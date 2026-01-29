@@ -63,3 +63,7 @@ cookies.txt
 .next/
 *.tsbuildinfo
 tsconfig.tsbuildinfo
+
+# editor/dev backups
+*.bak
+*.bak*
