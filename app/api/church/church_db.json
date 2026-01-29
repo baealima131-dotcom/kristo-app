@@ -1,0 +1,147 @@
+{
+  "churches": [
+    {
+      "id": "c1",
+      "name": "Kristo Church - Dallas",
+      "country": "US",
+      "city": "Dallas",
+      "pastorName": "Pastor Daniel",
+      "pastorId": "pastor_1",
+      "createdAt": 1769583873738
+    },
+    {
+      "id": "c2",
+      "name": "Kristo Church - Burundi",
+      "country": "BI",
+      "city": "Bujumbura",
+      "pastorName": "Pastor Jean",
+      "pastorId": "pastor_2",
+      "createdAt": 1769583873738
+    }
+  ],
+  "members": [
+    {
+      "id": "mb1",
+      "churchId": "c1",
+      "fullName": "Prince Fariji",
+      "phone": "",
+      "email": "",
+      "city": "Dallas",
+      "country": "US",
+      "status": "Active",
+      "createdAt": 1769583873738,
+      "updatedAt": 1769583873738
+    },
+    {
+      "id": "mb2",
+      "churchId": "c1",
+      "fullName": "Amina K.",
+      "city": "Dallas",
+      "country": "US",
+      "status": "Active",
+      "createdAt": 1769583873738,
+      "updatedAt": 1769583873738
+    }
+  ],
+  "roles": [
+    {
+      "id": "role1",
+      "churchId": "c1",
+      "name": "Ministry Leader",
+      "code": "MIN_LEADER",
+      "description": "Kiongozi mkuu wa ministry",
+      "createdAt": 1769583873738,
+      "updatedAt": 1769583873738
+    },
+    {
+      "id": "role2",
+      "churchId": "c1",
+      "name": "Ministry Assistant",
+      "code": "MIN_ASSISTANT",
+      "description": "Msaidizi wa kiongozi",
+      "createdAt": 1769583873738,
+      "updatedAt": 1769583873738
+    },
+    {
+      "id": "role3",
+      "churchId": "c1",
+      "name": "Ministry Treasurer",
+      "code": "MIN_TREASURER",
+      "description": "Mweka hazina",
+      "createdAt": 1769583873738,
+      "updatedAt": 1769583873738
+    }
+  ],
+  "ministries": [
+    {
+      "id": "min1",
+      "churchId": "c1",
+      "name": "Choir",
+      "description": "Waimbaji / Worship team",
+      "createdAt": 1769583873738,
+      "updatedAt": 1769583873738
+    },
+    {
+      "id": "min2",
+      "churchId": "c1",
+      "name": "Women",
+      "description": "Idara ya wamama",
+      "createdAt": 1769583873738,
+      "updatedAt": 1769583873738
+    }
+  ],
+  "ministryMembers": [
+    {
+      "id": "mm_266ec2e51218",
+      "churchId": "c1",
+      "ministryId": "min1",
+      "memberId": "mb1",
+      "position": "Leader",
+      "createdAt": 1769583873738
+    },
+    {
+      "id": "mm_8a65a3b6e69a",
+      "churchId": "c1",
+      "ministryId": "min1",
+      "memberId": "mb2",
+      "position": "Member",
+      "createdAt": 1769583873738
+    }
+  ],
+  "ministryRoleLinks": [
+    {
+      "id": "mrl_f32694934ea5",
+      "churchId": "c1",
+      "ministryId": "min1",
+      "roleId": "role1",
+      "label": "Leader",
+      "createdAt": 1769583873738
+    },
+    {
+      "id": "mrl_35b65f50e766",
+      "churchId": "c1",
+      "ministryId": "min1",
+      "roleId": "role2",
+      "label": "Assistant",
+      "createdAt": 1769583873738
+    },
+    {
+      "id": "mrl_68ce702a16eb",
+      "churchId": "c1",
+      "ministryId": "min1",
+      "roleId": "role3",
+      "label": "Treasurer",
+      "createdAt": 1769583873738
+    }
+  ],
+  "audit": [
+    {
+      "id": "aud_80d0fa78c22f",
+      "at": "2026-01-28T07:04:33.738Z",
+      "action": "seed_db",
+      "meta": {
+        "churches": 2
+      }
+    }
+  ]
+}

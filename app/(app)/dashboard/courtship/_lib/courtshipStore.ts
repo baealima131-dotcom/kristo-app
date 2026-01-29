@@ -1,0 +1,1006 @@
+// app/(app)/dashboard/courtship/_lib/courtshipStore.ts
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+
+/* =========================
+   TYPES (Aligned with API)
+   ========================= */
+
+export type Gender = "Male" | "Female";
+export type PastorApproval = "Required" | "Optional";
+export type VerificationStatus = "None" | "Pending" | "Verified" | "Rejected";
+export type ProfileStatus = "Draft" | "PendingPastor" | "Active" | "Locked";
+
+export type ChatSender = "Sender" | "Receiver" | "Pastor";
+export type ChatKind = "text" | "file";
+
+export type Church = {
+  id: string;
+  name: string;
+  country?: string;
+  city?: string;
+  pastorName: string;
+  pastorId: string;
+  createdAt: number;
+};
+
+export type PastorVerification = {
+  id: string;
+  profileId: string;
+  churchId: string;
+  requestedBy: ChatSender;
+  status: "Pending" | "Verified" | "Rejected";
+  note?: string;
+  requestedAt: string;
+  decidedAt?: string;
+  decidedByPastorId?: string;
+
+  // optional enrich (API may return)
+  pastorName?: string;
+  churchName?: string;
+  profileName?: string;
+  profileMeta?: string;
+};
+
+export type Profile = {
+  id: string;
+  name: string;
+  age: number;
+  city: string;
+  state: string;
+  gender: Gender;
+  faith: string;
+  goal: string;
+  bio: string;
+  job: string;
+  hasKids: boolean;
+  pastorApproval: PastorApproval;
+  avatarUrl: string;
+  tags: string[];
+
+  owner?: ChatSender;
+
+  createdAt?: number;
+  updatedAt?: number;
+  country?: string;
+
+  // Church linkage + verification
+  churchId?: string;
+  churchName?: string;
+  pastorId?: string;
+  verificationStatus?: VerificationStatus;
+  verificationRequestedAt?: string;
+  verificationDecidedAt?: string;
+  verificationNote?: string;
+
+  // Pastor Gate (Discover lock)
+  status?: ProfileStatus; // Draft | PendingPastor | Active | Locked
+  pastorGateNote?: string;
+  pastorGateAt?: string;
+  pastorGateBy?: string;
+};
+
+export type Match = {
+  id: string;
+  profileId: string;
+  approved: boolean;
+  pastorName?: string;
+  approvedAt?: string;
+};
+
+export type CoupleSteps = { s1: boolean; s2: boolean; s3: boolean; s4: boolean };
+
+export type CourtshipRequestStatus = "Pending" | "Accepted" | "Declined";
+
+export type CourtshipRequest = {
+  id: string;
+
+  /** target profile/user id (who is being requested) */
+  profileId: string;
+
+  /** compatibility fields (older UI / older data) */
+  requestId?: string;
+  targetUserId?: string;
+  toUserId?: string;
+
+  /** direction (demo roles) */
+  fromUser: "Sender";
+  toUser: "Receiver";
+
+  /** status */
+  status: CourtshipRequestStatus;
+
+  /** allow both number or ISO string */
+  createdAt: string | number;
+  decidedAt?: string | number;
+};
+
+export type ChatFileMeta = {
+  key: string;
+  name: string;
+  mime: string;
+  size: number;
+  url: string;
+};
+
+export type DeleteScope = "me" | "all";
+
+export type ChatMessage = {
+  id: string;
+  matchId: string;
+  sender: ChatSender;
+  kind: ChatKind;
+  text?: string;
+  file?: ChatFileMeta;
+  createdAt: string;
+  deliveredTo?: Partial<Record<ChatSender, string>>;
+  readBy?: Partial<Record<ChatSender, string>>;
+  editedAt?: string;
+  deletedAt?: string;
+  deletedBy?: ChatSender;
+  deletedFor?: Partial<Record<ChatSender, string>>;
+};
+
+export type CourtshipDB = {
+  profiles: Profile[];
+  requests: CourtshipRequest[];
+  matches: Match[];
+  coupleSteps: Record<string, CoupleSteps>;
+  chats: Record<string, ChatMessage[]>;
+  presence: Record<string, Partial<Record<ChatSender, string>>>;
+  readState: Record<string, Partial<Record<ChatSender, string>>>;
+
+  churches: Church[];
+  verifications: PastorVerification[];
+};
+
+type DemoMode = "Sender" | "Receiver";
+
+type UnreadSummary = {
+  viewer: ChatSender;
+  totalUnread: number;
+  byMatch: Record<string, number>;
+};
+
+type PastorSession = {
+  pastorId: string;
+  name?: string;
+};
+
+/* =========================
+   API PROFILE SHAPE (Discover)
+   ========================= */
+
+export type ApiProfile = {
+  userId: string;
+  displayName: string;
+  gender?: "male" | "female" | "other";
+  age?: number;
+  country?: string;
+  city?: string;
+  bio?: string;
+  faithLevel?: "new" | "growing" | "mature";
+  lookingFor?: "marriage" | "friendship" | "dating" | "courtship";
+  languages?: string[];
+  photos?: { url: string; uploadedAt: number }[];
+  discoverable: boolean;
+  isComplete: boolean;
+  createdAt: number;
+  updatedAt: number;
+
+  churchId?: string;
+  churchName?: string;
+  verificationStatus?: VerificationStatus;
+
+  status?: ProfileStatus;
+};
+
+/* =========================
+   API HELPERS
+   ========================= */
+
+const LS_KEY = "courtship_demo_mode_v1";
+const LS_VIEWER_KEY = "courtship_viewer_id_v1";
+const LS_PASTOR_SESSION = "courtship_pastor_session_v1";
+
+function nowISO() {
+  return new Date().toISOString();
+}
+
+function safeEmptyDB(): CourtshipDB {
+  return {
+    profiles: [],
+    requests: [],
+    matches: [],
+    coupleSteps: {},
+    chats: {},
+    presence: {},
+    readState: {},
+    churches: [],
+    verifications: [],
+  };
+}
+
+function makeViewerId() {
+  const rand = Math.random().toString(36).slice(2, 10);
+  return `demo_${rand}`;
+}
+
+function safeNormalizeRequests(reqs: any): CourtshipRequest[] {
+  const list = Array.isArray(reqs) ? reqs : [];
+  return list
+    .map((r: any) => {
+      const profileId = String(r?.profileId ?? r?.targetUserId ?? r?.toUserId ?? "").trim();
+      const id = String(r?.id ?? r?.requestId ?? "").trim();
+
+      if (!id || !profileId) return null;
+
+      return {
+        id,
+        requestId: String(r?.requestId ?? "").trim() || undefined,
+
+        profileId,
+        targetUserId: String(r?.targetUserId ?? "").trim() || undefined,
+        toUserId: String(r?.toUserId ?? "").trim() || undefined,
+
+        fromUser: "Sender",
+        toUser: "Receiver",
+
+        status: (r?.status === "Accepted" || r?.status === "Declined" ? r.status : "Pending") as CourtshipRequestStatus,
+
+        createdAt: (r?.createdAt ?? nowISO()) as string | number,
+        decidedAt: r?.decidedAt as any,
+      } satisfies CourtshipRequest;
+    })
+    .filter(Boolean) as CourtshipRequest[];
+}
+
+function safeNormalizeDB(incoming: any): CourtshipDB {
+  const base = safeEmptyDB();
+  const raw = incoming && typeof incoming === "object" ? incoming : {};
+
+  return {
+    profiles: Array.isArray(raw.profiles) ? raw.profiles : base.profiles,
+    requests: safeNormalizeRequests(raw.requests),
+    matches: Array.isArray(raw.matches) ? raw.matches : base.matches,
+    coupleSteps: raw.coupleSteps && typeof raw.coupleSteps === "object" ? raw.coupleSteps : base.coupleSteps,
+    chats: raw.chats && typeof raw.chats === "object" ? raw.chats : base.chats,
+    presence: raw.presence && typeof raw.presence === "object" ? raw.presence : base.presence,
+    readState: raw.readState && typeof raw.readState === "object" ? raw.readState : base.readState,
+    churches: Array.isArray(raw.churches) ? raw.churches : base.churches,
+    verifications: Array.isArray(raw.verifications) ? raw.verifications : base.verifications,
+  };
+}
+
+async function apiGET(action: string, params?: Record<string, string>) {
+  const sp = new URLSearchParams({ action, ...(params || {}) });
+  const res = await fetch(`/api/courtship?${sp.toString()}`, { cache: "no-store" });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.ok) throw new Error((json as any)?.error || "API GET failed");
+  return json as any;
+}
+
+async function apiPOSTJson(body: any) {
+  const res = await fetch(`/api/courtship`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.ok) throw new Error((json as any)?.error || "API POST failed");
+  return json as any;
+}
+
+async function apiUpload(file: File): Promise<ChatFileMeta> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`/api/courtship`, { method: "POST", body: fd });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.ok) throw new Error((json as any)?.error || "Upload failed");
+  return (json as any).file as ChatFileMeta;
+}
+
+/* =========================
+   STORE (Hook)
+   ========================= */
+
+export function useCourtshipStore() {
+  const [mode, setModeState] = useState<DemoMode>("Sender");
+  const [viewerId, setViewerIdState] = useState<string>("");
+
+  const [db, setDb] = useState<CourtshipDB | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // my profile cache (GET my_profile)
+  const [myProfile, setMyProfile] = useState<Profile | null>(null);
+  const [hasMyProfile, setHasMyProfile] = useState(false);
+
+  // pastor demo session
+  const [pastorSession, setPastorSession] = useState<PastorSession | null>(null);
+
+  // unread summary
+  const [unreadSummary, setUnreadSummary] = useState<UnreadSummary | null>(null);
+
+  // last message preview (server-side, lightweight)
+  const [lastByMatch, setLastByMatch] = useState<Record<string, ChatMessage | null>>({});
+
+  // pastor queue cached
+  const [pastorQueue, setPastorQueue] = useState<any[]>([]);
+
+  // internal: prevent race/stale updates
+  const refreshSeqRef = useRef(0);
+
+  // init from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(LS_KEY) as DemoMode | null;
+      if (saved === "Sender" || saved === "Receiver") setModeState(saved);
+    } catch {}
+
+    try {
+      const savedViewer = localStorage.getItem(LS_VIEWER_KEY);
+      if (savedViewer && savedViewer.trim()) {
+        setViewerIdState(savedViewer.trim());
+      } else {
+        const fresh = makeViewerId();
+        localStorage.setItem(LS_VIEWER_KEY, fresh);
+        setViewerIdState(fresh);
+      }
+    } catch {
+      setViewerIdState(makeViewerId());
+    }
+
+    try {
+      const raw = localStorage.getItem(LS_PASTOR_SESSION);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.pastorId) setPastorSession({ pastorId: String(parsed.pastorId), name: parsed?.name });
+      }
+    } catch {}
+  }, []);
+
+  function setMode(next: DemoMode) {
+    setModeState(next);
+    try {
+      localStorage.setItem(LS_KEY, next);
+    } catch {}
+  }
+
+  function setViewerId(nextId: string) {
+    const id = (nextId || "").trim();
+    if (!id) return;
+    setViewerIdState(id);
+    try {
+      localStorage.setItem(LS_VIEWER_KEY, id);
+    } catch {}
+  }
+
+  function getViewerRole(): ChatSender {
+    // demo role = Sender/Receiver only
+    return mode;
+  }
+
+  /* =========================
+     CORE REFRESH
+     ========================= */
+
+  async function refreshAll() {
+    const mySeq = ++refreshSeqRef.current;
+    setLoading(true);
+    try {
+      const json = await apiGET("db");
+      const incoming = (json as any)?.db;
+      const normalized = safeNormalizeDB(incoming);
+
+      if (mySeq === refreshSeqRef.current) setDb(normalized);
+    } finally {
+      if (mySeq === refreshSeqRef.current) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshAll().catch(() => {});
+     
+  }, []);
+
+  // ✅ Make collections stable (avoid eslint exhaustive-deps warnings from `?? [] / ?? {}`)
+  const profiles = useMemo(() => db?.profiles ?? [], [db]);
+  const requests = useMemo(() => db?.requests ?? [], [db]);
+  const matches = useMemo(() => db?.matches ?? [], [db]);
+  const coupleSteps = useMemo(() => (db?.coupleSteps ?? {}) as Record<string, CoupleSteps>, [db]);
+  const chats = useMemo(() => (db?.chats ?? {}) as Record<string, ChatMessage[]>, [db]);
+  const readState = useMemo(() => (db?.readState ?? {}) as Record<string, Partial<Record<ChatSender, string>>>, [db]);
+  const presence = useMemo(() => (db?.presence ?? {}) as Record<string, Partial<Record<ChatSender, string>>>, [db]);
+  const churches = useMemo(() => db?.churches ?? [], [db]);
+  const verifications = useMemo(() => db?.verifications ?? [], [db]);
+
+  // Requests lists (keep all statuses; UI can sort/filter)
+  const incomingRequests = useMemo(() => {
+    if (mode !== "Receiver") return [];
+    return requests.filter((r) => r.toUser === "Receiver");
+  }, [mode, requests]);
+
+  const sentRequests = useMemo(() => {
+    if (mode !== "Sender") return [];
+    return requests.filter((r) => r.fromUser === "Sender");
+  }, [mode, requests]);
+
+  const acceptedMatches = useMemo(() => matches, [matches]);
+
+  function getProfile(profileId: string) {
+    return profiles.find((p) => p.id === profileId);
+  }
+
+  function getSteps(matchId: string): CoupleSteps {
+    return coupleSteps[matchId] ?? { s1: false, s2: false, s3: false, s4: false };
+  }
+
+  function getMatch(matchId: string) {
+    return matches.find((m) => m.id === matchId);
+  }
+
+  function getChatLocal(matchId: string): ChatMessage[] {
+    return chats[matchId] ?? [];
+  }
+
+  // used by Matches page (preview)
+  const localLastMessageByMatch = useMemo(() => {
+    const out: Record<string, ChatMessage | undefined> = {};
+    for (const [mid, list] of Object.entries(chats)) {
+      if (!Array.isArray(list) || list.length === 0) {
+        out[mid] = undefined;
+        continue;
+      }
+      let last: ChatMessage | undefined = undefined;
+      for (let i = list.length - 1; i >= 0; i--) {
+        const m = list[i];
+        if (!m) continue;
+        if ((m as any).deletedAt) continue;
+        last = m;
+        break;
+      }
+      out[mid] = last;
+    }
+    return out;
+  }, [chats]);
+
+  const lastMessageByMatch = useMemo(() => {
+    // Prefer server preview when available (lighter), fallback to local chats-derived preview.
+    const hasServer = lastByMatch && Object.keys(lastByMatch).length > 0;
+    return hasServer ? lastByMatch : localLastMessageByMatch;
+  }, [lastByMatch, localLastMessageByMatch]);
+
+
+  function isHiddenForViewer(msg: ChatMessage, viewer: ChatSender) {
+    return Boolean((msg as any)?.deletedFor?.[viewer]);
+  }
+
+  function getUnreadCount(matchId: string, viewer: ChatSender) {
+    const lastReadISO = readState?.[matchId]?.[viewer];
+    const lastReadTime = lastReadISO ? +new Date(lastReadISO) : 0;
+    const msgs = getChatLocal(matchId);
+
+    let count = 0;
+    for (const m of msgs) {
+      if (!m) continue;
+      if (m.sender === viewer) continue;
+      if ((m as any).deletedAt) continue;
+      if (isHiddenForViewer(m, viewer)) continue;
+
+      const t = +new Date(m.createdAt);
+      if (!Number.isFinite(t)) continue;
+
+      if (!lastReadISO) count += 1;
+      else if (t > lastReadTime) count += 1;
+    }
+    return count;
+  }
+
+  /* =========================
+     MY PROFILE
+     ========================= */
+
+  async function fetchMyProfile() {
+    const user = getViewerRole();
+    const json = await apiGET("my_profile", { user });
+    const p = ((json as any).profile || null) as Profile | null;
+    setMyProfile(p);
+    setHasMyProfile(Boolean((json as any).hasProfile));
+    return { profile: p, hasProfile: Boolean((json as any).hasProfile) };
+  }
+
+  async function upsertMyProfile(profile: Partial<Profile>) {
+    const user = getViewerRole();
+    setLoading(true);
+    try {
+      const json = await apiPOSTJson({ action: "upsert_profile", user, profile });
+      const p = ((json as any).profile || null) as Profile | null;
+      setMyProfile(p);
+      setHasMyProfile(Boolean(p));
+      await refreshAll();
+      return p;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submitMyProfileToPastor(note?: string) {
+    const user = getViewerRole();
+    setLoading(true);
+    try {
+      const json = await apiPOSTJson({ action: "submit_profile", user, note: note || "" });
+      const p = ((json as any).profile || null) as Profile | null;
+      setMyProfile(p);
+      setHasMyProfile(Boolean(p));
+      await refreshAll();
+      return p;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /* =========================
+     DISCOVER (GET)
+     ========================= */
+
+  async function fetchDiscover(viewer?: ChatSender) {
+    const v = viewer || getViewerRole();
+    const json = await apiGET("discover", { viewer: v });
+    const list = ((json as any).profiles || []) as ApiProfile[];
+    return { viewer: v, profiles: Array.isArray(list) ? list : [] };
+  }
+
+  /* =========================
+     UNREAD SUMMARY (server-side)
+     ========================= */
+
+  async function fetchUnreadSummary(matchIds?: string[]) {
+    const viewer = getViewerRole();
+    const params: Record<string, string> = { viewer };
+    if (matchIds?.length) params.matchIds = matchIds.join(",");
+
+    const json = await apiGET("unread_summary", params);
+
+    const summary: UnreadSummary = {
+      viewer: (json as any).viewer as ChatSender,
+      totalUnread: Number((json as any).totalUnread ?? 0),
+      byMatch: ((json as any).byMatch || {}) as Record<string, number>,
+    };
+
+    setUnreadSummary(summary);
+    return summary;
+  }
+
+
+  /* =========================
+     LAST MESSAGE PREVIEW (server-side)
+     ========================= */
+
+  async function fetchLastMessages(matchIds?: string[]) {
+    const viewer = getViewerRole();
+    const params: Record<string, string> = { viewer };
+    if (matchIds?.length) params.matchIds = matchIds.join(",");
+
+    const json = await apiGET("last_messages", params);
+    const byMatch = ((json as any).byMatch || {}) as Record<string, ChatMessage | null>;
+
+    setLastByMatch(byMatch);
+    return { viewer, byMatch };
+  }
+
+
+  const totalUnread = useMemo(() => unreadSummary?.totalUnread ?? 0, [unreadSummary]);
+
+  /* =========================
+     CHAT
+     ========================= */
+
+  async function fetchChat(
+    matchId: string,
+    viewer: ChatSender
+  ): Promise<{ messages: ChatMessage[]; readState: any; presence: any; online?: any }> {
+    const json = await apiGET("chat", { matchId, viewer });
+
+    setDb((prev) => {
+      const base = prev ?? safeEmptyDB();
+      return {
+        ...base,
+        chats: { ...(base.chats || {}), [matchId]: ((json as any).messages || []) as ChatMessage[] },
+        readState: { ...(base.readState || {}), [matchId]: (json as any).readState || {} },
+        presence: { ...(base.presence || {}), [matchId]: (json as any).presence || {} },
+      };
+    });
+
+    return {
+      messages: ((json as any).messages || []) as ChatMessage[],
+      readState: (json as any).readState || {},
+      presence: (json as any).presence || {},
+      online: (json as any).online,
+    };
+  }
+
+  async function markRead(matchId: string, user: ChatSender) {
+    const json = await apiPOSTJson({ action: "mark_read", matchId, user });
+    const readAt = (json as any)?.readAt || nowISO();
+
+    setDb((prev) => {
+      if (!prev) return prev;
+      const rs = { ...(prev.readState || {}) };
+      rs[matchId] = { ...(rs[matchId] || {}), [user]: readAt };
+      return { ...prev, readState: rs };
+    });
+
+    fetchUnreadSummary().catch(() => {});
+    return json;
+  }
+
+  async function pingPresence(matchId: string, user: ChatSender) {
+    await apiPOSTJson({ action: "presence_ping", matchId, user });
+
+    const ts = nowISO();
+    setDb((prev) => {
+      if (!prev) return prev;
+      const cur = (prev.presence?.[matchId] || {}) as Partial<Record<ChatSender, string>>;
+      return { ...prev, presence: { ...(prev.presence || {}), [matchId]: { ...cur, [user]: ts } } };
+    });
+  }
+
+  // alias for compatibility
+  const presencePing = pingPresence;
+
+  async function getPresence(matchId: string) {
+    const json = await apiGET("presence", { matchId });
+
+    setDb((prev) => {
+      const base = prev ?? safeEmptyDB();
+      return { ...base, presence: { ...(base.presence || {}), [matchId]: (json as any).presence || {} } };
+    });
+
+    return json;
+  }
+
+  async function sendText(matchId: string, sender: ChatSender, text: string) {
+    const clean = (text || "").trim();
+    if (!clean) return;
+
+    await apiPOSTJson({ action: "send_chat", matchId, sender, kind: "text", text: clean });
+    await fetchChat(matchId, sender).catch(() => {});
+    fetchUnreadSummary().catch(() => {});
+  }
+
+  async function sendFile(matchId: string, sender: ChatSender, file: File) {
+    if (!(file instanceof File)) return;
+
+    const meta = await apiUpload(file);
+    await apiPOSTJson({ action: "send_chat", matchId, sender, kind: "file", file: meta });
+    await fetchChat(matchId, sender).catch(() => {});
+    fetchUnreadSummary().catch(() => {});
+  }
+
+  async function editMessage(matchId: string, user: ChatSender, messageId: string, text: string) {
+    const clean = (text || "").trim();
+    if (!matchId) throw new Error("matchId is required");
+    if (!messageId) throw new Error("messageId is required");
+    if (!clean) throw new Error("text is required");
+    await apiPOSTJson({ action: "edit_chat", matchId, user, messageId, text: clean });
+    await fetchChat(matchId, user);
+  }
+
+  async function deleteMessage(matchId: string, user: ChatSender, messageId: string, scope: DeleteScope) {
+    if (!matchId) throw new Error("matchId is required");
+    if (!messageId) throw new Error("messageId is required");
+    if (scope !== "me" && scope !== "all") throw new Error("Invalid delete scope");
+    await apiPOSTJson({ action: "delete_chat", matchId, user, messageId, scope });
+    await fetchChat(matchId, user);
+    fetchUnreadSummary().catch(() => {});
+  }
+
+  async function clearChat(matchId: string, viewer: ChatSender) {
+    await apiPOSTJson({ action: "clear_chat", matchId });
+
+    setDb((prev) => {
+      if (!prev) return prev;
+      return { ...prev, chats: { ...(prev.chats || {}), [matchId]: [] } };
+    });
+
+    await fetchChat(matchId, viewer).catch(() => {});
+    fetchUnreadSummary().catch(() => {});
+  }
+
+  /* =========================
+     Requests + Matches
+     ========================= */
+
+  async function sendInterest(profileId: string) {
+    setLoading(true);
+    try {
+      await apiPOSTJson({ action: "send_interest", profileId, viewerId });
+      await refreshAll();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function acceptRequest(requestId: string) {
+    setLoading(true);
+    try {
+      await apiPOSTJson({ action: "accept_request", requestId });
+      await refreshAll();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function declineRequest(requestId: string) {
+    setLoading(true);
+    try {
+      await apiPOSTJson({ action: "decline_request", requestId });
+      await refreshAll();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function approveMatch(matchId: string, pastorName: string) {
+    setLoading(true);
+    try {
+      await apiPOSTJson({ action: "approve_match", matchId, pastorName });
+      await refreshAll();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function resetApproval(matchId: string) {
+    setLoading(true);
+    try {
+      await apiPOSTJson({ action: "reset_approval", matchId });
+      await refreshAll();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function setStep(matchId: string, step: keyof CoupleSteps, value: boolean) {
+    setLoading(true);
+    try {
+      await apiPOSTJson({ action: "set_step", matchId, step, value });
+      await refreshAll();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function resetAll() {
+    setLoading(true);
+    try {
+      await apiPOSTJson({ action: "reset_all" });
+      await refreshAll();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /* =========================
+     Church + Verification
+     ========================= */
+
+  function getChurch(churchId?: string) {
+    if (!churchId) return null;
+    return churches.find((c) => c.id === churchId) || null;
+  }
+
+  async function requestVerification(profileId: string, churchId: string, note?: string) {
+    const user = getViewerRole();
+    setLoading(true);
+    try {
+      await apiPOSTJson({
+        action: "request_verification",
+        user,
+        profileId,
+        churchId,
+        note: note || "",
+      });
+      await refreshAll();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /**
+   * ✅ Demo helper: create a pending verification for the logged pastor (so queue is not 0)
+   * API action: seed_demo_verification
+   */
+  async function seedDemoVerificationForPastor(pastorId?: string) {
+    const pid = String(pastorId || pastorSession?.pastorId || "").trim();
+    if (!pid) throw new Error("pastorId is required");
+    setLoading(true);
+    try {
+      await apiPOSTJson({ action: "seed_demo_verification", pastorId: pid });
+      await refreshAll();
+      if (pastorSession?.pastorId) await fetchPastorQueue().catch(() => {});
+      return true;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function pastorLogin(pastorId: string) {
+    const id = String(pastorId || "").trim();
+    if (!id) throw new Error("pastorId is required");
+
+    try {
+      const json = await apiGET("churches");
+      const list = ((json as any).churches || []) as Church[];
+      const found = list.find((c) => c.pastorId === id);
+
+      const session: PastorSession = { pastorId: id, name: found?.pastorName };
+      setPastorSession(session);
+      try {
+        localStorage.setItem(LS_PASTOR_SESSION, JSON.stringify(session));
+      } catch {}
+
+      await refreshAll();
+      return session;
+    } catch {
+      const session: PastorSession = { pastorId: id };
+      setPastorSession(session);
+      try {
+        localStorage.setItem(LS_PASTOR_SESSION, JSON.stringify(session));
+      } catch {}
+      await refreshAll();
+      return session;
+    }
+  }
+
+  function pastorLogout() {
+    setPastorSession(null);
+    setPastorQueue([]);
+    try {
+      localStorage.removeItem(LS_PASTOR_SESSION);
+    } catch {}
+  }
+
+  async function fetchPastorQueue() {
+    if (!pastorSession?.pastorId) throw new Error("Pastor not logged in");
+    const json = await apiGET("pastor_queue", { pastorId: pastorSession.pastorId });
+    const items = ((json as any).items || []) as any[];
+    setPastorQueue(items);
+    return items;
+  }
+
+  /**
+   * ✅ FIX: pastor_decide requires verificationId (NOT profileId)
+   * Call this with: item.verification.id
+   */
+  async function pastorDecide(verificationId: string, decision: "Verified" | "Rejected", note?: string) {
+    if (!pastorSession?.pastorId) throw new Error("Pastor not logged in");
+
+    const vid = String(verificationId || "").trim();
+    if (!vid) throw new Error("verificationId is required");
+
+    setLoading(true);
+    try {
+      await apiPOSTJson({
+        action: "pastor_decide",
+        pastorId: pastorSession.pastorId,
+        verificationId: vid,
+        decision,
+        note: note || "",
+      });
+      await refreshAll();
+      fetchPastorQueue().catch(() => {});
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const myPastorChurch = useMemo(() => {
+    if (!pastorSession?.pastorId) return null;
+    return churches.find((c) => c.pastorId === pastorSession.pastorId) || null;
+  }, [pastorSession, churches]);
+
+  const myPendingVerifications = useMemo(() => {
+    const me = mode as ChatSender; // demo role == mode (Sender/Receiver)
+    return (verifications || []).filter((v) => v.requestedBy === me && v.status === "Pending");
+  }, [verifications, mode]);
+
+  return {
+    // viewer
+    viewerId,
+    setViewerId,
+
+    // mode
+    mode,
+    setMode,
+
+    // core state
+    db,
+    loading,
+
+    // collections
+    profiles,
+    requests,
+    matches: acceptedMatches,
+    coupleSteps,
+    churches,
+    verifications,
+
+    // computed lists
+    incomingRequests,
+    sentRequests,
+
+    // getters
+    getProfile,
+    getMatch,
+    getSteps,
+    getChatLocal,
+    getUnreadCount,
+    getChurch,
+
+    // previews for Matches page
+    lastMessageByMatch,
+
+    // my profile
+    myProfile,
+    hasMyProfile,
+    fetchMyProfile,
+    upsertMyProfile,
+    submitMyProfileToPastor,
+
+    // discover
+    fetchDiscover,
+
+    // unread summary
+    unreadSummary,
+    totalUnread,
+    fetchUnreadSummary,
+    fetchLastMessages,
+
+    // chat
+    fetchChat,
+    sendText,
+    sendFile,
+    editMessage,
+    deleteMessage,
+    clearChat,
+    markRead,
+
+    // presence
+    pingPresence,
+    presencePing, // alias
+    getPresence,
+    presence,
+
+    // global refresh/reset
+    refreshAll,
+    resetAll,
+
+    // requests + matches
+    sendInterest,
+    acceptRequest,
+    declineRequest,
+    approveMatch,
+    resetApproval,
+
+    // steps
+    setStep,
+
+    // church + verification
+    requestVerification,
+    myPendingVerifications,
+
+    // pastor tools
+    pastorSession,
+    pastorLogin,
+    pastorLogout,
+    myPastorChurch,
+    pastorQueue,
+    fetchPastorQueue,
+    pastorDecide,
+
+    // demo helper (optional to use from UI if you want)
+    seedDemoVerificationForPastor,
+  };
+}

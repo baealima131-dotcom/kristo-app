@@ -1,0 +1,687 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useUser, RedirectToSignIn } from "@clerk/nextjs";
+
+type Gender = "Male" | "Female";
+
+type ChurchPick = {
+  id: string;
+  name: string;
+  country?: string;
+  city?: string;
+};
+
+function cn(...xs: Array<string | false | null | undefined>) {
+  return xs.filter(Boolean).join(" ");
+}
+
+export default function OnboardingPage() {
+  const router = useRouter();
+  const { isLoaded, isSignedIn, user } = useUser();
+
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [gender, setGender] = useState<Gender>("Male");
+  const [dob, setDob] = useState("");
+
+  const [country, setCountry] = useState("");
+  const [city, setCity] = useState("");
+
+  const [joinChurch, setJoinChurch] = useState(false);
+  const [churchQuery, setChurchQuery] = useState("");
+  const [churchResults, setChurchResults] = useState<ChurchPick[]>([]);
+  const [selectedChurchId, setSelectedChurchId] = useState<string>("");
+
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  const mockChurches: ChurchPick[] = useMemo(
+    () => [
+      { id: "church_dev_default", name: "Kristo Church (Dev Default)", country: "USA", city: "Dallas" },
+      { id: "church_demo_2", name: "New Hope Ministry", country: "USA", city: "Houston" },
+      { id: "church_demo_3", name: "Jesus Saves Church", country: "Burundi", city: "Bujumbura" },
+    ],
+    []
+  );
+
+  useEffect(() => {
+    if (!isLoaded || !user) return;
+
+    const md = (user.unsafeMetadata ?? {}) as any;
+
+    const existingName =
+      (md.fullName as string) ||
+      user.fullName ||
+      user.username ||
+      "";
+
+    const primaryEmail =
+      (user as any).primaryEmailAddress?.emailAddress ||
+      (user as any).emailAddresses?.[0]?.emailAddress ||
+      "";
+
+    setFullName(existingName);
+    setEmail(typeof md.email === "string" && md.email.trim() ? md.email : String(primaryEmail || ""));
+
+    if (typeof md.phone === "string") setPhone(md.phone);
+    if (md.gender === "Male" || md.gender === "Female") setGender(md.gender);
+    if (typeof md.dob === "string") setDob(md.dob);
+
+    if (typeof md.country === "string") setCountry(md.country);
+    if (typeof md.city === "string") setCity(md.city);
+
+    if (typeof md.churchId === "string" && md.churchId) {
+      setJoinChurch(true);
+      setSelectedChurchId(md.churchId);
+    }
+  }, [isLoaded, user]);
+
+  useEffect(() => {
+    if (!joinChurch) {
+      setChurchQuery("");
+      setChurchResults([]);
+      setSelectedChurchId("");
+      return;
+    }
+
+    const q = churchQuery.trim().toLowerCase();
+    if (!q) {
+      setChurchResults([]);
+      return;
+    }
+
+    const results = mockChurches.filter((c) => {
+      const hay = `${c.name} ${c.city ?? ""} ${c.country ?? ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+
+    setChurchResults(results);
+  }, [joinChurch, churchQuery, mockChurches]);
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-white/80">
+        Loading...
+      </div>
+    );
+  }
+
+  if (!isSignedIn) {
+    return <RedirectToSignIn redirectUrl="/onboarding" />;
+  }
+
+  function validate() {
+    const n = fullName.trim();
+    const ctry = country.trim();
+    const cty = city.trim();
+
+    if (!n) return "Tafadhali andika majina yako (Full name).";
+    if (!ctry) return "Tafadhali andika country.";
+    if (!cty) return "Tafadhali andika city.";
+    if (joinChurch && !selectedChurchId) {
+      return "Umechagua ku-join church — tafadhali chagua church moja kwenye list.";
+    }
+
+    const clerkEmail =
+      (user as any)?.primaryEmailAddress?.emailAddress ||
+      (user as any)?.emailAddresses?.[0]?.emailAddress ||
+      "";
+    const effectiveEmail = String(clerkEmail || email || "").trim();
+    if (!effectiveEmail) return "Email haijapatikana. Tafadhali andika email yako.";
+
+    return "";
+  }
+
+  async function handleSave() {
+    setError("");
+    const v = validate();
+    if (v) return setError(v);
+
+    try {
+      setSaving(true);
+
+      if (!user) {
+        setError("User not available. Please sign in again.");
+        return;
+      }
+
+      const clerkEmail =
+        (user as any).primaryEmailAddress?.emailAddress ||
+        (user as any).emailAddresses?.[0]?.emailAddress ||
+        "";
+
+      const effectiveEmail = String(clerkEmail || email || "").trim();
+
+      await (user as any).update({
+        unsafeMetadata: {
+          ...(user.unsafeMetadata ?? {}),
+          fullName: fullName.trim(),
+          email: effectiveEmail,
+          phone: phone.trim(),
+          gender,
+          dob: dob.trim(),
+          country: country.trim(),
+          city: city.trim(),
+          churchId: joinChurch ? selectedChurchId : "",
+          onboardingComplete: true,
+        },
+      });
+
+      if (joinChurch && selectedChurchId) {
+        router.replace("/churches");
+      } else {
+        router.replace("/dashboard");
+      }
+    } catch (e: any) {
+      setError(e?.message ?? "Kuna tatizo wakati wa kuhifadhi. Jaribu tena.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const clerkEmailReadonly = Boolean(
+    (user as any)?.primaryEmailAddress?.emailAddress ||
+      (user as any)?.emailAddresses?.[0]?.emailAddress
+  );
+
+  const emailValue = String(
+    (user as any)?.primaryEmailAddress?.emailAddress ||
+      (user as any)?.emailAddresses?.[0]?.emailAddress ||
+      email
+  );
+
+  return (
+    <div className="vip-root min-h-screen px-4 py-10 flex items-center justify-center">
+      {/* Cinematic ambient */}
+      <div className="vip-ambient" aria-hidden="true" />
+      <div className="vip-grain" aria-hidden="true" />
+
+      <div className="w-full max-w-3xl relative">
+        <div className="vip-card">
+          <div className="vip-card-inner">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="vip-kicker">Kristo App</div>
+                <h1 className="vip-title">Onboarding</h1>
+                <p className="vip-subtitle">
+                  Jaza taarifa zako muhimu — tuanze safari yako kwa style ya VIP.
+                </p>
+              </div>
+
+              <div className="vip-badge">
+                <span className="vip-badge-dot" />
+                VIP • GOLD
+              </div>
+            </div>
+
+            {error ? (
+              <div className="vip-alert mt-6">
+                <div className="vip-alert-title">Kuna tatizo</div>
+                <div className="vip-alert-body">{error}</div>
+              </div>
+            ) : null}
+
+            <div className="mt-7 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="vip-label">Full name (Majina)</label>
+                <input
+                  className="vip-input"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  placeholder="Mfano: Prince Fariji"
+                  autoComplete="name"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="vip-label">Email</label>
+                <input
+                  className={cn("vip-input", clerkEmailReadonly && "vip-input-readonly")}
+                  value={emailValue}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Mfano: you@example.com"
+                  autoComplete="email"
+                  readOnly={clerkEmailReadonly}
+                />
+                <p className="vip-help">
+                  Email kawaida inatoka Clerk. Kama haipo, unaweza kuijaza hapa.
+                </p>
+              </div>
+
+              <div>
+                <label className="vip-label">Phone number</label>
+                <input
+                  className="vip-input"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="Mfano: +1 214..."
+                  autoComplete="tel"
+                  inputMode="tel"
+                />
+              </div>
+
+              <div>
+                <label className="vip-label">Gender</label>
+                <div className="vip-seg">
+                  <button
+                    type="button"
+                    className={cn("vip-seg-btn", gender === "Male" && "is-active")}
+                    onClick={() => setGender("Male")}
+                    aria-pressed={gender === "Male"}
+                  >
+                    Male
+                  </button>
+                  <button
+                    type="button"
+                    className={cn("vip-seg-btn", gender === "Female" && "is-active")}
+                    onClick={() => setGender("Female")}
+                    aria-pressed={gender === "Female"}
+                  >
+                    Female
+                  </button>
+                </div>
+                <p className="vip-help">Chaguzi 2 tu: Male / Female.</p>
+              </div>
+
+              <div>
+                <label className="vip-label">DOB (Date of birth)</label>
+                <input
+                  className="vip-input"
+                  value={dob}
+                  onChange={(e) => setDob(e.target.value)}
+                  type="date"
+                  autoComplete="bday"
+                />
+              </div>
+
+              <div>
+                <label className="vip-label">Country</label>
+                <input
+                  className="vip-input"
+                  value={country}
+                  onChange={(e) => setCountry(e.target.value)}
+                  placeholder="Mfano: USA"
+                  autoComplete="country-name"
+                />
+              </div>
+
+              <div>
+                <label className="vip-label">City</label>
+                <input
+                  className="vip-input"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  placeholder="Mfano: Dallas"
+                  autoComplete="address-level2"
+                />
+              </div>
+            </div>
+
+            <div className="vip-panel mt-7">
+              <div className="flex items-center gap-3">
+                <input
+                  id="joinChurch"
+                  type="checkbox"
+                  checked={joinChurch}
+                  onChange={(e) => setJoinChurch(e.target.checked)}
+                  className="vip-check"
+                />
+                <label htmlFor="joinChurch" className="vip-label mb-0">
+                  Join a church? <span className="opacity-70">(optional)</span>
+                </label>
+              </div>
+
+              {joinChurch ? (
+                <div className="mt-4">
+                  <label className="vip-label">Tafuta church (jina / city / country)</label>
+                  <input
+                    className="vip-input"
+                    value={churchQuery}
+                    onChange={(e) => setChurchQuery(e.target.value)}
+                    placeholder="Mfano: Dallas / Kristo / Bujumbura"
+                  />
+
+                  {churchQuery.trim() ? (
+                    <div className="mt-3 space-y-2">
+                      {churchResults.length === 0 ? (
+                        <div className="text-sm opacity-70">
+                          Hakuna church imepatikana (MVP mock). Baadaye tutaunganisha DB search.
+                        </div>
+                      ) : (
+                        churchResults.map((c) => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            onClick={() => setSelectedChurchId(c.id)}
+                            className={cn(
+                              "vip-pick",
+                              selectedChurchId === c.id && "is-selected"
+                            )}
+                          >
+                            <div className="font-medium">{c.name}</div>
+                            <div className="text-xs opacity-70">
+                              {(c.city ?? "") + (c.country ? `, ${c.country}` : "")}
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-xs opacity-70">Anza kuandika ili uone list.</div>
+                  )}
+
+                  {selectedChurchId ? (
+                    <div className="mt-3 text-xs opacity-80">
+                      Selected: <span className="font-medium">{selectedChurchId}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mt-7 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                className="vip-btn ghost"
+                onClick={() => router.replace("/dashboard")}
+                disabled={saving}
+              >
+                Skip (later)
+              </button>
+
+              <button
+                type="button"
+                className={cn("vip-btn primary", saving && "is-loading")}
+                onClick={handleSave}
+                disabled={saving}
+              >
+                {saving ? "Saving..." : "Continue"}
+              </button>
+            </div>
+
+            <p className="mt-5 text-xs opacity-70">
+              MVP note: taarifa hizi zina-save kwenye Clerk metadata. Baadaye tutazi-copy kwenda DB
+              (Prisma users table).
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <style jsx global>{`
+        .vip-root {
+          color: rgba(255, 255, 255, 0.92);
+          background: radial-gradient(1200px 600px at 20% 10%, rgba(255, 215, 130, 0.14), transparent 60%),
+            radial-gradient(900px 500px at 80% 20%, rgba(255, 190, 80, 0.10), transparent 55%),
+            radial-gradient(900px 700px at 60% 90%, rgba(120, 180, 255, 0.08), transparent 60%),
+            linear-gradient(180deg, #07070b 0%, #0b0b12 40%, #07070b 100%);
+          position: relative;
+          overflow: hidden;
+        }
+
+        .vip-ambient {
+          position: absolute;
+          inset: -40%;
+          background:
+            radial-gradient(circle at 30% 20%, rgba(255, 216, 140, 0.18), transparent 35%),
+            radial-gradient(circle at 70% 30%, rgba(255, 180, 80, 0.14), transparent 40%),
+            radial-gradient(circle at 50% 80%, rgba(120, 200, 255, 0.10), transparent 45%);
+          filter: blur(40px);
+          animation: vipFloat 10s ease-in-out infinite;
+          pointer-events: none;
+        }
+
+        .vip-grain {
+          position: absolute;
+          inset: 0;
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='260' height='260' filter='url(%23n)' opacity='.18'/%3E%3C/svg%3E");
+          mix-blend-mode: overlay;
+          opacity: 0.10;
+          pointer-events: none;
+        }
+
+        @keyframes vipFloat {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+          50% { transform: translate3d(0, -10px, 0) scale(1.02); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .vip-ambient { animation: none; }
+          .vip-card { animation: none; }
+          .vip-pick, .vip-btn, .vip-input { transition: none; }
+        }
+
+        .vip-card {
+          border-radius: 22px;
+          padding: 1px;
+          background: linear-gradient(135deg, rgba(255, 220, 140, 0.65), rgba(255, 170, 60, 0.25), rgba(120, 200, 255, 0.10));
+          box-shadow:
+            0 20px 80px rgba(0,0,0,0.65),
+            0 0 0 1px rgba(255, 220, 140, 0.15);
+          animation: vipCardIn 520ms ease-out both;
+        }
+
+        @keyframes vipCardIn {
+          from { opacity: 0; transform: translateY(10px) scale(0.99); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .vip-card-inner {
+          border-radius: 21px;
+          padding: 24px;
+          background: linear-gradient(180deg, rgba(17, 17, 26, 0.88), rgba(10, 10, 16, 0.86));
+          backdrop-filter: blur(10px);
+          border: 1px solid rgba(255, 220, 140, 0.14);
+        }
+
+        @media (min-width: 640px) {
+          .vip-card-inner { padding: 32px; }
+        }
+
+        .vip-kicker {
+          font-size: 12px;
+          letter-spacing: 0.18em;
+          text-transform: uppercase;
+          color: rgba(255, 215, 130, 0.85);
+        }
+
+        .vip-title {
+          margin-top: 8px;
+          font-size: 30px;
+          line-height: 1.1;
+          font-weight: 700;
+          letter-spacing: -0.02em;
+          background: linear-gradient(90deg, rgba(255, 240, 190, 0.95), rgba(255, 190, 80, 0.90));
+          -webkit-background-clip: text;
+          background-clip: text;
+          color: transparent;
+        }
+
+        .vip-subtitle {
+          margin-top: 10px;
+          font-size: 14px;
+          line-height: 1.55;
+          color: rgba(255, 255, 255, 0.78);
+        }
+
+        .vip-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 220, 140, 0.20);
+          background: rgba(255, 210, 120, 0.06);
+          color: rgba(255, 230, 170, 0.92);
+          font-size: 12px;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          white-space: nowrap;
+        }
+
+        .vip-badge-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 999px;
+          background: radial-gradient(circle, rgba(255, 220, 140, 1), rgba(255, 170, 60, 0.8));
+          box-shadow: 0 0 14px rgba(255, 200, 110, 0.65);
+        }
+
+        .vip-label {
+          display: block;
+          margin-bottom: 6px;
+          font-size: 12px;
+          font-weight: 600;
+          color: rgba(255, 240, 200, 0.88);
+        }
+
+        .vip-help {
+          margin-top: 6px;
+          font-size: 12px;
+          color: rgba(255, 255, 255, 0.62);
+        }
+
+        .vip-input {
+          width: 100%;
+          border-radius: 12px;
+          padding: 10px 12px;
+          border: 1px solid rgba(255, 220, 140, 0.14);
+          background: rgba(255, 255, 255, 0.06);
+          color: rgba(255, 255, 255, 0.92);
+          outline: none;
+          transition: transform 180ms ease, border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+        }
+
+        .vip-input::placeholder {
+          color: rgba(255, 255, 255, 0.45);
+        }
+
+        .vip-input:focus {
+          border-color: rgba(255, 220, 140, 0.45);
+          background: rgba(255, 255, 255, 0.08);
+          box-shadow: 0 0 0 4px rgba(255, 200, 110, 0.10);
+          transform: translateY(-1px);
+        }
+
+        .vip-input-readonly {
+          opacity: 0.82;
+          cursor: not-allowed;
+        }
+
+        .vip-seg {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+        }
+
+        .vip-seg-btn {
+          border-radius: 12px;
+          padding: 10px 12px;
+          border: 1px solid rgba(255, 220, 140, 0.14);
+          background: rgba(255, 255, 255, 0.05);
+          color: rgba(255, 255, 255, 0.85);
+          transition: transform 180ms ease, border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+        }
+
+        .vip-seg-btn:hover {
+          background: rgba(255, 255, 255, 0.07);
+          transform: translateY(-1px);
+        }
+
+        .vip-seg-btn.is-active {
+          border-color: rgba(255, 220, 140, 0.55);
+          background: rgba(255, 210, 120, 0.10);
+          box-shadow: 0 0 0 4px rgba(255, 200, 110, 0.10);
+          color: rgba(255, 240, 200, 0.95);
+        }
+
+        .vip-panel {
+          border-radius: 16px;
+          border: 1px solid rgba(255, 220, 140, 0.14);
+          background: rgba(255, 255, 255, 0.04);
+          padding: 16px;
+        }
+
+        .vip-check {
+          accent-color: #f5c36a;
+        }
+
+        .vip-pick {
+          width: 100%;
+          text-align: left;
+          border-radius: 14px;
+          border: 1px solid rgba(255, 220, 140, 0.12);
+          background: rgba(255, 255, 255, 0.04);
+          padding: 12px 12px;
+          transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+        }
+
+        .vip-pick:hover {
+          background: rgba(255, 255, 255, 0.07);
+          transform: translateY(-1px);
+          border-color: rgba(255, 220, 140, 0.26);
+        }
+
+        .vip-pick.is-selected {
+          border-color: rgba(255, 220, 140, 0.55);
+          background: rgba(255, 210, 120, 0.08);
+        }
+
+        .vip-btn {
+          border-radius: 14px;
+          padding: 10px 14px;
+          font-size: 14px;
+          border: 1px solid rgba(255, 220, 140, 0.18);
+          transition: transform 180ms ease, background 180ms ease, opacity 180ms ease, box-shadow 180ms ease;
+        }
+
+        .vip-btn.ghost {
+          background: rgba(255, 255, 255, 0.04);
+          color: rgba(255, 255, 255, 0.82);
+        }
+
+        .vip-btn.ghost:hover {
+          background: rgba(255, 255, 255, 0.06);
+          transform: translateY(-1px);
+        }
+
+        .vip-btn.primary {
+          border-color: rgba(255, 220, 140, 0.40);
+          background: linear-gradient(90deg, rgba(255, 210, 120, 0.25), rgba(255, 170, 60, 0.18));
+          color: rgba(255, 240, 200, 0.95);
+          box-shadow: 0 12px 34px rgba(0,0,0,0.35);
+        }
+
+        .vip-btn.primary:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 18px 44px rgba(0,0,0,0.45);
+        }
+
+        .vip-btn.primary.is-loading {
+          opacity: 0.75;
+          cursor: not-allowed;
+        }
+
+        .vip-alert {
+          border-radius: 14px;
+          border: 1px solid rgba(255, 120, 120, 0.30);
+          background: rgba(255, 80, 80, 0.10);
+          padding: 12px 14px;
+        }
+
+        .vip-alert-title {
+          font-weight: 700;
+          color: rgba(255, 210, 170, 0.95);
+          margin-bottom: 2px;
+        }
+
+        .vip-alert-body {
+          font-size: 13px;
+          color: rgba(255, 255, 255, 0.80);
+        }
+      `}</style>
+    </div>
+  );
+}

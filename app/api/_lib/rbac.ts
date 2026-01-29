@@ -1,0 +1,167 @@
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+import { getViewer } from "@/app/api/_lib/auth";
+import {
+  getActiveMembership,
+  requestMembership,
+  approveMembership,
+  type ChurchRole,
+  devPromoteToRoleIfActive,
+} from "@/app/api/_lib/memberships";
+
+export type Role = "System_Admin" | "Pastor" | "Church_Admin" | "Leader" | "Member";
+
+export type GuardContext = {
+  viewer: {
+    userId: string;
+    name?: string;
+    role: Role;
+  };
+  churchId: string; // only set when Active membership exists
+};
+
+type AuthOnlyContext = {
+  viewer: {
+    userId: string;
+    name?: string;
+  };
+};
+
+type ApiErr = { ok: false; error: string; details?: unknown };
+
+function json(data: any, init?: ResponseInit) {
+  return NextResponse.json(data, init);
+}
+
+function isDev() {
+  return process.env.NODE_ENV !== "production";
+}
+
+function devDefaultChurchId() {
+  return "church_dev_default";
+}
+
+function mapChurchRoleToRole(r: ChurchRole | undefined): Role {
+  if (r === "Pastor") return "Pastor";
+  if (r === "Church_Admin") return "Church_Admin";
+  if (r === "Leader") return "Leader";
+  return "Member";
+}
+
+/**
+ * DEV helper:
+ * Optionally auto-create + approve membership so app works immediately after login.
+ * You can disable by setting KRISTO_DEV_AUTO_MEMBERSHIP=0
+ */
+function devAutoMembershipEnabled() {
+  const v = String(process.env.KRISTO_DEV_AUTO_MEMBERSHIP || "").trim();
+  if (!v) return true;
+  return v !== "0" && v.toLowerCase() !== "false";
+}
+
+async function ensureDevActiveMembership(userId: string, name?: string) {
+  if (!isDev()) return;
+  if (!devAutoMembershipEnabled()) return;
+
+  const active = await getActiveMembership(userId);
+  if (active) return;
+
+  const reqRes = await requestMembership(userId, devDefaultChurchId(), name);
+  if (!reqRes.ok) return;
+
+  await approveMembership(reqRes.membership.id, userId);
+  await devPromoteToRoleIfActive(userId, devDefaultChurchId(), "Pastor");
+}
+
+/** Auth only: user must be signed in, no church required */
+async function requireAuthOnly(req: NextRequest): Promise<AuthOnlyContext | NextResponse> {
+  const v = await getViewer(req);
+  const userId = String((v as any).userId || "").trim();
+  const name = (v as any).name ? String((v as any).name) : undefined;
+
+  if (!userId) {
+    return json(
+      {
+        ok: false,
+        error: "Unauthorized",
+        details: { hint: "You must be signed in." },
+      } satisfies ApiErr,
+      { status: 401 }
+    );
+  }
+
+  return { viewer: { userId, name } };
+}
+
+/** Active membership required: churchId + role come from membership store */
+async function requireActiveMembership(req: NextRequest): Promise<GuardContext | NextResponse> {
+  const a = await requireAuthOnly(req);
+  if (a instanceof NextResponse) return a;
+
+  const { userId, name } = a.viewer;
+
+  // DEV: allow church context from headers (curl/UI devHeaders)
+  if (process.env.NODE_ENV !== "production") {
+    const hdrChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
+    const hdrRole = String(req.headers.get("x-kristo-role") || "").trim();
+    if (hdrChurchId) {
+      const role = (hdrRole === "Pastor" || hdrRole === "Church_Admin" || hdrRole === "Leader" || hdrRole === "Member")
+        ? (hdrRole as Role)
+        : "Member";
+      return { viewer: { userId, name, role }, churchId: hdrChurchId };
+    }
+  }
+
+  // DEV: optional auto-provision
+  await ensureDevActiveMembership(userId, name);
+
+  const active = await getActiveMembership(userId);
+  if (!active) {
+    return json(
+      {
+        ok: false,
+        error: "No active church membership",
+        details: {
+          hint: "Join a church first (send a request).",
+        },
+      } satisfies ApiErr,
+      { status: 403 }
+    );
+  }
+
+  const role = mapChurchRoleToRole(active.churchRole);
+  return { viewer: { userId, name, role }, churchId: active.churchId };
+}
+
+export function requireRole(ctx: GuardContext, roles: Role[]): GuardContext | NextResponse {
+  if (roles.includes(ctx.viewer.role)) return ctx;
+
+  return json(
+    {
+      ok: false,
+      error: "Forbidden (role)",
+      details: { required: roles, youAre: ctx.viewer.role },
+    } satisfies ApiErr,
+    { status: 403 }
+  );
+}
+
+/** ✅ Use this for endpoints that only require login (no church yet) */
+export async function guardAuth(req: NextRequest): Promise<AuthOnlyContext | NextResponse> {
+  return requireAuthOnly(req);
+}
+
+/** ✅ Use this for church-scoped endpoints (Active membership required) */
+export async function guard(req: NextRequest, roles?: Role[]): Promise<GuardContext | NextResponse> {
+  const ctxOrRes = await requireActiveMembership(req);
+  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+
+  if (roles && roles.length > 0) {
+    const roleOrRes = requireRole(ctxOrRes, roles);
+    if (roleOrRes instanceof NextResponse) return roleOrRes;
+    return roleOrRes;
+  }
+
+  return ctxOrRes;
+}

@@ -1,26 +1,949 @@
-@import "tailwindcss";
+/* app/globals.css */
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* basic reset */
+* {
+  box-sizing: border-box;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  padding: 0;
+  margin: 0;
+  min-height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: #0b0f1a;
+  color: #fff;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+}
+
+/* links */
+a {
+  color: inherit;
+}
+
+/* selection */
+::selection {
+  background: rgba(212, 175, 55, 0.25);
+}
+
+/* optional smooth */
+html {
+  scroll-behavior: smooth;
+}
+
+/* =========================
+   VIP AUTH BASE (shared)
+   Used by: /sign-in, /sign-up
+   ========================= */
+
+.vip-auth {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 16px;
+  color: rgba(255, 255, 255, 0.92);
+  background:
+    radial-gradient(1200px 600px at 20% 10%, rgba(255, 215, 130, 0.14), transparent 60%),
+    radial-gradient(900px 500px at 80% 20%, rgba(255, 190, 80, 0.10), transparent 55%),
+    radial-gradient(900px 700px at 60% 90%, rgba(120, 180, 255, 0.08), transparent 60%),
+    linear-gradient(180deg, #07070b 0%, #0b0b12 40%, #07070b 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.vip-ambient {
+  position: absolute;
+  inset: -40%;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 216, 140, 0.18), transparent 35%),
+    radial-gradient(circle at 70% 30%, rgba(255, 180, 80, 0.14), transparent 40%),
+    radial-gradient(circle at 50% 80%, rgba(120, 200, 255, 0.10), transparent 45%);
+  filter: blur(40px);
+  animation: vipFloat 10s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.vip-grain {
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='260' height='260' filter='url(%23n)' opacity='.18'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+  opacity: 0.10;
+  pointer-events: none;
+}
+
+@keyframes vipFloat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(0, -10px, 0) scale(1.02);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vip-ambient {
+    animation: none;
+  }
+}
+
+.vip-wrap {
+  width: 100%;
+  max-width: 620px; /* standard kwa sign-in + sign-up */
+  position: relative;
+}
+
+.vip-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.vip-kicker {
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 215, 130, 0.85);
+}
+
+.vip-title {
+  margin-top: 8px;
+  font-size: 30px;
+  line-height: 1.1;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  background: linear-gradient(90deg, rgba(255, 240, 190, 0.95), rgba(255, 190, 80, 0.90));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.vip-subtitle {
+  margin-top: 8px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.vip-link {
+  font-size: 13px;
+  text-decoration: none;
+  color: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(255, 220, 140, 0.22);
+  padding: 10px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.22);
+  white-space: nowrap;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.vip-link:hover {
+  background: rgba(0, 0, 0, 0.32);
+  border-color: rgba(255, 220, 140, 0.32);
+  transform: translateY(-1px);
+}
+
+.vip-link span {
+  color: rgba(255, 215, 130, 0.95);
+  font-weight: 800;
+}
+
+.vip-card {
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(12, 12, 18, 0.78);
+  border: 1px solid rgba(255, 220, 140, 0.14);
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(10px);
+}
+
+.vip-alert {
+  border: 1px solid rgba(255, 120, 120, 0.25);
+  background: rgba(255, 80, 80, 0.08);
+  border-radius: 14px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.vip-alert-title {
+  font-weight: 900;
+  margin-bottom: 4px;
+}
+
+.vip-alert-body {
+  opacity: 0.9;
+  font-size: 13px;
+}
+
+.vip-form {
+  display: grid;
+  gap: 10px;
+}
+
+.vip-label {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: rgba(255, 236, 190, 0.92);
+}
+
+.vip-label.mt {
+  margin-top: 6px;
+}
+
+.vip-input {
+  width: 100%;
+  border-radius: 14px;
+  padding: 12px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+  outline: none;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.vip-input::placeholder {
+  color: rgba(255, 255, 255, 0.50);
+}
+
+.vip-input:hover {
+  border-color: rgba(255, 220, 140, 0.22);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.vip-input:focus-visible {
+  border-color: rgba(255, 220, 140, 0.36);
+  box-shadow:
+    0 0 0 3px rgba(255, 215, 130, 0.16),
+    0 0 0 1px rgba(255, 215, 130, 0.22) inset;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.vip-btn {
+  margin-top: 8px;
+  width: 100%;
+  border-radius: 14px;
+  padding: 12px 12px;
+  border: 1px solid rgba(255, 215, 0, 0.25);
+  background: linear-gradient(90deg, rgba(255, 240, 190, 0.95), rgba(255, 190, 80, 0.90));
+  color: #09090f;
+  font-weight: 900;
+  cursor: pointer;
+  transition: transform 140ms ease, filter 140ms ease, opacity 140ms ease;
+}
+
+.vip-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.02);
+}
+
+.vip-btn:active {
+  transform: translateY(0px);
+}
+
+.vip-btn.is-loading {
+  opacity: 0.85;
+  cursor: progress;
+}
+
+.vip-btn:disabled {
+  opacity: 0.75;
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+}
+
+.vip-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.vip-soft {
+  color: rgba(255, 255, 255, 0.78);
+  text-decoration: none;
+  font-size: 13px;
+  transition: opacity 140ms ease;
+}
+
+.vip-soft:hover {
+  opacity: 0.95;
+}
+
+.vip-dim {
+  opacity: 0.7;
+  font-size: 12px;
+}
+
+/* =========================
+   VIP PROFILE (dashboard/profile)
+   Moved from inline <style jsx global> to keep page clean
+   ========================= */
+
+.vip-root {
+  color: rgba(255, 255, 255, 0.92);
+  background: radial-gradient(1200px 600px at 20% 10%, rgba(255, 215, 130, 0.14), transparent 60%),
+    radial-gradient(900px 500px at 80% 20%, rgba(255, 190, 80, 0.10), transparent 55%),
+    radial-gradient(900px 700px at 60% 90%, rgba(120, 180, 255, 0.08), transparent 60%),
+    linear-gradient(180deg, #07070b 0%, #0b0b12 40%, #07070b 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.vip-ambient {
+  position: absolute;
+  inset: -40%;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 216, 140, 0.18), transparent 35%),
+    radial-gradient(circle at 70% 30%, rgba(255, 180, 80, 0.14), transparent 40%),
+    radial-gradient(circle at 50% 80%, rgba(120, 200, 255, 0.10), transparent 45%);
+  filter: blur(26px);
+  animation: vipFloat 10s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.vip-grain {
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='260' height='260' filter='url(%23n)' opacity='.18'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+  opacity: 0.10;
+  pointer-events: none;
+}
+
+@keyframes vipFloat {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(0, -4px, 0) scale(1.01); }
+}
+
+.vip-card-inner { padding: 6px; }
+
+.vip-kicker {
+  font-size: 12px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: rgba(255, 215, 130, 0.85);
+}
+
+.vip-title-sm {
+  font-size: 26px;
+  line-height: 1.1;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  background: linear-gradient(90deg, rgba(255, 240, 190, 0.95), rgba(255, 190, 80, 0.90));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  max-width: 520px;
+}
+
+.vip-badge {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 215, 130, 0.35);
+  background: rgba(255, 215, 130, 0.10);
+  color: rgba(255, 236, 190, 0.95);
+}
+
+.vip-badge.warn {
+  border-color: rgba(255, 120, 120, 0.35);
+  background: rgba(255, 80, 80, 0.10);
+  color: rgba(255, 200, 200, 0.95);
+}
+
+/* FIX: removed the old typo "backgroundborder:" */
+.vip-alert {
+  border: 1px solid rgba(255,120,120,0.25);
+  background: rgba(255,80,80,0.08);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.vip-alert-title { font-weight: 900; margin-bottom: 4px; }
+.vip-alert-body { opacity: .9; font-size: 13px; }
+
+.vip-btn.is-loading { opacity: .8; cursor: progress; }
+
+.vip-dim { opacity: .75; font-size: 12px; }
+
+.vip-avatar {
+  width: 120px;
+  height: 120px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 220, 140, 0.18);
+  background: rgba(255,255,255,0.04);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vip-avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.vip-avatar-ph {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 44px;
+  font-weight: 900;
+  color: rgba(255, 236, 190, 0.95);
+  background: radial-gradient(circle at 30% 20%, rgba(255, 216, 140, 0.18), rgba(0,0,0,0.0));
+}
+
+.vip-rowline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+}
+
+.vip-rowlabel {
+  font-size: 11px;
+  opacity: .75;
+  font-weight: 900;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.vip-rowvalue {
+  font-size: 13px;
+  font-weight: 900;
+  color: rgba(255, 240, 190, 0.95);
+  margin-top: 2px;
+}
+
+.vip-mini {
+  border-radius: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.92);
+  font-weight: 900;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.vip-divider { height: 1px; background: rgba(255,255,255,0.10); margin: 8px 0; }
+
+.vip-stat {
+  border-radius: 16px;
+  padding: 14px 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+}
+
+.vip-stat-n { font-size: 20px; font-weight: 900; color: rgba(255, 240, 190, 0.95); }
+.vip-stat-l { font-size: 12px; opacity: .75; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; margin-top: 2px; }
+
+.vip-hub {
+  text-align: left;
+  border-radius: 16px;
+  padding: 14px 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+  cursor: pointer;
+}
+
+.vip-hub:hover { border-color: rgba(255,215,130,0.35); }
+.vip-hub-title { font-weight: 900; font-size: 14px; color: rgba(255,240,190,0.95); }
+.vip-hub-sub { margin-top: 4px; opacity: .75; font-size: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vip-ambient { animation: none !important; }
+}
+
+
+/* =========================
+   VIP Collapsible Cards (Profile)
+   ========================= */
+
+.vip-section {
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+  overflow: hidden;
+}
+
+.vip-section-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px;
+  cursor: pointer;
+  background: rgba(255,255,255,0.02);
+}
+
+.vip-section-title {
+  font-weight: 900;
+  letter-spacing: .02em;
+  color: rgba(255,240,190,0.95);
+}
+
+.vip-section-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  opacity: .70;
+}
+
+.vip-chevron {
+  font-weight: 900;
+  opacity: .75;
+  transform: rotate(0deg);
+  transition: transform 140ms ease;
+}
+
+.vip-section.is-open .vip-chevron {
+  transform: rotate(90deg);
+}
+
+.vip-section-body {
+  padding: 14px 14px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+
+
+/* =========================
+   VIP PROFILE: Empty States
+   ========================= */
+.vip-empty{
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 18px;
+  padding: 18px;
+  min-height: 240px;
+  display: grid;
+  align-content: center;
+  gap: 10px;
+}
+
+.vip-empty-title{
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: rgba(255, 236, 190, 0.92);
+}
+
+.vip-empty-body{
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.78);
+  max-width: 54ch;
+}
+
+
+/* =========================
+   VIP PROFILE: Tabs + Post grid
+   ========================= */
+.vip-tabs{
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(0, 0, 0, 0.18);
+  margin-bottom: 12px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.vip-tabs::-webkit-scrollbar{
+  height: 8px;
+}
+.vip-tabs::-webkit-scrollbar-thumb{
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+}
+
+.vip-tab{
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.86);
+  padding: 10px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.vip-tab:hover{
+  transform: translateY(-1px);
+  border-color: rgba(255, 220, 140, 0.26);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.vip-tab.is-active{
+  border-color: rgba(255, 220, 140, 0.30);
+  background: rgba(255, 215, 130, 0.14);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+  color: rgba(255, 240, 190, 0.96);
+}
+
+.vip-postgrid{
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 640px){
+  .vip-postgrid{
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+
+/* =========================
+   VIP PROFILE: Post tile overlay
+   ========================= */
+.vip-postthumb{
+  position: relative;
+  overflow: hidden;
+}
+
+.vip-postthumb-overlay{
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 10px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.05) 45%, rgba(0,0,0,0.65) 100%);
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+/* Mobile/touch: show overlay by default (no hover on touch devices) */
+@media (hover: none){
+  .vip-postthumb-overlay{
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.vip-postthumb:hover .vip-postthumb-overlay,
+.vip-postthumb:focus-visible .vip-postthumb-overlay{
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.vip-postthumb-top{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.vip-postpill{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0,0,0,0.28);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.10em;
+  color: rgba(255, 236, 190, 0.92);
+}
+
+.vip-postplay{
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 220, 140, 0.22);
+  background: rgba(0,0,0,0.28);
+  color: rgba(255, 240, 190, 0.96);
+  font-weight: 900;
+}
+
+.vip-postthumb-bottom{
+  display: grid;
+  gap: 6px;
+}
+
+.vip-postthumb-caption{
+  font-size: 12px;
+  font-weight: 900;
+  color: rgba(255,255,255,0.92);
+  text-shadow: 0 10px 30px rgba(0,0,0,0.65);
+}
+
+.vip-postthumb-metrics{
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.vip-postmetric{
+  font-size: 11px;
+  font-weight: 900;
+  color: rgba(255,255,255,0.80);
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(0,0,0,0.24);
+}
+
+
+.vip-tabcount{
+  margin-left: 8px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(0,0,0,0.20);
+  font-size: 11px;
+  font-weight: 900;
+  color: rgba(255,255,255,0.80);
+}
+
+.vip-tab.is-active .vip-tabcount{
+  border-color: rgba(255, 220, 140, 0.22);
+  background: rgba(255, 215, 130, 0.10);
+  color: rgba(255, 240, 190, 0.96);
+}
+
+
+/* =========================
+   Profile cards (stack)
+   ========================= */
+
+.vip-cardstack{
+  display: grid;
+  gap: 12px;
+}
+
+.vip-card{
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: linear-gradient(180deg, rgba(18,18,18,0.65), rgba(10,10,10,0.35));
+  box-shadow: 0 18px 50px rgba(0,0,0,0.35);
+  padding: 14px;
+}
+
+.vip-card-title{
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: rgba(255,240,190,0.95);
+  margin-bottom: 10px;
+}
+
+.vip-miniCards{
+  display: grid;
+  gap: 10px;
+}
+
+@media (min-width: 1024px){
+  .vip-miniCards{
+    grid-template-columns: 1fr;
+  }
+}
+
+.vip-miniCard{
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.vip-miniCard-main{
+  display: grid;
+  gap: 2px;
+}
+
+.vip-miniCard-k{
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.10em;
+  color: rgba(255,255,255,0.62);
+  text-transform: uppercase;
+}
+
+.vip-miniCard-v{
+  font-weight: 900;
+  color: rgba(255,255,255,0.92);
+}
+
+.vip-fieldgrid{
+  display: grid;
+  gap: 10px;
+}
+
+.vip-fieldrow{
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.16);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vip-fieldrow-k{
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.10em;
+  color: rgba(255,255,255,0.60);
+  text-transform: uppercase;
+}
+
+.vip-fieldrow-v{
+  font-weight: 900;
+  color: rgba(255,255,255,0.92);
+}
+
+
+/* =========================
+   PROFILE: VIP CARDS SCOPE
+   (Only affects /dashboard/profile)
+   ========================= */
+
+.vip-profile .vip-panel{
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: linear-gradient(180deg, rgba(18,18,18,0.68), rgba(10,10,10,0.34));
+  box-shadow: 0 18px 60px rgba(0,0,0,0.38);
+  padding: 14px;
+}
+
+.vip-profile .vip-panel-title{
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: rgba(255,240,190,0.95);
+}
+
+.vip-profile .vip-dim{
+  color: rgba(255,255,255,0.62);
+}
+
+/* Make long “rows” look like mini-cards inside panels */
+.vip-profile .vip-panel > *{
+  border-radius: 14px;
+}
+
+/* Field-like rows (best-effort: many of your rows are divs with borders already) */
+.vip-profile .vip-panel .vip-row,
+.vip-profile .vip-panel .vip-field,
+.vip-profile .vip-panel .vip-line{
+  border-radius: 14px;
+}
+
+/* Stats blocks: add stronger card feel */
+.vip-profile .vip-stat{
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+  padding: 12px;
+}
+
+/* Quick list rows: style whatever you already have as “row + chevron” */
+.vip-profile .vip-quickrow,
+.vip-profile .vip-quick,
+.vip-profile .vip-quick-item{
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+  padding: 12px;
+}
+
+/* Info rows (label/value style if your markup has keys/values) */
+.vip-profile .vip-inforow,
+.vip-profile .vip-info-row{
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.16);
+  padding: 10px 12px;
+}
+
+/* Tighter spacing on right column stacks (only if it's using grid gap already) */
+.vip-profile .lg\:col-span-4.grid{
+  gap: 12px !important;
+}
+
+
+/* Profile: header card polish */
+.vip-profile .vip-panel .vip-btn{
+  min-height: 42px;
+}
+
+.vip-profile .vip-panel .vip-btn.ghost{
+  background: rgba(0,0,0,0.18);
+}
+
+
+/* =========================
+   PROFILE: Roles-like cards (polish)
+   ========================= */
+
+.vip-profile .vip-panel{
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: radial-gradient(120% 160% at 20% 0%, rgba(255,215,130,0.08), rgba(0,0,0,0)) ,
+              linear-gradient(180deg, rgba(16,16,16,0.70), rgba(8,8,8,0.35));
+  box-shadow: 0 22px 70px rgba(0,0,0,0.45);
+}
+
+.vip-profile .vip-panel-title{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: rgba(255,240,190,0.96);
+}
+
+.vip-profile .vip-panel-title::after{
+  content: "";
+  flex: 1;
+  height: 1px;
+  margin-left: 12px;
+  background: linear-gradient(90deg, rgba(255,220,140,0.25), rgba(255,255,255,0));
+  opacity: 0.9;
+}
+
+.vip-profile .vip-stat{
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.22);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+.vip-profile .vip-tabs{
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+  padding: 6px;
 }

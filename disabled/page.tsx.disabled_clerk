@@ -1,0 +1,255 @@
+"use client";
+
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import { useEffect, useMemo, useState , useCallback} from "react";
+import { useUser } from "@clerk/nextjs";
+
+type Church = {
+  id: string;
+  name: string;
+  country: string;
+  city: string;
+  pastorName?: string;
+};
+
+const MOCK_CHURCHES: Church[] = [
+  { id: "church_demo_1", name: "Kristo Church Central", country: "USA", city: "Dallas", pastorName: "Mch. David Kalonda" },
+  { id: "church_demo_2", name: "New Hope Ministry", country: "USA", city: "Houston", pastorName: "Mch. Sarah N." },
+  { id: "church_demo_3", name: "Jesus Saves Church", country: "Burundi", city: "Bujumbura", pastorName: "Mch. Jean P." },
+];
+
+type JoinRequest = {
+  id: string;
+  userId: string;
+  churchId: string;
+  message?: string;
+  status: "Requested" | "Active" | "Rejected" | "Banned";
+  createdAt: number;
+};
+
+function loadJoinRequests(): JoinRequest[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem("kristo.joinRequests");
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveJoinRequests(reqs: JoinRequest[]) {
+  try {
+    localStorage.setItem("kristo.joinRequests", JSON.stringify(reqs));
+  } catch {}
+}
+
+function fmtTime(ms: number) {
+  try {
+    return new Date(ms).toLocaleString();
+  } catch {
+    return String(ms);
+  }
+}
+
+export default function ChurchAdminPage() {
+  const params = useParams<{ id: string }>();
+  const churchId = params?.id;
+
+  const { isLoaded, isSignedIn, user } = useUser();
+
+  const church = useMemo(() => {
+    return MOCK_CHURCHES.find((c) => c.id === churchId) ?? null;
+  }, [churchId]);
+
+  const [all, setAll] = useState<JoinRequest[]>([]);
+  const [notice, setNotice] = useState<string>("");
+
+  const refresh = useCallback(() => {
+    const reqs = loadJoinRequests();
+    setAll(reqs);
+}, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      refresh();
+    }, 0);
+    return () => clearTimeout(t);
+  }, [refresh]);
+
+  const requestsForThisChurch = useMemo(() => {
+    if (!churchId) return [];
+    return all
+      .filter((r) => r.churchId === churchId)
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }, [all, churchId]);
+
+  function setStatus(requestId: string, status: JoinRequest["status"]) {
+    setNotice("");
+
+    const next = all.map((r) => (r.id === requestId ? { ...r, status } : r));
+    setAll(next);
+    saveJoinRequests(next);
+
+    if (status === "Active") setNotice("✅ Approved: Member is now Active.");
+    if (status === "Rejected") setNotice("❌ Rejected: Request rejected.");
+    if (status === "Banned") setNotice("⛔️ Banned: User banned/removed.");
+  }
+
+  if (!churchId) {
+    return (
+      <div className="postCard">
+        <div className="postName">Invalid church id</div>
+        <div style={{ marginTop: 10 }}>
+          <Link className="action" href="/churches" style={{ padding: "10px 12px" }}>
+            Back →
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="topline" style={{ marginBottom: 12 }}>
+        <div>
+          <h1 className="pageTitle">Church Admin</h1>
+          <p className="pageSub">
+            {church ? (
+              <>
+                {church.name} — {church.city}, {church.country}
+                {church.pastorName ? ` • ${church.pastorName}` : ""}
+              </>
+            ) : (
+              <>Church: {churchId} (MVP mock)</>
+            )}
+          </p>
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <Link className="action" href={`/church/${churchId}`} style={{ padding: "10px 12px" }}>
+            Church Profile →
+          </Link>
+          <Link className="action" href="/churches" style={{ padding: "10px 12px" }}>
+            Churches →
+          </Link>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="statTitle">
+          <span>Admin status</span>
+          <span>🛡️</span>
+        </div>
+
+        <div className="statSub" style={{ marginTop: 10 }}>
+          Signed in: <b>{isLoaded && isSignedIn ? "YES" : "NO"}</b>
+        </div>
+        <div className="statSub" style={{ marginTop: 6 }}>
+          Admin userId (MVP): <b>{user?.id ?? "-"}</b>
+        </div>
+
+        <div className="footerNote" style={{ marginTop: 10 }}>
+          MVP note: hatujafunga access kwa roles bado. Baadaye: pastor/admin pekee.
+        </div>
+      </div>
+
+      {notice && (
+        <div className="postCard" style={{ marginBottom: 12 }}>
+          <div className="postName">{notice}</div>
+        </div>
+      )}
+
+      <div className="sectionTitle">Join Requests</div>
+
+      <div className="postStack">
+        {requestsForThisChurch.length === 0 ? (
+          <div className="postCard">
+            <div className="postName">No join requests</div>
+            <div className="postType">Hakuna requests kwa sasa</div>
+          </div>
+        ) : (
+          requestsForThisChurch.map((r) => (
+            <div key={r.id} className="postCard">
+              <div className="postHead" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div>
+                  <div className="postName">User: {r.userId}</div>
+                  <div className="postType">
+                    {fmtTime(r.createdAt)} • Status: <b>{r.status}</b>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    className="pill"
+                    onClick={() => setStatus(r.id, "Active")}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 999,
+                      border: "1px solid rgba(255,255,255,0.18)",
+                      cursor: "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Approve
+                  </button>
+
+                  <button
+                    type="button"
+                    className="pill"
+                    onClick={() => setStatus(r.id, "Rejected")}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 999,
+                      border: "1px solid rgba(255,255,255,0.18)",
+                      cursor: "pointer",
+                      opacity: 0.9,
+                    }}
+                  >
+                    Reject
+                  </button>
+
+                  <button
+                    type="button"
+                    className="pill"
+                    onClick={() => setStatus(r.id, "Banned")}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 999,
+                      border: "1px solid rgba(255,255,255,0.18)",
+                      cursor: "pointer",
+                      opacity: 0.85,
+                    }}
+                  >
+                    Ban
+                  </button>
+                </div>
+              </div>
+
+              {r.message ? (
+                <div className="postBody" style={{ marginTop: 10 }}>
+                  <b>Message:</b> {r.message}
+                </div>
+              ) : (
+                <div className="postBody" style={{ marginTop: 10, opacity: 0.8 }}>
+                  No message.
+                </div>
+              )}
+
+              <div className="footerNote" style={{ marginTop: 10 }}>
+                Baadaye: Approve itatengeneza Membership record + notification kwa user.
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="footerNote" style={{ marginTop: 14 }}>
+        MVP: data iko localStorage. Next step: Prisma DB + notifications pipeline.
+      </div>
+    </div>
+  );
+}

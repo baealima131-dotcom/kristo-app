@@ -39,3 +39,27 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# clerk configuration (can include secrets)
+/.clerk/
+
+# --- local/dev junk ---
+.data/
+data/
+cookies.txt
+*.tmp
+*.patch
+*.bak
+*.bak_*
+*.BROKEN
+*.bak_css_move_*
+*.bak_remove_*
+*WEKA_PATH*HAPA*
+.backups/
+
+# local/dev
+.backups/
+.eslintcache
+.next/
+*.tsbuildinfo
+tsconfig.tsbuildinfo

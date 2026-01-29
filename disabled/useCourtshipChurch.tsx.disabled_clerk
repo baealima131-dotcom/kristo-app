@@ -1,0 +1,45 @@
+// app/(app)/dashboard/courtship/church/useCourtshipChurch.ts
+"use client";
+
+import { useMemo } from "react";
+import { useUser } from "@clerk/nextjs";
+import type { ChurchLite } from "./types";
+import { getChurchById } from "./mockChurches";
+
+type CourtshipChurchState = {
+  isLoaded: boolean;
+  isSignedIn: boolean;
+  userId: string | null;
+
+  churchId: string | null;
+  church: ChurchLite | null;
+
+  pastorApprovalRequired: boolean; // default true
+};
+
+export function useCourtshipChurch(): CourtshipChurchState {
+  const { isLoaded, isSignedIn, user } = useUser();
+
+  const churchId = useMemo(() => {
+    if (!isLoaded || !isSignedIn || !user) return null;
+    const md: any = user.unsafeMetadata ?? {};
+    return typeof md.churchId === "string" ? md.churchId : null;
+  }, [isLoaded, isSignedIn, user]);
+
+  const church = useMemo(() => getChurchById(churchId), [churchId]);
+
+  const pastorApprovalRequired = useMemo(() => {
+    // MVP default: required = true (you can later make it per-church in DB)
+    if (church?.pastorApprovalRequired === false) return false;
+    return true;
+  }, [church]);
+
+  return {
+    isLoaded: !!isLoaded,
+    isSignedIn: !!isSignedIn,
+    userId: user?.id ?? null,
+    churchId,
+    church,
+    pastorApprovalRequired,
+  };
+}

@@ -6,12 +6,20 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint .",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio"
   },
   "dependencies": {
+    "@clerk/nextjs": "^6.36.10",
+    "bcryptjs": "^3.0.3",
+    "i18n-iso-countries": "^7.14.0",
+    "libphonenumber-js": "^1.12.35",
     "next": "16.1.1",
-    "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.10"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
