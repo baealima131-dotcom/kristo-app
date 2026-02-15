@@ -67,3 +67,18 @@ tsconfig.tsbuildinfo
 # editor/dev backups
 *.bak
 *.bak*
+
+# --- Kristo dev noise ---
+**/*.bak_*
+**/*.UI_BACKUP_*.tsx
+**/*.UI_FROZEN_*.tsx
+_bak/
+__bak__/
+.kristo-dev/
+**/.expo/
+**/.vscode/
+*.tgz
+
+# Expo / Metro / node
+**/node_modules/
+**/.DS_Store

@@ -1,5 +1,5 @@
 import React from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleProp, ViewStyle, TextStyle, ImageStyle, StyleSheet  } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { VIP } from "@/src/ui/vipPremium";
 import { formatCount } from "@/src/lib/formatCount";
@@ -82,7 +82,7 @@ function Action({ icon, count }: { icon: string; count: number }) {
   );
 }
 
-const s = StyleSheet.create({
+const s = StyleSheet.create<any>({
   page: { width: "100%", backgroundColor: VIP.colors.bg },
 
   // ✅ shrink the whole frame footprint
@@ -143,8 +143,8 @@ const s = StyleSheet.create({
   },
   pillText: { color: VIP.colors.gold2, fontWeight: "900", letterSpacing: 0.6 },
 
-  title: { color: VIP.colors.text, fontSize: 18, fontWeight: "950", marginBottom: 6 }, // was 20
-  desc: { color: VIP.colors.mut, fontSize: 13, lineHeight: 18, fontWeight: "650" }, // was 14/19
+  title: { color: VIP.colors.text, fontSize: 18, fontWeight: "900", marginBottom: 6 }, // was 20
+  desc: { color: VIP.colors.mut, fontSize: 13, lineHeight: 18, fontWeight: "600" }, // was 14/19
 
   actions: {
     position: "absolute",
