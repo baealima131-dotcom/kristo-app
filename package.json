@@ -9,7 +9,9 @@
     "lint": "eslint .",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "lint:web": "eslint . --ext .js,.jsx,.ts,.tsx --ignore-pattern apps/mobile/**",
+    "lint:mobile": "eslint apps/mobile --ext .js,.jsx,.ts,.tsx"
   },
   "dependencies": {
     "@clerk/nextjs": "^6.36.10",
