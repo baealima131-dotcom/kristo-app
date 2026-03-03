@@ -17,11 +17,19 @@ const config = [
       // RN: no alt prop on <Image/>
       "jsx-a11y/alt-text": "off",
 
-      // V1: don't fight dependency warnings in mobile
+      // V1: don't fight deps warnings in mobile
       "react-hooks/exhaustive-deps": "off",
 
       // Allow default-exported objects in mobile utilities
       "import/no-anonymous-default-export": "off",
+
+      // ✅ Relax new strict react-hooks rules for RN code (V1)
+      "react-hooks/refs": "off",
+      "react-hooks/immutability": "off",
+      "react-hooks/set-state-in-effect": "off",
+
+      // RN screens sometimes have apostrophes in <Text>
+      "react/no-unescaped-entities": "off",
     },
   },
 

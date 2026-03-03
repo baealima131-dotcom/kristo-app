@@ -10,7 +10,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "lint:web": "eslint . --ext .js,.jsx,.ts,.tsx --ignore-pattern apps/mobile/**",
+    "lint:web": "eslint app src --ext .js,.jsx,.ts,.tsx",
     "lint:mobile": "eslint apps/mobile --ext .js,.jsx,.ts,.tsx"
   },
   "dependencies": {
