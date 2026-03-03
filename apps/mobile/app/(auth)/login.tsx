@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { useRouter } from "expo-router";
+import { useRouter, Href } from "expo-router";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import type { KristoRole } from "@/src/lib/kristoSession";
@@ -87,7 +87,7 @@ export default function LoginScreen() {
           <Text style={s.btnText}>{saving ? "..." : "Login"}</Text>
         </Pressable>
 
-        <Pressable onPress={() => router.push("/(auth)/signup")} style={s.linkBtn}>
+        <Pressable onPress={() => router.push("/(auth)/signup" as Href)} style={s.linkBtn}>
           <Text style={s.linkText}>Create account (Sign up)</Text>
         </Pressable>
       </View>

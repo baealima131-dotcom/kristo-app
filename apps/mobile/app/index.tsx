@@ -1,5 +1,5 @@
 import React from "react";
-import { Redirect } from "expo-router";
+import { Redirect, Href } from "expo-router";
 import { ActivityIndicator, View } from "react-native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 
@@ -17,6 +17,6 @@ export default function AppGate() {
     );
   }
 
-  if (!session) return <Redirect href="/(auth)/login" />;
+  if (!session) return <Redirect href={"/(auth)/login" as Href} />;
   return <Redirect href="/(tabs)" />;
 }
