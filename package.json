@@ -11,7 +11,10 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "lint:web": "eslint app --ext .js,.jsx,.ts,.tsx",
-    "lint:mobile": "eslint apps/mobile --ext .js,.jsx,.ts,.tsx"
+    "lint:mobile": "eslint apps/mobile --ext .js,.jsx,.ts,.tsx",
+    "typecheck": "tsc -p tsconfig.web.json --noEmit --pretty false",
+    "typecheck:web": "tsc -p tsconfig.web.json --noEmit --pretty false",
+    "typecheck:mobile": "cd apps/mobile && tsc --noEmit --pretty false"
   },
   "dependencies": {
     "@clerk/nextjs": "^6.36.10",

@@ -1,6 +1,5 @@
-import { NextResponse } from "next/server";
-import { requireAuth, requireChurchScope } from "@/app/api/_lib/rbac";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { guard } from "@/app/api/_lib/rbac";
 export const runtime = "nodejs";
 type FeedType = "post" | "announcement" | "video";
 export type ChurchFeedItem = {
@@ -31,9 +30,11 @@ function store(): ChurchFeedItem[] {
 function makeId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
-export async function GET(req: Request) {
-  const viewer = requireAuth(req);
-  const { churchId } = requireChurchScope(req, viewer);
+export async function GET(req: NextRequest) {
+  const ctxOrRes = await guard(req);
+  if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
+  const ctx = ctxOrRes as any;
+  const churchId = String(ctx.churchId);
   const url = new URL(req.url);
   const type = url.searchParams.get("type") as FeedType | null;
   const items = store()
@@ -42,9 +43,11 @@ export async function GET(req: Request) {
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   return ok(items);
 }
-export async function POST(req: Request) {
-  const viewer = requireAuth(req);
-  const { churchId } = requireChurchScope(req, viewer);
+export async function POST(req: NextRequest) {
+  const ctxOrRes = await guard(req);
+  if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
+  const ctx = ctxOrRes as any;
+  const churchId = String(ctx.churchId);
   let body: any = null;
   try {
     body = await req.json();
@@ -68,7 +71,7 @@ export async function POST(req: Request) {
     text,
     videoUrl,
     createdAt: new Date().toISOString(),
-    createdBy: viewer.userId,
+    createdBy: String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown"),
   };
   store().push(item);
   return ok(item, { status: 201 });

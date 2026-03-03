@@ -186,22 +186,22 @@ export default function Page() {
   const countries = useMemo(() => {
     const codes = getCountries();
     return codes
-      .map((c) => ({
+      .map((c: string) => ({
         iso2: c,
         name: String(isoCountries.getName(c, "en") || c),
       }))
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      .sort((a: any, b: any) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   }, []);
 
   const selectedCountry = useMemo(() => {
-    const hit = countries.find((c) => c.iso2 === countryIso);
+    const hit = countries.find((c: any) => c.iso2 === countryIso);
     return hit || { iso2: countryIso, name: countryIso };
   }, [countries, countryIso]);
 
   const filteredCountries = useMemo(() => {
     const q = countryQuery.trim().toLowerCase();
     if (!q) return countries;
-    return countries.filter((c) => {
+    return countries.filter((c: any) => {
       const name = String(c.name || "").toLowerCase();
       return c.iso2.toLowerCase().includes(q) || name.includes(q);
     });
@@ -618,7 +618,7 @@ export default function Page() {
                     </div>
 
                     <div className="vip-country-list" role="listbox" aria-label="Countries">
-                      {filteredCountries.map((c) => (
+                      {filteredCountries.map((c: any) => (
                         <button
                           key={c.iso2}
                           type="button"

@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Pull unread notifications then mark them read
-  const items = await listNotifications({
+  const items = await (listNotifications as any)({
     churchId: ctxOrRes.churchId,
     userId: ctxOrRes.viewer.userId,
     unreadOnly: true,

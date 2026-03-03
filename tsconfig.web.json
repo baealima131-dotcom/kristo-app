@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "app/**/*",
+    "src/**/*",
+    "next-env.d.ts",
+    "**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next",
+    "dist",
+    "build",
+    "coverage",
+    "apps/mobile"
+  ]
+}
