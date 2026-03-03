@@ -82,3 +82,10 @@ __bak__/
 # Expo / Metro / node
 **/node_modules/
 **/.DS_Store
+
+# Mobile scratch/backups
+apps/mobile/_bak/
+apps/mobile/.expo/
+apps/mobile/**/*.backup_*
+apps/mobile/**/*.error_backup
+apps/mobile/**/*.save
