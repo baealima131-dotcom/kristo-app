@@ -5,7 +5,6 @@ const config = [
   {
     ignores: [".next/**", "node_modules/**", "dist/**", "build/**", "coverage/**", "data/**", "apps/mobile/_bak/**", "apps/mobile/.expo/**"],
   },
-  },
 
 
   /* MOBILE_OVERRIDES */
