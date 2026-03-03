@@ -20,12 +20,5 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
-  ],
-  "exclude": [
-    "../_bak/**",
-    "**/_bak/**",
-    "**/*.bak_*",
-    "**/*.patch",
-    "**/kristo_backups/**"
   ]
 }

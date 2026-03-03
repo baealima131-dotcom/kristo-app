@@ -4,14 +4,17 @@ import { Ionicons } from "@expo/vector-icons";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { vipAvatarBg, vipInitials } from "@/src/ui/vipUtil";
+
 type Member = {
   userId: string;
   role?: string;
   displayName?: string;
   email?: string;
 };
+
 const VIP_BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,1)";
+
 function dedupeByUserId<T extends { userId: string }>(arr: T[]) {
   const seen = new Set<string>();
   const out: T[] = [];
@@ -23,6 +26,7 @@ function dedupeByUserId<T extends { userId: string }>(arr: T[]) {
   }
   return out;
 }
+
 export function MembersListPanel({
   ministryId,
   visible,
@@ -38,6 +42,7 @@ export function MembersListPanel({
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
   async function load() {
     setErr(null);
     setLoading(true);
@@ -55,6 +60,7 @@ export function MembersListPanel({
       setLoading(false);
     }
   }
+
   async function refresh() {
     setRefreshing(true);
     try {
@@ -63,25 +69,33 @@ export function MembersListPanel({
       setRefreshing(false);
     }
   }
+
   useEffect(() => {
     if (visible) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, ministryId]);
+
   const count = useMemo(() => items?.length ?? 0, [items]);
+
   if (!visible) return null;
+
   return (
     <View style={s.panel}>
       <View style={s.panelTop}>
         <Pressable onPress={onClose} style={({ pressed }) => [s.iconBtn, pressed && { opacity: 0.85 }]}>
           <Ionicons name="close" size={18} color="rgba(255,255,255,0.9)" />
         </Pressable>
+
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={s.panelTitle} numberOfLines={1}>Members</Text>
           <Text style={s.panelSub} numberOfLines={1}>{`${count} members`}</Text>
         </View>
+
         <Pressable onPress={load} style={({ pressed }) => [s.iconBtn, pressed && { opacity: 0.85 }]}>
           <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.9)" />
         </Pressable>
       </View>
+
       {loading ? (
         <View style={s.center}>
           <ActivityIndicator />
@@ -117,13 +131,16 @@ export function MembersListPanel({
                 <View style={[s.avatar, { backgroundColor: vipAvatarBg(item.userId) }]}>
                   <Text style={s.avatarText}>{vipInitials(item.displayName || item.userId)}</Text>
                 </View>
+
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={s.title} numberOfLines={1}>{item.displayName || "Member"}</Text>
                   <Text style={s.sub} numberOfLines={1}>{`User: ${item.userId}`}</Text>
                 </View>
+
                 <View style={[s.badge, item.role === "Leader" ? s.badgeLeader : null]}>
                   <Text style={s.badgeText}>{item.role || "Member"}</Text>
                 </View>
+
                 <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.35)" />
               </View>
             </Pressable>
@@ -133,6 +150,7 @@ export function MembersListPanel({
     </View>
   );
 }
+
 const s = StyleSheet.create<any>({
   panel: {
     flex: 1,
@@ -154,6 +172,7 @@ const s = StyleSheet.create<any>({
   },
   panelTitle: { color: "white", fontWeight: "950", fontSize: 18 },
   panelSub: { marginTop: 2, color: "rgba(255,255,255,0.62)", fontWeight: "750", fontSize: 12 },
+
   iconBtn: {
     width: 42,
     height: 42,
@@ -164,6 +183,7 @@ const s = StyleSheet.create<any>({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
   },
+
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 18 },
   centerText: { marginTop: 10, color: "rgba(255,255,255,0.70)", fontWeight: "750" },
   retryBtn: {
@@ -176,9 +196,11 @@ const s = StyleSheet.create<any>({
     borderColor: "rgba(255,255,255,0.12)",
   },
   retryText: { color: "white", fontWeight: "850" },
+
   empty: { padding: 18, alignItems: "center" },
   emptyTitle: { marginTop: 8, color: "white", fontWeight: "900", fontSize: 16 },
   emptySub: { marginTop: 6, color: "rgba(255,255,255,0.62)", fontWeight: "750", textAlign: "center" },
+
   card: {
     borderRadius: 18,
     padding: 14,
@@ -199,6 +221,7 @@ const s = StyleSheet.create<any>({
   avatarText: { color: "white", fontWeight: "950" },
   title: { color: "white", fontWeight: "950", fontSize: 16 },
   sub: { marginTop: 4, color: "rgba(255,255,255,0.62)", fontWeight: "750", fontSize: 12 },
+
   badge: {
     paddingHorizontal: 10,
     paddingVertical: 6,
