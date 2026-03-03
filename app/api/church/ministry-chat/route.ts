@@ -16,9 +16,9 @@ type ChatMessage = {
   createdAt: string;
 };
 
-// eslint-disable-next-line no-var
+ 
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __KRISTO_MINISTRY_CHAT__: ChatMessage[] | undefined;
 }
 

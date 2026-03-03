@@ -14,7 +14,7 @@ type MinistryAnnouncement = {
   updatedAt?: string;
 };
 
-// eslint-disable-next-line no-var
+ 
 declare global {
   var __KRISTO_MINISTRY_ANNOUNCEMENTS__: MinistryAnnouncement[] | undefined;
 }

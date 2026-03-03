@@ -72,7 +72,7 @@ export function MembersListPanel({
 
   useEffect(() => {
     if (visible) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [visible, ministryId]);
 
   const count = useMemo(() => items?.length ?? 0, [items]);

@@ -27,7 +27,7 @@ function err(error: string, status = 400) {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __kristoChurchFeed: ChurchFeedItem[] | undefined;
 }
 

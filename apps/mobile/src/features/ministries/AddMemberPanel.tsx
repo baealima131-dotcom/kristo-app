@@ -57,7 +57,7 @@ export function AddMemberPanel({
 
   useEffect(() => {
     if (visible) loadPeople();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [visible]);
 
   const results = useMemo(() => {
