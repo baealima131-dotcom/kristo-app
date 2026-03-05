@@ -108,6 +108,10 @@ export default function AnnouncementsCreateOnly() {
               <Text style={styles.hSub}>Admin Composer • Posts to Feed</Text>
             </View>
             <View style={styles.card}>
+              <View pointerEvents="none" style={styles.cardEdge} />
+              <View pointerEvents="none" style={styles.cardGlow} />
+              <View pointerEvents="none" style={styles.cardGlow2} />
+              <View pointerEvents="none" style={styles.cardSheen} />
               <View style={styles.topRow}>
                 <Text style={styles.topLeft}>ADMIN</Text>
                 <View style={{ flex: 1 }} />
@@ -220,12 +224,14 @@ const styles = StyleSheet.create({
   hSub: { marginTop: 6, color: C.text.secondary, fontWeight: "800" },
   card: {
     marginTop: 10,
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: C.border,
-    backgroundColor: C.glass2,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.03)",
     padding: 12,
+    overflow: "hidden",
   },
+
   topRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -233,9 +239,10 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: C.borderSoft,
+    borderColor: "rgba(255,255,255,0.10)",
     backgroundColor: "rgba(255,255,255,0.02)",
   },
+
   topLeft: { color: C.gold, fontWeight: "900", letterSpacing: 3 },
   topRight: { color: C.text.secondary, fontWeight: "900", letterSpacing: 2 },
   fieldShell: {
@@ -395,4 +402,41 @@ addImgText: {
   },
   postBtnDisabled: { opacity: 0.45 },
   postBtnText: { color: C.gold, fontWeight: "900", letterSpacing: 3, fontSize: 15 },
+  // === VIP card cosmetics ===
+  cardEdge: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    backgroundColor: "rgba(217,179,95,0.28)",
+  },
+  cardGlow: {
+    position: "absolute",
+    right: -90,
+    top: -90,
+    width: 280,
+    height: 280,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.14)",
+  },
+  cardGlow2: {
+    position: "absolute",
+    left: -110,
+    bottom: -120,
+    width: 320,
+    height: 320,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  cardSheen: {
+    position: "absolute",
+    left: -80,
+    top: -40,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    transform: [{ rotate: "18deg" }],
+  },
 });
