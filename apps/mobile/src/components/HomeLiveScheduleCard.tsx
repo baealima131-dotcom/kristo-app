@@ -220,6 +220,7 @@ type SocialRailProps = {
   onComment?: () => void;
   onShare?: () => void;
   onToggleSave?: () => void;
+  blendUnclaimed?: boolean;
 };
 
 function SocialActionRail({
@@ -230,6 +231,7 @@ function SocialActionRail({
   onComment,
   onShare,
   onToggleSave,
+  blendUnclaimed = false,
 }: SocialRailProps) {
   if (!onLike && !onComment && !onShare && !onToggleSave) return null;
 
@@ -279,19 +281,34 @@ function SocialActionRail({
   }>;
 
   return (
-    <View style={styles.actionRail}>
+    <View style={[styles.actionRail, blendUnclaimed && styles.actionRailUnclaimed]}>
       <LinearGradient
-        colors={["rgba(18,20,28,0.92)", "rgba(10,12,18,0.88)", "rgba(6,8,14,0.94)"]}
+        colors={
+          blendUnclaimed
+            ? ["rgba(14,16,24,0.94)", "rgba(8,10,16,0.90)", "rgba(4,6,12,0.96)"]
+            : ["rgba(18,20,28,0.92)", "rgba(10,12,18,0.88)", "rgba(6,8,14,0.94)"]
+        }
         style={StyleSheet.absoluteFillObject}
       />
       <LinearGradient
-        colors={["rgba(255,255,255,0.06)", "transparent", "rgba(247,211,106,0.04)"]}
+        colors={
+          blendUnclaimed
+            ? ["rgba(247,211,106,0.07)", "transparent", "rgba(255,255,255,0.02)"]
+            : ["rgba(255,255,255,0.06)", "transparent", "rgba(247,211,106,0.04)"]
+        }
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={StyleSheet.absoluteFillObject}
       />
-      <View pointerEvents="none" style={styles.actionRailHighlight} />
-      <View style={styles.actionRailRow}>
+      <View pointerEvents="none" style={[styles.actionRailHighlight, blendUnclaimed && styles.actionRailHighlightUnclaimed]} />
+      {blendUnclaimed ? (
+        <LinearGradient
+          pointerEvents="none"
+          colors={["transparent", "rgba(0,0,0,0.16)"]}
+          style={styles.actionRailEdgeFadeUnclaimed}
+        />
+      ) : null}
+      <View style={[styles.actionRailRow, blendUnclaimed && styles.actionRailRowUnclaimed]}>
         {items.map((item) => (
           <Pressable
             key={item.key}
@@ -538,6 +555,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
   const showPrimaryClaim = !claimed && phase !== "ended";
   const showSecondaryClaim = claimed && phase !== "ended";
+  const isUnclaimedOpen = !claimed && (phase === "open" || phase === "upcoming");
 
   return (
     <Animated.View
@@ -562,7 +580,14 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           end={{ x: 1, y: 1 }}
           style={StyleSheet.absoluteFillObject}
         />
-        <View pointerEvents="none" style={[styles.glowOrbTop, { backgroundColor: GOLD_SOFT }]} />
+        <View
+          pointerEvents="none"
+          style={[
+            styles.glowOrbTop,
+            { backgroundColor: GOLD_SOFT },
+            isUnclaimedOpen && styles.glowOrbTopUnclaimed,
+          ]}
+        />
         <View pointerEvents="none" style={[styles.glowOrbBottom, { backgroundColor: theme.glow }]} />
         <LinearGradient
           pointerEvents="none"
@@ -598,7 +623,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                       style={StyleSheet.absoluteFillObject}
                     />
                     <Ionicons name="radio" size={10} color={GOLD} />
-                    <Text style={styles.liveSchedulePillText} numberOfLines={1}>
+                    <Text style={styles.liveSchedulePillText} numberOfLines={1} ellipsizeMode="tail">
                       LIVE SCHEDULE
                     </Text>
                   </View>
@@ -625,17 +650,17 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             </View>
           </Animated.View>
 
-          <View pointerEvents="none" style={styles.sectionGlowDivider} />
+          <View pointerEvents="none" style={[styles.sectionGlowDivider, isUnclaimedOpen && styles.sectionGlowDividerUnclaimed]} />
 
-          <View style={styles.bodySection}>
-            <View style={styles.stateRow}>
+          <View style={[styles.bodySection, isUnclaimedOpen && styles.bodySectionUnclaimed]}>
+            <View style={[styles.stateRow, isUnclaimedOpen && styles.stateRowUnclaimed]}>
               <View style={[styles.statePill, { borderColor: "rgba(255,255,255,0.08)", backgroundColor: `${theme.accent}14` }]}>
                 {phase === "live" ? <View style={[styles.liveDot, { backgroundColor: theme.accent }]} /> : null}
                 <Text style={[styles.statePillText, { color: theme.accent }]}>{theme.label}</Text>
               </View>
             </View>
 
-            <View style={styles.titleBlock}>
+            <View style={[styles.titleBlock, isUnclaimedOpen && styles.titleBlockUnclaimed]}>
               <Text
                 style={[styles.slotTitle, { fontSize: titleFontSize, lineHeight: titleLineHeight }]}
                 numberOfLines={2}
@@ -650,7 +675,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               ) : null}
             </View>
 
-            <View style={styles.metaRow}>
+            <View style={[styles.metaRow, isUnclaimedOpen && styles.metaRowUnclaimed]}>
               <View style={styles.metaChip}>
                 <Ionicons name="calendar-outline" size={15} color={GOLD} />
                 <Text style={styles.metaText}>{formatSlotDateLabel(slot.meetingDate, slot.meetingDay)}</Text>
@@ -664,7 +689,18 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               </View>
             </View>
 
-            <View style={styles.progressSection}>
+            {isUnclaimedOpen ? (
+              <View pointerEvents="none" style={styles.contentAmbientGlow}>
+                <LinearGradient
+                  colors={["transparent", "rgba(247,211,106,0.06)", "transparent"]}
+                  start={{ x: 0, y: 0.5 }}
+                  end={{ x: 1, y: 0.5 }}
+                  style={StyleSheet.absoluteFillObject}
+                />
+              </View>
+            ) : null}
+
+            <View style={[styles.progressSection, isUnclaimedOpen && styles.progressSectionUnclaimed]}>
               <View style={[styles.progressTrack, { shadowColor: theme.accent }]}>
                 <View style={[styles.progressFillGlow, { width: `${Math.round(progress * 100)}%`, shadowColor: theme.accent }]}>
                   <LinearGradient
@@ -775,27 +811,52 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                 ) : null}
                 </Animated.View>
               </View>
-            ) : (
+            ) : isUnclaimedOpen ? null : (
               <View style={styles.openSpacer} />
             )}
           </View>
 
-          <View style={styles.footerSection}>
+          <View style={[styles.footerSection, isUnclaimedOpen && styles.footerSectionUnclaimed]}>
             {showPrimaryClaim ? (
-              <AnimatedPressable
-                onPress={handleClaimPress}
-                style={[styles.claimBtnPrimary, claimBtnStyle]}
-              >
-                <LinearGradient
-                  colors={[GOLD, "#E7C46F", "#C8943A"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.claimBtnPrimaryGradient}
+              <View style={isUnclaimedOpen ? styles.claimBtnPrimaryWrap : undefined}>
+                {isUnclaimedOpen ? (
+                  <View pointerEvents="none" style={styles.claimBtnPrimaryBloom} />
+                ) : null}
+                <AnimatedPressable
+                  onPress={handleClaimPress}
+                  style={[
+                    styles.claimBtnPrimary,
+                    isUnclaimedOpen && styles.claimBtnPrimaryUnclaimed,
+                    claimBtnStyle,
+                  ]}
                 >
-                  <Ionicons name="hand-left-outline" size={24} color="#1A1205" />
-                  <Text style={styles.claimBtnPrimaryText}>Claim This Live Slot</Text>
-                </LinearGradient>
-              </AnimatedPressable>
+                  <LinearGradient
+                    colors={
+                      isUnclaimedOpen
+                        ? ["#FFE08A", "#F7D36A", "#E7C46F", "#B8862E", "#8B5E14"]
+                        : [GOLD, "#E7C46F", "#C8943A"]
+                    }
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.claimBtnPrimaryGradient}
+                  >
+                    {isUnclaimedOpen ? (
+                      <>
+                        <View pointerEvents="none" style={styles.claimBtnPrimaryTopSheen} />
+                        <LinearGradient
+                          pointerEvents="none"
+                          colors={["transparent", "rgba(0,0,0,0.12)", "rgba(0,0,0,0.22)"]}
+                          start={{ x: 0.5, y: 0 }}
+                          end={{ x: 0.5, y: 1 }}
+                          style={styles.claimBtnPrimaryInnerShadow}
+                        />
+                      </>
+                    ) : null}
+                    <Ionicons name="hand-left-outline" size={24} color="#1A1205" />
+                    <Text style={styles.claimBtnPrimaryText}>Claim This Live Slot</Text>
+                  </LinearGradient>
+                </AnimatedPressable>
+              </View>
             ) : null}
 
             {phase === "ended" ? (
@@ -812,6 +873,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               onComment={onComment}
               onShare={onShare}
               onToggleSave={onToggleSave}
+              blendUnclaimed={isUnclaimedOpen}
             />
           </View>
         </View>
@@ -864,6 +926,13 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     opacity: 0.45,
   },
+  glowOrbTopUnclaimed: {
+    opacity: 0.62,
+    width: 190,
+    height: 190,
+    top: -56,
+    right: 12,
+  },
   glowOrbBottom: {
     position: "absolute",
     bottom: -60,
@@ -899,6 +968,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.12,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 0 },
+  },
+  sectionGlowDividerUnclaimed: {
+    marginBottom: 8,
   },
   headerSection: {
     marginBottom: 10,
@@ -938,8 +1010,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     flexShrink: 1,
-    gap: 4,
-    paddingHorizontal: 7,
+    gap: 3,
+    paddingHorizontal: 6,
     paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
@@ -950,19 +1022,21 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 4,
+    minWidth: 0,
   },
   liveSchedulePillText: {
     color: GOLD,
     fontSize: 7.5,
     fontWeight: "900",
-    letterSpacing: 0.9,
+    letterSpacing: 0.8,
+    flexShrink: 1,
   },
   verifiedBadge: {
     flexDirection: "row",
     alignItems: "center",
     flexShrink: 0,
     gap: 3,
-    paddingHorizontal: 6,
+    paddingHorizontal: 5,
     paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
@@ -1001,10 +1075,16 @@ const styles = StyleSheet.create({
     flex: 0,
     justifyContent: "flex-start",
   },
+  bodySectionUnclaimed: {
+    flex: 1,
+  },
   stateRow: {
     flexDirection: "row",
     marginBottom: 12,
     marginTop: 0,
+  },
+  stateRowUnclaimed: {
+    marginBottom: 8,
   },
   statePill: {
     flexDirection: "row",
@@ -1030,6 +1110,10 @@ const styles = StyleSheet.create({
     minHeight: 92,
     justifyContent: "center",
   },
+  titleBlockUnclaimed: {
+    marginBottom: 10,
+    minHeight: 76,
+  },
   slotTitle: {
     color: "#FAFAFA",
     fontWeight: "900",
@@ -1053,6 +1137,18 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 16,
   },
+  metaRowUnclaimed: {
+    marginBottom: 8,
+  },
+  contentAmbientGlow: {
+    height: 1,
+    marginBottom: 10,
+    overflow: "hidden",
+    shadowColor: GOLD,
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 0 },
+  },
   metaChip: {
     flexDirection: "row",
     alignItems: "center",
@@ -1072,6 +1168,9 @@ const styles = StyleSheet.create({
   },
   progressSection: {
     marginBottom: 14,
+  },
+  progressSectionUnclaimed: {
+    marginBottom: 6,
   },
   progressTrack: {
     height: 8,
@@ -1227,6 +1326,27 @@ const styles = StyleSheet.create({
     marginTop: 14,
     gap: 11,
   },
+  footerSectionUnclaimed: {
+    marginTop: 6,
+    gap: 10,
+  },
+  claimBtnPrimaryWrap: {
+    position: "relative",
+  },
+  claimBtnPrimaryBloom: {
+    position: "absolute",
+    top: 4,
+    left: 12,
+    right: 12,
+    bottom: -6,
+    borderRadius: 999,
+    backgroundColor: "rgba(247,211,106,0.22)",
+    shadowColor: GOLD,
+    shadowOpacity: 0.45,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
   claimBtnPrimary: {
     borderRadius: 999,
     overflow: "hidden",
@@ -1236,6 +1356,12 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 8,
   },
+  claimBtnPrimaryUnclaimed: {
+    shadowOpacity: 0.52,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 12,
+  },
   claimBtnPrimaryGradient: {
     minHeight: 58,
     flexDirection: "row",
@@ -1243,6 +1369,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 10,
     paddingHorizontal: 20,
+    overflow: "hidden",
+  },
+  claimBtnPrimaryTopSheen: {
+    position: "absolute",
+    top: 0,
+    left: 20,
+    right: 20,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.42)",
+    borderRadius: 999,
+  },
+  claimBtnPrimaryInnerShadow: {
+    ...StyleSheet.absoluteFillObject,
   },
   claimBtnPrimaryText: {
     color: "#1A1205",
@@ -1325,6 +1464,17 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 8,
   },
+  actionRailUnclaimed: {
+    borderColor: "rgba(247,211,106,0.10)",
+    backgroundColor: "rgba(8,10,16,0.78)",
+    shadowOpacity: 0.32,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    marginTop: 2,
+  },
   actionRailHighlight: {
     position: "absolute",
     top: 0,
@@ -1334,11 +1484,30 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.14)",
     borderRadius: 999,
   },
+  actionRailHighlightUnclaimed: {
+    backgroundColor: "rgba(247,211,106,0.22)",
+    shadowColor: GOLD,
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  actionRailEdgeFadeUnclaimed: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 20,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+  },
   actionRailRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 4,
+  },
+  actionRailRowUnclaimed: {
+    paddingHorizontal: 2,
   },
   actionRailItem: {
     flex: 1,
