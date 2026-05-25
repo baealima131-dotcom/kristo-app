@@ -21,6 +21,12 @@ import {
 
 export const runtime = "nodejs";
 
+function isServerlessRuntime() {
+  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+}
+
+const MAX_AVATAR_DATA_URL_LEN = 2_800_000;
+
 type Body = {
   fullName?: string;
   gender?: Gender;
@@ -44,7 +50,7 @@ type Body = {
     allowMessages?: boolean;
     showPhone?: boolean;
     showChurch?: boolean;
-  showAddress?: boolean;
+    showAddress?: boolean;
     privateMode?: boolean;
   };
 
@@ -54,6 +60,7 @@ type Body = {
   allowMessages?: boolean;
   showPhone?: boolean;
   showChurch?: boolean;
+  showAddress?: boolean;
   privateMode?: boolean;
 };
 
@@ -62,10 +69,22 @@ function norm(s: any) {
 }
 
 async function saveAvatarData(userId: string, avatarData: string) {
-  const raw = String(avatarData || "");
-  const m = raw.match(/^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/);
+  const raw = String(avatarData || "").trim();
+  if (!raw) return "";
+  if (!raw.startsWith("data:image/")) return "";
+
+  const m = raw.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
   if (!m) return "";
-  const ext = m[1] === "jpeg" ? "jpg" : m[1];
+
+  // Vercel/serverless: no writable public/ — store data URL in Postgres profile JSON.
+  if (isServerlessRuntime()) {
+    if (raw.length > MAX_AVATAR_DATA_URL_LEN) {
+      throw new Error("Avatar image is too large. Choose a smaller photo (max ~2MB).");
+    }
+    return raw;
+  }
+
+  const ext = m[1].toLowerCase().replace("jpeg", "jpg");
   const dir = path.join(process.cwd(), "public", "uploads", "profile-avatars");
   await fs.mkdir(dir, { recursive: true });
   const safeUserId = String(userId || "user").replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -254,6 +273,11 @@ export async function POST(req: Request) {
       userId: u.id,
       fullName: next.fullName,
       userCode: (next as any).userCode,
+      avatarMode: uploadedAvatarUrl
+        ? uploadedAvatarUrl.startsWith("data:image/")
+          ? "postgres-data-url"
+          : "local-file"
+        : undefined,
     });
 
     return NextResponse.json({
