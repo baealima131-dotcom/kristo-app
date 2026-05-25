@@ -38,10 +38,7 @@ export async function fetchChurchMembers() {
 
   const h = headers();
   const r = await fetch(`${base}/api/church/members`, {
-    headers: {
-      ...h,
-      "x-kristo-role": "Church_Admin",
-    },
+    headers: h,
   });
 
   const j = await r.json().catch(() => ({} as any));

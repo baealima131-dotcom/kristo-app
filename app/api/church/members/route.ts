@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { deactivateMemberInChurch, getMembershipsForChurch, setMemberRole, type ChurchRole } from "@/app/api/_lib/memberships";
+import { deactivateMemberInChurch, getMembershipsForChurch, setMemberRole, type ChurchMembership, type ChurchRole } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
-import { ensureProfileDraft, getProfile } from "@/app/api/auth/_lib/profile";
+import { ensureProfileDraft, getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
+import { getUserById } from "@/app/api/auth/_lib/session";
 
 type ChurchMember = {
   // ✅ keep both for compatibility across UIs
@@ -13,11 +14,21 @@ type ChurchMember = {
 
   churchId: string;
   userId: string;
+  userCode?: string;
+  kristoId?: string;
 
   name: string;
+  fullName?: string;
+  displayName?: string;
   roleLabel?: string; // churchRole label
 
   role: ChurchRole; // actual churchRole
+  avatarUrl?: string;
+  avatarUri?: string;
+  profileImage?: string;
+  photoURL?: string;
+  image?: string;
+
   joinedAt: string;
   updatedAt?: string;
 };
@@ -34,53 +45,117 @@ function normalizeChurchRole(x: any): ChurchRole {
   return "Member";
 }
 
+function isKristoUserCode(x: string) {
+  return /^KR7-[A-Z0-9]{6,10}$/i.test(String(x || "").trim());
+}
+
+function pickAvatar(profile: any, user: any) {
+  return String(
+    profile?.avatarUrl ||
+    profile?.avatarUri ||
+    profile?.profileImage ||
+    profile?.photoURL ||
+    profile?.image ||
+    user?.avatarUrl ||
+    user?.avatarUri ||
+    user?.profileImage ||
+    user?.photoURL ||
+    user?.image ||
+    ""
+  ).trim();
+}
+
+async function resolveMemberProfile(membershipUserId: string) {
+  const raw = String(membershipUserId || "").trim();
+  if (!raw) return { profile: null as any, user: null as any, resolvedUserId: "" };
+
+  let profile: any = (await getProfile(raw)) || null;
+
+  if (!profile && isKristoUserCode(raw)) {
+    profile = (await getProfileByUserCode(raw)) || null;
+  }
+
+  if (!profile && raw !== raw.toLowerCase()) {
+    profile = (await getProfile(raw.toLowerCase())) || null;
+  }
+
+  const resolvedUserId = String(profile?.userId || raw).trim();
+  const user: any = resolvedUserId ? await getUserById(resolvedUserId) : null;
+
+  if (!profile && user) {
+    profile = (await getProfile(resolvedUserId)) || null;
+  }
+
+  return { profile, user, resolvedUserId };
+}
+
+async function enrichChurchMember(m: ChurchMembership): Promise<ChurchMember> {
+  const membershipId = m.id;
+  const role = (m.churchRole ?? "Member") as ChurchRole;
+  const { profile, user, resolvedUserId } = await resolveMemberProfile(String(m.userId || ""));
+
+  if (!profile && resolvedUserId) {
+    await ensureProfileDraft({
+      userId: resolvedUserId,
+      fullName: m.name || "Member",
+    });
+  }
+
+  const refreshed: any = profile || (resolvedUserId ? await getProfile(resolvedUserId) : null);
+  const avatar = pickAvatar(refreshed, user);
+  const userCode = String(refreshed?.userCode || "").trim().toUpperCase();
+  const name = String(
+    refreshed?.fullName ||
+    refreshed?.displayName ||
+    m.name ||
+    user?.fullName ||
+    user?.displayName ||
+    user?.name ||
+    refreshed?.email ||
+    user?.email ||
+    "Church member"
+  ).trim();
+
+  return {
+    id: membershipId,
+    membershipId,
+    churchId: m.churchId,
+    userId: resolvedUserId || String(m.userId || ""),
+    userCode,
+    kristoId: userCode,
+    name,
+    fullName: name,
+    displayName: name,
+    avatarUrl: avatar,
+    avatarUri: avatar,
+    profileImage: avatar,
+    roleLabel: role,
+    role,
+    joinedAt: m.decidedAt || m.createdAt,
+    updatedAt: m.updatedAt,
+  };
+}
+
 export async function GET(req: NextRequest) {
   const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin", "Member"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const list = await getMembershipsForChurch(ctxOrRes.churchId, "Active");
 
-  const items = await Promise.all(list.map(async (m) => {
-    const membershipId = m.id;
-    const role = (m.churchRole ?? "Member") as ChurchRole;
-    let profile = await getProfile(String(m.userId || ""));
+  const items = await Promise.all(list.map(enrichChurchMember));
 
-// AUTO FIX: kama profile haipo, create basic one
-if (!profile) {
-  await ensureProfileDraft({
-    userId: String(m.userId),
-    fullName: m.name || "Member",
-  });
-  profile = await getProfile(String(m.userId));
-}
-    const name = String(
-      (profile as any)?.fullName ||
-      (profile as any)?.displayName ||
-      m.name ||
-      (profile as any)?.email ||
-      "Church member"
-    ).trim();
-
-    const out: ChurchMember = {
-      id: membershipId,
-      membershipId,
-
-      churchId: m.churchId,
-      userId: m.userId,
-
-      name,
-      userCode: (profile as any)?.userCode || "",
-      kristoId: (profile as any)?.userCode || "",
-      avatarUrl: (profile as any)?.avatarUrl || "",
-      roleLabel: role,
-
-      role,
-      joinedAt: m.decidedAt || m.createdAt,
-      updatedAt: m.updatedAt,
-    };
-
-    return out;
-  }));
+  if (process.env.KRISTO_DEBUG_AUTH === "1" || process.env.NODE_ENV !== "production") {
+    console.log(
+      "[church/members] avatar fields",
+      items.map((row) => ({
+        userId: row.userId,
+        name: row.name,
+        role: row.role,
+        avatarUrl: row.avatarUrl ? `${String(row.avatarUrl).slice(0, 48)}…` : "",
+        hasAvatar: Boolean(row.avatarUrl),
+      }))
+    );
+  }
 
   return json({ ok: true, data: items });
 }
