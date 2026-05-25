@@ -37,6 +37,32 @@ const GOLD_GLASS = "rgba(247,211,106,0.14)";
 const LIVE_PINK = "#FF375F";
 const CARD_MIN_HEIGHT = Math.min(790, Math.max(720, Dimensions.get("window").height * 0.86));
 
+function phaseEdgeTint(phase: string, claimed: boolean) {
+  if (phase === "live") return "rgba(255,55,95,0.13)";
+  if (claimed) return "rgba(167,139,250,0.11)";
+  return "rgba(247,211,106,0.11)";
+}
+
+function PremiumSectionDivider({ unclaimed }: { unclaimed?: boolean }) {
+  return (
+    <View pointerEvents="none" style={[styles.sectionDividerWrap, unclaimed && styles.sectionDividerWrapUnclaimed]}>
+      <LinearGradient
+        colors={[
+          "transparent",
+          "rgba(247,211,106,0.05)",
+          "rgba(255,255,255,0.07)",
+          "rgba(247,211,106,0.05)",
+          "transparent",
+        ]}
+        start={{ x: 0, y: 0.5 }}
+        end={{ x: 1, y: 0.5 }}
+        style={styles.sectionDividerGradient}
+      />
+      <View style={styles.sectionDividerGlowCore} />
+    </View>
+  );
+}
+
 function userHasActiveChurchMembership(session?: { churchId?: string; activeChurchId?: string } | null) {
   return Boolean(String(session?.churchId || session?.activeChurchId || "").trim());
 }
@@ -285,7 +311,7 @@ function SocialActionRail({
       <LinearGradient
         colors={
           blendUnclaimed
-            ? ["rgba(14,16,24,0.94)", "rgba(8,10,16,0.90)", "rgba(4,6,12,0.96)"]
+            ? ["rgba(10,12,18,0.82)", "rgba(8,10,16,0.78)", "rgba(6,8,14,0.84)"]
             : ["rgba(18,20,28,0.92)", "rgba(10,12,18,0.88)", "rgba(6,8,14,0.94)"]
         }
         style={StyleSheet.absoluteFillObject}
@@ -293,7 +319,7 @@ function SocialActionRail({
       <LinearGradient
         colors={
           blendUnclaimed
-            ? ["rgba(247,211,106,0.07)", "transparent", "rgba(255,255,255,0.02)"]
+            ? ["rgba(255,255,255,0.05)", "rgba(247,211,106,0.04)", "transparent"]
             : ["rgba(255,255,255,0.06)", "transparent", "rgba(247,211,106,0.04)"]
         }
         start={{ x: 0, y: 0 }}
@@ -304,7 +330,14 @@ function SocialActionRail({
       {blendUnclaimed ? (
         <LinearGradient
           pointerEvents="none"
-          colors={["transparent", "rgba(0,0,0,0.16)"]}
+          colors={["rgba(255,255,255,0.04)", "transparent"]}
+          style={styles.actionRailAmbientReflection}
+        />
+      ) : null}
+      {blendUnclaimed ? (
+        <LinearGradient
+          pointerEvents="none"
+          colors={["transparent", "rgba(0,0,0,0.08)"]}
           style={styles.actionRailEdgeFadeUnclaimed}
         />
       ) : null}
@@ -556,6 +589,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const showPrimaryClaim = !claimed && phase !== "ended";
   const showSecondaryClaim = claimed && phase !== "ended";
   const isUnclaimedOpen = !claimed && (phase === "open" || phase === "upcoming");
+  const edgeTint = phaseEdgeTint(phase, claimed);
 
   return (
     <Animated.View
@@ -595,9 +629,38 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           style={styles.cardTopSheen}
         />
         <View pointerEvents="none" style={styles.cardInnerRim} />
+        <View pointerEvents="none" style={styles.cardEdgeGlowLayer}>
+          <LinearGradient
+            colors={[edgeTint, "transparent"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.cardEdgeGlowTL}
+          />
+          <LinearGradient
+            colors={[edgeTint, "transparent"]}
+            start={{ x: 1, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={styles.cardEdgeGlowTR}
+          />
+          <LinearGradient
+            colors={[edgeTint, "transparent"]}
+            start={{ x: 0, y: 1 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.cardEdgeGlowBL}
+          />
+          <LinearGradient
+            colors={[edgeTint, "transparent"]}
+            start={{ x: 1, y: 1 }}
+            end={{ x: 0, y: 0 }}
+            style={styles.cardEdgeGlowBR}
+          />
+        </View>
 
         <View style={styles.cardInner}>
-          <Animated.View entering={FadeInDown.duration(300)} style={styles.headerSection}>
+          <Animated.View
+            entering={FadeInDown.duration(300)}
+            style={[styles.headerSection, isUnclaimedOpen && styles.headerSectionUnclaimed]}
+          >
             <View style={styles.headerTopRow}>
               <AvatarRing
                 uri={avatarUri}
@@ -650,7 +713,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             </View>
           </Animated.View>
 
-          <View pointerEvents="none" style={[styles.sectionGlowDivider, isUnclaimedOpen && styles.sectionGlowDividerUnclaimed]} />
+          <PremiumSectionDivider unclaimed={isUnclaimedOpen} />
 
           <View style={[styles.bodySection, isUnclaimedOpen && styles.bodySectionUnclaimed]}>
             <View style={[styles.stateRow, isUnclaimedOpen && styles.stateRowUnclaimed]}>
@@ -838,7 +901,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     }
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
-                    style={styles.claimBtnPrimaryGradient}
+                    style={[
+                      styles.claimBtnPrimaryGradient,
+                      isUnclaimedOpen && styles.claimBtnPrimaryGradientUnclaimed,
+                    ]}
                   >
                     {isUnclaimedOpen ? (
                       <>
@@ -852,7 +918,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                         />
                       </>
                     ) : null}
-                    <Ionicons name="hand-left-outline" size={24} color="#1A1205" />
+                    <Ionicons name="hand-left-outline" size={isUnclaimedOpen ? 22 : 24} color="#1A1205" />
                     <Text style={styles.claimBtnPrimaryText}>Claim This Live Slot</Text>
                   </LinearGradient>
                 </AnimatedPressable>
@@ -960,20 +1026,76 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.06)",
     borderRadius: 999,
   },
-  sectionGlowDivider: {
-    height: 1,
-    marginBottom: 12,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    shadowColor: GOLD,
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 0 },
+  cardEdgeGlowLayer: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 30,
+    overflow: "hidden",
   },
-  sectionGlowDividerUnclaimed: {
-    marginBottom: 8,
+  cardEdgeGlowTL: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: 88,
+    height: 88,
+    borderTopLeftRadius: 30,
+  },
+  cardEdgeGlowTR: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    width: 88,
+    height: 88,
+    borderTopRightRadius: 30,
+  },
+  cardEdgeGlowBL: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    width: 72,
+    height: 72,
+    borderBottomLeftRadius: 30,
+  },
+  cardEdgeGlowBR: {
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    width: 72,
+    height: 72,
+    borderBottomRightRadius: 30,
+  },
+  sectionDividerWrap: {
+    alignSelf: "center",
+    width: "90%",
+    height: 2,
+    marginBottom: 10,
+    justifyContent: "center",
+    overflow: "visible",
+  },
+  sectionDividerWrapUnclaimed: {
+    marginBottom: 4,
+  },
+  sectionDividerGradient: {
+    height: 1,
+    borderRadius: 999,
+    opacity: 0.55,
+  },
+  sectionDividerGlowCore: {
+    position: "absolute",
+    alignSelf: "center",
+    width: "38%",
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    shadowColor: GOLD,
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    borderRadius: 999,
   },
   headerSection: {
     marginBottom: 10,
+  },
+  headerSectionUnclaimed: {
+    marginBottom: 6,
   },
   headerTopRow: {
     flexDirection: "row",
@@ -1084,7 +1206,8 @@ const styles = StyleSheet.create({
     marginTop: 0,
   },
   stateRowUnclaimed: {
-    marginBottom: 8,
+    marginBottom: 4,
+    marginTop: 0,
   },
   statePill: {
     flexDirection: "row",
@@ -1111,14 +1234,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   titleBlockUnclaimed: {
-    marginBottom: 10,
-    minHeight: 76,
+    marginBottom: 8,
+    minHeight: 68,
   },
   slotTitle: {
     color: "#FAFAFA",
     fontWeight: "900",
     letterSpacing: -0.5,
-    marginBottom: 8,
+    marginBottom: 6,
     textShadowColor: "rgba(0,0,0,0.45)",
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 10,
@@ -1138,15 +1261,15 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   metaRowUnclaimed: {
-    marginBottom: 8,
+    marginBottom: 4,
   },
   contentAmbientGlow: {
     height: 1,
-    marginBottom: 10,
+    marginBottom: 6,
     overflow: "hidden",
     shadowColor: GOLD,
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
+    shadowOpacity: 0.14,
+    shadowRadius: 10,
     shadowOffset: { width: 0, height: 0 },
   },
   metaChip: {
@@ -1170,7 +1293,8 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   progressSectionUnclaimed: {
-    marginBottom: 6,
+    marginTop: -12,
+    marginBottom: 2,
   },
   progressTrack: {
     height: 8,
@@ -1327,24 +1451,24 @@ const styles = StyleSheet.create({
     gap: 11,
   },
   footerSectionUnclaimed: {
-    marginTop: 6,
-    gap: 10,
+    marginTop: 4,
+    gap: 9,
   },
   claimBtnPrimaryWrap: {
     position: "relative",
   },
   claimBtnPrimaryBloom: {
     position: "absolute",
-    top: 4,
+    top: 3,
     left: 12,
     right: 12,
-    bottom: -6,
+    bottom: -4,
     borderRadius: 999,
-    backgroundColor: "rgba(247,211,106,0.22)",
+    backgroundColor: "rgba(247,211,106,0.20)",
     shadowColor: GOLD,
-    shadowOpacity: 0.45,
-    shadowRadius: 28,
-    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.42,
+    shadowRadius: 26,
+    shadowOffset: { width: 0, height: 6 },
     elevation: 6,
   },
   claimBtnPrimary: {
@@ -1370,6 +1494,11 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 20,
     overflow: "hidden",
+  },
+  claimBtnPrimaryGradientUnclaimed: {
+    minHeight: 52,
+    paddingVertical: 2,
+    gap: 9,
   },
   claimBtnPrimaryTopSheen: {
     position: "absolute",
@@ -1465,15 +1594,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   actionRailUnclaimed: {
-    borderColor: "rgba(247,211,106,0.10)",
-    backgroundColor: "rgba(8,10,16,0.78)",
-    shadowOpacity: 0.32,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 10,
-    paddingVertical: 14,
+    borderColor: "rgba(247,211,106,0.07)",
+    backgroundColor: "rgba(8,10,16,0.72)",
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    paddingVertical: 13,
     paddingHorizontal: 10,
-    marginTop: 2,
+    marginTop: 1,
   },
   actionRailHighlight: {
     position: "absolute",
@@ -1485,11 +1614,20 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   actionRailHighlightUnclaimed: {
-    backgroundColor: "rgba(247,211,106,0.22)",
+    backgroundColor: "rgba(255,255,255,0.10)",
     shadowColor: GOLD,
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
     shadowOffset: { width: 0, height: 0 },
+  },
+  actionRailAmbientReflection: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 28,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
   },
   actionRailEdgeFadeUnclaimed: {
     position: "absolute",
