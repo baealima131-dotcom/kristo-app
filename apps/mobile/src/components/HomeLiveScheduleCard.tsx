@@ -32,8 +32,10 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 const GOLD = "#F7D36A";
 const GOLD_SOFT = "rgba(247,211,106,0.22)";
-const GOLD_BORDER = "rgba(247,211,106,0.38)";
-const CARD_MIN_HEIGHT = Math.min(700, Math.max(620, Dimensions.get("window").height * 0.74));
+const GOLD_BORDER = "rgba(247,211,106,0.42)";
+const GOLD_GLASS = "rgba(247,211,106,0.14)";
+const LIVE_PINK = "#FF375F";
+const CARD_MIN_HEIGHT = Math.min(790, Math.max(720, Dimensions.get("window").height * 0.86));
 
 function userHasActiveChurchMembership(session?: { churchId?: string; activeChurchId?: string } | null) {
   return Boolean(String(session?.churchId || session?.activeChurchId || "").trim());
@@ -69,8 +71,8 @@ function AvatarRing({
     if (!live) return;
     pulse.value = withRepeat(
       withSequence(
-        withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.quad) }),
-        withTiming(0, { duration: 1200 })
+        withTiming(1, { duration: 1400, easing: Easing.inOut(Easing.quad) }),
+        withTiming(0, { duration: 1400 })
       ),
       -1,
       false
@@ -78,15 +80,35 @@ function AvatarRing({
   }, [live, pulse]);
 
   const ringStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: live ? 1 + pulse.value * 0.07 : 1 }],
-    opacity: live ? 0.55 + pulse.value * 0.45 : 1,
+    transform: [{ scale: live ? 1 + pulse.value * 0.06 : 1 }],
+    opacity: live ? 0.45 + pulse.value * 0.4 : 0.85,
+  }));
+
+  const liveHaloStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: live ? 1.04 + pulse.value * 0.1 : 1 }],
+    opacity: live ? 0.12 + pulse.value * 0.22 : 0,
   }));
 
   const outer = size + 14;
   const inner = size - 4;
 
   return (
-    <View style={{ width: outer, height: outer, alignItems: "center", justifyContent: "center" }}>
+    <View style={{ width: outer + (live ? 8 : 0), height: outer + (live ? 8 : 0), alignItems: "center", justifyContent: "center" }}>
+      {live ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            {
+              position: "absolute",
+              width: outer + 10,
+              height: outer + 10,
+              borderRadius: (outer + 10) / 2,
+              backgroundColor: accent,
+            },
+            liveHaloStyle,
+          ]}
+        />
+      ) : null}
       <Animated.View
         pointerEvents="none"
         style={[
@@ -115,26 +137,47 @@ function AvatarRing({
           width: size,
           height: size,
           borderRadius: size / 2,
-          padding: 2,
+          padding: 2.5,
         }}
       >
         {uri ? (
-          <Image
-            source={{ uri }}
-            style={{ width: inner, height: inner, borderRadius: inner / 2 }}
-            resizeMode="cover"
-          />
+          <View style={{ width: inner, height: inner, borderRadius: inner / 2, overflow: "hidden" }}>
+            <Image
+              source={{ uri }}
+              style={{ width: inner, height: inner, borderRadius: inner / 2 }}
+              resizeMode="cover"
+            />
+            <LinearGradient
+              pointerEvents="none"
+              colors={["rgba(255,255,255,0.12)", "transparent", "rgba(0,0,0,0.18)"]}
+              style={StyleSheet.absoluteFillObject}
+            />
+          </View>
         ) : (
           <LinearGradient
-            colors={goldFallback ? ["#F7D36A", "#C8943A", "#7A5218"] : ["rgba(255,255,255,0.14)", "rgba(255,255,255,0.06)"]}
+            colors={
+              goldFallback
+                ? ["#FFE08A", "#F7D36A", "#C8943A", "#7A5218"]
+                : ["rgba(255,255,255,0.18)", "rgba(255,255,255,0.08)", "rgba(0,0,0,0.12)"]
+            }
+            start={{ x: 0.2, y: 0 }}
+            end={{ x: 0.8, y: 1 }}
             style={{
               width: inner,
               height: inner,
               borderRadius: inner / 2,
               alignItems: "center",
               justifyContent: "center",
+              overflow: "hidden",
             }}
           >
+            <LinearGradient
+              pointerEvents="none"
+              colors={["rgba(255,255,255,0.28)", "transparent"]}
+              start={{ x: 0.5, y: 0 }}
+              end={{ x: 0.5, y: 0.45 }}
+              style={StyleSheet.absoluteFillObject}
+            />
             <Text style={{ color: goldFallback ? "#1A1205" : "#FFF", fontSize: size * 0.38, fontWeight: "900" }}>
               {initial}
             </Text>
@@ -142,6 +185,30 @@ function AvatarRing({
         )}
       </LinearGradient>
     </View>
+  );
+}
+
+function EnterLiveButtonGloss() {
+  const shimmer = useSharedValue(0);
+
+  useEffect(() => {
+    shimmer.value = withRepeat(
+      withTiming(1, { duration: 3400, easing: Easing.inOut(Easing.quad) }),
+      -1,
+      true
+    );
+  }, [shimmer]);
+
+  const shimmerStyle = useAnimatedStyle(() => ({
+    opacity: 0.1 + shimmer.value * 0.16,
+    transform: [{ translateX: -28 + shimmer.value * 56 }],
+  }));
+
+  return (
+    <>
+      <View pointerEvents="none" style={styles.hostEnterButtonTopSheen} />
+      <Animated.View pointerEvents="none" style={[styles.hostEnterButtonShimmer, shimmerStyle]} />
+    </>
   );
 }
 
@@ -214,14 +281,33 @@ function SocialActionRail({
   return (
     <View style={styles.actionRail}>
       <LinearGradient
-        colors={["rgba(255,255,255,0.04)", "rgba(255,255,255,0.01)"]}
+        colors={["rgba(18,20,28,0.92)", "rgba(10,12,18,0.88)", "rgba(6,8,14,0.94)"]}
         style={StyleSheet.absoluteFillObject}
       />
+      <LinearGradient
+        colors={["rgba(255,255,255,0.06)", "transparent", "rgba(247,211,106,0.04)"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View pointerEvents="none" style={styles.actionRailHighlight} />
       <View style={styles.actionRailRow}>
         {items.map((item) => (
-          <Pressable key={item.key} onPress={item.onPress} style={styles.actionRailItem} hitSlop={8}>
+          <Pressable
+            key={item.key}
+            onPress={item.onPress}
+            style={({ pressed }) => [styles.actionRailItem, pressed && styles.pressed]}
+            hitSlop={6}
+          >
             <View style={styles.actionRailIconWrap}>
-              <Ionicons name={item.icon} size={23} color={item.iconColor} />
+              <LinearGradient
+                colors={["rgba(255,255,255,0.16)", "rgba(255,255,255,0.05)", "rgba(0,0,0,0.28)"]}
+                start={{ x: 0.2, y: 0 }}
+                end={{ x: 0.8, y: 1 }}
+                style={StyleSheet.absoluteFillObject}
+              />
+              <View pointerEvents="none" style={styles.actionRailIconRing} />
+              <Ionicons name={item.icon} size={22} color={item.iconColor} />
             </View>
             <Text style={styles.actionRailLabel} numberOfLines={1}>
               {item.label}
@@ -478,6 +564,12 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         />
         <View pointerEvents="none" style={[styles.glowOrbTop, { backgroundColor: GOLD_SOFT }]} />
         <View pointerEvents="none" style={[styles.glowOrbBottom, { backgroundColor: theme.glow }]} />
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(255,255,255,0.07)", "rgba(255,255,255,0.02)", "transparent"]}
+          style={styles.cardTopSheen}
+        />
+        <View pointerEvents="none" style={styles.cardInnerRim} />
 
         <View style={styles.cardInner}>
           <Animated.View entering={FadeInDown.duration(300)} style={styles.headerSection}>
@@ -498,13 +590,29 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   {churchShort} • Church Media
                 </Text>
                 <View style={styles.badgeRow}>
-                  <View style={[styles.liveSchedulePill, { borderColor: GOLD_BORDER, backgroundColor: GOLD_SOFT }]}>
-                    <Ionicons name="radio" size={11} color={GOLD} />
-                    <Text style={styles.liveSchedulePillText}>LIVE SCHEDULE</Text>
+                  <View style={styles.liveSchedulePill}>
+                    <LinearGradient
+                      colors={[GOLD_GLASS, "rgba(255,255,255,0.05)", "rgba(0,0,0,0.12)"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={StyleSheet.absoluteFillObject}
+                    />
+                    <Ionicons name="radio" size={10} color={GOLD} />
+                    <Text style={styles.liveSchedulePillText} numberOfLines={1}>
+                      LIVE SCHEDULE
+                    </Text>
                   </View>
-                  <View style={[styles.verifiedBadge, { borderColor: GOLD_BORDER, backgroundColor: "rgba(255,255,255,0.05)" }]}>
-                    <Ionicons name="shield-checkmark" size={12} color={GOLD} />
-                    <Text style={styles.verifiedBadgeText}>VERIFIED</Text>
+                  <View style={styles.verifiedBadge}>
+                    <LinearGradient
+                      colors={["rgba(255,255,255,0.08)", "rgba(255,255,255,0.02)", "rgba(0,0,0,0.14)"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={StyleSheet.absoluteFillObject}
+                    />
+                    <Ionicons name="shield-checkmark" size={10} color={GOLD} />
+                    <Text style={styles.verifiedBadgeText} numberOfLines={1}>
+                      VERIFIED
+                    </Text>
                   </View>
                 </View>
               </View>
@@ -517,9 +625,11 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             </View>
           </Animated.View>
 
+          <View pointerEvents="none" style={styles.sectionGlowDivider} />
+
           <View style={styles.bodySection}>
             <View style={styles.stateRow}>
-              <View style={[styles.statePill, { borderColor: theme.border, backgroundColor: `${theme.accent}16` }]}>
+              <View style={[styles.statePill, { borderColor: "rgba(255,255,255,0.08)", backgroundColor: `${theme.accent}14` }]}>
                 {phase === "live" ? <View style={[styles.liveDot, { backgroundColor: theme.accent }]} /> : null}
                 <Text style={[styles.statePillText, { color: theme.accent }]}>{theme.label}</Text>
               </View>
@@ -529,8 +639,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               <Text
                 style={[styles.slotTitle, { fontSize: titleFontSize, lineHeight: titleLineHeight }]}
                 numberOfLines={2}
-                adjustsFontSizeToFit
-                minimumFontScale={0.68}
+                ellipsizeMode="tail"
               >
                 {slotTitle}
               </Text>
@@ -556,13 +665,15 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             </View>
 
             <View style={styles.progressSection}>
-              <View style={styles.progressTrack}>
-                <LinearGradient
-                  colors={[theme.accent, `${theme.accent}88`]}
-                  start={{ x: 0, y: 0.5 }}
-                  end={{ x: 1, y: 0.5 }}
-                  style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]}
-                />
+              <View style={[styles.progressTrack, { shadowColor: theme.accent }]}>
+                <View style={[styles.progressFillGlow, { width: `${Math.round(progress * 100)}%`, shadowColor: theme.accent }]}>
+                  <LinearGradient
+                    colors={["rgba(255,255,255,0.22)", theme.accent, `${theme.accent}CC`, theme.accent]}
+                    start={{ x: 0, y: 0.5 }}
+                    end={{ x: 1, y: 0.5 }}
+                    style={styles.progressFill}
+                  />
+                </View>
               </View>
               <View style={styles.progressFooter}>
                 <Text style={styles.countdown}>{countdownLabel}</Text>
@@ -573,21 +684,37 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             </View>
 
             {claimed ? (
-              <Animated.View
-                entering={FadeInDown.duration(240)}
-                style={[styles.hostSection, { borderColor: theme.border }]}
-              >
+              <View style={styles.hostSectionWrap}>
+                <View pointerEvents="none" style={[styles.hostSectionGlow, { backgroundColor: theme.glow }]} />
+                <Animated.View entering={FadeInDown.duration(240)} style={styles.hostSection}>
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={["rgba(255,255,255,0.06)", "transparent"]}
+                  style={styles.hostSectionTopSheen}
+                />
                 <View style={styles.hostHeaderRow}>
                   <Text style={[styles.hostKicker, { color: theme.accent }]}>
                     {phase === "live" ? "LIVE HOST" : "CLAIMED BY"}
                   </Text>
                   {phase === "live" ? (
-                    <View style={[styles.liveBadge, { backgroundColor: `${theme.accent}28`, borderColor: theme.border }]}>
-                      <View style={[styles.liveDot, { backgroundColor: theme.accent }]} />
-                      <Text style={[styles.liveBadgeText, { color: theme.accent }]}>ON AIR</Text>
+                    <View style={[styles.liveBadge, { shadowColor: LIVE_PINK }]}>
+                      <LinearGradient
+                        colors={["rgba(255,55,95,0.55)", "rgba(255,55,95,0.28)", "rgba(255,255,255,0.10)"]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={StyleSheet.absoluteFillObject}
+                      />
+                      <View style={[styles.liveDot, { backgroundColor: "#FFF" }]} />
+                      <Text style={styles.liveBadgeText}>ON AIR</Text>
                     </View>
                   ) : (
-                    <View style={[styles.claimedBadge, { borderColor: theme.border, backgroundColor: `${theme.accent}18` }]}>
+                    <View style={[styles.claimedBadge, { borderColor: theme.border }]}>
+                      <LinearGradient
+                        colors={[`${theme.accent}28`, `${theme.accent}12`, "rgba(0,0,0,0.18)"]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={StyleSheet.absoluteFillObject}
+                      />
                       <Text style={[styles.claimedBadgeText, { color: theme.accent }]}>CLAIMED</Text>
                     </View>
                   )}
@@ -596,7 +723,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   <AvatarRing
                     uri={claimedAvatarUri}
                     initial={String(claimedBy?.name || "H").slice(0, 1).toUpperCase()}
-                    size={48}
+                    size={58}
                     accent={theme.accent}
                     live={phase === "live"}
                   />
@@ -609,7 +736,45 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     </Text>
                   </View>
                 </View>
-              </Animated.View>
+
+                {showSecondaryClaim ? (
+                  <AnimatedPressable
+                    onPress={handleClaimPress}
+                    style={[
+                      styles.hostEnterButton,
+                      claimBtnStyle,
+                      { borderColor: theme.border, shadowColor: theme.glow },
+                    ]}
+                  >
+                    <LinearGradient
+                      colors={[`${theme.accent}F0`, `${theme.accent}BB`, `${theme.accent}88`, "rgba(255,255,255,0.12)"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.hostEnterButtonGradient}
+                    >
+                      <EnterLiveButtonGloss />
+                      {claimedByMe && phase === "live" ? (
+                        <>
+                          <Ionicons name="radio" size={24} color="#FFF" />
+                          <Text style={styles.hostEnterButtonText}>Enter Live Room</Text>
+                          <Ionicons name="arrow-forward" size={22} color="#FFF" />
+                        </>
+                      ) : claimedByMe ? (
+                        <>
+                          <Ionicons name="checkmark-circle" size={22} color="#FFF" />
+                          <Text style={styles.hostEnterButtonText}>Claimed • Tap to Release</Text>
+                        </>
+                      ) : (
+                        <>
+                          <Ionicons name="people-outline" size={22} color="#FFF" />
+                          <Text style={styles.hostEnterButtonText}>Taken • Join Queue</Text>
+                        </>
+                      )}
+                    </LinearGradient>
+                  </AnimatedPressable>
+                ) : null}
+                </Animated.View>
+              </View>
             ) : (
               <View style={styles.openSpacer} />
             )}
@@ -630,36 +795,6 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   <Ionicons name="hand-left-outline" size={24} color="#1A1205" />
                   <Text style={styles.claimBtnPrimaryText}>Claim This Live Slot</Text>
                 </LinearGradient>
-              </AnimatedPressable>
-            ) : null}
-
-            {showSecondaryClaim ? (
-              <AnimatedPressable
-                onPress={handleClaimPress}
-                style={[
-                  styles.claimBtnSecondary,
-                  claimBtnStyle,
-                  { borderColor: theme.border, backgroundColor: `${theme.accent}12` },
-                ]}
-              >
-                {claimedByMe && phase === "live" ? (
-                  <>
-                    <Ionicons name="radio" size={22} color={theme.accent} />
-                    <Text style={[styles.claimBtnSecondaryText, { color: theme.accent }]}>Enter Live Room</Text>
-                  </>
-                ) : claimedByMe ? (
-                  <>
-                    <Ionicons name="checkmark-circle" size={22} color={theme.accent} />
-                    <Text style={[styles.claimBtnSecondaryText, { color: theme.accent }]}>
-                      Claimed • Tap to Release
-                    </Text>
-                  </>
-                ) : (
-                  <>
-                    <Ionicons name="people-outline" size={22} color={theme.accent} />
-                    <Text style={[styles.claimBtnSecondaryText, { color: theme.accent }]}>Taken • Join Queue</Text>
-                  </>
-                )}
               </AnimatedPressable>
             ) : null}
 
@@ -697,7 +832,8 @@ const styles = StyleSheet.create({
     marginTop: 0,
     marginHorizontal: 14,
     justifyContent: "center",
-    paddingVertical: 18,
+    paddingTop: 42,
+    paddingBottom: 18,
   },
   card: {
     borderRadius: 30,
@@ -714,9 +850,9 @@ const styles = StyleSheet.create({
   cardInner: {
     flex: 1,
     minHeight: CARD_MIN_HEIGHT,
-    paddingHorizontal: 18,
-    paddingTop: 20,
-    paddingBottom: 14,
+    paddingHorizontal: 20,
+    paddingTop: 22,
+    paddingBottom: 16,
     justifyContent: "space-between",
   },
   glowOrbTop: {
@@ -737,8 +873,35 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     opacity: 0.28,
   },
+  cardTopSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 120,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+  },
+  cardInnerRim: {
+    position: "absolute",
+    top: 1,
+    left: 14,
+    right: 14,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderRadius: 999,
+  },
+  sectionGlowDivider: {
+    height: 1,
+    marginBottom: 12,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    shadowColor: GOLD,
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
+  },
   headerSection: {
-    marginBottom: 22,
+    marginBottom: 10,
   },
   headerTopRow: {
     flexDirection: "row",
@@ -751,53 +914,71 @@ const styles = StyleSheet.create({
     paddingTop: 4,
   },
   mediaName: {
-    color: "#FFFFFF",
-    fontSize: 21,
+    color: "#FAFAFA",
+    fontSize: 24,
     fontWeight: "900",
-    letterSpacing: -0.4,
+    letterSpacing: -0.5,
     marginBottom: 3,
   },
   churchSubline: {
-    color: "rgba(255,255,255,0.62)",
+    color: "rgba(255,255,255,0.58)",
     fontSize: 13,
     fontWeight: "700",
-    marginBottom: 10,
+    letterSpacing: 0.1,
+    marginBottom: 6,
   },
   badgeRow: {
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: "wrap",
-    gap: 8,
+    flexWrap: "nowrap",
+    gap: 5,
+    maxWidth: "100%",
   },
   liveSchedulePill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
+    flexShrink: 1,
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
+    borderColor: GOLD_BORDER,
+    overflow: "hidden",
+    shadowColor: GOLD,
+    shadowOpacity: 0.24,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
   },
   liveSchedulePillText: {
     color: GOLD,
-    fontSize: 9,
+    fontSize: 7.5,
     fontWeight: "900",
-    letterSpacing: 1.3,
+    letterSpacing: 0.9,
   },
   verifiedBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
+    flexShrink: 0,
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
+    borderColor: GOLD_BORDER,
+    overflow: "hidden",
+    shadowColor: GOLD,
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
   },
   verifiedBadgeText: {
     color: GOLD,
-    fontSize: 8,
+    fontSize: 7.5,
     fontWeight: "900",
-    letterSpacing: 1.1,
+    letterSpacing: 0.8,
   },
   slotCounter: {
     alignItems: "center",
@@ -817,12 +998,13 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
   bodySection: {
-    flex: 1,
+    flex: 0,
     justifyContent: "flex-start",
   },
   stateRow: {
     flexDirection: "row",
-    marginBottom: 16,
+    marginBottom: 12,
+    marginTop: 0,
   },
   statePill: {
     flexDirection: "row",
@@ -835,8 +1017,8 @@ const styles = StyleSheet.create({
   },
   statePillText: {
     fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 1.4,
+    fontWeight: "800",
+    letterSpacing: 1.2,
   },
   liveDot: {
     width: 7,
@@ -844,26 +1026,32 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   titleBlock: {
-    marginBottom: 18,
-    minHeight: 88,
+    marginBottom: 16,
+    minHeight: 92,
+    justifyContent: "center",
   },
   slotTitle: {
-    color: "#FFFFFF",
+    color: "#FAFAFA",
     fontWeight: "900",
-    letterSpacing: -0.7,
-    marginBottom: 10,
+    letterSpacing: -0.5,
+    marginBottom: 8,
+    textShadowColor: "rgba(0,0,0,0.45)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 10,
   },
   slotTopic: {
-    color: "rgba(255,255,255,0.64)",
+    color: "rgba(255,255,255,0.58)",
     fontSize: 15,
     lineHeight: 22,
     fontWeight: "600",
+    letterSpacing: 0.15,
+    marginTop: 2,
   },
   metaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
-    marginBottom: 18,
+    marginBottom: 16,
   },
   metaChip: {
     flexDirection: "row",
@@ -872,26 +1060,39 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 9,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
+    borderColor: "rgba(255,255,255,0.06)",
   },
   metaText: {
-    color: "#FFF",
+    color: "rgba(255,255,255,0.92)",
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "700",
+    letterSpacing: 0.1,
   },
   progressSection: {
-    marginBottom: 18,
+    marginBottom: 14,
   },
   progressTrack: {
-    height: 7,
+    height: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.06)",
     overflow: "hidden",
     marginBottom: 8,
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  progressFillGlow: {
+    height: "100%",
+    borderRadius: 999,
+    overflow: "hidden",
+    shadowOpacity: 0.55,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
   },
   progressFill: {
+    flex: 1,
     height: "100%",
     borderRadius: 999,
   },
@@ -903,25 +1104,53 @@ const styles = StyleSheet.create({
   countdown: {
     color: GOLD,
     fontSize: 13,
-    fontWeight: "900",
-    letterSpacing: 0.3,
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
   progressSlotHint: {
-    color: "rgba(255,255,255,0.42)",
+    color: "rgba(255,255,255,0.38)",
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "600",
+    letterSpacing: 0.15,
   },
   openSpacer: {
-    flex: 1,
-    minHeight: 24,
+    minHeight: 12,
+  },
+  hostSectionWrap: {
+    position: "relative",
+    marginTop: 4,
+  },
+  hostSectionGlow: {
+    position: "absolute",
+    top: 8,
+    left: 20,
+    right: 20,
+    bottom: 8,
+    borderRadius: 28,
+    opacity: 0.22,
+    transform: [{ scale: 1.02 }],
   },
   hostSection: {
     borderWidth: 1,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginTop: 4,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.07)",
+    borderRadius: 26,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 14,
+    backgroundColor: "rgba(0,0,0,0.28)",
+    shadowColor: "#000",
+    shadowOpacity: 0.32,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+    overflow: "hidden",
+  },
+  hostSectionTopSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 48,
   },
   hostHeaderRow: {
     flexDirection: "row",
@@ -931,13 +1160,14 @@ const styles = StyleSheet.create({
   },
   hostKicker: {
     fontSize: 9,
-    fontWeight: "900",
-    letterSpacing: 1.6,
+    fontWeight: "800",
+    letterSpacing: 1.3,
   },
   hostRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 14,
+    marginBottom: 14,
   },
   hostTextWrap: {
     flex: 1,
@@ -945,8 +1175,9 @@ const styles = StyleSheet.create({
   },
   hostName: {
     color: "#FFF",
-    fontSize: 17,
+    fontSize: 21,
     fontWeight: "900",
+    letterSpacing: -0.4,
   },
   hostRole: {
     color: "rgba(255,255,255,0.58)",
@@ -957,31 +1188,44 @@ const styles = StyleSheet.create({
   liveBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
     borderRadius: 999,
     borderWidth: 1,
+    borderColor: "rgba(255,120,150,0.65)",
+    overflow: "hidden",
+    shadowOpacity: 0.55,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
   },
   liveBadgeText: {
-    fontSize: 9,
+    color: "#FFFFFF",
+    fontSize: 7.5,
     fontWeight: "900",
-    letterSpacing: 1.1,
+    letterSpacing: 0.9,
   },
   claimedBadge: {
-    paddingHorizontal: 9,
-    paddingVertical: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
     borderRadius: 999,
     borderWidth: 1,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
   },
   claimedBadgeText: {
-    fontSize: 9,
+    fontSize: 7.5,
     fontWeight: "900",
-    letterSpacing: 1.1,
+    letterSpacing: 0.8,
   },
   footerSection: {
-    marginTop: 16,
-    gap: 12,
+    marginTop: 14,
+    gap: 11,
   },
   claimBtnPrimary: {
     borderRadius: 999,
@@ -1022,38 +1266,113 @@ const styles = StyleSheet.create({
   claimBtnDisabled: {
     opacity: 0.5,
   },
-  actionRail: {
-    borderRadius: 18,
+  hostEnterButton: {
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.14)",
     overflow: "hidden",
-    backgroundColor: "rgba(0,0,0,0.22)",
+    shadowOpacity: 0.55,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 16,
+  },
+  hostEnterButtonGradient: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 18,
+    overflow: "hidden",
+  },
+  hostEnterButtonTopSheen: {
+    position: "absolute",
+    top: 0,
+    left: 16,
+    right: 16,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.35)",
+    borderRadius: 999,
+  },
+  hostEnterButtonShimmer: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: 48,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    transform: [{ skewX: "-18deg" }],
+  },
+  hostEnterButtonText: {
+    color: "#FFF",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: -0.15,
+    textShadowColor: "rgba(0,0,0,0.25)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  actionRail: {
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: "rgba(247,211,106,0.16)",
+    overflow: "hidden",
+    backgroundColor: "rgba(6,8,14,0.82)",
+    shadowColor: "#000",
+    shadowOpacity: 0.48,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+  },
+  actionRailHighlight: {
+    position: "absolute",
+    top: 0,
+    left: 12,
+    right: 12,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderRadius: 999,
   },
   actionRailRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 6,
+    justifyContent: "space-between",
+    paddingHorizontal: 4,
   },
   actionRailItem: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
-    minHeight: 52,
+    gap: 6,
+    minHeight: 64,
   },
   actionRailIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 50,
+    height: 50,
+    borderRadius: 25,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.38,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 8,
+  },
+  actionRailIconRing: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
   },
   actionRailLabel: {
-    color: "rgba(255,255,255,0.72)",
-    fontSize: 11,
-    fontWeight: "800",
+    color: "rgba(255,255,255,0.66)",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.15,
   },
   pressed: {
     opacity: 0.88,
