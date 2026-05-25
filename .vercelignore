@@ -1,0 +1,121 @@
+# Kristo App — Vercel deploy ignore (Next.js web/API only)
+# Keeps root app/, app/api/, public/, data/, and server deps.
+# Excludes Expo mobile app, native builds, restores, and local artifacts.
+
+# Dependencies (installed on Vercel)
+node_modules
+**/node_modules
+
+# Git metadata
+.git
+**/.git
+
+# Expo / React Native mobile app (not served by Vercel)
+apps/mobile
+
+# Legacy Expo screens (moved out of app/ — canonical mobile app is apps/mobile)
+_excluded-from-vercel
+**/_excluded-from-vercel/**
+_archive-trash-before-delete
+**/_archive-trash-before-delete/**
+
+# Legacy Expo screens under root app/ (if any remain)
+app/(tabs)
+app/kingdom
+app/church
+app/church/ministry-chat
+app/profile
+app/profile/privacy.tsx
+app/poster-profile.tsx
+
+# Native mobile project folders
+ios
+android
+apps/mobile/ios
+apps/mobile/android
+**/ios/**
+**/android/**
+
+# Expo caches and tooling
+.expo
+**/.expo
+.expo-shared
+**/.expo-shared
+
+# Restore / backup trees
+_restore
+_restore*
+**/_restore*
+_restore_backup_before_unquarantine
+backups
+**/backups/**
+_bak
+**/_bak/**
+.bak
+.backups
+.trash_baks
+disabled
+.kristo-dev
+
+# Mobile backup / restore copies inside apps/mobile
+apps/mobile/tmp
+apps/mobile/app.restore*
+apps/mobile/app_*
+apps/mobile/metro.log
+apps/mobile/*.log
+
+# Backup / scratch file patterns
+*.bak
+*.bak*
+**/*.bak
+**/*.bak_*
+**/*backup*
+**/*.broken*
+**/*.save
+**/*.error_backup
+**/*.backup_*
+
+# Build outputs and caches
+dist
+build
+coverage
+.next
+**/.next
+.next/cache
+**/.next/cache
+.vercel/output
+out
+tmp
+**/tmp/**
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Logs and local env (secrets)
+*.log
+**/*.log
+.env
+.env.*
+!.env.example
+
+# Local dev uploads (ephemeral on Vercel; use external storage in production)
+public/uploads
+**/public/uploads/**
+
+# OS / editor noise
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# Cursor / agent artifacts
+agent-transcripts
+.cursor
+
+# Shell scripts and local-only tooling (not needed at runtime)
+*.sh
+backup-*.sh
+
+# Large local-only scratch files
+*.tmp
+WEKA_*.tmp
+
+_archive-trash-before-delete/

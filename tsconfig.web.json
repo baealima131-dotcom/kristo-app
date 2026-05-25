@@ -12,6 +12,22 @@
     "dist",
     "build",
     "coverage",
-    "apps/mobile"
+    "apps/mobile",
+    "_excluded-from-vercel",
+    "app/(tabs)",
+    "app/kingdom",
+    "app/church",
+    "app/church/ministry-chat",
+    "app/poster-profile.tsx",
+    "app/profile",
+    "app/profile/privacy.tsx",
+    "_restore_backup_before_unquarantine",
+    "_archive-trash-before-delete",
+    "_restore",
+    "_bak",
+    "backups",
+    "disabled",
+    ".kristo-dev",
+    ".trash_baks"
   ]
 }

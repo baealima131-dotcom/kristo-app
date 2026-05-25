@@ -89,3 +89,5 @@ apps/mobile/.expo/
 apps/mobile/**/*.backup_*
 apps/mobile/**/*.error_backup
 apps/mobile/**/*.save
+
+_archive-trash-before-delete/
