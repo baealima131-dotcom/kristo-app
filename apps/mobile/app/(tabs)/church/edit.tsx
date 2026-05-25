@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import { useRouter } from "expo-router";
@@ -6,7 +6,14 @@ import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View 
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { apiGet, apiPatch } from "@/src/lib/kristoApi";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import {
+  loadChurchDraft,
+  loadChurchProfileCache,
+  saveChurchDraft,
+  saveChurchProfileCache,
+} from "@/src/lib/churchStore";
 
 const GOLD = "rgba(217,179,95,0.96)";
 const BG = "#070B14";
@@ -22,28 +29,58 @@ function mediaUrl(u: any) {
 export default function EditChurchProfile() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { session, setSession } = useKristoSession();
+  const saveInFlight = useRef(false);
 
   const [name, setName] = useState("");
   const [pastorName, setPastorName] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [avatarUri, setAvatarUri] = useState("");
-  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let alive = true;
+
     (async () => {
+      const auth = getKristoAuth();
+      const churchId = String(session?.churchId || auth.churchId || "").trim();
+      const cached = churchId ? await loadChurchProfileCache(churchId) : null;
+
+      if (cached && alive) {
+        setName(String(cached.name || ""));
+        setPastorName(String(cached.pastorName || ""));
+        setPhone(String(cached.phone || ""));
+        setAddress(String(cached.address || ""));
+        setAvatarUri(mediaUrl(cached.avatarUri || cached.avatarUrl || ""));
+      }
+
       const j = await apiGet<any>("/api/church/profile", { headers: getKristoHeaders() }).catch(() => null);
       const p = j?.data || j?.profile || {};
       if (!alive) return;
-      setName(String(p.name || ""));
-      setPastorName(String(p.pastorName || ""));
-      setPhone(String(p.phone || ""));
-      setAddress(String(p.address || ""));
-      setAvatarUri(mediaUrl(p.avatarUri || p.avatarUrl || ""));
+
+      setName(String(p.name || cached?.name || ""));
+      setPastorName(String(p.pastorName || cached?.pastorName || ""));
+      setPhone(String(p.phone || cached?.phone || ""));
+      setAddress(String(p.address || cached?.address || ""));
+      setAvatarUri(mediaUrl(p.avatarUri || p.avatarUrl || cached?.avatarUri || cached?.avatarUrl || ""));
+
+      if (churchId && p?.name) {
+        await saveChurchProfileCache({
+          churchId,
+          name: String(p.name || ""),
+          pastorName: String(p.pastorName || ""),
+          phone: String(p.phone || ""),
+          address: String(p.address || ""),
+          avatarUri: mediaUrl(p.avatarUri || p.avatarUrl || ""),
+          avatarUrl: mediaUrl(p.avatarUrl || p.avatarUri || ""),
+        });
+      }
     })();
-    return () => { alive = false; };
-  }, []);
+
+    return () => {
+      alive = false;
+    };
+  }, [session?.churchId]);
 
   async function pickAvatar() {
     const res = await ImagePicker.launchImageLibraryAsync({
@@ -59,49 +96,146 @@ export default function EditChurchProfile() {
   }
 
   async function save() {
+    if (saveInFlight.current) return;
+
     if (!name.trim()) {
       Alert.alert("Church name required", "Weka jina la kanisa.");
       return;
     }
 
-    setSaving(true);
-    try {
-      let avatarData = "";
-      if (avatarUri.startsWith("file:")) {
-        const b64 = await FileSystem.readAsStringAsync(avatarUri, { encoding: FileSystem.EncodingType.Base64 });
-        avatarData = `data:image/jpeg;base64,${b64}`;
-      }
+    saveInFlight.current = true;
 
-      const res = await apiPatch<any>("/api/church/profile", {
-        name: name.trim(),
-        pastorName: pastorName.trim(),
-        phone: phone.trim(),
-        address: address.trim(),
-        avatarUri: avatarUri.startsWith("file:") ? "" : avatarUri,
-        avatarUrl: avatarUri.startsWith("file:") ? "" : avatarUri,
-        avatarData,
-      }, { headers: getKristoHeaders() });
+    const auth = getKristoAuth();
+    const churchId = String(session?.churchId || auth.churchId || "").trim();
+    const trimmedName = name.trim();
+    const trimmedPastor = pastorName.trim();
+    const trimmedPhone = phone.trim();
+    const trimmedAddress = address.trim();
+    const displayAvatar = avatarUri.startsWith("file:") ? avatarUri : mediaUrl(avatarUri);
 
-      if (res?.ok !== true) {
-        const msg = String(res?.error || res?.reason || "Save failed");
-        if (__DEV__) {
-          console.warn("[EditChurch] save failed", {
-            error: res?.error,
-            reason: res?.reason,
-            status: res?.status,
-            debug: res?.debug,
-            headers: getKristoHeaders(),
-          });
-        }
-        throw new Error(msg);
-      }
+    const localProfile = {
+      churchId,
+      name: trimmedName,
+      pastorName: trimmedPastor,
+      phone: trimmedPhone,
+      address: trimmedAddress,
+      avatarUri: displayAvatar,
+      avatarUrl: displayAvatar,
+    };
 
-      router.replace({ pathname: "/church/overview", params: { saved: "1", refreshAt: String(Date.now()) } } as any);
-    } catch (e: any) {
-      Alert.alert("Save failed", String(e?.message || e));
-    } finally {
-      setSaving(false);
+    await saveChurchProfileCache(localProfile);
+
+    if (session?.userId && churchId) {
+      const draft = (await loadChurchDraft(session.userId)) || { churchId };
+      await saveChurchDraft(
+        {
+          ...draft,
+          churchId,
+          churchName: trimmedName,
+          pastorName: trimmedPastor,
+          churchPhone: trimmedPhone,
+          address: trimmedAddress,
+          avatarUri: displayAvatar,
+          avatarUrl: displayAvatar,
+          churchProfile: {
+            ...(draft.churchProfile || {}),
+            name: trimmedName,
+            phone: trimmedPhone,
+            address: trimmedAddress,
+          },
+        },
+        session.userId
+      );
     }
+
+    if (session) {
+      await setSession({
+        ...session,
+        churchId: churchId || session.churchId,
+        activeChurchId: churchId || session.activeChurchId,
+        churchName: trimmedName,
+      } as any);
+    }
+
+    if (__DEV__) {
+      console.log("[EditChurch] save tap local update", {
+        churchId,
+        name: trimmedName,
+        pastorName: trimmedPastor,
+      });
+    }
+
+    router.replace({
+      pathname: "/(tabs)/church/overview",
+      params: {
+        saved: "1",
+        savedName: trimmedName,
+        refreshAt: String(Date.now()),
+      },
+    } as any);
+
+    void (async () => {
+      try {
+        let avatarData = "";
+        if (avatarUri.startsWith("file:")) {
+          const b64 = await FileSystem.readAsStringAsync(avatarUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          avatarData = `data:image/jpeg;base64,${b64}`;
+        }
+
+        const res = await apiPatch<any>(
+          "/api/church/profile",
+          {
+            name: trimmedName,
+            pastorName: trimmedPastor,
+            phone: trimmedPhone,
+            address: trimmedAddress,
+            avatarUri: avatarUri.startsWith("file:") ? "" : displayAvatar,
+            avatarUrl: avatarUri.startsWith("file:") ? "" : displayAvatar,
+            avatarData,
+          },
+          { headers: getKristoHeaders() }
+        );
+
+        if (res?.ok !== true) {
+          throw new Error(String(res?.error || res?.reason || "Save failed"));
+        }
+
+        const p = res?.data || {};
+        const synced = {
+          churchId,
+          name: String(p.name || trimmedName),
+          pastorName: String(p.pastorName || trimmedPastor),
+          phone: String(p.phone || trimmedPhone),
+          address: String(p.address || trimmedAddress),
+          avatarUri: mediaUrl(p.avatarUri || p.avatarUrl || displayAvatar),
+          avatarUrl: mediaUrl(p.avatarUrl || p.avatarUri || displayAvatar),
+        };
+        await saveChurchProfileCache(synced);
+
+        if (session) {
+          await setSession({
+            ...session,
+            churchId: churchId || session.churchId,
+            activeChurchId: churchId || session.activeChurchId,
+            churchName: synced.name,
+          } as any);
+        }
+
+        if (__DEV__) {
+          console.log("[EditChurch] patch success", { churchId, name: synced.name });
+        }
+      } catch (e: any) {
+        const msg = String(e?.message || e || "Save failed");
+        if (__DEV__) {
+          console.warn("[EditChurch] patch fail", { churchId, error: msg });
+        }
+        Alert.alert("Church sync failed", `${msg}\n\nYour changes are saved on this device and will retry when you open Edit Church again.`);
+      } finally {
+        saveInFlight.current = false;
+      }
+    })();
   }
 
   return (
@@ -148,8 +282,8 @@ export default function EditChurchProfile() {
         <Text style={s.label}>Address</Text>
         <TextInput value={address} onChangeText={setAddress} style={s.input} placeholder="Address" placeholderTextColor="rgba(255,255,255,0.35)" />
 
-        <Pressable onPress={save} disabled={saving} style={[s.saveBtn, saving && { opacity: 0.55 }]}>
-          <Text style={s.saveText}>{saving ? "Saving..." : "Save Church Profile"}</Text>
+        <Pressable onPress={save} style={s.saveBtn}>
+          <Text style={s.saveText}>Save Church Profile</Text>
         </Pressable>
       </ScrollView>
     </View>

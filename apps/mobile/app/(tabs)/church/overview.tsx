@@ -10,6 +10,7 @@ import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { useIsFocused } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { loadChurchProfileCache, saveChurchProfileCache } from "@/src/lib/churchStore";
 
 const VIP_BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -257,6 +258,19 @@ export default function ChurchOverviewScreen() {
       if (!churchId) throw new Error("churchId missing");
       if (!effectiveAuthUserId) throw new Error("userId missing");
 
+      const cached = await loadChurchProfileCache(churchId);
+      if (cached) {
+        setProfile({
+          id: churchId,
+          name: String(cached.name || churchId),
+          address: String(cached.address || ""),
+          phone: String(cached.phone || ""),
+          pastorName: String(cached.pastorName || ""),
+          avatarUri: mediaUrl(cached.avatarUri || cached.avatarUrl || ""),
+        });
+        if (!silent) setLoading(false);
+      }
+
       const overviewUrl = invitePreview
         ? `${base}/api/church/overview?invitePreview=1&inviteId=${encodeURIComponent(inviteId)}`
         : `${base}/api/church/overview`;
@@ -306,6 +320,16 @@ export default function ChurchOverviewScreen() {
         phone: String(p?.phone || ""),
         pastorName: String(p?.pastorName || ""),
         avatarUri: avatarUri ? mediaUrl(avatarUri) : "",
+      });
+
+      await saveChurchProfileCache({
+        churchId,
+        name: String(p?.name || churchId || "Church"),
+        address: String(p?.address || ""),
+        phone: String(p?.phone || ""),
+        pastorName: String(p?.pastorName || ""),
+        avatarUri: avatarUri ? mediaUrl(avatarUri) : "",
+        avatarUrl: avatarUri ? mediaUrl(avatarUri) : "",
       });
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Error");

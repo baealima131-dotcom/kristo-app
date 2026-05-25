@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
+import { getChurchById } from "@/app/api/_lib/churches";
 import {
   getUserById,
   readSession,
@@ -134,6 +135,9 @@ export async function GET(req: Request) {
       (await getProfile(u.id)) || (await ensureProfileDraft({ userId: u.id, email: u.email, phone: u.phone }));
     const activeMembership = await getActiveMembership(u.id);
     const hasChurch = !!activeMembership;
+    const churchProfile = activeMembership?.churchId
+      ? await getChurchById(activeMembership.churchId)
+      : null;
 
     const next = {
       ...current,
@@ -157,6 +161,7 @@ export async function GET(req: Request) {
       profile: next,
       activeMembership,
       churchId: activeMembership?.churchId || "",
+      churchName: churchProfile?.name || "",
       churchRole: activeMembership?.churchRole || "",
       role: activeMembership?.churchRole || "",
     });
@@ -241,13 +246,25 @@ export async function POST(req: Request) {
 
   await upsertProfilePersist(next);
 
+    const churchProfile = activeMembership?.churchId
+      ? await getChurchById(activeMembership.churchId)
+      : null;
+
     console.log("[KRISTO PROFILE POST] saved", {
       userId: u.id,
       fullName: next.fullName,
       userCode: (next as any).userCode,
     });
 
-    return NextResponse.json({ ok: true, profile: next });
+    return NextResponse.json({
+      ok: true,
+      profile: next,
+      activeMembership,
+      churchId: activeMembership?.churchId || "",
+      churchName: churchProfile?.name || "",
+      churchRole: activeMembership?.churchRole || "",
+      role: activeMembership?.churchRole || "",
+    });
   } catch (error: any) {
     const message = String(error?.message || error || "Failed to save profile.");
     console.error("[KRISTO PROFILE POST ERROR]", message, error?.stack || error);
