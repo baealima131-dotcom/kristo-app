@@ -57,6 +57,10 @@ async function purchasesIsConfigured(): Promise<boolean> {
 }
 
 export async function ensurePurchasesConfigured(): Promise<boolean> {
+  if (isSubscriptionBypassEnabled()) {
+    return false;
+  }
+
   if (isLiveRoomActive()) {
     console.log("RevenueCat skipped during live room");
     return false;
@@ -90,6 +94,8 @@ export async function ensurePurchasesConfigured(): Promise<boolean> {
 }
 
 export async function syncPurchasesAppUser(appUserID?: string): Promise<void> {
+  if (isSubscriptionBypassEnabled()) return;
+
   const ready = await ensurePurchasesConfigured();
   if (!ready) return;
 
@@ -171,6 +177,10 @@ export function formatSubscriptionSetupError(error: unknown): string {
 }
 
 export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
+  if (isSubscriptionBypassEnabled()) {
+    throw new Error("RevenueCat offerings skipped during subscription bypass testing");
+  }
+
   await requireConfiguredPurchases("offerings");
 
   try {
@@ -191,6 +201,10 @@ export async function restoreSubscriptionPurchases() {
 }
 
 export async function getCustomerSubscriptionInfo(): Promise<CustomerInfo> {
+  if (isSubscriptionBypassEnabled()) {
+    throw new Error("RevenueCat customer info skipped during subscription bypass testing");
+  }
+
   await requireConfiguredPurchases("customer info");
   return Purchases.getCustomerInfo();
 }

@@ -46,7 +46,6 @@ import {
 import {
   ACTIVE_MEDIA_SCHEDULE_ERROR,
   findActiveMediaScheduleForChurch,
-  findActiveMediaScheduleForChurchFromSources,
   isMediaScheduleFeedItem,
 } from "../../../src/lib/mediaScheduleLock";
 import { buildMediaScheduleAuthorityFields } from "../../../src/lib/liveMediaAuthority";
@@ -153,11 +152,28 @@ export default function MediaStudioScreen() {
   const [backendFeedItems, setBackendFeedItems] = useState<any[]>([]);
   const mediaScheduleVersionRef = useRef(0);
   const mediaScheduleUpdatedAtRef = useRef("");
+  const scheduleCreateInProgressRef = useRef(false);
+  const scheduleCreateCooldownUntilRef = useRef(0);
+  const [scheduleCreating, setScheduleCreating] = useState(false);
 
   const runMediaScheduleSilentReload = useCallback(
     async (reason: string, force = false) => {
       const churchId = String(session?.churchId || "").trim();
       if (!churchId) return null;
+
+      if (scheduleCreateInProgressRef.current) {
+        console.log("[ScheduleCreatePerf] skip silent reload during create", { reason });
+        return null;
+      }
+
+      if (
+        !force &&
+        Date.now() < scheduleCreateCooldownUntilRef.current &&
+        reason !== "create-media-schedule-bg"
+      ) {
+        console.log("[ScheduleCreatePerf] skip silent reload cooldown", { reason });
+        return null;
+      }
 
       try {
         const sync = await fetchMediaScheduleFeedSync(
@@ -1523,197 +1539,183 @@ export default function MediaStudioScreen() {
   }
 
   async function handleSendLiveScheduleToFeed() {
-    const rawCaption = scheduleTitle.trim();
-    const blockedCaption =
-      rawCaption.length > 60 ||
-      rawCaption.toLowerCase().includes("glass") ||
-      rawCaption.toLowerCase().includes("tumia") ||
-      rawCaption.toLowerCase().includes("hiyo top");
-    const caption = blockedCaption ? "Marriage guidance" : rawCaption || "Marriage guidance";
-    const slotNames = scheduleSlots
-      .split(",")
-      .map((x: string) => x.trim())
-      .filter(Boolean);
+    if (scheduleCreateInProgressRef.current) return;
 
-    const cards = slotNames.length ? slotNames : ["Prayer Live"];
+    const perfStart = Date.now();
+    console.log("[ScheduleCreatePerf] start");
 
-    const churchId = String(session?.churchId || "").trim();
-    const apiHeaders = getKristoHeaders({
-      userId: session?.userId || "",
-      role: (session?.role || "Member") as any,
-      churchId,
-    });
+    scheduleCreateInProgressRef.current = true;
+    setScheduleCreating(true);
 
-    if (!(await requireActiveChurchSubscriptionForSchedule(churchId, apiHeaders))) {
-      return;
-    }
-
-    if (churchId) {
-      const activeSchedule = await findActiveMediaScheduleForChurchFromSources(churchId, {
-        headers: apiHeaders,
-      });
-
-      if (activeSchedule) {
-        Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
-        return;
-      }
-    }
-
-    const scheduleId = `media-live-${Date.now()}`;
-    const publishedAt = new Date().toISOString();
-
-    function formatClock(d: Date) {
-      return d.toLocaleTimeString("en-US", {
-        hour: "numeric",
-        minute: "2-digit",
-        hour12: true,
-      });
-    }
-
-    function formatMeetingDay(d: Date) {
-      return d.toLocaleDateString("en-US", {
-        month: "short",
-        day: "2-digit",
-        year: "numeric",
-      });
-    }
-
-    let slotCursor = new Date(Date.now() + 5 * 60 * 1000);
-    const scheduleSlotsPayload = cards.map((name, index) => {
-      const durationMin = index === 0 ? 10 : index === 1 ? 21 : 5;
-      const startTime = formatClock(slotCursor);
-      const endDate = new Date(slotCursor.getTime() + durationMin * 60 * 1000);
-      const endTime = formatClock(endDate);
-      const meetingDay = formatMeetingDay(slotCursor);
-      slotCursor = new Date(endDate.getTime() + 2 * 60 * 1000);
-
-      return {
-        id: `media-slot-${Date.now()}-${index}`,
-        slotLabel: `Slot ${index + 1}`,
-        name,
-        role: caption,
-        task: caption,
-        meetingDate: meetingDay,
-        meetingDay,
-        startTime,
-        endTime,
-        durationMin,
-        claimed: false,
-        createdByUserId: String(session?.userId || ""),
-        mediaOwnerId: String(session?.userId || ""),
-      };
-    });
-
-    const scheduleMediaName = form.mediaName.trim() || churchMediaProfile?.mediaName || "Church Media";
-    const scheduleChurchName = String(
-      (session as any)?.churchName ||
-      (session as any)?.churchLabel ||
-      "MY CHURCH"
-    );
-
-    const pastorResolution = await fetchChurchPastorUserId(churchId, apiHeaders);
-    const scheduleAuthority = buildMediaScheduleAuthorityFields({
-      churchPastorUserId: pastorResolution.actualChurchPastorUserId,
-      creatorUserId: String(session?.userId || ""),
-      mediaHosts,
-      sourceField: pastorResolution.sourceField,
-    });
-
-    logChurchPastorResolution({
-      churchId,
-      actualChurchPastorUserId: pastorResolution.actualChurchPastorUserId,
-      sourceField: pastorResolution.sourceField,
-      scheduleCreatedByUserId: String(session?.userId || ""),
-      currentUserId: String(session?.userId || ""),
-    });
-
-    const localScheduleItem = {
-      id: scheduleId,
-      sourceScheduleId: scheduleId,
-      churchId,
-      kind: "post",
-      actorLabel: scheduleMediaName,
-      mediaName: scheduleMediaName,
-      churchLabel: scheduleChurchName,
-      churchName: scheduleChurchName,
-      mediaOwnerId: scheduleAuthority.scheduleCreatedByUserId,
-      ...scheduleAuthority,
-      mediaId: "MD-102948",
-      title: cards[0],
-      body: caption,
-      caption,
-      topic: caption,
-      createdAt: publishedAt,
-      liked: false,
-      saved: false,
-      likeCount: 0,
-      commentCount: 0,
-      shareCount: 0,
-      scheduleType: "media-live-slots",
-      source: "media-schedule",
-      visibility: "church",
-      audience: "church",
-      isGlobalMediaSlot: false,
-      publishedAt,
-      scheduleSlots: scheduleSlotsPayload,
+    const finishCreate = () => {
+      scheduleCreateInProgressRef.current = false;
+      setScheduleCreating(false);
     };
-
-    feedAdd(localScheduleItem as any);
-
-    const postPayload = {
-      type: "post",
-      title: cards[0],
-      text: caption,
-      churchId,
-      createdBy: String(session?.userId || ""),
-      source: "media-schedule",
-      scheduleType: "media-live-slots",
-      sourceScheduleId: scheduleId,
-      liveId: scheduleId,
-      visibility: "church",
-      audience: "church",
-      isGlobalMediaSlot: false,
-      publishedAt,
-      mediaOwnerId: scheduleAuthority.scheduleCreatedByUserId,
-      createdByUserId: scheduleAuthority.scheduleCreatedByUserId,
-      ...scheduleAuthority,
-      actorLabel: scheduleMediaName,
-      mediaName: scheduleMediaName,
-      churchLabel: scheduleChurchName,
-      churchName: scheduleChurchName,
-      actorAvatarUri: String(
-        (session as any)?.churchAvatarUri ||
-        (session as any)?.churchAvatarUrl ||
-        (session as any)?.avatarUri ||
-        (session as any)?.avatarUrl ||
-        (session as any)?.profileImage ||
-        ""
-      ),
-      churchAvatarUri: String(
-        (session as any)?.churchAvatarUri ||
-        (session as any)?.churchAvatarUrl ||
-        (session as any)?.avatarUri ||
-        (session as any)?.avatarUrl ||
-        (session as any)?.profileImage ||
-        ""
-      ),
-      scheduleSlots: scheduleSlotsPayload,
-    };
-
-    console.log("[ScheduleCreate] backend post start", {
-      churchId,
-      sourceScheduleId: scheduleId,
-      slotCount: scheduleSlotsPayload.length,
-    });
 
     try {
+      const rawCaption = scheduleTitle.trim();
+      const blockedCaption =
+        rawCaption.length > 60 ||
+        rawCaption.toLowerCase().includes("glass") ||
+        rawCaption.toLowerCase().includes("tumia") ||
+        rawCaption.toLowerCase().includes("hiyo top");
+      const caption = blockedCaption ? "Marriage guidance" : rawCaption || "Marriage guidance";
+      const slotNames = scheduleSlots
+        .split(",")
+        .map((x: string) => x.trim())
+        .filter(Boolean);
+
+      const cards = slotNames.length ? slotNames : ["Prayer Live"];
+
+      const churchId = String(session?.churchId || "").trim();
+      const apiHeaders = getKristoHeaders({
+        userId: session?.userId || "",
+        role: (session?.role || "Member") as any,
+        churchId,
+      });
+
+      if (!isSubscriptionBypassEnabled()) {
+        if (!(await requireActiveChurchSubscriptionForSchedule(churchId, apiHeaders))) {
+          return;
+        }
+      }
+
+      if (churchId) {
+        const localActive = findActiveMediaScheduleForChurch(feedList() as any[], churchId, {
+          strictChurch: true,
+        });
+
+        if (localActive) {
+          Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
+          return;
+        }
+      }
+
+      const scheduleId = `media-live-${Date.now()}`;
+      const publishedAt = new Date().toISOString();
+
+      function formatClock(d: Date) {
+        return d.toLocaleTimeString("en-US", {
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+        });
+      }
+
+      function formatMeetingDay(d: Date) {
+        return d.toLocaleDateString("en-US", {
+          month: "short",
+          day: "2-digit",
+          year: "numeric",
+        });
+      }
+
+      let slotCursor = new Date(Date.now() + 5 * 60 * 1000);
+      const scheduleSlotsPayload = cards.map((name, index) => {
+        const durationMin = index === 0 ? 10 : index === 1 ? 21 : 5;
+        const startTime = formatClock(slotCursor);
+        const endDate = new Date(slotCursor.getTime() + durationMin * 60 * 1000);
+        const endTime = formatClock(endDate);
+        const meetingDay = formatMeetingDay(slotCursor);
+        slotCursor = new Date(endDate.getTime() + 2 * 60 * 1000);
+
+        return {
+          id: `media-slot-${Date.now()}-${index}`,
+          slotLabel: `Slot ${index + 1}`,
+          name,
+          role: caption,
+          task: caption,
+          meetingDate: meetingDay,
+          meetingDay,
+          startTime,
+          endTime,
+          durationMin,
+          claimed: false,
+          createdByUserId: String(session?.userId || ""),
+          mediaOwnerId: String(session?.userId || ""),
+        };
+      });
+
+      const scheduleMediaName = form.mediaName.trim() || churchMediaProfile?.mediaName || "Church Media";
+      const scheduleChurchName = String(
+        (session as any)?.churchName ||
+        (session as any)?.churchLabel ||
+        "MY CHURCH"
+      );
+
+      const scheduleAuthority = buildMediaScheduleAuthorityFields({
+        churchPastorUserId: String(
+          (session as any)?.actualChurchPastorUserId ||
+          (session as any)?.churchPastorUserId ||
+          ""
+        ),
+        creatorUserId: String(session?.userId || ""),
+        mediaHosts,
+        sourceField: "session.fallback",
+      });
+
+      logChurchPastorResolution({
+        churchId,
+        actualChurchPastorUserId: scheduleAuthority.actualChurchPastorUserId,
+        sourceField: scheduleAuthority.pastorAuthoritySourceField || "session.fallback",
+        scheduleCreatedByUserId: String(session?.userId || ""),
+        currentUserId: String(session?.userId || ""),
+      });
+
+      const postPayload = {
+        type: "post",
+        title: cards[0],
+        text: caption,
+        churchId,
+        createdBy: String(session?.userId || ""),
+        source: "media-schedule",
+        scheduleType: "media-live-slots",
+        sourceScheduleId: scheduleId,
+        liveId: scheduleId,
+        visibility: "church",
+        audience: "church",
+        isGlobalMediaSlot: false,
+        publishedAt,
+        mediaOwnerId: scheduleAuthority.scheduleCreatedByUserId,
+        createdByUserId: scheduleAuthority.scheduleCreatedByUserId,
+        ...scheduleAuthority,
+        actorLabel: scheduleMediaName,
+        mediaName: scheduleMediaName,
+        churchLabel: scheduleChurchName,
+        churchName: scheduleChurchName,
+        actorAvatarUri: String(
+          (session as any)?.churchAvatarUri ||
+          (session as any)?.churchAvatarUrl ||
+          (session as any)?.avatarUri ||
+          (session as any)?.avatarUrl ||
+          (session as any)?.profileImage ||
+          ""
+        ),
+        churchAvatarUri: String(
+          (session as any)?.churchAvatarUri ||
+          (session as any)?.churchAvatarUrl ||
+          (session as any)?.avatarUri ||
+          (session as any)?.avatarUrl ||
+          (session as any)?.profileImage ||
+          ""
+        ),
+        scheduleSlots: scheduleSlotsPayload,
+      };
+
+      console.log("[ScheduleCreate] backend post start", {
+        churchId,
+        sourceScheduleId: scheduleId,
+        slotCount: scheduleSlotsPayload.length,
+      });
+
       const r: any = await apiPost("/api/church/feed", postPayload, {
         headers: apiHeaders,
       });
 
+      console.log("[ScheduleCreatePerf] postDone ms", Date.now() - perfStart);
       console.log("[ScheduleCreate] backend post result", {
         ok: r?.ok,
-        feedId: r?.data?.id || r?.id,
+        feedId: r?.data?.id || r?.item?.id || r?.id,
         churchId,
         sourceScheduleId: scheduleId,
       });
@@ -1739,42 +1741,85 @@ export default function MediaStudioScreen() {
             scheduleType: "media-live-slots",
             visibility: "church",
             audience: "church",
-            scheduleSlots: scheduleSlotsPayload,
+            scheduleSlots: Array.isArray(backendItem?.scheduleSlots)
+              ? backendItem.scheduleSlots
+              : scheduleSlotsPayload,
           },
           scheduleId
         );
+        setHomeFeedItems([...feedList()]);
+        setBackendFeedItems((prev) => {
+          const next = prev.filter((row) => String(row?.id || "") !== backendFeedId);
+          return [
+            {
+              ...backendItem,
+              churchId,
+              source: "media-schedule",
+              scheduleType: "media-live-slots",
+              scheduleSlots: Array.isArray(backendItem?.scheduleSlots)
+                ? backendItem.scheduleSlots
+                : scheduleSlotsPayload,
+            },
+            ...next,
+          ];
+        });
         console.log("[ScheduleFeed] persisted churchId/sourceScheduleId", {
           churchId,
           sourceScheduleId: backendFeedId,
         });
       }
 
-      sendAssignmentCards(
-        "church-media-room",
-        scheduleSlotsPayload.map((slot: any, index: number) => ({
-          cardId: `${backendFeedId || scheduleId}-room-${index}`,
-          id: `${backendFeedId || scheduleId}-room-${index}`,
-          title: String(slot.name || `Slot ${index + 1}`),
-          subtitle: caption,
-          role: caption,
-          status: "open",
-          meetingDate: String(slot.meetingDay || ""),
-          meetingDay: String(slot.meetingDay || ""),
-          startTime: String(slot.startTime || ""),
-          endTime: String(slot.endTime || ""),
-          durationMin: Number(slot.durationMin || 0),
-          sourceFeedId: backendFeedId || scheduleId,
-          source: "media-schedule",
-          roomKind: "assignment",
-          liveLayout: "grid6",
-        })),
-        { senderName: form.mediaName.trim() || "Church Media" }
-      );
+      console.log("[ScheduleCreatePerf] localCacheUpdated ms", Date.now() - perfStart);
 
-      await runMediaScheduleSilentReload("create-media-schedule", true);
+      scheduleCreateCooldownUntilRef.current = Date.now() + 12000;
+      (globalThis as any).__KRISTO_SCHEDULE_CREATE_COOLDOWN_UNTIL__ = scheduleCreateCooldownUntilRef.current;
+      finishCreate();
 
-      Alert.alert("Sent", "Live schedule is now visible to your church on Home feed.");
       router.push("/" as any);
+      console.log("[ScheduleCreatePerf] navigated ms", Date.now() - perfStart);
+
+      void (async () => {
+        try {
+          sendAssignmentCards(
+            "church-media-room",
+            scheduleSlotsPayload.map((slot: any, index: number) => ({
+              cardId: `${backendFeedId || scheduleId}-room-${index}`,
+              id: `${backendFeedId || scheduleId}-room-${index}`,
+              title: String(slot.name || `Slot ${index + 1}`),
+              subtitle: caption,
+              role: caption,
+              status: "open",
+              meetingDate: String(slot.meetingDay || ""),
+              meetingDay: String(slot.meetingDay || ""),
+              startTime: String(slot.startTime || ""),
+              endTime: String(slot.endTime || ""),
+              durationMin: Number(slot.durationMin || 0),
+              sourceFeedId: backendFeedId || scheduleId,
+              source: "media-schedule",
+              roomKind: "assignment",
+              liveLayout: "grid6",
+            })),
+            { senderName: scheduleMediaName || "Church Media" }
+          );
+
+          await runMediaScheduleSilentReload("create-media-schedule-bg", true);
+          void loadActiveBackendLive();
+
+          void fetchChurchPastorUserId(churchId, apiHeaders).then((pastorResolution) => {
+            logChurchPastorResolution({
+              churchId,
+              actualChurchPastorUserId: pastorResolution.actualChurchPastorUserId,
+              sourceField: pastorResolution.sourceField,
+              scheduleCreatedByUserId: String(session?.userId || ""),
+              currentUserId: String(session?.userId || ""),
+            });
+          });
+        } catch (e) {
+          console.log("[ScheduleCreatePerf] background error", e);
+        } finally {
+          console.log("[ScheduleCreatePerf] backgroundRefreshDone ms", Date.now() - perfStart);
+        }
+      })();
     } catch (e: any) {
       console.log("[ScheduleCreate] backend post error", e);
       if (isChurchSubscriptionRequiredError(e)) {
@@ -1786,6 +1831,10 @@ export default function MediaStudioScreen() {
         return;
       }
       Alert.alert("Backend schedule error", String(e?.message || e));
+    } finally {
+      if (scheduleCreateInProgressRef.current) {
+        finishCreate();
+      }
     }
   }
 
@@ -2615,9 +2664,23 @@ export default function MediaStudioScreen() {
                 </View>
               </View>
 
-              <Pressable onPress={handleSendLiveScheduleToFeed} style={({ pressed }) => [s.nextBtnPremium as any, pressed ? s.pressed : null]}>
-                <Text style={s.nextBtnPremiumText as any}>Send to Global Feed</Text>
-                <Ionicons name="paper-plane-outline" size={24} color="#07111F" />
+              <Pressable
+                disabled={scheduleCreating}
+                onPress={handleSendLiveScheduleToFeed}
+                style={({ pressed }) => [
+                  s.nextBtnPremium as any,
+                  pressed ? s.pressed : null,
+                  scheduleCreating ? { opacity: 0.72 } : null,
+                ]}
+              >
+                {scheduleCreating ? (
+                  <ActivityIndicator color="#07111F" />
+                ) : (
+                  <>
+                    <Text style={s.nextBtnPremiumText as any}>Send to Global Feed</Text>
+                    <Ionicons name="paper-plane-outline" size={24} color="#07111F" />
+                  </>
+                )}
               </Pressable>
             </>
           ) : !isEditingMedia && hasMediaAccount && isManagingGuests ? (
