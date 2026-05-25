@@ -60,7 +60,8 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
   const dev = await devAutoViewer();
   if (dev) return dev;
 
-  const sess = await readSession();
+  // Mobile sends x-kristo-user-id; readSession(req) resolves it (see session.ts).
+  const sess = await readSession(req);
   if (!sess) {
     return { userId: "", name: undefined, role: "Member", churchId: "" };
   }

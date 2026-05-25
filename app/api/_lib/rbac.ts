@@ -10,7 +10,7 @@ import {
   devPromoteToRoleIfActive,
 } from "@/app/api/_lib/memberships";
 
-export type Role = "System_Admin" | "Pastor" | "Church_Admin" | "Leader" | "Member";
+export type Role = "System_Admin" | "Pastor" | "Church_Admin" | "Ministry_Leader" | "Leader" | "Member";
 
 export type GuardContext = {
   viewer: {
@@ -38,6 +38,12 @@ function isDev() {
   return process.env.NODE_ENV !== "production";
 }
 
+function authDebugLog(label: string, details?: Record<string, unknown>) {
+  if (process.env.KRISTO_DEBUG_AUTH === "1" || isDev()) {
+    console.log(`[rbac] ${label}`, details || {});
+  }
+}
+
 function devDefaultChurchId() {
   return "church_dev_default";
 }
@@ -45,6 +51,7 @@ function devDefaultChurchId() {
 function mapChurchRoleToRole(r: ChurchRole | undefined): Role {
   if (r === "Pastor") return "Pastor";
   if (r === "Church_Admin") return "Church_Admin";
+  if (r === "Ministry_Leader") return "Ministry_Leader";
   if (r === "Leader") return "Leader";
   return "Member";
 }
@@ -76,11 +83,23 @@ async function ensureDevActiveMembership(userId: string, name?: string) {
 
 /** Auth only: user must be signed in, no church required */
 async function requireAuthOnly(req: NextRequest): Promise<AuthOnlyContext | NextResponse> {
+  const headerUid = String(req.headers.get("x-kristo-user-id") || "").trim();
+  const headerRole = String(req.headers.get("x-kristo-role") || "").trim();
+  const headerChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
+
   const v = await getViewer(req);
   const userId = String((v as any).userId || "").trim();
   const name = (v as any).name ? String((v as any).name) : undefined;
+  const role = String((v as any).role || "").trim();
+  const churchId = String((v as any).churchId || "").trim();
 
   if (!userId) {
+    authDebugLog("Unauthorized", {
+      headerUid,
+      headerRole,
+      headerChurchId,
+      hasCookie: Boolean(req.headers.get("cookie")),
+    });
     return json(
       {
         ok: false,
@@ -91,7 +110,7 @@ async function requireAuthOnly(req: NextRequest): Promise<AuthOnlyContext | Next
     );
   }
 
-  return { viewer: { userId, name } };
+  return { viewer: { userId, name, role, churchId } as any };
 }
 
 /** Active membership required: churchId + role come from membership store */
@@ -100,24 +119,19 @@ async function requireActiveMembership(req: NextRequest): Promise<GuardContext |
   if (a instanceof NextResponse) return a;
 
   const { userId, name } = a.viewer;
-
-  // DEV: allow church context from headers (curl/UI devHeaders)
-  if (process.env.NODE_ENV !== "production") {
-    const hdrChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
-    const hdrRole = String(req.headers.get("x-kristo-role") || "").trim();
-    if (hdrChurchId) {
-      const role = (hdrRole === "Pastor" || hdrRole === "Church_Admin" || hdrRole === "Leader" || hdrRole === "Member")
-        ? (hdrRole as Role)
-        : "Member";
-      return { viewer: { userId, name, role }, churchId: hdrChurchId };
-    }
-  }
+  const authRole = String((a.viewer as any).role || "").trim();
+  const authChurchId = String((a.viewer as any).churchId || "").trim();
 
   // DEV: optional auto-provision
   await ensureDevActiveMembership(userId, name);
 
   const active = await getActiveMembership(userId);
   if (!active) {
+    authDebugLog("No active church membership", {
+      userId,
+      headerChurchId: authChurchId,
+      headerRole: authRole,
+    });
     return json(
       {
         ok: false,
