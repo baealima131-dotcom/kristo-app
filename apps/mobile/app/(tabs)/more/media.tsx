@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "../../../src/lib/KristoSessionProvider";
 import type { KristoMediaCategory, KristoMediaProfile } from "../../../src/lib/kristoSession";
@@ -57,11 +58,14 @@ import {
   isChurchSubscriptionRequiredError,
   requireActiveChurchSubscriptionForSchedule,
 } from "../../../src/lib/churchSubscription";
+import { isSubscriptionBypassEnabled, shouldSuppressPremiumPrompts } from "../../../src/lib/subscriptionBypass";
 import { MEDIA_STUDIO_BACKGROUND } from "../../../src/lib/mediaPreload";
 import {
   loadChurchMediaProfileCache,
   saveChurchMediaProfileCache,
 } from "../../../src/lib/churchMediaProfileStore";
+import { logTrafficCache, shouldAllowScreenRefresh } from "../../../src/lib/kristoTraffic";
+import { useFocusedPolling } from "../../../src/lib/useFocusedPolling";
 
 function runAfterFirstFrame(task: () => void) {
   if (typeof requestAnimationFrame === "function") {
@@ -137,6 +141,7 @@ const CATEGORIES: KristoMediaCategory[] = [
 export default function MediaStudioScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const isFocused = useIsFocused();
 
   const scrollRef = useRef<any>(null);
   const detailsCardYRef = useRef(0);
@@ -230,22 +235,21 @@ export default function MediaStudioScreen() {
   );
 
   useEffect(() => {
-    let cancelled = false;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    if (!isFocused) return;
+    if (!shouldAllowScreenRefresh("MediaScreen", { minMs: 45000 })) return;
+    void runMediaScheduleSilentReload("focus", true);
+  }, [isFocused, runMediaScheduleSilentReload]);
 
-    runAfterFirstFrame(() => {
-      if (cancelled) return;
-      void runMediaScheduleSilentReload("mount", true);
-      pollTimer = setInterval(() => {
-        void runMediaScheduleSilentReload("poll");
-      }, 2500);
-    });
+  useFocusedPolling(
+    "MediaScreen",
+    () => {
+      void runMediaScheduleSilentReload("poll");
+    },
+    45000,
+    isFocused
+  );
 
-    return () => {
-      cancelled = true;
-      if (pollTimer) clearInterval(pollTimer);
-    };
-  }, [runMediaScheduleSilentReload]);
+  const mediaBootstrapKeyRef = useRef("");
   const [guestClockNow, setGuestClockNow] = useState(() => Date.now());
   const [guestInviteDraftBySlot, setGuestInviteDraftBySlot] = useState<Record<string, string>>({});
   const [guestInvitedBySlot, setGuestInvitedBySlot] = useState<Record<string, string>>({});
@@ -281,9 +285,12 @@ export default function MediaStudioScreen() {
 
   React.useEffect(() => {
     let alive = true;
+    const churchId = String(session?.churchId || "").trim();
+    const bootstrapKey = `${churchId}:${session?.userId || ""}:${session?.role || ""}`;
+    if (!bootstrapKey || mediaBootstrapKeyRef.current === bootstrapKey) return;
+    mediaBootstrapKeyRef.current = bootstrapKey;
 
     async function bootstrapMediaProfile() {
-      const churchId = String(session?.churchId || "").trim();
       if (!churchId || !session?.userId) {
         if (alive) {
           setCachedMedia(null);
@@ -297,6 +304,7 @@ export default function MediaStudioScreen() {
       if (!alive) return;
 
       if (cached?.mediaName) {
+        logTrafficCache("MediaScreen", "church-media-profile", true);
         console.log("[MediaScreen] cache profile shown", {
           churchId,
           mediaName: cached.mediaName,
@@ -304,6 +312,7 @@ export default function MediaStudioScreen() {
         setCachedMedia(cached);
         setBackendMedia((prev: any) => prev || cached);
       } else {
+        logTrafficCache("MediaScreen", "church-media-profile", false);
         setCachedMedia(null);
       }
 
@@ -312,13 +321,17 @@ export default function MediaStudioScreen() {
       mediaFetchCountRef.current += 1;
       console.log("[MediaScreen] mount fetch count", mediaFetchCountRef.current, { reason: "bootstrap" });
 
-      const res: any = await apiGet("/api/church/media", {
-        headers: getKristoHeaders({
-          userId: session.userId,
-          role: session.role,
-          churchId,
-        }),
-      });
+      const res: any = await apiGet(
+        "/api/church/media",
+        {
+          headers: getKristoHeaders({
+            userId: session.userId,
+            role: session.role,
+            churchId,
+          }),
+        },
+        { screen: "MediaScreen", throttleMs: 120000 }
+      );
 
       if (!alive) return;
 
@@ -370,38 +383,25 @@ export default function MediaStudioScreen() {
     };
   }, [session?.userId, session?.churchId, session?.role, setSession]);
 
-  React.useEffect(() => {
-    let alive = true;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
+  const loadActiveBackendLive = useCallback(async () => {
+    if (!session?.userId || !session?.churchId) return;
 
-    async function loadActiveBackendLive() {
-      if (!session?.userId || !session?.churchId) return;
-
-      const res: any = await apiGet("/api/church/live", {
+    const res: any = await apiGet(
+      "/api/church/live",
+      {
         headers: getKristoHeaders({
           userId: session.userId,
           role: (session.role || "Member") as any,
           churchId: session.churchId || "",
         }),
-      });
+      },
+      { screen: "MediaScreen", throttleMs: 45000 }
+    );
 
-      if (!alive) return;
-      setActiveBackendLive(res?.live?.isLive ? res.live : null);
-    }
+    setActiveBackendLive(res?.live?.isLive ? res.live : null);
+  }, [session?.churchId, session?.role, session?.userId]);
 
-    runAfterFirstFrame(() => {
-      if (!alive) return;
-      void loadActiveBackendLive();
-      pollTimer = setInterval(() => {
-        void loadActiveBackendLive();
-      }, 2500);
-    });
-
-    return () => {
-      alive = false;
-      if (pollTimer) clearInterval(pollTimer);
-    };
-  }, [session?.userId, session?.churchId, session?.role]);
+  useFocusedPolling("MediaScreenLive", () => loadActiveBackendLive(), 45000, isFocused);
 
   React.useEffect(() => {
     const loop = Animated.loop(
@@ -475,11 +475,13 @@ export default function MediaStudioScreen() {
   // Church-level media subscription.
   // Hosts NEVER control subscription ownership.
   const churchMediaSubscriptionActive =
+    isSubscriptionBypassEnabled() ||
     Boolean((churchMediaProfile as any)?.subscriptionActive);
 
-  const subscriptionLocked = !churchMediaSubscriptionActive;
+  const subscriptionLocked = !isSubscriptionBypassEnabled() && !churchMediaSubscriptionActive;
 
   function showSubscriptionRequired(tool?: string) {
+    if (shouldSuppressPremiumPrompts()) return;
     const toolLabel =
       tool === "live"
         ? "go live"
@@ -514,10 +516,8 @@ export default function MediaStudioScreen() {
   }
   const currentPlan = paymentsState.subscriptions.selectedPlan;
   const planStatus = paymentsState.subscriptions.planStatus;
-  // TEMP TEST: unlock old subscription gate for video/audio testing.
-  // Restore after testing:
-  // const hasSubscription = isPlanActive(currentPlan, planStatus);
-  const hasSubscription = true;
+  const hasSubscription =
+    isSubscriptionBypassEnabled() || isPlanActive(currentPlan, planStatus);
   const hasMediaAccessMinistry = Boolean(
     (session as any)?.mediaAccess ||
       (session as any)?.mediaAccessMinistry ||

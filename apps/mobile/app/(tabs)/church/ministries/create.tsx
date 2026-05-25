@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
+  Alert,
+ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -10,15 +11,18 @@ import {
   Text,
   TextInput,
   View,
+
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 
 type MinistryStatus = "Active" | "Paused";
 type Ministry = {
+  mediaAccess?: boolean;
   id: string;
   name: string;
   description?: string;
@@ -32,7 +36,7 @@ const PAD = 16;
 const GOLD = "rgba(217,179,95,0.95)";
 const VIP_BG = "#0B0F17";
 
-async function apiCreateMinistry(body: { name: string; description?: string; status?: MinistryStatus }) {
+async function apiCreateMinistry(body: { name: string; description?: string; status?: MinistryStatus; mediaAccess?: boolean }) {
   const res = await apiPost<any>("/api/church/ministries", body, { headers: getKristoHeaders() });
   if (!res) throw new Error("Network error");
   if (!res.ok) throw new Error(res.error || "Create failed");
@@ -61,6 +65,10 @@ export default function ChurchMinistryCreateScreen() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<MinistryStatus>("Active");
+  const [mediaAccess, setMediaAccess] = useState(false);
+
+  // TEMP premium gate for ministry media access
+  const hasSubscription = isSubscriptionBypassEnabled();
 
   const [members, setMembers] = useState<Array<{ userId: string; name?: string }>>([]);
   const [picker, setPicker] = useState<null | PickerKind>(null);
@@ -106,26 +114,44 @@ export default function ChurchMinistryCreateScreen() {
         name: name.trim(),
         description: description.trim() ? description.trim() : undefined,
         status,
+        mediaAccess: hasSubscription ? mediaAccess : false,
       });
-      setCreated(data);
+      const uniqueLeaders = Array.from(new Set(pickedLeaderIds));
+      const uniqueMembers = Array.from(new Set(pickedMemberIds.filter((x) => !uniqueLeaders.includes(x))));
 
-      // Assign leaders/members (best effort)
-      try {
-        for (const uid of pickedLeaderIds) {
-          await apiPost(
+      const failed: string[] = [];
+
+      for (const uid of uniqueLeaders) {
+        try {
+          const r = await apiPost(
             "/api/church/ministry-members",
             { ministryId: data.id, userId: uid, role: "Leader" },
             { headers: getKristoHeaders() }
           );
+          if (!r?.ok) failed.push(uid);
+        } catch {
+          failed.push(uid);
         }
-        for (const uid of pickedMemberIds.filter((x) => !pickedLeaderIds.includes(x))) {
-          await apiPost(
+      }
+
+      for (const uid of uniqueMembers) {
+        try {
+          const r = await apiPost(
             "/api/church/ministry-members",
             { ministryId: data.id, userId: uid, role: "Member" },
             { headers: getKristoHeaders() }
           );
+          if (!r?.ok) failed.push(uid);
+        } catch {
+          failed.push(uid);
         }
-      } catch {}
+      }
+
+      setCreated(data);
+
+      if (failed.length) {
+        setErr(`Ministry created, but ${failed.length} member assignment(s) failed.`);
+      }
     } catch (e: any) {
       setErr(humanErr(e));
     } finally {
@@ -139,6 +165,7 @@ export default function ChurchMinistryCreateScreen() {
     setName("");
     setDescription("");
     setStatus("Active");
+    setMediaAccess(false);
     setPickedMemberIds([]);
     setPickedLeaderIds([]);
     requestAnimationFrame(() => nameRef.current?.focus());
@@ -174,7 +201,7 @@ export default function ChurchMinistryCreateScreen() {
 
           <View style={s.navMid}>
             <Text style={s.navTitle}>Create Ministry</Text>
-            <Text style={s.navSub}>Add a new ministry to your church.</Text>
+            <Text style={s.navSub}>Build a ministry room with leaders, members, and media access.</Text>
           </View>
 
           <Pressable
@@ -228,12 +255,22 @@ export default function ChurchMinistryCreateScreen() {
               <View style={s.form}>
                 {err ? <Text style={s.errText}>{err}</Text> : null}
 
+                <View style={s.builderCard}>
+                  <View style={s.builderIcon}>
+                    <Ionicons name="sparkles" size={22} color="#0B0F17" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.builderTitle}>Ministry Builder</Text>
+                    <Text style={s.builderSub}>Create the room, choose leaders, add members, then turn on media if this ministry will host live schedules.</Text>
+                  </View>
+                </View>
+
                 <Text style={s.label}>Name</Text>
                 <TextInput
                   ref={nameRef}
                   value={name}
                   onChangeText={setName}
-                  placeholder="Ministry name"
+                  placeholder="Example: Choir, Youth, Ushauri"
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   style={s.input}
                   returnKeyType="next"
@@ -246,7 +283,7 @@ export default function ChurchMinistryCreateScreen() {
                 <TextInput
                   value={description}
                   onChangeText={setDescription}
-                  placeholder="Optional"
+                  placeholder="Short purpose or description"
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   style={s.input}
                   returnKeyType="done"
@@ -268,23 +305,60 @@ export default function ChurchMinistryCreateScreen() {
 
                 <View style={{ height: 16 }} />
 
+                <Pressable
+                  onPress={() => {
+                    if (!hasSubscription) {
+                      Alert.alert(
+                        "Subscription required",
+                        "Subscribe first before enabling ministry media access."
+                      );
+                      return;
+                    }
+                    setMediaAccess((v) => !v);
+                  }}
+                  style={({ pressed }) => [
+                    s.mediaAccessCard,
+                    mediaAccess && s.mediaAccessCardOn,
+                    pressed && { opacity: 0.9, transform: [{ scale: 0.99 }] },
+                  ]}
+                >
+                  <View style={[s.mediaAccessIcon, mediaAccess && s.mediaAccessIconOn]}>
+                    <Ionicons
+                      name={mediaAccess ? "videocam" : "videocam-outline"}
+                      size={18}
+                      color={mediaAccess ? "#0B0F17" : GOLD}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.mediaAccessTitle}>Media Access</Text>
+                    <Text style={s.mediaAccessSub}>
+                      Allow this ministry to create media schedules, hosts, and live planning cards.
+                    </Text>
+                  </View>
+                  <View style={[s.mediaAccessCheck, mediaAccess && s.mediaAccessCheckOn]}>
+                    {mediaAccess ? <Ionicons name="checkmark" size={14} color="#0B0F17" /> : null}
+                  </View>
+                </Pressable>
+
+                <View style={{ height: 16 }} />
+
                 {/* Admin pickers */}
                 <View style={s.pickRow}>
                   <Pressable onPress={() => setPicker("leaders")} style={({ pressed }) => [s.pickBtn, pressed && { opacity: 0.85 }]}>
                     <Ionicons name="star" size={16} color={GOLD} />
-                    <Text style={s.pickBtnText}>Pick leaders ({pickedLeaderIds.length})</Text>
+                    <Text style={s.pickBtnText}>Leaders ({pickedLeaderIds.length})</Text>
                   </Pressable>
 
                   <Pressable onPress={() => setPicker("members")} style={({ pressed }) => [s.pickBtn, pressed && { opacity: 0.85 }]}>
                     <Ionicons name="people" size={16} color={GOLD} />
-                    <Text style={s.pickBtnText}>Pick members ({pickedMemberIds.length})</Text>
+                    <Text style={s.pickBtnText}>Members ({pickedMemberIds.length})</Text>
                   </Pressable>
                 </View>
 
                 {members.length === 0 ? (
                   <Text style={s.hint}>No church members loaded yet (optional).</Text>
                 ) : (
-                  <Text style={s.hint}>Tip: Leaders automatically become members too.</Text>
+                  <Text style={s.hint}>Leaders automatically become members too.</Text>
                 )}
               </View>
 
@@ -341,6 +415,66 @@ export default function ChurchMinistryCreateScreen() {
 const s = StyleSheet.create<any>({
   screen: { flex: 1, backgroundColor: VIP_BG },
 
+  mediaAccessCard: {
+    minHeight: 84,
+    borderRadius: 24,
+    padding: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderWidth: 1.3,
+    borderColor: "rgba(255,255,255,0.28)",
+    backgroundColor: "rgba(255,255,255,0.095)",
+  },
+  mediaAccessCardOn: {
+    borderColor: "rgba(217,179,95,0.70)",
+    backgroundColor: "rgba(217,179,95,0.18)",
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 10 },
+  },
+  mediaAccessIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.35)",
+    backgroundColor: "rgba(217,179,95,0.10)",
+  },
+  mediaAccessIconOn: {
+    backgroundColor: GOLD,
+    borderColor: GOLD,
+  },
+  mediaAccessTitle: {
+    color: "white",
+    fontSize: 13,
+    fontWeight: "950",
+  },
+  mediaAccessSub: {
+    marginTop: 4,
+    color: "rgba(255,255,255,0.66)",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "750",
+  },
+  mediaAccessCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  mediaAccessCheckOn: {
+    backgroundColor: GOLD,
+    borderColor: GOLD,
+  },
+
   topBar: {
     position: "absolute",
     left: 0,
@@ -362,22 +496,22 @@ const s = StyleSheet.create<any>({
 
   nav: {
     marginHorizontal: PAD,
-    marginTop: 10,
-    marginBottom: 14,
-    padding: 16,
+    marginTop: 8,
+    marginBottom: 13,
+    padding: 14,
     borderRadius: 26,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(255,255,255,0.065)",
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
   },
 
   backBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
+    width: 34,
+    height: 34,
+    borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.04)",
@@ -386,76 +520,129 @@ const s = StyleSheet.create<any>({
   },
 
   navMid: { flex: 1, marginLeft: 10 },
-  navTitle: { color: "white", fontWeight: "900", fontSize: 16, letterSpacing: 0.2 },
-  navSub: { marginTop: 6, color: "rgba(255,255,255,0.66)", fontWeight: "750", fontSize: 13 },
+  navTitle: { color: "white", fontWeight: "900", fontSize: 15, letterSpacing: 0.2 },
+  navSub: { marginTop: 4, color: "rgba(255,255,255,0.66)", fontWeight: "750", fontSize: 11, lineHeight: 15 },
 
   saveBtn: {
-    paddingHorizontal: 14,
-    height: 38,
+    paddingHorizontal: 16,
+    height: 36,
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.16)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.40)",
+    backgroundColor: "rgba(217,179,95,0.22)",
+    borderWidth: 1.2,
+    borderColor: "rgba(217,179,95,0.55)",
   },
-  saveText: { color: GOLD, fontWeight: "900" },
+  saveText: { color: "#0B0F17", fontWeight: "950", fontSize: 14 },
 
   form: {
     marginHorizontal: PAD,
-    borderRadius: 24,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(255,255,255,0.02)",
+    borderRadius: 26,
+    padding: 15,
+    borderWidth: 1.2,
+    borderColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(255,255,255,0.035)",
   },
 
   errText: { marginBottom: 10, color: "rgba(255,120,120,0.95)", fontWeight: "900" },
-  label: { marginTop: 4, color: "rgba(255,255,255,0.80)", fontWeight: "800" },
+  label: { marginTop: 6, marginLeft: 2, color: "rgba(255,255,255,0.86)", fontWeight: "950", fontSize: 14 },
 
   input: {
-    marginTop: 10,
-    borderRadius: 16,
+    marginTop: 8,
+    borderRadius: 18,
     paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    paddingHorizontal: 14,
+    borderWidth: 1.2,
+    borderColor: "rgba(255,255,255,0.24)",
+    backgroundColor: "rgba(255,255,255,0.06)",
     color: "white",
-    fontWeight: "800",
+    fontWeight: "900",
+    fontSize: 13,
   },
 
   row: { flexDirection: "row", gap: 10, marginTop: 10 },
   pill: {
     flex: 1,
-    borderRadius: 16,
-    paddingVertical: 12,
+    borderRadius: 15,
+    paddingVertical: 10,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    backgroundColor: "rgba(0,0,0,0.18)",
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(255,255,255,0.04)",
   },
-  pillOn: { borderColor: "rgba(217,179,95,0.45)", backgroundColor: "rgba(217,179,95,0.10)" },
+  pillOn: {
+    borderColor: "rgba(217,179,95,0.75)",
+    backgroundColor: "rgba(217,179,95,0.18)",
+  },
   pillText: { color: "rgba(255,255,255,0.80)", fontWeight: "800" },
   pillTextOn: { color: GOLD, fontWeight: "900" },
 
   pickRow: { flexDirection: "row", gap: 10, marginTop: 14 },
   pickBtn: {
     flex: 1,
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
+    minHeight: 54,
+    borderRadius: 20,
+    paddingVertical: 11,
+    paddingHorizontal: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
+    gap: 8,
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.22)",
-    backgroundColor: "rgba(217,179,95,0.06)",
+    borderColor: "rgba(217,179,95,0.56)",
+    backgroundColor: "rgba(217,179,95,0.16)",
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 8 },
   },
-  pickBtnText: { color: "rgba(255,255,255,0.90)", fontWeight: "900" },
-  hint: { marginTop: 10, color: "rgba(255,255,255,0.55)", fontWeight: "750" },
+  pickBtnText: { color: "rgba(255,255,255,0.94)", fontWeight: "950", fontSize: 13 },
+  hint: {
+    marginTop: 12,
+    color: "rgba(255,255,255,0.58)",
+    fontWeight: "800",
+    fontSize: 11,
+    letterSpacing: 0.2,
+  },
+
+
+  builderCard: {
+    marginBottom: 18,
+    minHeight: 110,
+    borderRadius: 26,
+    padding: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    borderWidth: 1.2,
+    borderColor: "rgba(217,179,95,0.65)",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.35,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 16 },
+  },
+  builderIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GOLD,
+  },
+  builderTitle: {
+    color: "#FFFFFF",
+    fontSize: 17,
+    fontWeight: "950",
+  },
+  builderSub: {
+    marginTop: 6,
+    color: "rgba(255,255,255,0.68)",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "750",
+  },
 
   // modal
   modalWrap: {
