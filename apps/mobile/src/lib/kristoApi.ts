@@ -1,6 +1,18 @@
 type Json = any;
 
-const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+export type ApiErrorResult = {
+  ok: false;
+  error: string;
+  reason?: string;
+  status?: number;
+  debug?: unknown;
+};
+
+const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "https://kristo-app.vercel.app").replace(/\/$/, "");
+
+export function getApiBase() {
+  return API_BASE;
+}
 
 function kristoUrl(path: string) {
   if (/^https?:\/\//i.test(path)) return path;
@@ -13,8 +25,42 @@ async function safeJson(res: Response) {
   try {
     return JSON.parse(text);
   } catch {
-    return { ok: false, error: text };
+    return { ok: false, error: text.slice(0, 280) };
   }
+}
+
+function networkError(path: string, error: unknown): ApiErrorResult {
+  const message = String((error as any)?.message || error || "Network request failed");
+  if (__DEV__) {
+    console.warn("[KRISTO API] request failed", { path, base: API_BASE, error: message });
+  }
+  return {
+    ok: false,
+    error: `Could not reach ${API_BASE}. ${message}`,
+    reason: "network_error",
+  };
+}
+
+function httpError(path: string, res: Response, body: any): ApiErrorResult {
+  const providerError = String(body?.error || body?.message || "").trim();
+  const hint = String(body?.details?.hint || body?.details || "").trim();
+  const fallback = `Request failed (${res.status})`;
+  const error = providerError || hint || fallback;
+  if (__DEV__) {
+    console.warn("[KRISTO API] non-OK response", {
+      path,
+      base: API_BASE,
+      status: res.status,
+      body,
+    });
+  }
+  return {
+    ok: false,
+    error,
+    reason: String(body?.reason || "http_error"),
+    status: res.status,
+    debug: body?.details ?? body?.debug,
+  };
 }
 
 type HeadersRec = Record<string, string>;
@@ -29,9 +75,11 @@ function mergeHeaders(h?: HeadersRec) {
 export async function apiGet<T = Json>(path: string, init?: RequestInit) {
   try {
     const res = await fetch(kristoUrl(path), { ...(init || {}), method: "GET" });
-    return (await safeJson(res)) as T;
-  } catch {
-    return null as any;
+    const body = await safeJson(res);
+    if (!res.ok) return httpError(path, res, body) as T;
+    return (body ?? { ok: false, error: "Empty server response", status: res.status }) as T;
+  } catch (error) {
+    return networkError(path, error) as T;
   }
 }
 
@@ -66,9 +114,11 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
       headers,
       body: payload,
     });
-    return (await safeJson(res)) as T;
-  } catch {
-    return null as any;
+    const parsed = await safeJson(res);
+    if (!res.ok) return httpError(path, res, parsed) as T;
+    return (parsed ?? { ok: false, error: "Empty server response", status: res.status }) as T;
+  } catch (error) {
+    return networkError(path, error) as T;
   }
 }
 
@@ -100,17 +150,21 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
       headers,
       body: payload,
     });
-    return (await safeJson(res)) as T;
-  } catch {
-    return null as any;
+    const parsed = await safeJson(res);
+    if (!res.ok) return httpError(path, res, parsed) as T;
+    return (parsed ?? { ok: false, error: "Empty server response", status: res.status }) as T;
+  } catch (error) {
+    return networkError(path, error) as T;
   }
 }
 
 export async function apiDelete<T = Json>(path: string, init?: RequestInit) {
   try {
     const res = await fetch(kristoUrl(path), { ...(init || {}), method: "DELETE" });
-    return (await safeJson(res)) as T;
-  } catch {
-    return null as any;
+    const parsed = await safeJson(res);
+    if (!res.ok) return httpError(path, res, parsed) as T;
+    return (parsed ?? { ok: false, error: "Empty server response", status: res.status }) as T;
+  } catch (error) {
+    return networkError(path, error) as T;
   }
 }

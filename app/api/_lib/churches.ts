@@ -65,6 +65,13 @@ function languageHint(country?: unknown): string | undefined {
   return undefined;
 }
 
+function avatarField(input: unknown, prev?: string) {
+  const s = String(input ?? "").trim();
+  if (!s) return prev;
+  if (s.startsWith("data:image/")) return s;
+  return clean(s, 4000) ?? prev;
+}
+
 function clean(input: unknown, max = 120): string | undefined {
   if (input === undefined || input === null) return undefined;
   const s = String(input).trim();
@@ -401,8 +408,8 @@ export async function patchChurchProfile(
     const nextProvince = clean(input.province, 120);
     const nextCity = clean(input.city, 120);
     const nextPrimaryLanguage = clean(input.primaryLanguage, 20) ?? languageHint(nextCountry);
-    const nextAvatarUri = clean(input.avatarUri, 2000);
-    const nextAvatarUrl = clean(input.avatarUrl, 2000);
+    const nextAvatarUri = avatarField(input.avatarUri, prev.avatarUri);
+    const nextAvatarUrl = avatarField(input.avatarUrl, prev.avatarUrl) ?? nextAvatarUri;
 
     const saved: ChurchProfile = {
       ...prev,
@@ -432,6 +439,7 @@ export async function patchChurchProfile(
     (current) => {
       const list = Array.isArray(current) ? current : [];
       const idx = list.findIndex((c) => c.id === churchId);
+      const prevRow = idx >= 0 ? list[idx] : undefined;
 
       const nextName = clean(input.name, 120);
       const nextAddress = clean(input.address, 180);
@@ -441,8 +449,8 @@ export async function patchChurchProfile(
       const nextProvince = clean(input.province, 120);
       const nextCity = clean(input.city, 120);
       const nextPrimaryLanguage = clean(input.primaryLanguage, 20) ?? languageHint(nextCountry);
-      const nextAvatarUri = clean(input.avatarUri, 2000);
-      const nextAvatarUrl = clean(input.avatarUrl, 2000);
+      const nextAvatarUri = avatarField(input.avatarUri, prevRow?.avatarUri);
+      const nextAvatarUrl = avatarField(input.avatarUrl, prevRow?.avatarUrl) ?? nextAvatarUri;
 
       if (idx >= 0) {
         const prev = list[idx];

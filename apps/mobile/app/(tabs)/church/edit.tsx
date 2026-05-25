@@ -1,0 +1,206 @@
+import React, { useEffect, useState } from "react";
+import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system/legacy";
+import { useRouter } from "expo-router";
+import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { apiGet, apiPatch } from "@/src/lib/kristoApi";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+
+const GOLD = "rgba(217,179,95,0.96)";
+const BG = "#070B14";
+
+function mediaUrl(u: any) {
+  const s = String(u || "").trim();
+  if (!s) return "";
+  if (/^data:image\//i.test(s) || /^https?:\/\//i.test(s) || s.startsWith("file:")) return s;
+  const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+  return `${base}${s.startsWith("/") ? "" : "/"}${s}`;
+}
+
+export default function EditChurchProfile() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+
+  const [name, setName] = useState("");
+  const [pastorName, setPastorName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const [avatarUri, setAvatarUri] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const j = await apiGet<any>("/api/church/profile", { headers: getKristoHeaders() }).catch(() => null);
+      const p = j?.data || j?.profile || {};
+      if (!alive) return;
+      setName(String(p.name || ""));
+      setPastorName(String(p.pastorName || ""));
+      setPhone(String(p.phone || ""));
+      setAddress(String(p.address || ""));
+      setAvatarUri(mediaUrl(p.avatarUri || p.avatarUrl || ""));
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  async function pickAvatar() {
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.85,
+      allowsEditing: true,
+      aspect: [1, 1],
+    });
+
+    if (res.canceled) return;
+    const picked = String(res.assets?.[0]?.uri || "").trim();
+    if (picked) setAvatarUri(picked);
+  }
+
+  async function save() {
+    if (!name.trim()) {
+      Alert.alert("Church name required", "Weka jina la kanisa.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      let avatarData = "";
+      if (avatarUri.startsWith("file:")) {
+        const b64 = await FileSystem.readAsStringAsync(avatarUri, { encoding: FileSystem.EncodingType.Base64 });
+        avatarData = `data:image/jpeg;base64,${b64}`;
+      }
+
+      const res = await apiPatch<any>("/api/church/profile", {
+        name: name.trim(),
+        pastorName: pastorName.trim(),
+        phone: phone.trim(),
+        address: address.trim(),
+        avatarUri: avatarUri.startsWith("file:") ? "" : avatarUri,
+        avatarUrl: avatarUri.startsWith("file:") ? "" : avatarUri,
+        avatarData,
+      }, { headers: getKristoHeaders() });
+
+      if (res?.ok !== true) {
+        const msg = String(res?.error || res?.reason || "Save failed");
+        if (__DEV__) {
+          console.warn("[EditChurch] save failed", {
+            error: res?.error,
+            reason: res?.reason,
+            status: res?.status,
+            debug: res?.debug,
+            headers: getKristoHeaders(),
+          });
+        }
+        throw new Error(msg);
+      }
+
+      router.replace({ pathname: "/church/overview", params: { saved: "1", refreshAt: String(Date.now()) } } as any);
+    } catch (e: any) {
+      Alert.alert("Save failed", String(e?.message || e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <View style={[s.screen, { paddingTop: insets.top }]}>
+      <View style={s.header}>
+        <Pressable onPress={() => router.back()} style={s.backBtn}>
+          <Ionicons name="arrow-back" size={22} color="white" />
+        </Pressable>
+        <View>
+          <Text style={s.title}>Edit Church</Text>
+          <Text style={s.sub}>Church profile, not pastor profile</Text>
+        </View>
+      </View>
+
+      <ScrollView contentContainerStyle={s.content}>
+        <Pressable onPress={pickAvatar} style={s.avatarBox}>
+          <View style={s.avatarFrame}>
+            {avatarUri ? (
+              <Image source={{ uri: avatarUri }} style={s.avatar} resizeMode="cover" />
+            ) : (
+              <View style={s.avatarPlaceholder}>
+                <Ionicons name="business-outline" size={42} color={GOLD} />
+              </View>
+            )}
+
+            <View style={s.avatarEditBadge}>
+              <Ionicons name="camera-outline" size={18} color="#070B14" />
+            </View>
+          </View>
+
+          <Text style={s.avatarText}>Change church avatar</Text>
+          <Text style={s.avatarHint}>This image belongs to the church profile</Text>
+        </Pressable>
+
+        <Text style={s.label}>Church Name</Text>
+        <TextInput value={name} onChangeText={setName} style={s.input} placeholder="Church name" placeholderTextColor="rgba(255,255,255,0.35)" />
+
+        <Text style={s.label}>Pastor Name</Text>
+        <TextInput value={pastorName} onChangeText={setPastorName} style={s.input} placeholder="Pastor name" placeholderTextColor="rgba(255,255,255,0.35)" />
+
+        <Text style={s.label}>Phone</Text>
+        <TextInput value={phone} onChangeText={setPhone} style={s.input} placeholder="Phone" placeholderTextColor="rgba(255,255,255,0.35)" />
+
+        <Text style={s.label}>Address</Text>
+        <TextInput value={address} onChangeText={setAddress} style={s.input} placeholder="Address" placeholderTextColor="rgba(255,255,255,0.35)" />
+
+        <Pressable onPress={save} disabled={saving} style={[s.saveBtn, saving && { opacity: 0.55 }]}>
+          <Text style={s.saveText}>{saving ? "Saving..." : "Save Church Profile"}</Text>
+        </Pressable>
+      </ScrollView>
+    </View>
+  );
+}
+
+const s = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: BG },
+  header: { flexDirection: "row", alignItems: "center", gap: 14, padding: 18 },
+  backBtn: { width: 42, height: 42, borderRadius: 999, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.07)" },
+  title: { color: "white", fontSize: 24, fontWeight: "900" },
+  sub: { color: "rgba(255,255,255,0.58)", fontWeight: "700", marginTop: 3 },
+  content: { padding: 18, paddingBottom: 80 },
+  avatarBox: { alignSelf: "center", alignItems: "center", marginBottom: 30 },
+  avatarFrame: {
+    width: 128,
+    height: 128,
+    borderRadius: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    borderWidth: 2,
+    borderColor: "rgba(217,179,95,0.70)",
+    overflow: "visible",
+  },
+  avatarPlaceholder: {
+    width: 118,
+    height: 118,
+    borderRadius: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  avatar: { width: 118, height: 118, borderRadius: 30 },
+  avatarEditBadge: {
+    position: "absolute",
+    right: -8,
+    bottom: -8,
+    width: 42,
+    height: 42,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GOLD,
+    borderWidth: 3,
+    borderColor: BG,
+  },
+  avatarText: { color: GOLD, fontWeight: "900", marginTop: 16, fontSize: 16 },
+  avatarHint: { color: "rgba(255,255,255,0.50)", fontWeight: "700", marginTop: 5 },
+  label: { color: GOLD, fontWeight: "900", marginBottom: 8, marginTop: 14 },
+  input: { color: "white", backgroundColor: "rgba(255,255,255,0.07)", borderWidth: 1, borderColor: "rgba(217,179,95,0.20)", borderRadius: 16, paddingHorizontal: 14, paddingVertical: 13, fontWeight: "800" },
+  saveBtn: { marginTop: 26, height: 54, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: GOLD },
+  saveText: { color: "#070B14", fontWeight: "900", fontSize: 16 },
+});

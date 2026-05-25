@@ -26,7 +26,7 @@ type OverviewStats = {
 function mediaUrl(u: any) {
   const v = String(u || "").trim();
   if (!v) return "";
-  if (/^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
+  if (/^data:image\//i.test(v) || /^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
 
   const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
   return `${base}${v.startsWith("/") ? "" : "/"}${v}`;
