@@ -27,6 +27,17 @@ import {
   summarizeActiveMediaSchedule,
 } from "@/lib/mediaScheduleLock";
 import { getChurchMediaByChurchId } from "@/app/api/_lib/store/mediaDb";
+import {
+  ChurchFeedItem,
+  countScheduleFeedItems,
+  deleteFeedItemById,
+  deleteFeedItemsWhere,
+  ensureFeedStoreReady,
+  getFeedItemById,
+  isFeedDatabaseError,
+  listFeedItems,
+  upsertFeedItem,
+} from "@/app/api/_lib/store/feedDb";
 import { getKristoDataDir, isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
 
 export const runtime = "nodejs";
@@ -83,49 +94,14 @@ function writeJsonArray(fileName: string, rows: any[]) {
 }
 
 function saveFeedStores() {
-  writeJsonArray("church-feed.json", globalThis.__kristoChurchFeed || []);
   writeJsonArray("church-feed-comments.json", globalThis.__kristoChurchFeedComments || []);
   writeJsonArray("church-feed-comment-likes.json", globalThis.__kristoChurchFeedCommentLikes || []);
   writeJsonArray("church-feed-likes.json", globalThis.__kristoChurchFeedLikes || []);
 }
 
-
 type FeedType = "post" | "announcement" | "video";
 
-export type ChurchFeedItem = {
-  id: string;
-  churchId: string;
-  type: FeedType;
-  title?: string;
-  text?: string;
-  videoUrl?: string;
-  mediaUri?: string;
-  source?: string;
-  scheduleType?: string;
-  scheduleSlots?: any[];
-  visibility?: string;
-  audience?: any;
-  mediaName?: string;
-  churchName?: string;
-  churchLabel?: string;
-  actorLabel?: string;
-  actorAvatarUri?: string;
-  churchAvatarUri?: string;
-  avatarUri?: string;
-  mediaOwnerPastorUserId?: string;
-  actualChurchPastorUserId?: string;
-  churchPastorUserId?: string;
-  scheduleCreatedByUserId?: string;
-  sourceScheduleId?: string;
-  publishedAt?: string;
-  mediaHostIds?: string;
-  isGlobalMediaSlot?: boolean;
-  ownershipType?: "church" | "media" | "member";
-  ownerChurchId?: string;
-  ownerMediaId?: string;
-  createdAt: string;
-  createdBy: string; // userId
-};
+export type { ChurchFeedItem };
 
 export type FeedComment = {
   id: string;
@@ -197,38 +173,11 @@ function err(error: string, status = 400) {
 
 declare global {
   // eslint-disable-next-line no-var
-  var __kristoChurchFeed: ChurchFeedItem[] | undefined;
-  // eslint-disable-next-line no-var
   var __kristoChurchFeedComments: FeedComment[] | undefined;
   // eslint-disable-next-line no-var
   var __kristoChurchFeedCommentLikes: FeedCommentLike[] | undefined;
   // eslint-disable-next-line no-var
   var __kristoChurchFeedLikes: FeedPostLike[] | undefined;
-  // eslint-disable-next-line no-var
-  var __kristoChurchFeedHydrated: boolean | undefined;
-}
-
-function mergePostStoreFromDisk() {
-  const diskRows = readJsonArray<ChurchFeedItem>("church-feed.json");
-  const memoryRows = Array.isArray(globalThis.__kristoChurchFeed) ? globalThis.__kristoChurchFeed : [];
-  const byId = new Map<string, ChurchFeedItem>();
-
-  for (const row of diskRows) {
-    if (row?.id) byId.set(String(row.id), row);
-  }
-  for (const row of memoryRows) {
-    if (row?.id) byId.set(String(row.id), row);
-  }
-
-  globalThis.__kristoChurchFeed = Array.from(byId.values());
-  globalThis.__kristoChurchFeedHydrated = true;
-  return globalThis.__kristoChurchFeed;
-}
-
-function postStore(): ChurchFeedItem[] {
-  mergePostStoreFromDisk();
-  if (!globalThis.__kristoChurchFeed) globalThis.__kristoChurchFeed = [];
-  return globalThis.__kristoChurchFeed;
 }
 
 function hydrateCommentStoreFromDisk() {
@@ -408,8 +357,8 @@ async function canDeleteFeedPost(item: any, churchId: string, role: unknown, use
   return false;
 }
 
-function removePostAndRelated(postId: string) {
-  globalThis.__kristoChurchFeed = postStore().filter((x: any) => String(x.id || "") !== postId);
+async function removePostAndRelated(postId: string) {
+  await deleteFeedItemById(postId);
 
   const removedCommentIds = new Set(
     commentStore()
@@ -549,6 +498,15 @@ function buildCommentTree(churchId: string, postId: string, viewerUserId: string
 }
 
 export async function GET(req: NextRequest) {
+  try {
+    await ensureFeedStoreReady();
+  } catch (error: any) {
+    if (isFeedDatabaseError(error)) {
+      return err("Feed database not configured", 503);
+    }
+    throw error;
+  }
+
   const ctxOrRes = await guardAuth(req);
   if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
 
@@ -584,7 +542,7 @@ export async function GET(req: NextRequest) {
       return err("Pastor or admin access required", 403);
     }
 
-    const storageItems = postStore()
+    const storageItems = (await listFeedItems())
       .filter((x: any) => String(x?.churchId || "") === viewerChurchId)
       .filter((x: any) => (storageMode === "media" ? isMediaOwnedFeedItem(x) : true))
       .filter((x) => (type ? x.type === type : true))
@@ -598,7 +556,7 @@ export async function GET(req: NextRequest) {
   }
 
   if (id) {
-    const item = postStore().find((x: any) => x.id === id);
+    const item = await getFeedItemById(id);
     if (!item) return err("Feed item not found", 404);
 
     const itemChurchId = String(item.churchId || churchId);
@@ -627,7 +585,12 @@ export async function GET(req: NextRequest) {
     return ok(detail);
   }
 
-  const allRows = postStore();
+  const allRows = await listFeedItems();
+  console.log("[FeedDb] list churchId count scheduleCount", {
+    churchId,
+    count: allRows.length,
+    scheduleCount: countScheduleFeedItems(allRows),
+  });
   console.log("[ScheduleFeed] GET rows before filter", {
     churchId,
     headerChurchId,
@@ -672,6 +635,15 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   let body: any = null;
+  try {
+    await ensureFeedStoreReady();
+  } catch (error: any) {
+    if (isFeedDatabaseError(error)) {
+      return err("Feed database not configured", 503);
+    }
+    throw error;
+  }
+
   try {
     body = await req.json();
   } catch {
@@ -744,32 +716,24 @@ async function handleFeedPost(req: NextRequest, body: any) {
       return err("Only pastor or approved media host can clear media schedules", 403);
     }
 
-    const before = postStore().length;
-    let removedCount = 0;
-
-    globalThis.__kristoChurchFeed = postStore()
-      .map((it: any) => {
-        if (!isMediaScheduleForChurch(it, targetChurchId)) return it;
-        removedCount += 1;
-        return null;
-      })
-      .filter(Boolean);
-
-    saveFeedStores();
+    const removedCount = await deleteFeedItemsWhere((it: any) =>
+      isMediaScheduleForChurch(it, targetChurchId)
+    );
 
     bumpMediaScheduleSync(targetChurchId, "clear_media_schedules");
 
+    const remainingRows = await listFeedItems();
     const remainingActiveSchedules = findAllActiveMediaSchedulesForChurch(
-      postStore(),
+      remainingRows,
       targetChurchId,
       { strictChurch: true }
     ).map((item) => summarizeActiveMediaSchedule(item));
 
     const result = {
       churchId: targetChurchId,
-      removed: before - postStore().length,
+      removed: removedCount,
       removedCount,
-      remaining: postStore().length,
+      remaining: remainingRows.length,
       remainingActiveCount: remainingActiveSchedules.length,
       remainingActiveSchedules,
       role,
@@ -789,7 +753,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     if (!postId) return err("postId is required", 400);
 
-    const item = postStore().find((x: any) => String(x.id || "") === postId);
+    const item = await getFeedItemById(postId);
 
     if (!item) return err("Feed item not found", 404);
 
@@ -856,7 +820,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     if (!postId) return err("postId is required", 400);
     if (!text) return err("text is required", 400);
 
-    const item = postStore().find((x: any) => String(x.id || "") === postId);
+    const item = await getFeedItemById(postId);
 
     if (!item) return err("Feed item not found", 404);
 
@@ -939,7 +903,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     if (!postId) return err("postId/feedId is required", 400);
 
-    const item = postStore().find((x: any) => String(x.id || "") === String(postId));
+    const item = await getFeedItemById(postId);
     if (!item) return err("Feed item not found", 404);
 
     const slots = Array.isArray((item as any).scheduleSlots) ? (item as any).scheduleSlots : [];
@@ -966,9 +930,9 @@ async function handleFeedPost(req: NextRequest, body: any) {
     }
 
     if (nextSlots) {
-      (item as any).scheduleSlots = nextSlots;
-      saveFeedStores();
-      bumpMediaScheduleSyncForFeedItem(item, "update-schedule-slots");
+      const updatedItem = { ...item, scheduleSlots: nextSlots };
+      await upsertFeedItem(updatedItem);
+      bumpMediaScheduleSyncForFeedItem(updatedItem, "update-schedule-slots");
       return ok({ postId, slots: nextSlots });
     }
 
@@ -1019,9 +983,9 @@ async function handleFeedPost(req: NextRequest, body: any) {
       };
     });
 
-    (item as any).scheduleSlots = updated;
-    saveFeedStores();
-    bumpMediaScheduleSyncForFeedItem(item, "update-schedule-slots");
+    const updatedItem = { ...item, scheduleSlots: updated };
+    await upsertFeedItem(updatedItem);
+    bumpMediaScheduleSyncForFeedItem(updatedItem, "update-schedule-slots");
 
     return ok({ postId, slotId, slots: updated, slot: updated[targetIndex] });
   }
@@ -1038,7 +1002,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     if (!postId) return err("postId is required", 400);
     if (!slotId) return err("slotId is required", 400);
 
-    const item = postStore().find((x: any) => String(x.id || "") === String(postId));
+    const item = await getFeedItemById(postId);
     if (!item) return err("Feed item not found", 404);
 
     const slots = Array.isArray((item as any).scheduleSlots) ? (item as any).scheduleSlots : [];
@@ -1077,9 +1041,9 @@ async function handleFeedPost(req: NextRequest, body: any) {
       },
     };
 
-    (item as any).scheduleSlots = slots;
-    saveFeedStores();
-    bumpMediaScheduleSyncForFeedItem(item, "claim_schedule_slot");
+    const updatedItem = { ...item, scheduleSlots: slots };
+    await upsertFeedItem(updatedItem);
+    bumpMediaScheduleSyncForFeedItem(updatedItem, "claim_schedule_slot");
 
     return ok({
       postId,
@@ -1092,7 +1056,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const postId = cleanText(body?.postId, 240);
     if (!postId) return err("postId is required", 400);
 
-    const item = postStore().find((x: any) => String(x.id || "") === postId);
+    const item = await getFeedItemById(postId);
     if (!item) return err("Feed item not found", 404);
 
     const viewerRole = ctx?.viewer?.role;
@@ -1104,7 +1068,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       bumpMediaScheduleSyncForFeedItem(item, "delete_post");
     }
 
-    removePostAndRelated(postId);
+    await removePostAndRelated(postId);
     saveFeedStores();
 
     return ok({ postId, deleted: true });
@@ -1214,7 +1178,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       return churchSubscriptionRequiredResponse();
     }
 
-    const existingActive = findActiveMediaScheduleForChurch(postStore(), churchId, {
+    const existingActive = findActiveMediaScheduleForChurch(await listFeedItems(), churchId, {
       strictChurch: true,
     });
     if (existingActive) {
@@ -1269,8 +1233,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     createdBy: viewerUserId,
   };
 
-  postStore().push(item);
-  saveFeedStores();
+  await upsertFeedItem(item);
 
   const savedFeedRow = {
     ...item,
@@ -1286,8 +1249,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       sourceScheduleId: item.sourceScheduleId || item.id,
       feedId: item.id,
       slotCount: Array.isArray(item.scheduleSlots) ? item.scheduleSlots.length : 0,
-      store: "memory",
-      dataDir: DATA_DIR,
+      store: "postgres",
     });
   }
 
