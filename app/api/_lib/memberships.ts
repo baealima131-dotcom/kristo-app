@@ -1,16 +1,29 @@
 /**
- * Membership store (JSON file persistence).
- *
- * RULE: Single-church membership
- * - A user can have ONLY ONE Active membership at a time.
- *
- * This eliminates "demo feel" where memberships disappear after server restart.
+ * Membership store.
+ * Production (DATABASE_URL): Postgres via churchDb.
+ * Local dev fallback: data/memberships.json
  */
 
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import { hasDurableStore } from "@/app/api/_lib/store/authDb";
+import {
+  dbAddActiveMember,
+  dbApproveMembership,
+  dbDeactivateMemberInChurch,
+  dbDevPromoteToRoleIfActive,
+  dbGetActiveMembership,
+  dbGetMembershipById,
+  dbGetMembershipsForChurch,
+  dbGetMembershipsForUser,
+  dbLeaveActiveMembership,
+  dbRejectMembership,
+  dbRequestMembership,
+  dbSetMemberRole,
+  ensureChurchStoreReady,
+} from "@/app/api/_lib/store/churchDb";
 
 export type MembershipStatus = "Requested" | "Active" | "Rejected" | "Banned" | "Left";
-export type ChurchRole = "Member" | "Leader" | "Church_Admin" | "Pastor";
+export type ChurchRole = "Member" | "Leader" | "Ministry_Leader" | "Church_Admin" | "Pastor";
 
 export type ChurchMembership = {
   id: string;
@@ -32,9 +45,18 @@ export type ChurchMembership = {
   decidedBy?: string;
   decidedAt?: string;
   note?: string;
+  requestSource?: "JoinRequest" | "ChurchInvite";
 };
 
 const STORE_FILE = "memberships.json";
+
+function usePostgres() {
+  return hasDurableStore();
+}
+
+async function ensureStore() {
+  if (usePostgres()) await ensureChurchStoreReady();
+}
 
 /* =========================
    HELPERS
@@ -48,9 +70,43 @@ function id(prefix = "mem") {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
 }
 
+function normalizeMembershipRows(rows: ChurchMembership[]) {
+  const seenActive = new Set<string>();
+
+  return rows.map((m: any) => {
+    const userId = String(m?.userId || "").trim();
+    const churchId = String(m?.churchId || "").trim();
+
+    const next = {
+      ...m,
+      userId: userId.startsWith("U_") ? userId.toLowerCase() : userId,
+      churchId,
+      status: m?.status || "Requested",
+      churchRole: m?.churchRole || "Member",
+    };
+
+    const activeKey = `${String(next.userId).toLowerCase()}::active`;
+    if (next.status === "Active") {
+      if (seenActive.has(activeKey)) {
+        next.status = "Left";
+        next.updatedAt = new Date().toISOString();
+        next.note = "auto-clean duplicate active membership";
+      } else {
+        seenActive.add(activeKey);
+      }
+    }
+
+    return next;
+  });
+}
+
 async function readAll(): Promise<ChurchMembership[]> {
   const data = await readJsonFile<ChurchMembership[]>(STORE_FILE, []);
-  return Array.isArray(data) ? data : [];
+  return normalizeMembershipRows(Array.isArray(data) ? data : []);
+}
+
+function normUserId(x: any) {
+  return String(x || "").trim().toLowerCase();
 }
 
 function sortNewestFirst(list: ChurchMembership[]) {
@@ -62,32 +118,50 @@ function sortNewestFirst(list: ChurchMembership[]) {
    ========================= */
 
 export async function getActiveMembership(userId: string): Promise<ChurchMembership | undefined> {
+  if (usePostgres()) {
+    await ensureStore();
+    const row = await dbGetActiveMembership(userId);
+    return row || undefined;
+  }
   const all = await readAll();
-  return all.find((m) => m.userId === userId && m.status === "Active");
+  return all.find((m) => normUserId(m.userId) === normUserId(userId) && m.status === "Active");
 }
 
 export async function getMembershipsForUser(userId: string): Promise<ChurchMembership[]> {
+  if (usePostgres()) {
+    await ensureStore();
+    return dbGetMembershipsForUser(userId);
+  }
   const all = await readAll();
-  return sortNewestFirst(all.filter((m) => m.userId === userId));
+  return sortNewestFirst(all.filter((m) => normUserId(m.userId) === normUserId(userId)));
 }
 
 export async function getMembershipsForChurch(
   churchId: string,
   status?: MembershipStatus
 ): Promise<ChurchMembership[]> {
+  if (usePostgres()) {
+    await ensureStore();
+    return dbGetMembershipsForChurch(churchId, status);
+  }
   const all = await readAll();
   return sortNewestFirst(all.filter((m) => m.churchId === churchId && (!status || m.status === status)));
 }
 
 
 export async function getMembershipById(id: string): Promise<ChurchMembership | undefined> {
+  if (usePostgres()) {
+    await ensureStore();
+    const row = await dbGetMembershipById(id);
+    return row || undefined;
+  }
   const all = await readAll();
   return all.find((m) => m.id === id);
 }
 
 export async function isApproverForChurch(userId: string, churchId: string): Promise<boolean> {
   const active = await getMembershipsForChurch(churchId, "Active");
-  const mine = active.find((m) => m.userId === userId);
+  const mine = active.find((m) => normUserId(m.userId) === normUserId(userId));
   if (!mine) return false;
   return mine.churchRole === "Pastor" || mine.churchRole === "Church_Admin";
 }
@@ -105,8 +179,13 @@ export async function isApproverForChurch(userId: string, churchId: string): Pro
 export async function requestMembership(
   userId: string,
   churchId: string,
-  name?: string
+  name?: string,
+  requestSource: "JoinRequest" | "ChurchInvite" = "JoinRequest"
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  if (usePostgres()) {
+    await ensureStore();
+    return dbRequestMembership(userId, churchId, name, requestSource);
+  }
   let result: { ok: true; membership: ChurchMembership } | { ok: false; error: string } = {
     ok: false,
     error: "Unknown error",
@@ -117,19 +196,20 @@ export async function requestMembership(
     (current) => {
       const s = Array.isArray(current) ? current : [];
 
-      const active = s.find((m) => m.userId === userId && m.status === "Active");
+      const active = s.find((m) => normUserId(m.userId) === normUserId(userId) && m.status === "Active");
       if (active) {
         result = { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` };
         return s;
       }
 
-      const pending = s.find((m) => m.userId === userId && m.status === "Requested");
+      const pending = s.find((m) => normUserId(m.userId) === normUserId(userId) && m.status === "Requested");
       if (pending && pending.churchId !== churchId) {
         result = { ok: false, error: `User already has a pending request in churchId=${pending.churchId}` };
         return s;
       }
 
       if (pending && pending.churchId === churchId) {
+        pending.requestSource = pending.requestSource || requestSource;
         result = { ok: true, membership: pending };
         return s;
       }
@@ -141,6 +221,7 @@ export async function requestMembership(
         status: "Requested",
         churchRole: "Member",
         name: name?.trim() ? name.trim() : undefined,
+        requestSource,
         createdAt: nowIso(),
       };
 
@@ -157,6 +238,10 @@ export async function requestMembership(
 export async function leaveActiveMembership(
   userId: string
 ): Promise<{ ok: true; membership?: ChurchMembership } | { ok: false; error: string }> {
+  if (usePostgres()) {
+    await ensureStore();
+    return dbLeaveActiveMembership(userId);
+  }
   let result: { ok: true; membership?: ChurchMembership } | { ok: false; error: string } = {
     ok: false,
     error: "Unknown error",
@@ -166,7 +251,7 @@ export async function leaveActiveMembership(
     STORE_FILE,
     (current) => {
       const s = Array.isArray(current) ? current : [];
-      const active = s.find((m) => m.userId === userId && m.status === "Active");
+      const active = s.find((m) => normUserId(m.userId) === normUserId(userId) && m.status === "Active");
       if (!active) {
         result = { ok: false, error: "No Active membership to leave" };
         return s;
@@ -180,6 +265,26 @@ export async function leaveActiveMembership(
     []
   );
 
+  if (!result.ok) return result;
+
+  const activeMembership = (result as { ok: true; membership?: ChurchMembership }).membership;
+  if (activeMembership?.churchId) {
+    const leftChurchId = String(activeMembership.churchId || "");
+    await updateJsonFile<any[]>(
+      "ministry-members.json",
+      (current) => {
+        const list = Array.isArray(current) ? current : [];
+        return list.filter((mm: any) => {
+          return !(
+            String(mm?.userId || "").toLowerCase() === String(userId || "").toLowerCase() &&
+            String(mm?.churchId || "") === leftChurchId
+          );
+        });
+      },
+      []
+    );
+  }
+
   return result;
 }
 
@@ -187,6 +292,10 @@ export async function approveMembership(
   membershipId: string,
   decidedBy: string
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  if (usePostgres()) {
+    await ensureStore();
+    return dbApproveMembership(membershipId, decidedBy);
+  }
   let result: { ok: true; membership: ChurchMembership } | { ok: false; error: string } = {
     ok: false,
     error: "Unknown error",
@@ -208,7 +317,7 @@ export async function approveMembership(
       }
 
       // single Active enforcement
-      const active = s.find((x) => x.userId === m.userId && x.status === "Active");
+      const active = s.find((x) => normUserId(x.userId) === normUserId(m.userId) && x.status === "Active");
       if (active) {
         result = { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` };
         return s;
@@ -234,6 +343,10 @@ export async function rejectMembership(
   decidedBy: string,
   note?: string
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  if (usePostgres()) {
+    await ensureStore();
+    return dbRejectMembership(membershipId, decidedBy, note);
+  }
   let result: { ok: true; membership: ChurchMembership } | { ok: false; error: string } = {
     ok: false,
     error: "Unknown error",
@@ -280,6 +393,21 @@ export async function addActiveMember(
   name?: string,
   role: ChurchRole = "Member"
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  if (usePostgres()) {
+    await ensureStore();
+    const result = await dbAddActiveMember(churchId, userId, name, role);
+    if (process.env.KRISTO_DEBUG_AUTH === "1" || process.env.NODE_ENV !== "production") {
+      console.log("[memberships] addActiveMember postgres", {
+        churchId,
+        userId,
+        role,
+        ok: result.ok,
+        error: result.ok ? undefined : result.error,
+        membershipId: result.ok ? result.membership.id : null,
+      });
+    }
+    return result;
+  }
   let result: { ok: true; membership: ChurchMembership } | { ok: false; error: string } = {
     ok: false,
     error: "Unknown error",
@@ -290,9 +418,21 @@ export async function addActiveMember(
     (current) => {
       const s = Array.isArray(current) ? current : [];
 
-      const active = s.find((m) => m.userId === userId && m.status === "Active");
+      const active = s.find((m) => normUserId(m.userId) === normUserId(userId) && m.status === "Active");
       if (active) {
         result = { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` };
+        return s;
+      }
+
+      const pendingSameChurch = s.find((m) => normUserId(m.userId) === normUserId(userId) && m.churchId === churchId && m.status === "Requested");
+      if (pendingSameChurch) {
+        pendingSameChurch.status = "Active";
+        pendingSameChurch.churchRole = role;
+        pendingSameChurch.name = name?.trim() ? name.trim() : pendingSameChurch.name;
+        pendingSameChurch.updatedAt = nowIso();
+        pendingSameChurch.decidedBy = "system";
+        pendingSameChurch.decidedAt = nowIso();
+        result = { ok: true, membership: pendingSameChurch };
         return s;
       }
 
@@ -303,6 +443,7 @@ export async function addActiveMember(
         status: "Active",
         churchRole: role,
         name: name?.trim() ? name.trim() : undefined,
+        requestSource: "JoinRequest",
         createdAt: nowIso(),
         decidedBy: "system",
         decidedAt: nowIso(),
@@ -318,11 +459,63 @@ export async function addActiveMember(
   return result;
 }
 
+
+export async function deactivateMemberInChurch(
+  churchId: string,
+  userId: string
+): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  if (usePostgres()) {
+    await ensureStore();
+    return dbDeactivateMemberInChurch(churchId, userId);
+  }
+  let result: { ok: true; membership: ChurchMembership } | { ok: false; error: string } = {
+    ok: false,
+    error: "Unknown error",
+  };
+
+  await updateJsonFile<ChurchMembership[]>(
+    STORE_FILE,
+    (current) => {
+      const s = Array.isArray(current) ? current : [];
+      const m = s.find(
+        (x) =>
+          normUserId(x.userId) === normUserId(userId) &&
+          x.churchId === churchId &&
+          x.status === "Active"
+      );
+
+      if (!m) {
+        result = { ok: false, error: "Active membership not found for this user in this church" };
+        return s;
+      }
+
+      if (m.churchRole === "Pastor") {
+        result = { ok: false, error: "Pastor cannot be removed" };
+        return s;
+      }
+
+      m.status = "Left";
+      m.updatedAt = nowIso();
+      m.note = "Removed by church admin";
+
+      result = { ok: true, membership: m };
+      return s;
+    },
+    []
+  );
+
+  return result;
+}
+
 export async function setMemberRole(
   churchId: string,
   userId: string,
   role: ChurchRole
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  if (usePostgres()) {
+    await ensureStore();
+    return dbSetMemberRole(churchId, userId, role);
+  }
   let result: { ok: true; membership: ChurchMembership } | { ok: false; error: string } = {
     ok: false,
     error: "Unknown error",
@@ -361,6 +554,12 @@ export async function devPromoteToRoleIfActive(
   const isDev = process.env.NODE_ENV !== "production";
   if (!isDev) return;
 
+  if (usePostgres()) {
+    await ensureStore();
+    await dbDevPromoteToRoleIfActive(userId, churchId, role);
+    return;
+  }
+
   await updateJsonFile<ChurchMembership[]>(
     STORE_FILE,
     (current) => {
@@ -369,7 +568,7 @@ export async function devPromoteToRoleIfActive(
       if (!m) return s;
 
       // only promote upward; don’t downgrade if already higher
-      const priority: Record<ChurchRole, number> = { Member: 0, Leader: 1, Church_Admin: 2, Pastor: 3 };
+      const priority: Record<ChurchRole, number> = { Member: 0, Leader: 1, Ministry_Leader: 2, Church_Admin: 3, Pastor: 4 };
       const cur = m.churchRole || "Member";
       if (priority[cur] >= priority[role]) return s;
 

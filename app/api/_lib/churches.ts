@@ -1,4 +1,11 @@
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import { hasDurableStore } from "@/app/api/_lib/store/authDb";
+import {
+  dbGetChurchById,
+  dbListChurches,
+  dbUpsertChurch,
+  ensureChurchStoreReady,
+} from "@/app/api/_lib/store/churchDb";
 
 export type ChurchProfile = {
   id: string;
@@ -21,6 +28,14 @@ export type ChurchProfile = {
 };
 
 const STORE_FILE = "churches.json";
+
+function usePostgres() {
+  return hasDurableStore();
+}
+
+async function ensureStore() {
+  if (usePostgres()) await ensureChurchStoreReady();
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -58,11 +73,20 @@ function clean(input: unknown, max = 120): string | undefined {
 }
 
 async function readAll(): Promise<ChurchProfile[]> {
+  if (usePostgres()) {
+    await ensureStore();
+    return dbListChurches();
+  }
   const data = await readJsonFile<ChurchProfile[]>(STORE_FILE, []);
   return Array.isArray(data) ? data : [];
 }
 
 export async function getChurchById(churchId: string): Promise<ChurchProfile | undefined> {
+  if (usePostgres()) {
+    await ensureStore();
+    const row = await dbGetChurchById(churchId);
+    return row || undefined;
+  }
   const all = await readAll();
   return all.find((c) => c.id === churchId);
 }
@@ -279,6 +303,32 @@ export async function searchChurches(params: {
 export async function upsertChurchProfile(
   input: Pick<ChurchProfile, "id"> & Partial<Omit<ChurchProfile, "id" | "createdAt" | "updatedAt">>
 ): Promise<ChurchProfile> {
+  if (usePostgres()) {
+    await ensureStore();
+    const existing = await dbGetChurchById(input.id);
+    const saved: ChurchProfile = {
+      ...(existing || {}),
+      ...input,
+      id: input.id,
+      name: String(input.name || existing?.name || input.id),
+      normalizedCountry: normalizeGeo((input as any).country) ?? existing?.normalizedCountry,
+      normalizedProvince: normalizeGeo((input as any).province) ?? existing?.normalizedProvince,
+      normalizedCity: normalizeGeo((input as any).city) ?? existing?.normalizedCity,
+      phoneCountryCode: phoneCountryCode((input as any).phone) ?? existing?.phoneCountryCode,
+      primaryLanguage:
+        clean((input as any).primaryLanguage, 20) ??
+        existing?.primaryLanguage ??
+        languageHint((input as any).country),
+      createdAt: existing?.createdAt || nowIso(),
+      updatedAt: nowIso(),
+    };
+    const result = await dbUpsertChurch(saved);
+    if (process.env.KRISTO_DEBUG_AUTH === "1" || process.env.NODE_ENV !== "production") {
+      console.log("[churches] upsert postgres", { churchId: result.id, name: result.name });
+    }
+    return result;
+  }
+
   let saved!: ChurchProfile;
 
   await updateJsonFile<ChurchProfile[]>(
@@ -340,6 +390,41 @@ export async function patchChurchProfile(
     avatarUrl?: unknown;
   }
 ): Promise<ChurchProfile> {
+  if (usePostgres()) {
+    await ensureStore();
+    const prev = (await dbGetChurchById(churchId)) || ({ id: churchId, name: churchId, createdAt: nowIso() } as ChurchProfile);
+    const nextName = clean(input.name, 120);
+    const nextAddress = clean(input.address, 180);
+    const nextPhone = clean(input.phone, 60);
+    const nextPastorName = clean(input.pastorName, 120);
+    const nextCountry = clean(input.country, 120);
+    const nextProvince = clean(input.province, 120);
+    const nextCity = clean(input.city, 120);
+    const nextPrimaryLanguage = clean(input.primaryLanguage, 20) ?? languageHint(nextCountry);
+    const nextAvatarUri = clean(input.avatarUri, 2000);
+    const nextAvatarUrl = clean(input.avatarUrl, 2000);
+
+    const saved: ChurchProfile = {
+      ...prev,
+      name: nextName ?? prev.name,
+      address: nextAddress ?? prev.address,
+      phone: nextPhone ?? prev.phone,
+      pastorName: nextPastorName ?? prev.pastorName,
+      country: nextCountry ?? prev.country,
+      province: nextProvince ?? (prev as any).province,
+      city: nextCity ?? prev.city,
+      normalizedCountry: normalizeGeo(nextCountry) ?? (prev as any).normalizedCountry,
+      normalizedProvince: normalizeGeo(nextProvince) ?? (prev as any).normalizedProvince,
+      normalizedCity: normalizeGeo(nextCity) ?? (prev as any).normalizedCity,
+      phoneCountryCode: phoneCountryCode(nextPhone) ?? (prev as any).phoneCountryCode,
+      primaryLanguage: nextPrimaryLanguage ?? (prev as any).primaryLanguage,
+      avatarUri: nextAvatarUri ?? prev.avatarUri,
+      avatarUrl: nextAvatarUrl ?? prev.avatarUrl,
+      updatedAt: nowIso(),
+    };
+    return dbUpsertChurch(saved);
+  }
+
   let saved!: ChurchProfile;
 
   await updateJsonFile<ChurchProfile[]>(
