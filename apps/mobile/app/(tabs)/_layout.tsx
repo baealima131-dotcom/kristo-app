@@ -1,11 +1,17 @@
 import { Tabs, useGlobalSearchParams, useSegments, useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet } from "@/src/lib/kristoApi";
-import { feedList } from "@/src/lib/homeFeedStore";
+import { subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
+import {
+  RING_RECOMPUTE_INTERVAL_MS,
+  recomputeScheduleRingsFromRows,
+} from "@/src/lib/liveScheduleRing";
+import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
 import { Alert, Animated, Pressable, Text, View } from "react-native";
 import { fetchLightLiveState, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
 
@@ -375,6 +381,71 @@ export default function TabLayout() {
   const [mediaScheduleTabLive, setMediaScheduleTabLive] = useState<any>(null);
   const [personalScheduleTabAlert, setPersonalScheduleTabAlert] = useState<any>(null);
   const churchLivePulse = useRef(new Animated.Value(0)).current;
+  const backendFeedRowsRef = useRef<any[]>([]);
+  const claimRingTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+
+  const applyScheduleRings = useCallback(
+    (source: string, backendRows: any[] = backendFeedRowsRef.current) => {
+      if (!session?.userId) return;
+
+      const { personal, church } = recomputeScheduleRingsFromRows({
+        rows: backendRows,
+        viewerUserId: String(session.userId || ""),
+        viewerChurchId: String(session.churchId || ""),
+        source,
+      });
+
+      setMediaScheduleTabLive(church);
+      setPersonalScheduleTabAlert(personal);
+    },
+    [session?.userId, session?.churchId]
+  );
+
+  const scheduleClaimRingSync = useCallback(
+    (payload?: ClaimUpdatedPayload) => {
+      console.log("KRISTO_RING_CLAIM_EVENT_RECOMPUTE", {
+        action: payload?.action || "claim",
+        feedId: payload?.feedId || payload?.baseFeedId || payload?.postId || "",
+        slotId: payload?.slotId || "",
+        slotNumber: payload?.slotNumber ?? null,
+        userId: payload?.userId || "",
+        startMs: payload?.startMs ?? null,
+        endMs: payload?.endMs ?? null,
+      });
+
+      claimRingTimersRef.current.forEach((timer) => clearTimeout(timer));
+      claimRingTimersRef.current = [];
+
+      applyScheduleRings("claim-event");
+      for (const delayMs of [250, 1000, 2500]) {
+        claimRingTimersRef.current.push(
+          setTimeout(() => applyScheduleRings("claim-event"), delayMs)
+        );
+      }
+    },
+    [applyScheduleRings]
+  );
+
+  useEffect(() => {
+    applyScheduleRings("mount");
+    const unsubFeed = subscribeHomeFeed(() => applyScheduleRings("feed"));
+    const unsubClaim = onClaimUpdated((payload) => scheduleClaimRingSync(payload));
+    const fastTimer = setInterval(() => applyScheduleRings("timer"), RING_RECOMPUTE_INTERVAL_MS);
+
+    return () => {
+      unsubFeed();
+      unsubClaim();
+      clearInterval(fastTimer);
+      claimRingTimersRef.current.forEach((timer) => clearTimeout(timer));
+      claimRingTimersRef.current = [];
+    };
+  }, [applyScheduleRings, scheduleClaimRingSync]);
+
+  useFocusEffect(
+    useCallback(() => {
+      applyScheduleRings("focus");
+    }, [applyScheduleRings])
+  );
 
   useEffect(() => {
     let alive = true;
@@ -409,208 +480,14 @@ export default function TabLayout() {
           Array.isArray(feedRes?.items) ? feedRes.items :
           Array.isArray(feedRes) ? feedRes : [];
 
-        const localRows: any[] = (() => {
-          try { return feedList() as any[]; } catch { return []; }
-        })();
-
-        const allRows = [...rows, ...localRows];
-
-        const now = Date.now();
-        const viewerChurchId = String(session.churchId || "").trim();
-        const viewerUserId = String(session.userId || "").trim();
-
-        function timeToParts(t: string) {
-          const mm = String(t || "").match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i);
-          if (!mm) return null;
-          let h = Number(mm[1] || 0);
-          const min = Number(mm[2] || 0);
-          const ap = String(mm[3] || "").toUpperCase();
-          if (ap === "PM" && h < 12) h += 12;
-          if (ap === "AM" && h === 12) h = 0;
-          return { h, min };
-        }
-
-        function slotWindow(slot: any) {
-          const base = new Date(String(slot?.meetingDate || slot?.meetingDay || ""));
-          const today = new Date();
-          const y = Number.isFinite(base.getTime()) ? base.getFullYear() : today.getFullYear();
-          const m = Number.isFinite(base.getTime()) ? base.getMonth() : today.getMonth();
-          const d = Number.isFinite(base.getTime()) ? base.getDate() : today.getDate();
-          const sp = timeToParts(String(slot?.startTime || ""));
-          if (!sp) return { startMs: 0, endMs: 0 };
-          const startMs = new Date(y, m, d, sp.h, sp.min, 0, 0).getTime();
-          const ep = timeToParts(String(slot?.endTime || ""));
-          let endMs = ep
-            ? new Date(y, m, d, ep.h, ep.min, 0, 0).getTime()
-            : startMs + Math.max(1, Number(slot?.durationMin || 5)) * 60000;
-          if (endMs <= startMs) endMs += 24 * 60 * 60000;
-          return { startMs, endMs };
-        }
-
-        const upcoming: any[] = [];
-
-        allRows.forEach((item: any) => {
-          const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-          if (!slots.length) return;
-
-          const isMediaSlot =
-            String(item?.scheduleType || "").includes("media-live-slots") ||
-            String(item?.source || "").includes("media-schedule");
-
-          if (!isMediaSlot) return;
-
-          // Church LIVE tab must detect scheduled live slots
-          // for ALL members of the same church, not only owners.
-          const ownerChurchMatch =
-            String(item?.churchId || "").trim() === viewerChurchId;
-
-          const ownerUserMatch = [
-            item?.createdBy,
-            item?.mediaOwnerPastorUserId,
-            item?.pastorUserId,
-            item?.mediaOwnerId,
-          ]
-            .map((x) => String(x || "").trim())
-            .includes(viewerUserId);
-
-          // SECURITY:
-          // Red LIVE ring for scheduled media must show only to members of THAT church/media owner.
-          // Never use churchLabel/churchName fallback because another church/user can share same labels.
-          // Church LIVE tab must be current-church only.
-          // A pastor claiming another church's slot must NOT light up his own church tab.
-          if (!ownerChurchMatch) return;
-
-          // HARD SECURITY:
-          // Ignore stale/global local feed rows from other churches.
-          // LIVE tab must ONLY react to current church ownership.
-          const normalizedChurchId = String(item?.churchId || "").trim();
-
-          if (
-            normalizedChurchId &&
-            normalizedChurchId !== viewerChurchId
-          ) {
-            return;
-          }
-
-          slots.forEach((slot: any, index: number) => {
-            const { startMs, endMs } = slotWindow(slot);
-            if (!startMs || !endMs) return;
-
-            const startsInMin = Math.ceil((startMs - now) / 60000);
-            const isLiveNow = now >= startMs && now <= endMs;
-            const isSoon = startsInMin >= 0 && startsInMin <= 30;
-            if (!isLiveNow && !isSoon) return;
-
-            let color = "#38BDF8"; // 30 min
-            if (startsInMin <= 15) color = "#A78BFA";
-            if (startsInMin <= 5) color = "#F59E0B";
-            if (isLiveNow || startsInMin <= 0) color = "#EF4444";
-
-            upcoming.push({
-              item,
-              slot,
-              index,
-              startMs,
-              endMs,
-              startsInMin,
-              isLiveNow,
-              color,
-            });
-          });
-        });
-
-        const personalUpcoming: any[] = [];
-
-        allRows.forEach((item: any) => {
-          const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-          if (!slots.length) return;
-
-          const isMediaSlot =
-            String(item?.scheduleType || "").includes("media-live-slots") ||
-            String(item?.source || "").includes("media-schedule");
-
-          if (!isMediaSlot) return;
-
-          slots.forEach((slot: any, index: number) => {
-            const { startMs, endMs } = slotWindow(slot);
-            if (!startMs || !endMs) return;
-
-            const startsInMin = Math.ceil((startMs - now) / 60000);
-            const isLiveNow = now >= startMs && now <= endMs;
-            if (!isLiveNow && (startsInMin < 0 || startsInMin > 30)) return;
-
-            const claimedRaw = slot?.claimedBy;
-            const slotClaimedByMe =
-              String(slot?.claimedByUserId || "").trim() === viewerUserId ||
-              String(claimedRaw && typeof claimedRaw === "object" ? claimedRaw.userId || "" : "").trim() === viewerUserId;
-
-            const savedByMe =
-              item?.saved === true ||
-              item?.isSaved === true ||
-              item?.savedByMe === true ||
-              slot?.saved === true ||
-              slot?.savedByMe === true;
-
-            const likedByMe =
-              item?.liked === true ||
-              item?.likedByMe === true ||
-              slot?.liked === true ||
-              slot?.likedByMe === true;
-
-            let match = "";
-            let icon: keyof typeof Ionicons.glyphMap = "notifications";
-            let color = "#38BDF8";
-
-            if (slotClaimedByMe) {
-              match = "claimed";
-              icon = isLiveNow || startsInMin <= 0 ? "radio" : "hand-left";
-              color = "#EF4444";
-              if (!isLiveNow && startsInMin > 5) color = "#F59E0B";
-              if (!isLiveNow && startsInMin > 15) color = "#38BDF8";
-            } else if (savedByMe && startsInMin <= 15) {
-              match = "saved";
-              icon = "bookmark";
-              color = startsInMin <= 5 ? "#F59E0B" : "#A78BFA";
-            } else if (likedByMe && startsInMin <= 5) {
-              match = "liked";
-              icon = "heart";
-              color = "#FF5A7A";
-            }
-
-            if (!match) return;
-
-            personalUpcoming.push({
-              item,
-              slot,
-              index,
-              startMs,
-              endMs,
-              startsInMin,
-              isLiveNow,
-              match,
-              icon,
-              color,
-            });
-          });
-        });
-
-        upcoming.sort((a, b) => a.startMs - b.startMs);
-        personalUpcoming.sort((a, b) => {
-          const pri: any = { claimed: 0, saved: 1, liked: 2 };
-          return (pri[a.match] ?? 9) - (pri[b.match] ?? 9) || a.startMs - b.startMs;
-        });
-
-        if (alive) {
-          setMediaScheduleTabLive(upcoming[0] || null);
-          setPersonalScheduleTabAlert(personalUpcoming[0] || null);
-        }
+        backendFeedRowsRef.current = rows;
+        if (alive) applyScheduleRings("backend-feed", rows);
       } catch {
-        if (alive) {
-          setMediaScheduleTabLive(null);
-          setPersonalScheduleTabAlert(null);
-        }
+        if (alive) applyScheduleRings("backend-feed-error");
       }
     }
+
+    void loadChurchLive();
 
     const stop = startAdaptiveLivePolling({
       screen: "TabLayout",
@@ -623,7 +500,7 @@ export default function TabLayout() {
       alive = false;
       stop();
     };
-  }, [session?.userId, session?.churchId, session?.role]);
+  }, [session?.userId, session?.churchId, session?.role, applyScheduleRings]);
 
   useEffect(() => {
     if (!backendChurchLive?.isLive && !mediaScheduleTabLive) return;

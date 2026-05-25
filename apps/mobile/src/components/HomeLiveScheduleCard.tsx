@@ -506,6 +506,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
     const postId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
     const slotId = String(slot.id);
+    const slotNumber = Number((slot as any)?.slot || (slot as any)?.slotNumber || (slot as any)?.order || 0);
     const claim = {
       slotId,
       userId: currentUserId,
@@ -516,6 +517,12 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       avatarUri: String(
         session?.avatarUri || session?.avatarUrl || session?.profileImage || profileAvatarUri || ""
       ).trim(),
+      startMs: Number(slot.startMs || 0),
+      endMs: Number(slot.endMs || 0),
+      slotNumber: slotNumber || Number((slot as any).slot || (slot as any).slotNumber || 0),
+      churchId: String(item?.churchId || session?.churchId || ""),
+      slot,
+      item,
     };
 
     setOptimisticClaim(claim);
