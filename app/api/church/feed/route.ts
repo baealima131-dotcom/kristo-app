@@ -86,6 +86,8 @@ export type ChurchFeedItem = {
   actualChurchPastorUserId?: string;
   churchPastorUserId?: string;
   scheduleCreatedByUserId?: string;
+  sourceScheduleId?: string;
+  publishedAt?: string;
   mediaHostIds?: string;
   isGlobalMediaSlot?: boolean;
   ownershipType?: "church" | "media" | "member";
@@ -431,6 +433,10 @@ function isDiscoverableFeedItem(item: any, viewerChurchId: string) {
   const itemChurchId = String(item?.churchId || "");
   const member = viewerHasActiveChurchMembership(viewerChurchId);
 
+  if (visibility.includes("church")) {
+    return member && itemChurchId === viewerChurchId;
+  }
+
   if (member) {
     if (
       visibility.includes("public") ||
@@ -554,6 +560,10 @@ export async function GET(req: NextRequest) {
     .filter((x: any) => {
       if (isClaimableScheduleFeedItem(x) && !viewerHasActiveChurchMembership(churchId)) {
         return false;
+      }
+      if (isClaimableScheduleFeedItem(x)) {
+        const itemCid = String(x?.churchId || "").trim();
+        if (itemCid && churchId && itemCid !== churchId) return false;
       }
       return true;
     })
@@ -1015,7 +1025,9 @@ export async function POST(req: NextRequest) {
   const churchLabel = cleanText(body?.churchLabel || body?.churchName, 240) || undefined;
   const feedActorLabel = cleanText(body?.actorLabel || body?.mediaName, 240) || undefined;
   const scheduleCreatedByUserId =
-    cleanText(body?.scheduleCreatedByUserId || body?.createdByUserId, 240) || viewerUserId;
+    cleanText(body?.scheduleCreatedByUserId || body?.createdByUserId || body?.createdBy, 240) || viewerUserId;
+  const sourceScheduleId = cleanText(body?.sourceScheduleId || body?.liveId, 240) || undefined;
+  const publishedAt = cleanText(body?.publishedAt, 80) || new Date().toISOString();
 
   const pastorResolution = await resolveChurchPastorUserId(churchId);
   const clientPastorId = cleanText(
@@ -1122,6 +1134,8 @@ export async function POST(req: NextRequest) {
     actualChurchPastorUserId,
     churchPastorUserId: actualChurchPastorUserId,
     scheduleCreatedByUserId,
+    sourceScheduleId,
+    publishedAt,
     mediaHostIds,
 
     isGlobalMediaSlot,
@@ -1139,6 +1153,12 @@ export async function POST(req: NextRequest) {
 
   if (isIncomingMediaScheduleCreate(body)) {
     bumpMediaScheduleSync(churchId, "create_media_schedule");
+    console.log("[ScheduleFeed] persisted", {
+      churchId,
+      sourceScheduleId: item.sourceScheduleId || item.id,
+      feedId: item.id,
+      slotCount: Array.isArray(item.scheduleSlots) ? item.scheduleSlots.length : 0,
+    });
   }
 
   return ok(

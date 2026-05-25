@@ -27,6 +27,7 @@ import {
   feedAdd,
   feedList,
   feedRemoveWhere,
+  feedSyncMediaScheduleFromBackend,
   feedUnclaimSchedule,
   feedUpdateScheduleSlot,
   feedUpdateScheduleSlots,
@@ -1559,17 +1560,43 @@ export default function MediaStudioScreen() {
     }
 
     const scheduleId = `media-live-${Date.now()}`;
+    const publishedAt = new Date().toISOString();
+
+    function formatClock(d: Date) {
+      return d.toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      });
+    }
+
+    function formatMeetingDay(d: Date) {
+      return d.toLocaleDateString("en-US", {
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+      });
+    }
+
+    let slotCursor = new Date(Date.now() + 5 * 60 * 1000);
     const scheduleSlotsPayload = cards.map((name, index) => {
       const durationMin = index === 0 ? 10 : index === 1 ? 21 : 5;
+      const startTime = formatClock(slotCursor);
+      const endDate = new Date(slotCursor.getTime() + durationMin * 60 * 1000);
+      const endTime = formatClock(endDate);
+      const meetingDay = formatMeetingDay(slotCursor);
+      slotCursor = new Date(endDate.getTime() + 2 * 60 * 1000);
+
       return {
         id: `media-slot-${Date.now()}-${index}`,
         slotLabel: `Slot ${index + 1}`,
         name,
         role: caption,
         task: caption,
-        meetingDay: "Apr 03, 2026",
-        startTime: "7:00 PM",
-        endTime: index === 0 ? "7:10 PM" : index === 1 ? "7:21 PM" : "7:05 PM",
+        meetingDate: meetingDay,
+        meetingDay,
+        startTime,
+        endTime,
         durationMin,
         claimed: false,
         createdByUserId: String(session?.userId || ""),
@@ -1602,6 +1629,7 @@ export default function MediaStudioScreen() {
 
     const localScheduleItem = {
       id: scheduleId,
+      sourceScheduleId: scheduleId,
       churchId,
       kind: "post",
       actorLabel: scheduleMediaName,
@@ -1615,40 +1643,45 @@ export default function MediaStudioScreen() {
       body: caption,
       caption,
       topic: caption,
-      createdAt: new Date().toISOString(),
+      createdAt: publishedAt,
       liked: false,
       saved: false,
       likeCount: 0,
       commentCount: 0,
       shareCount: 0,
       scheduleType: "media-live-slots",
-      visibility: "public",
-      audience: "global",
-      isGlobalMediaSlot: true,
+      source: "media-schedule",
+      visibility: "church",
+      audience: "church",
+      isGlobalMediaSlot: false,
+      publishedAt,
       scheduleSlots: scheduleSlotsPayload,
     };
 
     feedAdd(localScheduleItem as any);
 
-    apiPost(
-      "/api/church/feed",
-      {
-        type: "post",
-        title: cards[0],
-        text: caption,
-        source: "media-schedule",
-        scheduleType: "media-live-slots",
-        visibility: "public",
-        audience: "global",
-        isGlobalMediaSlot: true,
-        mediaOwnerId: scheduleAuthority.scheduleCreatedByUserId,
-        createdByUserId: scheduleAuthority.scheduleCreatedByUserId,
-        ...scheduleAuthority,
-        actorLabel: scheduleMediaName,
-        mediaName: scheduleMediaName,
-        churchLabel: scheduleChurchName,
-        churchName: scheduleChurchName,
-        actorAvatarUri: String(
+    const postPayload = {
+      type: "post",
+      title: cards[0],
+      text: caption,
+      churchId,
+      createdBy: String(session?.userId || ""),
+      source: "media-schedule",
+      scheduleType: "media-live-slots",
+      sourceScheduleId: scheduleId,
+      liveId: scheduleId,
+      visibility: "church",
+      audience: "church",
+      isGlobalMediaSlot: false,
+      publishedAt,
+      mediaOwnerId: scheduleAuthority.scheduleCreatedByUserId,
+      createdByUserId: scheduleAuthority.scheduleCreatedByUserId,
+      ...scheduleAuthority,
+      actorLabel: scheduleMediaName,
+      mediaName: scheduleMediaName,
+      churchLabel: scheduleChurchName,
+      churchName: scheduleChurchName,
+      actorAvatarUri: String(
         (session as any)?.churchAvatarUri ||
         (session as any)?.churchAvatarUrl ||
         (session as any)?.avatarUri ||
@@ -1656,7 +1689,7 @@ export default function MediaStudioScreen() {
         (session as any)?.profileImage ||
         ""
       ),
-        churchAvatarUri: String(
+      churchAvatarUri: String(
         (session as any)?.churchAvatarUri ||
         (session as any)?.churchAvatarUrl ||
         (session as any)?.avatarUri ||
@@ -1664,65 +1697,96 @@ export default function MediaStudioScreen() {
         (session as any)?.profileImage ||
         ""
       ),
-        scheduleSlots: scheduleSlotsPayload,
-      },
-      {
-        headers: getKristoHeaders({
-          userId: session?.userId || "",
-          role: (session?.role || "Member") as any,
-          churchId: session?.churchId || "",
-        }),
-      }
-    )
-      .then(async (r: any) => {
-        console.log("KRISTO_MEDIA_SCHEDULE_BACKEND_OK", JSON.stringify(r));
-        if (!r?.ok) {
-          if (isChurchSubscriptionRequiredError(r)) {
-            alertChurchSubscriptionRequired();
-            return;
-          }
-          Alert.alert("Backend schedule failed", String(r?.error || JSON.stringify(r)));
-          return;
-        }
-        await runMediaScheduleSilentReload("create-media-schedule", true);
-      })
-      .catch((e: any) => {
-        console.log("KRISTO_MEDIA_SCHEDULE_BACKEND_ERROR", e);
-        if (isChurchSubscriptionRequiredError(e)) {
+      scheduleSlots: scheduleSlotsPayload,
+    };
+
+    console.log("[ScheduleCreate] backend post start", {
+      churchId,
+      sourceScheduleId: scheduleId,
+      slotCount: scheduleSlotsPayload.length,
+    });
+
+    try {
+      const r: any = await apiPost("/api/church/feed", postPayload, {
+        headers: apiHeaders,
+      });
+
+      console.log("[ScheduleCreate] backend post result", {
+        ok: r?.ok,
+        feedId: r?.data?.id || r?.id,
+        churchId,
+        sourceScheduleId: scheduleId,
+      });
+
+      if (!r?.ok) {
+        if (isChurchSubscriptionRequiredError(r)) {
           alertChurchSubscriptionRequired();
           return;
         }
-        if (Number(e?.status || e?.response?.status || 0) === 409) {
-          Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
-          return;
-        }
-        Alert.alert("Backend schedule error", String(e?.message || e));
-      });
+        Alert.alert("Backend schedule failed", String(r?.error || JSON.stringify(r)));
+        return;
+      }
 
-    sendAssignmentCards(
-      "church-media-room",
-      scheduleSlotsPayload.map((slot: any, index: number) => ({
-        cardId: `${scheduleId}-room-${index}`,
-        id: `${scheduleId}-room-${index}`,
-        title: String(slot.name || `Slot ${index + 1}`),
-        subtitle: caption,
-        role: caption,
-        status: "open",
-        meetingDate: String(slot.meetingDay || ""),
-        meetingDay: String(slot.meetingDay || ""),
-        startTime: String(slot.startTime || ""),
-        endTime: String(slot.endTime || ""),
-        durationMin: Number(slot.durationMin || 0),
-        sourceFeedId: scheduleId,
-        source: "media-schedule",
-        roomKind: "assignment",
-        liveLayout: "grid6",
-      })),
-      { senderName: form.mediaName.trim() || "Church Media" }
-    );
+      const backendItem = r?.data || r;
+      const backendFeedId = String(backendItem?.id || "").trim();
 
-    Alert.alert("Sent", "Live card has been sent to Home feed and Church Live Control.");
-    router.push("/" as any);
+      if (backendFeedId) {
+        feedSyncMediaScheduleFromBackend(
+          {
+            ...backendItem,
+            churchId,
+            source: "media-schedule",
+            scheduleType: "media-live-slots",
+            visibility: "church",
+            audience: "church",
+            scheduleSlots: scheduleSlotsPayload,
+          },
+          scheduleId
+        );
+        console.log("[ScheduleFeed] persisted churchId/sourceScheduleId", {
+          churchId,
+          sourceScheduleId: backendFeedId,
+        });
+      }
+
+      sendAssignmentCards(
+        "church-media-room",
+        scheduleSlotsPayload.map((slot: any, index: number) => ({
+          cardId: `${backendFeedId || scheduleId}-room-${index}`,
+          id: `${backendFeedId || scheduleId}-room-${index}`,
+          title: String(slot.name || `Slot ${index + 1}`),
+          subtitle: caption,
+          role: caption,
+          status: "open",
+          meetingDate: String(slot.meetingDay || ""),
+          meetingDay: String(slot.meetingDay || ""),
+          startTime: String(slot.startTime || ""),
+          endTime: String(slot.endTime || ""),
+          durationMin: Number(slot.durationMin || 0),
+          sourceFeedId: backendFeedId || scheduleId,
+          source: "media-schedule",
+          roomKind: "assignment",
+          liveLayout: "grid6",
+        })),
+        { senderName: form.mediaName.trim() || "Church Media" }
+      );
+
+      await runMediaScheduleSilentReload("create-media-schedule", true);
+
+      Alert.alert("Sent", "Live schedule is now visible to your church on Home feed.");
+      router.push("/" as any);
+    } catch (e: any) {
+      console.log("[ScheduleCreate] backend post error", e);
+      if (isChurchSubscriptionRequiredError(e)) {
+        alertChurchSubscriptionRequired();
+        return;
+      }
+      if (Number(e?.status || e?.response?.status || 0) === 409) {
+        Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
+        return;
+      }
+      Alert.alert("Backend schedule error", String(e?.message || e));
+    }
   }
 
 
