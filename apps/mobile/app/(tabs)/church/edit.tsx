@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system/legacy";
 import { useRouter } from "expo-router";
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -14,6 +13,7 @@ import {
   saveChurchDraft,
   saveChurchProfileCache,
 } from "@/src/lib/churchStore";
+import { buildAvatarDataUrl } from "@/src/lib/avatarCompress";
 
 const GOLD = "rgba(217,179,95,0.96)";
 const BG = "#070B14";
@@ -178,10 +178,7 @@ export default function EditChurchProfile() {
       try {
         let avatarData = "";
         if (avatarUri.startsWith("file:")) {
-          const b64 = await FileSystem.readAsStringAsync(avatarUri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          avatarData = `data:image/jpeg;base64,${b64}`;
+          avatarData = await buildAvatarDataUrl(avatarUri);
         }
 
         const res = await apiPatch<any>(

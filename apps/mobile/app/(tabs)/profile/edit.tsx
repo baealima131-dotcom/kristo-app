@@ -9,6 +9,7 @@ import { loadProfileDraft, saveProfileDraft, ProfileDraft } from "@/src/lib/prof
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { apiPost, apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { buildAvatarDataUrl, compressAvatarFile } from "@/src/lib/avatarCompress";
 
 const BG = "#050914";
 const GOLD = "#F4D06F";
@@ -111,11 +112,10 @@ export default function EditProfileScreen() {
     try {
       const dir = `${FileSystem.documentDirectory}profile-avatar/`;
       await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-      const ext = pickedUri.split("?")[0].split(".").pop() || "jpg";
-      const nextUri = `${dir}${String(session?.userId || "me")}-${Date.now()}.${ext}`;
+      const nextUri = `${dir}${String(session?.userId || "me")}-${Date.now()}.jpg`;
 
-      await FileSystem.copyAsync({ from: pickedUri, to: nextUri });
-      setAvatarUri(nextUri);
+      const compressedUri = await compressAvatarFile(pickedUri, nextUri);
+      setAvatarUri(compressedUri);
     } catch {
       setAvatarUri(pickedUri);
     }
@@ -185,10 +185,7 @@ export default function EditProfileScreen() {
       let avatarData = "";
       if (cleanAvatar && cleanAvatar.startsWith("file:")) {
         try {
-          const b64 = await FileSystem.readAsStringAsync(cleanAvatar, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          avatarData = `data:image/jpeg;base64,${b64}`;
+          avatarData = await buildAvatarDataUrl(cleanAvatar);
         } catch {}
       }
 
