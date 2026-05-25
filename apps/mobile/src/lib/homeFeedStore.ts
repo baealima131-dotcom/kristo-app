@@ -197,16 +197,30 @@ export function feedClaimSchedule(
       const scheduleSlots = anyIt.scheduleSlots.map((slot: any) => {
         if (slot.id !== slotId) return slot;
         if (slot.locked) return slot;
-        // Do not auto-hydrate local claimedBy from stale optimistic cache.
-        // Claims must come from explicit backend claim state only.
-        if (slot.claimedBy || slot.isClaimed || slot.status === "claimed") return slot;
+
+        const existingOwner = String(
+          slot?.claimedByUserId || slot?.claimedBy?.userId || ""
+        ).trim();
+        if (existingOwner && existingOwner !== String(claim?.userId || "").trim()) {
+          return slot;
+        }
+
         changed = true;
         return {
           ...slot,
-          // claimedBy removed here to prevent view-only auto claim.
-          // claimedBy,
+          claimed: true,
           isClaimed: true,
           status: "claimed",
+          claimedByUserId: String(claim?.userId || ""),
+          claimedByName: claim?.name || "You",
+          claimedByAvatar: claim?.avatarUri || "",
+          claimedBy: {
+            slotId,
+            userId: String(claim?.userId || ""),
+            name: claim?.name || "You",
+            role: claim?.role || "Member",
+            avatarUri: claim?.avatarUri || "",
+          },
         };
       });
 

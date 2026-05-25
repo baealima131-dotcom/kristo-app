@@ -47,6 +47,7 @@ import { loadProfileDraft } from "@/src/lib/profileStore";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
+import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const BODY_PREVIEW_CHARS = 140;
@@ -674,6 +675,7 @@ const FeedSlide = memo(function FeedSlide({
   profileName,
   profileAvatarUri,
   onOptimisticBackendLike,
+  onOptimisticSlotClaim,
 }: {
   item: HomeItem;
   height: number;
@@ -684,6 +686,11 @@ const FeedSlide = memo(function FeedSlide({
   profileName?: string;
   profileAvatarUri?: string;
   onOptimisticBackendLike?: (id: string, liked: boolean, likeCount: number) => void;
+  onOptimisticSlotClaim?: (params: {
+    postId: string;
+    slotId: string;
+    claim: { userId: string; name: string; role: string; avatarUri: string };
+  }) => void;
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -2167,84 +2174,43 @@ const noMediaPost =
 
             {activeSlot && !isLiveNow ? (
               <View style={s.liveFullFrame}>
-
                 <View style={s.slotTopRightActions}>
-
                   <Pressable
                     style={s.slotTopRightActionBtn}
                     hitSlop={12}
                     onPress={() => {
                       if ((item as any)?.isBackendPost) {
                         const nextLiked = !displayLiked;
-                        const nextCount = Math.max(
-                          0,
-                          Number(likeCount || 0) + (nextLiked ? 1 : -1)
-                        );
-
-                        onOptimisticBackendLike?.(
-                          item.id,
-                          nextLiked,
-                          nextCount
-                        );
-
+                        const nextCount = Math.max(0, Number(likeCount || 0) + (nextLiked ? 1 : -1));
+                        onOptimisticBackendLike?.(item.id, nextLiked, nextCount);
                         syncBackendLike(feedActionId, nextLiked);
                       } else {
                         feedToggleLike(item.id);
                       }
                     }}
                   >
-                    <Animated.View
-                      style={[
-                        s.slotTopRightIconWrap,
-                        { transform: [{ scale: likeScale }] }
-                      ]}
-                    >
+                    <Animated.View style={[s.slotTopRightIconWrap, { transform: [{ scale: likeScale }] }]}>
                       <Ionicons
                         name={displayLiked ? "heart" : "heart-outline"}
-                        size={28}
+                        size={26}
                         color={displayLiked ? "#FF4D6D" : "#FFFFFF"}
                       />
                     </Animated.View>
-
-                    <Text style={s.slotTopRightCount}>
-                      {likeCount}
-                    </Text>
+                    <Text style={s.slotTopRightCount}>{likeCount}</Text>
                   </Pressable>
 
-                  <Pressable
-                    style={s.slotTopRightActionBtn}
-                    hitSlop={12}
-                    onPress={openComments}
-                  >
+                  <Pressable style={s.slotTopRightActionBtn} hitSlop={12} onPress={openComments}>
                     <View style={s.slotTopRightIconWrap}>
-                      <Ionicons
-                        name="chatbubble-outline"
-                        size={27}
-                        color="#FFFFFF"
-                      />
+                      <Ionicons name="chatbubble-outline" size={25} color="#FFFFFF" />
                     </View>
-
-                    <Text style={s.slotTopRightLabel}>
-                      Chat
-                    </Text>
+                    <Text style={s.slotTopRightLabel}>Chat</Text>
                   </Pressable>
 
-                  <Pressable
-                    style={s.slotTopRightActionBtn}
-                    hitSlop={12}
-                    onPress={onShare}
-                  >
+                  <Pressable style={s.slotTopRightActionBtn} hitSlop={12} onPress={onShare}>
                     <View style={s.slotTopRightIconWrap}>
-                      <Ionicons
-                        name="arrow-redo-outline"
-                        size={28}
-                        color="#FFFFFF"
-                      />
+                      <Ionicons name="arrow-redo-outline" size={26} color="#FFFFFF" />
                     </View>
-
-                    <Text style={s.slotTopRightLabel}>
-                      Share
-                    </Text>
+                    <Text style={s.slotTopRightLabel}>Share</Text>
                   </Pressable>
 
                   <Pressable
@@ -2258,189 +2224,27 @@ const noMediaPost =
                     <View style={s.slotTopRightIconWrap}>
                       <Ionicons
                         name={localSaved ? "bookmark" : "bookmark-outline"}
-                        size={28}
+                        size={26}
                         color={localSaved ? "#F7D36A" : "#FFFFFF"}
                       />
                     </View>
-
-                    <Text style={s.slotTopRightLabel}>
-                      Standby
-                    </Text>
+                    <Text style={s.slotTopRightLabel}>Save</Text>
                   </Pressable>
-
                 </View>
 
-                <Animated.View
-                  style={[
-                    s.liveFullCard,
-                    {
-                      borderColor: slotTheme.border,
-                      shadowColor: isLiveNow ? "#ff425d" : slotTheme.accent,
-                      transform: [{ scale: cardScale }],
-                    },
-                  ]}
-                >
-                  <Animated.View
-                    pointerEvents="none"
-                    style={[s.liveLuxuryGlowTop, { backgroundColor: slotTheme.glow, opacity: glowBreath }]}
-                  />
-                  <View pointerEvents="none" style={s.worldGlassLine} />
-                  <Animated.View
-                    pointerEvents="none"
-                    style={[s.liveLuxuryGlowBottom, { backgroundColor: slotTheme.glow, opacity: glowBreath }]}
-                  />
-                  <View style={s.liveFullHero}>
-
-                    <Text style={s.liveFullTitle} numberOfLines={1} ellipsizeMode="tail">
-                      {activeSlot.name || activeSlot.slotLabel || "Live Slot"}
-                    </Text>
-
-                    <Text style={s.liveFullSub} numberOfLines={2}>
-                      {activeSlot.role || activeSlot.task || "Live media slot"}
-                    </Text>
-
-                    <View style={s.liveFullTopicPill}>
-                      <Text style={s.liveFullTopicText} numberOfLines={3} ellipsizeMode="tail">
-                          {`${String(
-  (activeSlot as any)?.script ||
-  (activeSlot as any)?.task ||
-  (activeSlot as any)?.role ||
-  (item as any)?.liveTopic ||
-  (item as any)?.topic ||
-  (item as any)?.meta?.topic ||
-  "Live media topic"
-).split("\n").join(" ").trim()}`}
-                        </Text>
-                    </View>
-
-
-                    <View style={s.liveFullInfoGrid}>
-                      <View style={s.liveFullInfoBox}>
-                        <Ionicons name="calendar-outline" size={22} color={slotTheme.accent} />
-                        <Text style={s.liveFullInfoText}>
-                          {formatSlotDateLabel(activeSlot.meetingDate, activeSlot.meetingDay)}
-                        </Text>
-                      </View>
-
-                      <View style={s.liveFullInfoBox}>
-                        <Ionicons name="time-outline" size={22} color={slotTheme.accent} />
-                        <Text style={s.liveFullInfoText}>
-                          {activeSlot.startTime} - {activeSlot.endTime}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={[s.liveFullDuration, { backgroundColor: slotTheme.accent }]}>
-                      <View style={s.liveFullDurationLeft}>
-                        <Ionicons name="stopwatch-outline" size={21} color="#06101E" />
-                        <Text style={s.liveFullDurationText}>
-                          {activeSlot.durationMin || 0} MIN LIVE SLOT
-                        </Text>
-                      </View>
-
-                      <Pressable
-                        onPress={onSkipSlots}
-                        style={({ pressed }) => [s.liveFullDurationSkip, pressed ? s.pressed : null]}
-                      >
-                        <Text style={s.liveFullDurationSkipCount}>
-                          {slotFeedIndex + 1 >= slotFeedTotal ? "LAST" : `${slotFeedIndex + 1}/${slotFeedTotal}`}
-                        </Text>
-
-                        <View style={s.liveFullDurationSkipRow}>
-                          <Text style={s.liveFullDurationSkipText}>SKIP</Text>
-                          <Ionicons name="play-skip-forward-outline" size={13} color="#06101E" />
-                        </View>
-                      </Pressable>
-                    </View>
-
-                    <Text style={s.liveSlotStateText} numberOfLines={1}>
-                      {liveActionLabel}
-                    </Text>
-                  </View>
-
-                  <Pressable
-                    onPress={
-                      claimedByMe && countdownLive
-                        ? openLiveRoom
-                        : slotLockedOnly
-                          ? undefined
-                          : claimedByOther
-                            ? () => joinSlotQueue(false)
-                            : claimedByMe
-                              ? (slotLocked ? undefined : unclaimThisSlot)
-                              : claimThisSlot
-                    }
-                    style={({ pressed }) => [
-                      claimed
-                        ? [s.liveFullClaimed, claimedByOther ? s.liveFullTaken : null]
-                        : [
-                            s.liveFullClaim,
-                            {
-                              backgroundColor: slotTheme.accent,
-                              shadowColor: isLiveNow ? "#ff425d" : slotTheme.accent,
-                              transform: [{ scale: pressed ? 0.985 : 1 }],
-                              opacity: pressed ? 0.94 : 1,
-                            },
-                          ],
-                    ]}
-                  >
-                    {slotLockedOnly ? (
-                      <>
-                        <View style={[s.liveClaimUserAvatarFallback, { borderColor: slotTheme.border }]}>
-                          <Ionicons name="lock-closed-outline" size={28} color={slotTheme.accent} />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={s.liveClaimUserStatus}>LOCKED SLOT</Text>
-                          <Text style={s.claimBtnTextDone}>Not open for claim</Text>
-                        </View>
-                      </>
-                    ) : claimed ? (
-                      <>
-                        <View pointerEvents="none" style={s.liveClaimGlossLine} />
-                        {claimedAvatarUri ? (
-                          <Image source={{ uri: claimedAvatarUri }} style={s.liveClaimUserAvatar} resizeMode="cover" />
-                        ) : (
-                          <View style={s.liveClaimUserAvatarFallback}>
-                            <Text style={s.liveClaimUserAvatarText}>{claimedInitial}</Text>
-                          </View>
-                        )}
-
-                        <View style={s.liveClaimUserTextWrap}>
-                          <Text style={s.liveClaimUserStatus}>
-                            {claimedByMe && countdownLive ? "LIVE READY • TAP TO ENTER" : slotApproved ? "APPROVED HOST" : claimedByOther ? (currentUserQueued ? "IN QUEUE" : "TAKEN • TAP TO JOIN QUEUE") : canUnclaim ? "CLAIMED • TAP TO UNCLAIM" : slotLocked ? "LOCKED HOST" : "CLAIMED"}
-                          </Text>
-                          <Text style={s.liveFullClaimedText} numberOfLines={1} adjustsFontSizeToFit>
-                            {claimedByOther ? (currentUserQueued ? `${waitingCount} WAITING` : claimedName || "Taken") : claimedName}
-                          </Text>
-                        </View>
-                      </>
-                    ) : (
-                      <>
-                        <Ionicons name="hand-left-outline" size={28} color="#06101E" />
-                        <Text style={s.liveFullClaimText} numberOfLines={1} adjustsFontSizeToFit>
-                          Claim This Live Slot
-                        </Text>
-                      </>
-                    )}
-                  </Pressable>
-
-                  <View style={s.liveFullHost}>
-                    {actorAvatarUri ? (
-                      <Image source={{ uri: actorAvatarUri }} style={s.liveFullAvatar} resizeMode="cover" />
-                    ) : (
-                      <View style={[s.liveFullAvatarFallback, { borderColor: slotTheme.border }]}>
-                        <Text style={s.liveFullAvatarText}>{mediaInitial}</Text>
-                      </View>
-                    )}
-
-                    <View style={s.liveFullHostText}>
-                      <Text style={s.liveFullHostLabel}>MEDIA HOST</Text>
-                      <Text style={s.liveFullHostName} numberOfLines={1}>
-                        {item.churchLabel || "Media Schedule"}
-                      </Text>
-                    </View>
-                  </View>
-                </Animated.View>
+                <HomeLiveScheduleCard
+                  item={item}
+                  activeSlot={activeSlot}
+                  slotFeedIndex={slotFeedIndex}
+                  slotFeedTotal={slotFeedTotal}
+                  nowMs={nowMs}
+                  isActive={isActive}
+                  profileName={profileName}
+                  profileAvatarUri={profileAvatarUri}
+                  onSkipSlots={onSkipSlots}
+                  onOpenLiveRoom={openLiveRoom}
+                  onOptimisticClaim={onOptimisticSlotClaim}
+                />
               </View>
             ) : null}
           </>
@@ -3036,6 +2840,15 @@ export default function FeedScreen() {
 
   const loadBackendFeed = useCallback(async (reason = "poll") => {
     if ((globalThis as any).__KRISTO_LIVE_ACTIVE__) return;
+
+    const scheduleCreateCooldownUntil = Number(
+      (globalThis as any).__KRISTO_SCHEDULE_CREATE_COOLDOWN_UNTIL__ || 0
+    );
+    if (reason !== "poll" && Date.now() < scheduleCreateCooldownUntil) {
+      console.log("[ScheduleCreatePerf] skip home feed refetch cooldown", { reason });
+      return;
+    }
+
     const session = getSessionSync() as any;
     const viewerChurchId = String(session?.churchId || "").trim();
     const viewerUserId = String(session?.userId || "").trim();
@@ -3063,7 +2876,7 @@ export default function FeedScreen() {
             : [];
 
       const scheduleRows = rows.filter((item: any) => isHomeMediaScheduleItem(item));
-      console.log("[HomeFeed] schedule item loaded for user/church", {
+      console.log("[HomeFeed] scheduleCount", {
         reason,
         userId: viewerUserId,
         churchId: viewerChurchId,
@@ -3853,6 +3666,40 @@ export default function FeedScreen() {
     [itemH]
   );
 
+  const handleOptimisticSlotClaim = useCallback(
+    (params: {
+      postId: string;
+      slotId: string;
+      claim: { userId: string; name: string; role: string; avatarUri: string };
+    }) => {
+      const { postId, slotId, claim } = params;
+      setBackendFeed((prev) =>
+        prev.map((row: any) => {
+          const rowId = String(row?.id || "");
+          if (rowId !== postId) return row;
+          const scheduleSlots = Array.isArray(row.scheduleSlots)
+            ? row.scheduleSlots.map((slot: any) =>
+                String(slot?.id || "") === slotId
+                  ? {
+                      ...slot,
+                      claimed: true,
+                      isClaimed: true,
+                      status: "claimed",
+                      claimedByUserId: claim.userId,
+                      claimedByName: claim.name,
+                      claimedByAvatar: claim.avatarUri,
+                      claimedBy: claim,
+                    }
+                  : slot
+              )
+            : row.scheduleSlots;
+          return { ...row, scheduleSlots };
+        })
+      );
+    },
+    []
+  );
+
   const renderItem = useCallback(
     ({ item }: { item: any }) => (
       <FeedSlide
@@ -3865,6 +3712,7 @@ export default function FeedScreen() {
         profileName={profileName}
         profileAvatarUri={profileAvatarUri}
         onOptimisticBackendLike={handleOptimisticBackendLike}
+        onOptimisticSlotClaim={handleOptimisticSlotClaim}
       />
     ),
     [
@@ -3876,6 +3724,7 @@ export default function FeedScreen() {
       profileName,
       profileAvatarUri,
       handleOptimisticBackendLike,
+      handleOptimisticSlotClaim,
     ]
   );
 
@@ -5313,7 +5162,7 @@ const s: any = StyleSheet.create({
     marginHorizontal: 0,
     borderRadius: 38,
     padding: 0,
-    transform: [{ translateY: 18 }],
+    transform: [{ translateY: 8 }],
   },
   liveFullCard: {
     width: "98%",
