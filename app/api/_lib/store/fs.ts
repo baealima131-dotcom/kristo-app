@@ -10,7 +10,18 @@ import path from "path";
  * - per-file in-process lock to avoid concurrent writes
  */
 
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR =
+  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
+    ? path.join("/tmp", "kristo-data")
+    : path.join(process.cwd(), "data");
+
+export function getKristoDataDir() {
+  return DATA_DIR;
+}
+
+export function isKristoServerlessRuntime() {
+  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+}
 
 // In-process lock per file (good enough for single Next dev server process)
 const locks = new Map<string, Promise<unknown>>();
@@ -64,6 +75,10 @@ function safeParseJson<T>(raw: string, fallback: T): T {
   }
 }
 
+function bundledDataPath(fileName: string) {
+  return path.join(process.cwd(), "data", sanitizeFileName(fileName));
+}
+
 export async function readJsonFile<T>(fileName: string, fallback: T): Promise<T> {
   await ensureDataDir();
   const filePath = resolvePath(fileName);
@@ -72,8 +87,14 @@ export async function readJsonFile<T>(fileName: string, fallback: T): Promise<T>
     const raw = await fs.readFile(filePath, "utf8");
     return safeParseJson<T>(raw, fallback);
   } catch (e: any) {
-    if (e?.code === "ENOENT") return fallback;
-    // if anything weird happens, return fallback (keep app running)
+    if (e?.code === "ENOENT") {
+      try {
+        const raw = await fs.readFile(bundledDataPath(fileName), "utf8");
+        return safeParseJson<T>(raw, fallback);
+      } catch {
+        return fallback;
+      }
+    }
     return fallback;
   }
 }
@@ -82,20 +103,26 @@ export async function writeJsonFile<T>(fileName: string, data: T): Promise<void>
   await ensureDataDir();
   const filePath = resolvePath(fileName);
 
-  await withLock(filePath, async () => {
-    const tmp = `${filePath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const content = JSON.stringify(data, null, 2);
+  try {
+    await withLock(filePath, async () => {
+      const tmp = `${filePath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const content = JSON.stringify(data, null, 2);
 
-    await fs.writeFile(tmp, content, "utf8");
-    // atomic replace on most platforms
-    await fs.rename(tmp, filePath).catch(async () => {
-      // windows sometimes needs unlink first
-      try {
-        await fs.unlink(filePath);
-      } catch {}
-      await fs.rename(tmp, filePath);
+      await fs.writeFile(tmp, content, "utf8");
+      await fs.rename(tmp, filePath).catch(async () => {
+        try {
+          await fs.unlink(filePath);
+        } catch {}
+        await fs.rename(tmp, filePath);
+      });
     });
-  });
+  } catch (error: any) {
+    console.error("[KRISTO] writeJsonFile failed", {
+      fileName,
+      code: error?.code,
+      message: error?.message,
+    });
+  }
 }
 
 export async function updateJsonFile<T>(
@@ -124,13 +151,21 @@ export async function updateJsonFile<T>(
     const tmp = `${filePath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const content = JSON.stringify(next, null, 2);
 
-    await fs.writeFile(tmp, content, "utf8");
-    await fs.rename(tmp, filePath).catch(async () => {
-      try {
-        await fs.unlink(filePath);
-      } catch {}
-      await fs.rename(tmp, filePath);
-    });
+    try {
+      await fs.writeFile(tmp, content, "utf8");
+      await fs.rename(tmp, filePath).catch(async () => {
+        try {
+          await fs.unlink(filePath);
+        } catch {}
+        await fs.rename(tmp, filePath);
+      });
+    } catch (error: any) {
+      console.error("[KRISTO] updateJsonFile write failed", {
+        fileName,
+        code: error?.code,
+        message: error?.message,
+      });
+    }
 
     return next;
   });

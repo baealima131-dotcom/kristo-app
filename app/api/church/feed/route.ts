@@ -26,37 +26,66 @@ import {
   summarizeActiveMediaSchedule,
 } from "@/lib/mediaScheduleLock";
 import { getChurchMediaByChurchId } from "@/app/api/_lib/store/mediaDb";
+import { getKristoDataDir, isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
 
 export const runtime = "nodejs";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const FEED_FILE = path.join(DATA_DIR, "church-feed.json");
-const FEED_COMMENTS_FILE = path.join(DATA_DIR, "church-feed-comments.json");
-const FEED_COMMENT_LIKES_FILE = path.join(DATA_DIR, "church-feed-comment-likes.json");
-const FEED_LIKES_FILE = path.join(DATA_DIR, "church-feed-likes.json");
-const PROFILES_FILE = path.join(DATA_DIR, "profiles.json");
+const DATA_DIR = getKristoDataDir();
+const BUNDLED_DATA_DIR = path.join(process.cwd(), "data");
+const PROFILES_FILE = path.join(BUNDLED_DATA_DIR, "profiles.json");
 
-function readJsonArray<T>(file: string): T[] {
+function readJsonArrayFromPaths<T>(paths: string[]): T[] {
+  for (const file of paths) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      const raw = fs.readFileSync(file, "utf8");
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error: any) {
+      console.error("[ScheduleFeed] read failure", {
+        file,
+        message: error?.message,
+        code: error?.code,
+      });
+    }
+  }
+  return [];
+}
+
+function readJsonArray<T>(fileName: string): T[] {
+  return readJsonArrayFromPaths<T>([
+    path.join(DATA_DIR, fileName),
+    path.join(BUNDLED_DATA_DIR, fileName),
+  ]);
+}
+
+function writeJsonArray(fileName: string, rows: any[]) {
   try {
-    if (!fs.existsSync(file)) return [];
-    const raw = fs.readFileSync(file, "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(path.join(DATA_DIR, fileName), JSON.stringify(rows, null, 2));
+    console.log("[ScheduleFeed] write success", {
+      file: fileName,
+      dir: DATA_DIR,
+      count: Array.isArray(rows) ? rows.length : 0,
+      serverless: isKristoServerlessRuntime(),
+    });
+  } catch (error: any) {
+    console.error("[ScheduleFeed] write failure", {
+      file: fileName,
+      dir: DATA_DIR,
+      message: error?.message,
+      code: error?.code,
+      stack: error?.stack,
+      serverless: isKristoServerlessRuntime(),
+    });
   }
 }
 
-function writeJsonArray(file: string, rows: any[]) {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(rows, null, 2));
-}
-
 function saveFeedStores() {
-  writeJsonArray(FEED_FILE, globalThis.__kristoChurchFeed || []);
-  writeJsonArray(FEED_COMMENTS_FILE, globalThis.__kristoChurchFeedComments || []);
-  writeJsonArray(FEED_COMMENT_LIKES_FILE, globalThis.__kristoChurchFeedCommentLikes || []);
-  writeJsonArray(FEED_LIKES_FILE, globalThis.__kristoChurchFeedLikes || []);
+  writeJsonArray("church-feed.json", globalThis.__kristoChurchFeed || []);
+  writeJsonArray("church-feed-comments.json", globalThis.__kristoChurchFeedComments || []);
+  writeJsonArray("church-feed-comment-likes.json", globalThis.__kristoChurchFeedCommentLikes || []);
+  writeJsonArray("church-feed-likes.json", globalThis.__kristoChurchFeedLikes || []);
 }
 
 
@@ -174,31 +203,46 @@ declare global {
   var __kristoChurchFeedCommentLikes: FeedCommentLike[] | undefined;
   // eslint-disable-next-line no-var
   var __kristoChurchFeedLikes: FeedPostLike[] | undefined;
+  // eslint-disable-next-line no-var
+  var __kristoChurchFeedHydrated: boolean | undefined;
+}
+
+function hydratePostStoreFromDisk() {
+  if (globalThis.__kristoChurchFeedHydrated) return;
+  globalThis.__kristoChurchFeed = readJsonArray<ChurchFeedItem>("church-feed.json");
+  globalThis.__kristoChurchFeedHydrated = true;
 }
 
 function postStore(): ChurchFeedItem[] {
-  // Always trust disk so feed reset is reflected immediately.
-  globalThis.__kristoChurchFeed = readJsonArray<ChurchFeedItem>(FEED_FILE);
+  hydratePostStoreFromDisk();
+  if (!globalThis.__kristoChurchFeed) globalThis.__kristoChurchFeed = [];
   return globalThis.__kristoChurchFeed;
 }
 
-function commentStore(): FeedComment[] {
+function hydrateCommentStoreFromDisk() {
   if (!globalThis.__kristoChurchFeedComments) {
-    globalThis.__kristoChurchFeedComments = readJsonArray<FeedComment>(FEED_COMMENTS_FILE);
+    globalThis.__kristoChurchFeedComments = readJsonArray<FeedComment>("church-feed-comments.json");
   }
+}
+
+function commentStore(): FeedComment[] {
+  hydrateCommentStoreFromDisk();
+  if (!globalThis.__kristoChurchFeedComments) globalThis.__kristoChurchFeedComments = [];
   return globalThis.__kristoChurchFeedComments;
 }
 
 function commentLikeStore(): FeedCommentLike[] {
   if (!globalThis.__kristoChurchFeedCommentLikes) {
-    globalThis.__kristoChurchFeedCommentLikes = readJsonArray<FeedCommentLike>(FEED_COMMENT_LIKES_FILE);
+    globalThis.__kristoChurchFeedCommentLikes = readJsonArray<FeedCommentLike>(
+      "church-feed-comment-likes.json"
+    );
   }
   return globalThis.__kristoChurchFeedCommentLikes;
 }
 
 function postLikeStore(): FeedPostLike[] {
   if (!globalThis.__kristoChurchFeedLikes) {
-    globalThis.__kristoChurchFeedLikes = readJsonArray<FeedPostLike>(FEED_LIKES_FILE);
+    globalThis.__kristoChurchFeedLikes = readJsonArray<FeedPostLike>("church-feed-likes.json");
   }
   return globalThis.__kristoChurchFeedLikes;
 }
@@ -585,6 +629,34 @@ export async function POST(req: NextRequest) {
     return err("Invalid JSON body", 400);
   }
 
+  if (isIncomingMediaScheduleCreate(body)) {
+    console.log("[ScheduleFeed] POST body", {
+      action: String(body?.action || "create_post"),
+      churchId: String(body?.churchId || ""),
+      source: String(body?.source || ""),
+      scheduleType: String(body?.scheduleType || ""),
+      sourceScheduleId: String(body?.sourceScheduleId || body?.liveId || ""),
+      slotCount: Array.isArray(body?.scheduleSlots) ? body.scheduleSlots.length : 0,
+      visibility: String(body?.visibility || ""),
+    });
+  }
+
+  try {
+    return await handleFeedPost(req, body);
+  } catch (error: any) {
+    console.error("[ScheduleFeed] POST unhandled error", {
+      message: error?.message,
+      stack: error?.stack,
+      body,
+    });
+    return NextResponse.json(
+      { ok: false, error: error?.message || "Internal feed error" },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleFeedPost(req: NextRequest, body: any) {
   const action = String(body?.action || "create_post").trim();
   const ctxOrRes =
     action === "toggle_like" ? await guardAuth(req) : await guard(req);
@@ -1151,22 +1223,30 @@ export async function POST(req: NextRequest) {
   postStore().push(item);
   saveFeedStores();
 
+  const savedFeedRow = {
+    ...item,
+    commentCount: 0,
+    replyCount: 0,
+    totalDiscussionCount: 0,
+  };
+
   if (isIncomingMediaScheduleCreate(body)) {
     bumpMediaScheduleSync(churchId, "create_media_schedule");
-    console.log("[ScheduleFeed] persisted", {
+    console.log("[ScheduleFeed] persisted row", {
       churchId,
       sourceScheduleId: item.sourceScheduleId || item.id,
       feedId: item.id,
       slotCount: Array.isArray(item.scheduleSlots) ? item.scheduleSlots.length : 0,
+      store: "memory",
+      dataDir: DATA_DIR,
     });
   }
 
-  return ok(
+  return NextResponse.json(
     {
-      ...item,
-      commentCount: 0,
-      replyCount: 0,
-      totalDiscussionCount: 0,
+      ok: true,
+      data: savedFeedRow,
+      item: savedFeedRow,
     },
     { status: 201 }
   );

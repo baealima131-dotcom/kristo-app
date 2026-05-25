@@ -1727,7 +1727,7 @@ export default function MediaStudioScreen() {
         return;
       }
 
-      const backendItem = r?.data || r;
+      const backendItem = r?.item || r?.data || r;
       const backendFeedId = String(backendItem?.id || "").trim();
 
       if (backendFeedId) {
