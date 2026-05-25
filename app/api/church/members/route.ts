@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { getMembershipsForChurch, setMemberRole, type ChurchRole } from "@/app/api/_lib/memberships";
+import { deactivateMemberInChurch, getMembershipsForChurch, setMemberRole, type ChurchRole } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
+import { ensureProfileDraft, getProfile } from "@/app/api/auth/_lib/profile";
 
 type ChurchMember = {
   // ✅ keep both for compatibility across UIs
@@ -34,15 +35,31 @@ function normalizeChurchRole(x: any): ChurchRole {
 }
 
 export async function GET(req: NextRequest) {
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin", "Member"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const list = await getMembershipsForChurch(ctxOrRes.churchId, "Active");
 
-  const items = list.map((m) => {
+  const items = await Promise.all(list.map(async (m) => {
     const membershipId = m.id;
     const role = (m.churchRole ?? "Member") as ChurchRole;
-    const name = String(m.name || "").trim() || "Member";
+    let profile = await getProfile(String(m.userId || ""));
+
+// AUTO FIX: kama profile haipo, create basic one
+if (!profile) {
+  await ensureProfileDraft({
+    userId: String(m.userId),
+    fullName: m.name || "Member",
+  });
+  profile = await getProfile(String(m.userId));
+}
+    const name = String(
+      (profile as any)?.fullName ||
+      (profile as any)?.displayName ||
+      m.name ||
+      (profile as any)?.email ||
+      "Church member"
+    ).trim();
 
     const out: ChurchMember = {
       id: membershipId,
@@ -52,6 +69,9 @@ export async function GET(req: NextRequest) {
       userId: m.userId,
 
       name,
+      userCode: (profile as any)?.userCode || "",
+      kristoId: (profile as any)?.userCode || "",
+      avatarUrl: (profile as any)?.avatarUrl || "",
       roleLabel: role,
 
       role,
@@ -60,7 +80,7 @@ export async function GET(req: NextRequest) {
     };
 
     return out;
-  });
+  }));
 
   return json({ ok: true, data: items });
 }
@@ -70,10 +90,26 @@ export async function PATCH(req: NextRequest) {
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const body = await req.json().catch(() => ({} as any));
-  const userId = String(body?.userId || "").trim();
+  const userId = String(body?.userId || body?.memberId || "").trim();
+  const action = String(body?.action || "").trim().toLowerCase();
   const role = normalizeChurchRole(body?.role);
 
   if (!userId) return json({ ok: false, error: "Missing userId" }, { status: 400 });
+
+  if (action === "deactivate" || action === "remove") {
+    const r = await deactivateMemberInChurch(ctxOrRes.churchId, userId);
+    if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
+
+    createNotification({
+      churchId: ctxOrRes.churchId,
+      type: "Generic",
+      title: "Church membership updated",
+      message: "You were removed from this church.",
+      targetUserId: userId,
+    });
+
+    return json({ ok: true, data: r.membership });
+  }
 
   const r = await setMemberRole(ctxOrRes.churchId, userId, role);
   if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });

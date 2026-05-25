@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import bcrypt from "bcryptjs";
 import {
   seedUserIfMissing,
   findUserByIdentifier,
@@ -10,6 +11,7 @@ import {
   requiredAuthForUser,
   getUserById,
   touchUser,
+  updateUserPersist,
 } from "@/app/api/auth/_lib/session";
 
 export const runtime = "nodejs";
@@ -49,7 +51,7 @@ function maskPhone(phone: string) {
 }
 
 export async function POST(req: Request) {
-  seedUserIfMissing();
+  await seedUserIfMissing();
 
   const body = (await req.json().catch(() => ({}))) as Partial<Body>;
   const step = (body as any)?.step;
@@ -63,17 +65,18 @@ export async function POST(req: Request) {
     if (!identifier) return NextResponse.json({ ok: false, error: "Weka email au phone." }, { status: 400 });
     if (!password) return NextResponse.json({ ok: false, error: "Weka password." }, { status: 400 });
 
-    const user = findUserByIdentifier(identifierType, identifier);
+    const user = await findUserByIdentifier(identifierType, identifier);
     if (!user) return NextResponse.json({ ok: false, error: "Account haipo." }, { status: 404 });
-    if (user.password !== password) return NextResponse.json({ ok: false, error: "Password si sahihi." }, { status: 401 });
+    if (!bcrypt.compareSync(password, user.password)) {
+      return NextResponse.json({ ok: false, error: "Password si sahihi." }, { status: 401 });
+    }
 
     const forceOtp = Boolean((b as any).forceOtp);
-
     const need = forceOtp ? "otp" : requiredAuthForUser(user);
 
     if (need === "password" || need === "none") {
       const sess = createSession(user.id);
-      touchUser(user.id);
+      await touchUser(user.id);
       let res = NextResponse.json({ ok: true, userId: user.id, mode: "password" });
       res = setSessionCookie(res, sess.id);
       return res;
@@ -87,7 +90,7 @@ export async function POST(req: Request) {
       mode: "otp",
       challengeId: ch.id,
       sentTo,
-      devCode: ch.code, // DEMO
+      devCode: ch.code,
     });
   }
 
@@ -106,7 +109,7 @@ export async function POST(req: Request) {
       ok: true,
       challengeId: ch.id,
       sentTo,
-      devCode: ch.code, // DEMO
+      devCode: ch.code,
     });
   }
 
@@ -121,10 +124,9 @@ export async function POST(req: Request) {
     const v = verifyChallenge(challengeId, code);
     if (!v.ok) return NextResponse.json(v, { status: 400 });
 
-    const user = getUserById(v.userId);
+    const user = await getUserById(v.userId);
     if (user) {
-      user.lastOtpAt = Date.now();
-      touchUser(user.id);
+      await updateUserPersist(user.id, { lastOtpAt: Date.now(), lastSeenAt: Date.now() });
     }
 
     const sess = createSession(v.userId);

@@ -1,16 +1,38 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import bcrypt from "bcryptjs";
+import crypto from "crypto";
+import {
+  dbCountUsers,
+  dbCreateUser,
+  dbDeleteProfile,
+  dbDeleteUser,
+  dbEmailTaken,
+  dbFindUserByEmail,
+  dbFindUserByPhone,
+  dbGetUserById,
+  dbPhoneTaken,
+  dbUpdateUser,
+  ensureAuthStoreReady,
+  hasDurableStore,
+  type UserRecord,
+} from "@/app/api/_lib/store/authDb";
+import {
+  localCountUsers,
+  localCreateUser,
+  localDeleteUser,
+  localEmailTaken,
+  localFindUserByEmail,
+  localFindUserByPhone,
+  localGetUserById,
+  localPhoneTaken,
+  localUpdateUser,
+  normEmailLocal,
+  normPhoneLocal,
+} from "@/app/api/_lib/store/localAuthStore";
 
 export type IdentifierType = "email" | "phone";
-
-type UserLite = {
-  id: string;
-  email?: string;
-  phone?: string;
-  password: string; // DEMO: (baadaye tuta-hash)
-  lastSeenAt?: number; // last time user was "inside app"
-  lastOtpAt?: number; // last time OTP verified
-};
+export type UserLite = UserRecord;
 
 type OtpChallenge = {
   id: string;
@@ -20,56 +42,53 @@ type OtpChallenge = {
   expiresAt: number;
   tries: number;
   userId: string;
-  lastSentAt?: number; // resend cooldown
+  lastSentAt?: number;
 };
 
 type Session = {
   id: string;
   userId: string;
   createdAt: number;
-  lastSeenAt: number; // for 12h rule
-  expiresAt: number; // hard expiry
+  lastSeenAt: number;
+  expiresAt: number;
 };
 
 declare global {
-  var __KRISTO_USERS__: UserLite[] | undefined;
   var __KRISTO_OTP__: Record<string, OtpChallenge> | undefined;
+  var __KRISTO_OTP_ACTIVE__: Record<string, { challengeId: string; issuedAt: number; expiresAt: number }> | undefined;
   var __KRISTO_SESS__: Record<string, Session> | undefined;
 }
 
-function usersStore() {
-  if (!globalThis.__KRISTO_USERS__) globalThis.__KRISTO_USERS__ = [];
-  return globalThis.__KRISTO_USERS__;
-}
 function otpStore() {
   if (!globalThis.__KRISTO_OTP__) globalThis.__KRISTO_OTP__ = {};
   return globalThis.__KRISTO_OTP__;
 }
+
 function sessStore() {
   if (!globalThis.__KRISTO_SESS__) globalThis.__KRISTO_SESS__ = {};
   return globalThis.__KRISTO_SESS__;
 }
 
 function normEmail(s: string) {
-  return String(s || "").trim().toLowerCase();
+  return normEmailLocal(s);
 }
+
 function normPhone(s: string) {
-  return String(s || "").trim();
+  return normPhoneLocal(s);
 }
 
+function authDebugEnabled() {
+  return process.env.KRISTO_DEBUG_AUTH === "1" || process.env.NODE_ENV !== "production";
+}
 
-/* =========================
-   DEV AUTO SESSION (NO SIGN-IN)
-   ========================= */
 function devAutoSession(): Session | null {
   if (process.env.NODE_ENV !== "development") return null;
-  if (process.env.KRISTO_DEV_AUTO_LOGIN === "0") return null;
+  if (process.env.KRISTO_DEV_AUTO_LOGIN !== "1") return null;
 
   const userId = process.env.KRISTO_DEV_USER_ID || "u-demo-1";
   const now = Date.now();
   const H12 = 12 * 60 * 60 * 1000;
 
-  // Session that always counts as "recent" in dev (so no sign-in prompt)
   return {
     id: "dev-session",
     userId,
@@ -79,85 +98,254 @@ function devAutoSession(): Session | null {
   };
 }
 
-export function seedUserIfMissing() {
-  const u = usersStore();
-  if (u.length === 0) {
-    u.push({
-      id: "u-demo-1",
-      email: "demo@kristo.app",
-      phone: "+15555550123",
-      password: "Password123",
-      lastSeenAt: Date.now(),
-      lastOtpAt: Date.now(),
-    });
-  }
-}
-
 export function makeId(prefix: string) {
   return `${prefix}_${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
 }
 
-export function createUser(params: { email?: string; phone?: string; password: string }) {
-  const store = usersStore();
+export function makeKristoId() {
+  const n = Date.now().toString(36).toUpperCase();
+  const r = Math.random().toString(36).slice(2, 5).toUpperCase();
+  const digits = String(Date.now()).slice(-5);
+  return `KR7-${digits}${n.slice(-1)}${r.slice(0, 1)}`;
+}
+
+export async function seedUserIfMissing() {
+  await ensureAuthStoreReady();
+
+  const count = hasDurableStore() ? await dbCountUsers() : await localCountUsers();
+  if (count > 0) return;
+
+  const demo: UserRecord = {
+    id: "u-demo-1",
+    kristoId: "KR7-DEMO1",
+    email: "demo@kristo.local",
+    phone: "+15555550123",
+    password: bcrypt.hashSync("Password123", 10),
+    lastSeenAt: Date.now(),
+    lastOtpAt: Date.now(),
+  };
+
+  if (hasDurableStore()) {
+    await dbCreateUser(demo);
+  } else {
+    await localCreateUser(demo);
+  }
+}
+
+export async function createUser(params: { email?: string; phone?: string; password: string }) {
+  await ensureAuthStoreReady();
 
   const email = params.email ? normEmail(params.email) : "";
   const phone = params.phone ? normPhone(params.phone) : "";
 
-  if (email && store.some((u) => normEmail(u.email || "") === email)) {
-    return { ok: false as const, error: "Email tayari imesajiliwa." };
+  if (email) {
+    const taken = hasDurableStore() ? await dbEmailTaken(email) : await localEmailTaken(email);
+    if (taken) return { ok: false as const, error: "Email tayari imesajiliwa." };
   }
-  if (phone && store.some((u) => normPhone(u.phone || "") === phone)) {
-    return { ok: false as const, error: "Phone tayari imesajiliwa." };
+  if (phone) {
+    const taken = hasDurableStore() ? await dbPhoneTaken(phone) : await localPhoneTaken(phone);
+    if (taken) return { ok: false as const, error: "Phone tayari imesajiliwa." };
   }
 
-  const user: UserLite = {
+  const user: UserRecord = {
     id: makeId("u"),
+    kristoId: makeKristoId(),
     email: email || undefined,
     phone: phone || undefined,
-    password: String(params.password || ""),
+    password: bcrypt.hashSync(String(params.password || ""), 10),
     lastSeenAt: Date.now(),
     lastOtpAt: 0,
   };
 
-  store.push(user);
-  return { ok: true as const, user };
+  const saved = hasDurableStore() ? await dbCreateUser(user) : await localCreateUser(user);
+  return { ok: true as const, user: saved };
 }
 
-export function findUserByIdentifier(identifierType: IdentifierType, identifier: string) {
-  const u = usersStore();
+export async function findUserByIdentifier(identifierType: IdentifierType, identifier: string) {
+  await ensureAuthStoreReady();
+
   const raw = String(identifier || "").trim();
   const key = identifierType === "email" ? normEmail(raw) : normPhone(raw);
 
-  if (identifierType === "email") return u.find((x) => normEmail(x.email || "") === key) || null;
-  return u.find((x) => normPhone(x.phone || "") === key) || null;
+  if (authDebugEnabled()) {
+    console.log("[KRISTO AUTH LOOKUP]", {
+      store: hasDurableStore() ? "postgres" : "local-json",
+      identifierType,
+      rawIdentifier: identifierType === "email" ? key : raw,
+      normalizedKey: key,
+    });
+  }
+
+  let hit: UserRecord | null = null;
+  if (identifierType === "email") {
+    hit = hasDurableStore() ? await dbFindUserByEmail(key) : await localFindUserByEmail(key);
+  } else if (identifierType === "phone") {
+    hit = hasDurableStore() ? await dbFindUserByPhone(raw) : await localFindUserByPhone(raw);
+  }
+
+  if (authDebugEnabled()) {
+    console.log("[KRISTO AUTH LOOKUP RESULT]", {
+      identifierType,
+      normalizedKey: key,
+      found: Boolean(hit),
+      userId: hit?.id || null,
+    });
+  }
+
+  return hit;
 }
 
-export function getUserById(userId: string) {
-  const u = usersStore();
-  return u.find((x) => x.id === userId) || null;
+export async function getUserById(userId: string) {
+  await ensureAuthStoreReady();
+  return hasDurableStore() ? dbGetUserById(userId) : localGetUserById(userId);
 }
 
-export function touchUser(userId: string) {
-  const u = getUserById(userId);
-  if (!u) return;
-  u.lastSeenAt = Date.now();
+export async function deleteUserById(userId: string) {
+  await ensureAuthStoreReady();
+  if (hasDurableStore()) {
+    await dbDeleteProfile(userId);
+    await dbDeleteUser(userId);
+  } else {
+    await localDeleteUser(userId);
+  }
+}
+
+export function deleteChallengesForUser(userId: string) {
+  const store = otpStore();
+  for (const [id, ch] of Object.entries(store)) {
+    if (ch.userId === userId) delete store[id];
+  }
+}
+
+export async function rollbackSignupUser(userId: string) {
+  deleteChallengesForUser(userId);
+  await deleteUserById(userId);
+}
+
+export async function touchUser(userId: string) {
+  await updateUserPersist(userId, { lastSeenAt: Date.now() });
+}
+
+export async function updateUserPersist(userId: string, patch: Partial<UserRecord>) {
+  await ensureAuthStoreReady();
+  const updated = hasDurableStore()
+    ? await dbUpdateUser(userId, patch)
+    : await localUpdateUser(userId, patch);
+
+  if (updated) {
+    const sess = sessStore();
+    for (const [sid, s] of Object.entries(sess)) {
+      if (s.userId === userId) delete sess[sid];
+    }
+  }
+
+  return updated;
+}
+
+export async function ensureUserKristoId(user: UserRecord) {
+  if (user.kristoId) return user.kristoId;
+  const kristoId = makeKristoId();
+  await updateUserPersist(user.id, { kristoId });
+  user.kristoId = kristoId;
+  return kristoId;
 }
 
 export function makeOtpCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-const OTP_EXPIRES_MS = 10 * 60 * 1000; // 10min
-const OTP_RESEND_COOLDOWN_MS = 30 * 1000; // 30s
+const OTP_EXPIRES_MS = 10 * 60 * 1000;
+
+type SignedOtpPayload = {
+  v: 1;
+  userId: string;
+  identifier: string;
+  identifierType: IdentifierType;
+  codeHash: string;
+  expiresAt: number;
+  issuedAt: number;
+};
+
+function getOtpSecret() {
+  return (
+    process.env.KRISTO_OTP_SECRET?.trim() ||
+    process.env.RESEND_API_KEY?.trim() ||
+    "kristo-dev-otp-secret"
+  );
+}
+
+function hashOtpCode(code: string) {
+  return crypto.createHmac("sha256", getOtpSecret()).update(String(code || "").trim()).digest("hex");
+}
+
+function otpActiveKey(userId: string, identifierType: IdentifierType, identifier: string) {
+  const id = identifierType === "email" ? normEmail(identifier) : normPhone(identifier);
+  return `${userId}::${identifierType}::${id}`;
+}
+
+function activeOtpStore() {
+  if (!globalThis.__KRISTO_OTP_ACTIVE__) globalThis.__KRISTO_OTP_ACTIVE__ = {};
+  return globalThis.__KRISTO_OTP_ACTIVE__;
+}
+
+function makeSignedChallengeId(payload: SignedOtpPayload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", getOtpSecret()).update(body).digest("base64url");
+  return `otpt.v1.${body}.${sig}`;
+}
+
+function parseSignedChallengeId(challengeId: string): SignedOtpPayload | null {
+  if (!challengeId.startsWith("otpt.v1.")) return null;
+  const rest = challengeId.slice("otpt.v1.".length);
+  const dot = rest.lastIndexOf(".");
+  if (dot <= 0) return null;
+  const body = rest.slice(0, dot);
+  const sig = rest.slice(dot + 1);
+  const expected = crypto.createHmac("sha256", getOtpSecret()).update(body).digest("base64url");
+  if (sig !== expected) return null;
+  try {
+    return JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as SignedOtpPayload;
+  } catch {
+    return null;
+  }
+}
 
 export function createChallenge(params: { identifierType: IdentifierType; identifier: string; userId: string }) {
   const store = otpStore();
-  const id = makeId("otp");
-  const code = makeOtpCode();
+  const active = activeOtpStore();
+  const activeKey = otpActiveKey(params.userId, params.identifierType, params.identifier);
   const now = Date.now();
-  const expiresAt = now + OTP_EXPIRES_MS;
 
-  store[id] = {
+  const current = active[activeKey];
+  if (current && now < current.expiresAt) {
+    const existing = store[current.challengeId];
+    if (existing) return existing;
+  }
+
+  for (const [id, ch] of Object.entries(store)) {
+    if (
+      ch.userId === params.userId &&
+      ch.identifier === params.identifier &&
+      ch.identifierType === params.identifierType
+    ) {
+      delete store[id];
+    }
+  }
+
+  const code = makeOtpCode();
+  const expiresAt = now + OTP_EXPIRES_MS;
+  const issuedAt = now;
+  const id = makeSignedChallengeId({
+    v: 1,
+    userId: params.userId,
+    identifier: params.identifier,
+    identifierType: params.identifierType,
+    codeHash: hashOtpCode(code),
+    expiresAt,
+    issuedAt,
+  });
+
+  const challenge: OtpChallenge = {
     id,
     code,
     expiresAt,
@@ -167,7 +355,10 @@ export function createChallenge(params: { identifierType: IdentifierType; identi
     identifierType: params.identifierType,
     lastSentAt: 0,
   };
-  return store[id];
+
+  store[id] = challenge;
+  active[activeKey] = { challengeId: id, issuedAt, expiresAt };
+  return challenge;
 }
 
 export function resendChallenge(challengeId: string) {
@@ -179,7 +370,6 @@ export function resendChallenge(challengeId: string) {
   const COOLDOWN_MS = 30 * 1000;
   const last = ch.lastSentAt || 0;
 
-  // Option B: lastSentAt=0 => resend ya kwanza inaruhusiwa (hakuna cooldown)
   if (last && now - last < COOLDOWN_MS) {
     const left = Math.max(1, Math.ceil((COOLDOWN_MS - (now - last)) / 1000));
     return { ok: false as const, status: 429 as const, error: `Subiri sekunde ${left} kisha ujaribu tena.` };
@@ -194,30 +384,56 @@ export function resendChallenge(challengeId: string) {
 }
 
 export function verifyChallenge(id: string, code: string) {
+  const normalizedCode = String(code || "").trim();
+  const signed = parseSignedChallengeId(id);
+
+  if (signed) {
+    const activeKey = otpActiveKey(signed.userId, signed.identifierType, signed.identifier);
+    const active = activeOtpStore()[activeKey];
+
+    if (Date.now() > signed.expiresAt) {
+      return { ok: false as const, error: "Code expired or replaced.", reason: "expired" as const };
+    }
+
+    if (active && active.challengeId !== id) {
+      return { ok: false as const, error: "A newer verification code was already sent.", reason: "superseded" as const };
+    }
+
+    if (active && signed.issuedAt < active.issuedAt) {
+      return { ok: false as const, error: "A newer verification code was already sent.", reason: "superseded" as const };
+    }
+
+    if (hashOtpCode(normalizedCode) !== signed.codeHash) {
+      return { ok: false as const, error: "Invalid code.", reason: "invalid_code" as const };
+    }
+
+    delete activeOtpStore()[activeKey];
+    delete otpStore()[id];
+    return { ok: true as const, userId: signed.userId };
+  }
+
   const store = otpStore();
   const ch = store[id];
-  if (!ch) return { ok: false as const, error: "Challenge haipo. Anza tena." };
+  if (!ch) {
+    return { ok: false as const, error: "Code expired or replaced.", reason: "expired" as const };
+  }
   if (Date.now() > ch.expiresAt) {
     delete store[id];
-    return { ok: false as const, error: "Code ime-expire. Omba tena." };
+    return { ok: false as const, error: "Code expired or replaced.", reason: "expired" as const };
   }
   ch.tries += 1;
   if (ch.tries > 6) {
     delete store[id];
-    return { ok: false as const, error: "Umejaribu mara nyingi. Omba code mpya." };
+    return { ok: false as const, error: "Too many attempts. Request a new code.", reason: "too_many_attempts" as const };
   }
-  if (String(code || "").trim() !== ch.code) return { ok: false as const, error: "Code si sahihi." };
+  if (normalizedCode !== ch.code) {
+    return { ok: false as const, error: "Invalid code.", reason: "invalid_code" as const };
+  }
   delete store[id];
   return { ok: true as const, userId: ch.userId };
 }
 
-/**
- * Rules:
- * - <= 12h since lastSeenAt => NO sign-in (auto)
- * - 12h..24h => password only
- * - > 24h OR unknown => OTP required
- */
-export function requiredAuthForUser(user: UserLite | null) {
+export function requiredAuthForUser(user: UserRecord | null) {
   const now = Date.now();
   const last = user?.lastSeenAt || 0;
   if (!last) return "otp" as const;
@@ -232,9 +448,7 @@ export function requiredAuthForUser(user: UserLite | null) {
 }
 
 export const SESSION_COOKIE = "kristo_session";
-
-// Keep session cookie longer, but gate by lastSeenAt rules.
-const SESSION_MAX_AGE_SEC = 30 * 24 * 60 * 60; // 30 days
+const SESSION_MAX_AGE_SEC = 30 * 24 * 60 * 60;
 const SESSION_MAX_AGE_MS = SESSION_MAX_AGE_SEC * 1000;
 
 export function createSession(userId: string) {
@@ -246,38 +460,46 @@ export function createSession(userId: string) {
   return store[id];
 }
 
-export async function readSession() {
-  const dev = devAutoSession();
-  if (dev) return dev;
+export async function readSession(req?: any) {
+  try {
+    const headerUserId = String(req?.headers?.get?.("x-kristo-user-id") || "").trim();
+    if (headerUserId) {
+      const now = Date.now();
+      return {
+        id: `header-session-${headerUserId}`,
+        userId: headerUserId,
+        createdAt: now,
+        lastSeenAt: now,
+        expiresAt: now + SESSION_MAX_AGE_MS,
+      };
+    }
+  } catch {}
 
   const jar = await cookies();
   const sid = jar.get(SESSION_COOKIE)?.value || "";
-  if (!sid) return null;
-
-  const store = sessStore();
-  const s = store[sid];
-  if (!s) return null;
-
-  if (Date.now() > s.expiresAt) {
-    delete store[sid];
-    return null;
+  if (sid) {
+    const store = sessStore();
+    const s = store[sid];
+    if (s && Date.now() <= s.expiresAt) return s;
+    if (s) delete store[sid];
   }
-  return s;
+
+  return devAutoSession();
 }
 
-export function touchSession(sessionId: string) {
+export async function touchSession(sessionId: string) {
   const store = sessStore();
   const s = store[sessionId];
   if (!s) return;
   s.lastSeenAt = Date.now();
-  touchUser(s.userId);
+  await touchUser(s.userId);
 }
 
 export function setSessionCookie<T>(res: NextResponse<T>, sessionId: string): NextResponse<T> {
   res.cookies.set(SESSION_COOKIE, sessionId, {
     httpOnly: true,
     sameSite: "lax",
-    secure: false, // DEV; production true on https
+    secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: SESSION_MAX_AGE_SEC,
   });
@@ -288,7 +510,7 @@ export function clearSessionCookie<T>(res: NextResponse<T>): NextResponse<T> {
   res.cookies.set(SESSION_COOKIE, "", {
     httpOnly: true,
     sameSite: "lax",
-    secure: false,
+    secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 0,
   });

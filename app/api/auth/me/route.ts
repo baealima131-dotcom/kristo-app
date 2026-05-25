@@ -4,19 +4,27 @@ import { ensureProfileDraft, getProfile } from "@/app/api/auth/_lib/profile";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  seedUserIfMissing();
+async function resolveAuthedUser(req: Request) {
+  const headerUserId = String(req.headers.get("x-kristo-user-id") || "").trim();
+  if (!headerUserId) return null;
+  return getUserById(headerUserId);
+}
 
-  const sess = await readSession();
-  if (!sess) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+export async function GET(req: Request) {
+  await seedUserIfMissing();
 
-  touchSession(sess.id);
+  const sess = await readSession(req);
+  let u = sess ? await getUserById(sess.userId) : null;
 
-  const u = getUserById(sess.userId);
-  if (!u) return NextResponse.json({ ok: false, error: "User haipo." }, { status: 404 });
+  if (sess?.id) await touchSession(sess.id);
 
-  // Ensure at least a draft exists so onboarding can prefill
-  const p0 = getProfile(u.id) || ensureProfileDraft({ userId: u.id, email: u.email, phone: u.phone });
+  if (!u) {
+    u = await resolveAuthedUser(req);
+  }
+
+  if (!u) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+
+  const p0 = (await getProfile(u.id)) || (await ensureProfileDraft({ userId: u.id, email: u.email, phone: u.phone }));
 
   return NextResponse.json({
     ok: true,

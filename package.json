@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -18,22 +18,29 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^6.36.10",
+    "@neondatabase/serverless": "^1.1.0",
     "bcryptjs": "^3.0.3",
+    "dotenv": "^17.4.2",
     "i18n-iso-countries": "^7.14.0",
     "libphonenumber-js": "^1.12.35",
+    "livekit-server-sdk": "^2.15.2",
     "next": "16.1.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "resend": "^6.12.2",
     "zustand": "^5.0.10"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "autoprefixer": "^10.5.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
-    "tailwindcss": "^4",
+    "postcss": "^8.5.10",
+    "tailwindcss": "^4.2.2",
     "typescript": "^5"
   }
 }

@@ -7,6 +7,8 @@ import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { addNotification } from "@/app/api/_lib/notifications";
+import { getProfile } from "@/app/api/auth/_lib/profile";
+import { getUserById } from "@/app/api/auth/_lib/session";
 
 /* =========================
    TYPES
@@ -110,6 +112,35 @@ async function isActiveChurchMember(churchId: string, userId: string): Promise<b
   return actives.some((m) => m.userId === userId);
 }
 
+
+async function enrichMember(mm: MinistryMember) {
+  const profile: any = (await getProfile(mm.userId)) || null;
+  const user: any = await getUserById(mm.userId);
+
+  return {
+    ...mm,
+    displayName: String(
+      profile?.fullName ||
+      profile?.displayName ||
+      profile?.name ||
+      user?.fullName ||
+      user?.displayName ||
+      user?.name ||
+      user?.email ||
+      ""
+    ).trim(),
+    avatarUrl: String(
+      profile?.avatarUrl ||
+      profile?.avatarUri ||
+      profile?.profileImage ||
+      user?.avatarUrl ||
+      user?.avatarUri ||
+      user?.profileImage ||
+      ""
+    ).trim(),
+  };
+}
+
 /* =========================
    GET /api/church/ministry-members?ministryId=...
    ========================= */
@@ -117,7 +148,7 @@ export async function GET(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin", "Member"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
@@ -132,7 +163,7 @@ export async function GET(req: NextRequest) {
     if (adminOrRes instanceof NextResponse) return adminOrRes;
 
     const all = await readAllMembers();
-    const data = all.filter((mm) => mm.churchId === adminOrRes.churchId);
+    const data = await Promise.all(all.filter((mm) => mm.churchId === adminOrRes.churchId).map(enrichMember));
 
     return json<MinistryMember[]>({ ok: true, data });
   }
@@ -148,7 +179,21 @@ export async function GET(req: NextRequest) {
   }
 
   const all = await readAllMembers();
-  const data = all.filter((mm) => mm.churchId === churchId && mm.ministryId === ministryId);
+
+  if (viewer.role === "Member") {
+    const ok = all.some(
+      (mm) =>
+        mm.churchId === churchId &&
+        mm.ministryId === ministryId &&
+        mm.userId === viewer.userId
+    );
+
+    if (!ok) {
+      return json({ ok: false, error: "Forbidden (ministry membership)" } satisfies ApiErr, { status: 403 });
+    }
+  }
+
+  const data = await Promise.all(all.filter((mm) => mm.churchId === churchId && mm.ministryId === ministryId).map(enrichMember));
 
   return json<MinistryMember[]>({ ok: true, data });
 }
@@ -157,7 +202,7 @@ export async function POST(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
@@ -189,8 +234,24 @@ export async function POST(req: NextRequest) {
   const before = await readAllMembers();
 
   if (role === "Leader") {
-    const hasLeader = before.some((mm) => mm.churchId === churchId && mm.ministryId === ministryId && mm.role === "Leader");
-    if (hasLeader) return json({ ok: false, error: "This ministry already has a Leader (Mkuu)." } satisfies ApiErr, { status: 409 });
+    try {
+      await updateJsonFile<MinistryMember[]>(
+        STORE_FILE,
+        (current) => {
+          const list = Array.isArray(current) ? current : [];
+          return list.map((mm) => {
+            if (mm.churchId === churchId && mm.ministryId === ministryId && mm.role === "Leader") {
+              return { ...mm, role: "Member", updatedAt: nowIso() };
+            }
+            return mm;
+          });
+        },
+        []
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to swap leader";
+      return json({ ok: false, error: msg } satisfies ApiErr, { status: 500 });
+    }
   }
   if (role === "Assistant") {
     const hasAssistant = before.some((mm) => mm.churchId === churchId && mm.ministryId === ministryId && mm.role === "Assistant");
@@ -260,7 +321,7 @@ export async function PATCH(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
@@ -302,9 +363,38 @@ export async function PATCH(req: NextRequest) {
 
   if (nextRole === "Leader") {
     const hasOtherLeader = allBefore.some(
-      (mm) => mm.churchId === churchId && mm.ministryId === existing.ministryId && mm.role === "Leader" && mm.id !== existing.id
+      (mm) =>
+        mm.churchId === churchId &&
+        mm.ministryId === existing.ministryId &&
+        mm.role === "Leader" &&
+        mm.id !== existing.id
     );
-    if (hasOtherLeader) return json({ ok: false, error: "This ministry already has a Leader (Mkuu)." } satisfies ApiErr, { status: 409 });
+
+    if (hasOtherLeader) {
+      try {
+        await updateJsonFile<MinistryMember[]>(
+          STORE_FILE,
+          (current) => {
+            const list = Array.isArray(current) ? current : [];
+            return list.map((mm) => {
+              if (
+                mm.churchId === churchId &&
+                mm.ministryId === existing.ministryId &&
+                mm.role === "Leader" &&
+                mm.id !== existing.id
+              ) {
+                return { ...mm, role: "Member", updatedAt: nowIso() };
+              }
+              return mm;
+            });
+          },
+          []
+        );
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "Failed to swap leader";
+        return json({ ok: false, error: msg } satisfies ApiErr, { status: 500 });
+      }
+    }
   }
   if (nextRole === "Assistant") {
     const hasOtherAssistant = allBefore.some(
@@ -366,7 +456,7 @@ export async function DELETE(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
