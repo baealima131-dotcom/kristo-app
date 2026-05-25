@@ -20,12 +20,13 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import {
   baseFeedId,
+  cleanFeedLabel,
   enrichScheduleSlot,
   formatSlotDateLabel,
   resolveAvatarUri,
+  resolveScheduleAvatarUri,
   resolveSlotPhase,
   SLOT_STATE_THEMES,
-  type EnrichedScheduleSlot,
 } from "@/src/lib/scheduleSlotUtils";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -52,55 +53,72 @@ function AvatarRing({
   useEffect(() => {
     if (!live) return;
     pulse.value = withRepeat(
-      withSequence(withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.quad) }), withTiming(0, { duration: 1200 })),
+      withSequence(
+        withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.quad) }),
+        withTiming(0, { duration: 1200 })
+      ),
       -1,
       false
     );
   }, [live, pulse]);
 
   const ringStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: live ? 1 + pulse.value * 0.06 : 1 }],
-    opacity: live ? 0.55 + pulse.value * 0.45 : 1,
+    transform: [{ scale: live ? 1 + pulse.value * 0.08 : 1 }],
+    opacity: live ? 0.6 + pulse.value * 0.4 : 1,
   }));
 
+  const outer = size + 12;
+
   return (
-    <View style={{ width: size + 14, height: size + 14, alignItems: "center", justifyContent: "center" }}>
+    <View style={{ width: outer, height: outer, alignItems: "center", justifyContent: "center" }}>
       <Animated.View
         pointerEvents="none"
         style={[
           {
             position: "absolute",
-            width: size + 14,
-            height: size + 14,
-            borderRadius: (size + 14) / 2,
-            borderWidth: 2.5,
+            width: outer,
+            height: outer,
+            borderRadius: outer / 2,
+            borderWidth: 2,
             borderColor: accent,
             shadowColor: accent,
-            shadowOpacity: 0.55,
-            shadowRadius: 16,
+            shadowOpacity: 0.65,
+            shadowRadius: 14,
             shadowOffset: { width: 0, height: 0 },
           },
           ringStyle,
         ]}
       />
-      {uri ? (
-        <Image source={{ uri }} style={{ width: size, height: size, borderRadius: size / 2 }} resizeMode="cover" />
-      ) : (
-        <View
-          style={{
-            width: size,
-            height: size,
-            borderRadius: size / 2,
-            backgroundColor: "rgba(255,255,255,0.08)",
-            borderWidth: 1.5,
-            borderColor: accent,
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Text style={{ color: "#FFF", fontSize: size * 0.38, fontWeight: "900" }}>{initial}</Text>
-        </View>
-      )}
+      <LinearGradient
+        colors={[`${accent}55`, `${accent}18`, "rgba(255,255,255,0.06)"]}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          padding: 2,
+        }}
+      >
+        {uri ? (
+          <Image
+            source={{ uri }}
+            style={{ width: size - 4, height: size - 4, borderRadius: (size - 4) / 2 }}
+            resizeMode="cover"
+          />
+        ) : (
+          <View
+            style={{
+              width: size - 4,
+              height: size - 4,
+              borderRadius: (size - 4) / 2,
+              backgroundColor: "rgba(255,255,255,0.1)",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Text style={{ color: "#FFF", fontSize: size * 0.36, fontWeight: "900" }}>{initial}</Text>
+          </View>
+        )}
+      </LinearGradient>
     </View>
   );
 }
@@ -112,6 +130,7 @@ export type HomeLiveScheduleCardProps = {
   slotFeedTotal: number;
   nowMs: number;
   isActive: boolean;
+  fullBleed?: boolean;
   profileName?: string;
   profileAvatarUri?: string;
   onSkipSlots?: () => void;
@@ -121,6 +140,13 @@ export type HomeLiveScheduleCardProps = {
     slotId: string;
     claim: { userId: string; name: string; role: string; avatarUri: string };
   }) => void;
+  displayLiked?: boolean;
+  likeCount?: number;
+  localSaved?: boolean;
+  onLike?: () => void;
+  onComment?: () => void;
+  onShare?: () => void;
+  onToggleSave?: () => void;
 };
 
 export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
@@ -129,12 +155,19 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   slotFeedIndex,
   slotFeedTotal,
   nowMs,
-  isActive,
+  fullBleed = false,
   profileName,
   profileAvatarUri,
   onSkipSlots,
   onOpenLiveRoom,
   onOptimisticClaim,
+  displayLiked,
+  likeCount = 0,
+  localSaved,
+  onLike,
+  onComment,
+  onShare,
+  onToggleSave,
 }: HomeLiveScheduleCardProps) {
   const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/$/, "");
   const session = getSessionSync() as any;
@@ -169,26 +202,21 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const phase = resolveSlotPhase(slot, claimed);
   const theme = SLOT_STATE_THEMES[phase];
 
-  const churchName = String(item?.churchName || item?.churchLabel || "MY CHURCH").trim();
-  const mediaName = String(item?.mediaName || item?.actorLabel || "Church Media").trim();
+  const mediaName = cleanFeedLabel(item?.mediaName || item?.actorLabel, "Church Media");
+  const churchName = cleanFeedLabel(item?.churchName || item?.churchLabel, "MY CHURCH");
+  const churchShort = churchName.replace(/\s+CHURCH$/i, "").trim() || churchName;
+
   const slotTitle = String(slot?.name || slot?.slotLabel || "Live Slot").trim();
-  const slotTopic = String(
-    slot?.script || slot?.task || slot?.role || item?.topic || item?.body || "Live media topic"
+  const slotTopic = cleanFeedLabel(
+    slot?.script || slot?.task || slot?.role || item?.topic || item?.body,
+    "Live media topic"
   )
     .split("\n")
     .join(" ")
     .trim();
 
-  const churchAvatarUri = resolveAvatarUri(
-    String(
-      item?.churchAvatarUri ||
-      item?.churchAvatarUrl ||
-      item?.actorAvatarUri ||
-      item?.avatarUri ||
-      ""
-    ),
-    apiBase
-  );
+  const avatarUri = resolveScheduleAvatarUri(item, apiBase);
+  const avatarInitial = mediaName.slice(0, 1).toUpperCase() || churchShort.slice(0, 1).toUpperCase() || "C";
   const claimedAvatarUri = resolveAvatarUri(String(claimedBy?.avatarUri || slot?.claimedByAvatar || ""), apiBase);
 
   const msUntilStart = slot.startMs > 0 ? slot.startMs - nowMs : null;
@@ -246,8 +274,6 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     feedClaimSchedule(postId, claim);
     onOptimisticClaim?.({ postId, slotId, claim });
 
-    console.log("[ClaimSlot] optimistic", { postId, slotId, userId: currentUserId });
-
     void apiPost(
       "/api/church/feed",
       { action: "claim_schedule_slot", postId, slotId, claim },
@@ -259,17 +285,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         }),
       }
     )
-      .then((res: any) => {
-        console.log("[ClaimSlot] backend sync result", {
-          ok: res?.ok,
-          postId,
-          slotId,
-        });
-      })
-      .catch((e) => {
-        console.log("[ClaimSlot] backend sync error", e);
-        setOptimisticClaim(null);
-      })
+      .catch(() => setOptimisticClaim(null))
       .finally(() => {
         claimingSlotRef.current = null;
       });
@@ -324,47 +340,101 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   ]);
 
   return (
-    <Animated.View entering={FadeIn.duration(320)} style={styles.frame}>
-      <LinearGradient colors={theme.gradient} style={StyleSheet.absoluteFillObject} />
-
+    <Animated.View
+      entering={FadeIn.duration(280)}
+      style={[styles.frame, fullBleed && styles.frameFullBleed]}
+    >
       <View style={[styles.card, { borderColor: theme.border, shadowColor: theme.glow }]}>
+        <LinearGradient colors={theme.gradient} style={StyleSheet.absoluteFillObject} />
         <View pointerEvents="none" style={[styles.glowOrbTop, { backgroundColor: theme.glow }]} />
         <View pointerEvents="none" style={[styles.glowOrbBottom, { backgroundColor: theme.glow }]} />
 
-        <BlurView intensity={28} tint="dark" style={styles.glassPanel}>
-          <View style={styles.topRow}>
-            <View style={[styles.statePill, { borderColor: theme.border, backgroundColor: `${theme.accent}22` }]}>
-              {phase === "live" ? (
-                <View style={[styles.liveDot, { backgroundColor: theme.accent }]} />
+        <BlurView intensity={fullBleed ? 44 : 32} tint="dark" style={[styles.glassPanel, fullBleed && styles.glassPanelFullBleed]}>
+          {onLike || onComment || onShare || onToggleSave ? (
+            <View style={styles.socialRow}>
+              {onLike ? (
+                <Pressable onPress={onLike} style={styles.socialBtn} hitSlop={8}>
+                  <Ionicons
+                    name={displayLiked ? "heart" : "heart-outline"}
+                    size={22}
+                    color={displayLiked ? "#FF4D6D" : "#FFF"}
+                  />
+                  <Text style={styles.socialCount}>{likeCount}</Text>
+                </Pressable>
               ) : null}
-              <Text style={[styles.statePillText, { color: theme.accent }]}>{theme.label}</Text>
+              {onComment ? (
+                <Pressable onPress={onComment} style={styles.socialBtn} hitSlop={8}>
+                  <Ionicons name="chatbubble-outline" size={21} color="#FFF" />
+                  <Text style={styles.socialLabel}>Chat</Text>
+                </Pressable>
+              ) : null}
+              {onShare ? (
+                <Pressable onPress={onShare} style={styles.socialBtn} hitSlop={8}>
+                  <Ionicons name="arrow-redo-outline" size={21} color="#FFF" />
+                  <Text style={styles.socialLabel}>Share</Text>
+                </Pressable>
+              ) : null}
+              {onToggleSave ? (
+                <Pressable onPress={onToggleSave} style={styles.socialBtn} hitSlop={8}>
+                  <Ionicons
+                    name={localSaved ? "bookmark" : "bookmark-outline"}
+                    size={21}
+                    color={localSaved ? "#F7D36A" : "#FFF"}
+                  />
+                  <Text style={styles.socialLabel}>Save</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
+
+          <Animated.View entering={FadeInDown.duration(300)} style={styles.broadcastHeaderWrap}>
+            <LinearGradient
+              colors={[`${theme.accent}28`, `${theme.accent}10`, "rgba(255,255,255,0.02)"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.broadcastHeaderGradient}
+            />
+            <View style={styles.broadcastHeader}>
+            <AvatarRing
+              uri={avatarUri}
+              initial={avatarInitial}
+              size={fullBleed ? 54 : 56}
+              accent={theme.accent}
+              live={phase === "live"}
+            />
+            <View style={styles.broadcastText}>
+              <View style={styles.broadcastTitleRow}>
+                <View style={[styles.liveSchedulePill, { borderColor: theme.border, backgroundColor: `${theme.accent}24` }]}>
+                  <Ionicons name="radio" size={11} color={theme.accent} />
+                  <Text style={[styles.liveSchedulePillText, { color: theme.accent }]}>LIVE SCHEDULE</Text>
+                </View>
+                <View style={[styles.verifiedBadge, { borderColor: theme.border, backgroundColor: `${theme.accent}20` }]}>
+                  <Ionicons name="shield-checkmark" size={12} color={theme.accent} />
+                  <Text style={[styles.verifiedBadgeText, { color: theme.accent }]}>VERIFIED</Text>
+                </View>
+              </View>
+              <Text style={styles.broadcastMediaName} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82}>
+                {mediaName}
+              </Text>
+              <Text style={styles.broadcastSubline} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+                {churchShort} • Church Media
+              </Text>
             </View>
             <Pressable onPress={onSkipSlots} style={({ pressed }) => [styles.skipBtn, pressed && styles.pressed]}>
               <Text style={styles.skipCount}>
                 {slotFeedIndex + 1}/{slotFeedTotal}
               </Text>
-              <Ionicons name="play-skip-forward" size={14} color="#FFF" />
+              <Ionicons name="play-skip-forward" size={13} color="#FFF" />
             </Pressable>
-          </View>
-
-          <Animated.View entering={FadeInDown.duration(380).delay(40)} style={styles.heroRow}>
-            <AvatarRing
-              uri={churchAvatarUri}
-              initial={mediaName.slice(0, 1).toUpperCase() || "C"}
-              size={72}
-              accent={theme.accent}
-              live={phase === "live"}
-            />
-            <View style={styles.heroText}>
-              <Text style={styles.mediaKicker}>CHURCH MEDIA</Text>
-              <Text style={styles.mediaName} numberOfLines={1}>
-                {mediaName}
-              </Text>
-              <Text style={styles.churchName} numberOfLines={1}>
-                {churchName}
-              </Text>
             </View>
           </Animated.View>
+
+          <View style={styles.stateRow}>
+            <View style={[styles.statePill, { borderColor: theme.border, backgroundColor: `${theme.accent}18` }]}>
+              {phase === "live" ? <View style={[styles.liveDot, { backgroundColor: theme.accent }]} /> : null}
+              <Text style={[styles.statePillText, { color: theme.accent }]}>{theme.label}</Text>
+            </View>
+          </View>
 
           <Text
             style={[styles.slotTitle, { fontSize: titleFontSize, lineHeight: titleFontSize + 4 }]}
@@ -381,12 +451,12 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
           <View style={styles.metaRow}>
             <View style={styles.metaChip}>
-              <Ionicons name="calendar-outline" size={15} color={theme.accent} />
+              <Ionicons name="calendar-outline" size={14} color={theme.accent} />
               <Text style={styles.metaText}>{formatSlotDateLabel(slot.meetingDate, slot.meetingDay)}</Text>
             </View>
             <View style={styles.metaChip}>
-              <Ionicons name="time-outline" size={15} color={theme.accent} />
-              <Text style={styles.metaText}>
+              <Ionicons name="time-outline" size={14} color={theme.accent} />
+              <Text style={styles.metaText} numberOfLines={1}>
                 {slot.startTime}
                 {slot.endTime ? ` – ${slot.endTime}` : ""}
               </Text>
@@ -394,12 +464,14 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           </View>
 
           <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%`, backgroundColor: theme.accent }]} />
+            <View
+              style={[styles.progressFill, { width: `${Math.round(progress * 100)}%`, backgroundColor: theme.accent }]}
+            />
           </View>
           <Text style={styles.countdown}>{countdownLabel}</Text>
 
           {claimed ? (
-            <Animated.View entering={FadeInDown.duration(260)} style={[styles.hostSection, { borderColor: theme.border }]}>
+            <Animated.View entering={FadeInDown.duration(240)} style={[styles.hostSection, { borderColor: theme.border }]}>
               <Text style={[styles.hostKicker, { color: theme.accent }]}>
                 {phase === "live" && claimedByMe ? "LIVE HOST" : "CLAIMED BY"}
               </Text>
@@ -407,13 +479,13 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                 <AvatarRing
                   uri={claimedAvatarUri}
                   initial={String(claimedBy?.name || "H").slice(0, 1).toUpperCase()}
-                  size={48}
+                  size={44}
                   accent={theme.accent}
                   live={phase === "live"}
                 />
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={styles.hostName} numberOfLines={1}>
-                    {String(claimedBy?.name || "Host")}
+                    {cleanFeedLabel(claimedBy?.name, "Host")}
                   </Text>
                   <Text style={styles.hostRole} numberOfLines={1}>
                     {String(claimedBy?.role || "Member").replaceAll("_", " ")}
@@ -472,225 +544,297 @@ const styles = StyleSheet.create({
   frame: {
     marginTop: 210,
     marginHorizontal: 10,
-    borderRadius: 32,
+    borderRadius: 28,
     overflow: "hidden",
   },
+  frameFullBleed: {
+    flex: 1,
+    marginTop: 0,
+    marginHorizontal: 12,
+    justifyContent: "center",
+    paddingVertical: 8,
+  },
   card: {
-    borderRadius: 32,
-    borderWidth: 1.4,
+    borderRadius: 28,
+    borderWidth: 1.2,
     overflow: "hidden",
-    shadowOpacity: 0.35,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 18,
+    shadowOpacity: 0.32,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 16,
   },
   glowOrbTop: {
     position: "absolute",
-    top: -40,
-    right: -20,
-    width: 140,
-    height: 140,
+    top: -36,
+    right: -16,
+    width: 120,
+    height: 120,
     borderRadius: 999,
-    opacity: 0.35,
+    opacity: 0.32,
   },
   glowOrbBottom: {
     position: "absolute",
-    bottom: -50,
-    left: -30,
-    width: 160,
-    height: 160,
+    bottom: -44,
+    left: -24,
+    width: 140,
+    height: 140,
     borderRadius: 999,
-    opacity: 0.28,
+    opacity: 0.24,
   },
   glassPanel: {
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 18,
-    backgroundColor: "rgba(8,12,20,0.55)",
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 16,
+    backgroundColor: "rgba(6,10,18,0.68)",
   },
-  topRow: {
+  glassPanelFullBleed: {
+    paddingTop: 8,
+    paddingHorizontal: 14,
+    backgroundColor: "rgba(4,8,16,0.74)",
+  },
+  socialRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 14,
+    marginBottom: 10,
+  },
+  socialBtn: {
+    alignItems: "center",
+    gap: 2,
+    minWidth: 44,
+  },
+  socialCount: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  socialLabel: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  broadcastHeaderWrap: {
+    borderRadius: 18,
+    overflow: "hidden",
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  broadcastHeaderGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  broadcastHeader: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 14,
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  broadcastText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  broadcastTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 3,
+    flexWrap: "wrap",
+  },
+  liveSchedulePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  liveSchedulePillText: {
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.4,
+  },
+  verifiedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  verifiedBadgeText: {
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 1.1,
+  },
+  broadcastMediaName: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: -0.3,
+  },
+  broadcastSubline: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 1,
+  },
+  skipBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.07)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  skipCount: {
+    color: "#FFF",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  stateRow: {
+    flexDirection: "row",
+    marginBottom: 10,
   },
   statePill: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
   },
   statePillText: {
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 1.6,
-  },
-  liveDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  skipBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-  },
-  skipCount: {
-    color: "#FFF",
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  heroRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-    marginBottom: 14,
-  },
-  heroText: {
-    flex: 1,
-    minWidth: 0,
-  },
-  mediaKicker: {
-    color: "rgba(255,255,255,0.55)",
     fontSize: 10,
     fontWeight: "900",
-    letterSpacing: 2.2,
+    letterSpacing: 1.3,
   },
-  mediaName: {
-    color: "#FFFFFF",
-    fontSize: 18,
-    fontWeight: "900",
-    marginTop: 2,
-  },
-  churchName: {
-    color: "rgba(255,255,255,0.62)",
-    fontSize: 13,
-    fontWeight: "700",
-    marginTop: 2,
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
   },
   slotTitle: {
     color: "#FFFFFF",
     fontWeight: "900",
     letterSpacing: -0.8,
-    marginBottom: 6,
+    marginBottom: 4,
   },
   slotTopic: {
-    color: "rgba(255,255,255,0.72)",
-    fontSize: 14,
-    lineHeight: 20,
+    color: "rgba(255,255,255,0.68)",
+    fontSize: 13,
+    lineHeight: 19,
     fontWeight: "600",
-    marginBottom: 12,
+    marginBottom: 10,
   },
   metaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    marginBottom: 10,
+    marginBottom: 8,
   },
   metaChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
+    borderColor: "rgba(255,255,255,0.08)",
   },
   metaText: {
     color: "#FFF",
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "800",
   },
   progressTrack: {
-    height: 6,
+    height: 5,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.08)",
     overflow: "hidden",
-    marginBottom: 6,
+    marginBottom: 5,
   },
   progressFill: {
     height: "100%",
     borderRadius: 999,
   },
   countdown: {
-    color: "rgba(255,255,255,0.58)",
-    fontSize: 11,
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 10,
     fontWeight: "800",
-    letterSpacing: 0.6,
-    marginBottom: 12,
+    letterSpacing: 0.5,
+    marginBottom: 10,
     textAlign: "center",
   },
   hostSection: {
     borderWidth: 1,
-    borderRadius: 20,
-    padding: 12,
-    marginBottom: 12,
+    borderRadius: 18,
+    padding: 10,
+    marginBottom: 10,
     backgroundColor: "rgba(255,255,255,0.04)",
   },
   hostKicker: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "900",
-    letterSpacing: 1.8,
-    marginBottom: 8,
+    letterSpacing: 1.6,
+    marginBottom: 6,
   },
   hostRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
   },
   hostName: {
     color: "#FFF",
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "900",
   },
   hostRole: {
-    color: "rgba(255,255,255,0.62)",
-    fontSize: 12,
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 11,
     fontWeight: "700",
-    marginTop: 2,
+    marginTop: 1,
   },
   liveBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
   },
   liveBadgeText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "900",
-    letterSpacing: 1.2,
+    letterSpacing: 1.1,
   },
   claimBtn: {
-    minHeight: 58,
+    minHeight: 54,
     borderRadius: 999,
     borderWidth: 1.2,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
   },
   claimBtnDisabled: {
     opacity: 0.45,
   },
   claimBtnTextOpen: {
     color: "#06101E",
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "900",
   },
   claimBtnTextClaimed: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "900",
   },
   pressed: {

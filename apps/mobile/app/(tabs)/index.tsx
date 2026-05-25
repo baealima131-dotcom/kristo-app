@@ -1236,6 +1236,16 @@ const noMediaPost =
       return endMs > nowMs;
     }) || null;
 
+  const isMediaSchedulePost =
+    String((item as any)?.scheduleType || "").includes("media-live-slots") ||
+    String((item as any)?.source || "").includes("media-schedule");
+
+  const isDedicatedScheduleSlide =
+    isMediaSchedulePost &&
+    !!activeSlot &&
+    item.mediaType !== "video" &&
+    item.mediaType !== "image";
+
   const slotApproved = Boolean(activeSlot?.approved);
   const slotLocked = Boolean(activeSlot?.locked || activeSlot?.approved);
   const slotLockedOnly = slotLocked && !claimed;
@@ -1928,7 +1938,48 @@ const noMediaPost =
   }
 
   return (
-    <View style={[s.slide, { height }]}>
+    <View style={[s.slide, isDedicatedScheduleSlide ? s.scheduleOnlySlide : null, { height }]}>
+      {isDedicatedScheduleSlide ? (
+        <>
+          <LinearGradient
+            colors={["#030508", "#0A0F18", "#050810"]}
+            style={StyleSheet.absoluteFillObject}
+          />
+          <HomeLiveScheduleCard
+            item={item}
+            activeSlot={activeSlot}
+            slotFeedIndex={slotFeedIndex}
+            slotFeedTotal={slotFeedTotal}
+            nowMs={nowMs}
+            isActive={isActive}
+            fullBleed
+            profileName={profileName}
+            profileAvatarUri={profileAvatarUri}
+            onSkipSlots={onSkipSlots}
+            onOpenLiveRoom={openLiveRoom}
+            onOptimisticClaim={onOptimisticSlotClaim}
+            displayLiked={displayLiked}
+            likeCount={likeCount}
+            localSaved={localSaved}
+            onLike={() => {
+              if (isBackendFeedPost) {
+                const nextLiked = !displayLiked;
+                const nextCount = Math.max(0, Number(likeCount || 0) + (nextLiked ? 1 : -1));
+                onOptimisticBackendLike?.(feedActionId, nextLiked, nextCount);
+                syncBackendLike(feedActionId, nextLiked);
+              } else {
+                feedToggleLike(item.id);
+              }
+            }}
+            onComment={openComments}
+            onShare={onShare}
+            onToggleSave={() => {
+              setLocalSaved((v) => !v);
+              feedToggleSave(item.id);
+            }}
+          />
+        </>
+      ) : (
       <Pressable onPress={isLiveNow ? openLiveRoom : undefined} style={s.page}>
         {item.mediaType === "video" && item.videoUrl ? (
           <FeedVideoSurface
@@ -1944,7 +1995,7 @@ const noMediaPost =
             item={item}
             isActive={isActive}
           />
-        ) : (
+        ) : isMediaSchedulePost && activeSlot ? null : (
         <View style={[s.noMediaBg, { borderColor: feedHeadlineColor }]}>
           <View style={[s.noMediaGlow, { backgroundColor: feedHeadlineColor }]} />
           <View style={[
@@ -2404,6 +2455,9 @@ const noMediaPost =
       </View>
       ) : null}
 
+      </Pressable>
+      )}
+
       <Modal
         visible={commentsOpen}
         transparent
@@ -2678,7 +2732,6 @@ const noMediaPost =
           </KeyboardAvoidingView>
         </View>
       </Modal>
-    </Pressable>
     </View>
   );
 });
@@ -2914,6 +2967,19 @@ export default function FeedScreen() {
             videoUrl,
           });
 
+          const isScheduleFeedItem =
+            String(item.scheduleType || "").includes("media-live-slots") ||
+            String(item.source || "").includes("media-schedule");
+
+          const scheduleAvatarRaw =
+            item.mediaAvatarUri ||
+            item.churchAvatarUri ||
+            item.churchAvatarUrl ||
+            item.avatarUri ||
+            item.avatarUrl ||
+            item.actorAvatarUri ||
+            "";
+
           return {
             id,
             kind: "post",
@@ -2949,7 +3015,7 @@ export default function FeedScreen() {
             mediaOwnerPastorUserId: buildLiveRoomAuthorityParams(item as any).actualChurchPastorUserId,
             mediaHostIds: String(item.mediaHostIds || item.hostIds || buildLiveRoomAuthorityParams(item as any).mediaHostIds || ""),
             actorLabel: String(
-              item.type === "video"
+              item.type === "video" || isScheduleFeedItem
                 ? (item.mediaName || item.actorLabel || "Church Media")
                 : (item.authorName || item.actorLabel || "Church Member")
             ),
@@ -2958,19 +3024,11 @@ export default function FeedScreen() {
               item.churchLabel ||
               "MY CHURCH"
             ),
+            mediaAvatarUri: mediaUrl(scheduleAvatarRaw),
+            churchAvatarUri: mediaUrl(item.churchAvatarUri || item.churchAvatarUrl || ""),
+            churchAvatarUrl: mediaUrl(item.churchAvatarUrl || item.churchAvatarUri || ""),
             actorAvatarUri: mediaUrl(
-              String(item.scheduleType || "").includes("media-live-slots") ||
-              String(item.source || "").includes("media-schedule")
-                ? (
-                    item.mediaAvatarUri ||
-                    item.churchAvatarUri ||
-                    item.churchAvatarUrl ||
-                    item.avatarUri ||
-                    item.avatarUrl ||
-                    item.actorAvatarUri ||
-                    ""
-                  )
-                : (
+              isScheduleFeedItem ? scheduleAvatarRaw : (
                     item.type === "video"
                       ? (item.churchAvatarUri || item.actorAvatarUri || item.avatarUri || "")
                       : (
@@ -4082,6 +4140,11 @@ const s: any = StyleSheet.create({
     width: "100%",
     overflow: "hidden",
     backgroundColor: "#070B14",
+  },
+
+  scheduleOnlySlide: {
+    backgroundColor: "#030508",
+    justifyContent: "center",
   },
 
   page: {
