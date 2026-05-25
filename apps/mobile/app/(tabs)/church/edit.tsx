@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system/legacy";
 import { useRouter } from "expo-router";
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -13,7 +14,8 @@ import {
   saveChurchDraft,
   saveChurchProfileCache,
 } from "@/src/lib/churchStore";
-import { buildAvatarDataUrl } from "@/src/lib/avatarCompress";
+import { buildAvatarDataUrl, compressAvatarFile } from "@/src/lib/avatarCompress";
+import { pickFresherAvatar } from "@/src/lib/avatarFreshness";
 import { emitChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
 
 const GOLD = "rgba(217,179,95,0.96)";
@@ -65,7 +67,15 @@ export default function EditChurchProfile() {
       setPastorName(String(p.pastorName || cached?.pastorName || ""));
       setPhone(String(p.phone || cached?.phone || ""));
       setAddress(String(p.address || cached?.address || ""));
-      setAvatarUri(mediaUrl(p.avatarUri || p.avatarUrl || cached?.avatarUri || cached?.avatarUrl || ""));
+
+      const serverAvatar = mediaUrl(p.avatarUri || p.avatarUrl || "");
+      const mergedAvatar = pickFresherAvatar({
+        localUri: mediaUrl(cached?.avatarUri || cached?.avatarUrl || ""),
+        localUpdatedAt: cached?.avatarUpdatedAt,
+        serverUri: serverAvatar,
+        serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || 0),
+      });
+      setAvatarUri(mergedAvatar.uri);
       setAvatarDirty(false);
 
       if (churchId && p?.name) {
@@ -75,8 +85,9 @@ export default function EditChurchProfile() {
           pastorName: String(p.pastorName || ""),
           phone: String(p.phone || ""),
           address: String(p.address || ""),
-          avatarUri: mediaUrl(p.avatarUri || p.avatarUrl || ""),
-          avatarUrl: mediaUrl(p.avatarUrl || p.avatarUri || ""),
+          avatarUri: mergedAvatar.uri,
+          avatarUrl: mergedAvatar.uri,
+          avatarUpdatedAt: mergedAvatar.skippedStale ? cached?.avatarUpdatedAt : cached?.avatarUpdatedAt,
         });
       }
     })();
@@ -96,10 +107,20 @@ export default function EditChurchProfile() {
 
     if (res.canceled) return;
     const picked = String(res.assets?.[0]?.uri || "").trim();
-    if (picked) {
+    if (!picked) return;
+
+    try {
+      const auth = getKristoAuth();
+      const churchId = String(session?.churchId || auth.churchId || "").trim();
+      const dir = `${FileSystem.documentDirectory}church-avatar/`;
+      await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+      const nextUri = `${dir}${churchId || "church"}-${Date.now()}.jpg`;
+      const compressedUri = await compressAvatarFile(picked, nextUri);
+      setAvatarUri(compressedUri);
+    } catch {
       setAvatarUri(picked);
-      setAvatarDirty(true);
     }
+    setAvatarDirty(true);
   }
 
   async function save() {
@@ -119,6 +140,8 @@ export default function EditChurchProfile() {
     const trimmedPhone = phone.trim();
     const trimmedAddress = address.trim();
     const displayAvatar = avatarUri.startsWith("file:") ? avatarUri : mediaUrl(avatarUri);
+    const now = Date.now();
+    const optimisticAvatarAt = avatarDirty && displayAvatar ? now : undefined;
 
     const localProfile = {
       churchId,
@@ -128,9 +151,17 @@ export default function EditChurchProfile() {
       address: trimmedAddress,
       avatarUri: displayAvatar,
       avatarUrl: displayAvatar,
+      avatarUpdatedAt: optimisticAvatarAt,
     };
 
     await saveChurchProfileCache(localProfile);
+
+    if (optimisticAvatarAt) {
+      console.log("[EditChurch] optimistic avatar saved", {
+        churchId,
+        avatarUpdatedAt: optimisticAvatarAt,
+      });
+    }
 
     if (session?.userId && churchId) {
       const draft = (await loadChurchDraft(session.userId)) || { churchId };
@@ -171,6 +202,15 @@ export default function EditChurchProfile() {
         pastorName: trimmedPastor,
       });
     }
+
+    emitChurchProfileUpdated({
+      churchId,
+      name: trimmedName,
+      avatarUri: displayAvatar,
+      avatarUrl: displayAvatar,
+      updatedAt: now,
+      avatarUpdatedAt: optimisticAvatarAt,
+    });
 
     router.replace({
       pathname: "/(tabs)/church/overview",
@@ -222,16 +262,28 @@ export default function EditChurchProfile() {
         }
 
         const p = res?.data || {};
-        const syncedAvatar = mediaUrl(p.avatarUri || p.avatarUrl || displayAvatar);
-        const avatarUpdatedAt = avatarDirty || syncedAvatar ? Date.now() : undefined;
+        const serverAvatar = mediaUrl(p.avatarUri || p.avatarUrl || "");
+        const existingCache = await loadChurchProfileCache(churchId);
+        const mergedAvatar = pickFresherAvatar({
+          localUri: displayAvatar,
+          localUpdatedAt: optimisticAvatarAt || existingCache?.avatarUpdatedAt,
+          serverUri: serverAvatar,
+          serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || Date.now()),
+        });
+        const avatarUpdatedAt =
+          mergedAvatar.source === "local"
+            ? optimisticAvatarAt || existingCache?.avatarUpdatedAt || Date.now()
+            : avatarDirty || serverAvatar
+              ? Date.now()
+              : existingCache?.avatarUpdatedAt;
         const synced = {
           churchId,
           name: String(p.name || trimmedName),
           pastorName: String(p.pastorName || trimmedPastor),
           phone: String(p.phone || trimmedPhone),
           address: String(p.address || trimmedAddress),
-          avatarUri: syncedAvatar,
-          avatarUrl: syncedAvatar,
+          avatarUri: mergedAvatar.uri || displayAvatar,
+          avatarUrl: mergedAvatar.uri || displayAvatar,
           avatarUpdatedAt,
         };
         await saveChurchProfileCache(synced);
@@ -248,6 +300,9 @@ export default function EditChurchProfile() {
 
         emitChurchProfileUpdated({
           churchId,
+          name: synced.name,
+          avatarUri: synced.avatarUri,
+          avatarUrl: synced.avatarUrl,
           updatedAt: Date.now(),
           avatarUpdatedAt,
         });

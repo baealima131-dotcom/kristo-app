@@ -11,6 +11,7 @@ import { apiPost, apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { buildAvatarDataUrl, compressAvatarFile } from "@/src/lib/avatarCompress";
 import { emitUserProfileUpdated } from "@/src/lib/kristoProfileEvents";
+import { pickFresherAvatar } from "@/src/lib/avatarFreshness";
 
 const BG = "#050914";
 const GOLD = "#F4D06F";
@@ -158,6 +159,21 @@ export default function EditProfileScreen() {
 
     await saveProfileDraft(nextProfile, session.userId);
 
+    const now = Date.now();
+    const optimisticAvatarAt =
+      avatarDirty && String(nextProfile.avatarUri || "").trim() ? now : (nextProfile as any).avatarUpdatedAt;
+
+    if (optimisticAvatarAt) {
+      await saveProfileDraft(
+        { ...nextProfile, avatarUpdatedAt: optimisticAvatarAt } as any,
+        session.userId
+      );
+      console.log("[ProfileEdit] optimistic avatar saved", {
+        userId: session.userId,
+        avatarUpdatedAt: optimisticAvatarAt,
+      });
+    }
+
     await setSession({
       ...session,
       name: nextProfile.displayName,
@@ -179,6 +195,14 @@ export default function EditProfileScreen() {
         displayName: nextProfile.displayName,
       });
     }
+
+    emitUserProfileUpdated({
+      userId: session.userId,
+      avatarUri: nextProfile.avatarUri,
+      avatarUrl: nextProfile.avatarUri,
+      updatedAt: now,
+      avatarUpdatedAt: optimisticAvatarAt,
+    });
 
     router.back();
 
@@ -228,8 +252,20 @@ export default function EditProfileScreen() {
         }
 
         const serverProfile = savedRes?.profile || {};
-        const serverAvatar = String(serverProfile?.avatarUrl || backendAvatar || "").trim();
-        const avatarUpdatedAt = avatarDirty || serverAvatar ? Date.now() : undefined;
+        const serverAvatarRaw = String(serverProfile?.avatarUrl || backendAvatar || "").trim();
+        const mergedAvatar = pickFresherAvatar({
+          localUri: String(nextProfile.avatarUri || "").trim(),
+          localUpdatedAt: optimisticAvatarAt,
+          serverUri: serverAvatarRaw,
+          serverUpdatedAt: Number(serverProfile?.updatedAt || serverProfile?.avatarUpdatedAt || Date.now()),
+        });
+        const serverAvatar = mergedAvatar.uri;
+        const avatarUpdatedAt =
+          mergedAvatar.source === "local"
+            ? optimisticAvatarAt || Date.now()
+            : avatarDirty || serverAvatar
+              ? Date.now()
+              : undefined;
         const syncedChurchId = String(
           savedRes?.churchId || savedRes?.activeMembership?.churchId || session.churchId || ""
         ).trim();
@@ -275,6 +311,8 @@ export default function EditProfileScreen() {
 
         emitUserProfileUpdated({
           userId: session.userId,
+          avatarUri: syncedProfile.avatarUri,
+          avatarUrl: syncedProfile.avatarUri,
           updatedAt: Date.now(),
           avatarUpdatedAt,
         });

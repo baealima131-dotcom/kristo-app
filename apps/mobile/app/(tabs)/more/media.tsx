@@ -252,6 +252,9 @@ export default function MediaStudioScreen() {
   const [backendMedia, setBackendMedia] = useState<any>(null);
   const [cachedMedia, setCachedMedia] = useState<any>(null);
   const [profileHydrated, setProfileHydrated] = useState(false);
+  const [mediaProfileReady, setMediaProfileReady] = useState(false);
+  const [viewerCanManage, setViewerCanManage] = useState(false);
+  const [viewerIsHost, setViewerIsHost] = useState(false);
   const mediaFetchCountRef = useRef(0);
   const [activeBackendLive, setActiveBackendLive] = useState<any>(null);
   const [vipNotice, setVipNotice] = useState<{ title: string; message: string } | null>(null);
@@ -279,12 +282,13 @@ export default function MediaStudioScreen() {
   React.useEffect(() => {
     let alive = true;
 
-    (async () => {
+    async function bootstrapMediaProfile() {
       const churchId = String(session?.churchId || "").trim();
-      if (!churchId) {
+      if (!churchId || !session?.userId) {
         if (alive) {
           setCachedMedia(null);
           setProfileHydrated(true);
+          setMediaProfileReady(true);
         }
         return;
       }
@@ -293,79 +297,78 @@ export default function MediaStudioScreen() {
       if (!alive) return;
 
       if (cached?.mediaName) {
-        console.log("[MediaProfile] cache hit", { churchId, mediaName: cached.mediaName });
+        console.log("[MediaScreen] cache profile shown", {
+          churchId,
+          mediaName: cached.mediaName,
+        });
         setCachedMedia(cached);
+        setBackendMedia((prev: any) => prev || cached);
       } else {
-        console.log("[MediaProfile] cache miss", { churchId });
         setCachedMedia(null);
       }
 
       setProfileHydrated(true);
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [session?.churchId]);
-
-  React.useEffect(() => {
-    let alive = true;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-    async function loadBackendMedia(reason: string) {
-      if (!session?.userId || !session?.churchId) return;
 
       mediaFetchCountRef.current += 1;
-      console.log("[MediaScreen] mount fetch count", mediaFetchCountRef.current, { reason });
+      console.log("[MediaScreen] mount fetch count", mediaFetchCountRef.current, { reason: "bootstrap" });
 
       const res: any = await apiGet("/api/church/media", {
         headers: getKristoHeaders({
           userId: session.userId,
           role: session.role,
-          churchId: session.churchId || "",
+          churchId,
         }),
       });
 
       if (!alive) return;
 
+      const nextViewerCanManage = Boolean(res?.viewerCanManage);
+      const nextViewerIsHost = Boolean(res?.viewerIsHost);
+      const profileMissing = Boolean(res?.profileMissing);
+
+      setViewerCanManage(nextViewerCanManage);
+      setViewerIsHost(nextViewerIsHost);
+
+      console.log("[MediaScreen] viewerCanManage/viewerIsHost", {
+        viewerCanManage: nextViewerCanManage,
+        viewerIsHost: nextViewerIsHost,
+      });
+      console.log("[MediaScreen] profileMissing decision", {
+        profileMissing,
+        hasBackendMedia: Boolean(res?.media?.mediaName),
+        hasCache: Boolean(cached?.mediaName),
+      });
       console.log("[MediaProfile] backend result", {
-        churchId: session.churchId,
+        churchId,
         ok: Boolean(res?.ok),
         hasMedia: Boolean(res?.media?.mediaName),
-        profileMissing: Boolean(res?.profileMissing),
+        profileMissing,
       });
 
-      if (!res?.ok) return;
-
-      if (res.media?.mediaName) {
+      if (res?.ok && res.media?.mediaName) {
         setBackendMedia(res.media);
         await saveChurchMediaProfileCache({
           ...res.media,
-          churchId: String(res.media.churchId || session.churchId || ""),
+          churchId: String(res.media.churchId || churchId),
         });
         await setSession({
           ...(session as any),
           mediaProfile: res.media,
           churchMediaProfile: res.media,
         } as any);
-      } else {
+      } else if (!cached?.mediaName) {
         setBackendMedia(null);
       }
+
+      setMediaProfileReady(true);
     }
 
-    runAfterFirstFrame(() => {
-      if (!alive) return;
-      void loadBackendMedia("mount");
-      pollTimer = setInterval(() => {
-        void loadBackendMedia("poll");
-      }, 30000);
-    });
+    void bootstrapMediaProfile();
 
     return () => {
       alive = false;
-      if (pollTimer) clearInterval(pollTimer);
     };
-  }, [session?.userId, session?.churchId, session?.role]);
+  }, [session?.userId, session?.churchId, session?.role, setSession]);
 
   React.useEffect(() => {
     let alive = true;
@@ -452,13 +455,22 @@ export default function MediaStudioScreen() {
       ""
   ).toLowerCase();
   const isPastor = churchRole.includes("pastor");
-  const mediaHosts = Array.isArray((churchMediaProfile as any)?.hosts) ? (churchMediaProfile as any).hosts : [];
-  const isMediaHost = mediaHosts.some((h: any) => String(h?.userId || h?.id || "") === String(session?.userId || ""));
-  const canCreateMedia = isPastor;
-  const canUseMediaTools = isPastor || isMediaHost;
   const isChurchAdmin = churchRole.includes("admin") || churchRole.includes("church_admin");
+  const mediaHosts = Array.isArray((churchMediaProfile as any)?.hosts) ? (churchMediaProfile as any).hosts : [];
+  const isMediaHostFromProfile = mediaHosts.some(
+    (h: any) => String(h?.userId || h?.id || "") === String(session?.userId || "")
+  );
+  const viewerCanManageEffective = viewerCanManage || isPastor || isChurchAdmin;
+  const viewerIsHostEffective = viewerIsHost || isMediaHostFromProfile;
+  const canCreateMedia = viewerCanManageEffective;
+  const canUseMediaTools = viewerCanManageEffective || viewerIsHostEffective;
   const canManageChurchStorage = isPastor || isChurchAdmin;
   const canManageMediaStorage = canUseMediaTools;
+  const hasChurchMediaProfile = Boolean(String(churchMediaProfile?.mediaName || "").trim());
+  const showHostSetupPending =
+    mediaProfileReady && !hasChurchMediaProfile && viewerIsHostEffective && !viewerCanManageEffective;
+  const showCreateWizard =
+    mediaProfileReady && !hasChurchMediaProfile && canCreateMedia && !showHostSetupPending;
 
   // Church-level media subscription.
   // Hosts NEVER control subscription ownership.
@@ -489,10 +501,8 @@ export default function MediaStudioScreen() {
     });
   }
 
-  // SECURITY UX: removed hosts / normal members must NOT enter existing Pastor Media Center.
-  // They can only see the create flow; saving will still require Pastor/approved Host.
-  const hasMediaAccount =
-    canUseMediaTools && Boolean(churchMediaProfile?.mediaName?.trim());
+  // SECURITY UX: hosts must not see create wizard; pastors/admins create once per church.
+  const hasMediaAccount = hasChurchMediaProfile && canUseMediaTools;
 
   function requireMediaManager() {
     if (canUseMediaTools) return true;
@@ -580,7 +590,7 @@ export default function MediaStudioScreen() {
 
   // sync form from church media profile (cache or backend) so every device sees same Church Media
   React.useEffect(() => {
-    if (!profileHydrated) return;
+    if (!profileHydrated || !mediaProfileReady) return;
 
     const m: any =
       backendMedia ||
@@ -590,8 +600,14 @@ export default function MediaStudioScreen() {
 
     const hasProfile = Boolean(String(m?.mediaName || "").trim());
 
+    if (showHostSetupPending) {
+      setIsEditingMedia(false);
+      setCreateStep(1);
+      return;
+    }
+
     if (!hasProfile) {
-      if (!canUseMediaTools) return;
+      if (!canCreateMedia) return;
       setForm({
         mediaName: "",
         category: "Church Media" as any,
@@ -626,7 +642,9 @@ export default function MediaStudioScreen() {
     setIsEditingMedia(false);
   }, [
     profileHydrated,
-    canUseMediaTools,
+    mediaProfileReady,
+    showHostSetupPending,
+    canCreateMedia,
     mediaBelongsToChurch,
     backendMedia?.id,
     backendMedia?.updatedAt,
@@ -3135,7 +3153,27 @@ export default function MediaStudioScreen() {
                 </View>
               </ScrollView>
             </>
-          ) : mediaStep === 1 ? (
+          ) : showHostSetupPending ? (
+            <>
+              <View style={s.hero}>
+                <View style={s.heroIcon}>
+                  <Ionicons name="hourglass-outline" size={22} color="#F4C95D" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.heroKicker}>Church Media</Text>
+                  <Text style={s.heroTitle}>Not set up yet</Text>
+                  <Text style={s.heroText}>
+                    Church Media not set up yet. Ask your pastor to create it.
+                  </Text>
+                </View>
+              </View>
+            </>
+          ) : !mediaProfileReady && !hasChurchMediaProfile ? (
+            <View style={{ alignItems: "center", paddingVertical: 48 }}>
+              <ActivityIndicator size="small" color="#F4C95D" />
+              <Text style={[s.heroText, { marginTop: 12 }]}>Loading Church Media…</Text>
+            </View>
+          ) : showCreateWizard && mediaStep === 1 ? (
             <>
               <Text style={s.fieldLabel}>Church Media name</Text>
               <View style={s.inputWrap as any}>
@@ -3203,7 +3241,7 @@ export default function MediaStudioScreen() {
                 <Ionicons name="chevron-forward" size={24} color="#111" />
               </Pressable>
             </>
-          ) : mediaStep === 2 ? (
+          ) : showCreateWizard && mediaStep === 2 ? (
             <>
               <Text style={s.fieldLabel}>Language</Text>
               <View style={s.inputWrap as any}>
@@ -3237,7 +3275,7 @@ export default function MediaStudioScreen() {
                 </Pressable>
               </View>
             </>
-          ) : (
+          ) : showCreateWizard ? (
             <>
               <Text style={s.fieldLabel}>Content style</Text>
               <View style={s.inputWrap as any}>
@@ -3272,7 +3310,7 @@ export default function MediaStudioScreen() {
                 </Pressable>
               </View>
             </>
-          )}
+          ) : null}
         </View>
 
 

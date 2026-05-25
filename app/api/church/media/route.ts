@@ -22,6 +22,18 @@ function isPastor(role: string) {
   return String(role || "").toLowerCase().includes("pastor");
 }
 
+function isChurchAdmin(role: string) {
+  const r = String(role || "").toLowerCase();
+  return r.includes("church_admin") || r.includes("system_admin");
+}
+
+function isSelectedMediaHost(media: { hosts?: any[] } | null | undefined, userId: string) {
+  const id = String(userId || "").trim();
+  if (!id || !media) return false;
+  const hosts = Array.isArray(media.hosts) ? media.hosts : [];
+  return hosts.some((h: any) => String(h?.userId || h?.id || "").trim() === id);
+}
+
 export async function GET(req: Request) {
   const a = auth(req);
   if (!a.userId || !a.churchId) {
@@ -30,20 +42,29 @@ export async function GET(req: Request) {
 
   try {
     const media = await getChurchMediaByChurchId(a.churchId);
+    const viewerCanManage = isPastor(a.role) || isChurchAdmin(a.role);
+    const viewerIsHost = isSelectedMediaHost(media, a.userId);
+    const hasProfile = Boolean(String(media?.mediaName || "").trim());
+    const canViewProfile = hasProfile && (viewerCanManage || viewerIsHost);
 
     if (process.env.KRISTO_DEBUG_AUTH === "1" || process.env.NODE_ENV !== "production") {
-      console.log("[church/media] GET", {
+      console.log("[MediaProfile] backend result", {
         churchId: a.churchId,
         userId: a.userId,
-        found: Boolean(media?.mediaName),
+        found: hasProfile,
+        viewerCanManage,
+        viewerIsHost,
+        profileMissing: !hasProfile,
         storeMode: resolveMediaStoreMode(),
       });
     }
 
     return NextResponse.json({
       ok: true,
-      media,
-      profileMissing: !media?.mediaName,
+      media: canViewProfile ? media : null,
+      profileMissing: !hasProfile,
+      viewerCanManage,
+      viewerIsHost,
       storeMode: resolveMediaStoreMode(),
     });
   } catch (error: any) {

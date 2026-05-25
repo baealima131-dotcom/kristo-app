@@ -17,6 +17,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { loadProfileDraft, saveProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
 import { onUserProfileUpdated } from "@/src/lib/kristoProfileEvents";
+import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getPaymentsState, subscribePayments } from "../../../src/store/paymentsStore";
@@ -817,7 +818,23 @@ export default function MeScreen() {
         setProfile(profileRes.profile);
 
         const backendName = String(profileRes.profile.fullName || "").trim();
-        const backendAvatar = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
+        const backendAvatarRaw = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
+        const draftBefore = session?.userId ? await loadProfileDraft(session.userId) : null;
+        const mergedAvatar = pickFresherAvatar({
+          localUri: String(draftBefore?.avatarUri || (session as any)?.avatarUri || (session as any)?.avatarUrl || "").trim(),
+          localUpdatedAt: draftBefore?.avatarUpdatedAt,
+          serverUri: backendAvatarRaw,
+          serverUpdatedAt: Number((profileRes.profile as any)?.updatedAt || (profileRes.profile as any)?.avatarUpdatedAt || 0),
+        });
+
+        if (mergedAvatar.skippedStale && silent) {
+          console.log("[Profile] skipped stale server avatar", {
+            userId,
+            localUpdatedAt: draftBefore?.avatarUpdatedAt || null,
+          });
+        }
+
+        const backendAvatar = mergedAvatar.uri ? toBackendImageUrl(mergedAvatar.uri) : "";
 
         if (session?.userId) {
           await setSession({
@@ -828,13 +845,19 @@ export default function MeScreen() {
           } as any);
 
           if (backendAvatar || backendName) {
-            const draft = (await loadProfileDraft(session.userId)) || { displayName: backendName || "" };
+            const draft = draftBefore || { displayName: backendName || "" };
+            const nextAvatarUpdatedAt =
+              mergedAvatar.source === "local"
+                ? draftBefore?.avatarUpdatedAt
+                : backendAvatar
+                  ? Date.now()
+                  : draft.avatarUpdatedAt;
             await saveProfileDraft(
               {
                 ...draft,
                 displayName: backendName || draft.displayName,
                 avatarUri: backendAvatar || draft.avatarUri,
-                avatarUpdatedAt: backendAvatar ? Date.now() : draft.avatarUpdatedAt,
+                avatarUpdatedAt: nextAvatarUpdatedAt,
               },
               session.userId
             );
@@ -842,6 +865,7 @@ export default function MeScreen() {
               ...draft,
               displayName: backendName || draft.displayName,
               avatarUri: backendAvatar || draft.avatarUri,
+              avatarUpdatedAt: nextAvatarUpdatedAt,
             });
           }
         }
@@ -931,12 +955,43 @@ export default function MeScreen() {
     }, [refreshProfileDraft, refreshActiveChurch, load])
   );
 
+  const applyUserProfileEvent = useCallback(
+    async (payload: { avatarUri?: string; avatarUrl?: string; avatarUpdatedAt?: number }) => {
+      const avatarRaw = String(payload.avatarUri || payload.avatarUrl || "").trim();
+      if (avatarRaw) {
+        const nextAvatar = toBackendImageUrl(avatarRaw) || avatarRaw;
+        setProfileDraft((prev) => ({
+          ...(prev || { displayName: "" }),
+          avatarUri: nextAvatar,
+          avatarUpdatedAt: payload.avatarUpdatedAt || prev?.avatarUpdatedAt,
+        }));
+        if (session?.userId) {
+          await setSession({
+            ...session,
+            avatarUri: nextAvatar,
+            avatarUrl: nextAvatar,
+          } as any);
+        }
+      } else if (userId) {
+        const draft = await loadProfileDraft(userId);
+        if (draft) setProfileDraft(draft);
+      }
+      console.log("[Profile] event applied immediately", {
+        userId,
+        hasAvatar: Boolean(avatarRaw),
+        avatarUpdatedAt: payload.avatarUpdatedAt || null,
+      });
+    },
+    [session, setSession, userId]
+  );
+
   useEffect(() => {
     return onUserProfileUpdated((payload) => {
       if (String(payload.userId || "").trim() !== userId) return;
+      void applyUserProfileEvent(payload);
       void silentRefreshProfile();
     });
-  }, [userId, silentRefreshProfile]);
+  }, [userId, applyUserProfileEvent, silentRefreshProfile]);
 
   
   const currentUserId = String(session?.userId || "").trim();
@@ -1068,8 +1123,9 @@ const resolvedName = useMemo(() => {
       toBackendImageUrl(String((session as any)?.avatarUri || "").trim());
     const fromDraft = toBackendImageUrl(String(profileDraft?.avatarUri || "").trim());
 
-    return fromApi || fromSession || fromDraft || "";
- }, [profile?.avatarUrl, session, profileDraft?.avatarUri]);
+    const raw = fromApi || fromSession || fromDraft || "";
+    return avatarCacheBust(raw, profileDraft?.avatarUpdatedAt);
+ }, [profile?.avatarUrl, session, profileDraft?.avatarUri, profileDraft?.avatarUpdatedAt]);
 
   const user = {
     userId: publicKristoId || String((profile as any)?.kristoId || (profile as any)?.publicKristoId || ""),
