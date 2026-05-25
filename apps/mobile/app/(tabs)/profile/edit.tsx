@@ -40,6 +40,7 @@ export default function EditProfileScreen() {
   const [displayName, setDisplayName] = useState("");
   const [bio, setBio] = useState("");
   const [avatarUri, setAvatarUri] = useState<string | undefined>(undefined);
+  const [avatarDirty, setAvatarDirty] = useState(false);
   const [focused, setFocused] = useState(false);
   const [bioOpen, setBioOpen] = useState(false);
   const [bioDraft, setBioDraft] = useState("");
@@ -79,6 +80,7 @@ export default function EditProfileScreen() {
       setDisplayName(apiName || savedName || signupName || sessionName || "");
       setBio(String((apiProfile as any)?.bio || saved?.bio || ""));
       setAvatarUri(apiProfile?.avatarUrl ? String(apiProfile.avatarUrl) : saved?.avatarUri);
+      setAvatarDirty(false);
 
       setPhoneValue(String(apiProfile?.phone || (saved as any)?.phone || (session as any)?.phone || ""));
       setAddressValue(String((saved as any)?.address || (session as any)?.address || ""));
@@ -116,8 +118,10 @@ export default function EditProfileScreen() {
 
       const compressedUri = await compressAvatarFile(pickedUri, nextUri);
       setAvatarUri(compressedUri);
+      setAvatarDirty(true);
     } catch {
       setAvatarUri(pickedUri);
+      setAvatarDirty(true);
     }
   };
 
@@ -180,10 +184,16 @@ export default function EditProfileScreen() {
     void (async () => {
       const cleanAvatar = String(avatarUri || "").trim();
       const backendAvatar =
-        cleanAvatar && !cleanAvatar.startsWith("file:") ? cleanAvatar : "";
+        !avatarDirty
+          ? cleanAvatar && !cleanAvatar.startsWith("file:")
+            ? cleanAvatar
+            : ""
+          : cleanAvatar && !cleanAvatar.startsWith("file:")
+            ? cleanAvatar
+            : "";
 
       let avatarData = "";
-      if (cleanAvatar && cleanAvatar.startsWith("file:")) {
+      if (avatarDirty && cleanAvatar.startsWith("file:")) {
         try {
           avatarData = await buildAvatarDataUrl(cleanAvatar);
         } catch {}
@@ -234,6 +244,7 @@ export default function EditProfileScreen() {
         } as any;
 
         await saveProfileDraft(syncedProfile, session.userId);
+        setAvatarDirty(false);
 
         await setSession({
           ...session,

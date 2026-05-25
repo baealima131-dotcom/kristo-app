@@ -37,6 +37,7 @@ export default function EditChurchProfile() {
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [avatarUri, setAvatarUri] = useState("");
+  const [avatarDirty, setAvatarDirty] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -52,6 +53,7 @@ export default function EditChurchProfile() {
         setPhone(String(cached.phone || ""));
         setAddress(String(cached.address || ""));
         setAvatarUri(mediaUrl(cached.avatarUri || cached.avatarUrl || ""));
+        setAvatarDirty(false);
       }
 
       const j = await apiGet<any>("/api/church/profile", { headers: getKristoHeaders() }).catch(() => null);
@@ -63,6 +65,7 @@ export default function EditChurchProfile() {
       setPhone(String(p.phone || cached?.phone || ""));
       setAddress(String(p.address || cached?.address || ""));
       setAvatarUri(mediaUrl(p.avatarUri || p.avatarUrl || cached?.avatarUri || cached?.avatarUrl || ""));
+      setAvatarDirty(false);
 
       if (churchId && p?.name) {
         await saveChurchProfileCache({
@@ -92,7 +95,10 @@ export default function EditChurchProfile() {
 
     if (res.canceled) return;
     const picked = String(res.assets?.[0]?.uri || "").trim();
-    if (picked) setAvatarUri(picked);
+    if (picked) {
+      setAvatarUri(picked);
+      setAvatarDirty(true);
+    }
   }
 
   async function save() {
@@ -177,8 +183,23 @@ export default function EditChurchProfile() {
     void (async () => {
       try {
         let avatarData = "";
-        if (avatarUri.startsWith("file:")) {
-          avatarData = await buildAvatarDataUrl(avatarUri);
+        let patchAvatarUri = "";
+        let patchAvatarUrl = "";
+
+        if (avatarDirty) {
+          if (avatarUri.startsWith("file:")) {
+            avatarData = await buildAvatarDataUrl(avatarUri);
+          } else {
+            patchAvatarUri = displayAvatar;
+            patchAvatarUrl = displayAvatar;
+          }
+        } else if (
+          avatarUri &&
+          !avatarUri.startsWith("file:") &&
+          (/^data:image\//i.test(avatarUri) || /^https?:\/\//i.test(avatarUri) || avatarUri.startsWith("/"))
+        ) {
+          patchAvatarUri = displayAvatar;
+          patchAvatarUrl = displayAvatar;
         }
 
         const res = await apiPatch<any>(
@@ -188,8 +209,8 @@ export default function EditChurchProfile() {
             pastorName: trimmedPastor,
             phone: trimmedPhone,
             address: trimmedAddress,
-            avatarUri: avatarUri.startsWith("file:") ? "" : displayAvatar,
-            avatarUrl: avatarUri.startsWith("file:") ? "" : displayAvatar,
+            avatarUri: patchAvatarUri,
+            avatarUrl: patchAvatarUrl,
             avatarData,
           },
           { headers: getKristoHeaders() }
@@ -210,6 +231,7 @@ export default function EditChurchProfile() {
           avatarUrl: mediaUrl(p.avatarUrl || p.avatarUri || displayAvatar),
         };
         await saveChurchProfileCache(synced);
+        setAvatarDirty(false);
 
         if (session) {
           await setSession({
