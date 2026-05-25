@@ -36,6 +36,7 @@ const GOLD_BORDER = "rgba(247,211,106,0.42)";
 const GOLD_GLASS = "rgba(247,211,106,0.14)";
 const LIVE_PINK = "#FF375F";
 const CARD_MIN_HEIGHT = Math.min(790, Math.max(720, Dimensions.get("window").height * 0.86));
+const CARD_MIN_HEIGHT_COMPACT = Math.min(600, Math.max(520, Dimensions.get("window").height * 0.58));
 
 function phaseEdgeTint(phase: string, claimed: boolean) {
   if (phase === "live") return "rgba(255,55,95,0.13)";
@@ -589,17 +590,22 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const showPrimaryClaim = !claimed && phase !== "ended";
   const showSecondaryClaim = claimed && phase !== "ended";
   const isUnclaimedOpen = !claimed && (phase === "open" || phase === "upcoming");
+  const compactOpenCard = !claimed && phase !== "ended";
   const edgeTint = phaseEdgeTint(phase, claimed);
 
   return (
     <Animated.View
       entering={FadeIn.duration(280)}
-      style={[styles.frame, fullBleed && styles.frameFullBleed]}
+      style={[
+        styles.frame,
+        fullBleed && styles.frameFullBleed,
+        fullBleed && compactOpenCard && styles.frameFullBleedCompact,
+      ]}
     >
       <View
         style={[
           styles.card,
-          fullBleed && styles.cardTall,
+          fullBleed && (compactOpenCard ? styles.cardCompact : styles.cardTall),
           { borderColor: theme.border, shadowColor: theme.glow },
         ]}
       >
@@ -656,7 +662,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           />
         </View>
 
-        <View style={styles.cardInner}>
+        <View style={[styles.cardInner, compactOpenCard && styles.cardInnerCompact]}>
           <Animated.View
             entering={FadeInDown.duration(300)}
             style={[styles.headerSection, isUnclaimedOpen && styles.headerSectionUnclaimed]}
@@ -963,6 +969,10 @@ const styles = StyleSheet.create({
     paddingTop: 42,
     paddingBottom: 18,
   },
+  frameFullBleedCompact: {
+    paddingTop: 22,
+    paddingBottom: 14,
+  },
   card: {
     borderRadius: 30,
     borderWidth: 1.2,
@@ -975,6 +985,9 @@ const styles = StyleSheet.create({
   cardTall: {
     minHeight: CARD_MIN_HEIGHT,
   },
+  cardCompact: {
+    minHeight: CARD_MIN_HEIGHT_COMPACT,
+  },
   cardInner: {
     flex: 1,
     minHeight: CARD_MIN_HEIGHT,
@@ -982,6 +995,12 @@ const styles = StyleSheet.create({
     paddingTop: 22,
     paddingBottom: 16,
     justifyContent: "space-between",
+  },
+  cardInnerCompact: {
+    minHeight: CARD_MIN_HEIGHT_COMPACT,
+    justifyContent: "flex-start",
+    paddingTop: 18,
+    paddingBottom: 14,
   },
   glowOrbTop: {
     position: "absolute",
@@ -1198,7 +1217,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
   },
   bodySectionUnclaimed: {
-    flex: 1,
+    flex: 0,
   },
   stateRow: {
     flexDirection: "row",
@@ -1235,7 +1254,7 @@ const styles = StyleSheet.create({
   },
   titleBlockUnclaimed: {
     marginBottom: 8,
-    minHeight: 68,
+    minHeight: 0,
   },
   slotTitle: {
     color: "#FAFAFA",
@@ -1451,8 +1470,9 @@ const styles = StyleSheet.create({
     gap: 11,
   },
   footerSectionUnclaimed: {
-    marginTop: 4,
+    marginTop: "auto",
     gap: 9,
+    paddingTop: 8,
   },
   claimBtnPrimaryWrap: {
     position: "relative",
