@@ -1,4 +1,13 @@
+import {
+  dedupeInflight,
+  headerUserId,
+  requestKey,
+  type TrafficOptions,
+} from "@/src/lib/kristoTraffic";
+
 type Json = any;
+
+export type { TrafficOptions };
 
 export type ApiErrorResult = {
   ok: false;
@@ -71,16 +80,31 @@ function mergeHeaders(h?: HeadersRec) {
   return out;
 }
 
-// apiGet(path, { headers }) style
-export async function apiGet<T = Json>(path: string, init?: RequestInit) {
-  try {
-    const res = await fetch(kristoUrl(path), { ...(init || {}), method: "GET" });
-    const body = await safeJson(res);
-    if (!res.ok) return httpError(path, res, body) as T;
-    return (body ?? { ok: false, error: "Empty server response", status: res.status }) as T;
-  } catch (error) {
-    return networkError(path, error) as T;
-  }
+// apiGet(path, { headers }, { screen, throttleMs })
+export async function apiGet<T = Json>(path: string, init?: RequestInit, traffic?: TrafficOptions) {
+  const userId = headerUserId(init?.headers);
+  const key = requestKey("GET", path, userId);
+  const screen = traffic?.screen || "api";
+  const dedupe = traffic?.dedupe !== false;
+
+  const run = async () => {
+    try {
+      const res = await fetch(kristoUrl(path), { ...(init || {}), method: "GET" });
+      const body = await safeJson(res);
+      if (!res.ok) return httpError(path, res, body) as T;
+      return (body ?? { ok: false, error: "Empty server response", status: res.status }) as T;
+    } catch (error) {
+      return networkError(path, error) as T;
+    }
+  };
+
+  if (!dedupe && !traffic?.throttleMs) return run();
+
+  return dedupeInflight(key, run, {
+    screen,
+    endpoint: path,
+    throttleMs: traffic?.throttleMs,
+  });
 }
 
 // Backward compatible:

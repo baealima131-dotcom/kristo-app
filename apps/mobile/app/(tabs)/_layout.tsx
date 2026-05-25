@@ -1,109 +1,848 @@
-import { Tabs } from "expo-router";
+import { Tabs, useGlobalSearchParams, useSegments, useRouter } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { View } from "react-native";
+import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { apiGet } from "@/src/lib/kristoApi";
+import { feedList } from "@/src/lib/homeFeedStore";
+import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
+import { Alert, Animated, Pressable, Text, View } from "react-native";
+import { fetchLightLiveState, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
 
 const VIP_BG = "#0B0F17";
 const VIP_BORDER = "rgba(255,255,255,0.10)";
 const GOLD = "#D9B35F";
 const MUTED = "rgba(255,255,255,0.55)";
+const TAB_BG = "rgba(8,12,20,0.96)";
+const TAB_BORDER = "rgba(255,255,255,0.05)";
 
-function ProfileAvatarIcon({ focused }: { focused: boolean }) {
+
+function MessagesModeTabButton({
+  label,
+  icon,
+  active,
+  onPress,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  active: boolean;
+  onPress: () => void;
+}) {
   return (
-    <View
+    <Pressable
+      onPress={onPress}
       style={{
-        width: 28,
-        height: 28,
-        borderRadius: 999,
+        flex: 1,
         alignItems: "center",
         justifyContent: "center",
-        borderWidth: focused ? 2 : 1,
-        borderColor: focused ? GOLD : "rgba(255,255,255,0.22)",
-        backgroundColor: "rgba(11,15,23,0.92)",
+        paddingTop: 8,
+        paddingBottom: 14,
+        height: 70,
       }}
     >
       <Ionicons
-        name="person"
-        size={16}
-        color={focused ? GOLD : "rgba(255,255,255,0.65)"}
+        name={icon}
+        size={26}
+        color={active ? GOLD : MUTED}
       />
+      <Text
+        style={{
+          marginTop: 1,
+          color: active ? GOLD : MUTED,
+          fontWeight: "800",
+          fontSize: 11,
+        }}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+
+function ChurchLiveTabIcon({ focused, isLive, pulse, liveColor = "#EF4444" }: { focused: boolean; isLive: boolean; pulse: Animated.Value; liveColor?: string }) {
+  const waveScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.9] });
+  const waveOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.75, 0] });
+
+  return (
+    <View style={{ width: 46, height: 34, alignItems: "center", justifyContent: "center" }}>
+      {isLive ? (
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            width: 34,
+            height: 34,
+            borderRadius: 999,
+            borderWidth: 2,
+            borderColor: liveColor,
+            transform: [{ scale: waveScale }],
+            opacity: waveOpacity,
+          }}
+        />
+      ) : null}
+      <View
+        style={{
+          width: 32,
+          height: 32,
+          borderRadius: 999,
+          alignItems: "center",
+          justifyContent: "center",
+          borderWidth: isLive ? 2 : 0,
+          borderColor: isLive ? liveColor : "transparent",
+        }}
+      >
+        {isLive ? (
+          <Ionicons name="radio" size={25} color={liveColor} />
+        ) : (
+          <MaterialCommunityIcons name="church" size={26} color={focused ? GOLD : MUTED} />
+        )}
+      </View>
+    </View>
+  );
+}
+
+
+function ProfileAvatarIcon({
+  focused,
+  alertColor,
+  alertIcon,
+}: {
+  focused: boolean;
+  alertColor?: string;
+  alertIcon?: keyof typeof Ionicons.glyphMap;
+}) {
+  const hasAlert = !!alertColor;
+  return (
+    <View
+      style={{
+        width: hasAlert ? 86 : 34,
+        height: hasAlert ? 74 : 34,
+        alignItems: "center",
+        justifyContent: "center",
+        marginBottom: hasAlert ? -24 : 0,
+      }}
+    >
+      {hasAlert ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            width: 76,
+            height: 76,
+            borderRadius: 999,
+            borderWidth: 6,
+            borderColor: alertColor,
+            backgroundColor: "rgba(0,0,0,0.42)",
+            shadowColor: alertColor,
+            shadowOpacity: 0.9,
+            shadowRadius: 20,
+            shadowOffset: { width: 0, height: 0 },
+            elevation: 14,
+          }}
+        />
+      ) : null}
+
+      <View
+        style={{
+          width: hasAlert ? 60 : 28,
+          height: hasAlert ? 60 : 28,
+          borderRadius: 999,
+          alignItems: "center",
+          justifyContent: "center",
+          borderWidth: focused || hasAlert ? 3 : 1,
+          borderColor: hasAlert ? alertColor : focused ? GOLD : "rgba(255,255,255,0.16)",
+          backgroundColor: hasAlert ? "rgba(2,8,18,0.96)" : "rgba(255,255,255,0.03)",
+        }}
+      >
+        <Ionicons
+          name={hasAlert ? (alertIcon || "notifications") : "person"}
+          size={hasAlert ? 36 : 16}
+          color={hasAlert ? alertColor : focused ? GOLD : "rgba(255,255,255,0.65)"}
+        />
+      </View>
     </View>
   );
 }
 
 export default function TabLayout() {
+  const segments = useSegments() as string[];
+  const params = useGlobalSearchParams<{ profileMode?: string }>();
+  const router = useRouter();
+  const { session, loading } = useKristoSession();
+  function openPersonalScheduleAlert() {
+    const alert = personalScheduleTabAlert;
+    if (!alert?.item || !alert?.slot) return false;
+
+    const item = alert.item || {};
+    const slot = alert.slot || {};
+    const claimedByMe = String(alert?.match || "") === "claimed";
+    const isLiveNow = alert?.isLiveNow === true;
+    const liveId = String(item?.sourceScheduleId || item?.id || "media-live-default");
+
+    router.replace({
+      pathname: "/more/my-church-room/messages/live-room",
+      params: {
+        source: "media",
+        liveMode: "schedule",
+        layout: "grid6",
+        entryMode: isLiveNow ? "live" : "waiting",
+        role: claimedByMe ? "Host" : "Viewer",
+        mode: claimedByMe ? "host" : "viewer",
+        room: "media",
+
+        mediaName: String(item?.mediaName || item?.actorLabel || "Church Media"),
+        churchName: String(item?.churchName || item?.churchLabel || "Church"),
+        churchLabel: String(item?.churchName || item?.churchLabel || "Church"),
+        churchId: String(item?.churchId || session?.churchId || ""),
+        liveId,
+
+        title: String(slot?.name || slot?.slotLabel || item?.title || "Church Live"),
+        preferredSlotNumber: String((alert?.index ?? 0) + 1),
+        currentSlotNumber: String((alert?.index ?? 0) + 1),
+        scheduleStartMs: String(alert?.startMs || ""),
+        scheduleEndMs: String(alert?.endMs || ""),
+
+        claimedByUserId: String(slot?.claimedByUserId || ""),
+        claimedByName: String(slot?.claimedByName || ""),
+        claimedByAvatar: String(slot?.claimedByAvatar || slot?.avatarUri || ""),
+
+        mediaSlotPublisher: claimedByMe ? "1" : "0",
+        canPublish: claimedByMe && isLiveNow ? "1" : "0",
+        canPublishCamera: claimedByMe && isLiveNow ? "1" : "0",
+        canPublishMic: claimedByMe && isLiveNow ? "1" : "0",
+
+        watchScheduledPublisher: claimedByMe ? "1" : "0",
+        isGlobalMediaSlot: "1",
+        ...buildLiveRoomAuthorityParams(item),
+        mediaOwnerPastorUserId: buildLiveRoomAuthorityParams(item).actualChurchPastorUserId,
+        mediaHostIds: String(item?.mediaHostIds || item?.hostIds || buildLiveRoomAuthorityParams(item).mediaHostIds || ""),
+      },
+    } as any);
+
+    return true;
+  }
+
+  function openChurchLiveAsViewer() {
+    const scheduleAlert = mediaScheduleTabLive;
+
+    if (scheduleAlert?.item && scheduleAlert?.slot) {
+      const item = scheduleAlert.item || {};
+      const slot = scheduleAlert.slot || {};
+      const isLiveNow = scheduleAlert?.isLiveNow === true;
+      const liveId = String(item?.sourceScheduleId || item?.id || "media-live-default");
+      const allSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+      const viewerUserId = String(session?.userId || "").trim();
+      const claimedIndex = allSlots.findIndex((s: any) => {
+        const raw = s?.claimedBy;
+        return (
+          String(s?.claimedByUserId || "").trim() === viewerUserId ||
+          String(raw && typeof raw === "object" ? raw.userId || "" : "").trim() === viewerUserId
+        );
+      });
+      const userClaimedSlot = claimedIndex >= 0 ? allSlots[claimedIndex] : null;
+
+      // Important: do NOT open camera just because user claimed a future slot.
+      // Church LIVE tab should show the current live slot unless the user's claimed slot is the current/live slot.
+      const currentLiveSlotId = String(slot?.id || slot?.slotId || "").trim();
+      const userClaimedSlotId = String(userClaimedSlot?.id || userClaimedSlot?.slotId || "").trim();
+      const userClaimIsCurrentLiveSlot =
+        !!userClaimedSlot &&
+        isLiveNow &&
+        !!currentLiveSlotId &&
+        currentLiveSlotId === userClaimedSlotId;
+
+      const claimedByMe = userClaimIsCurrentLiveSlot;
+      const routeSlot = userClaimIsCurrentLiveSlot ? userClaimedSlot : slot;
+      const routeSlotNumber = userClaimIsCurrentLiveSlot ? claimedIndex + 1 : (scheduleAlert?.index ?? 0) + 1;
+
+      router.replace({
+        pathname: "/more/my-church-room/messages/live-room",
+        params: {
+          source: "media",
+          liveMode: "schedule",
+          layout: "grid6",
+          entryMode: isLiveNow ? "live" : "waiting",
+          role: claimedByMe ? "Host" : "Viewer",
+          mode: claimedByMe ? "host" : "viewer",
+          room: "media",
+
+          mediaName: String(item?.mediaName || item?.actorLabel || "Church Media"),
+          churchName: String(item?.churchName || item?.churchLabel || "Church"),
+          churchLabel: String(item?.churchName || item?.churchLabel || "Church"),
+          churchId: String(item?.churchId || session?.churchId || ""),
+          liveId,
+
+          title: String(routeSlot?.name || routeSlot?.slotLabel || item?.title || "Church Live"),
+          preferredSlotNumber: String(routeSlotNumber),
+          currentSlotNumber: String(routeSlotNumber),
+          scheduleStartMs: String(scheduleAlert?.startMs || ""),
+          scheduleEndMs: String(scheduleAlert?.endMs || ""),
+
+          claimedByUserId: String(routeSlot?.claimedByUserId || ""),
+          claimedByName: String(routeSlot?.claimedByName || ""),
+          claimedByAvatar: String(routeSlot?.claimedByAvatar || routeSlot?.avatarUri || ""),
+
+          mediaSlotPublisher: claimedByMe ? "1" : "0",
+          canPublish: claimedByMe && isLiveNow ? "1" : "0",
+          canPublishCamera: claimedByMe && isLiveNow ? "1" : "0",
+          canPublishMic: claimedByMe && isLiveNow ? "1" : "0",
+
+          watchScheduledPublisher: claimedByMe ? "1" : "0",
+          isGlobalMediaSlot: "1",
+          ...buildLiveRoomAuthorityParams(item),
+          mediaOwnerPastorUserId: buildLiveRoomAuthorityParams(item).actualChurchPastorUserId,
+          mediaHostIds: String(item?.mediaHostIds || item?.hostIds || buildLiveRoomAuthorityParams(item).mediaHostIds || ""),
+        },
+      } as any);
+
+      return true;
+    }
+
+    const activeChurchLive = backendChurchLive;
+    if (!activeChurchLive?.isLive) return false;
+
+    router.replace({
+      pathname: "/more/my-church-room/messages/live-room",
+      params: {
+        source: "media",
+        liveMode: "instant",
+        entryMode: "live",
+        role: "Viewer",
+        title: String((activeChurchLive as any)?.title || (activeChurchLive as any)?.mediaName || "Church Live"),
+        mediaName: String((activeChurchLive as any)?.mediaName || (activeChurchLive as any)?.title || "Church Live"),
+        liveId: String((activeChurchLive as any)?.liveId || ""),
+        pastorUserId: String((activeChurchLive as any)?.actualChurchPastorUserId || (activeChurchLive as any)?.pastorUserId || ""),
+        actualChurchPastorUserId: String((activeChurchLive as any)?.actualChurchPastorUserId || (activeChurchLive as any)?.pastorUserId || ""),
+        layout: "focus",
+        room: "church",
+        mode: "viewer",
+      },
+    } as any);
+
+    return true;
+  }
+
+  const sessionChurchId = String(session?.churchId || "").trim();
+  const hasChurch = Boolean(sessionChurchId);
+
+  const hideAnnouncementsCreate =
+    segments[0] === "(tabs)" &&
+    segments[1] === "more" &&
+    segments[2] === "my-church-room" &&
+    segments[3] === "announcements" &&
+    segments[4] === "create";
+
+  const hidePosterProfile =
+    segments[0] === "(tabs)" &&
+    segments[1] === "profile" &&
+    String(params?.profileMode || "") === "poster";
+
+  const hideChurchCreate =
+    segments[0] === "(tabs)" &&
+    segments[1] === "more" &&
+    segments[2] === "church" &&
+    segments[3] === "create";
+
+  const isMessagesMode =
+    segments[0] === "(tabs)" &&
+    segments[1] === "more" &&
+    segments[2] === "my-church-room" &&
+    (segments[3] === "messages" || segments[3] === "ministry");
+
+  const hideAssignmentRoom =
+    segments[0] === "(tabs)" &&
+    segments[1] === "more" &&
+    segments[2] === "my-church-room" &&
+    segments[3] === "messages" &&
+    Boolean(segments[4]);
+
+  const hideTabBar = hideAnnouncementsCreate || hidePosterProfile || hideAssignmentRoom || hideChurchCreate;
+
+  const activeMessagesTab =
+    isMessagesMode
+      ? (segments[3] === "ministry" ? "ministry" : "chat")
+      : null;
+
+  const homeTitle = isMessagesMode ? "Chat" : "Home";
+  const moreTitle = isMessagesMode ? "TLMC" : "More";
+  const churchTitle = isMessagesMode ? "Live Room" : "Church";
+  const profileTitle = isMessagesMode ? "Call" : "Me";
+
+  const auth = getKristoAuth();
+  const hasActiveChurch = !!String(auth?.churchId || "").trim();
+  const [backendChurchLive, setBackendChurchLive] = useState<any>(null);
+  const [mediaScheduleTabLive, setMediaScheduleTabLive] = useState<any>(null);
+  const [personalScheduleTabAlert, setPersonalScheduleTabAlert] = useState<any>(null);
+  const churchLivePulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadChurchLive() {
+      if (!session?.userId || !session?.churchId) return;
+
+      const headers = getKristoHeaders({
+        userId: session.userId,
+        role: (session.role || "Member") as any,
+        churchId: session.churchId || "",
+      });
+
+      try {
+        const patch = await fetchLightLiveState(headers as any, "TabLayout");
+        if (alive) {
+          const nextLive =
+            patch.isLive === true && patch.raw && !patch.raw?.endedAt ? patch.raw : null;
+          setBackendChurchLive(nextLive);
+        }
+      } catch {}
+
+      try {
+        const feedRes: any = await apiGet(
+          "/api/church/feed",
+          { headers },
+          { screen: "TabLayout", throttleMs: 120000 }
+        );
+        const rows: any[] =
+          Array.isArray(feedRes?.data?.items) ? feedRes.data.items :
+          Array.isArray(feedRes?.data) ? feedRes.data :
+          Array.isArray(feedRes?.items) ? feedRes.items :
+          Array.isArray(feedRes) ? feedRes : [];
+
+        const localRows: any[] = (() => {
+          try { return feedList() as any[]; } catch { return []; }
+        })();
+
+        const allRows = [...rows, ...localRows];
+
+        const now = Date.now();
+        const viewerChurchId = String(session.churchId || "").trim();
+        const viewerUserId = String(session.userId || "").trim();
+
+        function timeToParts(t: string) {
+          const mm = String(t || "").match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i);
+          if (!mm) return null;
+          let h = Number(mm[1] || 0);
+          const min = Number(mm[2] || 0);
+          const ap = String(mm[3] || "").toUpperCase();
+          if (ap === "PM" && h < 12) h += 12;
+          if (ap === "AM" && h === 12) h = 0;
+          return { h, min };
+        }
+
+        function slotWindow(slot: any) {
+          const base = new Date(String(slot?.meetingDate || slot?.meetingDay || ""));
+          const today = new Date();
+          const y = Number.isFinite(base.getTime()) ? base.getFullYear() : today.getFullYear();
+          const m = Number.isFinite(base.getTime()) ? base.getMonth() : today.getMonth();
+          const d = Number.isFinite(base.getTime()) ? base.getDate() : today.getDate();
+          const sp = timeToParts(String(slot?.startTime || ""));
+          if (!sp) return { startMs: 0, endMs: 0 };
+          const startMs = new Date(y, m, d, sp.h, sp.min, 0, 0).getTime();
+          const ep = timeToParts(String(slot?.endTime || ""));
+          let endMs = ep
+            ? new Date(y, m, d, ep.h, ep.min, 0, 0).getTime()
+            : startMs + Math.max(1, Number(slot?.durationMin || 5)) * 60000;
+          if (endMs <= startMs) endMs += 24 * 60 * 60000;
+          return { startMs, endMs };
+        }
+
+        const upcoming: any[] = [];
+
+        allRows.forEach((item: any) => {
+          const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+          if (!slots.length) return;
+
+          const isMediaSlot =
+            String(item?.scheduleType || "").includes("media-live-slots") ||
+            String(item?.source || "").includes("media-schedule");
+
+          if (!isMediaSlot) return;
+
+          // Church LIVE tab must detect scheduled live slots
+          // for ALL members of the same church, not only owners.
+          const ownerChurchMatch =
+            String(item?.churchId || "").trim() === viewerChurchId;
+
+          const ownerUserMatch = [
+            item?.createdBy,
+            item?.mediaOwnerPastorUserId,
+            item?.pastorUserId,
+            item?.mediaOwnerId,
+          ]
+            .map((x) => String(x || "").trim())
+            .includes(viewerUserId);
+
+          // SECURITY:
+          // Red LIVE ring for scheduled media must show only to members of THAT church/media owner.
+          // Never use churchLabel/churchName fallback because another church/user can share same labels.
+          // Church LIVE tab must be current-church only.
+          // A pastor claiming another church's slot must NOT light up his own church tab.
+          if (!ownerChurchMatch) return;
+
+          // HARD SECURITY:
+          // Ignore stale/global local feed rows from other churches.
+          // LIVE tab must ONLY react to current church ownership.
+          const normalizedChurchId = String(item?.churchId || "").trim();
+
+          if (
+            normalizedChurchId &&
+            normalizedChurchId !== viewerChurchId
+          ) {
+            return;
+          }
+
+          slots.forEach((slot: any, index: number) => {
+            const { startMs, endMs } = slotWindow(slot);
+            if (!startMs || !endMs) return;
+
+            const startsInMin = Math.ceil((startMs - now) / 60000);
+            const isLiveNow = now >= startMs && now <= endMs;
+            const isSoon = startsInMin >= 0 && startsInMin <= 30;
+            if (!isLiveNow && !isSoon) return;
+
+            let color = "#38BDF8"; // 30 min
+            if (startsInMin <= 15) color = "#A78BFA";
+            if (startsInMin <= 5) color = "#F59E0B";
+            if (isLiveNow || startsInMin <= 0) color = "#EF4444";
+
+            upcoming.push({
+              item,
+              slot,
+              index,
+              startMs,
+              endMs,
+              startsInMin,
+              isLiveNow,
+              color,
+            });
+          });
+        });
+
+        const personalUpcoming: any[] = [];
+
+        allRows.forEach((item: any) => {
+          const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+          if (!slots.length) return;
+
+          const isMediaSlot =
+            String(item?.scheduleType || "").includes("media-live-slots") ||
+            String(item?.source || "").includes("media-schedule");
+
+          if (!isMediaSlot) return;
+
+          slots.forEach((slot: any, index: number) => {
+            const { startMs, endMs } = slotWindow(slot);
+            if (!startMs || !endMs) return;
+
+            const startsInMin = Math.ceil((startMs - now) / 60000);
+            const isLiveNow = now >= startMs && now <= endMs;
+            if (!isLiveNow && (startsInMin < 0 || startsInMin > 30)) return;
+
+            const claimedRaw = slot?.claimedBy;
+            const slotClaimedByMe =
+              String(slot?.claimedByUserId || "").trim() === viewerUserId ||
+              String(claimedRaw && typeof claimedRaw === "object" ? claimedRaw.userId || "" : "").trim() === viewerUserId;
+
+            const savedByMe =
+              item?.saved === true ||
+              item?.isSaved === true ||
+              item?.savedByMe === true ||
+              slot?.saved === true ||
+              slot?.savedByMe === true;
+
+            const likedByMe =
+              item?.liked === true ||
+              item?.likedByMe === true ||
+              slot?.liked === true ||
+              slot?.likedByMe === true;
+
+            let match = "";
+            let icon: keyof typeof Ionicons.glyphMap = "notifications";
+            let color = "#38BDF8";
+
+            if (slotClaimedByMe) {
+              match = "claimed";
+              icon = isLiveNow || startsInMin <= 0 ? "radio" : "hand-left";
+              color = "#EF4444";
+              if (!isLiveNow && startsInMin > 5) color = "#F59E0B";
+              if (!isLiveNow && startsInMin > 15) color = "#38BDF8";
+            } else if (savedByMe && startsInMin <= 15) {
+              match = "saved";
+              icon = "bookmark";
+              color = startsInMin <= 5 ? "#F59E0B" : "#A78BFA";
+            } else if (likedByMe && startsInMin <= 5) {
+              match = "liked";
+              icon = "heart";
+              color = "#FF5A7A";
+            }
+
+            if (!match) return;
+
+            personalUpcoming.push({
+              item,
+              slot,
+              index,
+              startMs,
+              endMs,
+              startsInMin,
+              isLiveNow,
+              match,
+              icon,
+              color,
+            });
+          });
+        });
+
+        upcoming.sort((a, b) => a.startMs - b.startMs);
+        personalUpcoming.sort((a, b) => {
+          const pri: any = { claimed: 0, saved: 1, liked: 2 };
+          return (pri[a.match] ?? 9) - (pri[b.match] ?? 9) || a.startMs - b.startMs;
+        });
+
+        if (alive) {
+          setMediaScheduleTabLive(upcoming[0] || null);
+          setPersonalScheduleTabAlert(personalUpcoming[0] || null);
+        }
+      } catch {
+        if (alive) {
+          setMediaScheduleTabLive(null);
+          setPersonalScheduleTabAlert(null);
+        }
+      }
+    }
+
+    const stop = startAdaptiveLivePolling({
+      screen: "TabLayout",
+      activeMs: 60000,
+      idleMs: 120000,
+      onTick: loadChurchLive,
+    });
+
+    return () => {
+      alive = false;
+      stop();
+    };
+  }, [session?.userId, session?.churchId, session?.role]);
+
+  useEffect(() => {
+    if (!backendChurchLive?.isLive && !mediaScheduleTabLive) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(churchLivePulse, { toValue: 1, duration: 850, useNativeDriver: true }),
+        Animated.timing(churchLivePulse, { toValue: 0, duration: 850, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [backendChurchLive?.isLive, mediaScheduleTabLive, churchLivePulse]);
+
+  const churchIsLive =
+    (
+      backendChurchLive?.isLive === true &&
+      !backendChurchLive?.endedAt &&
+      String(backendChurchLive?.liveId || "").trim().length > 0
+    ) ||
+    !!mediaScheduleTabLive;
+
+  const churchLiveColor = String(mediaScheduleTabLive?.color || "#EF4444");
+  const churchTabTitle = churchIsLive ? "LIVE" : churchTitle;
+
   return (
     <Tabs
+      initialRouteName="index"
       screenOptions={{
         headerShown: false,
-        tabBarStyle: {
-position: "absolute",
-          left: 0,
-          right: 0,
-          bottom: 0,
-
-          backgroundColor: "rgba(11,15,23,0.92)",
-          borderTopColor: "rgba(255,255,255,0.08)",
-          borderTopWidth: 1,
-
-          height: 92,
-          paddingTop: 10,
-          paddingBottom: 26,
-
-          elevation: 10,
-          shadowColor: "#000",
-          shadowOpacity: 0.15,
-          shadowRadius: 16,
-          shadowOffset: { width: 0, height: -8 },
-        },
+        tabBarStyle: hideTabBar
+          ? { display: "none" }
+          : {
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: TAB_BG,
+              borderTopColor: TAB_BORDER,
+              borderTopWidth: 1,
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.05)",
+              height: 70,
+              paddingTop: 6,
+              paddingBottom: 12,
+              borderRadius: 0,
+              elevation: 6,
+              shadowColor: "#000",
+              shadowOpacity: 0.18,
+              shadowRadius: 20,
+              shadowOffset: { width: 0, height: -10 },
+            },
         tabBarActiveTintColor: GOLD,
         tabBarInactiveTintColor: MUTED,
-        tabBarLabelStyle: { fontWeight: "800", fontSize: 12 },
+        tabBarLabelStyle: { fontWeight: "800", fontSize: 11, paddingBottom: 0 },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
-          title: "Home",
+          title: homeTitle,
+          tabBarButton: isMessagesMode
+            ? () => (
+                <MessagesModeTabButton
+                  label={homeTitle}
+                  icon="chatbubble-ellipses"
+                  active={activeMessagesTab === "chat"}
+                  onPress={() => router.replace("/more/my-church-room/messages" as any)}
+                />
+              )
+            : undefined,
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home" color={color} size={size ?? 22} />
-          ),
-        }}
-      />
-
-      {/* More is a folder route */}
-      <Tabs.Screen
-        name="more"
-        options={{
-          title: "More",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="grid" color={color} size={size ?? 22} />
-          ),
-        }}
-      />
-
-      <Tabs.Screen
-        name="church"
-        options={{
-          title: "Church",
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="church"
+            <Ionicons
+              name={isMessagesMode ? "chatbubble-ellipses" : "home"}
               color={color}
-              size={(size ?? 22) + 2}
+              size={size ?? 22}
             />
           ),
         }}
       />
 
       <Tabs.Screen
-        name="profile"
+        name="more"
         options={{
-          title: "Me",
-          tabBarIcon: ({ focused }) => <ProfileAvatarIcon focused={focused} />,
+          title: moreTitle,
+          tabBarButton: isMessagesMode
+            ? () => (
+                <MessagesModeTabButton
+                  label={moreTitle}
+                  icon="people"
+                  active={activeMessagesTab === "ministry"}
+                  onPress={() => router.replace("/more/my-church-room/ministry" as any)}
+                />
+              )
+            : ({ children }: any) => (
+                <Pressable
+                  onPress={() => router.replace("/(tabs)/more" as any)}
+                  style={{
+                    flex: 1,
+                    height: 70,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    paddingTop: 6,
+                    paddingBottom: 12,
+                  }}
+                >
+                  {children}
+                </Pressable>
+              ),
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons
+              name={isMessagesMode ? "people" : "grid"}
+              color={color}
+              size={size ?? 22}
+            />
+          ),
         }}
       />
 
-      {/* hide internal routes (only if they exist) */}
+      <Tabs.Screen
+        name="church"
+        
+        listeners={{
+          tabPress: (e) => {
+            if (churchIsLive && openChurchLiveAsViewer()) {
+              e.preventDefault();
+            }
+          },
+        }}
+        options={{
+          title: churchTabTitle,
+          tabBarButton: ({ children }: any) => (
+            <Pressable
+              onLongPress={() => {
+                if (churchIsLive) {
+                  openChurchLiveAsViewer();
+                }
+              }}
+              delayLongPress={280}
+              onPress={() => {
+                if (isMessagesMode) {
+                  router.replace("/more/my-church-room/messages/live-room" as any);
+                  return;
+                }
+
+                // LIVE room opens only by long press.
+                // Normal tap should still go to Church overview.
+                if (!hasChurch) {
+                  Alert.alert(
+                    "Church locked",
+                    "Session bado haina churchId. Rudi Me → Invitations → Accept invite tena, au logout/login ili session isome membership mpya."
+                  );
+                  return;
+                }
+
+                router.replace("/(tabs)/church/overview" as any);
+              }}
+              style={{
+                flex: 1,
+                height: 70,
+                alignItems: "center",
+                justifyContent: "center",
+                paddingTop: 6,
+                paddingBottom: 12,
+                opacity: !isMessagesMode && !hasChurch ? 0.55 : 1,
+              }}
+            >
+              {children}
+            </Pressable>
+          ),
+          tabBarIcon: ({ focused }) =>
+            isMessagesMode ? (
+              <Ionicons name="radio" color={focused ? GOLD : MUTED} size={22} />
+            ) : (
+              <ChurchLiveTabIcon focused={focused} isLive={churchIsLive} pulse={churchLivePulse} liveColor={churchLiveColor} />
+            ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: personalScheduleTabAlert ? "" : profileTitle,
+          tabBarLabel: personalScheduleTabAlert ? "" : profileTitle,
+          tabBarButton: isMessagesMode
+            ? undefined
+            : ({ children }: any) => (
+                <Pressable
+                  onPress={() => router.replace("/(tabs)/profile" as any)}
+                  onLongPress={() => {
+                    if (personalScheduleTabAlert) {
+                      openPersonalScheduleAlert();
+                    }
+                  }}
+                  delayLongPress={280}
+                  style={{
+                    flex: 1,
+                    height: 70,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    paddingTop: 6,
+                    paddingBottom: 12,
+                  }}
+                >
+                  {children}
+                </Pressable>
+              ),
+          tabBarIcon: ({ focused, color, size }) =>
+            isMessagesMode ? (
+              <Ionicons
+                name="call"
+                color={color}
+                size={size ?? 22}
+              />
+            ) : (
+              <ProfileAvatarIcon focused={focused} alertColor={personalScheduleTabAlert?.color} alertIcon={personalScheduleTabAlert?.icon} />
+            ),
+        }}
+      />
+
       <Tabs.Screen name="_ministry_hidden/index" options={{ href: null }} />
     </Tabs>
   );

@@ -17,9 +17,10 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
-import { AudioSession, LiveKitRoom, useIOSAudioManagement, useRoomContext } from "@livekit/react-native";
+import { AndroidAudioTypePresets, AudioSession, LiveKitRoom, useIOSAudioManagement, useRoomContext } from "@livekit/react-native";
 import { createLocalAudioTrack, createLocalVideoTrack, RoomEvent, Track } from "livekit-client";
 import { MediaStream, RTCView, registerGlobals } from "@livekit/react-native-webrtc";
 import * as Haptics from "expo-haptics";
@@ -32,13 +33,28 @@ import {
   endLive,
 } from "@/src/lib/liveStore";
 import { projectStore } from "@/src/lib/projectStore";
-import { getSnapshot } from "@/src/lib/messagesStore";
+import { getSnapshot, subscribe as subscribeMessages } from "@/src/lib/messagesStore";
 import { feedRemoveWhere } from "@/src/lib/homeFeedStore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { apiGet, apiPatch, apiPost } from "@/src/lib/kristoApi";
-import { loadProfileDraft } from "@/src/lib/profileStore";
+import {
+  fetchLightLiveState,
+  messagesListSignature,
+  paginateMessages,
+  preloadLiveImages,
+  resolveCachedLiveAvatar,
+  startAdaptiveLivePolling,
+} from "@/src/lib/liveRealtime";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import {
+  evaluateLiveMediaAuthority,
+  logLiveMediaAuthority,
+} from "@/src/lib/liveMediaAuthority";
+import {
+  fetchChurchPastorUserId,
+  logChurchPastorResolution,
+} from "@/src/lib/churchPastorResolver";
 import {
   getChurchProjectMcRuntime,
   getChurchProjectMcLiveSlotState,
@@ -55,6 +71,9 @@ registerGlobals();
 (globalThis as any).__KRISTO_DISABLE_LIVEKIT__ = false;
 (globalThis as any).__KRISTO_LIVEKIT_STAGE_LOCKS__ =
   (globalThis as any).__KRISTO_LIVEKIT_STAGE_LOCKS__ || new Set();
+
+(globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ =
+  (globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ || new Set();
 
 
 
@@ -187,9 +206,8 @@ gAny.document.head = gAny.document.head || { appendChild: () => {}, removeChild:
 
 
 if (!gAny.navigator) gAny.navigator = {};
-if (typeof gAny.navigator.userAgent !== "string") {
-  gAny.navigator.userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1";
-}
+gAny.navigator.product = "ReactNative";
+gAny.navigator.userAgent = "ReactNative";
 
 if (typeof gAny.Event === "undefined") {
   gAny.Event = class Event {
@@ -212,12 +230,113 @@ const GOLD = "#D9B35F";
 const BORDER = "rgba(255,255,255,0.10)";
 
 
-function forceKristoLiveCleanup(reason = "unknown") {
+function stopKristoLiveKitRoomTracks(room: any) {
+  if (!room) return;
+
   try {
-    console.log("KRISTO_FORCE_STOP_LIVE_MEDIA", { reason });
+    const lp = room.localParticipant;
+    const pubs = lp?.trackPublications;
+    if (pubs?.forEach) {
+      pubs.forEach((pub: any) => {
+        try {
+          pub?.track?.stop?.();
+        } catch {}
+      });
+    }
+  } catch {}
+
+  try {
+    const state = String(room?.state || "");
+    if (state === "connected" || state === "connecting" || state === "reconnecting") {
+      room.disconnect?.();
+    }
+  } catch {}
+}
+
+function clearKristoLiveKitGlobalsForSession(options?: {
+  userId?: string;
+  roomName?: string;
+  accountSwitch?: boolean;
+}) {
+  const g = globalThis as any;
+  const userId = String(options?.userId || "").trim();
+  const roomName = String(options?.roomName || "").trim();
+
+  if (roomName && String(g.__KRISTO_ACTIVE_PUBLISHER_ROOM__ || "") === roomName) {
+    g.__KRISTO_ACTIVE_PUBLISHER_ROOM__ = "";
+  }
+
+  if (userId && roomName) {
+    const publisherKey = `${roomName}|${userId}`;
+    if (String(g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ || "") === publisherKey) {
+      g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+    }
+  } else if (options?.accountSwitch) {
+    g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+  }
+
+  const locks = g.__KRISTO_LIVEKIT_STAGE_LOCKS__;
+  if (locks instanceof Set) {
+    if (options?.accountSwitch) {
+      for (const key of Array.from(locks)) {
+        const keyText = String(key || "");
+        if (
+          (userId && keyText.endsWith(`|${userId}`)) ||
+          (roomName && keyText.startsWith(`${roomName}|`))
+        ) {
+          locks.delete(key);
+        }
+      }
+    } else if (userId && roomName) {
+      locks.delete(`${roomName}|${userId}`);
+    }
+  }
+
+  const retryKeys = g.__KRISTO_VIEWER_JOIN_RETRY_KEYS__;
+  if (retryKeys instanceof Set) {
+    if (options?.accountSwitch && userId && roomName) {
+      retryKeys.delete(`${roomName}|${userId}`);
+    }
+  }
+
+  try {
+    if (g.__KRISTO_SET_LOCAL_MIC_MUTED__) {
+      delete g.__KRISTO_SET_LOCAL_MIC_MUTED__;
+    }
+  } catch {}
+
+  if (options?.accountSwitch) {
+    g.__KRISTO_LIVEKIT_ERROR_LOCK__ = false;
+  }
+}
+
+function forceKristoLiveCleanup(
+  reason = "unknown",
+  options?: {
+    userId?: string;
+    roomName?: string;
+    accountSwitch?: boolean;
+  }
+) {
+  try {
+    console.log("KRISTO_FORCE_STOP_LIVE_MEDIA", {
+      reason,
+      userId: options?.userId || "",
+      roomName: options?.roomName || "",
+      accountSwitch: !!options?.accountSwitch,
+    });
 
     (globalThis as any).__KRISTO_LIVE_ACTIVE__ = false;
     (globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ = 0;
+  } catch {}
+
+  try {
+    stopKristoLiveKitRoomTracks((globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__);
+    (globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__ = undefined;
+  } catch {}
+
+  try {
+    clearKristoLiveKitGlobalsForSession(options);
   } catch {}
 
   try {
@@ -373,6 +492,28 @@ function KristoLiveKitStage({
   
   const [livekitDisabled, setLivekitDisabled] = useState(false);
   const [stageMountAllowed, setStageMountAllowed] = useState(false);
+  const [liveKitRemountNonce, setLiveKitRemountNonce] = useState(0);
+
+  useEffect(() => {
+    AudioSession.configureAudio({
+      android: {
+        audioTypeOptions: AndroidAudioTypePresets.communication,
+      },
+    }).catch((e: any) => {
+      console.log("KRISTO_STAGE_AUDIO_CONFIGURE_ERROR", String(e?.message || e));
+    });
+
+    AudioSession.setDefaultRemoteAudioTrackVolume(1).catch((e: any) => {
+      console.log("KRISTO_STAGE_AUDIO_VOLUME_ERROR", String(e?.message || e));
+    });
+
+    AudioSession.startAudioSession().catch((e: any) => {
+      console.log("KRISTO_STAGE_AUDIO_START_ERROR", String(e?.message || e));
+    });
+
+    console.log("KRISTO_STAGE_AUDIO_SESSION_READY");
+  }, []);
+
 const headersKey = JSON.stringify(headers || {});
   const stableHeaders = useMemo(() => headers || {}, [headersKey]);
 
@@ -382,6 +523,33 @@ const headersKey = JSON.stringify(headers || {});
     stopLocalTrackOnUnpublish: true,
     disconnectOnPageLeave: false,
   }), []);
+
+  const stableConnectOptions = useMemo(() => ({
+    autoSubscribe: true,
+    maxRetries: 0,
+    websocketTimeout: 15000,
+  }), []);
+
+  const handleLiveKitError = React.useCallback((e: any) => {
+    if ((globalThis as any).__KRISTO_LIVEKIT_ERROR_LOCK__) {
+      return;
+    }
+    (globalThis as any).__KRISTO_LIVEKIT_ERROR_LOCK__ = true;
+
+    const message = String(e?.message || e || "");
+    console.log("KRISTO_LIVEKIT_ROOM_ERROR", { message });
+    if (
+      message.includes("429") ||
+      message.toLowerCase().includes("bad response") ||
+      message.toLowerCase().includes("signal connection")
+    ) {
+      (globalThis as any).__KRISTO_DISABLE_LIVEKIT__ = true;
+      (globalThis as any).__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = Date.now() + 120000;
+
+      setLivekitDisabled(true);
+      console.log("KRISTO_LIVEKIT_DISABLED_AFTER_FATAL_ERROR");
+    }
+  }, []);
 
   // CRITICAL:
   // LiveKit identity MUST stay stable for the lifetime of the room.
@@ -401,6 +569,14 @@ const headersKey = JSON.stringify(headers || {});
     () => publishIdentity,
     [publishIdentity]
   );
+
+  // Account switch / identity change: drop stale JWT and remount LiveKitRoom cleanly.
+  useEffect(() => {
+    setTokenState(null);
+    setLivekitDisabled(false);
+    setLiveKitRemountNonce(0);
+  }, [stableIdentity, roomName]);
+
   const identityText = String(
     publishIdentity || stableIdentity || ""
   );
@@ -549,7 +725,12 @@ const headersKey = JSON.stringify(headers || {});
         });
 
         if (res?.ok && res?.url && res?.token) {
-          setTokenState({ url: String(res.url), token: String(res.token) });
+          const nextUrl = String(res.url);
+          const nextToken = String(res.token);
+          setTokenState((prev) => {
+            if (prev?.url === nextUrl && prev?.token === nextToken) return prev;
+            return { url: nextUrl, token: nextToken };
+          });
         }
       } catch (e: any) {
         console.log("KRISTO_LIVEKIT_TOKEN_ERROR", {
@@ -615,41 +796,27 @@ const headersKey = JSON.stringify(headers || {});
 
   return (
     <LiveKitRoom
+      key={`${livekitRoomKey}|r${liveKitRemountNonce}`}
       serverUrl={tokenState.url}
       token={tokenState.token}
       connect={true}
-      onError={(e: any) => {
-        if ((globalThis as any).__KRISTO_LIVEKIT_ERROR_LOCK__) {
-          return;
-        }
-        (globalThis as any).__KRISTO_LIVEKIT_ERROR_LOCK__ = true;
-
-        const message = String(e?.message || e || "");
-        console.log("KRISTO_LIVEKIT_ROOM_ERROR", { message });
-        if (
-          message.includes("429") ||
-          message.toLowerCase().includes("bad response") ||
-          message.toLowerCase().includes("signal connection")
-        ) {
-          (globalThis as any).__KRISTO_DISABLE_LIVEKIT__ = true;
-          (globalThis as any).__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = Date.now() + 120000;
-
-          setLivekitDisabled(true);
-console.log("KRISTO_LIVEKIT_DISABLED_AFTER_FATAL_ERROR");
-        }
-      }}
-      // Disable LiveKit browser audio engine on React Native.
-      // We handle playback manually through WebRTC streams.
-      audio={false}
+      onError={handleLiveKitError}
+      // Keep audio enabled because this is the only path currently producing remote sound.
+      // TODO: remove AudioContext error separately without disabling playback.
+      audio={true}
       video={false}
-      connectOptions={{
-        autoSubscribe: true,
-        maxRetries: 0,
-        websocketTimeout: 15000,
-      } as any}
+      connectOptions={stableConnectOptions as any}
       options={liveKitOptions as any}
     >
       <KristoLiveKitCleanupGuard />
+      <KristoLiveKitNativeRemoteAudio />
+      <KristoViewerJoinRetryWatch
+        enabled={!canPublish}
+        roomName={roomName}
+        identity={stableIdentity}
+        remountNonce={liveKitRemountNonce}
+        onRetry={() => setLiveKitRemountNonce((n) => (n > 0 ? n : 1))}
+      />
       <KristoRemoteOrLocalVideo
         // Child mic sync must not re-open mic when UI state is muted.
         // Only current big-screen speaker can have active mic.
@@ -658,10 +825,10 @@ console.log("KRISTO_LIVEKIT_DISABLED_AFTER_FATAL_ERROR");
         // Mic state controlled manually via mediaStreamTrack.enabled.
         // Keep engine stable after connect.
         // Authority changes should only affect track.enabled.
-        canPublishMic={true}
-        canPublishCamera={true}
+        canPublishMic={canPublishMic}
+        canPublishCamera={canPublishCamera}
         renderLocalPreview={renderLocalPreview}
-        cameraFacing={"front"}
+        cameraFacing={cameraFacing}
         micMuted={effectiveMicMuted}
         cameraPaused={cameraPaused}
         style={style}
@@ -674,19 +841,218 @@ console.log("KRISTO_LIVEKIT_DISABLED_AFTER_FATAL_ERROR");
 
 
 
+
+function KristoViewerJoinRetryWatch({
+  enabled,
+  roomName,
+  identity,
+  remountNonce,
+  onRetry,
+}: {
+  enabled: boolean;
+  roomName: string;
+  identity: string;
+  remountNonce: number;
+  onRetry: () => void;
+}) {
+  const room = useRoomContext();
+
+  useEffect(() => {
+    if (!enabled || !room || remountNonce > 0) return;
+
+    const retryKey = `${roomName}|${identity || "viewer"}`;
+    const retryKeys =
+      ((globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ as Set<string>) ||
+      new Set<string>();
+
+    (globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ = retryKeys;
+
+    if (retryKeys.has(retryKey)) {
+      console.log("KRISTO_VIEWER_JOIN_RETRY_SKIPPED", { retryKey, reason: "already_used" });
+      return;
+    }
+
+    let alive = true;
+    let connected = false;
+    let hasRemoteAudio = false;
+    let disconnectedBeforeReady = false;
+
+    const hasUsableRemoteAudio = () => {
+      try {
+        if (!room?.remoteParticipants) return false;
+        for (const participant of Array.from(room.remoteParticipants.values()) as any[]) {
+          const pubs = Array.from(participant?.trackPublications?.values?.() || []) as any[];
+          for (const pub of pubs) {
+            const track = pub?.track;
+            const kind = String(pub?.kind || track?.kind || "").toLowerCase();
+            if (kind === "audio" && (pub?.isSubscribed || track) && track?.mediaStreamTrack) {
+              return true;
+            }
+          }
+        }
+      } catch {}
+      return false;
+    };
+
+    const markReadyIfAudio = () => {
+      if (hasUsableRemoteAudio()) {
+        hasRemoteAudio = true;
+        console.log("KRISTO_VIEWER_JOIN_READY", {
+          retryKey,
+          remoteCount: room.remoteParticipants?.size || 0,
+          hasRemoteAudio: true,
+        });
+      }
+    };
+
+    const onConnected = () => {
+      connected = true;
+      markReadyIfAudio();
+    };
+
+    const onDisconnected = () => {
+      if (!hasRemoteAudio) disconnectedBeforeReady = true;
+    };
+
+    const onTrackSubscribed = (track: any) => {
+      if (String(track?.kind || "").toLowerCase() === "audio") {
+        hasRemoteAudio = true;
+        try {
+          track?.setVolume?.(1);
+          if (track?.mediaStreamTrack) track.mediaStreamTrack.enabled = true;
+        } catch {}
+        console.log("KRISTO_VIEWER_JOIN_READY", {
+          retryKey,
+          remoteCount: room.remoteParticipants?.size || 0,
+          hasRemoteAudio: true,
+        });
+      }
+    };
+
+    room.on(RoomEvent.Connected, onConnected);
+    room.on(RoomEvent.Disconnected, onDisconnected);
+    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+
+    console.log("KRISTO_VIEWER_JOIN_WATCH_START", { retryKey, roomName });
+
+    const t = setTimeout(() => {
+      if (!alive) return;
+
+      markReadyIfAudio();
+
+      const remoteCount = room.remoteParticipants?.size || 0;
+      const ready = hasRemoteAudio || hasUsableRemoteAudio();
+
+      if (ready) {
+        console.log("KRISTO_VIEWER_JOIN_RETRY_SKIPPED", { retryKey, reason: "ready", remoteCount });
+        return;
+      }
+
+      if ((globalThis as any).__KRISTO_DISABLE_LIVEKIT__) {
+        console.log("KRISTO_VIEWER_JOIN_RETRY_SKIPPED", { retryKey, reason: "disabled" });
+        return;
+      }
+
+      const reason = disconnectedBeforeReady
+        ? "disconnected_before_ready"
+        : connected
+          ? (remoteCount <= 0 ? "no_remote_participants" : "no_remote_audio")
+          : "not_connected";
+
+      retryKeys.add(retryKey);
+      console.log("KRISTO_VIEWER_JOIN_NOT_READY", { retryKey, reason, remoteCount, connected });
+      console.log("KRISTO_VIEWER_JOIN_RETRY_ONCE", { retryKey, remountNonce: 1 });
+      onRetry();
+    }, 8000);
+
+    return () => {
+      alive = false;
+      clearTimeout(t);
+      room.off(RoomEvent.Connected, onConnected);
+      room.off(RoomEvent.Disconnected, onDisconnected);
+      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    };
+  }, [enabled, room, roomName, identity, remountNonce, onRetry]);
+
+  return null;
+}
+
+
+function KristoLiveKitNativeRemoteAudio() {
+  const room = useRoomContext();
+
+  useIOSAudioManagement(room as any, true);
+
+  useEffect(() => {
+    if (!room) return;
+
+    AudioSession.configureAudio({
+      android: {
+        audioTypeOptions: AndroidAudioTypePresets.communication,
+      },
+    }).catch((e: any) => {
+      console.log("KRISTO_AUDIO_SESSION_CONFIGURE_ERROR", String(e?.message || e));
+    });
+
+    AudioSession.setDefaultRemoteAudioTrackVolume(1).catch((e: any) => {
+      console.log("KRISTO_AUDIO_DEFAULT_REMOTE_VOLUME_ERROR", String(e?.message || e));
+    });
+
+    AudioSession.startAudioSession().catch((e: any) => {
+      console.log("KRISTO_AUDIO_SESSION_START_ERROR", String(e?.message || e));
+    });
+
+    console.log("KRISTO_NATIVE_REMOTE_AUDIO_READY");
+  }, [room]);
+
+  useEffect(() => {
+    if (!room) return;
+
+    const primeRemoteAudio = (track: any) => {
+      if (String(track?.kind || "").toLowerCase() !== "audio") return;
+      try {
+        track?.setVolume?.(1);
+        if (track?.mediaStreamTrack) track.mediaStreamTrack.enabled = true;
+      } catch (e: any) {
+        console.log("KRISTO_NATIVE_REMOTE_AUDIO_PRIME_ERROR", String(e?.message || e));
+      }
+    };
+
+    const onTrackSubscribed = (track: any) => primeRemoteAudio(track);
+
+    const primeExistingRemoteAudio = () => {
+      room.remoteParticipants.forEach((participant: any) => {
+        participant.trackPublications.forEach((pub: any) => {
+          if (pub?.track) primeRemoteAudio(pub.track);
+        });
+      });
+    };
+
+    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    room.on(RoomEvent.Connected, primeExistingRemoteAudio);
+
+    return () => {
+      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+      room.off(RoomEvent.Connected, primeExistingRemoteAudio);
+    };
+  }, [room]);
+
+  return null;
+}
+
 function KristoLiveKitCleanupGuard() {
   const room = useRoomContext();
 
   useEffect(() => {
-    return () => {
-      try {
-        // Stable room cleanup only.
-        // Do not force disconnect during slot/authority updates.
-      } catch {}
+    if (!room) return;
 
-      // Disabled room-unmount force cleanup.
-      // Prevent destroying active publisher during slot move.
-      // forceKristoLiveCleanup("room-unmount");
+    (globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__ = room;
+
+    return () => {
+      const held = (globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__;
+      if (held === room) {
+        (globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__ = undefined;
+      }
     };
   }, [room]);
 
@@ -713,7 +1079,6 @@ function KristoRemoteRoomVideo({
   useEffect(() => {
     try {
       const videoTrack: any = remoteVideoTrack?.mediaStreamTrack;
-      const audioTrack: any = remoteAudioTrack?.mediaStreamTrack;
 
       if (!videoTrack) return;
 
@@ -721,20 +1086,14 @@ function KristoRemoteRoomVideo({
       videoTrack.enabled = true;
       stream.addTrack(videoTrack as any);
 
-      // LiveKit native audio is disabled, so RTCView stream must include audio.
-      if (audioTrack) {
-        audioTrack.enabled = true;
-        stream.addTrack(audioTrack as any);
-      }
-
       const url = stream.toURL();
 
       console.log("KRISTO_REMOTE_COMBINED_AV_STREAM_READY", {
         hasURL: !!url,
         hasVideo: !!videoTrack,
-        hasAudio: !!audioTrack,
+        hasAudio: !!remoteAudioTrack?.mediaStreamTrack,
         videoReadyState: videoTrack?.readyState,
-        audioReadyState: audioTrack?.readyState,
+        audioReadyState: remoteAudioTrack?.mediaStreamTrack?.readyState,
       });
 
       setRemoteAvStreamURL(url);
@@ -759,29 +1118,7 @@ function KristoRemoteRoomVideo({
 
       if (kind === "audio") {
         setRemoteAudioTrack(track);
-
-        try {
-          // React Native has no HTMLAudioElement.
-          // Do NOT call track.attach() here; native WebRTC plays subscribed audio.
-          track?.setVolume?.(1);
-        } catch {}
-
-        try {
-          if (track?.mediaStreamTrack) {
-            track.mediaStreamTrack.enabled = true;
-
-          }
-          // removed: do not call LiveKit unmute() on unpublished track
-          track.setVolume?.(1);
-
-          console.log("KRISTO_REMOTE_AUDIO_READY", {
-            enabled: track.mediaStreamTrack?.enabled,
-            muted: track.mediaStreamTrack?.muted,
-            readyState: track.mediaStreamTrack?.readyState,
-          });
-        } catch (e: any) {
-          console.log("KRISTO_REMOTE_AUDIO_ERROR", { message: String(e?.message || e) });
-        }
+        return;
       }
 
       if (kind === "video") {
@@ -861,10 +1198,6 @@ function KristoRemoteRoomVideo({
             }
 
             if (String(track.kind).toLowerCase() === "audio") {
-              track.mediaStreamTrack.enabled = true;
-          // removed: do not call LiveKit unmute() on unpublished track
-              track.setVolume?.(1);
-
               setRemoteAudioTrack(track);
             }
           } catch (e) {
@@ -901,10 +1234,7 @@ function KristoRemoteRoomVideo({
       .on(RoomEvent.Reconnected, repick)
       .on(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
 
-    const timer = setInterval(pick, 4000);
-
     return () => {
-      clearInterval(timer);
       room
         .off(RoomEvent.TrackSubscribed, onTrackSubscribed)
         .off(RoomEvent.TrackPublished, repick)
@@ -1033,23 +1363,6 @@ function KristoRemoteOrLocalVideo({
 
   // Disabled duplicate mic sync effect.
   // Manual audio publish + mic button setter are now the only mic authority.
-
-
-  // Disabled:
-  // LiveKit RN audio manager internally touches AudioContext/browser audio APIs.
-  // Hermes/React Native crashes with AudioContext missing.
-  // Audio session is handled manually below.
-  // useIOSAudioManagement(room as any, true);
-
-  useEffect(() => {
-    if (!room) return;
-
-    AudioSession.startAudioSession().catch((e: any) => {
-      console.log("KRISTO_AUDIO_SESSION_START_ERROR", String(e?.message || e));
-    });
-
-    console.log("KRISTO_AUDIO_SESSION_STARTED");
-  }, [room]);
 
   const [localVideoTrack, setLocalVideoTrack] = useState<any>(null);
 
@@ -1192,7 +1505,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       room.off(RoomEvent.Connected, enableMicWhenConnected);
       try { localAudioTrack?.stop?.(); } catch {}
     };
-  }, [room]);
+  }, [room, canPublishMic, micMuted]);
 
 
   useEffect(() => {
@@ -1365,7 +1678,10 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
 export default function LiveRoomScreen() {
   const [cameraPaused, setCameraPaused] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [liveKitAccountEpoch, setLiveKitAccountEpoch] = useState(0);
+  const prevSessionUserIdRef = useRef("");
   const router = useRouter();
+  const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   const { session } = useKristoSession();
 
@@ -1397,68 +1713,117 @@ export default function LiveRoomScreen() {
   const isMinistryInstantLive = liveSource === "ministry" && String(params.liveMode || "").trim().toLowerCase() === "instant";
   const mediaName = String(params.mediaName || rawTitle || "Kristo").trim();
   const [backendChurchLive, setBackendChurchLive] = useState<any>(null);
+  const [resolvedActualChurchPastorUserId, setResolvedActualChurchPastorUserId] = useState("");
 
   useEffect(() => {
     let alive = true;
 
-    async function loadChurchLive() {
-      if (!session?.userId || !session?.churchId || !isMediaInstantLive) return;
-      try {
-        const res: any = await apiGet("/api/church/live", {
-          headers: getKristoHeaders({
-            userId: session.userId,
-            role: (session.role || "Member") as any,
-            churchId: session.churchId || "",
-          }),
-        });
-        if (alive && res?.removedFromLive === true) {
-          setBackendChurchLive(null);
-          setJoinRequestsBySlot({});
-          setHostRequestCard(null);
-          setVipGuestCardSlot(null);
-          setRequestListOpen(false);
-          router.replace("/(tabs)" as any);
-          return;
-        }
+    async function resolvePastor() {
+      const churchId = String(session?.churchId || (params as any).churchId || "").trim();
+      if (!churchId) return;
 
-        if (alive && res?.ok) {
-          setBackendChurchLive(res.live || null);
+      const scheduleCreator = String(
+        (params as any).scheduleCreatedByUserId ||
+        (params as any).createdByUserId ||
+        ""
+      ).trim();
+      const routePastor = String(
+        (params as any).actualChurchPastorUserId ||
+        (params as any).churchPastorUserId ||
+        ""
+      ).trim();
+      const backendPastor = String(backendChurchLive?.actualChurchPastorUserId || "").trim();
 
-          if (res?.live?.requests && typeof res.live.requests === "object") {
-            setJoinRequestsBySlot(res.live.requests);
-          }
-        }
-      } catch {}
+      let actual = "";
+      let sourceField = "";
+
+      if (backendPastor && (!scheduleCreator || backendPastor !== scheduleCreator)) {
+        actual = backendPastor;
+        sourceField = "backendChurchLive.actualChurchPastorUserId";
+      } else if (routePastor && scheduleCreator && routePastor !== scheduleCreator) {
+        actual = routePastor;
+        sourceField = "route.actualChurchPastorUserId";
+      } else {
+        const res = await fetchChurchPastorUserId(
+          churchId,
+          getKristoHeaders({
+            userId: session?.userId || "",
+            role: (session?.role || "Member") as any,
+            churchId,
+          }) as any
+        );
+        actual = res.actualChurchPastorUserId;
+        sourceField = res.sourceField;
+      }
+
+      logChurchPastorResolution({
+        churchId,
+        actualChurchPastorUserId: actual,
+        sourceField,
+        scheduleCreatedByUserId: scheduleCreator,
+        currentUserId: String(session?.userId || ""),
+      });
+
+      if (alive) setResolvedActualChurchPastorUserId(actual);
     }
 
-    loadChurchLive();
-    const t = setInterval(loadChurchLive, 3000);
+    void resolvePastor();
     return () => {
       alive = false;
-      clearInterval(t);
     };
-  }, [session?.userId, session?.churchId, session?.role, isMediaInstantLive]);
+  }, [
+    session?.churchId,
+    session?.userId,
+    session?.role,
+    (params as any).churchId,
+    (params as any).actualChurchPastorUserId,
+    (params as any).churchPastorUserId,
+    (params as any).scheduleCreatedByUserId,
+    (params as any).createdByUserId,
+    backendChurchLive?.actualChurchPastorUserId,
+  ]);
+
+  const routePastorCandidate = String(
+    (params as any).actualChurchPastorUserId ||
+    (params as any).churchPastorUserId ||
+    ""
+  ).trim();
+  const routeScheduleCreator = String(
+    (params as any).scheduleCreatedByUserId ||
+    (params as any).createdByUserId ||
+    ""
+  ).trim();
+  const routePastorLooksLikeCreator =
+    !!routePastorCandidate &&
+    !!routeScheduleCreator &&
+    routePastorCandidate === routeScheduleCreator;
+
   const projectId = String(params.projectId || "").trim();
   const assignmentId = String(params.assignmentId || "").trim();
   const membersCount = Math.max(0, Number(params.membersCount || "26") || 26);
   const leadersCount = Math.max(0, Number(params.leadersCount || "4") || 4);
   const roleParam = String(params.role || "").trim();
   const normalizedRoleParam = String(roleParam || "").toLowerCase();
-  const backendPastorUserId = String(
-    backendChurchLive?.pastorUserId ||
-    (params as any).mediaOwnerPastorUserId ||
-    params.pastorUserId ||
-    ""
-  ).trim();
-
   const currentUserId = String(session?.userId || "").trim();
   const sessionRoleText = String((session as any)?.role || "").toLowerCase();
   const routeRoleText = String(roleParam || "").toLowerCase();
 
-  const mediaHostIds = String((params as any).mediaHostIds || "")
-    .split(/[,\s]+/)
-    .map((x) => x.trim())
-    .filter(Boolean);
+  const liveMediaAuthority = evaluateLiveMediaAuthority({
+    currentUserId,
+    actualChurchPastorUserId: String(
+      resolvedActualChurchPastorUserId ||
+      backendChurchLive?.actualChurchPastorUserId ||
+      (!routePastorLooksLikeCreator ? routePastorCandidate : "") ||
+      ""
+    ).trim(),
+    scheduleCreatedByUserId: routeScheduleCreator,
+    mediaHostIds: (params as any).mediaHostIds,
+    backendLivePastorUserId: String(backendChurchLive?.actualChurchPastorUserId || "").trim(),
+  });
+
+  const actualChurchPastorUserId = liveMediaAuthority.actualChurchPastorUserId;
+  const scheduleCreatedByUserId = liveMediaAuthority.scheduleCreatedByUserId;
+  const mediaHostIds = liveMediaAuthority.mediaHostIds;
 
   const isChurchLiveControlRoute =
     String(assignmentId || "").trim() === "church-media-room" ||
@@ -1479,12 +1844,7 @@ export default function LiveRoomScreen() {
     );
 
   const isMediaOwnerHost =
-    !!currentUserId &&
-    (
-      backendPastorUserId === currentUserId ||
-      mediaHostIds.includes(currentUserId) ||
-      isChurchLiveControlHost
-    );
+    liveMediaAuthority.isMediaOwnerHost || isChurchLiveControlHost;
 
   const routeCanPublishEarly =
     String((params as any).canPublish || "") === "1" ||
@@ -1502,10 +1862,9 @@ export default function LiveRoomScreen() {
     isMinistryLiveRoute &&
     routeCanPublishEarly &&
     (
-      backendPastorUserId === currentUserId ||
-      routeRoleText.includes("pastor") ||
-      routeRoleText.includes("admin") ||
-      routeRoleText.includes("leader")
+      actualChurchPastorUserId === currentUserId ||
+      liveMediaAuthority.isMediaScheduleCreator ||
+      liveMediaAuthority.isMediaHost
     );
 
   const isPastorLiveOwner = isMediaOwnerHost || isMinistryLiveHost;
@@ -1532,7 +1891,7 @@ export default function LiveRoomScreen() {
   const [accessApproveCountdown, setAccessApproveCountdown] = useState<number | null>(null);
 
   useEffect(() => {
-    const t = setInterval(() => setLiveNowMs(Date.now()), 1000);
+    const t = setInterval(() => setLiveNowMs(Date.now()), 5000);
     return () => clearInterval(t);
   }, []);
 
@@ -1553,12 +1912,26 @@ export default function LiveRoomScreen() {
 
   const assignmentThreadId = String(selectedAssignment?.id || assignmentId || "").trim();
 
+  const [messageStoreTick, setMessageStoreTick] = useState(0);
+  const assignmentMessagesSigRef = useRef("");
+  useEffect(() => {
+    return subscribeMessages(() => {
+      if (!assignmentThreadId) return;
+      const snap = getSnapshot();
+      const arr = Array.isArray(snap.messages?.[assignmentThreadId]) ? snap.messages[assignmentThreadId] : [];
+      const sig = messagesListSignature(arr);
+      if (sig === assignmentMessagesSigRef.current) return;
+      assignmentMessagesSigRef.current = sig;
+      setMessageStoreTick((x) => x + 1);
+    });
+  }, [assignmentThreadId]);
+
   const assignmentThreadMessages = useMemo(() => {
     if (!assignmentThreadId) return [];
     const snap = getSnapshot();
     const arr = Array.isArray(snap.messages?.[assignmentThreadId]) ? snap.messages[assignmentThreadId] : [];
-    return arr;
-  }, [assignmentThreadId]);
+    return paginateMessages(arr, 80);
+  }, [assignmentThreadId, messageStoreTick]);
 
   const scheduleCards = useMemo(
     () =>
@@ -1950,10 +2323,17 @@ export default function LiveRoomScreen() {
     });
   }, [backendScheduleSlots, routeScheduleSlots, runtimeSlotOverrides]);
 
+  // AUTHORITY SOURCE OF TRUTH:
+  // When backend/runtime schedule exists, do NOT merge old activeStageSlots.
+  // This prevents login users from inheriting stale/ghost claimed slots.
+  const authorityStageSlots = runtimeScheduleSlots.length
+    ? runtimeScheduleSlots
+    : activeStageSlots;
+
   const currentMainStageSlot = useMemo(() => {
     const now = liveNowMs;
 
-    const allSlots = [...runtimeScheduleSlots, ...activeStageSlots]
+    const allSlots = authorityStageSlots
       .map((slot: any, index: number) => {
         const n = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
         const win = getScheduleSlotWindow(slot, index);
@@ -1988,7 +2368,7 @@ export default function LiveRoomScreen() {
     if (nextAfterExpired) return nextAfterExpired;
 
     return null;
-  }, [activeStageSlots, runtimeScheduleSlots, liveNowMs]);
+  }, [authorityStageSlots, liveNowMs]);
 
   const canAdvanceScheduleRuntime =
     roleLooksLikeHost;
@@ -2162,7 +2542,7 @@ export default function LiveRoomScreen() {
     currentSlotOwnerId === currentUserId;
 
   const myClaimedStageSlot = !isMediaInstantLive
-    ? [...activeStageSlots, ...runtimeScheduleSlots]
+    ? authorityStageSlots
         .map((slot: any, index: number) => {
           const win = getScheduleSlotWindow(slot, index);
 
@@ -2334,10 +2714,7 @@ export default function LiveRoomScreen() {
   // Only the CURRENT active camera slot owner can publish video.
   // Other claimed slots may keep mic, but must not publish camera.
   const myPublisherSlotNumber = Number(
-    approvedViewerSlotNumber ||
-    myClaimedSlotNumber ||
-    myOwnClaimedSlotNumber ||
-    0
+    currentSlotOwnerId === currentUserId ? currentSlotNumber : 0
   );
 
   const activeCameraSeatIsMine =
@@ -2419,6 +2796,21 @@ export default function LiveRoomScreen() {
       !!myClaimedSlotNumber ||
       !!myOwnClaimedSlotNumber
     );
+
+  // Mic override: claimed slots, pastor/host permanent authority, current camera owner.
+  const liveKitMicOverrideReady =
+    liveMicPublisherReady ||
+    pastorPermanentMicNow ||
+    isMediaOwnerHost ||
+    canPublishLiveVideoNow;
+
+  // Publisher LiveKit mount: camera owner OR mic-eligible (not all viewers).
+  const mountLiveKitPublisherStage =
+    canPublishLiveVideoNow ||
+    liveMicPublisherReady ||
+    pastorPermanentMicNow ||
+    isMediaOwnerHost ||
+    canPublishClaimedMicNow;
 
   const scheduledLiveStageOwnerId = currentMainStageSlot
     ? `stage-${currentMainStageSlot.slot}`
@@ -2597,8 +2989,33 @@ export default function LiveRoomScreen() {
         "scheduled-live-default"
       );
 
+  const liveKitStageSessionKey = `${liveBridgeId}|${currentUserId || "anon"}`;
+
   useEffect(() => {
-    console.log("KRISTO_LIVE_ROUTE_PARAMS", {
+    const nextUserId = String(session?.userId || "").trim();
+    const prevUserId = String(prevSessionUserIdRef.current || "").trim();
+
+    if (prevUserId && nextUserId && prevUserId !== nextUserId) {
+      forceKristoLiveCleanup("account-switch", {
+        userId: prevUserId,
+        roomName: liveBridgeId,
+        accountSwitch: true,
+      });
+      setLiveKitAccountEpoch((n) => n + 1);
+    } else if (prevUserId && !nextUserId) {
+      forceKristoLiveCleanup("account-logout", {
+        userId: prevUserId,
+        roomName: liveBridgeId,
+        accountSwitch: true,
+      });
+      setLiveKitAccountEpoch((n) => n + 1);
+    }
+
+    prevSessionUserIdRef.current = nextUserId;
+  }, [session?.userId, liveBridgeId]);
+
+  useEffect(() => {
+    logLiveMediaAuthority("live-room", liveMediaAuthority, {
       routeScheduleSlotsCount: routeScheduleSlots.length,
       scheduledStagePeopleCount: scheduledStagePeople.length,
       visibleQueueSlotsCount: visibleQueueSlots.length,
@@ -2611,13 +3028,24 @@ export default function LiveRoomScreen() {
       assignmentId,
       projectId,
       currentSlotNumber,
-      mediaOwnerPastorUserId: (params as any).mediaOwnerPastorUserId,
-      mediaHostIds: (params as any).mediaHostIds,
-      backendPastorUserId,
-      currentUserId,
-      isMediaOwnerHost,
     });
-  }, [isMediaInstantLive, liveBridgeId, params.liveId, (params as any).room, params.title, assignmentThreadId, assignmentId, projectId, currentSlotNumber]);
+  }, [
+    liveMediaAuthority.isMediaOwnerHost,
+    liveMediaAuthority.isActualChurchPastor,
+    liveMediaAuthority.isMediaScheduleCreator,
+    liveMediaAuthority.isMediaHost,
+    actualChurchPastorUserId,
+    scheduleCreatedByUserId,
+    isMediaInstantLive,
+    liveBridgeId,
+    params.liveId,
+    (params as any).room,
+    params.title,
+    assignmentThreadId,
+    assignmentId,
+    projectId,
+    currentSlotNumber,
+  ]);
 
   function normalizeLiveImageUri(value: any) {
     const v = String(value || "").trim();
@@ -2662,45 +3090,42 @@ export default function LiveRoomScreen() {
   );
 
   useEffect(() => {
-    let alive = true;
+    const id = String((params as any).liveId || liveBridgeId || "").trim();
+    if (!id) return;
 
-    async function loadBackendScheduleSlots() {
-      const id = String((params as any).liveId || liveBridgeId || "").trim();
-      if (!id) return;
+    let slotsSig = "";
 
-      try {
-        const res: any = await apiGet(`/api/church/feed?id=${encodeURIComponent(id)}`, {
-          headers: liveApiHeaders as any,
-        });
+    return startAdaptiveLivePolling({
+      screen: "LiveRoomSchedule",
+      enabled: isFocused,
+      activeMs: 45000,
+      idleMs: 90000,
+      onTick: async () => {
+        try {
+          const res: any = await apiGet(
+            `/api/church/feed?id=${encodeURIComponent(id)}`,
+            { headers: liveApiHeaders as any },
+            { screen: "LiveRoomSchedule", throttleMs: 45000 }
+          );
 
-        const item = res?.data?.item || res?.item || res?.data || {};
-        const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+          const item = res?.data?.item || res?.item || res?.data || {};
+          const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+          const sig = JSON.stringify(slots);
+          if (sig === slotsSig) return;
+          slotsSig = sig;
 
-        if (!alive) return;
-
-        setBackendScheduleSlots(
-          slots.map((slot: any, index: number) => ({
-            ...slot,
-            slot: Number(slot?.slot || slot?.slotNumber || index + 1),
-            slotNumber: Number(slot?.slotNumber || slot?.slot || index + 1),
-            order: Number(slot?.order || slot?.slot || slot?.slotNumber || index + 1),
-          }))
-        );
-
-        console.log("KRISTO_BACKEND_SCHEDULE_SLOTS_LOADED", { id, count: slots.length });
-      } catch (e) {
-        console.log("KRISTO_BACKEND_SCHEDULE_SLOTS_ERROR", e);
-      }
-    }
-
-    loadBackendScheduleSlots();
-    const t = setInterval(loadBackendScheduleSlots, 15000);
-
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [liveBridgeId, (params as any).liveId, liveApiHeaders]);
+          setBackendScheduleSlots(
+            slots.map((slot: any, index: number) => ({
+              ...slot,
+              slot: Number(slot?.slot || slot?.slotNumber || index + 1),
+              slotNumber: Number(slot?.slotNumber || slot?.slot || index + 1),
+              order: Number(slot?.order || slot?.slot || slot?.slotNumber || index + 1),
+            }))
+          );
+        } catch {}
+      },
+    });
+  }, [liveBridgeId, (params as any).liveId, liveApiHeaders, isFocused]);
   const [liveProfileAvatarUri, setLiveProfileAvatarUri] = useState("");
 
   useEffect(() => {
@@ -2709,10 +3134,22 @@ export default function LiveRoomScreen() {
     async function loadLiveProfileAvatar() {
       if (!session?.userId) return;
 
+      const cached = await resolveCachedLiveAvatar(
+        session.userId,
+        String((session as any)?.avatarUri || (session as any)?.avatarUrl || "")
+      );
+      if (cached && alive) {
+        setLiveProfileAvatarUri(cached);
+        return;
+      }
+
       try {
-        const res: any = await apiGet("/api/auth/profile", { headers: liveApiHeaders as any });
+        const res: any = await apiGet(
+          "/api/auth/profile",
+          { headers: liveApiHeaders as any },
+          { screen: "LiveRoom", throttleMs: 300000 }
+        );
         const p = res?.profile || res?.user || res?.data || res || {};
-        const localDraft = await loadProfileDraft(session?.userId);
         const raw = String(
           p.avatarUri ||
           p.avatarUrl ||
@@ -2720,7 +3157,6 @@ export default function LiveRoomScreen() {
           p.photoURL ||
           p.image ||
           p.avatar ||
-          localDraft?.avatarUri ||
           ""
         ).trim();
 
@@ -2730,14 +3166,14 @@ export default function LiveRoomScreen() {
           raw.startsWith("http://") || raw.startsWith("https://") || raw.startsWith("file://")
             ? raw
             : raw.startsWith("/")
-              ? `http://192.168.12.141:3000${raw}`
+              ? `${String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "")}${raw}`
               : raw;
 
         setLiveProfileAvatarUri(normalized);
       } catch {}
     }
 
-    loadLiveProfileAvatar();
+    void loadLiveProfileAvatar();
 
     return () => {
       alive = false;
@@ -2794,41 +3230,16 @@ export default function LiveRoomScreen() {
     }
   }
 
-  useEffect(() => {
-    if (isMediaInstantLive === false && !liveBridgeId) return;
-
-    let alive = true;
-
-    async function sendLiveHeartbeat() {
-      if (!alive) return;
-      await pushLiveAction("presence", {
-        viewerCount: 1,
-        role:
-          canManageLive
-            ? "host"
-            : isMyScheduledLiveTurn
-              ? "stage"
-              : "viewer",
-      });
-    }
-
-    sendLiveHeartbeat();
-    const t = setInterval(sendLiveHeartbeat, 5000);
-
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [isMediaInstantLive, isHost, liveBridgeId, session?.userId, session?.churchId, session?.role]);
+  const livePatchSigRef = useRef("");
+  const liveHeartbeatSigRef = useRef("");
+  const canManageLiveRef = useRef(false);
+  const isMyScheduledLiveTurnRef = useRef(false);
 
   useEffect(() => {
-    let alive = true;
+    if (!liveBridgeId && isMediaInstantLive === false) return;
 
-    async function pollLiveState() {
-      const res: any = await apiGet("/api/church/live", { headers: liveApiHeaders as any });
-      if (!alive) return;
-
-      if (res?.removedFromLive === true) {
+    const applyLivePatch = (patch: Awaited<ReturnType<typeof fetchLightLiveState>>) => {
+      if (patch.removedFromLive) {
         setJoinRequestsBySlot({});
         setHostRequestCard(null);
         setVipGuestCardSlot(null);
@@ -2837,31 +3248,66 @@ export default function LiveRoomScreen() {
         return;
       }
 
-      const nextLive = res?.live;
-      if (nextLive?.requestPolicy) {
-        setRequestPolicy(nextLive.requestPolicy as LiveRequestPolicy);
-      }
+      const sig = JSON.stringify({
+        policy: patch.requestPolicy || "",
+        req: patch.requests || null,
+        presence: patch.viewerPresence || null,
+        liveId: patch.liveId || "",
+        isLive: patch.isLive || false,
+      });
+      if (sig === livePatchSigRef.current) return;
+      livePatchSigRef.current = sig;
 
-      if (nextLive?.requestPolicy) {
-        setRequestPolicy(nextLive.requestPolicy as LiveRequestPolicy);
-      }
-
-      if (nextLive?.requests && typeof nextLive.requests === "object") {
-        setJoinRequestsBySlot(nextLive.requests);
-      }
-
-      if (nextLive?.viewerPresence && typeof nextLive.viewerPresence === "object") {
-        setLiveViewerPresence(nextLive.viewerPresence);
-      }
-    }
-
-    pollLiveState();
-    const t = setInterval(pollLiveState, 1600);
-    return () => {
-      alive = false;
-      clearInterval(t);
+      if (patch.raw) setBackendChurchLive(patch.raw);
+      if (patch.requestPolicy) setRequestPolicy(patch.requestPolicy as LiveRequestPolicy);
+      if (patch.requests) setJoinRequestsBySlot(patch.requests);
+      if (patch.viewerPresence) setLiveViewerPresence(patch.viewerPresence);
     };
-  }, [liveBridgeId, liveApiHeaders]);
+
+    const stopSync = startAdaptiveLivePolling({
+      screen: "LiveRoom",
+      enabled: isFocused,
+      activeMs: 6000,
+      idleMs: 22000,
+      onTick: async () => {
+        const patch = await fetchLightLiveState(liveApiHeaders as any, "LiveRoom");
+        applyLivePatch(patch);
+      },
+    });
+
+    const stopHeartbeat = startAdaptiveLivePolling({
+      screen: "LiveRoomHeartbeat",
+      enabled: isFocused,
+      activeMs: 15000,
+      idleMs: 30000,
+      onTick: async () => {
+        const body = {
+          viewerCount: 1,
+          role: canManageLiveRef.current
+            ? "host"
+            : isMyScheduledLiveTurnRef.current
+              ? "stage"
+              : "viewer",
+        };
+        const sig = JSON.stringify(body);
+        if (sig === liveHeartbeatSigRef.current) return;
+        liveHeartbeatSigRef.current = sig;
+        await pushLiveAction("presence", body);
+      },
+    });
+
+    return () => {
+      stopSync();
+      stopHeartbeat();
+    };
+  }, [liveBridgeId, isMediaInstantLive, liveApiHeaders, router, isFocused]);
+
+  useEffect(() => {
+    const uris = assignmentThreadMessages
+      .map((m: any) => String(m?.avatarUri || m?.card?.claimedByAvatar || "").trim())
+      .filter(Boolean);
+    preloadLiveImages(uris, 20);
+  }, [assignmentThreadMessages]);
 
 
 
@@ -3477,23 +3923,22 @@ export default function LiveRoomScreen() {
     (approvedAccessRequest && accessApproveCountdown === 0);
 
   useEffect(() => {
-    if (!approvedAccessRequest || audienceGateAllowed || isMediaInstantLive) return;
-    if (accessApproveCountdown !== null) return;
-    setAccessApproveCountdown(5);
-
+    if (accessApproveCountdown === null || accessApproveCountdown <= 0) return;
     const t = setInterval(() => {
       setAccessApproveCountdown((prev) => {
         if (prev === null) return null;
-        if (prev <= 1) {
-          clearInterval(t);
-          return 0;
-        }
+        if (prev <= 1) return 0;
         return prev - 1;
       });
     }, 1000);
-
     return () => clearInterval(t);
-  }, [approvedAccessRequest, finalAudienceGateAllowed, isMediaInstantLive]);
+  }, [accessApproveCountdown]);
+
+  useEffect(() => {
+    if (!approvedAccessRequest || audienceGateAllowed || isMediaInstantLive) return;
+    if (accessApproveCountdown !== null) return;
+    setAccessApproveCountdown(5);
+  }, [approvedAccessRequest, audienceGateAllowed, isMediaInstantLive, accessApproveCountdown]);
 
   const liveMeta = useMemo(() => {
     if (isMediaInstantLive) return `${live.viewerCount} • Creator controls`;
@@ -3588,6 +4033,12 @@ export default function LiveRoomScreen() {
   // Generic pastors/admins from another church/media must remain viewers.
   const canManageLive =
     roleLooksLikeHost;
+
+  useEffect(() => {
+    canManageLiveRef.current = canManageLive;
+    isMyScheduledLiveTurnRef.current = !!isMyScheduledLiveTurn;
+  }, [canManageLive, isMyScheduledLiveTurn]);
+
   const canUseAuthorityControls = isMediaInstantLive || (canManageLive && (canEnterBackstage || liveStillActive));
   const canSeeAuthorityBar =
     !isMediaInstantLive &&
@@ -4074,6 +4525,7 @@ export default function LiveRoomScreen() {
   }
 
   function handleHostRequestsPress() {
+    if (!canManageLive) return;
     closeMoreMenu();
 
     const pending = Object.entries(joinRequestsBySlot || {}).find(([, req]: any) => !!req && !req.approved);
@@ -4096,6 +4548,7 @@ ${scheduleAudienceAccessText}`,
         {
           text: "Approve",
           onPress: () => {
+            if (!canManageLive) return;
             const approvedReq = {
               ...req,
               name: requestName,
@@ -4190,6 +4643,7 @@ ${scheduleAudienceAccessText}`,
           : ({ backgroundColor: "#FF4B6E", shadowColor: "#FF4B6E" } as ViewStyle);
 
   function applyLiveRequestPolicy(nextPolicy: LiveRequestPolicy) {
+    if (!canManageLive) return;
     setRequestPolicy(nextPolicy);
     publishLivePolicy(liveBridgeId, nextPolicy);
     pushLiveAction("set-policy", { requestPolicy: nextPolicy, policy: nextPolicy });
@@ -4241,6 +4695,7 @@ ${scheduleAudienceAccessText}`,
   }
 
   function handleAutoJoinToStage(slot: number) {
+    if (!canManageLive) return;
     const existing = joinRequestsBySlot[slot];
     const req = {
       name: existing?.name || "You",
@@ -4266,7 +4721,7 @@ ${scheduleAudienceAccessText}`,
 
   const bottomSpacer = <View style={{ height: 96 }} />;
   const rootPanHandlers =
-    canManageLive || isCoHostRole
+    canManageLive
       ? hostDrawerPanResponder.panHandlers
       : viewerFlowPanResponder.panHandlers;
 
@@ -4329,10 +4784,11 @@ return (
               {(roleLooksLikeHost || canPublishLiveVideoNow || canPublishClaimedMicNow) && canShowCamera ? (
                 <>
                   <KristoLiveKitStage
+                    key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
                     roomName={liveBridgeId}
                     headers={liveKitApiHeaders}
-                    canPublish={liveMicPublisherReady || canPublishLiveVideoNow}
-                    canPublishMicOverride={liveMicPublisherReady || canPublishLiveVideoNow}
+                    canPublish={mountLiveKitPublisherStage}
+                    canPublishMicOverride={liveKitMicOverrideReady}
                     canPublishCameraOverride={scheduledPublisherSlotReady && canPublishLiveVideoNow}
                     renderLocalPreview={canPublishLiveVideoNow}
                     preferredIdentityPrefix={`${String(session?.userId || "")}-slot-${myOwnClaimedSlotNumber || currentSlotNumber || 1}`}
@@ -4357,11 +4813,12 @@ return (
               ) : isMediaInstantLive ? (
                 <>
                   <KristoLiveKitStage
+                    key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
                     roomName={liveBridgeId}
                     headers={liveKitViewerApiHeaders}
                     canPublish={false}
                     renderLocalPreview={false}
-                    preferredIdentityPrefix={`${String((params.pastorUserId || "") || "u_3cba06da2dc7c19df3cc074a")}-slot-1`}
+                    preferredIdentityPrefix={`${String(actualChurchPastorUserId || params.pastorUserId || "")}-slot-1`}
                     identity={`${String(session?.userId || "viewer")}-viewer`}
                     cameraFacing={"front"}
                     micMuted={false}
@@ -4478,12 +4935,13 @@ return (
             }}
           >
 {(isMediaInstantLive || !!currentMainStageSlot || (pastorPermanentMicNow && backendScheduleReady && !!currentSlotNumber)) ? (
-              canPublishLiveVideoNow || bigStageGuestId === scheduledLiveStageOwnerId ? (
+              mountLiveKitPublisherStage ? (
                 <KristoLiveKitStage
+                  key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
                   roomName={liveBridgeId}
                   headers={liveKitApiHeaders}
-                  canPublish={liveMicPublisherReady || canPublishLiveVideoNow}
-                  canPublishMicOverride={liveMicPublisherReady || canPublishLiveVideoNow}
+                  canPublish={mountLiveKitPublisherStage}
+                  canPublishMicOverride={liveKitMicOverrideReady}
                   canPublishCameraOverride={scheduledPublisherSlotReady && canPublishLiveVideoNow}
                   renderLocalPreview={canPublishLiveVideoNow}
                   preferredIdentityPrefix={
@@ -4492,10 +4950,7 @@ return (
                       : `slot:${Number((currentMainStageSlot as any)?.slot || currentSlotNumber || (params as any).preferredSlotNumber || 0)}`
                   }
                   identity={
-                    (
-                      liveMicPublisherReady ||
-                      canPublishLiveVideoNow
-                    )
+                    mountLiveKitPublisherStage
                       ? `${String(
                           (session as any)?.coreId ||
                           (session as any)?.kristoId ||
@@ -4525,6 +4980,7 @@ return (
                 />
               ) : (
                 <KristoLiveKitStage
+                  key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
                   roomName={liveBridgeId}
                   headers={liveKitViewerApiHeaders}
                   canPublish={false}
@@ -4718,6 +5174,7 @@ return (
               <View pointerEvents="auto" style={s.joinRequestActions as any}>
                 <Pressable
                   onPress={async () => {
+                    if (!canManageLive) return;
                     const slot = Number(latestJoinRequest.slot || 6);
                     const approvedReq = {
                       ...(joinRequestsBySlot[slot] || latestJoinRequest),
@@ -4840,7 +5297,7 @@ return (
         ) : null}
 
 
-        {layoutMode === "grid6" ? (
+        {layoutMode === "grid6" && canManageLive ? (
           <Animated.View
             pointerEvents={profileActionGuestId ? "auto" : "none"}
             style={[
@@ -4874,6 +5331,7 @@ return (
               <Pressable
                 key={`profile-action-${item.key}`}
                 onPress={() => {
+                  if (!canManageLive) return;
                   const selectedId = profileActionGuestId;
 
                   if (item.key === "down") {
@@ -5005,6 +5463,7 @@ return (
                 <Pressable
                   key={item.key}
                   onPress={() => {
+                    if (!canManageLive) return;
                     const nextPolicy = item.key as typeof requestPolicy;
                     applyLiveRequestPolicy(nextPolicy);
                     Haptics.selectionAsync().catch(() => {});
@@ -5116,26 +5575,26 @@ return (
 
         {layoutMode === "grid6" && (canUseLiveControlsNow || canPublishClaimedMicNow) ? (
           <View pointerEvents="box-none" style={s.teamGridTableControlsLayer as any}>
-            {(canPublishClaimedMicNow && !canPublishLiveVideoNow && !canManageLive
+            {(canManageLive
               ? [
-                  { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
-                  { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
-                ]
-              : isMyScheduledLiveTurn && !canManageLive
-                ? [
-                    { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
-                    { icon: "camera-reverse-outline", color: "#63D1FF", label: "Flip", action: "flip" },
-                    { icon: cameraPaused ? "videocam-off-outline" : "videocam-outline", color: "#4FC3FF", label: "Video", action: "video" },
-                    { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
-                  ]
-                : [
                   { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
                   { icon: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "camera-reverse-outline" : "repeat-outline", color: "#63D1FF", label: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "Flip" : "Switch", action: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "flip" : "switch" },
                   { icon: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? (cameraPaused ? "videocam-off-outline" : "videocam-outline") : "sparkles-outline", color: "#4FC3FF", label: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "Video" : "Guests", action: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "video" : "guests" },
                   { icon: "repeat-outline", color: "#67F5B5", label: "Switch", action: "switch" },
                   { icon: "sparkles-outline", color: "#FFB36A", label: "Guests", action: "guests" },
                   { icon: "power-outline", color: "#FF6B6B", label: "End", action: "end-live" },
-                ]).map((control, i) => (
+                ]
+              : canPublishClaimedMicNow && !canPublishLiveVideoNow
+                ? [
+                    { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
+                    { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
+                  ]
+                : [
+                    { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
+                    { icon: "camera-reverse-outline", color: "#63D1FF", label: "Flip", action: "flip" },
+                    { icon: cameraPaused ? "videocam-off-outline" : "videocam-outline", color: "#4FC3FF", label: "Video", action: "video" },
+                    { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
+                  ]).map((control, i) => (
               <Pressable
                 key={`main-screen-host-control-${control.label}-${i}`}
                 onPress={() => {
@@ -5164,6 +5623,7 @@ return (
                   }
 
                   if (control.action === "guests") {
+                    if (!canManageLive) return;
                     setRequestListOpen(false);
                     setHostRequestCard(null);
                     setVipGuestCardSlot(null);
@@ -5309,6 +5769,7 @@ return (
 
                 <Pressable
                   onPress={() => {
+                    if (!canManageLive) return;
                     const slot = Number(hostRequestCard.slot || 0);
                     const req = hostRequestCard.req || {};
                     pushLiveAction("approve-request", { slot, onStage: true, approved: true });
@@ -5401,6 +5862,7 @@ return (
                   <Pressable
                     style={s.vipGuestSmartBtn as any}
                     onPress={() => {
+                      if (!canManageLive) return;
                       // Up = move guest to upper small cards only, NOT big screen
                       setStageGuestIds((prev) => prev.includes(guestId) ? prev : [guestId, ...prev].slice(0, 4));
 
@@ -6431,7 +6893,7 @@ return (
           </Pressable>
         </Modal>
       </View>
-      {hostDrawerOpen ? (
+      {canManageLive && hostDrawerOpen ? (
         <Pressable
           pointerEvents="auto"
           style={s.hostDrawerScrim as any}
@@ -6439,6 +6901,7 @@ return (
         />
       ) : null}
 
+      {canManageLive ? (
       <Animated.View
         pointerEvents={hostDrawerOpen ? "auto" : "none"}
         style={[
@@ -6715,6 +7178,7 @@ return (
         </ScrollView>
         </ScrollView>
       </Animated.View>
+      ) : null}
 
       
 <Modal
