@@ -10,6 +10,7 @@ import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { apiPost, apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { buildAvatarDataUrl, compressAvatarFile } from "@/src/lib/avatarCompress";
+import { emitUserProfileUpdated } from "@/src/lib/kristoProfileEvents";
 
 const BG = "#050914";
 const GOLD = "#F4D06F";
@@ -228,6 +229,7 @@ export default function EditProfileScreen() {
 
         const serverProfile = savedRes?.profile || {};
         const serverAvatar = String(serverProfile?.avatarUrl || backendAvatar || "").trim();
+        const avatarUpdatedAt = avatarDirty || serverAvatar ? Date.now() : undefined;
         const syncedChurchId = String(
           savedRes?.churchId || savedRes?.activeMembership?.churchId || session.churchId || ""
         ).trim();
@@ -241,6 +243,7 @@ export default function EditProfileScreen() {
           phone: String(serverProfile?.phone || nextProfile.phone || ""),
           city: String(serverProfile?.city || nextProfile.city || ""),
           country: String(serverProfile?.country || nextProfile.country || ""),
+          avatarUpdatedAt,
         } as any;
 
         await saveProfileDraft(syncedProfile, session.userId);
@@ -270,12 +273,16 @@ export default function EditProfileScreen() {
           churchPublic,
         } as any);
 
-        if (__DEV__) {
-          console.log("[ProfileEdit] patch success", {
-            userId: session.userId,
-            churchId: syncedChurchId || null,
-          });
-        }
+        emitUserProfileUpdated({
+          userId: session.userId,
+          updatedAt: Date.now(),
+          avatarUpdatedAt,
+        });
+
+        console.log("[ProfileEdit] patch success updated cache", {
+          userId: session.userId,
+          avatarUpdatedAt: avatarUpdatedAt || null,
+        });
       } catch (e: any) {
         const msg = String(e?.message || e || "Profile save failed");
         if (__DEV__) {

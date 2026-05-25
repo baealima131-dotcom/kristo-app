@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { fetchMyActiveChurchMembership } from "@/src/lib/churchMembersApi";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, ScrollView, Modal, Alert, Image } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -11,6 +11,7 @@ import { useIsFocused } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { loadChurchProfileCache, saveChurchProfileCache } from "@/src/lib/churchStore";
+import { onChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
 
 const VIP_BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -360,6 +361,67 @@ export default function ChurchOverviewScreen() {
     }
   }
 
+  const silentRefreshProfile = useCallback(async () => {
+    if (!churchId || !effectiveAuthUserId) return;
+
+    const cached = await loadChurchProfileCache(churchId);
+    if (cached) {
+      setProfile({
+        id: churchId,
+        name: String(cached.name || churchId),
+        address: String(cached.address || ""),
+        phone: String(cached.phone || ""),
+        pastorName: String(cached.pastorName || ""),
+        avatarUri: mediaUrl(cached.avatarUri || cached.avatarUrl || ""),
+      });
+    }
+
+    try {
+      const j = await apiGet<any>("/api/church/profile", {
+        headers: getKristoHeaders(),
+      }).catch(() => null);
+
+      if (!j?.ok) return;
+
+      const p = j?.data || j?.profile || {};
+      const avatarUri = String(p?.avatarUri || p?.avatarUrl || "").trim();
+      const nextProfile: ChurchProfile = {
+        id: String(p?.id || churchId),
+        name: String(p?.name || churchId),
+        address: String(p?.address || ""),
+        phone: String(p?.phone || ""),
+        pastorName: String(p?.pastorName || ""),
+        avatarUri: avatarUri ? mediaUrl(avatarUri) : "",
+      };
+
+      setProfile(nextProfile);
+
+      await saveChurchProfileCache({
+        churchId,
+        name: nextProfile.name,
+        address: nextProfile.address,
+        phone: nextProfile.phone,
+        pastorName: nextProfile.pastorName,
+        avatarUri: nextProfile.avatarUri,
+        avatarUrl: nextProfile.avatarUri,
+        avatarUpdatedAt: avatarUri ? Date.now() : undefined,
+      });
+
+      if (session && nextProfile.name) {
+        await setSession({
+          ...session,
+          churchName: nextProfile.name,
+        } as any);
+      }
+
+      console.log("[ChurchOverview] silent refresh applied", {
+        churchId,
+        name: nextProfile.name,
+        hasAvatar: Boolean(nextProfile.avatarUri),
+      });
+    } catch {}
+  }, [churchId, effectiveAuthUserId, session, setSession]);
+
   useEffect(() => {
     if (!isFocused) return;
     if (invitePreview && !previewChecked) return;
@@ -370,6 +432,18 @@ export default function ChurchOverviewScreen() {
     }
     load({ silent: !loading });
   }, [isFocused, refreshAt, invitePreview, previewChecked, previewLimitReached]);
+
+  useEffect(() => {
+    if (!isFocused) return;
+    void silentRefreshProfile();
+  }, [isFocused, refreshAt, silentRefreshProfile]);
+
+  useEffect(() => {
+    return onChurchProfileUpdated((payload) => {
+      if (String(payload.churchId || "").trim() !== churchId) return;
+      void silentRefreshProfile();
+    });
+  }, [churchId, silentRefreshProfile]);
 
   useEffect(() => {
     if (String(params.saved || "") !== "1") return;

@@ -15,7 +15,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import { loadProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
+import { loadProfileDraft, saveProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
+import { onUserProfileUpdated } from "@/src/lib/kristoProfileEvents";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getPaymentsState, subscribePayments } from "../../../src/store/paymentsStore";
@@ -594,13 +595,6 @@ export default function MeScreen() {
     }
   }, [session, setSession]);
 
-  useFocusEffect(
-    useCallback(() => {
-      refreshProfileDraft();
-      void refreshActiveChurch();
-    }, [refreshProfileDraft, refreshActiveChurch])
-  );
-
   const church = useMemo(() => {
     const fromSession = String((session as any)?.churchName || churchDisplayName || "").trim();
     if (fromSession) return fromSession;
@@ -781,7 +775,8 @@ export default function MeScreen() {
     };
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
     if (
       (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
       Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) > 0
@@ -789,7 +784,7 @@ export default function MeScreen() {
       return;
     }
 
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
 
       const [profileRes, postsRes, announcementsRes, feedRes, overviewRes] = await Promise.all([
@@ -824,13 +819,38 @@ export default function MeScreen() {
         const backendName = String(profileRes.profile.fullName || "").trim();
         const backendAvatar = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
 
-        if (backendName && session?.userId) {
+        if (session?.userId) {
           await setSession({
             ...session,
-            name: backendName,
-            displayName: backendName,
+            ...(backendName ? { name: backendName, displayName: backendName } : {}),
             avatarUrl: backendAvatar || (session as any)?.avatarUrl || "",
+            avatarUri: backendAvatar || (session as any)?.avatarUri || "",
           } as any);
+
+          if (backendAvatar || backendName) {
+            const draft = (await loadProfileDraft(session.userId)) || { displayName: backendName || "" };
+            await saveProfileDraft(
+              {
+                ...draft,
+                displayName: backendName || draft.displayName,
+                avatarUri: backendAvatar || draft.avatarUri,
+                avatarUpdatedAt: backendAvatar ? Date.now() : draft.avatarUpdatedAt,
+              },
+              session.userId
+            );
+            setProfileDraft({
+              ...draft,
+              displayName: backendName || draft.displayName,
+              avatarUri: backendAvatar || draft.avatarUri,
+            });
+          }
+        }
+
+        if (silent) {
+          console.log("[Profile] silent refresh applied", {
+            userId,
+            hasAvatar: Boolean(backendAvatar),
+          });
         }
      } else {
         setProfile(null);
@@ -894,15 +914,29 @@ export default function MeScreen() {
       setLatestPrayer(null);
       setLatestSaved(null);
    } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
    }
- }, [churchId, userId]);
+ }, [churchId, userId, session, setSession]);
+
+  const silentRefreshProfile = useCallback(async () => {
+    await refreshProfileDraft();
+    await load({ silent: true });
+  }, [refreshProfileDraft, load]);
 
   useFocusEffect(
     useCallback(() => {
-      load();
-   }, [load])
+      void refreshProfileDraft();
+      void refreshActiveChurch();
+      void load({ silent: true });
+    }, [refreshProfileDraft, refreshActiveChurch, load])
   );
+
+  useEffect(() => {
+    return onUserProfileUpdated((payload) => {
+      if (String(payload.userId || "").trim() !== userId) return;
+      void silentRefreshProfile();
+    });
+  }, [userId, silentRefreshProfile]);
 
   
   const currentUserId = String(session?.userId || "").trim();

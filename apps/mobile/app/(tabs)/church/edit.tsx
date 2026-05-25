@@ -14,6 +14,7 @@ import {
   saveChurchProfileCache,
 } from "@/src/lib/churchStore";
 import { buildAvatarDataUrl } from "@/src/lib/avatarCompress";
+import { emitChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
 
 const GOLD = "rgba(217,179,95,0.96)";
 const BG = "#070B14";
@@ -221,14 +222,17 @@ export default function EditChurchProfile() {
         }
 
         const p = res?.data || {};
+        const syncedAvatar = mediaUrl(p.avatarUri || p.avatarUrl || displayAvatar);
+        const avatarUpdatedAt = avatarDirty || syncedAvatar ? Date.now() : undefined;
         const synced = {
           churchId,
           name: String(p.name || trimmedName),
           pastorName: String(p.pastorName || trimmedPastor),
           phone: String(p.phone || trimmedPhone),
           address: String(p.address || trimmedAddress),
-          avatarUri: mediaUrl(p.avatarUri || p.avatarUrl || displayAvatar),
-          avatarUrl: mediaUrl(p.avatarUrl || p.avatarUri || displayAvatar),
+          avatarUri: syncedAvatar,
+          avatarUrl: syncedAvatar,
+          avatarUpdatedAt,
         };
         await saveChurchProfileCache(synced);
         setAvatarDirty(false);
@@ -242,9 +246,17 @@ export default function EditChurchProfile() {
           } as any);
         }
 
-        if (__DEV__) {
-          console.log("[EditChurch] patch success", { churchId, name: synced.name });
-        }
+        emitChurchProfileUpdated({
+          churchId,
+          updatedAt: Date.now(),
+          avatarUpdatedAt,
+        });
+
+        console.log("[EditChurch] patch success updated cache", {
+          churchId,
+          name: synced.name,
+          avatarUpdatedAt: avatarUpdatedAt || null,
+        });
       } catch (e: any) {
         const msg = String(e?.message || e || "Save failed");
         if (__DEV__) {
