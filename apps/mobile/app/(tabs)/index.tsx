@@ -2225,64 +2225,6 @@ const noMediaPost =
 
             {activeSlot && !isLiveNow ? (
               <View style={s.liveFullFrame}>
-                <View style={s.slotTopRightActions}>
-                  <Pressable
-                    style={s.slotTopRightActionBtn}
-                    hitSlop={12}
-                    onPress={() => {
-                      if ((item as any)?.isBackendPost) {
-                        const nextLiked = !displayLiked;
-                        const nextCount = Math.max(0, Number(likeCount || 0) + (nextLiked ? 1 : -1));
-                        onOptimisticBackendLike?.(item.id, nextLiked, nextCount);
-                        syncBackendLike(feedActionId, nextLiked);
-                      } else {
-                        feedToggleLike(item.id);
-                      }
-                    }}
-                  >
-                    <Animated.View style={[s.slotTopRightIconWrap, { transform: [{ scale: likeScale }] }]}>
-                      <Ionicons
-                        name={displayLiked ? "heart" : "heart-outline"}
-                        size={26}
-                        color={displayLiked ? "#FF4D6D" : "#FFFFFF"}
-                      />
-                    </Animated.View>
-                    <Text style={s.slotTopRightCount}>{likeCount}</Text>
-                  </Pressable>
-
-                  <Pressable style={s.slotTopRightActionBtn} hitSlop={12} onPress={openComments}>
-                    <View style={s.slotTopRightIconWrap}>
-                      <Ionicons name="chatbubble-outline" size={25} color="#FFFFFF" />
-                    </View>
-                    <Text style={s.slotTopRightLabel}>Chat</Text>
-                  </Pressable>
-
-                  <Pressable style={s.slotTopRightActionBtn} hitSlop={12} onPress={onShare}>
-                    <View style={s.slotTopRightIconWrap}>
-                      <Ionicons name="arrow-redo-outline" size={26} color="#FFFFFF" />
-                    </View>
-                    <Text style={s.slotTopRightLabel}>Share</Text>
-                  </Pressable>
-
-                  <Pressable
-                    style={s.slotTopRightActionBtn}
-                    hitSlop={12}
-                    onPress={() => {
-                      setLocalSaved((v) => !v);
-                      feedToggleSave(item.id);
-                    }}
-                  >
-                    <View style={s.slotTopRightIconWrap}>
-                      <Ionicons
-                        name={localSaved ? "bookmark" : "bookmark-outline"}
-                        size={26}
-                        color={localSaved ? "#F7D36A" : "#FFFFFF"}
-                      />
-                    </View>
-                    <Text style={s.slotTopRightLabel}>Save</Text>
-                  </Pressable>
-                </View>
-
                 <HomeLiveScheduleCard
                   item={item}
                   activeSlot={activeSlot}
@@ -2295,13 +2237,32 @@ const noMediaPost =
                   onSkipSlots={onSkipSlots}
                   onOpenLiveRoom={openLiveRoom}
                   onOptimisticClaim={onOptimisticSlotClaim}
+                  displayLiked={displayLiked}
+                  likeCount={likeCount}
+                  localSaved={localSaved}
+                  onLike={() => {
+                    if (isBackendFeedPost) {
+                      const nextLiked = !displayLiked;
+                      const nextCount = Math.max(0, Number(likeCount || 0) + (nextLiked ? 1 : -1));
+                      onOptimisticBackendLike?.(feedActionId, nextLiked, nextCount);
+                      syncBackendLike(feedActionId, nextLiked);
+                    } else {
+                      feedToggleLike(item.id);
+                    }
+                  }}
+                  onComment={openComments}
+                  onShare={onShare}
+                  onToggleSave={() => {
+                    setLocalSaved((v) => !v);
+                    feedToggleSave(item.id);
+                  }}
                 />
               </View>
             ) : null}
           </>
         ) : null}
       </View>
-      {activeSlot ? (
+      {activeSlot && isLiveNow ? (
         <View pointerEvents="box-none" style={s.slotActions}>
           <Pressable
             hitSlop={16}
@@ -4145,6 +4106,7 @@ const s: any = StyleSheet.create({
   scheduleOnlySlide: {
     backgroundColor: "#030508",
     justifyContent: "center",
+    paddingVertical: 20,
   },
 
   page: {
