@@ -23,6 +23,7 @@ import {
   findAllActiveMediaSchedulesForChurch,
   isIncomingMediaScheduleCreate,
   isMediaScheduleForChurch,
+  isMediaScheduleFeedItem,
   summarizeActiveMediaSchedule,
 } from "@/lib/mediaScheduleLock";
 import { getChurchMediaByChurchId } from "@/app/api/_lib/store/mediaDb";
@@ -207,14 +208,25 @@ declare global {
   var __kristoChurchFeedHydrated: boolean | undefined;
 }
 
-function hydratePostStoreFromDisk() {
-  if (globalThis.__kristoChurchFeedHydrated) return;
-  globalThis.__kristoChurchFeed = readJsonArray<ChurchFeedItem>("church-feed.json");
+function mergePostStoreFromDisk() {
+  const diskRows = readJsonArray<ChurchFeedItem>("church-feed.json");
+  const memoryRows = Array.isArray(globalThis.__kristoChurchFeed) ? globalThis.__kristoChurchFeed : [];
+  const byId = new Map<string, ChurchFeedItem>();
+
+  for (const row of diskRows) {
+    if (row?.id) byId.set(String(row.id), row);
+  }
+  for (const row of memoryRows) {
+    if (row?.id) byId.set(String(row.id), row);
+  }
+
+  globalThis.__kristoChurchFeed = Array.from(byId.values());
   globalThis.__kristoChurchFeedHydrated = true;
+  return globalThis.__kristoChurchFeed;
 }
 
 function postStore(): ChurchFeedItem[] {
-  hydratePostStoreFromDisk();
+  mergePostStoreFromDisk();
   if (!globalThis.__kristoChurchFeed) globalThis.__kristoChurchFeed = [];
   return globalThis.__kristoChurchFeed;
 }
@@ -473,12 +485,20 @@ function feedItemVisibility(item: any) {
 }
 
 function isDiscoverableFeedItem(item: any, viewerChurchId: string) {
+  const itemChurchId = String(item?.churchId || "").trim();
+  const viewerCid = String(viewerChurchId || "").trim();
+
+  if (isMediaScheduleFeedItem(item)) {
+    if (!viewerCid) return false;
+    if (!itemChurchId) return true;
+    return itemChurchId === viewerCid;
+  }
+
   const visibility = feedItemVisibility(item);
-  const itemChurchId = String(item?.churchId || "");
   const member = viewerHasActiveChurchMembership(viewerChurchId);
 
   if (visibility.includes("church")) {
-    return member && itemChurchId === viewerChurchId;
+    return member && itemChurchId === viewerCid;
   }
 
   if (member) {
@@ -490,10 +510,17 @@ function isDiscoverableFeedItem(item: any, viewerChurchId: string) {
       return true;
     }
 
-    return itemChurchId === viewerChurchId;
+    return itemChurchId === viewerCid;
   }
 
   return visibility.includes("public") || visibility.includes("global");
+}
+
+async function resolveViewerChurchId(req: NextRequest, headerChurchId: string) {
+  const fromHeader = String(headerChurchId || "").trim();
+  const membershipOrRes = await guard(req);
+  if (membershipOrRes instanceof NextResponse) return fromHeader;
+  return String(membershipOrRes.churchId || fromHeader).trim();
 }
 
 function buildCommentTree(churchId: string, postId: string, viewerUserId: string): FeedCommentTree[] {
@@ -526,7 +553,8 @@ export async function GET(req: NextRequest) {
   if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const ctx = ctxOrRes as any;
-  const churchId = String(ctx?.viewer?.churchId || "").trim();
+  const headerChurchId = String(ctx?.viewer?.churchId || "").trim();
+  const churchId = await resolveViewerChurchId(req, headerChurchId);
   const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
   const url = new URL(req.url);
 
@@ -599,8 +627,22 @@ export async function GET(req: NextRequest) {
     return ok(detail);
   }
 
-  const items = postStore()
-    .filter((x: any) => isDiscoverableFeedItem(x, churchId))
+  const allRows = postStore();
+  console.log("[ScheduleFeed] GET rows before filter", {
+    churchId,
+    headerChurchId,
+    total: allRows.length,
+    scheduleCandidates: allRows.filter((x) => isMediaScheduleFeedItem(x)).length,
+  });
+
+  const afterDiscover = allRows.filter((x: any) => isDiscoverableFeedItem(x, churchId));
+  console.log("[ScheduleFeed] GET rows after church filter", {
+    churchId,
+    total: afterDiscover.length,
+    scheduleCandidates: afterDiscover.filter((x) => isMediaScheduleFeedItem(x)).length,
+  });
+
+  const items = afterDiscover
     .filter((x: any) => {
       if (isClaimableScheduleFeedItem(x) && !viewerHasActiveChurchMembership(churchId)) {
         return false;
@@ -617,6 +659,13 @@ export async function GET(req: NextRequest) {
     .map((item) => enrichFeedListItem(item, viewerUserId));
 
   const resolvedItems = await Promise.all(items);
+
+  const scheduleRows = resolvedItems.filter((x: any) => isMediaScheduleFeedItem(x));
+  console.log("[ScheduleFeed] GET schedule rows returned", {
+    churchId,
+    scheduleCount: scheduleRows.length,
+    scheduleIds: scheduleRows.map((x: any) => String(x?.id || "")),
+  });
 
   return feedListOk(churchId, resolvedItems);
 }

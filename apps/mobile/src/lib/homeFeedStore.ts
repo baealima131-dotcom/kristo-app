@@ -253,7 +253,16 @@ function isMediaScheduleCard(it: any): boolean {
 }
 
 export function isMediaScheduleFeedItem(it: any): boolean {
-  return isMediaScheduleCard(it) && Array.isArray(it?.scheduleSlots) && it.scheduleSlots.length > 0;
+  const source = String(it?.source || "").toLowerCase();
+  const scheduleType = String(it?.scheduleType || "").toLowerCase();
+  const byMeta =
+    source.includes("media-schedule") ||
+    scheduleType === "media-live-slots" ||
+    isMediaScheduleCard(it);
+
+  if (!byMeta) return false;
+  const slots = Array.isArray(it?.scheduleSlots) ? it.scheduleSlots : [];
+  return slots.length > 0;
 }
 
 /** Replace optimistic local schedule with durable backend row (same church). */
