@@ -18,6 +18,7 @@ import {
   Easing,
   AppState,
   Alert,
+  type LayoutChangeEvent,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -40,7 +41,13 @@ import {
   feedUnclaimSchedule,
   feedJoinSlotQueue,
   feedRemoveWhere,
+  clearLocalMediaVideoPosts,
+  clearHomeFeedLocalCaches,
+  clearHomeFeedRuntimeCaches,
+  isLocalMediaVideoPost,
   isMediaScheduleFeedItem as isHomeMediaScheduleItem,
+  isFeedVideoItem,
+  resolveFeedItemAvatar,
 } from "@/src/lib/homeFeedStore";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { loadProfileDraft } from "@/src/lib/profileStore";
@@ -49,6 +56,14 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
 import { baseFeedId, normalizeLiveScheduleSlots } from "@/src/lib/scheduleSlotUtils";
 import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
+import {
+  logHomeFeedVideoPlayState,
+  pauseAllHomeFeedVideos,
+  pauseHomeFeedVideo,
+  registerHomeFeedVideo,
+  syncHomeFeedVideoOwnership,
+  unregisterHomeFeedVideo,
+} from "@/src/lib/homeFeedVideoController";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const BODY_PREVIEW_CHARS = 140;
@@ -82,7 +97,12 @@ const FEED_APPEND_PREFETCH_AHEAD = 6;
 const FEED_APPEND_DELAY_MS = 100;
 const HOME_FEED_BOTTOM_OFFSET = 70;
 const HOME_FEED_OVERLAY_BOTTOM = 80;
+const HOME_FEED_VIDEO_OVERLAY_BOTTOM = 50;
 const HOME_FEED_ACTIONS_BOTTOM = 84;
+const VIDEO_META_PANEL_MAX_HEIGHT = 148;
+const VIDEO_IDENTITY_ROW_HEIGHT = 66;
+const VIDEO_TITLE_SLOT_HEIGHT = 26;
+const VIDEO_CAPTION_SLOT_HEIGHT = 44;
 
 type ForYouSignal = {
   watchedCount?: number;
@@ -161,6 +181,87 @@ function rememberFeedVideoPoster(videoUri: string, posterUri: string) {
   if (!video || !poster) return;
   feedVideoPosterCache.set(video, poster);
 }
+
+const FEED_MEDIA_AVATAR_SIZE = 56;
+
+const FeedMediaAvatar = memo(function FeedMediaAvatar({
+  uri,
+  initial,
+  live,
+  size = FEED_MEDIA_AVATAR_SIZE,
+}: {
+  uri?: string;
+  initial: string;
+  live?: boolean;
+  size?: number;
+}) {
+  const inner = size - 6;
+  return (
+    <View style={{ width: size + 10, height: size + 10, alignItems: "center", justifyContent: "center", marginRight: 12 }}>
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          width: size + 8,
+          height: size + 8,
+          borderRadius: (size + 8) / 2,
+          backgroundColor: "rgba(247,211,106,0.20)",
+          shadowColor: "#F7D36A",
+          shadowOpacity: 0.45,
+          shadowRadius: 14,
+          shadowOffset: { width: 0, height: 0 },
+          elevation: 8,
+        }}
+      />
+      <View
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: 2.5,
+          borderColor: "rgba(247,211,106,0.82)",
+          padding: 2,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "rgba(0,0,0,0.28)",
+          shadowColor: "#000",
+          shadowOpacity: 0.35,
+          shadowRadius: 10,
+          shadowOffset: { width: 0, height: 4 },
+          elevation: 6,
+        }}
+      >
+        {uri ? (
+          <Image source={{ uri }} style={{ width: inner, height: inner, borderRadius: inner / 2 }} resizeMode="cover" />
+        ) : (
+          <LinearGradient
+            colors={["#FFE08A", "#F7D36A", "#C8943A", "#7A5218"]}
+            start={{ x: 0.2, y: 0 }}
+            end={{ x: 0.8, y: 1 }}
+            style={{ width: inner, height: inner, borderRadius: inner / 2, alignItems: "center", justifyContent: "center" }}
+          >
+            <Text style={{ color: "#1A1205", fontSize: 22, fontWeight: "900" }}>{initial}</Text>
+          </LinearGradient>
+        )}
+      </View>
+      {live ? (
+        <View
+          style={{
+            position: "absolute",
+            bottom: 3,
+            right: 3,
+            width: 11,
+            height: 11,
+            borderRadius: 6,
+            backgroundColor: "#FF375F",
+            borderWidth: 2,
+            borderColor: "#0B0F17",
+          }}
+        />
+      ) : null}
+    </View>
+  );
+});
 
 type FeedImageFrameMeta = {
   imageWidth: number;
@@ -340,11 +441,21 @@ function normalizeFeedItemMedia(item: any) {
       ? mediaUrl(item?.videoUrl || item?.mediaUri)
       : undefined;
 
+  const avatarFields =
+    normalizedMediaType === "video" ? resolveFeedItemAvatar(item, mediaUrl) : null;
+
   return {
     ...item,
     mediaType: normalizedMediaType,
     mediaUri,
     videoUrl,
+    ...(avatarFields
+      ? {
+          actorAvatarUri: avatarFields.actorAvatarUri,
+          mediaAvatarUri: avatarFields.mediaAvatarUri,
+          churchAvatarUri: avatarFields.churchAvatarUri,
+        }
+      : {}),
     ...(normalizedMediaType === "video" && item?.posterUri
       ? { posterUri: mediaUrl(item.posterUri) }
       : {}),
@@ -475,18 +586,29 @@ function MiniLiveRemoteVideo({ onStream }: { onStream: (url: string) => void }) 
 }
 
 const FeedVideo = memo(function FeedVideo({
+  postId,
+  feedIndex,
   uri,
   posterUri,
-  isActive,
+  shouldPlay,
+  playbackMeta,
+  onVideoReadyChange,
 }: {
+  postId: string;
+  feedIndex: number;
   uri: string;
   posterUri?: string;
-  isActive: boolean;
+  shouldPlay: boolean;
+  playbackMeta: Record<string, unknown>;
+  onVideoReadyChange?: (ready: boolean) => void;
 }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = true;
     p.muted = true;
   });
+
+  const shouldPlayRef = useRef(shouldPlay);
+  shouldPlayRef.current = shouldPlay;
 
   const { status } = useEvent(player, "statusChange", { status: player.status });
   const videoReady = status === "readyToPlay";
@@ -494,8 +616,31 @@ const FeedVideo = memo(function FeedVideo({
     String(posterUri || "").trim() ||
     feedVideoPosterCache.get(String(uri || "").trim()) ||
     "";
-  const showPosterLayer = !!poster && (!isActive || !videoReady);
-  const showBackdrop = !poster && (!isActive || !videoReady);
+  const showPosterLayer = !!poster && (!shouldPlay || !videoReady);
+  const showBackdrop = !poster && (!shouldPlay || !videoReady);
+
+  useEffect(() => {
+    registerHomeFeedVideo(postId, player, {
+      postId,
+      feedIndex,
+      ...(playbackMeta as any),
+      reason: "mount",
+    });
+    return () => {
+      pauseHomeFeedVideo(postId, {
+        postId,
+        feedIndex,
+        ...(playbackMeta as any),
+        reason: "unmount",
+      });
+      unregisterHomeFeedVideo(postId, {
+        postId,
+        feedIndex,
+        ...(playbackMeta as any),
+        reason: "unmount",
+      });
+    };
+  }, [postId, player, feedIndex]);
 
   useEffect(() => {
     if (videoReady && poster) {
@@ -504,43 +649,59 @@ const FeedVideo = memo(function FeedVideo({
   }, [videoReady, poster, uri]);
 
   useEffect(() => {
-    let raf = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    onVideoReadyChange?.(shouldPlay && videoReady);
+  }, [shouldPlay, videoReady, onVideoReadyChange]);
 
-    const applyPlayback = () => {
+  useEffect(() => {
+    const applyPlayback = (reason: string) => {
+      const play = shouldPlayRef.current;
+      const meta = {
+        postId,
+        feedIndex,
+        shouldPlay: play,
+        reason,
+        ...(playbackMeta as any),
+      };
+
+      logHomeFeedVideoPlayState(meta);
+
+      if (!play) {
+        pauseHomeFeedVideo(postId, meta);
+        return;
+      }
+
+      syncHomeFeedVideoOwnership({
+        ...meta,
+        shouldPlay: true,
+        reason,
+      });
+
       try {
         player.loop = true;
-
-        if (isActive) {
-          player.muted = false;
-          player.play();
-        } else {
-          player.pause();
-          player.muted = true;
-        }
+        player.muted = false;
+        player.play();
       } catch {}
     };
 
-    raf = requestAnimationFrame(() => {
-      timer = setTimeout(applyPlayback, 0);
-    });
+    if (!shouldPlay) {
+      pauseHomeFeedVideo(postId, {
+        postId,
+        feedIndex,
+        shouldPlay: false,
+        ...(playbackMeta as any),
+        reason: "should-play-false-immediate",
+      });
+      return;
+    }
 
-    return () => {
-      cancelAnimationFrame(raf);
-      if (timer) clearTimeout(timer);
-      try {
-        player.pause();
-        player.muted = true;
-      } catch {}
-    };
-  }, [player, uri, isActive]);
+    applyPlayback("should-play-true");
+  }, [player, uri, shouldPlay, postId, feedIndex, playbackMeta]);
 
-  // expo-video loop can fail silently on some local/dev-client videos.
-  // Keep active feed videos repeating in the same order instead of stopping at the end.
   useEffect(() => {
-    if (!isActive) return;
+    if (!shouldPlay) return;
 
     const timer = setInterval(() => {
+      if (!shouldPlayRef.current) return;
       try {
         const duration = Number((player as any)?.duration || 0);
         const currentTime = Number((player as any)?.currentTime || 0);
@@ -554,7 +715,7 @@ const FeedVideo = memo(function FeedVideo({
     }, 350);
 
     return () => clearInterval(timer);
-  }, [player, isActive]);
+  }, [player, shouldPlay]);
 
   return (
     <View style={s.media}>
@@ -572,7 +733,7 @@ const FeedVideo = memo(function FeedVideo({
       ) : null}
       <VideoView
         player={player}
-        style={[StyleSheet.absoluteFillObject, { opacity: isActive && videoReady ? 1 : 0 }]}
+        style={[StyleSheet.absoluteFillObject, { opacity: shouldPlay && videoReady ? 1 : 0 }]}
         contentFit="cover"
         nativeControls={false}
       />
@@ -581,35 +742,60 @@ const FeedVideo = memo(function FeedVideo({
 });
 
 const FeedVideoSurface = memo(function FeedVideoSurface({
+  postId,
+  feedIndex,
   uri,
   posterUri,
-  isActive,
-  screenFocused,
+  shouldPlay,
+  playbackMeta,
+  onVideoReadyChange,
 }: {
+  postId: string;
+  feedIndex: number;
   uri: string;
   posterUri?: string;
-  isActive: boolean;
-  screenFocused: boolean;
+  shouldPlay: boolean;
+  playbackMeta: Record<string, unknown>;
+  onVideoReadyChange?: (ready: boolean) => void;
 }) {
   const resolvedPoster =
     String(posterUri || "").trim() ||
     feedVideoPosterCache.get(String(uri || "").trim()) ||
     "";
-  const shouldPlay = isActive && screenFocused;
 
-  return <FeedVideo uri={uri} posterUri={resolvedPoster} isActive={shouldPlay} />;
+  return (
+    <FeedVideo
+      postId={postId}
+      feedIndex={feedIndex}
+      uri={uri}
+      posterUri={resolvedPoster}
+      shouldPlay={shouldPlay}
+      playbackMeta={playbackMeta}
+      onVideoReadyChange={onVideoReadyChange}
+    />
+  );
 });
 
 function pickPrimaryViewableItem(viewableItems: any[]) {
-  const viewable = (viewableItems || []).filter((v) => v?.isViewable && v?.item?.id);
-  if (!viewable.length) return null;
+  const viewable = (viewableItems || [])
+    .filter((v) => {
+      const pct = Number(v?.itemVisiblePercent ?? 0);
+      return (
+        v?.isViewable &&
+        v?.item?.id &&
+        pct >= 82
+      );
+    })
+    .sort((a, b) => {
+      const aPct = Number(a?.itemVisiblePercent ?? 0);
+      const bPct = Number(b?.itemVisiblePercent ?? 0);
+      if (aPct !== bPct) {
+        return bPct - aPct;
+      }
+      return Number(a?.index ?? 0) - Number(b?.index ?? 0);
+    });
 
-  return viewable.reduce((best, cur) => {
-    const bestPct = Number((best as any)?.itemVisiblePercent ?? 0);
-    const curPct = Number((cur as any)?.itemVisiblePercent ?? 0);
-    if (curPct !== bestPct) return curPct > bestPct ? cur : best;
-    return Number(cur?.index ?? 0) >= Number(best?.index ?? 0) ? cur : best;
-  });
+  return viewable[0] || null;
 }
 
 const SLOT_THEMES = [
@@ -662,8 +848,12 @@ function syncBackendLike(postId: string, liked?: boolean) {
 const FeedSlide = memo(function FeedSlide({
   item,
   height,
+  feedIndex,
+  activeFeedIndex,
+  activeFeedItemId,
   isActive,
   screenFocused,
+  appActive,
   nowMs,
   onSkipSlots,
   profileName,
@@ -673,8 +863,12 @@ const FeedSlide = memo(function FeedSlide({
 }: {
   item: HomeItem;
   height: number;
+  feedIndex: number;
+  activeFeedIndex: number;
+  activeFeedItemId: string | null;
   isActive: boolean;
   screenFocused: boolean;
+  appActive: boolean;
   nowMs: number;
   onSkipSlots?: () => void;
   profileName?: string;
@@ -743,33 +937,79 @@ const FeedSlide = memo(function FeedSlide({
     inputRange: [0, 1],
     outputRange: [0.72, 1],
   });
-  const rawMediaAvatarMaybe = String((item as any)?.mediaAvatarUri || "").trim();
-  const safeMediaAvatarUri = rawMediaAvatarMaybe.includes("/profile-avatars/")
-    ? ""
-    : rawMediaAvatarMaybe;
 
-  const rawActorMaybe = String((item as any)?.actorAvatarUri || "").trim();
-  const safeActorAvatarUri = rawActorMaybe.includes("/profile-avatars/")
-    ? ""
-    : rawActorMaybe;
+  const feedAvatar = useMemo(() => resolveFeedItemAvatar(item, mediaUrl), [item]);
+  const actorAvatarUri = feedAvatar.uri;
+  const isVideoFeedPost = isFeedVideoItem(item);
+  const isStrictVideoPost =
+    item.mediaType === "video" &&
+    Boolean(feedVideoPlayUri(item));
+  const stableActive =
+    isActive &&
+    activeFeedIndex === feedIndex &&
+    String(item.id || "") === String(activeFeedItemId || "");
+  const appState = appActive ? "active" : "inactive";
+  const playbackMeta = useMemo(
+    () => ({
+      postId: String(item.id || ""),
+      activeFeedIndex,
+      feedIndex,
+      activeFeedItemId,
+      screenFocused,
+      appState,
+      isStrictVideoPost,
+    }),
+    [
+      item.id,
+      activeFeedIndex,
+      feedIndex,
+      activeFeedItemId,
+      screenFocused,
+      appState,
+      isStrictVideoPost,
+    ]
+  );
+  const shouldPlayVideo =
+    isStrictVideoPost &&
+    stableActive &&
+    screenFocused &&
+    appActive;
 
-  const rawActorAvatarUri = String(
-    safeMediaAvatarUri ||
-    (item as any)?.churchAvatarUri ||
-    (item as any)?.churchAvatarUrl ||
-    (item as any)?.avatarUri ||
-    safeActorAvatarUri ||
-    rawMediaAvatarMaybe ||
-    rawActorMaybe ||
-    ""
-  ).trim();
+  useEffect(() => {
+    if (!__DEV__) return;
+    console.log("KRISTO_FEED_PLAYBACK_GUARD", {
+      postId: item.id,
+      mediaType: item.mediaType,
+      hasVideoUrl: Boolean(item.videoUrl),
+      isStrictVideoPost,
+      stableActive,
+      screenFocused,
+      appState,
+      shouldPlay: shouldPlayVideo,
+    });
+  }, [
+    item.id,
+    item.mediaType,
+    item.videoUrl,
+    isStrictVideoPost,
+    stableActive,
+    screenFocused,
+    appState,
+    shouldPlayVideo,
+  ]);
 
-  const actorAvatarBase = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/$/, "");
-  const actorAvatarUri =
-    rawActorAvatarUri.startsWith("/uploads/")
-      ? `${actorAvatarBase}${rawActorAvatarUri}`
-      : rawActorAvatarUri;
-
+  useEffect(() => {
+    if (!isVideoFeedPost) return;
+    if (__DEV__) {
+      console.log("KRISTO_FEED_VIDEO_AVATAR", {
+        postId: item.id,
+        hasAvatar: Boolean(feedAvatar.uri),
+        avatarSource: feedAvatar.source,
+        actorLabel: String((item as any)?.actorLabel || (item as any)?.mediaName || ""),
+        kind: String((item as any)?.kind || (item as any)?.type || item.mediaType || ""),
+      });
+    }
+  }, [item.id, isVideoFeedPost, feedAvatar.uri, feedAvatar.source, item]);
 
   const postSource = String(
     (item as any)?.source ||
@@ -777,7 +1017,7 @@ const FeedSlide = memo(function FeedSlide({
     ""
   ).toLowerCase();
 
-  const isMediaPost = item.mediaType === "video";
+  const isMediaPost = isVideoFeedPost || item.mediaType === "video";
   
 const isScheduleOnlyCard =
   String((item as any)?.scheduleType || "").includes("media-live-slots") ||
@@ -854,7 +1094,7 @@ const noMediaPost =
     isAnnouncement ? "rgba(255,138,61,0.13)" :
     "rgba(255,255,255,0.08)";
 
-  const mediaInitial = feedSubline.slice(0, 1).toUpperCase() || "U";
+  const mediaInitial = feedSubline.slice(0, 1).toUpperCase() || "M";
   const mediaName = feedSubline;
 
   const [optimisticClaim, setOptimisticClaim] = useState<any>(null);
@@ -1229,6 +1469,69 @@ const noMediaPost =
       // Live Now card is handled separately by liveNowItems.
       return endMs > nowMs;
     }) || null;
+
+  const showBottomMeta = !noMediaPost && (Boolean(activeSlot) || Boolean(body) || isStrictVideoPost);
+
+  const isActivePost = stableActive;
+  const showVideoMetaChrome = isStrictVideoPost && !activeSlot && isActivePost;
+  const [feedVideoReady, setFeedVideoReady] = useState(false);
+  const videoMetaFade = useRef(new Animated.Value(0)).current;
+  const hasVideoPoster = Boolean(resolveFeedVideoPoster(item));
+
+  const handleFeedVideoReady = useCallback((ready: boolean) => {
+    if (!isActivePost) return;
+    setFeedVideoReady(ready);
+  }, [isActivePost]);
+
+  useEffect(() => {
+    setFeedVideoReady(false);
+    setBodyExpanded(false);
+    videoMetaFade.stopAnimation();
+    videoMetaFade.setValue(0);
+  }, [item.id, videoMetaFade]);
+
+  useEffect(() => {
+    if (isActivePost) return;
+    setFeedVideoReady(false);
+    setBodyExpanded(false);
+    videoMetaFade.stopAnimation();
+    videoMetaFade.setValue(0);
+  }, [isActivePost, item.id, videoMetaFade]);
+
+  const videoMetaCanFadeIn = showVideoMetaChrome && (feedVideoReady || hasVideoPoster);
+
+  useEffect(() => {
+    if (!videoMetaCanFadeIn) {
+      videoMetaFade.stopAnimation();
+      videoMetaFade.setValue(0);
+      return;
+    }
+
+    videoMetaFade.setValue(0);
+    Animated.timing(videoMetaFade, {
+      toValue: 1,
+      duration: 150,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [videoMetaCanFadeIn, item.id, videoMetaFade]);
+
+  useEffect(() => {
+    if (isStrictVideoPost) return;
+    setFeedVideoReady(false);
+    videoMetaFade.stopAnimation();
+    videoMetaFade.setValue(0);
+  }, [isStrictVideoPost, item.id, videoMetaFade]);
+
+  useEffect(() => {
+    if (!isStrictVideoPost || !__DEV__) return;
+    console.log("KRISTO_VIDEO_META_ACTIVE_RENDER", {
+      postId: item.id,
+      index: feedIndex,
+      activeIndex: activeFeedIndex,
+      isActivePost,
+    });
+  }, [isStrictVideoPost, item.id, feedIndex, activeFeedIndex, isActivePost]);
 
   const isMediaSchedulePost =
     String((item as any)?.scheduleType || "").includes("media-live-slots") ||
@@ -1702,6 +2005,19 @@ const noMediaPost =
     typedCount >= titleLimit &&
     deleteFromLeft >= titleLimit;
 
+  const logVideoMetaLayout = useCallback(
+    (e: LayoutChangeEvent) => {
+      if (!isStrictVideoPost || !__DEV__) return;
+      console.log("KRISTO_VIDEO_META_LAYOUT", {
+        postId: item.id,
+        overlayHeight: Math.round(e.nativeEvent.layout.height),
+        titleLines: title && !titleFullyHidden ? 1 : 0,
+        hasCaption: Boolean(body),
+      });
+    },
+    [isStrictVideoPost, item.id, title, body, titleFullyHidden]
+  );
+
   async function onShare() {
     try {
       const msg = [title, body].filter(Boolean).join("\n\n").trim() || "Kristo App post";
@@ -1943,12 +2259,14 @@ const noMediaPost =
           </View>
 
           <Pressable onPress={openLiveRoom} style={s.liveNowPremiumPreview}>
-            {item.mediaType === "video" && item.videoUrl ? (
+            {isStrictVideoPost ? (
               <FeedVideoSurface
+                postId={String(item.id || "")}
+                feedIndex={feedIndex}
                 uri={feedVideoPlayUri(item)}
                 posterUri={resolveFeedVideoPoster(item)}
-                isActive={isActive}
-                screenFocused={screenFocused}
+                shouldPlay={shouldPlayVideo}
+                playbackMeta={playbackMeta}
               />
             ) : item.mediaType === "image" && item.mediaUri ? (
               <Image
@@ -2046,12 +2364,17 @@ const noMediaPost =
         </>
       ) : (
       <Pressable onPress={isLiveNow ? openLiveRoom : undefined} style={s.page}>
-        {item.mediaType === "video" && item.videoUrl ? (
+        {isStrictVideoPost ? (
           <FeedVideoSurface
+            postId={String(item.id || "")}
+            feedIndex={feedIndex}
             uri={feedVideoPlayUri(item)}
             posterUri={resolveFeedVideoPoster(item)}
-            isActive={isActive}
-            screenFocused={screenFocused}
+            shouldPlay={shouldPlayVideo}
+            playbackMeta={playbackMeta}
+            onVideoReadyChange={
+              !activeSlot ? handleFeedVideoReady : undefined
+            }
           />
         ) : item.mediaType === "image" && item.mediaUri ? (
           <FeedSmartImage
@@ -2069,26 +2392,7 @@ const noMediaPost =
             { borderColor: feedHeadlineColor, backgroundColor: noMediaCardBg }
           ]}>
             <View style={s.noMediaTopRow}>
-              {actorAvatarUri ? (
-                <Image
-                  source={{ uri: actorAvatarUri }}
-                  style={[
-                    s.noMediaAvatar,
-                    { borderColor: feedHeadlineColor }
-                  ]}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View
-                  style={[
-                    s.noMediaAvatarFallback,
-                    { borderColor: feedHeadlineColor }
-                  ]}>
-                  <Text style={s.noMediaAvatarText}>
-                    {mediaInitial}
-                  </Text>
-                </View>
-              )}
+              <FeedMediaAvatar uri={actorAvatarUri} initial={mediaInitial} />
 
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text
@@ -2201,57 +2505,138 @@ const noMediaPost =
         </View>
       )}
 
-      <LinearGradient
-        pointerEvents="none"
-        colors={[
-          "rgba(0,0,0,0.08)",
-          "rgba(0,0,0,0.18)",
-          "rgba(0,0,0,0.55)",
-          "rgba(0,0,0,0.82)",
-        ]}
-        locations={[0, 0.45, 0.72, 1]}
-        style={s.overlay}
-      />
+      {showVideoMetaChrome ? (
+        <Animated.View pointerEvents="box-none" style={{ opacity: videoMetaFade }}>
+          <LinearGradient
+            pointerEvents="none"
+            colors={[
+              "rgba(0,0,0,0.0)",
+              "rgba(0,0,0,0.0)",
+              "rgba(0,0,0,0.20)",
+              "rgba(0,0,0,0.50)",
+            ]}
+            locations={[0, 0.55, 0.82, 1]}
+            style={s.overlay}
+          />
 
-      <View style={s.bottom}>
+          <View style={[s.bottom, s.bottomVideoMeta]}>
+            <View
+              key={`video-meta-${item.id}`}
+              style={s.videoMetaPanel}
+              onLayout={logVideoMetaLayout}
+            >
+              <View style={[s.identityRow, s.videoIdentityRow]}>
+                <FeedMediaAvatar
+                  key={`video-meta-avatar-${item.id}`}
+                  uri={actorAvatarUri}
+                  initial={mediaInitial}
+                  live={Boolean(isLiveNow || (item as any)?.isLiveNow)}
+                />
 
-        {!noMediaPost && (activeSlot || !!body) ? (
-          <>
-            {!activeSlot ? (
-              <View style={s.identityRow}>
-                {actorAvatarUri ? (
-                  <Image
-                    source={{ uri: actorAvatarUri }}
-                    style={[
-                      s.identityAvatar,
-                      { borderColor: feedHeadlineColor }
-                    ]}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View
-                    style={[
-                      s.identityAvatarFallback,
-                      { borderColor: feedHeadlineColor }
-                    ]}>
-                    <Text style={s.identityAvatarFallbackText}>
-                      {mediaInitial}
-                    </Text>
-                  </View>
-                )}
-
-                <View style={s.identityTextWrap}>
-                  <Text style={[s.identityRole, { color: feedHeadlineColor }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.78}>
+                <View style={s.videoIdentityTextWrap}>
+                  <Text
+                    style={[s.identityRole, s.videoMetaText, { color: feedHeadlineColor }]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.78}
+                  >
                     {feedHeadline}
                   </Text>
-                  <Text style={s.identityChurch} numberOfLines={1}>
+                  <Text style={[s.identityChurch, s.videoMetaText]} numberOfLines={1}>
                     {feedSubline}
                   </Text>
                 </View>
               </View>
+
+              {!!title && !titleFullyHidden ? (
+                <View style={s.videoTitleSlot}>
+                  <Text
+                    style={[s.title, s.videoMetaText, s.videoTitleText]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {animatedTitle}
+                  </Text>
+                </View>
+              ) : null}
+
+              {!!body && titleFullyHidden ? (
+                <View
+                  style={[
+                    s.videoCaptionSlot,
+                    bodyExpanded ? s.videoCaptionSlotExpanded : null,
+                  ]}
+                >
+                  <Text
+                    style={[s.videoCaption, s.videoMetaText]}
+                    numberOfLines={bodyExpanded ? 3 : 2}
+                    ellipsizeMode="tail"
+                  >
+                    {previewBody}
+                  </Text>
+                </View>
+              ) : null}
+
+              {titleFullyHidden && showBodyReadMore && !isLiveNow ? (
+                <Pressable onPress={() => setBodyExpanded((v) => !v)} style={s.readMoreBtn}>
+                  <Text style={s.readMoreText}>
+                    {bodyExpanded ? "Show less" : "Read more"}
+                  </Text>
+                </Pressable>
+              ) : null}
+
+              {isLiveNow ? (
+                <Pressable onPress={openLiveRoom} style={s.watchLiveBtn}>
+                  <Ionicons name="radio-outline" size={19} color="#06101E" />
+                  <Text style={s.watchLiveText}>WATCH LIVE</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+        </Animated.View>
+      ) : null}
+
+      {!isStrictVideoPost || activeSlot ? (
+        <>
+      <LinearGradient
+        pointerEvents="none"
+        colors={
+          isStrictVideoPost
+            ? ["rgba(0,0,0,0.0)", "rgba(0,0,0,0.0)", "rgba(0,0,0,0.20)", "rgba(0,0,0,0.50)"]
+            : ["rgba(0,0,0,0.08)", "rgba(0,0,0,0.18)", "rgba(0,0,0,0.55)", "rgba(0,0,0,0.82)"]
+        }
+        locations={isStrictVideoPost ? [0, 0.55, 0.82, 1] : [0, 0.45, 0.72, 1]}
+        style={s.overlay}
+      />
+
+      <View
+        style={[
+          s.bottom,
+          isStrictVideoPost && !activeSlot ? s.bottomVideoMeta : null,
+        ]}
+      >
+        {showBottomMeta ? (
+          <>
+            {!activeSlot && !isStrictVideoPost ? (
+                <View style={s.identityRow}>
+                  <FeedMediaAvatar
+                    uri={actorAvatarUri}
+                    initial={mediaInitial}
+                    live={Boolean(isLiveNow || (item as any)?.isLiveNow)}
+                  />
+
+                  <View style={s.identityTextWrap}>
+                    <Text style={[s.identityRole, { color: feedHeadlineColor }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.78}>
+                      {feedHeadline}
+                    </Text>
+                    <Text style={s.identityChurch} numberOfLines={1}>
+                      {feedSubline}
+                    </Text>
+                  </View>
+                </View>
             ) : null}
 
-            {!activeSlot && !!title && !titleFullyHidden ? (
+            {!activeSlot && !isStrictVideoPost && !!title && !titleFullyHidden ? (
               <View style={s.titleRow}>
                 <Text
                   style={s.title}
@@ -2263,7 +2648,7 @@ const noMediaPost =
               </View>
             ) : null}
 
-            {!activeSlot && !!body && titleFullyHidden ? (
+            {!activeSlot && !isStrictVideoPost && !!body && titleFullyHidden ? (
               <Text
                 style={s.body}
                 numberOfLines={bodyExpanded ? undefined : 3}
@@ -2273,7 +2658,7 @@ const noMediaPost =
               </Text>
             ) : null}
 
-            {!activeSlot && titleFullyHidden && showBodyReadMore && !isLiveNow ? (
+            {!activeSlot && !isStrictVideoPost && titleFullyHidden && showBodyReadMore && !isLiveNow ? (
               <Pressable onPress={() => setBodyExpanded((v) => !v)} style={s.readMoreBtn}>
                 <Text style={s.readMoreText}>
                   {bodyExpanded ? "Show less" : "Read more"}
@@ -2281,7 +2666,7 @@ const noMediaPost =
               </Pressable>
             ) : null}
 
-            {!activeSlot && isLiveNow ? (
+            {!activeSlot && !isStrictVideoPost && isLiveNow ? (
               <Pressable onPress={openLiveRoom} style={s.watchLiveBtn}>
                 <Ionicons name="radio-outline" size={19} color="#06101E" />
                 <Text style={s.watchLiveText}>WATCH LIVE</Text>
@@ -2327,6 +2712,8 @@ const noMediaPost =
           </>
         ) : null}
       </View>
+        </>
+      ) : null}
       {activeSlot && isLiveNow ? (
         <View pointerEvents="box-none" style={s.slotActions}>
           <Pressable
@@ -2395,8 +2782,11 @@ const noMediaPost =
         </View>
       ) : null}
 
-      {!activeSlot && !noMediaPost && !isScheduleCard ? (
-      <View pointerEvents="box-none" style={s.actions}>
+      {!activeSlot && !noMediaPost && !isScheduleCard && isActivePost ? (
+      <Animated.View
+        pointerEvents="box-none"
+        style={[s.actions, isStrictVideoPost ? { opacity: videoMetaFade } : null]}
+      >
         <Pressable
           pointerEvents="box-only"
           hitSlop={24}
@@ -2478,7 +2868,7 @@ const noMediaPost =
             {(item as any)?.saveCount ?? 0}
           </Text>
         </Pressable>
-      </View>
+      </Animated.View>
       ) : null}
 
       </Pressable>
@@ -2912,10 +3302,25 @@ export default function FeedScreen() {
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (nextState) => {
-      setAppActive(nextState === "active");
+      const active = nextState === "active";
+      setAppActive(active);
+      if (!active) {
+        pauseAllHomeFeedVideos({
+          appState: nextState,
+          reason: "app-state-background",
+        });
+      }
     });
     return () => sub.remove();
   }, []);
+
+  useEffect(() => {
+    if (tabFocused) return;
+    pauseAllHomeFeedVideos({
+      screenFocused: false,
+      reason: "home-tab-blur",
+    });
+  }, [tabFocused]);
 
   const loadBackendFeed = useCallback(async (reason = "poll") => {
     if ((globalThis as any).__KRISTO_LIVE_ACTIVE__) return;
@@ -2953,6 +3358,36 @@ export default function FeedScreen() {
           : Array.isArray(res?.items)
             ? res.items
             : [];
+
+      const total = Number(
+        res?.total ??
+          res?.data?.total ??
+          res?.count ??
+          rows.length
+      );
+      const isBackendEmpty = total === 0 || rows.length === 0;
+
+      if (isBackendEmpty) {
+        const localCount = feedList().length;
+        const cacheResult = await clearHomeFeedRuntimeCaches();
+        setBackendFeed([]);
+        setActiveFeedItemId(null);
+        setActiveFeedIndex(0);
+        pauseAllHomeFeedVideos({ reason: "backend-feed-empty" });
+        feedVideoPosterCache.clear();
+        feedImageDimensionCache.clear();
+        if (__DEV__) {
+          console.log("KRISTO_HOME_FEED_BACKEND_EMPTY_CLEAR", {
+            backendCount: 0,
+            localCount,
+            removedCount: cacheResult.removedCount,
+            removedMediaVideo: cacheResult.removedMediaVideo,
+            reason,
+            total,
+          });
+        }
+        return;
+      }
 
       const scheduleRows = rows.filter((item: any) => isHomeMediaScheduleItem(item));
       console.log("[HomeFeed] scheduleCount", {
@@ -2998,13 +3433,19 @@ export default function FeedScreen() {
             String(item.source || "").includes("media-schedule");
 
           const scheduleAvatarRaw =
+            item.actorAvatar ||
             item.mediaAvatarUri ||
             item.churchAvatarUri ||
             item.churchAvatarUrl ||
             item.avatarUri ||
             item.avatarUrl ||
             item.actorAvatarUri ||
+            item.profileImage ||
+            item.photoURL ||
+            item.image ||
             "";
+
+          const mappedAvatar = resolveFeedItemAvatar(item, mediaUrl);
 
           return {
             id,
@@ -3050,21 +3491,21 @@ export default function FeedScreen() {
               item.churchLabel ||
               "MY CHURCH"
             ),
-            mediaAvatarUri: mediaUrl(scheduleAvatarRaw),
-            churchAvatarUri: mediaUrl(item.churchAvatarUri || item.churchAvatarUrl || ""),
+            mediaAvatarUri: mappedAvatar.mediaAvatarUri || mediaUrl(scheduleAvatarRaw),
+            churchAvatarUri: mappedAvatar.churchAvatarUri || mediaUrl(item.churchAvatarUri || item.churchAvatarUrl || ""),
             churchAvatarUrl: mediaUrl(item.churchAvatarUrl || item.churchAvatarUri || ""),
-            actorAvatarUri: mediaUrl(
-              isScheduleFeedItem ? scheduleAvatarRaw : (
-                    item.type === "video"
-                      ? (item.churchAvatarUri || item.actorAvatarUri || item.avatarUri || "")
-                      : (
-                          item.authorAvatarUri ||
-                          item.churchAvatarUrl ||
-                          item.avatarUri ||
-                          item.avatarUrl ||
-                          ""
-                        )
-                  )
+            actorAvatarUri: mappedAvatar.actorAvatarUri || mediaUrl(
+              isScheduleFeedItem
+                ? scheduleAvatarRaw
+                : item.type === "video"
+                  ? scheduleAvatarRaw
+                  : (
+                      item.authorAvatarUri ||
+                      item.churchAvatarUrl ||
+                      item.avatarUri ||
+                      item.avatarUrl ||
+                      ""
+                    )
             ),
             isBackendPost: true,
             liked: optimistic ? optimistic.liked : Boolean(item.likedByMe),
@@ -3094,6 +3535,10 @@ export default function FeedScreen() {
 
   useEffect(() => {
     void loadBackendFeed("mount");
+    if (__DEV__) {
+      (globalThis as any).clearHomeFeedLocalCaches = clearHomeFeedLocalCaches;
+      (globalThis as any).clearLocalMediaVideoPosts = clearLocalMediaVideoPosts;
+    }
     const t = setInterval(() => {
       if ((globalThis as any).__KRISTO_LIVE_ACTIVE__) return;
       void loadBackendFeed("poll");
@@ -3140,6 +3585,10 @@ export default function FeedScreen() {
     );
 
     const localFeed: any[] = feedList().filter((item: any) => {
+      if (backendFeed.length === 0 && isLocalMediaVideoPost(item)) {
+        return false;
+      }
+
       const isStaleInstantLive =
         item?.isLiveNow ||
         item?.kind === "live" ||
@@ -3648,9 +4097,10 @@ export default function FeedScreen() {
       )
     );
 
-    const cycles = 3;
+    const cycles = backendFeed.length > 0 && nonScheduleItems.length > 0 ? 3 : 0;
 
-    const forYouLoop = Array.from({ length: cycles }).flatMap((_, cycle) => {
+    const forYouLoop = cycles
+      ? Array.from({ length: cycles }).flatMap((_, cycle) => {
       return unique
         .map((item: any, index: number) => {
           const originalId = String(item?.sourceScheduleId || item?.id || index);
@@ -3672,19 +4122,32 @@ export default function FeedScreen() {
         })
         .sort((a, b) => b.score - a.score)
         .map((x) => x.item);
-    });
+      })
+      : [];
 
     const finalFeed = [...schedulePriorityItems, ...forYouLoop];
     const seenFinal = new Set<string>();
 
-    return finalFeed.filter((item: any, index: number) => {
+    const visibleData = finalFeed.filter((item: any, index: number) => {
       const key = String(item?.id || `feed-item-${index}`);
       if (seenFinal.has(key)) return false;
       seenFinal.add(key);
       return true;
     });
+
+    if (__DEV__) {
+      console.log("KRISTO_HOME_FEED_VISIBLE_SOURCE", {
+        backendCount: backendFeed.length,
+        localCount: localFeed.length,
+        visibleCount: visibleData.length,
+        removedCount: feedList().length - localFeed.length,
+      });
+    }
+
+    return visibleData;
   }, [tick, skippedScheduleIds, backendFeed, optimisticLikes]);
   const [activeFeedItemId, setActiveFeedItemId] = useState<string | null>(() => String(data[0]?.id || ""));
+  const [activeFeedIndex, setActiveFeedIndex] = useState(0);
   const [feedVisibleCount, setFeedVisibleCount] = useState(FEED_INITIAL_VISIBLE_COUNT);
 
   const visibleData = useMemo(() => {
@@ -3703,14 +4166,94 @@ export default function FeedScreen() {
   }, [feedVisibleCount, data.length]);
 
   useEffect(() => {
+    if (backendFeed.length > 0) return;
+    setActiveFeedItemId(null);
+    setActiveFeedIndex(-1);
+    setFeedVisibleCount(FEED_INITIAL_VISIBLE_COUNT);
+    pauseAllHomeFeedVideos({ reason: "backend-feed-empty" });
+  }, [backendFeed.length]);
+
+  useEffect(() => {
     if (!visibleData.length) {
-      setActiveFeedItemId(null);
       return;
     }
-    if (!activeFeedItemId || !visibleData.some((it) => it.id === activeFeedItemId)) {
-      setActiveFeedItemId(visibleData[0]?.id ?? null);
+    if (
+      activeFeedItemId &&
+      visibleData.some((it) => it.id === activeFeedItemId)
+    ) {
+      return;
     }
-  }, [visibleData, activeFeedItemId]);
+    const firstVideoIndex = visibleData.findIndex(
+      (x) => x?.mediaType === "video" && Boolean(feedVideoPlayUri(x))
+    );
+    const fallbackIndex =
+      firstVideoIndex >= 0 ? firstVideoIndex : 0;
+    setActiveFeedItemId(
+      visibleData[fallbackIndex]?.id ?? null
+    );
+    setActiveFeedIndex(fallbackIndex);
+  }, [visibleData]);
+
+  const visibleDataRef = useRef(visibleData);
+  useEffect(() => {
+    visibleDataRef.current = visibleData;
+  }, [visibleData]);
+
+  useEffect(() => {
+    const meta = {
+      activeFeedIndex,
+      activeFeedItemId,
+      screenFocused: feedScreenFocused,
+      appState: appActive ? "active" : "inactive",
+    };
+
+    if (!feedScreenFocused || !appActive) {
+      pauseAllHomeFeedVideos({
+        ...meta,
+        reason: "screen-or-app-unfocused",
+      });
+      return;
+    }
+
+    const activeItem = visibleData[activeFeedIndex];
+    const activeId = String(activeFeedItemId || "");
+    const itemId = String(activeItem?.id || "");
+
+    if (
+      !activeItem ||
+      activeItem.mediaType !== "video" ||
+      !Boolean(feedVideoPlayUri(activeItem)) ||
+      !activeId ||
+      activeId !== itemId
+    ) {
+      pauseAllHomeFeedVideos({
+        ...meta,
+        reason: "active-not-strict-video",
+      });
+      return;
+    }
+
+    syncHomeFeedVideoOwnership({
+      ...meta,
+      postId: activeId,
+      feedIndex: activeFeedIndex,
+      isStrictVideoPost: true,
+      shouldPlay: true,
+      reason: "feed-screen-active",
+    });
+  }, [
+    feedScreenFocused,
+    appActive,
+    activeFeedIndex,
+    activeFeedItemId,
+    visibleData,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      pauseAllHomeFeedVideos({ reason: "home-feed-unmount" });
+    };
+  }, []);
 
   const { height: windowHeight } = useWindowDimensions();
   const feedViewportHeight = Math.max(520, windowHeight - HOME_FEED_BOTTOM_OFFSET);
@@ -3718,9 +4261,9 @@ export default function FeedScreen() {
 
   const listRef = useRef<FlatList<any> | null>(null);
   const viewabilityConfig = useRef({
-    itemVisiblePercentThreshold: 70,
-    minimumViewTime: 80,
-    waitForInteraction: false,
+    itemVisiblePercentThreshold: 82,
+    minimumViewTime: 220,
+    waitForInteraction: true,
   }).current;
 
   const skipSlotsFrom = useCallback((item: any) => {
@@ -3786,12 +4329,16 @@ export default function FeedScreen() {
   );
 
   const renderItem = useCallback(
-    ({ item }: { item: any }) => (
+    ({ item, index }: { item: any; index: number }) => (
       <FeedSlide
         item={item}
         height={itemH}
+        feedIndex={index}
+        activeFeedIndex={activeFeedIndex}
+        activeFeedItemId={activeFeedItemId}
         isActive={String(item?.id || "") === String(activeFeedItemId || "")}
         screenFocused={feedScreenFocused}
+        appActive={appActive}
         nowMs={feedNowMs}
         onSkipSlots={() => skipSlotsFrom(item)}
         profileName={profileName}
@@ -3803,7 +4350,9 @@ export default function FeedScreen() {
     [
       itemH,
       activeFeedItemId,
+      activeFeedIndex,
       feedScreenFocused,
+      appActive,
       feedNowMs,
       skipSlotsFrom,
       profileName,
@@ -3870,11 +4419,46 @@ export default function FeedScreen() {
     }
 
     if (nextId && previous?.id !== nextId) {
+      const nextItem = visibleDataRef.current[topIndex];
+      const scrollMeta = {
+        postId: nextId,
+        activeFeedIndex: topIndex,
+        activeFeedItemId: nextId,
+        feedIndex: topIndex,
+      };
+      if (
+        !nextItem ||
+        nextItem.mediaType !== "video" ||
+        !Boolean(String(nextItem.videoUrl || "").trim())
+      ) {
+        pauseAllHomeFeedVideos({
+          ...scrollMeta,
+          reason: "scroll-to-non-video",
+        });
+      } else {
+        pauseAllHomeFeedVideos({
+          ...scrollMeta,
+          exceptPostId: nextId,
+          reason: "scroll-switch",
+        });
+      }
+
       activeWatchRef.current = { id: nextId, startedAt: now };
       setActiveFeedItemId(nextId);
+      setActiveFeedIndex(topIndex);
+      if (__DEV__) {
+        console.log("KRISTO_FEED_ACTIVE_ITEM_CHANGED", {
+          postId: nextId,
+          index: topIndex,
+          activeIndex: topIndex,
+          previousPostId: previous?.id ?? null,
+        });
+      }
     } else if (!nextId && previous?.id) {
       activeWatchRef.current = null;
       setActiveFeedItemId(null);
+      setActiveFeedIndex(-1);
+      pauseAllHomeFeedVideos({ reason: "no-viewable-item" });
     }
   }).current;
 
@@ -3898,7 +4482,7 @@ export default function FeedScreen() {
         maxToRenderPerBatch={3}
         updateCellsBatchingPeriod={80}
         data={visibleData}
-        extraData={`${activeFeedItemId}|${feedScreenFocused ? 1 : 0}`}
+        extraData={`${activeFeedItemId}|${activeFeedIndex}|${feedScreenFocused ? 1 : 0}`}
         keyExtractor={keyExtractor}
         snapToInterval={itemH}
         snapToAlignment="start"
@@ -4238,6 +4822,11 @@ const s: any = StyleSheet.create({
     paddingHorizontal: 34,
   },
 
+  bottomVideoMeta: {
+    bottom: HOME_FEED_VIDEO_OVERLAY_BOTTOM,
+    paddingBottom: 2,
+  },
+
   meta: {
     color: "#F3D28F",
     fontSize: 13,
@@ -4267,8 +4856,8 @@ const s: any = StyleSheet.create({
   identityRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 10,
-    marginTop: 2,
+    marginBottom: 8,
+    marginTop: 0,
     paddingVertical: 0,
     paddingHorizontal: 0,
     borderRadius: 0,
@@ -4280,6 +4869,112 @@ const s: any = StyleSheet.create({
     shadowOpacity: 0,
     shadowRadius: 0,
     overflow: "visible",
+  },
+
+  videoMetaPanel: {
+    alignSelf: "flex-start",
+    maxWidth: "78%",
+    maxHeight: VIDEO_META_PANEL_MAX_HEIGHT,
+    overflow: "hidden",
+  },
+
+  videoIdentityRow: {
+    height: VIDEO_IDENTITY_ROW_HEIGHT,
+    marginBottom: 6,
+  },
+
+  videoIdentityTextWrap: {
+    flexShrink: 1,
+    minWidth: 0,
+    justifyContent: "center",
+  },
+
+  videoTitleSlot: {
+    height: VIDEO_TITLE_SLOT_HEIGHT,
+    justifyContent: "center",
+    overflow: "hidden",
+    marginBottom: 4,
+  },
+
+  videoCaptionSlot: {
+    height: VIDEO_CAPTION_SLOT_HEIGHT,
+    overflow: "hidden",
+    marginBottom: 2,
+  },
+
+  videoCaptionSlotExpanded: {
+    height: 66,
+  },
+
+  videoCaption: {
+    color: "rgba(255,255,255,0.90)",
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "500",
+  },
+
+  videoTitleText: {
+    fontSize: 18,
+    lineHeight: 22,
+  },
+
+  videoMetaText: {
+    textShadowColor: "rgba(0,0,0,0.55)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+
+  feedMediaAvatarWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+
+  feedMediaAvatarGlow: {
+    position: "absolute",
+    backgroundColor: "rgba(247,211,106,0.20)",
+    shadowColor: "#F7D36A",
+    shadowOpacity: 0.45,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
+  },
+
+  feedMediaAvatarRing: {
+    borderWidth: 2.5,
+    borderColor: "rgba(247,211,106,0.82)",
+    padding: 2,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.28)",
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+
+  feedMediaAvatarFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  feedMediaAvatarInitial: {
+    color: "#1A1205",
+    fontSize: 22,
+    fontWeight: "900",
+  },
+
+  feedMediaAvatarLiveDot: {
+    position: "absolute",
+    bottom: 3,
+    right: 3,
+    width: 11,
+    height: 11,
+    borderRadius: 6,
+    backgroundColor: "#FF375F",
+    borderWidth: 2,
+    borderColor: "#0B0F17",
   },
 
   identityAvatar: {
@@ -4318,18 +5013,18 @@ const s: any = StyleSheet.create({
 
   identityRole: {
     color: "#F3D28F",
-    fontSize: 16,
-    lineHeight: 19,
+    fontSize: 15,
+    lineHeight: 18,
     fontWeight: "900",
     letterSpacing: 0.35,
   },
 
   identityChurch: {
-    color: "rgba(255,255,255,0.82)",
-    fontSize: 11,
-    lineHeight: 14,
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 12,
+    lineHeight: 15,
     fontWeight: "700",
-    marginTop: 1,
+    marginTop: 2,
     letterSpacing: 0.1,
   },
 

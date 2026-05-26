@@ -631,6 +631,128 @@ export function feedRemoveWhere(predicate: (item: FeedItem) => boolean) {
   persistAndEmit();
 }
 
+export function isLocalMediaVideoPost(item: any) {
+  const id = String(item?.id || "").trim();
+  
+  // Match id starts with "media-video-"
+  if (id.startsWith("media-video-")) return true;
+  
+  // Match id includes "__fy_" AND base id starts with "media-video-"
+  if (id.includes("__fy_")) {
+    const baseId = baseFeedId(id);
+    if (baseId && baseId.startsWith("media-video-")) return true;
+  }
+  
+  if (item?.mediaType !== "video") return false;
+
+  const source = String(item?.source || "").toLowerCase();
+  const kind = String(item?.kind || "").toLowerCase();
+  
+  // Exclude backend posts
+  if (source.includes("backend") || item?.isBackendPost) return false;
+  
+  // Match mediaType === "video" AND source/kind indicates local media
+  if (source.includes("local") || kind.includes("local") || source.includes("media-video")) {
+    return true;
+  }
+
+  if (Boolean(item?.mediaId) && String(item?.kind || "") === "post") {
+    return true;
+  }
+
+  return false;
+}
+
+export function clearLocalMediaVideoPosts() {
+  const s = getStore();
+  const before = s.items.length;
+  s.items = s.items.filter((it) => !isLocalMediaVideoPost(it));
+  const removed = before - s.items.length;
+
+  if (removed > 0) {
+    void persistAndEmit();
+  }
+
+  if (__DEV__) {
+    console.log("KRISTO_HOME_FEED_LOCAL_MEDIA_CLEARED", { removed });
+  }
+
+  return removed;
+}
+
+const HOME_FEED_CACHE_KEY_PATTERNS = [
+  /feed/i,
+  /homefeed/i,
+  /home_feed/i,
+  /for_you/i,
+  /for-you/i,
+  /media-video/i,
+  /church-feed/i,
+  /KRISTO_HOME_FEED/i,
+  /kristo_for_you/i,
+];
+
+export async function clearHomeFeedLocalCaches() {
+  const keys = await AsyncStorage.getAllKeys();
+  const matched = keys.filter((key) =>
+    HOME_FEED_CACHE_KEY_PATTERNS.some((pattern) => pattern.test(key))
+  );
+
+  if (matched.length) {
+    await AsyncStorage.multiRemove(matched);
+  }
+
+  const s = getStore();
+  const removedItems = s.items.length;
+  s.items = [];
+  await persistAndEmit();
+
+  delete (globalThis as any).__KRISTO_OPTIMISTIC_LIKES__;
+
+  if (__DEV__) {
+    console.log("KRISTO_HOME_FEED_LOCAL_CACHE_CLEARED", {
+      keysRemoved: matched,
+      removedItems,
+    });
+  }
+
+  return { keysRemoved: matched, removedItems };
+}
+
+export async function clearHomeFeedRuntimeCaches() {
+  const s = getStore();
+  const before = s.items.length;
+  
+  // Clear local media-video rows
+  s.items = s.items.filter((it) => !isLocalMediaVideoPost(it));
+  const removedMediaVideo = before - s.items.length;
+  
+  // Clear all in-memory feed items
+  const totalRemoved = s.items.length;
+  s.items = [];
+  
+  // Remove AsyncStorage keys
+  await AsyncStorage.removeItem(FEED_STORAGE_KEY);
+  await AsyncStorage.removeItem("kristo_for_you_signals_v1");
+  
+  // Notify subscribers
+  emit();
+  
+  if (__DEV__) {
+    console.log("KRISTO_HOME_FEED_LOCAL_CACHE_CLEARED", {
+      removedCount: totalRemoved,
+      removedMediaVideo,
+    });
+  }
+  
+  return { removedCount: totalRemoved, removedMediaVideo };
+}
+
+if (__DEV__) {
+  (globalThis as any).clearHomeFeedLocalCaches = clearHomeFeedLocalCaches;
+  (globalThis as any).clearLocalMediaVideoPosts = clearLocalMediaVideoPosts;
+}
+
 function isMediaScheduleCard(it: any): boolean {
   const source = String(it?.source || "").toLowerCase();
   const scheduleType = String(it?.scheduleType || "").toLowerCase();
