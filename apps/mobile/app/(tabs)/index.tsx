@@ -170,10 +170,6 @@ function resolveFeedVideoPoster(item: any): string {
     item?.posterUri ||
       item?.thumbnailUri ||
       item?.thumbnailUrl ||
-      item?.churchAvatarUri ||
-      item?.churchAvatarUrl ||
-      item?.actorAvatarUri ||
-      item?.mediaAvatarUri ||
       ""
   );
 }
@@ -678,6 +674,34 @@ const FeedVideo = memo(function FeedVideo({
   }, [shouldPlay, videoReady, onVideoReadyChange]);
 
   useEffect(() => {
+    if (shouldPlay) return;
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled || shouldPlayRef.current) return;
+
+      try {
+        player.loop = true;
+        player.muted = true;
+        player.play();
+
+        setTimeout(() => {
+          if (cancelled || shouldPlayRef.current) return;
+          try {
+            player.pause();
+            player.muted = true;
+          } catch {}
+        }, 180);
+      } catch {}
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [player, uri, shouldPlay]);
+
+  useEffect(() => {
     const applyPlayback = (reason: string) => {
       const play = shouldPlayRef.current;
       const meta = {
@@ -758,7 +782,7 @@ const FeedVideo = memo(function FeedVideo({
       ) : null}
       <VideoView
         player={player}
-        style={[StyleSheet.absoluteFillObject, { opacity: shouldPlay && videoReady ? 1 : 0 }]}
+        style={StyleSheet.absoluteFillObject}
         contentFit="cover"
         nativeControls={false}
       />
@@ -999,6 +1023,10 @@ const FeedSlide = memo(function FeedSlide({
     stableActive &&
     screenFocused &&
     appActive;
+
+  const shouldKeepVideoMounted =
+    isStrictVideoPost &&
+    Math.abs(activeFeedIndex - feedIndex) <= 2;
 
   useEffect(() => {
     if (!__DEV__) return;
@@ -2284,7 +2312,7 @@ const noMediaPost =
           </View>
 
           <Pressable onPress={openLiveRoom} style={s.liveNowPremiumPreview}>
-            {isStrictVideoPost ? (
+            {isStrictVideoPost && shouldKeepVideoMounted ? (
               <FeedVideoSurface
                 postId={String(item.id || "")}
                 feedIndex={feedIndex}
@@ -2389,7 +2417,7 @@ const noMediaPost =
         </>
       ) : (
       <Pressable onPress={isLiveNow ? openLiveRoom : undefined} style={s.page}>
-        {isStrictVideoPost ? (
+        {isStrictVideoPost && shouldKeepVideoMounted ? (
           <FeedVideoSurface
             postId={String(item.id || "")}
             feedIndex={feedIndex}
@@ -3486,10 +3514,6 @@ export default function FeedScreen() {
                     item.thumbnailUri ||
                       item.posterUri ||
                       item.thumbnailUrl ||
-                      item.churchAvatarUri ||
-                      item.churchAvatarUrl ||
-                      item.actorAvatarUri ||
-                      item.mediaAvatarUri ||
                       ""
                   ),
                 }
@@ -3612,7 +3636,9 @@ export default function FeedScreen() {
     );
 
     const localFeed: any[] = feedList().filter((item: any) => {
-      if (backendFeed.length === 0 && isLocalMediaVideoPost(item)) {
+      // V1 safety: video posts must render from backend only.
+      // Local media-video optimistic rows can create black duplicate slides.
+      if (isLocalMediaVideoPost(item)) {
         return false;
       }
 
@@ -4142,9 +4168,17 @@ export default function FeedScreen() {
 
     const cycles = backendFeed.length > 0 && nonScheduleItems.length > 0 ? 3 : 0;
 
+    const forYouBaseItems = nonScheduleItems.filter((item: any) => {
+      return !(item?.mediaType === "video" || item?.videoUrl);
+    });
+
+    const singleVideoItems = nonScheduleItems.filter((item: any) => {
+      return item?.mediaType === "video" || item?.videoUrl;
+    });
+
     const forYouLoop = cycles
       ? Array.from({ length: cycles }).flatMap((_, cycle) => {
-      return unique
+      return forYouBaseItems
         .map((item: any, index: number) => {
           const originalId = String(item?.sourceScheduleId || item?.id || index);
           const cycleNoise = stableRand(`${userSeed}|cycle:${cycle}|${originalId}`) * 120;
@@ -4168,7 +4202,7 @@ export default function FeedScreen() {
       })
       : [];
 
-    const finalFeed = [...schedulePriorityItems, ...forYouLoop];
+    const finalFeed = [...schedulePriorityItems, ...singleVideoItems, ...forYouLoop];
     const seenFinal = new Set<string>();
 
     const visibleData = finalFeed.filter((item: any, index: number) => {
@@ -4406,6 +4440,50 @@ export default function FeedScreen() {
     ]
   );
 
+  const activateFeedIndex = useCallback((nextIndex: number, reason: string) => {
+    const nextItem = visibleDataRef.current[nextIndex];
+    const nextId = nextItem?.id ? String(nextItem.id) : "";
+
+    if (!nextId) {
+      setActiveFeedItemId(null);
+      setActiveFeedIndex(-1);
+      pauseAllHomeFeedVideos({ reason: `${reason}-empty` });
+      return;
+    }
+
+    setActiveFeedItemId(nextId);
+    setActiveFeedIndex(nextIndex);
+
+    const isVideo =
+      nextItem?.mediaType === "video" &&
+      Boolean(String(nextItem?.videoUrl || "").trim());
+
+    if (isVideo) {
+      pauseAllHomeFeedVideos({
+        postId: nextId,
+        activeFeedIndex: nextIndex,
+        activeFeedItemId: nextId,
+        feedIndex: nextIndex,
+        exceptPostId: nextId,
+        reason,
+      });
+    } else {
+      pauseAllHomeFeedVideos({
+        postId: nextId,
+        activeFeedIndex: nextIndex,
+        activeFeedItemId: nextId,
+        feedIndex: nextIndex,
+        reason: `${reason}-non-video`,
+      });
+    }
+  }, []);
+
+  const handleMomentumScrollEnd = useCallback((event: any) => {
+    const y = Number(event?.nativeEvent?.contentOffset?.y || 0);
+    const nextIndex = Math.max(0, Math.round(y / Math.max(1, itemH)));
+    activateFeedIndex(nextIndex, "momentum-scroll-end");
+  }, [activateFeedIndex, itemH]);
+
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     const topView = pickPrimaryViewableItem(viewableItems);
     const top = topView?.item;
@@ -4527,6 +4605,11 @@ export default function FeedScreen() {
         updateCellsBatchingPeriod={80}
         data={visibleData}
         extraData={`${activeFeedItemId}|${activeFeedIndex}|${feedScreenFocused ? 1 : 0}`}
+        removeClippedSubviews={false}
+        windowSize={3}
+        maxToRenderPerBatch={2}
+        initialNumToRender={2}
+        updateCellsBatchingPeriod={16}
         keyExtractor={keyExtractor}
         snapToInterval={itemH}
         snapToAlignment="start"
@@ -4537,6 +4620,7 @@ export default function FeedScreen() {
         getItemLayout={getItemLayout}
         viewabilityConfig={viewabilityConfig}
         onViewableItemsChanged={onViewableItemsChanged}
+        onMomentumScrollEnd={handleMomentumScrollEnd}
         renderItem={renderItem}
       />
     </View>

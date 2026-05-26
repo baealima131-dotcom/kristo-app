@@ -1273,6 +1273,18 @@ export default function MediaStudioScreen() {
         console.log("KRISTO_FEED_VIDEO_POST_ERROR", e);
       });
 
+    const churchAvatarUri = String(
+      (session as any)?.churchAvatarUri ||
+        (session as any)?.churchAvatarUrl ||
+        ""
+    ).trim();
+    const actorAvatarUri = String(
+      (session as any)?.avatarUri ||
+        (session as any)?.avatarUrl ||
+        (session as any)?.profileImage ||
+        churchAvatarUri
+    ).trim();
+
     feedAdd({
       id: `media-video-${Date.now()}`,
       kind: "post",
@@ -1280,13 +1292,8 @@ export default function MediaStudioScreen() {
       body: caption,
       mediaType: "video",
       videoUrl: videoPostUri,
-      posterUri: String(
-        (session as any)?.churchAvatarUri ||
-          (session as any)?.churchAvatarUrl ||
-          (session as any)?.avatarUri ||
-          (session as any)?.avatarUrl ||
-          ""
-      ).trim(),
+      churchAvatarUri,
+      actorAvatarUri,
       createdAt: new Date().toISOString(),
       actorLabel: mediaName,
       churchLabel: String((session as any)?.churchName || "MY CHURCH"),

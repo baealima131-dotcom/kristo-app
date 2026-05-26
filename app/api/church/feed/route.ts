@@ -263,6 +263,64 @@ function cleanText(input: unknown, max = 5000): string {
   return s.length > max ? s.slice(0, max) : s;
 }
 
+function feedUrlLooksLikeAvatarOrLogo(raw: unknown) {
+  const v = String(raw || "").trim().toLowerCase();
+  if (!v) return false;
+  return /avatar|profile|logo|church-logo|profile-avatars|media-avatar/i.test(v);
+}
+
+function feedUriMatchesAvatarMetadata(uri: unknown, fields: unknown[]) {
+  const value = String(uri || "").trim();
+  if (!value) return false;
+  if (feedUrlLooksLikeAvatarOrLogo(value)) return true;
+  const normalized = value.toLowerCase();
+  return fields.some((field) => {
+    const candidate = String(field || "").trim().toLowerCase();
+    return Boolean(candidate && candidate === normalized);
+  });
+}
+
+function sanitizeFeedPostMediaFields(input: {
+  type: FeedType;
+  videoUrl?: string;
+  mediaUri?: string;
+  posterUri?: string;
+  thumbnailUri?: string;
+  actorAvatarUri?: string;
+  churchAvatarUri?: string;
+  avatarUri?: string;
+  profileImage?: string;
+  logo?: string;
+}) {
+  const isVideo =
+    input.type === "video" || Boolean(String(input.videoUrl || "").trim());
+
+  const avatarFields = [
+    input.actorAvatarUri,
+    input.churchAvatarUri,
+    input.avatarUri,
+    input.profileImage,
+    input.logo,
+  ];
+
+  let mediaUri = input.mediaUri;
+  let posterUri = input.posterUri;
+  let thumbnailUri = input.thumbnailUri;
+
+  if (isVideo) {
+    mediaUri = undefined;
+  } else if (feedUriMatchesAvatarMetadata(mediaUri, avatarFields)) {
+    mediaUri = undefined;
+  }
+
+  if (isVideo) {
+    if (feedUriMatchesAvatarMetadata(posterUri, avatarFields)) posterUri = undefined;
+    if (feedUriMatchesAvatarMetadata(thumbnailUri, avatarFields)) thumbnailUri = undefined;
+  }
+
+  return { mediaUri, posterUri, thumbnailUri };
+}
+
 function postLikeCount(churchId: string, postId: string) {
   return postLikeStore().filter((x) => x.churchId === churchId && x.postId === postId).length;
 }
@@ -1187,6 +1245,21 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
   const actorAvatarUri = cleanText(body?.actorAvatarUri || body?.avatarUri || body?.profileImage, 2000) || undefined;
   const churchAvatarUri = cleanText(body?.churchAvatarUri || body?.churchAvatarUrl || body?.actorAvatarUri || body?.avatarUri || body?.profileImage, 2000) || undefined;
+  const posterUri = cleanText(body?.posterUri, 2000) || undefined;
+  const thumbnailUri = cleanText(body?.thumbnailUri || body?.thumbnailUrl, 2000) || undefined;
+
+  const sanitizedMedia = sanitizeFeedPostMediaFields({
+    type,
+    videoUrl,
+    mediaUri,
+    posterUri,
+    thumbnailUri,
+    actorAvatarUri,
+    churchAvatarUri,
+    avatarUri: cleanText(body?.avatarUri, 2000) || undefined,
+    profileImage: cleanText(body?.profileImage, 2000) || undefined,
+    logo: cleanText(body?.logo, 2000) || undefined,
+  });
 
   const viewerRole = ctx?.viewer?.role;
   const ownershipType =
@@ -1236,7 +1309,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     title,
     text,
     videoUrl,
-    mediaUri,
+    mediaUri: sanitizedMedia.mediaUri,
     source,
     scheduleType,
     scheduleSlots,
@@ -1266,6 +1339,20 @@ async function handleFeedPost(req: NextRequest, body: any) {
     createdAt: new Date().toISOString(),
     createdBy: viewerUserId,
   };
+
+  if (sanitizedMedia.posterUri) {
+    (item as any).posterUri = sanitizedMedia.posterUri;
+  }
+  if (sanitizedMedia.thumbnailUri) {
+    (item as any).thumbnailUri = sanitizedMedia.thumbnailUri;
+  }
+
+  if (type === "video" || videoUrl) {
+    item.mediaUri = undefined;
+    if (!sanitizedMedia.posterUri) delete (item as any).posterUri;
+    if (!sanitizedMedia.thumbnailUri) delete (item as any).thumbnailUri;
+    delete (item as any).imageUrl;
+  }
 
   await upsertFeedItem(item);
 
