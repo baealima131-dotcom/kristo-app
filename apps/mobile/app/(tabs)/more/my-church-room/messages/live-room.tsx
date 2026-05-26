@@ -34,10 +34,10 @@ import {
 } from "@/src/lib/liveStore";
 import { projectStore } from "@/src/lib/projectStore";
 import { getSnapshot, subscribe as subscribeMessages } from "@/src/lib/messagesStore";
-import { feedRemoveWhere } from "@/src/lib/homeFeedStore";
+import { feedRemoveWhere, feedScheduleSlotsForLive } from "@/src/lib/homeFeedStore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import { apiGet, apiPatch, apiPost } from "@/src/lib/kristoApi";
+import { apiGet, apiPatch, apiPost, getApiBase } from "@/src/lib/kristoApi";
 import {
   fetchLightLiveState,
   messagesListSignature,
@@ -49,6 +49,7 @@ import {
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   evaluateLiveMediaAuthority,
+  evaluateLiveStageAuthority,
   logLiveMediaAuthority,
 } from "@/src/lib/liveMediaAuthority";
 import {
@@ -56,9 +57,79 @@ import {
   logChurchPastorResolution,
 } from "@/src/lib/churchPastorResolver";
 import {
+  normalizeLiveScheduleSlots,
+  parseLiveAllScheduleSlotsJson,
+  resolveLiveScheduleFeedId,
+  cleanFeedLabel,
+} from "@/src/lib/scheduleSlotUtils";
+import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
+import {
   getChurchProjectMcRuntime,
   getChurchProjectMcLiveSlotState,
 } from "@/src/store/churchProjectMcScheduleStore";
+
+function isKristoChurchIdLabel(value: unknown) {
+  return /^CH\d+-[A-Z0-9]+$/i.test(String(value || "").trim());
+}
+
+function cleanLiveRoomLabel(raw: unknown, fallback = "") {
+  const s = String(raw || "").trim();
+  if (!s || isKristoChurchIdLabel(s)) return fallback;
+  return cleanFeedLabel(s, fallback);
+}
+
+function resolveLiveRoomHeaderLabel(input: {
+  mediaName?: string;
+  churchName?: string;
+  churchLabel?: string;
+  title?: string;
+  rawTitle?: string;
+  actorLabel?: string;
+  sessionChurchName?: string;
+}) {
+  const ordered: Array<[string, unknown]> = [
+    ["mediaName", input.mediaName],
+    ["churchName", input.churchName],
+    ["churchLabel", input.churchLabel],
+    ["sessionChurchName", input.sessionChurchName],
+    ["actorLabel", input.actorLabel],
+    ["title", input.title],
+    ["rawTitle", input.rawTitle],
+  ];
+
+  for (const [source, raw] of ordered) {
+    const label = cleanLiveRoomLabel(raw);
+    if (label) {
+      console.log("KRISTO_LIVE_HEADER_LABEL_RESOLVED", { source, label });
+      return label;
+    }
+  }
+
+  const fallback = "Church Live";
+  console.log("KRISTO_LIVE_HEADER_LABEL_RESOLVED", { source: "fallback", label: fallback });
+  return fallback;
+}
+
+function collectClaimedAvatarCandidates(slot: any): string[] {
+  const claimedBy = slot?.claimedBy;
+  return [
+    slot?.claimedByAvatar,
+    slot?.claimedByAvatarUrl,
+    claimedBy?.avatarUri,
+    claimedBy?.avatarUrl,
+    claimedBy?.profileImage,
+    claimedBy?.photoURL,
+    claimedBy?.image,
+    slot?.avatarUri,
+    slot?.avatarUrl,
+    slot?.avatar,
+    slot?.profileImage,
+    slot?.photoURL,
+    slot?.image,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
 
 
 
@@ -675,6 +746,14 @@ const headersKey = JSON.stringify(headers || {});
       const wantsPublish =
         String(stableHeaders?.["x-kristo-live-may-publish"] || "") === "1";
 
+      console.log("KRISTO_LIVEKIT_PRELOAD_START", {
+        roomName,
+        identity: stableIdentity,
+        wantsPublish,
+        canPublishCamera,
+        canPublishMic,
+      });
+
       try {
         if ((globalThis as any).__KRISTO_DISABLE_LIVEKIT__ || Date.now() < Number((globalThis as any).__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ || 0)) {
           setLivekitDisabled(true);
@@ -722,6 +801,8 @@ const headersKey = JSON.stringify(headers || {});
           canPublishProp: canPublish,
           identity: stableIdentity,
           roomName,
+          apiBase: getApiBase(),
+          error: res?.ok ? undefined : String(res?.error || ""),
         });
 
         if (res?.ok && res?.url && res?.token) {
@@ -739,6 +820,7 @@ const headersKey = JSON.stringify(headers || {});
           canPublishProp: canPublish,
           identity: stableIdentity,
           roomName,
+          apiBase: getApiBase(),
         });
       }
     }
@@ -1386,8 +1468,10 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
   }, []);
 
 
+  const wantsLocalStage = renderLocalPreview || canPublishCamera;
+
   useEffect(() => {
-    if (!room || !canPublishCamera) return;
+    if (!room || !wantsLocalStage) return;
 
     const syncLocalCamera = () => {
       try {
@@ -1429,7 +1513,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         clearInterval(t);
       }
     };
-  }, [room]);
+  }, [room, wantsLocalStage]);
 
   
   useEffect(() => {
@@ -1642,22 +1726,40 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     }
   }, [localVideoTrack, cameraPaused]);
 
-  if (canPublishCamera) {
-    if (localPreviewURL && !cameraPaused) {
-      return (
-        <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]}>
-          <RTCView
-            key={`local-preview-stable-${localPreviewURL}`}
-            streamURL={localPreviewURL}
-            style={({ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, width: "100%", height: "100%", backgroundColor: "#000" } as any)}
-            mirror={cameraFacing === "front"}
-            objectFit={"cover" as any}
-            zOrder={999}
-          />
-        </View>
-      );
-    }
+  const shouldShowLocalPreview =
+    wantsLocalStage && !!localPreviewURL && !cameraPaused;
 
+  if (shouldShowLocalPreview) {
+    console.log("KRISTO_BIG_STAGE_LOCAL_PREVIEW", {
+      renderLocalPreview,
+      canPublishCamera,
+      hasUrl: !!localPreviewURL,
+    });
+    console.log("KRISTO_LIVEKIT_PREVIEW_READY", {
+      hasUrl: !!localPreviewURL,
+      cameraFacing,
+    });
+    return (
+      <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]}>
+        <RTCView
+          key={`local-preview-stable-${localPreviewURL}`}
+          streamURL={localPreviewURL}
+          style={({ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, width: "100%", height: "100%", backgroundColor: "#000" } as any)}
+          mirror={cameraFacing === "front"}
+          objectFit={"cover" as any}
+          zOrder={999}
+        />
+      </View>
+    );
+  }
+
+  if (wantsLocalStage) {
+    console.log("KRISTO_LIVE_BLACKSCREEN_GUARD", {
+      hasUrl: !!localPreviewURL,
+      cameraPaused,
+      renderLocalPreview,
+      canPublishCamera,
+    });
     return <>{fallback}</>;
   }
 
@@ -1703,7 +1805,28 @@ export default function LiveRoomScreen() {
       ])
     ).start();
   }, []);
-  const params = useLocalSearchParams<{ title?: string; role?: string; layout?: string; pinnedGuestId?: string; membersCount?: string; leadersCount?: string; projectId?: string; assignmentId?: string; preview?: string; entryMode?: string; source?: string; liveMode?: string; liveId?: string; mediaName?: string; audienceRequests?: string; room?: string; pastorUserId?: string; churchName?: string; churchLabel?: string; churchId?: string; claimedByName?: string }>();
+  const params = useLocalSearchParams<{ title?: string; role?: string; layout?: string; pinnedGuestId?: string; membersCount?: string; leadersCount?: string; projectId?: string; assignmentId?: string; preview?: string; entryMode?: string; source?: string; liveMode?: string; liveId?: string; mediaName?: string; audienceRequests?: string; room?: string; pastorUserId?: string; churchName?: string; churchLabel?: string; churchId?: string; claimedByName?: string; liveAllScheduleSlotsJson?: string; feedId?: string; sourceScheduleId?: string; canPublish?: string }>();
+
+  useEffect(() => {
+    AudioSession.configureAudio({
+      android: {
+        audioTypeOptions: AndroidAudioTypePresets.communication,
+      },
+    }).catch(() => {});
+    AudioSession.startAudioSession().catch(() => {});
+
+    console.log("KRISTO_LIVE_ROOM_FAST_OPEN", {
+      liveId: String((params as any)?.liveId || ""),
+      feedId: String((params as any)?.feedId || ""),
+      sourceScheduleId: String((params as any)?.sourceScheduleId || ""),
+      churchId: String((params as any)?.churchId || session?.churchId || ""),
+      routeSlotJsonLen: String((params as any)?.liveAllScheduleSlotsJson || "").length,
+      currentSlotNumber: String((params as any)?.currentSlotNumber || ""),
+      claimedSlotNumber: String((params as any)?.claimedSlotNumber || ""),
+      canPublish: String((params as any)?.canPublish || ""),
+      layout: String(params.layout || ""),
+    });
+  }, []);
 
   const rawTitle = String(params.title || "Youth");
   const liveSource = String(params.source || "").trim().toLowerCase();
@@ -1714,6 +1837,9 @@ export default function LiveRoomScreen() {
   const mediaName = String(params.mediaName || rawTitle || "Kristo").trim();
   const [backendChurchLive, setBackendChurchLive] = useState<any>(null);
   const [resolvedActualChurchPastorUserId, setResolvedActualChurchPastorUserId] = useState("");
+  const [memberAvatarByUserId, setMemberAvatarByUserId] = useState<Record<string, string>>({});
+  const [resolvedAvatarByUserId, setResolvedAvatarByUserId] = useState<Record<string, string>>({});
+  const [liveProfileAvatarUri, setLiveProfileAvatarUri] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -1908,7 +2034,34 @@ export default function LiveRoomScreen() {
   }, [assignmentId, activeAssignment]);
 
   const liveScheduleReady = isMediaInstantLive || !projectId || !!activeAssignment;
-  const title = isMediaInstantLive ? mediaName : String(selectedAssignment?.title || rawTitle || "Youth");
+
+  const liveHeaderDisplayTitle = useMemo(
+    () =>
+      resolveLiveRoomHeaderLabel({
+        mediaName: String(params.mediaName || "").trim(),
+        churchName: String((params as any).churchName || "").trim(),
+        churchLabel: String((params as any).churchLabel || "").trim(),
+        title: String(params.title || "").trim(),
+        rawTitle,
+        actorLabel: String((params as any).actorLabel || "").trim(),
+        sessionChurchName: String((session as any)?.churchName || (session as any)?.churchLabel || "").trim(),
+      }),
+    [params.mediaName, (params as any).churchName, (params as any).churchLabel, params.title, rawTitle, (params as any).actorLabel, session]
+  );
+
+  const liveHeaderSubLine = useMemo(() => {
+    const churchLine = cleanLiveRoomLabel(
+      (params as any).churchName ||
+        (params as any).churchLabel ||
+        (session as any)?.churchName ||
+        (session as any)?.churchLabel
+    );
+    const speaker = cleanLiveRoomLabel((params as any).claimedByName || (params as any).liveClaimName);
+    const parts = [churchLine, speaker ? `• ${speaker}` : ""].filter(Boolean);
+    return parts.join(" ").trim() || "LIVE";
+  }, [params, session]);
+
+  const title = isMediaInstantLive ? liveHeaderDisplayTitle : String(selectedAssignment?.title || liveHeaderDisplayTitle);
 
   const assignmentThreadId = String(selectedAssignment?.id || assignmentId || "").trim();
 
@@ -2274,44 +2427,39 @@ export default function LiveRoomScreen() {
   };
 
 
+  const liveScheduleFeedId = useMemo(
+    () => resolveLiveScheduleFeedId(params as Record<string, unknown>),
+    [params]
+  );
+
   const routeScheduleSlots = useMemo(() => {
-    try {
-      const rawParam = (params as any).liveAllScheduleSlotsJson;
-      const rawValue = Array.isArray(rawParam)
-        ? String(rawParam[rawParam.length - 1] || "")
-        : String(rawParam || "");
+    const fromJson = parseLiveAllScheduleSlotsJson((params as any).liveAllScheduleSlotsJson);
+    if (fromJson.length) return fromJson;
 
-      const raw = rawValue.trim();
-      if (!raw) return [];
+    const fromFeedStore = liveScheduleFeedId
+      ? feedScheduleSlotsForLive(liveScheduleFeedId)
+      : [];
 
-      const jsonText = raw.startsWith("%") || raw.includes("%7B") || raw.includes("%5B")
-        ? decodeURIComponent(raw)
-        : raw;
-
-      const parsed = JSON.parse(jsonText);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-      console.log("KRISTO_ROUTE_SLOTS_PARSE_ERROR", e, {
-        rawType: typeof (params as any).liveAllScheduleSlotsJson,
-        rawPreview: String((params as any).liveAllScheduleSlotsJson || "").slice(0, 120),
-      });
-      return [];
-    }
-  }, [params]);
+    return fromFeedStore;
+  }, [params, liveScheduleFeedId]);
 
   const [liveViewerPresence, setLiveViewerPresence] = useState<Record<string, any>>({});
 
   const [backendScheduleSlots, setBackendScheduleSlots] = useState<any[]>([]);
   const [runtimeSlotOverrides, setRuntimeSlotOverrides] = useState<Record<string, any>>({});
-  const backendScheduleReady = backendScheduleSlots.length > 0 || routeScheduleSlots.length > 0;
+  const backendScheduleReady =
+    backendScheduleSlots.length > 0 ||
+    routeScheduleSlots.length > 0;
 
   const getRuntimeSlotKey = (slot: any, index = 0) =>
     String(slot?.id || slot?.slot || slot?.slotNumber || slot?.order || index + 1);
 
   const runtimeScheduleSlots = useMemo(() => {
-    const sourceSlots = backendScheduleSlots.length ? backendScheduleSlots : routeScheduleSlots;
+    const sourceSlots = backendScheduleSlots.length
+      ? backendScheduleSlots
+      : routeScheduleSlots;
 
-    return sourceSlots.map((slot: any, index: number) => {
+    return normalizeLiveScheduleSlots(sourceSlots).map((slot: any, index: number) => {
       const key = getRuntimeSlotKey(slot, index);
       const patch = runtimeSlotOverrides[key] || {};
       return {
@@ -2344,7 +2492,7 @@ export default function LiveRoomScreen() {
           startMs: win.startMs,
           endMs: win.endMs,
           name: String(slot?.claimedByName || slot?.claimedBy?.name || slot?.name || `Guest ${n}`),
-          avatar: normalizeLiveImageUri(slot?.claimedByAvatar || slot?.claimedBy?.avatarUri || slot?.avatarUri || slot?.avatar || ""),
+          avatar: resolveParticipantAvatarUri(slot),
           claimedByUserId: String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim(),
           approved: true,
         };
@@ -2368,7 +2516,7 @@ export default function LiveRoomScreen() {
     if (nextAfterExpired) return nextAfterExpired;
 
     return null;
-  }, [authorityStageSlots, liveNowMs]);
+  }, [authorityStageSlots, liveNowMs, memberAvatarByUserId, resolvedAvatarByUserId, liveProfileAvatarUri, session?.userId, params]);
 
   const canAdvanceScheduleRuntime =
     roleLooksLikeHost;
@@ -2574,6 +2722,26 @@ export default function LiveRoomScreen() {
 
   const myClaimedSlotNumber = Number((myClaimedStageSlot as any)?.slot || 0);
 
+  const myClaimedMicSlotNumbers = useMemo(() => {
+    if (isMediaInstantLive || !currentUserId) return [] as number[];
+
+    return authorityStageSlots
+      .map((slot: any, index: number) => {
+        const win = getScheduleSlotWindow(slot, index);
+        const slotNum = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+        return {
+          slot: slotNum,
+          startMs: win.startMs,
+          endMs: win.endMs,
+          claimedByUserId: String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim(),
+        };
+      })
+      .filter((slot: any) => slot.claimedByUserId === currentUserId)
+      .filter((slot: any) => slot.slot >= 1 && slot.slot <= 9)
+      .filter((slot: any) => Number(slot.endMs) > liveNowMs)
+      .map((slot: any) => Number(slot.slot));
+  }, [authorityStageSlots, currentUserId, liveNowMs, isMediaInstantLive]);
+
   // Keep LiveKit publisher identity stable during slot reorder/move.
   // Prevent camera track destruction when slot temporarily changes.
   const stablePublisherSlotRef = useRef(0);
@@ -2599,29 +2767,6 @@ export default function LiveRoomScreen() {
     stablePublisherSlotRef.current || preferredStableSlot || 1
   );
 
-
-  // Claimed user keeps mic/control before and after their slot,
-  // but camera is allowed only when their slot is the current live slot.
-  const myClaimedSeatType =
-    myClaimedSlotNumber > 0
-      ? resolveSeatType(
-          myClaimedSlotNumber,
-          isMyScheduledLiveTurn
-        )
-      : "viewer";
-
-  // TikTok-style panel:
-  // all claimed stage people can publish mic;
-  // slots 2-5 can also publish camera;
-  // big screen still follows currentMainStageSlot.
-  const pastorPermanentMicNow =
-    !isMediaInstantLive &&
-    (
-      isPastorLiveOwner ||
-      isMediaOwnerHost ||
-      isDeclaredMediaHostForThisLive
-    );
-
   const approvedViewerStageSlot = Object.entries(joinRequestsBySlot || {}).find(
     ([, req]: any) =>
       !!req?.approved &&
@@ -2643,123 +2788,50 @@ export default function LiveRoomScreen() {
         approvedViewerSeatType === "camera-mic" ||
         approvedViewerSeatType === "mic-only";
 
-  // Claimed people visible on stage keep mic even when they are not the camera slot.
-  // V1 stage rule: up to 9 claimed slots can speak; only current camera slot publishes video.
-  const isMyVisibleClaimedMicSlot =
-    !!myClaimedSlotNumber &&
-    myClaimedSlotNumber >= 1 &&
-    myClaimedSlotNumber <= 9 &&
-    !!currentUserId &&
-    currentSlotOwnerId !== currentUserId
-      ? true
-      : !!myClaimedSlotNumber &&
-        myClaimedSlotNumber >= 1 &&
-        myClaimedSlotNumber <= 9 &&
-        !!currentUserId;
-
-  const canPublishClaimedMicNow =
-    isMediaInstantLive
-      ? (isPastorLiveOwner || roleLooksLikeHost || approvedViewerCanMic)
-      : pastorPermanentMicNow ||
-        approvedViewerCanMic ||
-        isMyVisibleClaimedMicSlot ||
-        (isMyScheduledLiveTurn &&
-          currentSlotOwnerId === currentUserId &&
-          (myClaimedSeatType === "big-screen" ||
-            myClaimedSeatType === "camera-mic" ||
-            myClaimedSeatType === "mic-only"));
-
+  // Mic/camera authority: mic and camera are evaluated independently.
   const approvedViewerIsCurrentCameraTurn =
     !!currentSlotNumber &&
     approvedViewerSlotNumber === currentSlotNumber &&
     (approvedViewerSeatType === "big-screen" || approvedViewerSeatType === "camera-mic");
 
-  const myClaimedCanPublishCamera =
-    !!myClaimedSlotNumber &&
-    !!currentUserId &&
-    (
-      myClaimedSeatType === "big-screen" ||
-      myClaimedSeatType === "camera-mic"
-    );
+  const liveStageAuthority = evaluateLiveStageAuthority({
+    isMediaInstantLive,
+    currentUserId,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    authority: liveMediaAuthority,
+    isDeclaredMediaHostForThisLive,
+    claimedMicSlotNumbers: myClaimedMicSlotNumbers,
+    approvedViewerCanMic,
+    approvedViewerIsCurrentCameraTurn,
+    isPastorLiveOwner,
+    roleLooksLikeHost,
+    approvedViewerSeatType,
+  });
 
-  const myClaimedIsCurrentCameraTurn =
-    isMyScheduledLiveTurn &&
-    currentSlotOwnerId === currentUserId &&
-    myClaimedCanPublishCamera;
+  const {
+    pastorPermanentMicNow,
+    mediaHostPermanentMicNow,
+    userOwnsCurrentActiveSlot,
+    userIsAmongFirstNineClaimedSlots,
+    canPublishClaimedMicNow,
+    canPublishClaimedCameraNow,
+    canPublishLiveVideoNow,
+  } = liveStageAuthority;
 
-  const mediaOwnerCanOpenCameraWhenNoCurrentClaim =
-    !isMediaInstantLive &&
-    backendScheduleReady &&
-    isMediaOwnerHost &&
-    !currentSlotNumber;
-
-  const canPublishClaimedCameraNow =
-    isMediaInstantLive
-      ? (isPastorLiveOwner || roleLooksLikeHost || approvedViewerSeatType === "big-screen" || approvedViewerSeatType === "camera-mic")
-      : approvedViewerIsCurrentCameraTurn ||
-        myClaimedIsCurrentCameraTurn ||
-        mediaOwnerCanOpenCameraWhenNoCurrentClaim;
-
-  // Camera/video must NOT open just because pastor can keep mic authority.
-  // Video opens only for explicit route publish or claimed camera slot/time.
-  // Camera/video must open only for the user who owns the current camera slot.
-  // Pastor/host route authority may keep controls/mic, but must not force camera outside their scheduled slot.
-  const currentSlotIsMineForCamera =
-    !isMediaInstantLive &&
-    !!currentSlotNumber &&
-    !!currentSlotOwnerId &&
-    !!currentUserId &&
-    currentSlotOwnerId === currentUserId;
-
-  // Only the CURRENT active camera slot owner can publish video.
-  // Other claimed slots may keep mic, but must not publish camera.
-  const myPublisherSlotNumber = Number(
-    currentSlotOwnerId === currentUserId ? currentSlotNumber : 0
-  );
-
-  const activeCameraSeatIsMine =
-    Number(currentSlotNumber || 0) >= 1 &&
-    Number(currentSlotNumber || 0) <= 5 &&
-    myPublisherSlotNumber > 0 &&
-    Number(currentSlotNumber || 0) === myPublisherSlotNumber;
-
-  const canPublishLiveVideoNow =
-    canPublishClaimedCameraNow ||
-    currentSlotIsMineForCamera ||
-    activeCameraSeatIsMine;
-
-  // Scheduled media guest must not mount LiveKit publisher while slot is still hydrating as 0.
-  // This prevents mount -> unmount -> publish-after-disconnect race.
   const scheduledPublisherSlotReady =
     isMediaInstantLive ||
     !canPublishLiveVideoNow ||
-    !!currentSlotNumber;
+    (!!currentSlotNumber && userOwnsCurrentActiveSlot);
 
-  const ownsLiveMicSlot =
-    pastorPermanentMicNow ||
-    isMediaOwnerHost ||
-    !!myClaimedSlotNumber ||
-    !!myOwnClaimedSlotNumber ||
-    (
-      !!currentSlotNumber &&
-      !!currentSlotOwnerId &&
-      !!currentUserId &&
-      currentSlotOwnerId === currentUserId
-    );
-
-  // AUTHORITY: who is allowed to own a microphone.
-  // This is separate from mute/unmute UI state.
-  const canUseLiveMic =
-    pastorPermanentMicNow ||
-    isMediaOwnerHost ||
-    ownsLiveMicSlot;
+  const canUseLiveMic = canPublishClaimedMicNow;
 
   // Sticky for the live session: token fetch must not follow per-tick camera/slot flags.
   const [liveKitSessionMayPublish, setLiveKitSessionMayPublish] = useState(
     () =>
       routeCanPublish ||
       pastorPermanentMicNow ||
-      isMediaOwnerHost ||
+      mediaHostPermanentMicNow ||
       isDeclaredMediaHostForThisLive
   );
 
@@ -2767,50 +2839,222 @@ export default function LiveRoomScreen() {
     setLiveKitSessionMayPublish((prev) => {
       if (prev) return true;
       return (
-        canUseLiveMic ||
+        canPublishClaimedMicNow ||
+        canPublishLiveVideoNow ||
         routeCanPublish ||
-        !!myClaimedSlotNumber ||
-        !!myOwnClaimedSlotNumber ||
-        approvedViewerCanMic ||
         (isMediaInstantLive && (isPastorLiveOwner || roleLooksLikeHost))
       );
     });
   }, [
-    canUseLiveMic,
+    canPublishClaimedMicNow,
+    canPublishLiveVideoNow,
     routeCanPublish,
-    myClaimedSlotNumber,
-    myOwnClaimedSlotNumber,
-    approvedViewerCanMic,
     isMediaInstantLive,
     isPastorLiveOwner,
     roleLooksLikeHost,
   ]);
 
-  // Mic publisher readiness must not wait on currentSlotNumber during schedule hydration.
-  const liveMicPublisherReady =
-    canUseLiveMic &&
-    (
-      isMediaInstantLive ||
-      !canPublishLiveVideoNow ||
-      !!currentSlotNumber ||
-      !!myClaimedSlotNumber ||
-      !!myOwnClaimedSlotNumber
+  const liveMicPublisherReady = canPublishClaimedMicNow;
+
+  // Mic override is mic-only; must not imply camera.
+  const liveKitMicOverrideReady = canPublishClaimedMicNow;
+
+  // Publisher LiveKit mount: mic-eligible OR current camera slot owner.
+  const mountLiveKitPublisherStage = canPublishClaimedMicNow || canPublishLiveVideoNow;
+
+  useEffect(() => {
+    console.log("KRISTO_LIVE_AUTH_RULES", {
+      isMediaInstantLive,
+      pastorPermanentMicNow,
+      mediaHostPermanentMicNow,
+      userOwnsCurrentActiveSlot,
+      userIsAmongFirstNineClaimedSlots,
+      canPublishClaimedMicNow,
+      canPublishClaimedCameraNow,
+      canPublishLiveVideoNow,
+      liveKitSessionMayPublish,
+      mountLiveKitPublisherStage,
+      liveKitMicOverrideReady,
+      scheduledPublisherSlotReady,
+    });
+    console.log("KRISTO_LIVE_CLAIMED_SLOTS_FOR_USER", {
+      currentUserId,
+      myClaimedMicSlotNumbers,
+      myClaimedSlotNumber,
+      myOwnClaimedSlotNumber,
+    });
+    console.log("KRISTO_LIVE_CURRENT_CAMERA_OWNER", {
+      currentSlotNumber,
+      currentSlotOwnerId,
+      userOwnsCurrentActiveSlot,
+      currentMainStageSlot: currentMainStageSlot
+        ? {
+            slot: currentMainStageSlot.slot,
+            claimedByUserId: currentMainStageSlot.claimedByUserId,
+            startMs: currentMainStageSlot.startMs,
+            endMs: currentMainStageSlot.endMs,
+          }
+        : null,
+    });
+    console.log("KRISTO_LIVE_MIC_AUTHORITY", {
+      canPublishClaimedMicNow,
+      liveKitMicOverrideReady,
+      liveMicPublisherReady,
+      canUseLiveMic,
+    });
+    console.log("KRISTO_LIVE_CAMERA_AUTHORITY", {
+      canPublishClaimedCameraNow,
+      canPublishLiveVideoNow,
+      scheduledPublisherSlotReady,
+      userOwnsCurrentActiveSlot,
+    });
+    console.log("KRISTO_ACTIVE_SLOT_OWNER", {
+      currentSlotNumber,
+      currentSlotOwnerId,
+      currentUserId,
+      userOwnsCurrentActiveSlot,
+      currentMainStageSlot: currentMainStageSlot
+        ? {
+            slot: currentMainStageSlot.slot,
+            claimedByUserId: currentMainStageSlot.claimedByUserId,
+            claimedByName: currentMainStageSlot.claimedByName || currentMainStageSlot.name,
+          }
+        : null,
+    });
+    console.log("KRISTO_CAMERA_AUTH_FINAL", {
+      canPublishLiveVideoNow,
+      canPublishClaimedCameraNow,
+      userOwnsCurrentActiveSlot,
+      liveKitSessionMayPublish,
+      mountLiveKitPublisherStage,
+      scheduledPublisherSlotReady,
+    });
+    console.log("KRISTO_STAGE_AUTHORITY", liveStageAuthority);
+  }, [
+    isMediaInstantLive,
+    pastorPermanentMicNow,
+    mediaHostPermanentMicNow,
+    userOwnsCurrentActiveSlot,
+    userIsAmongFirstNineClaimedSlots,
+    canPublishClaimedMicNow,
+    canPublishClaimedCameraNow,
+    canPublishLiveVideoNow,
+    liveKitSessionMayPublish,
+    mountLiveKitPublisherStage,
+    liveKitMicOverrideReady,
+    scheduledPublisherSlotReady,
+    currentUserId,
+    myClaimedMicSlotNumbers,
+    myClaimedSlotNumber,
+    myOwnClaimedSlotNumber,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    currentMainStageSlot,
+    liveMicPublisherReady,
+    canUseLiveMic,
+  ]);
+
+  function normalizeLiveImageUri(value: any) {
+    const v = String(value || "").trim();
+    if (!v) return "";
+    if (
+      v.startsWith("http://") ||
+      v.startsWith("https://") ||
+      v.startsWith("file://") ||
+      v.startsWith("data:image/")
+    ) {
+      return v;
+    }
+    const base = String(getApiBase() || process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+    if (v.startsWith("/")) return `${base}${v}`;
+    if (v.includes("uploads/")) return `${base}/${v.replace(/^\//, "")}`;
+    return v;
+  }
+
+  function isImageAvatar(value: any) {
+    const v = normalizeLiveImageUri(value);
+    return (
+      v.startsWith("http://") ||
+      v.startsWith("https://") ||
+      v.startsWith("file://") ||
+      v.startsWith("data:image/")
     );
+  }
 
-  // Mic override: claimed slots, pastor/host permanent authority, current camera owner.
-  const liveKitMicOverrideReady =
-    liveMicPublisherReady ||
-    pastorPermanentMicNow ||
-    isMediaOwnerHost ||
-    canPublishLiveVideoNow;
+  function resolveParticipantAvatarUri(slot: any) {
+    const userId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
 
-  // Publisher LiveKit mount: camera owner OR mic-eligible (not all viewers).
-  const mountLiveKitPublisherStage =
-    canPublishLiveVideoNow ||
-    liveMicPublisherReady ||
-    pastorPermanentMicNow ||
-    isMediaOwnerHost ||
-    canPublishClaimedMicNow;
+    for (const raw of collectClaimedAvatarCandidates(slot)) {
+      const uri = normalizeLiveImageUri(raw);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "slot-field",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    if (userId && memberAvatarByUserId[userId]) {
+      const uri = normalizeLiveImageUri(memberAvatarByUserId[userId]);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "member-directory",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    if (userId && resolvedAvatarByUserId[userId]) {
+      const uri = normalizeLiveImageUri(resolvedAvatarByUserId[userId]);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "profile-cache",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    if (userId && userId === String(session?.userId || "").trim() && liveProfileAvatarUri) {
+      const uri = normalizeLiveImageUri(liveProfileAvatarUri);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "session-profile",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    if (
+      userId &&
+      userId === String((params as any)?.claimedByUserId || "").trim() &&
+      (params as any)?.claimedByAvatar
+    ) {
+      const uri = normalizeLiveImageUri((params as any).claimedByAvatar);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "route-param",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+      userId,
+      source: "initials-fallback",
+      hasUrl: false,
+    });
+    return "";
+  }
 
   const scheduledLiveStageOwnerId = currentMainStageSlot
     ? `stage-${currentMainStageSlot.slot}`
@@ -2846,7 +3090,7 @@ export default function LiveRoomScreen() {
         slot: Number(slot?.slot || slot?.slotNumber || index + 1),
         order: Number(slot?.order || slot?.slot || slot?.slotNumber || index + 1),
         name: String(slot?.claimedByName || slot?.claimedBy?.name || slot?.name || `Guest ${index + 1}`),
-        avatar: normalizeLiveImageUri(slot?.claimedByAvatar || slot?.claimedBy?.avatarUri || slot?.avatarUri || ""),
+        avatar: resolveParticipantAvatarUri(slot),
         claimedByUserId: String(slot?.claimedByUserId || slot?.claimedBy?.userId || ""),
         approved: true,
       }));
@@ -2882,7 +3126,7 @@ export default function LiveRoomScreen() {
         claimedByUserId: String(slot?.claimedByUserId || ""),
         name: String(slot?.name || `Guest ${slot.slot}`),
         role: isLeader ? "Leader" : "Speaker",
-        avatar: normalizeLiveImageUri(slot?.avatar || ""),
+        avatar: resolveParticipantAvatarUri(slot),
         stageTone:
           Number(slot?.slot || 0) === Number(currentSlotNumber || 0)
             ? "current"
@@ -2893,7 +3137,7 @@ export default function LiveRoomScreen() {
                 : "waiting",
       };
     });
-  }, [activeStageSlots, currentSlotNumber, runtimeScheduleSlots, liveNowMs]);
+  }, [activeStageSlots, currentSlotNumber, runtimeScheduleSlots, liveNowMs, memberAvatarByUserId, resolvedAvatarByUserId, liveProfileAvatarUri, session?.userId, params]);
 
   const scheduledWaitingPeople = useMemo(() => {
     return waitingStageSlots.map((slot: any) => ({
@@ -2981,7 +3225,10 @@ export default function LiveRoomScreen() {
   const liveBridgeId = isMediaInstantLive
     ? String(params.liveId || (params as any).room || params.title || "media-live-default")
     : String(
+        liveScheduleFeedId ||
         params.liveId ||
+        (params as any).feedId ||
+        (params as any).sourceScheduleId ||
         (params as any).room ||
         assignmentThreadId ||
         assignmentId ||
@@ -3017,17 +3264,30 @@ export default function LiveRoomScreen() {
   useEffect(() => {
     logLiveMediaAuthority("live-room", liveMediaAuthority, {
       routeScheduleSlotsCount: routeScheduleSlots.length,
+      backendScheduleSlotsCount: backendScheduleSlots.length,
+      runtimeScheduleSlotsCount: runtimeScheduleSlots.length,
       scheduledStagePeopleCount: scheduledStagePeople.length,
       visibleQueueSlotsCount: visibleQueueSlots.length,
+      liveScheduleFeedId,
       isMediaInstantLive,
       liveBridgeId,
       liveId: params.liveId,
+      sourceScheduleId: (params as any).sourceScheduleId,
       room: (params as any).room,
       title: params.title,
       assignmentThreadId,
       assignmentId,
       projectId,
       currentSlotNumber,
+      currentMainStageSlot: currentMainStageSlot
+        ? {
+            slot: currentMainStageSlot.slot,
+            claimedByUserId: currentMainStageSlot.claimedByUserId,
+            startMs: currentMainStageSlot.startMs,
+            endMs: currentMainStageSlot.endMs,
+          }
+        : null,
+      currentSlotOwnerId,
     });
   }, [
     liveMediaAuthority.isMediaOwnerHost,
@@ -3038,28 +3298,23 @@ export default function LiveRoomScreen() {
     scheduleCreatedByUserId,
     isMediaInstantLive,
     liveBridgeId,
+    liveScheduleFeedId,
     params.liveId,
+    (params as any).sourceScheduleId,
     (params as any).room,
     params.title,
     assignmentThreadId,
     assignmentId,
     projectId,
     currentSlotNumber,
+    currentSlotOwnerId,
+    currentMainStageSlot,
+    routeScheduleSlots.length,
+    backendScheduleSlots.length,
+    runtimeScheduleSlots.length,
+    scheduledStagePeople.length,
+    visibleQueueSlots.length,
   ]);
-
-  function normalizeLiveImageUri(value: any) {
-    const v = String(value || "").trim();
-    if (!v) return "";
-    if (v.startsWith("http://") || v.startsWith("https://") || v.startsWith("file://")) return v;
-    if (v.startsWith("/")) return `${String(process.env.EXPO_PUBLIC_API_BASE || "http://192.168.12.141:3000").replace(/\/+$/, "")}${v}`;
-    return v;
-  }
-
-  function isImageAvatar(value: any) {
-    const v = normalizeLiveImageUri(value);
-    return v.startsWith("http://") || v.startsWith("https://") || v.startsWith("file://");
-  }
-
 
   const liveRouteChurchId = String((params as any)?.churchId || session?.churchId || "").trim();
 
@@ -3090,44 +3345,91 @@ export default function LiveRoomScreen() {
   );
 
   useEffect(() => {
-    const id = String((params as any).liveId || liveBridgeId || "").trim();
-    if (!id) return;
+    const id = String(liveScheduleFeedId || (params as any).liveId || liveBridgeId || "").trim();
+    if (!id || isMediaInstantLive) return;
 
-    let slotsSig = "";
+    const hasRouteSlots = routeScheduleSlots.length > 0;
+    let cancelled = false;
+    let slotsSig = hasRouteSlots
+      ? JSON.stringify(routeScheduleSlots)
+      : "";
 
-    return startAdaptiveLivePolling({
-      screen: "LiveRoomSchedule",
-      enabled: isFocused,
-      activeMs: 45000,
-      idleMs: 90000,
-      onTick: async () => {
-        try {
-          const res: any = await apiGet(
-            `/api/church/feed?id=${encodeURIComponent(id)}`,
-            { headers: liveApiHeaders as any },
-            { screen: "LiveRoomSchedule", throttleMs: 45000 }
-          );
+    async function hydrateScheduleFromFeed(source: "immediate" | "poll") {
+      if (hasRouteSlots && source === "poll") return;
 
-          const item = res?.data?.item || res?.item || res?.data || {};
-          const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-          const sig = JSON.stringify(slots);
-          if (sig === slotsSig) return;
-          slotsSig = sig;
+      try {
+        const res: any = await apiGet(
+          `/api/church/feed?id=${encodeURIComponent(id)}`,
+          { headers: liveApiHeaders as any },
+          {
+            screen: "LiveRoomSchedule",
+            throttleMs: source === "immediate" ? 0 : hasRouteSlots ? 120000 : 45000,
+          }
+        );
 
-          setBackendScheduleSlots(
-            slots.map((slot: any, index: number) => ({
-              ...slot,
-              slot: Number(slot?.slot || slot?.slotNumber || index + 1),
-              slotNumber: Number(slot?.slotNumber || slot?.slot || index + 1),
-              order: Number(slot?.order || slot?.slot || slot?.slotNumber || index + 1),
-            }))
-          );
-        } catch {}
-      },
-    });
-  }, [liveBridgeId, (params as any).liveId, liveApiHeaders, isFocused]);
-  const [liveProfileAvatarUri, setLiveProfileAvatarUri] = useState("");
+        const item = res?.data?.item || res?.item || res?.data || {};
+        const slots = normalizeLiveScheduleSlots(
+          Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
+        );
 
+        if (cancelled || !slots.length) {
+          if (!cancelled && source === "immediate") {
+            console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
+              feedId: id,
+              source,
+              hadRouteSlots: routeScheduleSlots.length,
+            });
+          }
+          return;
+        }
+
+        const sig = JSON.stringify(slots);
+        if (source === "poll" && sig === slotsSig) return;
+        slotsSig = sig;
+
+        setBackendScheduleSlots(slots);
+        console.log("KRISTO_LIVE_SCHEDULE_HYDRATED", {
+          feedId: id,
+          source,
+          slotCount: slots.length,
+          claimedCount: slots.filter((slot: any) => String(slot?.claimedByUserId || "").trim()).length,
+        });
+      } catch (e: any) {
+        console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_ERROR", {
+          feedId: id,
+          source,
+          message: String(e?.message || e),
+        });
+      }
+    }
+
+    void hydrateScheduleFromFeed("immediate");
+
+    const stopPoll = hasRouteSlots
+      ? undefined
+      : startAdaptiveLivePolling({
+          screen: "LiveRoomSchedule",
+          enabled: isFocused,
+          activeMs: 90000,
+          idleMs: 120000,
+          onTick: async () => {
+            await hydrateScheduleFromFeed("poll");
+          },
+        });
+
+    return () => {
+      cancelled = true;
+      stopPoll?.();
+    };
+  }, [
+    liveScheduleFeedId,
+    liveBridgeId,
+    (params as any).liveId,
+    liveApiHeaders,
+    isFocused,
+    isMediaInstantLive,
+    routeScheduleSlots.length,
+  ]);
   useEffect(() => {
     let alive = true;
 
@@ -3179,6 +3481,59 @@ export default function LiveRoomScreen() {
       alive = false;
     };
   }, [session?.userId, liveApiHeaders]);
+
+  useEffect(() => {
+    let alive = true;
+
+    fetchChurchMembers()
+      .then((rows) => {
+        if (!alive) return;
+        const map: Record<string, string> = {};
+        for (const row of rows || []) {
+          const uid = String(row?.userId || row?.id || "").trim();
+          const raw = String(
+            row?.avatarUrl ||
+              row?.avatarUri ||
+              row?.profileImage ||
+              row?.photoURL ||
+              row?.image ||
+              ""
+          ).trim();
+          if (uid && raw) map[uid] = raw;
+        }
+        setMemberAvatarByUserId(map);
+      })
+      .catch(() => {});
+
+    return () => {
+      alive = false;
+    };
+  }, [liveRouteChurchId, session?.userId]);
+
+  useEffect(() => {
+    let alive = true;
+    const userIds = new Set<string>();
+
+    for (const slot of runtimeScheduleSlots) {
+      const uid = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+      if (uid) userIds.add(uid);
+    }
+
+    userIds.forEach((uid) => {
+      void (async () => {
+        const cached = await resolveCachedLiveAvatar(uid);
+        if (!alive || !cached) return;
+        setResolvedAvatarByUserId((prev) => {
+          if (prev[uid]) return prev;
+          return { ...prev, [uid]: cached };
+        });
+      })();
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [runtimeScheduleSlots]);
 
   async function pushLiveAction(action: string, body: Record<string, any> = {}) {
     try {
@@ -3731,13 +4086,14 @@ export default function LiveRoomScreen() {
             id,
             name: claimedBy === "You" ? "You" : claimedBy,
             role,
+            avatar: resolveParticipantAvatarUri(slot),
           };
         })
         .filter(Boolean) as LiveGuest[];
 
       return source;
     },
-    [approvedRequestGuests, activeStageSlots, isMediaInstantLive]
+    [approvedRequestGuests, activeStageSlots, isMediaInstantLive, memberAvatarByUserId, resolvedAvatarByUserId, liveProfileAvatarUri, session?.userId]
   );
 
   const pinnedGuest = useMemo(
@@ -5074,24 +5430,12 @@ return (
 
             <View style={s.mediaIdentityCenter as any}>
               <Text style={s.mediaIdentityName as any} numberOfLines={1}>
-                {String(
-                  (params as any).churchName ||
-                  (params as any).churchLabel ||
-                  (session as any)?.churchName ||
-                  (session as any)?.churchLabel ||
-                  (session as any)?.church ||
-                  "MY CHURCH"
-                ).toUpperCase()}
+                {liveHeaderDisplayTitle.toUpperCase()}
               </Text>
               <View style={s.mediaIdentitySubRow as any}>
                 <View style={s.mediaLiveDot as any} />
                 <Text style={s.mediaIdentitySub as any} numberOfLines={1}>
-                  {String(
-                    [
-                      ((params as any).mediaName || (params as any).channelName || (params as any).creatorName || "MEDIA"),
-                      ((params as any).claimedByName || "") ? `• ${(params as any).claimedByName}` : ""
-                    ].filter(Boolean).join(" ")
-                  ).toUpperCase()}
+                  {liveHeaderSubLine.toUpperCase()}
                 </Text>
               </View>
             </View>
@@ -6373,7 +6717,14 @@ return (
                         <View style={s.splitGuestAvatarWrap as any}>
                           <View style={s.splitGuestAvatarRing as any}>
                             <View style={s.splitGuestAvatarCore as any}>
-                              <Text style={s.splitGuestAvatarText as any}>{initials(guest.name)}</Text>
+                              {(guest as any)?.avatar && isImageAvatar((guest as any).avatar) ? (
+                                <Image
+                                  source={{ uri: String((guest as any).avatar) }}
+                                  style={s.teamGridRequestAvatarImage as any}
+                                />
+                              ) : (
+                                <Text style={s.splitGuestAvatarText as any}>{initials(guest.name)}</Text>
+                              )}
                             </View>
                           </View>
                         </View>
@@ -6488,7 +6839,14 @@ return (
                       <View style={s.gridGuestAvatarWrap as any}>
                         <View style={s.gridGuestAvatarRing as any}>
                           <View style={s.gridGuestAvatarCore as any}>
-                            <Text style={s.gridGuestAvatarText as any}>{initials(guest.name)}</Text>
+                            {(guest as any)?.avatar && isImageAvatar((guest as any).avatar) ? (
+                              <Image
+                                source={{ uri: String((guest as any).avatar) }}
+                                style={s.teamGridRequestAvatarImage as any}
+                              />
+                            ) : (
+                              <Text style={s.gridGuestAvatarText as any}>{initials(guest.name)}</Text>
+                            )}
                           </View>
                         </View>
                       </View>

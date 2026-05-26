@@ -47,6 +47,7 @@ import { loadProfileDraft } from "@/src/lib/profileStore";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
+import { baseFeedId, normalizeLiveScheduleSlots } from "@/src/lib/scheduleSlotUtils";
 import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -103,13 +104,6 @@ function recordForYouSignal(rawId: any, patch: Partial<ForYouSignal>) {
   try {
     recordForYouSignalGlobal?.(rawId, patch);
   } catch {}
-}
-
-function baseFeedId(input: any) {
-  return String(input || "")
-    .replace(/__fy_\d+$/g, "")
-    .replace(/__slot_.+$/g, "")
-    .trim();
 }
 
 function detectLanguage(text: any) {
@@ -1729,6 +1723,31 @@ const noMediaPost =
       String((item as any)?.scheduleType || "").includes("media-live") ||
       Array.isArray((item as any)?.scheduleSlots);
 
+    const scheduleFeedId = baseFeedId(
+      liveRoomParams.liveId ||
+      liveRoomParams.feedId ||
+      liveRoomParams.sourceScheduleId ||
+      (item as any)?.sourceScheduleId ||
+      item.id ||
+      "media-live-default"
+    );
+
+    const allScheduleSlotsForLive = normalizeLiveScheduleSlots(
+      Array.isArray((item as any)?.allScheduleSlotsForLive)
+        ? (item as any).allScheduleSlotsForLive
+        : Array.isArray((item as any)?.liveAllScheduleSlots)
+          ? (item as any).liveAllScheduleSlots
+          : allScheduleSlots.length
+            ? allScheduleSlots
+            : scheduleSlots
+    );
+
+    const liveAllScheduleSlotsJson =
+      liveRoomParams.liveAllScheduleSlotsJson ||
+      (allScheduleSlotsForLive.length
+        ? JSON.stringify(allScheduleSlotsForLive)
+        : "");
+
     const claimedRouteSlotNumber = Number(
       liveRoomParams.claimedSlotNumber ||
       liveRoomParams.preferredSlotNumber ||
@@ -1756,6 +1775,48 @@ const noMediaPost =
       ).match(/\d+/)?.[0] || 1
     );
 
+    const pickLiveRoomChurchLabel = (...values: unknown[]) => {
+      for (const value of values) {
+        const label = String(value || "").trim();
+        if (!label) continue;
+        if (/^CH\d+-[A-Z0-9]+$/i.test(label)) continue;
+        return label;
+      }
+      return "MY CHURCH";
+    };
+
+    const resolvedMediaName = String(
+      liveRoomParams.mediaName ||
+        (item as any)?.liveMediaName ||
+        (item as any)?.mediaName ||
+        item.actorLabel ||
+        "Church Media"
+    ).trim();
+
+    const resolvedChurchName = pickLiveRoomChurchLabel(
+      liveRoomParams.churchName,
+      liveRoomParams.churchLabel,
+      (item as any)?.churchName,
+      (item as any)?.churchLabel
+    );
+
+    const resolvedTitle = String(
+      liveRoomParams.title ||
+        (activeSlot as any)?.name ||
+        (item as any)?.title ||
+        resolvedMediaName ||
+        "Church Live"
+    ).trim();
+
+    console.log("KRISTO_LIVE_ROOM_FAST_OPEN", {
+      feedId: scheduleFeedId,
+      slotCount: allScheduleSlotsForLive.length,
+      slotNumber,
+      claimedByMe,
+      countdownLive,
+      hasLiveAllScheduleSlotsJson: !!liveAllScheduleSlotsJson,
+    });
+
     router.push({
       pathname: liveRoomPath as any,
       params: {
@@ -1767,11 +1828,14 @@ const noMediaPost =
         mode: claimedByMe && countdownLive ? "host" : (liveRoomParams.mode || "viewer"),
         entryMode: liveRoomParams.entryMode || "live",
         room: liveRoomParams.room || "media",
-        mediaName: liveRoomParams.mediaName || (item as any)?.liveMediaName || item.actorLabel || "Church Media",
-        churchName: liveRoomParams.churchName || (item as any)?.churchName || (item as any)?.churchLabel || "MY CHURCH",
-        churchLabel: liveRoomParams.churchLabel || liveRoomParams.churchName || (item as any)?.churchName || (item as any)?.churchLabel || "MY CHURCH",
+        mediaName: resolvedMediaName,
+        churchName: resolvedChurchName,
+        churchLabel: liveRoomParams.churchLabel || resolvedChurchName,
+        actorLabel: String(liveRoomParams.actorLabel || item.actorLabel || resolvedMediaName || ""),
         churchId: liveRoomParams.churchId || (item as any)?.churchId || "",
-        liveId: liveRoomParams.liveId || String((item as any)?.sourceScheduleId || item.id || "media-live-default"),
+        liveId: scheduleFeedId,
+        feedId: scheduleFeedId,
+        sourceScheduleId: scheduleFeedId,
         ...buildLiveRoomAuthorityParams(item as any),
         mediaOwnerPastorUserId: buildLiveRoomAuthorityParams(item as any).actualChurchPastorUserId,
         preferredSlotNumber: liveRoomParams.preferredSlotNumber || String(slotNumber),
@@ -1779,7 +1843,8 @@ const noMediaPost =
         claimedSlotNumber: String(slotNumber),
         scheduleStartMs: liveRoomParams.scheduleStartMs || String(slotStartMs || ""),
         scheduleEndMs: liveRoomParams.scheduleEndMs || String(slotEndMs || ""),
-        title: liveRoomParams.title || String((activeSlot as any)?.name || (item as any)?.title || "Church Live"),
+        liveAllScheduleSlotsJson,
+        title: resolvedTitle,
         claimedByName: liveRoomParams.claimedByName || (item as any)?.liveClaimName || (activeSlot as any)?.claimedByName || claimedName || "",
         liveClaimName: liveRoomParams.liveClaimName || liveRoomParams.claimedByName || (item as any)?.liveClaimName || claimedName || "",
         claimedByAvatar: liveRoomParams.claimedByAvatar || (activeSlot as any)?.claimedByAvatar || (activeSlot as any)?.avatarUri || "",
@@ -3370,6 +3435,7 @@ export default function FeedScreen() {
         ...item,
         id: `${item.id}__slot_${slot?.id || index}`,
         sourceScheduleId: item.id,
+        allScheduleSlotsForLive: normalizeLiveScheduleSlots(slots),
         scheduleSlots: [slot],
         slotFeedIndex: index,
         slotFeedTotal: remainingSlots.length,
