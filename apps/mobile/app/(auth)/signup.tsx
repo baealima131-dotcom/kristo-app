@@ -82,6 +82,7 @@ export default function SignupScreen() {
   const [emailInput, setEmailInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [verifyInfo, setVerifyInfo] = useState<string | null>(null);
   const [createdUserId, setCreatedUserId] = useState("");
   const [publicKristoId, setPublicKristoId] = useState("");
   const [signupChallengeId, setSignupChallengeId] = useState("");
@@ -117,6 +118,7 @@ export default function SignupScreen() {
     }
     if (!canForm) return;
     setErr(null);
+    setVerifyInfo(null);
     setSaving(true);
 
     try {
@@ -154,9 +156,16 @@ export default function SignupScreen() {
         String(data.kristoId || data.publicKristoId || "").trim()
       );
       setSignupChallengeId(data.challengeId || "");
-      if (data?.devCode) {
-        setEmailInput(String(data.devCode));
-        setErr(`Dev OTP code: ${data.devCode}`);
+      const devOtp =
+        __DEV__ && typeof data?.devOtp === "string" && data.devOtp.trim()
+          ? data.devOtp.trim()
+          : "";
+      if (devOtp) {
+        setVerifyInfo(`Dev OTP code: ${devOtp}`);
+        setEmailInput(devOtp);
+      } else {
+        setVerifyInfo("We sent a verification code to your email.");
+        setEmailInput("");
       }
       setStep("verify");
     } catch (error: any) {
@@ -208,6 +217,15 @@ export default function SignupScreen() {
         headers: getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" }),
       });
 
+      if (!profileRes?.ok) {
+        const message = String(profileRes?.error || "Account verified but server profile is unavailable.");
+        setErr(`${message} Try signing in with your email and password.`);
+        if (__DEV__) {
+          console.warn("[KRISTO SIGNUP] durable profile load failed after verify", profileRes);
+        }
+        return;
+      }
+
       const p = profileRes?.profile;
       const kristoId = String(
         publicKristoId || p?.userCode || ""
@@ -238,6 +256,11 @@ export default function SignupScreen() {
         }
         Alert.alert("Profile save failed", message);
         setErr(message);
+        return;
+      }
+
+      if (!data?.user?.id && !createdUserId) {
+        setErr("Verification succeeded but durable account id is missing.");
         return;
       }
 
@@ -437,7 +460,9 @@ export default function SignupScreen() {
             <View style={s.notice}>
               <Text style={s.noticeTitle}>SHALOM</Text>
               <Text style={s.noticeBig}>Let’s verify your account.</Text>
-              <Text style={s.noticeText}>We sent a verification code to your email. Did you see it?</Text>
+              <Text style={verifyInfo?.startsWith("Dev OTP") ? s.devOtpInfo : s.noticeText}>
+                {verifyInfo || "We sent a verification code to your email."}
+              </Text>
             </View>
 
             <Text style={s.label}>Verification code</Text>
@@ -719,6 +744,7 @@ const s = StyleSheet.create({
   noticeTitle: { color: GOLD, fontWeight: "900", marginBottom: 6, letterSpacing: 1.2 },
   noticeBig: { color: "white", fontWeight: "900", fontSize: 22, marginBottom: 6 },
   noticeText: { color: "white", fontWeight: "900", marginTop: 2, lineHeight: 20 },
+  devOtpInfo: { color: "rgba(147,197,253,0.95)", fontWeight: "900", marginTop: 2, lineHeight: 20 },
   err: { color: "#ff7b7b", fontWeight: "900", marginBottom: 12 },
   splitBtn: {
     position: "relative",

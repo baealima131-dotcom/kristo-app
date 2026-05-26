@@ -9,6 +9,7 @@ import { ensureProfileDraft, type Gender } from "@/app/api/auth/_lib/profile";
 import {
   emailProviderFailureStatus,
   exposeEmailDebugDetails,
+  isEmailProviderMissing,
   sendVerificationCodeEmail,
   signupEmailFailurePayload,
 } from "@/app/api/_lib/email";
@@ -115,42 +116,61 @@ export async function POST(req: Request) {
       );
     }
 
-    if (exposeEmailDebugDetails()) {
-      console.log("[KRISTO SIGNUP EMAIL RESULT]", {
-        email,
-        ok: emailResult.ok,
-        reason: emailResult.reason,
-        error: emailResult.error,
-        providerId: emailResult.providerId,
-        skipped: emailResult.skipped,
-        code: challenge.code,
-      });
-    }
+    const isProd = process.env.NODE_ENV === "production";
+    const providerMissing = isEmailProviderMissing(emailResult);
 
     if (!emailResult.ok) {
-      await rollbackSignupUser(userId);
+      if (isProd) {
+        await rollbackSignupUser(userId);
 
-      if (process.env.NODE_ENV !== "production") {
+        if (providerMissing) {
+          console.error("[KRISTO AUTH] verification_email_missing_provider_prod", {
+            email,
+            userId,
+          });
+          return NextResponse.json(
+            { ok: false, error: "Email service not configured.", reason: "email_not_configured" },
+            { status: 503 }
+          );
+        }
+
+        return NextResponse.json(
+          signupEmailFailurePayload(emailResult),
+          { status: emailProviderFailureStatus(emailResult) }
+        );
+      }
+
+      if (providerMissing) {
+        console.log("[KRISTO AUTH] verification_email_skipped_dev", {
+          email,
+          userId,
+          reason: emailResult.reason,
+        });
         return NextResponse.json({
           ok: true,
           needsVerification: true,
-          devMode: true,
-          devCode: challenge.code,
+          devOtp: challenge.code,
           challengeId: challenge.id,
           userId,
           kristoId: r.user.kristoId,
           publicKristoId: r.user.kristoId,
           coreId: userId,
           next: "/verify-code",
-          email: emailResult,
         });
       }
 
+      await rollbackSignupUser(userId);
       return NextResponse.json(
         signupEmailFailurePayload(emailResult),
         { status: emailProviderFailureStatus(emailResult) }
       );
     }
+
+    console.log("[KRISTO AUTH] verification_email_sent", {
+      email,
+      userId,
+      providerId: emailResult.providerId || null,
+    });
 
     return NextResponse.json({
       ok: true,

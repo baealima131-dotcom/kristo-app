@@ -31,9 +31,23 @@ export function exposeEmailDebugDetails() {
 function logEmailEvent(event: string, payload: Record<string, unknown>) {
   const safe = { ...payload };
   if (typeof safe.code === "string") {
-    safe.code = exposeEmailDebugDetails() ? safe.code : "[redacted]";
+    safe.code =
+      process.env.NODE_ENV === "production"
+        ? "[redacted]"
+        : exposeEmailDebugDetails()
+          ? safe.code
+          : "[redacted]";
   }
   console.log(`[KRISTO EMAIL] ${event}`, safe);
+}
+
+export function isEmailProviderMissing(result?: EmailSendResult) {
+  if (!isResendConfigured()) return true;
+  if (!result) return false;
+  return (
+    result.skipped === true &&
+    String(result.reason || "").toLowerCase().includes("resend")
+  );
 }
 
 function normalizeResendResult(result: {
