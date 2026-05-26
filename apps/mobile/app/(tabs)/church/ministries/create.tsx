@@ -3,6 +3,7 @@ import {
   Alert,
   ActivityIndicator,
   Animated,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -20,6 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+import { vipAvatarBg, vipInitials } from "@/src/ui/vipUtil";
 
 type MinistryStatus = "Active" | "Paused";
 type Ministry = {
@@ -40,6 +42,113 @@ const VIP_BG = "#05070D";
 const TEXT_PRIMARY = "rgba(255,255,255,0.96)";
 const TEXT_SECONDARY = "rgba(255,255,255,0.62)";
 const LABEL_GOLD = "rgba(217,179,95,0.78)";
+
+const MEMBER_API_BASE = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+
+type PickerMember = {
+  userId: string;
+  name?: string;
+  kristoId?: string;
+  coreId?: string;
+  publicId?: string;
+  publicKristoId?: string;
+  userCode?: string;
+  username?: string;
+  handle?: string;
+  memberCode?: string;
+  profileCode?: string;
+  role?: string;
+  avatarUri?: string;
+  avatarUrl?: string;
+  profileImage?: string;
+  profilePhoto?: string;
+  photoURL?: string;
+  photo?: string;
+  image?: string;
+};
+
+type DisplayCodeSource = "kristoId" | "coreId" | "publicId" | "username" | "pending";
+
+function isRawBackendId(value?: string) {
+  const s = String(value || "").trim();
+  if (!s) return true;
+  if (/^u_[a-f0-9-]+$/i.test(s)) return true;
+  if (/^[a-f0-9-]{24,}$/i.test(s)) return true;
+  if (s.includes("@") && !s.includes(" ")) return true;
+  return false;
+}
+
+function isVisibleCode(value?: string) {
+  const s = String(value || "").trim();
+  return Boolean(s) && !isRawBackendId(s);
+}
+
+function memberMediaUrl(v?: string) {
+  const raw = String(v || "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw) || raw.startsWith("file://") || raw.startsWith("data:image/")) return raw;
+  return MEMBER_API_BASE ? `${MEMBER_API_BASE}${raw.startsWith("/") ? "" : "/"}${raw}` : raw;
+}
+
+function resolvePickerMemberAvatar(m: PickerMember) {
+  return memberMediaUrl(
+    m.avatarUri || m.avatarUrl || m.profileImage || m.profilePhoto || m.photoURL || m.photo || m.image || ""
+  );
+}
+
+function resolvePickerDisplayName(m: PickerMember) {
+  const name = String(m.name || "").trim();
+  if (name && !isRawBackendId(name)) return name;
+  return "Member";
+}
+
+function resolveKristoDisplayCode(m: PickerMember): { label: string; source: DisplayCodeSource } {
+  if (isVisibleCode(m.kristoId)) return { label: String(m.kristoId).trim(), source: "kristoId" };
+  if (isVisibleCode(m.userCode)) return { label: String(m.userCode).trim(), source: "kristoId" };
+  if (isVisibleCode(m.coreId)) return { label: String(m.coreId).trim(), source: "coreId" };
+  if (isVisibleCode(m.publicId)) return { label: String(m.publicId).trim(), source: "publicId" };
+  if (isVisibleCode(m.publicKristoId)) return { label: String(m.publicKristoId).trim(), source: "publicId" };
+  if (isVisibleCode(m.username)) return { label: String(m.username).trim(), source: "username" };
+  if (isVisibleCode(m.handle)) return { label: String(m.handle).trim(), source: "username" };
+  if (isVisibleCode(m.memberCode)) return { label: String(m.memberCode).trim(), source: "username" };
+  if (isVisibleCode(m.profileCode)) return { label: String(m.profileCode).trim(), source: "username" };
+  return { label: "Kristo ID pending", source: "pending" };
+}
+
+function logPickerMemberDisplay(list: PickerMember[]) {
+  if (!__DEV__) return;
+  for (const m of list) {
+    const name = resolvePickerDisplayName(m);
+    const hasAvatar = Boolean(resolvePickerMemberAvatar(m));
+    const { source: displayCodeSource } = resolveKristoDisplayCode(m);
+    console.log("KRISTO_MINISTRY_PICKER_MEMBER_DISPLAY", { name, hasAvatar, displayCodeSource });
+  }
+}
+
+function isPastorRole(role?: string) {
+  const r = String(role || "").trim().toLowerCase();
+  return r === "pastor" || r === "church_pastor";
+}
+
+function resolvePastorUserId(
+  list: PickerMember[],
+  hints?: { pastorUserId?: string; currentPastorId?: string }
+) {
+  const hinted = [hints?.pastorUserId, hints?.currentPastorId]
+    .map((v) => String(v || "").trim())
+    .filter(Boolean);
+  for (const id of hinted) {
+    if (list.some((m) => m.userId === id)) return id;
+  }
+  const byRole = list.find((m) => isPastorRole(m.role));
+  return byRole?.userId || "";
+}
+
+function withPastor(ids: string[], pastorUserId: string) {
+  const pid = String(pastorUserId || "").trim();
+  if (!pid) return ids;
+  return ids.includes(pid) ? ids : [...ids, pid];
+}
 
 function LuxuryPressable({
   style,
@@ -139,7 +248,8 @@ export default function ChurchMinistryCreateScreen() {
   // TEMP premium gate for ministry media access
   const hasSubscription = isSubscriptionBypassEnabled();
 
-  const [members, setMembers] = useState<Array<{ userId: string; name?: string }>>([]);
+  const [members, setMembers] = useState<PickerMember[]>([]);
+  const [pastorHints, setPastorHints] = useState<{ pastorUserId?: string; currentPastorId?: string }>({});
   const [picker, setPicker] = useState<null | PickerKind>(null);
   const [pickedMemberIds, setPickedMemberIds] = useState<string[]>([]);
   const [pickedLeaderIds, setPickedLeaderIds] = useState<string[]>([]);
@@ -177,6 +287,27 @@ export default function ChurchMinistryCreateScreen() {
     }).start();
   }, [descFocused, descGlow]);
 
+  const autoPastorUserId = useMemo(
+    () => resolvePastorUserId(members, pastorHints),
+    [members, pastorHints]
+  );
+
+  const pickerMembers = useMemo(() => {
+    if (!autoPastorUserId) return members;
+    const pastor = members.find((m) => m.userId === autoPastorUserId);
+    const rest = members.filter((m) => m.userId !== autoPastorUserId);
+    return pastor ? [pastor, ...rest] : members;
+  }, [members, autoPastorUserId]);
+
+  useEffect(() => {
+    if (!autoPastorUserId) return;
+    setPickedLeaderIds((prev) => withPastor(prev, autoPastorUserId));
+    setPickedMemberIds((prev) => withPastor(prev, autoPastorUserId));
+    if (__DEV__) {
+      console.log("KRISTO_CREATE_MINISTRY_AUTO_PASTOR_SELECTED", { pastorUserId: autoPastorUserId });
+    }
+  }, [autoPastorUserId]);
+
   // Load church members for pickers
   useEffect(() => {
     let alive = true;
@@ -185,12 +316,34 @@ export default function ChurchMinistryCreateScreen() {
         const res = await apiGet<any>("/api/church/members?all=1", { headers: getKristoHeaders() });
         if (!alive) return;
         if (res?.ok && Array.isArray(res.data)) {
-          const list = res.data
+          const list: PickerMember[] = res.data
             .map((m: any) => ({
               userId: m.userId || m.id || m.memberId,
               name: m.name || m.fullName || m.displayName || m.email,
+              kristoId: m.kristoId || m.userCode,
+              coreId: m.coreId,
+              publicId: m.publicId || m.publicKristoId,
+              publicKristoId: m.publicKristoId,
+              userCode: m.userCode,
+              username: m.username,
+              handle: m.handle,
+              memberCode: m.memberCode,
+              profileCode: m.profileCode,
+              role: m.roleLabel || m.role || m.churchRole,
+              avatarUri: m.avatarUri,
+              avatarUrl: m.avatarUrl,
+              profileImage: m.profileImage,
+              profilePhoto: m.profilePhoto,
+              photoURL: m.photoURL,
+              photo: m.photo,
+              image: m.image,
             }))
-            .filter((x: any) => Boolean(x.userId));
+            .filter((x: PickerMember) => Boolean(x.userId));
+          logPickerMemberDisplay(list);
+          setPastorHints({
+            pastorUserId: String(res?.pastorUserId || res?.data?.pastorUserId || "").trim() || undefined,
+            currentPastorId: String(res?.currentPastorId || res?.data?.currentPastorId || "").trim() || undefined,
+          });
           setMembers(list);
         }
       } catch {}
@@ -214,8 +367,16 @@ export default function ChurchMinistryCreateScreen() {
         status,
         mediaAccess: hasSubscription ? mediaAccess : false,
       });
-      const uniqueLeaders = Array.from(new Set(pickedLeaderIds));
+      const uniqueLeaders = Array.from(new Set(withPastor(pickedLeaderIds, autoPastorUserId)));
       const uniqueMembers = Array.from(new Set(pickedMemberIds.filter((x) => !uniqueLeaders.includes(x))));
+
+      if (__DEV__) {
+        console.log("KRISTO_CREATE_MINISTRY_SAVE_LEADERS", {
+          leaders: uniqueLeaders,
+          members: withPastor(pickedMemberIds, autoPastorUserId),
+          autoPastorUserId,
+        });
+      }
 
       const failed: string[] = [];
 
@@ -264,12 +425,13 @@ export default function ChurchMinistryCreateScreen() {
     setDescription("");
     setStatus("Active");
     setMediaAccess(false);
-    setPickedMemberIds([]);
-    setPickedLeaderIds([]);
+    setPickedMemberIds(autoPastorUserId ? [autoPastorUserId] : []);
+    setPickedLeaderIds(autoPastorUserId ? [autoPastorUserId] : []);
     requestAnimationFrame(() => nameRef.current?.focus());
   }
 
   function togglePick(kind: PickerKind, userId: string) {
+    if (userId === autoPastorUserId) return;
     if (kind === "leaders") {
       setPickedLeaderIds((prev) => (prev.includes(userId) ? prev.filter((x) => x !== userId) : [...prev, userId]));
       // If leader is selected, also make sure they are in members list (optional)
@@ -639,24 +801,55 @@ export default function ChurchMinistryCreateScreen() {
                       </View>
 
                       <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ paddingBottom: 10 }}>
-                        {members.map((m) => {
+                        {pickerMembers.map((m) => {
                           const checked = picker === "leaders" ? pickedLeaderIds.includes(m.userId) : pickedMemberIds.includes(m.userId);
+                          const isLockedPastor = m.userId === autoPastorUserId;
+                          const displayName = resolvePickerDisplayName(m);
+                          const avatarUri = resolvePickerMemberAvatar(m);
+                          const { label: kristoLabel } = resolveKristoDisplayCode(m);
+                          const roleLabel = String(m.role || "").trim();
                           return (
                             <Pressable
                               key={m.userId}
+                              disabled={isLockedPastor}
                               onPress={() => togglePick(picker, m.userId)}
-                              style={({ pressed }) => [s.memberRow, pressed && { opacity: 0.88 }]}
+                              style={({ pressed }) => [
+                                s.memberRow,
+                                checked && s.memberRowSelected,
+                                isLockedPastor && s.memberRowLocked,
+                                pressed && !isLockedPastor && { opacity: 0.88 },
+                              ]}
                             >
-                              <View style={[s.check, checked && s.checkOn]}>
-                                {checked ? <Ionicons name="checkmark" size={14} color="#0B0F17" /> : null}
-                              </View>
-                              <View style={{ flex: 1 }}>
+                              {avatarUri ? (
+                                <Image source={{ uri: avatarUri }} style={s.memberAvatar} />
+                              ) : (
+                                <View style={[s.memberAvatar, s.memberAvatarFallback, { backgroundColor: vipAvatarBg(m.userId) }]}>
+                                  <Text style={s.memberAvatarInitials}>{vipInitials(displayName)}</Text>
+                                </View>
+                              )}
+                              <View style={s.memberMeta}>
                                 <Text style={s.memberName} numberOfLines={1}>
-                                  {m.name || m.userId}
+                                  {displayName}
                                 </Text>
                                 <Text style={s.memberId} numberOfLines={1}>
-                                  {m.userId}
+                                  {kristoLabel}
                                 </Text>
+                                {isLockedPastor ? (
+                                  <View style={s.pastorBadge}>
+                                    <Text style={s.pastorBadgeText} numberOfLines={1}>
+                                      Church Pastor
+                                    </Text>
+                                  </View>
+                                ) : roleLabel ? (
+                                  <View style={s.roleBadge}>
+                                    <Text style={s.roleBadgeText} numberOfLines={1}>
+                                      {roleLabel}
+                                    </Text>
+                                  </View>
+                                ) : null}
+                              </View>
+                              <View style={[s.check, checked && s.checkOn, isLockedPastor && s.checkLocked]}>
+                                {checked ? <Ionicons name="checkmark" size={14} color="#0B0F17" /> : null}
                               </View>
                             </Pressable>
                           );
@@ -1206,13 +1399,70 @@ const s = StyleSheet.create<any>({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.02)",
-    marginBottom: 8,
+    borderColor: "rgba(217,179,95,0.12)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    marginBottom: 10,
+  },
+  memberRowSelected: {
+    borderColor: "rgba(217,179,95,0.28)",
+    backgroundColor: "rgba(217,179,95,0.08)",
+  },
+  memberRowLocked: {
+    borderColor: "rgba(217,179,95,0.38)",
+    backgroundColor: "rgba(217,179,95,0.12)",
+  },
+  memberAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.22)",
+  },
+  memberAvatarFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  memberAvatarInitials: {
+    color: GOLD,
+    fontWeight: "900",
+    fontSize: 15,
+  },
+  memberMeta: { flex: 1, minWidth: 0 },
+  roleBadge: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.22)",
+  },
+  roleBadgeText: {
+    color: "rgba(217,179,95,0.88)",
+    fontWeight: "800",
+    fontSize: 11,
+    letterSpacing: 0.2,
+  },
+  pastorBadge: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.42)",
+  },
+  pastorBadgeText: {
+    color: GOLD,
+    fontWeight: "900",
+    fontSize: 11,
+    letterSpacing: 0.3,
   },
   check: {
     width: 26,
@@ -1224,9 +1474,10 @@ const s = StyleSheet.create<any>({
     alignItems: "center",
     justifyContent: "center",
   },
-  checkOn: { backgroundColor: GOLD, borderColor: "rgba(217,179,95,0.55)" },
-  memberName: { color: TEXT_PRIMARY, fontWeight: "800" },
-  memberId: { marginTop: 2, color: TEXT_SECONDARY, fontWeight: "700", fontSize: 12 },
+  checkOn: { backgroundColor: GOLD, borderColor: "rgba(217,179,95,0.72)" },
+  checkLocked: { backgroundColor: GOLD, borderColor: "rgba(217,179,95,0.85)" },
+  memberName: { color: TEXT_PRIMARY, fontWeight: "900", fontSize: 15 },
+  memberId: { marginTop: 3, color: "rgba(217,179,95,0.62)", fontWeight: "700", fontSize: 12 },
 
   doneBtn: { marginTop: 6, borderRadius: 16, paddingVertical: 12, alignItems: "center", backgroundColor: GOLD },
   doneText: { color: "#0B0F17", fontWeight: "900" },
