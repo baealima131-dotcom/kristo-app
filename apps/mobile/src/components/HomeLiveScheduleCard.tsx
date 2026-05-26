@@ -38,7 +38,8 @@ const LIVE_PINK = "#FF375F";
 const CARD_MIN_HEIGHT = Math.min(790, Math.max(720, Dimensions.get("window").height * 0.86));
 const CARD_MIN_HEIGHT_COMPACT = Math.min(600, Math.max(520, Dimensions.get("window").height * 0.58));
 
-function phaseEdgeTint(phase: string, claimed: boolean) {
+function phaseEdgeTint(phase: string, claimed: boolean, isUnclaimedLiveOpen?: boolean) {
+  if (isUnclaimedLiveOpen) return "rgba(255,55,95,0.13)";
   if (phase === "live") return "rgba(255,55,95,0.13)";
   if (claimed) return "rgba(167,139,250,0.11)";
   return "rgba(247,211,106,0.11)";
@@ -449,6 +450,24 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const phase = resolveSlotPhase(slot, claimed);
   const theme = SLOT_STATE_THEMES[phase];
 
+  const isLiveWindow = slot.startMs > 0 && slot.startMs <= nowMs && slot.endMs > nowMs;
+  const isUnclaimedLiveOpen = isLiveWindow && !claimed;
+  const isUnclaimedOpen = !claimed && (phase === "open" || phase === "upcoming");
+  const compactUnclaimedLayout = isUnclaimedOpen || isUnclaimedLiveOpen;
+  const visualTheme = isUnclaimedLiveOpen ? { ...theme, label: "LIVE NOW • OPEN" } : theme;
+
+  useEffect(() => {
+    if (!__DEV__) return;
+    console.log("KRISTO_HOME_SLOT_VISUAL_STATE", {
+      slotId: slot?.id,
+      slotNumber: Number((slot as any)?.slot || (slot as any)?.slotNumber || slotFeedIndex + 1),
+      claimed,
+      phase,
+      isLiveWindow,
+      isUnclaimedLiveOpen,
+    });
+  }, [slot?.id, slotFeedIndex, claimed, phase, isLiveWindow, isUnclaimedLiveOpen, slot]);
+
   const mediaName = cleanFeedLabel(item?.mediaName || item?.actorLabel, "Church Media");
   const churchName = cleanFeedLabel(item?.churchName || item?.churchLabel, "MY CHURCH");
   const churchShort = churchName.replace(/\s+CHURCH$/i, "").trim() || churchName;
@@ -474,8 +493,13 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       ? Math.max(0, Math.min(1, (nowMs - slot.startMs) / (slot.endMs - slot.startMs)))
       : 0;
 
-  const countdownLabel =
-    phase === "live"
+  const countdownLabel = isUnclaimedLiveOpen
+    ? msRemaining > 60000
+      ? `Ends in ${Math.ceil(msRemaining / 60000)}m`
+      : msRemaining > 0
+        ? "Live now"
+        : "Ending soon"
+    : phase === "live"
       ? msRemaining > 60000
         ? `${Math.ceil(msRemaining / 60000)}m left`
         : "Ending soon"
@@ -488,6 +512,8 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             : minutesToStart === 1
               ? "1m left"
               : "Starting now";
+
+  const claimCtaText = isUnclaimedLiveOpen ? "Claim & Go Live" : "Claim This Live Slot";
 
   const titleFontSize = useMemo(() => resolveTitleFontSize(slotTitle), [slotTitle]);
   const titleLineHeight = titleFontSize + 6;
@@ -596,9 +622,8 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
   const showPrimaryClaim = !claimed && phase !== "ended";
   const showSecondaryClaim = claimed && phase !== "ended";
-  const isUnclaimedOpen = !claimed && (phase === "open" || phase === "upcoming");
   const compactOpenCard = !claimed && phase !== "ended";
-  const edgeTint = phaseEdgeTint(phase, claimed);
+  const edgeTint = phaseEdgeTint(phase, claimed, isUnclaimedLiveOpen);
 
   return (
     <Animated.View
@@ -613,12 +638,12 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         style={[
           styles.card,
           fullBleed && (compactOpenCard ? styles.cardCompact : styles.cardTall),
-          { borderColor: theme.border, shadowColor: theme.glow },
+          { borderColor: visualTheme.border, shadowColor: visualTheme.glow },
         ]}
       >
         <LinearGradient colors={["#080A10", "#111520", "#070910"]} style={StyleSheet.absoluteFillObject} />
         <LinearGradient
-          colors={[theme.gradient[0], theme.gradient[1], theme.gradient[2]]}
+          colors={[visualTheme.gradient[0], visualTheme.gradient[1], visualTheme.gradient[2]]}
           style={[StyleSheet.absoluteFillObject, { opacity: 0.72 }]}
         />
         <LinearGradient
@@ -633,9 +658,16 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             styles.glowOrbTop,
             { backgroundColor: GOLD_SOFT },
             isUnclaimedOpen && styles.glowOrbTopUnclaimed,
+            isUnclaimedLiveOpen && styles.glowOrbTopLiveOpen,
           ]}
         />
-        <View pointerEvents="none" style={[styles.glowOrbBottom, { backgroundColor: theme.glow }]} />
+        <View
+          pointerEvents="none"
+          style={[
+            styles.glowOrbBottom,
+            { backgroundColor: isUnclaimedLiveOpen ? "rgba(255,55,95,0.32)" : visualTheme.glow },
+          ]}
+        />
         <LinearGradient
           pointerEvents="none"
           colors={["rgba(255,255,255,0.07)", "rgba(255,255,255,0.02)", "transparent"]}
@@ -672,16 +704,16 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         <View style={[styles.cardInner, compactOpenCard && styles.cardInnerCompact]}>
           <Animated.View
             entering={FadeInDown.duration(300)}
-            style={[styles.headerSection, isUnclaimedOpen && styles.headerSectionUnclaimed]}
+            style={[styles.headerSection, compactUnclaimedLayout && styles.headerSectionUnclaimed]}
           >
             <View style={styles.headerTopRow}>
               <AvatarRing
                 uri={avatarUri}
                 initial={avatarInitial}
                 size={68}
-                accent={theme.accent}
+                accent={visualTheme.accent}
                 live={phase === "live"}
-                goldFallback
+                goldFallback={!isUnclaimedLiveOpen}
               />
               <View style={styles.headerTextBlock}>
                 <Text style={styles.mediaName} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
@@ -726,17 +758,26 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             </View>
           </Animated.View>
 
-          <PremiumSectionDivider unclaimed={isUnclaimedOpen} />
+          <PremiumSectionDivider unclaimed={compactUnclaimedLayout} />
 
-          <View style={[styles.bodySection, isUnclaimedOpen && styles.bodySectionUnclaimed]}>
-            <View style={[styles.stateRow, isUnclaimedOpen && styles.stateRowUnclaimed]}>
-              <View style={[styles.statePill, { borderColor: "rgba(255,255,255,0.08)", backgroundColor: `${theme.accent}14` }]}>
-                {phase === "live" ? <View style={[styles.liveDot, { backgroundColor: theme.accent }]} /> : null}
-                <Text style={[styles.statePillText, { color: theme.accent }]}>{theme.label}</Text>
+          <View style={[styles.bodySection, compactUnclaimedLayout && styles.bodySectionUnclaimed]}>
+            <View style={[styles.stateRow, compactUnclaimedLayout && styles.stateRowUnclaimed]}>
+              <View
+                style={[
+                  styles.statePill,
+                  isUnclaimedLiveOpen && styles.statePillLiveOpen,
+                  {
+                    borderColor: isUnclaimedLiveOpen ? "rgba(255,120,150,0.45)" : "rgba(255,255,255,0.08)",
+                    backgroundColor: `${visualTheme.accent}14`,
+                  },
+                ]}
+              >
+                {phase === "live" ? <View style={[styles.liveDot, { backgroundColor: visualTheme.accent }]} /> : null}
+                <Text style={[styles.statePillText, { color: visualTheme.accent }]}>{visualTheme.label}</Text>
               </View>
             </View>
 
-            <View style={[styles.titleBlock, isUnclaimedOpen && styles.titleBlockUnclaimed]}>
+            <View style={[styles.titleBlock, compactUnclaimedLayout && styles.titleBlockUnclaimed]}>
               <Text
                 style={[styles.slotTitle, { fontSize: titleFontSize, lineHeight: titleLineHeight }]}
                 numberOfLines={2}
@@ -751,7 +792,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               ) : null}
             </View>
 
-            <View style={[styles.metaRow, isUnclaimedOpen && styles.metaRowUnclaimed]}>
+            <View style={[styles.metaRow, compactUnclaimedLayout && styles.metaRowUnclaimed]}>
               <View style={styles.metaChip}>
                 <Ionicons name="calendar-outline" size={15} color={GOLD} />
                 <Text style={styles.metaText}>{formatSlotDateLabel(slot.meetingDate, slot.meetingDay)}</Text>
@@ -765,10 +806,14 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               </View>
             </View>
 
-            {isUnclaimedOpen ? (
+            {compactUnclaimedLayout ? (
               <View pointerEvents="none" style={styles.contentAmbientGlow}>
                 <LinearGradient
-                  colors={["transparent", "rgba(247,211,106,0.06)", "transparent"]}
+                  colors={
+                    isUnclaimedLiveOpen
+                      ? ["transparent", "rgba(255,55,95,0.08)", "transparent"]
+                      : ["transparent", "rgba(247,211,106,0.06)", "transparent"]
+                  }
                   start={{ x: 0, y: 0.5 }}
                   end={{ x: 1, y: 0.5 }}
                   style={StyleSheet.absoluteFillObject}
@@ -776,11 +821,11 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               </View>
             ) : null}
 
-            <View style={[styles.progressSection, isUnclaimedOpen && styles.progressSectionUnclaimed]}>
-              <View style={[styles.progressTrack, { shadowColor: theme.accent }]}>
-                <View style={[styles.progressFillGlow, { width: `${Math.round(progress * 100)}%`, shadowColor: theme.accent }]}>
+            <View style={[styles.progressSection, compactUnclaimedLayout && styles.progressSectionUnclaimed]}>
+              <View style={[styles.progressTrack, { shadowColor: visualTheme.accent }]}>
+                <View style={[styles.progressFillGlow, { width: `${Math.round(progress * 100)}%`, shadowColor: visualTheme.accent }]}>
                   <LinearGradient
-                    colors={["rgba(255,255,255,0.22)", theme.accent, `${theme.accent}CC`, theme.accent]}
+                    colors={["rgba(255,255,255,0.22)", visualTheme.accent, `${visualTheme.accent}CC`, visualTheme.accent]}
                     start={{ x: 0, y: 0.5 }}
                     end={{ x: 1, y: 0.5 }}
                     style={styles.progressFill}
@@ -788,7 +833,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                 </View>
               </View>
               <View style={styles.progressFooter}>
-                <Text style={styles.countdown}>{countdownLabel}</Text>
+                <Text style={[styles.countdown, isUnclaimedLiveOpen && styles.countdownLiveOpen]}>{countdownLabel}</Text>
                 <Text style={styles.progressSlotHint}>
                   Slot {slotFeedIndex + 1} of {slotFeedTotal}
                 </Text>
@@ -887,28 +932,30 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                 ) : null}
                 </Animated.View>
               </View>
-            ) : isUnclaimedOpen ? null : (
-              <View style={styles.openSpacer} />
-            )}
+            ) : null}
           </View>
 
-          <View style={[styles.footerSection, isUnclaimedOpen && styles.footerSectionUnclaimed]}>
+          <View style={[styles.footerSection, compactUnclaimedLayout && styles.footerSectionUnclaimed]}>
             {showPrimaryClaim ? (
-              <View style={isUnclaimedOpen ? styles.claimBtnPrimaryWrap : undefined}>
-                {isUnclaimedOpen ? (
-                  <View pointerEvents="none" style={styles.claimBtnPrimaryBloom} />
+              <View style={compactUnclaimedLayout ? styles.claimBtnPrimaryWrap : undefined}>
+                {compactUnclaimedLayout ? (
+                  <View
+                    pointerEvents="none"
+                    style={[styles.claimBtnPrimaryBloom, isUnclaimedLiveOpen && styles.claimBtnPrimaryBloomLiveOpen]}
+                  />
                 ) : null}
                 <AnimatedPressable
                   onPress={handleClaimPress}
                   style={[
                     styles.claimBtnPrimary,
-                    isUnclaimedOpen && styles.claimBtnPrimaryUnclaimed,
+                    compactUnclaimedLayout && styles.claimBtnPrimaryUnclaimed,
+                    isUnclaimedLiveOpen && styles.claimBtnPrimaryLiveOpen,
                     claimBtnStyle,
                   ]}
                 >
                   <LinearGradient
                     colors={
-                      isUnclaimedOpen
+                      compactUnclaimedLayout
                         ? ["#FFE08A", "#F7D36A", "#E7C46F", "#B8862E", "#8B5E14"]
                         : [GOLD, "#E7C46F", "#C8943A"]
                     }
@@ -916,10 +963,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     end={{ x: 1, y: 1 }}
                     style={[
                       styles.claimBtnPrimaryGradient,
-                      isUnclaimedOpen && styles.claimBtnPrimaryGradientUnclaimed,
+                      compactUnclaimedLayout && styles.claimBtnPrimaryGradientUnclaimed,
                     ]}
                   >
-                    {isUnclaimedOpen ? (
+                    {compactUnclaimedLayout ? (
                       <>
                         <View pointerEvents="none" style={styles.claimBtnPrimaryTopSheen} />
                         <LinearGradient
@@ -931,16 +978,20 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                         />
                       </>
                     ) : null}
-                    <Ionicons name="hand-left-outline" size={isUnclaimedOpen ? 22 : 24} color="#1A1205" />
-                    <Text style={styles.claimBtnPrimaryText}>Claim This Live Slot</Text>
+                    <Ionicons
+                      name={isUnclaimedLiveOpen ? "radio" : "hand-left-outline"}
+                      size={compactUnclaimedLayout ? 22 : 24}
+                      color="#1A1205"
+                    />
+                    <Text style={styles.claimBtnPrimaryText}>{claimCtaText}</Text>
                   </LinearGradient>
                 </AnimatedPressable>
               </View>
             ) : null}
 
             {phase === "ended" ? (
-              <View style={[styles.claimBtnSecondary, styles.claimBtnDisabled, { borderColor: theme.border }]}>
-                <Text style={[styles.claimBtnSecondaryText, { color: theme.accent }]}>Slot Ended</Text>
+              <View style={[styles.claimBtnSecondary, styles.claimBtnDisabled, { borderColor: visualTheme.border }]}>
+                <Text style={[styles.claimBtnSecondaryText, { color: visualTheme.accent }]}>Slot Ended</Text>
               </View>
             ) : null}
 
@@ -952,7 +1003,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               onComment={onComment}
               onShare={onShare}
               onToggleSave={onToggleSave}
-              blendUnclaimed={isUnclaimedOpen}
+              blendUnclaimed={compactUnclaimedLayout}
             />
           </View>
         </View>
@@ -1024,6 +1075,14 @@ const styles = StyleSheet.create({
     height: 190,
     top: -56,
     right: 12,
+  },
+  glowOrbTopLiveOpen: {
+    opacity: 0.52,
+    backgroundColor: "rgba(255,55,95,0.14)",
+    width: 200,
+    height: 200,
+    top: -60,
+    right: 8,
   },
   glowOrbBottom: {
     position: "absolute",
@@ -1249,6 +1308,14 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 1.2,
   },
+  statePillLiveOpen: {
+    borderWidth: 1.2,
+    shadowColor: LIVE_PINK,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
+  },
   liveDot: {
     width: 7,
     height: 7,
@@ -1355,6 +1422,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800",
     letterSpacing: 0.2,
+  },
+  countdownLiveOpen: {
+    color: LIVE_PINK,
   },
   progressSlotHint: {
     color: "rgba(255,255,255,0.38)",
@@ -1498,6 +1568,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
   },
+  claimBtnPrimaryBloomLiveOpen: {
+    backgroundColor: "rgba(255,55,95,0.14)",
+    shadowColor: LIVE_PINK,
+    shadowOpacity: 0.32,
+  },
   claimBtnPrimary: {
     borderRadius: 999,
     overflow: "hidden",
@@ -1512,6 +1587,10 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 8 },
     elevation: 12,
+  },
+  claimBtnPrimaryLiveOpen: {
+    shadowColor: LIVE_PINK,
+    shadowOpacity: 0.38,
   },
   claimBtnPrimaryGradient: {
     minHeight: 58,
