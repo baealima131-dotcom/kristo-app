@@ -18,5 +18,5 @@ export default function AppGate() {
   }
 
   if (!session) return <Redirect href={"/(auth)/login" as Href} />;
-  return <Redirect href="/(tabs)" />;
+  return <Redirect href={"/(tabs)" as Href} />;
 }
