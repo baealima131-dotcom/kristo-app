@@ -13,6 +13,7 @@ import { fetchMyActiveChurchMembership } from "./churchMembersApi";
 import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
 import { resolveChurchDisplayName } from "./churchStore";
+import { silentPreloadTabScreens } from "./screenDataCache";
 
 type Ctx = {
   session: KristoSession | null;
@@ -51,29 +52,8 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     };
   }, []);
 
-
   async function silentPreloadChurchAndHome(baseSession: KristoSession | null) {
-    if (!baseSession?.userId) return;
-
-    try {
-      const headers = getKristoHeaders({
-        userId: baseSession.userId,
-        role: baseSession.role,
-        churchId: baseSession.churchId || "",
-      });
-
-      await Promise.allSettled([
-        apiGet("/api/auth/profile", { headers }),
-        apiGet("/api/users/" + encodeURIComponent(baseSession.userId) + "/overview", { headers }),
-        baseSession.churchId ? apiGet("/api/church/overview", { headers }) : Promise.resolve(null),
-        baseSession.churchId ? apiGet("/api/church/feed", { headers }) : Promise.resolve(null),
-        baseSession.churchId ? apiGet("/api/church/members?all=1", { headers }) : Promise.resolve(null),
-        baseSession.churchId ? apiGet("/api/church/ministries", { headers }) : Promise.resolve(null),
-        baseSession.churchId ? apiGet("/api/church/notifications", { headers }) : Promise.resolve(null),
-      ]);
-    } catch {
-      return baseSession;
-    }
+    await silentPreloadTabScreens(baseSession);
   }
 
   async function silentSyncProfile(baseSession: KristoSession | null, opts?: { returnOnly?: boolean }) {
@@ -82,12 +62,21 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     try {
       const res: any = await apiGet("/api/auth/profile", {
         headers: getKristoHeaders({ userId: baseSession.userId, role: baseSession.role, churchId: baseSession.churchId || "" }),
-      });
+      }, { screen: "SessionProvider", throttleMs: 120000 });
 
       if (!res?.ok || !res?.profile) return baseSession;
 
       const p = res.profile;
       const syncedChurchId = String(res?.churchId || res?.activeMembership?.churchId || baseSession.churchId || "");
+      console.log("KRISTO_MEMBERSHIP_RESOLVED", {
+        userId: baseSession.userId,
+        headerChurchId: baseSession.churchId || "",
+        syncedChurchId,
+        churchRole: String(
+          res?.role || res?.churchRole || res?.activeMembership?.churchRole || baseSession.role || "Member"
+        ),
+        source: "mobile-profile-sync",
+      });
       const churchName = syncedChurchId
         ? String(res?.churchName || "").trim() || (await resolveChurchDisplayName(syncedChurchId, baseSession.userId))
         : "";
@@ -158,12 +147,12 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     };
 
     silentSyncProfile(session);
+    void silentPreloadTabScreens(session);
     const t = setInterval(async () => {
       await checkExpiry();
       const latest = await loadSession();
       await silentSyncProfile(latest || session);
-      await silentPreloadChurchAndHome(latest || session);
-    }, 15 * 1000);
+    }, 120000);
 
     const sub = AppState.addEventListener("change", async (state) => {
       if (state === "active") {
@@ -199,7 +188,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
           }
           setSessionState(touched);
           await silentSyncProfile(touched);
-          await silentPreloadChurchAndHome(touched);
+          await silentPreloadTabScreens(touched);
         }
       }
     });
@@ -208,7 +197,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       clearInterval(t);
       sub.remove();
     };
-  }, [session?.userId]);
+  }, [session?.userId, session?.churchId]);
 
   async function setSession(s: KristoSession) {
     await saveSession(s);

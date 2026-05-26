@@ -26,6 +26,13 @@ import { useIsFocused } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { loadChurchProfileCache, saveChurchProfileCache } from "@/src/lib/churchStore";
+import {
+  getChurchOverviewCache,
+  peekChurchOverviewCache,
+  saveChurchOverviewCache,
+  type ChurchOverviewCachePayload,
+} from "@/src/lib/screenDataCache";
+import { ChurchOverviewSkeleton } from "@/src/components/PremiumTabSkeletons";
 import { onChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
 import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
 import {
@@ -159,6 +166,25 @@ function profileFromCache(churchId: string, cached: Awaited<ReturnType<typeof lo
   };
 }
 
+function applyOverviewCachePayload(
+  payload: ChurchOverviewCachePayload,
+  mediaUrlFn: (raw: string) => string
+): { profile: ChurchProfile; stats: OverviewStats } {
+  const avatarRaw = String(payload.profile.avatarUri || "").trim();
+  return {
+    profile: {
+      id: payload.profile.id,
+      name: payload.profile.name,
+      address: payload.profile.address,
+      phone: payload.profile.phone,
+      pastorName: payload.profile.pastorName,
+      avatarUri: avatarRaw ? mediaUrlFn(avatarRaw) : "",
+      avatarUpdatedAt: payload.profile.avatarUpdatedAt,
+    },
+    stats: { ...payload.stats },
+  };
+}
+
 type MediaMinistryTarget = {
   id: string;
   name: string;
@@ -244,23 +270,37 @@ export default function ChurchOverviewScreen() {
     });
   };
 
-  const [stats, setStats] = useState<OverviewStats>({
-    activeMembers: 0,
-    ministries: 0,
-    ministryMembers: 0,
-    unreadNotifications: 0,
-    offeringBalance: 0,
-  });
-  const [profile, setProfile] = useState<ChurchProfile>({
-    id: "",
-    name: "",
-    address: "",
-    phone: "",
-    pastorName: "",
-    avatarUri: "",
-    avatarUpdatedAt: undefined,
-  });
-  const [loading, setLoading] = useState(true);
+  const overviewCachePeek = useMemo(
+    () =>
+      churchId && effectiveAuthUserId && !invitePreview
+        ? peekChurchOverviewCache(churchId, effectiveAuthUserId)
+        : null,
+    [churchId, effectiveAuthUserId, invitePreview]
+  );
+  const initialOverview = overviewCachePeek ? applyOverviewCachePayload(overviewCachePeek, mediaUrl) : null;
+
+  const [stats, setStats] = useState<OverviewStats>(
+    initialOverview?.stats || {
+      activeMembers: 0,
+      ministries: 0,
+      ministryMembers: 0,
+      unreadNotifications: 0,
+      offeringBalance: 0,
+    }
+  );
+  const [profile, setProfile] = useState<ChurchProfile>(
+    initialOverview?.profile || {
+      id: "",
+      name: "",
+      address: "",
+      phone: "",
+      pastorName: "",
+      avatarUri: "",
+      avatarUpdatedAt: undefined,
+    }
+  );
+  const [bootLoading, setBootLoading] = useState(!initialOverview);
+  const hasOverviewCacheRef = useRef(Boolean(initialOverview));
   const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [saveBanner, setSaveBanner] = useState("");
@@ -276,7 +316,7 @@ export default function ChurchOverviewScreen() {
   const contentOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    if (!loading && !err && !(invitePreview && previewLimitReached)) {
+    if (!bootLoading && !err && !(invitePreview && previewLimitReached)) {
       contentOpacity.setValue(0);
       Animated.timing(contentOpacity, {
         toValue: 1,
@@ -284,7 +324,7 @@ export default function ChurchOverviewScreen() {
         useNativeDriver: true,
       }).start();
     }
-  }, [loading, err, invitePreview, previewLimitReached, contentOpacity]);
+  }, [bootLoading, err, invitePreview, previewLimitReached, contentOpacity]);
 
   useEffect(() => {
     let alive = true;
@@ -378,29 +418,35 @@ export default function ChurchOverviewScreen() {
   }
 
   useEffect(() => {
-    if (!churchId) return;
+    if (!churchId || !effectiveAuthUserId || invitePreview) return;
     let alive = true;
 
     (async () => {
-      const cached = await loadChurchProfileCache(churchId);
-      if (!alive || !cached) {
-        logTrafficCache("ChurchOverview", "church-profile", false);
-        return;
+      const cached = (await getChurchOverviewCache(churchId, effectiveAuthUserId)) || overviewCachePeek;
+      if (!alive || !cached) return;
+      hasOverviewCacheRef.current = true;
+      const next = applyOverviewCachePayload(cached, mediaUrl);
+      setProfile(next.profile);
+      setStats(next.stats);
+      setBootLoading(false);
+      if (__DEV__) {
+        console.log("KRISTO_CHURCH_OVERVIEW_CACHE_HIT", {
+          churchId,
+          userId: effectiveAuthUserId,
+          updatedAt: cached.updatedAt,
+        });
       }
-      logTrafficCache("ChurchOverview", "church-profile", true);
-      const next = profileFromCache(churchId, cached);
-      if (next) setProfile(next);
     })();
 
     return () => {
       alive = false;
     };
-  }, [churchId, refreshAt]);
+  }, [churchId, effectiveAuthUserId, invitePreview, refreshAt, overviewCachePeek]);
 
-  async function load(opts?: { silent?: boolean }) {
+  async function load(opts?: { silent?: boolean; manual?: boolean }) {
     const silent = !!opts?.silent;
     if (silent) setRefreshing(true);
-    else setLoading(true);
+    else if (!hasOverviewCacheRef.current) setBootLoading(true);
 
     setErr(null);
 
@@ -408,12 +454,26 @@ export default function ChurchOverviewScreen() {
       if (!churchId) throw new Error("churchId missing");
       if (!effectiveAuthUserId) throw new Error("userId missing");
 
-      const cached = await loadChurchProfileCache(churchId);
+      const cached = await getChurchOverviewCache(churchId, effectiveAuthUserId);
       if (cached) {
-        const fromCache = profileFromCache(churchId, cached);
-        if (fromCache) {
-          setProfile(fromCache);
-          if (!silent) setLoading(false);
+        hasOverviewCacheRef.current = true;
+        const fromCache = applyOverviewCachePayload(cached, mediaUrl);
+        setProfile(fromCache.profile);
+        setStats(fromCache.stats);
+        if (!silent) setBootLoading(false);
+        if (__DEV__) {
+          console.log("KRISTO_CHURCH_OVERVIEW_CACHE_HIT", {
+            churchId,
+            userId: effectiveAuthUserId,
+            updatedAt: cached.updatedAt,
+          });
+        }
+      } else {
+        const legacy = await loadChurchProfileCache(churchId);
+        const fromLegacy = profileFromCache(churchId, legacy);
+        if (fromLegacy) {
+          setProfile(fromLegacy);
+          if (!silent) setBootLoading(false);
         }
       }
 
@@ -442,13 +502,7 @@ export default function ChurchOverviewScreen() {
 
       const s = j?.data?.stats || {};
       const p = j?.data?.profile || {};
-      setStats({
-        activeMembers: Number(s?.activeMembers || 0),
-        ministries: Number(s?.ministries || 0),
-        ministryMembers: Number(s?.ministryMembers || 0),
-        unreadNotifications: Number(s?.unreadNotifications || 0),
-        offeringBalance: Number(s?.offeringBalance || 0),
-      });
+      const legacyProfileCache = await loadChurchProfileCache(churchId);
       const serverAvatarRaw = String(
         p?.avatarUri ||
         p?.avatarUrl ||
@@ -460,8 +514,8 @@ export default function ChurchOverviewScreen() {
       ).trim();
 
       const mergedAvatar = pickFresherAvatar({
-        localUri: cached?.avatarUri || cached?.avatarUrl || "",
-        localUpdatedAt: cached?.avatarUpdatedAt,
+        localUri: cached?.profile?.avatarUri || legacyProfileCache?.avatarUri || legacyProfileCache?.avatarUrl || "",
+        localUpdatedAt: cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt,
         serverUri: serverAvatarRaw,
         serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || 0),
       });
@@ -469,14 +523,18 @@ export default function ChurchOverviewScreen() {
       if (mergedAvatar.skippedStale) {
         console.log("[ChurchOverview] skipped stale server avatar", {
           churchId,
-          localUpdatedAt: cached?.avatarUpdatedAt || null,
+          localUpdatedAt: cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt || null,
           serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || 0),
         });
       }
 
       const nextAvatar = mergedAvatar.uri ? mediaUrl(mergedAvatar.uri) : "";
       const nextAvatarUpdatedAt =
-        mergedAvatar.source === "local" ? cached?.avatarUpdatedAt : nextAvatar ? Date.now() : cached?.avatarUpdatedAt;
+        mergedAvatar.source === "local"
+          ? cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt
+          : nextAvatar
+            ? Date.now()
+            : cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt;
 
       setProfile({
         id: String(p?.id || churchId || ""),
@@ -486,6 +544,32 @@ export default function ChurchOverviewScreen() {
         pastorName: String(p?.pastorName || ""),
         avatarUri: nextAvatar,
         avatarUpdatedAt: nextAvatarUpdatedAt,
+      });
+
+      const nextStats = {
+        activeMembers: Number(s?.activeMembers || 0),
+        ministries: Number(s?.ministries || 0),
+        ministryMembers: Number(s?.ministryMembers || 0),
+        unreadNotifications: Number(s?.unreadNotifications || 0),
+        offeringBalance: Number(s?.offeringBalance || 0),
+      };
+      setStats(nextStats);
+
+      hasOverviewCacheRef.current = true;
+      await saveChurchOverviewCache({
+        churchId,
+        userId: effectiveAuthUserId,
+        profile: {
+          id: String(p?.id || churchId || ""),
+          name: String(p?.name || churchId || "Church"),
+          address: String(p?.address || ""),
+          phone: String(p?.phone || ""),
+          pastorName: String(p?.pastorName || ""),
+          avatarUri: nextAvatar,
+          avatarUpdatedAt: nextAvatarUpdatedAt,
+        },
+        stats: nextStats,
+        updatedAt: Date.now(),
       });
 
       await saveChurchProfileCache({
@@ -522,8 +606,11 @@ export default function ChurchOverviewScreen() {
         setErr(msg);
       }
     } finally {
-      setLoading(false);
+      setBootLoading(false);
       setRefreshing(false);
+      if (__DEV__ && silent) {
+        console.log("KRISTO_CHURCH_OVERVIEW_SILENT_REFRESH", { churchId, userId: effectiveAuthUserId });
+      }
     }
   }
 
@@ -627,7 +714,7 @@ export default function ChurchOverviewScreen() {
     if (!isFocused) return;
     if (invitePreview && !previewChecked) return;
     if (invitePreview && previewLimitReached) {
-      setLoading(false);
+      setBootLoading(false);
       setErr(null);
       return;
     }
@@ -904,11 +991,8 @@ export default function ChurchOverviewScreen() {
         </View>
       )}
 
-      {loading || (invitePreview && !previewChecked) ? (
-        <View style={s.center}>
-          <ActivityIndicator color={GOLD} />
-          <Text style={s.p}>Loading overview...</Text>
-        </View>
+      {bootLoading || (invitePreview && !previewChecked) ? (
+        <ChurchOverviewSkeleton />
       ) : invitePreview && previewLimitReached ? (
         <View style={s.errorCard}>
           <Text style={s.errorTitle}>Preview limit reached</Text>

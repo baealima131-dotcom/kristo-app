@@ -16,14 +16,33 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { loadProfileDraft, saveProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
-import { onUserProfileUpdated } from "@/src/lib/kristoProfileEvents";
+import { onUserProfileUpdated, onClaimUpdated } from "@/src/lib/kristoProfileEvents";
+import { getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
+import {
+  getSlotRingWindow,
+  isNearLiveOrActiveSlot,
+  slotClaimedByUser,
+} from "@/src/lib/liveScheduleRing";
 import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
+import {
+  isSaveCooldown,
+  logTrafficCache,
+  shouldAllowScreenRefresh,
+} from "@/src/lib/kristoTraffic";
+import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getPaymentsState, subscribePayments } from "../../../src/store/paymentsStore";
 import { isPlanActive } from "../../../src/lib/payments/mobileSubscriptions";
 import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { resolveChurchDisplayName } from "@/src/lib/churchStore";
+import {
+  getProfileScreenCache,
+  peekProfileScreenCache,
+  saveProfileScreenCache,
+  type ProfileScreenCachePayload,
+} from "@/src/lib/screenDataCache";
+import { ProfileHeroSkeleton } from "@/src/components/PremiumTabSkeletons";
 import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
 import ChurchActivityGrid from "@/src/components/ChurchActivityGrid";
 import {
@@ -476,33 +495,43 @@ export default function MeScreen() {
     const claimedFeedUnsub = subscribeHomeFeed(() => {
       setClaimedFeedTick((v) => v + 1);
     });
+    const claimEventUnsub = onClaimUpdated(() => {
+      setClaimedFeedTick((v) => v + 1);
+    });
 
-    return claimedFeedUnsub;
+    return () => {
+      claimedFeedUnsub();
+      claimEventUnsub();
+    };
   }, []);
   useEffect(() => {
     let alive = true;
+    let fetched = false;
 
-    async function loadBackendMedia() {
-      if (!session?.userId || !session?.churchId) return;
+    async function loadBackendMediaOnce() {
+      if (!session?.userId || !session?.churchId || fetched) return;
+      fetched = true;
 
-      const res: any = await apiGet("/api/church/media", {
-        headers: getKristoHeaders({
-          userId: session.userId,
-          role: session.role,
-          churchId: session.churchId || "",
-        }),
-      });
+      const res: any = await apiGet(
+        "/api/church/media",
+        {
+          headers: getKristoHeaders({
+            userId: session.userId,
+            role: session.role,
+            churchId: session.churchId || "",
+          }),
+        },
+        { screen: "Profile", throttleMs: 120000 }
+      );
 
       if (!alive || !res?.ok) return;
       setBackendMedia(res.media || null);
     }
 
-    loadBackendMedia();
-    const t = setInterval(loadBackendMedia, 3000);
+    void loadBackendMediaOnce();
 
     return () => {
       alive = false;
-      clearInterval(t);
     };
   }, [session?.userId, session?.churchId]);
 
@@ -538,6 +567,7 @@ export default function MeScreen() {
 
 
   const userId = String(session?.userId || "").trim();
+  const profileCachePeek = userId ? peekProfileScreenCache(userId) : null;
   const [profileDraft, setProfileDraft] = React.useState<ProfileDraft | null>(null);
   const publicKristoId = String(
     (session as any)?.kristoId ||
@@ -616,15 +646,21 @@ export default function MeScreen() {
     toBackendImageUrl(String(profileDraft?.avatarUri || "").trim()) ||
     avatarForProfile(userId, session?.role, church);
 
-  const [loading, setLoading] = useState(true);
-  const [profile, setProfile] = useState<AuthProfile | null>(null);
-  const [postsCount, setPostsCount] = useState(0);
-  const [followersCount, setFollowersCount] = useState(0);
-  const [followingCount, setFollowingCount] = useState(0);
-  const [latestAnnouncement, setLatestAnnouncement] = useState<ChurchFeedItemLite | null>(null);
-  const [latestTestimony, setLatestTestimony] = useState<ChurchFeedItemLite | null>(null);
-  const [latestPrayer, setLatestPrayer] = useState<ChurchFeedItemLite | null>(null);
-  const [latestSaved, setLatestSaved] = useState<{ title: string; body: string } | null>(null);
+  const [bootLoading, setBootLoading] = useState(!profileCachePeek);
+  const [profile, setProfile] = useState<AuthProfile | null>((profileCachePeek?.profile as AuthProfile | null) || null);
+  const [postsCount, setPostsCount] = useState(profileCachePeek?.postsCount || 0);
+  const [followersCount, setFollowersCount] = useState(profileCachePeek?.followersCount || 0);
+  const [followingCount, setFollowingCount] = useState(profileCachePeek?.followingCount || 0);
+  const [latestAnnouncement, setLatestAnnouncement] = useState<ChurchFeedItemLite | null>(
+    (profileCachePeek?.latestAnnouncement as ChurchFeedItemLite | null) || null
+  );
+  const [latestTestimony, setLatestTestimony] = useState<ChurchFeedItemLite | null>(
+    (profileCachePeek?.latestTestimony as ChurchFeedItemLite | null) || null
+  );
+  const [latestPrayer, setLatestPrayer] = useState<ChurchFeedItemLite | null>(
+    (profileCachePeek?.latestPrayer as ChurchFeedItemLite | null) || null
+  );
+  const [latestSaved, setLatestSaved] = useState<{ title: string; body: string } | null>(profileCachePeek?.latestSaved || null);
   const [profileFeedItems, setProfileFeedItems] = useState<any[]>([]);
 
   const creatorScoreValue = useMemo(() => {
@@ -776,6 +812,129 @@ export default function MeScreen() {
     };
   }, []);
 
+  const hasProfileCacheRef = React.useRef(Boolean(profileCachePeek));
+
+  const applyProfileCachePayload = useCallback((payload: ProfileScreenCachePayload) => {
+    hasProfileCacheRef.current = true;
+    setProfile((payload.profile as AuthProfile | null) || null);
+    setPostsCount(payload.postsCount);
+    setFollowersCount(payload.followersCount);
+    setFollowingCount(payload.followingCount);
+    setLatestAnnouncement((payload.latestAnnouncement as ChurchFeedItemLite | null) || null);
+    setLatestTestimony((payload.latestTestimony as ChurchFeedItemLite | null) || null);
+    setLatestPrayer((payload.latestPrayer as ChurchFeedItemLite | null) || null);
+    setLatestSaved(payload.latestSaved || null);
+    setBootLoading(false);
+  }, []);
+
+  React.useEffect(() => {
+    if (!userId) return;
+    let alive = true;
+    void (async () => {
+      const cached = (await getProfileScreenCache(userId)) || profileCachePeek;
+      if (!alive || !cached) return;
+      applyProfileCachePayload(cached);
+      if (__DEV__) {
+        console.log("KRISTO_PROFILE_CACHE_HIT", { userId, updatedAt: cached.updatedAt });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [userId, applyProfileCachePayload, profileCachePeek]);
+
+  const applyProfileResponse = useCallback(
+    async (profileRes: AuthProfileRes | null | undefined, opts?: { silent?: boolean }) => {
+      const silent = !!opts?.silent;
+      if (!profileRes?.ok || !profileRes.profile) {
+        setProfile(null);
+        return;
+      }
+
+      setProfile(profileRes.profile);
+
+      const backendName = String(profileRes.profile.fullName || "").trim();
+      const backendAvatarRaw = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
+      const draftBefore = session?.userId ? await loadProfileDraft(session.userId) : null;
+      const mergedAvatar = pickFresherAvatar({
+        localUri: String(draftBefore?.avatarUri || (session as any)?.avatarUri || (session as any)?.avatarUrl || "").trim(),
+        localUpdatedAt: draftBefore?.avatarUpdatedAt,
+        serverUri: backendAvatarRaw,
+        serverUpdatedAt: Number((profileRes.profile as any)?.updatedAt || (profileRes.profile as any)?.avatarUpdatedAt || 0),
+      });
+
+      if (mergedAvatar.skippedStale && silent) {
+        console.log("[Profile] skipped stale server avatar", {
+          userId,
+          localUpdatedAt: draftBefore?.avatarUpdatedAt || null,
+        });
+      }
+
+      const backendAvatar = mergedAvatar.uri ? toBackendImageUrl(mergedAvatar.uri) : "";
+
+      if (session?.userId) {
+        await setSession({
+          ...session,
+          ...(backendName ? { name: backendName, displayName: backendName } : {}),
+          avatarUrl: backendAvatar || (session as any)?.avatarUrl || "",
+          avatarUri: backendAvatar || (session as any)?.avatarUri || "",
+        } as any);
+
+        if (backendAvatar || backendName) {
+          const draft = draftBefore || { displayName: backendName || "" };
+          const nextAvatarUpdatedAt =
+            mergedAvatar.source === "local"
+              ? draftBefore?.avatarUpdatedAt
+              : backendAvatar
+                ? Date.now()
+                : draft.avatarUpdatedAt;
+          await saveProfileDraft(
+            {
+              ...draft,
+              displayName: backendName || draft.displayName,
+              avatarUri: backendAvatar || draft.avatarUri,
+              avatarUpdatedAt: nextAvatarUpdatedAt,
+            },
+            session.userId
+          );
+          setProfileDraft({
+            ...draft,
+            displayName: backendName || draft.displayName,
+            avatarUri: backendAvatar || draft.avatarUri,
+            avatarUpdatedAt: nextAvatarUpdatedAt,
+          });
+        }
+      }
+
+      if (silent) {
+        console.log("[Profile] silent refresh applied", {
+          userId,
+          hasAvatar: Boolean(backendAvatar),
+        });
+      }
+    },
+    [session, setSession, userId]
+  );
+
+  const loadProfileLight = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (
+        (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
+        Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) > 0
+      ) {
+        return;
+      }
+
+      const profileRes = await apiGet<AuthProfileRes>(
+        "/api/auth/profile",
+        { headers: getKristoHeaders() },
+        { screen: "Profile", throttleMs: 45000 }
+      );
+      await applyProfileResponse(profileRes, opts);
+    },
+    [applyProfileResponse]
+  );
+
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = !!opts?.silent;
     if (
@@ -785,100 +944,54 @@ export default function MeScreen() {
       return;
     }
 
-    if (!silent) setLoading(true);
+    if (!silent && !hasProfileCacheRef.current) setBootLoading(true);
     try {
 
+      const cached = userId ? await getProfileScreenCache(userId) : null;
+      if (cached) {
+        applyProfileCachePayload(cached);
+        if (__DEV__) {
+          console.log("KRISTO_PROFILE_CACHE_HIT", { userId, updatedAt: cached.updatedAt });
+        }
+      }
+
       const [profileRes, postsRes, announcementsRes, feedRes, overviewRes] = await Promise.all([
-        apiGet<AuthProfileRes>("/api/auth/profile", {
-            headers: getKristoHeaders(),
-          }),
+        apiGet<AuthProfileRes>(
+          "/api/auth/profile",
+          { headers: getKristoHeaders() },
+          { screen: "Profile", throttleMs: 30000 }
+        ),
         userId
-          ? apiGet<UserPostsRes>(`/api/users/${encodeURIComponent(userId)}/posts?limit=60`, {
-              headers: getKristoHeaders(),
-           })
+          ? apiGet<UserPostsRes>(
+              `/api/users/${encodeURIComponent(userId)}/posts?limit=60`,
+              { headers: getKristoHeaders() },
+              { screen: "Profile", throttleMs: 120000 }
+            )
           : Promise.resolve(null as any),
         churchId
-          ? apiGet<ChurchFeedRes>("/api/church/feed?type=announcement", {
-              headers: getKristoHeaders(),
-           })
+          ? apiGet<ChurchFeedRes>(
+              "/api/church/feed?type=announcement",
+              { headers: getKristoHeaders() },
+              { screen: "Profile", throttleMs: 120000 }
+            )
           : Promise.resolve(null as any),
         churchId
-          ? apiGet<ChurchFeedRes>("/api/church/feed", {
-              headers: getKristoHeaders(),
-           })
+          ? apiGet<ChurchFeedRes>(
+              "/api/church/feed",
+              { headers: getKristoHeaders() },
+              { screen: "Profile", throttleMs: 120000 }
+            )
           : Promise.resolve(null as any),
         userId
-          ? apiGet<UserOverviewRes>(`/api/users/${encodeURIComponent(userId)}/overview`, {
-              headers: getKristoHeaders(),
-           })
+          ? apiGet<UserOverviewRes>(
+              `/api/users/${encodeURIComponent(userId)}/overview`,
+              { headers: getKristoHeaders() },
+              { screen: "Profile", throttleMs: 120000 }
+            )
           : Promise.resolve(null as any),
       ]);
 
-            if (profileRes?.ok && profileRes.profile) {
-        setProfile(profileRes.profile);
-
-        const backendName = String(profileRes.profile.fullName || "").trim();
-        const backendAvatarRaw = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
-        const draftBefore = session?.userId ? await loadProfileDraft(session.userId) : null;
-        const mergedAvatar = pickFresherAvatar({
-          localUri: String(draftBefore?.avatarUri || (session as any)?.avatarUri || (session as any)?.avatarUrl || "").trim(),
-          localUpdatedAt: draftBefore?.avatarUpdatedAt,
-          serverUri: backendAvatarRaw,
-          serverUpdatedAt: Number((profileRes.profile as any)?.updatedAt || (profileRes.profile as any)?.avatarUpdatedAt || 0),
-        });
-
-        if (mergedAvatar.skippedStale && silent) {
-          console.log("[Profile] skipped stale server avatar", {
-            userId,
-            localUpdatedAt: draftBefore?.avatarUpdatedAt || null,
-          });
-        }
-
-        const backendAvatar = mergedAvatar.uri ? toBackendImageUrl(mergedAvatar.uri) : "";
-
-        if (session?.userId) {
-          await setSession({
-            ...session,
-            ...(backendName ? { name: backendName, displayName: backendName } : {}),
-            avatarUrl: backendAvatar || (session as any)?.avatarUrl || "",
-            avatarUri: backendAvatar || (session as any)?.avatarUri || "",
-          } as any);
-
-          if (backendAvatar || backendName) {
-            const draft = draftBefore || { displayName: backendName || "" };
-            const nextAvatarUpdatedAt =
-              mergedAvatar.source === "local"
-                ? draftBefore?.avatarUpdatedAt
-                : backendAvatar
-                  ? Date.now()
-                  : draft.avatarUpdatedAt;
-            await saveProfileDraft(
-              {
-                ...draft,
-                displayName: backendName || draft.displayName,
-                avatarUri: backendAvatar || draft.avatarUri,
-                avatarUpdatedAt: nextAvatarUpdatedAt,
-              },
-              session.userId
-            );
-            setProfileDraft({
-              ...draft,
-              displayName: backendName || draft.displayName,
-              avatarUri: backendAvatar || draft.avatarUri,
-              avatarUpdatedAt: nextAvatarUpdatedAt,
-            });
-          }
-        }
-
-        if (silent) {
-          console.log("[Profile] silent refresh applied", {
-            userId,
-            hasAvatar: Boolean(backendAvatar),
-          });
-        }
-     } else {
-        setProfile(null);
-     }
+      await applyProfileResponse(profileRes, { silent });
 
       const overview = overviewRes?.ok ? overviewRes.data : undefined;
 
@@ -928,6 +1041,30 @@ export default function MeScreen() {
      } else {
         setLatestSaved(null);
      }
+
+      if (userId) {
+        hasProfileCacheRef.current = true;
+        await saveProfileScreenCache({
+          userId,
+          profile: profileRes?.ok ? profileRes.profile || null : null,
+          postsCount:
+            typeof overview?.postsCount === "number" ? overview.postsCount : userPosts.length,
+          followersCount:
+            typeof overview?.followersCount === "number" ? overview.followersCount : 0,
+          followingCount:
+            typeof overview?.followingCount === "number" ? overview.followingCount : 0,
+          latestAnnouncement: myAnnouncements[0] || null,
+          latestTestimony: testimony || null,
+          latestPrayer: prayer || null,
+          latestSaved: savedSource
+            ? {
+                title: firstWords(savedSource.caption, "Latest post", 5),
+                body: String(savedSource.caption || "").trim() || "Your newest user post is ready here.",
+              }
+            : null,
+          updatedAt: Date.now(),
+        });
+      }
    } catch {
       setProfile(null);
       setPostsCount(0);
@@ -938,21 +1075,38 @@ export default function MeScreen() {
       setLatestPrayer(null);
       setLatestSaved(null);
    } finally {
-      if (!silent) setLoading(false);
+      setBootLoading(false);
+      if (__DEV__ && silent) {
+        console.log("KRISTO_PROFILE_SILENT_REFRESH", { userId, churchId });
+      }
    }
- }, [churchId, userId, session, setSession]);
+ }, [churchId, userId, session, setSession, applyProfileResponse, applyProfileCachePayload]);
 
-  const silentRefreshProfile = useCallback(async () => {
-    await refreshProfileDraft();
-    await load({ silent: true });
-  }, [refreshProfileDraft, load]);
+  const profileBootedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!userId || profileBootedRef.current) return;
+    profileBootedRef.current = true;
+    void load({ silent: true });
+  }, [userId, load]);
 
   useFocusEffect(
     useCallback(() => {
-      void refreshProfileDraft();
+      void (async () => {
+        const draft = userId ? await loadProfileDraft(userId) : null;
+        if (draft) {
+          logTrafficCache("Profile", "profile-draft", true);
+          setProfileDraft(draft);
+        } else {
+          logTrafficCache("Profile", "profile-draft", false);
+        }
+      })();
+
+      if (isSaveCooldown(`user-profile:${userId}`)) return;
+      if (!shouldAllowScreenRefresh("Profile", { minMs: 45000 })) return;
+
       void refreshActiveChurch();
-      void load({ silent: true });
-    }, [refreshProfileDraft, refreshActiveChurch, load])
+      void loadProfileLight({ silent: true });
+    }, [userId, refreshActiveChurch, loadProfileLight])
   );
 
   const applyUserProfileEvent = useCallback(
@@ -989,9 +1143,8 @@ export default function MeScreen() {
     return onUserProfileUpdated((payload) => {
       if (String(payload.userId || "").trim() !== userId) return;
       void applyUserProfileEvent(payload);
-      void silentRefreshProfile();
     });
-  }, [userId, applyUserProfileEvent, silentRefreshProfile]);
+  }, [userId, applyUserProfileEvent]);
 
   
   const currentUserId = String(session?.userId || "").trim();
@@ -1034,59 +1187,50 @@ export default function MeScreen() {
   const claimedSchedules = useMemo(() => {
     const now = Date.now();
 
-    return [...feedList(), ...profileFeedItems]
+    const fromFeed = [...feedList(), ...profileFeedItems]
       .filter((item: any) => !isMediaActivityPost(item))
       .flatMap((item: any) => {
         const slots = Array.isArray(item?.scheduleSlots)
           ? item.scheduleSlots
           : [];
 
-        return slots.map((slot: any) => ({
+        return slots.map((slot: any, index: number) => ({
           ...slot,
           feedTitle:
             item?.title ||
             item?.mediaName ||
             "Live Schedule",
+          __feedItem: item,
+          __slotIndex: index,
         }));
       })
-      .filter((slot: any) => {
-        const claimedBy = slot?.claimedBy || {};
+      .filter((slot: any) => slotClaimedByUser(slot, currentUserId));
 
-        const uid = String(
-          claimedBy?.userId ||
-          slot?.claimedByUserId ||
-          ""
-        ).trim();
+    const fromStore = getUserClaimedSlotEntries(currentUserId).map((entry: any) => ({
+      id: entry.slotId,
+      claimedByUserId: entry.userId,
+      claimedByName: entry.name,
+      feedTitle: "Claimed slot",
+      __fromClaimStore: true,
+    }));
 
-        const claimedName = String(
-          claimedBy?.name ||
-          slot?.claimedByName ||
-          slot?.name ||
-          ""
-        ).trim().toLowerCase();
+    const merged = [...fromFeed, ...fromStore];
 
-        const myName = String(
-          session?.displayName ||
-          session?.name ||
-          (session as any)?.fullName ||
-          ""
-        ).trim().toLowerCase();
+    return merged
+      .filter((slot: any, index: number) => {
+        const { endMs } = getSlotRingWindow(slot, Number(slot.__slotIndex || index), now);
+        if (endMs > 0 && endMs <= now) return false;
 
-        const matchedById = !!uid && uid === currentUserId;
-        const matchedByName = !!claimedName && !!myName && claimedName === myName;
-
-        if (!matchedById && !matchedByName) {
-          return false;
-        }
-
-        const startMs = parseSlotTime(slot);
-
-        return startMs > now;
+        const startMs = getSlotRingWindow(slot, Number(slot.__slotIndex || index), now).startMs;
+        if (!startMs) return true;
+        return startMs > now || isNearLiveOrActiveSlot(slot, Number(slot.__slotIndex || index), now);
       })
       .sort((a: any, b: any) => {
-        return parseSlotTime(a) - parseSlotTime(b);
+        const aStart = getSlotRingWindow(a, Number(a.__slotIndex || 0), now).startMs;
+        const bStart = getSlotRingWindow(b, Number(b.__slotIndex || 0), now).startMs;
+        return aStart - bStart;
       });
-  }, [currentUserId, claimedFeedTick, profileFeedItems, session?.displayName, session?.name, (session as any)?.fullName]);
+  }, [currentUserId, claimedFeedTick, profileFeedItems]);
 
   const churchActivityPosts = useMemo(() => {
     return sortActivityPostsNewestFirst(
@@ -1157,76 +1301,17 @@ const resolvedName = useMemo(() => {
     country: String(profile?.country || profileDraft?.country || session?.country || "").trim(),
  };
 
-  React.useEffect(() => {
-    if (!session?.userId) return;
-
-    let alive = true;
-
-    const silentRefreshProfileAndInvites = async () => {
-      if (!alive) return;
-
+  useFocusedPolling(
+    "Profile",
+    async () => {
       try {
         await refreshInvitations();
       } catch {}
-
-      try {
-        const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
-        if (!base || !session?.userId) return;
-
-        const r = await fetch(`${base}/api/auth/profile`, {
-          headers: getKristoHeaders(),
-        });
-        const j = await r.json().catch(() => ({} as any));
-
-        const nextChurchId = String(
-          j?.churchId || j?.activeMembership?.churchId || session?.churchId || ""
-        ).trim();
-
-        if (j?.ok && alive) {
-          const churchName = nextChurchId
-            ? String(j?.churchName || "").trim() || (await resolveChurchDisplayName(nextChurchId, session.userId))
-            : "";
-
-          if (churchName) setChurchDisplayName(churchName);
-
-          if (nextChurchId || churchName) {
-            await setSession({
-              ...(session as any),
-              churchId: nextChurchId || session.churchId,
-              activeChurchId: nextChurchId || (session as any).activeChurchId,
-              churchName: churchName || (session as any).churchName || "",
-              role: String(
-                nextChurchId
-                  ? j?.role || j?.churchRole || j?.activeMembership?.churchRole || session.role || "Member"
-                  : session.role
-              ) as any,
-            });
-          }
-
-          if (__DEV__) {
-            console.log("[Profile] active church refresh result", {
-              churchId: nextChurchId || null,
-              churchName: churchName || null,
-              membershipFound: Boolean(j?.activeMembership || nextChurchId),
-            });
-          }
-        }
-      } catch {}
-    };
-
-    silentRefreshProfileAndInvites();
-
-    const timer = setInterval(silentRefreshProfileAndInvites, 12000);
-    const sub = AppState.addEventListener("change", (state: string) => {
-      if (state === "active") silentRefreshProfileAndInvites();
-    });
-
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      sub.remove();
-    };
-  }, [session?.userId, session?.churchId]);
+      await loadProfileLight({ silent: true });
+    },
+    90000,
+    Boolean(session?.userId)
+  );
 
   return (
     <View style={s.screen}>
@@ -1507,12 +1592,8 @@ const resolvedName = useMemo(() => {
               </View>
             ) : null}
 
-            {loading ? (
-
-              <View style={s.loadingBox}>
-                <ActivityIndicator color={GOLD} />
-                <Text style={s.loadingText}>Loading profile and counts…</Text>
-              </View>
+            {bootLoading ? (
+              <ProfileHeroSkeleton />
             ) : null}
           </View>
 

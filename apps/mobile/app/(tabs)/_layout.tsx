@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { silentPreloadTabScreens } from "@/src/lib/screenDataCache";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet } from "@/src/lib/kristoApi";
 import { subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
@@ -71,7 +72,7 @@ function ChurchLiveTabIcon({ focused, isLive, pulse, liveColor = "#EF4444" }: { 
   const waveOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.75, 0] });
 
   return (
-    <View style={{ width: 46, height: 34, alignItems: "center", justifyContent: "center" }}>
+    <View style={{ width: 46, height: 38, alignItems: "center", justifyContent: "center" }}>
       {isLive ? (
         <Animated.View
           pointerEvents="none"
@@ -86,22 +87,39 @@ function ChurchLiveTabIcon({ focused, isLive, pulse, liveColor = "#EF4444" }: { 
             opacity: waveOpacity,
           }}
         />
+      ) : focused ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            width: 42,
+            height: 42,
+            borderRadius: 999,
+            backgroundColor: "rgba(217,179,95,0.14)",
+            shadowColor: GOLD,
+            shadowOpacity: 0.55,
+            shadowRadius: 14,
+            shadowOffset: { width: 0, height: 0 },
+            elevation: 8,
+          }}
+        />
       ) : null}
       <View
         style={{
-          width: 32,
-          height: 32,
+          width: focused && !isLive ? 36 : 32,
+          height: focused && !isLive ? 36 : 32,
           borderRadius: 999,
           alignItems: "center",
           justifyContent: "center",
-          borderWidth: isLive ? 2 : 0,
-          borderColor: isLive ? liveColor : "transparent",
+          borderWidth: isLive ? 2 : focused ? 1.5 : 0,
+          borderColor: isLive ? liveColor : focused ? "rgba(217,179,95,0.55)" : "transparent",
+          backgroundColor: focused && !isLive ? "rgba(217,179,95,0.08)" : "transparent",
         }}
       >
         {isLive ? (
           <Ionicons name="radio" size={25} color={liveColor} />
         ) : (
-          <MaterialCommunityIcons name="church" size={26} color={focused ? GOLD : MUTED} />
+          <MaterialCommunityIcons name="church" size={focused ? 27 : 26} color={focused ? GOLD : MUTED} />
         )}
       </View>
     </View>
@@ -176,6 +194,20 @@ export default function TabLayout() {
   const params = useGlobalSearchParams<{ profileMode?: string }>();
   const router = useRouter();
   const { session, loading } = useKristoSession();
+
+  useEffect(() => {
+    if (loading || !session?.userId) return;
+    void silentPreloadTabScreens(session);
+  }, [loading, session?.userId, session?.churchId]);
+
+  useEffect(() => {
+    if (loading || !session?.userId) return;
+    const tab = String(segments[1] || "index");
+    if (tab === "index") {
+      void silentPreloadTabScreens(session);
+    }
+  }, [loading, session, segments.join("/")]);
+
   function openPersonalScheduleAlert() {
     const alert = personalScheduleTabAlert;
     if (!alert?.item || !alert?.slot) return false;
