@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
+import fs from "node:fs";
+import path from "node:path";
 import { guard, guardAuth } from "@/app/api/_lib/rbac";
 import { ensureActiveMembershipForSession, getActiveMembership } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
@@ -255,6 +255,25 @@ function enrichComment<T extends FeedComment>(c: T) {
     ...c,
     ...publicUser(c.createdBy),
   };
+}
+
+
+function uploadedMediaFileExists(uri: unknown) {
+  const value = String(uri || "").trim();
+  if (!value) return false;
+
+  // Remote/storage URLs cannot be checked locally, so do not block them here.
+  if (!value.startsWith("/uploads/")) return true;
+
+  const clean = value.split("?")[0].replace(/^\/+/, "");
+  const full = path.join(process.cwd(), "public", clean.replace(/^public\//, ""));
+  return fs.existsSync(full);
+}
+
+function feedVideoAssetExists(item: any) {
+  const isVideo = item?.type === "video" || Boolean(String(item?.videoUrl || "").trim());
+  if (!isVideo) return true;
+  return uploadedMediaFileExists(item?.videoUrl);
 }
 
 function cleanText(input: unknown, max = 5000): string {
@@ -665,7 +684,7 @@ export async function GET(req: NextRequest) {
     return ok(detail);
   }
 
-  const allRows = await listFeedItems();
+  const allRows = (await listFeedItems()).filter(feedVideoAssetExists);
   console.log("[FeedDb] list churchId count scheduleCount", {
     churchId,
     count: allRows.length,
