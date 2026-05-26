@@ -1,6 +1,21 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { fetchMyActiveChurchMembership } from "@/src/lib/churchMembersApi";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, ScrollView, Modal, Alert, Image } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  ActivityIndicator,
+  ScrollView,
+  Modal,
+  Alert,
+  Image,
+  Animated,
+  Platform,
+  Dimensions,
+} from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { BlurView } from "expo-blur";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -13,10 +28,95 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { loadChurchProfileCache, saveChurchProfileCache } from "@/src/lib/churchStore";
 import { onChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
 import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
+import {
+  isSaveCooldown,
+  logTrafficCache,
+  shouldAllowScreenRefresh,
+} from "@/src/lib/kristoTraffic";
 
-const VIP_BG = "#0B0F17";
+const VIP_BG = "#05070D";
+const VIP_BG_MID = "#0A101C";
 const GOLD = "#D9B35F";
-const MUTED = "rgba(255,255,255,0.72)";
+const GOLD_SOFT = "rgba(217,179,95,0.55)";
+const MUTED = "rgba(255,255,255,0.58)";
+const TEXT_PRIMARY = "rgba(255,255,255,0.96)";
+const TEXT_SECONDARY = "rgba(255,255,255,0.62)";
+const LABEL_GOLD = "rgba(217,179,95,0.78)";
+
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
+const PAGE_HORIZONTAL = 16;
+const STAT_GAP = 14;
+const STAT_CARD_WIDTH = Math.floor((SCREEN_WIDTH - PAGE_HORIZONTAL * 2 - STAT_GAP) / 2);
+const STAT_CARD_HEIGHT = 168;
+const STAT_GRID_WIDTH = STAT_CARD_WIDTH * 2 + STAT_GAP;
+
+type StatVariant = "blue" | "gold" | "purple" | "action";
+
+function isRawChurchId(value?: string) {
+  const s = String(value || "").trim();
+  return /^CH\d+-[A-Z0-9]+$/i.test(s);
+}
+
+function isRawBackendId(value?: string) {
+  const s = String(value || "").trim();
+  if (!s) return true;
+  if (/^u_[a-f0-9-]+$/i.test(s)) return true;
+  if (/^[a-f0-9-]{24,}$/i.test(s)) return true;
+  if (s.includes("@") && !s.includes(" ")) return true;
+  return isRawChurchId(s);
+}
+
+function formatChurchDisplayName(name?: string, fallbackName?: string) {
+  for (const candidate of [name, fallbackName]) {
+    const s = String(candidate || "").trim();
+    if (s && !isRawBackendId(s)) return s;
+  }
+  return "Your Church";
+}
+
+function formatPastorDisplayName(name?: string) {
+  const s = String(name || "").trim();
+  if (!s || isRawBackendId(s)) return "Pastor Not Assigned";
+  return s;
+}
+
+function pastorInitial(name?: string) {
+  const label = formatPastorDisplayName(name);
+  if (label === "Pastor Not Assigned") return "P";
+  const parts = label.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
+  return label.slice(0, 2).toUpperCase();
+}
+
+function LuxuryPressable({
+  style,
+  children,
+  disabled,
+  onPress,
+}: {
+  style?: any;
+  children: React.ReactNode;
+  disabled?: boolean;
+  onPress?: () => void;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  return (
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      style={style}
+      onPressIn={() => {
+        Animated.spring(scale, { toValue: 0.975, useNativeDriver: true, speed: 48, bounciness: 3 }).start();
+      }}
+      onPressOut={() => {
+        Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 48, bounciness: 3 }).start();
+      }}
+    >
+      <Animated.View style={{ flex: 1, transform: [{ scale }] }}>{children}</Animated.View>
+    </Pressable>
+  );
+}
 
 type OverviewStats = {
   activeMembers: number;
@@ -173,6 +273,18 @@ export default function ChurchOverviewScreen() {
   const [previewChecked, setPreviewChecked] = useState(!invitePreview);
   const [previewCount, setPreviewCount] = useState(0);
   const [previewLimitReached, setPreviewLimitReached] = useState(false);
+  const contentOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!loading && !err && !(invitePreview && previewLimitReached)) {
+      contentOpacity.setValue(0);
+      Animated.timing(contentOpacity, {
+        toValue: 1,
+        duration: 480,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [loading, err, invitePreview, previewLimitReached, contentOpacity]);
 
   useEffect(() => {
     let alive = true;
@@ -271,7 +383,11 @@ export default function ChurchOverviewScreen() {
 
     (async () => {
       const cached = await loadChurchProfileCache(churchId);
-      if (!alive || !cached) return;
+      if (!alive || !cached) {
+        logTrafficCache("ChurchOverview", "church-profile", false);
+        return;
+      }
+      logTrafficCache("ChurchOverview", "church-profile", true);
       const next = profileFromCache(churchId, cached);
       if (next) setProfile(next);
     })();
@@ -423,7 +539,7 @@ export default function ChurchOverviewScreen() {
     try {
       const j = await apiGet<any>("/api/church/profile", {
         headers: getKristoHeaders(),
-      }).catch(() => null);
+      }, { screen: "ChurchOverview", throttleMs: 45000 }).catch(() => null);
 
       if (!j?.ok) return;
 
@@ -515,21 +631,17 @@ export default function ChurchOverviewScreen() {
       setErr(null);
       return;
     }
-    load({ silent: !loading });
-  }, [isFocused, refreshAt, invitePreview, previewChecked, previewLimitReached]);
-
-  useEffect(() => {
-    if (!isFocused) return;
-    void silentRefreshProfile();
-  }, [isFocused, refreshAt, silentRefreshProfile]);
+    if (isSaveCooldown(`church-profile:${churchId}`)) return;
+    if (!shouldAllowScreenRefresh("ChurchOverview", { forceKey: refreshAt, minMs: 60000 })) return;
+    load({ silent: true });
+  }, [isFocused, refreshAt, invitePreview, previewChecked, previewLimitReached, churchId]);
 
   useEffect(() => {
     return onChurchProfileUpdated((payload) => {
       if (String(payload.churchId || "").trim() !== churchId) return;
       void applyChurchProfileEvent(payload);
-      void silentRefreshProfile();
     });
-  }, [churchId, applyChurchProfileEvent, silentRefreshProfile]);
+  }, [churchId, applyChurchProfileEvent]);
 
   useEffect(() => {
     if (String(params.saved || "") !== "1") return;
@@ -670,21 +782,12 @@ export default function ChurchOverviewScreen() {
     } as any);
   }
 
-  const roleLabel = invitePreview
-    ? "Church Preview"
-    : isChurchAdmin
-    ? "Church Admin Overview"
-    : isPastor
-    ? "Pastor Overview"
-    : isLeader
-    ? "Leader Overview"
-    : "Member Overview";
-
-  const accessNote = isMember
-    ? "Taarifa za msingi na notifications."
-    : canSeeOfferings
-    ? "Members, ministries, notifications na sadaka."
-    : "Viongozi wanaona members, ministries, ministry members na notifications.";
+  const displayChurchName = formatChurchDisplayName(
+    profile.name,
+    String(params.churchName || "")
+  );
+  const pastorDisplay = formatPastorDisplayName(profile.pastorName);
+  const churchVerified = !isRawBackendId(profile.name) && !!String(profile.name || "").trim();
 
   const cards = useMemo(() => {
     const memberCards = [
@@ -693,6 +796,7 @@ export default function ChurchOverviewScreen() {
         label: "Active Members",
         value: stats.activeMembers,
         icon: "people-outline" as const,
+        variant: "blue" as StatVariant,
         onPress: () => router.push("/church/members"),
       },
 
@@ -704,6 +808,7 @@ export default function ChurchOverviewScreen() {
         label: "Ministries",
         value: stats.ministries,
         icon: "grid-outline" as const,
+        variant: "gold" as StatVariant,
         onPress: () => {
           if (isPastor) router.push("/church/ministries" as any);
           else router.push("/more/ministries" as any);
@@ -714,6 +819,7 @@ export default function ChurchOverviewScreen() {
         label: "Ministry Members",
         value: stats.ministryMembers,
         icon: "person-add-outline" as const,
+        variant: "purple" as StatVariant,
         onPress: () => {
           if (isPastor) router.push("/church/ministries" as any);
           else router.push("/more/ministries" as any);
@@ -733,20 +839,43 @@ export default function ChurchOverviewScreen() {
   }, [stats, router, isMember, canSeeLeadershipOverview, canSeeOfferings, invitePreview]);
 
   return (
-    <View style={[s.wrap, { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 14 }]}>
-      <View style={s.topRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={s.h1}>Church Overview</Text>
-          <Text style={s.p}>
-            {roleLabel}
-            {refreshing ? " • Refreshing..." : ""}
-          </Text>
-        </View>
+    <View style={s.root}>
+      <LinearGradient
+        pointerEvents="none"
+        colors={["#03050A", VIP_BG, VIP_BG_MID, "#070C16"]}
+        locations={[0, 0.35, 0.72, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View pointerEvents="none" style={s.ambientGoldOrb} />
+      <View pointerEvents="none" style={s.ambientBlueOrb} />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["transparent", "rgba(0,0,0,0.18)", "rgba(0,0,0,0.55)"]}
+        locations={[0.55, 0.82, 1]}
+        style={s.vignetteBottom}
+      />
 
-        <Pressable onPress={() => load({ silent: true })} style={s.refreshBtn} hitSlop={10}>
-          <Ionicons name="refresh" size={18} color="white" />
-        </Pressable>
-      </View>
+      <View style={[s.wrap, { paddingTop: insets.top + 4, paddingBottom: insets.bottom + 14 }]}>
+        <View style={s.heroHeader}>
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(217,179,95,0.14)", "rgba(217,179,95,0.03)", "transparent"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={s.heroGradient}
+          />
+          <View pointerEvents="none" style={s.heroTitleGlow} />
+
+          <View style={s.topRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.h1}>Church Overview</Text>
+            </View>
+
+            <LuxuryPressable onPress={() => load({ silent: true })} style={s.refreshBtn}>
+              <Ionicons name="refresh" size={18} color={TEXT_PRIMARY} />
+            </LuxuryPressable>
+          </View>
+        </View>
 
       {invitePreview ? (
         <View style={s.successBanner}>
@@ -759,15 +888,9 @@ export default function ChurchOverviewScreen() {
 
           <Pressable
             onPress={acceptPreviewInvite}
-            style={{
-              marginLeft: 10,
-              paddingHorizontal: 12,
-              paddingVertical: 6,
-              borderRadius: 10,
-              backgroundColor: "#D9B35F"
-            }}
+            style={s.bannerAcceptBtn}
           >
-            <Text style={{ color: "#0B0F17", fontWeight: "700", fontSize: 12 }}>
+            <Text style={s.bannerAcceptText}>
               {acceptingInvite ? "Accepting..." : "Accept"}
             </Text>
           </Pressable>
@@ -783,7 +906,7 @@ export default function ChurchOverviewScreen() {
 
       {loading || (invitePreview && !previewChecked) ? (
         <View style={s.center}>
-          <ActivityIndicator />
+          <ActivityIndicator color={GOLD} />
           <Text style={s.p}>Loading overview...</Text>
         </View>
       ) : invitePreview && previewLimitReached ? (
@@ -807,28 +930,61 @@ export default function ChurchOverviewScreen() {
           </Pressable>
         </View>
       ) : (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 140 }}>
-          <View style={s.profileCard}>
+        <Animated.ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 140 }}
+          style={{ opacity: contentOpacity }}
+        >
+          <View style={s.profileCardOuter}>
+            <LinearGradient
+              pointerEvents="none"
+              colors={["rgba(255,255,255,0.10)", "rgba(255,255,255,0.02)", "transparent"]}
+              start={{ x: 0.5, y: 0 }}
+              end={{ x: 0.5, y: 0.35 }}
+              style={s.profileSheen}
+            />
+            {Platform.OS === "ios" ? (
+              <BlurView pointerEvents="none" intensity={26} tint="dark" style={StyleSheet.absoluteFillObject} />
+            ) : null}
+            <LinearGradient
+              pointerEvents="none"
+              colors={["rgba(217,179,95,0.10)", "rgba(8,14,26,0.88)", "rgba(5,8,14,0.94)"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFillObject}
+            />
+
             <View style={s.profileTop}>
-              {profile.avatarUri ? (
-                <Image
-                  source={{ uri: avatarCacheBust(profile.avatarUri, profile.avatarUpdatedAt) }}
-                  style={s.profileAvatar}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={s.profileIcon}>
-                  <Ionicons name="business-outline" size={22} color={GOLD} />
-                </View>
-              )}
+              <View style={s.profileAvatarRing}>
+                <View style={s.profileAvatarHalo} pointerEvents="none" />
+                {profile.avatarUri ? (
+                  <Image
+                    source={{ uri: avatarCacheBust(profile.avatarUri, profile.avatarUpdatedAt) }}
+                    style={s.profileAvatar}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={s.profileIcon}>
+                    <Ionicons name="business-outline" size={28} color={GOLD} />
+                  </View>
+                )}
+              </View>
 
               <View style={{ flex: 1 }}>
                 <Text style={s.profileEyebrow}>Church Profile</Text>
-                <Text style={s.profileChurch}>{profile.name || "Church Profile"}</Text>
+                <Text style={s.profileChurch} numberOfLines={2}>
+                  {displayChurchName}
+                </Text>
+                {churchVerified ? (
+                  <View style={s.profileVerifiedRow}>
+                    <Ionicons name="shield-checkmark" size={12} color={GOLD_SOFT} />
+                    <Text style={s.profileVerifiedText}>Verified church identity</Text>
+                  </View>
+                ) : null}
               </View>
 
               {canEditProfile ? (
-                <Pressable
+                <LuxuryPressable
                   onPress={() =>
                     router.push({
                       pathname: "/(tabs)/church/edit" as any,
@@ -843,82 +999,88 @@ export default function ChurchOverviewScreen() {
                   style={s.profileEditBtn}
                 >
                   <Ionicons name="create-outline" size={16} color={GOLD} />
-                </Pressable>
+                </LuxuryPressable>
               ) : null}
             </View>
 
             <View style={s.profileInfoList}>
               <View style={s.profileInfoRow}>
-                <Ionicons name="person-outline" size={15} color={GOLD} />
-                <Text style={s.profileInfoLabel}>Pastor</Text>
-                <Text style={s.profileInfoValue}>{profile.pastorName || "—"}</Text>
+                <View style={s.pastorAvatar}>
+                  <Text style={s.pastorAvatarText}>{pastorInitial(profile.pastorName)}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.profileInfoLabel}>Pastor</Text>
+                  <Text style={s.profileInfoValue}>{pastorDisplay}</Text>
+                </View>
               </View>
 
               <View style={s.profileInfoRow}>
-                <Ionicons name="location-outline" size={15} color={GOLD} />
-                <Text style={s.profileInfoLabel}>Address</Text>
-                <Text style={s.profileInfoValue}>{profile.address || "—"}</Text>
+                <View style={s.profileInfoIconWrap}>
+                  <Ionicons name="location-outline" size={15} color={GOLD} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.profileInfoLabel}>Address</Text>
+                  <Text style={s.profileInfoValue}>{profile.address || "—"}</Text>
+                </View>
               </View>
 
               <View style={s.profileInfoRow}>
-                <Ionicons name="call-outline" size={15} color={GOLD} />
-                <Text style={s.profileInfoLabel}>Phone</Text>
-                <Text style={s.profileInfoValue}>{profile.phone || "—"}</Text>
+                <View style={s.profileInfoIconWrap}>
+                  <Ionicons name="call-outline" size={15} color={GOLD} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.profileInfoLabel}>Phone</Text>
+                  <Text style={s.profileInfoValue}>{profile.phone || "—"}</Text>
+                </View>
               </View>
             </View>
           </View>
 
-          <View style={s.grid}>
-            {cards.map((c) => {
-              return (
-                <Pressable
-                  key={c.key}
-                  disabled={invitePreview}
-                  onPress={invitePreview ? undefined : c.onPress}
-                  style={[s.statCard, invitePreview && { opacity: 0.92 }]}
-                >
-                  <View style={s.statIcon}>
-                    <Ionicons name={c.icon} size={18} color={GOLD} />
-                  </View>
-                  <Text style={s.statValue}>{c.value}</Text>
-                  <Text style={s.statLabel}>{c.label}</Text>
-                </Pressable>
-              );
-            })}
-            {!invitePreview ? (
-            <Pressable
-              onPress={() => {
-                if (!canOpenMinistries) {
-                  Alert.alert("Admin access", "Only pastor or church admin can create ministries. Ukipewa admin access utaweza kutumia sehemu hii.");
-                  return;
-                }
-                router.push("/church/ministries/create" as any);
-              }}
-              style={[s.statCard, !canOpenMinistries && { opacity: 0.92 }]}
-            >
-              <View style={s.statIcon}>
-                <Ionicons name="add-circle-outline" size={24} color={GOLD} />
-              </View>
-              <Text style={s.statValue}>+</Text>
-              <Text style={s.statLabel}>Create Ministry</Text>
-            </Pressable>
-          ) : null}
-        </View>
-
           {!invitePreview ? (
-            <View style={[s.powerCard, !canUsePastorMediaControl && { opacity: 0.92 }]}>
+            <View style={[s.powerCardOuter, !canUsePastorMediaControl && { opacity: 0.92 }]}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(217,179,95,0.16)", "rgba(10,16,28,0.96)", "rgba(4,7,12,0.98)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFillObject}
+              />
+              <View pointerEvents="none" style={s.powerAmbientGlow} />
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(217,179,95,0.50)", "rgba(217,179,95,0.10)", "transparent"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={s.powerTopGoldLine}
+              />
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(255,255,255,0.07)", "rgba(255,255,255,0.02)", "transparent"]}
+                start={{ x: 0.5, y: 0 }}
+                end={{ x: 0.5, y: 0.55 }}
+                style={s.powerSheen}
+              />
+
               <View style={s.powerTop}>
-                <View style={s.powerIcon}>
-                  <Ionicons name="videocam" size={19} color="#0B0F17" />
+                <View style={s.powerIconOuter}>
+                  <View style={s.powerIconBroadcast} pointerEvents="none" />
+                  <LinearGradient
+                    colors={["#F0D48A", GOLD, "#B8893A"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.powerIcon}
+                  >
+                    <Ionicons name="videocam" size={19} color="#0B0F17" />
+                  </LinearGradient>
                 </View>
                 <View style={{ flex: 1 }}>
+                  <Text style={s.powerEyebrow}>Broadcast Control</Text>
                   <Text style={s.powerTitle}>Ministry Media Control</Text>
-                  <Text style={s.powerSub}>Choose ministries with media access, hosts, schedules, and live planning.</Text>
                 </View>
               </View>
 
               <View style={s.powerActions}>
-                <Pressable
+                <LuxuryPressable
                   onPress={() => {
                     if (!canUsePastorMediaControl) {
                       Alert.alert("Admin access", "Only pastor or church admin can manage ministry media access. Ukipewa admin access utaweza kutumia.");
@@ -928,11 +1090,20 @@ export default function ChurchOverviewScreen() {
                   }}
                   style={s.powerBtn}
                 >
-                  <Ionicons name="grid-outline" size={16} color={GOLD} />
-                  <Text style={s.powerBtnText}>Ministries</Text>
-                </Pressable>
+                  <View style={s.powerBtnContent}>
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={["rgba(255,255,255,0.10)", "transparent"]}
+                      start={{ x: 0.5, y: 0 }}
+                      end={{ x: 0.5, y: 1 }}
+                      style={s.powerBtnHighlight}
+                    />
+                    <Ionicons name="grid-outline" size={16} color={GOLD} />
+                    <Text style={s.powerBtnText}>Ministries</Text>
+                  </View>
+                </LuxuryPressable>
 
-                <Pressable
+                <LuxuryPressable
                   onPress={() => {
                     if (!canUsePastorMediaControl) {
                       Alert.alert("Admin access", "Only pastor or church admin can open Media Studio controls. Ukipewa admin access utaweza kutumia.");
@@ -940,17 +1111,97 @@ export default function ChurchOverviewScreen() {
                     }
                     openPastorMediaPicker("studio");
                   }}
-                  style={[s.powerBtn, s.powerBtnGold]}
+                  style={s.powerBtnGoldWrap}
                 >
-                  <Ionicons name="radio-outline" size={16} color="#0B0F17" />
-                  <Text style={s.powerBtnGoldText}>Media Studio</Text>
-                </Pressable>
+                  <LinearGradient
+                    colors={["#F2D792", GOLD, "#A67C2E"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.powerBtnGold}
+                  >
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={["rgba(255,255,255,0.34)", "transparent"]}
+                      start={{ x: 0.5, y: 0 }}
+                      end={{ x: 0.5, y: 0.55 }}
+                      style={s.powerBtnGoldShimmer}
+                    />
+                    <Ionicons name="radio-outline" size={16} color="#0B0F17" />
+                    <Text style={s.powerBtnGoldText}>Media Studio</Text>
+                  </LinearGradient>
+                </LuxuryPressable>
               </View>
             </View>
           ) : null}
 
+          <View style={s.statsGrid}>
+            {cards.map((c) => {
+              const variantStyles =
+                c.variant === "blue"
+                  ? { card: s.statCardBlue, icon: s.statIconBlue, iconColor: "#7EB4FF", glow: s.statGlowBlue }
+                  : c.variant === "gold"
+                  ? { card: s.statCardGoldGlow, icon: s.statIconGoldGlow, iconColor: GOLD, glow: s.statGlowGold }
+                  : c.variant === "purple"
+                  ? { card: s.statCardPurple, icon: s.statIconPurple, iconColor: "#C4A0FF", glow: s.statGlowPurple }
+                  : { card: s.statCardAction, icon: s.statIconAction, iconColor: GOLD, glow: s.statGlowAction };
+
+              return (
+                <LuxuryPressable
+                  key={c.key}
+                  disabled={invitePreview}
+                  onPress={invitePreview ? undefined : c.onPress}
+                  style={[s.statCardBase, variantStyles.card, invitePreview && { opacity: 0.92 }]}
+                >
+                  <View style={variantStyles.glow} pointerEvents="none" />
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={["rgba(255,255,255,0.14)", "rgba(217,179,95,0.05)", "transparent"]}
+                    start={{ x: 0.5, y: 0 }}
+                    end={{ x: 0.5, y: 1 }}
+                    style={s.statCardSheen}
+                  />
+                  <View style={variantStyles.icon}>
+                    <Ionicons name={c.icon} size={18} color={variantStyles.iconColor} />
+                  </View>
+                  <Text style={s.statValue}>{c.value}</Text>
+                  <Text style={s.statLabel} numberOfLines={2}>
+                    {c.label}
+                  </Text>
+                </LuxuryPressable>
+              );
+            })}
+            {!invitePreview ? (
+            <LuxuryPressable
+              onPress={() => {
+                if (!canOpenMinistries) {
+                  Alert.alert("Admin access", "Only pastor or church admin can create ministries. Ukipewa admin access utaweza kutumia sehemu hii.");
+                  return;
+                }
+                router.push("/church/ministries/create" as any);
+              }}
+              style={[s.statCardBase, s.statCardAction, !canOpenMinistries && { opacity: 0.92 }]}
+            >
+              <View style={s.statGlowAction} pointerEvents="none" />
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(255,255,255,0.14)", "rgba(217,179,95,0.10)", "transparent"]}
+                start={{ x: 0.5, y: 0 }}
+                end={{ x: 0.5, y: 1 }}
+                style={s.statCardSheen}
+              />
+              <View style={s.statIconAction}>
+                <Ionicons name="add-circle-outline" size={22} color={GOLD} />
+              </View>
+              <Text style={[s.statValue, s.statValueGold]}>+</Text>
+              <Text style={s.statLabel} numberOfLines={2}>
+                Create Ministry
+              </Text>
+            </LuxuryPressable>
+          ) : null}
+        </View>
+
           
-        </ScrollView>
+        </Animated.ScrollView>
       )}
 
       <Modal visible={mediaPickerOpen} animationType="slide" onRequestClose={() => setMediaPickerOpen(false)}>
@@ -1062,276 +1313,653 @@ export default function ChurchOverviewScreen() {
           )}
         </View>
       </Modal>
+      </View>
     </View>
   );
 }
 
 const s = StyleSheet.create<any>({
-  profileCard:{
-    borderRadius:22,
-    padding:18,
-    marginBottom:18,
-    borderWidth:1,
-    borderColor:"rgba(217,179,95,0.32)",
-    backgroundColor:"rgba(217,179,95,0.08)"
+  root: {
+    flex: 1,
+    backgroundColor: VIP_BG,
+  },
+  ambientGoldOrb: {
+    position: "absolute",
+    top: -40,
+    right: -30,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.10)",
+  },
+  ambientBlueOrb: {
+    position: "absolute",
+    top: 280,
+    left: -80,
+    width: 200,
+    height: 200,
+    borderRadius: 999,
+    backgroundColor: "rgba(72,120,255,0.07)",
+  },
+  vignetteBottom: {
+    ...StyleSheet.absoluteFillObject,
   },
 
-  profileTop:{
-    flexDirection:"row",
-    alignItems:"center",
-    gap:14,
-    marginBottom:14
-  },
+  wrap: { flex: 1, paddingHorizontal: 16, alignItems: "stretch" },
 
-  profileAvatar:{
-    width:54,
-    height:54,
-    borderRadius:18,
-    borderWidth:1,
-    borderColor:"rgba(217,179,95,0.32)"
+  heroHeader: {
+    marginBottom: 6,
+    borderRadius: 20,
+    overflow: "hidden",
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
-
-  profileIcon:{
-    width:54,
-    height:54,
-    borderRadius:18,
-    alignItems:"center",
-    justifyContent:"center",
-    backgroundColor:"rgba(255,255,255,0.06)",
-    borderWidth:1,
-    borderColor:"rgba(217,179,95,0.22)"
+  heroGradient: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 20,
   },
-
-  profileEditBtn:{
-    width:36,
-    height:36,
-    borderRadius:12,
-    alignItems:"center",
-    justifyContent:"center",
-    backgroundColor:"rgba(255,255,255,0.05)",
-    borderWidth:1,
-    borderColor:"rgba(217,179,95,0.20)"
+  heroTitleGlow: {
+    position: "absolute",
+    top: 4,
+    left: 8,
+    width: 140,
+    height: 44,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.04)",
   },
-
-  profileEyebrow:{
-    color:"rgba(255,255,255,0.58)",
-    fontSize:12,
-    fontWeight:"800",
-    marginBottom:4,
-    textTransform:"uppercase",
-    letterSpacing:0.8
-  },
-
-  profileChurch:{
-    color:"white",
-    fontSize:22,
-    fontWeight:"900"
-  },
-
-  profileInfoList:{
-    gap:10
-  },
-
-  profileInfoRow:{
-    flexDirection:"row",
-    alignItems:"center"
-  },
-
-  profileInfoLabel:{
-    width:62,
-    marginLeft:8,
-    color:"rgba(255,255,255,0.62)",
-    fontSize:12,
-    fontWeight:"800"
-  },
-
-  profileInfoValue:{
-    flex:1,
-    color:"rgba(255,255,255,0.90)",
-    fontSize:13,
-    fontWeight:"700"
-  },
-
-  wrap: { flex: 1, backgroundColor: VIP_BG, paddingHorizontal: 16 },
 
   topRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    marginBottom: 12,
+    gap: 12,
   },
   refreshBtn: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: "rgba(217,179,95,0.22)",
+    shadowColor: GOLD,
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
   },
 
-  h1: { color: "white", fontSize: 26, fontWeight: "900", letterSpacing: 0.2 },
+  h1: {
+    color: TEXT_PRIMARY,
+    fontSize: 28,
+    fontWeight: "800",
+    letterSpacing: 0.12,
+    lineHeight: 32,
+  },
+  heroIdentityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+    flexWrap: "wrap",
+  },
+  heroChurchName: {
+    color: TEXT_PRIMARY,
+    fontSize: 16,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+    maxWidth: "78%",
+    textShadowColor: "rgba(217,179,95,0.35)",
+    textShadowRadius: 12,
+    textShadowOffset: { width: 0, height: 0 },
+  },
+  verifiedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.28)",
+  },
+  verifiedBadgeText: {
+    color: LABEL_GOLD,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  heroSubtitle: {
+    color: TEXT_SECONDARY,
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "600",
+    letterSpacing: 0.15,
+  },
   p: { color: MUTED, marginTop: 6, fontSize: 13, lineHeight: 18 },
 
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
 
-  heroCard: {
-    borderRadius: 18,
-    padding: 12,
-    marginBottom: 14,
+  bannerAcceptBtn: {
+    marginLeft: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: GOLD,
+  },
+  bannerAcceptText: {
+    color: "#0B0F17",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+
+  profileCardOuter: {
+    borderRadius: 28,
+    paddingTop: 14,
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+    marginTop: 0,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.28)",
+    backgroundColor: "rgba(8,14,24,0.72)",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
+  },
+  profileSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 64,
+  },
+
+  profileTop: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.20)",
-    backgroundColor: "rgba(217,179,95,0.08)",
+    marginBottom: 10,
   },
-  heroIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+
+  profileAvatarRing: {
+    width: 70,
+    height: 70,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "rgba(217,179,95,0.42)",
+    backgroundColor: "rgba(217,179,95,0.06)",
+  },
+  profileAvatarHalo: {
+    position: "absolute",
+    width: 82,
+    height: 82,
+    borderRadius: 26,
+    backgroundColor: "rgba(217,179,95,0.10)",
+  },
+
+  profileAvatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+
+  profileIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.24)",
   },
-  heroTitle: { color: "white", fontSize: 16, fontWeight: "900" },
-  heroSub: { color: MUTED, marginTop: 3, fontSize: 12, lineHeight: 16, fontWeight: "700" },
+
+  profileEditBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.24)",
+  },
+
+  profileEyebrow: {
+    color: LABEL_GOLD,
+    fontSize: 11,
+    fontWeight: "800",
+    marginBottom: 5,
+    textTransform: "uppercase",
+    letterSpacing: 1.1,
+  },
+
+  profileChurch: {
+    color: TEXT_PRIMARY,
+    fontSize: 21,
+    fontWeight: "900",
+    lineHeight: 26,
+    letterSpacing: 0.2,
+  },
+  profileVerifiedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 4,
+  },
+  profileVerifiedText: {
+    color: TEXT_SECONDARY,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+  },
+
+  profileInfoList: {
+    gap: 8,
+    paddingTop: 0,
+  },
+
+  profileInfoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+
+  pastorAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.28)",
+  },
+  pastorAvatarText: {
+    color: GOLD,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  profileInfoIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.16)",
+  },
+
+  profileInfoLabel: {
+    color: LABEL_GOLD,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+    marginBottom: 2,
+  },
+
+  profileInfoValue: {
+    color: TEXT_PRIMARY,
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
 
   errorCard: {
-    borderRadius: 18,
-    padding: 16,
+    borderRadius: 22,
+    padding: 18,
     backgroundColor: "rgba(120,20,20,0.22)",
     borderWidth: 1,
     borderColor: "rgba(255,90,90,0.22)",
   },
-  errorTitle: { color: "white", fontSize: 15, fontWeight: "900" },
+  errorTitle: { color: TEXT_PRIMARY, fontSize: 15, fontWeight: "900" },
   errorText: { color: "rgba(255,255,255,0.78)", marginTop: 6, fontSize: 13, lineHeight: 18 },
 
   successBanner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    borderRadius: 16,
+    paddingVertical: 11,
+    paddingHorizontal: 13,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.26)",
     backgroundColor: "rgba(217,179,95,0.10)",
   },
   successBannerText: {
-    color: "white",
+    color: TEXT_PRIMARY,
     fontSize: 13,
     fontWeight: "800",
     flex: 1,
   },
 
-  grid: {
+  statsGrid: {
+    width: STAT_GRID_WIDTH,
+    alignSelf: "flex-start",
     flexDirection: "row",
     flexWrap: "wrap",
-    justifyContent: "space-between",
-    rowGap: 12,
-    marginBottom: 14,
+    columnGap: STAT_GAP,
+    rowGap: 14,
+    marginTop: 12,
+    marginBottom: 26,
   },
-  statCard: {
-    width: "48%",
-    minHeight: 124,
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 0,
-    backgroundColor: "rgba(12,20,36,0.95)",
+
+  statCardBase: {
+    width: STAT_CARD_WIDTH,
+    height: STAT_CARD_HEIGHT,
+    borderRadius: 24,
+    padding: 16,
+    overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(60,120,255,0.20)",
+    justifyContent: "space-between",
   },
-  statCardGold: {
-    width: "100%",
-    minHeight: 96,
-    borderColor: "rgba(217,179,95,0.28)",
-    backgroundColor: "rgba(217,179,95,0.08)",
+  statCardSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 54,
   },
-  statIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+  statGlowBlue: {
+    position: "absolute",
+    bottom: -20,
+    right: -10,
+    width: 90,
+    height: 90,
+    borderRadius: 999,
+    backgroundColor: "rgba(72,140,255,0.16)",
+  },
+  statGlowGold: {
+    position: "absolute",
+    bottom: -18,
+    right: -8,
+    width: 88,
+    height: 88,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.14)",
+  },
+  statGlowPurple: {
+    position: "absolute",
+    bottom: -18,
+    right: -8,
+    width: 88,
+    height: 88,
+    borderRadius: 999,
+    backgroundColor: "rgba(168,120,255,0.16)",
+  },
+  statGlowAction: {
+    position: "absolute",
+    top: -16,
+    left: -10,
+    width: 100,
+    height: 100,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.18)",
+  },
+
+  statCardBlue: {
+    backgroundColor: "rgba(8,16,32,0.94)",
+    borderColor: "rgba(72,140,255,0.28)",
+    shadowColor: "#4A90FF",
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+  statCardGoldGlow: {
+    backgroundColor: "rgba(14,12,8,0.94)",
+    borderColor: "rgba(217,179,95,0.30)",
+    shadowColor: GOLD,
+    shadowOpacity: 0.2,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+  statCardPurple: {
+    backgroundColor: "rgba(12,10,22,0.94)",
+    borderColor: "rgba(168,120,255,0.30)",
+    shadowColor: "#A878FF",
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+  statCardAction: {
+    backgroundColor: "rgba(16,14,8,0.95)",
+    borderColor: "rgba(217,179,95,0.38)",
+    shadowColor: GOLD,
+    shadowOpacity: 0.28,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+
+  statIconBlue: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.10)",
-    marginBottom: 14,
-  },
-  statIconGold: {
-    backgroundColor: "rgba(217,179,95,0.16)",
-  },
-  statValue: { color: "white", fontSize: 24, fontWeight: "900" },
-  statValueGold: { color: GOLD },
-  statLabel: { color: MUTED, marginTop: 6, fontSize: 12, lineHeight: 16, fontWeight: "700" },
-
-  powerCard: {
-    marginTop: 14,
-    marginBottom: 18,
-    borderRadius: 26,
-    padding: 16,
+    backgroundColor: "rgba(72,140,255,0.14)",
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.32)",
-    backgroundColor: "rgba(217,179,95,0.075)",
+    borderColor: "rgba(72,140,255,0.28)",
   },
+  statIconGoldGlow: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.30)",
+  },
+  statIconPurple: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(168,120,255,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(168,120,255,0.30)",
+  },
+  statIconAction: {
+    width: 40,
+    height: 40,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.36)",
+  },
+
+  statValue: {
+    color: TEXT_PRIMARY,
+    fontSize: 34,
+    lineHeight: 38,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+  statValueGold: { color: GOLD },
+  statLabel: {
+    color: TEXT_SECONDARY,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "800",
+    marginTop: 6,
+    opacity: 0.92,
+    flexShrink: 1,
+    width: "100%",
+  },
+
+  powerCardOuter: {
+    marginTop: 0,
+    marginBottom: 12,
+    borderRadius: 24,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.34)",
+    overflow: "hidden",
+    shadowColor: GOLD,
+    shadowOpacity: 0.24,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
+  },
+  powerAmbientGlow: {
+    position: "absolute",
+    top: -30,
+    right: -20,
+    width: 140,
+    height: 140,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.12)",
+  },
+  powerSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 44,
+  },
+  powerTopGoldLine: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+  },
+
   powerTop: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 13,
+    gap: 12,
   },
-  powerIcon: {
+  powerIconOuter: {
     width: 46,
     height: 46,
-    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: GOLD,
+  },
+  powerIconBroadcast: {
+    position: "absolute",
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    backgroundColor: "rgba(217,179,95,0.18)",
+  },
+  powerIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  powerEyebrow: {
+    color: LABEL_GOLD,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    marginBottom: 2,
   },
   powerTitle: {
-    color: "white",
-    fontSize: 17,
+    color: TEXT_PRIMARY,
+    fontSize: 16,
     fontWeight: "900",
-  },
-  powerSub: {
-    marginTop: 4,
-    color: "rgba(255,255,255,0.68)",
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: "700",
+    letterSpacing: 0.2,
+    lineHeight: 20,
   },
   powerActions: {
     flexDirection: "row",
+    alignItems: "center",
     gap: 10,
-    marginTop: 15,
+    marginTop: 10,
   },
   powerBtn: {
     flex: 1,
-    height: 48,
-    borderRadius: 17,
+    height: 44,
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.28)",
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  powerBtnContent: {
+    flex: 1,
+    height: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+  powerBtnHighlight: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 20,
+  },
+  powerBtnGoldWrap: {
+    flex: 1.15,
+    height: 44,
+    borderRadius: 16,
+    overflow: "hidden",
+    shadowColor: GOLD,
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  powerBtnGold: {
+    flex: 1,
+    height: 44,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
     gap: 7,
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.28)",
-    backgroundColor: "rgba(255,255,255,0.045)",
+    overflow: "hidden",
   },
-  powerBtnGold: {
-    backgroundColor: GOLD,
-    borderColor: GOLD,
+  powerBtnGoldShimmer: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 26,
   },
   powerBtnText: {
     color: GOLD,
     fontWeight: "900",
     fontSize: 12,
+    lineHeight: 14,
+    letterSpacing: 0.2,
   },
   powerBtnGoldText: {
     color: "#0B0F17",
     fontWeight: "900",
     fontSize: 12,
+    lineHeight: 14,
+    letterSpacing: 0.2,
   },
-
 
   mediaModalShade: {
     flex: 1,
