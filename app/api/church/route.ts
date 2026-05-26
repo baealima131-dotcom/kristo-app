@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { upsertChurchProfile } from "@/app/api/_lib/churches";
+import { addActiveMember } from "@/app/api/_lib/memberships";
 
 export const runtime = "nodejs";
 
@@ -468,6 +470,22 @@ export async function POST(req: Request) {
       db.churches.unshift(church);
       audit(db, "create_church", { churchId: church.id, name: church.name });
       writeDB(db);
+
+      await upsertChurchProfile({
+        id: church.id,
+        name: church.name,
+        pastorName: church.pastorName,
+        country: church.country,
+        city: church.city,
+      });
+
+      // creator automatically becomes active Pastor of this church
+      await addActiveMember(
+        church.id,
+        pastorId,
+        pastorName || church.pastorName || church.name,
+        "Pastor"
+      );
 
       return ok({ church });
     }

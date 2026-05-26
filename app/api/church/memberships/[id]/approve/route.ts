@@ -52,7 +52,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     churchId: r.membership.churchId,
     type: "Generic",
     title: "Membership approved ✅",
-    message: `You are now an Active member of churchId=${r.membership.churchId}.`,
+    message: "Your membership request was approved. You are now an active member.",
     targetUserId: r.membership.userId,
   });
 

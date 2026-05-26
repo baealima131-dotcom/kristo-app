@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "251d5525-099a-4a62-b30b-68b186ce29cb"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.princefariji.kristoapp",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
+}

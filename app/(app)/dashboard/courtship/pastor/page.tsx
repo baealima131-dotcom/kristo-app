@@ -2,7 +2,7 @@
 
 import type { CSSProperties } from "react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useCourtshipStore, type Profile, type VerificationStatus } from "../_lib/courtshipStore";
 
@@ -17,6 +17,14 @@ function badgeForStatus(s?: VerificationStatus) {
 }
 
 export default function PastorPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: 24, color: "#fff" }}>Loading…</div>}>
+      <PastorPageContent />
+    </Suspense>
+  );
+}
+
+function PastorPageContent() {
   const store = useCourtshipStore();
   const sp = useSearchParams();
   const router = useRouter();
@@ -426,7 +434,7 @@ export default function PastorPage() {
                         <div style={label}>Chagua Match</div>
                         <div style={mini}>Match unayotaka ku-approve (Step 4)</div>
                       </div>
-                      <div style={pillProgress}>{progressPct}% Progress</div>
+                      <div style={pillProgress}>{progressPct} Progress</div>
                     </div>
 
                     <select value={matchId} onChange={(e) => setMatchId(e.target.value)} style={select}>

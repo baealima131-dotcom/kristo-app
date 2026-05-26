@@ -56,7 +56,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     targetUserId: r.membership.userId,
     type: "MembershipRejected",
     title: "Membership rejected",
-    message: note ? `Reason: ${note}` : `Your request to join churchId=${r.membership.churchId} was rejected.`,
+    message: note ? `Reason: ${note}` : "Your membership request was not approved.",
   });
 
   return json({ ok: true, membership: r.membership });

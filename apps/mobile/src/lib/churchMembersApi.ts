@@ -1,8 +1,9 @@
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { getApiBase } from "@/src/lib/kristoApi";
 import { approveJoinRequest, deactivateChurchMember, getChurchJoinRequests, getChurchMembers, rejectJoinRequest } from "@/src/lib/churchRequestsStore";
 
 function getBase() {
-  return String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+  return getApiBase();
 }
 
 function getAuthBits() {
@@ -203,6 +204,8 @@ export async function fetchMyActiveChurchMembership() {
     headers: {
       accept: "application/json",
       "x-kristo-user-id": userId,
+      "x-kristo-role": getAuthBits().role,
+      "x-kristo-church-id": getAuthBits().churchId,
     },
   });
 

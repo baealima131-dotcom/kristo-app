@@ -44,7 +44,10 @@ import {
   clearLocalMediaVideoPosts,
   clearHomeFeedLocalCaches,
   clearHomeFeedRuntimeCaches,
+  clearHomeFeedPostsOnly,
   isLocalMediaVideoPost,
+  isStandaloneAvatarFeedPost,
+  isRealHomeFeedRow,
   isMediaScheduleFeedItem as isHomeMediaScheduleItem,
   isFeedVideoItem,
   resolveFeedItemAvatar,
@@ -460,6 +463,28 @@ function normalizeFeedItemMedia(item: any) {
       ? { posterUri: mediaUrl(item.posterUri) }
       : {}),
   };
+}
+
+type HomeFeedFilterSource = "localFeed" | "finalVisibleData";
+
+function keepRealHomeFeedRow(item: any, source: HomeFeedFilterSource) {
+  if (isRealHomeFeedRow(item)) return true;
+
+  if (__DEV__) {
+    console.log("KRISTO_HOME_FEED_FILTERED_AVATAR_POST", {
+      source,
+      id: item?.id,
+      mediaType: item?.mediaType,
+      mediaUri: item?.mediaUri,
+      videoUrl: item?.videoUrl,
+      actorAvatarUri: item?.actorAvatarUri,
+      mediaAvatarUri: item?.mediaAvatarUri,
+      churchAvatarUri: item?.churchAvatarUri,
+      standaloneAvatar: isStandaloneAvatarFeedPost(item),
+    });
+  }
+
+  return false;
 }
 
 
@@ -3538,6 +3563,8 @@ export default function FeedScreen() {
     if (__DEV__) {
       (globalThis as any).clearHomeFeedLocalCaches = clearHomeFeedLocalCaches;
       (globalThis as any).clearLocalMediaVideoPosts = clearLocalMediaVideoPosts;
+      (globalThis as any).clearHomeFeedRuntimeCaches = clearHomeFeedRuntimeCaches;
+      (globalThis as any).clearHomeFeedPostsOnly = clearHomeFeedPostsOnly;
     }
     const t = setInterval(() => {
       if ((globalThis as any).__KRISTO_LIVE_ACTIVE__) return;
@@ -3615,7 +3642,9 @@ export default function FeedScreen() {
 
       const key = `${String(item.title || "").trim()}|${String(item.body || item.text || "").trim()}`;
       return !backendKeys.has(key);
-    }).map(normalizeFeedItemMedia);
+    })
+      .map(normalizeFeedItemMedia)
+      .filter((item) => keepRealHomeFeedRow(item, "localFeed"));
 
     const safeBackendFeed = backendFeed.filter((item: any) => {
       const hasBackendSlots =
@@ -3641,7 +3670,21 @@ export default function FeedScreen() {
       if (isMediaSlot && !memberUser) return false;
 
       return true;
-    });
+    })
+      .filter((item) => {
+        if (!isStandaloneAvatarFeedPost(item)) return true;
+        if (__DEV__) {
+          console.log("KRISTO_HOME_FEED_FILTERED_AVATAR_POST", {
+            source: "safeBackendFeed",
+            id: item?.id,
+            mediaUri: item?.mediaUri,
+            actorAvatarUri: item?.actorAvatarUri,
+            mediaAvatarUri: item?.mediaAvatarUri,
+            churchAvatarUri: item?.churchAvatarUri,
+          });
+        }
+        return false;
+      });
 
     const liveNowItems: any[] = [];
 
@@ -4131,6 +4174,7 @@ export default function FeedScreen() {
     const visibleData = finalFeed.filter((item: any, index: number) => {
       const key = String(item?.id || `feed-item-${index}`);
       if (seenFinal.has(key)) return false;
+      if (!keepRealHomeFeedRow(item, "finalVisibleData")) return false;
       seenFinal.add(key);
       return true;
     });

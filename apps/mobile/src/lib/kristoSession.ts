@@ -139,6 +139,15 @@ export async function loadSession(): Promise<KristoSession | null> {
       lastSeenAt,
       expiresAt,
     };
+    
+    console.log("KRISTO_CURRENT_SESSION_FOR_CLEANUP", {
+      userId: s.userId,
+      role: s.role,
+      churchId: s.churchId,
+      activeChurchId: s.activeChurchId,
+      churchRole: s.churchRole,
+    });
+    
     setSessionSync(s);
     return s;
   } catch {

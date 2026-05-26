@@ -11,6 +11,26 @@ type Notification = {
 type ApiOk<T> = { ok: true; data: T };
 type ApiRes<T> = ApiOk<T> | { ok: false; error: string };
 
+function devHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const enabled = String(localStorage.getItem("kristo_dev_header_auth") || "").trim();
+    if (enabled !== "1") return {};
+
+    const uid = String(localStorage.getItem("kristo_dev_user_id") || "").trim();
+    const role = String(localStorage.getItem("kristo_dev_role") || "").trim();
+    const cid = String(localStorage.getItem("kristo_dev_church_id") || "").trim();
+
+    const h: Record<string, string> = {};
+    if (uid) h["x-kristo-user-id"] = uid;
+    if (role) h["x-kristo-role"] = role;
+    if (cid) h["x-kristo-church-id"] = cid;
+    return h;
+  } catch {
+    return {};
+  }
+}
+
 export default function NotificationBell() {
   const router = useRouter();
   const [unreadCount, setUnreadCount] = useState<number>(0);
@@ -19,8 +39,15 @@ export default function NotificationBell() {
 
   async function fetchUnreadCount() {
     try {
-      // fetch unread notifications (cap to 200)
-      const res = await fetch("/api/church/notifications?unread=1&limit=200", { cache: "no-store" });
+      const res = await fetch("/api/church/notifications?unread=1&limit=200", {
+        cache: "no-store",
+        credentials: "include",
+        headers: {
+          accept: "application/json",
+          ...devHeaders(),
+        },
+      });
+
       const json = (await res.json().catch(() => null)) as ApiRes<Notification[]> | null;
 
       if (!alive.current) return;
@@ -44,16 +71,34 @@ export default function NotificationBell() {
   useEffect(() => {
     alive.current = true;
 
-    // initial
-    const t0 = setTimeout(() => fetchUnreadCount(), 0);
-// lightweight polling
-    const t = setInterval(fetchUnreadCount, 20000);
+    const t0 = setTimeout(() => {
+      void fetchUnreadCount();
+    }, 0);
+
+    const t = setInterval(() => {
+      void fetchUnreadCount();
+    }, 20000);
+
+    const onFocus = () => {
+      void fetchUnreadCount();
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void fetchUnreadCount();
+      }
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
       alive.current = false;
+      clearTimeout(t0);
       clearInterval(t);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
-     
   }, []);
 
   return (

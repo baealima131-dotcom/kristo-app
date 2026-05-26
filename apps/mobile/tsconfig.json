@@ -26,6 +26,8 @@
     "**/_bak/**",
     "**/*.bak_*",
     "**/*.patch",
-    "**/kristo_backups/**"
+    "**/kristo_backups/**",
+    "_restore/**",
+    "_restore"
   ]
 }

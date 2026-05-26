@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
-import { getActiveMembership } from "@/app/api/_lib/memberships";
+import { getActiveMembership, ensureActiveMembershipForSession } from "@/app/api/_lib/memberships";
 import { getChurchById } from "@/app/api/_lib/churches";
 import {
   getUserById,
@@ -150,10 +150,19 @@ export async function GET(req: Request) {
 
     if (!u) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
+    const headerChurchId = String((req as any).headers?.get?.("x-kristo-church-id") || "").trim();
+    const headerRole = String((req as any).headers?.get?.("x-kristo-role") || "").trim();
+
+    const activeMembership =
+      (await ensureActiveMembershipForSession({
+        userId: u.id,
+        churchId: headerChurchId,
+        role: headerRole,
+        name: String(u.email || u.id || ""),
+      })) || (await getActiveMembership(u.id));
+    const hasChurch = !!activeMembership;
     const current =
       (await getProfile(u.id)) || (await ensureProfileDraft({ userId: u.id, email: u.email, phone: u.phone }));
-    const activeMembership = await getActiveMembership(u.id);
-    const hasChurch = !!activeMembership;
     const churchProfile = activeMembership?.churchId
       ? await getChurchById(activeMembership.churchId)
       : null;

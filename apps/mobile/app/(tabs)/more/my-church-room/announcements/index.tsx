@@ -83,6 +83,7 @@ export default function AnnouncementsCreateOnly() {
       title,
       body,
       mediaUri,
+      mediaType: mediaUri ? "image" : "none",
       createdAt: new Date().toISOString(),
       actorLabel: "ADMIN",
       churchLabel: "TLMC",

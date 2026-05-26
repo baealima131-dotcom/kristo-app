@@ -546,6 +546,96 @@ export async function setMemberRole(
    DEV HELPERS
    ========================= */
 
+export function mapHeaderRoleToChurchRole(role: unknown): ChurchRole {
+  const r = String(role || "").toLowerCase();
+  if (r.includes("pastor")) return "Pastor";
+  if (r.includes("admin")) return "Church_Admin";
+  if (r.includes("ministry") && r.includes("leader")) return "Ministry_Leader";
+  if (r.includes("leader")) return "Leader";
+  return "Member";
+}
+
+export async function ensureActiveMembershipForSession(input: {
+  userId: string;
+  churchId?: string;
+  role?: string;
+  name?: string;
+}): Promise<ChurchMembership | undefined> {
+  const userId = String(input.userId || "").trim();
+  const churchId = String(input.churchId || "").trim();
+  if (!userId) return undefined;
+
+  let active = await getActiveMembership(userId);
+  if (active?.churchId === churchId) {
+    console.log("KRISTO_MEMBERSHIP_RESOLVED", {
+      userId,
+      headerChurchId: churchId,
+      activeChurchId: active.churchId,
+      churchRole: active.churchRole,
+      synced: false,
+      source: "existing-active",
+    });
+    return active;
+  }
+
+  const allowHeaderSync =
+    process.env.NODE_ENV !== "production" ||
+    String(process.env.KRISTO_HEADER_MEMBERSHIP_SYNC || "").trim() === "1";
+
+  if (!allowHeaderSync || !churchId) return active;
+
+  if (active?.churchId && active.churchId !== churchId) {
+    console.log("KRISTO_MEMBERSHIP_RESOLVED", {
+      userId,
+      headerChurchId: churchId,
+      activeChurchId: active.churchId,
+      synced: false,
+      reason: "active-membership-other-church",
+    });
+    return active;
+  }
+
+  const reqRes = await requestMembership(userId, churchId, input.name, "ChurchInvite");
+  if (!reqRes.ok) {
+    console.log("KRISTO_MEMBERSHIP_RESOLVED", {
+      userId,
+      headerChurchId: churchId,
+      synced: false,
+      reason: "request-failed",
+      error: reqRes.error,
+    });
+    return active;
+  }
+
+  const approved = await approveMembership(reqRes.membership.id, userId);
+  if (!approved.ok) {
+    console.log("KRISTO_MEMBERSHIP_RESOLVED", {
+      userId,
+      headerChurchId: churchId,
+      synced: false,
+      reason: "approve-failed",
+      error: approved.error,
+    });
+    return active;
+  }
+
+  const preferredRole = mapHeaderRoleToChurchRole(input.role);
+  if (preferredRole !== "Member") {
+    await devPromoteToRoleIfActive(userId, churchId, preferredRole);
+  }
+
+  active = await getActiveMembership(userId);
+  console.log("KRISTO_MEMBERSHIP_RESOLVED", {
+    userId,
+    headerChurchId: churchId,
+    activeChurchId: active?.churchId || "",
+    churchRole: active?.churchRole || "",
+    synced: true,
+    source: "header-session-sync",
+  });
+  return active;
+}
+
 export async function devPromoteToRoleIfActive(
   userId: string,
   churchId: string,

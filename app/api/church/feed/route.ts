@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { guard, guardAuth } from "@/app/api/_lib/rbac";
+import { ensureActiveMembershipForSession, getActiveMembership } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { getChurchById } from "@/app/api/_lib/churches";
 import {
@@ -425,8 +426,12 @@ async function enrichFeedListItem(item: any, viewerUserId: string) {
   };
 }
 
-function viewerHasActiveChurchMembership(churchId: string) {
-  return Boolean(String(churchId || "").trim());
+async function viewerHasActiveChurchMembership(churchId: string, userId?: string) {
+  const cid = String(churchId || "").trim();
+  if (!cid) return false;
+  if (!userId) return true;
+  const active = await getActiveMembership(userId);
+  return !!active && String(active.churchId || "").trim() === cid;
 }
 
 function feedItemVisibility(item: any) {
@@ -444,7 +449,7 @@ function isDiscoverableFeedItem(item: any, viewerChurchId: string) {
   }
 
   const visibility = feedItemVisibility(item);
-  const member = viewerHasActiveChurchMembership(viewerChurchId);
+  const member = Boolean(String(viewerChurchId || "").trim());
 
   if (visibility.includes("church")) {
     return member && itemChurchId === viewerCid;
@@ -465,10 +470,26 @@ function isDiscoverableFeedItem(item: any, viewerChurchId: string) {
   return visibility.includes("public") || visibility.includes("global");
 }
 
-async function resolveViewerChurchId(req: NextRequest, headerChurchId: string) {
+async function resolveViewerChurchId(
+  req: NextRequest,
+  headerChurchId: string,
+  viewerUserId: string,
+  viewerRole: string
+) {
   const fromHeader = String(headerChurchId || "").trim();
+
+  await ensureActiveMembershipForSession({
+    userId: viewerUserId,
+    churchId: fromHeader,
+    role: viewerRole,
+  });
+
   const membershipOrRes = await guard(req);
-  if (membershipOrRes instanceof NextResponse) return fromHeader;
+  if (membershipOrRes instanceof NextResponse) {
+    const active = await getActiveMembership(viewerUserId);
+    return String(active?.churchId || fromHeader).trim();
+  }
+
   return String(membershipOrRes.churchId || fromHeader).trim();
 }
 
@@ -512,8 +533,9 @@ export async function GET(req: NextRequest) {
 
   const ctx = ctxOrRes as any;
   const headerChurchId = String(ctx?.viewer?.churchId || "").trim();
-  const churchId = await resolveViewerChurchId(req, headerChurchId);
   const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
+  const viewerRole = String(ctx?.viewer?.role || "Member").trim();
+  const churchId = await resolveViewerChurchId(req, headerChurchId, viewerUserId, viewerRole);
   const url = new URL(req.url);
 
   const type = url.searchParams.get("type") as FeedType | null;
@@ -565,7 +587,7 @@ export async function GET(req: NextRequest) {
       return err("Feed item not found", 404);
     }
 
-    if (isClaimableScheduleFeedItem(item) && !viewerHasActiveChurchMembership(churchId)) {
+    if (isClaimableScheduleFeedItem(item) && !(await viewerHasActiveChurchMembership(churchId, viewerUserId))) {
       return err("Feed item not found", 404);
     }
 
@@ -605,9 +627,11 @@ export async function GET(req: NextRequest) {
     scheduleCandidates: afterDiscover.filter((x) => isMediaScheduleFeedItem(x)).length,
   });
 
+  const hasMembership = await viewerHasActiveChurchMembership(churchId, viewerUserId);
+
   const items = afterDiscover
     .filter((x: any) => {
-      if (isClaimableScheduleFeedItem(x) && !viewerHasActiveChurchMembership(churchId)) {
+      if (isClaimableScheduleFeedItem(x) && !hasMembership) {
         return false;
       }
       if (isClaimableScheduleFeedItem(x)) {
@@ -624,6 +648,16 @@ export async function GET(req: NextRequest) {
   const resolvedItems = await Promise.all(items);
 
   const scheduleRows = resolvedItems.filter((x: any) => isMediaScheduleFeedItem(x));
+  console.log("KRISTO_FEED_SCHEDULES_RETURNED", {
+    churchId,
+    headerChurchId,
+    viewerUserId,
+    viewerRole,
+    hasMembership,
+    total: resolvedItems.length,
+    scheduleCount: scheduleRows.length,
+    scheduleIds: scheduleRows.map((x: any) => String(x?.id || "")),
+  });
   console.log("[ScheduleFeed] GET schedule rows returned", {
     churchId,
     scheduleCount: scheduleRows.length,
@@ -991,7 +1025,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
   }
 
   if (action === "claim_schedule_slot") {
-    if (!viewerHasActiveChurchMembership(churchId)) {
+    if (!(await viewerHasActiveChurchMembership(churchId, viewerUserId))) {
       return err("Join a church to claim schedule slots", 403);
     }
 

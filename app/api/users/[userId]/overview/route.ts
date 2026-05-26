@@ -120,6 +120,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ userId: str
   // Counts (fallback to 0 if unknown)
   let followersCount = 0;
   let followingCount = 0;
+  let viewerFollowsTarget = false;
 
   // If follows is an object with arrays
   if (follows && typeof follows === "object" && !Array.isArray(follows)) {
@@ -133,6 +134,28 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ userId: str
     followingCount = (follows as any[]).filter((x) => x && x.fromUserId === targetUserId).length;
   }
 
+  const viewerUserId = safeString(viewer?.userId).trim();
+  if (viewerUserId) {
+    if (follows && typeof follows === "object" && !Array.isArray(follows)) {
+      const followers = Array.isArray((follows as any).followers) ? (follows as any).followers : [];
+      const following = Array.isArray((follows as any).following) ? (follows as any).following : [];
+      const merged = [...followers, ...following];
+      viewerFollowsTarget = merged.some(
+        (x: any) =>
+          x &&
+          (String(x?.fromUserId || x?.followerId || "").trim() === viewerUserId) &&
+          (String(x?.toUserId || x?.followingId || "").trim() === targetUserId)
+      );
+    } else if (Array.isArray(follows)) {
+      viewerFollowsTarget = (follows as any[]).some(
+        (x: any) =>
+          x &&
+          String(x?.fromUserId || "").trim() === viewerUserId &&
+          String(x?.toUserId || "").trim() === targetUserId
+      );
+    }
+  }
+
   const postsArr = Array.isArray(posts) ? posts : Object.values(posts || {});
   const postsCount = postsArr.filter((x: any) => x && (x.userId === targetUserId || x.authorId === targetUserId)).length;
 
@@ -144,6 +167,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ userId: str
       viewerChurchId: "",
       followersCount,
       followingCount,
+      viewerFollowsTarget,
       postsCount,
       activeChurchId,
       ministryIds,

@@ -1,0 +1,65 @@
+{
+  "roomId": "test-ministry-live-room",
+  "messageKind": "assignment_card",
+  "destination": "messagesStore.messages[test-ministry-live-room]",
+  "cards": [
+    {
+      "id": "cardmsg_1778266615118_0",
+      "threadId": "test-ministry-live-room",
+      "sender": "other",
+      "displayName": "Schedule System",
+      "createdAt": 1778266615118,
+      "kind": "assignment_card",
+      "card": {
+        "cardId": "test-slot-1",
+        "title": "Opening Prayer",
+        "subtitle": "Ministry Live • Members",
+        "roleKey": "opening",
+        "roleLabel": "Opening",
+        "slotLabel": "Slot 1",
+        "durationMin": 10,
+        "startTime": "7:00 PM",
+        "endTime": "7:10 PM",
+        "timeLabel": "7:00 PM - 7:10 PM",
+        "task": "Open the live with prayer",
+        "script": "Welcome everyone and pray",
+        "notes": [
+          "Terminal test card"
+        ],
+        "musicItems": [],
+        "status": "open",
+        "likeCount": 0,
+        "commentCount": 0
+      }
+    },
+    {
+      "id": "cardmsg_1778266615118_1",
+      "threadId": "test-ministry-live-room",
+      "sender": "other",
+      "displayName": "Schedule System",
+      "createdAt": 1778266615119,
+      "kind": "assignment_card",
+      "card": {
+        "cardId": "test-slot-2",
+        "title": "Main Teaching",
+        "subtitle": "Ministry Live • Members",
+        "roleKey": "main",
+        "roleLabel": "Main",
+        "slotLabel": "Slot 2",
+        "durationMin": 20,
+        "startTime": "7:10 PM",
+        "endTime": "7:30 PM",
+        "timeLabel": "7:10 PM - 7:30 PM",
+        "task": "Teach the main message",
+        "script": "Short teaching",
+        "notes": [
+          "Terminal test card"
+        ],
+        "musicItems": [],
+        "status": "open",
+        "likeCount": 0,
+        "commentCount": 0
+      }
+    }
+  ]
+}

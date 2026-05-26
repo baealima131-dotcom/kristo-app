@@ -35,26 +35,13 @@ async function devAutoViewer(): Promise<Viewer | null> {
 export async function getViewer(req: NextRequest): Promise<Viewer> {
   await seedUserIfMissing();
 
-  if (process.env.KRISTO_DEV_HEADER_AUTH === "1") {
-    const url = new URL(req.url);
+  const headerUid = String(req.headers.get("x-kristo-user-id") || "").trim();
+  const headerRole = String(req.headers.get("x-kristo-role") || "Member").trim();
+  const headerChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
 
-    const qDev = String(url.searchParams.get("devHeaderAuth") || "").trim();
-    const headerUid = String(req.headers.get("x-kristo-user-id") || "").trim();
-    const headerRole = String(req.headers.get("x-kristo-role") || "Member").trim();
-    const headerChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
-
-    if (headerUid) {
-      const role = (headerRole as AppRole) || "Member";
-      return { userId: headerUid, name: headerUid, role, churchId: headerChurchId };
-    }
-
-    if (process.env.NODE_ENV === "development" && qDev === "1") {
-      const userId = process.env.KRISTO_DEV_USER_ID || "u-demo-1";
-      const churchId = process.env.KRISTO_DEV_CHURCH_ID || "c-demo-1";
-      const role = (process.env.KRISTO_DEV_ROLE as AppRole) || "System_Admin";
-      const u = await getUserById(userId);
-      return { userId, churchId, role, name: u?.email || u?.id || userId };
-    }
+  if (headerUid && (process.env.KRISTO_DEV_HEADER_AUTH === "1" || process.env.NODE_ENV !== "production")) {
+    const role = (headerRole as AppRole) || "Member";
+    return { userId: headerUid, name: headerUid, role, churchId: headerChurchId };
   }
 
   const dev = await devAutoViewer();
@@ -71,7 +58,7 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
   return {
     userId: sess.userId,
     name: u?.email,
-    role: "Member",
-    churchId: "",
+    role: (headerRole as AppRole) || "Member",
+    churchId: headerChurchId,
   };
 }

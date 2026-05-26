@@ -16,10 +16,13 @@ type Ministry = {
   id: string;
   name: string;
   description?: string;
+  avatarUri?: string;
+  mediaAccess?: boolean;
   status: MinistryStatus;
   churchId: string;
   createdAt: string;
   updatedAt?: string;
+  mediaAccess?: boolean;
 };
 
 type ApiErr = { ok: false; error: string; details?: unknown };
@@ -60,6 +63,25 @@ function parseDescription(input: unknown): string | undefined {
   return s.length > DESC_MAX ? s.slice(0, DESC_MAX) : s;
 }
 
+
+function parseAvatarUri(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+
+  const s = String(input).trim();
+  if (!s) return undefined;
+
+  const ok =
+    s.startsWith("http://") ||
+    s.startsWith("https://") ||
+    s.startsWith("file://") ||
+    s.startsWith("content://") ||
+    s.startsWith("/");
+
+  if (!ok) return undefined;
+
+  return s.length > 1200 ? s.slice(0, 1200) : s;
+}
+
 function sanitizeName(input: unknown): string {
   const s = String(input ?? "").trim();
   if (!s) return "";
@@ -98,12 +120,23 @@ export async function GET(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin", "Member"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId } = ctxOrRes;
+  const url = new URL(req.url);
+  const idParam = String(url.searchParams.get("id") || "").trim();
 
   const all = await readAll();
+
+  if (idParam) {
+    const one = all.find((m) => m.id === idParam && m.churchId === churchId);
+    if (!one) {
+      return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
+    }
+    return json<Ministry>({ ok: true, data: one });
+  }
+
   const data = all.filter((m) => m.churchId === churchId);
 
   return json<Ministry[]>({ ok: true, data });
@@ -118,7 +151,7 @@ export async function POST(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Ministry_Leader", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
@@ -133,13 +166,18 @@ export async function POST(req: NextRequest) {
   if (!status) return json({ ok: false, error: "Invalid status" } satisfies ApiErr, { status: 400 });
 
   const description = parseDescription(body.description);
+  const avatarUri = parseAvatarUri(body.avatarUri);
+  const mediaAccess = body.mediaAccess === true;
 
   const created: Ministry = {
     id: id(),
     name,
     description,
+    avatarUri,
+    mediaAccess,
     status,
     churchId,
+    createdByUserId: viewer.userId,
     createdAt: nowIso(),
   };
 
@@ -158,6 +196,43 @@ export async function POST(req: NextRequest) {
     return json({ ok: false, error: msg } satisfies ApiErr, { status: 500 });
   }
 
+  // Pastor/creator is always member #1 and senior leader of every ministry.
+  try {
+    await updateJsonFile<any[]>(
+      "ministry-members.json",
+      (current) => {
+        const list = Array.isArray(current) ? current : [];
+        const userId = String(viewer.userId || "").trim();
+
+        if (!userId) return list;
+
+        const exists = list.some(
+          (mm: any) =>
+            String(mm?.churchId || "") === String(churchId) &&
+            String(mm?.ministryId || "") === String(created.id) &&
+            String(mm?.userId || "") === userId
+        );
+
+        if (exists) return list;
+
+        list.unshift({
+          id: `mm_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          churchId,
+          ministryId: created.id,
+          userId,
+          role: "Leader",
+          createdAt: nowIso(),
+        });
+
+        return list;
+      },
+      []
+    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Failed to assign pastor as ministry leader";
+    return json({ ok: false, error: msg } satisfies ApiErr, { status: 500 });
+  }
+
   await logAudit({
     req,
     viewer,
@@ -166,7 +241,7 @@ export async function POST(req: NextRequest) {
     targetType: "ministry",
     targetId: created.id,
     message: `${viewer.name || viewer.userId} created ministry ${name}.`,
-    meta: { name, status, description },
+    meta: { name, status, description, avatarUri },
   } as any);
 
   return json<Ministry>({ ok: true, data: created }, { status: 201 });
@@ -181,7 +256,7 @@ export async function PATCH(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
@@ -225,6 +300,12 @@ export async function PATCH(req: NextRequest) {
         const nextDescription =
           body.description !== undefined ? parseDescription(body.description) : cur.description;
 
+        const nextMediaAccess =
+          body.mediaAccess !== undefined ? body.mediaAccess === true : !!(cur as any).mediaAccess;
+
+        const nextAvatarUri =
+          body.avatarUri !== undefined ? parseAvatarUri(body.avatarUri) : cur.avatarUri;
+
         prevStatus = cur.status;
         nextStatusForAudit = nextStatus;
 
@@ -233,6 +314,8 @@ export async function PATCH(req: NextRequest) {
           name: nextName,
           status: nextStatus,
           description: nextDescription,
+          avatarUri: nextAvatarUri,
+          mediaAccess: nextMediaAccess,
           updatedAt: nowIso(),
         };
 
@@ -265,7 +348,7 @@ export async function PATCH(req: NextRequest) {
     message: statusToggled
       ? `${viewer.name || viewer.userId} toggled ministry status to ${u.status} (${u.name}).`
       : `${viewer.name || viewer.userId} updated ministry ${u.name}.`,
-    meta: { name: u.name, status: u.status, description: u.description },
+    meta: { name: u.name, status: u.status, description: u.description, avatarUri: u.avatarUri, mediaAccess: (u as any).mediaAccess },
   } as any);
 
   return json<Ministry>({ ok: true, data: u });
@@ -279,7 +362,7 @@ export async function DELETE(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;

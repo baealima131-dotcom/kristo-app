@@ -5,6 +5,7 @@ export type NotificationType =
   | "MinistryLeaderRemoved"
   | "MinistryMemberRoleChanged"
   | "MembershipRejected"
+  | "ChurchProfileUpdated"
   | "Generic";
 
 export type AppNotification = {
@@ -57,12 +58,13 @@ export function listNotifications(args: {
   userId: string;
   unreadOnly?: boolean;
   limit?: number;
+  includeAllTargets?: boolean;
 }) {
-  const { churchId, userId, unreadOnly, limit = 50 } = args;
+  const { churchId, userId, unreadOnly, limit = 50, includeAllTargets = false } = args;
 
   return store()
     .filter((n) => n.churchId === churchId)
-    .filter((n) => !n.targetUserId || n.targetUserId === userId)
+    .filter((n) => includeAllTargets ? true : (!n.targetUserId || n.targetUserId === userId))
     .filter((n) => (unreadOnly ? !n.isRead : true))
     .slice()
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
@@ -77,15 +79,24 @@ export function setRead(id: string, isRead: boolean): AppNotification | null {
   return n;
 }
 
+export function removeNotification(id: string): AppNotification | null {
+  const items = store();
+  const idx = items.findIndex((x) => x.id === id);
+  if (idx < 0) return null;
+  const removed = items[idx];
+  items.splice(idx, 1);
+  return removed;
+}
+
 // Back-compat alias (some routes still import addNotification)
 export const addNotification = createNotification;
 
-export function markAllRead(args: { churchId: string; userId: string }) {
-  const { churchId, userId } = args;
+export function markAllRead(args: { churchId: string; userId: string; includeAllTargets?: boolean }) {
+  const { churchId, userId, includeAllTargets = false } = args;
 
   const items = store()
     .filter((n) => n.churchId === churchId)
-    .filter((n) => !n.targetUserId || n.targetUserId === userId);
+    .filter((n) => includeAllTargets ? true : (!n.targetUserId || n.targetUserId === userId));
 
   let updated = 0;
   for (const n of items) {

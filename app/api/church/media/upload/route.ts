@@ -1,0 +1,120 @@
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import fs from "fs";
+import path from "path";
+
+import { guard } from "@/app/api/_lib/rbac";
+
+export const runtime = "nodejs";
+
+const MAX_FILE_SIZE = 120 * 1024 * 1024;
+
+const PUBLIC_DIR = path.join(process.cwd(), "public");
+const UPLOAD_DIR = path.join(PUBLIC_DIR, "uploads", "media");
+
+function ensureDir() {
+  if (!fs.existsSync(UPLOAD_DIR)) {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  }
+}
+
+function safeName(name: string) {
+  return String(name || "video")
+    .replace(/[^\w.\- ]+/g, "_")
+    .replace(/\s+/g, "_")
+    .slice(0, 120);
+}
+
+function extFrom(file: File) {
+  const byName = path.extname(String(file.name || "")).trim();
+
+  if (byName) return byName.toLowerCase();
+
+  const mime = String(file.type || "").toLowerCase();
+
+  if (mime.includes("jpeg") || mime.includes("jpg")) return ".jpg";
+  if (mime.includes("png")) return ".png";
+  if (mime.includes("webp")) return ".webp";
+  if (mime.includes("quicktime")) return ".mov";
+  if (mime.includes("mov")) return ".mov";
+
+  return mime.includes("image/") ? ".jpg" : ".mp4";
+}
+
+function isAllowedMedia(file: File) {
+  const mime = String(file.type || "").toLowerCase();
+
+  return mime.includes("video/") || mime.includes("image/");
+}
+
+export async function POST(req: NextRequest) {
+  const ctxOrRes = await guard(req);
+
+  if (ctxOrRes instanceof NextResponse) {
+    return ctxOrRes;
+  }
+
+  const form = await req.formData().catch(() => null);
+
+  if (!form) {
+    return NextResponse.json(
+      { ok: false, error: "Invalid form data" },
+      { status: 400 }
+    );
+  }
+
+  const file = form.get("file");
+
+  if (!(file instanceof File)) {
+    return NextResponse.json(
+      { ok: false, error: "file is required" },
+      { status: 400 }
+    );
+  }
+
+  if (!isAllowedMedia(file)) {
+    return NextResponse.json(
+      { ok: false, error: "Only image/video files allowed" },
+      { status: 400 }
+    );
+  }
+
+  if (file.size > MAX_FILE_SIZE) {
+    return NextResponse.json(
+      { ok: false, error: "File too large" },
+      { status: 400 }
+    );
+  }
+
+  ensureDir();
+
+  const ext = extFrom(file);
+
+  const base = safeName(
+    path.basename(
+      String(file.name || "video"),
+      path.extname(String(file.name || ""))
+    )
+  );
+
+  const filename =
+    `media_${Date.now()}_${Math.random().toString(16).slice(2)}_${base}${ext}`;
+
+  const absPath = path.join(UPLOAD_DIR, filename);
+
+  const buf = Buffer.from(await file.arrayBuffer());
+
+  fs.writeFileSync(absPath, buf);
+
+  const url = `/uploads/media/${filename}`;
+
+  return NextResponse.json({
+    ok: true,
+    data: {
+      url,
+      filename,
+      size: file.size,
+      mime: file.type || "application/octet-stream",
+    },
+  });
+}

@@ -1,6 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+
+const DEV_USER_ID = process.env.NEXT_PUBLIC_KRISTO_DEV_USER_ID || "";
+const DEV_ROLE = process.env.NEXT_PUBLIC_KRISTO_DEV_ROLE || "";
+const DEV_CHURCH_ID = process.env.NEXT_PUBLIC_KRISTO_DEV_CHURCH_ID || "";
 
 type ChurchMember = {
   membershipId: string;
@@ -43,7 +48,7 @@ function explainAuthProblem(status: number, msg: string) {
   if (status === 401) {
     return (
       msg ||
-      "Unauthorized. Login (Clerk) au tumia KRISTO_DEV_* kwenye .env.local kisha restart."
+      "Unauthorized. Login (Clerk) au tumia KRISTO_DEV_* kwenye .env.local kisha restart. Uki-test kwa headers, weka kristo_dev_header_auth=1."
     );
   }
   if (status === 403) {
@@ -61,43 +66,32 @@ function explainAuthProblem(status: number, msg: string) {
   return msg || "Request failed.";
 }
 
+function devHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const enabled = String(localStorage.getItem("kristo_dev_header_auth") || "").trim();
+    if (enabled !== "1") return {};
+
+    const uid = String(localStorage.getItem("kristo_dev_user_id") || "").trim();
+    const role = String(localStorage.getItem("kristo_dev_role") || "").trim();
+    const cid = String(localStorage.getItem("kristo_dev_church_id") || "").trim();
+
+    const h: Record<string, string> = {};
+    if (uid) h["x-kristo-user-id"] = uid;
+    if (role) h["x-kristo-role"] = role;
+    if (cid) h["x-kristo-church-id"] = cid;
+    return h;
+  } catch {
+    return {};
+  }
+}
+
 export default function ChurchMembersPage() {
+  const sp = useSearchParams();
+
   const [members, setMembers] = useState<ChurchMember[]>([]);
   const [ministries, setMinistries] = useState<Ministry[]>([]);
-  
-  async function setChurchRole(userId: string, role: "Member" | "Leader" | "Church_Admin" | "Pastor") {
-    setActionMsg("");
-    setError("");
-    try {
-      setLoading(true);
-
-      // NOTE: endpoint hii lazima ulingane na backend yako.
-      // Kama bado hujatengeneza route ya kubadilisha role, hii itarudisha error lakini app itacompile.
-      const res = await fetch(`/api/church/memberships/role`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ userId, role }),
-      });
-
-      const json = await res.json().catch(() => ({} as any));
-      if (!res.ok || json?.ok === false) {
-        throw new Error(json?.error || `Failed (HTTP ${res.status})`);
-      }
-
-      setActionMsg(`✅ Role updated: ${userId} → ${role}`);
-      setTimeout(() => setActionMsg(""), 1200);
-
-      // reload list
-      // reload list (optional)
-      // await loadAll();
-    } catch (e: any) {
-      setError(e?.message || "Failed to set role");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const [q, setQ] = useState("");
@@ -108,14 +102,64 @@ const [loading, setLoading] = useState(false);
   const [pickedRole, setPickedRole] = useState<MinistryMemberRole>("Member");
   const [actionMsg, setActionMsg] = useState<string>("");
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const v = String(sp.get("devHeaderAuth") || "").trim();
+      if (v === "1" || v === "0") localStorage.setItem("kristo_dev_header_auth", v);
+    } catch {}
+  }, [sp]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      if (!localStorage.getItem("kristo_dev_header_auth")) localStorage.setItem("kristo_dev_header_auth", "0");
+      if (DEV_USER_ID && !localStorage.getItem("kristo_dev_user_id")) localStorage.setItem("kristo_dev_user_id", DEV_USER_ID);
+      if (DEV_ROLE && !localStorage.getItem("kristo_dev_role")) localStorage.setItem("kristo_dev_role", DEV_ROLE);
+      if (DEV_CHURCH_ID && !localStorage.getItem("kristo_dev_church_id")) localStorage.setItem("kristo_dev_church_id", DEV_CHURCH_ID);
+    } catch {}
+  }, []);
+
+  async function setChurchRole(userId: string, role: "Member" | "Leader" | "Church_Admin" | "Pastor") {
+    setActionMsg("");
+    setError("");
+    try {
+      setLoading(true);
+
+      const res = await fetch(`/api/church/memberships/role`, {
+        method: "POST",
+        credentials: "include",
+        headers: { ...devHeaders(), "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ userId, role }),
+      });
+
+      const json = await readApi<any>(res);
+      if (!res.ok || !okJson(json)) {
+        const msg = json && !okJson(json) ? (json as ApiErr).error : "";
+        throw new Error(explainAuthProblem(res.status, msg || `Failed (HTTP ${res.status})`));
+      }
+
+      setActionMsg(`✅ Role updated: ${userId} → ${role}`);
+      setTimeout(() => setActionMsg(""), 1200);
+
+      await loadAll();
+    } catch (e: any) {
+      setError(e?.message || "Failed to set role");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function loadAll() {
     setLoading(true);
     setError("");
     setActionMsg("");
     try {
+      const headers = { ...devHeaders(), accept: "application/json" };
+
       const [mr, minr] = await Promise.all([
-        fetch("/api/church/members", { cache: "no-store", credentials: "include", headers: { accept: "application/json" } }),
-        fetch("/api/church/ministries", { cache: "no-store", credentials: "include", headers: { accept: "application/json" } }),
+        fetch("/api/church/members", { cache: "no-store", credentials: "include", headers }),
+        fetch("/api/church/ministries", { cache: "no-store", credentials: "include", headers }),
       ]);
 
       const mj = await readApi<ChurchMember[]>(mr);
@@ -143,7 +187,7 @@ const [loading, setLoading] = useState(false);
         return String(a.name || "").localeCompare(String(b.name || ""));
       });
       setMinistries(mins);
-} catch {
+    } catch {
       setError("Network error");
     } finally {
       setLoading(false);
@@ -171,7 +215,7 @@ const [loading, setLoading] = useState(false);
       const res = await fetch(`/api/church/ministry-members?ministryId=${encodeURIComponent(ministryId)}`, {
         cache: "no-store",
         credentials: "include",
-        headers: { accept: "application/json" },
+        headers: { ...devHeaders(), accept: "application/json" },
       });
       const json = await readApi<any[]>(res);
       if (!res.ok || !okJson(json)) return false;
@@ -204,7 +248,6 @@ const [loading, setLoading] = useState(false);
     setActionMsg("");
 
     try {
-      // ✅ prevent duplicates
       const exists = await alreadyInMinistry(ministryId, userId);
       if (exists) {
         setActionMsg("⚠️ Member tayari yupo kwenye ministry hii.");
@@ -214,7 +257,7 @@ const [loading, setLoading] = useState(false);
       const res = await fetch("/api/church/ministry-members", {
         method: "POST",
         credentials: "include",
-        headers: { "content-type": "application/json", accept: "application/json" },
+        headers: { ...devHeaders(), "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({ ministryId, userId, role: pickedRole }),
       });
 
@@ -226,7 +269,6 @@ const [loading, setLoading] = useState(false);
       }
 
       setActionMsg("✅ Added to ministry!");
-      // ✅ refresh base data (future-proof)
       await loadAll();
     } catch {
       setError("Network error");
@@ -234,7 +276,6 @@ const [loading, setLoading] = useState(false);
       setLoading(false);
     }
   }
-
 
   const shellWrap: React.CSSProperties = { padding: 20, maxWidth: 1100 };
   const glass: React.CSSProperties = {
@@ -301,7 +342,6 @@ const [loading, setLoading] = useState(false);
         <div style={{ marginTop: 10, opacity: 0.92, fontWeight: 900, whiteSpace: "pre-wrap" }}>{actionMsg}</div>
       ) : null}
 
-      {/* Search */}
       <div style={{ ...glass, marginTop: 16, padding: 14 }}>
         <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 220px" }}>
           <input
@@ -321,7 +361,6 @@ const [loading, setLoading] = useState(false);
         </div>
       </div>
 
-      {/* Add to ministry */}
       <div style={{ ...glass, marginTop: 14, padding: 14 }}>
         <div style={{ fontWeight: 950, marginBottom: 10 }}>➕ Add selected member to a ministry</div>
 
@@ -350,7 +389,6 @@ const [loading, setLoading] = useState(false);
         </div>
       </div>
 
-      {/* List */}
       <div style={{ marginTop: 16 }}>
         <h3 style={{ marginBottom: 10 }}>List ({filtered.length})</h3>
 

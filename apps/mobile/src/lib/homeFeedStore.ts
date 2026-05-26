@@ -109,6 +109,10 @@ export function isFeedVideoItem(item: any) {
 type Listener = () => void;
 
 const FEED_STORAGE_KEY = "KRISTO_HOME_FEED_V3_RESET";
+const HOME_FEED_FOR_YOU_SIGNALS_KEY = "kristo_for_you_signals_v1";
+
+/** Primary AsyncStorage key for persisted local Home Feed posts. */
+export const HOME_FEED_POSTS_STORAGE_KEY = FEED_STORAGE_KEY;
 
 async function persistFeed(items: any[]) {
   try {
@@ -631,6 +635,218 @@ export function feedRemoveWhere(predicate: (item: FeedItem) => boolean) {
   persistAndEmit();
 }
 
+function feedApiBase() {
+  return String(
+    process.env.EXPO_PUBLIC_API_BASE ||
+      process.env.EXPO_PUBLIC_API_URL ||
+      process.env.EXPO_PUBLIC_KRISTO_API_URL ||
+      ""
+  ).replace(/\/$/, "");
+}
+
+function normalizeFeedUri(raw: unknown) {
+  return String(raw || "").trim().toLowerCase();
+}
+
+function stripFeedUriQueryHash(raw: string) {
+  return raw.split("#")[0].split("?")[0];
+}
+
+function toAbsoluteFeedUri(raw: unknown) {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  const lower = v.toLowerCase();
+  if (
+    lower.startsWith("http://") ||
+    lower.startsWith("https://") ||
+    lower.startsWith("file://") ||
+    lower.startsWith("data:image")
+  ) {
+    return lower;
+  }
+  const base = feedApiBase().toLowerCase();
+  if (!base) return lower;
+  return `${base}${v.startsWith("/") ? "" : "/"}${v}`.toLowerCase();
+}
+
+function feedUriPathname(raw: unknown) {
+  const v = stripFeedUriQueryHash(String(raw || "").trim().toLowerCase());
+  if (!v) return "";
+  if (v.startsWith("data:image")) return v;
+
+  const base = feedApiBase().toLowerCase();
+  if (base && v.startsWith(base)) {
+    const rest = v.slice(base.length);
+    return rest.startsWith("/") ? rest : `/${rest}`;
+  }
+
+  try {
+    if (/^https?:\/\//.test(v) || v.startsWith("file://")) {
+      return new URL(v).pathname.toLowerCase();
+    }
+  } catch {
+    // fall through to relative path handling
+  }
+
+  return v.startsWith("/") ? v : `/${v}`;
+}
+
+function feedUriPathTail(raw: unknown, segments = 2) {
+  const pathname = feedUriPathname(raw);
+  const parts = pathname.split("/").filter(Boolean);
+  if (!parts.length) return "";
+  return parts.slice(-Math.min(segments, parts.length)).join("/");
+}
+
+function feedUriLooksLikeAvatarAsset(raw: unknown) {
+  const tail = feedUriPathTail(raw, 3);
+  return /avatar|profile|logo|church|uploads|media\/profile|profile-avatars/i.test(tail);
+}
+
+function feedUrisEquivalent(a: unknown, b: unknown) {
+  const rawA = normalizeFeedUri(a);
+  const rawB = normalizeFeedUri(b);
+  if (!rawA || !rawB) return false;
+  if (rawA === rawB) return true;
+
+  const isDataA = rawA.startsWith("data:image");
+  const isDataB = rawB.startsWith("data:image");
+  if (isDataA || isDataB) return isDataA && isDataB && rawA === rawB;
+
+  const absA = toAbsoluteFeedUri(a);
+  const absB = toAbsoluteFeedUri(b);
+  if (absA && absB && absA === absB) return true;
+
+  const pathA = feedUriPathname(a);
+  const pathB = feedUriPathname(b);
+  if (pathA && pathB && pathA === pathB) return true;
+
+  const tailA = feedUriPathTail(a);
+  const tailB = feedUriPathTail(b);
+  if (tailA && tailB && tailA === tailB) {
+    if (feedUriLooksLikeAvatarAsset(a) || feedUriLooksLikeAvatarAsset(b)) return true;
+    if (tailA.split("/").length >= 2) return true;
+  }
+
+  const fileA = tailA.split("/").pop() || "";
+  const fileB = tailB.split("/").pop() || "";
+  if (
+    fileA &&
+    fileA === fileB &&
+    /\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|heif)$/i.test(fileA) &&
+    (feedUriLooksLikeAvatarAsset(a) || feedUriLooksLikeAvatarAsset(b))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function collectAvatarUriValues(item: any) {
+  return [
+    item?.actorAvatarUri,
+    item?.mediaAvatarUri,
+    item?.churchAvatarUri,
+    item?.churchAvatarUrl,
+    item?.avatarUri,
+    item?.avatarUrl,
+    item?.logo,
+    item?.logoUrl,
+    item?.logoUri,
+    item?.profileImage,
+    item?.profilePhoto,
+    item?.profilePicture,
+    item?.photo,
+    item?.image,
+    item?.avatar,
+    item?.posterUri,
+    item?.thumbnailUri,
+    item?.thumbnailUrl,
+    item?.actorAvatar,
+    item?.churchAvatar,
+    item?.mediaAvatar,
+  ]
+    .map((v) => String(v || "").trim())
+    .filter(Boolean);
+}
+
+function mediaUriMatchesAvatarMetadata(item: any) {
+  const mediaUri = String(item?.mediaUri || "").trim();
+  if (!mediaUri) return false;
+  return collectAvatarUriValues(item).some((avatar) => feedUrisEquivalent(mediaUri, avatar));
+}
+
+export function isStandaloneAvatarFeedPost(item: any) {
+  if (!item) return false;
+
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  if (slots.length > 0) return false;
+  if (String(item?.scheduleType || "").includes("media-live-slots")) return false;
+  if (String(item?.source || "").includes("media-schedule")) return false;
+  if (item?.isLiveNow || item?.kind === "live") return false;
+
+  const id = String(item?.id || "").trim();
+  if (id.includes("__slot_")) return false;
+
+  const source = String(item?.source || "").toLowerCase();
+  if (/avatar|profile|logo/.test(source)) return true;
+  if (/avatar|profile|logo/i.test(id)) return true;
+
+  const videoUrl = normalizeFeedUri(item?.videoUrl);
+  if (isFeedVideoItem(item) && videoUrl) return false;
+
+  const mediaUri = normalizeFeedUri(item?.mediaUri);
+  const avatarUris = collectAvatarUriValues(item);
+  const title = String(item?.title || "").trim();
+  const body = String(item?.body || "").trim();
+
+  if (mediaUri && mediaUriMatchesAvatarMetadata(item)) {
+    return true;
+  }
+
+  if (item?.mediaType === "image" && mediaUri && !videoUrl && !title && !body) {
+    return true;
+  }
+
+  if (
+    !mediaUri &&
+    !videoUrl &&
+    !title &&
+    !body &&
+    avatarUris.length > 0 &&
+    item?.mediaType !== "video"
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isRealHomeFeedRow(item: any) {
+  if (!item || isStandaloneAvatarFeedPost(item)) return false;
+
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  if (slots.length > 0) return true;
+  if (String(item?.scheduleType || "").includes("media-live-slots")) return true;
+  if (String(item?.source || "").includes("media-schedule")) return true;
+  if (item?.isLiveNow || item?.kind === "live") return true;
+
+  const id = String(item?.id || "");
+  if (id.includes("__slot_")) return true;
+
+  const mediaUri = String(item?.mediaUri || "").trim();
+  const videoUrl = String(item?.videoUrl || "").trim();
+  const title = String(item?.title || "").trim();
+  const body = String(item?.body || item?.text || "").trim();
+
+  if (isFeedVideoItem(item) && videoUrl) return true;
+  if (item?.mediaType === "video" && videoUrl) return true;
+  if (item?.mediaType === "image" && mediaUri) return true;
+  if (title || body) return true;
+
+  return false;
+}
+
 export function isLocalMediaVideoPost(item: any) {
   const id = String(item?.id || "").trim();
   
@@ -748,9 +964,38 @@ export async function clearHomeFeedRuntimeCaches() {
   return { removedCount: totalRemoved, removedMediaVideo };
 }
 
+/**
+ * Dev helper: clear local Home Feed posts only.
+ * Removes in-memory feed items + feed AsyncStorage keys.
+ * Does NOT touch session, church/profile/media caches, ministries, or avatars.
+ */
+export async function clearHomeFeedPostsOnly() {
+  const s = getStore();
+  const removedItems = s.items.length;
+  s.items = [];
+
+  const storageKeys = [FEED_STORAGE_KEY, HOME_FEED_FOR_YOU_SIGNALS_KEY];
+  await AsyncStorage.multiRemove(storageKeys);
+
+  delete (globalThis as any).__KRISTO_OPTIMISTIC_LIKES__;
+
+  emit();
+
+  if (__DEV__) {
+    console.log("KRISTO_HOME_FEED_POSTS_CLEARED", {
+      storageKeys,
+      removedItems,
+    });
+  }
+
+  return { removedItems, storageKeys };
+}
+
 if (__DEV__) {
   (globalThis as any).clearHomeFeedLocalCaches = clearHomeFeedLocalCaches;
   (globalThis as any).clearLocalMediaVideoPosts = clearLocalMediaVideoPosts;
+  (globalThis as any).clearHomeFeedRuntimeCaches = clearHomeFeedRuntimeCaches;
+  (globalThis as any).clearHomeFeedPostsOnly = clearHomeFeedPostsOnly;
 }
 
 function isMediaScheduleCard(it: any): boolean {

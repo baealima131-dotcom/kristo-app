@@ -43,6 +43,7 @@ async function readApi<T>(res: Response): Promise<ApiRes<T> | null> {
     return null;
   }
 }
+
 function okJson<T>(x: ApiRes<T> | null): x is ApiOk<T> {
   return !!x && (x as any).ok === true;
 }
@@ -58,31 +59,42 @@ export default function MinistryChat(props: { ministryId: string; title?: string
 
   const listRef = useRef<HTMLDivElement | null>(null);
 
+  const myUserId =
+    typeof window !== "undefined"
+      ? String(localStorage.getItem("kristo_dev_user_id") || "").trim()
+      : "";
+
   const wrap: CSSProperties = {
-    borderRadius: 18,
+    borderRadius: 22,
     border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(0,0,0,0.26)",
+    background: "rgba(0,0,0,0.22)",
     padding: 14,
+    height: "calc(100vh - 150px)",
+    minHeight: 640,
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
   };
 
   const btn: CSSProperties = {
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(0,0,0,0.20)",
+    padding: "13px 18px",
+    borderRadius: 16,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.04)",
     color: "inherit",
-    fontWeight: 900,
+    fontWeight: 1000,
     cursor: "pointer",
   };
 
   const input: CSSProperties = {
     width: "100%",
-    padding: "12px 12px",
-    borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(0,0,0,0.22)",
+    padding: "16px 18px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(15,15,15,0.96)",
     color: "inherit",
     outline: "none",
+    fontSize: 16,
   };
 
   const sorted = useMemo(() => {
@@ -119,8 +131,6 @@ export default function MinistryChat(props: { ministryId: string; title?: string
 
       const data = Array.isArray(json.data) ? json.data : [];
       setItems(data);
-
-      // slight delay to ensure DOM rendered
       setTimeout(scrollToBottom, 50);
     } catch {
       setError("Network error");
@@ -133,13 +143,19 @@ export default function MinistryChat(props: { ministryId: string; title?: string
   async function send() {
     const clean = String(text || "").trim();
     if (!clean) return;
+
     setSending(true);
     setError("");
+
     try {
       const res = await fetch("/api/church/ministry-chat", {
         method: "POST",
         credentials: "include",
-        headers: { ...devHeaders(), "content-type": "application/json", accept: "application/json" },
+        headers: {
+          ...devHeaders(),
+          "content-type": "application/json",
+          accept: "application/json",
+        },
         body: JSON.stringify({ ministryId, text: clean }),
       });
 
@@ -170,25 +186,43 @@ export default function MinistryChat(props: { ministryId: string; title?: string
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ministryId]);
 
+  useEffect(() => {
+    setTimeout(scrollToBottom, 50);
+  }, [sorted.length]);
+
   return (
     <div id="chat" style={wrap}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+          alignItems: "center",
+          marginBottom: 12,
+        }}
+      >
         <div>
-          <div style={{ fontWeight: 1000, fontSize: 15 }}>{title}</div>
-          <div style={{ opacity: 0.72, fontSize: 12, marginTop: 4 }}>
-            API: <b>/api/church/ministry-chat</b> • ministryId: <span style={{ opacity: 0.95 }}>{ministryId}</span>
+          <div style={{ fontWeight: 1000, fontSize: 16 }}>{title}</div>
+          <div style={{ opacity: 0.62, fontSize: 12, marginTop: 2 }}>
+            ministryId: <span style={{ opacity: 0.9 }}>{ministryId}</span>
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button onClick={load} disabled={loading} style={btn}>
-            {loading ? "Loading..." : "Refresh"}
-          </button>
-        </div>
+        <button onClick={load} disabled={loading} style={btn}>
+          {loading ? "Loading..." : "Refresh"}
+        </button>
       </div>
 
       {error ? (
-        <div style={{ marginTop: 10, color: "salmon", fontWeight: 900, whiteSpace: "pre-wrap" }}>
+        <div
+          style={{
+            marginBottom: 10,
+            color: "salmon",
+            fontWeight: 1000,
+            whiteSpace: "pre-wrap",
+          }}
+        >
           ⛔ {error}
         </div>
       ) : null}
@@ -196,14 +230,16 @@ export default function MinistryChat(props: { ministryId: string; title?: string
       <div
         ref={listRef}
         style={{
-          marginTop: 12,
-          height: 320,
-          overflow: "auto",
-          borderRadius: 14,
-          border: "1px solid rgba(255,255,255,0.10)",
-          background: "rgba(0,0,0,0.18)",
-          padding: 12,
-          display: "grid",
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          paddingRight: 6,
+          borderRadius: 18,
+          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(0,0,0,0.14)",
+          padding: "14px 12px",
+          display: "flex",
+          flexDirection: "column",
           gap: 10,
         }}
       >
@@ -212,32 +248,98 @@ export default function MinistryChat(props: { ministryId: string; title?: string
             {loading ? "Loading messages..." : "No messages yet. Andika message ya kwanza ✅"}
           </div>
         ) : (
-          sorted.map((m) => (
-            <div
-              key={m.id}
-              style={{
-                padding: "10px 12px",
-                borderRadius: 14,
-                border: "1px solid rgba(255,255,255,0.10)",
-                background: "rgba(255,255,255,0.06)",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontWeight: 950 }}>
-                  {m.userName || "Member"} <span style={{ opacity: 0.7, fontWeight: 800 }}>• {m.userId}</span>
-                </div>
-                <div style={{ opacity: 0.7, fontSize: 12 }}>
-                  {m.createdAt ? new Date(m.createdAt).toLocaleString() : ""}
+          sorted.map((m) => {
+            const mine = !!myUserId && m.userId === myUserId;
+            const author = m.userName || m.userId || "Member";
+            const when = m.createdAt ? new Date(m.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+
+            return (
+              <div
+                key={m.id}
+                style={{
+                  display: "flex",
+                  justifyContent: mine ? "flex-end" : "flex-start",
+                  width: "100%",
+                  marginTop: 2,
+                }}
+              >
+                <div
+                  style={{
+                    maxWidth: mine ? "72%" : "74%",
+                    padding: "10px 14px 12px",
+                    borderRadius: mine ? "18px 18px 6px 18px" : "18px 18px 18px 6px",
+                    border: mine
+                      ? "1px solid rgba(46,204,113,0.28)"
+                      : "1px solid rgba(255,255,255,0.08)",
+                    background: mine
+                      ? "linear-gradient(180deg, #1f8f58, #176b42)"
+                      : "rgba(32,32,32,0.96)",
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "baseline",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      marginBottom: 6,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 900,
+                        opacity: mine ? 0.96 : 0.82,
+                      }}
+                    >
+                      {mine ? "You" : author}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: 11,
+                        opacity: 0.62,
+                        whiteSpace: "nowrap",
+                        marginLeft: 10,
+                      }}
+                    >
+                      {when}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 15,
+                      lineHeight: 1.55,
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    {m.text}
+                  </div>
                 </div>
               </div>
-
-              <div style={{ marginTop: 6, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{m.text}</div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 
-      <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center" }}>
+      <div
+        style={{
+          marginTop: 12,
+          display: "grid",
+          gridTemplateColumns: "1fr auto",
+          gap: 10,
+          alignItems: "center",
+          position: "sticky",
+          bottom: 0,
+          background: "rgba(5,5,5,0.96)",
+          borderTop: "1px solid rgba(255,255,255,0.08)",
+          paddingTop: 12,
+          paddingBottom: 2,
+        }}
+      >
         <input
           style={input}
           placeholder="Andika message..."
@@ -255,8 +357,8 @@ export default function MinistryChat(props: { ministryId: string; title?: string
         </button>
       </div>
 
-      <div style={{ marginTop: 10, opacity: 0.7, fontSize: 12 }}>
-        Tip: Press <b>Enter</b> kutuma. (Shift+Enter = new line)
+      <div style={{ marginTop: 8, opacity: 0.56, fontSize: 11 }}>
+        Press <b>Enter</b> kutuma • <b>Shift+Enter</b> new line
       </div>
     </div>
   );

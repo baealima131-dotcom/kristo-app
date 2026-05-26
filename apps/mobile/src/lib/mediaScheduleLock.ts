@@ -5,6 +5,7 @@ import {
   feedPurgeMediaScheduleCardsForChurch,
 } from "@/src/lib/homeFeedStore";
 import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
+import { findProtectedNearLiveSchedule } from "@/src/lib/liveScheduleRing";
 
 export const ACTIVE_MEDIA_SCHEDULE_ERROR =
   "A media schedule is already active. Please end or delete it before creating another one.";
@@ -330,6 +331,17 @@ export async function findActiveMediaScheduleForChurchFromSources(
 
   const localActive = findActiveMediaScheduleForChurch(feedList() as any[], cid, looseFindOpts);
   const hasLocalMediaCards = (feedList() as any[]).some((item) => isLocalMediaScheduleCard(item));
+  const protectedNearLive = findProtectedNearLiveSchedule(feedList() as any[], cid, nowMs);
+
+  if (protectedNearLive) {
+    console.log("KRISTO_ACTIVE_SCHEDULE_PROTECTED", {
+      churchId: cid,
+      reason: "media-lock-backend-miss",
+      feedId: String(protectedNearLive.item?.id || ""),
+      slotId: String(protectedNearLive.slot?.id || ""),
+    });
+    return protectedNearLive.item;
+  }
 
   if (localActive || hasLocalMediaCards) {
     purgeStaleLocalMediaSchedules(cid, localActive);

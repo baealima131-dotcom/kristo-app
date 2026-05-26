@@ -1,14 +1,58 @@
 import "react-native-gesture-handler";
 
+import React, { useCallback, useLayoutEffect, useState } from "react";
 import { Slot } from "expo-router";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { KristoSessionProvider } from "@/src/lib/KristoSessionProvider";
+import * as SplashScreen from "expo-splash-screen";
+import { KristoSessionProvider, useKristoSession } from "@/src/lib/KristoSessionProvider";
+import {
+  ensurePurchasesConfigured,
+  syncPurchasesAppUser,
+} from "@/src/lib/payments/mobileSubscriptions";
+import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+import JujujuAnimatedSplash, { SPLASH_BG } from "@/src/components/JujujuAnimatedSplash";
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
+
+function RevenueCatBootstrap() {
+  const { session, loading } = useKristoSession();
+  const bypassRevenueCat = isSubscriptionBypassEnabled();
+
+  React.useEffect(() => {
+    if (bypassRevenueCat) return;
+
+    ensurePurchasesConfigured().catch((error) => {
+      console.log("RevenueCat boot configure error", error);
+    });
+  }, [bypassRevenueCat]);
+
+  React.useEffect(() => {
+    if (bypassRevenueCat || loading) return;
+
+    const appUserId = String(session?.userId || "").trim();
+    if (!appUserId) return;
+
+    syncPurchasesAppUser(appUserId).catch((error) => {
+      console.log("RevenueCat logIn error", error);
+    });
+  }, [bypassRevenueCat, loading, session?.userId]);
+
+  return <Slot />;
+}
 
 export default function RootLayout() {
+  const [splashFinished, setSplashFinished] = useState(false);
+  const onSplashFinished = useCallback(() => setSplashFinished(true), []);
+
+  useLayoutEffect(() => {
+    SplashScreen.hideAsync().catch(() => {});
+  }, []);
+
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: SPLASH_BG }}>
+      {!splashFinished ? <JujujuAnimatedSplash onFinished={onSplashFinished} /> : null}
       <KristoSessionProvider>
-        <Slot />
+        <RevenueCatBootstrap />
       </KristoSessionProvider>
     </GestureHandlerRootView>
   );

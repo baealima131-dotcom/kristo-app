@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
     churchId,
     type: "Generic",
     title: "Membership request sent",
-    message: `Your request to join churchId=${churchId} has been sent for approval.`,
+    message: "Your membership request has been sent for review.",
     targetUserId: a.viewer.userId,
   });
 
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
       churchId,
       type: "Generic",
       title: "New membership request",
-      message: `UserId=${a.viewer.userId} requested to join your church.`,
+      message: `${name || "A new member"} requested to join your church.`,
       targetUserId: p.userId,
     });
   }

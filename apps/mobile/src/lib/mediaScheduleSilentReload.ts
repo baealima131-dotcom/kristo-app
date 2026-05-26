@@ -7,6 +7,7 @@ import {
   feedRemoveWhere,
 } from "@/src/lib/homeFeedStore";
 import { findActiveMediaScheduleForChurch, findMediaScheduleFeedForChurch } from "@/src/lib/mediaScheduleLock";
+import { findProtectedNearLiveSchedule } from "@/src/lib/liveScheduleRing";
 import {
   clearChurchProjectScheduleSlots,
   getChurchProjectMcRuntime,
@@ -122,6 +123,7 @@ export type SilentMediaScheduleReloadResult = MediaScheduleFeedSync & {
   purgedLocal: boolean;
   backendHasActiveSchedule: boolean;
   shouldForceLocalPurge: boolean;
+  protectedLocalSchedule?: boolean;
   reason: string;
 };
 
@@ -168,8 +170,34 @@ export function applySilentMediaScheduleReload(params: {
   );
 
   let purgedLocal = false;
+  let protectedLocalSchedule = false;
 
-  if (shouldForceLocalPurge) {
+  const localRows = (() => {
+    try {
+      return feedList() as any[];
+    } catch {
+      return [];
+    }
+  })();
+
+  const protectedSchedule = cid
+    ? findProtectedNearLiveSchedule(localRows, cid, Date.now())
+    : null;
+
+  if (shouldForceLocalPurge && protectedSchedule) {
+    protectedLocalSchedule = true;
+    console.log("KRISTO_ACTIVE_SCHEDULE_PROTECTED", {
+      churchId: cid,
+      reason: params.reason,
+      feedId: String(protectedSchedule.item?.id || protectedSchedule.item?.sourceScheduleId || ""),
+      slotId: String(protectedSchedule.slot?.id || ""),
+      slotIndex: protectedSchedule.index,
+      mediaScheduleVersion,
+      backendHasActiveSchedule,
+    });
+  }
+
+  if (shouldForceLocalPurge && !protectedLocalSchedule) {
     purgeAllLocalMediaScheduleSources({
       churchId: cid,
       reason: params.reason,
@@ -207,7 +235,8 @@ export function applySilentMediaScheduleReload(params: {
     versionChanged,
     purgedLocal,
     backendHasActiveSchedule,
-    shouldForceLocalPurge,
+    shouldForceLocalPurge: shouldForceLocalPurge && !protectedLocalSchedule,
+    protectedLocalSchedule,
     reason: params.reason,
   };
 }

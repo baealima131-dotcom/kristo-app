@@ -21,6 +21,7 @@ type Profile = {
   country?: string;
   city?: string;
   avatarUrl?: string;
+  bio?: string;
 
   dobVisibility?: ProfileVisibility;
   maritalStatus?: string;
@@ -95,6 +96,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ userId: str
     country: p.country || "",
     city: p.city || "",
     avatarUrl: p.avatarUrl || "",
+    bio: (p as any).bio || "",
 
     // Conditionally visible
     dob: allowDob ? (p.dob || "") : "",

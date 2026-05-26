@@ -118,6 +118,7 @@ export default function MinistriesPage() {
   useEffect(() => {
     if (!openFromUrl) return;
     setOpenId(openFromUrl);
+    loadMembers(openFromUrl).catch(() => {});
   }, [openFromUrl]);
 
   // DEV: toggle header-auth via URL (terminal-friendly)
@@ -319,6 +320,22 @@ const sorted = useMemo(() => {
   function setMembersError(mid: string, msg: string) {
     setMembersErrorByMinistry((cur) => ({ ...cur, [mid]: msg }));
   }
+  function setMembers(mid: string, items: MinistryMember[]) {
+    setMembersByMinistry((cur) => ({ ...cur, [mid]: items }));
+  }
+
+  function sortMembers(list: MinistryMember[]) {
+    const rank = (r: MinistryMemberRole) =>
+      r === "Leader" ? 0 : r === "Assistant" ? 1 : 2;
+
+    return [...list].sort((a, b) => {
+      const ra = rank(a.role);
+      const rb = rank(b.role);
+      if (ra !== rb) return ra - rb;
+      return String(a.userId || "").localeCompare(String(b.userId || ""));
+    });
+  }
+
 
   async function loadMembers(mid: string) {
     setMembersLoading(mid, true);
@@ -330,8 +347,8 @@ const sorted = useMemo(() => {
         setMembersByMinistry((cur) => ({ ...cur, [mid]: [] }));
         return;
       }
-      const list = Array.isArray(json.data) ? json.data : [];
-      setMembersByMinistry((cur) => ({ ...cur, [mid]: list }));
+      const list = Array.isArray(json.data) ? sortMembers(json.data) : [];
+      setMembers(mid, list);
     } catch (e: any) {
       setMembersError(mid, e?.message || "Network error");
     } finally {
@@ -361,7 +378,7 @@ const sorted = useMemo(() => {
       }
 
       setAddUserIdByMinistry((cur) => ({ ...cur, [mid]: "" }));
-      setMembersByMinistry((cur) => ({ ...cur, [mid]: [json.data, ...(cur[mid] || [])] }));
+      setMembers(mid, sortMembers([json.data, ...(membersByMinistry[mid] || [])]));
     } catch (e: any) {
       setMembersError(mid, e?.message || "Network error");
     } finally {
@@ -654,7 +671,7 @@ const sorted = useMemo(() => {
                         </span>
                       </Link>
 
-                      <Link href={profileHref(m.id) + "#chat"} scroll style={{ textDecoration: "none" }}>
+                      <Link href={profileHref(m.id) + "/chat"} scroll style={{ textDecoration: "none" }}>
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(52, 152, 219, 0.14)", fontWeight: 950 }}>
                           💬 Chat
                         </span>
@@ -689,7 +706,9 @@ const sorted = useMemo(() => {
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                         <div>
-                          <div style={{ fontWeight: 950, fontSize: 14 }}>👥 Ministry Members</div>
+                          <div style={{ fontWeight: 950, fontSize: 14 }}>
+                            👥 Ministry Members {Array.isArray(mMembers) ? `(${mMembers.length})` : ""}
+                          </div>
                           <div style={{ opacity: 0.78, marginTop: 4, fontSize: 12 }}>
                             API: <b>/api/church/ministry-members</b>
                           </div>
@@ -711,6 +730,12 @@ const sorted = useMemo(() => {
                       {mErr ? (
                         <div style={{ marginTop: 10, color: "salmon", fontWeight: 900, whiteSpace: "pre-wrap" }}>
                           ⛔ {mErr}
+                        </div>
+                      ) : null}
+
+                      {!mLoading && Array.isArray(mMembers) && mMembers.length === 0 ? (
+                        <div style={{ marginTop: 10, opacity: 0.78, fontSize: 13 }}>
+                          No members yet in this ministry.
                         </div>
                       ) : null}
 

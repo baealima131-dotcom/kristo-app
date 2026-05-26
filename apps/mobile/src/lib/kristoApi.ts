@@ -4,6 +4,7 @@ import {
   requestKey,
   type TrafficOptions,
 } from "@/src/lib/kristoTraffic";
+import { resolveApiBase } from "@/src/lib/kristoEnv";
 
 type Json = any;
 
@@ -17,15 +18,14 @@ export type ApiErrorResult = {
   debug?: unknown;
 };
 
-const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "https://kristo-app.vercel.app").replace(/\/$/, "");
-
 export function getApiBase() {
-  return API_BASE;
+  return resolveApiBase();
 }
 
 function kristoUrl(path: string) {
   if (/^https?:\/\//i.test(path)) return path;
-  return `${API_BASE}${path.startsWith("/") ? "" : "/"}${path}`;
+  const base = getApiBase();
+  return `${base}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
 async function safeJson(res: Response) {
@@ -41,11 +41,11 @@ async function safeJson(res: Response) {
 function networkError(path: string, error: unknown): ApiErrorResult {
   const message = String((error as any)?.message || error || "Network request failed");
   if (__DEV__) {
-    console.warn("[KRISTO API] request failed", { path, base: API_BASE, error: message });
+    console.warn("[KRISTO API] request failed", { path, base: getApiBase(), error: message });
   }
   return {
     ok: false,
-    error: `Could not reach ${API_BASE}. ${message}`,
+    error: `Could not reach ${getApiBase()}. ${message}`,
     reason: "network_error",
   };
 }
@@ -58,7 +58,7 @@ function httpError(path: string, res: Response, body: any): ApiErrorResult {
   if (__DEV__) {
     console.warn("[KRISTO API] non-OK response", {
       path,
-      base: API_BASE,
+      base: getApiBase(),
       status: res.status,
       body,
     });

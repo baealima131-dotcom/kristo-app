@@ -1,4 +1,3 @@
-import { ENV } from "./kristoEnv";
 import { getSessionSync } from "./kristoSession";
 
 export type KristoRole =
@@ -25,13 +24,7 @@ export function getKristoAuth(): KristoAuth {
     };
   }
 
-  // DEMO fallback (no church yet => locked)
-  // ENV.DEMO can later swap into real login flow
-  if (ENV.DEMO) {
-    return { userId: "u-demo-1", role: "Member", churchId: "" };
-  }
-
-  return { userId: "u-demo-1", role: "Member", churchId: "" };
+  return { userId: "", role: "Member", churchId: "" };
 }
 
 export function getKristoHeaders(auth?: Partial<KristoAuth>) {

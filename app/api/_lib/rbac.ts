@@ -6,6 +6,7 @@ import {
   getActiveMembership,
   requestMembership,
   approveMembership,
+  ensureActiveMembershipForSession,
   type ChurchRole,
   devPromoteToRoleIfActive,
 } from "@/app/api/_lib/memberships";
@@ -67,18 +68,19 @@ function devAutoMembershipEnabled() {
   return v !== "0" && v.toLowerCase() !== "false";
 }
 
-async function ensureDevActiveMembership(userId: string, name?: string) {
+async function ensureDevActiveMembership(userId: string, name?: string, headerChurchId?: string) {
   if (!isDev()) return;
   if (!devAutoMembershipEnabled()) return;
 
   const active = await getActiveMembership(userId);
   if (active) return;
 
-  const reqRes = await requestMembership(userId, devDefaultChurchId(), name);
+  const churchId = String(headerChurchId || devDefaultChurchId()).trim();
+  const reqRes = await requestMembership(userId, churchId, name);
   if (!reqRes.ok) return;
 
   await approveMembership(reqRes.membership.id, userId);
-  await devPromoteToRoleIfActive(userId, devDefaultChurchId(), "Pastor");
+  await devPromoteToRoleIfActive(userId, churchId, "Pastor");
 }
 
 /** Auth only: user must be signed in, no church required */
@@ -122,8 +124,15 @@ async function requireActiveMembership(req: NextRequest): Promise<GuardContext |
   const authRole = String((a.viewer as any).role || "").trim();
   const authChurchId = String((a.viewer as any).churchId || "").trim();
 
-  // DEV: optional auto-provision
-  await ensureDevActiveMembership(userId, name);
+  await ensureActiveMembershipForSession({
+    userId,
+    churchId: authChurchId,
+    role: authRole,
+    name,
+  });
+
+  // DEV: optional auto-provision fallback church when header church missing
+  await ensureDevActiveMembership(userId, name, authChurchId);
 
   const active = await getActiveMembership(userId);
   if (!active) {
@@ -145,6 +154,13 @@ async function requireActiveMembership(req: NextRequest): Promise<GuardContext |
   }
 
   const role = mapChurchRoleToRole(active.churchRole);
+  authDebugLog("Active membership resolved", {
+    userId,
+    churchId: active.churchId,
+    churchRole: active.churchRole,
+    mappedRole: role,
+    headerChurchId: authChurchId,
+  });
   return { viewer: { userId, name, role }, churchId: active.churchId };
 }
 

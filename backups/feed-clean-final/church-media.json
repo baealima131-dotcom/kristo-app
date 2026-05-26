@@ -1,0 +1,47 @@
+{
+  "church-media-CH7-CRUMV9": {
+    "mediaName": "TLMC Media",
+    "category": "Church Media",
+    "subCategory": "Live Ministry",
+    "language": "English",
+    "country": "United States",
+    "targetAudience": "Church members",
+    "contentStyle": "Live, prayer, teaching",
+    "bio": "Official church media.",
+    "tags": [
+      "church",
+      "live"
+    ],
+    "id": "church-media-CH7-CRUMV9",
+    "churchId": "CH7-CRUMV9",
+    "ownerUserId": "u_baealima131_manual",
+    "hosts": [
+      {
+        "userId": "u_baealima131_manual",
+        "name": "Prince Moróo",
+        "role": "Member",
+        "avatarUrl": "/uploads/profile-avatars/u_baealima131_manual-1779052105910.jpg",
+        "kristoId": "KR7-311066C"
+      }
+    ],
+    "createdAt": 1777993416981,
+    "updatedAt": 1779520761296
+  },
+  "church-media-CH7-WT31MO": {
+    "mediaName": "Usalama media",
+    "category": "Church Media",
+    "subCategory": "",
+    "targetAudience": "",
+    "language": "Swahili",
+    "country": "Burundi",
+    "contentStyle": "",
+    "bio": "",
+    "tags": [],
+    "id": "church-media-CH7-WT31MO",
+    "churchId": "CH7-WT31MO",
+    "ownerUserId": "u_baealima131_manual",
+    "hosts": [],
+    "createdAt": 1779058204886,
+    "updatedAt": 1779058204886
+  }
+}

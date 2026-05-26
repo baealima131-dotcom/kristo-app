@@ -99,14 +99,128 @@ export function formatSlotDateLabel(iso?: string, fallback?: string) {
 export function resolveAvatarUri(raw: string, apiBase: string) {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return "";
+  if (trimmed.includes("/profile-avatars/")) return "";
   if (trimmed.startsWith("/uploads/")) return `${apiBase}${trimmed}`;
   return trimmed;
 }
 
+/** Hide raw user ids / emails from feed labels. */
+export function cleanFeedLabel(raw: unknown, fallback: string) {
+  const s = String(raw || "").trim();
+  if (!s) return fallback;
+  if (/^u_[a-f0-9-]+$/i.test(s)) return fallback;
+  if (/^[a-f0-9-]{24,}$/i.test(s)) return fallback;
+  if (s.includes("@") && !s.includes(" ")) return fallback;
+  return s;
+}
+
+export function resolveScheduleAvatarUri(item: any, apiBase: string) {
+  const candidates = [
+    item?.mediaAvatarUri,
+    item?.churchAvatarUri,
+    item?.churchAvatarUrl,
+    item?.actorAvatarUri,
+    item?.avatarUri,
+  ];
+
+  for (const raw of candidates) {
+    const uri = resolveAvatarUri(String(raw || ""), apiBase);
+    if (uri) return uri;
+  }
+  return "";
+}
+
 export function baseFeedId(input: unknown) {
-  const id = String(input || "").trim();
+  const id = String(input || "")
+    .replace(/__fy_\d+$/g, "")
+    .trim();
   if (!id) return "";
   return id.split("__slot_")[0];
+}
+
+export function resolveLiveScheduleFeedId(input: Record<string, unknown> | null | undefined) {
+  const candidates = [
+    input?.sourceScheduleId,
+    input?.feedId,
+    input?.liveId,
+    input?.schedulePostId,
+    input?.id,
+  ];
+
+  for (const value of candidates) {
+    const id = baseFeedId(value);
+    if (id) return id;
+  }
+
+  return "";
+}
+
+export function normalizeLiveScheduleSlot(slot: any, index = 0) {
+  const claimedRaw = slot?.claimedBy;
+  const claimedByUserId = String(
+    slot?.claimedByUserId ||
+      (claimedRaw && typeof claimedRaw === "object" ? claimedRaw.userId : "") ||
+      ""
+  ).trim();
+
+  const claimedByName = String(
+    slot?.claimedByName ||
+      slot?.claimedByDisplayName ||
+      slot?.claimedByUserName ||
+      (claimedRaw && typeof claimedRaw === "object"
+        ? claimedRaw.name || claimedRaw.displayName || claimedRaw.username || claimedRaw.fullName
+        : claimedRaw) ||
+      ""
+  ).trim();
+
+  const slotNum = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+
+  return {
+    ...slot,
+    slot: slotNum,
+    slotNumber: slotNum,
+    order: Number(slot?.order || slotNum),
+    claimedByUserId,
+    claimedByName,
+    ...(claimedByUserId
+      ? {
+          claimed: slot?.claimed ?? true,
+          isClaimed: slot?.isClaimed ?? true,
+          claimedBy: claimedRaw || {
+            userId: claimedByUserId,
+            name: claimedByName,
+            avatarUri: String(slot?.claimedByAvatar || slot?.claimedByAvatarUrl || ""),
+            role: String(slot?.claimedByRole || "Member"),
+          },
+        }
+      : {}),
+  };
+}
+
+export function normalizeLiveScheduleSlots(slots: any[]) {
+  if (!Array.isArray(slots)) return [];
+  return slots.map((slot, index) => normalizeLiveScheduleSlot(slot, index));
+}
+
+export function parseLiveAllScheduleSlotsJson(rawParam: unknown) {
+  try {
+    const rawValue = Array.isArray(rawParam)
+      ? String(rawParam[rawParam.length - 1] || "")
+      : String(rawParam || "");
+
+    const raw = rawValue.trim();
+    if (!raw) return [];
+
+    const jsonText =
+      raw.startsWith("%") || raw.includes("%7B") || raw.includes("%5B")
+        ? decodeURIComponent(raw)
+        : raw;
+
+    const parsed = JSON.parse(jsonText);
+    return Array.isArray(parsed) ? normalizeLiveScheduleSlots(parsed) : [];
+  } catch {
+    return [];
+  }
 }
 
 export const SLOT_STATE_THEMES: Record<

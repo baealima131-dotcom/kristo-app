@@ -47,11 +47,149 @@ import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { requireActiveChurchSubscriptionForSchedule } from "@/src/lib/churchSubscription";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { LinearGradient } from "expo-linear-gradient";
 
 const BG = "#0B0F17";
 const TEXT = "rgba(255,255,255,0.94)";
 const GOLD = "rgba(217,179,95,0.92)";
+const GOLD_SOLID = "#D9B35F";
+const PURPLE = "#8B5CF6";
 const PAD = 16;
+
+function chatMediaUrl(u: unknown) {
+  const v = String(u || "").trim();
+  if (!v) return "";
+  if (/^data:image\//i.test(v) || /^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
+
+  const base = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+  return `${base}${v.startsWith("/") ? "" : "/"}${v}`;
+}
+
+function resolveThreadHeaderAvatar(args: {
+  session: Record<string, any> | null | undefined;
+  params: Record<string, any> | null | undefined;
+  realMinistry: Record<string, any> | null | undefined;
+  ministryAvatarFallback: string;
+  routeAvatar: string;
+}) {
+  const sessionAny = (args.session || {}) as Record<string, any>;
+  const paramsAny = (args.params || {}) as Record<string, any>;
+  const ministry = args.realMinistry || {};
+  const profileChurch = sessionAny?.church || paramsAny?.church || {};
+
+  const candidates = [
+    ministry.avatarUri,
+    ministry.avatarUrl,
+    ministry.imageUrl,
+    args.ministryAvatarFallback,
+    args.routeAvatar,
+    paramsAny.avatar,
+    paramsAny.profileImage,
+    paramsAny.photoURL,
+    paramsAny.churchAvatarUri,
+    paramsAny.churchLogoUri,
+    paramsAny.churchProfileImage,
+    paramsAny.churchImage,
+    sessionAny.profileImage,
+    sessionAny.avatarUri,
+    sessionAny.avatarUrl,
+    sessionAny.photoURL,
+    sessionAny.churchAvatarUri,
+    sessionAny.churchLogoUri,
+    sessionAny.churchProfileImage,
+    sessionAny.churchImage,
+    profileChurch.avatarUri,
+    profileChurch.avatarUrl,
+    profileChurch.logoUri,
+  ];
+
+  for (const raw of candidates) {
+    const uri = chatMediaUrl(raw);
+    if (uri) return uri;
+  }
+
+  return "";
+}
+
+function FadeInBubbleWrap({
+  children,
+  mine,
+}: {
+  children: React.ReactNode;
+  mine?: boolean;
+}) {
+  const opacity = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(mine ? 8 : 6)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(translateY, {
+        toValue: 0,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [opacity, translateY]);
+
+  return (
+    <Animated.View style={{ opacity, transform: [{ translateY }] }}>
+      {children}
+    </Animated.View>
+  );
+}
+
+function ChatRoomBackdrop() {
+  return (
+    <>
+      <LinearGradient
+        pointerEvents="none"
+        colors={["#060910", "#0B0F17", "#070B14", "#05080F"]}
+        locations={[0, 0.38, 0.72, 1]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <View pointerEvents="none" style={s.chatBeamLeft} />
+      <View pointerEvents="none" style={s.chatBeamRight} />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(217,179,95,0.05)", "transparent", "rgba(139,92,246,0.04)", "transparent"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={s.chatAmbientWash}
+      />
+      <View pointerEvents="none" style={s.chatNoiseOverlay} />
+    </>
+  );
+}
+
+function ChatEmptyWatermark({
+  title,
+  isAssignment,
+}: {
+  title: string;
+  isAssignment: boolean;
+}) {
+  const label = isAssignment ? "Church Live Control" : String(title || "Ministry Room").trim();
+
+  return (
+    <View pointerEvents="none" style={s.chatEmptyWatermark}>
+      <View style={s.chatEmptyWatermarkGlow} />
+      <Ionicons name="infinite-outline" size={34} color="rgba(217,179,95,0.12)" />
+      <Text style={s.chatEmptyWatermarkTitle} numberOfLines={2}>
+        {label}
+      </Text>
+      <Text style={s.chatEmptyWatermarkSub}>Sacred communication hub</Text>
+    </View>
+  );
+}
 
 type MinistryRole = "pastor" | "admin" | "member";
 type MembershipStatus = "active" | "suspended";
@@ -1500,8 +1638,16 @@ function Bubble({
         mine ? ({ alignSelf: "flex-end" } as ViewStyle) : ({ alignSelf: "flex-start" } as ViewStyle),
       ]}
     >
+      <FadeInBubbleWrap mine={mine}>
       {mine ? (
         <View style={[s.bubble, s.bubbleMine, isPastorMineOrOther ? s.bubblePastor : null]}>
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(255,255,255,0.18)", "rgba(255,255,255,0.05)", "transparent"]}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={s.bubbleMineSheen}
+          />
           {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
           {m.attachments?.length ? (
@@ -1524,18 +1670,12 @@ function Bubble({
             </View>
           ) : null}
 
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
-            <Text style={t.msgTime}>{formatTime(m.createdAt)}</Text>
-            <Text
-              style={{
-                color: "rgba(244,208,111,0.78)",
-                fontSize: 10,
-                fontWeight: "800",
-                letterSpacing: 0.3,
-              }}
-            >
-              Delivered
-            </Text>
+          <View style={s.msgMetaRow}>
+            <Text style={t.msgTimeMine}>{formatTime(m.createdAt)}</Text>
+            <View style={s.deliveredRow}>
+              <Ionicons name="checkmark-done" size={11} color="rgba(196,181,253,0.88)" />
+              <Text style={t.deliveredText}>Delivered</Text>
+            </View>
           </View>
         </View>
       ) : (() => {
@@ -1607,7 +1747,7 @@ function Bubble({
 
             <Text
               style={[
-                t.msgTime,
+                t.msgTimeOther,
                 isPastorMessage ? { color: "rgba(244,208,111,0.86)" } : null,
               ]}
             >
@@ -1617,6 +1757,7 @@ function Bubble({
         </View>
         );
       })()}
+      </FadeInBubbleWrap>
     </Pressable>
   );
 }
@@ -2298,6 +2439,7 @@ export default function MessageThreadScreen() {
   const inputRef = useRef<any>(null);
 
   const [draft, setDraft] = useState("");
+  const [composerFocused, setComposerFocused] = useState(false);
   const [pending, setPending] = useState<Array<{ id: string; name: string; kind: "image" | "file" }>>([]);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -2355,22 +2497,14 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
 
   const headerAvatarSrc = useMemo(() => {
-    if (!isMinistryThread && !isAssignmentThread) return "";
-
-    const raw = String(
-      realMinistry?.avatarUri ||
-      (realMinistry as any)?.avatarUrl ||
-      (realMinistry as any)?.imageUrl ||
-      (params as any)?.avatar ||
-      ""
-    ).trim();
-
-    if (!raw) return "";
-
-    return raw.startsWith("/")
-      ? `${(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "")}${raw}`
-      : raw;
-  }, [isMinistryThread, isAssignmentThread, realMinistry, (params as any)?.avatar]);
+    return resolveThreadHeaderAvatar({
+      session: kristoSession,
+      params: params as any,
+      realMinistry: realMinistry as any,
+      ministryAvatarFallback,
+      routeAvatar,
+    });
+  }, [kristoSession, params, realMinistry, ministryAvatarFallback, routeAvatar]);
 
   const presence = useMemo(
     () => ({
@@ -5101,12 +5235,15 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           ]}
         >
           <View style={s.headerAvatarWrap}>
-            <View style={s.headerAvatar}>
-              {headerAvatarSrc ? (
-                <Image source={{ uri: headerAvatarSrc }} style={s.headerAvatarImg} />
-              ) : (
-                <Text style={t.headerAvatarText}>{assignmentInitialsParam || headerAvatarLabel(threadId, headerTitle)}</Text>
-              )}
+            <View pointerEvents="none" style={s.headerAvatarGlow} />
+            <View style={s.headerAvatarRing}>
+              <View style={s.headerAvatar}>
+                {headerAvatarSrc ? (
+                  <Image source={{ uri: headerAvatarSrc }} style={s.headerAvatarImg} />
+                ) : (
+                  <Text style={t.headerAvatarText}>{assignmentInitialsParam || headerAvatarLabel(threadId, headerTitle)}</Text>
+                )}
+              </View>
             </View>
           </View>
 
@@ -5122,8 +5259,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             </View>
 
             <View style={s.presenceRow}>
+              {presenceMessages[presenceIndex] === "online now" ? (
+                <View style={s.presenceOnlineDot} />
+              ) : null}
               <Text
-                style={[t.hSub, presenceMessages[presenceIndex] === "online now" ? t.presenceOnline : null]}
+                style={[
+                  t.hSub,
+                  presenceMessages[presenceIndex] === "online now" ? t.presenceOnline : null,
+                ]}
                 numberOfLines={1}
                 ellipsizeMode="tail"
               >
@@ -5154,23 +5297,29 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 onPress={handleSmartLivePress}
                 style={({ pressed }) => [
                   s.liveBtn,
-                  {
-                    minWidth: 68,
-                    paddingHorizontal: 10,
-                    borderWidth: 1,
-                    borderRadius: 999,
-                    alignSelf: "center",
-                  } as ViewStyle,
                   liveAssignmentCtaMeta.tone === "scheduled"
-                    ? ({ backgroundColor: "rgba(245,215,128,0.10)", borderColor: "rgba(245,215,128,0.42)" } as ViewStyle)
+                    ? s.liveBtnScheduled
                     : liveAssignmentCtaMeta.tone === "preview"
-                      ? ({ backgroundColor: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.38)" } as ViewStyle)
+                      ? s.liveBtnPreview
                       : liveAssignmentCtaMeta.tone === "live"
-                        ? ({ backgroundColor: "rgba(34,197,94,0.14)", borderColor: "rgba(34,197,94,0.52)" } as ViewStyle)
-                        : ({ backgroundColor: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.12)" } as ViewStyle),
-                  pressed ? ({ opacity: 0.7, transform: [{ scale: 0.98 }] } as ViewStyle) : null,
+                        ? s.liveBtnLive
+                        : s.liveBtnIdle,
+                  pressed ? ({ opacity: 0.82, transform: [{ scale: 0.98 }] } as ViewStyle) : null,
                 ]}
               >
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={
+                    liveAssignmentCtaMeta.tone === "live" || liveAssignmentCtaMeta.tone === "preview"
+                      ? ["rgba(34,197,94,0.22)", "rgba(34,197,94,0.08)", "rgba(255,255,255,0.04)"]
+                      : liveAssignmentCtaMeta.tone === "scheduled"
+                        ? ["rgba(245,215,128,0.18)", "rgba(245,215,128,0.06)", "rgba(255,255,255,0.03)"]
+                        : ["rgba(255,255,255,0.08)", "rgba(255,255,255,0.03)", "transparent"]
+                  }
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={s.liveBtnGlass}
+                />
                 <Animated.View
                   style={{
                     transform: [{ scale: livePulse }],
@@ -5180,7 +5329,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   <Ionicons
                     name="wifi-outline"
                     style={{ opacity: 0.95 }}
-                    size={14}
+                    size={13}
                     color={
                       liveAssignmentCtaMeta.tone === "scheduled"
                         ? "#F5D780"
@@ -5196,14 +5345,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 <Text
                   style={[
                     t.liveBtnText,
-                    { fontSize: 5, letterSpacing: 0.2 } as TextStyle,
                     liveAssignmentCtaMeta.tone === "scheduled"
-                      ? ({ color: "rgba(245,215,128,0.98)" } as TextStyle)
-                      : liveAssignmentCtaMeta.tone === "preview"
-                        ? ({ color: "rgba(134,239,172,0.98)" } as TextStyle)
-                        : liveAssignmentCtaMeta.tone === "live"
-                          ? ({ color: "rgba(134,239,172,0.98)" } as TextStyle)
-                          : ({ color: "rgba(248,113,113,0.98)" } as TextStyle),
+                      ? t.liveBtnTextScheduled
+                      : liveAssignmentCtaMeta.tone === "preview" || liveAssignmentCtaMeta.tone === "live"
+                        ? t.liveBtnTextLive
+                        : t.liveBtnTextIdle,
                   ]}
                 >
                   LIVE
@@ -5291,6 +5437,10 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
       {/* Frame */}
       <View style={s.frame}>
+        <ChatRoomBackdrop />
+        {!visibleMessages.length ? (
+          <ChatEmptyWatermark title={headerTitle} isAssignment={isAssignmentThread} />
+        ) : null}
         <FlatList
           ref={(r) => { listRef.current = r; }}
           data={visibleMessages}
@@ -5329,8 +5479,8 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             );
           }}
           ListEmptyComponent={
-            <View style={{ padding: 18 }}>
-              <Text style={t.emptyTitle}>No messages</Text>
+            <View style={s.chatEmptyList}>
+              <Text style={t.emptyTitle}>No messages yet</Text>
               <Text style={t.emptySub}>
                 {isAssignmentThread
                   ? "This assignment room is ready. Send the first assignment message."
@@ -5363,23 +5513,25 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         ) : null}
 
         <View style={[s.composer, { marginBottom: tabBarH + 8 }]}>
-          <Pressable onPress={pickImage} style={({ pressed }) => [s.cBtn, pressed ? ({ opacity: 0.85 } as ViewStyle) : null]}>
-            <Ionicons name="image" size={18} color={GOLD} />
+          <Pressable onPress={pickImage} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
+            <Ionicons name="image" size={18} color={GOLD_SOLID} />
           </Pressable>
 
-          <Pressable onPress={pickFile} style={({ pressed }) => [s.cBtn, pressed ? ({ opacity: 0.85 } as ViewStyle) : null]}>
-            <Ionicons name="attach" size={18} color={GOLD} />
+          <Pressable onPress={pickFile} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
+            <Ionicons name="attach" size={18} color={GOLD_SOLID} />
           </Pressable>
 
-          <View style={s.inputWrap}>
+          <View style={[s.inputWrap, composerFocused ? s.inputWrapFocused : null]}>
             <TextInput
               ref={inputRef}
              
               onFocus={() => {
+                setComposerFocused(true);
                 try {
                   listRef.current?.scrollToEnd?.({ animated: true });
                 } catch {}
               }}
+              onBlur={() => setComposerFocused(false)}
               blurOnSubmit={false}
               value={draft}
               onChangeText={setDraft}
@@ -5398,10 +5550,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             style={({ pressed }) => [
               s.sendBtn,
               !canSend || (isMinistryThread && isSuspended) ? s.sendBtnDisabled : null,
-              pressed && canSend && !(isMinistryThread && isSuspended) ? ({ transform: [{ scale: 0.99 }], opacity: 0.95 } as ViewStyle) : null,
+              canSend && !(isMinistryThread && isSuspended) ? s.sendBtnActive : null,
+              pressed && canSend && !(isMinistryThread && isSuspended) ? ({ transform: [{ scale: 0.97 }], opacity: 0.94 } as ViewStyle) : null,
             ]}
           >
-            <Ionicons name="send" size={16} color={canSend ? "#0B0F17" : "rgba(255,255,255,0.30)"} />
+            <Ionicons name="send" size={16} color={canSend && !(isMinistryThread && isSuspended) ? "#FFFFFF" : "rgba(255,255,255,0.30)"} />
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -8319,7 +8472,8 @@ videoEditorSplitTimelineBadgeText: {
     flexDirection: "row",
     alignItems: "flex-start",
     paddingHorizontal: 2,
-    paddingBottom: 10,
+    paddingBottom: 14,
+    marginBottom: 2,
   } as ViewStyle,
   headerMain: {
     flex: 1,
@@ -8329,25 +8483,44 @@ videoEditorSplitTimelineBadgeText: {
     marginRight: 8,
   } as ViewStyle,
   headerAvatarWrap: {
-    width: 48,
-    height: 48,
+    width: 54,
+    height: 54,
     marginRight: 12,
     alignItems: "center",
     justifyContent: "center",
   } as ViewStyle,
+  headerAvatarGlow: {
+    position: "absolute",
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: "rgba(217,179,95,0.16)",
+    shadowColor: GOLD_SOLID,
+    shadowOpacity: 0.45,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 0 },
+  } as ViewStyle,
+  headerAvatarRing: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    padding: 2,
+    backgroundColor: "rgba(217,179,95,0.95)",
+    shadowColor: GOLD_SOLID,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  } as ViewStyle,
   headerAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: "100%",
+    height: "100%",
+    borderRadius: 23,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.26)",
-    shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
+    borderColor: "rgba(255,255,255,0.14)",
     overflow: "hidden",
   } as ViewStyle,
   headerAvatarImg: {
@@ -8370,8 +8543,19 @@ videoEditorSplitTimelineBadgeText: {
   presenceRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 2,
+    marginTop: 3,
     flexWrap: "nowrap",
+    gap: 6,
+  } as ViewStyle,
+  presenceOnlineDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: "#4ADE80",
+    shadowColor: "#4ADE80",
+    shadowOpacity: 0.85,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
   } as ViewStyle,
   hBtn: {
     width: 42,
@@ -9356,14 +9540,84 @@ videoEditorSplitTimelineBadgeText: {
 
   frame: {
     flex: 1,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.02)",
+    borderRadius: 26,
+    backgroundColor: "rgba(4,8,16,0.96)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: "rgba(255,255,255,0.08)",
     overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.34,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
   } as ViewStyle,
 
-  bubbleWrap: { marginBottom: 14, maxWidth: "78%" } as ViewStyle,
+  chatBeamLeft: {
+    position: "absolute",
+    top: -40,
+    left: "18%",
+    width: 120,
+    height: "120%",
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.035)",
+    transform: [{ rotate: "-12deg" }],
+  } as ViewStyle,
+  chatBeamRight: {
+    position: "absolute",
+    top: -20,
+    right: "8%",
+    width: 90,
+    height: "110%",
+    borderRadius: 999,
+    backgroundColor: "rgba(139,92,246,0.04)",
+    transform: [{ rotate: "10deg" }],
+  } as ViewStyle,
+  chatAmbientWash: {
+    ...StyleSheet.absoluteFillObject,
+  } as ViewStyle,
+  chatNoiseOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255,255,255,0.012)",
+    opacity: 0.55,
+  } as ViewStyle,
+  chatEmptyWatermark: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 28,
+    zIndex: 0,
+  } as ViewStyle,
+  chatEmptyWatermarkGlow: {
+    position: "absolute",
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "rgba(217,179,95,0.05)",
+  } as ViewStyle,
+  chatEmptyWatermarkTitle: {
+    marginTop: 12,
+    color: "rgba(255,255,255,0.10)",
+    fontWeight: "900",
+    fontSize: 18,
+    letterSpacing: 1.4,
+    textAlign: "center",
+    textTransform: "uppercase",
+  } as TextStyle,
+  chatEmptyWatermarkSub: {
+    marginTop: 6,
+    color: "rgba(255,255,255,0.05)",
+    fontWeight: "700",
+    fontSize: 11,
+    letterSpacing: 0.8,
+    textAlign: "center",
+  } as TextStyle,
+  chatEmptyList: {
+    padding: 24,
+    alignItems: "center",
+    opacity: 0.72,
+  } as ViewStyle,
+
+  bubbleWrap: { marginBottom: 16, maxWidth: "80%" } as ViewStyle,
 
   assignmentTimelineWrap: {
     flexDirection: "row",
@@ -9461,9 +9715,15 @@ videoEditorSplitTimelineBadgeText: {
   bubble: {
     maxWidth: "100%",
     borderWidth: 1,
-    borderRadius: 22,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    borderRadius: 24,
+    paddingHorizontal: 15,
+    paddingVertical: 13,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4,
   } as ViewStyle,
 
   assignmentActionRow: {
@@ -9506,13 +9766,42 @@ videoEditorSplitTimelineBadgeText: {
   } as ViewStyle,
 
   bubbleMine: {
-    backgroundColor: "rgba(217,179,95,0.16)",
-    borderColor: "rgba(217,179,95,0.35)",
+    backgroundColor: "rgba(217,179,95,0.14)",
+    borderColor: "rgba(217,179,95,0.38)",
+    shadowColor: GOLD_SOLID,
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+  } as ViewStyle,
+  bubbleMineSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 34,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+  } as ViewStyle,
+  msgMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 10,
+  } as ViewStyle,
+  deliveredRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
   } as ViewStyle,
 
   bubbleOther: {
-    backgroundColor: "rgba(255,255,255,0.05)",
-    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(255,255,255,0.055)",
+    borderColor: "rgba(255,255,255,0.12)",
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
   } as ViewStyle,
 
   otherRow: {
@@ -9580,41 +9869,69 @@ videoEditorSplitTimelineBadgeText: {
     borderColor: "rgba(255,255,255,0.10)",
   } as ViewStyle,
 
-  composer: { marginTop: 10, marginBottom: 8, flexDirection: "row", alignItems: "flex-end" } as ViewStyle,
+  composer: { marginTop: 12, marginBottom: 8, flexDirection: "row", alignItems: "flex-end", gap: 8 } as ViewStyle,
   cBtn: {
-    width: 42,
-    height: 42,
+    width: 44,
+    height: 44,
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "rgba(255,255,255,0.045)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    marginRight: 10,
+    borderColor: "rgba(255,255,255,0.12)",
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 4,
+  } as ViewStyle,
+  cBtnPressed: {
+    opacity: 0.86,
+    transform: [{ scale: 0.97 }],
   } as ViewStyle,
 
   inputWrap: {
     flex: 1,
-    minHeight: 42,
+    minHeight: 44,
     maxHeight: 120,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    borderRadius: 20,
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    backgroundColor: "rgba(255,255,255,0.035)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
+    shadowColor: "#000",
+    shadowOpacity: 0.14,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+  } as ViewStyle,
+  inputWrapFocused: {
+    borderColor: "rgba(139,92,246,0.48)",
+    backgroundColor: "rgba(139,92,246,0.08)",
+    shadowColor: PURPLE,
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 0 },
   } as ViewStyle,
 
   sendBtn: {
-    marginLeft: 10,
-    width: 46,
-    height: 46,
+    width: 48,
+    height: 48,
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: GOLD,
+    backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.28)",
+    borderColor: "rgba(255,255,255,0.10)",
+  } as ViewStyle,
+  sendBtnActive: {
+    backgroundColor: "rgba(139,92,246,0.96)",
+    borderColor: "rgba(196,181,253,0.55)",
+    shadowColor: PURPLE,
+    shadowOpacity: 0.48,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
   } as ViewStyle,
   sendBtnDisabled: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.10)" } as ViewStyle,
 
@@ -9784,31 +10101,68 @@ videoEditorSplitTimelineBadgeText: {
   } as ViewStyle,
 
   liveBtn: {
-    minWidth: 62,
-    height: 38,
-    paddingHorizontal: 10,
-    
+    minWidth: 72,
+    height: 36,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    overflow: "hidden",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    backgroundColor: "rgba(16,185,129,0.16)",
+    gap: 5,
     borderWidth: 1,
-    borderColor: "rgba(16,185,129,0.48)",
-  },
-
-  liveDot: {
-    width: 7,
-    height: 7,
-    
-    backgroundColor: "#34D399",
-  },
+    alignSelf: "center",
+  } as ViewStyle,
+  liveBtnGlass: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 999,
+  } as ViewStyle,
+  liveBtnScheduled: {
+    borderColor: "rgba(245,215,128,0.48)",
+    shadowColor: GOLD_SOLID,
+    shadowOpacity: 0.24,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+  } as ViewStyle,
+  liveBtnPreview: {
+    borderColor: "rgba(34,197,94,0.42)",
+    shadowColor: "#22C55E",
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+  } as ViewStyle,
+  liveBtnLive: {
+    borderColor: "rgba(34,197,94,0.58)",
+    shadowColor: "#22C55E",
+    shadowOpacity: 0.36,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 5 },
+  } as ViewStyle,
+  liveBtnIdle: {
+    borderColor: "rgba(255,255,255,0.14)",
+    shadowColor: "#000",
+    shadowOpacity: 0.16,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+  } as ViewStyle,
 
 });
 
 const t = StyleSheet.create({
-  hTitle: { color: "white", fontWeight: "800", fontSize: 13.5, letterSpacing: 0.0, lineHeight: 15 } as TextStyle,
-  hSub: { color: "rgba(255,255,255,0.58)", fontWeight: "700", fontSize: 8, lineHeight: 11 } as TextStyle,
+  hTitle: {
+    color: "rgba(255,255,255,0.98)",
+    fontWeight: "900",
+    fontSize: 15,
+    letterSpacing: -0.2,
+    lineHeight: 18,
+  } as TextStyle,
+  hSub: {
+    color: "rgba(255,255,255,0.56)",
+    fontWeight: "700",
+    fontSize: 10,
+    lineHeight: 13,
+    letterSpacing: 0.15,
+  } as TextStyle,
 
   videoEditTitle: {
     color: "rgba(255,255,255,0.98)",
@@ -9895,24 +10249,58 @@ const t = StyleSheet.create({
 
   liveBtnText: {
     color: "#D9B35F",
-    fontWeight: "800",
+    fontWeight: "900",
     fontSize: 10,
-    letterSpacing: 0.4,
+    letterSpacing: 1.1,
+  } as TextStyle,
+  liveBtnTextScheduled: {
+    color: "rgba(245,215,128,0.98)",
+  } as TextStyle,
+  liveBtnTextLive: {
+    color: "rgba(134,239,172,0.98)",
+  } as TextStyle,
+  liveBtnTextIdle: {
+    color: "rgba(248,113,113,0.92)",
   } as TextStyle,
 
-  headerAvatarText: { color: "rgba(217,179,95,0.98)", fontWeight: "900", fontSize: 18 } as TextStyle,
+  headerAvatarText: { color: "rgba(217,179,95,0.98)", fontWeight: "900", fontSize: 17 } as TextStyle,
   presenceDivider: { marginHorizontal: 6, color: "rgba(255,255,255,0.35)", fontWeight: "800", fontSize: 12 } as TextStyle,
   presenceText: { color: "rgba(255,255,255,0.58)", fontWeight: "700", fontSize: 12 } as TextStyle,
-  presenceOnline: { color: "#35C759" } as TextStyle,
+  presenceOnline: {
+    color: "#4ADE80",
+    textShadowColor: "rgba(74,222,128,0.55)",
+    textShadowRadius: 8,
+    textShadowOffset: { width: 0, height: 0 },
+  } as TextStyle,
 
   senderName: { color: "rgba(255,255,255,0.85)", fontWeight: "900", fontSize: 12 } as TextStyle,
   msgText: {
     color: TEXT,
     fontWeight: "700",
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 14.5,
+    lineHeight: 21,
     flexShrink: 1,
 } as TextStyle,
+  msgTimeMine: {
+    color: "rgba(255,255,255,0.42)",
+    fontWeight: "700",
+    fontSize: 9,
+    letterSpacing: 0.2,
+  } as TextStyle,
+  msgTimeOther: {
+    marginTop: 8,
+    color: "rgba(255,255,255,0.38)",
+    fontWeight: "700",
+    fontSize: 9,
+    letterSpacing: 0.2,
+    alignSelf: "flex-end",
+  } as TextStyle,
+  deliveredText: {
+    color: "rgba(196,181,253,0.78)",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.25,
+  } as TextStyle,
   msgTime: { marginTop: 10, color: "rgba(255,255,255,0.45)", fontWeight: "800", fontSize: 8, alignSelf: "flex-end" } as TextStyle,
 
   avatarMiniText: { color: "rgba(217,179,95,0.95)", fontWeight: "900", fontSize: 11 } as TextStyle,
@@ -9978,7 +10366,7 @@ const t = StyleSheet.create({
   attachName: { flex: 1, marginLeft: 8, color: "rgba(255,255,255,0.88)", fontWeight: "800", fontSize: 12 } as TextStyle,
   attachMeta: { marginLeft: 10, color: "rgba(255,255,255,0.50)", fontWeight: "800", fontSize: 10 } as TextStyle,
 
-  input: { color: "white", fontWeight: "800", fontSize: 14, lineHeight: 20 } as TextStyle,
+  input: { color: "white", fontWeight: "700", fontSize: 15, lineHeight: 21 } as TextStyle,
 
   emptyTitle: { color: "white", fontWeight: "900", fontSize: 16 } as TextStyle,
   emptySub: { marginTop: 6, color: "rgba(255,255,255,0.62)", fontWeight: "700", fontSize: 12 } as TextStyle,

@@ -8,6 +8,11 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
 type MinistryStatus = "Active" | "Paused";
 type Ministry = {
+  mediaAccess?: boolean;
+  memberCount?: number;
+  membersCount?: number;
+  leaderCount?: number;
+  leadersCount?: number;
   id: string;
   name: string;
   description?: string;
@@ -40,9 +45,48 @@ export default function MoreMinistriesList() {
     setLoading(true);
     try {
       const data = await apiListMinistries();
-      setItems(data);
+
+      const withCounts = await Promise.all(
+        data.map(async (m) => {
+          try {
+            const r = await apiGet<any>(
+              `/api/church/ministry-members?ministryId=${encodeURIComponent(m.id)}&all=1`,
+              { headers: getKristoHeaders() }
+            );
+
+            const rawRows = Array.isArray(r?.data) ? r.data : Array.isArray(r?.items) ? r.items : [];
+            const rows = rawRows.filter((x: any) => {
+              const rowMinistryId = String(
+                x?.ministryId ||
+                x?.ministry?.id ||
+                x?.ministry_id ||
+                x?.idMinistry ||
+                ""
+              );
+              return rowMinistryId ? rowMinistryId === String(m.id) : false;
+            });
+
+            const leaders = rows.filter((x: any) =>
+              String(x?.role || x?.ministryRole || "").toLowerCase().includes("leader")
+            ).length;
+            const members = rows.length;
+
+            return { ...m, leaderCount: leaders, memberCount: members };
+          } catch {
+            return m;
+          }
+        })
+      );
+
+      setItems(withCounts);
     } catch (e: any) {
-      setErr(String(e?.message ?? e ?? "Error"));
+      const msg = String(e?.message ?? e ?? "Error");
+      if (msg.toLowerCase().includes("no active church membership")) {
+        setItems([]);
+        setErr(null);
+      } else {
+        setErr(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -62,7 +106,7 @@ export default function MoreMinistriesList() {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={s.navTitle}>Ministries</Text>
-          <Text style={s.navSub}>List &amp; open ministries (More tab).</Text>
+          <Text style={s.navSub}>Manage ministry rooms, leaders, members, and media access.</Text>
         </View>
 
         <Pressable onPress={load} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.85 }]}>
@@ -101,7 +145,10 @@ export default function MoreMinistriesList() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: PAD, paddingBottom: 26 }}>
-          {items.map((m) => (
+          {items.map((m) => {
+            const leaders = Number(m.leaderCount ?? m.leadersCount ?? 0);
+            const members = Number(m.memberCount ?? m.membersCount ?? 0);
+            return (
             <Pressable
               key={m.id}
               onPress={() => router.push((`/church/ministries/${m.id}` as any))}
@@ -114,11 +161,29 @@ export default function MoreMinistriesList() {
                   <View style={[s.badge, m.status === "Active" ? s.badgeOn : s.badgeOff]}>
                     <Text style={s.badgeText}>{m.status}</Text>
                   </View>
+
+                  <View style={s.countBadge}>
+                    <Ionicons name="star" size={11} color={GOLD} />
+                    <Text style={s.countBadgeText}>{leaders} leaders</Text>
+                  </View>
+
+                  <View style={s.countBadge}>
+                    <Ionicons name="people" size={11} color="rgba(255,255,255,0.78)" />
+                    <Text style={s.countBadgeText}>{members} members</Text>
+                  </View>
+
+                  {m.mediaAccess ? (
+                    <View style={[s.badge, s.mediaBadge]}>
+                      <Ionicons name="videocam" size={12} color="#0B0F17" />
+                      <Text style={s.mediaBadgeText}>Media</Text>
+                    </View>
+                  ) : null}
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.65)" />
             </Pressable>
-          ))}
+            );
+          })}
         </ScrollView>
       )}
 
@@ -131,7 +196,7 @@ const s = StyleSheet.create<any>({
   createBtnText: { color: "#0B0F17", fontWeight: "950" },
   createBtn: { marginTop: 12, height: 52, borderRadius: 18, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8, backgroundColor: "rgba(217,179,95,0.95)" },
   screen: { flex: 1, backgroundColor: VIP_BG },
-  nav: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: PAD, paddingBottom: 12 },
+  nav: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: PAD, paddingBottom: 14, paddingTop: 8 },
   iconPill: { width: 34, height: 34, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(217,179,95,0.12)", borderWidth: 1, borderColor: "rgba(217,179,95,0.25)" },
   navTitle: { color: "white", fontWeight: "900", fontSize: 18 },
   navSub: { marginTop: 2, color: "rgba(255,255,255,0.65)", fontWeight: "700" },
@@ -148,13 +213,28 @@ const s = StyleSheet.create<any>({
   btnGhost: { marginTop: 12, borderRadius: 16, paddingVertical: 12, alignItems: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)", backgroundColor: "rgba(255,255,255,0.03)" },
   btnGhostText: { color: "rgba(255,255,255,0.85)", fontWeight: "900" },
 
-  row: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 20, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.04)" },
-  rowTitle: { color: "rgba(255,255,255,0.95)", fontWeight: "900", fontSize: 16 },
-  rowSub: { marginTop: 5, color: "rgba(255,255,255,0.65)", fontWeight: "700" },
+  row: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 24, padding: 15, marginBottom: 12, borderWidth: 1.2, borderColor: "rgba(255,255,255,0.15)", backgroundColor: "rgba(255,255,255,0.055)" },
+  rowTitle: { color: "rgba(255,255,255,0.97)", fontWeight: "950", fontSize: 16, letterSpacing: 0.1 },
+  rowSub: { marginTop: 5, color: "rgba(255,255,255,0.66)", fontWeight: "750", lineHeight: 18 },
 
-  badges: { flexDirection: "row", gap: 8, marginTop: 10 },
-  badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1 },
+  badges: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 11 },
+  badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, minHeight: 28, alignItems: "center", justifyContent: "center" },
   badgeOn: { backgroundColor: "rgba(217,179,95,0.16)", borderColor: "rgba(217,179,95,0.35)" },
   badgeOff: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.12)" },
   badgeText: { color: "rgba(255,255,255,0.85)", fontWeight: "900", fontSize: 12 },
+  mediaBadge: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: GOLD, borderColor: GOLD },
+  mediaBadgeText: { color: "#0B0F17", fontWeight: "950", fontSize: 12 },
+  countBadge: {
+    minHeight: 28,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.055)",
+  },
+  countBadgeText: { color: "rgba(255,255,255,0.78)", fontWeight: "850", fontSize: 11 },
 });

@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+
+const DEV_USER_ID = process.env.NEXT_PUBLIC_KRISTO_DEV_USER_ID || "";
+const DEV_ROLE = process.env.NEXT_PUBLIC_KRISTO_DEV_ROLE || "";
+const DEV_CHURCH_ID = process.env.NEXT_PUBLIC_KRISTO_DEV_CHURCH_ID || "";
 
 /* =========================
    TYPES
@@ -32,7 +36,8 @@ type Notification = {
 };
 
 type ApiOk<T> = { ok: true; data: T };
-type ApiRes<T> = ApiOk<T> | { ok: false; error: string };
+type ApiErr = { ok: false; error: string; details?: unknown };
+type ApiRes<T> = ApiOk<T> | ApiErr;
 
 /* =========================
    HELPERS
@@ -53,12 +58,61 @@ function typeLabel(t: NotificationType) {
   return "Notice";
 }
 
+function explainAuthProblem(status: number, msg: string) {
+  if (status === 401) {
+    return (
+      msg ||
+      "Unauthorized. Kwa dev tumia KRISTO_DEV_AUTO_LOGIN=1 kwenye .env.local kisha restart dev server. Uki-test kwa headers, weka KRISTO_DEV_HEADER_AUTH=1 na utume x-kristo-user-id, x-kristo-role, x-kristo-church-id."
+    );
+  }
+  if (status === 403) {
+    return (
+      msg ||
+      "Forbidden. Role/church scope haikuruhusu. Hakikisha role ni Pastor au Church_Admin."
+    );
+  }
+  return msg || "Request failed.";
+}
+
+async function readApi<T>(res: Response): Promise<ApiRes<T> | null> {
+  try {
+    return (await res.json()) as ApiRes<T>;
+  } catch {
+    return null;
+  }
+}
+
+function okJson<T>(x: ApiRes<T> | null): x is ApiOk<T> {
+  return !!x && (x as any).ok === true;
+}
+
+function devHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const enabled = String(localStorage.getItem("kristo_dev_header_auth") || "").trim();
+    if (enabled !== "1") return {};
+
+    const uid = String(localStorage.getItem("kristo_dev_user_id") || "").trim();
+    const role = String(localStorage.getItem("kristo_dev_role") || "").trim();
+    const cid = String(localStorage.getItem("kristo_dev_church_id") || "").trim();
+
+    const h: Record<string, string> = {};
+    if (uid) h["x-kristo-user-id"] = uid;
+    if (role) h["x-kristo-role"] = role;
+    if (cid) h["x-kristo-church-id"] = cid;
+    return h;
+  } catch {
+    return {};
+  }
+}
+
 /* =========================
    PAGE
    ========================= */
 
 export default function ChurchNotificationsPage() {
   const router = useRouter();
+  const sp = useSearchParams();
 
   const [items, setItems] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
@@ -66,6 +120,24 @@ export default function ChurchNotificationsPage() {
 
   const [onlyUnread, setOnlyUnread] = useState(true);
   const [limit, setLimit] = useState(50);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const v = String(sp.get("devHeaderAuth") || "").trim();
+      if (v === "1" || v === "0") localStorage.setItem("kristo_dev_header_auth", v);
+    } catch {}
+  }, [sp]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      if (!localStorage.getItem("kristo_dev_header_auth")) localStorage.setItem("kristo_dev_header_auth", "0");
+      if (DEV_USER_ID && !localStorage.getItem("kristo_dev_user_id")) localStorage.setItem("kristo_dev_user_id", DEV_USER_ID);
+      if (DEV_ROLE && !localStorage.getItem("kristo_dev_role")) localStorage.setItem("kristo_dev_role", DEV_ROLE);
+      if (DEV_CHURCH_ID && !localStorage.getItem("kristo_dev_church_id")) localStorage.setItem("kristo_dev_church_id", DEV_CHURCH_ID);
+    } catch {}
+  }, []);
 
   async function load() {
     setLoading(true);
@@ -76,17 +148,22 @@ export default function ChurchNotificationsPage() {
       if (onlyUnread) qs.set("unread", "1");
       qs.set("limit", String(limit));
 
-      const res = await fetch(`/api/church/notifications?${qs.toString()}`, { cache: "no-store" });
-      const json = (await res.json().catch(() => null)) as ApiRes<Notification[]> | null;
+      const res = await fetch(`/api/church/notifications?${qs.toString()}`, {
+        cache: "no-store",
+        credentials: "include",
+        headers: { ...devHeaders(), accept: "application/json" },
+      });
 
-      if (!res.ok || !json || (json as any).ok !== true) {
-        setError((json as any)?.error || `Failed to load (HTTP ${res.status})`);
+      const json = await readApi<Notification[]>(res);
+
+      if (!res.ok || !okJson(json)) {
+        const msg = json && !okJson(json) ? (json as ApiErr).error : "";
+        setError(explainAuthProblem(res.status, msg || `Failed to load (HTTP ${res.status})`));
         setItems([]);
         return;
       }
 
-      const ok = json as any;
-      setItems(Array.isArray(ok?.data) ? ok.data : []);
+      setItems(Array.isArray(json.data) ? json.data : []);
     } catch {
       setError("Network error");
       setItems([]);
@@ -107,26 +184,94 @@ export default function ChurchNotificationsPage() {
     try {
       const res = await fetch(`/api/church/notifications?id=${encodeURIComponent(id)}`, {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        credentials: "include",
+        headers: { ...devHeaders(), "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({ isRead }),
       });
 
-      const json = (await res.json().catch(() => null)) as ApiRes<Notification> | null;
+      const json = await readApi<Notification>(res);
 
-      if (!res.ok || !json || (json as any).ok !== true) {
-        setError((json as any)?.error || `Failed to update (HTTP ${res.status})`);
+      if (!res.ok || !okJson(json)) {
+        const msg = json && !okJson(json) ? (json as ApiErr).error : "";
+        setError(explainAuthProblem(res.status, msg || `Failed to update (HTTP ${res.status})`));
         return;
       }
 
-      // update local
       setItems((prev) =>
-        prev.map((x) => (x.id === id ? { ...x, isRead: (json as any).data?.isRead ?? isRead, readAt: (json as any).data?.readAt } : x))
+        prev.map((x) =>
+          x.id === id
+            ? { ...x, isRead: json.data?.isRead ?? isRead, readAt: json.data?.readAt }
+            : x
+        )
       );
 
-      // if onlyUnread, remove read items
       if (onlyUnread && isRead) {
         setItems((prev) => prev.filter((x) => x.id !== id));
       }
+    } catch {
+      setError("Network error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function markAllRead() {
+    setLoading(true);
+    setError("");
+
+    try {
+      const res = await fetch("/api/church/notifications/mark-all", {
+        method: "POST",
+        credentials: "include",
+        headers: { ...devHeaders(), accept: "application/json" },
+      });
+
+      const json = await readApi<{ changed: number }>(res);
+
+      if (!res.ok || !okJson(json)) {
+        const msg = json && !okJson(json) ? (json as ApiErr).error : "";
+        setError(explainAuthProblem(res.status, msg || `Failed to mark all read (HTTP ${res.status})`));
+        return;
+      }
+
+      if (onlyUnread) {
+        setItems([]);
+      } else {
+        setItems((prev) =>
+          prev.map((x) => ({
+            ...x,
+            isRead: true,
+            readAt: x.readAt || new Date().toISOString(),
+          }))
+        );
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteOne(id: string) {
+    setLoading(true);
+    setError("");
+
+    try {
+      const res = await fetch(`/api/church/notifications?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: { ...devHeaders(), accept: "application/json" },
+      });
+
+      const json = await readApi<Notification>(res);
+
+      if (!res.ok || !okJson(json)) {
+        const msg = json && !okJson(json) ? (json as ApiErr).error : "";
+        setError(explainAuthProblem(res.status, msg || `Failed to delete (HTTP ${res.status})`));
+        return;
+      }
+
+      setItems((prev) => prev.filter((x) => x.id !== id));
     } catch {
       setError("Network error");
     } finally {
@@ -139,7 +284,6 @@ export default function ChurchNotificationsPage() {
       router.push(`/dashboard/church/ministries?open=${encodeURIComponent(n.ministryId)}`);
       return;
     }
-    // fallback
     alert("Hakuna link ya hii notification (bado).");
   }
 
@@ -151,6 +295,8 @@ export default function ChurchNotificationsPage() {
         <div>
           <h1 style={{ margin: 0 }}>🔔 Notifications</h1>
           <div style={{ opacity: 0.8, marginTop: 6 }}>
+            API: <b>/api/church/notifications</b>
+            {" • "}
             {onlyUnread ? (
               <>
                 Showing: <b>Unread</b>
@@ -178,6 +324,10 @@ export default function ChurchNotificationsPage() {
 
           <button onClick={load} disabled={loading}>
             {loading ? "Loading..." : "↻ Refresh"}
+          </button>
+
+          <button onClick={markAllRead} disabled={loading || items.length === 0}>
+            Mark all read
           </button>
         </div>
       </div>
@@ -229,6 +379,10 @@ export default function ChurchNotificationsPage() {
                     Mark Read
                   </button>
                 )}
+
+                <button onClick={() => deleteOne(n.id)} disabled={loading}>
+                  Delete
+                </button>
               </div>
             </div>
           </div>
@@ -236,7 +390,7 @@ export default function ChurchNotificationsPage() {
       </div>
 
       <div style={{ marginTop: 16, opacity: 0.8, fontSize: 12, lineHeight: 1.6 }}>
-        Tip: Notifications zitaonekana zaidi tukianza ku-log events (member added/removed, leader assigned) automatically kwenye API.
+        Tip: Notifications zitaonekana zaidi tukianza ku-log events automatically kwenye API.
       </div>
     </div>
   );
