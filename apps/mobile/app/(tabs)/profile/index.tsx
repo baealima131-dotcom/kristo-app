@@ -17,6 +17,12 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { loadProfileDraft, saveProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
 import { onUserProfileUpdated, onClaimUpdated } from "@/src/lib/kristoProfileEvents";
+import {
+  inviteEventTargetsCurrentUser,
+  onChurchInviteSent,
+  onChurchInviteAccepted,
+  onChurchMembershipChanged,
+} from "@/src/lib/kristoChurchInviteEvents";
 import { getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
 import {
   getSlotRingWindow,
@@ -733,14 +739,19 @@ export default function MeScreen() {
     });
   }
 
-  async function refreshInvitations() {
+  const refreshInvitations = useCallback(async () => {
+    const uid = String(session?.userId || "").trim();
+    if (!uid) return;
+
     try {
       const savedClosed = await AsyncStorage.getItem(CLOSED_INVITES_STORAGE_KEY);
       if (savedClosed) {
         JSON.parse(savedClosed).forEach((id: string) => CLOSED_INVITE_IDS.add(String(id)));
       }
       const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
-      const r = await fetch(`${base}/api/church/invites/action`, { headers: getKristoHeaders() });
+      const r = await fetch(`${base}/api/church/invites/action`, {
+        headers: getKristoHeaders({ userId: uid, role: session?.role as any, churchId: session?.churchId || "" }),
+      });
       const j = await r.json().catch(() => ({} as any));
       const raw = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
 
@@ -752,11 +763,12 @@ export default function MeScreen() {
 
       const joinedChurchId = String(joined?.churchId || "").trim();
 
-      if (!String(session?.churchId || "").trim() && joinedChurchId && countsAsRealActiveChurchId(joinedChurchId) && session?.userId) {
+      if (!String(session?.churchId || "").trim() && joinedChurchId && countsAsRealActiveChurchId(joinedChurchId)) {
         await setSession({
-          ...session,
+          ...(session as any),
+          userId: uid,
           churchId: joinedChurchId,
-          role: (session.role || "Member") as any,
+          role: (session?.role || "Member") as any,
         });
       }
 
@@ -775,11 +787,13 @@ export default function MeScreen() {
 
       setInviteItems(invites);
       setInviteCount(invites.length);
+      console.log("[ProfileInvites] silent refresh", { userId: uid, count: invites.length });
     } catch {}
-  }
+  }, [session, setSession]);
 
   useEffect(() => {
-    refreshInvitations();
+    if (!session?.userId) return;
+    void refreshInvitations();
 
     const unsubPayments = subscribePayments(() => {
       setPaymentsState(getPaymentsState());
@@ -788,7 +802,7 @@ export default function MeScreen() {
     return () => {
       unsubPayments();
     };
-  }, []);
+  }, [session?.userId, refreshInvitations]);
 
   const hasProfileCacheRef = React.useRef(Boolean(profileCachePeek));
 
@@ -1069,6 +1083,8 @@ export default function MeScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      void refreshInvitations();
+
       void (async () => {
         const draft = userId ? await loadProfileDraft(userId) : null;
         if (draft) {
@@ -1084,8 +1100,43 @@ export default function MeScreen() {
 
       void refreshActiveChurch();
       void loadProfileLight({ silent: true });
-    }, [userId, refreshActiveChurch, loadProfileLight])
+    }, [userId, refreshActiveChurch, loadProfileLight, refreshInvitations])
   );
+
+  useEffect(() => {
+    if (!session?.userId) return;
+
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        void refreshInvitations();
+      }
+    });
+
+    return () => sub.remove();
+  }, [session?.userId, refreshInvitations]);
+
+  useEffect(() => {
+    if (!session?.userId) return;
+
+    const maybeRefreshFromEvent = (
+      source: string,
+      payload: { targetUserId?: string; targetKristoId?: string; userId?: string; kristoId?: string }
+    ) => {
+      if (!inviteEventTargetsCurrentUser(payload, { userId: session.userId, kristoId: publicKristoId })) return;
+      console.log("[ProfileInvites] event refresh", { source, userId: session.userId });
+      void refreshInvitations();
+    };
+
+    const unsubs = [
+      onChurchInviteSent((payload) => maybeRefreshFromEvent("church-invite-sent", payload)),
+      onChurchInviteAccepted((payload) => maybeRefreshFromEvent("church-invite-accepted", payload)),
+      onChurchMembershipChanged((payload) => maybeRefreshFromEvent("church-membership-changed", payload)),
+    ];
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, [session?.userId, publicKristoId, refreshInvitations]);
 
   const applyUserProfileEvent = useCallback(
     async (payload: { avatarUri?: string; avatarUrl?: string; avatarUpdatedAt?: number }) => {
@@ -1282,9 +1333,6 @@ const resolvedName = useMemo(() => {
   useFocusedPolling(
     "Profile",
     async () => {
-      try {
-        await refreshInvitations();
-      } catch {}
       await loadProfileLight({ silent: true });
     },
     90000,

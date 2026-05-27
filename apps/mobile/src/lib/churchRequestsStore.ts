@@ -108,20 +108,23 @@ export async function rejectJoinRequest(requestId: string) {
 }
 
 
-export async function deactivateChurchMember(memberId: string) {
-  const members = await readArr(MEMBERS_KEY)
+export async function deactivateChurchMember(target: string) {
+  const members = await readArr(MEMBERS_KEY);
+  const needle = String(target || "").trim();
 
   const next = members.map((x) => {
-    const id = String(x.membershipId || x.id || "")
-    if (id !== String(memberId)) return x
+    const membershipId = String(x.membershipId || x.id || "");
+    const userId = String(x.userId || "");
+    const matches = (membershipId && membershipId === needle) || (userId && userId === needle);
+    if (!matches) return x;
 
     return {
       ...x,
       status: "inactive",
       membershipStatus: "inactive",
       removedAt: new Date().toISOString(),
-    }
-  })
+    };
+  });
 
-  await writeArr(MEMBERS_KEY, next)
+  await writeArr(MEMBERS_KEY, next);
 }

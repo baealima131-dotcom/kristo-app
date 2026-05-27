@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { deactivateMemberInChurch, getMembershipsForChurch, setMemberRole, type ChurchMembership, type ChurchRole } from "@/app/api/_lib/memberships";
+import { deactivateMemberInChurch, getMembershipById, getMembershipsForChurch, setMemberRole, type ChurchMembership, type ChurchRole } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { ensureProfileDraft, getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
@@ -89,6 +89,13 @@ async function resolveMemberProfile(membershipUserId: string) {
   return { profile, user, resolvedUserId };
 }
 
+async function resolveTargetUserId(raw: string) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  const { resolvedUserId } = await resolveMemberProfile(trimmed);
+  return String(resolvedUserId || trimmed).trim();
+}
+
 async function enrichChurchMember(m: ChurchMembership): Promise<ChurchMember> {
   const membershipId = m.id;
   const role = (m.churchRole ?? "Member") as ChurchRole;
@@ -165,22 +172,47 @@ export async function PATCH(req: NextRequest) {
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const body = await req.json().catch(() => ({} as any));
-  const userId = String(body?.userId || body?.memberId || "").trim();
+  const membershipId = String(body?.membershipId || body?.id || "").trim();
+  let userId = String(body?.userId || body?.memberId || "").trim();
   const action = String(body?.action || "").trim().toLowerCase();
   const role = normalizeChurchRole(body?.role);
+
+  if (membershipId) {
+    const membership = await getMembershipById(membershipId);
+    if (!membership) {
+      return json({ ok: false, error: "Membership not found" }, { status: 404 });
+    }
+    if (membership.churchId !== ctxOrRes.churchId) {
+      return json({ ok: false, error: "Membership does not belong to this church" }, { status: 403 });
+    }
+    userId = String(membership.userId || userId || "").trim();
+  }
 
   if (!userId) return json({ ok: false, error: "Missing userId" }, { status: 400 });
 
   if (action === "deactivate" || action === "remove") {
-    const r = await deactivateMemberInChurch(ctxOrRes.churchId, userId);
+    const resolvedUserId = await resolveTargetUserId(userId);
+    let r = await deactivateMemberInChurch(ctxOrRes.churchId, resolvedUserId);
+    if (!r.ok && resolvedUserId && resolvedUserId !== userId) {
+      r = await deactivateMemberInChurch(ctxOrRes.churchId, userId);
+    }
     if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
+
+    if (process.env.KRISTO_DEBUG_AUTH === "1" || process.env.NODE_ENV !== "production") {
+      console.log("[ChurchMembersRemove] deactivated", {
+        churchId: ctxOrRes.churchId,
+        membershipId: r.membership?.id || membershipId,
+        userId: r.membership?.userId || resolvedUserId || userId,
+        status: r.membership?.status,
+      });
+    }
 
     createNotification({
       churchId: ctxOrRes.churchId,
       type: "Generic",
       title: "Church membership updated",
       message: "You were removed from this church.",
-      targetUserId: userId,
+      targetUserId: String(r.membership?.userId || resolvedUserId || userId),
     });
 
     return json({ ok: true, data: r.membership });

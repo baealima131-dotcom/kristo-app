@@ -16,6 +16,12 @@ import { resolveChurchDisplayName } from "./churchStore";
 import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import { silentPreloadTabScreens } from "./screenDataCache";
+import {
+  inviteEventTargetsCurrentUser,
+  onChurchInviteAccepted,
+  onChurchInviteSent,
+  onChurchMembershipChanged,
+} from "./kristoChurchInviteEvents";
 
 type Ctx = {
   session: KristoSession | null;
@@ -200,6 +206,33 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       sub.remove();
     };
   }, [session?.userId, session?.churchId]);
+
+  useEffect(() => {
+    const syncMembershipFromEvent = async (payload: { targetUserId?: string; targetKristoId?: string; userId?: string; kristoId?: string }) => {
+      const loaded = await loadSession();
+      if (!loaded?.userId) return;
+      const kristoId = String((loaded as any)?.kristoId || "").trim();
+      if (!inviteEventTargetsCurrentUser(payload, { userId: loaded.userId, kristoId })) return;
+      clearResponseCacheForRequest("GET", "/api/auth/profile", loaded.userId);
+      await silentSyncProfile(loaded);
+    };
+
+    const unsubs = [
+      onChurchInviteSent((payload) => {
+        void syncMembershipFromEvent(payload);
+      }),
+      onChurchInviteAccepted((payload) => {
+        void syncMembershipFromEvent(payload);
+      }),
+      onChurchMembershipChanged((payload) => {
+        void syncMembershipFromEvent(payload);
+      }),
+    ];
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, []);
 
   async function setSession(s: KristoSession) {
     await saveSession(s);

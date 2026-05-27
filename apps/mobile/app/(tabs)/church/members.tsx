@@ -114,10 +114,9 @@ export default function ChurchMembersDirectory() {
         console.log("[ChurchMembers] rows avatar fields by userId/name", rows);
       }
     } catch (e: any) {
-                    const msg = String(e?.message || e || "Try again");
-                    console.log("KRISTO_INVITE_ERROR", msg);
-                    setInviteError(msg);
-                  } finally {
+      const msg = String(e?.message || e || "Try again");
+      setErr(msg);
+    } finally {
       if (!silent) setLoading(false);
     }
   }
@@ -426,7 +425,8 @@ export default function ChurchMembersDirectory() {
           ) : (
             visible.map((x, i) => {
               const id = String(x?.id || x?.requestId || x?.membershipId || x?.userId || i);
-              const rawUserId = String(x?.userId || x?.id || "—");
+              const membershipId = String(x?.membershipId || x?.id || "").trim();
+              const rawUserId = String(x?.userId || "").trim();
               const userCode = String(x?.userCode || x?.kristoId || x?.publicKristoId || "").trim();
               const userId = userCode || "Kristo ID pending";
               const name = String(x?.name || x?.fullName || x?.displayName || x?.email || userId || "Member");
@@ -480,18 +480,21 @@ export default function ChurchMembersDirectory() {
                                 style: "destructive",
                                 onPress: async () => {
                                   try {
-                                    setBusyId(id)
-                                    await removeChurchMember(rawUserId)
-                                    await load(false)
+                                    setBusyId(id);
+                                    await removeChurchMember({
+                                      userId: rawUserId,
+                                      membershipId,
+                                    });
+                                    await load(false);
                                   } catch (e: any) {
                                     Alert.alert(
                                       "Remove failed",
                                       String(e?.message || e || "Try again")
-                                    )
+                                    );
                                   } finally {
-                                    setBusyId("")
+                                    setBusyId("");
                                   }
-                                }
+                                },
                               }
                             ]
                           )

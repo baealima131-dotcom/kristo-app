@@ -1,6 +1,11 @@
-import { getSessionSync } from "@/src/lib/kristoSession";
-import { getApiBase } from "@/src/lib/kristoApi";
-import { resolveActiveChurchFromProfileResponse } from "@/src/lib/churchMembershipSync";
+import { getSessionSync } from "./kristoSession";
+import { getApiBase } from "./kristoApi";
+import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
+import {
+  emitChurchInviteAccepted,
+  emitChurchInviteSent,
+  emitChurchMembershipChanged,
+} from "./kristoChurchInviteEvents";
 import { approveJoinRequest, deactivateChurchMember, getChurchJoinRequests, getChurchMembers, rejectJoinRequest } from "@/src/lib/churchRequestsStore";
 
 function getBase() {
@@ -152,6 +157,13 @@ export async function sendChurchInvite(targetUserId: string, role: "Member" | "L
     throw new Error(String(j?.error || "This Kristo ID was not found."));
   }
 
+  const { churchId } = getAuthBits();
+  emitChurchInviteSent({
+    targetKristoId: privateKristoId,
+    churchId,
+    role,
+  });
+
   return j;
 }
 
@@ -168,6 +180,27 @@ export async function handleInviteAction(membershipId: string, action: "accept" 
   const j = await r.json().catch(() => ({} as any));
   if (!r.ok || !j?.ok) {
     throw new Error(j?.error || "Action failed");
+  }
+
+  const { churchId, userId } = getAuthBits();
+  const membership = j?.data || j?.membership || j;
+  const payload = {
+    userId,
+    churchId: String(membership?.churchId || churchId || ""),
+    role: String(membership?.churchRole || membership?.role || ""),
+    membershipId: String(membership?.id || membershipId || ""),
+  };
+
+  if (action === "accept") {
+    emitChurchInviteAccepted({
+      ...payload,
+      targetUserId: userId,
+    });
+  } else {
+    emitChurchMembershipChanged({
+      ...payload,
+      action: "rejected",
+    });
   }
 
   return j;
@@ -226,27 +259,60 @@ export async function fetchMyActiveChurchMembership() {
 }
 
 
-export async function removeChurchMember(userId: string) {
+export async function removeChurchMember(
+  target: string | { userId?: string; membershipId?: string }
+) {
+  const targetUserId = typeof target === "string" ? String(target || "").trim() : String(target?.userId || "").trim();
+  const membershipId = typeof target === "object" ? String(target?.membershipId || "").trim() : "";
   const base = getBase();
+  const { churchId, role } = getAuthBits();
 
   if (!base) {
-    return deactivateChurchMember(userId);
+    return deactivateChurchMember(membershipId || targetUserId);
   }
 
-  const r = await fetch(`${base}/api/church/members`, {
-    method: "PATCH",
+  const url = `${base}/api/church/members`;
+  const method = "PATCH";
+  const requestBody = {
+    userId: targetUserId,
+    membershipId: membershipId || undefined,
+    action: "deactivate",
+  };
+
+  console.log("[ChurchMembersRemove] request", {
+    targetUserId,
+    membershipId: membershipId || undefined,
+    churchId,
+    role,
+    url,
+    method,
+  });
+
+  const r = await fetch(url, {
+    method,
     headers: headers(),
-    body: JSON.stringify({
-      userId,
-      action: "deactivate",
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   const j = await r.json().catch(() => ({} as any));
 
+  console.log("[ChurchMembersRemove] response", {
+    status: r.status,
+    ok: Boolean(r.ok && j?.ok),
+    body: j,
+  });
+
   if (!r.ok || !j?.ok) {
     throw new Error(String(j?.error || "Remove failed"));
   }
+
+  const removedUserId = String(j?.data?.userId || targetUserId || "").trim();
+  emitChurchMembershipChanged({
+    targetUserId: removedUserId,
+    churchId,
+    membershipId: String(j?.data?.id || membershipId || ""),
+    action: "changed",
+  });
 
   return j;
 }
