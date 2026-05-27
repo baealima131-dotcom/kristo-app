@@ -1,5 +1,6 @@
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { getApiBase } from "@/src/lib/kristoApi";
+import { resolveActiveChurchFromProfileResponse } from "@/src/lib/churchMembershipSync";
 import { approveJoinRequest, deactivateChurchMember, getChurchJoinRequests, getChurchMembers, rejectJoinRequest } from "@/src/lib/churchRequestsStore";
 
 function getBase() {
@@ -214,11 +215,13 @@ export async function fetchMyActiveChurchMembership() {
     throw new Error(String(j?.error || "Failed to refresh profile"));
   }
 
+  const resolved = resolveActiveChurchFromProfileResponse(j);
+
   return {
     profile: j.profile,
-    membership: j.activeMembership || null,
-    churchId: String(j.churchId || j.activeMembership?.churchId || ""),
-    role: String(j.role || j.churchRole || j.activeMembership?.churchRole || "Member"),
+    membership: resolved.churchId ? j.activeMembership || resolved.membership : null,
+    churchId: resolved.churchId,
+    role: resolved.churchId ? resolved.role : "Member",
   };
 }
 

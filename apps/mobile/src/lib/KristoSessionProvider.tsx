@@ -13,6 +13,8 @@ import { fetchMyActiveChurchMembership } from "./churchMembersApi";
 import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
 import { resolveChurchDisplayName } from "./churchStore";
+import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
+import { clearResponseCacheForRequest } from "./kristoTraffic";
 import { silentPreloadTabScreens } from "./screenDataCache";
 
 type Ctx = {
@@ -60,21 +62,27 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     if (!baseSession?.userId) return baseSession;
 
     try {
+      const headerChurchId = String(baseSession.churchId || "").trim();
+      if (!headerChurchId) {
+        clearResponseCacheForRequest("GET", "/api/auth/profile", baseSession.userId);
+      }
+
       const res: any = await apiGet("/api/auth/profile", {
-        headers: getKristoHeaders({ userId: baseSession.userId, role: baseSession.role, churchId: baseSession.churchId || "" }),
-      }, { screen: "SessionProvider", throttleMs: 120000 });
+        headers: getKristoHeaders({ userId: baseSession.userId, role: baseSession.role, churchId: headerChurchId }),
+      }, { screen: "SessionProvider", throttleMs: headerChurchId ? 120000 : 0 });
 
       if (!res?.ok || !res?.profile) return baseSession;
 
       const p = res.profile;
-      const syncedChurchId = String(res?.churchId || res?.activeMembership?.churchId || baseSession.churchId || "");
+      const resolved = resolveActiveChurchFromProfileResponse(res);
+      const syncedChurchId = resolved.churchId;
+      const syncedRole = resolved.churchId ? resolved.role : "Member";
       console.log("KRISTO_MEMBERSHIP_RESOLVED", {
         userId: baseSession.userId,
-        headerChurchId: baseSession.churchId || "",
+        headerChurchId,
         syncedChurchId,
-        churchRole: String(
-          res?.role || res?.churchRole || res?.activeMembership?.churchRole || baseSession.role || "Member"
-        ),
+        membershipStatus: String(res?.activeMembership?.status || "none"),
+        churchRole: syncedRole,
         source: "mobile-profile-sync",
       });
       const churchName = syncedChurchId
@@ -84,17 +92,9 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
         ...baseSession,
         churchId: syncedChurchId,
         activeChurchId: syncedChurchId,
-        churchName: churchName || (baseSession as any).churchName || "",
-        role: String(
-          syncedChurchId
-            ? (res?.role || res?.churchRole || res?.activeMembership?.churchRole || baseSession.role || "Member")
-            : "Member"
-        ) as any,
-        churchRole: String(
-          syncedChurchId
-            ? (res?.role || res?.churchRole || res?.activeMembership?.churchRole || (baseSession as any).churchRole || baseSession.role || "Member")
-            : "Member"
-        ) as any,
+        churchName: churchName || (syncedChurchId ? (baseSession as any).churchName || "" : ""),
+        role: syncedRole as any,
+        churchRole: syncedRole as any,
         name: String(p.fullName || baseSession.name || ""),
         displayName: String(p.fullName || baseSession.displayName || baseSession.name || ""),
         phone: String(p.phone || baseSession.phone || ""),
@@ -129,14 +129,15 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
           const mine = await fetchMyActiveChurchMembership();
           if (mine?.churchId) {
             const syncedChurchId = String(mine.churchId);
+            const syncedRole = String(mine.role || "Member");
             const churchName = await resolveChurchDisplayName(syncedChurchId, loaded.userId);
             const next = {
               ...loaded,
               churchId: syncedChurchId,
               activeChurchId: syncedChurchId,
               churchName: churchName || (loaded as any).churchName || "",
-              role: (mine.membership?.churchRole || mine.role || loaded.role || "Member") as any,
-              churchRole: (mine.membership?.churchRole || mine.role || loaded.role || "Member") as any,
+              role: syncedRole as any,
+              churchRole: syncedRole as any,
             };
             await saveSession(next);
             setSessionSync(next);
@@ -170,14 +171,15 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
               const mine = await fetchMyActiveChurchMembership();
               if (mine?.churchId) {
                 const syncedChurchId = String(mine.churchId);
+                const syncedRole = String(mine.role || "Member");
                 const churchName = await resolveChurchDisplayName(syncedChurchId, touched.userId);
                 const next = {
                   ...touched,
                   churchId: syncedChurchId,
                   activeChurchId: syncedChurchId,
                   churchName: churchName || (touched as any).churchName || "",
-                  role: (mine.membership?.churchRole || mine.role || touched.role || "Member") as any,
-                  churchRole: (mine.membership?.churchRole || mine.role || touched.role || "Member") as any,
+                  role: syncedRole as any,
+                  churchRole: syncedRole as any,
                 };
                 await saveSession(next);
                 setSessionSync(next);

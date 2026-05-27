@@ -21,14 +21,14 @@ export async function POST(req: NextRequest) {
     ? await getProfileByUserCode(headerUserId)
     : null;
 
-  const realUserId = String(
-    (profile as any)?.userId ||
-    (profile as any)?.id ||
-    viewer.userId ||
-    headerUserId
-  ).trim();
+  const profileUserId = String((profile as any)?.userId || (profile as any)?.id || "").trim();
+  const viewerUserId = String(viewer.userId || headerUserId || "").trim();
 
-  const r = await leaveActiveMembership(realUserId);
+  // Guard resolves membership under viewer.userId; try that id first.
+  let r = await leaveActiveMembership(viewerUserId);
+  if (!r.ok && profileUserId && profileUserId !== viewerUserId) {
+    r = await leaveActiveMembership(profileUserId);
+  }
   if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
 
   createNotification({
@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
     type: "Generic",
     title: "You left the church",
     message: `You are no longer an Active member.`,
-    targetUserId: realUserId,
+    targetUserId: r.membership?.userId || viewerUserId,
   });
 
   return json({ ok: true, membership: r.membership });

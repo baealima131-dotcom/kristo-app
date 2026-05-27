@@ -4598,11 +4598,6 @@ export default function FeedScreen() {
       <FlatList
         ref={listRef}
         pagingEnabled={false}
-        removeClippedSubviews={false}
-        windowSize={4}
-        initialNumToRender={4}
-        maxToRenderPerBatch={3}
-        updateCellsBatchingPeriod={80}
         data={visibleData}
         extraData={`${activeFeedItemId}|${activeFeedIndex}|${feedScreenFocused ? 1 : 0}`}
         removeClippedSubviews={false}

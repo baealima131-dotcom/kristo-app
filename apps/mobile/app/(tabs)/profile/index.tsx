@@ -36,6 +36,7 @@ import { getPaymentsState, subscribePayments } from "../../../src/store/payments
 import { isPlanActive } from "../../../src/lib/payments/mobileSubscriptions";
 import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { resolveChurchDisplayName } from "@/src/lib/churchStore";
+import { countsAsRealActiveChurchId } from "@/src/lib/churchMembershipSync";
 import {
   getProfileScreenCache,
   peekProfileScreenCache,
@@ -749,10 +750,12 @@ export default function MeScreen() {
         return cId && (status === "active" || status === "accepted" || status === "member");
       });
 
-      if (!String(session?.churchId || "").trim() && joined?.churchId && session?.userId) {
+      const joinedChurchId = String(joined?.churchId || "").trim();
+
+      if (!String(session?.churchId || "").trim() && joinedChurchId && countsAsRealActiveChurchId(joinedChurchId) && session?.userId) {
         await setSession({
           ...session,
-          churchId: String(joined.churchId),
+          churchId: joinedChurchId,
           role: (session.role || "Member") as any,
         });
       }
@@ -769,31 +772,6 @@ export default function MeScreen() {
         seenInvites.add(inviteKey);
         return true;
       });
-
-      if (!String(session?.churchId || "").trim() && session?.userId) {
-        const demoChurchId = "c-demo-1";
-        const mr = await fetch(`${base}/api/church/members`, {
-          headers: {
-            accept: "application/json",
-            "x-kristo-user-id": String(session.userId),
-            "x-kristo-role": "Church_Admin",
-            "x-kristo-church-id": demoChurchId,
-          },
-        });
-        const mj = await mr.json().catch(() => ({} as any));
-        const memberRows = Array.isArray(mj?.data) ? mj.data : [];
-        const meIsMember = memberRows.some((m: any) =>
-          String(m?.userId || m?.id || m?.privateKristoId || "").toUpperCase() === String(session.userId).toUpperCase()
-        );
-
-        if (meIsMember) {
-          await setSession({
-            ...session,
-            churchId: demoChurchId,
-            role: (session.role || "Member") as any,
-          });
-        }
-      }
 
       setInviteItems(invites);
       setInviteCount(invites.length);
@@ -1429,7 +1407,7 @@ const resolvedName = useMemo(() => {
                   {[
                     ["Kristo ID", user.userId || "No ID found", true],
                     ["Phone", user.phone || "Private / not added", Boolean((profileDraft as any)?.phonePublic ?? (session as any)?.phonePublic ?? false)],
-                    ["Church", user.church || "No Church Yet", Boolean((profileDraft as any)?.churchPublic ?? (session as any)?.churchPublic ?? true)],
+                    ["Church", user.churchId || "No Church ID yet", Boolean((profileDraft as any)?.churchPublic ?? (session as any)?.churchPublic ?? true)],
                     ["Address", user.address || [user.city, user.country].filter(Boolean).join(", ") || "Private / not added", Boolean((profileDraft as any)?.addressPublic ?? (session as any)?.addressPublic ?? false)],
                   ].map(([label, value, canOpen]) => (
                     <Pressable

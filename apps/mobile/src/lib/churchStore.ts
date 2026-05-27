@@ -34,6 +34,11 @@ function keyForUser(userId?: string | null) {
   return id ? `${KEY}:${id}` : KEY;
 }
 
+
+export function resolveSessionChurchId(value?: string | null): string {
+  return String(value || "").trim().toUpperCase();
+}
+
 function profileCacheKey(churchId: string) {
   return `${PROFILE_CACHE_PREFIX}${String(churchId || "").trim().toUpperCase()}`;
 }

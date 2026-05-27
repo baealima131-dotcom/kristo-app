@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { makeChurchId } from "@/src/lib/kristoSession";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { clearChurchDraft, saveChurchDraft } from "@/src/lib/churchStore";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
 const VIP_BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.95)";
@@ -185,20 +186,57 @@ export default function MoreChurch() {
 
   async function leaveChurchBackend() {
     const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
-    if (!base || !session?.userId) return;
+    const churchId = String(session?.churchId || "").trim();
+    const role = String(session?.role || "Member");
+    const url = `${base}/api/church/membership/leave`;
+    const method = "POST";
+
+    if (!base || !session?.userId) {
+      console.log("[church-delete] skip leave — missing api base or userId", {
+        url,
+        method,
+        churchId,
+        role,
+        hasBase: Boolean(base),
+        userId: String(session?.userId || ""),
+      });
+      return;
+    }
 
     try {
-      await fetch(`${base}/api/church/membership/leave`, {
-        method: "POST",
+      const res = await fetch(url, {
+        method,
         headers: {
           accept: "application/json",
           "content-type": "application/json",
-          "x-kristo-user-id": String(session.userId || ""),
-          "x-kristo-role": String(session.role || "Member"),
-          "x-kristo-church-id": String(session.churchId || ""),
+          ...getKristoHeaders({ userId: session.userId, role: role as any, churchId }),
         },
       });
-    } catch {}
+      const rawText = await res.text();
+      let body: any = null;
+      try {
+        body = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        body = rawText;
+      }
+      console.log("[church-delete] leave response", {
+        url,
+        method,
+        churchId,
+        role,
+        status: res.status,
+        ok: res.ok,
+        body,
+      });
+    } catch (error: any) {
+      console.log("[church-delete] leave request failed", {
+        url,
+        method,
+        churchId,
+        role,
+        error: String(error?.message || error || "unknown"),
+      });
+    }
   }
 
   async function clearChurchLocal() {
@@ -207,6 +245,7 @@ export default function MoreChurch() {
     await setSession({
       ...(session as any),
       role: "Member",
+      churchRole: "Member",
       churchId: "",
       activeChurchId: "",
       churchProfile: undefined,

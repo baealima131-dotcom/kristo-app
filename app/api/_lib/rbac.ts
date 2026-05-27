@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { getViewer } from "@/app/api/_lib/auth";
+import { devAutoMembershipEnabled, isBlockedDemoChurchId } from "@/app/api/_lib/demoMemberships";
 import {
   getActiveMembership,
   requestMembership,
@@ -60,14 +61,8 @@ function mapChurchRoleToRole(r: ChurchRole | undefined): Role {
 /**
  * DEV helper:
  * Optionally auto-create + approve membership so app works immediately after login.
- * You can disable by setting KRISTO_DEV_AUTO_MEMBERSHIP=0
+ * Opt-in only: KRISTO_DEV_AUTO_MEMBERSHIP=1
  */
-function devAutoMembershipEnabled() {
-  const v = String(process.env.KRISTO_DEV_AUTO_MEMBERSHIP || "").trim();
-  if (!v) return true;
-  return v !== "0" && v.toLowerCase() !== "false";
-}
-
 async function ensureDevActiveMembership(userId: string, name?: string, headerChurchId?: string) {
   if (!isDev()) return;
   if (!devAutoMembershipEnabled()) return;
@@ -76,6 +71,8 @@ async function ensureDevActiveMembership(userId: string, name?: string, headerCh
   if (active) return;
 
   const churchId = String(headerChurchId || devDefaultChurchId()).trim();
+  if (isBlockedDemoChurchId(churchId)) return;
+
   const reqRes = await requestMembership(userId, churchId, name);
   if (!reqRes.ok) return;
 

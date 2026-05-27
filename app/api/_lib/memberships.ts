@@ -11,7 +11,6 @@ import {
   dbApproveMembership,
   dbDeactivateMemberInChurch,
   dbDevPromoteToRoleIfActive,
-  dbGetActiveMembership,
   dbGetMembershipById,
   dbGetMembershipsForChurch,
   dbGetMembershipsForUser,
@@ -21,6 +20,7 @@ import {
   dbSetMemberRole,
   ensureChurchStoreReady,
 } from "@/app/api/_lib/store/churchDb";
+import { countsAsRealActiveMembership, isBlockedDemoChurchId } from "@/app/api/_lib/demoMemberships";
 
 export type MembershipStatus = "Requested" | "Active" | "Rejected" | "Banned" | "Left";
 export type ChurchRole = "Member" | "Leader" | "Ministry_Leader" | "Church_Admin" | "Pastor";
@@ -118,13 +118,21 @@ function sortNewestFirst(list: ChurchMembership[]) {
    ========================= */
 
 export async function getActiveMembership(userId: string): Promise<ChurchMembership | undefined> {
+  const uid = String(userId || "").trim();
+  if (!uid) return undefined;
+
+  let candidates: ChurchMembership[] = [];
   if (usePostgres()) {
     await ensureStore();
-    const row = await dbGetActiveMembership(userId);
-    return row || undefined;
+    const all = await dbGetMembershipsForUser(uid);
+    candidates = all.filter((m) => m.status === "Active");
+  } else {
+    const all = await readAll();
+    candidates = all.filter((m) => normUserId(m.userId) === normUserId(uid) && m.status === "Active");
   }
-  const all = await readAll();
-  return all.find((m) => normUserId(m.userId) === normUserId(userId) && m.status === "Active");
+
+  const real = candidates.find((m) => countsAsRealActiveMembership(m.churchId));
+  return real || undefined;
 }
 
 export async function getMembershipsForUser(userId: string): Promise<ChurchMembership[]> {
@@ -582,7 +590,7 @@ export async function ensureActiveMembershipForSession(input: {
     process.env.NODE_ENV !== "production" ||
     String(process.env.KRISTO_HEADER_MEMBERSHIP_SYNC || "").trim() === "1";
 
-  if (!allowHeaderSync || !churchId) return active;
+  if (!allowHeaderSync || !churchId || isBlockedDemoChurchId(churchId)) return active;
 
   if (active?.churchId && active.churchId !== churchId) {
     console.log("KRISTO_MEMBERSHIP_RESOLVED", {

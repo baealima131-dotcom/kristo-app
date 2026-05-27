@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import { getActiveMembership, ensureActiveMembershipForSession } from "@/app/api/_lib/memberships";
+import { countsAsRealActiveMembership } from "@/app/api/_lib/demoMemberships";
 import { getChurchById } from "@/app/api/_lib/churches";
 import {
   getUserById,
@@ -97,6 +98,14 @@ function isKristoUserCode(x: any) {
   return /^KR7-[A-Z0-9]{6,10}$/.test(String(x || "").trim().toUpperCase());
 }
 
+function pickActiveMembershipForProfile(m?: { status?: string; churchId?: string } | null) {
+  if (!m) return undefined;
+  const status = String(m.status || "").trim();
+  if (status !== "Active" && status !== "Approved") return undefined;
+  if (!countsAsRealActiveMembership(m.churchId)) return undefined;
+  return m;
+}
+
 async function resolveAuthedUser(req: Request) {
   const headerUserId = String(req.headers.get("x-kristo-user-id") || "").trim();
   if (!headerUserId) return null;
@@ -153,13 +162,28 @@ export async function GET(req: Request) {
     const headerChurchId = String((req as any).headers?.get?.("x-kristo-church-id") || "").trim();
     const headerRole = String((req as any).headers?.get?.("x-kristo-role") || "").trim();
 
-    const activeMembership =
+    let activeMembershipSource: "ensureActiveMembershipForSession" | "getActiveMembership" | "none" = "none";
+    let rawMembership =
       (await ensureActiveMembershipForSession({
         userId: u.id,
         churchId: headerChurchId,
         role: headerRole,
         name: String(u.email || u.id || ""),
-      })) || (await getActiveMembership(u.id));
+      })) || null;
+    if (rawMembership) {
+      activeMembershipSource = "ensureActiveMembershipForSession";
+    } else {
+      rawMembership = (await getActiveMembership(u.id)) || null;
+      if (rawMembership) activeMembershipSource = "getActiveMembership";
+    }
+
+    const activeMembership = pickActiveMembershipForProfile(rawMembership);
+    console.log("[KRISTO PROFILE GET] membership", {
+      userId: u.id,
+      activeMembershipChurchId: activeMembership?.churchId || "",
+      activeMembershipStatus: activeMembership?.status || rawMembership?.status || "none",
+      activeMembershipSource,
+    });
     const hasChurch = !!activeMembership;
     const current =
       (await getProfile(u.id)) || (await ensureProfileDraft({ userId: u.id, email: u.email, phone: u.phone }));
@@ -220,7 +244,7 @@ export async function POST(req: Request) {
 
     const current =
       (await getProfile(u.id)) || (await ensureProfileDraft({ userId: u.id, email: u.email, phone: u.phone }));
-  const activeMembership = await getActiveMembership(u.id);
+  const activeMembership = pickActiveMembershipForProfile(await getActiveMembership(u.id));
   const hasChurch = !!activeMembership;
 
   const mergedPrivacyInput = {

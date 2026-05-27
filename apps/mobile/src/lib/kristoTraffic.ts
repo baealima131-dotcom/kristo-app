@@ -134,6 +134,13 @@ export async function dedupeInflight<T>(
   return promise;
 }
 
+export function clearResponseCacheForRequest(method: string, path: string, userId?: string) {
+  const key = requestKey(method, path, userId);
+  responseCache.delete(key);
+  lastFetchAt.delete(key);
+  inflight.delete(key);
+}
+
 export function createDebouncer(delayMs = 800) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   return (fn: () => void) => {
