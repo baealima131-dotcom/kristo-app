@@ -18,9 +18,10 @@ import {
   dbRejectMembership,
   dbRequestMembership,
   dbSetMemberRole,
+  dbCleanupStaleDemoActiveMemberships,
   ensureChurchStoreReady,
 } from "@/app/api/_lib/store/churchDb";
-import { countsAsRealActiveMembership, isBlockedDemoChurchId } from "@/app/api/_lib/demoMemberships";
+import { countsAsRealActiveMembership, isBlockedDemoChurchId, STALE_DEMO_MEMBERSHIP_NOTE } from "@/app/api/_lib/demoMemberships";
 
 export type MembershipStatus = "Requested" | "Active" | "Rejected" | "Banned" | "Left";
 export type ChurchRole = "Member" | "Leader" | "Ministry_Leader" | "Church_Admin" | "Pastor";
@@ -113,6 +114,66 @@ function sortNewestFirst(list: ChurchMembership[]) {
   return list.slice().sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
 
+function findRealActiveMembershipInRows(rows: ChurchMembership[], userId: string): ChurchMembership | undefined {
+  return rows.find(
+    (m) =>
+      normUserId(m.userId) === normUserId(userId) &&
+      m.status === "Active" &&
+      countsAsRealActiveMembership(m.churchId)
+  );
+}
+
+/** Auto-leave stale demo Active memberships so they never block real church flows. */
+export async function cleanupStaleDemoActiveMemberships(userId: string): Promise<ChurchMembership[]> {
+  const uid = String(userId || "").trim();
+  if (!uid) return [];
+
+  if (usePostgres()) {
+    await ensureStore();
+    return dbCleanupStaleDemoActiveMemberships(uid);
+  }
+
+  const cleaned: ChurchMembership[] = [];
+  await updateJsonFile<ChurchMembership[]>(
+    STORE_FILE,
+    (current) => {
+      const s = Array.isArray(current) ? current : [];
+      for (const m of s) {
+        if (
+          normUserId(m.userId) !== normUserId(uid) ||
+          m.status !== "Active" ||
+          !isBlockedDemoChurchId(m.churchId)
+        ) {
+          continue;
+        }
+        m.status = "Left";
+        m.updatedAt = nowIso();
+        m.note = STALE_DEMO_MEMBERSHIP_NOTE;
+        cleaned.push({ ...m });
+      }
+      return s;
+    },
+    []
+  );
+  return cleaned;
+}
+
+export function logInviteMembershipCheck(input: {
+  userId: string;
+  churchId: string;
+  membershipChurchId?: string;
+  membershipStatus?: string;
+  ignoredAsDemo?: boolean;
+}) {
+  console.log("[KRISTO INVITE CHECK]", {
+    userId: String(input.userId || ""),
+    churchId: String(input.churchId || ""),
+    membershipChurchId: String(input.membershipChurchId || ""),
+    membershipStatus: String(input.membershipStatus || "none"),
+    ignoredAsDemo: Boolean(input.ignoredAsDemo),
+  });
+}
+
 /* =========================
    READERS
    ========================= */
@@ -120,6 +181,8 @@ function sortNewestFirst(list: ChurchMembership[]) {
 export async function getActiveMembership(userId: string): Promise<ChurchMembership | undefined> {
   const uid = String(userId || "").trim();
   if (!uid) return undefined;
+
+  await cleanupStaleDemoActiveMemberships(uid);
 
   let candidates: ChurchMembership[] = [];
   if (usePostgres()) {
@@ -190,6 +253,8 @@ export async function requestMembership(
   name?: string,
   requestSource: "JoinRequest" | "ChurchInvite" = "JoinRequest"
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  await cleanupStaleDemoActiveMemberships(userId);
+
   if (usePostgres()) {
     await ensureStore();
     return dbRequestMembership(userId, churchId, name, requestSource);
@@ -204,7 +269,7 @@ export async function requestMembership(
     (current) => {
       const s = Array.isArray(current) ? current : [];
 
-      const active = s.find((m) => normUserId(m.userId) === normUserId(userId) && m.status === "Active");
+      const active = findRealActiveMembershipInRows(s, userId);
       if (active) {
         result = { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` };
         return s;
@@ -304,6 +369,7 @@ export async function approveMembership(
     await ensureStore();
     return dbApproveMembership(membershipId, decidedBy);
   }
+
   let result: { ok: true; membership: ChurchMembership } | { ok: false; error: string } = {
     ok: false,
     error: "Unknown error",
@@ -324,8 +390,21 @@ export async function approveMembership(
         return s;
       }
 
-      // single Active enforcement
-      const active = s.find((x) => normUserId(x.userId) === normUserId(m.userId) && x.status === "Active");
+      for (const row of s) {
+        if (
+          normUserId(row.userId) !== normUserId(m.userId) ||
+          row.status !== "Active" ||
+          !isBlockedDemoChurchId(row.churchId)
+        ) {
+          continue;
+        }
+        row.status = "Left";
+        row.updatedAt = nowIso();
+        row.note = STALE_DEMO_MEMBERSHIP_NOTE;
+      }
+
+      // single Active enforcement (real churches only)
+      const active = findRealActiveMembershipInRows(s, m.userId);
       if (active) {
         result = { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` };
         return s;
@@ -401,6 +480,8 @@ export async function addActiveMember(
   name?: string,
   role: ChurchRole = "Member"
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  await cleanupStaleDemoActiveMemberships(userId);
+
   if (usePostgres()) {
     await ensureStore();
     const result = await dbAddActiveMember(churchId, userId, name, role);
@@ -426,7 +507,7 @@ export async function addActiveMember(
     (current) => {
       const s = Array.isArray(current) ? current : [];
 
-      const active = s.find((m) => normUserId(m.userId) === normUserId(userId) && m.status === "Active");
+      const active = findRealActiveMembershipInRows(s, userId);
       if (active) {
         result = { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` };
         return s;

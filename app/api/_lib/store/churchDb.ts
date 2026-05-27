@@ -1,5 +1,10 @@
 import { neon, neonConfig } from "@neondatabase/serverless";
 import { getDatabaseUrl, hasDurableStore, isVercelRuntime } from "@/app/api/_lib/store/authDb";
+import {
+  countsAsRealActiveMembership,
+  isBlockedDemoChurchId,
+  STALE_DEMO_MEMBERSHIP_NOTE,
+} from "@/app/api/_lib/demoMemberships";
 
 neonConfig.fetchConnectionCache = true;
 
@@ -253,6 +258,29 @@ export async function dbGetActiveMembership(userId: string): Promise<ChurchMembe
   return row ? rowToMembership(row) : null;
 }
 
+export async function dbGetRealActiveMembership(userId: string): Promise<ChurchMembership | null> {
+  const all = await dbGetMembershipsForUser(userId);
+  const real = all.find((m) => m.status === "Active" && countsAsRealActiveMembership(m.churchId));
+  return real || null;
+}
+
+export async function dbCleanupStaleDemoActiveMemberships(userId: string): Promise<ChurchMembership[]> {
+  const uid = String(userId || "").trim();
+  if (!uid) return [];
+
+  const cleaned: ChurchMembership[] = [];
+  const all = await dbGetMembershipsForUser(uid);
+  for (const m of all) {
+    if (m.status !== "Active" || !isBlockedDemoChurchId(m.churchId)) continue;
+    m.status = "Left";
+    m.updatedAt = nowIso();
+    m.note = STALE_DEMO_MEMBERSHIP_NOTE;
+    await dbUpdateMembership(m);
+    cleaned.push(m);
+  }
+  return cleaned;
+}
+
 export async function dbGetMembershipsForUser(userId: string): Promise<ChurchMembership[]> {
   await ensureChurchSchema();
   const sql = getSql();
@@ -344,7 +372,8 @@ export async function dbRequestMembership(
   name?: string,
   requestSource: "JoinRequest" | "ChurchInvite" = "JoinRequest"
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
-  const active = await dbGetActiveMembership(userId);
+  await dbCleanupStaleDemoActiveMemberships(userId);
+  const active = await dbGetRealActiveMembership(userId);
   if (active) {
     return { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` };
   }
@@ -380,7 +409,8 @@ export async function dbAddActiveMember(
   name?: string,
   role: ChurchRole = "Member"
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
-  const active = await dbGetActiveMembership(userId);
+  await dbCleanupStaleDemoActiveMemberships(userId);
+  const active = await dbGetRealActiveMembership(userId);
   if (active) {
     return { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` };
   }
@@ -420,7 +450,7 @@ export async function dbAddActiveMember(
   } catch (error: any) {
     const msg = String(error?.message || error || "");
     if (msg.includes("kristo_memberships_one_active_per_user")) {
-      const again = await dbGetActiveMembership(userId);
+      const again = await dbGetRealActiveMembership(userId);
       if (again) {
         return { ok: false, error: `User already has an Active membership in churchId=${again.churchId}` };
       }
@@ -449,7 +479,8 @@ export async function dbApproveMembership(
   if (!m) return { ok: false, error: "Membership not found" };
   if (m.status !== "Requested") return { ok: false, error: `Cannot approve membership in status=${m.status}` };
 
-  const active = await dbGetActiveMembership(m.userId);
+  await dbCleanupStaleDemoActiveMemberships(m.userId);
+  const active = await dbGetRealActiveMembership(m.userId);
   if (active) {
     return { ok: false, error: `User already has an Active membership in churchId=${active.churchId}` };
   }

@@ -2,7 +2,15 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { getActiveMembership, requestMembership, type ChurchRole } from "@/app/api/_lib/memberships";
+import {
+  cleanupStaleDemoActiveMemberships,
+  getActiveMembership,
+  getMembershipsForUser,
+  logInviteMembershipCheck,
+  requestMembership,
+  type ChurchRole,
+} from "@/app/api/_lib/memberships";
+import { isBlockedDemoChurchId } from "@/app/api/_lib/demoMemberships";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
 import { sendChurchInviteEmail } from "@/app/api/_lib/email";
@@ -59,6 +67,20 @@ export async function POST(req: NextRequest) {
     (targetProfile as any)?.id ||
     targetUserId
   ).trim();
+
+  const beforeRows = await getMembershipsForUser(realTargetUserId);
+  const rawActive = beforeRows.find((m) => m.status === "Active");
+  const ignoredAsDemo = Boolean(rawActive && isBlockedDemoChurchId(rawActive.churchId));
+
+  await cleanupStaleDemoActiveMemberships(realTargetUserId);
+
+  logInviteMembershipCheck({
+    userId: realTargetUserId,
+    churchId: ctx.churchId,
+    membershipChurchId: rawActive?.churchId || "",
+    membershipStatus: rawActive?.status || "none",
+    ignoredAsDemo,
+  });
 
   const active = await getActiveMembership(realTargetUserId);
   if (active && active.churchId !== ctx.churchId) {
