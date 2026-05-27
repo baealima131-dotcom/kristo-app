@@ -11,13 +11,17 @@ import {
   Easing,
   Image,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { TLMC_UNIVERSE_IMAGE, preloadTlmcAssets } from "@/src/lib/tlmcPreload";
 import { MEDIA_STUDIO_BACKGROUND, preloadMediaAssets } from "@/src/lib/mediaPreload";
+import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { resolveSessionChurchId } from "@/src/lib/churchStore";
 
 const MEDIA_HREF = "/more/media";
+const CHURCH_GATE_HREF = "/more/church";
 
 type Item = {
   key: string;
@@ -122,17 +126,128 @@ const ITEMS: Item[] = [
   },
 ];
 
-const GAP = 14;
+const NO_CHURCH_VISIBLE_KEYS = new Set(["payments", "church"]);
+
+function splitColumns(items: Item[]) {
+  return {
+    left: items.filter((_, i) => i % 2 === 0),
+    right: items.filter((_, i) => i % 2 === 1),
+  };
+}
+
+const GAP = 16;
 const PAD = 16;
+const CARD_H = 232;
 const { width } = Dimensions.get("window");
 const CARD_W = Math.floor((width - PAD * 2 - GAP) / 2);
 
-const LEFT_ITEMS = ITEMS.filter((_, i) => i % 2 === 0);
-const RIGHT_ITEMS = ITEMS.filter((_, i) => i % 2 === 1);
+type CardSurface = {
+  base: [string, string, string];
+  tint: [string, string, string];
+  sheen: [string, string, string];
+  glowColor: string;
+  shadowColor: string;
+};
+
+function getCardSurface(key: string): CardSurface {
+  if (key === "tlmc") {
+    return {
+      base: ["rgba(22,16,52,0.98)", "rgba(12,9,28,0.99)", "rgba(7,6,18,0.99)"],
+      tint: ["rgba(108,78,255,0.24)", "rgba(217,179,95,0.10)", "transparent"],
+      sheen: ["rgba(255,255,255,0.16)", "rgba(148,128,255,0.10)", "transparent"],
+      glowColor: "rgba(126,102,255,0.30)",
+      shadowColor: "#6C4EFF",
+    };
+  }
+  if (key === "ministries" || key === "my_church_room") {
+    return {
+      base: ["rgba(28,22,12,0.98)", "rgba(14,11,7,0.96)", "rgba(8,7,5,0.94)"],
+      tint: ["rgba(236,202,112,0.16)", "rgba(217,179,95,0.06)", "transparent"],
+      sheen: ["rgba(255,255,255,0.16)", "rgba(217,179,95,0.12)", "transparent"],
+      glowColor: "rgba(236,202,112,0.22)",
+      shadowColor: "#D9B35F",
+    };
+  }
+  if (key === "notifications" || key === "messages") {
+    return {
+      base: ["rgba(10,18,36,0.98)", "rgba(8,14,28,0.97)", "rgba(5,9,18,0.96)"],
+      tint: ["rgba(96,152,255,0.16)", "rgba(0,145,255,0.06)", "transparent"],
+      sheen: ["rgba(255,255,255,0.14)", "rgba(132,198,255,0.10)", "transparent"],
+      glowColor: "rgba(96,152,255,0.24)",
+      shadowColor: "#5A9CFF",
+    };
+  }
+  if (key === "church") {
+    return {
+      base: ["rgba(18,12,38,0.98)", "rgba(12,8,26,0.97)", "rgba(7,5,16,0.96)"],
+      tint: ["rgba(156,118,255,0.18)", "rgba(217,179,95,0.08)", "transparent"],
+      sheen: ["rgba(255,255,255,0.14)", "rgba(198,166,255,0.10)", "transparent"],
+      glowColor: "rgba(156,118,255,0.26)",
+      shadowColor: "#9C76FF",
+    };
+  }
+  if (key === "bible") {
+    return {
+      base: ["rgba(8,22,18,0.98)", "rgba(6,16,13,0.97)", "rgba(4,10,8,0.96)"],
+      tint: ["rgba(84,196,146,0.16)", "rgba(64,150,126,0.06)", "transparent"],
+      sheen: ["rgba(255,255,255,0.14)", "rgba(120,224,178,0.10)", "transparent"],
+      glowColor: "rgba(84,196,146,0.22)",
+      shadowColor: "#54C492",
+    };
+  }
+  if (key === "courtship") {
+    return {
+      base: ["rgba(28,10,22,0.98)", "rgba(18,8,14,0.97)", "rgba(10,5,8,0.96)"],
+      tint: ["rgba(248,132,182,0.16)", "rgba(176,92,132,0.06)", "transparent"],
+      sheen: ["rgba(255,255,255,0.14)", "rgba(255,154,196,0.10)", "transparent"],
+      glowColor: "rgba(248,132,182,0.22)",
+      shadowColor: "#F884B6",
+    };
+  }
+  if (key === "testimony" || key === "payments" || key === "media") {
+    return {
+      base: ["rgba(26,10,18,0.98)", "rgba(16,8,12,0.97)", "rgba(9,5,7,0.96)"],
+      tint: ["rgba(228,120,176,0.16)", "rgba(156,86,118,0.06)", "transparent"],
+      sheen: ["rgba(255,255,255,0.14)", "rgba(255,158,210,0.10)", "transparent"],
+      glowColor: "rgba(228,120,176,0.22)",
+      shadowColor: "#E478B0",
+    };
+  }
+  return {
+    base: ["rgba(16,18,28,0.98)", "rgba(10,12,20,0.97)", "rgba(6,7,14,0.96)"],
+    tint: ["rgba(255,255,255,0.06)", "transparent", "transparent"],
+    sheen: ["rgba(255,255,255,0.12)", "rgba(255,255,255,0.04)", "transparent"],
+    glowColor: "rgba(255,255,255,0.10)",
+    shadowColor: "#000000",
+  };
+}
 
 export default function MoreScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { session } = useKristoSession();
+
+  const hasChurch = Boolean(
+    resolveSessionChurchId(session?.churchId || (session as any)?.activeChurchId || "")
+  );
+
+  const visibleItems = React.useMemo(() => {
+    if (hasChurch) return ITEMS;
+    return ITEMS.filter((item) => NO_CHURCH_VISIBLE_KEYS.has(item.key)).map((item) =>
+      item.key === "church"
+        ? {
+            ...item,
+            sub: "Create or join to unlock",
+            href: CHURCH_GATE_HREF,
+          }
+        : item
+    );
+  }, [hasChurch]);
+
+  const { left: leftItems, right: rightItems } = React.useMemo(
+    () => splitColumns(visibleItems),
+    [visibleItems]
+  );
 
   const [messagesV2Open, setMessagesV2Open] = React.useState(false);
   const [v2FeatureTitle, setV2FeatureTitle] = React.useState("Messages");
@@ -192,6 +307,7 @@ export default function MoreScreen() {
 
   const renderCard = (item: Item) => {
     const isTlmc = item.key === "tlmc";
+    const isChurchGate = !hasChurch && item.key === "church";
 
     const wrapTone =
       item.key === "ministries"
@@ -348,20 +464,16 @@ export default function MoreScreen() {
 
     const iconSize =
       item.key === "tlmc"
-        ? 20
+        ? 24
         : item.key === "church"
-        ? 19
+        ? 22
         : item.key === "bible"
-        ? 19
-        : 18;
+        ? 22
+        : 21;
 
-    const arrowSize = item.key === "tlmc" ? 18 : 16;
+    const titleLines = item.key === "my_church_room" ? 2 : 1;
 
-    const titleLines =
-      item.key === "my_church_room" || item.key === "church" ? 2 : 1;
-
-    const subLines =
-      item.key === "my_church_room" || item.key === "church" ? 3 : 2;
+    const subLines = 2;
 
     const titleStyleExtra =
       item.key === "tlmc"
@@ -471,10 +583,17 @@ export default function MoreScreen() {
         ? "rgba(255,214,230,0.96)"
         : "rgba(255,230,170,0.96)";
 
+    const surface = getCardSurface(item.key);
+
     return (
       <Pressable
         key={item.key}
         onPress={() => {
+          if (isChurchGate) {
+            router.push(CHURCH_GATE_HREF as any);
+            return;
+          }
+
           if (
             item.key === "messages" ||
             item.key === "bible" ||
@@ -495,40 +614,73 @@ export default function MoreScreen() {
         }}
         style={({ pressed }) => [
           s.tileWrap,
-          { width: CARD_W },
+          { width: CARD_W, height: CARD_H },
           wrapTone,
           premiumWrapTone,
           isTlmc ? s.tileTlmcWrap : null,
-          pressed ? { transform: [{ scale: 0.965 }], opacity: 0.92 } : null,
+          { shadowColor: surface.shadowColor },
+          pressed ? { transform: [{ scale: 0.972 }], opacity: 0.94 } : null,
         ]}
       >
-        <View style={s.floatGlow} />
-        <View style={s.edge} />
-        <View style={s.sheen} />
-        <View style={s.goldGlow} />
-        <View style={s.cornerGlow} />
-        <View style={s.bottomShade} />
+        <LinearGradient
+          pointerEvents="none"
+          colors={surface.base}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <LinearGradient
+          pointerEvents="none"
+          colors={surface.tint}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0.85, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <View
+          pointerEvents="none"
+          style={[s.themeGlowOrb, { backgroundColor: surface.glowColor }]}
+        />
+        <LinearGradient
+          pointerEvents="none"
+          colors={surface.sheen}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={s.topSheen}
+        />
+        <View pointerEvents="none" style={s.innerRim} />
+        <View pointerEvents="none" style={s.floatGlow} />
+        <View pointerEvents="none" style={s.bottomShade} />
 
         {isTlmc ? <View pointerEvents="none" style={s.tlmcAura} /> : null}
         {isTlmc ? <View pointerEvents="none" style={s.tlmcOrb} /> : null}
         {isTlmc ? <View pointerEvents="none" style={s.tlmcBeam} /> : null}
+        {isTlmc ? <View pointerEvents="none" style={s.tlmcGoldOrb} /> : null}
 
         <View style={[s.tile, innerTone, premiumInnerTone, isTlmc ? s.tileTlmc : null]}>
           <View style={s.rowTop}>
-            <View style={[s.iconPill, iconTone, isTlmc ? s.iconPillTlmc : null]}>
-              {item.iconLib === "ion" ? (
-                <Ionicons
-                  name={item.icon}
-                  size={iconSize}
-                  color={isTlmc ? "rgba(255,226,140,0.98)" : iconColor}
-                />
-              ) : (
-                <MaterialCommunityIcons
-                  name={item.icon}
-                  size={iconSize}
-                  color={isTlmc ? "rgba(255,226,140,0.98)" : iconColor}
-                />
-              )}
+            <View style={s.iconStack}>
+              <View
+                style={[
+                  s.iconGlow,
+                  isTlmc ? s.iconGlowTlmc : null,
+                  { backgroundColor: surface.glowColor },
+                ]}
+              />
+              <View style={[s.iconPill, iconTone, isTlmc ? s.iconPillTlmc : null]}>
+                {item.iconLib === "ion" ? (
+                  <Ionicons
+                    name={item.icon}
+                    size={iconSize}
+                    color={isTlmc ? "rgba(255,226,140,0.98)" : iconColor}
+                  />
+                ) : (
+                  <MaterialCommunityIcons
+                    name={item.icon}
+                    size={iconSize}
+                    color={isTlmc ? "rgba(255,226,140,0.98)" : iconColor}
+                  />
+                )}
+              </View>
             </View>
           </View>
 
@@ -549,11 +701,14 @@ export default function MoreScreen() {
           <View style={[s.tileFoot, footStyleExtra]}>
             <View style={s.divider} />
             <View style={s.ctaRow}>
-              <View style={[s.ctaPill, ctaPillTone]}>
+              <View style={[s.ctaPill, ctaPillTone, isTlmc ? s.ctaPillTlmc : null]}>
                 <Text style={[s.ctaText, hintTone, isTlmc ? s.tapHintTlmc : null]}>
-                  {item.title === "Giving" ? "Give" : "Open"}
+                  {isChurchGate ? "Unlock" : item.title === "Giving" ? "Give" : "Open"}
                 </Text>
               </View>
+              {isChurchGate ? (
+                <Ionicons name="lock-closed-outline" size={14} color="rgba(217,179,95,0.9)" />
+              ) : null}
             </View>
           </View>
         </View>
@@ -583,17 +738,17 @@ export default function MoreScreen() {
       <View style={[s.header, { paddingTop: insets.top + 18 }]}>
         <View style={s.titleGlass}>
           <Text style={s.title}>KRISTO APP</Text>
-          <Text style={s.titleSub}>Kristo ecosystem</Text>
+          <Text style={s.titleSub}>{hasChurch ? "Kristo ecosystem" : "Account & church setup"}</Text>
         </View>
       </View>
 
-      <View style={[s.columnsWrap, { paddingBottom: insets.bottom + 12 }]}>
+      <View style={[s.columnsWrap, { paddingBottom: insets.bottom + 98 }]}>
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={s.columnContent}
           style={s.columnScroll}
         >
-          {LEFT_ITEMS.map(renderCard)}
+          {leftItems.map(renderCard)}
         </ScrollView>
 
         <ScrollView
@@ -601,7 +756,7 @@ export default function MoreScreen() {
           contentContainerStyle={[s.columnContent, s.columnContentRight]}
           style={s.columnScroll}
         >
-          {RIGHT_ITEMS.map(renderCard)}
+          {rightItems.map(renderCard)}
         </ScrollView>
       </View>
 
@@ -743,8 +898,8 @@ const s = StyleSheet.create<any>({
   },
 
   columnContent: {
-    paddingBottom: 24,
-    gap: GAP + 2,
+    paddingBottom: 32,
+    gap: GAP,
   },
 
   columnContentRight: {
@@ -798,13 +953,12 @@ const s = StyleSheet.create<any>({
     maxWidth: 260,
   },
   tileWrap: {
-    borderRadius: 28,
+    borderRadius: 32,
     overflow: "hidden",
-    shadowColor: "#000",
-    shadowOpacity: 0.42,
-    shadowRadius: 30,
-    shadowOffset: { width: 0, height: 18 },
-    elevation: 20,
+    shadowOpacity: 0.48,
+    shadowRadius: 34,
+    shadowOffset: { width: 0, height: 20 },
+    elevation: 22,
   },
 
   tileGold: {
@@ -885,38 +1039,38 @@ const s = StyleSheet.create<any>({
   },
 
   iconPillGold: {
-    backgroundColor: "rgba(72,56,18,0.34)",
-    borderColor: "rgba(236,202,112,0.18)",
+    backgroundColor: "rgba(72,56,18,0.42)",
+    borderColor: "rgba(236,202,112,0.28)",
   },
 
   iconPillBlue: {
-    backgroundColor: "rgba(18,38,72,0.34)",
-    borderColor: "rgba(92,152,255,0.20)",
+    backgroundColor: "rgba(18,38,72,0.42)",
+    borderColor: "rgba(92,152,255,0.30)",
   },
 
   iconPillPurple: {
-    backgroundColor: "rgba(42,28,76,0.36)",
-    borderColor: "rgba(156,124,255,0.22)",
+    backgroundColor: "rgba(42,28,76,0.44)",
+    borderColor: "rgba(156,124,255,0.32)",
   },
 
   iconPillAmber: {
-    backgroundColor: "rgba(74,52,18,0.36)",
-    borderColor: "rgba(255,214,120,0.22)",
+    backgroundColor: "rgba(74,52,18,0.44)",
+    borderColor: "rgba(255,214,120,0.30)",
   },
 
   iconPillEmerald: {
-    backgroundColor: "rgba(16,54,44,0.36)",
-    borderColor: "rgba(84,196,146,0.22)",
+    backgroundColor: "rgba(16,54,44,0.44)",
+    borderColor: "rgba(84,196,146,0.30)",
   },
 
   iconPillRose: {
-    backgroundColor: "rgba(72,28,54,0.36)",
-    borderColor: "rgba(228,120,176,0.20)",
+    backgroundColor: "rgba(72,28,54,0.44)",
+    borderColor: "rgba(228,120,176,0.28)",
   },
 
   iconPillPink: {
-    backgroundColor: "rgba(76,24,46,0.36)",
-    borderColor: "rgba(236,126,176,0.20)",
+    backgroundColor: "rgba(76,24,46,0.44)",
+    borderColor: "rgba(236,126,176,0.28)",
   },
 
   tileTitleGold: {
@@ -1003,55 +1157,53 @@ const s = StyleSheet.create<any>({
     color: "rgba(255,154,196,0.97)",
   },
 
-  edge: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(255,255,255,0.016)",
-  },
-  sheen: {
+  topSheen: {
     position: "absolute",
-    left: -24,
-    top: -12,
-    width: 214,
-    height: 72,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.050)",
-    transform: [{ rotate: "-8deg" }],
-  },
-  goldGlow: {
-    position: "absolute",
-    right: -14,
-    top: 34,
-    width: 106,
-    height: 106,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.018)",
-  },
-  cornerGlow: {
-    position: "absolute",
-    left: -10,
-    bottom: -12,
-    width: 88,
+    left: 0,
+    right: 0,
+    top: 0,
     height: 88,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.010)",
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
   },
+
+  themeGlowOrb: {
+    position: "absolute",
+    right: -28,
+    top: -22,
+    width: 118,
+    height: 118,
+    borderRadius: 999,
+    opacity: 0.85,
+  },
+
+  innerRim: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 32,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "transparent",
+  },
+
   bottomShade: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
-    height: 42,
-    backgroundColor: "rgba(0,0,0,0.07)",
+    height: 56,
+    backgroundColor: "rgba(0,0,0,0.14)",
   },
+
   tile: {
-    minHeight: 210,
-    borderRadius: 30,
-    paddingHorizontal: 20,
-    paddingTop: 22,
-    paddingBottom: 20,
+    flex: 1,
+    borderRadius: 32,
+    paddingHorizontal: 18,
+    paddingTop: 20,
+    paddingBottom: 18,
     borderWidth: 1,
-    backgroundColor: "rgba(255,255,255,0.064)",
-    borderColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "rgba(255,255,255,0.028)",
+    borderColor: "rgba(255,255,255,0.12)",
+    justifyContent: "flex-start",
   },
 
   rowTop: {
@@ -1059,44 +1211,70 @@ const s = StyleSheet.create<any>({
     alignItems: "center",
     justifyContent: "flex-start",
   },
-  iconPill: {
-    width: 54,
-    height: 54,
-    borderRadius: 19,
+
+  iconStack: {
+    width: 64,
+    height: 64,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(18,22,32,0.55)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.20)",
+  },
+
+  iconGlow: {
+    position: "absolute",
+    width: 72,
+    height: 72,
+    borderRadius: 999,
+    opacity: 0.55,
+  },
+
+  iconGlowTlmc: {
+    width: 78,
+    height: 78,
+    opacity: 0.62,
+  },
+
+  iconPill: {
+    width: 58,
+    height: 58,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(12,14,22,0.72)",
+    borderWidth: 1.2,
+    borderColor: "rgba(255,255,255,0.24)",
     shadowColor: "#000",
-    shadowOpacity: 0.30,
-    shadowRadius: 16,
+    shadowOpacity: 0.38,
+    shadowRadius: 18,
     shadowOffset: { width: 0, height: 10 },
   },
 
   tileTitle: {
-    marginTop: 18,
+    marginTop: 16,
     color: "rgba(255,255,255,0.995)",
     fontWeight: "950",
-    fontSize: 19,
-    letterSpacing: -0.18,
+    fontSize: 19.5,
+    letterSpacing: -0.28,
+    lineHeight: 24,
   },
+
   tileSub: {
-    marginTop: 10,
-    color: "rgba(255,255,255,0.66)",
+    marginTop: 8,
+    color: "rgba(255,255,255,0.62)",
     fontWeight: "600",
-    fontSize: 12.6,
-    lineHeight: 18,
-    minHeight: 42,
+    fontSize: 12.4,
+    lineHeight: 17.5,
+    minHeight: 36,
+    maxHeight: 36,
   },
 
   tileFoot: {
     marginTop: "auto",
   },
+
   divider: {
-    marginTop: 16,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.060)",
+    marginTop: 14,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "rgba(255,255,255,0.10)",
   },
 
 
@@ -1254,48 +1432,58 @@ const s = StyleSheet.create<any>({
     fontSize: 12.8,
   },
   tileTlmcWrap: {
-    shadowColor: "#000",
-    shadowOpacity: 0.46,
-    shadowRadius: 34,
-    shadowOffset: { width: 0, height: 24 },
-    elevation: 26,
+    shadowOpacity: 0.56,
+    shadowRadius: 38,
+    shadowOffset: { width: 0, height: 26 },
+    elevation: 28,
   },
 
   tlmcAura: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(90,74,214,0.10)",
+    backgroundColor: "rgba(90,74,214,0.12)",
   },
 
   tlmcOrb: {
     position: "absolute",
-    right: -18,
-    top: -10,
-    width: 124,
-    height: 124,
+    right: -24,
+    top: -16,
+    width: 132,
+    height: 132,
     borderRadius: 999,
-    backgroundColor: "rgba(126,102,255,0.22)",
+    backgroundColor: "rgba(126,102,255,0.26)",
+  },
+
+  tlmcGoldOrb: {
+    position: "absolute",
+    left: -18,
+    bottom: 28,
+    width: 96,
+    height: 96,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.14)",
   },
 
   tlmcBeam: {
     position: "absolute",
     left: -22,
     bottom: -8,
-    width: 158,
-    height: 82,
+    width: 168,
+    height: 86,
     borderRadius: 999,
-    backgroundColor: "rgba(255,214,120,0.09)",
+    backgroundColor: "rgba(255,214,120,0.11)",
     transform: [{ rotate: "-12deg" }],
   },
 
   tileTlmc: {
-    backgroundColor: "rgba(46,34,102,0.24)",
+    backgroundColor: "rgba(46,34,102,0.20)",
     borderWidth: 1.15,
-    borderColor: "rgba(148,128,255,0.30)",
+    borderColor: "rgba(148,128,255,0.32)",
   },
 
   iconPillTlmc: {
-    backgroundColor: "rgba(28,22,64,0.58)",
-    borderColor: "rgba(255,226,140,0.24)",
+    backgroundColor: "rgba(28,22,64,0.68)",
+    borderColor: "rgba(255,226,140,0.30)",
+    borderWidth: 1.3,
   },
 
   tileTitleTlmc: {
@@ -1398,8 +1586,9 @@ const s = StyleSheet.create<any>({
 
 
   tileTitleHero: {
-    fontSize: 21,
-    letterSpacing: -0.20,
+    fontSize: 22,
+    letterSpacing: -0.32,
+    lineHeight: 26,
   },
 
   tileTitleCompact: {
@@ -1429,25 +1618,31 @@ const s = StyleSheet.create<any>({
   },
 
   ctaRow: {
-    marginTop: 10,
+    marginTop: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "flex-start",
+    gap: 8,
   },
 
   ctaPill: {
-    minHeight: 36,
-    paddingHorizontal: 18,
+    minHeight: 34,
+    paddingHorizontal: 16,
     borderRadius: 999,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderColor: "rgba(255,255,255,0.20)",
     shadowColor: "#000",
-    shadowOpacity: 0.22,
-    shadowRadius: 10,
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
+  },
+
+  ctaPillTlmc: {
+    backgroundColor: "rgba(255,226,140,0.12)",
+    borderColor: "rgba(255,226,140,0.28)",
   },
 
   ctaPillGold: {
@@ -1487,16 +1682,19 @@ const s = StyleSheet.create<any>({
 
   ctaText: {
     fontWeight: "900",
-    fontSize: 12.8,
+    fontSize: 12.2,
+    letterSpacing: 0.22,
   },
+
   floatGlow: {
     position: "absolute",
-    left: 18,
-    right: 18,
-    bottom: -12,
-    height: 22,
+    left: 14,
+    right: 14,
+    bottom: -10,
+    height: 24,
     borderRadius: 999,
-    backgroundColor: "rgba(0,0,0,0.18)",
+    backgroundColor: "rgba(0,0,0,0.22)",
+    opacity: 0.7,
   },
 
 });
