@@ -14,7 +14,13 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { apiPost } from "@/src/lib/kristoApi";
-import { feedClaimSchedule, feedJoinSlotQueue, feedUnclaimSchedule } from "@/src/lib/homeFeedStore";
+import {
+  feedClaimSchedule,
+  feedJoinSlotQueue,
+  feedUnclaimSchedule,
+  isPastorClaimActor,
+  resolveClaimFeedTarget,
+} from "@/src/lib/homeFeedStore";
 import { persistClaimToLiveRequest } from "@/src/lib/liveBridge";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -626,9 +632,21 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     claimingSlotRef.current = String(slot.id);
     claimPress.value = withSequence(withSpring(0.94), withSpring(1));
 
-    const postId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
+    const seedId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
+    const claimTarget = resolveClaimFeedTarget(seedId);
     const slotId = String(slot.id);
     const slotNumber = Number((slot as any)?.slot || (slot as any)?.slotNumber || (slot as any)?.order || 0);
+    const isPastorClaim = isPastorClaimActor(currentUserId, item);
+
+    if (isPastorClaim) {
+      console.log("KRISTO_PASTOR_CLAIM_ALLOWED", {
+        seedId: claimTarget.seedId,
+        apiFeedId: claimTarget.apiFeedId,
+        slotId,
+        userId: currentUserId,
+      });
+    }
+
     const claimAvatarUri = String(
       session?.avatarUri || session?.avatarUrl || session?.profileImage || profileAvatarUri || ""
     ).trim();
@@ -636,9 +654,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       slotId,
       userId: currentUserId,
       name: String(
-        session?.displayName || session?.fullName || session?.name || profileName || "Church Member"
+        session?.displayName || session?.fullName || session?.name || profileName || (isPastorClaim ? "Pastor" : "Church Member")
       ).trim(),
-      role: String(session?.role || "Member"),
+      role: isPastorClaim ? "Pastor" : String(session?.role || "Member"),
       avatarUri: claimAvatarUri,
       claimedByAvatarUri: claimAvatarUri,
       startMs: Number(slot.startMs || 0),
@@ -650,8 +668,8 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     };
 
     setOptimisticClaim(claim);
-    feedClaimSchedule(postId, claim);
-    onOptimisticClaim?.({ postId, slotId, claim });
+    feedClaimSchedule(seedId, claim);
+    onOptimisticClaim?.({ postId: claimTarget.apiFeedId, slotId, claim });
 
     const claimHeaders = getKristoHeaders({
       userId: session?.userId || "",
@@ -659,37 +677,58 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       churchId: session?.churchId || "",
     }) as Record<string, string>;
 
-    void persistClaimToLiveRequest({
-      liveId: postId,
-      slotId,
-      slot: slotNumber || undefined,
-      userId: currentUserId,
-      name: claim.name,
-      avatar: claimAvatarUri || claim.name.slice(0, 1).toUpperCase(),
-      headers: claimHeaders,
-    }).catch(() => {});
+    if (!isPastorClaim) {
+      void persistClaimToLiveRequest({
+        liveId: claimTarget.liveBridgeId,
+        slotId,
+        slot: slotNumber || undefined,
+        userId: currentUserId,
+        name: claim.name,
+        avatar: claimAvatarUri || claim.name.slice(0, 1).toUpperCase(),
+        headers: claimHeaders,
+      }).catch(() => {});
+    }
 
     void apiPost(
       "/api/church/feed",
-      { action: "claim_schedule_slot", postId, slotId, claim },
+      { action: "claim_schedule_slot", postId: claimTarget.apiFeedId, slotId, claim },
       {
         headers: claimHeaders,
       }
     )
       .then((res: any) => {
-        console.log("KRISTO_MEDIA_CLAIM_PERSISTED", {
-          postId,
-          slotId,
-          userId: currentUserId,
-          ok: res?.ok !== false,
-        });
+        if (isPastorClaim) {
+          console.log("KRISTO_PASTOR_CLAIM_PERSISTED", {
+            seedId: claimTarget.seedId,
+            apiFeedId: claimTarget.apiFeedId,
+            slotId,
+            userId: currentUserId,
+            ok: res?.ok !== false,
+          });
+        } else {
+          console.log("KRISTO_MEDIA_CLAIM_PERSISTED", {
+            seedId: claimTarget.seedId,
+            apiFeedId: claimTarget.apiFeedId,
+            slotId,
+            userId: currentUserId,
+            ok: res?.ok !== false,
+          });
+        }
         if (res?.ok === false || res?.error) {
           throw new Error(String(res?.error || "claim failed"));
         }
       })
-      .catch(() => {
-        feedUnclaimSchedule(postId, { slotId, userId: currentUserId });
-        setOptimisticClaim(null);
+      .catch((error) => {
+        console.log("KRISTO_CLAIM_BACKEND_SYNC_ERROR", {
+          seedId: claimTarget.seedId,
+          apiFeedId: claimTarget.apiFeedId,
+          localAliasId: claimTarget.localAliasId,
+          slotId,
+          userId: currentUserId,
+          isPastorClaim,
+          keepLocalClaim: true,
+          error: String((error as any)?.message || error),
+        });
       })
       .finally(() => {
         claimingSlotRef.current = null;

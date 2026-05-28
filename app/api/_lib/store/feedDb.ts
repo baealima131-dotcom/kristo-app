@@ -237,11 +237,38 @@ export async function getFeedItemById(id: string): Promise<ChurchFeedItem | null
       LIMIT 1
     `;
     const row = (rows as FeedRow[])[0];
-    return row ? rowToFeedItem(row) : null;
+    if (row) return rowToFeedItem(row);
+
+    if (feedId.startsWith("media-schedule-")) {
+      const aliasRows = await sql`
+        SELECT id, church_id, type, source, schedule_type, created_by, visibility, payload, created_at, updated_at
+        FROM kristo_church_feed
+        WHERE payload->>'sourceScheduleId' = ${feedId}
+           OR payload->>'liveId' = ${feedId}
+        LIMIT 1
+      `;
+      const aliasRow = (aliasRows as FeedRow[])[0];
+      return aliasRow ? rowToFeedItem(aliasRow) : null;
+    }
+
+    return null;
   }
 
   const all = await readLocalFeedItems();
-  return all.find((x) => String(x.id || "") === feedId) || null;
+  const direct = all.find((x) => String(x.id || "") === feedId);
+  if (direct) return direct;
+
+  if (feedId.startsWith("media-schedule-")) {
+    return (
+      all.find((item) => {
+        const sourceScheduleId = String((item as any).sourceScheduleId || "").trim();
+        const liveId = String((item as any).liveId || "").trim();
+        return sourceScheduleId === feedId || liveId === feedId;
+      }) || null
+    );
+  }
+
+  return null;
 }
 
 export async function upsertFeedItem(item: ChurchFeedItem): Promise<ChurchFeedItem> {

@@ -1686,3 +1686,58 @@ export function feedJoinSlotQueue(
   });
   persistAndEmit();
 }
+
+export type ClaimFeedTarget = {
+  seedId: string;
+  canonicalFeedId: string;
+  apiFeedId: string;
+  localAliasId: string;
+  liveBridgeId: string;
+};
+
+/** Resolve backend feed_* id for claim/unclaim API while preserving local live alias. */
+export function resolveClaimFeedTarget(seedId: string): ClaimFeedTarget {
+  const rows = feedList() as any[];
+  const seed = baseFeedId(seedId) || String(seedId || "").trim();
+  const canonicalFeedId = resolveCanonicalScheduleFeedId(seed, rows) || seed;
+  const apiFeedId = isBackendFeedScheduleId(canonicalFeedId) ? canonicalFeedId : seed;
+  const localAliasId = isLocalMediaScheduleId(seed)
+    ? seed
+    : isLocalMediaScheduleId(canonicalFeedId)
+      ? canonicalFeedId
+      : "";
+
+  const target: ClaimFeedTarget = {
+    seedId: seed,
+    canonicalFeedId,
+    apiFeedId,
+    localAliasId,
+    liveBridgeId: localAliasId || apiFeedId,
+  };
+
+  console.log("KRISTO_CLAIM_CANONICAL_FEED_ID_USED", {
+    seedId: target.seedId,
+    canonicalFeedId: target.canonicalFeedId,
+    apiFeedId: target.apiFeedId,
+    localAliasId: target.localAliasId,
+    liveBridgeId: target.liveBridgeId,
+  });
+
+  return target;
+}
+
+export function isPastorClaimActor(userId: string, item?: any): boolean {
+  const uid = String(userId || "").trim();
+  if (!uid) return false;
+
+  const pastorCandidates = [
+    item?.actualChurchPastorUserId,
+    item?.churchPastorUserId,
+    item?.mediaOwnerPastorUserId,
+    item?.pastorUserId,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return pastorCandidates.some((pastorId) => pastorId === uid);
+}

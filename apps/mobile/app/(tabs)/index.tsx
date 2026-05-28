@@ -42,6 +42,8 @@ import {
   feedJoinSlotQueue,
   feedRemoveWhere,
   feedRemoveScheduleMirrors,
+  isPastorClaimActor,
+  resolveClaimFeedTarget,
   clearLocalMediaVideoPosts,
   clearHomeFeedLocalCaches,
   clearHomeFeedRuntimeCaches,
@@ -58,7 +60,7 @@ import { loadProfileDraft } from "@/src/lib/profileStore";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
-import { baseFeedId, normalizeLiveScheduleSlots, patchMediaSlotClaimAvatarFields } from "@/src/lib/scheduleSlotUtils";
+import { baseFeedId, normalizeLiveScheduleSlots, patchMediaSlotClaimAvatarFields, collectScheduleAliasIds } from "@/src/lib/scheduleSlotUtils";
 import { mergeFeedRowsForScheduleScan } from "@/src/lib/liveScheduleRing";
 import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
 import {
@@ -1223,15 +1225,27 @@ const noMediaPost =
     if (claimStartedRef.current || claimed || !activeSlot) return;
     claimStartedRef.current = true;
 
-    const postId = String((item as any)?.sourceScheduleId || item.id);
+    const seedId = baseFeedId(String((item as any)?.sourceScheduleId || item.id));
+    const claimTarget = resolveClaimFeedTarget(seedId);
     const slotId = String(activeSlot?.id || "");
+    const isPastorClaim = isPastorClaimActor(currentUserId, item);
+
+    if (isPastorClaim) {
+      console.log("KRISTO_PASTOR_CLAIM_ALLOWED", {
+        seedId: claimTarget.seedId,
+        apiFeedId: claimTarget.apiFeedId,
+        slotId,
+        userId: currentUserId,
+      });
+    }
+
     const liveProfileName =
       String(
         liveSession?.displayName ||
         liveSession?.fullName ||
         liveSession?.name ||
         profileName ||
-        "Church Member"
+        (isPastorClaim ? "Pastor" : "Church Member")
       ).trim();
 
     const liveProfileAvatar =
@@ -1247,13 +1261,16 @@ const noMediaPost =
       slotId,
       userId: currentUserId,
       name: liveProfileName,
-      role: currentSession?.role || "Member",
+      role: isPastorClaim ? "Pastor" : currentSession?.role || "Member",
       avatarUri: liveProfileAvatar,
     };
 
+    feedClaimSchedule(seedId, claim);
+
     try {
       console.log("[ClaimSlot] backend sync start", {
-        postId,
+        seedId: claimTarget.seedId,
+        apiFeedId: claimTarget.apiFeedId,
         slotId,
         churchId: currentSession?.churchId || "",
         userId: currentUserId,
@@ -1261,7 +1278,7 @@ const noMediaPost =
 
       const res: any = await apiPost("/api/church/feed", {
         action: "claim_schedule_slot",
-        postId,
+        postId: claimTarget.apiFeedId,
         slotId,
         claim,
       }, {
@@ -1272,9 +1289,19 @@ const noMediaPost =
         }),
       });
 
+      if (isPastorClaim) {
+        console.log("KRISTO_PASTOR_CLAIM_PERSISTED", {
+          seedId: claimTarget.seedId,
+          apiFeedId: claimTarget.apiFeedId,
+          slotId,
+          userId: currentUserId,
+          ok: res?.ok !== false,
+        });
+      }
+
       console.log("[ClaimSlot] backend sync result", {
         ok: res?.ok,
-        postId,
+        apiFeedId: claimTarget.apiFeedId,
         slotId,
         claimedBy: res?.data?.slot?.claimedByUserId || res?.slot?.claimedByUserId,
       });
@@ -1282,11 +1309,6 @@ const noMediaPost =
       const savedSlot = res?.data?.slot || res?.slot || null;
       const savedClaim = savedSlot?.claimedBy || claim;
 
-      // setOptimisticClaim disabled: avoid view-only/stale auto-claim.
-      // setOptimisticClaim(savedClaim);
-
-      // Do not restore stale optimistic/local claim into activeSlot.
-      // Claim ownership must come from backend slot data after explicit claim action only.
       const backendClaimUserId = String(savedSlot?.claimedByUserId || savedClaim?.userId || "").trim();
       const backendClaimName = String(savedSlot?.claimedByName || savedClaim?.name || "").trim();
       if (backendClaimUserId && backendClaimName) {
@@ -1298,12 +1320,16 @@ const noMediaPost =
       (activeSlot as any).claimed = true;
       (activeSlot as any).isClaimed = true;
       (activeSlot as any).status = "claimed";
-
-      // feedClaimSchedule disabled here: only explicit claim action should write claim state.
-      // feedClaimSchedule(postId, savedClaim);
     } catch (e) {
-      console.log("KRISTO_BACKEND_CLAIM_SLOT_ERROR", e);
-      setOptimisticClaim(null);
+      console.log("KRISTO_CLAIM_BACKEND_SYNC_ERROR", {
+        seedId: claimTarget.seedId,
+        apiFeedId: claimTarget.apiFeedId,
+        slotId,
+        userId: currentUserId,
+        isPastorClaim,
+        keepLocalClaim: true,
+        error: String((e as any)?.message || e),
+      });
       claimStartedRef.current = false;
       return;
     }
@@ -4391,11 +4417,14 @@ export default function FeedScreen() {
       claim: { userId: string; name: string; role: string; avatarUri: string };
     }) => {
       const { postId, slotId, claim } = params;
-      const targetBase = baseFeedId(postId);
-      setBackendFeed((prev) =>
-        prev.map((row: any) => {
+      setBackendFeed((prev) => {
+        const aliasSet = new Set(
+          collectScheduleAliasIds(postId, prev).flatMap((id) => [id, baseFeedId(id)].filter(Boolean))
+        );
+        return prev.map((row: any) => {
           const rowBase = baseFeedId(String(row?.sourceScheduleId || row?.id || ""));
-          if (rowBase !== targetBase) return row;
+          const rowId = String(row?.id || "").trim();
+          if (!aliasSet.has(rowBase) && !aliasSet.has(rowId)) return row;
           const scheduleSlots = Array.isArray(row.scheduleSlots)
             ? row.scheduleSlots.map((slot: any) => {
                 const slotCandidates = [
@@ -4424,8 +4453,8 @@ export default function FeedScreen() {
               ).length
             : 0;
           return { ...row, scheduleSlots, claimedCount, updatedAt: Date.now() };
-        })
-      );
+        });
+      });
     },
     []
   );
