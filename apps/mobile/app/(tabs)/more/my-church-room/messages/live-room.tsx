@@ -62,6 +62,7 @@ import {
   evaluateLiveMediaAuthority,
   evaluateLiveStageAuthority,
   logLiveMediaAuthority,
+  parseMediaHostIds,
 } from "@/src/lib/liveMediaAuthority";
 import {
   fetchChurchPastorUserId,
@@ -1876,6 +1877,12 @@ export default function LiveRoomScreen() {
   const sessionRoleText = String((session as any)?.role || "").toLowerCase();
   const routeRoleText = String(roleParam || "").toLowerCase();
 
+  const resolvedTrustedMediaHostIds = useMemo(() => {
+    const fromRoute = parseMediaHostIds((params as any).mediaHostIds);
+    const fromBackend = parseMediaHostIds(backendChurchLive?.mediaHostIds);
+    return Array.from(new Set([...fromRoute, ...fromBackend]));
+  }, [backendChurchLive?.mediaHostIds, (params as any).mediaHostIds]);
+
   const liveMediaAuthority = evaluateLiveMediaAuthority({
     currentUserId,
     actualChurchPastorUserId: String(
@@ -1885,13 +1892,15 @@ export default function LiveRoomScreen() {
       ""
     ).trim(),
     scheduleCreatedByUserId: routeScheduleCreator,
-    mediaHostIds: (params as any).mediaHostIds,
+    mediaHostIds: resolvedTrustedMediaHostIds,
     backendLivePastorUserId: String(backendChurchLive?.actualChurchPastorUserId || "").trim(),
   });
 
   const actualChurchPastorUserId = liveMediaAuthority.actualChurchPastorUserId;
   const scheduleCreatedByUserId = liveMediaAuthority.scheduleCreatedByUserId;
   const mediaHostIds = liveMediaAuthority.mediaHostIds;
+  const isActualChurchPastor = liveMediaAuthority.isActualChurchPastor;
+  const isTrustedMediaHost = liveMediaAuthority.isTrustedMediaHost;
 
   const isChurchLiveControlRoute =
     String(assignmentId || "").trim() === "church-media-room" ||
@@ -1912,7 +1921,7 @@ export default function LiveRoomScreen() {
     );
 
   const isMediaOwnerHost =
-    liveMediaAuthority.isMediaOwnerHost || isChurchLiveControlHost;
+    isActualChurchPastor || isTrustedMediaHost || isChurchLiveControlHost;
 
   const routeCanPublishEarly =
     String((params as any).canPublish || "") === "1" ||
@@ -1924,22 +1933,17 @@ export default function LiveRoomScreen() {
     String((params as any).mediaScope || "").toLowerCase() === "ministry" ||
     String((params as any).roomKind || "").toLowerCase().includes("ministry");
 
-  // Ministry pastor authority comes only from the ministry live route params,
-  // not from generic pastor role alone.
   const isMinistryLiveHost =
     isMinistryLiveRoute &&
     routeCanPublishEarly &&
-    (
-      actualChurchPastorUserId === currentUserId ||
-      liveMediaAuthority.isMediaScheduleCreator ||
-      liveMediaAuthority.isMediaHost
-    );
+    (actualChurchPastorUserId === currentUserId || isTrustedMediaHost);
 
   const isPastorLiveOwner = isMediaOwnerHost || isMinistryLiveHost;
 
   const roleLooksLikeHost =
-    isPastorLiveOwner ||
-    isMediaOwnerHost ||
+    isActualChurchPastor ||
+    isTrustedMediaHost ||
+    isChurchLiveControlHost ||
     isMinistryLiveHost;
 
   const isHost = roleLooksLikeHost;
@@ -2621,21 +2625,15 @@ export default function LiveRoomScreen() {
     String((params as any).canPublishCamera || "") === "1" ||
     String((params as any).canPublishMic || "") === "1";
 
-  const routeMediaHostIds = String((params as any).mediaHostIds || "")
-    .split(/[|,\s]+/g)
-    .map((x) => x.trim())
-    .filter(Boolean);
+  const routeMediaHostIds = resolvedTrustedMediaHostIds;
 
   const isDeclaredMediaHostForThisLive =
-    !!currentUserId && routeMediaHostIds.includes(String(currentUserId));
+    !!currentUserId && isTrustedMediaHost;
 
-  // Never trust Pastor/Host role from another church/media.
-  // For scheduled media live, route publish is valid only for this live owner/media hosts.
-  const routeCanPublish =
-    isMediaInstantLive
-      ? rawRouteCanPublish
-      : rawRouteCanPublish &&
-        (isPastorLiveOwner || isMediaOwnerHost || isDeclaredMediaHostForThisLive);
+  // Route publish flags are for slot-time participants only — never owner/host authority.
+  const routeCanPublish = isMediaInstantLive
+    ? rawRouteCanPublish && (isActualChurchPastor || isTrustedMediaHost)
+    : false;
 
   const rawCurrentSlotOwnerId = String((currentMainStageSlot as any)?.claimedByUserId || "").trim();
   const rawCurrentSlotNumber = Number((currentMainStageSlot as any)?.slot || 0);
@@ -2732,6 +2730,8 @@ export default function LiveRoomScreen() {
       .map((slot: any) => Number(slot.slot));
   }, [authorityStageSlots, currentUserId, liveNowMs, isMediaInstantLive]);
 
+  const isScheduleClaimOwner = myClaimedMicSlotNumbers.length > 0;
+
   // Keep LiveKit publisher identity stable during slot reorder/move.
   // Prevent camera track destruction when slot temporarily changes.
   const stablePublisherSlotRef = useRef(0);
@@ -2818,11 +2818,7 @@ export default function LiveRoomScreen() {
 
   // Sticky for the live session: token fetch must not follow per-tick camera/slot flags.
   const [liveKitSessionMayPublish, setLiveKitSessionMayPublish] = useState(
-    () =>
-      routeCanPublish ||
-      pastorPermanentMicNow ||
-      mediaHostPermanentMicNow ||
-      isDeclaredMediaHostForThisLive
+    () => isActualChurchPastor || isTrustedMediaHost
   );
 
   useEffect(() => {
@@ -2831,14 +2827,12 @@ export default function LiveRoomScreen() {
       return (
         canPublishClaimedMicNow ||
         canPublishLiveVideoNow ||
-        routeCanPublish ||
         (isMediaInstantLive && (isPastorLiveOwner || roleLooksLikeHost))
       );
     });
   }, [
     canPublishClaimedMicNow,
     canPublishLiveVideoNow,
-    routeCanPublish,
     isMediaInstantLive,
     isPastorLiveOwner,
     roleLooksLikeHost,
@@ -3253,6 +3247,11 @@ export default function LiveRoomScreen() {
 
   useEffect(() => {
     logLiveMediaAuthority("live-room", liveMediaAuthority, {
+      isTrustedMediaHost,
+      isActualChurchPastor,
+      isScheduleClaimOwner,
+      userOwnsCurrentActiveSlot,
+      mediaHostPermanentMicNow,
       routeScheduleSlotsCount: routeScheduleSlots.length,
       backendScheduleSlotsCount: backendScheduleSlots.length,
       runtimeScheduleSlotsCount: runtimeScheduleSlots.length,
@@ -3280,8 +3279,12 @@ export default function LiveRoomScreen() {
       currentSlotOwnerId,
     });
   }, [
+    isTrustedMediaHost,
+    isActualChurchPastor,
+    isScheduleClaimOwner,
+    userOwnsCurrentActiveSlot,
+    mediaHostPermanentMicNow,
     liveMediaAuthority.isMediaOwnerHost,
-    liveMediaAuthority.isActualChurchPastor,
     liveMediaAuthority.isMediaScheduleCreator,
     liveMediaAuthority.isMediaHost,
     actualChurchPastorUserId,
@@ -4501,7 +4504,10 @@ export default function LiveRoomScreen() {
   // Only the REAL owner/media host of THIS live can manage authority controls.
   // Generic pastors/admins from another church/media must remain viewers.
   const canManageLive =
-    roleLooksLikeHost;
+    isActualChurchPastor ||
+    isTrustedMediaHost ||
+    isChurchLiveControlHost ||
+    (isMediaInstantLive && isMinistryLiveHost);
 
   useEffect(() => {
     canManageLiveRef.current = canManageLive;

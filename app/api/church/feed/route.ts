@@ -1354,7 +1354,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     bumpMediaScheduleSyncForFeedItem(updatedItem, "claim_schedule_slot");
 
     return ok({
-      postId,
+      postId: String(item.id || postId),
       slotId,
       slot: slots[slotIndex],
     });

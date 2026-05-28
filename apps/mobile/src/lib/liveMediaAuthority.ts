@@ -15,7 +15,10 @@ export type LiveMediaAuthority = {
   mediaHostIds: string[];
   isActualChurchPastor: boolean;
   isMediaScheduleCreator: boolean;
+  /** Trusted media host from /api/church/media-hosts list only. */
   isMediaHost: boolean;
+  isTrustedMediaHost: boolean;
+  /** Pastor or trusted media host — never schedule creator or slot claimer. */
   isMediaOwnerHost: boolean;
 };
 
@@ -25,7 +28,7 @@ export function parseMediaHostIds(value: unknown): string[] {
   }
 
   return String(value || "")
-    .split(/[,\s]+/)
+    .split(/[,\s|]+/)
     .map((x) => x.trim())
     .filter(Boolean);
 }
@@ -59,10 +62,10 @@ export function evaluateLiveMediaAuthority(
     !!currentUserId && actualChurchPastorUserId === currentUserId;
   const isMediaScheduleCreator =
     !!currentUserId && scheduleCreatedByUserId === currentUserId;
-  const isMediaHost =
+  const isTrustedMediaHost =
     !!currentUserId && mediaHostIds.includes(currentUserId);
-  const isMediaOwnerHost =
-    isActualChurchPastor || isMediaScheduleCreator || isMediaHost;
+  const isMediaHost = isTrustedMediaHost;
+  const isMediaOwnerHost = isActualChurchPastor || isTrustedMediaHost;
 
   return {
     actualChurchPastorUserId,
@@ -71,6 +74,7 @@ export function evaluateLiveMediaAuthority(
     isActualChurchPastor,
     isMediaScheduleCreator,
     isMediaHost,
+    isTrustedMediaHost,
     isMediaOwnerHost,
   };
 }
@@ -87,6 +91,7 @@ export function logLiveMediaAuthority(
     mediaHostIds: authority.mediaHostIds,
     isActualChurchPastor: authority.isActualChurchPastor,
     isMediaScheduleCreator: authority.isMediaScheduleCreator,
+    isTrustedMediaHost: authority.isTrustedMediaHost,
     isMediaHost: authority.isMediaHost,
     isMediaOwnerHost: authority.isMediaOwnerHost,
     ...extra,
@@ -98,7 +103,7 @@ export function logLiveMediaAuthority(
   if (authority.isMediaScheduleCreator) {
     console.log("KRISTO_MEDIA_SCHEDULE_CREATOR", { context, ...extra });
   }
-  if (authority.isMediaHost) {
+  if (authority.isTrustedMediaHost) {
     console.log("KRISTO_MEDIA_HOST_AUTHORITY", { context, ...extra });
   }
 }
@@ -189,17 +194,14 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
     !input.isMediaInstantLive && input.authority.isActualChurchPastor;
 
   const mediaHostPermanentMicNow =
-    !input.isMediaInstantLive &&
-    (input.authority.isMediaHost ||
-      input.authority.isMediaScheduleCreator ||
-      input.isDeclaredMediaHostForThisLive);
+    !input.isMediaInstantLive && input.authority.isTrustedMediaHost;
 
   const canPublishClaimedMicNow = input.isMediaInstantLive
     ? input.isPastorLiveOwner || input.roleLooksLikeHost || input.approvedViewerCanMic
     : pastorPermanentMicNow ||
       mediaHostPermanentMicNow ||
       input.approvedViewerCanMic ||
-      userIsAmongFirstNineClaimedSlots;
+      userOwnsCurrentActiveSlot;
 
   const canPublishClaimedCameraNow = input.isMediaInstantLive
     ? input.isPastorLiveOwner ||
