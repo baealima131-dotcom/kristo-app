@@ -62,6 +62,8 @@ export type MsgItem = {
   createdAt: number;
   kind?: "text" | "assignment_card";
   card?: AssignmentCardPayload;
+  pending?: boolean;
+  senderUserId?: string;
 };
 
 export type ThreadMeta = {
@@ -324,15 +326,22 @@ export function ensureThread(id: string, meta: { title: string; sub: string }) {
 
 export function sendMessage(
   threadId: string,
-  payload: { text?: string; attachments?: MsgAttachment[] },
+  payload: {
+    id?: string;
+    text?: string;
+    attachments?: MsgAttachment[];
+    pending?: boolean;
+    senderUserId?: string;
+    createdAt?: number;
+  },
   opts?: { seedOther?: boolean; name?: string; disableAutoReply?: boolean }
 ) {
   if (!threadId) return;
   if (!state.messages[threadId]) state.messages[threadId] = [];
   if (!state.threads[threadId]) ensureThread(threadId, { title: "Thread", sub: "" });
 
-  const now = Date.now();
-  const id = `msg_${now}_${Math.random().toString(16).slice(2)}`;
+  const now = payload.createdAt ?? Date.now();
+  const id = String(payload.id || `msg_${now}_${Math.random().toString(16).slice(2)}`);
 
   const item: MsgItem = {
     id,
@@ -343,6 +352,8 @@ export function sendMessage(
     attachments: payload.attachments?.length ? payload.attachments : undefined,
     createdAt: now,
     kind: "text",
+    pending: payload.pending,
+    senderUserId: payload.senderUserId,
   };
 
   state.messages[threadId] = [item, ...(state.messages[threadId] || [])];
@@ -536,6 +547,16 @@ export function addAssignmentCardMusic(
 export function deleteMessage(threadId: string, messageId: string) {
   const arr = state.messages[threadId] || [];
   state.messages[threadId] = arr.filter((m) => m.id !== messageId);
+  persist();
+  emit();
+}
+
+export function reconcileMessage(threadId: string, optimisticId: string, backendItem: MsgItem) {
+  if (!threadId) return;
+  const arr = state.messages[threadId] || [];
+  const withoutOptimistic = arr.filter((m) => m.id !== optimisticId);
+  const withoutDuplicateBackend = withoutOptimistic.filter((m) => m.id !== backendItem.id);
+  state.messages[threadId] = [{ ...backendItem, pending: false }, ...withoutDuplicateBackend];
   persist();
   emit();
 }

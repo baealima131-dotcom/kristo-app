@@ -280,8 +280,24 @@ export async function PATCH(req: Request) {
     }
 
     if (scope === "everyone") {
-      if (String(msg?.senderUserId || "") !== String(userId)) {
-        return NextResponse.json({ ok: false, error: "Only sender can delete for everyone" }, { status: 403 });
+      const msgSenderUserId = String(msg?.senderUserId || "");
+      const currentUserId = String(userId);
+      const ownerMatch = msgSenderUserId === currentUserId;
+
+      console.log("[RoomMessagesDelete] compare-owner", {
+        userId: currentUserId,
+        senderUserId: msgSenderUserId,
+        messageId,
+        roomId,
+        scope,
+        ownerMatch,
+      });
+
+      if (!ownerMatch) {
+        return NextResponse.json(
+          { ok: false, error: "Only sender can delete for everyone", userId: currentUserId, senderUserId: msgSenderUserId, messageId, roomId, scope },
+          { status: 403 }
+        );
       }
 
       rows.splice(index, 1);

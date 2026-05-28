@@ -43,7 +43,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
-import { ensureThread, sendMessage, setThreadMessages, deleteMessage, claimAssignmentCard, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
+import { ensureThread, sendMessage, setThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import {
   formatAttachmentMimeLabel,
   formatAttachmentSize,
@@ -1644,6 +1644,51 @@ function isAssignmentCardMessage(m: MsgItem) {
   return String(m.kind || "") === "assignment_card";
 }
 
+function isOptimisticOutgoingMessage(m: MsgItem) {
+  return !!m.pending || String(m.id || "").startsWith("local_");
+}
+
+function optimisticMessageMatchesBackend(opt: MsgItem, backend: MsgItem) {
+  if (opt.sender !== "me" || backend.sender !== "me") return false;
+  if (String(opt.text || "").trim() !== String(backend.text || "").trim()) return false;
+  return Math.abs(Number(opt.createdAt || 0) - Number(backend.createdAt || 0)) < 120000;
+}
+
+function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, apiBase: string): MsgItem {
+  return {
+    id: String(x.id || `backend_${x.createdAt || Date.now()}`),
+    threadId,
+    sender: String(x.senderUserId || "") === selfId ? "me" : "other",
+    displayName: String(x.senderName || "Member"),
+    senderUserId: String(x.senderUserId || ""),
+    avatarUri: String(x.senderAvatar || "").startsWith("/")
+      ? `${apiBase}${String(x.senderAvatar || "")}`
+      : String(x.senderAvatar || ""),
+    text: String(x.text || ""),
+    attachments: Array.isArray(x.attachments)
+      ? x.attachments.map((att: any) => normalizeMsgAttachment(att))
+      : undefined,
+    createdAt: Number(x.createdAt || Date.now()),
+    kind: String(x.kind || "text") as any,
+    card: x.card || undefined,
+  };
+}
+
+function pendingAttachmentsToOptimistic(items: PendingMessageAttachment[]): MsgAttachment[] {
+  return items.map((p) => ({
+    id: p.id,
+    kind: p.kind,
+    uri: p.localUri,
+    url: p.localUri,
+    name: p.name,
+    mime: p.mime,
+    size: p.size,
+    imageUri: p.kind === "image" ? p.localUri : undefined,
+    fileUri: p.kind === "file" ? p.localUri : undefined,
+    fileName: p.name,
+  }));
+}
+
 function isSelectableMessage(m: MsgItem) {
   return !isAssignmentCardMessage(m);
 }
@@ -2336,6 +2381,18 @@ export default function MessageThreadScreen() {
     routeMinistryId ||
     (isMinistryThread ? String(threadId || "").trim() : "");
 
+  const backendRoomId = useMemo(
+    () =>
+      String(
+        (params as any)?.ministryId ||
+          (params as any)?.assignmentId ||
+          resolvedMinistryId ||
+          threadId ||
+          ""
+      ).trim(),
+    [threadId, resolvedMinistryId, (params as any)?.ministryId, (params as any)?.assignmentId]
+  );
+
   const [realMinistry, setRealMinistry] = useState<MinistryApiItem | null>(null);
   const [actionLoading, setActionLoading] = useState<"pause" | "leave" | null>(null);
   const [mcHostsOpen, setMcHostsOpen] = useState(false);
@@ -2657,7 +2714,7 @@ export default function MessageThreadScreen() {
     let alive = true;
 
     async function loadBackendRoomMessages() {
-      const roomId = String((params as any)?.ministryId || (params as any)?.assignmentId || resolvedMinistryId || threadId || "").trim();
+      const roomId = backendRoomId;
       if (!roomId) return;
 
       const headers: any = getKristoHeaders();
@@ -2682,24 +2739,8 @@ export default function MessageThreadScreen() {
         return !isDraftCard;
       });
 
-      const mapped: MsgItem[] = visibleRows.map((x: any) => ({
-        id: String(x.id || `backend_${x.createdAt || Date.now()}`),
-        threadId,
-        sender: String(x.senderUserId || "") === selfId ? "me" : "other",
-        displayName: String(x.senderName || "Member"),
-        role: String(x.senderRole || x.role || ""),
-        senderUserId: String(x.senderUserId || ""),
-        avatarUri: String(x.senderAvatar || "").startsWith("/")
-          ? `${(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "")}${String(x.senderAvatar || "")}`
-          : String(x.senderAvatar || ""),
-        text: String(x.text || ""),
-        attachments: Array.isArray(x.attachments)
-          ? x.attachments.map((att: any) => normalizeMsgAttachment(att))
-          : undefined,
-        createdAt: Number(x.createdAt || Date.now()),
-        kind: String(x.kind || "text") as any,
-        card: x.card || undefined,
-      }));
+      const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+      const mapped: MsgItem[] = visibleRows.map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase));
 
       const roomTitle = String(
         isAssignmentThread
@@ -2714,10 +2755,15 @@ export default function MessageThreadScreen() {
         String(m?.kind || "") === "assignment_card" &&
         String((m as any)?.card?.source || "") === "media-schedule"
       );
-
+      const pendingOptimistic = currentLocalMessages.filter(isOptimisticOutgoingMessage);
       const backendIds = new Set(mapped.map((m: any) => String(m.id || "")));
       const safeLocalScheduleCards = localScheduleCards.filter((m: any) => !backendIds.has(String(m.id || "")));
-      const merged = [...safeLocalScheduleCards, ...mapped];
+      const dedupedPending = pendingOptimistic.filter(
+        (opt) => !backendIds.has(String(opt.id || "")) && !mapped.some((b) => optimisticMessageMatchesBackend(opt, b))
+      );
+      const merged = [...safeLocalScheduleCards, ...dedupedPending, ...mapped].sort(
+        (a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0)
+      );
       const sig = messagesListSignature(merged);
       if (sig === roomMessagesSigRef.current) return;
       roomMessagesSigRef.current = sig;
@@ -2740,7 +2786,7 @@ export default function MessageThreadScreen() {
       alive = false;
       stop();
     };
-  }, [threadId, resolvedMinistryId, effectiveAuthUserId, title, sub, isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, realMinistry, (params as any)?.ministryId, (params as any)?.assignmentId, isFocused]);
+  }, [threadId, backendRoomId, effectiveAuthUserId, title, sub, isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, realMinistry, (params as any)?.ministryId, (params as any)?.assignmentId, isFocused]);
 
   const listRef = useRef<any>(null);
   const inputRef = useRef<any>(null);
@@ -3194,26 +3240,84 @@ const displayHeaderTitle = assignmentDisplayTitle;
           style: "destructive",
           onPress: () => {
             void (async () => {
+              const headers: any = getKristoHeaders();
+              const userId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+              const roomId = backendRoomId;
+              let anySuccess = false;
+
               for (const id of deletable) {
+                const msg = messages.find((x) => x.id === id);
+                const senderUserId = String(msg?.senderUserId || "").trim();
+
                 console.log(`[MessageActions] ${logKey}`, id);
-                deleteMessage(threadId, id);
+                console.log("[RoomMessagesDelete] compare-owner", {
+                  userId,
+                  senderUserId,
+                  messageId: id,
+                  roomId,
+                  scope,
+                  sender: msg?.sender,
+                });
+                console.log("[MessageActions] delete backend request", {
+                  messageId: id,
+                  roomId,
+                  scope,
+                  userId,
+                  senderUserId,
+                });
 
                 try {
                   const res: any = await apiPatch(
                     "/api/church/room-messages",
                     {
-                      roomId: threadId,
+                      roomId,
                       messageId: id,
                       action: "delete",
                       scope,
                     },
-                    { headers: getKristoHeaders() as any }
+                    { headers }
                   );
 
-                  console.log("[MessageActions] delete backend", { id, scope, ok: res?.ok !== false, res });
+                  console.log("[MessageActions] delete backend result", {
+                    messageId: id,
+                    roomId,
+                    scope,
+                    userId,
+                    senderUserId,
+                    ok: res?.ok !== false,
+                    res,
+                  });
+
+                  if (res?.ok === false) {
+                    console.log("[MessageActions] delete backend rejected", {
+                      messageId: id,
+                      roomId,
+                      scope,
+                      userId,
+                      senderUserId,
+                      error: res?.error,
+                    });
+                    continue;
+                  }
+
+                  deleteMessage(threadId, id);
+                  anySuccess = true;
                 } catch (e: any) {
-                  console.log("[MessageActions] delete backend failed", { id, scope, error: String(e?.message || e) });
+                  console.log("[MessageActions] delete backend result", {
+                    messageId: id,
+                    roomId,
+                    scope,
+                    userId,
+                    senderUserId,
+                    ok: false,
+                    error: String(e?.message || e),
+                  });
                 }
+              }
+
+              if (anySuccess) {
+                roomMessagesSigRef.current = "";
+                await reloadRoomMessagesRef.current?.();
               }
 
               exitMessageSelectionMode();
@@ -3223,7 +3327,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
         },
       ]);
     },
-    [messages, threadId, exitMessageSelectionMode, closeMessageActions]
+    [messages, threadId, backendRoomId, effectiveAuthUserId, exitMessageSelectionMode, closeMessageActions]
   );
 
   const handleMessageActionSelect = useCallback(() => {
@@ -3379,8 +3483,9 @@ const displayHeaderTitle = assignmentDisplayTitle;
     const text = String(draft || "").trim();
     if (!text && pending.length === 0) return;
 
-    const roomId = String((params as any)?.ministryId || (params as any)?.assignmentId || resolvedMinistryId || threadId || "").trim();
+    const roomId = backendRoomId;
     const sendHeaders: any = getKristoHeaders();
+    const selfId = String(sendHeaders?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
     const senderName = String(
       sendHeaders?.["x-kristo-user-name"] ||
       sendHeaders?.["x-kristo-display-name"] ||
@@ -3388,12 +3493,44 @@ const displayHeaderTitle = assignmentDisplayTitle;
       "Member"
     ).trim();
 
+    const pendingSnapshot = [...pending];
+    const optimisticId = `local_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const optimisticAttachments = pendingAttachmentsToOptimistic(pendingSnapshot);
+    const optimisticCreatedAt = Date.now();
+
+    console.log("[MessagesSend] optimistic", {
+      optimisticId,
+      roomId,
+      text: text || "",
+      attachmentCount: optimisticAttachments.length,
+    });
+
+    sendMessage(
+      threadId,
+      {
+        id: optimisticId,
+        text,
+        attachments: optimisticAttachments.length ? optimisticAttachments : undefined,
+        createdAt: optimisticCreatedAt,
+        pending: true,
+        senderUserId: selfId,
+      },
+      { disableAutoReply: true }
+    );
+
+    setDraft("");
+    setPending([]);
+
+    setTimeout(() => {
+      listRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+    }, 0);
+
     setAttachUploading(true);
 
     try {
       const attachments: MsgAttachment[] = [];
 
-      for (const item of pending) {
+      for (const item of pendingSnapshot) {
         const uploaded = await uploadMessageAttachment(item, sendHeaders);
         attachments.push(uploaded);
       }
@@ -3403,8 +3540,6 @@ const displayHeaderTitle = assignmentDisplayTitle;
         text: text || "",
         attachmentCount: attachments.length,
       });
-
-      sendMessage(threadId, { text, attachments }, { disableAutoReply: true });
 
       const postRes: any = await apiPost(
         "/api/church/room-messages",
@@ -3422,15 +3557,21 @@ const displayHeaderTitle = assignmentDisplayTitle;
         throw new Error(String(postRes?.error || "Failed to send message"));
       }
 
-      setDraft("");
-      setPending([]);
-      roomMessagesSigRef.current = "";
-      await reloadRoomMessagesRef.current?.();
+      const backendRow = postRes?.data;
+      const backendId = String(backendRow?.id || "");
+      console.log("[MessagesSend] backend saved", { optimisticId, backendId, roomId });
 
-      setTimeout(() => {
-        listRef.current?.scrollToOffset?.({ offset: 0, animated: true });
-      }, 80);
+      if (backendRow && backendId) {
+        const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+        const reconciled = mapBackendRoomMessageRow(backendRow, threadId, selfId, apiBase);
+        console.log("[MessagesSend] reconcile", { optimisticId, backendId });
+        reconcileMessage(threadId, optimisticId, reconciled);
+      }
+
+      roomMessagesSigRef.current = "";
+      void reloadRoomMessagesRef.current?.();
     } catch (e: any) {
+      deleteMessage(threadId, optimisticId);
       Alert.alert("Send failed", String(e?.message || e || "Could not send attachment message."));
     } finally {
       setAttachUploading(false);
