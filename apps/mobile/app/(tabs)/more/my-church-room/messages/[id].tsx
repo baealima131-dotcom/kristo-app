@@ -2588,6 +2588,11 @@ export default function MessageThreadScreen() {
     [threadId, resolvedMinistryId, (params as any)?.ministryId, (params as any)?.assignmentId]
   );
 
+  const isChurchLiveControlRoom = useMemo(
+    () => String(backendRoomId || "").trim() === "church-media-room",
+    [backendRoomId]
+  );
+
   const [realMinistry, setRealMinistry] = useState<MinistryApiItem | null>(null);
   const [actionLoading, setActionLoading] = useState<"pause" | "leave" | null>(null);
   const [mcHostsOpen, setMcHostsOpen] = useState(false);
@@ -2814,6 +2819,8 @@ export default function MessageThreadScreen() {
     ((opts?: { force?: boolean; reason?: string }) => Promise<boolean>) | null
   >(null);
 
+  const reloadMemberBoardRef = useRef<(() => Promise<void>) | null>(null);
+
   const isAssignmentLeader =
     isAssignmentThread &&
     (ministryAuthority.tier === "pastor" || ministryAuthority.tier === "leader");
@@ -2947,7 +2954,16 @@ export default function MessageThreadScreen() {
   ]);
 
   const currentRole = ministryInfo.role;
-  const isSuspended = ministryInfo.status === "suspended";
+
+  const isSelfLiveControlSuspended = useMemo(() => {
+    if (!isChurchLiveControlRoom) return false;
+    const self = realMemberBoardPeople.find(
+      (x: any) => String(x.userId || x.id || "").trim() === currentUserIdForAuthority
+    );
+    return String(self?.status || "").toLowerCase() === "suspended";
+  }, [isChurchLiveControlRoom, realMemberBoardPeople, currentUserIdForAuthority]);
+
+  const isSuspended = ministryInfo.status === "suspended" || isSelfLiveControlSuspended;
 
   useEffect(() => {
     if (!threadId) return;
@@ -5688,9 +5704,10 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
   const [churchMemberPickerRows, setChurchMemberPickerRows] = useState<MinistryPerson[]>([]);
   const [selectedAddMemberId, setSelectedAddMemberId] = useState("");
   const [selectedRemoveMemberId, setSelectedRemoveMemberId] = useState("");
-  const [addMemberMode, setAddMemberMode] = useState<"add" | "remove">("add");
+  const [addMemberMode, setAddMemberMode] = useState<"add" | "remove" | "suspend">("add");
   const [addingAssignmentMember, setAddingAssignmentMember] = useState(false);
   const [removingAssignmentMember, setRemovingAssignmentMember] = useState(false);
+  const [suspendingAssignmentMember, setSuspendingAssignmentMember] = useState(false);
 
   const assignmentStatsSource =
     realMemberBoardPeople.length > 0 ? realMemberBoardPeople : assignmentMembers;
@@ -5713,9 +5730,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
   useEffect(() => {
     let alive = true;
 
-    async function loadRealBoardPeople() {
+    async function reloadMemberBoard() {
       if ((!isAssignmentThread && !isMinistryThread) || !String(threadId || "").trim()) {
-        setRealMemberBoardPeople([]);
+        if (alive) setRealMemberBoardPeople([]);
         return;
       }
 
@@ -5727,18 +5744,22 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           ""
         );
 
-
-        const endpoint = isChurchLiveControlAssignment
+        const endpoint = isChurchLiveControlRoom
+          ? "/api/church/live-control-members?roomId=church-media-room"
+          : isChurchLiveControlAssignment
           ? "/api/church/members"
           : `/api/church/ministry-members?ministryId=${encodeURIComponent(targetMinistryId)}`;
 
         const res: any = await apiGet(
           endpoint,
           {
-            headers: isChurchLiveControlAssignment
+            headers: isChurchLiveControlAssignment || isChurchLiveControlRoom
               ? ({ ...getKristoHeaders(), "x-kristo-role": "Pastor" } as any)
               : (getKristoHeaders() as any),
-          }
+          },
+          isChurchLiveControlAssignment || isChurchLiveControlRoom
+            ? undefined
+            : { screen: `MinistryMembersBoard:${targetMinistryId}`, throttleMs: 0, dedupe: false }
         );
 
         const rows = Array.isArray(res?.data)
@@ -5763,10 +5784,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             /admin/i.test(roleRaw) ? "Leader" :
             "Member";
 
+          const ministryMemberId = String(x.id || "").trim();
+          const userId = String(x.userId || "").trim();
+
           return {
-            id: String(x.id || x.userId || `real_${index}`),
-            ministryId: String(x.ministryId || resolvedMinistryId || (params as any)?.assignmentId || threadId || ""),
-            userId: String(x.userId || ""),
+            id: ministryMemberId.startsWith("mm_") ? ministryMemberId : userId || `real_${index}`,
+            ministryMemberId: ministryMemberId.startsWith("mm_") ? ministryMemberId : "",
+            ministryId: String(x.ministryId || targetMinistryId || (params as any)?.assignmentId || threadId || ""),
+            userId,
             name: String(x.displayName || x.fullName || x.name || x.userId || "Member"),
             role,
             status: /paused|suspended/i.test(String(x.status || "")) ? "Suspended" : "Active",
@@ -5784,12 +5809,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       }
     }
 
-    loadRealBoardPeople();
+    reloadMemberBoardRef.current = reloadMemberBoard;
+    void reloadMemberBoard();
 
     return () => {
       alive = false;
+      reloadMemberBoardRef.current = null;
     };
-  }, [isAssignmentThread, isMinistryThread, threadId, resolvedMinistryId, (params as any)?.assignmentId]);
+  }, [isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, isChurchLiveControlRoom, threadId, resolvedMinistryId, (params as any)?.assignmentId]);
 
   useEffect(() => {
     const next = new Map<string, string>();
@@ -5882,17 +5909,81 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
   }, [addMemberOpen, isAssignmentThread, isMinistryThread, realMemberBoardPeople]);
 
   async function addSelectedChurchMemberToAssignment() {
-    const selected = churchMemberPickerRows.find(
+    const pickerSource = isChurchLiveControlRoom
+      ? realMemberBoardPeople.filter(
+          (x: any) => String(x.status || "").toLowerCase() === "suspended"
+        )
+      : churchMemberPickerRows;
+
+    const selected = pickerSource.find(
       (x: any) => String(x.userId || x.id || "") === selectedAddMemberId
     );
 
     if (!selected || addingAssignmentMember) return;
 
-    const assignmentId = String(resolvedMinistryId || (params as any)?.assignmentId || threadId || "").trim();
     const userId = String((selected as any).userId || selected.id || "").trim();
 
-    if (!assignmentId || !userId) {
-      Alert.alert("Missing info", "Assignment or member information is missing.");
+    if (!userId) {
+      Alert.alert("Missing info", "Member information is missing.");
+      return;
+    }
+
+    if (isChurchLiveControlRoom) {
+      try {
+        setAddingAssignmentMember(true);
+
+        console.log("[LiveControlMembers] suspend request", {
+          action: "unsuspend",
+          userId,
+          roomId: "church-media-room",
+        });
+
+        const res: any = await apiPatch(
+          "/api/church/live-control-members",
+          {
+            action: "unsuspend",
+            userId,
+            roomId: "church-media-room",
+          },
+          { headers: getKristoHeaders() as any }
+        );
+
+        if (!res || res.ok === false) {
+          console.log("[LiveControlMembers] suspend failed", {
+            action: "unsuspend",
+            userId,
+            error: String(res?.error || "Restore failed"),
+          });
+          throw new Error(String(res?.error || "Restore failed"));
+        }
+
+        console.log("[LiveControlMembers] suspend success", {
+          unsuspended: !!res.unsuspended,
+          userId: res.userId || userId,
+          roomId: res.roomId || "church-media-room",
+        });
+
+        setAddMemberOpen(false);
+        setSelectedAddMemberId("");
+        await reloadMemberBoardRef.current?.();
+        Alert.alert("Restored", `${selected.name} can access Church Live Control again.`);
+      } catch (e: any) {
+        console.log("[LiveControlMembers] suspend failed", {
+          action: "unsuspend",
+          userId,
+          error: String(e?.message || e || "Please try again."),
+        });
+        Alert.alert("Could not restore member", String(e?.message || "Please try again."));
+      } finally {
+        setAddingAssignmentMember(false);
+      }
+      return;
+    }
+
+    const assignmentId = String(resolvedMinistryId || (params as any)?.assignmentId || threadId || "").trim();
+
+    if (!assignmentId) {
+      Alert.alert("Missing info", "Assignment information is missing.");
       return;
     }
 
@@ -5937,18 +6028,98 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
     }
   }
 
-  async function removeSelectedAssignmentMember() {
+  async function suspendSelectedAssignmentMember() {
     const selected = realMemberBoardPeople.find(
-      (x: any) => String(x.id || "") === selectedRemoveMemberId
+      (x: any) =>
+        String(x.id || "") === selectedRemoveMemberId ||
+        String((x as any).userId || "") === selectedRemoveMemberId
+    );
+
+    if (!selected || suspendingAssignmentMember) return;
+
+    const targetUserId = String((selected as any).userId || selected.id || "").trim();
+
+    if (!targetUserId) {
+      Alert.alert("Missing info", "Member record is missing.");
+      return;
+    }
+
+    console.log("[LiveControlMembers] suspend request", {
+      action: "suspend",
+      userId: targetUserId,
+      roomId: "church-media-room",
+    });
+
+    try {
+      setSuspendingAssignmentMember(true);
+
+      const res: any = await apiPatch(
+        "/api/church/live-control-members",
+        {
+          action: "suspend",
+          userId: targetUserId,
+          roomId: "church-media-room",
+        },
+        { headers: getKristoHeaders() as any }
+      );
+
+      if (!res || res.ok === false) {
+        console.log("[LiveControlMembers] suspend failed", {
+          userId: targetUserId,
+          error: String(res?.error || "Suspend failed"),
+        });
+        throw new Error(String(res?.error || "Suspend failed"));
+      }
+
+      console.log("[LiveControlMembers] suspend success", {
+        suspended: !!res.suspended,
+        userId: res.userId || targetUserId,
+        roomId: res.roomId || "church-media-room",
+      });
+
+      setSelectedRemoveMemberId("");
+      await reloadMemberBoardRef.current?.();
+
+      if (targetUserId && mcHostIds.includes(targetUserId)) {
+        invalidateCachedParticipant(mcHostsCacheKey);
+        void fetchMcHostsRef.current?.({ force: true, reason: "member-suspended-host" });
+      }
+
+      Alert.alert("Suspended", `${selected.name} no longer has Church Live Control access.`);
+    } catch (e: any) {
+      console.log("[LiveControlMembers] suspend failed", {
+        userId: targetUserId,
+        error: String(e?.message || e || "Please try again."),
+      });
+      Alert.alert("Could not suspend member", String(e?.message || "Please try again."));
+    } finally {
+      setSuspendingAssignmentMember(false);
+    }
+  }
+
+  async function removeSelectedAssignmentMember() {
+    if (isChurchLiveControlRoom) {
+      Alert.alert(
+        "Use Suspend",
+        "Church Live Control members cannot be removed. Suspend them instead."
+      );
+      return;
+    }
+
+    const selected = realMemberBoardPeople.find(
+      (x: any) =>
+        String(x.id || "") === selectedRemoveMemberId ||
+        String((x as any).ministryMemberId || "") === selectedRemoveMemberId
     );
 
     if (!selected || removingAssignmentMember) return;
 
-    const mmid = String((selected as any).id || "").trim();
+    const ministryMemberId = String((selected as any).ministryMemberId || selected.id || "").trim();
+    const targetUserId = String((selected as any).userId || "").trim();
     const currentMinistryId = String(resolvedMinistryId || (params as any)?.assignmentId || threadId || "").trim();
     const selectedMinistryId = String((selected as any).ministryId || "").trim();
 
-    if (!mmid) {
+    if (!ministryMemberId && !(targetUserId && currentMinistryId)) {
       Alert.alert("Missing info", "Member record is missing.");
       return;
     }
@@ -5958,24 +6129,58 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       return;
     }
 
+    const deleteParams = new URLSearchParams();
+    if (ministryMemberId.startsWith("mm_")) {
+      deleteParams.set("id", ministryMemberId);
+    }
+    if (currentMinistryId) deleteParams.set("ministryId", currentMinistryId);
+    if (targetUserId) deleteParams.set("userId", targetUserId);
+
+    console.log("[MinistryMembers] remove request", {
+      ministryMemberId,
+      userId: targetUserId,
+      ministryId: currentMinistryId,
+    });
+
     try {
       setRemovingAssignmentMember(true);
 
       const res: any = await apiDelete(
-        `/api/church/ministry-members?id=${encodeURIComponent(mmid)}`,
+        `/api/church/ministry-members?${deleteParams.toString()}`,
         { headers: getKristoHeaders() as any }
       );
 
-      if (res && res.ok === false) {
-        throw new Error(String(res.error || "Remove failed"));
+      if (!res || res.ok === false) {
+        console.log("[MinistryMembers] remove failed", {
+          ministryMemberId,
+          userId: targetUserId,
+          error: String(res?.error || "Remove failed"),
+        });
+        throw new Error(String(res?.error || "Remove failed"));
       }
 
-      setRealMemberBoardPeople((prev) =>
-        prev.filter((x: any) => String(x.id || "") !== mmid)
-      );
+      console.log("[MinistryMembers] remove success", {
+        removed: !!res.removed,
+        ministryMemberId: res.ministryMemberId || ministryMemberId,
+        userId: res.userId || targetUserId,
+        ministryId: res.ministryId || currentMinistryId,
+      });
+
       setSelectedRemoveMemberId("");
+      await reloadMemberBoardRef.current?.();
+
+      if (targetUserId && mcHostIds.includes(targetUserId)) {
+        invalidateCachedParticipant(mcHostsCacheKey);
+        void fetchMcHostsRef.current?.({ force: true, reason: "member-removed-host" });
+      }
+
       Alert.alert("Removed", `${selected.name} has been removed from this assignment.`);
     } catch (e: any) {
+      console.log("[MinistryMembers] remove failed", {
+        ministryMemberId,
+        userId: targetUserId,
+        error: String(e?.message || e || "Please try again."),
+      });
       Alert.alert("Could not remove member", String(e?.message || "Please try again."));
     } finally {
       setRemovingAssignmentMember(false);
@@ -6814,15 +7019,25 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           <Pressable style={s.menuBackdrop} onPress={() => setAddMemberOpen(false)} />
           <View style={s.memberSheet}>
             <View style={s.memberSheetHeader}>
-              <Text style={t.menuTitle}>ADD & Remove</Text>
-              <Text style={t.menuSub}>Manage members for {headerTitle}</Text>
+              <Text style={t.menuTitle}>{isChurchLiveControlRoom ? "ADD & Suspend" : "ADD & Remove"}</Text>
+              <Text style={t.menuSub}>
+                {isChurchLiveControlRoom
+                  ? `Restore or suspend access for ${headerTitle}`
+                  : `Manage members for ${headerTitle}`}
+              </Text>
             </View>
 
             <View style={{ flexDirection: "row", gap: 10, marginTop: 14, marginBottom: 14 }}>
-              {[
-                { key: "add", label: "Add" },
-                { key: "remove", label: "Remove" },
-              ].map((tab: any) => {
+              {(isChurchLiveControlRoom
+                ? [
+                    { key: "add", label: "Add" },
+                    { key: "suspend", label: "Suspend" },
+                  ]
+                : [
+                    { key: "add", label: "Add" },
+                    { key: "remove", label: "Remove" },
+                  ]
+              ).map((tab: any) => {
                 const active = addMemberMode === tab.key;
                 return (
                   <Pressable
@@ -6853,7 +7068,19 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
             <FlatList
               data={
-                (addMemberMode === "add" ? churchMemberPickerRows : realMemberBoardPeople).filter((x: any) => {
+                (addMemberMode === "add"
+                  ? isChurchLiveControlRoom
+                    ? realMemberBoardPeople.filter(
+                        (x: any) => String(x.status || "").toLowerCase() === "suspended"
+                      )
+                    : churchMemberPickerRows
+                  : realMemberBoardPeople.filter(
+                      (x: any) =>
+                        addMemberMode === "suspend"
+                          ? String(x.status || "").toLowerCase() !== "suspended"
+                          : true
+                    )
+                ).filter((x: any) => {
                   const role = String(x.role || x.roleLabel || "").toLowerCase();
                   const note = String(x.note || "").toLowerCase();
                   const userId = String(x.userId || x.id || "").trim();
@@ -6871,18 +7098,44 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
               ListEmptyComponent={
                 <View style={{ paddingVertical: 28, alignItems: "center" }}>
-                  <Ionicons name={addMemberMode === "add" ? "people-outline" : "remove-circle-outline"} size={28} color={GOLD} />
+                  <Ionicons
+                    name={
+                      addMemberMode === "add"
+                        ? "people-outline"
+                        : addMemberMode === "suspend"
+                          ? "pause-circle-outline"
+                          : "remove-circle-outline"
+                    }
+                    size={28}
+                    color={GOLD}
+                  />
                   <Text style={[t.memberEmptyTitle, { marginTop: 10 }]}>
-                    {addMemberMode === "add" ? "No church members to add" : "No members to remove"}
+                    {addMemberMode === "add"
+                      ? isChurchLiveControlRoom
+                        ? "No suspended members to restore"
+                        : "No church members to add"
+                      : addMemberMode === "suspend"
+                        ? "No members to suspend"
+                        : "No members to remove"}
                   </Text>
                   <Text style={t.menuSub}>
-                    {addMemberMode === "add" ? "Everyone may already be in this assignment." : "This assignment has no removable members."}
+                    {addMemberMode === "add"
+                      ? isChurchLiveControlRoom
+                        ? "Everyone with access is already active."
+                        : "Everyone may already be in this assignment."
+                      : addMemberMode === "suspend"
+                        ? "Everyone currently has Church Live Control access."
+                        : "This assignment has no removable members."}
                   </Text>
                 </View>
               }
               renderItem={({ item }: any) => {
                 const addKey = String(item.userId || item.id || "");
-                const removeKey = String(item.id || "");
+                const removeKey = String(
+                  isChurchLiveControlRoom
+                    ? item.userId || item.id || ""
+                    : (item as any).ministryMemberId || item.id || ""
+                );
                 const alreadyAdded = !!(item as any).alreadyAdded;
                 const selected =
                   addMemberMode === "add"
@@ -6893,7 +7146,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                   <Pressable
                     onPress={() => {
                       if (addMemberMode === "add") {
-                        if (!alreadyAdded) setSelectedAddMemberId(addKey);
+                        if (!alreadyAdded || isChurchLiveControlRoom) setSelectedAddMemberId(addKey);
                       } else {
                         setSelectedRemoveMemberId(removeKey);
                       }
@@ -6901,15 +7154,19 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                     style={({ pressed }) => [
                       s.memberRow,
                       selected ? { borderColor: GOLD, backgroundColor: "rgba(217,179,95,0.12)" } : null,
-                      addMemberMode === "add" && alreadyAdded ? { opacity: 0.55 } : null,
-                      pressed && !(addMemberMode === "add" && alreadyAdded) ? ({ opacity: 0.92 } as ViewStyle) : null,
+                      addMemberMode === "add" && alreadyAdded && !isChurchLiveControlRoom
+                        ? { opacity: 0.55 }
+                        : null,
+                      pressed && !(addMemberMode === "add" && alreadyAdded && !isChurchLiveControlRoom)
+                        ? ({ opacity: 0.92 } as ViewStyle)
+                        : null,
                     ]}
                   >
                     <PersonRow item={item} />
                     <View style={{ marginLeft: 10 }}>
                       <Ionicons
                         name={
-                          addMemberMode === "add" && alreadyAdded
+                          addMemberMode === "add" && alreadyAdded && !isChurchLiveControlRoom
                             ? "checkmark-done-circle"
                             : selected
                               ? "checkmark-circle"
@@ -6917,7 +7174,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                         }
                         size={24}
                         color={
-                          addMemberMode === "add" && alreadyAdded
+                          addMemberMode === "add" && alreadyAdded && !isChurchLiveControlRoom
                             ? "rgba(255,255,255,0.35)"
                             : selected
                               ? GOLD
@@ -6931,14 +7188,25 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             />
 
             <Pressable
-              onPress={addMemberMode === "add" ? addSelectedChurchMemberToAssignment : removeSelectedAssignmentMember}
+              onPress={
+                addMemberMode === "add"
+                  ? addSelectedChurchMemberToAssignment
+                  : addMemberMode === "suspend"
+                    ? suspendSelectedAssignmentMember
+                    : removeSelectedAssignmentMember
+              }
               disabled={
                 addMemberMode === "add"
                   ? !selectedAddMemberId || addingAssignmentMember
-                  : !selectedRemoveMemberId || removingAssignmentMember
+                  : addMemberMode === "suspend"
+                    ? !selectedRemoveMemberId || suspendingAssignmentMember
+                    : !selectedRemoveMemberId || removingAssignmentMember
               }
               style={({ pressed }) => {
-                const enabled = addMemberMode === "add" ? !!selectedAddMemberId : !!selectedRemoveMemberId;
+                const enabled =
+                  addMemberMode === "add"
+                    ? !!selectedAddMemberId
+                    : !!selectedRemoveMemberId;
                 return [
                   s.menuCancelBtn,
                   {
@@ -6961,8 +7229,20 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 ]}
               >
                 {addMemberMode === "add"
-                  ? addingAssignmentMember ? "Adding..." : "Add to assignment"
-                  : removingAssignmentMember ? "Removing..." : "Remove from assignment"}
+                  ? addingAssignmentMember
+                    ? isChurchLiveControlRoom
+                      ? "Restoring..."
+                      : "Adding..."
+                    : isChurchLiveControlRoom
+                      ? "Restore access"
+                      : "Add to assignment"
+                  : addMemberMode === "suspend"
+                    ? suspendingAssignmentMember
+                      ? "Suspending..."
+                      : "Suspend member"
+                    : removingAssignmentMember
+                      ? "Removing..."
+                      : "Remove from assignment"}
               </Text>
             </Pressable>
 

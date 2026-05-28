@@ -48,6 +48,15 @@ type ApiOk<T> = { ok: true; data: T };
 
 const STORE_FILE = "ministry-members.json";
 const MINISTRIES_FILE = "ministries.json";
+const MC_HOSTS_FILE = "mc-hosts.json";
+
+type McHostsRow = {
+  assignmentId: string;
+  churchId: string;
+  hostUserIds: string[];
+  updatedAt: string;
+  updatedBy?: string;
+};
 
 /* =========================
    HELPERS
@@ -121,6 +130,69 @@ async function isMinistryLeader(args: { churchId: string; ministryId: string; us
 async function isActiveChurchMember(churchId: string, userId: string): Promise<boolean> {
   const actives = await getMembershipsForChurch(churchId, "Active");
   return actives.some((m) => m.userId === userId);
+}
+
+function resolveMinistryMemberRow(args: {
+  all: MinistryMember[];
+  churchId: string;
+  mmid?: string;
+  ministryId?: string;
+  userId?: string;
+}) {
+  const mmid = String(args.mmid || "").trim();
+  const ministryId = String(args.ministryId || "").trim();
+  const userId = String(args.userId || "").trim();
+
+  if (mmid) {
+    const byId = args.all.find((mm) => mm.id === mmid && mm.churchId === args.churchId);
+    if (byId) return byId;
+  }
+
+  if (ministryId && userId) {
+    return (
+      args.all.find(
+        (mm) =>
+          mm.churchId === args.churchId &&
+          mm.ministryId === ministryId &&
+          mm.userId === userId
+      ) || null
+    );
+  }
+
+  if (userId && mmid && mmid.startsWith("u_")) {
+    return (
+      args.all.find((mm) => mm.churchId === args.churchId && mm.userId === userId) || null
+    );
+  }
+
+  return null;
+}
+
+async function removeUserFromMcHostsForMinistry(args: {
+  churchId: string;
+  ministryId: string;
+  userId: string;
+  updatedBy: string;
+}) {
+  await updateJsonFile<McHostsRow[]>(
+    MC_HOSTS_FILE,
+    (rows) => {
+      const list = Array.isArray(rows) ? rows : [];
+      return list.map((row) => {
+        if (row.churchId !== args.churchId || row.assignmentId !== args.ministryId) return row;
+        const before = Array.isArray(row.hostUserIds) ? row.hostUserIds.map(String) : [];
+        const hostUserIds = before.filter((id) => id !== args.userId);
+        if (hostUserIds.length === before.length) return row;
+        return {
+          ...row,
+          hostUserIds,
+          updatedAt: nowIso(),
+          updatedBy: args.updatedBy,
+        };
+      });
+    },
+    []
+  );
 }
 
 
@@ -518,36 +590,95 @@ export async function DELETE(req: NextRequest) {
 
   const url = new URL(req.url);
   const mmid = String(url.searchParams.get("id") || "").trim();
-  if (!mmid) return json({ ok: false, error: "Missing id" } satisfies ApiErr, { status: 400 });
+  const ministryIdParam = String(url.searchParams.get("ministryId") || "").trim();
+  const userIdParam = String(url.searchParams.get("userId") || "").trim();
+
+  console.log("[MinistryMembers] remove request", {
+    churchId,
+    viewerUserId: viewer.userId,
+    viewerRole: viewer.role,
+    mmid,
+    ministryId: ministryIdParam,
+    userId: userIdParam,
+  });
+
+  if (!mmid && !(ministryIdParam && userIdParam)) {
+    console.log("[MinistryMembers] remove failed", { reason: "missing-id-or-ministry-user" });
+    return json({ ok: false, error: "Missing id or ministryId+userId" } satisfies ApiErr, { status: 400 });
+  }
+
+  const resolvedMinistryIdForDelete = String(
+    ministryIdParam ||
+      (mmid
+        ? (await readAllMembers()).find((mm) => mm.id === mmid && mm.churchId === churchId)?.ministryId
+        : "") ||
+      ""
+  ).trim();
+
+  if (
+    resolvedMinistryIdForDelete === "church-media-room" ||
+    ministryIdParam === "church-media-room"
+  ) {
+    console.log("[MinistryMembers] remove failed", {
+      reason: "church-live-control-use-suspend",
+      ministryId: resolvedMinistryIdForDelete || ministryIdParam,
+    });
+    return json(
+      {
+        ok: false,
+        error: "Church Live Control members cannot be removed. Use suspend instead.",
+      } satisfies ApiErr,
+      { status: 409 }
+    );
+  }
 
   const allBefore = await readAllMembers();
-  const existing = allBefore.find((mm) => mm.id === mmid && mm.churchId === churchId);
-  if (!existing) return json({ ok: false, error: "Ministry member not found" } satisfies ApiErr, { status: 404 });
+  const existing = resolveMinistryMemberRow({
+    all: allBefore,
+    churchId,
+    mmid,
+    ministryId: ministryIdParam,
+    userId: userIdParam,
+  });
 
-  if (!(await isActiveChurchMember(churchId, existing.userId))) {
-    return json({ ok: false, error: "User is not an active member of this church" } satisfies ApiErr, { status: 403 });
+  if (!existing) {
+    console.log("[MinistryMembers] remove failed", { reason: "not-found", mmid, ministryIdParam, userIdParam });
+    return json({ ok: false, error: "Ministry member not found" } satisfies ApiErr, { status: 404 });
   }
 
   const ministry = await requireMinistryInChurch(existing.ministryId, churchId);
-  if (!ministry) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
-
-  const viewerMinistryRole = await getMinistryMemberRole(churchId, existing.ministryId, viewer.userId);
-  if (viewerMinistryRole === "Host") {
-    return json({ ok: false, error: "Hosts cannot manage ministry members" } satisfies ApiErr, { status: 403 });
+  if (!ministry) {
+    console.log("[MinistryMembers] remove failed", { reason: "ministry-not-found", ministryId: existing.ministryId });
+    return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
   }
 
-  if (viewer.role === "Leader") {
-    const ok = await isMinistryLeader({ churchId, ministryId: existing.ministryId, userId: viewer.userId });
-    if (!ok) return json({ ok: false, error: "Forbidden (role)" } satisfies ApiErr, { status: 403 });
+  const viewerMinistryRole = await getMinistryMemberRole(churchId, existing.ministryId, viewer.userId);
 
-    const modifyErr = assertLeaderCanModifyTarget({
-      viewerAppRole: viewer.role,
-      viewerMinistryRole,
-      targetRole: existing.role,
-      targetUserId: existing.userId,
-      viewerUserId: viewer.userId,
-    });
-    if (modifyErr) return json({ ok: false, error: modifyErr } satisfies ApiErr, { status: 403 });
+  if (!isPastorAppRole(viewer.role)) {
+    if (viewerMinistryRole === "Host") {
+      console.log("[MinistryMembers] remove failed", { reason: "host-cannot-manage-members" });
+      return json({ ok: false, error: "Hosts cannot manage ministry members" } satisfies ApiErr, { status: 403 });
+    }
+
+    if (viewer.role === "Leader") {
+      const ok = await isMinistryLeader({ churchId, ministryId: existing.ministryId, userId: viewer.userId });
+      if (!ok) {
+        console.log("[MinistryMembers] remove failed", { reason: "leader-not-in-ministry" });
+        return json({ ok: false, error: "Forbidden (role)" } satisfies ApiErr, { status: 403 });
+      }
+
+      const modifyErr = assertLeaderCanModifyTarget({
+        viewerAppRole: viewer.role,
+        viewerMinistryRole,
+        targetRole: existing.role,
+        targetUserId: existing.userId,
+        viewerUserId: viewer.userId,
+      });
+      if (modifyErr) {
+        console.log("[MinistryMembers] remove failed", { reason: modifyErr });
+        return json({ ok: false, error: modifyErr } satisfies ApiErr, { status: 403 });
+      }
+    }
   }
 
   if (existing.role === "Leader") {
@@ -555,6 +686,7 @@ export async function DELETE(req: NextRequest) {
       (mm) => mm.churchId === churchId && mm.ministryId === existing.ministryId && mm.role === "Leader"
     );
     if (leaders.length <= 1) {
+      console.log("[MinistryMembers] remove failed", { reason: "last-leader" });
       return json({ ok: false, error: "Cannot remove the last Leader (Senior) of this ministry." } satisfies ApiErr, { status: 409 });
     }
   }
@@ -564,14 +696,28 @@ export async function DELETE(req: NextRequest) {
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
-        return list.filter((mm) => mm.id !== mmid);
+        return list.filter((mm) => mm.id !== existing.id);
       },
       []
     );
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Delete failed";
+    console.log("[MinistryMembers] remove failed", { reason: msg });
     return json({ ok: false, error: msg } satisfies ApiErr, { status: 500 });
   }
+
+  try {
+    await removeUserFromMcHostsForMinistry({
+      churchId,
+      ministryId: existing.ministryId,
+      userId: existing.userId,
+      updatedBy: viewer.userId,
+    });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "mc-host cleanup failed";
+    console.log("[MinistryMembers] remove mc-host cleanup warning", { userId: existing.userId, error: msg });
+  }
+
   await logAudit({
     req,
     viewer,
@@ -592,5 +738,18 @@ export async function DELETE(req: NextRequest) {
     ministryId: existing.ministryId,
   });
 
-  return json({ ok: true, data: { id: mmid } });
+  console.log("[MinistryMembers] remove success", {
+    removed: true,
+    userId: existing.userId,
+    ministryId: existing.ministryId,
+    ministryMemberId: existing.id,
+  });
+
+  return json({
+    ok: true,
+    removed: true,
+    userId: existing.userId,
+    ministryId: existing.ministryId,
+    ministryMemberId: existing.id,
+  });
 }

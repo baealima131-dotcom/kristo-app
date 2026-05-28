@@ -22,11 +22,14 @@ import {
   cleanFeedLabel,
   enrichScheduleSlot,
   formatSlotDateLabel,
-  resolveAvatarUri,
+  patchMediaSlotClaimAvatarFields,
+  resolveMediaSlotClaimedAvatar,
   resolveScheduleAvatarUri,
   resolveSlotPhase,
   SLOT_STATE_THEMES,
 } from "@/src/lib/scheduleSlotUtils";
+import { loadProfileDraft } from "@/src/lib/profileStore";
+import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -429,6 +432,34 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const [optimisticClaim, setOptimisticClaim] = useState<any>(null);
   const claimingSlotRef = useRef<string | null>(null);
   const claimPress = useSharedValue(1);
+  const [memberAvatarByUserId, setMemberAvatarByUserId] = useState<Record<string, string>>({});
+  const [claimerProfileAvatar, setClaimerProfileAvatar] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    fetchChurchMembers()
+      .then((members) => {
+        if (!alive || !Array.isArray(members)) return;
+        const map: Record<string, string> = {};
+        for (const member of members) {
+          const userId = String(member?.userId || member?.id || "").trim();
+          const avatar = String(
+            member?.avatarUri ||
+              member?.avatarUrl ||
+              member?.profileImage ||
+              member?.photoURL ||
+              member?.image ||
+              ""
+          ).trim();
+          if (userId && avatar) map[userId] = avatar;
+        }
+        setMemberAvatarByUserId(map);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const claimedBy =
     optimisticClaim ||
@@ -438,11 +469,76 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           userId: slot.claimedByUserId,
           name: slot.claimedByName || "Host",
           role: "Member",
-          avatarUri: slot.claimedByAvatar || "",
+          avatarUri: slot.claimedByAvatarUri || slot.claimedByAvatar || "",
         }
       : null);
 
   const claimUserId = String(claimedBy?.userId || slot?.claimedByUserId || "").trim();
+
+  useEffect(() => {
+    let alive = true;
+    if (!claimUserId) {
+      setClaimerProfileAvatar("");
+      return () => {
+        alive = false;
+      };
+    }
+    loadProfileDraft(claimUserId)
+      .then((draft) => {
+        if (!alive) return;
+        setClaimerProfileAvatar(String(draft?.avatarUri || "").trim());
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [claimUserId]);
+
+  const slotForAvatar = useMemo(() => {
+    if (!optimisticClaim) return slot;
+    const avatarUri = String(optimisticClaim.avatarUri || "").trim();
+    return patchMediaSlotClaimAvatarFields(
+      {
+        ...slot,
+        claimedByUserId: optimisticClaim.userId,
+        claimedByName: optimisticClaim.name,
+        claimedBy: optimisticClaim,
+      },
+      avatarUri
+    );
+  }, [slot, optimisticClaim]);
+
+  const claimedAvatarUri = useMemo(
+    () =>
+      resolveMediaSlotClaimedAvatar({
+        slot: slotForAvatar,
+        slotId: String(slot?.id || ""),
+        apiBase,
+        profileAvatarByUserId:
+          claimUserId && claimerProfileAvatar ? { [claimUserId]: claimerProfileAvatar } : {},
+        memberAvatarByUserId,
+        sessionAvatarUri: String(
+          session?.avatarUri ||
+            session?.avatarUrl ||
+            session?.profileImage ||
+            profileAvatarUri ||
+            ""
+        ).trim(),
+        sessionUserId: currentUserId,
+      }).uri,
+    [
+      slotForAvatar,
+      slot?.id,
+      apiBase,
+      claimUserId,
+      claimerProfileAvatar,
+      memberAvatarByUserId,
+      session,
+      profileAvatarUri,
+      currentUserId,
+    ]
+  );
+
   const claimed = Boolean(claimUserId || optimisticClaim);
   const claimedByMe = !!claimUserId && claimUserId === currentUserId;
   const claimedByOther = !!claimUserId && claimUserId !== currentUserId;
@@ -483,7 +579,6 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
   const avatarUri = resolveScheduleAvatarUri(item, apiBase);
   const avatarInitial = mediaName.slice(0, 1).toUpperCase() || churchShort.slice(0, 1).toUpperCase() || "C";
-  const claimedAvatarUri = resolveAvatarUri(String(claimedBy?.avatarUri || slot?.claimedByAvatar || ""), apiBase);
 
   const msUntilStart = slot.startMs > 0 ? slot.startMs - nowMs : null;
   const minutesToStart = msUntilStart !== null ? Math.ceil(msUntilStart / 60000) : null;
@@ -533,6 +628,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     const postId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
     const slotId = String(slot.id);
     const slotNumber = Number((slot as any)?.slot || (slot as any)?.slotNumber || (slot as any)?.order || 0);
+    const claimAvatarUri = String(
+      session?.avatarUri || session?.avatarUrl || session?.profileImage || profileAvatarUri || ""
+    ).trim();
     const claim = {
       slotId,
       userId: currentUserId,
@@ -540,9 +638,8 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         session?.displayName || session?.fullName || session?.name || profileName || "Church Member"
       ).trim(),
       role: String(session?.role || "Member"),
-      avatarUri: String(
-        session?.avatarUri || session?.avatarUrl || session?.profileImage || profileAvatarUri || ""
-      ).trim(),
+      avatarUri: claimAvatarUri,
+      claimedByAvatarUri: claimAvatarUri,
       startMs: Number(slot.startMs || 0),
       endMs: Number(slot.endMs || 0),
       slotNumber: slotNumber || Number((slot as any).slot || (slot as any).slotNumber || 0),

@@ -57,7 +57,7 @@ import { loadProfileDraft } from "@/src/lib/profileStore";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
-import { baseFeedId, normalizeLiveScheduleSlots } from "@/src/lib/scheduleSlotUtils";
+import { baseFeedId, normalizeLiveScheduleSlots, patchMediaSlotClaimAvatarFields } from "@/src/lib/scheduleSlotUtils";
 import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
 import {
   logHomeFeedVideoPlayState,
@@ -3521,7 +3521,9 @@ export default function FeedScreen() {
             createdAt: String(item.createdAt || ""),
             source: String(item.source || ""),
             scheduleType: String((item as any).scheduleType || ""),
-            scheduleSlots: Array.isArray(item.scheduleSlots) ? item.scheduleSlots : [],
+            scheduleSlots: normalizeLiveScheduleSlots(
+              Array.isArray(item.scheduleSlots) ? item.scheduleSlots : []
+            ),
             sourceScheduleId: String(item.sourceScheduleId || item.id || ""),
             mediaName: String(item.mediaName || item.actorLabel || "Church Media"),
             churchName: String(item.churchName || item.churchLabel || "MY CHURCH"),
@@ -4386,16 +4388,18 @@ export default function FeedScreen() {
           const scheduleSlots = Array.isArray(row.scheduleSlots)
             ? row.scheduleSlots.map((slot: any) =>
                 String(slot?.id || "") === slotId
-                  ? {
-                      ...slot,
-                      claimed: true,
-                      isClaimed: true,
-                      status: "claimed",
-                      claimedByUserId: claim.userId,
-                      claimedByName: claim.name,
-                      claimedByAvatar: claim.avatarUri,
-                      claimedBy: claim,
-                    }
+                  ? patchMediaSlotClaimAvatarFields(
+                      {
+                        ...slot,
+                        claimed: true,
+                        isClaimed: true,
+                        status: "claimed",
+                        claimedByUserId: claim.userId,
+                        claimedByName: claim.name,
+                        claimedBy: claim,
+                      },
+                      claim.avatarUri
+                    )
                   : slot
               )
             : row.scheduleSlots;

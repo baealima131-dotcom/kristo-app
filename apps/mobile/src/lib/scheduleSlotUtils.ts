@@ -19,6 +19,7 @@ export type EnrichedScheduleSlot = {
   isEnded: boolean;
   claimedByUserId?: string;
   claimedByName?: string;
+  claimedByAvatarUri?: string;
   claimedByAvatar?: string;
   claimedBy?: any;
   claimed?: boolean;
@@ -130,6 +131,159 @@ export function resolveScheduleAvatarUri(item: any, apiBase: string) {
   return "";
 }
 
+export type MediaSlotAvatarResolution = {
+  uri: string;
+  source: string;
+  hasAvatar: boolean;
+};
+
+function pickMediaSlotAvatarRaw(slot: any, claimedBy: any): Array<[string, unknown]> {
+  return [
+    ["slot.claimedByAvatarUri", slot?.claimedByAvatarUri],
+    ["slot.claimedByAvatar", slot?.claimedByAvatar],
+    ["slot.claimedByAvatarUrl", slot?.claimedByAvatarUrl],
+    ["claimedBy.avatarUri", claimedBy?.avatarUri],
+    ["claimedBy.avatarUrl", claimedBy?.avatarUrl],
+    ["claimedBy.profileImage", claimedBy?.profileImage],
+    ["claimedBy.photoURL", claimedBy?.photoURL],
+    ["claimedBy.image", claimedBy?.image],
+    ["slot.avatarUri", slot?.avatarUri],
+    ["slot.avatarUrl", slot?.avatarUrl],
+    ["slot.profileImage", slot?.profileImage],
+    ["slot.photoURL", slot?.photoURL],
+    ["slot.image", slot?.image],
+  ];
+}
+
+export function toMediaSlotAbsoluteAvatarUri(raw: string, apiBase: string) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  if (
+    trimmed.startsWith("data:image") ||
+    /^https?:\/\//i.test(trimmed) ||
+    trimmed.startsWith("file://")
+  ) {
+    return trimmed;
+  }
+
+  const base = String(apiBase || "").replace(/\/$/, "");
+  if (trimmed.startsWith("/")) return base ? `${base}${trimmed}` : trimmed;
+  return trimmed;
+}
+
+export function resolveMediaSlotClaimedAvatar(args: {
+  slot: any;
+  slotId?: string;
+  apiBase: string;
+  profileAvatarByUserId?: Record<string, string>;
+  memberAvatarByUserId?: Record<string, string>;
+  sessionAvatarUri?: string;
+  sessionUserId?: string;
+}): MediaSlotAvatarResolution {
+  const slot = args.slot || {};
+  const slotId = String(args.slotId || slot?.id || "").trim();
+  const claimedBy = slot?.claimedBy;
+  const claimedByUserId = String(slot?.claimedByUserId || claimedBy?.userId || "").trim();
+
+  for (const [source, raw] of pickMediaSlotAvatarRaw(slot, claimedBy)) {
+    const uri = toMediaSlotAbsoluteAvatarUri(String(raw || ""), args.apiBase);
+    if (uri) {
+      console.log("[MediaSlotAvatar]", {
+        slotId,
+        claimedByUserId,
+        hasAvatar: true,
+        source,
+      });
+      return { uri, source, hasAvatar: true };
+    }
+  }
+
+  if (claimedByUserId && args.profileAvatarByUserId?.[claimedByUserId]) {
+    const uri = toMediaSlotAbsoluteAvatarUri(
+      args.profileAvatarByUserId[claimedByUserId],
+      args.apiBase
+    );
+    if (uri) {
+      console.log("[MediaSlotAvatar]", {
+        slotId,
+        claimedByUserId,
+        hasAvatar: true,
+        source: "profile-cache",
+      });
+      return { uri, source: "profile-cache", hasAvatar: true };
+    }
+  }
+
+  if (claimedByUserId && args.memberAvatarByUserId?.[claimedByUserId]) {
+    const uri = toMediaSlotAbsoluteAvatarUri(
+      args.memberAvatarByUserId[claimedByUserId],
+      args.apiBase
+    );
+    if (uri) {
+      console.log("[MediaSlotAvatar]", {
+        slotId,
+        claimedByUserId,
+        hasAvatar: true,
+        source: "church-members-cache",
+      });
+      return { uri, source: "church-members-cache", hasAvatar: true };
+    }
+  }
+
+  if (
+    claimedByUserId &&
+    args.sessionUserId &&
+    claimedByUserId === args.sessionUserId &&
+    args.sessionAvatarUri
+  ) {
+    const uri = toMediaSlotAbsoluteAvatarUri(args.sessionAvatarUri, args.apiBase);
+    if (uri) {
+      console.log("[MediaSlotAvatar]", {
+        slotId,
+        claimedByUserId,
+        hasAvatar: true,
+        source: "session-profile",
+      });
+      return { uri, source: "session-profile", hasAvatar: true };
+    }
+  }
+
+  console.log("[MediaSlotAvatar]", {
+    slotId,
+    claimedByUserId,
+    hasAvatar: false,
+    source: "initials-fallback",
+  });
+  return { uri: "", source: "initials-fallback", hasAvatar: false };
+}
+
+export function patchMediaSlotClaimAvatarFields(slot: any, avatarUri: string) {
+  const uri = String(avatarUri || "").trim();
+  if (!uri) return slot;
+
+  const claimedByUserId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+  const claimedBy = slot?.claimedBy && typeof slot.claimedBy === "object" ? slot.claimedBy : null;
+
+  return {
+    ...slot,
+    claimedByAvatarUri: uri,
+    claimedByAvatar: uri,
+    ...(claimedByUserId
+      ? {
+          claimedBy: {
+            ...(claimedBy || {
+              userId: claimedByUserId,
+              name: String(slot?.claimedByName || "Member"),
+              role: String(slot?.claimedByRole || "Member"),
+            }),
+            userId: claimedByUserId,
+            avatarUri: uri,
+          },
+        }
+      : {}),
+  };
+}
+
 export function baseFeedId(input: unknown) {
   const id = String(input || "")
     .replace(/__fy_\d+$/g, "")
@@ -173,6 +327,20 @@ export function normalizeLiveScheduleSlot(slot: any, index = 0) {
       ""
   ).trim();
 
+  const claimedAvatar = String(
+    slot?.claimedByAvatarUri ||
+      slot?.claimedByAvatar ||
+      slot?.claimedByAvatarUrl ||
+      (claimedRaw && typeof claimedRaw === "object"
+        ? claimedRaw.avatarUri ||
+          claimedRaw.avatarUrl ||
+          claimedRaw.profileImage ||
+          claimedRaw.photoURL ||
+          claimedRaw.image
+        : "") ||
+      ""
+  ).trim();
+
   const slotNum = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
 
   return {
@@ -186,12 +354,21 @@ export function normalizeLiveScheduleSlot(slot: any, index = 0) {
       ? {
           claimed: slot?.claimed ?? true,
           isClaimed: slot?.isClaimed ?? true,
-          claimedBy: claimedRaw || {
-            userId: claimedByUserId,
-            name: claimedByName,
-            avatarUri: String(slot?.claimedByAvatar || slot?.claimedByAvatarUrl || ""),
-            role: String(slot?.claimedByRole || "Member"),
-          },
+          claimedByAvatarUri: claimedAvatar,
+          claimedByAvatar: claimedAvatar,
+          claimedBy: claimedRaw
+            ? {
+                ...claimedRaw,
+                userId: claimedByUserId,
+                name: claimedByName || claimedRaw.name,
+                avatarUri: claimedAvatar || claimedRaw.avatarUri || "",
+              }
+            : {
+                userId: claimedByUserId,
+                name: claimedByName,
+                avatarUri: claimedAvatar,
+                role: String(slot?.claimedByRole || "Member"),
+              },
         }
       : {}),
   };

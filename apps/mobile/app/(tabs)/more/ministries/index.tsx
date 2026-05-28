@@ -157,14 +157,17 @@ function MinistryCardAvatar({
   cardType,
   resolved,
   fallbackIcon,
+  suspendedRing,
 }: {
   cardType: CardAvatarKind;
   title: string;
   resolved: ResolvedCardAvatar;
   fallbackIcon: keyof typeof Ionicons.glyphMap;
+  suspendedRing?: boolean;
 }) {
-  const ringStyle =
-    cardType === "church"
+  const ringStyle = suspendedRing
+    ? s.avatarRingRedSuspended
+    : cardType === "church"
       ? s.avatarRingGold
       : cardType === "media"
         ? s.avatarRingGreen
@@ -220,6 +223,31 @@ async function apiListMinistryMembers(ministryId: string) {
   return (res.data || []) as MinistryMember[];
 }
 
+type LiveControlSelfStatus = "Active" | "Suspended";
+
+async function apiFetchLiveControlSelfStatus(viewerId: string): Promise<LiveControlSelfStatus> {
+  try {
+    const res = await apiGet<any>(
+      "/api/church/live-control-members?roomId=church-media-room",
+      { headers: getKristoHeaders() }
+    );
+
+    if (!res || res.ok === false) return "Active";
+
+    const selfStatus = String(res?.self?.liveControlStatus || res?.self?.status || "").trim();
+    if (selfStatus === "Suspended" || selfStatus === "Active") {
+      return selfStatus;
+    }
+
+    const rows = Array.isArray(res?.data) ? res.data : [];
+    const mine = rows.find((x: any) => String(x?.userId || "") === viewerId);
+    const rowStatus = String(mine?.liveControlStatus || mine?.status || "Active").trim();
+    return rowStatus === "Suspended" ? "Suspended" : "Active";
+  } catch {
+    return "Active";
+  }
+}
+
 export default function MoreMinistriesList() {
 
   const auth = getKristoAuth() as any;
@@ -238,6 +266,8 @@ export default function MoreMinistriesList() {
   const [items, setItems] = useState<Ministry[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [churchLiveControlStatus, setChurchLiveControlStatus] =
+    useState<LiveControlSelfStatus>("Active");
   const [churchAvatarContext, setChurchAvatarContext] = useState<{
     session: Record<string, any> | null;
     churchDraft: Record<string, any> | null;
@@ -270,7 +300,10 @@ export default function MoreMinistriesList() {
 
       if (!loadViewerId) throw new Error("User session missing.");
 
-      const data = await apiListMinistries();
+      const [data, liveControlStatus] = await Promise.all([
+        apiListMinistries(),
+        loadChurchId ? apiFetchLiveControlSelfStatus(loadViewerId) : Promise.resolve("Active" as LiveControlSelfStatus),
+      ]);
       const checked = await Promise.all(
         data.map(async (m) => {
           try {
@@ -321,6 +354,7 @@ export default function MoreMinistriesList() {
             String(a.name || "").localeCompare(String(b.name || ""))
         )
       );
+      setChurchLiveControlStatus(liveControlStatus);
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Error");
       if (msg.toLowerCase().includes("no active church membership")) {
@@ -387,6 +421,7 @@ export default function MoreMinistriesList() {
   const hasItems = useMemo(() => items.length > 0, [items]);
   const hasChurch = Boolean(String(auth?.churchId || "").trim());
   const shouldShowChurchControl = hasChurch;
+  const isChurchLiveControlSuspended = churchLiveControlStatus === "Suspended";
   const showGrid = hasItems || shouldShowChurchControl;
 
   return (
@@ -499,7 +534,15 @@ export default function MoreMinistriesList() {
           <View style={[s.grid, { columnGap: GRID_GAP, rowGap: GRID_GAP }]}>
             {shouldShowChurchControl ? (
             <Pressable
-              onPress={() =>
+              onPress={() => {
+                if (isChurchLiveControlSuspended) {
+                  Alert.alert(
+                    "Access suspended",
+                    "Your Church Live Control access is suspended."
+                  );
+                  return;
+                }
+
                 router.push({
                   pathname: "/(tabs)/more/my-church-room/messages/[id]",
                   params: {
@@ -515,54 +558,118 @@ export default function MoreMinistriesList() {
                     role: churchLiveControlRole,
                     assignmentInitials: "C",
                   },
-                } as any)
-              }
+                } as any);
+              }}
               style={({ pressed }) => [
                 s.cardItem,
                 s.cardItemChurchControl,
+                isChurchLiveControlSuspended ? s.cardItemChurchControlSuspended : null,
+                isChurchLiveControlSuspended ? s.cardItemSuspendedPadding : null,
                 { width: cardWidth, height: CARD_HEIGHT },
-                pressed && s.cardItemPressed,
+                pressed && !isChurchLiveControlSuspended ? s.cardItemPressed : null,
               ]}
             >
               <LinearGradient
                 pointerEvents="none"
-                colors={["rgba(28,22,12,0.98)", "rgba(14,11,7,0.96)", "rgba(8,7,5,0.94)"]}
+                colors={
+                  isChurchLiveControlSuspended
+                    ? ["#3F0606", "#2A0404", "#180202"]
+                    : ["rgba(28,22,12,0.98)", "rgba(14,11,7,0.96)", "rgba(8,7,5,0.94)"]
+                }
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={StyleSheet.absoluteFill}
               />
-              <View pointerEvents="none" style={s.cardGlowGold} />
-              <LinearGradient
-                pointerEvents="none"
-                colors={["rgba(255,255,255,0.16)", "rgba(217,179,95,0.10)", "transparent"]}
-                start={{ x: 0.5, y: 0 }}
-                end={{ x: 0.5, y: 1 }}
-                style={s.cardSheen}
-              />
-
-              <View style={s.cardTop}>
-                <MinistryCardAvatar
-                  cardType="church"
-                  title="Church Live Control"
-                  resolved={churchControlAvatar}
-                  fallbackIcon="business-outline"
+              {!isChurchLiveControlSuspended ? (
+                <View pointerEvents="none" style={s.cardGlowGold} />
+              ) : (
+                <View pointerEvents="none" style={s.cardGlowRedAmbient} />
+              )}
+              {!isChurchLiveControlSuspended ? (
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={["rgba(255,255,255,0.16)", "rgba(217,179,95,0.10)", "transparent"]}
+                  start={{ x: 0.5, y: 0 }}
+                  end={{ x: 0.5, y: 1 }}
+                  style={s.cardSheen}
                 />
+              ) : null}
 
-                <View style={s.cardTopRight}>
-                  <View style={[s.statusTopPill, s.churchTopPill]}>
-                    <Text style={s.statusTopPillText} numberOfLines={1}>CHURCH</Text>
+              {isChurchLiveControlSuspended ? (
+                <View style={s.suspendedCardContent}>
+                  <View style={[s.cardTop, s.suspendedCardTop]}>
+                    <MinistryCardAvatar
+                      cardType="church"
+                      title="Church Live Control"
+                      resolved={churchControlAvatar}
+                      fallbackIcon="business-outline"
+                      suspendedRing
+                    />
+                  </View>
+
+                  <Text style={s.cardTitleSuspendedLayout} numberOfLines={2}>
+                    Church Live Control
+                  </Text>
+
+                  <View style={s.suspendedLockSection}>
+                    <View style={s.cardLockSealRing}>
+                      <View style={s.cardLockSeal}>
+                        <Ionicons name="lock-closed" size={22} color="#FFB4B4" />
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={s.suspendedWarningBlock}>
+                    <Text style={s.cardSubSuspendedLine}>Access paused</Text>
+                    <Text style={s.cardSubSuspendedLineSoft} numberOfLines={2}>
+                      Contact your pastor or leadership
+                    </Text>
+                  </View>
+
+                  <View style={s.suspendedDividerWrap}>
+                    <View style={s.suspendedDashedDivider} />
+                  </View>
+
+                  <View style={s.suspendedFooter}>
+                    <View style={[s.rolePill, s.rolePillSuspendedWide]}>
+                      <Ionicons name="lock-closed" size={12} color="#FFFFFF" />
+                      <Text style={s.rolePillTextSuspended}>SUSPENDED</Text>
+                    </View>
                   </View>
                 </View>
-              </View>
+              ) : (
+                <>
+                  <View style={s.cardTop}>
+                    <MinistryCardAvatar
+                      cardType="church"
+                      title="Church Live Control"
+                      resolved={churchControlAvatar}
+                      fallbackIcon="business-outline"
+                    />
 
-              <Text style={s.cardTitle} numberOfLines={2}>Church Live Control</Text>
-              <Text style={s.cardSub} numberOfLines={2}>Whole church control room</Text>
+                    <View style={s.cardTopRight}>
+                      <View style={[s.statusTopPill, s.churchTopPill]}>
+                        <Text style={s.statusTopPillText} numberOfLines={1}>
+                          CHURCH
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
 
-              <View style={s.cardFooter}>
-                <View style={[s.rolePill, s.rolePillChurch]}>
-                  <Text style={[s.rolePillText, s.rolePillTextChurch]}>Assignment</Text>
-                </View>
-              </View>
+                  <Text style={s.cardTitle} numberOfLines={2}>
+                    Church Live Control
+                  </Text>
+                  <Text style={s.cardSub} numberOfLines={2}>
+                    Whole church control room
+                  </Text>
+
+                  <View style={s.cardFooter}>
+                    <View style={[s.rolePill, s.rolePillChurch]}>
+                      <Text style={[s.rolePillText, s.rolePillTextChurch]}>Assignment</Text>
+                    </View>
+                  </View>
+                </>
+              )}
             </Pressable>
             ) : null}
 
@@ -852,6 +959,147 @@ const s = StyleSheet.create<any>({
     shadowOffset: { width: 0, height: 16 },
     elevation: 14,
   },
+  cardItemChurchControlSuspended: {
+    borderColor: "rgba(255,110,110,0.92)",
+    borderWidth: 1.5,
+    shadowColor: "#FF4444",
+    shadowOpacity: 0.55,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 16,
+  },
+  cardItemSuspendedPadding: {
+    paddingTop: 11,
+    paddingBottom: 13,
+    paddingHorizontal: 15,
+  },
+  cardGlowRedAmbient: {
+    position: "absolute",
+    bottom: -40,
+    right: -30,
+    width: 108,
+    height: 108,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,59,59,0.16)",
+  },
+  suspendedCardContent: {
+    flex: 1,
+    zIndex: 2,
+    justifyContent: "flex-start",
+  },
+  cardTitleSuspendedLayout: {
+    color: "rgba(255,255,255,0.98)",
+    marginTop: 0,
+    marginBottom: 2,
+    minHeight: 0,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "800",
+    letterSpacing: -0.1,
+    alignSelf: "flex-start",
+    paddingRight: 8,
+    maxWidth: "100%",
+  },
+  suspendedCardTop: {
+    marginBottom: 6,
+  },
+  suspendedLockSection: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 6,
+    marginBottom: 6,
+  },
+  suspendedWarningBlock: {
+    alignItems: "center",
+    alignSelf: "center",
+    paddingHorizontal: 8,
+    marginTop: 0,
+    marginBottom: 2,
+    gap: 3,
+    maxWidth: "100%",
+    zIndex: 3,
+  },
+  cardSubSuspendedLine: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+    fontSize: 12,
+    lineHeight: 16,
+    textAlign: "center",
+  },
+  cardSubSuspendedLineSoft: {
+    color: "rgba(255,186,186,0.94)",
+    fontWeight: "600",
+    fontSize: 10,
+    lineHeight: 14,
+    textAlign: "center",
+    maxWidth: "94%",
+  },
+  suspendedDividerWrap: {
+    width: "76%",
+    alignSelf: "center",
+    marginTop: 6,
+    marginBottom: 10,
+  },
+  suspendedDashedDivider: {
+    borderTopWidth: 1,
+    borderStyle: "dashed",
+    borderColor: "rgba(255,130,130,0.48)",
+    width: "100%",
+  },
+  suspendedFooter: {
+    marginTop: "auto",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: 2,
+    paddingBottom: 2,
+  },
+  rolePillSuspendedWide: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    borderColor: "rgba(255,140,140,0.72)",
+    backgroundColor: "rgba(210,36,36,0.32)",
+    shadowColor: "#FF3B3B",
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    minWidth: 136,
+    maxWidth: 160,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+  },
+  rolePillTextSuspended: {
+    color: "#FFFFFF",
+    letterSpacing: 1,
+    fontSize: 9.5,
+    fontWeight: "900",
+  },
+  cardLockSealRing: {
+    width: 76,
+    height: 76,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: "rgba(255,130,130,0.98)",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.05)",
+    shadowColor: "#FF5555",
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  cardLockSeal: {
+    width: 58,
+    height: 58,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.07)",
+    borderWidth: 1,
+    borderColor: "rgba(255,190,190,0.28)",
+  },
   cardItemMediaAccess: {
     borderColor: "rgba(34,197,94,0.78)",
     shadowColor: GREEN,
@@ -971,6 +1219,14 @@ const s = StyleSheet.create<any>({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
+  },
+  avatarRingRedSuspended: {
+    backgroundColor: "rgba(255,96,96,0.96)",
+    shadowColor: "#FF4444",
+    shadowOpacity: 0.48,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
   },
   avatarRingGreen: {
     backgroundColor: "rgba(34,197,94,0.95)",

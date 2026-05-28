@@ -369,6 +369,8 @@ function applyClaimPatchToSlot(
 
   const claimedAt = String(slot?.claimedAt || slot?.claimedBy?.claimedAt || new Date().toISOString());
 
+  const avatarUri = claim?.avatarUri || slot?.claimedByAvatarUri || slot?.claimedByAvatar || "";
+
   return {
     ...slot,
     claimed: true,
@@ -377,13 +379,14 @@ function applyClaimPatchToSlot(
     claimedAt,
     claimedByUserId: String(claim?.userId || ""),
     claimedByName: claim?.name || slot?.claimedByName || "You",
-    claimedByAvatar: claim?.avatarUri || slot?.claimedByAvatar || "",
+    claimedByAvatarUri: avatarUri,
+    claimedByAvatar: avatarUri,
     claimedBy: {
       slotId,
       userId: String(claim?.userId || ""),
       name: claim?.name || slot?.claimedByName || "You",
       role: claim?.role || slot?.claimedByRole || "Member",
-      avatarUri: claim?.avatarUri || slot?.claimedByAvatar || "",
+      avatarUri,
       claimedAt,
     },
   };
@@ -538,6 +541,7 @@ export function feedClaimSchedule(
           status: "claimed",
           claimedByUserId: userId,
           claimedByName: claim.name || "You",
+          claimedByAvatarUri: claim.avatarUri || "",
           claimedByAvatar: claim.avatarUri || "",
           claimedBy: {
             slotId,

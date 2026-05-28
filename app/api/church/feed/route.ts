@@ -256,6 +256,59 @@ function publicUser(userId: string) {
   };
 }
 
+function profileAvatarForUserId(userId: string) {
+  const p = profileMap()[userId] || {};
+  return String(
+    p.avatarUri || p.avatarUrl || p.profileImage || p.photoURL || p.image || ""
+  ).trim();
+}
+
+function enrichScheduleSlotClaimAvatar(slot: any) {
+  const userId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+  if (!userId) return slot;
+
+  const existing = String(
+    slot?.claimedByAvatarUri ||
+      slot?.claimedByAvatar ||
+      slot?.claimedByAvatarUrl ||
+      slot?.claimedBy?.avatarUri ||
+      slot?.claimedBy?.avatarUrl ||
+      slot?.claimedBy?.profileImage ||
+      slot?.claimedBy?.photoURL ||
+      slot?.claimedBy?.image ||
+      ""
+  ).trim();
+
+  const avatarUri = existing || profileAvatarForUserId(userId);
+  if (!avatarUri) return slot;
+
+  const claimedBy =
+    slot?.claimedBy && typeof slot.claimedBy === "object"
+      ? {
+          ...slot.claimedBy,
+          userId,
+          avatarUri,
+        }
+      : {
+          userId,
+          name: String(slot?.claimedByName || "Member"),
+          role: String(slot?.claimedByRole || "Member"),
+          avatarUri,
+        };
+
+  return {
+    ...slot,
+    claimedByAvatarUri: avatarUri,
+    claimedByAvatar: avatarUri,
+    claimedBy,
+  };
+}
+
+function enrichScheduleSlotsClaimAvatars(slots: any[]) {
+  if (!Array.isArray(slots)) return [];
+  return slots.map(enrichScheduleSlotClaimAvatar);
+}
+
 function enrichComment<T extends FeedComment>(c: T) {
   return {
     ...c,
@@ -596,6 +649,9 @@ async function enrichFeedListItem(item: any, viewerUserId: string) {
     churchPrimaryLanguage: String((itemChurchProfile as any)?.primaryLanguage || "").trim(),
     churchPhoneCountryCode: String((itemChurchProfile as any)?.phoneCountryCode || "").trim(),
     mediaName: String(itemMediaProfile?.mediaName || item?.mediaName || itemChurchName || "Church Media").trim(),
+    scheduleSlots: enrichScheduleSlotsClaimAvatars(
+      Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
+    ),
     commentCount: commentCountForPost(item.id),
     replyCount: replyCountForPost(item.id),
     totalDiscussionCount: commentCountForPost(item.id) + replyCountForPost(item.id),
@@ -1265,7 +1321,15 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     const name = cleanText(claim?.name || actorLabel || "Church Member", 240) || "Church Member";
     const role = cleanText(claim?.role || ctx?.viewer?.role || "Member", 120) || "Member";
-    const avatarUri = cleanText(claim?.avatarUri || claim?.avatarUrl || "", 2000) || "";
+    const avatarUri =
+      cleanText(
+        claim?.avatarUri ||
+          claim?.avatarUrl ||
+          claim?.claimedByAvatarUri ||
+          profileAvatarForUserId(viewerUserId) ||
+          "",
+        2000
+      ) || "";
 
     slots[slotIndex] = {
       ...existing,
@@ -1274,6 +1338,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       status: "claimed",
       claimedByUserId: viewerUserId,
       claimedByName: name,
+      claimedByAvatarUri: avatarUri,
       claimedByAvatar: avatarUri,
       claimedBy: {
         slotId,
