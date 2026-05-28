@@ -3253,6 +3253,8 @@ async function publishScheduleSlot(slot: any) {
             `Swipe inside this post to claim a slot.`,
           source: "media-schedule",
           scheduleType: "media-live-slots",
+          ministryId: String((params as any)?.ministryId || (params as any)?.roomId || assignmentId || ""),
+          roomId: String((params as any)?.roomId || (params as any)?.sourceRoomId || assignmentId || ""),
           ...scheduleAuthority,
           actorLabel: routeMediaName || assignmentTitle || "MEDIA",
           mediaName: routeMediaName || assignmentTitle || "MEDIA",

@@ -7,6 +7,13 @@ import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { addNotification } from "@/app/api/_lib/notifications";
+import {
+  assertLeaderCanAssignRole,
+  assertLeaderCanModifyTarget,
+  getMinistryMemberRole,
+  isPastorAppRole,
+  listMinistryLeaderUserIds,
+} from "@/app/api/_lib/ministryAuthority";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
 
@@ -14,7 +21,7 @@ import { getUserById } from "@/app/api/auth/_lib/session";
    TYPES
    ========================= */
 
-type MinistryMemberRole = "Leader" | "Assistant" | "Member";
+type MinistryMemberRole = "Leader" | "Assistant" | "Host" | "Member";
 
 type MinistryMember = {
   id: string;
@@ -59,7 +66,7 @@ function id(prefix = "mm") {
 }
 
 function isRole(x: string): x is MinistryMemberRole {
-  return x === "Leader" || x === "Assistant" || x === "Member";
+  return x === "Leader" || x === "Assistant" || x === "Host" || x === "Member";
 }
 
 function parseRole(input: unknown, fallback: MinistryMemberRole): MinistryMemberRole | null {
@@ -103,7 +110,11 @@ async function isMinistryLeader(args: { churchId: string; ministryId: string; us
   const { churchId, ministryId, userId } = args;
   const all = await readAllMembers();
   return all.some(
-    (mm) => mm.churchId === churchId && mm.ministryId === ministryId && mm.userId === userId && mm.role === "Leader"
+    (mm) =>
+      mm.churchId === churchId &&
+      mm.ministryId === ministryId &&
+      mm.userId === userId &&
+      (mm.role === "Leader" || mm.role === "Assistant")
   );
 }
 
@@ -222,6 +233,11 @@ export async function POST(req: NextRequest) {
   const ministry = await requireMinistryInChurch(ministryId, churchId);
   if (!ministry) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
 
+  const viewerMinistryRole = await getMinistryMemberRole(churchId, ministryId, viewer.userId);
+  if (viewerMinistryRole === "Host") {
+    return json({ ok: false, error: "Hosts cannot manage ministry members" } satisfies ApiErr, { status: 403 });
+  }
+
   if (viewer.role === "Leader") {
     const ok = await isMinistryLeader({ churchId, ministryId, userId: viewer.userId });
     if (!ok) return json({ ok: false, error: "Forbidden (role)" } satisfies ApiErr, { status: 403 });
@@ -231,9 +247,21 @@ export async function POST(req: NextRequest) {
   const role = parseRole(roleInput, "Member");
   if (!role) return json({ ok: false, error: "Invalid role" } satisfies ApiErr, { status: 400 });
 
+  if (!isPastorAppRole(viewer.role)) {
+    const leaderErr = assertLeaderCanAssignRole({
+      viewerAppRole: viewer.role,
+      viewerMinistryRole,
+      nextRole: role,
+    });
+    if (leaderErr) return json({ ok: false, error: leaderErr } satisfies ApiErr, { status: 403 });
+  }
+
   const before = await readAllMembers();
 
   if (role === "Leader") {
+    if (!isPastorAppRole(viewer.role)) {
+      return json({ ok: false, error: "Only Pastor can promote to Leader" } satisfies ApiErr, { status: 403 });
+    }
     try {
       await updateJsonFile<MinistryMember[]>(
         STORE_FILE,
@@ -347,9 +375,32 @@ export async function PATCH(req: NextRequest) {
   const ministry = await requireMinistryInChurch(existing.ministryId, churchId);
   if (!ministry) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
 
+  const viewerMinistryRole = await getMinistryMemberRole(churchId, existing.ministryId, viewer.userId);
+  if (viewerMinistryRole === "Host") {
+    return json({ ok: false, error: "Hosts cannot manage ministry members" } satisfies ApiErr, { status: 403 });
+  }
+
   if (viewer.role === "Leader") {
     const ok = await isMinistryLeader({ churchId, ministryId: existing.ministryId, userId: viewer.userId });
     if (!ok) return json({ ok: false, error: "Forbidden (role)" } satisfies ApiErr, { status: 403 });
+  }
+
+  if (!isPastorAppRole(viewer.role)) {
+    const modifyErr = assertLeaderCanModifyTarget({
+      viewerAppRole: viewer.role,
+      viewerMinistryRole,
+      targetRole: existing.role,
+      targetUserId: existing.userId,
+      viewerUserId: viewer.userId,
+    });
+    if (modifyErr) return json({ ok: false, error: modifyErr } satisfies ApiErr, { status: 403 });
+
+    const assignErr = assertLeaderCanAssignRole({
+      viewerAppRole: viewer.role,
+      viewerMinistryRole,
+      nextRole,
+    });
+    if (assignErr) return json({ ok: false, error: assignErr } satisfies ApiErr, { status: 403 });
   }
 
   if (existing.role === "Leader" && nextRole !== "Leader") {
@@ -362,6 +413,10 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (nextRole === "Leader") {
+    if (!isPastorAppRole(viewer.role)) {
+      return json({ ok: false, error: "Only Pastor can promote to Leader" } satisfies ApiErr, { status: 403 });
+    }
+
     const hasOtherLeader = allBefore.some(
       (mm) =>
         mm.churchId === churchId &&
@@ -476,6 +531,25 @@ export async function DELETE(req: NextRequest) {
   const ministry = await requireMinistryInChurch(existing.ministryId, churchId);
   if (!ministry) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
 
+  const viewerMinistryRole = await getMinistryMemberRole(churchId, existing.ministryId, viewer.userId);
+  if (viewerMinistryRole === "Host") {
+    return json({ ok: false, error: "Hosts cannot manage ministry members" } satisfies ApiErr, { status: 403 });
+  }
+
+  if (viewer.role === "Leader") {
+    const ok = await isMinistryLeader({ churchId, ministryId: existing.ministryId, userId: viewer.userId });
+    if (!ok) return json({ ok: false, error: "Forbidden (role)" } satisfies ApiErr, { status: 403 });
+
+    const modifyErr = assertLeaderCanModifyTarget({
+      viewerAppRole: viewer.role,
+      viewerMinistryRole,
+      targetRole: existing.role,
+      targetUserId: existing.userId,
+      viewerUserId: viewer.userId,
+    });
+    if (modifyErr) return json({ ok: false, error: modifyErr } satisfies ApiErr, { status: 403 });
+  }
+
   if (existing.role === "Leader") {
     const leaders = allBefore.filter(
       (mm) => mm.churchId === churchId && mm.ministryId === existing.ministryId && mm.role === "Leader"
@@ -483,11 +557,6 @@ export async function DELETE(req: NextRequest) {
     if (leaders.length <= 1) {
       return json({ ok: false, error: "Cannot remove the last Leader (Senior) of this ministry." } satisfies ApiErr, { status: 409 });
     }
-  }
-
-  if (viewer.role === "Leader") {
-    const ok = await isMinistryLeader({ churchId, ministryId: existing.ministryId, userId: viewer.userId });
-    if (!ok) return json({ ok: false, error: "Forbidden (role)" } satisfies ApiErr, { status: 403 });
   }
 
   try {

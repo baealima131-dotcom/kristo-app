@@ -58,6 +58,7 @@ import { apiGet, apiPatch, apiDelete, apiPost } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
+import { logMinistryAuthority, resolveMinistryAuthority } from "@/src/lib/ministryAuthority";
 import { requireActiveChurchSubscriptionForSchedule } from "@/src/lib/churchSubscription";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
@@ -2544,6 +2545,8 @@ export default function MessageThreadScreen() {
   const [actionLoading, setActionLoading] = useState<"pause" | "leave" | null>(null);
   const [mcHostsOpen, setMcHostsOpen] = useState(false);
   const [mcHostIds, setMcHostIds] = useState<string[]>([]);
+  const [realMemberBoardPeople, setRealMemberBoardPeople] = useState<MinistryPerson[]>([]);
+  const [churchPastorUserId, setChurchPastorUserId] = useState("");
 
   const [membershipAlive, setMembershipAlive] = useState(true);
   const membershipMissCountRef = useRef(0);
@@ -2650,118 +2653,129 @@ export default function MessageThreadScreen() {
     };
   }, [effectiveAuthUserId, effectiveAuthRole, resolvedMinistryId, isChurchLiveControlAssignment, threadId, (params as any)?.ministryId, isFocused]);
 
-  const canEditMinistry =
-    isMinistryThread &&
-    ["System_Admin", "Church_Admin", "Pastor", "Ministry_Leader", "Leader", "Admin"].includes(
-      String(effectiveAuthRole || "")
-    );
-  const assignmentRoleLower = String(assignmentRole || "member").trim().toLowerCase();
-  const isAssignmentTlmc = isAssignmentThread && assignmentRoleLower === "tlmc";
-  const isAssignmentLeader = isAssignmentThread && (isPastorAuthority || ["leader", "admin", "pastor", "church_admin"].includes(assignmentRoleLower));
+  useEffect(() => {
+    let alive = true;
 
-  const canManageAssignmentMembers =
-    ["leader", "admin", "pastor", "church_admin"].includes(
-      String(assignmentRole || assignmentRoleParam || effectiveAuthRole || "").toLowerCase()
-    );
-  const canPastorStartChurchLive =
-    isChurchLiveControlAssignment &&
-    String(effectiveAuthRole || "").toLowerCase() === "pastor";
+    async function loadChurchPastorUserId() {
+      const cid = String(churchId || getKristoHeaders()["x-kristo-church-id"] || "").trim();
+      if (!cid) {
+        if (alive) setChurchPastorUserId("");
+        return;
+      }
 
-  const canEditStructuredProfile =
-    isMinistryThread
-      ? canEditMinistry
-      : isAssignmentThread
-        ? isAssignmentLeader
-        : false;
+      try {
+        const res = await fetchChurchPastorUserId(cid, getKristoHeaders() as any);
+        if (alive) setChurchPastorUserId(String(res.actualChurchPastorUserId || "").trim());
+      } catch {
+        if (alive) setChurchPastorUserId("");
+      }
+    }
 
-  const canManageStructuredMembers =
-    isMinistryThread
-      ? canEditMinistry
-      : isAssignmentThread
-        ? isAssignmentLeader
-        : false;
+    void loadChurchPastorUserId();
 
-  const canInviteStructuredMembers =
-    isMinistryThread
-      ? canEditMinistry
-      : isAssignmentThread
-        ? isAssignmentLeader
-        : false;
+    return () => {
+      alive = false;
+    };
+  }, [churchId, effectiveAuthUserId]);
 
-  const canOpenTlmcPanel =
-    isAssignmentThread
-      ? (isAssignmentTlmc || isAssignmentLeader)
-      : false;
+  const currentUserIdForAuthority = String(
+    (getKristoHeaders() as any)?.["x-kristo-user-id"] || effectiveAuthUserId || ""
+  ).trim();
+
+  const selfMinistryMember = useMemo(
+    () =>
+      realMemberBoardPeople.find(
+        (x: any) => String(x.userId || x.id || "").trim() === currentUserIdForAuthority
+      ),
+    [realMemberBoardPeople, currentUserIdForAuthority]
+  );
 
   const isSelectedMcHost = useMemo(() => {
     if (!isAssignmentThread) return false;
 
-    const headerUserId = String((getKristoHeaders() as any)?.["x-kristo-user-id"] || "").trim();
-
     const selfIds = [
-      headerUserId,
-      String(effectiveAuthUserId || ""),
+      currentUserIdForAuthority,
       String((params as any)?.userId || ""),
       String((params as any)?.memberId || ""),
       String((params as any)?.profileId || ""),
     ].filter(Boolean);
 
     return mcHostIds.some((id) => selfIds.includes(String(id)));
-  }, [isAssignmentThread, effectiveAuthUserId, mcHostIds, params]);
+  }, [isAssignmentThread, currentUserIdForAuthority, mcHostIds, params]);
 
-  const canScheduleStructuredMeeting =
-    __DEV__
-      ? true
-      : isAssignmentThread
-        ? (isAssignmentTlmc || isSelectedMcHost)
-        : false;
+  const ministryAuthority = useMemo(() => {
+    const authority = resolveMinistryAuthority({
+      appRole: effectiveAuthRole,
+      ministryRole: String(selfMinistryMember?.role || assignmentRole || assignmentRoleParam || ""),
+      isChurchPastor:
+        isPastorAuthority ||
+        (!!churchPastorUserId && churchPastorUserId === currentUserIdForAuthority),
+      isSelectedMcHost,
+    });
 
-  const canPauseStructuredRoom =
-    isMinistryThread
-      ? canEditMinistry
-      : isAssignmentThread
-        ? isAssignmentLeader
-        : false;
+    logMinistryAuthority(
+      currentUserIdForAuthority,
+      String(effectiveAuthRole || ""),
+      String(selfMinistryMember?.role || assignmentRole || ""),
+      authority
+    );
 
-  const canRunAssignmentElection =
-    isAssignmentThread
-      ? (
-          isAssignmentTlmc ||
-          isAssignmentLeader ||
-          effectiveAuthRole === "Church_Admin" ||
-          effectiveAuthRole === "Pastor" ||
-          effectiveAuthRole === "Leader" ||
-          effectiveAuthRole === "Admin" ||
-          assignmentRoleParam === "PASTOR" ||
-          assignmentRoleParam === "LEADER" ||
-          assignmentRoleParam === "ADMIN"
-        )
-      : false;
+    return authority;
+  }, [
+    effectiveAuthRole,
+    selfMinistryMember?.role,
+    assignmentRole,
+    assignmentRoleParam,
+    isPastorAuthority,
+    churchPastorUserId,
+    currentUserIdForAuthority,
+    isSelectedMcHost,
+  ]);
 
-  const canSendTargetedAssignmentMessage =
-    isAssignmentThread
-      ? (isAssignmentTlmc || isAssignmentLeader)
-      : false;
-
-  const canManageAssignmentVisibility =
-    isAssignmentThread
-      ? (isAssignmentTlmc || isAssignmentLeader)
-      : false;
-
-  const canOpenAssignmentSchedule =
-    isAssignmentThread
-      ? (isAssignmentTlmc || isAssignmentLeader)
-      : false;
-
-  const showAssignmentLockedPreview =
+  const isAssignmentLeader =
     isAssignmentThread &&
-    !isAssignmentTlmc &&
-    !isAssignmentLeader;
+    (ministryAuthority.tier === "pastor" || ministryAuthority.tier === "leader");
 
-  const canOpenAssignmentMembersBoard =
-    isAssignmentThread
-      ? true
+  const isAssignmentTlmc = isAssignmentThread && ministryAuthority.canOpenTlmcTools;
+
+  const canManageAssignmentMembers = ministryAuthority.canManageMembers;
+  const canScheduleStructuredMeeting = ministryAuthority.canCreateMeeting;
+  const canManageMcHosts = ministryAuthority.canManageHosts;
+  const canAddMemberAuthority = ministryAuthority.canManageMembers;
+
+  const canEditMinistry = isMinistryThread && ministryAuthority.canManageMembers;
+  const canPastorStartChurchLive =
+    isChurchLiveControlAssignment &&
+    (ministryAuthority.tier === "pastor" || String(effectiveAuthRole || "").toLowerCase() === "pastor");
+
+  const canEditStructuredProfile =
+    isMinistryThread ? canEditMinistry : isAssignmentThread ? isAssignmentLeader : false;
+  const canManageStructuredMembers = isMinistryThread
+    ? canEditMinistry
+    : isAssignmentThread
+      ? isAssignmentLeader
       : false;
+  const canInviteStructuredMembers = canManageStructuredMembers;
+  const canOpenTlmcPanel = isAssignmentThread && ministryAuthority.canOpenTlmcTools;
+  const canPauseStructuredRoom = canManageStructuredMembers;
+  const canRunAssignmentElection = canOpenTlmcPanel;
+  const canSendTargetedAssignmentMessage = canOpenTlmcPanel;
+  const canManageAssignmentVisibility = isAssignmentLeader;
+  const canOpenAssignmentSchedule = ministryAuthority.canCreateMeeting;
+  const showAssignmentLockedPreview = isAssignmentThread && ministryAuthority.tier === "member";
+  const canOpenAssignmentMembersBoard = isAssignmentThread;
+  const showLeaderManagementTiles =
+    ministryAuthority.tier === "pastor" || ministryAuthority.tier === "leader";
+  const showScheduleTiles = ministryAuthority.canCreateMeeting;
+  const showMcHostsTile = showLeaderManagementTiles || isSelectedMcHost;
+  const assignmentToolRole =
+    ministryAuthority.tier === "pastor"
+      ? "pastor"
+      : ministryAuthority.tier === "leader"
+        ? "leader"
+        : ministryAuthority.tier === "host"
+          ? "host"
+          : "member";
 
   const ministryInfo = useMemo(() => {
     if (isAssignmentThread) {
@@ -2965,33 +2979,7 @@ export default function MessageThreadScreen() {
   const [composerFocused, setComposerFocused] = useState(false);
   const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
   const [attachUploading, setAttachUploading] = useState(false);
-  const [churchPastorUserId, setChurchPastorUserId] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-
-    async function loadChurchPastorUserId() {
-      const cid = String(churchId || getKristoHeaders()["x-kristo-church-id"] || "").trim();
-      if (!cid) {
-        if (alive) setChurchPastorUserId("");
-        return;
-      }
-
-      try {
-        const res = await fetchChurchPastorUserId(cid, getKristoHeaders() as any);
-        if (alive) setChurchPastorUserId(String(res.actualChurchPastorUserId || "").trim());
-      } catch {
-        if (alive) setChurchPastorUserId("");
-      }
-    }
-
-    void loadChurchPastorUserId();
-
-    return () => {
-      alive = false;
-    };
-  }, [churchId, effectiveAuthUserId]);
 
   const openedMenuFromParamRef = useRef(false);
 
@@ -3349,8 +3337,6 @@ const displayHeaderTitle = assignmentDisplayTitle;
     const facts = profileFacts(threadId, headerTitle);
     return facts?.[0] || null;
   }, [threadId, headerTitle]);
-
-  const [realMemberBoardPeople, setRealMemberBoardPeople] = useState<MinistryPerson[]>([]);
 
   const ministryMembers = useMemo<MinistryPerson[]>(() => {
     return isMinistryThread ? realMemberBoardPeople : [];
@@ -3850,7 +3836,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
     if (isAssignmentThread && lockedTools.includes(String(tool)) && !canScheduleStructuredMeeting) {
       Alert.alert(
         "Access locked",
-        "Only assignment leaders or selected MC+ Hosts can open Meeting and Schedule."
+        "Only Pastor, Leader, or Host can open Meeting and Schedule."
       );
       return;
     }
@@ -3877,12 +3863,13 @@ const displayHeaderTitle = assignmentDisplayTitle;
         mediaScope: isChurchLiveControlTool ? "church" : "ministry",
         roomId: targetRoomId,
         sourceRoomId: targetRoomId,
-        role: assignmentRole || "leader",
+        role: assignmentToolRole,
         status: assignmentStatus || "",
         roomKind: isChurchLiveControlTool
           ? "church-live-control"
           : String((params as any)?.roomKind || "ministry"),
         mcAccess: canScheduleStructuredMeeting ? "1" : "0",
+        ministryId: String(resolvedMinistryId || threadId || ""),
         avatar: routeAvatar || ministryAvatarFallback,
       },
     });
@@ -3952,6 +3939,14 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
     if (action === "tlmc" || action === "election" || action === "targeted" || action === "visibility") {
       return;
+    }
+
+    if (action === "edit") {
+      if (!showLeaderManagementTiles) {
+        closeThreadMenu();
+        Alert.alert("Access locked", "Only Pastor or Leader can edit this profile.");
+        return;
+      }
     }
 
     if (action === "edit" || action === "pause" || action === "search" || action === "mute" || action === "block" || action === "report" || action === "clear" || action === "delete") {
@@ -5623,8 +5618,10 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
           const roleRaw = String(x.role || "Member");
           const role =
-            /leader|admin/i.test(roleRaw) ? "Admin" :
             /pastor/i.test(roleRaw) ? "Pastor" :
+            /^leader$/i.test(roleRaw) || /assistant/i.test(roleRaw) ? "Leader" :
+            /host/i.test(roleRaw) ? "Host" :
+            /admin/i.test(roleRaw) ? "Leader" :
             "Member";
 
           return {
@@ -5634,7 +5631,10 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             name: String(x.displayName || x.fullName || x.name || x.userId || "Member"),
             role,
             status: /paused|suspended/i.test(String(x.status || "")) ? "Suspended" : "Active",
-            note: role === "Admin" ? "Ministry leader" : "Ministry member",
+            note:
+              role === "Leader" ? "Ministry leader" :
+              role === "Host" ? "Ministry host" :
+              "Ministry member",
             avatarUri,
           } as MinistryPerson;
         });
@@ -5924,7 +5924,12 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
     () =>
       memberBoardSource.filter((x) => {
         const r = String(x.role || "").toLowerCase();
-        return r.includes("pastor") || r.includes("admin") || r.includes("leader");
+        return (
+          r.includes("pastor") ||
+          r.includes("admin") ||
+          r.includes("leader") ||
+          r.includes("host")
+        );
       }),
     [memberBoardSource]
   );
@@ -5953,26 +5958,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
     [memberBoardSource]
   );
 
-  const currentUserIdForMc = String((getKristoHeaders() as any)?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
-
-  const canAddMemberAuthority = useMemo(() => {
-    const appRole = String(effectiveAuthRole || "").toLowerCase();
-    if (appRole === "pastor") return true;
-
-    const realSelf = realMemberBoardPeople.find((x: any) => String(x.userId || x.id || "") === currentUserIdForMc);
-    const realRole = String((realSelf as any)?.role || "").toLowerCase();
-
-    return realRole.includes("pastor") || realRole.includes("admin") || realRole.includes("leader");
-  }, [effectiveAuthRole, realMemberBoardPeople, currentUserIdForMc]);
-
-  const canManageMcHosts = useMemo(() => {
-    const appRole = String(effectiveAuthRole || "").toLowerCase();
-    if (isPastorAuthority || ["pastor", "church_admin", "system_admin"].includes(appRole)) return true;
-
-    const realSelf = realMemberBoardPeople.find((x: any) => String(x.userId || x.id || "") === currentUserIdForMc);
-    return /leader|admin|pastor/i.test(String((realSelf as any)?.role || ""));
-  }, [effectiveAuthRole, realMemberBoardPeople, currentUserIdForMc]);
-
+  const currentUserIdForMc = currentUserIdForAuthority;
 
   const visibleMcHostCandidates = useMemo(() => {
     if (canManageMcHosts) return mcHostCandidates;
@@ -7213,36 +7199,42 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                         </View>
 
                         <View style={{ flexBasis: "48%", flexGrow: 1 }}>
-                          <MenuTile
-                            ministryCompact
-                            icon="create-outline"
-                            label="Profile"
-                            activeGlow
-                            disabled={actionLoading !== null}
-                            onPress={() => onThreadMenuAction("edit")}
-                          />
+                          {showLeaderManagementTiles ? (
+                            <MenuTile
+                              ministryCompact
+                              icon="create-outline"
+                              label="Profile"
+                              activeGlow
+                              disabled={actionLoading !== null}
+                              onPress={() => onThreadMenuAction("edit")}
+                            />
+                          ) : null}
                         </View>
 
                         <View style={{ flexBasis: "48%", flexGrow: 1 }}>
-                          <MenuTile
-                            ministryCompact
-                            icon="person-add-outline"
-                            label="ADD & Remove"
-                            activeGlow
-                            disabled={actionLoading !== null || !canAddMemberAuthority}
-                            onPress={() => onThreadMenuAction("invite")}
-                          />
+                          {showLeaderManagementTiles ? (
+                            <MenuTile
+                              ministryCompact
+                              icon="person-add-outline"
+                              label="ADD & Remove"
+                              activeGlow
+                              disabled={actionLoading !== null || !canAddMemberAuthority}
+                              onPress={() => onThreadMenuAction("invite")}
+                            />
+                          ) : null}
                         </View>
 
                         <View style={{ flexBasis: "48%", flexGrow: 1 }}>
-                          <MenuTile
-                            ministryCompact
-                            icon={actionLoading === "pause" ? "time-outline" : "pause-circle-outline"}
-                            label={actionLoading === "pause" ? "Pausing..." : "Pause ministry"}
-                            danger
-                            disabled={actionLoading !== null || !canEditMinistry}
-                            onPress={() => onThreadMenuAction("pause")}
-                          />
+                          {showLeaderManagementTiles ? (
+                            <MenuTile
+                              ministryCompact
+                              icon={actionLoading === "pause" ? "time-outline" : "pause-circle-outline"}
+                              label={actionLoading === "pause" ? "Pausing..." : "Pause ministry"}
+                              danger
+                              disabled={actionLoading !== null || !canEditMinistry}
+                              onPress={() => onThreadMenuAction("pause")}
+                            />
+                          ) : null}
                         </View>
                       </View>
                     ) : null}
@@ -7263,29 +7255,35 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                                 />
                               ) : null}
 
-                              <MenuTile
-                                icon="create-outline"
-                                label="Profile" activeGlow
-                                compact
-                                disabled={actionLoading !== null}
-                                onPress={() => onThreadMenuAction("edit")}
-                              />
+                              {showLeaderManagementTiles ? (
+                                <MenuTile
+                                  icon="create-outline"
+                                  label="Profile" activeGlow
+                                  compact
+                                  disabled={actionLoading !== null}
+                                  onPress={() => onThreadMenuAction("edit")}
+                                />
+                              ) : null}
 
-                              <MenuTile
-                                icon="person-add-outline"
-                                label="ADD & Remove" activeGlow
-                                compact
-                                disabled={actionLoading !== null || !canAddMemberAuthority}
-                                onPress={() => onThreadMenuAction("invite")}
-                              />
+                              {showLeaderManagementTiles ? (
+                                <MenuTile
+                                  icon="person-add-outline"
+                                  label="ADD & Remove" activeGlow
+                                  compact
+                                  disabled={actionLoading !== null || !canAddMemberAuthority}
+                                  onPress={() => onThreadMenuAction("invite")}
+                                />
+                              ) : null}
 
-                              <MenuTile
-                                icon="mic-outline"
-                                label="MC+ Hosts" activeGlow
-                                compact
-                                disabled={actionLoading !== null || (!canManageMcHosts && !isSelectedMcHost)}
-                                onPress={() => onThreadMenuAction("mc_plus")}
-                              />
+                              {showMcHostsTile ? (
+                                <MenuTile
+                                  icon="mic-outline"
+                                  label="MC+ Hosts" activeGlow
+                                  compact
+                                  disabled={actionLoading !== null || (!canManageMcHosts && !isSelectedMcHost)}
+                                  onPress={() => onThreadMenuAction("mc_plus")}
+                                />
+                              ) : null}
                             </View>
                           </View>
 
@@ -7334,19 +7332,23 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                           <View style={s.menuSectionBlock}>
                             <Text style={t.menuSection}>Scheduling</Text>
                             <View style={s.menuTileGrid}>
-                              <MenuTile
-                                icon="calendar-outline"
-                                label="Meeting" activeGlow
-                                disabled={actionLoading !== null || !canScheduleStructuredMeeting}
-                                onPress={() => openAssignmentToolScreen("meeting")}
-                              />
+                              {showScheduleTiles ? (
+                                <>
+                                  <MenuTile
+                                    icon="calendar-outline"
+                                    label="Meeting" activeGlow
+                                    disabled={actionLoading !== null || !canScheduleStructuredMeeting}
+                                    onPress={() => openAssignmentToolScreen("meeting")}
+                                  />
 
-                              <MenuTile
-                                icon="time-outline"
-                                label="Schedule" activeGlow
-                                disabled={actionLoading !== null || !canScheduleStructuredMeeting}
-                                onPress={() => openAssignmentToolScreen("schedule")}
-                              />
+                                  <MenuTile
+                                    icon="time-outline"
+                                    label="Schedule" activeGlow
+                                    disabled={actionLoading !== null || !canScheduleStructuredMeeting}
+                                    onPress={() => openAssignmentToolScreen("schedule")}
+                                  />
+                                </>
+                              ) : null}
                             </View>
                           </View>
 
@@ -7367,7 +7369,9 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                                 onPress={() => openAssignmentToolScreen("permissions")}
                               />
 
-                              <MenuTile icon={actionLoading === "pause" ? "time-outline" : "pause-circle-outline"} label={actionLoading === "pause" ? "Pausing..." : "Pause assignment"} danger disabled={actionLoading !== null} onPress={() => onThreadMenuAction("pause")} />
+                              {showLeaderManagementTiles ? (
+                                <MenuTile icon={actionLoading === "pause" ? "time-outline" : "pause-circle-outline"} label={actionLoading === "pause" ? "Pausing..." : "Pause assignment"} danger disabled={actionLoading !== null || !canPauseStructuredRoom} onPress={() => onThreadMenuAction("pause")} />
+                              ) : null}
 
                               <MenuTile icon={actionLoading === "leave" ? "time-outline" : "exit-outline"} label={actionLoading === "leave" ? "Leaving..." : isAssignmentThread ? "Leave assignment" : "Quit ministry"} danger disabled={actionLoading !== null} onPress={() => onThreadMenuAction("leave")} />
                             </View>

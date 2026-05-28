@@ -19,6 +19,12 @@ import {
   getMediaScheduleSync,
 } from "@/lib/mediaScheduleSync";
 import {
+  canCreateOrEditScheduleSlots,
+  getMinistryMemberRole,
+  isPastorAppRole,
+  listMinistryLeaderUserIds,
+} from "@/app/api/_lib/ministryAuthority";
+import {
   ACTIVE_MEDIA_SCHEDULE_ERROR,
   findActiveMediaScheduleForChurch,
   findAllActiveMediaSchedulesForChurch,
@@ -433,6 +439,101 @@ async function canDeleteFeedPost(item: any, churchId: string, role: unknown, use
   if (isOwnPost && ownership === "member") return true;
 
   return false;
+}
+
+function resolveScheduleMinistryId(item: any, body: any) {
+  return String(
+    body?.ministryId ||
+      body?.roomId ||
+      body?.sourceRoomId ||
+      item?.ministryId ||
+      item?.roomId ||
+      item?.sourceRoomId ||
+      ""
+  ).trim();
+}
+
+function formatScheduleSlotLabel(slot: any) {
+  const title = String(slot?.name || slot?.slotLabel || slot?.title || "schedule slot").trim();
+  const time = String(slot?.timeLabel || slot?.startTime || "").trim();
+  return time ? `${title} (${time})` : title;
+}
+
+async function assertScheduleEditPermission(args: {
+  churchId: string;
+  viewerUserId: string;
+  viewerAppRole: string;
+  item: any;
+  body: any;
+}) {
+  const itemChurchId = String(args.item?.churchId || args.churchId || "");
+  if (itemChurchId && itemChurchId !== String(args.churchId || "")) {
+    return "Feed item not in your church";
+  }
+
+  const isMedia =
+    isMediaScheduleFeedItem(args.item) ||
+    isIncomingMediaScheduleCreate(args.body) ||
+    String(args.item?.source || "").includes("media");
+  const isMediaHost = await isMediaHostForChurch(args.churchId, args.viewerUserId);
+  const ministryId = resolveScheduleMinistryId(args.item, args.body);
+
+  const allowed = await canCreateOrEditScheduleSlots({
+    churchId: args.churchId,
+    viewerUserId: args.viewerUserId,
+    viewerAppRole: args.viewerAppRole,
+    ministryId,
+    isMediaSchedule: isMedia,
+    isMediaHost,
+  });
+
+  if (!allowed) return "Only Pastor, Leader, or Host can edit schedule slots";
+  return null;
+}
+
+async function notifyScheduleSlotEdit(args: {
+  churchId: string;
+  editorUserId: string;
+  editorName: string;
+  editorAppRole: string;
+  ministryId?: string;
+  slotLabel: string;
+}) {
+  if (isPastorAppRole(args.editorAppRole)) return;
+
+  const ministryId = String(args.ministryId || "").trim();
+  const editorMinistryRole = ministryId
+    ? await getMinistryMemberRole(args.churchId, ministryId, args.editorUserId)
+    : "";
+
+  const isLeaderOrHost =
+    editorMinistryRole === "Leader" ||
+    editorMinistryRole === "Assistant" ||
+    editorMinistryRole === "Host";
+
+  if (!isLeaderOrHost) return;
+
+  const pastorResolution = await resolveChurchPastorUserId(args.churchId);
+  const pastorUserId = String(pastorResolution.actualChurchPastorUserId || "").trim();
+  const leaderIds = ministryId ? await listMinistryLeaderUserIds(args.churchId, ministryId) : [];
+
+  const notifyIds = new Set<string>();
+  if (pastorUserId) notifyIds.add(pastorUserId);
+  for (const id of leaderIds) notifyIds.add(id);
+  notifyIds.delete(args.editorUserId);
+
+  const message = `${args.editorName || args.editorUserId} edited ${args.slotLabel}`;
+
+  for (const targetUserId of notifyIds) {
+    createNotification({
+      churchId: args.churchId,
+      type: "Generic",
+      title: "Schedule updated",
+      message,
+      targetUserId,
+      ministryId: ministryId || undefined,
+    });
+  }
 }
 
 async function removePostAndRelated(postId: string) {
@@ -1017,6 +1118,17 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const item = await getFeedItemById(postId);
     if (!item) return err("Feed item not found", 404);
 
+    const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
+    const permissionErr = await assertScheduleEditPermission({
+      churchId,
+      viewerUserId,
+      viewerAppRole,
+      item,
+      body,
+    });
+    if (permissionErr) return err(permissionErr, 403);
+
+    const ministryId = resolveScheduleMinistryId(item, body);
     const slots = Array.isArray((item as any).scheduleSlots) ? (item as any).scheduleSlots : [];
 
     function addMinutesToClock(timeText: string, minutesToAdd: number) {
@@ -1044,6 +1156,17 @@ async function handleFeedPost(req: NextRequest, body: any) {
       const updatedItem = { ...item, scheduleSlots: nextSlots };
       await upsertFeedItem(updatedItem);
       bumpMediaScheduleSyncForFeedItem(updatedItem, "update-schedule-slots");
+
+      const firstSlot = nextSlots[0];
+      void notifyScheduleSlotEdit({
+        churchId,
+        editorUserId: viewerUserId,
+        editorName: actorLabel,
+        editorAppRole: viewerAppRole,
+        ministryId,
+        slotLabel: formatScheduleSlotLabel(firstSlot),
+      });
+
       return ok({ postId, slots: nextSlots });
     }
 
@@ -1097,6 +1220,15 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const updatedItem = { ...item, scheduleSlots: updated };
     await upsertFeedItem(updatedItem);
     bumpMediaScheduleSyncForFeedItem(updatedItem, "update-schedule-slots");
+
+    void notifyScheduleSlotEdit({
+      churchId,
+      editorUserId: viewerUserId,
+      editorName: actorLabel,
+      editorAppRole: viewerAppRole,
+      ministryId,
+      slotLabel: formatScheduleSlotLabel(updated[targetIndex]),
+    });
 
     return ok({ postId, slotId, slots: updated, slot: updated[targetIndex] });
   }
@@ -1304,6 +1436,21 @@ async function handleFeedPost(req: NextRequest, body: any) {
       return churchSubscriptionRequiredResponse();
     }
 
+    const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
+    const ministryId = resolveScheduleMinistryId(null, body);
+    const isMediaHost = await isMediaHostForChurch(churchId, viewerUserId);
+    const canCreate = await canCreateOrEditScheduleSlots({
+      churchId,
+      viewerUserId,
+      viewerAppRole,
+      ministryId,
+      isMediaSchedule: true,
+      isMediaHost,
+    });
+    if (!canCreate) {
+      return err("Only Pastor, Leader, or Host can create schedule slots", 403);
+    }
+
     const existingActive = findActiveMediaScheduleForChurch(await listFeedItems(), churchId, {
       strictChurch: true,
     });
@@ -1359,6 +1506,12 @@ async function handleFeedPost(req: NextRequest, body: any) {
     createdBy: viewerUserId,
   };
 
+  const scheduleMinistryId = resolveScheduleMinistryId(null, body);
+  if (scheduleMinistryId) {
+    (item as any).ministryId = scheduleMinistryId;
+    (item as any).roomId = scheduleMinistryId;
+  }
+
   if (sanitizedMedia.posterUri) {
     (item as any).posterUri = sanitizedMedia.posterUri;
   }
@@ -1390,6 +1543,16 @@ async function handleFeedPost(req: NextRequest, body: any) {
       feedId: item.id,
       slotCount: Array.isArray(item.scheduleSlots) ? item.scheduleSlots.length : 0,
       store: "postgres",
+    });
+
+    const firstSlot = Array.isArray(item.scheduleSlots) ? item.scheduleSlots[0] : null;
+    void notifyScheduleSlotEdit({
+      churchId,
+      editorUserId: viewerUserId,
+      editorName: actorLabel,
+      editorAppRole: String(ctx?.viewer?.role || ctx?.role || ""),
+      ministryId: scheduleMinistryId,
+      slotLabel: formatScheduleSlotLabel(firstSlot || { name: title || "schedule" }),
     });
   }
 
