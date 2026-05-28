@@ -17,6 +17,7 @@ import {
   PanResponder,
 
   StyleSheet,
+  Share,
   Text,
   TextInput,
   View,
@@ -1639,6 +1640,134 @@ function MessageImageGalleryModal({
   );
 }
 
+function isAssignmentCardMessage(m: MsgItem) {
+  return String(m.kind || "") === "assignment_card";
+}
+
+function isSelectableMessage(m: MsgItem) {
+  return !isAssignmentCardMessage(m);
+}
+
+function canEditMessage(m: MsgItem) {
+  return m.sender === "me" && isSelectableMessage(m) && String(m.text || "").trim().length > 0;
+}
+
+function canDeleteMessage(m: MsgItem) {
+  return isSelectableMessage(m);
+}
+
+function buildMessageShareContent(m: MsgItem) {
+  const parts: string[] = [];
+  const text = String(m.text || "").trim();
+  if (text) parts.push(text);
+  for (const raw of m.attachments || []) {
+    const a = normalizeMsgAttachment(raw);
+    const url = resolveMessageAttachmentUrl(a.imageUri || a.fileUri || a.uri || a.url || "");
+    if (url) parts.push(url);
+    else {
+      const name = String(a.fileName || a.name || "").trim();
+      if (name) parts.push(name);
+    }
+  }
+  return parts.join("\n").trim() || "Message";
+}
+
+function MessageActionRow({
+  icon,
+  label,
+  danger,
+  divider,
+  onPress,
+}: {
+  icon: string;
+  label: string;
+  danger?: boolean;
+  divider?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        s.msgActionRow,
+        divider ? s.msgActionRowDivider : null,
+        danger ? s.msgActionRowDanger : null,
+        pressed ? s.msgActionRowPressed : null,
+      ]}
+    >
+      <View style={[s.msgActionIconWrap, danger ? s.msgActionIconWrapDanger : null]}>
+        <Ionicons name={icon as any} size={19} color={danger ? "#FF6B72" : GOLD} />
+      </View>
+      <Text style={[t.msgActionRowText, danger ? t.msgActionRowTextDanger : null]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function MessageActionsSheet({
+  open,
+  message,
+  showEdit,
+  showDelete,
+  deleteLabel,
+  showDeleteForEveryone,
+  onClose,
+  onSelect,
+  onDelete,
+  onDeleteForEveryone,
+  onEdit,
+  onShare,
+  onSelectAll,
+}: {
+  open: boolean;
+  message: MsgItem | null;
+  showEdit: boolean;
+  showDelete: boolean;
+  deleteLabel: string;
+  showDeleteForEveryone: boolean;
+  onClose: () => void;
+  onSelect: () => void;
+  onDelete: () => void;
+  onDeleteForEveryone: () => void;
+  onEdit: () => void;
+  onShare: () => void;
+  onSelectAll: () => void;
+}) {
+  if (!open || !message) return null;
+
+  return (
+    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={s.msgActionsOverlay}>
+        <Pressable style={s.msgActionsBackdrop} onPress={onClose} />
+        <View style={s.msgActionsSheet}>
+          <View style={s.msgActionsGlassOuter}>
+            <View style={s.msgActionsTopGlow} pointerEvents="none" />
+            <BlurView intensity={34} tint="dark" style={s.msgActionsGlass}>
+              <View style={s.msgActionsHandle} />
+              <Text style={t.msgActionsTitle}>Message actions</Text>
+              <MessageActionRow icon="checkmark-circle-outline" label="Select message" divider onPress={onSelect} />
+              {showDelete ? (
+                <MessageActionRow icon="trash-outline" label={deleteLabel} danger divider onPress={onDelete} />
+              ) : null}
+              {showDeleteForEveryone ? (
+                <MessageActionRow
+                  icon="globe-outline"
+                  label="Delete for everyone"
+                  danger
+                  divider
+                  onPress={onDeleteForEveryone}
+                />
+              ) : null}
+              {showEdit ? <MessageActionRow icon="create-outline" label="Edit" divider onPress={onEdit} /> : null}
+              <MessageActionRow icon="share-outline" label="Share" divider onPress={onShare} />
+              <MessageActionRow icon="albums-outline" label="Select All" divider onPress={onSelectAll} />
+              <MessageActionRow icon="close-circle-outline" label="Cancel" onPress={onClose} />
+            </BlurView>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 function MessageAttachmentsBlock({
   attachments,
@@ -1725,6 +1854,9 @@ function Bubble({
   m,
   showAvatar,
   onLongPress,
+  onPress,
+  selected,
+  actionHighlighted,
   canClaimAssignmentCard,
   canAddAssignmentCard,
   canAddVideoAssignmentCard,
@@ -1737,6 +1869,9 @@ function Bubble({
   m: MsgItem;
   showAvatar?: boolean;
   onLongPress: () => void;
+  onPress?: () => void;
+  selected?: boolean;
+  actionHighlighted?: boolean;
   canClaimAssignmentCard?: boolean;
   canAddAssignmentCard?: boolean;
   canAddVideoAssignmentCard?: boolean;
@@ -1764,12 +1899,14 @@ function Bubble({
     const liveMeta = getAssignmentLiveCountdownMeta(m.card);
     const canOpenThisScheduledLive = !!liveMeta.valid && !!liveMeta.canOpenLive;
 
+    const highlightStyle = selected || actionHighlighted ? s.bubbleSelectedGlow : null;
+
     return (
       <Pressable
-        // Slot card is view-only. Live opens only from the top LIVE button.
+        onPress={onPress}
         onLongPress={onLongPress}
         delayLongPress={280}
-        style={s.assignmentTimelineWrap}
+        style={[s.assignmentTimelineWrap, highlightStyle]}
       >
         <View style={s.assignmentTimelineRail}>
           
@@ -1824,16 +1961,18 @@ function Bubble({
   }
   return (
     <Pressable
+      onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={280}
       style={[
         s.bubbleWrap,
         mine ? ({ alignSelf: "flex-end" } as ViewStyle) : ({ alignSelf: "flex-start" } as ViewStyle),
+        selected || actionHighlighted ? s.bubbleWrapSelected : null,
       ]}
     >
       <FadeInBubbleWrap mine={mine}>
       {mine ? (
-        <View style={[s.bubble, s.bubbleMine, isPastorMineOrOther ? s.bubblePastor : null]}>
+        <View style={[s.bubble, s.bubbleMine, isPastorMineOrOther ? s.bubblePastor : null, selected || actionHighlighted ? s.bubbleSelectedGlow : null]}>
           <LinearGradient
             pointerEvents="none"
             colors={["rgba(255,255,255,0.18)", "rgba(255,255,255,0.05)", "transparent"]}
@@ -1880,6 +2019,7 @@ function Bubble({
               s.bubbleOther,
               s.bubbleOtherInline,
               isPastorMessage ? s.bubblePastor : null,
+              selected || actionHighlighted ? s.bubbleSelectedGlow : null,
             ]}
           >
             {!!m.displayName && (
@@ -2989,9 +3129,129 @@ const displayHeaderTitle = assignmentDisplayTitle;
     });
   }
 
-  function confirmDelete(item: any) {
-    Alert.alert("Delete message", "Connect delete flow next.");
-  }
+  const [messageActionsOpen, setMessageActionsOpen] = useState(false);
+  const [messageActionsTarget, setMessageActionsTarget] = useState<MsgItem | null>(null);
+  const [messageSelectionMode, setMessageSelectionMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
+
+  const closeMessageActions = useCallback(() => {
+    setMessageActionsOpen(false);
+    setMessageActionsTarget(null);
+  }, []);
+
+  const exitMessageSelectionMode = useCallback(() => {
+    setMessageSelectionMode(false);
+    setSelectedMessageIds(new Set());
+  }, []);
+
+  const openMessageActions = useCallback((item: MsgItem) => {
+    console.log("[MessageActions] open", item.id);
+    setMessageActionsTarget(item);
+    setMessageActionsOpen(true);
+  }, []);
+
+  const toggleMessageSelection = useCallback((messageId: string) => {
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  }, []);
+
+  const performDeleteMessageIds = useCallback(
+    (ids: string[], options?: { scope?: "local" | "everyone" }) => {
+      const scope = options?.scope ?? "local";
+      const logKey = scope === "everyone" ? "delete-everyone" : "delete";
+      const deletable = ids.filter((id) => {
+        const msg = messages.find((x) => x.id === id);
+        return msg && canDeleteMessage(msg);
+      });
+      if (!deletable.length) {
+        Alert.alert("Cannot delete", "Assignment cards cannot be deleted from here.");
+        return;
+      }
+      const isEveryone = scope === "everyone";
+      const title =
+        isEveryone
+          ? "Delete for everyone"
+          : deletable.length > 1
+            ? "Delete messages"
+            : deletable.length === 1 && messages.find((x) => x.id === deletable[0])?.sender === "me"
+              ? "Delete for me"
+              : "Delete from my view";
+      const body = isEveryone
+        ? "Remove this message for everyone in the chat?"
+        : deletable.length > 1
+          ? `Delete ${deletable.length} selected messages from your view?`
+          : deletable.length === 1 && messages.find((x) => x.id === deletable[0])?.sender === "me"
+            ? "Remove this message from your view only?"
+            : "Remove this message from your view?";
+      Alert.alert(title, body, [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: isEveryone ? "Delete for everyone" : "Delete",
+          style: "destructive",
+          onPress: () => {
+            for (const id of deletable) {
+              console.log(`[MessageActions] ${logKey}`, id);
+              deleteMessage(threadId, id);
+            }
+            exitMessageSelectionMode();
+            closeMessageActions();
+          },
+        },
+      ]);
+    },
+    [messages, threadId, exitMessageSelectionMode, closeMessageActions]
+  );
+
+  const handleMessageActionSelect = useCallback(() => {
+    if (!messageActionsTarget) return;
+    console.log("[MessageActions] select", messageActionsTarget.id);
+    setMessageSelectionMode(true);
+    setSelectedMessageIds(new Set([messageActionsTarget.id]));
+    closeMessageActions();
+  }, [messageActionsTarget, closeMessageActions]);
+
+  const handleMessageActionDelete = useCallback(() => {
+    if (!messageActionsTarget) return;
+    performDeleteMessageIds([messageActionsTarget.id], { scope: "local" });
+  }, [messageActionsTarget, performDeleteMessageIds]);
+
+  const handleMessageActionDeleteForEveryone = useCallback(() => {
+    if (!messageActionsTarget) return;
+    if (messageActionsTarget.sender !== "me" || !canDeleteMessage(messageActionsTarget)) return;
+    performDeleteMessageIds([messageActionsTarget.id], { scope: "everyone" });
+  }, [messageActionsTarget, performDeleteMessageIds]);
+
+  const handleMessageActionEdit = useCallback(() => {
+    if (!messageActionsTarget || !canEditMessage(messageActionsTarget)) return;
+    console.log("[MessageActions] edit", messageActionsTarget.id);
+    setDraft(String(messageActionsTarget.text || ""));
+    closeMessageActions();
+    setTimeout(() => {
+      try {
+        inputRef.current?.focus?.();
+      } catch {}
+    }, 120);
+  }, [messageActionsTarget, closeMessageActions]);
+
+  const handleMessageActionShare = useCallback(() => {
+    if (!messageActionsTarget) return;
+    console.log("[MessageActions] share", messageActionsTarget.id);
+    const payload = buildMessageShareContent(messageActionsTarget);
+    closeMessageActions();
+    void Share.share({ message: payload }).catch(() => {});
+  }, [messageActionsTarget, closeMessageActions]);
+
+  const handleMessageActionSelectAll = useCallback(() => {
+    console.log("[MessageActions] select-all");
+    const ids = visibleMessages.filter(isSelectableMessage).map((m) => m.id);
+    setMessageSelectionMode(true);
+    setSelectedMessageIds(new Set(ids));
+    closeMessageActions();
+  }, [visibleMessages, closeMessageActions]);
 
   function removePending(id: string) {
     setPending((prev) => prev.filter((x) => x.id !== id));
@@ -5731,12 +5991,21 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           renderItem={({ item, index }) => {
             const prev = messages[index + 1];
             const showAvatar = !prev || prev.sender !== item.sender;
+            const isSelected = selectedMessageIds.has(item.id);
+            const isActionHighlighted = messageActionsOpen && messageActionsTarget?.id === item.id;
 
             return (
               <Bubble
                 m={item}
                 showAvatar={showAvatar}
-                onLongPress={() => confirmDelete(item)}
+                selected={isSelected}
+                actionHighlighted={isActionHighlighted}
+                onPress={
+                  messageSelectionMode && isSelectableMessage(item)
+                    ? () => toggleMessageSelection(item.id)
+                    : undefined
+                }
+                onLongPress={() => openMessageActions(item)}
                 canClaimAssignmentCard={canViewerClaimAssignmentCard}
                 canAddAssignmentCard={canViewerAddToAssignmentCard}
                 canAddVideoAssignmentCard={canViewerAddMusicAssignmentCard}
@@ -5765,6 +6034,26 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
       {/* Composer */}
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}>
+        {messageSelectionMode ? (
+          <View style={[s.messageSelectionBar, { marginBottom: tabBarH + 6 }]}>
+            <Pressable onPress={exitMessageSelectionMode} style={({ pressed }) => [s.messageSelectionBtn, pressed ? s.messageSelectionBtnPressed : null]}>
+              <Text style={t.messageSelectionBtnText}>Cancel</Text>
+            </Pressable>
+            <Text style={t.messageSelectionCount}>{selectedMessageIds.size} selected</Text>
+            <Pressable
+              onPress={() => performDeleteMessageIds(Array.from(selectedMessageIds))}
+              disabled={selectedMessageIds.size === 0}
+              style={({ pressed }) => [
+                s.messageSelectionDeleteBtn,
+                selectedMessageIds.size === 0 ? s.messageSelectionDeleteBtnDisabled : null,
+                pressed && selectedMessageIds.size > 0 ? s.messageSelectionBtnPressed : null,
+              ]}
+            >
+              <Ionicons name="trash-outline" size={16} color="#FF6B72" />
+              <Text style={t.messageSelectionDeleteText}>Delete</Text>
+            </Pressable>
+          </View>
+        ) : null}
         {pending.length ? (
           <ScrollView
             horizontal
@@ -5849,6 +6138,28 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         uris={roomImageGallery}
         startIndex={imagePreviewIndex ?? 0}
         onClose={closeImagePreview}
+      />
+
+      <MessageActionsSheet
+        open={messageActionsOpen}
+        message={messageActionsTarget}
+        showEdit={!!messageActionsTarget && canEditMessage(messageActionsTarget)}
+        showDelete={!!messageActionsTarget && canDeleteMessage(messageActionsTarget)}
+        deleteLabel={
+          messageActionsTarget?.sender === "me" ? "Delete for me" : "Delete from my view"
+        }
+        showDeleteForEveryone={
+          !!messageActionsTarget &&
+          messageActionsTarget.sender === "me" &&
+          canDeleteMessage(messageActionsTarget)
+        }
+        onClose={closeMessageActions}
+        onSelect={handleMessageActionSelect}
+        onDelete={handleMessageActionDelete}
+        onDeleteForEveryone={handleMessageActionDeleteForEveryone}
+        onEdit={handleMessageActionEdit}
+        onShare={handleMessageActionShare}
+        onSelectAll={handleMessageActionSelectAll}
       />
 
       <Modal
@@ -9909,6 +10220,138 @@ videoEditorSplitTimelineBadgeText: {
   } as ViewStyle,
 
   bubbleWrap: { marginBottom: 16, maxWidth: "80%" } as ViewStyle,
+  bubbleWrapSelected: {
+    borderRadius: 20,
+  } as ViewStyle,
+  bubbleSelectedGlow: {
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.72)",
+    shadowColor: "#C4B5FD",
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
+  } as ViewStyle,
+  msgActionsOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(2,6,23,0.72)",
+  } as ViewStyle,
+  msgActionsBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  } as ViewStyle,
+  msgActionsSheet: {
+    paddingHorizontal: 14,
+    paddingBottom: 22,
+  } as ViewStyle,
+  msgActionsGlassOuter: {
+    borderRadius: 22,
+    overflow: "hidden",
+    shadowColor: "#D9B35F",
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.32,
+    shadowRadius: 14,
+    elevation: 14,
+  } as ViewStyle,
+  msgActionsTopGlow: {
+    position: "absolute",
+    top: 0,
+    left: 12,
+    right: 12,
+    height: 1,
+    borderRadius: 999,
+    backgroundColor: "rgba(244,208,111,0.72)",
+    zIndex: 3,
+    shadowColor: "#F4D06F",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.85,
+    shadowRadius: 8,
+  } as ViewStyle,
+  msgActionsGlass: {
+    borderRadius: 22,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.20)",
+    borderTopColor: "rgba(244,208,111,0.38)",
+    backgroundColor: "rgba(10,16,28,0.94)",
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 6,
+  } as ViewStyle,
+  msgActionsHandle: {
+    alignSelf: "center",
+    width: 34,
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.16)",
+    marginBottom: 8,
+  } as ViewStyle,
+  msgActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+  } as ViewStyle,
+  msgActionRowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(255,255,255,0.06)",
+  } as ViewStyle,
+  msgActionRowPressed: {
+    backgroundColor: "rgba(255,255,255,0.04)",
+  } as ViewStyle,
+  msgActionRowDanger: {} as ViewStyle,
+  msgActionIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.09)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.16)",
+  } as ViewStyle,
+  msgActionIconWrapDanger: {
+    backgroundColor: "rgba(255,107,114,0.10)",
+    borderColor: "rgba(255,107,114,0.22)",
+  } as ViewStyle,
+  messageSelectionBar: {
+    marginTop: 8,
+    marginHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 16,
+    backgroundColor: "rgba(10,16,28,0.94)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.20)",
+  } as ViewStyle,
+  messageSelectionBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+  } as ViewStyle,
+  messageSelectionBtnPressed: {
+    opacity: 0.82,
+  } as ViewStyle,
+  messageSelectionDeleteBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,107,114,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(255,107,114,0.22)",
+  } as ViewStyle,
+  messageSelectionDeleteBtnDisabled: {
+    opacity: 0.45,
+  } as ViewStyle,
 
   assignmentTimelineWrap: {
     flexDirection: "row",
@@ -10839,6 +11282,37 @@ const t = StyleSheet.create({
   attachName: { flex: 1, marginLeft: 8, color: "rgba(255,255,255,0.88)", fontWeight: "800", fontSize: 12 } as TextStyle,
   attachMeta: { marginLeft: 10, color: "rgba(255,255,255,0.50)", fontWeight: "800", fontSize: 10 } as TextStyle,
   attachImageHint: { color: "rgba(255,255,255,0.72)", fontWeight: "700", fontSize: 11 } as TextStyle,
+  msgActionsTitle: {
+    color: "rgba(255,255,255,0.92)",
+    fontWeight: "800",
+    fontSize: 15,
+    letterSpacing: 0.2,
+    marginBottom: 2,
+    paddingHorizontal: 6,
+  } as TextStyle,
+  msgActionRowText: {
+    color: "rgba(255,255,255,0.92)",
+    fontWeight: "800",
+    fontSize: 15,
+  } as TextStyle,
+  msgActionRowTextDanger: {
+    color: "#FF6B72",
+  } as TextStyle,
+  messageSelectionBtnText: {
+    color: "rgba(255,255,255,0.82)",
+    fontWeight: "800",
+    fontSize: 13,
+  } as TextStyle,
+  messageSelectionCount: {
+    color: "#F4D06F",
+    fontWeight: "800",
+    fontSize: 13,
+  } as TextStyle,
+  messageSelectionDeleteText: {
+    color: "#FF6B72",
+    fontWeight: "800",
+    fontSize: 13,
+  } as TextStyle,
   attachPreviewCounterText: {
     color: "rgba(255,255,255,0.78)",
     fontWeight: "700",
