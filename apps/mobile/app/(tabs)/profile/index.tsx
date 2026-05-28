@@ -34,6 +34,7 @@ import {
   isSaveCooldown,
   logTrafficCache,
   shouldAllowScreenRefresh,
+  clearResponseCacheForRequest,
 } from "@/src/lib/kristoTraffic";
 import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
 import { apiGet } from "@/src/lib/kristoApi";
@@ -42,7 +43,7 @@ import { getPaymentsState, subscribePayments } from "../../../src/store/payments
 import { isPlanActive } from "../../../src/lib/payments/mobileSubscriptions";
 import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { resolveChurchDisplayName } from "@/src/lib/churchStore";
-import { countsAsRealActiveChurchId } from "@/src/lib/churchMembershipSync";
+import { countsAsRealActiveChurchId, resolveActiveChurchFromProfileResponse, isActiveMembershipStatus } from "@/src/lib/churchMembershipSync";
 import {
   getProfileScreenCache,
   peekProfileScreenCache,
@@ -843,7 +844,18 @@ export default function MeScreen() {
         return;
       }
 
-      setProfile(profileRes.profile);
+      setProfile((prev) => {
+        const next = profileRes.profile!;
+        if (
+          prev &&
+          String(prev.profileStatus || "") === String(next.profileStatus || "") &&
+          String(prev.fullName || "") === String(next.fullName || "") &&
+          String(prev.avatarUrl || "") === String(next.avatarUrl || "")
+        ) {
+          return prev;
+        }
+        return next;
+      });
 
       const backendName = String(profileRes.profile.fullName || "").trim();
       const backendAvatarRaw = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
@@ -863,14 +875,43 @@ export default function MeScreen() {
       }
 
       const backendAvatar = mergedAvatar.uri ? toBackendImageUrl(mergedAvatar.uri) : "";
+      const resolved = resolveActiveChurchFromProfileResponse(profileRes as any);
+      const membershipStatus = String((profileRes as any)?.activeMembership?.status || "").trim();
+      const syncedChurchId =
+        membershipStatus && !isActiveMembershipStatus(membershipStatus) ? "" : resolved.churchId;
+      const syncedRole = syncedChurchId ? resolved.role : "Member";
+      const prevChurchId = String(session?.churchId || "").trim();
 
       if (session?.userId) {
-        await setSession({
+        let nextChurchName = String((session as any)?.churchName || "").trim();
+        if (syncedChurchId && syncedChurchId !== prevChurchId) {
+          nextChurchName =
+            String((profileRes as any)?.churchName || "").trim() ||
+            (await resolveChurchDisplayName(syncedChurchId, session.userId));
+        } else if (!syncedChurchId) {
+          nextChurchName = "";
+        }
+
+        const sessionPatch: any = {
           ...session,
           ...(backendName ? { name: backendName, displayName: backendName } : {}),
           avatarUrl: backendAvatar || (session as any)?.avatarUrl || "",
           avatarUri: backendAvatar || (session as any)?.avatarUri || "",
-        } as any);
+        };
+
+        if (syncedChurchId !== prevChurchId || syncedRole !== String(session?.role || "Member")) {
+          sessionPatch.churchId = syncedChurchId;
+          sessionPatch.activeChurchId = syncedChurchId;
+          sessionPatch.churchName = nextChurchName;
+          sessionPatch.role = syncedRole;
+          sessionPatch.churchRole = syncedRole;
+        }
+
+        await setSession(sessionPatch);
+
+        if (syncedChurchId !== prevChurchId) {
+          setChurchDisplayName(nextChurchName);
+        }
 
         if (backendAvatar || backendName) {
           const draft = draftBefore || { displayName: backendName || "" };
@@ -905,11 +946,11 @@ export default function MeScreen() {
         });
       }
     },
-    [session, setSession, userId]
+    [session, setSession, userId, setChurchDisplayName]
   );
 
   const loadProfileLight = useCallback(
-    async (opts?: { silent?: boolean }) => {
+    async (opts?: { silent?: boolean; bypassThrottle?: boolean }) => {
       if (
         (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
         Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) > 0
@@ -917,14 +958,24 @@ export default function MeScreen() {
         return;
       }
 
+      if (opts?.bypassThrottle && session?.userId) {
+        clearResponseCacheForRequest("GET", "/api/auth/profile", session.userId);
+      }
+
       const profileRes = await apiGet<AuthProfileRes>(
         "/api/auth/profile",
-        { headers: getKristoHeaders() },
-        { screen: "Profile", throttleMs: 45000 }
+        {
+          headers: getKristoHeaders({
+            userId: session?.userId,
+            role: opts?.bypassThrottle ? "Member" : (session?.role as any),
+            churchId: opts?.bypassThrottle ? "" : session?.churchId || "",
+          }),
+        },
+        { screen: "Profile", throttleMs: opts?.bypassThrottle ? 2500 : 45000 }
       );
       await applyProfileResponse(profileRes, opts);
     },
-    [applyProfileResponse]
+    [applyProfileResponse, session?.userId, session?.role, session?.churchId]
   );
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
@@ -1331,11 +1382,14 @@ const resolvedName = useMemo(() => {
  };
 
   useFocusedPolling(
-    "Profile",
+    "ProfileTab",
     async () => {
-      await loadProfileLight({ silent: true });
+      console.log("[ProfileTab] silent refresh");
+      await refreshInvitations();
+      await loadProfileLight({ silent: true, bypassThrottle: true });
+      setClaimedFeedTick((v) => v + 1);
     },
-    90000,
+    2500,
     Boolean(session?.userId)
   );
 

@@ -1,6 +1,7 @@
 import { getSessionSync } from "./kristoSession";
 import { getApiBase } from "./kristoApi";
 import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
+import { clearResponseCacheForRequest } from "./kristoTraffic";
 import {
   emitChurchInviteAccepted,
   emitChurchInviteSent,
@@ -234,12 +235,14 @@ export async function fetchMyActiveChurchMembership() {
   if (!userId) throw new Error("userId missing");
   if (!base) throw new Error("API base missing");
 
+  clearResponseCacheForRequest("GET", "/api/auth/profile", userId);
+
   const r = await fetch(`${base}/api/auth/profile`, {
     headers: {
       accept: "application/json",
       "x-kristo-user-id": userId,
-      "x-kristo-role": getAuthBits().role,
-      "x-kristo-church-id": getAuthBits().churchId,
+      "x-kristo-role": "Member",
+      "x-kristo-church-id": "",
     },
   });
 

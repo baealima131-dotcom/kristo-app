@@ -71,3 +71,13 @@ export function resolveActiveChurchFromProfileResponse(
     membership: null,
   };
 }
+
+export function profileMembershipStatus(res: ProfileMembershipPayload | null | undefined) {
+  return String(res?.activeMembership?.status || "").trim();
+}
+
+export function profileHasActiveMembership(res: ProfileMembershipPayload | null | undefined) {
+  const status = profileMembershipStatus(res);
+  if (status) return isActiveMembershipStatus(status);
+  return Boolean(resolveActiveChurchFromProfileResponse(res).churchId);
+}

@@ -12,6 +12,7 @@ import {
   Pressable,
   Image,
   ImageStyle,
+  Linking,
   PanResponder,
 
   StyleSheet,
@@ -41,6 +42,14 @@ import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
 import { ensureThread, sendMessage, setThreadMessages, deleteMessage, claimAssignmentCard, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
+import {
+  formatAttachmentMimeLabel,
+  formatAttachmentSize,
+  normalizeMsgAttachment,
+  resolveMessageAttachmentUrl,
+  uploadMessageAttachment,
+  type PendingMessageAttachment,
+} from "@/src/lib/messageAttachmentUpload";
 import { getChurchProjectMcScheduleState } from "@/src/store/churchProjectMcScheduleStore";
 import { apiGet, apiPatch, apiDelete, apiPost } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
@@ -63,6 +72,28 @@ function chatMediaUrl(u: unknown) {
 
   const base = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
   return `${base}${v.startsWith("/") ? "" : "/"}${v}`;
+}
+
+function photoLibraryAccessAllowed(perm: ImagePicker.MediaLibraryPermissionResponse) {
+  if (perm.granted) return true;
+  const accessPrivileges = String((perm as any)?.accessPrivileges || "").toLowerCase();
+  return accessPrivileges === "limited";
+}
+
+function alertPhotoLibraryPermissionNeeded() {
+  Alert.alert(
+    "Permission needed",
+    "Please allow photo library access to send images.",
+    [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Open Settings",
+        onPress: () => {
+          void Linking.openSettings();
+        },
+      },
+    ]
+  );
 }
 
 function resolveThreadHeaderAvatar(args: {
@@ -1530,6 +1561,95 @@ function getAssignmentLiveCountdownMeta(card?: any) {
   };
 }
 
+function MessageAttachmentsBlock({ attachments }: { attachments: MsgAttachment[] }) {
+  const [previewUri, setPreviewUri] = useState("");
+
+  if (!attachments?.length) return null;
+
+  async function openAttachmentFile(url: string) {
+    const fileUrl = resolveMessageAttachmentUrl(url);
+    if (!fileUrl) {
+      Alert.alert("File unavailable", "This attachment does not have a reachable URL.");
+      return;
+    }
+
+    try {
+      const supported = await Linking.canOpenURL(fileUrl);
+      if (!supported) {
+        Alert.alert("Cannot open file", fileUrl);
+        return;
+      }
+      await Linking.openURL(fileUrl);
+    } catch (e: any) {
+      Alert.alert("Cannot open file", String(e?.message || e || "Try again."));
+    }
+  }
+
+  return (
+    <>
+      <View style={s.attachBlock}>
+        {attachments.map((raw) => {
+          const a = normalizeMsgAttachment(raw);
+          const imageUri = resolveMessageAttachmentUrl(a.imageUri || (a.kind === "image" ? a.uri || a.url : ""));
+          const fileUri = resolveMessageAttachmentUrl(a.fileUri || (a.kind === "file" ? a.uri || a.url : ""));
+          const fileName = String(a.fileName || a.name || "attachment");
+          const metaParts = [formatAttachmentMimeLabel(a.mimeType || a.mime), formatAttachmentSize(a.size)].filter(Boolean);
+          const metaLabel = metaParts.join(" • ");
+
+          if (a.kind === "image" && imageUri) {
+            return (
+              <Pressable
+                key={a.id}
+                onPress={() => setPreviewUri(imageUri)}
+                style={({ pressed }) => [s.attachImageWrap, pressed ? ({ opacity: 0.92 } as ViewStyle) : null]}
+              >
+                <Image source={{ uri: imageUri }} style={s.attachImagePreview as ImageStyle} resizeMode="cover" />
+                <View style={s.attachImageFooter}>
+                  <Ionicons name="expand-outline" size={14} color="rgba(255,255,255,0.82)" />
+                  <Text style={t.attachImageHint} numberOfLines={1}>
+                    Tap to preview
+                  </Text>
+                </View>
+              </Pressable>
+            );
+          }
+
+          return (
+            <Pressable
+              key={a.id}
+              onPress={() => void openAttachmentFile(fileUri || a.uri || a.url || "")}
+              style={({ pressed }) => [s.attachFileCard, pressed ? ({ opacity: 0.92 } as ViewStyle) : null]}
+            >
+              <View style={s.attachFileIconWrap}>
+                <Ionicons name="document-text-outline" size={22} color="#F4D06F" />
+              </View>
+              <View style={s.attachFileCopy}>
+                <Text style={t.attachFileName} numberOfLines={2} ellipsizeMode="middle">
+                  {fileName}
+                </Text>
+                {metaLabel ? <Text style={t.attachFileMeta}>{metaLabel}</Text> : null}
+              </View>
+              <Ionicons name="open-outline" size={18} color="rgba(255,255,255,0.55)" />
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Modal visible={!!previewUri} transparent animationType="fade" onRequestClose={() => setPreviewUri("")}>
+        <View style={s.attachPreviewOverlay}>
+          <Pressable style={s.attachPreviewBackdrop} onPress={() => setPreviewUri("")} />
+          {previewUri ? (
+            <Image source={{ uri: previewUri }} style={s.attachPreviewFullscreen as ImageStyle} resizeMode="contain" />
+          ) : null}
+          <Pressable onPress={() => setPreviewUri("")} style={s.attachPreviewClose} hitSlop={12}>
+            <Ionicons name="close" size={22} color="#FFFFFF" />
+          </Pressable>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
 function Bubble({
   m,
   showAvatar,
@@ -1650,25 +1770,7 @@ function Bubble({
           />
           {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
-          {m.attachments?.length ? (
-            <View style={s.attachBlock}>
-              {m.attachments.map((a) => (
-                <View key={a.id} style={s.attachRow}>
-                  <Ionicons
-                    name={a.kind === "image" ? "image" : "document"}
-                    size={16}
-                    color="rgba(255,255,255,0.70)"
-                  />
-                  <Text style={t.attachName} numberOfLines={1}>
-                    {a.name}
-                  </Text>
-                  <Text style={t.attachMeta} numberOfLines={1}>
-                    {a.kind.toUpperCase()}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          ) : null}
+          <MessageAttachmentsBlock attachments={m.attachments || []} />
 
           <View style={s.msgMetaRow}>
             <Text style={t.msgTimeMine}>{formatTime(m.createdAt)}</Text>
@@ -1725,25 +1827,7 @@ function Bubble({
 
             {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
-            {m.attachments?.length ? (
-              <View style={s.attachBlock}>
-                {m.attachments.map((a) => (
-                  <View key={a.id} style={s.attachRow}>
-                    <Ionicons
-                      name={a.kind === "image" ? "image" : "document"}
-                      size={16}
-                      color="rgba(255,255,255,0.70)"
-                    />
-                    <Text style={t.attachName} numberOfLines={1}>
-                      {a.name}
-                    </Text>
-                    <Text style={t.attachMeta} numberOfLines={1}>
-                      {a.kind.toUpperCase()}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            ) : null}
+            <MessageAttachmentsBlock attachments={m.attachments || []} />
 
             <Text
               style={[
@@ -2331,6 +2415,7 @@ export default function MessageThreadScreen() {
   const { messages } = useThread(threadId);
   const visibleMessages = useMemo(() => paginateMessages(messages, 120), [messages]);
   const roomMessagesSigRef = useRef("");
+  const reloadRoomMessagesRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     if (!threadId || !isFocused) return;
@@ -2341,7 +2426,11 @@ export default function MessageThreadScreen() {
     const uris = visibleMessages
       .flatMap((m: any) => [
         String(m?.avatarUri || "").trim(),
-        ...(Array.isArray(m?.attachments) ? m.attachments.map((a: any) => String(a?.uri || "")) : []),
+        ...(Array.isArray(m?.attachments)
+          ? m.attachments.map((a: any) =>
+              resolveMessageAttachmentUrl(String(a?.uri || a?.imageUri || a?.fileUri || ""))
+            )
+          : []),
       ])
       .filter((u) => /^https?:\/\//i.test(u));
     preloadLiveImages(uris, 24);
@@ -2389,7 +2478,9 @@ export default function MessageThreadScreen() {
           ? `${(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "")}${String(x.senderAvatar || "")}`
           : String(x.senderAvatar || ""),
         text: String(x.text || ""),
-        attachments: Array.isArray(x.attachments) ? x.attachments : undefined,
+        attachments: Array.isArray(x.attachments)
+          ? x.attachments.map((att: any) => normalizeMsgAttachment(att))
+          : undefined,
         createdAt: Number(x.createdAt || Date.now()),
         kind: String(x.kind || "text") as any,
         card: x.card || undefined,
@@ -2419,6 +2510,7 @@ export default function MessageThreadScreen() {
       setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
     }
 
+    reloadRoomMessagesRef.current = loadBackendRoomMessages;
     void loadBackendRoomMessages();
 
     const stop = startAdaptiveLivePolling({
@@ -2440,7 +2532,8 @@ export default function MessageThreadScreen() {
 
   const [draft, setDraft] = useState("");
   const [composerFocused, setComposerFocused] = useState(false);
-  const [pending, setPending] = useState<Array<{ id: string; name: string; kind: "image" | "file" }>>([]);
+  const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
+  const [attachUploading, setAttachUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
   const openedMenuFromParamRef = useRef(false);
@@ -2830,36 +2923,94 @@ const displayHeaderTitle = assignmentDisplayTitle;
   }
 
   function pickImage() {
-    const id = `img_${Date.now()}`;
-    setPending((prev) => [...prev, { id, name: "image.jpg", kind: "image" }]);
+    void (async () => {
+      try {
+        console.log("[MessagesAttach] pick image");
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!photoLibraryAccessAllowed(perm)) {
+          alertPhotoLibraryPermissionNeeded();
+          return;
+        }
+
+        const result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ["images"],
+          allowsMultipleSelection: false,
+          quality: 0.85,
+        });
+
+        if (result.canceled || !result.assets?.length) return;
+
+        const asset = result.assets[0];
+        const localUri = String(asset.uri || "").trim();
+        if (!localUri) return;
+
+        const name = String(asset.fileName || asset.uri?.split("/").pop() || `image_${Date.now()}.jpg`);
+        const mime = String((asset as any).mimeType || "image/jpeg");
+
+        setPending((prev) => [
+          ...prev,
+          {
+            id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            kind: "image",
+            localUri,
+            name,
+            mime,
+            size: typeof asset.fileSize === "number" ? asset.fileSize : undefined,
+          },
+        ]);
+      } catch (e: any) {
+        Alert.alert("Image picker error", String(e?.message || e || "Could not pick image."));
+      }
+    })();
   }
 
   function pickFile() {
-    const id = `file_${Date.now()}`;
-    setPending((prev) => [...prev, { id, name: "document.pdf", kind: "file" }]);
+    void (async () => {
+      try {
+        console.log("[MessagesAttach] pick file");
+        const result = await DocumentPicker.getDocumentAsync({
+          copyToCacheDirectory: true,
+          multiple: false,
+        });
+
+        if (result.canceled || !result.assets?.length) return;
+
+        const asset = result.assets[0];
+        const localUri = String(asset.uri || "").trim();
+        if (!localUri) return;
+
+        const name = String(asset.name || `file_${Date.now()}`);
+        const mime = String(asset.mimeType || "application/octet-stream");
+
+        setPending((prev) => [
+          ...prev,
+          {
+            id: `file_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            kind: "file",
+            localUri,
+            name,
+            mime,
+            size: typeof asset.size === "number" ? asset.size : undefined,
+          },
+        ]);
+      } catch (e: any) {
+        Alert.alert("File picker error", String(e?.message || e || "Could not pick file."));
+      }
+    })();
   }
 
   const canSend = useMemo(
-    () => String(draft || "").trim().length > 0 || pending.length > 0,
-    [draft, pending]
+    () => !attachUploading && (String(draft || "").trim().length > 0 || pending.length > 0),
+    [draft, pending, attachUploading]
   );
 
-  function onSend() {
-    const text = String(draft || "").trim();
-    const attachments: MsgAttachment[] = pending.map((a) => ({
-      id: a.id,
-      kind: a.kind,
-      uri: "",
-      name: a.name,
-      mime: a.kind === "image" ? "image/jpeg" : "application/octet-stream",
-    }));
+  async function onSend() {
+    if (attachUploading) return;
 
-    if (!text && attachments.length === 0) return;
+    const text = String(draft || "").trim();
+    if (!text && pending.length === 0) return;
 
     const roomId = String((params as any)?.ministryId || (params as any)?.assignmentId || resolvedMinistryId || threadId || "").trim();
-
-    sendMessage(threadId, { text, attachments }, { disableAutoReply: true });
-
     const sendHeaders: any = getKristoHeaders();
     const senderName = String(
       sendHeaders?.["x-kristo-user-name"] ||
@@ -2868,24 +3019,53 @@ const displayHeaderTitle = assignmentDisplayTitle;
       "Member"
     ).trim();
 
-    apiPost(
-      "/api/church/room-messages",
-      {
+    setAttachUploading(true);
+
+    try {
+      const attachments: MsgAttachment[] = [];
+
+      for (const item of pending) {
+        const uploaded = await uploadMessageAttachment(item, sendHeaders);
+        attachments.push(uploaded);
+      }
+
+      console.log("[MessagesAttach] send payload", {
         roomId,
-        roomKind: isAssignmentThread ? "assignment" : isMinistryThread ? "ministry" : "chat",
-        senderName,
-        text,
-        attachments,
-      },
-      { headers: sendHeaders }
-    );
+        text: text || "",
+        attachmentCount: attachments.length,
+      });
 
-    setDraft("");
-    setPending([]);
+      sendMessage(threadId, { text, attachments }, { disableAutoReply: true });
 
-    setTimeout(() => {
-      listRef.current?.scrollToOffset?.({ offset: 0, animated: true });
-    }, 80);
+      const postRes: any = await apiPost(
+        "/api/church/room-messages",
+        {
+          roomId,
+          roomKind: isAssignmentThread ? "assignment" : isMinistryThread ? "ministry" : "chat",
+          senderName,
+          text,
+          attachments,
+        },
+        { headers: sendHeaders }
+      );
+
+      if (!postRes?.ok) {
+        throw new Error(String(postRes?.error || "Failed to send message"));
+      }
+
+      setDraft("");
+      setPending([]);
+      roomMessagesSigRef.current = "";
+      await reloadRoomMessagesRef.current?.();
+
+      setTimeout(() => {
+        listRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+      }, 80);
+    } catch (e: any) {
+      Alert.alert("Send failed", String(e?.message || e || "Could not send attachment message."));
+    } finally {
+      setAttachUploading(false);
+    }
   }
 
   function openScheduledLiveFromCard(m: MsgItem) {
@@ -5496,20 +5676,35 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       {/* Composer */}
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}>
         {pending.length ? (
-          <View style={s.pendingBar}>
-            <Text style={t.pendingTitle}>Attachments</Text>
-            <View style={s.pendingList}>
-              {pending.map((a) => (
-                <Pressable key={a.id} onPress={() => removePending(a.id)} style={({ pressed }) => [s.pendingPill, pressed ? ({ opacity: 0.9 } as ViewStyle) : null]}>
-                  <Ionicons name={a.kind === "image" ? "image" : "document"} size={17} color="rgba(255,255,255,0.75)" />
-                  <Text style={t.pendingName} numberOfLines={1}>
-                    {a.name}
-                  </Text>
-                  <Ionicons name="close" size={17} color="rgba(255,255,255,0.55)" />
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            style={s.pendingStrip}
+            contentContainerStyle={s.pendingStripContent}
+          >
+            {pending.map((a) => (
+              <View key={a.id} style={s.pendingChip}>
+                {a.kind === "image" ? (
+                  <Image source={{ uri: a.localUri }} style={s.pendingChipThumb as ImageStyle} resizeMode="cover" />
+                ) : (
+                  <View style={s.pendingChipIcon}>
+                    <Ionicons name="document-text-outline" size={18} color={GOLD_SOLID} />
+                  </View>
+                )}
+                <Text style={t.pendingChipName} numberOfLines={1} ellipsizeMode="middle">
+                  {a.name}
+                </Text>
+                <Pressable
+                  onPress={() => removePending(a.id)}
+                  hitSlop={8}
+                  style={({ pressed }) => [s.pendingChipRemove, pressed ? ({ opacity: 0.72 } as ViewStyle) : null]}
+                >
+                  <Ionicons name="close" size={14} color="rgba(255,255,255,0.62)" />
                 </Pressable>
-              ))}
-            </View>
-          </View>
+              </View>
+            ))}
+          </ScrollView>
         ) : null}
 
         <View style={[s.composer, { marginBottom: tabBarH + 8 }]}>
@@ -5546,15 +5741,15 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
           <Pressable
             onPress={onSend}
-            disabled={!canSend || (isMinistryThread && isSuspended)}
+            disabled={!canSend || (isMinistryThread && isSuspended) || attachUploading}
             style={({ pressed }) => [
               s.sendBtn,
-              !canSend || (isMinistryThread && isSuspended) ? s.sendBtnDisabled : null,
-              canSend && !(isMinistryThread && isSuspended) ? s.sendBtnActive : null,
-              pressed && canSend && !(isMinistryThread && isSuspended) ? ({ transform: [{ scale: 0.97 }], opacity: 0.94 } as ViewStyle) : null,
+              !canSend || (isMinistryThread && isSuspended) || attachUploading ? s.sendBtnDisabled : null,
+              canSend && !(isMinistryThread && isSuspended) && !attachUploading ? s.sendBtnActive : null,
+              pressed && canSend && !(isMinistryThread && isSuspended) && !attachUploading ? ({ transform: [{ scale: 0.97 }], opacity: 0.94 } as ViewStyle) : null,
             ]}
           >
-            <Ionicons name="send" size={16} color={canSend && !(isMinistryThread && isSuspended) ? "#FFFFFF" : "rgba(255,255,255,0.30)"} />
+            <Ionicons name="send" size={16} color={canSend && !(isMinistryThread && isSuspended) && !attachUploading ? "#FFFFFF" : "rgba(255,255,255,0.30)"} />
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -9856,17 +10051,81 @@ videoEditorSplitTimelineBadgeText: {
     flexShrink: 0,
   } as ViewStyle,
 
-  attachBlock: { marginTop: 8 } as ViewStyle,
-  attachRow: {
-    marginTop: 6,
+  attachBlock: { marginTop: 6, gap: 6 } as ViewStyle,
+  attachImageWrap: {
+    marginTop: 4,
+    width: "100%",
+    maxWidth: 240,
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+  } as ViewStyle,
+  attachImagePreview: {
+    width: "100%",
+    height: 188,
+    backgroundColor: "rgba(255,255,255,0.06)",
+  } as ImageStyle,
+  attachImageFooter: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 8,
+    gap: 6,
     paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "rgba(0,0,0,0.28)",
+  } as ViewStyle,
+  attachFileCard: {
+    marginTop: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
     borderRadius: 14,
-    backgroundColor: "rgba(0,0,0,0.22)",
+    backgroundColor: "rgba(0,0,0,0.24)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: "rgba(217,179,95,0.16)",
+  } as ViewStyle,
+  attachFileIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.22)",
+  } as ViewStyle,
+  attachFileCopy: {
+    flex: 1,
+    minWidth: 0,
+  } as ViewStyle,
+  attachPreviewOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.88)",
+    justifyContent: "center",
+    alignItems: "center",
+  } as ViewStyle,
+  attachPreviewBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  } as ViewStyle,
+  attachPreviewFullscreen: {
+    width: "92%",
+    height: "72%",
+  } as ImageStyle,
+  attachPreviewClose: {
+    position: "absolute",
+    top: 54,
+    right: 18,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
   } as ViewStyle,
 
   composer: { marginTop: 12, marginBottom: 8, flexDirection: "row", alignItems: "flex-end", gap: 8 } as ViewStyle,
@@ -9935,27 +10194,51 @@ videoEditorSplitTimelineBadgeText: {
   } as ViewStyle,
   sendBtnDisabled: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.10)" } as ViewStyle,
 
-  pendingBar: {
-    marginTop: 10,
-    borderRadius: 18,
-    padding: 12,
-    backgroundColor: "rgba(255,255,255,0.02)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+  pendingStrip: {
+    maxHeight: 48,
+    marginBottom: 6,
   } as ViewStyle,
-  pendingList: { marginTop: 10, flexDirection: "row", flexWrap: "wrap" } as ViewStyle,
-  pendingPill: {
-    marginRight: 8,
-    marginBottom: 8,
-    maxWidth: "92%",
+  pendingStripContent: {
     flexDirection: "row",
     alignItems: "center",
-    
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    backgroundColor: "rgba(0,0,0,0.22)",
+    gap: 8,
+    paddingHorizontal: 2,
+  } as ViewStyle,
+  pendingChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    height: 44,
+    maxWidth: 220,
+    paddingRight: 4,
+    paddingLeft: 0,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
+    overflow: "hidden",
+  } as ViewStyle,
+  pendingChipThumb: {
+    width: 44,
+    height: 44,
+    backgroundColor: "rgba(255,255,255,0.06)",
+  } as ImageStyle,
+  pendingChipIcon: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    borderRightWidth: 1,
+    borderRightColor: "rgba(255,255,255,0.08)",
+  } as ViewStyle,
+  pendingChipRemove: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 2,
+    backgroundColor: "rgba(255,255,255,0.06)",
   } as ViewStyle,
 
   headerTitleClip: {
@@ -10365,14 +10648,23 @@ const t = StyleSheet.create({
 
   attachName: { flex: 1, marginLeft: 8, color: "rgba(255,255,255,0.88)", fontWeight: "800", fontSize: 12 } as TextStyle,
   attachMeta: { marginLeft: 10, color: "rgba(255,255,255,0.50)", fontWeight: "800", fontSize: 10 } as TextStyle,
+  attachImageHint: { color: "rgba(255,255,255,0.72)", fontWeight: "700", fontSize: 11 } as TextStyle,
+  attachFileName: { color: "rgba(255,255,255,0.94)", fontWeight: "800", fontSize: 13, lineHeight: 17 } as TextStyle,
+  attachFileMeta: { marginTop: 3, color: "rgba(255,255,255,0.52)", fontWeight: "700", fontSize: 11 } as TextStyle,
 
   input: { color: "white", fontWeight: "700", fontSize: 15, lineHeight: 21 } as TextStyle,
 
   emptyTitle: { color: "white", fontWeight: "900", fontSize: 16 } as TextStyle,
   emptySub: { marginTop: 6, color: "rgba(255,255,255,0.62)", fontWeight: "700", fontSize: 12 } as TextStyle,
 
-  pendingTitle: { color: "white", fontWeight: "900", fontSize: 12, letterSpacing: 0.2 } as TextStyle,
-  pendingName: { marginLeft: 8, marginRight: 8, maxWidth: 180, color: "rgba(255,255,255,0.80)", fontWeight: "800", fontSize: 12 } as TextStyle,
+  pendingChipName: {
+    flex: 1,
+    minWidth: 0,
+    marginHorizontal: 8,
+    color: "rgba(255,255,255,0.82)",
+    fontWeight: "700",
+    fontSize: 11,
+  } as TextStyle,
 
   menuTitle: { color: "white", fontWeight: "900", fontSize: 18, letterSpacing: 0.2, opacity: 0.96 } as TextStyle,
   menuSub: { marginTop: 2, color: "rgba(255,255,255,0.56)", fontWeight: "700", fontSize: 12, lineHeight: 16 } as TextStyle,

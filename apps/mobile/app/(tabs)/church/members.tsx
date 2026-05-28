@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { approveRequest, fetchChurchMembers, fetchJoinRequests, rejectRequest, removeChurchMember, sendChurchInvite } from "@/src/lib/churchMembersApi";
+import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -123,13 +124,17 @@ export default function ChurchMembersDirectory() {
 
   useEffect(() => {
     void load(false);
-
-    const timer = setInterval(() => {
-      void load(true);
-    }, 10000);
-
-    return () => clearInterval(timer);
   }, [session?.churchId]);
+
+  useFocusedPolling(
+    "ChurchMembers",
+    async () => {
+      console.log("[ChurchTab] silent refresh");
+      await load(true);
+    },
+    2500,
+    Boolean(session?.churchId)
+  );
 
   async function act(id: string, action: "approve" | "reject") {
     try {

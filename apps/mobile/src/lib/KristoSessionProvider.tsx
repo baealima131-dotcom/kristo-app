@@ -13,7 +13,7 @@ import { fetchMyActiveChurchMembership } from "./churchMembersApi";
 import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
 import { resolveChurchDisplayName } from "./churchStore";
-import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
+import { resolveActiveChurchFromProfileResponse, isActiveMembershipStatus } from "./churchMembershipSync";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import { silentPreloadTabScreens } from "./screenDataCache";
 import {
@@ -64,33 +64,63 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     await silentPreloadTabScreens(baseSession);
   }
 
-  async function silentSyncProfile(baseSession: KristoSession | null, opts?: { returnOnly?: boolean }) {
+  async function silentSyncProfile(
+    baseSession: KristoSession | null,
+    opts?: { returnOnly?: boolean; forceFresh?: boolean; throttleMs?: number; omitChurchHeader?: boolean }
+  ) {
     if (!baseSession?.userId) return baseSession;
 
     try {
       const headerChurchId = String(baseSession.churchId || "").trim();
-      if (!headerChurchId) {
+      const forceFresh = Boolean(opts?.forceFresh);
+      const omitChurchHeader = Boolean(opts?.omitChurchHeader);
+      const throttleMs =
+        typeof opts?.throttleMs === "number"
+          ? opts.throttleMs
+          : forceFresh
+            ? 0
+            : headerChurchId
+              ? 120000
+              : 0;
+
+      if (forceFresh || !headerChurchId) {
         clearResponseCacheForRequest("GET", "/api/auth/profile", baseSession.userId);
       }
 
-      const res: any = await apiGet("/api/auth/profile", {
-        headers: getKristoHeaders({ userId: baseSession.userId, role: baseSession.role, churchId: headerChurchId }),
-      }, { screen: "SessionProvider", throttleMs: headerChurchId ? 120000 : 0 });
+      const res: any = await apiGet(
+        "/api/auth/profile",
+        {
+          headers: getKristoHeaders({
+            userId: baseSession.userId,
+            role: omitChurchHeader ? "Member" : baseSession.role,
+            churchId: omitChurchHeader ? "" : headerChurchId,
+          }),
+        },
+        { screen: "SessionProvider", throttleMs }
+      );
 
       if (!res?.ok || !res?.profile) return baseSession;
 
       const p = res.profile;
+      const membershipStatus = String(res?.activeMembership?.status || "").trim();
       const resolved = resolveActiveChurchFromProfileResponse(res);
-      const syncedChurchId = resolved.churchId;
-      const syncedRole = resolved.churchId ? resolved.role : "Member";
+      let syncedChurchId = resolved.churchId;
+      let syncedRole = resolved.churchId ? resolved.role : "Member";
+
+      if (membershipStatus && !isActiveMembershipStatus(membershipStatus)) {
+        syncedChurchId = "";
+        syncedRole = "Member";
+      }
+
       console.log("KRISTO_MEMBERSHIP_RESOLVED", {
         userId: baseSession.userId,
         headerChurchId,
         syncedChurchId,
-        membershipStatus: String(res?.activeMembership?.status || "none"),
+        membershipStatus: membershipStatus || "none",
         churchRole: syncedRole,
-        source: "mobile-profile-sync",
+        source: forceFresh ? "mobile-profile-sync-force" : "mobile-profile-sync",
       });
+
       const churchName = syncedChurchId
         ? String(res?.churchName || "").trim() || (await resolveChurchDisplayName(syncedChurchId, baseSession.userId))
         : "";
@@ -153,12 +183,16 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       }
     };
 
-    silentSyncProfile(session);
-    void silentPreloadTabScreens(session);
+    silentSyncProfile(session).then((synced) => {
+      void silentPreloadTabScreens(synced || session);
+    });
     const t = setInterval(async () => {
       await checkExpiry();
       const latest = await loadSession();
-      await silentSyncProfile(latest || session);
+      const synced = await silentSyncProfile(latest || session);
+      if (synced && !String(synced.churchId || "").trim()) {
+        return;
+      }
     }, 120000);
 
     const sub = AppState.addEventListener("change", async (state) => {
@@ -195,8 +229,9 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
             } catch {}
           }
           setSessionState(touched);
-          await silentSyncProfile(touched);
-          await silentPreloadTabScreens(touched);
+          clearResponseCacheForRequest("GET", "/api/auth/profile", touched.userId);
+          const synced = await silentSyncProfile(touched, { throttleMs: 0, omitChurchHeader: true });
+          await silentPreloadTabScreens(synced || touched, { force: true });
         }
       }
     });
@@ -208,13 +243,39 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
   }, [session?.userId, session?.churchId]);
 
   useEffect(() => {
-    const syncMembershipFromEvent = async (payload: { targetUserId?: string; targetKristoId?: string; userId?: string; kristoId?: string }) => {
+    const syncMembershipFromEvent = async (payload: {
+      targetUserId?: string;
+      targetKristoId?: string;
+      userId?: string;
+      kristoId?: string;
+    }) => {
       const loaded = await loadSession();
       if (!loaded?.userId) return;
       const kristoId = String((loaded as any)?.kristoId || "").trim();
       if (!inviteEventTargetsCurrentUser(payload, { userId: loaded.userId, kristoId })) return;
+
       clearResponseCacheForRequest("GET", "/api/auth/profile", loaded.userId);
-      await silentSyncProfile(loaded);
+
+      const cleared: KristoSession = {
+        ...loaded,
+        churchId: "",
+        activeChurchId: "",
+        churchName: "",
+        role: "Member",
+        churchRole: "Member",
+      } as KristoSession;
+      await saveSession(cleared);
+      setSessionSync(cleared);
+      setSessionState(cleared);
+
+      const synced =
+        (await silentSyncProfile(cleared, {
+          forceFresh: true,
+          throttleMs: 0,
+          omitChurchHeader: true,
+        })) || cleared;
+
+      await silentPreloadTabScreens(synced, { force: true });
     };
 
     const unsubs = [

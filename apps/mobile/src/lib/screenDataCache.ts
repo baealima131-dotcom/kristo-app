@@ -2,6 +2,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { KristoSession } from "./kristoSession";
 import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
+import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
+import { clearResponseCacheForRequest } from "./kristoTraffic";
 import { saveChurchProfileCache } from "./churchStore";
 import { saveProfileDraft } from "./profileStore";
 
@@ -318,8 +320,47 @@ export async function silentRefreshProfileScreen(
 
 export async function silentPreloadTabScreens(session: KristoSession | null, opts?: { force?: boolean }) {
   const userId = String(session?.userId || "").trim();
-  const churchId = String(session?.churchId || "").trim();
   if (!userId) return;
+
+  let effectiveSession = session as KristoSession;
+  let churchId = String(effectiveSession?.churchId || "").trim();
+
+  if (churchId) {
+    if (opts?.force) {
+      clearResponseCacheForRequest("GET", "/api/auth/profile", userId);
+    }
+
+    const profileRes = await apiGet<any>(
+      "/api/auth/profile",
+      {
+        headers: getKristoHeaders({
+          userId,
+          role: "Member",
+          churchId: "",
+        }),
+      },
+      { screen: "ScreenCache", throttleMs: opts?.force ? 0 : SCREEN_CACHE_TTL_MS }
+    ).catch(() => null);
+
+    const resolved = resolveActiveChurchFromProfileResponse(profileRes);
+    if (!resolved.churchId) {
+      churchId = "";
+      effectiveSession = {
+        ...effectiveSession,
+        churchId: "",
+        activeChurchId: "",
+        churchName: "",
+        role: "Member",
+        churchRole: "Member",
+      } as KristoSession;
+      if (__DEV__) {
+        console.log("KRISTO_SILENT_PRELOAD_SKIP_CHURCH", {
+          userId,
+          membershipStatus: String(profileRes?.activeMembership?.status || "none"),
+        });
+      }
+    }
+  }
 
   const preloadKey = `${userId}:${churchId}`;
   if (
@@ -339,7 +380,7 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
   lastPreloadAt = Date.now();
 
   preloadInflight = (async () => {
-    const tasks: Promise<unknown>[] = [silentRefreshProfileScreen(session as KristoSession, opts)];
+    const tasks: Promise<unknown>[] = [silentRefreshProfileScreen(effectiveSession, opts)];
     if (churchId) {
       tasks.push(
         silentRefreshChurchOverview(
@@ -347,7 +388,7 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
           userId,
           getKristoHeaders({
             userId,
-            role: (session?.role || "Member") as any,
+            role: (effectiveSession?.role || "Member") as any,
             churchId,
           }),
           opts

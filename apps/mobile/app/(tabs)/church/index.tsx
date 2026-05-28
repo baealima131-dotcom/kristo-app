@@ -19,6 +19,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { feedList, subscribe, feedToggleLike, feedToggleSave, type FeedItem } from "@/src/lib/churchFeedStore";
+import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
 
 const S = { pad: 16 };
 
@@ -445,56 +446,110 @@ const goOverview = () => router.push("/church/overview");
   });
   const [loadingProfile, setLoadingProfile] = useState(true);
 
+  const loadChurchTabData = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const silent = Boolean(opts?.silent);
+      if (!base || !activeChurchId || !effectiveAuthUserId || !hasChurch) return;
+
+      if (!silent) setLoadingProfile(true);
+
+      const headers = {
+        accept: "application/json",
+        "x-kristo-user-id": effectiveAuthUserId,
+        "x-kristo-role": effectiveAuthRole,
+        "x-kristo-church-id": activeChurchId,
+      };
+
+      try {
+        const [overviewRes, membersRes, requestsRes] = await Promise.all([
+          fetch(`${base}/api/church/overview`, { headers }),
+          fetch(`${base}/api/church/members`, { headers }),
+          fetch(`${base}/api/church/join-requests`, { headers }),
+        ]);
+
+        const overviewJson = await overviewRes.json().catch(() => ({}));
+        const membersJson = await membersRes.json().catch(() => ({}));
+        const requestsJson = await requestsRes.json().catch(() => ({}));
+
+        let nextActiveMembers: number | null = null;
+        let nextRequestCount: number | null = null;
+
+        if (membersRes.ok && membersJson?.ok) {
+          const rows = Array.isArray(membersJson?.data)
+            ? membersJson.data
+            : Array.isArray(membersJson?.items)
+              ? membersJson.items
+              : [];
+          nextActiveMembers = rows.filter(
+            (x: any) => String(x?.status || x?.membershipStatus || "active").toLowerCase() === "active"
+          ).length;
+        }
+
+        if (requestsRes.ok && requestsJson?.ok) {
+          const rows = Array.isArray(requestsJson?.data)
+            ? requestsJson.data
+            : Array.isArray(requestsJson?.items)
+              ? requestsJson.items
+              : [];
+          nextRequestCount = rows.length;
+        }
+
+        if (overviewRes.ok && overviewJson?.ok) {
+          const p = overviewJson?.data?.profile || {};
+          const st = overviewJson?.data?.stats || {};
+          const nextProfile = {
+            id: String(p?.id || activeChurchId || ""),
+            name: String(p?.name || "Church"),
+          };
+          const nextStats = {
+            activeMembers: nextActiveMembers ?? Number(st?.activeMembers || 0),
+            ministries: Number(st?.ministries || 0),
+            ministryMembers: Number(st?.ministryMembers || 0),
+            unreadNotifications: Number(st?.unreadNotifications || 0),
+          };
+
+          setProfile((prev) =>
+            prev.id === nextProfile.id && prev.name === nextProfile.name ? prev : nextProfile
+          );
+          setStats((prev) =>
+            prev.activeMembers === nextStats.activeMembers &&
+            prev.ministries === nextStats.ministries &&
+            prev.ministryMembers === nextStats.ministryMembers &&
+            prev.unreadNotifications === nextStats.unreadNotifications
+              ? prev
+              : nextStats
+          );
+        }
+
+        if (silent) {
+          console.log("[ChurchTab] silent refresh", {
+            members: nextActiveMembers,
+            requests: nextRequestCount,
+          });
+        }
+      } finally {
+        if (!silent) setLoadingProfile(false);
+      }
+    },
+    [base, activeChurchId, effectiveAuthRole, effectiveAuthUserId, hasChurch]
+  );
+
+  useEffect(() => {
+    void loadChurchTabData({ silent: false });
+  }, [loadChurchTabData]);
+
+  useFocusedPolling(
+    "ChurchTab",
+    async () => {
+      await loadChurchTabData({ silent: true });
+    },
+    2500,
+    hasChurch
+  );
+
   useEffect(() => {
     return subscribe(() => setTick((t) => t + 1));
   }, []);
-
-  useEffect(() => {
-    let dead = false;
-
-    async function loadOverview() {
-      try {
-        if (!base || !activeChurchId || !effectiveAuthUserId) return;
-
-        setLoadingProfile(true);
-
-        const r = await fetch(`${base}/api/church/overview`, {
-          headers: {
-            accept: "application/json",
-            "x-kristo-user-id": effectiveAuthUserId,
-            "x-kristo-role": effectiveAuthRole,
-            "x-kristo-church-id": activeChurchId,
-          },
-        });
-
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j?.ok) return;
-        if (dead) return;
-
-        const p = j?.data?.profile || {};
-        const st = j?.data?.stats || {};
-
-        setProfile({
-          id: String(p?.id || activeChurchId || ""),
-          name: String(p?.name || "Church"),
-        });
-
-        setStats({
-          activeMembers: Number(st?.activeMembers || 0),
-          ministries: Number(st?.ministries || 0),
-          ministryMembers: Number(st?.ministryMembers || 0),
-          unreadNotifications: Number(st?.unreadNotifications || 0),
-        });
-      } finally {
-        if (!dead) setLoadingProfile(false);
-      }
-    }
-
-    loadOverview();
-    return () => {
-      dead = true;
-    };
-  }, [base, activeChurchId, effectiveAuthRole, effectiveAuthUserId]);
 
   const insets = useSafeAreaInsets();
   const data = useMemo(() => feedList(), [tick]);

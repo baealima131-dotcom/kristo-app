@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 
@@ -21,6 +21,7 @@ export function useFocusedPolling(
     let timer: ReturnType<typeof setInterval> | null = null;
     let alive = true;
     let appState: AppStateStatus = AppState.currentState;
+    let inflight = false;
 
     const canRun = () => alive && isFocused && appState === "active";
 
@@ -31,15 +32,25 @@ export function useFocusedPolling(
       logTrafficPollingPaused(screen, reason);
     };
 
+    const runTick = async () => {
+      if (!canRun() || inflight) return;
+      inflight = true;
+      try {
+        await tickRef.current();
+      } finally {
+        inflight = false;
+      }
+    };
+
     const start = () => {
-      if (!canRun() || timer) {
-        if (!canRun()) logTrafficPollingPaused(screen, !isFocused ? "unfocused" : "background");
+      if (!canRun()) {
+        logTrafficPollingPaused(screen, !isFocused ? "unfocused" : "background");
         return;
       }
-      void tickRef.current();
+      if (timer) return;
+      void runTick();
       timer = setInterval(() => {
-        if (!canRun()) return;
-        void tickRef.current();
+        void runTick();
       }, intervalMs);
     };
 
@@ -58,4 +69,19 @@ export function useFocusedPolling(
       sub.remove();
     };
   }, [screen, intervalMs, enabled, isFocused]);
+}
+
+/** Run async work once at a time (skip overlapping silent refresh ticks). */
+export function useSilentInflightGuard() {
+  const inflightRef = useRef(false);
+  return useCallback(async (fn: () => void | Promise<void>) => {
+    if (inflightRef.current) return false;
+    inflightRef.current = true;
+    try {
+      await fn();
+      return true;
+    } finally {
+      inflightRef.current = false;
+    }
+  }, []);
 }

@@ -684,6 +684,23 @@ export async function ensureActiveMembershipForSession(input: {
     return active;
   }
 
+  const history = await getMembershipsForUser(userId);
+  const removedFromHeaderChurch = history.find(
+    (m) =>
+      m.churchId === churchId &&
+      (m.status === "Left" || m.status === "Banned")
+  );
+  if (removedFromHeaderChurch) {
+    console.log("KRISTO_MEMBERSHIP_RESOLVED", {
+      userId,
+      headerChurchId: churchId,
+      synced: false,
+      reason: "removed-membership-block-resync",
+      membershipStatus: removedFromHeaderChurch.status,
+    });
+    return undefined;
+  }
+
   const reqRes = await requestMembership(userId, churchId, input.name, "ChurchInvite");
   if (!reqRes.ok) {
     console.log("KRISTO_MEMBERSHIP_RESOLVED", {

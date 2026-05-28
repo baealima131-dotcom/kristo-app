@@ -8,6 +8,11 @@ export type MsgAttachment = {
   name: string;
   mime: string;
   size?: number;
+  imageUri?: string;
+  fileUri?: string;
+  fileName?: string;
+  mimeType?: string;
+  url?: string;
 };
 
 export type AssignmentCardStatus = "open" | "taken" | "done";
