@@ -2304,6 +2304,7 @@ function MenuTile({
   danger,
   disabled,
   locked,
+  v2Restricted,
   fullWidth,
   compact,
   ministryCompact,
@@ -2315,41 +2316,55 @@ function MenuTile({
   danger?: boolean;
   disabled?: boolean;
   locked?: boolean;
+  v2Restricted?: boolean;
   fullWidth?: boolean;
   compact?: boolean;
   ministryCompact?: boolean;
   activeGlow?: boolean;
   onPress: () => void;
 }) {
-  const visuallyLocked = !!locked;
+  const isV2Restricted = !!v2Restricted;
+  const visuallyLocked = !!locked || isV2Restricted;
   const busy = !!disabled;
+  const nonInteractive = busy || isV2Restricted;
 
-  return (
-    <Pressable
-      disabled={busy}
-      onPress={onPress}
-      style={({ pressed }) => [
-        s.menuTile,
-        activeGlow && !visuallyLocked && !busy ? s.menuTileActiveGlow : null,
-        compact ? s.menuTileHalf : null,
-        ministryCompact ? s.menuTileMinistryCompact : null,
-        fullWidth ? s.menuTileFullWidth : null,
-        danger ? s.menuTileDanger : null,
-        visuallyLocked ? s.menuTileLocked : null,
-        busy ? [s.menuTileDisabled, ({ opacity: 0.58 } as ViewStyle)] : null,
-        pressed && !busy ? s.menuTilePressed : null,
-      ]}
-    >
+  const tileBody = (
+    <>
       <View style={s.menuTileTop}>
-        <View style={[s.menuTileIconWrap, danger ? s.menuTileIconWrapDanger : null, visuallyLocked ? s.menuTileIconWrapLocked : null]}>
+        <View
+          style={[
+            s.menuTileIconWrap,
+            danger ? s.menuTileIconWrapDanger : null,
+            visuallyLocked ? s.menuTileIconWrapLocked : null,
+            isV2Restricted ? s.menuTileIconWrapV2 : null,
+          ]}
+        >
           <Ionicons
             name={icon as any}
             size={18}
-            color={danger ? "#FF7D84" : visuallyLocked ? "rgba(217,179,95,0.55)" : GOLD}
+            color={
+              danger
+                ? "#FF7D84"
+                : isV2Restricted
+                  ? "rgba(217,179,95,0.32)"
+                  : visuallyLocked
+                    ? "rgba(217,179,95,0.55)"
+                    : GOLD
+            }
           />
         </View>
 
-        {visuallyLocked ? (
+        {isV2Restricted ? (
+          <View style={s.menuTileV2BadgeRow}>
+            <View style={s.menuTileV2Badge}>
+              <Text style={s.menuTileV2BadgeText}>V2</Text>
+            </View>
+            <View style={s.menuTileV2LockedBadge}>
+              <Ionicons name="lock-closed" size={9} color="rgba(255,255,255,0.48)" />
+              <Text style={s.menuTileV2LockedBadgeText}>LOCKED</Text>
+            </View>
+          </View>
+        ) : visuallyLocked ? (
           <View style={s.menuTileLockBadge}>
             <Ionicons name="lock-closed" size={10} color="rgba(255,255,255,0.72)" />
             <Text style={s.menuTileLockBadgeText}>Locked</Text>
@@ -2371,11 +2386,58 @@ function MenuTile({
           activeGlow && !visuallyLocked && !busy ? s.menuTileLabelActive : null,
           danger ? s.menuTileLabelDanger : null,
           visuallyLocked ? s.menuTileLabelLocked : null,
+          isV2Restricted ? s.menuTileLabelV2 : null,
         ]}
         numberOfLines={2}
       >
         {label}
       </Text>
+    </>
+  );
+
+  if (isV2Restricted) {
+    return (
+      <View
+        pointerEvents="none"
+        style={[
+          s.menuTileV2Shell,
+          compact ? s.menuTileHalf : null,
+          ministryCompact ? s.menuTileMinistryCompact : null,
+          fullWidth ? s.menuTileFullWidth : null,
+        ]}
+      >
+        <View
+          style={[
+            s.menuTile,
+            s.menuTileV2Restricted,
+            compact ? s.menuTileHalf : null,
+            ministryCompact ? s.menuTileMinistryCompact : null,
+            fullWidth ? s.menuTileFullWidth : null,
+          ]}
+        >
+          {tileBody}
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      disabled={nonInteractive}
+      onPress={onPress}
+      style={({ pressed }) => [
+        s.menuTile,
+        activeGlow && !visuallyLocked && !busy ? s.menuTileActiveGlow : null,
+        compact ? s.menuTileHalf : null,
+        ministryCompact ? s.menuTileMinistryCompact : null,
+        fullWidth ? s.menuTileFullWidth : null,
+        danger ? s.menuTileDanger : null,
+        visuallyLocked ? s.menuTileLocked : null,
+        busy ? [s.menuTileDisabled, ({ opacity: 0.58 } as ViewStyle)] : null,
+        pressed && !nonInteractive ? s.menuTilePressed : null,
+      ]}
+    >
+      {tileBody}
     </Pressable>
   );
 }
@@ -7374,6 +7436,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                               <MenuTile
                                 icon="mail-outline"
                                 label="V2 • Targeted msg"
+                                v2Restricted={!ministryToolAccess.targeted_msg}
                                 activeGlow={ministryToolAccess.targeted_msg}
                                 locked={!ministryToolAccess.targeted_msg}
                                 disabled={actionLoading !== null}
@@ -7383,6 +7446,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                               <MenuTile
                                 icon="megaphone-outline"
                                 label="V2 • Broadcast"
+                                v2Restricted={!ministryToolAccess.broadcast}
                                 activeGlow={ministryToolAccess.broadcast}
                                 locked={!ministryToolAccess.broadcast}
                                 disabled={actionLoading !== null}
@@ -7399,6 +7463,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                               <MenuTile
                                 icon="sparkles-outline"
                                 label="V2 • TLMC panel"
+                                v2Restricted={!ministryToolAccess.tlmc_panel}
                                 activeGlow={ministryToolAccess.tlmc_panel}
                                 locked={!ministryToolAccess.tlmc_panel}
                                 compact
@@ -7409,6 +7474,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                               <MenuTile
                                 icon="checkbox-outline"
                                 label="V2 • Election"
+                                v2Restricted={!ministryToolAccess.election}
                                 activeGlow={ministryToolAccess.election}
                                 locked={!ministryToolAccess.election}
                                 compact
@@ -10332,6 +10398,60 @@ videoEditorSplitTimelineBadgeText: {
   } as TextStyle,
   menuTileLabelLocked: {
     color: "rgba(255,255,255,0.58)",
+  } as TextStyle,
+  menuTileV2Shell: {
+    width: "48%",
+  } as ViewStyle,
+  menuTileV2Restricted: {
+    opacity: 0.46,
+    backgroundColor: "rgba(8,10,18,0.96)",
+    borderColor: "rgba(217,179,95,0.14)",
+    shadowOpacity: 0,
+    elevation: 0,
+  } as ViewStyle,
+  menuTileIconWrapV2: {
+    backgroundColor: "rgba(217,179,95,0.04)",
+    borderColor: "rgba(217,179,95,0.12)",
+  } as ViewStyle,
+  menuTileV2BadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  } as ViewStyle,
+  menuTileV2Badge: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.14)",
+  } as ViewStyle,
+  menuTileV2BadgeText: {
+    color: "rgba(217,179,95,0.42)",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  } as TextStyle,
+  menuTileV2LockedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  } as ViewStyle,
+  menuTileV2LockedBadgeText: {
+    color: "rgba(255,255,255,0.38)",
+    fontSize: 8,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+  } as TextStyle,
+  menuTileLabelV2: {
+    color: "rgba(255,255,255,0.34)",
+    fontWeight: "800",
   } as TextStyle,
   menuTilePressed: {
     opacity: 0.96,
