@@ -239,6 +239,19 @@ function feedItemMatchesScheduleId(it: FeedItem, targetId: string): boolean {
   );
 }
 
+function countClaimedScheduleSlots(slots: unknown): number {
+  if (!Array.isArray(slots)) return 0;
+  return slots.filter((slot: any) =>
+    String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()
+  ).length;
+}
+
+function enrichScheduleSlotsForStore(slots: unknown, nowMs = Date.now()) {
+  return normalizeLiveScheduleSlots(Array.isArray(slots) ? slots : []).map((slot, index) =>
+    enrichScheduleSlot(slot, index, nowMs)
+  );
+}
+
 function syncUserClaimedSlotStore(
   postId: string,
   slotId: string,
@@ -482,6 +495,12 @@ export function feedClaimSchedule(
   const userId = String(claim?.userId || "").trim();
   if (!baseId || !slotId || !userId || !claim) return;
 
+  console.log("KRISTO_MEDIA_CLAIM_START", {
+    postId: baseId,
+    slotId,
+    userId,
+  });
+
   let anyChanged = false;
   let claimMeta: {
     startMs: number;
@@ -514,7 +533,7 @@ export function feedClaimSchedule(
     if (!Array.isArray(anyIt.scheduleSlots) || !anyIt.scheduleSlots.length) return it;
 
     const patched = patchScheduleCollections(anyIt, slotId, claim);
-    if (!patched.changed) return it;
+    if (!patched.changed && !patched.claimedSlot) return it;
 
     anyChanged = true;
 
@@ -561,7 +580,8 @@ export function feedClaimSchedule(
       ...(Array.isArray(patched.allScheduleSlotsForLive)
         ? { allScheduleSlotsForLive: patched.allScheduleSlotsForLive }
         : {}),
-      claimedCount: Number(anyIt.claimedCount || 0) + 1,
+      claimedCount: countClaimedScheduleSlots(patched.scheduleSlots),
+      updatedAt: Date.now(),
     } as any;
   });
 
@@ -587,6 +607,19 @@ export function feedClaimSchedule(
   };
 
   writeRingClaimHint(hint);
+
+  console.log("KRISTO_MEDIA_CLAIM_LOCAL_SYNC", {
+    postId: baseId,
+    slotId,
+    userId,
+    anyChanged,
+    claimedCount: claimMeta?.item
+      ? countClaimedScheduleSlots(claimMeta.item.scheduleSlots)
+      : null,
+    startMs: hint.startMs,
+    endMs: hint.endMs,
+    slotNumber: hint.slotNumber,
+  });
 
   console.log("KRISTO_CLAIM_LOCAL_SYNC", {
     postId: baseId,
@@ -1074,11 +1107,58 @@ export function isMediaScheduleFeedItem(it: any): boolean {
   return slots.length > 0;
 }
 
+export function feedPublishMediaScheduleLocal(item: any) {
+  const churchId = String(item?.churchId || "").trim();
+  const id = String(item?.id || item?.sourceScheduleId || "").trim();
+  if (!churchId || !id) return;
+
+  const nowMs = Date.now();
+  const scheduleSlots = enrichScheduleSlotsForStore(item?.scheduleSlots, nowMs);
+  const claimedCount = countClaimedScheduleSlots(scheduleSlots);
+
+  const s = getStore();
+  s.items = s.items.filter((it) => {
+    if (!isMediaScheduleCard(it)) return true;
+    const itemCid = String((it as any)?.churchId || "").trim();
+    if (itemCid && itemCid === churchId) return false;
+    if (String(it.id) === id) return false;
+    return true;
+  });
+
+  s.items.unshift({
+    likeCount: 0,
+    liked: false,
+    saved: false,
+    kind: "post",
+    body: String(item?.text || item?.body || ""),
+    ...item,
+    id,
+    sourceScheduleId: id,
+    churchId,
+    scheduleSlots,
+    claimedCount,
+    updatedAt: nowMs,
+  } as any);
+
+  persistAndEmit();
+
+  console.log("KRISTO_MEDIA_SCHEDULE_CREATED_LOCAL_SYNC", {
+    churchId,
+    scheduleId: id,
+    slotCount: scheduleSlots.length,
+    firstSlotStartMs: scheduleSlots[0]?.startMs ?? null,
+  });
+}
+
 /** Replace optimistic local schedule with durable backend row (same church). */
 export function feedSyncMediaScheduleFromBackend(backendItem: any, localId?: string) {
   const backendId = String(backendItem?.id || "").trim();
   const churchId = String(backendItem?.churchId || "").trim();
   if (!backendId || !churchId) return;
+
+  const nowMs = Date.now();
+  const scheduleSlots = enrichScheduleSlotsForStore(backendItem?.scheduleSlots, nowMs);
+  const claimedCount = countClaimedScheduleSlots(scheduleSlots);
 
   const s = getStore();
   s.items = s.items.filter((it) => {
@@ -1099,10 +1179,18 @@ export function feedSyncMediaScheduleFromBackend(backendItem: any, localId?: str
     ...backendItem,
     id: backendId,
     sourceScheduleId: backendId,
-    scheduleSlots: Array.isArray(backendItem.scheduleSlots) ? backendItem.scheduleSlots : [],
+    scheduleSlots,
+    claimedCount,
+    updatedAt: nowMs,
   } as any);
 
   persistAndEmit();
+  console.log("KRISTO_MEDIA_SCHEDULE_CREATED_LOCAL_SYNC", {
+    churchId,
+    scheduleId: backendId,
+    slotCount: scheduleSlots.length,
+    source: "backend-sync",
+  });
   console.log("[ScheduleFeed] local synced from backend", { churchId, sourceScheduleId: backendId });
 }
 

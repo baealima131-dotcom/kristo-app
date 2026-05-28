@@ -58,6 +58,7 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
 import { baseFeedId, normalizeLiveScheduleSlots, patchMediaSlotClaimAvatarFields } from "@/src/lib/scheduleSlotUtils";
+import { mergeFeedRowsForScheduleScan } from "@/src/lib/liveScheduleRing";
 import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
 import {
   logHomeFeedVideoPlayState,
@@ -3631,12 +3632,6 @@ export default function FeedScreen() {
       )
     );
 
-    const backendScheduleForChurch = backendFeed.some(
-      (item: any) =>
-        isHomeMediaScheduleItem(item) &&
-        String(item?.churchId || "").trim() === myChurchId
-    );
-
     const localFeed: any[] = feedList().filter((item: any) => {
       // V1 safety: video posts must render from backend only.
       // Local media-video optimistic rows can create black duplicate slides.
@@ -3663,8 +3658,6 @@ export default function FeedScreen() {
         if (!memberUser) return false;
         const itemCid = String(item?.churchId || "").trim();
         if (myChurchId && itemCid && itemCid !== myChurchId) return false;
-        // Prefer durable backend schedule for the church — local is optimistic fallback only.
-        if (backendScheduleForChurch) return false;
         return true;
       }
 
@@ -3765,7 +3758,26 @@ export default function FeedScreen() {
       return { startMs: start, endMs: end };
     }
 
-    const expanded = [...safeBackendFeed, ...localFeed].flatMap((item) => {
+    function isScheduleFeedRow(item: any): boolean {
+      const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+      return (
+        isHomeMediaScheduleItem(item) ||
+        String(item?.scheduleType || "").includes("media-live-slots") ||
+        String(item?.source || "").includes("media-schedule") ||
+        slots.length > 0
+      );
+    }
+
+    const mergedScheduleRows = mergeFeedRowsForScheduleScan([
+      ...safeBackendFeed.filter(isScheduleFeedRow),
+      ...localFeed.filter(isScheduleFeedRow),
+    ]);
+    const nonScheduleRows = [
+      ...safeBackendFeed.filter((item) => !isScheduleFeedRow(item)),
+      ...localFeed.filter((item) => !isScheduleFeedRow(item)),
+    ];
+
+    const expanded = [...nonScheduleRows, ...mergedScheduleRows].flatMap((item) => {
       const slots = Array.isArray((item as any)?.scheduleSlots) ? ((item as any).scheduleSlots as any[]) : [];
       const isLiveSchedule =
         String((item as any)?.scheduleType || "").includes("live") ||
@@ -4381,29 +4393,39 @@ export default function FeedScreen() {
       claim: { userId: string; name: string; role: string; avatarUri: string };
     }) => {
       const { postId, slotId, claim } = params;
+      const targetBase = baseFeedId(postId);
       setBackendFeed((prev) =>
         prev.map((row: any) => {
-          const rowId = String(row?.id || "");
-          if (rowId !== postId) return row;
+          const rowBase = baseFeedId(String(row?.sourceScheduleId || row?.id || ""));
+          if (rowBase !== targetBase) return row;
           const scheduleSlots = Array.isArray(row.scheduleSlots)
-            ? row.scheduleSlots.map((slot: any) =>
-                String(slot?.id || "") === slotId
-                  ? patchMediaSlotClaimAvatarFields(
-                      {
-                        ...slot,
-                        claimed: true,
-                        isClaimed: true,
-                        status: "claimed",
-                        claimedByUserId: claim.userId,
-                        claimedByName: claim.name,
-                        claimedBy: claim,
-                      },
-                      claim.avatarUri
-                    )
-                  : slot
-              )
+            ? row.scheduleSlots.map((slot: any) => {
+                const slotCandidates = [
+                  String(slot?.id || ""),
+                  String(slot?.slotId || ""),
+                  String(slot?.slot || ""),
+                ].filter(Boolean);
+                if (!slotCandidates.includes(slotId)) return slot;
+                return patchMediaSlotClaimAvatarFields(
+                  {
+                    ...slot,
+                    claimed: true,
+                    isClaimed: true,
+                    status: "claimed",
+                    claimedByUserId: claim.userId,
+                    claimedByName: claim.name,
+                    claimedBy: claim,
+                  },
+                  claim.avatarUri
+                );
+              })
             : row.scheduleSlots;
-          return { ...row, scheduleSlots };
+          const claimedCount = Array.isArray(scheduleSlots)
+            ? scheduleSlots.filter((slot: any) =>
+                String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()
+              ).length
+            : 0;
+          return { ...row, scheduleSlots, claimedCount, updatedAt: Date.now() };
         })
       );
     },

@@ -26,6 +26,7 @@ import { isPlanActive } from "../../../src/lib/payments/mobileSubscriptions";
 import {
   feedAdd,
   feedList,
+  feedPublishMediaScheduleLocal,
   feedRemoveWhere,
   feedSyncMediaScheduleFromBackend,
   feedUnclaimSchedule,
@@ -1731,6 +1732,14 @@ export default function MediaStudioScreen() {
         ),
         scheduleSlots: scheduleSlotsPayload,
       };
+
+      feedPublishMediaScheduleLocal({
+        ...postPayload,
+        id: scheduleId,
+        sourceScheduleId: scheduleId,
+        updatedAt: Date.now(),
+      });
+      setHomeFeedItems([...feedList()]);
 
       console.log("[ScheduleCreate] backend post start", {
         churchId,

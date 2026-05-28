@@ -663,7 +663,21 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         }),
       }
     )
-      .catch(() => setOptimisticClaim(null))
+      .then((res: any) => {
+        console.log("KRISTO_MEDIA_CLAIM_PERSISTED", {
+          postId,
+          slotId,
+          userId: currentUserId,
+          ok: res?.ok !== false,
+        });
+        if (res?.ok === false || res?.error) {
+          throw new Error(String(res?.error || "claim failed"));
+        }
+      })
+      .catch(() => {
+        feedUnclaimSchedule(postId, { slotId, userId: currentUserId });
+        setOptimisticClaim(null);
+      })
       .finally(() => {
         claimingSlotRef.current = null;
       });

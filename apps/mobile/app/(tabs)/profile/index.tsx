@@ -23,12 +23,13 @@ import {
   onChurchInviteAccepted,
   onChurchMembershipChanged,
 } from "@/src/lib/kristoChurchInviteEvents";
-import { getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
+import { getUserClaimedSlotEntries, getRingClaimHints } from "@/src/lib/homeFeedStore";
 import {
   getSlotRingWindow,
   isNearLiveOrActiveSlot,
   slotClaimedByUser,
 } from "@/src/lib/liveScheduleRing";
+import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
 import {
   isSaveCooldown,
@@ -1294,9 +1295,26 @@ export default function MeScreen() {
       __fromClaimStore: true,
     }));
 
-    const merged = [...fromFeed, ...fromStore];
+    const fromHints = getRingClaimHints(currentUserId).map((hint) => ({
+      id: hint.slotId,
+      claimedByUserId: hint.userId,
+      claimedByName: hint.name || "You",
+      startMs: hint.startMs,
+      endMs: hint.endMs,
+      slot: hint.slotNumber,
+      feedTitle:
+        hint.item?.title ||
+        hint.item?.mediaName ||
+        "Live Schedule",
+      __fromRingHint: true,
+      __feedItem: hint.item,
+      __slotIndex: Math.max(0, Number(hint.slotNumber || 1) - 1),
+    }));
 
-    return merged
+    const merged = [...fromFeed, ...fromStore, ...fromHints];
+    const seenKeys = new Set<string>();
+
+    const result = merged
       .filter((slot: any, index: number) => {
         const { endMs } = getSlotRingWindow(slot, Number(slot.__slotIndex || index), now);
         if (endMs > 0 && endMs <= now) return false;
@@ -1305,11 +1323,29 @@ export default function MeScreen() {
         if (!startMs) return true;
         return startMs > now || isNearLiveOrActiveSlot(slot, Number(slot.__slotIndex || index), now);
       })
+      .filter((slot: any) => {
+        const feedKey = baseFeedId(String(slot.__feedItem?.sourceScheduleId || slot.__feedItem?.id || ""));
+        const slotKey = String(slot?.id || slot?.slotId || "");
+        if (!slotKey) return true;
+        if (seenKeys.has(`${feedKey}|${slotKey}`)) return false;
+        seenKeys.add(`${feedKey}|${slotKey}`);
+        return true;
+      })
       .sort((a: any, b: any) => {
         const aStart = getSlotRingWindow(a, Number(a.__slotIndex || 0), now).startMs;
         const bStart = getSlotRingWindow(b, Number(b.__slotIndex || 0), now).startMs;
         return aStart - bStart;
       });
+
+    console.log("KRISTO_PROFILE_CLAIMED_COUNT_RECOMPUTE", {
+      userId: currentUserId,
+      fromFeed: fromFeed.length,
+      fromStore: fromStore.length,
+      fromHints: fromHints.length,
+      total: result.length,
+    });
+
+    return result;
   }, [currentUserId, claimedFeedTick, profileFeedItems]);
 
   const churchActivityPosts = useMemo(() => {

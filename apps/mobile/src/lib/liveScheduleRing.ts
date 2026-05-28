@@ -162,8 +162,14 @@ export function mergeFeedRowsForScheduleScan(backendRows: any[] = []): any[] {
     const nextClaimed = (Array.isArray(row.scheduleSlots) ? row.scheduleSlots : []).filter(
       (slot: any) => String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()
     ).length;
+    const prevUpdated = Number(prev.updatedAt || prev.publishedAt || 0);
+    const nextUpdated = Number(row.updatedAt || row.publishedAt || 0);
 
-    byBase.set(key, nextClaimed >= prevClaimed ? row : prev);
+    if (nextClaimed > prevClaimed || (nextClaimed === prevClaimed && nextUpdated >= prevUpdated)) {
+      byBase.set(key, row);
+    } else {
+      byBase.set(key, prev);
+    }
   }
 
   return Array.from(byBase.values());
@@ -413,9 +419,17 @@ export function recomputeScheduleRingsFromRows(options: {
   });
 
   const church = computeChurchScheduleTabLive({
-    rows: options.rows.length ? options.rows : rows,
+    rows,
     viewerChurchId: options.viewerChurchId,
     nowMs,
+  });
+
+  console.log("KRISTO_LIVE_RING_FAST_SYNC", {
+    source: options.source || "local",
+    hasChurchLive: !!church,
+    isLiveNow: church?.isLiveNow ?? false,
+    startsInMin: church?.startsInMin ?? null,
+    mergedRowCount: rows.length,
   });
 
   console.log("KRISTO_PROFILE_RING_RECOMPUTE", {
