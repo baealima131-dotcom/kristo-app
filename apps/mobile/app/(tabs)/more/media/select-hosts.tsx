@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Image,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +13,7 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -50,9 +53,50 @@ type Member = {
 const API_BASE = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/$/, "");
 const GOLD = "#D9B35F";
 const GOLD_SOFT = "rgba(217,179,95,0.55)";
-const TAB_BAR_HEIGHT = 72;
+const TEXT_SECONDARY = "rgba(255,255,255,0.62)";
+const TEXT_MUTED = "rgba(255,255,255,0.44)";
+const TAB_BAR_HEIGHT = 70;
 const LIVE_FAB_CLEARANCE = 84;
-const FOOTER_HEIGHT = 92;
+const FOOTER_ABOVE_TAB_GAP = 16;
+const LIVE_FAB_VERTICAL_PAD = 14;
+const SAVE_BUTTON_HEIGHT = 56;
+const SAVE_BUTTON_RADIUS = 23;
+const SCROLL_BOTTOM_EXTRA = 56;
+const FOOTER_BANNER_RESERVE = 34;
+const FOOTER_GLOW_RESERVE = 12;
+const HOST_AVATAR_SIZE = 66;
+const EMPTY_PLACEHOLDER_SIZE = 52;
+
+function LuxuryPressable({
+  style,
+  children,
+  disabled,
+  onPress,
+}: {
+  style?: any;
+  children: React.ReactNode;
+  disabled?: boolean;
+  onPress?: () => void;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  return (
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      style={style}
+      onPressIn={() => {
+        if (disabled) return;
+        Animated.spring(scale, { toValue: 0.978, useNativeDriver: true, speed: 52, bounciness: 2 }).start();
+      }}
+      onPressOut={() => {
+        Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 52, bounciness: 2 }).start();
+      }}
+    >
+      <Animated.View style={{ transform: [{ scale }] }}>{children}</Animated.View>
+    </Pressable>
+  );
+}
 
 function imgUrl(u?: string) {
   if (!u) return "";
@@ -117,8 +161,35 @@ export default function SelectHosts() {
     [hosts]
   );
 
-  const scrollBottomPad =
-    insets.bottom + TAB_BAR_HEIGHT + LIVE_FAB_CLEARANCE + FOOTER_HEIGHT + 12;
+  const bottomContentClearance = useMemo(
+    () =>
+      SAVE_BUTTON_HEIGHT +
+      TAB_BAR_HEIGHT +
+      LIVE_FAB_CLEARANCE +
+      insets.bottom +
+      SCROLL_BOTTOM_EXTRA +
+      FOOTER_BANNER_RESERVE +
+      FOOTER_GLOW_RESERVE,
+    [insets.bottom]
+  );
+
+  const footerBottomOffset = useMemo(
+    () => TAB_BAR_HEIGHT + FOOTER_ABOVE_TAB_GAP + LIVE_FAB_VERTICAL_PAD,
+    []
+  );
+
+  const saveGlowPulse = useRef(new Animated.Value(0.35)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(saveGlowPulse, { toValue: 0.72, duration: 1800, useNativeDriver: true }),
+        Animated.timing(saveGlowPulse, { toValue: 0.35, duration: 1800, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [saveGlowPulse]);
 
   const applySavedHosts = useCallback((savedHosts: HostDraft[]) => {
     setHosts(slotsFromHosts(savedHosts.slice(0, MAX_CHURCH_MEDIA_HOSTS)));
@@ -350,31 +421,55 @@ export default function SelectHosts() {
   return (
     <View style={s.root}>
       <LinearGradient
-        colors={["#05070D", "#0A101C", "#050810"]}
+        colors={["#04060B", "#080E18", "#050810"]}
         style={StyleSheet.absoluteFillObject}
       />
       <LinearGradient
         pointerEvents="none"
-        colors={["rgba(217,179,95,0.10)", "transparent", "transparent"]}
+        colors={["rgba(217,179,95,0.14)", "rgba(217,179,95,0.04)", "transparent"]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
         style={s.topGlow}
       />
+      <View pointerEvents="none" style={s.bgRadialGold} />
+      <View pointerEvents="none" style={s.bgRadialBlue} />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["transparent", "rgba(8,14,24,0.35)", "transparent"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+        style={s.bgMidBand}
+      />
 
-      <View style={[s.header, { paddingTop: insets.top + 10 }]}>
-        <Pressable onPress={() => router.back()} style={s.backBtn}>
-          <Ionicons name="chevron-back" size={22} color={GOLD} />
+      <View style={[s.header, { paddingTop: insets.top + 8 }]}>
+        <Pressable onPress={() => router.back()} style={({ pressed }) => [s.backBtn, pressed && s.backBtnPressed]}>
+          <Ionicons name="chevron-back" size={20} color={GOLD} />
         </Pressable>
 
         <View style={s.headerTextWrap}>
-          <View style={s.titleRow}>
-            <Text style={s.title}>Trusted Hosts</Text>
-            <View style={s.countPill}>
-              <Text style={s.countPillText}>
-                {selectedCount}/{MAX_CHURCH_MEDIA_HOSTS} selected
-              </Text>
+          <View style={s.titleBlock}>
+            <View pointerEvents="none" style={s.titleGlow} />
+            <View style={s.titleRow}>
+              <Text style={s.title}>Trusted Hosts</Text>
+              <View style={s.countPillOuter}>
+                {Platform.OS === "ios" ? (
+                  <BlurView intensity={28} tint="dark" style={StyleSheet.absoluteFillObject} />
+                ) : null}
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={["rgba(255,255,255,0.10)", "rgba(217,179,95,0.06)", "transparent"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={StyleSheet.absoluteFillObject}
+                />
+                <Text style={s.countPillText}>
+                  {selectedCount}/{MAX_CHURCH_MEDIA_HOSTS}
+                </Text>
+              </View>
             </View>
           </View>
           <Text style={s.subtitle}>
-            Pastor can assign up to {MAX_CHURCH_MEDIA_HOSTS} active church members to help manage Media Studio.
+            Assign up to {MAX_CHURCH_MEDIA_HOSTS} trusted members to help manage your church broadcast studio.
           </Text>
         </View>
       </View>
@@ -387,8 +482,11 @@ export default function SelectHosts() {
       ) : (
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={[s.scrollContent, { paddingBottom: scrollBottomPad }]}
+          contentContainerStyle={[s.scrollContent, { paddingBottom: bottomContentClearance }]}
+          scrollIndicatorInsets={{ bottom: bottomContentClearance * 0.35 }}
         >
+          <Text style={s.sectionEyebrow}>Broadcast control</Text>
+
           {hosts.map((host, index) => {
             const filled = Boolean(host);
             const avatar = imgUrl(host?.avatarUrl || host?.avatarUri);
@@ -398,18 +496,47 @@ export default function SelectHosts() {
                 key={`slot-${index}`}
                 style={[s.slotCard, filled ? s.slotCardFilled : s.slotCardEmpty]}
               >
+                {filled ? (
+                  <>
+                    <View pointerEvents="none" style={s.cardAmbientGlow} />
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={["rgba(255,255,255,0.16)", "rgba(217,179,95,0.08)", "transparent"]}
+                      start={{ x: 0.5, y: 0 }}
+                      end={{ x: 0.5, y: 1 }}
+                      style={s.cardSheen}
+                    />
+                    <View pointerEvents="none" style={s.cardInnerGlow} />
+                  </>
+                ) : (
+                  <>
+                    <View pointerEvents="none" style={s.emptyCardAmbientGlow} />
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={["rgba(255,255,255,0.05)", "rgba(217,179,95,0.03)", "transparent"]}
+                      start={{ x: 0.5, y: 0 }}
+                      end={{ x: 0.5, y: 1 }}
+                      style={s.cardSheenEmpty}
+                    />
+                    <View pointerEvents="none" style={s.emptyCardInnerGlow} />
+                  </>
+                )}
+
                 <View style={s.slotTopRow}>
                   <Text style={[s.slotLabel, filled ? s.slotLabelFilled : s.slotLabelEmpty]}>
-                    Host slot {index + 1}
+                    Host {index + 1}
                   </Text>
                   {filled ? (
                     <Pressable
                       disabled={!canManageHosts || saving}
                       onPress={() => removeHost(index)}
                       hitSlop={8}
-                      style={({ pressed }) => [s.removeBtn, pressed ? s.pressed : null]}
+                      style={({ pressed }) => [s.removeBtn, pressed && s.removeBtnPressed]}
                     >
-                      <Ionicons name="close-circle-outline" size={18} color="#FCA5A5" />
+                      {Platform.OS === "ios" ? (
+                        <BlurView intensity={20} tint="dark" style={StyleSheet.absoluteFillObject} />
+                      ) : null}
+                      <Ionicons name="close" size={11} color="#FCA5A5" />
                       <Text style={s.removeBtnText}>Remove</Text>
                     </Pressable>
                   ) : null}
@@ -417,47 +544,65 @@ export default function SelectHosts() {
 
                 {filled ? (
                   <View style={s.hostRow}>
-                    {avatar ? (
-                      <Image source={{ uri: avatar }} style={s.hostAvatar} />
-                    ) : (
-                      <View style={s.hostAvatarFallback}>
-                        <Text style={s.hostAvatarInitial}>
-                          {String(host!.name || "H").slice(0, 1).toUpperCase()}
-                        </Text>
-                      </View>
-                    )}
+                    <View style={s.avatarStage}>
+                      <View pointerEvents="none" style={s.avatarAmbient} />
+                      {avatar ? (
+                        <Image source={{ uri: avatar }} style={s.hostAvatar} />
+                      ) : (
+                        <View style={s.hostAvatarFallback}>
+                          <Text style={s.hostAvatarInitial}>
+                            {String(host!.name || "H").slice(0, 1).toUpperCase()}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
 
                     <View style={s.hostMeta}>
                       <Text style={s.hostName} numberOfLines={1}>
                         {host!.name}
                       </Text>
-                      <Text style={s.hostRole} numberOfLines={1}>
-                        {host!.role}
-                      </Text>
-                      {host!.kristoId ? (
-                        <View style={s.coreIdPill}>
-                          <Text style={s.coreIdText}>{host!.kristoId}</Text>
-                        </View>
-                      ) : null}
+                      <View style={s.hostSubRow}>
+                        <Text style={s.hostRole} numberOfLines={1}>
+                          {host!.role}
+                        </Text>
+                        {host!.kristoId ? (
+                          <>
+                            <Text style={s.hostDot}>·</Text>
+                            <View style={s.coreIdPill}>
+                              <Text style={s.coreIdText}>{host!.kristoId}</Text>
+                            </View>
+                          </>
+                        ) : null}
+                      </View>
                     </View>
                   </View>
                 ) : (
-                  <Pressable
+                  <LuxuryPressable
                     disabled={!canManageHosts || saving || selectedCount >= MAX_CHURCH_MEDIA_HOSTS}
                     onPress={() => setActiveSlot(index)}
-                    style={({ pressed }) => [s.emptySlotBody, pressed ? s.pressed : null]}
+                    style={s.emptySlotPressable}
                   >
-                    <View style={s.emptyIconRing}>
-                      <Ionicons name="person-add-outline" size={18} color={GOLD} />
+                    <View style={s.emptyAvatarStage}>
+                      <View pointerEvents="none" style={s.emptyAmbientGlow} />
+                      <View style={s.emptyDashedFrame}>
+                        <Ionicons name="person-add-outline" size={18} color={GOLD_SOFT} />
+                      </View>
                     </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.emptyTitle}>Empty slot</Text>
-                      <Text style={s.emptySub}>
-                        {canManageHosts ? "Tap to choose a church member" : "Pastor access required"}
+
+                    <View style={s.emptyTextCol}>
+                      <Text style={s.emptyTitle}>Available slot</Text>
+                      <Text style={s.emptyMicro}>
+                        {canManageHosts ? "Tap to assign" : "Pastor access required"}
                       </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.35)" />
-                  </Pressable>
+
+                    <View style={s.emptyChevronWrap}>
+                      {Platform.OS === "ios" ? (
+                        <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
+                      ) : null}
+                      <Ionicons name="chevron-forward" size={14} color="rgba(217,179,95,0.65)" />
+                    </View>
+                  </LuxuryPressable>
                 )}
               </View>
             );
@@ -469,71 +614,88 @@ export default function SelectHosts() {
         style={[
           s.footer,
           {
-            paddingBottom: insets.bottom + TAB_BAR_HEIGHT + 12,
+            bottom: footerBottomOffset,
           },
         ]}
+        pointerEvents="box-none"
       >
         <LinearGradient
           pointerEvents="none"
-          colors={["transparent", "rgba(5,7,13,0.92)", "rgba(5,7,13,0.98)"]}
+          colors={["transparent", "rgba(5,8,14,0.04)", "rgba(5,8,14,0.08)"]}
           style={s.footerFade}
         />
 
         {saveSuccess ? (
           <View style={s.bannerSuccess}>
-            <Ionicons name="checkmark-circle" size={16} color="#86EFAC" />
+            <Ionicons name="checkmark-circle" size={14} color="#86EFAC" />
             <Text style={s.bannerSuccessText}>{saveSuccess}</Text>
           </View>
         ) : null}
 
         {saveError ? (
           <View style={s.bannerError}>
-            <Ionicons name="alert-circle" size={16} color="#FCA5A5" />
+            <Ionicons name="alert-circle" size={14} color="#FCA5A5" />
             <Text style={s.bannerErrorText}>{saveError}</Text>
           </View>
         ) : null}
 
-        <Pressable
-          disabled={!canManageHosts || saving || loading}
-          onPress={saveHosts}
-          style={({ pressed }) => [
-            s.saveBtn,
-            !canManageHosts ? s.saveBtnDisabled : null,
-            saving ? s.saveBtnSaving : null,
-            pressed && canManageHosts && !saving ? s.pressed : null,
-          ]}
-        >
-          <LinearGradient
-            colors={
-              !canManageHosts
-                ? ["rgba(217,179,95,0.18)", "rgba(217,179,95,0.10)"]
-                : saving
-                  ? ["rgba(217,179,95,0.55)", "rgba(167,124,46,0.72)"]
-                  : ["#F2D792", GOLD, "#A67C2E"]
-            }
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={s.saveBtnGradient}
+        <View style={s.saveBtnWrap}>
+          {!saving && canManageHosts ? (
+            <Animated.View
+              pointerEvents="none"
+              style={[s.saveBtnGlow, { opacity: saveGlowPulse }]}
+            />
+          ) : null}
+
+          <Pressable
+            disabled={!canManageHosts || saving || loading}
+            onPress={saveHosts}
+            style={({ pressed }) => [
+              s.saveBtn,
+              !canManageHosts ? s.saveBtnDisabled : null,
+              saving ? s.saveBtnSaving : null,
+              pressed && canManageHosts && !saving ? s.saveBtnPressed : null,
+            ]}
           >
-            {saving ? (
-              <>
-                <ActivityIndicator size="small" color="#0B0F17" />
-                <Text style={s.saveBtnTextDark}>{saveLabel}</Text>
-              </>
-            ) : (
-              <>
-                <Ionicons
-                  name={canManageHosts ? "save-outline" : "lock-closed-outline"}
-                  size={18}
-                  color={canManageHosts ? "#0B0F17" : GOLD}
-                />
-                <Text style={[s.saveBtnTextDark, !canManageHosts && s.saveBtnTextMuted]}>
-                  {canManageHosts ? "Save Trusted Hosts" : "Pastor access required"}
-                </Text>
-              </>
-            )}
-          </LinearGradient>
-        </Pressable>
+            <LinearGradient
+              colors={
+                !canManageHosts
+                  ? ["rgba(217,179,95,0.14)", "rgba(217,179,95,0.08)"]
+                  : saving
+                    ? ["rgba(217,179,95,0.62)", "rgba(167,124,46,0.78)"]
+                    : ["#F5E2A8", "#E8C872", GOLD, "#9A7330"]
+              }
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={s.saveBtnGradient}
+            >
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(255,255,255,0.38)", "rgba(255,255,255,0.06)", "transparent"]}
+                start={{ x: 0.5, y: 0 }}
+                end={{ x: 0.5, y: 0.55 }}
+                style={s.saveBtnSheen}
+              />
+              {saving ? (
+                <>
+                  <ActivityIndicator size="small" color="#0B0F17" />
+                  <Text style={s.saveBtnTextDark}>{saveLabel}</Text>
+                </>
+              ) : (
+                <>
+                  <Ionicons
+                    name={canManageHosts ? "shield-checkmark-outline" : "lock-closed-outline"}
+                    size={15}
+                    color={canManageHosts ? "#0B0F17" : GOLD}
+                  />
+                  <Text style={[s.saveBtnTextDark, !canManageHosts && s.saveBtnTextMuted]}>
+                    {canManageHosts ? "Save Trusted Hosts" : "Pastor access required"}
+                  </Text>
+                </>
+              )}
+            </LinearGradient>
+          </Pressable>
+        </View>
       </View>
 
       <Modal visible={activeSlot !== null} transparent animationType="slide">
@@ -561,7 +723,7 @@ export default function SelectHosts() {
                     style={({ pressed }) => [
                       s.memberRow,
                       used || isPastorMember ? s.memberRowDisabled : null,
-                      pressed && !used && !isPastorMember ? s.pressed : null,
+                      pressed && !used && !isPastorMember ? s.memberRowPressed : null,
                     ]}
                   >
                     {avatar ? (
@@ -605,299 +767,525 @@ export default function SelectHosts() {
 const s = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#05070D",
+    backgroundColor: "#04060B",
   },
   topGlow: {
     position: "absolute",
     top: 0,
     left: 0,
     right: 0,
-    height: 180,
+    height: 220,
+  },
+  bgRadialGold: {
+    position: "absolute",
+    top: 80,
+    left: -40,
+    width: 260,
+    height: 260,
+    borderRadius: 130,
+    backgroundColor: "rgba(217,179,95,0.07)",
+  },
+  bgRadialBlue: {
+    position: "absolute",
+    top: 280,
+    right: -70,
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    backgroundColor: "rgba(72,120,210,0.06)",
+  },
+  bgMidBand: {
+    position: "absolute",
+    top: "38%",
+    left: 0,
+    right: 0,
+    height: 280,
   },
   header: {
-    paddingHorizontal: 16,
-    paddingBottom: 12,
+    paddingHorizontal: 18,
+    paddingBottom: 14,
   },
   backBtn: {
-    width: 40,
-    height: 40,
+    width: 38,
+    height: 38,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.22)",
-    marginBottom: 12,
+    borderColor: "rgba(217,179,95,0.20)",
+    marginBottom: 14,
+  },
+  backBtnPressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.97 }],
   },
   headerTextWrap: {
-    gap: 6,
+    gap: 8,
+  },
+  titleBlock: {
+    position: "relative",
+  },
+  titleGlow: {
+    position: "absolute",
+    left: -8,
+    top: -6,
+    width: 180,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(217,179,95,0.10)",
   },
   titleRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
+    gap: 12,
   },
   title: {
     color: GOLD,
-    fontSize: 24,
-    fontWeight: "900",
-    letterSpacing: 0.2,
+    fontSize: 21,
+    fontWeight: "800",
+    letterSpacing: 0.15,
   },
-  countPill: {
-    paddingHorizontal: 10,
-    height: 28,
+  countPillOuter: {
+    minWidth: 52,
+    height: 30,
+    paddingHorizontal: 12,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.12)",
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.28)",
+    borderColor: "rgba(217,179,95,0.26)",
   },
   countPillText: {
     color: GOLD,
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 0.4,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.6,
   },
   subtitle: {
-    color: "rgba(255,255,255,0.58)",
+    color: TEXT_SECONDARY,
     fontSize: 13,
-    fontWeight: "700",
-    lineHeight: 18,
+    fontWeight: "600",
+    lineHeight: 19,
+    letterSpacing: 0.12,
+    maxWidth: "96%",
   },
   loadingWrap: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
+    gap: 18,
   },
   loadingText: {
-    color: "rgba(255,255,255,0.62)",
-    fontWeight: "800",
+    color: TEXT_SECONDARY,
+    fontWeight: "700",
+    fontSize: 13,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    gap: 10,
+    paddingHorizontal: 18,
+    paddingTop: 2,
+    gap: 14,
+  },
+  sectionEyebrow: {
+    color: TEXT_MUTED,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
+    marginBottom: 2,
+    marginLeft: 2,
   },
   slotCard: {
     borderRadius: 20,
-    padding: 14,
+    paddingHorizontal: 14,
+    paddingTop: 11,
+    paddingBottom: 12,
     borderWidth: 1,
     overflow: "hidden",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOpacity: 0.18,
+        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 6 },
+      },
+      android: { elevation: 3 },
+    }),
   },
   slotCardEmpty: {
-    backgroundColor: "rgba(255,255,255,0.025)",
-    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(8,14,24,0.46)",
+    borderColor: "rgba(217,179,95,0.16)",
+    paddingBottom: 10,
   },
   slotCardFilled: {
-    backgroundColor: "rgba(217,179,95,0.07)",
-    borderColor: GOLD_SOFT,
+    backgroundColor: "rgba(10,16,28,0.72)",
+    borderColor: "rgba(217,179,95,0.32)",
+  },
+  cardAmbientGlow: {
+    position: "absolute",
+    left: 12,
+    top: 34,
+    width: 76,
+    height: 76,
+    borderRadius: 22,
+    backgroundColor: "rgba(217,179,95,0.10)",
+  },
+  cardSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 40,
+  },
+  cardSheenEmpty: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 32,
+  },
+  emptyCardAmbientGlow: {
+    position: "absolute",
+    left: 12,
+    top: 34,
+    width: 60,
+    height: 60,
+    borderRadius: 18,
+    backgroundColor: "rgba(217,179,95,0.08)",
+  },
+  emptyCardInnerGlow: {
+    position: "absolute",
+    top: 1,
+    left: 1,
+    right: 1,
+    bottom: 1,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.10)",
+  },
+  cardInnerGlow: {
+    position: "absolute",
+    top: 1,
+    left: 1,
+    right: 1,
+    bottom: 1,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.14)",
   },
   slotTopRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 10,
+    marginBottom: 8,
+    minHeight: 22,
   },
   slotLabel: {
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 1.1,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1.2,
     textTransform: "uppercase",
   },
   slotLabelEmpty: {
-    color: "rgba(255,255,255,0.42)",
+    color: TEXT_MUTED,
   },
   slotLabelFilled: {
-    color: "rgba(217,179,95,0.92)",
+    color: "rgba(217,179,95,0.88)",
   },
   hostRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+    minHeight: HOST_AVATAR_SIZE,
   },
-  hostAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 999,
-    borderWidth: 1.5,
-    borderColor: GOLD,
-  },
-  hostAvatarFallback: {
-    width: 44,
-    height: 44,
-    borderRadius: 999,
+  avatarStage: {
+    width: HOST_AVATAR_SIZE + 6,
+    height: HOST_AVATAR_SIZE + 6,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.12)",
+    flexShrink: 0,
+  },
+  avatarAmbient: {
+    position: "absolute",
+    width: HOST_AVATAR_SIZE + 10,
+    height: HOST_AVATAR_SIZE + 10,
+    borderRadius: 20,
+    backgroundColor: "rgba(217,179,95,0.14)",
+  },
+  hostAvatar: {
+    width: HOST_AVATAR_SIZE,
+    height: HOST_AVATAR_SIZE,
+    borderRadius: 18,
     borderWidth: 1.5,
-    borderColor: "rgba(217,179,95,0.35)",
+    borderColor: "rgba(247,210,112,0.88)",
+  },
+  hostAvatarFallback: {
+    width: HOST_AVATAR_SIZE,
+    height: HOST_AVATAR_SIZE,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    borderWidth: 1.5,
+    borderColor: "rgba(247,210,112,0.38)",
   },
   hostAvatarInitial: {
     color: GOLD,
-    fontWeight: "900",
-    fontSize: 16,
+    fontWeight: "800",
+    fontSize: 22,
   },
   hostMeta: {
     flex: 1,
-    gap: 2,
+    gap: 4,
+    justifyContent: "center",
+    minWidth: 0,
   },
   hostName: {
-    color: "#fff",
+    color: "#F8FAFC",
     fontSize: 16,
-    fontWeight: "900",
+    fontWeight: "800",
+    letterSpacing: 0.04,
+  },
+  hostSubRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "wrap",
   },
   hostRole: {
-    color: "rgba(255,255,255,0.58)",
+    color: TEXT_SECONDARY,
+    fontSize: 13,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
+  hostDot: {
+    color: "rgba(255,255,255,0.28)",
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   coreIdPill: {
-    alignSelf: "flex-start",
-    marginTop: 4,
     paddingHorizontal: 8,
     height: 22,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.12)",
+    backgroundColor: "rgba(217,179,95,0.10)",
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.24)",
+    borderColor: "rgba(217,179,95,0.22)",
   },
   coreIdText: {
     color: GOLD,
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.4,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.35,
   },
-  emptySlotBody: {
+  emptySlotPressable: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    minHeight: 52,
+    gap: 12,
+    minHeight: EMPTY_PLACEHOLDER_SIZE + 4,
   },
-  emptyIconRing: {
-    width: 36,
-    height: 36,
-    borderRadius: 999,
+  emptyAvatarStage: {
+    width: EMPTY_PLACEHOLDER_SIZE + 4,
+    height: EMPTY_PLACEHOLDER_SIZE + 4,
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
+  },
+  emptyAmbientGlow: {
+    position: "absolute",
+    width: EMPTY_PLACEHOLDER_SIZE + 8,
+    height: EMPTY_PLACEHOLDER_SIZE + 8,
+    borderRadius: 16,
     backgroundColor: "rgba(217,179,95,0.10)",
+  },
+  emptyDashedFrame: {
+    width: EMPTY_PLACEHOLDER_SIZE,
+    height: EMPTY_PLACEHOLDER_SIZE,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.18)",
+    borderStyle: "dashed",
+    borderColor: "rgba(217,179,95,0.32)",
+    backgroundColor: "rgba(217,179,95,0.05)",
+  },
+  emptyTextCol: {
+    flex: 1,
+    justifyContent: "center",
+    minWidth: 0,
+    gap: 4,
   },
   emptyTitle: {
-    color: "rgba(255,255,255,0.82)",
+    color: "rgba(255,255,255,0.88)",
     fontSize: 14,
-    fontWeight: "900",
+    fontWeight: "800",
+    letterSpacing: 0.08,
   },
-  emptySub: {
-    color: "rgba(255,255,255,0.45)",
+  emptyMicro: {
+    color: TEXT_MUTED,
     fontSize: 12,
-    fontWeight: "700",
-    marginTop: 2,
+    fontWeight: "600",
+    letterSpacing: 0.2,
+    lineHeight: 16,
+  },
+  emptyChevronWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 999,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.20)",
+    flexShrink: 0,
   },
   removeBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 3,
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 999,
+    overflow: "hidden",
     backgroundColor: "rgba(248,113,113,0.08)",
     borderWidth: 1,
     borderColor: "rgba(248,113,113,0.18)",
+    flexShrink: 0,
+  },
+  removeBtnPressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.97 }],
   },
   removeBtnText: {
     color: "#FCA5A5",
-    fontSize: 11,
-    fontWeight: "900",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.15,
   },
   footer: {
     position: "absolute",
     left: 0,
     right: 0,
-    bottom: 0,
-    paddingHorizontal: 16,
+    paddingHorizontal: 18,
     paddingTop: 10,
-    gap: 8,
+    paddingBottom: 0,
+    gap: 6,
+    backgroundColor: "transparent",
   },
   footerFade: {
     position: "absolute",
     left: 0,
     right: 0,
-    top: -28,
-    height: 28,
+    top: -14,
+    height: 14,
   },
   bannerSuccess: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 14,
-    backgroundColor: "rgba(34,197,94,0.10)",
+    gap: 7,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 12,
+    backgroundColor: "rgba(34,197,94,0.08)",
     borderWidth: 1,
-    borderColor: "rgba(134,239,172,0.22)",
+    borderColor: "rgba(134,239,172,0.18)",
   },
   bannerSuccessText: {
     color: "#86EFAC",
-    fontWeight: "800",
-    fontSize: 12,
+    fontWeight: "700",
+    fontSize: 11,
     flex: 1,
   },
   bannerError: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 14,
-    backgroundColor: "rgba(248,113,113,0.10)",
+    gap: 7,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 12,
+    backgroundColor: "rgba(248,113,113,0.08)",
     borderWidth: 1,
-    borderColor: "rgba(252,165,165,0.22)",
+    borderColor: "rgba(252,165,165,0.18)",
   },
   bannerErrorText: {
     color: "#FCA5A5",
-    fontWeight: "800",
-    fontSize: 12,
+    fontWeight: "700",
+    fontSize: 11,
     flex: 1,
   },
+  saveBtnWrap: {
+    position: "relative",
+  },
+  saveBtnGlow: {
+    position: "absolute",
+    left: 10,
+    right: 10,
+    top: 4,
+    bottom: 0,
+    borderRadius: SAVE_BUTTON_RADIUS,
+    backgroundColor: "rgba(217,179,95,0.32)",
+    ...Platform.select({
+      ios: {
+        shadowColor: GOLD,
+        shadowOpacity: 0.38,
+        shadowRadius: 14,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      android: { elevation: 5 },
+    }),
+  },
   saveBtn: {
-    borderRadius: 18,
+    borderRadius: SAVE_BUTTON_RADIUS,
     overflow: "hidden",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOpacity: 0.24,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      android: { elevation: 4 },
+    }),
   },
   saveBtnDisabled: {
-    opacity: 0.92,
+    opacity: 0.9,
   },
   saveBtnSaving: {
     opacity: 0.96,
   },
+  saveBtnPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.985 }],
+  },
   saveBtnGradient: {
-    minHeight: 52,
-    paddingHorizontal: 16,
+    height: SAVE_BUTTON_HEIGHT,
+    paddingHorizontal: 18,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 7,
+  },
+  saveBtnSheen: {
+    ...StyleSheet.absoluteFillObject,
   },
   saveBtnTextDark: {
     color: "#0B0F17",
-    fontSize: 15,
-    fontWeight: "900",
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
   saveBtnTextMuted: {
     color: GOLD,
   },
-  pressed: {
-    opacity: 0.88,
-  },
   modalOverlay: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(0,0,0,0.58)",
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -926,9 +1314,9 @@ const s = StyleSheet.create({
     fontWeight: "900",
   },
   modalSub: {
-    color: "rgba(255,255,255,0.55)",
+    color: TEXT_SECONDARY,
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "600",
     marginTop: 4,
     marginBottom: 10,
   },
@@ -941,10 +1329,14 @@ const s = StyleSheet.create({
     borderColor: "rgba(217,179,95,0.16)",
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 18,
   },
   memberRowDisabled: {
     opacity: 0.45,
+  },
+  memberRowPressed: {
+    opacity: 0.86,
+    transform: [{ scale: 0.985 }],
   },
   memberAvatar: {
     width: 40,
@@ -969,9 +1361,9 @@ const s = StyleSheet.create({
     fontWeight: "900",
   },
   memberRole: {
-    color: "rgba(255,255,255,0.55)",
+    color: TEXT_SECONDARY,
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "700",
     marginTop: 2,
   },
   modalCancelBtn: {
