@@ -52,6 +52,124 @@ function canModerateLive(
   return authority.isMediaOwnerHost;
 }
 
+function liveStoreKey(churchId: string, liveId: string) {
+  const cid = String(churchId || "").trim();
+  const lid = String(liveId || "").trim() || "scheduled-live-default";
+  return `${cid}|${lid}`;
+}
+
+function defaultLiveRecord(churchId: string, liveId: string, now: number) {
+  const lid = String(liveId || "").trim() || `church-live-${now}`;
+  return {
+    isLive: true,
+    liveId: lid,
+    churchId,
+    pastorUserId: "",
+    mediaName: "Church Live",
+    title: "Pastor is LIVE",
+    startedAt: now,
+    updatedAt: now,
+    requests: {} as Record<string, any>,
+    comments: [] as any[],
+    viewerCount: 0,
+    blockedUsers: {} as Record<string, any>,
+    viewerPresence: {} as Record<string, any>,
+    requestPolicy: "locked",
+  };
+}
+
+function normalizeLiveRecord(live: any, churchId: string, liveId: string) {
+  const lid = String(liveId || live?.liveId || "").trim() || "scheduled-live-default";
+  return {
+    ...live,
+    liveId: lid,
+    churchId: String(live?.churchId || churchId || "").trim(),
+    requests: live?.requests && typeof live.requests === "object" ? live.requests : {},
+    blockedUsers: live?.blockedUsers && typeof live.blockedUsers === "object" ? live.blockedUsers : {},
+    comments: Array.isArray(live?.comments) ? live.comments : [],
+    viewerPresence:
+      live?.viewerPresence && typeof live.viewerPresence === "object" ? live.viewerPresence : {},
+    requestPolicy: String(live?.requestPolicy || "locked"),
+  };
+}
+
+function readLiveSession(store: Record<string, any>, churchId: string, liveId: string) {
+  const key = liveStoreKey(churchId, liveId);
+  const direct = store[key];
+  if (direct) {
+    return { key, live: normalizeLiveRecord(direct, churchId, liveId), migrated: false };
+  }
+
+  const legacy = store[churchId];
+  const legacyLiveId = String(legacy?.liveId || "").trim();
+  const targetLiveId = String(liveId || "").trim();
+  if (legacy && (!targetLiveId || !legacyLiveId || legacyLiveId === targetLiveId)) {
+    return {
+      key,
+      live: normalizeLiveRecord({ ...legacy, liveId: targetLiveId || legacyLiveId }, churchId, liveId),
+      migrated: true,
+      legacyKey: churchId,
+    };
+  }
+
+  return { key, live: null as any, migrated: false };
+}
+
+function resolveLiveForGet(store: Record<string, any>, churchId: string, liveId?: string) {
+  if (liveId) {
+    return readLiveSession(store, churchId, liveId);
+  }
+
+  const legacy = store[churchId];
+  if (legacy) {
+    return {
+      key: churchId,
+      live: normalizeLiveRecord(legacy, churchId, String(legacy.liveId || "")),
+      migrated: false,
+    };
+  }
+
+  const prefix = `${String(churchId || "").trim()}|`;
+  let newest: { key: string; live: any; updatedAt: number } | null = null;
+
+  for (const [key, value] of Object.entries(store)) {
+    if (!key.startsWith(prefix)) continue;
+    const updatedAt = Number((value as any)?.updatedAt || (value as any)?.startedAt || 0);
+    if (!newest || updatedAt >= newest.updatedAt) {
+      newest = { key, live: value, updatedAt };
+    }
+  }
+
+  if (!newest) return { key: "", live: null as any, migrated: false };
+
+  const lid = String(newest.live?.liveId || newest.key.split("|")[1] || "").trim();
+  return {
+    key: newest.key,
+    live: normalizeLiveRecord(newest.live, churchId, lid),
+    migrated: false,
+  };
+}
+
+function ensureLiveSession(
+  store: Record<string, any>,
+  churchId: string,
+  liveId: string,
+  now: number
+) {
+  const resolved = readLiveSession(store, churchId, liveId);
+  if (resolved.live) {
+    if (resolved.migrated && resolved.legacyKey && resolved.legacyKey !== resolved.key) {
+      store[resolved.key] = resolved.live;
+      delete store[resolved.legacyKey];
+    }
+    return resolved;
+  }
+
+  const live = defaultLiveRecord(churchId, liveId, now);
+  store[resolved.key] = live;
+  return { ...resolved, live };
+}
+
 function liteLivePayload(live: any) {
   if (!live) return null;
   return {
@@ -70,6 +188,61 @@ function liteLivePayload(live: any) {
   };
 }
 
+function upsertWaitingRequest(
+  live: any,
+  opts: {
+    liveId: string;
+    slotId?: string;
+    slot?: number;
+    userId: string;
+    name: string;
+    avatar: string;
+    status?: string;
+    now: number;
+  }
+) {
+  live.requests = live.requests || {};
+
+  for (const [key, req] of Object.entries(live.requests) as any) {
+    if (String(req?.userId || "").trim() === opts.userId) {
+      delete live.requests[key];
+    }
+  }
+
+  const usedSlots = new Set(
+    Object.keys(live.requests || {})
+      .map((x) => Number(x))
+      .filter(Boolean)
+  );
+
+  let slot = Number(opts.slot || 0);
+  if (!slot && opts.slotId) {
+    const match = Object.entries(live.requests).find(
+      ([, req]: any) => String(req?.slotId || "") === String(opts.slotId)
+    );
+    if (match) slot = Number(match[0]);
+  }
+  if (!slot) slot = 1;
+  while (usedSlots.has(slot) && slot < 9) slot += 1;
+
+  live.requests[slot] = {
+    liveId: String(opts.liveId || live.liveId || "").trim(),
+    slotId: String(opts.slotId || "").trim(),
+    userId: opts.userId,
+    name: opts.name,
+    avatar: opts.avatar,
+    status: String(opts.status || "waiting"),
+    approved: false,
+    onStage: false,
+    waiting: true,
+    seatType: "waiting",
+    joinedAt: new Date(opts.now).toISOString(),
+    claimedAt: new Date(opts.now).toISOString(),
+  };
+
+  return { slot, request: live.requests[slot] };
+}
+
 export async function GET(req: Request) {
   const a = auth(req);
   if (!a.userId || !a.churchId) {
@@ -78,9 +251,11 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const lite = url.searchParams.get("lite") === "1";
+  const queryLiveId = String(url.searchParams.get("liveId") || "").trim();
 
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
-  const rawLive = store[a.churchId] || null;
+  const resolved = resolveLiveForGet(store, a.churchId, queryLiveId || undefined);
+  let rawLive = resolved.live;
 
   if (rawLive?.isLive === true && !rawLive?.endedAt) {
     const lastBeat = Number(rawLive.lastPresenceAt || rawLive.updatedAt || rawLive.startedAt || 0);
@@ -89,18 +264,13 @@ export async function GET(req: Request) {
       rawLive.endedAt = new Date().toISOString();
       rawLive.endedReason = "heartbeat-timeout";
       rawLive.updatedAt = Date.now();
-      store[a.churchId] = rawLive;
+      if (resolved.key) store[resolved.key] = rawLive;
       await writeJsonFile(STORE_FILE, store);
     }
   }
 
-  const live =
-    rawLive?.isLive === true && !rawLive?.endedAt
-      ? rawLive
-      : null;
+  const live = rawLive?.isLive === true && !rawLive?.endedAt ? rawLive : null;
 
-  // User aliyekuwa removed/closed kwenye live hii asiione tena mpaka live mpya ianze.
-  // Kwa viewer huyu, app itaona kama hakuna live.
   if (live?.blockedUsers?.[a.userId]) {
     return NextResponse.json({
       ok: true,
@@ -129,8 +299,10 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => ({}));
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
-  const previousLive = store[a.churchId] || null;
   const now = Date.now();
+  const liveId = String(body.liveId || `church-live-${now}`).trim();
+  const storeKey = liveStoreKey(a.churchId, liveId);
+  const previousLive = store[storeKey] || store[a.churchId] || null;
 
   const pastorResolution = await resolveChurchPastorUserId(a.churchId);
   const actualChurchPastorUserId =
@@ -146,7 +318,7 @@ export async function POST(req: Request) {
 
   const live = {
     isLive: body.isLive !== false,
-    liveId: String(body.liveId || `church-live-${now}`),
+    liveId,
     churchId: a.churchId,
     pastorUserId: actualChurchPastorUserId,
     actualChurchPastorUserId,
@@ -157,10 +329,25 @@ export async function POST(req: Request) {
     startedAt: now,
     updatedAt: now,
     lastPresenceAt: now,
+    requests: previousLive?.requests && typeof previousLive.requests === "object" ? previousLive.requests : {},
     requestPolicy: String(body.requestPolicy || previousLive?.requestPolicy || "locked"),
+    blockedUsers:
+      previousLive?.blockedUsers && typeof previousLive.blockedUsers === "object"
+        ? previousLive.blockedUsers
+        : {},
+    viewerPresence:
+      previousLive?.viewerPresence && typeof previousLive.viewerPresence === "object"
+        ? previousLive.viewerPresence
+        : {},
+    comments: Array.isArray(previousLive?.comments) ? previousLive.comments : [],
+    viewerCount: Number(previousLive?.viewerCount || 0),
   };
 
-  store[a.churchId] = live;
+  if (store[a.churchId] && store[a.churchId] !== store[storeKey]) {
+    delete store[a.churchId];
+  }
+
+  store[storeKey] = live;
   await writeJsonFile(STORE_FILE, store);
 
   const shouldNotifyMembers =
@@ -189,7 +376,6 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true, live, notifiedMembers });
 }
 
-
 export async function PATCH(req: Request) {
   const a = auth(req);
   if (!a.userId || !a.churchId) {
@@ -198,30 +384,19 @@ export async function PATCH(req: Request) {
 
   const body = await req.json().catch(() => ({}));
   const action = String(body.action || "").trim();
+  const liveId = String(body.liveId || "").trim();
 
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
   const now = Date.now();
 
-  const live = store[a.churchId] || {
-    isLive: true,
-    liveId: String(body.liveId || `church-live-${now}`),
-    churchId: a.churchId,
-    pastorUserId: "",
-    mediaName: "Church Live",
-    title: "Pastor is LIVE",
-    startedAt: now,
-    updatedAt: now,
-    requests: {},
-    comments: [],
-    viewerCount: 0,
-    blockedUsers: {},
-    requestPolicy: "locked",
-  };
+  const session = ensureLiveSession(store, a.churchId, liveId || `church-live-${now}`, now);
+  const live = session.live;
 
   live.requests = live.requests || {};
   live.blockedUsers = live.blockedUsers || {};
   live.comments = Array.isArray(live.comments) ? live.comments : [];
   live.requestPolicy = String(live.requestPolicy || "locked");
+
   if (action === "end-live") {
     if (!canModerateLive(a, live)) {
       return NextResponse.json({ ok: false, error: "Pastor/live owner only" }, { status: 403 });
@@ -230,12 +405,11 @@ export async function PATCH(req: Request) {
     live.isLive = false;
     live.endedAt = new Date(now).toISOString();
     live.updatedAt = now;
-    store[a.churchId] = live;
+    store[session.key] = live;
     await writeJsonFile(STORE_FILE, store);
 
     return NextResponse.json({ ok: true, live });
   }
-
 
   if (action === "set-policy") {
     if (!canModerateLive(a, live)) {
@@ -252,34 +426,75 @@ export async function PATCH(req: Request) {
     live.requestPolicy = nextPolicy;
   }
 
-  if (action === "request-join") {
-    const requestUserId = String(body.userId || a.userId || "").trim();
-    const rawSlot = Number(body.slot || 0);
-
-    for (const [key, req] of Object.entries(live.requests || {}) as any) {
-      if (requestUserId && String(req?.userId || "") === requestUserId) {
-        delete live.requests[key];
-      }
+  if (action === "claim-schedule-request") {
+    const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
+    if (!requestLiveId) {
+      return NextResponse.json({ ok: false, error: "liveId is required" }, { status: 400 });
     }
 
-    const usedSlots = new Set(Object.keys(live.requests || {}).map((x) => Number(x)).filter(Boolean));
-    let slot = rawSlot > 0 ? rawSlot : 1;
-    while (usedSlots.has(slot) && slot < 9) slot += 1;
+    live.liveId = requestLiveId;
+
+    const requestUserId = String(body.userId || a.userId || "").trim();
+    const slotId = String(body.slotId || "").trim();
+    const name = String(body.name || "Member").trim() || "Member";
+    const avatar = String(body.avatar || body.avatarUri || "M").trim() || "M";
+
+    const { slot, request } = upsertWaitingRequest(live, {
+      liveId: requestLiveId,
+      slotId,
+      slot: Number(body.slot || body.slotNumber || 0),
+      userId: requestUserId,
+      name,
+      avatar,
+      status: String(body.status || "waiting"),
+      now,
+    });
+
+    console.log("KRISTO_LIVE_REQUEST_PERSISTED", {
+      churchId: a.churchId,
+      liveId: requestLiveId,
+      storeKey: session.key,
+      slot,
+      slotId,
+      userId: requestUserId,
+      status: request?.status || "waiting",
+    });
+  }
+
+  if (action === "request-join") {
+    const requestUserId = String(body.userId || a.userId || "").trim();
+    const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
+    if (requestLiveId) live.liveId = requestLiveId;
+
+    upsertWaitingRequest(live, {
+      liveId: requestLiveId || String(live.liveId || ""),
+      slotId: String(body.slotId || "").trim(),
+      slot: Number(body.slot || 0),
+      userId: requestUserId,
+      name: String(body.name || "Guest"),
+      avatar: String(body.avatar || body.avatarUri || "G"),
+      status: "waiting",
+      now,
+    });
 
     const policy = String(live.requestPolicy || "locked");
     const autoApproved = policy === "auto" || policy === "members";
+    const slotKey = Object.keys(live.requests).find((key) => {
+      const req = live.requests[key];
+      return String(req?.userId || "") === requestUserId;
+    });
 
-    live.requests[slot] = {
-      name: String(body.name || "Guest"),
-      avatar: String(body.avatar || "G"),
-      approved: autoApproved,
-      onStage: autoApproved,
-      seatType: autoApproved ? "camera-mic" : "waiting",
-      joinedAt: String(body.joinedAt || new Date(now).toISOString()),
-      userId: requestUserId,
-      waiting: !autoApproved,
-      approvedAt: autoApproved ? new Date(now).toISOString() : undefined,
-    };
+    if (slotKey && autoApproved) {
+      live.requests[slotKey] = {
+        ...live.requests[slotKey],
+        approved: true,
+        onStage: true,
+        waiting: false,
+        status: "approved",
+        seatType: "camera-mic",
+        approvedAt: new Date(now).toISOString(),
+      };
+    }
   }
 
   if (action === "approve-request") {
@@ -303,6 +518,7 @@ export async function PATCH(req: Request) {
       onStage: body.onStage === false ? false : true,
       seatType: "camera-mic",
       waiting: false,
+      status: "approved",
       approvedAt: new Date(now).toISOString(),
       joinedAt: String(existingRequest.joinedAt || body.joinedAt || new Date(now).toISOString()),
     };
@@ -325,6 +541,7 @@ export async function PATCH(req: Request) {
         approved: true,
         onStage: true,
         waiting: false,
+        status: "approved",
         seatType: "camera-mic",
         approvedAt: new Date(now).toISOString(),
       };
@@ -413,9 +630,8 @@ export async function PATCH(req: Request) {
   }
 
   live.updatedAt = now;
-  store[a.churchId] = live;
+  store[session.key] = live;
   await writeJsonFile(STORE_FILE, store);
 
   return NextResponse.json({ ok: true, live });
 }
-

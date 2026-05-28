@@ -379,6 +379,156 @@ export function normalizeLiveScheduleSlots(slots: any[]) {
   return slots.map((slot, index) => normalizeLiveScheduleSlot(slot, index));
 }
 
+function liveRoomSlotKey(slot: any, index = 0) {
+  const id = String(slot?.id || slot?.slotId || "").trim();
+  if (id) return `id:${id}`;
+  const n = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+  return `num:${n}`;
+}
+
+function pickFresherScheduleSlot(prev: any, next: any) {
+  const prevOwner = String(prev?.claimedByUserId || prev?.claimedBy?.userId || "").trim();
+  const nextOwner = String(next?.claimedByUserId || next?.claimedBy?.userId || "").trim();
+  const prevUpdated = Number(prev?.updatedAt || prev?.claimedAt || 0);
+  const nextUpdated = Number(next?.updatedAt || next?.claimedAt || 0);
+
+  if (nextOwner && !prevOwner) return next;
+  if (prevOwner && !nextOwner) return prev;
+  if (nextUpdated >= prevUpdated) return next;
+  return prev;
+}
+
+/** Merge schedule slot arrays for live room — prefers claimed / fresher rows. */
+export function mergeLiveRoomScheduleSlots(...sources: any[][]) {
+  const byKey = new Map<string, any>();
+  let walkIndex = 0;
+
+  for (const source of sources) {
+    const normalized = normalizeLiveScheduleSlots(Array.isArray(source) ? source : []);
+    normalized.forEach((slot, index) => {
+      const key = liveRoomSlotKey(slot, walkIndex + index);
+      const prev = byKey.get(key);
+      byKey.set(key, prev ? pickFresherScheduleSlot(prev, slot) : slot);
+    });
+    walkIndex += normalized.length;
+  }
+
+  return Array.from(byKey.values()).sort(
+    (a, b) => Number(a?.slot || a?.slotNumber || 0) - Number(b?.slot || b?.slotNumber || 0)
+  );
+}
+
+export function applyRingClaimHintsToScheduleSlots(
+  slots: any[],
+  feedId: string,
+  hints: Array<{
+    baseFeedId: string;
+    slotId: string;
+    userId: string;
+    name?: string;
+    role?: string;
+    avatarUri?: string;
+    slotNumber?: number;
+  }>
+) {
+  const base = baseFeedId(feedId);
+  if (!base || !hints.length) return slots;
+
+  return slots.map((slot, index) => {
+    const slotId = String(slot?.id || slot?.slotId || "").trim();
+    const slotNum = Number(slot?.slot || slot?.slotNumber || index + 1);
+    const hint = hints.find((row) => {
+      if (baseFeedId(row.baseFeedId) !== base) return false;
+      if (slotId && String(row.slotId || "") === slotId) return true;
+      return Number(row.slotNumber || 0) === slotNum;
+    });
+
+    if (!hint) return slot;
+    if (String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()) return slot;
+
+    const avatar = String(hint.avatarUri || slot?.claimedByAvatar || "").trim();
+    return normalizeLiveScheduleSlot(
+      {
+        ...slot,
+        claimed: true,
+        isClaimed: true,
+        claimedByUserId: hint.userId,
+        claimedByName: hint.name || "Member",
+        claimedByAvatarUri: avatar,
+        claimedByAvatar: avatar,
+        claimedBy: {
+          userId: hint.userId,
+          name: hint.name || "Member",
+          role: hint.role || "Member",
+          avatarUri: avatar,
+        },
+      },
+      index
+    );
+  });
+}
+
+export function enrichScheduleSlotsFromLiveRequests(
+  slots: any[],
+  requests: Record<string, any> | null | undefined,
+  liveId?: string
+) {
+  if (!Array.isArray(slots) || !slots.length) return slots;
+  const reqRows = Object.entries(requests || {});
+  if (!reqRows.length) return slots;
+
+  return slots.map((slot, index) => {
+    const owner = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+    if (owner) return slot;
+
+    const slotId = String(slot?.id || slot?.slotId || "").trim();
+    const slotNum = Number(slot?.slot || slot?.slotNumber || index + 1);
+
+    const match = reqRows.find(([, req]: any) => {
+      if (liveId && String(req?.liveId || "").trim() && String(req.liveId) !== String(liveId)) {
+        return false;
+      }
+      if (slotId && String(req?.slotId || "") === slotId) return true;
+      return Number(req?.slot || req?.claimNumber || 0) === slotNum;
+    });
+
+    if (!match) return slot;
+
+    const req = match[1] as any;
+    const userId = String(req?.userId || "").trim();
+    if (!userId) return slot;
+
+    const avatar = String(req?.avatar || req?.avatarUri || "").trim();
+
+    console.log("KRISTO_BACKEND_REQUEST_VISIBLE", {
+      liveId: liveId || req?.liveId || "",
+      slotId,
+      slotNumber: slotNum,
+      userId,
+      status: String(req?.status || "waiting"),
+    });
+
+    return normalizeLiveScheduleSlot(
+      {
+        ...slot,
+        claimed: true,
+        isClaimed: true,
+        claimedByUserId: userId,
+        claimedByName: String(req?.name || "Member"),
+        claimedByAvatarUri: avatar,
+        claimedByAvatar: avatar,
+        claimedBy: {
+          userId,
+          name: String(req?.name || "Member"),
+          avatarUri: avatar,
+          role: String(req?.role || "Member"),
+        },
+      },
+      index
+    );
+  });
+}
+
 export function parseLiveAllScheduleSlotsJson(rawParam: unknown) {
   try {
     const rawValue = Array.isArray(rawParam)

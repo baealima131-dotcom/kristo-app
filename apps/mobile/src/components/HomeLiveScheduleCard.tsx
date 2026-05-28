@@ -15,6 +15,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { apiPost } from "@/src/lib/kristoApi";
 import { feedClaimSchedule, feedJoinSlotQueue, feedUnclaimSchedule } from "@/src/lib/homeFeedStore";
+import { persistClaimToLiveRequest } from "@/src/lib/liveBridge";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import {
@@ -652,15 +653,27 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     feedClaimSchedule(postId, claim);
     onOptimisticClaim?.({ postId, slotId, claim });
 
+    const claimHeaders = getKristoHeaders({
+      userId: session?.userId || "",
+      role: (session?.role || "Member") as any,
+      churchId: session?.churchId || "",
+    }) as Record<string, string>;
+
+    void persistClaimToLiveRequest({
+      liveId: postId,
+      slotId,
+      slot: slotNumber || undefined,
+      userId: currentUserId,
+      name: claim.name,
+      avatar: claimAvatarUri || claim.name.slice(0, 1).toUpperCase(),
+      headers: claimHeaders,
+    }).catch(() => {});
+
     void apiPost(
       "/api/church/feed",
       { action: "claim_schedule_slot", postId, slotId, claim },
       {
-        headers: getKristoHeaders({
-          userId: session?.userId || "",
-          role: (session?.role || "Member") as any,
-          churchId: session?.churchId || "",
-        }),
+        headers: claimHeaders,
       }
     )
       .then((res: any) => {
