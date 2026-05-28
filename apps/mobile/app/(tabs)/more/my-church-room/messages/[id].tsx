@@ -31,12 +31,14 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import {
   getCachedParticipant,
+  invalidateCachedParticipant,
   markThreadReadOnce,
   messagesListSignature,
   paginateMessages,
   preloadLiveImages,
   setCachedParticipant,
   startAdaptiveLivePolling,
+  startMcHostsPolling,
   startRoomMessagesPolling,
 } from "@/src/lib/liveRealtime";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
@@ -2736,7 +2738,7 @@ export default function MessageThreadScreen() {
   );
 
   const isSelectedMcHost = useMemo(() => {
-    if (!isAssignmentThread) return false;
+    if (!isStructuredRoom) return false;
 
     const selfIds = [
       currentUserIdForAuthority,
@@ -2746,7 +2748,7 @@ export default function MessageThreadScreen() {
     ].filter(Boolean);
 
     return mcHostIds.some((id) => selfIds.includes(String(id)));
-  }, [isAssignmentThread, currentUserIdForAuthority, mcHostIds, params]);
+  }, [isStructuredRoom, currentUserIdForAuthority, mcHostIds, params]);
 
   const ministryAuthority = useMemo(() => {
     const authority = resolveMinistryAuthority({
@@ -2776,6 +2778,41 @@ export default function MessageThreadScreen() {
     currentUserIdForAuthority,
     isSelectedMcHost,
   ]);
+
+  const prevMcHostAccessRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const becameHost = isSelectedMcHost;
+    if (prevMcHostAccessRef.current === null) {
+      prevMcHostAccessRef.current = becameHost;
+      return;
+    }
+    if (prevMcHostAccessRef.current !== becameHost) {
+      console.log("[MinistryAuthority] recomputed", {
+        userId: currentUserIdForAuthority,
+        isSelectedMcHost: becameHost,
+        tier: ministryAuthority.tier,
+        canCreateMeeting: ministryAuthority.canCreateMeeting,
+        canManageHosts: ministryAuthority.canManageHosts,
+        trigger: "mc-host-ids-changed",
+      });
+      prevMcHostAccessRef.current = becameHost;
+    }
+  }, [
+    isSelectedMcHost,
+    ministryAuthority.tier,
+    ministryAuthority.canCreateMeeting,
+    ministryAuthority.canManageHosts,
+    currentUserIdForAuthority,
+  ]);
+
+  const mcHostsCacheKey = useMemo(
+    () => `mc-hosts:${threadId}:${resolvedMinistryId}:${String((params as any)?.assignmentId || "")}`,
+    [threadId, resolvedMinistryId, (params as any)?.assignmentId]
+  );
+
+  const fetchMcHostsRef = useRef<
+    ((opts?: { force?: boolean; reason?: string }) => Promise<boolean>) | null
+  >(null);
 
   const isAssignmentLeader =
     isAssignmentThread &&
@@ -5947,18 +5984,21 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
   useEffect(() => {
     let alive = true;
+    let prevSig = "";
 
-    async function loadMcHosts() {
-      if ((!isAssignmentThread && !isMinistryThread) || !String(threadId || "").trim()) {
-        setMcHostIds([]);
-        return;
+    async function fetchMcHosts(opts?: { force?: boolean; reason?: string }): Promise<boolean> {
+      if (!isStructuredRoom || !String(threadId || "").trim()) {
+        if (alive) setMcHostIds([]);
+        return false;
       }
 
-      const cacheKey = `mc-hosts:${threadId}:${resolvedMinistryId}:${String((params as any)?.assignmentId || "")}`;
-      const cached = getCachedParticipant(cacheKey);
-      if (cached && alive) {
-        setMcHostIds(Array.isArray(cached) ? cached : []);
-        return;
+      const cacheKey = mcHostsCacheKey;
+
+      if (!opts?.force) {
+        const cached = getCachedParticipant(cacheKey);
+        if (cached && alive) {
+          setMcHostIds(Array.isArray(cached) ? cached : []);
+        }
       }
 
       try {
@@ -5974,9 +6014,16 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         let foundIds: string[] = [];
 
         for (const assignmentKey of keys) {
+          console.log("[McHostsPoll] fetch-start", {
+            assignmentKey,
+            reason: opts?.reason || "poll",
+            force: !!opts?.force,
+          });
+
           const res: any = await apiGet(
-            `/api/church/mc-hosts?assignmentId=${encodeURIComponent(assignmentKey)}`,
-            { headers: { ...getKristoHeaders(), "x-kristo-role": "Member" } as any }
+            `/api/church/mc-hosts?assignmentId=${encodeURIComponent(assignmentKey)}&t=${Date.now()}`,
+            { headers: { ...getKristoHeaders(), "x-kristo-role": "Member" } as any },
+            { screen: `McHostsPoll:${cacheKey}`, throttleMs: 0, dedupe: false }
           );
 
           const ids = Array.isArray(res?.data?.hostUserIds) ? res.data.hostUserIds : [];
@@ -5992,30 +6039,55 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           }
         }
 
+        const sig = foundIds.join("|");
+        const changed = sig !== prevSig;
+
         if (alive) {
           setMcHostIds(foundIds);
           setCachedParticipant(cacheKey, foundIds);
         }
+
+        if (changed) {
+          prevSig = sig;
+          console.log("[McHostsPoll] updated", {
+            cacheKey,
+            hostUserIds: foundIds,
+            reason: opts?.reason || "poll",
+          });
+          return true;
+        }
+
+        return false;
       } catch {
-        if (alive) setMcHostIds([]);
+        if (alive && opts?.force) setMcHostIds([]);
+        return false;
       }
     }
 
-    void loadMcHosts();
+    fetchMcHostsRef.current = fetchMcHosts;
 
-    const stop = startAdaptiveLivePolling({
-      screen: "MessageThreadMcHosts",
-      enabled: isFocused && isAssignmentThread,
-      activeMs: 30000,
-      idleMs: 120000,
-      onTick: loadMcHosts,
+    void fetchMcHosts({ force: true, reason: "mount" });
+
+    const stop = startMcHostsPolling({
+      assignmentId: mcHostsCacheKey,
+      enabled: isFocused && isStructuredRoom,
+      intervalMs: 2500,
+      onTick: () => fetchMcHosts({ force: true, reason: "poll" }),
     });
 
     return () => {
       alive = false;
+      fetchMcHostsRef.current = null;
       stop();
     };
-  }, [isAssignmentThread, threadId, resolvedMinistryId, (params as any)?.assignmentId, isFocused]);
+  }, [
+    isStructuredRoom,
+    threadId,
+    mcHostsCacheKey,
+    resolvedMinistryId,
+    (params as any)?.assignmentId,
+    isFocused,
+  ]);
 
   const memberBoardSource =
     isAssignmentThread
@@ -6102,13 +6174,23 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       );
 
       const savedIds = Array.isArray(saved?.data?.hostUserIds) ? saved.data.hostUserIds : nextIds;
-      setMcHostIds(
-        savedIds
-          .map((x: any) => String(x || "").trim())
-          .filter((x: string) => x.startsWith("u_"))
-          .filter((x: string, index: number, arr: string[]) => arr.indexOf(x) === index)
-          .slice(0, 2)
-      );
+      const normalizedSavedIds = savedIds
+        .map((x: any) => String(x || "").trim())
+        .filter((x: string) => x.startsWith("u_"))
+        .filter((x: string, index: number, arr: string[]) => arr.indexOf(x) === index)
+        .slice(0, 2);
+
+      invalidateCachedParticipant(mcHostsCacheKey);
+      setMcHostIds(normalizedSavedIds);
+      setCachedParticipant(mcHostsCacheKey, normalizedSavedIds);
+
+      console.log("[McHostsPoll] updated", {
+        cacheKey: mcHostsCacheKey,
+        hostUserIds: normalizedSavedIds,
+        reason: "save-success",
+      });
+
+      void fetchMcHostsRef.current?.({ force: true, reason: "save-success" });
     } catch {
       Alert.alert("Save failed", "MC+ Hosts could not be saved right now.");
     }

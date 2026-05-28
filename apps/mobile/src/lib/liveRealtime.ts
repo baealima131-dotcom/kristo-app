@@ -148,6 +148,10 @@ export function setCachedParticipant(key: string, data: any) {
   participantCache.set(key, { data, at: Date.now() });
 }
 
+export function invalidateCachedParticipant(key: string) {
+  participantCache.delete(key);
+}
+
 export async function fetchLightLiveState(
   headers: Record<string, string>,
   screen = "LiveRoom"
@@ -311,5 +315,82 @@ export function startRoomMessagesPolling(opts: RoomMessagesPollOpts) {
     clear();
     sub.remove();
     console.log("[RoomMessagesPoll] stop", { roomId });
+  };
+}
+
+export type McHostsPollOpts = {
+  assignmentId: string;
+  enabled?: boolean;
+  intervalMs?: number;
+  onTick: () => void | Promise<boolean | void>;
+};
+
+/** Fast polling for MC+ host list while ministry / live-control thread is focused. */
+export function startMcHostsPolling(opts: McHostsPollOpts) {
+  const assignmentId = String(opts.assignmentId || "").trim();
+  const enabled = opts.enabled !== false;
+  const intervalMs = opts.intervalMs ?? 2500;
+
+  if (!enabled || !assignmentId) {
+    return () => {};
+  }
+
+  let cancelled = false;
+  let inflight = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let appState: AppStateStatus = AppState.currentState;
+
+  const canRun = () => !cancelled && appState === "active";
+
+  const clear = () => {
+    if (!timer) return;
+    clearTimeout(timer);
+    timer = null;
+  };
+
+  const runTick = async () => {
+    if (!canRun()) return;
+    if (inflight) return;
+
+    inflight = true;
+    try {
+      const updated = await opts.onTick();
+      if (updated === true) {
+        console.log("[McHostsPoll] updated", { assignmentId });
+      }
+    } catch {
+      // silent poll
+    } finally {
+      inflight = false;
+    }
+  };
+
+  const scheduleNext = () => {
+    clear();
+    if (!canRun()) return;
+    timer = setTimeout(async () => {
+      await runTick();
+      scheduleNext();
+    }, intervalMs);
+  };
+
+  console.log("[McHostsPoll] start", { assignmentId, intervalMs });
+  scheduleNext();
+
+  const sub = AppState.addEventListener("change", (next) => {
+    appState = next;
+    if (next === "active") {
+      void runTick();
+      scheduleNext();
+    } else {
+      clear();
+    }
+  });
+
+  return () => {
+    cancelled = true;
+    clear();
+    sub.remove();
+    console.log("[McHostsPoll] stop", { assignmentId });
   };
 }
