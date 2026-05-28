@@ -58,7 +58,14 @@ import { apiGet, apiPatch, apiDelete, apiPost } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
-import { logMinistryAuthority, resolveMinistryAuthority } from "@/src/lib/ministryAuthority";
+import {
+  canOpenMinistryTool,
+  logMinistryAuthority,
+  logMinistryToolGate,
+  ministryToolLockMessage,
+  resolveMinistryAuthority,
+  type MinistryToolKey,
+} from "@/src/lib/ministryAuthority";
 import { requireActiveChurchSubscriptionForSchedule } from "@/src/lib/churchSubscription";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
@@ -2296,6 +2303,7 @@ function MenuTile({
   label,
   danger,
   disabled,
+  locked,
   fullWidth,
   compact,
   ministryCompact,
@@ -2306,46 +2314,63 @@ function MenuTile({
   label: string;
   danger?: boolean;
   disabled?: boolean;
+  locked?: boolean;
   fullWidth?: boolean;
   compact?: boolean;
   ministryCompact?: boolean;
   activeGlow?: boolean;
   onPress: () => void;
 }) {
+  const visuallyLocked = !!locked;
+  const busy = !!disabled;
+
   return (
     <Pressable
-      disabled={disabled}
+      disabled={busy}
       onPress={onPress}
       style={({ pressed }) => [
         s.menuTile,
-          activeGlow && !disabled ? s.menuTileActiveGlow : null,
+        activeGlow && !visuallyLocked && !busy ? s.menuTileActiveGlow : null,
         compact ? s.menuTileHalf : null,
         ministryCompact ? s.menuTileMinistryCompact : null,
         fullWidth ? s.menuTileFullWidth : null,
         danger ? s.menuTileDanger : null,
-        disabled ? [s.menuTileDisabled, ({ opacity: 0.58 } as ViewStyle)] : null,
-        pressed && !disabled ? s.menuTilePressed : null,
+        visuallyLocked ? s.menuTileLocked : null,
+        busy ? [s.menuTileDisabled, ({ opacity: 0.58 } as ViewStyle)] : null,
+        pressed && !busy ? s.menuTilePressed : null,
       ]}
     >
       <View style={s.menuTileTop}>
-        <View style={[s.menuTileIconWrap, danger ? s.menuTileIconWrapDanger : null]}>
-          <Ionicons name={icon as any} size={18} color={danger ? "#FF7D84" : GOLD} />
-        </View>
-
-        <View style={[s.menuTileChevronWrap, danger ? s.menuTileChevronWrapDanger : null]}>
+        <View style={[s.menuTileIconWrap, danger ? s.menuTileIconWrapDanger : null, visuallyLocked ? s.menuTileIconWrapLocked : null]}>
           <Ionicons
-            name="chevron-forward"
-            size={14}
-            color={danger ? "rgba(255,125,132,0.92)" : "rgba(255,255,255,0.42)"}
+            name={icon as any}
+            size={18}
+            color={danger ? "#FF7D84" : visuallyLocked ? "rgba(217,179,95,0.55)" : GOLD}
           />
         </View>
+
+        {visuallyLocked ? (
+          <View style={s.menuTileLockBadge}>
+            <Ionicons name="lock-closed" size={10} color="rgba(255,255,255,0.72)" />
+            <Text style={s.menuTileLockBadgeText}>Locked</Text>
+          </View>
+        ) : (
+          <View style={[s.menuTileChevronWrap, danger ? s.menuTileChevronWrapDanger : null]}>
+            <Ionicons
+              name="chevron-forward"
+              size={14}
+              color={danger ? "rgba(255,125,132,0.92)" : "rgba(255,255,255,0.42)"}
+            />
+          </View>
+        )}
       </View>
 
       <Text
         style={[
           s.menuTileLabel,
-              activeGlow && !disabled ? s.menuTileLabelActive : null,
+          activeGlow && !visuallyLocked && !busy ? s.menuTileLabelActive : null,
           danger ? s.menuTileLabelDanger : null,
+          visuallyLocked ? s.menuTileLabelLocked : null,
         ]}
         numberOfLines={2}
       >
@@ -2763,11 +2788,6 @@ export default function MessageThreadScreen() {
   const canManageAssignmentVisibility = isAssignmentLeader;
   const canOpenAssignmentSchedule = ministryAuthority.canCreateMeeting;
   const showAssignmentLockedPreview = isAssignmentThread && ministryAuthority.tier === "member";
-  const canOpenAssignmentMembersBoard = isAssignmentThread;
-  const showLeaderManagementTiles =
-    ministryAuthority.tier === "pastor" || ministryAuthority.tier === "leader";
-  const showScheduleTiles = ministryAuthority.canCreateMeeting;
-  const showMcHostsTile = showLeaderManagementTiles || isSelectedMcHost;
   const assignmentToolRole =
     ministryAuthority.tier === "pastor"
       ? "pastor"
@@ -2776,6 +2796,51 @@ export default function MessageThreadScreen() {
         : ministryAuthority.tier === "host"
           ? "host"
           : "member";
+
+  const ministryToolGateOpts = useMemo(() => ({ isSelectedMcHost }), [isSelectedMcHost]);
+
+  const ministryToolAccess = useMemo(() => {
+    const keys: MinistryToolKey[] = [
+      "members_board",
+      "profile",
+      "add_remove",
+      "mc_hosts",
+      "meeting",
+      "schedule",
+      "tlmc_panel",
+      "election",
+      "targeted_msg",
+      "broadcast",
+      "visibility",
+      "permissions",
+      "pause",
+    ];
+    return Object.fromEntries(
+      keys.map((toolKey) => [
+        toolKey,
+        canOpenMinistryTool(toolKey, ministryAuthority, ministryToolGateOpts),
+      ])
+    ) as Record<MinistryToolKey, boolean>;
+  }, [ministryAuthority, ministryToolGateOpts]);
+
+  const resolvedMinistryRoleLabel = String(
+    selfMinistryMember?.role || assignmentRole || assignmentRoleParam || ""
+  );
+
+  function gateMinistryTool(toolKey: MinistryToolKey, onAllowed: () => void) {
+    const allowed = ministryToolAccess[toolKey];
+    logMinistryToolGate({
+      toolKey,
+      allowed,
+      ministryRole: resolvedMinistryRoleLabel,
+      appRole: String(effectiveAuthRole || ""),
+    });
+    if (!allowed) {
+      Alert.alert("Access locked", ministryToolLockMessage(toolKey));
+      return;
+    }
+    onAllowed();
+  }
 
   const ministryInfo = useMemo(() => {
     if (isAssignmentThread) {
@@ -3833,11 +3898,8 @@ const displayHeaderTitle = assignmentDisplayTitle;
       }
     }
 
-    if (isAssignmentThread && lockedTools.includes(String(tool)) && !canScheduleStructuredMeeting) {
-      Alert.alert(
-        "Access locked",
-        "Only Pastor, Leader, or Host can open Meeting and Schedule."
-      );
+    if (isAssignmentThread && lockedTools.includes(String(tool)) && !ministryToolAccess.meeting) {
+      Alert.alert("Access locked", ministryToolLockMessage(tool === "schedule" ? "schedule" : "meeting"));
       return;
     }
 
@@ -3876,6 +3938,32 @@ const displayHeaderTitle = assignmentDisplayTitle;
   }
 
   function onThreadMenuAction(action: string) {
+    const toolKeyForAction: Partial<Record<string, MinistryToolKey>> = {
+      members: "members_board",
+      edit: "profile",
+      invite: "add_remove",
+      mc_plus: "mc_hosts",
+      meeting: "meeting",
+      schedule: "schedule",
+      tlmc: "tlmc_panel",
+      election: "election",
+      targeted: "targeted_msg",
+      broadcast: "broadcast",
+      visibility: "visibility",
+      permissions: "permissions",
+      pause: "pause",
+    };
+
+    const mappedToolKey = toolKeyForAction[action];
+    if (mappedToolKey) {
+      gateMinistryTool(mappedToolKey, () => runThreadMenuAction(action));
+      return;
+    }
+
+    runThreadMenuAction(action);
+  }
+
+  function runThreadMenuAction(action: string) {
     if (action === "members") {
       closeThreadMenu();
       setMembersOpen(true);
@@ -3912,24 +4000,12 @@ const displayHeaderTitle = assignmentDisplayTitle;
       return;
     }
     if (action === "mc_plus") {
-      if (!canManageMcHosts && !isSelectedMcHost) {
-        closeThreadMenu();
-        Alert.alert("Access locked", "Only leaders or selected MC+ Hosts can open this card.");
-        return;
-      }
-
       closeThreadMenu();
       setMcHostsOpen(true);
       return;
     }
     if (action === "invite") {
       closeThreadMenu();
-
-      if (!canAddMemberAuthority) {
-        Alert.alert("Access locked", "Only leaders can add members to this room.");
-        return;
-      }
-
       setAddMemberMode("add");
       setSelectedAddMemberId("");
       setSelectedRemoveMemberId("");
@@ -3938,15 +4014,21 @@ const displayHeaderTitle = assignmentDisplayTitle;
     }
 
     if (action === "tlmc" || action === "election" || action === "targeted" || action === "visibility") {
+      closeThreadMenu();
+      Alert.alert("Coming next", `${action} flow will be connected next.`);
       return;
     }
 
-    if (action === "edit") {
-      if (!showLeaderManagementTiles) {
-        closeThreadMenu();
-        Alert.alert("Access locked", "Only Pastor or Leader can edit this profile.");
-        return;
-      }
+    if (action === "broadcast") {
+      closeThreadMenu();
+      openAssignmentToolScreen("broadcast");
+      return;
+    }
+
+    if (action === "permissions") {
+      closeThreadMenu();
+      openAssignmentToolScreen("permissions");
+      return;
     }
 
     if (action === "edit" || action === "pause" || action === "search" || action === "mute" || action === "block" || action === "report" || action === "clear" || action === "delete") {
@@ -7192,49 +7274,48 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                             ministryCompact
                             icon="people-outline"
                             label="Manage members"
-                            activeGlow
+                            activeGlow={ministryToolAccess.members_board}
+                            locked={!ministryToolAccess.members_board}
                             disabled={actionLoading !== null}
                             onPress={() => onThreadMenuAction("members")}
                           />
                         </View>
 
                         <View style={{ flexBasis: "48%", flexGrow: 1 }}>
-                          {showLeaderManagementTiles ? (
-                            <MenuTile
-                              ministryCompact
-                              icon="create-outline"
-                              label="Profile"
-                              activeGlow
-                              disabled={actionLoading !== null}
-                              onPress={() => onThreadMenuAction("edit")}
-                            />
-                          ) : null}
+                          <MenuTile
+                            ministryCompact
+                            icon="create-outline"
+                            label="Profile"
+                            activeGlow={ministryToolAccess.profile}
+                            locked={!ministryToolAccess.profile}
+                            disabled={actionLoading !== null}
+                            onPress={() => onThreadMenuAction("edit")}
+                          />
                         </View>
 
                         <View style={{ flexBasis: "48%", flexGrow: 1 }}>
-                          {showLeaderManagementTiles ? (
-                            <MenuTile
-                              ministryCompact
-                              icon="person-add-outline"
-                              label="ADD & Remove"
-                              activeGlow
-                              disabled={actionLoading !== null || !canAddMemberAuthority}
-                              onPress={() => onThreadMenuAction("invite")}
-                            />
-                          ) : null}
+                          <MenuTile
+                            ministryCompact
+                            icon="person-add-outline"
+                            label="ADD & Remove"
+                            activeGlow={ministryToolAccess.add_remove}
+                            locked={!ministryToolAccess.add_remove}
+                            disabled={actionLoading !== null}
+                            onPress={() => onThreadMenuAction("invite")}
+                          />
                         </View>
 
                         <View style={{ flexBasis: "48%", flexGrow: 1 }}>
-                          {showLeaderManagementTiles ? (
-                            <MenuTile
-                              ministryCompact
-                              icon={actionLoading === "pause" ? "time-outline" : "pause-circle-outline"}
-                              label={actionLoading === "pause" ? "Pausing..." : "Pause ministry"}
-                              danger
-                              disabled={actionLoading !== null || !canEditMinistry}
-                              onPress={() => onThreadMenuAction("pause")}
-                            />
-                          ) : null}
+                          <MenuTile
+                            ministryCompact
+                            icon={actionLoading === "pause" ? "time-outline" : "pause-circle-outline"}
+                            label={actionLoading === "pause" ? "Pausing..." : "Pause ministry"}
+                            danger
+                            activeGlow={ministryToolAccess.pause}
+                            locked={!ministryToolAccess.pause}
+                            disabled={actionLoading !== null}
+                            onPress={() => onThreadMenuAction("pause")}
+                          />
                         </View>
                       </View>
                     ) : null}
@@ -7245,45 +7326,45 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                           <View style={[s.menuSectionBlock, { marginTop: 2 }]}>
                             <Text style={t.menuSection}>People</Text>
                             <View style={s.menuTileGrid}>
-                              {canOpenAssignmentMembersBoard ? (
-                                <MenuTile
-                                  icon="people-outline"
-                                  label="Members board" activeGlow
-                                  compact
-                                  disabled={actionLoading !== null}
-                                  onPress={() => onThreadMenuAction("members")}
-                                />
-                              ) : null}
+                              <MenuTile
+                                icon="people-outline"
+                                label="Members board"
+                                activeGlow={ministryToolAccess.members_board}
+                                locked={!ministryToolAccess.members_board}
+                                compact
+                                disabled={actionLoading !== null}
+                                onPress={() => onThreadMenuAction("members")}
+                              />
 
-                              {showLeaderManagementTiles ? (
-                                <MenuTile
-                                  icon="create-outline"
-                                  label="Profile" activeGlow
-                                  compact
-                                  disabled={actionLoading !== null}
-                                  onPress={() => onThreadMenuAction("edit")}
-                                />
-                              ) : null}
+                              <MenuTile
+                                icon="create-outline"
+                                label="Profile"
+                                activeGlow={ministryToolAccess.profile}
+                                locked={!ministryToolAccess.profile}
+                                compact
+                                disabled={actionLoading !== null}
+                                onPress={() => onThreadMenuAction("edit")}
+                              />
 
-                              {showLeaderManagementTiles ? (
-                                <MenuTile
-                                  icon="person-add-outline"
-                                  label="ADD & Remove" activeGlow
-                                  compact
-                                  disabled={actionLoading !== null || !canAddMemberAuthority}
-                                  onPress={() => onThreadMenuAction("invite")}
-                                />
-                              ) : null}
+                              <MenuTile
+                                icon="person-add-outline"
+                                label="ADD & Remove"
+                                activeGlow={ministryToolAccess.add_remove}
+                                locked={!ministryToolAccess.add_remove}
+                                compact
+                                disabled={actionLoading !== null}
+                                onPress={() => onThreadMenuAction("invite")}
+                              />
 
-                              {showMcHostsTile ? (
-                                <MenuTile
-                                  icon="mic-outline"
-                                  label="MC+ Hosts" activeGlow
-                                  compact
-                                  disabled={actionLoading !== null || (!canManageMcHosts && !isSelectedMcHost)}
-                                  onPress={() => onThreadMenuAction("mc_plus")}
-                                />
-                              ) : null}
+                              <MenuTile
+                                icon="mic-outline"
+                                label="MC+ Hosts"
+                                activeGlow={ministryToolAccess.mc_hosts}
+                                locked={!ministryToolAccess.mc_hosts}
+                                compact
+                                disabled={actionLoading !== null}
+                                onPress={() => onThreadMenuAction("mc_plus")}
+                              />
                             </View>
                           </View>
 
@@ -7293,15 +7374,19 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                               <MenuTile
                                 icon="mail-outline"
                                 label="V2 • Targeted msg"
-                                disabled={true}
+                                activeGlow={ministryToolAccess.targeted_msg}
+                                locked={!ministryToolAccess.targeted_msg}
+                                disabled={actionLoading !== null}
                                 onPress={() => onThreadMenuAction("targeted")}
                               />
 
                               <MenuTile
                                 icon="megaphone-outline"
                                 label="V2 • Broadcast"
-                                disabled={true}
-                                onPress={() => openAssignmentToolScreen("broadcast")}
+                                activeGlow={ministryToolAccess.broadcast}
+                                locked={!ministryToolAccess.broadcast}
+                                disabled={actionLoading !== null}
+                                onPress={() => onThreadMenuAction("broadcast")}
                               />
                             </View>
                           </View>
@@ -7314,16 +7399,20 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                               <MenuTile
                                 icon="sparkles-outline"
                                 label="V2 • TLMC panel"
+                                activeGlow={ministryToolAccess.tlmc_panel}
+                                locked={!ministryToolAccess.tlmc_panel}
                                 compact
-                                disabled={true}
+                                disabled={actionLoading !== null}
                                 onPress={() => onThreadMenuAction("tlmc")}
                               />
 
                               <MenuTile
                                 icon="checkbox-outline"
                                 label="V2 • Election"
+                                activeGlow={ministryToolAccess.election}
+                                locked={!ministryToolAccess.election}
                                 compact
-                                disabled={true}
+                                disabled={actionLoading !== null}
                                 onPress={() => onThreadMenuAction("election")}
                               />
                             </View>
@@ -7332,23 +7421,33 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                           <View style={s.menuSectionBlock}>
                             <Text style={t.menuSection}>Scheduling</Text>
                             <View style={s.menuTileGrid}>
-                              {showScheduleTiles ? (
-                                <>
-                                  <MenuTile
-                                    icon="calendar-outline"
-                                    label="Meeting" activeGlow
-                                    disabled={actionLoading !== null || !canScheduleStructuredMeeting}
-                                    onPress={() => openAssignmentToolScreen("meeting")}
-                                  />
+                              <MenuTile
+                                icon="calendar-outline"
+                                label="Meeting"
+                                activeGlow={ministryToolAccess.meeting}
+                                locked={!ministryToolAccess.meeting}
+                                disabled={actionLoading !== null}
+                                onPress={() =>
+                                  gateMinistryTool("meeting", () => {
+                                    closeThreadMenu();
+                                    openAssignmentToolScreen("meeting");
+                                  })
+                                }
+                              />
 
-                                  <MenuTile
-                                    icon="time-outline"
-                                    label="Schedule" activeGlow
-                                    disabled={actionLoading !== null || !canScheduleStructuredMeeting}
-                                    onPress={() => openAssignmentToolScreen("schedule")}
-                                  />
-                                </>
-                              ) : null}
+                              <MenuTile
+                                icon="time-outline"
+                                label="Schedule"
+                                activeGlow={ministryToolAccess.schedule}
+                                locked={!ministryToolAccess.schedule}
+                                disabled={actionLoading !== null}
+                                onPress={() =>
+                                  gateMinistryTool("schedule", () => {
+                                    closeThreadMenu();
+                                    openAssignmentToolScreen("schedule");
+                                  })
+                                }
+                              />
                             </View>
                           </View>
 
@@ -7358,20 +7457,30 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                               <MenuTile
                                 icon="eye-outline"
                                 label="V2 • Visibility"
-                                disabled={true}
+                                activeGlow={ministryToolAccess.visibility}
+                                locked={!ministryToolAccess.visibility}
+                                disabled={actionLoading !== null}
                                 onPress={() => onThreadMenuAction("visibility")}
                               />
 
                               <MenuTile
                                 icon="shield-checkmark-outline"
                                 label="V2 • Permissions"
-                                disabled={true}
-                                onPress={() => openAssignmentToolScreen("permissions")}
+                                activeGlow={ministryToolAccess.permissions}
+                                locked={!ministryToolAccess.permissions}
+                                disabled={actionLoading !== null}
+                                onPress={() => onThreadMenuAction("permissions")}
                               />
 
-                              {showLeaderManagementTiles ? (
-                                <MenuTile icon={actionLoading === "pause" ? "time-outline" : "pause-circle-outline"} label={actionLoading === "pause" ? "Pausing..." : "Pause assignment"} danger disabled={actionLoading !== null || !canPauseStructuredRoom} onPress={() => onThreadMenuAction("pause")} />
-                              ) : null}
+                              <MenuTile
+                                icon={actionLoading === "pause" ? "time-outline" : "pause-circle-outline"}
+                                label={actionLoading === "pause" ? "Pausing..." : "Pause assignment"}
+                                danger
+                                activeGlow={ministryToolAccess.pause}
+                                locked={!ministryToolAccess.pause}
+                                disabled={actionLoading !== null}
+                                onPress={() => onThreadMenuAction("pause")}
+                              />
 
                               <MenuTile icon={actionLoading === "leave" ? "time-outline" : "exit-outline"} label={actionLoading === "leave" ? "Leaving..." : isAssignmentThread ? "Leave assignment" : "Quit ministry"} danger disabled={actionLoading !== null} onPress={() => onThreadMenuAction("leave")} />
                             </View>
@@ -10195,6 +10304,35 @@ videoEditorSplitTimelineBadgeText: {
     borderColor: "rgba(255,255,255,0.08)",
     backgroundColor: "rgba(15,18,28,0.92)",
   } as ViewStyle,
+  menuTileLocked: {
+    opacity: 0.72,
+    borderColor: "rgba(255,255,255,0.07)",
+    backgroundColor: "rgba(12,15,24,0.94)",
+  } as ViewStyle,
+  menuTileIconWrapLocked: {
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.10)",
+  } as ViewStyle,
+  menuTileLockBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+  } as ViewStyle,
+  menuTileLockBadgeText: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  } as TextStyle,
+  menuTileLabelLocked: {
+    color: "rgba(255,255,255,0.58)",
+  } as TextStyle,
   menuTilePressed: {
     opacity: 0.96,
     transform: [{ scale: 0.985 }],

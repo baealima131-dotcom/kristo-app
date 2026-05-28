@@ -84,3 +84,79 @@ export function logMinistryAuthority(
     canCreateMeeting: authority.canCreateMeeting,
   });
 }
+
+export type MinistryToolKey =
+  | "members_board"
+  | "profile"
+  | "add_remove"
+  | "mc_hosts"
+  | "meeting"
+  | "schedule"
+  | "tlmc_panel"
+  | "election"
+  | "targeted_msg"
+  | "broadcast"
+  | "visibility"
+  | "permissions"
+  | "pause";
+
+const PASTOR_LEADER_TOOLS: MinistryToolKey[] = [
+  "profile",
+  "add_remove",
+  "pause",
+  "visibility",
+  "permissions",
+  "tlmc_panel",
+  "election",
+  "targeted_msg",
+  "broadcast",
+];
+
+export function canOpenMinistryTool(
+  toolKey: MinistryToolKey,
+  authority: MinistryAuthority,
+  opts?: { isSelectedMcHost?: boolean }
+): boolean {
+  switch (toolKey) {
+    case "members_board":
+      return true;
+    case "profile":
+    case "add_remove":
+    case "pause":
+    case "visibility":
+    case "permissions":
+    case "tlmc_panel":
+    case "election":
+    case "targeted_msg":
+    case "broadcast":
+      return authority.tier === "pastor" || authority.tier === "leader";
+    case "mc_hosts":
+      return authority.canManageHosts || !!opts?.isSelectedMcHost;
+    case "meeting":
+    case "schedule":
+      return authority.canCreateMeeting;
+    default:
+      return false;
+  }
+}
+
+export function ministryToolLockMessage(toolKey: MinistryToolKey): string {
+  if (PASTOR_LEADER_TOOLS.includes(toolKey) || toolKey === "mc_hosts") {
+    return "This tool requires Pastor or Leader access.";
+  }
+  return "This tool requires Pastor, Leader, or Host access.";
+}
+
+export function logMinistryToolGate(args: {
+  toolKey: MinistryToolKey;
+  allowed: boolean;
+  ministryRole: string;
+  appRole: string;
+}) {
+  console.log("[MinistryToolGate]", {
+    toolKey: args.toolKey,
+    allowed: args.allowed,
+    ministryRole: args.ministryRole,
+    appRole: args.appRole,
+  });
+}
