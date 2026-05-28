@@ -56,6 +56,7 @@ import { getChurchProjectMcScheduleState } from "@/src/store/churchProjectMcSche
 import { apiGet, apiPatch, apiDelete, apiPost } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
 import { requireActiveChurchSubscriptionForSchedule } from "@/src/lib/churchSubscription";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
@@ -1655,12 +1656,18 @@ function optimisticMessageMatchesBackend(opt: MsgItem, backend: MsgItem) {
 }
 
 function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, apiBase: string): MsgItem {
+  const senderRole = String(x.senderRole || x.role || "").trim();
+  const churchRole = String(x.churchRole || x.senderRole || x.role || "").trim();
+
   return {
     id: String(x.id || `backend_${x.createdAt || Date.now()}`),
     threadId,
     sender: String(x.senderUserId || "") === selfId ? "me" : "other",
     displayName: String(x.senderName || "Member"),
     senderUserId: String(x.senderUserId || ""),
+    senderRole: senderRole || undefined,
+    role: senderRole || churchRole || undefined,
+    churchRole: churchRole || undefined,
     avatarUri: String(x.senderAvatar || "").startsWith("/")
       ? `${apiBase}${String(x.senderAvatar || "")}`
       : String(x.senderAvatar || ""),
@@ -1672,6 +1679,25 @@ function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, apiB
     kind: String(x.kind || "text") as any,
     card: x.card || undefined,
   };
+}
+
+function isPastorMessage(m: MsgItem, opts?: { churchPastorUserId?: string }) {
+  if (isAssignmentCardMessage(m)) return false;
+
+  const roleTokens = [m.senderRole, m.role, m.churchRole]
+    .map((v) => String(v || "").trim().toLowerCase())
+    .filter(Boolean);
+
+  if (roleTokens.some((token) => token.includes("pastor"))) return true;
+
+  const senderUserId = String(m.senderUserId || "").trim();
+  const churchPastorUserId = String(opts?.churchPastorUserId || "").trim();
+  if (senderUserId && churchPastorUserId && senderUserId === churchPastorUserId) return true;
+
+  const displayName = String(m.displayName || "").trim().toLowerCase();
+  if (displayName.includes("pastor")) return true;
+
+  return false;
 }
 
 function pendingAttachmentsToOptimistic(items: PendingMessageAttachment[]): MsgAttachment[] {
@@ -1902,6 +1928,7 @@ function Bubble({
   onPress,
   selected,
   actionHighlighted,
+  churchPastorUserId,
   canClaimAssignmentCard,
   canAddAssignmentCard,
   canAddVideoAssignmentCard,
@@ -1917,6 +1944,7 @@ function Bubble({
   onPress?: () => void;
   selected?: boolean;
   actionHighlighted?: boolean;
+  churchPastorUserId?: string;
   canClaimAssignmentCard?: boolean;
   canAddAssignmentCard?: boolean;
   canAddVideoAssignmentCard?: boolean;
@@ -1927,11 +1955,16 @@ function Bubble({
   onPreviewImage?: (uri: string) => void;
 }) {
   const mine = m.sender === "me";
-  const senderRoleGlobal = String((m as any).role || "").toLowerCase();
-  const isPastorMineOrOther =
-    senderRoleGlobal.includes("pastor") ||
-    String((m as any).senderUserId || "") === "u_3cba06da2dc7c19df3cc074a" ||
-    String(m.displayName || "").toLowerCase().includes("pastor");
+  const pastorMessage = isPastorMessage(m, { churchPastorUserId });
+
+  console.log("[MessageBubbleRole]", {
+    id: m.id,
+    sender: m.sender,
+    senderRole: m.senderRole,
+    role: m.role,
+    churchRole: m.churchRole,
+    isPastorMessage: pastorMessage,
+  });
 
   if (m.kind === "assignment_card") {
     const cardIndexMatch = String(m.card?.slotLabel || m.card?.cardId || m.id || "").match(/(\d+)/);
@@ -2017,14 +2050,22 @@ function Bubble({
     >
       <FadeInBubbleWrap mine={mine}>
       {mine ? (
-        <View style={[s.bubble, s.bubbleMine, isPastorMineOrOther ? s.bubblePastor : null, selected || actionHighlighted ? s.bubbleSelectedGlow : null]}>
-          <LinearGradient
-            pointerEvents="none"
-            colors={["rgba(255,255,255,0.18)", "rgba(255,255,255,0.05)", "transparent"]}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={s.bubbleMineSheen}
-          />
+        <View
+          style={[
+            s.bubble,
+            pastorMessage ? s.bubblePastor : s.bubbleMine,
+            selected || actionHighlighted ? s.bubbleSelectedGlow : null,
+          ]}
+        >
+          {!pastorMessage ? (
+            <LinearGradient
+              pointerEvents="none"
+              colors={["rgba(255,255,255,0.18)", "rgba(255,255,255,0.05)", "transparent"]}
+              start={{ x: 0.5, y: 0 }}
+              end={{ x: 0.5, y: 1 }}
+              style={s.bubbleMineSheen}
+            />
+          ) : null}
           {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
           <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} />
@@ -2037,19 +2078,12 @@ function Bubble({
             </View>
           </View>
         </View>
-      ) : (() => {
-        const senderRole = String((m as any).role || "").toLowerCase();
-        const isPastorMessage =
-          senderRole.includes("pastor") ||
-          String((m as any).senderUserId || "") === "u_3cba06da2dc7c19df3cc074a" ||
-          String(m.displayName || "").toLowerCase().includes("pastor");
-
-        return (
+      ) : (
         <View style={s.otherRow}>
           {showAvatar ? (
             <View style={s.avatarMini}>
-              {(m as any).avatarUri ? (
-                <Image source={{ uri: String((m as any).avatarUri) }} style={s.avatarMiniImage as any} />
+              {m.avatarUri ? (
+                <Image source={{ uri: String(m.avatarUri) }} style={s.avatarMiniImage as any} />
               ) : (
                 <Text style={t.avatarMiniText}>{initials(m.displayName || "U")}</Text>
               )}
@@ -2063,21 +2097,21 @@ function Bubble({
               s.bubble,
               s.bubbleOther,
               s.bubbleOtherInline,
-              isPastorMessage ? s.bubblePastor : null,
+              pastorMessage ? s.bubblePastor : null,
               selected || actionHighlighted ? s.bubbleSelectedGlow : null,
             ]}
           >
             {!!m.displayName && (
               <Text
                 style={{
-                  color: isPastorMessage ? "#F4D06F" : "#F4D06F",
+                  color: "#F4D06F",
                   fontSize: 11,
                   fontWeight: "800",
                   marginBottom: 6,
                   letterSpacing: 0.3,
                 }}
               >
-                {isPastorMessage
+                {pastorMessage
                   ? pastorShortName(String(m.displayName || ""))
                   : m.displayName}
               </Text>
@@ -2090,15 +2124,14 @@ function Bubble({
             <Text
               style={[
                 t.msgTimeOther,
-                isPastorMessage ? { color: "rgba(244,208,111,0.86)" } : null,
+                pastorMessage ? { color: "rgba(244,208,111,0.86)" } : null,
               ]}
             >
               {formatTime(m.createdAt)}
             </Text>
           </View>
         </View>
-        );
-      })()}
+      )}
       </FadeInBubbleWrap>
     </Pressable>
   );
@@ -2795,7 +2828,33 @@ export default function MessageThreadScreen() {
   const [composerFocused, setComposerFocused] = useState(false);
   const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
   const [attachUploading, setAttachUploading] = useState(false);
+  const [churchPastorUserId, setChurchPastorUserId] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadChurchPastorUserId() {
+      const cid = String(churchId || getKristoHeaders()["x-kristo-church-id"] || "").trim();
+      if (!cid) {
+        if (alive) setChurchPastorUserId("");
+        return;
+      }
+
+      try {
+        const res = await fetchChurchPastorUserId(cid, getKristoHeaders() as any);
+        if (alive) setChurchPastorUserId(String(res.actualChurchPastorUserId || "").trim());
+      } catch {
+        if (alive) setChurchPastorUserId("");
+      }
+    }
+
+    void loadChurchPastorUserId();
+
+    return () => {
+      alive = false;
+    };
+  }, [churchId, effectiveAuthUserId]);
 
   const openedMenuFromParamRef = useRef(false);
 
@@ -3486,6 +3545,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
     const roomId = backendRoomId;
     const sendHeaders: any = getKristoHeaders();
     const selfId = String(sendHeaders?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+    const authRole = String(sendHeaders?.["x-kristo-role"] || effectiveAuthRole || "").trim();
     const senderName = String(
       sendHeaders?.["x-kristo-user-name"] ||
       sendHeaders?.["x-kristo-display-name"] ||
@@ -3514,6 +3574,10 @@ const displayHeaderTitle = assignmentDisplayTitle;
         createdAt: optimisticCreatedAt,
         pending: true,
         senderUserId: selfId,
+        displayName: senderName || "Member",
+        senderRole: authRole,
+        role: authRole,
+        churchRole: authRole,
       },
       { disableAutoReply: true }
     );
@@ -6161,6 +6225,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 showAvatar={showAvatar}
                 selected={isSelected}
                 actionHighlighted={isActionHighlighted}
+                churchPastorUserId={churchPastorUserId}
                 onPress={
                   messageSelectionMode && isSelectableMessage(item)
                     ? () => toggleMessageSelection(item.id)

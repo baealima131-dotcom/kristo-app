@@ -64,6 +64,9 @@ export type MsgItem = {
   card?: AssignmentCardPayload;
   pending?: boolean;
   senderUserId?: string;
+  senderRole?: string;
+  role?: string;
+  churchRole?: string;
 };
 
 export type ThreadMeta = {
@@ -333,6 +336,10 @@ export function sendMessage(
     pending?: boolean;
     senderUserId?: string;
     createdAt?: number;
+    displayName?: string;
+    senderRole?: string;
+    role?: string;
+    churchRole?: string;
   },
   opts?: { seedOther?: boolean; name?: string; disableAutoReply?: boolean }
 ) {
@@ -347,13 +354,16 @@ export function sendMessage(
     id,
     threadId,
     sender: opts?.seedOther ? "other" : "me",
-    displayName: opts?.seedOther ? opts?.name || "User" : "Me",
+    displayName: payload.displayName || (opts?.seedOther ? opts?.name || "User" : "Me"),
     text: payload.text || "",
     attachments: payload.attachments?.length ? payload.attachments : undefined,
     createdAt: now,
     kind: "text",
     pending: payload.pending,
     senderUserId: payload.senderUserId,
+    senderRole: payload.senderRole,
+    role: payload.role,
+    churchRole: payload.churchRole,
   };
 
   state.messages[threadId] = [item, ...(state.messages[threadId] || [])];
