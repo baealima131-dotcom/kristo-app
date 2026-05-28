@@ -232,3 +232,84 @@ export function startAdaptiveLivePolling(opts: AdaptiveOpts) {
     logTrafficPollingPaused(screen, "unmounted");
   };
 }
+
+export type RoomMessagesPollOpts = {
+  roomId: string;
+  enabled?: boolean;
+  intervalMs?: number;
+  onTick: () => void | Promise<boolean | void>;
+};
+
+/** Fast silent polling for active message rooms — ~1–2s cross-device delivery. */
+export function startRoomMessagesPolling(opts: RoomMessagesPollOpts) {
+  const roomId = String(opts.roomId || "").trim();
+  const enabled = opts.enabled !== false;
+  const intervalMs = opts.intervalMs ?? 1500;
+
+  if (!enabled || !roomId) {
+    return () => {};
+  }
+
+  let cancelled = false;
+  let inflight = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let appState: AppStateStatus = AppState.currentState;
+
+  const canRun = () => !cancelled && appState === "active";
+
+  const clear = () => {
+    if (!timer) return;
+    clearTimeout(timer);
+    timer = null;
+  };
+
+  const runTick = async () => {
+    if (!canRun()) return;
+    if (inflight) {
+      console.log("[RoomMessagesPoll] skip-inflight", { roomId });
+      return;
+    }
+
+    console.log("[RoomMessagesPoll] tick", { roomId });
+    inflight = true;
+    try {
+      const updated = await opts.onTick();
+      if (updated === true) {
+        console.log("[RoomMessagesPoll] updated", { roomId });
+      }
+    } catch {
+      // silent — delivery poll should not surface errors in UI
+    } finally {
+      inflight = false;
+    }
+  };
+
+  const scheduleNext = () => {
+    clear();
+    if (!canRun()) return;
+    timer = setTimeout(async () => {
+      await runTick();
+      scheduleNext();
+    }, intervalMs);
+  };
+
+  console.log("[RoomMessagesPoll] start", { roomId, intervalMs });
+  scheduleNext();
+
+  const sub = AppState.addEventListener("change", (next) => {
+    appState = next;
+    if (next === "active") {
+      void runTick();
+      scheduleNext();
+    } else {
+      clear();
+    }
+  });
+
+  return () => {
+    cancelled = true;
+    clear();
+    sub.remove();
+    console.log("[RoomMessagesPoll] stop", { roomId });
+  };
+}

@@ -37,6 +37,7 @@ import {
   preloadLiveImages,
   setCachedParticipant,
   startAdaptiveLivePolling,
+  startRoomMessagesPolling,
 } from "@/src/lib/liveRealtime";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -2720,7 +2721,8 @@ export default function MessageThreadScreen() {
   const roomImageGallery = useMemo(() => collectRoomImageGalleryUris(messages), [messages]);
   const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
   const roomMessagesSigRef = useRef("");
-  const reloadRoomMessagesRef = useRef<(() => Promise<void>) | null>(null);
+  const roomMessagesInflightRef = useRef(false);
+  const reloadRoomMessagesRef = useRef<(() => Promise<boolean>) | null>(null);
 
   useEffect(() => {
     if (!threadId || !isFocused) return;
@@ -2746,72 +2748,87 @@ export default function MessageThreadScreen() {
 
     let alive = true;
 
-    async function loadBackendRoomMessages() {
+    async function loadBackendRoomMessages(): Promise<boolean> {
       const roomId = backendRoomId;
-      if (!roomId) return;
+      if (!roomId) return false;
+      if (roomMessagesInflightRef.current) return false;
 
-      const headers: any = getKristoHeaders();
-      const selfId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+      roomMessagesInflightRef.current = true;
+      console.log("[RoomMessagesPoll] fetch-start", { backendRoomId: roomId });
 
-      const res: any = await apiGet(
-        `/api/church/room-messages?roomId=${encodeURIComponent(roomId)}&limit=120`,
-        { headers },
-        { screen: "MessageThread", throttleMs: 12000 }
-      );
+      let count = 0;
+      let updated = false;
 
-      const rows = Array.isArray(res?.data) ? res.data : [];
-      if (!alive || !Array.isArray(rows)) return;
+      try {
+        const headers: any = getKristoHeaders();
+        const selfId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
 
-      const visibleRows = rows.filter((x: any) => {
-        const isDraftCard =
-          String(x?.kind || "") === "assignment_card" &&
-          String(x?.card?.visibility || "published") === "draft";
+        const res: any = await apiGet(
+          `/api/church/room-messages?roomId=${encodeURIComponent(roomId)}&limit=120&t=${Date.now()}`,
+          { headers },
+          { screen: `RoomMessagesPoll:${roomId}`, throttleMs: 0, dedupe: false }
+        );
 
-        // Locked schedule cards are hidden from the chat room for everyone.
-        // They remain editable in Schedule, and Publish can show them again.
-        return !isDraftCard;
-      });
+        const rows = Array.isArray(res?.data) ? res.data : [];
+        if (!alive || !Array.isArray(rows)) return false;
 
-      const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
-      const mapped: MsgItem[] = visibleRows.map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase));
+        const visibleRows = rows.filter((x: any) => {
+          const isDraftCard =
+            String(x?.kind || "") === "assignment_card" &&
+            String(x?.card?.visibility || "published") === "draft";
 
-      const roomTitle = String(
-        isAssignmentThread
-          ? ((params as any)?.assignmentTitle || title || "Ministry Assignment")
-          : isMinistryThread
-            ? (realMinistry?.name || title || "Ministry Room")
-            : (title || "Message Room")
-      );
+          // Locked schedule cards are hidden from the chat room for everyone.
+          // They remain editable in Schedule, and Publish can show them again.
+          return !isDraftCard;
+        });
 
-      const currentLocalMessages = getSnapshot().messages?.[threadId] || [];
-      const localScheduleCards = currentLocalMessages.filter((m: any) =>
-        String(m?.kind || "") === "assignment_card" &&
-        String((m as any)?.card?.source || "") === "media-schedule"
-      );
-      const pendingOptimistic = currentLocalMessages.filter(isOptimisticOutgoingMessage);
-      const backendIds = new Set(mapped.map((m: any) => String(m.id || "")));
-      const safeLocalScheduleCards = localScheduleCards.filter((m: any) => !backendIds.has(String(m.id || "")));
-      const dedupedPending = pendingOptimistic.filter(
-        (opt) => !backendIds.has(String(opt.id || "")) && !mapped.some((b) => optimisticMessageMatchesBackend(opt, b))
-      );
-      const merged = [...safeLocalScheduleCards, ...dedupedPending, ...mapped].sort(
-        (a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0)
-      );
-      const sig = messagesListSignature(merged);
-      if (sig === roomMessagesSigRef.current) return;
-      roomMessagesSigRef.current = sig;
+        count = visibleRows.length;
 
-      setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
+        const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+        const mapped: MsgItem[] = visibleRows.map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase));
+
+        const roomTitle = String(
+          isAssignmentThread
+            ? ((params as any)?.assignmentTitle || title || "Ministry Assignment")
+            : isMinistryThread
+              ? (realMinistry?.name || title || "Ministry Room")
+              : (title || "Message Room")
+        );
+
+        const currentLocalMessages = getSnapshot().messages?.[threadId] || [];
+        const localScheduleCards = currentLocalMessages.filter((m: any) =>
+          String(m?.kind || "") === "assignment_card" &&
+          String((m as any)?.card?.source || "") === "media-schedule"
+        );
+        const pendingOptimistic = currentLocalMessages.filter(isOptimisticOutgoingMessage);
+        const backendIds = new Set(mapped.map((m: any) => String(m.id || "")));
+        const safeLocalScheduleCards = localScheduleCards.filter((m: any) => !backendIds.has(String(m.id || "")));
+        const dedupedPending = pendingOptimistic.filter(
+          (opt) => !backendIds.has(String(opt.id || "")) && !mapped.some((b) => optimisticMessageMatchesBackend(opt, b))
+        );
+        const merged = [...safeLocalScheduleCards, ...dedupedPending, ...mapped].sort(
+          (a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0)
+        );
+        const sig = messagesListSignature(merged);
+        if (sig === roomMessagesSigRef.current) return false;
+
+        roomMessagesSigRef.current = sig;
+        setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
+        updated = true;
+        return true;
+      } finally {
+        roomMessagesInflightRef.current = false;
+        console.log("[RoomMessagesPoll] fetch-done", { count, updated });
+      }
     }
 
     reloadRoomMessagesRef.current = loadBackendRoomMessages;
     void loadBackendRoomMessages();
 
-    const stop = startAdaptiveLivePolling({
-      screen: "MessageThread",
+    const stop = startRoomMessagesPolling({
+      roomId: backendRoomId,
       enabled: isFocused,
-      activeMs: isChurchLiveControlAssignment ? 15000 : 30000,
-      idleMs: isChurchLiveControlAssignment ? 45000 : 90000,
+      intervalMs: 1500,
       onTick: loadBackendRoomMessages,
     });
 
@@ -3376,7 +3393,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
               if (anySuccess) {
                 roomMessagesSigRef.current = "";
-                await reloadRoomMessagesRef.current?.();
+                void reloadRoomMessagesRef.current?.();
               }
 
               exitMessageSelectionMode();
