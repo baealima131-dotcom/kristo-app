@@ -1580,7 +1580,7 @@ function collectRoomImageGalleryUris(messages: MsgItem[]): string[] {
     }
   }
 
-  return uris.reverse();
+  return uris;
 }
 
 function findGalleryImageIndex(gallery: string[], uri: string) {
