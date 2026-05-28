@@ -67,6 +67,7 @@ export type MsgItem = {
   senderRole?: string;
   role?: string;
   churchRole?: string;
+  senderAvatar?: string;
 };
 
 export type ThreadMeta = {
@@ -340,6 +341,8 @@ export function sendMessage(
     senderRole?: string;
     role?: string;
     churchRole?: string;
+    avatarUri?: string;
+    senderAvatar?: string;
   },
   opts?: { seedOther?: boolean; name?: string; disableAutoReply?: boolean }
 ) {
@@ -364,6 +367,8 @@ export function sendMessage(
     senderRole: payload.senderRole,
     role: payload.role,
     churchRole: payload.churchRole,
+    avatarUri: payload.avatarUri,
+    senderAvatar: payload.senderAvatar || payload.avatarUri,
   };
 
   state.messages[threadId] = [item, ...(state.messages[threadId] || [])];

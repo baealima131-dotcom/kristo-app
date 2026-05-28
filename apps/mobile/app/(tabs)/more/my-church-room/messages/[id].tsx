@@ -1656,9 +1656,93 @@ function optimisticMessageMatchesBackend(opt: MsgItem, backend: MsgItem) {
   return Math.abs(Number(opt.createdAt || 0) - Number(backend.createdAt || 0)) < 120000;
 }
 
-function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, apiBase: string): MsgItem {
+type MessageAvatarSource =
+  | "avatarUri"
+  | "senderAvatar"
+  | "senderAvatarUri"
+  | "avatarUrl"
+  | "profileImage"
+  | "photoURL"
+  | "image"
+  | "user.avatarUri"
+  | "profile.avatarUri"
+  | null;
+
+function resolveMessageSenderAvatar(m: MsgItem | Record<string, any>): {
+  uri: string;
+  source: MessageAvatarSource;
+} {
+  const raw = m as Record<string, any>;
+  const candidates: Array<[MessageAvatarSource, unknown]> = [
+    ["avatarUri", raw.avatarUri],
+    ["senderAvatar", raw.senderAvatar],
+    ["senderAvatarUri", raw.senderAvatarUri],
+    ["avatarUrl", raw.avatarUrl],
+    ["profileImage", raw.profileImage],
+    ["photoURL", raw.photoURL],
+    ["image", raw.image],
+    ["user.avatarUri", raw.user?.avatarUri],
+    ["profile.avatarUri", raw.profile?.avatarUri],
+  ];
+
+  for (const [source, value] of candidates) {
+    const uri = chatMediaUrl(value);
+    if (uri) return { uri, source };
+  }
+
+  return { uri: "", source: null };
+}
+
+function resolveSessionUserAvatar(
+  session: Record<string, any> | null | undefined,
+  auth: Record<string, any> | null | undefined
+) {
+  const sessionAny = (session || {}) as Record<string, any>;
+  const authAny = (auth || {}) as Record<string, any>;
+  const candidates = [
+    sessionAny.avatarUri,
+    sessionAny.avatarUrl,
+    sessionAny.profileImage,
+    sessionAny.photoURL,
+    sessionAny.image,
+    sessionAny.user?.avatarUri,
+    sessionAny.user?.avatarUrl,
+    sessionAny.profile?.avatarUri,
+    sessionAny.profile?.avatarUrl,
+    sessionAny.profile?.profileImage,
+    authAny.avatarUri,
+    authAny.avatarUrl,
+    authAny.profileImage,
+    authAny.photoURL,
+    authAny.image,
+  ];
+
+  for (const raw of candidates) {
+    const uri = chatMediaUrl(raw);
+    if (uri) return uri;
+  }
+
+  return "";
+}
+
+function enrichMessageSenderAvatar(m: MsgItem, lookup: Map<string, string>): MsgItem {
+  if (resolveMessageSenderAvatar(m).uri) return m;
+
+  const uid = String(m.senderUserId || "").trim();
+  const fallback = uid ? lookup.get(uid) : "";
+  if (!fallback) return m;
+
+  return {
+    ...m,
+    avatarUri: fallback,
+    senderAvatar: fallback,
+  };
+}
+
+function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, _apiBase: string): MsgItem {
   const senderRole = String(x.senderRole || x.role || "").trim();
   const churchRole = String(x.churchRole || x.senderRole || x.role || "").trim();
+  const senderAvatar = resolveMessageSenderAvatar(x).uri;
 
   return {
     id: String(x.id || `backend_${x.createdAt || Date.now()}`),
@@ -1669,9 +1753,8 @@ function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, apiB
     senderRole: senderRole || undefined,
     role: senderRole || churchRole || undefined,
     churchRole: churchRole || undefined,
-    avatarUri: String(x.senderAvatar || "").startsWith("/")
-      ? `${apiBase}${String(x.senderAvatar || "")}`
-      : String(x.senderAvatar || ""),
+    senderAvatar: senderAvatar || undefined,
+    avatarUri: senderAvatar || undefined,
     text: String(x.text || ""),
     attachments: Array.isArray(x.attachments)
       ? x.attachments.map((att: any) => normalizeMsgAttachment(att))
@@ -1742,6 +1825,32 @@ function buildMessageShareContent(m: MsgItem) {
     }
   }
   return parts.join("\n").trim() || "Message";
+}
+
+function MessageBubbleAvatar({
+  uri,
+  label,
+  show,
+  side,
+}: {
+  uri: string;
+  label: string;
+  show: boolean;
+  side: "left" | "right";
+}) {
+  if (!show) {
+    return <View style={s.avatarSpacer} />;
+  }
+
+  return (
+    <View style={side === "left" ? s.avatarMini : s.avatarMiniRight}>
+      {uri ? (
+        <Image source={{ uri }} style={s.avatarMiniImage as any} />
+      ) : (
+        <Text style={t.avatarMiniText}>{initials(label || "U")}</Text>
+      )}
+    </View>
+  );
 }
 
 function MessageActionRow({
@@ -1957,14 +2066,13 @@ function Bubble({
 }) {
   const mine = m.sender === "me";
   const pastorMessage = isPastorMessage(m, { churchPastorUserId });
+  const senderAvatar = resolveMessageSenderAvatar(m);
 
-  console.log("[MessageBubbleRole]", {
+  console.log("[MessageAvatar]", {
     id: m.id,
-    sender: m.sender,
-    senderRole: m.senderRole,
-    role: m.role,
-    churchRole: m.churchRole,
-    isPastorMessage: pastorMessage,
+    senderUserId: m.senderUserId,
+    hasAvatar: !!senderAvatar.uri,
+    source: senderAvatar.source,
   });
 
   if (m.kind === "assignment_card") {
@@ -2051,47 +2159,52 @@ function Bubble({
     >
       <FadeInBubbleWrap mine={mine}>
       {mine ? (
-        <View
-          style={[
-            s.bubble,
-            pastorMessage ? s.bubblePastor : s.bubbleMine,
-            selected || actionHighlighted ? s.bubbleSelectedGlow : null,
-          ]}
-        >
-          {!pastorMessage ? (
-            <LinearGradient
-              pointerEvents="none"
-              colors={["rgba(255,255,255,0.18)", "rgba(255,255,255,0.05)", "transparent"]}
-              start={{ x: 0.5, y: 0 }}
-              end={{ x: 0.5, y: 1 }}
-              style={s.bubbleMineSheen}
-            />
-          ) : null}
-          {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
+        <View style={s.mineRow}>
+          <View
+            style={[
+              s.bubble,
+              s.bubbleMineInline,
+              pastorMessage ? s.bubblePastor : s.bubbleMine,
+              selected || actionHighlighted ? s.bubbleSelectedGlow : null,
+            ]}
+          >
+            {!pastorMessage ? (
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(255,255,255,0.18)", "rgba(255,255,255,0.05)", "transparent"]}
+                start={{ x: 0.5, y: 0 }}
+                end={{ x: 0.5, y: 1 }}
+                style={s.bubbleMineSheen}
+              />
+            ) : null}
+            {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
-          <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} />
+            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} />
 
-          <View style={s.msgMetaRow}>
-            <Text style={t.msgTimeMine}>{formatTime(m.createdAt)}</Text>
-            <View style={s.deliveredRow}>
-              <Ionicons name="checkmark-done" size={11} color="rgba(196,181,253,0.88)" />
-              <Text style={t.deliveredText}>Delivered</Text>
+            <View style={s.msgMetaRow}>
+              <Text style={t.msgTimeMine}>{formatTime(m.createdAt)}</Text>
+              <View style={s.deliveredRow}>
+                <Ionicons name="checkmark-done" size={11} color="rgba(196,181,253,0.88)" />
+                <Text style={t.deliveredText}>Delivered</Text>
+              </View>
             </View>
           </View>
+
+          <MessageBubbleAvatar
+            uri={senderAvatar.uri}
+            label={String(m.displayName || "Me")}
+            show={true}
+            side="right"
+          />
         </View>
       ) : (
         <View style={s.otherRow}>
-          {showAvatar ? (
-            <View style={s.avatarMini}>
-              {m.avatarUri ? (
-                <Image source={{ uri: String(m.avatarUri) }} style={s.avatarMiniImage as any} />
-              ) : (
-                <Text style={t.avatarMiniText}>{initials(m.displayName || "U")}</Text>
-              )}
-            </View>
-          ) : (
-            <View style={s.avatarSpacer} />
-          )}
+          <MessageBubbleAvatar
+            uri={senderAvatar.uri}
+            label={String(m.displayName || "U")}
+            show={true}
+            side="left"
+          />
 
           <View
             style={[
@@ -2722,6 +2835,7 @@ export default function MessageThreadScreen() {
   const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
   const roomMessagesSigRef = useRef("");
   const roomMessagesInflightRef = useRef(false);
+  const memberAvatarByUserIdRef = useRef<Map<string, string>>(new Map());
   const reloadRoomMessagesRef = useRef<(() => Promise<boolean>) | null>(null);
 
   useEffect(() => {
@@ -2785,7 +2899,9 @@ export default function MessageThreadScreen() {
         count = visibleRows.length;
 
         const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
-        const mapped: MsgItem[] = visibleRows.map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase));
+        const mapped: MsgItem[] = visibleRows
+          .map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase))
+          .map((m) => enrichMessageSenderAvatar(m, memberAvatarByUserIdRef.current));
 
         const roomTitle = String(
           isAssignmentThread
@@ -2813,7 +2929,11 @@ export default function MessageThreadScreen() {
         if (sig === roomMessagesSigRef.current) return false;
 
         roomMessagesSigRef.current = sig;
-        setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
+        if (merged.length > 0 || messages.length === 0) {
+          setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
+        } else {
+          console.log("[RoomMessagesPoll] skip-empty-overwrite", { threadId, backendRoomId });
+        }
         updated = true;
         return true;
       } finally {
@@ -3563,6 +3683,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
     const sendHeaders: any = getKristoHeaders();
     const selfId = String(sendHeaders?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
     const authRole = String(sendHeaders?.["x-kristo-role"] || effectiveAuthRole || "").trim();
+    const selfAvatarUri = resolveSessionUserAvatar(kristoSession, auth);
     const senderName = String(
       sendHeaders?.["x-kristo-user-name"] ||
       sendHeaders?.["x-kristo-display-name"] ||
@@ -3595,6 +3716,8 @@ const displayHeaderTitle = assignmentDisplayTitle;
         senderRole: authRole,
         role: authRole,
         churchRole: authRole,
+        avatarUri: selfAvatarUri || undefined,
+        senderAvatar: selfAvatarUri || undefined,
       },
       { disableAutoReply: true }
     );
@@ -5527,7 +5650,24 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
     return () => {
       alive = false;
     };
-  }, [isAssignmentThread, threadId, resolvedMinistryId, (params as any)?.assignmentId]);
+  }, [isAssignmentThread, isMinistryThread, threadId, resolvedMinistryId, (params as any)?.assignmentId]);
+
+  useEffect(() => {
+    const next = new Map<string, string>();
+
+    for (const person of realMemberBoardPeople) {
+      const uid = String((person as any).userId || person.id || "").trim();
+      const uri = resolveMessageSenderAvatar(person as any).uri;
+      if (uid && uri) next.set(uid, uri);
+    }
+
+    memberAvatarByUserIdRef.current = next;
+
+    if (next.size > 0) {
+      roomMessagesSigRef.current = "";
+      void reloadRoomMessagesRef.current?.();
+    }
+  }, [realMemberBoardPeople]);
 
   useEffect(() => {
     let alive = true;
@@ -6231,8 +6371,8 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 }}
           renderItem={({ item, index }) => {
-            const prev = messages[index + 1];
-            const showAvatar = !prev || prev.sender !== item.sender;
+            const prev = visibleMessages[index + 1];
+            const showAvatar = true;
             const isSelected = selectedMessageIds.has(item.id);
             const isActionHighlighted = messageActionsOpen && messageActionsTarget?.id === item.id;
 
@@ -10494,7 +10634,7 @@ videoEditorSplitTimelineBadgeText: {
     opacity: 0.72,
   } as ViewStyle,
 
-  bubbleWrap: { marginBottom: 16, maxWidth: "80%" } as ViewStyle,
+  bubbleWrap: { marginBottom: 16, maxWidth: "88%" } as ViewStyle,
   bubbleWrapSelected: {
     borderRadius: 20,
   } as ViewStyle,
@@ -10816,6 +10956,13 @@ videoEditorSplitTimelineBadgeText: {
   otherRow: {
     flexDirection: "row",
     alignItems: "flex-start",
+    maxWidth: "100%",
+  } as ViewStyle,
+  mineRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "flex-end",
+    maxWidth: "100%",
   } as ViewStyle,
   avatarSpacer: {
     width: 44,
@@ -10831,6 +10978,10 @@ videoEditorSplitTimelineBadgeText: {
     shadowOffset: { width: 0, height: 6 },
   },
   bubbleOtherInline: {
+    flexShrink: 1,
+    maxWidth: "100%",
+  } as ViewStyle,
+  bubbleMineInline: {
     flexShrink: 1,
     maxWidth: "100%",
   } as ViewStyle,
@@ -10850,6 +11001,22 @@ videoEditorSplitTimelineBadgeText: {
     borderColor: "rgba(217,179,95,0.22)",
     marginTop: 10,
     marginRight: 10,
+    flexShrink: 0,
+    overflow: "hidden",
+  } as ViewStyle,
+  avatarMiniRight: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.28)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.22)",
+    marginTop: 10,
+    marginLeft: 10,
+    flexShrink: 0,
+    overflow: "hidden",
   } as ViewStyle,
   avatarMiniInline: {
     width: 22,

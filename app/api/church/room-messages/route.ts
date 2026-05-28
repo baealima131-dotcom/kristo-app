@@ -5,6 +5,8 @@ import {
   churchSubscriptionRequiredResponse,
   isChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
+import { getProfile } from "@/app/api/auth/_lib/profile";
+import { getUserById } from "@/app/api/auth/_lib/session";
 
 export const runtime = "nodejs";
 
@@ -55,22 +57,71 @@ function keyOf(churchId: string, roomId: string) {
 }
 
 
-async function profileAvatarForUser(userId: string) {
-  try {
-    const file = path.join(process.cwd(), "data", "profiles.json");
-    const raw = await fs.readFile(file, "utf8");
-    const profiles = JSON.parse(raw || "{}");
-    const p = profiles?.[userId] || null;
+function pickProfileAvatar(profile: any, user: any) {
+  return String(
+    profile?.avatarUrl ||
+    profile?.avatarUri ||
+    profile?.profileImage ||
+    profile?.photoURL ||
+    profile?.image ||
+    user?.avatarUrl ||
+    user?.avatarUri ||
+    user?.profileImage ||
+    user?.photoURL ||
+    user?.image ||
+    ""
+  ).trim();
+}
 
-    return String(
-      p?.avatarUrl ||
-      p?.avatarUri ||
-      p?.profileImage ||
-      ""
-    ).trim();
-  } catch {
-    return "";
+function pickProfileName(profile: any, user: any) {
+  return String(
+    profile?.displayName ||
+    profile?.fullName ||
+    profile?.name ||
+    user?.displayName ||
+    user?.name ||
+    user?.email ||
+    profile?.email ||
+    ""
+  ).trim();
+}
+
+async function resolveSenderIdentity(userId: string) {
+  const raw = String(userId || "").trim();
+  if (!raw) return { name: "", avatar: "" };
+
+  let profile: any = (await getProfile(raw)) || null;
+  if (!profile && raw !== raw.toLowerCase()) {
+    profile = (await getProfile(raw.toLowerCase())) || null;
   }
+
+  const resolvedUserId = String(profile?.userId || raw).trim();
+  const user: any = resolvedUserId ? await getUserById(resolvedUserId) : null;
+
+  if (!profile && user) {
+    profile = (await getProfile(resolvedUserId)) || null;
+  }
+
+  if (!profile) {
+    try {
+      const file = path.join(process.cwd(), "data", "profiles.json");
+      const storeRaw = await fs.readFile(file, "utf8");
+      const profiles = JSON.parse(storeRaw || "{}");
+      profile = profiles?.[raw] || profiles?.[resolvedUserId] || null;
+    } catch {
+      profile = null;
+    }
+  }
+
+  return {
+    name: pickProfileName(profile, user),
+    avatar: pickProfileAvatar(profile, user),
+  };
+}
+
+async function profileAvatarForUser(userId: string) {
+  const row = await resolveSenderIdentity(userId);
+  return row.avatar;
 }
 
 type SenderProfile = { name: string; avatar: string; role: string };
@@ -87,13 +138,12 @@ async function senderProfileFor(churchId: string, userId: string): Promise<Sende
     return cached.row;
   }
 
-  const [name, avatar, role] = await Promise.all([
-    profileNameForUser(id),
-    profileAvatarForUser(id),
+  const [identity, role] = await Promise.all([
+    resolveSenderIdentity(id),
     churchRoleForUser(churchId, id),
   ]);
 
-  const row = { name, avatar, role };
+  const row = { name: identity.name, avatar: identity.avatar, role };
   senderProfileCache.set(`${churchId}::${id}`, { row, at: Date.now() });
   return row;
 }
@@ -123,22 +173,8 @@ async function churchRoleForUser(churchId: string, userId: string) {
 }
 
 async function profileNameForUser(userId: string) {
-  try {
-    const file = path.join(process.cwd(), "data", "profiles.json");
-    const raw = await fs.readFile(file, "utf8");
-    const profiles = JSON.parse(raw || "{}");
-    const p = profiles?.[userId] || null;
-
-    return String(
-      p?.displayName ||
-      p?.fullName ||
-      p?.name ||
-      p?.email ||
-      ""
-    ).trim();
-  } catch {
-    return "";
-  }
+  const row = await resolveSenderIdentity(userId);
+  return row.name;
 }
 
 export async function GET(req: Request) {
@@ -216,10 +252,9 @@ export async function POST(req: Request) {
   const store = await readStore();
   const key = keyOf(churchId, roomId);
 
-  const profileName = await profileNameForUser(userId);
-  const profileAvatar = await profileAvatarForUser(userId);
+  const identity = await resolveSenderIdentity(userId);
   const senderRole = await churchRoleForUser(churchId, userId);
-  const senderName = String(profileName || body?.senderName || name || "Member").trim();
+  const senderName = String(identity.name || body?.senderName || name || "Member").trim();
 
   const msg: RoomMessage = {
     id: `rm_${Date.now()}_${Math.random().toString(16).slice(2)}`,
@@ -228,7 +263,7 @@ export async function POST(req: Request) {
     roomKind,
     senderUserId: userId,
     senderName: senderName || "Member",
-    senderAvatar: profileAvatar || "",
+    senderAvatar: identity.avatar || "",
     senderRole: senderRole || "",
     text,
     attachments,
