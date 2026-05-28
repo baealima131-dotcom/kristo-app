@@ -24,6 +24,7 @@ type RoomMessage = {
   kind?: string;
   card?: any;
   createdAt: number;
+  deletedFor?: string[];
 };
 
 async function readStore(): Promise<Record<string, RoomMessage[]>> {
@@ -156,7 +157,10 @@ export async function GET(req: Request) {
   }
 
   const store = await readStore();
-  const rows = store[keyOf(churchId, roomId)] || [];
+  const rows = (store[keyOf(churchId, roomId)] || []).filter((m: any) => {
+    const deletedFor = Array.isArray(m?.deletedFor) ? m.deletedFor.map(String) : [];
+    return !deletedFor.includes(String(userId));
+  });
   const sorted = rows.slice().sort((a, b) => b.createdAt - a.createdAt);
   const window = limit > 0 ? sorted.slice(0, limit) : sorted;
 
@@ -252,6 +256,50 @@ export async function PATCH(req: Request) {
   const messageId = String(body?.messageId || "").trim();
   const cardId = String(body?.cardId || "").trim();
   const patch = body?.patch && typeof body.patch === "object" ? body.patch : {};
+  const action = String(body?.action || "").trim().toLowerCase();
+  const scope = String(body?.scope || "local").trim().toLowerCase();
+
+  if (action === "delete") {
+    if (!roomId || !messageId) {
+      return NextResponse.json({ ok: false, error: "Missing roomId or messageId" }, { status: 400 });
+    }
+
+    const store = await readStore();
+    const key = keyOf(churchId, roomId);
+    const rows = store[key] || [];
+    const index = rows.findIndex((m: any) => String(m?.id || "") === messageId);
+
+    if (index < 0) {
+      return NextResponse.json({ ok: false, error: "Message not found" }, { status: 404 });
+    }
+
+    const msg: any = rows[index];
+
+    if (String(msg?.kind || "") === "assignment_card") {
+      return NextResponse.json({ ok: false, error: "Assignment cards cannot be deleted here" }, { status: 403 });
+    }
+
+    if (scope === "everyone") {
+      if (String(msg?.senderUserId || "") !== String(userId)) {
+        return NextResponse.json({ ok: false, error: "Only sender can delete for everyone" }, { status: 403 });
+      }
+
+      rows.splice(index, 1);
+      store[key] = rows;
+      await writeStore(store);
+
+      return NextResponse.json({ ok: true, deleted: "everyone", messageId });
+    }
+
+    const deletedFor = Array.isArray(msg.deletedFor) ? msg.deletedFor.map(String) : [];
+    if (!deletedFor.includes(String(userId))) deletedFor.push(String(userId));
+
+    rows[index] = { ...msg, deletedFor };
+    store[key] = rows;
+    await writeStore(store);
+
+    return NextResponse.json({ ok: true, deleted: "local", messageId });
+  }
 
   if (!roomId) {
     return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });

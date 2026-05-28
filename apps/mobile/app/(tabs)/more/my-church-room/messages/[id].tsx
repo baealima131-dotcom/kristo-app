@@ -3193,12 +3193,32 @@ const displayHeaderTitle = assignmentDisplayTitle;
           text: isEveryone ? "Delete for everyone" : "Delete",
           style: "destructive",
           onPress: () => {
-            for (const id of deletable) {
-              console.log(`[MessageActions] ${logKey}`, id);
-              deleteMessage(threadId, id);
-            }
-            exitMessageSelectionMode();
-            closeMessageActions();
+            void (async () => {
+              for (const id of deletable) {
+                console.log(`[MessageActions] ${logKey}`, id);
+                deleteMessage(threadId, id);
+
+                try {
+                  const res: any = await apiPatch(
+                    "/api/church/room-messages",
+                    {
+                      roomId: threadId,
+                      messageId: id,
+                      action: "delete",
+                      scope,
+                    },
+                    { headers: getKristoHeaders() as any }
+                  );
+
+                  console.log("[MessageActions] delete backend", { id, scope, ok: res?.ok !== false, res });
+                } catch (e: any) {
+                  console.log("[MessageActions] delete backend failed", { id, scope, error: String(e?.message || e) });
+                }
+              }
+
+              exitMessageSelectionMode();
+              closeMessageActions();
+            })();
           },
         },
       ]);
@@ -6034,26 +6054,58 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
       {/* Composer */}
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}>
-        {messageSelectionMode ? (
-          <View style={[s.messageSelectionBar, { marginBottom: tabBarH + 6 }]}>
-            <Pressable onPress={exitMessageSelectionMode} style={({ pressed }) => [s.messageSelectionBtn, pressed ? s.messageSelectionBtnPressed : null]}>
-              <Text style={t.messageSelectionBtnText}>Cancel</Text>
-            </Pressable>
-            <Text style={t.messageSelectionCount}>{selectedMessageIds.size} selected</Text>
-            <Pressable
-              onPress={() => performDeleteMessageIds(Array.from(selectedMessageIds))}
-              disabled={selectedMessageIds.size === 0}
-              style={({ pressed }) => [
-                s.messageSelectionDeleteBtn,
-                selectedMessageIds.size === 0 ? s.messageSelectionDeleteBtnDisabled : null,
-                pressed && selectedMessageIds.size > 0 ? s.messageSelectionBtnPressed : null,
-              ]}
-            >
-              <Ionicons name="trash-outline" size={16} color="#FF6B72" />
-              <Text style={t.messageSelectionDeleteText}>Delete</Text>
-            </Pressable>
-          </View>
-        ) : null}
+        {messageSelectionMode ? (() => {
+          const selectedMessages = messages.filter((m) => selectedMessageIds.has(m.id));
+          const canDeleteEveryoneSelection =
+            selectedMessages.length > 0 &&
+            selectedMessages.every((m) => m.sender === "me" && canDeleteMessage(m));
+
+          return (
+            <View style={[s.messageSelectionBar, { marginBottom: tabBarH + 6 }]}>
+              <Pressable onPress={exitMessageSelectionMode} style={({ pressed }) => [s.messageSelectionBtn, pressed ? s.messageSelectionBtnPressed : null]}>
+                <Text style={t.messageSelectionBtnText}>Cancel</Text>
+              </Pressable>
+
+              <Text style={t.messageSelectionCount}>{selectedMessageIds.size} selected</Text>
+
+              {canDeleteEveryoneSelection ? (
+                <Pressable
+                  onPress={() =>
+                    performDeleteMessageIds(Array.from(selectedMessageIds), {
+                      scope: "everyone",
+                    })
+                  }
+                  disabled={selectedMessageIds.size === 0}
+                  style={({ pressed }) => [
+                    s.messageSelectionDeleteBtn,
+                    selectedMessageIds.size === 0 ? s.messageSelectionDeleteBtnDisabled : null,
+                    pressed && selectedMessageIds.size > 0 ? s.messageSelectionBtnPressed : null,
+                  ]}
+                >
+                  <Ionicons name="trash-outline" size={15} color="#FF6B72" />
+                  <Text style={t.messageSelectionDeleteText}>Everyone</Text>
+                </Pressable>
+              ) : null}
+
+              <Pressable
+                onPress={() =>
+                  performDeleteMessageIds(Array.from(selectedMessageIds), {
+                    scope: "local",
+                  })
+                }
+                disabled={selectedMessageIds.size === 0}
+                style={({ pressed }) => [
+                  s.messageSelectionDeleteBtn,
+                  selectedMessageIds.size === 0 ? s.messageSelectionDeleteBtnDisabled : null,
+                  pressed && selectedMessageIds.size > 0 ? s.messageSelectionBtnPressed : null,
+                ]}
+              >
+                <Ionicons name="trash-outline" size={15} color="#FF6B72" />
+                <Text style={t.messageSelectionDeleteText}>Me</Text>
+              </Pressable>
+            </View>
+          );
+        })() : null}
         {pending.length ? (
           <ScrollView
             horizontal
