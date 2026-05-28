@@ -1360,6 +1360,56 @@ async function handleFeedPost(req: NextRequest, body: any) {
     });
   }
 
+  if (action === "unclaim_schedule_slot") {
+    const postId = cleanText(body?.postId || body?.feedId, 240);
+    const slotId = cleanText(body?.slotId, 240);
+    const targetUserId = cleanText(body?.userId || viewerUserId, 240);
+
+    if (!postId) return err("postId is required", 400);
+    if (!slotId) return err("slotId is required", 400);
+
+    const item = await getFeedItemById(postId);
+    if (!item) return err("Feed item not found", 404);
+
+    const slots = Array.isArray((item as any).scheduleSlots) ? (item as any).scheduleSlots : [];
+    const slotIndex = slots.findIndex((slot: any) => String(slot?.id || "") === String(slotId));
+    if (slotIndex < 0) return err("Slot not found", 404);
+
+    const existing = slots[slotIndex] || {};
+    const existingOwner = String(
+      existing.claimedByUserId || existing.claimedBy?.userId || ""
+    ).trim();
+
+    if (existingOwner && targetUserId && existingOwner !== targetUserId) {
+      return err("Slot claimed by another member", 409);
+    }
+
+    const nextSlot = { ...existing };
+    delete nextSlot.claimed;
+    delete nextSlot.isClaimed;
+    delete nextSlot.claimedByUserId;
+    delete nextSlot.claimedByName;
+    delete nextSlot.claimedByAvatar;
+    delete nextSlot.claimedByAvatarUri;
+    delete nextSlot.claimedBy;
+    delete nextSlot.claimedAt;
+    nextSlot.status = "open";
+    nextSlot.approved = false;
+    nextSlot.locked = false;
+
+    slots[slotIndex] = nextSlot;
+
+    const updatedItem = { ...item, scheduleSlots: slots };
+    await upsertFeedItem(updatedItem);
+    bumpMediaScheduleSyncForFeedItem(updatedItem, "unclaim_schedule_slot");
+
+    return ok({
+      postId,
+      slotId,
+      slot: slots[slotIndex],
+    });
+  }
+
   if (action === "delete_post") {
     const postId = cleanText(body?.postId, 240);
     if (!postId) return err("postId is required", 400);

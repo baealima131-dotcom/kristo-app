@@ -461,6 +461,34 @@ export async function PATCH(req: Request) {
     });
   }
 
+  if (action === "clear-claim-request") {
+    const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
+    if (requestLiveId) live.liveId = requestLiveId;
+
+    const slotId = String(body.slotId || "").trim();
+    const requestUserId = String(body.userId || a.userId || "").trim();
+    const clearedKeys: string[] = [];
+
+    live.requests = live.requests || {};
+    for (const [key, req] of Object.entries(live.requests) as any) {
+      const matchesUser = !requestUserId || String(req?.userId || "").trim() === requestUserId;
+      const matchesSlotId = !slotId || String(req?.slotId || "").trim() === slotId;
+      if (matchesUser && matchesSlotId) {
+        delete live.requests[key];
+        clearedKeys.push(String(key));
+      }
+    }
+
+    console.log("KRISTO_CLAIM_DELETE_LIVE_REQUEST_CLEARED", {
+      churchId: a.churchId,
+      liveId: requestLiveId || live.liveId,
+      storeKey: session.key,
+      slotId,
+      userId: requestUserId,
+      clearedKeys,
+    });
+  }
+
   if (action === "request-join") {
     const requestUserId = String(body.userId || a.userId || "").trim();
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();

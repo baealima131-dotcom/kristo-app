@@ -34,7 +34,7 @@ import {
 } from "@/src/lib/liveStore";
 import { projectStore } from "@/src/lib/projectStore";
 import { getSnapshot, subscribe as subscribeMessages } from "@/src/lib/messagesStore";
-import { feedRemoveWhere, feedScheduleSlotsForLive, getRingClaimHints, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import { feedList, feedRemoveWhere, feedScheduleSlotsForLive, getRingClaimHints, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
 import { onClaimUpdated } from "@/src/lib/kristoProfileEvents";
 import {
   getLiveJoinBridge,
@@ -2377,10 +2377,22 @@ export default function LiveRoomScreen() {
   const [backendScheduleSlots, setBackendScheduleSlots] = useState<any[]>([]);
   const [runtimeSlotOverrides, setRuntimeSlotOverrides] = useState<Record<string, any>>({});
 
-  const liveScheduleFeedId = useMemo(
-    () => resolveLiveScheduleFeedId(params as Record<string, unknown>),
-    [params]
-  );
+  const liveScheduleFeedId = useMemo(() => {
+    const rows = feedList() as any[];
+    const resolved = resolveLiveScheduleFeedId(params as Record<string, unknown>, rows);
+    if (resolved) {
+      console.log("KRISTO_SCHEDULE_ID_NORMALIZED", {
+        context: "live-room",
+        seedIds: {
+          sourceScheduleId: String((params as any)?.sourceScheduleId || ""),
+          feedId: String((params as any)?.feedId || ""),
+          liveId: String((params as any)?.liveId || ""),
+        },
+        canonicalId: resolved,
+      });
+    }
+    return resolved;
+  }, [params, feedScheduleTick]);
 
   const routeScheduleSlots = useMemo(() => {
     const fromJson = parseLiveAllScheduleSlotsJson((params as any).liveAllScheduleSlotsJson);
@@ -2403,7 +2415,8 @@ export default function LiveRoomScreen() {
     const withHints = applyRingClaimHintsToScheduleSlots(
       merged,
       liveScheduleFeedId,
-      getRingClaimHints()
+      getRingClaimHints(),
+      feedList() as any[]
     );
     return enrichScheduleSlotsFromLiveRequests(
       withHints,

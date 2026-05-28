@@ -1,6 +1,17 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { baseFeedId, enrichScheduleSlot, normalizeLiveScheduleSlots } from "@/src/lib/scheduleSlotUtils";
+import {
+  baseFeedId,
+  collectScheduleAliasIds,
+  enrichScheduleSlot,
+  isBackendFeedScheduleId,
+  isLocalMediaScheduleId,
+  normalizeLiveScheduleSlots,
+  resolveCanonicalScheduleFeedId,
+} from "@/src/lib/scheduleSlotUtils";
 import { emitClaimUpdated } from "@/src/lib/kristoProfileEvents";
+import { persistClaimDeleteToBackend } from "@/src/lib/liveBridge";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { getSessionSync } from "@/src/lib/kristoSession";
 
 export type FeedKind = "announcement" | "post" | "testimony" | "counsel" | "live";
 
@@ -226,16 +237,18 @@ export function feedToggleSave(id: string) {
  * New helper used by Announcements create-only screen
  */
 function feedItemMatchesScheduleId(it: FeedItem, targetId: string): boolean {
+  const rows = feedList() as any[];
+  const aliases = new Set(collectScheduleAliasIds(targetId, rows));
   const baseId = baseFeedId(targetId);
-  if (!baseId) return false;
+  if (baseId) aliases.add(baseId);
 
   const rowId = String(it.id || "").trim();
   const sourceId = String((it as any)?.sourceScheduleId || "").trim();
 
   return (
-    rowId === baseId ||
-    sourceId === baseId ||
-    baseFeedId(rowId) === baseId
+    aliases.has(rowId) ||
+    aliases.has(sourceId) ||
+    aliases.has(baseFeedId(rowId))
   );
 }
 
@@ -331,6 +344,123 @@ function clearRingClaimHint(baseFeedIdValue: string, slotId: string, userId: str
   const g = globalThis as any;
   const store = g.__KRISTO_RING_CLAIM_HINTS__ || {};
   delete store[`${userId}|${baseFeedIdValue}|${slotId}`];
+}
+
+function clearRingClaimHintsForAliases(aliasIds: string[], slotId: string, userId?: string) {
+  const g = globalThis as any;
+  const store = g.__KRISTO_RING_CLAIM_HINTS__ || {};
+  const aliasSet = new Set(aliasIds.flatMap((id) => [id, baseFeedId(id)].filter(Boolean)));
+  const uid = String(userId || "").trim();
+  const sid = String(slotId || "").trim();
+
+  for (const key of Object.keys(store)) {
+    const hint = store[key] as RingClaimHint | undefined;
+    if (!hint) continue;
+    const hintBase = baseFeedId(String(hint.baseFeedId || hint.feedId || ""));
+    if (!aliasSet.has(hintBase) && !aliasSet.has(String(hint.baseFeedId || ""))) continue;
+    if (sid && String(hint.slotId || "") !== sid) continue;
+    if (uid && String(hint.userId || "") !== uid) continue;
+    delete store[key];
+  }
+}
+
+function clearUserClaimedSlotsForAliases(aliasIds: string[], slotId: string, userId?: string) {
+  const g = globalThis as any;
+  const store = g.__KRISTO_USER_CLAIMED_SLOTS__ || {};
+  const aliasSet = new Set(aliasIds.flatMap((id) => [id, baseFeedId(id)].filter(Boolean)));
+  const uid = String(userId || "").trim();
+  const sid = String(slotId || "").trim();
+
+  for (const key of Object.keys(store)) {
+    const entry = store[key] as any;
+    if (!entry) continue;
+    const postId = String(entry?.postId || "").trim();
+    if (!aliasSet.has(postId) && !aliasSet.has(baseFeedId(postId))) continue;
+    if (sid && String(entry?.slotId || "") !== sid) continue;
+    if (uid && String(entry?.userId || "") !== uid) continue;
+    delete store[key];
+  }
+}
+
+function purgeStaleLocalScheduleMirrors(canonicalId: string, aliasIds: string[]) {
+  if (!isBackendFeedScheduleId(canonicalId)) return false;
+
+  const aliasSet = new Set(aliasIds.flatMap((id) => [id, baseFeedId(id)].filter(Boolean)));
+  const s = getStore();
+  const removed: string[] = [];
+
+  s.items = s.items.filter((it) => {
+    const rowId = String(it.id || "").trim();
+    if (!isLocalMediaScheduleId(rowId)) return true;
+    if (!aliasSet.has(rowId) && !aliasSet.has(baseFeedId(rowId))) return true;
+    removed.push(rowId);
+    return false;
+  });
+
+  if (removed.length) {
+    console.log("KRISTO_STALE_LOCAL_SCHEDULE_REMOVED", {
+      canonicalId,
+      removed,
+      aliasIds,
+    });
+    persistAndEmit();
+    return true;
+  }
+
+  return false;
+}
+
+export function feedRemoveScheduleMirrors(scheduleId: string) {
+  const rows = feedList() as any[];
+  const aliases = collectScheduleAliasIds(scheduleId, rows);
+  const aliasSet = new Set(aliases.flatMap((id) => [id, baseFeedId(id)].filter(Boolean)));
+
+  feedRemoveWhere((it) => {
+    const rowId = String(it.id || "").trim();
+    const sourceId = String((it as any)?.sourceScheduleId || "").trim();
+    return (
+      aliasSet.has(rowId) ||
+      aliasSet.has(sourceId) ||
+      aliasSet.has(baseFeedId(rowId)) ||
+      aliasSet.has(baseFeedId(sourceId))
+    );
+  });
+}
+
+function migrateClaimStoresToCanonical(localId: string, canonicalId: string) {
+  const local = String(localId || "").trim();
+  const canonical = String(canonicalId || "").trim();
+  if (!local || !canonical || local === canonical) return;
+
+  const g = globalThis as any;
+  const slotStore = g.__KRISTO_USER_CLAIMED_SLOTS__ || {};
+  for (const [key, entry] of Object.entries(slotStore) as any) {
+    if (String(entry?.postId || "") !== local) continue;
+    delete slotStore[key];
+    const nextKey = `${canonical}|${entry.slotId}`;
+    slotStore[nextKey] = { ...entry, postId: canonical };
+  }
+  g.__KRISTO_USER_CLAIMED_SLOTS__ = slotStore;
+
+  const hintStore = g.__KRISTO_RING_CLAIM_HINTS__ || {};
+  for (const [key, hint] of Object.entries(hintStore) as any) {
+    const hintBase = String(hint?.baseFeedId || hint?.feedId || "");
+    if (hintBase !== local && baseFeedId(hintBase) !== local) continue;
+    delete hintStore[key];
+    const nextKey = `${hint.userId}|${canonical}|${hint.slotId}`;
+    hintStore[nextKey] = {
+      ...hint,
+      feedId: canonical,
+      baseFeedId: canonical,
+    };
+  }
+  g.__KRISTO_RING_CLAIM_HINTS__ = hintStore;
+
+  console.log("KRISTO_SCHEDULE_ID_NORMALIZED", {
+    context: "claim-store-migrate",
+    localId: local,
+    canonicalId: canonical,
+  });
 }
 
 function slotIdsMatch(slot: any, slotId: string): boolean {
@@ -490,10 +620,19 @@ export function feedClaimSchedule(
   }
 ) {
   const s = getStore();
-  const baseId = baseFeedId(id) || String(id || "").trim();
+  const rows = feedList() as any[];
+  const seedId = baseFeedId(id) || String(id || "").trim();
+  const baseId = resolveCanonicalScheduleFeedId(seedId, rows) || seedId;
   const slotId = String(claim?.slotId || "").trim();
   const userId = String(claim?.userId || "").trim();
   if (!baseId || !slotId || !userId || !claim) return;
+
+  console.log("KRISTO_SCHEDULE_ID_NORMALIZED", {
+    context: "claim",
+    seedId,
+    canonicalId: baseId,
+    aliasIds: collectScheduleAliasIds(seedId, rows),
+  });
 
   console.log("KRISTO_MEDIA_CLAIM_START", {
     postId: baseId,
@@ -1049,20 +1188,27 @@ function isMediaScheduleCard(it: any): boolean {
 }
 
 export function feedFindMediaScheduleRow(feedId: string) {
-  const baseId = baseFeedId(feedId);
-  if (!baseId) return null;
+  const rows = feedList() as any[];
+  const seed = baseFeedId(feedId) || String(feedId || "").trim();
+  if (!seed) return null;
 
-  let best: any = null;
-  let bestCount = 0;
+  const canonicalId = resolveCanonicalScheduleFeedId(seed, rows) || seed;
+  const aliases = new Set(collectScheduleAliasIds(seed, rows));
 
-  for (const row of feedList() as any[]) {
+  let backendBest: any = null;
+  let localBest: any = null;
+  let backendClaimed = 0;
+  let localClaimed = 0;
+
+  for (const row of rows) {
     const rowId = String(row?.id || "").trim();
     const sourceId = String(row?.sourceScheduleId || "").trim();
     const matches =
-      rowId === baseId ||
-      sourceId === baseId ||
-      rowId.startsWith(`${baseId}__slot_`) ||
-      baseFeedId(rowId) === baseId;
+      aliases.has(rowId) ||
+      aliases.has(sourceId) ||
+      aliases.has(baseFeedId(rowId)) ||
+      rowId === canonicalId ||
+      sourceId === canonicalId;
 
     if (!matches) continue;
 
@@ -1072,18 +1218,69 @@ export function feedFindMediaScheduleRow(feedId: string) {
         ? row.scheduleSlots
         : [];
 
-    if (slots.length >= bestCount) {
-      best = row;
-      bestCount = slots.length;
+    const claimedCount = slots.filter((slot: any) =>
+      String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()
+    ).length;
+
+    if (isBackendFeedScheduleId(rowId)) {
+      if (
+        !backendBest ||
+        claimedCount > backendClaimed ||
+        (claimedCount === backendClaimed && slots.length >= (backendBest?.scheduleSlots?.length || 0))
+      ) {
+        backendBest = row;
+        backendClaimed = claimedCount;
+      }
+      continue;
+    }
+
+    if (isLocalMediaScheduleId(rowId)) {
+      if (
+        !localBest ||
+        claimedCount > localClaimed ||
+        (claimedCount === localClaimed && slots.length >= (localBest?.scheduleSlots?.length || 0))
+      ) {
+        localBest = row;
+        localClaimed = claimedCount;
+      }
     }
   }
 
-  return best;
+  if (backendBest) return backendBest;
+  return localBest;
 }
 
 export function feedScheduleSlotsForLive(feedId: string) {
+  const rows = feedList() as any[];
+  const seed = baseFeedId(feedId) || String(feedId || "").trim();
+  const canonicalId = resolveCanonicalScheduleFeedId(seed, rows);
+
+  if (canonicalId && isBackendFeedScheduleId(canonicalId)) {
+    const hasBackend = rows.some((row) => String(row?.id || "") === canonicalId);
+    if (hasBackend) {
+      purgeStaleLocalScheduleMirrors(canonicalId, collectScheduleAliasIds(seed, rows));
+    }
+  }
+
   const row = feedFindMediaScheduleRow(feedId);
   if (!row) return [] as any[];
+
+  if (isLocalMediaScheduleId(row?.id) && canonicalId && isBackendFeedScheduleId(canonicalId)) {
+    const backendRow = rows.find((r) => String(r?.id || "") === canonicalId);
+    if (backendRow) {
+      console.log("KRISTO_STALE_LOCAL_SCHEDULE_REMOVED", {
+        context: "feedScheduleSlotsForLive-skip-local",
+        canonicalId,
+        localId: String(row?.id || ""),
+      });
+      const slots = Array.isArray(backendRow?.allScheduleSlotsForLive)
+        ? backendRow.allScheduleSlotsForLive
+        : Array.isArray(backendRow?.scheduleSlots)
+          ? backendRow.scheduleSlots
+          : [];
+      return normalizeLiveScheduleSlots(slots);
+    }
+  }
 
   const slots = Array.isArray(row?.allScheduleSlotsForLive)
     ? row.allScheduleSlotsForLive
@@ -1178,11 +1375,16 @@ export function feedSyncMediaScheduleFromBackend(backendItem: any, localId?: str
     body: String(backendItem.text || backendItem.body || ""),
     ...backendItem,
     id: backendId,
-    sourceScheduleId: backendId,
+    sourceScheduleId: localId || backendItem?.sourceScheduleId || backendId,
+    liveId: localId || backendItem?.liveId || backendId,
     scheduleSlots,
     claimedCount,
     updatedAt: nowMs,
   } as any);
+
+  if (localId) {
+    migrateClaimStoresToCanonical(localId, backendId);
+  }
 
   persistAndEmit();
   console.log("KRISTO_MEDIA_SCHEDULE_CREATED_LOCAL_SYNC", {
@@ -1296,14 +1498,38 @@ export function feedUnclaimSchedule(
   opts?: {
     slotId?: string;
     userId?: string;
+    liveId?: string;
+    headers?: Record<string, string>;
+    skipBackendSync?: boolean;
   }
 ) {
   const store = getStore();
-  const baseId = baseFeedId(id);
+  const rows = feedList() as any[];
+  const seedId = baseFeedId(id) || String(id || "").trim();
+  const canonicalId = resolveCanonicalScheduleFeedId(seedId, rows) || seedId;
+  const aliasIds = collectScheduleAliasIds(seedId, rows);
   let anyChanged = false;
 
+  console.log("KRISTO_SCHEDULE_ID_NORMALIZED", {
+    context: "unclaim",
+    seedId,
+    canonicalId,
+    aliasIds,
+    slotId: opts?.slotId || "",
+    userId: opts?.userId || "",
+  });
+
+  console.log("KRISTO_CLAIM_DELETE_SYNC_START", {
+    seedId,
+    canonicalId,
+    aliasIds,
+    slotId: opts?.slotId || "",
+    userId: opts?.userId || "",
+    liveId: opts?.liveId || canonicalId,
+  });
+
   store.items = store.items.map((it) => {
-    if (!feedItemMatchesScheduleId(it, baseId || id)) return it;
+    if (!feedItemMatchesScheduleId(it, seedId)) return it;
 
     const anyIt = it as any;
     const slotId = opts?.slotId || "";
@@ -1313,7 +1539,7 @@ export function feedUnclaimSchedule(
       let changed = false;
 
       const scheduleSlots = anyIt.scheduleSlots.map((slot: any) => {
-        if (slot.id !== slotId) return slot;
+        if (!slotIdsMatch(slot, slotId)) return slot;
 
         const claimedBy = slot.claimedBy || null;
         const ownerId = String(slot?.claimedByUserId || claimedBy?.userId || "").trim();
@@ -1328,6 +1554,8 @@ export function feedUnclaimSchedule(
         delete next.claimedByUserId;
         delete next.claimedByName;
         delete next.claimedByAvatar;
+        delete next.claimedByAvatarUri;
+        delete next.claimedAt;
         next.status = "open";
         next.approved = false;
         next.locked = false;
@@ -1342,24 +1570,36 @@ export function feedUnclaimSchedule(
       return {
         ...it,
         scheduleSlots,
-        claimedCount: Math.max(0, Number(anyIt.claimedCount || 0) - 1),
+        claimedCount: countClaimedScheduleSlots(scheduleSlots),
+        updatedAt: Date.now(),
       } as any;
     }
 
     return it;
   });
 
+  if (opts?.slotId) {
+    clearUserClaimedSlotsForAliases(aliasIds, String(opts.slotId), opts?.userId);
+    clearRingClaimHintsForAliases(aliasIds, String(opts.slotId), opts?.userId);
+    if (canonicalId) {
+      clearRingClaimHint(canonicalId, String(opts.slotId), String(opts.userId || ""));
+    }
+  }
+
+  purgeStaleLocalScheduleMirrors(canonicalId, aliasIds);
+
   if (anyChanged && opts?.slotId) {
-    syncUserClaimedSlotStore(baseId || id, String(opts.slotId), null);
-    clearRingClaimHint(baseId || id, String(opts.slotId), String(opts.userId || ""));
     console.log("KRISTO_CLAIM_LOCAL_SYNC", {
-      postId: baseId || id,
+      postId: canonicalId || seedId,
       slotId: opts.slotId,
       userId: opts.userId || "",
       action: "unclaim",
+      aliasIds,
     });
     emitClaimUpdated({
-      postId: baseId || id,
+      postId: canonicalId || seedId,
+      feedId: canonicalId || seedId,
+      baseFeedId: canonicalId || seedId,
       slotId: String(opts.slotId),
       userId: String(opts.userId || ""),
       action: "unclaim",
@@ -1367,6 +1607,42 @@ export function feedUnclaimSchedule(
   }
 
   if (anyChanged) persistAndEmit();
+
+  console.log("KRISTO_HOME_FEED_AFTER_CLAIM_DELETE", {
+    canonicalId,
+    slotId: opts?.slotId || "",
+    anyChanged,
+    feedRows: feedList().length,
+  });
+
+  console.log("KRISTO_LIVE_RING_AFTER_CLAIM_DELETE", {
+    canonicalId,
+    slotId: opts?.slotId || "",
+    ringHints: getRingClaimHints().length,
+    claimedSlots: getUserClaimedSlotEntries().length,
+  });
+
+  if (anyChanged && opts?.slotId && !opts?.skipBackendSync) {
+    const session = getSessionSync();
+    const headers = (opts.headers || getKristoHeaders({
+      userId: session?.userId || opts?.userId || "",
+      role: (session?.role || "Member") as any,
+      churchId: session?.churchId || "",
+    })) as Record<string, string>;
+
+    const userId = String(opts.userId || session?.userId || "").trim();
+    const liveId = String(opts.liveId || canonicalId || seedId).trim();
+
+    if (userId && headers["x-kristo-user-id"]) {
+      void persistClaimDeleteToBackend({
+        feedId: canonicalId || seedId,
+        slotId: String(opts.slotId),
+        userId,
+        liveId,
+        headers,
+      });
+    }
+  }
 }
 
 

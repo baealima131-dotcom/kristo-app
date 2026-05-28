@@ -41,6 +41,7 @@ import {
   feedUnclaimSchedule,
   feedJoinSlotQueue,
   feedRemoveWhere,
+  feedRemoveScheduleMirrors,
   clearLocalMediaVideoPosts,
   clearHomeFeedLocalCaches,
   clearHomeFeedRuntimeCaches,
@@ -1670,10 +1671,7 @@ const noMediaPost =
 
     if (!expiredByEnd) return;
 
-    feedRemoveWhere((x: any) => {
-      const xId = String(x?.sourceScheduleId || x?.id || "");
-      return xId === removeId;
-    });
+    feedRemoveScheduleMirrors(removeId);
 
     console.log("KRISTO_EXPIRED_LIVE_REMOVED", {
       removeId,

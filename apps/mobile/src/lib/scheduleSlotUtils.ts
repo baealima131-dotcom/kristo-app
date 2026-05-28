@@ -292,7 +292,88 @@ export function baseFeedId(input: unknown) {
   return id.split("__slot_")[0];
 }
 
-export function resolveLiveScheduleFeedId(input: Record<string, unknown> | null | undefined) {
+export function isBackendFeedScheduleId(id: unknown): boolean {
+  return String(id || "").trim().startsWith("feed_");
+}
+
+export function isLocalMediaScheduleId(id: unknown): boolean {
+  const value = String(id || "").trim().toLowerCase();
+  return value.startsWith("media-schedule-") || value.startsWith("media-live-");
+}
+
+/** Collect every schedule id alias (local media-schedule-* and backend feed_*) linked in feed rows. */
+export function collectScheduleAliasIds(seedId: unknown, rows: any[] = []): string[] {
+  const seed = baseFeedId(seedId);
+  const rawSeed = String(seedId || "").trim();
+  if (!seed && !rawSeed) return [];
+
+  const aliases = new Set<string>();
+  if (seed) aliases.add(seed);
+  if (rawSeed) aliases.add(rawSeed);
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+
+      const rowId = String(row?.id || "").trim();
+      const sourceId = String(row?.sourceScheduleId || "").trim();
+      const liveId = String(row?.liveId || "").trim();
+      const linked = [rowId, sourceId, liveId, baseFeedId(rowId), baseFeedId(sourceId), baseFeedId(liveId)].filter(
+        Boolean
+      );
+
+      const touches = linked.some((id) => aliases.has(id));
+      if (!touches) continue;
+
+      for (const id of linked) {
+        if (!aliases.has(id)) {
+          aliases.add(id);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return Array.from(aliases);
+}
+
+/** Prefer durable backend feed_* id when a mirror row exists in the feed store. */
+export function resolveCanonicalScheduleFeedId(seedId: unknown, rows: any[] = []): string {
+  const seed = baseFeedId(seedId) || String(seedId || "").trim();
+  if (!seed) return "";
+
+  const aliases = new Set(collectScheduleAliasIds(seed, rows));
+  if (isBackendFeedScheduleId(seed)) return seed;
+
+  for (const row of rows) {
+    const rowId = String(row?.id || "").trim();
+    if (!isBackendFeedScheduleId(rowId)) continue;
+
+    const sourceId = String(row?.sourceScheduleId || "").trim();
+    const liveId = String(row?.liveId || "").trim();
+    if (
+      aliases.has(rowId) ||
+      aliases.has(baseFeedId(rowId)) ||
+      (sourceId && aliases.has(sourceId)) ||
+      (liveId && aliases.has(liveId))
+    ) {
+      return rowId;
+    }
+  }
+
+  for (const alias of aliases) {
+    if (isBackendFeedScheduleId(alias)) return alias;
+  }
+
+  return seed;
+}
+
+export function resolveLiveScheduleFeedId(
+  input: Record<string, unknown> | null | undefined,
+  rows?: any[]
+) {
   const candidates = [
     input?.sourceScheduleId,
     input?.feedId,
@@ -301,12 +382,20 @@ export function resolveLiveScheduleFeedId(input: Record<string, unknown> | null 
     input?.id,
   ];
 
+  let resolved = "";
   for (const value of candidates) {
     const id = baseFeedId(value);
-    if (id) return id;
+    if (id) {
+      resolved = id;
+      break;
+    }
   }
 
-  return "";
+  if (!resolved) return "";
+  if (rows && rows.length) {
+    return resolveCanonicalScheduleFeedId(resolved, rows);
+  }
+  return resolved;
 }
 
 export function normalizeLiveScheduleSlot(slot: any, index = 0) {
@@ -429,16 +518,24 @@ export function applyRingClaimHintsToScheduleSlots(
     role?: string;
     avatarUri?: string;
     slotNumber?: number;
-  }>
+  }>,
+  rows: any[] = []
 ) {
   const base = baseFeedId(feedId);
   if (!base || !hints.length) return slots;
+
+  const aliasSet = new Set(collectScheduleAliasIds(base, rows));
 
   return slots.map((slot, index) => {
     const slotId = String(slot?.id || slot?.slotId || "").trim();
     const slotNum = Number(slot?.slot || slot?.slotNumber || index + 1);
     const hint = hints.find((row) => {
-      if (baseFeedId(row.baseFeedId) !== base) return false;
+      const hintBase = baseFeedId(row.baseFeedId);
+      const matchesFeed =
+        hintBase === base ||
+        aliasSet.has(hintBase) ||
+        aliasSet.has(String(row.baseFeedId || ""));
+      if (!matchesFeed) return false;
       if (slotId && String(row.slotId || "") === slotId) return true;
       return Number(row.slotNumber || 0) === slotNum;
     });

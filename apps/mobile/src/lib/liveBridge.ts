@@ -145,6 +145,93 @@ export async function persistClaimToLiveRequest(opts: {
   }
 }
 
+export function clearLiveBridgeClaim(liveId: string, opts?: { slot?: number; slotId?: string; userId?: string }) {
+  const bridge = getLiveJoinBridge();
+  const requests = bridge.requestsByLiveId[liveId] as Record<string, LiveJoinRequest> | undefined;
+  if (!requests) return;
+
+  const slotId = String(opts?.slotId || "").trim();
+  const userId = String(opts?.userId || "").trim();
+  const slotNum = Number(opts?.slot || 0);
+
+  for (const [key, req] of Object.entries(requests)) {
+    const matchesUser = !userId || String(req?.userId || "").trim() === userId;
+    const matchesSlot = !slotNum || Number(key) === slotNum;
+    const matchesSlotId = !slotId || String((req as any)?.slotId || "").trim() === slotId;
+    if (matchesUser && matchesSlot && matchesSlotId) {
+      delete requests[key];
+    }
+  }
+}
+
+export async function persistClaimDeleteToBackend(opts: {
+  feedId: string;
+  slotId: string;
+  userId: string;
+  liveId: string;
+  headers: Record<string, string>;
+}) {
+  const feedId = String(opts.feedId || "").trim();
+  const slotId = String(opts.slotId || "").trim();
+  const userId = String(opts.userId || "").trim();
+  const liveId = String(opts.liveId || "").trim();
+
+  clearLiveBridgeClaim(liveId, { slotId, userId });
+
+  try {
+    await apiPatch(
+      "/api/church/feed",
+      {
+        action: "unclaim_schedule_slot",
+        postId: feedId,
+        feedId,
+        slotId,
+        userId,
+      },
+      { headers: opts.headers as any }
+    );
+  } catch (error) {
+    console.log("KRISTO_CLAIM_DELETE_FEED_UNCLAIM_ERROR", {
+      feedId,
+      slotId,
+      userId,
+      error: String((error as any)?.message || error),
+    });
+  }
+
+  try {
+    const res: any = await apiPatch(
+      "/api/church/live",
+      {
+        action: "clear-claim-request",
+        liveId,
+        slotId,
+        userId,
+      },
+      { headers: opts.headers as any }
+    );
+
+    console.log("KRISTO_CLAIM_DELETE_LIVE_REQUEST_CLEARED", {
+      liveId,
+      slotId,
+      userId,
+      ok: res?.ok !== false,
+      requestKeys: res?.live?.requests ? Object.keys(res.live.requests) : [],
+    });
+
+    return res;
+  } catch (error) {
+    console.log("KRISTO_CLAIM_DELETE_LIVE_REQUEST_CLEARED", {
+      liveId,
+      slotId,
+      userId,
+      ok: false,
+      error: String((error as any)?.message || error),
+    });
+    throw error;
+  }
+}
+
 export async function syncClaimedMemberToLiveRoom(opts: {
   liveId: string;
   slot: number;

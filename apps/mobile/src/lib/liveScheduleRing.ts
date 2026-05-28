@@ -1,6 +1,6 @@
 import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
-import { baseFeedId, enrichScheduleSlot } from "@/src/lib/scheduleSlotUtils";
+import { baseFeedId, collectScheduleAliasIds, enrichScheduleSlot, resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
 
 export const NEAR_LIVE_WINDOW_MS = 30 * 60 * 1000;
 export const RING_RECOMPUTE_INTERVAL_MS = 20_000;
@@ -38,13 +38,17 @@ function localStoreClaimsSlot(
 ): boolean {
   const uid = String(userId || "").trim();
   const slotId = String(slot?.id || slot?.slotId || "").trim();
-  const baseId = baseFeedId(feedId || "");
+  const seed = baseFeedId(feedId || "");
   if (!uid || !slotId) return false;
+
+  const rows = feedList() as any[];
+  const aliases = seed ? new Set(collectScheduleAliasIds(seed, rows)) : null;
 
   return getUserClaimedSlotEntries(uid).some((entry) => {
     if (String(entry?.slotId || "").trim() !== slotId) return false;
-    if (!baseId) return true;
-    return baseFeedId(String(entry?.postId || "")) === baseId;
+    if (!seed || !aliases) return true;
+    const entryPostId = String(entry?.postId || "").trim();
+    return aliases.has(entryPostId) || aliases.has(baseFeedId(entryPostId));
   });
 }
 
@@ -145,9 +149,14 @@ export function mergeFeedRowsForScheduleScan(backendRows: any[] = []): any[] {
   })();
 
   const byBase = new Map<string, any>();
+  const mergedRows = [...localRows, ...backendRows];
 
-  for (const row of [...localRows, ...backendRows]) {
-    const key = baseFeedId(String(row?.sourceScheduleId || row?.id || "")) || String(row?.id || "");
+  for (const row of mergedRows) {
+    const seed = String(row?.sourceScheduleId || row?.id || "");
+    const key =
+      resolveCanonicalScheduleFeedId(seed, mergedRows) ||
+      baseFeedId(seed) ||
+      String(row?.id || "");
     if (!key) continue;
 
     const prev = byBase.get(key);
