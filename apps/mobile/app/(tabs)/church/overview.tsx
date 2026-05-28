@@ -40,6 +40,7 @@ import {
   logTrafficCache,
   shouldAllowScreenRefresh,
 } from "@/src/lib/kristoTraffic";
+import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
 
 const VIP_BG = "#05070D";
 const VIP_BG_MID = "#0A101C";
@@ -309,6 +310,8 @@ export default function ChurchOverviewScreen() {
   const [mediaTargetsLoading, setMediaTargetsLoading] = useState(false);
   const [mediaTargetsSaved, setMediaTargetsSaved] = useState(false);
   const [mediaPickerMode, setMediaPickerMode] = useState<"manage" | "studio">("studio");
+  const [canAccessChurchMedia, setCanAccessChurchMedia] = useState(false);
+  const [isActualChurchPastor, setIsActualChurchPastor] = useState(false);
   const [acceptingInvite, setAcceptingInvite] = useState(false);
   const [previewChecked, setPreviewChecked] = useState(!invitePreview);
   const [previewCount, setPreviewCount] = useState(0);
@@ -555,6 +558,26 @@ export default function ChurchOverviewScreen() {
       };
       setStats(nextStats);
 
+      try {
+        const hostsRes: any = await apiGet("/api/church/media-hosts", {
+          headers: getHeaders(),
+        });
+        const access = evaluateChurchMediaAccessClient({
+          userId: effectiveAuthUserId,
+          actualPastorUserId: hostsRes?.actualPastorUserId,
+          mediaHostUserIds: hostsRes?.mediaHostUserIds,
+          isActualChurchPastor: hostsRes?.isActualChurchPastor,
+          isMediaHost: hostsRes?.isMediaHost,
+          canAccessChurchMedia: hostsRes?.canAccessChurchMedia,
+          canManageMediaHosts: hostsRes?.canManageMediaHosts,
+        });
+        setCanAccessChurchMedia(access.canAccessChurchMedia);
+        setIsActualChurchPastor(access.isActualChurchPastor);
+      } catch {
+        setCanAccessChurchMedia(false);
+        setIsActualChurchPastor(false);
+      }
+
       hasOverviewCacheRef.current = true;
       await saveChurchOverviewCache({
         churchId,
@@ -751,14 +774,16 @@ export default function ChurchOverviewScreen() {
   const canOpenMinistries = !invitePreview && canSeeLeadershipOverview;
   const canOpenOfferings = !invitePreview && canSeeOfferings;
   const canEditProfile = !invitePreview && (isPastor || isChurchAdmin || isSystemAdmin);
-  const canUsePastorMediaControl = !invitePreview && (isPastor || isChurchAdmin || isSystemAdmin);
+  const canManageMinistryMediaAccess = !invitePreview && isActualChurchPastor;
+  const canOpenMediaStudio = !invitePreview && canAccessChurchMedia;
+  const showMediaControlCard = canOpenMediaStudio || canManageMinistryMediaAccess;
 
   function ministryInitial(name?: string) {
     return String(name || "M").trim().charAt(0).toUpperCase() || "M";
   }
 
   async function saveMediaAccessChanges() {
-    if (!canUsePastorMediaControl) return;
+    if (!canManageMinistryMediaAccess) return;
 
     const selectedIds = new Set(
       mediaTargets.filter((m) => m.mediaAccess).slice(0, 3).map((m) => m.id)
@@ -793,7 +818,7 @@ export default function ChurchOverviewScreen() {
   }
 
   async function openPastorMediaPicker(mode: "manage" | "studio" = "studio") {
-    if (!canUsePastorMediaControl) return;
+    if (!canManageMinistryMediaAccess) return;
     setMediaPickerMode(mode);
     setMediaPickerOpen(true);
     setMediaTargetsLoading(true);
@@ -831,7 +856,7 @@ export default function ChurchOverviewScreen() {
   }
 
   function toggleMediaAccess(target: MediaMinistryTarget) {
-    if (!canUsePastorMediaControl || !target?.id) return;
+    if (!canManageMinistryMediaAccess || !target?.id) return;
 
     setMediaTargets((prev) => {
       const selectedCount = prev.filter((x) => x.mediaAccess).length;
@@ -1120,8 +1145,8 @@ export default function ChurchOverviewScreen() {
             </View>
           </View>
 
-          {!invitePreview ? (
-            <View style={[s.powerCardOuter, !canUsePastorMediaControl && { opacity: 0.92 }]}>
+          {showMediaControlCard ? (
+            <View style={[s.powerCardOuter, !canOpenMediaStudio && !canManageMinistryMediaAccess && { opacity: 0.92 }]}>
               <LinearGradient
                 pointerEvents="none"
                 colors={["rgba(217,179,95,0.16)", "rgba(10,16,28,0.96)", "rgba(4,7,12,0.98)"]}
@@ -1166,8 +1191,8 @@ export default function ChurchOverviewScreen() {
               <View style={s.powerActions}>
                 <LuxuryPressable
                   onPress={() => {
-                    if (!canUsePastorMediaControl) {
-                      Alert.alert("Admin access", "Only pastor or church admin can manage ministry media access. Ukipewa admin access utaweza kutumia.");
+                    if (!canManageMinistryMediaAccess) {
+                      Alert.alert("Pastor access required", "Only the church Pastor can manage ministry media access.");
                       return;
                     }
                     openPastorMediaPicker("manage");
@@ -1189,8 +1214,11 @@ export default function ChurchOverviewScreen() {
 
                 <LuxuryPressable
                   onPress={() => {
-                    if (!canUsePastorMediaControl) {
-                      Alert.alert("Admin access", "Only pastor or church admin can open Media Studio controls. Ukipewa admin access utaweza kutumia.");
+                    if (!canOpenMediaStudio) {
+                      Alert.alert(
+                        "Pastor access required",
+                        "Only the church Pastor and trusted media hosts can open Media Studio."
+                      );
                       return;
                     }
                     openPastorMediaPicker("studio");

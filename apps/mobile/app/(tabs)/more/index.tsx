@@ -10,6 +10,7 @@ import {
   Animated,
   Easing,
   Image,
+  Alert,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -19,6 +20,9 @@ import { TLMC_UNIVERSE_IMAGE, preloadTlmcAssets } from "@/src/lib/tlmcPreload";
 import { MEDIA_STUDIO_BACKGROUND, preloadMediaAssets } from "@/src/lib/mediaPreload";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { resolveSessionChurchId } from "@/src/lib/churchStore";
+import { apiGet } from "@/src/lib/kristoApi";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
@@ -255,6 +259,40 @@ export default function MoreScreen() {
   const [v2FeatureTitle, setV2FeatureTitle] = React.useState("Messages");
   const v2CardAnim = React.useRef(new Animated.Value(0)).current;
   const mediaOpenRef = React.useRef(false);
+  const [canAccessChurchMedia, setCanAccessChurchMedia] = React.useState<boolean | null>(null);
+
+  const refreshMediaAccess = React.useCallback(async () => {
+    const churchId = resolveSessionChurchId(
+      session?.churchId || (session as any)?.activeChurchId || ""
+    );
+    const userId = String(session?.userId || "").trim();
+    if (!churchId || !userId) {
+      setCanAccessChurchMedia(null);
+      return;
+    }
+
+    try {
+      const res: any = await apiGet("/api/church/media-hosts", {
+        headers: getKristoHeaders({
+          userId,
+          role: (session?.role || "Member") as any,
+          churchId,
+        }),
+      });
+      const access = evaluateChurchMediaAccessClient({
+        userId,
+        actualPastorUserId: res?.actualPastorUserId,
+        mediaHostUserIds: res?.mediaHostUserIds,
+        isActualChurchPastor: res?.isActualChurchPastor,
+        isMediaHost: res?.isMediaHost,
+        canAccessChurchMedia: res?.canAccessChurchMedia,
+        canManageMediaHosts: res?.canManageMediaHosts,
+      });
+      setCanAccessChurchMedia(access.canAccessChurchMedia);
+    } catch {
+      setCanAccessChurchMedia(false);
+    }
+  }, [session?.churchId, session?.role, session?.userId]);
 
   const warmMediaRoute = React.useCallback(() => {
     void preloadMediaAssets();
@@ -277,7 +315,8 @@ export default function MoreScreen() {
       mediaOpenRef.current = false;
       void preloadTlmcAssets();
       warmMediaRoute();
-    }, [warmMediaRoute])
+      void refreshMediaAccess();
+    }, [warmMediaRoute, refreshMediaAccess])
   );
 
   React.useEffect(() => {
@@ -312,6 +351,14 @@ export default function MoreScreen() {
   const renderCard = (item: Item) => {
     const isTlmc = item.key === "tlmc";
     const isChurchGate = !hasChurch && item.key === "church";
+    const isMediaLocked =
+      item.key === "media" && hasChurch && canAccessChurchMedia === false;
+    const itemTitle = isMediaLocked ? "Media" : item.title;
+    const itemSub = isMediaLocked
+      ? "Pastor access required"
+      : item.key === "media" && hasChurch && canAccessChurchMedia
+        ? "Studio • live • videos • global feed"
+        : item.sub;
 
     const wrapTone =
       item.key === "ministries"
@@ -610,6 +657,13 @@ export default function MoreScreen() {
           }
 
           if (item.key === "media") {
+            if (isMediaLocked) {
+              Alert.alert(
+                "Pastor access required",
+                "Only the church Pastor and trusted media hosts can open Media Studio."
+              );
+              return;
+            }
             openMediaScreen();
             return;
           }
@@ -624,6 +678,7 @@ export default function MoreScreen() {
           isTlmc ? s.tileTlmcWrap : null,
           { shadowColor: surface.shadowColor },
           pressed ? { transform: [{ scale: 0.974 }], opacity: 0.95 } : null,
+          isMediaLocked ? { opacity: 0.82 } : null,
         ]}
       >
         <LinearGradient
@@ -722,14 +777,14 @@ export default function MoreScreen() {
             style={[s.tileTitle, titleTone, titleStyleExtra, isTlmc ? s.tileTitleTlmc : null]}
             numberOfLines={titleLines}
           >
-            {item.title}
+            {itemTitle}
           </Text>
 
           <Text
             style={[s.tileSub, subTone, subStyleExtra, isTlmc ? s.tileSubTlmc : null]}
             numberOfLines={subLines}
           >
-            {item.sub}
+            {itemSub}
           </Text>
 
           <View style={[s.tileFoot, footStyleExtra]}>
@@ -746,10 +801,10 @@ export default function MoreScreen() {
             <View style={s.ctaRow}>
               <View style={[s.ctaPill, ctaPillTone, isTlmc ? s.ctaPillTlmc : null]}>
                 <Text style={[s.ctaText, hintTone, isTlmc ? s.tapHintTlmc : null]}>
-                  {isChurchGate ? "Unlock" : item.title === "Giving" ? "Give" : "Open"}
+                  {isChurchGate ? "Unlock" : isMediaLocked ? "Locked" : item.title === "Giving" ? "Give" : "Open"}
                 </Text>
               </View>
-              {isChurchGate ? (
+              {isChurchGate || isMediaLocked ? (
                 <Ionicons name="lock-closed-outline" size={14} color="rgba(217,179,95,0.9)" />
               ) : null}
             </View>

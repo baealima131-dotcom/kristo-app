@@ -101,21 +101,108 @@ function rowToMedia(row: MediaRow): ChurchMediaProfile {
   };
 }
 
+function normalizeChurchId(churchId: string) {
+  return String(churchId || "").trim();
+}
+
+function isRecordStore(value: unknown): value is Record<string, ChurchMediaProfile> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 async function readLocalStore(): Promise<Record<string, ChurchMediaProfile>> {
-  return readJsonFile<Record<string, ChurchMediaProfile>>(STORE_FILE, {});
+  const raw = await readJsonFile<unknown>(STORE_FILE, {});
+
+  if (Array.isArray(raw)) {
+    console.warn("[MediaDb] repairing corrupt church-media.json array store", {
+      length: raw.length,
+    });
+    const migrated: Record<string, ChurchMediaProfile> = {};
+    for (const item of raw) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const profile = item as ChurchMediaProfile;
+      const churchId = normalizeChurchId(profile.churchId);
+      const id = String(profile.id || (churchId ? `church-media-${churchId}` : "")).trim();
+      if (!churchId || !String(profile.mediaName || "").trim()) continue;
+      migrated[id] = {
+        ...profile,
+        id,
+        churchId,
+        mediaName: String(profile.mediaName || "").trim(),
+      };
+    }
+    await writeJsonFile(STORE_FILE, migrated);
+    return migrated;
+  }
+
+  if (!isRecordStore(raw)) {
+    console.warn("[MediaDb] repairing invalid church-media.json store shape");
+    await writeJsonFile(STORE_FILE, {});
+    return {};
+  }
+
+  return raw;
 }
 
 async function writeLocalStore(store: Record<string, ChurchMediaProfile>) {
+  if (!isRecordStore(store)) {
+    throw new Error("Invalid church media store payload");
+  }
+
   await writeJsonFile(STORE_FILE, store);
+  const readBack = await readJsonFile<unknown>(STORE_FILE, null);
+
+  if (!isRecordStore(readBack)) {
+    throw new Error("Church media store write verification failed");
+  }
+
+  const expectedKeys = Object.keys(store);
+  for (const key of expectedKeys) {
+    const expectedName = String(store[key]?.mediaName || "").trim();
+    const actualName = String(readBack[key]?.mediaName || "").trim();
+    if (expectedName && actualName !== expectedName) {
+      throw new Error("Church media store write verification mismatch");
+    }
+  }
 }
 
 async function getLocalByChurchId(churchId: string): Promise<ChurchMediaProfile | null> {
+  const cid = normalizeChurchId(churchId);
+  if (!cid) return null;
+
   const store = await readLocalStore();
-  return Object.values(store).find((m) => String(m.churchId || "") === churchId) || null;
+  const target = cid.toUpperCase();
+  return (
+    Object.values(store).find(
+      (media) => normalizeChurchId(media.churchId).toUpperCase() === target
+    ) || null
+  );
+}
+
+export async function confirmChurchMediaPersisted(
+  churchId: string,
+  expectedMediaName?: string
+): Promise<ChurchMediaProfile | null> {
+  const media = await getChurchMediaByChurchId(churchId);
+  const mediaName = String(media?.mediaName || "").trim();
+  const ok =
+    !!mediaName &&
+    (!expectedMediaName || mediaName === String(expectedMediaName || "").trim());
+
+  if (ok && media) {
+    console.log("KRISTO_MEDIA_BACKEND_CONFIRMED", {
+      churchId: normalizeChurchId(churchId),
+      mediaId: media.id,
+      mediaName: media.mediaName,
+      hostCount: Array.isArray(media.hosts) ? media.hosts.length : 0,
+      storeMode: resolveMediaStoreMode(),
+    });
+  }
+
+  return ok ? media : null;
 }
 
 export async function getChurchMediaByChurchId(churchId: string): Promise<ChurchMediaProfile | null> {
-  const id = String(churchId || "").trim();
+  const id = normalizeChurchId(churchId);
   if (!id) return null;
 
   if (usePostgres()) {
@@ -124,7 +211,7 @@ export async function getChurchMediaByChurchId(churchId: string): Promise<Church
     const rows = await sql`
       SELECT church_id, owner_user_id, data, created_at, updated_at
       FROM kristo_church_media
-      WHERE church_id = ${id}
+      WHERE LOWER(church_id) = LOWER(${id})
       LIMIT 1
     `;
     const row = (rows as MediaRow[])[0];
@@ -139,7 +226,7 @@ export async function upsertChurchMedia(input: {
   ownerUserId: string;
   patch: Partial<ChurchMediaProfile> & { mediaName: string };
 }): Promise<ChurchMediaProfile> {
-  const churchId = String(input.churchId || "").trim();
+  const churchId = normalizeChurchId(input.churchId);
   const ownerUserId = String(input.ownerUserId || "").trim();
   if (!churchId) throw new Error("churchId required");
   if (!ownerUserId) throw new Error("ownerUserId required");
@@ -163,6 +250,10 @@ export async function upsertChurchMedia(input: {
     updatedAt: now,
   };
 
+  if (!next.mediaName) {
+    throw new Error("mediaName required");
+  }
+
   if (usePostgres()) {
     await ensureMediaSchema();
     const sql = getSql();
@@ -175,13 +266,26 @@ export async function upsertChurchMedia(input: {
         data = EXCLUDED.data,
         updated_at = NOW()
     `;
-    return next;
+  } else {
+    const store = await readLocalStore();
+    store[id] = next;
+    await writeLocalStore(store);
   }
 
-  const store = await readLocalStore();
-  store[id] = next;
-  await writeLocalStore(store);
-  return next;
+  const confirmed = await confirmChurchMediaPersisted(churchId, next.mediaName);
+  if (!confirmed?.mediaName) {
+    throw new Error("Failed to persist church media profile");
+  }
+
+  console.log("KRISTO_MEDIA_PROFILE_PERSISTED", {
+    churchId,
+    mediaId: confirmed.id,
+    mediaName: confirmed.mediaName,
+    hostCount: Array.isArray(confirmed.hosts) ? confirmed.hosts.length : 0,
+    storeMode: resolveMediaStoreMode(),
+  });
+
+  return confirmed;
 }
 
 export async function patchChurchMediaSubscription(

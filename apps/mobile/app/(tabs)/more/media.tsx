@@ -63,9 +63,14 @@ import { MEDIA_STUDIO_BACKGROUND } from "../../../src/lib/mediaPreload";
 import {
   loadChurchMediaProfileCache,
   saveChurchMediaProfileCache,
+  clearChurchMediaProfileCache,
 } from "../../../src/lib/churchMediaProfileStore";
 import { logTrafficCache, shouldAllowScreenRefresh } from "../../../src/lib/kristoTraffic";
 import { useFocusedPolling } from "../../../src/lib/useFocusedPolling";
+import {
+  evaluateChurchMediaAccessClient,
+  MAX_CHURCH_MEDIA_HOSTS,
+} from "../../../src/lib/churchMediaAccess";
 
 function runAfterFirstFrame(task: () => void) {
   if (typeof requestAnimationFrame === "function") {
@@ -271,11 +276,16 @@ export default function MediaStudioScreen() {
   const [guestInviteDraftBySlot, setGuestInviteDraftBySlot] = useState<Record<string, string>>({});
   const [guestInvitedBySlot, setGuestInvitedBySlot] = useState<Record<string, string>>({});
   const [backendMedia, setBackendMedia] = useState<any>(null);
+  const [backendMediaConfirmed, setBackendMediaConfirmed] = useState(false);
   const [cachedMedia, setCachedMedia] = useState<any>(null);
   const [profileHydrated, setProfileHydrated] = useState(false);
   const [mediaProfileReady, setMediaProfileReady] = useState(false);
   const [viewerCanManage, setViewerCanManage] = useState(false);
   const [viewerIsHost, setViewerIsHost] = useState(false);
+  const [churchMediaAccess, setChurchMediaAccess] = useState(() =>
+    evaluateChurchMediaAccessClient({ userId: session?.userId })
+  );
+  const [trustedHosts, setTrustedHosts] = useState<any[]>([]);
   const mediaFetchCountRef = useRef(0);
   const [activeBackendLive, setActiveBackendLive] = useState<any>(null);
   const [vipNotice, setVipNotice] = useState<{ title: string; message: string } | null>(null);
@@ -322,43 +332,74 @@ export default function MediaStudioScreen() {
 
       if (cached?.mediaName) {
         logTrafficCache("MediaScreen", "church-media-profile", true);
-        console.log("[MediaScreen] cache profile shown", {
+        console.log("[MediaScreen] cache profile candidate", {
           churchId,
           mediaName: cached.mediaName,
         });
         setCachedMedia(cached);
-        setBackendMedia((prev: any) => prev || cached);
       } else {
         logTrafficCache("MediaScreen", "church-media-profile", false);
         setCachedMedia(null);
       }
 
       setProfileHydrated(true);
+      setBackendMediaConfirmed(false);
 
       mediaFetchCountRef.current += 1;
       console.log("[MediaScreen] mount fetch count", mediaFetchCountRef.current, { reason: "bootstrap" });
 
-      const res: any = await apiGet(
-        "/api/church/media",
-        {
-          headers: getKristoHeaders({
-            userId: session.userId,
-            role: session.role,
-            churchId,
-          }),
-        },
-        { screen: "MediaScreen", throttleMs: 120000 }
-      );
+      const [res, hostsRes]: any[] = await Promise.all([
+        apiGet(
+          "/api/church/media",
+          {
+            headers: getKristoHeaders({
+              userId: session.userId,
+              role: session.role,
+              churchId,
+            }),
+          },
+          { screen: "MediaScreen", throttleMs: 0, dedupe: false }
+        ),
+        apiGet(
+          "/api/church/media-hosts",
+          {
+            headers: getKristoHeaders({
+              userId: session.userId,
+              role: session.role,
+              churchId,
+            }),
+          },
+          { screen: "MediaScreen", throttleMs: 0, dedupe: false }
+        ),
+      ]);
 
       if (!alive) return;
 
-      const nextViewerCanManage = Boolean(res?.viewerCanManage);
-      const nextViewerIsHost = Boolean(res?.viewerIsHost);
+      const nextAccess = evaluateChurchMediaAccessClient({
+        userId: session.userId,
+        actualPastorUserId: res?.actualPastorUserId || hostsRes?.actualPastorUserId,
+        mediaHostUserIds: res?.mediaHostUserIds || hostsRes?.mediaHostUserIds,
+        isActualChurchPastor: res?.isActualChurchPastor ?? hostsRes?.isActualChurchPastor,
+        isMediaHost: res?.viewerIsHost ?? hostsRes?.isMediaHost,
+        canAccessChurchMedia: res?.canAccessChurchMedia ?? hostsRes?.canAccessChurchMedia,
+        canManageMediaHosts: res?.viewerCanManage ?? hostsRes?.canManageMediaHosts,
+      });
+      setChurchMediaAccess(nextAccess);
+      setTrustedHosts(Array.isArray(hostsRes?.hosts) ? hostsRes.hosts : []);
+
+      const nextViewerCanManage = Boolean(nextAccess.canManageMediaHosts);
+      const nextViewerIsHost = Boolean(nextAccess.isMediaHost);
       const profileMissing = Boolean(res?.profileMissing);
 
       setViewerCanManage(nextViewerCanManage);
       setViewerIsHost(nextViewerIsHost);
 
+      console.log("[MediaScreen] church media access", {
+        canAccessChurchMedia: nextAccess.canAccessChurchMedia,
+        isActualChurchPastor: nextAccess.isActualChurchPastor,
+        isMediaHost: nextAccess.isMediaHost,
+        hostCount: Array.isArray(hostsRes?.hosts) ? hostsRes.hosts.length : 0,
+      });
       console.log("[MediaScreen] viewerCanManage/viewerIsHost", {
         viewerCanManage: nextViewerCanManage,
         viewerIsHost: nextViewerIsHost,
@@ -377,6 +418,7 @@ export default function MediaStudioScreen() {
 
       if (res?.ok && res.media?.mediaName) {
         setBackendMedia(res.media);
+        setBackendMediaConfirmed(true);
         await saveChurchMediaProfileCache({
           ...res.media,
           churchId: String(res.media.churchId || churchId),
@@ -386,8 +428,29 @@ export default function MediaStudioScreen() {
           mediaProfile: res.media,
           churchMediaProfile: res.media,
         } as any);
-      } else if (!cached?.mediaName) {
+        console.log("[MediaScreen] backend media confirmed", {
+          churchId,
+          mediaName: res.media.mediaName,
+          hostCount: Array.isArray(hostsRes?.hosts) ? hostsRes.hosts.length : 0,
+        });
+      } else {
         setBackendMedia(null);
+        setBackendMediaConfirmed(false);
+
+        if (cached?.mediaName || res?.profileMissing) {
+          console.warn("[MediaScreen] stale media cache invalidated", {
+            churchId,
+            hadCache: Boolean(cached?.mediaName),
+            profileMissing: Boolean(res?.profileMissing),
+          });
+          await clearChurchMediaProfileCache(churchId);
+          setCachedMedia(null);
+          await setSession({
+            ...(session as any),
+            mediaProfile: null,
+            churchMediaProfile: null,
+          } as any);
+        }
       }
 
       setMediaProfileReady(true);
@@ -440,54 +503,32 @@ export default function MediaStudioScreen() {
     return () => loop.stop();
   }, [claimActionPulse]);
 
-  const rawSessionMedia =
-    (session as any)?.churchMediaProfile ||
-    session?.mediaProfile ||
-    null;
-
-  // SECURITY: never reuse media profile from another church.
-  // SECURITY: cached media without churchId is unsafe; it may belong to an old church.
-  const mediaBelongsToChurch =
-    !!rawSessionMedia?.churchId &&
-    String(rawSessionMedia?.churchId || "") === String(session?.churchId || "");
-
-  const safeSessionMedia =
-    mediaBelongsToChurch ? rawSessionMedia : null;
-
-  const cachedMediaForChurch =
-    cachedMedia &&
-    String(cachedMedia?.churchId || "").trim().toUpperCase() ===
-      String(session?.churchId || "").trim().toUpperCase()
-      ? cachedMedia
-      : null;
-
-  const existingMedia = backendMedia || cachedMediaForChurch || safeSessionMedia || null;
+  const existingMedia = backendMediaConfirmed ? backendMedia : null;
   const churchMediaProfile = existingMedia;
 
   const hasChurchMembership = Boolean(String(session?.churchId || "").trim());
-  const churchRole = String(
-    (session as any)?.churchRole ||
-      (session as any)?.role ||
-      (session as any)?.memberRole ||
-      ""
-  ).toLowerCase();
-  const isPastor = churchRole.includes("pastor");
-  const isChurchAdmin = churchRole.includes("admin") || churchRole.includes("church_admin");
-  const mediaHosts = Array.isArray((churchMediaProfile as any)?.hosts) ? (churchMediaProfile as any).hosts : [];
-  const isMediaHostFromProfile = mediaHosts.some(
-    (h: any) => String(h?.userId || h?.id || "") === String(session?.userId || "")
-  );
-  const viewerCanManageEffective = viewerCanManage || isPastor || isChurchAdmin;
-  const viewerIsHostEffective = viewerIsHost || isMediaHostFromProfile;
-  const canCreateMedia = viewerCanManageEffective;
-  const canUseMediaTools = viewerCanManageEffective || viewerIsHostEffective;
-  const canManageChurchStorage = isPastor || isChurchAdmin;
+  const isActualChurchPastor = churchMediaAccess.isActualChurchPastor;
+  const isMediaHostFromProfile = churchMediaAccess.isMediaHost;
+  const canAccessChurchMedia = churchMediaAccess.canAccessChurchMedia;
+  const canManageMediaHosts = churchMediaAccess.canManageMediaHosts;
+  const mediaHosts = trustedHosts.length
+    ? trustedHosts
+    : Array.isArray((churchMediaProfile as any)?.hosts)
+      ? (churchMediaProfile as any).hosts
+      : [];
+  const viewerCanManageEffective = canManageMediaHosts || viewerCanManage;
+  const viewerIsHostEffective = isMediaHostFromProfile || viewerIsHost;
+  const canCreateMedia = canManageMediaHosts;
+  const canUseMediaTools = canAccessChurchMedia;
+  const canManageChurchStorage = canManageMediaHosts;
   const canManageMediaStorage = canUseMediaTools;
   const hasChurchMediaProfile = Boolean(String(churchMediaProfile?.mediaName || "").trim());
   const showHostSetupPending =
     mediaProfileReady && !hasChurchMediaProfile && viewerIsHostEffective && !viewerCanManageEffective;
+  const showAccessLocked =
+    mediaProfileReady && hasChurchMembership && !canAccessChurchMedia;
   const showCreateWizard =
-    mediaProfileReady && !hasChurchMediaProfile && canCreateMedia && !showHostSetupPending;
+    mediaProfileReady && !hasChurchMediaProfile && canCreateMedia && !showHostSetupPending && !showAccessLocked;
 
   // Church-level media subscription.
   // Hosts NEVER control subscription ownership.
@@ -506,7 +547,7 @@ export default function MediaStudioScreen() {
         ? "post videos"
         : "use this feature";
 
-    if (isPastor) {
+    if (isActualChurchPastor) {
       setVipNotice({
         title: "Activate Church Media",
         message: `Your church has not activated Media subscription yet. Subscribe to unlock ${toolLabel}.`,
@@ -526,8 +567,8 @@ export default function MediaStudioScreen() {
   function requireMediaManager() {
     if (canUseMediaTools) return true;
     Alert.alert(
-      "Pastor/Host only",
-      "Only the pastor or an approved church media host can continue."
+      "Pastor access required",
+      "Only the church Pastor and trusted media hosts can access Media Studio."
     );
     return false;
   }
@@ -535,13 +576,6 @@ export default function MediaStudioScreen() {
   const planStatus = paymentsState.subscriptions.planStatus;
   const hasSubscription =
     isSubscriptionBypassEnabled() || isPlanActive(currentPlan, planStatus);
-  const hasMediaAccessMinistry = Boolean(
-    (session as any)?.mediaAccess ||
-      (session as any)?.mediaAccessMinistry ||
-      (session as any)?.ministryMediaAccess ||
-      (session as any)?.currentMinistry?.mediaAccess ||
-      (session as any)?.activeMinistry?.mediaAccess
-  );
   const subscriptionLabel =
     currentPlan === "monthly"
       ? planStatus === "active"
@@ -605,15 +639,11 @@ export default function MediaStudioScreen() {
     ]).start();
   }, [v2VipOpen, v2VipScale, v2VipFade, v2VipLift]);
 
-  // sync form from church media profile (cache or backend) so every device sees same Church Media
+  // sync form from backend-confirmed church media profile only
   React.useEffect(() => {
     if (!profileHydrated || !mediaProfileReady) return;
 
-    const m: any =
-      backendMedia ||
-      cachedMediaForChurch ||
-      (mediaBelongsToChurch ? (session as any)?.churchMediaProfile : null) ||
-      null;
+    const m: any = backendMediaConfirmed ? backendMedia : null;
 
     const hasProfile = Boolean(String(m?.mediaName || "").trim());
 
@@ -662,12 +692,9 @@ export default function MediaStudioScreen() {
     mediaProfileReady,
     showHostSetupPending,
     canCreateMedia,
-    mediaBelongsToChurch,
+    backendMediaConfirmed,
     backendMedia?.id,
     backendMedia?.updatedAt,
-    cachedMediaForChurch?.id,
-    cachedMediaForChurch?.updatedAt,
-    (session as any)?.churchMediaProfile?.id,
   ]);
 
   const [scheduleTitle, setScheduleTitle] = useState("Pray live for people");
@@ -721,13 +748,9 @@ export default function MediaStudioScreen() {
     if (!hasChurchMembership) return "Join a church first";
 
     if (subscriptionLocked) {
-      return isPastor
+      return isActualChurchPastor
         ? "Activate Church Media subscription to unlock live and posting tools"
         : "Church Media subscription required. Contact your pastor.";
-    }
-
-    if (!hasMediaAccessMinistry) {
-      return "Pastor must give media access through a ministry";
     }
 
     return "Media account is ready";
@@ -735,8 +758,7 @@ export default function MediaStudioScreen() {
     hasMediaAccount,
     hasChurchMembership,
     subscriptionLocked,
-    hasMediaAccessMinistry,
-    isPastor,
+    isActualChurchPastor,
   ]);
 
   const syncedGuestClaimSlots = useMemo(() => {
@@ -1080,6 +1102,7 @@ export default function MediaStudioScreen() {
       churchId: String(serverProfile.churchId || session.churchId || ""),
     });
     setBackendMedia(serverProfile);
+    setBackendMediaConfirmed(true);
     setCachedMedia(serverProfile);
 
     console.log("[MediaProfile] create/upsert result", {
@@ -1102,7 +1125,7 @@ export default function MediaStudioScreen() {
   }
 
   function handleSubscriptionOpen() {
-    if (!isPastor) {
+    if (!isActualChurchPastor) {
       showSubscriptionRequired();
       return;
     }
@@ -1136,8 +1159,8 @@ export default function MediaStudioScreen() {
   async function pickMediaVideoForPost() {
     if (subscriptionLocked) {
       Alert.alert(
-        isPastor ? "Subscription required" : "Locked by pastor",
-        isPastor
+        isActualChurchPastor ? "Subscription required" : "Locked by pastor",
+        isActualChurchPastor
           ? "Activate Church Media subscription first."
           : "Your church does not have an active Church Media subscription."
       );
@@ -1184,8 +1207,8 @@ export default function MediaStudioScreen() {
   function publishVideoPostToFeed() {
     if (subscriptionLocked) {
       Alert.alert(
-        isPastor ? "Subscription required" : "Locked by pastor",
-        isPastor
+        isActualChurchPastor ? "Subscription required" : "Locked by pastor",
+        isActualChurchPastor
           ? "Activate Church Media subscription first."
           : "Your church does not have an active Church Media subscription."
       );
@@ -1346,7 +1369,7 @@ export default function MediaStudioScreen() {
       return;
     }
 
-    if (!isPastor) {
+    if (!isActualChurchPastor) {
       let activeChurchLive: any = null;
       try {
         const res: any = await apiGet("/api/church/live", {
@@ -1481,7 +1504,7 @@ export default function MediaStudioScreen() {
     : !hasSubscription
     ? "Subscription required"
     : !canUseMediaTools
-    ? "Pastor/Host only"
+    ? "Pastor access required"
     : "Ready";
 
   const goLiveHint = activeMediaLiveSlot
@@ -1493,7 +1516,7 @@ export default function MediaStudioScreen() {
     : !hasSubscription
     ? "Subscription required"
     : !canUseMediaTools
-    ? "Pastor/Host only"
+    ? "Pastor access required"
     : "V2 Feature";
 
   async function handleCreateLiveSchedule() {
@@ -1502,7 +1525,7 @@ export default function MediaStudioScreen() {
       return;
     }
     if (!canUseMediaTools) {
-      Alert.alert("Pastor/Host only", "Only the Pastor or approved Media Hosts can create live schedules.");
+      Alert.alert("Pastor access required", "Only the church Pastor and trusted media hosts can create live schedules.");
       return;
     }
 
@@ -2394,8 +2417,8 @@ export default function MediaStudioScreen() {
         source: "media",
         liveMode: "instant",
         layout: "focus",
-        role: isPastor ? "host" : "Viewer",
-        mode: isPastor ? "host" : "viewer",
+        role: isActualChurchPastor ? "host" : "Viewer",
+        mode: isActualChurchPastor ? "host" : "viewer",
         entryMode: "live",
         room: "media",
         liveId: String(activeBackendLive.liveId || ""),
@@ -3096,7 +3119,13 @@ export default function MediaStudioScreen() {
                 </View>
                 <View style={s.statusMini}>
                   <Ionicons name={hasSubscription ? "checkmark-circle" : "lock-closed-outline"} size={14} color="#F4C95D" />
-                  <Text style={s.statusMiniText}>{canUseMediaTools ? "Pastor/Host access" : "Pastor managed"}</Text>
+                  <Text style={s.statusMiniText}>
+                    {canUseMediaTools
+                      ? isActualChurchPastor
+                        ? "Pastor access"
+                        : "Trusted host access"
+                      : "Pastor access required"}
+                  </Text>
                 </View>
               </View>
 
@@ -3156,7 +3185,16 @@ export default function MediaStudioScreen() {
 
               <View style={s.grid}>
                 <Pressable
-                  onPress={() => router.push("/more/media/select-hosts" as any)}
+                  onPress={() => {
+                    if (!canManageMediaHosts) {
+                      Alert.alert(
+                        "Pastor access required",
+                        "Only the church Pastor can add or remove trusted media hosts."
+                      );
+                      return;
+                    }
+                    router.push("/more/media/select-hosts" as any);
+                  }}
                   style={({ pressed }) => [s.smallCard, s.glassFollowers, pressed ? s.pressed : null]}
                 >
                   <View style={s.cardAura} />
@@ -3164,8 +3202,10 @@ export default function MediaStudioScreen() {
                   <View style={[s.iconRing, s.ringFollowers]}>
                     <Ionicons name="person-add-outline" size={27} color="#7DD3FC" />
                   </View>
-                  <Text style={s.smallTitle}>Hosts</Text>
-                  <Text style={s.smallSub}>{mediaHosts.length}/3 max</Text>
+                  <Text style={s.smallTitle}>Trusted Hosts</Text>
+                  <Text style={s.smallSub}>
+                    {mediaHosts.length}/{MAX_CHURCH_MEDIA_HOSTS} max
+                  </Text>
                 </Pressable>
 
                 <Pressable
@@ -3286,6 +3326,21 @@ export default function MediaStudioScreen() {
                 ) : null}
                 </View>
               </ScrollView>
+            </>
+          ) : showAccessLocked ? (
+            <>
+              <View style={s.hero}>
+                <View style={s.heroIcon}>
+                  <Ionicons name="lock-closed-outline" size={22} color="#F4C95D" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.heroKicker}>Church Media</Text>
+                  <Text style={s.heroTitle}>Pastor access required</Text>
+                  <Text style={s.heroText}>
+                    Only the church Pastor and trusted media hosts can access Media Studio. Ask your pastor if you need access.
+                  </Text>
+                </View>
+              </View>
             </>
           ) : showHostSetupPending ? (
             <>

@@ -6,7 +6,9 @@ import {
   patchChurchMediaSubscription,
   resolveMediaStoreMode,
   upsertChurchMedia,
+  confirmChurchMediaPersisted,
 } from "@/app/api/_lib/store/mediaDb";
+import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
 
 export const runtime = "nodejs";
 
@@ -18,22 +20,6 @@ function auth(req: Request) {
   };
 }
 
-function isPastor(role: string) {
-  return String(role || "").toLowerCase().includes("pastor");
-}
-
-function isChurchAdmin(role: string) {
-  const r = String(role || "").toLowerCase();
-  return r.includes("church_admin") || r.includes("system_admin");
-}
-
-function isSelectedMediaHost(media: { hosts?: any[] } | null | undefined, userId: string) {
-  const id = String(userId || "").trim();
-  if (!id || !media) return false;
-  const hosts = Array.isArray(media.hosts) ? media.hosts : [];
-  return hosts.some((h: any) => String(h?.userId || h?.id || "").trim() === id);
-}
-
 export async function GET(req: Request) {
   const a = auth(req);
   if (!a.userId || !a.churchId) {
@@ -42,18 +28,25 @@ export async function GET(req: Request) {
 
   try {
     const media = await getChurchMediaByChurchId(a.churchId);
-    const viewerCanManage = isPastor(a.role) || isChurchAdmin(a.role);
-    const viewerIsHost = isSelectedMediaHost(media, a.userId);
+    const access = await evaluateChurchMediaAccess({
+      churchId: a.churchId,
+      userId: a.userId,
+    });
     const hasProfile = Boolean(String(media?.mediaName || "").trim());
-    const canViewProfile = hasProfile && (viewerCanManage || viewerIsHost);
+    const canViewProfile = hasProfile && access.canAccessChurchMedia;
+
+    if (hasProfile) {
+      await confirmChurchMediaPersisted(a.churchId, media?.mediaName);
+    }
 
     if (process.env.KRISTO_DEBUG_AUTH === "1" || process.env.NODE_ENV !== "production") {
       console.log("[MediaProfile] backend result", {
         churchId: a.churchId,
         userId: a.userId,
         found: hasProfile,
-        viewerCanManage,
-        viewerIsHost,
+        canAccessChurchMedia: access.canAccessChurchMedia,
+        isActualChurchPastor: access.isActualChurchPastor,
+        isMediaHost: access.isMediaHost,
         profileMissing: !hasProfile,
         storeMode: resolveMediaStoreMode(),
       });
@@ -63,8 +56,12 @@ export async function GET(req: Request) {
       ok: true,
       media: canViewProfile ? media : null,
       profileMissing: !hasProfile,
-      viewerCanManage,
-      viewerIsHost,
+      viewerCanManage: access.canManageMediaHosts,
+      viewerIsHost: access.isMediaHost,
+      canAccessChurchMedia: access.canAccessChurchMedia,
+      isActualChurchPastor: access.isActualChurchPastor,
+      actualPastorUserId: access.actualPastorUserId,
+      mediaHostUserIds: access.mediaHostUserIds,
       storeMode: resolveMediaStoreMode(),
     });
   } catch (error: any) {
@@ -88,8 +85,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  if (!isPastor(a.role)) {
-    return NextResponse.json({ ok: false, error: "Pastor only" }, { status: 403 });
+  const access = await evaluateChurchMediaAccess({
+    churchId: a.churchId,
+    userId: a.userId,
+  });
+  if (!access.canManageMediaHosts) {
+    return NextResponse.json({ ok: false, error: "Only the church Pastor can manage Church Media" }, { status: 403 });
   }
 
   try {
@@ -151,8 +152,12 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  if (!isPastor(a.role)) {
-    return NextResponse.json({ ok: false, error: "Pastor only" }, { status: 403 });
+  const access = await evaluateChurchMediaAccess({
+    churchId: a.churchId,
+    userId: a.userId,
+  });
+  if (!access.canManageMediaHosts) {
+    return NextResponse.json({ ok: false, error: "Only the church Pastor can manage Church Media" }, { status: 403 });
   }
 
   try {
