@@ -234,6 +234,16 @@ export default function TabLayout() {
         churchLabel: String(item?.churchName || item?.churchLabel || "Church"),
         churchId: String(item?.churchId || session?.churchId || ""),
         liveId,
+        feedId: liveId,
+        sourceScheduleId: liveId,
+        liveAllScheduleSlotsJson: JSON.stringify(
+          (Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []).map((s: any, i: number) => ({
+            ...s,
+            slot: i + 1,
+            slotNumber: i + 1,
+            order: i + 1,
+          }))
+        ),
 
         title: String(slot?.name || slot?.slotLabel || item?.title || "Church Live"),
         preferredSlotNumber: String((alert?.index ?? 0) + 1),
@@ -310,6 +320,16 @@ export default function TabLayout() {
           churchLabel: String(item?.churchName || item?.churchLabel || "Church"),
           churchId: String(item?.churchId || session?.churchId || ""),
           liveId,
+          feedId: liveId,
+          sourceScheduleId: liveId,
+          liveAllScheduleSlotsJson: JSON.stringify(
+            allSlots.map((s: any, i: number) => ({
+              ...s,
+              slot: i + 1,
+              slotNumber: i + 1,
+              order: i + 1,
+            }))
+          ),
 
           title: String(routeSlot?.name || routeSlot?.slotLabel || item?.title || "Church Live"),
           preferredSlotNumber: String(routeSlotNumber),

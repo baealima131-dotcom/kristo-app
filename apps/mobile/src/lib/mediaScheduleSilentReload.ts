@@ -8,6 +8,7 @@ import {
 } from "@/src/lib/homeFeedStore";
 import { findActiveMediaScheduleForChurch, findMediaScheduleFeedForChurch } from "@/src/lib/mediaScheduleLock";
 import { findProtectedNearLiveSchedule } from "@/src/lib/liveScheduleRing";
+import { resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
 import {
   clearChurchProjectScheduleSlots,
   getChurchProjectMcRuntime,
@@ -246,14 +247,17 @@ export async function syncMediaScheduleSlotsToBackend(
   slots: any[],
   headers?: Record<string, string>
 ) {
-  if (!sourceFeedId) return null;
+  const seed = String(sourceFeedId || "").trim();
+  if (!seed) return null;
+
+  const feedId = resolveCanonicalScheduleFeedId(seed, feedList() as any[]) || seed;
 
   return apiPost(
     "/api/church/feed",
     {
       action: "update-schedule-slots",
-      feedId: sourceFeedId,
-      postId: sourceFeedId,
+      feedId,
+      postId: feedId,
       slots,
     },
     { headers }
@@ -261,13 +265,26 @@ export async function syncMediaScheduleSlotsToBackend(
 }
 
 export function readFeedItemScheduleSlots(sourceFeedId: string, fallbackRows: any[] = []) {
-  const id = String(sourceFeedId || "").trim();
-  if (!id) return [];
+  const seed = String(sourceFeedId || "").trim();
+  if (!seed) return [];
 
-  const fromLocal = (feedList() as any[]).find((item) => String(item?.id || "") === id);
+  const localRows = feedList() as any[];
+  const merged = [...localRows, ...fallbackRows];
+  const canonicalId = resolveCanonicalScheduleFeedId(seed, merged) || seed;
+
+  const fromLocal = localRows.find(
+    (item) =>
+      String(item?.id || "") === canonicalId ||
+      String(item?.id || "") === seed ||
+      String(item?.sourceScheduleId || "") === seed
+  );
   if (Array.isArray(fromLocal?.scheduleSlots)) return fromLocal.scheduleSlots;
 
-  const fromRows = fallbackRows.find((item) => String(item?.id || "") === id);
+  const fromRows = fallbackRows.find(
+    (item) =>
+      String(item?.id || "") === canonicalId ||
+      String(item?.id || "") === seed
+  );
   if (Array.isArray(fromRows?.scheduleSlots)) return fromRows.scheduleSlots;
 
   return [];
