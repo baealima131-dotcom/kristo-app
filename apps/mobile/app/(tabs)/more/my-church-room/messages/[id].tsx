@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Dimensions,
   Easing,
   Animated,
   FlatList,
@@ -57,6 +58,7 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { requireActiveChurchSubscriptionForSchedule } from "@/src/lib/churchSubscription";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
+import ImageViewing from "react-native-image-viewing";
 
 const BG = "#0B0F17";
 const TEXT = "rgba(255,255,255,0.94)";
@@ -1561,9 +1563,90 @@ function getAssignmentLiveCountdownMeta(card?: any) {
   };
 }
 
-function MessageAttachmentsBlock({ attachments }: { attachments: MsgAttachment[] }) {
-  const [previewUri, setPreviewUri] = useState("");
+const GALLERY_SCREEN = Dimensions.get("window");
+const GALLERY_W = GALLERY_SCREEN.width;
+const GALLERY_H = GALLERY_SCREEN.height;
 
+function collectRoomImageGalleryUris(messages: MsgItem[]): string[] {
+  const sorted = [...messages].sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+  const uris: string[] = [];
+
+  for (const m of sorted) {
+    for (const raw of m.attachments || []) {
+      const a = normalizeMsgAttachment(raw);
+      if (a.kind !== "image") continue;
+      const uri = resolveMessageAttachmentUrl(a.imageUri || a.uri || a.url || "");
+      if (uri && isGalleryPreviewSafeImageUri(uri)) uris.push(uri);
+    }
+  }
+
+  return uris.reverse();
+}
+
+function findGalleryImageIndex(gallery: string[], uri: string) {
+  const target = resolveMessageAttachmentUrl(uri);
+  if (!target) return -1;
+  const exact = gallery.indexOf(target);
+  if (exact >= 0) return exact;
+  return gallery.findIndex((u) => u === uri || u.endsWith(target) || target.endsWith(u));
+}
+
+function isGalleryPreviewSafeImageUri(uri: string) {
+  const clean = String(uri || "").split("?")[0].toLowerCase();
+  // Remote HEIC/HEIF can crash RN Image preview on some iOS/dev-client builds.
+  // Keep bubble thumbnail/upload, but exclude from fullscreen gallery until converted.
+  if (/\.(heic|heif)$/i.test(clean)) return false;
+  return /\.(png|jpe?g|webp|gif)$/i.test(clean) || clean.startsWith("data:image/");
+}
+
+
+function MessageImageGalleryModal({
+  open,
+  uris,
+  startIndex,
+  onClose,
+}: {
+  open: boolean;
+  uris: string[];
+  startIndex: number;
+  onClose: () => void;
+}) {
+  const images = useMemo(() => uris.map((uri) => ({ uri })), [uris]);
+
+  const safeIndex = Math.max(
+    0,
+    Math.min(startIndex || 0, Math.max(0, images.length - 1))
+  );
+
+  return (
+    <ImageViewing
+      images={images}
+      imageIndex={safeIndex}
+      visible={open && images.length > 0}
+      onRequestClose={onClose}
+      swipeToCloseEnabled
+      doubleTapToZoomEnabled
+      presentationStyle="fullScreen"
+      backgroundColor="#000000"
+      FooterComponent={({ imageIndex }) => (
+        <View style={{ width: "100%", alignItems: "center", paddingBottom: 34 }}>
+          <Text style={{ color: "#FFFFFF", fontSize: 13, fontWeight: "700", opacity: 0.92 }}>
+            {(imageIndex || 0) + 1} / {images.length}
+          </Text>
+        </View>
+      )}
+    />
+  );
+}
+
+
+function MessageAttachmentsBlock({
+  attachments,
+  onPreviewImage,
+}: {
+  attachments: MsgAttachment[];
+  onPreviewImage?: (uri: string) => void;
+}) {
   if (!attachments?.length) return null;
 
   async function openAttachmentFile(url: string) {
@@ -1600,7 +1683,7 @@ function MessageAttachmentsBlock({ attachments }: { attachments: MsgAttachment[]
             return (
               <Pressable
                 key={a.id}
-                onPress={() => setPreviewUri(imageUri)}
+                onPress={() => onPreviewImage?.(imageUri)}
                 style={({ pressed }) => [s.attachImageWrap, pressed ? ({ opacity: 0.92 } as ViewStyle) : null]}
               >
                 <Image source={{ uri: imageUri }} style={s.attachImagePreview as ImageStyle} resizeMode="cover" />
@@ -1634,18 +1717,6 @@ function MessageAttachmentsBlock({ attachments }: { attachments: MsgAttachment[]
           );
         })}
       </View>
-
-      <Modal visible={!!previewUri} transparent animationType="fade" onRequestClose={() => setPreviewUri("")}>
-        <View style={s.attachPreviewOverlay}>
-          <Pressable style={s.attachPreviewBackdrop} onPress={() => setPreviewUri("")} />
-          {previewUri ? (
-            <Image source={{ uri: previewUri }} style={s.attachPreviewFullscreen as ImageStyle} resizeMode="contain" />
-          ) : null}
-          <Pressable onPress={() => setPreviewUri("")} style={s.attachPreviewClose} hitSlop={12}>
-            <Ionicons name="close" size={22} color="#FFFFFF" />
-          </Pressable>
-        </View>
-      </Modal>
     </>
   );
 }
@@ -1661,6 +1732,7 @@ function Bubble({
   onAddAssignmentMember,
   onAddVideoAssignmentCard,
   onOpenScheduledLive,
+  onPreviewImage,
 }: {
   m: MsgItem;
   showAvatar?: boolean;
@@ -1672,6 +1744,7 @@ function Bubble({
   onAddAssignmentMember?: (messageId: string) => void;
   onAddVideoAssignmentCard?: (messageId: string) => void;
   onOpenScheduledLive?: (m: MsgItem) => void;
+  onPreviewImage?: (uri: string) => void;
 }) {
   const mine = m.sender === "me";
   const senderRoleGlobal = String((m as any).role || "").toLowerCase();
@@ -1770,7 +1843,7 @@ function Bubble({
           />
           {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
-          <MessageAttachmentsBlock attachments={m.attachments || []} />
+          <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} />
 
           <View style={s.msgMetaRow}>
             <Text style={t.msgTimeMine}>{formatTime(m.createdAt)}</Text>
@@ -1827,7 +1900,7 @@ function Bubble({
 
             {m.text ? <Text style={t.msgText}>{m.text}</Text> : null}
 
-            <MessageAttachmentsBlock attachments={m.attachments || []} />
+            <MessageAttachmentsBlock attachments={m.attachments || []} onPreviewImage={onPreviewImage} />
 
             <Text
               style={[
@@ -2414,6 +2487,8 @@ export default function MessageThreadScreen() {
 
   const { messages } = useThread(threadId);
   const visibleMessages = useMemo(() => paginateMessages(messages, 120), [messages]);
+  const roomImageGallery = useMemo(() => collectRoomImageGalleryUris(messages), [messages]);
+  const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
   const roomMessagesSigRef = useRef("");
   const reloadRoomMessagesRef = useRef<(() => Promise<void>) | null>(null);
 
@@ -2921,6 +2996,20 @@ const displayHeaderTitle = assignmentDisplayTitle;
   function removePending(id: string) {
     setPending((prev) => prev.filter((x) => x.id !== id));
   }
+
+  const openImagePreview = useCallback(
+    (uri: string) => {
+      const target = String(uri || "").trim();
+      if (!target || !roomImageGallery.length) return;
+      const idx = findGalleryImageIndex(roomImageGallery, target);
+      setImagePreviewIndex(idx >= 0 ? idx : 0);
+    },
+    [roomImageGallery]
+  );
+
+  const closeImagePreview = useCallback(() => {
+    setImagePreviewIndex(null);
+  }, []);
 
   function pickImage() {
     void (async () => {
@@ -5655,6 +5744,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 onAddAssignmentMember={handleAddAssignmentMember}
                 onAddVideoAssignmentCard={handleAddAssignmentVideo}
                 onOpenScheduledLive={openScheduledLiveFromCard}
+                onPreviewImage={openImagePreview}
               />
             );
           }}
@@ -5754,6 +5844,12 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         </View>
       </KeyboardAvoidingView>
 
+      <MessageImageGalleryModal
+        open={imagePreviewIndex != null && roomImageGallery.length > 0}
+        uris={roomImageGallery}
+        startIndex={imagePreviewIndex ?? 0}
+        onClose={closeImagePreview}
+      />
 
       <Modal
         visible={membersOpen}
@@ -10104,8 +10200,32 @@ videoEditorSplitTimelineBadgeText: {
   attachPreviewOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.88)",
+  } as ViewStyle,
+  attachPreviewPage: {
+    width: GALLERY_W,
+    height: GALLERY_H,
     justifyContent: "center",
     alignItems: "center",
+  } as ViewStyle,
+  attachPreviewPageInner: {
+    width: GALLERY_W,
+    height: GALLERY_H,
+    justifyContent: "center",
+    alignItems: "center",
+  } as ViewStyle,
+  galleryPlainImage: {
+    width: "92%",
+    height: "72%",
+    backgroundColor: "rgba(8,10,18,0.96)",
+  } as ImageStyle,
+  galleryPlainPlaceholder: {
+    position: "absolute",
+    width: "72%",
+    height: "58%",
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
   } as ViewStyle,
   attachPreviewBackdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -10114,9 +10234,56 @@ videoEditorSplitTimelineBadgeText: {
     width: "92%",
     height: "72%",
   } as ImageStyle,
+  attachPreviewCounter: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    alignItems: "center",
+  } as ViewStyle,
+  attachPreviewThumbStrip: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingTop: 8,
+    backgroundColor: "rgba(0,0,0,0.28)",
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.08)",
+  } as ViewStyle,
+  attachPreviewThumbRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+  } as ViewStyle,
+  attachPreviewThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    overflow: "hidden",
+  } as ViewStyle,
+  attachPreviewThumbIdle: {
+    opacity: 0.42,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  } as ViewStyle,
+  attachPreviewThumbActive: {
+    opacity: 1,
+    borderWidth: 2,
+    borderColor: "rgba(217,179,95,0.95)",
+    shadowColor: "#C4B5FD",
+    shadowOpacity: 0.72,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
+  } as ViewStyle,
+  attachPreviewThumbImg: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  } as ImageStyle,
   attachPreviewClose: {
     position: "absolute",
-    top: 54,
     right: 18,
     width: 42,
     height: 42,
@@ -10126,6 +10293,29 @@ videoEditorSplitTimelineBadgeText: {
     backgroundColor: "rgba(255,255,255,0.12)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.18)",
+  } as ViewStyle,
+  galleryNavBtn: {
+    position: "absolute",
+    top: "50%",
+    marginTop: -24,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.38)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  } as ViewStyle,
+  galleryNavBtnLeft: {
+    left: 12,
+  } as ViewStyle,
+  galleryNavBtnRight: {
+    right: 12,
+  } as ViewStyle,
+  galleryNavBtnPressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.96 }],
   } as ViewStyle,
 
   composer: { marginTop: 12, marginBottom: 8, flexDirection: "row", alignItems: "flex-end", gap: 8 } as ViewStyle,
@@ -10649,6 +10839,19 @@ const t = StyleSheet.create({
   attachName: { flex: 1, marginLeft: 8, color: "rgba(255,255,255,0.88)", fontWeight: "800", fontSize: 12 } as TextStyle,
   attachMeta: { marginLeft: 10, color: "rgba(255,255,255,0.50)", fontWeight: "800", fontSize: 10 } as TextStyle,
   attachImageHint: { color: "rgba(255,255,255,0.72)", fontWeight: "700", fontSize: 11 } as TextStyle,
+  attachPreviewCounterText: {
+    color: "rgba(255,255,255,0.78)",
+    fontWeight: "700",
+    fontSize: 12,
+    letterSpacing: 0.3,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor: "rgba(0,0,0,0.28)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+  } as TextStyle,
   attachFileName: { color: "rgba(255,255,255,0.94)", fontWeight: "800", fontSize: 13, lineHeight: 17 } as TextStyle,
   attachFileMeta: { marginTop: 3, color: "rgba(255,255,255,0.52)", fontWeight: "700", fontSize: 11 } as TextStyle,
 
