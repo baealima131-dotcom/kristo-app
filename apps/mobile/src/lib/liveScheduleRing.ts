@@ -1,3 +1,4 @@
+import { DeviceEventEmitter } from "react-native";
 import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
 import { baseFeedId, collectScheduleAliasIds, enrichScheduleSlot, resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
@@ -466,4 +467,23 @@ export function recomputeScheduleRingsFromRows(options: {
   }
 
   return { personal, church, rows };
+}
+
+export const KRISTO_LIVE_RING_REFRESH = "kristo:live-ring-refresh";
+
+export type LiveRingRefreshPayload = {
+  reason: string;
+  at: number;
+};
+
+export function emitLiveRingRefresh(reason: string) {
+  DeviceEventEmitter.emit(KRISTO_LIVE_RING_REFRESH, {
+    reason: String(reason || "manual"),
+    at: Date.now(),
+  } satisfies LiveRingRefreshPayload);
+}
+
+export function onLiveRingRefresh(listener: (payload: LiveRingRefreshPayload) => void) {
+  const sub = DeviceEventEmitter.addListener(KRISTO_LIVE_RING_REFRESH, listener);
+  return () => sub.remove();
 }

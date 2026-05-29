@@ -77,6 +77,8 @@ import {
   cleanFeedLabel,
 } from "@/src/lib/scheduleSlotUtils";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
+import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
+import { runMediaScheduleSilentReload } from "@/src/lib/mediaScheduleSilentReload";
 import {
   getChurchProjectMcRuntime,
   getChurchProjectMcLiveSlotState,
@@ -5120,8 +5122,23 @@ export default function LiveRoomScreen() {
   }
 
 
+  function refreshLiveStateAfterLeave() {
+    const userId = String(session?.userId || "").trim();
+    const roomName = String(liveBridgeId || "").trim();
+
+    clearKristoLiveKitGlobalsForSession({ userId, roomName });
+
+    emitLiveRingRefresh("leave-live-room");
+    void runMediaScheduleSilentReload("leave-live-room", true, {
+      churchId: String((session as any)?.churchId || (params as any)?.churchId || ""),
+      userId,
+      role: String((session as any)?.role || "Member"),
+    });
+  }
+
   function quitLiveRoom() {
     setCameraPaused(true);
+    refreshLiveStateAfterLeave();
     router.replace("/(tabs)/more" as any);
   }
 
@@ -5247,6 +5264,8 @@ ${scheduleAudienceAccessText}`,
 
   function handleLeaveLive() {
     closeMoreMenu();
+    setCameraPaused(true);
+    refreshLiveStateAfterLeave();
     router.replace("/(tabs)/more" as any);
   }
 

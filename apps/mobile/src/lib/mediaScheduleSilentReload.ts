@@ -7,8 +7,9 @@ import {
   feedRemoveWhere,
 } from "@/src/lib/homeFeedStore";
 import { findActiveMediaScheduleForChurch, findMediaScheduleFeedForChurch } from "@/src/lib/mediaScheduleLock";
-import { findProtectedNearLiveSchedule } from "@/src/lib/liveScheduleRing";
+import { findProtectedNearLiveSchedule, emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   clearChurchProjectScheduleSlots,
   getChurchProjectMcRuntime,
@@ -288,4 +289,47 @@ export function readFeedItemScheduleSlots(sourceFeedId: string, fallbackRows: an
   if (Array.isArray(fromRows?.scheduleSlots)) return fromRows.scheduleSlots;
 
   return [];
+}
+
+let lastMediaScheduleVersion = 0;
+let lastMediaScheduleUpdatedAt = "";
+
+export async function runMediaScheduleSilentReload(
+  reason: string,
+  force = false,
+  auth?: { churchId?: string; userId?: string; role?: string }
+): Promise<SilentMediaScheduleReloadResult | null> {
+  const churchId = String(auth?.churchId || "").trim();
+  if (!churchId) {
+    emitLiveRingRefresh(reason);
+    return null;
+  }
+
+  try {
+    const headers = getKristoHeaders({
+      userId: String(auth?.userId || ""),
+      role: (auth?.role || "Member") as any,
+      churchId,
+    }) as Record<string, string>;
+
+    const sync = await fetchMediaScheduleFeedSync(churchId, headers);
+    const result = applySilentMediaScheduleReload({
+      churchId,
+      sync,
+      reason,
+      previousVersion: lastMediaScheduleVersion,
+      previousUpdatedAt: lastMediaScheduleUpdatedAt,
+      force,
+    });
+
+    lastMediaScheduleVersion = result.mediaScheduleVersion;
+    lastMediaScheduleUpdatedAt = result.mediaScheduleUpdatedAt;
+
+    emitLiveRingRefresh(reason);
+    return result;
+  } catch (e) {
+    console.log("KRISTO_MEDIA_SILENT_RELOAD_ERROR", { reason, error: String(e) });
+    emitLiveRingRefresh(`${reason}-error`);
+    return null;
+  }
 }

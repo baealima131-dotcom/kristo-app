@@ -11,6 +11,7 @@ import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
 import {
   RING_RECOMPUTE_INTERVAL_MS,
   recomputeScheduleRingsFromRows,
+  onLiveRingRefresh,
 } from "@/src/lib/liveScheduleRing";
 import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
 import { Alert, Animated, Pressable, Text, View } from "react-native";
@@ -453,6 +454,46 @@ export default function TabLayout() {
     [session?.userId, session?.churchId]
   );
 
+  const refreshChurchLiveAndRings = useCallback(
+    async (source: string) => {
+      applyScheduleRings(source);
+
+      if (!session?.userId || !session?.churchId) return;
+
+      const headers = getKristoHeaders({
+        userId: session.userId,
+        role: (session.role || "Member") as any,
+        churchId: session.churchId || "",
+      });
+
+      try {
+        const patch = await fetchLightLiveState(headers as any, `TabLayout:${source}`);
+        const nextLive =
+          patch.isLive === true && patch.raw && !patch.raw?.endedAt ? patch.raw : null;
+        setBackendChurchLive(nextLive);
+      } catch {}
+
+      try {
+        const feedRes: any = await apiGet(
+          `/api/church/feed?_=${Date.now()}`,
+          { headers, cache: "no-store" as RequestCache },
+          { screen: "TabLayout", dedupe: false }
+        );
+        const rows: any[] =
+          Array.isArray(feedRes?.data?.items) ? feedRes.data.items :
+          Array.isArray(feedRes?.data) ? feedRes.data :
+          Array.isArray(feedRes?.items) ? feedRes.items :
+          Array.isArray(feedRes) ? feedRes : [];
+
+        backendFeedRowsRef.current = rows;
+        applyScheduleRings(`${source}-backend`, rows);
+      } catch {
+        applyScheduleRings(`${source}-backend-error`);
+      }
+    },
+    [session?.userId, session?.churchId, session?.role, applyScheduleRings]
+  );
+
   const scheduleClaimRingSync = useCallback(
     (payload?: ClaimUpdatedPayload) => {
       console.log("KRISTO_RING_CLAIM_EVENT_RECOMPUTE", {
@@ -482,61 +523,33 @@ export default function TabLayout() {
     applyScheduleRings("mount");
     const unsubFeed = subscribeHomeFeed(() => applyScheduleRings("feed"));
     const unsubClaim = onClaimUpdated((payload) => scheduleClaimRingSync(payload));
+    const unsubRingRefresh = onLiveRingRefresh(({ reason }) => {
+      void refreshChurchLiveAndRings(reason);
+    });
     const fastTimer = setInterval(() => applyScheduleRings("timer"), RING_RECOMPUTE_INTERVAL_MS);
 
     return () => {
       unsubFeed();
       unsubClaim();
+      unsubRingRefresh();
       clearInterval(fastTimer);
       claimRingTimersRef.current.forEach((timer) => clearTimeout(timer));
       claimRingTimersRef.current = [];
     };
-  }, [applyScheduleRings, scheduleClaimRingSync]);
+  }, [applyScheduleRings, scheduleClaimRingSync, refreshChurchLiveAndRings]);
 
   useFocusEffect(
     useCallback(() => {
-      applyScheduleRings("focus");
-    }, [applyScheduleRings])
+      void refreshChurchLiveAndRings("focus");
+    }, [refreshChurchLiveAndRings])
   );
 
   useEffect(() => {
     let alive = true;
 
     async function loadChurchLive() {
-      if (!session?.userId || !session?.churchId) return;
-
-      const headers = getKristoHeaders({
-        userId: session.userId,
-        role: (session.role || "Member") as any,
-        churchId: session.churchId || "",
-      });
-
-      try {
-        const patch = await fetchLightLiveState(headers as any, "TabLayout");
-        if (alive) {
-          const nextLive =
-            patch.isLive === true && patch.raw && !patch.raw?.endedAt ? patch.raw : null;
-          setBackendChurchLive(nextLive);
-        }
-      } catch {}
-
-      try {
-        const feedRes: any = await apiGet(
-          "/api/church/feed",
-          { headers },
-          { screen: "TabLayout", throttleMs: 120000 }
-        );
-        const rows: any[] =
-          Array.isArray(feedRes?.data?.items) ? feedRes.data.items :
-          Array.isArray(feedRes?.data) ? feedRes.data :
-          Array.isArray(feedRes?.items) ? feedRes.items :
-          Array.isArray(feedRes) ? feedRes : [];
-
-        backendFeedRowsRef.current = rows;
-        if (alive) applyScheduleRings("backend-feed", rows);
-      } catch {
-        if (alive) applyScheduleRings("backend-feed-error");
-      }
+      if (!alive) return;
+      await refreshChurchLiveAndRings("poll");
     }
 
     void loadChurchLive();
@@ -552,7 +565,7 @@ export default function TabLayout() {
       alive = false;
       stop();
     };
-  }, [session?.userId, session?.churchId, session?.role, applyScheduleRings]);
+  }, [refreshChurchLiveAndRings]);
 
   useEffect(() => {
     if (!backendChurchLive?.isLive && !mediaScheduleTabLive) return;
