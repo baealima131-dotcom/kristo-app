@@ -34,7 +34,7 @@ import {
   feedUpdateScheduleSlots,
   subscribe,
 } from "../../../src/lib/homeFeedStore";
-import { apiGet, apiPost } from "../../../src/lib/kristoApi";
+import { apiGet, apiPost, getApiBase } from "../../../src/lib/kristoApi";
 import { getKristoHeaders } from "../../../src/lib/kristoHeaders";
 import { sendAssignmentCards } from "../../../src/lib/messagesStore";
 import {
@@ -1248,33 +1248,62 @@ export default function MediaStudioScreen() {
     const title = typedTitle;
     const caption = typedCaption;
 
+    const fileUri = String(videoPostUri || "").trim();
+    const fileName = `video-${Date.now()}.mp4`;
+
     const fd = new FormData();
 
     fd.append("file", {
-      uri: videoPostUri,
-      name: `video-${Date.now()}.mp4`,
+      uri: fileUri,
+      name: fileName,
       type: "video/mp4",
     } as any);
 
-    apiPost(
-      "/api/church/media/upload",
-      fd,
-      {
-        headers: {
-          accept: "application/json",
-          ...getKristoHeaders({
-            userId: session?.userId || "",
-            role: (session?.role || "Member") as any,
-            churchId: session?.churchId || "",
-          }),
-        },
-      }
-    )
+    const uploadHeaders: any = {
+      accept: "application/json",
+      ...getKristoHeaders({
+        userId: session?.userId || "",
+        role: (session?.role || "Member") as any,
+        churchId: session?.churchId || "",
+      }),
+    };
+
+    delete uploadHeaders["content-type"];
+    delete uploadHeaders["Content-Type"];
+
+    console.log("KRISTO_UPLOAD_FORM_DEBUG", {
+      fileUri,
+      fileName,
+      hasFileUri: !!fileUri,
+      base: getApiBase(),
+    });
+
+    fetch(`${getApiBase()}/api/church/media/upload`, {
+      method: "POST",
+      headers: uploadHeaders,
+      body: fd,
+    })
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || !body?.ok) {
+          throw new Error(String(body?.error || `Upload failed (${res.status})`));
+        }
+        return body;
+      })
       .then((uploadRes) => {
         console.log("KRISTO_VIDEO_UPLOAD_RESULT", uploadRes);
 
-        const uploadedUrl =
-          uploadRes?.data?.url || videoPostUri;
+        const uploadedUrl = String(
+          uploadRes?.data?.url ||
+          uploadRes?.data?.videoUrl ||
+          uploadRes?.url ||
+          uploadRes?.videoUrl ||
+          ""
+        ).trim();
+
+        if (!uploadedUrl || uploadedUrl.startsWith("file://")) {
+          throw new Error("Video upload did not return a server URL.");
+        }
 
         return apiPost(
           "/api/church/feed",
@@ -1295,51 +1324,16 @@ export default function MediaStudioScreen() {
       })
       .then((res: any) => {
         console.log("KRISTO_FEED_VIDEO_POSTED", res);
+        setVideoPostDetailsOpen(false);
+        router.push("/" as any);
       })
       .catch((e) => {
         console.log("KRISTO_FEED_VIDEO_POST_ERROR", e);
+        Alert.alert("Upload failed", String(e?.message || e || "Video upload failed. Please try again."));
       });
 
-    const churchAvatarUri = String(
-      (session as any)?.churchAvatarUri ||
-        (session as any)?.churchAvatarUrl ||
-        ""
-    ).trim();
-    const actorAvatarUri = String(
-      (session as any)?.avatarUri ||
-        (session as any)?.avatarUrl ||
-        (session as any)?.profileImage ||
-        churchAvatarUri
-    ).trim();
-
-    feedAdd({
-      id: `media-video-${Date.now()}`,
-      kind: "post",
-      title,
-      body: caption,
-      mediaType: "video",
-      videoUrl: videoPostUri,
-      churchAvatarUri,
-      actorAvatarUri,
-      createdAt: new Date().toISOString(),
-      actorLabel: mediaName,
-      churchLabel: String((session as any)?.churchName || "MY CHURCH"),
-      mediaOwnerId: String(session?.userId || ""),
-      createdByUserId: String(session?.userId || ""),
-      mediaId: "MD-102948",
-      liked: false,
-      saved: false,
-      likeCount: 0,
-      commentCount: 0,
-      shareCount: 0,
-    } as any);
-
-    setIsCreatingVideoPost(false);
-    setVideoPostUri("");
-    setVideoPostTitle("Church Media Video");
-    setVideoPostCaption("");
-    setVideoPostDetailsOpen(false);
-    router.push("/" as any);
+    // Do not add local media-video-* optimistic rows.
+    // Home Feed must render video posts from backend server URLs only.
   }
 
   async function handleLockedAction(kind: "video" | "live") {

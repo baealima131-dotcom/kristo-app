@@ -54,11 +54,28 @@ export async function POST(req: NextRequest) {
     return ctxOrRes;
   }
 
-  const form = await req.formData().catch(() => null);
+  console.log("KRISTO_UPLOAD_SERVER_DEBUG", {
+    contentType: req.headers.get("content-type"),
+    contentLength: req.headers.get("content-length"),
+  });
 
-  if (!form) {
+  let form: FormData;
+
+  try {
+    form = await req.formData();
+  } catch (err) {
+    console.log("KRISTO_UPLOAD_SERVER_DEBUG", {
+      contentType: req.headers.get("content-type"),
+      contentLength: req.headers.get("content-length"),
+      parseError: err instanceof Error ? err.message : String(err),
+    });
+
     return NextResponse.json(
-      { ok: false, error: "Invalid form data" },
+      {
+        error: "Invalid form data",
+        detail: err instanceof Error ? err.message : String(err),
+        contentType: req.headers.get("content-type"),
+      },
       { status: 400 }
     );
   }
