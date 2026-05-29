@@ -1413,92 +1413,11 @@ export default function MediaStudioScreen() {
       return;
     }
 
-    const mediaName = form.mediaName.trim() || churchMediaProfile?.mediaName || "Media Studio";
-    const liveId = `media-live-${Date.now()}`;
-    const liveHeaders = getKristoHeaders({
-      userId: session?.userId || "",
-      role: (session?.role || "Pastor") as any,
-      churchId: session?.churchId || "",
-    }) as any;
-    const pastorResolution = await fetchChurchPastorUserId(
-      String(session?.churchId || ""),
-      liveHeaders
+    Alert.alert(
+      "Schedule required",
+      "Church Live now depends on media schedule slots. Create a schedule first, then enter live when the active slot time arrives."
     );
-    const actualChurchPastorUserId =
-      pastorResolution.actualChurchPastorUserId || String(session?.userId || "");
-
-    logChurchPastorResolution({
-      churchId: String(session?.churchId || ""),
-      actualChurchPastorUserId,
-      sourceField: pastorResolution.sourceField || "live.session.userId",
-      scheduleCreatedByUserId: String(session?.userId || ""),
-      currentUserId: String(session?.userId || ""),
-    });
-
-    feedRemoveWhere((item: any) =>
-      String(item.id || "").startsWith("media-live-now-") ||
-      String(item.id || "").startsWith("church-live-now-")
-    );
-
-    apiPost("/api/church/live", {
-      isLive: true,
-      liveId,
-      mediaName,
-      title: "Pastor is LIVE",
-      actualChurchPastorUserId,
-      churchId: String(session?.churchId || ""),
-      visibility: "church",
-      audience: "church-members",
-    }, {
-      headers: liveHeaders,
-    }).catch(() => {});
-
-    feedAdd({
-      id: `church-live-now-${liveId}`,
-      kind: "live",
-      title: "Pastor is LIVE",
-      body: `${mediaName} is live now for church members. Tap to watch or send a join request.`,
-      createdAt: new Date().toISOString(),
-      actorLabel: mediaName,
-      churchLabel: String((session as any)?.churchName || "MY CHURCH"),
-      isLiveNow: true,
-      isChurchLive: true,
-      visibility: "church",
-      audience: "church-members",
-      churchId: String(session?.churchId || ""),
-      liveId,
-      liveRoomPath: "/more/my-church-room/messages/live-room",
-      liveRoomParams: {
-        source: "media",
-        liveMode: "instant",
-        layout: "focus",
-        role: "Viewer",
-        mode: "viewer",
-        entryMode: "live",
-        room: "media",
-        mediaName,
-        liveId,
-      },
-    } as any);
-
-    router.push({
-      pathname: "/more/my-church-room/messages/live-room",
-      params: {
-        source: "media",
-        liveMode: "instant",
-        layout: "focus",
-        role: "Pastor",
-        mode: "host",
-        entryMode: "live",
-        pastorUserId: actualChurchPastorUserId,
-        actualChurchPastorUserId,
-        churchPastorUserId: actualChurchPastorUserId,
-        scheduleCreatedByUserId: String(session?.userId || ""),
-        room: "media",
-        mediaName,
-        liveId,
-      },
-    } as any);
+    return;
   }
 
   const postVideoHint = !hasMediaAccount
