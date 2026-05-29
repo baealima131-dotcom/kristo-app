@@ -4032,7 +4032,7 @@ export default function LiveRoomScreen() {
   const [selectedHostTool, setSelectedHostTool] = useState("Pin topic");
   const [viewerFlowOpen, setViewerFlowOpen] = useState(false);
   const hostDrawerX = useRef(new Animated.Value(360)).current;
-  const VIEWER_FLOW_PANEL_W = 300;
+  const VIEWER_FLOW_PANEL_W = 310;
   const viewerFlowX = useRef(new Animated.Value(VIEWER_FLOW_PANEL_W)).current;
   const mediaHeaderShimmerX = useRef(new Animated.Value(0)).current;
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
@@ -4168,6 +4168,210 @@ export default function LiveRoomScreen() {
         ) : (
           <Text style={s.audiencePanelEmpty as any}>Not scheduled yet</Text>
         )}
+      </View>
+    );
+  }
+
+  function renderAudienceCurrentLiveBlock() {
+    const speaker = hostControlLiveSpeaker;
+    return (
+      <View style={s.audiencePanelBlock as any}>
+        <Text style={[s.hcSectionTitlePurple as any, { marginBottom: 8 }]}>CURRENT LIVE SPEAKER</Text>
+        {speaker?.name ? (
+          <View style={s.audiencePanelSpeakerRow as any}>
+            {renderHostControlAvatar(String(speaker.name), String(speaker.avatar || ""), 52, "#22C55E")}
+            <View style={{ flex: 1, gap: 3 }}>
+              <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+              <Text style={s.audiencePanelSpeakerTopic as any} numberOfLines={2}>{speaker.topic}</Text>
+              <Text style={s.audiencePanelSpeakerMeta as any}>
+                Slot {speaker.slot || "—"} • {speaker.countdown || "Waiting"}
+              </Text>
+            </View>
+          </View>
+        ) : (
+          <Text style={s.audiencePanelEmpty as any}>Waiting for current speaker</Text>
+        )}
+      </View>
+    );
+  }
+
+  function renderAudienceNextSpeakerBlock() {
+    const speaker = hostControlNextSpeaker;
+    return (
+      <View style={s.audiencePanelBlock as any}>
+        <Text style={[s.hcSectionTitlePurple as any, { marginBottom: 8 }]}>NEXT SPEAKER</Text>
+        {speaker?.name ? (
+          <View style={s.audiencePanelSpeakerRow as any}>
+            {renderHostControlAvatar(String(speaker.name), String(speaker.avatar || ""), 48, "#A78BFA")}
+            <View style={{ flex: 1, gap: 3 }}>
+              <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+              <Text style={s.audiencePanelSpeakerTopic as any} numberOfLines={1}>{speaker.topic}</Text>
+              <Text style={s.audiencePanelSpeakerMeta as any}>
+                {speaker.startTime} • Slot {speaker.slot || "—"}
+              </Text>
+            </View>
+            <View style={s.hcReadyPill as any}>
+              <Text style={s.hcReadyPillText as any}>{speaker.status || "WAITING"}</Text>
+            </View>
+          </View>
+        ) : (
+          <Text style={s.audiencePanelEmpty as any}>No next speaker scheduled</Text>
+        )}
+      </View>
+    );
+  }
+
+  function renderAudienceClaimedSpeakersSection(compact = false) {
+    const speakers = compact ? hostControlClaimedSpeakers.slice(0, 6) : hostControlClaimedSpeakers;
+    return (
+      <View style={s.audiencePanelSectionWrap as any}>
+        <Text style={s.hcSectionTitlePurple as any}>
+          CLAIMED SPEAKERS ({hostControlClaimedSpeakers.length})
+        </Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.hcSpeakerScroll as any}>
+          {speakers.length ? speakers.map((speaker: any) => (
+            <View key={speaker.id} style={s.hcSpeakerCard as any}>
+              {renderHostControlAvatar(speaker.name, speaker.avatar, 46, speaker.statusColor)}
+              <Text style={s.hcSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+              <Text style={s.hcSpeakerSlot as any}>Slot {speaker.slot}</Text>
+              <Text style={s.hcSpeakerTopic as any} numberOfLines={1}>{speaker.topic}</Text>
+              <Text style={[s.hcSpeakerStatus as any, { color: speaker.statusColor }]}>{speaker.status}</Text>
+            </View>
+          )) : (
+            <Text style={s.hcEmptyText as any}>No claimed speakers yet</Text>
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  function renderAudienceViewerStatsSection(compact = false) {
+    const stats = hostControlViewerStats;
+    return (
+      <View style={s.hcViewerSection as any}>
+        <View style={s.hcViewerHeader as any}>
+          <Text style={s.hcSectionTitleBlue as any}>VIEWERS</Text>
+          <View style={s.hcViewerLiveDot as any} />
+        </View>
+        <View style={s.hcViewerStatsGrid as any}>
+          <View style={s.hcViewerStatRow as any}>
+            <Text style={s.hcViewerStatLabel as any}>Total viewers</Text>
+            <Text style={s.hcViewerStatValue as any}>{stats.totalViewers}</Text>
+          </View>
+          <View style={s.hcViewerStatRow as any}>
+            <Text style={s.hcViewerStatLabel as any}>Active viewers</Text>
+            <Text style={s.hcViewerStatValue as any}>{stats.activeViewers}</Text>
+          </View>
+          <View style={s.hcViewerStatRow as any}>
+            <Text style={s.hcViewerStatLabel as any}>Members in live</Text>
+            <Text style={s.hcViewerStatValue as any}>{stats.members}</Text>
+          </View>
+          <View style={s.hcViewerStatRow as any}>
+            <Text style={s.hcViewerStatLabel as any}>Leaders in live</Text>
+            <Text style={s.hcViewerStatValue as any}>{stats.leaders}</Text>
+          </View>
+        </View>
+        {!compact ? (
+          <View style={[s.hcViewerBreakdownRow as any, { flexWrap: "wrap" }]}>
+            {[
+              { label: "TOTAL", value: stats.totalViewers },
+              { label: "ACTIVE", value: stats.activeViewers },
+              { label: "MEMBERS", value: stats.members },
+              { label: "LEADERS", value: stats.leaders },
+              { label: "GUESTS", value: stats.guests },
+            ].map((chip) => (
+              <View key={chip.label} style={[s.hcViewerChip as any, { minWidth: 52 }]}>
+                <Text style={s.hcViewerChipValue as any}>{chip.value}</Text>
+                <Text style={s.hcViewerChipLabel as any}>{chip.label}</Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <View style={s.audiencePanelStatCard as any}>
+            <Text style={s.audiencePanelBlockLabel as any}>GUESTS IN LIVE</Text>
+            <Text style={s.audiencePanelStatValue as any}>{stats.guests}</Text>
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  function renderAudienceUpcomingQueueSection() {
+    return (
+      <View style={s.hcQueueSection as any}>
+        <Text style={s.hcSectionTitleGold as any}>UPCOMING QUEUE</Text>
+        {hostControlUpcomingQueue.length ? hostControlUpcomingQueue.map((item: any, index: number) => (
+          <View key={`audience-queue-${item.slot}-${index}`} style={s.hcQueueTimelineRow as any}>
+            <View style={s.hcQueueTimelineRail as any}>
+              <View style={[s.hcQueueTimelineDot as any, item.claimed ? s.hcQueueTimelineDotClaimed : null]} />
+              {index < hostControlUpcomingQueue.length - 1 ? <View style={s.hcQueueTimelineLine as any} /> : null}
+            </View>
+            <View style={s.hcQueueTimelineBody as any}>
+              <Text style={s.hcQueueTimelineSlot as any}>Slot {item.slot}</Text>
+              <Text style={s.hcQueueTimelineTime as any}>{item.timeLabel}</Text>
+              <Text style={s.hcQueueTimelineName as any} numberOfLines={1}>
+                {item.name} • {String(item.status || "").toUpperCase()}
+              </Text>
+            </View>
+          </View>
+        )) : (
+          <Text style={s.hcEmptyText as any}>No upcoming scheduled slots</Text>
+        )}
+      </View>
+    );
+  }
+
+  function renderAudienceMicStatusSection() {
+    return (
+      <View style={s.audiencePanelMicSection as any}>
+        <Text style={s.hcSectionTitleGold as any}>MY MIC STATUS</Text>
+        <View style={s.audiencePanelMicRow as any}>
+          <Ionicons name="mic-outline" size={18} color="#38BDF8" />
+          <Text style={s.audiencePanelMicText as any}>{audienceMicStatus.micLabel}</Text>
+        </View>
+        <View style={s.audiencePanelMicRow as any}>
+          <Ionicons name="videocam-outline" size={18} color="#A78BFA" />
+          <Text style={s.audiencePanelMicText as any}>{audienceMicStatus.cameraLabel}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  function renderAudienceSafeActions() {
+    return (
+      <View style={s.audiencePanelActionsWrap as any}>
+        <Text style={s.audiencePanelBlockLabel as any}>SAFE ACTIONS</Text>
+        {openClaimableSlots.length ? (
+          <Pressable
+            onPress={() => router.push("/" as any)}
+            style={({ pressed }) => ([s.audiencePanelClaimBtn, s.audiencePanelActionBtnWide, pressed ? s.audiencePanelClaimBtnPressed : null] as any)}
+          >
+            <Ionicons name="add-circle-outline" size={16} color="#F4D06F" />
+            <Text style={s.audiencePanelClaimBtnText as any}>Go Claim Open Slot</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={() => router.push("/" as any)}
+            style={({ pressed }) => ([s.audiencePanelSecondaryBtn, pressed ? s.audiencePanelClaimBtnPressed : null] as any)}
+          >
+            <Ionicons name="home-outline" size={16} color="#DCE9FF" />
+            <Text style={s.audiencePanelSecondaryBtnText as any}>Go to Home Feed</Text>
+          </Pressable>
+        )}
+        <Pressable
+          onPress={handleSharePress}
+          style={({ pressed }) => ([s.audiencePanelSecondaryBtn, pressed ? s.audiencePanelClaimBtnPressed : null] as any)}
+        >
+          <Ionicons name="share-social-outline" size={16} color="#DCE9FF" />
+          <Text style={s.audiencePanelSecondaryBtnText as any}>Share Live</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => quitLiveRoom()}
+          style={({ pressed }) => ([s.audiencePanelCloseBtn, pressed ? s.audiencePanelCloseBtnPressed : null] as any)}
+        >
+          <Ionicons name="close-circle-outline" size={18} color="#FFFFFF" />
+          <Text style={s.audiencePanelCloseBtnText as any}>Close Live</Text>
+        </Pressable>
       </View>
     );
   }
@@ -5131,6 +5335,8 @@ export default function LiveRoomScreen() {
 
     return {
       slot: slotNum,
+      name: String(slot?.claimedByName || slot?.name || liveProfileName || "Member"),
+      avatar: String(resolveParticipantAvatarUri(slot) || slot?.avatar || slot?.claimedByAvatar || liveProfileAvatarUri || ""),
       topic: String(slot?.title || slot?.task || slot?.slotLabel || slot?.name || `Slot ${slotNum}`),
       timeLabel: startMs
         ? new Date(startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
@@ -5138,8 +5344,34 @@ export default function LiveRoomScreen() {
       status,
       statusColor: isLiveNow ? "#22C55E" : isWaiting ? "#FACC15" : "#38BDF8",
       countdown,
+      isLiveNow,
     };
-  }, [myClaimedStageSlot, currentMainStageSlot, liveCountdownLabel, liveNowMs]);
+  }, [myClaimedStageSlot, currentMainStageSlot, liveCountdownLabel, liveNowMs, liveProfileName, liveProfileAvatarUri]);
+
+  const audienceMicStatus = useMemo(() => {
+    const isLiveNow = claimedMemberPanelInfo?.status === "LIVE NOW";
+    const micReady = !!(canPublishClaimedMicNow || liveMicPublisherReady);
+    const cameraAllowed = !!userOwnsCurrentActiveSlot;
+
+    if (isLiveNow) {
+      return {
+        micLabel: micReady ? "You are live now — mic ready" : "You are live now",
+        cameraLabel: cameraAllowed ? "Camera open for your slot" : "Camera opens when your slot is live",
+      };
+    }
+
+    return {
+      micLabel: micReady ? "Mic ready" : "Mic unlocks when your slot is live",
+      cameraLabel: cameraAllowed
+        ? "Camera allowed for your active slot"
+        : "Camera opens when your slot is live",
+    };
+  }, [
+    claimedMemberPanelInfo?.status,
+    canPublishClaimedMicNow,
+    liveMicPublisherReady,
+    userOwnsCurrentActiveSlot,
+  ]);
 
   const hostControlClaimedSpeakers = useMemo(() => {
     const currentSlotNum = Number(currentMainStageSlot?.slot || 0);
@@ -5294,6 +5526,23 @@ export default function LiveRoomScreen() {
       .sort((a: any, b: any) => Number(a.startMs || 0) - Number(b.startMs || 0))
       .slice(0, 8);
   }, [runtimeScheduleSlots, liveNowMs]);
+
+  useEffect(() => {
+    if (!canSeeAudiencePanel) return;
+    console.log("KRISTO_AUDIENCE_PANEL_DATA", {
+      isClaimedMember: !!myClaimedStageSlot,
+      myClaimedSlot: Number((myClaimedStageSlot as any)?.slot || 0),
+      claimedSpeakersCount: hostControlClaimedSpeakers.length,
+      viewersTotal: hostControlViewerStats.totalViewers,
+      queueCount: hostControlUpcomingQueue.length,
+    });
+  }, [
+    canSeeAudiencePanel,
+    myClaimedStageSlot,
+    hostControlClaimedSpeakers.length,
+    hostControlViewerStats.totalViewers,
+    hostControlUpcomingQueue.length,
+  ]);
 
   const pinnedGuestOnStage = !!pinnedGuest?.id && stageGuestIds.includes(pinnedGuest.id);
   const pinnedGuestAuthorityMuted =
@@ -7668,13 +7917,13 @@ return (
                 bounces={false}
                 contentContainerStyle={[
                   s.audiencePanelScroll,
-                  { paddingBottom: Math.max(insets.bottom, 12) + 8 },
+                  { paddingBottom: Math.max(insets.bottom, 12) + 16 },
                 ]}
               >
                 {isClaimedMemberAudience && claimedMemberPanelInfo ? (
                   <>
                     <Text style={s.audiencePanelEyebrow as any}>MY SPEAKING SLOT</Text>
-                    <View style={s.audiencePanelHero as any}>
+                    <View style={[s.audiencePanelHero as any, s.audiencePanelHeroLive as any]}>
                       <View style={s.audiencePanelHeroTop as any}>
                         <Text style={s.audiencePanelHeroSlot as any}>Slot {claimedMemberPanelInfo.slot}</Text>
                         <View
@@ -7688,31 +7937,68 @@ return (
                           </Text>
                         </View>
                       </View>
-                      <Text style={s.audiencePanelHeroTopic as any} numberOfLines={2}>
-                        {claimedMemberPanelInfo.topic}
-                      </Text>
-                      <Text style={s.audiencePanelHeroMeta as any}>
-                        {claimedMemberPanelInfo.timeLabel} • {claimedMemberPanelInfo.countdown}
-                      </Text>
+                      <View style={s.audiencePanelHeroBody as any}>
+                        {renderHostControlAvatar(
+                          claimedMemberPanelInfo.name,
+                          claimedMemberPanelInfo.avatar,
+                          56,
+                          claimedMemberPanelInfo.statusColor
+                        )}
+                        <View style={{ flex: 1, gap: 4 }}>
+                          <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>
+                            {claimedMemberPanelInfo.name}
+                          </Text>
+                          <Text style={s.audiencePanelHeroTopic as any} numberOfLines={2}>
+                            {claimedMemberPanelInfo.topic}
+                          </Text>
+                          <Text style={s.audiencePanelHeroMeta as any}>
+                            {claimedMemberPanelInfo.timeLabel} • {claimedMemberPanelInfo.countdown}
+                          </Text>
+                        </View>
+                      </View>
                     </View>
 
-                    {renderAudienceSpeakerBlock("CURRENT SPEAKER", hostControlLiveSpeaker, "#22C55E")}
-                    {renderAudienceSpeakerBlock("NEXT SPEAKER", hostControlNextSpeaker, "#A78BFA")}
+                    {renderAudienceCurrentLiveBlock()}
+                    {renderAudienceNextSpeakerBlock()}
+                    {renderAudienceClaimedSpeakersSection(false)}
+                    {renderAudienceViewerStatsSection(false)}
+                    {renderAudienceUpcomingQueueSection()}
+                    {renderAudienceMicStatusSection()}
+                    {renderAudienceSafeActions()}
                   </>
                 ) : (
                   <>
                     <Text style={s.audiencePanelEyebrow as any}>VIEWER PANEL</Text>
                     <Text style={s.audiencePanelTitle as any} numberOfLines={2}>{rawTitle}</Text>
 
-                    {renderAudienceSpeakerBlock("CURRENT SPEAKER", hostControlLiveSpeaker, "#22C55E")}
-                    {renderAudienceSpeakerBlock("NEXT SPEAKER", hostControlNextSpeaker, "#A78BFA")}
+                    {hostControlLiveSpeaker ? (
+                      <View style={[s.audiencePanelHero as any, { borderColor: "rgba(34,197,94,0.42)" }]}>
+                        <Text style={s.audiencePanelBlockLabel as any}>LIVE NOW</Text>
+                        <View style={s.audiencePanelHeroBody as any}>
+                          {renderHostControlAvatar(
+                            hostControlLiveSpeaker.name,
+                            hostControlLiveSpeaker.avatar,
+                            52,
+                            "#22C55E"
+                          )}
+                          <View style={{ flex: 1, gap: 3 }}>
+                            <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>
+                              {hostControlLiveSpeaker.name}
+                            </Text>
+                            <Text style={s.audiencePanelSpeakerTopic as any} numberOfLines={2}>
+                              {hostControlLiveSpeaker.topic}
+                            </Text>
+                            <Text style={s.audiencePanelSpeakerMeta as any}>
+                              Slot {hostControlLiveSpeaker.slot || "—"} • {hostControlLiveSpeaker.countdown}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                    ) : null}
 
-                    <View style={s.audiencePanelStatCard as any}>
-                      <Text style={s.audiencePanelBlockLabel as any}>TOTAL VIEWERS</Text>
-                      <Text style={s.audiencePanelStatValue as any}>
-                        {hostControlViewerStats.totalViewers}
-                      </Text>
-                    </View>
+                    {renderAudienceNextSpeakerBlock()}
+                    {renderAudienceClaimedSpeakersSection(true)}
+                    {renderAudienceViewerStatsSection(true)}
 
                     {openClaimableSlots.length ? (
                       <View style={s.audiencePanelBlock as any}>
@@ -7735,19 +8021,10 @@ return (
                         </View>
                       </View>
                     ) : null}
+
+                    {renderAudienceSafeActions()}
                   </>
                 )}
-
-                <Pressable
-                  onPress={() => quitLiveRoom()}
-                  style={({ pressed }) => ([
-                    s.audiencePanelCloseBtn,
-                    pressed ? s.audiencePanelCloseBtnPressed : null,
-                  ] as any)}
-                >
-                  <Ionicons name="close-circle-outline" size={18} color="#FFFFFF" />
-                  <Text style={s.audiencePanelCloseBtnText as any}>Close Live</Text>
-                </Pressable>
               </ScrollView>
             </Animated.View>
             ) : null}
@@ -9281,10 +9558,10 @@ const s: any = StyleSheet.create({
   },
   viewerFlowPanel: {
   position: "absolute",
-  right: 18,
-  bottom: 106,
-  width: 300,
-  maxHeight: 460,
+  right: 14,
+  top: 92,
+  bottom: 92,
+  width: 310,
   paddingTop: 10,
   paddingHorizontal: 14,
   paddingBottom: 12,
@@ -9450,6 +9727,16 @@ const s: any = StyleSheet.create({
     borderColor: "rgba(167,139,250,0.35)",
     gap: 6,
   },
+  audiencePanelHeroLive: {
+    borderColor: "rgba(167,139,250,0.45)",
+    backgroundColor: "rgba(14,36,64,0.94)",
+  },
+  audiencePanelHeroBody: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 4,
+  },
   audiencePanelHeroTop: {
     flexDirection: "row",
     alignItems: "center",
@@ -9578,6 +9865,56 @@ const s: any = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "900",
+  },
+  audiencePanelSectionWrap: {
+    gap: 8,
+  },
+  audiencePanelMicSection: {
+    borderRadius: 18,
+    padding: 12,
+    backgroundColor: "rgba(14,36,64,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.32)",
+    gap: 8,
+  },
+  audiencePanelMicRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  audiencePanelMicText: {
+    flex: 1,
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 17,
+  },
+  audiencePanelActionsWrap: {
+    gap: 10,
+    marginTop: 4,
+  },
+  audiencePanelActionBtnWide: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    width: "100%",
+  },
+  audiencePanelSecondaryBtn: {
+    height: 44,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  audiencePanelSecondaryBtnText: {
+    color: "#DCE9FF",
+    fontSize: 13,
+    fontWeight: "800",
   },
 
   controlsWrap: {
