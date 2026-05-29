@@ -56,6 +56,11 @@ import {
   resolveFeedItemAvatar,
 } from "@/src/lib/homeFeedStore";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import {
+  hydrateChurchFollowState,
+  subscribeChurchFollows,
+  toggleChurchFollow,
+} from "@/src/lib/churchFollowStore";
 import { loadProfileDraft } from "@/src/lib/profileStore";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -107,7 +112,7 @@ const HOME_FEED_OVERLAY_BOTTOM = 80;
 const HOME_FEED_VIDEO_OVERLAY_BOTTOM = 24;
 const HOME_FEED_ACTIONS_BOTTOM = 84;
 const VIDEO_META_PANEL_MAX_HEIGHT = 148;
-const VIDEO_IDENTITY_ROW_HEIGHT = 66;
+const VIDEO_IDENTITY_ROW_HEIGHT = 92;
 const VIDEO_TITLE_SLOT_HEIGHT = 26;
 const VIDEO_CAPTION_SLOT_HEIGHT = 44;
 
@@ -1103,6 +1108,38 @@ const noMediaPost =
     "Church Media"
   ).trim();
 
+  const displayChurchName = String(
+    (item as any)?.churchName ||
+    (item as any)?.churchLabel ||
+    (item as any)?.church?.name ||
+    ""
+  ).trim();
+
+  const displayChurchId = String(
+    (item as any)?.churchId ||
+    (item as any)?.churchCode ||
+    (item as any)?.church?.id ||
+    ""
+  ).trim();
+
+  const displayMediaName = String(
+    (item as any)?.mediaName ||
+    (item as any)?.actorLabel ||
+    ""
+  ).trim();
+
+  const displayMinistryId = String(
+    (item as any)?.ministryId ||
+    (item as any)?.roomId ||
+    ""
+  ).trim();
+
+  const churchHasLive = Boolean(
+    isLiveNow ||
+    (item as any)?.churchIsLive ||
+    (item as any)?.hasActiveLive
+  );
+
   const isTestimony = postSource.includes("testimony");
   const isCounsel = postSource.includes("counsel");
   const isPrayer = postSource.includes("prayer");
@@ -1135,12 +1172,14 @@ const noMediaPost =
   ).trim();
 
   const feedHeadline = isMediaPost
-    ? String((item as any)?.churchLabel || "MY CHURCH").trim()
+    ? (displayChurchName || displayMediaName || "Church")
     : categoryTitle;
 
   const feedSubline = isMediaPost
-    ? displayChurchMediaName
+    ? displayChurchId
     : displayAuthorName;
+
+  const feedDepartmentLabel = isMediaPost ? displayMediaName : "";
   const feedHeadlineColor = isMediaPost ? "#F7D36A" : categoryAccent;
 
   const displayVideoTitle = String(item.title || (item as any)?.postTitle || "").trim();
@@ -1166,8 +1205,165 @@ const noMediaPost =
     isAnnouncement ? "rgba(255,138,61,0.13)" :
     "rgba(255,255,255,0.08)";
 
-  const mediaInitial = feedSubline.slice(0, 1).toUpperCase() || "M";
-  const mediaName = feedSubline;
+  const mediaInitial = (
+    isMediaPost
+      ? (displayChurchName || displayMediaName || feedHeadline)
+      : feedSubline
+  ).slice(0, 1).toUpperCase() || "M";
+  const mediaName = isMediaPost ? (displayMediaName || displayChurchMediaName) : feedSubline;
+
+  const churchAvatarUri = useMemo(() => {
+    const raw = String(
+      (item as any)?.churchAvatarUri ||
+      (item as any)?.churchAvatarUrl ||
+      (item as any)?.church?.avatarUri ||
+      (item as any)?.churchAvatar ||
+      ""
+    ).trim();
+    return raw ? mediaUrl(raw) : feedAvatar.churchAvatarUri || "";
+  }, [item, feedAvatar.churchAvatarUri]);
+
+  const identityAvatarUri = isMediaPost && churchAvatarUri ? churchAvatarUri : actorAvatarUri;
+  const viewerChurchId = String(getSessionSync()?.churchId || "").trim();
+
+  const [churchFollowing, setChurchFollowing] = useState(false);
+  const [followBusy, setFollowBusy] = useState(false);
+  const liveBadgePulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!isMediaPost || !displayChurchId) return;
+    let alive = true;
+    void hydrateChurchFollowState(displayChurchId, viewerChurchId).then((state) => {
+      if (!alive || !state) return;
+      setChurchFollowing(state.following);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [displayChurchId, isMediaPost, item.id]);
+
+  useEffect(() => {
+    if (!isMediaPost || !displayChurchId) return;
+    return subscribeChurchFollows(() => {
+      void hydrateChurchFollowState(displayChurchId, viewerChurchId).then((state) => {
+        if (state) setChurchFollowing(state.following);
+      });
+    });
+  }, [displayChurchId, isMediaPost]);
+
+  useEffect(() => {
+    if (!churchHasLive || !isMediaPost) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(liveBadgePulse, {
+          toValue: 1,
+          duration: 900,
+          useNativeDriver: true,
+        }),
+        Animated.timing(liveBadgePulse, {
+          toValue: 0,
+          duration: 900,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [churchHasLive, isMediaPost, liveBadgePulse]);
+
+  const handleFollowChurchPress = useCallback(async () => {
+    if (!displayChurchId || followBusy) return;
+    setFollowBusy(true);
+    try {
+      const next = await toggleChurchFollow(displayChurchId, viewerChurchId);
+      if (next) setChurchFollowing(next.following);
+      console.log("KRISTO_FEED_FOLLOW_CHURCH_PRESS", {
+        churchId: displayChurchId,
+        churchName: displayChurchName || displayMediaName,
+        viewerChurchId,
+        following: next?.following,
+      });
+    } finally {
+      setFollowBusy(false);
+    }
+  }, [
+    displayChurchId,
+    displayChurchName,
+    displayMediaName,
+    followBusy,
+    viewerChurchId,
+  ]);
+
+  const handleOpenMediaMinistry = useCallback(() => {
+    if (!displayMinistryId) {
+      Alert.alert(
+        "Ministry profile unavailable",
+        "This media department does not have a linked ministry profile yet."
+      );
+      return;
+    }
+
+    router.push({
+      pathname: "/church/ministries/[ministryId]",
+      params: {
+        ministryId: displayMinistryId,
+        churchId: displayChurchId,
+        source: "feed",
+        mode: "publicPreview",
+        mediaName: displayMediaName,
+        churchName: displayChurchName || displayMediaName,
+      },
+    } as any);
+  }, [
+    router,
+    displayMinistryId,
+    displayChurchId,
+    displayMediaName,
+    displayChurchName,
+  ]);
+
+  const handleViewChurchPress = useCallback(() => {
+    const session = getSessionSync() as any;
+    const currentViewerChurchId = String(session?.churchId || "").trim();
+    const churchId = displayChurchId;
+    const churchName = displayChurchName || displayMediaName || "Church";
+    const sameChurch = Boolean(
+      currentViewerChurchId && churchId && currentViewerChurchId === churchId
+    );
+
+    console.log("KRISTO_FEED_VIEW_CHURCH_PRESS", {
+      churchId,
+      churchName,
+      viewerChurchId: currentViewerChurchId,
+      isSameChurch: sameChurch,
+    });
+
+    if (sameChurch) {
+      router.push({
+        pathname: "/church/overview",
+        params: { refreshAt: String(Date.now()) },
+      } as any);
+      return;
+    }
+
+    if (!churchId) {
+      Alert.alert("Church unavailable", "This post does not include a church ID yet.");
+      return;
+    }
+
+    router.push({
+      pathname: "/church/overview",
+      params: {
+        churchId,
+        churchName,
+        source: "feed",
+        mode: "publicPreview",
+        invitePreview: "1",
+        mediaTeamName: displayMediaName || undefined,
+        viewerChurchId: currentViewerChurchId || undefined,
+      },
+    } as any);
+  }, [router, displayChurchId, displayChurchName, displayMediaName]);
 
   const [optimisticClaim, setOptimisticClaim] = useState<any>(null);
   const claimStartedRef = useRef(false);
@@ -2645,23 +2841,94 @@ const noMediaPost =
               <View style={[s.identityRow, s.videoIdentityRow]}>
                 <FeedMediaAvatar
                   key={`video-meta-avatar-${item.id}`}
-                  uri={actorAvatarUri}
+                  uri={identityAvatarUri}
                   initial={mediaInitial}
                   live={Boolean(isLiveNow || (item as any)?.isLiveNow)}
                 />
 
                 <View style={s.videoIdentityTextWrap}>
-                  <Text
-                    style={[s.videoChurchPrimary, s.videoMetaText]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.82}
-                  >
-                    {feedHeadline}
-                  </Text>
-                  <Text style={[s.videoMediaSecondary, s.videoMetaText]} numberOfLines={1}>
-                    {feedSubline}
-                  </Text>
+                  <View style={s.videoChurchNameRow}>
+                    <Text
+                      style={[s.videoChurchPrimary, s.videoMetaText, s.videoChurchNameFlex]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.82}
+                    >
+                      {feedHeadline}
+                    </Text>
+                    {isMediaPost && churchHasLive ? (
+                      <Animated.View
+                        style={[
+                          s.videoLiveBadge,
+                          {
+                            opacity: liveBadgePulse.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [0.82, 1],
+                            }),
+                          },
+                        ]}
+                      >
+                        <Text style={s.videoLiveBadgeText}>🔴 LIVE NOW</Text>
+                      </Animated.View>
+                    ) : null}
+                  </View>
+
+                  {isMediaPost && displayChurchId ? (
+                    <Text style={[s.videoChurchIdLine, s.videoMetaText]} numberOfLines={1}>
+                      {displayChurchId}
+                    </Text>
+                  ) : null}
+
+                  {isMediaPost ? (
+                    <View style={s.videoChurchActionsRow}>
+                      <Pressable
+                        onPress={handleViewChurchPress}
+                        style={({ pressed }) => [
+                          s.videoViewChurchBtn,
+                          pressed && { opacity: 0.78 },
+                        ]}
+                        hitSlop={8}
+                      >
+                        <Text style={s.videoViewChurchBtnText}>View Church</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={handleFollowChurchPress}
+                        disabled={followBusy || !displayChurchId}
+                        style={({ pressed }) => [
+                          s.videoFollowChurchBtn,
+                          churchFollowing && s.videoFollowChurchBtnActive,
+                          (followBusy || !displayChurchId) && { opacity: 0.55 },
+                          pressed && { opacity: 0.78 },
+                        ]}
+                        hitSlop={8}
+                      >
+                        <Text
+                          style={[
+                            s.videoFollowChurchBtnText,
+                            churchFollowing && s.videoFollowChurchBtnTextActive,
+                          ]}
+                        >
+                          {churchFollowing ? "Following" : "Follow"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+
+                  {isMediaPost && feedDepartmentLabel ? (
+                    <Pressable
+                      onPress={handleOpenMediaMinistry}
+                      style={({ pressed }) => [pressed && { opacity: 0.78 }]}
+                      hitSlop={8}
+                    >
+                      <Text style={[s.videoDepartmentLabel, s.videoDepartmentLink]} numberOfLines={1}>
+                        {feedDepartmentLabel}
+                      </Text>
+                    </Pressable>
+                  ) : !isMediaPost ? (
+                    <Text style={[s.videoMediaSecondary, s.videoMetaText]} numberOfLines={1}>
+                      {feedSubline}
+                    </Text>
+                  ) : null}
                 </View>
               </View>
 
@@ -3592,6 +3859,7 @@ export default function FeedScreen() {
             mediaName: String(item.mediaName || item.actorLabel || "Church Media"),
             churchName: String(item.churchName || item.churchLabel || "MY CHURCH"),
             churchId: String(item.churchId || session?.churchId || ""),
+            ministryId: String(item.ministryId || item.roomId || ""),
             createdBy: String(item.createdBy || ""),
             ...buildLiveRoomAuthorityParams(item as any),
             mediaOwnerPastorUserId: buildLiveRoomAuthorityParams(item as any).actualChurchPastorUserId,
@@ -5089,7 +5357,7 @@ const s: any = StyleSheet.create({
   videoMetaPanel: {
     alignSelf: "flex-start",
     maxWidth: "78%",
-    maxHeight: VIDEO_META_PANEL_MAX_HEIGHT + 36,
+    maxHeight: VIDEO_META_PANEL_MAX_HEIGHT + 56,
     overflow: "hidden",
   },
 
@@ -5112,6 +5380,105 @@ const s: any = StyleSheet.create({
     lineHeight: 23,
     fontWeight: "900",
     letterSpacing: 0.25,
+  },
+
+  videoChurchNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 0,
+  },
+
+  videoChurchNameFlex: {
+    flexShrink: 1,
+    minWidth: 0,
+  },
+
+  videoLiveBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: "rgba(255,59,92,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(255,59,92,0.42)",
+  },
+
+  videoLiveBadgeText: {
+    color: "#FF6B84",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.35,
+  },
+
+  videoChurchActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 5,
+    flexWrap: "wrap",
+  },
+
+  videoChurchIdLine: {
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: "800",
+    letterSpacing: 0.55,
+  },
+
+  videoViewChurchBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.34)",
+    backgroundColor: "rgba(255,255,255,0.10)",
+  },
+
+  videoFollowChurchBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(247,211,106,0.34)",
+    backgroundColor: "rgba(247,211,106,0.08)",
+  },
+
+  videoFollowChurchBtnActive: {
+    borderColor: "rgba(247,211,106,0.58)",
+    backgroundColor: "rgba(247,211,106,0.16)",
+  },
+
+  videoFollowChurchBtnText: {
+    color: "rgba(247,211,106,0.92)",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.35,
+  },
+
+  videoFollowChurchBtnTextActive: {
+    color: "#F7D36A",
+  },
+
+  videoViewChurchBtnText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.35,
+  },
+
+  videoDepartmentLabel: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: "600",
+    letterSpacing: 0.12,
+    marginTop: 4,
+  },
+
+  videoDepartmentLink: {
+    color: "rgba(247,211,106,0.88)",
+    textDecorationLine: "underline",
   },
 
   videoMediaSecondary: {

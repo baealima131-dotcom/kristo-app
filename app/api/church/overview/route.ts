@@ -7,6 +7,10 @@ import { getChurchById } from "@/app/api/_lib/churches";
 import { listNotifications } from "@/app/api/_lib/notifications";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { readJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  countChurchFollowers,
+  countMutualFollowersFromChurch,
+} from "@/app/api/_lib/churchFollows";
 
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
@@ -41,6 +45,14 @@ export async function GET(req: NextRequest) {
       return json({ ok: false, error: "churchId missing" }, { status: 400 });
     }
 
+    const publicPreview = url.searchParams.get("publicPreview") === "1";
+    const mediaTeamNameParam = String(url.searchParams.get("mediaTeamName") || "").trim();
+    const viewerChurchId = String(
+      url.searchParams.get("viewerChurchId") ||
+      req.headers.get("x-kristo-viewer-church-id") ||
+      ""
+    ).trim();
+
     const activeMembers = await getMembershipsForChurch(churchId, "Active");
     const churchProfile = await getChurchById(churchId);
 
@@ -63,9 +75,11 @@ export async function GET(req: NextRequest) {
     const ministriesAll = await readJsonFile<any[]>("ministries.json", []);
     const ministryMembersAll = await readJsonFile<any[]>("ministry-members.json", []);
 
-    const ministriesCount = Array.isArray(ministriesAll)
-      ? ministriesAll.filter((m: any) => String(m?.churchId || "") === churchId).length
-      : 0;
+    const churchMinistries = Array.isArray(ministriesAll)
+      ? ministriesAll.filter((m: any) => String(m?.churchId || "") === churchId)
+      : [];
+
+    const ministriesCount = churchMinistries.length;
 
     const ministryMembersCount = Array.isArray(ministryMembersAll)
       ? new Set(
@@ -76,6 +90,46 @@ export async function GET(req: NextRequest) {
         ).size
       : 0;
 
+    const mediaTeamMinistry = churchMinistries.find((m: any) => Boolean(m?.mediaAccess));
+    const mediaTeamName =
+      mediaTeamNameParam ||
+      String(mediaTeamMinistry?.name || "").trim();
+
+    const avatarUri = String(
+      (churchProfile as any)?.avatarUri ||
+      (churchProfile as any)?.avatarUrl ||
+      (churchProfile as any)?.profileImage ||
+      (churchProfile as any)?.profilePhoto ||
+      (churchProfile as any)?.photo ||
+      (churchProfile as any)?.image ||
+      ""
+    ).trim();
+
+    const coverUri = String(
+      (churchProfile as any)?.coverUri ||
+      (churchProfile as any)?.coverImage ||
+      (churchProfile as any)?.bannerUri ||
+      avatarUri
+    ).trim();
+
+    const [followerCount, mutualFollowersFromViewerChurch] = await Promise.all([
+      countChurchFollowers(churchId),
+      viewerChurchId && viewerChurchId !== churchId
+        ? countMutualFollowersFromChurch({ targetChurchId: churchId, viewerChurchId })
+        : Promise.resolve(0),
+    ]);
+
+    const collaboratingMinistriesCount =
+      viewerChurchId && viewerChurchId !== churchId
+        ? (Array.isArray(ministriesAll)
+            ? ministriesAll.filter(
+                (m: any) =>
+                  String(m?.churchId || "") === viewerChurchId &&
+                  String(m?.partnerChurchId || "") === churchId
+              ).length
+            : 0)
+        : 0;
+
     return json({
       ok: true,
       data: {
@@ -84,28 +138,29 @@ export async function GET(req: NextRequest) {
           userId: String(req.headers.get("x-kristo-user-id") || "preview-user"),
           role: "Member",
           preview: true,
+          publicPreview,
         },
         profile: {
           id: churchId,
           name: churchProfile?.name || churchId,
-          address: churchProfile?.address || "",
-          phone: churchProfile?.phone || "",
-          pastorName,
-          avatarUri: String(
-            (churchProfile as any)?.avatarUri ||
-            (churchProfile as any)?.avatarUrl ||
-            (churchProfile as any)?.profileImage ||
-            (churchProfile as any)?.profilePhoto ||
-            (churchProfile as any)?.photo ||
-            (churchProfile as any)?.image ||
-            ""
-          ).trim(),
+          address: publicPreview ? "" : (churchProfile?.address || ""),
+          phone: publicPreview ? "" : (churchProfile?.phone || ""),
+          pastorName: publicPreview ? "" : pastorName,
+          avatarUri,
+          coverUri,
         },
         stats: {
           activeMembers: activeMembers.length,
           ministries: ministriesCount,
           ministryMembers: ministryMembersCount,
           unreadNotifications: 0,
+        },
+        publicDiscovery: {
+          followerCount,
+          mutualFollowersFromViewerChurch,
+          collaboratingMinistriesCount,
+          mediaTeamName,
+          coverUri,
         },
         generatedAt: new Date().toISOString(),
       },
