@@ -104,7 +104,7 @@ const FEED_APPEND_PREFETCH_AHEAD = 6;
 const FEED_APPEND_DELAY_MS = 100;
 const HOME_FEED_BOTTOM_OFFSET = 70;
 const HOME_FEED_OVERLAY_BOTTOM = 80;
-const HOME_FEED_VIDEO_OVERLAY_BOTTOM = 50;
+const HOME_FEED_VIDEO_OVERLAY_BOTTOM = 24;
 const HOME_FEED_ACTIONS_BOTTOM = 84;
 const VIDEO_META_PANEL_MAX_HEIGHT = 148;
 const VIDEO_IDENTITY_ROW_HEIGHT = 66;
@@ -2652,15 +2652,15 @@ const noMediaPost =
 
                 <View style={s.videoIdentityTextWrap}>
                   <Text
-                    style={[s.identityRole, s.videoMetaText, { color: feedHeadlineColor }]}
+                    style={[s.videoChurchPrimary, s.videoMetaText]}
                     numberOfLines={1}
                     adjustsFontSizeToFit
-                    minimumFontScale={0.78}
+                    minimumFontScale={0.82}
                   >
-                    {feedSubline}
-                  </Text>
-                  <Text style={[s.identityChurch, s.videoMetaText]} numberOfLines={1}>
                     {feedHeadline}
+                  </Text>
+                  <Text style={[s.videoMediaSecondary, s.videoMetaText]} numberOfLines={1}>
+                    {feedSubline}
                   </Text>
                 </View>
               </View>
@@ -5039,7 +5039,7 @@ const s: any = StyleSheet.create({
 
   bottomVideoMeta: {
     bottom: HOME_FEED_VIDEO_OVERLAY_BOTTOM,
-    paddingBottom: 2,
+    paddingBottom: 6,
   },
 
   meta: {
@@ -5094,21 +5094,40 @@ const s: any = StyleSheet.create({
   },
 
   videoIdentityRow: {
-    height: VIDEO_IDENTITY_ROW_HEIGHT,
-    marginBottom: 6,
+    minHeight: VIDEO_IDENTITY_ROW_HEIGHT,
+    marginBottom: 14,
+    alignItems: "flex-end",
   },
 
   videoIdentityTextWrap: {
     flexShrink: 1,
     minWidth: 0,
-    justifyContent: "center",
+    justifyContent: "flex-end",
+    gap: 3,
+  },
+
+  videoChurchPrimary: {
+    color: "#FFFFFF",
+    fontSize: 19,
+    lineHeight: 23,
+    fontWeight: "900",
+    letterSpacing: 0.25,
+  },
+
+  videoMediaSecondary: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: "600",
+    letterSpacing: 0.12,
   },
 
   videoTitleSlot: {
     height: VIDEO_TITLE_SLOT_HEIGHT,
     justifyContent: "center",
     overflow: "hidden",
-    marginBottom: 4,
+    marginTop: 4,
+    marginBottom: 6,
   },
 
   videoCaptionSlot: {
