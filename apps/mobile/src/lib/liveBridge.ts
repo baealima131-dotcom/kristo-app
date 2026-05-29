@@ -1,4 +1,5 @@
 import { apiPatch } from "@/src/lib/kristoApi";
+import { parseMediaHostIds } from "@/src/lib/liveMediaAuthority";
 
 export type LiveRequestPolicy = "auto" | "approval" | "invite" | "members" | "locked";
 
@@ -15,7 +16,102 @@ export type LiveJoinRequest = {
   seatType?: "viewer" | "moderator" | "mic-only" | "camera-mic" | "big-screen";
 };
 
+export type LiveJoinSanitizeOpts = {
+  currentUserId?: string;
+  actualChurchPastorUserId?: string;
+  scheduleCreatedByUserId?: string;
+  mediaHostIds?: string[] | string;
+  hostDisplayNames?: string[];
+  canManageLive?: boolean;
+  isActualChurchPastor?: boolean;
+  isTrustedMediaHost?: boolean;
+};
+
 type LiveSeatType = LiveJoinRequest["seatType"];
+
+function normalizePersonName(value: unknown) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function buildHostUserIdSet(opts: LiveJoinSanitizeOpts) {
+  const ids = new Set<string>();
+  const pastorId = String(opts.actualChurchPastorUserId || "").trim();
+  const currentUserId = String(opts.currentUserId || "").trim();
+
+  if (pastorId) ids.add(pastorId);
+  for (const hostId of parseMediaHostIds(opts.mediaHostIds)) {
+    if (hostId) ids.add(hostId);
+  }
+
+  if (
+    currentUserId &&
+    (opts.isActualChurchPastor || opts.isTrustedMediaHost || opts.canManageLive)
+  ) {
+    ids.add(currentUserId);
+  }
+
+  return ids;
+}
+
+function buildHostNameSet(opts: LiveJoinSanitizeOpts) {
+  const names = new Set<string>();
+  for (const raw of opts.hostDisplayNames || []) {
+    const normalized = normalizePersonName(raw);
+    if (normalized) names.add(normalized);
+  }
+  return names;
+}
+
+/** True when a join/waiting row must never appear in guest request UI. */
+export function isHostManagedJoinRequest(
+  req: Record<string, any> | null | undefined,
+  opts: LiveJoinSanitizeOpts
+): boolean {
+  const row = req || {};
+  const userId = String(row.userId || "").trim();
+  const hostUserIds = buildHostUserIdSet(opts);
+
+  if (userId && hostUserIds.has(userId)) {
+    return true;
+  }
+
+  const reqName = normalizePersonName(row.name);
+  if (!reqName) return false;
+
+  const hostNames = buildHostNameSet(opts);
+  if (hostNames.has(reqName)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function sanitizeLiveJoinRequests(
+  requests: Record<string, any> | null | undefined,
+  opts: LiveJoinSanitizeOpts
+): Record<string, any> {
+  const out: Record<string, any> = { ...(requests || {}) };
+
+  for (const [slot, req] of Object.entries(out)) {
+    if (!isHostManagedJoinRequest(req as any, opts)) continue;
+
+    console.log("KRISTO_NO_FAKE_PASTOR_REQUEST", {
+      slot: Number(slot),
+      userId: String((req as any)?.userId || ""),
+      name: String((req as any)?.name || ""),
+      actualChurchPastorUserId: String(opts.actualChurchPastorUserId || ""),
+      mediaHostIds: parseMediaHostIds(opts.mediaHostIds),
+      matchedByUserId: !!String((req as any)?.userId || "").trim(),
+      matchedByName: !!String((req as any)?.name || "").trim(),
+    });
+    delete out[slot];
+  }
+
+  return out;
+}
 
 function resolveSeatType(slot: number): Exclude<LiveSeatType, undefined> {
   if (slot === 1) return "big-screen";
@@ -63,7 +159,23 @@ export function publishLivePolicy(liveId: string, policy: LiveRequestPolicy) {
   });
 }
 
-export function publishLiveJoin(liveId: string, slot: number, req: LiveJoinRequest) {
+export function publishLiveJoin(
+  liveId: string,
+  slot: number,
+  req: LiveJoinRequest,
+  sanitizeOpts?: LiveJoinSanitizeOpts
+) {
+  if (sanitizeOpts && isHostManagedJoinRequest(req, sanitizeOpts)) {
+    console.log("KRISTO_NO_FAKE_PASTOR_REQUEST", {
+      context: "publishLiveJoin-blocked",
+      liveId,
+      slot,
+      userId: String(req?.userId || ""),
+      name: String(req?.name || ""),
+    });
+    return;
+  }
+
   const bridge = getLiveJoinBridge();
   const seatType = resolveSeatType(slot);
 
@@ -241,7 +353,21 @@ export async function syncClaimedMemberToLiveRoom(opts: {
   avatar: string;
   role?: string;
   pushLiveAction: (action: string, body: Record<string, any>) => Promise<any>;
+  sanitizeOpts?: LiveJoinSanitizeOpts;
 }) {
+  if (opts.sanitizeOpts && isHostManagedJoinRequest(
+    { userId: opts.userId, name: opts.name },
+    opts.sanitizeOpts
+  )) {
+    console.log("KRISTO_NO_FAKE_PASTOR_REQUEST", {
+      context: "skip-sync-claimed-member",
+      liveId: opts.liveId,
+      userId: opts.userId,
+      name: opts.name,
+    });
+    return null;
+  }
+
   const joinedAt = new Date().toISOString();
 
   console.log("KRISTO_CLAIM_ROOM_SYNC_START", {
@@ -260,7 +386,7 @@ export async function syncClaimedMemberToLiveRoom(opts: {
     userId: opts.userId,
     role: opts.role || "Member",
     joinedAt,
-  });
+  }, opts.sanitizeOpts);
 
   try {
     const res = await opts.pushLiveAction("claim-schedule-request", {

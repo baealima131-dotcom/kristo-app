@@ -43,7 +43,10 @@ import {
   publishLivePolicy,
   subscribeLiveJoin,
   syncClaimedMemberToLiveRoom,
+  sanitizeLiveJoinRequests,
+  isHostManagedJoinRequest,
   type LiveJoinRequest,
+  type LiveJoinSanitizeOpts,
   type LiveRequestPolicy,
 } from "@/src/lib/liveBridge";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -75,6 +78,7 @@ import {
   normalizeLiveScheduleSlots,
   parseLiveAllScheduleSlotsJson,
   resolveLiveScheduleFeedId,
+  resolveActiveSlotSpeaker,
   cleanFeedLabel,
 } from "@/src/lib/scheduleSlotUtils";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
@@ -1901,6 +1905,15 @@ export default function LiveRoomScreen() {
   const mediaHostIds = liveMediaAuthority.mediaHostIds;
   const isActualChurchPastor = liveMediaAuthority.isActualChurchPastor;
   const isTrustedMediaHost = liveMediaAuthority.isTrustedMediaHost;
+  const isActualChurchPastorRef = useRef(false);
+  const isTrustedMediaHostRef = useRef(false);
+  const actualChurchPastorUserIdRef = useRef("");
+
+  useEffect(() => {
+    isActualChurchPastorRef.current = isActualChurchPastor;
+    isTrustedMediaHostRef.current = isTrustedMediaHost;
+    actualChurchPastorUserIdRef.current = actualChurchPastorUserId;
+  }, [isActualChurchPastor, isTrustedMediaHost, actualChurchPastorUserId]);
 
   const isChurchLiveControlRoute =
     String(assignmentId || "").trim() === "church-media-room" ||
@@ -1937,6 +1950,49 @@ export default function LiveRoomScreen() {
     isMinistryLiveRoute &&
     routeCanPublishEarly &&
     (actualChurchPastorUserId === currentUserId || isTrustedMediaHost);
+
+  const canManageLive =
+    isActualChurchPastor ||
+    isTrustedMediaHost ||
+    isChurchLiveControlHost ||
+    (isMediaInstantLive && isMinistryLiveHost);
+
+  const canManageLiveRef = useRef(canManageLive);
+  canManageLiveRef.current = canManageLive;
+
+  const liveJoinSanitizeOpts = useMemo<LiveJoinSanitizeOpts>(
+    () => ({
+      currentUserId: String(session?.userId || ""),
+      actualChurchPastorUserId,
+      scheduleCreatedByUserId,
+      mediaHostIds,
+      hostDisplayNames: [
+        String((session as any)?.displayName || ""),
+        String((session as any)?.fullName || ""),
+        String((session as any)?.name || ""),
+        String((params as any)?.pastorName || ""),
+        String((params as any)?.actorLabel || ""),
+        String((params as any)?.claimedByName || ""),
+        String((params as any)?.liveClaimName || ""),
+        String(backendChurchLive?.pastorName || ""),
+      ].filter(Boolean),
+      canManageLive,
+      isActualChurchPastor,
+      isTrustedMediaHost,
+    }),
+    [
+      session?.userId,
+      session,
+      actualChurchPastorUserId,
+      scheduleCreatedByUserId,
+      mediaHostIds,
+      params,
+      backendChurchLive,
+      canManageLive,
+      isActualChurchPastor,
+      isTrustedMediaHost,
+    ]
+  );
 
   const isPastorLiveOwner = isMediaOwnerHost || isMinistryLiveHost;
 
@@ -1994,18 +2050,6 @@ export default function LiveRoomScreen() {
       }),
     [params.mediaName, (params as any).churchName, (params as any).churchLabel, params.title, rawTitle, (params as any).actorLabel, session]
   );
-
-  const liveHeaderSubLine = useMemo(() => {
-    const churchLine = cleanLiveRoomLabel(
-      (params as any).churchName ||
-        (params as any).churchLabel ||
-        (session as any)?.churchName ||
-        (session as any)?.churchLabel
-    );
-    const speaker = cleanLiveRoomLabel((params as any).claimedByName || (params as any).liveClaimName);
-    const parts = [churchLine, speaker ? `• ${speaker}` : ""].filter(Boolean);
-    return parts.join(" ").trim() || "LIVE";
-  }, [params, session]);
 
   const title = isMediaInstantLive ? liveHeaderDisplayTitle : String(selectedAssignment?.title || liveHeaderDisplayTitle);
 
@@ -2132,6 +2176,10 @@ export default function LiveRoomScreen() {
   const [moderatorIds, setModeratorIds] = useState<Record<string, boolean>>({});
   const [miniVideoMutedById, setMiniVideoMutedById] = useState<Record<string, boolean>>({});
   const [joinRequestsBySlot, setJoinRequestsBySlot] = useState<Record<number, { name: string; avatar: string; approved: boolean; onStage?: boolean; joinedAt?: string }>>({});
+  const displayJoinRequestsBySlot = useMemo(
+    () => sanitizeLiveJoinRequests(joinRequestsBySlot, liveJoinSanitizeOpts),
+    [joinRequestsBySlot, liveJoinSanitizeOpts]
+  );
   const [hostRequestCard, setHostRequestCard] = useState<any>(null);
   const joinToastAnim = useRef(new Animated.Value(0)).current;
   const [showJoinToast, setShowJoinToast] = useState(false);
@@ -2143,15 +2191,9 @@ export default function LiveRoomScreen() {
   const joinToastPlayingRef = useRef(false);
 
   useEffect(() => {
-    if (vipGuestCardSlot === null) return;
-    const t = setTimeout(() => setVipGuestCardSlot(null), 3500);
-    return () => clearTimeout(t);
-  }, [vipGuestCardSlot]);
+    if (joinToastPlayingRef.current || !canManageLive) return;
 
-  useEffect(() => {
-    if (joinToastPlayingRef.current) return;
-
-    const ordered = Object.entries(joinRequestsBySlot || {})
+    const ordered = Object.entries(displayJoinRequestsBySlot || {})
       .map(([slot, req]) => ({ slot: Number(slot), ...(req as any) }))
       .filter((req: any) => !!req?.name && !req?.approved)
       .sort((a: any, b: any) => String(a.joinedAt || "").localeCompare(String(b.joinedAt || "")));
@@ -2196,7 +2238,13 @@ export default function LiveRoomScreen() {
         setShowJoinToast(false);
       }
     });
-  }, [joinRequestsBySlot, showJoinToast, joinToastAnim]);
+  }, [displayJoinRequestsBySlot, showJoinToast, joinToastAnim, canManageLive]);
+
+  useEffect(() => {
+    if (vipGuestCardSlot === null) return;
+    const t = setTimeout(() => setVipGuestCardSlot(null), 3500);
+    return () => clearTimeout(t);
+  }, [vipGuestCardSlot]);
 
   const approvedStageSlots = useMemo(() => {
     return claimedScheduleCards
@@ -2236,7 +2284,7 @@ export default function LiveRoomScreen() {
           order: Number(card.order || card.slot || card.slotNumber || index + 1),
         };
       })
-      .filter((x: any) => !!x.name)
+      .filter((x: any) => !!String(x.claimedByUserId || "").trim())
       .sort((a: any, b: any) => Number(a.order || a.slot || 0) - Number(b.order || b.slot || 0));
   }, [claimedScheduleCards]);
 
@@ -2479,15 +2527,20 @@ export default function LiveRoomScreen() {
       .map((slot: any, index: number) => {
         const n = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
         const win = getScheduleSlotWindow(slot, index);
+        const speaker = resolveActiveSlotSpeaker(slot, index);
         return {
           ...slot,
           slot: n,
           order: Number(slot?.order || n),
           startMs: win.startMs,
           endMs: win.endMs,
-          name: String(slot?.claimedByName || slot?.claimedBy?.name || slot?.name || `Guest ${n}`),
-          avatar: resolveParticipantAvatarUri(slot),
-          claimedByUserId: String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim(),
+          claimedByUserId: speaker.claimedByUserId,
+          isClaimed: speaker.isClaimed,
+          programTitle: speaker.programTitle,
+          speakerName: speaker.speakerName,
+          name: speaker.displayTitle,
+          liveBannerTitle: speaker.liveBannerTitle,
+          avatar: speaker.isClaimed ? resolveParticipantAvatarUri(slot) : "",
           approved: true,
         };
       })
@@ -2499,18 +2552,69 @@ export default function LiveRoomScreen() {
       return Number.isFinite(slot.startMs) && Number.isFinite(slot.endMs) && now >= slot.startMs && now <= slot.endMs;
     });
 
-    if (currentByTime) return currentByTime;
+    if (currentByTime) {
+      console.log("KRISTO_ACTIVE_SLOT_SPEAKER_RESOLVED", {
+        slot: currentByTime.slot,
+        claimedByUserId: currentByTime.claimedByUserId || "",
+        isClaimed: !!currentByTime.isClaimed,
+        programTitle: currentByTime.programTitle,
+        speakerName: currentByTime.speakerName || "",
+        displayTitle: currentByTime.name,
+      });
+      if (!currentByTime.isClaimed) {
+        console.log("KRISTO_UNCLAIMED_SLOT_OPEN", {
+          slot: currentByTime.slot,
+          programTitle: currentByTime.programTitle,
+          startMs: currentByTime.startMs,
+          endMs: currentByTime.endMs,
+        });
+      }
+      return currentByTime;
+    }
 
-    // Auto-handoff:
-    // if current slot expired, immediately promote the next non-expired claimed slot.
-    const nextAfterExpired = allSlots.find((slot: any) => {
+    const nextClaimed = allSlots.find((slot: any) => {
+      return !!slot.isClaimed && Number.isFinite(slot.endMs) && Number(slot.endMs || 0) > now;
+    });
+    if (nextClaimed) return nextClaimed;
+
+    const nextOpen = allSlots.find((slot: any) => {
       return Number.isFinite(slot.endMs) && Number(slot.endMs || 0) > now;
     });
 
-    if (nextAfterExpired) return nextAfterExpired;
+    if (nextOpen && !nextOpen.isClaimed) {
+      console.log("KRISTO_UNCLAIMED_SLOT_OPEN", {
+        slot: nextOpen.slot,
+        programTitle: nextOpen.programTitle,
+        startMs: nextOpen.startMs,
+        endMs: nextOpen.endMs,
+      });
+    }
 
-    return null;
+    return nextOpen || null;
   }, [authorityStageSlots, liveNowMs, memberAvatarByUserId, resolvedAvatarByUserId, liveProfileAvatarUri, session?.userId, params]);
+
+  const activeUnclaimedLiveSlot =
+    !isMediaInstantLive &&
+    !!currentMainStageSlot &&
+    !(currentMainStageSlot as any).isClaimed;
+
+  const liveHeaderSubLine = useMemo(() => {
+    const churchLine = cleanLiveRoomLabel(
+      (params as any).churchName ||
+        (params as any).churchLabel ||
+        (session as any)?.churchName ||
+        (session as any)?.churchLabel
+    );
+    const speaker = isMediaInstantLive
+      ? cleanLiveRoomLabel((params as any).claimedByName || (params as any).liveClaimName)
+      : currentMainStageSlot
+        ? (currentMainStageSlot as any).isClaimed
+          ? cleanLiveRoomLabel((currentMainStageSlot as any).speakerName || (currentMainStageSlot as any).name)
+          : cleanLiveRoomLabel((currentMainStageSlot as any).programTitle)
+        : cleanLiveRoomLabel((params as any).claimedByName || (params as any).liveClaimName);
+    const parts = [churchLine, speaker ? `• ${speaker}` : ""].filter(Boolean);
+    return parts.join(" ").trim() || "LIVE";
+  }, [params, session, currentMainStageSlot, isMediaInstantLive]);
 
   const canAdvanceScheduleRuntime =
     roleLooksLikeHost;
@@ -3154,7 +3258,9 @@ export default function LiveRoomScreen() {
 
   // REALTIME HOST DRAWER DATA
   const hostDrawerCurrentLabel = currentMainStageSlot
-    ? String(currentMainStageSlot?.name || currentMainStageSlot?.title || `Slot ${currentMainStageSlot?.slot || ""}`)
+    ? (currentMainStageSlot as any).isClaimed
+      ? String((currentMainStageSlot as any).speakerName || (currentMainStageSlot as any).name || `Slot ${(currentMainStageSlot as any)?.slot || ""}`)
+      : String((currentMainStageSlot as any).programTitle || (currentMainStageSlot as any).name || `Slot ${(currentMainStageSlot as any)?.slot || ""}`)
     : "No active speaker";
 
   const hostDrawerNextSlot = visibleQueueSlots[0] || null;
@@ -3551,12 +3657,17 @@ export default function LiveRoomScreen() {
       }
 
       if (nextLive?.requests && typeof nextLive.requests === "object") {
-        backendLiveRequestsRef.current = nextLive.requests;
-        setBackendLiveRequests(nextLive.requests);
         const bridgeIncoming = getLiveJoinBridge().requestsByLiveId[liveBridgeId] || {};
-        setJoinRequestsBySlot({ ...bridgeIncoming, ...nextLive.requests });
+        const sanitizedRequests = sanitizeLiveJoinRequests(
+          { ...bridgeIncoming, ...nextLive.requests },
+          liveJoinSanitizeOpts
+        );
+        getLiveJoinBridge().requestsByLiveId[liveBridgeId] = sanitizedRequests;
+        backendLiveRequestsRef.current = sanitizedRequests;
+        setBackendLiveRequests(sanitizedRequests);
+        setJoinRequestsBySlot(sanitizedRequests);
 
-        const mine: any = Object.entries(nextLive.requests).find(([, req]: any) =>
+        const mine: any = Object.entries(sanitizedRequests).find(([, req]: any) =>
           !!req?.approved &&
           !!req?.onStage &&
           String(req?.userId || "").trim() === String(session?.userId || "").trim()
@@ -3583,6 +3694,20 @@ export default function LiveRoomScreen() {
 
   useEffect(() => {
     if (isMediaInstantLive || !liveBridgeId || !currentUserId || !myClaimedStageSlot) return;
+
+    const claimedOwnerId = String((myClaimedStageSlot as any)?.claimedByUserId || "").trim();
+    if (!claimedOwnerId || claimedOwnerId !== currentUserId) return;
+
+    if (isActualChurchPastor || isTrustedMediaHost) {
+      console.log("KRISTO_NO_FAKE_PASTOR_REQUEST", {
+        context: "skip-auto-claim-room-sync",
+        userId: currentUserId,
+        isActualChurchPastor,
+        isTrustedMediaHost,
+        claimedOwnerId,
+      });
+      return;
+    }
 
     const slot = Number((myClaimedStageSlot as any)?.slot || 0);
     if (!slot) return;
@@ -3619,13 +3744,19 @@ export default function LiveRoomScreen() {
       avatar,
       role: String((session as any)?.role || "Member"),
       pushLiveAction,
+      sanitizeOpts: liveJoinSanitizeOpts,
     }).then((res) => {
       const nextRequests = res?.live?.requests;
       if (nextRequests && typeof nextRequests === "object") {
-        backendLiveRequestsRef.current = nextRequests;
-        setBackendLiveRequests(nextRequests);
         const bridge = getLiveJoinBridge().requestsByLiveId[liveBridgeId] || {};
-        setJoinRequestsBySlot({ ...bridge, ...nextRequests });
+        const sanitizedRequests = sanitizeLiveJoinRequests(
+          { ...bridge, ...nextRequests },
+          liveJoinSanitizeOpts
+        );
+        getLiveJoinBridge().requestsByLiveId[liveBridgeId] = sanitizedRequests;
+        backendLiveRequestsRef.current = sanitizedRequests;
+        setBackendLiveRequests(sanitizedRequests);
+        setJoinRequestsBySlot(sanitizedRequests);
       }
     }).catch(() => {
       claimRoomSyncRef.current = "";
@@ -3638,11 +3769,14 @@ export default function LiveRoomScreen() {
     session,
     liveProfileAvatarUri,
     feedScheduleTick,
+    isActualChurchPastor,
+    isTrustedMediaHost,
+    liveJoinSanitizeOpts,
   ]);
 
   const livePatchSigRef = useRef("");
   const liveHeartbeatSigRef = useRef("");
-  const canManageLiveRef = useRef(false);
+  const hostRequestPurgeSigRef = useRef("");
   const isMyScheduledLiveTurnRef = useRef(false);
 
   const applyBackendLivePatch = useCallback(
@@ -3673,16 +3807,26 @@ export default function LiveRoomScreen() {
       if (patch.requestPolicy) setRequestPolicy(patch.requestPolicy as LiveRequestPolicy);
 
       if (patch.requests && typeof patch.requests === "object") {
-        backendLiveRequestsRef.current = patch.requests;
-        setBackendLiveRequests(patch.requests);
         const bridgeIncoming = getLiveJoinBridge().requestsByLiveId[liveBridgeId] || {};
-        setJoinRequestsBySlot({ ...bridgeIncoming, ...patch.requests });
+        const sanitizedRequests = sanitizeLiveJoinRequests(
+          { ...bridgeIncoming, ...(patch.requests || {}) },
+          liveJoinSanitizeOpts
+        );
+        getLiveJoinBridge().requestsByLiveId[liveBridgeId] = sanitizedRequests;
+        backendLiveRequestsRef.current = sanitizedRequests;
+        setBackendLiveRequests(sanitizedRequests);
+        setJoinRequestsBySlot(sanitizedRequests);
+
+        if (!Object.keys(sanitizedRequests).length) {
+          setHostRequestCard(null);
+          setShowJoinToast(false);
+        }
 
         console.log("KRISTO_ROOM_WAITING_LIST", {
           liveBridgeId,
           source,
-          requestCount: Object.keys(patch.requests).length,
-          requests: Object.entries(patch.requests).map(([slot, req]: any) => ({
+          requestCount: Object.keys(sanitizedRequests).length,
+          requests: Object.entries(sanitizedRequests).map(([slot, req]: any) => ({
             slot: Number(slot),
             userId: String(req?.userId || ""),
             name: String(req?.name || ""),
@@ -3697,16 +3841,73 @@ export default function LiveRoomScreen() {
           console.log("KRISTO_PASTOR_WAITING_HYDRATED", {
             liveBridgeId,
             source,
-            requestCount: Object.keys(patch.requests).length,
-            userIds: Object.values(patch.requests).map((req: any) => String(req?.userId || "")),
+            requestCount: Object.keys(sanitizedRequests).length,
+            userIds: Object.values(sanitizedRequests).map((req: any) => String(req?.userId || "")),
           });
         }
       }
 
       if (patch.viewerPresence) setLiveViewerPresence(patch.viewerPresence);
     },
-    [liveBridgeId, router]
+    [liveBridgeId, router, session?.userId, liveJoinSanitizeOpts]
   );
+
+  useEffect(() => {
+    if (!liveBridgeId || isMediaInstantLive) return;
+
+    const bridge = getLiveJoinBridge();
+    const incoming = bridge.requestsByLiveId[liveBridgeId] || {};
+    const cleaned = sanitizeLiveJoinRequests(incoming, liveJoinSanitizeOpts);
+    const hadBlocked = Object.keys(incoming).length !== Object.keys(cleaned).length;
+
+    bridge.requestsByLiveId[liveBridgeId] = cleaned;
+    setJoinRequestsBySlot((prev) => sanitizeLiveJoinRequests(prev, liveJoinSanitizeOpts));
+
+    if (hadBlocked) {
+      setHostRequestCard(null);
+      setShowJoinToast(false);
+      setActiveJoinToastSlot(null);
+    }
+
+    if (!canManageLive || !actualChurchPastorUserId) return;
+
+    const purgeSig = `${liveBridgeId}|${actualChurchPastorUserId}`;
+    if (hostRequestPurgeSigRef.current === purgeSig) return;
+    hostRequestPurgeSigRef.current = purgeSig;
+
+    void apiPatch(
+      "/api/church/live",
+      {
+        action: "clear-claim-request",
+        liveId: liveBridgeId,
+        userId: actualChurchPastorUserId,
+      },
+      { headers: liveApiHeaders as any }
+    ).then((res: any) => {
+      const nextRequests = res?.live?.requests;
+      if (nextRequests && typeof nextRequests === "object") {
+        const sanitized = sanitizeLiveJoinRequests(nextRequests, liveJoinSanitizeOpts);
+        getLiveJoinBridge().requestsByLiveId[liveBridgeId] = sanitized;
+        backendLiveRequestsRef.current = sanitized;
+        setBackendLiveRequests(sanitized);
+        setJoinRequestsBySlot(sanitized);
+      }
+    }).catch(() => {});
+  }, [
+    liveBridgeId,
+    isMediaInstantLive,
+    canManageLive,
+    actualChurchPastorUserId,
+    liveJoinSanitizeOpts,
+    liveApiHeaders,
+  ]);
+
+  useEffect(() => {
+    if (Object.keys(displayJoinRequestsBySlot || {}).length > 0) return;
+    setHostRequestCard(null);
+    setShowJoinToast(false);
+    setActiveJoinToastSlot(null);
+  }, [displayJoinRequestsBySlot]);
 
   useEffect(() => {
     if (!liveBridgeId || isMediaInstantLive) return;
@@ -3818,12 +4019,15 @@ export default function LiveRoomScreen() {
       }
 
       const backend = backendLiveRequestsRef.current || {};
-      setJoinRequestsBySlot({ ...incoming, ...backend });
+      const merged = { ...incoming, ...backend };
+      const sanitized = sanitizeLiveJoinRequests(merged, liveJoinSanitizeOpts);
+      bridge.requestsByLiveId[liveBridgeId] = sanitized;
+      setJoinRequestsBySlot(sanitized);
     };
 
     pullLiveJoinRequests();
     return subscribeLiveJoin(pullLiveJoinRequests);
-  }, [liveBridgeId]);
+  }, [liveBridgeId, session?.userId, liveJoinSanitizeOpts]);
 
   const [endingLive, setEndingLive] = useState(false);
   const [requestPolicyOpen, setRequestPolicyOpen] = useState<boolean>(false);
@@ -4162,7 +4366,7 @@ export default function LiveRoomScreen() {
 
   const approvedRequestGuests = useMemo<LiveGuest[]>(
     () =>
-      Object.entries(joinRequestsBySlot)
+      Object.entries(displayJoinRequestsBySlot)
         .filter(([, req]: any) => !!req?.approved && !!req?.onStage)
         .map(([slot, req]) => ({
           id: `request-slot-${slot}`,
@@ -4178,7 +4382,7 @@ export default function LiveRoomScreen() {
             initials(String(req?.name || "Guest"))
           ),
         })),
-    [joinRequestsBySlot]
+    [displayJoinRequestsBySlot]
   );
 
   const guests = useMemo<LiveGuest[]>(
@@ -4503,16 +4707,28 @@ export default function LiveRoomScreen() {
   // SECURITY:
   // Only the REAL owner/media host of THIS live can manage authority controls.
   // Generic pastors/admins from another church/media must remain viewers.
-  const canManageLive =
-    isActualChurchPastor ||
-    isTrustedMediaHost ||
-    isChurchLiveControlHost ||
-    (isMediaInstantLive && isMinistryLiveHost);
+  useEffect(() => {
+    if (isMediaInstantLive || !activeUnclaimedLiveSlot || canManageLive) return;
+    if (requestPolicy === "invite") return;
+
+    console.log("KRISTO_VIEWER_SEND_REQUEST_AVAILABLE", {
+      slot: Number((currentMainStageSlot as any)?.slot || 0),
+      programTitle: String((currentMainStageSlot as any)?.programTitle || ""),
+      requestPolicy,
+      userId: currentUserId,
+    });
+  }, [
+    isMediaInstantLive,
+    activeUnclaimedLiveSlot,
+    canManageLive,
+    requestPolicy,
+    currentMainStageSlot,
+    currentUserId,
+  ]);
 
   useEffect(() => {
-    canManageLiveRef.current = canManageLive;
     isMyScheduledLiveTurnRef.current = !!isMyScheduledLiveTurn;
-  }, [canManageLive, isMyScheduledLiveTurn]);
+  }, [isMyScheduledLiveTurn]);
 
   useEffect(() => {
     if (isMediaInstantLive) return;
@@ -4525,7 +4741,7 @@ export default function LiveRoomScreen() {
           String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()
         ).length,
         runtimeSlotCount: runtimeScheduleSlots.length,
-        joinRequestCount: Object.keys(joinRequestsBySlot || {}).length,
+        joinRequestCount: Object.keys(displayJoinRequestsBySlot || {}).length,
         presenceCount: Object.keys(liveViewerPresence || {}).length,
         currentSlotOwnerId,
         currentSlotNumber,
@@ -5067,7 +5283,7 @@ export default function LiveRoomScreen() {
     if (!canManageLive) return;
     closeMoreMenu();
 
-    const pending = Object.entries(joinRequestsBySlot || {}).find(([, req]: any) => !!req && !req.approved);
+    const pending = Object.entries(displayJoinRequestsBySlot || {}).find(([, req]: any) => !!req && !req.approved);
     if (!pending) {
       Alert.alert("Requests", "No pending access requests right now.");
       return;
@@ -5188,7 +5404,7 @@ ${scheduleAudienceAccessText}`,
     pushLiveAction("set-policy", { requestPolicy: nextPolicy, policy: nextPolicy });
   }
 
-  const pendingAccessRequests = Object.entries(joinRequestsBySlot || {})
+  const pendingAccessRequests = Object.entries(displayJoinRequestsBySlot || {})
     .map(([slot, req]: any) => ({ slot: Number(slot), req }))
     .filter((x: any) => !!x.req && !x.req.approved)
     .filter((item: any, index: number, arr: any[]) => {
@@ -5266,7 +5482,7 @@ ${scheduleAudienceAccessText}`,
 
   const realFeelViewerCount = Number(live.viewerCount || 0);
 
-  const orderedJoinRequests = Object.entries(joinRequestsBySlot || {})
+  const orderedJoinRequests = Object.entries(displayJoinRequestsBySlot || {})
     .map(([slot, req]) => ({ slot: Number(slot), ...(req as any) }))
     .filter((req: any) => !!req?.name)
     .sort((a: any, b: any) => String(a.joinedAt || "").localeCompare(String(b.joinedAt || "")));
@@ -5511,8 +5727,8 @@ return (
                     <View style={s.teamGridLiveFallback as any}>
                       <View style={s.livePausedWrap as any}>
                         <Ionicons name="radio-outline" size={64} color="#F4C95D" />
-                        <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : currentMainStageSlot ? `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE` : "LIVE WINDOW ENDED"}</Text>
-                        <Text style={s.livePausedSub as any}>{currentMainStageSlot || isMediaInstantLive ? "Connecting video..." : "No active speaker right now"}</Text>
+                        <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : currentMainStageSlot ? String((currentMainStageSlot as any)?.liveBannerTitle || `${String((currentMainStageSlot as any)?.programTitle || "OPEN SLOT").toUpperCase()} • OPEN SLOT`) : "LIVE WINDOW ENDED"}</Text>
+                        <Text style={s.livePausedSub as any}>{currentMainStageSlot || isMediaInstantLive ? ((currentMainStageSlot as any)?.isClaimed ? "Connecting video..." : "Open slot — waiting for speaker") : "No active speaker right now"}</Text>
                       </View>
                     </View>
                   }
@@ -5537,8 +5753,8 @@ return (
                     <View style={s.teamGridLiveFallback as any}>
                       <View style={s.livePausedWrap as any}>
                         <Ionicons name="radio-outline" size={64} color="#F4C95D" />
-                        <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE`}</Text>
-                        <Text style={s.livePausedSub as any}>Waiting for pastor video...</Text>
+                        <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : String((currentMainStageSlot as any)?.liveBannerTitle || `${String((currentMainStageSlot as any)?.programTitle || "OPEN SLOT").toUpperCase()} • OPEN SLOT`)}</Text>
+                        <Text style={s.livePausedSub as any}>{(currentMainStageSlot as any)?.isClaimed ? "Waiting for speaker video..." : "Open slot — send a request to join"}</Text>
                       </View>
                     </View>
                   }
@@ -5548,12 +5764,17 @@ return (
               <View style={s.teamGridLiveFallback as any}>
                 {(() => {
                   const req = bigStageGuestId.startsWith("request-slot-")
-                    ? joinRequestsBySlot[Number(bigStageGuestId.replace("request-slot-", ""))]
+                    ? displayJoinRequestsBySlot[Number(bigStageGuestId.replace("request-slot-", ""))]
                     : null;
 
                   const stageGuest = scheduledStagePeople.find((g: any) => String(g.id) === String(bigStageGuestId));
                   const anyGuest = guests.find((g) => String(g.id) === String(bigStageGuestId));
-                  const guestName = String(req?.name || stageGuest?.name || anyGuest?.name || "Guest");
+                  const guestName = (() => {
+                    if (activeUnclaimedLiveSlot && String(bigStageGuestId).startsWith("stage-")) {
+                      return String((currentMainStageSlot as any)?.programTitle || "Open Slot");
+                    }
+                    return String(req?.name || stageGuest?.name || anyGuest?.name || "Guest");
+                  })();
                   const guestAvatar = String(req?.avatar || (stageGuest as any)?.avatar || (anyGuest as any)?.avatar || "");
 
                   return (
@@ -5704,7 +5925,7 @@ return (
                     if (!canManageLive) return;
                     const slot = Number(latestJoinRequest.slot || 6);
                     const approvedReq = {
-                      ...(joinRequestsBySlot[slot] || latestJoinRequest),
+                      ...(displayJoinRequestsBySlot[slot] || latestJoinRequest),
                       approved: true,
                       onStage: true,
                       joinedAt: new Date().toISOString(),
@@ -6336,7 +6557,7 @@ return (
         ) : null}
 
         {layoutMode === "grid6" && canManageLive && vipGuestCardSlot === -999 ? (() => {
-          const req = joinRequestsBySlot[vipGuestCardSlot] as any;
+          const req = displayJoinRequestsBySlot[vipGuestCardSlot] as any;
           if (!req) return null;
           const guestId = `request-slot-${vipGuestCardSlot}`;
           return (
@@ -6426,7 +6647,7 @@ return (
           <View pointerEvents="box-none" style={s.teamGridOverlayLayer as any}>
             {[0, 1, 2, 3].map((slot, index) => {
               const claimedGuest = visibleQueueSlots.slice(4, 8)[index] as any;
-              const rawReq = claimedGuest ? null : joinRequestsBySlot[slot];
+              const rawReq = claimedGuest ? null : displayJoinRequestsBySlot[slot];
               const req = (rawReq as any)?.waiting || (rawReq as any)?.upper ? null : rawReq;
               const approved = !!req?.approved || !!claimedGuest;
 
@@ -6465,7 +6686,7 @@ return (
                     if (requestPolicy === "locked") {
                       const roleNow = String((session as any)?.role || "").toLowerCase();
 
-                      if (!roleNow.includes("pastor")) {
+                      if (!roleNow.includes("pastor") && !activeUnclaimedLiveSlot) {
                         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
                         Alert.alert(
                           "Live locked",
@@ -6482,6 +6703,15 @@ return (
                     }
 
                     if (req && !req.approved && canManageLive) {
+                      if (isHostManagedJoinRequest(req, liveJoinSanitizeOpts)) {
+                        console.log("KRISTO_NO_FAKE_PASTOR_REQUEST", {
+                          context: "block-host-request-card",
+                          slot,
+                          userId: String((req as any)?.userId || ""),
+                          name: String((req as any)?.name || ""),
+                        });
+                        return;
+                      }
                       setHostRequestCard({ slot, req });
                       Haptics.selectionAsync().catch(() => {});
                       return;
@@ -6554,6 +6784,14 @@ return (
                       };
 
                       if (!canManageLive) {
+                        console.log("KRISTO_REAL_JOIN_REQUEST_CREATED", {
+                          liveBridgeId,
+                          slot,
+                          userId: String(session?.userId || ""),
+                          name: nextReq.name,
+                          requestPolicy,
+                          activeUnclaimedLiveSlot,
+                        });
                         pushLiveAction("request-join", {
                           slot,
                           userId: String(session?.userId || ""),

@@ -7,7 +7,7 @@ import {
 } from "@/app/api/_lib/churchPastor";
 import { createNotification } from "@/app/api/_lib/notifications";
 
-import { evaluateLiveMediaAuthority } from "@/lib/liveMediaAuthority";
+import { evaluateLiveMediaAuthority, parseMediaHostIds } from "@/lib/liveMediaAuthority";
 
 export const runtime = "nodejs";
 
@@ -170,21 +170,54 @@ function ensureLiveSession(
   return { ...resolved, live };
 }
 
+function blockedHostGuestUserIds(live: any) {
+  const pastorId = String(live?.actualChurchPastorUserId || live?.pastorUserId || "").trim();
+  return new Set([pastorId, ...parseMediaHostIds(live?.mediaHostIds)].filter(Boolean));
+}
+
+function isBlockedHostGuestUser(live: any, userId: string) {
+  const uid = String(userId || "").trim();
+  if (!uid) return false;
+  return blockedHostGuestUserIds(live).has(uid);
+}
+
+function filterHostJoinRequests(live: any) {
+  if (!live || typeof live !== "object") return live;
+  live.requests = live.requests && typeof live.requests === "object" ? live.requests : {};
+  const blockedIds = blockedHostGuestUserIds(live);
+  if (!blockedIds.size) return live;
+
+  for (const [key, req] of Object.entries(live.requests) as any) {
+    const uid = String(req?.userId || "").trim();
+    if (!uid || !blockedIds.has(uid)) continue;
+    console.log("KRISTO_NO_FAKE_PASTOR_REQUEST", {
+      context: "api-filter-host-request",
+      slot: key,
+      userId: uid,
+      name: String(req?.name || ""),
+    });
+    delete live.requests[key];
+  }
+
+  return live;
+}
+
 function liteLivePayload(live: any) {
   if (!live) return null;
+  const filtered = filterHostJoinRequests({ ...live });
   return {
-    isLive: live.isLive === true && !live.endedAt,
-    liveId: live.liveId,
-    churchId: live.churchId,
-    requestPolicy: live.requestPolicy,
-    requests: live.requests,
-    viewerPresence: live.viewerPresence,
-    viewerCount: live.viewerCount,
-    lastPresenceAt: live.lastPresenceAt,
-    actualChurchPastorUserId: live.actualChurchPastorUserId,
-    scheduleCreatedByUserId: live.scheduleCreatedByUserId,
-    mediaHostIds: live.mediaHostIds,
-    updatedAt: live.updatedAt,
+    isLive: filtered.isLive === true && !filtered.endedAt,
+    liveId: filtered.liveId,
+    churchId: filtered.churchId,
+    requestPolicy: filtered.requestPolicy,
+    requests: filtered.requests,
+    viewerPresence: filtered.viewerPresence,
+    viewerCount: filtered.viewerCount,
+    lastPresenceAt: filtered.lastPresenceAt,
+    actualChurchPastorUserId: filtered.actualChurchPastorUserId,
+    scheduleCreatedByUserId: filtered.scheduleCreatedByUserId,
+    mediaHostIds: filtered.mediaHostIds,
+    updatedAt: filtered.updatedAt,
   };
 }
 
@@ -284,7 +317,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: true, live: liteLivePayload(live), lite: true });
   }
 
-  return NextResponse.json({ ok: true, live });
+  return NextResponse.json({ ok: true, live: filterHostJoinRequests(live) });
 }
 
 export async function POST(req: Request) {
@@ -435,6 +468,13 @@ export async function PATCH(req: Request) {
     live.liveId = requestLiveId;
 
     const requestUserId = String(body.userId || a.userId || "").trim();
+    if (isBlockedHostGuestUser(live, requestUserId)) {
+      console.log("KRISTO_NO_FAKE_PASTOR_REQUEST", {
+        context: "api-block-claim-schedule-request",
+        liveId: requestLiveId,
+        userId: requestUserId,
+      });
+    } else {
     const slotId = String(body.slotId || "").trim();
     const name = String(body.name || "Member").trim() || "Member";
     const avatar = String(body.avatar || body.avatarUri || "M").trim() || "M";
@@ -459,6 +499,7 @@ export async function PATCH(req: Request) {
       userId: requestUserId,
       status: request?.status || "waiting",
     });
+    }
   }
 
   if (action === "clear-claim-request") {
@@ -494,7 +535,13 @@ export async function PATCH(req: Request) {
     const requestLiveId = String(body.liveId || liveId || live.liveId || "").trim();
     if (requestLiveId) live.liveId = requestLiveId;
 
-    upsertWaitingRequest(live, {
+    if (isBlockedHostGuestUser(live, requestUserId)) {
+      console.log("KRISTO_NO_FAKE_PASTOR_REQUEST", {
+        context: "api-block-request-join",
+        liveId: requestLiveId || live.liveId,
+        userId: requestUserId,
+      });
+    } else upsertWaitingRequest(live, {
       liveId: requestLiveId || String(live.liveId || ""),
       slotId: String(body.slotId || "").trim(),
       slot: Number(body.slot || 0),
@@ -658,8 +705,9 @@ export async function PATCH(req: Request) {
   }
 
   live.updatedAt = now;
+  filterHostJoinRequests(live);
   store[session.key] = live;
   await writeJsonFile(STORE_FILE, store);
 
-  return NextResponse.json({ ok: true, live });
+  return NextResponse.json({ ok: true, live: filterHostJoinRequests({ ...live }) });
 }
