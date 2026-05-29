@@ -4331,7 +4331,9 @@ export default function FeedScreen() {
       )
     );
 
-    const cycles = backendFeed.length > 0 && nonScheduleItems.length > 0 ? 3 : 0;
+    // Keep Home Feed stable after posting.
+    // Repeating non-schedule rows creates ghost/duplicate visible rows and can shift active posts.
+    const cycles = backendFeed.length > 0 && nonScheduleItems.length > 0 ? 1 : 0;
 
     const forYouBaseItems = nonScheduleItems.filter((item: any) => {
       return !(item?.mediaType === "video" || item?.videoUrl);
@@ -4435,7 +4437,7 @@ export default function FeedScreen() {
       visibleData[fallbackIndex]?.id ?? null
     );
     setActiveFeedIndex(fallbackIndex);
-  }, [visibleData]);
+  }, [visibleData, activeFeedItemId]);
 
   const visibleDataRef = useRef(visibleData);
   useEffect(() => {
