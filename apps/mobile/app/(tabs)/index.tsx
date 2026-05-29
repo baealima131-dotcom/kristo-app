@@ -1097,11 +1097,28 @@ const noMediaPost =
   const noMediaPreviewBody =
     body.length > 150 ? body.slice(0, 150).trimEnd() + "..." : body;
 
-  const displayChurchMediaName = String(
+  const displayChurchName = String(
+    (item as any)?.churchName ||
+    (item as any)?.churchLabel ||
+    (item as any)?.church?.name ||
+    (item as any)?.mediaChurchName ||
+    "MY CHURCH"
+  ).trim();
+
+  const displayChurchId = String(
+    (item as any)?.churchId ||
+    (item as any)?.churchCode ||
+    (item as any)?.church?.id ||
+    ""
+  ).trim();
+
+  const displayMediaName = String(
     (item as any)?.mediaName ||
     (item as any)?.actorLabel ||
-    "Church Media"
+    ""
   ).trim();
+
+  const hasDisplayMediaName = Boolean(displayMediaName);
 
   const isTestimony = postSource.includes("testimony");
   const isCounsel = postSource.includes("counsel");
@@ -1134,12 +1151,10 @@ const noMediaPost =
     "Church Member"
   ).trim();
 
-  const feedHeadline = isMediaPost
-    ? String((item as any)?.churchLabel || "MY CHURCH").trim()
-    : categoryTitle;
+  const feedHeadline = isMediaPost ? displayChurchName : categoryTitle;
 
   const feedSubline = isMediaPost
-    ? displayChurchMediaName
+    ? (hasDisplayMediaName ? displayMediaName : "")
     : displayAuthorName;
   const feedHeadlineColor = isMediaPost ? "#F7D36A" : categoryAccent;
 
@@ -1166,8 +1181,12 @@ const noMediaPost =
     isAnnouncement ? "rgba(255,138,61,0.13)" :
     "rgba(255,255,255,0.08)";
 
-  const mediaInitial = feedSubline.slice(0, 1).toUpperCase() || "M";
-  const mediaName = feedSubline;
+  const mediaInitial = (
+    isMediaPost ? displayChurchName : feedSubline
+  ).slice(0, 1).toUpperCase() || "M";
+  const mediaName = isMediaPost
+    ? (displayMediaName || "Church Media")
+    : feedSubline;
 
   const [optimisticClaim, setOptimisticClaim] = useState<any>(null);
   const claimStartedRef = useRef(false);
@@ -2119,6 +2138,67 @@ const noMediaPost =
   const showCaption =
     showVideoMetaChrome && titleFullyHidden && !!displayVideoCaption;
 
+  useEffect(() => {
+    if (!isStrictVideoPost || !isMediaPost) return;
+
+    const session = getSessionSync() as any;
+    const viewerChurchId = String(session?.churchId || "").trim();
+    const isVerifiedChurchId = Boolean(
+      displayChurchId &&
+      viewerChurchId &&
+      displayChurchId === viewerChurchId
+    );
+    const isSameChurch = isVerifiedChurchId;
+
+    console.log("KRISTO_CHURCH_MEDIA_OVERLAY_SOURCE", {
+      postId: String(item.id || ""),
+      churchName: String((item as any)?.churchName || ""),
+      churchLabel: String((item as any)?.churchLabel || ""),
+      churchId: String((item as any)?.churchId || ""),
+      mediaName: String((item as any)?.mediaName || ""),
+      actorLabel: String((item as any)?.actorLabel || ""),
+      title: String(item.title || ""),
+      postTitle: String((item as any)?.postTitle || ""),
+      caption: String(item.caption || ""),
+      body: String(item.body || ""),
+      description: String(item.description || ""),
+    });
+
+    if (displayChurchId && !isVerifiedChurchId) {
+      console.log("KRISTO_FEED_CHURCH_ID_HIDDEN_UNVERIFIED", {
+        postId: String(item.id || ""),
+        displayChurchId,
+        viewerChurchId,
+        churchName: displayChurchName,
+        reason: "church_id_not_verified_from_session",
+      });
+    }
+
+    console.log("KRISTO_FEED_CHURCH_ACTION_GATE", {
+      postId: String(item.id || ""),
+      churchId: displayChurchId,
+      churchName: displayChurchName,
+      viewerChurchId,
+      isSameChurch,
+      showFollow: !isSameChurch,
+      showViewProfile: isSameChurch,
+      churchIdShown: false,
+    });
+  }, [
+    isStrictVideoPost,
+    isMediaPost,
+    item.id,
+    item.title,
+    item.body,
+    item.caption,
+    item.description,
+    displayVideoTitle,
+    displayVideoCaption,
+    displayChurchId,
+    displayChurchName,
+    item,
+  ]);
+
   const logVideoMetaLayout = useCallback(
     (e: LayoutChangeEvent) => {
       if (!isStrictVideoPost || !__DEV__) return;
@@ -2519,12 +2599,14 @@ const noMediaPost =
                   {feedHeadline}
                 </Text>
 
+                {!!feedSubline ? (
                 <Text
                   style={s.noMediaAuthor}
                   numberOfLines={1}
                 >
                   {feedSubline}
                 </Text>
+                ) : null}
               </View>
             </View>
 
@@ -2659,9 +2741,15 @@ const noMediaPost =
                   >
                     {feedHeadline}
                   </Text>
-                  <Text style={[s.videoMediaSecondary, s.videoMetaText]} numberOfLines={1}>
-                    {feedSubline}
-                  </Text>
+                  {isMediaPost && hasDisplayMediaName ? (
+                    <Text style={[s.videoDepartmentLabel, s.videoMetaText]} numberOfLines={1}>
+                      {displayMediaName}
+                    </Text>
+                  ) : !isMediaPost && !!feedSubline ? (
+                    <Text style={[s.videoMediaSecondary, s.videoMetaText]} numberOfLines={1}>
+                      {feedSubline}
+                    </Text>
+                  ) : null}
                 </View>
               </View>
 
@@ -5120,6 +5208,15 @@ const s: any = StyleSheet.create({
     lineHeight: 17,
     fontWeight: "600",
     letterSpacing: 0.12,
+  },
+
+  videoDepartmentLabel: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: "600",
+    letterSpacing: 0.12,
+    marginTop: 2,
   },
 
   videoTitleSlot: {
