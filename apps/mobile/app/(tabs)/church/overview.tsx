@@ -21,7 +21,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet, apiPatch } from "@/src/lib/kristoApi";
-import { handleInviteAction, requestJoinChurch } from "@/src/lib/churchMembersApi";
+import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { useIsFocused } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -205,14 +205,6 @@ export default function ChurchOverviewScreen() {
   const auth = getKristoAuth();
   const invitePreview = String(params.invitePreview || "") === "1";
   const paramChurchId = String(params.churchId || "").trim();
-  const feedPublicPreview =
-    invitePreview &&
-    String(params.source || "") === "feed" &&
-    String(params.mode || "") === "publicPreview";
-  const paramMediaTeamName = String(params.mediaTeamName || "").trim();
-  const paramViewerChurchId = String(
-    params.viewerChurchId || session?.churchId || ""
-  ).trim();
 
   useEffect(() => {
     let alive = true;
@@ -324,15 +316,6 @@ export default function ChurchOverviewScreen() {
   const [previewChecked, setPreviewChecked] = useState(!invitePreview);
   const [previewCount, setPreviewCount] = useState(0);
   const [previewLimitReached, setPreviewLimitReached] = useState(false);
-  const [publicDiscovery, setPublicDiscovery] = useState({
-    followerCount: 0,
-    mutualFollowersFromViewerChurch: 0,
-    collaboratingMinistriesCount: 0,
-    mediaTeamName: "",
-    coverUri: "",
-  });
-  const [requestSent, setRequestSent] = useState(false);
-  const [requestingAccess, setRequestingAccess] = useState(false);
   const contentOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -350,7 +333,7 @@ export default function ChurchOverviewScreen() {
     let alive = true;
 
     async function checkPreviewLimit() {
-      if (!invitePreview || feedPublicPreview) {
+      if (!invitePreview) {
         setPreviewChecked(true);
         setPreviewLimitReached(false);
         return;
@@ -393,7 +376,7 @@ export default function ChurchOverviewScreen() {
     return () => {
       alive = false;
     };
-  }, [invitePreview, feedPublicPreview, churchId, paramChurchId, inviteId, session?.userId, auth?.userId]);
+  }, [invitePreview, churchId, paramChurchId, inviteId, session?.userId, auth?.userId]);
 
   async function acceptPreviewInvite() {
 
@@ -498,15 +481,7 @@ export default function ChurchOverviewScreen() {
       }
 
       const overviewUrl = invitePreview
-        ? `${base}/api/church/overview?invitePreview=1${
-            inviteId ? `&inviteId=${encodeURIComponent(inviteId)}` : ""
-          }${
-            feedPublicPreview
-              ? `&publicPreview=1&mediaTeamName=${encodeURIComponent(
-                  paramMediaTeamName || String(params.churchName || "")
-                )}&viewerChurchId=${encodeURIComponent(paramViewerChurchId)}`
-              : ""
-          }`
+        ? `${base}/api/church/overview?invitePreview=1&inviteId=${encodeURIComponent(inviteId)}`
         : `${base}/api/church/overview`;
 
       logOverviewRequest(overviewUrl);
@@ -582,23 +557,6 @@ export default function ChurchOverviewScreen() {
         offeringBalance: Number(s?.offeringBalance || 0),
       };
       setStats(nextStats);
-
-      const discovery = j?.data?.publicDiscovery || {};
-      setPublicDiscovery({
-        followerCount: Number(discovery?.followerCount || 0),
-        mutualFollowersFromViewerChurch: Number(
-          discovery?.mutualFollowersFromViewerChurch || 0
-        ),
-        collaboratingMinistriesCount: Number(
-          discovery?.collaboratingMinistriesCount || 0
-        ),
-        mediaTeamName: String(
-          discovery?.mediaTeamName || paramMediaTeamName || ""
-        ).trim(),
-        coverUri: mediaUrl(
-          String(discovery?.coverUri || p?.coverUri || nextAvatar || "").trim()
-        ),
-      });
 
       try {
         const hostsRes: any = await apiGet("/api/church/media-hosts", {
@@ -942,45 +900,6 @@ export default function ChurchOverviewScreen() {
   );
   const pastorDisplay = formatPastorDisplayName(profile.pastorName);
   const churchVerified = !isRawBackendId(profile.name) && !!String(profile.name || "").trim();
-  const previewMediaTeamName =
-    publicDiscovery.mediaTeamName || paramMediaTeamName || "Church Media";
-
-  const mutualDiscoveryLine = useMemo(() => {
-    if (!feedPublicPreview) return "";
-    if (publicDiscovery.mutualFollowersFromViewerChurch > 0) {
-      return `${publicDiscovery.mutualFollowersFromViewerChurch} people from your church also follow ${displayChurchName}`;
-    }
-    if (publicDiscovery.collaboratingMinistriesCount > 0) {
-      return `${publicDiscovery.collaboratingMinistriesCount} ministries collaborate with this church`;
-    }
-    return "";
-  }, [feedPublicPreview, publicDiscovery, displayChurchName]);
-
-  async function requestChurchAccess() {
-    if (requestingAccess || requestSent || !churchId) return;
-    const userId = String(session?.userId || effectiveAuthUserId || "").trim();
-    if (!userId) {
-      Alert.alert("Sign in required", "Please sign in before requesting church access.");
-      return;
-    }
-
-    setRequestingAccess(true);
-    try {
-      await requestJoinChurch(
-        churchId,
-        session?.displayName || session?.name || userId
-      );
-      setRequestSent(true);
-      Alert.alert(
-        "Request sent",
-        "Your request was sent for pastor/admin approval. Full church profile unlocks after approval."
-      );
-    } catch (e: any) {
-      Alert.alert("Request failed", String(e?.message || e || "Could not send request."));
-    } finally {
-      setRequestingAccess(false);
-    }
-  }
 
   const cards = useMemo(() => {
     const memberCards = [
@@ -1070,14 +989,7 @@ export default function ChurchOverviewScreen() {
           </View>
         </View>
 
-      {feedPublicPreview ? (
-        <View style={s.successBanner}>
-          <Ionicons name="eye-outline" size={16} color={GOLD} />
-          <Text style={s.successBannerText}>
-            Public preview only • Request access for full church profile
-          </Text>
-        </View>
-      ) : invitePreview ? (
+      {invitePreview ? (
         <View style={s.successBanner}>
           <Ionicons name="eye-outline" size={16} color={GOLD} />
           <Text style={s.successBannerText}>
@@ -1132,22 +1044,7 @@ export default function ChurchOverviewScreen() {
           contentContainerStyle={{ paddingBottom: insets.bottom + 140 }}
           style={{ opacity: contentOpacity }}
         >
-          {feedPublicPreview && publicDiscovery.coverUri ? (
-            <View style={s.publicCoverWrap}>
-              <Image
-                source={{ uri: publicDiscovery.coverUri }}
-                style={s.publicCoverImage}
-                resizeMode="cover"
-              />
-              <LinearGradient
-                pointerEvents="none"
-                colors={["transparent", "rgba(5,8,14,0.92)"]}
-                style={s.publicCoverFade}
-              />
-            </View>
-          ) : null}
-
-          <View style={[s.profileCardOuter, feedPublicPreview && s.profileCardOuterPublic]}>
+          <View style={s.profileCardOuter}>
             <LinearGradient
               pointerEvents="none"
               colors={["rgba(255,255,255,0.10)", "rgba(255,255,255,0.02)", "transparent"]}
@@ -1183,9 +1080,7 @@ export default function ChurchOverviewScreen() {
               </View>
 
               <View style={{ flex: 1 }}>
-                <Text style={s.profileEyebrow}>
-                  {feedPublicPreview ? "Public Church Preview" : "Church Profile"}
-                </Text>
+                <Text style={s.profileEyebrow}>Church Profile</Text>
                 <Text style={s.profileChurch} numberOfLines={2}>
                   {displayChurchName}
                 </Text>
@@ -1217,47 +1112,6 @@ export default function ChurchOverviewScreen() {
               ) : null}
             </View>
 
-            {feedPublicPreview ? (
-              <View style={s.publicStatsCard}>
-                <Text style={s.publicStatsTitle}>Public Stats</Text>
-                <View style={s.publicStatsRow}>
-                  <Text style={s.publicStatsLabel}>Members</Text>
-                  <Text style={s.publicStatsValue}>
-                    {Number(stats.activeMembers || 0).toLocaleString()}
-                  </Text>
-                </View>
-                <View style={s.publicStatsRow}>
-                  <Text style={s.publicStatsLabel}>Ministries</Text>
-                  <Text style={s.publicStatsValue}>
-                    {Number(stats.ministries || 0).toLocaleString()}
-                  </Text>
-                </View>
-                <View style={s.publicStatsRow}>
-                  <Text style={s.publicStatsLabel}>Media Team</Text>
-                  <Text style={s.publicStatsValue}>{previewMediaTeamName}</Text>
-                </View>
-                {!!mutualDiscoveryLine ? (
-                  <Text style={s.publicDiscoveryText}>{mutualDiscoveryLine}</Text>
-                ) : null}
-                <Pressable
-                  disabled={requestingAccess || requestSent}
-                  onPress={requestChurchAccess}
-                  style={[
-                    s.btn,
-                    s.btnGold,
-                    (requestingAccess || requestSent) && { opacity: 0.72 },
-                  ]}
-                >
-                  <Text style={[s.btnText, s.btnTextGold]}>
-                    {requestSent
-                      ? "Request Sent"
-                      : requestingAccess
-                        ? "Sending Request..."
-                        : "Request Access"}
-                  </Text>
-                </Pressable>
-              </View>
-            ) : (
             <View style={s.profileInfoList}>
               <View style={s.profileInfoRow}>
                 <View style={s.pastorAvatar}>
@@ -1289,10 +1143,9 @@ export default function ChurchOverviewScreen() {
                 </View>
               </View>
             </View>
-            )}
           </View>
 
-          {showMediaControlCard && !feedPublicPreview ? (
+          {showMediaControlCard ? (
             <View style={[s.powerCardOuter, !canOpenMediaStudio && !canManageMinistryMediaAccess && { opacity: 0.92 }]}>
               <LinearGradient
                 pointerEvents="none"
@@ -1393,7 +1246,6 @@ export default function ChurchOverviewScreen() {
             </View>
           ) : null}
 
-          {!feedPublicPreview ? (
           <View style={s.statsGrid}>
             {cards.map((c) => {
               const variantStyles =
@@ -1459,7 +1311,6 @@ export default function ChurchOverviewScreen() {
             </LuxuryPressable>
           ) : null}
         </View>
-          ) : null}
 
           
         </Animated.ScrollView>
@@ -2539,64 +2390,5 @@ const s = StyleSheet.create<any>({
   },
   btnText: { color: "white", fontSize: 14, fontWeight: "800", letterSpacing: 0.2, textAlign: "center" },
   btnTextGold: { color: GOLD },
-
-  publicCoverWrap: {
-    height: 168,
-    borderRadius: 24,
-    overflow: "hidden",
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-  publicCoverImage: {
-    width: "100%",
-    height: "100%",
-  },
-  publicCoverFade: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  profileCardOuterPublic: {
-    marginTop: -28,
-  },
-  publicStatsCard: {
-    marginTop: 14,
-    borderRadius: 18,
-    padding: 14,
-    gap: 10,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.18)",
-  },
-  publicStatsTitle: {
-    color: GOLD,
-    fontSize: 12,
-    fontWeight: "900",
-    letterSpacing: 1.1,
-  },
-  publicStatsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  publicStatsLabel: {
-    color: "rgba(255,255,255,0.62)",
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  publicStatsValue: {
-    color: TEXT_PRIMARY,
-    fontSize: 14,
-    fontWeight: "900",
-    flexShrink: 1,
-    textAlign: "right",
-  },
-  publicDiscoveryText: {
-    marginTop: 2,
-    color: "rgba(247,211,106,0.88)",
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: "700",
-  },
 
 });
