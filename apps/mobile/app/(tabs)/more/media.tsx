@@ -16,7 +16,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer } from "expo-video";
-import { useRouter } from "expo-router";
+import { usePathname, useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "../../../src/lib/KristoSessionProvider";
@@ -146,6 +146,7 @@ const CATEGORIES: KristoMediaCategory[] = [
 
 export default function MediaStudioScreen() {
   const router = useRouter();
+  const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const isFocused = useIsFocused();
 
@@ -312,6 +313,8 @@ export default function MediaStudioScreen() {
   }, []);
 
   React.useEffect(() => {
+    if (!isFocused || pathname !== "/more/media") return;
+
     let alive = true;
     const churchId = String(session?.churchId || "").trim();
     const bootstrapKey = `${churchId}:${session?.userId || ""}:${session?.role || ""}`;
@@ -480,7 +483,7 @@ export default function MediaStudioScreen() {
     );
 
     setActiveBackendLive(res?.live?.isLive ? res.live : null);
-  }, [session?.churchId, session?.role, session?.userId]);
+  }, [isFocused, pathname, session?.churchId, session?.role, session?.userId]);
 
   useFocusedPolling("MediaScreenLive", () => loadActiveBackendLive(), 45000, isFocused);
 

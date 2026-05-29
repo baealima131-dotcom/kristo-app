@@ -294,11 +294,6 @@ export default function MoreScreen() {
     }
   }, [session?.churchId, session?.role, session?.userId]);
 
-  const warmMediaRoute = React.useCallback(() => {
-    void preloadMediaAssets();
-    void (router as any).prefetch?.(MEDIA_HREF);
-  }, [router]);
-
   const openMediaScreen = React.useCallback(() => {
     if (mediaOpenRef.current) return;
     mediaOpenRef.current = true;
@@ -307,16 +302,16 @@ export default function MoreScreen() {
 
   React.useEffect(() => {
     void preloadTlmcAssets();
-    warmMediaRoute();
-  }, [warmMediaRoute]);
+    void preloadMediaAssets();
+  }, []);
 
   useFocusEffect(
     React.useCallback(() => {
       mediaOpenRef.current = false;
       void preloadTlmcAssets();
-      warmMediaRoute();
+      void preloadMediaAssets();
       void refreshMediaAccess();
-    }, [warmMediaRoute, refreshMediaAccess])
+    }, [refreshMediaAccess])
   );
 
   React.useEffect(() => {
