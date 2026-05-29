@@ -6511,83 +6511,92 @@ return (
 
         {layoutMode === "grid6" ? (
           <View pointerEvents="box-none" style={s.teamGridOverlayLayer as any}>
-            {openClaimableSlots.length ? (
-              openClaimableSlots.map((slot: any, index: number) => (
-                <Pressable
-                  key={`open-claim-slot-${slot?.id || slot?.slot || index}`}
-                  onPress={() => router.push("/" as any)}
-                  style={({ pressed }) => ([
-                    s.teamGridMiniCard,
-                    index % 2 === 0 ? s.teamGridMiniCardLeft : s.teamGridMiniCardRight,
-                    index < 2 ? s.teamGridMiniCardRowOne : s.teamGridMiniCardRowTwo,
-                    pressed ? s.upperBookRequestPressed : null,
-                  ] as any)}
-                >
-                  <View style={s.teamGridRequestAvatar as any}>
-                    <Text style={s.teamGridRequestAvatarText as any}>+</Text>
-                    <View
-                      pointerEvents="none"
-                      style={[
-                        s.slotOrbitAvatarRing as any,
-                        { borderColor: slotRingColor((slot as any)?.slot || (index + 1)) },
-                      ]}
-                    />
-                  </View>
+            {[0, 1, 2, 3].map((index) => {
+              const slot = openClaimableSlots[index] as any;
+              const positionStyle = [
+                index % 2 === 0 ? s.teamGridMiniCardLeft : s.teamGridMiniCardRight,
+                index < 2 ? s.teamGridMiniCardRowOne : s.teamGridMiniCardRowTwo,
+              ];
 
-                  <View style={s.teamGridRequestTextArea as any}>
-                    <Text style={s.teamGridRequestName as any} numberOfLines={1}>
-                      {`Go Claim S${slot.slot}`}
-                    </Text>
-                    <Text style={[s.teamGridRequestStatus as any, s.teamGridRequestStatusApproved]} numberOfLines={1}>
-                      {String(slot.title || "Open slot")}
-                    </Text>
-                  </View>
-                </Pressable>
-              ))
-            ) : (
-              <View
-                pointerEvents="none"
-                style={[
-                  s.teamGridMiniCard,
-                  s.teamGridMiniCardLeft,
-                  s.teamGridMiniCardRowTwo,
-                  {
-                    width: "88%",
-                    borderColor: "rgba(244,208,111,0.55)",
-                    backgroundColor: "rgba(72,8,12,0.94)",
-                    shadowColor: "#8B0000",
-                    shadowOpacity: 0.45,
-                    shadowRadius: 10,
-                    shadowOffset: { width: 0, height: 4 },
-                  },
-                ] as any}
-              >
+              if (slot) {
+                return (
+                  <Pressable
+                    key={`open-claim-slot-${slot?.id || slot?.slot || index}`}
+                    onPress={() => router.push("/" as any)}
+                    style={({ pressed }) => ([
+                      s.teamGridMiniCard,
+                      ...positionStyle,
+                      pressed ? s.upperBookRequestPressed : null,
+                    ] as any)}
+                  >
+                    <View style={s.teamGridRequestAvatar as any}>
+                      <Text style={s.teamGridRequestAvatarText as any}>+</Text>
+                      <View
+                        pointerEvents="none"
+                        style={[
+                          s.slotOrbitAvatarRing as any,
+                          { borderColor: slotRingColor((slot as any)?.slot || (index + 1)) },
+                        ]}
+                      />
+                    </View>
+
+                    <View style={s.teamGridRequestTextArea as any}>
+                      <Text style={s.teamGridRequestName as any} numberOfLines={1}>
+                        {`Go Claim S${slot.slot}`}
+                      </Text>
+                      <Text style={[s.teamGridRequestStatus as any, s.teamGridRequestStatusApproved]} numberOfLines={1}>
+                        {String(slot.title || "Open slot")}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              }
+
+              return (
                 <View
+                  key={`locked-claim-slot-${index}`}
+                  pointerEvents="none"
                   style={[
-                    s.teamGridRequestAvatar as any,
+                    s.teamGridMiniCard,
+                    ...positionStyle,
                     {
-                      backgroundColor: "rgba(139,0,0,0.35)",
-                      borderColor: "rgba(244,208,111,0.72)",
+                      borderColor: "rgba(244,208,111,0.55)",
+                      backgroundColor: "rgba(72,8,12,0.94)",
+                      shadowColor: "#8B0000",
+                      shadowOpacity: 0.45,
+                      shadowRadius: 10,
+                      shadowOffset: { width: 0, height: 4 },
                     },
-                  ]}
+                  ] as any}
                 >
-                  <Ionicons name="lock-closed" size={22} color="#F4D06F" />
-                </View>
-                <View style={s.teamGridRequestTextArea as any}>
-                  <Text style={[s.teamGridRequestName as any, { color: "#FFD6D6" }]}>
-                    All slots claimed
-                  </Text>
-                  <Text
+                  <View
                     style={[
-                      s.teamGridRequestStatus as any,
-                      { color: "rgba(255,214,214,0.78)", fontWeight: "700" },
+                      s.teamGridRequestAvatar as any,
+                      {
+                        backgroundColor: "rgba(139,0,0,0.35)",
+                        borderColor: "rgba(244,208,111,0.72)",
+                      },
                     ]}
                   >
-                    No claim slots left
-                  </Text>
+                    <Ionicons name="lock-closed" size={22} color="#F4D06F" />
+                  </View>
+                  <View style={s.teamGridRequestTextArea as any}>
+                    <Text style={[s.teamGridRequestName as any, { color: "#FFD6D6" }]} numberOfLines={1}>
+                      All slots claimed
+                    </Text>
+                    <Text
+                      style={[
+                        s.teamGridRequestStatus as any,
+                        { color: "rgba(255,214,214,0.78)", fontWeight: "700" },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      No slots available
+                    </Text>
+                  </View>
                 </View>
-              </View>
-            )}
+              );
+            })}
           </View>
         ) : null}
 <StatusBar translucent backgroundColor="transparent" barStyle="light-content" hidden={false} />
