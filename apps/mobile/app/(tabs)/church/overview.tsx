@@ -245,11 +245,11 @@ export default function ChurchOverviewScreen() {
   // but UI actions remain locked by invitePreview.
   const effectiveAuthUserId = invitePreview
     ? String(auth?.userId || "preview-user")
-    : String(auth?.userId || "");
+    : String(session?.userId || auth?.userId || "");
 
   const effectiveAuthRole = invitePreview
     ? "Church_Admin"
-    : String(auth?.role || "Member");
+    : String(session?.role || (session as any)?.churchRole || auth?.role || "Member");
 
   const getHeaders = () => ({
     accept: "application/json",
@@ -774,9 +774,27 @@ export default function ChurchOverviewScreen() {
   const canOpenMinistries = !invitePreview && canSeeLeadershipOverview;
   const canOpenOfferings = !invitePreview && canSeeOfferings;
   const canEditProfile = !invitePreview && (isPastor || isChurchAdmin || isSystemAdmin);
-  const canManageMinistryMediaAccess = !invitePreview && isActualChurchPastor;
-  const canOpenMediaStudio = !invitePreview && canAccessChurchMedia;
+  const sessionRoleText = [
+    role,
+    String((session as any)?.role || ""),
+    String((session as any)?.churchRole || ""),
+  ].join(" ");
+  const isPastorSession = /\bPastor\b/i.test(sessionRoleText);
+  const canManageMinistryMediaAccess = !invitePreview && (isActualChurchPastor || isPastor || isPastorSession);
+  const canOpenMediaStudio = !invitePreview && (canAccessChurchMedia || isPastor || isPastorSession);
   const showMediaControlCard = canOpenMediaStudio || canManageMinistryMediaAccess;
+  const showMemberChurchAccessCard = !invitePreview && isMember && !showMediaControlCard;
+
+  console.log("KRISTO_BROADCAST_GATE", {
+    role,
+    isPastor,
+    isPastorSession,
+    isActualChurchPastor,
+    canAccessChurchMedia,
+    canManageMinistryMediaAccess,
+    canOpenMediaStudio,
+    showMediaControlCard,
+  });
 
   function ministryInitial(name?: string) {
     return String(name || "M").trim().charAt(0).toUpperCase() || "M";
@@ -1144,6 +1162,119 @@ export default function ChurchOverviewScreen() {
               </View>
             </View>
           </View>
+
+          {showMemberChurchAccessCard ? (
+            <View style={[s.powerCardOuter, s.memberAccessCard]}>
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(86,139,255,0.14)", "rgba(10,16,28,0.96)", "rgba(4,7,12,0.98)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFillObject}
+              />
+              <View pointerEvents="none" style={s.memberAccessGlow} />
+              <LinearGradient
+                pointerEvents="none"
+                colors={["rgba(86,139,255,0.42)", "rgba(217,179,95,0.12)", "transparent"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={s.powerTopGoldLine}
+              />
+
+              <View style={s.powerTop}>
+                <View style={s.powerIconOuter}>
+                  <View style={s.memberAccessIconHalo} pointerEvents="none" />
+                  <LinearGradient
+                    colors={["#8FB5FF", "#568BFF", "#2E5FBF"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.powerIcon}
+                  >
+                    <Ionicons name="people" size={19} color="#061020" />
+                  </LinearGradient>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.memberAccessEyebrow}>Church Access</Text>
+                  <Text style={s.powerTitle}>Serve with your church</Text>
+                </View>
+              </View>
+
+              <View style={s.powerActions}>
+                <LuxuryPressable
+                  onPress={() => router.push("/more/ministries" as any)}
+                  style={s.powerBtn}
+                >
+                  <View style={s.powerBtnContent}>
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={["rgba(255,255,255,0.10)", "transparent"]}
+                      start={{ x: 0.5, y: 0 }}
+                      end={{ x: 0.5, y: 1 }}
+                      style={s.powerBtnHighlight}
+                    />
+                    <Ionicons name="grid-outline" size={16} color="#8FB5FF" />
+                    <Text style={[s.powerBtnText, s.memberAccessBtnText]}>Ministries</Text>
+                  </View>
+                </LuxuryPressable>
+
+                <LuxuryPressable
+                  onPress={async () => {
+                    try {
+                      const feedRes: any = await apiGet("/api/church/feed", {
+                        headers: getHeaders(),
+                      } as any);
+
+                      const rows = Array.isArray(feedRes?.items)
+                        ? feedRes.items
+                        : Array.isArray(feedRes?.data)
+                          ? feedRes.data
+                          : Array.isArray(feedRes)
+                            ? feedRes
+                            : [];
+
+                      const hasOpenMediaSlot = rows.some((item: any) => {
+                        const source = String(item?.source || "");
+                        const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+                        if (!source.includes("media-schedule") && !slots.length) return false;
+
+                        return slots.some((slot: any) => {
+                          const claimedByUserId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+                          const locked = slot?.locked === true || slot?.isLocked === true;
+                          return !claimedByUserId && !locked;
+                        });
+                      });
+
+                      if (!hasOpenMediaSlot) {
+                        Alert.alert(
+                          "No media slots available",
+                          "There is no open media schedule slot right now. Please check again later when your church media team creates a schedule."
+                        );
+                        return;
+                      }
+
+                      router.push({ pathname: "/(tabs)", params: { tab: "home", focus: "media-slots" } } as any);
+                    } catch {
+                      Alert.alert(
+                        "Unable to check media slots",
+                        "Please try again in a moment."
+                      );
+                    }
+                  }}
+                  style={s.powerBtnGoldWrap}
+                >
+                  <LinearGradient
+                    colors={["#F2D792", GOLD, "#A67C2E"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.powerBtnGold}
+                  >
+                    <Ionicons name="radio-outline" size={16} color="#0B0F17" />
+                    <Text style={s.powerBtnGoldText}>Claim Media Slot</Text>
+                  </LinearGradient>
+                </LuxuryPressable>
+              </View>
+            </View>
+          ) : null}
 
           {showMediaControlCard ? (
             <View style={[s.powerCardOuter, !canOpenMediaStudio && !canManageMinistryMediaAccess && { opacity: 0.92 }]}>
@@ -1944,6 +2075,36 @@ const s = StyleSheet.create<any>({
     height: 140,
     borderRadius: 999,
     backgroundColor: "rgba(217,179,95,0.12)",
+  },
+  memberAccessCard: {
+    borderColor: "rgba(86,139,255,0.34)",
+  },
+  memberAccessGlow: {
+    position: "absolute",
+    bottom: -42,
+    right: -28,
+    width: 150,
+    height: 150,
+    borderRadius: 999,
+    backgroundColor: "rgba(86,139,255,0.12)",
+  },
+  memberAccessIconHalo: {
+    position: "absolute",
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    backgroundColor: "rgba(86,139,255,0.18)",
+  },
+  memberAccessEyebrow: {
+    color: "#8FB5FF",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    marginBottom: 2,
+  },
+  memberAccessBtnText: {
+    color: "#8FB5FF",
   },
   powerSheen: {
     position: "absolute",
