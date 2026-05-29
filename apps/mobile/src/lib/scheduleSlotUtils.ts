@@ -565,65 +565,41 @@ export function applyRingClaimHintsToScheduleSlots(
   });
 }
 
+export function resolveActiveSlotSpeaker(slot: any, index = 0) {
+  const slotNumber = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+  const claimedByUserId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+  const explicitProgramTitle = String(
+    slot?.slotLabel || slot?.task || slot?.script || slot?.title || ""
+  ).trim();
+  const programTitle =
+    explicitProgramTitle ||
+    (claimedByUserId ? String(slot?.name || "").trim() : "") ||
+    `Slot ${slotNumber}`;
+  const speakerName = claimedByUserId
+    ? String(slot?.claimedByName || slot?.claimedBy?.name || slot?.name || "").trim()
+    : "";
+
+  return {
+    slotNumber,
+    claimedByUserId,
+    isClaimed: !!claimedByUserId,
+    programTitle,
+    speakerName,
+    displayTitle: claimedByUserId ? speakerName || programTitle : programTitle,
+    liveBannerTitle: claimedByUserId
+      ? `${(speakerName || programTitle).toUpperCase()} IS LIVE`
+      : `${programTitle.toUpperCase()} • OPEN SLOT`,
+  };
+}
+
 export function enrichScheduleSlotsFromLiveRequests(
   slots: any[],
-  requests: Record<string, any> | null | undefined,
-  liveId?: string
+  _requests: Record<string, any> | null | undefined,
+  _liveId?: string
 ) {
-  if (!Array.isArray(slots) || !slots.length) return slots;
-  const reqRows = Object.entries(requests || {});
-  if (!reqRows.length) return slots;
-
-  return slots.map((slot, index) => {
-    const owner = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
-    if (owner) return slot;
-
-    const slotId = String(slot?.id || slot?.slotId || "").trim();
-    const slotNum = Number(slot?.slot || slot?.slotNumber || index + 1);
-
-    const match = reqRows.find(([, req]: any) => {
-      if (liveId && String(req?.liveId || "").trim() && String(req.liveId) !== String(liveId)) {
-        return false;
-      }
-      if (slotId && String(req?.slotId || "") === slotId) return true;
-      return Number(req?.slot || req?.claimNumber || 0) === slotNum;
-    });
-
-    if (!match) return slot;
-
-    const req = match[1] as any;
-    const userId = String(req?.userId || "").trim();
-    if (!userId) return slot;
-
-    const avatar = String(req?.avatar || req?.avatarUri || "").trim();
-
-    console.log("KRISTO_BACKEND_REQUEST_VISIBLE", {
-      liveId: liveId || req?.liveId || "",
-      slotId,
-      slotNumber: slotNum,
-      userId,
-      status: String(req?.status || "waiting"),
-    });
-
-    return normalizeLiveScheduleSlot(
-      {
-        ...slot,
-        claimed: true,
-        isClaimed: true,
-        claimedByUserId: userId,
-        claimedByName: String(req?.name || "Member"),
-        claimedByAvatarUri: avatar,
-        claimedByAvatar: avatar,
-        claimedBy: {
-          userId,
-          name: String(req?.name || "Member"),
-          avatarUri: avatar,
-          role: String(req?.role || "Member"),
-        },
-      },
-      index
-    );
-  });
+  // Join/waiting requests are separate from schedule slot claims.
+  // Never promote a live request into claimedByUserId on the schedule row.
+  return slots;
 }
 
 export function parseLiveAllScheduleSlotsJson(rawParam: unknown) {
