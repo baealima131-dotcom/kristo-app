@@ -23,6 +23,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
+import Slider from "@react-native-community/slider";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEvent } from "expo";
 import { LiveKitRoom, useRoomContext } from "@livekit/react-native";
@@ -160,7 +161,16 @@ function mediaUrl(u: any) {
 const feedVideoPosterCache = new Map<string, string>();
 
 function feedVideoPlayUri(item: any) {
-  return mediaUrl(String(item?.videoUrl || item?.mediaUri || "").trim());
+  const raw = String(item?.videoUrl || item?.mediaUri || "").trim();
+  if (!raw || raw.startsWith("file://")) return "";
+  return mediaUrl(raw);
+}
+
+function formatFeedVideoTime(seconds: number) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
 function resolveFeedVideoPoster(item: any): string {
@@ -610,22 +620,34 @@ function MiniLiveRemoteVideo({ onStream }: { onStream: (url: string) => void }) 
   return null;
 }
 
+const FEED_VIDEO_DOUBLE_TAP_MS = 280;
+const FEED_VIDEO_SINGLE_TAP_DELAY_MS = 300;
+const FEED_VIDEO_CONTROLS_HIDE_MS = 3200;
+const FEED_VIDEO_CENTER_BTN_SIZE = 80;
+const FEED_VIDEO_CENTER_ICON_PLAY = 38;
+const FEED_VIDEO_CENTER_ICON_PAUSE = 36;
+const FEED_VIDEO_HEART_SIZE = 86;
+
 const FeedVideo = memo(function FeedVideo({
   postId,
   feedIndex,
   uri,
   posterUri,
   shouldPlay,
+  interactive,
   playbackMeta,
   onVideoReadyChange,
+  onDoubleTapLike,
 }: {
   postId: string;
   feedIndex: number;
   uri: string;
   posterUri?: string;
   shouldPlay: boolean;
+  interactive?: boolean;
   playbackMeta: Record<string, unknown>;
   onVideoReadyChange?: (ready: boolean) => void;
+  onDoubleTapLike?: () => void;
 }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = true;
@@ -634,6 +656,23 @@ const FeedVideo = memo(function FeedVideo({
 
   const shouldPlayRef = useRef(shouldPlay);
   shouldPlayRef.current = shouldPlay;
+
+  const userPausedRef = useRef(false);
+  const [userPaused, setUserPaused] = useState(false);
+  const [showControls, setShowControls] = useState(false);
+  const [scrubbing, setScrubbing] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [centerFlashIcon, setCenterFlashIcon] = useState<"play" | "pause" | null>(null);
+
+  const centerFlashOpacity = useRef(new Animated.Value(0)).current;
+  const heartBurstScale = useRef(new Animated.Value(0)).current;
+  const heartBurstOpacity = useRef(new Animated.Value(0)).current;
+
+  const controlsHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const centerFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTapRef = useRef(0);
 
   const { status } = useEvent(player, "statusChange", { status: player.status });
   const videoReady = status === "readyToPlay";
@@ -644,6 +683,153 @@ const FeedVideo = memo(function FeedVideo({
   const showPosterLayer = !!poster && (!shouldPlay || !videoReady);
   const showBackdrop = !poster && (!shouldPlay || !videoReady);
 
+  const clearControlsHideTimer = useCallback(() => {
+    if (controlsHideTimerRef.current) {
+      clearTimeout(controlsHideTimerRef.current);
+      controlsHideTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleControlsHide = useCallback(() => {
+    clearControlsHideTimer();
+    controlsHideTimerRef.current = setTimeout(() => {
+      setShowControls(false);
+    }, FEED_VIDEO_CONTROLS_HIDE_MS);
+  }, [clearControlsHideTimer]);
+
+  const revealControls = useCallback(() => {
+    if (!interactive) return;
+    setShowControls(true);
+    scheduleControlsHide();
+  }, [interactive, scheduleControlsHide]);
+
+  const flashCenterIcon = useCallback(
+    (icon: "play" | "pause", holdMs = 650) => {
+      if (centerFlashTimerRef.current) {
+        clearTimeout(centerFlashTimerRef.current);
+      }
+      setCenterFlashIcon(icon);
+      centerFlashOpacity.stopAnimation();
+      centerFlashOpacity.setValue(0.92);
+      Animated.timing(centerFlashOpacity, {
+        toValue: 0,
+        duration: holdMs,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setCenterFlashIcon(null);
+      });
+    },
+    [centerFlashOpacity]
+  );
+
+  const playHeartBurst = useCallback(() => {
+    heartBurstScale.stopAnimation();
+    heartBurstOpacity.stopAnimation();
+    heartBurstScale.setValue(0.52);
+    heartBurstOpacity.setValue(0.88);
+
+    Animated.parallel([
+      Animated.sequence([
+        Animated.spring(heartBurstScale, {
+          toValue: 1.06,
+          friction: 5.5,
+          tension: 160,
+          useNativeDriver: true,
+        }),
+        Animated.timing(heartBurstScale, {
+          toValue: 1,
+          duration: 220,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.sequence([
+        Animated.delay(360),
+        Animated.timing(heartBurstOpacity, {
+          toValue: 0,
+          duration: 320,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    ]).start();
+  }, [heartBurstOpacity, heartBurstScale]);
+
+  const togglePlayPause = useCallback(() => {
+    try {
+      const playing = Boolean(player.playing);
+      const meta = {
+        postId,
+        feedIndex,
+        shouldPlay: shouldPlayRef.current,
+        ...(playbackMeta as any),
+      };
+
+      if (playing) {
+        player.pause();
+        player.muted = true;
+        userPausedRef.current = true;
+        setUserPaused(true);
+        logHomeFeedVideoPlayState({
+          ...meta,
+          shouldPlay: false,
+          reason: "user-pause",
+        });
+        return;
+      }
+
+      userPausedRef.current = false;
+      setUserPaused(false);
+      syncHomeFeedVideoOwnership({
+        ...meta,
+        shouldPlay: true,
+        reason: "user-play",
+      });
+      player.loop = true;
+      player.muted = false;
+      player.play();
+      flashCenterIcon("pause", 380);
+      logHomeFeedVideoPlayState({
+        ...meta,
+        shouldPlay: true,
+        reason: "user-play",
+      });
+    } catch {}
+  }, [feedIndex, flashCenterIcon, playbackMeta, player, postId]);
+
+  const handleDoubleTap = useCallback(() => {
+    onDoubleTapLike?.();
+    playHeartBurst();
+    revealControls();
+  }, [onDoubleTapLike, playHeartBurst, revealControls]);
+
+  const handleVideoPress = useCallback(() => {
+    if (!interactive) return;
+
+    revealControls();
+
+    const now = Date.now();
+    if (now - lastTapRef.current < FEED_VIDEO_DOUBLE_TAP_MS) {
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      lastTapRef.current = 0;
+      handleDoubleTap();
+      return;
+    }
+
+    lastTapRef.current = now;
+    if (singleTapTimerRef.current) {
+      clearTimeout(singleTapTimerRef.current);
+    }
+    singleTapTimerRef.current = setTimeout(() => {
+      singleTapTimerRef.current = null;
+      togglePlayPause();
+    }, FEED_VIDEO_SINGLE_TAP_DELAY_MS);
+  }, [handleDoubleTap, interactive, revealControls, togglePlayPause]);
+
   useEffect(() => {
     registerHomeFeedVideo(postId, player, {
       postId,
@@ -652,6 +838,9 @@ const FeedVideo = memo(function FeedVideo({
       reason: "mount",
     });
     return () => {
+      if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
+      if (centerFlashTimerRef.current) clearTimeout(centerFlashTimerRef.current);
+      clearControlsHideTimer();
       pauseHomeFeedVideo(postId, {
         postId,
         feedIndex,
@@ -665,7 +854,7 @@ const FeedVideo = memo(function FeedVideo({
         reason: "unmount",
       });
     };
-  }, [postId, player, feedIndex]);
+  }, [postId, player, feedIndex, playbackMeta, clearControlsHideTimer]);
 
   useEffect(() => {
     if (videoReady && poster) {
@@ -676,6 +865,15 @@ const FeedVideo = memo(function FeedVideo({
   useEffect(() => {
     onVideoReadyChange?.(shouldPlay && videoReady);
   }, [shouldPlay, videoReady, onVideoReadyChange]);
+
+  useEffect(() => {
+    if (shouldPlay) return;
+    userPausedRef.current = false;
+    setUserPaused(false);
+    setShowControls(false);
+    setCenterFlashIcon(null);
+    clearControlsHideTimer();
+  }, [shouldPlay, clearControlsHideTimer]);
 
   useEffect(() => {
     if (shouldPlay) return;
@@ -708,10 +906,11 @@ const FeedVideo = memo(function FeedVideo({
   useEffect(() => {
     const applyPlayback = (reason: string) => {
       const play = shouldPlayRef.current;
+      const blockedByUser = userPausedRef.current;
       const meta = {
         postId,
         feedIndex,
-        shouldPlay: play,
+        shouldPlay: play && !blockedByUser,
         reason,
         ...(playbackMeta as any),
       };
@@ -720,6 +919,14 @@ const FeedVideo = memo(function FeedVideo({
 
       if (!play) {
         pauseHomeFeedVideo(postId, meta);
+        return;
+      }
+
+      if (blockedByUser) {
+        try {
+          player.pause();
+          player.muted = true;
+        } catch {}
         return;
       }
 
@@ -755,20 +962,27 @@ const FeedVideo = memo(function FeedVideo({
 
     const timer = setInterval(() => {
       if (!shouldPlayRef.current) return;
+      if (userPausedRef.current) return;
       try {
-        const duration = Number((player as any)?.duration || 0);
-        const currentTime = Number((player as any)?.currentTime || 0);
+        const nextDuration = Number((player as any)?.duration || 0);
+        const nextCurrent = Number((player as any)?.currentTime || 0);
+        if (!scrubbing) {
+          setDuration(nextDuration);
+          setCurrentTime(nextCurrent);
+        }
 
-        if (duration > 0 && currentTime >= Math.max(0, duration - 0.25)) {
+        if (nextDuration > 0 && nextCurrent >= Math.max(0, nextDuration - 0.25)) {
           player.currentTime = 0;
           player.muted = false;
           player.play();
         }
       } catch {}
-    }, 350);
+    }, 250);
 
     return () => clearInterval(timer);
-  }, [player, shouldPlay]);
+  }, [player, shouldPlay, scrubbing]);
+
+  const maxDuration = Math.max(duration, 0.01);
 
   return (
     <View style={s.media}>
@@ -790,6 +1004,103 @@ const FeedVideo = memo(function FeedVideo({
         contentFit="cover"
         nativeControls={false}
       />
+
+      {interactive ? (
+        <>
+          <Pressable
+            style={s.feedVideoTouchLayer}
+            onPressIn={revealControls}
+            onPress={handleVideoPress}
+          />
+
+          {userPaused ? (
+            <View pointerEvents="none" style={s.feedVideoCenterPlay}>
+              <View style={s.feedVideoCenterPlayCircle}>
+                <BlurView intensity={26} tint="dark" style={StyleSheet.absoluteFillObject} />
+                <Ionicons
+                  name="play"
+                  size={FEED_VIDEO_CENTER_ICON_PLAY}
+                  color="rgba(255,255,255,0.92)"
+                  style={s.feedVideoPlayIconOffset}
+                />
+              </View>
+            </View>
+          ) : null}
+
+          {centerFlashIcon ? (
+            <Animated.View
+              pointerEvents="none"
+              style={[s.feedVideoCenterFlash, { opacity: centerFlashOpacity }]}
+            >
+              <View style={s.feedVideoCenterPlayCircleSoft}>
+                <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
+                <Ionicons
+                  name={centerFlashIcon === "pause" ? "pause" : "play"}
+                  size={
+                    centerFlashIcon === "pause"
+                      ? FEED_VIDEO_CENTER_ICON_PAUSE
+                      : FEED_VIDEO_CENTER_ICON_PLAY
+                  }
+                  color="rgba(255,255,255,0.88)"
+                  style={centerFlashIcon === "play" ? s.feedVideoPlayIconOffset : undefined}
+                />
+              </View>
+            </Animated.View>
+          ) : null}
+
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              s.feedVideoHeartBurst,
+              {
+                opacity: heartBurstOpacity,
+                transform: [{ scale: heartBurstScale }],
+              },
+            ]}
+          >
+            <Ionicons name="heart" size={FEED_VIDEO_HEART_SIZE} color="rgba(255,107,136,0.94)" />
+          </Animated.View>
+
+          {showControls ? (
+            <View style={s.feedVideoControls} pointerEvents="box-none">
+              <LinearGradient
+                colors={["rgba(0,0,0,0)", "rgba(0,0,0,0.18)", "rgba(0,0,0,0.34)"]}
+                style={StyleSheet.absoluteFillObject}
+              />
+              <View style={s.feedVideoControlsRow}>
+                <Text style={s.feedVideoTimeText}>{formatFeedVideoTime(currentTime)}</Text>
+                <View style={s.feedVideoSliderWrap}>
+                  <Slider
+                    style={s.feedVideoSlider}
+                    minimumValue={0}
+                    maximumValue={maxDuration}
+                    value={Math.min(currentTime, maxDuration)}
+                    minimumTrackTintColor="rgba(247,211,106,0.92)"
+                    maximumTrackTintColor="rgba(255,255,255,0.16)"
+                    thumbTintColor="rgba(255,255,255,0.94)"
+                    onSlidingStart={() => {
+                      setScrubbing(true);
+                      clearControlsHideTimer();
+                    }}
+                    onValueChange={(value) => {
+                      setCurrentTime(value);
+                    }}
+                    onSlidingComplete={(value) => {
+                      try {
+                        player.currentTime = value;
+                      } catch {}
+                      setCurrentTime(value);
+                      setScrubbing(false);
+                      scheduleControlsHide();
+                    }}
+                  />
+                </View>
+                <Text style={s.feedVideoTimeText}>{formatFeedVideoTime(duration)}</Text>
+              </View>
+            </View>
+          ) : null}
+        </>
+      ) : null}
     </View>
   );
 });
@@ -800,16 +1111,20 @@ const FeedVideoSurface = memo(function FeedVideoSurface({
   uri,
   posterUri,
   shouldPlay,
+  interactive,
   playbackMeta,
   onVideoReadyChange,
+  onDoubleTapLike,
 }: {
   postId: string;
   feedIndex: number;
   uri: string;
   posterUri?: string;
   shouldPlay: boolean;
+  interactive?: boolean;
   playbackMeta: Record<string, unknown>;
   onVideoReadyChange?: (ready: boolean) => void;
+  onDoubleTapLike?: () => void;
 }) {
   const resolvedPoster =
     String(posterUri || "").trim() ||
@@ -823,8 +1138,10 @@ const FeedVideoSurface = memo(function FeedVideoSurface({
       uri={uri}
       posterUri={resolvedPoster}
       shouldPlay={shouldPlay}
+      interactive={interactive}
       playbackMeta={playbackMeta}
       onVideoReadyChange={onVideoReadyChange}
+      onDoubleTapLike={onDoubleTapLike}
     />
   );
 });
@@ -1253,6 +1570,27 @@ const noMediaPost =
       : 0) ??
     0
   );
+
+  const triggerVideoDoubleTapLike = useCallback(() => {
+    if (isBackendFeedPost) {
+      const nextLiked = !displayLiked;
+      const nextCount = Math.max(0, Number(likeCount || 0) + (nextLiked ? 1 : -1));
+      onOptimisticBackendLike?.(feedActionId, nextLiked, nextCount);
+      recordForYouSignal(feedActionId, { likedCount: nextLiked ? 1 : 0, lastActionAt: Date.now() });
+      syncBackendLike(feedActionId, nextLiked);
+      return;
+    }
+
+    recordForYouSignal(feedActionId, { likedCount: 1, lastActionAt: Date.now() });
+    feedToggleLike(item.id);
+  }, [
+    displayLiked,
+    feedActionId,
+    isBackendFeedPost,
+    item.id,
+    likeCount,
+    onOptimisticBackendLike,
+  ]);
 
   async function claimThisSlot() {
     if (!userHasActiveChurchMembership(currentSession)) return;
@@ -2460,7 +2798,9 @@ const noMediaPost =
                 uri={feedVideoPlayUri(item)}
                 posterUri={resolveFeedVideoPoster(item)}
                 shouldPlay={shouldPlayVideo}
+                interactive={shouldPlayVideo}
                 playbackMeta={playbackMeta}
+                onDoubleTapLike={triggerVideoDoubleTapLike}
               />
             ) : item.mediaType === "image" && item.mediaUri ? (
               <Image
@@ -2565,7 +2905,9 @@ const noMediaPost =
             uri={feedVideoPlayUri(item)}
             posterUri={resolveFeedVideoPoster(item)}
             shouldPlay={shouldPlayVideo}
+            interactive={shouldPlayVideo}
             playbackMeta={playbackMeta}
+            onDoubleTapLike={triggerVideoDoubleTapLike}
             onVideoReadyChange={
               !activeSlot ? handleFeedVideoReady : undefined
             }
@@ -3737,6 +4079,7 @@ export default function FeedScreen() {
   }, []);
 
   useEffect(() => {
+    clearLocalMediaVideoPosts();
     void loadBackendFeed("mount");
     if (__DEV__) {
       (globalThis as any).clearHomeFeedLocalCaches = clearHomeFeedLocalCaches;
@@ -4373,6 +4716,11 @@ export default function FeedScreen() {
     const seenFinal = new Set<string>();
 
     const visibleData = finalFeed.filter((item: any, index: number) => {
+      const id = String(item?.id || "");
+      if (id.startsWith("media-video-") || id.includes("__fy_") && id.split("__fy_")[0].startsWith("media-video-")) {
+        return false;
+      }
+
       const key = String(item?.id || `feed-item-${index}`);
       if (seenFinal.has(key)) return false;
       if (!keepRealHomeFeedRow(item, "finalVisibleData")) return false;
@@ -5074,6 +5422,98 @@ const s: any = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     width: "100%",
     height: "100%",
+  },
+
+  feedVideoTouchLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 4,
+  },
+
+  feedVideoCenterPlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 5,
+  },
+
+  feedVideoCenterFlash: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 6,
+  },
+
+  feedVideoCenterPlayCircle: {
+    width: FEED_VIDEO_CENTER_BTN_SIZE,
+    height: FEED_VIDEO_CENTER_BTN_SIZE,
+    borderRadius: FEED_VIDEO_CENTER_BTN_SIZE / 2,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.28)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+
+  feedVideoCenterPlayCircleSoft: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.24)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+
+  feedVideoPlayIconOffset: {
+    marginLeft: 3,
+  },
+
+  feedVideoHeartBurst: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 7,
+  },
+
+  feedVideoControls: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 2,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+    paddingTop: 6,
+    zIndex: 8,
+  },
+
+  feedVideoControlsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  feedVideoTimeText: {
+    minWidth: 36,
+    color: "rgba(255,255,255,0.84)",
+    fontSize: 12,
+    fontWeight: "600",
+    textAlign: "center",
+    letterSpacing: 0.2,
+  },
+
+  feedVideoSliderWrap: {
+    flex: 1,
+    height: 18,
+    justifyContent: "center",
+  },
+
+  feedVideoSlider: {
+    width: "100%",
+    height: 18,
+    transform: [{ scaleY: 0.72 }],
   },
 
   mediaImage: {

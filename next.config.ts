@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  experimental: {
+    middlewareClientMaxBodySize: "150mb",
+  },
   typescript: {
     // Monorepo API routes have legacy type drift; runtime is validated in handlers.
     ignoreBuildErrors: true,
