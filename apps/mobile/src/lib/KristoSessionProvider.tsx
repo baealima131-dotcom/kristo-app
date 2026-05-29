@@ -124,13 +124,33 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       const churchName = syncedChurchId
         ? String(res?.churchName || "").trim() || (await resolveChurchDisplayName(syncedChurchId, baseSession.userId))
         : "";
+      const currentRole = String(baseSession.role || baseSession.churchRole || "Member");
+      const safeSyncedRole =
+        syncedChurchId &&
+        syncedChurchId === String(baseSession.churchId || "").trim() &&
+        currentRole === "Pastor" &&
+        syncedRole === "Member"
+          ? "Pastor"
+          : syncedRole;
+
+      if (safeSyncedRole !== syncedRole) {
+        console.log("KRISTO_SESSION_ROLE_DOWNGRADE_BLOCKED", {
+          userId: baseSession.userId,
+          churchId: syncedChurchId,
+          from: currentRole,
+          attempted: syncedRole,
+          kept: safeSyncedRole,
+          source: "SessionProvider.silentSyncProfile",
+        });
+      }
+
       const next: KristoSession = {
         ...baseSession,
         churchId: syncedChurchId,
         activeChurchId: syncedChurchId,
         churchName: churchName || (syncedChurchId ? (baseSession as any).churchName || "" : ""),
-        role: syncedRole as any,
-        churchRole: syncedRole as any,
+        role: safeSyncedRole as any,
+        churchRole: safeSyncedRole as any,
         name: String(p.fullName || baseSession.name || ""),
         displayName: String(p.fullName || baseSession.displayName || baseSession.name || ""),
         phone: String(p.phone || baseSession.phone || ""),
