@@ -160,7 +160,7 @@ function mediaUrl(u: any) {
 const feedVideoPosterCache = new Map<string, string>();
 
 function feedVideoPlayUri(item: any) {
-  return mediaUrl(String(item?.videoUrl || "").trim());
+  return mediaUrl(String(item?.videoUrl || item?.mediaUri || "").trim());
 }
 
 function resolveFeedVideoPoster(item: any): string {
@@ -939,7 +939,13 @@ const FeedSlide = memo(function FeedSlide({
   const liveRoomPath = String((item as any)?.liveRoomPath || "/more/my-church-room/messages/live-room");
   const title = String(item.title || "").trim();
   const titleUpper = title.toUpperCase();
-  const body = String(item.body || "").trim();
+  const body = String(
+    item.body ||
+    item.text ||
+    item.description ||
+    item.caption ||
+    ""
+  ).trim();
   const isScheduleCard = String((item as any)?.scheduleType || "").includes("live") || title.toLowerCase().includes("live time card");
   const firstSlotClaimedBy = (item as any)?.scheduleSlots?.[0]?.claimedBy;
   const claimed = Boolean(
@@ -1136,6 +1142,14 @@ const noMediaPost =
     ? displayChurchMediaName
     : displayAuthorName;
   const feedHeadlineColor = isMediaPost ? "#F7D36A" : categoryAccent;
+
+  const displayVideoTitle = String(
+    title ||
+    displayChurchMediaName ||
+    displayAuthorName ||
+    "Church Media"
+  ).trim();
+  const displayVideoCaption = body;
 
   const noMediaCardBg =
     isTestimony ? "rgba(4, 24, 45, 0.92)" :
@@ -1579,7 +1593,7 @@ const noMediaPost =
     videoMetaFade.setValue(0);
   }, [isActivePost, item.id, videoMetaFade]);
 
-  const videoMetaCanFadeIn = showVideoMetaChrome && (feedVideoReady || hasVideoPoster);
+  const videoMetaCanFadeIn = showVideoMetaChrome;
 
   useEffect(() => {
     if (!videoMetaCanFadeIn) {
@@ -2584,16 +2598,19 @@ const noMediaPost =
       )}
 
       {showVideoMetaChrome ? (
-        <Animated.View pointerEvents="box-none" style={{ opacity: videoMetaFade }}>
+        <Animated.View
+          pointerEvents="box-none"
+          style={[StyleSheet.absoluteFillObject, { opacity: videoMetaFade }]}
+        >
           <LinearGradient
             pointerEvents="none"
             colors={[
-              "rgba(0,0,0,0.0)",
+              "rgba(0,0,0,0.18)",
               "rgba(0,0,0,0.0)",
               "rgba(0,0,0,0.20)",
-              "rgba(0,0,0,0.50)",
+              "rgba(0,0,0,0.58)",
             ]}
-            locations={[0, 0.55, 0.82, 1]}
+            locations={[0, 0.45, 0.78, 1]}
             style={s.overlay}
           />
 
@@ -2618,27 +2635,27 @@ const noMediaPost =
                     adjustsFontSizeToFit
                     minimumFontScale={0.78}
                   >
-                    {feedHeadline}
+                    {feedSubline}
                   </Text>
                   <Text style={[s.identityChurch, s.videoMetaText]} numberOfLines={1}>
-                    {feedSubline}
+                    {feedHeadline}
                   </Text>
                 </View>
               </View>
 
-              {!!title && !titleFullyHidden ? (
+              {!!displayVideoTitle ? (
                 <View style={s.videoTitleSlot}>
                   <Text
                     style={[s.title, s.videoMetaText, s.videoTitleText]}
-                    numberOfLines={1}
+                    numberOfLines={2}
                     ellipsizeMode="tail"
                   >
-                    {animatedTitle}
+                    {displayVideoTitle}
                   </Text>
                 </View>
               ) : null}
 
-              {!!body && titleFullyHidden ? (
+              {!!displayVideoCaption ? (
                 <View
                   style={[
                     s.videoCaptionSlot,
@@ -2655,7 +2672,7 @@ const noMediaPost =
                 </View>
               ) : null}
 
-              {titleFullyHidden && showBodyReadMore && !isLiveNow ? (
+              {!!displayVideoCaption && showBodyReadMore && !isLiveNow ? (
                 <Pressable onPress={() => setBodyExpanded((v) => !v)} style={s.readMoreBtn}>
                   <Text style={s.readMoreText}>
                     {bodyExpanded ? "Show less" : "Read more"}
@@ -5050,7 +5067,7 @@ const s: any = StyleSheet.create({
   videoMetaPanel: {
     alignSelf: "flex-start",
     maxWidth: "78%",
-    maxHeight: VIDEO_META_PANEL_MAX_HEIGHT,
+    maxHeight: VIDEO_META_PANEL_MAX_HEIGHT + 36,
     overflow: "hidden",
   },
 
