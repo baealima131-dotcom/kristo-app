@@ -554,6 +554,14 @@ export default function MeScreen() {
       String(h?.userId || "").trim() === String(session?.userId || "").trim()
   );
 
+  const viewerRoleRaw = String(session?.role || "Member").trim();
+  const isMediaPrivilegedRole =
+    viewerRoleRaw === "Pastor" ||
+    viewerRoleRaw === "Church_Admin" ||
+    viewerRoleRaw === "System_Admin" ||
+    viewerRoleRaw === "Admin";
+  const canShowMediaTab = isMediaPrivilegedRole || amIMediaHost;
+
   const mediaProfile =
     backendMedia && amIMediaHost
       ? backendMedia
@@ -565,14 +573,13 @@ export default function MeScreen() {
   const planStatus = paymentsState.subscriptions.planStatus;
   const hasSubscription = isPlanActive(currentPlan, planStatus);
   const [contentMode, setContentMode] = useState<"church" | "media">("church");
-  const canUseMediaMode = hasSubscription || hasMediaProfile;
-  const showMediaContent = hasMediaProfile && contentMode === "media";
+  const showMediaContent = canShowMediaTab && hasMediaProfile && contentMode === "media";
 
   React.useEffect(() => {
-    if (!hasMediaProfile && contentMode === "media") {
+    if (!canShowMediaTab && contentMode === "media") {
       setContentMode("church");
     }
-  }, [hasMediaProfile, contentMode]);
+  }, [canShowMediaTab, contentMode]);
 
 
   const userId = String(session?.userId || "").trim();
@@ -1672,7 +1679,7 @@ const resolvedName = useMemo(() => {
               </Pressable>
             </View>
 
-            {canUseMediaMode && showMediaContent ? (
+            {canShowMediaTab && showMediaContent ? (
               <View style={s.mediaSwitchRow}>
                 <Pressable
                   style={[s.mediaActionBtn, s.mediaActionBtnPrimary]}
@@ -1719,7 +1726,7 @@ const resolvedName = useMemo(() => {
                 <Text style={s.sectionTitle}>{showMediaContent ? "Media Library" : "Church Activity"}</Text>
                 <Text style={s.sectionSub}>{showMediaContent ? "Saved media and creator tools" : "Member life inside church"}</Text>
               </View>
-              {canUseMediaMode ? (
+              {canShowMediaTab ? (
                 <View style={s.contentModeTabs}>
                   <Pressable
                     onPress={() => setContentMode("church")}
