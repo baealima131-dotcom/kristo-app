@@ -5148,12 +5148,31 @@ export default function LiveRoomScreen() {
   ]);
 
   const hostControlViewerStats = useMemo(() => {
-    const presenceCount = Object.keys(liveViewerPresence || {}).length;
+    const presenceRows = Object.values(liveViewerPresence || {}) as any[];
+    const presenceCount = presenceRows.length;
     const totalViewers = Math.max(Number(live.viewerCount || 0), presenceCount);
     const activeViewers = presenceCount;
-    const members = Number(membersCount || 0);
-    const leaders = Number(leadersCount || 0);
-    const guests = Math.max(0, totalViewers - members - leaders);
+
+    const isLeaderRole = (role: string) => {
+      const r = String(role || "").toLowerCase();
+      return r.includes("pastor") || r.includes("admin") || r.includes("leader") || r.includes("host");
+    };
+
+    const leaders = presenceRows.filter((viewer: any) => {
+      const roleText = `${String(viewer?.role || "")} ${String(viewer?.churchRole || "")}`.toLowerCase();
+      return isLeaderRole(roleText);
+    }).length;
+
+    const members = presenceRows.filter((viewer: any) => {
+      const roleText = `${String(viewer?.role || "")} ${String(viewer?.churchRole || "")}`.toLowerCase();
+      if (isLeaderRole(roleText)) return false;
+      return roleText.includes("member") || !!viewer?.churchId;
+    }).length;
+
+    const knownPresence = members + leaders;
+    const guestsFromPresence = Math.max(0, presenceCount - knownPresence);
+    const unknownTotalExtra = Math.max(0, totalViewers - presenceCount);
+    const guests = guestsFromPresence + unknownTotalExtra;
 
     return {
       totalViewers,
@@ -5162,7 +5181,7 @@ export default function LiveRoomScreen() {
       leaders,
       guests,
     };
-  }, [liveViewerPresence, live.viewerCount, membersCount, leadersCount]);
+  }, [liveViewerPresence, live.viewerCount]);
 
   const hostControlUpcomingQueue = useMemo(() => {
     return runtimeScheduleSlots
