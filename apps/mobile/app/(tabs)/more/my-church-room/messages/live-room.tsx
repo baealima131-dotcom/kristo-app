@@ -345,16 +345,20 @@ function clearKristoLiveKitGlobalsForSession(options?: {
   userId?: string;
   roomName?: string;
   accountSwitch?: boolean;
+  forceReentry?: boolean;
 }) {
   const g = globalThis as any;
   const userId = String(options?.userId || "").trim();
   const roomName = String(options?.roomName || "").trim();
+  const unlockReentry = !!options?.forceReentry || !!options?.accountSwitch;
 
   if (roomName && String(g.__KRISTO_ACTIVE_PUBLISHER_ROOM__ || "") === roomName) {
     g.__KRISTO_ACTIVE_PUBLISHER_ROOM__ = "";
   }
 
-  if (userId && roomName) {
+  if (unlockReentry) {
+    g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+  } else if (userId && roomName) {
     const publisherKey = `${roomName}|${userId}`;
     if (String(g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ || "") === publisherKey) {
       g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
@@ -365,7 +369,7 @@ function clearKristoLiveKitGlobalsForSession(options?: {
 
   const locks = g.__KRISTO_LIVEKIT_STAGE_LOCKS__;
   if (locks instanceof Set) {
-    if (options?.accountSwitch) {
+    if (options?.accountSwitch || unlockReentry) {
       for (const key of Array.from(locks)) {
         const keyText = String(key || "");
         if (
@@ -382,7 +386,7 @@ function clearKristoLiveKitGlobalsForSession(options?: {
 
   const retryKeys = g.__KRISTO_VIEWER_JOIN_RETRY_KEYS__;
   if (retryKeys instanceof Set) {
-    if (options?.accountSwitch && userId && roomName) {
+    if ((options?.accountSwitch || unlockReentry) && userId && roomName) {
       retryKeys.delete(`${roomName}|${userId}`);
     }
   }
@@ -393,7 +397,11 @@ function clearKristoLiveKitGlobalsForSession(options?: {
     }
   } catch {}
 
-  if (options?.accountSwitch) {
+  if (unlockReentry) {
+    g.__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = 0;
+    g.__KRISTO_DISABLE_LIVEKIT__ = false;
+    g.__KRISTO_LIVEKIT_ERROR_LOCK__ = false;
+  } else if (options?.accountSwitch) {
     g.__KRISTO_LIVEKIT_ERROR_LOCK__ = false;
   }
 }
@@ -404,14 +412,22 @@ function forceKristoLiveCleanup(
     userId?: string;
     roomName?: string;
     accountSwitch?: boolean;
+    forceReentry?: boolean;
   }
 ) {
+  const shouldUnlockReentry =
+    !!options?.forceReentry ||
+    !!options?.accountSwitch ||
+    reason === "leave-live-room" ||
+    reason === "quit-live-room";
+
   try {
     console.log("KRISTO_FORCE_STOP_LIVE_MEDIA", {
       reason,
       userId: options?.userId || "",
       roomName: options?.roomName || "",
       accountSwitch: !!options?.accountSwitch,
+      forceReentry: shouldUnlockReentry,
     });
 
     (globalThis as any).__KRISTO_LIVE_ACTIVE__ = false;
@@ -424,8 +440,26 @@ function forceKristoLiveCleanup(
   } catch {}
 
   try {
-    clearKristoLiveKitGlobalsForSession(options);
+    clearKristoLiveKitGlobalsForSession({
+      ...options,
+      forceReentry: shouldUnlockReentry,
+    });
   } catch {}
+
+  if (shouldUnlockReentry) {
+    try {
+      const g = globalThis as any;
+      g.__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = 0;
+      g.__KRISTO_DISABLE_LIVEKIT__ = false;
+      g.__KRISTO_LIVEKIT_ERROR_LOCK__ = false;
+      g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+      console.log("KRISTO_LIVE_REENTRY_UNLOCKED", {
+        reason,
+        roomName: String(options?.roomName || ""),
+        userId: String(options?.userId || ""),
+      });
+    } catch {}
+  }
 
   try {
     AudioSession.stopAudioSession().catch(() => {});
@@ -589,9 +623,18 @@ const headersKey = JSON.stringify(headers || {});
   // Account switch / identity change: drop stale JWT and remount LiveKitRoom cleanly.
   useEffect(() => {
     setTokenState(null);
-    setLivekitDisabled(false);
+    if (!(globalThis as any).__KRISTO_DISABLE_LIVEKIT__) {
+      setLivekitDisabled(false);
+    }
     setLiveKitRemountNonce(0);
   }, [stableIdentity, roomName]);
+
+  useEffect(() => {
+    const g = globalThis as any;
+    if (!g.__KRISTO_DISABLE_LIVEKIT__ && Number(g.__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ || 0) <= Date.now()) {
+      setLivekitDisabled(false);
+    }
+  }, [roomName, stableIdentity]);
 
   const identityText = String(
     publishIdentity || stableIdentity || ""
@@ -3962,6 +4005,8 @@ export default function LiveRoomScreen() {
   const [lastStageTapAt, setLastStageTapAt] = useState<number>(0);
   const [moreOpen, setMoreOpen] = useState(false);
   const [hostDrawerOpen, setHostDrawerOpen] = useState(false);
+  const hostControlPulse = useRef(new Animated.Value(0)).current;
+  const hostControlViewerPulse = useRef(new Animated.Value(0)).current;
   const [layoutStudioOpen, setLayoutStudioOpen] = useState(false);
   const [selectedHostTool, setSelectedHostTool] = useState("Pin topic");
   const [viewerFlowOpen, setViewerFlowOpen] = useState(false);
@@ -3986,6 +4031,28 @@ export default function LiveRoomScreen() {
       speed: 18,
     }).start();
   };
+
+  useEffect(() => {
+    if (!hostDrawerOpen) return;
+    const liveLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(hostControlPulse, { toValue: 1, duration: 850, useNativeDriver: true }),
+        Animated.timing(hostControlPulse, { toValue: 0, duration: 850, useNativeDriver: true }),
+      ])
+    );
+    const viewerLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(hostControlViewerPulse, { toValue: 1, duration: 1100, useNativeDriver: true }),
+        Animated.timing(hostControlViewerPulse, { toValue: 0, duration: 1100, useNativeDriver: true }),
+      ])
+    );
+    liveLoop.start();
+    viewerLoop.start();
+    return () => {
+      liveLoop.stop();
+      viewerLoop.stop();
+    };
+  }, [hostDrawerOpen, hostControlPulse, hostControlViewerPulse]);
 
 
   useEffect(() => {
@@ -4013,6 +4080,51 @@ export default function LiveRoomScreen() {
   function pressHostTool(label: string) {
     setSelectedHostTool(label);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  }
+
+  function muteAllHostAudience() {
+    const next: Record<string, boolean> = { ...(miniVideoMutedById || {}) };
+    [...scheduledStagePeople, ...guests].forEach((entry: any) => {
+      const id = String(entry?.id || "");
+      if (id) next[id] = true;
+    });
+    setMiniVideoMutedById(next);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  }
+
+  function renderHostControlAvatar(
+    name: string,
+    avatarUri: string,
+    size: number,
+    ringColor: string
+  ) {
+    return (
+      <View
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: 2.5,
+          borderColor: ringColor,
+          overflow: "hidden",
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "#07111F",
+          shadowColor: ringColor,
+          shadowOpacity: 0.45,
+          shadowRadius: 8,
+          shadowOffset: { width: 0, height: 0 },
+        }}
+      >
+        {avatarUri && isImageAvatar(avatarUri) ? (
+          <Image source={{ uri: avatarUri }} style={{ width: "100%", height: "100%" }} />
+        ) : (
+          <Text style={{ color: "#FFFFFF", fontWeight: "900", fontSize: size * 0.34 }}>
+            {initials(name)}
+          </Text>
+        )}
+      </View>
+    );
   }
 
   function canSelectedProfileModerate(id?: string | null) {
@@ -4889,6 +5001,190 @@ export default function LiveRoomScreen() {
     );
   }, [nextScheduleEntry, guests]);
 
+  const hostControlRemainingLabel = useMemo(() => {
+    const endMs = Number(currentMainStageSlot?.endMs || currentScheduleEntry?.endMs || 0);
+    if (!endMs) return "Waiting";
+    const left = Math.max(0, endMs - liveNowMs);
+    const mins = Math.floor(left / 60000);
+    const secs = Math.floor((left % 60000) / 1000);
+    return `${mins}m ${String(secs).padStart(2, "0")}s remaining`;
+  }, [currentMainStageSlot?.endMs, currentScheduleEntry?.endMs, liveNowMs]);
+
+  const hostControlLiveSpeaker = useMemo(() => {
+    const slot = currentMainStageSlot;
+    if (!slot) return null;
+    return {
+      name: String(slot?.name || slot?.claimedByName || currentScheduleEntry?.title || hostDrawerCurrentLabel),
+      avatar: String(slot?.avatar || resolveParticipantAvatarUri(slot) || ""),
+      topic: String(
+        slot?.title ||
+          slot?.task ||
+          slot?.subtitle ||
+          currentScheduleEntry?.task ||
+          activeSlot?.task ||
+          mcRuntime.current.task ||
+          "Live session"
+      ),
+      slot: Number(slot?.slot || 0),
+    };
+  }, [currentMainStageSlot, currentScheduleEntry, activeSlot?.task, mcRuntime.current.task, hostDrawerCurrentLabel]);
+
+  const hostControlNextSpeaker = useMemo(() => {
+    const next = hostDrawerNextSlot || (nextScheduleEntry ? {
+      name: nextScheduleEntry.title,
+      avatar: "",
+      slot: 0,
+      startMs: nextScheduleEntry.startMs,
+      topic: nextScheduleEntry.task || nextScheduleEntry.title,
+    } : null);
+    if (!next) return null;
+    const startMs = Number((next as any)?.startMs || nextScheduleEntry?.startMs || 0);
+    return {
+      name: String((next as any)?.name || nextSpeakerLabel || hostDrawerNextLabel),
+      avatar: String((next as any)?.avatar || resolveParticipantAvatarUri(next) || ""),
+      topic: String((next as any)?.title || (next as any)?.task || nextScheduleEntry?.task || "Up next"),
+      slot: Number((next as any)?.slot || currentMainStageSlot?.slot ? Number(currentMainStageSlot.slot) + 1 : 0),
+      startTime: startMs
+        ? new Date(startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        : "—",
+      status: startMs > liveNowMs ? "WAITING" : "READY",
+    };
+  }, [hostDrawerNextSlot, nextScheduleEntry, nextSpeakerLabel, hostDrawerNextLabel, liveNowMs, currentMainStageSlot?.slot]);
+
+  const hostControlClaimedSpeakers = useMemo(() => {
+    const currentSlotNum = Number(currentMainStageSlot?.slot || 0);
+    return scheduledStagePeople.map((person: any) => {
+      const slotNum = Number(person?.slot || 0);
+      const startMs = Number(person?.startMs || 0);
+      const endMs = Number(person?.endMs || 0);
+      const isLiveNow = slotNum === currentSlotNum;
+      const isWaiting = !isLiveNow && startMs > liveNowMs;
+      const isReady = !isLiveNow && startMs <= liveNowMs && endMs >= liveNowMs;
+      return {
+        id: String(person?.id || `claimed-${slotNum}`),
+        slot: slotNum,
+        name: String(person?.name || `Speaker ${slotNum}`),
+        avatar: String(person?.avatar || ""),
+        topic: String(person?.title || person?.task || person?.role || "Speaking slot"),
+        status: isLiveNow ? "LIVE NOW" : isWaiting ? "WAITING" : isReady ? "READY" : "WAITING",
+        statusColor: isLiveNow ? "#22C55E" : isWaiting ? "#FACC15" : "#38BDF8",
+      };
+    });
+  }, [scheduledStagePeople, currentMainStageSlot?.slot, liveNowMs]);
+
+  const hostControlHosts = useMemo(() => {
+    const rows: Array<{ id: string; name: string; role: string; avatar: string }> = [];
+    const seen = new Set<string>();
+
+    const pushHost = (id: string, name: string, role: string, avatar = "") => {
+      const uid = String(id || "").trim();
+      if (!uid || seen.has(uid)) return;
+      seen.add(uid);
+      rows.push({ id: uid, name: String(name || role), role, avatar: String(avatar || "") });
+    };
+
+    if (actualChurchPastorUserId) {
+      const pastorPerson = scheduledStagePeople.find(
+        (p: any) => String(p?.claimedByUserId || "") === actualChurchPastorUserId
+      );
+      pushHost(
+        actualChurchPastorUserId,
+        String(pastorPerson?.name || (params as any)?.claimedByName || "Pastor"),
+        "Pastor",
+        String(pastorPerson?.avatar || liveProfileAvatarUri || "")
+      );
+    }
+
+    (Array.isArray(mediaHostIds) ? mediaHostIds : []).forEach((hostId: string) => {
+      const person = scheduledStagePeople.find((p: any) => String(p?.claimedByUserId || "") === String(hostId));
+      pushHost(String(hostId), String(person?.name || "Host"), "Host", String(person?.avatar || ""));
+    });
+
+    scheduledStagePeople
+      .filter((p: any) => String(p?.role || "").toLowerCase().includes("leader"))
+      .forEach((p: any) => {
+        pushHost(String(p?.claimedByUserId || p?.id || ""), String(p?.name || "Co-host"), "Co-host", String(p?.avatar || ""));
+      });
+
+    if (canManageLive && session?.userId) {
+      pushHost(
+        String(session.userId),
+        String(liveProfileName || "Live Host"),
+        isCoHostRole ? "Co-host" : "Host",
+        String(liveProfileAvatarUri || "")
+      );
+    }
+
+    return rows;
+  }, [
+    actualChurchPastorUserId,
+    mediaHostIds,
+    scheduledStagePeople,
+    canManageLive,
+    session?.userId,
+    liveProfileName,
+    liveProfileAvatarUri,
+    isCoHostRole,
+    params,
+  ]);
+
+  const hostControlViewerStats = useMemo(() => {
+    const presenceRows = Object.values(liveViewerPresence || {});
+    const totalViewers = Math.max(
+      Number(live.viewerCount || 0),
+      presenceRows.length,
+      Number(membersCount || 0)
+    );
+    const oneMinuteAgo = liveNowMs - 60000;
+    const activeViewers = presenceRows.length
+      ? presenceRows.filter((viewer: any) => {
+          const lastSeen = Number(viewer?.lastSeenAt || viewer?.updatedAt || viewer?.joinedAt || 0);
+          return !lastSeen || lastSeen >= liveNowMs - 120000;
+        }).length
+      : totalViewers;
+    const joinedLastMinute = presenceRows.filter((viewer: any) => {
+      const joined = Number(viewer?.joinedAt || viewer?.createdAt || 0);
+      return joined >= oneMinuteAgo;
+    }).length;
+    const mutedViewers = Object.values(miniVideoMutedById || {}).filter(Boolean).length;
+    const engagedViewers = presenceRows.filter(
+      (viewer: any) => !!viewer?.handRaised || !!viewer?.reacted || !!viewer?.commented
+    ).length;
+
+    return {
+      totalViewers,
+      activeViewers,
+      newViewers: joinedLastMinute,
+      joinedLastMinute,
+      mutedViewers,
+      engagedViewers: engagedViewers || Math.max(0, activeViewers - mutedViewers),
+    };
+  }, [liveViewerPresence, live.viewerCount, membersCount, liveNowMs, miniVideoMutedById]);
+
+  const hostControlUpcomingQueue = useMemo(() => {
+    const currentSlotNum = Number(currentMainStageSlot?.slot || 0);
+    return runtimeScheduleSlots
+      .map((slot: any, index: number) => {
+        const win = getScheduleSlotWindow(slot, index);
+        const slotNum = Number(slot?.slot || slot?.slotNumber || index + 1);
+        if (slot?.skipped) return null;
+        if (Number(win.endMs || 0) <= liveNowMs && slotNum !== currentSlotNum) return null;
+        if (slotNum <= currentSlotNum) return null;
+        return {
+          slot: slotNum,
+          startMs: Number(win.startMs || 0),
+          timeLabel: Number(win.startMs || 0)
+            ? new Date(Number(win.startMs)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+            : "—",
+          claimed: !!String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim(),
+          name: String(slot?.claimedByName || slot?.title || slot?.name || `Slot ${slotNum}`),
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => Number(a.startMs || 0) - Number(b.startMs || 0))
+      .slice(0, 8);
+  }, [runtimeScheduleSlots, currentMainStageSlot?.slot, liveNowMs]);
+
   const pinnedGuestOnStage = !!pinnedGuest?.id && stageGuestIds.includes(pinnedGuest.id);
   const pinnedGuestAuthorityMuted =
     !!pinnedGuest?.id && !!authorityMutedIds[pinnedGuest.id];
@@ -5126,7 +5422,11 @@ export default function LiveRoomScreen() {
     const userId = String(session?.userId || "").trim();
     const roomName = String(liveBridgeId || "").trim();
 
-    clearKristoLiveKitGlobalsForSession({ userId, roomName });
+    forceKristoLiveCleanup("leave-live-room", {
+      userId,
+      roomName,
+      forceReentry: true,
+    });
 
     emitLiveRingRefresh("leave-live-room");
     void runMediaScheduleSilentReload("leave-live-room", true, {
@@ -7456,262 +7756,231 @@ return (
           ]}
         >
           <View style={s.hostDrawerHandle as any} />
-          <Text style={s.hostDrawerEyebrow as any}>{isMediaInstantLive ? "MEDIA LIVE CONTROL" : "HOST CONTROL"}</Text>
-          {!isMediaInstantLive ? <Text style={s.hostDrawerTitle as any}>{hostDrawerStateLabel}</Text> : null}
+          <Text style={s.hostDrawerEyebrow as any}>
+            {isMediaInstantLive ? "MEDIA COMMAND CENTER" : "HOST COMMAND CENTER"}
+          </Text>
 
-          {isMediaInstantLive ? (
-            <>
-              <View style={s.hostDrawerQueueCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>PINNED TOPIC</Text>
-                <Text style={s.hostDrawerQueueEmpty as any}>
-                  Add the main topic for this live.
-                </Text>
+          {!isMediaInstantLive && hostControlLiveSpeaker ? (
+            <View style={s.hcLiveHero as any}>
+              <View style={s.hcLiveHeroTop as any}>
+                <Text style={s.hcLiveHeroKicker as any}>LIVE NOW</Text>
+                <Animated.View
+                  style={[
+                    s.hcLivePulseDotWrap as any,
+                    {
+                      transform: [{
+                        scale: hostControlPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.35] }),
+                      }],
+                      opacity: hostControlPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.45] }),
+                    },
+                  ]}
+                >
+                  <View style={s.hcLivePulseDot as any} />
+                </Animated.View>
               </View>
-            </>
-          ) : (
-            <>
-              <View style={s.hostDrawerCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>NOW LIVE</Text>
-                <Text style={s.hostDrawerCardValue as any}>{hostDrawerCurrentLabel}</Text>
+              <View style={s.hcLiveHeroBody as any}>
+                {renderHostControlAvatar(hostControlLiveSpeaker.name, hostControlLiveSpeaker.avatar, 62, "#22C55E")}
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text style={s.hcLiveHeroName as any} numberOfLines={1}>{hostControlLiveSpeaker.name}</Text>
+                  <Text style={s.hcLiveHeroTopic as any} numberOfLines={2}>{hostControlLiveSpeaker.topic}</Text>
+                  <Text style={s.hcLiveHeroMeta as any}>
+                    Slot {hostControlLiveSpeaker.slot || "—"} • {hostControlRemainingLabel}
+                  </Text>
+                </View>
               </View>
+            </View>
+          ) : !isMediaInstantLive ? (
+            <View style={[s.hcLiveHero as any, { borderColor: "rgba(239,68,68,0.45)" }]}>
+              <Text style={s.hcLiveHeroKicker as any}>LIVE STATUS</Text>
+              <Text style={s.hcLiveHeroName as any}>{hostDrawerStateLabel}</Text>
+            </View>
+          ) : null}
 
-              <View style={s.hostDrawerCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>NEXT</Text>
-                <Text style={[s.hostDrawerCardValue as any, s.hostDrawerCardValueSecondary]}>
-                  {hostDrawerNextLabel}
-                </Text>
+          {!isMediaInstantLive && hostControlNextSpeaker ? (
+            <View style={s.hcNextCard as any}>
+              <Text style={s.hcSectionTitlePurple as any}>NEXT SPEAKER</Text>
+              <View style={s.hcNextBody as any}>
+                {renderHostControlAvatar(hostControlNextSpeaker.name, hostControlNextSpeaker.avatar, 52, "#A78BFA")}
+                <View style={{ flex: 1, gap: 3 }}>
+                  <Text style={s.hcNextName as any} numberOfLines={1}>{hostControlNextSpeaker.name}</Text>
+                  <Text style={s.hcNextTopic as any} numberOfLines={1}>{hostControlNextSpeaker.topic}</Text>
+                  <Text style={s.hcNextMeta as any}>
+                    {hostControlNextSpeaker.startTime} • Slot {hostControlNextSpeaker.slot || "—"}
+                  </Text>
+                </View>
+                <View style={s.hcReadyPill as any}>
+                  <Text style={s.hcReadyPillText as any}>{hostControlNextSpeaker.status}</Text>
+                </View>
               </View>
+            </View>
+          ) : null}
 
-              <View style={s.hostDrawerQueueCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>UP NEXT QUEUE</Text>
-
-                {hostDrawerQueueEntries.length ? (
-                  hostDrawerQueueEntries.map((item: any, index: number) => (
-                    <View
-                      key={String(item?.id || `queue_${index}`)}
-                      style={[
-                        s.hostDrawerQueueRow,
-                        index === 0 ? s.hostDrawerQueueRowActive : null,
-                      ]}
-                    >
-                      <View style={s.hostDrawerQueueIndex as any}>
-                        <Text style={s.hostDrawerQueueIndexText as any}>{index + 1}</Text>
-                      </View>
-
-                      <View style={s.hostDrawerQueueBody as any}>
-                        <Text numberOfLines={1} style={s.hostDrawerQueueTitle as any}>
-                          {String(item?.title || item?.task || `Slot ${index + 1}`)}
-                        </Text>
-                        <Text numberOfLines={1} style={s.hostDrawerQueueMeta as any}>
-                          {String(
-                            new Date(item?.startMs || Date.now()).toLocaleTimeString([], {
-                              hour: "numeric",
-                              minute: "2-digit",
-                            })
-                          )}{" "}
-                          • {String(item?.roleLabel || "Scheduled")}
-                        </Text>
-                      </View>
-                    </View>
-                  ))
-                ) : (
-                  <Text style={s.hostDrawerQueueEmpty as any}>No queued slots yet</Text>
-                )}
-              </View>
-
-              <View style={s.hostDrawerCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>COUNTDOWN</Text>
-                <Text style={s.hostDrawerCardValue as any}>{liveCountdownLabel}</Text>
-              </View>
-            </>
-          )}
-
-
-          
-<ScrollView
-          style={s.hostDrawerActionsScroll as any}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={s.hostDrawerActionScroller}
-        >
-          <View style={s.hostDrawerActionGrid as any}>
-              <Pressable
-                onPress={() => pressHostTool("Pin topic")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Pin topic" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="bookmark-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Pin topic</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Comment")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Comment" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="chatbubble-ellipses-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Comment</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Pin name")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Pin name" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="person-circle-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Pin name</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Layout")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Layout" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="grid-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Layout</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Photo")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Photo" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="image-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Photo</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={handleHostRequestsPress}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Requests" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="hand-left-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                {latestPendingAccessRequest ? (
-                  <View style={{ alignItems: "center", gap: 4 }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-                      <View
-                        style={{
-                          width: 24,
-                          height: 24,
-                          borderRadius: 12,
-                          alignItems: "center",
-                          justifyContent: "center",
-                          backgroundColor: "rgba(244,208,111,0.18)",
-                          borderWidth: 1,
-                          borderColor: "rgba(244,208,111,0.35)",
-                        }}
-                      >
-                        <Text style={{ color: GOLD, fontWeight: "900", fontSize: 11 }}>
-                          {pendingRequestFirstName.slice(0, 1).toUpperCase()}
-                        </Text>
-                      </View>
-
-                      <Text style={s.hostDrawerActionText as any} numberOfLines={1}>
-                        {pendingRequestFirstName}
-                      </Text>
-
-                      <Ionicons name={pendingRequestRoleIcon as any} size={15} color={GOLD} />
-                    </View>
-
-                    <Text style={{ color: "rgba(255,255,255,0.58)", fontSize: 10, fontWeight: "800" }}>
-                      sent request
-                    </Text>
+          {!isMediaInstantLive ? (
+            <View style={s.hcSectionWrap as any}>
+              <Text style={s.hcSectionTitlePurple as any}>
+                CLAIMED SPEAKERS ({hostControlClaimedSpeakers.length})
+              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.hcSpeakerScroll as any}>
+                {hostControlClaimedSpeakers.length ? hostControlClaimedSpeakers.map((speaker: any) => (
+                  <View key={speaker.id} style={s.hcSpeakerCard as any}>
+                    {renderHostControlAvatar(speaker.name, speaker.avatar, 46, speaker.statusColor)}
+                    <Text style={s.hcSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+                    <Text style={s.hcSpeakerSlot as any}>Slot {speaker.slot}</Text>
+                    <Text style={s.hcSpeakerTopic as any} numberOfLines={1}>{speaker.topic}</Text>
+                    <Text style={[s.hcSpeakerStatus as any, { color: speaker.statusColor }]}>{speaker.status}</Text>
                   </View>
-                ) : (
-                  <Text style={s.hostDrawerActionText as any}>Requests</Text>
+                )) : (
+                  <Text style={s.hcEmptyText as any}>No claimed speakers yet</Text>
                 )}
-              </Pressable>
+              </ScrollView>
+            </View>
+          ) : null}
 
-              <Pressable
-                onPress={() => pressHostTool("Record")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Record" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="radio-button-on-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Record</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Screen")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Screen" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="phone-portrait-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Screen</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Game")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Game" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="game-controller-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Game</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Promote")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Promote" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="megaphone-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Promote</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Translate")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Translate" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="language-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Translate</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Video")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Video" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="videocam-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Video</Text>
-              </Pressable>
+          <View style={s.hcHostSection as any}>
+            <Text style={s.hcSectionTitleGold as any}>HOSTS ({hostControlHosts.length})</Text>
+            {hostControlHosts.length ? hostControlHosts.map((host: any) => (
+              <View key={host.id} style={s.hcHostRow as any}>
+                {renderHostControlAvatar(host.name, host.avatar, 44, "#D9B35F")}
+                <View style={{ flex: 1 }}>
+                  <Text style={s.hcHostName as any} numberOfLines={1}>{host.name}</Text>
+                  <Text style={s.hcHostRole as any}>{host.role}</Text>
+                </View>
+              </View>
+            )) : (
+              <Text style={s.hcEmptyText as any}>No hosts detected</Text>
+            )}
           </View>
-        </ScrollView>
+
+          <View style={s.hcViewerSection as any}>
+            <View style={s.hcViewerHeader as any}>
+              <Text style={s.hcSectionTitleBlue as any}>VIEWERS</Text>
+              <Animated.View
+                style={{
+                  opacity: hostControlViewerPulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] }),
+                }}
+              >
+                <View style={s.hcViewerLiveDot as any} />
+              </Animated.View>
+            </View>
+            <View style={s.hcViewerStatsGrid as any}>
+              <View style={s.hcViewerStatRow as any}>
+                <Text style={s.hcViewerStatLabel as any}>Total viewers</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.totalViewers}</Text>
+              </View>
+              <View style={s.hcViewerStatRow as any}>
+                <Text style={s.hcViewerStatLabel as any}>Active viewers</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.activeViewers}</Text>
+              </View>
+              <View style={s.hcViewerStatRow as any}>
+                <Text style={s.hcViewerStatLabel as any}>New viewers</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.newViewers}</Text>
+              </View>
+              <View style={s.hcViewerStatRow as any}>
+                <Text style={s.hcViewerStatLabel as any}>Joined last minute</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.joinedLastMinute}</Text>
+              </View>
+            </View>
+            <View style={s.hcViewerBreakdownRow as any}>
+              {[
+                { label: "TOTAL", value: hostControlViewerStats.totalViewers },
+                { label: "ACTIVE", value: hostControlViewerStats.activeViewers },
+                { label: "MUTED", value: hostControlViewerStats.mutedViewers },
+                { label: "ENGAGED", value: hostControlViewerStats.engagedViewers },
+              ].map((chip) => (
+                <View key={chip.label} style={s.hcViewerChip as any}>
+                  <Text style={s.hcViewerChipValue as any}>{chip.value}</Text>
+                  <Text style={s.hcViewerChipLabel as any}>{chip.label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+
+          {!isMediaInstantLive ? (
+            <View style={s.hcQueueSection as any}>
+              <Text style={s.hcSectionTitleGold as any}>UPCOMING QUEUE</Text>
+              {hostControlUpcomingQueue.length ? hostControlUpcomingQueue.map((item: any, index: number) => (
+                <View key={`${item.slot}-${index}`} style={s.hcQueueTimelineRow as any}>
+                  <View style={s.hcQueueTimelineRail as any}>
+                    <View style={[s.hcQueueTimelineDot as any, item.claimed ? s.hcQueueTimelineDotClaimed : null]} />
+                    {index < hostControlUpcomingQueue.length - 1 ? <View style={s.hcQueueTimelineLine as any} /> : null}
+                  </View>
+                  <View style={s.hcQueueTimelineBody as any}>
+                    <Text style={s.hcQueueTimelineSlot as any}>Slot {item.slot}</Text>
+                    <Text style={s.hcQueueTimelineTime as any}>{item.timeLabel}</Text>
+                    <Text style={s.hcQueueTimelineName as any} numberOfLines={1}>{item.name}</Text>
+                  </View>
+                </View>
+              )) : (
+                <Text style={s.hcEmptyText as any}>No upcoming slots scheduled</Text>
+              )}
+            </View>
+          ) : null}
+
+          <View style={s.hcActionsWrap as any}>
+            <Text style={s.hcActionsGroupTitle as any}>LIVE CONTROL</Text>
+            <View style={s.hcActionsRow as any}>
+              <Pressable onPress={() => endLiveNow()} style={({ pressed }) => [s.hcActionBtnDanger, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="stop-circle-outline" size={20} color="#FCA5A5" />
+                <Text style={s.hcActionBtnDangerText as any}>End Live</Text>
+              </Pressable>
+              <Pressable onPress={togglePaused} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="pause-circle-outline" size={20} color="#D9B35F" />
+                <Text style={s.hcActionBtnText as any}>Pause</Text>
+              </Pressable>
+              <Pressable onPress={openLayoutStudio} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="grid-outline" size={20} color="#D9B35F" />
+                <Text style={s.hcActionBtnText as any}>Switch Layout</Text>
+              </Pressable>
+            </View>
+
+            <Text style={s.hcActionsGroupTitle as any}>AUDIENCE CONTROL</Text>
+            <View style={s.hcActionsRow as any}>
+              <Pressable onPress={handleHostRequestsPress} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="hand-left-outline" size={20} color="#38BDF8" />
+                <Text style={s.hcActionBtnText as any}>View Requests</Text>
+              </Pressable>
+              <Pressable onPress={muteAllHostAudience} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="mic-off-outline" size={20} color="#38BDF8" />
+                <Text style={s.hcActionBtnText as any}>Mute All</Text>
+              </Pressable>
+              <Pressable onPress={() => applyLiveRequestPolicy("locked")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="lock-closed-outline" size={20} color="#EF4444" />
+                <Text style={s.hcActionBtnText as any}>Lock Room</Text>
+              </Pressable>
+            </View>
+
+            <Text style={s.hcActionsGroupTitle as any}>CONTENT CONTROL</Text>
+            <View style={s.hcActionsRow as any}>
+              <Pressable onPress={() => pressHostTool("Pin topic")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="bookmark-outline" size={20} color="#D9B35F" />
+                <Text style={s.hcActionBtnText as any}>Pin Topic</Text>
+              </Pressable>
+              <Pressable onPress={() => pressHostTool("Pin name")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="person-circle-outline" size={20} color="#D9B35F" />
+                <Text style={s.hcActionBtnText as any}>Pin Name</Text>
+              </Pressable>
+              <Pressable onPress={() => pressHostTool("Comment")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="chatbubble-ellipses-outline" size={20} color="#D9B35F" />
+                <Text style={s.hcActionBtnText as any}>Comment</Text>
+              </Pressable>
+            </View>
+
+            <Text style={s.hcActionsGroupTitle as any}>MEDIA CONTROL</Text>
+            <View style={s.hcActionsRow as any}>
+              <Pressable onPress={() => pressHostTool("Video")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="videocam-outline" size={20} color="#A78BFA" />
+                <Text style={s.hcActionBtnText as any}>Camera</Text>
+              </Pressable>
+              <Pressable onPress={() => pressHostTool("Photo")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="image-outline" size={20} color="#A78BFA" />
+                <Text style={s.hcActionBtnText as any}>Photo</Text>
+              </Pressable>
+              <Pressable onPress={pressNextLiveSlot} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+                <Ionicons name="sparkles-outline" size={20} color="#A78BFA" />
+                <Text style={s.hcActionBtnText as any}>Next Slot</Text>
+              </Pressable>
+            </View>
+          </View>
         </ScrollView>
       </Animated.View>
       ) : null}
@@ -10356,28 +10625,32 @@ const s: any = StyleSheet.create({
     right: 0,
     top: 0,
     bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.18)",
+    backgroundColor: "rgba(2,6,18,0.62)",
     zIndex: 70,
   },
   hostDrawer: {
     position: "absolute",
-    right: 10,
-    top: "24%",
-    bottom: 94,
-    width: "77%",
-    borderRadius: 40,
-    backgroundColor: "rgba(3,9,24,0.88)",
-    borderWidth: 1.55,
-    borderColor: "rgba(244,201,93,0.16)",
+    right: 8,
+    top: "12%",
+    bottom: 88,
+    width: "88%",
+    borderRadius: 34,
+    backgroundColor: "#060B1A",
+    borderWidth: 1.8,
+    borderColor: "rgba(217,179,95,0.42)",
     overflow: "hidden",
     zIndex: 140,
-    shadowOffset: { width: 0, height: 14 },
-    elevation: 18,
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.28,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 22,
   },
   hostDrawerScrollContent: {
-    paddingHorizontal: 22,
-    paddingTop: 18,
-    paddingBottom: 150,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 28,
+    gap: 12,
   },
   hostDrawerFooter: {
     position: "absolute",
@@ -10390,21 +10663,384 @@ const s: any = StyleSheet.create({
   },
   hostDrawerHandle: {
     alignSelf: "center",
-    width: 58,
-    height: 7,
+    width: 64,
+    height: 6,
     borderRadius: 999,
-    marginBottom: 22,
-    backgroundColor: "rgba(255,255,255,0.34)",
-    shadowOffset: { width: 0, height: 0 },
+    marginBottom: 12,
+    backgroundColor: "rgba(217,179,95,0.55)",
   },
   hostDrawerEyebrow: {
-    color: "#E7C46F",
+    color: "#D9B35F",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 4.5,
+    marginBottom: 10,
+    textAlign: "center",
+  },
+  hcLiveHero: {
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 4,
+    backgroundColor: "rgba(8,32,22,0.96)",
+    borderWidth: 1.5,
+    borderColor: "rgba(34,197,94,0.55)",
+    shadowColor: "#22C55E",
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  hcLiveHeroTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  hcLiveHeroKicker: {
+    color: "#86EFAC",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 3,
+  },
+  hcLivePulseDotWrap: {
+    width: 16,
+    height: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  hcLivePulseDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: "#22C55E",
+  },
+  hcLiveHeroBody: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  hcLiveHeroName: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "900",
+    letterSpacing: -0.5,
+  },
+  hcLiveHeroTopic: {
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  hcLiveHeroMeta: {
+    color: "rgba(134,239,172,0.88)",
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 2,
+  },
+  hcNextCard: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(28,16,48,0.96)",
+    borderWidth: 1.4,
+    borderColor: "rgba(167,139,250,0.48)",
+  },
+  hcSectionTitlePurple: {
+    color: "#C4B5FD",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 3.2,
+    marginBottom: 10,
+  },
+  hcNextBody: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  hcNextName: {
+    color: "#FFFFFF",
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  hcNextTopic: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  hcNextMeta: {
+    color: "rgba(196,181,253,0.88)",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  hcReadyPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(167,139,250,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(167,139,250,0.45)",
+  },
+  hcReadyPillText: {
+    color: "#DDD6FE",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+  hcSectionWrap: {
+    marginTop: 2,
+  },
+  hcSpeakerScroll: {
+    gap: 10,
+    paddingRight: 8,
+  },
+  hcSpeakerCard: {
+    width: 132,
+    borderRadius: 18,
+    padding: 10,
+    backgroundColor: "rgba(24,14,42,0.96)",
+    borderWidth: 1.2,
+    borderColor: "rgba(167,139,250,0.35)",
+    gap: 4,
+  },
+  hcSpeakerName: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+    marginTop: 6,
+  },
+  hcSpeakerSlot: {
+    color: "#C4B5FD",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  hcSpeakerTopic: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  hcSpeakerStatus: {
+    fontSize: 10,
+    fontWeight: "900",
+    marginTop: 2,
+  },
+  hcHostSection: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(18,14,8,0.96)",
+    borderWidth: 1.4,
+    borderColor: "rgba(217,179,95,0.42)",
+    gap: 10,
+  },
+  hcSectionTitleGold: {
+    color: "#D9B35F",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 3.2,
+  },
+  hcHostRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 4,
+  },
+  hcHostName: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  hcHostRole: {
+    color: "rgba(217,179,95,0.88)",
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 1,
+  },
+  hcViewerSection: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(8,18,38,0.96)",
+    borderWidth: 1.4,
+    borderColor: "rgba(56,189,248,0.42)",
+    gap: 10,
+  },
+  hcViewerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  hcSectionTitleBlue: {
+    color: "#7DD3FC",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 3.2,
+  },
+  hcViewerLiveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "#38BDF8",
+  },
+  hcViewerStatsGrid: {
+    gap: 8,
+  },
+  hcViewerStatRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  hcViewerStatLabel: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  hcViewerStatValue: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  hcViewerBreakdownRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  hcViewerChip: {
+    flex: 1,
+    borderRadius: 14,
+    paddingVertical: 10,
+    alignItems: "center",
+    backgroundColor: "rgba(14,36,64,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(56,189,248,0.28)",
+  },
+  hcViewerChipValue: {
+    color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "900",
-    letterSpacing: 5,
-    marginBottom: 18,
-    textShadowColor: "rgba(217,179,95,0.30)",
-    textShadowRadius: 12,
+  },
+  hcViewerChipLabel: {
+    color: "rgba(125,211,252,0.82)",
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 1,
+    marginTop: 2,
+  },
+  hcQueueSection: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(10,12,24,0.96)",
+    borderWidth: 1.2,
+    borderColor: "rgba(217,179,95,0.28)",
+    gap: 8,
+  },
+  hcQueueTimelineRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  hcQueueTimelineRail: {
+    width: 18,
+    alignItems: "center",
+  },
+  hcQueueTimelineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.35)",
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.65)",
+  },
+  hcQueueTimelineDotClaimed: {
+    backgroundColor: "#A78BFA",
+    borderColor: "#DDD6FE",
+  },
+  hcQueueTimelineLine: {
+    flex: 1,
+    width: 2,
+    marginTop: 4,
+    backgroundColor: "rgba(217,179,95,0.25)",
+  },
+  hcQueueTimelineBody: {
+    flex: 1,
+    paddingBottom: 10,
+  },
+  hcQueueTimelineSlot: {
+    color: "#D9B35F",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  hcQueueTimelineTime: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+    marginTop: 1,
+  },
+  hcQueueTimelineName: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  hcEmptyText: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  hcActionsWrap: {
+    marginTop: 6,
+    gap: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(217,179,95,0.18)",
+  },
+  hcActionsGroupTitle: {
+    color: "rgba(217,179,95,0.88)",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 2.8,
+    marginTop: 4,
+  },
+  hcActionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  hcActionBtn: {
+    flexGrow: 1,
+    flexBasis: "30%",
+    minWidth: 96,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "rgba(12,20,36,0.96)",
+    borderWidth: 1.2,
+    borderColor: "rgba(217,179,95,0.28)",
+  },
+  hcActionBtnDanger: {
+    flexGrow: 1,
+    flexBasis: "30%",
+    minWidth: 96,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "rgba(48,10,14,0.96)",
+    borderWidth: 1.2,
+    borderColor: "rgba(239,68,68,0.45)",
+  },
+  hcActionBtnPressed: {
+    opacity: 0.72,
+    transform: [{ scale: 0.98 }],
+  },
+  hcActionBtnText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  hcActionBtnDangerText: {
+    color: "#FCA5A5",
+    fontSize: 10,
+    fontWeight: "900",
+    textAlign: "center",
   },
   hostDrawerTitle: {
     color: "#FFFFFF",
