@@ -1829,6 +1829,27 @@ export default function LiveRoomScreen() {
   const [resolvedAvatarByUserId, setResolvedAvatarByUserId] = useState<Record<string, string>>({});
   const [liveProfileAvatarUri, setLiveProfileAvatarUri] = useState("");
 
+  const liveProfileName = useMemo(() => {
+    return (
+      String(
+        (session as any)?.displayName ||
+        (session as any)?.fullName ||
+        (session as any)?.name ||
+        (session as any)?.username ||
+        ""
+      ).trim() ||
+      String(mediaName || "").trim() ||
+      "Live Host"
+    );
+  }, [
+    session?.userId,
+    (session as any)?.displayName,
+    (session as any)?.fullName,
+    (session as any)?.name,
+    (session as any)?.username,
+    mediaName,
+  ]);
+
   useEffect(() => {
     let alive = true;
 
