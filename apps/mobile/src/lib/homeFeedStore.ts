@@ -265,7 +265,7 @@ function enrichScheduleSlotsForStore(slots: unknown, nowMs = Date.now()) {
   );
 }
 
-function syncUserClaimedSlotStore(
+export function syncUserClaimedSlotStore(
   postId: string,
   slotId: string,
   claim: {
@@ -325,7 +325,7 @@ export type RingClaimHint = {
   updatedAt: number;
 };
 
-function writeRingClaimHint(hint: RingClaimHint) {
+export function writeRingClaimHint(hint: RingClaimHint) {
   const g = globalThis as any;
   const store = g.__KRISTO_RING_CLAIM_HINTS__ || {};
   g.__KRISTO_RING_CLAIM_HINTS__ = store;

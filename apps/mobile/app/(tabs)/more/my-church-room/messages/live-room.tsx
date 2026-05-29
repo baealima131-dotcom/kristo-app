@@ -34,7 +34,7 @@ import {
 } from "@/src/lib/liveStore";
 import { projectStore } from "@/src/lib/projectStore";
 import { getSnapshot, subscribe as subscribeMessages } from "@/src/lib/messagesStore";
-import { feedList, feedRemoveWhere, feedScheduleSlotsForLive, getRingClaimHints, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import { feedList, feedRemoveWhere, feedScheduleSlotsForLive, getRingClaimHints, syncUserClaimedSlotStore, writeRingClaimHint, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
 import { onClaimUpdated } from "@/src/lib/kristoProfileEvents";
 import {
   getLiveJoinBridge,
@@ -3348,6 +3348,51 @@ export default function LiveRoomScreen() {
           ...(savedSlot || {}),
         },
       }));
+
+      const syncedSlot = {
+        ...slot,
+        ...(savedSlot || {}),
+        id: slotId,
+        slotId,
+        feedId: postId,
+        sourceScheduleId: postId,
+        claimed: true,
+        isClaimed: true,
+        status: "claimed",
+        claimedByUserId: currentUserId,
+        claimedByName: name,
+        claimedByAvatarUri: avatarUri,
+        claimedByAvatar: avatarUri,
+        claimedBy: {
+          slotId,
+          userId: currentUserId,
+          name,
+          role: String((session as any)?.role || "Member"),
+          avatarUri,
+        },
+      } as any;
+
+      syncUserClaimedSlotStore(postId, slotId, syncedSlot);
+      writeRingClaimHint({
+        userId: currentUserId,
+        feedId: postId,
+        slotId,
+        slotNumber: Number(syncedSlot?.slot || syncedSlot?.slotNumber || 0),
+        title: String(syncedSlot?.title || syncedSlot?.task || syncedSlot?.slotLabel || syncedSlot?.name || ""),
+        claimedByUserId: currentUserId,
+        claimedByName: name,
+        claimedByAvatarUri: avatarUri,
+        startMs: Number(syncedSlot?.startMs || 0),
+        endMs: Number(syncedSlot?.endMs || 0),
+        createdAt: Date.now(),
+      } as any);
+
+      console.log("KRISTO_LIVE_CLAIM_SYNC_TO_PROFILE", {
+        feedId: postId,
+        slotId,
+        userId: currentUserId,
+        slotNumber: Number(syncedSlot?.slot || syncedSlot?.slotNumber || 0),
+      });
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (e) {
