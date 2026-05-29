@@ -393,7 +393,19 @@ export function resolveLiveScheduleFeedId(
 
   if (!resolved) return "";
   if (rows && rows.length) {
-    return resolveCanonicalScheduleFeedId(resolved, rows);
+    const canonical = resolveCanonicalScheduleFeedId(resolved, rows);
+
+    // Prefer backend feed_* id for backend API actions.
+    // media-schedule-* is a local/live-room id and causes /api/church/feed?id=... 404.
+    const backendMatch = rows.find((row: any) => {
+      const rowId = String(row?.id || "").trim();
+      const sourceId = String(row?.sourceScheduleId || row?.liveId || row?.scheduleId || "").trim();
+      return rowId.startsWith("feed_") && (sourceId === resolved || sourceId === canonical || rowId === canonical);
+    });
+
+    if (backendMatch?.id) return String(backendMatch.id);
+
+    return canonical;
   }
   return resolved;
 }

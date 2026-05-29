@@ -127,6 +127,7 @@ function resolveLiveRoomHeaderLabel(input: {
 function collectClaimedAvatarCandidates(slot: any): string[] {
   const claimedBy = slot?.claimedBy;
   return [
+    slot?.claimedByAvatarUri,
     slot?.claimedByAvatar,
     slot?.claimedByAvatarUrl,
     claimedBy?.avatarUri,
@@ -2757,32 +2758,12 @@ export default function LiveRoomScreen() {
     stablePublisherSlotRef.current || preferredStableSlot || 1
   );
 
-  const approvedViewerStageSlot = Object.entries(joinRequestsBySlot || {}).find(
-    ([, req]: any) =>
-      !!req?.approved &&
-      !!req?.onStage &&
-      String(req?.userId || "").trim() === String(session?.userId || "").trim()
-  );
-
-  const approvedViewerSlotNumber = Number(approvedViewerStageSlot?.[0] || 0);
-
-  const approvedViewerSeatType =
-    approvedViewerSlotNumber > 0
-      ? resolveSeatType(approvedViewerSlotNumber)
-      : "viewer";
-
-  const approvedViewerCanMic =
-    isMediaInstantLive
-      ? approvedViewerSlotNumber > 0
-      : approvedViewerSeatType === "big-screen" ||
-        approvedViewerSeatType === "camera-mic" ||
-        approvedViewerSeatType === "mic-only";
-
-  // Mic/camera authority: mic and camera are evaluated independently.
-  const approvedViewerIsCurrentCameraTurn =
-    !!currentSlotNumber &&
-    approvedViewerSlotNumber === currentSlotNumber &&
-    (approvedViewerSeatType === "big-screen" || approvedViewerSeatType === "camera-mic");
+  // V1: request approval removed. Requests never grant mic/camera.
+  const approvedViewerStageSlot = null;
+  const approvedViewerSlotNumber = 0;
+  const approvedViewerSeatType = "viewer";
+  const approvedViewerCanMic = false;
+  const approvedViewerIsCurrentCameraTurn = false;
 
   const liveStageAuthority = evaluateLiveStageAuthority({
     isMediaInstantLive,
@@ -3010,12 +2991,23 @@ export default function LiveRoomScreen() {
       }
     }
 
-    if (userId && userId === String(session?.userId || "").trim() && liveProfileAvatarUri) {
-      const uri = normalizeLiveImageUri(liveProfileAvatarUri);
+    if (userId && userId === String(session?.userId || "").trim()) {
+      const sessionAvatar = String(
+        liveProfileAvatarUri ||
+          (session as any)?.avatarUri ||
+          (session as any)?.avatarUrl ||
+          (session as any)?.profileImage ||
+          (session as any)?.photoURL ||
+          (session as any)?.image ||
+          (session as any)?.avatar ||
+          ""
+      ).trim();
+
+      const uri = normalizeLiveImageUri(sessionAvatar);
       if (isImageAvatar(uri)) {
         console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
           userId,
-          source: "session-profile",
+          source: "session-profile-expanded",
           hasUrl: true,
         });
         return uri;
@@ -3140,23 +3132,162 @@ export default function LiveRoomScreen() {
 
   const scheduledHiddenCount = hiddenStageSlots.length;
 
-  // Dynamic rolling queue:
-  // - big screen = current live slot
-  // - remaining 8 visible rooms = next claimed upcoming slots
-  // - no empty gaps between slot numbers
-  const visibleQueueSlots = useMemo(() => {
+  // V1 claimed-slots-only seats:
+  // - big screen = current active claimed slot
+  // - upper seats = claimed schedule slots only
+  // - bottom cards = open claim slots (Go Claim) or locked "all claimed" state
+  const claimedSeatSlots = useMemo(() => {
     const currentSlot = Number(currentMainStageSlot?.slot || 0);
 
     return scheduledStagePeople
       .filter((guest: any) => Number(guest?.slot || 0) !== currentSlot)
       .filter((guest: any) => Number(guest?.endMs || 0) >= liveNowMs)
       .sort((a: any, b: any) => {
-        const aStart = Number(a?.startMs || 0);
-        const bStart = Number(b?.startMs || 0);
-        return aStart - bStart;
+        const aSlot = Number(a?.slot || 0);
+        const bSlot = Number(b?.slot || 0);
+        return aSlot - bSlot;
       })
       .slice(0, 8);
   }, [scheduledStagePeople, currentMainStageSlot, liveNowMs]);
+
+  const visibleQueueSlots = claimedSeatSlots;
+
+  const openClaimableSlots = useMemo(() => {
+    const currentUserId = String(session?.userId || "").trim();
+    const now = liveNowMs;
+
+    return runtimeScheduleSlots
+      .map((slot: any, index: number) => {
+        const win = getScheduleSlotWindow(slot, index);
+        const n = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+        const ownerId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+
+        return {
+          ...slot,
+          slot: n,
+          slotNumber: n,
+          order: Number(slot?.order || n),
+          startMs: Number(win.startMs || 0),
+          endMs: Number(win.endMs || 0),
+          claimedByUserId: ownerId,
+          title: String(slot?.title || slot?.name || slot?.slotLabel || `Slot ${n}`),
+          subtitle: String(slot?.subtitle || slot?.task || slot?.roleLabel || "Open speaking slot"),
+        };
+      })
+      .filter((slot: any) => Number(slot?.slot || 0) > 0)
+      .filter((slot: any) => !slot?.skipped)
+      .filter((slot: any) => !String(slot?.claimedByUserId || "").trim())
+      .filter((slot: any) => !currentUserId || String(slot?.claimedByUserId || "") !== currentUserId)
+      .filter((slot: any) => !Number(slot?.endMs || 0) || Number(slot.endMs || 0) >= now)
+      .sort((a: any, b: any) => Number(a.slot || 0) - Number(b.slot || 0))
+      .slice(0, 4);
+  }, [runtimeScheduleSlots, liveNowMs, session?.userId]);
+
+  async function claimOpenScheduleSlotFromLive(slot: any) {
+    const slotId = String(slot?.id || slot?.slotId || "").trim();
+
+    const scheduleKey = String(liveScheduleFeedId || sourceScheduleId || liveId || "").trim();
+    const feedSource = [
+      ...(Array.isArray(backendFeedItems) ? backendFeedItems : []),
+      ...(Array.isArray(homeFeedItems) ? homeFeedItems : []),
+    ];
+
+    const matchingFeedItem = feedSource.find((item: any) => {
+      const id = String(item?.id || "").trim();
+      const sourceId = String(item?.sourceScheduleId || item?.liveId || item?.scheduleId || "").trim();
+      return (
+        id === scheduleKey ||
+        sourceId === scheduleKey ||
+        String(item?.id || "").startsWith("feed_") && String(item?.sourceScheduleId || "") === scheduleKey
+      );
+    });
+
+    const postId = String(
+      matchingFeedItem?.id ||
+        (String(scheduleKey).startsWith("feed_") ? scheduleKey : "")
+    ).trim();
+
+    const currentUserId = String(session?.userId || "").trim();
+
+    if (!slotId || !postId || !currentUserId) {
+      Alert.alert("Claim unavailable", "This slot cannot be claimed right now.");
+      return;
+    }
+
+    const name =
+      String((session as any)?.name || (session as any)?.displayName || (session as any)?.fullName || "").trim() ||
+      liveProfileName ||
+      "Church Member";
+
+    const avatarUri =
+      String(
+        liveProfileAvatarUri ||
+          (session as any)?.avatarUri ||
+          (session as any)?.avatarUrl ||
+          (session as any)?.profileImage ||
+          (session as any)?.photoURL ||
+          ""
+      ).trim();
+
+    try {
+      const res: any = await apiPost(
+        "/api/church/feed",
+        {
+          action: "claim_schedule_slot",
+          postId,
+          slotId,
+          claim: {
+            slotId,
+            userId: currentUserId,
+            name,
+            role: String((session as any)?.role || "Member"),
+            avatarUri,
+          },
+        },
+        {
+          headers: getKristoHeaders({
+            userId: currentUserId,
+            role: String((session as any)?.role || "Member"),
+            churchId: String((session as any)?.churchId || (params as any)?.churchId || ""),
+          }),
+        }
+      );
+
+      if (res?.ok === false) {
+        Alert.alert("Slot not claimed", String(res?.error || "This slot may already be claimed."));
+        return;
+      }
+
+      const key = getRuntimeSlotKey(slot, Math.max(0, Number(slot.slot || 1) - 1));
+      const savedSlot = res?.data?.slot || res?.slot || null;
+
+      setRuntimeSlotOverrides((prev) => ({
+        ...(prev || {}),
+        [key]: {
+          ...((prev || {})[key] || {}),
+          claimed: true,
+          isClaimed: true,
+          status: "claimed",
+          claimedByUserId: currentUserId,
+          claimedByName: name,
+          claimedByAvatarUri: avatarUri,
+          claimedByAvatar: avatarUri,
+          claimedBy: {
+            slotId,
+            userId: currentUserId,
+            name,
+            role: String((session as any)?.role || "Member"),
+            avatarUri,
+          },
+          ...(savedSlot || {}),
+        },
+      }));
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } catch (e) {
+      Alert.alert("Slot not claimed", "Network error. Please try again.");
+    }
+  }
 
   // REALTIME HOST DRAWER DATA
   const hostDrawerCurrentLabel = currentMainStageSlot
@@ -4519,7 +4650,7 @@ export default function LiveRoomScreen() {
           String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()
         ).length,
         runtimeSlotCount: runtimeScheduleSlots.length,
-        joinRequestCount: Object.keys(joinRequestsBySlot || {}).length,
+        joinRequestCount: 0,
         presenceCount: Object.keys(liveViewerPresence || {}).length,
         currentSlotOwnerId,
         currentSlotNumber,
@@ -5182,15 +5313,8 @@ ${scheduleAudienceAccessText}`,
     pushLiveAction("set-policy", { requestPolicy: nextPolicy, policy: nextPolicy });
   }
 
-  const pendingAccessRequests = Object.entries(joinRequestsBySlot || {})
-    .map(([slot, req]: any) => ({ slot: Number(slot), req }))
-    .filter((x: any) => !!x.req && !x.req.approved)
-    .filter((item: any, index: number, arr: any[]) => {
-      const name = String(item?.req?.name || "").trim().toLowerCase();
-      return arr.findIndex((x: any) =>
-        String(x?.req?.name || "").trim().toLowerCase() === name
-      ) === index;
-    });
+  // V1: no pending access requests.
+  const pendingAccessRequests: any[] = [];
 
   const latestPendingAccessRequest = pendingAccessRequests[0] || null;
 
@@ -5207,49 +5331,11 @@ ${scheduleAudienceAccessText}`,
           : "person-outline";
 
   function handleRequestWaitingApproval(slot: number) {
-    const existing = joinRequestsBySlot[slot];
-    const req = {
-      name: existing?.name || "You",
-      avatar: existing?.avatar || "Y",
-      approved: false,
-      onStage: false,
-      joinedAt: new Date().toISOString(),
-    };
-
-    publishLiveJoin(liveBridgeId, slot, req);
-
-    setJoinRequestsBySlot((prev) => {
-      const next = { ...prev };
-      delete next[slot];
-      return next;
-    });
-
-    Haptics.selectionAsync().catch(() => {});
+    return;
   }
 
   function handleAutoJoinToStage(slot: number) {
-    if (!canManageLive) return;
-    const existing = joinRequestsBySlot[slot];
-    const req = {
-      name: existing?.name || "You",
-      avatar: existing?.avatar || "Y",
-      approved: true,
-      onStage: false,
-      waiting: false,
-      joinedAt: existing?.joinedAt || new Date().toISOString(),
-    } as any;
-
-    pushLiveAction("approve-request", { slot, onStage: true, approved: true });
-
-    setJoinRequestsBySlot((prev) => ({
-      ...prev,
-      [slot]: req,
-    }));
-
-    setRequestListOpen(false);
-    setVipGuestCardSlot(null);
-
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    return;
   }
 
   const bottomSpacer = <View style={{ height: 96 }} />;
@@ -5260,10 +5346,8 @@ ${scheduleAudienceAccessText}`,
 
   const realFeelViewerCount = Number(live.viewerCount || 0);
 
-  const orderedJoinRequests = Object.entries(joinRequestsBySlot || {})
-    .map(([slot, req]) => ({ slot: Number(slot), ...(req as any) }))
-    .filter((req: any) => !!req?.name)
-    .sort((a: any, b: any) => String(a.joinedAt || "").localeCompare(String(b.joinedAt || "")));
+  // V1: request-to-join flow removed. Only claimed slot users appear.
+  const orderedJoinRequests: any[] = [];
 
   const activeJoinToast =
     orderedJoinRequests.find((req: any) => req.slot === activeJoinToastSlot) ||
@@ -5677,7 +5761,7 @@ return (
             <View style={s.joinRequestCopy as any}>
               <View style={s.joinRequestTopLine as any}>
                 <Ionicons name="person-add-outline" size={14} color="#F4C95D" />
-                <Text style={s.joinRequestKicker as any}>JOIN REQUEST</Text>
+                <Text style={s.joinRequestKicker as any}></Text>
               </View>
               <Text style={s.joinRequestTitle as any} numberOfLines={1}>
                 {`${String(latestJoinRequest.name || "Guest").trim()}${otherJoinRequestCount > 0 ? ` + ${otherJoinRequestCount} other${otherJoinRequestCount === 1 ? "" : "s"}` : ""}`}
@@ -5711,7 +5795,7 @@ return (
 
                     publishLiveJoin(liveBridgeId, slot, approvedReq);
 
-                    await pushLiveAction("approve-request", {
+                    await false && pushLiveAction("v1-disabled-approve", {
                       slot,
                       userId: String(approvedReq.userId || latestJoinRequest.userId || ""),
                       onStage: true,
@@ -5751,16 +5835,25 @@ return (
 
         {layoutMode === "grid6" ? (
           <View pointerEvents="box-none" style={s.upperBookRequestLayer as any}>
-            {visibleQueueSlots.slice(0,4).map((guest, index) => (
+            {[0, 1, 2, 3].map((seatIndex) => {
+              const guest = visibleQueueSlots[seatIndex] as any;
+              const index = seatIndex;
+              if (!guest) return null;
+
+              const isMiniMuted = !!guest && !!miniVideoMutedById[String(guest.id)];
+
+              return (
               <Pressable
-                key={`upper-book-request-${guest.id}-${index}`}
+                key={`upper-claimed-seat-${guest?.id || "empty"}-${index}`}
                 onPress={() => {
+                  if (!guest) return;
                   const id = String(guest.id);
                   setStageSwapArmed(false);
                   setProfileActionGuestId((prev) => (prev === id ? null : id));
                   Haptics.selectionAsync().catch(() => {});
                 }}
                 onLongPress={() => {
+                  if (!guest) return;
                   const id = String(guest.id);
                   setMiniVideoMutedById((prev) => ({ ...prev, [id]: !prev[id] }));
                   Haptics.selectionAsync().catch(() => {});
@@ -5773,12 +5866,12 @@ return (
                 ] as any)}
               >
                 <View style={s.upperBookRequestVideoPreview as any}>
-                  {miniVideoMutedById[String(guest.id)] ? (
+                  {isMiniMuted ? (
                     <>
                       <Ionicons name="videocam-off-outline" size={23} color="#F4C95D" />
                       <Text style={s.upperBookRequestMutedText as any}>MUTED</Text>
                     </>
-                  ) : String(guest.id) === "host" && canManageLive && canShowCamera ? (
+                  ) : guest && String(guest.id) === "host" && canManageLive && canShowCamera ? (
                     <>
                       <CameraView
                         key={`mini-host-camera-${cameraFacing}`}
@@ -5790,17 +5883,16 @@ return (
                     </>
                   ) : (
                     <>
-                      {isImageAvatar((guest as any).avatar) ? (
+                      {guest && isImageAvatar((guest as any).avatar) ? (
                         <Image
                           source={{ uri: String((guest as any).avatar) }}
                           style={s.upperBookRequestProfileImage as any}
                         />
                       ) : (
                         <Text style={s.upperBookRequestInitial as any}>
-                          {initials(guest.name)}
+                          {guest ? initials(guest.name) : ""}
                         </Text>
                       )}
-
                     </>
                   )}
 
@@ -5813,7 +5905,8 @@ return (
                   />
                 </View>
               </Pressable>
-            ))}
+              );
+            })}
           </View>
         ) : null}
 
@@ -6023,7 +6116,7 @@ return (
           </Animated.View>
         ) : null}
 
-        {layoutMode === "grid6" && canManageLive && requestListOpen ? (
+        {false && layoutMode === "grid6" && canManageLive && requestListOpen ? (
           <View pointerEvents="box-none" style={s.joinRequestListLayer as any}>
             <View style={s.joinRequestListCard as any}>
               <View style={s.joinRequestListHeader as any}>
@@ -6234,7 +6327,7 @@ return (
           </View>
         ) : null}
 
-        {layoutMode === "grid6" && canManageLive && hostRequestCard ? (
+        {false && layoutMode === "grid6" && canManageLive && hostRequestCard ? (
           <View pointerEvents="box-none" style={s.hostRequestVipLayer as any}>
             <View style={s.hostRequestVipCard as any}>
               <View style={s.hostRequestVipTop as any}>
@@ -6261,7 +6354,7 @@ return (
                     const slot = Number(hostRequestCard.slot || 0);
                     const req = hostRequestCard.req || {};
 
-                    pushLiveAction("request-join", {
+                    false && false && pushLiveAction("v1-disabled-request", {
                       slot,
                       name: req.name,
                       avatar: req.avatar,
@@ -6293,7 +6386,7 @@ return (
                     if (!canManageLive) return;
                     const slot = Number(hostRequestCard.slot || 0);
                     const req = hostRequestCard.req || {};
-                    pushLiveAction("approve-request", { slot, onStage: true, approved: true });
+                    false && pushLiveAction("v1-disabled-approve", { slot, onStage: true, approved: true });
                               setJoinRequestsBySlot((prev) => {
                                 const next = { ...prev };
                                 delete next[slot];
@@ -6308,7 +6401,7 @@ return (
                       waiting: false,
                       joinedAt: req.joinedAt || new Date().toISOString(),
                     };
-                    pushLiveAction("approve-request", { slot, onStage: true, approved: true });
+                    false && pushLiveAction("v1-disabled-approve", { slot, onStage: true, approved: true });
                     setJoinRequestsBySlot((prev) => ({ ...prev, [slot]: approvedReq }));
 
                     // scheduled live should stay on active slot owner
@@ -6354,7 +6447,7 @@ return (
                         setBigStageGuestId("host");
                       }
                       setStageGuestIds((prev) => prev.filter((id) => id !== guestId));
-                      pushLiveAction("request-join", {
+                      false && false && pushLiveAction("v1-disabled-request", {
                         slot: vipGuestCardSlot,
                         name: req.name,
                         avatar: req.avatar,
@@ -6418,151 +6511,11 @@ return (
 
         {layoutMode === "grid6" ? (
           <View pointerEvents="box-none" style={s.teamGridOverlayLayer as any}>
-            {[0, 1, 2, 3].map((slot, index) => {
-              const claimedGuest = visibleQueueSlots.slice(4, 8)[index] as any;
-              const rawReq = claimedGuest ? null : joinRequestsBySlot[slot];
-              const req = (rawReq as any)?.waiting || (rawReq as any)?.upper ? null : rawReq;
-              const approved = !!req?.approved || !!claimedGuest;
-
-              return (
+            {openClaimableSlots.length ? (
+              openClaimableSlots.map((slot: any, index: number) => (
                 <Pressable
-                  key={`join-request-slot-${slot}`}
-                  onPress={() => {
-                    if (claimedGuest) {
-                      const id = String(claimedGuest.id);
-                      setStageSwapArmed(false);
-                      setProfileActionGuestId((prev) => (prev === id ? null : id));
-                      Haptics.selectionAsync().catch(() => {});
-                      return;
-                    }
-
-                    const guest = guests[slot] || guests[0];
-                    const guestId = `request-slot-${slot}`;
-
-                    if (req?.approved || req?.onStage) {
-                      if (!canManageLive) return;
-
-                      setStageSwapArmed(false);
-
-                      // Opening controls should NOT put guest on big screen
-                      if (isMediaInstantLive) {
-                        setBigStageGuestId("host");
-                        setPinnedGuestId("host");
-                      }
-
-                      setVipGuestCardSlot(slot);
-                      setRequestListOpen(false);
-                      Haptics.selectionAsync().catch(() => {});
-                      return;
-                    }
-
-                    if (requestPolicy === "locked") {
-                      const roleNow = String((session as any)?.role || "").toLowerCase();
-
-                      if (!roleNow.includes("pastor")) {
-                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-                        Alert.alert(
-                          "Live locked",
-                          "Only pastor can join this live right now."
-                        );
-                        return;
-                      }
-                    }
-
-                    if (requestPolicy === "invite") {
-                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-                      Alert.alert("Invite only", "Only invited guests can join this live.");
-                      return;
-                    }
-
-                    if (req && !req.approved && canManageLive) {
-                      setHostRequestCard({ slot, req });
-                      Haptics.selectionAsync().catch(() => {});
-                      return;
-                    }
-
-                    const currentViewerName =
-                      String((session as any)?.name || (session as any)?.displayName || (session as any)?.fullName || "").trim() ||
-                      "Member";
-                    const currentViewerAvatar = (() => {
-                      const raw =
-                        liveProfileAvatarUri ||
-                        (session as any)?.avatarUri ||
-                        (session as any)?.avatarUrl ||
-                        (session as any)?.profileImage ||
-                        (session as any)?.photoURL ||
-                        (session as any)?.image ||
-                        (session as any)?.avatar ||
-                        "";
-
-                      const value = String(raw || "").trim();
-                      if (!value) return currentViewerName.slice(0, 1).toUpperCase() || "M";
-                      if (value.startsWith("http://") || value.startsWith("https://")) return value;
-                      if (value.startsWith("/")) return `http://192.168.12.141:3000${value}`;
-                      return value;
-                    })();
-
-                    setJoinRequestsBySlot((prev) => {
-                      const existing = prev[slot];
-                      const requestGuestId = `request-slot-${slot}`;
-
-                      // AUTO approves at bottom only. Host moves guest up/big manually.
-
-                      if (false && existing && !existing.approved && requestPolicy === "approval" && canManageLive) {
-                        const approvedReq = {
-                          ...existing,
-                          approved: true,
-                          onStage: false,
-                          joinedAt: existing?.joinedAt || new Date().toISOString(),
-                        };
-                        pushLiveAction("approve-request", { slot, onStage: true, approved: true });
-                        publishLiveJoin(liveBridgeId, slot, approvedReq);
-                        return { ...prev, [slot]: approvedReq };
-                      }
-
-                      const viewerChurchId =
-                        String((session as any)?.churchId || "").trim();
-
-                      const liveChurchId =
-                        String((params as any)?.churchId || (session as any)?.churchId || "").trim();
-
-                      const isChurchMember =
-                        !!viewerChurchId &&
-                        !!liveChurchId &&
-                        viewerChurchId === liveChurchId;
-
-                      if (requestPolicy === "members" && !isChurchMember) {
-                        Alert.alert(
-                          "Members only",
-                          "Only church members can join this live."
-                        );
-                        return prev;
-                      }
-
-                      const nextReq = {
-                        name: existing?.name || currentViewerName,
-                        avatar: existing?.avatar || currentViewerAvatar,
-                        approved: requestPolicy === "auto" || requestPolicy === "members",
-                        onStage: false,
-                        joinedAt: existing?.joinedAt || new Date().toISOString(),
-                      };
-
-                      if (!canManageLive) {
-                        pushLiveAction("request-join", {
-                          slot,
-                          userId: String(session?.userId || ""),
-                          name: nextReq.name,
-                          avatar: nextReq.avatar,
-                          joinedAt: nextReq.joinedAt,
-                        });
-                      }
-
-                      return { ...prev, [slot]: nextReq };
-                    });
-
-                    Haptics.selectionAsync().catch(() => {});
-
-                  }}
+                  key={`open-claim-slot-${slot?.id || slot?.slot || index}`}
+                  onPress={() => router.push("/" as any)}
                   style={({ pressed }) => ([
                     s.teamGridMiniCard,
                     index % 2 === 0 ? s.teamGridMiniCardLeft : s.teamGridMiniCardRight,
@@ -6571,50 +6524,70 @@ return (
                   ] as any)}
                 >
                   <View style={s.teamGridRequestAvatar as any}>
-                    {(claimedGuest?.avatar && isImageAvatar(claimedGuest.avatar)) || (req?.avatar && String(req.avatar).includes("/")) ? (
-                      <Image source={{ uri: String(claimedGuest?.avatar || req?.avatar) }} style={s.teamGridRequestAvatarImage as any} />
-                    ) : (
-                      <Text style={s.teamGridRequestAvatarText as any}>
-                        {claimedGuest ? initials(String(claimedGuest.name || "Guest")).slice(0, 2) : req ? initials(String(req.name || "Guest")).slice(0, 2) : "+"}
-                      </Text>
-                    )}
-
-                    {claimedGuest ? (
-                      <View
-                        pointerEvents="none"
-                        style={[
-                          s.slotOrbitAvatarRing as any,
-                          { borderColor: slotRingColor((claimedGuest as any)?.slot || (index + 6)) },
-                        ]}
-                      />
-                    ) : null}
+                    <Text style={s.teamGridRequestAvatarText as any}>+</Text>
+                    <View
+                      pointerEvents="none"
+                      style={[
+                        s.slotOrbitAvatarRing as any,
+                        { borderColor: slotRingColor((slot as any)?.slot || (index + 1)) },
+                      ]}
+                    />
                   </View>
 
                   <View style={s.teamGridRequestTextArea as any}>
-                    <Text style={s.teamGridRequestName as any}>
-                      {claimedGuest ? `${claimedGuest.name}  S${claimedGuest.slot}` : req ? req.name : "Send Request"}
+                    <Text style={s.teamGridRequestName as any} numberOfLines={1}>
+                      {`Go Claim S${slot.slot}`}
                     </Text>
-                    <Text style={[s.teamGridRequestStatus as any, approved ? s.teamGridRequestStatusApproved : null]}>
-                      {claimedGuest
-  ? ""
-  : requestPolicy === "locked"
-  ? "LOCKED"
-  : requestPolicy === "invite"
-    ? "INVITE ONLY"
-    : approved
-      ? "APPROVED"
-      : req
-        ? "REQUESTED"
-        : requestPolicy === "approval"
-          ? "WAIT APPROVAL"
-          : requestPolicy === "members"
-            ? "MEMBERS"
-            : "AUTO JOIN"}
+                    <Text style={[s.teamGridRequestStatus as any, s.teamGridRequestStatusApproved]} numberOfLines={1}>
+                      {String(slot.title || "Open slot")}
                     </Text>
                   </View>
                 </Pressable>
-              );
-            })}
+              ))
+            ) : (
+              <View
+                pointerEvents="none"
+                style={[
+                  s.teamGridMiniCard,
+                  s.teamGridMiniCardLeft,
+                  s.teamGridMiniCardRowTwo,
+                  {
+                    width: "88%",
+                    borderColor: "rgba(244,208,111,0.55)",
+                    backgroundColor: "rgba(72,8,12,0.94)",
+                    shadowColor: "#8B0000",
+                    shadowOpacity: 0.45,
+                    shadowRadius: 10,
+                    shadowOffset: { width: 0, height: 4 },
+                  },
+                ] as any}
+              >
+                <View
+                  style={[
+                    s.teamGridRequestAvatar as any,
+                    {
+                      backgroundColor: "rgba(139,0,0,0.35)",
+                      borderColor: "rgba(244,208,111,0.72)",
+                    },
+                  ]}
+                >
+                  <Ionicons name="lock-closed" size={22} color="#F4D06F" />
+                </View>
+                <View style={s.teamGridRequestTextArea as any}>
+                  <Text style={[s.teamGridRequestName as any, { color: "#FFD6D6" }]}>
+                    All slots claimed
+                  </Text>
+                  <Text
+                    style={[
+                      s.teamGridRequestStatus as any,
+                      { color: "rgba(255,214,214,0.78)", fontWeight: "700" },
+                    ]}
+                  >
+                    No claim slots left
+                  </Text>
+                </View>
+              </View>
+            )}
           </View>
         ) : null}
 <StatusBar translucent backgroundColor="transparent" barStyle="light-content" hidden={false} />
@@ -6894,13 +6867,13 @@ return (
                         <View style={s.splitGuestAvatarWrap as any}>
                           <View style={s.splitGuestAvatarRing as any}>
                             <View style={s.splitGuestAvatarCore as any}>
-                              {(guest as any)?.avatar && isImageAvatar((guest as any).avatar) ? (
+                              {(guest as any)?.avatar && guest && isImageAvatar((guest as any).avatar) ? (
                                 <Image
                                   source={{ uri: String((guest as any).avatar) }}
                                   style={s.teamGridRequestAvatarImage as any}
                                 />
                               ) : (
-                                <Text style={s.splitGuestAvatarText as any}>{initials(guest.name)}</Text>
+                                <Text style={s.splitGuestAvatarText as any}>{guest ? initials(guest.name) : ""}</Text>
                               )}
                             </View>
                           </View>
@@ -7016,13 +6989,13 @@ return (
                       <View style={s.gridGuestAvatarWrap as any}>
                         <View style={s.gridGuestAvatarRing as any}>
                           <View style={s.gridGuestAvatarCore as any}>
-                            {(guest as any)?.avatar && isImageAvatar((guest as any).avatar) ? (
+                            {(guest as any)?.avatar && guest && isImageAvatar((guest as any).avatar) ? (
                               <Image
                                 source={{ uri: String((guest as any).avatar) }}
                                 style={s.teamGridRequestAvatarImage as any}
                               />
                             ) : (
-                              <Text style={s.gridGuestAvatarText as any}>{initials(guest.name)}</Text>
+                              <Text style={s.gridGuestAvatarText as any}>{guest ? initials(guest.name) : ""}</Text>
                             )}
                           </View>
                         </View>
