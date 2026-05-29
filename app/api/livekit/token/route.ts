@@ -52,6 +52,16 @@ export async function POST(req: Request) {
     const allowedToPublish =
       wantsPublish && (canPublish(a.role) || headerMayPublish);
 
+    console.log("KRISTO_LIVEKIT_TOKEN_REQUEST", {
+      userId: a.userId,
+      role: a.role,
+      churchId: a.churchId,
+      roomName,
+      wantsPublish,
+      headerMayPublish,
+      allowedToPublish,
+    });
+
     token.addGrant({
       room: roomName,
       roomJoin: true,
@@ -67,6 +77,7 @@ export async function POST(req: Request) {
       url: livekitUrl,
       token: await token.toJwt(),
       roomName,
+      canPublish: allowedToPublish,
     });
   } catch (e: any) {
     console.error("KRISTO_LIVEKIT_TOKEN_ROUTE_ERROR", e);
