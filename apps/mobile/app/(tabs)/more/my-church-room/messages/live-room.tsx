@@ -4846,6 +4846,15 @@ export default function LiveRoomScreen() {
       (!!canEnterBackstage && (isLeaderRole || isClaimedViewer)));
   const isCoHostRole = normalizedRole.includes("co-host") || normalizedRole.includes("cohost");
   const isViewerRole = !canManageLive && !isCoHostRole;
+  const roleLooksLikeHostPanel =
+    sessionRoleText.includes("pastor") ||
+    sessionRoleText.includes("admin") ||
+    sessionRoleText.includes("host") ||
+    routeRoleText.includes("pastor") ||
+    routeRoleText.includes("admin") ||
+    routeRoleText.includes("host");
+  const canSeeHostCommandCenter =
+    canManageLive || isCoHostRole || roleLooksLikeHostPanel;
 
   const viewerApprovedGuestOnStage =
     isViewerRole &&
@@ -5022,55 +5031,33 @@ export default function LiveRoomScreen() {
     );
   }, [nextScheduleEntry, guests]);
 
-  const hostControlRemainingLabel = useMemo(() => {
-    const endMs = Number(currentMainStageSlot?.endMs || currentScheduleEntry?.endMs || 0);
-    if (!endMs) return "Waiting";
-    const left = Math.max(0, endMs - liveNowMs);
-    const mins = Math.floor(left / 60000);
-    const secs = Math.floor((left % 60000) / 1000);
-    return `${mins}m ${String(secs).padStart(2, "0")}s remaining`;
-  }, [currentMainStageSlot?.endMs, currentScheduleEntry?.endMs, liveNowMs]);
-
   const hostControlLiveSpeaker = useMemo(() => {
     const slot = currentMainStageSlot;
     if (!slot) return null;
     return {
-      name: String(slot?.name || slot?.claimedByName || currentScheduleEntry?.title || hostDrawerCurrentLabel),
-      avatar: String(slot?.avatar || resolveParticipantAvatarUri(slot) || ""),
-      topic: String(
-        slot?.title ||
-          slot?.task ||
-          slot?.subtitle ||
-          currentScheduleEntry?.task ||
-          activeSlot?.task ||
-          mcRuntime.current.task ||
-          "Live session"
-      ),
+      name: String(slot?.claimedByName || slot?.name || ""),
+      avatar: String(resolveParticipantAvatarUri(slot) || slot?.avatar || ""),
+      topic: String(slot?.title || slot?.task || slot?.slotLabel || slot?.name || ""),
       slot: Number(slot?.slot || 0),
+      countdown: String(liveCountdownLabel || "Waiting"),
     };
-  }, [currentMainStageSlot, currentScheduleEntry, activeSlot?.task, mcRuntime.current.task, hostDrawerCurrentLabel]);
+  }, [currentMainStageSlot, liveCountdownLabel]);
 
   const hostControlNextSpeaker = useMemo(() => {
-    const next = hostDrawerNextSlot || (nextScheduleEntry ? {
-      name: nextScheduleEntry.title,
-      avatar: "",
-      slot: 0,
-      startMs: nextScheduleEntry.startMs,
-      topic: nextScheduleEntry.task || nextScheduleEntry.title,
-    } : null);
+    const next = hostDrawerNextSlot;
     if (!next) return null;
-    const startMs = Number((next as any)?.startMs || nextScheduleEntry?.startMs || 0);
+    const startMs = Number((next as any)?.startMs || 0);
     return {
-      name: String((next as any)?.name || nextSpeakerLabel || hostDrawerNextLabel),
+      name: String((next as any)?.name || ""),
       avatar: String((next as any)?.avatar || resolveParticipantAvatarUri(next) || ""),
-      topic: String((next as any)?.title || (next as any)?.task || nextScheduleEntry?.task || "Up next"),
-      slot: Number((next as any)?.slot || currentMainStageSlot?.slot ? Number(currentMainStageSlot.slot) + 1 : 0),
+      topic: String((next as any)?.title || (next as any)?.task || (next as any)?.slotLabel || (next as any)?.name || ""),
+      slot: Number((next as any)?.slot || 0),
       startTime: startMs
         ? new Date(startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
         : "—",
       status: startMs > liveNowMs ? "WAITING" : "READY",
     };
-  }, [hostDrawerNextSlot, nextScheduleEntry, nextSpeakerLabel, hostDrawerNextLabel, liveNowMs, currentMainStageSlot?.slot]);
+  }, [hostDrawerNextSlot, liveNowMs]);
 
   const hostControlClaimedSpeakers = useMemo(() => {
     const currentSlotNum = Number(currentMainStageSlot?.slot || 0);
@@ -5084,9 +5071,9 @@ export default function LiveRoomScreen() {
       return {
         id: String(person?.id || `claimed-${slotNum}`),
         slot: slotNum,
-        name: String(person?.name || `Speaker ${slotNum}`),
-        avatar: String(person?.avatar || ""),
-        topic: String(person?.title || person?.task || person?.role || "Speaking slot"),
+        name: String(person?.name || person?.claimedByName || `Speaker ${slotNum}`),
+        avatar: String(person?.avatar || resolveParticipantAvatarUri(person) || ""),
+        topic: String(person?.title || person?.task || person?.slotLabel || person?.name || "Speaking slot"),
         status: isLiveNow ? "LIVE NOW" : isWaiting ? "WAITING" : isReady ? "READY" : "WAITING",
         statusColor: isLiveNow ? "#22C55E" : isWaiting ? "#FACC15" : "#38BDF8",
       };
@@ -5096,6 +5083,8 @@ export default function LiveRoomScreen() {
   const hostControlHosts = useMemo(() => {
     const rows: Array<{ id: string; name: string; role: string; avatar: string }> = [];
     const seen = new Set<string>();
+    const pastorId = String(actualChurchPastorUserId || "").trim();
+    const hostIds = Array.isArray(mediaHostIds) ? mediaHostIds : [];
 
     const pushHost = (id: string, name: string, role: string, avatar = "") => {
       const uid = String(id || "").trim();
@@ -5104,28 +5093,37 @@ export default function LiveRoomScreen() {
       rows.push({ id: uid, name: String(name || role), role, avatar: String(avatar || "") });
     };
 
-    if (actualChurchPastorUserId) {
+    if (pastorId) {
       const pastorPerson = scheduledStagePeople.find(
-        (p: any) => String(p?.claimedByUserId || "") === actualChurchPastorUserId
+        (p: any) => String(p?.claimedByUserId || "").trim() === pastorId
       );
       pushHost(
-        actualChurchPastorUserId,
+        pastorId,
         String(pastorPerson?.name || (params as any)?.claimedByName || "Pastor"),
         "Pastor",
-        String(pastorPerson?.avatar || liveProfileAvatarUri || "")
+        String(pastorPerson?.avatar || resolveParticipantAvatarUri(pastorPerson) || liveProfileAvatarUri || "")
       );
     }
 
-    (Array.isArray(mediaHostIds) ? mediaHostIds : []).forEach((hostId: string) => {
-      const person = scheduledStagePeople.find((p: any) => String(p?.claimedByUserId || "") === String(hostId));
-      pushHost(String(hostId), String(person?.name || "Host"), "Host", String(person?.avatar || ""));
+    hostIds.forEach((hostId: string) => {
+      const id = String(hostId || "").trim();
+      if (!id) return;
+      const person = scheduledStagePeople.find((p: any) => String(p?.claimedByUserId || "").trim() === id);
+      pushHost(id, String(person?.name || "Host"), "Host", String(person?.avatar || resolveParticipantAvatarUri(person) || ""));
     });
 
-    scheduledStagePeople
-      .filter((p: any) => String(p?.role || "").toLowerCase().includes("leader"))
-      .forEach((p: any) => {
-        pushHost(String(p?.claimedByUserId || p?.id || ""), String(p?.name || "Co-host"), "Co-host", String(p?.avatar || ""));
-      });
+    scheduledStagePeople.forEach((p: any) => {
+      const roleRaw = String(p?.role || p?.roleLabel || "").toLowerCase();
+      const uid = String(p?.claimedByUserId || "").trim();
+      if (!uid) return;
+      if (roleRaw.includes("pastor")) {
+        pushHost(uid, String(p?.name || "Pastor"), "Pastor", String(p?.avatar || resolveParticipantAvatarUri(p) || ""));
+      } else if (roleRaw.includes("admin")) {
+        pushHost(uid, String(p?.name || "Admin"), "Admin", String(p?.avatar || resolveParticipantAvatarUri(p) || ""));
+      } else if (roleRaw.includes("host")) {
+        pushHost(uid, String(p?.name || "Host"), "Host", String(p?.avatar || resolveParticipantAvatarUri(p) || ""));
+      }
+    });
 
     if (canManageLive && session?.userId) {
       pushHost(
@@ -5150,61 +5148,51 @@ export default function LiveRoomScreen() {
   ]);
 
   const hostControlViewerStats = useMemo(() => {
-    const presenceRows = Object.values(liveViewerPresence || {});
-    const totalViewers = Math.max(
-      Number(live.viewerCount || 0),
-      presenceRows.length,
-      Number(membersCount || 0)
-    );
-    const oneMinuteAgo = liveNowMs - 60000;
-    const activeViewers = presenceRows.length
-      ? presenceRows.filter((viewer: any) => {
-          const lastSeen = Number(viewer?.lastSeenAt || viewer?.updatedAt || viewer?.joinedAt || 0);
-          return !lastSeen || lastSeen >= liveNowMs - 120000;
-        }).length
-      : totalViewers;
-    const joinedLastMinute = presenceRows.filter((viewer: any) => {
-      const joined = Number(viewer?.joinedAt || viewer?.createdAt || 0);
-      return joined >= oneMinuteAgo;
-    }).length;
-    const mutedViewers = Object.values(miniVideoMutedById || {}).filter(Boolean).length;
-    const engagedViewers = presenceRows.filter(
-      (viewer: any) => !!viewer?.handRaised || !!viewer?.reacted || !!viewer?.commented
-    ).length;
+    const presenceCount = Object.keys(liveViewerPresence || {}).length;
+    const totalViewers = Math.max(Number(live.viewerCount || 0), presenceCount);
+    const activeViewers = presenceCount;
+    const members = Number(membersCount || 0);
+    const leaders = Number(leadersCount || 0);
+    const guests = Math.max(0, totalViewers - members - leaders);
 
     return {
       totalViewers,
       activeViewers,
-      newViewers: joinedLastMinute,
-      joinedLastMinute,
-      mutedViewers,
-      engagedViewers: engagedViewers || Math.max(0, activeViewers - mutedViewers),
+      members,
+      leaders,
+      guests,
     };
-  }, [liveViewerPresence, live.viewerCount, membersCount, liveNowMs, miniVideoMutedById]);
+  }, [liveViewerPresence, live.viewerCount, membersCount, leadersCount]);
 
   const hostControlUpcomingQueue = useMemo(() => {
-    const currentSlotNum = Number(currentMainStageSlot?.slot || 0);
     return runtimeScheduleSlots
       .map((slot: any, index: number) => {
         const win = getScheduleSlotWindow(slot, index);
         const slotNum = Number(slot?.slot || slot?.slotNumber || index + 1);
+        const startMs = Number(win.startMs || 0);
         if (slot?.skipped) return null;
-        if (Number(win.endMs || 0) <= liveNowMs && slotNum !== currentSlotNum) return null;
-        if (slotNum <= currentSlotNum) return null;
+        if (!startMs || startMs <= liveNowMs) return null;
+        const claimed = !!String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
         return {
           slot: slotNum,
-          startMs: Number(win.startMs || 0),
-          timeLabel: Number(win.startMs || 0)
-            ? new Date(Number(win.startMs)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-            : "—",
-          claimed: !!String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim(),
-          name: String(slot?.claimedByName || slot?.title || slot?.name || `Slot ${slotNum}`),
+          startMs,
+          timeLabel: new Date(startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+          claimed,
+          status: claimed ? "claimed" : "open",
+          name: String(
+            slot?.claimedByName ||
+              slot?.title ||
+              slot?.task ||
+              slot?.slotLabel ||
+              slot?.name ||
+              `Slot ${slotNum}`
+          ),
         };
       })
       .filter(Boolean)
       .sort((a: any, b: any) => Number(a.startMs || 0) - Number(b.startMs || 0))
       .slice(0, 8);
-  }, [runtimeScheduleSlots, currentMainStageSlot?.slot, liveNowMs]);
+  }, [runtimeScheduleSlots, liveNowMs]);
 
   const pinnedGuestOnStage = !!pinnedGuest?.id && stageGuestIds.includes(pinnedGuest.id);
   const pinnedGuestAuthorityMuted =
@@ -5680,7 +5668,7 @@ ${scheduleAudienceAccessText}`,
 
   const bottomSpacer = <View style={{ height: 96 }} />;
   const rootPanHandlers =
-    canManageLive
+    canSeeHostCommandCenter
       ? hostDrawerPanResponder.panHandlers
       : viewerFlowPanResponder.panHandlers;
 
@@ -7750,7 +7738,7 @@ return (
           </Pressable>
         </Modal>
       </View>
-      {canManageLive && hostDrawerOpen ? (
+      {canSeeHostCommandCenter && hostDrawerOpen ? (
         <Pressable
           pointerEvents="auto"
           style={s.hostDrawerScrim as any}
@@ -7758,7 +7746,7 @@ return (
         />
       ) : null}
 
-      {canManageLive ? (
+      {canSeeHostCommandCenter ? (
       <Animated.View
         pointerEvents={hostDrawerOpen ? "auto" : "none"}
         style={[
@@ -7805,7 +7793,7 @@ return (
                   <Text style={s.hcLiveHeroName as any} numberOfLines={1}>{hostControlLiveSpeaker.name}</Text>
                   <Text style={s.hcLiveHeroTopic as any} numberOfLines={2}>{hostControlLiveSpeaker.topic}</Text>
                   <Text style={s.hcLiveHeroMeta as any}>
-                    Slot {hostControlLiveSpeaker.slot || "—"} • {hostControlRemainingLabel}
+                    Slot {hostControlLiveSpeaker.slot || "—"} • {hostControlLiveSpeaker.countdown}
                   </Text>
                 </View>
               </View>
@@ -7893,20 +7881,21 @@ return (
                 <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.activeViewers}</Text>
               </View>
               <View style={s.hcViewerStatRow as any}>
-                <Text style={s.hcViewerStatLabel as any}>New viewers</Text>
-                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.newViewers}</Text>
+                <Text style={s.hcViewerStatLabel as any}>Members</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.members}</Text>
               </View>
               <View style={s.hcViewerStatRow as any}>
-                <Text style={s.hcViewerStatLabel as any}>Joined last minute</Text>
-                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.joinedLastMinute}</Text>
+                <Text style={s.hcViewerStatLabel as any}>Leaders</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.leaders}</Text>
               </View>
             </View>
             <View style={s.hcViewerBreakdownRow as any}>
               {[
                 { label: "TOTAL", value: hostControlViewerStats.totalViewers },
                 { label: "ACTIVE", value: hostControlViewerStats.activeViewers },
-                { label: "MUTED", value: hostControlViewerStats.mutedViewers },
-                { label: "ENGAGED", value: hostControlViewerStats.engagedViewers },
+                { label: "MEMBERS", value: hostControlViewerStats.members },
+                { label: "LEADERS", value: hostControlViewerStats.leaders },
+                { label: "GUESTS", value: hostControlViewerStats.guests },
               ].map((chip) => (
                 <View key={chip.label} style={s.hcViewerChip as any}>
                   <Text style={s.hcViewerChipValue as any}>{chip.value}</Text>
@@ -7928,11 +7917,13 @@ return (
                   <View style={s.hcQueueTimelineBody as any}>
                     <Text style={s.hcQueueTimelineSlot as any}>Slot {item.slot}</Text>
                     <Text style={s.hcQueueTimelineTime as any}>{item.timeLabel}</Text>
-                    <Text style={s.hcQueueTimelineName as any} numberOfLines={1}>{item.name}</Text>
+                    <Text style={s.hcQueueTimelineName as any} numberOfLines={1}>
+                      {item.name} • {String(item.status || "").toUpperCase()}
+                    </Text>
                   </View>
                 </View>
               )) : (
-                <Text style={s.hcEmptyText as any}>No upcoming slots scheduled</Text>
+                <Text style={s.hcEmptyText as any}>No upcoming scheduled slots</Text>
               )}
             </View>
           ) : null}
