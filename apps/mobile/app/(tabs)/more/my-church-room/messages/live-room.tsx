@@ -4226,14 +4226,16 @@ export default function LiveRoomScreen() {
     return (
       <View style={s.audiencePanelSectionWrap as any}>
         <Text style={s.hcSectionTitlePurple as any}>
-          CLAIMED SPEAKERS ({hostControlClaimedSpeakers.length})
+          CLAIMED SPEAKERS ({claimedUserCount} USERS • {claimedSlotCount} SLOTS)
         </Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.hcSpeakerScroll as any}>
           {speakers.length ? speakers.map((speaker: any) => (
             <View key={speaker.id} style={s.hcSpeakerCard as any}>
               {renderHostControlAvatar(speaker.name, speaker.avatar, 46, speaker.statusColor)}
               <Text style={s.hcSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
-              <Text style={s.hcSpeakerSlot as any}>Slot {speaker.slot}</Text>
+              <Text style={s.hcSpeakerSlot as any}>
+                {claimedSpeakerSlotLabelById[speaker.id] || `Slot ${speaker.slot}`}
+              </Text>
               <Text style={s.hcSpeakerTopic as any} numberOfLines={1}>{speaker.topic}</Text>
               <Text style={[s.hcSpeakerStatus as any, { color: speaker.statusColor }]}>{speaker.status}</Text>
             </View>
@@ -5385,6 +5387,7 @@ export default function LiveRoomScreen() {
       return {
         id: String(person?.id || `claimed-${slotNum}`),
         slot: slotNum,
+        claimedByUserId: String(person?.claimedByUserId || person?.userId || "").trim(),
         name: String(person?.name || person?.claimedByName || `Speaker ${slotNum}`),
         avatar: String(person?.avatar || resolveParticipantAvatarUri(person) || ""),
         topic: String(person?.title || person?.task || person?.slotLabel || person?.name || "Speaking slot"),
@@ -5393,6 +5396,66 @@ export default function LiveRoomScreen() {
       };
     });
   }, [scheduledStagePeople, currentMainStageSlot?.slot, liveNowMs]);
+
+  const {
+    claimedSlotCount,
+    claimedUserCount,
+    claimedUsers,
+    claimedSpeakerSlotLabelById,
+  } = useMemo(() => {
+    const speakers = hostControlClaimedSpeakers;
+    const slotCount = speakers.length;
+    const slotsByUserKey = new Map<string, number[]>();
+
+    const userKeyFor = (speaker: any) => {
+      const userId = String(speaker?.claimedByUserId || speaker?.userId || "").trim();
+      if (userId) return `uid:${userId}`;
+      const name = String(speaker?.name || "").trim().toLowerCase();
+      if (name) return `name:${name}`;
+      return `id:${String(speaker?.id || speaker?.slot || "")}`;
+    };
+
+    speakers.forEach((speaker: any) => {
+      const key = userKeyFor(speaker);
+      const slots = slotsByUserKey.get(key) || [];
+      const slotNum = Number(speaker?.slot || 0);
+      if (slotNum > 0) slots.push(slotNum);
+      slotsByUserKey.set(key, slots);
+    });
+
+    const slotLabelById: Record<string, string> = {};
+    speakers.forEach((speaker: any) => {
+      const key = userKeyFor(speaker);
+      const slots = (slotsByUserKey.get(key) || []).filter(Boolean).sort((a, b) => a - b);
+      slotLabelById[speaker.id] =
+        slots.length > 1 ? `Slots ${slots.join(", ")}` : `Slot ${slots[0] || speaker.slot || "—"}`;
+    });
+
+    const seenUserKeys = new Set<string>();
+    const users = speakers.filter((speaker: any) => {
+      const key = userKeyFor(speaker);
+      if (seenUserKeys.has(key)) return false;
+      seenUserKeys.add(key);
+      return true;
+    }).map((speaker: any) => ({
+      ...speaker,
+      slotLabel: slotLabelById[speaker.id] || `Slot ${speaker.slot || "—"}`,
+    }));
+
+    return {
+      claimedSlotCount: slotCount,
+      claimedUserCount: users.length,
+      claimedUsers: users,
+      claimedSpeakerSlotLabelById: slotLabelById,
+    };
+  }, [hostControlClaimedSpeakers]);
+
+  useEffect(() => {
+    console.log("KRISTO_CLAIMED_SPEAKER_COUNTS", {
+      claimedUserCount,
+      claimedSlotCount,
+    });
+  }, [claimedUserCount, claimedSlotCount]);
 
   const hostControlHosts = useMemo(() => {
     const rows: Array<{ id: string; name: string; role: string; avatar: string }> = [];
@@ -5532,7 +5595,8 @@ export default function LiveRoomScreen() {
     console.log("KRISTO_AUDIENCE_PANEL_DATA", {
       isClaimedMember: !!myClaimedStageSlot,
       myClaimedSlot: Number((myClaimedStageSlot as any)?.slot || 0),
-      claimedSpeakersCount: hostControlClaimedSpeakers.length,
+      claimedSpeakersCount: claimedSlotCount,
+      claimedUsersCount: claimedUserCount,
       viewersTotal: hostControlViewerStats.totalViewers,
       queueCount: hostControlUpcomingQueue.length,
     });
@@ -5540,6 +5604,8 @@ export default function LiveRoomScreen() {
     canSeeAudiencePanel,
     myClaimedStageSlot,
     hostControlClaimedSpeakers.length,
+    claimedSlotCount,
+    claimedUserCount,
     hostControlViewerStats.totalViewers,
     hostControlUpcomingQueue.length,
   ]);
@@ -8229,14 +8295,16 @@ return (
           {!isMediaInstantLive ? (
             <View style={s.hcSectionWrap as any}>
               <Text style={s.hcSectionTitlePurple as any}>
-                CLAIMED SPEAKERS ({hostControlClaimedSpeakers.length})
+                CLAIMED SPEAKERS ({claimedUserCount} USERS • {claimedSlotCount} SLOTS)
               </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.hcSpeakerScroll as any}>
                 {hostControlClaimedSpeakers.length ? hostControlClaimedSpeakers.map((speaker: any) => (
                   <View key={speaker.id} style={s.hcSpeakerCard as any}>
                     {renderHostControlAvatar(speaker.name, speaker.avatar, 46, speaker.statusColor)}
                     <Text style={s.hcSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
-                    <Text style={s.hcSpeakerSlot as any}>Slot {speaker.slot}</Text>
+                    <Text style={s.hcSpeakerSlot as any}>
+                      {claimedSpeakerSlotLabelById[speaker.id] || `Slot ${speaker.slot}`}
+                    </Text>
                     <Text style={s.hcSpeakerTopic as any} numberOfLines={1}>{speaker.topic}</Text>
                     <Text style={[s.hcSpeakerStatus as any, { color: speaker.statusColor }]}>{speaker.status}</Text>
                   </View>
