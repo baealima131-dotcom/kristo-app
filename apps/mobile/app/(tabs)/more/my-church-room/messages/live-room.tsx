@@ -4148,6 +4148,30 @@ export default function LiveRoomScreen() {
     );
   }
 
+  function renderAudienceSpeakerBlock(label: string, speaker: any, accent: string) {
+    return (
+      <View style={s.audiencePanelBlock as any}>
+        <Text style={s.audiencePanelBlockLabel as any}>{label}</Text>
+        {speaker?.name ? (
+          <View style={s.audiencePanelSpeakerRow as any}>
+            {renderHostControlAvatar(String(speaker.name), String(speaker.avatar || ""), 44, accent)}
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+              <Text style={s.audiencePanelSpeakerTopic as any} numberOfLines={1}>
+                {speaker.topic || speaker.startTime || "—"}
+              </Text>
+              {speaker.slot ? (
+                <Text style={s.audiencePanelSpeakerMeta as any}>Slot {speaker.slot}</Text>
+              ) : null}
+            </View>
+          </View>
+        ) : (
+          <Text style={s.audiencePanelEmpty as any}>Not scheduled yet</Text>
+        )}
+      </View>
+    );
+  }
+
   function canSelectedProfileModerate(id?: string | null) {
     const selectedId = String(id || "").trim();
     return !!selectedId && !!moderatorIds[selectedId] && selectedId !== "host";
@@ -4856,6 +4880,25 @@ export default function LiveRoomScreen() {
   const canSeeHostCommandCenter =
     canManageLive || isCoHostRole || roleLooksLikeHostPanel;
 
+  const canSeeAudiencePanel = !canSeeHostCommandCenter && !isMediaInstantLive;
+  const isClaimedMemberAudience = canSeeAudiencePanel && !!myClaimedStageSlot;
+
+  useEffect(() => {
+    console.log("KRISTO_AUDIENCE_PANEL_GATE", {
+      canSeeAudiencePanel,
+      viewerFlowOpen,
+      layoutMode,
+      isClaimedMember: !!myClaimedStageSlot,
+      canSeeHostCommandCenter,
+    });
+  }, [
+    canSeeAudiencePanel,
+    viewerFlowOpen,
+    layoutMode,
+    myClaimedStageSlot,
+    canSeeHostCommandCenter,
+  ]);
+
   const viewerApprovedGuestOnStage =
     isViewerRole &&
     Object.values(joinRequestsBySlot || {}).some((req: any) =>
@@ -5058,6 +5101,45 @@ export default function LiveRoomScreen() {
       status: startMs > liveNowMs ? "WAITING" : "READY",
     };
   }, [hostDrawerNextSlot, liveNowMs]);
+
+  const claimedMemberPanelInfo = useMemo(() => {
+    if (!myClaimedStageSlot) return null;
+    const slot = myClaimedStageSlot as any;
+    const slotNum = Number(slot?.slot || 0);
+    const startMs = Number(slot?.startMs || 0);
+    const endMs = Number(slot?.endMs || 0);
+    const currentSlotNum = Number(currentMainStageSlot?.slot || 0);
+    const isLiveNow = slotNum > 0 && slotNum === currentSlotNum && !!currentMainStageSlot;
+    const isWaiting = startMs > liveNowMs;
+    const isReady = !isLiveNow && startMs <= liveNowMs && (!endMs || endMs >= liveNowMs);
+
+    let status = "WAITING";
+    if (isLiveNow) status = "LIVE NOW";
+    else if (isReady) status = "READY";
+
+    let countdown = "—";
+    if (isLiveNow) {
+      countdown = String(liveCountdownLabel || "Waiting");
+    } else if (isWaiting && startMs) {
+      const left = Math.max(0, startMs - liveNowMs);
+      const mins = Math.floor(left / 60000);
+      const secs = Math.floor((left % 60000) / 1000);
+      countdown = `STARTS IN ${mins}:${String(secs).padStart(2, "0")}`;
+    } else if (isReady) {
+      countdown = "You're up next";
+    }
+
+    return {
+      slot: slotNum,
+      topic: String(slot?.title || slot?.task || slot?.slotLabel || slot?.name || `Slot ${slotNum}`),
+      timeLabel: startMs
+        ? new Date(startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        : "—",
+      status,
+      statusColor: isLiveNow ? "#22C55E" : isWaiting ? "#FACC15" : "#38BDF8",
+      countdown,
+    };
+  }, [myClaimedStageSlot, currentMainStageSlot, liveCountdownLabel, liveNowMs]);
 
   const hostControlClaimedSpeakers = useMemo(() => {
     const currentSlotNum = Number(currentMainStageSlot?.slot || 0);
@@ -5689,7 +5771,9 @@ ${scheduleAudienceAccessText}`,
   const rootPanHandlers =
     canSeeHostCommandCenter
       ? hostDrawerPanResponder.panHandlers
-      : viewerFlowPanResponder.panHandlers;
+      : canSeeAudiencePanel
+        ? viewerFlowPanResponder.panHandlers
+        : {};
 
   const realFeelViewerCount = Number(live.viewerCount || 0);
 
@@ -5839,6 +5923,11 @@ return (
                   style={[s.vipSoloControl as any, viewerFlowOpen ? s.vipSoloControlOn as any : null]}
                   onPress={() => {
                     Haptics.selectionAsync().catch(() => {});
+                    if (canSeeHostCommandCenter) {
+                      if (hostDrawerOpen) closeHostDrawer();
+                      else openHostDrawer();
+                      return;
+                    }
                     if (viewerFlowOpen) closeViewerFlow();
                     else openViewerFlow();
                   }}
@@ -7549,9 +7638,9 @@ return (
           </View>
         )}
 
-        {true ? (
+        {canSeeAudiencePanel ? (
           <>
-            {(layoutMode === "focus" || layoutMode === "grid6") ? null : !viewerFlowOpen ? (
+            {!viewerFlowOpen ? (
               <Pressable
                 onPress={openViewerFlow}
                 pointerEvents="box-only"
@@ -7560,91 +7649,108 @@ return (
               />
             ) : null}
 
-            {viewerFlowOpen && layoutMode !== "grid6" && layoutMode !== "focus" ? <Pressable style={s.viewerFlowScrim as any} onPress={closeViewerFlow} /> : null}
+            {viewerFlowOpen ? (
+              <Pressable style={s.viewerFlowScrim as any} onPress={closeViewerFlow} />
+            ) : null}
 
+            {viewerFlowOpen ? (
             <Animated.View
-              pointerEvents={(layoutMode === "grid6" || layoutMode === "focus") ? "none" : "auto"}
+              pointerEvents="auto"
               {...viewerFlowPanResponder.panHandlers}
               style={[
                 s.viewerFlowPanel,
-                (layoutMode === "grid6" || layoutMode === "focus") ? { opacity: 0, display: "none" } : null,
                 { transform: [{ translateX: viewerFlowX }] },
               ]}
             >
               <View style={s.viewerFlowHandle as any} />
-              <Text style={s.viewerFlowTitle as any}>Flow</Text>
-              <Text style={s.viewerFlowSub as any}>Swipe right to close</Text>
-
-              <View style={s.viewerFlowSummaryRow as any}>
-                <View style={s.viewerFlowSummaryCard as any}>
-                  <Text style={s.viewerFlowSummaryLabel as any}>ENDS IN</Text>
-                  <Text style={s.viewerFlowSummaryValue as any} numberOfLines={1}>
-                    {String(liveCountdownLabel || "").replace(/^ENDS IN\s*/i, "")}
-                  </Text>
-                </View>
-
-                <View style={s.viewerFlowSummaryCard as any}>
-                  <Text style={s.viewerFlowSummaryLabel as any}>NEXT</Text>
-                  <Text style={s.viewerFlowSummaryValue as any} numberOfLines={1}>
-                    {viewerUpcomingFlowRow?.title || nextSpeakerLabel || mcRuntime.next.name || "TBD"}
-                  </Text>
-                </View>
-              </View>
-
               <ScrollView
                 showsVerticalScrollIndicator={false}
+                bounces={false}
                 contentContainerStyle={[
-                  s.viewerFlowScrollContent,
-                  { paddingBottom: Math.max(insets.bottom, 16) + 96 },
+                  s.audiencePanelScroll,
+                  { paddingBottom: Math.max(insets.bottom, 12) + 8 },
                 ]}
               >
-                {flowRows.map((row: any, index: number) => {
-                  const isCurrent = index === viewerCurrentFlowIndex;
-                  const isNext = index === viewerNextFlowIndex;
-
-                  return (
-                    <View
-                      key={row.id}
-                      style={[
-                        s.viewerFlowItem,
-                        isCurrent ? s.viewerFlowItemCurrent : null,
-                        isNext ? s.viewerFlowItemNext : null,
-                      ]}
-                    >
-                      <View style={s.viewerFlowItemTop as any}>
-                        <Text style={s.viewerFlowSlot as any}>{row.slotLabel}</Text>
-
-                        {isCurrent ? (
-                          <View style={[s.viewerFlowMiniBadge as any, s.viewerFlowMiniBadgeLive]}>
-                            <Text style={s.viewerFlowMiniBadgeText as any}>LIVE</Text>
-                          </View>
-                        ) : isNext ? (
-                          <View style={[s.viewerFlowMiniBadge as any, s.viewerFlowMiniBadgeNext]}>
-                            <Text style={s.viewerFlowMiniBadgeText as any}>NEXT</Text>
-                          </View>
-                        ) : null}
+                {isClaimedMemberAudience && claimedMemberPanelInfo ? (
+                  <>
+                    <Text style={s.audiencePanelEyebrow as any}>MY SPEAKING SLOT</Text>
+                    <View style={s.audiencePanelHero as any}>
+                      <View style={s.audiencePanelHeroTop as any}>
+                        <Text style={s.audiencePanelHeroSlot as any}>Slot {claimedMemberPanelInfo.slot}</Text>
+                        <View
+                          style={[
+                            s.audiencePanelStatusPill as any,
+                            { borderColor: claimedMemberPanelInfo.statusColor },
+                          ]}
+                        >
+                          <Text style={[s.audiencePanelStatusText as any, { color: claimedMemberPanelInfo.statusColor }]}>
+                            {claimedMemberPanelInfo.status}
+                          </Text>
+                        </View>
                       </View>
-
-                      <Text style={s.viewerFlowItemTitle as any} numberOfLines={1}>
-                        {row.title}
+                      <Text style={s.audiencePanelHeroTopic as any} numberOfLines={2}>
+                        {claimedMemberPanelInfo.topic}
                       </Text>
-
-                      <Text style={s.viewerFlowItemMeta as any} numberOfLines={1}>
-                        {row.timeLabel || "Scheduled"}
+                      <Text style={s.audiencePanelHeroMeta as any}>
+                        {claimedMemberPanelInfo.timeLabel} • {claimedMemberPanelInfo.countdown}
                       </Text>
-
-                      {row.roleLabel ? (
-                        <Text style={s.viewerFlowItemSub as any} numberOfLines={1}>
-                          {row.roleLabel}
-                        </Text>
-                      ) : null}
                     </View>
-                  );
-                })}
 
-                {bottomSpacer}
+                    {renderAudienceSpeakerBlock("CURRENT SPEAKER", hostControlLiveSpeaker, "#22C55E")}
+                    {renderAudienceSpeakerBlock("NEXT SPEAKER", hostControlNextSpeaker, "#A78BFA")}
+                  </>
+                ) : (
+                  <>
+                    <Text style={s.audiencePanelEyebrow as any}>VIEWER PANEL</Text>
+                    <Text style={s.audiencePanelTitle as any} numberOfLines={2}>{rawTitle}</Text>
+
+                    {renderAudienceSpeakerBlock("CURRENT SPEAKER", hostControlLiveSpeaker, "#22C55E")}
+                    {renderAudienceSpeakerBlock("NEXT SPEAKER", hostControlNextSpeaker, "#A78BFA")}
+
+                    <View style={s.audiencePanelStatCard as any}>
+                      <Text style={s.audiencePanelBlockLabel as any}>TOTAL VIEWERS</Text>
+                      <Text style={s.audiencePanelStatValue as any}>
+                        {hostControlViewerStats.totalViewers}
+                      </Text>
+                    </View>
+
+                    {openClaimableSlots.length ? (
+                      <View style={s.audiencePanelBlock as any}>
+                        <Text style={s.audiencePanelBlockLabel as any}>OPEN SLOTS</Text>
+                        <View style={s.audiencePanelClaimRow as any}>
+                          {openClaimableSlots.map((slot: any) => (
+                            <Pressable
+                              key={`viewer-claim-${slot?.id || slot?.slot}`}
+                              onPress={() => router.push("/" as any)}
+                              style={({ pressed }) => ([
+                                s.audiencePanelClaimBtn,
+                                pressed ? s.audiencePanelClaimBtnPressed : null,
+                              ] as any)}
+                            >
+                              <Text style={s.audiencePanelClaimBtnText as any}>
+                                Go Claim S{slot.slot}
+                              </Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+                    ) : null}
+                  </>
+                )}
+
+                <Pressable
+                  onPress={() => quitLiveRoom()}
+                  style={({ pressed }) => ([
+                    s.audiencePanelCloseBtn,
+                    pressed ? s.audiencePanelCloseBtnPressed : null,
+                  ] as any)}
+                >
+                  <Ionicons name="close-circle-outline" size={18} color="#FFFFFF" />
+                  <Text style={s.audiencePanelCloseBtnText as any}>Close Live</Text>
+                </Pressable>
               </ScrollView>
             </Animated.View>
+            ) : null}
           </>
         ) : null}
 
@@ -9178,7 +9284,7 @@ const s: any = StyleSheet.create({
   right: 18,
   bottom: 106,
   width: 300,
-  maxHeight: 390,
+  maxHeight: 460,
   paddingTop: 10,
   paddingHorizontal: 14,
   paddingBottom: 12,
@@ -9317,6 +9423,162 @@ const s: any = StyleSheet.create({
   fontWeight: "900",
   letterSpacing: 0.9,
 },
+
+  audiencePanelScroll: {
+    gap: 12,
+  },
+  audiencePanelEyebrow: {
+    color: "rgba(125,211,252,0.82)",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.6,
+    marginBottom: 2,
+  },
+  audiencePanelTitle: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: -0.3,
+    lineHeight: 26,
+    marginBottom: 4,
+  },
+  audiencePanelHero: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(14,36,64,0.88)",
+    borderWidth: 1,
+    borderColor: "rgba(167,139,250,0.35)",
+    gap: 6,
+  },
+  audiencePanelHeroTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  audiencePanelHeroSlot: {
+    color: "#A78BFA",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+  audiencePanelHeroTopic: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+    lineHeight: 21,
+  },
+  audiencePanelHeroMeta: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  audiencePanelStatusPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  audiencePanelStatusText: {
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+  audiencePanelBlock: {
+    borderRadius: 18,
+    padding: 12,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    gap: 8,
+  },
+  audiencePanelBlockLabel: {
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+  },
+  audiencePanelSpeakerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  audiencePanelSpeakerName: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  audiencePanelSpeakerTopic: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  audiencePanelSpeakerMeta: {
+    color: "rgba(125,211,252,0.72)",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  audiencePanelEmpty: {
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  audiencePanelStatCard: {
+    borderRadius: 18,
+    padding: 12,
+    backgroundColor: "rgba(14,36,64,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(56,189,248,0.28)",
+    gap: 4,
+  },
+  audiencePanelStatValue: {
+    color: "#FFFFFF",
+    fontSize: 28,
+    fontWeight: "900",
+  },
+  audiencePanelClaimRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  audiencePanelClaimBtn: {
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "rgba(244,208,111,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(244,208,111,0.55)",
+  },
+  audiencePanelClaimBtnPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.98 }],
+  },
+  audiencePanelClaimBtnText: {
+    color: "#F4D06F",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  audiencePanelCloseBtn: {
+    marginTop: 4,
+    height: 48,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "rgba(170,14,28,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(255,72,88,0.72)",
+  },
+  audiencePanelCloseBtnPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.98 }],
+  },
+  audiencePanelCloseBtnText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "900",
+  },
 
   controlsWrap: {
     position: "absolute",
