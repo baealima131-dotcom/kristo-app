@@ -3375,16 +3375,6 @@ const displayHeaderTitle = assignmentDisplayTitle;
       now < startMs - 3 * 60 * 60 * 1000;
 
     if (!hasRealSchedule) {
-      if (isChurchLiveControlAssignment) {
-        return {
-          label: "LIVE",
-          tone: canPastorStartChurchLive ? "live" as const : "idle" as const,
-          sublabel: canPastorStartChurchLive ? "Pastor live ready" : "Pastor only",
-          canOpenLive: canPastorStartChurchLive,
-          entryMode: canPastorStartChurchLive ? "live" as const : "none" as const,
-        };
-      }
-
       return {
         label: "LIVE",
         tone: "idle" as const,
@@ -5377,6 +5367,14 @@ function saveAssignmentVideoTrim() {
   }
 
   function handleSmartLivePress() {
+    if (isChurchLiveControlAssignment && liveAssignmentCtaMeta.tone !== "scheduled") {
+      Alert.alert(
+        "Schedule required",
+        "Church Live depends on active schedule slots. Create a schedule first, then enter when the slot time arrives."
+      );
+      return;
+    }
+
     if (isChurchLiveControlAssignment && liveAssignmentCtaMeta.canOpenLive) {
       router.push({
         pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
