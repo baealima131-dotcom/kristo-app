@@ -40,10 +40,10 @@ export async function POST(req: NextRequest) {
 
   // ❌ block self invite: compare header KR7 + guard userId
   const actorHeaderId = String(req.headers.get("x-kristo-user-id") || "").trim().toUpperCase();
-  const actorProfile = await getProfile(ctx.userId);
+  const actorProfile = await getProfile(ctx.viewer.userId);
   const actorCodes = [
     actorHeaderId,
-    String(ctx.userId || ""),
+    String(ctx.viewer.userId || ""),
     String((actorProfile as any)?.userCode || ""),
     String((actorProfile as any)?.coreId || ""),
     String((actorProfile as any)?.coreIdBirth || ""),

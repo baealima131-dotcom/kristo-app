@@ -747,9 +747,11 @@ export async function DELETE(req: NextRequest) {
 
   return json({
     ok: true,
-    removed: true,
-    userId: existing.userId,
-    ministryId: existing.ministryId,
-    ministryMemberId: existing.id,
+    data: {
+      removed: true,
+      userId: existing.userId,
+      ministryId: existing.ministryId,
+      ministryMemberId: existing.id,
+    },
   });
 }

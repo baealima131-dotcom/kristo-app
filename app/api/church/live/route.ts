@@ -617,7 +617,6 @@ export async function PATCH(req: Request) {
     const isLiveOwner = evaluateLiveMediaAuthority({
       currentUserId: a.userId,
       actualChurchPastorUserId: live.actualChurchPastorUserId,
-      pastorUserId: live.pastorUserId,
       scheduleCreatedByUserId: live.scheduleCreatedByUserId,
       mediaHostIds: live.mediaHostIds,
     }).isMediaOwnerHost;

@@ -17,11 +17,11 @@ type Ministry = {
   name: string;
   description?: string;
   avatarUri?: string;
-  mediaAccess?: boolean;
   status: MinistryStatus;
   churchId: string;
   createdAt: string;
   updatedAt?: string;
+  createdByUserId?: string;
   mediaAccess?: boolean;
 };
 

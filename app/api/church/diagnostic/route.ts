@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
     const status =
       diagnostics.vercel && !diagnostics.hasDatabaseUrl ? 503 : diagnostics.ok ? 200 : 503;
 
-    return NextResponse.json({ ok: diagnostics.ok, ...diagnostics }, { status });
+    return NextResponse.json({ ...diagnostics, ok: diagnostics.ok }, { status });
   } catch (error: any) {
     return NextResponse.json(
       {

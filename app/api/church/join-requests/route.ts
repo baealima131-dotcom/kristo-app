@@ -65,8 +65,8 @@ export async function PATCH(req: NextRequest) {
 
   const result =
     action === "approve"
-      ? await approveMembership(requestId, ctxOrRes.userId)
-      : await rejectMembership(requestId, ctxOrRes.userId);
+      ? await approveMembership(requestId, ctxOrRes.viewer.userId)
+      : await rejectMembership(requestId, ctxOrRes.viewer.userId);
 
   if (!result.ok) return json({ ok: false, error: result.error }, { status: 400 });
 
