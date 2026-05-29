@@ -1143,13 +1143,14 @@ const noMediaPost =
     : displayAuthorName;
   const feedHeadlineColor = isMediaPost ? "#F7D36A" : categoryAccent;
 
-  const displayVideoTitle = String(
-    title ||
-    displayChurchMediaName ||
-    displayAuthorName ||
-    "Church Media"
+  const displayVideoTitle = String(item.title || (item as any)?.postTitle || "").trim();
+  const displayVideoCaption = String(
+    item.body ||
+    item.text ||
+    item.description ||
+    item.caption ||
+    ""
   ).trim();
-  const displayVideoCaption = body;
 
   const noMediaCardBg =
     isTestimony ? "rgba(4, 24, 45, 0.92)" :
@@ -1969,8 +1970,13 @@ const noMediaPost =
       ? body
       : body.slice(0, BODY_PREVIEW_CHARS).trimEnd() + "...";
 
-  const titleLimit = Math.min(TITLE_PREVIEW_LIMIT, titleUpper.length);
-  const titleNeedsReadMore = titleUpper.length > TITLE_PREVIEW_LIMIT;
+  const titleLimit = Math.min(
+    TITLE_PREVIEW_LIMIT,
+    (isStrictVideoPost ? displayVideoTitle.toUpperCase() : titleUpper).length
+  );
+  const titleNeedsReadMore = (
+    isStrictVideoPost ? displayVideoTitle.toUpperCase() : titleUpper
+  ).length > TITLE_PREVIEW_LIMIT;
 
   useEffect(() => {
     setTypedCount(0);
@@ -1986,7 +1992,11 @@ const noMediaPost =
   }, [isActive, item.id]);
 
   useEffect(() => {
-    if (!titleUpper || titleExpanded || !isActive) return;
+    const sequenceTitleUpper = isStrictVideoPost
+      ? displayVideoTitle.toUpperCase()
+      : titleUpper;
+
+    if (!sequenceTitleUpper || titleExpanded || !isActive) return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2020,7 +2030,14 @@ const noMediaPost =
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [titleUpper, titleExpanded, isActive, titleLimit]);
+  }, [
+    titleUpper,
+    displayVideoTitle,
+    isStrictVideoPost,
+    titleExpanded,
+    isActive,
+    titleLimit,
+  ]);
 
 
   useEffect(() => {
@@ -2081,8 +2098,8 @@ const noMediaPost =
 
   const animatedTitle =
     titleExpanded
-      ? titleUpper
-      : titleUpper
+      ? (isStrictVideoPost ? displayVideoTitle.toUpperCase() : titleUpper)
+      : (isStrictVideoPost ? displayVideoTitle.toUpperCase() : titleUpper)
           .slice(deleteFromLeft, Math.max(deleteFromLeft, typedCount))
           .trim();
 
@@ -2096,6 +2113,11 @@ const noMediaPost =
     !titleExpanded &&
     typedCount >= titleLimit &&
     deleteFromLeft >= titleLimit;
+
+  const showTitle =
+    showVideoMetaChrome && !!displayVideoTitle && !titleFullyHidden;
+  const showCaption =
+    showVideoMetaChrome && titleFullyHidden && !!displayVideoCaption;
 
   const logVideoMetaLayout = useCallback(
     (e: LayoutChangeEvent) => {
@@ -2643,19 +2665,19 @@ const noMediaPost =
                 </View>
               </View>
 
-              {!!displayVideoTitle ? (
+              {showTitle ? (
                 <View style={s.videoTitleSlot}>
                   <Text
                     style={[s.title, s.videoMetaText, s.videoTitleText]}
-                    numberOfLines={2}
+                    numberOfLines={1}
                     ellipsizeMode="tail"
                   >
-                    {displayVideoTitle}
+                    {animatedTitle}
                   </Text>
                 </View>
               ) : null}
 
-              {!!displayVideoCaption ? (
+              {showCaption ? (
                 <View
                   style={[
                     s.videoCaptionSlot,
@@ -2672,7 +2694,7 @@ const noMediaPost =
                 </View>
               ) : null}
 
-              {!!displayVideoCaption && showBodyReadMore && !isLiveNow ? (
+              {showCaption && showBodyReadMore && !isLiveNow ? (
                 <Pressable onPress={() => setBodyExpanded((v) => !v)} style={s.readMoreBtn}>
                   <Text style={s.readMoreText}>
                     {bodyExpanded ? "Show less" : "Read more"}
