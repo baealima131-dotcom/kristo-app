@@ -2596,7 +2596,7 @@ export default function MediaStudioScreen() {
               </View>
 
               <Pressable
-                disabled={scheduleCreating || subscriptionLocked}
+                disabled={scheduleCreating}
                 onPress={() => {
                   if (subscriptionLocked) {
                     alertChurchSubscriptionRequired();
@@ -3181,12 +3181,11 @@ export default function MediaStudioScreen() {
 
                 <Pressable
                   onPress={handleCreateLiveSchedule}
-                  disabled={subscriptionLocked}
                   style={({ pressed }) => [
                     s.smallCard,
                     s.glassSchedule,
                     subscriptionLocked ? s.glassVipLocked : null,
-                    pressed ? s.pressed : null,
+                    pressed && !subscriptionLocked ? s.pressed : null,
                   ]}
                 >
                   <View style={s.cardAura} />
