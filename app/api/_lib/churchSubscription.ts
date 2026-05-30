@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { readJsonFile } from "@/app/api/_lib/store/fs";
 import {
-  CHURCH_SUBSCRIPTION_REQUIRED_MESSAGE,
   isChurchSubscriptionActiveFromRecord,
   type ChurchSubscriptionRecord,
 } from "@/lib/churchSubscription";
@@ -30,12 +29,5 @@ export async function isChurchSubscriptionActive(churchId: string): Promise<bool
 }
 
 export function churchSubscriptionRequiredResponse() {
-  return NextResponse.json(
-    {
-      ok: false,
-      error: "CHURCH_SUBSCRIPTION_REQUIRED",
-      message: CHURCH_SUBSCRIPTION_REQUIRED_MESSAGE,
-    },
-    { status: 402 }
-  );
+  return NextResponse.json({ ok: false, error: "Subscription required" }, { status: 403 });
 }

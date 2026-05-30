@@ -9,6 +9,7 @@ import {
   confirmChurchMediaPersisted,
 } from "@/app/api/_lib/store/mediaDb";
 import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
+import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 
 export const runtime = "nodejs";
 
@@ -34,6 +35,7 @@ export async function GET(req: Request) {
     });
     const hasProfile = Boolean(String(media?.mediaName || "").trim());
     const canViewProfile = hasProfile && access.canAccessChurchMedia;
+    const subscriptionActive = isChurchSubscriptionActiveFromRecord(media);
 
     if (hasProfile) {
       await confirmChurchMediaPersisted(a.churchId, media?.mediaName);
@@ -44,6 +46,7 @@ export async function GET(req: Request) {
         churchId: a.churchId,
         userId: a.userId,
         found: hasProfile,
+        subscriptionActive,
         canAccessChurchMedia: access.canAccessChurchMedia,
         isActualChurchPastor: access.isActualChurchPastor,
         isMediaHost: access.isMediaHost,
@@ -56,6 +59,7 @@ export async function GET(req: Request) {
       ok: true,
       media: canViewProfile ? media : null,
       profileMissing: !hasProfile,
+      subscriptionActive,
       viewerCanManage: access.canManageMediaHosts,
       viewerIsHost: access.isMediaHost,
       canAccessChurchMedia: access.canAccessChurchMedia,

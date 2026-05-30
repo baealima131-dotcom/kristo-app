@@ -4,13 +4,21 @@ export type ChurchSubscriptionRecord = {
   subscriptionUpdatedAt?: number;
 };
 
+export const CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE =
+  "Subscription required to schedule Live, Media, or Ministry activity.";
+
 export const CHURCH_SUBSCRIPTION_REQUIRED_TITLE = "Church Subscription Required";
 
-export const CHURCH_SUBSCRIPTION_REQUIRED_MESSAGE =
-  "Only the Pastor can activate the church subscription. Media hosts and ministry leaders cannot create schedules until the church subscription is active.";
+export const CHURCH_SUBSCRIPTION_REQUIRED_MESSAGE = CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE;
 
 export function isChurchSubscriptionActiveFromRecord(
   record: ChurchSubscriptionRecord | null | undefined
 ): boolean {
-  return Boolean(record?.subscriptionActive);
+  if (record?.subscriptionActive === true) return true;
+
+  const status = String((record as { subscriptionStatus?: string } | null)?.subscriptionStatus || "")
+    .trim()
+    .toLowerCase();
+
+  return status === "active" || status === "trialing";
 }

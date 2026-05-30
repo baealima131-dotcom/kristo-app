@@ -1,17 +1,21 @@
 import { Alert } from "react-native";
 import { apiGet, apiPatch } from "./kristoApi";
 import { isSubscriptionBypassEnabled, shouldSuppressPremiumPrompts } from "./subscriptionBypass";
+import {
+  CHURCH_SUBSCRIPTION_REQUIRED_TITLE,
+  CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE,
+} from "@/lib/churchSubscription";
 
 export type ChurchSubscriptionRecord = {
   subscriptionActive?: boolean;
   subscriptionPlan?: string;
   subscriptionUpdatedAt?: number;
+  subscriptionStatus?: string;
 };
 
-export const CHURCH_SUBSCRIPTION_REQUIRED_TITLE = "Church Subscription Required";
+export { CHURCH_SUBSCRIPTION_REQUIRED_TITLE, CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE };
 
-export const CHURCH_SUBSCRIPTION_REQUIRED_MESSAGE =
-  "Only the Pastor can activate the church subscription. Media hosts and ministry leaders cannot create schedules until the church subscription is active.";
+export const CHURCH_SUBSCRIPTION_REQUIRED_MESSAGE = CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE;
 
 export function isPastorSessionRole(role?: string) {
   return String(role || "").toLowerCase().includes("pastor");
@@ -21,12 +25,18 @@ export function isChurchSubscriptionActiveFromRecord(
   record: ChurchSubscriptionRecord | null | undefined
 ): boolean {
   if (isSubscriptionBypassEnabled()) return true;
-  return Boolean(record?.subscriptionActive);
+  if (record?.subscriptionActive === true) return true;
+
+  const status = String(record?.subscriptionStatus || "")
+    .trim()
+    .toLowerCase();
+
+  return status === "active" || status === "trialing";
 }
 
 export function alertChurchSubscriptionRequired() {
   if (shouldSuppressPremiumPrompts()) return;
-  Alert.alert(CHURCH_SUBSCRIPTION_REQUIRED_TITLE, CHURCH_SUBSCRIPTION_REQUIRED_MESSAGE);
+  Alert.alert("Subscription required", CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE);
 }
 
 export async function fetchChurchSubscriptionActive(
@@ -42,7 +52,7 @@ export async function fetchChurchSubscriptionActive(
       headers,
       cache: "no-store",
     });
-    return isChurchSubscriptionActiveFromRecord(res?.media);
+    return isChurchSubscriptionActiveFromRecord(res?.media) || Boolean(res?.subscriptionActive);
   } catch {
     return false;
   }
@@ -86,9 +96,13 @@ export async function requireActiveChurchSubscriptionForSchedule(
 
 export function isChurchSubscriptionRequiredError(res: any): boolean {
   if (isSubscriptionBypassEnabled()) return false;
+  const error = String(res?.error || res?.message || "").trim();
+  const status = Number(res?.status || 0);
   return (
-    Number(res?.status || 0) === 402 ||
-    String(res?.error || "").toUpperCase() === "CHURCH_SUBSCRIPTION_REQUIRED"
+    error === "Subscription required" ||
+    status === 403 && error.includes("Subscription") ||
+    status === 402 ||
+    error.toUpperCase() === "CHURCH_SUBSCRIPTION_REQUIRED"
   );
 }
 
