@@ -573,6 +573,22 @@ export default function MediaStudioScreen() {
     });
   }
 
+  function closeSubscriptionSchedulePrompt() {
+    setSubscriptionPromptOpen(false);
+  }
+
+  function openSubscriptionSchedulePrompt() {
+    if (shouldSuppressPremiumPrompts()) return;
+    setSubscriptionPromptOpen(true);
+  }
+
+  function handleSubscriptionPromptPrimary() {
+    closeSubscriptionSchedulePrompt();
+    if (isActualChurchPastor) {
+      router.push("/more/payments/subscriptions" as any);
+    }
+  }
+
   // SECURITY UX: hosts must not see create wizard; pastors/admins create once per church.
   const hasMediaAccount = hasChurchMediaProfile && canUseMediaTools;
 
@@ -621,6 +637,39 @@ export default function MediaStudioScreen() {
   const v2VipScale = useRef(new Animated.Value(0.92)).current;
   const v2VipFade = useRef(new Animated.Value(0)).current;
   const v2VipLift = useRef(new Animated.Value(18)).current;
+  const [subscriptionPromptOpen, setSubscriptionPromptOpen] = useState(false);
+  const subPromptScale = useRef(new Animated.Value(0.9)).current;
+  const subPromptFade = useRef(new Animated.Value(0)).current;
+  const subPromptLift = useRef(new Animated.Value(22)).current;
+
+  useEffect(() => {
+    if (!subscriptionPromptOpen) {
+      subPromptScale.setValue(0.9);
+      subPromptFade.setValue(0);
+      subPromptLift.setValue(22);
+      return;
+    }
+
+    Animated.parallel([
+      Animated.spring(subPromptScale, {
+        toValue: 1,
+        useNativeDriver: true,
+        friction: 7,
+        tension: 82,
+      }),
+      Animated.timing(subPromptFade, {
+        toValue: 1,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+      Animated.spring(subPromptLift, {
+        toValue: 0,
+        useNativeDriver: true,
+        friction: 7,
+        tension: 74,
+      }),
+    ]).start();
+  }, [subscriptionPromptOpen, subPromptScale, subPromptFade, subPromptLift]);
 
   useEffect(() => {
     if (!v2VipOpen) {
@@ -1419,7 +1468,7 @@ export default function MediaStudioScreen() {
 
   async function handleCreateLiveSchedule() {
     if (subscriptionLocked) {
-      alertChurchSubscriptionRequired();
+      openSubscriptionSchedulePrompt();
       return;
     }
     if (!canUseMediaTools) {
@@ -2410,6 +2459,74 @@ export default function MediaStudioScreen() {
         </View>
       ) : null}
 
+      <Modal
+        visible={subscriptionPromptOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={closeSubscriptionSchedulePrompt}
+      >
+        <View style={s.subPromptOverlay}>
+          <Pressable style={s.subPromptBackdrop} onPress={closeSubscriptionSchedulePrompt} />
+          <Animated.View
+            style={[
+              s.subPromptCard,
+              {
+                opacity: subPromptFade,
+                transform: [{ translateY: subPromptLift }, { scale: subPromptScale }],
+              },
+            ]}
+          >
+            <View style={s.subPromptGoldGlow} />
+            <View style={s.subPromptGoldGlowSoft} />
+            <View style={s.subPromptTopShine} />
+
+            <View style={s.subPromptIconStack}>
+              <View style={s.subPromptIconRing}>
+                <Ionicons name="diamond-outline" size={28} color="#F4C95D" />
+              </View>
+              <View style={s.subPromptLockBadge}>
+                <Ionicons name="lock-closed" size={12} color="#07111F" />
+              </View>
+            </View>
+
+            <Text style={s.subPromptKicker}>KRISTO PREMIUM</Text>
+            <Text style={s.subPromptTitle}>Premium subscription required</Text>
+            <Text style={s.subPromptMessage}>{CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE}</Text>
+
+            <View style={s.subPromptPillRow}>
+              <View style={s.subPromptPill}>
+                <Ionicons name="calendar-outline" size={13} color="#F4C95D" />
+                <Text style={s.subPromptPillText}>Live</Text>
+              </View>
+              <View style={s.subPromptPill}>
+                <Ionicons name="videocam-outline" size={13} color="#F4C95D" />
+                <Text style={s.subPromptPillText}>Media</Text>
+              </View>
+              <View style={s.subPromptPill}>
+                <Ionicons name="people-outline" size={13} color="#F4C95D" />
+                <Text style={s.subPromptPillText}>Ministry</Text>
+              </View>
+            </View>
+
+            <View style={s.subPromptBtnRow}>
+              <Pressable
+                onPress={closeSubscriptionSchedulePrompt}
+                style={({ pressed }) => [s.subPromptSecondaryBtn, pressed ? s.pressed : null]}
+              >
+                <Text style={s.subPromptSecondaryText}>Not now</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSubscriptionPromptPrimary}
+                style={({ pressed }) => [s.subPromptPrimaryBtn, pressed ? s.pressed : null]}
+              >
+                <Ionicons name="sparkles-outline" size={18} color="#07111F" />
+                <Text style={s.subPromptPrimaryText}>View subscription</Text>
+              </Pressable>
+            </View>
+          </Animated.View>
+        </View>
+      </Modal>
+
       <ScrollView
         ref={scrollRef}
         scrollEnabled={isEditingMedia || !hasMediaAccount || isCreatingVideoPost || isCreatingSchedule || isManagingGuests}
@@ -2599,7 +2716,7 @@ export default function MediaStudioScreen() {
                 disabled={scheduleCreating}
                 onPress={() => {
                   if (subscriptionLocked) {
-                    alertChurchSubscriptionRequired();
+                    openSubscriptionSchedulePrompt();
                     return;
                   }
                   void handleSendLiveScheduleToFeed();
@@ -3527,6 +3644,176 @@ const s = StyleSheet.create({
     color: "#07111F",
     fontWeight: "900",
     fontSize: 18,
+  },
+  subPromptOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 28,
+    backgroundColor: "rgba(1,8,22,0.78)",
+  },
+  subPromptBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  subPromptCard: {
+    borderRadius: 32,
+    paddingHorizontal: 22,
+    paddingTop: 24,
+    paddingBottom: 20,
+    overflow: "hidden",
+    backgroundColor: "rgba(8,18,38,0.96)",
+    borderWidth: 1.6,
+    borderColor: "rgba(244,201,93,0.58)",
+    shadowColor: "#F4C95D",
+    shadowOpacity: 0.34,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 14 },
+    elevation: 24,
+  },
+  subPromptGoldGlow: {
+    position: "absolute",
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    right: -90,
+    top: -110,
+    backgroundColor: "rgba(244,201,93,0.18)",
+  },
+  subPromptGoldGlowSoft: {
+    position: "absolute",
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    left: -70,
+    bottom: -80,
+    backgroundColor: "rgba(217,179,95,0.10)",
+  },
+  subPromptTopShine: {
+    position: "absolute",
+    left: 24,
+    right: 24,
+    top: 14,
+    height: 1.4,
+    borderRadius: 2,
+    backgroundColor: "rgba(244,201,93,0.42)",
+  },
+  subPromptIconStack: {
+    alignSelf: "center",
+    marginBottom: 14,
+  },
+  subPromptIconRing: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(244,201,93,0.12)",
+    borderWidth: 2,
+    borderColor: "rgba(244,201,93,0.55)",
+    shadowColor: "#F4C95D",
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
+  },
+  subPromptLockBadge: {
+    position: "absolute",
+    right: -2,
+    bottom: -2,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F4C95D",
+    borderWidth: 2,
+    borderColor: "rgba(8,18,38,0.96)",
+  },
+  subPromptKicker: {
+    color: "#F4C95D",
+    fontWeight: "900",
+    letterSpacing: 3.2,
+    fontSize: 11,
+    textAlign: "center",
+    marginBottom: 6,
+  },
+  subPromptTitle: {
+    color: "#FFFFFF",
+    fontSize: 24,
+    fontWeight: "900",
+    textAlign: "center",
+    letterSpacing: -0.3,
+    marginBottom: 10,
+  },
+  subPromptMessage: {
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "700",
+    textAlign: "center",
+    marginBottom: 16,
+  },
+  subPromptPillRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 18,
+  },
+  subPromptPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.22)",
+  },
+  subPromptPillText: {
+    color: "rgba(255,255,255,0.86)",
+    fontWeight: "900",
+    fontSize: 11,
+    letterSpacing: 0.4,
+  },
+  subPromptBtnRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  subPromptSecondaryBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  subPromptSecondaryText: {
+    color: "rgba(255,255,255,0.82)",
+    fontWeight: "800",
+    fontSize: 15,
+  },
+  subPromptPrimaryBtn: {
+    flex: 1.35,
+    height: 50,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    backgroundColor: "#F4C95D",
+    shadowColor: "#F4C95D",
+    shadowOpacity: 0.35,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 12,
+  },
+  subPromptPrimaryText: {
+    color: "#07111F",
+    fontWeight: "900",
+    fontSize: 15,
   },
   screen: {
     flex: 1,
