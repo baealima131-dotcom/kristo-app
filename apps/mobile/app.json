@@ -14,7 +14,7 @@
       "backgroundColor": "#0B0F17"
     },
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.princefariji.kristoapp",
       "infoPlist": {
         "NSCameraUsageDescription": "Kristo App needs camera access for live streaming and video rooms.",
