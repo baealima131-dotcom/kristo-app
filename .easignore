@@ -1,0 +1,17 @@
+.git
+node_modules
+.next
+.expo
+_bak
+_archive-trash-before-delete
+backups
+public/uploads
+kristo-v1-subscription-launch.bundle
+*.log
+*.tsbuildinfo
+.DS_Store
+
+apps/mobile/ios/Pods
+apps/mobile/ios/build
+apps/mobile/android/app/build
+apps/mobile/android/.gradle
