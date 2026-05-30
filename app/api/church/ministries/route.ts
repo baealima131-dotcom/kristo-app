@@ -5,6 +5,10 @@ import { guard } from "@/app/api/_lib/rbac";
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
 import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
+import {
+  churchSubscriptionRequiredResponse,
+  isChurchSubscriptionActive,
+} from "@/app/api/_lib/churchSubscription";
 
 /* =========================
    TYPES
@@ -155,6 +159,10 @@ export async function POST(req: NextRequest) {
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
+
+  if (!(await isChurchSubscriptionActive(churchId))) {
+    return churchSubscriptionRequiredResponse();
+  }
 
   const body = await asBody(req);
   if (!body) return json({ ok: false, error: "Invalid JSON body" } satisfies ApiErr, { status: 400 });

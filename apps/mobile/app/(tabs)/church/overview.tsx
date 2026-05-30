@@ -41,6 +41,9 @@ import {
   shouldAllowScreenRefresh,
 } from "@/src/lib/kristoTraffic";
 import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
+import { ChurchPremiumSubscriptionModal } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
+import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 
 const VIP_BG = "#05070D";
 const VIP_BG_MID = "#0A101C";
@@ -316,6 +319,10 @@ export default function ChurchOverviewScreen() {
   const [previewChecked, setPreviewChecked] = useState(!invitePreview);
   const [previewCount, setPreviewCount] = useState(0);
   const [previewLimitReached, setPreviewLimitReached] = useState(false);
+  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
+    isSubscriptionBypassEnabled() ? true : null
+  );
+  const [premiumModalOpen, setPremiumModalOpen] = useState(false);
   const contentOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -328,6 +335,22 @@ export default function ChurchOverviewScreen() {
       }).start();
     }
   }, [bootLoading, err, invitePreview, previewLimitReached, contentOpacity]);
+
+  useEffect(() => {
+    if (!churchId || invitePreview || isSubscriptionBypassEnabled()) {
+      setChurchSubscriptionActive(isSubscriptionBypassEnabled() ? true : null);
+      return;
+    }
+
+    let alive = true;
+    fetchChurchSubscriptionActive(churchId, getHeaders()).then((active) => {
+      if (alive) setChurchSubscriptionActive(active);
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [churchId, invitePreview, refreshAt]);
 
   useEffect(() => {
     let alive = true;
@@ -772,6 +795,8 @@ export default function ChurchOverviewScreen() {
   const canSeeOfferings = isPastor || isChurchAdmin || isSystemAdmin;
   const canOpenMembers = !invitePreview;
   const canOpenMinistries = !invitePreview && canSeeLeadershipOverview;
+  const createMinistryLocked =
+    !invitePreview && canOpenMinistries && churchSubscriptionActive === false;
   const canOpenOfferings = !invitePreview && canSeeOfferings;
   const canEditProfile = !invitePreview && (isPastor || isChurchAdmin || isSystemAdmin);
   const sessionRoleText = [
@@ -798,6 +823,35 @@ export default function ChurchOverviewScreen() {
 
   function ministryInitial(name?: string) {
     return String(name || "M").trim().charAt(0).toUpperCase() || "M";
+  }
+
+  async function handleCreateMinistryPress() {
+    if (!canOpenMinistries) {
+      Alert.alert(
+        "Admin access",
+        "Only pastor or church admin can create ministries. Ukipewa admin access utaweza kutumia sehemu hii."
+      );
+      return;
+    }
+
+    let active = churchSubscriptionActive;
+    if (active === null && !isSubscriptionBypassEnabled()) {
+      active = await fetchChurchSubscriptionActive(churchId, getHeaders());
+      setChurchSubscriptionActive(active);
+    }
+    if (!active) {
+      setPremiumModalOpen(true);
+      return;
+    }
+
+    router.push("/church/ministries/create" as any);
+  }
+
+  function handlePremiumModalPrimary() {
+    setPremiumModalOpen(false);
+    if (isPastor || isPastorSession || isChurchAdmin || isSystemAdmin) {
+      router.push("/more/payments/subscriptions" as any);
+    }
   }
 
   async function saveMediaAccessChanges() {
@@ -1415,14 +1469,12 @@ export default function ChurchOverviewScreen() {
             })}
             {!invitePreview ? (
             <LuxuryPressable
-              onPress={() => {
-                if (!canOpenMinistries) {
-                  Alert.alert("Admin access", "Only pastor or church admin can create ministries. Ukipewa admin access utaweza kutumia sehemu hii.");
-                  return;
-                }
-                router.push("/church/ministries/create" as any);
-              }}
-              style={[s.statCardBase, s.statCardAction, !canOpenMinistries && { opacity: 0.92 }]}
+              onPress={handleCreateMinistryPress}
+              style={[
+                s.statCardBase,
+                createMinistryLocked ? s.statCardPremiumLocked : s.statCardAction,
+                !canOpenMinistries && { opacity: 0.92 },
+              ]}
             >
               <View style={s.statGlowAction} pointerEvents="none" />
               <LinearGradient
@@ -1432,13 +1484,22 @@ export default function ChurchOverviewScreen() {
                 end={{ x: 0.5, y: 1 }}
                 style={s.statCardSheen}
               />
-              <View style={s.statIconAction}>
-                <Ionicons name="add-circle-outline" size={22} color={GOLD} />
+              <View style={[s.statIconAction, createMinistryLocked && s.statIconPremiumLocked]}>
+                <Ionicons
+                  name={createMinistryLocked ? "lock-closed" : "add-circle-outline"}
+                  size={createMinistryLocked ? 18 : 22}
+                  color={GOLD}
+                />
               </View>
-              <Text style={[s.statValue, s.statValueGold]}>+</Text>
+              <Text style={[s.statValue, s.statValueGold, createMinistryLocked && s.statValueLocked]}>
+                {createMinistryLocked ? "◆" : "+"}
+              </Text>
               <Text style={s.statLabel} numberOfLines={2}>
                 Create Ministry
               </Text>
+              {createMinistryLocked ? (
+                <Text style={s.statPremiumTag}>Premium</Text>
+              ) : null}
             </LuxuryPressable>
           ) : null}
         </View>
@@ -1556,6 +1617,12 @@ export default function ChurchOverviewScreen() {
           )}
         </View>
       </Modal>
+
+      <ChurchPremiumSubscriptionModal
+        visible={premiumModalOpen}
+        onClose={() => setPremiumModalOpen(false)}
+        onViewSubscription={handlePremiumModalPrimary}
+      />
       </View>
     </View>
   );
@@ -1991,6 +2058,15 @@ const s = StyleSheet.create<any>({
     shadowOffset: { width: 0, height: 10 },
     elevation: 8,
   },
+  statCardPremiumLocked: {
+    backgroundColor: "rgba(10,12,18,0.96)",
+    borderColor: "rgba(217,181,109,0.58)",
+    shadowColor: "#D9B56D",
+    shadowOpacity: 0.34,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
 
   statIconBlue: {
     width: 38,
@@ -2032,6 +2108,10 @@ const s = StyleSheet.create<any>({
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.36)",
   },
+  statIconPremiumLocked: {
+    backgroundColor: "rgba(217,179,95,0.12)",
+    borderColor: "rgba(217,181,109,0.45)",
+  },
 
   statValue: {
     color: TEXT_PRIMARY,
@@ -2041,6 +2121,15 @@ const s = StyleSheet.create<any>({
     letterSpacing: 0.2,
   },
   statValueGold: { color: GOLD },
+  statValueLocked: { fontSize: 24, lineHeight: 28, opacity: 0.82 },
+  statPremiumTag: {
+    marginTop: 4,
+    color: LABEL_GOLD,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+  },
   statLabel: {
     color: TEXT_SECONDARY,
     fontSize: 14,

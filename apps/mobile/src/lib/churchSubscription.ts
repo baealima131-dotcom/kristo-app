@@ -2,8 +2,11 @@ import { Alert } from "react-native";
 import { apiGet, apiPatch } from "./kristoApi";
 import { isSubscriptionBypassEnabled, shouldSuppressPremiumPrompts } from "./subscriptionBypass";
 export const CHURCH_SUBSCRIPTION_REQUIRED_TITLE = "Subscription required";
+export const CHURCH_SUBSCRIPTION_PREMIUM_TITLE = "Premium subscription required";
 export const CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE =
   "Subscription required to schedule Live, Media, or Ministry activity.";
+export const CHURCH_SUBSCRIPTION_MINISTRY_MESSAGE =
+  "Subscription required to create ministries or schedule Live, Media, or Ministry activity.";
 
 export type ChurchSubscriptionRecord = {
   subscriptionActive?: boolean;

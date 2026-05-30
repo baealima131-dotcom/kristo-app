@@ -5,6 +5,10 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { ChurchPremiumSubscriptionModal } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
+import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 
 type MinistryStatus = "Active" | "Paused";
 type Ministry = {
@@ -35,10 +39,20 @@ async function apiListMinistries() {
 export default function MoreMinistriesList() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { session } = useKristoSession();
 
   const [items, setItems] = useState<Ministry[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
+    isSubscriptionBypassEnabled() ? true : null
+  );
+  const [premiumModalOpen, setPremiumModalOpen] = useState(false);
+
+  const churchId = String(session?.churchId || (session as any)?.activeChurchId || "").trim();
+  const role = String(session?.role || (session as any)?.churchRole || "Member");
+  const canManageSubscriptions =
+    /\bPastor\b/i.test(role) || role === "Church_Admin" || role === "System_Admin";
 
   async function load() {
     setErr(null);
@@ -96,6 +110,43 @@ export default function MoreMinistriesList() {
     load();
   }, []);
 
+  useEffect(() => {
+    if (!churchId || isSubscriptionBypassEnabled()) {
+      setChurchSubscriptionActive(isSubscriptionBypassEnabled() ? true : null);
+      return;
+    }
+
+    let alive = true;
+    fetchChurchSubscriptionActive(churchId, getKristoHeaders()).then((active) => {
+      if (alive) setChurchSubscriptionActive(active);
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [churchId]);
+
+  async function handleCreateMinistryPress() {
+    let active = churchSubscriptionActive;
+    if (active === null && !isSubscriptionBypassEnabled()) {
+      active = await fetchChurchSubscriptionActive(churchId, getKristoHeaders());
+      setChurchSubscriptionActive(active);
+    }
+    if (!active) {
+      setPremiumModalOpen(true);
+      return;
+    }
+
+    router.push("/church/ministries/create" as any);
+  }
+
+  function handlePremiumModalPrimary() {
+    setPremiumModalOpen(false);
+    if (canManageSubscriptions) {
+      router.push("/more/payments/subscriptions" as any);
+    }
+  }
+
   const hasItems = useMemo(() => items.length > 0, [items]);
 
   return (
@@ -133,14 +184,21 @@ export default function MoreMinistriesList() {
           <Text style={s.muted}>Create ministry hapa.</Text>
 
           <Pressable
-            onPress={() => router.push("/church/ministries/create" as any)}
+            onPress={handleCreateMinistryPress}
             style={({ pressed }) => [
               s.createBtn,
+              churchSubscriptionActive === false && s.createBtnLocked,
               pressed && { transform: [{ scale: 0.99 }] },
             ]}
           >
-            <Ionicons name="add" size={18} color="#0B0F17" />
-            <Text style={s.createBtnText}>Create ministry</Text>
+            <Ionicons
+              name={churchSubscriptionActive === false ? "lock-closed" : "add"}
+              size={18}
+              color="#0B0F17"
+            />
+            <Text style={s.createBtnText}>
+              {churchSubscriptionActive === false ? "Create ministry (Premium)" : "Create ministry"}
+            </Text>
           </Pressable>
         </View>
       ) : (
@@ -187,6 +245,12 @@ export default function MoreMinistriesList() {
         </ScrollView>
       )}
 
+      <ChurchPremiumSubscriptionModal
+        visible={premiumModalOpen}
+        onClose={() => setPremiumModalOpen(false)}
+        onViewSubscription={handlePremiumModalPrimary}
+      />
+
       {/* LIST_ONLY_MARKER */}
     </View>
   );
@@ -195,6 +259,11 @@ export default function MoreMinistriesList() {
 const s = StyleSheet.create<any>({
   createBtnText: { color: "#0B0F17", fontWeight: "950" },
   createBtn: { marginTop: 12, height: 52, borderRadius: 18, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8, backgroundColor: "rgba(217,179,95,0.95)" },
+  createBtnLocked: {
+    backgroundColor: "rgba(217,179,95,0.78)",
+    borderWidth: 1,
+    borderColor: "rgba(217,181,109,0.55)",
+  },
   screen: { flex: 1, backgroundColor: VIP_BG },
   nav: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: PAD, paddingBottom: 14, paddingTop: 8 },
   iconPill: { width: 34, height: 34, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(217,179,95,0.12)", borderWidth: 1, borderColor: "rgba(217,179,95,0.25)" },
