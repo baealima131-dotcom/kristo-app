@@ -11,9 +11,6 @@ export type ChurchSubscriptionRecord = {
   subscriptionUpdatedAt?: number;
   subscriptionStatus?: string;
 };
-
-export { CHURCH_SUBSCRIPTION_REQUIRED_TITLE, CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE };
-
 export const CHURCH_SUBSCRIPTION_REQUIRED_MESSAGE = CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE;
 
 export function isPastorSessionRole(role?: string) {
