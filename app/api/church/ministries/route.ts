@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
+import {
+  requireChurchSubscription,
+  requiresScheduleSubscription,
+} from "@/app/api/_lib/churchSubscription";
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
 import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
@@ -125,6 +129,11 @@ export async function POST(req: NextRequest) {
 
   const body = await asBody(req);
   if (!body) return json({ ok: false, error: "Invalid JSON body" } satisfies ApiErr, { status: 400 });
+
+  if (requiresScheduleSubscription(body)) {
+    const blocked = await requireChurchSubscription(churchId);
+    if (blocked) return blocked;
+  }
 
   const name = sanitizeName(body.name);
   if (!name) return json({ ok: false, error: "Ministry name is required" } satisfies ApiErr, { status: 400 });

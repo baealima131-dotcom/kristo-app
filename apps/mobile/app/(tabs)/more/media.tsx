@@ -56,6 +56,7 @@ import {
 } from "../../../src/lib/churchPastorResolver";
 import {
   alertChurchSubscriptionRequired,
+  CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE,
   isChurchSubscriptionRequiredError,
   requireActiveChurchSubscriptionForSchedule,
 } from "../../../src/lib/churchSubscription";
@@ -279,6 +280,7 @@ export default function MediaStudioScreen() {
   const [guestInvitedBySlot, setGuestInvitedBySlot] = useState<Record<string, string>>({});
   const [backendMedia, setBackendMedia] = useState<any>(null);
   const [backendMediaConfirmed, setBackendMediaConfirmed] = useState(false);
+  const [churchSubscriptionActiveFromApi, setChurchSubscriptionActiveFromApi] = useState<boolean | null>(null);
   const [cachedMedia, setCachedMedia] = useState<any>(null);
   const [profileHydrated, setProfileHydrated] = useState(false);
   const [mediaProfileReady, setMediaProfileReady] = useState(false);
@@ -378,6 +380,14 @@ export default function MediaStudioScreen() {
       ]);
 
       if (!alive) return;
+
+      const subscriptionActiveFromServer =
+        Boolean(res?.subscriptionActive) ||
+        Boolean(res?.media?.subscriptionActive) ||
+        String(res?.media?.subscriptionStatus || "")
+          .trim()
+          .toLowerCase() === "active";
+      setChurchSubscriptionActiveFromApi(subscriptionActiveFromServer);
 
       const nextAccess = evaluateChurchMediaAccessClient({
         userId: session.userId,
@@ -538,9 +548,13 @@ export default function MediaStudioScreen() {
   // Hosts NEVER control subscription ownership.
   const churchMediaSubscriptionActive =
     isSubscriptionBypassEnabled() ||
+    churchSubscriptionActiveFromApi === true ||
     Boolean((churchMediaProfile as any)?.subscriptionActive);
 
-  const subscriptionLocked = !isSubscriptionBypassEnabled() && !churchMediaSubscriptionActive;
+  const subscriptionLocked =
+    !isSubscriptionBypassEnabled() &&
+    churchSubscriptionActiveFromApi !== null &&
+    !churchMediaSubscriptionActive;
 
   function showSubscriptionRequired(tool?: string) {
     if (shouldSuppressPremiumPrompts()) return;
@@ -561,7 +575,7 @@ export default function MediaStudioScreen() {
 
     setVipNotice({
       title: "Church subscription required",
-      message: `Your church has not activated Church Media subscription yet. Please contact your pastor to unlock ${toolLabel}.`,
+      message: CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE,
     });
   }
 
@@ -752,9 +766,7 @@ export default function MediaStudioScreen() {
     if (!hasChurchMembership) return "Join a church first";
 
     if (subscriptionLocked) {
-      return isActualChurchPastor
-        ? "Activate Church Media subscription to unlock live and posting tools"
-        : "Church Media subscription required. Contact your pastor.";
+      return CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE;
     }
 
     return "Media account is ready";
@@ -1161,16 +1173,6 @@ export default function MediaStudioScreen() {
   }
 
   async function pickMediaVideoForPost() {
-    if (subscriptionLocked) {
-      Alert.alert(
-        isActualChurchPastor ? "Subscription required" : "Locked by pastor",
-        isActualChurchPastor
-          ? "Activate Church Media subscription first."
-          : "Your church does not have an active Church Media subscription."
-      );
-      return;
-    }
-
     setIsCreatingVideoPost(true);
     setVideoPreparing(true);
     setVideoPreparePercent(3);
@@ -1209,16 +1211,6 @@ export default function MediaStudioScreen() {
   }
 
   function publishVideoPostToFeed() {
-    if (subscriptionLocked) {
-      Alert.alert(
-        isActualChurchPastor ? "Subscription required" : "Locked by pastor",
-        isActualChurchPastor
-          ? "Activate Church Media subscription first."
-          : "Your church does not have an active Church Media subscription."
-      );
-      return;
-    }
-
     if (!videoPostDetailsOpen) {
       setVideoPostDetailsOpen(true);
       return;
@@ -1347,23 +1339,21 @@ export default function MediaStudioScreen() {
       return;
     }
 
+    // Hosts are allowed to post video. Only live requires Pastor to already be live.
+    if (kind === "video") {
+      await pickMediaVideoForPost();
+      return;
+    }
+
     if (!hasSubscription) {
       Alert.alert(
         "Subscription required",
-        kind === "video"
-          ? "To post videos to global feed, open subscriptions first."
-          : "To go live to global feed, open subscriptions first.",
+        "To go live to global feed, open subscriptions first.",
         [
           { text: "Not now", style: "cancel" },
           { text: "Open subscriptions", onPress: handleSubscriptionOpen },
         ]
       );
-      return;
-    }
-
-    // Hosts are allowed to post video. Only live requires Pastor to already be live.
-    if (kind === "video") {
-      await pickMediaVideoForPost();
       return;
     }
 
@@ -1418,8 +1408,6 @@ export default function MediaStudioScreen() {
     ? "Pastor create first"
     : !hasChurchMembership
     ? "Join a church first"
-    : !hasSubscription
-    ? "Subscription required"
     : !canUseMediaTools
     ? "Pastor access required"
     : "Ready";
@@ -2355,11 +2343,6 @@ export default function MediaStudioScreen() {
   }
 
   function handlePostVideo() {
-    if (subscriptionLocked) {
-      showSubscriptionRequired("video");
-      return;
-    }
-
     handleLockedAction("video");
   }
 
@@ -2620,12 +2603,18 @@ export default function MediaStudioScreen() {
               </View>
 
               <Pressable
-                disabled={scheduleCreating}
-                onPress={handleSendLiveScheduleToFeed}
+                disabled={scheduleCreating || subscriptionLocked}
+                onPress={() => {
+                  if (subscriptionLocked) {
+                    alertChurchSubscriptionRequired();
+                    return;
+                  }
+                  void handleSendLiveScheduleToFeed();
+                }}
                 style={({ pressed }) => [
                   s.nextBtnPremium as any,
                   pressed ? s.pressed : null,
-                  scheduleCreating ? { opacity: 0.72 } : null,
+                  scheduleCreating || subscriptionLocked ? { opacity: 0.72 } : null,
                 ]}
               >
                 {scheduleCreating ? (
@@ -3043,16 +3032,30 @@ export default function MediaStudioScreen() {
                   <Text style={s.statusMiniText}>Audience</Text>
                 </View>
                 <View style={s.statusMini}>
-                  <Ionicons name={hasSubscription ? "checkmark-circle" : "lock-closed-outline"} size={14} color="#F4C95D" />
+                  <Ionicons name={churchMediaSubscriptionActive ? "checkmark-circle" : "lock-closed-outline"} size={14} color="#F4C95D" />
                   <Text style={s.statusMiniText}>
-                    {canUseMediaTools
-                      ? isActualChurchPastor
-                        ? "Pastor access"
-                        : "Trusted host access"
-                      : "Pastor access required"}
+                    {churchMediaSubscriptionActive
+                      ? "Church subscription active"
+                      : "Subscription required"}
                   </Text>
                 </View>
               </View>
+
+              {subscriptionLocked ? (
+                <Pressable
+                  onPress={handleSubscriptionOpen}
+                  style={({ pressed }) => [s.subscriptionGateCard, pressed ? s.pressed : null]}
+                >
+                  <View style={s.subscriptionGateIcon}>
+                    <Ionicons name="diamond-outline" size={18} color="#F4C95D" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.subscriptionGateTitle}>Premium subscription required</Text>
+                    <Text style={s.subscriptionGateText}>{CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.72)" />
+                </Pressable>
+              ) : null}
 
               <ScrollView
                 style={s.dashboardToolsScroll}
@@ -3147,7 +3150,7 @@ export default function MediaStudioScreen() {
                     <Ionicons name="diamond-outline" size={25} color="#F4C95D" />
                   </View>
                   <Text style={s.smallTitle}>Premium</Text>
-                  <Text style={s.smallSub}>{hasSubscription ? "Active" : "Plans"}</Text>
+                  <Text style={s.smallSub}>{churchMediaSubscriptionActive ? "Active" : "Plans"}</Text>
                 </Pressable>
 
                 <Pressable
@@ -3161,7 +3164,7 @@ export default function MediaStudioScreen() {
                   </View>
                   <Text style={s.smallTitle}>Post</Text>
                   <Text style={s.smallSub}>Video</Text>
-                  <Text style={s.cardHint}>{subscriptionLocked ? "Locked" : postVideoHint === "Ready" ? "Ready" : "Locked"}</Text>
+                  <Text style={s.cardHint}>{postVideoHint === "Ready" ? "Ready" : "Locked"}</Text>
                 </Pressable>
 
                 <Pressable
@@ -3179,17 +3182,19 @@ export default function MediaStudioScreen() {
                   </Text>
 
                   <Text style={s.cardHint}>
-                    {subscriptionLocked
-                      ? "Locked"
-                      : activeMediaLiveSlot
-                      ? "Join live"
-                      : "VIP V2"}
+                    {activeMediaLiveSlot ? "Join live" : "VIP V2"}
                   </Text>
                 </Pressable>
 
                 <Pressable
                   onPress={handleCreateLiveSchedule}
-                  style={({ pressed }) => [s.smallCard, s.glassSchedule, pressed ? s.pressed : null]}
+                  disabled={subscriptionLocked}
+                  style={({ pressed }) => [
+                    s.smallCard,
+                    s.glassSchedule,
+                    subscriptionLocked ? s.glassVipLocked : null,
+                    pressed ? s.pressed : null,
+                  ]}
                 >
                   <View style={s.cardAura} />
                   <View style={s.cardTopShine} />
@@ -3198,7 +3203,7 @@ export default function MediaStudioScreen() {
                   </View>
                   <Text style={s.smallTitle}>Slots</Text>
                   <Text style={s.cardHint}>
-                    {hasSubscription ? "Ready" : "Locked"}
+                    {subscriptionLocked ? "Locked" : "Ready"}
                   </Text>
                   <Text style={s.smallSub}>Invitations</Text>
                   <Text style={s.cardHint}>Schedule</Text>
@@ -3648,6 +3653,41 @@ const s = StyleSheet.create({
     height: 190,
     borderRadius: 95,
     backgroundColor: "rgba(91,141,255,0.16)",
+  },
+  subscriptionGateCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    marginTop: 14,
+    marginBottom: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 22,
+    backgroundColor: "rgba(13,28,58,0.88)",
+    borderWidth: 1.2,
+    borderColor: "rgba(244,201,93,0.42)",
+  },
+  subscriptionGateIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(244,201,93,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.35)",
+  },
+  subscriptionGateTitle: {
+    color: "#FFFFFF",
+    fontWeight: "900",
+    fontSize: 15,
+    marginBottom: 4,
+  },
+  subscriptionGateText: {
+    color: "rgba(255,255,255,0.76)",
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "700",
   },
   vipNoticeTopLine: {
     height: 1.2,
