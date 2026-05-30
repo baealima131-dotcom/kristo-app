@@ -41,7 +41,7 @@ import {
   shouldAllowScreenRefresh,
 } from "@/src/lib/kristoTraffic";
 import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
-import { ChurchPremiumSubscriptionModal } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { ChurchPremiumSubscriptionModal, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 
@@ -796,7 +796,7 @@ export default function ChurchOverviewScreen() {
   const canOpenMembers = !invitePreview;
   const canOpenMinistries = !invitePreview && canSeeLeadershipOverview;
   const createMinistryLocked =
-    !invitePreview && canOpenMinistries && churchSubscriptionActive === false;
+    !invitePreview && canOpenMinistries && isMinistryCreationBlocked(churchSubscriptionActive);
   const canOpenOfferings = !invitePreview && canSeeOfferings;
   const canEditProfile = !invitePreview && (isPastor || isChurchAdmin || isSystemAdmin);
   const sessionRoleText = [
@@ -839,7 +839,7 @@ export default function ChurchOverviewScreen() {
       active = await fetchChurchSubscriptionActive(churchId, getHeaders());
       setChurchSubscriptionActive(active);
     }
-    if (!active) {
+    if (isMinistryCreationBlocked(active)) {
       setPremiumModalOpen(true);
       return;
     }

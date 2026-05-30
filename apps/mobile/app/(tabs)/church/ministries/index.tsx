@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import { ChurchPremiumSubscriptionModal } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { ChurchPremiumSubscriptionModal, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 
@@ -51,8 +51,15 @@ export default function MoreMinistriesList() {
 
   const churchId = String(session?.churchId || (session as any)?.activeChurchId || "").trim();
   const role = String(session?.role || (session as any)?.churchRole || "Member");
+  const canCreateMinistry =
+    /\bPastor\b/i.test(role) ||
+    role === "Church_Admin" ||
+    role === "Leader" ||
+    role === "Ministry_Leader" ||
+    role === "System_Admin";
   const canManageSubscriptions =
     /\bPastor\b/i.test(role) || role === "Church_Admin" || role === "System_Admin";
+  const createMinistryLocked = canCreateMinistry && isMinistryCreationBlocked(churchSubscriptionActive);
 
   async function load() {
     setErr(null);
@@ -127,12 +134,14 @@ export default function MoreMinistriesList() {
   }, [churchId]);
 
   async function handleCreateMinistryPress() {
+    if (!canCreateMinistry) return;
+
     let active = churchSubscriptionActive;
     if (active === null && !isSubscriptionBypassEnabled()) {
       active = await fetchChurchSubscriptionActive(churchId, getKristoHeaders());
       setChurchSubscriptionActive(active);
     }
-    if (!active) {
+    if (isMinistryCreationBlocked(active)) {
       setPremiumModalOpen(true);
       return;
     }
@@ -163,6 +172,22 @@ export default function MoreMinistriesList() {
         <Pressable onPress={load} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.85 }]}>
           <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.85)" />
         </Pressable>
+        {canCreateMinistry ? (
+          <Pressable
+            onPress={handleCreateMinistryPress}
+            style={({ pressed }) => [
+              s.createNavBtn,
+              createMinistryLocked && s.createNavBtnLocked,
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Ionicons
+              name={createMinistryLocked ? "lock-closed" : "add"}
+              size={18}
+              color={createMinistryLocked ? GOLD : "rgba(255,255,255,0.92)"}
+            />
+          </Pressable>
+        ) : null}
       </View>
 
       {loading ? (
@@ -187,17 +212,17 @@ export default function MoreMinistriesList() {
             onPress={handleCreateMinistryPress}
             style={({ pressed }) => [
               s.createBtn,
-              churchSubscriptionActive === false && s.createBtnLocked,
+              createMinistryLocked && s.createBtnLocked,
               pressed && { transform: [{ scale: 0.99 }] },
             ]}
           >
             <Ionicons
-              name={churchSubscriptionActive === false ? "lock-closed" : "add"}
+              name={createMinistryLocked ? "lock-closed" : "add"}
               size={18}
               color="#0B0F17"
             />
             <Text style={s.createBtnText}>
-              {churchSubscriptionActive === false ? "Create ministry (Premium)" : "Create ministry"}
+              {createMinistryLocked ? "Create ministry (Premium)" : "Create ministry"}
             </Text>
           </Pressable>
         </View>
@@ -270,6 +295,20 @@ const s = StyleSheet.create<any>({
   navTitle: { color: "white", fontWeight: "900", fontSize: 18 },
   navSub: { marginTop: 2, color: "rgba(255,255,255,0.65)", fontWeight: "700" },
   refreshBtn: { width: 40, height: 40, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.06)", borderWidth: 1, borderColor: "rgba(255,255,255,0.10)" },
+  createNavBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.32)",
+  },
+  createNavBtnLocked: {
+    backgroundColor: "rgba(217,179,95,0.10)",
+    borderColor: "rgba(217,181,109,0.45)",
+  },
 
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
   muted: { color: "rgba(255,255,255,0.65)", fontWeight: "700" },

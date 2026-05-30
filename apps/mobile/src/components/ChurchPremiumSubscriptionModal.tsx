@@ -13,6 +13,12 @@ import {
   CHURCH_SUBSCRIPTION_MINISTRY_MESSAGE,
   CHURCH_SUBSCRIPTION_PREMIUM_TITLE,
 } from "@/src/lib/churchSubscription";
+import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+
+export function isMinistryCreationBlocked(subscriptionActive: boolean | null): boolean {
+  if (isSubscriptionBypassEnabled()) return false;
+  return subscriptionActive !== true;
+}
 
 type Props = {
   visible: boolean;
