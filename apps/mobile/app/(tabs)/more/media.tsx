@@ -2482,28 +2482,32 @@ export default function MediaStudioScreen() {
 
             <View style={s.subPromptIconStack}>
               <View style={s.subPromptIconRing}>
-                <Ionicons name="diamond-outline" size={28} color="#F4C95D" />
+                <Ionicons name="diamond-outline" size={22} color="#F4C95D" />
               </View>
               <View style={s.subPromptLockBadge}>
-                <Ionicons name="lock-closed" size={12} color="#07111F" />
+                <Ionicons name="lock-closed" size={10} color="#07111F" />
               </View>
             </View>
 
             <Text style={s.subPromptKicker}>KRISTO PREMIUM</Text>
-            <Text style={s.subPromptTitle}>Premium subscription required</Text>
-            <Text style={s.subPromptMessage}>{CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE}</Text>
+            <Text style={s.subPromptTitle} numberOfLines={2}>
+              Premium subscription required
+            </Text>
+            <View style={s.subPromptMessageWrap}>
+              <Text style={s.subPromptMessage}>{CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE}</Text>
+            </View>
 
             <View style={s.subPromptPillRow}>
               <View style={s.subPromptPill}>
-                <Ionicons name="calendar-outline" size={13} color="#F4C95D" />
+                <Ionicons name="calendar-outline" size={11} color="#F4C95D" />
                 <Text style={s.subPromptPillText}>Live</Text>
               </View>
               <View style={s.subPromptPill}>
-                <Ionicons name="videocam-outline" size={13} color="#F4C95D" />
+                <Ionicons name="videocam-outline" size={11} color="#F4C95D" />
                 <Text style={s.subPromptPillText}>Media</Text>
               </View>
               <View style={s.subPromptPill}>
-                <Ionicons name="people-outline" size={13} color="#F4C95D" />
+                <Ionicons name="people-outline" size={11} color="#F4C95D" />
                 <Text style={s.subPromptPillText}>Ministry</Text>
               </View>
             </View>
@@ -2519,7 +2523,7 @@ export default function MediaStudioScreen() {
                 onPress={handleSubscriptionPromptPrimary}
                 style={({ pressed }) => [s.subPromptPrimaryBtn, pressed ? s.pressed : null]}
               >
-                <Ionicons name="sparkles-outline" size={18} color="#07111F" />
+                <Ionicons name="sparkles-outline" size={15} color="#07111F" />
                 <Text style={s.subPromptPrimaryText}>View subscription</Text>
               </Pressable>
             </View>
@@ -3655,10 +3659,10 @@ const s = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
   },
   subPromptCard: {
-    borderRadius: 32,
-    paddingHorizontal: 22,
-    paddingTop: 24,
-    paddingBottom: 20,
+    borderRadius: 28,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 16,
     overflow: "hidden",
     backgroundColor: "rgba(8,18,38,0.96)",
     borderWidth: 1.6,
@@ -3698,30 +3702,30 @@ const s = StyleSheet.create({
   },
   subPromptIconStack: {
     alignSelf: "center",
-    marginBottom: 14,
+    marginBottom: 10,
   },
   subPromptIconRing: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(244,201,93,0.12)",
-    borderWidth: 2,
+    borderWidth: 1.8,
     borderColor: "rgba(244,201,93,0.55)",
     shadowColor: "#F4C95D",
     shadowOpacity: 0.35,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 5 },
     elevation: 10,
   },
   subPromptLockBadge: {
     position: "absolute",
-    right: -2,
-    bottom: -2,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    right: -1,
+    bottom: -1,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#F4C95D",
@@ -3730,41 +3734,46 @@ const s = StyleSheet.create({
   },
   subPromptKicker: {
     color: "#F4C95D",
-    fontWeight: "900",
-    letterSpacing: 3.2,
-    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 2.8,
+    fontSize: 10,
     textAlign: "center",
-    marginBottom: 6,
+    marginBottom: 4,
   },
   subPromptTitle: {
     color: "#FFFFFF",
-    fontSize: 24,
-    fontWeight: "900",
+    fontSize: 17,
+    fontWeight: "800",
     textAlign: "center",
-    letterSpacing: -0.3,
-    marginBottom: 10,
+    letterSpacing: -0.2,
+    lineHeight: 21,
+    marginBottom: 7,
+  },
+  subPromptMessageWrap: {
+    alignSelf: "center",
+    maxWidth: "84%",
+    marginBottom: 11,
   },
   subPromptMessage: {
-    color: "rgba(255,255,255,0.78)",
-    fontSize: 15,
-    lineHeight: 22,
-    fontWeight: "700",
+    color: "rgba(255,255,255,0.76)",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
     textAlign: "center",
-    marginBottom: 16,
   },
   subPromptPillRow: {
     flexDirection: "row",
     justifyContent: "center",
     flexWrap: "wrap",
-    gap: 8,
-    marginBottom: 18,
+    gap: 6,
+    marginBottom: 12,
   },
   subPromptPill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 11,
-    paddingVertical: 8,
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
@@ -3772,17 +3781,18 @@ const s = StyleSheet.create({
   },
   subPromptPillText: {
     color: "rgba(255,255,255,0.86)",
-    fontWeight: "900",
-    fontSize: 11,
-    letterSpacing: 0.4,
+    fontWeight: "700",
+    fontSize: 12,
+    letterSpacing: 0.2,
   },
   subPromptBtnRow: {
     flexDirection: "row",
-    gap: 10,
+    alignItems: "center",
+    gap: 8,
   },
   subPromptSecondaryBtn: {
-    flex: 1,
-    height: 50,
+    flex: 0.82,
+    height: 44,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
@@ -3792,28 +3802,28 @@ const s = StyleSheet.create({
   },
   subPromptSecondaryText: {
     color: "rgba(255,255,255,0.82)",
-    fontWeight: "800",
-    fontSize: 15,
+    fontWeight: "700",
+    fontSize: 13,
   },
   subPromptPrimaryBtn: {
-    flex: 1.35,
-    height: 50,
+    flex: 1.18,
+    height: 44,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
-    gap: 8,
+    gap: 6,
     backgroundColor: "#F4C95D",
     shadowColor: "#F4C95D",
     shadowOpacity: 0.35,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
     elevation: 12,
   },
   subPromptPrimaryText: {
     color: "#07111F",
-    fontWeight: "900",
-    fontSize: 15,
+    fontWeight: "800",
+    fontSize: 13,
   },
   screen: {
     flex: 1,
