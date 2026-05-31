@@ -174,6 +174,42 @@ function isImageFeedItem(item: any) {
   return item?.mediaType === "image" || Boolean(String(item?.mediaUri || "").trim());
 }
 
+function feedOriginIdFromItem(item: any) {
+  const explicit = String(item?.feedOriginId || item?.sourceScheduleId || "").trim();
+  if (explicit) return baseFeedId(explicit);
+  const rawId = String(item?.id || "").trim();
+  const stripped = rawId.replace(/__loop_\d+(?:_\d+)?$/i, "");
+  return baseFeedId(stripped);
+}
+
+function createFeedLoopBatch(baseFeed: any[], loopGen: number, skipOriginId?: string) {
+  if (!baseFeed.length) return [];
+
+  let pool = [...baseFeed];
+  if (pool.length > 1) {
+    if (skipOriginId) {
+      const idx = pool.findIndex((item) => feedOriginIdFromItem(item) === skipOriginId);
+      if (idx >= 0) {
+        pool = [...pool.slice(idx + 1), ...pool.slice(0, idx + 1)];
+      }
+    } else {
+      const offset = loopGen % pool.length;
+      pool = [...pool.slice(offset), ...pool.slice(0, offset)];
+    }
+  }
+
+  return pool.map((item, idx) => {
+    const originId = feedOriginIdFromItem(item);
+    return {
+      ...item,
+      id: `${originId}__loop_${loopGen}_${idx}`,
+      sourceScheduleId: item?.sourceScheduleId || originId,
+      feedOriginId: originId,
+      feedLoopGeneration: loopGen,
+    };
+  });
+}
+
 function logNonVideoActivePause(meta: Record<string, unknown>) {
   if (__DEV__) {
     console.log("KRISTO_FEED_NON_VIDEO_ACTIVE_PAUSE", meta);
@@ -1541,7 +1577,7 @@ const noMediaPost =
   const claimedByOther = !!claimed && !!claimUserId && claimUserId !== currentUserId;
 
   const rawFeedActionId = String(
-    (item as any)?.sourceScheduleId || item.id || ""
+    (item as any)?.feedOriginId || (item as any)?.sourceScheduleId || item.id || ""
   );
 
   // Slot cards can be rendered as cloned ids like feed_xxx__slot_4.
@@ -2703,7 +2739,15 @@ const noMediaPost =
   const strictVideoUri = feedVideoPlayUri(item);
 
   const renderStrictVideoLayer = () => {
-    if (shouldKeepVideoMounted && strictVideoUri) {
+    const isCurrentStrictVideo =
+      feedIndex === activeFeedIndex ||
+      String(item.id || "") === String(activeFeedItemId || "");
+
+    const shouldMountVideoPlayer =
+      Boolean(strictVideoUri) &&
+      (isCurrentStrictVideo || shouldKeepVideoMounted);
+
+    if (shouldMountVideoPlayer) {
       return (
         <FeedVideoSurface
           postId={String(item.id || "")}
@@ -4863,10 +4907,21 @@ export default function FeedScreen() {
   const [activeFeedItemId, setActiveFeedItemId] = useState<string | null>(() => String(data[0]?.id || ""));
   const [activeFeedIndex, setActiveFeedIndex] = useState(0);
   const [feedVisibleCount, setFeedVisibleCount] = useState(FEED_INITIAL_VISIBLE_COUNT);
+  const [feedLoopBatches, setFeedLoopBatches] = useState<any[][]>([]);
+
+  const baseFeedSignature = useMemo(
+    () => data.map((item) => String(item?.id || "")).join("|"),
+    [data]
+  );
+
+  const displayFeed = useMemo(() => {
+    const tail = feedLoopBatches.flat();
+    return tail.length ? [...data, ...tail] : data;
+  }, [data, feedLoopBatches]);
 
   const visibleData = useMemo(() => {
-    return data.slice(0, Math.min(feedVisibleCount, data.length));
-  }, [data, feedVisibleCount]);
+    return displayFeed.slice(0, Math.min(feedVisibleCount, displayFeed.length));
+  }, [displayFeed, feedVisibleCount]);
 
   const activeItemIsStrictVideo = useMemo(() => {
     if (activeFeedIndex < 0) return false;
@@ -4874,15 +4929,71 @@ export default function FeedScreen() {
   }, [visibleData, activeFeedIndex]);
 
   const feedVisibleCountRef = useRef(feedVisibleCount);
-  const feedTotalCountRef = useRef(data.length);
+  const feedTotalCountRef = useRef(displayFeed.length);
   const feedAppendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const feedAppendLoadingRef = useRef(false);
+  const feedLoopGenRef = useRef(0);
+  const dataRef = useRef<any[]>(data);
+  const activeFeedIndexRef = useRef(activeFeedIndex);
+  const activeFeedItemIdRef = useRef<string | null>(activeFeedItemId);
+  const appendMoreFeedItemsRef = useRef<(() => void) | null>(null);
+  const visibleDataRef = useRef(visibleData);
+
+  useEffect(() => {
+    visibleDataRef.current = visibleData;
+  }, [visibleData]);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    activeFeedIndexRef.current = activeFeedIndex;
+    activeFeedItemIdRef.current = activeFeedItemId;
+  }, [activeFeedIndex, activeFeedItemId]);
+
+  useEffect(() => {
+    setFeedLoopBatches([]);
+    feedLoopGenRef.current = 0;
+    setFeedVisibleCount(FEED_INITIAL_VISIBLE_COUNT);
+  }, [baseFeedSignature]);
+
+  const appendMoreFeedItems = useCallback(() => {
+    if (feedAppendLoadingRef.current) return;
+
+    const base = dataRef.current;
+    if (!base.length) return;
+
+    feedAppendLoadingRef.current = true;
+    const nextGen = feedLoopGenRef.current + 1;
+    feedLoopGenRef.current = nextGen;
+
+    const activeItem = visibleDataRef.current[activeFeedIndexRef.current];
+    const skipOrigin = activeItem ? feedOriginIdFromItem(activeItem) : undefined;
+    const batch = createFeedLoopBatch(base, nextGen, skipOrigin);
+
+    setFeedLoopBatches((prev) => [...prev, batch]);
+    setFeedVisibleCount((prev) => prev + Math.max(FEED_APPEND_BATCH_SIZE, batch.length));
+
+    if (feedAppendTimerRef.current) {
+      clearTimeout(feedAppendTimerRef.current);
+      feedAppendTimerRef.current = null;
+    }
+
+    setTimeout(() => {
+      feedAppendLoadingRef.current = false;
+    }, FEED_APPEND_DELAY_MS);
+  }, []);
+
+  useEffect(() => {
+    appendMoreFeedItemsRef.current = appendMoreFeedItems;
+  }, [appendMoreFeedItems]);
 
   useEffect(() => {
     feedVisibleCountRef.current = feedVisibleCount;
-    feedTotalCountRef.current = data.length;
+    feedTotalCountRef.current = displayFeed.length;
     feedAppendLoadingRef.current = false;
-  }, [feedVisibleCount, data.length]);
+  }, [feedVisibleCount, displayFeed.length]);
 
   useEffect(() => {
     if (backendFeed.length > 0) return;
@@ -4915,11 +5026,6 @@ export default function FeedScreen() {
       });
     }
   }, [visibleData, activeFeedItemId]);
-
-  const visibleDataRef = useRef(visibleData);
-  useEffect(() => {
-    visibleDataRef.current = visibleData;
-  }, [visibleData]);
 
   useEffect(() => {
     const meta = {
@@ -5142,6 +5248,16 @@ export default function FeedScreen() {
     const y = Number(event?.nativeEvent?.contentOffset?.y || 0);
     const nextIndex = Math.max(0, Math.round(y / Math.max(1, itemH)));
     activateFeedIndex(nextIndex, "momentum-scroll-end");
+
+    const visibleCount = feedVisibleCountRef.current;
+    const totalCount = feedTotalCountRef.current;
+    if (
+      nextIndex >= Math.max(0, visibleCount - 2) &&
+      visibleCount >= totalCount &&
+      totalCount > 0
+    ) {
+      appendMoreFeedItemsRef.current?.();
+    }
   }, [activateFeedIndex, itemH]);
 
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
@@ -5155,15 +5271,17 @@ export default function FeedScreen() {
     const prefetchThreshold = Math.max(0, visibleCount - FEED_APPEND_PREFETCH_AHEAD);
     const nearEndThreshold = Math.max(0, visibleCount - 2);
 
-    const canAppendMore = visibleCount < totalCount && !!nextId && !feedAppendLoadingRef.current;
+    const canExtendVisible = visibleCount < totalCount && !!nextId && !feedAppendLoadingRef.current;
+    const atVisibleEnd = visibleCount >= totalCount && !!nextId && !feedAppendLoadingRef.current;
+    const nearEnd = topIndex >= nearEndThreshold || topIndex >= Math.max(0, visibleCount - 1);
 
-    if (canAppendMore && topIndex >= prefetchThreshold) {
+    if (canExtendVisible && topIndex >= prefetchThreshold) {
       feedAppendLoadingRef.current = true;
 
       if (feedAppendTimerRef.current) clearTimeout(feedAppendTimerRef.current);
 
       const delay =
-        topIndex >= nearEndThreshold || topIndex >= visibleCount - 1
+        nearEnd
           ? 0
           : FEED_APPEND_DELAY_MS;
 
@@ -5177,7 +5295,13 @@ export default function FeedScreen() {
           }
           return Math.min(feedTotalCountRef.current, prev + FEED_APPEND_BATCH_SIZE);
         });
+
+        setTimeout(() => {
+          feedAppendLoadingRef.current = false;
+        }, FEED_APPEND_DELAY_MS);
       }, delay);
+    } else if (atVisibleEnd && topIndex >= prefetchThreshold && nearEnd) {
+      appendMoreFeedItemsRef.current?.();
     } else if (
       topIndex < Math.max(0, prefetchThreshold - 2) &&
       feedAppendTimerRef.current
@@ -5192,7 +5316,9 @@ export default function FeedScreen() {
 
     if (previous?.id && previous.id !== nextId) {
       const durationMs = Math.max(0, now - previous.startedAt);
-      recordForYouSignalLocal(previous.id, {
+      const previousItem = visibleDataRef.current.find((row) => String(row?.id || "") === String(previous.id));
+      const signalId = previousItem ? feedOriginIdFromItem(previousItem) : baseFeedId(previous.id);
+      recordForYouSignalLocal(signalId, {
         watchedCount: durationMs >= 1200 ? 1 : 0,
         skippedCount: durationMs < 1200 ? 1 : 0,
         watchDurationMs: durationMs,
