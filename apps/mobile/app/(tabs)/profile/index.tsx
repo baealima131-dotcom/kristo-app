@@ -1476,30 +1476,50 @@ export default function MeScreen() {
     churchId,
   ]);
 
-  const openActivityPostInHomeFeed = useCallback(
+  const openActivityPostInChurchFeed = useCallback(
     (post: ActivityGridItem) => {
       const focusPostId = String(post?.id || "").trim();
-      if (!focusPostId) return;
+      if (!focusPostId || !churchId) return;
 
-      const pathname = "/(tabs)";
+      const activityMode: "church" | "member" | "media" = showMediaActivityTab
+        ? "media"
+        : activityMemberFilter === "all"
+          ? "church"
+          : "member";
 
-      console.log("CHURCH_ACTIVITY_OPEN_POST", { postId: focusPostId, pathname });
+      const activityMemberIdParam =
+        activityMemberFilter === "mine"
+          ? currentUserId
+          : activityMemberFilter === "member"
+            ? activityMemberId
+            : "";
 
-      try {
-        router.push({
-          pathname: pathname as any,
-          params: {
-            focusPostId,
-            source: "churchActivity",
-          },
-        });
-      } catch {
-        try {
-          router.push("/" as any);
-        } catch {}
-      }
+      console.log("CHURCH_ACTIVITY_OPEN_POST", {
+        postId: focusPostId,
+        pathname: "/church-activity-feed",
+        activityChurchId: churchId,
+        activityMemberId: activityMemberIdParam,
+        activityMode,
+      });
+
+      router.push({
+        pathname: "/church-activity-feed",
+        params: {
+          focusPostId,
+          activityChurchId: churchId,
+          activityMode,
+          ...(activityMemberIdParam ? { activityMemberId: activityMemberIdParam } : {}),
+        },
+      });
     },
-    [router]
+    [
+      router,
+      churchId,
+      currentUserId,
+      showMediaActivityTab,
+      activityMemberFilter,
+      activityMemberId,
+    ]
   );
 
   const handleActivityMemberChipSelect = useCallback(
@@ -1921,14 +1941,14 @@ const resolvedName = useMemo(() => {
                 items={mediaActivityPosts}
                 emptyTitle="No media posts yet"
                 emptyBody="Church media uploads and creator posts will appear here."
-                onItemPress={openActivityPostInHomeFeed}
+                onItemPress={openActivityPostInChurchFeed}
               />
             ) : (
               <ChurchActivityGrid
                 items={churchActivityPosts}
                 emptyTitle="No church activity yet"
                 emptyBody="Posts from church members will appear here."
-                onItemPress={openActivityPostInHomeFeed}
+                onItemPress={openActivityPostInChurchFeed}
               />
             )}
           </View>

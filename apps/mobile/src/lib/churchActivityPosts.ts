@@ -239,6 +239,19 @@ export function sortActivityPostsNewestFirst<T extends { createdAt?: string }>(r
 
 export type ChurchActivityTab = "church" | "media";
 export type ChurchActivityMemberFilter = "all" | "mine" | "member";
+export type ChurchActivityFeedMode = "church" | "member" | "media";
+
+export function getPostAuthorId(item: any) {
+  return postAuthorUserId(item);
+}
+
+export function getPostChurchId(item: any) {
+  return postChurchId(item);
+}
+
+export function isMediaPost(item: any) {
+  return isMediaActivityPost(item);
+}
 
 export function postAuthorUserId(item: any) {
   return String(
@@ -423,4 +436,85 @@ export function getChurchActivityPosts({
   }
 
   return result;
+}
+
+export function filterChurchActivityFeedRows(
+  rows: any[],
+  context: {
+    activityChurchId: string;
+    activityMemberId?: string;
+    activityMode: ChurchActivityFeedMode;
+  },
+  mediaUrlFn?: (uri?: string) => string
+) {
+  const activityChurchId = String(context.activityChurchId || "").trim();
+  const activityMemberId = String(context.activityMemberId || "").trim();
+  const activityMode = context.activityMode || "church";
+  const beforeCount = rows.length;
+
+  if (!activityChurchId) return [];
+
+  let filtered = mergeActivityPostsUnique(rows).filter((item) =>
+    belongsToChurch(item, activityChurchId)
+  );
+
+  if (activityMode === "media") {
+    filtered = filtered.filter(isMediaPost);
+  } else if (activityMode === "church") {
+    filtered = filtered.filter(isChurchTabActivityPost);
+  }
+
+  if (activityMemberId) {
+    filtered = filtered.filter((item) => {
+      const authorId = getPostAuthorId(item);
+      return Boolean(authorId) && authorId === activityMemberId;
+    });
+  }
+
+  const result = sortActivityPostsNewestFirst(
+    filtered.map((item) => normalizeChurchActivityFeedItem(item, mediaUrlFn))
+  );
+
+  if (__DEV__) {
+    console.log("KRISTO_CHURCH_ACTIVITY_FEED_FILTER", {
+      activityChurchId,
+      activityMemberId,
+      activityMode,
+      beforeCount,
+      afterCount: result.length,
+    });
+  }
+
+  return result;
+}
+
+export function normalizeChurchActivityFeedItem(
+  item: any,
+  mediaUrlFn?: (uri?: string) => string
+) {
+  const normalized = normalizeActivityItem(item, mediaUrlFn);
+  const isVideo = activityIsVideo(normalized);
+  const imageUri = String(normalized.mediaUri || normalized.imageUrl || "").trim();
+  const videoUri = String(normalized.videoUrl || "").trim();
+
+  return {
+    ...normalized,
+    title: churchActivityTitle(normalized),
+    body: churchActivityBody(normalized),
+    mediaType: isVideo ? "video" : imageUri ? "image" : "none",
+    mediaUri: isVideo ? videoUri || imageUri : imageUri,
+    videoUrl: videoUri || undefined,
+    authorName: postAuthorName(normalized),
+  };
+}
+
+export function stampChurchFeedScope(item: any, fallbackChurchId: string) {
+  const scopedChurchId = String(
+    item?.churchId || item?.sourceChurchId || item?.church?.id || fallbackChurchId || ""
+  ).trim();
+  return {
+    ...item,
+    churchId: scopedChurchId,
+    sourceChurchId: String(item?.sourceChurchId || scopedChurchId).trim(),
+  };
 }
