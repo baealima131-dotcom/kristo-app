@@ -484,11 +484,19 @@ async function canDeleteFeedPost(item: any, churchId: string, role: unknown, use
   const itemChurchId = String(item?.churchId || "");
   if (!itemChurchId || itemChurchId !== String(churchId || "")) return false;
 
+  if (isPastorOrAdminRole(role)) return true;
+
+  const pastorResolution = await resolveChurchPastorUserId(churchId);
+  if (String(pastorResolution.actualChurchPastorUserId || "").trim() === String(userId || "")) {
+    return true;
+  }
+
   const ownership = inferOwnershipType(item);
   const isOwnPost = String(item?.createdBy || "") === String(userId || "");
 
-  if (isPastorOrAdminRole(role)) return true;
-  if ((await isMediaHostForChurch(churchId, userId)) && ownership === "media") return true;
+  if (await isMediaHostForChurch(churchId, userId)) {
+    if (ownership === "media") return true;
+  }
   if (isOwnPost && ownership === "member") return true;
 
   return false;
@@ -1411,11 +1419,16 @@ async function handleFeedPost(req: NextRequest, body: any) {
   }
 
   if (action === "delete_post") {
-    const postId = cleanText(body?.postId, 240);
+    const postId = cleanText(body?.postId || body?.feedId || body?.id, 240);
     if (!postId) return err("postId is required", 400);
 
     const item = await getFeedItemById(postId);
     if (!item) return err("Feed item not found", 404);
+
+    const itemChurchId = String(item?.churchId || churchId || "").trim();
+    if (!itemChurchId || itemChurchId !== String(churchId || "").trim()) {
+      return err("Feed item not in your church", 403);
+    }
 
     const viewerRole = ctx?.viewer?.role;
     if (!(await canDeleteFeedPost(item, churchId, viewerRole, viewerUserId))) {
@@ -1426,10 +1439,16 @@ async function handleFeedPost(req: NextRequest, body: any) {
       bumpMediaScheduleSyncForFeedItem(item, "delete_post");
     }
 
-    await removePostAndRelated(postId);
+    await removePostAndRelated(String(item.id || postId));
     saveFeedStores();
 
-    return ok({ postId, deleted: true });
+    const deletedId = String(item.id || postId);
+    return NextResponse.json({
+      ok: true,
+      data: { postId: deletedId, deleted: true },
+      postId: deletedId,
+      deleted: true,
+    });
   }
 
   // back-compat/default: create post

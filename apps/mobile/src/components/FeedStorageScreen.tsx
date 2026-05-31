@@ -22,7 +22,6 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { feedList, feedRemoveWhere } from "@/src/lib/homeFeedStore";
 import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import {
   activityIsVideo,
   formatActivityWhen,
@@ -288,6 +287,23 @@ function StoragePostCard({
   );
 }
 
+function parseStorageDeleteResponse(res: any, postId: string) {
+  const payload = res?.data && typeof res.data === "object" ? res.data : res;
+  const deletedId = String(payload?.postId || res?.postId || postId || "").trim();
+  const deleted =
+    res?.ok !== false &&
+    !res?.error &&
+    (payload?.deleted === true || res?.deleted === true);
+
+  return {
+    deleted,
+    deletedId,
+    status: Number(res?.status || 0),
+    error: String(res?.error || "").trim(),
+    payload,
+  };
+}
+
 export default function FeedStorageScreen({
   mode,
   title,
@@ -419,7 +435,9 @@ export default function FeedStorageScreen({
           text: "Delete",
           style: "destructive",
           onPress: async () => {
-            const postId = baseFeedId(item.id) || String(item.id || "").trim();
+            const postId = String(item.id || "").trim();
+            const payload = { action: "delete_post", postId };
+
             if (!postId) {
               Alert.alert("Delete failed", "Could not delete post. Please try again.");
               return;
@@ -427,24 +445,23 @@ export default function FeedStorageScreen({
 
             setDeletingId(item.id);
             try {
-              const res: any = await apiPost(
-                "/api/church/feed",
-                { action: "delete_post", postId },
-                {
-                  headers: getKristoHeaders({
-                    userId: session.userId,
-                    role: (session.role || "Member") as any,
-                    churchId,
-                  }),
-                }
-              );
+              const res: any = await apiPost("/api/church/feed", payload, {
+                headers: getKristoHeaders({
+                  userId: session.userId,
+                  role: (session.role || "Member") as any,
+                  churchId,
+                }),
+              });
 
-              const success =
-                res?.ok !== false &&
-                !res?.error &&
-                (res?.deleted === true || res?.postId === postId);
+              const parsed = parseStorageDeleteResponse(res, postId);
 
-              if (!success) {
+              if (!parsed.deleted) {
+                console.log("KRISTO_STORAGE_DELETE_FAIL_DETAIL", {
+                  postId,
+                  status: parsed.status || res?.status,
+                  responseText: parsed.error || res?.error,
+                  payload: parsed.payload ?? res,
+                });
                 if (__DEV__) {
                   console.log("KRISTO_STORAGE_DELETE_POST", {
                     postId,
@@ -458,7 +475,7 @@ export default function FeedStorageScreen({
 
               if (__DEV__) {
                 console.log("KRISTO_STORAGE_DELETE_POST", {
-                  postId,
+                  postId: parsed.deletedId || postId,
                   storageType: mode,
                   status: "success",
                 });
@@ -467,9 +484,15 @@ export default function FeedStorageScreen({
               feedRemoveWhere((row) => String(row.id || "") === String(item.id));
               setRows((prev) => prev.filter((row) => row.id !== item.id));
             } catch (e) {
+              console.log("KRISTO_STORAGE_DELETE_FAIL_DETAIL", {
+                postId,
+                status: "exception",
+                responseText: e instanceof Error ? e.message : String(e),
+                payload: { action: "delete_post", postId },
+              });
               if (__DEV__) {
                 console.log("KRISTO_STORAGE_DELETE_POST", {
-                  postId: baseFeedId(item.id) || item.id,
+                  postId,
                   storageType: mode,
                   status: "failed",
                 });
