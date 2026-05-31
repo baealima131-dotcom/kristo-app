@@ -7,6 +7,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Image,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -14,6 +15,13 @@ import { useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { createDebouncer, shouldAllowScreenRefresh } from "@/src/lib/kristoTraffic";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  safeAvatarUri,
+  safeBody,
+  safeDisplayName,
+  safeInitial,
+  type NotificationLike,
+} from "@/src/lib/notificationDisplay";
 
 const VIP_BG = "#070C14";
 const CARD = "rgba(16,20,29,0.92)";
@@ -25,7 +33,7 @@ const GREEN = "#63D18C";
 const RED = "#FF8A8A";
 const BLUE = "#7DB7FF";
 
-type Notice = {
+type Notice = NotificationLike & {
   membershipId?: string;
   id: string;
   title: string;
@@ -33,8 +41,6 @@ type Notice = {
   createdAt?: string;
   read?: boolean;
   type?: string;
-  actorName?: string;
-  actorInitials?: string;
 };
 
 type NoticeGroup = {
@@ -109,14 +115,11 @@ function buildDemoNotifications(): Notice[] {
   ];
 
   return rows
-    .map((row) => {
-      const actorName = extractActorName(row.body);
-      return {
-        ...row,
-        actorName,
-        actorInitials: initialsFromName(actorName),
-      };
-    })
+    .map((row) => ({
+      ...row,
+      actorName: safeDisplayName(row),
+      body: safeBody(row),
+    }))
     .sort((a, b) => {
       const aa = a.createdAt ? new Date(a.createdAt).getTime() : 0;
       const bb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
@@ -183,36 +186,37 @@ function cardTone(n: Notice): "approved" | "rejected" | "role" | "request" | "de
   return "default";
 }
 
-function extractActorName(body: string) {
-  const text = String(body || "").trim();
-  if (!text) return "";
+function mapApiNotice(x: any, i: number): Notice {
+  const raw: NotificationLike = {
+    title: String(x?.title || x?.subject || "Notification"),
+    body: String(x?.body || x?.message || x?.text || ""),
+    message: String(x?.message || x?.body || x?.text || ""),
+    actorName: x?.actorName,
+    actorUserId: x?.actorUserId,
+    actorAvatarUri: x?.actorAvatarUri,
+    actorRole: x?.actorRole,
+    avatarUri: x?.avatarUri,
+    avatarUrl: x?.avatarUrl,
+    profileImage: x?.profileImage,
+    type: String(x?.type || ""),
+  };
 
-  const patterns = [
-    /^(.+?)\s+replied\b/i,
-    /^(.+?)\s+commented\b/i,
-    /^(.+?)\s+requested\b/i,
-    /^(.+?)\s+updated\b/i,
-    /^(.+?)\s+liked\b/i,
-    /^([^:]+):/,
-  ];
-
-  for (const rx of patterns) {
-    const m = text.match(rx);
-    if (m?.[1]) return m[1].trim();
-  }
-
-  return "";
-}
-
-function initialsFromName(name?: string) {
-  const parts = String(name || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2);
-
-  if (!parts.length) return "N";
-  return parts.map((x) => x[0]?.toUpperCase() || "").join("");
+  return {
+    membershipId: x?.membershipId || x?.meta?.membershipId,
+    id: String(x?.id || `n-${i}`),
+    title: String(raw.title || "Notification"),
+    body: safeBody(raw),
+    createdAt: String(x?.createdAt || x?.date || ""),
+    read: !!(x?.readAt || x?.isRead || x?.read),
+    type: String(x?.type || ""),
+    actorName: safeDisplayName(raw),
+    actorUserId: raw.actorUserId,
+    actorAvatarUri: raw.actorAvatarUri,
+    actorRole: raw.actorRole,
+    avatarUri: raw.avatarUri,
+    avatarUrl: raw.avatarUrl,
+    profileImage: raw.profileImage,
+  };
 }
 
 export default function MoreNotificationsScreen() {
@@ -228,6 +232,7 @@ export default function MoreNotificationsScreen() {
 
   const effectiveAuthUserId = String(auth?.userId || "");
   const effectiveAuthRole = String(auth?.role || "Member");
+  const effectiveDisplayName = String(auth?.displayName || auth?.name || "").trim();
 
   const getHeaders = () => ({
     accept: "application/json",
@@ -235,6 +240,9 @@ export default function MoreNotificationsScreen() {
     "x-kristo-user-id": effectiveAuthUserId,
     "x-kristo-role": effectiveAuthRole,
     "x-kristo-church-id": churchId,
+    ...(effectiveDisplayName
+      ? { "x-kristo-user-name": effectiveDisplayName, "x-kristo-display-name": effectiveDisplayName }
+      : {}),
   });
 
   const [items, setItems] = useState<Notice[]>([]);
@@ -291,22 +299,7 @@ export default function MoreNotificationsScreen() {
       });
 
       const mapped: Notice[] = inviteSafeRaw
-        .map((x: any, i: number) => {
-          const title = String(x?.title || x?.subject || "Notification");
-          const body = String(x?.body || x?.message || x?.text || "");
-          const actorName = extractActorName(body);
-          return {
-            membershipId: x?.membershipId || x?.meta?.membershipId,
-            id: String(x?.id || `n-${i}`),
-            title,
-            body,
-            createdAt: String(x?.createdAt || x?.date || ""),
-            read: !!(x?.readAt || x?.isRead || x?.read),
-            type: String(x?.type || ""),
-            actorName,
-            actorInitials: initialsFromName(actorName),
-          };
-        })
+        .map((x: any, i: number) => mapApiNotice(x, i))
         .sort((a: Notice, b: Notice) => {
           const aa = a.createdAt ? new Date(a.createdAt).getTime() : 0;
           const bb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
@@ -450,6 +443,10 @@ export default function MoreNotificationsScreen() {
     const expanded = !!openedIds[n.id];
     const visuallyRead = !!n.read;
     const isGeneric = tone === "default";
+    const avatarUri = safeAvatarUri(n);
+    const actorName = safeDisplayName(n);
+    const actorInitial = safeInitial(n);
+    const displayBody = safeBody(n);
 
     return (
       <Pressable
@@ -485,13 +482,17 @@ export default function MoreNotificationsScreen() {
         <View style={s.rowTop}>
           <View style={s.titleWrap}>
             <View style={s.avatarWrap}>
-              <Text style={s.avatarText}>{n.actorInitials || "N"}</Text>
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={s.avatarImage} resizeMode="cover" />
+              ) : (
+                <Text style={s.avatarText}>{actorInitial}</Text>
+              )}
             </View>
 
             <View style={s.titleTextWrap}>
-              {!!n.actorName ? (
+              {!!actorName ? (
                 <Text style={s.actorName} numberOfLines={1}>
-                  {n.actorName}
+                  {actorName}
                 </Text>
               ) : null}
 
@@ -526,16 +527,16 @@ export default function MoreNotificationsScreen() {
           </View>
         </View>
 
-        {!!n.body ? (
+        {!!displayBody ? (
           expanded ? (
             <View style={s.bodyPanel}>
               <Text style={s.pExpanded} numberOfLines={20}>
-                {n.body}
+                {displayBody}
               </Text>
             </View>
           ) : (
             <Text style={s.p} numberOfLines={1}>
-              {n.body}
+              {displayBody}
             </Text>
           )
         ) : null}
@@ -843,6 +844,13 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(217,179,95,0.04)",
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.32)",
+    overflow: "hidden",
+  },
+
+  avatarImage: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
   },
 
   avatarText: {

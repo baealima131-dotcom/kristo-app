@@ -1,25 +1,67 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, ScrollView, Text, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, ScrollView, Text, Pressable, StyleSheet, View, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import {
+  safeAvatarUri,
+  safeBody,
+  safeDisplayName,
+  safeInitial,
+  type NotificationLike,
+} from "@/src/lib/notificationDisplay";
 
 const VIP_BG = "#07111F";
 const GOLD = "#F4D06F";
 const MUTED = "rgba(255,255,255,0.68)";
 
-type Notice = {
+type Notice = NotificationLike & {
   id?: string;
   title?: string;
   body?: string;
   message?: string;
   createdAt?: string;
   readAt?: string;
+  read?: boolean;
   status?: string;
   membershipStatus?: string;
   inviteStatus?: string;
 };
+
+function mapApiNotice(x: any, i: number): Notice {
+  const raw: NotificationLike = {
+    title: String(x?.title || "Notification"),
+    body: String(x?.body || x?.message || x?.text || ""),
+    message: String(x?.message || x?.body || x?.text || ""),
+    actorName: x?.actorName,
+    actorUserId: x?.actorUserId,
+    actorAvatarUri: x?.actorAvatarUri,
+    actorRole: x?.actorRole,
+    avatarUri: x?.avatarUri,
+    avatarUrl: x?.avatarUrl,
+    profileImage: x?.profileImage,
+    type: String(x?.type || ""),
+  };
+
+  return {
+    id: String(x?.id || i),
+    title: String(raw.title || "Notification"),
+    body: safeBody(raw),
+    message: safeBody(raw),
+    createdAt: String(x?.createdAt || ""),
+    readAt: x?.readAt,
+    read: !!(x?.readAt || x?.isRead || x?.read),
+    actorName: safeDisplayName(raw),
+    actorUserId: raw.actorUserId,
+    actorAvatarUri: raw.actorAvatarUri,
+    actorRole: raw.actorRole,
+    avatarUri: raw.avatarUri,
+    avatarUrl: raw.avatarUrl,
+    profileImage: raw.profileImage,
+    type: raw.type,
+  };
+}
 
 export default function ChurchNotifications() {
   const router = useRouter();
@@ -55,16 +97,18 @@ export default function ChurchNotifications() {
       });
 
       const seen = new Set<string>();
-      const clean = inviteFiltered.filter((x: Notice, i: number) => {
-        const title = String(x?.title || "").toLowerCase();
-        const status = String(x?.status || x?.membershipStatus || x?.inviteStatus || "").toLowerCase();
-        const key = String((x as any)?.membershipId || (x as any)?.ministryMemberId || (x as any)?.churchId || x?.id || i);
+      const clean = inviteFiltered
+        .filter((x: Notice, i: number) => {
+          const title = String(x?.title || "").toLowerCase();
+          const status = String(x?.status || x?.membershipStatus || x?.inviteStatus || "").toLowerCase();
+          const key = String((x as any)?.membershipId || (x as any)?.ministryMemberId || (x as any)?.churchId || x?.id || i);
 
-        if (title.includes("invite") && status && status !== "pending") return false;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
+          if (title.includes("invite") && status && status !== "pending") return false;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .map((x: any, i: number) => mapApiNotice(x, i));
 
       setItems(clean);
     } finally {
@@ -76,7 +120,7 @@ export default function ChurchNotifications() {
     load();
   }, []);
 
-  const unread = useMemo(() => items.filter((x) => !x.readAt).length, [items]);
+  const unread = useMemo(() => items.filter((x) => !(x.readAt || x.read)).length, [items]);
 
   return (
     <View style={[s.wrap, { paddingTop: insets.top + 12 }]}>
@@ -101,7 +145,7 @@ export default function ChurchNotifications() {
           <Text style={s.unreadText}>{unread} unread</Text>
         </View>
 
-        <Pressable onPress={() => setItems((prev) => prev.map((x) => ({ ...x, readAt: x.readAt || new Date().toISOString() })))} style={s.markBtn}>
+        <Pressable onPress={() => setItems((prev) => prev.map((x) => ({ ...x, readAt: x.readAt || new Date().toISOString(), read: true })))} style={s.markBtn}>
           <Text style={s.markText}>Mark all</Text>
         </Pressable>
       </View>
@@ -123,20 +167,33 @@ export default function ChurchNotifications() {
             items.map((n, i) => {
               const id = String(n.id || i);
               const open = expandedId === id;
-              const body = String(n.body || n.message || "Notification update.");
+              const body = safeBody(n);
+              const actorName = safeDisplayName(n);
+              const avatarUri = safeAvatarUri(n);
+              const actorInitial = safeInitial(n);
+
               return (
                 <Pressable key={id} onPress={() => setExpandedId(open ? "" : id)} style={s.noticeCard}>
                   <View style={s.noticeLeftBar} />
                   <View style={s.noticeTop}>
                     <View style={s.noticeIcon}>
-                      <Text style={s.noticeIconText}>N</Text>
+                      {avatarUri ? (
+                        <Image source={{ uri: avatarUri }} style={s.noticeAvatarImage} resizeMode="cover" />
+                      ) : (
+                        <Text style={s.noticeIconText}>{actorInitial}</Text>
+                      )}
                     </View>
                     <View style={{ flex: 1 }}>
+                      {!!actorName ? (
+                        <Text style={s.noticeActor} numberOfLines={1}>
+                          {actorName}
+                        </Text>
+                      ) : null}
                       <Text style={s.noticeTitle} numberOfLines={1}>{n.title || "Notification"}</Text>
                       <Text style={s.noticeTime}>Now</Text>
                     </View>
                     <View style={s.unreadBadge}>
-                      <Text style={s.unreadBadgeText}>{n.readAt ? "Read" : "Unread"}</Text>
+                      <Text style={s.unreadBadgeText}>{n.readAt || n.read ? "Read" : "Unread"}</Text>
                     </View>
                   </View>
 
@@ -165,8 +222,10 @@ const s = StyleSheet.create({
   noticeCard: { marginBottom: 14, padding: 18, borderRadius: 22, backgroundColor: "rgba(19,20,14,0.96)", borderWidth: 1, borderColor: "rgba(244,208,111,0.26)", overflow: "hidden" },
   noticeLeftBar: { position: "absolute", left: 0, top: 0, bottom: 0, width: 7, backgroundColor: GOLD },
   noticeTop: { flexDirection: "row", gap: 14, alignItems: "center" },
-  noticeIcon: { width: 58, height: 58, borderRadius: 29, alignItems: "center", justifyContent: "center", borderWidth: 1.3, borderColor: "rgba(244,208,111,0.45)" },
+  noticeIcon: { width: 58, height: 58, borderRadius: 29, alignItems: "center", justifyContent: "center", borderWidth: 1.3, borderColor: "rgba(244,208,111,0.45)", overflow: "hidden" },
+  noticeAvatarImage: { width: 58, height: 58, borderRadius: 29 },
   noticeIconText: { color: GOLD, fontWeight: "900", fontSize: 18 },
+  noticeActor: { color: "rgba(255,255,255,0.92)", fontSize: 15, fontWeight: "800", marginBottom: 4 },
   noticeTitle: { color: "white", fontSize: 20, fontWeight: "900" },
   noticeTime: { marginTop: 10, color: MUTED, fontWeight: "800" },
   unreadBadge: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: "rgba(244,208,111,0.13)", borderWidth: 1, borderColor: "rgba(244,208,111,0.35)" },

@@ -7,6 +7,7 @@ import { guard } from "@/app/api/_lib/rbac";
 import { getChurchById, patchChurchProfile } from "@/app/api/_lib/churches";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { addNotification } from "@/app/api/_lib/notifications";
+import { resolveActorFromViewer, sanitizeActorInText } from "@/app/api/_lib/notificationActor";
 import { isChurchDatabaseError } from "@/app/api/_lib/store/churchDb";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
 
@@ -160,12 +161,15 @@ export async function PATCH(req: NextRequest) {
 
     const prevName = String(before?.name || churchId);
     const nextName = String(saved.name || churchId);
-    const actorName = String(viewer.name || viewer.userId || "A leader");
+    const actor = await resolveActorFromViewer(viewer, req);
+    const actorName = actor.actorName;
 
     const message =
       prevName !== nextName
         ? `${actorName} updated church profile: name changed from ${prevName} to ${nextName}.`
         : `${actorName} updated church profile for ${nextName}.`;
+
+    const cleanMessage = sanitizeActorInText(message, actor.actorUserId, actorName);
 
     for (const m of activeMembers) {
       if (!m.userId) continue;
@@ -173,8 +177,12 @@ export async function PATCH(req: NextRequest) {
         churchId,
         type: "ChurchProfileUpdated",
         title: "Church profile updated",
-        message,
+        message: cleanMessage,
         targetUserId: m.userId,
+        actorName: actor.actorName,
+        actorUserId: actor.actorUserId,
+        actorAvatarUri: actor.actorAvatarUri || undefined,
+        actorRole: actor.actorRole,
       });
     }
 

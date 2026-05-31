@@ -28,10 +28,13 @@ export function getKristoAuth(): KristoAuth {
 }
 
 export function getKristoHeaders(auth?: Partial<KristoAuth>) {
+  const s = getSessionSync();
   const a = { ...getKristoAuth(), ...(auth || {}) };
+  const displayName = String(s?.displayName || s?.name || "").trim();
   return {
     "x-kristo-user-id": a.userId,
     "x-kristo-role": a.role,
     "x-kristo-church-id": a.churchId,
+    ...(displayName ? { "x-kristo-user-name": displayName, "x-kristo-display-name": displayName } : {}),
   } as const;
 }

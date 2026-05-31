@@ -7,9 +7,12 @@ import {
   setRead,
   removeNotification,
   createNotification,
+  toClientNotification,
+  toClientNotifications,
   type AppNotification,
   type NotificationType,
 } from "@/app/api/_lib/notifications";
+import { resolveActorFromViewer } from "@/app/api/_lib/notificationActor";
 
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
@@ -35,7 +38,9 @@ export async function GET(req: NextRequest) {
     includeAllTargets: canSeeAllTargets,
   });
 
-  return json({ ok: true, data: items });
+  const data = await toClientNotifications(items);
+
+  return json({ ok: true, data });
 }
 
 export async function POST(req: NextRequest) {
@@ -64,6 +69,12 @@ export async function POST(req: NextRequest) {
   const targetUserId =
     body?.targetUserId != null ? String(body.targetUserId).trim() : undefined;
 
+  const actor = await resolveActorFromViewer(ctxOrRes.viewer, req);
+  const actorName = String(body?.actorName || actor.actorName).trim();
+  const actorUserId = String(body?.actorUserId || actor.actorUserId).trim();
+  const actorAvatarUri = String(body?.actorAvatarUri || body?.avatarUri || actor.actorAvatarUri || "").trim();
+  const actorRole = String(body?.actorRole || actor.actorRole).trim();
+
   if (!churchId) {
     return json({ ok: false, error: "Missing churchId" }, { status: 400 });
   }
@@ -78,9 +89,15 @@ export async function POST(req: NextRequest) {
     title,
     message,
     targetUserId,
+    actorName,
+    actorUserId,
+    actorAvatarUri: actorAvatarUri || undefined,
+    actorRole,
   });
 
-  return json({ ok: true, data: created as AppNotification });
+  const data = await toClientNotification(created);
+
+  return json({ ok: true, data });
 }
 
 export async function PATCH(req: NextRequest) {
@@ -118,7 +135,9 @@ export async function PATCH(req: NextRequest) {
   const updated = setRead(id, isRead);
   if (!updated) return json({ ok: false, error: "Notification not found" }, { status: 404 });
 
-  return json({ ok: true, data: updated as AppNotification });
+  const data = await toClientNotification(updated);
+
+  return json({ ok: true, data });
 }
 
 export async function DELETE(req: NextRequest) {

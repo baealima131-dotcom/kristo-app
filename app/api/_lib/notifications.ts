@@ -1,3 +1,12 @@
+import {
+  extractLeadingActorUserId,
+  isRawUserId,
+  resolveActorIdentity,
+  roleFallbackLabel,
+  sanitizeActorInText,
+  type ActorIdentity,
+} from "@/app/api/_lib/notificationActor";
+
 export type NotificationType =
   | "MinistryMemberAdded"
   | "MinistryMemberRemoved"
@@ -16,6 +25,11 @@ export type AppNotification = {
   title: string;
   message?: string;
 
+  actorName?: string;
+  actorUserId?: string;
+  actorAvatarUri?: string;
+  actorRole?: string;
+
   ministryId?: string;
   ministryMemberId?: string;
   targetUserId?: string;
@@ -23,6 +37,26 @@ export type AppNotification = {
   isRead: boolean;
   createdAt: string;
   readAt?: string;
+};
+
+export type ClientNotification = {
+  id: string;
+  churchId: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  message: string;
+  actorName: string;
+  actorUserId?: string;
+  actorAvatarUri?: string;
+  actorRole?: string;
+  read: boolean;
+  isRead: boolean;
+  createdAt: string;
+  readAt?: string;
+  ministryId?: string;
+  ministryMemberId?: string;
+  targetUserId?: string;
 };
 
 declare global {
@@ -51,6 +85,61 @@ export function createNotification(input: Omit<AppNotification, "id" | "createdA
   };
   store().push(n);
   return n;
+}
+
+export async function toClientNotification(n: AppNotification): Promise<ClientNotification> {
+  let actorUserId = String(n.actorUserId || "").trim();
+  let actorName = String(n.actorName || "").trim();
+  let actorAvatarUri = String(n.actorAvatarUri || "").trim();
+  let actorRole = String(n.actorRole || "").trim();
+  const rawMessage = String(n.message || "");
+
+  if (!actorUserId) {
+    actorUserId = extractLeadingActorUserId(rawMessage);
+  }
+
+  if ((!actorName || isRawUserId(actorName)) && actorUserId) {
+    const identity = await resolveActorIdentity(actorUserId);
+    if (!actorName || isRawUserId(actorName)) {
+      actorName = identity.name;
+    }
+    if (!actorAvatarUri) {
+      actorAvatarUri = identity.avatar;
+    }
+  }
+
+  if (!actorName || isRawUserId(actorName)) {
+    const fallbackRole =
+      actorRole ||
+      (n.type === "ChurchProfileUpdated" ? "Church_Admin" : "");
+    actorName = roleFallbackLabel(fallbackRole);
+  }
+
+  const body = sanitizeActorInText(rawMessage, actorUserId, actorName);
+
+  return {
+    id: n.id,
+    churchId: n.churchId,
+    type: n.type,
+    title: String(n.title || "Notification"),
+    body,
+    message: body,
+    actorName,
+    actorUserId: actorUserId || undefined,
+    actorAvatarUri: actorAvatarUri || undefined,
+    actorRole: actorRole || undefined,
+    read: !!n.isRead,
+    isRead: !!n.isRead,
+    createdAt: n.createdAt,
+    readAt: n.readAt,
+    ministryId: n.ministryId,
+    ministryMemberId: n.ministryMemberId,
+    targetUserId: n.targetUserId,
+  };
+}
+
+export async function toClientNotifications(items: AppNotification[]): Promise<ClientNotification[]> {
+  return Promise.all(items.map((n) => toClientNotification(n)));
 }
 
 export function listNotifications(args: {
@@ -108,3 +197,5 @@ export function markAllRead(args: { churchId: string; userId: string; includeAll
   }
   return { updated };
 }
+
+export type { ActorIdentity };
