@@ -1481,9 +1481,13 @@ export default function MeScreen() {
       const focusPostId = String(post?.id || "").trim();
       if (!focusPostId) return;
 
+      const pathname = "/(tabs)";
+
+      console.log("CHURCH_ACTIVITY_OPEN_POST", { postId: focusPostId, pathname });
+
       try {
         router.push({
-          pathname: "/(tabs)/index" as any,
+          pathname: pathname as any,
           params: {
             focusPostId,
             source: "churchActivity",
@@ -1491,7 +1495,7 @@ export default function MeScreen() {
         });
       } catch {
         try {
-          router.push("/(tabs)/" as any);
+          router.push("/" as any);
         } catch {}
       }
     },
