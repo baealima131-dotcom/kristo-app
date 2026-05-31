@@ -1353,6 +1353,8 @@ const FeedSlide = memo(function FeedSlide({
   const actorAvatarUri = feedAvatar.uri;
   const isVideoFeedPost = isFeedVideoItem(item);
   const isStrictVideoPost = isStrictVideoFeedItem(item);
+  const isImageFeedPost =
+    item.mediaType === "image" && Boolean(String(item.mediaUri || "").trim());
   const stableActive =
     isStrictVideoPost &&
     isActive &&
@@ -1391,29 +1393,6 @@ const FeedSlide = memo(function FeedSlide({
       (activeItemIsStrictVideo &&
         activeFeedIndex >= 0 &&
         Math.abs(activeFeedIndex - feedIndex) <= 2));
-
-  useEffect(() => {
-    if (!__DEV__) return;
-    console.log("KRISTO_FEED_PLAYBACK_GUARD", {
-      postId: item.id,
-      mediaType: item.mediaType,
-      hasVideoUrl: Boolean(item.videoUrl),
-      isStrictVideoPost,
-      stableActive,
-      screenFocused,
-      appState,
-      shouldPlay: shouldPlayVideo,
-    });
-  }, [
-    item.id,
-    item.mediaType,
-    item.videoUrl,
-    isStrictVideoPost,
-    stableActive,
-    screenFocused,
-    appState,
-    shouldPlayVideo,
-  ]);
 
   useEffect(() => {
     if (!isVideoFeedPost) return;
@@ -1619,7 +1598,7 @@ const noMediaPost =
     }
 
     recordForYouSignal(feedActionId, { likedCount: 1, lastActionAt: Date.now() });
-    feedToggleLike(item.id);
+    feedToggleLike(feedActionId);
   }, [
     displayLiked,
     feedActionId,
@@ -1770,7 +1749,13 @@ const noMediaPost =
 
   useEffect(() => {
     setLocalSaved(Boolean(item.saved));
-  }, [item.id, item.saved]);
+  }, [feedActionId, item.saved]);
+
+  const toggleMediaSave = useCallback(() => {
+    setLocalSaved((v) => !v);
+    recordForYouSignal(feedActionId, { savedCount: 1, lastActionAt: Date.now() });
+    feedToggleSave(feedActionId);
+  }, [feedActionId]);
 
   const [bodyExpanded, setBodyExpanded] = useState(false);
 
@@ -2015,16 +2000,6 @@ const noMediaPost =
     videoMetaFade.stopAnimation();
     videoMetaFade.setValue(0);
   }, [isStrictVideoPost, item.id, videoMetaFade]);
-
-  useEffect(() => {
-    if (!isStrictVideoPost || !__DEV__) return;
-    console.log("KRISTO_VIDEO_META_ACTIVE_RENDER", {
-      postId: item.id,
-      index: feedIndex,
-      activeIndex: activeFeedIndex,
-      isActivePost,
-    });
-  }, [isStrictVideoPost, item.id, feedIndex, activeFeedIndex, isActivePost]);
 
   const isMediaSchedulePost =
     String((item as any)?.scheduleType || "").includes("media-live-slots") ||
@@ -2753,15 +2728,7 @@ const noMediaPost =
     if (!isStrictVideoPost || !shouldPlayVideo) return;
 
     const nextIndex = feedIndex + 1;
-    const postId = String(item.id || "");
-
-    console.log("KRISTO_VIDEO_END", {
-      postId,
-      feedIndex,
-      nextIndex,
-    });
-
-    onRequestFeedAdvance?.(nextIndex, postId);
+    onRequestFeedAdvance?.(nextIndex, String(item.id || ""));
   }, [feedIndex, isStrictVideoPost, item.id, onRequestFeedAdvance, shouldPlayVideo]);
 
   const renderStrictVideoLayer = () => {
@@ -2978,15 +2945,12 @@ const noMediaPost =
                 onOptimisticBackendLike?.(feedActionId, nextLiked, nextCount);
                 syncBackendLike(feedActionId, nextLiked);
               } else {
-                feedToggleLike(item.id);
+                feedToggleLike(feedActionId);
               }
             }}
             onComment={openComments}
             onShare={onShare}
-            onToggleSave={() => {
-              setLocalSaved((v) => !v);
-              feedToggleSave(item.id);
-            }}
+            onToggleSave={toggleMediaSave}
           />
         </>
       ) : (
@@ -3067,8 +3031,8 @@ const noMediaPost =
                     onOptimisticBackendLike?.(feedActionId, nextLiked, nextCount);
                     syncBackendLike(feedActionId, nextLiked);
                   } else {
-                    recordForYouSignal(item.id, { likedCount: 1, lastActionAt: Date.now() });
-              feedToggleLike(item.id);
+                    recordForYouSignal(feedActionId, { likedCount: 1, lastActionAt: Date.now() });
+                    feedToggleLike(feedActionId);
                   }
                 }}
               >
@@ -3107,10 +3071,7 @@ const noMediaPost =
               <Pressable
                 style={s.noMediaActionBtn}
                 hitSlop={12}
-                onPress={() => {
-                  setLocalSaved((v) => !v);
-                  feedToggleSave(item.id);
-                }}
+                onPress={toggleMediaSave}
               >
                 <Ionicons
                   name={localSaved ? "bookmark" : "bookmark-outline"}
@@ -3325,15 +3286,12 @@ const noMediaPost =
                       onOptimisticBackendLike?.(feedActionId, nextLiked, nextCount);
                       syncBackendLike(feedActionId, nextLiked);
                     } else {
-                      feedToggleLike(item.id);
+                      feedToggleLike(feedActionId);
                     }
                   }}
                   onComment={openComments}
                   onShare={onShare}
-                  onToggleSave={() => {
-                    setLocalSaved((v) => !v);
-                    feedToggleSave(item.id);
-                  }}
+                  onToggleSave={toggleMediaSave}
                 />
               </View>
             ) : null}
@@ -3413,25 +3371,30 @@ const noMediaPost =
       {!activeSlot && !noMediaPost && !isScheduleCard && isActivePost ? (
       <Animated.View
         pointerEvents="box-none"
-        style={[s.actions, isStrictVideoPost ? { opacity: videoMetaFade } : null]}
+        style={[
+          s.actions,
+          isImageFeedPost ? s.actionsImage : null,
+          isStrictVideoPost ? { opacity: videoMetaFade } : null,
+        ]}
       >
         <Pressable
           pointerEvents="box-only"
           hitSlop={24}
-          style={[s.actionBtn, displayLiked ? s.actionBtnActive : null]}
+          style={[s.actionBtn, isImageFeedPost ? s.actionBtnImage : null, displayLiked ? s.actionBtnActive : null]}
           onPress={() => {
-            if ((item as any)?.isBackendPost) {
+            if (isBackendFeedPost) {
               const nextLiked = !displayLiked;
               const nextCount = Math.max(0, Number(likeCount || 0) + (nextLiked ? 1 : -1));
               onOptimisticBackendLike?.(feedActionId, nextLiked, nextCount);
               recordForYouSignal(feedActionId, { likedCount: nextLiked ? 1 : 0, lastActionAt: Date.now() });
               syncBackendLike(feedActionId, nextLiked);
             } else {
-              feedToggleLike(item.id);
+              recordForYouSignal(feedActionId, { likedCount: 1, lastActionAt: Date.now() });
+              feedToggleLike(feedActionId);
             }
           }}
         >
-          <BlurView pointerEvents="none" intensity={35} tint="dark" style={[s.actionIconWrap, displayLiked ? s.actionIconWrapLiked : null]}>
+          <BlurView pointerEvents="none" intensity={35} tint="dark" style={[s.actionIconWrap, isImageFeedPost ? s.actionIconWrapImage : null, displayLiked ? s.actionIconWrapLiked : null]}>
             <Animated.View
               pointerEvents="none"
               style={[
@@ -3455,44 +3418,44 @@ const noMediaPost =
             <Animated.View style={{ transform: [{ scale: likeScale }] }}>
               <Ionicons
                 name={displayLiked ? "heart" : "heart-outline"}
-                size={28}
+                size={isImageFeedPost ? 26 : 28}
                 color={displayLiked ? "#FF5A7A" : "#FFFFFF"}
               />
             </Animated.View>
           </BlurView>
-          <Text style={[s.actionText, displayLiked ? s.actionTextActive : null]}>
+          <Text style={[s.actionText, isImageFeedPost ? s.actionTextImage : null, displayLiked ? s.actionTextActive : null]}>
             {likeCount}
           </Text>
         </Pressable>
 
-        <Pressable style={s.actionBtn} onPress={openComments}>
-          <BlurView pointerEvents="none" intensity={35} tint="dark" style={s.actionIconWrap}>
-            <Ionicons name="chatbubble-ellipses-outline" size={28} color="#FFFFFF" />
+        <Pressable style={[s.actionBtn, isImageFeedPost ? s.actionBtnImage : null]} onPress={openComments}>
+          <BlurView pointerEvents="none" intensity={35} tint="dark" style={[s.actionIconWrap, isImageFeedPost ? s.actionIconWrapImage : null]}>
+            <Ionicons name="chatbubble-ellipses-outline" size={isImageFeedPost ? 26 : 28} color="#FFFFFF" />
           </BlurView>
-          <Text style={s.actionText}>{comments.length || ((item as any)?.commentCount ?? 0)}</Text>
+          <Text style={[s.actionText, isImageFeedPost ? s.actionTextImage : null]}>{comments.length || ((item as any)?.commentCount ?? 0)}</Text>
         </Pressable>
 
-        <Pressable style={s.actionBtn} onPress={onShare}>
-          <BlurView pointerEvents="none" intensity={35} tint="dark" style={s.actionIconWrap}>
-            <Ionicons name="arrow-redo-outline" size={28} color="#FFFFFF" />
+        <Pressable style={[s.actionBtn, isImageFeedPost ? s.actionBtnImage : null]} onPress={onShare}>
+          <BlurView pointerEvents="none" intensity={35} tint="dark" style={[s.actionIconWrap, isImageFeedPost ? s.actionIconWrapImage : null]}>
+            <Ionicons name="arrow-redo-outline" size={isImageFeedPost ? 26 : 28} color="#FFFFFF" />
           </BlurView>
-          <Text style={s.actionText}>{(item as any)?.shareCount ?? 0}</Text>
+          <Text style={[s.actionText, isImageFeedPost ? s.actionTextImage : null]}>{(item as any)?.shareCount ?? 0}</Text>
         </Pressable>
 
         <Pressable
           pointerEvents="box-only"
           hitSlop={24}
-          style={[s.actionBtn, item.saved ? s.actionBtnActive : null]}
-          onPress={() => feedToggleSave(item.id)}
+          style={[s.actionBtn, isImageFeedPost ? s.actionBtnImage : null, localSaved ? s.actionBtnActive : null]}
+          onPress={toggleMediaSave}
         >
-          <View pointerEvents="none" style={[s.actionIconWrap, item.saved ? s.actionIconWrapSaved : null]}>
+          <View pointerEvents="none" style={[s.actionIconWrap, isImageFeedPost ? s.actionIconWrapImage : null, localSaved ? s.actionIconWrapSaved : null]}>
             <Ionicons
-              name={item.saved ? "bookmark" : "bookmark-outline"}
-              size={27}
-              color={item.saved ? "#F3D28F" : "#FFFFFF"}
+              name={localSaved ? "bookmark" : "bookmark-outline"}
+              size={isImageFeedPost ? 26 : 27}
+              color={localSaved ? "#F3D28F" : "#FFFFFF"}
             />
           </View>
-          <Text style={[s.actionText, item.saved ? s.actionTextActive : null]}>
+          <Text style={[s.actionText, isImageFeedPost ? s.actionTextImage : null, localSaved ? s.actionTextActive : null]}>
             {(item as any)?.saveCount ?? 0}
           </Text>
         </Pressable>
@@ -4989,10 +4952,6 @@ export default function FeedScreen() {
 
     const base = dataRef.current;
     if (!base.length) return;
-
-    console.log("KRISTO_LOOP_APPEND", {
-      totalBefore: feedTotalCountRef.current,
-    });
 
     feedAppendLoadingRef.current = true;
     const nextGen = feedLoopGenRef.current + 1;
@@ -6654,6 +6613,12 @@ const s: any = StyleSheet.create({
     gap: 16,
   },
 
+  actionsImage: {
+    right: 12,
+    bottom: HOME_FEED_ACTIONS_BOTTOM + 10,
+    gap: 20,
+  },
+
   actionBtn: {
     width: 70,
     minHeight: 76,
@@ -6661,6 +6626,11 @@ const s: any = StyleSheet.create({
     justifyContent: "center",
     zIndex: 10000,
     elevation: 10000,
+  },
+
+  actionBtnImage: {
+    width: 58,
+    minHeight: 68,
   },
 
   actionBtnActive: {
@@ -6683,6 +6653,13 @@ const s: any = StyleSheet.create({
     shadowOffset: { width: 0, height: 5 },
     elevation: 8,
     transform: [{ translateY: -8 }],
+  },
+
+  actionIconWrapImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    transform: [{ translateY: 0 }],
   },
 
   actionIconWrapLiked: {
@@ -6716,6 +6693,15 @@ const s: any = StyleSheet.create({
     textShadowColor: "rgba(0,0,0,0.55)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
+  },
+
+  actionTextImage: {
+    position: "relative",
+    top: 0,
+    marginTop: 5,
+    fontSize: 13,
+    lineHeight: 15,
+    fontWeight: "800",
   },
 
   actionTextActive: {
