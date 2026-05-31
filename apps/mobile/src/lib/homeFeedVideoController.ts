@@ -7,6 +7,7 @@ type HomeFeedVideoPlayer = {
 
 type HomeFeedVideoLogMeta = {
   postId?: string;
+  feedOriginId?: string;
   activeFeedIndex?: number;
   feedIndex?: number;
   activeFeedItemId?: string | null;
@@ -16,22 +17,83 @@ type HomeFeedVideoLogMeta = {
   shouldPlay?: boolean;
   reason?: string;
   exceptPostId?: string;
+  exceptFeedOriginId?: string;
 };
 
-const registry = new Map<string, HomeFeedVideoPlayer>();
+type RegistryEntry = {
+  player: HomeFeedVideoPlayer;
+  feedOriginId?: string;
+};
+
+const registry = new Map<string, RegistryEntry>();
 let activePostId: string | null = null;
 
-function safePausePlayer(player: HomeFeedVideoPlayer | undefined) {
-  if (!player) return;
-  try {
-    player.pause();
-    player.muted = true;
-  } catch {}
-}
-
-function devLog(event: string, meta: HomeFeedVideoLogMeta) {
+function devLog(event: string, meta: Record<string, unknown>) {
   if (!__DEV__) return;
   console.log(event, meta);
+}
+
+function baseFeedId(postId: string) {
+  return String(postId || "")
+    .trim()
+    .replace(/__loop_\d+(?:_\d+)?$/i, "");
+}
+
+function safePausePlayer(player: HomeFeedVideoPlayer | undefined): boolean {
+  if (!player) return false;
+  let ok = true;
+  try {
+    player.pause();
+  } catch {
+    ok = false;
+  }
+  try {
+    player.muted = true;
+  } catch {
+    ok = false;
+  }
+  return ok;
+}
+
+function safePlayPlayer(player: HomeFeedVideoPlayer | undefined, unmute = true): boolean {
+  if (!player) return false;
+  let ok = true;
+  if (unmute) {
+    try {
+      player.muted = false;
+    } catch {
+      ok = false;
+    }
+  }
+  try {
+    player.play?.();
+  } catch {
+    ok = false;
+  }
+  return ok;
+}
+
+function purgeRegistryEntry(postId: string) {
+  registry.delete(postId);
+  if (activePostId === postId) {
+    activePostId = null;
+  }
+}
+
+function logHomeFeedVideoAudioGuard(
+  postId: string,
+  shouldPlay: boolean,
+  action: "force-pause-inactive" | "activate-active"
+) {
+  devLog("KRISTO_VIDEO_AUDIO_GUARD", {
+    postId,
+    shouldPlay,
+    action,
+  });
+}
+
+function isExceptActivePlayer(registryPostId: string, exceptPostId: string) {
+  return Boolean(exceptPostId) && registryPostId === exceptPostId;
 }
 
 export function isStrictVideoFeedItem(item: any) {
@@ -50,7 +112,29 @@ export function registerHomeFeedVideo(
 ) {
   const id = String(postId || "").trim();
   if (!id) return;
-  registry.set(id, player);
+
+  if (!meta.shouldPlay) {
+    devLog("KRISTO_VIDEO_PRELOAD_SKIP", {
+      postId: id,
+      originId: meta.feedOriginId || baseFeedId(id),
+      reason: "inactive-poster-only",
+    });
+    return;
+  }
+
+  const existing = registry.get(id);
+  if (existing && existing.player !== player) {
+    if (!safePausePlayer(existing.player)) {
+      purgeRegistryEntry(id);
+    }
+  }
+
+  registry.set(id, {
+    player,
+    feedOriginId: String(meta.feedOriginId || baseFeedId(id)).trim() || undefined,
+  });
+
+  logHomeFeedVideoAudioGuard(id, true, "activate-active");
   devLog("KRISTO_FEED_VIDEO_REGISTER", { postId: id, ...meta });
 }
 
@@ -60,11 +144,11 @@ export function unregisterHomeFeedVideo(
 ) {
   const id = String(postId || "").trim();
   if (!id) return;
-  safePausePlayer(registry.get(id));
-  registry.delete(id);
-  if (activePostId === id) {
-    activePostId = null;
-  }
+
+  const entry = registry.get(id);
+  purgeRegistryEntry(id);
+  safePausePlayer(entry?.player);
+  logHomeFeedVideoAudioGuard(id, false, "force-pause-inactive");
   devLog("KRISTO_FEED_VIDEO_UNREGISTER", { postId: id, ...meta });
 }
 
@@ -74,10 +158,20 @@ export function pauseHomeFeedVideo(
 ) {
   const id = String(postId || "").trim();
   if (!id) return;
-  safePausePlayer(registry.get(id));
+
+  const entry = registry.get(id);
+  if (!entry) return;
+
+  if (!safePausePlayer(entry.player)) {
+    purgeRegistryEntry(id);
+  } else {
+    logHomeFeedVideoAudioGuard(id, false, "force-pause-inactive");
+  }
+
   if (activePostId === id) {
     activePostId = null;
   }
+
   logHomeFeedVideoPlayState({
     postId: id,
     shouldPlay: false,
@@ -88,13 +182,25 @@ export function pauseHomeFeedVideo(
 
 export function pauseAllHomeFeedVideos(meta: HomeFeedVideoLogMeta = {}) {
   const exceptPostId = String(meta.exceptPostId || "").trim();
-  registry.forEach((player, postId) => {
-    if (exceptPostId && postId === exceptPostId) return;
-    safePausePlayer(player);
+  const dead: string[] = [];
+
+  registry.forEach((entry, postId) => {
+    if (isExceptActivePlayer(postId, exceptPostId)) return;
+    if (!safePausePlayer(entry.player)) {
+      dead.push(postId);
+      return;
+    }
+    logHomeFeedVideoAudioGuard(postId, false, "force-pause-inactive");
   });
+
+  for (const postId of dead) {
+    purgeRegistryEntry(postId);
+  }
+
   if (!exceptPostId) {
     activePostId = null;
   }
+
   devLog("KRISTO_FEED_VIDEO_PAUSE_ALL", meta);
 }
 
@@ -112,6 +218,7 @@ export function activateHomeFeedVideo(
   });
 
   activePostId = id;
+  logHomeFeedVideoAudioGuard(id, true, "activate-active");
   devLog("KRISTO_FEED_VIDEO_ACTIVATE", { postId: id, ...meta });
 }
 
@@ -130,6 +237,7 @@ export function syncHomeFeedVideoOwnership(meta: HomeFeedVideoLogMeta) {
     activeFeedIndex,
     feedIndex,
     reason,
+    feedOriginId,
   } = meta;
 
   const appOk = appState === "active";
@@ -150,7 +258,7 @@ export function syncHomeFeedVideoOwnership(meta: HomeFeedVideoLogMeta) {
     indexOk &&
     idOk;
 
-  if (!focusOk || !appOk || !isStrictVideoPost || !idOk || !indexOk) {
+  if (!focusOk || !appOk || !isStrictVideoPost || !idOk || !indexOk || !shouldPlay) {
     pauseAllHomeFeedVideos({
       ...meta,
       reason: reason || "ownership-denied",
@@ -159,7 +267,10 @@ export function syncHomeFeedVideoOwnership(meta: HomeFeedVideoLogMeta) {
   }
 
   if (canOwnPlayback && postId) {
-    activateHomeFeedVideo(postId, meta);
+    activateHomeFeedVideo(postId, {
+      ...meta,
+      feedOriginId: String(feedOriginId || baseFeedId(postId)).trim() || undefined,
+    });
     return;
   }
 
@@ -168,3 +279,5 @@ export function syncHomeFeedVideoOwnership(meta: HomeFeedVideoLogMeta) {
     reason: reason || "ownership-no-play",
   });
 }
+
+export { safePausePlayer, safePlayPlayer };

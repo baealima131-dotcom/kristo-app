@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   TextInput,
@@ -234,12 +234,56 @@ function resolveFeedVideoPoster(item: any): string {
   const cached = videoUri ? feedVideoPosterCache.get(videoUri) : "";
   if (cached) return cached;
 
-  return mediaUrl(
-    item?.posterUri ||
-      item?.thumbnailUri ||
-      item?.thumbnailUrl ||
-      ""
-  );
+  const candidates = [
+    item?.posterUri,
+    item?.videoPosterUri,
+    item?.thumbnailUri,
+    item?.thumbnailUrl,
+    item?.mediaThumbUri,
+    item?.previewUri,
+    item?.coverUri,
+    item?.imageUri,
+  ];
+
+  for (const candidate of candidates) {
+    const url = mediaUrl(candidate);
+    if (url) return url;
+  }
+
+  const mediaRaw = String(item?.mediaUri || "").trim();
+  if (mediaRaw) {
+    const mediaResolved = mediaUrl(mediaRaw);
+    if (mediaResolved && mediaResolved !== videoUri) {
+      const lower = mediaRaw.toLowerCase();
+      if (!/\.(mp4|mov|m4v|webm|mkv)(\?|$)/i.test(lower)) {
+        return mediaResolved;
+      }
+    }
+  }
+
+  return "";
+}
+
+function resolveFeedVideoOwnerAvatar(item: any): string {
+  const avatar = resolveFeedItemAvatar(item, mediaUrl);
+  if (avatar.uri) return avatar.uri;
+
+  const candidates = [
+    item?.actorAvatarUri,
+    item?.actorAvatar,
+    item?.mediaAvatarUri,
+    item?.churchAvatarUri,
+    item?.churchAvatarUrl,
+    item?.avatarUri,
+    item?.authorAvatarUri,
+  ];
+
+  for (const candidate of candidates) {
+    const url = mediaUrl(candidate);
+    if (url) return url;
+  }
+
+  return "";
 }
 
 function rememberFeedVideoPoster(videoUri: string, posterUri: string) {
@@ -681,6 +725,138 @@ const FEED_VIDEO_CENTER_BTN_SIZE = 80;
 const FEED_VIDEO_CENTER_ICON_PLAY = 38;
 const FEED_VIDEO_CENTER_ICON_PAUSE = 36;
 const FEED_VIDEO_HEART_SIZE = 86;
+const FEED_VIDEO_BRANDED_PLACEHOLDER_DELAY_MS = 1000;
+
+function feedVideoRegistryId(postId: string, uri: string, videoOriginId?: string) {
+  const origin = String(videoOriginId || "").trim();
+  const video = String(uri || "").trim();
+  if (origin && video) return `${origin}|${video}`;
+  return String(postId || "").trim();
+}
+
+function FeedVideoOwnerBackdrop({ avatarUri }: { avatarUri?: string }) {
+  if (avatarUri) {
+    return (
+      <View style={StyleSheet.absoluteFillObject}>
+        <Image
+          source={{ uri: avatarUri }}
+          style={[StyleSheet.absoluteFillObject, { transform: [{ scale: 1.18 }] }]}
+          blurRadius={Platform.OS === "ios" ? 32 : 22}
+          resizeMode="cover"
+        />
+        <BlurView intensity={30} tint="dark" style={StyleSheet.absoluteFillObject} />
+        <LinearGradient
+          colors={["rgba(247,211,106,0.16)", "rgba(0,0,0,0.08)", "rgba(0,0,0,0.58)"]}
+          style={StyleSheet.absoluteFillObject}
+        />
+      </View>
+    );
+  }
+
+  return (
+    <LinearGradient
+      colors={["#1a1428", "#0f1729", "#15120a"]}
+      locations={[0, 0.55, 1]}
+      style={StyleSheet.absoluteFillObject}
+    />
+  );
+}
+
+function FeedVideoBrandedPlaceholder({
+  title,
+  avatarUri,
+  initial,
+}: {
+  title: string;
+  avatarUri?: string;
+  initial: string;
+}) {
+  return (
+    <View style={StyleSheet.absoluteFillObject}>
+      <LinearGradient
+        colors={["#1a1428", "#0f1729", "#15120a"]}
+        locations={[0, 0.55, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFillObject} />
+      <LinearGradient
+        colors={["rgba(247,211,106,0.10)", "transparent", "rgba(247,211,106,0.06)"]}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          paddingHorizontal: 28,
+        }}
+      >
+        {avatarUri ? (
+          <Image
+            source={{ uri: avatarUri }}
+            style={{
+              width: 72,
+              height: 72,
+              borderRadius: 36,
+              marginBottom: 16,
+              borderWidth: 2,
+              borderColor: "rgba(247,211,106,0.72)",
+            }}
+          />
+        ) : (
+          <View
+            style={{
+              width: 72,
+              height: 72,
+              borderRadius: 36,
+              marginBottom: 16,
+              backgroundColor: "rgba(247,211,106,0.15)",
+              borderWidth: 2,
+              borderColor: "rgba(247,211,106,0.72)",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Text style={{ color: "#F7D36A", fontSize: 28, fontWeight: "700" }}>{initial}</Text>
+          </View>
+        )}
+        <View
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: 32,
+            backgroundColor: "rgba(0,0,0,0.32)",
+            borderWidth: 1,
+            borderColor: "rgba(255,255,255,0.14)",
+            alignItems: "center",
+            justifyContent: "center",
+            marginBottom: 14,
+          }}
+        >
+          <Ionicons
+            name="play"
+            size={30}
+            color="rgba(255,255,255,0.9)"
+            style={{ marginLeft: 3 }}
+          />
+        </View>
+        {title ? (
+          <Text
+            numberOfLines={2}
+            style={{
+              color: "rgba(255,255,255,0.88)",
+              fontSize: 16,
+              fontWeight: "600",
+              textAlign: "center",
+            }}
+          >
+            {title}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
 
 const FeedVideo = memo(function FeedVideo({
   postId,
@@ -688,26 +864,38 @@ const FeedVideo = memo(function FeedVideo({
   uri,
   posterUri,
   shouldPlay,
+  videoOriginId,
   interactive,
   playbackMeta,
   onVideoReadyChange,
-  onVideoEnd,
   onDoubleTapLike,
+  fallbackTitle,
+  fallbackInitial,
+  fallbackAvatarUri,
 }: {
   postId: string;
   feedIndex: number;
   uri: string;
   posterUri?: string;
   shouldPlay: boolean;
+  videoOriginId?: string;
   interactive?: boolean;
   playbackMeta: Record<string, unknown>;
   onVideoReadyChange?: (ready: boolean) => void;
-  onVideoEnd?: (postId: string) => void;
   onDoubleTapLike?: () => void;
+  fallbackTitle?: string;
+  fallbackInitial?: string;
+  fallbackAvatarUri?: string;
 }) {
+  const playbackMetaRef = useRef(playbackMeta);
+  playbackMetaRef.current = playbackMeta;
+
   const player = useVideoPlayer(uri, (p) => {
     p.loop = false;
     p.muted = true;
+    try {
+      p.pause();
+    } catch {}
   });
 
   const shouldPlayRef = useRef(shouldPlay);
@@ -736,8 +924,112 @@ const FeedVideo = memo(function FeedVideo({
     String(posterUri || "").trim() ||
     feedVideoPosterCache.get(String(uri || "").trim()) ||
     "";
-  const showPosterLayer = !!poster && (!shouldPlay || !videoReady);
-  const showBackdrop = !poster && (!shouldPlay || !videoReady);
+
+  const mountedAtRef = useRef(Date.now());
+  const [mountedMs, setMountedMs] = useState(0);
+  const [brandPlaceholderEligible, setBrandPlaceholderEligible] = useState(false);
+  const posterOpacity = useRef(new Animated.Value(1)).current;
+  const [posterLayerVisible, setPosterLayerVisible] = useState(Boolean(poster));
+
+  useEffect(() => {
+    mountedAtRef.current = Date.now();
+    setMountedMs(0);
+    setBrandPlaceholderEligible(false);
+    posterOpacity.setValue(1);
+    setPosterLayerVisible(Boolean(poster));
+
+    const delayTimer = setTimeout(() => {
+      setBrandPlaceholderEligible(true);
+    }, FEED_VIDEO_BRANDED_PLACEHOLDER_DELAY_MS);
+
+    const tickTimer = setInterval(() => {
+      setMountedMs(Date.now() - mountedAtRef.current);
+    }, 100);
+
+    return () => {
+      clearTimeout(delayTimer);
+      clearInterval(tickTimer);
+    };
+  }, [uri, postId, poster, posterOpacity]);
+
+  const posterShouldCover = !!poster && (!shouldPlay || !videoReady);
+
+  useEffect(() => {
+    if (!poster) {
+      setPosterLayerVisible(false);
+      return;
+    }
+
+    if (posterShouldCover) {
+      posterOpacity.stopAnimation();
+      posterOpacity.setValue(1);
+      setPosterLayerVisible(true);
+      return;
+    }
+
+    if (!shouldPlay) {
+      posterOpacity.setValue(1);
+      setPosterLayerVisible(true);
+      return;
+    }
+
+    posterOpacity.stopAnimation();
+    posterOpacity.setValue(0);
+    setPosterLayerVisible(false);
+  }, [posterShouldCover, poster, shouldPlay, posterOpacity]);
+
+  const showBrandedPlaceholder =
+    shouldPlay && !poster && !videoReady && brandPlaceholderEligible;
+  const showOwnerBackdrop =
+    shouldPlay && !poster && !videoReady && !showBrandedPlaceholder;
+
+  const videoOpacity =
+    showBrandedPlaceholder
+      ? 0
+      : !shouldPlay
+        ? 0
+        : !poster && !videoReady && shouldPlay
+          ? 0
+          : 1;
+
+  const forcePauseInactive = useCallback(() => {
+    if (shouldPlayRef.current) return;
+    try {
+      player.muted = true;
+      player.pause();
+    } catch {}
+  }, [player]);
+
+  useEffect(() => {
+    if (!__DEV__) return;
+    console.log("KRISTO_VIDEO_PLACEHOLDER_STATE", {
+      postId,
+      hasPoster: Boolean(poster),
+      videoReady,
+      shouldPlay,
+      showingPoster: posterShouldCover || posterLayerVisible,
+      showingBrandedPlaceholder: showBrandedPlaceholder,
+      showingOwnerBackdrop: showOwnerBackdrop,
+      mountedMs,
+    });
+    console.log("KRISTO_VIDEO_READY_TIMING", {
+      postId,
+      mountedMs,
+      hasPoster: Boolean(poster),
+      videoReady,
+      shouldPlay,
+    });
+  }, [
+    postId,
+    poster,
+    videoReady,
+    shouldPlay,
+    posterShouldCover,
+    posterLayerVisible,
+    showBrandedPlaceholder,
+    showOwnerBackdrop,
+    mountedMs,
+  ]);
 
   const clearControlsHideTimer = useCallback(() => {
     if (controlsHideTimerRef.current) {
@@ -813,46 +1105,49 @@ const FeedVideo = memo(function FeedVideo({
   }, [heartBurstOpacity, heartBurstScale]);
 
   const togglePlayPause = useCallback(() => {
-    try {
-      const playing = Boolean(player.playing);
-      const meta = {
-        postId,
-        feedIndex,
-        shouldPlay: shouldPlayRef.current,
-        ...(playbackMeta as any),
-      };
+    if (!shouldPlayRef.current) return;
+    const meta = {
+      postId,
+      feedIndex,
+      shouldPlay: shouldPlayRef.current,
+      ...(playbackMeta as any),
+    };
 
-      if (playing) {
+    if (!userPausedRef.current) {
+      try {
         player.pause();
         player.muted = true;
-        userPausedRef.current = true;
-        setUserPaused(true);
-        logHomeFeedVideoPlayState({
-          ...meta,
-          shouldPlay: false,
-          reason: "user-pause",
-        });
-        return;
-      }
-
-      userPausedRef.current = false;
-      setUserPaused(false);
-      syncHomeFeedVideoOwnership({
+      } catch {}
+      userPausedRef.current = true;
+      setUserPaused(true);
+      logHomeFeedVideoPlayState({
         ...meta,
-        shouldPlay: true,
-        reason: "user-play",
+        shouldPlay: false,
+        reason: "user-pause",
       });
+      return;
+    }
+
+    userPausedRef.current = false;
+    setUserPaused(false);
+    syncHomeFeedVideoOwnership({
+      ...meta,
+      feedOriginId: videoOriginId,
+      shouldPlay: true,
+      reason: "user-play",
+    });
+    try {
       player.loop = false;
       player.muted = false;
       player.play();
-      flashCenterIcon("pause", 380);
-      logHomeFeedVideoPlayState({
-        ...meta,
-        shouldPlay: true,
-        reason: "user-play",
-      });
     } catch {}
-  }, [feedIndex, flashCenterIcon, playbackMeta, player, postId]);
+    flashCenterIcon("pause", 380);
+    logHomeFeedVideoPlayState({
+      ...meta,
+      shouldPlay: true,
+      reason: "user-play",
+    });
+  }, [feedIndex, flashCenterIcon, playbackMeta, player, postId, videoOriginId]);
 
   const handleDoubleTap = useCallback(() => {
     onDoubleTapLike?.();
@@ -886,11 +1181,29 @@ const FeedVideo = memo(function FeedVideo({
     }, FEED_VIDEO_SINGLE_TAP_DELAY_MS);
   }, [handleDoubleTap, interactive, revealControls, togglePlayPause]);
 
+  useLayoutEffect(() => {
+    if (!shouldPlayRef.current || userPausedRef.current) {
+      forcePauseInactive();
+      return;
+    }
+    try {
+      player.loop = false;
+      player.muted = false;
+      player.play();
+    } catch {}
+  }, [shouldPlay, player, uri, postId, forcePauseInactive]);
+
+  useEffect(() => {
+    forcePauseInactive();
+  }, [shouldPlay, forcePauseInactive]);
+
   useEffect(() => {
     registerHomeFeedVideo(postId, player, {
       postId,
       feedIndex,
-      ...(playbackMeta as any),
+      feedOriginId: videoOriginId,
+      shouldPlay,
+      ...(playbackMetaRef.current as any),
       reason: "mount",
     });
     return () => {
@@ -900,17 +1213,19 @@ const FeedVideo = memo(function FeedVideo({
       pauseHomeFeedVideo(postId, {
         postId,
         feedIndex,
-        ...(playbackMeta as any),
+        feedOriginId: videoOriginId,
+        ...(playbackMetaRef.current as any),
         reason: "unmount",
       });
       unregisterHomeFeedVideo(postId, {
         postId,
         feedIndex,
-        ...(playbackMeta as any),
+        feedOriginId: videoOriginId,
+        ...(playbackMetaRef.current as any),
         reason: "unmount",
       });
     };
-  }, [postId, player, feedIndex, playbackMeta, clearControlsHideTimer]);
+  }, [postId, player, feedIndex, videoOriginId, shouldPlay, clearControlsHideTimer]);
 
   useEffect(() => {
     if (videoReady && poster) {
@@ -933,14 +1248,20 @@ const FeedVideo = memo(function FeedVideo({
 
   useEffect(() => {
     const applyPlayback = (reason: string) => {
+      if (!shouldPlayRef.current) {
+        forcePauseInactive();
+        return;
+      }
+
       const play = shouldPlayRef.current;
       const blockedByUser = userPausedRef.current;
       const meta = {
         postId,
         feedIndex,
+        feedOriginId: videoOriginId,
         shouldPlay: play && !blockedByUser,
         reason,
-        ...(playbackMeta as any),
+        ...(playbackMetaRef.current as any),
       };
 
       logHomeFeedVideoPlayState(meta);
@@ -972,25 +1293,32 @@ const FeedVideo = memo(function FeedVideo({
     };
 
     if (!shouldPlay) {
+      forcePauseInactive();
       pauseHomeFeedVideo(postId, {
         postId,
         feedIndex,
+        feedOriginId: videoOriginId,
         shouldPlay: false,
-        ...(playbackMeta as any),
+        ...(playbackMetaRef.current as any),
         reason: "should-play-false-immediate",
       });
       return;
     }
 
     applyPlayback("should-play-true");
-  }, [player, uri, shouldPlay, postId, feedIndex, playbackMeta]);
+  }, [player, uri, shouldPlay, postId, feedIndex, videoOriginId, forcePauseInactive]);
 
   useEffect(() => {
     if (!shouldPlay) return;
 
     const timer = setInterval(() => {
-      if (!shouldPlayRef.current) return;
-      if (userPausedRef.current) return;
+      if (!shouldPlayRef.current || userPausedRef.current) {
+        try {
+          player.muted = true;
+          player.pause();
+        } catch {}
+        return;
+      }
       try {
         const nextDuration = Number((player as any)?.duration || 0);
         const nextCurrent = Number((player as any)?.currentTime || 0);
@@ -1000,35 +1328,49 @@ const FeedVideo = memo(function FeedVideo({
         }
 
         if (nextDuration > 0 && nextCurrent >= Math.max(0, nextDuration - 0.25)) {
-          player.pause();
-          player.muted = true;
-          onVideoEnd?.(postId);
+          if (!shouldPlayRef.current || userPausedRef.current) return;
+          try {
+            player.currentTime = 0;
+            setCurrentTime(0);
+            player.muted = false;
+            player.play();
+          } catch {}
         }
       } catch {}
     }, 250);
 
     return () => clearInterval(timer);
-  }, [player, shouldPlay, scrubbing, onVideoEnd, postId]);
+  }, [player, shouldPlay, scrubbing, postId]);
 
   const maxDuration = Math.max(duration, 0.01);
 
   return (
     <View style={s.media}>
-      {showPosterLayer ? (
-        <Image
-          source={{ uri: poster }}
-          style={StyleSheet.absoluteFillObject}
-          resizeMode="cover"
-        />
-      ) : showBackdrop ? (
-        <LinearGradient
-          colors={["#050814", "#0B1020", "#070B14"]}
-          style={StyleSheet.absoluteFillObject}
+      {showOwnerBackdrop ? (
+        <FeedVideoOwnerBackdrop avatarUri={fallbackAvatarUri} />
+      ) : null}
+      {posterLayerVisible && poster ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFillObject, { opacity: posterOpacity }]}
+        >
+          <Image
+            source={{ uri: poster }}
+            style={StyleSheet.absoluteFillObject}
+            resizeMode="cover"
+          />
+        </Animated.View>
+      ) : null}
+      {showBrandedPlaceholder ? (
+        <FeedVideoBrandedPlaceholder
+          title={String(fallbackTitle || "").trim()}
+          avatarUri={fallbackAvatarUri}
+          initial={String(fallbackInitial || "K").trim().charAt(0).toUpperCase() || "K"}
         />
       ) : null}
       <VideoView
         player={player}
-        style={StyleSheet.absoluteFillObject}
+        style={[StyleSheet.absoluteFillObject, { opacity: videoOpacity }]}
         contentFit="cover"
         nativeControls={false}
       />
@@ -1139,40 +1481,51 @@ const FeedVideoSurface = memo(function FeedVideoSurface({
   uri,
   posterUri,
   shouldPlay,
+  videoOriginId,
   interactive,
   playbackMeta,
   onVideoReadyChange,
-  onVideoEnd,
   onDoubleTapLike,
+  fallbackTitle,
+  fallbackInitial,
+  fallbackAvatarUri,
 }: {
   postId: string;
   feedIndex: number;
   uri: string;
   posterUri?: string;
   shouldPlay: boolean;
+  videoOriginId?: string;
   interactive?: boolean;
   playbackMeta: Record<string, unknown>;
   onVideoReadyChange?: (ready: boolean) => void;
-  onVideoEnd?: (postId: string) => void;
   onDoubleTapLike?: () => void;
+  fallbackTitle?: string;
+  fallbackInitial?: string;
+  fallbackAvatarUri?: string;
 }) {
   const resolvedPoster =
     String(posterUri || "").trim() ||
     feedVideoPosterCache.get(String(uri || "").trim()) ||
     "";
+  const playerStableKey = feedVideoRegistryId(postId, uri, videoOriginId);
 
   return (
     <FeedVideo
+      key={playerStableKey}
       postId={postId}
       feedIndex={feedIndex}
       uri={uri}
       posterUri={resolvedPoster}
       shouldPlay={shouldPlay}
+      videoOriginId={videoOriginId}
       interactive={interactive}
       playbackMeta={playbackMeta}
       onVideoReadyChange={onVideoReadyChange}
-      onVideoEnd={onVideoEnd}
       onDoubleTapLike={onDoubleTapLike}
+      fallbackTitle={fallbackTitle}
+      fallbackInitial={fallbackInitial}
+      fallbackAvatarUri={fallbackAvatarUri}
     />
   );
 });
@@ -1252,7 +1605,6 @@ const FeedSlide = memo(function FeedSlide({
   feedIndex,
   activeFeedIndex,
   activeFeedItemId,
-  activeItemIsStrictVideo,
   isActive,
   screenFocused,
   appActive,
@@ -1262,14 +1614,12 @@ const FeedSlide = memo(function FeedSlide({
   profileAvatarUri,
   onOptimisticBackendLike,
   onOptimisticSlotClaim,
-  onRequestFeedAdvance,
 }: {
   item: HomeItem;
   height: number;
   feedIndex: number;
   activeFeedIndex: number;
   activeFeedItemId: string | null;
-  activeItemIsStrictVideo: boolean;
   isActive: boolean;
   screenFocused: boolean;
   appActive: boolean;
@@ -1283,7 +1633,6 @@ const FeedSlide = memo(function FeedSlide({
     slotId: string;
     claim: { userId: string; name: string; role: string; avatarUri: string };
   }) => void;
-  onRequestFeedAdvance?: (nextIndex: number, endedPostId: string) => void;
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -1360,10 +1709,12 @@ const FeedSlide = memo(function FeedSlide({
     isActive &&
     activeFeedIndex === feedIndex &&
     String(item.id || "") === String(activeFeedItemId || "");
+  const itemVideoOriginId = feedOriginIdFromItem(item);
   const appState = appActive ? "active" : "inactive";
   const playbackMeta = useMemo(
     () => ({
       postId: String(item.id || ""),
+      feedOriginId: itemVideoOriginId,
       activeFeedIndex,
       feedIndex,
       activeFeedItemId,
@@ -1373,6 +1724,7 @@ const FeedSlide = memo(function FeedSlide({
     }),
     [
       item.id,
+      itemVideoOriginId,
       activeFeedIndex,
       feedIndex,
       activeFeedItemId,
@@ -1386,13 +1738,6 @@ const FeedSlide = memo(function FeedSlide({
     stableActive &&
     screenFocused &&
     appActive;
-
-  const shouldKeepVideoMounted =
-    isStrictVideoPost &&
-    (stableActive ||
-      (activeItemIsStrictVideo &&
-        activeFeedIndex >= 0 &&
-        Math.abs(activeFeedIndex - feedIndex) <= 2));
 
   useEffect(() => {
     if (!isVideoFeedPost) return;
@@ -2722,22 +3067,23 @@ const noMediaPost =
 
   const strictVideoPoster = resolveFeedVideoPoster(item);
   const strictVideoUri = feedVideoPlayUri(item);
-
-  const handleFeedVideoEnd = useCallback((endedPostId: string) => {
-    if (String(endedPostId || "") !== String(item.id || "")) return;
-    if (!isStrictVideoPost || !shouldPlayVideo) return;
-
-    const nextIndex = feedIndex + 1;
-    onRequestFeedAdvance?.(nextIndex, String(item.id || ""));
-  }, [feedIndex, isStrictVideoPost, item.id, onRequestFeedAdvance, shouldPlayVideo]);
+  const strictVideoOwnerAvatar = resolveFeedVideoOwnerAvatar(item);
+  const videoPlaceholderInitial = String(
+    (item as any)?.actorLabel ||
+      (item as any)?.mediaName ||
+      title ||
+      "K"
+  )
+    .trim()
+    .charAt(0)
+    .toUpperCase() || "K";
 
   const renderStrictVideoLayer = () => {
-    const isCurrentStrictVideo =
-      feedIndex === activeFeedIndex ||
-      String(item.id || "") === String(activeFeedItemId || "");
-
     const shouldMountVideoPlayer =
-      Boolean(strictVideoUri);
+      Boolean(strictVideoUri) &&
+      isStrictVideoPost &&
+      stableActive &&
+      shouldPlayVideo;
 
     if (shouldMountVideoPlayer) {
       return (
@@ -2747,13 +3093,24 @@ const noMediaPost =
           uri={strictVideoUri}
           posterUri={strictVideoPoster}
           shouldPlay={shouldPlayVideo}
+          videoOriginId={itemVideoOriginId}
           interactive={shouldPlayVideo}
           playbackMeta={playbackMeta}
           onDoubleTapLike={triggerVideoDoubleTapLike}
           onVideoReadyChange={!activeSlot ? handleFeedVideoReady : undefined}
-          onVideoEnd={handleFeedVideoEnd}
+          fallbackTitle={title}
+          fallbackInitial={videoPlaceholderInitial}
+          fallbackAvatarUri={strictVideoOwnerAvatar || actorAvatarUri}
         />
       );
+    }
+
+    if (__DEV__ && isStrictVideoPost && strictVideoUri && !shouldMountVideoPlayer) {
+      console.log("KRISTO_VIDEO_PRELOAD_SKIP", {
+        postId: String(item.id || ""),
+        originId: itemVideoOriginId,
+        reason: "inactive-poster-only",
+      });
     }
 
     if (strictVideoPoster) {
@@ -2766,10 +3123,15 @@ const noMediaPost =
       );
     }
 
+    if (strictVideoUri) {
+      return <FeedVideoOwnerBackdrop avatarUri={strictVideoOwnerAvatar || actorAvatarUri} />;
+    }
+
     return (
-      <LinearGradient
-        colors={["#030508", "#070B14", "#050810"]}
-        style={StyleSheet.absoluteFillObject}
+      <FeedVideoBrandedPlaceholder
+        title={title}
+        avatarUri={actorAvatarUri}
+        initial={videoPlaceholderInitial}
       />
     );
   };
@@ -4018,6 +4380,9 @@ export default function FeedScreen() {
             mediaType: normalizedMediaType,
             mediaUri,
             videoUrl,
+            posterUri: item.posterUri,
+            thumbnailUri: item.thumbnailUri,
+            videoPosterUri: item.videoPosterUri,
           });
 
           const isScheduleFeedItem =
@@ -4050,9 +4415,25 @@ export default function FeedScreen() {
             ...(normalizedMediaType === "video"
               ? {
                   posterUri: mediaUrl(
-                    item.thumbnailUri ||
+                    item.videoPosterUri ||
                       item.posterUri ||
+                      item.thumbnailUri ||
                       item.thumbnailUrl ||
+                      item.previewUri ||
+                      item.coverUri ||
+                      ""
+                  ),
+                  thumbnailUri: mediaUrl(
+                    item.thumbnailUri ||
+                      item.thumbnailUrl ||
+                      item.videoPosterUri ||
+                      item.posterUri ||
+                      ""
+                  ),
+                  videoPosterUri: mediaUrl(
+                    item.videoPosterUri ||
+                      item.posterUri ||
+                      item.thumbnailUri ||
                       ""
                   ),
                 }
@@ -4545,7 +4926,15 @@ export default function FeedScreen() {
       return true;
     });
 
-    const userSeed = `${String(session?.userId || session?.email || "guest")}|session:${feedSessionSeedRef.current}`;
+    const userId = String(session?.userId || "").trim();
+    const deviceOrSessionFallback =
+      String(session?.sessionId || session?.deviceId || feedSessionSeedRef.current).trim() ||
+      feedSessionSeedRef.current;
+    const userSeed = userId
+      ? `${userId}|session:${feedSessionSeedRef.current}`
+      : `${deviceOrSessionFallback}|session:${feedSessionSeedRef.current}`;
+    const userSeedShort = userSeed.slice(0, 24);
+    const dayBucket = new Date().toISOString().slice(0, 10);
 
     function geoNorm(input: any) {
       return String(input || "")
@@ -4655,7 +5044,7 @@ export default function FeedScreen() {
       if (myLang && postLang && myLang === postLang) score += 36;
 
       // Per-user stable randomness: small tie-breaker only.
-      score += stableRand(`${userSeed}|${id}`) * 18;
+      score += stableRand(`${userSeed}|${id}`) * 45;
 
       const signalId = baseFeedId(item?.sourceScheduleId || item?.id || index);
       const sig = forYouSignals[signalId] || {};
@@ -4747,8 +5136,14 @@ export default function FeedScreen() {
       return hours > 48 ? "older" : "text";
     }
 
-    function interleaveHomeFeedItems(items: any[], seed: string) {
+    function interleaveHomeFeedItems(items: any[], seed: string, mixDayBucket: string) {
       type ScoredRow = { item: any; score: number };
+      let pool = [...items];
+      if (pool.length > 0 && pool.length <= 6) {
+        const offset = Math.floor(stableRand(`${seed}|${mixDayBucket}|user-offset`) * pool.length);
+        pool = [...pool.slice(offset), ...pool.slice(0, offset)];
+      }
+
       const buckets: Record<string, ScoredRow[]> = {
         live: [],
         freshMedia: [],
@@ -4758,7 +5153,7 @@ export default function FeedScreen() {
         older: [],
       };
 
-      items.forEach((item, index) => {
+      pool.forEach((item, index) => {
         const bucket = classifyMixBucket(item);
         buckets[bucket].push({ item, score: rankScore(item, index) });
       });
@@ -4782,7 +5177,7 @@ export default function FeedScreen() {
       };
 
       const pattern = ["freshMedia", "video", "image", "text", "older", "freshMedia", "video", "image", "text"];
-      const start = Math.floor(stableRand(`${seed}|mix-start`) * pattern.length);
+      const start = Math.floor(stableRand(`${seed}|${mixDayBucket}|mix-start`) * pattern.length);
       const mixed: any[] = [];
       let patternIdx = 0;
       let guard = 0;
@@ -4835,7 +5230,7 @@ export default function FeedScreen() {
 
     const sortedScheduleItems = scheduleScored.map((x) => x.item);
 
-    const sortedRemainingItems = interleaveHomeFeedItems(nonScheduleItems, userSeed);
+    const sortedRemainingItems = interleaveHomeFeedItems(nonScheduleItems, userSeed, dayBucket);
 
     const remainingScored = nonScheduleItems
       .map((item: any, index: number) => ({
@@ -4874,15 +5269,28 @@ export default function FeedScreen() {
         }));
       console.log("KRISTO_HOME_FEED_RANKING", rankingSample);
 
-      const mixSample = sortedRemainingItems.slice(0, 8).map((item, index) => ({
-        rank: index + 1,
-        id: String(item?.id || ""),
-        kind: String(item?.kind || ""),
-        mediaType: String(item?.mediaType || ""),
-        bucket: classifyMixBucket(item),
-        createdAt: String(item?.createdAt || ""),
-      }));
-      console.log("KRISTO_HOME_FEED_MIX", mixSample);
+      console.log("KRISTO_HOME_FEED_USER_SEED", {
+        userId: userId || deviceOrSessionFallback,
+        userSeedShort,
+      });
+
+      const mixSample = sortedRemainingItems.slice(0, 8).map((item, index) => {
+        const origIndex = nonScheduleItems.findIndex(
+          (row) => String(row?.id || "") === String(item?.id || "")
+        );
+        const scoreIndex = origIndex >= 0 ? origIndex : index;
+        return {
+          rank: index + 1,
+          id: String(item?.id || ""),
+          kind: String(item?.kind || ""),
+          mediaType: String(item?.mediaType || ""),
+          bucket: classifyMixBucket(item),
+          score: Math.round(rankScore(item, scoreIndex) * 10) / 10,
+          createdAt: String(item?.createdAt || ""),
+          userSeedShort,
+        };
+      });
+      console.log("KRISTO_HOME_FEED_MIX", { userSeedShort, order: mixSample });
 
       console.log("KRISTO_HOME_FEED_VISIBLE_SOURCE", {
         backendCount: backendFeed.length,
@@ -4978,12 +5386,6 @@ export default function FeedScreen() {
   useEffect(() => {
     appendMoreFeedItemsRef.current = appendMoreFeedItems;
   }, [appendMoreFeedItems]);
-
-  useEffect(() => {
-    if (data.length > 0 && data.length <= FEED_INITIAL_VISIBLE_COUNT && feedLoopBatches.length === 0) {
-      setTimeout(() => appendMoreFeedItemsRef.current?.(), 120);
-    }
-  }, [data.length, feedLoopBatches.length]);
 
   useEffect(() => {
     feedVisibleCountRef.current = feedVisibleCount;
@@ -5204,31 +5606,26 @@ export default function FeedScreen() {
     }
   }, []);
 
-  const handleRequestFeedAdvance = useCallback((nextIndex: number, endedPostId: string) => {
-    appendMoreFeedItemsRef.current?.();
+  useEffect(() => {
+    if (activeFeedIndex < 0 || !activeItemIsStrictVideo) return;
 
-    requestAnimationFrame(() => {
-      const total = Math.max(0, feedTotalCountRef.current - 1);
-      const target = Math.min(Math.max(0, nextIndex), total);
+    const visibleCount = visibleData.length;
+    const totalCount = displayFeed.length;
+    const remainingAhead = visibleCount - activeFeedIndex - 1;
 
-      try {
-        listRef.current?.scrollToIndex({ index: target, animated: true });
-      } catch {}
-
-      const nextItem = visibleDataRef.current[target];
-      if (nextItem?.id) {
-        activateFeedIndex(target, "video-ended-auto-next");
-      }
-    });
+    if (remainingAhead <= 1 && visibleCount >= totalCount && totalCount > 0) {
+      appendMoreFeedItemsRef.current?.();
+    }
 
     if (__DEV__) {
-      console.log("KRISTO_HOME_FEED_APPEND_ON_VIDEO_END", {
-        endedPostId,
-        nextIndex,
-        total: feedTotalCountRef.current,
+      console.log("KRISTO_HOME_FEED_VIDEO_APPEND", {
+        activeFeedIndex,
+        remainingAhead,
+        visibleCount,
+        totalCount,
       });
     }
-  }, [activateFeedIndex]);
+  }, [activeFeedIndex, activeItemIsStrictVideo, visibleData.length, displayFeed.length]);
 
   const renderItem = useCallback(
     ({ item, index }: { item: any; index: number }) => (
@@ -5238,7 +5635,6 @@ export default function FeedScreen() {
         feedIndex={index}
         activeFeedIndex={activeFeedIndex}
         activeFeedItemId={activeFeedItemId}
-        activeItemIsStrictVideo={activeItemIsStrictVideo}
         isActive={String(item?.id || "") === String(activeFeedItemId || "")}
         screenFocused={feedScreenFocused}
         appActive={appActive}
@@ -5248,14 +5644,12 @@ export default function FeedScreen() {
         profileAvatarUri={profileAvatarUri}
         onOptimisticBackendLike={handleOptimisticBackendLike}
         onOptimisticSlotClaim={handleOptimisticSlotClaim}
-        onRequestFeedAdvance={handleRequestFeedAdvance}
       />
     ),
     [
       itemH,
       activeFeedItemId,
       activeFeedIndex,
-      activeItemIsStrictVideo,
       feedScreenFocused,
       appActive,
       feedNowMs,
@@ -5264,7 +5658,6 @@ export default function FeedScreen() {
       profileAvatarUri,
       handleOptimisticBackendLike,
       handleOptimisticSlotClaim,
-      handleRequestFeedAdvance,
     ]
   );
 
