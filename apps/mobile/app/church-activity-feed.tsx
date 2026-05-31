@@ -77,6 +77,41 @@ function syncActivityFeedLike(postId: string, liked?: boolean) {
 
 type ChipFilterKey = "all" | "media" | "me" | string;
 
+function memberUserIds(member: any): string[] {
+  return [
+    member?.userId,
+    member?.id,
+    member?.actorUserId,
+    member?.authorId,
+    member?.createdBy,
+    member?.memberId,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function buildCurrentUserIdSet(currentUserId: string, churchMembers: any[]): Set<string> {
+  const ids = new Set<string>();
+  if (currentUserId) ids.add(currentUserId);
+
+  for (const member of churchMembers) {
+    const memberIds = memberUserIds(member);
+    if (memberIds.some((id) => ids.has(id))) {
+      memberIds.forEach((id) => ids.add(id));
+    }
+  }
+
+  return ids;
+}
+
+function isCurrentUser(userIdOrMember: string | any, currentUserIdSet: Set<string>): boolean {
+  if (!currentUserIdSet.size) return false;
+  if (typeof userIdOrMember === "string") {
+    return currentUserIdSet.has(userIdOrMember);
+  }
+  return memberUserIds(userIdOrMember).some((id) => currentUserIdSet.has(id));
+}
+
 function resolveInitialChip(
   routeMode: ChurchActivityFeedMode,
   routeMemberId: string,
@@ -88,16 +123,158 @@ function resolveInitialChip(
   return "all";
 }
 
-const CHIP_AVATAR = 60;
+function pickFirstMediaUri(...candidates: unknown[]) {
+  for (const candidate of candidates) {
+    const uri = mediaUrl(String(candidate || "").trim());
+    if (uri) return uri;
+  }
+  return "";
+}
+
+function resolveChurchActivityChurchAvatar(rows: any[], session?: any) {
+  const fromSession = pickFirstMediaUri(
+    session?.churchAvatarUri,
+    session?.churchAvatarUrl,
+    session?.churchLogoUri,
+    session?.churchLogoUrl,
+    session?.churchProfileImage,
+    session?.churchImage,
+    session?.church?.avatarUri,
+    session?.church?.avatarUrl,
+    session?.church?.logoUri,
+    session?.church?.logoUrl,
+    session?.church?.image,
+    session?.church?.profileImage
+  );
+  if (fromSession) return fromSession;
+
+  for (const row of rows) {
+    const uri = pickFirstMediaUri(
+      row?.churchAvatarUri,
+      row?.churchAvatarUrl,
+      row?.churchLogoUri,
+      row?.churchLogoUrl,
+      row?.churchProfileImage,
+      row?.churchImage,
+      row?.church?.avatarUri,
+      row?.church?.avatarUrl,
+      row?.church?.logoUri,
+      row?.church?.logoUrl,
+      row?.church?.image,
+      row?.churchProfile?.avatarUri,
+      row?.churchProfile?.logoUri,
+      row?.churchProfile?.image
+    );
+    if (uri) return uri;
+  }
+
+  return "";
+}
+
+const CHIP_AVATAR = 64;
+const POSTER_AVATAR_SIZE = 56;
+
+function resolvePostAuthorAvatar(
+  item: any,
+  memberAvatarMap: Map<string, { avatarUri?: string }>
+) {
+  const authorId = getPostAuthorId(item);
+  const fromMember = authorId ? memberAvatarMap.get(authorId)?.avatarUri : "";
+  return pickFirstMediaUri(
+    item?.actorAvatarUri,
+    item?.authorAvatarUri,
+    item?.avatarUri,
+    item?.profileImage,
+    item?.author?.avatarUri,
+    item?.actor?.avatarUri,
+    item?.createdByAvatarUri,
+    item?.postedByAvatarUri,
+    item?.actorAvatar,
+    item?.authorAvatar,
+    fromMember
+  );
+}
+
+const ActivityPosterAvatar = memo(function ActivityPosterAvatar({
+  uri,
+  initial,
+}: {
+  uri?: string;
+  initial: string;
+}) {
+  const size = POSTER_AVATAR_SIZE;
+  const inner = size - 6;
+
+  return (
+    <View style={styles.posterAvatarShell}>
+      <View pointerEvents="none" style={styles.posterAvatarGlow} />
+      <View style={styles.posterAvatarRing}>
+        {uri ? (
+          <Image
+            source={{ uri }}
+            style={{ width: inner, height: inner, borderRadius: inner / 2 }}
+            resizeMode="cover"
+          />
+        ) : (
+          <LinearGradient
+            colors={["#FFE08A", "#F7D36A", "#C8943A", "#7A5218"]}
+            start={{ x: 0.2, y: 0 }}
+            end={{ x: 0.8, y: 1 }}
+            style={styles.posterAvatarFallback}
+          >
+            <Text style={styles.posterAvatarInitial}>{initial}</Text>
+          </LinearGradient>
+        )}
+      </View>
+    </View>
+  );
+});
+
+function FilterChipAvatarContent({
+  uri,
+  fallbackIcon,
+  fallbackInitial,
+  mediaBadge,
+}: {
+  uri?: string;
+  fallbackIcon?: React.ComponentProps<typeof Ionicons>["name"];
+  fallbackInitial?: string;
+  mediaBadge?: boolean;
+}) {
+  return (
+    <View style={styles.filterChipAvatarContentWrap}>
+      <View style={styles.filterChipAvatarFrame}>
+        {uri ? (
+          <Image source={{ uri }} style={styles.filterChipAvatar} resizeMode="cover" />
+        ) : (
+          <View style={styles.filterChipFallback}>
+            {fallbackIcon ? (
+              <Ionicons name={fallbackIcon} size={26} color="#F4D06F" />
+            ) : (
+              <Text style={styles.filterChipInitial}>{fallbackInitial || "?"}</Text>
+            )}
+          </View>
+        )}
+      </View>
+      {mediaBadge ? (
+        <View style={styles.filterChipMediaBadge}>
+          <Ionicons name="images" size={12} color="#FFFFFF" />
+        </View>
+      ) : null}
+    </View>
+  );
+}
 
 const ActivityFeedFilterChips = memo(function ActivityFeedFilterChips({
   selectedKey,
+  churchAvatarUri,
   currentUserAvatar,
   currentUserName,
   members,
   onSelect,
 }: {
   selectedKey: ChipFilterKey;
+  churchAvatarUri?: string;
   currentUserAvatar?: string;
   currentUserName?: string;
   members: { userId: string; name: string; avatarUri?: string }[];
@@ -135,27 +312,20 @@ const ActivityFeedFilterChips = memo(function ActivityFeedFilterChips({
       {renderChip(
         "all",
         "All Church",
-        <View style={styles.filterChipFallback}>
-          <Ionicons name="business-outline" size={24} color="#F4D06F" />
-        </View>
+        <FilterChipAvatarContent uri={churchAvatarUri} fallbackIcon="business-outline" />
       )}
       {renderChip(
         "media",
         "Media",
-        <View style={styles.filterChipFallback}>
-          <Ionicons name="images-outline" size={24} color="#F4D06F" />
-        </View>
+        <FilterChipAvatarContent uri={churchAvatarUri} fallbackIcon="business-outline" mediaBadge />
       )}
       {renderChip(
         "me",
         "Me",
-        currentUserAvatar ? (
-          <Image source={{ uri: currentUserAvatar }} style={styles.filterChipAvatar} resizeMode="cover" />
-        ) : (
-          <View style={styles.filterChipFallback}>
-            <Text style={styles.filterChipInitial}>{meInitial}</Text>
-          </View>
-        )
+        <FilterChipAvatarContent
+          uri={currentUserAvatar}
+          fallbackInitial={meInitial}
+        />
       )}
       {members.map((member) => {
         const initial = String(member.name || "?").trim().charAt(0).toUpperCase() || "?";
@@ -163,13 +333,7 @@ const ActivityFeedFilterChips = memo(function ActivityFeedFilterChips({
         return renderChip(
           member.userId,
           firstName,
-          member.avatarUri ? (
-            <Image source={{ uri: member.avatarUri }} style={styles.filterChipAvatar} resizeMode="cover" />
-          ) : (
-            <View style={styles.filterChipFallback}>
-              <Text style={styles.filterChipInitial}>{initial}</Text>
-            </View>
-          )
+          <FilterChipAvatarContent uri={member.avatarUri} fallbackInitial={initial} />
         );
       })}
     </ScrollView>
@@ -294,7 +458,7 @@ const ActivityActionRail = memo(function ActivityActionRail({
             <Ionicons name={liked ? "heart" : "heart-outline"} size={26} color={liked ? "#FF5A7A" : "#FFFFFF"} />
           </Animated.View>
         </BlurView>
-        <Text style={[styles.actionText, liked ? styles.actionTextLiked : null]}>
+        <Text style={styles.actionText}>
           {formatActionCount(likeCount)}
         </Text>
       </Pressable>
@@ -325,7 +489,7 @@ const ActivityActionRail = memo(function ActivityActionRail({
             color={saved ? "#F3D28F" : "#FFFFFF"}
           />
         </View>
-        <Text style={[styles.actionText, styles.actionTextCompact, saved ? styles.actionTextSaved : null]}>
+        <Text style={[styles.actionSaveLabel, saved ? styles.actionTextSaved : null]}>
           {saved ? "Saved" : "Save"}
         </Text>
       </Pressable>
@@ -341,6 +505,7 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
   liked,
   likeCount,
   saved,
+  memberAvatarMap,
   onLike,
   onComment,
   onShare,
@@ -353,16 +518,22 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
   liked: boolean;
   likeCount: number;
   saved: boolean;
+  memberAvatarMap: Map<string, { avatarUri?: string; name?: string }>;
   onLike: () => void;
   onComment: () => void;
   onShare: () => void;
   onSave: () => void;
 }) {
-  const title = String(item?.title || "").trim();
   const body = String(item?.body || item?.text || "").trim();
   const authorName = String(item?.authorName || item?.actorLabel || "Church member").trim();
   const whenLabel = formatActivityWhen(item?.createdAt);
   const label = getChurchActivityLabel(item);
+  const authorInitial =
+    String(authorName || "?")
+      .trim()
+      .charAt(0)
+      .toUpperCase() || "?";
+  const authorAvatarUri = resolvePostAuthorAvatar(item, memberAvatarMap);
   const isVideo = item?.mediaType === "video" && Boolean(String(item?.videoUrl || item?.mediaUri || "").trim());
   const imageUri = String(item?.mediaUri || item?.imageUrl || "").trim();
   const videoUri = mediaUrl(item?.videoUrl || item?.mediaUri);
@@ -384,7 +555,7 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
 
       <LinearGradient
         pointerEvents="none"
-        colors={["transparent", "rgba(0,0,0,0.35)", "rgba(0,0,0,0.75)"]}
+        colors={["transparent", "rgba(0,0,0,0.45)", "rgba(0,0,0,0.85)"]}
         locations={[0, 0.55, 1]}
         style={styles.bottomGradient}
       />
@@ -402,25 +573,24 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
       />
 
       <View style={styles.metaFooter}>
-        <View style={styles.labelPill}>
-          <Text style={styles.labelPillText}>{label}</Text>
+        <View style={styles.identityRow}>
+          <ActivityPosterAvatar uri={authorAvatarUri} initial={authorInitial} />
+          <View style={styles.identityTextWrap}>
+            <Text style={styles.kindLabel} numberOfLines={1}>
+              {label}
+            </Text>
+            <Text style={styles.authorName} numberOfLines={1}>
+              {authorName}
+            </Text>
+          </View>
         </View>
 
-        {!!title ? (
-          <Text style={styles.title} numberOfLines={3}>
-            {title}
-          </Text>
-        ) : null}
-
-        {!!body && body !== title ? (
+        {!!body ? (
           <Text style={styles.body} numberOfLines={6}>
             {body}
           </Text>
         ) : null}
 
-        <Text style={styles.authorName} numberOfLines={1}>
-          {authorName}
-        </Text>
         {!!whenLabel ? <Text style={styles.whenLabel}>{whenLabel}</Text> : null}
       </View>
     </View>
@@ -531,6 +701,38 @@ export default function ChurchActivityFeedScreen() {
     return [...sourceRows, ...localRows];
   }, [sourceRows, homeFeedTick, churchId]);
 
+  const churchAvatarUri = useMemo(
+    () => resolveChurchActivityChurchAvatar(mergedSourceRows, session),
+    [mergedSourceRows, session]
+  );
+
+  const memberAvatarMap = useMemo(() => {
+    const map = new Map<string, { avatarUri?: string; name?: string }>();
+    for (const member of churchMembers) {
+      const userIdValue = String(member?.userId || member?.id || "").trim();
+      if (!userIdValue) continue;
+      map.set(userIdValue, {
+        name: String(
+          member?.fullName ||
+            member?.name ||
+            member?.displayName ||
+            member?.username ||
+            "Member"
+        ).trim(),
+        avatarUri: mediaUrl(
+          String(member?.avatarUrl || member?.avatarUri || member?.profileImage || "").trim()
+        ),
+      });
+    }
+    if (currentUserId) {
+      map.set(currentUserId, {
+        name: currentUserName,
+        avatarUri: currentUserAvatar,
+      });
+    }
+    return map;
+  }, [churchMembers, currentUserId, currentUserName, currentUserAvatar]);
+
   const filterContext = useMemo(() => {
     if (activeChip === "all") {
       return { activityMode: "church" as ChurchActivityFeedMode, activityMemberId: undefined };
@@ -556,11 +758,17 @@ export default function ChurchActivityFeedScreen() {
     );
   }, [mergedSourceRows, churchId, filterContext]);
 
+  const currentUserIdSet = useMemo(
+    () => buildCurrentUserIdSet(currentUserId, churchMembers),
+    [currentUserId, churchMembers]
+  );
+
   const recentPosterMembers = useMemo(() => {
     const memberLookup = new Map<string, { name: string; avatarUri?: string }>();
     for (const member of churchMembers) {
+      if (isCurrentUser(member, currentUserIdSet)) continue;
       const userIdValue = String(member?.userId || member?.id || "").trim();
-      if (!userIdValue || userIdValue === currentUserId) continue;
+      if (!userIdValue) continue;
       memberLookup.set(userIdValue, {
         name: String(
           member?.fullName ||
@@ -580,7 +788,7 @@ export default function ChurchActivityFeedScreen() {
       if (isChurchActivityExcludedCard(item)) continue;
       if (!isChurchActivityAllowedPost(item)) continue;
       const authorId = getPostAuthorId(item);
-      if (!authorId || authorId === currentUserId) continue;
+      if (!authorId || isCurrentUser(authorId, currentUserIdSet)) continue;
       const ms = new Date(String(item?.createdAt || "")).getTime();
       const prev = latestByAuthor.get(authorId) || 0;
       if (Number.isFinite(ms) && ms > prev) {
@@ -599,8 +807,9 @@ export default function ChurchActivityFeedScreen() {
           name: lookup?.name || postAuthorName(sample) || "Member",
           avatarUri: lookup?.avatarUri,
         };
-      });
-  }, [mergedSourceRows, churchMembers, currentUserId]);
+      })
+      .filter((member) => !isCurrentUser(member.userId, currentUserIdSet));
+  }, [mergedSourceRows, churchMembers, currentUserIdSet]);
 
   const isMemberChipEmpty =
     feedRows.length === 0 &&
@@ -608,6 +817,16 @@ export default function ChurchActivityFeedScreen() {
     Boolean(churchId) &&
     activeChip !== "all" &&
     activeChip !== "media";
+
+  const goBackToProfile = useCallback(() => {
+    try {
+      router.replace("/(tabs)/profile");
+    } catch {
+      try {
+        router.replace("/(tabs)");
+      } catch {}
+    }
+  }, [router]);
 
   const handleChipSelect = useCallback((key: ChipFilterKey) => {
     setActiveChip(key);
@@ -731,6 +950,7 @@ export default function ChurchActivityFeedScreen() {
           liked={likeState.liked}
           likeCount={likeState.likeCount}
           saved={saved}
+          memberAvatarMap={memberAvatarMap}
           onLike={() => handleLike(item)}
           onComment={handleComment}
           onShare={() => handleShare(item)}
@@ -742,6 +962,7 @@ export default function ChurchActivityFeedScreen() {
       contentHeight,
       activeIndex,
       screenFocused,
+      memberAvatarMap,
       getLikeState,
       getSavedState,
       handleLike,
@@ -766,7 +987,7 @@ export default function ChurchActivityFeedScreen() {
       >
         <View style={styles.topChromeRow}>
           <Pressable
-            onPress={() => router.back()}
+            onPress={goBackToProfile}
             style={({ pressed }) => [styles.backBtn, pressed ? styles.pressed : null]}
             hitSlop={12}
           >
@@ -776,6 +997,7 @@ export default function ChurchActivityFeedScreen() {
           <View style={styles.chipsWrap}>
             <ActivityFeedFilterChips
               selectedKey={activeChip}
+              churchAvatarUri={churchAvatarUri}
               currentUserAvatar={currentUserAvatar}
               currentUserName={currentUserName}
               members={recentPosterMembers}
@@ -896,13 +1118,13 @@ const styles = StyleSheet.create({
   filterChipRow: {
     paddingVertical: 2,
     paddingRight: 4,
-    gap: 6,
+    gap: 4,
     alignItems: "flex-start",
   },
   filterChip: {
-    width: 68,
+    width: 72,
     alignItems: "center",
-    gap: 5,
+    gap: 4,
   },
   filterChipAvatarShell: {
     width: CHIP_AVATAR + 8,
@@ -930,11 +1152,22 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: "rgba(255,255,255,0.12)",
     backgroundColor: "rgba(255,255,255,0.03)",
-    overflow: "hidden",
+    overflow: "visible",
   },
   filterChipRingActive: {
     borderColor: "rgba(217,179,95,0.96)",
     borderWidth: 2,
+  },
+  filterChipAvatarContentWrap: {
+    width: "100%",
+    height: "100%",
+    position: "relative",
+  },
+  filterChipAvatarFrame: {
+    width: "100%",
+    height: "100%",
+    borderRadius: CHIP_AVATAR / 2,
+    overflow: "hidden",
   },
   filterChipAvatar: {
     width: "100%",
@@ -943,23 +1176,38 @@ const styles = StyleSheet.create({
   },
   filterChipFallback: {
     flex: 1,
+    width: "100%",
+    height: "100%",
     borderRadius: CHIP_AVATAR / 2,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(217,179,95,0.12)",
   },
+  filterChipMediaBadge: {
+    position: "absolute",
+    right: -2,
+    bottom: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(8,10,16,0.92)",
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.92)",
+  },
   filterChipInitial: {
     color: "#F4D06F",
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: "900",
   },
   filterChipLabel: {
-    color: "rgba(255,255,255,0.58)",
-    fontSize: 9.5,
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 13,
     fontWeight: "800",
     textAlign: "center",
-    lineHeight: 12,
-    maxWidth: 68,
+    lineHeight: 16,
+    maxWidth: 72,
   },
   filterChipLabelActive: {
     color: "#F4D06F",
@@ -1015,48 +1263,98 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    height: "42%",
+    height: "48%",
   },
   metaFooter: {
     position: "absolute",
     left: 16,
     right: 84,
     bottom: 22,
-    gap: 7,
+    gap: 8,
+    maxWidth: "78%",
   },
-  labelPill: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.12)",
+  identityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 2,
   },
-  labelPillText: {
-    color: "#FFFFFF",
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.6,
+  identityTextWrap: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: "center",
+    gap: 2,
   },
-  title: {
-    color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "800",
-    lineHeight: 28,
+  posterAvatarShell: {
+    width: POSTER_AVATAR_SIZE + 10,
+    height: POSTER_AVATAR_SIZE + 10,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  posterAvatarGlow: {
+    position: "absolute",
+    width: POSTER_AVATAR_SIZE + 8,
+    height: POSTER_AVATAR_SIZE + 8,
+    borderRadius: (POSTER_AVATAR_SIZE + 8) / 2,
+    backgroundColor: "rgba(247,211,106,0.20)",
+    shadowColor: "#F7D36A",
+    shadowOpacity: 0.45,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
+  },
+  posterAvatarRing: {
+    width: POSTER_AVATAR_SIZE,
+    height: POSTER_AVATAR_SIZE,
+    borderRadius: POSTER_AVATAR_SIZE / 2,
+    borderWidth: 2.5,
+    borderColor: "rgba(247,211,106,0.82)",
+    padding: 2,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.28)",
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+    overflow: "hidden",
+  },
+  posterAvatarFallback: {
+    width: POSTER_AVATAR_SIZE - 6,
+    height: POSTER_AVATAR_SIZE - 6,
+    borderRadius: (POSTER_AVATAR_SIZE - 6) / 2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  posterAvatarInitial: {
+    color: "#1A1205",
+    fontSize: 20,
+    fontWeight: "900",
+  },
+  kindLabel: {
+    color: "#F3D28F",
+    fontSize: 15,
+    lineHeight: 18,
+    fontWeight: "900",
+    letterSpacing: 0.35,
   },
   body: {
-    color: "rgba(255,255,255,0.92)",
+    color: "rgba(255,255,255,0.88)",
     fontSize: 15,
     lineHeight: 22,
+    marginTop: 4,
   },
   authorName: {
-    color: "#FFFFFF",
-    fontSize: 14,
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 13,
     fontWeight: "700",
-    marginTop: 2,
+    letterSpacing: 0.1,
   },
   whenLabel: {
-    color: "rgba(255,255,255,0.62)",
+    color: "rgba(255,255,255,0.55)",
     fontSize: 12,
+    marginTop: 2,
   },
   actionRail: {
     position: "absolute",
@@ -1067,8 +1365,8 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   actionBtn: {
-    width: 56,
-    minHeight: 68,
+    width: 58,
+    minHeight: 76,
     alignItems: "center",
     justifyContent: "flex-start",
   },
@@ -1103,18 +1401,25 @@ const styles = StyleSheet.create({
   },
   actionText: {
     color: "#FFFFFF",
-    fontWeight: "800",
-    fontSize: 12,
-    lineHeight: 14,
-    marginTop: 4,
+    fontWeight: "900",
+    fontSize: 18,
+    lineHeight: 22,
+    marginTop: 5,
     textAlign: "center",
-    textShadowColor: "rgba(0,0,0,0.55)",
+    textShadowColor: "rgba(0,0,0,0.65)",
     textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+    textShadowRadius: 4,
   },
-  actionTextCompact: {
-    fontSize: 10,
-    lineHeight: 12,
+  actionSaveLabel: {
+    color: "#FFFFFF",
+    fontWeight: "900",
+    fontSize: 15,
+    lineHeight: 18,
+    marginTop: 5,
+    textAlign: "center",
+    textShadowColor: "rgba(0,0,0,0.65)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   actionTextLiked: {
     color: "#FF5A7A",
