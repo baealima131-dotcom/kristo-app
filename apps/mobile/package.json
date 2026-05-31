@@ -44,6 +44,7 @@
     "expo-splash-screen": "~31.0.13",
     "expo-status-bar": "~3.0.9",
     "expo-video": "~3.0.16",
+    "expo-video-thumbnails": "~10.0.8",
     "expo-web-browser": "~15.0.10",
     "i18n-iso-countries": "^7.14.0",
     "livekit-client": "^2.18.9",

@@ -1287,6 +1287,10 @@ export default function MediaStudioScreen() {
     const fileUri = String(videoPostUri || "").trim();
     const fileName = `video-${Date.now()}.mp4`;
 
+    void (async () => {
+    const { generateLocalVideoPosterUri } = await import("../../../src/lib/videoPoster");
+    const localPosterUri = await generateLocalVideoPosterUri(fileUri);
+
     const fd = new FormData();
 
     fd.append("file", {
@@ -1294,6 +1298,14 @@ export default function MediaStudioScreen() {
       name: fileName,
       type: "video/mp4",
     } as any);
+
+    if (localPosterUri) {
+      fd.append("poster", {
+        uri: localPosterUri,
+        name: `poster-${Date.now()}.jpg`,
+        type: "image/jpeg",
+      } as any);
+    }
 
     const uploadHeaders: any = {
       accept: "application/json",
@@ -1337,6 +1349,13 @@ export default function MediaStudioScreen() {
           ""
         ).trim();
 
+        const uploadedPosterUri = String(
+          uploadRes?.data?.posterUri ||
+          uploadRes?.data?.thumbnailUri ||
+          uploadRes?.data?.videoPosterUri ||
+          ""
+        ).trim();
+
         if (!uploadedUrl || uploadedUrl.startsWith("file://")) {
           throw new Error("Video upload did not return a server URL.");
         }
@@ -1348,6 +1367,12 @@ export default function MediaStudioScreen() {
             title,
             text: caption,
             videoUrl: uploadedUrl,
+            ...(uploadedPosterUri
+              ? {
+                  posterUri: uploadedPosterUri,
+                  thumbnailUri: uploadedPosterUri,
+                }
+              : {}),
           },
           {
             headers: getKristoHeaders({
@@ -1367,6 +1392,7 @@ export default function MediaStudioScreen() {
         console.log("KRISTO_FEED_VIDEO_POST_ERROR", e);
         Alert.alert("Upload failed", String(e?.message || e || "Video upload failed. Please try again."));
       });
+    })();
 
     // Do not add local media-video-* optimistic rows.
     // Home Feed must render video posts from backend server URLs only.

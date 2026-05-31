@@ -4,6 +4,11 @@ import fs from "fs";
 import path from "path";
 
 import { guard } from "@/app/api/_lib/rbac";
+import {
+  generateVideoPosterFromFile,
+  saveClientPosterBuffer,
+  VIDEO_POSTERS_DIR,
+} from "@/app/api/_lib/media/videoPoster";
 
 export const runtime = "nodejs";
 
@@ -15,6 +20,9 @@ const UPLOAD_DIR = path.join(PUBLIC_DIR, "uploads", "media");
 function ensureDir() {
   if (!fs.existsSync(UPLOAD_DIR)) {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(VIDEO_POSTERS_DIR)) {
+    fs.mkdirSync(VIDEO_POSTERS_DIR, { recursive: true });
   }
 }
 
@@ -81,6 +89,7 @@ export async function POST(req: NextRequest) {
   }
 
   const file = form.get("file");
+  const posterFile = form.get("poster");
 
   if (!(file instanceof File)) {
     return NextResponse.json(
@@ -124,6 +133,29 @@ export async function POST(req: NextRequest) {
   fs.writeFileSync(absPath, buf);
 
   const url = `/uploads/media/${filename}`;
+  const isVideo = String(file.type || "").toLowerCase().includes("video/");
+
+  let posterUri: string | undefined;
+  let thumbnailUri: string | undefined;
+
+  if (posterFile instanceof File && posterFile.size > 0) {
+    const posterBuf = Buffer.from(await posterFile.arrayBuffer());
+    const savedPoster = saveClientPosterBuffer(posterBuf, filename);
+    posterUri = savedPoster;
+    thumbnailUri = savedPoster;
+    console.log("KRISTO_VIDEO_POSTER_CLIENT", { url, posterUri: savedPoster });
+  } else if (isVideo) {
+    const generatedPoster = await generateVideoPosterFromFile(absPath);
+    if (generatedPoster) {
+      posterUri = generatedPoster;
+      thumbnailUri = generatedPoster;
+    } else {
+      console.log("KRISTO_VIDEO_POSTER_FFMPEG_UNAVAILABLE", {
+        url,
+        note: "Install ffmpeg or send client poster file with upload",
+      });
+    }
+  }
 
   return NextResponse.json({
     ok: true,
@@ -132,6 +164,7 @@ export async function POST(req: NextRequest) {
       filename,
       size: file.size,
       mime: file.type || "application/octet-stream",
+      ...(posterUri ? { posterUri, thumbnailUri, videoPosterUri: posterUri } : {}),
     },
   });
 }

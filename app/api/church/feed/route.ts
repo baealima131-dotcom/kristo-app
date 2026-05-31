@@ -46,6 +46,7 @@ import {
   upsertFeedItem,
 } from "@/app/api/_lib/store/feedDb";
 import { getKristoDataDir, isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
+import { ensureVideoPosterForUrl } from "@/app/api/_lib/media/videoPoster";
 
 export const runtime = "nodejs";
 
@@ -639,8 +640,39 @@ async function enrichFeedListItem(item: any, viewerUserId: string) {
 
   const ownershipType = inferOwnershipType(item);
 
+  let posterUri = String(item?.posterUri || "").trim() || undefined;
+  let thumbnailUri = String(item?.thumbnailUri || item?.thumbnailUrl || "").trim() || undefined;
+  const isVideoItem =
+    item?.type === "video" || Boolean(String(item?.videoUrl || "").trim());
+
+  if (isVideoItem && !posterUri && !thumbnailUri && item?.videoUrl) {
+    const generatedPoster = await ensureVideoPosterForUrl(String(item.videoUrl));
+    if (generatedPoster) {
+      posterUri = generatedPoster;
+      thumbnailUri = generatedPoster;
+      try {
+        await upsertFeedItem({
+          ...item,
+          posterUri: generatedPoster,
+          thumbnailUri: generatedPoster,
+          videoPosterUri: generatedPoster,
+        });
+      } catch (error) {
+        console.log("KRISTO_VIDEO_POSTER_PERSIST_ERROR", {
+          postId: item?.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  const videoPosterUri = posterUri || thumbnailUri;
+
   return {
     ...item,
+    ...(posterUri ? { posterUri } : {}),
+    ...(thumbnailUri ? { thumbnailUri } : {}),
+    ...(videoPosterUri ? { videoPosterUri } : {}),
     ownershipType,
     ownerChurchId: String(item?.ownerChurchId || itemChurchId || ""),
     ownerMediaId: String(item?.ownerMediaId || item?.mediaName || itemMediaProfile?.mediaName || "").trim() || undefined,
@@ -1546,6 +1578,19 @@ async function handleFeedPost(req: NextRequest, body: any) {
     logo: cleanText(body?.logo, 2000) || undefined,
   });
 
+  let resolvedPosterUri =
+    sanitizedMedia.posterUri || sanitizedMedia.thumbnailUri || undefined;
+  let resolvedThumbnailUri =
+    sanitizedMedia.thumbnailUri || sanitizedMedia.posterUri || undefined;
+
+  if ((type === "video" || videoUrl) && !resolvedPosterUri && videoUrl) {
+    const generatedPoster = await ensureVideoPosterForUrl(videoUrl);
+    if (generatedPoster) {
+      resolvedPosterUri = generatedPoster;
+      resolvedThumbnailUri = generatedPoster;
+    }
+  }
+
   const viewerRole = ctx?.viewer?.role;
   const ownershipType =
     isIncomingMediaScheduleCreate(body) || String(source || "").toLowerCase().includes("media")
@@ -1646,17 +1691,18 @@ async function handleFeedPost(req: NextRequest, body: any) {
     (item as any).roomId = scheduleMinistryId;
   }
 
-  if (sanitizedMedia.posterUri) {
-    (item as any).posterUri = sanitizedMedia.posterUri;
+  if (resolvedPosterUri) {
+    (item as any).posterUri = resolvedPosterUri;
+    (item as any).videoPosterUri = resolvedPosterUri;
   }
-  if (sanitizedMedia.thumbnailUri) {
-    (item as any).thumbnailUri = sanitizedMedia.thumbnailUri;
+  if (resolvedThumbnailUri) {
+    (item as any).thumbnailUri = resolvedThumbnailUri;
   }
 
   if (type === "video" || videoUrl) {
     item.mediaUri = undefined;
-    if (!sanitizedMedia.posterUri) delete (item as any).posterUri;
-    if (!sanitizedMedia.thumbnailUri) delete (item as any).thumbnailUri;
+    if (!resolvedPosterUri) delete (item as any).posterUri;
+    if (!resolvedThumbnailUri) delete (item as any).thumbnailUri;
     delete (item as any).imageUrl;
   }
 
