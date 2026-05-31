@@ -32,6 +32,7 @@ import { RoomEvent } from "livekit-client";
 import { RTCView, MediaStream, registerGlobals } from "@livekit/react-native-webrtc";
 
 import { useIsFocused } from "@react-navigation/native";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   feedList,
@@ -103,7 +104,6 @@ const FEED_INITIAL_VISIBLE_COUNT = 10;
 const FEED_APPEND_BATCH_SIZE = 5;
 const FEED_APPEND_PREFETCH_AHEAD = 6;
 const FEED_APPEND_DELAY_MS = 100;
-const HOME_FEED_BOTTOM_OFFSET = 70;
 const HOME_FEED_OVERLAY_BOTTOM = 80;
 const HOME_FEED_VIDEO_OVERLAY_BOTTOM = 24;
 const HOME_FEED_ACTIONS_BOTTOM = 84;
@@ -3202,7 +3202,7 @@ const noMediaPost =
     const liveNextLabel = `${liveNextLeft} left`;
 
     return (
-      <View style={[s.slide, { height }]}>
+      <View style={[s.slide, { height, minHeight: height, maxHeight: height }]}>
         <LinearGradient colors={["#050814", "#080817", "#03050C"]} style={StyleSheet.absoluteFillObject} />
 
         <View style={s.liveNowPremiumOuter}>
@@ -3223,7 +3223,7 @@ const noMediaPost =
 
           <Pressable onPress={openLiveRoom} style={s.liveNowPremiumPreview}>
             {isStrictVideoPost ? (
-              <View style={s.media}>{renderStrictVideoLayer()}</View>
+              <View style={[s.media, { height }]}>{renderStrictVideoLayer()}</View>
             ) : item.mediaType === "image" && item.mediaUri ? (
               <Image
                 source={{ uri: item.mediaUri }}
@@ -3277,7 +3277,13 @@ const noMediaPost =
   }
 
   return (
-    <View style={[s.slide, isDedicatedScheduleSlide ? s.scheduleOnlySlide : null, { height }]}>
+    <View
+      style={[
+        s.slide,
+        isDedicatedScheduleSlide ? s.scheduleOnlySlide : null,
+        { height, minHeight: height, maxHeight: height },
+      ]}
+    >
       {isDedicatedScheduleSlide ? (
         <>
           <LinearGradient
@@ -3318,7 +3324,7 @@ const noMediaPost =
       ) : (
       <Pressable onPress={isLiveNow ? openLiveRoom : undefined} style={s.page}>
         {isStrictVideoPost ? (
-          <View style={s.media}>{renderStrictVideoLayer()}</View>
+          <View style={[s.media, { height }]}>{renderStrictVideoLayer()}</View>
         ) : item.mediaType === "image" && item.mediaUri ? (
           <FeedSmartImage
             uri={item.mediaUri}
@@ -5483,8 +5489,28 @@ export default function FeedScreen() {
   }, []);
 
   const { height: windowHeight } = useWindowDimensions();
-  const feedViewportHeight = Math.max(520, windowHeight - HOME_FEED_BOTTOM_OFFSET);
-  const itemH = Math.floor(feedViewportHeight);
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
+  const [listViewportH, setListViewportH] = useState(0);
+  const itemH = Math.max(320, Math.round(listViewportH || windowHeight));
+
+  const handleFeedListLayout = useCallback((event: LayoutChangeEvent) => {
+    const nextHeight = Math.round(event.nativeEvent.layout.height);
+    if (nextHeight <= 0) return;
+    setListViewportH((prev) => (prev === nextHeight ? prev : nextHeight));
+  }, []);
+
+  useEffect(() => {
+    if (!__DEV__ || itemH <= 0) return;
+    console.log("KRISTO_FEED_LAYOUT", {
+      windowHeight,
+      itemH,
+      safeBottom: insets.bottom,
+      tabBarHeight,
+      visibleCount: visibleData.length,
+      listViewportH,
+    });
+  }, [windowHeight, itemH, insets.bottom, tabBarHeight, visibleData.length, listViewportH]);
 
   const listRef = useRef<FlatList<any> | null>(null);
   const viewabilityConfig = useRef({
@@ -5836,23 +5862,25 @@ export default function FeedScreen() {
   }
 
   return (
-    <View style={s.wrap}>
+    <View style={s.wrap} onLayout={handleFeedListLayout}>
       <FlatList
         ref={listRef}
-        pagingEnabled={false}
+        style={s.feedList}
+        pagingEnabled={itemH > 0}
         data={visibleData}
-        extraData={`${activeFeedItemId}|${activeFeedIndex}|${feedScreenFocused ? 1 : 0}`}
+        extraData={`${activeFeedItemId}|${activeFeedIndex}|${feedScreenFocused ? 1 : 0}|${itemH}`}
         removeClippedSubviews={false}
         windowSize={3}
         maxToRenderPerBatch={2}
         initialNumToRender={2}
         updateCellsBatchingPeriod={16}
         keyExtractor={keyExtractor}
-        snapToInterval={itemH}
+        snapToInterval={itemH > 0 ? itemH : undefined}
         snapToAlignment="start"
         decelerationRate="fast"
-        disableIntervalMomentum={true}
+        disableIntervalMomentum
         bounces={false}
+        overScrollMode="never"
         showsVerticalScrollIndicator={false}
         getItemLayout={getItemLayout}
         viewabilityConfig={viewabilityConfig}
@@ -5868,6 +5896,10 @@ const s: any = StyleSheet.create({
   wrap: {
     flex: 1,
     backgroundColor: "#070B14",
+  },
+
+  feedList: {
+    flex: 1,
   },
 
 
@@ -6116,6 +6148,7 @@ const s: any = StyleSheet.create({
     width: "100%",
     overflow: "hidden",
     backgroundColor: "#070B14",
+    flexShrink: 0,
   },
 
   scheduleOnlySlide: {
