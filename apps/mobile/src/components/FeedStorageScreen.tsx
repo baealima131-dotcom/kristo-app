@@ -8,10 +8,13 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Modal,
+  useWindowDimensions,
 } from "react-native";
 import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { VideoView, useVideoPlayer } from "expo-video";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -19,16 +22,20 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { feedList, feedRemoveWhere } from "@/src/lib/homeFeedStore";
 import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
+import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import {
   activityIsVideo,
   formatActivityWhen,
 } from "@/src/lib/churchActivityPosts";
 import {
   canDeleteStoragePosts,
+  canPreviewStoragePost,
   getStoragePostAuthor,
   getStoragePostThumbnail,
   getStoragePostTitle,
   getStoragePostTypeBadge,
+  getStoragePreviewImageUri,
+  getStoragePreviewVideoUri,
   mergeStorageSourceRows,
   type StorageMode,
   type StoragePostLabel,
@@ -71,109 +78,112 @@ function badgeTone(label: StoragePostLabel) {
   }
 }
 
+function StorageVideoPreview({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = false;
+    p.muted = false;
+  });
+
+  useEffect(() => {
+    player.play();
+    return () => {
+      player.pause();
+    };
+  }, [player, uri]);
+
+  return (
+    <VideoView
+      player={player}
+      style={previewStyles.videoPlayer}
+      contentFit="contain"
+      nativeControls
+    />
+  );
+}
+
+function StorageMediaPreviewModal({
+  visible,
+  item,
+  onClose,
+}: {
+  visible: boolean;
+  item: FeedStorageItem | null;
+  onClose: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
+
+  if (!item) return null;
+
+  const isVideo = activityIsVideo(item);
+  const videoUri = getStoragePreviewVideoUri(item);
+  const imageUri = getStoragePreviewImageUri(item);
+
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
+      <View style={previewStyles.backdrop}>
+        <Pressable
+          onPress={onClose}
+          style={[previewStyles.closeBtn, { top: insets.top + 12 }]}
+          hitSlop={12}
+        >
+          <Ionicons name="close" size={24} color="#FFFFFF" />
+        </Pressable>
+
+        <View style={[previewStyles.content, { maxHeight: height - insets.top - insets.bottom - 80 }]}>
+          {isVideo && videoUri ? (
+            <StorageVideoPreview uri={videoUri} />
+          ) : imageUri ? (
+            <Image source={{ uri: imageUri }} style={previewStyles.image} resizeMode="contain" />
+          ) : (
+            <View style={previewStyles.emptyPreview}>
+              <Ionicons name="image-outline" size={36} color="rgba(255,255,255,0.55)" />
+              <Text style={previewStyles.emptyPreviewText}>Preview unavailable</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function StoragePostCard({
   item,
   mode,
   canDelete,
   deleting,
   onDelete,
+  onPreview,
 }: {
   item: FeedStorageItem;
   mode: StorageMode;
   canDelete: boolean;
   deleting: boolean;
   onDelete: () => void;
+  onPreview: () => void;
 }) {
   const author = getStoragePostAuthor(item);
   const thumbnailUri = getStoragePostThumbnail(item);
-  const title = getStoragePostTitle(item);
+  const title = getStoragePostTitle(item, mode);
   const typeBadge = getStoragePostTypeBadge(item, mode);
   const whenLabel = formatActivityWhen(item.createdAt);
   const isVideo = activityIsVideo(item);
   const tone = badgeTone(typeBadge);
+  const canPreview = canPreviewStoragePost(item);
   const authorInitial =
     String(author.name || "?")
       .trim()
       .charAt(0)
       .toUpperCase() || "?";
+  const churchLabel = String(item.churchName || "").trim();
 
   return (
     <View style={s.card}>
-      <View style={s.thumbWrap}>
-        {thumbnailUri ? (
-          <>
-            <Image source={{ uri: thumbnailUri }} style={s.thumbImage} resizeMode="cover" />
-            {isVideo ? (
-              <View style={s.videoOverlay}>
-                <Ionicons name="play" size={18} color="#FFFFFF" />
-              </View>
-            ) : null}
-          </>
-        ) : (
-          <LinearGradient
-            colors={["#141A28", "#0A0F18", "#05070D"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFillObject}
-          >
-            <View style={s.thumbPlaceholder}>
-              <Ionicons
-                name={isVideo ? "videocam-outline" : "document-text-outline"}
-                size={22}
-                color="rgba(244,201,93,0.72)"
-              />
-            </View>
-          </LinearGradient>
-        )}
-      </View>
-
-      <View style={s.cardBody}>
-        <View style={s.authorRow}>
-          <View style={s.authorAvatarRing}>
-            {author.avatarUri ? (
-              <Image source={{ uri: author.avatarUri }} style={s.authorAvatar} resizeMode="cover" />
-            ) : (
-              <LinearGradient
-                colors={["#FFE08A", "#C8943A", "#7A5218"]}
-                style={s.authorAvatarFallback}
-              >
-                <Text style={s.authorAvatarInitial}>{authorInitial}</Text>
-              </LinearGradient>
-            )}
-          </View>
-          <View style={s.authorMeta}>
-            <Text style={s.authorName} numberOfLines={1}>
-              {author.name}
-            </Text>
-            <Text style={s.authorRole} numberOfLines={1}>
-              {author.role}
-            </Text>
-          </View>
-          <View style={[s.typeBadge, { backgroundColor: tone.bg }]}>
-            <Text style={[s.typeBadgeText, { color: tone.color }]}>{typeBadge}</Text>
-          </View>
-        </View>
-
-        <Text style={s.cardTitle} numberOfLines={2}>
-          {title}
-        </Text>
-
-        <View style={s.cardFooter}>
-          <Text style={s.whenLabel} numberOfLines={1}>
-            {whenLabel || "—"}
-          </Text>
-          {item.churchName ? (
-            <Text style={s.churchLabel} numberOfLines={1}>
-              {item.churchName}
-            </Text>
-          ) : null}
-        </View>
-      </View>
-
       {canDelete ? (
         <Pressable
           onPress={onDelete}
           disabled={deleting}
+          accessibilityLabel="Delete post"
           style={({ pressed }) => [
             s.deleteBtn,
             deleting ? s.deleteBtnBusy : null,
@@ -184,14 +194,96 @@ function StoragePostCard({
             {deleting ? (
               <ActivityIndicator size="small" color="#FFB4B4" />
             ) : (
-              <>
-                <Ionicons name="trash-outline" size={16} color="#FFB4B4" />
-                <Text style={s.deleteText}>Delete</Text>
-              </>
+              <Ionicons name="trash-outline" size={18} color="#FFB4B4" />
             )}
           </BlurView>
         </Pressable>
       ) : null}
+
+      <View style={s.cardMainRow}>
+        <Pressable
+          onPress={canPreview ? onPreview : undefined}
+          disabled={!canPreview}
+          style={({ pressed }) => [s.thumbWrap, pressed && canPreview ? s.pressed : null]}
+        >
+          {thumbnailUri ? (
+            <>
+              <Image source={{ uri: thumbnailUri }} style={s.thumbImage} resizeMode="cover" />
+              {isVideo ? (
+                <View style={s.videoOverlay}>
+                  <Ionicons name="play" size={18} color="#FFFFFF" />
+                </View>
+              ) : null}
+            </>
+          ) : (
+            <LinearGradient
+              colors={["#141A28", "#0A0F18", "#05070D"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFillObject}
+            >
+              <View style={s.thumbPlaceholder}>
+                <Ionicons
+                  name={isVideo ? "videocam-outline" : "document-text-outline"}
+                  size={22}
+                  color="rgba(244,201,93,0.72)"
+                />
+                {isVideo && canPreview ? (
+                  <View style={s.playHint}>
+                    <Ionicons name="play" size={12} color="#FFFFFF" />
+                  </View>
+                ) : null}
+              </View>
+            </LinearGradient>
+          )}
+        </Pressable>
+
+        <View style={[s.cardContent, canDelete ? s.cardContentWithDelete : null]}>
+          <Text style={s.cardTitle} numberOfLines={2}>
+            {title}
+          </Text>
+
+          <View style={s.metaRow}>
+            <View style={[s.typeBadge, { backgroundColor: tone.bg }]}>
+              <Text style={[s.typeBadgeText, { color: tone.color }]}>{typeBadge}</Text>
+            </View>
+            <Text style={s.whenLabel} numberOfLines={1}>
+              {whenLabel || "—"}
+            </Text>
+          </View>
+
+          <View style={s.authorRow}>
+            <View style={s.authorAvatarRing}>
+              {author.avatarUri ? (
+                <Image source={{ uri: author.avatarUri }} style={s.authorAvatar} resizeMode="cover" />
+              ) : (
+                <LinearGradient
+                  colors={["#FFE08A", "#C8943A", "#7A5218"]}
+                  style={s.authorAvatarFallback}
+                >
+                  <Text style={s.authorAvatarInitial}>{authorInitial}</Text>
+                </LinearGradient>
+              )}
+            </View>
+            <View style={s.authorMeta}>
+              <Text style={s.authorName} numberOfLines={1}>
+                {author.name}
+              </Text>
+              {author.role ? (
+                <Text style={s.authorRole} numberOfLines={1}>
+                  {author.role}
+                </Text>
+              ) : null}
+            </View>
+          </View>
+
+          {churchLabel ? (
+            <Text style={s.churchLabel} numberOfLines={1}>
+              {churchLabel}
+            </Text>
+          ) : null}
+        </View>
+      </View>
     </View>
   );
 }
@@ -213,6 +305,7 @@ export default function FeedStorageScreen({
   const [rows, setRows] = useState<FeedStorageItem[]>([]);
   const [deletingId, setDeletingId] = useState("");
   const [isMediaHost, setIsMediaHost] = useState(false);
+  const [previewItem, setPreviewItem] = useState<FeedStorageItem | null>(null);
 
   const churchId = String(session?.churchId || "").trim();
 
@@ -326,11 +419,17 @@ export default function FeedStorageScreen({
           text: "Delete",
           style: "destructive",
           onPress: async () => {
+            const postId = baseFeedId(item.id) || String(item.id || "").trim();
+            if (!postId) {
+              Alert.alert("Delete failed", "Could not delete post. Please try again.");
+              return;
+            }
+
             setDeletingId(item.id);
             try {
               const res: any = await apiPost(
                 "/api/church/feed",
-                { action: "delete_post", postId: item.id },
+                { action: "delete_post", postId },
                 {
                   headers: getKristoHeaders({
                     userId: session.userId,
@@ -340,23 +439,43 @@ export default function FeedStorageScreen({
                 }
               );
 
-              if (!res?.ok) {
-                Alert.alert("Delete failed", String(res?.error || "Could not delete post."));
+              const success =
+                res?.ok !== false &&
+                !res?.error &&
+                (res?.deleted === true || res?.postId === postId);
+
+              if (!success) {
+                if (__DEV__) {
+                  console.log("KRISTO_STORAGE_DELETE_POST", {
+                    postId,
+                    storageType: mode,
+                    status: "failed",
+                  });
+                }
+                Alert.alert("Delete failed", "Could not delete post. Please try again.");
                 return;
               }
 
               if (__DEV__) {
                 console.log("KRISTO_STORAGE_DELETE_POST", {
-                  postId: item.id,
+                  postId,
                   storageType: mode,
+                  status: "success",
                 });
               }
 
               feedRemoveWhere((row) => String(row.id || "") === String(item.id));
               setRows((prev) => prev.filter((row) => row.id !== item.id));
             } catch (e) {
+              if (__DEV__) {
+                console.log("KRISTO_STORAGE_DELETE_POST", {
+                  postId: baseFeedId(item.id) || item.id,
+                  storageType: mode,
+                  status: "failed",
+                });
+              }
               console.log("KRISTO_FEED_STORAGE_DELETE_ERROR", e);
-              Alert.alert("Delete failed", "Could not delete post.");
+              Alert.alert("Delete failed", "Could not delete post. Please try again.");
             } finally {
               setDeletingId("");
             }
@@ -368,6 +487,12 @@ export default function FeedStorageScreen({
 
   return (
     <View style={[s.screen, { paddingTop: insets.top + 8 }]}>
+      <StorageMediaPreviewModal
+        visible={Boolean(previewItem)}
+        item={previewItem}
+        onClose={() => setPreviewItem(null)}
+      />
+
       <View style={s.headerRow}>
         <Pressable onPress={() => router.back()} style={({ pressed }) => [s.backBtn, pressed ? s.pressed : null]}>
           <Ionicons name="chevron-back" size={22} color="#fff" />
@@ -409,6 +534,7 @@ export default function FeedStorageScreen({
                 canDelete={canDelete}
                 deleting={deletingId === item.id}
                 onDelete={() => void handleDelete(item)}
+                onPreview={() => setPreviewItem(item)}
               />
             ))
           )}
@@ -418,7 +544,9 @@ export default function FeedStorageScreen({
   );
 }
 
-const THUMB_SIZE = 88;
+const THUMB_WIDTH = 104;
+const THUMB_HEIGHT = 128;
+const DELETE_BTN_SIZE = 44;
 
 const s = StyleSheet.create({
   screen: {
@@ -507,23 +635,27 @@ const s = StyleSheet.create({
     lineHeight: 18,
   },
   card: {
+    position: "relative",
     borderRadius: 22,
     padding: 12,
-    flexDirection: "row",
-    alignItems: "stretch",
-    gap: 12,
     backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.12)",
   },
+  cardMainRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
   thumbWrap: {
-    width: THUMB_SIZE,
-    height: THUMB_SIZE,
-    borderRadius: 18,
+    width: THUMB_WIDTH,
+    height: THUMB_HEIGHT,
+    borderRadius: 20,
     overflow: "hidden",
     backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
+    flexShrink: 0,
   },
   thumbImage: {
     width: "100%",
@@ -534,45 +666,83 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  playHint: {
+    position: "absolute",
+    bottom: 8,
+    right: 8,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
   videoOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(0,0,0,0.28)",
   },
-  cardBody: {
+  cardContent: {
     flex: 1,
     minWidth: 0,
-    justifyContent: "center",
     gap: 6,
+  },
+  cardContentWithDelete: {
+    paddingRight: 54,
+  },
+  cardTitle: {
+    color: "#FFFFFF",
+    fontSize: 21,
+    fontWeight: "800",
+    lineHeight: 26,
+  },
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  typeBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    flexShrink: 0,
+  },
+  typeBadgeText: {
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.35,
   },
   authorRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    marginTop: 2,
   },
   authorAvatarRing: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     padding: 2,
     backgroundColor: "rgba(244,201,93,0.22)",
+    flexShrink: 0,
   },
   authorAvatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
   },
   authorAvatarFallback: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
   authorAvatarInitial: {
     color: "#1A1205",
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: "900",
   },
   authorMeta: {
@@ -580,36 +750,20 @@ const s = StyleSheet.create({
     minWidth: 0,
   },
   authorName: {
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "800",
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 18,
   },
   authorRole: {
-    color: "rgba(255,255,255,0.52)",
-    fontSize: 11,
-    fontWeight: "700",
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 12,
+    fontWeight: "600",
     marginTop: 1,
   },
-  typeBadge: {
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  typeBadgeText: {
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.35,
-  },
-  cardTitle: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "800",
-    lineHeight: 20,
-  },
-  cardFooter: {
-    gap: 2,
-  },
   whenLabel: {
+    flex: 1,
+    minWidth: 0,
     color: "rgba(255,255,255,0.55)",
     fontSize: 11,
     fontWeight: "700",
@@ -618,19 +772,23 @@ const s = StyleSheet.create({
     color: "rgba(244,201,93,0.72)",
     fontSize: 10,
     fontWeight: "700",
+    marginTop: 1,
   },
   deleteBtn: {
-    alignSelf: "center",
+    position: "absolute",
+    top: 10,
+    right: 10,
+    zIndex: 2,
+    width: DELETE_BTN_SIZE,
+    height: DELETE_BTN_SIZE,
     borderRadius: 14,
     overflow: "hidden",
   },
   deleteBlur: {
-    minWidth: 72,
-    minHeight: 72,
-    paddingHorizontal: 10,
+    width: DELETE_BTN_SIZE,
+    height: DELETE_BTN_SIZE,
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
     backgroundColor: "rgba(255,80,80,0.12)",
     borderWidth: 1,
     borderColor: "rgba(255,120,120,0.28)",
@@ -639,12 +797,53 @@ const s = StyleSheet.create({
   deleteBtnBusy: {
     opacity: 0.7,
   },
-  deleteText: {
-    color: "#FFB4B4",
-    fontSize: 11,
-    fontWeight: "800",
-  },
   pressed: {
     opacity: 0.88,
+  },
+});
+
+const previewStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  closeBtn: {
+    position: "absolute",
+    right: 16,
+    zIndex: 3,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+  content: {
+    width: "100%",
+    flex: 1,
+    justifyContent: "center",
+  },
+  image: {
+    width: "100%",
+    height: "100%",
+    minHeight: 280,
+  },
+  videoPlayer: {
+    width: "100%",
+    height: "100%",
+    minHeight: 280,
+  },
+  emptyPreview: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    minHeight: 220,
+  },
+  emptyPreviewText: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 14,
+    fontWeight: "700",
   },
 });

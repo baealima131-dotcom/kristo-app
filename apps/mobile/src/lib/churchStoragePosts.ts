@@ -9,7 +9,6 @@ import {
   isChurchTabActivityPost,
   mergeActivityPostsUnique,
   normalizeActivityMediaUrl,
-  postAuthorName,
   sortActivityPostsNewestFirst,
 } from "./churchActivityPosts";
 
@@ -141,11 +140,46 @@ function logStorageClassify(item: any, churchId: string) {
   });
 }
 
-function mediaUrl(uri?: string) {
-  return normalizeActivityMediaUrl(uri);
+function looksLikeBackendIdentifier(value: string): boolean {
+  const v = value.trim();
+  if (!v) return true;
+  if (/^feed_[0-9a-z_]+$/i.test(v)) return true;
+  if (/^church-live-/i.test(v)) return true;
+  if (/^media-live-/i.test(v)) return true;
+  if (/^[a-f0-9-]{24,}$/i.test(v)) return true;
+  if (v.includes("__slot_")) return true;
+  return false;
+}
+
+function sanitizeStorageDisplayText(value: unknown): string {
+  const raw = String(value || "").trim();
+  if (!raw || looksLikeBackendIdentifier(raw)) return "";
+  return raw;
+}
+
+function friendlyTypeFallbackTitle(item: any, mode: StorageMode): string {
+  const badge = getStoragePostTypeBadge(item, mode);
+  return `${badge.charAt(0)}${badge.slice(1).toLowerCase()} post`;
 }
 
 export function getStoragePostAuthor(item: any) {
+  const nameCandidates = [
+    item?.authorName,
+    item?.actorLabel,
+    item?.postedByName,
+    item?.profileName,
+    item?.userName,
+  ];
+
+  let name = "Church member";
+  for (const candidate of nameCandidates) {
+    const clean = sanitizeStorageDisplayText(candidate);
+    if (clean) {
+      name = clean;
+      break;
+    }
+  }
+
   return {
     id: String(
       item?.actorUserId ||
@@ -154,7 +188,7 @@ export function getStoragePostAuthor(item: any) {
         item?.userId ||
         ""
     ).trim(),
-    name: postAuthorName(item),
+    name,
     avatarUri: mediaUrl(
       String(
         item?.authorAvatarUri ||
@@ -177,10 +211,11 @@ export function getStoragePostAuthorRole(item: any): string {
     if (lower.includes("pastor")) return "Pastor";
     if (lower.includes("host") || lower.includes("media")) return "Host";
     if (lower.includes("admin")) return "Admin";
-    return role;
+    if (lower === "member") return "";
+    return sanitizeStorageDisplayText(role);
   }
 
-  return "Member";
+  return "";
 }
 
 export function getStoragePostThumbnail(item: any): string {
@@ -192,8 +227,34 @@ export function getStoragePostThumbnail(item: any): string {
   );
 }
 
-export function getStoragePostTitle(item: any): string {
-  return String(item?.title || item?.text || item?.body || item?.mediaName || "Untitled post").trim();
+export function getStoragePostTitle(item: any, mode: StorageMode = "church"): string {
+  for (const field of [item?.title, item?.text, item?.body]) {
+    const clean = sanitizeStorageDisplayText(field);
+    if (clean) return clean;
+  }
+  return friendlyTypeFallbackTitle(item, mode);
+}
+
+export function getStoragePreviewVideoUri(item: any): string {
+  return mediaUrl(String(item?.videoUrl || item?.mediaUri || "").trim());
+}
+
+export function getStoragePreviewImageUri(item: any): string {
+  if (activityIsVideo(item)) {
+    return getStoragePostThumbnail(item);
+  }
+  const imageUri = mediaUrl(String(item?.mediaUri || item?.imageUrl || "").trim());
+  if (imageUri) return imageUri;
+  return getStoragePostThumbnail(item);
+}
+
+export function canPreviewStoragePost(item: any): boolean {
+  if (activityIsVideo(item)) return Boolean(getStoragePreviewVideoUri(item));
+  return Boolean(getStoragePreviewImageUri(item));
+}
+
+function mediaUrl(uri?: string) {
+  return normalizeActivityMediaUrl(uri);
 }
 
 export function getStoragePostTypeBadge(item: any, mode: StorageMode): StoragePostLabel {
