@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   ImageBackground,
+  Pressable,
   type ImageSourcePropType,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -15,13 +16,15 @@ import {
   churchActivityBody,
   churchActivityIcon,
   churchActivityTitle,
+  formatActivityWhen,
   getActivityGridLabel,
+  postAuthorName,
   type ActivityGridItem,
   type ChurchActivityLabel,
 } from "@/src/lib/churchActivityPosts";
 
-const GRID_GAP = 10;
-const CARD_ASPECT = 9 / 14;
+const GRID_GAP = 14;
+const CARD_HEIGHT = 236;
 
 function labelEyebrow(label: ChurchActivityLabel) {
   switch (label) {
@@ -40,12 +43,35 @@ function labelEyebrow(label: ChurchActivityLabel) {
   }
 }
 
+function ActivityMetaRow({ item }: { item: ActivityGridItem }) {
+  const author = postAuthorName(item);
+  const when = formatActivityWhen(item.createdAt);
+
+  return (
+    <View style={s.metaRow}>
+      <Text style={s.metaAuthor} numberOfLines={1}>
+        {author}
+      </Text>
+      {when ? (
+        <>
+          <Text style={s.metaDot}>•</Text>
+          <Text style={s.metaWhen} numberOfLines={1}>
+            {when}
+          </Text>
+        </>
+      ) : null}
+    </View>
+  );
+}
+
 function MediaActivityCard({
   item,
   label,
+  onPress,
 }: {
   item: ActivityGridItem;
   label: ChurchActivityLabel;
+  onPress?: () => void;
 }) {
   const backgroundUri = activityCardBackgroundUri(item);
   const isVideo = activityIsVideo(item);
@@ -54,20 +80,25 @@ function MediaActivityCard({
   const source: ImageSourcePropType = { uri: backgroundUri };
 
   return (
-    <View style={s.mediaCard}>
+    <Pressable onPress={onPress} style={s.cardBase}>
       <ImageBackground source={source} style={s.mediaFill} resizeMode="cover">
         <LinearGradient
-          colors={["rgba(0,0,0,0.05)", "rgba(0,0,0,0.28)", "rgba(0,0,0,0.88)"]}
-          locations={[0, 0.45, 1]}
+          colors={[
+            "rgba(0,0,0,0.12)",
+            "rgba(0,0,0,0.34)",
+            "rgba(0,0,0,0.72)",
+            "rgba(0,0,0,0.96)",
+          ]}
+          locations={[0, 0.34, 0.72, 1]}
           style={s.mediaGradient}
         >
           {isVideo ? (
             <View style={s.playBadge}>
-              <Ionicons name="play" size={14} color="#FFFFFF" />
+              <Ionicons name="play" size={15} color="#FFFFFF" />
             </View>
           ) : null}
 
-          <View style={s.mediaOverlayBottom}>
+          <View style={s.cardBottom}>
             <View style={s.labelPill}>
               <Text style={s.labelPillText} numberOfLines={1}>
                 {label}
@@ -77,64 +108,76 @@ function MediaActivityCard({
               {title}
             </Text>
             {preview && preview !== title ? (
-              <Text style={s.mediaPreview} numberOfLines={1}>
+              <Text style={s.mediaPreview} numberOfLines={2}>
                 {preview}
               </Text>
             ) : null}
+            <ActivityMetaRow item={item} />
           </View>
         </LinearGradient>
       </ImageBackground>
-    </View>
+    </Pressable>
   );
 }
 
 function TextActivityCard({
   item,
   label,
+  onPress,
 }: {
   item: ActivityGridItem;
   label: ChurchActivityLabel;
+  onPress?: () => void;
 }) {
   const icon = churchActivityIcon(label) as keyof typeof Ionicons.glyphMap;
 
   return (
-    <View style={s.textCard}>
-      <View style={s.textCardTopRow}>
-        <View style={s.iconWrap}>
-          <Ionicons name={icon} size={16} color="#FF5A5F" />
+    <Pressable onPress={onPress} style={[s.cardBase, s.textCard]}>
+      <LinearGradient
+        colors={["rgba(18,16,10,0.96)", "rgba(8,10,16,0.98)", "rgba(4,6,12,1)"]}
+        locations={[0, 0.55, 1]}
+        style={s.textGradient}
+      >
+        <View style={s.textCardTopRow}>
+          <View style={s.iconWrap}>
+            <Ionicons name={icon} size={15} color="#F4D06F" />
+          </View>
+          <View style={s.labelPill}>
+            <Text style={s.labelPillText} numberOfLines={1}>
+              {label}
+            </Text>
+          </View>
         </View>
-        <View style={s.metaPill}>
-          <Text style={s.metaPillText} numberOfLines={1}>
-            {label}
-          </Text>
-        </View>
-      </View>
 
-      <View style={s.textCardBody}>
-        <Text style={s.eyebrow} numberOfLines={1}>
-          {labelEyebrow(label)}
-        </Text>
-        <Text style={s.title} numberOfLines={3}>
-          {churchActivityTitle(item)}
-        </Text>
-        <Text style={s.body} numberOfLines={2}>
-          {churchActivityBody(item)}
-        </Text>
-      </View>
-    </View>
+        <View style={s.cardBottom}>
+          <Text style={s.eyebrow} numberOfLines={1}>
+            {labelEyebrow(label)}
+          </Text>
+          <Text style={s.title} numberOfLines={2}>
+            {churchActivityTitle(item)}
+          </Text>
+          <Text style={s.body} numberOfLines={2}>
+            {churchActivityBody(item)}
+          </Text>
+          <ActivityMetaRow item={item} />
+        </View>
+      </LinearGradient>
+    </Pressable>
   );
 }
 
 export default function ChurchActivityGrid({
   items,
   emptyTitle = "No church activity yet",
-  emptyBody = "Testimonies, announcements, prayer requests, and counsel posts will appear here.",
+  emptyBody = "Posts from church members will appear here.",
   variant = "church",
+  onItemPress,
 }: {
   items: ActivityGridItem[];
   emptyTitle?: string;
   emptyBody?: string;
   variant?: "church" | "media";
+  onItemPress?: (item: ActivityGridItem) => void;
 }) {
   if (!items.length) {
     return (
@@ -151,12 +194,27 @@ export default function ChurchActivityGrid({
       {items.map((item) => {
         const label = getActivityGridLabel(item, variant);
         const key = String(item.id);
+        const handlePress = onItemPress ? () => onItemPress(item) : undefined;
 
         if (activityHasVisualMedia(item)) {
-          return <MediaActivityCard key={key} item={item} label={label} />;
+          return (
+            <MediaActivityCard
+              key={key}
+              item={item}
+              label={label}
+              onPress={handlePress}
+            />
+          );
         }
 
-        return <TextActivityCard key={key} item={item} label={label} />;
+        return (
+          <TextActivityCard
+            key={key}
+            item={item}
+            label={label}
+            onPress={handlePress}
+          />
+        );
       })}
     </View>
   );
@@ -167,17 +225,17 @@ const s = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: GRID_GAP,
-    alignItems: "flex-start",
-    justifyContent: "flex-start",
+    justifyContent: "space-between",
+    paddingBottom: 8,
   },
-  mediaCard: {
+  cardBase: {
     width: "48%",
-    aspectRatio: CARD_ASPECT,
-    borderRadius: 18,
+    height: CARD_HEIGHT,
+    borderRadius: 24,
     overflow: "hidden",
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: "rgba(255,255,255,0.03)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: "rgba(217,179,95,0.14)",
   },
   mediaFill: {
     flex: 1,
@@ -186,25 +244,25 @@ const s = StyleSheet.create({
   mediaGradient: {
     flex: 1,
     justifyContent: "flex-end",
-    paddingHorizontal: 10,
-    paddingBottom: 10,
-    paddingTop: 28,
+    paddingHorizontal: 13,
+    paddingBottom: 13,
+    paddingTop: 36,
   },
   playBadge: {
     position: "absolute",
-    top: "38%",
+    top: "34%",
     alignSelf: "center",
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: "rgba(0,0,0,0.52)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.28)",
+    borderColor: "rgba(255,255,255,0.24)",
   },
-  mediaOverlayBottom: {
-    gap: 4,
+  cardBottom: {
+    gap: 5,
   },
   labelPill: {
     alignSelf: "flex-start",
@@ -212,109 +270,105 @@ const s = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 999,
-    backgroundColor: "rgba(255,90,95,0.82)",
+    backgroundColor: "rgba(8,10,14,0.82)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.42)",
   },
   labelPillText: {
-    color: "#FFFFFF",
-    fontSize: 9,
+    color: "#F4D06F",
+    fontSize: 8.5,
     fontWeight: "900",
-    letterSpacing: 0.7,
+    letterSpacing: 0.8,
   },
   mediaTitle: {
     color: "#FFFFFF",
-    fontSize: 13,
+    fontSize: 13.5,
     fontWeight: "900",
-    lineHeight: 16,
-    letterSpacing: -0.1,
+    lineHeight: 17,
+    letterSpacing: -0.15,
   },
   mediaPreview: {
-    color: "rgba(255,255,255,0.78)",
+    color: "rgba(255,255,255,0.76)",
     fontSize: 11,
     fontWeight: "700",
     lineHeight: 14,
   },
   textCard: {
-    width: "48%",
-    aspectRatio: CARD_ASPECT,
-    borderRadius: 18,
+    borderColor: "rgba(217,179,95,0.16)",
+  },
+  textGradient: {
+    flex: 1,
     paddingTop: 12,
     paddingHorizontal: 12,
-    paddingBottom: 12,
-    backgroundColor: "rgba(255,255,255,0.02)",
-    borderWidth: 1,
-    borderColor: "rgba(255,90,95,0.24)",
-    shadowColor: "#000",
-    shadowOpacity: 0.22,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
-    overflow: "hidden",
+    paddingBottom: 13,
+    justifyContent: "space-between",
   },
   textCardTopRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  textCardBody: {
-    flex: 1,
-    justifyContent: "flex-end",
   },
   iconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,90,95,0.06)",
+    backgroundColor: "rgba(217,179,95,0.08)",
     borderWidth: 1,
-    borderColor: "rgba(255,90,95,0.22)",
-  },
-  metaPill: {
-    maxWidth: "58%",
-    minHeight: 26,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,90,95,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,90,95,0.18)",
-  },
-  metaPillText: {
-    color: "#FF8A8F",
-    fontSize: 9,
-    fontWeight: "900",
-    letterSpacing: 0.7,
+    borderColor: "rgba(217,179,95,0.18)",
   },
   eyebrow: {
-    color: "rgba(255,255,255,0.48)",
+    color: "rgba(255,255,255,0.46)",
     fontSize: 10,
     fontWeight: "800",
-    letterSpacing: 0.3,
-    marginBottom: 4,
+    letterSpacing: 0.25,
   },
   title: {
     color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "900",
     lineHeight: 17,
-    letterSpacing: -0.2,
+    letterSpacing: -0.15,
   },
   body: {
-    marginTop: 5,
-    color: "rgba(255,255,255,0.68)",
+    color: "rgba(255,255,255,0.66)",
     fontSize: 11.5,
     fontWeight: "700",
     lineHeight: 15,
   },
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 1,
+    minHeight: 14,
+  },
+  metaAuthor: {
+    flexShrink: 1,
+    color: "rgba(255,255,255,0.84)",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  metaDot: {
+    color: "rgba(255,255,255,0.34)",
+    fontSize: 10,
+    fontWeight: "900",
+  },
+  metaWhen: {
+    flexShrink: 0,
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 10,
+    fontWeight: "700",
+  },
   emptyCard: {
-    borderRadius: 22,
-    padding: 20,
+    borderRadius: 24,
+    padding: 22,
     alignItems: "center",
     backgroundColor: "rgba(255,255,255,0.03)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(217,179,95,0.14)",
+    marginBottom: 8,
   },
   emptyTitle: {
     marginTop: 10,

@@ -236,3 +236,191 @@ export function sortActivityPostsNewestFirst<T extends { createdAt?: string }>(r
     return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0);
   });
 }
+
+export type ChurchActivityTab = "church" | "media";
+export type ChurchActivityMemberFilter = "all" | "mine" | "member";
+
+export function postAuthorUserId(item: any) {
+  return String(
+    item?.actorUserId ||
+      item?.authorId ||
+      item?.userId ||
+      item?.createdBy ||
+      item?.memberId ||
+      item?.postedByUserId ||
+      ""
+  ).trim();
+}
+
+export function postAuthorName(item: any) {
+  return String(
+    item?.authorName ||
+      item?.actorLabel ||
+      item?.postedByName ||
+      item?.profileName ||
+      item?.userName ||
+      item?.mediaName ||
+      "Church member"
+  ).trim();
+}
+
+export function postChurchId(item: any) {
+  const candidates = postChurchIdCandidates(item);
+  return candidates[0] || "";
+}
+
+export function postChurchIdCandidates(item: any) {
+  const ids = [
+    item?.churchId,
+    item?.sourceChurchId,
+    item?.church?.id,
+    item?.churchProfile?.id,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return [...new Set(ids)];
+}
+
+export function postHasAlternateChurchIdentity(item: any) {
+  return Boolean(
+    String(item?.churchName || "").trim() ||
+      String(item?.churchLabel || "").trim() ||
+      String(item?.churchCode || "").trim()
+  );
+}
+
+export function belongsToChurch(item: any, churchId: string) {
+  const targetChurchId = String(churchId || "").trim();
+  if (!targetChurchId) return false;
+
+  const candidates = postChurchIdCandidates(item);
+  if (candidates.length > 0) {
+    return candidates.some((candidate) => candidate === targetChurchId);
+  }
+
+  if (postHasAlternateChurchIdentity(item)) {
+    return false;
+  }
+
+  return false;
+}
+
+export function matchesActivityMemberFilter(
+  item: any,
+  memberFilter: ChurchActivityMemberFilter,
+  selectedMemberId?: string,
+  currentUserId?: string
+) {
+  if (memberFilter === "all") return true;
+
+  const authorId = postAuthorUserId(item);
+  if (!authorId) return false;
+
+  if (memberFilter === "mine") {
+    const viewerId = String(currentUserId || "").trim();
+    return Boolean(viewerId) && authorId === viewerId;
+  }
+
+  if (memberFilter === "member") {
+    const memberId = String(selectedMemberId || "").trim();
+    return Boolean(memberId) && authorId === memberId;
+  }
+
+  return true;
+}
+
+export function isChurchTabActivityPost(item: any) {
+  if (!item || typeof item !== "object") return false;
+  if (isMediaActivityPost(item)) return false;
+  if (isChurchActivityPost(item)) return true;
+
+  const mediaType = String(item?.mediaType || "").trim().toLowerCase();
+  if (mediaType === "image" || mediaType === "video") return true;
+
+  const source = String(item?.source || "").trim().toLowerCase();
+  if (
+    source === "post" ||
+    source === "announcement" ||
+    source === "testimony" ||
+    source === "prayer" ||
+    source === "counsel"
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function formatActivityWhen(createdAt?: string | number) {
+  const ms = new Date(String(createdAt || "")).getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  return new Date(ms).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+export function mergeActivityPostsUnique(rows: any[]) {
+  const seen = new Set<string>();
+  const merged: any[] = [];
+
+  for (const item of rows) {
+    const id = String(item?.id || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(item);
+  }
+
+  return merged;
+}
+
+export function getChurchActivityPosts({
+  allPosts,
+  selectedTab,
+  memberFilter = "all",
+  selectedMemberId,
+  currentUserId,
+  churchId,
+  mediaUrlFn,
+}: {
+  allPosts: any[];
+  selectedTab: ChurchActivityTab;
+  memberFilter?: ChurchActivityMemberFilter;
+  selectedMemberId?: string;
+  currentUserId: string;
+  churchId: string;
+  mediaUrlFn?: (uri?: string) => string;
+}) {
+  let rows = mergeActivityPostsUnique(allPosts).filter((item) =>
+    belongsToChurch(item, churchId)
+  );
+
+  if (selectedTab === "media") {
+    rows = rows.filter(isMediaActivityPost);
+  } else {
+    rows = rows.filter(isChurchTabActivityPost);
+  }
+
+  rows = rows.filter((item) =>
+    matchesActivityMemberFilter(item, memberFilter, selectedMemberId, currentUserId)
+  );
+
+  const result = sortActivityPostsNewestFirst(
+    rows.map((item) => normalizeActivityItem(item, mediaUrlFn))
+  );
+
+  if (__DEV__) {
+    console.log("CHURCH_ACTIVITY_FILTER_RESULT", {
+      tab: selectedTab,
+      filter: memberFilter,
+      selectedMemberId: String(selectedMemberId || ""),
+      churchId: String(churchId || ""),
+      count: result.length,
+    });
+  }
+
+  return result;
+}

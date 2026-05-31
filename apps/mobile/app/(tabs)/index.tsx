@@ -1,4 +1,5 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   TextInput,
   ScrollView,
@@ -30,7 +31,6 @@ import { LiveKitRoom, useRoomContext } from "@livekit/react-native";
 import { RoomEvent } from "livekit-client";
 import { RTCView, MediaStream, registerGlobals } from "@livekit/react-native-webrtc";
 
-import { useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
@@ -3781,6 +3781,7 @@ const formatSocialCount = (value?: number) => {
 };
 
 export default function FeedScreen() {
+  const { focusPostId } = useLocalSearchParams<{ focusPostId?: string }>();
   const [tick, setTick] = useState(0);
   const [profileName, setProfileName] = useState("Prince Fariji");
   const [profileAvatarUri, setProfileAvatarUri] = useState("");
@@ -5282,6 +5283,49 @@ export default function FeedScreen() {
       appendMoreFeedItemsRef.current?.();
     }
   }, [activateFeedIndex, itemH]);
+
+  const activateFeedIndexRef = useRef(activateFeedIndex);
+  const focusPostHandledRef = useRef("");
+
+  useEffect(() => {
+    activateFeedIndexRef.current = activateFeedIndex;
+  }, [activateFeedIndex]);
+
+  useEffect(() => {
+    const rawFocusId = String(focusPostId || "").trim();
+    if (!rawFocusId) return;
+    if (focusPostHandledRef.current === rawFocusId) return;
+    if (!displayFeed.length) return;
+
+    const matchIndex = displayFeed.findIndex((item: any) => {
+      const id = String(item?.id || "");
+      const origin = String((item as any)?.feedOriginId || (item as any)?.sourceScheduleId || "");
+      const focusBase = baseFeedId(rawFocusId);
+      return (
+        id === rawFocusId ||
+        origin === rawFocusId ||
+        baseFeedId(id) === focusBase ||
+        baseFeedId(origin) === focusBase
+      );
+    });
+
+    if (matchIndex < 0) return;
+
+    if (matchIndex + 1 > feedVisibleCount) {
+      setFeedVisibleCount(matchIndex + 1);
+      return;
+    }
+
+    focusPostHandledRef.current = rawFocusId;
+
+    requestAnimationFrame(() => {
+      try {
+        listRef.current?.scrollToIndex({ index: matchIndex, animated: true });
+      } catch {}
+
+      activateFeedIndexRef.current(matchIndex, "focus-post-param");
+    });
+  }, [focusPostId, displayFeed, feedVisibleCount]);
 
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     const topView = pickPrimaryViewableItem(viewableItems);

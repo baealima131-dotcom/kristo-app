@@ -54,11 +54,14 @@ import {
 import { ProfileHeroSkeleton } from "@/src/components/PremiumTabSkeletons";
 import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
 import ChurchActivityGrid from "@/src/components/ChurchActivityGrid";
+import ChurchActivityMemberChips from "@/src/components/ChurchActivityMemberChips";
+import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import {
+  getChurchActivityPosts,
   isChurchActivityPost,
   isMediaActivityPost,
-  normalizeActivityItem,
-  sortActivityPostsNewestFirst,
+  type ActivityGridItem,
+  type ChurchActivityMemberFilter,
 } from "@/src/lib/churchActivityPosts";
 
 type AuthProfile = {
@@ -503,6 +506,7 @@ export default function MeScreen() {
   useEffect(() => {
     const claimedFeedUnsub = subscribeHomeFeed(() => {
       setClaimedFeedTick((v) => v + 1);
+      setHomeFeedTick((v) => v + 1);
     });
     const claimEventUnsub = onClaimUpdated(() => {
       setClaimedFeedTick((v) => v + 1);
@@ -513,6 +517,26 @@ export default function MeScreen() {
       claimEventUnsub();
     };
   }, []);
+  useEffect(() => {
+    if (!churchId || !userId) {
+      setChurchMembers([]);
+      return;
+    }
+
+    let alive = true;
+    void fetchChurchMembers()
+      .then((rows) => {
+        if (!alive) return;
+        setChurchMembers(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (alive) setChurchMembers([]);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [churchId, userId]);
   useEffect(() => {
     let alive = true;
     let fetched = false;
@@ -574,6 +598,8 @@ export default function MeScreen() {
   const hasSubscription = isPlanActive(currentPlan, planStatus);
   const [contentMode, setContentMode] = useState<"church" | "media">("church");
   const showMediaContent = canShowMediaTab && hasMediaProfile && contentMode === "media";
+  const showMediaActivityTab = contentMode === "media";
+  const showMediaCreatorTools = showMediaContent;
 
   React.useEffect(() => {
     if (!canShowMediaTab && contentMode === "media") {
@@ -678,6 +704,11 @@ export default function MeScreen() {
   );
   const [latestSaved, setLatestSaved] = useState<{ title: string; body: string } | null>(profileCachePeek?.latestSaved || null);
   const [profileFeedItems, setProfileFeedItems] = useState<any[]>([]);
+  const [homeFeedTick, setHomeFeedTick] = useState(0);
+  const [churchMembers, setChurchMembers] = useState<any[]>([]);
+  const [activityMemberFilter, setActivityMemberFilter] =
+    useState<ChurchActivityMemberFilter>("all");
+  const [activityMemberId, setActivityMemberId] = useState("");
 
   const creatorScoreValue = useMemo(() => {
     const posts = Number(postsCount || 0);
@@ -1065,7 +1096,18 @@ export default function MeScreen() {
       setLatestAnnouncement(myAnnouncements[0] || null);
 
       const feedItems = Array.isArray(feedRes?.data) ? feedRes!.data! : [];
-      setProfileFeedItems(feedItems as any[]);
+      setProfileFeedItems(
+        feedItems.map((item: any) => {
+          const scopedChurchId = String(
+            item?.churchId || item?.sourceChurchId || item?.church?.id || churchId || ""
+          ).trim();
+          return {
+            ...item,
+            churchId: scopedChurchId,
+            sourceChurchId: String(item?.sourceChurchId || scopedChurchId).trim(),
+          };
+        }) as any[]
+      );
       const myFeed = feedItems
         .filter(isChurchActivityPost)
         .filter((x: ChurchFeedItemLite) => String(x?.createdBy || "").trim() === userId)
@@ -1355,27 +1397,126 @@ export default function MeScreen() {
     return result;
   }, [currentUserId, claimedFeedTick, profileFeedItems]);
 
+  const allActivitySourcePosts = useMemo(() => {
+    void homeFeedTick;
+    return [...profileFeedItems, ...feedList()];
+  }, [profileFeedItems, homeFeedTick]);
+
+  const activityMemberChipRows = useMemo(() => {
+    const seen = new Set<string>();
+    const rows: { userId: string; name: string; avatarUri?: string }[] = [];
+
+    for (const member of churchMembers) {
+      const userIdValue = String(member?.userId || member?.id || "").trim();
+      if (!userIdValue || seen.has(userIdValue)) continue;
+      seen.add(userIdValue);
+      rows.push({
+        userId: userIdValue,
+        name: String(
+          member?.fullName ||
+            member?.name ||
+            member?.displayName ||
+            member?.username ||
+            "Member"
+        ).trim(),
+        avatarUri: toBackendImageUrl(
+          String(
+            member?.avatarUrl ||
+              member?.avatarUri ||
+              member?.profileImage ||
+              ""
+          ).trim()
+        ),
+      });
+    }
+
+    return rows.sort((a, b) => a.name.localeCompare(b.name));
+  }, [churchMembers]);
+
+  const activityMemberChipKey = useMemo(() => {
+    if (activityMemberFilter === "member" && activityMemberId) {
+      return activityMemberId;
+    }
+    return activityMemberFilter;
+  }, [activityMemberFilter, activityMemberId]);
+
   const churchActivityPosts = useMemo(() => {
-    return sortActivityPostsNewestFirst(
-      profileFeedItems
-        .filter((item: any) => {
-          if (!isChurchActivityPost(item)) return false;
-          return String(item?.createdBy || "").trim() === currentUserId;
-        })
-        .map((item: any) => normalizeActivityItem(item, toBackendImageUrl))
-    );
-  }, [profileFeedItems, currentUserId]);
+    return getChurchActivityPosts({
+      allPosts: allActivitySourcePosts,
+      selectedTab: "church",
+      memberFilter: activityMemberFilter,
+      selectedMemberId: activityMemberId,
+      currentUserId,
+      churchId,
+      mediaUrlFn: toBackendImageUrl,
+    });
+  }, [
+    allActivitySourcePosts,
+    activityMemberFilter,
+    activityMemberId,
+    currentUserId,
+    churchId,
+  ]);
 
   const mediaActivityPosts = useMemo(() => {
-    return sortActivityPostsNewestFirst(
-      profileFeedItems
-        .filter((item: any) => {
-          if (!isMediaActivityPost(item)) return false;
-          return String(item?.createdBy || "").trim() === currentUserId;
-        })
-        .map((item: any) => normalizeActivityItem(item, toBackendImageUrl))
-    );
-  }, [profileFeedItems, currentUserId]);
+    return getChurchActivityPosts({
+      allPosts: allActivitySourcePosts,
+      selectedTab: "media",
+      memberFilter: activityMemberFilter,
+      selectedMemberId: activityMemberId,
+      currentUserId,
+      churchId,
+      mediaUrlFn: toBackendImageUrl,
+    });
+  }, [
+    allActivitySourcePosts,
+    activityMemberFilter,
+    activityMemberId,
+    currentUserId,
+    churchId,
+  ]);
+
+  const openActivityPostInHomeFeed = useCallback(
+    (post: ActivityGridItem) => {
+      const focusPostId = String(post?.id || "").trim();
+      if (!focusPostId) return;
+
+      try {
+        router.push({
+          pathname: "/(tabs)/index" as any,
+          params: {
+            focusPostId,
+            source: "churchActivity",
+          },
+        });
+      } catch {
+        try {
+          router.push("/(tabs)/" as any);
+        } catch {}
+      }
+    },
+    [router]
+  );
+
+  const handleActivityMemberChipSelect = useCallback(
+    (key: "all" | "mine" | string, memberId?: string) => {
+      if (key === "all") {
+        setActivityMemberFilter("all");
+        setActivityMemberId("");
+        return;
+      }
+      if (key === "mine") {
+        setActivityMemberFilter("mine");
+        setActivityMemberId("");
+        return;
+      }
+      setActivityMemberFilter("member");
+      setActivityMemberId(String(memberId || key || "").trim());
+    },
+    []
+  );
+
+  const showActivityTabs = Boolean(churchId);
 
 
 const resolvedName = useMemo(() => {
@@ -1679,7 +1820,7 @@ const resolvedName = useMemo(() => {
               </Pressable>
             </View>
 
-            {canShowMediaTab && showMediaContent ? (
+            {canShowMediaTab && showMediaCreatorTools ? (
               <View style={s.mediaSwitchRow}>
                 <Pressable
                   style={[s.mediaActionBtn, s.mediaActionBtnPrimary]}
@@ -1720,36 +1861,36 @@ const resolvedName = useMemo(() => {
             ) : null}
           </View>
 
-          <View style={s.section}>
+          <View style={[s.section, s.churchActivitySection]}>
             <View style={s.sectionHead}>
               <View>
-                <Text style={s.sectionTitle}>{showMediaContent ? "Media Library" : "Church Activity"}</Text>
-                <Text style={s.sectionSub}>{showMediaContent ? "Saved media and creator tools" : "Member life inside church"}</Text>
+                <Text style={s.sectionTitle}>
+                  {showMediaCreatorTools ? "Media Library" : "Church Activity"}
+                </Text>
+                <Text style={s.sectionSub}>
+                  {showMediaCreatorTools
+                    ? "Saved media and creator tools"
+                    : "Member life inside church"}
+                </Text>
               </View>
-              {canShowMediaTab ? (
+              {showActivityTabs ? (
                 <View style={s.contentModeTabs}>
                   <Pressable
                     onPress={() => setContentMode("church")}
-                    style={[s.contentModeTab, !showMediaContent ? s.contentModeTabActive : null]}
+                    style={[s.contentModeTab, !showMediaActivityTab ? s.contentModeTabActive : null]}
                   >
-                    <Ionicons name="home-outline" size={13} color={!showMediaContent ? "#07111F" : "#F4D06F"} />
-                    <Text style={[s.contentModeTabText, !showMediaContent ? s.contentModeTabTextActive : null]}>
+                    <Ionicons name="home-outline" size={13} color={!showMediaActivityTab ? "#07111F" : "#F4D06F"} />
+                    <Text style={[s.contentModeTabText, !showMediaActivityTab ? s.contentModeTabTextActive : null]}>
                       Church
                     </Text>
                   </Pressable>
 
                   <Pressable
-                    onPress={() => {
-                      if (hasMediaProfile) {
-                        setContentMode("media");
-                        return;
-                      }
-                      router.push("/more/media" as any);
-                    }}
-                    style={[s.contentModeTab, showMediaContent ? s.contentModeTabActive : null]}
+                    onPress={() => setContentMode("media")}
+                    style={[s.contentModeTab, showMediaActivityTab ? s.contentModeTabActive : null]}
                   >
-                    <Ionicons name="images-outline" size={13} color={showMediaContent ? "#07111F" : "#F4D06F"} />
-                    <Text style={[s.contentModeTabText, showMediaContent ? s.contentModeTabTextActive : null]}>
+                    <Ionicons name="images-outline" size={13} color={showMediaActivityTab ? "#07111F" : "#F4D06F"} />
+                    <Text style={[s.contentModeTabText, showMediaActivityTab ? s.contentModeTabTextActive : null]}>
                       Media
                     </Text>
                   </Pressable>
@@ -1759,18 +1900,31 @@ const resolvedName = useMemo(() => {
               )}
             </View>
 
-            {showMediaContent ? (
+            {showActivityTabs ? (
+              <View style={s.activityMemberChipsWrap}>
+                <ChurchActivityMemberChips
+                  members={activityMemberChipRows}
+                  selectedKey={activityMemberChipKey}
+                  onSelect={handleActivityMemberChipSelect}
+                  currentUserName={user.name}
+                />
+              </View>
+            ) : null}
+
+            {showMediaActivityTab ? (
               <ChurchActivityGrid
                 variant="media"
                 items={mediaActivityPosts}
                 emptyTitle="No media posts yet"
-                emptyBody="Your media uploads and creator posts will appear here."
+                emptyBody="Church media uploads and creator posts will appear here."
+                onItemPress={openActivityPostInHomeFeed}
               />
             ) : (
               <ChurchActivityGrid
                 items={churchActivityPosts}
                 emptyTitle="No church activity yet"
-                emptyBody="Your testimonies, announcements, prayer requests, and counsel posts will appear here."
+                emptyBody="Posts from church members will appear here."
+                onItemPress={openActivityPostInHomeFeed}
               />
             )}
           </View>
@@ -3431,6 +3585,14 @@ const s = StyleSheet.create({
 
   contentModeTabTextActive: {
     color: "#07111F",
+  },
+  activityMemberChipsWrap: {
+    marginTop: 12,
+    marginBottom: 10,
+  },
+  churchActivitySection: {
+    paddingBottom: 28,
+    marginBottom: 8,
   },
   grid: {
     flexDirection: "row",
