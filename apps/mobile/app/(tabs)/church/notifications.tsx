@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, ScrollView, Text, Pressable, StyleSheet, View, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { useFocusEffect } from "@react-navigation/native";
+import { getKristoHeaders, getKristoAuth } from "@/src/lib/kristoHeaders";
+import { shouldAllowScreenRefresh } from "@/src/lib/kristoTraffic";
 import {
   safeAvatarUri,
   safeBody,
@@ -15,6 +17,7 @@ import {
 const VIP_BG = "#07111F";
 const GOLD = "#F4D06F";
 const MUTED = "rgba(255,255,255,0.68)";
+const FETCH_TIMEOUT_MS = 12000;
 
 type Notice = NotificationLike & {
   id?: string;
@@ -28,6 +31,12 @@ type Notice = NotificationLike & {
   membershipStatus?: string;
   inviteStatus?: string;
 };
+
+const churchNotificationsCache = new Map<string, Notice[]>();
+
+function cacheKeyForAuth(userId: string, churchId: string) {
+  return `${userId}:${churchId}`;
+}
 
 function mapApiNotice(x: any, i: number): Notice {
   const raw: NotificationLike = {
@@ -63,62 +72,139 @@ function mapApiNotice(x: any, i: number): Notice {
   };
 }
 
+function mapNoticesFromApi(raw: any[]): Notice[] {
+  const inviteFiltered = raw.filter((x: any) => {
+    const title = String(x?.title || "").toLowerCase();
+    const body = String(x?.body || x?.message || x?.text || "").toLowerCase();
+    const type = String(x?.type || x?.kind || x?.category || "").toLowerCase();
+
+    const hasInviteShape = Boolean(x?.membershipId || x?.ministryMemberId);
+    const looksLikeInvite =
+      title.includes("invite") ||
+      title.includes("invitation") ||
+      body.includes("invite") ||
+      body.includes("invitation") ||
+      type.includes("invite") ||
+      type.includes("invitation") ||
+      hasInviteShape;
+
+    return !looksLikeInvite;
+  });
+
+  const seen = new Set<string>();
+  return inviteFiltered
+    .filter((x: Notice, i: number) => {
+      const title = String(x?.title || "").toLowerCase();
+      const status = String(x?.status || x?.membershipStatus || x?.inviteStatus || "").toLowerCase();
+      const key = String((x as any)?.membershipId || (x as any)?.ministryMemberId || (x as any)?.churchId || x?.id || i);
+
+      if (title.includes("invite") && status && status !== "pending") return false;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((x: any, i: number) => mapApiNotice(x, i));
+}
+
+function fetchErrorMessage(error: unknown, aborted: boolean) {
+  if (aborted) return "Notifications took too long to load. Check your connection and try again.";
+  return String((error as any)?.message ?? error ?? "Could not load notifications.");
+}
+
 export default function ChurchNotifications() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const [items, setItems] = useState<Notice[]>([]);
-  const [loading, setLoading] = useState(true);
+  const auth = getKristoAuth();
+  const cacheKey = cacheKeyForAuth(auth.userId, auth.churchId);
+  const bootCache = churchNotificationsCache.get(cacheKey) || [];
+
+  const [items, setItems] = useState<Notice[]>(bootCache);
+  const [loading, setLoading] = useState(bootCache.length === 0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState("");
+  const loadSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
-      const r = await fetch(`${base}/api/church/notifications`, { headers: getKristoHeaders() });
-      const j = await r.json().catch(() => ({} as any));
-      const raw = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
+  const load = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const silent = !!opts?.silent;
+      const seq = ++loadSeqRef.current;
 
-      const inviteFiltered = raw.filter((x: any) => {
-        const title = String(x?.title || "").toLowerCase();
-        const body = String(x?.body || x?.message || x?.text || "").toLowerCase();
-        const type = String(x?.type || x?.kind || x?.category || "").toLowerCase();
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-        const hasInviteShape = Boolean(x?.membershipId || x?.ministryMemberId);
-        const looksLikeInvite =
-          title.includes("invite") ||
-          title.includes("invitation") ||
-          body.includes("invite") ||
-          body.includes("invitation") ||
-          type.includes("invite") ||
-          type.includes("invitation") ||
-          hasInviteShape;
+      if (!silent) setLoading(true);
+      else setRefreshing(true);
+      if (!silent) setErr(null);
 
-        return !looksLikeInvite;
-      });
+      try {
+        const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+        if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
 
-      const seen = new Set<string>();
-      const clean = inviteFiltered
-        .filter((x: Notice, i: number) => {
-          const title = String(x?.title || "").toLowerCase();
-          const status = String(x?.status || x?.membershipStatus || x?.inviteStatus || "").toLowerCase();
-          const key = String((x as any)?.membershipId || (x as any)?.ministryMemberId || (x as any)?.churchId || x?.id || i);
+        const r = await fetch(`${base}/api/church/notifications`, {
+          headers: getKristoHeaders(),
+          signal: controller.signal,
+        });
+        const j = await r.json().catch(() => ({} as any));
+        if (!r.ok || !j?.ok) {
+          throw new Error(String(j?.error || `Request failed (${r.status})`));
+        }
 
-          if (title.includes("invite") && status && status !== "pending") return false;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        })
-        .map((x: any, i: number) => mapApiNotice(x, i));
+        if (seq !== loadSeqRef.current) return;
 
-      setItems(clean);
-    } finally {
-      setLoading(false);
-    }
-  }
+        const raw = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
+        const clean = mapNoticesFromApi(raw);
+        churchNotificationsCache.set(cacheKey, clean);
+        setItems(clean);
+        setErr(null);
+      } catch (e: unknown) {
+        if (seq !== loadSeqRef.current) return;
 
-  useEffect(() => {
-    load();
-  }, []);
+        const aborted = (e as any)?.name === "AbortError";
+        const cached = churchNotificationsCache.get(cacheKey) || [];
+        if (cached.length) {
+          setItems(cached);
+          setErr(null);
+        } else {
+          setErr(fetchErrorMessage(e, aborted));
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        if (seq !== loadSeqRef.current) return;
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [cacheKey]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      const cached = churchNotificationsCache.get(cacheKey) || [];
+      if (cached.length) {
+        setItems(cached);
+        setLoading(false);
+      }
+
+      const throttled = !shouldAllowScreenRefresh("ChurchNotifications", { minMs: 60000 });
+      if (throttled && cached.length > 0) {
+        setLoading(false);
+        setRefreshing(false);
+        return () => {
+          abortRef.current?.abort();
+        };
+      }
+
+      void load({ silent: cached.length > 0 });
+
+      return () => {
+        abortRef.current?.abort();
+      };
+    }, [cacheKey, load])
+  );
 
   const unread = useMemo(() => items.filter((x) => !(x.readAt || x.read)).length, [items]);
 
@@ -131,10 +217,10 @@ export default function ChurchNotifications() {
 
         <View style={{ flex: 1 }}>
           <Text style={s.h1}>Notifications</Text>
-          <Text style={s.h2}>Real alerts inside More tab</Text>
+          <Text style={s.h2}>{refreshing ? "Refreshing..." : "Real alerts inside More tab"}</Text>
         </View>
 
-        <Pressable onPress={load} style={s.roundBtn}>
+        <Pressable onPress={() => load({ silent: items.length > 0 })} style={s.roundBtn}>
           <Ionicons name="refresh" size={23} color="white" />
         </Pressable>
       </View>
@@ -150,10 +236,18 @@ export default function ChurchNotifications() {
         </Pressable>
       </View>
 
-      {loading ? (
+      {loading && items.length === 0 ? (
         <View style={s.center}>
           <ActivityIndicator />
           <Text style={s.emptyText}>Loading notifications...</Text>
+        </View>
+      ) : err && items.length === 0 ? (
+        <View style={s.errorCard}>
+          <Text style={s.emptyTitle}>Failed to load</Text>
+          <Text style={s.emptyText}>{err}</Text>
+          <Pressable onPress={() => load()} style={s.retryBtn}>
+            <Text style={s.markText}>Retry</Text>
+          </Pressable>
         </View>
       ) : (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 120 }}>
@@ -234,5 +328,7 @@ const s = StyleSheet.create({
   center: { marginTop: 80, alignItems: "center", gap: 12 },
   emptyCard: { marginTop: 30, minHeight: 220, borderRadius: 26, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.035)" },
   emptyTitle: { marginTop: 14, color: "white", fontSize: 24, fontWeight: "900" },
-  emptyText: { marginTop: 6, color: MUTED, fontWeight: "800" },
+  emptyText: { marginTop: 6, color: MUTED, fontWeight: "800", textAlign: "center", paddingHorizontal: 12 },
+  errorCard: { marginTop: 30, minHeight: 220, borderRadius: 26, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(255,120,120,0.22)", backgroundColor: "rgba(45,16,16,0.82)", paddingHorizontal: 18 },
+  retryBtn: { marginTop: 16, height: 48, paddingHorizontal: 20, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(244,208,111,0.12)", borderWidth: 1, borderColor: "rgba(244,208,111,0.45)" },
 });

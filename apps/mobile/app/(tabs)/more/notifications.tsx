@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { useRouter } from "expo-router";
-import { useIsFocused } from "@react-navigation/native";
+import { useFocusEffect } from "@react-navigation/native";
 import { createDebouncer, shouldAllowScreenRefresh } from "@/src/lib/kristoTraffic";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
@@ -22,6 +22,65 @@ import {
   safeInitial,
   type NotificationLike,
 } from "@/src/lib/notificationDisplay";
+
+const FETCH_TIMEOUT_MS = 12000;
+
+const notificationsScreenCache = new Map<string, Notice[]>();
+
+function notificationsCacheKey(userId: string, churchId: string) {
+  return `${userId}:${churchId}`;
+}
+
+function filterInviteSafeNotices(raw: any[]): any[] {
+  return raw.filter((x: any) => {
+    const title = String(x?.title || x?.subject || "").toLowerCase();
+    const body = String(x?.body || x?.message || x?.text || "").toLowerCase();
+    const type = String(x?.type || x?.kind || x?.category || "").toLowerCase();
+    return !(
+      title.includes("invite") ||
+      title.includes("invitation") ||
+      body.includes("invited") ||
+      body.includes("invite") ||
+      body.includes("invitation") ||
+      type.includes("invite") ||
+      type.includes("invitation") ||
+      Boolean(x?.membershipId || x?.meta?.membershipId || x?.ministryMemberId)
+    );
+  });
+}
+
+function mapNoticesFromApi(raw: any[]): Notice[] {
+  return filterInviteSafeNotices(raw)
+    .map((x: any, i: number) => mapApiNotice(x, i))
+    .sort((a: Notice, b: Notice) => {
+      const aa = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bb - aa;
+    });
+}
+
+function buildFetchHeaders(auth: {
+  userId: string;
+  role: string;
+  churchId: string;
+  displayName: string;
+}) {
+  return {
+    accept: "application/json",
+    "content-type": "application/json",
+    "x-kristo-user-id": auth.userId,
+    "x-kristo-role": auth.role,
+    "x-kristo-church-id": auth.churchId,
+    ...(auth.displayName
+      ? { "x-kristo-user-name": auth.displayName, "x-kristo-display-name": auth.displayName }
+      : {}),
+  };
+}
+
+function fetchErrorMessage(error: unknown, aborted: boolean) {
+  if (aborted) return "Notifications took too long to load. Check your connection and try again.";
+  return String((error as any)?.message ?? error ?? "Could not load notifications.");
+}
 
 const VIP_BG = "#070C14";
 const CARD = "rgba(16,20,29,0.92)";
@@ -222,31 +281,30 @@ function mapApiNotice(x: any, i: number): Notice {
 export default function MoreNotificationsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const isFocused = useIsFocused();
 
   const auth = getSessionSync() as any;
-  const churchId = String(
-    auth?.churchId
-  );
+  const churchId = String(auth?.churchId);
   const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
 
   const effectiveAuthUserId = String(auth?.userId || "");
   const effectiveAuthRole = String(auth?.role || "Member");
   const effectiveDisplayName = String(auth?.displayName || auth?.name || "").trim();
+  const cacheKey = notificationsCacheKey(effectiveAuthUserId, churchId);
+  const bootCache = notificationsScreenCache.get(cacheKey) || [];
 
-  const getHeaders = () => ({
-    accept: "application/json",
-    "content-type": "application/json",
-    "x-kristo-user-id": effectiveAuthUserId,
-    "x-kristo-role": effectiveAuthRole,
-    "x-kristo-church-id": churchId,
-    ...(effectiveDisplayName
-      ? { "x-kristo-user-name": effectiveDisplayName, "x-kristo-display-name": effectiveDisplayName }
-      : {}),
-  });
+  const getHeaders = useCallback(
+    () =>
+      buildFetchHeaders({
+        userId: effectiveAuthUserId,
+        role: effectiveAuthRole,
+        churchId,
+        displayName: effectiveDisplayName,
+      }),
+    [effectiveAuthUserId, effectiveAuthRole, churchId, effectiveDisplayName]
+  );
 
-  const [items, setItems] = useState<Notice[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<Notice[]>(bootCache);
+  const [loading, setLoading] = useState(bootCache.length === 0);
   const [refreshing, setRefreshing] = useState(false);
   const [busyId, setBusyId] = useState("");
   const [markingAll, setMarkingAll] = useState(false);
@@ -255,71 +313,79 @@ export default function MoreNotificationsScreen() {
   const [openedIds, setOpenedIds] = useState<Record<string, boolean>>({});
   const [usingDemo, setUsingDemo] = useState(false);
   const debouncedRefresh = useRef(createDebouncer(900)).current;
+  const loadSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const canMarkAll =
     effectiveAuthRole === "Pastor" ||
     effectiveAuthRole === "Church_Admin" ||
     effectiveAuthRole === "System_Admin";
 
-  async function load(opts?: { silent?: boolean }) {
-    const silent = !!opts?.silent;
-    if (!silent) setLoading(true);
-    else setRefreshing(true);
-    setErr(null);
+  const load = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const silent = !!opts?.silent;
+      const seq = ++loadSeqRef.current;
 
-    try {
-      if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
-      // No church yet is OK here: invites are church-scoped, dev fallback handles testing.
-      if (!effectiveAuthUserId) throw new Error("userId missing");
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-      const r = await fetch(`${base}/api/church/notifications`, {
-        headers: getHeaders(),
-      });
+      if (!silent) setLoading(true);
+      else setRefreshing(true);
+      if (!silent) setErr(null);
 
-      const j = await r.json().catch(() => ({} as any));
-      if (!r.ok || !j?.ok) {
-        throw new Error(String(j?.error || `Request failed (${r.status})`));
-      }
+      try {
+        if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
+        if (!effectiveAuthUserId) throw new Error("userId missing");
 
-      const raw = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
-      const inviteSafeRaw = raw.filter((x: any) => {
-        const title = String(x?.title || x?.subject || "").toLowerCase();
-        const body = String(x?.body || x?.message || x?.text || "").toLowerCase();
-        const type = String(x?.type || x?.kind || x?.category || "").toLowerCase();
-        return !(
-          title.includes("invite") ||
-          title.includes("invitation") ||
-          body.includes("invited") ||
-          body.includes("invite") ||
-          body.includes("invitation") ||
-          type.includes("invite") ||
-          type.includes("invitation") ||
-          Boolean(x?.membershipId || x?.meta?.membershipId || x?.ministryMemberId)
-        );
-      });
-
-      const mapped: Notice[] = inviteSafeRaw
-        .map((x: any, i: number) => mapApiNotice(x, i))
-        .sort((a: Notice, b: Notice) => {
-          const aa = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-          const bb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-          return bb - aa;
+        const r = await fetch(`${base}/api/church/notifications`, {
+          headers: getHeaders(),
+          signal: controller.signal,
         });
 
-      if (mapped.length) {
-        setUsingDemo(false);
-        setItems(mapped);
-      } else {
-        setUsingDemo(true);
-        setItems(buildDemoNotifications());
+        const j = await r.json().catch(() => ({} as any));
+        if (!r.ok || !j?.ok) {
+          throw new Error(String(j?.error || `Request failed (${r.status})`));
+        }
+
+        if (seq !== loadSeqRef.current) return;
+
+        const raw = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
+        const mapped = mapNoticesFromApi(raw);
+
+        if (mapped.length) {
+          setUsingDemo(false);
+          notificationsScreenCache.set(cacheKey, mapped);
+          setItems(mapped);
+          setErr(null);
+        } else {
+          const demo = buildDemoNotifications();
+          setUsingDemo(true);
+          notificationsScreenCache.set(cacheKey, demo);
+          setItems(demo);
+          setErr(null);
+        }
+      } catch (e: unknown) {
+        if (seq !== loadSeqRef.current) return;
+
+        const aborted = (e as any)?.name === "AbortError";
+        const cached = notificationsScreenCache.get(cacheKey) || [];
+        if (cached.length) {
+          setItems(cached);
+          setErr(null);
+        } else {
+          setErr(fetchErrorMessage(e, aborted));
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        if (seq !== loadSeqRef.current) return;
+        setLoading(false);
+        setRefreshing(false);
       }
-    } catch (e: any) {
-      setErr(String(e?.message ?? e ?? "Error"));
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }
+    },
+    [base, cacheKey, effectiveAuthUserId, getHeaders]
+  );
 
   async function markOneRead(id: string) {
     try {
@@ -429,11 +495,30 @@ export default function MoreNotificationsScreen() {
     [busyId]
   );
 
-  useEffect(() => {
-    if (!isFocused) return;
-    if (!shouldAllowScreenRefresh("Notifications", { minMs: 60000 })) return;
-    load({ silent: !loading });
-  }, [isFocused]);
+  useFocusEffect(
+    useCallback(() => {
+      const cached = notificationsScreenCache.get(cacheKey) || [];
+      if (cached.length) {
+        setItems(cached);
+        setLoading(false);
+      }
+
+      const throttled = !shouldAllowScreenRefresh("Notifications", { minMs: 60000 });
+      if (throttled && cached.length > 0) {
+        setLoading(false);
+        setRefreshing(false);
+        return () => {
+          abortRef.current?.abort();
+        };
+      }
+
+      void load({ silent: cached.length > 0 });
+
+      return () => {
+        abortRef.current?.abort();
+      };
+    }, [cacheKey, load])
+  );
 
   const unreadCount = useMemo(() => items.filter((x) => !x.read).length, [items]);
   const groupedItems = useMemo(() => groupNotices(items), [items]);
@@ -621,12 +706,12 @@ export default function MoreNotificationsScreen() {
         </View>
       )}
 
-      {loading ? (
+      {loading && items.length === 0 ? (
         <View style={s.center}>
           <ActivityIndicator color={GOLD} />
           <Text style={s.centerText}>Loading notifications...</Text>
         </View>
-      ) : err ? (
+      ) : err && items.length === 0 ? (
         <View style={s.errorCard}>
           <Text style={s.errorTitle}>Failed to load</Text>
           <Text style={s.errorText}>{err}</Text>
