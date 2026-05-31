@@ -4567,18 +4567,32 @@ export default function FeedScreen() {
 
       let score = 0;
 
-      // Fresh posts still matter, but not enough to make every user see same order.
-      score += Math.max(0, 120 - ageHours(item?.createdAt) * 2);
+      const hours = ageHours(item?.createdAt);
+      if (hours <= 48) {
+        score += Math.max(0, 155 - hours * 2.75);
+      } else {
+        score += Math.max(0, 24 - (hours - 48) * 0.75);
+      }
 
-      // Live/video/social content gets small discovery boost.
-      if (item?.isLiveNow) score += 90;
-      if (item?.kind === "live") score += 60;
-      if (item?.mediaType === "video") score += 35;
-      if (Number(item?.commentCount || 0) > 0) score += Math.min(35, Number(item.commentCount) * 7);
-      if (Number(item?.likeCount || 0) > 0) score += Math.min(25, Number(item.likeCount) * 4);
+      if (item?.isLiveNow) score += 180;
+      if (item?.kind === "live") score += 110;
+      if (item?.mediaType === "video" || item?.videoUrl) score += 75;
+      if (item?.mediaType === "image" || item?.mediaUri) score += 35;
+      if (item?.kind === "testimony") score += 45;
+      if (item?.kind === "announcement") score += 25;
+      if (item?.kind === "prayer_request") score += 20;
+      if (
+        (Array.isArray(item?.scheduleSlots) && item.scheduleSlots.length > 0) ||
+        String(item?.scheduleType || "").includes("media-live-slots") ||
+        String(item?.source || "").includes("media-schedule")
+      ) {
+        score += 120;
+      }
 
-      // Same church is relevant, but public outside churches still get chance.
-      if (sourceChurchId && myChurchId && sourceChurchId === myChurchId) score += 60;
+      if (Number(item?.commentCount || 0) > 0) score += Math.min(28, Number(item.commentCount) * 6);
+      if (Number(item?.likeCount || 0) > 0) score += Math.min(20, Number(item.likeCount) * 3);
+
+      if (sourceChurchId && myChurchId && sourceChurchId === myChurchId) score += 85;
 
       // GEO / REGION AFFINITY
       if (myCountry && postCountry) score += textSimilarity(myCountry, postCountry) * 120;
@@ -4595,8 +4609,8 @@ export default function FeedScreen() {
 
       if (myLang && postLang && myLang === postLang) score += 36;
 
-      // Per-user stable randomness: different users see different order.
-      score += stableRand(`${userSeed}|${id}`) * 95;
+      // Per-user stable randomness: small tie-breaker only.
+      score += stableRand(`${userSeed}|${id}`) * 18;
 
       const signalId = baseFeedId(item?.sourceScheduleId || item?.id || index);
       const sig = forYouSignals[signalId] || {};
@@ -4643,12 +4657,12 @@ export default function FeedScreen() {
         });
       });
 
-      // Learn from this device behavior.
-      score += Math.min(85, Number(sig.watchDurationMs || 0) / 1000);
-      score += Math.min(60, Number(sig.watchedCount || 0) * 8);
-      score += Math.min(70, Number(sig.likedCount || 0) * 18);
-      score += Math.min(70, Number(sig.commentedCount || 0) * 22);
-      score += Math.min(35, Number(sig.savedCount || 0) * 14);
+      // Learn from this device behavior (capped so live/fresh posts stay ahead).
+      score += Math.min(70, Number(sig.watchDurationMs || 0) / 1000);
+      score += Math.min(45, Number(sig.watchedCount || 0) * 8);
+      score += Math.min(50, Number(sig.likedCount || 0) * 18);
+      score += Math.min(55, Number(sig.commentedCount || 0) * 22);
+      score += Math.min(30, Number(sig.savedCount || 0) * 14);
 
       // Skipped posts can still return later, but lower.
       score -= Math.min(80, Number(sig.skippedCount || 0) * 18);
@@ -4658,6 +4672,13 @@ export default function FeedScreen() {
       if (item?.saved) score -= 10;
 
       return score;
+    }
+
+    function rankScore(item: any, index: number) {
+      const originalId = String(item?.sourceScheduleId || item?.id || index);
+      const cycleNoise = stableRand(`${userSeed}|cycle:0|${originalId}`) * 8;
+      const shuffleNoise = stableRand(`${userSeed}|top-shuffle:0|${originalId}`) * 12;
+      return forYouScore(item, index) + cycleNoise + shuffleNoise;
     }
 
     const schedulePriorityItems = unique.filter((item: any) =>
@@ -4674,45 +4695,29 @@ export default function FeedScreen() {
       )
     );
 
-    // Keep Home Feed stable after posting.
-    // Repeating non-schedule rows creates ghost/duplicate visible rows and can shift active posts.
-    const cycles = backendFeed.length > 0 && nonScheduleItems.length > 0 ? 1 : 0;
+    const scheduleScored = schedulePriorityItems
+      .map((item: any, index: number) => ({
+        item,
+        score: rankScore(item, index),
+        createdAtMs: new Date(String(item?.createdAt || "")).getTime() || 0,
+      }))
+      .sort((a, b) => {
+        if (b.createdAtMs !== a.createdAtMs) return b.createdAtMs - a.createdAtMs;
+        return b.score - a.score;
+      });
 
-    const forYouBaseItems = nonScheduleItems.filter((item: any) => {
-      return !(item?.mediaType === "video" || item?.videoUrl);
-    });
+    const sortedScheduleItems = scheduleScored.map((x) => x.item);
 
-    const singleVideoItems = nonScheduleItems.filter((item: any) => {
-      return item?.mediaType === "video" || item?.videoUrl;
-    });
+    const remainingScored = nonScheduleItems
+      .map((item: any, index: number) => ({
+        item,
+        score: rankScore(item, index),
+      }))
+      .sort((a, b) => b.score - a.score);
 
-    const forYouLoop = cycles
-      ? Array.from({ length: cycles }).flatMap((_, cycle) => {
-      return forYouBaseItems
-        .map((item: any, index: number) => {
-          const originalId = String(item?.sourceScheduleId || item?.id || index);
-          const cycleNoise = stableRand(`${userSeed}|cycle:${cycle}|${originalId}`) * 120;
+    const sortedRemainingItems = remainingScored.map((x) => x.item);
 
-          return {
-            item: {
-              ...item,
-              id: cycle === 0 ? String(item?.id || originalId) : `${String(item?.id || originalId)}__fy_${cycle}`,
-              sourceScheduleId: originalId,
-              forYouCycle: cycle,
-            },
-            score:
-              forYouScore(item, index) +
-              cycleNoise +
-              stableRand(`${userSeed}|top-shuffle:${cycle}|${originalId}`) * 220 -
-              cycle * 6,
-          };
-        })
-        .sort((a, b) => b.score - a.score)
-        .map((x) => x.item);
-      })
-      : [];
-
-    const finalFeed = [...schedulePriorityItems, ...singleVideoItems, ...forYouLoop];
+    const finalFeed = [...sortedScheduleItems, ...sortedRemainingItems];
     const seenFinal = new Set<string>();
 
     const visibleData = finalFeed.filter((item: any, index: number) => {
@@ -4729,6 +4734,18 @@ export default function FeedScreen() {
     });
 
     if (__DEV__) {
+      const rankingSample = [...scheduleScored, ...remainingScored]
+        .slice(0, 8)
+        .map((row, index) => ({
+          rank: index + 1,
+          id: String(row.item?.id || ""),
+          kind: String(row.item?.kind || ""),
+          mediaType: String(row.item?.mediaType || ""),
+          score: Math.round(row.score * 10) / 10,
+          createdAt: String(row.item?.createdAt || ""),
+        }));
+      console.log("KRISTO_HOME_FEED_RANKING", rankingSample);
+
       console.log("KRISTO_HOME_FEED_VISIBLE_SOURCE", {
         backendCount: backendFeed.length,
         localCount: localFeed.length,
