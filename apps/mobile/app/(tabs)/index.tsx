@@ -691,6 +691,7 @@ const FeedVideo = memo(function FeedVideo({
   interactive,
   playbackMeta,
   onVideoReadyChange,
+  onVideoEnd,
   onDoubleTapLike,
 }: {
   postId: string;
@@ -701,10 +702,11 @@ const FeedVideo = memo(function FeedVideo({
   interactive?: boolean;
   playbackMeta: Record<string, unknown>;
   onVideoReadyChange?: (ready: boolean) => void;
+  onVideoEnd?: (postId: string) => void;
   onDoubleTapLike?: () => void;
 }) {
   const player = useVideoPlayer(uri, (p) => {
-    p.loop = true;
+    p.loop = false;
     p.muted = true;
   });
 
@@ -840,7 +842,7 @@ const FeedVideo = memo(function FeedVideo({
         shouldPlay: true,
         reason: "user-play",
       });
-      player.loop = true;
+      player.loop = false;
       player.muted = false;
       player.play();
       flashCenterIcon("pause", 380);
@@ -963,7 +965,7 @@ const FeedVideo = memo(function FeedVideo({
       });
 
       try {
-        player.loop = true;
+        player.loop = false;
         player.muted = false;
         player.play();
       } catch {}
@@ -998,15 +1000,15 @@ const FeedVideo = memo(function FeedVideo({
         }
 
         if (nextDuration > 0 && nextCurrent >= Math.max(0, nextDuration - 0.25)) {
-          player.currentTime = 0;
-          player.muted = false;
-          player.play();
+          player.pause();
+          player.muted = true;
+          onVideoEnd?.(postId);
         }
       } catch {}
     }, 250);
 
     return () => clearInterval(timer);
-  }, [player, shouldPlay, scrubbing]);
+  }, [player, shouldPlay, scrubbing, onVideoEnd, postId]);
 
   const maxDuration = Math.max(duration, 0.01);
 
@@ -1140,6 +1142,7 @@ const FeedVideoSurface = memo(function FeedVideoSurface({
   interactive,
   playbackMeta,
   onVideoReadyChange,
+  onVideoEnd,
   onDoubleTapLike,
 }: {
   postId: string;
@@ -1150,6 +1153,7 @@ const FeedVideoSurface = memo(function FeedVideoSurface({
   interactive?: boolean;
   playbackMeta: Record<string, unknown>;
   onVideoReadyChange?: (ready: boolean) => void;
+  onVideoEnd?: (postId: string) => void;
   onDoubleTapLike?: () => void;
 }) {
   const resolvedPoster =
@@ -1167,6 +1171,7 @@ const FeedVideoSurface = memo(function FeedVideoSurface({
       interactive={interactive}
       playbackMeta={playbackMeta}
       onVideoReadyChange={onVideoReadyChange}
+      onVideoEnd={onVideoEnd}
       onDoubleTapLike={onDoubleTapLike}
     />
   );
@@ -1257,6 +1262,7 @@ const FeedSlide = memo(function FeedSlide({
   profileAvatarUri,
   onOptimisticBackendLike,
   onOptimisticSlotClaim,
+  onRequestFeedAdvance,
 }: {
   item: HomeItem;
   height: number;
@@ -1277,6 +1283,7 @@ const FeedSlide = memo(function FeedSlide({
     slotId: string;
     claim: { userId: string; name: string; role: string; avatarUri: string };
   }) => void;
+  onRequestFeedAdvance?: (nextIndex: number, endedPostId: string) => void;
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -1955,7 +1962,10 @@ const noMediaPost =
 
   const showBottomMeta = !noMediaPost && (Boolean(activeSlot) || Boolean(body) || isStrictVideoPost);
 
-  const isActivePost = stableActive;
+  const isActivePost =
+    isActive &&
+    activeFeedIndex === feedIndex &&
+    String(item.id || "") === String(activeFeedItemId || "");
   const showVideoMetaChrome = isStrictVideoPost && !activeSlot && isActivePost;
   const [feedVideoReady, setFeedVideoReady] = useState(false);
   const videoMetaFade = useRef(new Animated.Value(0)).current;
@@ -2738,14 +2748,29 @@ const noMediaPost =
   const strictVideoPoster = resolveFeedVideoPoster(item);
   const strictVideoUri = feedVideoPlayUri(item);
 
+  const handleFeedVideoEnd = useCallback((endedPostId: string) => {
+    if (String(endedPostId || "") !== String(item.id || "")) return;
+    if (!isStrictVideoPost || !shouldPlayVideo) return;
+
+    const nextIndex = feedIndex + 1;
+    const postId = String(item.id || "");
+
+    console.log("KRISTO_VIDEO_END", {
+      postId,
+      feedIndex,
+      nextIndex,
+    });
+
+    onRequestFeedAdvance?.(nextIndex, postId);
+  }, [feedIndex, isStrictVideoPost, item.id, onRequestFeedAdvance, shouldPlayVideo]);
+
   const renderStrictVideoLayer = () => {
     const isCurrentStrictVideo =
       feedIndex === activeFeedIndex ||
       String(item.id || "") === String(activeFeedItemId || "");
 
     const shouldMountVideoPlayer =
-      Boolean(strictVideoUri) &&
-      (isCurrentStrictVideo || shouldKeepVideoMounted);
+      Boolean(strictVideoUri);
 
     if (shouldMountVideoPlayer) {
       return (
@@ -2759,6 +2784,7 @@ const noMediaPost =
           playbackMeta={playbackMeta}
           onDoubleTapLike={triggerVideoDoubleTapLike}
           onVideoReadyChange={!activeSlot ? handleFeedVideoReady : undefined}
+          onVideoEnd={handleFeedVideoEnd}
         />
       );
     }
@@ -4964,6 +4990,10 @@ export default function FeedScreen() {
     const base = dataRef.current;
     if (!base.length) return;
 
+    console.log("KRISTO_LOOP_APPEND", {
+      totalBefore: feedTotalCountRef.current,
+    });
+
     feedAppendLoadingRef.current = true;
     const nextGen = feedLoopGenRef.current + 1;
     feedLoopGenRef.current = nextGen;
@@ -4988,6 +5018,12 @@ export default function FeedScreen() {
   useEffect(() => {
     appendMoreFeedItemsRef.current = appendMoreFeedItems;
   }, [appendMoreFeedItems]);
+
+  useEffect(() => {
+    if (data.length > 0 && data.length <= FEED_INITIAL_VISIBLE_COUNT && feedLoopBatches.length === 0) {
+      setTimeout(() => appendMoreFeedItemsRef.current?.(), 120);
+    }
+  }, [data.length, feedLoopBatches.length]);
 
   useEffect(() => {
     feedVisibleCountRef.current = feedVisibleCount;
@@ -5172,42 +5208,6 @@ export default function FeedScreen() {
     []
   );
 
-  const renderItem = useCallback(
-    ({ item, index }: { item: any; index: number }) => (
-      <FeedSlide
-        item={item}
-        height={itemH}
-        feedIndex={index}
-        activeFeedIndex={activeFeedIndex}
-        activeFeedItemId={activeFeedItemId}
-        activeItemIsStrictVideo={activeItemIsStrictVideo}
-        isActive={String(item?.id || "") === String(activeFeedItemId || "")}
-        screenFocused={feedScreenFocused}
-        appActive={appActive}
-        nowMs={feedNowMs}
-        onSkipSlots={() => skipSlotsFrom(item)}
-        profileName={profileName}
-        profileAvatarUri={profileAvatarUri}
-        onOptimisticBackendLike={handleOptimisticBackendLike}
-        onOptimisticSlotClaim={handleOptimisticSlotClaim}
-      />
-    ),
-    [
-      itemH,
-      activeFeedItemId,
-      activeFeedIndex,
-      activeItemIsStrictVideo,
-      feedScreenFocused,
-      appActive,
-      feedNowMs,
-      skipSlotsFrom,
-      profileName,
-      profileAvatarUri,
-      handleOptimisticBackendLike,
-      handleOptimisticSlotClaim,
-    ]
-  );
-
   const activateFeedIndex = useCallback((nextIndex: number, reason: string) => {
     const nextItem = visibleDataRef.current[nextIndex];
     const nextId = nextItem?.id ? String(nextItem.id) : "";
@@ -5243,6 +5243,70 @@ export default function FeedScreen() {
       });
     }
   }, []);
+
+  const handleRequestFeedAdvance = useCallback((nextIndex: number, endedPostId: string) => {
+    appendMoreFeedItemsRef.current?.();
+
+    requestAnimationFrame(() => {
+      const total = Math.max(0, feedTotalCountRef.current - 1);
+      const target = Math.min(Math.max(0, nextIndex), total);
+
+      try {
+        listRef.current?.scrollToIndex({ index: target, animated: true });
+      } catch {}
+
+      const nextItem = visibleDataRef.current[target];
+      if (nextItem?.id) {
+        activateFeedIndex(target, "video-ended-auto-next");
+      }
+    });
+
+    if (__DEV__) {
+      console.log("KRISTO_HOME_FEED_APPEND_ON_VIDEO_END", {
+        endedPostId,
+        nextIndex,
+        total: feedTotalCountRef.current,
+      });
+    }
+  }, [activateFeedIndex]);
+
+  const renderItem = useCallback(
+    ({ item, index }: { item: any; index: number }) => (
+      <FeedSlide
+        item={item}
+        height={itemH}
+        feedIndex={index}
+        activeFeedIndex={activeFeedIndex}
+        activeFeedItemId={activeFeedItemId}
+        activeItemIsStrictVideo={activeItemIsStrictVideo}
+        isActive={String(item?.id || "") === String(activeFeedItemId || "")}
+        screenFocused={feedScreenFocused}
+        appActive={appActive}
+        nowMs={feedNowMs}
+        onSkipSlots={() => skipSlotsFrom(item)}
+        profileName={profileName}
+        profileAvatarUri={profileAvatarUri}
+        onOptimisticBackendLike={handleOptimisticBackendLike}
+        onOptimisticSlotClaim={handleOptimisticSlotClaim}
+        onRequestFeedAdvance={handleRequestFeedAdvance}
+      />
+    ),
+    [
+      itemH,
+      activeFeedItemId,
+      activeFeedIndex,
+      activeItemIsStrictVideo,
+      feedScreenFocused,
+      appActive,
+      feedNowMs,
+      skipSlotsFrom,
+      profileName,
+      profileAvatarUri,
+      handleOptimisticBackendLike,
+      handleOptimisticSlotClaim,
+      handleRequestFeedAdvance,
+    ]
+  );
 
   const handleMomentumScrollEnd = useCallback((event: any) => {
     const y = Number(event?.nativeEvent?.contentOffset?.y || 0);
