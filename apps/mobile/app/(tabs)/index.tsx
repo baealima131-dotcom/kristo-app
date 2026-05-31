@@ -166,6 +166,24 @@ function feedVideoPlayUri(item: any) {
   return mediaUrl(raw);
 }
 
+function isStrictVideoFeedItem(item: any) {
+  return item?.mediaType === "video" && Boolean(feedVideoPlayUri(item));
+}
+
+function isImageFeedItem(item: any) {
+  return item?.mediaType === "image" || Boolean(String(item?.mediaUri || "").trim());
+}
+
+function logNonVideoActivePause(meta: Record<string, unknown>) {
+  if (__DEV__) {
+    console.log("KRISTO_FEED_NON_VIDEO_ACTIVE_PAUSE", meta);
+  }
+  pauseAllHomeFeedVideos({
+    ...(meta as any),
+    reason: String(meta.reason || "non-video-active"),
+  });
+}
+
 function formatFeedVideoTime(seconds: number) {
   const total = Math.max(0, Math.floor(Number(seconds) || 0));
   const mins = Math.floor(total / 60);
@@ -876,34 +894,6 @@ const FeedVideo = memo(function FeedVideo({
   }, [shouldPlay, clearControlsHideTimer]);
 
   useEffect(() => {
-    if (shouldPlay) return;
-
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (cancelled || shouldPlayRef.current) return;
-
-      try {
-        player.loop = true;
-        player.muted = true;
-        player.play();
-
-        setTimeout(() => {
-          if (cancelled || shouldPlayRef.current) return;
-          try {
-            player.pause();
-            player.muted = true;
-          } catch {}
-        }, 180);
-      } catch {}
-    }, 120);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [player, uri, shouldPlay]);
-
-  useEffect(() => {
     const applyPlayback = (reason: string) => {
       const play = shouldPlayRef.current;
       const blockedByUser = userPausedRef.current;
@@ -1221,6 +1211,7 @@ const FeedSlide = memo(function FeedSlide({
   feedIndex,
   activeFeedIndex,
   activeFeedItemId,
+  activeItemIsStrictVideo,
   isActive,
   screenFocused,
   appActive,
@@ -1236,6 +1227,7 @@ const FeedSlide = memo(function FeedSlide({
   feedIndex: number;
   activeFeedIndex: number;
   activeFeedItemId: string | null;
+  activeItemIsStrictVideo: boolean;
   isActive: boolean;
   screenFocused: boolean;
   appActive: boolean;
@@ -1317,10 +1309,9 @@ const FeedSlide = memo(function FeedSlide({
   const feedAvatar = useMemo(() => resolveFeedItemAvatar(item, mediaUrl), [item]);
   const actorAvatarUri = feedAvatar.uri;
   const isVideoFeedPost = isFeedVideoItem(item);
-  const isStrictVideoPost =
-    item.mediaType === "video" &&
-    Boolean(feedVideoPlayUri(item));
+  const isStrictVideoPost = isStrictVideoFeedItem(item);
   const stableActive =
+    isStrictVideoPost &&
     isActive &&
     activeFeedIndex === feedIndex &&
     String(item.id || "") === String(activeFeedItemId || "");
@@ -1353,7 +1344,10 @@ const FeedSlide = memo(function FeedSlide({
 
   const shouldKeepVideoMounted =
     isStrictVideoPost &&
-    Math.abs(activeFeedIndex - feedIndex) <= 2;
+    (stableActive ||
+      (activeItemIsStrictVideo &&
+        activeFeedIndex >= 0 &&
+        Math.abs(activeFeedIndex - feedIndex) <= 2));
 
   useEffect(() => {
     if (!__DEV__) return;
@@ -4681,6 +4675,88 @@ export default function FeedScreen() {
       return forYouScore(item, index) + cycleNoise + shuffleNoise;
     }
 
+    function classifyMixBucket(item: any): "live" | "freshMedia" | "video" | "image" | "text" | "older" {
+      if (item?.isLiveNow || item?.kind === "live") return "live";
+      const hours = ageHours(item?.createdAt);
+      const video = isStrictVideoFeedItem(item);
+      const image = isImageFeedItem(item);
+      if (hours <= 48 && (video || image)) return "freshMedia";
+      if (video) return "video";
+      if (image) return "image";
+      const kind = String(item?.kind || "").toLowerCase();
+      if (
+        kind === "testimony" ||
+        kind === "announcement" ||
+        kind === "prayer_request" ||
+        kind === "counsel" ||
+        kind === "post"
+      ) {
+        return hours > 48 ? "older" : "text";
+      }
+      return hours > 48 ? "older" : "text";
+    }
+
+    function interleaveHomeFeedItems(items: any[], seed: string) {
+      type ScoredRow = { item: any; score: number };
+      const buckets: Record<string, ScoredRow[]> = {
+        live: [],
+        freshMedia: [],
+        video: [],
+        image: [],
+        text: [],
+        older: [],
+      };
+
+      items.forEach((item, index) => {
+        const bucket = classifyMixBucket(item);
+        buckets[bucket].push({ item, score: rankScore(item, index) });
+      });
+
+      for (const key of Object.keys(buckets)) {
+        buckets[key].sort((a, b) => b.score - a.score);
+      }
+
+      const liveItems = buckets.live.map((row) => row.item);
+      const olderAll = buckets.older;
+      const olderPromoteCount = Math.max(0, Math.ceil(olderAll.length * 0.12));
+      const olderPromoted = olderAll.slice(0, olderPromoteCount);
+      const olderRest = olderAll.slice(olderPromoteCount).map((row) => row.item);
+
+      const queues: Record<string, ScoredRow[]> = {
+        freshMedia: [...buckets.freshMedia],
+        video: [...buckets.video],
+        image: [...buckets.image],
+        text: [...buckets.text],
+        older: [...olderPromoted],
+      };
+
+      const pattern = ["freshMedia", "video", "image", "text", "older", "freshMedia", "video", "image", "text"];
+      const start = Math.floor(stableRand(`${seed}|mix-start`) * pattern.length);
+      const mixed: any[] = [];
+      let patternIdx = 0;
+      let guard = 0;
+
+      const totalRemaining = () =>
+        Object.values(queues).reduce((count, queue) => count + queue.length, 0);
+
+      while (totalRemaining() > 0 && guard++ < 5000) {
+        let picked = false;
+        for (let attempt = 0; attempt < pattern.length; attempt += 1) {
+          const bucketKey = pattern[(start + patternIdx + attempt) % pattern.length];
+          const queue = queues[bucketKey];
+          if (queue.length > 0) {
+            mixed.push(queue.shift()!.item);
+            patternIdx += attempt + 1;
+            picked = true;
+            break;
+          }
+        }
+        if (!picked) break;
+      }
+
+      return [...liveItems, ...mixed, ...olderRest];
+    }
+
     const schedulePriorityItems = unique.filter((item: any) =>
       (Array.isArray(item?.scheduleSlots) && item.scheduleSlots.length > 0) ||
       String(item?.scheduleType || "").includes("media-live-slots") ||
@@ -4708,14 +4784,14 @@ export default function FeedScreen() {
 
     const sortedScheduleItems = scheduleScored.map((x) => x.item);
 
+    const sortedRemainingItems = interleaveHomeFeedItems(nonScheduleItems, userSeed);
+
     const remainingScored = nonScheduleItems
       .map((item: any, index: number) => ({
         item,
         score: rankScore(item, index),
       }))
       .sort((a, b) => b.score - a.score);
-
-    const sortedRemainingItems = remainingScored.map((x) => x.item);
 
     const finalFeed = [...sortedScheduleItems, ...sortedRemainingItems];
     const seenFinal = new Set<string>();
@@ -4735,6 +4811,7 @@ export default function FeedScreen() {
 
     if (__DEV__) {
       const rankingSample = [...scheduleScored, ...remainingScored]
+        .sort((a, b) => b.score - a.score)
         .slice(0, 8)
         .map((row, index) => ({
           rank: index + 1,
@@ -4745,6 +4822,16 @@ export default function FeedScreen() {
           createdAt: String(row.item?.createdAt || ""),
         }));
       console.log("KRISTO_HOME_FEED_RANKING", rankingSample);
+
+      const mixSample = sortedRemainingItems.slice(0, 8).map((item, index) => ({
+        rank: index + 1,
+        id: String(item?.id || ""),
+        kind: String(item?.kind || ""),
+        mediaType: String(item?.mediaType || ""),
+        bucket: classifyMixBucket(item),
+        createdAt: String(item?.createdAt || ""),
+      }));
+      console.log("KRISTO_HOME_FEED_MIX", mixSample);
 
       console.log("KRISTO_HOME_FEED_VISIBLE_SOURCE", {
         backendCount: backendFeed.length,
@@ -4763,6 +4850,11 @@ export default function FeedScreen() {
   const visibleData = useMemo(() => {
     return data.slice(0, Math.min(feedVisibleCount, data.length));
   }, [data, feedVisibleCount]);
+
+  const activeItemIsStrictVideo = useMemo(() => {
+    if (activeFeedIndex < 0) return false;
+    return isStrictVideoFeedItem(visibleData[activeFeedIndex]);
+  }, [visibleData, activeFeedIndex]);
 
   const feedVisibleCountRef = useRef(feedVisibleCount);
   const feedTotalCountRef = useRef(data.length);
@@ -4793,15 +4885,18 @@ export default function FeedScreen() {
     ) {
       return;
     }
-    const firstVideoIndex = visibleData.findIndex(
-      (x) => x?.mediaType === "video" && Boolean(feedVideoPlayUri(x))
-    );
-    const fallbackIndex =
-      firstVideoIndex >= 0 ? firstVideoIndex : 0;
-    setActiveFeedItemId(
-      visibleData[fallbackIndex]?.id ?? null
-    );
+    const fallbackIndex = 0;
+    const fallbackItem = visibleData[fallbackIndex];
+    setActiveFeedItemId(fallbackItem?.id ?? null);
     setActiveFeedIndex(fallbackIndex);
+    if (!isStrictVideoFeedItem(fallbackItem)) {
+      logNonVideoActivePause({
+        postId: String(fallbackItem?.id || ""),
+        activeFeedIndex: fallbackIndex,
+        activeFeedItemId: String(fallbackItem?.id || ""),
+        reason: "fallback-non-video-active",
+      });
+    }
   }, [visibleData, activeFeedItemId]);
 
   const visibleDataRef = useRef(visibleData);
@@ -4831,13 +4926,13 @@ export default function FeedScreen() {
 
     if (
       !activeItem ||
-      activeItem.mediaType !== "video" ||
-      !Boolean(feedVideoPlayUri(activeItem)) ||
+      !isStrictVideoFeedItem(activeItem) ||
       !activeId ||
       activeId !== itemId
     ) {
-      pauseAllHomeFeedVideos({
+      logNonVideoActivePause({
         ...meta,
+        postId: activeId || itemId,
         reason: "active-not-strict-video",
       });
       return;
@@ -4857,6 +4952,7 @@ export default function FeedScreen() {
     activeFeedIndex,
     activeFeedItemId,
     visibleData,
+    activeItemIsStrictVideo,
   ]);
 
   useEffect(() => {
@@ -4961,6 +5057,7 @@ export default function FeedScreen() {
         feedIndex={index}
         activeFeedIndex={activeFeedIndex}
         activeFeedItemId={activeFeedItemId}
+        activeItemIsStrictVideo={activeItemIsStrictVideo}
         isActive={String(item?.id || "") === String(activeFeedItemId || "")}
         screenFocused={feedScreenFocused}
         appActive={appActive}
@@ -4976,6 +5073,7 @@ export default function FeedScreen() {
       itemH,
       activeFeedItemId,
       activeFeedIndex,
+      activeItemIsStrictVideo,
       feedScreenFocused,
       appActive,
       feedNowMs,
@@ -5001,11 +5099,9 @@ export default function FeedScreen() {
     setActiveFeedItemId(nextId);
     setActiveFeedIndex(nextIndex);
 
-    const isVideo =
-      nextItem?.mediaType === "video" &&
-      Boolean(String(nextItem?.videoUrl || "").trim());
+    const isStrictVideo = isStrictVideoFeedItem(nextItem);
 
-    if (isVideo) {
+    if (isStrictVideo) {
       pauseAllHomeFeedVideos({
         postId: nextId,
         activeFeedIndex: nextIndex,
@@ -5015,7 +5111,7 @@ export default function FeedScreen() {
         reason,
       });
     } else {
-      pauseAllHomeFeedVideos({
+      logNonVideoActivePause({
         postId: nextId,
         activeFeedIndex: nextIndex,
         activeFeedItemId: nextId,
@@ -5095,12 +5191,8 @@ export default function FeedScreen() {
         activeFeedItemId: nextId,
         feedIndex: topIndex,
       };
-      if (
-        !nextItem ||
-        nextItem.mediaType !== "video" ||
-        !Boolean(String(nextItem.videoUrl || "").trim())
-      ) {
-        pauseAllHomeFeedVideos({
+      if (!isStrictVideoFeedItem(nextItem)) {
+        logNonVideoActivePause({
           ...scrollMeta,
           reason: "scroll-to-non-video",
         });

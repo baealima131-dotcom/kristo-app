@@ -35,10 +35,8 @@ function devLog(event: string, meta: HomeFeedVideoLogMeta) {
 }
 
 export function isStrictVideoFeedItem(item: any) {
-  return (
-    item?.mediaType === "video" &&
-    Boolean(String(item?.videoUrl || "").trim())
-  );
+  const raw = String(item?.videoUrl || item?.mediaUri || "").trim();
+  return item?.mediaType === "video" && Boolean(raw) && !raw.startsWith("file://");
 }
 
 export function getActiveHomeFeedVideoId() {
