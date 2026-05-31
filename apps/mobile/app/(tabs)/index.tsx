@@ -2699,6 +2699,44 @@ const noMediaPost =
     } as any);
   }
 
+  const strictVideoPoster = resolveFeedVideoPoster(item);
+  const strictVideoUri = feedVideoPlayUri(item);
+
+  const renderStrictVideoLayer = () => {
+    if (shouldKeepVideoMounted && strictVideoUri) {
+      return (
+        <FeedVideoSurface
+          postId={String(item.id || "")}
+          feedIndex={feedIndex}
+          uri={strictVideoUri}
+          posterUri={strictVideoPoster}
+          shouldPlay={shouldPlayVideo}
+          interactive={shouldPlayVideo}
+          playbackMeta={playbackMeta}
+          onDoubleTapLike={triggerVideoDoubleTapLike}
+          onVideoReadyChange={!activeSlot ? handleFeedVideoReady : undefined}
+        />
+      );
+    }
+
+    if (strictVideoPoster) {
+      return (
+        <Image
+          source={{ uri: strictVideoPoster }}
+          style={StyleSheet.absoluteFillObject}
+          resizeMode="cover"
+        />
+      );
+    }
+
+    return (
+      <LinearGradient
+        colors={["#030508", "#070B14", "#050810"]}
+        style={StyleSheet.absoluteFillObject}
+      />
+    );
+  };
+
   if (isLiveNow && claimedByMe) {
     return null;
   }
@@ -2785,17 +2823,8 @@ const noMediaPost =
           </View>
 
           <Pressable onPress={openLiveRoom} style={s.liveNowPremiumPreview}>
-            {isStrictVideoPost && shouldKeepVideoMounted ? (
-              <FeedVideoSurface
-                postId={String(item.id || "")}
-                feedIndex={feedIndex}
-                uri={feedVideoPlayUri(item)}
-                posterUri={resolveFeedVideoPoster(item)}
-                shouldPlay={shouldPlayVideo}
-                interactive={shouldPlayVideo}
-                playbackMeta={playbackMeta}
-                onDoubleTapLike={triggerVideoDoubleTapLike}
-              />
+            {isStrictVideoPost ? (
+              <View style={s.media}>{renderStrictVideoLayer()}</View>
             ) : item.mediaType === "image" && item.mediaUri ? (
               <Image
                 source={{ uri: item.mediaUri }}
@@ -2892,20 +2921,8 @@ const noMediaPost =
         </>
       ) : (
       <Pressable onPress={isLiveNow ? openLiveRoom : undefined} style={s.page}>
-        {isStrictVideoPost && shouldKeepVideoMounted ? (
-          <FeedVideoSurface
-            postId={String(item.id || "")}
-            feedIndex={feedIndex}
-            uri={feedVideoPlayUri(item)}
-            posterUri={resolveFeedVideoPoster(item)}
-            shouldPlay={shouldPlayVideo}
-            interactive={shouldPlayVideo}
-            playbackMeta={playbackMeta}
-            onDoubleTapLike={triggerVideoDoubleTapLike}
-            onVideoReadyChange={
-              !activeSlot ? handleFeedVideoReady : undefined
-            }
-          />
+        {isStrictVideoPost ? (
+          <View style={s.media}>{renderStrictVideoLayer()}</View>
         ) : item.mediaType === "image" && item.mediaUri ? (
           <FeedSmartImage
             uri={item.mediaUri}
@@ -3040,7 +3057,7 @@ const noMediaPost =
       {showVideoMetaChrome ? (
         <Animated.View
           pointerEvents="box-none"
-          style={[StyleSheet.absoluteFillObject, { opacity: videoMetaFade }]}
+          style={[StyleSheet.absoluteFillObject, s.feedVideoOverlay, { opacity: videoMetaFade }]}
         >
           <LinearGradient
             pointerEvents="none"
@@ -5531,6 +5548,13 @@ const s: any = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     width: "100%",
     height: "100%",
+    backgroundColor: "#050810",
+    zIndex: 0,
+  },
+
+  feedVideoOverlay: {
+    zIndex: 8,
+    elevation: 8,
   },
 
   feedVideoTouchLayer: {
@@ -5666,6 +5690,8 @@ const s: any = StyleSheet.create({
 
   overlay: {
     ...StyleSheet.absoluteFillObject,
+    zIndex: 6,
+    elevation: 6,
   },
 
   bottom: {
@@ -5674,6 +5700,8 @@ const s: any = StyleSheet.create({
     right: 0,
     bottom: HOME_FEED_OVERLAY_BOTTOM,
     paddingHorizontal: 34,
+    zIndex: 7,
+    elevation: 7,
   },
 
   bottomVideoMeta: {
