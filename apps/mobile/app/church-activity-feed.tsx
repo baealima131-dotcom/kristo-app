@@ -6,6 +6,7 @@ import {
   FlatList,
   Image,
   Pressable,
+  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -22,7 +23,6 @@ import { useIsFocused } from "@react-navigation/native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import ChurchActivityMemberChips from "@/src/components/ChurchActivityMemberChips";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -34,6 +34,8 @@ import {
   formatActivityWhen,
   getChurchActivityLabel,
   getPostAuthorId,
+  isChurchActivityAllowedPost,
+  isChurchActivityExcludedCard,
   normalizeActivityMediaUrl,
   postAuthorName,
   stampChurchFeedScope,
@@ -73,16 +75,106 @@ function syncActivityFeedLike(postId: string, liked?: boolean) {
   ).catch(() => {});
 }
 
-type MemberFilter = "all" | "mine" | "member";
+type ChipFilterKey = "all" | "media" | "me" | string;
 
-function resolveInitialMemberFilter(
+function resolveInitialChip(
+  routeMode: ChurchActivityFeedMode,
   routeMemberId: string,
   currentUserId: string
-): MemberFilter {
-  if (!routeMemberId) return "all";
-  if (routeMemberId === currentUserId) return "mine";
-  return "member";
+): ChipFilterKey {
+  if (routeMode === "media") return "media";
+  if (routeMemberId && routeMemberId === currentUserId) return "me";
+  if (routeMemberId) return routeMemberId;
+  return "all";
 }
+
+const CHIP_AVATAR = 60;
+
+const ActivityFeedFilterChips = memo(function ActivityFeedFilterChips({
+  selectedKey,
+  currentUserAvatar,
+  currentUserName,
+  members,
+  onSelect,
+}: {
+  selectedKey: ChipFilterKey;
+  currentUserAvatar?: string;
+  currentUserName?: string;
+  members: { userId: string; name: string; avatarUri?: string }[];
+  onSelect: (key: ChipFilterKey) => void;
+}) {
+  const renderChip = (
+    key: ChipFilterKey,
+    label: string,
+    content: React.ReactNode
+  ) => {
+    const active = selectedKey === key;
+    return (
+      <Pressable key={key} onPress={() => onSelect(key)} style={styles.filterChip}>
+        <View style={styles.filterChipAvatarShell}>
+          {active ? <View pointerEvents="none" style={styles.filterChipGlow} /> : null}
+          <View style={[styles.filterChipRing, active ? styles.filterChipRingActive : null]}>
+            {content}
+          </View>
+        </View>
+        <Text style={[styles.filterChipLabel, active ? styles.filterChipLabelActive : null]} numberOfLines={1}>
+          {label}
+        </Text>
+      </Pressable>
+    );
+  };
+
+  const meInitial = String(currentUserName || "Me").trim().charAt(0).toUpperCase() || "M";
+
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.filterChipRow}
+    >
+      {renderChip(
+        "all",
+        "All Church",
+        <View style={styles.filterChipFallback}>
+          <Ionicons name="business-outline" size={24} color="#F4D06F" />
+        </View>
+      )}
+      {renderChip(
+        "media",
+        "Media",
+        <View style={styles.filterChipFallback}>
+          <Ionicons name="images-outline" size={24} color="#F4D06F" />
+        </View>
+      )}
+      {renderChip(
+        "me",
+        "Me",
+        currentUserAvatar ? (
+          <Image source={{ uri: currentUserAvatar }} style={styles.filterChipAvatar} resizeMode="cover" />
+        ) : (
+          <View style={styles.filterChipFallback}>
+            <Text style={styles.filterChipInitial}>{meInitial}</Text>
+          </View>
+        )
+      )}
+      {members.map((member) => {
+        const initial = String(member.name || "?").trim().charAt(0).toUpperCase() || "?";
+        const firstName = String(member.name || "Member").trim().split(/\s+/)[0] || "Member";
+        return renderChip(
+          member.userId,
+          firstName,
+          member.avatarUri ? (
+            <Image source={{ uri: member.avatarUri }} style={styles.filterChipAvatar} resizeMode="cover" />
+          ) : (
+            <View style={styles.filterChipFallback}>
+              <Text style={styles.filterChipInitial}>{initial}</Text>
+            </View>
+          )
+        );
+      })}
+    </ScrollView>
+  );
+});
 
 const ActivityFeedVideo = memo(function ActivityFeedVideo({
   uri,
@@ -233,7 +325,7 @@ const ActivityActionRail = memo(function ActivityActionRail({
             color={saved ? "#F3D28F" : "#FFFFFF"}
           />
         </View>
-        <Text style={[styles.actionText, saved ? styles.actionTextSaved : null]}>
+        <Text style={[styles.actionText, styles.actionTextCompact, saved ? styles.actionTextSaved : null]}>
           {saved ? "Saved" : "Save"}
         </Text>
       </Pressable>
@@ -278,19 +370,22 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
   const shouldPlayVideo = isVideo && isActive && screenFocused;
   const commentCount = Number(item?.commentCount || 0);
   const shareCount = Number(item?.shareCount || 0);
+  const hasImage = Boolean(imageUri);
 
   return (
     <View style={[styles.slide, { height }]}>
       {isVideo && videoUri ? (
         <ActivityFeedVideo uri={videoUri} posterUri={posterUri} shouldPlay={shouldPlayVideo} />
-      ) : imageUri ? (
-        <Image source={{ uri: mediaUrl(imageUri) }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+      ) : hasImage ? (
+        <Image source={{ uri: mediaUrl(imageUri) }} style={styles.mediaFill} resizeMode="cover" />
       ) : (
         <LinearGradient colors={["#050814", "#0A1020", "#03050C"]} style={StyleSheet.absoluteFillObject} />
       )}
 
       <LinearGradient
-        colors={["transparent", "rgba(0,0,0,0.28)", "rgba(0,0,0,0.78)"]}
+        pointerEvents="none"
+        colors={["transparent", "rgba(0,0,0,0.35)", "rgba(0,0,0,0.75)"]}
+        locations={[0, 0.55, 1]}
         style={styles.bottomGradient}
       />
 
@@ -306,7 +401,7 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
         onSave={onSave}
       />
 
-      <View style={styles.metaWrap}>
+      <View style={styles.metaFooter}>
         <View style={styles.labelPill}>
           <Text style={styles.labelPillText}>{label}</Text>
         </View>
@@ -318,17 +413,15 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
         ) : null}
 
         {!!body && body !== title ? (
-          <Text style={styles.body} numberOfLines={5}>
+          <Text style={styles.body} numberOfLines={6}>
             {body}
           </Text>
         ) : null}
 
-        <View style={styles.authorRow}>
-          <Text style={styles.authorName} numberOfLines={1}>
-            {authorName}
-          </Text>
-          {!!whenLabel ? <Text style={styles.whenLabel}>{whenLabel}</Text> : null}
-        </View>
+        <Text style={styles.authorName} numberOfLines={1}>
+          {authorName}
+        </Text>
+        {!!whenLabel ? <Text style={styles.whenLabel}>{whenLabel}</Text> : null}
       </View>
     </View>
   );
@@ -341,6 +434,8 @@ export default function ChurchActivityFeedScreen() {
   const screenFocused = useIsFocused();
   const session = getSessionSync() as any;
   const currentUserId = String(session?.userId || "").trim();
+  const currentUserAvatar = mediaUrl(String(session?.avatarUrl || session?.avatarUri || "").trim());
+  const currentUserName = String(session?.displayName || session?.name || "Me").trim();
 
   const {
     focusPostId,
@@ -356,7 +451,7 @@ export default function ChurchActivityFeedScreen() {
 
   const churchId = String(activityChurchId || "").trim();
   const routeMemberId = String(activityMemberId || "").trim();
-  const mode: ChurchActivityFeedMode =
+  const routeMode: ChurchActivityFeedMode =
     activityMode === "member" || activityMode === "media" ? activityMode : "church";
 
   const [loading, setLoading] = useState(true);
@@ -364,11 +459,8 @@ export default function ChurchActivityFeedScreen() {
   const [homeFeedTick, setHomeFeedTick] = useState(0);
   const [churchMembers, setChurchMembers] = useState<any[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [memberFilter, setMemberFilter] = useState<MemberFilter>(() =>
-    resolveInitialMemberFilter(routeMemberId, currentUserId)
-  );
-  const [selectedMemberId, setSelectedMemberId] = useState(
-    routeMemberId && routeMemberId !== currentUserId ? routeMemberId : ""
+  const [activeChip, setActiveChip] = useState<ChipFilterKey>(() =>
+    resolveInitialChip(routeMode, routeMemberId, currentUserId)
   );
   const [optimisticLikes, setOptimisticLikes] = useState<
     Record<string, { liked: boolean; likeCount: number }>
@@ -377,7 +469,8 @@ export default function ChurchActivityFeedScreen() {
 
   const listRef = useRef<FlatList<any>>(null);
   const focusHandledRef = useRef("");
-  const slideHeight = Math.max(320, windowHeight);
+  const [topChromeHeight, setTopChromeHeight] = useState(0);
+  const contentHeight = Math.max(280, windowHeight - topChromeHeight);
 
   useEffect(() => {
     return subscribeHomeFeed(() => setHomeFeedTick((v) => v + 1));
@@ -438,29 +531,36 @@ export default function ChurchActivityFeedScreen() {
     return [...sourceRows, ...localRows];
   }, [sourceRows, homeFeedTick, churchId]);
 
-  const effectiveMemberId = useMemo(() => {
-    if (memberFilter === "mine") return currentUserId;
-    if (memberFilter === "member") return selectedMemberId;
-    return "";
-  }, [memberFilter, currentUserId, selectedMemberId]);
+  const filterContext = useMemo(() => {
+    if (activeChip === "all") {
+      return { activityMode: "church" as ChurchActivityFeedMode, activityMemberId: undefined };
+    }
+    if (activeChip === "media") {
+      return { activityMode: "media" as ChurchActivityFeedMode, activityMemberId: undefined };
+    }
+    if (activeChip === "me") {
+      return { activityMode: "member" as ChurchActivityFeedMode, activityMemberId: currentUserId };
+    }
+    return { activityMode: "member" as ChurchActivityFeedMode, activityMemberId: activeChip };
+  }, [activeChip, currentUserId]);
 
   const feedRows = useMemo(() => {
     return filterChurchActivityFeedRows(
       mergedSourceRows,
       {
         activityChurchId: churchId,
-        activityMemberId: effectiveMemberId || undefined,
-        activityMode: mode,
+        activityMemberId: filterContext.activityMemberId,
+        activityMode: filterContext.activityMode,
       },
       mediaUrl
     );
-  }, [mergedSourceRows, churchId, effectiveMemberId, mode]);
+  }, [mergedSourceRows, churchId, filterContext]);
 
   const recentPosterMembers = useMemo(() => {
     const memberLookup = new Map<string, { name: string; avatarUri?: string }>();
     for (const member of churchMembers) {
       const userIdValue = String(member?.userId || member?.id || "").trim();
-      if (!userIdValue) continue;
+      if (!userIdValue || userIdValue === currentUserId) continue;
       memberLookup.set(userIdValue, {
         name: String(
           member?.fullName ||
@@ -477,8 +577,10 @@ export default function ChurchActivityFeedScreen() {
 
     const latestByAuthor = new Map<string, number>();
     for (const item of mergedSourceRows) {
+      if (isChurchActivityExcludedCard(item)) continue;
+      if (!isChurchActivityAllowedPost(item)) continue;
       const authorId = getPostAuthorId(item);
-      if (!authorId) continue;
+      if (!authorId || authorId === currentUserId) continue;
       const ms = new Date(String(item?.createdAt || "")).getTime();
       const prev = latestByAuthor.get(authorId) || 0;
       if (Number.isFinite(ms) && ms > prev) {
@@ -488,7 +590,7 @@ export default function ChurchActivityFeedScreen() {
 
     return [...latestByAuthor.entries()]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 14)
+      .slice(0, 12)
       .map(([userId]) => {
         const lookup = memberLookup.get(userId);
         const sample = mergedSourceRows.find((row) => getPostAuthorId(row) === userId);
@@ -498,34 +600,17 @@ export default function ChurchActivityFeedScreen() {
           avatarUri: lookup?.avatarUri,
         };
       });
-  }, [mergedSourceRows, churchMembers]);
+  }, [mergedSourceRows, churchMembers, currentUserId]);
 
-  const modeBadge = useMemo(() => {
-    if (mode === "media") return "Media";
-    if (effectiveMemberId) return "Member";
-    return "Church";
-  }, [mode, effectiveMemberId]);
-
-  const chipSelectedKey =
-    memberFilter === "member" && selectedMemberId ? selectedMemberId : memberFilter;
-
-  const isMemberEmpty =
+  const isMemberChipEmpty =
     feedRows.length === 0 &&
     !loading &&
     Boolean(churchId) &&
-    (memberFilter === "member" || memberFilter === "mine");
+    activeChip !== "all" &&
+    activeChip !== "media";
 
-  const handleMemberChipSelect = useCallback((key: "all" | "mine" | string, mid?: string) => {
-    if (key === "all") {
-      setMemberFilter("all");
-      setSelectedMemberId("");
-    } else if (key === "mine") {
-      setMemberFilter("mine");
-      setSelectedMemberId("");
-    } else {
-      setMemberFilter("member");
-      setSelectedMemberId(String(mid || key || "").trim());
-    }
+  const handleChipSelect = useCallback((key: ChipFilterKey) => {
+    setActiveChip(key);
     setActiveIndex(0);
     focusHandledRef.current = "";
     requestAnimationFrame(() => {
@@ -626,10 +711,10 @@ export default function ChurchActivityFeedScreen() {
   const handleMomentumScrollEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const y = Number(event?.nativeEvent?.contentOffset?.y || 0);
-      const nextIndex = Math.max(0, Math.round(y / Math.max(1, slideHeight)));
+      const nextIndex = Math.max(0, Math.round(y / Math.max(1, contentHeight)));
       setActiveIndex(nextIndex);
     },
-    [slideHeight]
+    [contentHeight]
   );
 
   const renderItem = useCallback(
@@ -640,7 +725,7 @@ export default function ChurchActivityFeedScreen() {
       return (
         <ActivityFeedSlide
           item={item}
-          height={slideHeight}
+          height={contentHeight}
           isActive={index === activeIndex}
           screenFocused={screenFocused}
           liked={likeState.liked}
@@ -654,7 +739,7 @@ export default function ChurchActivityFeedScreen() {
       );
     },
     [
-      slideHeight,
+      contentHeight,
       activeIndex,
       screenFocused,
       getLikeState,
@@ -666,20 +751,20 @@ export default function ChurchActivityFeedScreen() {
     ]
   );
 
-  const headerTop = insets.top + 8;
-
   return (
     <View style={styles.screen}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      <LinearGradient
-        colors={["rgba(3,5,12,0.92)", "rgba(3,5,12,0.72)", "rgba(3,5,12,0)"]}
-        style={[styles.headerBackdrop, { height: headerTop + 148 }]}
-        pointerEvents="none"
-      />
-
-      <View style={[styles.header, { paddingTop: headerTop }]}>
-        <View style={styles.headerTopRow}>
+      <View
+        style={[styles.topChrome, { paddingTop: insets.top + 4 }]}
+        onLayout={(event) => {
+          const nextHeight = Math.ceil(event.nativeEvent.layout.height);
+          if (nextHeight > 0 && nextHeight !== topChromeHeight) {
+            setTopChromeHeight(nextHeight);
+          }
+        }}
+      >
+        <View style={styles.topChromeRow}>
           <Pressable
             onPress={() => router.back()}
             style={({ pressed }) => [styles.backBtn, pressed ? styles.pressed : null]}
@@ -688,168 +773,200 @@ export default function ChurchActivityFeedScreen() {
             <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
           </Pressable>
 
-          <View style={styles.headerTextWrap}>
-            <View style={styles.headerTitleRow}>
-              <Text style={styles.headerTitle}>Church Activity</Text>
-              <View style={styles.modeBadge}>
-                <Text style={styles.modeBadgeText}>{modeBadge}</Text>
-              </View>
-            </View>
-            <Text style={styles.headerSubtitle} numberOfLines={1}>
-              {feedRows.length} post{feedRows.length === 1 ? "" : "s"}
-            </Text>
+          <View style={styles.chipsWrap}>
+            <ActivityFeedFilterChips
+              selectedKey={activeChip}
+              currentUserAvatar={currentUserAvatar}
+              currentUserName={currentUserName}
+              members={recentPosterMembers}
+              onSelect={handleChipSelect}
+            />
           </View>
-        </View>
 
-        <View style={styles.chipsWrap}>
-          <ChurchActivityMemberChips
-            members={recentPosterMembers}
-            selectedKey={chipSelectedKey}
-            onSelect={handleMemberChipSelect}
-          />
+          {!loading && feedRows.length > 0 ? (
+            <Text style={styles.postCount}>{feedRows.length}</Text>
+          ) : null}
         </View>
       </View>
 
-      {loading ? (
-        <View style={styles.centerState}>
-          <ActivityIndicator color="#FFFFFF" />
-        </View>
-      ) : !churchId ? (
-        <View style={styles.centerState}>
-          <Text style={styles.emptyTitle}>Church context is required.</Text>
-        </View>
-      ) : isMemberEmpty ? (
-        <View style={styles.centerState}>
-          <Text style={styles.emptyTitle}>No posts yet</Text>
-          <Text style={styles.emptyBody}>Posts from this member will appear here.</Text>
-          <Pressable
-            onPress={() => handleMemberChipSelect("all")}
-            style={({ pressed }) => [styles.emptyChipBtn, pressed ? styles.pressed : null]}
-          >
-            <Text style={styles.emptyChipBtnText}>All Church</Text>
-          </Pressable>
-        </View>
-      ) : feedRows.length === 0 ? (
-        <View style={styles.centerState}>
-          <Text style={styles.emptyTitle}>No posts yet</Text>
-          <Text style={styles.emptyBody}>Church activity for this filter will appear here.</Text>
-          <Pressable
-            onPress={() => handleMemberChipSelect("all")}
-            style={({ pressed }) => [styles.emptyChipBtn, pressed ? styles.pressed : null]}
-          >
-            <Text style={styles.emptyChipBtnText}>All Church</Text>
-          </Pressable>
-        </View>
-      ) : (
-        <FlatList
-          ref={listRef}
-          data={feedRows}
-          keyExtractor={(item, index) => String(item?.id || index)}
-          renderItem={renderItem}
-          pagingEnabled
-          decelerationRate="fast"
-          snapToInterval={slideHeight}
-          snapToAlignment="start"
-          disableIntervalMomentum
-          showsVerticalScrollIndicator={false}
-          onMomentumScrollEnd={handleMomentumScrollEnd}
-          getItemLayout={(_, index) => ({
-            length: slideHeight,
-            offset: slideHeight * index,
-            index,
-          })}
-          initialNumToRender={3}
-          windowSize={5}
-          maxToRenderPerBatch={3}
-          removeClippedSubviews
-        />
-      )}
+      <View style={styles.contentBlock}>
+        {loading ? (
+          <View style={styles.centerState}>
+            <ActivityIndicator color="#FFFFFF" />
+          </View>
+        ) : !churchId ? (
+          <View style={styles.centerState}>
+            <Text style={styles.emptyTitle}>Church context is required.</Text>
+          </View>
+        ) : isMemberChipEmpty ? (
+          <View style={styles.centerState}>
+            <Text style={styles.emptyTitle}>No posts yet</Text>
+            <Text style={styles.emptyBody}>Posts from this member will appear here.</Text>
+            <Pressable
+              onPress={() => handleChipSelect("all")}
+              style={({ pressed }) => [styles.emptyChipBtn, pressed ? styles.pressed : null]}
+            >
+              <Text style={styles.emptyChipBtnText}>All Church</Text>
+            </Pressable>
+          </View>
+        ) : feedRows.length === 0 ? (
+          <View style={styles.centerState}>
+            <Text style={styles.emptyTitle}>No posts yet</Text>
+            <Text style={styles.emptyBody}>Church activity for this filter will appear here.</Text>
+            <Pressable
+              onPress={() => handleChipSelect("all")}
+              style={({ pressed }) => [styles.emptyChipBtn, pressed ? styles.pressed : null]}
+            >
+              <Text style={styles.emptyChipBtnText}>All Church</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <FlatList
+            ref={listRef}
+            data={feedRows}
+            keyExtractor={(item, index) => String(item?.id || index)}
+            renderItem={renderItem}
+            pagingEnabled
+            decelerationRate="fast"
+            snapToInterval={contentHeight}
+            snapToAlignment="start"
+            disableIntervalMomentum
+            showsVerticalScrollIndicator={false}
+            onMomentumScrollEnd={handleMomentumScrollEnd}
+            getItemLayout={(_, index) => ({
+              length: contentHeight,
+              offset: contentHeight * index,
+              index,
+            })}
+            initialNumToRender={2}
+            windowSize={3}
+            maxToRenderPerBatch={2}
+            removeClippedSubviews
+          />
+        )}
+      </View>
     </View>
   );
 }
 
-const ACTION_RAIL_BOTTOM = 118;
+const ACTION_RAIL_BOTTOM = 108;
 
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: "#03050C",
   },
-  headerBackdrop: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 18,
+  topChrome: {
+    backgroundColor: "#03050C",
+    paddingHorizontal: 8,
+    paddingBottom: 4,
+    zIndex: 10,
   },
-  header: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 20,
-    paddingHorizontal: 12,
-    paddingBottom: 6,
-    gap: 8,
-  },
-  headerTopRow: {
+  topChromeRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    alignItems: "flex-start",
+    gap: 6,
   },
   backBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    marginTop: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.42)",
+    backgroundColor: "rgba(0,0,0,0.38)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
   },
   pressed: {
     opacity: 0.82,
   },
-  headerTextWrap: {
+  chipsWrap: {
     flex: 1,
     minWidth: 0,
   },
-  headerTitleRow: {
-    flexDirection: "row",
+  postCount: {
+    marginTop: 18,
+    minWidth: 18,
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  filterChipRow: {
+    paddingVertical: 2,
+    paddingRight: 4,
+    gap: 6,
+    alignItems: "flex-start",
+  },
+  filterChip: {
+    width: 68,
     alignItems: "center",
-    gap: 8,
-    flexWrap: "wrap",
+    gap: 5,
   },
-  headerTitle: {
-    color: "#FFFFFF",
-    fontSize: 18,
-    fontWeight: "800",
-    letterSpacing: 0.2,
+  filterChipAvatarShell: {
+    width: CHIP_AVATAR + 8,
+    height: CHIP_AVATAR + 8,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  modeBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
+  filterChipGlow: {
+    position: "absolute",
+    width: CHIP_AVATAR + 10,
+    height: CHIP_AVATAR + 10,
+    borderRadius: (CHIP_AVATAR + 10) / 2,
     backgroundColor: "rgba(217,179,95,0.14)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.42)",
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.42,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 5,
   },
-  modeBadgeText: {
+  filterChipRing: {
+    width: CHIP_AVATAR,
+    height: CHIP_AVATAR,
+    borderRadius: CHIP_AVATAR / 2,
+    padding: 2,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    overflow: "hidden",
+  },
+  filterChipRingActive: {
+    borderColor: "rgba(217,179,95,0.96)",
+    borderWidth: 2,
+  },
+  filterChipAvatar: {
+    width: "100%",
+    height: "100%",
+    borderRadius: CHIP_AVATAR / 2,
+  },
+  filterChipFallback: {
+    flex: 1,
+    borderRadius: CHIP_AVATAR / 2,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.12)",
+  },
+  filterChipInitial: {
     color: "#F4D06F",
-    fontSize: 10,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  filterChipLabel: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 9.5,
     fontWeight: "800",
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
+    textAlign: "center",
+    lineHeight: 12,
+    maxWidth: 68,
   },
-  headerSubtitle: {
-    color: "rgba(255,255,255,0.68)",
-    fontSize: 12,
-    marginTop: 2,
-    fontWeight: "600",
+  filterChipLabelActive: {
+    color: "#F4D06F",
   },
-  chipsWrap: {
-    marginLeft: -2,
-    marginTop: 2,
+  contentBlock: {
+    flex: 1,
+    backgroundColor: "#03050C",
   },
   centerState: {
     flex: 1,
@@ -890,18 +1007,22 @@ const styles = StyleSheet.create({
     backgroundColor: "#03050C",
     overflow: "hidden",
   },
+  mediaFill: {
+    ...StyleSheet.absoluteFillObject,
+  },
   bottomGradient: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
-    height: "52%",
+    height: "42%",
   },
-  metaWrap: {
+  metaFooter: {
     position: "absolute",
     left: 16,
-    right: 92,
-    bottom: 34,
+    right: 84,
+    bottom: 22,
+    gap: 7,
   },
   labelPill: {
     alignSelf: "flex-start",
@@ -909,7 +1030,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.12)",
-    marginBottom: 10,
   },
   labelPillText: {
     color: "#FFFFFF",
@@ -919,27 +1039,20 @@ const styles = StyleSheet.create({
   },
   title: {
     color: "#FFFFFF",
-    fontSize: 23,
+    fontSize: 22,
     fontWeight: "800",
-    marginBottom: 8,
+    lineHeight: 28,
   },
   body: {
-    color: "rgba(255,255,255,0.88)",
+    color: "rgba(255,255,255,0.92)",
     fontSize: 15,
     lineHeight: 22,
-    marginBottom: 12,
-  },
-  authorRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
   },
   authorName: {
-    flex: 1,
     color: "#FFFFFF",
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "700",
+    marginTop: 2,
   },
   whenLabel: {
     color: "rgba(255,255,255,0.62)",
@@ -951,11 +1064,11 @@ const styles = StyleSheet.create({
     bottom: ACTION_RAIL_BOTTOM,
     zIndex: 12,
     alignItems: "center",
-    gap: 14,
+    gap: 12,
   },
   actionBtn: {
-    width: 58,
-    minHeight: 72,
+    width: 56,
+    minHeight: 68,
     alignItems: "center",
     justifyContent: "flex-start",
   },
@@ -993,17 +1106,20 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 12,
     lineHeight: 14,
-    marginTop: 5,
+    marginTop: 4,
     textAlign: "center",
     textShadowColor: "rgba(0,0,0,0.55)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
+  },
+  actionTextCompact: {
+    fontSize: 10,
+    lineHeight: 12,
   },
   actionTextLiked: {
     color: "#FF5A7A",
   },
   actionTextSaved: {
     color: "#F3D28F",
-    fontSize: 10,
   },
 });

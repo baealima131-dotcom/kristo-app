@@ -113,6 +113,103 @@ function bag(item: any) {
     .join(" ");
 }
 
+function activityItemSignalHaystack(item: any) {
+  return [
+    item?.id,
+    item?.source,
+    item?.kind,
+    item?.type,
+    item?.scheduleType,
+    item?.title,
+    item?.liveRoomPath,
+    item?.mediaControl,
+    item?.scheduleId,
+    item?.sourceScheduleId,
+    item?.liveScheduleId,
+  ]
+    .map((v) => String(v || "").trim().toLowerCase())
+    .filter(Boolean)
+    .join(" ");
+}
+
+export function getChurchActivityExclusionReason(item: any): string | null {
+  if (!item || typeof item !== "object") return "invalid-item";
+
+  const haystack = activityItemSignalHaystack(item);
+  const source = String(item?.source || "").trim().toLowerCase();
+  const kind = String(item?.kind || "").trim().toLowerCase();
+  const type = String(item?.type || "").trim().toLowerCase();
+  const scheduleType = String(item?.scheduleType || "").trim().toLowerCase();
+  const id = String(item?.id || "").trim().toLowerCase();
+  const title = String(item?.title || "").trim().toLowerCase();
+
+  if (Array.isArray(item?.scheduleSlots) && item.scheduleSlots.length > 0) {
+    return "scheduleSlots";
+  }
+  if (Array.isArray(item?.claimableSlots) && item.claimableSlots.length > 0) {
+    return "claimableSlots";
+  }
+
+  if (id.includes("__slot_") || id.startsWith("media-live-")) return "id-slot-or-media-live";
+  if (id.startsWith("church-live-now-") || id.includes("live-schedule")) return "id-church-live";
+
+  if (item?.isLiveNow || kind === "live" || type === "live") return "live-flag";
+  if (kind === "schedule" || type === "schedule") return "schedule-type";
+
+  if (source.includes("media-schedule")) return "source-media-schedule";
+  if (source.includes("live-schedule") || source.includes("live_schedule")) return "source-live-schedule";
+  if (scheduleType.includes("media-live-slots")) return "scheduleType-media-live-slots";
+
+  if (
+    haystack.includes("claimableslots") ||
+    haystack.includes("liveschedule") ||
+    haystack.includes("mediacontrol") ||
+    haystack.includes("countdown") ||
+    haystack.includes("churchlive") ||
+    haystack.includes("mediahost") ||
+    haystack.includes("media-host") ||
+    haystack.includes("slot-management") ||
+    haystack.includes("live-time-card")
+  ) {
+    return "haystack-keyword";
+  }
+
+  if (title.includes("live time card")) return "title-live-time-card";
+
+  if (item?.mediaControl || item?.countdownMs != null || item?.liveSlotsRemaining != null) {
+    if (scheduleType || source.includes("schedule") || source.includes("live") || item?.isLiveNow) {
+      return "live-control-fields";
+    }
+  }
+
+  if (Boolean(item?.scheduleId || item?.liveScheduleId) && (scheduleType || source.includes("schedule"))) {
+    return "schedule-id-fields";
+  }
+
+  return null;
+}
+
+export function isChurchActivityExcludedCard(item: any) {
+  return getChurchActivityExclusionReason(item) != null;
+}
+
+export function isChurchActivityMediaContentPost(item: any) {
+  if (isChurchActivityExcludedCard(item)) return false;
+
+  const mediaType = String(item?.mediaType || "").trim().toLowerCase();
+  if (mediaType === "image" || mediaType === "video") return true;
+  if (activityIsVideo(item)) return true;
+  if (Boolean(String(item?.mediaUri || item?.imageUrl || item?.videoUrl || "").trim())) return true;
+
+  return false;
+}
+
+export function isChurchActivityAllowedPost(item: any) {
+  if (isChurchActivityExcludedCard(item)) return false;
+  if (isChurchTabActivityPost(item)) return true;
+  return isChurchActivityMediaContentPost(item);
+}
+
 export function isMediaActivityPost(item: any) {
   if (!item || typeof item !== "object") return false;
 
@@ -458,10 +555,13 @@ export function filterChurchActivityFeedRows(
     belongsToChurch(item, activityChurchId)
   );
 
+  const afterChurchCount = filtered.length;
+  filtered = filtered.filter((item) => !isChurchActivityExcludedCard(item));
+
   if (activityMode === "media") {
-    filtered = filtered.filter(isMediaPost);
-  } else if (activityMode === "church") {
-    filtered = filtered.filter(isChurchTabActivityPost);
+    filtered = filtered.filter(isChurchActivityMediaContentPost);
+  } else {
+    filtered = filtered.filter(isChurchActivityAllowedPost);
   }
 
   if (activityMemberId) {
@@ -481,6 +581,8 @@ export function filterChurchActivityFeedRows(
       activityMemberId,
       activityMode,
       beforeCount,
+      afterChurchCount,
+      afterExcludeCount: filtered.length,
       afterCount: result.length,
     });
   }
