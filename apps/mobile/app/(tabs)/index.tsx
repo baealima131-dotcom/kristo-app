@@ -77,6 +77,7 @@ import {
   cancelOptimisticVideoUpload,
   retryOptimisticVideoUpload,
 } from "@/src/lib/optimisticVideoUpload";
+import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const BODY_PREVIEW_CHARS = 140;
@@ -191,14 +192,48 @@ function feedOriginIdFromItem(item: any) {
   return baseFeedId(stripped);
 }
 
+function isBackendFeedPost(item: any) {
+  if (item?.isBackendPost) return true;
+  const source = String(item?.source || "").toLowerCase();
+  return source === "backend" || source === "media-upload" || source.includes("backend");
+}
+
+function isLoopEligibleFeedItem(item: any) {
+  const id = String(item?.id || "");
+  if (id.includes("__loop_")) return false;
+  if (id.startsWith("local-upload-")) return false;
+
+  const source = String(item?.source || "").toLowerCase();
+  if (source === "local-video-upload") return false;
+  if (isBackendFeedPost(item)) return false;
+  if (!isStrictVideoFeedItem(item)) return false;
+
+  return true;
+}
+
+function countRealFeedVideoOrigins(feed: any[]) {
+  const origins = new Set<string>();
+  for (const item of feed || []) {
+    if (!isLoopEligibleFeedItem(item)) continue;
+    const origin = feedOriginIdFromItem(item);
+    if (origin) origins.add(origin);
+  }
+  return origins.size;
+}
+
+function canCreateFeedVideoLoops(feed: any[]) {
+  return countRealFeedVideoOrigins(feed) > 1;
+}
+
 function createFeedLoopBatch(baseFeed: any[], loopGen: number, skipOriginId?: string) {
   if (!baseFeed.length) return [];
 
-  let pool = baseFeed.filter((item: any) => {
-    const id = String(item?.id || "");
-    const source = String(item?.source || "").toLowerCase();
-    return !id.startsWith("local-upload-") && source !== "local-video-upload";
-  });
+  let pool = baseFeed.filter(isLoopEligibleFeedItem);
+  if (!pool.length) return [];
+
+  const uniqueOrigins = new Set(pool.map((item) => feedOriginIdFromItem(item)));
+  if (uniqueOrigins.size <= 1) return [];
+
   if (pool.length > 1) {
     if (skipOriginId) {
       const idx = pool.findIndex((item) => feedOriginIdFromItem(item) === skipOriginId);
@@ -4497,13 +4532,23 @@ export default function FeedScreen() {
         { screen: "HomeFeed", throttleMs: reason === "focus" ? 0 : 8000 }
       );
 
-      const rows = Array.isArray(res?.data)
+      const rawRows = Array.isArray(res?.data)
         ? res.data
         : Array.isArray(res?.data?.items)
           ? res.data.items
           : Array.isArray(res?.items)
             ? res.items
             : [];
+
+      const rows = rawRows.filter(isHomeFeedReadyMediaItem);
+
+      if (__DEV__ && rawRows.length !== rows.length) {
+        console.log("KRISTO_HOME_FEED_MEDIA_STATUS_FILTER", {
+          rawCount: rawRows.length,
+          readyCount: rows.length,
+          skipped: rawRows.length - rows.length,
+        });
+      }
 
       const total = Number(
         res?.total ??
@@ -4570,6 +4615,7 @@ export default function FeedScreen() {
             id,
             type: item.type,
             mediaType: normalizedMediaType,
+            mediaStatus: item.mediaStatus || "ready",
             mediaUri,
             videoUrl,
             posterUri: item.posterUri,
@@ -4606,6 +4652,7 @@ export default function FeedScreen() {
             videoUrl,
             ...(normalizedMediaType === "video"
               ? {
+                  mediaStatus: String(item.mediaStatus || "ready"),
                   posterUri: mediaUrl(
                     item.videoPosterUri ||
                       item.posterUri ||
@@ -4825,6 +4872,7 @@ export default function FeedScreen() {
 
       return true;
     })
+      .filter(isHomeFeedReadyMediaItem)
       .filter((item) => {
         if (!isStandaloneAvatarFeedPost(item)) return true;
         if (__DEV__) {
@@ -5490,6 +5538,7 @@ export default function FeedScreen() {
       const key = String(item?.id || `feed-item-${index}`);
       if (seenFinal.has(key)) return false;
       if (!keepRealHomeFeedRow(item, "finalVisibleData")) return false;
+      if (!isHomeFeedReadyMediaItem(item)) return false;
       seenFinal.add(key);
       return true;
     });
@@ -5602,16 +5651,36 @@ export default function FeedScreen() {
     const base = dataRef.current;
     if (!base.length) return;
 
+    const visible = visibleDataRef.current;
+    if (visible.length <= 1) return;
+    if (!canCreateFeedVideoLoops(base)) return;
+
     feedAppendLoadingRef.current = true;
     const nextGen = feedLoopGenRef.current + 1;
     feedLoopGenRef.current = nextGen;
 
-    const activeItem = visibleDataRef.current[activeFeedIndexRef.current];
+    const activeItem = visible[activeFeedIndexRef.current];
     const skipOrigin = activeItem ? feedOriginIdFromItem(activeItem) : undefined;
     const batch = createFeedLoopBatch(base, nextGen, skipOrigin);
 
+    if (!batch.length) {
+      feedAppendLoadingRef.current = false;
+      return;
+    }
+
+    if (__DEV__) {
+      console.log("KRISTO_HOME_FEED_VIDEO_APPEND", {
+        activeFeedIndex: activeFeedIndexRef.current,
+        visibleCount: visible.length,
+        totalCount: dataRef.current.length,
+        batchSize: batch.length,
+        loopGen: nextGen,
+        loopVideoOrigins: countRealFeedVideoOrigins(base),
+      });
+    }
+
     setFeedLoopBatches((prev) => [...prev, batch]);
-    setFeedVisibleCount((prev) => prev + Math.max(FEED_APPEND_BATCH_SIZE, batch.length));
+    setFeedVisibleCount((prev) => prev + batch.length);
 
     if (feedAppendTimerRef.current) {
       clearTimeout(feedAppendTimerRef.current);
@@ -5866,20 +5935,18 @@ export default function FeedScreen() {
     const visibleCount = visibleData.length;
     const totalCount = displayFeed.length;
     const remainingAhead = visibleCount - activeFeedIndex - 1;
+    const loopVideoOrigins = countRealFeedVideoOrigins(data);
 
-    if (remainingAhead <= 2 && visibleCount >= totalCount && totalCount > 0) {
+    if (
+      loopVideoOrigins > 1 &&
+      visibleCount > 1 &&
+      remainingAhead <= 2 &&
+      visibleCount >= totalCount &&
+      totalCount > 0
+    ) {
       appendMoreFeedItemsRef.current?.();
     }
-
-    if (__DEV__) {
-      console.log("KRISTO_HOME_FEED_VIDEO_APPEND", {
-        activeFeedIndex,
-        remainingAhead,
-        visibleCount,
-        totalCount,
-      });
-    }
-  }, [activeFeedIndex, activeItemIsStrictVideo, visibleData.length, displayFeed.length]);
+  }, [activeFeedIndex, activeItemIsStrictVideo, activeFeedItemId, visibleData.length, displayFeed.length, data]);
 
   const renderItem = useCallback(
     ({ item, index }: { item: any; index: number }) => (
@@ -5923,6 +5990,8 @@ export default function FeedScreen() {
     const visibleCount = feedVisibleCountRef.current;
     const totalCount = feedTotalCountRef.current;
     if (
+      countRealFeedVideoOrigins(dataRef.current) > 1 &&
+      visibleCount > 1 &&
       nextIndex >= Math.max(0, visibleCount - 2) &&
       visibleCount >= totalCount &&
       totalCount > 0
@@ -6072,7 +6141,13 @@ export default function FeedScreen() {
           feedAppendLoadingRef.current = false;
         }, FEED_APPEND_DELAY_MS);
       }, delay);
-    } else if (atVisibleEnd && topIndex >= prefetchThreshold && nearEnd) {
+    } else if (
+      atVisibleEnd &&
+      topIndex >= prefetchThreshold &&
+      nearEnd &&
+      countRealFeedVideoOrigins(dataRef.current) > 1 &&
+      visibleCount > 1
+    ) {
       appendMoreFeedItemsRef.current?.();
     } else if (
       topIndex < Math.max(0, prefetchThreshold - 2) &&

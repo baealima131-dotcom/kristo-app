@@ -1,3 +1,5 @@
+import { NativeModules } from "react-native";
+
 export type VideoCompressResult = {
   uri: string;
   originalBytes: number;
@@ -7,6 +9,11 @@ export type VideoCompressResult = {
 };
 
 const MIN_COMPRESS_BYTES = 2 * 1024 * 1024;
+
+function hasVideoCompressorNative() {
+  const native = NativeModules as Record<string, unknown>;
+  return Boolean(native.Compressor || native.RNCompressor || native.VideoCompressor);
+}
 
 async function resolveFileSize(uri: string): Promise<number> {
   const FileSystem = await import("expo-file-system/legacy");
@@ -64,8 +71,27 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
     };
   }
 
+  if (!hasVideoCompressorNative()) {
+    console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
+      reason: "native-not-linked",
+      originalBytes,
+      compressedBytes: originalBytes,
+    });
+    return {
+      uri: cleanUri,
+      originalBytes,
+      compressedBytes: originalBytes,
+      skipped: true,
+      reason: "native-not-linked",
+    };
+  }
+
   try {
     const { Video } = await import("react-native-compressor");
+    if (typeof Video?.compress !== "function") {
+      throw new Error("Video.compress unavailable");
+    }
+
     const compressedUri = await Video.compress(
       cleanUri,
       {

@@ -34,6 +34,7 @@ export type MediaVideoUploadResult = {
   backendFeedId: string;
   videoUrl: string;
   posterUri: string | null;
+  mediaStatus?: string;
 };
 
 export type MediaVideoUploadCallbacks = {
@@ -123,6 +124,10 @@ async function runMediaVideoUpload(job: MediaVideoUploadJob, callbacks: MediaVid
   };
 
   try {
+    console.log("KRISTO_MEDIA_STATUS_UPLOADING", {
+      title: job.title,
+      fileName: job.fileName,
+    });
     reportProgress(0, "uploading");
 
     const compressed = await compressVideoForUpload(job.fileUri);
@@ -150,6 +155,11 @@ async function runMediaVideoUpload(job: MediaVideoUploadJob, callbacks: MediaVid
 
     reportProgress(100, "processing");
 
+    console.log("KRISTO_MEDIA_STATUS_PROCESSING", {
+      title: job.title,
+      videoUrl: signed.videoUrl,
+    });
+
     const feedRes = await publishChurchVideoFeedPost({
       title: job.title,
       caption: job.caption,
@@ -162,15 +172,30 @@ async function runMediaVideoUpload(job: MediaVideoUploadJob, callbacks: MediaVid
 
     const backendItem = feedRes?.item || feedRes?.data || feedRes;
     const backendFeedId = String(backendItem?.id || "").trim();
+    const mediaStatus = String(backendItem?.mediaStatus || "processing").trim();
 
     if (!backendFeedId) {
       throw new Error("Video uploaded but feed post id was missing.");
+    }
+
+    console.log("KRISTO_MEDIA_STATUS_PROCESSING", {
+      backendFeedId,
+      mediaStatus,
+      videoUrl: signed.videoUrl,
+    });
+
+    if (mediaStatus === "ready") {
+      console.log("KRISTO_MEDIA_STATUS_READY", {
+        backendFeedId,
+        videoUrl: signed.videoUrl,
+      });
     }
 
     const result: MediaVideoUploadResult = {
       backendFeedId,
       videoUrl: signed.videoUrl,
       posterUri: posterPublicUrl || null,
+      mediaStatus,
     };
 
     reportProgress(100, "done");
@@ -220,12 +245,10 @@ export function startOptimisticVideoUpload(job: OptimisticVideoUploadJob) {
       if (posterUri && videoUrl) {
         (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__ = { videoUrl, posterUri };
       }
+      // Media-first: do not focus Home Feed until mediaStatus is ready server-side.
       if (backendFeedId) {
-        (globalThis as any).__KRISTO_HOME_FEED_PENDING_FOCUS__ = backendFeedId;
+        (globalThis as any).__KRISTO_MEDIA_STORAGE_REFRESH__ = backendFeedId;
       }
-      try {
-        (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__?.("optimistic-video-done");
-      } catch {}
     },
     onError: (message) => {
       if (!job.tempPostId) return;

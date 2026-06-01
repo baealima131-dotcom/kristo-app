@@ -1,4 +1,5 @@
 import { apiPost } from "@/src/lib/kristoApi";
+import type { MediaStatus } from "@/src/lib/mediaStatus";
 
 type HeadersRec = Record<string, string>;
 
@@ -351,6 +352,7 @@ export async function publishChurchVideoFeedPost(params: {
       postOrigin: "media",
       storageType: "media",
       isMediaPost: true,
+      mediaStatus: "processing" satisfies MediaStatus,
       title: params.title,
       text: params.caption,
       videoUrl: params.videoUrl,

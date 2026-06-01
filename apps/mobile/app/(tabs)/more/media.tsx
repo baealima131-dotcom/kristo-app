@@ -1521,7 +1521,7 @@ export default function MediaStudioScreen() {
           }
           setVideoPostUploadPercent(Math.max(0, Math.min(99, Math.round(uploadProgress))));
         },
-        onSuccess: ({ backendFeedId, videoUrl, posterUri }) => {
+        onSuccess: ({ backendFeedId, videoUrl, posterUri, mediaStatus }) => {
           setVideoPostUploadStatus("done");
           setVideoPostUploadPercent(100);
 
@@ -1557,19 +1557,22 @@ export default function MediaStudioScreen() {
           }
 
           if (backendFeedId) {
-            (globalThis as any).__KRISTO_HOME_FEED_PENDING_FOCUS__ = backendFeedId;
+            (globalThis as any).__KRISTO_MEDIA_STORAGE_REFRESH__ = backendFeedId;
           }
 
-          try {
-            (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__?.("media-video-upload-done");
-          } catch {}
+          console.log("KRISTO_MEDIA_VIDEO_UPLOAD_SAVED_TO_STORAGE", {
+            backendFeedId,
+            mediaStatus: mediaStatus || "processing",
+          });
 
-          console.log("KRISTO_MEDIA_VIDEO_UPLOAD_NAVIGATE_HOME", { backendFeedId });
+          Alert.alert(
+            "Saved to Media Storage",
+            mediaStatus === "ready"
+              ? "Your video is ready and will appear on Home Feed."
+              : "Your video is processing in Media Storage. Home Feed will show it when mediaStatus is ready."
+          );
 
-          router.push({
-            pathname: "/",
-            params: { focusPostId: backendFeedId },
-          } as any);
+          router.push("/(tabs)/more/media-storage" as any);
         },
         onError: (message) => {
           setVideoPostUploading(false);

@@ -43,16 +43,30 @@ import {
   getFeedItemById,
   isFeedDatabaseError,
   listFeedItems,
+  safeListFeedItems,
   upsertFeedItem,
 } from "@/app/api/_lib/store/feedDb";
 import { getKristoDataDir, isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
-import { ensureVideoPosterForUrl } from "@/app/api/_lib/media/videoPoster";
+import {
+  ensureVideoPosterForUrl,
+  posterPublicUrlForVideoUrl,
+  publicUploadAbsPath,
+} from "@/app/api/_lib/media/videoPoster";
 
 export const runtime = "nodejs";
 
 const DATA_DIR = getKristoDataDir();
 const BUNDLED_DATA_DIR = path.join(process.cwd(), "data");
 const PROFILES_FILE = path.join(BUNDLED_DATA_DIR, "profiles.json");
+const FEED_GET_TIMEOUT_MS = isKristoServerlessRuntime() ? 12000 : 30000;
+
+let feedEnrichChurchCache = new Map<string, any>();
+let feedEnrichMediaCache = new Map<string, any | null>();
+
+function resetFeedEnrichCaches() {
+  feedEnrichChurchCache = new Map();
+  feedEnrichMediaCache = new Map();
+}
 
 function readJsonArrayFromPaths<T>(paths: string[]): T[] {
   for (const file of paths) {
@@ -232,11 +246,34 @@ function profileMap(): Record<string, any> {
 }
 
 async function churchMediaFor(churchId: string) {
+  const cid = String(churchId || "").trim();
+  if (!cid) return null;
+
+  if (feedEnrichMediaCache.has(cid)) {
+    return feedEnrichMediaCache.get(cid);
+  }
+
   try {
-    return await getChurchMediaByChurchId(churchId);
+    const media = await getChurchMediaByChurchId(cid);
+    feedEnrichMediaCache.set(cid, media);
+    return media;
   } catch {
+    feedEnrichMediaCache.set(cid, null);
     return null;
   }
+}
+
+async function churchProfileFor(churchId: string) {
+  const cid = String(churchId || "").trim();
+  if (!cid) return null;
+
+  if (feedEnrichChurchCache.has(cid)) {
+    return feedEnrichChurchCache.get(cid);
+  }
+
+  const profile = await getChurchById(cid).catch(() => null);
+  feedEnrichChurchCache.set(cid, profile);
+  return profile;
 }
 
 function publicUser(userId: string) {
@@ -359,6 +396,91 @@ function feedUriMatchesAvatarMetadata(uri: unknown, fields: unknown[]) {
   });
 }
 
+function isRemotePosterUri(uri: unknown) {
+  const value = String(uri || "").trim();
+  if (!value) return false;
+  if (/^https?:\/\//i.test(value)) return true;
+  return value.includes("/church-video-posters/") || value.includes("/uploads/media/posters/");
+}
+
+type MediaStatus = "uploading" | "processing" | "ready";
+
+function normalizeMediaStatus(value: unknown): MediaStatus | undefined {
+  const status = String(value || "").trim().toLowerCase();
+  if (status === "uploading" || status === "processing" || status === "ready") {
+    return status;
+  }
+  return undefined;
+}
+
+function isMediaUploadCreateBody(body: any) {
+  if (body?.isMediaPost === true) return true;
+  if (String(body?.source || "").toLowerCase() === "media-upload") return true;
+  if (
+    String(body?.postOrigin || "").toLowerCase() === "media" &&
+    String(body?.storageType || "").toLowerCase() === "media"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isHomeFeedReadyItem(item: any) {
+  const isVideo = item?.type === "video" || Boolean(String(item?.videoUrl || "").trim());
+  if (!isVideo) return true;
+
+  const status = normalizeMediaStatus(item?.mediaStatus);
+  if (!status) return true;
+  return status === "ready";
+}
+
+function logMediaStatus(event: string, meta: Record<string, unknown>) {
+  console.log(event, meta);
+}
+
+async function finalizeMediaUploadVideoPost(itemId: string) {
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    const existing = await getFeedItemById(itemId);
+    if (!existing) return;
+
+    const current = normalizeMediaStatus((existing as any)?.mediaStatus);
+    if (current === "ready") return;
+
+    let posterUri = String((existing as any)?.posterUri || (existing as any)?.videoPosterUri || "").trim();
+    const videoUrl = String(existing.videoUrl || "").trim();
+
+    if (!posterUri && videoUrl) {
+      const generated = await ensureVideoPosterForUrl(videoUrl);
+      if (generated) posterUri = generated;
+    }
+
+    const next: any = {
+      ...existing,
+      mediaStatus: "ready",
+    };
+
+    if (posterUri) {
+      next.posterUri = posterUri;
+      next.videoPosterUri = posterUri;
+      next.thumbnailUri = posterUri;
+    }
+
+    await upsertFeedItem(next);
+    logMediaStatus("KRISTO_MEDIA_STATUS_READY", {
+      id: itemId,
+      videoUrl,
+      posterUri: posterUri || null,
+    });
+  } catch (error) {
+    logMediaStatus("KRISTO_MEDIA_STATUS_READY_ERROR", {
+      id: itemId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 function sanitizeFeedPostMediaFields(input: {
   type: FeedType;
   videoUrl?: string;
@@ -393,8 +515,12 @@ function sanitizeFeedPostMediaFields(input: {
   }
 
   if (isVideo) {
-    if (feedUriMatchesAvatarMetadata(posterUri, avatarFields)) posterUri = undefined;
-    if (feedUriMatchesAvatarMetadata(thumbnailUri, avatarFields)) thumbnailUri = undefined;
+    if (!isRemotePosterUri(posterUri) && feedUriMatchesAvatarMetadata(posterUri, avatarFields)) {
+      posterUri = undefined;
+    }
+    if (!isRemotePosterUri(thumbnailUri) && feedUriMatchesAvatarMetadata(thumbnailUri, avatarFields)) {
+      thumbnailUri = undefined;
+    }
   }
 
   return { mediaUri, posterUri, thumbnailUri };
@@ -622,7 +748,7 @@ async function removePostAndRelated(postId: string) {
 
 async function enrichFeedListItem(item: any, viewerUserId: string) {
   const itemChurchId = String(item.churchId || "");
-  const itemChurchProfile = await getChurchById(itemChurchId);
+  const itemChurchProfile = await churchProfileFor(itemChurchId);
   const itemMediaProfile: any = await churchMediaFor(itemChurchId);
   const author = publicUser(item.createdBy);
 
@@ -640,29 +766,20 @@ async function enrichFeedListItem(item: any, viewerUserId: string) {
 
   const ownershipType = inferOwnershipType(item);
 
-  let posterUri = String(item?.posterUri || "").trim() || undefined;
-  let thumbnailUri = String(item?.thumbnailUri || item?.thumbnailUrl || "").trim() || undefined;
+  let posterUri =
+    String(item?.posterUri || item?.videoPosterUri || "").trim() || undefined;
+  let thumbnailUri =
+    String(item?.thumbnailUri || item?.thumbnailUrl || item?.videoPosterUri || "").trim() ||
+    undefined;
   const isVideoItem =
     item?.type === "video" || Boolean(String(item?.videoUrl || "").trim());
 
   if (isVideoItem && !posterUri && !thumbnailUri && item?.videoUrl) {
-    const generatedPoster = await ensureVideoPosterForUrl(String(item.videoUrl));
-    if (generatedPoster) {
-      posterUri = generatedPoster;
-      thumbnailUri = generatedPoster;
-      try {
-        await upsertFeedItem({
-          ...item,
-          posterUri: generatedPoster,
-          thumbnailUri: generatedPoster,
-          videoPosterUri: generatedPoster,
-        });
-      } catch (error) {
-        console.log("KRISTO_VIDEO_POSTER_PERSIST_ERROR", {
-          postId: item?.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    const existingPoster = posterPublicUrlForVideoUrl(String(item.videoUrl));
+    const posterAbsPath = publicUploadAbsPath(existingPoster);
+    if (posterAbsPath && fs.existsSync(posterAbsPath)) {
+      posterUri = existingPoster;
+      thumbnailUri = existingPoster;
     }
   }
 
@@ -698,6 +815,37 @@ async function enrichFeedListItem(item: any, viewerUserId: string) {
     likeCount: postLikeCount(itemChurchId, item.id),
     likedByMe: postLikedByUser(itemChurchId, item.id, viewerUserId),
   };
+}
+
+async function safeEnrichFeedListItem(item: any, viewerUserId: string) {
+  try {
+    return await enrichFeedListItem(item, viewerUserId);
+  } catch (error) {
+    console.error("[church/feed] enrich item failed", {
+      postId: String(item?.id || ""),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      ...item,
+      ownershipType: inferOwnershipType(item),
+      authorName: publicUser(item?.createdBy).authorName,
+      authorAvatarUri: publicUser(item?.createdBy).authorAvatarUri,
+      scheduleSlots: enrichScheduleSlotsClaimAvatars(
+        Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
+      ),
+      commentCount: commentCountForPost(String(item?.id || "")),
+      replyCount: replyCountForPost(String(item?.id || "")),
+      totalDiscussionCount:
+        commentCountForPost(String(item?.id || "")) +
+        replyCountForPost(String(item?.id || "")),
+      likeCount: postLikeCount(String(item?.churchId || ""), String(item?.id || "")),
+      likedByMe: postLikedByUser(
+        String(item?.churchId || ""),
+        String(item?.id || ""),
+        viewerUserId
+      ),
+    };
+  }
 }
 
 async function viewerHasActiveChurchMembership(churchId: string, userId?: string) {
@@ -792,153 +940,214 @@ function buildCommentTree(churchId: string, postId: string, viewerUserId: string
   }));
 }
 
+function emptyFeedListResponse(churchId: string) {
+  return feedListOk(churchId, []);
+}
+
 export async function GET(req: NextRequest) {
+  let churchIdForFallback = String(req.headers.get("x-kristo-church-id") || "").trim();
+
   try {
-    await ensureFeedStoreReady();
+    return await Promise.race([
+      handleFeedGet(req, () => churchIdForFallback, (next) => {
+        churchIdForFallback = next;
+      }),
+      new Promise<NextResponse>((resolve) => {
+        setTimeout(() => {
+          console.error("[church/feed] GET timed out", { churchId: churchIdForFallback });
+          resolve(emptyFeedListResponse(churchIdForFallback));
+        }, FEED_GET_TIMEOUT_MS);
+      }),
+    ]);
   } catch (error: any) {
-    if (isFeedDatabaseError(error)) {
-      return err("Feed database not configured", 503);
-    }
-    throw error;
+    console.error("[church/feed] GET failed", {
+      churchId: churchIdForFallback,
+      message: error?.message,
+      stack: error?.stack,
+    });
+    return emptyFeedListResponse(churchIdForFallback);
   }
+}
 
-  const ctxOrRes = await guardAuth(req);
-  if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
+async function handleFeedGet(
+  req: NextRequest,
+  getFallbackChurchId: () => string,
+  setFallbackChurchId: (next: string) => void
+) {
+  resetFeedEnrichCaches();
 
-  const ctx = ctxOrRes as any;
-  const headerChurchId = String(ctx?.viewer?.churchId || "").trim();
-  const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
-  const viewerRole = String(ctx?.viewer?.role || "Member").trim();
-  const churchId = await resolveViewerChurchId(req, headerChurchId, viewerUserId, viewerRole);
-  const url = new URL(req.url);
-
-  const type = url.searchParams.get("type") as FeedType | null;
-  const id = String(url.searchParams.get("id") || "").trim();
-  const storageMode = String(url.searchParams.get("storage") || "").trim().toLowerCase();
-
-  if (storageMode === "media" || storageMode === "church") {
-    const membershipOrRes = await guard(req);
-    if ("ok" in (membershipOrRes as any) === false && membershipOrRes instanceof NextResponse) {
-      return membershipOrRes;
+  try {
+    try {
+      await ensureFeedStoreReady();
+    } catch (error: any) {
+      if (isFeedDatabaseError(error)) {
+        console.error("[church/feed] GET feed store unavailable", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return emptyFeedListResponse(getFallbackChurchId());
+      }
+      throw error;
     }
 
-    const membershipCtx = membershipOrRes as any;
-    const viewerChurchId = String(membershipCtx.churchId || "").trim();
-    const viewerRole = membershipCtx?.viewer?.role;
+    const ctxOrRes = await guardAuth(req);
+    if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
 
-    if (!viewerChurchId) {
-      return err("Active church membership required", 403);
+    const ctx = ctxOrRes as any;
+    const headerChurchId = String(ctx?.viewer?.churchId || "").trim();
+    const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
+    const viewerRole = String(ctx?.viewer?.role || "Member").trim();
+    const churchId = await resolveViewerChurchId(req, headerChurchId, viewerUserId, viewerRole);
+    setFallbackChurchId(churchId || getFallbackChurchId());
+    const url = new URL(req.url);
+
+    const type = url.searchParams.get("type") as FeedType | null;
+    const id = String(url.searchParams.get("id") || "").trim();
+    const storageMode = String(url.searchParams.get("storage") || "").trim().toLowerCase();
+
+    if (storageMode === "media" || storageMode === "church") {
+      const membershipOrRes = await guard(req);
+      if ("ok" in (membershipOrRes as any) === false && membershipOrRes instanceof NextResponse) {
+        return membershipOrRes;
+      }
+
+      const membershipCtx = membershipOrRes as any;
+      const viewerChurchId = String(membershipCtx.churchId || "").trim();
+      const viewerRole = membershipCtx?.viewer?.role;
+
+      if (!viewerChurchId) {
+        return err("Active church membership required", 403);
+      }
+
+      if (storageMode === "media" && !(await canAccessMediaStorage(viewerChurchId, viewerRole, viewerUserId))) {
+        return err("Pastor or media host access required", 403);
+      }
+
+      if (storageMode === "church" && !isPastorOrAdminRole(viewerRole)) {
+        return err("Pastor or admin access required", 403);
+      }
+
+      const storageItems = (await safeListFeedItems())
+        .filter((x: any) => String(x?.churchId || "") === viewerChurchId)
+        .filter((x: any) => (storageMode === "media" ? isMediaOwnedFeedItem(x) : true))
+        .filter((x) => (type ? x.type === type : true))
+        .slice()
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+        .map((item) => safeEnrichFeedListItem(item, viewerUserId));
+
+      const resolvedStorageItems = await Promise.all(storageItems);
+
+      return feedListOk(viewerChurchId, resolvedStorageItems);
     }
 
-    if (storageMode === "media" && !(await canAccessMediaStorage(viewerChurchId, viewerRole, viewerUserId))) {
-      return err("Pastor or media host access required", 403);
+    if (id) {
+      const item = await getFeedItemById(id);
+      if (!item) return err("Feed item not found", 404);
+
+      const itemChurchId = String(item.churchId || churchId);
+
+      if (!isDiscoverableFeedItem(item, churchId)) {
+        return err("Feed item not found", 404);
+      }
+
+      if (isClaimableScheduleFeedItem(item) && !(await viewerHasActiveChurchMembership(churchId, viewerUserId))) {
+        return err("Feed item not found", 404);
+      }
+
+      const commentCount = commentCountForPost(item.id);
+      const replyCount = replyCountForPost(item.id);
+
+      const detail: FeedPostDetail = {
+        item: {
+          ...item,
+          commentCount,
+          replyCount,
+          totalDiscussionCount: commentCount + replyCount,
+        },
+        comments: buildCommentTree(itemChurchId, item.id, viewerUserId),
+      };
+
+      return ok(detail);
     }
 
-    if (storageMode === "church" && !isPastorOrAdminRole(viewerRole)) {
-      return err("Pastor or admin access required", 403);
+    const allRows = (await safeListFeedItems()).filter(feedVideoAssetExists);
+    console.log("[FeedDb] list churchId count scheduleCount", {
+      churchId,
+      count: allRows.length,
+      scheduleCount: countScheduleFeedItems(allRows),
+    });
+    console.log("[ScheduleFeed] GET rows before filter", {
+      churchId,
+      headerChurchId,
+      total: allRows.length,
+      scheduleCandidates: allRows.filter((x) => isMediaScheduleFeedItem(x)).length,
+    });
+
+    const afterDiscover = allRows.filter((x: any) => isDiscoverableFeedItem(x, churchId));
+    const homeReadyRows = afterDiscover.filter((x: any) => isHomeFeedReadyItem(x));
+
+    if (__DEV__) {
+      const skipped = afterDiscover.length - homeReadyRows.length;
+      if (skipped > 0) {
+        console.log("KRISTO_HOME_FEED_MEDIA_STATUS_FILTER", {
+          churchId,
+          skipped,
+          kept: homeReadyRows.length,
+        });
+      }
     }
 
-    const storageItems = (await listFeedItems())
-      .filter((x: any) => String(x?.churchId || "") === viewerChurchId)
-      .filter((x: any) => (storageMode === "media" ? isMediaOwnedFeedItem(x) : true))
+    console.log("[ScheduleFeed] GET rows after church filter", {
+      churchId,
+      total: homeReadyRows.length,
+      scheduleCandidates: homeReadyRows.filter((x) => isMediaScheduleFeedItem(x)).length,
+    });
+
+    const hasMembership = await viewerHasActiveChurchMembership(churchId, viewerUserId);
+
+    const items = homeReadyRows
+      .filter((x: any) => {
+        if (isClaimableScheduleFeedItem(x) && !hasMembership) {
+          return false;
+        }
+        if (isClaimableScheduleFeedItem(x)) {
+          const itemCid = String(x?.churchId || "").trim();
+          if (itemCid && churchId && itemCid !== churchId) return false;
+        }
+        return true;
+      })
       .filter((x) => (type ? x.type === type : true))
       .slice()
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-      .map((item) => enrichFeedListItem(item, viewerUserId));
+      .map((item) => safeEnrichFeedListItem(item, viewerUserId));
 
-    const resolvedStorageItems = await Promise.all(storageItems);
+    const resolvedItems = await Promise.all(items);
 
-    return feedListOk(viewerChurchId, resolvedStorageItems);
+    const scheduleRows = resolvedItems.filter((x: any) => isMediaScheduleFeedItem(x));
+    console.log("KRISTO_FEED_SCHEDULES_RETURNED", {
+      churchId,
+      headerChurchId,
+      viewerUserId,
+      viewerRole,
+      hasMembership,
+      total: resolvedItems.length,
+      scheduleCount: scheduleRows.length,
+      scheduleIds: scheduleRows.map((x: any) => String(x?.id || "")),
+    });
+    console.log("[ScheduleFeed] GET schedule rows returned", {
+      churchId,
+      scheduleCount: scheduleRows.length,
+      scheduleIds: scheduleRows.map((x: any) => String(x?.id || "")),
+    });
+
+    return feedListOk(churchId, resolvedItems);
+  } catch (error: any) {
+    console.error("[church/feed] GET handler failed", {
+      churchId: getFallbackChurchId(),
+      message: error?.message,
+      stack: error?.stack,
+    });
+    return emptyFeedListResponse(getFallbackChurchId());
   }
-
-  if (id) {
-    const item = await getFeedItemById(id);
-    if (!item) return err("Feed item not found", 404);
-
-    const itemChurchId = String(item.churchId || churchId);
-
-    if (!isDiscoverableFeedItem(item, churchId)) {
-      return err("Feed item not found", 404);
-    }
-
-    if (isClaimableScheduleFeedItem(item) && !(await viewerHasActiveChurchMembership(churchId, viewerUserId))) {
-      return err("Feed item not found", 404);
-    }
-
-    const commentCount = commentCountForPost(item.id);
-    const replyCount = replyCountForPost(item.id);
-
-    const detail: FeedPostDetail = {
-      item: {
-        ...item,
-        commentCount,
-        replyCount,
-        totalDiscussionCount: commentCount + replyCount,
-      },
-      comments: buildCommentTree(itemChurchId, item.id, viewerUserId),
-    };
-
-    return ok(detail);
-  }
-
-  const allRows = (await listFeedItems()).filter(feedVideoAssetExists);
-  console.log("[FeedDb] list churchId count scheduleCount", {
-    churchId,
-    count: allRows.length,
-    scheduleCount: countScheduleFeedItems(allRows),
-  });
-  console.log("[ScheduleFeed] GET rows before filter", {
-    churchId,
-    headerChurchId,
-    total: allRows.length,
-    scheduleCandidates: allRows.filter((x) => isMediaScheduleFeedItem(x)).length,
-  });
-
-  const afterDiscover = allRows.filter((x: any) => isDiscoverableFeedItem(x, churchId));
-  console.log("[ScheduleFeed] GET rows after church filter", {
-    churchId,
-    total: afterDiscover.length,
-    scheduleCandidates: afterDiscover.filter((x) => isMediaScheduleFeedItem(x)).length,
-  });
-
-  const hasMembership = await viewerHasActiveChurchMembership(churchId, viewerUserId);
-
-  const items = afterDiscover
-    .filter((x: any) => {
-      if (isClaimableScheduleFeedItem(x) && !hasMembership) {
-        return false;
-      }
-      if (isClaimableScheduleFeedItem(x)) {
-        const itemCid = String(x?.churchId || "").trim();
-        if (itemCid && churchId && itemCid !== churchId) return false;
-      }
-      return true;
-    })
-    .filter((x) => (type ? x.type === type : true))
-    .slice()
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-    .map((item) => enrichFeedListItem(item, viewerUserId));
-
-  const resolvedItems = await Promise.all(items);
-
-  const scheduleRows = resolvedItems.filter((x: any) => isMediaScheduleFeedItem(x));
-  console.log("KRISTO_FEED_SCHEDULES_RETURNED", {
-    churchId,
-    headerChurchId,
-    viewerUserId,
-    viewerRole,
-    hasMembership,
-    total: resolvedItems.length,
-    scheduleCount: scheduleRows.length,
-    scheduleIds: scheduleRows.map((x: any) => String(x?.id || "")),
-  });
-  console.log("[ScheduleFeed] GET schedule rows returned", {
-    churchId,
-    scheduleCount: scheduleRows.length,
-    scheduleIds: scheduleRows.map((x: any) => String(x?.id || "")),
-  });
-
-  return feedListOk(churchId, resolvedItems);
 }
 
 export async function POST(req: NextRequest) {
@@ -1562,8 +1771,13 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
   const actorAvatarUri = cleanText(body?.actorAvatarUri || body?.avatarUri || body?.profileImage, 2000) || undefined;
   const churchAvatarUri = cleanText(body?.churchAvatarUri || body?.churchAvatarUrl || body?.actorAvatarUri || body?.avatarUri || body?.profileImage, 2000) || undefined;
-  const posterUri = cleanText(body?.posterUri, 2000) || undefined;
-  const thumbnailUri = cleanText(body?.thumbnailUri || body?.thumbnailUrl, 2000) || undefined;
+  const posterUri =
+    cleanText(body?.posterUri || body?.videoPosterUri, 4000) || undefined;
+  const thumbnailUri =
+    cleanText(body?.thumbnailUri || body?.thumbnailUrl || body?.videoPosterUri, 4000) ||
+    undefined;
+  const videoPosterUri =
+    cleanText(body?.videoPosterUri || body?.posterUri || body?.thumbnailUri, 4000) || undefined;
 
   const sanitizedMedia = sanitizeFeedPostMediaFields({
     type,
@@ -1579,9 +1793,9 @@ async function handleFeedPost(req: NextRequest, body: any) {
   });
 
   let resolvedPosterUri =
-    sanitizedMedia.posterUri || sanitizedMedia.thumbnailUri || undefined;
+    sanitizedMedia.posterUri || sanitizedMedia.thumbnailUri || videoPosterUri || undefined;
   let resolvedThumbnailUri =
-    sanitizedMedia.thumbnailUri || sanitizedMedia.posterUri || undefined;
+    sanitizedMedia.thumbnailUri || sanitizedMedia.posterUri || videoPosterUri || undefined;
 
   if ((type === "video" || videoUrl) && !resolvedPosterUri && videoUrl) {
     const generatedPoster = await ensureVideoPosterForUrl(videoUrl);
@@ -1697,6 +1911,10 @@ async function handleFeedPost(req: NextRequest, body: any) {
   }
   if (resolvedThumbnailUri) {
     (item as any).thumbnailUri = resolvedThumbnailUri;
+    if (!resolvedPosterUri) {
+      (item as any).posterUri = resolvedThumbnailUri;
+      (item as any).videoPosterUri = resolvedThumbnailUri;
+    }
   }
 
   if (type === "video" || videoUrl) {
@@ -1706,7 +1924,64 @@ async function handleFeedPost(req: NextRequest, body: any) {
     delete (item as any).imageUrl;
   }
 
+  const isMediaUploadVideo = type === "video" && Boolean(videoUrl) && isMediaUploadCreateBody(body);
+  const requestedMediaStatus = normalizeMediaStatus(body?.mediaStatus);
+  const mediaStatus: MediaStatus | undefined = isMediaUploadVideo
+    ? requestedMediaStatus === "uploading" || !requestedMediaStatus
+      ? "processing"
+      : requestedMediaStatus
+    : requestedMediaStatus;
+
+  if (cleanText(body?.mediaType, 40)) {
+    (item as any).mediaType = cleanText(body?.mediaType, 40);
+  }
+  if (cleanText(body?.storageType, 40)) {
+    (item as any).storageType = cleanText(body?.storageType, 40);
+  }
+  if (cleanText(body?.postOrigin, 40)) {
+    (item as any).postOrigin = cleanText(body?.postOrigin, 40);
+  }
+  if (body?.isMediaPost === true) {
+    (item as any).isMediaPost = true;
+  }
+  if (mediaStatus) {
+    (item as any).mediaStatus = mediaStatus;
+    if (mediaStatus === "processing") {
+      logMediaStatus("KRISTO_MEDIA_STATUS_PROCESSING", {
+        id: item.id,
+        videoUrl: videoUrl || null,
+        source: source || null,
+      });
+    } else if (mediaStatus === "uploading") {
+      logMediaStatus("KRISTO_MEDIA_STATUS_UPLOADING", {
+        id: item.id,
+        videoUrl: videoUrl || null,
+        source: source || null,
+      });
+    } else if (mediaStatus === "ready") {
+      logMediaStatus("KRISTO_MEDIA_STATUS_READY", {
+        id: item.id,
+        videoUrl: videoUrl || null,
+        source: source || null,
+      });
+    }
+  }
+
   await upsertFeedItem(item);
+
+  if (isMediaUploadVideo && mediaStatus === "processing") {
+    void finalizeMediaUploadVideoPost(String(item.id));
+  }
+
+  if (type === "video" || videoUrl) {
+    console.log("KRISTO_FEED_VIDEO_POSTER_SAVED", {
+      id: item.id,
+      videoUrl,
+      posterUri: resolvedPosterUri || null,
+      videoPosterUri: (item as any).videoPosterUri || null,
+      thumbnailUri: resolvedThumbnailUri || null,
+    });
+  }
 
   const savedFeedRow = {
     ...item,

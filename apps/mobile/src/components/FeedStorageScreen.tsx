@@ -21,7 +21,7 @@ import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { feedList, feedRemoveWhere } from "@/src/lib/homeFeedStore";
-import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
+import { evaluateChurchMediaAccessFromSession } from "@/src/lib/churchMediaAccess";
 import {
   activityIsVideo,
   formatActivityWhen,
@@ -39,6 +39,7 @@ import {
   type StorageMode,
   type StoragePostLabel,
 } from "@/src/lib/churchStoragePosts";
+import { mediaStatusLabel, normalizeMediaStatus } from "@/src/lib/mediaStatus";
 
 type FeedStorageItem = {
   id: string;
@@ -55,6 +56,7 @@ type FeedStorageItem = {
   ownershipType?: string;
   churchName?: string;
   mediaType?: string;
+  mediaStatus?: string;
   videoUrl?: string;
   mediaUri?: string;
   imageUrl?: string;
@@ -167,6 +169,9 @@ function StoragePostCard({
   const typeBadge = getStoragePostTypeBadge(item, mode);
   const whenLabel = formatActivityWhen(item.createdAt);
   const isVideo = activityIsVideo(item);
+  const mediaStatus = normalizeMediaStatus(item.mediaStatus);
+  const statusLabel =
+    mediaStatus && mediaStatus !== "ready" ? mediaStatusLabel(mediaStatus) : "";
   const tone = badgeTone(typeBadge);
   const canPreview = canPreviewStoragePost(item);
   const authorInitial =
@@ -246,6 +251,14 @@ function StoragePostCard({
             <View style={[s.typeBadge, { backgroundColor: tone.bg }]}>
               <Text style={[s.typeBadgeText, { color: tone.color }]}>{typeBadge}</Text>
             </View>
+            {statusLabel ? (
+              <View style={s.processingBadge}>
+                {mediaStatus === "processing" ? (
+                  <ActivityIndicator size="small" color="#F4C95D" style={s.processingSpinner} />
+                ) : null}
+                <Text style={s.processingBadgeText}>{statusLabel}</Text>
+              </View>
+            ) : null}
             <Text style={s.whenLabel} numberOfLines={1}>
               {whenLabel || "—"}
             </Text>
@@ -327,11 +340,12 @@ export default function FeedStorageScreen({
 
   const mediaAccess = useMemo(
     () =>
-      evaluateChurchMediaAccessClient({
+      evaluateChurchMediaAccessFromSession({
         userId: session?.userId,
-        isMediaHost,
+        role: session?.role,
+        churchRole: (session as any)?.churchRole,
       }),
-    [session?.userId, isMediaHost]
+    [session?.userId, session?.role, (session as any)?.churchRole, isMediaHost]
   );
 
   const canDelete = canDeleteStoragePosts(mode, session, mediaAccess.isMediaHost);
@@ -355,17 +369,24 @@ export default function FeedStorageScreen({
     })
       .then((res: any) => {
         if (!alive) return;
-        const access = evaluateChurchMediaAccessClient({
-          userId: session.userId,
-          actualPastorUserId: res?.actualPastorUserId,
-          mediaHostUserIds: res?.mediaHostUserIds,
-          isActualChurchPastor: res?.isActualChurchPastor,
-          isMediaHost: res?.isMediaHost ?? res?.viewerIsHost,
-        });
+        const access = evaluateChurchMediaAccessFromSession(
+          {
+            userId: session.userId,
+            role: session.role,
+            churchRole: (session as any)?.churchRole,
+          },
+          res
+        );
         setIsMediaHost(access.isMediaHost || access.isActualChurchPastor);
       })
       .catch(() => {
-        if (alive) setIsMediaHost(false);
+        if (!alive) return;
+        const fallback = evaluateChurchMediaAccessFromSession({
+          userId: session.userId,
+          role: session.role,
+          churchRole: (session as any)?.churchRole,
+        });
+        setIsMediaHost(fallback.isMediaHost || fallback.isActualChurchPastor);
       });
 
     return () => {
@@ -400,12 +421,17 @@ export default function FeedStorageScreen({
       const filtered = mergeStorageSourceRows(apiList, supplemental, mode, churchId);
       setRows(filtered);
 
+      const processingCount = filtered.filter(
+        (item: any) => normalizeMediaStatus(item?.mediaStatus) === "processing"
+      ).length;
+
       if (__DEV__) {
         console.log("KRISTO_STORAGE_LOAD", {
           storageType: mode,
           apiCount: apiList.length,
           supplementalCount: supplemental.length,
           filteredCount: filtered.length,
+          processingCount,
         });
       }
     } catch (e) {
@@ -415,6 +441,26 @@ export default function FeedStorageScreen({
       setLoading(false);
     }
   }, [churchId, mode, session?.role, session?.userId]);
+
+  const hasProcessingRows = useMemo(
+    () => rows.some((item) => normalizeMediaStatus(item.mediaStatus) === "processing"),
+    [rows]
+  );
+
+  useEffect(() => {
+    const pendingRefreshId = String((globalThis as any).__KRISTO_MEDIA_STORAGE_REFRESH__ || "").trim();
+    if (!pendingRefreshId) return;
+    delete (globalThis as any).__KRISTO_MEDIA_STORAGE_REFRESH__;
+    void loadRows();
+  }, [loadRows]);
+
+  useEffect(() => {
+    if (mode !== "media" || !hasProcessingRows) return;
+    const timer = setInterval(() => {
+      void loadRows();
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [hasProcessingRows, loadRows, mode]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -733,6 +779,25 @@ const s = StyleSheet.create({
     flexShrink: 0,
   },
   typeBadgeText: {
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.35,
+  },
+  processingBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: "rgba(244,201,93,0.14)",
+    flexShrink: 0,
+  },
+  processingSpinner: {
+    transform: [{ scale: 0.7 }],
+  },
+  processingBadgeText: {
+    color: "#F4C95D",
     fontSize: 9,
     fontWeight: "900",
     letterSpacing: 0.35,
