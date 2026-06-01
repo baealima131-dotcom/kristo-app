@@ -57,6 +57,25 @@ import {
 } from "@/src/lib/messageAttachmentUpload";
 import { getChurchProjectMcScheduleState } from "@/src/store/churchProjectMcScheduleStore";
 import { apiGet, apiPatch, apiDelete, apiPost } from "@/src/lib/kristoApi";
+import {
+  getLiveControlMembersCache,
+  getMcHostsCache,
+  getRoomMessagesCache,
+  invalidateMcHostsCache,
+  isChurchMediaRoomCacheFresh,
+  liveControlMembersRawSignature,
+  mcHostsSignature,
+  peekLiveControlMembersCache,
+  peekMcHostsCache,
+  peekRoomMessagesCache,
+} from "@/src/lib/churchMediaRoomCache";
+import {
+  CHURCH_MEDIA_ROOM_ID,
+  mapLiveControlBoardPeople,
+  refreshLiveControlMembersIfNeeded,
+  refreshMcHostsIfNeeded,
+  refreshRoomMessagesIfNeeded,
+} from "@/src/lib/churchMediaRoomRefresh";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
@@ -2593,6 +2612,11 @@ export default function MessageThreadScreen() {
     [backendRoomId]
   );
 
+  const mediaRoomCacheFreshRef = useRef(false);
+  const mediaRoomHydratedRef = useRef(false);
+  const memberBoardSigRef = useRef("");
+  const mcHostsSigRef = useRef("");
+
   const [realMinistry, setRealMinistry] = useState<MinistryApiItem | null>(null);
   const [actionLoading, setActionLoading] = useState<"pause" | "leave" | null>(null);
   const [mcHostsOpen, setMcHostsOpen] = useState(false);
@@ -2819,7 +2843,7 @@ export default function MessageThreadScreen() {
     ((opts?: { force?: boolean; reason?: string }) => Promise<boolean>) | null
   >(null);
 
-  const reloadMemberBoardRef = useRef<(() => Promise<void>) | null>(null);
+  const reloadMemberBoardRef = useRef<((opts?: { force?: boolean }) => Promise<void>) | null>(null);
 
   const isAssignmentLeader =
     isAssignmentThread &&
@@ -2989,6 +3013,210 @@ export default function MessageThreadScreen() {
   const roomMessagesInflightRef = useRef(false);
   const memberAvatarByUserIdRef = useRef<Map<string, string>>(new Map());
   const reloadRoomMessagesRef = useRef<(() => Promise<boolean>) | null>(null);
+  const [composerFocused, setComposerFocused] = useState(false);
+
+  const filterVisibleRoomMessageRows = useCallback((rows: any[]) => {
+    return (Array.isArray(rows) ? rows : []).filter((x: any) => {
+      const isDraftCard =
+        String(x?.kind || "") === "assignment_card" &&
+        String(x?.card?.visibility || "published") === "draft";
+      return !isDraftCard;
+    });
+  }, []);
+
+  const applyVisibleRoomMessageRows = useCallback(
+    (visibleRows: any[]): boolean => {
+      if (!threadId) return false;
+
+      const headers: any = getKristoHeaders();
+      const selfId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+      const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+      const mapped: MsgItem[] = filterVisibleRoomMessageRows(visibleRows)
+        .map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase))
+        .map((m) => enrichMessageSenderAvatar(m, memberAvatarByUserIdRef.current));
+
+      const roomTitle = String(
+        isAssignmentThread
+          ? ((params as any)?.assignmentTitle || title || "Ministry Assignment")
+          : isMinistryThread
+            ? (realMinistry?.name || title || "Ministry Room")
+            : (title || "Message Room")
+      );
+
+      const currentLocalMessages = getSnapshot().messages?.[threadId] || [];
+      const localScheduleCards = currentLocalMessages.filter((m: any) =>
+        String(m?.kind || "") === "assignment_card" &&
+        String((m as any)?.card?.source || "") === "media-schedule"
+      );
+      const pendingOptimistic = currentLocalMessages.filter(isOptimisticOutgoingMessage);
+      const backendIds = new Set(mapped.map((m: any) => String(m.id || "")));
+      const safeLocalScheduleCards = localScheduleCards.filter((m: any) => !backendIds.has(String(m.id || "")));
+      const dedupedPending = pendingOptimistic.filter(
+        (opt) => !backendIds.has(String(opt.id || "")) && !mapped.some((b) => optimisticMessageMatchesBackend(opt, b))
+      );
+      const merged = [...safeLocalScheduleCards, ...dedupedPending, ...mapped].sort(
+        (a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0)
+      );
+      const sig = messagesListSignature(merged);
+      if (sig === roomMessagesSigRef.current) return false;
+
+      roomMessagesSigRef.current = sig;
+      if (merged.length > 0 || messages.length === 0) {
+        setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
+      } else {
+        console.log("[RoomMessagesPoll] skip-empty-overwrite", { threadId, backendRoomId });
+      }
+      return true;
+    },
+    [
+      threadId,
+      effectiveAuthUserId,
+      title,
+      sub,
+      isAssignmentThread,
+      isMinistryThread,
+      realMinistry,
+      messages.length,
+      filterVisibleRoomMessageRows,
+      (params as any)?.assignmentTitle,
+    ]
+  );
+
+  useEffect(() => {
+    if (!isChurchLiveControlRoom || !isFocused) return;
+
+    const cid = String(churchId || getKristoHeaders()["x-kristo-church-id"] || "").trim();
+    const uid = String(effectiveAuthUserId || getKristoHeaders()["x-kristo-user-id"] || "").trim();
+    if (!cid || !uid) return;
+
+    const roomId = CHURCH_MEDIA_ROOM_ID;
+    const assignmentId = CHURCH_MEDIA_ROOM_ID;
+
+    const msgsPeek = peekRoomMessagesCache(cid, uid, roomId);
+    const livePeek = peekLiveControlMembersCache(cid, uid, roomId);
+    const hostsPeek = peekMcHostsCache(cid, uid, assignmentId);
+
+    mediaRoomCacheFreshRef.current =
+      Boolean(msgsPeek && isChurchMediaRoomCacheFresh(msgsPeek.updatedAt)) &&
+      Boolean(livePeek && isChurchMediaRoomCacheFresh(livePeek.updatedAt)) &&
+      Boolean(hostsPeek && isChurchMediaRoomCacheFresh(hostsPeek.updatedAt));
+
+    let alive = true;
+
+    (async () => {
+      const [msgsCache, liveCache, hostsCache] = await Promise.all([
+        msgsPeek ? Promise.resolve(msgsPeek) : getRoomMessagesCache(cid, uid, roomId),
+        livePeek ? Promise.resolve(livePeek) : getLiveControlMembersCache(cid, uid, roomId),
+        hostsPeek ? Promise.resolve(hostsPeek) : getMcHostsCache(cid, uid, assignmentId),
+      ]);
+
+      if (!alive) return;
+
+      if (msgsCache?.rawRows?.length) {
+        applyVisibleRoomMessageRows(msgsCache.rawRows as any[]);
+      }
+
+      if (liveCache?.rawRows) {
+        const liveSig = liveControlMembersRawSignature(liveCache.rawRows);
+        if (liveSig !== memberBoardSigRef.current) {
+          memberBoardSigRef.current = liveSig;
+          const targetMinistryId = String(
+            resolvedMinistryId || (params as any)?.assignmentId || threadId || ""
+          );
+          setRealMemberBoardPeople(
+            mapLiveControlBoardPeople(
+              liveCache.rawRows as any[],
+              targetMinistryId,
+              String(threadId || ""),
+              assignmentId
+            ) as MinistryPerson[]
+          );
+        }
+      }
+
+      if (hostsCache?.hostUserIds?.length) {
+        const hostSig = mcHostsSignature(hostsCache.hostUserIds);
+        if (hostSig !== mcHostsSigRef.current) {
+          mcHostsSigRef.current = hostSig;
+          setMcHostIds(hostsCache.hostUserIds);
+          setCachedParticipant(mcHostsCacheKey, hostsCache.hostUserIds);
+        }
+      }
+
+      mediaRoomHydratedRef.current = true;
+
+      const headers = getKristoHeaders() as Record<string, string>;
+      void refreshRoomMessagesIfNeeded({
+        churchId: cid,
+        userId: uid,
+        roomId,
+        headers,
+        cacheFresh: mediaRoomCacheFreshRef.current,
+        source: "hydrate-background",
+      }).then((refresh) => {
+        if (!alive || !refresh.rawRows?.length) return;
+        applyVisibleRoomMessageRows(refresh.rawRows);
+        if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
+      });
+
+      void refreshLiveControlMembersIfNeeded({
+        churchId: cid,
+        userId: uid,
+        roomId,
+        headers: { ...headers, "x-kristo-role": "Pastor" },
+        cacheFresh: mediaRoomCacheFreshRef.current,
+        source: "hydrate-background",
+      }).then((refresh) => {
+        if (!alive || !refresh.rawRows?.length) return;
+        const liveSig = liveControlMembersRawSignature(refresh.rawRows);
+        if (liveSig === memberBoardSigRef.current) return;
+        memberBoardSigRef.current = liveSig;
+        const targetMinistryId = String(
+          resolvedMinistryId || (params as any)?.assignmentId || threadId || ""
+        );
+        setRealMemberBoardPeople(
+          mapLiveControlBoardPeople(
+            refresh.rawRows,
+            targetMinistryId,
+            String(threadId || ""),
+            assignmentId
+          ) as MinistryPerson[]
+        );
+        if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
+      });
+
+      void refreshMcHostsIfNeeded({
+        churchId: cid,
+        userId: uid,
+        assignmentId,
+        headers,
+        cacheFresh: mediaRoomCacheFreshRef.current,
+        cacheKey: mcHostsCacheKey,
+        source: "hydrate-background",
+      }).then((refresh) => {
+        if (!alive) return;
+        const hostSig = mcHostsSignature(refresh.hostUserIds);
+        if (hostSig === mcHostsSigRef.current) return;
+        mcHostsSigRef.current = hostSig;
+        setMcHostIds(refresh.hostUserIds);
+        if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
+      });
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    isChurchLiveControlRoom,
+    isFocused,
+    churchId,
+    effectiveAuthUserId,
+    threadId,
+    resolvedMinistryId,
+    mcHostsCacheKey,
+    applyVisibleRoomMessageRows,
+    (params as any)?.assignmentId,
+  ]);
 
   useEffect(() => {
     if (!threadId || !isFocused) return;
@@ -3017,18 +3245,54 @@ export default function MessageThreadScreen() {
     async function loadBackendRoomMessages(): Promise<boolean> {
       const roomId = backendRoomId;
       if (!roomId) return false;
+
+      const headers: any = getKristoHeaders();
+      const selfId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+
+      if (isChurchLiveControlRoom) {
+        const cid = String(churchId || headers?.["x-kristo-church-id"] || "").trim();
+        if (!cid || !selfId) return false;
+        if (roomMessagesInflightRef.current) return false;
+
+        roomMessagesInflightRef.current = true;
+        if (__DEV__) console.log("[RoomMessagesPoll] fetch-start", { backendRoomId: roomId, cached: true });
+
+        let count = 0;
+        let updated = false;
+
+        try {
+          const refresh = await refreshRoomMessagesIfNeeded({
+            churchId: cid,
+            userId: selfId,
+            roomId: CHURCH_MEDIA_ROOM_ID,
+            headers,
+            force: false,
+            cacheFresh: mediaRoomCacheFreshRef.current,
+            source: composerFocused ? "poll-active" : "poll",
+          });
+
+          if (!alive) return false;
+
+          const visibleRows = filterVisibleRoomMessageRows(refresh.rawRows);
+          count = visibleRows.length;
+          if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
+          updated = applyVisibleRoomMessageRows(visibleRows);
+          return updated;
+        } finally {
+          roomMessagesInflightRef.current = false;
+          if (__DEV__) console.log("[RoomMessagesPoll] fetch-done", { count, updated });
+        }
+      }
+
       if (roomMessagesInflightRef.current) return false;
 
       roomMessagesInflightRef.current = true;
-      console.log("[RoomMessagesPoll] fetch-start", { backendRoomId: roomId });
+      if (__DEV__) console.log("[RoomMessagesPoll] fetch-start", { backendRoomId: roomId });
 
       let count = 0;
       let updated = false;
 
       try {
-        const headers: any = getKristoHeaders();
-        const selfId = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
-
         const res: any = await apiGet(
           `/api/church/room-messages?roomId=${encodeURIComponent(roomId)}&limit=120&t=${Date.now()}`,
           { headers },
@@ -3038,59 +3302,13 @@ export default function MessageThreadScreen() {
         const rows = Array.isArray(res?.data) ? res.data : [];
         if (!alive || !Array.isArray(rows)) return false;
 
-        const visibleRows = rows.filter((x: any) => {
-          const isDraftCard =
-            String(x?.kind || "") === "assignment_card" &&
-            String(x?.card?.visibility || "published") === "draft";
-
-          // Locked schedule cards are hidden from the chat room for everyone.
-          // They remain editable in Schedule, and Publish can show them again.
-          return !isDraftCard;
-        });
-
+        const visibleRows = filterVisibleRoomMessageRows(rows);
         count = visibleRows.length;
-
-        const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
-        const mapped: MsgItem[] = visibleRows
-          .map((x: any) => mapBackendRoomMessageRow(x, threadId, selfId, apiBase))
-          .map((m) => enrichMessageSenderAvatar(m, memberAvatarByUserIdRef.current));
-
-        const roomTitle = String(
-          isAssignmentThread
-            ? ((params as any)?.assignmentTitle || title || "Ministry Assignment")
-            : isMinistryThread
-              ? (realMinistry?.name || title || "Ministry Room")
-              : (title || "Message Room")
-        );
-
-        const currentLocalMessages = getSnapshot().messages?.[threadId] || [];
-        const localScheduleCards = currentLocalMessages.filter((m: any) =>
-          String(m?.kind || "") === "assignment_card" &&
-          String((m as any)?.card?.source || "") === "media-schedule"
-        );
-        const pendingOptimistic = currentLocalMessages.filter(isOptimisticOutgoingMessage);
-        const backendIds = new Set(mapped.map((m: any) => String(m.id || "")));
-        const safeLocalScheduleCards = localScheduleCards.filter((m: any) => !backendIds.has(String(m.id || "")));
-        const dedupedPending = pendingOptimistic.filter(
-          (opt) => !backendIds.has(String(opt.id || "")) && !mapped.some((b) => optimisticMessageMatchesBackend(opt, b))
-        );
-        const merged = [...safeLocalScheduleCards, ...dedupedPending, ...mapped].sort(
-          (a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0)
-        );
-        const sig = messagesListSignature(merged);
-        if (sig === roomMessagesSigRef.current) return false;
-
-        roomMessagesSigRef.current = sig;
-        if (merged.length > 0 || messages.length === 0) {
-          setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
-        } else {
-          console.log("[RoomMessagesPoll] skip-empty-overwrite", { threadId, backendRoomId });
-        }
-        updated = true;
-        return true;
+        updated = applyVisibleRoomMessageRows(visibleRows);
+        return updated;
       } finally {
         roomMessagesInflightRef.current = false;
-        console.log("[RoomMessagesPoll] fetch-done", { count, updated });
+        if (__DEV__) console.log("[RoomMessagesPoll] fetch-done", { count, updated });
       }
     }
 
@@ -3100,7 +3318,7 @@ export default function MessageThreadScreen() {
     const stop = startRoomMessagesPolling({
       roomId: backendRoomId,
       enabled: isFocused,
-      intervalMs: 1500,
+      active: composerFocused,
       onTick: loadBackendRoomMessages,
     });
 
@@ -3108,13 +3326,12 @@ export default function MessageThreadScreen() {
       alive = false;
       stop();
     };
-  }, [threadId, backendRoomId, effectiveAuthUserId, title, sub, isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, realMinistry, (params as any)?.ministryId, (params as any)?.assignmentId, isFocused]);
+  }, [threadId, backendRoomId, effectiveAuthUserId, churchId, title, sub, isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, isChurchLiveControlRoom, realMinistry, (params as any)?.ministryId, (params as any)?.assignmentId, isFocused, composerFocused, applyVisibleRoomMessageRows, filterVisibleRoomMessageRows]);
 
   const listRef = useRef<any>(null);
   const inputRef = useRef<any>(null);
 
   const [draft, setDraft] = useState("");
-  const [composerFocused, setComposerFocused] = useState(false);
   const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
   const [attachUploading, setAttachUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -5728,7 +5945,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
   useEffect(() => {
     let alive = true;
 
-    async function reloadMemberBoard() {
+    async function reloadMemberBoard(opts?: { force?: boolean }) {
       if ((!isAssignmentThread && !isMinistryThread) || !String(threadId || "").trim()) {
         if (alive) setRealMemberBoardPeople([]);
         return;
@@ -5742,20 +5959,51 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           ""
         );
 
-        const endpoint = isChurchLiveControlRoom
-          ? "/api/church/live-control-members?roomId=church-media-room"
-          : isChurchLiveControlAssignment
+        if (isChurchLiveControlRoom) {
+          const headers: any = getKristoHeaders();
+          const cid = String(churchId || headers?.["x-kristo-church-id"] || "").trim();
+          const uid = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+          if (!cid || !uid) return;
+
+          const refresh = await refreshLiveControlMembersIfNeeded({
+            churchId: cid,
+            userId: uid,
+            roomId: CHURCH_MEDIA_ROOM_ID,
+            headers: { ...headers, "x-kristo-role": "Pastor" },
+            force: !!opts?.force,
+            cacheFresh: !opts?.force && mediaRoomCacheFreshRef.current,
+            source: opts?.force ? "manual" : "screen",
+          });
+
+          const rows = refresh.rawRows;
+          const sig = liveControlMembersRawSignature(rows);
+          if (sig === memberBoardSigRef.current) return;
+
+          memberBoardSigRef.current = sig;
+          const mapped = mapLiveControlBoardPeople(
+            rows,
+            targetMinistryId,
+            String(threadId || ""),
+            CHURCH_MEDIA_ROOM_ID
+          ) as MinistryPerson[];
+
+          if (alive) setRealMemberBoardPeople(mapped);
+          if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
+          return;
+        }
+
+        const endpoint = isChurchLiveControlAssignment
           ? "/api/church/members"
           : `/api/church/ministry-members?ministryId=${encodeURIComponent(targetMinistryId)}`;
 
         const res: any = await apiGet(
           endpoint,
           {
-            headers: isChurchLiveControlAssignment || isChurchLiveControlRoom
+            headers: isChurchLiveControlAssignment
               ? ({ ...getKristoHeaders(), "x-kristo-role": "Pastor" } as any)
               : (getKristoHeaders() as any),
           },
-          isChurchLiveControlAssignment || isChurchLiveControlRoom
+          isChurchLiveControlAssignment
             ? undefined
             : { screen: `MinistryMembersBoard:${targetMinistryId}`, throttleMs: 0, dedupe: false }
         );
@@ -5814,7 +6062,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       alive = false;
       reloadMemberBoardRef.current = null;
     };
-  }, [isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, isChurchLiveControlRoom, threadId, resolvedMinistryId, (params as any)?.assignmentId]);
+  }, [isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, isChurchLiveControlRoom, threadId, resolvedMinistryId, churchId, effectiveAuthUserId, (params as any)?.assignmentId]);
 
   useEffect(() => {
     const next = new Map<string, string>();
@@ -5963,7 +6211,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
         setAddMemberOpen(false);
         setSelectedAddMemberId("");
-        await reloadMemberBoardRef.current?.();
+        await reloadMemberBoardRef.current?.({ force: true });
         Alert.alert("Restored", `${selected.name} can access Church Live Control again.`);
       } catch (e: any) {
         console.log("[LiveControlMembers] suspend failed", {
@@ -6076,10 +6324,15 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
       });
 
       setSelectedRemoveMemberId("");
-      await reloadMemberBoardRef.current?.();
+      await reloadMemberBoardRef.current?.({ force: true });
 
       if (targetUserId && mcHostIds.includes(targetUserId)) {
+        const headers: any = getKristoHeaders();
+        const cid = String(churchId || headers?.["x-kristo-church-id"] || "").trim();
+        const uid = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+        if (cid && uid) invalidateMcHostsCache(cid, uid, CHURCH_MEDIA_ROOM_ID);
         invalidateCachedParticipant(mcHostsCacheKey);
+        mcHostsSigRef.current = "";
         void fetchMcHostsRef.current?.({ force: true, reason: "member-suspended-host" });
       }
 
@@ -6197,6 +6450,65 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
       const cacheKey = mcHostsCacheKey;
 
+      if (isChurchLiveControlRoom) {
+        const headers: any = getKristoHeaders();
+        const cid = String(churchId || headers?.["x-kristo-church-id"] || "").trim();
+        const uid = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+        if (!cid || !uid) return false;
+
+        if (!opts?.force) {
+          const cached = getCachedParticipant(cacheKey);
+          if (cached && alive) {
+            const hostSig = mcHostsSignature(Array.isArray(cached) ? cached : []);
+            if (hostSig !== mcHostsSigRef.current) {
+              mcHostsSigRef.current = hostSig;
+              setMcHostIds(Array.isArray(cached) ? cached : []);
+            }
+          }
+        }
+
+        try {
+          const refresh = await refreshMcHostsIfNeeded({
+            churchId: cid,
+            userId: uid,
+            assignmentId: CHURCH_MEDIA_ROOM_ID,
+            headers,
+            force: !!opts?.force,
+            cacheFresh: !opts?.force && mediaRoomCacheFreshRef.current,
+            source: opts?.reason || "poll",
+            cacheKey,
+          });
+
+          const foundIds = refresh.hostUserIds;
+          const sig = mcHostsSignature(foundIds);
+          const changed = sig !== mcHostsSigRef.current;
+
+          if (alive) {
+            if (changed) {
+              mcHostsSigRef.current = sig;
+              setMcHostIds(foundIds);
+            }
+          }
+
+          if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
+
+          if (changed) {
+            prevSig = sig;
+            console.log("[McHostsPoll] updated", {
+              cacheKey,
+              hostUserIds: foundIds,
+              reason: opts?.reason || "poll",
+            });
+            return true;
+          }
+
+          return false;
+        } catch {
+          if (alive && opts?.force) setMcHostIds([]);
+          return false;
+        }
+      }
+
       if (!opts?.force) {
         const cached = getCachedParticipant(cacheKey);
         if (cached && alive) {
@@ -6269,13 +6581,19 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
 
     fetchMcHostsRef.current = fetchMcHosts;
 
-    void fetchMcHosts({ force: true, reason: "mount" });
+    void fetchMcHosts({
+      force: isChurchLiveControlRoom ? false : true,
+      reason: "mount",
+    });
 
     const stop = startMcHostsPolling({
       assignmentId: mcHostsCacheKey,
       enabled: isFocused && isStructuredRoom,
-      intervalMs: 2500,
-      onTick: () => fetchMcHosts({ force: true, reason: "poll" }),
+      onTick: () =>
+        fetchMcHosts({
+          force: false,
+          reason: "poll",
+        }),
     });
 
     return () => {
@@ -6285,8 +6603,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
     };
   }, [
     isStructuredRoom,
+    isChurchLiveControlRoom,
     threadId,
     mcHostsCacheKey,
+    churchId,
+    effectiveAuthUserId,
     resolvedMinistryId,
     (params as any)?.assignmentId,
     isFocused,

@@ -24,6 +24,7 @@ import {
   peekChurchMembersCache,
   saveChurchMembersCache,
 } from "@/src/lib/churchTabCache";
+import { preloadChurchMediaRoom } from "@/src/lib/churchMediaRoomRefresh";
 
 export { CHURCH_TAB_REFRESH_MS };
 
@@ -241,7 +242,7 @@ export function runChurchTabPreload(session: KristoSession | null) {
 
   const timers: ReturnType<typeof setTimeout>[] = [];
   let done = 0;
-  const total = 4;
+  const total = 5;
 
   const finish = (label: string) => {
     done += 1;
@@ -262,6 +263,17 @@ export function runChurchTabPreload(session: KristoSession | null) {
   schedule(500, () => preloadMembers(churchId, userId));
   schedule(1000, () => preloadMinistries(churchId, userId, session as KristoSession));
   schedule(1500, () => preloadMedia(churchId, userId, session as KristoSession));
+  schedule(2000, () =>
+    preloadChurchMediaRoom({
+      churchId,
+      userId,
+      headers: getKristoHeaders({
+        userId,
+        churchId,
+        role: (session?.role || "Member") as any,
+      }) as Record<string, string>,
+    })
+  );
 
   return () => {
     for (const t of timers) clearTimeout(t);
