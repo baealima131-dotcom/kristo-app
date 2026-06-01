@@ -36,6 +36,13 @@ import {
   subscribe,
 } from "../../../src/lib/homeFeedStore";
 import { apiGet, apiPost, getApiBase } from "../../../src/lib/kristoApi";
+import {
+  fileNameFromUri,
+  guessVideoContentType,
+  publishChurchVideoFeedPost,
+  requestVideoUploadUrl,
+  uploadVideoFileToSignedUrl,
+} from "../../../src/lib/churchVideoUpload";
 import { getKristoHeaders } from "../../../src/lib/kristoHeaders";
 import { sendAssignmentCards } from "../../../src/lib/messagesStore";
 import {
@@ -71,9 +78,34 @@ import {
 import { logTrafficCache, shouldAllowScreenRefresh } from "../../../src/lib/kristoTraffic";
 import { useFocusedPolling } from "../../../src/lib/useFocusedPolling";
 import {
-  evaluateChurchMediaAccessClient,
+  evaluateChurchMediaAccessMerged,
+  evaluateChurchMediaAccessFromSession,
+  isChurchMediaHostsApiSuccess,
+  stabilizeChurchMediaAccess,
   MAX_CHURCH_MEDIA_HOSTS,
 } from "../../../src/lib/churchMediaAccess";
+import {
+  refreshChurchMediaAccess,
+  scheduleScreenRefresh,
+  seedChurchMediaAccessFromSession,
+  subscribeChurchMediaAccess,
+} from "../../../src/lib/refreshCoordinator";
+import { logFirstPaintReady } from "../../../src/lib/firstPaint";
+import {
+  CHURCH_RESOURCE_REFRESH_MS,
+  refreshChurchMediaIfNeeded,
+} from "../../../src/lib/churchResourceRefresh";
+import {
+  hasScreenFirstPainted,
+  logScreenBackgroundRefresh,
+  logScreenReopenFastPath,
+  markScreenBackgroundRefresh,
+  peekScreenSessionData,
+  saveScreenSessionData,
+  shouldSkipFocusRefresh,
+} from "../../../src/lib/screenOpenState";
+
+const MEDIA_SCREEN = "MediaScreen";
 
 function runAfterFirstFrame(task: () => void) {
   if (typeof requestAnimationFrame === "function") {
@@ -213,6 +245,10 @@ export default function MediaStudioScreen() {
         mediaScheduleVersionRef.current = result.mediaScheduleVersion;
         mediaScheduleUpdatedAtRef.current = result.mediaScheduleUpdatedAt;
 
+        if (result.fetchFailed) {
+          return result;
+        }
+
         if (result.shouldForceLocalPurge) {
           setBackendFeedItems([]);
           setHomeFeedItems([...feedList()]);
@@ -262,8 +298,15 @@ export default function MediaStudioScreen() {
 
   useEffect(() => {
     if (!isFocused) return;
-    if (!shouldAllowScreenRefresh("MediaScreen", { minMs: 45000 })) return;
-    void runMediaScheduleSilentReload("focus", true);
+    if (!shouldAllowScreenRefresh("MediaScreen", { minMs: 60000 })) return;
+    scheduleScreenRefresh(
+      "MediaScreen",
+      "homeFeed",
+      () => {
+        void runMediaScheduleSilentReload("focus", false);
+      },
+      { delayMs: 3500, minMs: 60000 }
+    );
   }, [isFocused, runMediaScheduleSilentReload]);
 
   useFocusedPolling(
@@ -271,26 +314,61 @@ export default function MediaStudioScreen() {
     () => {
       void runMediaScheduleSilentReload("poll");
     },
-    45000,
+    90000,
     isFocused
   );
+
+  const mediaSessionPeek = peekScreenSessionData<{
+    cachedMedia: any;
+    backendMedia: any;
+    backendMediaConfirmed: boolean;
+    churchMediaAccess: any;
+    trustedHosts: any[];
+  }>(MEDIA_SCREEN);
 
   const mediaBootstrapKeyRef = useRef("");
   const [guestClockNow, setGuestClockNow] = useState(() => Date.now());
   const [guestInviteDraftBySlot, setGuestInviteDraftBySlot] = useState<Record<string, string>>({});
   const [guestInvitedBySlot, setGuestInvitedBySlot] = useState<Record<string, string>>({});
-  const [backendMedia, setBackendMedia] = useState<any>(null);
-  const [backendMediaConfirmed, setBackendMediaConfirmed] = useState(false);
+  const [backendMedia, setBackendMedia] = useState<any>(mediaSessionPeek?.backendMedia ?? null);
+  const [backendMediaConfirmed, setBackendMediaConfirmed] = useState(
+    Boolean(mediaSessionPeek?.backendMediaConfirmed)
+  );
   const [churchSubscriptionActiveFromApi, setChurchSubscriptionActiveFromApi] = useState<boolean | null>(null);
-  const [cachedMedia, setCachedMedia] = useState<any>(null);
-  const [profileHydrated, setProfileHydrated] = useState(false);
-  const [mediaProfileReady, setMediaProfileReady] = useState(false);
+  const [cachedMedia, setCachedMedia] = useState<any>(mediaSessionPeek?.cachedMedia ?? null);
+  const [profileHydrated, setProfileHydrated] = useState(true);
+  const [mediaProfileReady, setMediaProfileReady] = useState(true);
   const [viewerCanManage, setViewerCanManage] = useState(false);
   const [viewerIsHost, setViewerIsHost] = useState(false);
   const [churchMediaAccess, setChurchMediaAccess] = useState(() =>
-    evaluateChurchMediaAccessClient({ userId: session?.userId })
+    mediaSessionPeek?.churchMediaAccess ||
+    evaluateChurchMediaAccessFromSession({
+      userId: session?.userId,
+      role: session?.role,
+      churchRole: (session as any)?.churchRole,
+    })
   );
-  const [trustedHosts, setTrustedHosts] = useState<any[]>([]);
+
+  useEffect(() => {
+    seedChurchMediaAccessFromSession({
+      userId: session?.userId,
+      role: session?.role,
+      churchRole: (session as any)?.churchRole,
+    });
+  }, [session?.userId, session?.role, (session as any)?.churchRole]);
+
+  useEffect(() => {
+    return subscribeChurchMediaAccess((access) => {
+      setChurchMediaAccess((prev) =>
+        stabilizeChurchMediaAccess(prev, access, {
+          userId: session?.userId,
+          role: session?.role,
+          churchRole: (session as any)?.churchRole,
+        })
+      );
+    });
+  }, [session?.userId, session?.role, (session as any)?.churchRole]);
+  const [trustedHosts, setTrustedHosts] = useState<any[]>(mediaSessionPeek?.trustedHosts || []);
   const mediaFetchCountRef = useRef(0);
   const [activeBackendLive, setActiveBackendLive] = useState<any>(null);
   const [vipNotice, setVipNotice] = useState<{ title: string; message: string } | null>(null);
@@ -318,19 +396,200 @@ export default function MediaStudioScreen() {
   React.useEffect(() => {
     if (!isFocused || pathname !== "/more/media") return;
 
+    const churchId = String(session?.churchId || "").trim();
+    logFirstPaintReady("MediaScreen", {
+      churchId,
+      hasSession: Boolean(session?.userId),
+      role: session?.role || "Member",
+    });
+  }, [isFocused, pathname, session?.churchId, session?.role, session?.userId]);
+
+  React.useEffect(() => {
+    if (!isFocused || pathname !== "/more/media") return;
+
     let alive = true;
     const churchId = String(session?.churchId || "").trim();
     const bootstrapKey = `${churchId}:${session?.userId || ""}:${session?.role || ""}`;
-    if (!bootstrapKey || mediaBootstrapKeyRef.current === bootstrapKey) return;
-    mediaBootstrapKeyRef.current = bootstrapKey;
+    const isReopen = hasScreenFirstPainted(MEDIA_SCREEN);
+    const savedMeta = peekScreenSessionData<{ bootstrapKey: string }>(`${MEDIA_SCREEN}:meta`);
 
-    async function bootstrapMediaProfile() {
-      if (!churchId || !session?.userId) {
-        if (alive) {
-          setCachedMedia(null);
-          setProfileHydrated(true);
-          setMediaProfileReady(true);
+    async function bootstrapMediaProfileFromNetwork() {
+      if (!churchId || !session?.userId) return;
+
+      const cached = await loadChurchMediaProfileCache(churchId);
+      if (!alive) return;
+
+      if (!isReopen) {
+        setBackendMediaConfirmed(false);
+      }
+
+      try {
+        const headers = getKristoHeaders({
+          userId: session.userId,
+          role: session.role,
+          churchId,
+        }) as Record<string, string>;
+
+        const refresh = await refreshChurchMediaIfNeeded({
+          churchId,
+          userId: session.userId,
+          headers,
+          screen: MEDIA_SCREEN,
+          includeHosts: true,
+        });
+
+        if (!alive) return;
+        if (refresh.skipped) return;
+
+        mediaFetchCountRef.current += 1;
+        if (__DEV__) {
+          console.log("[MediaScreen] mount fetch count", mediaFetchCountRef.current, {
+            reason: isReopen ? "background-refresh" : "bootstrap",
+          });
         }
+
+        const res = refresh.mediaRes;
+        const hostsRes = refresh.hostsRes;
+
+        setChurchSubscriptionActiveFromApi(
+          Boolean(res?.subscriptionActive) ||
+            Boolean(res?.media?.subscriptionActive) ||
+            String(res?.media?.subscriptionStatus || "")
+              .trim()
+              .toLowerCase() === "active"
+        );
+
+        const nextAccess = stabilizeChurchMediaAccess(
+          churchMediaAccess,
+          evaluateChurchMediaAccessMerged(
+            {
+              userId: session.userId,
+              role: session.role,
+              churchRole: (session as any)?.churchRole,
+            },
+            res,
+            hostsRes
+          ),
+          {
+            userId: session.userId,
+            role: session.role,
+            churchRole: (session as any)?.churchRole,
+          }
+        );
+        setChurchMediaAccess(nextAccess);
+        setTrustedHosts(
+          isChurchMediaHostsApiSuccess(hostsRes) && Array.isArray(hostsRes?.hosts)
+            ? hostsRes.hosts
+            : []
+        );
+
+        const nextViewerCanManage = Boolean(nextAccess.canManageMediaHosts);
+        const nextViewerIsHost = Boolean(nextAccess.isMediaHost);
+        const profileMissing = Boolean(res?.ok && res?.profileMissing);
+        const mediaApiFailed = res?.ok === false || Number(res?.status || 0) >= 400;
+
+        setViewerCanManage(nextViewerCanManage);
+        setViewerIsHost(nextViewerIsHost);
+
+        console.log("[MediaScreen] church media access", {
+          canAccessChurchMedia: nextAccess.canAccessChurchMedia,
+          isActualChurchPastor: nextAccess.isActualChurchPastor,
+          isMediaHost: nextAccess.isMediaHost,
+          hostCount: Array.isArray(hostsRes?.hosts) ? hostsRes.hosts.length : 0,
+        });
+        console.log("[MediaScreen] viewerCanManage/viewerIsHost", {
+          viewerCanManage: nextViewerCanManage,
+          viewerIsHost: nextViewerIsHost,
+        });
+        console.log("[MediaScreen] profileMissing decision", {
+          profileMissing,
+          mediaApiFailed,
+          hasBackendMedia: Boolean(res?.media?.mediaName),
+          hasCache: Boolean(cached?.mediaName),
+        });
+        console.log("[MediaProfile] backend result", {
+          churchId,
+          ok: Boolean(res?.ok),
+          hasMedia: Boolean(res?.media?.mediaName),
+          profileMissing,
+        });
+
+        if (res?.ok && res.media?.mediaName) {
+          setBackendMedia(res.media);
+          setBackendMediaConfirmed(true);
+          await saveChurchMediaProfileCache({
+            ...res.media,
+            churchId: String(res.media.churchId || churchId),
+          });
+          await setSession({
+            ...(session as any),
+            mediaProfile: res.media,
+            churchMediaProfile: res.media,
+          } as any);
+          saveScreenSessionData(MEDIA_SCREEN, {
+            cachedMedia: res.media,
+            backendMedia: res.media,
+            backendMediaConfirmed: true,
+            churchMediaAccess: nextAccess,
+            trustedHosts: isChurchMediaHostsApiSuccess(hostsRes) && Array.isArray(hostsRes?.hosts)
+              ? hostsRes.hosts
+              : [],
+          });
+          console.log("[MediaScreen] backend media confirmed", {
+            churchId,
+            mediaName: res.media.mediaName,
+            hostCount: Array.isArray(hostsRes?.hosts) ? hostsRes.hosts.length : 0,
+          });
+        } else if (mediaApiFailed) {
+          console.warn("[MediaScreen] media profile fetch failed; keeping cache if present", {
+            churchId,
+            status: Number(res?.status || 0),
+            hadCache: Boolean(cached?.mediaName),
+          });
+          if (!isReopen || !cached?.mediaName) {
+            setBackendMedia(null);
+            setBackendMediaConfirmed(false);
+          }
+        } else {
+          if (!isReopen || !cached?.mediaName) {
+            setBackendMedia(null);
+            setBackendMediaConfirmed(false);
+          }
+
+          if (profileMissing) {
+            console.warn("[MediaScreen] stale media cache invalidated", {
+              churchId,
+              hadCache: Boolean(cached?.mediaName),
+              profileMissing: true,
+            });
+            await clearChurchMediaProfileCache(churchId);
+            setCachedMedia(null);
+            await setSession({
+              ...(session as any),
+              mediaProfile: null,
+              churchMediaProfile: null,
+            } as any);
+          }
+        }
+      } catch (error) {
+        console.warn("[MediaScreen] bootstrap failed; keeping cache if present", {
+          churchId,
+          hadCache: Boolean(cached?.mediaName),
+          error: String((error as any)?.message || error),
+        });
+      } finally {
+        if (!alive || !bootstrapKey) return;
+        saveScreenSessionData(`${MEDIA_SCREEN}:meta`, { bootstrapKey });
+        mediaBootstrapKeyRef.current = bootstrapKey;
+        markScreenBackgroundRefresh(MEDIA_SCREEN);
+        setMediaProfileReady(true);
+        setProfileHydrated(true);
+      }
+    }
+
+    async function hydrateLocalMediaProfile() {
+      if (!churchId || !session?.userId) {
+        if (alive) setCachedMedia(null);
         return;
       }
 
@@ -339,144 +598,66 @@ export default function MediaStudioScreen() {
 
       if (cached?.mediaName) {
         logTrafficCache("MediaScreen", "church-media-profile", true);
-        console.log("[MediaScreen] cache profile candidate", {
-          churchId,
-          mediaName: cached.mediaName,
-        });
         setCachedMedia(cached);
       } else {
         logTrafficCache("MediaScreen", "church-media-profile", false);
         setCachedMedia(null);
       }
-
-      setProfileHydrated(true);
-      setBackendMediaConfirmed(false);
-
-      mediaFetchCountRef.current += 1;
-      console.log("[MediaScreen] mount fetch count", mediaFetchCountRef.current, { reason: "bootstrap" });
-
-      const [res, hostsRes]: any[] = await Promise.all([
-        apiGet(
-          "/api/church/media",
-          {
-            headers: getKristoHeaders({
-              userId: session.userId,
-              role: session.role,
-              churchId,
-            }),
-          },
-          { screen: "MediaScreen", throttleMs: 0, dedupe: false }
-        ),
-        apiGet(
-          "/api/church/media-hosts",
-          {
-            headers: getKristoHeaders({
-              userId: session.userId,
-              role: session.role,
-              churchId,
-            }),
-          },
-          { screen: "MediaScreen", throttleMs: 0, dedupe: false }
-        ),
-      ]);
-
-      if (!alive) return;
-
-      setChurchSubscriptionActiveFromApi(
-        Boolean(res?.subscriptionActive) ||
-          Boolean(res?.media?.subscriptionActive) ||
-          String(res?.media?.subscriptionStatus || "")
-            .trim()
-            .toLowerCase() === "active"
-      );
-
-      const nextAccess = evaluateChurchMediaAccessClient({
-        userId: session.userId,
-        actualPastorUserId: res?.actualPastorUserId || hostsRes?.actualPastorUserId,
-        mediaHostUserIds: res?.mediaHostUserIds || hostsRes?.mediaHostUserIds,
-        isActualChurchPastor: res?.isActualChurchPastor ?? hostsRes?.isActualChurchPastor,
-        isMediaHost: res?.viewerIsHost ?? hostsRes?.isMediaHost,
-        canAccessChurchMedia: res?.canAccessChurchMedia ?? hostsRes?.canAccessChurchMedia,
-        canManageMediaHosts: res?.viewerCanManage ?? hostsRes?.canManageMediaHosts,
-      });
-      setChurchMediaAccess(nextAccess);
-      setTrustedHosts(Array.isArray(hostsRes?.hosts) ? hostsRes.hosts : []);
-
-      const nextViewerCanManage = Boolean(nextAccess.canManageMediaHosts);
-      const nextViewerIsHost = Boolean(nextAccess.isMediaHost);
-      const profileMissing = Boolean(res?.profileMissing);
-
-      setViewerCanManage(nextViewerCanManage);
-      setViewerIsHost(nextViewerIsHost);
-
-      console.log("[MediaScreen] church media access", {
-        canAccessChurchMedia: nextAccess.canAccessChurchMedia,
-        isActualChurchPastor: nextAccess.isActualChurchPastor,
-        isMediaHost: nextAccess.isMediaHost,
-        hostCount: Array.isArray(hostsRes?.hosts) ? hostsRes.hosts.length : 0,
-      });
-      console.log("[MediaScreen] viewerCanManage/viewerIsHost", {
-        viewerCanManage: nextViewerCanManage,
-        viewerIsHost: nextViewerIsHost,
-      });
-      console.log("[MediaScreen] profileMissing decision", {
-        profileMissing,
-        hasBackendMedia: Boolean(res?.media?.mediaName),
-        hasCache: Boolean(cached?.mediaName),
-      });
-      console.log("[MediaProfile] backend result", {
-        churchId,
-        ok: Boolean(res?.ok),
-        hasMedia: Boolean(res?.media?.mediaName),
-        profileMissing,
-      });
-
-      if (res?.ok && res.media?.mediaName) {
-        setBackendMedia(res.media);
-        setBackendMediaConfirmed(true);
-        await saveChurchMediaProfileCache({
-          ...res.media,
-          churchId: String(res.media.churchId || churchId),
-        });
-        await setSession({
-          ...(session as any),
-          mediaProfile: res.media,
-          churchMediaProfile: res.media,
-        } as any);
-        console.log("[MediaScreen] backend media confirmed", {
-          churchId,
-          mediaName: res.media.mediaName,
-          hostCount: Array.isArray(hostsRes?.hosts) ? hostsRes.hosts.length : 0,
-        });
-      } else {
-        setBackendMedia(null);
-        setBackendMediaConfirmed(false);
-
-        if (cached?.mediaName || res?.profileMissing) {
-          console.warn("[MediaScreen] stale media cache invalidated", {
-            churchId,
-            hadCache: Boolean(cached?.mediaName),
-            profileMissing: Boolean(res?.profileMissing),
-          });
-          await clearChurchMediaProfileCache(churchId);
-          setCachedMedia(null);
-          await setSession({
-            ...(session as any),
-            mediaProfile: null,
-            churchMediaProfile: null,
-          } as any);
-        }
-      }
-
-      setMediaProfileReady(true);
     }
 
-    void bootstrapMediaProfile();
+    if (isReopen) {
+      logScreenReopenFastPath(MEDIA_SCREEN, "session-reopen");
+    }
+
+    void hydrateLocalMediaProfile();
+
+    if (isReopen && shouldSkipFocusRefresh(MEDIA_SCREEN, CHURCH_RESOURCE_REFRESH_MS)) {
+      return () => {
+        alive = false;
+      };
+    }
+
+    const alreadyBootstrapped =
+      Boolean(bootstrapKey) &&
+      (mediaBootstrapKeyRef.current === bootstrapKey || savedMeta?.bootstrapKey === bootstrapKey);
+
+    if (alreadyBootstrapped && isReopen) {
+      scheduleScreenRefresh(
+        "MediaScreen",
+        "overview",
+        () => {
+          if (shouldSkipFocusRefresh(MEDIA_SCREEN, CHURCH_RESOURCE_REFRESH_MS)) return;
+          logScreenBackgroundRefresh(MEDIA_SCREEN, "focus-background");
+          void bootstrapMediaProfileFromNetwork();
+        },
+        { delayMs: 1200, minMs: CHURCH_RESOURCE_REFRESH_MS }
+      );
+      return () => {
+        alive = false;
+      };
+    }
+
+    if (!bootstrapKey) {
+      return () => {
+        alive = false;
+      };
+    }
+
+    mediaBootstrapKeyRef.current = bootstrapKey;
+    scheduleScreenRefresh(
+      "MediaScreen",
+      "overview",
+      () => {
+        logScreenBackgroundRefresh(MEDIA_SCREEN, isReopen ? "reopen-bootstrap" : "first-bootstrap");
+        void bootstrapMediaProfileFromNetwork();
+      },
+      { delayMs: isReopen ? 1200 : 2000, minMs: CHURCH_RESOURCE_REFRESH_MS }
+    );
 
     return () => {
       alive = false;
     };
-  }, [session?.userId, session?.churchId, session?.role, setSession]);
+  }, [session?.userId, session?.churchId, session?.role, setSession, isFocused, pathname]);
 
   const loadActiveBackendLive = useCallback(async () => {
     if (!session?.userId || !session?.churchId) return;
@@ -496,7 +677,7 @@ export default function MediaStudioScreen() {
     setActiveBackendLive(res?.live?.isLive ? res.live : null);
   }, [isFocused, pathname, session?.churchId, session?.role, session?.userId]);
 
-  useFocusedPolling("MediaScreenLive", () => loadActiveBackendLive(), 45000, isFocused);
+  useFocusedPolling("MediaScreenLive", () => loadActiveBackendLive(), 120000, isFocused);
 
   React.useEffect(() => {
     const loop = Animated.loop(
@@ -519,7 +700,8 @@ export default function MediaStudioScreen() {
   }, [claimActionPulse]);
 
   const existingMedia = backendMediaConfirmed ? backendMedia : null;
-  const churchMediaProfile = existingMedia;
+  const churchMediaProfile =
+    existingMedia || (cachedMedia?.mediaName ? cachedMedia : null);
 
   const hasChurchMembership = Boolean(String(session?.churchId || "").trim());
   const isActualChurchPastor = churchMediaAccess.isActualChurchPastor;
@@ -534,7 +716,8 @@ export default function MediaStudioScreen() {
   const viewerCanManageEffective = canManageMediaHosts || viewerCanManage;
   const viewerIsHostEffective = isMediaHostFromProfile || viewerIsHost;
   const canCreateMedia = canManageMediaHosts;
-  const canUseMediaTools = canAccessChurchMedia;
+  const canUseMediaTools =
+    canAccessChurchMedia || isActualChurchPastor || viewerCanManageEffective;
   const canManageChurchStorage = canManageMediaHosts;
   const canManageMediaStorage = canUseMediaTools;
   const hasChurchMediaProfile = Boolean(String(churchMediaProfile?.mediaName || "").trim());
@@ -769,6 +952,8 @@ export default function MediaStudioScreen() {
   const [videoPostCaption, setVideoPostCaption] = useState("");
   const [videoPostDetailsOpen, setVideoPostDetailsOpen] = useState(false);
   const [pendingDetailsScroll, setPendingDetailsScroll] = useState(false);
+  const [videoPostUploading, setVideoPostUploading] = useState(false);
+  const [videoPostUploadPercent, setVideoPostUploadPercent] = useState(0);
   const [videoPreparing, setVideoPreparing] = useState(false);
   const [videoPreparePercent, setVideoPreparePercent] = useState(0);
 
@@ -1265,6 +1450,10 @@ export default function MediaStudioScreen() {
       return;
     }
 
+    if (videoPostUploading) {
+      return;
+    }
+
     if (!videoPostUri) {
       Alert.alert("Video required", "Please choose a video first.");
       return;
@@ -1285,113 +1474,71 @@ export default function MediaStudioScreen() {
     const caption = typedCaption;
 
     const fileUri = String(videoPostUri || "").trim();
-    const fileName = `video-${Date.now()}.mp4`;
-
-    void (async () => {
-    const { generateLocalVideoPosterUri } = await import("../../../src/lib/videoPoster");
-    const localPosterUri = await generateLocalVideoPosterUri(fileUri);
-
-    const fd = new FormData();
-
-    fd.append("file", {
-      uri: fileUri,
-      name: fileName,
-      type: "video/mp4",
-    } as any);
-
-    if (localPosterUri) {
-      fd.append("poster", {
-        uri: localPosterUri,
-        name: `poster-${Date.now()}.jpg`,
-        type: "image/jpeg",
-      } as any);
-    }
-
-    const uploadHeaders: any = {
-      accept: "application/json",
-      ...getKristoHeaders({
-        userId: session?.userId || "",
-        role: (session?.role || "Member") as any,
-        churchId: session?.churchId || "",
-      }),
-    };
-
-    delete uploadHeaders["content-type"];
-    delete uploadHeaders["Content-Type"];
-
-    console.log("KRISTO_UPLOAD_FORM_DEBUG", {
-      fileUri,
-      fileName,
-      hasFileUri: !!fileUri,
-      base: getApiBase(),
+    const fileName = fileNameFromUri(fileUri, `video-${Date.now()}.mp4`);
+    const uploadHeaders = getKristoHeaders({
+      userId: session?.userId || "",
+      role: (session?.role || "Member") as any,
+      churchId: session?.churchId || "",
     });
 
-    fetch(`${getApiBase()}/api/church/media/upload`, {
-      method: "POST",
-      headers: uploadHeaders,
-      body: fd,
-    })
-      .then(async (res) => {
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok || !body?.ok) {
-          throw new Error(String(body?.error || `Upload failed (${res.status})`));
-        }
-        return body;
-      })
-      .then((uploadRes) => {
-        console.log("KRISTO_VIDEO_UPLOAD_RESULT", uploadRes);
+    void (async () => {
+      setVideoPostUploading(true);
+      setVideoPostUploadPercent(0);
+      try {
+        const FileSystem = await import("expo-file-system/legacy");
+        const info = await FileSystem.getInfoAsync(fileUri, { size: true } as any);
+        const fileSize = Number((info as any)?.size || 0);
+        const contentType = guessVideoContentType(fileName);
 
-        const uploadedUrl = String(
-          uploadRes?.data?.url ||
-          uploadRes?.data?.videoUrl ||
-          uploadRes?.url ||
-          uploadRes?.videoUrl ||
-          ""
-        ).trim();
+        console.log("KRISTO_UPLOAD_FILE_SIZE", {
+          fileUri,
+          fileName,
+          fileSize,
+          contentType,
+          exists: Boolean((info as any)?.exists),
+        });
 
-        const uploadedPosterUri = String(
-          uploadRes?.data?.posterUri ||
-          uploadRes?.data?.thumbnailUri ||
-          uploadRes?.data?.videoPosterUri ||
-          ""
-        ).trim();
-
-        if (!uploadedUrl || uploadedUrl.startsWith("file://")) {
-          throw new Error("Video upload did not return a server URL.");
+        if (!fileSize || !(info as any)?.exists) {
+          Alert.alert("Video unavailable", "Could not read the selected video file. Try choosing it again.");
+          return;
         }
 
-        return apiPost(
-          "/api/church/feed",
-          {
-            type: "video",
-            title,
-            text: caption,
-            videoUrl: uploadedUrl,
-            ...(uploadedPosterUri
-              ? {
-                  posterUri: uploadedPosterUri,
-                  thumbnailUri: uploadedPosterUri,
-                }
-              : {}),
-          },
-          {
-            headers: getKristoHeaders({
-              userId: session?.userId || "",
-              role: (session?.role || "Member") as any,
-              churchId: session?.churchId || "",
-            }),
-          }
-        );
-      })
-      .then((res: any) => {
-        console.log("KRISTO_FEED_VIDEO_POSTED", res);
+        const signed = await requestVideoUploadUrl({
+          fileName,
+          contentType,
+          fileSize,
+          headers: uploadHeaders,
+        });
+
+        console.log("KRISTO_UPLOAD_SIGNED_URL", {
+          videoUrl: signed.videoUrl,
+          contentType: signed.contentType,
+        });
+
+        await uploadVideoFileToSignedUrl({
+          fileUri,
+          uploadUrl: signed.uploadUrl,
+          contentType: signed.contentType,
+          onProgress: setVideoPostUploadPercent,
+        });
+
+        const feedRes = await publishChurchVideoFeedPost({
+          title,
+          caption,
+          videoUrl: signed.videoUrl,
+          headers: uploadHeaders,
+        });
+
+        console.log("KRISTO_FEED_VIDEO_POSTED", feedRes);
         setVideoPostDetailsOpen(false);
         router.push("/" as any);
-      })
-      .catch((e) => {
+      } catch (e) {
         console.log("KRISTO_FEED_VIDEO_POST_ERROR", e);
-        Alert.alert("Upload failed", String(e?.message || e || "Video upload failed. Please try again."));
-      });
+        Alert.alert("Upload failed", String((e as any)?.message || e || "Video upload failed. Please try again."));
+      } finally {
+        setVideoPostUploading(false);
+        setVideoPostUploadPercent(0);
+      }
     })();
 
     // Do not add local media-video-* optimistic rows.
@@ -2649,6 +2796,22 @@ export default function MediaStudioScreen() {
                       You can write title and caption while Kristo prepares this video for preview.
                     </Text>
                   </View>
+                ) : videoPostUploading ? (
+                  <View style={s.videoSmartLoadingCard}>
+                    <View style={s.videoSmartLoadingTop}>
+                      <ActivityIndicator size="small" color="#F4C95D" />
+                      <Text style={s.videoSmartLoadingTitle}>Uploading video</Text>
+                      <Text style={s.videoSmartLoadingPercent}>{videoPostUploadPercent}%</Text>
+                    </View>
+
+                    <View style={s.videoSmartProgressTrack}>
+                      <View style={[s.videoSmartProgressFill, { width: `${videoPostUploadPercent}%` }]} />
+                    </View>
+
+                    <Text style={s.videoSmartLoadingText}>
+                      Keep Kristo open while your sermon uploads directly to video storage.
+                    </Text>
+                  </View>
                 ) : videoPostUri ? (
                   <MediaPostVideoPreview uri={videoPostUri} onChange={pickMediaVideoForPost} />
                 ) : null}
@@ -2693,7 +2856,7 @@ export default function MediaStudioScreen() {
               </View>
 
               <Pressable
-                disabled={videoPreparing || (videoPostDetailsOpen && !videoPostReadyToPublish)}
+                disabled={videoPreparing || videoPostUploading || (videoPostDetailsOpen && !videoPostReadyToPublish)}
                 onPress={() => {
                   if (!videoPostDetailsOpen) {
                     setVideoPostDetailsOpen(true);
@@ -2708,12 +2871,21 @@ export default function MediaStudioScreen() {
                   s.nextBtnPremium as any,
                   s.videoPostFloatingCta as any,
                   { bottom: videoPostDetailsOpen ? insets.bottom - 62 : insets.bottom - 42 },
-                  (videoPreparing || (videoPostDetailsOpen && !videoPostReadyToPublish)) ? { opacity: 0.42 } : null,
+                  (videoPreparing || videoPostUploading || (videoPostDetailsOpen && !videoPostReadyToPublish)) ? { opacity: 0.42 } : null,
                   pressed ? s.pressed : null,
                 ]}
               >
-                <Text style={s.nextBtnPremiumText as any}>{videoPostDetailsOpen ? "Post to Home Feed" : "Add Title & Caption"}</Text>
-                <Ionicons name="paper-plane-outline" size={24} color="#07111F" />
+                {videoPostUploading ? (
+                  <>
+                    <Text style={s.nextBtnPremiumText as any}>Uploading {videoPostUploadPercent}%</Text>
+                    <ActivityIndicator color="#07111F" />
+                  </>
+                ) : (
+                  <>
+                    <Text style={s.nextBtnPremiumText as any}>{videoPostDetailsOpen ? "Post to Home Feed" : "Add Title & Caption"}</Text>
+                    <Ionicons name="paper-plane-outline" size={24} color="#07111F" />
+                  </>
+                )}
               </Pressable>
             </>
           ) : !isEditingMedia && hasMediaAccount && isCreatingSchedule ? (
@@ -3452,11 +3624,6 @@ export default function MediaStudioScreen() {
                 </View>
               </View>
             </>
-          ) : !mediaProfileReady && !hasChurchMediaProfile ? (
-            <View style={{ alignItems: "center", paddingVertical: 48 }}>
-              <ActivityIndicator size="small" color="#F4C95D" />
-              <Text style={[s.heroText, { marginTop: 12 }]}>Loading Church Media…</Text>
-            </View>
           ) : showCreateWizard && mediaStep === 1 ? (
             <>
               <Text style={s.fieldLabel}>Church Media name</Text>
