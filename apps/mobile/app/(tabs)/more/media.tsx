@@ -25,7 +25,6 @@ import type { KristoMediaCategory, KristoMediaProfile } from "../../../src/lib/k
 import { getPaymentsState, subscribePayments } from "../../../src/store/paymentsStore";
 import { isPlanActive } from "../../../src/lib/payments/mobileSubscriptions";
 import {
-  feedAdd,
   feedList,
   feedPublishMediaScheduleLocal,
   feedRemoveWhere,
@@ -38,7 +37,7 @@ import {
 import { apiGet, apiPost, getApiBase } from "../../../src/lib/kristoApi";
 import { fileNameFromUri } from "../../../src/lib/churchVideoUpload";
 import { generateLocalVideoPosterUri } from "../../../src/lib/videoPoster";
-import { startOptimisticVideoUpload } from "../../../src/lib/optimisticVideoUpload";
+import { startMediaVideoUpload, type MediaVideoUploadStatus } from "../../../src/lib/optimisticVideoUpload";
 import { getKristoHeaders } from "../../../src/lib/kristoHeaders";
 import { sendAssignmentCards } from "../../../src/lib/messagesStore";
 import {
@@ -951,6 +950,7 @@ export default function MediaStudioScreen() {
   const [pendingDetailsScroll, setPendingDetailsScroll] = useState(false);
   const [videoPostUploading, setVideoPostUploading] = useState(false);
   const [videoPostUploadPercent, setVideoPostUploadPercent] = useState(0);
+  const [videoPostUploadStatus, setVideoPostUploadStatus] = useState<MediaVideoUploadStatus | "idle">("idle");
   const [videoPreparing, setVideoPreparing] = useState(false);
   const [videoPreparePercent, setVideoPreparePercent] = useState(0);
 
@@ -1459,6 +1459,10 @@ export default function MediaStudioScreen() {
       return;
     }
 
+    if (videoPostUploading) {
+      return;
+    }
+
     if (!videoPostUri) {
       Alert.alert("Video required", "Please choose a video first.");
       return;
@@ -1474,88 +1478,108 @@ export default function MediaStudioScreen() {
       return;
     }
 
-    const mediaName = form.mediaName.trim() || churchMediaProfile?.mediaName || "Church Media";
     const title = typedTitle;
     const caption = typedCaption;
     const fileUri = String(videoPostUri || "").trim();
     const localPosterUri = String(videoPostPosterUri || "").trim();
     const fileName = fileNameFromUri(fileUri, `video-${Date.now()}.mp4`);
-    const tempPostId = `local-upload-${Date.now()}`;
     const churchId = String(session?.churchId || "").trim();
-    const churchLabel = String(
-      (session as any)?.churchName ||
-      (session as any)?.churchLabel ||
-      "MY CHURCH"
-    );
-    const actorAvatarUri = String(
-      (session as any)?.churchAvatarUri ||
-      (session as any)?.churchAvatarUrl ||
-      (session as any)?.avatarUri ||
-      (session as any)?.avatarUrl ||
-      (session as any)?.profileImage ||
-      ""
-    );
 
-    feedAdd({
-      id: tempPostId,
-      kind: "post",
-      title,
-      body: caption,
-      mediaType: "video",
-      type: "video",
-      localVideoUri: fileUri,
-      localPosterUri: localPosterUri || undefined,
-      posterUri: localPosterUri || undefined,
-      uploadStatus: "uploading",
-      uploadProgress: 0,
-      source: "local-video-upload",
-      createdAt: new Date().toISOString(),
-      churchId,
-      churchName: churchLabel,
-      churchLabel,
-      mediaName,
-      actorLabel: mediaName,
-      actorAvatarUri,
-      churchAvatarUri: actorAvatarUri,
-      uploadJob: {
-        fileUri,
-        localPosterUri: localPosterUri || undefined,
-        fileName,
-        title,
-        caption,
-      },
-    } as any);
+    if (!churchId) {
+      Alert.alert("Church required", "Please sign in with a church before posting.");
+      return;
+    }
 
-    console.log("KRISTO_OPTIMISTIC_VIDEO_POST_CREATED", {
-      tempPostId,
+    console.log("KRISTO_MEDIA_VIDEO_UPLOAD_START", {
       fileUri,
       localPosterUri: localPosterUri || null,
       title,
     });
 
-    setVideoPostDetailsOpen(false);
-    setVideoPostUri("");
-    setVideoPostPosterUri("");
-    setVideoPostTitle("");
-    setVideoPostCaption("");
-    setIsCreatingVideoPost(false);
+    setVideoPostUploading(true);
+    setVideoPostUploadPercent(0);
+    setVideoPostUploadStatus("uploading");
 
-    router.push({
-      pathname: "/",
-      params: { focusPostId: tempPostId },
-    } as any);
+    startMediaVideoUpload(
+      {
+        fileUri,
+        localPosterUri: localPosterUri || undefined,
+        fileName,
+        title,
+        caption,
+        churchId,
+        userId: String(session?.userId || "").trim(),
+        role: String(session?.role || "Member"),
+      },
+      {
+        onProgress: (uploadProgress, uploadStatus) => {
+          const status = uploadStatus || "uploading";
+          setVideoPostUploadStatus(status);
+          if (status === "processing" || status === "done") {
+            setVideoPostUploadPercent(100);
+            return;
+          }
+          setVideoPostUploadPercent(Math.max(0, Math.min(99, Math.round(uploadProgress))));
+        },
+        onSuccess: ({ backendFeedId, videoUrl, posterUri }) => {
+          setVideoPostUploadStatus("done");
+          setVideoPostUploadPercent(100);
 
-    startOptimisticVideoUpload({
-      tempPostId,
-      fileUri,
-      localPosterUri: localPosterUri || undefined,
-      fileName,
-      title,
-      caption,
-      churchId,
-      userId: String(session?.userId || "").trim(),
-      role: String(session?.role || "Member"),
-    });
+          void refreshChurchMediaIfNeeded({
+            churchId,
+            userId: String(session?.userId || "").trim(),
+            headers: getKristoHeaders({
+              userId: String(session?.userId || "").trim(),
+              role: (session?.role || "Member") as any,
+              churchId,
+            }) as Record<string, string>,
+            screen: "media-video-upload-done",
+            force: true,
+          }).catch((error) => {
+            console.log("KRISTO_MEDIA_STORAGE_REFRESH_ERROR", error);
+          });
+
+          setVideoPostUploading(false);
+          setVideoPostUploadStatus("idle");
+          setVideoPostUploadPercent(0);
+          setVideoPostDetailsOpen(false);
+          setVideoPostUri("");
+          setVideoPostPosterUri("");
+          setVideoPostTitle("");
+          setVideoPostCaption("");
+          setIsCreatingVideoPost(false);
+
+          if (posterUri && videoUrl) {
+            (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__ = {
+              videoUrl,
+              posterUri,
+            };
+          }
+
+          if (backendFeedId) {
+            (globalThis as any).__KRISTO_HOME_FEED_PENDING_FOCUS__ = backendFeedId;
+          }
+
+          try {
+            (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__?.("media-video-upload-done");
+          } catch {}
+
+          console.log("KRISTO_MEDIA_VIDEO_UPLOAD_NAVIGATE_HOME", { backendFeedId });
+
+          router.push({
+            pathname: "/",
+            params: { focusPostId: backendFeedId },
+          } as any);
+        },
+        onError: (message) => {
+          setVideoPostUploading(false);
+          setVideoPostUploadStatus("failed");
+          setVideoPostUploadPercent(0);
+          console.log("KRISTO_MEDIA_VIDEO_UPLOAD_FAILED", { message });
+          Alert.alert("Upload failed", message);
+        },
+      }
+    );
   }
 
   async function handleLockedAction(kind: "video" | "live") {
@@ -2813,16 +2837,36 @@ export default function MediaStudioScreen() {
                   <View style={s.videoSmartLoadingCard}>
                     <View style={s.videoSmartLoadingTop}>
                       <ActivityIndicator size="small" color="#F4C95D" />
-                      <Text style={s.videoSmartLoadingTitle}>Uploading video</Text>
-                      <Text style={s.videoSmartLoadingPercent}>{videoPostUploadPercent}%</Text>
+                      <Text style={s.videoSmartLoadingTitle}>
+                        {videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                          ? "Processing…"
+                          : "Uploading video"}
+                      </Text>
+                      <Text style={s.videoSmartLoadingPercent}>
+                        {videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                          ? ""
+                          : `${videoPostUploadPercent}%`}
+                      </Text>
                     </View>
 
                     <View style={s.videoSmartProgressTrack}>
-                      <View style={[s.videoSmartProgressFill, { width: `${videoPostUploadPercent}%` }]} />
+                      <View
+                        style={[
+                          s.videoSmartProgressFill,
+                          {
+                            width:
+                              videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                                ? "100%"
+                                : `${videoPostUploadPercent}%`,
+                          },
+                        ]}
+                      />
                     </View>
 
                     <Text style={s.videoSmartLoadingText}>
-                      Keep Kristo open while your sermon uploads directly to video storage.
+                      {videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                        ? "Publishing to Media Storage and preparing your Home Feed post."
+                        : "Keep Kristo open while your sermon uploads directly to video storage."}
                     </Text>
                   </View>
                 ) : videoPostUri ? (
@@ -2890,7 +2934,11 @@ export default function MediaStudioScreen() {
               >
                 {videoPostUploading ? (
                   <>
-                    <Text style={s.nextBtnPremiumText as any}>Uploading {videoPostUploadPercent}%</Text>
+                    <Text style={s.nextBtnPremiumText as any}>
+                      {videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                        ? "Processing…"
+                        : `Uploading ${videoPostUploadPercent}%`}
+                    </Text>
                     <ActivityIndicator color="#07111F" />
                   </>
                 ) : (

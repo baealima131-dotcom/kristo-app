@@ -1,26 +1,25 @@
 import {
-  feedList,
   feedRemoveOptimisticVideoUpload,
   feedUpdateOptimisticVideoUpload,
   isOptimisticVideoUploadPost,
+  feedList,
 } from "@/src/lib/homeFeedStore";
 import {
   guessPosterContentType,
   guessVideoContentType,
   fileNameFromUri,
   publishChurchVideoFeedPost,
-  requestPosterUploadUrl,
-  requestVideoUploadUrl,
-  uploadFileToSignedUrl,
-  uploadVideoFileToSignedUrl,
+  resolveUploadFileSize,
+  uploadPosterToStorageWithRetry,
+  uploadVideoToStorageWithRetry,
 } from "@/src/lib/churchVideoUpload";
+import { compressVideoForUpload } from "@/src/lib/videoCompress";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 
-export type OptimisticVideoUploadStatus = "uploading" | "processing" | "failed" | "done";
+export type MediaVideoUploadStatus = "uploading" | "processing" | "failed" | "done";
 
-export type OptimisticVideoUploadJob = {
-  tempPostId: string;
+export type MediaVideoUploadJob = {
   fileUri: string;
   localPosterUri?: string;
   fileName: string;
@@ -31,9 +30,24 @@ export type OptimisticVideoUploadJob = {
   role: string;
 };
 
+export type MediaVideoUploadResult = {
+  backendFeedId: string;
+  videoUrl: string;
+  posterUri: string | null;
+};
+
+export type MediaVideoUploadCallbacks = {
+  onProgress?: (uploadProgress: number, uploadStatus?: MediaVideoUploadStatus) => void;
+  onSuccess?: (result: MediaVideoUploadResult) => void;
+  onError?: (message: string) => void;
+};
+
+/** @deprecated Legacy optimistic feed job shape — kept for stale local-upload cleanup only. */
+export type OptimisticVideoUploadJob = MediaVideoUploadJob & { tempPostId: string };
+
 const inflight = new Map<string, Promise<void>>();
 
-function uploadHeadersForJob(job: OptimisticVideoUploadJob) {
+function uploadHeadersForJob(job: MediaVideoUploadJob) {
   return getKristoHeaders({
     userId: job.userId,
     role: (job.role || "Member") as any,
@@ -41,7 +55,189 @@ function uploadHeadersForJob(job: OptimisticVideoUploadJob) {
   }) as Record<string, string>;
 }
 
-function jobFromFeedItem(tempPostId: string): OptimisticVideoUploadJob | null {
+function jobInflightKey(job: MediaVideoUploadJob) {
+  return `${job.fileUri}::${job.fileName}::${job.title}`;
+}
+
+async function uploadPosterIfAvailable(job: MediaVideoUploadJob, uploadHeaders: Record<string, string>) {
+  if (!job.localPosterUri) return "";
+
+  try {
+    const posterSize = await resolveUploadFileSize(job.localPosterUri);
+    const posterFileName = fileNameFromUri(job.localPosterUri, `poster-${Date.now()}.jpg`);
+    const posterContentType = guessPosterContentType(posterFileName);
+
+    if (posterSize <= 0) {
+      console.log("KRISTO_UPLOAD_POSTER_SKIPPED", {
+        reason: "missing-poster-file-size",
+        localPosterUri: job.localPosterUri,
+      });
+      return "";
+    }
+
+    console.log("KRISTO_UPLOAD_POSTER_START", {
+      posterFileName,
+      posterContentType,
+      posterSize,
+    });
+
+    const posterSigned = await uploadPosterToStorageWithRetry({
+      fileUri: job.localPosterUri,
+      fileName: posterFileName,
+      contentType: posterContentType,
+      fileSize: posterSize,
+      headers: uploadHeaders,
+    });
+
+    const posterPublicUrl = String(posterSigned.publicUrl || posterSigned.videoUrl || "").trim();
+
+    console.log("KRISTO_UPLOAD_POSTER_SIGNED_URL", {
+      publicUrl: posterPublicUrl || null,
+    });
+
+    return posterPublicUrl;
+  } catch (posterError) {
+    console.log("KRISTO_UPLOAD_POSTER_ERROR", {
+      message: String((posterError as any)?.message || posterError || "unknown"),
+      localPosterUri: job.localPosterUri,
+    });
+    return "";
+  }
+}
+
+async function runMediaVideoUpload(job: MediaVideoUploadJob, callbacks: MediaVideoUploadCallbacks) {
+  const uploadHeaders = uploadHeadersForJob(job);
+
+  const reportProgress = (uploadProgress: number, uploadStatus: MediaVideoUploadStatus = "uploading") => {
+    const cappedProgress =
+      uploadStatus === "processing" || uploadStatus === "done"
+        ? 100
+        : Math.max(0, Math.min(99, Math.round(uploadProgress)));
+
+    callbacks.onProgress?.(cappedProgress, uploadStatus);
+    console.log("KRISTO_MEDIA_VIDEO_UPLOAD_PROGRESS", {
+      uploadProgress: cappedProgress,
+      uploadStatus,
+      title: job.title,
+    });
+  };
+
+  try {
+    reportProgress(0, "uploading");
+
+    const compressed = await compressVideoForUpload(job.fileUri);
+    const uploadUri = compressed.uri;
+    const uploadFileName = fileNameFromUri(uploadUri, job.fileName);
+    const fileSize = await resolveUploadFileSize(uploadUri);
+    const contentType = guessVideoContentType(uploadFileName);
+
+    if (!uploadUri || !fileSize) {
+      throw new Error("Could not read the selected video file.");
+    }
+
+    // TODO(multipart): For large compressed files, prefer chunked multipart upload once supported.
+
+    const posterPublicUrl = await uploadPosterIfAvailable(job, uploadHeaders);
+
+    const signed = await uploadVideoToStorageWithRetry({
+      fileUri: uploadUri,
+      fileName: uploadFileName,
+      contentType,
+      fileSize,
+      headers: uploadHeaders,
+      onProgress: (pct) => reportProgress(pct, "uploading"),
+    });
+
+    reportProgress(100, "processing");
+
+    const feedRes = await publishChurchVideoFeedPost({
+      title: job.title,
+      caption: job.caption,
+      videoUrl: signed.videoUrl,
+      posterUri: posterPublicUrl || undefined,
+      videoPosterUri: posterPublicUrl || undefined,
+      thumbnailUri: posterPublicUrl || undefined,
+      headers: uploadHeaders,
+    });
+
+    const backendItem = feedRes?.item || feedRes?.data || feedRes;
+    const backendFeedId = String(backendItem?.id || "").trim();
+
+    if (!backendFeedId) {
+      throw new Error("Video uploaded but feed post id was missing.");
+    }
+
+    const result: MediaVideoUploadResult = {
+      backendFeedId,
+      videoUrl: signed.videoUrl,
+      posterUri: posterPublicUrl || null,
+    };
+
+    reportProgress(100, "done");
+
+    console.log("KRISTO_OPTIMISTIC_VIDEO_UPLOAD_DONE", {
+      backendFeedId,
+      videoUrl: signed.videoUrl,
+      posterUri: posterPublicUrl || null,
+      compressed: !compressed.skipped,
+      originalBytes: compressed.originalBytes,
+      compressedBytes: compressed.compressedBytes,
+    });
+
+    callbacks.onSuccess?.(result);
+  } catch (error) {
+    const message = String((error as any)?.message || error || "Upload failed");
+    console.log("KRISTO_OPTIMISTIC_VIDEO_UPLOAD_FAILED", { message, title: job.title });
+    callbacks.onError?.(message);
+  }
+}
+
+export function startMediaVideoUpload(job: MediaVideoUploadJob, callbacks: MediaVideoUploadCallbacks = {}) {
+  const key = jobInflightKey(job);
+  if (inflight.has(key)) return;
+
+  const task = runMediaVideoUpload(job, callbacks).finally(() => {
+    inflight.delete(key);
+  });
+
+  inflight.set(key, task);
+}
+
+/** @deprecated Do not add local-upload feed rows. Kept as alias for legacy imports. */
+export function startOptimisticVideoUpload(job: OptimisticVideoUploadJob) {
+  startMediaVideoUpload(job, {
+    onProgress: (uploadProgress, uploadStatus) => {
+      if (!job.tempPostId) return;
+      feedUpdateOptimisticVideoUpload(job.tempPostId, {
+        uploadProgress,
+        ...(uploadStatus ? { uploadStatus } : {}),
+      });
+    },
+    onSuccess: ({ backendFeedId, videoUrl, posterUri }) => {
+      if (job.tempPostId) {
+        feedRemoveOptimisticVideoUpload(job.tempPostId);
+      }
+      if (posterUri && videoUrl) {
+        (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__ = { videoUrl, posterUri };
+      }
+      if (backendFeedId) {
+        (globalThis as any).__KRISTO_HOME_FEED_PENDING_FOCUS__ = backendFeedId;
+      }
+      try {
+        (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__?.("optimistic-video-done");
+      } catch {}
+    },
+    onError: (message) => {
+      if (!job.tempPostId) return;
+      feedUpdateOptimisticVideoUpload(job.tempPostId, {
+        uploadStatus: "failed",
+        uploadError: message,
+      });
+    },
+  });
+}
+
+function legacyJobFromFeedItem(tempPostId: string): OptimisticVideoUploadJob | null {
   const item = (feedList() as any[]).find((row) => String(row?.id || "") === tempPostId);
   if (!item || !isOptimisticVideoUploadPost(item)) return null;
 
@@ -64,148 +260,9 @@ function jobFromFeedItem(tempPostId: string): OptimisticVideoUploadJob | null {
   };
 }
 
-function patchProgress(tempPostId: string, uploadProgress: number, uploadStatus?: OptimisticVideoUploadStatus) {
-  feedUpdateOptimisticVideoUpload(tempPostId, {
-    uploadProgress: Math.max(0, Math.min(100, Math.round(uploadProgress))),
-    ...(uploadStatus ? { uploadStatus } : {}),
-  });
-
-  console.log("KRISTO_OPTIMISTIC_VIDEO_UPLOAD_PROGRESS", {
-    tempPostId,
-    uploadProgress: Math.round(uploadProgress),
-    uploadStatus: uploadStatus || "uploading",
-  });
-}
-
-async function runOptimisticVideoUpload(job: OptimisticVideoUploadJob) {
-  const uploadHeaders = uploadHeadersForJob(job);
-
-  try {
-    patchProgress(job.tempPostId, 0, "uploading");
-
-    const FileSystem = await import("expo-file-system/legacy");
-    const info = await FileSystem.getInfoAsync(job.fileUri, { size: true } as any);
-    const fileSize = Number((info as any)?.size || 0);
-    const contentType = guessVideoContentType(job.fileName);
-
-    if (!fileSize || !(info as any)?.exists) {
-      throw new Error("Could not read the selected video file.");
-    }
-
-    let posterPublicUrl = "";
-
-    if (job.localPosterUri) {
-      try {
-        const posterInfo = await FileSystem.getInfoAsync(job.localPosterUri, { size: true } as any);
-        const posterSize = Number((posterInfo as any)?.size || 0);
-        const posterFileName = fileNameFromUri(job.localPosterUri, `poster-${Date.now()}.jpg`);
-        const posterContentType = guessPosterContentType(posterFileName);
-
-        if (posterSize > 0 && (posterInfo as any)?.exists) {
-          const posterSigned = await requestPosterUploadUrl({
-            fileName: posterFileName,
-            contentType: posterContentType,
-            fileSize: posterSize,
-            headers: uploadHeaders,
-          });
-
-          await uploadFileToSignedUrl({
-            fileUri: job.localPosterUri,
-            uploadUrl: posterSigned.uploadUrl,
-            contentType: posterContentType,
-          });
-
-          posterPublicUrl = String(posterSigned.publicUrl || posterSigned.videoUrl || "").trim();
-        }
-      } catch (posterError) {
-        console.log("KRISTO_UPLOAD_POSTER_ERROR", posterError);
-      }
-    }
-
-    const signed = await requestVideoUploadUrl({
-      fileName: job.fileName,
-      contentType,
-      fileSize,
-      headers: uploadHeaders,
-    });
-
-    await uploadVideoFileToSignedUrl({
-      fileUri: job.fileUri,
-      uploadUrl: signed.uploadUrl,
-      contentType: signed.contentType,
-      onProgress: (pct) => patchProgress(job.tempPostId, pct, "uploading"),
-    });
-
-    patchProgress(job.tempPostId, 100, "processing");
-
-    const feedRes = await publishChurchVideoFeedPost({
-      title: job.title,
-      caption: job.caption,
-      videoUrl: signed.videoUrl,
-      posterUri: posterPublicUrl || undefined,
-      videoPosterUri: posterPublicUrl || undefined,
-      thumbnailUri: posterPublicUrl || undefined,
-      headers: uploadHeaders,
-    });
-
-    const backendItem = feedRes?.item || feedRes?.data || feedRes;
-    const backendFeedId = String(backendItem?.id || "").trim();
-
-    if (posterPublicUrl && signed.videoUrl) {
-      (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__ = {
-        videoUrl: signed.videoUrl,
-        posterUri: posterPublicUrl,
-      };
-    }
-
-    feedRemoveOptimisticVideoUpload(job.tempPostId);
-
-    if (backendFeedId) {
-      (globalThis as any).__KRISTO_HOME_FEED_PENDING_FOCUS__ = backendFeedId;
-    }
-
-    try {
-      (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__?.("optimistic-video-done");
-    } catch {}
-
-    console.log("KRISTO_OPTIMISTIC_VIDEO_UPLOAD_DONE", {
-      tempPostId: job.tempPostId,
-      backendFeedId,
-      videoUrl: signed.videoUrl,
-      posterUri: posterPublicUrl || null,
-    });
-
-    console.log("KRISTO_OPTIMISTIC_VIDEO_POST_REPLACED", {
-      tempPostId: job.tempPostId,
-      backendFeedId,
-    });
-  } catch (error) {
-    const message = String((error as any)?.message || error || "Upload failed");
-
-    feedUpdateOptimisticVideoUpload(job.tempPostId, {
-      uploadStatus: "failed",
-      uploadError: message,
-    });
-
-    console.log("KRISTO_OPTIMISTIC_VIDEO_UPLOAD_FAILED", {
-      tempPostId: job.tempPostId,
-      message,
-    });
-  }
-}
-
-export function startOptimisticVideoUpload(job: OptimisticVideoUploadJob) {
-  if (inflight.has(job.tempPostId)) return;
-
-  const task = runOptimisticVideoUpload(job).finally(() => {
-    inflight.delete(job.tempPostId);
-  });
-
-  inflight.set(job.tempPostId, task);
-}
-
+/** Retry stale local-upload rows left from older app versions. */
 export function retryOptimisticVideoUpload(tempPostId: string) {
-  const job = jobFromFeedItem(tempPostId);
+  const job = legacyJobFromFeedItem(tempPostId);
   if (!job) return;
 
   feedUpdateOptimisticVideoUpload(tempPostId, {
@@ -217,7 +274,7 @@ export function retryOptimisticVideoUpload(tempPostId: string) {
   startOptimisticVideoUpload(job);
 }
 
+/** Remove stale local-upload rows left from older app versions. */
 export function cancelOptimisticVideoUpload(tempPostId: string) {
-  inflight.delete(tempPostId);
   feedRemoveOptimisticVideoUpload(tempPostId);
 }
