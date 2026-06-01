@@ -2,9 +2,10 @@ import { apiPost } from "@/src/lib/kristoApi";
 
 type HeadersRec = Record<string, string>;
 
-export type SignedVideoUploadSession = {
+export type SignedMediaUploadSession = {
   uploadUrl: string;
   videoUrl: string;
+  publicUrl: string;
   contentType: string;
 };
 
@@ -20,6 +21,13 @@ export function guessVideoContentType(fileName: string) {
   return "video/mp4";
 }
 
+export function guessPosterContentType(fileName: string) {
+  const lower = String(fileName || "").trim().toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  return "image/jpeg";
+}
+
 export function fileNameFromUri(uri: string, fallback = "video.mp4") {
   const clean = String(uri || "").trim().split("?")[0];
   const base = clean.split("/").pop();
@@ -27,39 +35,73 @@ export function fileNameFromUri(uri: string, fallback = "video.mp4") {
   return fallback;
 }
 
+async function requestSignedMediaUpload(params: {
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+  headers: HeadersRec;
+  kind: "video" | "poster";
+}): Promise<SignedMediaUploadSession> {
+  const payload = {
+    fileName: params.fileName,
+    contentType: params.contentType,
+    fileSize: params.fileSize,
+    kind: params.kind,
+    uploadKind: params.kind,
+  };
+
+  if (__DEV__) {
+    console.log("KRISTO_SIGNED_MEDIA_UPLOAD_REQUEST", payload);
+  }
+
+  const res: any = await apiPost(
+    "/api/church/media/upload-url",
+    payload,
+    { headers: params.headers }
+  );
+
+  if (!res?.ok) {
+    throw new Error(
+      uploadErrorMessage(
+        res,
+        params.kind === "poster"
+          ? "Could not start poster upload."
+          : "Could not start video upload."
+      )
+    );
+  }
+
+  const data = res?.data || res;
+  const uploadUrl = String(data?.uploadUrl || "").trim();
+  const publicUrl = String(data?.publicUrl || data?.videoUrl || "").trim();
+  const contentType = String(data?.contentType || params.contentType).trim();
+
+  if (!uploadUrl || !publicUrl) {
+    throw new Error("Signed upload URL response was incomplete.");
+  }
+
+  return { uploadUrl, videoUrl: publicUrl, publicUrl, contentType };
+}
+
 export async function requestVideoUploadUrl(params: {
   fileName: string;
   contentType: string;
   fileSize: number;
   headers: HeadersRec;
-}): Promise<SignedVideoUploadSession> {
-  const res: any = await apiPost(
-    "/api/church/media/upload-url",
-    {
-      fileName: params.fileName,
-      contentType: params.contentType,
-      fileSize: params.fileSize,
-    },
-    { headers: params.headers }
-  );
-
-  if (!res?.ok) {
-    throw new Error(uploadErrorMessage(res, "Could not start video upload."));
-  }
-
-  const data = res?.data || res;
-  const uploadUrl = String(data?.uploadUrl || "").trim();
-  const videoUrl = String(data?.videoUrl || "").trim();
-  const contentType = String(data?.contentType || params.contentType || "video/mp4").trim();
-
-  if (!uploadUrl || !videoUrl) {
-    throw new Error("Signed upload URL response was incomplete.");
-  }
-
-  return { uploadUrl, videoUrl, contentType };
+}): Promise<SignedMediaUploadSession> {
+  return requestSignedMediaUpload({ ...params, kind: "video" });
 }
 
-export async function uploadVideoFileToSignedUrl(params: {
+export async function requestPosterUploadUrl(params: {
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+  headers: HeadersRec;
+}): Promise<SignedMediaUploadSession> {
+  return requestSignedMediaUpload({ ...params, kind: "poster" });
+}
+
+export async function uploadFileToSignedUrl(params: {
   fileUri: string;
   uploadUrl: string;
   contentType: string;
@@ -94,26 +136,51 @@ export async function uploadVideoFileToSignedUrl(params: {
   const status = Number(result?.status || 0);
 
   if (status < 200 || status >= 300) {
-    throw new Error(`Video storage upload failed (${status || "unknown"}).`);
+    throw new Error(`Storage upload failed (${status || "unknown"}).`);
   }
 
   params.onProgress?.(100);
+}
+
+export async function uploadVideoFileToSignedUrl(params: {
+  fileUri: string;
+  uploadUrl: string;
+  contentType: string;
+  onProgress?: (percent: number) => void;
+}) {
+  return uploadFileToSignedUrl(params);
 }
 
 export async function publishChurchVideoFeedPost(params: {
   title: string;
   caption: string;
   videoUrl: string;
+  posterUri?: string;
+  videoPosterUri?: string;
+  thumbnailUri?: string;
   headers: HeadersRec;
 }) {
+  const poster = String(params.posterUri || params.videoPosterUri || params.thumbnailUri || "").trim();
+
   const res: any = await apiPost(
     "/api/church/feed",
     {
       type: "video",
       mediaType: "video",
+      source: "media-upload",
+      postOrigin: "media",
+      storageType: "media",
+      isMediaPost: true,
       title: params.title,
       text: params.caption,
       videoUrl: params.videoUrl,
+      ...(poster
+        ? {
+            posterUri: poster,
+            videoPosterUri: poster,
+            thumbnailUri: poster,
+          }
+        : {}),
     },
     { headers: params.headers }
   );
