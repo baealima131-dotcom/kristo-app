@@ -15,6 +15,7 @@ type HomeFeedVideoLogMeta = {
   appState?: string;
   isStrictVideoPost?: boolean;
   shouldPlay?: boolean;
+  videoReady?: boolean;
   reason?: string;
   exceptPostId?: string;
   exceptFeedOriginId?: string;
@@ -113,13 +114,13 @@ export function registerHomeFeedVideo(
   const id = String(postId || "").trim();
   if (!id) return;
 
+  // Allow warmup/preload videos to register while muted.
+  // Audio/playback ownership is still blocked below until shouldPlay + videoReady.
   if (!meta.shouldPlay) {
-    devLog("KRISTO_VIDEO_PRELOAD_SKIP", {
-      postId: id,
-      originId: meta.feedOriginId || baseFeedId(id),
-      reason: "inactive-poster-only",
-    });
-    return;
+    try {
+      player.muted = true;
+      player.pause();
+    } catch {}
   }
 
   const existing = registry.get(id);
@@ -134,7 +135,14 @@ export function registerHomeFeedVideo(
     feedOriginId: String(meta.feedOriginId || baseFeedId(id)).trim() || undefined,
   });
 
-  logHomeFeedVideoAudioGuard(id, true, "activate-active");
+  if (meta.shouldPlay && meta.videoReady) {
+    logHomeFeedVideoAudioGuard(id, true, "activate-active");
+  } else if (__DEV__ && meta.shouldPlay) {
+    devLog("KRISTO_VIDEO_AUDIO_BLOCKED_NOT_READY", {
+      postId: id,
+      reason: meta.reason || "register-not-ready",
+    });
+  }
   devLog("KRISTO_FEED_VIDEO_REGISTER", { postId: id, ...meta });
 }
 
@@ -218,7 +226,14 @@ export function activateHomeFeedVideo(
   });
 
   activePostId = id;
-  logHomeFeedVideoAudioGuard(id, true, "activate-active");
+  if (meta.shouldPlay && meta.videoReady) {
+    logHomeFeedVideoAudioGuard(id, true, "activate-active");
+  } else if (__DEV__ && meta.shouldPlay) {
+    devLog("KRISTO_VIDEO_AUDIO_BLOCKED_NOT_READY", {
+      postId: id,
+      reason: meta.reason || "activate-not-ready",
+    });
+  }
   devLog("KRISTO_FEED_VIDEO_ACTIVATE", { postId: id, ...meta });
 }
 
@@ -238,6 +253,7 @@ export function syncHomeFeedVideoOwnership(meta: HomeFeedVideoLogMeta) {
     feedIndex,
     reason,
     feedOriginId,
+    videoReady,
   } = meta;
 
   const appOk = appState === "active";
@@ -253,6 +269,7 @@ export function syncHomeFeedVideoOwnership(meta: HomeFeedVideoLogMeta) {
 
   const canOwnPlayback =
     Boolean(shouldPlay) &&
+    Boolean(videoReady) &&
     Boolean(isStrictVideoPost) &&
     focusOk &&
     indexOk &&

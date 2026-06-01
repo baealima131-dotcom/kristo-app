@@ -142,7 +142,24 @@ async function loadPersistedFeed() {
     if (!raw) return [];
 
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+
+    const cleaned = parsed.filter((it: any) => {
+      const id = String(it?.id || "");
+      const source = String(it?.source || "").toLowerCase();
+      return !id.startsWith("local-upload-") && source !== "local-video-upload";
+    });
+
+    if (cleaned.length !== parsed.length) {
+      void AsyncStorage.setItem(FEED_STORAGE_KEY, JSON.stringify(cleaned));
+      if (__DEV__) {
+        console.log("KRISTO_HOME_FEED_LOCAL_UPLOADS_AUTO_CLEANED", {
+          removed: parsed.length - cleaned.length,
+        });
+      }
+    }
+
+    return cleaned;
   } catch (e) {
     console.log("KRISTO_FEED_LOAD_ERROR", e);
     return [];
@@ -202,6 +219,22 @@ function emit() {
  */
 export function feedList() {
   return getStore().items;
+}
+
+export function feedRemoveLocalUploads() {
+  const s = getStore();
+  const before = s.items.length;
+  s.items = s.items.filter((it: any) => {
+    const id = String(it?.id || "");
+    const source = String(it?.source || "").toLowerCase();
+    return !id.startsWith("local-upload-") && source !== "local-video-upload";
+  });
+  const removed = before - s.items.length;
+  if (__DEV__) {
+    console.log("KRISTO_HOME_FEED_LOCAL_UPLOADS_REMOVED", { removed });
+  }
+  void persistAndEmit();
+  return removed;
 }
 
 export function subscribe(fn: Listener) {
