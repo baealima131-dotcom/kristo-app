@@ -151,3 +151,24 @@ export async function createPresignedVideoUpload(params: {
     maxBytes: MAX_VIDEO_UPLOAD_BYTES,
   };
 }
+
+function logVideoStorageStartupConfig() {
+  const config = getVideoStorageConfig();
+  if (config) {
+    console.log("KRISTO_VIDEO_STORAGE_CONFIG_OK", {
+      bucket: config.bucket,
+      region: config.region,
+      endpointConfigured: Boolean(config.endpoint),
+      publicBaseUrl: config.publicBaseUrl,
+      maxUploadGb: Math.floor(MAX_VIDEO_UPLOAD_BYTES / (1024 * 1024 * 1024)),
+      uploadUrlTtlSeconds: VIDEO_UPLOAD_URL_TTL_SECONDS,
+    });
+    return;
+  }
+
+  console.log("KRISTO_VIDEO_STORAGE_CONFIG_MISSING", {
+    error: videoStorageConfigError(),
+  });
+}
+
+logVideoStorageStartupConfig();
