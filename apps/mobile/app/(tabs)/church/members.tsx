@@ -1,11 +1,33 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Animated, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { approveRequest, fetchChurchMembers, fetchJoinRequests, rejectRequest, removeChurchMember, sendChurchInvite } from "@/src/lib/churchMembersApi";
 import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
+import {
+  churchMembersRowsSignature,
+  getChurchMembersCache,
+  peekChurchMembersCache,
+  saveChurchMembersCache,
+} from "@/src/lib/churchTabCache";
+import {
+  CHURCH_TAB_REFRESH_MS,
+  logChurchFeatureBackgroundRefresh,
+  logChurchFeatureFirstPaint,
+  markChurchFeatureRefreshDone,
+  shouldSkipChurchFeatureRefresh,
+} from "@/src/lib/churchTabPreload";
+import {
+  hasScreenFirstPainted,
+  markScreenBackgroundRefresh,
+  markScreenFirstPainted,
+  shouldBlockVisibleLoading,
+  shouldSkipFocusRefresh,
+} from "@/src/lib/screenOpenState";
+
+const CHURCH_MEMBERS_SCREEN = "ChurchMembers";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -41,10 +63,31 @@ export default function ChurchMembersDirectory() {
   const { session } = useKristoSession();
   const canManageMembers = ["Pastor", "Church_Admin", "System_Admin"].includes(String(session?.role || ""));
 
+  const churchId = String(session?.churchId || "").trim();
+  const userId = String(session?.userId || "").trim();
+  const membersCachePeek = useMemo(
+    () => (churchId && userId ? peekChurchMembersCache(churchId, userId) : null),
+    [churchId, userId]
+  );
+
   const [tab, setTab] = useState<Tab>("active");
-  const [members, setMembers] = useState<any[]>([]);
-  const [requests, setRequests] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [members, setMembers] = useState<any[]>(
+    (membersCachePeek?.members as any[]) || []
+  );
+  const [requests, setRequests] = useState<any[]>(
+    (membersCachePeek?.requests as any[]) || []
+  );
+  const [loading, setLoading] = useState(
+    !Boolean(membersCachePeek?.members?.length || membersCachePeek?.requests?.length)
+  );
+  const [refreshing, setRefreshing] = useState(false);
+  const membersSigRef = useRef(
+    membersCachePeek
+      ? `${churchMembersRowsSignature((membersCachePeek.members || []) as any[])}|${churchMembersRowsSignature((membersCachePeek.requests || []) as any[])}`
+      : ""
+  );
+  const firstPaintLoggedRef = useRef(false);
+  const cacheHydratedRef = useRef(Boolean(membersCachePeek));
   const [busyId, setBusyId] = useState("");
   const [err, setErr] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -87,53 +130,126 @@ export default function ChurchMembersDirectory() {
     }).start();
   }, [inviteSuccessOpen, successAnim]);
 
-  async function load(silent = false) {
-    try {
-      if (!silent) setErr("");
-      if (!silent) setLoading(true);
-
-      const [m, r] = await Promise.all([
-        fetchChurchMembers().catch(() => []),
-        fetchJoinRequests().catch(() => []),
-      ]);
-
-      setMembers(Array.isArray(m) ? m : []);
-      setRequests(Array.isArray(r) ? r : []);
-
-      if (__DEV__) {
-        const rows = (Array.isArray(m) ? m : []).map((row: any) => ({
-          userId: String(row?.userId || ""),
-          name: String(row?.name || row?.fullName || row?.displayName || ""),
-          role: String(row?.role || row?.churchRole || ""),
-          avatarUrl: Boolean(String(row?.avatarUrl || "").trim()),
-          avatarUri: Boolean(String(row?.avatarUri || "").trim()),
-          profileImage: Boolean(String(row?.profileImage || "").trim()),
-          photoURL: Boolean(String(row?.photoURL || "").trim()),
-          image: Boolean(String(row?.image || "").trim()),
-          resolved: Boolean(resolveMemberAvatar(row)),
-        }));
-        console.log("[ChurchMembers] rows avatar fields by userId/name", rows);
-      }
-    } catch (e: any) {
-      const msg = String(e?.message || e || "Try again");
-      setErr(msg);
-    } finally {
-      if (!silent) setLoading(false);
+  const applyMembersCache = useCallback((cached: { members: any[]; requests: any[] }) => {
+    const nextMembers = Array.isArray(cached.members) ? cached.members : [];
+    const nextRequests = Array.isArray(cached.requests) ? cached.requests : [];
+    const sig = `${churchMembersRowsSignature(nextMembers)}|${churchMembersRowsSignature(nextRequests)}`;
+    if (sig !== membersSigRef.current) {
+      membersSigRef.current = sig;
+      setMembers(nextMembers);
+      setRequests(nextRequests);
     }
-  }
+    cacheHydratedRef.current = true;
+    if (shouldBlockVisibleLoading(CHURCH_MEMBERS_SCREEN, nextMembers.length > 0 || nextRequests.length > 0)) {
+      setLoading(false);
+    }
+  }, []);
 
-  useEffect(() => {
-    void load(false);
-  }, [session?.churchId]);
+  const load = useCallback(
+    async (opts?: { silent?: boolean; force?: boolean }) => {
+      const silent = !!opts?.silent;
+      const force = !!opts?.force;
+      if (!churchId || !userId) return;
+
+      if (
+        silent &&
+        !force &&
+        (shouldSkipChurchFeatureRefresh(CHURCH_MEMBERS_SCREEN, churchId, userId) ||
+          shouldSkipFocusRefresh(CHURCH_MEMBERS_SCREEN, CHURCH_TAB_REFRESH_MS))
+      ) {
+        return;
+      }
+
+      try {
+        if (!silent) setErr("");
+        const hasVisible = members.length > 0 || requests.length > 0;
+        if (!silent && !force && shouldBlockVisibleLoading(CHURCH_MEMBERS_SCREEN, hasVisible)) {
+          // keep cached rows visible
+        } else if (!silent && !hasVisible) {
+          setLoading(true);
+        }
+        if (silent) {
+          setRefreshing(true);
+          logChurchFeatureBackgroundRefresh(CHURCH_MEMBERS_SCREEN, "silent-refresh");
+        }
+
+        const [m, r] = await Promise.all([
+          fetchChurchMembers().catch(() => []),
+          fetchJoinRequests().catch(() => []),
+        ]);
+
+        const nextMembers = Array.isArray(m) ? m : [];
+        const nextRequests = Array.isArray(r) ? r : [];
+        const sig = `${churchMembersRowsSignature(nextMembers)}|${churchMembersRowsSignature(nextRequests)}`;
+        if (sig !== membersSigRef.current) {
+          membersSigRef.current = sig;
+          setMembers(nextMembers);
+          setRequests(nextRequests);
+        }
+
+        await saveChurchMembersCache({
+          churchId,
+          userId,
+          members: nextMembers,
+          requests: nextRequests,
+          updatedAt: Date.now(),
+        });
+        markScreenBackgroundRefresh(CHURCH_MEMBERS_SCREEN);
+        markChurchFeatureRefreshDone(CHURCH_MEMBERS_SCREEN, churchId, userId);
+      } catch (e: any) {
+        const msg = String(e?.message || e || "Try again");
+        setErr(msg);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [churchId, userId, members.length, requests.length]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+
+      (async () => {
+        if (churchId && userId && !cacheHydratedRef.current) {
+          const disk = await getChurchMembersCache(churchId, userId);
+          if (disk && alive) applyMembersCache(disk);
+        }
+
+        if (!firstPaintLoggedRef.current && alive) {
+          firstPaintLoggedRef.current = true;
+          markScreenFirstPainted(CHURCH_MEMBERS_SCREEN);
+          logChurchFeatureFirstPaint(
+            CHURCH_MEMBERS_SCREEN,
+            cacheHydratedRef.current,
+            members.length + requests.length
+          );
+        }
+
+        if (
+          shouldSkipFocusRefresh(CHURCH_MEMBERS_SCREEN, CHURCH_TAB_REFRESH_MS) ||
+          shouldSkipChurchFeatureRefresh(CHURCH_MEMBERS_SCREEN, churchId, userId)
+        ) {
+          return;
+        }
+
+        void load({ silent: true });
+      })();
+
+      return () => {
+        alive = false;
+      };
+    }, [churchId, userId, applyMembersCache, load, members.length, requests.length])
+  );
 
   useFocusedPolling(
     "ChurchMembers",
     async () => {
-      console.log("[ChurchTab] silent refresh");
-      await load(true);
+      await load({ silent: true });
     },
-    2500,
-    Boolean(session?.churchId)
+    CHURCH_TAB_REFRESH_MS,
+    Boolean(churchId && userId)
   );
 
   async function act(id: string, action: "approve" | "reject") {
@@ -141,7 +257,7 @@ export default function ChurchMembersDirectory() {
       setBusyId(id);
       if (action === "approve") await approveRequest(id);
       else await rejectRequest(id);
-      await load(false);
+      await load({ force: true });
     } catch (e: any) {
       Alert.alert("Action failed", String(e?.message || e || "Try again"));
     } finally {
@@ -169,6 +285,12 @@ export default function ChurchMembersDirectory() {
     [members]
   );
   const visible = useMemo(() => (tab === "requests" ? requests : tab === "inactive" ? inactiveMembers : activeMembers), [tab, requests, activeMembers, inactiveMembers]);
+  const showSpinner =
+    loading &&
+    !shouldBlockVisibleLoading(
+      CHURCH_MEMBERS_SCREEN,
+      members.length > 0 || requests.length > 0
+    );
 
   return (
     <View style={[s.screen, { paddingTop: insets.top + 12 }]}>
@@ -182,7 +304,7 @@ export default function ChurchMembersDirectory() {
           <Text style={s.sub}>Requests, active members, and control</Text>
         </View>
 
-        <Pressable onPress={() => load(false)} style={s.refreshBtn}>
+        <Pressable onPress={() => load({ force: true })} style={s.refreshBtn}>
           <Ionicons name="refresh" size={19} color={GOLD} />
         </Pressable>
       </View>
@@ -304,7 +426,7 @@ export default function ChurchMembersDirectory() {
                     setInviteUserId("");
                     setInviteSentId(id);
                     setInviteSuccessOpen(true);
-                    await load(true);
+                    await load({ silent: true, force: true });
                   } catch (e: any) {
                     const rawMsg = String(e?.message || e || "Try again");
                     const cleanMsg =
@@ -408,7 +530,7 @@ export default function ChurchMembersDirectory() {
         </View>
       </Modal>
 
-      {loading ? (
+      {showSpinner ? (
         <View style={s.center}>
           <ActivityIndicator />
           <Text style={s.muted}>Loading...</Text>
@@ -417,7 +539,9 @@ export default function ChurchMembersDirectory() {
         <ScrollView
           contentContainerStyle={s.content}
           showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={loading} onRefresh={() => load(false)} />}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={() => load({ force: true })} />
+          }
         >
           {visible.length === 0 ? (
             <View style={s.emptyCard}>
@@ -490,7 +614,7 @@ export default function ChurchMembersDirectory() {
                                       userId: rawUserId,
                                       membershipId,
                                     });
-                                    await load(false);
+                                    await load({ force: true });
                                   } catch (e: any) {
                                     Alert.alert(
                                       "Remove failed",

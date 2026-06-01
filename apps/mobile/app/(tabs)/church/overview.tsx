@@ -41,6 +41,24 @@ import {
   shouldAllowScreenRefresh,
 } from "@/src/lib/kristoTraffic";
 import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
+import {
+  getCachedChurchMediaAccess,
+  seedChurchMediaAccessFromSession,
+} from "@/src/lib/refreshCoordinator";
+import {
+  CHURCH_TAB_REFRESH_MS,
+  logChurchFeatureBackgroundRefresh,
+  logChurchFeatureFirstPaint,
+  markChurchFeatureRefreshDone,
+  shouldSkipChurchFeatureRefresh,
+} from "@/src/lib/churchTabPreload";
+import {
+  markScreenFirstPainted,
+  shouldBlockVisibleLoading,
+  shouldSkipFocusRefresh,
+} from "@/src/lib/screenOpenState";
+
+const CHURCH_OVERVIEW_SCREEN = "ChurchOverview";
 import { ChurchPremiumSubscriptionModal, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
@@ -168,6 +186,14 @@ function profileFromCache(churchId: string, cached: Awaited<ReturnType<typeof lo
     avatarUri: avatarUri ? mediaUrl(avatarUri) : "",
     avatarUpdatedAt: cached.avatarUpdatedAt,
   };
+}
+
+function overviewStatsSignature(stats: OverviewStats) {
+  return `${stats.activeMembers}|${stats.ministries}|${stats.ministryMembers}|${stats.unreadNotifications}|${stats.offeringBalance}`;
+}
+
+function overviewProfileSignature(profile: ChurchProfile) {
+  return `${profile.id}|${profile.name}|${profile.address}|${profile.phone}|${profile.pastorName}|${profile.avatarUri}|${profile.avatarUpdatedAt || 0}`;
 }
 
 function applyOverviewCachePayload(
@@ -313,8 +339,27 @@ export default function ChurchOverviewScreen() {
   const [mediaTargetsLoading, setMediaTargetsLoading] = useState(false);
   const [mediaTargetsSaved, setMediaTargetsSaved] = useState(false);
   const [mediaPickerMode, setMediaPickerMode] = useState<"manage" | "studio">("studio");
-  const [canAccessChurchMedia, setCanAccessChurchMedia] = useState(false);
-  const [isActualChurchPastor, setIsActualChurchPastor] = useState(false);
+  const initialMediaAccess =
+    getCachedChurchMediaAccess() ||
+    seedChurchMediaAccessFromSession({
+      userId: effectiveAuthUserId,
+      role: session?.role,
+      churchRole: session?.churchRole,
+    });
+  const [canAccessChurchMedia, setCanAccessChurchMedia] = useState(
+    Boolean(initialMediaAccess?.canAccessChurchMedia)
+  );
+  const [isActualChurchPastor, setIsActualChurchPastor] = useState(
+    Boolean(initialMediaAccess?.isActualChurchPastor)
+  );
+  const statsSigRef = useRef(
+    initialOverview ? overviewStatsSignature(initialOverview.stats) : ""
+  );
+  const profileSigRef = useRef(
+    initialOverview ? overviewProfileSignature(initialOverview.profile) : ""
+  );
+  const firstPaintLoggedRef = useRef(false);
+  const broadcastGateSigRef = useRef("");
   const [acceptingInvite, setAcceptingInvite] = useState(false);
   const [previewChecked, setPreviewChecked] = useState(!invitePreview);
   const [previewCount, setPreviewCount] = useState(0);
@@ -452,8 +497,16 @@ export default function ChurchOverviewScreen() {
       if (!alive || !cached) return;
       hasOverviewCacheRef.current = true;
       const next = applyOverviewCachePayload(cached, mediaUrl);
-      setProfile(next.profile);
-      setStats(next.stats);
+      const pSig = overviewProfileSignature(next.profile);
+      const sSig = overviewStatsSignature(next.stats);
+      if (pSig !== profileSigRef.current) {
+        profileSigRef.current = pSig;
+        setProfile(next.profile);
+      }
+      if (sSig !== statsSigRef.current) {
+        statsSigRef.current = sSig;
+        setStats(next.stats);
+      }
       setBootLoading(false);
       if (__DEV__) {
         console.log("KRISTO_CHURCH_OVERVIEW_CACHE_HIT", {
@@ -471,8 +524,27 @@ export default function ChurchOverviewScreen() {
 
   async function load(opts?: { silent?: boolean; manual?: boolean }) {
     const silent = !!opts?.silent;
-    if (silent) setRefreshing(true);
-    else if (!hasOverviewCacheRef.current) setBootLoading(true);
+    const force = !!opts?.manual;
+    if (
+      silent &&
+      !force &&
+      churchId &&
+      effectiveAuthUserId &&
+      (shouldSkipChurchFeatureRefresh(CHURCH_OVERVIEW_SCREEN, churchId, effectiveAuthUserId) ||
+        shouldSkipFocusRefresh(CHURCH_OVERVIEW_SCREEN, CHURCH_TAB_REFRESH_MS))
+    ) {
+      return;
+    }
+
+    if (silent) {
+      setRefreshing(true);
+      logChurchFeatureBackgroundRefresh(CHURCH_OVERVIEW_SCREEN, force ? "manual" : "silent-refresh");
+    } else if (
+      !hasOverviewCacheRef.current &&
+      !shouldBlockVisibleLoading(CHURCH_OVERVIEW_SCREEN, hasOverviewCacheRef.current)
+    ) {
+      setBootLoading(true);
+    }
 
     setErr(null);
 
@@ -484,8 +556,16 @@ export default function ChurchOverviewScreen() {
       if (cached) {
         hasOverviewCacheRef.current = true;
         const fromCache = applyOverviewCachePayload(cached, mediaUrl);
-        setProfile(fromCache.profile);
-        setStats(fromCache.stats);
+        const pSig = overviewProfileSignature(fromCache.profile);
+        const sSig = overviewStatsSignature(fromCache.stats);
+        if (pSig !== profileSigRef.current) {
+          profileSigRef.current = pSig;
+          setProfile(fromCache.profile);
+        }
+        if (sSig !== statsSigRef.current) {
+          statsSigRef.current = sSig;
+          setStats(fromCache.stats);
+        }
         if (!silent) setBootLoading(false);
         if (__DEV__) {
           console.log("KRISTO_CHURCH_OVERVIEW_CACHE_HIT", {
@@ -498,7 +578,11 @@ export default function ChurchOverviewScreen() {
         const legacy = await loadChurchProfileCache(churchId);
         const fromLegacy = profileFromCache(churchId, legacy);
         if (fromLegacy) {
-          setProfile(fromLegacy);
+          const pSig = overviewProfileSignature(fromLegacy);
+          if (pSig !== profileSigRef.current) {
+            profileSigRef.current = pSig;
+            setProfile(fromLegacy);
+          }
           if (!silent) setBootLoading(false);
         }
       }
@@ -562,7 +646,7 @@ export default function ChurchOverviewScreen() {
             ? Date.now()
             : cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt;
 
-      setProfile({
+      const nextProfile: ChurchProfile = {
         id: String(p?.id || churchId || ""),
         name: String(p?.name || churchId || "Church"),
         address: String(p?.address || ""),
@@ -570,7 +654,12 @@ export default function ChurchOverviewScreen() {
         pastorName: String(p?.pastorName || ""),
         avatarUri: nextAvatar,
         avatarUpdatedAt: nextAvatarUpdatedAt,
-      });
+      };
+      const pSig = overviewProfileSignature(nextProfile);
+      if (pSig !== profileSigRef.current) {
+        profileSigRef.current = pSig;
+        setProfile(nextProfile);
+      }
 
       const nextStats = {
         activeMembers: Number(s?.activeMembers || 0),
@@ -579,7 +668,11 @@ export default function ChurchOverviewScreen() {
         unreadNotifications: Number(s?.unreadNotifications || 0),
         offeringBalance: Number(s?.offeringBalance || 0),
       };
-      setStats(nextStats);
+      const sSig = overviewStatsSignature(nextStats);
+      if (sSig !== statsSigRef.current) {
+        statsSigRef.current = sSig;
+        setStats(nextStats);
+      }
 
       try {
         const hostsRes: any = await apiGet("/api/church/media-hosts", {
@@ -654,8 +747,8 @@ export default function ChurchOverviewScreen() {
     } finally {
       setBootLoading(false);
       setRefreshing(false);
-      if (__DEV__ && silent) {
-        console.log("KRISTO_CHURCH_OVERVIEW_SILENT_REFRESH", { churchId, userId: effectiveAuthUserId });
+      if (churchId && effectiveAuthUserId) {
+        markChurchFeatureRefreshDone(CHURCH_OVERVIEW_SCREEN, churchId, effectiveAuthUserId);
       }
     }
   }
@@ -764,10 +857,31 @@ export default function ChurchOverviewScreen() {
       setErr(null);
       return;
     }
+    if (!firstPaintLoggedRef.current) {
+      firstPaintLoggedRef.current = true;
+      markScreenFirstPainted(CHURCH_OVERVIEW_SCREEN);
+      logChurchFeatureFirstPaint(
+        CHURCH_OVERVIEW_SCREEN,
+        hasOverviewCacheRef.current,
+        stats.activeMembers + stats.ministries
+      );
+    }
     if (isSaveCooldown(`church-profile:${churchId}`)) return;
-    if (!shouldAllowScreenRefresh("ChurchOverview", { forceKey: refreshAt, minMs: 60000 })) return;
-    load({ silent: true });
-  }, [isFocused, refreshAt, invitePreview, previewChecked, previewLimitReached, churchId]);
+    const force = Boolean(refreshAt);
+    if (
+      !force &&
+      churchId &&
+      effectiveAuthUserId &&
+      (shouldSkipChurchFeatureRefresh(CHURCH_OVERVIEW_SCREEN, churchId, effectiveAuthUserId) ||
+        shouldSkipFocusRefresh(CHURCH_OVERVIEW_SCREEN, CHURCH_TAB_REFRESH_MS))
+    ) {
+      return;
+    }
+    if (!force && !shouldAllowScreenRefresh("ChurchOverview", { forceKey: refreshAt, minMs: CHURCH_TAB_REFRESH_MS })) {
+      return;
+    }
+    load({ silent: true, manual: force });
+  }, [isFocused, refreshAt, invitePreview, previewChecked, previewLimitReached, churchId, effectiveAuthUserId]);
 
   useEffect(() => {
     return onChurchProfileUpdated((payload) => {
@@ -810,7 +924,7 @@ export default function ChurchOverviewScreen() {
   const showMediaControlCard = canOpenMediaStudio || canManageMinistryMediaAccess;
   const showMemberChurchAccessCard = !invitePreview && isMember && !showMediaControlCard;
 
-  console.log("KRISTO_BROADCAST_GATE", {
+  const broadcastGateSig = [
     role,
     isPastor,
     isPastorSession,
@@ -819,7 +933,22 @@ export default function ChurchOverviewScreen() {
     canManageMinistryMediaAccess,
     canOpenMediaStudio,
     showMediaControlCard,
-  });
+  ].join("|");
+  if (broadcastGateSig !== broadcastGateSigRef.current) {
+    broadcastGateSigRef.current = broadcastGateSig;
+    if (__DEV__) {
+      console.log("KRISTO_BROADCAST_GATE", {
+        role,
+        isPastor,
+        isPastorSession,
+        isActualChurchPastor,
+        canAccessChurchMedia,
+        canManageMinistryMediaAccess,
+        canOpenMediaStudio,
+        showMediaControlCard,
+      });
+    }
+  }
 
   function ministryInitial(name?: string) {
     return String(name || "M").trim().charAt(0).toUpperCase() || "M";
@@ -1088,7 +1217,8 @@ export default function ChurchOverviewScreen() {
         </View>
       )}
 
-      {bootLoading || (invitePreview && !previewChecked) ? (
+      {(bootLoading && !shouldBlockVisibleLoading(CHURCH_OVERVIEW_SCREEN, hasOverviewCacheRef.current)) ||
+      (invitePreview && !previewChecked) ? (
         <ChurchOverviewSkeleton />
       ) : invitePreview && previewLimitReached ? (
         <View style={s.errorCard}>

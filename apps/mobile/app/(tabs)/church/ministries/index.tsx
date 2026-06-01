@@ -1,14 +1,36 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { ChurchPremiumSubscriptionModal, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+import {
+  getMinistriesCache,
+  isScreenCacheFresh,
+  peekMinistriesCache,
+  saveMinistriesCache,
+} from "@/src/lib/screenDataCache";
+import { refreshMinistriesBundleIfNeeded, seedMinistriesRefreshFromCache } from "@/src/lib/churchResourceRefresh";
+import {
+  CHURCH_TAB_REFRESH_MS,
+  logChurchFeatureBackgroundRefresh,
+  logChurchFeatureFirstPaint,
+  markChurchFeatureRefreshDone,
+  shouldSkipChurchFeatureRefresh,
+} from "@/src/lib/churchTabPreload";
+import {
+  hasScreenFirstPainted,
+  markScreenBackgroundRefresh,
+  markScreenFirstPainted,
+  shouldBlockVisibleLoading,
+  shouldSkipFocusRefresh,
+} from "@/src/lib/screenOpenState";
+
+const CHURCH_MINISTRIES_SCREEN = "ChurchMinistries";
 
 type MinistryStatus = "Active" | "Paused";
 type Ministry = {
@@ -29,11 +51,14 @@ const PAD = 16;
 const VIP_BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.95)";
 
-async function apiListMinistries() {
-  const res = await apiGet<any>("/api/church/ministries", { headers: getKristoHeaders() });
-  if (!res) throw new Error("Network error");
-  if (!res.ok) throw new Error(res.error || "Fetch failed");
-  return (res.data || []) as Ministry[];
+function ministriesSignature(rows: Ministry[]) {
+  return rows
+    .map(
+      (m) =>
+        `${m.id}|${m.name}|${m.status}|${Number(m.mediaAccess)}|${m.leaderCount ?? 0}|${m.memberCount ?? 0}`
+    )
+    .sort()
+    .join("\n");
 }
 
 export default function MoreMinistriesList() {
@@ -41,15 +66,32 @@ export default function MoreMinistriesList() {
   const insets = useSafeAreaInsets();
   const { session } = useKristoSession();
 
-  const [items, setItems] = useState<Ministry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
-    isSubscriptionBypassEnabled() ? true : null
-  );
-  const [premiumModalOpen, setPremiumModalOpen] = useState(false);
-
   const churchId = String(session?.churchId || (session as any)?.activeChurchId || "").trim();
+  const userId = String(session?.userId || "").trim();
+  const ministriesCachePeek = useMemo(
+    () => (churchId && userId ? peekMinistriesCache(churchId, userId) : null),
+    [churchId, userId]
+  );
+
+  const [items, setItems] = useState<Ministry[]>(
+    (ministriesCachePeek?.items as Ministry[]) || []
+  );
+  const [loading, setLoading] = useState(!Boolean(ministriesCachePeek?.items?.length));
+  const [err, setErr] = useState<string | null>(null);
+  const itemsSigRef = useRef(
+    ministriesCachePeek?.items?.length
+      ? ministriesSignature((ministriesCachePeek.items || []) as Ministry[])
+      : ""
+  );
+  const cacheFreshRef = useRef(
+    Boolean(
+      ministriesCachePeek &&
+        isScreenCacheFresh(ministriesCachePeek.updatedAt, CHURCH_TAB_REFRESH_MS)
+    )
+  );
+  const firstPaintLoggedRef = useRef(false);
+  const cacheHydratedRef = useRef(Boolean(ministriesCachePeek?.items?.length));
+
   const role = String(session?.role || (session as any)?.churchRole || "Member");
   const canCreateMinistry =
     /\bPastor\b/i.test(role) ||
@@ -59,63 +101,165 @@ export default function MoreMinistriesList() {
     role === "System_Admin";
   const canManageSubscriptions =
     /\bPastor\b/i.test(role) || role === "Church_Admin" || role === "System_Admin";
+  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
+    isSubscriptionBypassEnabled() ? true : null
+  );
+  const [premiumModalOpen, setPremiumModalOpen] = useState(false);
   const createMinistryLocked = canCreateMinistry && isMinistryCreationBlocked(churchSubscriptionActive);
 
-  async function load() {
-    setErr(null);
-    setLoading(true);
-    try {
-      const data = await apiListMinistries();
-
-      const withCounts = await Promise.all(
-        data.map(async (m) => {
-          try {
-            const r = await apiGet<any>(
-              `/api/church/ministry-members?ministryId=${encodeURIComponent(m.id)}&all=1`,
-              { headers: getKristoHeaders() }
-            );
-
-            const rawRows = Array.isArray(r?.data) ? r.data : Array.isArray(r?.items) ? r.items : [];
-            const rows = rawRows.filter((x: any) => {
-              const rowMinistryId = String(
-                x?.ministryId ||
-                x?.ministry?.id ||
-                x?.ministry_id ||
-                x?.idMinistry ||
-                ""
-              );
-              return rowMinistryId ? rowMinistryId === String(m.id) : false;
-            });
-
-            const leaders = rows.filter((x: any) =>
-              String(x?.role || x?.ministryRole || "").toLowerCase().includes("leader")
-            ).length;
-            const members = rows.length;
-
-            return { ...m, leaderCount: leaders, memberCount: members };
-          } catch {
-            return m;
-          }
-        })
-      );
-
-      setItems(withCounts);
-    } catch (e: any) {
-      const msg = String(e?.message ?? e ?? "Error");
-      if (msg.toLowerCase().includes("no active church membership")) {
-        setItems([]);
-        setErr(null);
-      } else {
-        setErr(msg);
-      }
-    } finally {
+  const applyMinistriesCache = useCallback((cachedItems: Ministry[]) => {
+    const sig = ministriesSignature(cachedItems);
+    if (sig !== itemsSigRef.current) {
+      itemsSigRef.current = sig;
+      setItems(cachedItems);
+    }
+    cacheHydratedRef.current = true;
+    if (shouldBlockVisibleLoading(CHURCH_MINISTRIES_SCREEN, cachedItems.length > 0)) {
       setLoading(false);
     }
+  }, []);
+
+  if (!cacheHydratedRef.current && ministriesCachePeek?.items?.length) {
+    cacheHydratedRef.current = true;
+    seedMinistriesRefreshFromCache({
+      churchId: ministriesCachePeek.churchId,
+      userId: ministriesCachePeek.userId,
+      items: ministriesCachePeek.items,
+      updatedAt: ministriesCachePeek.updatedAt,
+    });
+    markScreenBackgroundRefresh(CHURCH_MINISTRIES_SCREEN);
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  const load = useCallback(
+    async (opts?: { force?: boolean }) => {
+      const force = !!opts?.force;
+      if (!churchId || !userId) return;
+
+      if (
+        !force &&
+        (shouldSkipChurchFeatureRefresh(CHURCH_MINISTRIES_SCREEN, churchId, userId) ||
+          shouldSkipFocusRefresh(CHURCH_MINISTRIES_SCREEN, CHURCH_TAB_REFRESH_MS))
+      ) {
+        return;
+      }
+
+      const hasVisible = items.length > 0;
+      if (!force && shouldBlockVisibleLoading(CHURCH_MINISTRIES_SCREEN, hasVisible)) {
+        // keep cards visible
+      } else if (!hasVisible) {
+        setLoading(true);
+      }
+
+      setErr(null);
+      logChurchFeatureBackgroundRefresh(CHURCH_MINISTRIES_SCREEN, force ? "manual" : "silent-refresh");
+
+      try {
+        const bundle = await refreshMinistriesBundleIfNeeded({
+          churchId,
+          userId,
+          headers: getKristoHeaders() as Record<string, string>,
+          isChurchAuthority: true,
+          force,
+          cacheFresh: !force && cacheFreshRef.current,
+          source: force ? "church-ministries-manual" : "church-ministries-screen",
+        });
+
+        if (bundle.skipped && itemsSigRef.current) return;
+
+        const data = bundle.ministries as Ministry[];
+        const withCounts = data.map((m) => {
+          const rows = bundle.membersByMinistryId[String(m.id || "")] || [];
+          const leaders = rows.filter((x: any) =>
+            String(x?.role || x?.ministryRole || "").toLowerCase().includes("leader")
+          ).length;
+          return { ...m, leaderCount: leaders, memberCount: rows.length };
+        });
+
+        const sig = ministriesSignature(withCounts);
+        if (sig !== itemsSigRef.current) {
+          itemsSigRef.current = sig;
+          setItems(withCounts);
+        }
+
+        cacheFreshRef.current = true;
+        await saveMinistriesCache({
+          churchId,
+          userId,
+          items: withCounts as Record<string, unknown>[],
+          churchLiveControlStatus: bundle.liveControlStatus,
+          updatedAt: Date.now(),
+        });
+        seedMinistriesRefreshFromCache({
+          churchId,
+          userId,
+          items: withCounts,
+          churchLiveControlStatus: bundle.liveControlStatus,
+          updatedAt: Date.now(),
+          membersByMinistryId: bundle.membersByMinistryId,
+        });
+        markScreenBackgroundRefresh(CHURCH_MINISTRIES_SCREEN);
+        markChurchFeatureRefreshDone(CHURCH_MINISTRIES_SCREEN, churchId, userId);
+      } catch (e: any) {
+        const msg = String(e?.message ?? e ?? "Error");
+        if (msg.toLowerCase().includes("no active church membership")) {
+          if (!items.length) setItems([]);
+          setErr(null);
+        } else {
+          setErr(msg);
+        }
+      } finally {
+        setLoading(false);
+      }
+    },
+    [churchId, userId, items.length]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+
+      (async () => {
+        if (churchId && userId && !cacheHydratedRef.current) {
+          const disk = await getMinistriesCache(churchId, userId);
+          if (disk?.items?.length && alive) {
+            applyMinistriesCache((disk.items || []) as Ministry[]);
+            cacheFreshRef.current = isScreenCacheFresh(disk.updatedAt, CHURCH_TAB_REFRESH_MS);
+            seedMinistriesRefreshFromCache({
+              churchId: disk.churchId,
+              userId: disk.userId,
+              items: disk.items,
+              churchLiveControlStatus: disk.churchLiveControlStatus,
+              updatedAt: disk.updatedAt,
+            });
+          }
+        }
+
+        if (!firstPaintLoggedRef.current && alive) {
+          firstPaintLoggedRef.current = true;
+          markScreenFirstPainted(CHURCH_MINISTRIES_SCREEN);
+          logChurchFeatureFirstPaint(
+            CHURCH_MINISTRIES_SCREEN,
+            cacheHydratedRef.current,
+            items.length
+          );
+        }
+
+        if (
+          cacheFreshRef.current ||
+          shouldSkipFocusRefresh(CHURCH_MINISTRIES_SCREEN, CHURCH_TAB_REFRESH_MS) ||
+          shouldSkipChurchFeatureRefresh(CHURCH_MINISTRIES_SCREEN, churchId, userId)
+        ) {
+          return;
+        }
+
+        void load({ force: false });
+      })();
+
+      return () => {
+        alive = false;
+      };
+    }, [churchId, userId, applyMinistriesCache, load, items.length])
+  );
 
   useEffect(() => {
     if (!churchId || isSubscriptionBypassEnabled()) {
@@ -157,6 +301,7 @@ export default function MoreMinistriesList() {
   }
 
   const hasItems = useMemo(() => items.length > 0, [items]);
+  const showSpinner = loading && !shouldBlockVisibleLoading(CHURCH_MINISTRIES_SCREEN, hasItems);
 
   return (
     <View style={[s.screen, { paddingTop: insets.top }]}>
@@ -169,7 +314,7 @@ export default function MoreMinistriesList() {
           <Text style={s.navSub}>Manage ministry rooms, leaders, members, and media access.</Text>
         </View>
 
-        <Pressable onPress={load} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.85 }]}>
+        <Pressable onPress={() => load({ force: true })} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.85 }]}>
           <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.85)" />
         </Pressable>
         {canCreateMinistry ? (
@@ -190,7 +335,7 @@ export default function MoreMinistriesList() {
         ) : null}
       </View>
 
-      {loading ? (
+      {showSpinner ? (
         <View style={s.center}>
           <ActivityIndicator />
           <Text style={s.muted}>Loading…</Text>
@@ -199,7 +344,7 @@ export default function MoreMinistriesList() {
         <View style={s.card}>
           <Text style={s.errTitle}>Error</Text>
           <Text style={s.errText}>{err}</Text>
-          <Pressable onPress={load} style={({ pressed }) => [s.btnGhost, pressed && { opacity: 0.9 }]}>
+          <Pressable onPress={() => load({ force: true })} style={({ pressed }) => [s.btnGhost, pressed && { opacity: 0.9 }]}>
             <Text style={s.btnGhostText}>Retry</Text>
           </Pressable>
         </View>
