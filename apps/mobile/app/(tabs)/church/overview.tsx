@@ -359,7 +359,15 @@ export default function ChurchOverviewScreen() {
     initialOverview ? overviewProfileSignature(initialOverview.profile) : ""
   );
   const firstPaintLoggedRef = useRef(false);
-  const broadcastGateSigRef = useRef("");
+  const broadcastGateStateRef = useRef<{
+    role: string;
+    isPastor: boolean;
+    isActualChurchPastor: boolean;
+    canAccessChurchMedia: boolean;
+    canManageMinistryMediaAccess: boolean;
+    canOpenMediaStudio: boolean;
+    showMediaControlCard: boolean;
+  } | null>(null);
   const [acceptingInvite, setAcceptingInvite] = useState(false);
   const [previewChecked, setPreviewChecked] = useState(!invitePreview);
   const [previewCount, setPreviewCount] = useState(0);
@@ -924,31 +932,42 @@ export default function ChurchOverviewScreen() {
   const showMediaControlCard = canOpenMediaStudio || canManageMinistryMediaAccess;
   const showMemberChurchAccessCard = !invitePreview && isMember && !showMediaControlCard;
 
-  const broadcastGateSig = [
+  useEffect(() => {
+    const next = {
+      role,
+      isPastor,
+      isActualChurchPastor,
+      canAccessChurchMedia,
+      canManageMinistryMediaAccess,
+      canOpenMediaStudio,
+      showMediaControlCard,
+    };
+    const prev = broadcastGateStateRef.current;
+    if (
+      prev &&
+      prev.role === next.role &&
+      prev.isPastor === next.isPastor &&
+      prev.isActualChurchPastor === next.isActualChurchPastor &&
+      prev.canAccessChurchMedia === next.canAccessChurchMedia &&
+      prev.canManageMinistryMediaAccess === next.canManageMinistryMediaAccess &&
+      prev.canOpenMediaStudio === next.canOpenMediaStudio &&
+      prev.showMediaControlCard === next.showMediaControlCard
+    ) {
+      return;
+    }
+    broadcastGateStateRef.current = next;
+    if (__DEV__) {
+      console.log("KRISTO_BROADCAST_GATE", next);
+    }
+  }, [
     role,
     isPastor,
-    isPastorSession,
     isActualChurchPastor,
     canAccessChurchMedia,
     canManageMinistryMediaAccess,
     canOpenMediaStudio,
     showMediaControlCard,
-  ].join("|");
-  if (broadcastGateSig !== broadcastGateSigRef.current) {
-    broadcastGateSigRef.current = broadcastGateSig;
-    if (__DEV__) {
-      console.log("KRISTO_BROADCAST_GATE", {
-        role,
-        isPastor,
-        isPastorSession,
-        isActualChurchPastor,
-        canAccessChurchMedia,
-        canManageMinistryMediaAccess,
-        canOpenMediaStudio,
-        showMediaControlCard,
-      });
-    }
-  }
+  ]);
 
   function ministryInitial(name?: string) {
     return String(name || "M").trim().charAt(0).toUpperCase() || "M";
