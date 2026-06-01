@@ -15,7 +15,11 @@
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "https://kristo-app.vercel.app",
+        "EXPO_PUBLIC_WEB_BASE": "https://kristo-app.vercel.app"
+      }
     }
   },
   "submit": {
