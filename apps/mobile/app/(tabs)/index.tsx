@@ -50,6 +50,7 @@ import {
   clearHomeFeedRuntimeCaches,
   clearHomeFeedPostsOnly,
   isLocalMediaVideoPost,
+  isOptimisticVideoUploadPost,
   isStandaloneAvatarFeedPost,
   isRealHomeFeedRow,
   isMediaScheduleFeedItem as isHomeMediaScheduleItem,
@@ -72,6 +73,10 @@ import {
   syncHomeFeedVideoOwnership,
   unregisterHomeFeedVideo,
 } from "@/src/lib/homeFeedVideoController";
+import {
+  cancelOptimisticVideoUpload,
+  retryOptimisticVideoUpload,
+} from "@/src/lib/optimisticVideoUpload";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const BODY_PREVIEW_CHARS = 140;
@@ -161,12 +166,16 @@ function mediaUrl(u: any) {
 const feedVideoPosterCache = new Map<string, string>();
 
 function feedVideoPlayUri(item: any) {
+  const localVideo = String(item?.localVideoUri || "").trim();
+  if (localVideo.startsWith("file://")) return localVideo;
+
   const raw = String(item?.videoUrl || item?.mediaUri || "").trim();
   if (!raw || raw.startsWith("file://")) return "";
   return mediaUrl(raw);
 }
 
 function isStrictVideoFeedItem(item: any) {
+  if (isOptimisticVideoUploadPost(item)) return true;
   return item?.mediaType === "video" && Boolean(feedVideoPlayUri(item));
 }
 
@@ -228,7 +237,15 @@ function formatFeedVideoTime(seconds: number) {
 }
 
 function resolveFeedVideoPoster(item: any): string {
-  if (item?.mediaType !== "video") return "";
+  if (item?.mediaType !== "video" && !isOptimisticVideoUploadPost(item)) return "";
+
+  const localPoster = String(item?.localPosterUri || "").trim();
+  if (localPoster) {
+    if (localPoster.startsWith("file://") || /^https?:\/\//i.test(localPoster)) {
+      return localPoster;
+    }
+    return mediaUrl(localPoster);
+  }
 
   const videoUri = feedVideoPlayUri(item);
   const cached = videoUri ? feedVideoPosterCache.get(videoUri) : "";
@@ -531,6 +548,18 @@ const FeedSmartImage = memo(function FeedSmartImage({
 });
 
 function normalizeFeedItemMedia(item: any) {
+  if (isOptimisticVideoUploadPost(item)) {
+    const localVideo = String(item?.localVideoUri || "").trim();
+    const localPoster = String(item?.localPosterUri || item?.posterUri || "").trim();
+    return {
+      ...item,
+      mediaType: "video",
+      localVideoUri: localVideo || item?.localVideoUri,
+      localPosterUri: localPoster || item?.localPosterUri,
+      posterUri: localPoster || item?.posterUri,
+    };
+  }
+
   if (item?.mediaType === "video" || item?.mediaType === "image" || item?.mediaType === "none") {
     return item;
   }
@@ -725,7 +754,6 @@ const FEED_VIDEO_CENTER_BTN_SIZE = 80;
 const FEED_VIDEO_CENTER_ICON_PLAY = 38;
 const FEED_VIDEO_CENTER_ICON_PAUSE = 36;
 const FEED_VIDEO_HEART_SIZE = 86;
-const FEED_VIDEO_BRANDED_PLACEHOLDER_DELAY_MS = 1000;
 const FEED_VIDEO_EARLY_ACTIVE_VISIBLE_PCT = 40;
 const FEED_VIDEO_EARLY_ACTIVE_MIN_VIEW_MS = 40;
 const FEED_VIDEO_EARLY_ACTIVATE_THROTTLE_MS = 120;
@@ -765,25 +793,77 @@ function FeedVideoOwnerBackdrop({ avatarUri }: { avatarUri?: string }) {
   );
 }
 
+function FeedVideoUploadOverlay({
+  item,
+}: {
+  item: any;
+}) {
+  const status = String(item?.uploadStatus || "uploading");
+  const progress = Math.max(0, Math.min(100, Number(item?.uploadProgress || 0)));
+  const tempPostId = String(item?.id || "");
+  const label =
+    status === "processing"
+      ? "Processing video..."
+      : status === "failed"
+        ? "Upload failed"
+        : "Uploading...";
+
+  return (
+    <View pointerEvents="box-none" style={s.feedVideoUploadOverlay}>
+      <LinearGradient
+        colors={["rgba(0,0,0,0)", "rgba(0,0,0,0.35)", "rgba(0,0,0,0.72)"]}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View style={s.feedVideoUploadCard}>
+        <View style={s.feedVideoUploadProgressTrack}>
+          <View style={[s.feedVideoUploadProgressFill, { width: `${progress}%` }]} />
+        </View>
+        <Text style={s.feedVideoUploadLabel}>
+          {label}
+          {status === "uploading" ? ` ${progress}%` : ""}
+        </Text>
+        {status === "failed" ? (
+          <View style={s.feedVideoUploadActions}>
+            <Pressable
+              onPress={() => retryOptimisticVideoUpload(tempPostId)}
+              style={({ pressed }) => [s.feedVideoUploadBtn, pressed ? { opacity: 0.82 } : null]}
+            >
+              <Text style={s.feedVideoUploadBtnText}>Retry</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => cancelOptimisticVideoUpload(tempPostId)}
+              style={({ pressed }) => [s.feedVideoUploadBtnGhost, pressed ? { opacity: 0.82 } : null]}
+            >
+              <Text style={s.feedVideoUploadBtnGhostText}>Remove</Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 function FeedVideoBrandedPlaceholder({
   title,
   avatarUri,
   initial,
+  loading = false,
 }: {
   title: string;
   avatarUri?: string;
   initial: string;
+  loading?: boolean;
 }) {
   return (
     <View style={StyleSheet.absoluteFillObject}>
       <LinearGradient
-        colors={["#1a1428", "#0f1729", "#15120a"]}
+        colors={["#2a2210", "#15120a", "#0f1729"]}
         locations={[0, 0.55, 1]}
         style={StyleSheet.absoluteFillObject}
       />
       <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFillObject} />
       <LinearGradient
-        colors={["rgba(247,211,106,0.10)", "transparent", "rgba(247,211,106,0.06)"]}
+        colors={["rgba(247,211,106,0.18)", "transparent", "rgba(247,211,106,0.10)"]}
         style={StyleSheet.absoluteFillObject}
       />
       <View
@@ -830,18 +910,22 @@ function FeedVideoBrandedPlaceholder({
             borderRadius: 32,
             backgroundColor: "rgba(0,0,0,0.32)",
             borderWidth: 1,
-            borderColor: "rgba(255,255,255,0.14)",
+            borderColor: "rgba(247,211,106,0.28)",
             alignItems: "center",
             justifyContent: "center",
             marginBottom: 14,
           }}
         >
-          <Ionicons
-            name="play"
-            size={30}
-            color="rgba(255,255,255,0.9)"
-            style={{ marginLeft: 3 }}
-          />
+          {loading ? (
+            <ActivityIndicator size="small" color="#F7D36A" />
+          ) : (
+            <Ionicons
+              name="play"
+              size={30}
+              color="rgba(255,255,255,0.9)"
+              style={{ marginLeft: 3 }}
+            />
+          )}
         </View>
         {title ? (
           <Text
@@ -931,31 +1015,15 @@ const FeedVideo = memo(function FeedVideo({
     "";
 
   const mountedAtRef = useRef(Date.now());
-  const warmedReadyRef = useRef(false);
   const warmupReadyLoggedRef = useRef(false);
-  const warmupReusedRef = useRef(false);
-  const warmupReusedLoggedRef = useRef(false);
   const warmupSurfaceReadyLoggedRef = useRef(false);
-  const [brandPlaceholderEligible, setBrandPlaceholderEligible] = useState(false);
   const posterOpacity = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     mountedAtRef.current = Date.now();
-    warmedReadyRef.current = false;
     warmupReadyLoggedRef.current = false;
-    warmupReusedRef.current = false;
-    warmupReusedLoggedRef.current = false;
     warmupSurfaceReadyLoggedRef.current = false;
-    setBrandPlaceholderEligible(false);
     posterOpacity.setValue(1);
-
-    const delayTimer = setTimeout(() => {
-      setBrandPlaceholderEligible(true);
-    }, FEED_VIDEO_BRANDED_PLACEHOLDER_DELAY_MS);
-
-    return () => {
-      clearTimeout(delayTimer);
-    };
   }, [uri, postId, poster, posterOpacity]);
 
   useEffect(() => {
@@ -972,7 +1040,6 @@ const FeedVideo = memo(function FeedVideo({
 
   useEffect(() => {
     if (!videoReady || shouldPlay) return;
-    warmedReadyRef.current = true;
     if (!__DEV__ || !isWarmupTarget) return;
     if (!warmupReadyLoggedRef.current) {
       warmupReadyLoggedRef.current = true;
@@ -992,13 +1059,7 @@ const FeedVideo = memo(function FeedVideo({
     }
   }, [videoReady, shouldPlay, isWarmupTarget, postId, uri, videoOriginId]);
 
-  const effectiveVideoReady =
-    videoReady ||
-    (shouldPlay && (warmedReadyRef.current || warmupReusedRef.current));
-
-  const shouldHidePosterNow =
-    shouldPlay &&
-    (videoReady || warmedReadyRef.current || warmupReusedRef.current);
+  const shouldHidePosterNow = shouldPlay && videoReady;
   const showingPoster = Boolean(poster) && !shouldHidePosterNow;
 
   useEffect(() => {
@@ -1007,19 +1068,10 @@ const FeedVideo = memo(function FeedVideo({
     posterOpacity.setValue(0);
   }, [showingPoster, poster, posterOpacity]);
 
-  const showBrandedPlaceholder =
-    shouldPlay && !poster && !effectiveVideoReady && brandPlaceholderEligible;
-  const showOwnerBackdrop =
-    shouldPlay && !poster && !effectiveVideoReady && !showBrandedPlaceholder;
+  const showBrandedPlaceholder = shouldPlay && !poster && !videoReady;
+  const showOwnerBackdrop = false;
 
-  const videoOpacity =
-    showBrandedPlaceholder
-      ? 0
-      : !shouldPlay
-        ? 0
-        : !poster && !effectiveVideoReady && shouldPlay
-          ? 0
-          : 1;
+  const videoOpacity = shouldPlay && videoReady ? 1 : 0;
 
   const forcePauseInactive = useCallback(() => {
     if (shouldPlayRef.current) return;
@@ -1044,8 +1096,6 @@ const FeedVideo = memo(function FeedVideo({
       postId,
       shouldPlay,
       videoReady,
-      warmedReady: warmedReadyRef.current,
-      warmupReused: warmupReusedRef.current,
       showingPoster,
     });
   }, [
@@ -1059,16 +1109,15 @@ const FeedVideo = memo(function FeedVideo({
   ]);
 
   useEffect(() => {
-    if (!__DEV__ || !effectiveVideoReady || !shouldPlay) return;
+    if (!__DEV__ || !videoReady || !shouldPlay) return;
     console.log("KRISTO_VIDEO_READY_TIMING", {
       postId,
       mountedMs: Date.now() - mountedAtRef.current,
       hasPoster: Boolean(poster),
-      videoReady: effectiveVideoReady,
+      videoReady,
       shouldPlay,
-      warmupReused: warmupReusedRef.current,
     });
-  }, [effectiveVideoReady, shouldPlay, postId, poster]);
+  }, [videoReady, shouldPlay, postId, poster]);
 
   const clearControlsHideTimer = useCallback(() => {
     if (controlsHideTimerRef.current) {
@@ -1226,25 +1275,6 @@ const FeedVideo = memo(function FeedVideo({
       return;
     }
 
-    if (warmedReadyRef.current) {
-      warmupReusedRef.current = true;
-      if (!warmupReusedLoggedRef.current) {
-        warmupReusedLoggedRef.current = true;
-        if (__DEV__) {
-          console.log("KRISTO_VIDEO_WARMUP_REUSED", {
-            postId,
-            originId: videoOriginId,
-          });
-          console.log("KRISTO_VIDEO_POSTER_HIDE_INSTANT", {
-            postId,
-            originId: videoOriginId,
-          });
-        }
-      }
-      posterOpacity.stopAnimation();
-      posterOpacity.setValue(0);
-    }
-
     if (userPausedRef.current) {
       forcePauseInactive();
       return;
@@ -1254,7 +1284,7 @@ const FeedVideo = memo(function FeedVideo({
       player.muted = false;
       player.play();
     } catch {}
-  }, [shouldPlay, player, uri, postId, forcePauseInactive, poster, posterOpacity, videoOriginId]);
+  }, [shouldPlay, player, uri, postId, forcePauseInactive, videoOriginId]);
 
   useEffect(() => {
     forcePauseInactive();
@@ -1268,7 +1298,7 @@ const FeedVideo = memo(function FeedVideo({
       feedOriginId: videoOriginId,
       shouldPlay: true,
       ...(playbackMetaRef.current as any),
-      reason: warmupReusedRef.current ? "mount-reused" : "mount-active",
+      reason: "mount-active",
     });
     return () => {
       if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
@@ -1298,8 +1328,8 @@ const FeedVideo = memo(function FeedVideo({
   }, [videoReady, poster, uri]);
 
   useEffect(() => {
-    onVideoReadyChange?.(shouldPlay && effectiveVideoReady);
-  }, [shouldPlay, effectiveVideoReady, onVideoReadyChange]);
+    onVideoReadyChange?.(shouldPlay && videoReady);
+  }, [shouldPlay, videoReady, onVideoReadyChange]);
 
   useEffect(() => {
     if (shouldPlay) return;
@@ -1407,6 +1437,8 @@ const FeedVideo = memo(function FeedVideo({
   }, [player, shouldPlay, scrubbing, postId]);
 
   const maxDuration = Math.max(duration, 0.01);
+  const mountVideoView =
+    (isWarmupTarget && !shouldPlay) || (shouldPlay && videoReady);
 
   return (
     <View style={s.media}>
@@ -1430,9 +1462,10 @@ const FeedVideo = memo(function FeedVideo({
           title={String(fallbackTitle || "").trim()}
           avatarUri={fallbackAvatarUri}
           initial={String(fallbackInitial || "K").trim().charAt(0).toUpperCase() || "K"}
+          loading
         />
       ) : null}
-      {shouldPlay || isWarmupTarget ? (
+      {mountVideoView ? (
         <VideoView
           player={player}
           style={[
@@ -1778,6 +1811,8 @@ const FeedSlide = memo(function FeedSlide({
   const actorAvatarUri = feedAvatar.uri;
   const isVideoFeedPost = isFeedVideoItem(item);
   const isStrictVideoPost = isStrictVideoFeedItem(item);
+  const isOptimisticUploadPost = isOptimisticVideoUploadPost(item);
+  const optimisticUploadStatus = String((item as any)?.uploadStatus || "");
   const isImageFeedPost =
     item.mediaType === "image" && Boolean(String(item.mediaUri || "").trim());
   const stableActive =
@@ -3305,7 +3340,12 @@ const noMediaPost =
 
           <Pressable onPress={openLiveRoom} style={s.liveNowPremiumPreview}>
             {isStrictVideoPost ? (
-              <View style={s.media}>{renderStrictVideoLayer()}</View>
+              <View style={s.media}>
+                {renderStrictVideoLayer()}
+                {isOptimisticUploadPost && optimisticUploadStatus !== "done" ? (
+                  <FeedVideoUploadOverlay item={item} />
+                ) : null}
+              </View>
             ) : item.mediaType === "image" && item.mediaUri ? (
               <Image
                 source={{ uri: item.mediaUri }}
@@ -3400,7 +3440,12 @@ const noMediaPost =
       ) : (
       <Pressable onPress={isLiveNow ? openLiveRoom : undefined} style={s.page}>
         {isStrictVideoPost ? (
-          <View style={s.media}>{renderStrictVideoLayer()}</View>
+          <View style={s.media}>
+            {renderStrictVideoLayer()}
+            {isOptimisticUploadPost && optimisticUploadStatus !== "done" ? (
+              <FeedVideoUploadOverlay item={item} />
+            ) : null}
+          </View>
         ) : item.mediaType === "image" && item.mediaUri ? (
           <FeedSmartImage
             uri={item.mediaUri}
@@ -4335,6 +4380,11 @@ export default function FeedScreen() {
   const tabFocused = useIsFocused();
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
   const feedScreenFocused = tabFocused && appActive;
+  const feedScreenFocusedRef = useRef(feedScreenFocused);
+
+  useEffect(() => {
+    feedScreenFocusedRef.current = feedScreenFocused;
+  }, [feedScreenFocused]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (nextState) => {
@@ -4581,6 +4631,13 @@ export default function FeedScreen() {
         });
 
         setBackendFeed(mapped);
+
+        const posterSeed = (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__;
+        const seedVideoUrl = String(posterSeed?.videoUrl || "").trim();
+        const seedPosterUri = String(posterSeed?.posterUri || "").trim();
+        if (seedVideoUrl && seedPosterUri) {
+          feedVideoPosterCache.set(seedVideoUrl, seedPosterUri);
+        }
       } catch (e) {
         console.log("KRISTO_BACKEND_FEED_ERROR", e);
       }
@@ -4596,6 +4653,7 @@ export default function FeedScreen() {
       (globalThis as any).clearHomeFeedPostsOnly = clearHomeFeedPostsOnly;
     }
     const t = setInterval(() => {
+      if (!feedScreenFocusedRef.current) return;
       if ((globalThis as any).__KRISTO_LIVE_ACTIVE__) return;
       void loadBackendFeed("poll");
     }, 15000);
@@ -4606,6 +4664,15 @@ export default function FeedScreen() {
     if (!feedScreenFocused) return;
     void loadBackendFeed("focus");
   }, [feedScreenFocused, loadBackendFeed]);
+
+  useEffect(() => {
+    (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__ = (reason = "force") => {
+      void loadBackendFeed(String(reason || "force"));
+    };
+    return () => {
+      delete (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__;
+    };
+  }, [loadBackendFeed]);
 
   useEffect(() => {
     let alive = true;
@@ -4635,6 +4702,10 @@ export default function FeedScreen() {
     );
 
     const localFeed: any[] = feedList().filter((item: any) => {
+      if (isOptimisticVideoUploadPost(item)) {
+        return true;
+      }
+
       // V1 safety: video posts must render from backend only.
       // Local media-video optimistic rows can create black duplicate slides.
       if (isLocalMediaVideoPost(item)) {
@@ -5008,6 +5079,24 @@ export default function FeedScreen() {
       return true;
     });
 
+    const optimisticUploadItems = unique
+      .filter(
+        (item: any) =>
+          isOptimisticVideoUploadPost(item) &&
+          String(item?.uploadStatus || "uploading") !== "done"
+      )
+      .sort(
+        (a: any, b: any) =>
+          new Date(String(b?.createdAt || "")).getTime() -
+          new Date(String(a?.createdAt || "")).getTime()
+      );
+
+    const rankableFeed = unique.filter(
+      (item: any) =>
+        !isOptimisticVideoUploadPost(item) ||
+        String(item?.uploadStatus || "") === "done"
+    );
+
     const userId = String(session?.userId || "").trim();
     const deviceOrSessionFallback =
       String(session?.sessionId || session?.deviceId || feedSessionSeedRef.current).trim() ||
@@ -5285,13 +5374,13 @@ export default function FeedScreen() {
       return [...liveItems, ...mixed, ...olderRest];
     }
 
-    const schedulePriorityItems = unique.filter((item: any) =>
+    const schedulePriorityItems = rankableFeed.filter((item: any) =>
       (Array.isArray(item?.scheduleSlots) && item.scheduleSlots.length > 0) ||
       String(item?.scheduleType || "").includes("media-live-slots") ||
       String(item?.source || "").includes("media-schedule")
     );
 
-    const nonScheduleItems = unique.filter((item: any) =>
+    const nonScheduleItems = rankableFeed.filter((item: any) =>
       !(
         (Array.isArray(item?.scheduleSlots) && item.scheduleSlots.length > 0) ||
         String(item?.scheduleType || "").includes("media-live-slots") ||
@@ -5321,11 +5410,19 @@ export default function FeedScreen() {
       }))
       .sort((a, b) => b.score - a.score);
 
-    const finalFeed = [...sortedScheduleItems, ...sortedRemainingItems];
+    const finalFeed = [...optimisticUploadItems, ...sortedScheduleItems, ...sortedRemainingItems];
     const seenFinal = new Set<string>();
 
     const visibleData = finalFeed.filter((item: any, index: number) => {
       const id = String(item?.id || "");
+      if (id.startsWith("local-upload-")) {
+        const key = id;
+        if (seenFinal.has(key)) return false;
+        if (!keepRealHomeFeedRow(item, "finalVisibleData")) return false;
+        seenFinal.add(key);
+        return true;
+      }
+
       if (id.startsWith("media-video-") || id.includes("__fy_") && id.split("__fy_")[0].startsWith("media-video-")) {
         return false;
       }
@@ -5836,6 +5933,33 @@ export default function FeedScreen() {
     });
   }, [focusPostId, displayFeed, feedVisibleCount]);
 
+  useEffect(() => {
+    const pendingId = String((globalThis as any).__KRISTO_HOME_FEED_PENDING_FOCUS__ || "").trim();
+    if (!pendingId || !displayFeed.length) return;
+
+    const matchIndex = displayFeed.findIndex((item: any) => {
+      const id = String(item?.id || "");
+      return id === pendingId || baseFeedId(id) === baseFeedId(pendingId);
+    });
+
+    if (matchIndex < 0) return;
+
+    delete (globalThis as any).__KRISTO_HOME_FEED_PENDING_FOCUS__;
+    focusPostHandledRef.current = pendingId;
+
+    if (matchIndex + 1 > feedVisibleCount) {
+      setFeedVisibleCount(matchIndex + 1);
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      try {
+        listRef.current?.scrollToIndex({ index: matchIndex, animated: true });
+      } catch {}
+      activateFeedIndexRef.current(matchIndex, "optimistic-upload-replaced");
+    });
+  }, [displayFeed, feedVisibleCount, backendFeed.length, tick]);
+
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     const topView = pickPrimaryViewableItem(viewableItems);
     const top = topView?.item;
@@ -5904,10 +6028,10 @@ export default function FeedScreen() {
 
     if (nextId && previous?.id !== nextId) {
       const nextItem = visibleDataRef.current[topIndex];
-
-      if (!isStrictVideoFeedItem(nextItem)) {
-        activateFeedIndexRef.current(topIndex, "early-scroll-viewability");
-      }
+      const reason = isStrictVideoFeedItem(nextItem)
+        ? "viewability-video-active"
+        : "early-scroll-viewability";
+      activateFeedIndexRef.current(topIndex, reason);
 
       activeWatchRef.current = { id: nextId, startedAt: now };
       if (__DEV__) {
@@ -6323,6 +6447,75 @@ const s: any = StyleSheet.create({
     fontWeight: "600",
     textAlign: "center",
     letterSpacing: 0.2,
+  },
+
+  feedVideoUploadOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "flex-end",
+    paddingHorizontal: 18,
+    paddingBottom: 28,
+  },
+
+  feedVideoUploadCard: {
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: "rgba(8,12,22,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(247,211,106,0.28)",
+  },
+
+  feedVideoUploadProgressTrack: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    overflow: "hidden",
+    marginBottom: 8,
+  },
+
+  feedVideoUploadProgressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#F7D36A",
+  },
+
+  feedVideoUploadLabel: {
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  feedVideoUploadActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 10,
+  },
+
+  feedVideoUploadBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#F7D36A",
+  },
+
+  feedVideoUploadBtnText: {
+    color: "#1A1205",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  feedVideoUploadBtnGhost: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.24)",
+  },
+
+  feedVideoUploadBtnGhostText: {
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 13,
+    fontWeight: "700",
   },
 
   feedVideoSliderWrap: {

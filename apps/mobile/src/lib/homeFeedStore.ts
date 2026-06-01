@@ -998,8 +998,35 @@ export function isStandaloneAvatarFeedPost(item: any) {
   return false;
 }
 
+export function isOptimisticVideoUploadPost(item: any) {
+  const id = String(item?.id || "").trim();
+  if (id.startsWith("local-upload-")) return true;
+  return String(item?.source || "").toLowerCase() === "local-video-upload";
+}
+
+export function feedUpdateOptimisticVideoUpload(id: string, patch: Record<string, unknown>) {
+  const cleanId = String(id || "").trim();
+  if (!cleanId) return;
+
+  const s = getStore();
+  let changed = false;
+
+  s.items = s.items.map((it) => {
+    if (String(it.id || "") !== cleanId) return it;
+    changed = true;
+    return { ...(it as any), ...patch };
+  });
+
+  if (changed) persistAndEmit();
+}
+
+export function feedRemoveOptimisticVideoUpload(id: string) {
+  feedRemoveWhere((it) => String(it.id || "") === String(id || "").trim());
+}
+
 export function isRealHomeFeedRow(item: any) {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
+  if (isOptimisticVideoUploadPost(item)) return true;
 
   const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
   if (slots.length > 0) return true;

@@ -36,13 +36,9 @@ import {
   subscribe,
 } from "../../../src/lib/homeFeedStore";
 import { apiGet, apiPost, getApiBase } from "../../../src/lib/kristoApi";
-import {
-  fileNameFromUri,
-  guessVideoContentType,
-  publishChurchVideoFeedPost,
-  requestVideoUploadUrl,
-  uploadVideoFileToSignedUrl,
-} from "../../../src/lib/churchVideoUpload";
+import { fileNameFromUri } from "../../../src/lib/churchVideoUpload";
+import { generateLocalVideoPosterUri } from "../../../src/lib/videoPoster";
+import { startOptimisticVideoUpload } from "../../../src/lib/optimisticVideoUpload";
 import { getKristoHeaders } from "../../../src/lib/kristoHeaders";
 import { sendAssignmentCards } from "../../../src/lib/messagesStore";
 import {
@@ -948,6 +944,7 @@ export default function MediaStudioScreen() {
 
   const [isCreatingVideoPost, setIsCreatingVideoPost] = useState(false);
   const [videoPostUri, setVideoPostUri] = useState("");
+  const [videoPostPosterUri, setVideoPostPosterUri] = useState("");
   const [videoPostTitle, setVideoPostTitle] = useState("");
   const [videoPostCaption, setVideoPostCaption] = useState("");
   const [videoPostDetailsOpen, setVideoPostDetailsOpen] = useState(false);
@@ -1381,11 +1378,23 @@ export default function MediaStudioScreen() {
   function beginSmartVideoPrepare(uri: string) {
     setIsCreatingVideoPost(true);
     setVideoPostUri("");
+    setVideoPostPosterUri("");
     setVideoPostTitle("");
     setVideoPostCaption("");
     setVideoPostDetailsOpen(false);
     setVideoPreparing(true);
     setVideoPreparePercent(8);
+
+    void generateLocalVideoPosterUri(uri)
+      .then((posterUri) => {
+        const cleanPoster = String(posterUri || "").trim();
+        if (!cleanPoster) return;
+        setVideoPostPosterUri(cleanPoster);
+        console.log("KRISTO_VIDEO_POSTER_CLIENT_READY", { posterUri: cleanPoster });
+      })
+      .catch((error) => {
+        console.log("KRISTO_VIDEO_POSTER_CLIENT_ERROR", error);
+      });
 
     let pct = 8;
     const timer = setInterval(() => {
@@ -1450,10 +1459,6 @@ export default function MediaStudioScreen() {
       return;
     }
 
-    if (videoPostUploading) {
-      return;
-    }
-
     if (!videoPostUri) {
       Alert.alert("Video required", "Please choose a video first.");
       return;
@@ -1472,77 +1477,85 @@ export default function MediaStudioScreen() {
     const mediaName = form.mediaName.trim() || churchMediaProfile?.mediaName || "Church Media";
     const title = typedTitle;
     const caption = typedCaption;
-
     const fileUri = String(videoPostUri || "").trim();
+    const localPosterUri = String(videoPostPosterUri || "").trim();
     const fileName = fileNameFromUri(fileUri, `video-${Date.now()}.mp4`);
-    const uploadHeaders = getKristoHeaders({
-      userId: session?.userId || "",
-      role: (session?.role || "Member") as any,
-      churchId: session?.churchId || "",
+    const tempPostId = `local-upload-${Date.now()}`;
+    const churchId = String(session?.churchId || "").trim();
+    const churchLabel = String(
+      (session as any)?.churchName ||
+      (session as any)?.churchLabel ||
+      "MY CHURCH"
+    );
+    const actorAvatarUri = String(
+      (session as any)?.churchAvatarUri ||
+      (session as any)?.churchAvatarUrl ||
+      (session as any)?.avatarUri ||
+      (session as any)?.avatarUrl ||
+      (session as any)?.profileImage ||
+      ""
+    );
+
+    feedAdd({
+      id: tempPostId,
+      kind: "post",
+      title,
+      body: caption,
+      mediaType: "video",
+      type: "video",
+      localVideoUri: fileUri,
+      localPosterUri: localPosterUri || undefined,
+      posterUri: localPosterUri || undefined,
+      uploadStatus: "uploading",
+      uploadProgress: 0,
+      source: "local-video-upload",
+      createdAt: new Date().toISOString(),
+      churchId,
+      churchName: churchLabel,
+      churchLabel,
+      mediaName,
+      actorLabel: mediaName,
+      actorAvatarUri,
+      churchAvatarUri: actorAvatarUri,
+      uploadJob: {
+        fileUri,
+        localPosterUri: localPosterUri || undefined,
+        fileName,
+        title,
+        caption,
+      },
+    } as any);
+
+    console.log("KRISTO_OPTIMISTIC_VIDEO_POST_CREATED", {
+      tempPostId,
+      fileUri,
+      localPosterUri: localPosterUri || null,
+      title,
     });
 
-    void (async () => {
-      setVideoPostUploading(true);
-      setVideoPostUploadPercent(0);
-      try {
-        const FileSystem = await import("expo-file-system/legacy");
-        const info = await FileSystem.getInfoAsync(fileUri, { size: true } as any);
-        const fileSize = Number((info as any)?.size || 0);
-        const contentType = guessVideoContentType(fileName);
+    setVideoPostDetailsOpen(false);
+    setVideoPostUri("");
+    setVideoPostPosterUri("");
+    setVideoPostTitle("");
+    setVideoPostCaption("");
+    setIsCreatingVideoPost(false);
 
-        console.log("KRISTO_UPLOAD_FILE_SIZE", {
-          fileUri,
-          fileName,
-          fileSize,
-          contentType,
-          exists: Boolean((info as any)?.exists),
-        });
+    router.push({
+      pathname: "/",
+      params: { focusPostId: tempPostId },
+    } as any);
 
-        if (!fileSize || !(info as any)?.exists) {
-          Alert.alert("Video unavailable", "Could not read the selected video file. Try choosing it again.");
-          return;
-        }
-
-        const signed = await requestVideoUploadUrl({
-          fileName,
-          contentType,
-          fileSize,
-          headers: uploadHeaders,
-        });
-
-        console.log("KRISTO_UPLOAD_SIGNED_URL", {
-          videoUrl: signed.videoUrl,
-          contentType: signed.contentType,
-        });
-
-        await uploadVideoFileToSignedUrl({
-          fileUri,
-          uploadUrl: signed.uploadUrl,
-          contentType: signed.contentType,
-          onProgress: setVideoPostUploadPercent,
-        });
-
-        const feedRes = await publishChurchVideoFeedPost({
-          title,
-          caption,
-          videoUrl: signed.videoUrl,
-          headers: uploadHeaders,
-        });
-
-        console.log("KRISTO_FEED_VIDEO_POSTED", feedRes);
-        setVideoPostDetailsOpen(false);
-        router.push("/" as any);
-      } catch (e) {
-        console.log("KRISTO_FEED_VIDEO_POST_ERROR", e);
-        Alert.alert("Upload failed", String((e as any)?.message || e || "Video upload failed. Please try again."));
-      } finally {
-        setVideoPostUploading(false);
-        setVideoPostUploadPercent(0);
-      }
-    })();
-
-    // Do not add local media-video-* optimistic rows.
-    // Home Feed must render video posts from backend server URLs only.
+    startOptimisticVideoUpload({
+      tempPostId,
+      fileUri,
+      localPosterUri: localPosterUri || undefined,
+      fileName,
+      title,
+      caption,
+      churchId,
+      userId: String(session?.userId || "").trim(),
+      role: String(session?.role || "Member"),
+    });
   }
 
   async function handleLockedAction(kind: "video" | "live") {
