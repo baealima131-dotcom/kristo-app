@@ -194,7 +194,11 @@ function feedOriginIdFromItem(item: any) {
 function createFeedLoopBatch(baseFeed: any[], loopGen: number, skipOriginId?: string) {
   if (!baseFeed.length) return [];
 
-  let pool = [...baseFeed];
+  let pool = baseFeed.filter((item: any) => {
+    const id = String(item?.id || "");
+    const source = String(item?.source || "").toLowerCase();
+    return !id.startsWith("local-upload-") && source !== "local-video-upload";
+  });
   if (pool.length > 1) {
     if (skipOriginId) {
       const idx = pool.findIndex((item) => feedOriginIdFromItem(item) === skipOriginId);
@@ -228,6 +232,8 @@ function logNonVideoActivePause(meta: Record<string, unknown>) {
     reason: String(meta.reason || "non-video-active"),
   });
 }
+
+const activeHomeFeedVideoReadyRef = { current: false };
 
 function formatFeedVideoTime(seconds: number) {
   const total = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -765,6 +771,22 @@ function feedVideoRegistryId(originId: string, uri: string) {
   return origin || video || "feed-video";
 }
 
+function FeedVideoGoldUnderlay() {
+  return (
+    <View style={StyleSheet.absoluteFillObject}>
+      <LinearGradient
+        colors={["#2a2210", "#15120a", "#0f1729"]}
+        locations={[0, 0.55, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <LinearGradient
+        colors={["rgba(247,211,106,0.18)", "transparent", "rgba(247,211,106,0.10)"]}
+        style={StyleSheet.absoluteFillObject}
+      />
+    </View>
+  );
+}
+
 function FeedVideoOwnerBackdrop({ avatarUri }: { avatarUri?: string }) {
   if (avatarUri) {
     return (
@@ -951,6 +973,8 @@ const FeedVideo = memo(function FeedVideo({
   uri,
   posterUri,
   shouldPlay,
+  screenFocused,
+  appActive,
   videoOriginId,
   interactive,
   playbackMeta,
@@ -966,6 +990,8 @@ const FeedVideo = memo(function FeedVideo({
   uri: string;
   posterUri?: string;
   shouldPlay: boolean;
+  screenFocused: boolean;
+  appActive: boolean;
   videoOriginId?: string;
   interactive?: boolean;
   playbackMeta: Record<string, unknown>;
@@ -987,8 +1013,13 @@ const FeedVideo = memo(function FeedVideo({
     } catch {}
   });
 
+  const { status } = useEvent(player, "statusChange", { status: player.status });
+  const videoReady = status === "readyToPlay";
+  const effectiveShouldPlay = shouldPlay && videoReady && screenFocused && appActive;
   const shouldPlayRef = useRef(shouldPlay);
   shouldPlayRef.current = shouldPlay;
+  const effectiveShouldPlayRef = useRef(effectiveShouldPlay);
+  effectiveShouldPlayRef.current = effectiveShouldPlay;
 
   const userPausedRef = useRef(false);
   const [userPaused, setUserPaused] = useState(false);
@@ -1007,8 +1038,6 @@ const FeedVideo = memo(function FeedVideo({
   const centerFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTapRef = useRef(0);
 
-  const { status } = useEvent(player, "statusChange", { status: player.status });
-  const videoReady = status === "readyToPlay";
   const poster =
     String(posterUri || "").trim() ||
     feedVideoPosterCache.get(String(uri || "").trim()) ||
@@ -1028,15 +1057,45 @@ const FeedVideo = memo(function FeedVideo({
 
   useEffect(() => {
     try {
-      if (shouldPlay) {
+      if (effectiveShouldPlay) {
         player.loop = false;
-      } else {
-        player.loop = true;
-        player.muted = true;
-        player.pause();
+        return;
       }
+      player.loop = !shouldPlay && isWarmupTarget;
+      player.muted = true;
+      player.pause();
     } catch {}
-  }, [shouldPlay, player, uri]);
+  }, [effectiveShouldPlay, shouldPlay, isWarmupTarget, player, uri]);
+
+  useEffect(() => {
+    if (!__DEV__) return;
+    console.log("KRISTO_VIDEO_EFFECTIVE_PLAY_STATE", {
+      postId,
+      shouldPlay,
+      videoReady,
+      screenFocused,
+      appActive,
+      effectiveShouldPlay,
+      isWarmupTarget,
+    });
+    if (shouldPlay && !videoReady) {
+      console.log("KRISTO_VIDEO_AUDIO_BLOCKED_NOT_READY", {
+        postId,
+        shouldPlay,
+        videoReady,
+        screenFocused,
+        appActive,
+      });
+    }
+  }, [
+    postId,
+    shouldPlay,
+    videoReady,
+    screenFocused,
+    appActive,
+    effectiveShouldPlay,
+    isWarmupTarget,
+  ]);
 
   useEffect(() => {
     if (!videoReady || shouldPlay) return;
@@ -1060,7 +1119,10 @@ const FeedVideo = memo(function FeedVideo({
   }, [videoReady, shouldPlay, isWarmupTarget, postId, uri, videoOriginId]);
 
   const shouldHidePosterNow = shouldPlay && videoReady;
+  const awaitingVideoSurface = shouldPlay && !videoReady;
   const showingPoster = Boolean(poster) && !shouldHidePosterNow;
+  const showGoldUnderlay = awaitingVideoSurface && Boolean(poster);
+  const showBrandedPlaceholder = awaitingVideoSurface && !poster;
 
   useEffect(() => {
     if (!poster || showingPoster) return;
@@ -1068,13 +1130,9 @@ const FeedVideo = memo(function FeedVideo({
     posterOpacity.setValue(0);
   }, [showingPoster, poster, posterOpacity]);
 
-  const showBrandedPlaceholder = shouldPlay && !poster && !videoReady;
-  const showOwnerBackdrop = false;
-
   const videoOpacity = shouldPlay && videoReady ? 1 : 0;
 
-  const forcePauseInactive = useCallback(() => {
-    if (shouldPlayRef.current) return;
+  const forcePauseNoAudio = useCallback(() => {
     try {
       player.muted = true;
       player.pause();
@@ -1090,7 +1148,7 @@ const FeedVideo = memo(function FeedVideo({
       shouldPlay,
       showingPoster,
       showingBrandedPlaceholder: showBrandedPlaceholder,
-      showingOwnerBackdrop: showOwnerBackdrop,
+      showingGoldUnderlay: showGoldUnderlay,
     });
     console.log("KRISTO_VIDEO_HANDOFF", {
       postId,
@@ -1105,7 +1163,7 @@ const FeedVideo = memo(function FeedVideo({
     shouldPlay,
     showingPoster,
     showBrandedPlaceholder,
-    showOwnerBackdrop,
+    showGoldUnderlay,
   ]);
 
   useEffect(() => {
@@ -1193,7 +1251,7 @@ const FeedVideo = memo(function FeedVideo({
   }, [heartBurstOpacity, heartBurstScale]);
 
   const togglePlayPause = useCallback(() => {
-    if (!shouldPlayRef.current) return;
+    if (!shouldPlayRef.current || !effectiveShouldPlayRef.current) return;
     const meta = {
       postId,
       feedIndex,
@@ -1222,6 +1280,7 @@ const FeedVideo = memo(function FeedVideo({
       ...meta,
       feedOriginId: videoOriginId,
       shouldPlay: true,
+      videoReady: true,
       reason: "user-play",
     });
     try {
@@ -1269,41 +1328,70 @@ const FeedVideo = memo(function FeedVideo({
     }, FEED_VIDEO_SINGLE_TAP_DELAY_MS);
   }, [handleDoubleTap, interactive, revealControls, togglePlayPause]);
 
-  useLayoutEffect(() => {
-    if (!shouldPlayRef.current) {
-      forcePauseInactive();
+  useEffect(() => {
+    forcePauseNoAudio();
+
+    if (!effectiveShouldPlay) {
       return;
     }
 
     if (userPausedRef.current) {
-      forcePauseInactive();
       return;
     }
+
+    const meta = {
+      postId,
+      feedIndex,
+      feedOriginId: videoOriginId,
+      shouldPlay: true,
+      videoReady: true,
+      reason: "effective-should-play",
+      ...(playbackMetaRef.current as any),
+    };
+
+    logHomeFeedVideoPlayState(meta);
+    syncHomeFeedVideoOwnership({
+      ...meta,
+    });
+
     try {
       player.loop = false;
       player.muted = false;
       player.play();
     } catch {}
-  }, [shouldPlay, player, uri, postId, forcePauseInactive, videoOriginId]);
+  }, [
+    effectiveShouldPlay,
+    player,
+    uri,
+    postId,
+    feedIndex,
+    videoOriginId,
+    forcePauseNoAudio,
+  ]);
 
   useEffect(() => {
-    forcePauseInactive();
-  }, [shouldPlay, forcePauseInactive]);
+    if (!shouldPlay) {
+      forcePauseNoAudio();
+    }
+  }, [shouldPlay, forcePauseNoAudio]);
 
   useEffect(() => {
-    if (!shouldPlay) return;
+    if (!effectiveShouldPlay) return;
+
     registerHomeFeedVideo(postId, player, {
       postId,
       feedIndex,
       feedOriginId: videoOriginId,
       shouldPlay: true,
+      videoReady: true,
       ...(playbackMetaRef.current as any),
-      reason: "mount-active",
+      reason: "mount-active-ready",
     });
     return () => {
       if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
       if (centerFlashTimerRef.current) clearTimeout(centerFlashTimerRef.current);
       clearControlsHideTimer();
+      forcePauseNoAudio();
       pauseHomeFeedVideo(postId, {
         postId,
         feedIndex,
@@ -1319,7 +1407,21 @@ const FeedVideo = memo(function FeedVideo({
         reason: "unmount",
       });
     };
-  }, [postId, player, feedIndex, videoOriginId, shouldPlay, clearControlsHideTimer]);
+  }, [
+    postId,
+    player,
+    feedIndex,
+    videoOriginId,
+    effectiveShouldPlay,
+    clearControlsHideTimer,
+    forcePauseNoAudio,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      forcePauseNoAudio();
+    };
+  }, [forcePauseNoAudio]);
 
   useEffect(() => {
     if (videoReady && poster) {
@@ -1328,8 +1430,11 @@ const FeedVideo = memo(function FeedVideo({
   }, [videoReady, poster, uri]);
 
   useEffect(() => {
-    onVideoReadyChange?.(shouldPlay && videoReady);
-  }, [shouldPlay, videoReady, onVideoReadyChange]);
+    onVideoReadyChange?.(effectiveShouldPlay);
+    if (shouldPlay) {
+      activeHomeFeedVideoReadyRef.current = videoReady;
+    }
+  }, [effectiveShouldPlay, shouldPlay, videoReady, onVideoReadyChange]);
 
   useEffect(() => {
     if (shouldPlay) return;
@@ -1338,79 +1443,21 @@ const FeedVideo = memo(function FeedVideo({
     setShowControls(false);
     setCenterFlashIcon(null);
     clearControlsHideTimer();
-  }, [shouldPlay, clearControlsHideTimer]);
+    forcePauseNoAudio();
+  }, [shouldPlay, clearControlsHideTimer, forcePauseNoAudio]);
 
   useEffect(() => {
-    const applyPlayback = (reason: string) => {
-      if (!shouldPlayRef.current) {
-        forcePauseInactive();
-        return;
-      }
-
-      const play = shouldPlayRef.current;
-      const blockedByUser = userPausedRef.current;
-      const meta = {
-        postId,
-        feedIndex,
-        feedOriginId: videoOriginId,
-        shouldPlay: play && !blockedByUser,
-        reason,
-        ...(playbackMetaRef.current as any),
-      };
-
-      logHomeFeedVideoPlayState(meta);
-
-      if (!play) {
-        pauseHomeFeedVideo(postId, meta);
-        return;
-      }
-
-      if (blockedByUser) {
-        try {
-          player.pause();
-          player.muted = true;
-        } catch {}
-        return;
-      }
-
-      syncHomeFeedVideoOwnership({
-        ...meta,
-        shouldPlay: true,
-        reason,
-      });
-
-      try {
-        player.loop = false;
-        player.muted = false;
-        player.play();
-      } catch {}
-    };
-
-    if (!shouldPlay) {
-      forcePauseInactive();
-      pauseHomeFeedVideo(postId, {
-        postId,
-        feedIndex,
-        feedOriginId: videoOriginId,
-        shouldPlay: false,
-        ...(playbackMetaRef.current as any),
-        reason: "should-play-false-immediate",
-      });
-      return;
+    if (!screenFocused || !appActive) {
+      forcePauseNoAudio();
     }
-
-    applyPlayback("should-play-true");
-  }, [player, uri, shouldPlay, postId, feedIndex, videoOriginId, forcePauseInactive]);
+  }, [screenFocused, appActive, forcePauseNoAudio]);
 
   useEffect(() => {
-    if (!shouldPlay) return;
+    if (!effectiveShouldPlay) return;
 
     const timer = setInterval(() => {
-      if (!shouldPlayRef.current || userPausedRef.current) {
-        try {
-          player.muted = true;
-          player.pause();
-        } catch {}
+      if (!effectiveShouldPlayRef.current || userPausedRef.current) {
+        forcePauseNoAudio();
         return;
       }
       try {
@@ -1422,7 +1469,7 @@ const FeedVideo = memo(function FeedVideo({
         }
 
         if (nextDuration > 0 && nextCurrent >= Math.max(0, nextDuration - 0.25)) {
-          if (!shouldPlayRef.current || userPausedRef.current) return;
+          if (!effectiveShouldPlayRef.current || userPausedRef.current) return;
           try {
             player.currentTime = 0;
             setCurrentTime(0);
@@ -1434,21 +1481,18 @@ const FeedVideo = memo(function FeedVideo({
     }, 250);
 
     return () => clearInterval(timer);
-  }, [player, shouldPlay, scrubbing, postId]);
+  }, [player, effectiveShouldPlay, scrubbing, postId, forcePauseNoAudio]);
 
   const maxDuration = Math.max(duration, 0.01);
-  const mountVideoView =
-    (isWarmupTarget && !shouldPlay) || (shouldPlay && videoReady);
+  const mountVideoView = shouldPlay && videoReady;
 
   return (
     <View style={s.media}>
-      {showOwnerBackdrop ? (
-        <FeedVideoOwnerBackdrop avatarUri={fallbackAvatarUri} />
-      ) : null}
+      {showGoldUnderlay ? <FeedVideoGoldUnderlay /> : null}
       {showingPoster ? (
         <Animated.View
           pointerEvents="none"
-          style={[StyleSheet.absoluteFillObject, { opacity: posterOpacity }]}
+          style={[StyleSheet.absoluteFillObject, { opacity: posterOpacity, zIndex: 2 }]}
         >
           <Image
             source={{ uri: poster }}
@@ -1470,7 +1514,7 @@ const FeedVideo = memo(function FeedVideo({
           player={player}
           style={[
             StyleSheet.absoluteFillObject,
-            { opacity: shouldPlay ? videoOpacity : 0 },
+            { opacity: videoOpacity, zIndex: 3 },
           ]}
           contentFit="cover"
           nativeControls={false}
@@ -1584,6 +1628,8 @@ const FeedVideoSurface = memo(function FeedVideoSurface({
   uri,
   posterUri,
   shouldPlay,
+  screenFocused,
+  appActive,
   videoOriginId,
   interactive,
   playbackMeta,
@@ -1599,6 +1645,8 @@ const FeedVideoSurface = memo(function FeedVideoSurface({
   uri: string;
   posterUri?: string;
   shouldPlay: boolean;
+  screenFocused: boolean;
+  appActive: boolean;
   videoOriginId?: string;
   interactive?: boolean;
   playbackMeta: Record<string, unknown>;
@@ -1626,6 +1674,8 @@ const FeedVideoSurface = memo(function FeedVideoSurface({
       uri={uri}
       posterUri={resolvedPoster}
       shouldPlay={shouldPlay}
+      screenFocused={screenFocused}
+      appActive={appActive}
       videoOriginId={videoOriginId}
       interactive={interactive}
       playbackMeta={playbackMeta}
@@ -2415,6 +2465,7 @@ const noMediaPost =
   const handleFeedVideoReady = useCallback((ready: boolean) => {
     if (!isActivePost) return;
     setFeedVideoReady(ready);
+    activeHomeFeedVideoReadyRef.current = ready;
   }, [isActivePost]);
 
   useEffect(() => {
@@ -3217,6 +3268,8 @@ const noMediaPost =
           uri={strictVideoUri}
           posterUri={strictVideoPoster}
           shouldPlay={videoShouldPlay}
+          screenFocused={screenFocused}
+          appActive={appActive}
           videoOriginId={itemVideoOriginId}
           interactive={videoShouldPlay}
           playbackMeta={playbackMeta}
@@ -3241,7 +3294,14 @@ const noMediaPost =
     }
 
     if (strictVideoUri) {
-      return <FeedVideoOwnerBackdrop avatarUri={strictVideoOwnerAvatar || actorAvatarUri} />;
+      return (
+        <FeedVideoBrandedPlaceholder
+          title={title}
+          avatarUri={strictVideoOwnerAvatar || actorAvatarUri}
+          initial={videoPlaceholderInitial}
+          loading
+        />
+      );
     }
 
     return (
@@ -5606,6 +5666,10 @@ export default function FeedScreen() {
   }, [visibleData, activeFeedItemId]);
 
   useEffect(() => {
+    activeHomeFeedVideoReadyRef.current = false;
+  }, [activeFeedItemId, activeFeedIndex]);
+
+  useEffect(() => {
     const meta = {
       activeFeedIndex,
       activeFeedItemId,
@@ -5639,13 +5703,18 @@ export default function FeedScreen() {
       return;
     }
 
+    const effectiveActiveShouldPlay = activeHomeFeedVideoReadyRef.current;
+
     syncHomeFeedVideoOwnership({
       ...meta,
       postId: activeId,
       feedIndex: activeFeedIndex,
       isStrictVideoPost: true,
-      shouldPlay: true,
-      reason: "feed-screen-active",
+      shouldPlay: effectiveActiveShouldPlay,
+      videoReady: effectiveActiveShouldPlay,
+      reason: effectiveActiveShouldPlay
+        ? "feed-screen-active-ready"
+        : "feed-screen-active-not-ready",
     });
   }, [
     feedScreenFocused,
@@ -5790,6 +5859,9 @@ export default function FeedScreen() {
 
   useEffect(() => {
     if (activeFeedIndex < 0 || !activeItemIsStrictVideo) return;
+
+    const activeId = String(activeFeedItemId || "");
+    if (activeId.startsWith("local-upload-")) return;
 
     const visibleCount = visibleData.length;
     const totalCount = displayFeed.length;
