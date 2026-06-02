@@ -1090,8 +1090,24 @@ async function handleFeedGet(
       scheduleCandidates: allRows.filter((x) => isMediaScheduleFeedItem(x)).length,
     });
 
+    console.log("KRISTO_FEED_DEBUG_COUNTS", {
+      churchId,
+      rawRows: rawRows.length,
+      afterAsset: allRows.length,
+      mediaRaw: rawRows.filter((x: any) => String(x?.source || "") === "media-upload").length,
+      mediaAfterAsset: allRows.filter((x: any) => String(x?.source || "") === "media-upload").length,
+    });
+
     const afterDiscover = allRows.filter((x: any) => isDiscoverableFeedItem(x, churchId));
     const homeReadyRows = afterDiscover.filter((x: any) => isHomeFeedReadyItem(x));
+
+    console.log("KRISTO_FEED_DEBUG_AFTER_FILTERS", {
+      churchId,
+      afterDiscover: afterDiscover.length,
+      homeReadyRows: homeReadyRows.length,
+      mediaAfterDiscover: afterDiscover.filter((x: any) => String(x?.source || "") === "media-upload").length,
+      mediaHomeReady: homeReadyRows.filter((x: any) => String(x?.source || "") === "media-upload").length,
+    });
 
     if (__DEV__) {
       const skipped = afterDiscover.length - homeReadyRows.length;
