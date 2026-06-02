@@ -1069,7 +1069,16 @@ async function handleFeedGet(
       return ok(detail);
     }
 
-    const allRows = (await safeListFeedItems()).filter(feedVideoAssetExists);
+    const rawRows = await safeListFeedItems();
+    const allRows = rawRows.filter((x: any) => {
+      const isMediaUpload =
+        String(x?.source || "") === "media-upload" ||
+        String(x?.ownershipType || "") === "media";
+      const hasRemoteVideo =
+        String(x?.videoUrl || x?.videoUri || x?.mediaUrl || "").startsWith("http");
+      if (isMediaUpload && hasRemoteVideo) return true;
+      return feedVideoAssetExists(x);
+    });
     console.log("[FeedDb] list churchId count scheduleCount", {
       churchId,
       count: allRows.length,
