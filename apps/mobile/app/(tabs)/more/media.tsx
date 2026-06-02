@@ -102,6 +102,20 @@ import {
 
 const MEDIA_SCREEN = "MediaScreen";
 
+function logMediaScreenNav(
+  action: "push" | "back" | "replace",
+  target: string,
+  reason: string,
+  meta?: Record<string, unknown>
+) {
+  console.log("KRISTO_MEDIA_NAV_PUSH", {
+    action,
+    target,
+    reason,
+    ...meta,
+  });
+}
+
 function runAfterFirstFrame(task: () => void) {
   if (typeof requestAnimationFrame === "function") {
     requestAnimationFrame(() => {
@@ -178,6 +192,47 @@ export default function MediaStudioScreen() {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const isFocused = useIsFocused();
+  const pathnameRef = useRef(pathname);
+  const isFocusedRef = useRef(isFocused);
+  pathnameRef.current = pathname;
+  isFocusedRef.current = isFocused;
+
+  useEffect(() => {
+    console.log("KRISTO_MEDIA_SCREEN_MOUNT", {
+      pathname: pathnameRef.current,
+      isFocused: isFocusedRef.current,
+    });
+    return () => {
+      console.log("KRISTO_MEDIA_SCREEN_UNMOUNT", {
+        pathname: pathnameRef.current,
+        isFocused: isFocusedRef.current,
+      });
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log("KRISTO_MEDIA_SCREEN_FOCUS_STATE", { pathname, isFocused });
+  }, [pathname, isFocused]);
+
+  const mediaRouterPush = useCallback(
+    (target: any, reason: string) => {
+      const targetLabel =
+        typeof target === "string"
+          ? target
+          : String(target?.pathname || "object-route");
+      logMediaScreenNav("push", targetLabel, reason, { pathname, isFocused });
+      return router.push(target as any);
+    },
+    [router, pathname, isFocused]
+  );
+
+  const mediaRouterBack = useCallback(
+    (reason: string) => {
+      logMediaScreenNav("back", "(stack-back)", reason, { pathname, isFocused });
+      return router.back();
+    },
+    [router, pathname, isFocused]
+  );
 
   const scrollRef = useRef<any>(null);
   const detailsCardYRef = useRef(0);
@@ -699,10 +754,26 @@ export default function MediaStudioScreen() {
     existingMedia || (cachedMedia?.mediaName ? cachedMedia : null);
 
   const hasChurchMembership = Boolean(String(session?.churchId || "").trim());
-  const isActualChurchPastor = churchMediaAccess.isActualChurchPastor;
+  const sessionIsPastor =
+    String(session?.role || "").trim().toLowerCase() === "pastor" ||
+    String((session as any)?.churchRole || "").trim().toLowerCase() === "pastor";
+
+  const isActualChurchPastor = churchMediaAccess.isActualChurchPastor || sessionIsPastor;
   const isMediaHostFromProfile = churchMediaAccess.isMediaHost;
-  const canAccessChurchMedia = churchMediaAccess.canAccessChurchMedia;
-  const canManageMediaHosts = churchMediaAccess.canManageMediaHosts;
+  const canAccessChurchMedia = churchMediaAccess.canAccessChurchMedia || sessionIsPastor;
+  const canManageMediaHosts = churchMediaAccess.canManageMediaHosts || sessionIsPastor;
+
+  if (__DEV__) {
+    console.log("KRISTO_MEDIA_ACCESS_EFFECTIVE", {
+      sessionRole: session?.role,
+      churchRole: (session as any)?.churchRole,
+      sessionIsPastor,
+      isActualChurchPastor,
+      canAccessChurchMedia,
+      canManageMediaHosts,
+      isMediaHostFromProfile,
+    });
+  }
   const mediaHosts = trustedHosts.length
     ? trustedHosts
     : Array.isArray((churchMediaProfile as any)?.hosts)
@@ -764,7 +835,7 @@ export default function MediaStudioScreen() {
   function handleSubscriptionPromptPrimary() {
     closeSubscriptionSchedulePrompt();
     if (isActualChurchPastor) {
-      router.push("/more/payments/subscriptions" as any);
+      mediaRouterPush("/more/payments/subscriptions", "subscription-prompt-primary");
     }
   }
 
@@ -879,13 +950,12 @@ export default function MediaStudioScreen() {
     ]).start();
   }, [v2VipOpen, v2VipScale, v2VipFade, v2VipLift]);
 
-  // sync form from backend-confirmed church media profile only
+  // sync form from church media profile (backend-confirmed or cached)
   React.useEffect(() => {
     if (!profileHydrated || !mediaProfileReady) return;
 
-    const m: any = backendMediaConfirmed ? backendMedia : null;
-
-    const hasProfile = Boolean(String(m?.mediaName || "").trim());
+    const hasProfile = hasChurchMediaProfile;
+    const m: any = churchMediaProfile;
 
     if (showHostSetupPending) {
       setIsEditingMedia(false);
@@ -932,9 +1002,10 @@ export default function MediaStudioScreen() {
     mediaProfileReady,
     showHostSetupPending,
     canCreateMedia,
-    backendMediaConfirmed,
-    backendMedia?.id,
-    backendMedia?.updatedAt,
+    hasChurchMediaProfile,
+    churchMediaProfile?.id,
+    churchMediaProfile?.updatedAt,
+    churchMediaProfile?.mediaName,
   ]);
 
   const [scheduleTitle, setScheduleTitle] = useState("Pray live for people");
@@ -968,6 +1039,62 @@ export default function MediaStudioScreen() {
 
   const [guestClaimSlots, setGuestClaimSlots] = useState<any[]>([]);
 
+  const activeRenderBranch = useMemo(() => {
+    if (!isEditingMedia && hasMediaAccount && isCreatingVideoPost) return "video-post";
+    if (!isEditingMedia && hasMediaAccount && isCreatingSchedule) return "schedule-create";
+    if (!isEditingMedia && hasMediaAccount && isManagingGuests) return "guest-manage";
+    if (!isEditingMedia && hasMediaAccount) return "dashboard";
+    if (showAccessLocked) return "access-locked";
+    if (showHostSetupPending) return "host-setup-pending";
+    if (showCreateWizard && mediaStep === 1) return "create-wizard-step-1";
+    if (showCreateWizard && mediaStep === 2) return "create-wizard-step-2";
+    if (showCreateWizard) return "create-wizard-step-3";
+    if (isEditingMedia && hasMediaAccount) return "editing-with-account-null-gap";
+    return "empty-null";
+  }, [
+    isEditingMedia,
+    hasMediaAccount,
+    isCreatingVideoPost,
+    isCreatingSchedule,
+    isManagingGuests,
+    showAccessLocked,
+    showHostSetupPending,
+    showCreateWizard,
+    mediaStep,
+  ]);
+
+  useEffect(() => {
+    console.log("KRISTO_MEDIA_RENDER_STATE", {
+      showAccessLocked,
+      showHostSetupPending,
+      showCreateWizard,
+      mediaProfileReady,
+      backendMediaConfirmed,
+      hasChurchMediaProfile,
+      canAccessChurchMedia,
+      isActualChurchPastor,
+      hasMediaAccount,
+      isEditingMedia,
+      activeRenderBranch,
+      cachedMediaName: String(cachedMedia?.mediaName || "").trim() || null,
+      backendMediaName: String(backendMedia?.mediaName || "").trim() || null,
+    });
+  }, [
+    showAccessLocked,
+    showHostSetupPending,
+    showCreateWizard,
+    mediaProfileReady,
+    backendMediaConfirmed,
+    hasChurchMediaProfile,
+    canAccessChurchMedia,
+    isActualChurchPastor,
+    hasMediaAccount,
+    isEditingMedia,
+    activeRenderBranch,
+    cachedMedia?.mediaName,
+    backendMedia?.mediaName,
+  ]);
+
   useEffect(() => {
     if (!pendingDetailsScroll || !videoPostDetailsOpen) return;
 
@@ -985,7 +1112,7 @@ export default function MediaStudioScreen() {
       setCreateStep(3);
       setIsEditingMedia(false);
     }
-  }, [hasMediaAccount]);
+  }, [hasMediaAccount, backendMediaConfirmed, hasChurchMediaProfile]);
 
   const gateText = useMemo(() => {
     if (!hasMediaAccount) return "Create your media account first";
@@ -1372,7 +1499,7 @@ export default function MediaStudioScreen() {
       return;
     }
 
-    router.push("/more/payments/subscriptions" as any);
+    mediaRouterPush("/more/payments/subscriptions", "subscription-open-handler");
   }
 
   function beginSmartVideoPrepare(uri: string) {
@@ -1572,7 +1699,7 @@ export default function MediaStudioScreen() {
               : "Your video is processing in Media Storage. Home Feed will show it when mediaStatus is ready."
           );
 
-          router.push("/(tabs)/more/media-storage" as any);
+          mediaRouterPush("/(tabs)/more/media-storage", "video-upload-success");
         },
         onError: (message) => {
           setVideoPostUploading(false);
@@ -1634,22 +1761,25 @@ export default function MediaStudioScreen() {
         return;
       }
 
-      router.push({
-        pathname: "/more/my-church-room/messages/live-room",
-        params: {
-          source: "media",
-          liveMode: "instant",
-          entryMode: "live",
-          role: "Viewer",
-          mode: "viewer",
-          room: "media",
-          liveId: String(activeChurchLive?.liveId || ""),
-          pastorUserId: String(activeChurchLive?.actualChurchPastorUserId || activeChurchLive?.pastorUserId || ""),
-        actualChurchPastorUserId: String(activeChurchLive?.actualChurchPastorUserId || activeChurchLive?.pastorUserId || ""),
-          mediaName: String(activeChurchLive?.mediaName || churchMediaProfile?.mediaName || "Church Live"),
-          title: String(activeChurchLive?.title || activeChurchLive?.mediaName || churchMediaProfile?.mediaName || "Church Live"),
+      mediaRouterPush(
+        {
+          pathname: "/more/my-church-room/messages/live-room",
+          params: {
+            source: "media",
+            liveMode: "instant",
+            entryMode: "live",
+            role: "Viewer",
+            mode: "viewer",
+            room: "media",
+            liveId: String(activeChurchLive?.liveId || ""),
+            pastorUserId: String(activeChurchLive?.actualChurchPastorUserId || activeChurchLive?.pastorUserId || ""),
+            actualChurchPastorUserId: String(activeChurchLive?.actualChurchPastorUserId || activeChurchLive?.pastorUserId || ""),
+            mediaName: String(activeChurchLive?.mediaName || churchMediaProfile?.mediaName || "Church Live"),
+            title: String(activeChurchLive?.title || activeChurchLive?.mediaName || churchMediaProfile?.mediaName || "Church Live"),
+          },
         },
-      } as any);
+        "locked-action-join-pastor-live"
+      );
       return;
     }
 
@@ -1724,8 +1854,9 @@ export default function MediaStudioScreen() {
       "Church"
     ));
 
-    router.push(
-      `/kingdom/church-project-tool/media-schedule/meeting?source=media&roomId=media-schedule&title=Media%20Schedule&subtitle=Media%20Studio&avatar=${mediaToolAvatar}&mediaName=${mediaToolMediaName}&churchName=${mediaToolChurchName}` as any
+    mediaRouterPush(
+      `/kingdom/church-project-tool/media-schedule/meeting?source=media&roomId=media-schedule&title=Media%20Schedule&subtitle=Media%20Studio&avatar=${mediaToolAvatar}&mediaName=${mediaToolMediaName}&churchName=${mediaToolChurchName}`,
+      "create-live-schedule-tool"
     );
   }
 
@@ -1974,8 +2105,9 @@ export default function MediaStudioScreen() {
       (globalThis as any).__KRISTO_SCHEDULE_CREATE_COOLDOWN_UNTIL__ = scheduleCreateCooldownUntilRef.current;
       finishCreate();
 
-      router.push("/" as any);
-      console.log("[ScheduleCreatePerf] navigated ms", Date.now() - perfStart);
+      console.log("[ScheduleCreatePerf] stay-on-media-after-create", {
+        ms: Date.now() - perfStart,
+      });
 
       void (async () => {
         try {
@@ -2557,45 +2689,51 @@ export default function MediaStudioScreen() {
     }
 
     const roomId = `guest-claim-${String(slot?.id || "slot")}`;
-    router.push({
-      pathname: "/more/my-church-room/messages/[id]",
-      params: {
-        id: roomId,
-        assignmentTitle: `Guest Claim • ${String(slot?.title || "Live Slot")}`,
-        assignmentSubtitle: name,
-        assignmentRole: "MEDIA_GUEST",
-        assignmentStatus: slot?.approved ? "approved" : "claimed",
-        assignmentInitials: name.slice(0, 1).toUpperCase(),
-        roomKind: "media-guest",
-        source: "media",
-        backTo: "/more/media",
-        guestName: name,
-        guestAvatarUri: String(slot?.avatarUri || ""),
-        slotId: String(slot?.id || ""),
-        sourceFeedId: String(slot?.sourceFeedId || ""),
+    mediaRouterPush(
+      {
+        pathname: "/more/my-church-room/messages/[id]",
+        params: {
+          id: roomId,
+          assignmentTitle: `Guest Claim • ${String(slot?.title || "Live Slot")}`,
+          assignmentSubtitle: name,
+          assignmentRole: "MEDIA_GUEST",
+          assignmentStatus: slot?.approved ? "approved" : "claimed",
+          assignmentInitials: name.slice(0, 1).toUpperCase(),
+          roomKind: "media-guest",
+          source: "media",
+          backTo: "/more/media",
+          guestName: name,
+          guestAvatarUri: String(slot?.avatarUri || ""),
+          slotId: String(slot?.id || ""),
+          sourceFeedId: String(slot?.sourceFeedId || ""),
+        },
       },
-    } as any);
+      "message-guest-claimant"
+    );
   }
 
   function enterBackendLiveAsViewer() {
     if (!activeBackendLive?.liveId) return;
 
-    router.push({
-      pathname: "/more/my-church-room/messages/live-room",
-      params: {
-        source: "media",
-        liveMode: "instant",
-        layout: "focus",
-        role: isActualChurchPastor ? "host" : "Viewer",
-        mode: isActualChurchPastor ? "host" : "viewer",
-        entryMode: "live",
-        room: "media",
-        liveId: String(activeBackendLive.liveId || ""),
-        pastorUserId: String(activeBackendLive.pastorUserId || ""),
-        mediaName: String(activeBackendLive.mediaName || churchMediaProfile?.mediaName || "Church Live"),
-        title: String(activeBackendLive.title || activeBackendLive.mediaName || "Pastor is LIVE"),
+    mediaRouterPush(
+      {
+        pathname: "/more/my-church-room/messages/live-room",
+        params: {
+          source: "media",
+          liveMode: "instant",
+          layout: "focus",
+          role: isActualChurchPastor ? "host" : "Viewer",
+          mode: isActualChurchPastor ? "host" : "viewer",
+          entryMode: "live",
+          room: "media",
+          liveId: String(activeBackendLive.liveId || ""),
+          pastorUserId: String(activeBackendLive.pastorUserId || ""),
+          mediaName: String(activeBackendLive.mediaName || churchMediaProfile?.mediaName || "Church Live"),
+          title: String(activeBackendLive.title || activeBackendLive.mediaName || "Pastor is LIVE"),
+        },
       },
-    } as any);
+      "enter-backend-live-viewer"
+    );
   }
 
   function handlePostVideo() {
@@ -2612,31 +2750,34 @@ export default function MediaStudioScreen() {
     }
 
     if (activeMediaLiveSlot) {
-      router.push({
-        pathname: "/more/my-church-room/messages/live-room",
-        params: {
-          source: "media",
-          liveMode: "instant",
-          layout: "focus",
-          role: canUseMediaTools ? "host" : "Viewer",
-          mode: canUseMediaTools ? "host" : "viewer",
-          entryMode: "live",
-          room: "media",
-          mediaName:
-            form.mediaName.trim() ||
-            churchMediaProfile?.mediaName ||
-            "Church Media",
-          liveId: String(
-            activeMediaLiveSlot?.sourceFeedId ||
-            activeMediaLiveSlot?.id ||
-            "media-live"
-          ),
-          title: String(
-            activeMediaLiveSlot?.title ||
-            "Church Live"
-          ),
+      mediaRouterPush(
+        {
+          pathname: "/more/my-church-room/messages/live-room",
+          params: {
+            source: "media",
+            liveMode: "instant",
+            layout: "focus",
+            role: canUseMediaTools ? "host" : "Viewer",
+            mode: canUseMediaTools ? "host" : "viewer",
+            entryMode: "live",
+            room: "media",
+            mediaName:
+              form.mediaName.trim() ||
+              churchMediaProfile?.mediaName ||
+              "Church Media",
+            liveId: String(
+              activeMediaLiveSlot?.sourceFeedId ||
+              activeMediaLiveSlot?.id ||
+              "media-live"
+            ),
+            title: String(
+              activeMediaLiveSlot?.title ||
+              "Church Live"
+            ),
+          },
         },
-      } as any);
+        "handle-go-live-active-slot"
+      );
 
       return;
     }
@@ -2783,7 +2924,7 @@ export default function MediaStudioScreen() {
         {hasMediaAccount ? (
         <View style={[s.headerRow, !hasMediaAccount ? s.headerRowCreateHidden : null]}>
           {hasMediaAccount ? (
-            <Pressable onPress={() => router.back()} style={({ pressed }) => [s.backBtn, pressed ? s.pressed : null]}>
+            <Pressable onPress={() => mediaRouterBack("header-back-button")} style={({ pressed }) => [s.backBtn, pressed ? s.pressed : null]}>
               <Ionicons name="chevron-back" size={22} color="#fff" />
             </Pressable>
           ) : (
@@ -3523,7 +3664,7 @@ export default function MediaStudioScreen() {
                       );
                       return;
                     }
-                    router.push("/more/media/select-hosts" as any);
+                    mediaRouterPush("/more/media/select-hosts", "manage-hosts-card");
                   }}
                   style={({ pressed }) => [s.smallCard, s.glassFollowers, pressed ? s.pressed : null]}
                 >
@@ -3626,7 +3767,7 @@ export default function MediaStudioScreen() {
 
                 {canManageMediaStorage ? (
                   <Pressable
-                    onPress={() => router.push("/more/media-storage" as any)}
+                    onPress={() => mediaRouterPush("/more/media-storage", "media-storage-card")}
                     style={({ pressed }) => [s.smallCard, s.glassStorageMedia, pressed ? s.pressed : null]}
                   >
                     <View style={s.cardAura} />
@@ -3642,7 +3783,7 @@ export default function MediaStudioScreen() {
 
                 {canManageChurchStorage ? (
                   <Pressable
-                    onPress={() => router.push("/more/church-storage" as any)}
+                    onPress={() => mediaRouterPush("/more/church-storage", "church-storage-card")}
                     style={({ pressed }) => [s.smallCard, s.glassStorageChurch, pressed ? s.pressed : null]}
                   >
                     <View style={s.cardAura} />
