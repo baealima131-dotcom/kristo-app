@@ -1186,7 +1186,7 @@ const FeedVideo = memo(function FeedVideo({
   const shouldHidePosterNow = shouldPlay && videoReady;
   const awaitingVideoSurface = shouldPlay && !videoReady;
   const showingPoster = Boolean(poster) && !shouldHidePosterNow;
-  const showGoldUnderlay = awaitingVideoSurface && Boolean(poster);
+  const showGoldUnderlay = false;
   const showBrandedPlaceholder = awaitingVideoSurface && !poster;
 
   useEffect(() => {
