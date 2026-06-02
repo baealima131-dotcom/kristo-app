@@ -1157,7 +1157,21 @@ async function handleFeedGet(
 
     const hasMembership = await viewerHasActiveChurchMembership(churchId, viewerUserId);
 
-    const items = homeReadyRows
+    const forcedMediaHomeRows = rawRows.filter((x: any) => {
+      const sameChurch =
+        String(x?.churchId || "").trim() === churchId ||
+        String(x?.ownerChurchId || "").trim() === churchId;
+      const isMediaUpload = String(x?.source || "").toLowerCase() === "media-upload";
+      const isReady = String(x?.mediaStatus || "ready").toLowerCase() === "ready";
+      const hasVideo = Boolean(String(x?.videoUrl || x?.videoUri || x?.mediaUrl || "").trim());
+      return sameChurch && isMediaUpload && isReady && hasVideo;
+    });
+
+    const mergedHomeRows = [...forcedMediaHomeRows, ...homeReadyRows].filter(
+      (x: any, idx, arr) => arr.findIndex((y: any) => String(y?.id || "") === String(x?.id || "")) === idx
+    );
+
+    const items = mergedHomeRows
       .filter((x: any) => {
         if (isClaimableScheduleFeedItem(x) && !hasMembership) {
           return false;
