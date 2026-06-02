@@ -40,6 +40,20 @@ import {
   type StoragePostLabel,
 } from "@/src/lib/churchStoragePosts";
 import { mediaStatusLabel, normalizeMediaStatus } from "@/src/lib/mediaStatus";
+import {
+  listActiveMediaUploadJobs,
+  listMediaUploadJobs,
+  subscribeMediaUploadJobs,
+  type PersistedMediaUploadJob,
+} from "@/src/lib/mediaUploadJobStore";
+import {
+  isMultipartBackendNotDeployedJob,
+  markMediaUploadJobReady,
+  MULTIPART_BACKEND_NOT_DEPLOYED_MESSAGE,
+  resumePausedMediaUploadJobs,
+  retryMediaUploadJob,
+} from "@/src/lib/optimisticVideoUpload";
+import { startKristoNetworkMonitor } from "@/src/lib/networkMonitor";
 
 type FeedStorageItem = {
   id: string;
@@ -300,6 +314,120 @@ function StoragePostCard({
   );
 }
 
+function MediaUploadJobCard({
+  job,
+  onRetry,
+}: {
+  job: PersistedMediaUploadJob;
+  onRetry: () => void;
+}) {
+  const phase = job.phase;
+  const multipartBlocked = isMultipartBackendNotDeployedJob(job);
+  const progress =
+    phase === "processing" || phase === "ready"
+      ? 100
+      : Math.max(0, Math.min(100, Math.round(job.uploadProgress || 0)));
+
+  const statusLabel =
+    phase === "uploading"
+      ? `Uploading ${progress}%`
+      : phase === "paused"
+        ? `Paused at ${Math.round(job.pausedAtProgress ?? progress)}%`
+        : phase === "processing"
+          ? "Processing..."
+          : phase === "ready"
+            ? "Ready"
+            : phase === "failed"
+              ? "Failed"
+              : "Uploading";
+
+  const showProgressTrack = phase === "uploading" || phase === "paused";
+  const showSpinner =
+    phase === "uploading" || phase === "processing" || (phase === "paused" && !multipartBlocked);
+
+  return (
+    <View style={s.uploadJobCard}>
+      <View style={s.uploadJobHeader}>
+        {showSpinner ? <ActivityIndicator size="small" color="#F4C95D" /> : null}
+        <View style={{ flex: 1 }}>
+          <Text style={s.uploadJobTitle} numberOfLines={2}>
+            {job.title}
+          </Text>
+          {job.caption ? (
+            <Text style={s.uploadJobCaption} numberOfLines={2}>
+              {job.caption}
+            </Text>
+          ) : null}
+        </View>
+        <View style={s.uploadJobStatusBadge}>
+          <Text style={s.uploadJobStatusText}>{statusLabel}</Text>
+        </View>
+      </View>
+
+      {showProgressTrack ? (
+        <View style={s.uploadJobProgressTrack}>
+          <View style={[s.uploadJobProgressFill, { width: `${progress}%` }]} />
+        </View>
+      ) : null}
+
+      {phase === "paused" ? (
+        <Text style={s.uploadJobHint}>
+          {multipartBlocked
+            ? "Resumable upload is waiting for the server update. Retry is disabled until multipart upload routes are deployed."
+            : job.resumableMode === "chunk"
+              ? "Connection lost. Upload will resume from the last completed chunk when you are back online."
+              : "Connection lost. Retry will restart the file until chunk upload is fully enabled."}
+        </Text>
+      ) : null}
+
+      {phase === "processing" ? (
+        <Text style={s.uploadJobHint}>
+          Video saved to Media Storage. Home Feed will show it when mediaStatus is ready.
+        </Text>
+      ) : null}
+
+      {phase === "ready" ? (
+        <Text style={s.uploadJobHint}>Ready for Home Feed.</Text>
+      ) : null}
+
+      {job.error && (phase === "paused" || phase === "failed") ? (
+        <Text style={s.uploadJobError} numberOfLines={3}>
+          {job.error}
+        </Text>
+      ) : null}
+
+      {phase === "paused" || phase === "failed" ? (
+        <Pressable
+          onPress={() => {
+            if (multipartBlocked) {
+              Alert.alert(
+                "Upload not available yet",
+                `${MULTIPART_BACKEND_NOT_DEPLOYED_MESSAGE} Deploy the multipart upload routes on the server, then tap Retry again.`,
+                [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Retry now", onPress: onRetry },
+                ]
+              );
+              return;
+            }
+            onRetry();
+          }}
+          style={({ pressed }) => [
+            s.uploadJobRetryBtn,
+            multipartBlocked ? s.uploadJobRetryBtnDisabled : null,
+            !multipartBlocked && pressed ? s.pressed : null,
+          ]}
+        >
+          <Ionicons name="refresh-outline" size={16} color={multipartBlocked ? "#64748B" : "#07111F"} />
+          <Text style={[s.uploadJobRetryText, multipartBlocked ? s.uploadJobRetryTextDisabled : null]}>
+            {multipartBlocked ? "Waiting for server" : phase === "paused" ? "Retry now" : "Try again"}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 function parseStorageDeleteResponse(res: any, postId: string) {
   const payload = res?.data && typeof res.data === "object" ? res.data : res;
   const deletedId = String(payload?.postId || res?.postId || postId || "").trim();
@@ -335,6 +463,7 @@ export default function FeedStorageScreen({
   const [deletingId, setDeletingId] = useState("");
   const [isMediaHost, setIsMediaHost] = useState(false);
   const [previewItem, setPreviewItem] = useState<FeedStorageItem | null>(null);
+  const [uploadJobs, setUploadJobs] = useState<PersistedMediaUploadJob[]>([]);
 
   const churchId = String(session?.churchId || "").trim();
 
@@ -349,6 +478,25 @@ export default function FeedStorageScreen({
   );
 
   const canDelete = canDeleteStoragePosts(mode, session, mediaAccess.isMediaHost);
+
+  const refreshUploadJobs = useCallback(async () => {
+    if (!churchId) {
+      setUploadJobs([]);
+      return;
+    }
+    const jobs = await listMediaUploadJobs(churchId);
+    setUploadJobs(listActiveMediaUploadJobs(jobs));
+  }, [churchId]);
+
+  useEffect(() => {
+    startKristoNetworkMonitor();
+    void refreshUploadJobs();
+    void resumePausedMediaUploadJobs("media-storage-mount");
+
+    return subscribeMediaUploadJobs(() => {
+      void refreshUploadJobs();
+    });
+  }, [refreshUploadJobs]);
 
   useEffect(() => {
     let alive = true;
@@ -419,9 +567,36 @@ export default function FeedStorageScreen({
           : [];
 
       const filtered = mergeStorageSourceRows(apiList, supplemental, mode, churchId);
-      setRows(filtered);
 
-      const processingCount = filtered.filter(
+      if (mode === "media") {
+        const jobs = await listMediaUploadJobs(churchId);
+        for (const job of jobs) {
+          if (!job.backendFeedId || job.phase === "ready") continue;
+          const backendRow = filtered.find((row: any) => String(row?.id || "") === job.backendFeedId);
+          const backendStatus = normalizeMediaStatus(backendRow?.mediaStatus);
+          if (backendStatus === "ready") {
+            await markMediaUploadJobReady(job.jobId, "ready");
+          }
+        }
+      }
+
+      const activeJobs = listActiveMediaUploadJobs(await listMediaUploadJobs(churchId));
+      const activeBackendIds = new Set(
+        activeJobs.map((job) => String(job.backendFeedId || "").trim()).filter(Boolean)
+      );
+
+      const visibleRows = filtered.filter((row: any) => {
+        const id = String(row?.id || "").trim();
+        if (!id) return true;
+        if (!activeBackendIds.has(id)) return true;
+        const status = normalizeMediaStatus(row?.mediaStatus);
+        return status === "ready";
+      });
+
+      setUploadJobs(activeJobs);
+      setRows(visibleRows);
+
+      const processingCount = visibleRows.filter(
         (item: any) => normalizeMediaStatus(item?.mediaStatus) === "processing"
       ).length;
 
@@ -430,7 +605,8 @@ export default function FeedStorageScreen({
           storageType: mode,
           apiCount: apiList.length,
           supplementalCount: supplemental.length,
-          filteredCount: filtered.length,
+          filteredCount: visibleRows.length,
+          activeUploadJobs: activeJobs.length,
           processingCount,
         });
       }
@@ -443,8 +619,10 @@ export default function FeedStorageScreen({
   }, [churchId, mode, session?.role, session?.userId]);
 
   const hasProcessingRows = useMemo(
-    () => rows.some((item) => normalizeMediaStatus(item.mediaStatus) === "processing"),
-    [rows]
+    () =>
+      rows.some((item) => normalizeMediaStatus(item.mediaStatus) === "processing") ||
+      uploadJobs.some((job) => job.phase === "processing"),
+    [rows, uploadJobs]
   );
 
   useEffect(() => {
@@ -569,13 +747,15 @@ export default function FeedStorageScreen({
         <View style={{ flex: 1 }}>
           <View style={s.titleRow}>
             <Text style={s.title}>{title}</Text>
-            {!loading ? <Text style={s.countBadge}>{rows.length}</Text> : null}
+            {!loading ? (
+              <Text style={s.countBadge}>{rows.length + (mode === "media" ? uploadJobs.length : 0)}</Text>
+            ) : null}
           </View>
           <Text style={s.subtitle}>{subtitle}</Text>
         </View>
       </View>
 
-      {loading ? (
+      {loading && !(mode === "media" && uploadJobs.length) ? (
         <View style={s.center}>
           <ActivityIndicator color="#F4C95D" />
         </View>
@@ -584,7 +764,25 @@ export default function FeedStorageScreen({
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[s.list, { paddingBottom: insets.bottom + 28 }]}
         >
-          {!rows.length ? (
+          {mode === "media" && uploadJobs.length
+            ? uploadJobs.map((job) => (
+                <MediaUploadJobCard
+                  key={job.jobId}
+                  job={job}
+                  onRetry={() => {
+                    void retryMediaUploadJob(job.jobId, { manual: true });
+                  }}
+                />
+              ))
+            : null}
+
+          {loading ? (
+            <View style={s.inlineLoading}>
+              <ActivityIndicator color="#F4C95D" />
+            </View>
+          ) : null}
+
+          {!rows.length && !(mode === "media" && uploadJobs.length) ? (
             <View style={s.emptyCard}>
               <Ionicons name="folder-open-outline" size={28} color="#F4C95D" />
               <Text style={s.emptyTitle}>No posts yet</Text>
@@ -675,6 +873,11 @@ const s = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
+  },
+  inlineLoading: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 16,
   },
   list: {
     paddingHorizontal: 16,
@@ -801,6 +1004,87 @@ const s = StyleSheet.create({
     fontSize: 9,
     fontWeight: "900",
     letterSpacing: 0.35,
+  },
+  uploadJobCard: {
+    borderRadius: 22,
+    padding: 16,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.18)",
+    gap: 10,
+  },
+  uploadJobHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  uploadJobTitle: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "800",
+    lineHeight: 22,
+  },
+  uploadJobCaption: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  uploadJobStatusBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: "rgba(244,201,93,0.14)",
+  },
+  uploadJobStatusText: {
+    color: "#F4C95D",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.35,
+  },
+  uploadJobProgressTrack: {
+    height: 8,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  uploadJobProgressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#F4C95D",
+  },
+  uploadJobHint: {
+    color: "rgba(255,255,255,0.68)",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  uploadJobError: {
+    color: "#FFB4B4",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  uploadJobRetryBtn: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "#F4C95D",
+  },
+  uploadJobRetryBtnDisabled: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  uploadJobRetryText: {
+    color: "#07111F",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  uploadJobRetryTextDisabled: {
+    color: "#94A3B8",
   },
   authorRow: {
     flexDirection: "row",

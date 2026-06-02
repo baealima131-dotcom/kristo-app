@@ -1,8 +1,16 @@
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
+  PutObjectCommand,
+  S3Client,
+  UploadPartCommand,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export const MAX_VIDEO_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024;
 export const VIDEO_UPLOAD_URL_TTL_SECONDS = 2 * 60 * 60;
+export const VIDEO_MULTIPART_CHUNK_BYTES = 5 * 1024 * 1024;
+export const VIDEO_MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024;
 
 export type VideoStorageConfig = {
   bucket: string;
@@ -101,6 +109,18 @@ function extFromFileName(fileName: string, contentType: string) {
   return ".mp4";
 }
 
+function extFromImageFileName(fileName: string, contentType: string) {
+  const byName = String(fileName || "").match(/(\.[a-z0-9]+)$/i)?.[1];
+  if (byName) return byName.toLowerCase();
+
+  const mime = String(contentType || "").toLowerCase();
+  if (mime.includes("png")) return ".png";
+  if (mime.includes("webp")) return ".webp";
+  return ".jpg";
+}
+
+export const MAX_POSTER_UPLOAD_BYTES = 12 * 1024 * 1024;
+
 export function buildPublicVideoUrl(config: VideoStorageConfig, key: string) {
   const encodedKey = key
     .split("/")
@@ -116,16 +136,44 @@ export async function createPresignedVideoUpload(params: {
   contentType: string;
   fileSize: number;
 }) {
+  return createPresignedMediaUpload({ ...params, kind: "video" });
+}
+
+export async function createPresignedPosterUpload(params: {
+  churchId: string;
+  userId: string;
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+}) {
+  return createPresignedMediaUpload({ ...params, kind: "poster" });
+}
+
+export async function createPresignedMediaUpload(params: {
+  churchId: string;
+  userId: string;
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+  kind: "video" | "poster";
+}) {
   const config = getVideoStorageConfig();
   if (!config) {
     throw new Error(videoStorageConfigError());
   }
 
-  const contentType = String(params.contentType || "video/mp4").trim() || "video/mp4";
-  const ext = extFromFileName(params.fileName, contentType);
-  const stem = safeFileStem(params.fileName.replace(/\.[^.]+$/, "") || "sermon");
+  const isPoster = params.kind === "poster";
+  const contentType = String(
+    params.contentType || (isPoster ? "image/jpeg" : "video/mp4")
+  ).trim() || (isPoster ? "image/jpeg" : "video/mp4");
+  const ext = isPoster
+    ? extFromImageFileName(params.fileName, contentType)
+    : extFromFileName(params.fileName, contentType);
+  const stem = safeFileStem(
+    params.fileName.replace(/\.[^.]+$/, "") || (isPoster ? "poster" : "sermon")
+  );
   const key = [
-    "church-videos",
+    isPoster ? "church-video-posters" : "church-videos",
     safeFileStem(params.churchId || "unknown"),
     `${Date.now()}_${Math.random().toString(16).slice(2)}_${stem}${ext}`,
   ].join("/");
@@ -142,13 +190,160 @@ export async function createPresignedVideoUpload(params: {
     expiresIn: VIDEO_UPLOAD_URL_TTL_SECONDS,
   });
 
+  const publicUrl = buildPublicVideoUrl(config, key);
+
   return {
     uploadUrl,
-    videoUrl: buildPublicVideoUrl(config, key),
+    videoUrl: publicUrl,
+    publicUrl,
     key,
     contentType,
     expiresIn: VIDEO_UPLOAD_URL_TTL_SECONDS,
-    maxBytes: MAX_VIDEO_UPLOAD_BYTES,
+    maxBytes: isPoster ? MAX_POSTER_UPLOAD_BYTES : MAX_VIDEO_UPLOAD_BYTES,
+  };
+}
+
+function buildVideoObjectKey(params: {
+  churchId: string;
+  fileName: string;
+  contentType: string;
+  kind: "video" | "poster";
+}) {
+  const isPoster = params.kind === "poster";
+  const contentType = String(
+    params.contentType || (isPoster ? "image/jpeg" : "video/mp4")
+  ).trim() || (isPoster ? "image/jpeg" : "video/mp4");
+  const ext = isPoster
+    ? extFromImageFileName(params.fileName, contentType)
+    : extFromFileName(params.fileName, contentType);
+  const stem = safeFileStem(
+    params.fileName.replace(/\.[^.]+$/, "") || (isPoster ? "poster" : "sermon")
+  );
+
+  return [
+    isPoster ? "church-video-posters" : "church-videos",
+    safeFileStem(params.churchId || "unknown"),
+    `${Date.now()}_${Math.random().toString(16).slice(2)}_${stem}${ext}`,
+  ].join("/");
+}
+
+export async function createMultipartVideoUpload(params: {
+  churchId: string;
+  userId: string;
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+}) {
+  const config = getVideoStorageConfig();
+  if (!config) {
+    throw new Error(videoStorageConfigError());
+  }
+
+  const contentType = String(params.contentType || "video/mp4").trim() || "video/mp4";
+  const key = buildVideoObjectKey({
+    churchId: params.churchId,
+    fileName: params.fileName,
+    contentType,
+    kind: "video",
+  });
+  const chunkSize = VIDEO_MULTIPART_CHUNK_BYTES;
+  const totalParts = Math.max(1, Math.ceil(params.fileSize / chunkSize));
+
+  const client = createStorageClient(config);
+  const created = await client.send(
+    new CreateMultipartUploadCommand({
+      Bucket: config.bucket,
+      Key: key,
+      ContentType: contentType,
+    })
+  );
+
+  const uploadId = String(created.UploadId || "").trim();
+  if (!uploadId) {
+    throw new Error("Could not start multipart upload.");
+  }
+
+  const publicUrl = buildPublicVideoUrl(config, key);
+
+  return {
+    uploadId,
+    key,
+    publicUrl,
+    videoUrl: publicUrl,
+    contentType,
+    chunkSize,
+    totalParts,
+    expiresIn: VIDEO_UPLOAD_URL_TTL_SECONDS,
+  };
+}
+
+export async function createPresignedMultipartPartUpload(params: {
+  key: string;
+  uploadId: string;
+  partNumber: number;
+  contentLength: number;
+}) {
+  const config = getVideoStorageConfig();
+  if (!config) {
+    throw new Error(videoStorageConfigError());
+  }
+
+  const partNumber = Math.max(1, Math.floor(Number(params.partNumber || 1)));
+  const client = createStorageClient(config);
+  const command = new UploadPartCommand({
+    Bucket: config.bucket,
+    Key: params.key,
+    UploadId: params.uploadId,
+    PartNumber: partNumber,
+    ContentLength: Math.max(1, Math.floor(Number(params.contentLength || 0))),
+  });
+
+  const uploadUrl = await getSignedUrl(client, command, {
+    expiresIn: VIDEO_UPLOAD_URL_TTL_SECONDS,
+  });
+
+  return {
+    uploadUrl,
+    partNumber,
+    expiresIn: VIDEO_UPLOAD_URL_TTL_SECONDS,
+  };
+}
+
+export async function completeMultipartVideoUpload(params: {
+  key: string;
+  uploadId: string;
+  parts: Array<{ partNumber: number; etag: string }>;
+}) {
+  const config = getVideoStorageConfig();
+  if (!config) {
+    throw new Error(videoStorageConfigError());
+  }
+
+  const client = createStorageClient(config);
+  const completed = await client.send(
+    new CompleteMultipartUploadCommand({
+      Bucket: config.bucket,
+      Key: params.key,
+      UploadId: params.uploadId,
+      MultipartUpload: {
+        Parts: params.parts
+          .slice()
+          .sort((a, b) => a.partNumber - b.partNumber)
+          .map((part) => ({
+            ETag: part.etag,
+            PartNumber: part.partNumber,
+          })),
+      },
+    })
+  );
+
+  const publicUrl = buildPublicVideoUrl(config, params.key);
+
+  return {
+    key: params.key,
+    publicUrl,
+    videoUrl: publicUrl,
+    location: completed.Location || publicUrl,
   };
 }
 

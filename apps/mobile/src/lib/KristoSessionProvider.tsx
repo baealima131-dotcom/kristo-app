@@ -15,13 +15,19 @@ import { getKristoHeaders } from "./kristoHeaders";
 import { resolveChurchDisplayName } from "./churchStore";
 import { resolveActiveChurchFromProfileResponse, isActiveMembershipStatus } from "./churchMembershipSync";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
-import { silentPreloadTabScreens } from "./screenDataCache";
+import {
+  hydrateSessionOnce,
+  scheduleCoordinatedAppRefresh,
+  seedChurchMediaAccessFromSession,
+} from "./refreshCoordinator";
+import { deferNonCriticalRefresh } from "./firstPaint";
 import {
   inviteEventTargetsCurrentUser,
   onChurchInviteAccepted,
   onChurchInviteSent,
   onChurchMembershipChanged,
 } from "./kristoChurchInviteEvents";
+import { startMediaUploadResumeSystem } from "./optimisticVideoUpload";
 
 type Ctx = {
   session: KristoSession | null;
@@ -46,23 +52,29 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       setSessionState(s);
       setLoading(false);
 
-      // Home ifunguke kwanza; profile/church/home feed zijipange kimya kimya nyuma
-      (async () => {
-        const ready = ((await silentSyncProfile(s, { returnOnly: true })) as KristoSession | null) || s || null;
-        if (!alive || !ready?.userId) return;
-        setSessionSync(ready);
-        setSessionState(ready);
-        await silentPreloadChurchAndHome(ready);
-      })();
+      // Session opens immediately; profile sync + cache warm run after first paint.
+      deferNonCriticalRefresh(() => {
+        void (async () => {
+          const ready =
+            ((await hydrateSessionOnce(s, (base) =>
+              silentSyncProfile(base, { returnOnly: true })
+            )) as KristoSession | null) || s || null;
+          if (!alive || !ready?.userId) return;
+          seedChurchMediaAccessFromSession({
+            userId: ready.userId,
+            role: ready.role,
+            churchRole: ready.churchRole,
+          });
+          setSessionSync(ready);
+          setSessionState(ready);
+          scheduleCoordinatedAppRefresh(ready, { delayMs: 0 });
+        })();
+      }, 1800);
     })();
     return () => {
       alive = false;
     };
   }, []);
-
-  async function silentPreloadChurchAndHome(baseSession: KristoSession | null) {
-    await silentPreloadTabScreens(baseSession);
-  }
 
   async function silentSyncProfile(
     baseSession: KristoSession | null,
@@ -170,6 +182,14 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
   }
 
   useEffect(() => {
+    if (loading) return;
+    const churchId = String(session?.churchId || "").trim();
+    if (!session?.userId || !churchId) return;
+
+    void startMediaUploadResumeSystem("app-startup");
+  }, [loading, session?.userId, session?.churchId]);
+
+  useEffect(() => {
     if (!session?.userId) return;
 
     const checkExpiry = async () => {
@@ -204,7 +224,12 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     };
 
     silentSyncProfile(session).then((synced) => {
-      void silentPreloadTabScreens(synced || session);
+      const next = synced || session;
+      seedChurchMediaAccessFromSession({
+        userId: next.userId,
+        role: next.role,
+        churchRole: next.churchRole,
+      });
     });
     const t = setInterval(async () => {
       await checkExpiry();
@@ -251,7 +276,12 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
           setSessionState(touched);
           clearResponseCacheForRequest("GET", "/api/auth/profile", touched.userId);
           const synced = await silentSyncProfile(touched, { throttleMs: 0, omitChurchHeader: true });
-          await silentPreloadTabScreens(synced || touched, { force: true });
+          seedChurchMediaAccessFromSession({
+            userId: (synced || touched).userId,
+            role: (synced || touched).role,
+            churchRole: (synced || touched).churchRole,
+          });
+          scheduleCoordinatedAppRefresh(synced || touched, { force: true, delayMs: 2500 });
         }
       }
     });
@@ -295,7 +325,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
           omitChurchHeader: true,
         })) || cleared;
 
-      await silentPreloadTabScreens(synced, { force: true });
+      scheduleCoordinatedAppRefresh(synced, { force: true, delayMs: 2500 });
     };
 
     const unsubs = [
