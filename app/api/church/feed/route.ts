@@ -1138,7 +1138,7 @@ async function handleFeedGet(
       mediaHomeReady: homeReadyRows.filter((x: any) => String(x?.source || "") === "media-upload").length,
     });
 
-    if (__DEV__) {
+    if (process.env.NODE_ENV !== 'production') {
       const skipped = afterDiscover.length - homeReadyRows.length;
       if (skipped > 0) {
         console.log("KRISTO_HOME_FEED_MEDIA_STATUS_FILTER", {
