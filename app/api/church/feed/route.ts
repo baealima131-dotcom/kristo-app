@@ -1069,7 +1069,15 @@ async function handleFeedGet(
       return ok(detail);
     }
 
-    const rawRows = await listFeedItemsForChurch(churchId);
+    let rawRows = await listFeedItemsForChurch(churchId);
+    if (rawRows.length === 0) {
+      const fallbackRows = await listFeedItems();
+      rawRows = fallbackRows.filter((x: any) => {
+        const cid = String(x?.churchId || "").trim();
+        const ownerCid = String(x?.ownerChurchId || "").trim();
+        return cid === churchId || ownerCid === churchId;
+      });
+    }
     const allRows = rawRows.filter((x: any) => {
       const isMediaUpload =
         String(x?.source || "") === "media-upload" ||
