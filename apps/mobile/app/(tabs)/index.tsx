@@ -78,6 +78,7 @@ import {
   retryOptimisticVideoUpload,
 } from "@/src/lib/optimisticVideoUpload";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
+import { VipSkeletonLine } from "@/src/ui/VipSkeleton";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const BODY_PREVIEW_CHARS = 140;
@@ -900,6 +901,35 @@ function FeedVideoUploadOverlay({
   );
 }
 
+function HomeFeedLoadingSkeleton({ itemH }: { itemH: number }) {
+  return (
+    <View style={[s.feedLoadingWrap, { height: itemH }]}>
+      <LinearGradient
+        colors={["#1a1428", "#0f1729", "#15120a"]}
+        locations={[0, 0.55, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
+      <LinearGradient
+        colors={["rgba(247,211,106,0.14)", "transparent", "rgba(247,211,106,0.08)"]}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View style={s.feedLoadingContent}>
+        <View style={s.feedLoadingAvatarPulse}>
+          <VipSkeletonLine w={72} h={72} r={36} />
+        </View>
+        <VipSkeletonLine w={220} h={18} r={10} />
+        <VipSkeletonLine w={280} h={14} r={8} style={{ marginTop: 10 }} />
+        <VipSkeletonLine w={180} h={14} r={8} style={{ marginTop: 8 }} />
+        <View style={s.feedLoadingPlayRing}>
+          <ActivityIndicator size="small" color="#F7D36A" />
+        </View>
+        <Text style={s.feedLoadingLabel}>Loading your feed...</Text>
+      </View>
+    </View>
+  );
+}
+
 function FeedVideoBrandedPlaceholder({
   title,
   avatarUri,
@@ -1519,7 +1549,9 @@ const FeedVideo = memo(function FeedVideo({
   }, [player, effectiveShouldPlay, scrubbing, postId, forcePauseNoAudio]);
 
   const maxDuration = Math.max(duration, 0.01);
-  const mountVideoView = shouldPlay && videoReady;
+  // Mount video surface early so it can prepare behind the poster.
+  // Playback/audio still waits for videoReady via effectiveShouldPlay.
+  const mountVideoView = shouldPlay || isWarmupTarget || videoReady;
 
   return (
     <View style={s.media}>
@@ -4371,6 +4403,11 @@ export default function FeedScreen() {
   const [profileAvatarUri, setProfileAvatarUri] = useState("");
   const [skippedScheduleIds, setSkippedScheduleIds] = useState<Record<string, true>>({});
   const [backendFeed, setBackendFeed] = useState<any[]>([]);
+  const [feedFetchPending, setFeedFetchPending] = useState(false);
+  const [feedFetchHasLoadedOnce, setFeedFetchHasLoadedOnce] = useState(false);
+  const [feedLastFetchWasSuccessful, setFeedLastFetchWasSuccessful] = useState(false);
+  const feedFetchInflightRef = useRef(0);
+  const homeFeedEmptySuppressedLoggedRef = useRef(false);
   const [optimisticLikes, setOptimisticLikes] = useState<Record<string, { liked: boolean; likeCount: number }>>({});
   const optimisticLikesRef = useRef(optimisticLikes);
   const [forYouSignals, setForYouSignals] = useState<Record<string, ForYouSignal>>({});
@@ -4518,6 +4555,10 @@ export default function FeedScreen() {
     const viewerChurchId = String(session?.churchId || "").trim();
     const viewerUserId = String(session?.userId || "").trim();
 
+    feedFetchInflightRef.current += 1;
+    setFeedFetchPending(true);
+    let fetchSucceeded = false;
+
     try {
       const res: any = await apiGet(
         `/api/church/feed?_=${Date.now()}`,
@@ -4531,6 +4572,8 @@ export default function FeedScreen() {
         },
         { screen: "HomeFeed", throttleMs: reason === "focus" ? 0 : 8000 }
       );
+
+      fetchSucceeded = true;
 
       const rawRows = Array.isArray(res?.data)
         ? res.data
@@ -4747,6 +4790,13 @@ export default function FeedScreen() {
         }
       } catch (e) {
         console.log("KRISTO_BACKEND_FEED_ERROR", e);
+      } finally {
+        feedFetchInflightRef.current = Math.max(0, feedFetchInflightRef.current - 1);
+        setFeedFetchPending(feedFetchInflightRef.current > 0);
+        setFeedFetchHasLoadedOnce(true);
+        if (fetchSucceeded) {
+          setFeedLastFetchWasSuccessful(true);
+        }
       }
   }, []);
 
@@ -6197,7 +6247,41 @@ export default function FeedScreen() {
     }
   }).current;
 
-  if (!visibleData.length) {
+  const backendCount = backendFeed.length;
+  const showFeedLoadingState =
+    visibleData.length === 0 && (feedFetchPending || !feedFetchHasLoadedOnce);
+  const showFeedEmptyState =
+    visibleData.length === 0 &&
+    feedFetchHasLoadedOnce &&
+    !feedFetchPending &&
+    feedLastFetchWasSuccessful &&
+    backendCount === 0;
+
+  if (showFeedLoadingState) {
+    if (!homeFeedEmptySuppressedLoggedRef.current) {
+      homeFeedEmptySuppressedLoggedRef.current = true;
+      console.log("KRISTO_HOME_FEED_EMPTY_SUPPRESSED_LOADING", {
+        feedFetchPending,
+        feedFetchHasLoadedOnce,
+        backendCount,
+        visibleCount: visibleData.length,
+      });
+    }
+    return (
+      <View style={s.wrap}>
+        <HomeFeedLoadingSkeleton itemH={itemH} />
+      </View>
+    );
+  }
+
+  if (showFeedEmptyState) {
+    homeFeedEmptySuppressedLoggedRef.current = false;
+    console.log("KRISTO_HOME_FEED_EMPTY_SHOWN_AFTER_LOADED", {
+      backendCount,
+      visibleCount: visibleData.length,
+      feedFetchPending,
+      feedLastFetchWasSuccessful,
+    });
     return (
       <View style={s.emptyWrap}>
         <Text style={s.emptyTitle}>Global Feed</Text>
@@ -6205,6 +6289,16 @@ export default function FeedScreen() {
       </View>
     );
   }
+
+  if (!visibleData.length) {
+    return (
+      <View style={s.wrap}>
+        <HomeFeedLoadingSkeleton itemH={itemH} />
+      </View>
+    );
+  }
+
+  homeFeedEmptySuppressedLoggedRef.current = false;
 
   return (
     <View style={s.wrap}>
@@ -6461,6 +6555,40 @@ const s: any = StyleSheet.create({
     lineHeight: 13,
     fontWeight: "900",
     transform: [{ rotate: "90deg" }],
+  },
+
+  feedLoadingWrap: {
+    width: "100%",
+    overflow: "hidden",
+    backgroundColor: "#070B14",
+  },
+  feedLoadingContent: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 28,
+    gap: 0,
+  },
+  feedLoadingAvatarPulse: {
+    marginBottom: 18,
+  },
+  feedLoadingPlayRing: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    marginTop: 22,
+    marginBottom: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.32)",
+    borderWidth: 1,
+    borderColor: "rgba(247,211,106,0.28)",
+  },
+  feedLoadingLabel: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 15,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
 
   emptyWrap: {
