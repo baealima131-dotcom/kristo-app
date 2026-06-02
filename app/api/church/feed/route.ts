@@ -1039,6 +1039,26 @@ async function handleFeedGet(
       return feedListOk(viewerChurchId, resolvedStorageItems);
     }
 
+    if (url.searchParams.get("debug") === "feed") {
+      const all = await listFeedItems();
+      const byChurch = await listFeedItemsForChurch(churchId);
+      return ok({
+        churchId,
+        headerChurchId,
+        totalAll: all.length,
+        totalByChurch: byChurch.length,
+        mediaAll: all.filter((x: any) => String(x?.source || "") === "media-upload").map((x: any) => ({
+          id: x.id,
+          churchId: x.churchId,
+          ownerChurchId: x.ownerChurchId,
+          source: x.source,
+          type: x.type,
+          mediaStatus: x.mediaStatus,
+          hasVideoUrl: Boolean(x.videoUrl),
+        })).slice(0, 10),
+      });
+    }
+
     if (id) {
       const item = await getFeedItemById(id);
       if (!item) return err("Feed item not found", 404);
