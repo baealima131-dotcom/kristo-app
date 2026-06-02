@@ -43,6 +43,7 @@ import {
   getFeedItemById,
   isFeedDatabaseError,
   listFeedItems,
+  listFeedItemsForChurch,
   upsertFeedItem,
 } from "@/app/api/_lib/store/feedDb";
 import { getKristoDataDir, isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
@@ -1068,7 +1069,7 @@ async function handleFeedGet(
       return ok(detail);
     }
 
-    const rawRows = await listFeedItems();
+    const rawRows = await listFeedItemsForChurch(churchId);
     const allRows = rawRows.filter((x: any) => {
       const isMediaUpload =
         String(x?.source || "") === "media-upload" ||
