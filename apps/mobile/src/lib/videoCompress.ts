@@ -8,7 +8,7 @@ export type VideoCompressResult = {
   reason?: string;
 };
 
-const MIN_COMPRESS_BYTES = 2 * 1024 * 1024;
+const MIN_COMPRESS_BYTES = 200 * 1024;
 
 function hasVideoCompressorNative() {
   const native = NativeModules as Record<string, unknown>;
@@ -58,7 +58,7 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
 
   if (originalBytes > 0 && originalBytes < MIN_COMPRESS_BYTES) {
     console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
-      reason: "already-small",
+      reason: "too-small-to-remux",
       originalBytes,
       compressedBytes: originalBytes,
     });
@@ -67,7 +67,7 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       originalBytes,
       compressedBytes: originalBytes,
       skipped: true,
-      reason: "already-small",
+      reason: "too-small-to-remux",
     };
   }
 
@@ -115,18 +115,12 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
     }
 
     if (originalBytes > 0 && compressedBytes >= originalBytes * 0.95) {
-      console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
-        reason: "no-meaningful-gain",
+      console.log("KRISTO_VIDEO_COMPRESS_KEEP_REMUXED", {
+        reason: "keep-remuxed-for-faststart",
         originalBytes,
         compressedBytes,
+        outputUri,
       });
-      return {
-        uri: cleanUri,
-        originalBytes,
-        compressedBytes: originalBytes,
-        skipped: true,
-        reason: "no-meaningful-gain",
-      };
     }
 
     console.log("KRISTO_VIDEO_COMPRESS_DONE", {
