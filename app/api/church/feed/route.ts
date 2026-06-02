@@ -43,7 +43,6 @@ import {
   getFeedItemById,
   isFeedDatabaseError,
   listFeedItems,
-  safeListFeedItems,
   upsertFeedItem,
 } from "@/app/api/_lib/store/feedDb";
 import { getKristoDataDir, isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
@@ -1026,7 +1025,7 @@ async function handleFeedGet(
         return err("Pastor or admin access required", 403);
       }
 
-      const storageItems = (await safeListFeedItems())
+      const storageItems = (await listFeedItems())
         .filter((x: any) => String(x?.churchId || "") === viewerChurchId)
         .filter((x: any) => (storageMode === "media" ? isMediaOwnedFeedItem(x) : true))
         .filter((x) => (type ? x.type === type : true))
@@ -1069,7 +1068,7 @@ async function handleFeedGet(
       return ok(detail);
     }
 
-    const rawRows = await safeListFeedItems();
+    const rawRows = await listFeedItems();
     const allRows = rawRows.filter((x: any) => {
       const isMediaUpload =
         String(x?.source || "") === "media-upload" ||
