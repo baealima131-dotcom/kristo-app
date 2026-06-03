@@ -21,6 +21,7 @@ import {
   appendReplyToComment,
   appendRootComment,
   buildOptimisticComment,
+  commentCacheKey,
   enrichCommentsFromLocalProfiles,
   fetchFeedComments,
   mergeCommentsAfterSuccessfulPost,
@@ -32,6 +33,7 @@ import {
   removeCommentFromTree,
   replaceCommentInTree,
   resolveCommentAuthor,
+  sessionUserId,
   submitFeedComment,
   submitFeedReply,
   toggleFeedCommentLike,
@@ -419,7 +421,8 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   const commentsRef = useRef<FeedCommentNode[]>([]);
   const postIdRef = useRef(postId);
   const railCountRef = useRef(railDiscussionCount);
-  const lastOpenPostIdRef = useRef("");
+  const lastOpenScopeKeyRef = useRef("");
+  const viewerUserId = sessionUserId();
 
   const [loading, setLoading] = useState(false);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
@@ -446,18 +449,33 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
     const cleanPostId = normalizeCommentPostId(postIdRef.current);
     if (!cleanPostId) return;
 
+    const loadScope = commentCacheKey(cleanPostId);
     const seq = ++loadSeqRef.current;
-    console.log("KRISTO_COMMENTS_LOAD_START", { postId: cleanPostId, seq });
+    console.log("KRISTO_COMMENTS_LOAD_START", {
+      postId: cleanPostId,
+      viewerUserId: loadScope.viewerUserId,
+      seq,
+    });
 
     setLoading(true);
     setError("");
     setInitialLoadDone(false);
 
+    const isStaleLoad = () => {
+      if (seq !== loadSeqRef.current) return true;
+      const currentScope = commentCacheKey(postIdRef.current);
+      return currentScope.key !== loadScope.key;
+    };
+
     const applyFetch = async (isRetry: boolean): Promise<void> => {
       const result = await fetchFeedComments(cleanPostId, { bypassCache: true });
 
-      if (seq !== loadSeqRef.current) {
-        console.log("KRISTO_COMMENTS_LOAD_STALE_IGNORED", { postId: cleanPostId, seq });
+      if (isStaleLoad()) {
+        console.log("KRISTO_COMMENTS_STALE_USER_IGNORED", {
+          postId: cleanPostId,
+          viewerUserId: loadScope.viewerUserId,
+          seq,
+        });
         return;
       }
 
@@ -472,8 +490,12 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
 
       const enriched = await enrichCommentsFromLocalProfiles(result.comments);
 
-      if (seq !== loadSeqRef.current) {
-        console.log("KRISTO_COMMENTS_LOAD_STALE_IGNORED", { postId: cleanPostId, seq });
+      if (isStaleLoad()) {
+        console.log("KRISTO_COMMENTS_STALE_USER_IGNORED", {
+          postId: cleanPostId,
+          viewerUserId: loadScope.viewerUserId,
+          seq,
+        });
         return;
       }
 
@@ -514,7 +536,18 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
       setComments(enriched);
       setLoading(false);
       setInitialLoadDone(true);
-      console.log("KRISTO_COMMENTS_LOAD_APPLY", { postId: cleanPostId, seq, count: loadedCount });
+      console.log("KRISTO_COMMENTS_APPLY_STATE", {
+        postId: cleanPostId,
+        viewerUserId: loadScope.viewerUserId,
+        count: loadedCount,
+        authorNames: enriched.map((c) => c.authorName),
+      });
+      console.log("KRISTO_COMMENTS_LOAD_APPLY", {
+        postId: cleanPostId,
+        viewerUserId: loadScope.viewerUserId,
+        seq,
+        count: loadedCount,
+      });
 
       if (result.discussionCount > 0) {
         onDiscussionCountChangeRef.current(cleanPostId, result.discussionCount);
@@ -526,7 +559,7 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
     try {
       await applyFetch(false);
     } catch {
-      if (seq === loadSeqRef.current) {
+      if (!isStaleLoad()) {
         setLoading(false);
         setInitialLoadDone(true);
       }
@@ -536,16 +569,26 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   useEffect(() => {
     if (!visible || !postId) return;
 
-    const cleanPostId = normalizeCommentPostId(postId);
-    if (lastOpenPostIdRef.current !== cleanPostId) {
+    const scope = commentCacheKey(postId);
+    console.log("KRISTO_COMMENTS_CACHE_KEY", {
+      postId: scope.postId,
+      viewerUserId: scope.viewerUserId,
+    });
+
+    if (lastOpenScopeKeyRef.current !== scope.key) {
+      loadSeqRef.current += 1;
       setComments([]);
-      lastOpenPostIdRef.current = cleanPostId;
+      setInitialLoadDone(false);
+      lastOpenScopeKeyRef.current = scope.key;
     }
 
-    console.log("KRISTO_COMMENTS_OPEN", { postId: cleanPostId });
+    console.log("KRISTO_COMMENTS_OPEN", {
+      postId: scope.postId,
+      viewerUserId: scope.viewerUserId,
+    });
     resetDraft();
     void runCommentLoad();
-  }, [visible, postId, resetDraft, runCommentLoad]);
+  }, [visible, postId, viewerUserId, resetDraft, runCommentLoad]);
 
   useEffect(() => {
     if (visible) return;
@@ -672,12 +715,30 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
       return;
     }
 
+    const sendScope = commentCacheKey(cleanPostId);
     let reloaded: FeedCommentNode[] = [];
     if (!result.comment) {
       const reload = await reloadFeedCommentsAfterPost(cleanPostId);
-      if (reload.ok) {
+      const currentScope = commentCacheKey(cleanPostId);
+      if (currentScope.key !== sendScope.key) {
+        console.log("KRISTO_COMMENTS_STALE_USER_IGNORED", {
+          postId: cleanPostId,
+          viewerUserId: sendScope.viewerUserId,
+          stage: "post-send-reload",
+        });
+      } else if (reload.ok) {
         reloaded = await enrichCommentsFromLocalProfiles(reload.comments);
       }
+    }
+
+    const currentScope = commentCacheKey(cleanPostId);
+    if (currentScope.key !== sendScope.key) {
+      console.log("KRISTO_COMMENTS_STALE_USER_IGNORED", {
+        postId: cleanPostId,
+        viewerUserId: sendScope.viewerUserId,
+        stage: "post-send-merge",
+      });
+      return;
     }
 
     setComments((prev) =>

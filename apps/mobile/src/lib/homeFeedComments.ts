@@ -40,8 +40,23 @@ export function normalizeCommentPostId(postId: unknown) {
   return baseFeedId(postId);
 }
 
-function sessionUserId() {
+export function sessionUserId() {
   return String((getSessionSync() as any)?.userId || "").trim();
+}
+
+export function commentCacheKey(postId: unknown, viewerUserId?: string) {
+  const cleanPostId = normalizeCommentPostId(postId);
+  const uid = String(viewerUserId || sessionUserId()).trim();
+  return {
+    postId: cleanPostId,
+    viewerUserId: uid,
+    key: cleanPostId && uid ? `${cleanPostId}:${uid}` : cleanPostId || uid || "",
+  };
+}
+
+function hasPersistedAuthorSnapshot(raw: any) {
+  const snap = String(raw?.authorName || "").trim();
+  return Boolean(snap && snap !== DELETED_COMMENT_USER && !looksLikeUserId(snap));
 }
 
 export function clearCommentFeedCache(postId: string) {
@@ -92,15 +107,12 @@ function sessionProfileForUserId(userId: string) {
 }
 
 function pickDisplayName(raw: any) {
+  if (hasPersistedAuthorSnapshot(raw)) {
+    return String(raw.authorName).trim();
+  }
+
   const createdBy = String(raw?.createdBy || "").trim();
-  const candidates = [
-    raw?.userName,
-    raw?.displayName,
-    raw?.name,
-    raw?.profileName,
-    raw?.fullName,
-    raw?.authorName,
-  ]
+  const candidates = [raw?.userName, raw?.displayName, raw?.name, raw?.profileName, raw?.fullName]
     .map((v) => String(v || "").trim())
     .filter(Boolean);
 
@@ -118,6 +130,11 @@ function pickAvatarUri(raw: any, displayName: string) {
   const createdBy = String(raw?.createdBy || "").trim();
   const isDeleted = displayName === DELETED_COMMENT_USER;
   if (isDeleted) return "";
+
+  if (hasPersistedAuthorSnapshot(raw)) {
+    const snapAvatar = commentAvatarUrl(raw?.authorAvatarUri || "");
+    if (snapAvatar) return snapAvatar;
+  }
 
   const candidates = [
     raw?.userAvatarUri,
@@ -159,9 +176,17 @@ function patchNodeFromProfileDraft(
 
   const nextName = String(draft.displayName || "").trim();
   const nextAvatar = commentAvatarUrl(draft.avatarUri || "");
+  const hasSnapshot = hasPersistedAuthorSnapshot({
+    authorName: node.authorName,
+    createdBy: node.createdBy,
+  });
   const nameLooksLikeId = looksLikeUserId(node.authorName);
   const shouldPatchName =
-    nameLooksLikeId && nextName && !looksLikeUserId(nextName) && nextName !== node.createdBy;
+    !hasSnapshot &&
+    nameLooksLikeId &&
+    nextName &&
+    !looksLikeUserId(nextName) &&
+    nextName !== node.createdBy;
   const shouldPatchAvatar = !node.authorAvatarUri && Boolean(nextAvatar);
 
   const authorName = shouldPatchName ? nextName : node.authorName;
@@ -197,7 +222,13 @@ export async function enrichCommentsFromLocalProfiles(
   const walk = (nodes: FeedCommentNode[]) => {
     for (const node of nodes) {
       const id = String(node.createdBy || "").trim();
-      if (id && looksLikeUserId(node.authorName)) userIds.add(id);
+      if (
+        id &&
+        !hasPersistedAuthorSnapshot({ authorName: node.authorName, createdBy: node.createdBy }) &&
+        looksLikeUserId(node.authorName)
+      ) {
+        userIds.add(id);
+      }
       if (node.replies.length) walk(node.replies);
     }
   };
@@ -244,7 +275,17 @@ export function sortCommentsTree(comments: FeedCommentNode[]): FeedCommentNode[]
 }
 
 function normalizeComment(raw: any): FeedCommentNode {
+  const rawAuthorName = String(raw?.authorName || "").trim();
   const { authorName, authorAvatarUri, authorInitial } = resolveCommentAuthor(raw);
+  const commentId = String(raw?.id || "").trim();
+  if (commentId) {
+    console.log("KRISTO_COMMENT_AUTHOR_UI_RESOLVE", {
+      commentId,
+      rawAuthorName: rawAuthorName || null,
+      finalName: authorName,
+      hasAvatar: Boolean(authorAvatarUri),
+    });
+  }
 
   const replies = Array.isArray(raw?.replies)
     ? raw.replies
@@ -286,11 +327,17 @@ export async function fetchFeedComments(postId: string, options?: { bypassCache?
     return { ok: false as const, error: "Missing post id", comments: [] as FeedCommentNode[] };
   }
 
+  const cacheScope = commentCacheKey(cleanPostId);
+  console.log("KRISTO_COMMENTS_CACHE_KEY", {
+    postId: cacheScope.postId,
+    viewerUserId: cacheScope.viewerUserId,
+  });
+
   if (options?.bypassCache) {
     clearCommentFeedCache(cleanPostId);
   }
 
-  console.log("KRISTO_COMMENTS_LOAD", { postId: cleanPostId });
+  console.log("KRISTO_COMMENTS_LOAD", { postId: cleanPostId, viewerUserId: cacheScope.viewerUserId });
 
   try {
     const res: any = await apiGet(
