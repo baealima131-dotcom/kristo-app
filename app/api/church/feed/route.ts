@@ -255,6 +255,10 @@ function enrichComment<T extends FeedComment>(c: T) {
     const snapAvatar = String(c.authorAvatarUri || "").trim();
     const snapInitial =
       String(c.authorInitial || "").trim() || snapName.charAt(0).toUpperCase() || "U";
+    console.log("KRISTO_COMMENT_AUTHOR_ENRICH", {
+      commentId: c.id,
+      source: "snapshot",
+    });
     return {
       ...c,
       authorName: snapName,
@@ -262,6 +266,10 @@ function enrichComment<T extends FeedComment>(c: T) {
       authorInitial: snapInitial,
     };
   }
+  console.log("KRISTO_COMMENT_AUTHOR_ENRICH", {
+    commentId: c.id,
+    source: "publicUser",
+  });
   return {
     ...c,
     ...publicUser(c.createdBy),

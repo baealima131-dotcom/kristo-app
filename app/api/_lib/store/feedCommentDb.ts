@@ -183,12 +183,20 @@ export async function ensureCommentSchema() {
   await schemaReady;
 }
 
+function logCommentAuthorDbRow(comment: Pick<FeedComment, "id" | "authorName" | "authorAvatarUri">) {
+  console.log("KRISTO_COMMENT_AUTHOR_DB_ROW", {
+    commentId: comment.id,
+    authorName: comment.authorName || null,
+    hasAvatar: Boolean(String(comment.authorAvatarUri || "").trim()),
+  });
+}
+
 function rowToComment(row: CommentRow): FeedComment {
   const authorName = String(row.author_name || "").trim() || undefined;
   const authorAvatarUri = String(row.author_avatar_uri || "").trim() || undefined;
   const authorInitial = String(row.author_initial || "").trim() || undefined;
 
-  return {
+  const comment: FeedComment = {
     id: row.id,
     churchId: row.church_id,
     postId: row.post_id,
@@ -200,6 +208,8 @@ function rowToComment(row: CommentRow): FeedComment {
     authorAvatarUri,
     authorInitial,
   };
+  logCommentAuthorDbRow(comment);
+  return comment;
 }
 
 async function readLocalComments(): Promise<FeedComment[]> {
@@ -252,6 +262,7 @@ export async function insertFeedComment(comment: FeedComment): Promise<FeedComme
         ${comment.authorInitial || null}
       )
     `;
+    logCommentAuthorDbRow(comment);
     logCommentStoreEvent({ op: "write", count: 1, detail: `insert:${comment.id}` });
     return comment;
   }
@@ -259,6 +270,7 @@ export async function insertFeedComment(comment: FeedComment): Promise<FeedComme
   const all = await readLocalComments();
   all.push(comment);
   await writeLocalComments(all);
+  logCommentAuthorDbRow(comment);
   return comment;
 }
 
