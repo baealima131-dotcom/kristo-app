@@ -46,7 +46,24 @@ import {
   listFeedItemsForChurch,
   upsertFeedItem,
 } from "@/app/api/_lib/store/feedDb";
-import { getKristoDataDir, isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
+import {
+  countDiscussionForPostIdSet,
+  countDiscussionForPostIds,
+  deleteEngagementForPost,
+  ensureCommentStoreReady,
+  findFeedCommentById,
+  getCommentLikeMetaForIds,
+  getPostLikeMeta,
+  insertFeedComment,
+  isCommentDatabaseError,
+  listCommentsForPostIds,
+  logCommentStoreEvent,
+  resolveCommentStoreMode,
+  toggleCommentLike,
+  togglePostLike,
+  type FeedComment,
+} from "@/app/api/_lib/store/feedCommentDb";
+import { isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
 import {
   ensureVideoPosterForUrl,
   posterPublicUrlForVideoUrl,
@@ -55,7 +72,6 @@ import {
 
 export const runtime = "nodejs";
 
-const DATA_DIR = getKristoDataDir();
 const BUNDLED_DATA_DIR = path.join(process.cwd(), "data");
 const PROFILES_FILE = path.join(BUNDLED_DATA_DIR, "profiles.json");
 const FEED_GET_TIMEOUT_MS = isKristoServerlessRuntime() ? 12000 : 30000;
@@ -68,86 +84,9 @@ function resetFeedEnrichCaches() {
   feedEnrichMediaCache = new Map();
 }
 
-function readJsonArrayFromPaths<T>(paths: string[]): T[] {
-  for (const file of paths) {
-    try {
-      if (!fs.existsSync(file)) continue;
-      const raw = fs.readFileSync(file, "utf8");
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (error: any) {
-      console.error("[ScheduleFeed] read failure", {
-        file,
-        message: error?.message,
-        code: error?.code,
-      });
-    }
-  }
-  return [];
-}
-
-function readJsonArray<T>(fileName: string): T[] {
-  return readJsonArrayFromPaths<T>([
-    path.join(DATA_DIR, fileName),
-    path.join(BUNDLED_DATA_DIR, fileName),
-  ]);
-}
-
-function writeJsonArray(fileName: string, rows: any[]) {
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(path.join(DATA_DIR, fileName), JSON.stringify(rows, null, 2));
-    console.log("[ScheduleFeed] write success", {
-      file: fileName,
-      dir: DATA_DIR,
-      count: Array.isArray(rows) ? rows.length : 0,
-      serverless: isKristoServerlessRuntime(),
-    });
-  } catch (error: any) {
-    console.error("[ScheduleFeed] write failure", {
-      file: fileName,
-      dir: DATA_DIR,
-      message: error?.message,
-      code: error?.code,
-      stack: error?.stack,
-      serverless: isKristoServerlessRuntime(),
-    });
-  }
-}
-
-function saveFeedStores() {
-  writeJsonArray("church-feed-comments.json", globalThis.__kristoChurchFeedComments || []);
-  writeJsonArray("church-feed-comment-likes.json", globalThis.__kristoChurchFeedCommentLikes || []);
-  writeJsonArray("church-feed-likes.json", globalThis.__kristoChurchFeedLikes || []);
-}
-
 type FeedType = "post" | "announcement" | "video";
 
-export type { ChurchFeedItem };
-
-export type FeedComment = {
-  id: string;
-  churchId: string;
-  postId: string;
-  parentCommentId?: string; // set only for replies
-  text: string;
-  createdAt: string;
-  createdBy: string; // userId
-};
-
-type FeedCommentLike = {
-  churchId: string;
-  commentId: string;
-  userId: string;
-  createdAt: string;
-};
-
-type FeedPostLike = {
-  churchId: string;
-  postId: string;
-  userId: string;
-  createdAt: string;
-};
+export type { ChurchFeedItem, FeedComment };
 
 type FeedCommentTree = FeedComment & {
   likeCount: number;
@@ -191,43 +130,6 @@ function feedListOk<T>(churchId: string, data: T, init?: ResponseInit) {
 
 function err(error: string, status = 400) {
   return NextResponse.json({ ok: false, error } satisfies ApiErr, { status });
-}
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __kristoChurchFeedComments: FeedComment[] | undefined;
-  // eslint-disable-next-line no-var
-  var __kristoChurchFeedCommentLikes: FeedCommentLike[] | undefined;
-  // eslint-disable-next-line no-var
-  var __kristoChurchFeedLikes: FeedPostLike[] | undefined;
-}
-
-function hydrateCommentStoreFromDisk() {
-  if (!globalThis.__kristoChurchFeedComments) {
-    globalThis.__kristoChurchFeedComments = readJsonArray<FeedComment>("church-feed-comments.json");
-  }
-}
-
-function commentStore(): FeedComment[] {
-  hydrateCommentStoreFromDisk();
-  if (!globalThis.__kristoChurchFeedComments) globalThis.__kristoChurchFeedComments = [];
-  return globalThis.__kristoChurchFeedComments;
-}
-
-function commentLikeStore(): FeedCommentLike[] {
-  if (!globalThis.__kristoChurchFeedCommentLikes) {
-    globalThis.__kristoChurchFeedCommentLikes = readJsonArray<FeedCommentLike>(
-      "church-feed-comment-likes.json"
-    );
-  }
-  return globalThis.__kristoChurchFeedCommentLikes;
-}
-
-function postLikeStore(): FeedPostLike[] {
-  if (!globalThis.__kristoChurchFeedLikes) {
-    globalThis.__kristoChurchFeedLikes = readJsonArray<FeedPostLike>("church-feed-likes.json");
-  }
-  return globalThis.__kristoChurchFeedLikes;
 }
 
 function makeId(prefix: string) {
@@ -379,6 +281,82 @@ function cleanText(input: unknown, max = 5000): string {
   return s.length > max ? s.slice(0, max) : s;
 }
 
+function parsePositiveNumber(input: unknown): number | undefined {
+  const n = Number(input);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
+}
+
+function computeVideoBitrateEstimate(sizeBytes: number, durationMs: number): number | undefined {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return undefined;
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return undefined;
+  return Math.round((sizeBytes * 8) / (durationMs / 1000));
+}
+
+function applyVideoMetadataFields(item: any, body?: any) {
+  const durationMs =
+    parsePositiveNumber(body?.durationMs) ??
+    parsePositiveNumber(item?.durationMs);
+  const sizeBytes =
+    parsePositiveNumber(body?.sizeBytes) ??
+    parsePositiveNumber(body?.fileSizeBytes) ??
+    parsePositiveNumber(item?.sizeBytes) ??
+    parsePositiveNumber(item?.fileSizeBytes);
+  const faststart =
+    body?.faststart === true || item?.faststart === true || item?.hasFaststart === true;
+  let bitrateEstimate =
+    parsePositiveNumber(body?.bitrateEstimate) ?? parsePositiveNumber(item?.bitrateEstimate);
+
+  if (!bitrateEstimate && durationMs && sizeBytes) {
+    bitrateEstimate = computeVideoBitrateEstimate(sizeBytes, durationMs);
+  }
+
+  if (durationMs) {
+    item.durationMs = Math.round(durationMs);
+    item.durationSec = item.durationMs / 1000;
+  }
+  if (sizeBytes) {
+    item.sizeBytes = Math.round(sizeBytes);
+    item.fileSizeBytes = item.sizeBytes;
+  }
+  if (bitrateEstimate) {
+    item.bitrateEstimate = Math.round(bitrateEstimate);
+  }
+  if (faststart) {
+    item.faststart = true;
+  }
+
+  return item;
+}
+
+function withVideoMetadataReturnFields(item: any) {
+  const isVideo =
+    item?.type === "video" || Boolean(String(item?.videoUrl || "").trim());
+  if (!isVideo) return item;
+
+  const next = applyVideoMetadataFields({ ...item });
+  const hasMetadata =
+    Number(next?.durationMs || 0) > 0 ||
+    Number(next?.sizeBytes || 0) > 0 ||
+    Number(next?.bitrateEstimate || 0) > 0 ||
+    next?.faststart === true;
+
+  if (hasMetadata) {
+    console.log("KRISTO_VIDEO_METADATA_RETURNED", {
+      id: String(next?.id || ""),
+      durationMs: Number(next?.durationMs || 0) || null,
+      durationSec: Number(next?.durationSec || 0) || null,
+      sizeBytes: Number(next?.sizeBytes || 0) || null,
+      fileSizeBytes: Number(next?.fileSizeBytes || 0) || null,
+      bitrateEstimate: Number(next?.bitrateEstimate || 0) || null,
+      faststart: next?.faststart === true,
+      source: String(next?.source || ""),
+    });
+  }
+
+  return next;
+}
+
 function feedUrlLooksLikeAvatarOrLogo(raw: unknown) {
   const v = String(raw || "").trim().toLowerCase();
   if (!v) return false;
@@ -526,30 +504,17 @@ function sanitizeFeedPostMediaFields(input: {
   return { mediaUri, posterUri, thumbnailUri };
 }
 
-function postLikeCount(churchId: string, postId: string) {
-  return postLikeStore().filter((x) => x.churchId === churchId && x.postId === postId).length;
-}
-
-function postLikedByUser(churchId: string, postId: string, userId: string) {
-  return postLikeStore().some((x) => x.churchId === churchId && x.postId === postId && x.userId === userId);
-}
-
-function commentCountForPost(postId: string) {
-  return commentStore().filter((x) => x.postId === postId && !x.parentCommentId).length;
-}
-
-function replyCountForPost(postId: string) {
-  return commentStore().filter((x) => x.postId === postId && !!x.parentCommentId).length;
-}
-
-function commentLikeCount(churchId: string, commentId: string) {
-  return commentLikeStore().filter((x) => x.churchId === churchId && x.commentId === commentId).length;
-}
-
-function commentLikedByUser(churchId: string, commentId: string, userId: string) {
-  return commentLikeStore().some(
-    (x) => x.churchId === churchId && x.commentId === commentId && x.userId === userId
-  );
+function commentPostIdAliases(item: { id?: string; sourceScheduleId?: string; liveId?: string }, requestPostId?: string) {
+  const ids = new Set<string>();
+  const canonical = String(item?.id || "").trim();
+  if (canonical) ids.add(canonical);
+  const requested = String(requestPostId || "").trim();
+  if (requested) ids.add(requested);
+  const sourceScheduleId = String(item?.sourceScheduleId || "").trim();
+  const liveId = String(item?.liveId || "").trim();
+  if (sourceScheduleId) ids.add(sourceScheduleId);
+  if (liveId) ids.add(liveId);
+  return ids;
 }
 
 function isClaimableScheduleFeedItem(item: any) {
@@ -726,27 +691,18 @@ async function notifyScheduleSlotEdit(args: {
 
 async function removePostAndRelated(postId: string) {
   await deleteFeedItemById(postId);
-
-  const removedCommentIds = new Set(
-    commentStore()
-      .filter((x) => String(x.postId || "") === postId)
-      .map((x) => String(x.id || ""))
-  );
-
-  globalThis.__kristoChurchFeedComments = commentStore().filter(
-    (x) => String(x.postId || "") !== postId
-  );
-
-  globalThis.__kristoChurchFeedLikes = postLikeStore().filter(
-    (x) => String(x.postId || "") !== postId
-  );
-
-  globalThis.__kristoChurchFeedCommentLikes = commentLikeStore().filter(
-    (x) => !removedCommentIds.has(String(x.commentId || ""))
-  );
+  await deleteEngagementForPost(postId);
 }
 
-async function enrichFeedListItem(item: any, viewerUserId: string) {
+type FeedListEngagementMeta = {
+  discussionByPostId: Map<string, { commentCount: number; replyCount: number }>;
+};
+
+async function enrichFeedListItem(
+  item: any,
+  viewerUserId: string,
+  engagement?: FeedListEngagementMeta
+) {
   const itemChurchId = String(item.churchId || "");
   const itemChurchProfile = await churchProfileFor(itemChurchId);
   const itemMediaProfile: any = await churchMediaFor(itemChurchId);
@@ -785,7 +741,21 @@ async function enrichFeedListItem(item: any, viewerUserId: string) {
 
   const videoPosterUri = posterUri || thumbnailUri;
 
-  return {
+  const postId = String(item?.id || "").trim();
+  let discussion = { commentCount: 0, replyCount: 0 };
+  if (postId) {
+    if (engagement?.discussionByPostId.has(postId)) {
+      discussion = engagement.discussionByPostId.get(postId)!;
+    } else {
+      const map = await countDiscussionForPostIds([postId]);
+      discussion = map.get(postId) || discussion;
+    }
+  }
+  const likeMeta = postId
+    ? await getPostLikeMeta(itemChurchId, postId, viewerUserId)
+    : { likeCount: 0, likedByMe: false };
+
+  return withVideoMetadataReturnFields({
     ...item,
     ...(posterUri ? { posterUri } : {}),
     ...(thumbnailUri ? { thumbnailUri } : {}),
@@ -809,22 +779,37 @@ async function enrichFeedListItem(item: any, viewerUserId: string) {
     scheduleSlots: enrichScheduleSlotsClaimAvatars(
       Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
     ),
-    commentCount: commentCountForPost(item.id),
-    replyCount: replyCountForPost(item.id),
-    totalDiscussionCount: commentCountForPost(item.id) + replyCountForPost(item.id),
-    likeCount: postLikeCount(itemChurchId, item.id),
-    likedByMe: postLikedByUser(itemChurchId, item.id, viewerUserId),
-  };
+    commentCount: discussion.commentCount,
+    replyCount: discussion.replyCount,
+    totalDiscussionCount: discussion.commentCount + discussion.replyCount,
+    likeCount: likeMeta.likeCount,
+    likedByMe: likeMeta.likedByMe,
+  });
 }
 
-async function safeEnrichFeedListItem(item: any, viewerUserId: string) {
+async function safeEnrichFeedListItem(
+  item: any,
+  viewerUserId: string,
+  engagement?: FeedListEngagementMeta
+) {
   try {
-    return await enrichFeedListItem(item, viewerUserId);
+    return await enrichFeedListItem(item, viewerUserId, engagement);
   } catch (error) {
     console.error("[church/feed] enrich item failed", {
       postId: String(item?.id || ""),
       error: error instanceof Error ? error.message : String(error),
     });
+    const postId = String(item?.id || "").trim();
+    const itemChurchId = String(item?.churchId || "").trim();
+    const discussion =
+      (postId && engagement?.discussionByPostId.get(postId)) ||
+      { commentCount: 0, replyCount: 0 };
+    const likeMeta = postId
+      ? await getPostLikeMeta(itemChurchId, postId, viewerUserId).catch(() => ({
+          likeCount: 0,
+          likedByMe: false,
+        }))
+      : { likeCount: 0, likedByMe: false };
     return {
       ...item,
       ownershipType: inferOwnershipType(item),
@@ -833,17 +818,11 @@ async function safeEnrichFeedListItem(item: any, viewerUserId: string) {
       scheduleSlots: enrichScheduleSlotsClaimAvatars(
         Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
       ),
-      commentCount: commentCountForPost(String(item?.id || "")),
-      replyCount: replyCountForPost(String(item?.id || "")),
-      totalDiscussionCount:
-        commentCountForPost(String(item?.id || "")) +
-        replyCountForPost(String(item?.id || "")),
-      likeCount: postLikeCount(String(item?.churchId || ""), String(item?.id || "")),
-      likedByMe: postLikedByUser(
-        String(item?.churchId || ""),
-        String(item?.id || ""),
-        viewerUserId
-      ),
+      commentCount: discussion.commentCount,
+      replyCount: discussion.replyCount,
+      totalDiscussionCount: discussion.commentCount + discussion.replyCount,
+      likeCount: likeMeta.likeCount,
+      likedByMe: likeMeta.likedByMe,
     };
   }
 }
@@ -915,29 +894,47 @@ async function resolveViewerChurchId(
   return String(membershipOrRes.churchId || fromHeader).trim();
 }
 
-function buildCommentTree(churchId: string, postId: string, viewerUserId: string): FeedCommentTree[] {
-  const all = commentStore()
-    .filter((x) => x.churchId === churchId && x.postId === postId)
+async function buildCommentTree(
+  churchId: string,
+  canonicalPostId: string,
+  viewerUserId: string,
+  extraPostIds: string[] = []
+): Promise<FeedCommentTree[]> {
+  const postIds = commentPostIdAliases({ id: canonicalPostId }, canonicalPostId);
+  for (const extra of extraPostIds) {
+    const v = String(extra || "").trim();
+    if (v) postIds.add(v);
+  }
+
+  const all = (await listCommentsForPostIds(churchId, postIds))
     .slice()
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
   const roots = all.filter((x) => !x.parentCommentId);
   const replies = all.filter((x) => !!x.parentCommentId);
+  const commentIds = all.map((x) => String(x.id || "")).filter(Boolean);
+  const likeMeta = await getCommentLikeMetaForIds(churchId, commentIds, viewerUserId);
 
-  return roots.map((root) => ({
-    ...enrichComment(root),
-    likeCount: commentLikeCount(churchId, root.id),
-    likedByMe: commentLikedByUser(churchId, root.id, viewerUserId),
-    replies: replies
-      .filter((r) => r.parentCommentId === root.id)
-      .slice()
-      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
-      .map((reply) => ({
-        ...enrichComment(reply),
-        likeCount: commentLikeCount(churchId, reply.id),
-        likedByMe: commentLikedByUser(churchId, reply.id, viewerUserId),
-      })),
-  }));
+  return roots.map((root) => {
+    const rootLikes = likeMeta.get(root.id) || { likeCount: 0, likedByMe: false };
+    return {
+      ...enrichComment(root),
+      likeCount: rootLikes.likeCount,
+      likedByMe: rootLikes.likedByMe,
+      replies: replies
+        .filter((r) => r.parentCommentId === root.id)
+        .slice()
+        .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
+        .map((reply) => {
+          const replyLikes = likeMeta.get(reply.id) || { likeCount: 0, likedByMe: false };
+          return {
+            ...enrichComment(reply),
+            likeCount: replyLikes.likeCount,
+            likedByMe: replyLikes.likedByMe,
+          };
+        }),
+    };
+  });
 }
 
 function emptyFeedListResponse(churchId: string) {
@@ -988,6 +985,21 @@ async function handleFeedGet(
       }
       throw error;
     }
+
+    try {
+      await ensureCommentStoreReady();
+    } catch (error: any) {
+      if (isCommentDatabaseError(error)) {
+        console.warn("[church/feed] GET comment store unavailable", {
+          mode: resolveCommentStoreMode(),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    logCommentStoreEvent({ op: "read", count: 0, detail: "feed-get-start" });
 
     const ctxOrRes = await guardAuth(req);
     if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) return ctxOrRes;
@@ -1073,8 +1085,26 @@ async function handleFeedGet(
         return err("Feed item not found", 404);
       }
 
-      const commentCount = commentCountForPost(item.id);
-      const replyCount = replyCountForPost(item.id);
+      const requestPostId = String(id || "").trim();
+      const canonicalPostId = String(item.id || requestPostId).trim();
+      const postIdAliases = commentPostIdAliases(item, requestPostId);
+      const discussion = await countDiscussionForPostIdSet(postIdAliases);
+      const commentCount = discussion.commentCount;
+      const replyCount = discussion.replyCount;
+      const comments = await buildCommentTree(
+        itemChurchId,
+        canonicalPostId,
+        viewerUserId,
+        requestPostId !== canonicalPostId ? [requestPostId] : []
+      );
+
+      console.log("KRISTO_COMMENT_BACKEND_READ", {
+        postId: canonicalPostId,
+        requestPostId,
+        storeMode: resolveCommentStoreMode(),
+        totalForPost: comments.length,
+        ids: comments.map((c) => c.id),
+      });
 
       const detail: FeedPostDetail = {
         item: {
@@ -1083,7 +1113,7 @@ async function handleFeedGet(
           replyCount,
           totalDiscussionCount: commentCount + replyCount,
         },
-        comments: buildCommentTree(itemChurchId, item.id, viewerUserId),
+        comments,
       };
 
       return ok(detail);
@@ -1171,7 +1201,7 @@ async function handleFeedGet(
       (x: any, idx, arr) => arr.findIndex((y: any) => String(y?.id || "") === String(x?.id || "")) === idx
     );
 
-    const items = mergedHomeRows
+    const listRows = mergedHomeRows
       .filter((x: any) => {
         if (isClaimableScheduleFeedItem(x) && !hasMembership) {
           return false;
@@ -1184,8 +1214,17 @@ async function handleFeedGet(
       })
       .filter((x) => (type ? x.type === type : true))
       .slice()
-      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-      .map((item) => safeEnrichFeedListItem(item, viewerUserId));
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+
+    const listPostIds = listRows
+      .map((x: any) => String(x?.id || "").trim())
+      .filter(Boolean);
+    const discussionByPostId = await countDiscussionForPostIds(listPostIds);
+    const listEngagement: FeedListEngagementMeta = { discussionByPostId };
+
+    const items = listRows.map((item) =>
+      safeEnrichFeedListItem(item, viewerUserId, listEngagement)
+    );
 
     const resolvedItems = await Promise.all(items);
 
@@ -1224,6 +1263,15 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     if (isFeedDatabaseError(error)) {
       return err("Feed database not configured", 503);
+    }
+    throw error;
+  }
+
+  try {
+    await ensureCommentStoreReady();
+  } catch (error: any) {
+    if (isCommentDatabaseError(error)) {
+      return err("Comment storage not configured for this deployment", 503);
     }
     throw error;
   }
@@ -1343,57 +1391,20 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     const itemChurchId = String(item.churchId || churchId);
 
-    const likes = postLikeStore();
-
-    const existingIndex = likes.findIndex(
-      (x) =>
-        x.churchId === itemChurchId &&
-        x.postId === postId &&
-        x.userId === viewerUserId
-    );
-
     const wantsLiked =
       typeof body?.liked === "boolean" ? Boolean(body.liked) : null;
 
-    let likedByMe = false;
-
-    if (wantsLiked === true) {
-      if (existingIndex < 0) {
-        likes.push({
-          churchId: itemChurchId,
-          postId,
-          userId: viewerUserId,
-          createdAt: new Date().toISOString(),
-        });
-      }
-
-      likedByMe = true;
-    } else if (wantsLiked === false) {
-      if (existingIndex >= 0) {
-        likes.splice(existingIndex, 1);
-      }
-
-      likedByMe = false;
-    } else if (existingIndex >= 0) {
-      likes.splice(existingIndex, 1);
-      likedByMe = false;
-    } else {
-      likes.push({
-        churchId: itemChurchId,
-        postId,
-        userId: viewerUserId,
-        createdAt: new Date().toISOString(),
-      });
-
-      likedByMe = true;
-    }
-
-    saveFeedStores();
+    const likeResult = await togglePostLike({
+      churchId: itemChurchId,
+      postId,
+      viewerUserId,
+      wantsLiked,
+    });
 
     return ok({
       postId,
-      likedByMe,
-      likeCount: postLikeCount(itemChurchId, postId),
+      likedByMe: likeResult.likedByMe,
+      likeCount: likeResult.likeCount,
     });
   }
 
@@ -1404,16 +1415,26 @@ async function handleFeedPost(req: NextRequest, body: any) {
     if (!postId) return err("postId is required", 400);
     if (!text) return err("text is required", 400);
 
-    const item = await getFeedItemById(postId);
+    const requestPostId = postId;
+    const item = await getFeedItemById(requestPostId);
 
     if (!item) return err("Feed item not found", 404);
 
     const itemChurchId = String(item.churchId || churchId);
+    const canonicalPostId = String(item.id || requestPostId).trim();
 
-    const comment = {
+    console.log("KRISTO_COMMENT_BACKEND_WRITE_START", {
+      postId: canonicalPostId,
+      requestPostId,
+      userId: viewerUserId,
+      storeMode: resolveCommentStoreMode(),
+      text: text.slice(0, 120),
+    });
+
+    const comment: FeedComment = {
       id: makeId("comment"),
       churchId: itemChurchId,
-      postId,
+      postId: canonicalPostId,
       parentCommentId:
         action === "add_reply"
           ? cleanText(body?.parentCommentId, 240)
@@ -1423,14 +1444,23 @@ async function handleFeedPost(req: NextRequest, body: any) {
       createdBy: viewerUserId,
     };
 
-    commentStore().push(comment);
+    await insertFeedComment(comment);
 
-    saveFeedStores();
+    const postIdAliases = commentPostIdAliases(item, requestPostId);
+    const discussion = await countDiscussionForPostIdSet(postIdAliases);
+
+    console.log("KRISTO_COMMENT_BACKEND_WRITE_DONE", {
+      postId: canonicalPostId,
+      requestPostId,
+      commentId: comment.id,
+      storeMode: resolveCommentStoreMode(),
+      totalForPost: discussion.commentCount + discussion.replyCount,
+    });
 
     return ok({
       comment: enrichComment(comment),
-      commentCount: commentCountForPost(postId),
-      replyCount: replyCountForPost(postId),
+      commentCount: discussion.commentCount,
+      replyCount: discussion.replyCount,
     });
   }
 
@@ -1439,42 +1469,20 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     if (!commentId) return err("commentId is required", 400);
 
-    const comment = commentStore().find(
-      (x) => String(x.id || "") === commentId
-    );
+    const comment = await findFeedCommentById(commentId);
 
     if (!comment) return err("Comment not found", 404);
 
-    const likes = commentLikeStore();
-
-    const existingIndex = likes.findIndex(
-      (x) =>
-        x.churchId === comment.churchId &&
-        x.commentId === commentId &&
-        x.userId === viewerUserId
-    );
-
-    let likedByMe = false;
-
-    if (existingIndex >= 0) {
-      likes.splice(existingIndex, 1);
-    } else {
-      likes.push({
-        churchId: comment.churchId,
-        commentId,
-        userId: viewerUserId,
-        createdAt: new Date().toISOString(),
-      });
-
-      likedByMe = true;
-    }
-
-    saveFeedStores();
+    const likeResult = await toggleCommentLike({
+      churchId: comment.churchId,
+      commentId,
+      viewerUserId,
+    });
 
     return ok({
       commentId,
-      likedByMe,
-      likeCount: commentLikeCount(comment.churchId, commentId),
+      likedByMe: likeResult.likedByMe,
+      likeCount: likeResult.likeCount,
     });
   }
 
@@ -1748,7 +1756,6 @@ async function handleFeedPost(req: NextRequest, body: any) {
     }
 
     await removePostAndRelated(String(item.id || postId));
-    saveFeedStores();
 
     const deletedId = String(item.id || postId);
     return NextResponse.json({
@@ -2034,6 +2041,10 @@ async function handleFeedPost(req: NextRequest, body: any) {
     }
   }
 
+  if (type === "video" || videoUrl) {
+    applyVideoMetadataFields(item as any, body);
+  }
+
   await upsertFeedItem(item);
 
   if (isMediaUploadVideo && mediaStatus === "processing") {
@@ -2050,12 +2061,12 @@ async function handleFeedPost(req: NextRequest, body: any) {
     });
   }
 
-  const savedFeedRow = {
+  const savedFeedRow = withVideoMetadataReturnFields({
     ...item,
     commentCount: 0,
     replyCount: 0,
     totalDiscussionCount: 0,
-  };
+  });
 
   if (isIncomingMediaScheduleCreate(body)) {
     bumpMediaScheduleSync(churchId, "create_media_schedule");

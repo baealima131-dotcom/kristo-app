@@ -1,0 +1,441 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  AppState,
+  Share,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
+import { useIsFocused } from "@react-navigation/native";
+import { useLocalSearchParams } from "expo-router";
+import {
+  feedList,
+  feedToggleLike,
+  feedToggleSave,
+  subscribe as subscribeHomeFeed,
+} from "@/src/lib/homeFeedStore";
+import { FeedList } from "./FeedList";
+import { FeedReportSheet } from "./FeedReportSheet";
+import { FeedCommentsSheet } from "./FeedCommentsSheet";
+import {
+  normalizeCommentPostId,
+  userHasActiveChurchMembership,
+} from "@/src/lib/homeFeedComments";
+import { getSessionSync } from "@/src/lib/kristoSession";
+import { fetchHomeFeedFromApi, syncHomeFeedLike } from "./homeFeedApi";
+import { mergeFeedRowsDeterministic } from "./homeFeedUtils";
+import { HOME_FEED_BG, homeFeedSlideHeight } from "./theme";
+import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import {
+  getLocallyReportedPostIds,
+  markPostReportedLocally,
+  syncReportedPostIdsFromApi,
+} from "@/src/lib/homeFeedReport";
+
+export default function HomeFeedScreen() {
+  const { height: windowHeight } = useWindowDimensions();
+  const tabBarHeight = useBottomTabBarHeight();
+  const screenFocused = useIsFocused();
+  const { focusPostId } = useLocalSearchParams<{ focusPostId?: string }>();
+
+  const [backendRows, setBackendRows] = useState<any[]>([]);
+  const [localTick, setLocalTick] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
+  const [optimisticLikes, setOptimisticLikes] = useState<
+    Record<string, { liked: boolean; likeCount: number }>
+  >({});
+  const [optimisticSaved, setOptimisticSaved] = useState<Record<string, boolean>>({});
+  const [reportedPostIds, setReportedPostIds] = useState<Record<string, true>>({});
+  const [reportSheetOpen, setReportSheetOpen] = useState(false);
+  const [reportTargetPostId, setReportTargetPostId] = useState("");
+  const [commentsSheetOpen, setCommentsSheetOpen] = useState(false);
+  const [commentTargetPostId, setCommentTargetPostId] = useState("");
+  const [commentRailCount, setCommentRailCount] = useState(0);
+  const [commentCountOverrides, setCommentCountOverrides] = useState<Record<string, number>>({});
+  const [successBanner, setSuccessBanner] = useState("");
+
+  const focusHandledRef = useRef("");
+  const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const contentHeight = homeFeedSlideHeight(windowHeight, tabBarHeight);
+  const feedFocused = screenFocused && appActive;
+
+  useEffect(() => {
+    const unsub = subscribeHomeFeed(() => setLocalTick((n) => n + 1));
+    return () => {
+      try {
+        (unsub as any)?.();
+      } catch {}
+    };
+  }, []);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      setAppActive(next === "active");
+    });
+    return () => sub.remove();
+  }, []);
+
+  const loadFeed = useCallback(async (reason = "load") => {
+    if ((globalThis as any).__KRISTO_LIVE_ACTIVE__) return;
+
+    setLoading(true);
+    try {
+      const rows = await fetchHomeFeedFromApi(reason);
+      setBackendRows(rows);
+    } catch {
+      setBackendRows((prev) => prev);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadFeed(screenFocused ? "focus" : "load");
+  }, [loadFeed, screenFocused]);
+
+  useEffect(() => {
+    if (!feedFocused) return;
+    const timer = setInterval(() => {
+      void loadFeed("poll");
+    }, 45000);
+    return () => clearInterval(timer);
+  }, [feedFocused, loadFeed]);
+
+  const feedRows = useMemo(() => {
+    void localTick;
+    return mergeFeedRowsDeterministic(backendRows, feedList());
+  }, [backendRows, localTick]);
+
+  useEffect(() => {
+    let alive = true;
+
+    void getLocallyReportedPostIds().then((ids) => {
+      if (!alive || !ids.length) return;
+      setReportedPostIds((prev) => {
+        const next = { ...prev };
+        for (const id of ids) next[id] = true;
+        return next;
+      });
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!feedRows.length) return;
+
+    const ids = feedRows
+      .map((item) => baseFeedId(String(item?.id || "")))
+      .filter(Boolean);
+
+    let alive = true;
+    void syncReportedPostIdsFromApi(ids).then((reported) => {
+      if (!alive || !reported.length) return;
+      setReportedPostIds((prev) => {
+        const next = { ...prev };
+        for (const id of reported) next[id] = true;
+        return next;
+      });
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [feedRows]);
+
+  useEffect(() => {
+    return () => {
+      if (successBannerTimerRef.current) {
+        clearTimeout(successBannerTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const rawFocusId = String(focusPostId || "").trim();
+    if (!rawFocusId || !feedRows.length) return;
+    if (focusHandledRef.current === rawFocusId) return;
+
+    const matchIndex = feedRows.findIndex((item) => String(item?.id || "") === rawFocusId);
+    if (matchIndex < 0) return;
+
+    focusHandledRef.current = rawFocusId;
+    setActiveIndex(matchIndex);
+  }, [focusPostId, feedRows]);
+
+  useEffect(() => {
+    if (activeIndex >= feedRows.length && feedRows.length > 0) {
+      setActiveIndex(Math.max(0, feedRows.length - 1));
+    }
+  }, [activeIndex, feedRows.length]);
+
+  const getLikeState = useCallback(
+    (item: any) => {
+      const postId = String(item?.id || "");
+      if (Object.prototype.hasOwnProperty.call(optimisticLikes, postId)) {
+        return optimisticLikes[postId];
+      }
+      return {
+        liked: Boolean(item?.liked),
+        likeCount: Number(item?.likeCount || 0),
+      };
+    },
+    [optimisticLikes]
+  );
+
+  const getSavedState = useCallback(
+    (item: any) => {
+      const postId = String(item?.id || "");
+      if (Object.prototype.hasOwnProperty.call(optimisticSaved, postId)) {
+        return optimisticSaved[postId];
+      }
+      return Boolean(item?.saved);
+    },
+    [optimisticSaved]
+  );
+
+  const handleLike = useCallback(
+    (item: any) => {
+      const postId = String(item?.id || "").trim();
+      if (!postId) return;
+
+      const current = getLikeState(item);
+      const nextLiked = !current.liked;
+      const nextCount = Math.max(0, current.likeCount + (nextLiked ? 1 : -1));
+
+      setOptimisticLikes((prev) => ({
+        ...prev,
+        [postId]: { liked: nextLiked, likeCount: nextCount },
+      }));
+
+      feedToggleLike(postId);
+      syncHomeFeedLike(postId, nextLiked);
+    },
+    [getLikeState]
+  );
+
+  const handleSave = useCallback(
+    (item: any) => {
+      const postId = String(item?.id || "").trim();
+      if (!postId) return;
+
+      const nextSaved = !getSavedState(item);
+      setOptimisticSaved((prev) => ({ ...prev, [postId]: nextSaved }));
+      feedToggleSave(postId);
+    },
+    [getSavedState]
+  );
+
+  const discussionCountFromItem = useCallback((item: any) => {
+    const total = Number(item?.totalDiscussionCount || 0);
+    if (total > 0) return total;
+    return Number(item?.commentCount || 0) + Number(item?.replyCount || 0);
+  }, []);
+
+  const getVisibleDiscussionCount = useCallback(
+    (item: any) => {
+      const postId = normalizeCommentPostId(String(item?.id || ""));
+      const serverCount = discussionCountFromItem(item);
+      const hasOverride =
+        Boolean(postId) && Object.prototype.hasOwnProperty.call(commentCountOverrides, postId);
+      const overrideCount = hasOverride ? commentCountOverrides[postId] : undefined;
+      const visibleCount = hasOverride
+        ? Math.max(serverCount, overrideCount ?? 0)
+        : serverCount;
+
+      if (hasOverride && serverCount < (overrideCount ?? 0)) {
+        console.log("KRISTO_COMMENT_COUNT_STALE_FEED_IGNORED", {
+          postId,
+          serverCount,
+          overrideCount,
+          visibleCount,
+        });
+      }
+
+      console.log("KRISTO_COMMENT_COUNT_SOURCE", {
+        postId,
+        serverCount,
+        overrideCount: hasOverride ? overrideCount : null,
+        visibleCount,
+      });
+
+      return visibleCount;
+    },
+    [commentCountOverrides, discussionCountFromItem]
+  );
+
+  const handleComment = useCallback((item: any) => {
+    const postId = normalizeCommentPostId(String(item?.id || "").trim());
+    if (!postId) return;
+
+    const session = getSessionSync();
+    if (!userHasActiveChurchMembership(session)) {
+      Alert.alert("Join a church", "Join a church to comment on posts.");
+      return;
+    }
+
+    setCommentTargetPostId(postId);
+    setCommentRailCount(getVisibleDiscussionCount(item));
+    setCommentsSheetOpen(true);
+  }, [getVisibleDiscussionCount]);
+
+  const handleDiscussionCountChange = useCallback((postId: string, count: number) => {
+    const cleanId = normalizeCommentPostId(postId);
+    if (!cleanId || !Number.isFinite(count)) return;
+    const nextCount = Math.max(0, count);
+    console.log("KRISTO_COMMENT_COUNT_OVERRIDE_SET", {
+      postId: cleanId,
+      count: nextCount,
+      source: "comments_confirmed",
+    });
+    setCommentCountOverrides((prev) => ({ ...prev, [cleanId]: nextCount }));
+  }, []);
+
+  const handleDiscussionCountBump = useCallback(
+    (postId: string, delta: number) => {
+      const cleanId = normalizeCommentPostId(postId);
+      if (!cleanId || !Number.isFinite(delta) || delta === 0) return;
+
+      setCommentCountOverrides((prev) => {
+        const item = feedRows.find(
+          (row) => normalizeCommentPostId(String(row?.id || "")) === cleanId
+        );
+        const serverCount = discussionCountFromItem(item || {});
+        const prevOverride = Object.prototype.hasOwnProperty.call(prev, cleanId)
+          ? prev[cleanId]
+          : undefined;
+        const visibleBase =
+          prevOverride !== undefined ? Math.max(serverCount, prevOverride) : serverCount;
+        const nextCount = Math.max(0, visibleBase + delta);
+        console.log("KRISTO_COMMENT_COUNT_OVERRIDE_SET", {
+          postId: cleanId,
+          count: nextCount,
+          source: delta > 0 ? "optimistic_bump" : "optimistic_rollback",
+          delta,
+        });
+        return { ...prev, [cleanId]: nextCount };
+      });
+    },
+    [feedRows, discussionCountFromItem]
+  );
+
+  const handleShare = useCallback(async (item: any) => {
+    const title = String(item?.title || "").trim();
+    const body = String(item?.body || item?.text || "").trim();
+    const church = String(item?.churchName || item?.churchLabel || "").trim();
+    const message = [title, body, church].filter(Boolean).join("\n\n");
+    try {
+      await Share.share({ message: message || "Shared from Kristo", title: title || "Kristo" });
+    } catch {}
+  }, []);
+
+  const isPostReported = useCallback(
+    (item: any) => {
+      const postId = baseFeedId(String(item?.id || ""));
+      return Boolean(postId && reportedPostIds[postId]);
+    },
+    [reportedPostIds]
+  );
+
+  const handleReport = useCallback((item: any) => {
+    const postId = normalizeCommentPostId(String(item?.id || "").trim());
+    if (!postId) return;
+    setReportTargetPostId(postId);
+    setReportSheetOpen(true);
+  }, []);
+
+  const handleReported = useCallback((postId: string) => {
+    const cleanId = baseFeedId(postId);
+    if (!cleanId) return;
+
+    void markPostReportedLocally(cleanId);
+    setReportedPostIds((prev) => ({ ...prev, [cleanId]: true }));
+    setSuccessBanner("Report submitted. Thank you for helping keep Kristo safe.");
+
+    if (successBannerTimerRef.current) {
+      clearTimeout(successBannerTimerRef.current);
+    }
+    successBannerTimerRef.current = setTimeout(() => {
+      setSuccessBanner("");
+    }, 3200);
+  }, []);
+
+  return (
+    <View style={[styles.screen, { height: contentHeight }]}>
+      {successBanner ? (
+        <View style={styles.successBanner} pointerEvents="none">
+          <Text style={styles.successBannerText}>{successBanner}</Text>
+        </View>
+      ) : null}
+
+      <FeedList
+        rows={feedRows}
+        contentHeight={contentHeight}
+        activeIndex={activeIndex}
+        screenFocused={feedFocused}
+        loading={loading}
+        getLikeState={getLikeState}
+        getSavedState={getSavedState}
+        getVisibleDiscussionCount={getVisibleDiscussionCount}
+        isPostReported={isPostReported}
+        onActiveIndexChange={setActiveIndex}
+        onLike={handleLike}
+        onComment={handleComment}
+        onShare={handleShare}
+        onSave={handleSave}
+        onReport={handleReport}
+      />
+
+      <FeedReportSheet
+        visible={reportSheetOpen}
+        postId={reportTargetPostId}
+        onClose={() => setReportSheetOpen(false)}
+        onReported={handleReported}
+      />
+
+      <FeedCommentsSheet
+        visible={commentsSheetOpen}
+        postId={commentTargetPostId}
+        railDiscussionCount={commentRailCount}
+        onClose={() => setCommentsSheetOpen(false)}
+        onDiscussionCountChange={handleDiscussionCountChange}
+        onDiscussionCountBump={handleDiscussionCountBump}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: {
+    alignSelf: "stretch",
+    backgroundColor: HOME_FEED_BG,
+    overflow: "hidden",
+  },
+  successBanner: {
+    position: "absolute",
+    top: 12,
+    left: 14,
+    right: 14,
+    zIndex: 40,
+    backgroundColor: "rgba(217,179,95,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.45)",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  successBannerText: {
+    color: "#F4D06F",
+    fontSize: 13,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+});
