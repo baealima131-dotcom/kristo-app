@@ -38,7 +38,7 @@ import {
   userHasActiveChurchMembership,
   type FeedCommentNode,
 } from "@/src/lib/homeFeedComments";
-import { homeFeedMediaUrl } from "./homeFeedUtils";
+import { commentAvatarUrl } from "./homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 
 const COMMENT_COLLAPSED_LINES = 3;
@@ -85,14 +85,11 @@ function resolveAvatarUriForNode(node: FeedCommentNode) {
   ];
 
   for (const candidate of candidates) {
-    const uri = homeFeedMediaUrl(candidate);
+    const uri = commentAvatarUrl(candidate);
     if (uri) return uri;
   }
 
-  const raw = String(node.authorAvatarUri || display.authorAvatarUri || "").trim();
-  if (/^https?:\/\//i.test(raw)) return raw;
-
-  return "";
+  return commentAvatarUrl(node.authorAvatarUri || display.authorAvatarUri || "");
 }
 
 type Props = {

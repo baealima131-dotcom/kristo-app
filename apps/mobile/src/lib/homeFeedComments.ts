@@ -4,7 +4,7 @@ import { getSessionSync } from "@/src/lib/kristoSession";
 import { clearResponseCacheForRequest } from "@/src/lib/kristoTraffic";
 import { loadProfileDraft } from "@/src/lib/profileStore";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
-import { homeFeedMediaUrl } from "@/src/components/homeFeed/homeFeedUtils";
+import { commentAvatarUrl } from "@/src/components/homeFeed/homeFeedUtils";
 
 export type FeedCommentNode = {
   id: string;
@@ -85,7 +85,7 @@ function sessionProfileForUserId(userId: string) {
   const id = String(userId || "").trim();
   if (!id || id !== String(session?.userId || "").trim()) return null;
   const name = String(session?.displayName || session?.name || "").trim();
-  const avatar = homeFeedMediaUrl(
+  const avatar = commentAvatarUrl(
     session?.avatarUri || session?.avatarUrl || session?.profileImage || ""
   );
   return { name, avatar };
@@ -130,7 +130,7 @@ function pickAvatarUri(raw: any, displayName: string) {
   ];
 
   for (const candidate of candidates) {
-    const uri = homeFeedMediaUrl(candidate);
+    const uri = commentAvatarUrl(candidate);
     if (uri) return uri;
   }
 
@@ -158,7 +158,7 @@ function patchNodeFromProfileDraft(
   if (!draft) return node;
 
   const nextName = String(draft.displayName || "").trim();
-  const nextAvatar = homeFeedMediaUrl(draft.avatarUri || "");
+  const nextAvatar = commentAvatarUrl(draft.avatarUri || "");
   const nameLooksLikeId = looksLikeUserId(node.authorName);
   const shouldPatchName =
     nameLooksLikeId && nextName && !looksLikeUserId(nextName) && nextName !== node.createdBy;
@@ -549,7 +549,7 @@ export function buildOptimisticComment(postId: string, text: string, parentComme
   const userId = String(session?.userId || "me").trim();
   const name =
     String(session?.displayName || session?.name || "").trim() || "You";
-  const avatar = homeFeedMediaUrl(
+  const avatar = commentAvatarUrl(
     session?.avatarUri || session?.avatarUrl || session?.profileImage || ""
   );
 

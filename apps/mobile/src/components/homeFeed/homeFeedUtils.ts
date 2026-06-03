@@ -16,6 +16,15 @@ export function homeFeedMediaUrl(raw: unknown) {
   return `${API_BASE}${v.startsWith("/") ? "" : "/"}${v}`;
 }
 
+/** Comment avatars: keep data URLs and absolute http(s); only prefix relative upload paths. */
+export function commentAvatarUrl(raw: unknown) {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  if (v.startsWith("data:image/")) return v;
+  if (/^https?:\/\//i.test(v)) return v;
+  return homeFeedMediaUrl(v);
+}
+
 /** Phase-1 Home Feed rows: posts with media or text; no live/schedule/cycle cards. */
 export function isPhase1HomeFeedPost(item: any): boolean {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
