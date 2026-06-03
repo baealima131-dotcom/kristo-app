@@ -9,6 +9,7 @@ import {
   churchSubscriptionRequiredResponse,
   isChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
+import { getUserJoinedMinistries, logMinistryScope, resolveMinistryViewerUserId } from "@/app/api/_lib/ministryMembership";
 
 /* =========================
    TYPES
@@ -101,6 +102,86 @@ async function readAll(): Promise<Ministry[]> {
   return Array.isArray(data) ? data : [];
 }
 
+function normalizeMinistryId(raw: unknown): string {
+  try {
+    return decodeURIComponent(String(raw || "").trim());
+  } catch {
+    return String(raw || "").trim();
+  }
+}
+
+function normalizeChurchId(raw: unknown): string {
+  return String(raw || "").trim();
+}
+
+function churchIdsMatch(stored: unknown, requested: string): boolean {
+  return (
+    normalizeChurchId(stored).toLowerCase() === normalizeChurchId(requested).toLowerCase()
+  );
+}
+
+function findMinistryInChurch(
+  all: Ministry[],
+  churchId: string,
+  requestedId: string
+): Ministry | undefined {
+  const normalizedId = normalizeMinistryId(requestedId);
+  return all.find(
+    (m) =>
+      churchIdsMatch(m.churchId, churchId) &&
+      normalizeMinistryId(m.id) === normalizedId
+  );
+}
+
+function listMinistryIdsForChurch(all: Ministry[], churchId: string): string[] {
+  return all
+    .filter((m) => churchIdsMatch(m.churchId, churchId))
+    .map((m) => String(m.id || ""))
+    .filter(Boolean);
+}
+
+function logMinistryDeleteLookup(payload: Record<string, unknown>) {
+  console.log("KRISTO_MINISTRY_DELETE_LOOKUP", payload);
+}
+
+const MINISTRY_MEMBERS_FILE = "ministry-members.json";
+
+function ministryMemberMatchesMinistry(
+  row: { churchId?: unknown; ministryId?: unknown },
+  churchId: string,
+  ministryId: string
+): boolean {
+  return (
+    churchIdsMatch(row.churchId, churchId) &&
+    normalizeMinistryId(row.ministryId) === normalizeMinistryId(ministryId)
+  );
+}
+
+async function removeMinistryMembersForMinistry(
+  churchId: string,
+  ministryId: string
+): Promise<number> {
+  let removedCount = 0;
+
+  await updateJsonFile<any[]>(
+    MINISTRY_MEMBERS_FILE,
+    (current) => {
+      const list = Array.isArray(current) ? current : [];
+      const next = list.filter((row) => {
+        if (ministryMemberMatchesMinistry(row, churchId, ministryId)) {
+          removedCount += 1;
+          return false;
+        }
+        return true;
+      });
+      return next;
+    },
+    []
+  );
+
+  return removedCount;
+}
+
 async function applyRateLimit(req: NextRequest): Promise<NextResponse | null> {
   const rl = await rateLimit(req, { name: "ministries", limit: 60, windowMs: 60_000 });
   if (!rl.allowed) {
@@ -127,23 +208,43 @@ export async function GET(req: NextRequest) {
   const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin", "Member"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
-  const { churchId } = ctxOrRes;
+  const { churchId, viewer } = ctxOrRes;
   const url = new URL(req.url);
   const idParam = String(url.searchParams.get("id") || "").trim();
+  const mineMode = url.searchParams.get("mine") === "1" || url.searchParams.get("mine") === "true";
 
   const all = await readAll();
 
   if (idParam) {
-    const one = all.find((m) => m.id === idParam && m.churchId === churchId);
+    const one = findMinistryInChurch(all, churchId, idParam);
     if (!one) {
       return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
     }
     return json<Ministry>({ ok: true, data: one });
   }
 
-  const data = all.filter((m) => m.churchId === churchId);
+  const churchMinistries = all.filter((m) => m.churchId === churchId);
 
-  return json<Ministry[]>({ ok: true, data });
+  if (mineMode) {
+    const data = await getUserJoinedMinistries(churchId, viewer.userId);
+    const joinedMinistryIds = data.map((m) => String(m.id || "")).filter(Boolean);
+    const identity = await resolveMinistryViewerUserId(viewer.userId);
+
+    logMinistryScope("KRISTO_MY_MINISTRIES_SCOPE", {
+      userId: identity.rawUserId,
+      resolvedUserId: identity.resolvedUserId,
+      matchUserIds: identity.matchUserIds,
+      churchId,
+      serverRole: viewer.role,
+      scope: "joined",
+      joinedMinistryIds,
+      count: data.length,
+    });
+
+    return json<Ministry[]>({ ok: true, data });
+  }
+
+  return json<Ministry[]>({ ok: true, data: churchMinistries });
 }
 
 /* =========================
@@ -376,9 +477,56 @@ export async function DELETE(req: NextRequest) {
   const { churchId, viewer } = ctxOrRes;
 
   const url = new URL(req.url);
-  const mid = String(url.searchParams.get("id") || "").trim();
-  if (!mid) return json({ ok: false, error: "Missing id" } satisfies ApiErr, { status: 400 });
+  const requestedId = String(url.searchParams.get("id") || "").trim();
+  if (!requestedId) return json({ ok: false, error: "Missing id" } satisfies ApiErr, { status: 400 });
 
+  const allBefore = await readAll();
+  const lookup = findMinistryInChurch(allBefore, churchId, requestedId);
+  const normalizedId = normalizeMinistryId(requestedId);
+
+  logMinistryDeleteLookup({
+    requestedId,
+    normalizedId,
+    found: Boolean(lookup),
+    matchedId: lookup?.id || null,
+    matchedChurchId: lookup?.churchId || null,
+    guardChurchId: churchId,
+    userId: viewer.userId,
+    ministryIdsAvailable: listMinistryIdsForChurch(allBefore, churchId),
+  });
+
+  if (!lookup) {
+    const orphanMembersRemoved = await removeMinistryMembersForMinistry(churchId, normalizedId);
+    if (orphanMembersRemoved > 0) {
+      console.log("KRISTO_MINISTRY_DELETE_ORPHAN_CLEANUP", {
+        requestedId,
+        normalizedId,
+        churchId,
+        userId: viewer.userId,
+        orphanMembersRemoved,
+      });
+
+      await logAudit({
+        req,
+        viewer,
+        churchId,
+        action: "MINISTRY_DELETE",
+        targetType: "ministry",
+        targetId: normalizedId,
+        message: `${viewer.name || viewer.userId} deleted orphaned ministry membership data (${orphanMembersRemoved} members).`,
+        meta: { orphanMembersRemoved, requestedId: normalizedId },
+      } as any);
+
+      return json({
+        ok: true,
+        data: { id: normalizedId, orphanCleanup: true, membersRemoved: orphanMembersRemoved },
+      });
+    }
+
+    return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
+  }
+
+  const canonicalId = String(lookup.id || normalizedId);
   let removed: Ministry | null = null;
 
   try {
@@ -386,11 +534,16 @@ export async function DELETE(req: NextRequest) {
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
-        const idx = list.findIndex((m) => m.id === mid && m.churchId === churchId);
+        const idx = list.findIndex(
+          (m) => normalizeMinistryId(m.id) === canonicalId && churchIdsMatch(m.churchId, churchId)
+        );
         if (idx < 0) return list;
 
         removed = list[idx];
-        return list.filter((m) => !(m.id === mid && m.churchId === churchId));
+        return list.filter(
+          (m) =>
+            !(normalizeMinistryId(m.id) === canonicalId && churchIdsMatch(m.churchId, churchId))
+        );
       },
       []
     );
@@ -403,6 +556,15 @@ export async function DELETE(req: NextRequest) {
 
   const r = removed as any as Ministry;
 
+  const membersRemoved = await removeMinistryMembersForMinistry(churchId, canonicalId);
+  if (membersRemoved > 0) {
+    console.log("KRISTO_MINISTRY_DELETE_MEMBERS_CASCADE", {
+      ministryId: r.id,
+      churchId,
+      membersRemoved,
+    });
+  }
+
   await logAudit({
     req,
     viewer,
@@ -414,5 +576,5 @@ export async function DELETE(req: NextRequest) {
     meta: { name: r.name },
   } as any);
 
-  return json({ ok: true, data: { id: mid } });
+  return json({ ok: true, data: { id: r.id } });
 }
