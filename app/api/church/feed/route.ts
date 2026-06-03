@@ -907,7 +907,7 @@ async function resolveViewerChurchId(
 }
 
 async function buildCommentTree(
-  churchId: string,
+  _itemChurchId: string,
   canonicalPostId: string,
   viewerUserId: string,
   extraPostIds: string[] = []
@@ -918,14 +918,14 @@ async function buildCommentTree(
     if (v) postIds.add(v);
   }
 
-  const all = (await listCommentsForPostIds(churchId, postIds))
+  const all = (await listCommentsForPostIds(postIds))
     .slice()
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
   const roots = all.filter((x) => !x.parentCommentId);
   const replies = all.filter((x) => !!x.parentCommentId);
   const commentIds = all.map((x) => String(x.id || "")).filter(Boolean);
-  const likeMeta = await getCommentLikeMetaForIds(churchId, commentIds, viewerUserId);
+  const likeMeta = await getCommentLikeMetaForIds(commentIds, viewerUserId);
 
   return roots.map((root) => {
     const rootLikes = likeMeta.get(root.id) || { likeCount: 0, likedByMe: false };
@@ -1087,7 +1087,17 @@ async function handleFeedGet(
       const item = await getFeedItemById(id);
       if (!item) return err("Feed item not found", 404);
 
-      const itemChurchId = String(item.churchId || churchId);
+      const viewerChurchId = String(churchId || "").trim();
+      const itemChurchId = String(item.churchId || "").trim();
+      const requestPostId = String(id || "").trim();
+      const canonicalPostId = String(item.id || requestPostId).trim();
+
+      console.log("KRISTO_COMMENT_READ_SCOPE", {
+        viewerChurchId,
+        itemChurchId,
+        postId: canonicalPostId,
+        viewerUserId,
+      });
 
       if (!isDiscoverableFeedItem(item, churchId)) {
         return err("Feed item not found", 404);
@@ -1097,8 +1107,6 @@ async function handleFeedGet(
         return err("Feed item not found", 404);
       }
 
-      const requestPostId = String(id || "").trim();
-      const canonicalPostId = String(item.id || requestPostId).trim();
       const postIdAliases = commentPostIdAliases(item, requestPostId);
       const discussion = await countDiscussionForPostIdSet(postIdAliases);
       const commentCount = discussion.commentCount;
@@ -1113,6 +1121,8 @@ async function handleFeedGet(
       console.log("KRISTO_COMMENT_BACKEND_READ", {
         postId: canonicalPostId,
         requestPostId,
+        itemChurchId,
+        viewerChurchId,
         storeMode: resolveCommentStoreMode(),
         totalForPost: comments.length,
         ids: comments.map((c) => c.id),

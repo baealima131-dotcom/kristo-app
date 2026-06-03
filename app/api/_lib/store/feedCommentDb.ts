@@ -297,13 +297,9 @@ export async function findFeedCommentById(commentId: string): Promise<FeedCommen
   return found;
 }
 
-export async function listCommentsForPostIds(
-  churchId: string,
-  postIds: Set<string>
-): Promise<FeedComment[]> {
-  const cid = String(churchId || "").trim();
+export async function listCommentsForPostIds(postIds: Set<string>): Promise<FeedComment[]> {
   const ids = [...postIds].map((x) => String(x || "").trim()).filter(Boolean);
-  if (!cid || !ids.length) {
+  if (!ids.length) {
     logCommentStoreEvent({ op: "read", count: 0, detail: "list:empty-input" });
     return [];
   }
@@ -325,7 +321,7 @@ export async function listCommentsForPostIds(
         id, church_id, post_id, parent_comment_id, text, created_at, created_by,
         author_name, author_avatar_uri, author_initial
       FROM kristo_church_feed_comments
-      WHERE church_id = ${cid} AND post_id = ANY(${ids})
+      WHERE post_id = ANY(${ids})
       ORDER BY created_at ASC
     `;
     const items = (rows as CommentRow[]).map(rowToComment);
@@ -334,9 +330,7 @@ export async function listCommentsForPostIds(
   }
 
   const all = await readLocalComments();
-  const items = all.filter(
-    (x) => x.churchId === cid && ids.includes(String(x.postId || ""))
-  );
+  const items = all.filter((x) => ids.includes(String(x.postId || "")));
   logCommentStoreEvent({ op: "read", count: items.length, detail: `list:${ids.join(",")}` });
   return items;
 }
@@ -595,7 +589,6 @@ export async function togglePostLike(args: {
 }
 
 export async function getCommentLikeMetaForIds(
-  churchId: string,
   commentIds: string[],
   viewerUserId: string
 ): Promise<Map<string, { likeCount: number; likedByMe: boolean }>> {
@@ -606,7 +599,6 @@ export async function getCommentLikeMetaForIds(
   }
   if (!ids.length) return result;
 
-  const cid = String(churchId || "").trim();
   const uid = String(viewerUserId || "").trim();
 
   try {
@@ -621,7 +613,7 @@ export async function getCommentLikeMetaForIds(
     const countRows = await sql`
       SELECT comment_id, COUNT(*)::int AS count
       FROM kristo_church_feed_comment_likes
-      WHERE church_id = ${cid} AND comment_id = ANY(${ids})
+      WHERE comment_id = ANY(${ids})
       GROUP BY comment_id
     `;
     for (const row of countRows as any[]) {
@@ -635,7 +627,7 @@ export async function getCommentLikeMetaForIds(
     const likedRows = await sql`
       SELECT comment_id
       FROM kristo_church_feed_comment_likes
-      WHERE church_id = ${cid} AND user_id = ${uid} AND comment_id = ANY(${ids})
+      WHERE user_id = ${uid} AND comment_id = ANY(${ids})
     `;
     for (const row of likedRows as any[]) {
       const commentId = String(row.comment_id || "").trim();
@@ -648,7 +640,7 @@ export async function getCommentLikeMetaForIds(
 
   const likes = await readLocalCommentLikes();
   for (const id of ids) {
-    const scoped = likes.filter((x) => x.churchId === cid && x.commentId === id);
+    const scoped = likes.filter((x) => x.commentId === id);
     result.set(id, {
       likeCount: scoped.length,
       likedByMe: scoped.some((x) => x.userId === uid),
@@ -691,7 +683,7 @@ export async function toggleCommentLike(args: {
       `;
       likedByMe = true;
     }
-    const meta = await getCommentLikeMetaForIds(cid, [commentId], uid);
+    const meta = await getCommentLikeMetaForIds([commentId], uid);
     const row = meta.get(commentId) || { likeCount: 0, likedByMe };
     logCommentStoreEvent({ op: "write", count: 1, detail: `toggle-comment-like:${commentId}` });
     return { likedByMe: row.likedByMe, likeCount: row.likeCount };
