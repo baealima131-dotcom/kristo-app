@@ -1351,6 +1351,15 @@ async function handleFeedPost(req: NextRequest, body: any) {
       ? String(ctx?.viewer?.churchId || ctx?.churchId || "").trim()
       : String(ctx.churchId || "");
   const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
+
+  console.log("KRISTO_FEED_POST_ACTION_RECEIVED", {
+    action,
+    hasPostId: Boolean(body?.postId),
+    postId: String(body?.postId || ""),
+    hasText: Boolean(body?.text),
+    userId: viewerUserId,
+  });
+
   const viewerName = String(ctx?.viewer?.name || "").trim();
   const actorLabel = viewerName || viewerUserId;
 
