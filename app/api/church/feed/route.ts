@@ -250,6 +250,18 @@ function enrichScheduleSlotsClaimAvatars(slots: any[]) {
 }
 
 function enrichComment<T extends FeedComment>(c: T) {
+  const snapName = String(c.authorName || "").trim();
+  if (snapName) {
+    const snapAvatar = String(c.authorAvatarUri || "").trim();
+    const snapInitial =
+      String(c.authorInitial || "").trim() || snapName.charAt(0).toUpperCase() || "U";
+    return {
+      ...c,
+      authorName: snapName,
+      authorAvatarUri: snapAvatar,
+      authorInitial: snapInitial,
+    };
+  }
   return {
     ...c,
     ...publicUser(c.createdBy),
@@ -1431,6 +1443,14 @@ async function handleFeedPost(req: NextRequest, body: any) {
       text: text.slice(0, 120),
     });
 
+    const author = publicUser(viewerUserId);
+
+    console.log("KRISTO_COMMENT_AUTHOR_SNAPSHOT", {
+      userId: viewerUserId,
+      authorName: author.authorName,
+      hasAvatar: Boolean(author.authorAvatarUri),
+    });
+
     const comment: FeedComment = {
       id: makeId("comment"),
       churchId: itemChurchId,
@@ -1442,6 +1462,9 @@ async function handleFeedPost(req: NextRequest, body: any) {
       text,
       createdAt: new Date().toISOString(),
       createdBy: viewerUserId,
+      authorName: author.authorName,
+      authorAvatarUri: author.authorAvatarUri,
+      authorInitial: author.authorInitial,
     };
 
     await insertFeedComment(comment);

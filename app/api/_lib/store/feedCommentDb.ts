@@ -12,6 +12,9 @@ export type FeedComment = {
   text: string;
   createdAt: string;
   createdBy: string;
+  authorName?: string;
+  authorAvatarUri?: string;
+  authorInitial?: string;
 };
 
 export type FeedCommentLike = {
@@ -41,6 +44,9 @@ type CommentRow = {
   text: string;
   created_at: string;
   created_by: string;
+  author_name: string | null;
+  author_avatar_uri: string | null;
+  author_initial: string | null;
 };
 
 type CommentLikeRow = {
@@ -169,12 +175,19 @@ export async function ensureCommentSchema() {
         CREATE INDEX IF NOT EXISTS kristo_church_feed_post_likes_church_idx
         ON kristo_church_feed_post_likes (church_id, post_id)
       `;
+      await sql`ALTER TABLE kristo_church_feed_comments ADD COLUMN IF NOT EXISTS author_name TEXT`;
+      await sql`ALTER TABLE kristo_church_feed_comments ADD COLUMN IF NOT EXISTS author_avatar_uri TEXT`;
+      await sql`ALTER TABLE kristo_church_feed_comments ADD COLUMN IF NOT EXISTS author_initial TEXT`;
     })();
   }
   await schemaReady;
 }
 
 function rowToComment(row: CommentRow): FeedComment {
+  const authorName = String(row.author_name || "").trim() || undefined;
+  const authorAvatarUri = String(row.author_avatar_uri || "").trim() || undefined;
+  const authorInitial = String(row.author_initial || "").trim() || undefined;
+
   return {
     id: row.id,
     churchId: row.church_id,
@@ -183,6 +196,9 @@ function rowToComment(row: CommentRow): FeedComment {
     text: row.text,
     createdAt: row.created_at,
     createdBy: row.created_by,
+    authorName,
+    authorAvatarUri,
+    authorInitial,
   };
 }
 
@@ -221,7 +237,8 @@ export async function insertFeedComment(comment: FeedComment): Promise<FeedComme
     const sql = getSql();
     await sql`
       INSERT INTO kristo_church_feed_comments (
-        id, church_id, post_id, parent_comment_id, text, created_at, created_by
+        id, church_id, post_id, parent_comment_id, text, created_at, created_by,
+        author_name, author_avatar_uri, author_initial
       ) VALUES (
         ${comment.id},
         ${comment.churchId},
@@ -229,7 +246,10 @@ export async function insertFeedComment(comment: FeedComment): Promise<FeedComme
         ${comment.parentCommentId || null},
         ${comment.text},
         ${comment.createdAt},
-        ${comment.createdBy}
+        ${comment.createdBy},
+        ${comment.authorName || null},
+        ${comment.authorAvatarUri || null},
+        ${comment.authorInitial || null}
       )
     `;
     logCommentStoreEvent({ op: "write", count: 1, detail: `insert:${comment.id}` });
@@ -259,7 +279,9 @@ export async function findFeedCommentById(commentId: string): Promise<FeedCommen
   if (usePostgres()) {
     const sql = getSql();
     const rows = await sql`
-      SELECT id, church_id, post_id, parent_comment_id, text, created_at, created_by
+      SELECT
+        id, church_id, post_id, parent_comment_id, text, created_at, created_by,
+        author_name, author_avatar_uri, author_initial
       FROM kristo_church_feed_comments
       WHERE id = ${id}
       LIMIT 1
@@ -299,7 +321,9 @@ export async function listCommentsForPostIds(
   if (usePostgres()) {
     const sql = getSql();
     const rows = await sql`
-      SELECT id, church_id, post_id, parent_comment_id, text, created_at, created_by
+      SELECT
+        id, church_id, post_id, parent_comment_id, text, created_at, created_by,
+        author_name, author_avatar_uri, author_initial
       FROM kristo_church_feed_comments
       WHERE church_id = ${cid} AND post_id = ANY(${ids})
       ORDER BY created_at ASC
