@@ -29,8 +29,9 @@ import { fetchHomeFeedFromApi, syncHomeFeedLike } from "./homeFeedApi";
 import {
   feedRenderKey,
   hydrateFeedRowLikes,
-  isMediaLiveSlotsHomeFeedRow,
-  mergeFeedRowsDeterministic,
+  buildHomeFeedDisplayRows,
+  homeFeedScheduleEngagementId,
+  isHomeFeedScheduleCardRow,
   readFeedItemLikedByMe,
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, homeFeedSlideHeight } from "./theme";
@@ -99,7 +100,7 @@ export default function HomeFeedScreen() {
         let changed = false;
         const next = { ...prev };
         for (const row of rows) {
-          const postId = feedRenderKey(row);
+          const postId = homeFeedScheduleEngagementId(row);
           if (!postId || !(postId in next)) continue;
           const serverLikedByMe = readFeedItemLikedByMe(row);
           if (serverLikedByMe || next[postId].likedByMe === serverLikedByMe) {
@@ -132,7 +133,7 @@ export default function HomeFeedScreen() {
   const serverLikeByPostId = useMemo(() => {
     const map: Record<string, { likedByMe: boolean; likeCount: number }> = {};
     for (const row of backendRows) {
-      const postId = feedRenderKey(row);
+      const postId = homeFeedScheduleEngagementId(row);
       if (!postId) continue;
       map[postId] = {
         likedByMe: readFeedItemLikedByMe(row),
@@ -144,13 +145,15 @@ export default function HomeFeedScreen() {
 
   const feedRows = useMemo(() => {
     void localTick;
-    const merged = mergeFeedRowsDeterministic(backendRows, feedList());
+    const merged = buildHomeFeedDisplayRows(backendRows, feedList());
     const hydrated = hydrateFeedRowLikes(merged, serverLikeByPostId);
-    const visibleSchedule = hydrated.filter(isMediaLiveSlotsHomeFeedRow);
+    const visibleSchedule = hydrated.filter(isHomeFeedScheduleCardRow);
     console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
       stage: "home_feed_screen_merged",
       visibleCount: visibleSchedule.length,
       feedCount: hydrated.length,
+      displayBuilder: "buildHomeFeedDisplayRows",
+      expandedSlotCount: visibleSchedule.filter((row) => row?.homeFeedSlotExpanded).length,
       visibleScheduleIds: visibleSchedule.map((row) => String(row?.id || "")),
     });
     return hydrated;
@@ -223,7 +226,7 @@ export default function HomeFeedScreen() {
 
   const getLikeState = useCallback(
     (item: any, logContext?: { index?: number }) => {
-      const postId = feedRenderKey(item);
+      const postId = homeFeedScheduleEngagementId(item);
       if (!postId) {
         return { likedByMe: false, liked: false, likeCount: 0 };
       }
@@ -289,7 +292,7 @@ export default function HomeFeedScreen() {
 
   const handleLike = useCallback(
     (item: any) => {
-      const postId = feedRenderKey(item);
+      const postId = homeFeedScheduleEngagementId(item);
       if (!postId) return;
 
       const current = getLikeState(item);

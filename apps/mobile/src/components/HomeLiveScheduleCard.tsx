@@ -392,6 +392,8 @@ export type HomeLiveScheduleCardProps = {
   profileName?: string;
   profileAvatarUri?: string;
   onSkipSlots?: () => void;
+  /** Home Feed expanded slot cards — scroll feed instead of in-card carousel. */
+  disableSlotCarousel?: boolean;
   onOpenLiveRoom?: () => void;
   onOptimisticClaim?: (params: {
     postId: string;
@@ -417,6 +419,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   profileName,
   profileAvatarUri,
   onSkipSlots,
+  disableSlotCarousel = false,
   onOpenLiveRoom,
   onOptimisticClaim,
   displayLiked,
@@ -912,12 +915,23 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   </View>
                 </View>
               </View>
-              <Pressable onPress={onSkipSlots} style={({ pressed }) => [styles.slotCounter, pressed && styles.pressed]}>
-                <Text style={styles.slotCounterText}>
-                  {slotFeedIndex + 1}/{slotFeedTotal}
-                </Text>
-                <Ionicons name="play-skip-forward" size={14} color={GOLD} />
-              </Pressable>
+              {disableSlotCarousel ? (
+                <View style={styles.slotCounter}>
+                  <Text style={styles.slotCounterText}>
+                    Slot {slotFeedIndex + 1}/{slotFeedTotal}
+                  </Text>
+                </View>
+              ) : (
+                <Pressable
+                  onPress={onSkipSlots}
+                  style={({ pressed }) => [styles.slotCounter, pressed && styles.pressed]}
+                >
+                  <Text style={styles.slotCounterText}>
+                    {slotFeedIndex + 1}/{slotFeedTotal}
+                  </Text>
+                  <Ionicons name="play-skip-forward" size={14} color={GOLD} />
+                </Pressable>
+              )}
             </View>
           </Animated.View>
 

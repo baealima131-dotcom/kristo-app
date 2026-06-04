@@ -14,6 +14,11 @@ import {
   clearChurchProjectScheduleSlots,
   getChurchProjectMcRuntime,
 } from "@/src/store/churchProjectMcScheduleStore";
+import {
+  hasPendingLocalScheduleForChurch,
+  isPendingLocalMediaScheduleRow,
+  listPendingLocalScheduleIds,
+} from "@/src/lib/mediaSchedulePendingSync";
 
 export type LocalMediaScheduleUiReset = {
   setGuestClaimSlots?: (slots: any[]) => void;
@@ -48,7 +53,11 @@ export function purgeAllLocalMediaScheduleSources(options: {
   const churchId = String(options.churchId || "").trim();
   const assignmentId = String(options.assignmentId || "media-schedule").trim() || "media-schedule";
 
-  feedRemoveWhere((it: any) => isLocalMediaScheduleFeedRow(it));
+  feedRemoveWhere((it: any) => {
+    if (!isLocalMediaScheduleFeedRow(it)) return false;
+    if (isPendingLocalMediaScheduleRow(it, churchId)) return false;
+    return true;
+  });
   feedCloseMediaScheduleCards();
   feedPurgeMediaScheduleCards();
   if (churchId) {
@@ -78,6 +87,11 @@ export function purgeAllLocalMediaScheduleSources(options: {
   ui?.setScheduleConflictInfo?.(null);
   ui?.setActiveScheduleBatchIndex?.(0);
 
+  console.log("KRISTO_SCHEDULE_LOCAL_PURGED", {
+    churchId,
+    assignmentId,
+    reason: options.reason,
+  });
   console.log("KRISTO_LOCAL_MEDIA_DELETE_PURGE_DONE", {
     churchId,
     assignmentId,
@@ -167,8 +181,13 @@ export function applySilentMediaScheduleReload(params: {
     });
   }
 
+  const pendingLocalScheduleIds = cid ? listPendingLocalScheduleIds(cid) : [];
+  const hasPendingLocalSchedule = Boolean(
+    pendingLocalScheduleIds.length || (cid && hasPendingLocalScheduleForChurch(cid))
+  );
+
   const shouldForceLocalPurge = Boolean(
-    versionChanged && cid && !backendScheduleFeed && !backendActive
+    versionChanged && cid && !backendScheduleFeed && !backendActive && !hasPendingLocalSchedule
   );
 
   let purgedLocal = false;
@@ -186,6 +205,16 @@ export function applySilentMediaScheduleReload(params: {
     ? findProtectedNearLiveSchedule(localRows, cid, Date.now())
     : null;
 
+  if (versionChanged && cid && !backendScheduleFeed && !backendActive && hasPendingLocalSchedule) {
+    console.log("KRISTO_SCHEDULE_LOCAL_KEEP_PENDING_BACKEND", {
+      churchId: cid,
+      reason: params.reason,
+      pendingLocalScheduleIds,
+      mediaScheduleVersion,
+      backendRowCount: rows.length,
+    });
+  }
+
   if (shouldForceLocalPurge && protectedSchedule) {
     protectedLocalSchedule = true;
     console.log("KRISTO_ACTIVE_SCHEDULE_PROTECTED", {
@@ -200,6 +229,17 @@ export function applySilentMediaScheduleReload(params: {
   }
 
   if (shouldForceLocalPurge && !protectedLocalSchedule) {
+    console.log("KRISTO_SCHEDULE_LOCAL_PURGED", {
+      churchId: cid,
+      reason: "silent_reload_no_backend_schedule",
+      gate: "applySilentMediaScheduleReload",
+      mediaScheduleVersion,
+      backendRowCount: rows.length,
+      backendScheduleRowCount: rows.filter((row) =>
+        String(row?.source || "").includes("media-schedule") ||
+        String(row?.scheduleType || "").includes("media-live-slots")
+      ).length,
+    });
     purgeAllLocalMediaScheduleSources({
       churchId: cid,
       reason: params.reason,
@@ -210,6 +250,26 @@ export function applySilentMediaScheduleReload(params: {
   }
 
   if (versionChanged) {
+    console.log("KRISTO_SILENT_MEDIA_SCHEDULE_RELOAD", {
+      churchId: cid,
+      reason: params.reason,
+      mediaScheduleVersion,
+      mediaScheduleUpdatedAt,
+      previousVersion,
+      previousUpdatedAt,
+      purgedLocal,
+      backendHasActiveSchedule,
+      hasPendingLocalSchedule,
+      pendingLocalScheduleIds,
+      backendScheduleFeedId: String(backendScheduleFeed?.id || ""),
+      backendActiveId: String(backendActive?.id || ""),
+      shouldForceLocalPurge,
+      rowCount: rows.length,
+      scheduleRowCount: rows.filter((row) =>
+        String(row?.source || "").includes("media-schedule") ||
+        String(row?.scheduleType || "").includes("media-live-slots")
+      ).length,
+    });
     console.log("KRISTO_MEDIA_SILENT_RELOAD", {
       churchId: cid,
       reason: params.reason,

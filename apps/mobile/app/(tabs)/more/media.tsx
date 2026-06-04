@@ -28,7 +28,6 @@ import {
   feedList,
   feedPublishMediaScheduleLocal,
   feedRemoveWhere,
-  feedSyncMediaScheduleFromBackend,
   feedUnclaimSchedule,
   feedUpdateScheduleSlot,
   feedUpdateScheduleSlots,
@@ -48,6 +47,10 @@ import {
   syncMediaScheduleSlotsToBackend,
 } from "../../../src/lib/mediaScheduleSilentReload";
 import {
+  markLocalSchedulePendingBackend,
+  replaceLocalScheduleWithBackend,
+} from "../../../src/lib/mediaSchedulePendingSync";
+import {
   ACTIVE_MEDIA_SCHEDULE_ERROR,
   findActiveMediaScheduleForChurch,
   isMediaScheduleFeedItem,
@@ -61,9 +64,13 @@ import {
   alertChurchSubscriptionRequired,
   CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE,
   isChurchSubscriptionRequiredError,
+  evaluateScheduleSubscriptionGate,
   requireActiveChurchSubscriptionForSchedule,
 } from "../../../src/lib/churchSubscription";
-import { isSubscriptionBypassEnabled, shouldSuppressPremiumPrompts } from "../../../src/lib/subscriptionBypass";
+import {
+  evaluateChurchMediaSubscriptionGate,
+  shouldSuppressPremiumPrompts,
+} from "../../../src/lib/subscriptionBypass";
 import { MEDIA_STUDIO_BACKGROUND } from "../../../src/lib/mediaPreload";
 import {
   loadChurchMediaProfileCache,
@@ -794,20 +801,43 @@ export default function MediaStudioScreen() {
   const showCreateWizard =
     mediaProfileReady && !hasChurchMediaProfile && canCreateMedia && !showHostSetupPending && !showAccessLocked;
 
-  // Church-level media subscription.
-  // Hosts NEVER control subscription ownership.
-  const churchMediaSubscriptionActive =
-    isSubscriptionBypassEnabled() ||
+  // Church-level subscription: Pastor pays; approved hosts use Media when church is active.
+  const isApprovedMediaHost = Boolean(isMediaHostFromProfile && canAccessChurchMedia);
+  const churchSubActiveFromApi =
     churchSubscriptionActiveFromApi === true ||
     Boolean((churchMediaProfile as any)?.subscriptionActive);
 
+  const mediaSubscriptionGate = evaluateChurchMediaSubscriptionGate({
+    isPastor: isActualChurchPastor,
+    isApprovedMediaHost,
+    churchSubscriptionActive: churchSubActiveFromApi
+      ? true
+      : churchSubscriptionActiveFromApi === false
+        ? false
+        : null,
+    screen: "media",
+    gate: "media.churchSubscription",
+    churchId: String(session?.churchId || ""),
+  });
+
+  const scheduleSubscriptionBypassed = mediaSubscriptionGate.bypassed;
+  const churchMediaSubscriptionActive =
+    isActualChurchPastor || isApprovedMediaHost
+      ? mediaSubscriptionGate.subscriptionAllowed
+      : false;
+
   const subscriptionLocked =
-    !isSubscriptionBypassEnabled() &&
+    (isActualChurchPastor || isApprovedMediaHost) &&
     churchSubscriptionActiveFromApi !== null &&
     !churchMediaSubscriptionActive;
 
   function showSubscriptionRequired() {
-    if (shouldSuppressPremiumPrompts()) return;
+    if (
+      shouldSuppressPremiumPrompts(isActualChurchPastor, isApprovedMediaHost) ||
+      scheduleSubscriptionBypassed
+    ) {
+      return;
+    }
 
     if (isActualChurchPastor) {
       setVipNotice({
@@ -828,7 +858,12 @@ export default function MediaStudioScreen() {
   }
 
   function openSubscriptionSchedulePrompt() {
-    if (shouldSuppressPremiumPrompts()) return;
+    if (
+      shouldSuppressPremiumPrompts(isActualChurchPastor, isApprovedMediaHost) ||
+      scheduleSubscriptionBypassed
+    ) {
+      return;
+    }
     setSubscriptionPromptOpen(true);
   }
 
@@ -853,7 +888,9 @@ export default function MediaStudioScreen() {
   const currentPlan = paymentsState.subscriptions.selectedPlan;
   const planStatus = paymentsState.subscriptions.planStatus;
   const hasSubscription =
-    isSubscriptionBypassEnabled() || isPlanActive(currentPlan, planStatus);
+    (isActualChurchPastor || isApprovedMediaHost)
+      ? churchMediaSubscriptionActive
+      : isPlanActive(currentPlan, planStatus);
   const subscriptionLabel =
     currentPlan === "monthly"
       ? planStatus === "active"
@@ -1256,6 +1293,34 @@ export default function MediaStudioScreen() {
       return aStart - bStart;
     });
     }, [homeFeedItems, backendFeedItems, session?.userId, session?.churchId, guestClockNow]);
+
+  useEffect(() => {
+    const churchId = String(session?.churchId || "").trim();
+    const combined = backendFeedItems.length ? backendFeedItems : homeFeedItems;
+    const activeSchedule = churchId
+      ? findActiveMediaScheduleForChurch(combined, churchId, { strictChurch: true })
+      : null;
+
+    console.log("KRISTO_GUEST_CLAIM_CENTER_LOAD", {
+      churchId,
+      backendFeedCount: backendFeedItems.length,
+      homeFeedCount: homeFeedItems.length,
+      activeScheduleId: String(activeSchedule?.id || activeSchedule?.sourceScheduleId || ""),
+      activeScheduleSource: String(activeSchedule?.source || ""),
+      slotCount: Array.isArray(activeSchedule?.scheduleSlots)
+        ? activeSchedule.scheduleSlots.length
+        : 0,
+      guestClaimSlotCount: syncedGuestClaimSlots.length,
+      headerMediaIdDisplay: "MD-102948",
+      summaryMediaIdDisplay: "MD-000000",
+      mediaIdMismatchNote: "header/summary IDs are hardcoded UI placeholders, not feed mediaId",
+    });
+  }, [
+    backendFeedItems,
+    homeFeedItems,
+    session?.churchId,
+    syncedGuestClaimSlots.length,
+  ]);
 
   const guestClaimTotalMinutes = syncedGuestClaimSlots.reduce((sum, slot) => sum + slot.durationMin, 0);
   const guestClaimClaimedCount = syncedGuestClaimSlots.filter((slot) => slot.status === "Claimed" && !slot.approved).length;
@@ -1837,7 +1902,15 @@ export default function MediaStudioScreen() {
     : "V2 Feature";
 
   async function handleCreateLiveSchedule() {
-    if (subscriptionLocked) {
+    const scheduleGate = evaluateScheduleSubscriptionGate({
+      screen: "media.handleCreateLiveSchedule",
+      gate: "media.slots-card",
+      isPastor: isActualChurchPastor,
+      isApprovedMediaHost,
+      hasSubscription: churchMediaSubscriptionActive,
+      subscriptionLocked,
+    });
+    if (!scheduleGate.allowed) {
       openSubscriptionSchedulePrompt();
       return;
     }
@@ -1922,10 +1995,15 @@ export default function MediaStudioScreen() {
         churchId,
       });
 
-      if (!isSubscriptionBypassEnabled()) {
-        if (!(await requireActiveChurchSubscriptionForSchedule(churchId, apiHeaders))) {
-          return;
-        }
+      if (
+        !(await requireActiveChurchSubscriptionForSchedule(churchId, apiHeaders, {
+          isPastor: isActualChurchPastor,
+          isApprovedMediaHost,
+          screen: "media.handleSendLiveScheduleToFeed",
+          gate: "media.send-to-global-feed",
+        }))
+      ) {
+        return;
       }
 
       if (churchId) {
@@ -2054,9 +2132,22 @@ export default function MediaStudioScreen() {
         ...postPayload,
         id: scheduleId,
         sourceScheduleId: scheduleId,
+        source: "media-schedule",
+        scheduleType: "media-live-slots",
+        pendingBackendSync: true,
         updatedAt: Date.now(),
       });
+      markLocalSchedulePendingBackend(scheduleId, churchId);
       setHomeFeedItems([...feedList()]);
+
+      console.log("KRISTO_SCHEDULE_CREATE_REQUEST", {
+        screen: "media.handleSendLiveScheduleToFeed",
+        churchId,
+        localScheduleId: scheduleId,
+        slotCount: scheduleSlotsPayload.length,
+        source: postPayload.source,
+        scheduleType: postPayload.scheduleType,
+      });
 
       console.log("[ScheduleCreate] backend post start", {
         churchId,
@@ -2068,17 +2159,43 @@ export default function MediaStudioScreen() {
         headers: apiHeaders,
       });
 
+      const backendFeedId = String(r?.data?.id || r?.item?.id || r?.id || "").trim();
+
+      console.log("KRISTO_SCHEDULE_CREATE_SUCCESS", {
+        screen: "media.handleSendLiveScheduleToFeed",
+        ok: Boolean(r?.ok),
+        churchId,
+        localScheduleId: scheduleId,
+        backendFeedId: backendFeedId || null,
+        scheduleId: String(r?.data?.sourceScheduleId || r?.item?.sourceScheduleId || backendFeedId || scheduleId),
+        slotCount: scheduleSlotsPayload.length,
+        error: r?.ok ? null : String(r?.error || r?.message || ""),
+        status: Number(r?.status || 0) || null,
+      });
+
       console.log("[ScheduleCreatePerf] postDone ms", Date.now() - perfStart);
       console.log("[ScheduleCreate] backend post result", {
         ok: r?.ok,
-        feedId: r?.data?.id || r?.item?.id || r?.id,
+        feedId: backendFeedId,
         churchId,
         sourceScheduleId: scheduleId,
       });
 
       if (!r?.ok) {
-        if (isChurchSubscriptionRequiredError(r)) {
-          alertChurchSubscriptionRequired();
+        if (
+          isChurchSubscriptionRequiredError(r, {
+            screen: "media.handleSendLiveScheduleToFeed",
+            gate: "media.schedule-create.api",
+            isPastor: isActualChurchPastor,
+            isApprovedMediaHost,
+          })
+        ) {
+          alertChurchSubscriptionRequired({
+            screen: "media.handleSendLiveScheduleToFeed",
+            gate: "media.schedule-create.api",
+            isPastor: isActualChurchPastor,
+            isApprovedMediaHost,
+          });
           return;
         }
         Alert.alert("Backend schedule failed", String(r?.error || JSON.stringify(r)));
@@ -2086,26 +2203,15 @@ export default function MediaStudioScreen() {
       }
 
       const backendItem = r?.item || r?.data || r;
-      const backendFeedId = String(backendItem?.id || "").trim();
+      const backendScheduleFeedId = replaceLocalScheduleWithBackend(backendItem, scheduleId, {
+        churchId,
+        scheduleSlots: scheduleSlotsPayload,
+      });
 
-      if (backendFeedId) {
-        feedSyncMediaScheduleFromBackend(
-          {
-            ...backendItem,
-            churchId,
-            source: "media-schedule",
-            scheduleType: "media-live-slots",
-            visibility: "church",
-            audience: "church",
-            scheduleSlots: Array.isArray(backendItem?.scheduleSlots)
-              ? backendItem.scheduleSlots
-              : scheduleSlotsPayload,
-          },
-          scheduleId
-        );
+      if (backendScheduleFeedId) {
         setHomeFeedItems([...feedList()]);
         setBackendFeedItems((prev) => {
-          const next = prev.filter((row) => String(row?.id || "") !== backendFeedId);
+          const next = prev.filter((row) => String(row?.id || "") !== backendScheduleFeedId);
           return [
             {
               ...backendItem,
@@ -2121,7 +2227,7 @@ export default function MediaStudioScreen() {
         });
         console.log("[ScheduleFeed] persisted churchId/sourceScheduleId", {
           churchId,
-          sourceScheduleId: backendFeedId,
+          sourceScheduleId: backendScheduleFeedId,
         });
       }
 
@@ -2140,8 +2246,8 @@ export default function MediaStudioScreen() {
           sendAssignmentCards(
             "church-media-room",
             scheduleSlotsPayload.map((slot: any, index: number) => ({
-              cardId: `${backendFeedId || scheduleId}-room-${index}`,
-              id: `${backendFeedId || scheduleId}-room-${index}`,
+              cardId: `${backendScheduleFeedId || backendFeedId || scheduleId}-room-${index}`,
+              id: `${backendScheduleFeedId || backendFeedId || scheduleId}-room-${index}`,
               title: String(slot.name || `Slot ${index + 1}`),
               subtitle: caption,
               role: caption,
@@ -2151,7 +2257,7 @@ export default function MediaStudioScreen() {
               startTime: String(slot.startTime || ""),
               endTime: String(slot.endTime || ""),
               durationMin: Number(slot.durationMin || 0),
-              sourceFeedId: backendFeedId || scheduleId,
+              sourceFeedId: backendScheduleFeedId || backendFeedId || scheduleId,
               source: "media-schedule",
               roomKind: "assignment",
               liveLayout: "grid6",
@@ -2179,8 +2285,20 @@ export default function MediaStudioScreen() {
       })();
     } catch (e: any) {
       console.log("[ScheduleCreate] backend post error", e);
-      if (isChurchSubscriptionRequiredError(e)) {
-        alertChurchSubscriptionRequired();
+      if (
+        isChurchSubscriptionRequiredError(e, {
+          screen: "media.handleSendLiveScheduleToFeed",
+          gate: "media.schedule-create.api.catch",
+          isPastor: isActualChurchPastor,
+          isApprovedMediaHost,
+        })
+      ) {
+        alertChurchSubscriptionRequired({
+          screen: "media.handleSendLiveScheduleToFeed",
+          gate: "media.schedule-create.api.catch",
+          isPastor: isActualChurchPastor,
+          isApprovedMediaHost,
+        });
         return;
       }
       if (Number(e?.status || e?.response?.status || 0) === 409) {
@@ -3182,7 +3300,15 @@ export default function MediaStudioScreen() {
               <Pressable
                 disabled={scheduleCreating}
                 onPress={() => {
-                  if (subscriptionLocked) {
+                  const scheduleGate = evaluateScheduleSubscriptionGate({
+                    screen: "media.schedule-create",
+                    gate: "media.send-to-global-feed-button",
+                    isPastor: isActualChurchPastor,
+                    isApprovedMediaHost,
+                    hasSubscription: churchMediaSubscriptionActive,
+                    subscriptionLocked,
+                  });
+                  if (!scheduleGate.allowed) {
                     openSubscriptionSchedulePrompt();
                     return;
                   }

@@ -16,8 +16,11 @@ import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { FeedRow } from "./FeedRow";
 import {
   feedRenderKey,
+  isExplicitHomeFeedMediaScheduleRow,
+  isHomeFeedExpandedScheduleSlotRow,
   isHomeFeedScheduleCardRow,
-  resolveHomeFeedActiveScheduleSlot,
+  isMediaLiveSlotsHomeFeedRow,
+  resolveHomeFeedSlotCardStatus,
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 
@@ -73,35 +76,30 @@ const FeedScheduleRow = memo(function FeedScheduleRow({
   const router = useRouter();
   const session = getSessionSync() as any;
   const [nowMs, setNowMs] = useState(Date.now());
-  const [slotIndex, setSlotIndex] = useState(0);
+  const isExpandedSlot = item?.homeFeedSlotExpanded === true;
 
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 20_000);
     return () => clearInterval(timer);
   }, []);
 
-  const slots = useMemo(() => {
-    const all = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-    const upcoming = all.filter((slot: any) => {
-      const active = resolveHomeFeedActiveScheduleSlot(
-        { scheduleSlots: [slot] },
-        nowMs
-      );
-      return Boolean(active);
-    });
-    return upcoming.length ? upcoming : all;
-  }, [item?.scheduleSlots, nowMs]);
+  const activeSlot = useMemo(() => {
+    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    return slots[0] || null;
+  }, [item?.scheduleSlots]);
 
-  useEffect(() => {
-    setSlotIndex(0);
-  }, [item?.id]);
-
-  const activeSlot = slots[slotIndex % Math.max(1, slots.length)] || resolveHomeFeedActiveScheduleSlot(item, nowMs);
-  const slotFeedTotal = Math.max(1, slots.length);
+  const slotNumber = Math.max(1, Number(item?.slotNumber || 1));
+  const slotFeedTotal = Math.max(
+    1,
+    Number(item?.parentScheduleSlotCount || item?.scheduleSlots?.length || 1)
+  );
+  const slotFeedIndex = slotNumber - 1;
 
   const openLiveRoom = useCallback(() => {
     (globalThis as any).__KRISTO_LIVE_ACTIVE__ = true;
-    const feedId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
+    const feedId = baseFeedId(
+      String(item?.parentScheduleId || item?.sourceScheduleId || item?.id || "")
+    );
     router.push({
       pathname: "/(tabs)/more/my-church-room/messages/live-room",
       params: {
@@ -129,14 +127,14 @@ const FeedScheduleRow = memo(function FeedScheduleRow({
       <HomeLiveScheduleCard
         item={item}
         activeSlot={activeSlot}
-        slotFeedIndex={slotIndex % slotFeedTotal}
+        slotFeedIndex={slotFeedIndex}
         slotFeedTotal={slotFeedTotal}
         nowMs={nowMs}
         isActive={isActive}
         fullBleed
+        disableSlotCarousel={isExpandedSlot}
         profileName={profileName}
         profileAvatarUri={profileAvatarUri}
-        onSkipSlots={() => setSlotIndex((prev) => (prev + 1) % slotFeedTotal)}
         onOpenLiveRoom={openLiveRoom}
         displayLiked={likedByMe || liked}
         likeCount={likeCount}
@@ -182,9 +180,48 @@ export const FeedList = memo(function FeedList({
   const renderItem = useCallback(
     ({ item, index }: { item: any; index: number }) => {
       const likeState = getLikeState(item, { index });
+      const isScheduleCandidate =
+        isExplicitHomeFeedMediaScheduleRow(item) || isMediaLiveSlotsHomeFeedRow(item);
       const isScheduleCard = isHomeFeedScheduleCardRow(item, scheduleNowMs);
 
+      console.log("KRISTO_FEED_RENDER_ITEM", {
+        index,
+        id: feedRenderKey(item) || String(item?.id || ""),
+        scheduleType: String(item?.scheduleType || ""),
+        source: String(item?.source || ""),
+        slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
+        isScheduleCandidate,
+        isScheduleCard,
+        rowKind: isScheduleCard ? "schedule-card" : "feed-row",
+      });
+
+      if (isScheduleCandidate && !isScheduleCard) {
+        console.log("KRISTO_HOME_FEED_SCHEDULE_ROW_DROPPED", {
+          index,
+          id: feedRenderKey(item) || String(item?.id || ""),
+          scheduleType: String(item?.scheduleType || ""),
+          reason: "schedule_card_gate",
+        });
+      }
+
       if (isScheduleCard) {
+        const slot = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots[0] : null;
+        if (isHomeFeedExpandedScheduleSlotRow(item)) {
+          console.log("KRISTO_HOME_FEED_SCHEDULE_SLOT_RENDERED", {
+            index,
+            parentScheduleId: String(item?.parentScheduleId || item?.sourceScheduleId || ""),
+            slotNumber: Number(item?.slotNumber || 0),
+            status: resolveHomeFeedSlotCardStatus(slot),
+            rowKey: feedRenderKey(item),
+          });
+        } else {
+          console.log("KRISTO_HOME_FEED_SCHEDULE_ROW_RENDERED", {
+            index,
+            id: feedRenderKey(item) || String(item?.id || ""),
+            scheduleType: String(item?.scheduleType || ""),
+            slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
+          });
+        }
         return (
           <FeedScheduleRow
             item={item}

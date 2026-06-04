@@ -92,18 +92,12 @@ export function commentAvatarUrl(raw: unknown) {
 /** Active church media schedule row (media-live-slots) for Home Feed / Guest Claim / Live ring. */
 export function isMediaLiveSlotsHomeFeedRow(item: any): boolean {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
+  if (!isMediaScheduleFeedItem(item)) return false;
 
   const scheduleType = String(item?.scheduleType || "").toLowerCase();
   const source = String(item?.source || "").toLowerCase();
-  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-  if (!slots.length) return false;
-
-  const isAllowedType =
-    scheduleType.includes("media-live-slots") || source.includes("media-schedule");
-  if (!isAllowedType) return false;
-
   const id = String(item?.id || "").toLowerCase();
-  if (id.includes("__slot_")) return false;
+  if (id.includes("__slot_") && !isHomeFeedExpandedScheduleSlotRow(item)) return false;
   if (id.startsWith("church-live-now-") || id.startsWith("media-live-now-")) return false;
 
   if (
@@ -136,26 +130,24 @@ export function resolveHomeFeedActiveScheduleSlot(item: any, nowMs = Date.now())
   return active || slots[0] || null;
 }
 
-export function isHomeFeedScheduleCardRow(item: any, nowMs = Date.now()): boolean {
-  if (!isMediaLiveSlotsHomeFeedRow(item)) return false;
-  if (!resolveHomeFeedActiveScheduleSlot(item, nowMs)) return false;
-
-  const videoUrl = String(item?.videoUrl || "").trim();
-  const isVideo = item?.mediaType === "video" || Boolean(videoUrl);
-  const isImage = item?.mediaType === "image" && Boolean(String(item?.mediaUri || "").trim());
-  return !isVideo && !isImage;
+/** Schedule cards render outside the video autoplay pipeline. */
+export function isHomeFeedScheduleCardRow(item: any, _nowMs = Date.now()): boolean {
+  return isExplicitHomeFeedMediaScheduleRow(item) || isMediaLiveSlotsHomeFeedRow(item);
 }
 
 /** Phase-1 Home Feed rows: posts with media or text; media-live-slots schedule cards allowed. */
 export function isPhase1HomeFeedPost(item: any): boolean {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
+  if (isExplicitHomeFeedMediaScheduleRow(item)) return true;
   if (isMediaLiveSlotsHomeFeedRow(item)) return true;
+
+  const scheduleType = String(item?.scheduleType || "").toLowerCase();
+  if (scheduleType.includes("media-live-slots")) return true;
 
   if (isMediaScheduleFeedItem(item)) return false;
 
   const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
   if (slots.length > 0) return false;
-  if (String(item?.scheduleType || "").includes("media-live-slots")) return false;
   if (item?.isLiveNow || item?.kind === "live") return false;
 
   const id = String(item?.id || "");
@@ -183,13 +175,34 @@ function isLegacyScheduleFeedRow(item: any) {
   return !isMediaLiveSlotsHomeFeedRow(item);
 }
 
+/** Church media schedule rows — bypass video upload / mediaStatus gates in Phase 1. */
+export function isExplicitHomeFeedMediaScheduleRow(item: any): boolean {
+  if (!item || isStandaloneAvatarFeedPost(item)) return false;
+
+  const scheduleType = String(item?.scheduleType || "").toLowerCase();
+  const source = String(item?.source || "").toLowerCase();
+  if (!scheduleType.includes("media-live-slots") || !source.includes("media-schedule")) {
+    return false;
+  }
+
+  const id = String(item?.id || "").toLowerCase();
+  if (id.includes("__slot_") && !isHomeFeedExpandedScheduleSlotRow(item)) return false;
+  if (id.startsWith("church-live-now-") || id.startsWith("media-live-now-")) return false;
+
+  return true;
+}
+
 export function filterPhase1FeedRows(rows: any[]) {
   const scheduleCandidates = rows.filter(
-    (row) => isMediaLiveSlotsHomeFeedRow(row) || isLegacyScheduleFeedRow(row)
+    (row) =>
+      isExplicitHomeFeedMediaScheduleRow(row) ||
+      isMediaLiveSlotsHomeFeedRow(row) ||
+      isLegacyScheduleFeedRow(row)
   );
   const filtered = rows.filter((row) => {
-    if (!isHomeFeedReadyMediaItem(row)) return false;
+    if (isExplicitHomeFeedMediaScheduleRow(row)) return true;
     if (isMediaLiveSlotsHomeFeedRow(row)) return true;
+    if (!isHomeFeedReadyMediaItem(row)) return false;
     return isPhase1HomeFeedPost(row);
   });
 
@@ -197,33 +210,129 @@ export function filterPhase1FeedRows(rows: any[]) {
     const id = String(row?.id || "");
     if (filtered.some((item) => String(item?.id || "") === id)) continue;
 
+    const reason = isLegacyScheduleFeedRow(row)
+      ? "legacy_schedule_not_media_live_slots"
+      : isExplicitHomeFeedMediaScheduleRow(row)
+        ? "explicit_schedule_meta_but_not_in_filtered"
+        : "phase1_home_feed_policy";
+
     console.log("KRISTO_SCHEDULE_FILTERED_OUT", {
       id,
       source: String(row?.source || ""),
       scheduleType: String(row?.scheduleType || ""),
       churchId: String(row?.churchId || ""),
       slotCount: Array.isArray(row?.scheduleSlots) ? row.scheduleSlots.length : 0,
-      reason: isLegacyScheduleFeedRow(row)
-        ? "legacy_schedule_not_media_live_slots"
-        : "phase1_home_feed_policy",
+      ownershipType: String(row?.ownershipType || ""),
+      mediaStatus: String(row?.mediaStatus || row?.status || ""),
+      reason,
       gate: "filterPhase1FeedRows",
     });
   }
 
-  const visibleSchedule = filtered.filter(isMediaLiveSlotsHomeFeedRow);
+  const visibleSchedule = filtered.filter(
+    (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
+  );
   console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
     visibleCount: visibleSchedule.length,
     feedCount: filtered.length,
     scheduleCandidateCount: scheduleCandidates.length,
+    explicitScheduleCount: filtered.filter(isExplicitHomeFeedMediaScheduleRow).length,
     visibleScheduleIds: visibleSchedule.map((row) => String(row?.id || "")),
   });
 
   return filtered;
 }
 
-/** Canonical post id for likes, comments, and FlatList keys (strips slot/fiscal suffixes). */
-export function feedRenderKey(item: any) {
+/** Likes/comments API id — parent schedule for expanded slot cards. */
+export function homeFeedScheduleEngagementId(item: any) {
+  const parent = String(item?.parentScheduleId || item?.sourceScheduleId || "").trim();
+  if (parent) return baseFeedId(parent);
   return baseFeedId(String(item?.id || item?.feedOriginId || ""));
+}
+
+/** FlatList row key — unique per expanded slot card. */
+export function feedRenderKey(item: any) {
+  const id = String(item?.id || item?.feedOriginId || "").trim();
+  if (item?.homeFeedSlotExpanded || /:slot:\d+/i.test(id)) return id;
+  return baseFeedId(id);
+}
+
+function resolveHomeFeedSlotNumber(slot: any, fallback: number) {
+  const n = Number(slot?.slot || slot?.slotNumber || slot?.order || 0);
+  return n > 0 ? n : fallback;
+}
+
+export function resolveHomeFeedSlotCardStatus(slot: any): "available" | "claimed" | "taken" {
+  if (!slot) return "available";
+
+  const slotStatus = String(slot?.status || "").toLowerCase().trim();
+  if (slotStatus === "taken" || slotStatus === "closed") return "taken";
+  if (slotStatus === "claimed") return "claimed";
+
+  const claimedByObj =
+    typeof slot?.claimedBy === "object" && slot?.claimedBy ? slot.claimedBy : null;
+  const claimedByName = String(
+    slot?.claimedByName || claimedByObj?.name || slot?.claimedBy || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  const claimedByUserId = String(slot?.claimedByUserId || claimedByObj?.userId || "").trim();
+  const isClaimed = Boolean(
+    claimedByUserId ||
+    slot?.claimed === true ||
+    slot?.isClaimed === true ||
+    (claimedByName && claimedByName !== "open")
+  );
+
+  if (!isClaimed) return "available";
+  if (slotStatus === "live" || slot?.isLive === true) return "taken";
+  return "claimed";
+}
+
+export function isHomeFeedExpandedScheduleSlotRow(item: any): boolean {
+  return item?.homeFeedSlotExpanded === true || /:slot:\d+/i.test(String(item?.id || ""));
+}
+
+export function shouldExpandHomeFeedScheduleRow(row: any): boolean {
+  if (!row || isHomeFeedExpandedScheduleSlotRow(row)) return false;
+  return String(row?.scheduleType || "").toLowerCase().includes("media-live-slots");
+}
+
+/** One Home Feed card per media-live-slots slot (all slots, including taken). */
+export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any): any[] {
+  if (!shouldExpandHomeFeedScheduleRow(scheduleRow)) return [scheduleRow];
+
+  const scheduleId = baseFeedId(
+    String(scheduleRow?.id || scheduleRow?.sourceScheduleId || "")
+  );
+  const slots = Array.isArray(scheduleRow?.scheduleSlots) ? scheduleRow.scheduleSlots : [];
+  if (!scheduleId || !slots.length) return [scheduleRow];
+
+  const expanded = slots.map((slot: any, index: number) => {
+    const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
+    return {
+      ...scheduleRow,
+      id: `${scheduleId}:slot:${slotNumber}`,
+      feedOriginId: `${scheduleId}:slot:${slotNumber}`,
+      parentScheduleId: scheduleId,
+      sourceScheduleId: scheduleId,
+      scheduleSlots: [slot],
+      slotNumber,
+      homeFeedSlotExpanded: true,
+      parentScheduleSlotCount: slots.length,
+      source: String(scheduleRow?.source || "media-schedule"),
+      scheduleType: String(scheduleRow?.scheduleType || "media-live-slots"),
+    };
+  });
+
+  console.log("KRISTO_HOME_FEED_SCHEDULE_EXPANDED", {
+    scheduleId,
+    slotCount: slots.length,
+    expandedCount: expanded.length,
+  });
+
+  return expanded;
 }
 
 export function readFeedItemLikedByMe(item: any) {
@@ -235,7 +344,7 @@ export function hydrateFeedRowLikes(
   serverLikeByPostId: Record<string, { likedByMe: boolean; likeCount: number }>
 ) {
   return rows.map((item) => {
-    const postId = feedRenderKey(item);
+    const postId = homeFeedScheduleEngagementId(item);
     const server = postId ? serverLikeByPostId[postId] : undefined;
     const itemLikedByMe = readFeedItemLikedByMe(item);
     const likedByMe = server?.likedByMe === true || itemLikedByMe;
@@ -258,29 +367,60 @@ export function hydrateFeedRowLikes(
   });
 }
 
-export function mergeFeedRowsDeterministic(backendRows: any[], localRows: any[]) {
-  const seen = new Set<string>();
-  const merged: any[] = [];
+function homeFeedScheduleSlotCount(item: any) {
+  return Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0;
+}
 
-  for (const row of backendRows) {
+function pickRicherHomeFeedRow(prev: any, next: any) {
+  const prevSlots = homeFeedScheduleSlotCount(prev);
+  const nextSlots = homeFeedScheduleSlotCount(next);
+  if (nextSlots !== prevSlots) return nextSlots > prevSlots ? next : prev;
+
+  const prevTs = Date.parse(String(prev?.updatedAt || prev?.createdAt || "")) || 0;
+  const nextTs = Date.parse(String(next?.updatedAt || next?.createdAt || "")) || 0;
+  return nextTs >= prevTs ? next : prev;
+}
+
+/** Merged Home Feed list: schedule rows first, not re-sorted with videos. */
+export function buildHomeFeedDisplayRows(backendRows: any[], localRows: any[]) {
+  const byId = new Map<string, any>();
+
+  for (const row of [...backendRows, ...localRows]) {
+    if (!row) continue;
     const id = String(row?.id || "").trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    merged.push(row);
+    if (!id) continue;
+    const prev = byId.get(id);
+    byId.set(id, prev ? pickRicherHomeFeedRow(prev, row) : row);
   }
 
-  const locals = filterPhase1FeedRows(localRows)
-    .filter((row) => {
-      const id = String(row?.id || "").trim();
-      return id && !seen.has(id);
-    })
-    .sort((a, b) => {
-      const ta = Date.parse(String(a?.createdAt || "")) || 0;
-      const tb = Date.parse(String(b?.createdAt || "")) || 0;
-      return tb - ta;
-    });
+  const filtered = filterPhase1FeedRows(Array.from(byId.values()));
+  const scheduleRows = filtered.filter(
+    (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
+  );
+  const postRows = filtered.filter(
+    (row) => !isExplicitHomeFeedMediaScheduleRow(row) && !isMediaLiveSlotsHomeFeedRow(row)
+  );
+  const expandedScheduleRows = scheduleRows.flatMap(expandHomeFeedScheduleIntoSlotRows);
+  const display = [...expandedScheduleRows, ...postRows];
 
-  return [...merged, ...locals];
+  console.log("KRISTO_HOME_FEED_VISIBLE_DATA", {
+    backendCount: backendRows.length,
+    localCount: localRows.length,
+    mergedCount: byId.size,
+    filteredCount: filtered.length,
+    scheduleSourceCount: scheduleRows.length,
+    scheduleCount: expandedScheduleRows.length,
+    displayCount: display.length,
+    scheduleIds: scheduleRows.map((row) => String(row?.id || "")),
+    scheduleSlotCounts: scheduleRows.map((row) => homeFeedScheduleSlotCount(row)),
+    expandedScheduleIds: expandedScheduleRows.map((row) => String(row?.id || "")),
+  });
+
+  return display;
+}
+
+export function mergeFeedRowsDeterministic(backendRows: any[], localRows: any[]) {
+  return buildHomeFeedDisplayRows(backendRows, localRows);
 }
 
 export function formatActionCount(value?: number) {

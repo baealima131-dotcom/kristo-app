@@ -4,16 +4,14 @@ import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { filterPhase1FeedRows } from "./homeFeedUtils";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
+import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
+import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
 
 function parseFeedRows(res: any): any[] {
-  const raw = Array.isArray(res?.data)
-    ? res.data
-    : Array.isArray(res?.data?.items)
-      ? res.data.items
-      : Array.isArray(res?.items)
-        ? res.items
-        : [];
-  return raw.filter(isHomeFeedReadyMediaItem);
+  const raw = parseChurchFeedListResponse(res).rows;
+  return raw.filter(
+    (row) => isMediaScheduleFeedItem(row) || isHomeFeedReadyMediaItem(row)
+  );
 }
 
 export async function fetchHomeFeedFromApi(reason = "load") {
@@ -34,7 +32,22 @@ export async function fetchHomeFeedFromApi(reason = "load") {
     { screen: "HomeFeed", throttleMs: reason === "focus" ? 0 : 8000 }
   );
 
-  return filterPhase1FeedRows(parseFeedRows(res));
+  const rawRows = parseFeedRows(res);
+  const apiScheduleCount = rawRows.filter(
+    (row) =>
+      String(row?.scheduleType || "").includes("media-live-slots") ||
+      String(row?.source || "").includes("media-schedule")
+  ).length;
+
+  console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
+    stage: "api_before_phase1_filter",
+    reason,
+    churchId: viewerChurchId,
+    apiScheduleCount,
+    apiRowCount: rawRows.length,
+  });
+
+  return filterPhase1FeedRows(rawRows);
 }
 
 export function syncHomeFeedLike(postId: string, liked?: boolean) {

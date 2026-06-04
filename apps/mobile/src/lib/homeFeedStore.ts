@@ -1388,6 +1388,8 @@ export function feedPublishMediaScheduleLocal(item: any) {
     saved: false,
     kind: "post",
     body: String(item?.text || item?.body || ""),
+    source: String(item?.source || "media-schedule"),
+    scheduleType: String(item?.scheduleType || "media-live-slots"),
     ...item,
     id,
     sourceScheduleId: id,
@@ -1395,6 +1397,7 @@ export function feedPublishMediaScheduleLocal(item: any) {
     scheduleSlots,
     claimedCount,
     updatedAt: nowMs,
+    pendingBackendSync: item?.pendingBackendSync === true,
   } as any);
 
   persistAndEmit();
@@ -1404,6 +1407,7 @@ export function feedPublishMediaScheduleLocal(item: any) {
     scheduleId: id,
     slotCount: scheduleSlots.length,
     firstSlotStartMs: scheduleSlots[0]?.startMs ?? null,
+    pendingBackendSync: item?.pendingBackendSync === true,
   });
 }
 
@@ -1433,6 +1437,8 @@ export function feedSyncMediaScheduleFromBackend(backendItem: any, localId?: str
     saved: false,
     kind: "post",
     body: String(backendItem.text || backendItem.body || ""),
+    source: String(backendItem?.source || "media-schedule"),
+    scheduleType: String(backendItem?.scheduleType || "media-live-slots"),
     ...backendItem,
     id: backendId,
     sourceScheduleId: localId || backendItem?.sourceScheduleId || backendId,
@@ -1440,6 +1446,7 @@ export function feedSyncMediaScheduleFromBackend(backendItem: any, localId?: str
     scheduleSlots,
     claimedCount,
     updatedAt: nowMs,
+    pendingBackendSync: false,
   } as any);
 
   if (localId) {

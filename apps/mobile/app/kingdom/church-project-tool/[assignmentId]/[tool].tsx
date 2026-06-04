@@ -14,7 +14,13 @@ import {
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { feedAdd } from "@/src/lib/homeFeedStore";
+import { feedPublishMediaScheduleLocal } from "@/src/lib/homeFeedStore";
+import {
+  markLocalSchedulePendingBackend,
+  removeLocalScheduleAfterBackendFail,
+  replaceLocalScheduleWithBackend,
+  scheduleBackendFailAlertMessage,
+} from "@/src/lib/mediaSchedulePendingSync";
 import { apiGet, apiPatch, apiPost, apiDelete } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -35,6 +41,7 @@ import {
 import {
   alertChurchSubscriptionRequired,
   isChurchSubscriptionRequiredError,
+  isPastorSessionRole,
   requireActiveChurchSubscriptionForSchedule,
 } from "@/src/lib/churchSubscription";
 import { clearThreadMessages } from "@/src/lib/messagesStore";
@@ -435,6 +442,16 @@ export default function ChurchProjectToolScreen() {
   const routeChurchName = String((params as any)?.churchName || "").trim();
   const routeMinistryId = String((params as any)?.ministryId || assignmentId || "").trim();
   const routeMediaAccess = String((params as any)?.mediaAccess || "").trim();
+
+  function toolMediaSubscriptionGateOpts() {
+    const session = getSessionSync() as any;
+    const sessionRole = String(session?.role || role || "").trim().toLowerCase();
+    const isPastor =
+      isPastorSessionRole(sessionRole) ||
+      String(session?.churchRole || "").trim().toLowerCase() === "pastor";
+    const isApprovedMediaHost = routeMediaAccess === "1";
+    return { isPastor, isApprovedMediaHost };
+  }
 
   const meta = useMemo(
     () =>
@@ -2267,7 +2284,13 @@ async function publishScheduleSlot(slot: any) {
     const headers = getKristoHeaders();
     const churchId = String(getSessionSync()?.churchId || "").trim();
 
-    if (!(await requireActiveChurchSubscriptionForSchedule(churchId, headers as any))) {
+    if (
+      !(await requireActiveChurchSubscriptionForSchedule(churchId, headers as any, {
+        ...toolMediaSubscriptionGateOpts(),
+        screen: "church-project-tool.media-schedule",
+        gate: "publishScheduleSlot",
+      }))
+    ) {
       return;
     }
 
@@ -2331,8 +2354,18 @@ async function publishScheduleSlot(slot: any) {
     }
 
     if (!res?.ok) {
-      if (isChurchSubscriptionRequiredError(res)) {
-        alertChurchSubscriptionRequired();
+      if (
+        isChurchSubscriptionRequiredError(res, {
+          ...toolMediaSubscriptionGateOpts(),
+          screen: "church-project-tool.media-schedule",
+          gate: "publishScheduleSlot.api",
+        })
+      ) {
+        alertChurchSubscriptionRequired({
+          ...toolMediaSubscriptionGateOpts(),
+          screen: "church-project-tool.media-schedule",
+          gate: "publishScheduleSlot.api",
+        });
         return;
       }
       Alert.alert("Not published", String(res?.error || "Card could not be published."));
@@ -2388,7 +2421,13 @@ async function publishScheduleSlot(slot: any) {
 
     const churchId = String(getSessionSync()?.churchId || "").trim();
     const scheduleApiHeaders = getKristoHeaders() as any;
-    if (!(await requireActiveChurchSubscriptionForSchedule(churchId, scheduleApiHeaders))) {
+    if (
+      !(await requireActiveChurchSubscriptionForSchedule(churchId, scheduleApiHeaders, {
+        ...toolMediaSubscriptionGateOpts(),
+        screen: "church-project-tool.media-schedule",
+        gate: "handleSendMeetingToSchedule",
+      }))
+    ) {
       return;
     }
 
@@ -3195,18 +3234,58 @@ async function publishScheduleSlot(slot: any) {
         });
       } catch {}
 
-      feedAdd({
-        id: `media-schedule-${Date.now()}`,
+      const localScheduleId = `media-schedule-${Date.now()}`;
+
+      console.log("KRISTO_SCHEDULE_CREATE_REQUEST", {
+        screen: "church-project-tool.media-schedule",
+        churchId,
+        localScheduleId,
+        slotCount: items.length,
+        source: "media-schedule",
+        scheduleType: "media-live-slots",
+      });
+
+      const scheduleSlotsPayload = items.map((item, index) => ({
+        id: item.id,
+        name: item.name,
+        slotLabel: `Slot ${index + 1}`,
+        durationMin: item.durationMin,
+        startTime: item.startTime,
+        endTime: item.endTime,
+        timeLabel: `${item.startTime} - ${item.endTime}`,
+        role: item.role,
+        task: item.task,
+        script: item.script,
+        chat: item.chat,
+        meetingDate: parseTimeToDate(
+          meetingStartDay,
+          meetingStartMonth,
+          meetingStartYear,
+          item.startTime
+        ).toISOString(),
+        meetingDay: scheduleDay,
+      }));
+
+      const localSchedulePayload = {
+        id: localScheduleId,
         churchId,
         kind: "post",
         title: "Media Live Cards",
         topic: scheduleTopic,
+        text:
+          `${scheduleTopic}\n\n` +
+          `${items.length} claimable slots • ${scheduleDay}\n` +
+          `Audience: ${scheduleTarget}\n` +
+          `Swipe inside this post to claim a slot.`,
         body:
           `${scheduleTopic}\n\n` +
           `${items.length} claimable slots • ${scheduleDay}\n` +
           `Audience: ${scheduleTarget}\n` +
           `Swipe inside this post to claim a slot.`,
         createdAt: new Date().toISOString(),
+        source: "media-schedule",
+        scheduleType: "media-live-slots",
+        pendingBackendSync: true,
         actorLabel: routeMediaName || assignmentTitle || "MEDIA",
         mediaName: routeMediaName || assignmentTitle || "MEDIA",
         churchLabel: routeChurchName || assignmentTitle || "Media Schedule",
@@ -3215,111 +3294,107 @@ async function publishScheduleSlot(slot: any) {
         actorAvatarUri: routeAvatar,
         churchAvatarUri: routeAvatar,
         avatarUri: routeAvatar,
-        scheduleSlots: items.map((item, index) => ({
-          id: item.id,
-          name: item.name,
-          slotLabel: `Slot ${index + 1}`,
-          durationMin: item.durationMin,
-          startTime: item.startTime,
-          endTime: item.endTime,
-          timeLabel: `${item.startTime} - ${item.endTime}`,
-          role: item.role,
-          task: item.task,
-          script: item.script,
-          chat: item.chat,
-          meetingDate: parseTimeToDate(
-            meetingStartDay,
-            meetingStartMonth,
-            meetingStartYear,
-            item.startTime
-          ).toISOString(),
-          meetingDay: scheduleDay,
-        })),
-        scheduleType: "media-live-slots",
-        likeCount: 0,
-        liked: false,
-        saved: false,
-      } as any);
+        scheduleSlots: scheduleSlotsPayload,
+        visibility: "public",
+        audience: "global",
+        isGlobalMediaSlot: true,
+      };
 
-      apiPost(
-        "/api/church/feed",
-        {
-          type: "post",
-          title: "Media Live Cards",
-          text:
-            `${scheduleTopic}\n\n` +
-            `${items.length} claimable slots • ${scheduleDay}\n` +
-            `Audience: ${scheduleTarget}\n` +
-            `Swipe inside this post to claim a slot.`,
-          source: "media-schedule",
-          scheduleType: "media-live-slots",
-          ministryId: String((params as any)?.ministryId || (params as any)?.roomId || assignmentId || ""),
-          roomId: String((params as any)?.roomId || (params as any)?.sourceRoomId || assignmentId || ""),
-          ...scheduleAuthority,
-          actorLabel: routeMediaName || assignmentTitle || "MEDIA",
-          mediaName: routeMediaName || assignmentTitle || "MEDIA",
-          churchLabel: routeChurchName || assignmentTitle || "Media Schedule",
-          churchName: routeChurchName || assignmentTitle || "Media Schedule",
+      feedPublishMediaScheduleLocal(localSchedulePayload);
+      markLocalSchedulePendingBackend(localScheduleId, churchId);
 
-          // GLOBAL DISCOVERY
-          visibility: "public",
-          audience: "global",
-          isGlobalMediaSlot: true,
+      let createRes: any = null;
+      try {
+        createRes = await apiPost(
+          "/api/church/feed",
+          {
+            type: "post",
+            title: "Media Live Cards",
+            text: localSchedulePayload.text,
+            source: "media-schedule",
+            scheduleType: "media-live-slots",
+            ministryId: String((params as any)?.ministryId || (params as any)?.roomId || assignmentId || ""),
+            roomId: String((params as any)?.roomId || (params as any)?.sourceRoomId || assignmentId || ""),
+            ...scheduleAuthority,
+            actorLabel: routeMediaName || assignmentTitle || "MEDIA",
+            mediaName: routeMediaName || assignmentTitle || "MEDIA",
+            churchLabel: routeChurchName || assignmentTitle || "Media Schedule",
+            churchName: routeChurchName || assignmentTitle || "Media Schedule",
+            visibility: "public",
+            audience: "global",
+            isGlobalMediaSlot: true,
+            actorAvatarUri: routeAvatar,
+            churchAvatarUri: routeAvatar,
+            avatarUri: routeAvatar,
+            scheduleSlots: scheduleSlotsPayload,
+          },
+          { headers: apiHeaders }
+        );
+      } catch (e: any) {
+        createRes = {
+          ok: false,
+          error: String(e?.message || e?.error || e),
+          status: Number(e?.status || e?.response?.status || 0) || null,
+        };
+      }
 
-          actorAvatarUri: routeAvatar,
-          churchAvatarUri: routeAvatar,
-          avatarUri: routeAvatar,
-          scheduleSlots: items.map((item, index) => ({
-            id: item.id,
-            name: item.name,
-            slotLabel: `Slot ${index + 1}`,
-            durationMin: item.durationMin,
-            startTime: item.startTime,
-            endTime: item.endTime,
-            timeLabel: `${item.startTime} - ${item.endTime}`,
-            role: item.role,
-            task: item.task,
-            script: item.script,
-            chat: item.chat,
-            meetingDate: parseTimeToDate(
-              meetingStartDay,
-              meetingStartMonth,
-              meetingStartYear,
-              item.startTime
-            ).toISOString(),
-            meetingDay: scheduleDay,
-          })),
-        },
-        { headers: apiHeaders }
-      )
-        .then(async (r: any) => {
-          console.log("KRISTO_TOOL_MEDIA_FEED_BACKEND_OK", JSON.stringify(r));
-          if (!r?.ok) {
-            if (isChurchSubscriptionRequiredError(r)) {
-              alertChurchSubscriptionRequired();
-            }
-            return;
-          }
-          if (churchId) {
-            const sync = await fetchMediaScheduleFeedSync(churchId, apiHeaders);
-            applySilentMediaScheduleReload({
-              churchId,
-              sync,
-              reason: "tool-create-schedule",
-              force: true,
-            });
-          }
-        })
-        .catch((e: any) => {
-          console.log("KRISTO_TOOL_MEDIA_FEED_BACKEND_ERROR", e);
-          if (isChurchSubscriptionRequiredError(e)) {
-            alertChurchSubscriptionRequired();
-            return;
-          }
-          if (Number(e?.status || e?.response?.status || 0) === 409) {
-            Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
-          }
+      const backendFeedId = String(
+        createRes?.data?.id || createRes?.item?.id || createRes?.id || ""
+      ).trim();
+
+      console.log("KRISTO_SCHEDULE_CREATE_SUCCESS", {
+        screen: "church-project-tool.media-schedule",
+        ok: Boolean(createRes?.ok),
+        churchId,
+        localScheduleId,
+        backendFeedId: backendFeedId || null,
+        scheduleId: String(
+          createRes?.data?.sourceScheduleId ||
+            createRes?.item?.sourceScheduleId ||
+            backendFeedId ||
+            ""
+        ),
+        slotCount: scheduleSlotsPayload.length,
+        error: createRes?.ok ? null : String(createRes?.error || createRes?.message || ""),
+        status: Number(createRes?.status || 0) || null,
+      });
+
+      if (!createRes?.ok) {
+        const failStatus = Number(createRes?.status || 0) || null;
+        const failError = String(createRes?.error || createRes?.message || "").trim();
+
+        removeLocalScheduleAfterBackendFail({
+          localScheduleId,
+          churchId,
+          status: failStatus,
+          error: failError,
+          screen: "church-project-tool.media-schedule",
+          gate: "tool-create-schedule.api",
         });
+
+        if (failStatus === 409) {
+          Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
+        } else {
+          Alert.alert("Schedule not saved", scheduleBackendFailAlertMessage(failStatus || 0, failError));
+        }
+        return;
+      }
+
+      const backendItem = createRes?.item || createRes?.data || createRes;
+      replaceLocalScheduleWithBackend(backendItem, localScheduleId, {
+        churchId,
+        scheduleSlots: scheduleSlotsPayload,
+      });
+
+      if (churchId) {
+        const sync = await fetchMediaScheduleFeedSync(churchId, apiHeaders);
+        applySilentMediaScheduleReload({
+          churchId,
+          sync,
+          reason: "tool-create-schedule",
+          force: true,
+        });
+      }
 
       Alert.alert("Sent to Home Feed", `${items.length} media tools were sent as claimable live cards.`);
       router.push("/" as any);
