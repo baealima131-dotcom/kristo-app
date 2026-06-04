@@ -169,14 +169,8 @@ async function churchMediaFor(churchId: string) {
 async function churchProfileFor(churchId: string) {
   const cid = String(churchId || "").trim();
   if (!cid) return null;
-
-  if (feedEnrichChurchCache.has(cid)) {
-    return feedEnrichChurchCache.get(cid);
-  }
-
-  const profile = await getChurchById(cid).catch(() => null);
-  feedEnrichChurchCache.set(cid, profile);
-  return profile;
+  // Always read latest church profile so feed author avatars update after profile save.
+  return getChurchById(cid).catch(() => null);
 }
 
 function publicUser(userId: string) {

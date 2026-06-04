@@ -1,3 +1,20 @@
+export function normalizeAvatarUpdatedAt(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  const parsed = Date.parse(String(value || "").trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+export function isEphemeralAvatarUri(uri: unknown) {
+  const u = String(uri || "").trim();
+  return u.startsWith("file:") || /^data:image\//i.test(u);
+}
+
+export function isPersistedAvatarUri(uri: unknown) {
+  const u = String(uri || "").trim();
+  if (!u || isEphemeralAvatarUri(u)) return false;
+  return /^https?:\/\//i.test(u) || u.startsWith("/uploads/") || u.startsWith("/");
+}
+
 export function pickFresherAvatar(opts: {
   localUri?: string;
   localUpdatedAt?: number;
@@ -6,12 +23,16 @@ export function pickFresherAvatar(opts: {
 }): { uri: string; skippedStale: boolean; source: "local" | "server" | "none" } {
   const local = String(opts.localUri || "").trim();
   const server = String(opts.serverUri || "").trim();
-  const localAt = Number(opts.localUpdatedAt || 0);
-  const serverAt = Number(opts.serverUpdatedAt || 0);
+  const localAt = normalizeAvatarUpdatedAt(opts.localUpdatedAt);
+  const serverAt = normalizeAvatarUpdatedAt(opts.serverUpdatedAt);
 
   if (!local && !server) return { uri: "", skippedStale: false, source: "none" };
   if (!server) return { uri: local, skippedStale: false, source: "local" };
   if (!local) return { uri: server, skippedStale: false, source: "server" };
+
+  if (isPersistedAvatarUri(server) && isEphemeralAvatarUri(local)) {
+    return { uri: server, skippedStale: local !== server, source: "server" };
+  }
 
   if (localAt > serverAt) {
     return { uri: local, skippedStale: local !== server, source: "local" };
@@ -21,10 +42,37 @@ export function pickFresherAvatar(opts: {
   }
 
   if (local !== server) {
+    if (isPersistedAvatarUri(server) && !isPersistedAvatarUri(local)) {
+      return { uri: server, skippedStale: false, source: "server" };
+    }
     return { uri: local, skippedStale: true, source: "local" };
   }
 
   return { uri: server, skippedStale: false, source: "server" };
+}
+
+export function mergeChurchAvatarForDisplay(opts: {
+  churchId: string;
+  localUri?: string;
+  localUpdatedAt?: number;
+  serverUri?: string;
+  serverUpdatedAt?: number;
+}) {
+  const merged = pickFresherAvatar({
+    localUri: opts.localUri,
+    localUpdatedAt: opts.localUpdatedAt,
+    serverUri: opts.serverUri,
+    serverUpdatedAt: opts.serverUpdatedAt,
+  });
+
+  console.log("KRISTO_CHURCH_AVATAR_CACHE_APPLY", {
+    churchId: opts.churchId,
+    cachedAvatarUri: String(opts.localUri || ""),
+    serverAvatarUri: String(opts.serverUri || ""),
+    finalAvatarUri: merged.uri,
+  });
+
+  return merged;
 }
 
 export function avatarCacheBust(uri: string, updatedAt?: number): string {

@@ -20,7 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
-import { apiGet, apiPatch } from "@/src/lib/kristoApi";
+import { apiGet, apiPatch, getApiBase } from "@/src/lib/kristoApi";
 import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { useIsFocused } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -34,7 +34,11 @@ import {
 } from "@/src/lib/screenDataCache";
 import { ChurchOverviewSkeleton } from "@/src/components/PremiumTabSkeletons";
 import { onChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
-import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
+import {
+  avatarCacheBust,
+  mergeChurchAvatarForDisplay,
+  normalizeAvatarUpdatedAt,
+} from "@/src/lib/avatarFreshness";
 import {
   isSaveCooldown,
   logTrafficCache,
@@ -50,12 +54,10 @@ import {
   logChurchFeatureBackgroundRefresh,
   logChurchFeatureFirstPaint,
   markChurchFeatureRefreshDone,
-  shouldSkipChurchFeatureRefresh,
 } from "@/src/lib/churchTabPreload";
 import {
   markScreenFirstPainted,
   shouldBlockVisibleLoading,
-  shouldSkipFocusRefresh,
 } from "@/src/lib/screenOpenState";
 
 const CHURCH_OVERVIEW_SCREEN = "ChurchOverview";
@@ -160,7 +162,7 @@ function mediaUrl(u: any) {
   if (!v) return "";
   if (/^data:image\//i.test(v) || /^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
 
-  const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+  const base = getApiBase();
   return `${base}${v.startsWith("/") ? "" : "/"}${v}`;
 }
 
@@ -268,7 +270,7 @@ export default function ChurchOverviewScreen() {
       (session as any)?.activeChurchId ||
       ""
   ).trim();
-  const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+  const base = getApiBase();
 
   // Preview should READ the invited church like admin so data matches,
   // but UI actions remain locked by invitePreview.
@@ -309,15 +311,13 @@ export default function ChurchOverviewScreen() {
   );
   const initialOverview = overviewCachePeek ? applyOverviewCachePayload(overviewCachePeek, mediaUrl) : null;
 
-  const [stats, setStats] = useState<OverviewStats>(
-    initialOverview?.stats || {
-      activeMembers: 0,
-      ministries: 0,
-      ministryMembers: 0,
-      unreadNotifications: 0,
-      offeringBalance: 0,
-    }
-  );
+  const [stats, setStats] = useState<OverviewStats>({
+    activeMembers: initialOverview?.stats.activeMembers ?? 0,
+    ministries: 0,
+    ministryMembers: 0,
+    unreadNotifications: initialOverview?.stats.unreadNotifications ?? 0,
+    offeringBalance: initialOverview?.stats.offeringBalance ?? 0,
+  });
   const [profile, setProfile] = useState<ChurchProfile>(
     initialOverview?.profile || {
       id: "",
@@ -352,9 +352,7 @@ export default function ChurchOverviewScreen() {
   const [isActualChurchPastor, setIsActualChurchPastor] = useState(
     Boolean(initialMediaAccess?.isActualChurchPastor)
   );
-  const statsSigRef = useRef(
-    initialOverview ? overviewStatsSignature(initialOverview.stats) : ""
-  );
+  const statsSigRef = useRef("");
   const profileSigRef = useRef(
     initialOverview ? overviewProfileSignature(initialOverview.profile) : ""
   );
@@ -496,53 +494,42 @@ export default function ChurchOverviewScreen() {
     }
   }
 
+  const serverStatsLoadedRef = useRef(false);
+  const [statsSource, setStatsSource] = useState<string>("initial");
+
+  async function applyOverviewStatsFromServer(nextStats: OverviewStats, source: string) {
+    serverStatsLoadedRef.current = true;
+    const sSig = overviewStatsSignature(nextStats);
+    statsSigRef.current = sSig;
+    setStatsSource(source);
+    setStats(nextStats);
+    if (__DEV__) {
+      console.log("KRISTO_CHURCH_OVERVIEW_STATS_APPLIED", {
+        source,
+        ministries: nextStats.ministries,
+        ministryMembers: nextStats.ministryMembers,
+      });
+    }
+  }
+
   useEffect(() => {
-    if (!churchId || !effectiveAuthUserId || invitePreview) return;
-    let alive = true;
+    serverStatsLoadedRef.current = false;
+    setStatsSource("reset");
+  }, [churchId, effectiveAuthUserId, refreshAt]);
 
-    (async () => {
-      const cached = (await getChurchOverviewCache(churchId, effectiveAuthUserId)) || overviewCachePeek;
-      if (!alive || !cached) return;
-      hasOverviewCacheRef.current = true;
-      const next = applyOverviewCachePayload(cached, mediaUrl);
-      const pSig = overviewProfileSignature(next.profile);
-      const sSig = overviewStatsSignature(next.stats);
-      if (pSig !== profileSigRef.current) {
-        profileSigRef.current = pSig;
-        setProfile(next.profile);
-      }
-      if (sSig !== statsSigRef.current) {
-        statsSigRef.current = sSig;
-        setStats(next.stats);
-      }
-      setBootLoading(false);
-      if (__DEV__) {
-        console.log("KRISTO_CHURCH_OVERVIEW_CACHE_HIT", {
-          churchId,
-          userId: effectiveAuthUserId,
-          updatedAt: cached.updatedAt,
-        });
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [churchId, effectiveAuthUserId, invitePreview, refreshAt, overviewCachePeek]);
+  useEffect(() => {
+    if (!__DEV__) return;
+    console.log("KRISTO_CHURCH_OVERVIEW_RENDER_STATS", {
+      ministries: stats.ministries,
+      ministryMembers: stats.ministryMembers,
+      source: statsSource,
+      serverStatsLoaded: serverStatsLoadedRef.current,
+    });
+  }, [stats.ministries, stats.ministryMembers, statsSource]);
 
   async function load(opts?: { silent?: boolean; manual?: boolean }) {
     const silent = !!opts?.silent;
     const force = !!opts?.manual;
-    if (
-      silent &&
-      !force &&
-      churchId &&
-      effectiveAuthUserId &&
-      (shouldSkipChurchFeatureRefresh(CHURCH_OVERVIEW_SCREEN, churchId, effectiveAuthUserId) ||
-        shouldSkipFocusRefresh(CHURCH_OVERVIEW_SCREEN, CHURCH_TAB_REFRESH_MS))
-    ) {
-      return;
-    }
 
     if (silent) {
       setRefreshing(true);
@@ -565,14 +552,9 @@ export default function ChurchOverviewScreen() {
         hasOverviewCacheRef.current = true;
         const fromCache = applyOverviewCachePayload(cached, mediaUrl);
         const pSig = overviewProfileSignature(fromCache.profile);
-        const sSig = overviewStatsSignature(fromCache.stats);
         if (pSig !== profileSigRef.current) {
           profileSigRef.current = pSig;
           setProfile(fromCache.profile);
-        }
-        if (sSig !== statsSigRef.current) {
-          statsSigRef.current = sSig;
-          setStats(fromCache.stats);
         }
         if (!silent) setBootLoading(false);
         if (__DEV__) {
@@ -580,6 +562,8 @@ export default function ChurchOverviewScreen() {
             churchId,
             userId: effectiveAuthUserId,
             updatedAt: cached.updatedAt,
+            statsSkipped: true,
+            cachedMinistries: cached.stats?.ministries ?? 0,
           });
         }
       } else {
@@ -594,6 +578,8 @@ export default function ChurchOverviewScreen() {
           if (!silent) setBootLoading(false);
         }
       }
+
+      if (!base) throw new Error("API base missing");
 
       const overviewUrl = invitePreview
         ? `${base}/api/church/overview?invitePreview=1&inviteId=${encodeURIComponent(inviteId)}`
@@ -631,27 +617,21 @@ export default function ChurchOverviewScreen() {
         ""
       ).trim();
 
-      const mergedAvatar = pickFresherAvatar({
+      const serverUpdatedAt = normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt);
+      const mergedAvatar = mergeChurchAvatarForDisplay({
+        churchId,
         localUri: cached?.profile?.avatarUri || legacyProfileCache?.avatarUri || legacyProfileCache?.avatarUrl || "",
         localUpdatedAt: cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt,
         serverUri: serverAvatarRaw,
-        serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || 0),
+        serverUpdatedAt,
       });
-
-      if (mergedAvatar.skippedStale) {
-        console.log("[ChurchOverview] skipped stale server avatar", {
-          churchId,
-          localUpdatedAt: cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt || null,
-          serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || 0),
-        });
-      }
 
       const nextAvatar = mergedAvatar.uri ? mediaUrl(mergedAvatar.uri) : "";
       const nextAvatarUpdatedAt =
-        mergedAvatar.source === "local"
-          ? cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt
-          : nextAvatar
-            ? Date.now()
+        mergedAvatar.source === "server"
+          ? serverUpdatedAt || (nextAvatar ? Date.now() : undefined)
+          : mergedAvatar.source === "local"
+            ? cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt
             : cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt;
 
       const nextProfile: ChurchProfile = {
@@ -676,10 +656,22 @@ export default function ChurchOverviewScreen() {
         unreadNotifications: Number(s?.unreadNotifications || 0),
         offeringBalance: Number(s?.offeringBalance || 0),
       };
-      const sSig = overviewStatsSignature(nextStats);
-      if (sSig !== statsSigRef.current) {
-        statsSigRef.current = sSig;
-        setStats(nextStats);
+
+      await applyOverviewStatsFromServer(nextStats, "GET /api/church/overview");
+
+      if (__DEV__) {
+        console.log("KRISTO_OVERVIEW_MINISTRY_SCOPE", {
+          userId: effectiveAuthUserId,
+          resolvedUserId: String(j?.data?.viewer?.userId || effectiveAuthUserId),
+          churchId,
+          serverRole: String(j?.data?.viewer?.role || effectiveAuthRole || "Member"),
+          clientRole: effectiveAuthRole,
+          scope: "joined",
+          joinedMinistryIds: [],
+          count: nextStats.ministries,
+          ministryMembersCount: nextStats.ministryMembers,
+          source: "client:/api/church/overview",
+        });
       }
 
       try {
@@ -729,6 +721,15 @@ export default function ChurchOverviewScreen() {
         avatarUrl: nextAvatar,
         avatarUpdatedAt: nextAvatarUpdatedAt,
       });
+
+      if (session) {
+        await setSession({
+          ...session,
+          churchName: String(p?.name || session.churchName || churchId),
+          churchAvatarUri: nextAvatar,
+          churchAvatarUrl: nextAvatar,
+        } as any);
+      }
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Error");
 
@@ -748,6 +749,7 @@ export default function ChurchOverviewScreen() {
           unreadNotifications: 0,
           offeringBalance: 0,
         });
+        setStatsSource("invite-preview-empty");
         setErr(null);
       } else {
         setErr(msg);
@@ -779,24 +781,22 @@ export default function ChurchOverviewScreen() {
 
       const p = j?.data || j?.profile || {};
       const serverAvatarRaw = String(p?.avatarUri || p?.avatarUrl || "").trim();
-      const mergedAvatar = pickFresherAvatar({
+      const serverUpdatedAt = normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt);
+      const mergedAvatar = mergeChurchAvatarForDisplay({
+        churchId,
         localUri: cached?.avatarUri || cached?.avatarUrl || "",
         localUpdatedAt: cached?.avatarUpdatedAt,
         serverUri: serverAvatarRaw,
-        serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || 0),
+        serverUpdatedAt,
       });
-
-      if (mergedAvatar.skippedStale) {
-        console.log("[ChurchOverview] skipped stale server avatar", {
-          churchId,
-          localUpdatedAt: cached?.avatarUpdatedAt || null,
-          serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || 0),
-        });
-      }
 
       const nextAvatar = mergedAvatar.uri ? mediaUrl(mergedAvatar.uri) : "";
       const nextAvatarUpdatedAt =
-        mergedAvatar.source === "local" ? cached?.avatarUpdatedAt : nextAvatar ? Date.now() : cached?.avatarUpdatedAt;
+        mergedAvatar.source === "server"
+          ? serverUpdatedAt || (nextAvatar ? Date.now() : undefined)
+          : mergedAvatar.source === "local"
+            ? cached?.avatarUpdatedAt
+            : cached?.avatarUpdatedAt;
 
       const nextProfile: ChurchProfile = {
         id: String(p?.id || churchId),
@@ -825,6 +825,8 @@ export default function ChurchOverviewScreen() {
         await setSession({
           ...session,
           churchName: nextProfile.name,
+          churchAvatarUri: nextProfile.avatarUri,
+          churchAvatarUrl: nextProfile.avatarUri,
         } as any);
       }
 
@@ -842,19 +844,28 @@ export default function ChurchOverviewScreen() {
       const avatarRaw =
         String(payload.avatarUri || payload.avatarUrl || cached?.avatarUri || cached?.avatarUrl || "").trim();
       const nextAvatar = avatarRaw ? mediaUrl(avatarRaw) : "";
+      const nextUpdatedAt = payload.avatarUpdatedAt || cached?.avatarUpdatedAt || Date.now();
       setProfile((prev) => ({
         ...prev,
         name: String(payload.name || cached?.name || prev.name || churchId),
         avatarUri: nextAvatar || prev.avatarUri,
-        avatarUpdatedAt: payload.avatarUpdatedAt || cached?.avatarUpdatedAt || prev.avatarUpdatedAt,
+        avatarUpdatedAt: nextUpdatedAt,
       }));
+      if (session && nextAvatar) {
+        await setSession({
+          ...session,
+          churchName: String(payload.name || cached?.name || session.churchName || ""),
+          churchAvatarUri: nextAvatar,
+          churchAvatarUrl: nextAvatar,
+        } as any);
+      }
       console.log("[ChurchOverview] event applied immediately", {
         churchId,
         hasAvatar: Boolean(nextAvatar),
         avatarUpdatedAt: payload.avatarUpdatedAt || cached?.avatarUpdatedAt || null,
       });
     },
-    [churchId]
+    [churchId, session, setSession]
   );
 
   useEffect(() => {
@@ -865,6 +876,8 @@ export default function ChurchOverviewScreen() {
       setErr(null);
       return;
     }
+    if (!churchId || !effectiveAuthUserId) return;
+
     if (!firstPaintLoggedRef.current) {
       firstPaintLoggedRef.current = true;
       markScreenFirstPainted(CHURCH_OVERVIEW_SCREEN);
@@ -874,22 +887,29 @@ export default function ChurchOverviewScreen() {
         stats.activeMembers + stats.ministries
       );
     }
-    if (isSaveCooldown(`church-profile:${churchId}`)) return;
+
     const force = Boolean(refreshAt);
+    const needsServerStats = !serverStatsLoadedRef.current;
+
+    if (isSaveCooldown(`church-profile:${churchId}`) && !needsServerStats) return;
+
     if (
       !force &&
-      churchId &&
-      effectiveAuthUserId &&
-      (shouldSkipChurchFeatureRefresh(CHURCH_OVERVIEW_SCREEN, churchId, effectiveAuthUserId) ||
-        shouldSkipFocusRefresh(CHURCH_OVERVIEW_SCREEN, CHURCH_TAB_REFRESH_MS))
+      !needsServerStats &&
+      !shouldAllowScreenRefresh("ChurchOverview", { forceKey: refreshAt, minMs: CHURCH_TAB_REFRESH_MS })
     ) {
       return;
     }
-    if (!force && !shouldAllowScreenRefresh("ChurchOverview", { forceKey: refreshAt, minMs: CHURCH_TAB_REFRESH_MS })) {
-      return;
-    }
-    load({ silent: true, manual: force });
+
+    load({ silent: !needsServerStats, manual: force || needsServerStats });
   }, [isFocused, refreshAt, invitePreview, previewChecked, previewLimitReached, churchId, effectiveAuthUserId]);
+
+  useEffect(() => {
+    if (invitePreview) return;
+    if (!churchId || !effectiveAuthUserId) return;
+    if (serverStatsLoadedRef.current) return;
+    void load({ silent: false, manual: true });
+  }, [churchId, effectiveAuthUserId, invitePreview]);
 
   useEffect(() => {
     return onChurchProfileUpdated((payload) => {

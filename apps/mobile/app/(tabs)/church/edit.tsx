@@ -15,7 +15,10 @@ import {
   saveChurchProfileCache,
 } from "@/src/lib/churchStore";
 import { buildAvatarDataUrl, compressAvatarFile } from "@/src/lib/avatarCompress";
-import { pickFresherAvatar } from "@/src/lib/avatarFreshness";
+import {
+  mergeChurchAvatarForDisplay,
+  normalizeAvatarUpdatedAt,
+} from "@/src/lib/avatarFreshness";
 import { emitChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
 
 const GOLD = "rgba(217,179,95,0.96)";
@@ -69,11 +72,12 @@ export default function EditChurchProfile() {
       setAddress(String(p.address || cached?.address || ""));
 
       const serverAvatar = mediaUrl(p.avatarUri || p.avatarUrl || "");
-      const mergedAvatar = pickFresherAvatar({
+      const mergedAvatar = mergeChurchAvatarForDisplay({
+        churchId: churchId || "",
         localUri: mediaUrl(cached?.avatarUri || cached?.avatarUrl || ""),
         localUpdatedAt: cached?.avatarUpdatedAt,
         serverUri: serverAvatar,
-        serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || 0),
+        serverUpdatedAt: normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt),
       });
       setAvatarUri(mergedAvatar.uri);
       setAvatarDirty(false);
@@ -226,11 +230,24 @@ export default function EditChurchProfile() {
         let avatarData = "";
         let patchAvatarUri = "";
         let patchAvatarUrl = "";
+        let targetField = "none";
 
         if (avatarDirty) {
           if (avatarUri.startsWith("file:")) {
+            targetField = "avatarData";
+            console.log("KRISTO_CHURCH_AVATAR_SAVE_START", {
+              churchId,
+              hasLocalUri: true,
+              targetField,
+            });
             avatarData = await buildAvatarDataUrl(avatarUri);
           } else {
+            targetField = "avatarUri";
+            console.log("KRISTO_CHURCH_AVATAR_SAVE_START", {
+              churchId,
+              hasLocalUri: false,
+              targetField,
+            });
             patchAvatarUri = displayAvatar;
             patchAvatarUrl = displayAvatar;
           }
@@ -263,19 +280,25 @@ export default function EditChurchProfile() {
 
         const p = res?.data || {};
         const serverAvatar = mediaUrl(p.avatarUri || p.avatarUrl || "");
+        const serverUpdatedAt = normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt);
+        console.log("KRISTO_CHURCH_AVATAR_SAVE_DONE", {
+          churchId,
+          avatarUri: serverAvatar,
+          logoUri: "",
+          persisted: Boolean(serverAvatar),
+        });
         const existingCache = await loadChurchProfileCache(churchId);
-        const mergedAvatar = pickFresherAvatar({
+        const mergedAvatar = mergeChurchAvatarForDisplay({
+          churchId,
           localUri: displayAvatar,
           localUpdatedAt: optimisticAvatarAt || existingCache?.avatarUpdatedAt,
           serverUri: serverAvatar,
-          serverUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || Date.now()),
+          serverUpdatedAt: serverUpdatedAt || Date.now(),
         });
         const avatarUpdatedAt =
-          mergedAvatar.source === "local"
-            ? optimisticAvatarAt || existingCache?.avatarUpdatedAt || Date.now()
-            : avatarDirty || serverAvatar
-              ? Date.now()
-              : existingCache?.avatarUpdatedAt;
+          mergedAvatar.source === "server"
+            ? serverUpdatedAt || Date.now()
+            : optimisticAvatarAt || existingCache?.avatarUpdatedAt || Date.now();
         const synced = {
           churchId,
           name: String(p.name || trimmedName),
@@ -295,6 +318,8 @@ export default function EditChurchProfile() {
             churchId: churchId || session.churchId,
             activeChurchId: churchId || session.activeChurchId,
             churchName: synced.name,
+            churchAvatarUri: synced.avatarUri,
+            churchAvatarUrl: synced.avatarUri,
           } as any);
         }
 

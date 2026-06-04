@@ -5,7 +5,9 @@ import { getKristoHeaders } from "./kristoHeaders";
 import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import { saveChurchProfileCache } from "./churchStore";
+import { mergeChurchAvatarForDisplay, normalizeAvatarUpdatedAt } from "./avatarFreshness";
 import { saveProfileDraft } from "./profileStore";
+import { waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
 
 export const SCREEN_CACHE_TTL_MS = 45000;
 
@@ -44,11 +46,21 @@ export type ProfileScreenCachePayload = {
   updatedAt: number;
 };
 
-const CHURCH_OVERVIEW_PREFIX = "kristo_screen_church_overview_v1:";
+export type MinistriesCachePayload = {
+  churchId: string;
+  userId: string;
+  items: Record<string, unknown>[];
+  churchLiveControlStatus?: string;
+  updatedAt: number;
+};
+
+const CHURCH_OVERVIEW_PREFIX = "kristo_screen_church_overview_v2:";
 const PROFILE_SCREEN_PREFIX = "kristo_screen_profile_v1:";
+const MINISTRIES_PREFIX = "kristo_screen_ministries_v1:";
 
 const churchOverviewMemory = new Map<string, ChurchOverviewCachePayload>();
 const profileScreenMemory = new Map<string, ProfileScreenCachePayload>();
+const ministriesMemory = new Map<string, MinistriesCachePayload>();
 
 let preloadInflight: Promise<void> | null = null;
 let lastPreloadKey = "";
@@ -60,6 +72,10 @@ function churchOverviewKey(churchId: string, userId: string) {
 
 function profileScreenKey(userId: string) {
   return String(userId || "").trim();
+}
+
+function ministriesKey(churchId: string, userId: string) {
+  return `${String(churchId || "").trim().toUpperCase()}:${String(userId || "").trim()}`;
 }
 
 export function isScreenCacheFresh(updatedAt?: number, ttlMs = SCREEN_CACHE_TTL_MS) {
@@ -74,6 +90,11 @@ export function peekChurchOverviewCache(churchId: string, userId: string) {
 export function peekProfileScreenCache(userId: string) {
   const key = profileScreenKey(userId);
   return profileScreenMemory.get(key) || null;
+}
+
+export function peekMinistriesCache(churchId: string, userId: string) {
+  const key = ministriesKey(churchId, userId);
+  return ministriesMemory.get(key) || null;
 }
 
 export async function getChurchOverviewCache(churchId: string, userId: string) {
@@ -135,13 +156,66 @@ export async function saveProfileScreenCache(payload: ProfileScreenCachePayload)
   await AsyncStorage.setItem(`${PROFILE_SCREEN_PREFIX}${key}`, JSON.stringify(next));
 }
 
-function parseChurchOverviewResponse(churchId: string, userId: string, j: any): ChurchOverviewCachePayload | null {
+export async function getMinistriesCache(churchId: string, userId: string) {
+  const key = ministriesKey(churchId, userId);
+  const mem = ministriesMemory.get(key);
+  if (mem) return mem;
+
+  try {
+    const raw = await AsyncStorage.getItem(`${MINISTRIES_PREFIX}${key}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as MinistriesCachePayload;
+    if (!parsed?.churchId || !parsed?.userId) return null;
+    ministriesMemory.set(key, parsed);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveMinistriesCache(payload: MinistriesCachePayload) {
+  const key = ministriesKey(payload.churchId, payload.userId);
+  const next = {
+    ...payload,
+    items: Array.isArray(payload.items) ? payload.items : [],
+    updatedAt: Date.now(),
+  };
+  ministriesMemory.set(key, next);
+  await AsyncStorage.setItem(`${MINISTRIES_PREFIX}${key}`, JSON.stringify(next));
+}
+
+function parseChurchOverviewResponse(
+  churchId: string,
+  userId: string,
+  j: any,
+  existing?: ChurchOverviewCachePayload | null
+): ChurchOverviewCachePayload | null {
   if (!j?.ok) return null;
   const s = j?.data?.stats || {};
   const p = j?.data?.profile || {};
-  const avatarUri = String(
-    p?.avatarUri || p?.avatarUrl || p?.profileImage || p?.profilePhoto || p?.photo || p?.image || ""
+  const serverAvatarRaw = String(
+    p?.avatarUri ||
+      p?.avatarUrl ||
+      p?.churchAvatarUri ||
+      p?.churchLogoUrl ||
+      p?.profileImage ||
+      p?.profilePhoto ||
+      p?.photo ||
+      p?.image ||
+      ""
   ).trim();
+  const serverUpdatedAt = normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt);
+  const mergedAvatar = mergeChurchAvatarForDisplay({
+    churchId,
+    localUri: existing?.profile?.avatarUri || "",
+    localUpdatedAt: existing?.profile?.avatarUpdatedAt,
+    serverUri: serverAvatarRaw,
+    serverUpdatedAt,
+  });
+  const avatarUpdatedAt =
+    mergedAvatar.source === "server"
+      ? serverUpdatedAt || (mergedAvatar.uri ? Date.now() : undefined)
+      : existing?.profile?.avatarUpdatedAt;
 
   return {
     churchId,
@@ -152,8 +226,8 @@ function parseChurchOverviewResponse(churchId: string, userId: string, j: any): 
       address: String(p?.address || ""),
       phone: String(p?.phone || ""),
       pastorName: String(p?.pastorName || ""),
-      avatarUri,
-      avatarUpdatedAt: Number(p?.updatedAt || p?.avatarUpdatedAt || 0) || undefined,
+      avatarUri: mergedAvatar.uri,
+      avatarUpdatedAt,
     },
     stats: {
       activeMembers: Number(s?.activeMembers || 0),
@@ -177,7 +251,13 @@ export async function silentRefreshChurchOverview(
   if (!cid || !uid) return null;
 
   const existing = await getChurchOverviewCache(cid, uid);
-  if (!opts?.force && existing && isScreenCacheFresh(existing.updatedAt)) {
+  const existingStats = existing?.stats;
+  const existingLooksStale =
+    existingStats &&
+    Number(existingStats.ministries || 0) === 0 &&
+    Number(existingStats.ministryMembers || 0) === 0;
+
+  if (!opts?.force && existing && isScreenCacheFresh(existing.updatedAt) && !existingLooksStale) {
     return existing;
   }
 
@@ -187,7 +267,7 @@ export async function silentRefreshChurchOverview(
     { screen: "ScreenCache", throttleMs: SCREEN_CACHE_TTL_MS }
   ).catch(() => null);
 
-  const parsed = parseChurchOverviewResponse(cid, uid, res);
+  const parsed = parseChurchOverviewResponse(cid, uid, res, existing);
   if (!parsed) return existing || null;
 
   await saveChurchOverviewCache(parsed);
@@ -380,6 +460,8 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
   lastPreloadAt = Date.now();
 
   preloadInflight = (async () => {
+    await waitForHomeFirstVideoReadyIfOnHome();
+
     const tasks: Promise<unknown>[] = [silentRefreshProfileScreen(effectiveSession, opts)];
     if (churchId) {
       tasks.push(

@@ -5,6 +5,7 @@ import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
 import { getChurchById, patchChurchProfile } from "@/app/api/_lib/churches";
+import { churchAvatarUpdatedAtMs } from "@/app/api/_lib/churchAvatar";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { addNotification } from "@/app/api/_lib/notifications";
 import { resolveActorFromViewer, sanitizeActorInText } from "@/app/api/_lib/notificationActor";
@@ -85,6 +86,8 @@ export async function GET(req: NextRequest) {
         pastorName: profile?.pastorName || "",
         avatarUri: (profile as any)?.avatarUri || (profile as any)?.avatarUrl || "",
         avatarUrl: (profile as any)?.avatarUrl || (profile as any)?.avatarUri || "",
+        avatarUpdatedAt: churchAvatarUpdatedAtMs(profile),
+        updatedAt: profile?.updatedAt || profile?.createdAt,
       },
       storeMode: hasDurableStore() ? "postgres" : "local-json",
     });
@@ -126,6 +129,21 @@ export async function PATCH(req: NextRequest) {
     const viewer = ctxOrRes.viewer;
     const before = await getChurchById(churchId);
 
+    const hasLocalUri = Boolean(String(body.avatarData || "").trim());
+    const targetField = hasLocalUri
+      ? "avatarData"
+      : String(body.avatarUri || "").trim()
+        ? "avatarUri"
+        : String(body.avatarUrl || "").trim()
+          ? "avatarUrl"
+          : "none";
+
+    console.log("KRISTO_CHURCH_AVATAR_SAVE_START", {
+      churchId,
+      hasLocalUri,
+      targetField,
+    });
+
     const uploadedAvatarUrl = await saveChurchAvatarData(churchId, body.avatarData);
     const avatarFromBody = String(body.avatarUri || body.avatarUrl || "").trim();
     const avatarUri = uploadedAvatarUrl || avatarFromBody || undefined;
@@ -155,6 +173,14 @@ export async function PATCH(req: NextRequest) {
       pastorName: body.pastorName,
       avatarUri,
       avatarUrl,
+    });
+
+    const savedAvatarUri = String((saved as any)?.avatarUri || (saved as any)?.avatarUrl || "").trim();
+    console.log("KRISTO_CHURCH_AVATAR_SAVE_DONE", {
+      churchId,
+      avatarUri: savedAvatarUri,
+      logoUri: String((saved as any)?.logoUri || (saved as any)?.churchLogoUri || "").trim(),
+      persisted: Boolean(savedAvatarUri),
     });
 
     const activeMembers = await getMembershipsForChurch(churchId, "Active");
@@ -198,8 +224,9 @@ export async function PATCH(req: NextRequest) {
         city: (saved as any).city || "",
         primaryLanguage: (saved as any).primaryLanguage || "",
         pastorName: saved.pastorName || "",
-        avatarUri: (saved as any).avatarUri || (saved as any).avatarUrl || "",
-        avatarUrl: (saved as any).avatarUrl || (saved as any).avatarUri || "",
+        avatarUri: savedAvatarUri,
+        avatarUrl: String((saved as any).avatarUrl || savedAvatarUri),
+        avatarUpdatedAt: churchAvatarUpdatedAtMs(saved),
         updatedAt: saved.updatedAt || saved.createdAt,
         notifiedMembers: activeMembers.filter((m) => !!m.userId).length,
       },

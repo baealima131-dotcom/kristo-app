@@ -4,30 +4,40 @@ import type { NextRequest } from "next/server";
 import { guard } from "@/app/api/_lib/rbac";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { getChurchById } from "@/app/api/_lib/churches";
+import {
+  churchAvatarUpdatedAtMs,
+  logChurchOverviewGetAvatar,
+  resolveChurchAvatarFields,
+} from "@/app/api/_lib/churchAvatar";
 import { listNotifications } from "@/app/api/_lib/notifications";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { readJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  getUserJoinedMinistries,
+  logMinistryScope,
+  resolveMinistryStatsScope,
+} from "@/app/api/_lib/ministryMembership";
 
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
 }
 
-function forwardAuthHeaders(req: NextRequest): Record<string, string> {
-  const h: Record<string, string> = {
-    accept: "application/json",
-    cookie: req.headers.get("cookie") || "",
+function buildOverviewProfile(churchId: string, churchProfile: Awaited<ReturnType<typeof getChurchById>>, pastorName: string) {
+  const avatar = logChurchOverviewGetAvatar(churchId, churchProfile);
+  const avatarUpdatedAt = churchAvatarUpdatedAtMs(churchProfile);
+  return {
+    id: churchId,
+    name: churchProfile?.name || churchId,
+    address: churchProfile?.address || "",
+    phone: churchProfile?.phone || "",
+    pastorName,
+    avatarUri: avatar.finalAvatarUri,
+    avatarUrl: avatar.avatarUrl || avatar.finalAvatarUri,
+    churchAvatarUri: avatar.churchAvatarUri || avatar.finalAvatarUri,
+    churchLogoUrl: avatar.churchLogoUrl || avatar.logoUrl || undefined,
+    avatarUpdatedAt,
+    updatedAt: String(churchProfile?.updatedAt || churchProfile?.createdAt || ""),
   };
-
-  // DEV header-auth passthrough (safe even if empty)
-  const uid = req.headers.get("x-kristo-user-id");
-  const role = req.headers.get("x-kristo-role");
-  const cid = req.headers.get("x-kristo-church-id");
-
-  if (uid) h["x-kristo-user-id"] = uid;
-  if (role) h["x-kristo-role"] = role;
-  if (cid) h["x-kristo-church-id"] = cid;
-
-  return h;
 }
 
 export async function GET(req: NextRequest) {
@@ -85,22 +95,7 @@ export async function GET(req: NextRequest) {
           role: "Member",
           preview: true,
         },
-        profile: {
-          id: churchId,
-          name: churchProfile?.name || churchId,
-          address: churchProfile?.address || "",
-          phone: churchProfile?.phone || "",
-          pastorName,
-          avatarUri: String(
-            (churchProfile as any)?.avatarUri ||
-            (churchProfile as any)?.avatarUrl ||
-            (churchProfile as any)?.profileImage ||
-            (churchProfile as any)?.profilePhoto ||
-            (churchProfile as any)?.photo ||
-            (churchProfile as any)?.image ||
-            ""
-          ).trim(),
-        },
+        profile: buildOverviewProfile(churchId, churchProfile, pastorName),
         stats: {
           activeMembers: activeMembers.length,
           ministries: ministriesCount,
@@ -152,48 +147,28 @@ export async function GET(req: NextRequest) {
     ""
   ).trim();
 
-  const headers = forwardAuthHeaders(req);
   const role = String(ctxOrRes.viewer.role || "");
 
-  const canSeeLeadershipOverview =
-    role === "Pastor" ||
-    role === "Church_Admin" ||
-    role === "Leader" ||
-    role === "Ministry_Leader" ||
-    role === "System_Admin";
+  const ministryScope = await resolveMinistryStatsScope({
+    churchId,
+    userId: ctxOrRes.viewer.userId,
+    serverRole: role,
+  });
 
-  let ministriesCount = 0;
-  if (canSeeLeadershipOverview) {
-    try {
-      const res = await fetch(new URL("/api/church/ministries", req.url), {
-        headers,
-        cache: "no-store",
-      });
-      const j = await res.json().catch(() => null);
-      const list = j && j.ok === true && Array.isArray(j.data) ? j.data : [];
-      ministriesCount = list.length;
-    } catch {
-      ministriesCount = 0;
-    }
-  }
+  logMinistryScope("KRISTO_OVERVIEW_MINISTRY_SCOPE", {
+    userId: ministryScope.userId,
+    resolvedUserId: ministryScope.resolvedUserId,
+    matchUserIds: ministryScope.matchUserIds,
+    churchId: ministryScope.churchId,
+    serverRole: ministryScope.serverRole,
+    scope: ministryScope.scope,
+    joinedMinistryIds: ministryScope.joinedMinistryIds,
+    count: ministryScope.ministriesCount,
+    ministryMembersCount: ministryScope.ministryMembersCount,
+  });
 
-  // NOTE: ministry-members endpoint might require ministryId; keep safe.
-  let ministryMembersCount = 0;
-  if (canSeeLeadershipOverview) {
-    try {
-      const res = await fetch(new URL("/api/church/ministry-members?all=1", req.url), {
-        headers,
-        cache: "no-store",
-      });
-      const j = await res.json().catch(() => null);
-      const list = j && j.ok === true && Array.isArray(j.data) ? j.data : [];
-      ministryMembersCount = new Set(
-        list.map((x: any) => String(x?.userId || "").toLowerCase()).filter(Boolean)
-      ).size;
-    } catch {
-      ministryMembersCount = 0;
-    }
-  }
+  const ministriesCount = ministryScope.ministriesCount;
+  const ministryMembersCount = ministryScope.ministryMembersCount;
 
   const canSeeAllTargets =
     role === "Pastor" || role === "Church_Admin" || role === "System_Admin";
@@ -211,22 +186,7 @@ export async function GET(req: NextRequest) {
     data: {
       churchId,
       viewer: ctxOrRes.viewer,
-      profile: {
-        id: churchId,
-        name: churchProfile?.name || churchId,
-        address: churchProfile?.address || "",
-        phone: churchProfile?.phone || "",
-        pastorName,
-        avatarUri: String(
-          (churchProfile as any)?.avatarUri ||
-          (churchProfile as any)?.avatarUrl ||
-          (churchProfile as any)?.profileImage ||
-          (churchProfile as any)?.profilePhoto ||
-          (churchProfile as any)?.photo ||
-          (churchProfile as any)?.image ||
-          ""
-        ).trim(),
-      },
+      profile: buildOverviewProfile(churchId, churchProfile, pastorName),
       stats: {
         activeMembers: activeMembers.length,
         ministries: ministriesCount,
