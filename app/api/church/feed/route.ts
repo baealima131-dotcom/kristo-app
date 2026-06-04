@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveActorIdentity } from "@/app/api/_lib/notificationActor";
 import { guard, guardAuth } from "@/app/api/_lib/rbac";
 import { ensureActiveMembershipForSession, getActiveMembership } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
@@ -224,24 +225,53 @@ function nameFromViewer(viewer: any) {
   return "";
 }
 
-function avatarFromViewer(viewer: any) {
-  return String(
-    viewer?.avatarUri ||
-      viewer?.avatarUrl ||
-      viewer?.profileImage ||
-      viewer?.photoURL ||
-      ""
-  ).trim();
+function firstNonEmptyAvatar(...values: unknown[]) {
+  for (const value of values) {
+    const uri = String(value || "").trim();
+    if (uri) return uri;
+  }
+  return "";
 }
 
-function resolveCommentAuthorSnapshot(viewerUserId: string, ctx: any) {
+function avatarFromViewer(viewer: any) {
+  const profile = viewer?.profile;
+  return firstNonEmptyAvatar(
+    viewer?.avatarUri,
+    viewer?.avatarUrl,
+    viewer?.profileImage,
+    viewer?.photoURL,
+    viewer?.image,
+    viewer?.picture,
+    profile?.avatarUri,
+    profile?.avatarUrl,
+    profile?.profileImage,
+    profile?.photoURL,
+    profile?.image
+  );
+}
+
+function avatarFromProfileMap(userId: string) {
+  const p = profileMap()[userId] || {};
+  return firstNonEmptyAvatar(
+    p.avatarUri,
+    p.avatarUrl,
+    p.profileImage,
+    p.photoURL,
+    p.image,
+    p.picture
+  );
+}
+
+async function resolveCommentAuthorSnapshot(viewerUserId: string, ctx: any) {
   const viewer = ctx?.viewer || {};
   const ctxName = nameFromViewer(viewer);
   const ctxAvatar = avatarFromViewer(viewer);
+  const mapAvatar = avatarFromProfileMap(viewerUserId);
   const fallback = publicUser(viewerUserId);
   const publicUserName = fallback.authorName;
+  const identity = await resolveActorIdentity(viewerUserId);
 
-  let finalAuthorName = ctxName || publicUserName;
+  let finalAuthorName = ctxName || identity.name || publicUserName;
   if (commentAuthorNameLooksLikeUserId(finalAuthorName, viewerUserId)) {
     const profileEmail = String(profileMap()[viewerUserId]?.email || "").trim();
     const emailPrefix = String(viewer?.email || profileEmail || "")
@@ -254,14 +284,18 @@ function resolveCommentAuthorSnapshot(viewerUserId: string, ctx: any) {
     }
   }
 
-  const finalAuthorAvatarUri = ctxAvatar || fallback.authorAvatarUri;
+  const finalAuthorAvatarUri = firstNonEmptyAvatar(
+    ctxAvatar,
+    mapAvatar,
+    identity.avatar,
+    fallback.authorAvatarUri
+  );
   const finalAuthorInitial = finalAuthorName.trim().charAt(0).toUpperCase() || "M";
 
   console.log("KRISTO_COMMENT_AUTHOR_RESOLVED", {
     userId: viewerUserId,
-    ctxName: ctxName || null,
-    publicUserName,
     finalAuthorName,
+    finalAuthorAvatarUri: finalAuthorAvatarUri || null,
     hasAvatar: Boolean(finalAuthorAvatarUri),
   });
 
@@ -1546,7 +1580,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       text: text.slice(0, 120),
     });
 
-    const author = resolveCommentAuthorSnapshot(viewerUserId, ctx);
+    const author = await resolveCommentAuthorSnapshot(viewerUserId, ctx);
 
     const comment: FeedComment = {
       id: makeId("comment"),
