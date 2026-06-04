@@ -14,6 +14,16 @@ const GOLD = "#D9B35F";
 const MUTED = "rgba(255,255,255,0.65)";
 const BORDER = "rgba(255,255,255,0.10)";
 
+const KRISTO_V1_SUPPORT_EMAIL = String(
+  process.env.EXPO_PUBLIC_KRISTO_SUPPORT_EMAIL || "support@kristoapp.com"
+).trim();
+
+function isKristoSupportEmailReady(email: string) {
+  return email.length >= 3 && email.includes("@");
+}
+
+const SHOW_FORGOT_EMAIL_LINK = isKristoSupportEmailReady(KRISTO_V1_SUPPORT_EMAIL);
+
 export default function LoginScreen() {
   const router = useRouter();
   const { setSession } = useKristoSession();
@@ -54,7 +64,11 @@ export default function LoginScreen() {
   function onForgotEmailPress() {
     console.log("KRISTO_FORGOT_EMAIL_OPENED");
     console.log("KRISTO_FORGOT_EMAIL_UNAVAILABLE", { reason: "v1_support_only" });
-    Alert.alert("Forgot email?", "Forgot email? Please contact support.", [{ text: "OK" }]);
+    Alert.alert(
+      "Forgot email?",
+      `Email recovery is not available in Kristo V1.\n\nPlease create a new account or contact support at ${KRISTO_V1_SUPPORT_EMAIL}`,
+      [{ text: "OK" }]
+    );
   }
 
   function onForgotPasswordPress() {
@@ -345,10 +359,12 @@ export default function LoginScreen() {
           </Pressable>
         </View>
 
-        <View style={s.forgotRow}>
-          <Pressable onPress={onForgotEmailPress} style={s.forgotBtnLeft}>
-            <Text style={s.forgotEmailText}>Forgot email?</Text>
-          </Pressable>
+        <View style={[s.forgotRow, !SHOW_FORGOT_EMAIL_LINK && s.forgotRowPasswordOnly]}>
+          {SHOW_FORGOT_EMAIL_LINK ? (
+            <Pressable onPress={onForgotEmailPress} style={s.forgotBtnLeft}>
+              <Text style={s.forgotEmailText}>Forgot email?</Text>
+            </Pressable>
+          ) : null}
 
           <Pressable onPress={onForgotPasswordPress} style={s.forgotBtn}>
             <Text style={s.forgotText}>Forgot password?</Text>
@@ -510,6 +526,9 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+  },
+  forgotRowPasswordOnly: {
+    justifyContent: "flex-end",
   },
   forgotBtnLeft: { paddingVertical: 6, paddingRight: 10 },
   forgotBtn: { paddingVertical: 6, paddingLeft: 10 },
