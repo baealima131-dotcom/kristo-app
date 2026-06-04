@@ -199,6 +199,12 @@ export function alertChurchSubscriptionRequired(opts?: {
   const { bypassed } = isScheduleSubscriptionGateBypassed({ isPastor, isApprovedMediaHost });
 
   if (shouldSuppressPremiumPrompts(isPastor, isApprovedMediaHost) || bypassed) {
+    console.log("KRISTO_APP_REVIEW_SUBSCRIPTION_BLOCK_SUPPRESSED", {
+      screen: String(opts?.screen || "alertChurchSubscriptionRequired"),
+      gate: String(opts?.gate || "alertChurchSubscriptionRequired"),
+      isPastor,
+      isApprovedMediaHost,
+    });
     logScheduleGate({
       kind: "bypassed",
       screen: String(opts?.screen || "alertChurchSubscriptionRequired"),

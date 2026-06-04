@@ -836,6 +836,12 @@ export default function MediaStudioScreen() {
       shouldSuppressPremiumPrompts(isActualChurchPastor, isApprovedMediaHost) ||
       scheduleSubscriptionBypassed
     ) {
+      console.log("KRISTO_APP_REVIEW_SUBSCRIPTION_BLOCK_SUPPRESSED", {
+        screen: "media",
+        gate: "showSubscriptionRequired",
+        isPastor: isActualChurchPastor,
+        isApprovedMediaHost,
+      });
       return;
     }
 

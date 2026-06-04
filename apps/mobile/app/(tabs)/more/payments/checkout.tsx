@@ -188,10 +188,16 @@ export default function PaymentsCheckoutScreen() {
       } catch (error: any) {
         if (!alive) return;
         const reviewBypass = isAppleReviewBypassEnabled();
+        const errorMessage = formatSubscriptionSetupError(error);
+        console.log("KRISTO_REVENUECAT_OFFERINGS_UNAVAILABLE", {
+          screen: "checkout",
+          reviewBypass,
+          error: errorMessage,
+        });
         console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
           screen: "checkout",
           reviewBypass,
-          error: formatSubscriptionSetupError(error),
+          error: errorMessage,
         });
         if (!reviewBypass) {
           setCheckoutUnavailable(true);

@@ -17,13 +17,15 @@ export const BYPASS_SUBSCRIPTION_FOR_TESTING =
 let loggedServerReviewBypassCheck = false;
 
 export function isAppleReviewBypassEnabled() {
-  const enabled = BYPASS_SUBSCRIPTION_FOR_TESTING;
+  const appReviewMode = process.env.KRISTO_APP_REVIEW_MODE === "1";
+  const enabled = BYPASS_SUBSCRIPTION_FOR_TESTING || appReviewMode;
   if (!loggedServerReviewBypassCheck) {
     loggedServerReviewBypassCheck = true;
     console.log("KRISTO_APP_REVIEW_BYPASS_CHECK", {
       scope: "server",
       enabled,
       bypassEnv: BYPASS_SUBSCRIPTION_FOR_TESTING,
+      appReviewMode,
     });
   }
   return enabled;

@@ -139,10 +139,16 @@ export default function PaymentsSubscriptionsScreen() {
       } catch (error: any) {
         if (!alive) return;
         const reviewBypass = isAppleReviewBypassEnabled();
+        const errorMessage = formatSubscriptionSetupError(error);
+        console.log("KRISTO_REVENUECAT_OFFERINGS_UNAVAILABLE", {
+          screen: "subscriptions",
+          reviewBypass,
+          error: errorMessage,
+        });
         console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
           screen: "subscriptions",
           reviewBypass,
-          error: formatSubscriptionSetupError(error),
+          error: errorMessage,
         });
         if (!reviewBypass) {
           setSubscriptionUnavailable(true);
