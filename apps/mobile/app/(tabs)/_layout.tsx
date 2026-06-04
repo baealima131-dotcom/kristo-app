@@ -24,7 +24,7 @@ import {
 } from "@/src/lib/liveScheduleRing";
 import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
 import { Animated, Pressable, Text, View } from "react-native";
-import { recoverChurchIdFromMembership } from "@/src/lib/churchLockedRecovery";
+import { ensureChurchAccessOrSetup } from "@/src/lib/churchLockedRecovery";
 import { fetchLightLiveState, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
 
 const VIP_BG = "#0B0F17";
@@ -867,12 +867,17 @@ export default function TabLayout() {
 
                 // LIVE room opens only on long press (red ring).
                 if (!hasChurch) {
-                  const recovered = await recoverChurchIdFromMembership(session, setSession);
-                  if (recovered.churchId) {
-                    router.replace("/(tabs)/church/overview" as any);
-                    return;
-                  }
-                  router.replace("/more/church" as any);
+                  await ensureChurchAccessOrSetup({
+                    session,
+                    setSession,
+                    showSetupAlert: true,
+                    onChurchReady: () => {
+                      router.replace("/(tabs)/church/overview" as any);
+                    },
+                    onNavigateToSetup: () => {
+                      router.replace("/more/church" as any);
+                    },
+                  });
                   return;
                 }
 

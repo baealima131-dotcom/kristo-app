@@ -1,5 +1,11 @@
+import { Alert } from "react-native";
 import { fetchMyActiveChurchMembership } from "./churchMembersApi";
 import type { KristoSession } from "./kristoSession";
+
+export const CHURCH_SETUP_NEEDED_TITLE = "Church setup needed";
+export const CHURCH_SETUP_NEEDED_MESSAGE =
+  "Your account is not connected to a church yet. Please choose or join a church.";
+export const CHURCH_SETUP_ROUTE = "/more/church";
 
 export type ChurchLockedRecoveryResult = {
   churchId: string;
@@ -62,4 +68,43 @@ export async function recoverChurchIdFromMembership(
     });
     return { churchId: "", role: "Member", recovered: false };
   }
+}
+
+export type EnsureChurchAccessOptions = {
+  session: KristoSession | null | undefined;
+  setSession?: (s: KristoSession) => Promise<void>;
+  /** When true (default), show English setup alert if recovery fails. Never uses legacy Swahili copy. */
+  showSetupAlert?: boolean;
+  onNavigateToSetup: () => void;
+  onChurchReady: (churchId: string) => void;
+};
+
+/**
+ * Retry membership recovery, then route to church setup (no legacy "Church locked" alert).
+ */
+export async function ensureChurchAccessOrSetup(
+  opts: EnsureChurchAccessOptions
+): Promise<boolean> {
+  const existing = String(opts.session?.churchId || "").trim();
+  if (existing) {
+    opts.onChurchReady(existing);
+    return true;
+  }
+
+  const recovered = await recoverChurchIdFromMembership(opts.session, opts.setSession);
+  if (recovered.churchId) {
+    opts.onChurchReady(recovered.churchId);
+    return true;
+  }
+
+  const showAlert = opts.showSetupAlert !== false;
+  if (showAlert) {
+    Alert.alert(CHURCH_SETUP_NEEDED_TITLE, CHURCH_SETUP_NEEDED_MESSAGE, [
+      { text: "Choose or join", onPress: opts.onNavigateToSetup },
+    ]);
+  } else {
+    opts.onNavigateToSetup();
+  }
+
+  return false;
 }
