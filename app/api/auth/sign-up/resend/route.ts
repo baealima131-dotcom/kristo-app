@@ -22,6 +22,17 @@ function isServerSignupReviewBypass() {
   );
 }
 
+function logSignupOtpDevOnly(scope: string, meta: { email?: string; userId?: string; challengeId?: string; code?: string }) {
+  if (process.env.NODE_ENV === "production") return;
+  console.log("[KRISTO_SIGNUP_DEV_OTP]", {
+    scope,
+    email: meta.email || null,
+    userId: meta.userId || null,
+    challengeId: meta.challengeId || null,
+    code: meta.code || null,
+  });
+}
+
 export async function POST(req: Request) {
   try {
     await seedUserIfMissing();
@@ -84,11 +95,17 @@ export async function POST(req: Request) {
         scope: "resend",
         challengeId,
         email: ch.identifier,
-        reason: emailResult.reason || null,
+        reason: emailResult.reason || (isEmailProviderMissing(emailResult) ? "email_not_configured" : "email_send_failed"),
         reviewBypass,
       });
 
       if (reviewBypass) {
+        logSignupOtpDevOnly("resend-review-bypass", {
+          email: ch.identifier,
+          userId: ch.userId,
+          challengeId: ch.id,
+          code: ch.code,
+        });
         console.log("KRISTO_SIGNUP_REVIEW_VERIFY_BYPASS", {
           scope: "resend",
           challengeId,
@@ -100,7 +117,6 @@ export async function POST(req: Request) {
           challengeId: ch.id,
           userId: ch.userId,
           reviewBypass: true,
-          reviewVerificationCode: ch.code,
         });
       }
 
@@ -110,6 +126,13 @@ export async function POST(req: Request) {
       );
     }
 
+    logSignupOtpDevOnly("resend-sent", {
+      email: ch.identifier,
+      userId: ch.userId,
+      challengeId: ch.id,
+      code: ch.code,
+    });
+
     console.log("KRISTO_SIGNUP_VERIFY_EMAIL_SENT", {
       scope: "resend",
       challengeId,
@@ -118,13 +141,11 @@ export async function POST(req: Request) {
       providerId: emailResult.providerId || null,
     });
 
-    const isProd = process.env.NODE_ENV === "production";
     return NextResponse.json({
       ok: true,
       challengeId: ch.id,
       userId: ch.userId,
-      ...(!isProd ? { devOtp: ch.code } : {}),
-      ...(reviewBypass && isProd ? { reviewBypass: true, reviewVerificationCode: ch.code } : {}),
+      ...(reviewBypass ? { reviewBypass: true } : {}),
     });
   } catch (error: any) {
     const message = String(error?.message || error || "Resend failed.");

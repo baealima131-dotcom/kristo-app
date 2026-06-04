@@ -60,14 +60,9 @@ const PASSWORD_RULES_HINT =
   "Use 8+ characters with at least one letter and one number.";
 
 const VERIFICATION_EMAIL_FAILED_MSG =
-  "Verification email could not be sent. Please try again or sign in with the review account.";
+  "We could not send a verification code to this email. Please use a valid email address or sign in with the review account.";
 
-function isSignupVerificationReviewBypassEnabled() {
-  return (
-    process.env.EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE === "1" ||
-    process.env.EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS === "1"
-  );
-}
+const VERIFY_STEP_MESSAGE = "Enter the verification code sent to your email.";
 
 function isSignupEmailSendFailure(data: any) {
   const reason = String(data?.reason || "").trim();
@@ -172,36 +167,25 @@ export default function SignupScreen() {
     !!signupChallengeId &&
     !saving;
 
-  const signupReviewBypass = isSignupVerificationReviewBypassEnabled();
+  function logDevVerificationCodeConsoleOnly(data: any) {
+    if (!__DEV__) return;
+    const leakedCode = String(data?.devOtp || data?.reviewVerificationCode || data?.code || "").trim();
+    if (!leakedCode) return;
+    console.log("[KRISTO_SIGNUP_DEV_OTP]", {
+      challengeId: data?.challengeId || null,
+      note: "dev console only — never shown in UI",
+      code: leakedCode,
+    });
+  }
 
   function applyVerificationStepAfterSend(data: any) {
     setCreatedUserId(String(data.userId || "").trim());
     setPublicKristoId(String(data.kristoId || data.publicKristoId || "").trim());
     setSignupChallengeId(data.challengeId || "");
+    setEmailInput("");
 
-    const devOtp =
-      __DEV__ && typeof data?.devOtp === "string" && data.devOtp.trim()
-        ? data.devOtp.trim()
-        : "";
-    const reviewCode =
-      signupReviewBypass &&
-      typeof data?.reviewVerificationCode === "string" &&
-      data.reviewVerificationCode.trim()
-        ? data.reviewVerificationCode.trim()
-        : "";
-
-    if (devOtp) {
-      setVerifyInfo(`Dev OTP code: ${devOtp}`);
-      setEmailInput(devOtp);
-    } else if (data?.reviewBypass) {
-      setVerifyInfo(
-        "Verification email may be delayed. Tap Continue for Review, or enter your code when it arrives."
-      );
-      setEmailInput(reviewCode);
-    } else {
-      setVerifyInfo("We sent a verification code to your email.");
-      setEmailInput("");
-    }
+    logDevVerificationCodeConsoleOnly(data);
+    setVerifyInfo(VERIFY_STEP_MESSAGE);
     setStep("verify");
   }
 
@@ -283,50 +267,6 @@ export default function SignupScreen() {
     return true;
   }
 
-  async function onContinueForReview() {
-    if (!signupReviewBypass) return;
-    if (!createdUserId) {
-      setErr("Review continue unavailable. Go back and send the code again, or use Back to Login.");
-      return;
-    }
-
-    setErr(null);
-    setSaving(true);
-
-    try {
-      console.log("KRISTO_SIGNUP_REVIEW_VERIFY_BYPASS", {
-        userId: createdUserId,
-        email: email.trim(),
-      });
-
-      const signIn = await apiPost("/api/auth/signin", {
-        email: email.trim(),
-        password,
-      });
-
-      if (!signIn?.ok) {
-        setErr(
-          String(signIn?.error || "") ||
-            "Review sign-in failed. Please use Back to Login with the review account."
-        );
-        return;
-      }
-
-      const finalUserId = String(signIn.userId || createdUserId || "").trim();
-      if (!finalUserId) {
-        setErr("Review sign-in succeeded but user id is missing.");
-        return;
-      }
-
-      await finalizeSignupAccount(finalUserId);
-    } catch (error: any) {
-      const message = String(error?.message || error || "Review continue failed.");
-      setErr(`${message} Try Back to Login with the review account.`);
-    } finally {
-      setSaving(false);
-    }
-  }
-
   async function resendVerificationCode() {
     if (!signupChallengeId) {
       setErr("Send the code first, or go back to the form and try again.");
@@ -358,19 +298,11 @@ export default function SignupScreen() {
       console.log("KRISTO_SIGNUP_VERIFY_EMAIL_SENT", {
         scope: "mobile-resend",
         challengeId: signupChallengeId,
-        reviewBypass: Boolean(data?.reviewBypass),
       });
 
-      if (typeof data?.devOtp === "string" && data.devOtp.trim()) {
-        setVerifyInfo(`Dev OTP code: ${data.devOtp.trim()}`);
-        setEmailInput(data.devOtp.trim());
-      } else if (data?.reviewBypass) {
-        setVerifyInfo(
-          "Verification email may be delayed. Tap Continue for Review, or enter your code when it arrives."
-        );
-      } else {
-        setVerifyInfo("We sent a new verification code to your email.");
-      }
+      logDevVerificationCodeConsoleOnly(data);
+      setEmailInput("");
+      setVerifyInfo(VERIFY_STEP_MESSAGE);
     } catch (error: any) {
       const message = String(error?.message || error || "Network request failed");
       console.log("KRISTO_SIGNUP_VERIFY_EMAIL_FAILED", {
@@ -440,7 +372,6 @@ export default function SignupScreen() {
       console.log("KRISTO_SIGNUP_VERIFY_EMAIL_SENT", {
         email: email.trim(),
         userId: data.userId || null,
-        reviewBypass: Boolean(data?.reviewBypass),
       });
 
       applyVerificationStepAfterSend(data);
@@ -667,9 +598,7 @@ export default function SignupScreen() {
             <View style={s.notice}>
               <Text style={s.noticeTitle}>SHALOM</Text>
               <Text style={s.noticeBig}>Let’s verify your account.</Text>
-              <Text style={verifyInfo?.startsWith("Dev OTP") ? s.devOtpInfo : s.noticeText}>
-                {verifyInfo || "We sent a verification code to your email."}
-              </Text>
+              <Text style={s.noticeText}>{verifyInfo || VERIFY_STEP_MESSAGE}</Text>
             </View>
 
             <Text style={s.label}>Verification code</Text>
@@ -677,7 +606,10 @@ export default function SignupScreen() {
               value={emailInput}
               onChangeText={setEmailInput}
               keyboardType="number-pad"
-              textContentType="oneTimeCode"
+              textContentType="none"
+              autoComplete="off"
+              autoCorrect={false}
+              importantForAutofill="no"
               placeholder="Enter the code from your email"
               placeholderTextColor="rgba(255,255,255,0.35)"
               style={s.input}
@@ -686,18 +618,6 @@ export default function SignupScreen() {
             <Pressable onPress={onCreate} disabled={!canVerify || saving} style={[s.btn, (!canVerify || saving) && { opacity: 0.45 }]}>
               <Text style={s.btnText}>{saving ? "Verifying..." : "Confirm & Create account"}</Text>
             </Pressable>
-
-            {signupReviewBypass ? (
-              <Pressable
-                onPress={onContinueForReview}
-                disabled={saving || !createdUserId}
-                style={[s.btn, s.reviewBypassBtn, (saving || !createdUserId) && { opacity: 0.45 }]}
-              >
-                <Text style={s.reviewBypassBtnText}>
-                  {saving ? "Continuing..." : "Continue for Review"}
-                </Text>
-              </Pressable>
-            ) : null}
 
             <Pressable
               onPress={resendVerificationCode}
@@ -1007,7 +927,6 @@ const s = StyleSheet.create({
   noticeTitle: { color: GOLD, fontWeight: "900", marginBottom: 6, letterSpacing: 1.2 },
   noticeBig: { color: "white", fontWeight: "900", fontSize: 22, marginBottom: 6 },
   noticeText: { color: "white", fontWeight: "900", marginTop: 2, lineHeight: 20 },
-  devOtpInfo: { color: "rgba(147,197,253,0.95)", fontWeight: "900", marginTop: 2, lineHeight: 20 },
   err: { color: "#ff7b7b", fontWeight: "900", marginBottom: 12 },
   splitBtn: {
     position: "relative",
@@ -1129,12 +1048,6 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.2)", shadowColor: "#F4C95D", shadowOpacity: 0.7, shadowRadius: 24, shadowOffset: { width: 0, height: 12 } },
   btnText: { color: "#0B0F17", fontWeight: "900", fontSize: 15 },
-  reviewBypassBtn: {
-    marginTop: 10,
-    backgroundColor: "rgba(147,197,253,0.22)",
-    borderColor: "rgba(147,197,253,0.55)",
-  },
-  reviewBypassBtnText: { color: "#fff", fontWeight: "900", fontSize: 15 },
 
   linkBtn: { marginTop: 8, paddingVertical: 8, alignItems: "center" },
   linkText: { color: "rgba(255,255,255,0.75)", fontWeight: "900" },

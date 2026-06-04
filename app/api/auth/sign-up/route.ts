@@ -47,13 +47,31 @@ function isServerSignupReviewBypass() {
   );
 }
 
+function logSignupOtpDevOnly(scope: string, meta: { email?: string; userId?: string; challengeId?: string; code?: string }) {
+  if (process.env.NODE_ENV === "production") return;
+  console.log("[KRISTO_SIGNUP_DEV_OTP]", {
+    scope,
+    email: meta.email || null,
+    userId: meta.userId || null,
+    challengeId: meta.challengeId || null,
+    code: meta.code || null,
+  });
+}
+
 function signupReviewBypassPayload(params: {
   challengeId: string;
   userId: string;
   kristoId?: string;
-  challengeCode: string;
+  email?: string;
+  challengeCode?: string;
   emailFailed?: boolean;
 }) {
+  logSignupOtpDevOnly("review-bypass", {
+    email: params.email,
+    userId: params.userId,
+    challengeId: params.challengeId,
+    code: params.challengeCode,
+  });
   console.log("KRISTO_SIGNUP_REVIEW_VERIFY_BYPASS", {
     emailFailed: params.emailFailed === true,
     userId: params.userId,
@@ -68,8 +86,34 @@ function signupReviewBypassPayload(params: {
     kristoId: params.kristoId,
     publicKristoId: params.kristoId,
     coreId: params.userId,
-    reviewVerificationCode: params.challengeCode,
     next: "/verify-code",
+  });
+}
+
+function signupVerificationSentPayload(params: {
+  challengeId: string;
+  userId: string;
+  kristoId?: string;
+  email?: string;
+  challengeCode?: string;
+  reviewBypass?: boolean;
+}) {
+  logSignupOtpDevOnly("verification-sent", {
+    email: params.email,
+    userId: params.userId,
+    challengeId: params.challengeId,
+    code: params.challengeCode,
+  });
+  return NextResponse.json({
+    ok: true,
+    needsVerification: true,
+    challengeId: params.challengeId,
+    userId: params.userId,
+    kristoId: params.kristoId,
+    publicKristoId: params.kristoId,
+    coreId: params.userId,
+    next: "/verify-code",
+    ...(params.reviewBypass ? { reviewBypass: true } : {}),
   });
 }
 
@@ -147,6 +191,7 @@ export async function POST(req: Request) {
           challengeId: challenge.id,
           userId,
           kristoId: r.user.kristoId,
+          email,
           challengeCode: challenge.code,
           emailFailed: true,
         });
@@ -181,6 +226,7 @@ export async function POST(req: Request) {
             challengeId: challenge.id,
             userId,
             kristoId: r.user.kristoId,
+            email,
             challengeCode: challenge.code,
             emailFailed: true,
           });
@@ -202,16 +248,12 @@ export async function POST(req: Request) {
       }
 
       if (providerMissing) {
-        return NextResponse.json({
-          ok: true,
-          needsVerification: true,
-          devOtp: challenge.code,
+        return signupVerificationSentPayload({
           challengeId: challenge.id,
           userId,
           kristoId: r.user.kristoId,
-          publicKristoId: r.user.kristoId,
-          coreId: userId,
-          next: "/verify-code",
+          email,
+          challengeCode: challenge.code,
         });
       }
 
@@ -229,16 +271,13 @@ export async function POST(req: Request) {
       reviewBypass,
     });
 
-    return NextResponse.json({
-      ok: true,
-      needsVerification: true,
+    return signupVerificationSentPayload({
       challengeId: challenge.id,
       userId,
       kristoId: r.user.kristoId,
-      publicKristoId: r.user.kristoId,
-      coreId: userId,
-      next: "/verify-code",
-      ...(reviewBypass && isProd ? { reviewBypass: true, reviewVerificationCode: challenge.code } : {}),
+      email,
+      challengeCode: challenge.code,
+      reviewBypass: reviewBypass && isProd,
     });
   } catch (error: any) {
     const dbRes = authDatabaseErrorResponse(error);
