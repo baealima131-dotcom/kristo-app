@@ -3,8 +3,9 @@ import { AppState } from "react-native";
 import type { KristoSession } from "./kristoSession";
 import {
   MOBILE_SESSION_IDLE_MS,
-  clearSession,
+  isLoggedOutFlagSet,
   loadSession,
+  performLogoutCleanup,
   saveSession,
   setSessionSync,
   touchMobileSession,
@@ -55,11 +56,19 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
 
       // Session opens immediately; profile sync + cache warm run after Home first frame.
       deferStartupWorkAfterHomeFirstFrame(async () => {
+        if (!alive || (await isLoggedOutFlagSet())) {
+          if (alive) {
+            setSessionSync(null);
+            setSessionState(null);
+          }
+          return;
+        }
+
         const ready =
           ((await hydrateSessionOnce(s, (base) =>
             silentSyncProfile(base, { returnOnly: true })
           )) as KristoSession | null) || s || null;
-        if (!alive || !ready?.userId) return;
+        if (!alive || !ready?.userId || (await isLoggedOutFlagSet())) return;
         seedChurchMediaAccessFromSession({
           userId: ready.userId,
           role: ready.role,
@@ -80,6 +89,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     opts?: { returnOnly?: boolean; forceFresh?: boolean; throttleMs?: number; omitChurchHeader?: boolean }
   ) {
     if (!baseSession?.userId) return baseSession;
+    if (await isLoggedOutFlagSet()) return null;
 
     try {
       const headerChurchId = String(baseSession.churchId || "").trim();
@@ -192,6 +202,12 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     if (!session?.userId) return;
 
     const checkExpiry = async () => {
+      if (await isLoggedOutFlagSet()) {
+        setSessionSync(null);
+        setSessionState(null);
+        return;
+      }
+
       const loaded = await loadSession();
       if (!loaded) {
         setSessionSync(null);
@@ -241,6 +257,12 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
 
     const sub = AppState.addEventListener("change", async (state) => {
       if (state === "active") {
+        if (await isLoggedOutFlagSet()) {
+          setSessionSync(null);
+          setSessionState(null);
+          return;
+        }
+
         const loaded = await loadSession();
         if (!loaded) {
           setSessionSync(null);
@@ -351,7 +373,9 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
   }
 
   async function logout() {
-    await clearSession();
+    const userId = String(session?.userId || "").trim();
+    const churchId = String(session?.churchId || "").trim();
+    await performLogoutCleanup({ userId, churchId });
     setSessionState(null);
   }
 

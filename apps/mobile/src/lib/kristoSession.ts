@@ -1,4 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { clearChurchDraft, clearChurchProfileCache } from "./churchStore";
+import { clearChurchMembersCachesForUser } from "./churchTabCache";
+import { clearProfileDraft } from "./profileStore";
+import { resetAuthRefreshStateForLogout } from "./refreshCoordinator";
+import { clearResponseCacheForRequest } from "./kristoTraffic";
 
 export type KristoRole = "Pastor" | "Member" | "Church_Admin" | "System_Admin" | "Leader" | "Ministry_Leader";
 
@@ -57,6 +62,7 @@ export type KristoSession = {
 };
 
 const KEY = "kristo.session.v1";
+export const LOGGED_OUT_KEY = "KRISTO_LOGGED_OUT";
 export const MOBILE_SESSION_IDLE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days inactivity
 export const MOBILE_SESSION_MAX_MS = 30 * 24 * 60 * 60 * 1000; // 30 days hard expiry
 
@@ -71,8 +77,43 @@ export function setSessionSync(s: KristoSession | null) {
   _session = s;
 }
 
+export async function isLoggedOutFlagSet(): Promise<boolean> {
+  try {
+    return (await AsyncStorage.getItem(LOGGED_OUT_KEY)) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export async function setLoggedOutFlag(enabled: boolean): Promise<void> {
+  try {
+    if (enabled) {
+      await AsyncStorage.setItem(LOGGED_OUT_KEY, "true");
+    } else {
+      await AsyncStorage.removeItem(LOGGED_OUT_KEY);
+    }
+  } catch {}
+}
+
+export async function clearLoggedOutFlag(): Promise<void> {
+  const wasSet = await isLoggedOutFlagSet();
+  await setLoggedOutFlag(false);
+  if (wasSet) {
+    console.log("KRISTO_LOGIN_CLEAR_LOGOUT_FLAG");
+  }
+}
+
 export async function loadSession(): Promise<KristoSession | null> {
   try {
+    if (await isLoggedOutFlagSet()) {
+      console.log("KRISTO_SESSION_RESTORE_BLOCKED_BY_LOGOUT");
+      setSessionSync(null);
+      try {
+        await AsyncStorage.removeItem(KEY);
+      } catch {}
+      return null;
+    }
+
     const raw = await AsyncStorage.getItem(KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
@@ -156,6 +197,14 @@ export async function loadSession(): Promise<KristoSession | null> {
 }
 
 export async function saveSession(s: KristoSession): Promise<void> {
+  const userId = String(s?.userId || "").trim();
+  if (!userId) return;
+  if (await isLoggedOutFlagSet()) {
+    return;
+  }
+
+  await clearLoggedOutFlag();
+
   const now = Date.now();
   const next: KristoSession = {
     ...s,
@@ -171,6 +220,7 @@ export async function saveSession(s: KristoSession): Promise<void> {
 }
 
 export async function touchMobileSession(): Promise<KristoSession | null> {
+  if (await isLoggedOutFlagSet()) return null;
   const current = _session || (await loadSession());
   if (!current) return null;
 
@@ -188,6 +238,48 @@ export async function clearSession(): Promise<void> {
   try {
     await AsyncStorage.removeItem(KEY);
   } catch {}
+}
+
+export type LogoutCleanupParams = {
+  userId?: string;
+  churchId?: string;
+};
+
+export async function performLogoutCleanup(params: LogoutCleanupParams = {}): Promise<void> {
+  const userId = String(params.userId || "").trim();
+  const churchId = String(params.churchId || "").trim();
+
+  console.log("KRISTO_LOGOUT_CLEAR_START", { userId: userId || null, churchId: churchId || null });
+
+  await setLoggedOutFlag(true);
+  setSessionSync(null);
+
+  try {
+    await AsyncStorage.removeItem(KEY);
+  } catch {}
+
+  try {
+    if (userId) {
+      await clearProfileDraft(userId);
+      await clearChurchDraft(userId);
+      clearResponseCacheForRequest("GET", "/api/auth/profile", userId);
+      clearResponseCacheForRequest("GET", "/api/church/members", userId);
+      clearResponseCacheForRequest("GET", "/api/church/join-requests", userId);
+      await clearChurchMembersCachesForUser(userId);
+    }
+
+    if (churchId) {
+      await clearChurchProfileCache(churchId);
+    }
+
+    resetAuthRefreshStateForLogout();
+  } catch (error: any) {
+    console.log("KRISTO_LOGOUT_CLEAR_PARTIAL", {
+      error: String(error?.message || error || "unknown"),
+    });
+  }
+
+  console.log("KRISTO_LOGOUT_CLEAR_DONE", { userId: userId || null });
 }
 
 // helper ids

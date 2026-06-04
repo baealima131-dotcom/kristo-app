@@ -50,6 +50,26 @@ export function isChurchMembersCacheFresh(updatedAt?: number) {
   return isScreenCacheFresh(updatedAt, CHURCH_TAB_REFRESH_MS);
 }
 
+export async function clearChurchMembersCachesForUser(userId: string) {
+  const uid = String(userId || "").trim();
+  if (!uid) return;
+
+  for (const key of [...membersMemory.keys()]) {
+    if (key.endsWith(`:${uid}`)) {
+      membersMemory.delete(key);
+    }
+  }
+
+  try {
+    const allKeys = await AsyncStorage.getAllKeys();
+    const suffix = `:${uid}`;
+    const toRemove = allKeys.filter(
+      (k) => k.startsWith(MEMBERS_PREFIX) && k.endsWith(suffix)
+    );
+    if (toRemove.length) await AsyncStorage.multiRemove(toRemove);
+  } catch {}
+}
+
 export function churchMembersRowsSignature(rows: any[]) {
   return rows
     .map(

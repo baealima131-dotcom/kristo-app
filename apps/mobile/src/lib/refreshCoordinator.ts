@@ -7,7 +7,7 @@ import {
   type ChurchMediaAccessSession,
   type ChurchMediaAccessState,
 } from "./churchMediaAccess";
-import { deferNonCriticalRefresh } from "./firstPaint";
+import { deferStartupWorkAfterHomeFirstFrame, waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
 import { shouldThrottleFetch } from "./kristoTraffic";
 
 function logEndpointTiming(
@@ -143,6 +143,8 @@ export async function refreshChurchMediaAccess(args: {
   seedChurchMediaAccessFromSession(session);
 
   const job = (async () => {
+    await waitForHomeFirstVideoReadyIfOnHome();
+
     const headers =
       args.headers ||
       (getKristoHeaders({
@@ -180,6 +182,17 @@ export async function refreshChurchMediaAccess(args: {
   }
 }
 
+export function resetAuthRefreshStateForLogout() {
+  sessionHydrationInflight = null;
+  lastHydratedSessionKey = "";
+  cachedMediaAccess = null;
+  cachedMediaAccessKey = "";
+  laneInflight.clear();
+  laneLastDone.clear();
+  coordinatedRefreshInflight = null;
+  lastCoordinatedRefreshAt = 0;
+}
+
 export async function hydrateSessionOnce(
   session: KristoSession | null,
   syncFn: (session: KristoSession) => Promise<KristoSession | null | undefined>
@@ -212,6 +225,34 @@ export async function runCoordinatedAppRefresh(
 ): Promise<void> {
   const userId = String(session?.userId || "").trim();
   if (!userId) return;
+
+  if (
+    (globalThis as any).__KRISTO_HOME_FEED_RENDER_PAUSED__ ||
+    (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
+    Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) > 0
+  ) {
+    if (__DEV__) {
+      console.log("KRISTO_REFRESH_COORDINATOR_SKIPPED", {
+        userId,
+        reason: "live_room_active",
+      });
+    }
+    return;
+  }
+
+  if (
+    (globalThis as any).__KRISTO_HOME_FEED_RENDER_PAUSED__ ||
+    (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
+    Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) > 0
+  ) {
+    if (__DEV__) {
+      console.log("KRISTO_REFRESH_COORDINATOR_SKIPPED", {
+        userId,
+        reason: "live_room_active",
+      });
+    }
+    return;
+  }
 
   const deferMs = Number(opts?.deferMs ?? 0);
   if (deferMs > 0) {
@@ -248,6 +289,8 @@ export async function runCoordinatedAppRefresh(
   }) as Record<string, string>;
 
   const job = (async () => {
+    await waitForHomeFirstVideoReadyIfOnHome();
+
     console.log("KRISTO_REFRESH_COORDINATOR_START", {
       userId,
       churchId,
@@ -306,14 +349,17 @@ export async function runCoordinatedAppRefresh(
   }
 }
 
-/** Warm caches after first paint — never blocks tab/screen opening. */
+/** Warm caches after Home first frame — never blocks tab/screen opening. */
 export function scheduleCoordinatedAppRefresh(
   session: KristoSession | null,
   opts?: { force?: boolean; lanes?: RefreshLane[]; delayMs?: number }
 ) {
-  deferNonCriticalRefresh(
+  deferStartupWorkAfterHomeFirstFrame(
     () => runCoordinatedAppRefresh(session, { ...opts, deferMs: 0 }),
-    opts?.delayMs ?? 2400
+    {
+      reason: "church-overview-coordinated-refresh",
+      delayMs: opts?.delayMs ?? 3000,
+    }
   );
 }
 
