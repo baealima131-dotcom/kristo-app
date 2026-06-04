@@ -56,6 +56,29 @@ function formatProfileError(data: any, fallback: string) {
   return `${fallback}${status}`;
 }
 
+const PASSWORD_RULES_HINT =
+  "Use 8+ characters with at least one letter and one number.";
+
+function isSignupPasswordValid(value: string) {
+  const pwd = String(value || "");
+  if (pwd.length < 8) return false;
+  if (!/[A-Za-z]/.test(pwd)) return false;
+  if (!/[0-9]/.test(pwd)) return false;
+  return true;
+}
+
+function getSignupPasswordValidationMessage(password: string, confirmPassword: string) {
+  const pwd = String(password || "");
+  const hasConfirmPassword = confirmPassword.trim().length > 0;
+  const passwordsMismatch = hasConfirmPassword && pwd !== confirmPassword;
+  if (!pwd.trim()) return "Enter a password.";
+  if (pwd.length < 8) return "Password must be at least 8 characters.";
+  if (!/[A-Za-z]/.test(pwd)) return "Password must include at least one letter.";
+  if (!/[0-9]/.test(pwd)) return "Password must include at least one number.";
+  if (passwordsMismatch) return "Passwords do not match.";
+  return null;
+}
+
 export default function SignupScreen() {
   const router = useRouter();
   const { setSession } = useKristoSession();
@@ -87,6 +110,19 @@ export default function SignupScreen() {
 
   const phone = `${country.code} ${phoneLocal}`.trim();
 
+  const passwordSaved = useMemo(
+    () => isSignupPasswordValid(password) && password === confirmPassword,
+    [password, confirmPassword]
+  );
+
+  const hasConfirmPassword = confirmPassword.trim().length > 0;
+  const passwordsMismatch = hasConfirmPassword && password !== confirmPassword;
+
+  const passwordValidationMessage = useMemo(() => {
+    if (passwordsMismatch) return "Passwords do not match.";
+    return getSignupPasswordValidationMessage(password, confirmPassword);
+  }, [password, confirmPassword, passwordsMismatch]);
+
   const canForm = useMemo(() => {
     return (
       fullName.trim().length >= 2 &&
@@ -94,14 +130,23 @@ export default function SignupScreen() {
       age >= MIN_AGE &&
       phoneLocal.trim().length >= 6 &&
       email.trim().includes("@") &&
-      password.length >= 8 &&
-      confirmPassword.length >= 8 &&
-      password === confirmPassword &&
+      passwordSaved &&
       address.trim().length >= 3 &&
       city.trim().length >= 2 &&
       !saving
     );
-  }, [fullName, age, phoneLocal, email, password, confirmPassword, address, city, saving]);
+  }, [fullName, age, phoneLocal, email, passwordSaved, address, city, saving]);
+
+  function onPressSendCode() {
+    const pwdMsg = getSignupPasswordValidationMessage(password, confirmPassword);
+    if (pwdMsg) {
+      setErr(pwdMsg);
+      setPasswordOpen(true);
+      return;
+    }
+    if (!canForm || saving) return;
+    void sendVerification();
+  }
 
   const canVerify =
     emailInput.trim().length >= 4 &&
@@ -111,6 +156,12 @@ export default function SignupScreen() {
   async function sendVerification() {
     if (!age || age < MIN_AGE) {
       setErr("Kristo requires age 14+");
+      return;
+    }
+    const pwdMsg = getSignupPasswordValidationMessage(password, confirmPassword);
+    if (pwdMsg) {
+      setErr(pwdMsg);
+      setPasswordOpen(true);
       return;
     }
     if (!canForm) return;
@@ -339,14 +390,25 @@ export default function SignupScreen() {
 
               <Pressable
                 onPress={() => setPasswordOpen((v) => !v)}
-                style={[s.passwordHalfCard, password.length >= 8 && password === confirmPassword && s.passwordHalfDone]}
+                style={[s.passwordHalfCard, passwordSaved && s.passwordHalfDone]}
               >
-                <Text style={s.passwordHalfLabel}>Password</Text>
-                <Text style={s.passwordHalfValue}>
-                  {password.length >= 8 && password === confirmPassword ? "Saved" : "Password"}
+                <Text style={s.passwordHalfLabel} numberOfLines={1}>
+                  Password
+                </Text>
+                <Text style={s.passwordHalfValue} numberOfLines={1} ellipsizeMode="tail">
+                  {passwordSaved ? "Saved" : "Tap to set"}
                 </Text>
               </Pressable>
             </View>
+
+            <Text style={s.passwordHint}>{PASSWORD_RULES_HINT}</Text>
+            {!passwordSaved &&
+            (password.length > 0 || hasConfirmPassword) &&
+            (passwordsMismatch || passwordValidationMessage) ? (
+              <Text style={s.passwordHintWarn}>
+                {passwordsMismatch ? "Passwords do not match." : passwordValidationMessage}
+              </Text>
+            ) : null}
 
             {passwordOpen ? (
               <View style={s.passwordPanelBlue}>
@@ -357,6 +419,10 @@ export default function SignupScreen() {
                   placeholderTextColor="rgba(255,255,255,0.38)"
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
+                  autoCorrect={false}
+                  textContentType="newPassword"
+                  multiline={false}
+                  numberOfLines={1}
                   style={s.passwordInputVip}
                 />
                 <TextInput
@@ -366,7 +432,11 @@ export default function SignupScreen() {
                   placeholderTextColor="rgba(255,255,255,0.38)"
                   secureTextEntry={!showConfirm}
                   autoCapitalize="none"
-                  style={[s.passwordInputVip, { marginTop: 8 }]}
+                  autoCorrect={false}
+                  textContentType="newPassword"
+                  multiline={false}
+                  numberOfLines={1}
+                  style={[s.passwordInputVip, s.passwordInputVipGap]}
                 />
 
                 <View style={s.passwordActions}>
@@ -382,9 +452,10 @@ export default function SignupScreen() {
 
                   <Pressable
                     onPress={() => {
-                      if (password.length >= 8 && password === confirmPassword) setPasswordOpen(false);
+                      if (passwordSaved) setPasswordOpen(false);
                     }}
-                    style={[s.passwordSaveBtnBlue, (password.length < 8 || password !== confirmPassword) && { opacity: 0.45 }]}
+                    disabled={!passwordSaved}
+                    style={[s.passwordSaveBtnBlue, !passwordSaved && { opacity: 0.45 }]}
                   >
                     <Text style={s.passwordSaveText}>Save</Text>
                   </Pressable>
@@ -428,7 +499,11 @@ export default function SignupScreen() {
                 <Text style={s.splitAgeText}>{age ? `Age ${age}` : "Select"}</Text>
               </Pressable>
 
-              <Pressable onPress={sendVerification} disabled={!canForm} style={s.splitSend}>
+              <Pressable
+                onPress={onPressSendCode}
+                disabled={saving}
+                style={[s.splitSend, !canForm && { opacity: 0.45 }]}
+              >
                 <Text style={s.splitSendText}>{saving ? "Sending..." : "Send code"}</Text>
               </Pressable>
             </View>
@@ -600,7 +675,14 @@ const s = StyleSheet.create({
   brandDotText: { color: GOLD, fontWeight: "900" },
   brandText: { color: GOLD, fontWeight: "900", marginLeft: 10, letterSpacing: 0.8, fontSize: 15 },
   wrap: { flex: 1, backgroundColor: "#05070D" },
-  content: { paddingHorizontal: 12, paddingTop: 40, paddingBottom: 32 },
+  content: {
+    paddingHorizontal: 12,
+    paddingTop: 40,
+    paddingBottom: 32,
+    width: "100%",
+    maxWidth: 560,
+    alignSelf: "center",
+  },
   title: { color: "white", fontSize: 34, fontWeight: "900", letterSpacing: -1.2 },
   sub: { color: MUTED, marginTop: 4, fontWeight: "800", lineHeight: 18, fontSize: 13 },
   card: {
@@ -654,14 +736,34 @@ const s = StyleSheet.create({
     borderColor: "rgba(79,140,255,0.72)",
   },
   passwordInputVip: {
-    height: 42,
+    width: "100%",
+    alignSelf: "stretch",
+    minHeight: 48,
+    height: 48,
     borderRadius: 16,
-    paddingHorizontal: 13,
+    paddingHorizontal: 14,
+    paddingVertical: 0,
     color: "white",
     fontWeight: "900",
+    fontSize: 16,
     backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.11)",
+  },
+  passwordInputVipGap: { marginTop: 8 },
+  passwordHint: {
+    marginTop: 6,
+    color: "rgba(255,255,255,0.52)",
+    fontWeight: "700",
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  passwordHintWarn: {
+    marginTop: 4,
+    color: "#ffb4b4",
+    fontWeight: "800",
+    fontSize: 11,
+    lineHeight: 15,
   },
   passwordActions: { marginTop: 7, flexDirection: "row", gap: 8 },
   passwordMiniBtn: { flex: 1, height: 38, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.07)" },
@@ -672,12 +774,44 @@ const s = StyleSheet.create({
   passwordSaveText: { color: "#07101B", fontWeight: "900" },
 
 
-  emailPasswordRow: { marginTop: 6, flexDirection: "row", alignItems: "center", gap: 10 },
-  emailHalfInput: { flex: 1.65, marginTop: 0 },
-  passwordHalfCard: { flex: 0.62, minHeight: 50, borderRadius: 19, paddingHorizontal: 10, justifyContent: "center", backgroundColor: "rgba(59,130,246,0.18)", borderWidth: 1.3, borderColor: "rgba(96,165,250,0.9)" },
+  emailPasswordRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 10,
+    width: "100%",
+    flexWrap: "nowrap",
+  },
+  emailHalfInput: { flex: 1, flexShrink: 1, minWidth: 0, marginTop: 0 },
+  passwordHalfCard: {
+    width: 148,
+    minWidth: 132,
+    maxWidth: 200,
+    flexGrow: 0,
+    flexShrink: 0,
+    minHeight: 50,
+    borderRadius: 19,
+    paddingHorizontal: 12,
+    justifyContent: "center",
+    backgroundColor: "rgba(59,130,246,0.18)",
+    borderWidth: 1.3,
+    borderColor: "rgba(96,165,250,0.9)",
+    overflow: "hidden",
+  },
   passwordHalfDone: { backgroundColor: "rgba(59,130,246,0.28)", borderColor: "rgba(147,197,253,0.98)" },
-  passwordHalfLabel: { color: "rgba(255,255,255,0.68)", fontWeight: "900", fontSize: 10 },
-  passwordHalfValue: { color: "white", fontWeight: "900", fontSize: 13, marginTop: 3 },
+  passwordHalfLabel: {
+    color: "rgba(255,255,255,0.68)",
+    fontWeight: "900",
+    fontSize: 10,
+    letterSpacing: 0.2,
+  },
+  passwordHalfValue: {
+    color: "white",
+    fontWeight: "900",
+    fontSize: 13,
+    marginTop: 3,
+    flexShrink: 1,
+  },
 
   phoneRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   codeBox: { marginTop: 6, borderWidth: 1, borderColor: "rgba(217,179,95,0.4)", borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: "rgba(217,179,95,0.08)" },
