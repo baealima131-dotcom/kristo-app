@@ -25,7 +25,7 @@ const DANGER = "#FF5A5F";
 export default function ProfileSettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { session, logout } = useKristoSession();
+  const { session, exitSessionFast } = useKristoSession();
 
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -48,7 +48,7 @@ export default function ProfileSettingsScreen() {
         onPress: async () => {
           setLoggingOut(true);
           try {
-            await logout();
+            exitSessionFast({ reason: "logout" });
             router.replace("/(auth)/login" as any);
           } finally {
             setLoggingOut(false);
@@ -106,7 +106,8 @@ export default function ProfileSettingsScreen() {
 
       console.log("KRISTO_DELETE_ACCOUNT_SUCCESS", { userId });
       setDeleteModalOpen(false);
-      await logout();
+      exitSessionFast({ reason: "delete", userId, churchId });
+      console.log("KRISTO_DELETE_ACCOUNT_NAVIGATE_LOGIN", { userId });
       router.replace("/(auth)/login" as any);
     } catch (error: any) {
       console.log("KRISTO_DELETE_ACCOUNT_FAILED", {

@@ -8,6 +8,7 @@ import { clearChurchProfileCache, saveChurchProfileCache } from "./churchStore";
 import { mergeChurchAvatarForDisplay, normalizeAvatarUpdatedAt } from "./avatarFreshness";
 import { saveProfileDraft } from "./profileStore";
 import { waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
+import { isSessionExitInProgress } from "./kristoSessionExitFlags";
 
 export const SCREEN_CACHE_TTL_MS = 45000;
 /** Fast re-check for church profile block on Church Overview focus. */
@@ -302,6 +303,8 @@ export async function silentRefreshChurchOverview(
   headers?: Record<string, string>,
   opts?: { force?: boolean; profileFresh?: boolean }
 ) {
+  if (isSessionExitInProgress()) return null;
+
   const cid = String(churchId || "").trim();
   const uid = String(userId || "").trim();
   if (!cid || !uid) return null;
@@ -374,6 +377,8 @@ export async function silentRefreshProfileScreen(
   session: KristoSession,
   opts?: { force?: boolean }
 ) {
+  if (isSessionExitInProgress()) return null;
+
   const userId = String(session?.userId || "").trim();
   const churchId = String(session?.churchId || "").trim();
   if (!userId) return null;
@@ -469,6 +474,8 @@ export async function silentRefreshProfileScreen(
 }
 
 export async function silentPreloadTabScreens(session: KristoSession | null, opts?: { force?: boolean }) {
+  if (isSessionExitInProgress()) return null;
+
   const userId = String(session?.userId || "").trim();
   if (!userId) return;
 

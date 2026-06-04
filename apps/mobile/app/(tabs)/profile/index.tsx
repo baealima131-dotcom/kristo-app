@@ -15,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { isSessionExitInProgress } from "@/src/lib/kristoSessionExitFlags";
 import { loadProfileDraft, saveProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
 import { onUserProfileUpdated, onClaimUpdated } from "@/src/lib/kristoProfileEvents";
 import {
@@ -501,7 +502,7 @@ export default function MeScreen() {
   const [claimedModalOpen, setClaimedModalOpen] = useState(false);
   const [claimedFeedTick, setClaimedFeedTick] = useState(0);
   const insets = useSafeAreaInsets();
-  const { session, setSession, logout } = useKristoSession();
+  const { session, setSession } = useKristoSession();
 
   useEffect(() => {
     const claimedFeedUnsub = subscribeHomeFeed(() => {
@@ -780,6 +781,8 @@ export default function MeScreen() {
   }
 
   const refreshInvitations = useCallback(async () => {
+    if (isSessionExitInProgress()) return;
+
     const uid = String(session?.userId || "").trim();
     if (!uid) return;
 
@@ -990,6 +993,8 @@ export default function MeScreen() {
 
   const loadProfileLight = useCallback(
     async (opts?: { silent?: boolean; bypassThrottle?: boolean }) => {
+      if (isSessionExitInProgress()) return;
+
       if (
         (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
         Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) > 0
@@ -1018,6 +1023,8 @@ export default function MeScreen() {
   );
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (isSessionExitInProgress()) return;
+
     const silent = !!opts?.silent;
     if (
       (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
@@ -1208,7 +1215,7 @@ export default function MeScreen() {
     if (!session?.userId) return;
 
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active") {
+      if (state === "active" && !isSessionExitInProgress()) {
         void refreshInvitations();
       }
     });
@@ -1223,6 +1230,7 @@ export default function MeScreen() {
       source: string,
       payload: { targetUserId?: string; targetKristoId?: string; userId?: string; kristoId?: string }
     ) => {
+      if (isSessionExitInProgress()) return;
       if (!inviteEventTargetsCurrentUser(payload, { userId: session.userId, kristoId: publicKristoId })) return;
       console.log("[ProfileInvites] event refresh", { source, userId: session.userId });
       void refreshInvitations();
@@ -1592,6 +1600,8 @@ const resolvedName = useMemo(() => {
   useFocusedPolling(
     "ProfileTab",
     async () => {
+      if (isSessionExitInProgress()) return;
+
       console.log("[ProfileTab] silent refresh");
       await refreshInvitations();
       await loadProfileLight({ silent: true, bypassThrottle: true });
@@ -1615,26 +1625,11 @@ const resolvedName = useMemo(() => {
             <Text style={s.title}>My Profile</Text>
 
             <Pressable
-              style={s.iconBtn}
-              onPress={() =>
-                Alert.alert(
-                  "Logout",
-                  "Are you sure you want to logout?",
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Logout",
-                      style: "destructive",
-                      onPress: async () => {
-                        await logout();
-                        router.replace("/(auth)/login" as any);
-                     },
-                   },
-                  ]
-                )
-             }
+              style={s.settingsIconBtn}
+              onPress={() => router.push("/(tabs)/profile/settings" as any)}
+              accessibilityLabel="Settings"
             >
-              <Ionicons name="log-out-outline" size={20} color="#FF5A5F" />
+              <Ionicons name="settings-outline" size={20} color="#F4D06F" />
             </Pressable>
           </View>
                       <View style={s.heroCard}>
@@ -2409,6 +2404,22 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,90,95,0.34)",
     shadowColor: "#FF5A5F",
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+ },
+
+  settingsIconBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(244,208,111,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(244,208,111,0.34)",
+    shadowColor: "#F4D06F",
     shadowOpacity: 0.18,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },

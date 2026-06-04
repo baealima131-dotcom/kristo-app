@@ -1,4 +1,5 @@
 import type { KristoSession } from "./kristoSession";
+import { isSessionExitInProgress } from "./kristoSessionExitFlags";
 import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
 import {
@@ -182,21 +183,31 @@ export async function refreshChurchMediaAccess(args: {
   }
 }
 
-export function resetAuthRefreshStateForLogout() {
+export function cancelAllScheduledRefreshes() {
+  for (const timer of screenTimers.values()) {
+    clearTimeout(timer);
+  }
+  screenTimers.clear();
   sessionHydrationInflight = null;
   lastHydratedSessionKey = "";
-  cachedMediaAccess = null;
-  cachedMediaAccessKey = "";
-  laneInflight.clear();
-  laneLastDone.clear();
   coordinatedRefreshInflight = null;
   lastCoordinatedRefreshAt = 0;
+  laneInflight.clear();
+  laneLastDone.clear();
+}
+
+export function resetAuthRefreshStateForLogout() {
+  cancelAllScheduledRefreshes();
+  cachedMediaAccess = null;
+  cachedMediaAccessKey = "";
 }
 
 export async function hydrateSessionOnce(
   session: KristoSession | null,
   syncFn: (session: KristoSession) => Promise<KristoSession | null | undefined>
 ): Promise<KristoSession | null> {
+  if (isSessionExitInProgress()) return null;
+
   const userId = String(session?.userId || "").trim();
   if (!userId) return null;
 
@@ -223,6 +234,8 @@ export async function runCoordinatedAppRefresh(
   session: KristoSession | null,
   opts?: { force?: boolean; lanes?: RefreshLane[]; deferMs?: number }
 ): Promise<void> {
+  if (isSessionExitInProgress()) return;
+
   const userId = String(session?.userId || "").trim();
   if (!userId) return;
 
@@ -355,7 +368,10 @@ export function scheduleCoordinatedAppRefresh(
   opts?: { force?: boolean; lanes?: RefreshLane[]; delayMs?: number }
 ) {
   deferStartupWorkAfterHomeFirstFrame(
-    () => runCoordinatedAppRefresh(session, { ...opts, deferMs: 0 }),
+    async () => {
+      if (isSessionExitInProgress()) return;
+      await runCoordinatedAppRefresh(session, { ...opts, deferMs: 0 });
+    },
     {
       reason: "church-overview-coordinated-refresh",
       delayMs: opts?.delayMs ?? 3000,
@@ -369,6 +385,8 @@ export function scheduleScreenRefresh(
   task: () => void | Promise<void>,
   opts?: { delayMs?: number; minMs?: number; force?: boolean }
 ) {
+  if (isSessionExitInProgress()) return;
+
   const scope = screen;
   const timerKey = `${screen}:${lane}`;
   const existing = screenTimers.get(timerKey);

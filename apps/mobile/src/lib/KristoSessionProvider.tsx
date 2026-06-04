@@ -6,7 +6,6 @@ import {
   getSessionSync,
   isLoggedOutFlagSet,
   loadSession,
-  performLogoutCleanup,
   saveSession,
   setSessionSync,
   touchMobileSession,
@@ -31,12 +30,21 @@ import {
   onChurchMembershipChanged,
 } from "./kristoChurchInviteEvents";
 import { startMediaUploadResumeSystem } from "./optimisticVideoUpload";
+import {
+  beginDeleteAccountExit,
+  beginLogoutExit,
+  completeSessionExitCleanup,
+  isSessionExitInProgress,
+} from "./kristoSessionExit";
+
+type ExitSessionReason = "delete" | "logout";
 
 type Ctx = {
   session: KristoSession | null;
   loading: boolean;
   setSession: (s: KristoSession) => Promise<void>;
   logout: () => Promise<void>;
+  exitSessionFast: (params: { reason: ExitSessionReason; userId?: string; churchId?: string }) => void;
 };
 
 const C = createContext<Ctx | null>(null);
@@ -57,7 +65,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
 
       // Session opens immediately; profile sync + cache warm run after Home first frame.
       deferStartupWorkAfterHomeFirstFrame(async () => {
-        if (!alive || (await isLoggedOutFlagSet())) {
+        if (!alive || isSessionExitInProgress() || (await isLoggedOutFlagSet())) {
           if (alive) {
             setSessionSync(null);
             setSessionState(null);
@@ -69,7 +77,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
           ((await hydrateSessionOnce(s, (base) =>
             silentSyncProfile(base, { returnOnly: true })
           )) as KristoSession | null) || s || null;
-        if (!alive || !ready?.userId || (await isLoggedOutFlagSet())) return;
+        if (!alive || !ready?.userId || isSessionExitInProgress() || (await isLoggedOutFlagSet())) return;
         seedChurchMediaAccessFromSession({
           userId: ready.userId,
           role: ready.role,
@@ -90,6 +98,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     opts?: { returnOnly?: boolean; forceFresh?: boolean; throttleMs?: number; omitChurchHeader?: boolean }
   ) {
     if (!baseSession?.userId) return baseSession;
+    if (isSessionExitInProgress()) return null;
     if (await isLoggedOutFlagSet()) return null;
 
     try {
@@ -239,7 +248,10 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       }
     };
 
+    if (isSessionExitInProgress()) return;
+
     silentSyncProfile(session).then((synced) => {
+      if (isSessionExitInProgress()) return;
       const next = synced || session;
       seedChurchMediaAccessFromSession({
         userId: next.userId,
@@ -248,6 +260,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       });
     });
     const t = setInterval(async () => {
+      if (isSessionExitInProgress()) return;
       await checkExpiry();
       const latest = await loadSession();
       const synced = await silentSyncProfile(latest || session);
@@ -258,7 +271,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
 
     const sub = AppState.addEventListener("change", async (state) => {
       if (state === "active") {
-        if (await isLoggedOutFlagSet()) {
+        if (isSessionExitInProgress() || (await isLoggedOutFlagSet())) {
           setSessionSync(null);
           setSessionState(null);
           return;
@@ -321,6 +334,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       userId?: string;
       kristoId?: string;
     }) => {
+      if (isSessionExitInProgress()) return;
       const loaded = await loadSession();
       if (!loaded?.userId) return;
       const kristoId = String((loaded as any)?.kristoId || "").trim();
@@ -373,16 +387,30 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     setSessionState(s);
   }
 
-  async function logout() {
+  function exitSessionFast(params: {
+    reason: ExitSessionReason;
+    userId?: string;
+    churchId?: string;
+  }) {
     const sync = getSessionSync();
-    const userId = String(session?.userId || sync?.userId || "").trim();
-    const churchId = String(session?.churchId || sync?.churchId || "").trim();
-    await performLogoutCleanup({ userId, churchId });
-    setSessionSync(null);
+    const userId = String(params.userId || session?.userId || sync?.userId || "").trim();
+    const churchId = String(params.churchId || session?.churchId || sync?.churchId || "").trim();
+
+    if (params.reason === "delete") beginDeleteAccountExit();
+    else beginLogoutExit();
+
     setSessionState(null);
+    completeSessionExitCleanup({ userId, churchId }, params.reason);
   }
 
-  const value = useMemo(() => ({ session, loading, setSession, logout }), [session, loading]);
+  async function logout() {
+    exitSessionFast({ reason: "logout" });
+  }
+
+  const value = useMemo(
+    () => ({ session, loading, setSession, logout, exitSessionFast }),
+    [session, loading]
+  );
   return <C.Provider value={value}>{children}</C.Provider>;
 }
 
