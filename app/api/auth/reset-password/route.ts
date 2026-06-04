@@ -79,10 +79,29 @@ export async function POST(req: Request) {
     const b = body as StartBody;
     const identifierType = b.identifierType;
     const identifier = String(b.identifier || "").trim();
-    if (!identifier) return NextResponse.json({ ok: false, error: "Weka email au phone." }, { status: 400 });
+    if (!identifier) {
+      return NextResponse.json({ ok: false, error: "Enter your email or phone number." }, { status: 400 });
+    }
+
+    console.log("KRISTO_FORGOT_PASSWORD_REQUEST", {
+      identifierType,
+      hasAt: identifier.includes("@"),
+    });
+
+    if (identifierType === "phone") {
+      console.log("KRISTO_FORGOT_PASSWORD_FAILED", { reason: "phone_not_supported" });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Password reset by phone is not available. Please use your email address.",
+        },
+        { status: 400 }
+      );
+    }
 
     const limit = checkResetRequestLimit(identifierType, identifier);
     if (!limit.ok) {
+      console.log("KRISTO_FORGOT_PASSWORD_FAILED", { reason: "rate_limited", retryAfter: limit.retryAfter });
       return NextResponse.json(
         {
           ok: false,
@@ -94,27 +113,34 @@ export async function POST(req: Request) {
     }
 
     const user = await findUserByIdentifier(identifierType, identifier);
-    if (!user) return NextResponse.json({ ok: false, error: "This email does not exist." }, { status: 404 });
+    if (!user) {
+      console.log("KRISTO_FORGOT_PASSWORD_SENT", { delivered: false, reason: "no_matching_account" });
+      return NextResponse.json({
+        ok: true,
+        message: "If an account exists with this email, we sent a reset code. Check your inbox.",
+      });
+    }
 
     const ch = createChallenge({ identifierType, identifier, userId: user.id });
 
-    if (identifierType === "email") {
-      const emailResult = await sendPasswordResetEmail({
-        to: identifier,
-        code: ch.code,
-      });
+    const emailResult = await sendPasswordResetEmail({
+      to: identifier,
+      code: ch.code,
+    });
 
-      if (!emailResult.ok) {
-        return NextResponse.json(emailFailurePayload(emailResult), { status: 500 });
-      }
-    } else {
-      return NextResponse.json(
-        { ok: false, error: "Phone reset bado haijaunganishwa na SMS. Tumia email kwanza." },
-        { status: 400 }
-      );
+    if (!emailResult.ok) {
+      console.log("KRISTO_FORGOT_PASSWORD_FAILED", {
+        reason: emailResult.reason || "email_send_failed",
+      });
+      return NextResponse.json(emailFailurePayload(emailResult), { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, challengeId: ch.id });
+    console.log("KRISTO_FORGOT_PASSWORD_SENT", { delivered: true, challengeId: ch.id });
+    return NextResponse.json({
+      ok: true,
+      challengeId: ch.id,
+      message: "We sent a password reset code to your email.",
+    });
   }
 
   if (step === "verify") {
@@ -123,18 +149,25 @@ export async function POST(req: Request) {
     const code = String(b.code || "").trim();
     const newPassword = String(b.newPassword || "");
 
-    if (!challengeId) return NextResponse.json({ ok: false, error: "Challenge haipo." }, { status: 400 });
-    if (!code) return NextResponse.json({ ok: false, error: "Weka verification code." }, { status: 400 });
+    if (!challengeId) {
+      return NextResponse.json({ ok: false, error: "Reset session expired. Request a new code." }, { status: 400 });
+    }
+    if (!code) {
+      return NextResponse.json({ ok: false, error: "Enter the reset code from your email." }, { status: 400 });
+    }
 
     if (!newPassword || newPassword.length < 8) {
-      return NextResponse.json({ ok: false, error: "Password mpya iwe angalau characters 8." }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "New password must be at least 8 characters." },
+        { status: 400 }
+      );
     }
 
     const v = verifyChallenge(challengeId, code);
     if (!v.ok) return NextResponse.json(v, { status: 400 });
 
     const u = await getUserById(v.userId);
-    if (!u) return NextResponse.json({ ok: false, error: "User haipo." }, { status: 404 });
+    if (!u) return NextResponse.json({ ok: false, error: "Account not found." }, { status: 404 });
 
     const updated = await updateUserPersist(u.id, {
       password: bcrypt.hashSync(newPassword, 10),

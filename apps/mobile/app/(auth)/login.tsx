@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useRouter, Href } from "expo-router";
-import { Keyboard, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Keyboard, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { loadProfileDraft } from "@/src/lib/profileStore";
 import { loadChurchDraft } from "@/src/lib/churchStore";
@@ -25,24 +25,14 @@ export default function LoginScreen() {
   const [info, setInfo] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [forgotOpen, setForgotOpen] = useState(false);
-  const [forgotEmailOpen, setForgotEmailOpen] = useState(false);
-  const [recoveryPhone, setRecoveryPhone] = useState("");
   const [resetContact, setResetContact] = useState("");
   const [resetStep, setResetStep] = useState(1);
   const [resetCode, setResetCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [resetSuccess, setResetSuccess] = useState(false);
   const [resetErr, setResetErr] = useState<string | null>(null);
   const [challengeId, setChallengeId] = useState("");
   const [retryAfter, setRetryAfter] = useState(0);
   const [loginStage, setLoginStage] = useState(false);
-
-  useEffect(() => {
-    if (resetSuccess) {
-      const t = setTimeout(() => setResetSuccess(false), 3000);
-      return () => clearTimeout(t);
-    }
-  }, [resetSuccess]);
 
   useEffect(() => {
     if (retryAfter <= 0) return;
@@ -61,11 +51,132 @@ export default function LoginScreen() {
     return userId.trim().length >= 3 && password.length >= 8 && !saving && !locked;
   }, [userId, password, saving, locked]);
 
+  function onForgotEmailPress() {
+    console.log("KRISTO_FORGOT_EMAIL_OPENED");
+    console.log("KRISTO_FORGOT_EMAIL_UNAVAILABLE", { reason: "v1_support_only" });
+    Alert.alert("Forgot email?", "Forgot email? Please contact support.", [{ text: "OK" }]);
+  }
+
+  function onForgotPasswordPress() {
+    console.log("KRISTO_FORGOT_PASSWORD_OPENED");
+    setResetErr(null);
+    setResetStep(1);
+    setResetContact("");
+    setResetCode("");
+    setNewPassword("");
+    setChallengeId("");
+    setForgotOpen(true);
+  }
+
+  async function requestPasswordResetCode() {
+    const contact = resetContact.trim();
+    if (contact.length < 3) {
+      setResetErr("Enter your email address.");
+      return;
+    }
+
+    if (!contact.includes("@")) {
+      setResetErr("Password reset by phone is not available. Please use your email address.");
+      return;
+    }
+
+    setResetErr(null);
+    console.log("KRISTO_FORGOT_PASSWORD_REQUEST", { hasAt: true });
+
+    try {
+      const data = await apiPost("/api/auth/reset-password", {
+        step: "start",
+        identifierType: "email",
+        identifier: contact,
+      });
+
+      if (!data?.ok) {
+        const retryAfter = Number(data?.retryAfter || 0);
+        console.log("KRISTO_FORGOT_PASSWORD_FAILED", {
+          error: data?.error || "request_failed",
+          retryAfter: retryAfter || undefined,
+        });
+        setResetErr(
+          retryAfter > 0
+            ? "Too many reset requests. Please wait and try again."
+            : data?.error || "We could not send a reset code. Please try again later."
+        );
+        return;
+      }
+
+      const nextChallengeId = String(data?.challengeId || "").trim();
+      if (!nextChallengeId) {
+        console.log("KRISTO_FORGOT_PASSWORD_SENT", { delivered: false });
+        setForgotOpen(false);
+        setResetStep(1);
+        setResetContact("");
+        setErr(null);
+        setInfo(
+          String(data?.message || "").trim() ||
+            "If an account exists with this email, we sent a reset code. Check your inbox."
+        );
+        return;
+      }
+
+      console.log("KRISTO_FORGOT_PASSWORD_SENT", { delivered: true, challengeId: nextChallengeId });
+      setChallengeId(nextChallengeId);
+      setResetStep(2);
+      setErr(null);
+      setInfo(String(data?.message || "").trim() || "We sent a password reset code to your email.");
+    } catch {
+      console.log("KRISTO_FORGOT_PASSWORD_FAILED", { error: "network_exception" });
+      setResetErr("We could not reach the server. Check your connection and try again.");
+    }
+  }
+
+  async function submitPasswordReset() {
+    const code = resetCode.trim();
+    const pwd = newPassword;
+
+    if (code.length < 4) {
+      setResetErr("Enter the reset code from your email.");
+      return;
+    }
+    if (pwd.length < 8) {
+      setResetErr("New password must be at least 8 characters.");
+      return;
+    }
+
+    setResetErr(null);
+
+    try {
+      const data = await apiPost("/api/auth/reset-password", {
+        step: "verify",
+        challengeId,
+        code,
+        newPassword: pwd,
+      });
+
+      if (!data?.ok) {
+        console.log("KRISTO_FORGOT_PASSWORD_FAILED", { error: data?.error || "verify_failed", step: "verify" });
+        setResetErr(data?.error || "Reset failed. Check your code and try again.");
+        return;
+      }
+
+      setForgotOpen(false);
+      setResetStep(1);
+      setResetContact("");
+      setResetCode("");
+      setNewPassword("");
+      setChallengeId("");
+      setResetErr(null);
+      setErr(null);
+      setInfo("Your password was reset. Sign in with your new password.");
+    } catch {
+      console.log("KRISTO_FORGOT_PASSWORD_FAILED", { error: "network_exception", step: "verify" });
+      setResetErr("We could not reach the server. Check your connection and try again.");
+    }
+  }
+
   async function onLogin() {
     if (!can) return;
     setErr(null);
     setRetryAfter(0);
-    setResetSuccess(false);
     Keyboard.dismiss();
     setSaving(true);
 
@@ -182,7 +293,6 @@ export default function LoginScreen() {
 
       {locked ? <Text style={s.err}>Too many attempts. Please wait {retryLabel}</Text> : null}
       {!!err && !locked && <Text style={s.err}>{err}</Text>}
-      {resetSuccess && <Text style={s.success}>Check your email for the reset code.</Text>}
       {!!info && !err && !locked && <Text style={s.info}>{info}</Text>}
 
       {loginStage ? (
@@ -236,18 +346,11 @@ export default function LoginScreen() {
         </View>
 
         <View style={s.forgotRow}>
-          <Pressable
-            onPress={() => {
-              setErr(null);
-              setInfo(null);
-              setForgotEmailOpen(true);
-            }}
-            style={s.forgotBtnLeft}
-          >
+          <Pressable onPress={onForgotEmailPress} style={s.forgotBtnLeft}>
             <Text style={s.forgotEmailText}>Forgot email?</Text>
           </Pressable>
 
-          <Pressable onPress={() => setForgotOpen(true)} style={s.forgotBtn}>
+          <Pressable onPress={onForgotPasswordPress} style={s.forgotBtn}>
             <Text style={s.forgotText}>Forgot password?</Text>
           </Pressable>
         </View>
@@ -261,69 +364,6 @@ export default function LoginScreen() {
         </Pressable>
       </View>
 
-      
-      <Modal visible={forgotEmailOpen} transparent animationType="fade" onRequestClose={() => setForgotEmailOpen(false)}>
-        <View style={s.modalWrap}>
-          <Pressable style={s.modalBackdrop} onPress={() => setForgotEmailOpen(false)} />
-          <View style={s.resetCard}>
-            <Text style={s.resetTitle}>Find your account</Text>
-            <Text style={s.resetSub}>
-              Enter your phone number. We’ll use it to help you remember which account to sign in with.
-            </Text>
-
-            <TextInput
-              value={recoveryPhone}
-              onChangeText={setRecoveryPhone}
-              placeholder="Phone number"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              keyboardType="phone-pad"
-              textContentType="telephoneNumber"
-              style={s.resetInput}
-            />
-
-            <Pressable
-              disabled={recoveryPhone.trim().length < 6}
-              onPress={async () => {
-                const phone = recoveryPhone.trim();
-
-                if (phone.length < 6) return;
-
-                try {
-                  const data = await apiPost("/api/auth/find-account", { phone });
-
-                  if (!data?.ok) {
-                    setErr(data?.error || "No account found with this phone number.");
-                    setForgotEmailOpen(false);
-                    return;
-                  }
-
-                  setUserId(phone);
-                  setErr(null);
-                  setInfo(data?.email ? `Account found: ${data.email}` : "Account found. You can now sign in.");
-                } catch {
-                  setErr("Failed to find account. Check server connection.");
-                }
-
-                setForgotEmailOpen(false);
-              }}
-              style={[s.resetBtn, recoveryPhone.trim().length < 6 && { opacity: 0.45 }]}
-            >
-              <Text style={s.resetBtnText}>Use this phone number</Text>
-            </Pressable>
-
-            <Pressable
-              onPress={() => {
-                setForgotEmailOpen(false);
-                setRecoveryPhone("");
-              }}
-              style={s.cancelBtn}
-            >
-              <Text style={s.cancelText}>Cancel</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
       <Modal visible={forgotOpen} transparent animationType="fade" onRequestClose={() => setForgotOpen(false)}>
         <View style={s.modalWrap}>
           <Pressable style={s.modalBackdrop} onPress={() => setForgotOpen(false)} />
@@ -332,7 +372,7 @@ export default function LoginScreen() {
             {resetStep === 1 ? (
               <>
                 <Text style={s.resetTitle}>Reset password</Text>
-                <Text style={s.resetSub}>Enter your email or phone number. We will send a reset code.</Text>
+                <Text style={s.resetSub}>Enter your email. We will send a reset code to your inbox.</Text>
 
                 {!!resetErr && <Text style={s.resetErrText}>{resetErr}</Text>}
 
@@ -340,37 +380,17 @@ export default function LoginScreen() {
                   value={resetContact}
                   onChangeText={setResetContact}
                   autoCapitalize="none"
-                  placeholder="Email or phone number"
+                  keyboardType="email-address"
+                  textContentType="emailAddress"
+                  autoComplete="email"
+                  placeholder="Email address"
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   style={s.resetInput}
                 />
 
                 <Pressable
                   disabled={resetContact.trim().length < 3}
-                  onPress={async () => {
-                    if (resetContact.trim().length < 3) {
-                      setResetErr("Enter your email or phone number.");
-                      return;
-                    }
-
-                    setResetErr(null);
-
-                    const data = await apiPost("/api/auth/reset-password", {
-                      step: "start",
-                      identifierType: resetContact.includes("@") ? "email" : "phone",
-                      identifier: resetContact.trim(),
-                    });
-
-                    if (!data?.ok) {
-                      setResetErr(data?.error || "Failed to send reset code.");
-                      return;
-                    }
-
-                    setChallengeId(data.challengeId);
-                    setResetStep(2);
-                    setErr(null);
-                    setResetSuccess(true);
-                  }}
+                  onPress={requestPasswordResetCode}
                   style={[s.resetBtn, resetContact.trim().length < 3 && { opacity: 0.45 }]}
                 >
                   <Text style={s.resetBtnText}>Send reset code</Text>
@@ -378,8 +398,8 @@ export default function LoginScreen() {
               </>
             ) : (
               <>
-                <Text style={s.resetTitle}>Enter code</Text>
-                <Text style={s.resetSub}>Check your messages and enter the code + new password.</Text>
+                <Text style={s.resetTitle}>Enter reset code</Text>
+                <Text style={s.resetSub}>Enter the code from your email and choose a new password.</Text>
 
                 {!!resetErr && <Text style={s.resetErrText}>{resetErr}</Text>}
 
@@ -389,8 +409,8 @@ export default function LoginScreen() {
                   placeholder="Reset code"
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   keyboardType="number-pad"
-                  textContentType="oneTimeCode"
-                  autoComplete="sms-otp"
+                  textContentType="none"
+                  autoComplete="off"
                   style={s.resetInput}
                 />
 
@@ -404,35 +424,7 @@ export default function LoginScreen() {
                 />
 
                 <Pressable
-                  onPress={async () => {
-                    const code = resetCode.trim();
-                    const pwd = newPassword;
-
-                    if (code.length < 4 || pwd.length < 8) return;
-
-                    setResetErr(null);
-
-                    const data = await apiPost("/api/auth/reset-password", {
-                      step: "verify",
-                      challengeId,
-                      code,
-                      newPassword: pwd,
-                    });
-
-                    if (!data?.ok) {
-                      setResetErr(data?.error || "Reset failed. Check your code.");
-                      return;
-                    }
-
-                    setForgotOpen(false);
-                    setResetStep(1);
-                    setResetContact("");
-                    setResetCode("");
-                    setNewPassword("");
-                    setResetErr(null);
-                    setErr(null);
-                    setResetSuccess(true);
-                  }}
+                  onPress={submitPasswordReset}
                   disabled={resetCode.trim().length < 4 || newPassword.length < 8}
                   style={[
                     s.resetBtn,
@@ -451,6 +443,7 @@ export default function LoginScreen() {
                 setResetContact("");
                 setResetCode("");
                 setNewPassword("");
+                setChallengeId("");
                 setResetErr(null);
               }}
               style={s.cancelBtn}
@@ -470,7 +463,6 @@ const s = StyleSheet.create({
   title: { color: "white", fontSize: 32, fontWeight: "900", letterSpacing: 0.5, textShadowColor: "rgba(217,179,95,0.35)", textShadowRadius: 14 },
   sub: { color: MUTED, marginTop: 6, fontWeight: "700" },
   err: { color: "#ff7b7b", marginTop: 14, fontWeight: "800" },
-  success: { color: "rgba(134,239,172,0.95)", marginTop: 14, fontWeight: "900" },
   info: { color: "rgba(147,197,253,0.95)", marginTop: 10, fontWeight: "800" },
 
   card: { marginTop: 22, borderWidth: 1.2, borderColor: "rgba(217,179,95,0.18)", borderRadius: 24, padding: 16, backgroundColor: "rgba(255,255,255,0.035)" },
