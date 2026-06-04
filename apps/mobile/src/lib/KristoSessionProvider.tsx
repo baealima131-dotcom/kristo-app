@@ -3,6 +3,7 @@ import { AppState } from "react-native";
 import type { KristoSession } from "./kristoSession";
 import {
   MOBILE_SESSION_IDLE_MS,
+  getSessionSync,
   isLoggedOutFlagSet,
   loadSession,
   performLogoutCleanup,
@@ -373,9 +374,11 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
   }
 
   async function logout() {
-    const userId = String(session?.userId || "").trim();
-    const churchId = String(session?.churchId || "").trim();
+    const sync = getSessionSync();
+    const userId = String(session?.userId || sync?.userId || "").trim();
+    const churchId = String(session?.churchId || sync?.churchId || "").trim();
     await performLogoutCleanup({ userId, churchId });
+    setSessionSync(null);
     setSessionState(null);
   }
 

@@ -139,12 +139,29 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
       body: payload,
     });
     const parsed = await safeJson(res);
+    if (path.includes("/api/auth/delete-account")) {
+      console.log("KRISTO_DELETE_ACCOUNT_HTTP", {
+        path,
+        status: res.status,
+        ok: res.ok,
+        body: parsed,
+      });
+    }
     if (!res.ok) return httpError(path, res, parsed) as T;
     const body = parsed ?? { ok: false, error: "Empty server response" };
     return (typeof body === "object" && body !== null
       ? { ...body, status: res.status }
       : { ok: false, error: "Empty server response", status: res.status }) as T;
   } catch (error) {
+    if (path.includes("/api/auth/delete-account")) {
+      console.log("KRISTO_DELETE_ACCOUNT_HTTP", {
+        path,
+        status: null,
+        ok: false,
+        body: null,
+        error: String((error as any)?.message || error || "network_error"),
+      });
+    }
     return networkError(path, error) as T;
   }
 }
