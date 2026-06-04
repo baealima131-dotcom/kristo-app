@@ -411,65 +411,47 @@ export function resolveLiveScheduleFeedId(
 }
 
 export function normalizeLiveScheduleSlot(slot: any, index = 0) {
-  const claimedRaw = slot?.claimedBy;
-  const claimedByUserId = String(
-    slot?.claimedByUserId ||
-      (claimedRaw && typeof claimedRaw === "object" ? claimedRaw.userId : "") ||
-      ""
-  ).trim();
-
-  const claimedByName = String(
-    slot?.claimedByName ||
-      slot?.claimedByDisplayName ||
-      slot?.claimedByUserName ||
-      (claimedRaw && typeof claimedRaw === "object"
-        ? claimedRaw.name || claimedRaw.displayName || claimedRaw.username || claimedRaw.fullName
-        : claimedRaw) ||
-      ""
-  ).trim();
-
-  const claimedAvatar = String(
-    slot?.claimedByAvatarUri ||
-      slot?.claimedByAvatar ||
-      slot?.claimedByAvatarUrl ||
-      (claimedRaw && typeof claimedRaw === "object"
-        ? claimedRaw.avatarUri ||
-          claimedRaw.avatarUrl ||
-          claimedRaw.profileImage ||
-          claimedRaw.photoURL ||
-          claimedRaw.image
-        : "") ||
-      ""
-  ).trim();
-
-  const slotNum = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+  const lean = toLeanLiveRouteSlot(slot, index);
+  const slotNum = lean.slotNumber;
+  const claimedByUserId = lean.claimedByUserId;
+  const claimedByName = lean.claimedByName;
+  const claimedAvatar = lean.claimedByAvatarUri;
+  const isClaimed =
+    lean.status === "claimed" ||
+    lean.status === "taken" ||
+    lean.status === "live" ||
+    Boolean(claimedByUserId);
 
   return {
-    ...slot,
+    id: lean.id,
     slot: slotNum,
     slotNumber: slotNum,
-    order: Number(slot?.order || slotNum),
+    order: slotNum,
+    name: lean.title,
+    slotLabel: lean.title,
+    title: lean.title,
+    meetingDay: lean.meetingDay,
+    meetingDate: lean.meetingDay,
+    startTime: lean.startTime,
+    endTime: lean.endTime,
+    durationMin: lean.durationMin,
+    startMs: lean.startMs,
+    endMs: lean.endMs,
+    status: lean.status,
     claimedByUserId,
     claimedByName,
-    ...(claimedByUserId
+    ...(isClaimed
       ? {
-          claimed: slot?.claimed ?? true,
-          isClaimed: slot?.isClaimed ?? true,
+          claimed: true,
+          isClaimed: true,
           claimedByAvatarUri: claimedAvatar,
           claimedByAvatar: claimedAvatar,
-          claimedBy: claimedRaw
-            ? {
-                ...claimedRaw,
-                userId: claimedByUserId,
-                name: claimedByName || claimedRaw.name,
-                avatarUri: claimedAvatar || claimedRaw.avatarUri || "",
-              }
-            : {
-                userId: claimedByUserId,
-                name: claimedByName,
-                avatarUri: claimedAvatar,
-                role: String(slot?.claimedByRole || "Member"),
-              },
+          claimedBy: {
+            userId: claimedByUserId,
+            name: claimedByName,
+            avatarUri: claimedAvatar,
+            role: "Member",
+          },
         }
       : {}),
   };
@@ -614,6 +596,185 @@ export function enrichScheduleSlotsFromLiveRequests(
   return slots;
 }
 
+/** Resolve backend feed_* id for Live ring → Live Room navigation. */
+export function resolveLiveRingCanonicalFeedId(
+  item: any,
+  rows: any[] = []
+): { canonicalFeedId: string; localScheduleId: string } {
+  const candidates = [
+    item?.backendFeedId,
+    item?.feedId,
+    item?.sourceScheduleId,
+    item?.id,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  let canonicalFeedId = "";
+  for (const candidate of candidates) {
+    if (!isBackendFeedScheduleId(candidate)) continue;
+    canonicalFeedId = baseFeedId(candidate) || candidate;
+    break;
+  }
+
+  let localScheduleId = "";
+  for (const candidate of candidates) {
+    if (!isLocalMediaScheduleId(candidate)) continue;
+    localScheduleId = candidate;
+    break;
+  }
+
+  if (!canonicalFeedId) {
+    const seed =
+      localScheduleId ||
+      String(item?.sourceScheduleId || item?.id || item?.feedId || "").trim();
+    const resolved = resolveCanonicalScheduleFeedId(seed, rows);
+    if (isBackendFeedScheduleId(resolved)) canonicalFeedId = resolved;
+  }
+
+  if (!canonicalFeedId) {
+    for (const candidate of candidates) {
+      const resolved = resolveCanonicalScheduleFeedId(candidate, rows);
+      if (isBackendFeedScheduleId(resolved)) {
+        canonicalFeedId = resolved;
+        break;
+      }
+    }
+  }
+
+  if (!canonicalFeedId) {
+    canonicalFeedId =
+      candidates.find((candidate) => isBackendFeedScheduleId(candidate)) ||
+      baseFeedId(item?.id) ||
+      "media-live-default";
+  }
+
+  return { canonicalFeedId, localScheduleId };
+}
+
+export type LeanLiveRouteSlot = {
+  id: string;
+  slotNumber: number;
+  startMs: number;
+  endMs: number;
+  claimedByUserId: string;
+  claimedByName: string;
+  claimedByAvatarUri: string;
+  status: string;
+  title: string;
+  meetingDay: string;
+  startTime: string;
+  endTime: string;
+  durationMin: number;
+};
+
+const LEAN_ROUTE_AVATAR_MAX_LEN = 512;
+const LEAN_ROUTE_TITLE_MAX_LEN = 120;
+
+/** Route params must never carry base64 blobs or nested schedule objects. */
+export function sanitizeLeanRouteAvatarUri(raw: unknown): string {
+  const value = String(raw || "").trim();
+  if (!value || value.startsWith("data:")) return "";
+  if (value.length > LEAN_ROUTE_AVATAR_MAX_LEN) return "";
+  if (/^https?:\/\//i.test(value) || value.startsWith("file://")) return value;
+  return "";
+}
+
+export function utf8JsonByteLength(json: string): number {
+  try {
+    return new TextEncoder().encode(json).length;
+  } catch {
+    return unescape(encodeURIComponent(json)).length;
+  }
+}
+
+function leanSlotWindowMs(slot: any, index: number) {
+  const existingStart = Number(slot?.startMs || 0);
+  const existingEnd = Number(slot?.endMs || 0);
+  if (existingStart > 0 && existingEnd > 0) {
+    return { startMs: existingStart, endMs: existingEnd };
+  }
+
+  const startMs = parseSlotStartMs(slot);
+  if (!startMs) return { startMs: 0, endMs: 0 };
+
+  const endMsFromClock = parseSlotClockMs(
+    String(slot?.meetingDate || slot?.meetingDay || ""),
+    String(slot?.endTime || "")
+  );
+  const durationMs = Math.max(1, Number(slot?.durationMin || 10)) * 60000;
+  const endMs = endMsFromClock > startMs ? endMsFromClock : startMs + durationMs;
+  return { startMs, endMs };
+}
+
+export function toLeanLiveRouteSlot(slot: any, index = 0): LeanLiveRouteSlot {
+  const slotNumber = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+  const claimedByObj =
+    typeof slot?.claimedBy === "object" && slot?.claimedBy ? slot.claimedBy : null;
+  const { startMs, endMs } = leanSlotWindowMs(slot, index);
+  const claimedByName = String(
+    slot?.claimedByName ||
+      slot?.claimedByDisplayName ||
+      (claimedByObj && typeof claimedByObj === "object"
+        ? claimedByObj.name || claimedByObj.displayName
+        : typeof slot?.claimedBy === "string"
+          ? slot.claimedBy
+          : "") ||
+      ""
+  )
+    .trim()
+    .slice(0, 80);
+
+  const rawStatus = String(slot?.status || "").trim().toLowerCase();
+  const status =
+    rawStatus ||
+    (slot?.claimed === true || slot?.isClaimed === true || claimedByName ? "claimed" : "open");
+
+  return {
+    id: String(slot?.id || slot?.slotId || `slot-${slotNumber}`).slice(0, 80),
+    slotNumber,
+    startMs,
+    endMs,
+    claimedByUserId: String(slot?.claimedByUserId || claimedByObj?.userId || "")
+      .trim()
+      .slice(0, 64),
+    claimedByName,
+    claimedByAvatarUri: sanitizeLeanRouteAvatarUri(
+      slot?.claimedByAvatarUri ||
+        slot?.claimedByAvatar ||
+        slot?.avatarUri ||
+        claimedByObj?.avatarUri ||
+        claimedByObj?.avatarUrl
+    ),
+    status: status.slice(0, 24),
+    title: String(slot?.title || slot?.name || slot?.slotLabel || `Slot ${slotNumber}`)
+      .trim()
+      .slice(0, LEAN_ROUTE_TITLE_MAX_LEN),
+    meetingDay: String(slot?.meetingDay || slot?.meetingDate || "").trim().slice(0, 32),
+    startTime: String(slot?.startTime || slot?.time || "").trim().slice(0, 16),
+    endTime: String(slot?.endTime || "").trim().slice(0, 16),
+    durationMin: Math.max(0, Math.min(999, Number(slot?.durationMin || 0))),
+  };
+}
+
+/** Compact slot payload for live-room route params (no blobs/nested profile data). */
+export function buildLeanLiveScheduleSlotsJson(slots: any[]) {
+  const list = Array.isArray(slots) ? slots : [];
+  const lean = list.map((slot, index) => toLeanLiveRouteSlot(slot, index));
+  const json = JSON.stringify(lean);
+  const byteLen = utf8JsonByteLength(json);
+
+  if (byteLen > 20_000) {
+    console.log("KRISTO_LIVE_ROUTE_SLOTS_JSON_LARGE", {
+      byteLen,
+      slotCount: lean.length,
+      warn: "route_slot_json_over_20kb",
+    });
+  }
+
+  return json;
+}
+
 export function parseLiveAllScheduleSlotsJson(rawParam: unknown) {
   try {
     const rawValue = Array.isArray(rawParam)
@@ -629,7 +790,10 @@ export function parseLiveAllScheduleSlotsJson(rawParam: unknown) {
         : raw;
 
     const parsed = JSON.parse(jsonText);
-    return Array.isArray(parsed) ? normalizeLiveScheduleSlots(parsed) : [];
+    if (!Array.isArray(parsed)) return [];
+    return normalizeLiveScheduleSlots(
+      parsed.map((slot: any, index: number) => toLeanLiveRouteSlot(slot, index))
+    );
   } catch {
     return [];
   }

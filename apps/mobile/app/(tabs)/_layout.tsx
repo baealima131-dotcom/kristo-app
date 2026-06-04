@@ -1,12 +1,21 @@
 import { Tabs, useGlobalSearchParams, useSegments, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { silentPreloadTabScreens } from "@/src/lib/screenDataCache";
+import { deferStartupWorkAfterHomeFirstFrame, setHomeTabFocused } from "@/src/lib/firstPaint";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet } from "@/src/lib/kristoApi";
-import { subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import {
+  buildLeanLiveScheduleSlotsJson,
+  isBackendFeedScheduleId,
+  isLocalMediaScheduleId,
+  resolveLiveRingCanonicalFeedId,
+  sanitizeLeanRouteAvatarUri,
+  utf8JsonByteLength,
+} from "@/src/lib/scheduleSlotUtils";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
 import {
   RING_RECOMPUTE_INTERVAL_MS,
@@ -23,6 +32,10 @@ const GOLD = "#D9B35F";
 const MUTED = "rgba(255,255,255,0.55)";
 const TAB_BG = "rgba(8,12,20,0.96)";
 const TAB_BORDER = "rgba(255,255,255,0.05)";
+/** Hold time before onLongPress; RN default is 500ms. */
+const LIVE_RING_LONG_PRESS_MS = 150;
+
+type LiveRingNavTrigger = "longPress" | "tabPress";
 
 
 function MessagesModeTabButton({
@@ -196,90 +209,205 @@ export default function TabLayout() {
   const router = useRouter();
   const { session, loading } = useKristoSession();
 
+  useLayoutEffect(() => {
+    const tab = String(segments[1] || "index");
+    setHomeTabFocused(tab === "index");
+  }, [segments.join("/")]);
+
   useEffect(() => {
     if (loading || !session?.userId) return;
-    void silentPreloadTabScreens(session);
-  }, [loading, session?.userId, session?.churchId]);
+    deferStartupWorkAfterHomeFirstFrame(
+      () => silentPreloadTabScreens(session),
+      { reason: "screen-cache-preload" }
+    );
+  }, [loading, session?.userId, session?.churchId, session?.role]);
 
   useEffect(() => {
     if (loading || !session?.userId) return;
     const tab = String(segments[1] || "index");
-    if (tab === "index") {
-      void silentPreloadTabScreens(session);
-    }
+    if (tab !== "index") return;
+    deferStartupWorkAfterHomeFirstFrame(
+      () => silentPreloadTabScreens(session),
+      { reason: "screen-cache-preload-home-focus" }
+    );
   }, [loading, session, segments.join("/")]);
 
+  function resolveRingScheduleIds(item: any) {
+    const rows = [...backendFeedRowsRef.current, ...(feedList() as any[])];
+    return resolveLiveRingCanonicalFeedId(item, rows);
+  }
+
+  function logLiveRingActiveSchedule(
+    label: string,
+    item: any,
+    alert?: { startsInMin?: number; isLiveNow?: boolean } | null
+  ) {
+    const rawId = String(item?.id || "").trim();
+    const { canonicalFeedId, localScheduleId } = resolveRingScheduleIds(item);
+
+    console.log("KRISTO_LIVE_RING_ACTIVE_SCHEDULE_FOUND", {
+      label,
+      id: rawId,
+      canonicalFeedId,
+      localScheduleId,
+      slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
+      startsInMin: alert?.startsInMin ?? null,
+      isLiveNow: alert?.isLiveNow ?? null,
+      isLocalScheduleId: isLocalMediaScheduleId(localScheduleId || rawId),
+      isBackendFeedId: isBackendFeedScheduleId(canonicalFeedId),
+    });
+  }
+
+  function buildScheduleLiveRoomRouteParams(
+    item: any,
+    options: {
+      slot: any;
+      allSlots: any[];
+      isLiveNow: boolean;
+      claimedByMe: boolean;
+      routeSlotNumber: number;
+      scheduleStartMs?: number;
+      scheduleEndMs?: number;
+    }
+  ) {
+    const { canonicalFeedId, localScheduleId } = resolveRingScheduleIds(item);
+    const { slot, allSlots, isLiveNow, claimedByMe, routeSlotNumber } = options;
+    const authority = buildLiveRoomAuthorityParams(item);
+    const leanSlotsJson = buildLeanLiveScheduleSlotsJson(allSlots);
+
+    console.log("KRISTO_LIVE_RING_ROUTE_SLOTS_SIZE", {
+      byteLen: utf8JsonByteLength(leanSlotsJson),
+      slotCount: allSlots.length,
+    });
+
+    return {
+      source: "media",
+      liveMode: "schedule",
+      layout: "grid6",
+      entryMode: isLiveNow ? "live" : "waiting",
+      role: claimedByMe ? "Host" : "Viewer",
+      mode: claimedByMe ? "host" : "viewer",
+      room: "media",
+      mediaName: String(item?.mediaName || item?.actorLabel || "Church Media"),
+      churchName: String(item?.churchName || item?.churchLabel || "Church"),
+      churchLabel: String(item?.churchName || item?.churchLabel || "Church"),
+      churchId: String(item?.churchId || session?.churchId || ""),
+      liveId: canonicalFeedId,
+      feedId: canonicalFeedId,
+      sourceScheduleId: canonicalFeedId,
+      ...(localScheduleId ? { localScheduleId } : {}),
+      liveAllScheduleSlotsJson: leanSlotsJson,
+      title: String(slot?.name || slot?.slotLabel || item?.title || "Church Live").slice(0, 120),
+      preferredSlotNumber: String(routeSlotNumber),
+      currentSlotNumber: String(routeSlotNumber),
+      scheduleStartMs: String(options.scheduleStartMs || ""),
+      scheduleEndMs: String(options.scheduleEndMs || ""),
+      claimedByUserId: String(slot?.claimedByUserId || "").slice(0, 64),
+      claimedByName: String(slot?.claimedByName || "").slice(0, 80),
+      claimedByAvatar: sanitizeLeanRouteAvatarUri(
+        slot?.claimedByAvatar || slot?.claimedByAvatarUri || slot?.avatarUri
+      ),
+      mediaSlotPublisher: claimedByMe ? "1" : "0",
+      canPublish: claimedByMe && isLiveNow ? "1" : "0",
+      canPublishCamera: claimedByMe && isLiveNow ? "1" : "0",
+      canPublishMic: claimedByMe && isLiveNow ? "1" : "0",
+      watchScheduledPublisher: claimedByMe ? "1" : "0",
+      isGlobalMediaSlot: "1",
+      ...authority,
+      mediaOwnerPastorUserId: authority.actualChurchPastorUserId,
+      mediaHostIds: String(
+        item?.mediaHostIds || item?.hostIds || authority.mediaHostIds || ""
+      ),
+    };
+  }
+
   function openPersonalScheduleAlert() {
+    const pressStartedAt = Date.now();
+    console.log("KRISTO_LIVE_RING_LONG_PRESS_START", {
+      tab: "profile",
+      hasAlert: !!personalScheduleTabAlert,
+    });
+
     const alert = personalScheduleTabAlert;
-    if (!alert?.item || !alert?.slot) return false;
+    if (!alert?.item || !alert?.slot) {
+      console.log("KRISTO_LIVE_RING_LONG_PRESS_BLOCKED", {
+        tab: "profile",
+        reason: "no_personal_schedule_alert",
+        durationMs: Date.now() - pressStartedAt,
+      });
+      return false;
+    }
 
     const item = alert.item || {};
     const slot = alert.slot || {};
     const claimedByMe = String(alert?.match || "") === "claimed";
     const isLiveNow = alert?.isLiveNow === true;
-    const liveId = String(item?.sourceScheduleId || item?.id || "media-live-default");
+    const allSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+
+    logLiveRingActiveSchedule("profile-ring", item, alert);
+
+    const navigateParams = buildScheduleLiveRoomRouteParams(item, {
+      slot,
+      allSlots,
+      isLiveNow,
+      claimedByMe,
+      routeSlotNumber: (alert?.index ?? 0) + 1,
+      scheduleStartMs: alert?.startMs,
+      scheduleEndMs: alert?.endMs,
+    });
+
+    console.log("KRISTO_LIVE_RING_NAVIGATE_REQUEST", {
+      tab: "profile",
+      target: "/more/my-church-room/messages/live-room",
+      feedId: navigateParams.feedId,
+      liveId: navigateParams.liveId,
+      localScheduleId: String((navigateParams as any).localScheduleId || ""),
+      entryMode: navigateParams.entryMode,
+      currentSlotNumber: navigateParams.currentSlotNumber,
+      routeSlotCount: allSlots.length,
+      durationMs: Date.now() - pressStartedAt,
+    });
 
     router.replace({
       pathname: "/more/my-church-room/messages/live-room",
-      params: {
-        source: "media",
-        liveMode: "schedule",
-        layout: "grid6",
-        entryMode: isLiveNow ? "live" : "waiting",
-        role: claimedByMe ? "Host" : "Viewer",
-        mode: claimedByMe ? "host" : "viewer",
-        room: "media",
-
-        mediaName: String(item?.mediaName || item?.actorLabel || "Church Media"),
-        churchName: String(item?.churchName || item?.churchLabel || "Church"),
-        churchLabel: String(item?.churchName || item?.churchLabel || "Church"),
-        churchId: String(item?.churchId || session?.churchId || ""),
-        liveId,
-        feedId: liveId,
-        sourceScheduleId: liveId,
-        liveAllScheduleSlotsJson: JSON.stringify(
-          (Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []).map((s: any, i: number) => ({
-            ...s,
-            slot: i + 1,
-            slotNumber: i + 1,
-            order: i + 1,
-          }))
-        ),
-
-        title: String(slot?.name || slot?.slotLabel || item?.title || "Church Live"),
-        preferredSlotNumber: String((alert?.index ?? 0) + 1),
-        currentSlotNumber: String((alert?.index ?? 0) + 1),
-        scheduleStartMs: String(alert?.startMs || ""),
-        scheduleEndMs: String(alert?.endMs || ""),
-
-        claimedByUserId: String(slot?.claimedByUserId || ""),
-        claimedByName: String(slot?.claimedByName || ""),
-        claimedByAvatar: String(slot?.claimedByAvatar || slot?.avatarUri || ""),
-
-        mediaSlotPublisher: claimedByMe ? "1" : "0",
-        canPublish: claimedByMe && isLiveNow ? "1" : "0",
-        canPublishCamera: claimedByMe && isLiveNow ? "1" : "0",
-        canPublishMic: claimedByMe && isLiveNow ? "1" : "0",
-
-        watchScheduledPublisher: claimedByMe ? "1" : "0",
-        isGlobalMediaSlot: "1",
-        ...buildLiveRoomAuthorityParams(item),
-        mediaOwnerPastorUserId: buildLiveRoomAuthorityParams(item).actualChurchPastorUserId,
-        mediaHostIds: String(item?.mediaHostIds || item?.hostIds || buildLiveRoomAuthorityParams(item).mediaHostIds || ""),
-      },
+      params: navigateParams,
     } as any);
 
     return true;
   }
 
-  function openChurchLiveAsViewer() {
+  function logLiveRingNavDelay(
+    trigger: LiveRingNavTrigger,
+    pressStartedAt: number,
+    opened: boolean,
+    extra?: Record<string, unknown>
+  ) {
+    console.log("KRISTO_LIVE_RING_NAV_DELAY", {
+      tab: "church",
+      trigger,
+      durationMs: Date.now() - pressStartedAt,
+      opened,
+      ...extra,
+    });
+  }
+
+  function openChurchLiveAsViewer(trigger: LiveRingNavTrigger, gestureAt?: number) {
+    const openViewerStart = Date.now();
+    const gestureDetectedAt = Number(gestureAt || openViewerStart);
+
+    console.log("KRISTO_LIVE_RING_OPEN_VIEWER_START", {
+      tab: "church",
+      trigger,
+      delayLongPressMs: LIVE_RING_LONG_PRESS_MS,
+      sinceGestureMs: openViewerStart - gestureDetectedAt,
+    });
+
     const scheduleAlert = mediaScheduleTabLive;
 
     if (scheduleAlert?.item && scheduleAlert?.slot) {
       const item = scheduleAlert.item || {};
       const slot = scheduleAlert.slot || {};
       const isLiveNow = scheduleAlert?.isLiveNow === true;
-      const liveId = String(item?.sourceScheduleId || item?.id || "media-live-default");
       const allSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
       const viewerUserId = String(session?.userId || "").trim();
       const claimedIndex = allSlots.findIndex((s: any) => {
@@ -290,6 +418,9 @@ export default function TabLayout() {
         );
       });
       const userClaimedSlot = claimedIndex >= 0 ? allSlots[claimedIndex] : null;
+
+      const paramsBuildStart = Date.now();
+      logLiveRingActiveSchedule("church-ring-schedule", item, scheduleAlert);
 
       // Important: do NOT open camera just because user claimed a future slot.
       // Church LIVE tab should show the current live slot unless the user's claimed slot is the current/live slot.
@@ -305,80 +436,85 @@ export default function TabLayout() {
       const routeSlot = userClaimIsCurrentLiveSlot ? userClaimedSlot : slot;
       const routeSlotNumber = userClaimIsCurrentLiveSlot ? claimedIndex + 1 : (scheduleAlert?.index ?? 0) + 1;
 
+      const navigateParams = buildScheduleLiveRoomRouteParams(item, {
+        slot: routeSlot,
+        allSlots,
+        isLiveNow,
+        claimedByMe,
+        routeSlotNumber,
+        scheduleStartMs: scheduleAlert?.startMs,
+        scheduleEndMs: scheduleAlert?.endMs,
+      });
+
+      const paramsBuildMs = Date.now() - paramsBuildStart;
+      const navAt = Date.now();
+      (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = navAt;
+
       router.replace({
         pathname: "/more/my-church-room/messages/live-room",
-        params: {
-          source: "media",
-          liveMode: "schedule",
-          layout: "grid6",
-          entryMode: isLiveNow ? "live" : "waiting",
-          role: claimedByMe ? "Host" : "Viewer",
-          mode: claimedByMe ? "host" : "viewer",
-          room: "media",
-
-          mediaName: String(item?.mediaName || item?.actorLabel || "Church Media"),
-          churchName: String(item?.churchName || item?.churchLabel || "Church"),
-          churchLabel: String(item?.churchName || item?.churchLabel || "Church"),
-          churchId: String(item?.churchId || session?.churchId || ""),
-          liveId,
-          feedId: liveId,
-          sourceScheduleId: liveId,
-          liveAllScheduleSlotsJson: JSON.stringify(
-            allSlots.map((s: any, i: number) => ({
-              ...s,
-              slot: i + 1,
-              slotNumber: i + 1,
-              order: i + 1,
-            }))
-          ),
-
-          title: String(routeSlot?.name || routeSlot?.slotLabel || item?.title || "Church Live"),
-          preferredSlotNumber: String(routeSlotNumber),
-          currentSlotNumber: String(routeSlotNumber),
-          scheduleStartMs: String(scheduleAlert?.startMs || ""),
-          scheduleEndMs: String(scheduleAlert?.endMs || ""),
-
-          claimedByUserId: String(routeSlot?.claimedByUserId || ""),
-          claimedByName: String(routeSlot?.claimedByName || ""),
-          claimedByAvatar: String(routeSlot?.claimedByAvatar || routeSlot?.avatarUri || ""),
-
-          mediaSlotPublisher: claimedByMe ? "1" : "0",
-          canPublish: claimedByMe && isLiveNow ? "1" : "0",
-          canPublishCamera: claimedByMe && isLiveNow ? "1" : "0",
-          canPublishMic: claimedByMe && isLiveNow ? "1" : "0",
-
-          watchScheduledPublisher: claimedByMe ? "1" : "0",
-          isGlobalMediaSlot: "1",
-          ...buildLiveRoomAuthorityParams(item),
-          mediaOwnerPastorUserId: buildLiveRoomAuthorityParams(item).actualChurchPastorUserId,
-          mediaHostIds: String(item?.mediaHostIds || item?.hostIds || buildLiveRoomAuthorityParams(item).mediaHostIds || ""),
-        },
+        params: navigateParams,
       } as any);
 
+      const replaceDoneAt = Date.now();
+      console.log("KRISTO_LIVE_RING_ROUTER_REPLACE_DONE", {
+        tab: "church",
+        path: "schedule",
+        trigger,
+        paramsBuildMs,
+        replaceCallMs: replaceDoneAt - navAt,
+        sinceGestureMs: replaceDoneAt - gestureDetectedAt,
+        sinceOpenViewerMs: replaceDoneAt - openViewerStart,
+      });
+      logLiveRingNavDelay(trigger, gestureDetectedAt, true, { path: "schedule" });
       return true;
     }
 
     const activeChurchLive = backendChurchLive;
-    if (!activeChurchLive?.isLive) return false;
+    if (!activeChurchLive?.isLive) {
+      console.log("KRISTO_LIVE_RING_LONG_PRESS_BLOCKED", {
+        tab: "church",
+        trigger,
+        reason: "no_schedule_alert_and_no_backend_live",
+      });
+      logLiveRingNavDelay(trigger, gestureDetectedAt, false, {
+        reason: "no_schedule_alert_and_no_backend_live",
+      });
+      return false;
+    }
+
+    const instantParams = {
+      source: "media",
+      liveMode: "instant",
+      entryMode: "live",
+      role: "Viewer",
+      title: String((activeChurchLive as any)?.title || (activeChurchLive as any)?.mediaName || "Church Live"),
+      mediaName: String((activeChurchLive as any)?.mediaName || (activeChurchLive as any)?.title || "Church Live"),
+      liveId: String((activeChurchLive as any)?.liveId || ""),
+      pastorUserId: String((activeChurchLive as any)?.actualChurchPastorUserId || (activeChurchLive as any)?.pastorUserId || ""),
+      actualChurchPastorUserId: String((activeChurchLive as any)?.actualChurchPastorUserId || (activeChurchLive as any)?.pastorUserId || ""),
+      layout: "focus",
+      room: "church",
+      mode: "viewer",
+    };
+
+    const navAt = Date.now();
+    (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = navAt;
 
     router.replace({
       pathname: "/more/my-church-room/messages/live-room",
-      params: {
-        source: "media",
-        liveMode: "instant",
-        entryMode: "live",
-        role: "Viewer",
-        title: String((activeChurchLive as any)?.title || (activeChurchLive as any)?.mediaName || "Church Live"),
-        mediaName: String((activeChurchLive as any)?.mediaName || (activeChurchLive as any)?.title || "Church Live"),
-        liveId: String((activeChurchLive as any)?.liveId || ""),
-        pastorUserId: String((activeChurchLive as any)?.actualChurchPastorUserId || (activeChurchLive as any)?.pastorUserId || ""),
-        actualChurchPastorUserId: String((activeChurchLive as any)?.actualChurchPastorUserId || (activeChurchLive as any)?.pastorUserId || ""),
-        layout: "focus",
-        room: "church",
-        mode: "viewer",
-      },
+      params: instantParams,
     } as any);
 
+    const replaceDoneAt = Date.now();
+    console.log("KRISTO_LIVE_RING_ROUTER_REPLACE_DONE", {
+      tab: "church",
+      path: "instant",
+      trigger,
+      replaceCallMs: replaceDoneAt - navAt,
+      sinceGestureMs: replaceDoneAt - gestureDetectedAt,
+      sinceOpenViewerMs: replaceDoneAt - openViewerStart,
+    });
+    logLiveRingNavDelay(trigger, gestureDetectedAt, true, { path: "instant" });
     return true;
   }
 
@@ -436,6 +572,9 @@ export default function TabLayout() {
   const churchLivePulse = useRef(new Animated.Value(0)).current;
   const backendFeedRowsRef = useRef<any[]>([]);
   const claimRingTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const liveRingPollingStartedRef = useRef(false);
+  const liveRingPollStopRef = useRef<(() => void) | null>(null);
+  const ringRecomputeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const applyScheduleRings = useCallback(
     (source: string, backendRows: any[] = backendFeedRowsRef.current) => {
@@ -519,6 +658,27 @@ export default function TabLayout() {
     [applyScheduleRings]
   );
 
+  const startLiveRingPolling = useCallback(() => {
+    if (liveRingPollingStartedRef.current) return;
+    liveRingPollingStartedRef.current = true;
+
+    void refreshChurchLiveAndRings("deferred-start");
+
+    ringRecomputeTimerRef.current = setInterval(
+      () => applyScheduleRings("timer"),
+      RING_RECOMPUTE_INTERVAL_MS
+    );
+
+    liveRingPollStopRef.current = startAdaptiveLivePolling({
+      screen: "TabLayout",
+      activeMs: 60000,
+      idleMs: 120000,
+      onTick: async () => {
+        await refreshChurchLiveAndRings("poll");
+      },
+    });
+  }, [applyScheduleRings, refreshChurchLiveAndRings]);
+
   useEffect(() => {
     applyScheduleRings("mount");
     const unsubFeed = subscribeHomeFeed(() => applyScheduleRings("feed"));
@@ -526,46 +686,33 @@ export default function TabLayout() {
     const unsubRingRefresh = onLiveRingRefresh(({ reason }) => {
       void refreshChurchLiveAndRings(reason);
     });
-    const fastTimer = setInterval(() => applyScheduleRings("timer"), RING_RECOMPUTE_INTERVAL_MS);
+
+    deferStartupWorkAfterHomeFirstFrame(() => startLiveRingPolling(), {
+      reason: "live-ring-polling",
+    });
 
     return () => {
       unsubFeed();
       unsubClaim();
       unsubRingRefresh();
-      clearInterval(fastTimer);
+      if (ringRecomputeTimerRef.current) {
+        clearInterval(ringRecomputeTimerRef.current);
+        ringRecomputeTimerRef.current = null;
+      }
+      liveRingPollStopRef.current?.();
+      liveRingPollStopRef.current = null;
+      liveRingPollingStartedRef.current = false;
       claimRingTimersRef.current.forEach((timer) => clearTimeout(timer));
       claimRingTimersRef.current = [];
     };
-  }, [applyScheduleRings, scheduleClaimRingSync, refreshChurchLiveAndRings]);
+  }, [applyScheduleRings, scheduleClaimRingSync, refreshChurchLiveAndRings, startLiveRingPolling]);
 
   useFocusEffect(
     useCallback(() => {
+      if (!liveRingPollingStartedRef.current) return;
       void refreshChurchLiveAndRings("focus");
     }, [refreshChurchLiveAndRings])
   );
-
-  useEffect(() => {
-    let alive = true;
-
-    async function loadChurchLive() {
-      if (!alive) return;
-      await refreshChurchLiveAndRings("poll");
-    }
-
-    void loadChurchLive();
-
-    const stop = startAdaptiveLivePolling({
-      screen: "TabLayout",
-      activeMs: 60000,
-      idleMs: 120000,
-      onTick: loadChurchLive,
-    });
-
-    return () => {
-      alive = false;
-      stop();
-    };
-  }, [refreshChurchLiveAndRings]);
 
   useEffect(() => {
     if (!backendChurchLive?.isLive && !mediaScheduleTabLive) return;
@@ -686,32 +833,38 @@ export default function TabLayout() {
 
       <Tabs.Screen
         name="church"
-        
-        listeners={{
-          tabPress: (e) => {
-            if (churchIsLive && openChurchLiveAsViewer()) {
-              e.preventDefault();
-            }
-          },
-        }}
         options={{
           title: churchTabTitle,
           tabBarButton: ({ children }: any) => (
             <Pressable
               onLongPress={() => {
-                if (churchIsLive) {
-                  openChurchLiveAsViewer();
+                const gestureAt = Date.now();
+                console.log("KRISTO_LIVE_RING_GESTURE_DETECTED", {
+                  tab: "church",
+                  trigger: "longPress",
+                  delayLongPressMs: LIVE_RING_LONG_PRESS_MS,
+                  at: gestureAt,
+                });
+
+                if (!churchIsLive) {
+                  console.log("KRISTO_LIVE_RING_LONG_PRESS_BLOCKED", {
+                    tab: "church",
+                    reason: "church_tab_not_live",
+                    sinceGestureMs: 0,
+                  });
+                  return;
                 }
+
+                openChurchLiveAsViewer("longPress", gestureAt);
               }}
-              delayLongPress={280}
+              delayLongPress={LIVE_RING_LONG_PRESS_MS}
               onPress={() => {
                 if (isMessagesMode) {
                   router.replace("/more/my-church-room/messages/live-room" as any);
                   return;
                 }
 
-                // LIVE room opens only by long press.
-                // Normal tap should still go to Church overview.
+                // LIVE room opens only on long press (red ring).
                 if (!hasChurch) {
                   Alert.alert(
                     "Church locked",
@@ -755,11 +908,16 @@ export default function TabLayout() {
                 <Pressable
                   onPress={() => router.replace("/(tabs)/profile" as any)}
                   onLongPress={() => {
-                    if (personalScheduleTabAlert) {
-                      openPersonalScheduleAlert();
+                    if (!personalScheduleTabAlert) {
+                      console.log("KRISTO_LIVE_RING_LONG_PRESS_BLOCKED", {
+                        tab: "profile",
+                        reason: "no_personal_ring_alert",
+                      });
+                      return;
                     }
+                    openPersonalScheduleAlert();
                   }}
-                  delayLongPress={280}
+                  delayLongPress={LIVE_RING_LONG_PRESS_MS}
                   style={{
                     flex: 1,
                     height: 70,
