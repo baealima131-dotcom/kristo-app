@@ -59,6 +59,25 @@ function formatProfileError(data: any, fallback: string) {
 const PASSWORD_RULES_HINT =
   "Use 8+ characters with at least one letter and one number.";
 
+const VERIFICATION_EMAIL_FAILED_MSG =
+  "Verification email could not be sent. Please try again or sign in with the review account.";
+
+function isSignupVerificationReviewBypassEnabled() {
+  return (
+    process.env.EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE === "1" ||
+    process.env.EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS === "1"
+  );
+}
+
+function isSignupEmailSendFailure(data: any) {
+  const reason = String(data?.reason || "").trim();
+  return (
+    reason === "email_send_failed" ||
+    reason === "email_not_configured" ||
+    /email/i.test(String(data?.error || ""))
+  );
+}
+
 function isSignupPasswordValid(value: string) {
   const pwd = String(value || "");
   if (pwd.length < 8) return false;
@@ -153,6 +172,217 @@ export default function SignupScreen() {
     !!signupChallengeId &&
     !saving;
 
+  const signupReviewBypass = isSignupVerificationReviewBypassEnabled();
+
+  function applyVerificationStepAfterSend(data: any) {
+    setCreatedUserId(String(data.userId || "").trim());
+    setPublicKristoId(String(data.kristoId || data.publicKristoId || "").trim());
+    setSignupChallengeId(data.challengeId || "");
+
+    const devOtp =
+      __DEV__ && typeof data?.devOtp === "string" && data.devOtp.trim()
+        ? data.devOtp.trim()
+        : "";
+    const reviewCode =
+      signupReviewBypass &&
+      typeof data?.reviewVerificationCode === "string" &&
+      data.reviewVerificationCode.trim()
+        ? data.reviewVerificationCode.trim()
+        : "";
+
+    if (devOtp) {
+      setVerifyInfo(`Dev OTP code: ${devOtp}`);
+      setEmailInput(devOtp);
+    } else if (data?.reviewBypass) {
+      setVerifyInfo(
+        "Verification email may be delayed. Tap Continue for Review, or enter your code when it arrives."
+      );
+      setEmailInput(reviewCode);
+    } else {
+      setVerifyInfo("We sent a verification code to your email.");
+      setEmailInput("");
+    }
+    setStep("verify");
+  }
+
+  async function finalizeSignupAccount(finalUserId: string) {
+    const profileRes: any = await apiGet("/api/auth/profile", {
+      headers: getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" }),
+    });
+
+    if (!profileRes?.ok) {
+      const message = String(profileRes?.error || "Account verified but server profile is unavailable.");
+      setErr(`${message} Try signing in with your email and password.`);
+      if (__DEV__) {
+        console.warn("[KRISTO SIGNUP] durable profile load failed after verify", profileRes);
+      }
+      return false;
+    }
+
+    const p = profileRes?.profile;
+    const kristoId = String(publicKristoId || p?.userCode || "").trim();
+    const finalName = String(p?.fullName || fullName.trim());
+
+    const profileData = await apiPost(
+      "/api/auth/profile",
+      {
+        userCode: kristoId,
+        fullName: finalName,
+        phone,
+        email: email.trim(),
+        country: country.name,
+        city: city.trim(),
+        dob: age ? dobFromAge(age) : undefined,
+      },
+      getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" })
+    );
+
+    if (!profileData?.ok) {
+      const message = formatProfileError(profileData, "Could not save your profile. Please try again.");
+      if (__DEV__) {
+        console.warn("[KRISTO SIGNUP] profile save failed", profileData);
+      }
+      Alert.alert("Profile save failed", message);
+      setErr(message);
+      return false;
+    }
+
+    await setSession({
+      userId: finalUserId,
+      kristoId,
+      role: "Member",
+      churchId: "",
+      name: finalName,
+      displayName: finalName,
+      phone,
+      email: email.trim(),
+      address: address.trim(),
+      city: city.trim(),
+      country: country.name,
+      age: age ?? undefined,
+    } as any);
+
+    await saveProfileDraft(
+      {
+        userId: finalUserId,
+        kristoId,
+        displayName: finalName,
+        bio: "",
+        avatarUri: undefined,
+        phone,
+        email: email.trim(),
+        address: address.trim(),
+        city: city.trim(),
+        country: country.name,
+        age: age ?? undefined,
+      },
+      finalUserId
+    );
+
+    router.replace("/(tabs)");
+    return true;
+  }
+
+  async function onContinueForReview() {
+    if (!signupReviewBypass) return;
+    if (!createdUserId) {
+      setErr("Review continue unavailable. Go back and send the code again, or use Back to Login.");
+      return;
+    }
+
+    setErr(null);
+    setSaving(true);
+
+    try {
+      console.log("KRISTO_SIGNUP_REVIEW_VERIFY_BYPASS", {
+        userId: createdUserId,
+        email: email.trim(),
+      });
+
+      const signIn = await apiPost("/api/auth/signin", {
+        email: email.trim(),
+        password,
+      });
+
+      if (!signIn?.ok) {
+        setErr(
+          String(signIn?.error || "") ||
+            "Review sign-in failed. Please use Back to Login with the review account."
+        );
+        return;
+      }
+
+      const finalUserId = String(signIn.userId || createdUserId || "").trim();
+      if (!finalUserId) {
+        setErr("Review sign-in succeeded but user id is missing.");
+        return;
+      }
+
+      await finalizeSignupAccount(finalUserId);
+    } catch (error: any) {
+      const message = String(error?.message || error || "Review continue failed.");
+      setErr(`${message} Try Back to Login with the review account.`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resendVerificationCode() {
+    if (!signupChallengeId) {
+      setErr("Send the code first, or go back to the form and try again.");
+      return;
+    }
+
+    setErr(null);
+    setSaving(true);
+
+    try {
+      const data = await apiPost("/api/auth/sign-up/resend", {
+        challengeId: signupChallengeId,
+      });
+
+      if (!data?.ok) {
+        console.log("KRISTO_SIGNUP_VERIFY_EMAIL_FAILED", {
+          scope: "mobile-resend",
+          reason: data?.reason || null,
+          error: data?.error || null,
+        });
+        setErr(
+          isSignupEmailSendFailure(data)
+            ? VERIFICATION_EMAIL_FAILED_MSG
+            : String(data?.error || VERIFICATION_EMAIL_FAILED_MSG)
+        );
+        return;
+      }
+
+      console.log("KRISTO_SIGNUP_VERIFY_EMAIL_SENT", {
+        scope: "mobile-resend",
+        challengeId: signupChallengeId,
+        reviewBypass: Boolean(data?.reviewBypass),
+      });
+
+      if (typeof data?.devOtp === "string" && data.devOtp.trim()) {
+        setVerifyInfo(`Dev OTP code: ${data.devOtp.trim()}`);
+        setEmailInput(data.devOtp.trim());
+      } else if (data?.reviewBypass) {
+        setVerifyInfo(
+          "Verification email may be delayed. Tap Continue for Review, or enter your code when it arrives."
+        );
+      } else {
+        setVerifyInfo("We sent a new verification code to your email.");
+      }
+    } catch (error: any) {
+      const message = String(error?.message || error || "Network request failed");
+      console.log("KRISTO_SIGNUP_VERIFY_EMAIL_FAILED", {
+        scope: "mobile-resend",
+        error: message,
+      });
+      setErr(`${VERIFICATION_EMAIL_FAILED_MSG} (${message})`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function sendVerification() {
     if (!age || age < MIN_AGE) {
       setErr("Kristo requires age 14+");
@@ -184,6 +414,10 @@ export default function SignupScreen() {
       if (!data?.ok) {
         const serverError = String(data?.error || "").trim();
         const reason = String(data?.reason || "").trim();
+        console.log("KRISTO_SIGNUP_VERIFY_EMAIL_FAILED", {
+          reason: reason || null,
+          error: serverError || null,
+        });
         if (reason === "account_exists" || /already registered|tayari imesajiliwa/i.test(serverError)) {
           setErr("This email is already registered. Sign in with your password to continue.");
           return;
@@ -193,8 +427,9 @@ export default function SignupScreen() {
           .filter(Boolean)
           .join(" ");
         setErr(
-          detail ||
-            `Could not send verification code${status}. API: ${getApiBase()}`
+          isSignupEmailSendFailure(data)
+            ? VERIFICATION_EMAIL_FAILED_MSG
+            : detail || `Could not send verification code${status}. API: ${getApiBase()}`
         );
         if (__DEV__) {
           console.warn("[KRISTO SIGNUP] sign-up failed", { data, apiBase: getApiBase() });
@@ -202,23 +437,13 @@ export default function SignupScreen() {
         return;
       }
 
-      setCreatedUserId(String(data.userId || "").trim());
-      setPublicKristoId(
-        String(data.kristoId || data.publicKristoId || "").trim()
-      );
-      setSignupChallengeId(data.challengeId || "");
-      const devOtp =
-        __DEV__ && typeof data?.devOtp === "string" && data.devOtp.trim()
-          ? data.devOtp.trim()
-          : "";
-      if (devOtp) {
-        setVerifyInfo(`Dev OTP code: ${devOtp}`);
-        setEmailInput(devOtp);
-      } else {
-        setVerifyInfo("We sent a verification code to your email.");
-        setEmailInput("");
-      }
-      setStep("verify");
+      console.log("KRISTO_SIGNUP_VERIFY_EMAIL_SENT", {
+        email: email.trim(),
+        userId: data.userId || null,
+        reviewBypass: Boolean(data?.reviewBypass),
+      });
+
+      applyVerificationStepAfterSend(data);
     } catch (error: any) {
       const message = String(error?.message || error || "Network request failed");
       setErr(`Could not connect to ${getApiBase()}. ${message}`);
@@ -234,8 +459,6 @@ export default function SignupScreen() {
     if (!canVerify) return;
     setErr(null);
     setSaving(true);
-
-    setErr(null);
 
     try {
       const data = await apiPost("/api/auth/login/verify", {
@@ -264,85 +487,12 @@ export default function SignupScreen() {
         return;
       }
 
-      const profileRes: any = await apiGet("/api/auth/profile", {
-        headers: getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" }),
-      });
-
-      if (!profileRes?.ok) {
-        const message = String(profileRes?.error || "Account verified but server profile is unavailable.");
-        setErr(`${message} Try signing in with your email and password.`);
-        if (__DEV__) {
-          console.warn("[KRISTO SIGNUP] durable profile load failed after verify", profileRes);
-        }
-        return;
-      }
-
-      const p = profileRes?.profile;
-      const kristoId = String(
-        publicKristoId || p?.userCode || ""
-      ).trim();
-
-      const finalName = String(p?.fullName || fullName.trim());
-
-      const profileData = await apiPost(
-        "/api/auth/profile",
-        {
-          userCode: kristoId,
-          fullName: finalName,
-          phone,
-          email: email.trim(),
-          country: country.name,
-          city: city.trim(),
-          dob: age ? dobFromAge(age) : undefined,
-        },
-        getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" })
-      );
-
-      if (!profileData?.ok) {
-        const message = formatProfileError(profileData, "Could not save your profile. Please try again.");
-        if (__DEV__) {
-          console.warn("[KRISTO SIGNUP] profile save failed", profileData);
-        }
-        Alert.alert("Profile save failed", message);
-        setErr(message);
-        return;
-      }
-
       if (!data?.user?.id && !createdUserId) {
         setErr("Verification succeeded but durable account id is missing.");
         return;
       }
 
-      await setSession({
-        userId: finalUserId,
-        kristoId,
-        role: "Member",
-        churchId: "",
-        name: finalName,
-        displayName: finalName,
-        phone,
-        email: email.trim(),
-        address: address.trim(),
-        city: city.trim(),
-        country: country.name,
-        age: age ?? undefined,
-      } as any);
-
-      await saveProfileDraft({
-        userId: finalUserId,
-        kristoId,
-        displayName: finalName,
-        bio: "",
-        avatarUri: undefined,
-        phone,
-        email: email.trim(),
-        address: address.trim(),
-        city: city.trim(),
-        country: country.name,
-        age: age ?? undefined,
-      }, finalUserId);
-
-      router.replace("/(tabs)");
+      await finalizeSignupAccount(finalUserId);
     } catch (error: any) {
       const message = String(error?.message || error || "Verification failed.");
       setErr(`Verification failed. ${message}`);
@@ -533,8 +683,28 @@ export default function SignupScreen() {
               style={s.input}
             />
 
-            <Pressable onPress={onCreate} disabled={!canVerify} style={[s.btn, !canVerify && { opacity: 0.45 }]}>
+            <Pressable onPress={onCreate} disabled={!canVerify || saving} style={[s.btn, (!canVerify || saving) && { opacity: 0.45 }]}>
               <Text style={s.btnText}>{saving ? "Verifying..." : "Confirm & Create account"}</Text>
+            </Pressable>
+
+            {signupReviewBypass ? (
+              <Pressable
+                onPress={onContinueForReview}
+                disabled={saving || !createdUserId}
+                style={[s.btn, s.reviewBypassBtn, (saving || !createdUserId) && { opacity: 0.45 }]}
+              >
+                <Text style={s.reviewBypassBtnText}>
+                  {saving ? "Continuing..." : "Continue for Review"}
+                </Text>
+              </Pressable>
+            ) : null}
+
+            <Pressable
+              onPress={resendVerificationCode}
+              disabled={saving || !signupChallengeId}
+              style={[s.linkBtn, (saving || !signupChallengeId) && { opacity: 0.45 }]}
+            >
+              <Text style={s.linkText}>{saving ? "Sending..." : "Resend code"}</Text>
             </Pressable>
 
             <Pressable onPress={() => setStep("form")} style={s.linkBtn}>
@@ -959,6 +1129,12 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.2)", shadowColor: "#F4C95D", shadowOpacity: 0.7, shadowRadius: 24, shadowOffset: { width: 0, height: 12 } },
   btnText: { color: "#0B0F17", fontWeight: "900", fontSize: 15 },
+  reviewBypassBtn: {
+    marginTop: 10,
+    backgroundColor: "rgba(147,197,253,0.22)",
+    borderColor: "rgba(147,197,253,0.55)",
+  },
+  reviewBypassBtnText: { color: "#fff", fontWeight: "900", fontSize: 15 },
 
   linkBtn: { marginTop: 8, paddingVertical: 8, alignItems: "center" },
   linkText: { color: "rgba(255,255,255,0.75)", fontWeight: "900" },

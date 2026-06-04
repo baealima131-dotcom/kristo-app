@@ -40,6 +40,39 @@ function normEmail(s: any) {
   return String(s ?? "").trim().toLowerCase();
 }
 
+function isServerSignupReviewBypass() {
+  return (
+    process.env.KRISTO_BYPASS_SUBSCRIPTION_FOR_TESTING === "1" ||
+    process.env.KRISTO_APP_REVIEW_MODE === "1"
+  );
+}
+
+function signupReviewBypassPayload(params: {
+  challengeId: string;
+  userId: string;
+  kristoId?: string;
+  challengeCode: string;
+  emailFailed?: boolean;
+}) {
+  console.log("KRISTO_SIGNUP_REVIEW_VERIFY_BYPASS", {
+    emailFailed: params.emailFailed === true,
+    userId: params.userId,
+    challengeId: params.challengeId,
+  });
+  return NextResponse.json({
+    ok: true,
+    needsVerification: true,
+    reviewBypass: true,
+    challengeId: params.challengeId,
+    userId: params.userId,
+    kristoId: params.kristoId,
+    publicKristoId: params.kristoId,
+    coreId: params.userId,
+    reviewVerificationCode: params.challengeCode,
+    next: "/verify-code",
+  });
+}
+
 export async function POST(req: Request) {
   try {
     await seedUserIfMissing();
@@ -102,9 +135,23 @@ export async function POST(req: Request) {
         name: fullName,
       });
     } catch (error: any) {
-      await rollbackSignupUser(userId);
       const message = String(error?.message || error || "Verification email could not be sent.");
-      console.error("[KRISTO SIGNUP EMAIL ERROR]", message);
+      console.log("KRISTO_SIGNUP_VERIFY_EMAIL_FAILED", {
+        email,
+        userId,
+        reason: "email_send_exception",
+        error: message,
+      });
+      if (isServerSignupReviewBypass()) {
+        return signupReviewBypassPayload({
+          challengeId: challenge.id,
+          userId,
+          kristoId: r.user.kristoId,
+          challengeCode: challenge.code,
+          emailFailed: true,
+        });
+      }
+      await rollbackSignupUser(userId);
       return NextResponse.json(
         {
           ok: false,
@@ -118,16 +165,30 @@ export async function POST(req: Request) {
 
     const isProd = process.env.NODE_ENV === "production";
     const providerMissing = isEmailProviderMissing(emailResult);
+    const reviewBypass = isServerSignupReviewBypass();
 
     if (!emailResult.ok) {
+      console.log("KRISTO_SIGNUP_VERIFY_EMAIL_FAILED", {
+        email,
+        userId,
+        reason: emailResult.reason || (providerMissing ? "email_not_configured" : "email_send_failed"),
+        reviewBypass,
+      });
+
       if (isProd) {
+        if (reviewBypass) {
+          return signupReviewBypassPayload({
+            challengeId: challenge.id,
+            userId,
+            kristoId: r.user.kristoId,
+            challengeCode: challenge.code,
+            emailFailed: true,
+          });
+        }
+
         await rollbackSignupUser(userId);
 
         if (providerMissing) {
-          console.error("[KRISTO AUTH] verification_email_missing_provider_prod", {
-            email,
-            userId,
-          });
           return NextResponse.json(
             { ok: false, error: "Email service not configured.", reason: "email_not_configured" },
             { status: 503 }
@@ -141,11 +202,6 @@ export async function POST(req: Request) {
       }
 
       if (providerMissing) {
-        console.log("[KRISTO AUTH] verification_email_skipped_dev", {
-          email,
-          userId,
-          reason: emailResult.reason,
-        });
         return NextResponse.json({
           ok: true,
           needsVerification: true,
@@ -166,10 +222,11 @@ export async function POST(req: Request) {
       );
     }
 
-    console.log("[KRISTO AUTH] verification_email_sent", {
+    console.log("KRISTO_SIGNUP_VERIFY_EMAIL_SENT", {
       email,
       userId,
       providerId: emailResult.providerId || null,
+      reviewBypass,
     });
 
     return NextResponse.json({
@@ -181,6 +238,7 @@ export async function POST(req: Request) {
       publicKristoId: r.user.kristoId,
       coreId: userId,
       next: "/verify-code",
+      ...(reviewBypass && isProd ? { reviewBypass: true, reviewVerificationCode: challenge.code } : {}),
     });
   } catch (error: any) {
     const dbRes = authDatabaseErrorResponse(error);
