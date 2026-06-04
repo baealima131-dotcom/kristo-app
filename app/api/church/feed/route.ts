@@ -359,30 +359,111 @@ function enrichScheduleSlotsClaimAvatars(slots: any[]) {
   return slots.map(enrichScheduleSlotClaimAvatar);
 }
 
-function enrichComment<T extends FeedComment>(c: T) {
-  const snapName = String(c.authorName || "").trim();
-  if (snapName) {
-    const snapAvatar = String(c.authorAvatarUri || "").trim();
-    const snapInitial =
-      String(c.authorInitial || "").trim() || snapName.charAt(0).toUpperCase() || "U";
-    console.log("KRISTO_COMMENT_AUTHOR_ENRICH", {
-      commentId: c.id,
-      source: "snapshot",
-    });
-    return {
-      ...c,
-      authorName: snapName,
-      authorAvatarUri: snapAvatar,
-      authorInitial: snapInitial,
-    };
+type CommentActorIdentity = { name: string; avatar: string };
+
+function resolveReadAuthorName(
+  userId: string,
+  snapName: string,
+  identity: CommentActorIdentity,
+  fallback: ReturnType<typeof publicUser>
+) {
+  if (snapName && !commentAuthorNameLooksLikeUserId(snapName, userId)) {
+    return snapName;
   }
+
+  for (const candidate of [identity.name, fallback.authorName]) {
+    const value = String(candidate || "").trim();
+    if (value && !commentAuthorNameLooksLikeUserId(value, userId)) return value;
+  }
+
+  const profileEmail = String(profileMap()[userId]?.email || "").trim();
+  const emailPrefix = profileEmail.includes("@") ? profileEmail.split("@")[0].trim() : "";
+  if (emailPrefix && !commentAuthorNameLooksLikeUserId(emailPrefix, userId)) {
+    return emailPrefix;
+  }
+
+  return "Member";
+}
+
+async function hydrateCommentIdentityMap(comments: FeedComment[]) {
+  const identityByUser = new Map<string, CommentActorIdentity>();
+  const userIds = [
+    ...new Set(comments.map((row) => String(row.createdBy || "").trim()).filter(Boolean)),
+  ];
+
+  await Promise.all(
+    userIds.map(async (userId) => {
+      identityByUser.set(userId, await resolveActorIdentity(userId));
+    })
+  );
+
+  return identityByUser;
+}
+
+async function enrichComment<T extends FeedComment>(
+  c: T,
+  identityByUser?: Map<string, CommentActorIdentity>
+): Promise<
+  T & {
+    authorName: string;
+    authorAvatarUri: string;
+    authorInitial: string;
+  }
+> {
+  const commentId = String(c.id || "").trim();
+  const beforeName = String(c.authorName || "").trim();
+  const hadAvatar = Boolean(String(c.authorAvatarUri || "").trim());
+  const userId = String(c.createdBy || "").trim();
+
+  let identity = identityByUser?.get(userId);
+  if (!identity && userId) {
+    identity = await resolveActorIdentity(userId);
+    identityByUser?.set(userId, identity);
+  }
+  identity = identity || { name: "", avatar: "" };
+
+  const fallback = publicUser(userId);
+  const snapName = beforeName;
+  const snapAvatar = String(c.authorAvatarUri || "").trim();
+  const hasValidSnapName = Boolean(snapName) && !commentAuthorNameLooksLikeUserId(snapName, userId);
+
+  const finalName = resolveReadAuthorName(userId, snapName, identity, fallback);
+  const finalAuthorAvatarUri = firstNonEmptyAvatar(
+    snapAvatar,
+    identity.avatar,
+    fallback.authorAvatarUri
+  );
+  const hasAvatar = Boolean(finalAuthorAvatarUri);
+  const finalInitial =
+    String(c.authorInitial || "").trim() ||
+    finalName.charAt(0).toUpperCase() ||
+    "M";
+
+  let source: "snapshot" | "actorIdentity" | "snapshot+avatarHydrate" = "actorIdentity";
+  if (hasValidSnapName) {
+    if (snapAvatar) {
+      source = "snapshot";
+    } else if (hasAvatar) {
+      source = "snapshot+avatarHydrate";
+    } else {
+      source = "snapshot";
+    }
+  }
+
   console.log("KRISTO_COMMENT_AUTHOR_ENRICH", {
-    commentId: c.id,
-    source: "publicUser",
+    commentId,
+    source,
+    beforeName: beforeName || null,
+    finalName,
+    hadAvatar,
+    hasAvatar,
   });
+
   return {
     ...c,
-    ...publicUser(c.createdBy),
+    authorName: finalName,
+    authorAvatarUri: finalAuthorAvatarUri,
+    authorInitial: finalInitial,
   };
 }
 
@@ -1044,27 +1125,34 @@ async function buildCommentTree(
   const replies = all.filter((x) => !!x.parentCommentId);
   const commentIds = all.map((x) => String(x.id || "")).filter(Boolean);
   const likeMeta = await getCommentLikeMetaForIds(commentIds, viewerUserId);
+  const identityByUser = await hydrateCommentIdentityMap(all);
 
-  return roots.map((root) => {
-    const rootLikes = likeMeta.get(root.id) || { likeCount: 0, likedByMe: false };
-    return {
-      ...enrichComment(root),
-      likeCount: rootLikes.likeCount,
-      likedByMe: rootLikes.likedByMe,
-      replies: replies
-        .filter((r) => r.parentCommentId === root.id)
-        .slice()
-        .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
-        .map((reply) => {
-          const replyLikes = likeMeta.get(reply.id) || { likeCount: 0, likedByMe: false };
-          return {
-            ...enrichComment(reply),
-            likeCount: replyLikes.likeCount,
-            likedByMe: replyLikes.likedByMe,
-          };
-        }),
-    };
-  });
+  return Promise.all(
+    roots.map(async (root) => {
+      const rootLikes = likeMeta.get(root.id) || { likeCount: 0, likedByMe: false };
+      const enrichedRoot = await enrichComment(root, identityByUser);
+      return {
+        ...enrichedRoot,
+        likeCount: rootLikes.likeCount,
+        likedByMe: rootLikes.likedByMe,
+        replies: await Promise.all(
+          replies
+            .filter((r) => r.parentCommentId === root.id)
+            .slice()
+            .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
+            .map(async (reply) => {
+              const replyLikes = likeMeta.get(reply.id) || { likeCount: 0, likedByMe: false };
+              const enrichedReply = await enrichComment(reply, identityByUser);
+              return {
+                ...enrichedReply,
+                likeCount: replyLikes.likeCount,
+                likedByMe: replyLikes.likedByMe,
+              };
+            })
+        ),
+      };
+    })
+  );
 }
 
 function emptyFeedListResponse(churchId: string) {
@@ -1611,8 +1699,10 @@ async function handleFeedPost(req: NextRequest, body: any) {
       totalForPost: discussion.commentCount + discussion.replyCount,
     });
 
+    const identityByUser = await hydrateCommentIdentityMap([comment]);
+
     return ok({
-      comment: enrichComment(comment),
+      comment: await enrichComment(comment, identityByUser),
       commentCount: discussion.commentCount,
       replyCount: discussion.replyCount,
     });
