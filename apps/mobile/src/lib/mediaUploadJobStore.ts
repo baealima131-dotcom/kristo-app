@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { normalizeMediaStatus } from "@/src/lib/mediaStatus";
 
 export type MediaUploadJobPhase =
   | "uploading"
@@ -28,6 +29,7 @@ export type PersistedMediaUploadJob = {
   mediaStatus?: string;
   error?: string;
   pauseReason?: string;
+  durationMs?: number;
   resumableMode: MediaUploadResumableMode;
   chunkSessionId?: string;
   uploadedChunkIndexes?: number[];
@@ -164,6 +166,7 @@ export async function createMediaUploadJob(
     churchId: input.churchId,
     userId: input.userId,
     role: input.role,
+    durationMs: input.durationMs,
     phase: "uploading",
     uploadProgress: 0,
     resumableMode: input.resumableMode || "chunk",
@@ -185,6 +188,280 @@ export function listActiveMediaUploadJobs(jobs: PersistedMediaUploadJob[]) {
   return jobs.filter((job) => job.phase !== "ready");
 }
 
-export async function hydrateMediaUploadJobs() {
-  return readAllJobs();
+export type FeedRowForMediaJobCleanup = {
+  id: string;
+  title?: string;
+  text?: string;
+  body?: string;
+  caption?: string;
+  mediaStatus?: string;
+  videoUrl?: string;
+  videoUri?: string;
+  mediaUrl?: string;
+  source?: string;
+  postOrigin?: string;
+  createdAt?: string;
+};
+
+function normalizeJobText(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeMediaUrl(value: unknown) {
+  return String(value || "").trim().split("?")[0].toLowerCase();
+}
+
+function mediaUploadJobSignature(job: Pick<PersistedMediaUploadJob, "title" | "caption">) {
+  return `${normalizeJobText(job.title)}|${normalizeJobText(job.caption)}`;
+}
+
+function jobMediaTexts(job: Pick<PersistedMediaUploadJob, "title" | "caption">) {
+  return [job.title, job.caption].map(normalizeJobText).filter(Boolean);
+}
+
+function rowMediaTexts(row: FeedRowForMediaJobCleanup) {
+  return [row.title, row.text, row.body, row.caption].map(normalizeJobText).filter(Boolean);
+}
+
+function rowVideoUrl(row: FeedRowForMediaJobCleanup) {
+  return normalizeMediaUrl(row.videoUrl || row.videoUri || row.mediaUrl);
+}
+
+function jobVideoUrl(job: PersistedMediaUploadJob) {
+  return normalizeMediaUrl(job.videoUrl);
+}
+
+export function feedRowMatchesMediaUploadJob(
+  job: PersistedMediaUploadJob,
+  row: FeedRowForMediaJobCleanup
+) {
+  const backendFeedId = String(job.backendFeedId || "").trim();
+  const rowId = String(row.id || "").trim();
+  if (backendFeedId && rowId && backendFeedId === rowId) return true;
+
+  const jobUrl = jobVideoUrl(job);
+  const apiUrl = rowVideoUrl(row);
+  if (jobUrl && apiUrl && jobUrl === apiUrl) return true;
+
+  const jobTexts = jobMediaTexts(job);
+  const rowTexts = rowMediaTexts(row);
+  if (!jobTexts.length || !rowTexts.length) return false;
+
+  return jobTexts.some((jobText) => rowTexts.some((rowText) => jobText === rowText));
+}
+
+export function findMatchingApiMediaRow(
+  job: PersistedMediaUploadJob,
+  feedRows: FeedRowForMediaJobCleanup[]
+) {
+  const backendFeedId = String(job.backendFeedId || "").trim();
+  if (backendFeedId) {
+    const byId = feedRows.find((row) => String(row.id || "").trim() === backendFeedId);
+    if (byId) return byId;
+  }
+
+  return feedRows.find((row) => feedRowMatchesMediaUploadJob(job, row)) || null;
+}
+
+export function buildMediaJobCleanupRowsFromApi(apiRows: any[]): FeedRowForMediaJobCleanup[] {
+  const seen = new Set<string>();
+  const rows: FeedRowForMediaJobCleanup[] = [];
+
+  for (const row of apiRows) {
+    const id = String(row?.id || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    rows.push({
+      id,
+      title: row?.title,
+      text: row?.text,
+      body: row?.body,
+      caption: row?.caption,
+      mediaStatus: row?.mediaStatus,
+      videoUrl: row?.videoUrl,
+      videoUri: row?.videoUri,
+      mediaUrl: row?.mediaUrl,
+      source: row?.source,
+      postOrigin: row?.postOrigin,
+      createdAt: row?.createdAt,
+    });
+  }
+
+  return rows;
+}
+
+/** Hide stale failed cards when the feed row or a published job already exists. */
+export function filterMediaStorageUploadJobs(
+  jobs: PersistedMediaUploadJob[],
+  feedRows: FeedRowForMediaJobCleanup[] = []
+) {
+  const active = listActiveMediaUploadJobs(jobs);
+  const publishedSignatures = new Set(
+    jobs
+      .filter(
+        (job) =>
+          String(job.backendFeedId || "").trim() ||
+          job.phase === "processing" ||
+          job.phase === "uploading"
+      )
+      .map((job) => mediaUploadJobSignature(job))
+  );
+
+  return active.filter((job) => {
+    const backendFeedId = String(job.backendFeedId || "").trim();
+
+    if (job.phase === "failed" && backendFeedId) {
+      return false;
+    }
+
+    if (job.phase === "failed") {
+      if (backendFeedId && feedRows.some((row) => String(row.id || "").trim() === backendFeedId)) {
+        return false;
+      }
+      if (feedRows.some((row) => feedRowMatchesMediaUploadJob(job, row))) {
+        return false;
+      }
+      const sig = mediaUploadJobSignature(job);
+      if (sig.replace("|", "") && publishedSignatures.has(sig)) {
+        const hasPublishedSibling = jobs.some(
+          (other) =>
+            other.jobId !== job.jobId &&
+            mediaUploadJobSignature(other) === sig &&
+            (String(other.backendFeedId || "").trim() || other.phase === "processing")
+        );
+        if (hasPublishedSibling) return false;
+      }
+    }
+
+    return true;
+  });
+}
+
+async function removeStaleFailedMediaUploadJob(
+  job: PersistedMediaUploadJob,
+  reason: string,
+  extra: Record<string, unknown> = {}
+) {
+  const removed = await removeMediaUploadJob(job.jobId);
+  if (!removed) return false;
+  console.log("KRISTO_MEDIA_FAILED_JOB_CLEANED", {
+    jobId: job.jobId,
+    title: job.title,
+    backendFeedId: job.backendFeedId || null,
+    reason,
+    ...extra,
+  });
+  return true;
+}
+
+export async function reconcileStaleMediaUploadJobs(
+  churchId: string,
+  feedRows: FeedRowForMediaJobCleanup[] = []
+) {
+  const cleaned: string[] = [];
+  const recovered: string[] = [];
+
+  if (!feedRows.length) {
+    return { cleaned, recovered };
+  }
+
+  const feedIds = new Set(feedRows.map((row) => String(row.id || "").trim()).filter(Boolean));
+  const jobs = await listMediaUploadJobs(churchId);
+
+  for (const job of jobs) {
+    const backendFeedId = String(job.backendFeedId || "").trim();
+    const feedRow = findMatchingApiMediaRow(job, feedRows);
+    const feedRowId = String(feedRow?.id || "").trim();
+
+    if (job.phase === "failed") {
+      if (backendFeedId && feedIds.has(backendFeedId)) {
+        if (
+          await removeStaleFailedMediaUploadJob(job, "failed-backend-feed-id-in-api", {
+            apiFeedId: backendFeedId,
+          })
+        ) {
+          cleaned.push(job.jobId);
+        }
+        continue;
+      }
+
+      if (feedRow) {
+        if (
+          await removeStaleFailedMediaUploadJob(job, "failed-matches-api-media-item", {
+            apiFeedId: feedRowId,
+            matchBy: backendFeedId && feedRowId === backendFeedId ? "backendFeedId" : "title-or-videoUrl",
+          })
+        ) {
+          cleaned.push(job.jobId);
+        }
+        continue;
+      }
+
+      const sig = mediaUploadJobSignature(job);
+      if (sig.replace("|", "")) {
+        const publishedSibling = jobs.find(
+          (other) =>
+            other.jobId !== job.jobId &&
+            mediaUploadJobSignature(other) === sig &&
+            (String(other.backendFeedId || "").trim() || other.phase === "processing")
+        );
+        if (publishedSibling) {
+          if (
+            await removeStaleFailedMediaUploadJob(job, "stale-failed-duplicate-local-job", {
+              duplicateOf: publishedSibling.jobId,
+              backendFeedId: publishedSibling.backendFeedId || null,
+            })
+          ) {
+            cleaned.push(job.jobId);
+          }
+        }
+      }
+
+      continue;
+    }
+
+    if ((job.phase === "paused" || job.phase === "processing") && feedRow) {
+      const mediaStatus = normalizeMediaStatus(feedRow.mediaStatus);
+      const matchId = feedRowId || backendFeedId;
+      if (mediaStatus === "ready" && matchId) {
+        const removed = await removeMediaUploadJob(job.jobId);
+        if (removed) {
+          cleaned.push(job.jobId);
+          console.log("KRISTO_MEDIA_FAILED_JOB_CLEANED", {
+            jobId: job.jobId,
+            backendFeedId: matchId,
+            reason: "stale-active-job-api-ready",
+          });
+        }
+        continue;
+      }
+
+      if (matchId && (job.phase === "paused" || !backendFeedId)) {
+        await patchMediaUploadJob(job.jobId, {
+          phase: "processing",
+          backendFeedId: matchId,
+          error: "",
+          uploadProgress: 100,
+          mediaStatus,
+          videoUrl: job.videoUrl || feedRow.videoUrl || feedRow.videoUri || feedRow.mediaUrl,
+        });
+        recovered.push(job.jobId);
+        console.log("KRISTO_MEDIA_FAILED_JOB_RECOVERED", {
+          jobId: job.jobId,
+          backendFeedId: matchId,
+          reason: "active-job-matches-api-media-item",
+        });
+      }
+    }
+  }
+
+  return { cleaned, recovered };
+}
+
+export async function hydrateMediaUploadJobs(churchId?: string) {
+  const jobs = await readAllJobs();
+  if (churchId) {
+    await reconcileStaleMediaUploadJobs(churchId);
+  }
+  return jobs;
 }
