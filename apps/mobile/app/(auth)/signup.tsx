@@ -61,8 +61,6 @@ export default function SignupScreen() {
   const { setSession } = useKristoSession();
 
   const [fullName, setFullName] = useState("");
-  const [gender, setGender] = useState<"M" | "F" | "">("");
-  const [genderOpen, setGenderOpen] = useState(false);
   const [age, setAge] = useState<number | null>(null);
   const [ageOpen, setAgeOpen] = useState(false);
   const [country, setCountry] = useState(COUNTRIES[0]);
@@ -92,7 +90,6 @@ export default function SignupScreen() {
   const canForm = useMemo(() => {
     return (
       fullName.trim().length >= 2 &&
-      !!gender &&
       !!age &&
       age >= MIN_AGE &&
       phoneLocal.trim().length >= 6 &&
@@ -104,7 +101,7 @@ export default function SignupScreen() {
       city.trim().length >= 2 &&
       !saving
     );
-  }, [fullName, gender, age, phoneLocal, email, password, confirmPassword, address, city, saving]);
+  }, [fullName, age, phoneLocal, email, password, confirmPassword, address, city, saving]);
 
   const canVerify =
     emailInput.trim().length >= 4 &&
@@ -127,7 +124,6 @@ export default function SignupScreen() {
         phone,
         password,
         fullName: fullName.trim(),
-        gender: gender === "M" ? "MALE" : "FEMALE",
         age,
         dob: dobFromAge(age),
         country: country.name,
@@ -137,6 +133,10 @@ export default function SignupScreen() {
       if (!data?.ok) {
         const serverError = String(data?.error || "").trim();
         const reason = String(data?.reason || "").trim();
+        if (reason === "account_exists" || /already registered|tayari imesajiliwa/i.test(serverError)) {
+          setErr("This email is already registered. Sign in with your password to continue.");
+          return;
+        }
         const status = typeof data?.status === "number" ? ` (HTTP ${data.status})` : "";
         const detail = [serverError, reason && reason !== "http_error" ? `Reason: ${reason}` : ""]
           .filter(Boolean)
@@ -232,7 +232,6 @@ export default function SignupScreen() {
       ).trim();
 
       const finalName = String(p?.fullName || fullName.trim());
-      const profileGender = gender === "M" ? "MALE" : gender === "F" ? "FEMALE" : undefined;
 
       const profileData = await apiPost(
         "/api/auth/profile",
@@ -243,7 +242,6 @@ export default function SignupScreen() {
           email: email.trim(),
           country: country.name,
           city: city.trim(),
-          gender: profileGender,
           dob: age ? dobFromAge(age) : undefined,
         },
         getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" })
@@ -271,7 +269,6 @@ export default function SignupScreen() {
         churchId: "",
         name: finalName,
         displayName: finalName,
-        gender,
         phone,
         email: email.trim(),
         address: address.trim(),
@@ -291,7 +288,6 @@ export default function SignupScreen() {
         address: address.trim(),
         city: city.trim(),
         country: country.name,
-        gender,
         age: age ?? undefined,
       }, finalUserId);
 
@@ -425,25 +421,11 @@ export default function SignupScreen() {
 
             <View style={[s.splitBtn, !canForm && { opacity: 0.45 }]}>
               <Pressable
-                onPress={() => {
-                  setGenderOpen(true);
-                  setAgeOpen(false);
-                }}
-                style={s.splitGender}
-              >
-                <Text style={s.splitSmall}>Gender</Text>
-                <Text style={s.splitGenderText}>{gender || "Select"}</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => {
-                  setAgeOpen(true);
-                  setGenderOpen(false);
-                }}
+                onPress={() => setAgeOpen(true)}
                 style={s.splitAge}
               >
                 <Text style={s.splitSmall}>Age</Text>
-                <Text style={s.splitGenderText}>{age ? `Age ${age}` : "Select"}</Text>
+                <Text style={s.splitAgeText}>{age ? `Age ${age}` : "Select"}</Text>
               </Pressable>
 
               <Pressable onPress={sendVerification} disabled={!canForm} style={s.splitSend}>
@@ -559,29 +541,6 @@ export default function SignupScreen() {
         </View>
       </Modal>
 
-      <Modal visible={genderOpen} transparent animationType="fade" onRequestClose={() => setGenderOpen(false)}>
-        <View style={s.genderModalWrap}>
-          <Pressable style={s.genderBackdrop} onPress={() => setGenderOpen(false)} />
-          <View style={s.genderSheet}>
-            <Text style={s.genderSheetTitle}>Select gender</Text>
-
-            {(["M", "F"] as const).map((g) => (
-              <Pressable
-                key={g}
-                onPress={() => {
-                  setGender(g);
-                  setGenderOpen(false);
-                }}
-                style={[s.genderSheetOption, gender === g && s.genderSheetOptionOn]}
-              >
-                <Text style={[s.genderSheetText, gender === g && s.genderSheetTextOn]}>
-                  {g === "M" ? "Male" : "Female"}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-      </Modal>
       <Modal visible={phoneOpen} transparent animationType="fade" onRequestClose={() => setPhoneOpen(false)}>
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -759,7 +718,7 @@ const s = StyleSheet.create({
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 10 },
   },
-  splitGender: {
+  splitAge: {
     flex: 1,
     borderTopLeftRadius: 24,
     borderBottomLeftRadius: 24,
@@ -771,23 +730,12 @@ const s = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 4,
   },
-  splitAge: {
-    flex: 1,
-    backgroundColor: "rgba(18,24,36,0.98)",
-    borderTopWidth: 1.1,
-    borderBottomWidth: 1.1,
-    borderColor: "rgba(244,201,93,0.22)",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-  },
   splitSmall: {
     color: "rgba(244,201,93,0.72)",
     fontSize: 11,
     fontWeight: "900",
   },
-  splitGenderText: {
+  splitAgeText: {
     color: "rgba(255,255,255,0.88)",
     fontWeight: "900",
     fontSize: 14,
@@ -878,20 +826,6 @@ const s = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.2)", shadowColor: "#F4C95D", shadowOpacity: 0.7, shadowRadius: 24, shadowOffset: { width: 0, height: 12 } },
   btnText: { color: "#0B0F17", fontWeight: "900", fontSize: 15 },
 
-  genderActionMenu: { position: "absolute", left: 18, bottom: 66, width: 150, borderRadius: 22, overflow: "hidden", backgroundColor: "#080C14", borderWidth: 1.4, borderColor: "rgba(244,201,93,0.7)", zIndex: 999, elevation: 30, shadowColor: "#F4C95D", shadowOpacity: 0.55, shadowRadius: 18, shadowOffset: { width: 0, height: 10 } },
-  genderActionOption: { height: 48, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.035)" },
-  genderActionOptionOn: { backgroundColor: "rgba(244,201,93,0.18)" },
-  genderActionText: { color: "white", fontWeight: "900", fontSize: 16 },
-  genderActionTextOn: { color: "#F4C95D" },
-
-  genderModalWrap: { flex: 1, justifyContent: "center", alignItems: "center" },
-  genderBackdrop: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.72)" },
-  genderSheet: { width: "74%", borderRadius: 24, padding: 14, backgroundColor: "#080C14", borderWidth: 1.2, borderColor: "rgba(244,201,93,0.58)", shadowColor: "#F4C95D", shadowOpacity: 0.35, shadowRadius: 18, shadowOffset: { width: 0, height: 10 } },
-  genderSheetTitle: { color: "white", fontWeight: "900", fontSize: 16, marginBottom: 8, textAlign: "center" },
-  genderSheetOption: { height: 46, borderRadius: 16, alignItems: "center", justifyContent: "center", marginTop: 7, backgroundColor: "rgba(255,255,255,0.045)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
-  genderSheetOptionOn: { backgroundColor: "rgba(244,201,93,0.16)", borderColor: "rgba(244,201,93,0.55)" },
-  genderSheetText: { color: "rgba(255,255,255,0.78)", fontWeight: "900", fontSize: 15 },
-  genderSheetTextOn: { color: "#F4C95D" },
   linkBtn: { marginTop: 8, paddingVertical: 8, alignItems: "center" },
   linkText: { color: "rgba(255,255,255,0.75)", fontWeight: "900" },
 }
