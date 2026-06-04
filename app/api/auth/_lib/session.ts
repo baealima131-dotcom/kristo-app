@@ -140,7 +140,13 @@ export async function createUser(params: { email?: string; phone?: string; passw
 
   if (email) {
     const taken = hasDurableStore() ? await dbEmailTaken(email) : await localEmailTaken(email);
-    if (taken) return { ok: false as const, error: "Email tayari imesajiliwa." };
+    if (taken) {
+      return {
+        ok: false as const,
+        error: "This email is already registered. Sign in to continue.",
+        reason: "account_exists" as const,
+      };
+    }
   }
   if (phone) {
     const taken = hasDurableStore() ? await dbPhoneTaken(phone) : await localPhoneTaken(phone);

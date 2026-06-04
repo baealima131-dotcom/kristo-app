@@ -9,6 +9,7 @@ import Constants from "expo-constants";
 import { Platform } from "react-native";
 import type { PlanStatus, SubscriptionPlanKey } from "../../store/paymentsStore";
 import { isSubscriptionBypassEnabled } from "../subscriptionBypass";
+import { shouldEnableRevenueCatDebug } from "../kristoDebugFlags";
 
 const extra =
   (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
@@ -42,6 +43,21 @@ let configuredAppUserId: string | null = null;
 let configurePromise: Promise<boolean> | null = null;
 let loginPromise: Promise<void> | null = null;
 let loginAppUserId: string | null = null;
+let revenueCatDebugRouteEnabled = false;
+
+export function setRevenueCatDebugRouteEnabled(enabled: boolean) {
+  revenueCatDebugRouteEnabled = enabled;
+  applyRevenueCatLogLevel();
+}
+
+function applyRevenueCatLogLevel() {
+  if (!__DEV__) {
+    Purchases.setLogLevel(LOG_LEVEL.WARN);
+    return;
+  }
+  const debug = shouldEnableRevenueCatDebug(revenueCatDebugRouteEnabled ? "payments" : null);
+  Purchases.setLogLevel(debug ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN);
+}
 
 export function getDefaultAppUserId(appUserID?: string) {
   const raw = String(appUserID || "").trim();
@@ -81,7 +97,7 @@ export async function ensurePurchasesConfigured(): Promise<boolean> {
   }
 
   configurePromise = (async () => {
-    Purchases.setLogLevel(LOG_LEVEL.DEBUG);
+    applyRevenueCatLogLevel();
     await Purchases.configure({ apiKey });
     return purchasesIsConfigured();
   })();
@@ -187,6 +203,16 @@ export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
     return await Purchases.getOfferings();
   } catch (error) {
     throw new Error(formatSubscriptionSetupError(error));
+  }
+}
+
+export async function prefetchSubscriptionOfferings(): Promise<boolean> {
+  try {
+    await getSubscriptionOfferings();
+    return true;
+  } catch (error) {
+    console.log("RevenueCat offerings prefetch error", error);
+    return false;
   }
 }
 

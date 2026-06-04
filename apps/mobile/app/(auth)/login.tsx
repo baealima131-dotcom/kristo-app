@@ -6,6 +6,8 @@ import { loadProfileDraft } from "@/src/lib/profileStore";
 import { loadChurchDraft } from "@/src/lib/churchStore";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { resolveActiveChurchFromProfileResponse } from "@/src/lib/churchMembershipSync";
+import { recoverChurchIdFromMembership } from "@/src/lib/churchLockedRecovery";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -95,17 +97,9 @@ export default function LoginScreen() {
       });
 
       const p = profileRes?.profile;
-      const serverChurchId = String(
-        profileRes?.churchId || profileRes?.activeMembership?.churchId || ""
-      ).trim();
-      const serverRole = String(
-        serverChurchId
-          ? profileRes?.role ||
-              profileRes?.churchRole ||
-              profileRes?.activeMembership?.churchRole ||
-              "Member"
-          : "Member"
-      );
+      const resolvedChurch = resolveActiveChurchFromProfileResponse(profileRes);
+      let serverChurchId = resolvedChurch.churchId;
+      let serverRole = serverChurchId ? resolvedChurch.role : "Member";
 
       const publicKristoId = String(
         data.kristoId ||
@@ -117,14 +111,14 @@ export default function LoginScreen() {
       const draft = await loadProfileDraft(finalUserId);
       const churchDraft = await loadChurchDraft(finalUserId);
 
-      const sessionChurchId = serverChurchId || String(churchDraft?.churchId || "").trim();
-      const sessionRole = serverChurchId
+      let sessionChurchId = serverChurchId || String(churchDraft?.churchId || "").trim();
+      let sessionRole = sessionChurchId
         ? serverRole
         : String(churchDraft?.role || serverRole || "Member");
 
       const fullName = String(p?.fullName || draft?.displayName || data.name || data.fullName || "");
 
-      await setSession({
+      const preSession = {
         userId: finalUserId,
         kristoId: publicKristoId,
         role: sessionRole,
@@ -142,6 +136,22 @@ export default function LoginScreen() {
         country: String(p?.country || draft?.country || ""),
         avatarUri: String(p?.avatarUrl || draft?.avatarUri || ""),
         avatarUrl: String(p?.avatarUrl || draft?.avatarUri || ""),
+      } as any;
+
+      if (!sessionChurchId) {
+        await setSession(preSession);
+        const recovered = await recoverChurchIdFromMembership(preSession, setSession);
+        if (recovered.churchId) {
+          sessionChurchId = recovered.churchId;
+          sessionRole = recovered.role;
+        }
+      }
+
+      await setSession({
+        ...preSession,
+        role: sessionRole,
+        churchId: sessionChurchId,
+        churchRole: sessionRole,
       } as any);
 
       const hasProfile = Boolean(fullName.trim());

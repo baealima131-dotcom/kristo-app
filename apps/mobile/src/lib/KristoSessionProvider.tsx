@@ -17,10 +17,11 @@ import { resolveActiveChurchFromProfileResponse, isActiveMembershipStatus } from
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import {
   hydrateSessionOnce,
+  runCoordinatedAppRefresh,
   scheduleCoordinatedAppRefresh,
   seedChurchMediaAccessFromSession,
 } from "./refreshCoordinator";
-import { deferNonCriticalRefresh } from "./firstPaint";
+import { deferStartupWorkAfterHomeFirstFrame } from "./firstPaint";
 import {
   inviteEventTargetsCurrentUser,
   onChurchInviteAccepted,
@@ -52,24 +53,22 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       setSessionState(s);
       setLoading(false);
 
-      // Session opens immediately; profile sync + cache warm run after first paint.
-      deferNonCriticalRefresh(() => {
-        void (async () => {
-          const ready =
-            ((await hydrateSessionOnce(s, (base) =>
-              silentSyncProfile(base, { returnOnly: true })
-            )) as KristoSession | null) || s || null;
-          if (!alive || !ready?.userId) return;
-          seedChurchMediaAccessFromSession({
-            userId: ready.userId,
-            role: ready.role,
-            churchRole: ready.churchRole,
-          });
-          setSessionSync(ready);
-          setSessionState(ready);
-          scheduleCoordinatedAppRefresh(ready, { delayMs: 0 });
-        })();
-      }, 1800);
+      // Session opens immediately; profile sync + cache warm run after Home first frame.
+      deferStartupWorkAfterHomeFirstFrame(async () => {
+        const ready =
+          ((await hydrateSessionOnce(s, (base) =>
+            silentSyncProfile(base, { returnOnly: true })
+          )) as KristoSession | null) || s || null;
+        if (!alive || !ready?.userId) return;
+        seedChurchMediaAccessFromSession({
+          userId: ready.userId,
+          role: ready.role,
+          churchRole: ready.churchRole,
+        });
+        setSessionSync(ready);
+        setSessionState(ready);
+        await runCoordinatedAppRefresh(ready, { deferMs: 0 });
+      }, { reason: "session-profile-hydrate" });
     })();
     return () => {
       alive = false;
