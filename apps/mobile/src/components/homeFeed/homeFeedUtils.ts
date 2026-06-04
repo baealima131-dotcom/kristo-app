@@ -6,6 +6,7 @@ import {
   resolveFeedItemAvatar,
 } from "@/src/lib/homeFeedStore";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
+import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
 
@@ -55,6 +56,43 @@ export function isPhase1HomeFeedPost(item: any): boolean {
 
 export function filterPhase1FeedRows(rows: any[]) {
   return rows.filter((row) => isHomeFeedReadyMediaItem(row) && isPhase1HomeFeedPost(row));
+}
+
+/** Canonical post id for likes, comments, and FlatList keys (strips slot/fiscal suffixes). */
+export function feedRenderKey(item: any) {
+  return baseFeedId(String(item?.id || item?.feedOriginId || ""));
+}
+
+export function readFeedItemLikedByMe(item: any) {
+  return item?.likedByMe === true || item?.liked === true;
+}
+
+export function hydrateFeedRowLikes(
+  rows: any[],
+  serverLikeByPostId: Record<string, { likedByMe: boolean; likeCount: number }>
+) {
+  return rows.map((item) => {
+    const postId = feedRenderKey(item);
+    const server = postId ? serverLikeByPostId[postId] : undefined;
+    const itemLikedByMe = readFeedItemLikedByMe(item);
+    const likedByMe = server?.likedByMe === true || itemLikedByMe;
+    const likeCount = Math.max(Number(item?.likeCount || 0), Number(server?.likeCount || 0));
+
+    if (
+      item?.likedByMe === likedByMe &&
+      item?.liked === likedByMe &&
+      Number(item?.likeCount || 0) === likeCount
+    ) {
+      return item;
+    }
+
+    return {
+      ...item,
+      likedByMe,
+      liked: likedByMe,
+      likeCount,
+    };
+  });
 }
 
 export function mergeFeedRowsDeterministic(backendRows: any[], localRows: any[]) {
@@ -153,17 +191,33 @@ export function resolvePostCaption(item: any) {
   return title || body;
 }
 
-/** Church logo/avatar only; missing church image → caller shows church initial. */
+function pickHomeFeedAvatarUri(raw: unknown) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed || FEED_AVATAR_BLOCKED.test(trimmed)) return "";
+  return homeFeedMediaUrl(trimmed);
+}
+
+/** Media/church posts: prefer author/media/church avatar fields from API enrichment. */
 export function resolveHomeFeedDisplayAvatar(item: any) {
   const churchName = resolveChurchName(item);
   const initial = String(churchName || "K").trim().charAt(0).toUpperCase() || "K";
 
-  const churchSources: unknown[] = [
+  const sources: unknown[] = [
+    item?.authorAvatarUri,
+    item?.mediaAvatarUri,
+    item?.mediaLogoUrl,
+    item?.mediaLogo,
     item?.churchAvatarUri,
     item?.churchAvatarUrl,
     item?.churchAvatar,
-    item?.churchLogoUri,
     item?.churchLogoUrl,
+    item?.churchLogoUri,
+    item?.churchLogo,
+    item?.ownerChurchAvatarUri,
+    item?.profileAvatarUri,
+    item?.actorAvatarUri,
+    item?.avatarUri,
+    item?.avatarUrl,
     item?.churchProfileImage,
     item?.churchImage,
     item?.church?.avatarUri,
@@ -173,14 +227,27 @@ export function resolveHomeFeedDisplayAvatar(item: any) {
     item?.church?.image,
   ];
 
-  for (const raw of churchSources) {
-    const trimmed = String(raw || "").trim();
-    if (!trimmed || FEED_AVATAR_BLOCKED.test(trimmed)) continue;
-    const uri = homeFeedMediaUrl(trimmed);
+  for (const raw of sources) {
+    const uri = pickHomeFeedAvatarUri(raw);
     if (uri) return { uri, initial };
   }
 
   return { uri: "", initial };
+}
+
+export function logHomeFeedIdentityAvatarResolve(
+  item: any,
+  authorName: string,
+  finalAvatarUri: string
+) {
+  console.log("KRISTO_FEED_IDENTITY_AVATAR_RESOLVE", {
+    postId: feedRenderKey(item),
+    authorName,
+    hasAuthorAvatarUri: Boolean(String(item?.authorAvatarUri || "").trim()),
+    hasChurchAvatarUri: Boolean(String(item?.churchAvatarUri || "").trim()),
+    hasMediaLogoUrl: Boolean(String(item?.mediaLogoUrl || item?.mediaLogo || "").trim()),
+    finalAvatarUri,
+  });
 }
 
 export function resolvePostAvatar(item: any) {
@@ -198,7 +265,14 @@ export function resolveImageUri(item: any) {
 }
 
 export function resolvePosterUri(item: any) {
-  return homeFeedMediaUrl(item?.posterUri || item?.thumbnailUri || item?.thumbnailUrl);
+  return homeFeedMediaUrl(
+    item?.posterUri ||
+      item?.videoPosterUri ||
+      item?.thumbnailUri ||
+      item?.thumbnailUrl ||
+      item?.mediaPosterUri ||
+      item?.posterUrl
+  );
 }
 
 export function isVideoPost(item: any) {

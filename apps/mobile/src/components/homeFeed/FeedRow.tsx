@@ -12,7 +12,6 @@ import {
   formatFeedTimestamp,
   isImagePost,
   isVideoPost,
-  resolveHomeFeedDisplayAvatar,
   resolveChurchName,
   resolveImageUri,
   resolveMediaName,
@@ -28,6 +27,7 @@ type Props = {
   isActive: boolean;
   isNext: boolean;
   screenFocused: boolean;
+  likedByMe: boolean;
   liked: boolean;
   likeCount: number;
   visibleDiscussionCount: number;
@@ -46,6 +46,7 @@ export const FeedRow = memo(function FeedRow({
   isActive,
   isNext,
   screenFocused,
+  likedByMe,
   liked,
   likeCount,
   visibleDiscussionCount,
@@ -64,7 +65,6 @@ export const FeedRow = memo(function FeedRow({
   const churchName = resolveChurchName(item);
   const mediaName = resolveMediaName(item);
   const whenLabel = formatFeedTimestamp(item?.createdAt);
-  const { uri: avatarUri, initial } = resolveHomeFeedDisplayAvatar(item);
   const title = resolvePostTitle(item);
   const caption = resolvePostBody(item);
 
@@ -86,6 +86,7 @@ export const FeedRow = memo(function FeedRow({
         {video && videoUri ? (
           mountActivePlayer || mountPreloadPlayer ? (
             <SimpleFeedVideo
+              postId={postId}
               uri={videoUri}
               posterUri={posterUri}
               shouldPlay={mountActivePlayer}
@@ -117,8 +118,7 @@ export const FeedRow = memo(function FeedRow({
 
       <View style={[styles.meta, { bottom: chrome.metaBottom }]} pointerEvents="box-none">
         <FeedIdentity
-          avatarUri={avatarUri}
-          initial={initial}
+          item={item}
           churchName={churchName}
           mediaName={mediaName}
           whenLabel={whenLabel}
@@ -132,6 +132,7 @@ export const FeedRow = memo(function FeedRow({
       </View>
 
       <PostActions
+        likedByMe={likedByMe}
         liked={liked}
         likeCount={likeCount}
         commentCount={visibleDiscussionCount}
@@ -174,7 +175,7 @@ const styles = StyleSheet.create({
   },
   media: {
     flex: 1,
-    backgroundColor: "#0B0F17",
+    backgroundColor: "#03050C",
   },
   mediaFallback: {
     flex: 1,

@@ -747,6 +747,128 @@ function inferOwnershipType(item: any): "church" | "media" | "member" {
   return "member";
 }
 
+function isMediaChurchFeedPost(item: any, ownershipType: string) {
+  const source = String(item?.source || "").toLowerCase();
+  return (
+    ownershipType === "media" ||
+    ownershipType === "church" ||
+    source === "media-upload" ||
+    source.includes("media")
+  );
+}
+
+function resolveFeedAuthorEnrichment(args: {
+  item: any;
+  itemChurchProfile: any;
+  itemMediaProfile: any;
+  ownershipType: "church" | "media" | "member";
+  fallbackAuthor: { authorName: string; authorAvatarUri: string };
+}) {
+  const { item, itemChurchProfile, itemMediaProfile, ownershipType, fallbackAuthor } = args;
+
+  const churchLogoUrl =
+    firstNonEmptyAvatar(
+      item?.churchLogoUrl,
+      item?.churchLogoUri,
+      item?.churchLogo,
+      itemChurchProfile?.churchLogoUrl,
+      itemChurchProfile?.churchLogoUri,
+      itemChurchProfile?.logoUrl,
+      itemChurchProfile?.logoUri
+    ) || undefined;
+
+  const churchAvatarUri =
+    firstNonEmptyAvatar(
+      item?.churchAvatarUri,
+      item?.churchAvatarUrl,
+      item?.churchAvatar,
+      item?.ownerChurchAvatarUri,
+      churchLogoUrl,
+      itemChurchProfile?.avatarUri,
+      itemChurchProfile?.avatarUrl,
+      itemChurchProfile?.profileImage
+    ) || "";
+
+  const mediaLogoUrl =
+    firstNonEmptyAvatar(
+      item?.mediaLogoUrl,
+      item?.mediaLogo,
+      itemMediaProfile?.mediaLogoUrl,
+      itemMediaProfile?.logoUrl,
+      itemMediaProfile?.logoUri
+    ) || undefined;
+
+  const mediaAvatarUri =
+    firstNonEmptyAvatar(
+      item?.mediaAvatarUri,
+      item?.mediaAvatar,
+      mediaLogoUrl,
+      item?.actorAvatarUri,
+      itemMediaProfile?.avatarUri,
+      itemMediaProfile?.avatarUrl,
+      itemMediaProfile?.mediaAvatarUri
+    ) || undefined;
+
+  const authorAvatarCandidate = firstNonEmptyAvatar(
+    item?.authorAvatarUri,
+    fallbackAuthor.authorAvatarUri,
+    item?.profileAvatarUri,
+    item?.avatarUri,
+    item?.profileImage
+  );
+
+  const isMediaPost = isMediaChurchFeedPost(item, ownershipType);
+  const isMediaUpload = String(item?.source || "").toLowerCase() === "media-upload";
+  const hasMediaAvatar = Boolean(mediaAvatarUri || mediaLogoUrl);
+
+  const candidates: Array<{ source: string; uri: string }> = [];
+  const push = (source: string, uri: unknown) => {
+    const value = String(uri || "").trim();
+    if (!value) return;
+    if (candidates.some((c) => c.uri === value)) return;
+    candidates.push({ source, uri: value });
+  };
+
+  if (isMediaPost && isMediaUpload && !hasMediaAvatar) {
+    push("churchAvatarUri", churchAvatarUri);
+    push("churchLogoUrl", churchLogoUrl);
+    push("churchLogo", item?.churchLogo);
+    push("ownerChurchAvatarUri", item?.ownerChurchAvatarUri);
+    push("mediaAvatarUri", mediaAvatarUri);
+    push("mediaLogoUrl", mediaLogoUrl);
+    push("authorAvatarUri", authorAvatarCandidate);
+    push("profileAvatarUri", item?.profileAvatarUri);
+  } else if (isMediaPost) {
+    push("authorAvatarUri", authorAvatarCandidate);
+    push("mediaAvatarUri", mediaAvatarUri);
+    push("mediaLogoUrl", mediaLogoUrl);
+    push("churchAvatarUri", churchAvatarUri);
+    push("churchLogoUrl", churchLogoUrl);
+    push("churchLogo", item?.churchLogo);
+    push("ownerChurchAvatarUri", item?.ownerChurchAvatarUri);
+    push("profileAvatarUri", item?.profileAvatarUri);
+  } else {
+    push("authorAvatarUri", authorAvatarCandidate);
+    push("churchAvatarUri", churchAvatarUri);
+    push("churchLogoUrl", churchLogoUrl);
+    push("mediaAvatarUri", mediaAvatarUri);
+    push("profileAvatarUri", item?.profileAvatarUri);
+  }
+
+  const chosen = candidates[0];
+  const finalAvatarUri = chosen?.uri || "";
+
+  return {
+    authorAvatarUri: finalAvatarUri,
+    churchAvatarUri: churchAvatarUri || undefined,
+    churchLogoUrl,
+    mediaAvatarUri,
+    mediaLogoUrl,
+    finalAvatarUri,
+    source: chosen?.source || "none",
+  };
+}
+
 function isMediaOwnedFeedItem(item: any) {
   const ownership = String(item?.ownershipType || "").trim().toLowerCase();
   if (ownership === "media") return true;
@@ -921,17 +1043,24 @@ async function enrichFeedListItem(
 
   const itemChurchName = String(
     (itemChurchProfile as any)?.name ||
+    item?.churchName ||
+    item?.churchLabel ||
     itemChurchId ||
     "Church"
   ).trim();
 
-  const itemChurchAvatarUri = String(
-    (itemChurchProfile as any)?.avatarUri ||
-    (itemChurchProfile as any)?.avatarUrl ||
-    ""
+  const ownershipType = inferOwnershipType(item);
+  const itemMediaName = String(
+    itemMediaProfile?.mediaName || item?.mediaName || itemChurchName || "Church Media"
   ).trim();
 
-  const ownershipType = inferOwnershipType(item);
+  const authorEnrichment = resolveFeedAuthorEnrichment({
+    item,
+    itemChurchProfile,
+    itemMediaProfile,
+    ownershipType,
+    fallbackAuthor: author,
+  });
 
   let posterUri =
     String(item?.posterUri || item?.videoPosterUri || "").trim() || undefined;
@@ -953,6 +1082,23 @@ async function enrichFeedListItem(
   const videoPosterUri = posterUri || thumbnailUri;
 
   const postId = String(item?.id || "").trim();
+
+  if (postId) {
+    console.log("KRISTO_FEED_AUTHOR_ENRICH", {
+      postId,
+      churchId: itemChurchId,
+      source: authorEnrichment.source,
+      authorName: itemChurchName,
+      mediaName: itemMediaName,
+      authorAvatarUri: authorEnrichment.authorAvatarUri || "",
+      churchAvatarUri: authorEnrichment.churchAvatarUri || "",
+      churchLogoUrl: authorEnrichment.churchLogoUrl || "",
+      mediaAvatarUri: authorEnrichment.mediaAvatarUri || "",
+      mediaLogoUrl: authorEnrichment.mediaLogoUrl || "",
+      finalAvatarUri: authorEnrichment.finalAvatarUri || "",
+    });
+  }
+
   const postIdAliases = commentPostIdAliases(item, postId);
   let discussion = { commentCount: 0, replyCount: 0 };
   if (postId) {
@@ -976,9 +1122,12 @@ async function enrichFeedListItem(
     ownerChurchId: String(item?.ownerChurchId || itemChurchId || ""),
     ownerMediaId: String(item?.ownerMediaId || item?.mediaName || itemMediaProfile?.mediaName || "").trim() || undefined,
     authorName: author.authorName,
-    authorAvatarUri: author.authorAvatarUri,
+    authorAvatarUri: authorEnrichment.finalAvatarUri || authorEnrichment.authorAvatarUri,
     churchName: itemChurchName,
-    churchAvatarUri: itemChurchAvatarUri,
+    churchAvatarUri: authorEnrichment.churchAvatarUri,
+    ...(authorEnrichment.churchLogoUrl ? { churchLogoUrl: authorEnrichment.churchLogoUrl } : {}),
+    ...(authorEnrichment.mediaAvatarUri ? { mediaAvatarUri: authorEnrichment.mediaAvatarUri } : {}),
+    ...(authorEnrichment.mediaLogoUrl ? { mediaLogoUrl: authorEnrichment.mediaLogoUrl } : {}),
     churchCountry: String((itemChurchProfile as any)?.country || "").trim(),
     churchProvince: String((itemChurchProfile as any)?.province || "").trim(),
     churchCity: String((itemChurchProfile as any)?.city || "").trim(),
@@ -987,7 +1136,7 @@ async function enrichFeedListItem(
     churchNormalizedCity: String((itemChurchProfile as any)?.normalizedCity || "").trim(),
     churchPrimaryLanguage: String((itemChurchProfile as any)?.primaryLanguage || "").trim(),
     churchPhoneCountryCode: String((itemChurchProfile as any)?.phoneCountryCode || "").trim(),
-    mediaName: String(itemMediaProfile?.mediaName || item?.mediaName || itemChurchName || "Church Media").trim(),
+    mediaName: itemMediaName,
     scheduleSlots: enrichScheduleSlotsClaimAvatars(
       Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
     ),
@@ -1027,11 +1176,24 @@ async function safeEnrichFeedListItem(
           likedByMe: false,
         }))
       : { likeCount: 0, likedByMe: false };
+    const fallbackAuthor = publicUser(item?.createdBy);
+    const ownershipType = inferOwnershipType(item);
+    const authorEnrichment = resolveFeedAuthorEnrichment({
+      item,
+      itemChurchProfile: null,
+      itemMediaProfile: null,
+      ownershipType,
+      fallbackAuthor,
+    });
     return {
       ...item,
-      ownershipType: inferOwnershipType(item),
-      authorName: publicUser(item?.createdBy).authorName,
-      authorAvatarUri: publicUser(item?.createdBy).authorAvatarUri,
+      ownershipType,
+      authorName: fallbackAuthor.authorName,
+      authorAvatarUri: authorEnrichment.finalAvatarUri || authorEnrichment.authorAvatarUri,
+      churchAvatarUri: authorEnrichment.churchAvatarUri,
+      ...(authorEnrichment.churchLogoUrl ? { churchLogoUrl: authorEnrichment.churchLogoUrl } : {}),
+      ...(authorEnrichment.mediaAvatarUri ? { mediaAvatarUri: authorEnrichment.mediaAvatarUri } : {}),
+      ...(authorEnrichment.mediaLogoUrl ? { mediaLogoUrl: authorEnrichment.mediaLogoUrl } : {}),
       scheduleSlots: enrichScheduleSlotsClaimAvatars(
         Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
       ),

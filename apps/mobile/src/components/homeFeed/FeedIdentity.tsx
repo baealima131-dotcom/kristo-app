@@ -1,25 +1,36 @@
-import React, { memo, useEffect, useState } from "react";
+import React, { memo, useEffect, useMemo, useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
+import {
+  logHomeFeedIdentityAvatarResolve,
+  resolveHomeFeedDisplayAvatar,
+} from "./homeFeedUtils";
 import { HOME_FEED_GOLD, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 
 const AVATAR_SIZE = 58;
 const AVATAR_RING = AVATAR_SIZE + 10;
 
 type Props = {
-  avatarUri: string;
-  initial: string;
+  item: any;
   churchName: string;
   mediaName: string;
   whenLabel: string;
 };
 
 export const FeedIdentity = memo(function FeedIdentity({
-  avatarUri,
-  initial,
+  item,
   churchName,
   mediaName,
   whenLabel,
 }: Props) {
+  const { uri: avatarUri, initial } = useMemo(
+    () => resolveHomeFeedDisplayAvatar(item),
+    [item]
+  );
+
+  useEffect(() => {
+    logHomeFeedIdentityAvatarResolve(item, churchName, avatarUri);
+  }, [item, churchName, avatarUri]);
+
   const [imageFailed, setImageFailed] = useState(false);
   const showPhoto = Boolean(String(avatarUri || "").trim()) && !imageFailed;
   const letter = String(initial || churchName || "K").trim().charAt(0).toUpperCase() || "K";
