@@ -81,6 +81,21 @@ function isSignupPasswordValid(value: string) {
   return true;
 }
 
+type SignupGender = "MALE" | "FEMALE";
+
+function buildSignupPhone(countryCode: string, local: string): string | undefined {
+  const localTrim = local.trim();
+  if (!localTrim) return undefined;
+  return `${countryCode} ${localTrim}`.trim();
+}
+
+function validateOptionalPhoneLocal(local: string): string | null {
+  const trimmed = local.trim();
+  if (!trimmed) return null;
+  if (trimmed.length < 6) return "Enter a valid phone number or leave it blank.";
+  return null;
+}
+
 function getSignupPasswordValidationMessage(password: string, confirmPassword: string) {
   const pwd = String(password || "");
   const hasConfirmPassword = confirmPassword.trim().length > 0;
@@ -111,6 +126,7 @@ export default function SignupScreen() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [gender, setGender] = useState<SignupGender | null>(null);
   const [address, setAddress] = useState("");
   const [city, setCity] = useState("");
   const [step, setStep] = useState<"form" | "verify">("form");
@@ -122,7 +138,10 @@ export default function SignupScreen() {
   const [publicKristoId, setPublicKristoId] = useState("");
   const [signupChallengeId, setSignupChallengeId] = useState("");
 
-  const phone = `${country.code} ${phoneLocal}`.trim();
+  const signupPhone = useMemo(
+    () => buildSignupPhone(country.code, phoneLocal),
+    [country.code, phoneLocal]
+  );
 
   const passwordSaved = useMemo(
     () => isSignupPasswordValid(password) && password === confirmPassword,
@@ -142,14 +161,11 @@ export default function SignupScreen() {
       fullName.trim().length >= 2 &&
       !!age &&
       age >= MIN_AGE &&
-      phoneLocal.trim().length >= 6 &&
       email.trim().includes("@") &&
       passwordSaved &&
-      address.trim().length >= 3 &&
-      city.trim().length >= 2 &&
       !saving
     );
-  }, [fullName, age, phoneLocal, email, passwordSaved, address, city, saving]);
+  }, [fullName, age, email, passwordSaved, saving]);
 
   function onPressSendCode() {
     const pwdMsg = getSignupPasswordValidationMessage(password, confirmPassword);
@@ -207,17 +223,21 @@ export default function SignupScreen() {
     const kristoId = String(publicKristoId || p?.userCode || "").trim();
     const finalName = String(p?.fullName || fullName.trim());
 
+    const profilePayload: Record<string, unknown> = {
+      userCode: kristoId,
+      fullName: finalName,
+      email: email.trim(),
+      country: country.name,
+      dob: age ? dobFromAge(age) : undefined,
+    };
+    if (signupPhone) profilePayload.phone = signupPhone;
+    if (gender === "MALE" || gender === "FEMALE") profilePayload.gender = gender;
+    const cityValue = city.trim();
+    if (cityValue) profilePayload.city = cityValue;
+
     const profileData = await apiPost(
       "/api/auth/profile",
-      {
-        userCode: kristoId,
-        fullName: finalName,
-        phone,
-        email: email.trim(),
-        country: country.name,
-        city: city.trim(),
-        dob: age ? dobFromAge(age) : undefined,
-      },
+      profilePayload,
       getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" })
     );
 
@@ -231,6 +251,9 @@ export default function SignupScreen() {
       return false;
     }
 
+    const addressValue = address.trim();
+    const cityValue = city.trim();
+
     await setSession({
       userId: finalUserId,
       kristoId,
@@ -238,12 +261,13 @@ export default function SignupScreen() {
       churchId: "",
       name: finalName,
       displayName: finalName,
-      phone,
       email: email.trim(),
-      address: address.trim(),
-      city: city.trim(),
       country: country.name,
       age: age ?? undefined,
+      ...(signupPhone ? { phone: signupPhone } : {}),
+      ...(addressValue ? { address: addressValue } : {}),
+      ...(cityValue ? { city: cityValue } : {}),
+      ...(gender === "MALE" || gender === "FEMALE" ? { gender } : {}),
     } as any);
 
     await saveProfileDraft(
@@ -253,12 +277,13 @@ export default function SignupScreen() {
         displayName: finalName,
         bio: "",
         avatarUri: undefined,
-        phone,
         email: email.trim(),
-        address: address.trim(),
-        city: city.trim(),
         country: country.name,
         age: age ?? undefined,
+        ...(signupPhone ? { phone: signupPhone } : {}),
+        ...(addressValue ? { address: addressValue } : {}),
+        ...(cityValue ? { city: cityValue } : {}),
+        ...(gender === "MALE" || gender === "FEMALE" ? { gender } : {}),
       },
       finalUserId
     );
@@ -326,22 +351,32 @@ export default function SignupScreen() {
       setPasswordOpen(true);
       return;
     }
+    const phoneErr = validateOptionalPhoneLocal(phoneLocal);
+    if (phoneErr) {
+      setErr(phoneErr);
+      setPhoneOpen(true);
+      return;
+    }
     if (!canForm) return;
     setErr(null);
     setVerifyInfo(null);
     setSaving(true);
 
     try {
-      const data = await apiPost("/api/auth/sign-up", {
+      const signUpPayload: Record<string, unknown> = {
         email: email.trim(),
-        phone,
         password,
         fullName: fullName.trim(),
         age,
         dob: dobFromAge(age),
         country: country.name,
-        city: city.trim(),
-      });
+      };
+      if (signupPhone) signUpPayload.phone = signupPhone;
+      if (gender === "MALE" || gender === "FEMALE") signUpPayload.gender = gender;
+      const cityValue = city.trim();
+      if (cityValue) signUpPayload.city = cityValue;
+
+      const data = await apiPost("/api/auth/sign-up", signUpPayload);
 
       if (!data?.ok) {
         const serverError = String(data?.error || "").trim();
@@ -544,10 +579,33 @@ export default function SignupScreen() {
               </View>
             ) : null}
 
-            <Text style={s.labelGap}>Address</Text>
+            <Text style={s.labelGap}>Gender (Optional)</Text>
+            <View style={s.genderRow}>
+              {(["MALE", "FEMALE"] as const).map((value) => {
+                const active = gender === value;
+                const label = value === "MALE" ? "Male" : "Female";
+                return (
+                  <Pressable
+                    key={value}
+                    onPress={() => setGender(value)}
+                    style={[s.genderPill, active && s.genderPillOn]}
+                  >
+                    <Text style={[s.genderPillText, active && s.genderPillTextOn]}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+              <Pressable
+                onPress={() => setGender(null)}
+                style={[s.genderPill, gender === null && s.genderPillOn]}
+              >
+                <Text style={[s.genderPillText, gender === null && s.genderPillTextOn]}>Skip</Text>
+              </Pressable>
+            </View>
+
+            <Text style={s.labelGap}>Address (Optional)</Text>
             <TextInput value={address} onChangeText={setAddress} placeholder="Street address" placeholderTextColor="rgba(255,255,255,0.35)" style={s.input} />
 
-            <Text style={s.labelGap}>City</Text>
+            <Text style={s.labelGap}>City (Optional)</Text>
             <TextInput value={city} onChangeText={setCity} placeholder="City" placeholderTextColor="rgba(255,255,255,0.35)" style={s.input} />
 
             <Text style={s.labelGap}>Country</Text>
@@ -559,14 +617,14 @@ export default function SignupScreen() {
 
 
 
-            <Text style={s.labelGap}>Phone number</Text>
+            <Text style={s.labelGap}>Phone number (Optional)</Text>
             <View style={s.phoneRow}>
               <View style={s.codeBox}>
                 <Text style={s.codeText}>{country.code}</Text>
               </View>
               <Pressable onPress={() => setPhoneOpen(true)} style={[s.input, s.phoneInput, s.phoneSelect]}>
                 <Text style={[s.phoneSelectText, !phoneLocal.trim() && s.phoneSelectPlaceholder]}>
-                  {phoneLocal.trim() || "Tap to enter phone number"}
+                  {phoneLocal.trim() || "Tap to add phone (optional)"}
                 </Text>
               </Pressable>
             </View>
@@ -714,7 +772,7 @@ export default function SignupScreen() {
           <Pressable style={s.phoneBackdrop} onPress={() => setPhoneOpen(false)} />
 
           <View style={s.phoneSheet}>
-            <Text style={s.phoneSheetTitle}>Phone number</Text>
+            <Text style={s.phoneSheetTitle}>Phone number (Optional)</Text>
 
             <View style={s.phoneSheetRow}>
               <View style={s.phoneSheetCode}>
@@ -902,6 +960,19 @@ const s = StyleSheet.create({
     marginTop: 3,
     flexShrink: 1,
   },
+
+  genderRow: { marginTop: 6, flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  genderPill: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.02)",
+  },
+  genderPillOn: { borderColor: "rgba(217,179,95,0.55)", backgroundColor: "rgba(217,179,95,0.12)" },
+  genderPillText: { color: MUTED, fontWeight: "800", fontSize: 13 },
+  genderPillTextOn: { color: GOLD },
 
   phoneRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   codeBox: { marginTop: 6, borderWidth: 1, borderColor: "rgba(217,179,95,0.4)", borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: "rgba(217,179,95,0.08)" },
