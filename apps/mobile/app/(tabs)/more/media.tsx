@@ -1914,8 +1914,11 @@ export default function MediaStudioScreen() {
       openSubscriptionSchedulePrompt();
       return;
     }
-    if (!canUseMediaTools) {
-      Alert.alert("Pastor access required", "Only the church Pastor and trusted media hosts can create live schedules.");
+    if (!isActualChurchPastor && !isApprovedMediaHost) {
+      Alert.alert(
+        "Pastor access required",
+        "Only the church Pastor and trusted media hosts can create live schedules."
+      );
       return;
     }
 

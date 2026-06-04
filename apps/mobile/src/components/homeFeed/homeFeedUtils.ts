@@ -89,7 +89,8 @@ export function commentAvatarUrl(raw: unknown) {
   return homeFeedMediaUrl(v);
 }
 
-/** Active church media schedule row (media-live-slots) for Home Feed / Guest Claim / Live ring. */
+/** Active church media schedule row (media-live-slots) for Home Feed / Guest Claim / Live ring.
+ *  V1: visible to church members for claim; ranking pipeline unchanged. */
 export function isMediaLiveSlotsHomeFeedRow(item: any): boolean {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
   if (!isMediaScheduleFeedItem(item)) return false;

@@ -61,6 +61,7 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   evaluateLiveMediaAuthority,
   evaluateLiveStageAuthority,
+  logMediaLiveV1StageAuthority,
   logLiveMediaAuthority,
 } from "@/src/lib/liveMediaAuthority";
 import {
@@ -72,8 +73,11 @@ import {
   enrichScheduleSlotsFromLiveRequests,
   mergeLiveRoomScheduleSlots,
   normalizeLiveScheduleSlots,
+  baseFeedId,
+  isBackendFeedScheduleId,
   parseLiveAllScheduleSlotsJson,
   resolveLiveScheduleFeedId,
+  utf8JsonByteLength,
   cleanFeedLabel,
 } from "@/src/lib/scheduleSlotUtils";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
@@ -1770,6 +1774,9 @@ export default function LiveRoomScreen() {
   const [cameraReady, setCameraReady] = useState(false);
   const [liveKitAccountEpoch, setLiveKitAccountEpoch] = useState(0);
   const prevSessionUserIdRef = useRef("");
+  const liveRoomMountAtRef = useRef(Date.now());
+  const liveRoomBootstrapAtRef = useRef(0);
+  const liveRoomReadyLoggedRef = useRef(false);
   const router = useRouter();
   const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
@@ -1793,7 +1800,89 @@ export default function LiveRoomScreen() {
       ])
     ).start();
   }, []);
-  const params = useLocalSearchParams<{ title?: string; role?: string; layout?: string; pinnedGuestId?: string; membersCount?: string; leadersCount?: string; projectId?: string; assignmentId?: string; preview?: string; entryMode?: string; source?: string; liveMode?: string; liveId?: string; mediaName?: string; audienceRequests?: string; room?: string; pastorUserId?: string; churchName?: string; churchLabel?: string; churchId?: string; claimedByName?: string; liveAllScheduleSlotsJson?: string; feedId?: string; sourceScheduleId?: string; canPublish?: string }>();
+  const params = useLocalSearchParams<{
+    title?: string;
+    role?: string;
+    layout?: string;
+    pinnedGuestId?: string;
+    membersCount?: string;
+    leadersCount?: string;
+    projectId?: string;
+    assignmentId?: string;
+    preview?: string;
+    entryMode?: string;
+    source?: string;
+    liveMode?: string;
+    liveId?: string;
+    mediaName?: string;
+    audienceRequests?: string;
+    room?: string;
+    pastorUserId?: string;
+    churchName?: string;
+    churchLabel?: string;
+    churchId?: string;
+    claimedByName?: string;
+    liveAllScheduleSlotsJson?: string;
+    feedId?: string;
+    sourceScheduleId?: string;
+    localScheduleId?: string;
+    canPublish?: string;
+  }>();
+
+  const initialRouteScheduleSlots = useMemo(
+    () => parseLiveAllScheduleSlotsJson((params as any).liveAllScheduleSlotsJson),
+    [(params as any).liveAllScheduleSlotsJson]
+  );
+
+  useEffect(() => {
+    liveRoomMountAtRef.current = Date.now();
+    liveRoomReadyLoggedRef.current = false;
+    const routeSlotCount = initialRouteScheduleSlots.length;
+    const routeSlotsRaw = String((params as any)?.liveAllScheduleSlotsJson || "");
+    const routeSlotsByteLen = utf8JsonByteLength(routeSlotsRaw);
+    console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_SIZE", {
+      byteLen: routeSlotsByteLen,
+      charLen: routeSlotsRaw.length,
+      slotCount: routeSlotCount,
+    });
+    const ringNavAt = Number((globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ || 0);
+    console.log("KRISTO_LIVE_ROOM_MOUNT_START", {
+      at: liveRoomMountAtRef.current,
+      sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
+    });
+
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const paintAt = Date.now();
+        console.log("KRISTO_LIVE_ROOM_FIRST_PAINT", {
+          at: paintAt,
+          sinceMountMs: paintAt - liveRoomMountAtRef.current,
+          sinceRingNavMs: ringNavAt ? paintAt - ringNavAt : null,
+        });
+      });
+    });
+
+    console.log("KRISTO_LIVE_ROOM_PARAMS_RECEIVED", {
+      feedId: String((params as any)?.feedId || ""),
+      liveId: String((params as any)?.liveId || ""),
+      localScheduleId: String((params as any)?.localScheduleId || ""),
+      sourceScheduleId: String((params as any)?.sourceScheduleId || ""),
+      churchId: String((params as any)?.churchId || ""),
+      liveMode: String((params as any)?.liveMode || ""),
+      entryMode: String((params as any)?.entryMode || ""),
+      hasRouteSlots: routeSlotCount > 0,
+      routeSlotCount,
+      isBackendFeedId: isBackendFeedScheduleId(
+        String((params as any)?.feedId || (params as any)?.liveId || "")
+      ),
+    });
+
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, []);
 
   useEffect(() => {
     AudioSession.configureAudio({
@@ -1803,12 +1892,14 @@ export default function LiveRoomScreen() {
     }).catch(() => {});
     AudioSession.startAudioSession().catch(() => {});
 
+    const fastOpenSlotsRaw = String((params as any)?.liveAllScheduleSlotsJson || "");
     console.log("KRISTO_LIVE_ROOM_FAST_OPEN", {
       liveId: String((params as any)?.liveId || ""),
       feedId: String((params as any)?.feedId || ""),
       sourceScheduleId: String((params as any)?.sourceScheduleId || ""),
       churchId: String((params as any)?.churchId || session?.churchId || ""),
-      routeSlotJsonLen: String((params as any)?.liveAllScheduleSlotsJson || "").length,
+      routeSlotJsonLen: fastOpenSlotsRaw.length,
+      routeSlotByteLen: utf8JsonByteLength(fastOpenSlotsRaw),
       currentSlotNumber: String((params as any)?.currentSlotNumber || ""),
       claimedSlotNumber: String((params as any)?.claimedSlotNumber || ""),
       canPublish: String((params as any)?.canPublish || ""),
@@ -2445,32 +2536,72 @@ export default function LiveRoomScreen() {
   const [runtimeSlotOverrides, setRuntimeSlotOverrides] = useState<Record<string, any>>({});
 
   const liveScheduleFeedId = useMemo(() => {
+    const paramFeedId = String((params as any)?.feedId || "").trim();
+    const paramSourceId = String((params as any)?.sourceScheduleId || "").trim();
+    const paramLiveId = String((params as any)?.liveId || "").trim();
+
+    for (const candidate of [paramFeedId, paramSourceId, paramLiveId]) {
+      if (!isBackendFeedScheduleId(candidate)) continue;
+      const canonical = baseFeedId(candidate) || candidate;
+      console.log("KRISTO_SCHEDULE_ID_NORMALIZED", {
+        context: "live-room",
+        seedIds: {
+          sourceScheduleId: paramSourceId,
+          feedId: paramFeedId,
+          liveId: paramLiveId,
+          localScheduleId: String((params as any)?.localScheduleId || ""),
+        },
+        canonicalId: canonical,
+        source: "route-feed-id",
+      });
+      return canonical;
+    }
+
     const rows = feedList() as any[];
     const resolved = resolveLiveScheduleFeedId(params as Record<string, unknown>, rows);
     if (resolved) {
       console.log("KRISTO_SCHEDULE_ID_NORMALIZED", {
         context: "live-room",
         seedIds: {
-          sourceScheduleId: String((params as any)?.sourceScheduleId || ""),
-          feedId: String((params as any)?.feedId || ""),
-          liveId: String((params as any)?.liveId || ""),
+          sourceScheduleId: paramSourceId,
+          feedId: paramFeedId,
+          liveId: paramLiveId,
+          localScheduleId: String((params as any)?.localScheduleId || ""),
         },
         canonicalId: resolved,
+        source: "feed-store-resolve",
       });
     }
     return resolved;
   }, [params, feedScheduleTick]);
 
   const routeScheduleSlots = useMemo(() => {
-    const fromJson = parseLiveAllScheduleSlotsJson((params as any).liveAllScheduleSlotsJson);
-    if (fromJson.length) return fromJson;
+    if (initialRouteScheduleSlots.length) return initialRouteScheduleSlots;
 
     const fromFeedStore = liveScheduleFeedId
       ? feedScheduleSlotsForLive(liveScheduleFeedId)
       : [];
 
     return fromFeedStore;
-  }, [params, liveScheduleFeedId, feedScheduleTick]);
+  }, [initialRouteScheduleSlots, liveScheduleFeedId, feedScheduleTick]);
+
+  // Preserve ring/nav slot before time-based stage resolution (fast lean route open).
+  const routeCurrentSlotNumber = useMemo(() => {
+    const fromCurrent = Number(String((params as any)?.currentSlotNumber || "").trim());
+    if (Number.isFinite(fromCurrent) && fromCurrent > 0) return fromCurrent;
+
+    const fromPreferred = Number(String((params as any)?.preferredSlotNumber || "").trim());
+    if (Number.isFinite(fromPreferred) && fromPreferred > 0) return fromPreferred;
+
+    const fromClaimed = Number(String((params as any)?.claimedSlotNumber || "").trim());
+    if (Number.isFinite(fromClaimed) && fromClaimed > 0) return fromClaimed;
+
+    return 0;
+  }, [
+    (params as any)?.currentSlotNumber,
+    (params as any)?.preferredSlotNumber,
+    (params as any)?.claimedSlotNumber,
+  ]);
 
   const mergedScheduleSlots = useMemo(() => {
     const feedSlots = liveScheduleFeedId ? feedScheduleSlotsForLive(liveScheduleFeedId) : [];
@@ -2511,6 +2642,69 @@ export default function LiveRoomScreen() {
   const backendScheduleReady =
     mergedScheduleSlots.length > 0 ||
     routeScheduleSlots.length > 0;
+
+  useEffect(() => {
+    if (isMediaInstantLive) return;
+    if (liveRoomBootstrapAtRef.current > 0) return;
+    liveRoomBootstrapAtRef.current = Date.now();
+    console.log("KRISTO_LIVE_ROOM_BOOTSTRAP_START", {
+      liveScheduleFeedId,
+      routeFeedId: String((params as any)?.feedId || (params as any)?.liveId || ""),
+      routeSlotCount: routeScheduleSlots.length,
+      mergedSlotCount: mergedScheduleSlots.length,
+    });
+  }, [
+    isMediaInstantLive,
+    liveScheduleFeedId,
+    routeScheduleSlots.length,
+    mergedScheduleSlots.length,
+    (params as any)?.feedId,
+    (params as any)?.liveId,
+  ]);
+
+  useEffect(() => {
+    if (!backendScheduleReady || liveRoomReadyLoggedRef.current) return;
+    liveRoomReadyLoggedRef.current = true;
+    const bootstrapAt = liveRoomBootstrapAtRef.current || liveRoomMountAtRef.current;
+    console.log("KRISTO_LIVE_ROOM_BOOTSTRAP_DONE", {
+      durationMs: Date.now() - bootstrapAt,
+      routeSlotCount: routeScheduleSlots.length,
+      mergedSlotCount: mergedScheduleSlots.length,
+      backendSlotCount: backendScheduleSlots.length,
+    });
+    const readySource =
+      routeScheduleSlots.length > 0 && backendScheduleSlots.length === 0
+        ? "route-slots"
+        : backendScheduleSlots.length > 0
+          ? "backend"
+          : routeScheduleSlots.length > 0
+            ? "route-slots"
+            : "backend";
+
+    console.log("KRISTO_LIVE_ROOM_READY", {
+      source: readySource,
+      liveScheduleFeedId,
+      liveBridgeId: String(
+        liveScheduleFeedId ||
+          (params as any)?.liveId ||
+          (params as any)?.feedId ||
+          (params as any)?.sourceScheduleId ||
+          ""
+      ),
+      slotCount: mergedScheduleSlots.length,
+      routeSlotCount: routeScheduleSlots.length,
+      backendSlotCount: backendScheduleSlots.length,
+    });
+  }, [
+    backendScheduleReady,
+    routeScheduleSlots.length,
+    mergedScheduleSlots.length,
+    backendScheduleSlots.length,
+    liveScheduleFeedId,
+    (params as any)?.feedId,
+    (params as any)?.liveId,
+    (params as any)?.sourceScheduleId,
+  ]);
 
   const getRuntimeSlotKey = (slot: any, index = 0) =>
     String(slot?.id || slot?.slot || slot?.slotNumber || slot?.order || index + 1);
@@ -2572,8 +2766,84 @@ export default function LiveRoomScreen() {
 
     if (nextAfterExpired) return nextAfterExpired;
 
+    // Fast-open: lean route slots may lack a valid live window — honor route currentSlotNumber.
+    if (routeCurrentSlotNumber > 0 && (routeScheduleSlots.length > 0 || allSlots.length > 0)) {
+      const byRouteNumber = allSlots.find(
+        (slot: any) => Number(slot?.slot || slot?.slotNumber || 0) === routeCurrentSlotNumber
+      );
+      if (byRouteNumber) return byRouteNumber;
+
+      const routeIndex = Math.max(0, routeCurrentSlotNumber - 1);
+      const routeSlot =
+        routeScheduleSlots.find(
+          (slot: any) =>
+            Number(slot?.slot || slot?.slotNumber || slot?.order || 0) === routeCurrentSlotNumber
+        ) || routeScheduleSlots[routeIndex];
+
+      if (routeSlot) {
+        const n = routeCurrentSlotNumber;
+        const win = getScheduleSlotWindow(routeSlot, routeIndex);
+        const routeOwnerId = String(
+          routeSlot?.claimedByUserId ||
+            routeSlot?.claimedBy?.userId ||
+            (params as any)?.claimedByUserId ||
+            ""
+        ).trim();
+        return {
+          ...routeSlot,
+          slot: n,
+          slotNumber: n,
+          order: Number(routeSlot?.order || n),
+          startMs: Number(routeSlot?.startMs || win.startMs || 0),
+          endMs: Number(routeSlot?.endMs || win.endMs || 0),
+          name: String(
+            routeSlot?.claimedByName ||
+              routeSlot?.name ||
+              routeSlot?.title ||
+              (params as any)?.claimedByName ||
+              `Guest ${n}`
+          ),
+          avatar: resolveParticipantAvatarUri(routeSlot),
+          claimedByUserId: routeOwnerId,
+          approved: true,
+        };
+      }
+
+      const routeOwnerId = String((params as any)?.claimedByUserId || "").trim();
+      if (routeOwnerId) {
+        const scheduleStartMs = Number((params as any)?.scheduleStartMs || 0);
+        const scheduleEndMs = Number((params as any)?.scheduleEndMs || 0);
+        return {
+          slot: routeCurrentSlotNumber,
+          slotNumber: routeCurrentSlotNumber,
+          order: routeCurrentSlotNumber,
+          startMs: scheduleStartMs > 0 ? scheduleStartMs : now,
+          endMs:
+            scheduleEndMs > scheduleStartMs
+              ? scheduleEndMs
+              : scheduleStartMs > 0
+                ? scheduleStartMs + 600000
+                : now + 600000,
+          name: String((params as any)?.claimedByName || (params as any)?.title || `Guest ${routeCurrentSlotNumber}`),
+          avatar: normalizeLiveImageUri((params as any)?.claimedByAvatar || ""),
+          claimedByUserId: routeOwnerId,
+          approved: true,
+        };
+      }
+    }
+
     return null;
-  }, [authorityStageSlots, liveNowMs, memberAvatarByUserId, resolvedAvatarByUserId, liveProfileAvatarUri, session?.userId, params]);
+  }, [
+    authorityStageSlots,
+    liveNowMs,
+    memberAvatarByUserId,
+    resolvedAvatarByUserId,
+    liveProfileAvatarUri,
+    session?.userId,
+    params,
+    routeCurrentSlotNumber,
+    routeScheduleSlots,
+  ]);
 
   const canAdvanceScheduleRuntime =
     roleLooksLikeHost;
@@ -2682,11 +2952,11 @@ export default function LiveRoomScreen() {
     /* debug log removed for live performance */
   }, [liveNowMs, currentMainStageSlot, activeStageSlots, claimedScheduleCards]);
 
-  const rawRouteCanPublish =
-    String((params as any).canPublish || "") === "1" ||
+  const rawRouteCanPublishMic =
+    String((params as any).canPublishMic || "") === "1" ||
     String((params as any).mediaSlotPublisher || "") === "1" ||
-    String((params as any).canPublishCamera || "") === "1" ||
-    String((params as any).canPublishMic || "") === "1";
+    String((params as any).canPublish || "") === "1";
+  const rawRouteCanPublishCamera = String((params as any).canPublishCamera || "") === "1";
 
   const routeMediaHostIds = String((params as any).mediaHostIds || "")
     .split(/[|,\s]+/g)
@@ -2698,14 +2968,16 @@ export default function LiveRoomScreen() {
 
   // Never trust Pastor/Host role from another church/media.
   // For scheduled media live, route publish is valid only for this live owner/media hosts.
+  // V1 scheduled: route hints may prime mic session only — camera follows active-slot ownership.
   const routeCanPublish =
     isMediaInstantLive
-      ? rawRouteCanPublish
-      : rawRouteCanPublish &&
+      ? rawRouteCanPublishMic || rawRouteCanPublishCamera
+      : rawRouteCanPublishMic &&
         (isPastorLiveOwner || isMediaOwnerHost || isDeclaredMediaHostForThisLive);
 
+  const runtimeCurrentSlotNumber = Number((currentMainStageSlot as any)?.slot || 0);
   const rawCurrentSlotOwnerId = String((currentMainStageSlot as any)?.claimedByUserId || "").trim();
-  const rawCurrentSlotNumber = Number((currentMainStageSlot as any)?.slot || 0);
+  const rawCurrentSlotNumber = runtimeCurrentSlotNumber;
 
   // Prevent backend refresh flicker from destroying live stage.
   // Keep last valid slot briefly while schedule refresh hydrates again.
@@ -2721,6 +2993,16 @@ export default function LiveRoomScreen() {
       ownerId: rawCurrentSlotOwnerId,
       updatedAt: Date.now(),
     };
+  } else if (routeCurrentSlotNumber > 0 && routeScheduleSlots.length > 0) {
+    stableCurrentSlotRef.current = {
+      slot: routeCurrentSlotNumber,
+      ownerId: String(
+        rawCurrentSlotOwnerId ||
+          (params as any)?.claimedByUserId ||
+          ""
+      ).trim(),
+      updatedAt: Date.now(),
+    };
   }
 
   const stableAgeMs =
@@ -2731,13 +3013,20 @@ export default function LiveRoomScreen() {
     stableCurrentSlotRef.current.slot > 0 &&
     stableAgeMs < 15000;
 
-  const currentSlotNumber = shouldHoldPreviousSlot
+  const resolvedSlotNumber = shouldHoldPreviousSlot
     ? stableCurrentSlotRef.current.slot
-    : rawCurrentSlotNumber;
+    : rawCurrentSlotNumber > 0
+      ? rawCurrentSlotNumber
+      : routeCurrentSlotNumber;
+
+  const currentSlotNumber = resolvedSlotNumber;
 
   const currentSlotOwnerId = shouldHoldPreviousSlot
     ? stableCurrentSlotRef.current.ownerId
-    : rawCurrentSlotOwnerId;
+    : rawCurrentSlotOwnerId ||
+      (resolvedSlotNumber === routeCurrentSlotNumber
+        ? String((params as any)?.claimedByUserId || "").trim()
+        : "");
 
   const isMyScheduledLiveTurn =
     !isMediaInstantLive &&
@@ -2779,6 +3068,7 @@ export default function LiveRoomScreen() {
 
   const myClaimedSlotNumber = Number((myClaimedStageSlot as any)?.slot || 0);
 
+  // V1: every non-expired claimed slot grants mic (multiple claims per user allowed).
   const myClaimedMicSlotNumbers = useMemo(() => {
     if (isMediaInstantLive || !currentUserId) return [] as number[];
 
@@ -2794,8 +3084,8 @@ export default function LiveRoomScreen() {
         };
       })
       .filter((slot: any) => slot.claimedByUserId === currentUserId)
-      .filter((slot: any) => slot.slot >= 1 && slot.slot <= 9)
-      .filter((slot: any) => Number(slot.endMs) > liveNowMs)
+      .filter((slot: any) => slot.slot >= 1)
+      .filter((slot: any) => !Number(slot.endMs) || Number(slot.endMs) > liveNowMs)
       .map((slot: any) => Number(slot.slot));
   }, [authorityStageSlots, currentUserId, liveNowMs, isMediaInstantLive]);
 
@@ -2850,6 +3140,7 @@ export default function LiveRoomScreen() {
     pastorPermanentMicNow,
     mediaHostPermanentMicNow,
     userOwnsCurrentActiveSlot,
+    userHasClaimedScheduleSlot,
     userIsAmongFirstNineClaimedSlots,
     canPublishClaimedMicNow,
     canPublishClaimedCameraNow,
@@ -2866,21 +3157,27 @@ export default function LiveRoomScreen() {
   // Sticky for the live session: token fetch must not follow per-tick camera/slot flags.
   const [liveKitSessionMayPublish, setLiveKitSessionMayPublish] = useState(
     () =>
-      routeCanPublish ||
-      pastorPermanentMicNow ||
-      mediaHostPermanentMicNow ||
-      isDeclaredMediaHostForThisLive
+      isMediaInstantLive
+        ? routeCanPublish
+        : pastorPermanentMicNow ||
+          mediaHostPermanentMicNow ||
+          isDeclaredMediaHostForThisLive ||
+          myClaimedMicSlotNumbers.length > 0
   );
 
   useEffect(() => {
     setLiveKitSessionMayPublish((prev) => {
       if (prev) return true;
-      return (
-        canPublishClaimedMicNow ||
-        canPublishLiveVideoNow ||
-        routeCanPublish ||
-        (isMediaInstantLive && (isPastorLiveOwner || roleLooksLikeHost))
-      );
+      if (isMediaInstantLive) {
+        return (
+          canPublishClaimedMicNow ||
+          canPublishLiveVideoNow ||
+          routeCanPublish ||
+          isPastorLiveOwner ||
+          roleLooksLikeHost
+        );
+      }
+      return canPublishClaimedMicNow || canPublishLiveVideoNow;
     });
   }, [
     canPublishClaimedMicNow,
@@ -2900,11 +3197,36 @@ export default function LiveRoomScreen() {
   const mountLiveKitPublisherStage = canPublishClaimedMicNow || canPublishLiveVideoNow;
 
   useEffect(() => {
+    logMediaLiveV1StageAuthority("live-room", liveStageAuthority, {
+      isMediaInstantLive,
+      currentSlotNumber,
+      currentSlotOwnerId,
+      currentUserId,
+      claimedMicSlotNumbers: myClaimedMicSlotNumbers,
+      routeCurrentSlotNumber,
+      userHasClaimedScheduleSlot,
+    });
+    console.log("KRISTO_LIVE_CURRENT_SLOT_RESOLVED", {
+      routeCurrentSlotNumber,
+      runtimeCurrentSlotNumber,
+      resolvedSlotNumber: currentSlotNumber,
+      currentSlotOwnerId,
+      currentUserId,
+      userOwnsCurrentActiveSlot,
+      hasRouteSlots: routeScheduleSlots.length > 0,
+      currentMainStageSlot: currentMainStageSlot
+        ? {
+            slot: currentMainStageSlot.slot,
+            claimedByUserId: currentMainStageSlot.claimedByUserId,
+          }
+        : null,
+    });
     console.log("KRISTO_LIVE_AUTH_RULES", {
       isMediaInstantLive,
       pastorPermanentMicNow,
       mediaHostPermanentMicNow,
       userOwnsCurrentActiveSlot,
+      userHasClaimedScheduleSlot,
       userIsAmongFirstNineClaimedSlots,
       canPublishClaimedMicNow,
       canPublishClaimedCameraNow,
@@ -2972,21 +3294,25 @@ export default function LiveRoomScreen() {
     pastorPermanentMicNow,
     mediaHostPermanentMicNow,
     userOwnsCurrentActiveSlot,
+    userHasClaimedScheduleSlot,
     userIsAmongFirstNineClaimedSlots,
     canPublishClaimedMicNow,
     canPublishClaimedCameraNow,
     canPublishLiveVideoNow,
     liveKitSessionMayPublish,
+    liveStageAuthority,
+    myClaimedMicSlotNumbers,
     mountLiveKitPublisherStage,
     liveKitMicOverrideReady,
     scheduledPublisherSlotReady,
     currentUserId,
-    myClaimedMicSlotNumbers,
     myClaimedSlotNumber,
     myOwnClaimedSlotNumber,
     currentSlotNumber,
     currentSlotOwnerId,
     currentMainStageSlot,
+    routeCurrentSlotNumber,
+    runtimeCurrentSlotNumber,
     liveMicPublisherReady,
     canUseLiveMic,
   ]);
@@ -3577,25 +3903,35 @@ export default function LiveRoomScreen() {
   );
 
   useEffect(() => {
-    const id = String(liveScheduleFeedId || (params as any).liveId || liveBridgeId || "").trim();
-    if (!id || isMediaInstantLive) return;
+    if (isMediaInstantLive) return;
+
+    const hydrateFeedId = String(liveScheduleFeedId || "").trim();
+    if (!hydrateFeedId || !isBackendFeedScheduleId(hydrateFeedId)) {
+      console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_SKIP", {
+        reason: "no_backend_feed_id",
+        liveScheduleFeedId: hydrateFeedId,
+        routeFeedId: String((params as any)?.feedId || ""),
+        localScheduleId: String((params as any)?.localScheduleId || ""),
+        hasRouteSlots: routeScheduleSlots.length > 0,
+      });
+      return;
+    }
 
     const hasRouteSlots = routeScheduleSlots.length > 0;
     let cancelled = false;
-    let slotsSig = hasRouteSlots
-      ? JSON.stringify(routeScheduleSlots)
-      : "";
+    let slotsSig = hasRouteSlots ? JSON.stringify(routeScheduleSlots) : "";
 
-    async function hydrateScheduleFromFeed(source: "immediate" | "poll") {
+    async function hydrateScheduleFromFeed(source: "immediate" | "poll" | "background") {
       if (hasRouteSlots && source === "poll") return;
 
       try {
         const res: any = await apiGet(
-          `/api/church/feed?id=${encodeURIComponent(id)}`,
+          `/api/church/feed?id=${encodeURIComponent(hydrateFeedId)}`,
           { headers: liveApiHeaders as any },
           {
             screen: "LiveRoomSchedule",
-            throttleMs: source === "immediate" ? 0 : hasRouteSlots ? 120000 : 45000,
+            throttleMs:
+              source === "background" ? 120000 : source === "immediate" ? 0 : hasRouteSlots ? 120000 : 45000,
           }
         );
 
@@ -3605,9 +3941,9 @@ export default function LiveRoomScreen() {
         );
 
         if (cancelled || !slots.length) {
-          if (!cancelled && source === "immediate") {
+          if (!cancelled) {
             console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
-              feedId: id,
+              feedId: hydrateFeedId,
               source,
               hadRouteSlots: routeScheduleSlots.length,
             });
@@ -3616,38 +3952,59 @@ export default function LiveRoomScreen() {
         }
 
         const sig = JSON.stringify(slots);
-        if (source === "poll" && sig === slotsSig) return;
+        if ((source === "poll" || source === "background") && sig === slotsSig) return;
         slotsSig = sig;
 
         setBackendScheduleSlots(slots);
         console.log("KRISTO_LIVE_SCHEDULE_HYDRATED", {
-          feedId: id,
+          feedId: hydrateFeedId,
           source,
           slotCount: slots.length,
           claimedCount: slots.filter((slot: any) => String(slot?.claimedByUserId || "").trim()).length,
+          hadRouteSlots: hasRouteSlots,
         });
       } catch (e: any) {
+        const status = Number(e?.status || e?.response?.status || 0);
         console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_ERROR", {
-          feedId: id,
+          feedId: hydrateFeedId,
           source,
           message: String(e?.message || e),
+          status: status || null,
+          hadRouteSlots: hasRouteSlots,
+        });
+        console.log("KRISTO_LIVE_ROOM_BACKEND_ERROR", {
+          endpoint: `/api/church/feed?id=${hydrateFeedId}`,
+          feedId: hydrateFeedId,
+          source,
+          status: status || null,
+          message: String(e?.message || e),
+          hadRouteSlots: hasRouteSlots,
+          continuesWithRouteSlots: hasRouteSlots,
         });
       }
     }
 
+    if (hasRouteSlots) {
+      const timer = setTimeout(() => {
+        void hydrateScheduleFromFeed("background");
+      }, 0);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
+    }
+
     void hydrateScheduleFromFeed("immediate");
 
-    const stopPoll = hasRouteSlots
-      ? undefined
-      : startAdaptiveLivePolling({
-          screen: "LiveRoomSchedule",
-          enabled: isFocused,
-          activeMs: 90000,
-          idleMs: 120000,
-          onTick: async () => {
-            await hydrateScheduleFromFeed("poll");
-          },
-        });
+    const stopPoll = startAdaptiveLivePolling({
+      screen: "LiveRoomSchedule",
+      enabled: isFocused,
+      activeMs: 90000,
+      idleMs: 120000,
+      onTick: async () => {
+        await hydrateScheduleFromFeed("poll");
+      },
+    });
 
     return () => {
       cancelled = true;
@@ -3951,9 +4308,20 @@ export default function LiveRoomScreen() {
     if (!liveBridgeId || isMediaInstantLive) return;
     let cancelled = false;
 
-    void fetchLightLiveState(liveApiHeaders as any, "LiveRoomImmediate", liveBridgeId).then((patch) => {
-      if (!cancelled) applyBackendLivePatch(patch, "immediate");
-    });
+    void fetchLightLiveState(liveApiHeaders as any, "LiveRoomImmediate", liveBridgeId)
+      .then((patch) => {
+        if (!cancelled) applyBackendLivePatch(patch, "immediate");
+      })
+      .catch((e: any) => {
+        const status = Number(e?.status || e?.response?.status || 0);
+        console.log("KRISTO_LIVE_ROOM_BACKEND_ERROR", {
+          endpoint: `/api/church/live?lite=1&liveId=${liveBridgeId}`,
+          liveId: liveBridgeId,
+          source: "LiveRoomImmediate",
+          status: status || null,
+          message: String(e?.message || e),
+        });
+      });
 
     return () => {
       cancelled = true;
@@ -6189,7 +6557,10 @@ return (
 
             <View style={[s.vipSoloHero as any, requestListOpen ? s.vipSoloHeroCompact as any : s.vipSoloHeroExpanded as any]}>
               <View style={s.vipSoloHeroGlow as any} />
-              {(roleLooksLikeHost || canPublishLiveVideoNow || canPublishClaimedMicNow) && canShowCamera ? (
+              {((isMediaInstantLive && roleLooksLikeHost) ||
+                canPublishLiveVideoNow ||
+                canPublishClaimedMicNow) &&
+              canShowCamera ? (
                 <>
                   <KristoLiveKitStage
                     key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}

@@ -169,12 +169,22 @@ export type LiveStageAuthority = {
   pastorPermanentMicNow: boolean;
   mediaHostPermanentMicNow: boolean;
   userOwnsCurrentActiveSlot: boolean;
+  /** V1: user claimed one or more schedule slots (no per-user slot cap). */
+  userHasClaimedScheduleSlot: boolean;
+  /** @deprecated Use userHasClaimedScheduleSlot — kept for existing logs/callers. */
   userIsAmongFirstNineClaimedSlots: boolean;
   canPublishClaimedMicNow: boolean;
   canPublishClaimedCameraNow: boolean;
   canPublishLiveVideoNow: boolean;
 };
 
+/**
+ * V1 Media Live (scheduled) authority:
+ * - Mic: every claimed slot owner + pastor/trusted media host (even without a claim).
+ * - Camera: only the current active slot owner; pastor/host need an active-slot claim too.
+ * - Viewers without a claim: watch only.
+ * Multiple claims per user are allowed.
+ */
 export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): LiveStageAuthority {
   const userOwnsCurrentActiveSlot =
     !input.isMediaInstantLive &&
@@ -183,7 +193,7 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
     !!input.currentUserId &&
     input.currentSlotOwnerId === input.currentUserId;
 
-  const userIsAmongFirstNineClaimedSlots = input.claimedMicSlotNumbers.length > 0;
+  const userHasClaimedScheduleSlot = input.claimedMicSlotNumbers.length > 0;
 
   const pastorPermanentMicNow =
     !input.isMediaInstantLive && input.authority.isActualChurchPastor;
@@ -198,27 +208,46 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
     ? input.isPastorLiveOwner || input.roleLooksLikeHost || input.approvedViewerCanMic
     : pastorPermanentMicNow ||
       mediaHostPermanentMicNow ||
-      input.approvedViewerCanMic ||
-      userIsAmongFirstNineClaimedSlots;
+      userHasClaimedScheduleSlot;
 
   const canPublishClaimedCameraNow = input.isMediaInstantLive
     ? input.isPastorLiveOwner ||
       input.roleLooksLikeHost ||
       input.approvedViewerSeatType === "big-screen" ||
       input.approvedViewerSeatType === "camera-mic"
-    : userOwnsCurrentActiveSlot || input.approvedViewerIsCurrentCameraTurn;
+    : userOwnsCurrentActiveSlot;
 
   const canPublishLiveVideoNow = input.isMediaInstantLive
     ? canPublishClaimedCameraNow
-    : userOwnsCurrentActiveSlot || input.approvedViewerIsCurrentCameraTurn;
+    : userOwnsCurrentActiveSlot;
 
   return {
     pastorPermanentMicNow,
     mediaHostPermanentMicNow,
     userOwnsCurrentActiveSlot,
-    userIsAmongFirstNineClaimedSlots,
+    userHasClaimedScheduleSlot,
+    userIsAmongFirstNineClaimedSlots: userHasClaimedScheduleSlot,
     canPublishClaimedMicNow,
     canPublishClaimedCameraNow,
     canPublishLiveVideoNow,
   };
+}
+
+export function logMediaLiveV1StageAuthority(
+  context: string,
+  stage: LiveStageAuthority,
+  extra?: Record<string, unknown>
+) {
+  console.log("KRISTO_MEDIA_LIVE_V1_AUTHORITY", {
+    context,
+    userOwnsCurrentActiveSlot: stage.userOwnsCurrentActiveSlot,
+    userHasClaimedScheduleSlot: stage.userHasClaimedScheduleSlot,
+    pastorPermanentMicNow: stage.pastorPermanentMicNow,
+    mediaHostPermanentMicNow: stage.mediaHostPermanentMicNow,
+    canPublishClaimedMicNow: stage.canPublishClaimedMicNow,
+    canPublishClaimedCameraNow: stage.canPublishClaimedCameraNow,
+    canPublishLiveVideoNow: stage.canPublishLiveVideoNow,
+    rules: "mic=claimed+pastor/host; camera=active-slot-owner-only",
+    ...extra,
+  });
 }
