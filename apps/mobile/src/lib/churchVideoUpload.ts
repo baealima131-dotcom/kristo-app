@@ -332,6 +332,74 @@ export async function uploadVideoFileToSignedUrl(params: {
   return uploadFileToSignedUrl(params);
 }
 
+export type ChurchVideoPublishMetadata = {
+  durationMs?: number;
+  sizeBytes: number;
+  bitrateEstimate?: number;
+  faststart: boolean;
+};
+
+export function computeVideoBitrateEstimate(sizeBytes: number, durationMs: number): number | undefined {
+  const bytes = Number(sizeBytes);
+  const ms = Number(durationMs);
+  if (!Number.isFinite(bytes) || bytes <= 0) return undefined;
+  if (!Number.isFinite(ms) || ms <= 0) return undefined;
+  return Math.round((bytes * 8) / (ms / 1000));
+}
+
+export function buildChurchVideoPublishMetadata(params: {
+  durationMs?: number;
+  sizeBytes: number;
+  faststart: boolean;
+}): ChurchVideoPublishMetadata {
+  const sizeBytes = Math.max(0, Math.round(Number(params.sizeBytes || 0)));
+  const durationMsRaw = Number(params.durationMs || 0);
+  const durationMs =
+    Number.isFinite(durationMsRaw) && durationMsRaw > 0 ? Math.round(durationMsRaw) : undefined;
+  const bitrateEstimate =
+    durationMs && sizeBytes > 0
+      ? computeVideoBitrateEstimate(sizeBytes, durationMs)
+      : undefined;
+
+  return {
+    ...(durationMs ? { durationMs } : {}),
+    sizeBytes,
+    ...(bitrateEstimate ? { bitrateEstimate } : {}),
+    faststart: params.faststart === true,
+  };
+}
+
+export type PublishedFeedPost = {
+  item: Record<string, unknown>;
+  backendFeedId: string;
+  mediaStatus: string;
+};
+
+/** Parse POST /api/church/feed publish payloads even when `ok` is missing in a 201 body. */
+export function parsePublishedFeedResponse(res: any): PublishedFeedPost | null {
+  const nestedItem = res?.item;
+  const data = res?.data;
+  const dataItem =
+    data && typeof data === "object" && !Array.isArray(data) && String(data?.id || "").trim()
+      ? data
+      : data && typeof data === "object" && !Array.isArray(data) && data?.item
+        ? data.item
+        : null;
+  const item =
+    nestedItem && typeof nestedItem === "object" && !Array.isArray(nestedItem)
+      ? nestedItem
+      : dataItem;
+
+  const backendFeedId = String(item?.id || res?.postId || res?.id || "").trim();
+  if (!backendFeedId) return null;
+
+  return {
+    item: (item && typeof item === "object" ? item : { id: backendFeedId }) as Record<string, unknown>,
+    backendFeedId,
+    mediaStatus: String(item?.mediaStatus || "processing").trim() || "processing",
+  };
+}
+
 export async function publishChurchVideoFeedPost(params: {
   title: string;
   caption: string;
@@ -340,36 +408,78 @@ export async function publishChurchVideoFeedPost(params: {
   videoPosterUri?: string;
   thumbnailUri?: string;
   headers: HeadersRec;
+  durationMs?: number;
+  sizeBytes?: number;
+  bitrateEstimate?: number;
+  faststart?: boolean;
 }) {
   const poster = String(params.posterUri || params.videoPosterUri || params.thumbnailUri || "").trim();
+  const metadata = buildChurchVideoPublishMetadata({
+    durationMs: params.durationMs,
+    sizeBytes: Number(params.sizeBytes || 0),
+    faststart: params.faststart === true,
+  });
+  const publishBitrateEstimate =
+    Number(params.bitrateEstimate || 0) > 0
+      ? Math.round(Number(params.bitrateEstimate))
+      : metadata.bitrateEstimate;
 
-  const res: any = await apiPost(
-    "/api/church/feed",
-    {
-      type: "video",
-      mediaType: "video",
-      source: "media-upload",
-      postOrigin: "media",
-      storageType: "media",
-      isMediaPost: true,
-      mediaStatus: "processing" satisfies MediaStatus,
-      title: params.title,
-      text: params.caption,
-      videoUrl: params.videoUrl,
-      ...(poster
-        ? {
-            posterUri: poster,
-            videoPosterUri: poster,
-            thumbnailUri: poster,
-          }
-        : {}),
-    },
-    { headers: params.headers }
-  );
+  const publishBody = {
+    type: "video",
+    mediaType: "video",
+    source: "media-upload",
+    postOrigin: "media",
+    storageType: "media",
+    isMediaPost: true,
+    mediaStatus: "processing" satisfies MediaStatus,
+    title: params.title,
+    text: params.caption,
+    videoUrl: params.videoUrl,
+    ...(metadata.durationMs ? { durationMs: metadata.durationMs } : {}),
+    ...(metadata.sizeBytes > 0 ? { sizeBytes: metadata.sizeBytes } : {}),
+    ...(publishBitrateEstimate ? { bitrateEstimate: publishBitrateEstimate } : {}),
+    faststart: metadata.faststart,
+    ...(poster
+      ? {
+          posterUri: poster,
+          videoPosterUri: poster,
+          thumbnailUri: poster,
+        }
+      : {}),
+  };
+
+  console.log("KRISTO_VIDEO_METADATA_PUBLISHED", {
+    title: params.title,
+    videoUrl: params.videoUrl,
+    durationMs: metadata.durationMs ?? null,
+    sizeBytes: metadata.sizeBytes || null,
+    bitrateEstimate: publishBitrateEstimate ?? null,
+    faststart: metadata.faststart,
+    durationSec: metadata.durationMs ? metadata.durationMs / 1000 : null,
+    fileSizeBytes: metadata.sizeBytes > 0 ? metadata.sizeBytes : null,
+  });
+
+  const res: any = await apiPost("/api/church/feed", publishBody, { headers: params.headers });
+  const published = parsePublishedFeedResponse(res);
+
+  if (published) {
+    console.log("KRISTO_UPLOAD_PUBLISH_SUCCESS", {
+      backendFeedId: published.backendFeedId,
+      mediaStatus: published.mediaStatus,
+      httpStatus: Number(res?.status || 0) || null,
+      responseOk: res?.ok !== false,
+    });
+    return {
+      ...res,
+      ok: true,
+      item: published.item,
+      data: published.item,
+    };
+  }
 
   if (!res?.ok) {
     throw new Error(uploadErrorMessage(res, "Could not publish video to feed."));
   }
 
-  return res;
+  throw new Error("Video uploaded but feed post id was missing.");
 }

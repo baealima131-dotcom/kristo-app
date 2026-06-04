@@ -1015,6 +1015,7 @@ export default function MediaStudioScreen() {
   const [isCreatingVideoPost, setIsCreatingVideoPost] = useState(false);
   const [videoPostUri, setVideoPostUri] = useState("");
   const [videoPostPosterUri, setVideoPostPosterUri] = useState("");
+  const [videoPostDurationMs, setVideoPostDurationMs] = useState(0);
   const [videoPostTitle, setVideoPostTitle] = useState("");
   const [videoPostCaption, setVideoPostCaption] = useState("");
   const [videoPostDetailsOpen, setVideoPostDetailsOpen] = useState(false);
@@ -1502,13 +1503,18 @@ export default function MediaStudioScreen() {
     mediaRouterPush("/more/payments/subscriptions", "subscription-open-handler");
   }
 
-  function beginSmartVideoPrepare(uri: string) {
+  function beginSmartVideoPrepare(uri: string, durationMs?: number) {
     setIsCreatingVideoPost(true);
     setVideoPostUri("");
     setVideoPostPosterUri("");
     setVideoPostTitle("");
     setVideoPostCaption("");
     setVideoPostDetailsOpen(false);
+    setVideoPostDurationMs(
+      Number.isFinite(Number(durationMs)) && Number(durationMs) > 0
+        ? Math.round(Number(durationMs))
+        : 0
+    );
     setVideoPreparing(true);
     setVideoPreparePercent(8);
 
@@ -1572,7 +1578,12 @@ export default function MediaStudioScreen() {
       return;
     }
 
-    beginSmartVideoPrepare(picked.assets[0].uri);
+    const asset = picked.assets[0];
+    const pickerDurationMs = Number(asset?.duration || 0);
+    beginSmartVideoPrepare(
+      asset.uri,
+      pickerDurationMs > 0 ? pickerDurationMs : undefined
+    );
   }
 
   function publishVideoPostToFeed() {
@@ -1637,6 +1648,7 @@ export default function MediaStudioScreen() {
         churchId,
         userId: String(session?.userId || "").trim(),
         role: String(session?.role || "Member"),
+        ...(videoPostDurationMs > 0 ? { durationMs: videoPostDurationMs } : {}),
       },
       {
         onProgress: (uploadProgress, uploadStatus) => {
@@ -1652,6 +1664,46 @@ export default function MediaStudioScreen() {
           setVideoPostUploadStatus("done");
           setVideoPostUploadPercent(100);
 
+          const finishComposer = (refreshFailed = false) => {
+            setVideoPostUploading(false);
+            setVideoPostUploadStatus("idle");
+            setVideoPostUploadPercent(0);
+            setVideoPostDetailsOpen(false);
+            setVideoPostUri("");
+            setVideoPostPosterUri("");
+            setVideoPostTitle("");
+            setVideoPostCaption("");
+            setIsCreatingVideoPost(false);
+
+            if (posterUri && videoUrl) {
+              (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__ = {
+                videoUrl,
+                posterUri,
+              };
+            }
+
+            if (backendFeedId) {
+              (globalThis as any).__KRISTO_MEDIA_STORAGE_REFRESH__ = backendFeedId;
+            }
+
+            console.log("KRISTO_MEDIA_VIDEO_UPLOAD_SAVED_TO_STORAGE", {
+              backendFeedId,
+              mediaStatus: mediaStatus || "processing",
+              refreshFailed,
+            });
+
+            Alert.alert(
+              refreshFailed ? "Posted, refreshing…" : "Saved to Media Storage",
+              refreshFailed
+                ? "Your post is live. Media Storage will refresh when the connection is back."
+                : mediaStatus === "ready"
+                  ? "Your video is ready and will appear on Home Feed."
+                  : "Your video is processing in Media Storage. Home Feed will show it when mediaStatus is ready."
+            );
+
+            mediaRouterPush("/(tabs)/more/media-storage", "video-upload-success");
+          };
+
           void refreshChurchMediaIfNeeded({
             churchId,
             userId: String(session?.userId || "").trim(),
@@ -1662,49 +1714,23 @@ export default function MediaStudioScreen() {
             }) as Record<string, string>,
             screen: "media-video-upload-done",
             force: true,
-          }).catch((error) => {
-            console.log("KRISTO_MEDIA_STORAGE_REFRESH_ERROR", error);
-          });
-
-          setVideoPostUploading(false);
-          setVideoPostUploadStatus("idle");
-          setVideoPostUploadPercent(0);
-          setVideoPostDetailsOpen(false);
-          setVideoPostUri("");
-          setVideoPostPosterUri("");
-          setVideoPostTitle("");
-          setVideoPostCaption("");
-          setIsCreatingVideoPost(false);
-
-          if (posterUri && videoUrl) {
-            (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__ = {
-              videoUrl,
-              posterUri,
-            };
-          }
-
-          if (backendFeedId) {
-            (globalThis as any).__KRISTO_MEDIA_STORAGE_REFRESH__ = backendFeedId;
-          }
-
-          console.log("KRISTO_MEDIA_VIDEO_UPLOAD_SAVED_TO_STORAGE", {
-            backendFeedId,
-            mediaStatus: mediaStatus || "processing",
-          });
-
-          Alert.alert(
-            "Saved to Media Storage",
-            mediaStatus === "ready"
-              ? "Your video is ready and will appear on Home Feed."
-              : "Your video is processing in Media Storage. Home Feed will show it when mediaStatus is ready."
-          );
-
-          mediaRouterPush("/(tabs)/more/media-storage", "video-upload-success");
+          })
+            .then(() => finishComposer(false))
+            .catch((error) => {
+              console.log("KRISTO_UPLOAD_REFRESH_AFTER_POST_FAILED", {
+                backendFeedId,
+                message: String((error as any)?.message || error || "unknown"),
+              });
+              console.log("KRISTO_MEDIA_STORAGE_REFRESH_ERROR", error);
+              setVideoPostUploadStatus("posted_refreshing");
+              finishComposer(true);
+            });
         },
         onError: (message) => {
           setVideoPostUploading(false);
           setVideoPostUploadStatus("failed");
           setVideoPostUploadPercent(0);
+          console.log("KRISTO_UPLOAD_STATUS_MARK_FAILED", { message, screen: "media-video-post" });
           console.log("KRISTO_MEDIA_VIDEO_UPLOAD_FAILED", { message });
           Alert.alert("Upload failed", message);
         },
@@ -2982,12 +3008,16 @@ export default function MediaStudioScreen() {
                     <View style={s.videoSmartLoadingTop}>
                       <ActivityIndicator size="small" color="#F4C95D" />
                       <Text style={s.videoSmartLoadingTitle}>
-                        {videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                        {videoPostUploadStatus === "processing" ||
+                        videoPostUploadStatus === "done" ||
+                        videoPostUploadStatus === "posted_refreshing"
                           ? "Processing…"
                           : "Uploading video"}
                       </Text>
                       <Text style={s.videoSmartLoadingPercent}>
-                        {videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                        {videoPostUploadStatus === "processing" ||
+                        videoPostUploadStatus === "done" ||
+                        videoPostUploadStatus === "posted_refreshing"
                           ? ""
                           : `${videoPostUploadPercent}%`}
                       </Text>
@@ -2999,7 +3029,9 @@ export default function MediaStudioScreen() {
                           s.videoSmartProgressFill,
                           {
                             width:
-                              videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                              videoPostUploadStatus === "processing" ||
+                              videoPostUploadStatus === "done" ||
+                              videoPostUploadStatus === "posted_refreshing"
                                 ? "100%"
                                 : `${videoPostUploadPercent}%`,
                           },
@@ -3008,9 +3040,11 @@ export default function MediaStudioScreen() {
                     </View>
 
                     <Text style={s.videoSmartLoadingText}>
-                      {videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
-                        ? "Publishing to Media Storage and preparing your Home Feed post."
-                        : "Keep Kristo open while your sermon uploads directly to video storage."}
+                      {videoPostUploadStatus === "posted_refreshing"
+                        ? "Posted. Refreshing Media Storage…"
+                        : videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                          ? "Publishing to Media Storage and preparing your Home Feed post."
+                          : "Keep Kristo open while your sermon uploads directly to video storage."}
                     </Text>
                   </View>
                 ) : videoPostUri ? (

@@ -140,7 +140,10 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
     });
     const parsed = await safeJson(res);
     if (!res.ok) return httpError(path, res, parsed) as T;
-    return (parsed ?? { ok: false, error: "Empty server response", status: res.status }) as T;
+    const body = parsed ?? { ok: false, error: "Empty server response" };
+    return (typeof body === "object" && body !== null
+      ? { ...body, status: res.status }
+      : { ok: false, error: "Empty server response", status: res.status }) as T;
   } catch (error) {
     return networkError(path, error) as T;
   }

@@ -8,8 +8,10 @@ import {
   guessPosterContentType,
   guessVideoContentType,
   fileNameFromUri,
+  parsePublishedFeedResponse,
   publishChurchVideoFeedPost,
   resolveUploadFileSize,
+  buildChurchVideoPublishMetadata,
   uploadPosterToStorageWithRetry,
 } from "@/src/lib/churchVideoUpload";
 import {
@@ -17,6 +19,7 @@ import {
   getChunkUploadSession,
   MultipartBackendNotDeployedError,
   MULTIPART_BACKEND_NOT_DEPLOYED_MESSAGE,
+  removeChunkUploadSession,
   uploadVideoWithChunkSession,
 } from "@/src/lib/churchVideoChunkUpload";
 import { compressVideoForUpload } from "@/src/lib/videoCompress";
@@ -37,7 +40,14 @@ import {
   subscribeKristoNetworkStatus,
 } from "@/src/lib/networkMonitor";
 
-export type MediaVideoUploadStatus = "uploading" | "processing" | "failed" | "done" | "paused" | "ready";
+export type MediaVideoUploadStatus =
+  | "uploading"
+  | "processing"
+  | "failed"
+  | "done"
+  | "paused"
+  | "ready"
+  | "posted_refreshing";
 
 export type MediaVideoUploadJob = {
   jobId?: string;
@@ -49,6 +59,7 @@ export type MediaVideoUploadJob = {
   churchId: string;
   userId: string;
   role: string;
+  durationMs?: number;
 };
 
 export type MediaVideoUploadResult = {
@@ -107,6 +118,56 @@ function mapPhaseToUploadStatus(phase: PersistedMediaUploadJob["phase"]): MediaV
   return "uploading";
 }
 
+function invokeUploadSuccess(callbacks: MediaVideoUploadCallbacks, result: MediaVideoUploadResult) {
+  try {
+    callbacks.onSuccess?.(result);
+  } catch (error) {
+    console.log("KRISTO_UPLOAD_CLIENT_SUCCESS_CALLBACK_ERROR", {
+      jobId: result.jobId,
+      backendFeedId: result.backendFeedId,
+      message: String((error as any)?.message || error || "unknown"),
+    });
+  }
+}
+
+async function completePublishedUploadJob(
+  jobId: string,
+  job: MediaVideoUploadJob,
+  params: {
+    backendFeedId: string;
+    videoUrl: string;
+    posterUri?: string | null;
+    mediaStatus: string;
+  },
+  callbacks: MediaVideoUploadCallbacks
+) {
+  await markJobPatch(
+    jobId,
+    {
+      phase: "processing",
+      uploadProgress: 100,
+      backendFeedId: params.backendFeedId,
+      videoUrl: params.videoUrl,
+      posterUri: params.posterUri || undefined,
+      mediaStatus: params.mediaStatus,
+      error: "",
+    },
+    callbacks
+  );
+
+  (globalThis as any).__KRISTO_MEDIA_STORAGE_REFRESH__ = params.backendFeedId;
+
+  const result: MediaVideoUploadResult = {
+    jobId,
+    backendFeedId: params.backendFeedId,
+    videoUrl: params.videoUrl,
+    posterUri: params.posterUri || null,
+    mediaStatus: params.mediaStatus,
+  };
+
+  invokeUploadSuccess(callbacks, result);
+}
+
 async function markJobPatch(
   jobId: string,
   patch: Partial<PersistedMediaUploadJob>,
@@ -128,12 +189,24 @@ async function markJobPatch(
 async function uploadPosterIfAvailable(job: MediaVideoUploadJob, uploadHeaders: Record<string, string>) {
   if (!job.localPosterUri) return "";
 
+  const startedAt = Date.now();
+  console.log("KRISTO_UPLOAD_POSTER_START", {
+    jobId: job.jobId,
+    localPosterUri: job.localPosterUri,
+  });
+
   try {
     const posterSize = await resolveUploadFileSize(job.localPosterUri);
     const posterFileName = fileNameFromUri(job.localPosterUri, `poster-${Date.now()}.jpg`);
     const posterContentType = guessPosterContentType(posterFileName);
 
     if (posterSize <= 0) {
+      console.log("KRISTO_UPLOAD_POSTER_DONE", {
+        jobId: job.jobId,
+        durationMs: Date.now() - startedAt,
+        ok: false,
+        reason: "missing-poster-file-size",
+      });
       console.log("KRISTO_UPLOAD_POSTER_SKIPPED", {
         reason: "missing-poster-file-size",
         localPosterUri: job.localPosterUri,
@@ -149,8 +222,22 @@ async function uploadPosterIfAvailable(job: MediaVideoUploadJob, uploadHeaders: 
       headers: uploadHeaders,
     });
 
-    return String(posterSigned.publicUrl || posterSigned.videoUrl || "").trim();
+    const publicUrl = String(posterSigned.publicUrl || posterSigned.videoUrl || "").trim();
+    console.log("KRISTO_UPLOAD_POSTER_DONE", {
+      jobId: job.jobId,
+      durationMs: Date.now() - startedAt,
+      ok: Boolean(publicUrl),
+      posterBytes: posterSize,
+      publicUrl,
+    });
+    return publicUrl;
   } catch (posterError) {
+    console.log("KRISTO_UPLOAD_POSTER_DONE", {
+      jobId: job.jobId,
+      durationMs: Date.now() - startedAt,
+      ok: false,
+      error: String((posterError as any)?.message || posterError || "unknown"),
+    });
     console.log("KRISTO_UPLOAD_POSTER_ERROR", {
       message: String((posterError as any)?.message || posterError || "unknown"),
       localPosterUri: job.localPosterUri,
@@ -173,6 +260,8 @@ function isRetryableUploadError(error: unknown) {
 }
 
 export const MULTIPART_BACKEND_NOT_DEPLOYED_REASON = "multipart-backend-not-deployed";
+
+export { MULTIPART_BACKEND_NOT_DEPLOYED_MESSAGE } from "@/src/lib/churchVideoChunkUpload";
 
 const AUTO_MEDIA_UPLOAD_RESUME_REASONS = new Set([
   "app-startup",
@@ -197,6 +286,7 @@ function isRetryableFailedMediaUploadJob(job: PersistedMediaUploadJob) {
 }
 
 function shouldResumeMediaUploadJob(job: PersistedMediaUploadJob) {
+  if (String(job.backendFeedId || "").trim()) return false;
   if (isMultipartBackendNotDeployedJob(job)) return false;
   if (job.phase === "paused") return true;
   if (job.phase === "uploading") return !inflight.has(jobInflightKey(job.jobId));
@@ -215,6 +305,7 @@ function storedJobToUploadJob(stored: PersistedMediaUploadJob): MediaVideoUpload
     churchId: stored.churchId,
     userId: stored.userId,
     role: stored.role,
+    durationMs: stored.durationMs,
   };
 }
 
@@ -226,14 +317,46 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
   const compressed = await compressVideoForUpload(job.fileUri);
   const uploadUri = compressed.uri;
   const uploadFileName = fileNameFromUri(uploadUri, job.fileName);
-  const fileSize = await resolveUploadFileSize(uploadUri);
+  const fileSize =
+    compressed.sizeBytes > 0
+      ? compressed.sizeBytes
+      : await resolveUploadFileSize(uploadUri);
   const contentType = guessVideoContentType(uploadFileName);
 
   if (!uploadUri || !fileSize) {
     throw new Error("Could not read the selected video file.");
   }
 
-  const existingChunkSession = await getChunkUploadSession(chunkSessionId);
+  const publishMetadata = buildChurchVideoPublishMetadata({
+    durationMs: job.durationMs,
+    sizeBytes: fileSize,
+    faststart: compressed.faststart,
+  });
+
+  console.log("KRISTO_VIDEO_METADATA_CAPTURED", {
+    jobId,
+    title: job.title,
+    durationMs: publishMetadata.durationMs ?? null,
+    sizeBytes: publishMetadata.sizeBytes,
+    bitrateEstimate: publishMetadata.bitrateEstimate ?? null,
+    faststart: publishMetadata.faststart,
+    pickerDurationMs: job.durationMs ?? null,
+    compressedSizeBytes: compressed.sizeBytes,
+  });
+
+  let existingChunkSession = await getChunkUploadSession(chunkSessionId);
+  if (
+    existingChunkSession &&
+    String(existingChunkSession.fileUri || "").trim() !== String(uploadUri || "").trim()
+  ) {
+    await removeChunkUploadSession(chunkSessionId);
+    existingChunkSession = null;
+    console.log("KRISTO_CHUNK_UPLOAD_SESSION_RESET", {
+      sessionId: chunkSessionId,
+      reason: "remuxed-video-uri-changed",
+    });
+  }
+
   if (existingChunkSession) {
     const resumePct = chunkSessionResumeProgress(existingChunkSession);
     await markJobPatch(
@@ -275,7 +398,7 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     callbacks
   );
 
-  return signed;
+  return { signed, publishMetadata };
 }
 
 async function runMediaVideoUpload(
@@ -285,8 +408,30 @@ async function runMediaVideoUpload(
   opts?: { resume?: boolean }
 ) {
   const uploadHeaders = uploadHeadersForJob(job);
+  let publishConfirmedFeedId = "";
 
   try {
+    const storedBeforeRun = await getMediaUploadJob(jobId);
+    const existingBackendFeedId = String(storedBeforeRun?.backendFeedId || "").trim();
+    if (existingBackendFeedId) {
+      console.log("KRISTO_UPLOAD_PUBLISH_ALREADY_CONFIRMED", {
+        jobId,
+        backendFeedId: existingBackendFeedId,
+      });
+      await completePublishedUploadJob(
+        jobId,
+        job,
+        {
+          backendFeedId: existingBackendFeedId,
+          videoUrl: String(storedBeforeRun?.videoUrl || "").trim(),
+          posterUri: storedBeforeRun?.posterUri || null,
+          mediaStatus: String(storedBeforeRun?.mediaStatus || "processing").trim() || "processing",
+        },
+        callbacks
+      );
+      return;
+    }
+
     console.log("KRISTO_MEDIA_STATUS_UPLOADING", {
       jobId,
       title: job.title,
@@ -294,7 +439,6 @@ async function runMediaVideoUpload(
       resume: Boolean(opts?.resume),
     });
 
-    const storedBeforeRun = await getMediaUploadJob(jobId);
     const uploadProgress = opts?.resume
       ? Math.max(0, Math.min(99, Number(storedBeforeRun?.uploadProgress || 0)))
       : 0;
@@ -302,7 +446,7 @@ async function runMediaVideoUpload(
     await markJobPatch(jobId, { phase: "uploading", uploadProgress, error: "" }, callbacks);
 
     const posterPublicUrl = await uploadPosterIfAvailable(job, uploadHeaders);
-    const signed = await uploadVideoWithResume(job, jobId, callbacks);
+    const { signed, publishMetadata } = await uploadVideoWithResume(job, jobId, callbacks);
 
     await markJobPatch(jobId, { uploadProgress: 100, phase: "processing" }, callbacks);
 
@@ -320,50 +464,64 @@ async function runMediaVideoUpload(
       videoPosterUri: posterPublicUrl || undefined,
       thumbnailUri: posterPublicUrl || undefined,
       headers: uploadHeaders,
+      durationMs: publishMetadata.durationMs,
+      sizeBytes: publishMetadata.sizeBytes,
+      bitrateEstimate: publishMetadata.bitrateEstimate,
+      faststart: publishMetadata.faststart,
     });
 
-    const backendItem = feedRes?.item || feedRes?.data || feedRes;
-    const backendFeedId = String(backendItem?.id || "").trim();
-    const mediaStatus = String(backendItem?.mediaStatus || "processing").trim();
-
-    if (!backendFeedId) {
+    const published = parsePublishedFeedResponse(feedRes);
+    if (!published) {
       throw new Error("Video uploaded but feed post id was missing.");
     }
 
-    await markJobPatch(
-      jobId,
-      {
-        phase: "processing",
-        uploadProgress: 100,
-        backendFeedId,
-        videoUrl: signed.videoUrl,
-        posterUri: posterPublicUrl || undefined,
-        mediaStatus,
-      },
-      callbacks
-    );
+    publishConfirmedFeedId = published.backendFeedId;
 
     console.log("KRISTO_MEDIA_STATUS_PROCESSING", {
       jobId,
-      backendFeedId,
-      mediaStatus,
+      backendFeedId: published.backendFeedId,
+      mediaStatus: published.mediaStatus,
       videoUrl: signed.videoUrl,
     });
 
-    (globalThis as any).__KRISTO_MEDIA_STORAGE_REFRESH__ = backendFeedId;
-
-    const result: MediaVideoUploadResult = {
+    await completePublishedUploadJob(
       jobId,
-      backendFeedId,
-      videoUrl: signed.videoUrl,
-      posterUri: posterPublicUrl || null,
-      mediaStatus,
-    };
-
-    callbacks.onSuccess?.(result);
+      job,
+      {
+        backendFeedId: published.backendFeedId,
+        videoUrl: signed.videoUrl,
+        posterUri: posterPublicUrl || null,
+        mediaStatus: published.mediaStatus,
+      },
+      callbacks
+    );
   } catch (error) {
     const message = String((error as any)?.message || error || "Upload failed");
     const stored = await getMediaUploadJob(jobId);
+    const recoveredFeedId = String(
+      publishConfirmedFeedId || stored?.backendFeedId || ""
+    ).trim();
+
+    if (recoveredFeedId) {
+      console.log("KRISTO_UPLOAD_STATUS_RECOVERED_AFTER_PUBLISH", {
+        jobId,
+        backendFeedId: recoveredFeedId,
+        message,
+      });
+      await completePublishedUploadJob(
+        jobId,
+        job,
+        {
+          backendFeedId: recoveredFeedId,
+          videoUrl: String(stored?.videoUrl || "").trim(),
+          posterUri: stored?.posterUri || null,
+          mediaStatus: String(stored?.mediaStatus || "processing").trim() || "processing",
+        },
+        callbacks
+      );
+      return;
+    }
+
     const pausedAtProgress = Math.max(0, Math.min(99, Number(stored?.uploadProgress || 0)));
     const multipartBackendMissing =
       error instanceof MultipartBackendNotDeployedError ||
@@ -417,6 +575,7 @@ async function runMediaVideoUpload(
       },
       callbacks
     );
+    console.log("KRISTO_UPLOAD_STATUS_MARK_FAILED", { jobId, message, title: job.title });
     console.log("KRISTO_OPTIMISTIC_VIDEO_UPLOAD_FAILED", { jobId, message, title: job.title });
     callbacks.onError?.(message);
   }
@@ -447,21 +606,24 @@ function launchMediaVideoUpload(
 export function enqueueMediaVideoUpload(job: MediaVideoUploadJob, callbacks: MediaVideoUploadCallbacks = {}) {
   const jobId = String(job.jobId || createMediaUploadJobId()).trim();
 
-  void createMediaUploadJob({
-    jobId,
-    title: job.title,
-    caption: job.caption,
-    fileUri: job.fileUri,
-    localPosterUri: job.localPosterUri,
-    fileName: job.fileName,
-    churchId: job.churchId,
-    userId: job.userId,
-    role: job.role,
-    resumableMode: "chunk",
-    chunkSessionId: jobId,
-  });
+  void (async () => {
+    await createMediaUploadJob({
+      jobId,
+      title: job.title,
+      caption: job.caption,
+      fileUri: job.fileUri,
+      localPosterUri: job.localPosterUri,
+      fileName: job.fileName,
+      churchId: job.churchId,
+      userId: job.userId,
+      role: job.role,
+      durationMs: job.durationMs,
+      resumableMode: "chunk",
+      chunkSessionId: jobId,
+    });
+    launchMediaVideoUpload({ ...job, jobId }, jobId, callbacks);
+  })();
 
-  launchMediaVideoUpload({ ...job, jobId }, jobId, callbacks);
   return jobId;
 }
 
@@ -472,6 +634,20 @@ export function startMediaVideoUpload(job: MediaVideoUploadJob, callbacks: Media
 export async function retryMediaUploadJob(jobId: string, opts?: { manual?: boolean }) {
   const stored = await getMediaUploadJob(jobId);
   if (!stored) return false;
+  const publishedFeedId = String(stored.backendFeedId || "").trim();
+  if (publishedFeedId) {
+    await patchMediaUploadJob(jobId, {
+      phase: "processing",
+      uploadProgress: 100,
+      error: "",
+    });
+    console.log("KRISTO_UPLOAD_PUBLISH_ALREADY_CONFIRMED", {
+      jobId,
+      backendFeedId: publishedFeedId,
+      reason: "retry-skipped-reupload",
+    });
+    return true;
+  }
   if (stored.phase === "processing" || stored.phase === "ready") return false;
   if (stored.phase === "uploading" && inflight.has(jobInflightKey(jobId))) return false;
 
@@ -568,6 +744,24 @@ export async function resumePausedMediaUploadJobs(reason = "manual") {
 
   const { listMediaUploadJobs } = await import("@/src/lib/mediaUploadJobStore");
   const jobs = await listMediaUploadJobs(churchId);
+
+  for (const job of jobs) {
+    const backendFeedId = String(job.backendFeedId || "").trim();
+    if (!backendFeedId || job.phase === "ready") continue;
+    if (job.phase === "failed" || job.phase === "paused" || job.phase === "uploading") {
+      await patchMediaUploadJob(job.jobId, {
+        phase: "processing",
+        uploadProgress: 100,
+        error: "",
+      });
+      console.log("KRISTO_UPLOAD_PUBLISH_ALREADY_CONFIRMED", {
+        jobId: job.jobId,
+        backendFeedId,
+        reason: "startup-reconcile-published-job",
+      });
+    }
+  }
+
   const blockedMultipartJobs = jobs.filter(isMultipartBackendNotDeployedJob);
   if (blockedMultipartJobs.length && AUTO_MEDIA_UPLOAD_RESUME_REASONS.has(reason)) {
     console.log("KRISTO_MEDIA_UPLOAD_AUTO_RESUME_SKIP", {
@@ -622,7 +816,11 @@ export async function markMediaUploadJobReady(jobId: string, mediaStatus = "read
   } catch {}
 
   setTimeout(() => {
-    void removeMediaUploadJob(jobId);
+    void removeMediaUploadJob(jobId).then((removed) => {
+      if (removed) {
+        console.log("KRISTO_OPTIMISTIC_UPLOAD_CLEARED", { jobId, reason: "media-upload-ready" });
+      }
+    });
   }, 4000);
 }
 
@@ -639,6 +837,12 @@ export function startOptimisticVideoUpload(job: OptimisticVideoUploadJob) {
     onSuccess: ({ backendFeedId, videoUrl, posterUri }) => {
       if (job.tempPostId) {
         feedRemoveOptimisticVideoUpload(job.tempPostId);
+        console.log("KRISTO_OPTIMISTIC_UPLOAD_CLEARED", {
+          jobId: job.jobId,
+          tempPostId: job.tempPostId,
+          backendFeedId,
+          reason: "optimistic-feed-row-removed",
+        });
       }
       if (posterUri && videoUrl) {
         (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__ = { videoUrl, posterUri };
