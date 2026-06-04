@@ -22,22 +22,33 @@ export const FeedIdentity = memo(function FeedIdentity({
   mediaName,
   whenLabel,
 }: Props) {
-  const { uri: avatarUri, initial } = useMemo(
+  const { uri: avatarUri, backupUri, initial } = useMemo(
     () => resolveHomeFeedDisplayAvatar(item),
     [item]
   );
 
-  useEffect(() => {
-    logHomeFeedIdentityAvatarResolve(item, churchName, avatarUri);
-  }, [item, churchName, avatarUri]);
+  const avatarCandidates = useMemo(() => {
+    const next: string[] = [];
+    for (const raw of [avatarUri, backupUri]) {
+      const uri = String(raw || "").trim();
+      if (uri && !next.includes(uri)) next.push(uri);
+    }
+    return next;
+  }, [avatarUri, backupUri]);
 
-  const [imageFailed, setImageFailed] = useState(false);
-  const showPhoto = Boolean(String(avatarUri || "").trim()) && !imageFailed;
+  const [failedCount, setFailedCount] = useState(0);
+  const displayUri = avatarCandidates[failedCount] || "";
+  const showPhoto = Boolean(displayUri) && failedCount < avatarCandidates.length;
+
+  useEffect(() => {
+    logHomeFeedIdentityAvatarResolve(item, churchName, displayUri, backupUri);
+  }, [item, churchName, displayUri, backupUri]);
+
   const letter = String(initial || churchName || "K").trim().charAt(0).toUpperCase() || "K";
 
   useEffect(() => {
-    setImageFailed(false);
-  }, [avatarUri]);
+    setFailedCount(0);
+  }, [avatarCandidates]);
 
   const subline = [mediaName, whenLabel].filter(Boolean).join(" • ");
 
@@ -48,9 +59,11 @@ export const FeedIdentity = memo(function FeedIdentity({
         <View style={styles.avatarRing}>
           {showPhoto ? (
             <Image
-              source={{ uri: avatarUri }}
+              source={{ uri: displayUri }}
               style={styles.avatarImage}
-              onError={() => setImageFailed(true)}
+              onError={() => {
+                setFailedCount((count) => Math.min(count + 1, avatarCandidates.length));
+              }}
             />
           ) : (
             <View style={[styles.avatarImage, styles.avatarFallback]}>

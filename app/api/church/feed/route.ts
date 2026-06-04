@@ -7,6 +7,10 @@ import { ensureActiveMembershipForSession, getActiveMembership } from "@/app/api
 import { createNotification } from "@/app/api/_lib/notifications";
 import { getChurchById } from "@/app/api/_lib/churches";
 import {
+  churchAvatarUpdatedAtMs,
+  resolveChurchAvatarFields,
+} from "@/app/api/_lib/churchAvatar";
+import {
   logChurchPastorResolution,
   resolveChurchPastorUserId,
 } from "@/app/api/_lib/churchPastor";
@@ -760,8 +764,15 @@ function resolveFeedAuthorEnrichment(args: {
 }) {
   const { item, itemChurchProfile, itemMediaProfile, ownershipType, fallbackAuthor } = args;
 
+  const churchAvatarFields = itemChurchProfile
+    ? resolveChurchAvatarFields(itemChurchProfile)
+    : null;
+  const churchAvatarUpdatedAt = churchAvatarUpdatedAtMs(itemChurchProfile);
+
   const churchLogoUrl =
     firstNonEmptyAvatar(
+      churchAvatarFields?.churchLogoUrl,
+      churchAvatarFields?.logoUrl,
       item?.churchLogoUrl,
       item?.churchLogoUri,
       item?.churchLogo,
@@ -773,6 +784,10 @@ function resolveFeedAuthorEnrichment(args: {
 
   const churchAvatarUri =
     firstNonEmptyAvatar(
+      churchAvatarFields?.churchAvatarUri,
+      churchAvatarFields?.finalAvatarUri,
+      churchAvatarFields?.avatarUri,
+      churchAvatarFields?.avatarUrl,
       item?.churchAvatarUri,
       item?.churchAvatarUrl,
       item?.churchAvatar,
@@ -833,13 +848,13 @@ function resolveFeedAuthorEnrichment(args: {
     push("authorAvatarUri", authorAvatarCandidate);
     push("profileAvatarUri", item?.profileAvatarUri);
   } else if (isMediaPost) {
-    push("authorAvatarUri", authorAvatarCandidate);
-    push("mediaAvatarUri", mediaAvatarUri);
-    push("mediaLogoUrl", mediaLogoUrl);
     push("churchAvatarUri", churchAvatarUri);
     push("churchLogoUrl", churchLogoUrl);
     push("churchLogo", item?.churchLogo);
     push("ownerChurchAvatarUri", item?.ownerChurchAvatarUri);
+    push("mediaAvatarUri", mediaAvatarUri);
+    push("mediaLogoUrl", mediaLogoUrl);
+    push("authorAvatarUri", authorAvatarCandidate);
     push("profileAvatarUri", item?.profileAvatarUri);
   } else {
     push("authorAvatarUri", authorAvatarCandidate);
@@ -859,6 +874,7 @@ function resolveFeedAuthorEnrichment(args: {
     mediaAvatarUri,
     mediaLogoUrl,
     finalAvatarUri,
+    churchAvatarUpdatedAt: churchAvatarUpdatedAt || undefined,
     source: chosen?.source || "none",
   };
 }
@@ -1086,12 +1102,15 @@ async function enrichFeedListItem(
       mediaName: itemMediaName,
       authorAvatarUri: authorEnrichment.authorAvatarUri || "",
       churchAvatarUri: authorEnrichment.churchAvatarUri || "",
+      churchAvatarUpdatedAt: authorEnrichment.churchAvatarUpdatedAt || null,
       churchLogoUrl: authorEnrichment.churchLogoUrl || "",
       mediaAvatarUri: authorEnrichment.mediaAvatarUri || "",
       mediaLogoUrl: authorEnrichment.mediaLogoUrl || "",
       finalAvatarUri: authorEnrichment.finalAvatarUri || "",
     });
   }
+
+  const churchAvatarUpdatedAt = authorEnrichment.churchAvatarUpdatedAt;
 
   const postIdAliases = commentPostIdAliases(item, postId);
   let discussion = { commentCount: 0, replyCount: 0 };
@@ -1119,6 +1138,9 @@ async function enrichFeedListItem(
     authorAvatarUri: authorEnrichment.finalAvatarUri || authorEnrichment.authorAvatarUri,
     churchName: itemChurchName,
     churchAvatarUri: authorEnrichment.churchAvatarUri,
+    ...(churchAvatarUpdatedAt
+      ? { churchAvatarUpdatedAt, avatarUpdatedAt: churchAvatarUpdatedAt }
+      : {}),
     ...(authorEnrichment.churchLogoUrl ? { churchLogoUrl: authorEnrichment.churchLogoUrl } : {}),
     ...(authorEnrichment.mediaAvatarUri ? { mediaAvatarUri: authorEnrichment.mediaAvatarUri } : {}),
     ...(authorEnrichment.mediaLogoUrl ? { mediaLogoUrl: authorEnrichment.mediaLogoUrl } : {}),

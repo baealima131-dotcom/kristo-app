@@ -6,6 +6,7 @@ import {
   resolveFeedItemAvatar,
 } from "@/src/lib/homeFeedStore";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
+import { avatarCacheBust, normalizeAvatarUpdatedAt } from "@/src/lib/avatarFreshness";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
@@ -13,8 +14,70 @@ const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").r
 export function homeFeedMediaUrl(raw: unknown) {
   const v = String(raw || "").trim();
   if (!v) return "";
+  if (v.startsWith("data:image/")) return v;
   if (/^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
   return `${API_BASE}${v.startsWith("/") ? "" : "/"}${v}`;
+}
+
+export type HomeFeedDisplayAvatar = {
+  uri: string;
+  backupUri: string;
+  initial: string;
+};
+
+function homeFeedAvatarCacheBustAt(item: any) {
+  return normalizeAvatarUpdatedAt(
+    item?.churchAvatarUpdatedAt ?? item?.avatarUpdatedAt ?? item?.church?.avatarUpdatedAt
+  );
+}
+
+function isHomeFeedChurchMediaPost(item: any) {
+  const ownership = String(item?.ownershipType || "").trim().toLowerCase();
+  if (ownership === "church" || ownership === "media") return true;
+
+  const source = String(item?.source || "").toLowerCase();
+  if (source.includes("media") || source === "media-upload") return true;
+
+  if (String(item?.mediaName || "").trim() && String(item?.type || "").toLowerCase() === "video") {
+    return true;
+  }
+
+  return false;
+}
+
+function homeFeedAvatarSourceFields(item: any, churchMediaFirst: boolean): unknown[] {
+  const churchSources = [
+    item?.churchAvatarUri,
+    item?.churchAvatarUrl,
+    item?.churchAvatar,
+    item?.churchLogoUrl,
+    item?.churchLogoUri,
+    item?.churchLogo,
+    item?.ownerChurchAvatarUri,
+    item?.churchProfileImage,
+    item?.churchImage,
+    item?.church?.avatarUri,
+    item?.church?.avatarUrl,
+    item?.church?.logoUri,
+    item?.church?.logoUrl,
+    item?.church?.image,
+  ];
+
+  const mediaSources = [item?.mediaAvatarUri, item?.mediaLogoUrl, item?.mediaLogo];
+
+  const authorSources = [
+    item?.authorAvatarUri,
+    item?.profileAvatarUri,
+    item?.actorAvatarUri,
+    item?.avatarUri,
+    item?.avatarUrl,
+  ];
+
+  if (churchMediaFirst) {
+    return [...churchSources, ...mediaSources, ...authorSources];
+  }
+
+  return [...authorSources, ...mediaSources, ...churchSources];
 }
 
 /** Comment avatars: keep data URLs and absolute http(s); only prefix relative upload paths. */
@@ -191,54 +254,43 @@ export function resolvePostCaption(item: any) {
   return title || body;
 }
 
-function pickHomeFeedAvatarUri(raw: unknown) {
+function pickHomeFeedAvatarUri(raw: unknown, cacheBustAt?: number) {
   const trimmed = String(raw || "").trim();
   if (!trimmed || FEED_AVATAR_BLOCKED.test(trimmed)) return "";
-  return homeFeedMediaUrl(trimmed);
+  const base = homeFeedMediaUrl(trimmed);
+  if (!base) return "";
+  if (base.startsWith("file://") || base.startsWith("data:image/")) return base;
+  const bust = Number(cacheBustAt || 0);
+  return bust > 0 ? avatarCacheBust(base, bust) : base;
 }
 
-/** Media/church posts: prefer author/media/church avatar fields from API enrichment. */
-export function resolveHomeFeedDisplayAvatar(item: any) {
+/** Church/media posts: church logo first; backup URI for FeedIdentity on image error. */
+export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
   const churchName = resolveChurchName(item);
   const initial = String(churchName || "K").trim().charAt(0).toUpperCase() || "K";
+  const churchMediaFirst = isHomeFeedChurchMediaPost(item);
+  const cacheBustAt = homeFeedAvatarCacheBustAt(item);
+  const sources = homeFeedAvatarSourceFields(item, churchMediaFirst);
 
-  const sources: unknown[] = [
-    item?.authorAvatarUri,
-    item?.mediaAvatarUri,
-    item?.mediaLogoUrl,
-    item?.mediaLogo,
-    item?.churchAvatarUri,
-    item?.churchAvatarUrl,
-    item?.churchAvatar,
-    item?.churchLogoUrl,
-    item?.churchLogoUri,
-    item?.churchLogo,
-    item?.ownerChurchAvatarUri,
-    item?.profileAvatarUri,
-    item?.actorAvatarUri,
-    item?.avatarUri,
-    item?.avatarUrl,
-    item?.churchProfileImage,
-    item?.churchImage,
-    item?.church?.avatarUri,
-    item?.church?.avatarUrl,
-    item?.church?.logoUri,
-    item?.church?.logoUrl,
-    item?.church?.image,
-  ];
-
+  const uris: string[] = [];
   for (const raw of sources) {
-    const uri = pickHomeFeedAvatarUri(raw);
-    if (uri) return { uri, initial };
+    const uri = pickHomeFeedAvatarUri(raw, cacheBustAt);
+    if (!uri || uris.includes(uri)) continue;
+    uris.push(uri);
   }
 
-  return { uri: "", initial };
+  return {
+    uri: uris[0] || "",
+    backupUri: uris[1] || "",
+    initial,
+  };
 }
 
 export function logHomeFeedIdentityAvatarResolve(
   item: any,
   authorName: string,
-  finalAvatarUri: string
+  finalAvatarUri: string,
+  backupAvatarUri?: string
 ) {
   console.log("KRISTO_FEED_IDENTITY_AVATAR_RESOLVE", {
     postId: feedRenderKey(item),
@@ -246,7 +298,9 @@ export function logHomeFeedIdentityAvatarResolve(
     hasAuthorAvatarUri: Boolean(String(item?.authorAvatarUri || "").trim()),
     hasChurchAvatarUri: Boolean(String(item?.churchAvatarUri || "").trim()),
     hasMediaLogoUrl: Boolean(String(item?.mediaLogoUrl || item?.mediaLogo || "").trim()),
+    churchAvatarUpdatedAt: item?.churchAvatarUpdatedAt ?? item?.avatarUpdatedAt ?? null,
     finalAvatarUri,
+    backupAvatarUri: backupAvatarUri || "",
   });
 }
 
