@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useRouter, Href } from "expo-router";
-import { Alert, Keyboard, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Keyboard, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { loadProfileDraft } from "@/src/lib/profileStore";
 import { loadChurchDraft } from "@/src/lib/churchStore";
@@ -13,16 +13,6 @@ const BG = "#0B0F17";
 const GOLD = "#D9B35F";
 const MUTED = "rgba(255,255,255,0.65)";
 const BORDER = "rgba(255,255,255,0.10)";
-
-const KRISTO_V1_SUPPORT_EMAIL = String(
-  process.env.EXPO_PUBLIC_KRISTO_SUPPORT_EMAIL || "support@kristoapp.com"
-).trim();
-
-function isKristoSupportEmailReady(email: string) {
-  return email.length >= 3 && email.includes("@");
-}
-
-const SHOW_FORGOT_EMAIL_LINK = isKristoSupportEmailReady(KRISTO_V1_SUPPORT_EMAIL);
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -60,16 +50,6 @@ export default function LoginScreen() {
   const can = useMemo(() => {
     return userId.trim().length >= 3 && password.length >= 8 && !saving && !locked;
   }, [userId, password, saving, locked]);
-
-  function onForgotEmailPress() {
-    console.log("KRISTO_FORGOT_EMAIL_OPENED");
-    console.log("KRISTO_FORGOT_EMAIL_UNAVAILABLE", { reason: "v1_support_only" });
-    Alert.alert(
-      "Forgot email?",
-      `Email recovery is not available in Kristo V1.\n\nPlease create a new account or contact support at ${KRISTO_V1_SUPPORT_EMAIL}`,
-      [{ text: "OK" }]
-    );
-  }
 
   function onForgotPasswordPress() {
     console.log("KRISTO_FORGOT_PASSWORD_OPENED");
@@ -359,13 +339,7 @@ export default function LoginScreen() {
           </Pressable>
         </View>
 
-        <View style={[s.forgotRow, !SHOW_FORGOT_EMAIL_LINK && s.forgotRowPasswordOnly]}>
-          {SHOW_FORGOT_EMAIL_LINK ? (
-            <Pressable onPress={onForgotEmailPress} style={s.forgotBtnLeft}>
-              <Text style={s.forgotEmailText}>Forgot email?</Text>
-            </Pressable>
-          ) : null}
-
+        <View style={s.forgotRow}>
           <Pressable onPress={onForgotPasswordPress} style={s.forgotBtn}>
             <Text style={s.forgotText}>Forgot password?</Text>
           </Pressable>
@@ -525,14 +499,9 @@ const s = StyleSheet.create({
     marginTop: 10,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-  },
-  forgotRowPasswordOnly: {
     justifyContent: "flex-end",
   },
-  forgotBtnLeft: { paddingVertical: 6, paddingRight: 10 },
   forgotBtn: { paddingVertical: 6, paddingLeft: 10 },
-  forgotEmailText: { color: "rgba(255,255,255,0.62)", fontWeight: "900", fontSize: 13 },
   forgotText: { color: "rgba(96,165,250,0.95)", fontWeight: "900", fontSize: 13 },
 
   btn: { marginTop: 10, borderRadius: 20, paddingVertical: 15, alignItems: "center", backgroundColor: "rgba(217,179,95,0.28)", borderWidth: 1.2, borderColor: "rgba(217,179,95,0.48)" },
