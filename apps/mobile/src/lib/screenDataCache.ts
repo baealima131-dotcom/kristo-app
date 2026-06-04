@@ -4,12 +4,14 @@ import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
 import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
-import { saveChurchProfileCache } from "./churchStore";
+import { clearChurchProfileCache, saveChurchProfileCache } from "./churchStore";
 import { mergeChurchAvatarForDisplay, normalizeAvatarUpdatedAt } from "./avatarFreshness";
 import { saveProfileDraft } from "./profileStore";
 import { waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
 
 export const SCREEN_CACHE_TTL_MS = 45000;
+/** Fast re-check for church profile block on Church Overview focus. */
+export const CHURCH_OVERVIEW_PROFILE_REFRESH_MS = 4000;
 
 export type ChurchOverviewCachePayload = {
   churchId: string;
@@ -132,6 +134,87 @@ export async function saveChurchOverviewCache(payload: ChurchOverviewCachePayloa
   });
 }
 
+export async function invalidateChurchProfileCaches(
+  churchId: string,
+  opts?: { userId?: string; source?: string }
+) {
+  const cid = String(churchId || "").trim().toUpperCase();
+  if (!cid) return;
+
+  let removedOverviewKeys = 0;
+  for (const key of [...churchOverviewMemory.keys()]) {
+    if (key.startsWith(`${cid}:`)) {
+      churchOverviewMemory.delete(key);
+      removedOverviewKeys += 1;
+    }
+  }
+
+  try {
+    const allKeys = await AsyncStorage.getAllKeys();
+    const prefix = `${CHURCH_OVERVIEW_PREFIX}${cid}:`;
+    const toRemove = allKeys.filter((k) => k.startsWith(prefix));
+    if (toRemove.length) await AsyncStorage.multiRemove(toRemove);
+    removedOverviewKeys += toRemove.length;
+  } catch {}
+
+  await clearChurchProfileCache(cid);
+
+  const uid = String(opts?.userId || "").trim();
+  if (uid) {
+    clearResponseCacheForRequest("GET", "/api/church/overview", uid);
+  }
+
+  console.log("KRISTO_CHURCH_PROFILE_CACHE_INVALIDATED", {
+    churchId: cid,
+    userId: uid || null,
+    removedOverviewKeys,
+    source: opts?.source || "unknown",
+  });
+}
+
+export type ChurchOverviewProfileFields = ChurchOverviewCachePayload["profile"];
+
+export function parseChurchOverviewProfileFields(
+  churchId: string,
+  p: Record<string, unknown> | null | undefined,
+  local?: { uri?: string; updatedAt?: number }
+): ChurchOverviewProfileFields {
+  const serverAvatarRaw = String(
+    p?.avatarUri ||
+      p?.avatarUrl ||
+      p?.churchAvatarUri ||
+      p?.churchLogoUrl ||
+      p?.profileImage ||
+      p?.profilePhoto ||
+      p?.photo ||
+      p?.image ||
+      ""
+  ).trim();
+  const serverUpdatedAt = normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt);
+  const mergedAvatar = mergeChurchAvatarForDisplay({
+    churchId,
+    localUri: local?.uri || "",
+    localUpdatedAt: local?.updatedAt,
+    serverUri: serverAvatarRaw,
+    serverUpdatedAt,
+    preferServer: true,
+  });
+  const avatarUpdatedAt =
+    mergedAvatar.source === "server"
+      ? serverUpdatedAt || (mergedAvatar.uri ? Date.now() : undefined)
+      : local?.updatedAt;
+
+  return {
+    id: String(p?.id || churchId || ""),
+    name: String(p?.name || churchId || "Church"),
+    address: String(p?.address || ""),
+    phone: String(p?.phone || ""),
+    pastorName: String(p?.pastorName || ""),
+    avatarUri: mergedAvatar.uri,
+    avatarUpdatedAt,
+  };
+}
+
 export async function getProfileScreenCache(userId: string) {
   const key = profileScreenKey(userId);
   const mem = profileScreenMemory.get(key);
@@ -193,42 +276,15 @@ function parseChurchOverviewResponse(
   if (!j?.ok) return null;
   const s = j?.data?.stats || {};
   const p = j?.data?.profile || {};
-  const serverAvatarRaw = String(
-    p?.avatarUri ||
-      p?.avatarUrl ||
-      p?.churchAvatarUri ||
-      p?.churchLogoUrl ||
-      p?.profileImage ||
-      p?.profilePhoto ||
-      p?.photo ||
-      p?.image ||
-      ""
-  ).trim();
-  const serverUpdatedAt = normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt);
-  const mergedAvatar = mergeChurchAvatarForDisplay({
-    churchId,
-    localUri: existing?.profile?.avatarUri || "",
-    localUpdatedAt: existing?.profile?.avatarUpdatedAt,
-    serverUri: serverAvatarRaw,
-    serverUpdatedAt,
+  const profile = parseChurchOverviewProfileFields(churchId, p, {
+    uri: existing?.profile?.avatarUri || "",
+    updatedAt: existing?.profile?.avatarUpdatedAt,
   });
-  const avatarUpdatedAt =
-    mergedAvatar.source === "server"
-      ? serverUpdatedAt || (mergedAvatar.uri ? Date.now() : undefined)
-      : existing?.profile?.avatarUpdatedAt;
 
   return {
     churchId,
     userId,
-    profile: {
-      id: String(p?.id || churchId || ""),
-      name: String(p?.name || churchId || "Church"),
-      address: String(p?.address || ""),
-      phone: String(p?.phone || ""),
-      pastorName: String(p?.pastorName || ""),
-      avatarUri: mergedAvatar.uri,
-      avatarUpdatedAt,
-    },
+    profile,
     stats: {
       activeMembers: Number(s?.activeMembers || 0),
       ministries: Number(s?.ministries || 0),
@@ -244,7 +300,7 @@ export async function silentRefreshChurchOverview(
   churchId: string,
   userId: string,
   headers?: Record<string, string>,
-  opts?: { force?: boolean }
+  opts?: { force?: boolean; profileFresh?: boolean }
 ) {
   const cid = String(churchId || "").trim();
   const uid = String(userId || "").trim();
@@ -257,14 +313,28 @@ export async function silentRefreshChurchOverview(
     Number(existingStats.ministries || 0) === 0 &&
     Number(existingStats.ministryMembers || 0) === 0;
 
-  if (!opts?.force && existing && isScreenCacheFresh(existing.updatedAt) && !existingLooksStale) {
+  const profileFresh = Boolean(opts?.profileFresh || opts?.force);
+  if (
+    !profileFresh &&
+    !opts?.force &&
+    existing &&
+    isScreenCacheFresh(existing.updatedAt) &&
+    !existingLooksStale
+  ) {
     return existing;
+  }
+
+  if (profileFresh) {
+    clearResponseCacheForRequest("GET", "/api/church/overview", uid);
   }
 
   const res = await apiGet<any>(
     "/api/church/overview",
     { headers: headers || getKristoHeaders({ userId: uid, churchId: cid }) },
-    { screen: "ScreenCache", throttleMs: SCREEN_CACHE_TTL_MS }
+    {
+      screen: "ScreenCache",
+      throttleMs: profileFresh ? 0 : SCREEN_CACHE_TTL_MS,
+    }
   ).catch(() => null);
 
   const parsed = parseChurchOverviewResponse(cid, uid, res, existing);

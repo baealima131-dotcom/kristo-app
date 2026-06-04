@@ -57,13 +57,25 @@ export function mergeChurchAvatarForDisplay(opts: {
   localUpdatedAt?: number;
   serverUri?: string;
   serverUpdatedAt?: number;
+  /** When true, server wins if serverUpdatedAt >= localUpdatedAt (church overview server truth). */
+  preferServer?: boolean;
 }) {
-  const merged = pickFresherAvatar({
+  const local = String(opts.localUri || "").trim();
+  const server = String(opts.serverUri || "").trim();
+  const localAt = normalizeAvatarUpdatedAt(opts.localUpdatedAt);
+  const serverAt = normalizeAvatarUpdatedAt(opts.serverUpdatedAt);
+
+  let merged = pickFresherAvatar({
     localUri: opts.localUri,
     localUpdatedAt: opts.localUpdatedAt,
     serverUri: opts.serverUri,
     serverUpdatedAt: opts.serverUpdatedAt,
   });
+
+  if (opts.preferServer && server && serverAt >= localAt) {
+    merged = { uri: server, skippedStale: local !== server, source: "server" };
+  }
+
 
   console.log("KRISTO_CHURCH_AVATAR_CACHE_APPLY", {
     churchId: opts.churchId,

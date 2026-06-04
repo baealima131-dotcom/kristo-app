@@ -28,6 +28,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { loadChurchProfileCache, saveChurchProfileCache } from "@/src/lib/churchStore";
 import {
   getChurchOverviewCache,
+  parseChurchOverviewProfileFields,
   peekChurchOverviewCache,
   saveChurchOverviewCache,
   type ChurchOverviewCachePayload,
@@ -40,6 +41,7 @@ import {
   normalizeAvatarUpdatedAt,
 } from "@/src/lib/avatarFreshness";
 import {
+  clearResponseCacheForRequest,
   isSaveCooldown,
   logTrafficCache,
   shouldAllowScreenRefresh,
@@ -356,6 +358,7 @@ export default function ChurchOverviewScreen() {
   const profileSigRef = useRef(
     initialOverview ? overviewProfileSignature(initialOverview.profile) : ""
   );
+  const profileFetchInflightRef = useRef<Promise<void> | null>(null);
   const firstPaintLoggedRef = useRef(false);
   const broadcastGateStateRef = useRef<{
     role: string;
@@ -527,9 +530,10 @@ export default function ChurchOverviewScreen() {
     });
   }, [stats.ministries, stats.ministryMembers, statsSource]);
 
-  async function load(opts?: { silent?: boolean; manual?: boolean }) {
+  async function load(opts?: { silent?: boolean; manual?: boolean; refreshStats?: boolean }) {
     const silent = !!opts?.silent;
     const force = !!opts?.manual;
+    const refreshStats = opts?.refreshStats !== false;
 
     if (silent) {
       setRefreshing(true);
@@ -581,15 +585,18 @@ export default function ChurchOverviewScreen() {
 
       if (!base) throw new Error("API base missing");
 
+      clearResponseCacheForRequest("GET", "/api/church/overview", effectiveAuthUserId);
+
       const overviewUrl = invitePreview
         ? `${base}/api/church/overview?invitePreview=1&inviteId=${encodeURIComponent(inviteId)}`
-        : `${base}/api/church/overview`;
+        : `${base}/api/church/overview?_=${Date.now()}`;
 
       logOverviewRequest(overviewUrl);
 
       const res = await fetch(overviewUrl, {
         method: "GET",
         headers: getHeaders(),
+        cache: "no-store" as RequestCache,
       });
       const j = await res.json().catch(() => ({} as any));
 
@@ -607,57 +614,59 @@ export default function ChurchOverviewScreen() {
       const s = j?.data?.stats || {};
       const p = j?.data?.profile || {};
       const legacyProfileCache = await loadChurchProfileCache(churchId);
-      const serverAvatarRaw = String(
-        p?.avatarUri ||
-        p?.avatarUrl ||
-        p?.profileImage ||
-        p?.profilePhoto ||
-        p?.photo ||
-        p?.image ||
-        ""
-      ).trim();
+      const prevProfileSig = profileSigRef.current;
 
-      const serverUpdatedAt = normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt);
-      const mergedAvatar = mergeChurchAvatarForDisplay({
-        churchId,
-        localUri: cached?.profile?.avatarUri || legacyProfileCache?.avatarUri || legacyProfileCache?.avatarUrl || "",
-        localUpdatedAt: cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt,
-        serverUri: serverAvatarRaw,
-        serverUpdatedAt,
+      const profileFields = parseChurchOverviewProfileFields(churchId, p, {
+        uri: cached?.profile?.avatarUri || legacyProfileCache?.avatarUri || legacyProfileCache?.avatarUrl || "",
+        updatedAt: cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt,
       });
 
-      const nextAvatar = mergedAvatar.uri ? mediaUrl(mergedAvatar.uri) : "";
-      const nextAvatarUpdatedAt =
-        mergedAvatar.source === "server"
-          ? serverUpdatedAt || (nextAvatar ? Date.now() : undefined)
-          : mergedAvatar.source === "local"
-            ? cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt
-            : cached?.profile?.avatarUpdatedAt || legacyProfileCache?.avatarUpdatedAt;
-
       const nextProfile: ChurchProfile = {
-        id: String(p?.id || churchId || ""),
-        name: String(p?.name || churchId || "Church"),
-        address: String(p?.address || ""),
-        phone: String(p?.phone || ""),
-        pastorName: String(p?.pastorName || ""),
-        avatarUri: nextAvatar,
-        avatarUpdatedAt: nextAvatarUpdatedAt,
+        ...profileFields,
+        avatarUri: profileFields.avatarUri ? mediaUrl(profileFields.avatarUri) : "",
       };
-      const pSig = overviewProfileSignature(nextProfile);
-      if (pSig !== profileSigRef.current) {
-        profileSigRef.current = pSig;
-        setProfile(nextProfile);
+
+      profileSigRef.current = overviewProfileSignature(nextProfile);
+      setProfile(nextProfile);
+
+      console.log("KRISTO_CHURCH_OVERVIEW_PROFILE_SERVER_APPLIED", {
+        churchId,
+        userId: effectiveAuthUserId,
+        name: nextProfile.name,
+        pastorName: nextProfile.pastorName,
+        hasAvatar: Boolean(nextProfile.avatarUri),
+        avatarUpdatedAt: nextProfile.avatarUpdatedAt ?? null,
+        refreshStats,
+      });
+
+      if (prevProfileSig && prevProfileSig !== profileSigRef.current) {
+        console.log("KRISTO_CHURCH_OVERVIEW_PROFILE_STALE_CACHE_REPLACED", {
+          churchId,
+          userId: effectiveAuthUserId,
+          prevProfileSig,
+          nextProfileSig: profileSigRef.current,
+        });
       }
 
-      const nextStats = {
-        activeMembers: Number(s?.activeMembers || 0),
-        ministries: Number(s?.ministries || 0),
-        ministryMembers: Number(s?.ministryMembers || 0),
-        unreadNotifications: Number(s?.unreadNotifications || 0),
-        offeringBalance: Number(s?.offeringBalance || 0),
-      };
+      const nextStats = refreshStats
+        ? {
+            activeMembers: Number(s?.activeMembers || 0),
+            ministries: Number(s?.ministries || 0),
+            ministryMembers: Number(s?.ministryMembers || 0),
+            unreadNotifications: Number(s?.unreadNotifications || 0),
+            offeringBalance: Number(s?.offeringBalance || 0),
+          }
+        : {
+            activeMembers: cached?.stats?.activeMembers ?? stats.activeMembers,
+            ministries: cached?.stats?.ministries ?? stats.ministries,
+            ministryMembers: cached?.stats?.ministryMembers ?? stats.ministryMembers,
+            unreadNotifications: cached?.stats?.unreadNotifications ?? stats.unreadNotifications,
+            offeringBalance: cached?.stats?.offeringBalance ?? stats.offeringBalance,
+          };
 
-      await applyOverviewStatsFromServer(nextStats, "GET /api/church/overview");
+      if (refreshStats) {
+        await applyOverviewStatsFromServer(nextStats, "GET /api/church/overview");
+      }
 
       if (__DEV__) {
         console.log("KRISTO_OVERVIEW_MINISTRY_SCOPE", {
@@ -699,13 +708,13 @@ export default function ChurchOverviewScreen() {
         churchId,
         userId: effectiveAuthUserId,
         profile: {
-          id: String(p?.id || churchId || ""),
-          name: String(p?.name || churchId || "Church"),
-          address: String(p?.address || ""),
-          phone: String(p?.phone || ""),
-          pastorName: String(p?.pastorName || ""),
-          avatarUri: nextAvatar,
-          avatarUpdatedAt: nextAvatarUpdatedAt,
+          id: nextProfile.id || String(p?.id || churchId || ""),
+          name: nextProfile.name || "",
+          address: nextProfile.address || "",
+          phone: nextProfile.phone || "",
+          pastorName: nextProfile.pastorName || "",
+          avatarUri: nextProfile.avatarUri || "",
+          avatarUpdatedAt: nextProfile.avatarUpdatedAt,
         },
         stats: nextStats,
         updatedAt: Date.now(),
@@ -713,21 +722,21 @@ export default function ChurchOverviewScreen() {
 
       await saveChurchProfileCache({
         churchId,
-        name: String(p?.name || churchId || "Church"),
-        address: String(p?.address || ""),
-        phone: String(p?.phone || ""),
-        pastorName: String(p?.pastorName || ""),
-        avatarUri: nextAvatar,
-        avatarUrl: nextAvatar,
-        avatarUpdatedAt: nextAvatarUpdatedAt,
+        name: nextProfile.name || "",
+        address: nextProfile.address || "",
+        phone: nextProfile.phone || "",
+        pastorName: nextProfile.pastorName || "",
+        avatarUri: nextProfile.avatarUri || "",
+        avatarUrl: nextProfile.avatarUri || "",
+        avatarUpdatedAt: nextProfile.avatarUpdatedAt,
       });
 
       if (session) {
         await setSession({
           ...session,
-          churchName: String(p?.name || session.churchName || churchId),
-          churchAvatarUri: nextAvatar,
-          churchAvatarUrl: nextAvatar,
+          churchName: nextProfile.name || session.churchName || churchId,
+          churchAvatarUri: nextProfile.avatarUri || "",
+          churchAvatarUrl: nextProfile.avatarUri || "",
         } as any);
       }
     } catch (e: any) {
@@ -788,6 +797,7 @@ export default function ChurchOverviewScreen() {
         localUpdatedAt: cached?.avatarUpdatedAt,
         serverUri: serverAvatarRaw,
         serverUpdatedAt,
+        preferServer: true,
       });
 
       const nextAvatar = mergedAvatar.uri ? mediaUrl(mergedAvatar.uri) : "";
@@ -890,18 +900,30 @@ export default function ChurchOverviewScreen() {
 
     const force = Boolean(refreshAt);
     const needsServerStats = !serverStatsLoadedRef.current;
+    const refreshStats =
+      force ||
+      needsServerStats ||
+      shouldAllowScreenRefresh("ChurchOverview", {
+        forceKey: refreshAt,
+        minMs: CHURCH_TAB_REFRESH_MS,
+      });
 
-    if (isSaveCooldown(`church-profile:${churchId}`) && !needsServerStats) return;
+    const run = () =>
+      load({
+        silent: hasOverviewCacheRef.current || !needsServerStats,
+        manual: force || needsServerStats,
+        refreshStats,
+      });
 
-    if (
-      !force &&
-      !needsServerStats &&
-      !shouldAllowScreenRefresh("ChurchOverview", { forceKey: refreshAt, minMs: CHURCH_TAB_REFRESH_MS })
-    ) {
+    if (profileFetchInflightRef.current) {
+      void profileFetchInflightRef.current.finally(run);
       return;
     }
 
-    load({ silent: !needsServerStats, manual: force || needsServerStats });
+    const job = run().finally(() => {
+      profileFetchInflightRef.current = null;
+    });
+    profileFetchInflightRef.current = job;
   }, [isFocused, refreshAt, invitePreview, previewChecked, previewLimitReached, churchId, effectiveAuthUserId]);
 
   useEffect(() => {

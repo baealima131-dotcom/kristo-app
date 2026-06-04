@@ -14,6 +14,7 @@ import {
   saveChurchDraft,
   saveChurchProfileCache,
 } from "@/src/lib/churchStore";
+import { invalidateChurchProfileCaches } from "@/src/lib/screenDataCache";
 import { buildAvatarDataUrl, compressAvatarFile } from "@/src/lib/avatarCompress";
 import {
   mergeChurchAvatarForDisplay,
@@ -288,12 +289,18 @@ export default function EditChurchProfile() {
           persisted: Boolean(serverAvatar),
         });
         const existingCache = await loadChurchProfileCache(churchId);
+        await invalidateChurchProfileCaches(churchId, {
+          userId: session?.userId,
+          source: "church-profile-patch",
+        });
+
         const mergedAvatar = mergeChurchAvatarForDisplay({
           churchId,
           localUri: displayAvatar,
           localUpdatedAt: optimisticAvatarAt || existingCache?.avatarUpdatedAt,
           serverUri: serverAvatar,
           serverUpdatedAt: serverUpdatedAt || Date.now(),
+          preferServer: true,
         });
         const avatarUpdatedAt =
           mergedAvatar.source === "server"

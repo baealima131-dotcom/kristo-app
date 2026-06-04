@@ -87,6 +87,14 @@ export async function saveChurchProfileCache(profile: ChurchProfileCache): Promi
   await AsyncStorage.setItem(profileCacheKey(churchId), JSON.stringify(next));
 }
 
+export async function clearChurchProfileCache(churchId?: string | null): Promise<void> {
+  const id = String(churchId || "").trim();
+  if (!id) return;
+  try {
+    await AsyncStorage.removeItem(profileCacheKey(id));
+  } catch {}
+}
+
 export async function resolveChurchDisplayName(
   churchId: string,
   userId?: string | null
