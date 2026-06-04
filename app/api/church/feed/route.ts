@@ -196,6 +196,82 @@ function publicUser(userId: string) {
   };
 }
 
+function commentAuthorNameLooksLikeUserId(value: string, userId: string) {
+  const v = String(value || "").trim();
+  const uid = String(userId || "").trim();
+  if (!v) return true;
+  if (uid && v === uid) return true;
+  if (/^u[-_]?/i.test(v)) return true;
+  if (/^[a-f0-9-]{18,}$/i.test(v)) return true;
+  if (v.length >= 20 && !v.includes(" ")) return true;
+  return false;
+}
+
+function nameFromViewer(viewer: any) {
+  const email = String(viewer?.email || "").trim();
+  const emailPrefix = email.includes("@") ? email.split("@")[0] : "";
+  const candidates = [
+    viewer?.fullName,
+    viewer?.displayName,
+    viewer?.name,
+    viewer?.username,
+    emailPrefix,
+  ];
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function avatarFromViewer(viewer: any) {
+  return String(
+    viewer?.avatarUri ||
+      viewer?.avatarUrl ||
+      viewer?.profileImage ||
+      viewer?.photoURL ||
+      ""
+  ).trim();
+}
+
+function resolveCommentAuthorSnapshot(viewerUserId: string, ctx: any) {
+  const viewer = ctx?.viewer || {};
+  const ctxName = nameFromViewer(viewer);
+  const ctxAvatar = avatarFromViewer(viewer);
+  const fallback = publicUser(viewerUserId);
+  const publicUserName = fallback.authorName;
+
+  let finalAuthorName = ctxName || publicUserName;
+  if (commentAuthorNameLooksLikeUserId(finalAuthorName, viewerUserId)) {
+    const profileEmail = String(profileMap()[viewerUserId]?.email || "").trim();
+    const emailPrefix = String(viewer?.email || profileEmail || "")
+      .split("@")[0]
+      .trim();
+    if (emailPrefix && !commentAuthorNameLooksLikeUserId(emailPrefix, viewerUserId)) {
+      finalAuthorName = emailPrefix;
+    } else {
+      finalAuthorName = "Member";
+    }
+  }
+
+  const finalAuthorAvatarUri = ctxAvatar || fallback.authorAvatarUri;
+  const finalAuthorInitial = finalAuthorName.trim().charAt(0).toUpperCase() || "M";
+
+  console.log("KRISTO_COMMENT_AUTHOR_RESOLVED", {
+    userId: viewerUserId,
+    ctxName: ctxName || null,
+    publicUserName,
+    finalAuthorName,
+    hasAvatar: Boolean(finalAuthorAvatarUri),
+  });
+
+  return {
+    authorName: finalAuthorName,
+    authorAvatarUri: finalAuthorAvatarUri,
+    authorInitial: finalAuthorInitial,
+  };
+}
+
 function profileAvatarForUserId(userId: string) {
   const p = profileMap()[userId] || {};
   return String(
@@ -1470,13 +1546,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       text: text.slice(0, 120),
     });
 
-    const author = publicUser(viewerUserId);
-
-    console.log("KRISTO_COMMENT_AUTHOR_SNAPSHOT", {
-      userId: viewerUserId,
-      authorName: author.authorName,
-      hasAvatar: Boolean(author.authorAvatarUri),
-    });
+    const author = resolveCommentAuthorSnapshot(viewerUserId, ctx);
 
     const comment: FeedComment = {
       id: makeId("comment"),
