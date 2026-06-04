@@ -187,12 +187,15 @@ export default function PaymentsCheckoutScreen() {
         setYearlyPackage(yearly);
       } catch (error: any) {
         if (!alive) return;
+        const reviewBypass = isAppleReviewBypassEnabled();
         console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
           screen: "checkout",
-          reviewBypass: isAppleReviewBypassEnabled(),
+          reviewBypass,
           error: formatSubscriptionSetupError(error),
         });
-        setCheckoutUnavailable(true);
+        if (!reviewBypass) {
+          setCheckoutUnavailable(true);
+        }
       } finally {
         if (alive) setLoadingPackages(false);
       }

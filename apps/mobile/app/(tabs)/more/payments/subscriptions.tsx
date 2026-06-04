@@ -138,12 +138,15 @@ export default function PaymentsSubscriptionsScreen() {
         setSubscriptionPlanStatus(effective.planStatus);
       } catch (error: any) {
         if (!alive) return;
+        const reviewBypass = isAppleReviewBypassEnabled();
         console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
           screen: "subscriptions",
-          reviewBypass: isAppleReviewBypassEnabled(),
+          reviewBypass,
           error: formatSubscriptionSetupError(error),
         });
-        setSubscriptionUnavailable(true);
+        if (!reviewBypass) {
+          setSubscriptionUnavailable(true);
+        }
       } finally {
         if (alive) setOffersLoading(false);
       }

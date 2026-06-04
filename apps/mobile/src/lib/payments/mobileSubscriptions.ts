@@ -189,7 +189,7 @@ export function formatSubscriptionSetupError(error: unknown): string {
     );
   }
 
-  return message || "RevenueCat setup or offerings are not ready yet.";
+  return message || "Subscription setup could not be completed. Try again later.";
 }
 
 export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
