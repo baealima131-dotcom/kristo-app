@@ -5,25 +5,16 @@ import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { saveProfileDraft } from "@/src/lib/profileStore";
 import { apiGet, apiPost, getApiBase } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import {
+  DEFAULT_KRISTO_COUNTRY,
+  filterKristoCountries,
+  type KristoCountry,
+} from "@/src/lib/countries";
 
 const BG = "#0B0F17";
 const GOLD = "#D9B35F";
 const MUTED = "rgba(255,255,255,0.65)";
 const BORDER = "rgba(255,255,255,0.10)";
-
-const COUNTRIES = [
-  { name: "United States", code: "+1", flag: "🇺🇸" },
-  { name: "Canada", code: "+1", flag: "🇨🇦" },
-  { name: "Burundi", code: "+257", flag: "🇧🇮" },
-  { name: "DR Congo", code: "+243", flag: "🇨🇩" },
-  { name: "Tanzania", code: "+255", flag: "🇹🇿" },
-  { name: "Kenya", code: "+254", flag: "🇰🇪" },
-  { name: "Uganda", code: "+256", flag: "🇺🇬" },
-  { name: "Rwanda", code: "+250", flag: "🇷🇼" },
-  { name: "South Africa", code: "+27", flag: "🇿🇦" },
-  { name: "United Kingdom", code: "+44", flag: "🇬🇧" },
-  { name: "France", code: "+33", flag: "🇫🇷" },
-];
 
 const MIN_AGE = 14;
 const MAX_AGE = 100;
@@ -83,10 +74,18 @@ function isSignupPasswordValid(value: string) {
 
 type SignupGender = "MALE" | "FEMALE";
 
-function buildSignupPhone(countryCode: string, local: string): string | undefined {
+function signupGenderLabel(value: SignupGender | null) {
+  if (value === "MALE") return "Male";
+  if (value === "FEMALE") return "Female";
+  return "Skip";
+}
+
+function buildSignupPhone(dialCode: string, local: string): string | undefined {
   const localTrim = local.trim();
   if (!localTrim) return undefined;
-  return `${countryCode} ${localTrim}`.trim();
+  const prefix = String(dialCode || "").trim();
+  if (!prefix) return localTrim;
+  return `${prefix} ${localTrim}`.trim();
 }
 
 function validateOptionalPhoneLocal(local: string): string | null {
@@ -115,8 +114,9 @@ export default function SignupScreen() {
   const [fullName, setFullName] = useState("");
   const [age, setAge] = useState<number | null>(null);
   const [ageOpen, setAgeOpen] = useState(false);
-  const [country, setCountry] = useState(COUNTRIES[0]);
+  const [country, setCountry] = useState<KristoCountry>(DEFAULT_KRISTO_COUNTRY);
   const [countryOpen, setCountryOpen] = useState(false);
+  const [countrySearch, setCountrySearch] = useState("");
   const [phoneLocal, setPhoneLocal] = useState("");
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [email, setEmail] = useState("");
@@ -127,6 +127,7 @@ export default function SignupScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [gender, setGender] = useState<SignupGender | null>(null);
+  const [genderOpen, setGenderOpen] = useState(false);
   const [address, setAddress] = useState("");
   const [city, setCity] = useState("");
   const [step, setStep] = useState<"form" | "verify">("form");
@@ -139,9 +140,19 @@ export default function SignupScreen() {
   const [signupChallengeId, setSignupChallengeId] = useState("");
 
   const signupPhone = useMemo(
-    () => buildSignupPhone(country.code, phoneLocal),
-    [country.code, phoneLocal]
+    () => buildSignupPhone(country.dialCode, phoneLocal),
+    [country.dialCode, phoneLocal]
   );
+
+  const filteredCountries = useMemo(
+    () => filterKristoCountries(countrySearch),
+    [countrySearch]
+  );
+
+  function closeCountryPicker() {
+    setCountryOpen(false);
+    setCountrySearch("");
+  }
 
   const passwordSaved = useMemo(
     () => isSignupPasswordValid(password) && password === confirmPassword,
@@ -156,16 +167,19 @@ export default function SignupScreen() {
     return getSignupPasswordValidationMessage(password, confirmPassword);
   }, [password, confirmPassword, passwordsMismatch]);
 
+  const countryReady = Boolean(country?.name?.trim());
+
   const canForm = useMemo(() => {
     return (
       fullName.trim().length >= 2 &&
-      !!age &&
-      age >= MIN_AGE &&
       email.trim().includes("@") &&
       passwordSaved &&
+      !!age &&
+      age >= MIN_AGE &&
+      countryReady &&
       !saving
     );
-  }, [fullName, age, email, passwordSaved, saving]);
+  }, [fullName, email, passwordSaved, age, countryReady, saving]);
 
   function onPressSendCode() {
     const pwdMsg = getSignupPasswordValidationMessage(password, confirmPassword);
@@ -223,6 +237,11 @@ export default function SignupScreen() {
     const kristoId = String(publicKristoId || p?.userCode || "").trim();
     const finalName = String(p?.fullName || fullName.trim());
 
+    const phoneValue = signupPhone;
+    const addressValue = address.trim();
+    const cityValue = city.trim();
+    const genderValue = gender === "MALE" || gender === "FEMALE" ? gender : undefined;
+
     const profilePayload: Record<string, unknown> = {
       userCode: kristoId,
       fullName: finalName,
@@ -230,9 +249,8 @@ export default function SignupScreen() {
       country: country.name,
       dob: age ? dobFromAge(age) : undefined,
     };
-    if (signupPhone) profilePayload.phone = signupPhone;
-    if (gender === "MALE" || gender === "FEMALE") profilePayload.gender = gender;
-    const cityValue = city.trim();
+    if (phoneValue) profilePayload.phone = phoneValue;
+    if (genderValue) profilePayload.gender = genderValue;
     if (cityValue) profilePayload.city = cityValue;
 
     const profileData = await apiPost(
@@ -251,9 +269,6 @@ export default function SignupScreen() {
       return false;
     }
 
-    const addressValue = address.trim();
-    const cityValue = city.trim();
-
     await setSession({
       userId: finalUserId,
       kristoId,
@@ -264,10 +279,10 @@ export default function SignupScreen() {
       email: email.trim(),
       country: country.name,
       age: age ?? undefined,
-      ...(signupPhone ? { phone: signupPhone } : {}),
+      ...(phoneValue ? { phone: phoneValue } : {}),
       ...(addressValue ? { address: addressValue } : {}),
       ...(cityValue ? { city: cityValue } : {}),
-      ...(gender === "MALE" || gender === "FEMALE" ? { gender } : {}),
+      ...(genderValue ? { gender: genderValue } : {}),
     } as any);
 
     await saveProfileDraft(
@@ -280,10 +295,10 @@ export default function SignupScreen() {
         email: email.trim(),
         country: country.name,
         age: age ?? undefined,
-        ...(signupPhone ? { phone: signupPhone } : {}),
+        ...(phoneValue ? { phone: phoneValue } : {}),
         ...(addressValue ? { address: addressValue } : {}),
         ...(cityValue ? { city: cityValue } : {}),
-        ...(gender === "MALE" || gender === "FEMALE" ? { gender } : {}),
+        ...(genderValue ? { gender: genderValue } : {}),
       },
       finalUserId
     );
@@ -345,6 +360,11 @@ export default function SignupScreen() {
       setErr("Kristo requires age 14+");
       return;
     }
+    if (!countryReady) {
+      setErr("Select your country.");
+      setCountryOpen(true);
+      return;
+    }
     const pwdMsg = getSignupPasswordValidationMessage(password, confirmPassword);
     if (pwdMsg) {
       setErr(pwdMsg);
@@ -363,6 +383,10 @@ export default function SignupScreen() {
     setSaving(true);
 
     try {
+      const phoneValue = signupPhone;
+      const cityValue = city.trim();
+      const genderValue = gender === "MALE" || gender === "FEMALE" ? gender : undefined;
+
       const signUpPayload: Record<string, unknown> = {
         email: email.trim(),
         password,
@@ -371,9 +395,8 @@ export default function SignupScreen() {
         dob: dobFromAge(age),
         country: country.name,
       };
-      if (signupPhone) signUpPayload.phone = signupPhone;
-      if (gender === "MALE" || gender === "FEMALE") signUpPayload.gender = gender;
-      const cityValue = city.trim();
+      if (phoneValue) signUpPayload.phone = phoneValue;
+      if (genderValue) signUpPayload.gender = genderValue;
       if (cityValue) signUpPayload.city = cityValue;
 
       const data = await apiPost("/api/auth/sign-up", signUpPayload);
@@ -579,28 +602,17 @@ export default function SignupScreen() {
               </View>
             ) : null}
 
-            <Text style={s.labelGap}>Gender (Optional)</Text>
-            <View style={s.genderRow}>
-              {(["MALE", "FEMALE"] as const).map((value) => {
-                const active = gender === value;
-                const label = value === "MALE" ? "Male" : "Female";
-                return (
-                  <Pressable
-                    key={value}
-                    onPress={() => setGender(value)}
-                    style={[s.genderPill, active && s.genderPillOn]}
-                  >
-                    <Text style={[s.genderPillText, active && s.genderPillTextOn]}>{label}</Text>
-                  </Pressable>
-                );
-              })}
-              <Pressable
-                onPress={() => setGender(null)}
-                style={[s.genderPill, gender === null && s.genderPillOn]}
-              >
-                <Text style={[s.genderPillText, gender === null && s.genderPillTextOn]}>Skip</Text>
-              </Pressable>
-            </View>
+            <Text style={s.labelGap}>Country</Text>
+            <Pressable
+              onPress={() => setCountryOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel={`Country, ${country.name}. Tap to change.`}
+              style={s.countrySelectCard}
+            >
+              <Text style={s.flag}>{country.flag}</Text>
+              <Text style={s.selectText}>{country.name}</Text>
+              <Text style={s.countryChangeHint}>Change</Text>
+            </Pressable>
 
             <Text style={s.labelGap}>Address (Optional)</Text>
             <TextInput value={address} onChangeText={setAddress} placeholder="Street address" placeholderTextColor="rgba(255,255,255,0.35)" style={s.input} />
@@ -608,19 +620,10 @@ export default function SignupScreen() {
             <Text style={s.labelGap}>City (Optional)</Text>
             <TextInput value={city} onChangeText={setCity} placeholder="City" placeholderTextColor="rgba(255,255,255,0.35)" style={s.input} />
 
-            <Text style={s.labelGap}>Country</Text>
-            <Pressable onPress={() => setCountryOpen((v) => !v)} style={s.selectCard}>
-              <Text style={s.flag}>{country.flag}</Text>
-              <Text style={s.selectText}>{country.name}</Text>
-              <Text style={s.chevron}>{countryOpen ? "⌃" : "⌄"}</Text>
-            </Pressable>
-
-
-
             <Text style={s.labelGap}>Phone number (Optional)</Text>
             <View style={s.phoneRow}>
               <View style={s.codeBox}>
-                <Text style={s.codeText}>{country.code}</Text>
+                <Text style={s.codeText}>{country.dialCode || "—"}</Text>
               </View>
               <Pressable onPress={() => setPhoneOpen(true)} style={[s.input, s.phoneInput, s.phoneSelect]}>
                 <Text style={[s.phoneSelectText, !phoneLocal.trim() && s.phoneSelectPlaceholder]}>
@@ -629,21 +632,27 @@ export default function SignupScreen() {
               </Pressable>
             </View>
 
-            <View style={[s.splitBtn, !canForm && { opacity: 0.45 }]}>
-              <Pressable
-                onPress={() => setAgeOpen(true)}
-                style={s.splitAge}
-              >
+            <View style={s.splitBtn}>
+              <Pressable onPress={() => setGenderOpen(true)} style={s.splitGender}>
+                <Text style={s.splitGenderSmall}>Gender</Text>
+                <Text style={s.splitGenderText} numberOfLines={1}>
+                  {signupGenderLabel(gender)}
+                </Text>
+              </Pressable>
+
+              <Pressable onPress={() => setAgeOpen(true)} style={s.splitAge}>
                 <Text style={s.splitSmall}>Age</Text>
-                <Text style={s.splitAgeText}>{age ? `Age ${age}` : "Select"}</Text>
+                <Text style={s.splitAgeText}>{age ? `${age}` : "Select"}</Text>
               </Pressable>
 
               <Pressable
                 onPress={onPressSendCode}
-                disabled={saving}
-                style={[s.splitSend, !canForm && { opacity: 0.45 }]}
+                disabled={!canForm || saving}
+                style={[s.splitSend, canForm ? s.splitSendActive : s.splitSendDisabled]}
               >
-                <Text style={s.splitSendText}>{saving ? "Sending..." : "Send code"}</Text>
+                <Text style={[s.splitSendText, !canForm && s.splitSendTextDisabled]}>
+                  {saving ? "Sending..." : "Send code"}
+                </Text>
               </Pressable>
             </View>
 
@@ -695,32 +704,84 @@ export default function SignupScreen() {
           <Text style={s.linkText}>Back to Login</Text>
         </Pressable>
       </View>
-      <Modal visible={countryOpen} transparent animationType="fade" onRequestClose={() => setCountryOpen(false)}>
+      <Modal visible={countryOpen} transparent animationType="fade" onRequestClose={closeCountryPicker}>
         <View style={s.modalWrap}>
-          <Pressable style={s.modalBackdrop} onPress={() => setCountryOpen(false)} />
+          <Pressable style={s.modalBackdrop} onPress={closeCountryPicker} />
 
           <View style={s.countrySheet}>
             <View style={s.sheetHandle} />
             <Text style={s.sheetTitle}>Select country</Text>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {COUNTRIES.map((c) => {
-                const active = c.name === country.name;
-                return (
-                  <Pressable
-                    key={c.name}
-                    onPress={() => {
-                      setCountry(c);
-                      setCountryOpen(false);
-                    }}
-                    style={[s.sheetOption, active && s.sheetOptionOn]}
-                  >
-                    <Text style={s.flagSmall}>{c.flag}</Text>
-                    <Text style={[s.countryName, active && s.countryNameOn]}>{c.name}</Text>
-                  </Pressable>
-                );
-              })}
+            <TextInput
+              value={countrySearch}
+              onChangeText={setCountrySearch}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="Search name, ISO, or dial code"
+              placeholderTextColor="rgba(255,255,255,0.38)"
+              style={s.countrySearchInput}
+            />
+
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              {filteredCountries.length === 0 ? (
+                <Text style={s.countrySearchEmpty}>No countries match your search.</Text>
+              ) : (
+                filteredCountries.map((c) => {
+                  const active = c.code === country.code;
+                  return (
+                    <Pressable
+                      key={c.code}
+                      onPress={() => {
+                        setCountry(c);
+                        closeCountryPicker();
+                      }}
+                      style={[s.sheetOption, active && s.sheetOptionOn]}
+                    >
+                      <Text style={s.flagSmall}>{c.flag}</Text>
+                      <View style={s.countryOptionTextWrap}>
+                        <Text style={[s.countryName, active && s.countryNameOn]}>{c.name}</Text>
+                        <Text style={s.countryOptionMeta}>
+                          {c.code}
+                          {c.dialCode ? ` · ${c.dialCode}` : ""}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })
+              )}
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={genderOpen} transparent animationType="fade" onRequestClose={() => setGenderOpen(false)}>
+        <View style={s.genderModalWrap}>
+          <Pressable style={s.genderBackdrop} onPress={() => setGenderOpen(false)} />
+          <View style={s.genderSheet}>
+            <Text style={s.genderSheetTitle}>Gender</Text>
+            <Text style={s.genderSheetSub}>Optional</Text>
+            {(
+              [
+                { value: "MALE" as const, label: "Male" },
+                { value: "FEMALE" as const, label: "Female" },
+                { value: null, label: "Skip" },
+              ] as const
+            ).map((item) => {
+              const active = gender === item.value;
+              return (
+                <Pressable
+                  key={item.label}
+                  onPress={() => {
+                    setGender(item.value);
+                    setGenderOpen(false);
+                  }}
+                  style={[s.genderOption, active && s.genderOptionOn]}
+                >
+                  <Text style={[s.genderOptionText, active && s.genderOptionTextOn]}>{item.label}</Text>
+                  {active ? <Text style={s.genderOptionBadge}>Selected</Text> : null}
+                </Pressable>
+              );
+            })}
           </View>
         </View>
       </Modal>
@@ -776,7 +837,7 @@ export default function SignupScreen() {
 
             <View style={s.phoneSheetRow}>
               <View style={s.phoneSheetCode}>
-                <Text style={s.phoneSheetCodeText}>{country.code}</Text>
+                <Text style={s.phoneSheetCodeText}>{country.dialCode || "—"}</Text>
               </View>
 
               <TextInput
@@ -853,12 +914,54 @@ const s = StyleSheet.create({
   nameInput: { flex: 1, paddingRight: 112 },
   input: { marginTop: 6, minHeight: 50, borderWidth: 1, borderColor: "rgba(255,255,255,0.10)", borderRadius: 19, paddingHorizontal: 15, color: "white", fontWeight: "900", backgroundColor: "rgba(255,255,255,0.035)" },
   selectCard: { marginTop: 6, minHeight: 50, borderWidth: 1.1, borderColor: "rgba(244,201,93,0.48)", borderRadius: 20, paddingHorizontal: 15, flexDirection: "row", alignItems: "center", backgroundColor: "rgba(244,201,93,0.10)" },
+  countrySelectCard: {
+    marginTop: 6,
+    minHeight: 50,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 20,
+    paddingHorizontal: 15,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.035)",
+  },
+  countryChangeHint: {
+    color: "rgba(147,197,253,0.9)",
+    fontWeight: "800",
+    fontSize: 12,
+  },
   flag: { fontSize: 20, marginRight: 10 },
   selectText: { flex: 1, color: "white", fontWeight: "900", fontSize: 16 },
   chevron: { color: GOLD, fontWeight: "900", fontSize: 18 },
   modalWrap: { flex: 1, justifyContent: "flex-end" },
   modalBackdrop: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.58)" },
-  countrySheet: { maxHeight: "52%", margin: 14, borderRadius: 28, padding: 14, backgroundColor: "rgba(12,16,25,0.98)", borderWidth: 1, borderColor: "rgba(217,179,95,0.28)" },
+  countrySheet: { maxHeight: "72%", margin: 14, borderRadius: 28, padding: 14, backgroundColor: "rgba(12,16,25,0.98)", borderWidth: 1, borderColor: "rgba(217,179,95,0.28)" },
+  countrySearchInput: {
+    marginTop: 10,
+    marginBottom: 8,
+    minHeight: 46,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    color: "white",
+    fontWeight: "800",
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  countrySearchEmpty: {
+    color: MUTED,
+    fontWeight: "800",
+    fontSize: 13,
+    textAlign: "center",
+    paddingVertical: 16,
+  },
+  countryOptionTextWrap: { flex: 1 },
+  countryOptionMeta: {
+    color: "rgba(255,255,255,0.45)",
+    fontWeight: "800",
+    fontSize: 11,
+    marginTop: 2,
+  },
   sheetHandle: { alignSelf: "center", width: 42, height: 5, borderRadius: 999, backgroundColor: "rgba(255,255,255,0.22)", marginBottom: 12 },
   sheetTitle: { color: "white", fontWeight: "900", fontSize: 18, marginBottom: 0 },
   sheetOption: { minHeight: 46, borderRadius: 16, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", marginBottom: 6, backgroundColor: "rgba(255,255,255,0.035)" },
@@ -961,19 +1064,6 @@ const s = StyleSheet.create({
     flexShrink: 1,
   },
 
-  genderRow: { marginTop: 6, flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  genderPill: {
-    borderWidth: 1,
-    borderColor: BORDER,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.02)",
-  },
-  genderPillOn: { borderColor: "rgba(217,179,95,0.55)", backgroundColor: "rgba(217,179,95,0.12)" },
-  genderPillText: { color: MUTED, fontWeight: "800", fontSize: 13 },
-  genderPillTextOn: { color: GOLD },
-
   phoneRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   codeBox: { marginTop: 6, borderWidth: 1, borderColor: "rgba(217,179,95,0.4)", borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: "rgba(217,179,95,0.08)" },
   codeText: { color: GOLD, fontWeight: "900" },
@@ -1000,22 +1090,46 @@ const s = StyleSheet.create({
   noticeText: { color: "white", fontWeight: "900", marginTop: 2, lineHeight: 20 },
   err: { color: "#ff7b7b", fontWeight: "900", marginBottom: 12 },
   splitBtn: {
-    position: "relative",
     marginTop: 16,
     minHeight: 70,
     borderRadius: 24,
     flexDirection: "row",
-    overflow: "visible",
-    backgroundColor: "rgba(244,201,93,0.85)",
+    overflow: "hidden",
+    gap: 2,
+    backgroundColor: "rgba(255,255,255,0.04)",
     shadowColor: "#F4C95D",
-    shadowOpacity: 0.25,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
   },
-  splitAge: {
+  splitGender: {
     flex: 1,
     borderTopLeftRadius: 24,
     borderBottomLeftRadius: 24,
+    backgroundColor: "rgba(88,52,140,0.92)",
+    borderWidth: 1.1,
+    borderColor: "rgba(192,132,252,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+  },
+  splitGenderSmall: {
+    color: "rgba(233,213,255,0.82)",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.3,
+  },
+  splitGenderText: {
+    color: "#F5E6FF",
+    fontWeight: "900",
+    fontSize: 13,
+    lineHeight: 16,
+    textAlign: "center",
+    marginTop: 2,
+  },
+  splitAge: {
+    flex: 1,
     backgroundColor: "rgba(18,24,36,0.98)",
     borderWidth: 1.1,
     borderColor: "rgba(244,201,93,0.22)",
@@ -1037,22 +1151,76 @@ const s = StyleSheet.create({
     textAlign: "center",
   },
   splitSend: {
-    flex: 1.65,
+    flex: 1.35,
     borderTopRightRadius: 24,
     borderBottomRightRadius: 24,
-    backgroundColor: "#D9B35F",
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 12,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
+  },
+  splitSendActive: {
+    backgroundColor: "rgba(244,201,93,0.95)",
+    borderWidth: 1.1,
+    borderColor: "rgba(255,255,255,0.22)",
+  },
+  splitSendDisabled: {
+    backgroundColor: "rgba(244,201,93,0.28)",
+    borderWidth: 1.1,
+    borderColor: "rgba(244,201,93,0.18)",
   },
   splitSendText: {
     color: "#0B0F17",
     fontWeight: "900",
-    fontSize: 14,
-    lineHeight: 17,
+    fontSize: 13,
+    lineHeight: 16,
     textAlign: "center",
   },
+  splitSendTextDisabled: {
+    color: "rgba(11,15,23,0.55)",
+  },
+  genderModalWrap: { flex: 1, justifyContent: "center", alignItems: "center" },
+  genderBackdrop: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.72)" },
+  genderSheet: {
+    width: "72%",
+    borderRadius: 26,
+    padding: 14,
+    backgroundColor: "rgba(14,10,24,0.98)",
+    borderWidth: 1.2,
+    borderColor: "rgba(192,132,252,0.58)",
+    shadowColor: "#C084FC",
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+  },
+  genderSheetTitle: { color: "#F5E6FF", fontWeight: "900", fontSize: 17, textAlign: "center" },
+  genderSheetSub: {
+    color: "rgba(233,213,255,0.62)",
+    fontWeight: "800",
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  genderOption: {
+    minHeight: 46,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 6,
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderWidth: 1,
+    borderColor: "rgba(192,132,252,0.2)",
+  },
+  genderOptionOn: {
+    backgroundColor: "rgba(88,52,140,0.35)",
+    borderColor: "rgba(192,132,252,0.55)",
+  },
+  genderOptionText: { color: "rgba(255,255,255,0.78)", fontWeight: "900", fontSize: 16 },
+  genderOptionTextOn: { color: "#E9D5FF" },
+  genderOptionBadge: { color: "#C084FC", fontWeight: "900", fontSize: 11 },
   ageHint: {
     marginTop: 6,
     color: "rgba(255,255,255,0.48)",
