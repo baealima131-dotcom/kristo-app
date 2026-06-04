@@ -100,6 +100,25 @@ export default function HomeFeedScreen() {
   }, [loadFeed, screenFocused]);
 
   useEffect(() => {
+    if (!backendRows.length) return;
+    setOptimisticLikes((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const item of backendRows) {
+        const postId = baseFeedId(String(item?.id || ""));
+        if (!postId || !(postId in next)) continue;
+        const backendLiked = Boolean(item?.likedByMe ?? item?.liked);
+        const opt = next[postId];
+        if (backendLiked || opt.liked === backendLiked) {
+          delete next[postId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [backendRows]);
+
+  useEffect(() => {
     if (!feedFocused) return;
     const timer = setInterval(() => {
       void loadFeed("poll");
@@ -179,13 +198,35 @@ export default function HomeFeedScreen() {
 
   const getLikeState = useCallback(
     (item: any) => {
-      const postId = String(item?.id || "");
-      if (Object.prototype.hasOwnProperty.call(optimisticLikes, postId)) {
-        return optimisticLikes[postId];
+      const postId = baseFeedId(String(item?.id || ""));
+      if (!postId) {
+        return { liked: false, likeCount: 0 };
       }
+
+      const backendLiked = Boolean(item?.likedByMe ?? item?.liked);
+      const backendCount = Number(item?.likeCount || 0);
+
+      if (Object.prototype.hasOwnProperty.call(optimisticLikes, postId)) {
+        const optimistic = optimisticLikes[postId];
+        if (optimistic.liked === backendLiked) {
+          return {
+            liked: optimistic.liked,
+            likeCount: Math.max(optimistic.likeCount, backendCount),
+          };
+        }
+        // After refresh, persisted likedByMe from API wins over stale optimistic false.
+        if (backendLiked) {
+          return {
+            liked: true,
+            likeCount: Math.max(backendCount, optimistic.likeCount),
+          };
+        }
+        return optimistic;
+      }
+
       return {
-        liked: Boolean(item?.liked),
-        likeCount: Number(item?.likeCount || 0),
+        liked: backendLiked,
+        likeCount: backendCount,
       };
     },
     [optimisticLikes]
@@ -204,7 +245,7 @@ export default function HomeFeedScreen() {
 
   const handleLike = useCallback(
     (item: any) => {
-      const postId = String(item?.id || "").trim();
+      const postId = baseFeedId(String(item?.id || ""));
       if (!postId) return;
 
       const current = getLikeState(item);

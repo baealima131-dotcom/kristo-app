@@ -85,6 +85,18 @@ function usePostgres() {
 
 export type CommentStoreMode = "postgres" | "local-json" | "missing-db-on-vercel";
 
+export function commentStoreEnvDiagnostics() {
+  return {
+    vercel: isVercelRuntime(),
+    hasDurableStore: hasDurableStore(),
+    hasDATABASE_URL: Boolean(process.env.DATABASE_URL),
+    hasPOSTGRES_URL: Boolean(process.env.POSTGRES_URL),
+    hasPOSTGRES_URL_NON_POOLING: Boolean(process.env.POSTGRES_URL_NON_POOLING),
+    hasPOSTGRES_PRISMA_URL: Boolean(process.env.POSTGRES_PRISMA_URL),
+    localCommentsPath: `${getKristoDataDir()}/${LOCAL_COMMENTS_FILE}`,
+  };
+}
+
 export function resolveCommentStoreMode(): CommentStoreMode {
   if (isVercelRuntime() && !hasDurableStore()) return "missing-db-on-vercel";
   return hasDurableStore() ? "postgres" : "local-json";
@@ -103,7 +115,7 @@ export function logCommentStoreEvent(args: {
 }) {
   const mode = resolveCommentStoreMode();
   const path = storePathForMode(mode);
-  console.log("KRISTO_COMMENT_STORE_MODE", { mode });
+  console.log("KRISTO_COMMENT_STORE_MODE", { mode, ...commentStoreEnvDiagnostics() });
   if (args.op === "write") {
     console.log("KRISTO_COMMENT_STORE_WRITE_PATH", { path, detail: args.detail || null });
     console.log("KRISTO_COMMENT_STORE_WRITE_COUNT", { count: args.count });
@@ -469,47 +481,88 @@ export async function deleteEngagementForPost(postId: string): Promise<void> {
   logCommentStoreEvent({ op: "write", count: 0, detail: `delete-post:${pid}` });
 }
 
+function normalizePostLikeIds(postId: string, postIdAliases?: Iterable<string>) {
+  return [
+    ...new Set(
+      [postId, ...(postIdAliases ? [...postIdAliases] : [])]
+        .map((x) => String(x || "").trim())
+        .filter(Boolean)
+    ),
+  ];
+}
+
 export async function getPostLikeMeta(
   churchId: string,
   postId: string,
-  viewerUserId: string
+  viewerUserId: string,
+  postIdAliases?: Iterable<string>
 ): Promise<{ likeCount: number; likedByMe: boolean }> {
   const cid = String(churchId || "").trim();
-  const pid = String(postId || "").trim();
-  if (!cid || !pid) return { likeCount: 0, likedByMe: false };
+  const uid = String(viewerUserId || "").trim();
+  const ids = normalizePostLikeIds(postId, postIdAliases);
+  const primaryPostId = ids[0] || String(postId || "").trim();
+
+  if (!ids.length) {
+    console.log("KRISTO_POST_LIKE_META_READ", {
+      postId: primaryPostId,
+      viewerUserId: uid,
+      likeCount: 0,
+      likedByMe: false,
+    });
+    return { likeCount: 0, likedByMe: false };
+  }
 
   try {
     await ensureCommentStoreReady();
   } catch (error) {
-    if (isCommentDatabaseError(error)) return { likeCount: 0, likedByMe: false };
+    if (isCommentDatabaseError(error)) {
+      console.log("KRISTO_POST_LIKE_META_READ", {
+        postId: primaryPostId,
+        viewerUserId: uid,
+        likeCount: 0,
+        likedByMe: false,
+      });
+      return { likeCount: 0, likedByMe: false };
+    }
     throw error;
   }
+
+  let likeCount = 0;
+  let likedByMe = false;
 
   if (usePostgres()) {
     const sql = getSql();
     const countRows = await sql`
       SELECT COUNT(*)::int AS count
       FROM kristo_church_feed_post_likes
-      WHERE church_id = ${cid} AND post_id = ${pid}
+      WHERE post_id = ANY(${ids})
     `;
-    const likedRows = await sql`
-      SELECT 1
-      FROM kristo_church_feed_post_likes
-      WHERE church_id = ${cid} AND post_id = ${pid} AND user_id = ${viewerUserId}
-      LIMIT 1
-    `;
-    return {
-      likeCount: Number((countRows as any[])?.[0]?.count || 0),
-      likedByMe: (likedRows as any[]).length > 0,
-    };
+    likeCount = Number((countRows as any[])?.[0]?.count || 0);
+
+    if (uid) {
+      const likedRows = await sql`
+        SELECT 1
+        FROM kristo_church_feed_post_likes
+        WHERE post_id = ANY(${ids}) AND user_id = ${uid}
+        LIMIT 1
+      `;
+      likedByMe = (likedRows as any[]).length > 0;
+    }
+  } else {
+    const likes = await readLocalPostLikes();
+    const scoped = likes.filter((x) => ids.includes(String(x.postId || "")));
+    likeCount = scoped.length;
+    likedByMe = uid ? scoped.some((x) => x.userId === uid) : false;
   }
 
-  const likes = await readLocalPostLikes();
-  const scoped = likes.filter((x) => x.churchId === cid && x.postId === pid);
-  return {
-    likeCount: scoped.length,
-    likedByMe: scoped.some((x) => x.userId === viewerUserId),
-  };
+  console.log("KRISTO_POST_LIKE_META_READ", {
+    postId: primaryPostId,
+    viewerUserId: uid,
+    likeCount,
+    likedByMe,
+  });
+
+  return { likeCount, likedByMe };
 }
 
 export async function togglePostLike(args: {
@@ -529,7 +582,7 @@ export async function togglePostLike(args: {
     const existing = await sql`
       SELECT user_id
       FROM kristo_church_feed_post_likes
-      WHERE church_id = ${cid} AND post_id = ${pid} AND user_id = ${uid}
+      WHERE post_id = ${pid} AND user_id = ${uid}
       LIMIT 1
     `;
     const hasLike = (existing as any[]).length > 0;
@@ -548,14 +601,14 @@ export async function togglePostLike(args: {
       if (hasLike) {
         await sql`
           DELETE FROM kristo_church_feed_post_likes
-          WHERE church_id = ${cid} AND post_id = ${pid} AND user_id = ${uid}
+          WHERE post_id = ${pid} AND user_id = ${uid}
         `;
       }
       likedByMe = false;
     } else if (hasLike) {
       await sql`
         DELETE FROM kristo_church_feed_post_likes
-        WHERE church_id = ${cid} AND post_id = ${pid} AND user_id = ${uid}
+        WHERE post_id = ${pid} AND user_id = ${uid}
       `;
       likedByMe = false;
     } else {
@@ -573,9 +626,7 @@ export async function togglePostLike(args: {
   }
 
   const likes = await readLocalPostLikes();
-  const index = likes.findIndex(
-    (x) => x.churchId === cid && x.postId === pid && x.userId === uid
-  );
+  const index = likes.findIndex((x) => x.postId === pid && x.userId === uid);
   let likedByMe = index >= 0;
 
   if (args.wantsLiked === true) {
@@ -593,11 +644,9 @@ export async function togglePostLike(args: {
   }
 
   await writeLocalPostLikes(likes);
+  const likeCount = likes.filter((x) => String(x.postId || "") === pid).length;
   logCommentStoreEvent({ op: "write", count: likes.length, detail: `toggle-post-like:${pid}` });
-  return {
-    likedByMe,
-    likeCount: likes.filter((x) => x.churchId === cid && x.postId === pid).length,
-  };
+  return { likedByMe, likeCount };
 }
 
 export async function getCommentLikeMetaForIds(

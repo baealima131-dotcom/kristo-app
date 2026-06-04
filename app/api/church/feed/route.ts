@@ -953,6 +953,7 @@ async function enrichFeedListItem(
   const videoPosterUri = posterUri || thumbnailUri;
 
   const postId = String(item?.id || "").trim();
+  const postIdAliases = commentPostIdAliases(item, postId);
   let discussion = { commentCount: 0, replyCount: 0 };
   if (postId) {
     if (engagement?.discussionByPostId.has(postId)) {
@@ -963,7 +964,7 @@ async function enrichFeedListItem(
     }
   }
   const likeMeta = postId
-    ? await getPostLikeMeta(itemChurchId, postId, viewerUserId)
+    ? await getPostLikeMeta(itemChurchId, postId, viewerUserId, postIdAliases)
     : { likeCount: 0, likedByMe: false };
 
   return withVideoMetadataReturnFields({
@@ -1016,7 +1017,12 @@ async function safeEnrichFeedListItem(
       (postId && engagement?.discussionByPostId.get(postId)) ||
       { commentCount: 0, replyCount: 0 };
     const likeMeta = postId
-      ? await getPostLikeMeta(itemChurchId, postId, viewerUserId).catch(() => ({
+      ? await getPostLikeMeta(
+          itemChurchId,
+          postId,
+          viewerUserId,
+          commentPostIdAliases(item, postId)
+        ).catch(() => ({
           likeCount: 0,
           likedByMe: false,
         }))
@@ -1618,28 +1624,36 @@ async function handleFeedPost(req: NextRequest, body: any) {
   }
 
   if (action === "toggle_like") {
-    const postId = cleanText(body?.postId, 240);
+    const requestPostId = cleanText(body?.postId, 240);
 
-    if (!postId) return err("postId is required", 400);
+    if (!requestPostId) return err("postId is required", 400);
 
-    const item = await getFeedItemById(postId);
+    const item = await getFeedItemById(requestPostId);
 
     if (!item) return err("Feed item not found", 404);
 
     const itemChurchId = String(item.churchId || churchId);
+    const canonicalPostId = String(item.id || requestPostId).trim();
 
     const wantsLiked =
       typeof body?.liked === "boolean" ? Boolean(body.liked) : null;
 
     const likeResult = await togglePostLike({
       churchId: itemChurchId,
-      postId,
+      postId: canonicalPostId,
       viewerUserId,
       wantsLiked,
     });
 
+    console.log("KRISTO_POST_LIKE_TOGGLE", {
+      postId: canonicalPostId,
+      viewerUserId,
+      likedByMe: likeResult.likedByMe,
+      likeCount: likeResult.likeCount,
+    });
+
     return ok({
-      postId,
+      postId: canonicalPostId,
       likedByMe: likeResult.likedByMe,
       likeCount: likeResult.likeCount,
     });
