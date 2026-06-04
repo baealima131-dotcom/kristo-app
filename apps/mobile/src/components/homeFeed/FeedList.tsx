@@ -23,6 +23,7 @@ import {
   resolveHomeFeedSlotCardStatus,
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
+import { isHomeFeedRenderPaused } from "@/src/lib/liveRoomStartup";
 
 type Props = {
   rows: any[];
@@ -167,6 +168,8 @@ export const FeedList = memo(function FeedList({
   onReport,
 }: Props) {
   const [scheduleNowMs] = useState(() => Date.now());
+  const renderPaused = isHomeFeedRenderPaused();
+  const effectiveScreenFocused = screenFocused && !renderPaused;
 
   const handleMomentumScrollEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -184,16 +187,18 @@ export const FeedList = memo(function FeedList({
         isExplicitHomeFeedMediaScheduleRow(item) || isMediaLiveSlotsHomeFeedRow(item);
       const isScheduleCard = isHomeFeedScheduleCardRow(item, scheduleNowMs);
 
-      console.log("KRISTO_FEED_RENDER_ITEM", {
-        index,
-        id: feedRenderKey(item) || String(item?.id || ""),
-        scheduleType: String(item?.scheduleType || ""),
-        source: String(item?.source || ""),
-        slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
-        isScheduleCandidate,
-        isScheduleCard,
-        rowKind: isScheduleCard ? "schedule-card" : "feed-row",
-      });
+      if (!renderPaused) {
+        console.log("KRISTO_FEED_RENDER_ITEM", {
+          index,
+          id: feedRenderKey(item) || String(item?.id || ""),
+          scheduleType: String(item?.scheduleType || ""),
+          source: String(item?.source || ""),
+          slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
+          isScheduleCandidate,
+          isScheduleCard,
+          rowKind: isScheduleCard ? "schedule-card" : "feed-row",
+        });
+      }
 
       if (isScheduleCandidate && !isScheduleCard) {
         console.log("KRISTO_HOME_FEED_SCHEDULE_ROW_DROPPED", {
@@ -245,7 +250,7 @@ export const FeedList = memo(function FeedList({
           height={contentHeight}
           isActive={index === activeIndex}
           isNext={index === activeIndex + 1}
-          screenFocused={screenFocused}
+          screenFocused={effectiveScreenFocused}
           likedByMe={likeState.likedByMe}
           liked={likeState.liked}
           likeCount={likeState.likeCount}
@@ -264,6 +269,8 @@ export const FeedList = memo(function FeedList({
       contentHeight,
       activeIndex,
       screenFocused,
+      effectiveScreenFocused,
+      renderPaused,
       scheduleNowMs,
       likeUiEpoch,
       getLikeState,
