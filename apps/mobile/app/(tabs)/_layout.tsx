@@ -23,7 +23,8 @@ import {
   onLiveRingRefresh,
 } from "@/src/lib/liveScheduleRing";
 import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
-import { Alert, Animated, Pressable, Text, View } from "react-native";
+import { Animated, Pressable, Text, View } from "react-native";
+import { recoverChurchIdFromMembership } from "@/src/lib/churchLockedRecovery";
 import { fetchLightLiveState, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
 
 const VIP_BG = "#0B0F17";
@@ -207,7 +208,7 @@ export default function TabLayout() {
   const segments = useSegments() as string[];
   const params = useGlobalSearchParams<{ profileMode?: string }>();
   const router = useRouter();
-  const { session, loading } = useKristoSession();
+  const { session, loading, setSession } = useKristoSession();
 
   useLayoutEffect(() => {
     const tab = String(segments[1] || "index");
@@ -858,7 +859,7 @@ export default function TabLayout() {
                 openChurchLiveAsViewer("longPress", gestureAt);
               }}
               delayLongPress={LIVE_RING_LONG_PRESS_MS}
-              onPress={() => {
+              onPress={async () => {
                 if (isMessagesMode) {
                   router.replace("/more/my-church-room/messages/live-room" as any);
                   return;
@@ -866,10 +867,12 @@ export default function TabLayout() {
 
                 // LIVE room opens only on long press (red ring).
                 if (!hasChurch) {
-                  Alert.alert(
-                    "Church locked",
-                    "Session bado haina churchId. Rudi Me → Invitations → Accept invite tena, au logout/login ili session isome membership mpya."
-                  );
+                  const recovered = await recoverChurchIdFromMembership(session, setSession);
+                  if (recovered.churchId) {
+                    router.replace("/(tabs)/church/overview" as any);
+                    return;
+                  }
+                  router.replace("/more/church" as any);
                   return;
                 }
 

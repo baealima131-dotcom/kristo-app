@@ -8,7 +8,7 @@ import {
   Alert,
   ActivityIndicator,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
@@ -33,13 +33,17 @@ import {
   resolveMonthlyPackage,
   resolveYearlyPackage,
   describeCurrentOfferingPackages,
+  setRevenueCatDebugRouteEnabled,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
   activateChurchSubscriptionForPastor,
   isPastorSessionRole,
 } from "../../../../src/lib/churchSubscription";
+import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
+import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
+import { SUBSCRIPTION_REVIEW_FALLBACK_MESSAGE } from "../../../../src/lib/subscriptionReviewFallback";
 
 const PLAN_META: Record<
   SubscriptionPlanKey,
@@ -75,7 +79,7 @@ export default function PaymentsCheckoutScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ plan?: string }>();
-  const { session, loading: sessionLoading } = useKristoSession();
+  const { session, loading: sessionLoading, setSession } = useKristoSession();
 
   const [paymentsState, setPaymentsState] = useState(() => getPaymentsState());
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
@@ -84,6 +88,7 @@ export default function PaymentsCheckoutScreen() {
   const didLoadPackagesRef = useRef(false);
   const didLogCheckoutPackagesRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
+  const [checkoutUnavailable, setCheckoutUnavailable] = useState(false);
 
   useEffect(() => {
     setPaymentsCurrentModule("subscriptions");
@@ -91,6 +96,13 @@ export default function PaymentsCheckoutScreen() {
       setPaymentsState(getPaymentsState());
     });
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      setRevenueCatDebugRouteEnabled(true);
+      return () => setRevenueCatDebugRouteEnabled(false);
+    }, [])
+  );
 
   const paramPlan = params.plan;
   const safePlan: SubscriptionPlanKey =
@@ -109,14 +121,27 @@ export default function PaymentsCheckoutScreen() {
       return { activated: false, skipped: true as const };
     }
 
+    let churchId = sessionChurchId;
+    if (!churchId) {
+      const recovered = await recoverChurchIdFromMembership(session, setSession);
+      churchId = recovered.churchId;
+    }
+
+    if (!churchId) {
+      if (isAppleReviewBypassEnabled()) {
+        return { activated: false, skipped: true as const };
+      }
+      return { activated: false, skipped: false as const };
+    }
+
     const headers = getKristoHeaders({
       userId: sessionUserId,
       role: sessionRole as any,
-      churchId: sessionChurchId,
+      churchId,
     }) as Record<string, string>;
 
     const activated = await activateChurchSubscriptionForPastor(
-      sessionChurchId,
+      churchId,
       resolvedPlan,
       headers
     );
@@ -162,7 +187,12 @@ export default function PaymentsCheckoutScreen() {
         setYearlyPackage(yearly);
       } catch (error: any) {
         if (!alive) return;
-        Alert.alert("Confirm plan not ready", formatSubscriptionSetupError(error));
+        console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
+          screen: "checkout",
+          reviewBypass: isAppleReviewBypassEnabled(),
+          error: formatSubscriptionSetupError(error),
+        });
+        setCheckoutUnavailable(true);
       } finally {
         if (alive) setLoadingPackages(false);
       }
@@ -196,6 +226,15 @@ export default function PaymentsCheckoutScreen() {
     if (submitting) return;
 
     if (!targetPackage) {
+      if (checkoutUnavailable || isAppleReviewBypassEnabled()) {
+        console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
+          screen: "checkout",
+          reason: "package_missing",
+          reviewBypass: isAppleReviewBypassEnabled(),
+        });
+        router.back();
+        return;
+      }
       Alert.alert(
         "Package missing",
         "Monthly or yearly package was not found from RevenueCat offerings. Check Metro logs for packageType, identifier, and productIdentifier."
@@ -371,6 +410,18 @@ export default function PaymentsCheckoutScreen() {
               <Text style={s.loadingText}>Loading checkout package...</Text>
             </View>
           ) : null}
+
+          {checkoutUnavailable ? (
+            <View style={s.reviewFallbackCard}>
+              <Text style={s.reviewFallbackText}>{SUBSCRIPTION_REVIEW_FALLBACK_MESSAGE}</Text>
+              <Pressable
+                onPress={() => router.back()}
+                style={({ pressed }) => [s.reviewFallbackBtn, pressed ? s.pressed : null]}
+              >
+                <Text style={s.reviewFallbackBtnText}>Continue using Kristo</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
 
         <View style={s.summaryCard}>
@@ -389,7 +440,7 @@ export default function PaymentsCheckoutScreen() {
           <View style={s.actionRow}>
             <Pressable
               onPress={handleConfirmCheckout}
-              disabled={submitting || loadingPackages}
+              disabled={submitting || loadingPackages || checkoutUnavailable}
               style={({ pressed }) => [
                 s.primaryBtn,
                 s.primaryBtnMain,
@@ -502,6 +553,36 @@ const s = StyleSheet.create({
     color: "rgba(255,255,255,0.54)",
     fontSize: 12.5,
     fontWeight: "700",
+  },
+
+  reviewFallbackCard: {
+    marginTop: 14,
+    borderRadius: 18,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    gap: 10,
+  },
+  reviewFallbackText: {
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
+  reviewFallbackBtn: {
+    minHeight: 44,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.32)",
+  },
+  reviewFallbackBtnText: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 14,
   },
 
   hero: {

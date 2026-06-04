@@ -2,6 +2,7 @@ import { Alert } from "react-native";
 import { apiGet, apiPatch } from "./kristoApi";
 import { getSessionSync } from "./kristoSession";
 import {
+  evaluateChurchMediaSubscriptionGate,
   isScheduleSubscriptionBypassEnabled,
   isSubscriptionBypassEnabled,
   shouldSuppressPremiumPrompts,
@@ -26,6 +27,7 @@ export type ScheduleGateLogContext = {
   screen: string;
   gate: string;
   isPastor?: boolean;
+  isApprovedMediaHost?: boolean;
   hasSubscription?: boolean | null;
   subscriptionLocked?: boolean | null;
   headers?: Record<string, string>;
@@ -61,17 +63,13 @@ export function resolveScheduleGateIsPastor(
 }
 
 export function isScheduleSubscriptionGateBypassed(
-  opts?: { isPastor?: boolean },
+  opts?: { isPastor?: boolean; isApprovedMediaHost?: boolean },
   headers?: Record<string, string>
 ) {
   const isPastor = resolveScheduleGateIsPastor(opts, headers);
-  if (isSubscriptionBypassEnabled()) {
-    return { bypassed: true, isPastor };
-  }
-  if (isScheduleSubscriptionBypassEnabled(isPastor)) {
-    return { bypassed: true, isPastor };
-  }
-  return { bypassed: false, isPastor };
+  const isApprovedMediaHost = opts?.isApprovedMediaHost === true;
+  const bypassed = isScheduleSubscriptionBypassEnabled(isPastor, isApprovedMediaHost);
+  return { bypassed, isPastor, isApprovedMediaHost };
 }
 
 function logScheduleGate(meta: {
@@ -107,10 +105,19 @@ function logScheduleGate(meta: {
 
 export function evaluateScheduleSubscriptionGate(ctx: ScheduleGateLogContext) {
   const isPastor = resolveScheduleGateIsPastor({ isPastor: ctx.isPastor }, ctx.headers);
-  const { bypassed } = isScheduleSubscriptionGateBypassed({ isPastor }, ctx.headers);
-  const churchMediaActive =
-    ctx.hasSubscription === true || ctx.subscriptionLocked === false;
-  const allowed = bypassed || churchMediaActive;
+  const isApprovedMediaHost = ctx.isApprovedMediaHost === true;
+  const churchMediaActive = ctx.hasSubscription === true;
+  const mediaGate = evaluateChurchMediaSubscriptionGate({
+    isPastor,
+    isApprovedMediaHost,
+    churchSubscriptionActive: churchMediaActive ? true : ctx.hasSubscription === false ? false : null,
+    screen: ctx.screen,
+    gate: ctx.gate,
+  });
+  const bypassed = mediaGate.bypassed;
+  const allowed =
+    mediaGate.subscriptionAllowed ||
+    (churchMediaActive && (isPastor || isApprovedMediaHost));
 
   logScheduleGate({
     kind: "check",
@@ -151,9 +158,27 @@ export function evaluateScheduleSubscriptionGate(ctx: ScheduleGateLogContext) {
 }
 
 export function isChurchSubscriptionActiveFromRecord(
-  record: ChurchSubscriptionRecord | null | undefined
+  record: ChurchSubscriptionRecord | null | undefined,
+  opts?: { isPastor?: boolean; isApprovedMediaHost?: boolean; gate?: string }
 ): boolean {
-  if (isSubscriptionBypassEnabled()) return true;
+  const fromRecord =
+    record?.subscriptionActive === true ||
+    (() => {
+      const status = String(record?.subscriptionStatus || "")
+        .trim()
+        .toLowerCase();
+      return status === "active" || status === "trialing";
+    })();
+
+  if (opts?.isPastor || opts?.isApprovedMediaHost) {
+    return evaluateChurchMediaSubscriptionGate({
+      isPastor: !!opts?.isPastor,
+      isApprovedMediaHost: !!opts?.isApprovedMediaHost,
+      churchSubscriptionActive: fromRecord,
+      gate: opts?.gate || "isChurchSubscriptionActiveFromRecord",
+    }).subscriptionAllowed;
+  }
+
   if (record?.subscriptionActive === true) return true;
 
   const status = String(record?.subscriptionStatus || "")
@@ -165,13 +190,15 @@ export function isChurchSubscriptionActiveFromRecord(
 
 export function alertChurchSubscriptionRequired(opts?: {
   isPastor?: boolean;
+  isApprovedMediaHost?: boolean;
   screen?: string;
   gate?: string;
 }) {
   const isPastor = resolveScheduleGateIsPastor(opts);
-  const { bypassed } = isScheduleSubscriptionGateBypassed({ isPastor });
+  const isApprovedMediaHost = opts?.isApprovedMediaHost === true;
+  const { bypassed } = isScheduleSubscriptionGateBypassed({ isPastor, isApprovedMediaHost });
 
-  if (shouldSuppressPremiumPrompts() || bypassed) {
+  if (shouldSuppressPremiumPrompts(isPastor, isApprovedMediaHost) || bypassed) {
     logScheduleGate({
       kind: "bypassed",
       screen: String(opts?.screen || "alertChurchSubscriptionRequired"),
@@ -197,10 +224,16 @@ export function alertChurchSubscriptionRequired(opts?: {
 
 export async function fetchChurchSubscriptionActive(
   churchId: string,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  opts?: { isPastor?: boolean; isApprovedMediaHost?: boolean }
 ): Promise<boolean> {
-  const { bypassed } = isScheduleSubscriptionGateBypassed({}, headers);
-  if (isSubscriptionBypassEnabled() || bypassed) return true;
+  const isPastor = resolveScheduleGateIsPastor(opts, headers);
+  const isApprovedMediaHost = opts?.isApprovedMediaHost === true;
+  const { bypassed } = isScheduleSubscriptionGateBypassed(
+    { isPastor, isApprovedMediaHost },
+    headers
+  );
+  if (bypassed) return true;
 
   const cid = String(churchId || "").trim();
   if (!cid) return false;
@@ -210,7 +243,13 @@ export async function fetchChurchSubscriptionActive(
       headers,
       cache: "no-store",
     });
-    return isChurchSubscriptionActiveFromRecord(res?.media) || Boolean(res?.subscriptionActive);
+    const active =
+      isChurchSubscriptionActiveFromRecord(res?.media, {
+        isPastor,
+        isApprovedMediaHost,
+        gate: "fetchChurchSubscriptionActive",
+      }) || Boolean(res?.subscriptionActive);
+    return active;
   } catch {
     return false;
   }
@@ -243,12 +282,16 @@ export async function activateChurchSubscriptionForPastor(
 export async function requireActiveChurchSubscriptionForSchedule(
   churchId: string,
   headers?: Record<string, string>,
-  opts?: { isPastor?: boolean; screen?: string; gate?: string }
+  opts?: { isPastor?: boolean; isApprovedMediaHost?: boolean; screen?: string; gate?: string }
 ) {
   const screen = String(opts?.screen || "requireActiveChurchSubscriptionForSchedule");
   const gate = String(opts?.gate || "requireActiveChurchSubscriptionForSchedule");
   const isPastor = resolveScheduleGateIsPastor(opts, headers);
-  const { bypassed } = isScheduleSubscriptionGateBypassed({ isPastor }, headers);
+  const isApprovedMediaHost = opts?.isApprovedMediaHost === true;
+  const { bypassed } = isScheduleSubscriptionGateBypassed(
+    { isPastor, isApprovedMediaHost },
+    headers
+  );
 
   if (bypassed) {
     logScheduleGate({
@@ -270,7 +313,10 @@ export async function requireActiveChurchSubscriptionForSchedule(
     return true;
   }
 
-  const active = await fetchChurchSubscriptionActive(churchId, headers);
+  const active = await fetchChurchSubscriptionActive(churchId, headers, {
+    isPastor,
+    isApprovedMediaHost,
+  });
 
   logScheduleGate({
     kind: "check",
@@ -292,7 +338,7 @@ export async function requireActiveChurchSubscriptionForSchedule(
       hasSubscription: false,
       allowed: false,
     });
-    alertChurchSubscriptionRequired({ isPastor, screen, gate });
+    alertChurchSubscriptionRequired({ isPastor, isApprovedMediaHost, screen, gate });
   }
 
   return active;
@@ -300,12 +346,13 @@ export async function requireActiveChurchSubscriptionForSchedule(
 
 export function isChurchSubscriptionRequiredError(
   res: any,
-  opts?: { isPastor?: boolean; screen?: string; gate?: string }
+  opts?: { isPastor?: boolean; isApprovedMediaHost?: boolean; screen?: string; gate?: string }
 ) {
   const isPastor = resolveScheduleGateIsPastor(opts);
-  const { bypassed } = isScheduleSubscriptionGateBypassed({ isPastor });
+  const isApprovedMediaHost = opts?.isApprovedMediaHost === true;
+  const { bypassed } = isScheduleSubscriptionGateBypassed({ isPastor, isApprovedMediaHost });
 
-  if (isSubscriptionBypassEnabled() || bypassed) {
+  if (bypassed) {
     logScheduleGate({
       kind: "bypassed",
       screen: String(opts?.screen || "isChurchSubscriptionRequiredError"),

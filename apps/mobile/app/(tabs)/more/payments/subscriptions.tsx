@@ -5,11 +5,10 @@ import {
   StyleSheet,
   ScrollView,
   Pressable,
-  Alert,
   ActivityIndicator,
   type ScrollView as RNScrollView,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import type { PurchasesPackage } from "react-native-purchases";
@@ -31,8 +30,11 @@ import {
   resolveMonthlyPackage,
   resolveYearlyPackage,
   describeCurrentOfferingPackages,
+  setRevenueCatDebugRouteEnabled,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
+import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
+import { SUBSCRIPTION_REVIEW_FALLBACK_MESSAGE } from "../../../../src/lib/subscriptionReviewFallback";
 
 const PLAN_CARDS: {
   key: SubscriptionPlanKey;
@@ -79,6 +81,7 @@ export default function PaymentsSubscriptionsScreen() {
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
   const [offersLoading, setOffersLoading] = useState(true);
+  const [subscriptionUnavailable, setSubscriptionUnavailable] = useState(false);
   const scrollRef = useRef<RNScrollView | null>(null);
   const [draftCurrentPlan, setDraftCurrentPlan] = useState<SubscriptionPlanKey>(() => getPaymentsState().subscriptions.selectedPlan);
 
@@ -88,6 +91,13 @@ export default function PaymentsSubscriptionsScreen() {
       setPaymentsState(getPaymentsState());
     });
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      setRevenueCatDebugRouteEnabled(true);
+      return () => setRevenueCatDebugRouteEnabled(false);
+    }, [])
+  );
 
   useEffect(() => {
     let alive = true;
@@ -128,7 +138,12 @@ export default function PaymentsSubscriptionsScreen() {
         setSubscriptionPlanStatus(effective.planStatus);
       } catch (error: any) {
         if (!alive) return;
-        Alert.alert("Subscriptions not ready", formatSubscriptionSetupError(error));
+        console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
+          screen: "subscriptions",
+          reviewBypass: isAppleReviewBypassEnabled(),
+          error: formatSubscriptionSetupError(error),
+        });
+        setSubscriptionUnavailable(true);
       } finally {
         if (alive) setOffersLoading(false);
       }
@@ -201,12 +216,26 @@ export default function PaymentsSubscriptionsScreen() {
             <Text style={s.sub}>Choose your access</Text>
           </View>
         </View>
+        {subscriptionUnavailable ? (
+          <View style={s.reviewFallbackCard}>
+            <Ionicons name="sparkles-outline" size={22} color="rgba(255,230,190,0.96)" />
+            <Text style={s.reviewFallbackTitle}>Premium</Text>
+            <Text style={s.reviewFallbackText}>{SUBSCRIPTION_REVIEW_FALLBACK_MESSAGE}</Text>
+            <Pressable
+              onPress={() => router.back()}
+              style={({ pressed }) => [s.reviewFallbackBtn, pressed ? s.pressed : null]}
+            >
+              <Text style={s.reviewFallbackBtnText}>Continue using Kristo</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         <View style={s.sectionHead}>
           <Text style={s.sectionTitle}>Choose</Text>
           <Text style={s.sectionSub}>Monthly or yearly church premium.</Text>
         </View>
 
-        <View style={s.planGrid}>
+        <View style={[s.planGrid, subscriptionUnavailable ? { opacity: 0.45 } : null]}>
           {PLAN_CARDS.map((item) => {
             const isCurrent = item.key === draftCurrentPlan;
             const toneStyle =
@@ -276,6 +305,7 @@ export default function PaymentsSubscriptionsScreen() {
                         item.key === currentPlan && isPlanActive(currentPlan, planStatus);
 
                       if (isSameActivePlan) return;
+                      if (subscriptionUnavailable) return;
 
                       setSubscriptionSelectedPlan(item.key);
                       router.push({
@@ -369,6 +399,43 @@ const s = StyleSheet.create({
     color: "rgba(255,255,255,0.54)",
     fontSize: 12.5,
     fontWeight: "700",
+  },
+
+  reviewFallbackCard: {
+    marginHorizontal: 18,
+    marginBottom: 18,
+    borderRadius: 22,
+    padding: 18,
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    gap: 10,
+  },
+  reviewFallbackTitle: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  reviewFallbackText: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
+  reviewFallbackBtn: {
+    marginTop: 6,
+    minHeight: 46,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.35)",
+  },
+  reviewFallbackBtnText: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 14,
   },
 
   hero: {

@@ -7,9 +7,11 @@ import * as SplashScreen from "expo-splash-screen";
 import { KristoSessionProvider, useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
   ensurePurchasesConfigured,
+  prefetchSubscriptionOfferings,
   syncPurchasesAppUser,
 } from "@/src/lib/payments/mobileSubscriptions";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+import { deferStartupWorkAfterHomeFirstFrame } from "@/src/lib/firstPaint";
 import JujujuAnimatedSplash, { SPLASH_BG } from "@/src/components/JujujuAnimatedSplash";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -32,9 +34,18 @@ function RevenueCatBootstrap() {
     const appUserId = String(session?.userId || "").trim();
     if (!appUserId) return;
 
-    syncPurchasesAppUser(appUserId).catch((error) => {
-      console.log("RevenueCat logIn error", error);
-    });
+    syncPurchasesAppUser(appUserId)
+      .then(() => {
+        deferStartupWorkAfterHomeFirstFrame(
+          async () => {
+            await prefetchSubscriptionOfferings();
+          },
+          { reason: "revenuecat-offerings" }
+        );
+      })
+      .catch((error) => {
+        console.log("RevenueCat logIn error", error);
+      });
   }, [bypassRevenueCat, loading, session?.userId]);
 
   return <Slot />;
