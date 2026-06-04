@@ -26,7 +26,13 @@ import {
 } from "@/src/lib/homeFeedComments";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { fetchHomeFeedFromApi, syncHomeFeedLike } from "./homeFeedApi";
-import { mergeFeedRowsDeterministic } from "./homeFeedUtils";
+import {
+  feedRenderKey,
+  hydrateFeedRowLikes,
+  isMediaLiveSlotsHomeFeedRow,
+  mergeFeedRowsDeterministic,
+  readFeedItemLikedByMe,
+} from "./homeFeedUtils";
 import { HOME_FEED_BG, homeFeedSlideHeight } from "./theme";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import {
@@ -47,8 +53,9 @@ export default function HomeFeedScreen() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
   const [optimisticLikes, setOptimisticLikes] = useState<
-    Record<string, { liked: boolean; likeCount: number }>
+    Record<string, { likedByMe: boolean; likeCount: number }>
   >({});
+  const [likeUiEpoch, setLikeUiEpoch] = useState(0);
   const [optimisticSaved, setOptimisticSaved] = useState<Record<string, boolean>>({});
   const [reportedPostIds, setReportedPostIds] = useState<Record<string, true>>({});
   const [reportSheetOpen, setReportSheetOpen] = useState(false);
@@ -88,6 +95,21 @@ export default function HomeFeedScreen() {
     try {
       const rows = await fetchHomeFeedFromApi(reason);
       setBackendRows(rows);
+      setOptimisticLikes((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const row of rows) {
+          const postId = feedRenderKey(row);
+          if (!postId || !(postId in next)) continue;
+          const serverLikedByMe = readFeedItemLikedByMe(row);
+          if (serverLikedByMe || next[postId].likedByMe === serverLikedByMe) {
+            delete next[postId];
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+      setLikeUiEpoch((n) => n + 1);
     } catch {
       setBackendRows((prev) => prev);
     } finally {
@@ -100,25 +122,6 @@ export default function HomeFeedScreen() {
   }, [loadFeed, screenFocused]);
 
   useEffect(() => {
-    if (!backendRows.length) return;
-    setOptimisticLikes((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const item of backendRows) {
-        const postId = baseFeedId(String(item?.id || ""));
-        if (!postId || !(postId in next)) continue;
-        const backendLiked = Boolean(item?.likedByMe ?? item?.liked);
-        const opt = next[postId];
-        if (backendLiked || opt.liked === backendLiked) {
-          delete next[postId];
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [backendRows]);
-
-  useEffect(() => {
     if (!feedFocused) return;
     const timer = setInterval(() => {
       void loadFeed("poll");
@@ -126,10 +129,32 @@ export default function HomeFeedScreen() {
     return () => clearInterval(timer);
   }, [feedFocused, loadFeed]);
 
+  const serverLikeByPostId = useMemo(() => {
+    const map: Record<string, { likedByMe: boolean; likeCount: number }> = {};
+    for (const row of backendRows) {
+      const postId = feedRenderKey(row);
+      if (!postId) continue;
+      map[postId] = {
+        likedByMe: readFeedItemLikedByMe(row),
+        likeCount: Number(row?.likeCount || 0),
+      };
+    }
+    return map;
+  }, [backendRows]);
+
   const feedRows = useMemo(() => {
     void localTick;
-    return mergeFeedRowsDeterministic(backendRows, feedList());
-  }, [backendRows, localTick]);
+    const merged = mergeFeedRowsDeterministic(backendRows, feedList());
+    const hydrated = hydrateFeedRowLikes(merged, serverLikeByPostId);
+    const visibleSchedule = hydrated.filter(isMediaLiveSlotsHomeFeedRow);
+    console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
+      stage: "home_feed_screen_merged",
+      visibleCount: visibleSchedule.length,
+      feedCount: hydrated.length,
+      visibleScheduleIds: visibleSchedule.map((row) => String(row?.id || "")),
+    });
+    return hydrated;
+  }, [backendRows, localTick, serverLikeByPostId]);
 
   useEffect(() => {
     let alive = true;
@@ -197,39 +222,58 @@ export default function HomeFeedScreen() {
   }, [activeIndex, feedRows.length]);
 
   const getLikeState = useCallback(
-    (item: any) => {
-      const postId = baseFeedId(String(item?.id || ""));
+    (item: any, logContext?: { index?: number }) => {
+      const postId = feedRenderKey(item);
       if (!postId) {
-        return { liked: false, likeCount: 0 };
+        return { likedByMe: false, liked: false, likeCount: 0 };
       }
 
-      const backendLiked = Boolean(item?.likedByMe ?? item?.liked);
-      const backendCount = Number(item?.likeCount || 0);
+      const itemLikedByMe = readFeedItemLikedByMe(item);
+      const hydrated = serverLikeByPostId[postId];
+      const serverLikedByMe = hydrated?.likedByMe === true || itemLikedByMe;
+      const serverLikeCount = Math.max(
+        Number(item?.likeCount || 0),
+        Number(hydrated?.likeCount || 0)
+      );
 
-      if (Object.prototype.hasOwnProperty.call(optimisticLikes, postId)) {
-        const optimistic = optimisticLikes[postId];
-        if (optimistic.liked === backendLiked) {
-          return {
-            liked: optimistic.liked,
-            likeCount: Math.max(optimistic.likeCount, backendCount),
-          };
+      const override = Object.prototype.hasOwnProperty.call(optimisticLikes, postId)
+        ? optimisticLikes[postId]
+        : undefined;
+      const overrideLikedByMe = override?.likedByMe;
+
+      let finalLikedByMe = serverLikedByMe;
+      if (override) {
+        if (serverLikedByMe) {
+          finalLikedByMe = true;
+        } else if (overrideLikedByMe === true) {
+          finalLikedByMe = true;
+        } else {
+          finalLikedByMe = false;
         }
-        // After refresh, persisted likedByMe from API wins over stale optimistic false.
-        if (backendLiked) {
-          return {
-            liked: true,
-            likeCount: Math.max(backendCount, optimistic.likeCount),
-          };
-        }
-        return optimistic;
+      }
+
+      const likeCount = Math.max(
+        serverLikeCount,
+        override ? Number(override.likeCount || 0) : 0
+      );
+
+      if (logContext?.index === activeIndex) {
+        console.log("KRISTO_LIKE_UI_STATE", {
+          postId,
+          itemLikedByMe,
+          overrideLikedByMe: overrideLikedByMe ?? null,
+          finalLikedByMe,
+          likeCount,
+        });
       }
 
       return {
-        liked: backendLiked,
-        likeCount: backendCount,
+        likedByMe: finalLikedByMe,
+        liked: finalLikedByMe,
+        likeCount,
       };
     },
-    [optimisticLikes]
+    [activeIndex, optimisticLikes, serverLikeByPostId]
   );
 
   const getSavedState = useCallback(
@@ -245,20 +289,21 @@ export default function HomeFeedScreen() {
 
   const handleLike = useCallback(
     (item: any) => {
-      const postId = baseFeedId(String(item?.id || ""));
+      const postId = feedRenderKey(item);
       if (!postId) return;
 
       const current = getLikeState(item);
-      const nextLiked = !current.liked;
-      const nextCount = Math.max(0, current.likeCount + (nextLiked ? 1 : -1));
+      const nextLikedByMe = !current.likedByMe;
+      const nextCount = Math.max(0, current.likeCount + (nextLikedByMe ? 1 : -1));
 
       setOptimisticLikes((prev) => ({
         ...prev,
-        [postId]: { liked: nextLiked, likeCount: nextCount },
+        [postId]: { likedByMe: nextLikedByMe, likeCount: nextCount },
       }));
+      setLikeUiEpoch((n) => n + 1);
 
       feedToggleLike(postId);
-      syncHomeFeedLike(postId, nextLiked);
+      syncHomeFeedLike(postId, nextLikedByMe);
     },
     [getLikeState]
   );
@@ -423,6 +468,7 @@ export default function HomeFeedScreen() {
         activeIndex={activeIndex}
         screenFocused={feedFocused}
         loading={loading}
+        likeUiEpoch={likeUiEpoch}
         getLikeState={getLikeState}
         getSavedState={getSavedState}
         getVisibleDiscussionCount={getVisibleDiscussionCount}

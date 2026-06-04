@@ -7,7 +7,7 @@ import {
 } from "@/src/lib/homeFeedStore";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { avatarCacheBust, normalizeAvatarUpdatedAt } from "@/src/lib/avatarFreshness";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { baseFeedId, parseSlotClockMs, parseSlotStartMs } from "@/src/lib/scheduleSlotUtils";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
 
@@ -89,9 +89,68 @@ export function commentAvatarUrl(raw: unknown) {
   return homeFeedMediaUrl(v);
 }
 
-/** Phase-1 Home Feed rows: posts with media or text; no live/schedule/cycle cards. */
+/** Active church media schedule row (media-live-slots) for Home Feed / Guest Claim / Live ring. */
+export function isMediaLiveSlotsHomeFeedRow(item: any): boolean {
+  if (!item || isStandaloneAvatarFeedPost(item)) return false;
+
+  const scheduleType = String(item?.scheduleType || "").toLowerCase();
+  const source = String(item?.source || "").toLowerCase();
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  if (!slots.length) return false;
+
+  const isAllowedType =
+    scheduleType.includes("media-live-slots") || source.includes("media-schedule");
+  if (!isAllowedType) return false;
+
+  const id = String(item?.id || "").toLowerCase();
+  if (id.includes("__slot_")) return false;
+  if (id.startsWith("church-live-now-") || id.startsWith("media-live-now-")) return false;
+
+  if (
+    (item?.isLiveNow || item?.kind === "live") &&
+    !scheduleType.includes("media-live-slots") &&
+    !source.includes("media-schedule")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export function resolveHomeFeedActiveScheduleSlot(item: any, nowMs = Date.now()) {
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  const active =
+    slots.find((slot: any) => {
+      const startMs = parseSlotStartMs(slot);
+      if (!startMs || startMs <= 0) return false;
+
+      const endMsFromClock = parseSlotClockMs(
+        String(slot?.meetingDate || slot?.meetingDay || ""),
+        String(slot?.endTime || "")
+      );
+      const fallbackDuration = Math.max(1, Number(slot?.durationMin || 10)) * 60000;
+      const endMs = endMsFromClock > startMs ? endMsFromClock : startMs + fallbackDuration;
+      return endMs > nowMs;
+    }) || null;
+
+  return active || slots[0] || null;
+}
+
+export function isHomeFeedScheduleCardRow(item: any, nowMs = Date.now()): boolean {
+  if (!isMediaLiveSlotsHomeFeedRow(item)) return false;
+  if (!resolveHomeFeedActiveScheduleSlot(item, nowMs)) return false;
+
+  const videoUrl = String(item?.videoUrl || "").trim();
+  const isVideo = item?.mediaType === "video" || Boolean(videoUrl);
+  const isImage = item?.mediaType === "image" && Boolean(String(item?.mediaUri || "").trim());
+  return !isVideo && !isImage;
+}
+
+/** Phase-1 Home Feed rows: posts with media or text; media-live-slots schedule cards allowed. */
 export function isPhase1HomeFeedPost(item: any): boolean {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
+  if (isMediaLiveSlotsHomeFeedRow(item)) return true;
+
   if (isMediaScheduleFeedItem(item)) return false;
 
   const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
@@ -117,8 +176,49 @@ export function isPhase1HomeFeedPost(item: any): boolean {
   return false;
 }
 
+function isLegacyScheduleFeedRow(item: any) {
+  if (!item) return false;
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  if (!slots.length && !isMediaScheduleFeedItem(item)) return false;
+  return !isMediaLiveSlotsHomeFeedRow(item);
+}
+
 export function filterPhase1FeedRows(rows: any[]) {
-  return rows.filter((row) => isHomeFeedReadyMediaItem(row) && isPhase1HomeFeedPost(row));
+  const scheduleCandidates = rows.filter(
+    (row) => isMediaLiveSlotsHomeFeedRow(row) || isLegacyScheduleFeedRow(row)
+  );
+  const filtered = rows.filter((row) => {
+    if (!isHomeFeedReadyMediaItem(row)) return false;
+    if (isMediaLiveSlotsHomeFeedRow(row)) return true;
+    return isPhase1HomeFeedPost(row);
+  });
+
+  for (const row of scheduleCandidates) {
+    const id = String(row?.id || "");
+    if (filtered.some((item) => String(item?.id || "") === id)) continue;
+
+    console.log("KRISTO_SCHEDULE_FILTERED_OUT", {
+      id,
+      source: String(row?.source || ""),
+      scheduleType: String(row?.scheduleType || ""),
+      churchId: String(row?.churchId || ""),
+      slotCount: Array.isArray(row?.scheduleSlots) ? row.scheduleSlots.length : 0,
+      reason: isLegacyScheduleFeedRow(row)
+        ? "legacy_schedule_not_media_live_slots"
+        : "phase1_home_feed_policy",
+      gate: "filterPhase1FeedRows",
+    });
+  }
+
+  const visibleSchedule = filtered.filter(isMediaLiveSlotsHomeFeedRow);
+  console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
+    visibleCount: visibleSchedule.length,
+    feedCount: filtered.length,
+    scheduleCandidateCount: scheduleCandidates.length,
+    visibleScheduleIds: visibleSchedule.map((row) => String(row?.id || "")),
+  });
+
+  return filtered;
 }
 
 /** Canonical post id for likes, comments, and FlatList keys (strips slot/fiscal suffixes). */
