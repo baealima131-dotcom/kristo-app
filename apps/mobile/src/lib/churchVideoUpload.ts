@@ -8,6 +8,8 @@ export type SignedMediaUploadSession = {
   videoUrl: string;
   publicUrl: string;
   contentType: string;
+  faststart?: boolean;
+  faststartPending?: boolean;
 };
 
 export const SIGNED_UPLOAD_TIMEOUT_MS = 90_000;

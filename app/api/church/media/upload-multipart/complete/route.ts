@@ -7,6 +7,10 @@ import {
   getVideoStorageConfig,
   videoStorageConfigError,
 } from "@/app/api/_lib/media/objectStorage";
+import {
+  repackVideoFaststartForKey,
+  scheduleVideoFaststartRepack,
+} from "@/app/api/_lib/media/videoFaststart";
 
 export const runtime = "nodejs";
 
@@ -63,7 +67,24 @@ export async function POST(req: NextRequest) {
       videoUrl: completed.videoUrl,
     });
 
-    return NextResponse.json({ ok: true, data: completed });
+    const repack = await repackVideoFaststartForKey({
+      key,
+      videoUrl: completed.videoUrl,
+    });
+
+    if (!repack.faststart && repack.skipped && repack.reason === "object-too-large-for-inline-remux") {
+      scheduleVideoFaststartRepack({ key, videoUrl: completed.videoUrl });
+    }
+
+    return NextResponse.json({
+      ok: true,
+      data: {
+        ...completed,
+        faststart: repack.faststart === true,
+        faststartPending: !repack.faststart,
+        faststartReason: repack.reason || repack.error || null,
+      },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.log("KRISTO_MULTIPART_UPLOAD_COMPLETE_ERROR", { message, uploadId });

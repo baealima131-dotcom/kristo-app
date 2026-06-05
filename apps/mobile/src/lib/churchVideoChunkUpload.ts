@@ -437,11 +437,24 @@ export async function uploadVideoWithChunkSession(params: {
     partCount: session.completedParts.length,
   });
 
+  const faststart = completed.faststart === true;
+
+  if (!faststart) {
+    console.log("KRISTO_VIDEO_FASTSTART_REQUIRED", {
+      videoUrl: publicUrl,
+      faststart: false,
+      faststartPending: completed.faststartPending === true,
+      reason: completed.faststartReason || null,
+    });
+  }
+
   return {
     uploadUrl: "",
     videoUrl: publicUrl,
     publicUrl,
     contentType: session.contentType,
+    faststart,
+    faststartPending: completed.faststartPending === true,
     resumableMode: "chunk",
     sessionId: session.sessionId,
   };
