@@ -10,7 +10,10 @@ import {
   storageKeyFromPublicUrl,
   storageObjectExists,
 } from "@/app/api/_lib/media/objectStorage";
-import { generateVideoPosterFromFile } from "@/app/api/_lib/media/videoPoster";
+import {
+  generateVideoPosterFromFile,
+  shouldAttemptServerFfmpeg,
+} from "@/app/api/_lib/media/videoPoster";
 import { patchFeedItemsPosterByVideoUrl } from "@/app/api/_lib/store/feedDb";
 
 function normalizeVideoUrl(url: string) {
@@ -19,6 +22,14 @@ function normalizeVideoUrl(url: string) {
 
 export async function ensureRemoteVideoPosterForUrl(videoUrl: string): Promise<string | null> {
   const normalizedUrl = normalizeVideoUrl(videoUrl);
+  if (!shouldAttemptServerFfmpeg()) {
+    console.log("KRISTO_VIDEO_POSTER_SKIPPED", {
+      videoUrl: normalizedUrl,
+      reason: "serverless-ffmpeg-skipped",
+    });
+    return null;
+  }
+
   const config = getVideoStorageConfig();
   if (!config || !normalizedUrl) return null;
 

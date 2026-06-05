@@ -442,6 +442,7 @@ export async function uploadVideoWithChunkSession(params: {
   const faststartPending = completed.faststartPending === true;
   const faststartReason = String(completed.faststartReason || "").trim() || null;
   const posterUri = String(completed.posterUri || "").trim() || null;
+  const brandedPoster = completed.brandedPoster === true;
 
   if (faststart) {
     console.log("KRISTO_VIDEO_FASTSTART_REPACK_DONE", {
@@ -472,6 +473,7 @@ export async function uploadVideoWithChunkSession(params: {
     faststartPending,
     faststartReason,
     posterUri,
+    brandedPoster,
     resumableMode: "chunk",
     sessionId: session.sessionId,
   };

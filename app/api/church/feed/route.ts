@@ -70,10 +70,15 @@ import {
 } from "@/app/api/_lib/store/feedCommentDb";
 import { isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
 import {
+  applyBrandedVideoPosterFallback,
+  brandedVideoPosterFields,
+} from "@/app/api/_lib/media/brandedVideoPoster";
+import {
   ensureVideoPosterForUrl,
   isUsableVideoPosterUri,
   posterPublicUrlForVideoUrl,
   publicUploadAbsPath,
+  shouldAttemptServerFfmpeg,
 } from "@/app/api/_lib/media/videoPoster";
 
 export const runtime = "nodejs";
@@ -647,8 +652,10 @@ async function finalizeMediaUploadVideoPost(itemId: string) {
     const videoUrl = String(existing.videoUrl || "").trim();
 
     if (!posterUri && videoUrl) {
-      const generated = await ensureVideoPosterForUrl(videoUrl);
-      if (generated) posterUri = generated;
+      if (shouldAttemptServerFfmpeg()) {
+        const generated = await ensureVideoPosterForUrl(videoUrl);
+        if (generated) posterUri = generated;
+      }
     }
 
     const next: any = {
@@ -660,6 +667,8 @@ async function finalizeMediaUploadVideoPost(itemId: string) {
       next.posterUri = posterUri;
       next.videoPosterUri = posterUri;
       next.thumbnailUri = posterUri;
+    } else if (videoUrl) {
+      Object.assign(next, brandedVideoPosterFields());
     }
 
     await upsertFeedItem(next);
@@ -1087,35 +1096,48 @@ async function enrichFeedListItem(
   let thumbnailUri =
     String(item?.thumbnailUri || item?.thumbnailUrl || item?.videoPosterUri || "").trim() ||
     undefined;
+  let videoBrandedPoster = item?.brandedPoster === true;
   const isVideoItem =
     item?.type === "video" || Boolean(String(item?.videoUrl || "").trim());
 
   if (isVideoItem && item?.videoUrl) {
     const videoUrlStr = String(item.videoUrl).trim();
     const hasUsablePoster =
+      item?.brandedPoster === true ||
       isUsableVideoPosterUri(posterUri, videoUrlStr) ||
       isUsableVideoPosterUri(thumbnailUri, videoUrlStr);
 
     if (!hasUsablePoster) {
-      const existingPoster = posterPublicUrlForVideoUrl(videoUrlStr);
-      const posterAbsPath = publicUploadAbsPath(existingPoster);
-      if (posterAbsPath && fs.existsSync(posterAbsPath)) {
-        posterUri = existingPoster;
-        thumbnailUri = existingPoster;
-      } else {
-        const generatedPoster = await ensureVideoPosterForUrl(videoUrlStr);
-        if (generatedPoster) {
-          posterUri = generatedPoster;
-          thumbnailUri = generatedPoster;
+      if (shouldAttemptServerFfmpeg()) {
+        const existingPoster = posterPublicUrlForVideoUrl(videoUrlStr);
+        const posterAbsPath = publicUploadAbsPath(existingPoster);
+        if (posterAbsPath && fs.existsSync(posterAbsPath)) {
+          posterUri = existingPoster;
+          thumbnailUri = existingPoster;
+        } else {
+          const generatedPoster = await ensureVideoPosterForUrl(videoUrlStr);
+          if (generatedPoster) {
+            posterUri = generatedPoster;
+            thumbnailUri = generatedPoster;
+          }
         }
       }
 
-      if (postId && isUsableVideoPosterUri(posterUri, videoUrlStr)) {
+      const usingBranded = !isUsableVideoPosterUri(posterUri, videoUrlStr);
+      if (usingBranded) {
+        const branded = brandedVideoPosterFields();
+        posterUri = branded.posterUri;
+        thumbnailUri = branded.thumbnailUri;
+        videoBrandedPoster = true;
+      }
+
+      if (postId) {
         void upsertFeedItem({
           ...item,
           posterUri,
           videoPosterUri: posterUri,
-          thumbnailUri: posterUri,
+          thumbnailUri,
+          ...(usingBranded ? brandedVideoPosterFields() : {}),
         }).catch(() => {});
       }
     }
@@ -1161,6 +1183,7 @@ async function enrichFeedListItem(
     ...(posterUri ? { posterUri } : {}),
     ...(thumbnailUri ? { thumbnailUri } : {}),
     ...(videoPosterUri ? { videoPosterUri } : {}),
+    ...(videoBrandedPoster ? { brandedPoster: true } : {}),
     ownershipType,
     ownerChurchId: String(item?.ownerChurchId || itemChurchId || ""),
     ownerMediaId: String(item?.ownerMediaId || item?.mediaName || itemMediaProfile?.mediaName || "").trim() || undefined,
@@ -2344,12 +2367,22 @@ async function handleFeedPost(req: NextRequest, body: any) {
   let resolvedThumbnailUri =
     sanitizedMedia.thumbnailUri || sanitizedMedia.posterUri || videoPosterUri || undefined;
 
-  if ((type === "video" || videoUrl) && !resolvedPosterUri && videoUrl) {
+  if ((type === "video" || videoUrl) && !resolvedPosterUri && videoUrl && shouldAttemptServerFfmpeg()) {
     const generatedPoster = await ensureVideoPosterForUrl(videoUrl);
     if (generatedPoster) {
       resolvedPosterUri = generatedPoster;
       resolvedThumbnailUri = generatedPoster;
     }
+  }
+
+  const requestBrandedPoster =
+    body?.brandedPoster === true ||
+    String(body?.posterUri || "").trim() === brandedVideoPosterFields().posterUri;
+
+  if ((type === "video" || videoUrl) && !resolvedPosterUri && (requestBrandedPoster || !shouldAttemptServerFfmpeg())) {
+    const branded = brandedVideoPosterFields();
+    resolvedPosterUri = branded.posterUri;
+    resolvedThumbnailUri = branded.thumbnailUri;
   }
 
   const viewerRole = ctx?.viewer?.role;
@@ -2469,6 +2502,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     if (!resolvedPosterUri) delete (item as any).posterUri;
     if (!resolvedThumbnailUri) delete (item as any).thumbnailUri;
     delete (item as any).imageUrl;
+    applyBrandedVideoPosterFallback(item as any, videoUrl);
   }
 
   const isMediaUploadVideo = type === "video" && Boolean(videoUrl) && isMediaUploadCreateBody(body);
@@ -2533,7 +2567,8 @@ async function handleFeedPost(req: NextRequest, body: any) {
     faststart: (item as any).faststart === true,
     faststartPending: (item as any).faststartPending === true,
     faststartReason: (item as any).faststartReason || null,
-    posterUri: resolvedPosterUri || null,
+    posterUri: (item as any).posterUri || resolvedPosterUri || null,
+    brandedPoster: (item as any).brandedPoster === true,
     churchId,
   });
 

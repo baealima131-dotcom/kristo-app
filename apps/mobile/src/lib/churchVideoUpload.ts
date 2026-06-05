@@ -1,4 +1,8 @@
 import { apiPost } from "@/src/lib/kristoApi";
+import {
+  brandedVideoPosterPayload,
+  isBrandedVideoPosterUri,
+} from "@/src/lib/brandedVideoPoster";
 import type { MediaStatus } from "@/src/lib/mediaStatus";
 
 type HeadersRec = Record<string, string>;
@@ -12,6 +16,7 @@ export type SignedMediaUploadSession = {
   faststartPending?: boolean;
   faststartReason?: string | null;
   posterUri?: string | null;
+  brandedPoster?: boolean;
 };
 
 export const SIGNED_UPLOAD_TIMEOUT_MS = 90_000;
@@ -442,6 +447,14 @@ export async function publishChurchVideoFeedPost(params: {
   faststartReason?: string | null;
 }) {
   const poster = String(params.posterUri || params.videoPosterUri || params.thumbnailUri || "").trim();
+  const branded = !poster || isBrandedVideoPosterUri(poster);
+  const posterFields = branded
+    ? brandedVideoPosterPayload()
+    : {
+        posterUri: poster,
+        videoPosterUri: poster,
+        thumbnailUri: poster,
+      };
   const metadata = buildChurchVideoPublishMetadata({
     durationMs: params.durationMs,
     sizeBytes: Number(params.sizeBytes || 0),
@@ -471,13 +484,7 @@ export async function publishChurchVideoFeedPost(params: {
     ...(params.faststartReason
       ? { faststartReason: String(params.faststartReason).trim() }
       : {}),
-    ...(poster
-      ? {
-          posterUri: poster,
-          videoPosterUri: poster,
-          thumbnailUri: poster,
-        }
-      : {}),
+    ...posterFields,
   };
 
   console.log("KRISTO_VIDEO_METADATA_PUBLISHED", {
@@ -489,6 +496,7 @@ export async function publishChurchVideoFeedPost(params: {
     faststart: metadata.faststart,
     faststartPending: params.faststartPending === true,
     faststartReason: params.faststartReason || null,
+    brandedPoster: branded,
     durationSec: metadata.durationMs ? metadata.durationMs / 1000 : null,
     fileSizeBytes: metadata.sizeBytes > 0 ? metadata.sizeBytes : null,
   });

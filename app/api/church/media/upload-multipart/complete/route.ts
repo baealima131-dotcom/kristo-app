@@ -7,7 +7,11 @@ import {
   getVideoStorageConfig,
   videoStorageConfigError,
 } from "@/app/api/_lib/media/objectStorage";
-import { ensureVideoPosterForUrl } from "@/app/api/_lib/media/videoPoster";
+import { brandedVideoPosterFields } from "@/app/api/_lib/media/brandedVideoPoster";
+import {
+  ensureVideoPosterForUrl,
+  shouldAttemptServerFfmpeg,
+} from "@/app/api/_lib/media/videoPoster";
 import {
   repackVideoFaststartForKey,
   resolveFaststartResponseFields,
@@ -80,14 +84,29 @@ export async function POST(req: NextRequest) {
 
     const faststartFields = resolveFaststartResponseFields(repack);
     let posterUri: string | null = null;
-    try {
-      posterUri = await ensureVideoPosterForUrl(completed.videoUrl);
-    } catch (posterError) {
-      console.log("KRISTO_VIDEO_POSTER_REMOTE_FAILED", {
+    let brandedPoster = false;
+
+    if (shouldAttemptServerFfmpeg()) {
+      try {
+        posterUri = await ensureVideoPosterForUrl(completed.videoUrl);
+      } catch (posterError) {
+        console.log("KRISTO_VIDEO_POSTER_REMOTE_FAILED", {
+          videoUrl: completed.videoUrl,
+          stage: "multipart-complete",
+          error: posterError instanceof Error ? posterError.message : String(posterError),
+        });
+      }
+    } else {
+      console.log("KRISTO_VIDEO_POSTER_SKIPPED", {
         videoUrl: completed.videoUrl,
-        stage: "multipart-complete",
-        error: posterError instanceof Error ? posterError.message : String(posterError),
+        reason: "serverless-ffmpeg-skipped",
       });
+    }
+
+    if (!posterUri) {
+      const branded = brandedVideoPosterFields();
+      posterUri = branded.posterUri;
+      brandedPoster = true;
     }
 
     if (repack.faststart) {
@@ -111,7 +130,8 @@ export async function POST(req: NextRequest) {
       data: {
         ...completed,
         ...faststartFields,
-        posterUri: posterUri || null,
+        posterUri,
+        ...(brandedPoster ? { brandedPoster: true } : {}),
       },
     });
   } catch (error) {

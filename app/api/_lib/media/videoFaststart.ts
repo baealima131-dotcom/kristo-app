@@ -9,7 +9,11 @@ import {
   getStorageObjectByteSize,
   replaceStorageObjectFromPath,
 } from "@/app/api/_lib/media/objectStorage";
-import { ffmpegAvailable, resolveFfmpegPath } from "@/app/api/_lib/media/videoPoster";
+import {
+  ffmpegAvailable,
+  resolveFfmpegPath,
+  shouldAttemptServerFfmpeg,
+} from "@/app/api/_lib/media/videoPoster";
 
 const execFileAsync = promisify(execFile);
 
@@ -87,6 +91,23 @@ export async function repackVideoFaststartForKey(params: {
       key,
       skipped: true,
       reason: "unsupported-extension",
+    };
+  }
+
+  if (!shouldAttemptServerFfmpeg()) {
+    console.log("KRISTO_VIDEO_FASTSTART_SKIPPED", {
+      videoUrl,
+      key,
+      reason: "serverless-ffmpeg-skipped",
+    });
+    return {
+      ok: false,
+      faststart: false,
+      videoUrl,
+      key,
+      skipped: true,
+      reason: "serverless-ffmpeg-skipped",
+      error: "serverless-ffmpeg-skipped",
     };
   }
 
@@ -237,6 +258,16 @@ export function scheduleVideoFaststartRepack(params: {
   videoUrl: string;
   preferAsync?: boolean;
 }) {
+  if (!shouldAttemptServerFfmpeg()) {
+    console.log("KRISTO_VIDEO_FASTSTART_SKIPPED", {
+      videoUrl: normalizeVideoUrl(params.videoUrl),
+      key: params.key,
+      reason: "serverless-ffmpeg-skipped",
+      async: true,
+    });
+    return;
+  }
+
   void repackVideoFaststartForKey({
     key: params.key,
     videoUrl: params.videoUrl,

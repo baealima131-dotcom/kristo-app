@@ -3,6 +3,8 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
+import { isBrandedVideoPosterUri } from "@/app/api/_lib/media/brandedVideoPoster";
+import { isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
 
 const execFileAsync = promisify(execFile);
 const moduleRequire = createRequire(path.join(process.cwd(), "package.json"));
@@ -51,7 +53,7 @@ function publicUrlFromAbs(absPath: string): string {
 export function isUsableVideoPosterUri(posterUri: unknown, videoUrl?: unknown): boolean {
   const poster = String(posterUri || "").trim().split("?")[0];
   const video = String(videoUrl || "").trim().split("?")[0];
-  if (!poster) return false;
+  if (!poster || isBrandedVideoPosterUri(poster)) return false;
   if (video && poster === video) return false;
   if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(poster)) return false;
   return true;
@@ -63,7 +65,13 @@ export function posterPublicUrlForVideoUrl(videoUrl: string): string {
   return `/uploads/media/posters/${base}.jpg`;
 }
 
+export function shouldAttemptServerFfmpeg(): boolean {
+  return !isKristoServerlessRuntime();
+}
+
 export async function ffmpegAvailable(): Promise<boolean> {
+  if (!shouldAttemptServerFfmpeg()) return false;
+
   const ffmpegPath = resolveFfmpegPath();
   if (!ffmpegPath) return false;
 
@@ -133,6 +141,14 @@ export async function generateVideoPosterFromFile(
 export async function ensureVideoPosterForUrl(videoUrl: string): Promise<string | null> {
   const normalized = String(videoUrl || "").trim().split("?")[0];
   if (!normalized) return null;
+
+  if (!shouldAttemptServerFfmpeg()) {
+    console.log("KRISTO_VIDEO_POSTER_SKIPPED", {
+      videoUrl: normalized,
+      reason: "serverless-ffmpeg-skipped",
+    });
+    return null;
+  }
 
   const absPath = publicUploadAbsPath(normalized);
   if (absPath) {

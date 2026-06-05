@@ -22,6 +22,7 @@ import {
   removeChunkUploadSession,
   uploadVideoWithChunkSession,
 } from "@/src/lib/churchVideoChunkUpload";
+import { isBrandedVideoPosterUri } from "@/src/lib/brandedVideoPoster";
 import { compressVideoForUpload } from "@/src/lib/videoCompress";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -548,6 +549,8 @@ async function runMediaVideoUpload(
     uploadedVideoUrl = String(signed.videoUrl || "").trim();
     const serverPosterUri = String(signed.posterUri || "").trim();
     publishPosterUri = posterPublicUrl || serverPosterUri;
+    const usingBrandedPoster =
+      signed.brandedPoster === true || isBrandedVideoPosterUri(publishPosterUri);
 
     if (publishMetadata.faststart) {
       console.log("KRISTO_VIDEO_FASTSTART_DONE", {
@@ -561,7 +564,8 @@ async function runMediaVideoUpload(
         videoUrl: uploadedVideoUrl,
         faststartPending: signed.faststartPending === true,
         faststartReason: signed.faststartReason || null,
-        posterUri: publishPosterUri || null,
+        posterUri: usingBrandedPoster ? null : publishPosterUri || null,
+        brandedPoster: usingBrandedPoster,
       });
     }
 
@@ -571,7 +575,7 @@ async function runMediaVideoUpload(
         uploadProgress: 100,
         phase: "processing",
         videoUrl: uploadedVideoUrl,
-        posterUri: publishPosterUri || undefined,
+        posterUri: usingBrandedPoster ? undefined : publishPosterUri || undefined,
         mediaStatus: "processing",
         error: "",
       },
@@ -583,6 +587,7 @@ async function runMediaVideoUpload(
       title: job.title,
       videoUrl: uploadedVideoUrl,
       serverPosterUri: serverPosterUri || null,
+      brandedPoster: usingBrandedPoster,
       faststart: publishMetadata.faststart,
       faststartPending: signed.faststartPending === true,
       faststartReason: signed.faststartReason || null,
@@ -590,7 +595,7 @@ async function runMediaVideoUpload(
 
     const publishedFromRetry = await tryPublishUploadedVideo(job, {
       videoUrl: uploadedVideoUrl,
-      posterPublicUrl: publishPosterUri,
+      posterPublicUrl: usingBrandedPoster ? "" : publishPosterUri,
       publishMetadata,
       uploadHeaders,
       faststartPending: signed.faststartPending,
