@@ -24,6 +24,11 @@ import {
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 import { isHomeFeedRenderPaused } from "@/src/lib/liveRoomStartup";
+import {
+  collectHomeFeedVideoWindowIds,
+  resolveHomeFeedVideoWarmMode,
+} from "@/src/lib/homeFeedVideoWindow";
+import { isVideoPost } from "./homeFeedUtils";
 
 type Props = {
   rows: any[];
@@ -171,14 +176,39 @@ export const FeedList = memo(function FeedList({
   const renderPaused = isHomeFeedRenderPaused();
   const effectiveScreenFocused = screenFocused && !renderPaused;
 
+  const syncActiveIndexFromOffset = useCallback(
+    (y: number) => {
+      const nextIndex = Math.max(0, Math.round(y / Math.max(1, contentHeight)));
+      if (nextIndex !== activeIndex) {
+        onActiveIndexChange(nextIndex);
+      }
+    },
+    [activeIndex, contentHeight, onActiveIndexChange]
+  );
+
+  const handleScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      syncActiveIndexFromOffset(Number(event?.nativeEvent?.contentOffset?.y || 0));
+    },
+    [syncActiveIndexFromOffset]
+  );
+
   const handleMomentumScrollEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const y = Number(event?.nativeEvent?.contentOffset?.y || 0);
-      const nextIndex = Math.max(0, Math.round(y / Math.max(1, contentHeight)));
-      onActiveIndexChange(nextIndex);
+      syncActiveIndexFromOffset(Number(event?.nativeEvent?.contentOffset?.y || 0));
     },
-    [contentHeight, onActiveIndexChange]
+    [syncActiveIndexFromOffset]
   );
+
+  useEffect(() => {
+    if (renderPaused) return;
+    const warmIds = collectHomeFeedVideoWindowIds(rows, activeIndex);
+    console.log("KRISTO_VIDEO_WINDOW_STATE", {
+      activeIndex,
+      warmIds,
+      videoCount: rows.filter((row) => isVideoPost(row)).length,
+    });
+  }, [activeIndex, rows, renderPaused]);
 
   const renderItem = useCallback(
     ({ item, index }: { item: any; index: number }) => {
@@ -244,12 +274,16 @@ export const FeedList = memo(function FeedList({
         );
       }
 
+      const videoWarmMode = isVideoPost(item)
+        ? resolveHomeFeedVideoWarmMode(index, activeIndex)
+        : "off";
+
       return (
         <FeedRow
           item={item}
           height={contentHeight}
           isActive={index === activeIndex}
-          isNext={index === activeIndex + 1}
+          videoWarmMode={videoWarmMode}
           screenFocused={effectiveScreenFocused}
           likedByMe={likeState.likedByMe}
           liked={likeState.liked}
@@ -323,16 +357,18 @@ export const FeedList = memo(function FeedList({
       snapToAlignment="start"
       disableIntervalMomentum
       showsVerticalScrollIndicator={false}
+      onScroll={handleScroll}
+      scrollEventThrottle={16}
       onMomentumScrollEnd={handleMomentumScrollEnd}
       getItemLayout={(_, index) => ({
         length: contentHeight,
         offset: contentHeight * index,
         index,
       })}
-      initialNumToRender={2}
-      windowSize={3}
-      maxToRenderPerBatch={2}
-      removeClippedSubviews
+      initialNumToRender={3}
+      windowSize={7}
+      maxToRenderPerBatch={4}
+      removeClippedSubviews={false}
       style={[styles.list, viewportStyle]}
     />
   );

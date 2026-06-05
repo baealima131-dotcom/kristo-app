@@ -22,12 +22,13 @@ import {
   isValidVideoPosterUri,
 } from "./homeFeedUtils";
 import { VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
+import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
 
 type Props = {
   item: any;
   height: number;
   isActive: boolean;
-  isNext: boolean;
+  videoWarmMode: HomeFeedVideoWarmMode;
   screenFocused: boolean;
   likedByMe: boolean;
   liked: boolean;
@@ -46,7 +47,7 @@ export const FeedRow = memo(function FeedRow({
   item,
   height,
   isActive,
-  isNext,
+  videoWarmMode,
   screenFocused,
   likedByMe,
   liked,
@@ -76,9 +77,7 @@ export const FeedRow = memo(function FeedRow({
   const imageUri = resolveImageUri(item);
   const posterUri = resolvePosterUri(item);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
-  const canMountPlayer = video && videoUri && screenFocused;
-  const mountActivePlayer = Boolean(canMountPlayer && isActive);
-  const mountPreloadPlayer = Boolean(canMountPlayer && isNext && !isActive);
+  const mountVideoPlayer = Boolean(video && videoUri && screenFocused && videoWarmMode !== "off");
   const shareCount = Number(item?.shareCount || 0);
   const saveCount = Number(item?.saveCount || 0);
   const animateCopy = isActive && screenFocused;
@@ -87,15 +86,14 @@ export const FeedRow = memo(function FeedRow({
     <View style={[styles.slide, { height }]}>
       <View style={styles.media}>
         {video && videoUri ? (
-          mountActivePlayer || mountPreloadPlayer ? (
+          mountVideoPlayer ? (
             <SimpleFeedVideo
               postId={postId}
               title={title}
               mediaStatus={mediaStatus}
               uri={videoUri}
               posterUri={posterUri}
-              shouldPlay={mountActivePlayer}
-              preloadOnly={mountPreloadPlayer}
+              warmMode={videoWarmMode}
               screenFocused={screenFocused}
             />
           ) : (
