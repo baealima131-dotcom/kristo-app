@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import { updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  readMinistryJsonFile,
+  updateMinistryJsonFile,
+} from "@/app/api/_lib/store/ministryDb";
 import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
@@ -100,12 +104,12 @@ function asBody(req: NextRequest): Promise<Record<string, unknown> | null> {
 }
 
 async function readAllMembers(): Promise<MinistryMember[]> {
-  const data = await readJsonFile<MinistryMember[]>(STORE_FILE, []);
+  const data = await readMinistryJsonFile<MinistryMember[]>(STORE_FILE, []);
   return Array.isArray(data) ? data : [];
 }
 
 async function readAllMinistries(): Promise<Ministry[]> {
-  const data = await readJsonFile<Ministry[]>(MINISTRIES_FILE, []);
+  const data = await readMinistryJsonFile<Ministry[]>(MINISTRIES_FILE, []);
   return Array.isArray(data) ? data : [];
 }
 
@@ -335,7 +339,7 @@ export async function POST(req: NextRequest) {
       return json({ ok: false, error: "Only Pastor can promote to Leader" } satisfies ApiErr, { status: 403 });
     }
     try {
-      await updateJsonFile<MinistryMember[]>(
+      await updateMinistryJsonFile<MinistryMember[]>(
         STORE_FILE,
         (current) => {
           const list = Array.isArray(current) ? current : [];
@@ -370,7 +374,7 @@ export async function POST(req: NextRequest) {
   let conflict = false;
 
   try {
-    await updateJsonFile<MinistryMember[]>(
+    await updateMinistryJsonFile<MinistryMember[]>(
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
@@ -499,7 +503,7 @@ export async function PATCH(req: NextRequest) {
 
     if (hasOtherLeader) {
       try {
-        await updateJsonFile<MinistryMember[]>(
+        await updateMinistryJsonFile<MinistryMember[]>(
           STORE_FILE,
           (current) => {
             const list = Array.isArray(current) ? current : [];
@@ -533,7 +537,7 @@ export async function PATCH(req: NextRequest) {
   let updated: MinistryMember | null = null;
 
   try {
-    await updateJsonFile<MinistryMember[]>(
+    await updateMinistryJsonFile<MinistryMember[]>(
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
@@ -692,7 +696,7 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    await updateJsonFile<MinistryMember[]>(
+    await updateMinistryJsonFile<MinistryMember[]>(
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];

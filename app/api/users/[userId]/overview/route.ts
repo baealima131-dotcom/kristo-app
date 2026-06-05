@@ -6,6 +6,8 @@ import path from "node:path";
 
 import { guard } from "@/app/api/_lib/rbac";
 import { readJsonFile } from "@/app/api/_lib/store/fs";
+import { hasDurableStore } from "@/app/api/_lib/store/authDb";
+import { readMinistryJsonFile } from "@/app/api/_lib/store/ministryDb";
 
 export const runtime = "nodejs";
 
@@ -87,10 +89,19 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ userId: str
     []
   );
 
-  const ministryMembers = await tryReadDevJson<any>(
-    ["ministry-members.json", "ministryMembers.json", "ministry_members.json"],
-    []
-  );
+  // Production: read ministry members from durable storage. Local/dev keeps the
+  // best-effort .kristo-dev / fs fallback so existing workflows are unchanged.
+  const durableMinistryMembers = hasDurableStore()
+    ? await readMinistryJsonFile<any[]>("ministry-members.json", []).catch(() => [])
+    : null;
+
+  const ministryMembers =
+    durableMinistryMembers && durableMinistryMembers.length
+      ? durableMinistryMembers
+      : await tryReadDevJson<any>(
+          ["ministry-members.json", "ministryMembers.json", "ministry_members.json"],
+          []
+        );
 
   const follows = await tryReadDevJson<any>(
     ["follows.json", "followers.json", "social.json"],

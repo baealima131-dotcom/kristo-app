@@ -4,6 +4,7 @@ import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
 import { readJsonFile } from "@/app/api/_lib/store/fs";
+import { readMinistryJsonFile } from "@/app/api/_lib/store/ministryDb";
 
 /* =========================
    TYPES
@@ -44,8 +45,11 @@ export async function GET(req: NextRequest) {
   const { churchId } = ctxOrRes;
 
   const members = await readJsonFile<ChurchMember[]>("church_members.json", []);
-  const ministries = await readJsonFile<Ministry[]>("ministries.json", []);
-  const ministryMembers = await readJsonFile<MinistryMember[]>("ministry_members.json", []);
+  const ministries = await readMinistryJsonFile<Ministry[]>("ministries.json", []);
+  const ministryMembers = await readMinistryJsonFile<MinistryMember[]>(
+    "ministry-members.json",
+    []
+  );
 
   const membersCount = members.filter((m) => m.churchId === churchId).length;
   const ministriesCount = ministries.filter((m) => m.churchId === churchId).length;

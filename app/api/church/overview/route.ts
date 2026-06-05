@@ -11,7 +11,7 @@ import {
 } from "@/app/api/_lib/churchAvatar";
 import { listNotifications } from "@/app/api/_lib/notifications";
 import { getProfile } from "@/app/api/auth/_lib/profile";
-import { readJsonFile } from "@/app/api/_lib/store/fs";
+import { readMinistryJsonFile as readJsonFile } from "@/app/api/_lib/store/ministryDb";
 import {
   getUserJoinedMinistries,
   logMinistryScope,

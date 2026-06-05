@@ -1,4 +1,4 @@
-import { readJsonFile } from "@/app/api/_lib/store/fs";
+import { readMinistryJsonFile as readJsonFile } from "@/app/api/_lib/store/ministryDb";
 
 export type MinistryMemberRole = "Leader" | "Assistant" | "Host" | "Member";
 

@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  readMinistryJsonFile as readJsonFile,
+  updateMinistryJsonFile as updateJsonFile,
+} from "@/app/api/_lib/store/ministryDb";
 import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
 import {
