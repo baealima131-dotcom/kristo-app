@@ -45,6 +45,7 @@ import {
   requireActiveChurchSubscriptionForSchedule,
 } from "@/src/lib/churchSubscription";
 import { clearThreadMessages } from "@/src/lib/messagesStore";
+import { applyScheduleDeleteToLocalRoom } from "@/src/lib/scheduleRoomMessageSync";
 import {
   configureChurchProjectElection,
   getChurchProjectElectionState,
@@ -1822,6 +1823,32 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     });
   }
 
+  function syncScheduleDeleteToChatRoom(opts: {
+    cardIds?: string[];
+    clearAllAssignmentCards?: boolean;
+    scheduleBatchId?: string;
+    reason: string;
+  }) {
+    const session = getSessionSync();
+    const churchId = String(session?.churchId || "").trim();
+    const userId = String(session?.userId || "").trim();
+    const roomIds = Array.from(
+      new Set([targetRoomId, "church-media-room", assignmentId].filter(Boolean))
+    );
+
+    return applyScheduleDeleteToLocalRoom({
+      roomIds,
+      threadIds: roomIds,
+      cardIds: opts.cardIds,
+      clearAllAssignmentCards: opts.clearAllAssignmentCards,
+      scheduleBatchId: opts.scheduleBatchId,
+      assignmentId,
+      churchId,
+      userId,
+      reason: opts.reason,
+    });
+  }
+
   function deleteSelectedScheduleSlots() {
     if (!selectedScheduleSlotIds.length) {
       Alert.alert("No slots selected", "Select at least one slot.");
@@ -1836,13 +1863,66 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         {
           text: "Delete",
           style: "destructive",
-          onPress: () => {
+          onPress: async () => {
+            console.log("KRISTO_SCHEDULE_DELETE_TAP", {
+              action: "delete-selected-slots",
+              count: selectedScheduleSlotIds.length,
+              roomId: targetRoomId,
+            });
+
+            const deleteIds = Array.from(
+              new Set(
+                scheduleSpeakerSlots
+                  .filter((slot: any) =>
+                    selectedScheduleSlotIds.includes(String(slot.id))
+                  )
+                  .map((slot: any) => String(slot.id || slot.cardId || ""))
+                  .filter(Boolean)
+              )
+            );
+
+            try {
+              const base = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/+$/, "");
+              const res = await fetch(`${base}/api/church/room-messages`, {
+                method: "DELETE",
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(getKristoHeaders() as any),
+                },
+                body: JSON.stringify({
+                  roomId: targetRoomId,
+                  cardIds: deleteIds,
+                  clearCardIds: deleteIds,
+                }),
+              });
+
+              if (!res.ok) {
+                console.log("⚠️ DELETE_SELECTED_BACKEND_FAILED", await res.text());
+              } else {
+                console.log("KRISTO_SCHEDULE_DELETE_SUCCESS", {
+                  action: "delete-selected-slots",
+                  count: deleteIds.length,
+                  roomId: targetRoomId,
+                });
+              }
+            } catch (e) {
+              console.log("⚠️ DELETE_SELECTED_BACKEND_ERROR", e);
+            }
+
+            syncScheduleDeleteToChatRoom({
+              cardIds: deleteIds,
+              reason: "tool-delete-selected-slots",
+            });
+
             const next = scheduleSpeakerSlots.filter(
               (slot: any) =>
                 !selectedScheduleSlotIds.includes(String(slot.id))
             );
 
             saveChurchProjectScheduleSlots(assignmentId, next);
+            setBackendScheduleCards((prev) =>
+              prev.filter((slot: any) => !deleteIds.includes(String(slot.id || slot.cardId || "")))
+            );
 
             setSelectedScheduleSlotIds([]);
             setScheduleSelectionMode(false);
@@ -1952,6 +2032,12 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           text: "Delete",
           style: "destructive",
           onPress: async () => {
+            console.log("KRISTO_SCHEDULE_DELETE_TAP", {
+              action: "delete-schedule-batch",
+              batchId: String(activeScheduleBatch.id || ""),
+              roomId: targetRoomId,
+            });
+
             const batchId = String(activeScheduleBatch.id || "");
             const deleteIds = Array.from(
               new Set(
@@ -1983,10 +2069,23 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
 
               if (!res.ok) {
                 console.log("⚠️ DELETE_BATCH_BACKEND_FAILED", await res.text());
+              } else {
+                console.log("KRISTO_SCHEDULE_DELETE_SUCCESS", {
+                  action: "delete-schedule-batch",
+                  batchId,
+                  count: deleteIds.length,
+                  roomId: targetRoomId,
+                });
               }
             } catch (e) {
               console.log("⚠️ DELETE_BATCH_BACKEND_ERROR", e);
             }
+
+            syncScheduleDeleteToChatRoom({
+              cardIds: deleteIds,
+              scheduleBatchId: batchId,
+              reason: "tool-delete-schedule-batch",
+            });
 
             const next = scheduleSpeakerSlots.filter(
               (slot: any) => String(slot.scheduleBatchId || "batch_1") !== batchId
@@ -2006,6 +2105,11 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
   }
 
   async function clearCurrentScheduleSlots() {
+    console.log("KRISTO_SCHEDULE_DELETE_TAP", {
+      action: "clear-schedule",
+      roomId: targetRoomId,
+    });
+
     const allIds = Array.from(
       new Set(
         [
@@ -2064,10 +2168,23 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
 
       if (!res.ok) {
         console.log("⚠️ CLEAR_SCHEDULE_BACKEND_FAILED", await res.text());
+      } else {
+        console.log("KRISTO_SCHEDULE_DELETE_SUCCESS", {
+          action: "clear-schedule",
+          count: allIds.length,
+          roomId: targetRoomId,
+          clearAllAssignmentCards: true,
+        });
       }
     } catch (e) {
       console.log("⚠️ CLEAR_SCHEDULE_BACKEND_ERROR", e);
     }
+
+    syncScheduleDeleteToChatRoom({
+      cardIds: allIds,
+      clearAllAssignmentCards: true,
+      reason: "tool-clear-schedule",
+    });
 
     if (isMediaSchedule && !isMinistryLiveSchedule) {
       const churchId = String(getSessionSync()?.churchId || "").trim();

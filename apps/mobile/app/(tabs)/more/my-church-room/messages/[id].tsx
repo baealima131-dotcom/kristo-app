@@ -81,6 +81,7 @@ import {
   refreshRoomMessagesIfNeeded,
   resetRoomMessagesRefreshState,
 } from "@/src/lib/churchMediaRoomRefresh";
+import { subscribeScheduleRoomDeleteInvalidation } from "@/src/lib/scheduleRoomMessageSync";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
@@ -3638,6 +3639,49 @@ export default function MessageThreadScreen() {
     roomMessagesSigRef.current = "";
     void reloadRoomMessagesRef.current?.({ force: true });
   }, [churchId, effectiveAuthUserId, backendRoomId]);
+
+  useEffect(() => {
+    return subscribeScheduleRoomDeleteInvalidation((payload) => {
+      const relevantIds = new Set(
+        [
+          threadId,
+          backendRoomId,
+          CHURCH_MEDIA_ROOM_ID,
+          String((params as any)?.assignmentId || ""),
+          String((params as any)?.ministryId || ""),
+          String(resolvedMinistryId || ""),
+        ]
+          .map((x) => String(x || "").trim())
+          .filter(Boolean)
+      );
+
+      const affected = [...(payload.threadIds || []), ...(payload.roomIds || [])].some((id) =>
+        relevantIds.has(String(id || "").trim())
+      );
+
+      if (!affected) return;
+
+      mediaRoomCacheFreshRef.current = false;
+      roomMessagesSigRef.current = "";
+
+      console.log("KRISTO_ROOM_MESSAGES_FORCE_RELOAD_AFTER_DELETE", {
+        threadId,
+        backendRoomId,
+        cardIds: payload.cardIds || [],
+        clearAllAssignmentCards: !!payload.clearAllAssignmentCards,
+        reason: payload.reason || null,
+      });
+
+      forceReloadRoomMessages();
+    });
+  }, [
+    threadId,
+    backendRoomId,
+    forceReloadRoomMessages,
+    resolvedMinistryId,
+    (params as any)?.assignmentId,
+    (params as any)?.ministryId,
+  ]);
 
   const listRef = useRef<any>(null);
   const inputRef = useRef<any>(null);

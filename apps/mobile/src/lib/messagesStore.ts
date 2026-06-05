@@ -662,6 +662,93 @@ export function clearThreadMessages(threadId: string) {
   emit();
 }
 
+function shouldRemoveAssignmentCard(
+  m: MsgItem,
+  opts?: {
+    cardIds?: Set<string>;
+    clearAllAssignmentCards?: boolean;
+    scheduleBatchId?: string;
+  }
+) {
+  if (m.kind !== "assignment_card" || !m.card) return false;
+
+  if (opts?.clearAllAssignmentCards) return true;
+
+  const card = m.card as AssignmentCardPayload & Record<string, unknown>;
+  const cardId = String(card.cardId || m.id || "").trim();
+  const messageId = String(m.id || "").trim();
+  const cardIdSet = opts?.cardIds;
+
+  if (cardIdSet && cardIdSet.size > 0) {
+    if (cardIdSet.has(cardId) || cardIdSet.has(messageId)) return true;
+  }
+
+  const scheduleBatchId = String(opts?.scheduleBatchId || "").trim();
+  if (
+    scheduleBatchId &&
+    String((card as any).scheduleBatchId || "").trim() === scheduleBatchId
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function removeAssignmentCardsFromThread(
+  threadId: string,
+  opts?: {
+    cardIds?: string[];
+    clearAllAssignmentCards?: boolean;
+    scheduleBatchId?: string;
+  }
+): number {
+  if (!threadId) return 0;
+
+  const arr = state.messages[threadId] || [];
+  const cardIdSet = new Set(
+    (opts?.cardIds || []).map((x) => String(x || "").trim()).filter(Boolean)
+  );
+  const hasFilter =
+    !!opts?.clearAllAssignmentCards ||
+    cardIdSet.size > 0 ||
+    !!String(opts?.scheduleBatchId || "").trim();
+
+  if (!hasFilter) return 0;
+
+  const next = arr.filter(
+    (m) =>
+      !shouldRemoveAssignmentCard(m, {
+        cardIds: cardIdSet,
+        clearAllAssignmentCards: opts?.clearAllAssignmentCards,
+        scheduleBatchId: opts?.scheduleBatchId,
+      })
+  );
+
+  const removed = arr.length - next.length;
+  if (removed > 0) {
+    state.messages[threadId] = next;
+    persist();
+    emit();
+  }
+
+  return removed;
+}
+
+export function removeAssignmentCardsFromThreads(
+  threadIds: string[],
+  opts?: {
+    cardIds?: string[];
+    clearAllAssignmentCards?: boolean;
+    scheduleBatchId?: string;
+  }
+): number {
+  let total = 0;
+  for (const threadId of threadIds) {
+    total += removeAssignmentCardsFromThread(threadId, opts);
+  }
+  return total;
+}
+
 export function useThread(threadId: string): { messages: MsgItem[]; meta?: ThreadMeta } {
   const [, force] = React.useState(0);
 
