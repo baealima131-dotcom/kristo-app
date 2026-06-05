@@ -79,6 +79,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ userId: str
   const url = new URL(req.url);
   const limit = Math.max(1, Math.min(60, asNum(url.searchParams.get("limit"), 18)));
 
+  // Read-only legacy/dev fallback: posts.json / user-posts.json have no writer
+  // in the codebase (real posts come from the feed system), so this never
+  // persists to /tmp in production. Returns empty when absent. Safe to leave.
   const rawPosts = await tryReadDevJson<any>(["posts.json", "user-posts.json"], []);
 
   const arr: Post[] = Array.isArray(rawPosts) ? rawPosts : Object.values(rawPosts || {});

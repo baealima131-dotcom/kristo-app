@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { guardAuth } from "@/app/api/_lib/rbac";
-import { readJsonFile, writeJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  readCoreJsonFile as readJsonFile,
+  writeCoreJsonFile as writeJsonFile,
+} from "@/app/api/_lib/store/coreDb";
 
 const FILE_NAME = "my_way_settings.json";
 const DEFAULT_AGENT_COMMAND = "A";

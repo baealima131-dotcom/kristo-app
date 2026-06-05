@@ -33,13 +33,17 @@ export const CHURCHES_STORE_KEY = "churches.json";
 export const MEMBERSHIPS_STORE_KEY = "memberships.json";
 export const MEMBERS_STORE_KEY = "members.json";
 export const CHURCH_BANKED_STORE_KEY = "church_banked.json";
+export const FOLLOWS_STORE_KEY = "follows.json";
+export const MY_WAY_SETTINGS_STORE_KEY = "my_way_settings.json";
 
 type CoreStoreKey =
   | typeof PROFILES_STORE_KEY
   | typeof CHURCHES_STORE_KEY
   | typeof MEMBERSHIPS_STORE_KEY
   | typeof MEMBERS_STORE_KEY
-  | typeof CHURCH_BANKED_STORE_KEY;
+  | typeof CHURCH_BANKED_STORE_KEY
+  | typeof FOLLOWS_STORE_KEY
+  | typeof MY_WAY_SETTINGS_STORE_KEY;
 
 let sqlClient: ReturnType<typeof neon> | null = null;
 let schemaReady: Promise<void> | null = null;
@@ -81,6 +85,14 @@ function normalizeStoreKey(fileName: string): CoreStoreKey {
 
   if (f === "members.json") return MEMBERS_STORE_KEY;
   if (f === "church_banked.json" || f === "church-banked.json") return CHURCH_BANKED_STORE_KEY;
+
+  if (f === "follows.json" || f === "followers.json" || f === "social.json") {
+    return FOLLOWS_STORE_KEY;
+  }
+
+  if (f === "my_way_settings.json" || f === "my-way-settings.json") {
+    return MY_WAY_SETTINGS_STORE_KEY;
+  }
 
   throw new Error(`Unsupported core store file: ${fileName}`);
 }

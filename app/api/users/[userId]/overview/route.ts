@@ -8,6 +8,7 @@ import { guard } from "@/app/api/_lib/rbac";
 import { readJsonFile } from "@/app/api/_lib/store/fs";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
 import { readMinistryJsonFile } from "@/app/api/_lib/store/ministryDb";
+import { readCoreJsonFile } from "@/app/api/_lib/store/coreDb";
 import { getMembershipsForUser } from "@/app/api/_lib/memberships";
 
 export const runtime = "nodejs";
@@ -113,11 +114,23 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ userId: str
           []
         );
 
-  const follows = await tryReadDevJson<any>(
-    ["follows.json", "followers.json", "social.json"],
-    { followers: [], following: [] }
-  );
+  // Production: follow edges are durable (Postgres kristo_core_store). Local/dev
+  // keeps the best-effort .kristo-dev / fs fallback so existing workflows work.
+  const durableFollows = hasDurableStore()
+    ? await readCoreJsonFile<any[]>("follows.json", []).catch(() => [])
+    : null;
 
+  const follows =
+    durableFollows && durableFollows.length
+      ? durableFollows
+      : await tryReadDevJson<any>(
+          ["follows.json", "followers.json", "social.json"],
+          { followers: [], following: [] }
+        );
+
+  // posts.json / user-posts.json are a read-only legacy/dev fallback (no writer
+  // in the codebase). Real posts come from the feed system; this never persists
+  // to /tmp in production. Safe to leave as a dev fallback.
   const posts = await tryReadDevJson<any>(
     ["posts.json", "user-posts.json"],
     []
