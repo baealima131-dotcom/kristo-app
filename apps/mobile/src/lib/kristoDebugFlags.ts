@@ -1,0 +1,9 @@
+/** Global toggle for extra RevenueCat logging in dev (off by default). */
+export const KRISTO_VERBOSE_REVENUECAT_DEBUG = false;
+
+export function shouldEnableRevenueCatDebug(_route?: string | null): boolean {
+  if (process.env.EXPO_PUBLIC_KRISTO_REVENUECAT_DEBUG === "1") return true;
+  if (!__DEV__) return false;
+  if (_route === "payments") return true;
+  return KRISTO_VERBOSE_REVENUECAT_DEBUG;
+}
