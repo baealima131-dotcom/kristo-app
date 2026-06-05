@@ -44,5 +44,10 @@ export function isHomeFeedReadyMediaItem(item: AnyItem | null | undefined) {
   if (!isMediaUploadFeedItem(item)) return true;
   if (!videoUrl) return false;
 
-  return mediaStatus === "ready" || mediaStatus === "published" || mediaStatus === "";
+  return (
+    mediaStatus === "ready" ||
+    mediaStatus === "published" ||
+    mediaStatus === "processing" ||
+    mediaStatus === ""
+  );
 }

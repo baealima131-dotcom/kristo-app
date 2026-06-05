@@ -141,6 +141,14 @@ export default function HomeFeedScreen() {
     return () => clearInterval(timer);
   }, [feedFocused, loadFeed]);
 
+  useEffect(() => {
+    if (!feedFocused || homeFeedRenderPaused) return;
+    const timer = setInterval(() => {
+      setLocalTick((n) => n + 1);
+    }, 20_000);
+    return () => clearInterval(timer);
+  }, [feedFocused, homeFeedRenderPaused]);
+
   const serverLikeByPostId = useMemo(() => {
     const map: Record<string, { likedByMe: boolean; likeCount: number }> = {};
     for (const row of backendRows) {
