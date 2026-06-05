@@ -7,7 +7,10 @@ import {
 } from "@/app/api/_lib/churchSubscription";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
-import { readJsonFile, writeJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  readRoomMessagesJsonFile,
+  writeRoomMessagesJsonFile,
+} from "@/app/api/_lib/store/roomMessageDb";
 
 export const runtime = "nodejs";
 
@@ -40,6 +43,7 @@ function isV1DisabledRoomTextSend(roomKind: string, kind: string) {
 
 type RoomMessage = {
   id: string;
+  clientId?: string;
   churchId: string;
   roomId: string;
   roomKind: string;
@@ -49,25 +53,66 @@ type RoomMessage = {
   senderRole?: string;
   text: string;
   attachments: any[];
+  // Optional rich payloads (assignment cards, schedule slots, etc.). These must
+  // be persisted and returned verbatim so the client never loses them after a
+  // poll/hydrate.
+  attachment?: any;
+  file?: any;
+  files?: any[];
   kind?: string;
   card?: any;
+  payload?: any;
+  assignment?: any;
+  schedule?: any;
+  slot?: any;
+  scheduleId?: string;
+  slotId?: string;
+  parentScheduleId?: string;
+  metadata?: any;
   createdAt: number;
   deletedFor?: string[];
 };
 
+/**
+ * Copy only the optional rich fields that are actually present on the incoming
+ * body so we never overwrite stored fields with `undefined` and never strip
+ * attachments/cards/schedule data.
+ */
+function pickOptionalRoomMessageFields(body: any): Partial<RoomMessage> {
+  const out: Partial<RoomMessage> = {};
+  if (body?.attachment !== undefined) out.attachment = body.attachment;
+  if (body?.file !== undefined) out.file = body.file;
+  if (Array.isArray(body?.files)) out.files = body.files;
+  if (body?.payload !== undefined && body?.payload !== null) out.payload = body.payload;
+  if (body?.assignment !== undefined && body?.assignment !== null) out.assignment = body.assignment;
+  if (body?.schedule !== undefined && body?.schedule !== null) out.schedule = body.schedule;
+  if (body?.slot !== undefined && body?.slot !== null) out.slot = body.slot;
+  if (body?.metadata !== undefined && body?.metadata !== null) out.metadata = body.metadata;
+
+  const scheduleId = String(body?.scheduleId || "").trim();
+  if (scheduleId) out.scheduleId = scheduleId;
+  const slotId = String(body?.slotId || "").trim();
+  if (slotId) out.slotId = slotId;
+  const parentScheduleId = String(body?.parentScheduleId || "").trim();
+  if (parentScheduleId) out.parentScheduleId = parentScheduleId;
+
+  return out;
+}
+
 async function readStore(): Promise<Record<string, RoomMessage[]>> {
-  try {
-    const data = await readJsonFile<Record<string, RoomMessage[]>>(ROOM_MESSAGES_STORE_FILE, {});
-    return data && typeof data === "object" ? data : {};
-  } catch {
-    return {};
-  }
+  const data = await readRoomMessagesJsonFile<Record<string, RoomMessage[]>>(
+    ROOM_MESSAGES_STORE_FILE,
+    {}
+  );
+  return data && typeof data === "object" ? data : {};
 }
 
 async function writeStore(data: Record<string, RoomMessage[]>) {
-  // Uses the writable data dir (/tmp on serverless) instead of the read-only
-  // bundled `data/` folder, so sends never crash with a filesystem 500.
-  await writeJsonFile(ROOM_MESSAGES_STORE_FILE, data);
+  // Durable Postgres-backed store (falls back to local JSON only in dev). On
+  // Vercel without a database this throws instead of silently writing to /tmp,
+  // so room messages, attachments, cards and schedule slots are never lost
+  // across instances, redeploys or devices.
+  await writeRoomMessagesJsonFile(ROOM_MESSAGES_STORE_FILE, data);
 }
 
 function getHeaders(req: Request) {
@@ -219,7 +264,19 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
   }
 
-  const store = await readStore();
+  let store: Record<string, RoomMessage[]>;
+  try {
+    store = await readStore();
+  } catch (e) {
+    console.log("KRISTO_ROOM_MESSAGES_READ_FAILED", {
+      roomId,
+      error: String((e as any)?.message || e),
+    });
+    return NextResponse.json(
+      { ok: false, error: "Message store unavailable. Please try again later." },
+      { status: 503 }
+    );
+  }
   const rows = (store[keyOf(churchId, roomId)] || []).filter((m: any) => {
     const deletedFor = Array.isArray(m?.deletedFor) ? m.deletedFor.map(String) : [];
     return !deletedFor.includes(String(userId));
@@ -231,6 +288,8 @@ export async function GET(req: Request) {
     window.map(async (m: any) => {
       const profile = await senderProfileFor(churchId, String(m.senderUserId || ""));
 
+      // Spread the full stored row first so attachments / card / payload /
+      // schedule / slot / metadata are never stripped on the way out.
       return {
         ...m,
         senderName: profile.name || m.senderName || "Member",
@@ -239,6 +298,21 @@ export async function GET(req: Request) {
       };
     })
   );
+
+  const attachmentCount = enriched.reduce(
+    (sum: number, m: any) => sum + (Array.isArray(m?.attachments) ? m.attachments.length : 0),
+    0
+  );
+  const cardCount = enriched.filter(
+    (m: any) => String(m?.kind || "") === "assignment_card" || !!m?.card
+  ).length;
+
+  console.log("KRISTO_ROOM_MESSAGE_GET_RETURNED", {
+    roomId,
+    count: enriched.length,
+    attachmentCount,
+    cardCount,
+  });
 
   return NextResponse.json({
     ok: true,
@@ -260,6 +334,8 @@ export async function POST(req: Request) {
   const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
   const kind = String(body?.kind || "text").trim();
   const card = body?.card && typeof body.card === "object" ? body.card : null;
+  const clientId = String(body?.clientId || body?.localId || "").trim();
+  const optionalFields = pickOptionalRoomMessageFields(body);
 
   if (!roomId) {
     return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
@@ -274,7 +350,16 @@ export async function POST(req: Request) {
     );
   }
 
-  if (!text && attachments.length === 0 && !(kind === "assignment_card" && card)) {
+  // A message is meaningful if it has text, attachments, a card, or any rich
+  // payload (assignment / schedule / slot).
+  const hasRichPayload =
+    !!card ||
+    optionalFields.payload !== undefined ||
+    optionalFields.assignment !== undefined ||
+    optionalFields.schedule !== undefined ||
+    optionalFields.slot !== undefined;
+
+  if (!text && attachments.length === 0 && !hasRichPayload) {
     return NextResponse.json({ ok: false, error: "Empty message" }, { status: 400 });
   }
 
@@ -285,7 +370,20 @@ export async function POST(req: Request) {
     }
   }
 
-  const store = await readStore();
+  let store: Record<string, RoomMessage[]>;
+  try {
+    store = await readStore();
+  } catch (e) {
+    console.log("KRISTO_ROOM_MESSAGES_READ_FAILED", {
+      roomId,
+      roomKind,
+      error: String((e as any)?.message || e),
+    });
+    return NextResponse.json(
+      { ok: false, error: "Message store unavailable. Please try again later." },
+      { status: 503 }
+    );
+  }
   const key = keyOf(churchId, roomId);
 
   const identity = await resolveSenderIdentity(userId);
@@ -294,6 +392,7 @@ export async function POST(req: Request) {
 
   const msg: RoomMessage = {
     id: `rm_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    ...(clientId ? { clientId } : {}),
     churchId,
     roomId,
     roomKind,
@@ -305,10 +404,19 @@ export async function POST(req: Request) {
     attachments,
     kind,
     card,
+    ...optionalFields,
     createdAt: Date.now(),
   };
 
   store[key] = [msg, ...(store[key] || [])].slice(0, 500);
+
+  console.log("KRISTO_ROOM_MESSAGE_POST_PERSISTED", {
+    roomId,
+    kind,
+    attachmentCount: attachments.length,
+    hasPayload: optionalFields.payload !== undefined || !!card,
+    hasSlot: optionalFields.slot !== undefined || !!optionalFields.slotId,
+  });
 
   try {
     await writeStore(store);
