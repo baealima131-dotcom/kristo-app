@@ -89,7 +89,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const isPreload = warmMode === "preload";
   const isWarm = warmMode === "warm";
   const shouldPrime = isPreload || isWarm;
-  const reusedReady = cachedReadyOnMount && (isActive || shouldPrime);
 
   const [firstFrameReady, setFirstFrameReady] = useState(
     () => isActive && cachedReadyOnMount
@@ -336,42 +335,50 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const poster = String(posterUri || "").trim();
   const hasPoster = isValidVideoPosterUri(poster, uri);
-  const showPosterOverlay = !firstFrameReady;
-  const showPosterImage = hasPoster && showPosterOverlay;
-  const showFallbackPoster = !hasPoster && showPosterOverlay;
+  const showOverlay = !firstFrameReady;
 
   return (
-    <View style={StyleSheet.absoluteFillObject}>
-      {showFallbackPoster ? (
-        <VideoPostFallbackPoster
-          postId={postId}
-          title={title}
-          videoUrl={uri}
-          mediaStatus={mediaStatus}
-        />
-      ) : null}
-      {showPosterImage ? (
-        <Image
-          source={{ uri: poster }}
-          style={[StyleSheet.absoluteFillObject, styles.posterLayer]}
-          resizeMode="cover"
-        />
-      ) : null}
+    <View style={styles.root}>
       <VideoView
         player={player}
-        style={[
-          StyleSheet.absoluteFillObject,
-          { opacity: isActive && firstFrameReady ? 1 : 0 },
-        ]}
+        style={styles.videoSurface}
         contentFit="cover"
         nativeControls={false}
       />
+      {showOverlay ? (
+        <View style={styles.overlay} pointerEvents="none">
+          {hasPoster ? (
+            <Image source={{ uri: poster }} style={styles.overlayFill} resizeMode="cover" />
+          ) : (
+            <VideoPostFallbackPoster
+              postId={postId}
+              title={title}
+              videoUrl={uri}
+              mediaStatus={mediaStatus}
+            />
+          )}
+        </View>
+      ) : null}
     </View>
   );
 });
 
 const styles = StyleSheet.create({
-  posterLayer: {
+  root: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: "hidden",
+  },
+  videoSurface: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
     zIndex: 2,
+  },
+  overlayFill: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
   },
 });
