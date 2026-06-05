@@ -3125,6 +3125,20 @@ export default function MessageThreadScreen() {
   }, [threadId, title, sub, isAssignmentThread, assignmentTitleParam, assignmentSubtitleParam, isMinistryThread, realMinistry]);
 
   const { messages } = useThread(threadId);
+  const cacheRenderedLoggedRef = useRef(false);
+
+  // Log the instant render from the persisted local store (cached messages /
+  // R2 image URLs appear immediately, before any background refresh).
+  useEffect(() => {
+    if (cacheRenderedLoggedRef.current) return;
+    if (!threadId || messages.length === 0) return;
+    cacheRenderedLoggedRef.current = true;
+    console.log("KRISTO_ROOM_MESSAGES_CACHE_RENDERED", {
+      roomId: backendRoomId,
+      count: messages.length,
+    });
+  }, [threadId, backendRoomId, messages.length]);
+
   const visibleMessages = useMemo(() => paginateMessages(messages, 120), [messages]);
   const roomImageGallery = useMemo(() => collectRoomImageGalleryUris(messages), [messages]);
   const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
@@ -3195,6 +3209,10 @@ export default function MessageThreadScreen() {
       roomMessagesSigRef.current = sig;
       if (merged.length > 0 || messages.length === 0) {
         setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
+        console.log("KRISTO_ROOM_MESSAGES_BACKGROUND_REFRESH", {
+          roomId: backendRoomId,
+          count: merged.length,
+        });
       } else {
         console.log("[RoomMessagesPoll] skip-empty-overwrite", { threadId, backendRoomId });
       }
