@@ -1,5 +1,5 @@
-import React, { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Animated, Image, LayoutChangeEvent, StyleSheet, View } from "react-native";
+import React, { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Image, StyleSheet, View } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEvent } from "expo";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
@@ -19,8 +19,6 @@ import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
 import { isValidVideoPosterUri } from "./homeFeedUtils";
 import { VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
 
-const CROSSFADE_MS = 220;
-
 type Props = {
   postId?: string;
   title?: string;
@@ -35,18 +33,27 @@ function statusLower(status: string) {
   return String(status || "").trim().toLowerCase();
 }
 
-/** Requires decoded pixels — readyToPlay alone is not enough for visual handoff. */
-function hasStableVisualFrame(status: string, currentTime: number, playing: boolean) {
+function hasDecodedFrame(status: string, currentTime: number, playing: boolean) {
   const lower = statusLower(status);
-  if (currentTime >= 0.05) return true;
-  if (playing && currentTime >= 0.03) return true;
-  if (lower === "playing" && currentTime >= 0.03) return true;
-  return false;
+  return (
+    currentTime > 0.03 ||
+    playing ||
+    lower === "playing" ||
+    lower === "readytoplay"
+  );
 }
 
-function isPlayerBuffering(status: string) {
+function isPlayerReadyToStart(status: string, currentTime: number, playing: boolean) {
   const lower = statusLower(status);
-  return lower === "loading" || lower === "loaded";
+  return (
+    hasDecodedFrame(status, currentTime, playing) ||
+    lower === "loading" ||
+    lower === "loaded"
+  );
+}
+
+function shouldMarkReadiness(status: string, currentTime: number, playing: boolean) {
+  return hasDecodedFrame(status, currentTime, playing);
 }
 
 /**
@@ -82,14 +89,11 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const isPreload = warmMode === "preload";
   const isWarm = warmMode === "warm";
   const shouldPrime = isPreload || isWarm;
+  const reusedReady = cachedReadyOnMount && (isActive || shouldPrime);
 
-  const [layoutReady, setLayoutReady] = useState(false);
-  const [visualFrameConfirmed, setVisualFrameConfirmed] = useState(false);
-  const [playbackReady, setPlaybackReady] = useState(false);
-  const [visualRevealed, setVisualRevealed] = useState(false);
-
-  const overlayOpacity = useRef(new Animated.Value(1)).current;
-  const videoOpacity = useRef(new Animated.Value(0)).current;
+  const [firstFrameReady, setFirstFrameReady] = useState(
+    () => isActive && cachedReadyOnMount
+  );
 
   const mountedUriRef = useRef(uri);
   const preloadPrimedRef = useRef(false);
@@ -98,21 +102,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const readyMarkedRef = useRef(cachedReadyOnMount);
   const mountMsRef = useRef(Date.now());
   const readyMsRef = useRef<number | null>(cachedReadyOnMount ? 0 : null);
-  const playbackReadyMsRef = useRef<number | null>(cachedReadyOnMount ? 0 : null);
+  const firstFrameMsRef = useRef<number | null>(cachedReadyOnMount && isActive ? 0 : null);
   const timingLoggedRef = useRef(false);
-  const visualReadyLoggedRef = useRef(false);
-  const crossfadeStartedRef = useRef(false);
-
-  const resetVisualLayer = useCallback(() => {
-    crossfadeStartedRef.current = false;
-    visualReadyLoggedRef.current = false;
-    overlayOpacity.setValue(1);
-    videoOpacity.setValue(0);
-    setLayoutReady(false);
-    setVisualFrameConfirmed(false);
-    setPlaybackReady(false);
-    setVisualRevealed(false);
-  }, [overlayOpacity, videoOpacity]);
 
   const logStartupTiming = (mode: HomeFeedVideoWarmMode) => {
     if (timingLoggedRef.current) return;
@@ -121,9 +112,16 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       id: postId || null,
       warmMode: mode,
       msToReady: readyMsRef.current,
-      msToFirstFrame: playbackReadyMsRef.current,
+      msToFirstFrame: firstFrameMsRef.current,
       reusedReady: cachedReadyRef.current,
     });
+  };
+
+  const markFirstFrame = (fromCache = false) => {
+    if (firstFrameMsRef.current === null) {
+      firstFrameMsRef.current = fromCache ? 0 : Date.now() - mountMsRef.current;
+    }
+    setFirstFrameReady((prev) => (prev ? prev : true));
   };
 
   const activateActivePlayback = (reason: string) => {
@@ -142,27 +140,11 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     markHomeFirstVideoReady("simple-feed-video");
   };
 
-  const markPlaybackReady = () => {
-    if (!playbackReady) {
-      if (playbackReadyMsRef.current === null) {
-        playbackReadyMsRef.current = Date.now() - mountMsRef.current;
-      }
-      setPlaybackReady(true);
-    }
-  };
-
-  const handleLayout = useCallback((event: LayoutChangeEvent) => {
-    const { width, height } = event.nativeEvent.layout;
-    if (width > 0 && height > 0) {
-      setLayoutReady(true);
-    }
-  }, []);
-
   useLayoutEffect(() => {
     mountMsRef.current = Date.now();
     timingLoggedRef.current = false;
     readyMsRef.current = cachedReadyRef.current ? 0 : null;
-    playbackReadyMsRef.current = null;
+    firstFrameMsRef.current = cachedReadyRef.current && warmModeRef.current === "active" ? 0 : null;
 
     if (!screenFocused) return;
 
@@ -170,6 +152,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       player.muted = true;
       player.play();
     } catch {}
+
+    if (warmModeRef.current === "active" && cachedReadyRef.current) {
+      markFirstFrame(true);
+    }
   }, [player, screenFocused, uri, postId]);
 
   useEffect(() => {
@@ -199,10 +185,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     registerHomeFeedVideo(postId, player, {
       postId,
       shouldPlay: isActive,
-      videoReady: playbackReady,
+      videoReady: firstFrameReady,
       reason: `warm-${warmMode}`,
     });
-  }, [player, postId, warmMode, isActive, playbackReady]);
+  }, [player, postId, warmMode, isActive, firstFrameReady]);
 
   useEffect(() => {
     if (mountedUriRef.current !== uri) {
@@ -215,15 +201,15 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       cachedReadyRef.current = isHomeFeedVideoPreloadReady(postId, uri);
       reusedWarmLoggedRef.current = false;
       readyMsRef.current = cachedReadyRef.current ? 0 : null;
-      playbackReadyMsRef.current = null;
-      resetVisualLayer();
+      firstFrameMsRef.current = null;
+      setFirstFrameReady(false);
 
       try {
         player.muted = true;
         player.play();
       } catch {}
     }
-  }, [uri, postId, player, resetVisualLayer]);
+  }, [uri, postId, player]);
 
   useEffect(() => {
     if (!shouldPrime || preloadStartLoggedRef.current) return;
@@ -241,8 +227,15 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
 
     if (isActive) {
-      if (playbackReady) {
+      if (firstFrameReady) {
         activateActivePlayback("simple-feed-video-active-handoff");
+        logStartupTiming(warmMode);
+        return;
+      }
+
+      if (cachedReadyRef.current) {
+        markFirstFrame(true);
+        activateActivePlayback("simple-feed-video-cached-handoff");
         logStartupTiming(warmMode);
         return;
       }
@@ -268,61 +261,58 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       player.pause();
       player.muted = true;
     } catch {}
-  }, [player, isActive, shouldPrime, screenFocused, uri, warmMode, playbackReady]);
+  }, [player, isActive, shouldPrime, screenFocused, uri, warmMode, firstFrameReady]);
 
   useEffect(() => {
     if (!screenFocused) return;
 
     const lower = statusLower(status);
 
-    if (
-      (hasStableVisualFrame(status, currentTime, playing) || isPlayerBuffering(status)) &&
-      readyMsRef.current === null
-    ) {
+    if (isPlayerReadyToStart(status, currentTime, playing) && readyMsRef.current === null) {
       readyMsRef.current = Date.now() - mountMsRef.current;
     }
 
-    if (isActive && (hasStableVisualFrame(status, currentTime, playing) || isPlayerBuffering(status))) {
+    if (isActive && isPlayerReadyToStart(status, currentTime, playing)) {
       try {
         player.play();
       } catch {}
     }
 
-    if (shouldPrime && hasStableVisualFrame(status, currentTime, playing)) {
+    if (shouldPrime && (lower === "readytoplay" || lower === "playing" || currentTime > 0)) {
       try {
         player.pause();
         player.muted = true;
       } catch {}
     }
 
-    if (hasStableVisualFrame(status, currentTime, playing)) {
-      if (!visualFrameConfirmed) {
-        setVisualFrameConfirmed(true);
-      }
-
-      if (!readyMarkedRef.current) {
-        readyMarkedRef.current = true;
-        markHomeFeedVideoPreloadReady(postId, uri);
-        cachedReadyRef.current = true;
-        if (shouldPrime) {
-          console.log("KRISTO_VIDEO_PRELOAD_READY", { id: postId || null });
-        }
-      } else if (isWarm || isPreload) {
-        touchHomeFeedVideoReadiness(postId, uri);
-      }
-
-      if (isActive) {
-        markPlaybackReady();
-        activateActivePlayback("simple-feed-video-active");
-        logStartupTiming(warmMode);
-      } else {
-        markPlaybackReady();
-        try {
-          player.pause();
-          player.muted = true;
-        } catch {}
-      }
+    if (!shouldMarkReadiness(status, currentTime, playing)) {
+      return;
     }
+
+    if (!readyMarkedRef.current) {
+      readyMarkedRef.current = true;
+      markHomeFeedVideoPreloadReady(postId, uri);
+      cachedReadyRef.current = true;
+      if (shouldPrime) {
+        console.log("KRISTO_VIDEO_PRELOAD_READY", { id: postId || null });
+      }
+    } else if (isWarm || isPreload) {
+      touchHomeFeedVideoReadiness(postId, uri);
+    }
+
+    if (isActive) {
+      markFirstFrame(false);
+      activateActivePlayback("simple-feed-video-active");
+      logStartupTiming(warmMode);
+      return;
+    }
+
+    markFirstFrame(false);
+
+    try {
+      player.pause();
+      player.muted = true;
+    } catch {}
   }, [
     isActive,
     shouldPrime,
@@ -336,7 +326,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     postId,
     uri,
     warmMode,
-    visualFrameConfirmed,
+    firstFrameReady,
   ]);
 
   useEffect(() => {
@@ -344,119 +334,44 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     pauseHomeFeedVideo(postId, { postId, reason: `warm-${warmMode}` });
   }, [isActive, warmMode, screenFocused, postId]);
 
-  useEffect(() => {
-    if (isActive) return;
-    overlayOpacity.setValue(1);
-    videoOpacity.setValue(0);
-  }, [isActive, overlayOpacity, videoOpacity]);
-
-  useEffect(() => {
-    if (!isActive || !layoutReady || !visualFrameConfirmed) return;
-
-    if (visualRevealed) {
-      videoOpacity.setValue(1);
-      overlayOpacity.setValue(0);
-      return;
-    }
-
-    if (crossfadeStartedRef.current) return;
-    crossfadeStartedRef.current = true;
-
-    if (!visualReadyLoggedRef.current) {
-      visualReadyLoggedRef.current = true;
-      console.log("KRISTO_VIDEO_FIRST_FRAME_VISUAL_READY", {
-        id: postId || null,
-        ms: Date.now() - mountMsRef.current,
-      });
-    }
-
-    Animated.parallel([
-      Animated.timing(overlayOpacity, {
-        toValue: 0,
-        duration: CROSSFADE_MS,
-        useNativeDriver: true,
-      }),
-      Animated.timing(videoOpacity, {
-        toValue: 1,
-        duration: CROSSFADE_MS,
-        useNativeDriver: true,
-      }),
-    ]).start(({ finished }) => {
-      if (finished) {
-        setVisualRevealed(true);
-      }
-    });
-  }, [
-    isActive,
-    layoutReady,
-    visualFrameConfirmed,
-    visualRevealed,
-    overlayOpacity,
-    videoOpacity,
-    postId,
-  ]);
-
   const poster = String(posterUri || "").trim();
   const hasPoster = isValidVideoPosterUri(poster, uri);
+  const showPosterOverlay = !firstFrameReady;
+  const showPosterImage = hasPoster && showPosterOverlay;
+  const showFallbackPoster = !hasPoster && showPosterOverlay;
 
   return (
-    <View style={styles.root} onLayout={handleLayout}>
-      <Animated.View
-        style={[styles.videoLayer, { opacity: isActive ? videoOpacity : 0 }]}
-        pointerEvents="none"
-      >
-        <VideoView
-          player={player}
-          style={styles.videoSurface}
-          contentFit="cover"
-          nativeControls={false}
-          allowsFullscreen={false}
-          allowsPictureInPicture={false}
+    <View style={StyleSheet.absoluteFillObject}>
+      {showFallbackPoster ? (
+        <VideoPostFallbackPoster
+          postId={postId}
+          title={title}
+          videoUrl={uri}
+          mediaStatus={mediaStatus}
         />
-      </Animated.View>
-
-      <Animated.View
-        style={[styles.overlayLayer, { opacity: overlayOpacity }]}
-        pointerEvents="none"
-      >
-        {hasPoster ? (
-          <Image source={{ uri: poster }} style={styles.overlayFill} resizeMode="cover" />
-        ) : (
-          <VideoPostFallbackPoster
-            postId={postId}
-            title={title}
-            videoUrl={uri}
-            mediaStatus={mediaStatus}
-          />
-        )}
-      </Animated.View>
+      ) : null}
+      {showPosterImage ? (
+        <Image
+          source={{ uri: poster }}
+          style={[StyleSheet.absoluteFillObject, styles.posterLayer]}
+          resizeMode="cover"
+        />
+      ) : null}
+      <VideoView
+        player={player}
+        style={[
+          StyleSheet.absoluteFillObject,
+          { opacity: isActive && firstFrameReady ? 1 : 0 },
+        ]}
+        contentFit="cover"
+        nativeControls={false}
+      />
     </View>
   );
 });
 
 const styles = StyleSheet.create({
-  root: {
-    ...StyleSheet.absoluteFillObject,
-    overflow: "hidden",
-    backgroundColor: "#03050C",
-  },
-  videoLayer: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 1,
-  },
-  videoSurface: {
-    ...StyleSheet.absoluteFillObject,
-    width: "100%",
-    height: "100%",
-  },
-  overlayLayer: {
-    ...StyleSheet.absoluteFillObject,
+  posterLayer: {
     zIndex: 2,
-    backgroundColor: "#03050C",
-  },
-  overlayFill: {
-    ...StyleSheet.absoluteFillObject,
-    width: "100%",
-    height: "100%",
   },
 });
