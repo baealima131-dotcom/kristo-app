@@ -7,10 +7,24 @@ import {
 } from "@/app/api/_lib/churchSubscription";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
+import { readJsonFile, writeJsonFile } from "@/app/api/_lib/store/fs";
 
 export const runtime = "nodejs";
 
-const STORE = path.join(process.cwd(), "data", "room-messages.json");
+// V1: room chat messaging is not yet launched. The assignment / church-live
+// control room shows a V2 notice instead of a composer, and the server rejects
+// plain-text sends to that room with a clean response (no message persisted).
+// Assignment cards (live-control scheduling) still flow through this endpoint.
+const ROOM_MESSAGES_STORE_FILE = "room-messages.json";
+
+const V1_MESSAGING_DISABLED_NOTICE =
+  "Messages are coming in V2. For V1, communication happens through ministries, live, and church updates.";
+
+function isV1DisabledRoomTextSend(roomKind: string, kind: string) {
+  const rk = String(roomKind || "").trim().toLowerCase();
+  const isAssignmentRoom = rk === "assignment" || rk === "church-live-control";
+  return isAssignmentRoom && String(kind || "").trim() !== "assignment_card";
+}
 
 type RoomMessage = {
   id: string;
@@ -31,16 +45,17 @@ type RoomMessage = {
 
 async function readStore(): Promise<Record<string, RoomMessage[]>> {
   try {
-    const raw = await fs.readFile(STORE, "utf8");
-    return JSON.parse(raw || "{}");
+    const data = await readJsonFile<Record<string, RoomMessage[]>>(ROOM_MESSAGES_STORE_FILE, {});
+    return data && typeof data === "object" ? data : {};
   } catch {
     return {};
   }
 }
 
 async function writeStore(data: Record<string, RoomMessage[]>) {
-  await fs.mkdir(path.dirname(STORE), { recursive: true });
-  await fs.writeFile(STORE, JSON.stringify(data, null, 2));
+  // Uses the writable data dir (/tmp on serverless) instead of the read-only
+  // bundled `data/` folder, so sends never crash with a filesystem 500.
+  await writeJsonFile(ROOM_MESSAGES_STORE_FILE, data);
 }
 
 function getHeaders(req: Request) {
@@ -238,6 +253,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Missing roomId" }, { status: 400 });
   }
 
+  // V1: assignment / church-live control room chat is disabled. Reject plain
+  // text/attachment sends with a clean response instead of persisting/crashing.
+  if (isV1DisabledRoomTextSend(roomKind, kind)) {
+    return NextResponse.json(
+      { ok: false, error: V1_MESSAGING_DISABLED_NOTICE, code: "MESSAGING_V1_DISABLED" },
+      { status: 403 }
+    );
+  }
+
   if (!text && attachments.length === 0 && !(kind === "assignment_card" && card)) {
     return NextResponse.json({ ok: false, error: "Empty message" }, { status: 400 });
   }
@@ -273,7 +297,20 @@ export async function POST(req: Request) {
   };
 
   store[key] = [msg, ...(store[key] || [])].slice(0, 500);
-  await writeStore(store);
+
+  try {
+    await writeStore(store);
+  } catch (e) {
+    console.log("KRISTO_ROOM_MESSAGES_WRITE_FAILED", {
+      roomId,
+      roomKind,
+      error: String((e as any)?.message || e),
+    });
+    return NextResponse.json(
+      { ok: false, error: "Message store unavailable. Please try again later." },
+      { status: 503 }
+    );
+  }
 
   return NextResponse.json({ ok: true, data: msg });
 }

@@ -2589,6 +2589,11 @@ export default function MessageThreadScreen() {
           ? false
           : !isAssignmentThread && (threadId.startsWith("m") || String(params.tab || "") === "ministries");
   const isStructuredRoom = isMinistryThread || isAssignmentThread;
+
+  // V1: chat messaging in the assignment / church-live control room is not
+  // launched yet. Hide the composer and show a "coming in V2" notice instead.
+  const isMessagingDisabledV1 = isAssignmentThread;
+
   const routeMinistryId = String((params as any)?.ministryId || "").trim();
 
   const resolvedMinistryId =
@@ -4006,6 +4011,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
 
   async function onSend() {
     if (attachUploading) return;
+    if (isMessagingDisabledV1) return;
 
     const text = String(draft || "").trim();
     if (!text && pending.length === 0) return;
@@ -7098,11 +7104,13 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
             <View style={s.chatEmptyList}>
               <Text style={t.emptyTitle}>No messages yet</Text>
               <Text style={t.emptySub}>
-                {isAssignmentThread
-                  ? "This assignment room is ready. Send the first assignment message."
-                  : isMinistryThread
-                    ? "This ministry space is ready. Send the first ministry message."
-                    : "Send the first message."}
+                {isMessagingDisabledV1
+                  ? "Messages are coming in V2. For V1, communication happens through ministries, live, and church updates."
+                  : isAssignmentThread
+                    ? "This assignment room is ready. Send the first assignment message."
+                    : isMinistryThread
+                      ? "This ministry space is ready. Send the first ministry message."
+                      : "Send the first message."}
               </Text>
             </View>
           }
@@ -7195,51 +7203,82 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           </ScrollView>
         ) : null}
 
-        <View style={[s.composer, { marginBottom: tabBarH + 8 }]}>
-          <Pressable onPress={pickImage} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
-            <Ionicons name="image" size={18} color={GOLD_SOLID} />
-          </Pressable>
-
-          <Pressable onPress={pickFile} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
-            <Ionicons name="attach" size={18} color={GOLD_SOLID} />
-          </Pressable>
-
-          <View style={[s.inputWrap, composerFocused ? s.inputWrapFocused : null]}>
-            <TextInput
-              ref={inputRef}
-             
-              onFocus={() => {
-                setComposerFocused(true);
-                try {
-                  listRef.current?.scrollToEnd?.({ animated: true });
-                } catch {}
-              }}
-              onBlur={() => setComposerFocused(false)}
-              blurOnSubmit={false}
-              value={draft}
-              onChangeText={setDraft}
-              placeholder="Type a message..."
-              autoFocus={false}
-              placeholderTextColor="rgba(255,255,255,0.45)"
-              style={t.input}
-              multiline
-              autoCorrect
-            />
-          </View>
-
-          <Pressable
-            onPress={onSend}
-            disabled={!canSend || (isMinistryThread && isSuspended) || attachUploading}
-            style={({ pressed }) => [
-              s.sendBtn,
-              !canSend || (isMinistryThread && isSuspended) || attachUploading ? s.sendBtnDisabled : null,
-              canSend && !(isMinistryThread && isSuspended) && !attachUploading ? s.sendBtnActive : null,
-              pressed && canSend && !(isMinistryThread && isSuspended) && !attachUploading ? ({ transform: [{ scale: 0.97 }], opacity: 0.94 } as ViewStyle) : null,
-            ]}
+        {isMessagingDisabledV1 ? (
+          <View
+            style={{
+              marginBottom: tabBarH + 8,
+              marginHorizontal: 14,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+              paddingVertical: 14,
+              paddingHorizontal: 16,
+              borderRadius: 16,
+              backgroundColor: "rgba(255,255,255,0.04)",
+              borderWidth: 1,
+              borderColor: "rgba(244,208,111,0.22)",
+            }}
           >
-            <Ionicons name="send" size={16} color={canSend && !(isMinistryThread && isSuspended) && !attachUploading ? "#FFFFFF" : "rgba(255,255,255,0.30)"} />
-          </Pressable>
-        </View>
+            <Ionicons name="lock-closed-outline" size={20} color={GOLD_SOLID} />
+            <Text
+              style={{
+                flex: 1,
+                color: "rgba(255,255,255,0.78)",
+                fontSize: 13,
+                lineHeight: 19,
+              }}
+            >
+              Messages are coming in V2. For V1, communication happens through
+              ministries, live, and church updates.
+            </Text>
+          </View>
+        ) : (
+          <View style={[s.composer, { marginBottom: tabBarH + 8 }]}>
+            <Pressable onPress={pickImage} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
+              <Ionicons name="image" size={18} color={GOLD_SOLID} />
+            </Pressable>
+
+            <Pressable onPress={pickFile} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
+              <Ionicons name="attach" size={18} color={GOLD_SOLID} />
+            </Pressable>
+
+            <View style={[s.inputWrap, composerFocused ? s.inputWrapFocused : null]}>
+              <TextInput
+                ref={inputRef}
+               
+                onFocus={() => {
+                  setComposerFocused(true);
+                  try {
+                    listRef.current?.scrollToEnd?.({ animated: true });
+                  } catch {}
+                }}
+                onBlur={() => setComposerFocused(false)}
+                blurOnSubmit={false}
+                value={draft}
+                onChangeText={setDraft}
+                placeholder="Type a message..."
+                autoFocus={false}
+                placeholderTextColor="rgba(255,255,255,0.45)"
+                style={t.input}
+                multiline
+                autoCorrect
+              />
+            </View>
+
+            <Pressable
+              onPress={onSend}
+              disabled={!canSend || (isMinistryThread && isSuspended) || attachUploading}
+              style={({ pressed }) => [
+                s.sendBtn,
+                !canSend || (isMinistryThread && isSuspended) || attachUploading ? s.sendBtnDisabled : null,
+                canSend && !(isMinistryThread && isSuspended) && !attachUploading ? s.sendBtnActive : null,
+                pressed && canSend && !(isMinistryThread && isSuspended) && !attachUploading ? ({ transform: [{ scale: 0.97 }], opacity: 0.94 } as ViewStyle) : null,
+              ]}
+            >
+              <Ionicons name="send" size={16} color={canSend && !(isMinistryThread && isSuspended) && !attachUploading ? "#FFFFFF" : "rgba(255,255,255,0.30)"} />
+            </Pressable>
+          </View>
+        )}
       </KeyboardAvoidingView>
 
       <MessageImageGalleryModal
