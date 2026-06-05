@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -28,6 +28,24 @@ import {
 
 // Show cached ministries instantly, then silently refresh if older than this.
 const MINISTRIES_CACHE_TTL_MS = 90000;
+const MINISTRIES_LOAD_TIMEOUT_MS = 12000;
+const MINISTRIES_LOAD_TIMEOUT_ERR = "__MINISTRIES_LOAD_TIMEOUT__";
+
+function withMinistriesLoadTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(MINISTRIES_LOAD_TIMEOUT_ERR)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
 
 type MinistryStatus = "Active" | "Paused";
 type Ministry = {
@@ -205,10 +223,21 @@ function MinistryCardAvatar({
 }
 
 async function apiListMinistries() {
+  const startedAt = Date.now();
   const h = getKristoHeaders();
   const res = await apiGet<any>("/api/church/ministries", {
     headers: h,
   });
+  if (__DEV__) {
+    console.log("KRISTO_MINISTRIES_API_FETCH", {
+      elapsedMs: Date.now() - startedAt,
+      ok: !!res?.ok,
+      error: res?.error || null,
+      churchId: String((h as any)["x-kristo-church-id"] || ""),
+      userId: String((h as any)["x-kristo-user-id"] || ""),
+      count: Array.isArray(res?.data) ? res.data.length : 0,
+    });
+  }
   if (!res) throw new Error("Network error");
   if (!res.ok) throw new Error(res.error || "Fetch failed");
   return (res.data || []) as Ministry[];
@@ -277,11 +306,16 @@ export default function MoreMinistriesList() {
   const ministriesPeek = peekMinistriesCache(churchId, viewerId);
   const cacheHydratedRef = useRef(false);
   const cacheFreshRef = useRef(false);
+  const hasRenderableCacheRef = useRef(Boolean(ministriesPeek?.items?.length));
+  const loadSeqRef = useRef(0);
 
   const [items, setItems] = useState<Ministry[]>(
     (ministriesPeek?.items as Ministry[]) || []
   );
-  const [loading, setLoading] = useState(!ministriesPeek?.items?.length);
+  const hasChurch = Boolean(String(auth?.churchId || "").trim());
+  const [loading, setLoading] = useState(
+    !ministriesPeek?.items?.length && !hasChurch
+  );
   const [err, setErr] = useState<string | null>(null);
   const [churchLiveControlStatus, setChurchLiveControlStatus] =
     useState<LiveControlSelfStatus>(
@@ -309,9 +343,73 @@ export default function MoreMinistriesList() {
     return resolved;
   }, [churchAvatarContext]);
 
-  async function load(opts?: { silent?: boolean }) {
+  const hydrateFromCache = useCallback(async (): Promise<boolean> => {
+    if (cacheHydratedRef.current && hasRenderableCacheRef.current) {
+      return true;
+    }
+
+    const mem = peekMinistriesCache(churchId, viewerId);
+    if (mem?.items?.length) {
+      cacheHydratedRef.current = true;
+      hasRenderableCacheRef.current = true;
+      setItems(mem.items as Ministry[]);
+      if (
+        mem.churchLiveControlStatus === "Suspended" ||
+        mem.churchLiveControlStatus === "Active"
+      ) {
+        setChurchLiveControlStatus(mem.churchLiveControlStatus);
+      }
+      cacheFreshRef.current = isScreenCacheFresh(mem.updatedAt, MINISTRIES_CACHE_TTL_MS);
+      setLoading(false);
+      console.log("KRISTO_MINISTRIES_CACHE_HIT", {
+        source: "memory",
+        count: mem.items.length,
+        churchId,
+        viewerId,
+      });
+      return true;
+    }
+
+    if (!churchId || !viewerId) return false;
+
+    const disk = await getMinistriesCache(churchId, viewerId);
+    if (disk?.items?.length) {
+      cacheHydratedRef.current = true;
+      hasRenderableCacheRef.current = true;
+      setItems(disk.items as Ministry[]);
+      if (
+        disk.churchLiveControlStatus === "Suspended" ||
+        disk.churchLiveControlStatus === "Active"
+      ) {
+        setChurchLiveControlStatus(disk.churchLiveControlStatus);
+      }
+      cacheFreshRef.current = isScreenCacheFresh(disk.updatedAt, MINISTRIES_CACHE_TTL_MS);
+      setLoading(false);
+      console.log("KRISTO_MINISTRIES_CACHE_HIT", {
+        source: "disk",
+        count: disk.items.length,
+        churchId,
+        viewerId,
+      });
+      return true;
+    }
+
+    return false;
+  }, [churchId, viewerId]);
+
+  async function load(opts?: { silent?: boolean; force?: boolean }) {
+    const seq = ++loadSeqRef.current;
+    console.log("KRISTO_MINISTRIES_LOAD_START", {
+      churchId,
+      viewerId,
+      silent: !!opts?.silent,
+      force: !!opts?.force,
+      hasCache: hasRenderableCacheRef.current,
+    });
+
     setErr(null);
     if (!opts?.silent) setLoading(true);
+
     try {
       const loadViewerId = viewerId;
       const loadChurchId = String(auth?.churchId || "").trim();
@@ -319,42 +417,55 @@ export default function MoreMinistriesList() {
 
       if (!loadViewerId) throw new Error("User session missing.");
 
-      const [data, liveControlStatus] = await Promise.all([
-        apiListMinistries(),
-        loadChurchId ? apiFetchLiveControlSelfStatus(loadViewerId) : Promise.resolve("Active" as LiveControlSelfStatus),
-      ]);
-      const checked = await Promise.all(
-        data.map(async (m) => {
-          try {
-            // Pastor/Admin sees all ministries in the church without per-ministry membership checks.
-            if (loadIsChurchAuthority) {
+      const fetchWork = async () => {
+        const [data, liveControlStatus] = await Promise.all([
+          apiListMinistries(),
+          loadChurchId
+            ? apiFetchLiveControlSelfStatus(loadViewerId)
+            : Promise.resolve("Active" as LiveControlSelfStatus),
+        ]);
+        const checked = await Promise.all(
+          data.map(async (m) => {
+            try {
+              // Pastor/Admin sees all ministries in the church without per-ministry membership checks.
+              if (loadIsChurchAuthority) {
+                return {
+                  ...m,
+                  memberRole: "Pastor",
+                  memberStatus: "Active",
+                };
+              }
+
+              // Normal member sees only ministries where they are a real member.
+              const members = await apiListMinistryMembers(m.id);
+              const mine = members.find(
+                (x) =>
+                  String(x?.userId || "") === loadViewerId &&
+                  String((x as any)?.ministryId || "") === String(m.id || "")
+              );
+
+              if (!mine) return null;
+
               return {
                 ...m,
-                memberRole: "Pastor",
-                memberStatus: "Active",
+                memberRole: String(mine?.role || "Member"),
+                memberStatus: String(mine?.status || "Active"),
               };
+            } catch {
+              return null;
             }
+          })
+        );
 
-            // Normal member sees only ministries where they are a real member.
-            const members = await apiListMinistryMembers(m.id);
-            const mine = members.find(
-              (x) =>
-                String(x?.userId || "") === loadViewerId &&
-                String((x as any)?.ministryId || "") === String(m.id || "")
-            );
+        return { data, liveControlStatus, checked };
+      };
 
-            if (!mine) return null;
-
-            return {
-              ...m,
-              memberRole: String(mine?.role || "Member"),
-              memberStatus: String(mine?.status || "Active"),
-            };
-          } catch {
-            return null;
-          }
-        })
+      const { liveControlStatus, checked } = await withMinistriesLoadTimeout(
+        fetchWork(),
+        MINISTRIES_LOAD_TIMEOUT_MS
       );
+
+      if (seq !== loadSeqRef.current) return;
 
       const currentAuth = getKristoAuth() as any;
       if (
@@ -374,6 +485,7 @@ export default function MoreMinistriesList() {
 
       setItems(sortedItems);
       setChurchLiveControlStatus(liveControlStatus);
+      hasRenderableCacheRef.current = sortedItems.length > 0;
 
       // Persist the fresh snapshot so the next focus renders instantly.
       cacheHydratedRef.current = true;
@@ -387,54 +499,65 @@ export default function MoreMinistriesList() {
           updatedAt: Date.now(),
         });
       }
-      console.log("KRISTO_MINISTRIES_BACKGROUND_REFRESH", { count: sortedItems.length });
+
+      console.log("KRISTO_MINISTRIES_API_DONE", {
+        churchId: loadChurchId,
+        viewerId: loadViewerId,
+        count: sortedItems.length,
+      });
     } catch (e: any) {
+      if (seq !== loadSeqRef.current) return;
+
       const msg = String(e?.message ?? e ?? "Error");
+      if (msg === MINISTRIES_LOAD_TIMEOUT_ERR) {
+        console.log("KRISTO_MINISTRIES_LOAD_TIMEOUT", {
+          churchId,
+          viewerId,
+          hasCache: hasRenderableCacheRef.current,
+        });
+        if (!hasRenderableCacheRef.current) {
+          setErr("Loading timed out. Check your connection and try again.");
+        }
+        return;
+      }
+
       if (msg.toLowerCase().includes("no active church membership")) {
         setItems([]);
         setErr(null);
-      } else {
+      } else if (!hasRenderableCacheRef.current) {
         setErr(msg);
       }
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) {
+        setLoading(false);
+      }
     }
   }
+
+  useEffect(() => {
+    void hydrateFromCache();
+  }, [hydrateFromCache]);
 
   useFocusEffect(
     useCallback(() => {
       let alive = true;
 
       (async () => {
-        // 1) Render cached ministries instantly (disk) before any network.
-        if (churchId && viewerId && !cacheHydratedRef.current) {
-          const disk = await getMinistriesCache(churchId, viewerId);
-          if (alive && disk?.items?.length) {
-            cacheHydratedRef.current = true;
-            setItems(disk.items as Ministry[]);
-            if (
-              disk.churchLiveControlStatus === "Suspended" ||
-              disk.churchLiveControlStatus === "Active"
-            ) {
-              setChurchLiveControlStatus(disk.churchLiveControlStatus);
-            }
-            setLoading(false);
-            cacheFreshRef.current = isScreenCacheFresh(disk.updatedAt, MINISTRIES_CACHE_TTL_MS);
-            console.log("KRISTO_MINISTRIES_CACHE_RENDERED", { count: disk.items.length });
-          }
-        }
-
+        // 1) Render cached ministries instantly (memory/disk) before any network.
+        const hasCached = await hydrateFromCache();
         if (!alive) return;
+
+        if (!viewerId) {
+          setLoading(false);
+          return;
+        }
 
         // 2) Silent background refresh. Only show the full loader when there is
         //    nothing cached to render (first empty load). Skip entirely if the
         //    cache is still within TTL.
         if (cacheFreshRef.current) return;
 
-        const hasCached =
-          cacheHydratedRef.current ||
-          Boolean(peekMinistriesCache(churchId, viewerId)?.items?.length);
-        void load({ silent: hasCached });
+        void load({ silent: hasCached || hasRenderableCacheRef.current });
       })();
 
       const session = getSessionSync() as Record<string, any> | null;
@@ -478,14 +601,13 @@ export default function MoreMinistriesList() {
         alive = false;
         clearInterval(timer);
       };
-    }, [viewerId, authRole, auth?.churchId])
+    }, [viewerId, authRole, auth?.churchId, churchId, hydrateFromCache])
   );
 
   const hasItems = useMemo(() => items.length > 0, [items]);
   // Never replace an already-populated grid with a full-screen loader; only show
-  // it on the first empty load.
-  const showSpinner = loading && !hasItems;
-  const hasChurch = Boolean(String(auth?.churchId || "").trim());
+  // it on the first empty load. Church Live Control can render while ministries refresh.
+  const showSpinner = loading && !hasItems && !hasChurch;
   const shouldShowChurchControl = hasChurch;
   const isChurchLiveControlSuspended = churchLiveControlStatus === "Suspended";
   const showGrid = hasItems || shouldShowChurchControl;
@@ -508,7 +630,13 @@ export default function MoreMinistriesList() {
           </View>
 
           <Pressable
-            onPress={() => load({ silent: items.length > 0 })}
+            onPress={() => {
+              cacheFreshRef.current = false;
+              load({
+                silent: hasRenderableCacheRef.current || items.length > 0 || hasChurch,
+                force: true,
+              });
+            }}
             style={({ pressed }) => [
               s.refreshBtn,
               pressed && { opacity: 0.92, transform: [{ scale: 0.97 }] },
