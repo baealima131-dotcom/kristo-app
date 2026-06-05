@@ -12,7 +12,7 @@ export const VIDEO_POSTERS_DIR = path.join(PUBLIC_DIR, "uploads", "media", "post
 
 let cachedFfmpegPath: string | null | undefined;
 
-function resolveFfmpegPath(): string | null {
+export function resolveFfmpegPath(): string | null {
   if (cachedFfmpegPath !== undefined) return cachedFfmpegPath;
 
   try {

@@ -335,7 +335,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const poster = String(posterUri || "").trim();
   const hasPoster = isValidVideoPosterUri(poster, uri);
-  const showOverlay = !firstFrameReady;
+  const showPosterOverlay = hasPoster && !firstFrameReady;
+  const showMinimalActiveHint = !hasPoster && isActive && !firstFrameReady;
 
   return (
     <View style={styles.root}>
@@ -345,18 +346,20 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
         contentFit="cover"
         nativeControls={false}
       />
-      {showOverlay ? (
+      {showPosterOverlay ? (
         <View style={styles.overlay} pointerEvents="none">
-          {hasPoster ? (
-            <Image source={{ uri: poster }} style={styles.overlayFill} resizeMode="cover" />
-          ) : (
-            <VideoPostFallbackPoster
-              postId={postId}
-              title={title}
-              videoUrl={uri}
-              mediaStatus={mediaStatus}
-            />
-          )}
+          <Image source={{ uri: poster }} style={styles.overlayFill} resizeMode="cover" />
+        </View>
+      ) : null}
+      {showMinimalActiveHint ? (
+        <View style={styles.overlay} pointerEvents="none">
+          <VideoPostFallbackPoster
+            variant="minimal"
+            postId={postId}
+            title={title}
+            videoUrl={uri}
+            mediaStatus={mediaStatus}
+          />
         </View>
       ) : null}
     </View>

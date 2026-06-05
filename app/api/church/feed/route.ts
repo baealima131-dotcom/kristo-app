@@ -2488,11 +2488,19 @@ async function handleFeedPost(req: NextRequest, body: any) {
     applyVideoMetadataFields(item as any, body);
   }
 
+  if ((type === "video" || videoUrl) && (item as any).faststart !== true) {
+    console.log("KRISTO_VIDEO_FASTSTART_REQUIRED", {
+      videoUrl: videoUrl || null,
+      faststart: false,
+    });
+  }
+
   console.log("KRISTO_VIDEO_POST_BEFORE_SAVE", {
     type,
     videoUrl,
     mediaType: (item as any).mediaType,
     mediaStatus: (item as any).mediaStatus,
+    faststart: (item as any).faststart === true,
     churchId,
   });
 

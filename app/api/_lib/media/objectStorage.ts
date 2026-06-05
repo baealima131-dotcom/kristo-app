@@ -1,6 +1,12 @@
+import fs from "node:fs";
+import { createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import type { Readable } from "node:stream";
 import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
@@ -345,6 +351,67 @@ export async function completeMultipartVideoUpload(params: {
     videoUrl: publicUrl,
     location: completed.Location || publicUrl,
   };
+}
+
+export async function getStorageObjectByteSize(key: string): Promise<number> {
+  const config = getVideoStorageConfig();
+  if (!config) {
+    throw new Error(videoStorageConfigError());
+  }
+
+  const client = createStorageClient(config);
+  const head = await client.send(
+    new HeadObjectCommand({
+      Bucket: config.bucket,
+      Key: key,
+    })
+  );
+
+  return Math.max(0, Number(head.ContentLength || 0));
+}
+
+export async function downloadStorageObjectToPath(key: string, destPath: string): Promise<void> {
+  const config = getVideoStorageConfig();
+  if (!config) {
+    throw new Error(videoStorageConfigError());
+  }
+
+  const client = createStorageClient(config);
+  const response = await client.send(
+    new GetObjectCommand({
+      Bucket: config.bucket,
+      Key: key,
+    })
+  );
+
+  const body = response.Body;
+  if (!body) {
+    throw new Error("Storage object body was empty.");
+  }
+
+  await pipeline(body as Readable, createWriteStream(destPath));
+}
+
+export async function replaceStorageObjectFromPath(params: {
+  key: string;
+  srcPath: string;
+  contentType?: string;
+}) {
+  const config = getVideoStorageConfig();
+  if (!config) {
+    throw new Error(videoStorageConfigError());
+  }
+
+  const body = fs.createReadStream(params.srcPath);
+  const client = createStorageClient(config);
+  await client.send(
+    new PutObjectCommand({
+      Bucket: config.bucket,
+      Key: params.key,
+      Body: body,
+      ContentType: String(params.contentType || "video/mp4").trim() || "video/mp4",
+    })
+  );
 }
 
 function logVideoStorageStartupConfig() {

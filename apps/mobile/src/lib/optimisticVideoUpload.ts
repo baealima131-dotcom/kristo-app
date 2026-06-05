@@ -403,23 +403,6 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     throw new Error("Could not read the selected video file.");
   }
 
-  const publishMetadata = buildChurchVideoPublishMetadata({
-    durationMs: job.durationMs,
-    sizeBytes: fileSize,
-    faststart: compressed.faststart,
-  });
-
-  console.log("KRISTO_VIDEO_METADATA_CAPTURED", {
-    jobId,
-    title: job.title,
-    durationMs: publishMetadata.durationMs ?? null,
-    sizeBytes: publishMetadata.sizeBytes,
-    bitrateEstimate: publishMetadata.bitrateEstimate ?? null,
-    faststart: publishMetadata.faststart,
-    pickerDurationMs: job.durationMs ?? null,
-    compressedSizeBytes: compressed.sizeBytes,
-  });
-
   let existingChunkSession = await getChunkUploadSession(chunkSessionId);
   if (
     existingChunkSession &&
@@ -473,6 +456,33 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     },
     callbacks
   );
+
+  const publishMetadata = buildChurchVideoPublishMetadata({
+    durationMs: job.durationMs,
+    sizeBytes: fileSize,
+    faststart: signed.faststart === true,
+  });
+
+  console.log("KRISTO_VIDEO_METADATA_CAPTURED", {
+    jobId,
+    title: job.title,
+    durationMs: publishMetadata.durationMs ?? null,
+    sizeBytes: publishMetadata.sizeBytes,
+    bitrateEstimate: publishMetadata.bitrateEstimate ?? null,
+    faststart: publishMetadata.faststart,
+    serverFaststart: signed.faststart === true,
+    faststartPending: signed.faststartPending === true,
+    pickerDurationMs: job.durationMs ?? null,
+    compressedSizeBytes: compressed.sizeBytes,
+  });
+
+  if (!publishMetadata.faststart) {
+    console.log("KRISTO_VIDEO_FASTSTART_REQUIRED", {
+      videoUrl: String(signed.videoUrl || "").trim(),
+      faststart: false,
+      faststartPending: signed.faststartPending === true,
+    });
+  }
 
   return { signed, publishMetadata };
 }

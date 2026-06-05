@@ -271,6 +271,41 @@ export async function getFeedItemById(id: string): Promise<ChurchFeedItem | null
   return null;
 }
 
+function normalizeFeedVideoUrl(url: unknown) {
+  return String(url || "").trim().split("?")[0];
+}
+
+export async function patchFeedItemsFaststartByVideoUrl(videoUrl: string): Promise<number> {
+  await ensureFeedStoreReady();
+  const target = normalizeFeedVideoUrl(videoUrl);
+  if (!target) return 0;
+
+  const items = await listFeedItems();
+  let patched = 0;
+
+  for (const item of items) {
+    const itemUrl = normalizeFeedVideoUrl(item.videoUrl);
+    if (!itemUrl || itemUrl !== target) continue;
+    if (item.faststart === true || item.hasFaststart === true) continue;
+
+    await upsertFeedItem({
+      ...item,
+      faststart: true,
+      hasFaststart: true,
+    });
+    patched += 1;
+  }
+
+  if (patched > 0) {
+    console.log("KRISTO_VIDEO_FASTSTART_FEED_PATCHED", {
+      videoUrl: target,
+      patchedCount: patched,
+    });
+  }
+
+  return patched;
+}
+
 export async function upsertFeedItem(item: ChurchFeedItem): Promise<ChurchFeedItem> {
   await ensureFeedStoreReady();
 
