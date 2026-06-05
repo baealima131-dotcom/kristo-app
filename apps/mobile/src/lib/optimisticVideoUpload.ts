@@ -398,10 +398,18 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
 
   const compressed = await compressVideoForUpload(job.fileUri);
   const uploadUri = compressed.uri;
+  if (!compressed.skipped) {
+    console.log("KRISTO_VIDEO_UPLOAD_USING_COMPRESSED", {
+      jobId,
+      originalBytes: compressed.originalBytes,
+      compressedBytes: compressed.compressedBytes,
+      uploadUri,
+    });
+  }
   const uploadFileName = fileNameFromUri(uploadUri, job.fileName);
   const fileSize =
-    compressed.sizeBytes > 0
-      ? compressed.sizeBytes
+    compressed.compressedBytes > 0
+      ? compressed.compressedBytes
       : await resolveUploadFileSize(uploadUri);
   const contentType = guessVideoContentType(uploadFileName);
 
@@ -479,7 +487,10 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     serverFaststart: signed.faststart === true,
     faststartPending: signed.faststartPending === true,
     pickerDurationMs: job.durationMs ?? null,
-    compressedSizeBytes: compressed.sizeBytes,
+    compressedSkipped: compressed.skipped,
+    compressedReason: compressed.reason || null,
+    originalSizeBytes: compressed.originalBytes,
+    compressedSizeBytes: compressed.compressedBytes,
   });
 
   if (!publishMetadata.faststart) {

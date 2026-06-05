@@ -1,4 +1,4 @@
-import { NativeModules } from "react-native";
+import { NativeModules, Platform, TurboModuleRegistry } from "react-native";
 
 export type VideoCompressResult = {
   uri: string;
@@ -8,11 +8,26 @@ export type VideoCompressResult = {
   reason?: string;
 };
 
+/** Skip remux/compress for tiny clips (already negligible upload size). */
 const MIN_COMPRESS_BYTES = 200 * 1024;
 
-function hasVideoCompressorNative() {
-  const native = NativeModules as Record<string, unknown>;
-  return Boolean(native.Compressor || native.RNCompressor || native.VideoCompressor);
+/** V1 iOS target: 720p long edge, ~800 kbps video (+ AAC audio). */
+const TARGET_MAX_SIZE = 720;
+const TARGET_BITRATE = 800_000;
+const MIN_FILE_SIZE_MB_FOR_COMPRESS = 0.15;
+
+function isCompressorNativeLinked(): boolean {
+  if (Boolean((NativeModules as Record<string, unknown>).Compressor)) {
+    return true;
+  }
+  if (!Boolean((globalThis as any).__turboModuleProxy)) {
+    return false;
+  }
+  try {
+    return Boolean(TurboModuleRegistry.get("Compressor"));
+  } catch {
+    return false;
+  }
 }
 
 async function resolveFileSize(uri: string): Promise<number> {
@@ -32,6 +47,11 @@ async function resolveFileSize(uri: string): Promise<number> {
   }
 }
 
+function compressionRatio(originalBytes: number, compressedBytes: number) {
+  if (originalBytes <= 0 || compressedBytes <= 0) return null;
+  return Number((compressedBytes / originalBytes).toFixed(3));
+}
+
 export async function compressVideoForUpload(sourceUri: string): Promise<VideoCompressResult> {
   const cleanUri = String(sourceUri || "").trim();
   const originalBytes = await resolveFileSize(cleanUri);
@@ -39,14 +59,10 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
   console.log("KRISTO_VIDEO_COMPRESS_START", {
     originalBytes,
     sourceUri: cleanUri,
+    platform: Platform.OS,
   });
 
   if (!cleanUri) {
-    console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
-      reason: "missing-uri",
-      originalBytes: 0,
-      compressedBytes: 0,
-    });
     return {
       uri: cleanUri,
       originalBytes: 0,
@@ -58,7 +74,7 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
 
   if (originalBytes > 0 && originalBytes < MIN_COMPRESS_BYTES) {
     console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
-      reason: "too-small-to-remux",
+      reason: "too-small",
       originalBytes,
       compressedBytes: originalBytes,
     });
@@ -67,11 +83,16 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       originalBytes,
       compressedBytes: originalBytes,
       skipped: true,
-      reason: "too-small-to-remux",
+      reason: "too-small",
     };
   }
 
-  if (!hasVideoCompressorNative()) {
+  if (!isCompressorNativeLinked()) {
+    console.log("KRISTO_VIDEO_COMPRESS_FAILED", {
+      reason: "native-not-linked",
+      originalBytes,
+      message: "react-native-compressor native module missing — rebuild iOS dev client after pod install",
+    });
     console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
       reason: "native-not-linked",
       originalBytes,
@@ -92,12 +113,23 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       throw new Error("Video.compress unavailable");
     }
 
+    console.log("KRISTO_VIDEO_COMPRESS_READY", {
+      originalBytes,
+      maxSize: TARGET_MAX_SIZE,
+      bitrate: TARGET_BITRATE,
+      compressionMethod: "manual",
+      stripAudio: false,
+      output: "mp4",
+    });
+
     const compressedUri = await Video.compress(
       cleanUri,
       {
-        compressionMethod: "auto",
-        maxSize: 1280,
-        minimumFileSizeForCompress: 2,
+        compressionMethod: "manual",
+        maxSize: TARGET_MAX_SIZE,
+        bitrate: TARGET_BITRATE,
+        minimumFileSizeForCompress: MIN_FILE_SIZE_MB_FOR_COMPRESS,
+        stripAudio: false,
       },
       (progress) => {
         const pct = Math.round(Number(progress || 0) * 100);
@@ -114,19 +146,14 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       throw new Error("Compression returned empty output.");
     }
 
-    if (originalBytes > 0 && compressedBytes >= originalBytes * 0.95) {
-      console.log("KRISTO_VIDEO_COMPRESS_KEEP_REMUXED", {
-        reason: "keep-remuxed-for-faststart",
-        originalBytes,
-        compressedBytes,
-        outputUri,
-      });
-    }
+    const ratio = compressionRatio(originalBytes, compressedBytes);
 
     console.log("KRISTO_VIDEO_COMPRESS_DONE", {
       originalBytes,
       compressedBytes,
+      ratio,
       savedBytes: Math.max(0, originalBytes - compressedBytes),
+      outputUri,
     });
 
     return {
@@ -137,7 +164,11 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
     };
   } catch (error) {
     const message = String((error as any)?.message || error || "unknown");
-    console.log("KRISTO_VIDEO_COMPRESS_FAILED", { message, originalBytes });
+    console.log("KRISTO_VIDEO_COMPRESS_FAILED", {
+      message,
+      originalBytes,
+      platform: Platform.OS,
+    });
     console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
       reason: "compress-failed",
       originalBytes,
