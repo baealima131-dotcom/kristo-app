@@ -46,7 +46,7 @@ import {
 } from "@/src/lib/churchSubscription";
 import { clearThreadMessages } from "@/src/lib/messagesStore";
 import { applyScheduleDeleteToLocalRoom } from "@/src/lib/scheduleRoomMessageSync";
-import { resolveScheduleSlotScriptForSaveForSave } from "@/src/lib/slotTopicUtils";
+import { resolveScheduleSlotScriptForSave } from "@/src/lib/slotTopicUtils";
 import {
   configureChurchProjectElection,
   getChurchProjectElectionState,
