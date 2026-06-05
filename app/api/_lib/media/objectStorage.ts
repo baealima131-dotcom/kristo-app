@@ -396,6 +396,40 @@ export async function completeMultipartVideoUpload(params: {
   };
 }
 
+/**
+ * Server-side upload of an in-memory buffer to object storage (R2/S3).
+ * Used for small attachments (e.g. room chat images/files) where we already
+ * have the bytes on the server and want a durable public URL without writing
+ * to the local (read-only on Vercel) filesystem.
+ */
+export async function uploadBufferToStorage(params: {
+  key: string;
+  body: Buffer;
+  contentType: string;
+}): Promise<{ key: string; publicUrl: string }> {
+  const config = getVideoStorageConfig();
+  if (!config) {
+    throw new Error(videoStorageConfigError());
+  }
+
+  const contentType =
+    String(params.contentType || "application/octet-stream").trim() ||
+    "application/octet-stream";
+
+  const client = createStorageClient(config);
+  await client.send(
+    new PutObjectCommand({
+      Bucket: config.bucket,
+      Key: params.key,
+      Body: params.body,
+      ContentType: contentType,
+      ContentLength: params.body.byteLength,
+    })
+  );
+
+  return { key: params.key, publicUrl: buildPublicVideoUrl(config, params.key) };
+}
+
 export async function getStorageObjectByteSize(key: string): Promise<number> {
   const config = getVideoStorageConfig();
   if (!config) {

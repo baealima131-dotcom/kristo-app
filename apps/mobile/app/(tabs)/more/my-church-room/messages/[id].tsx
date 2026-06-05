@@ -99,13 +99,6 @@ const GOLD_SOLID = "#D9B35F";
 const PURPLE = "#8B5CF6";
 const PAD = 16;
 
-// V1: room attachments are disabled until durable object storage (V2) is wired.
-// Local filesystem uploads fail on Vercel, so we hide/disable the attachment
-// buttons and surface a friendly notice instead of calling the upload endpoint.
-const ROOM_ATTACHMENTS_DISABLED_V1 = true;
-const ROOM_ATTACHMENTS_DISABLED_MESSAGE =
-  "Attachments are coming in V2. Please send text messages for now.";
-
 function chatMediaUrl(u: unknown) {
   const v = String(u || "").trim();
   if (!v) return "";
@@ -3977,15 +3970,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
     setImagePreviewIndex(null);
   }, []);
 
-  function notifyAttachmentsDisabledV1() {
-    Alert.alert("Attachments", ROOM_ATTACHMENTS_DISABLED_MESSAGE);
-  }
-
   function pickImage() {
-    if (ROOM_ATTACHMENTS_DISABLED_V1) {
-      notifyAttachmentsDisabledV1();
-      return;
-    }
     void (async () => {
       try {
         console.log("[MessagesAttach] pick image");
@@ -4028,10 +4013,6 @@ const displayHeaderTitle = assignmentDisplayTitle;
   }
 
   function pickFile() {
-    if (ROOM_ATTACHMENTS_DISABLED_V1) {
-      notifyAttachmentsDisabledV1();
-      return;
-    }
     void (async () => {
       try {
         console.log("[MessagesAttach] pick file");
@@ -7296,25 +7277,11 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           </View>
         ) : (
           <View style={[s.composer, { marginBottom: tabBarH + 8 }]}>
-            <Pressable
-              onPress={pickImage}
-              style={({ pressed }) => [
-                s.cBtn,
-                ROOM_ATTACHMENTS_DISABLED_V1 ? s.cBtnDisabled : null,
-                pressed && !ROOM_ATTACHMENTS_DISABLED_V1 ? s.cBtnPressed : null,
-              ]}
-            >
+            <Pressable onPress={pickImage} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
               <Ionicons name="image" size={18} color={GOLD_SOLID} />
             </Pressable>
 
-            <Pressable
-              onPress={pickFile}
-              style={({ pressed }) => [
-                s.cBtn,
-                ROOM_ATTACHMENTS_DISABLED_V1 ? s.cBtnDisabled : null,
-                pressed && !ROOM_ATTACHMENTS_DISABLED_V1 ? s.cBtnPressed : null,
-              ]}
-            >
+            <Pressable onPress={pickFile} style={({ pressed }) => [s.cBtn, pressed ? s.cBtnPressed : null]}>
               <Ionicons name="attach" size={18} color={GOLD_SOLID} />
             </Pressable>
 
@@ -12278,9 +12245,6 @@ videoEditorSplitTimelineBadgeText: {
   cBtnPressed: {
     opacity: 0.86,
     transform: [{ scale: 0.97 }],
-  } as ViewStyle,
-  cBtnDisabled: {
-    opacity: 0.38,
   } as ViewStyle,
 
   inputWrap: {
