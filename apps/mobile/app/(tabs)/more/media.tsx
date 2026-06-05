@@ -1589,16 +1589,12 @@ export default function MediaStudioScreen() {
     setVideoPreparing(true);
     setVideoPreparePercent(8);
 
-    void generateLocalVideoPosterUri(uri)
-      .then((posterUri) => {
-        const cleanPoster = String(posterUri || "").trim();
-        if (!cleanPoster) return;
-        setVideoPostPosterUri(cleanPoster);
-        console.log("KRISTO_VIDEO_POSTER_CLIENT_READY", { posterUri: cleanPoster });
-      })
-      .catch((error) => {
-        console.log("KRISTO_VIDEO_POSTER_CLIENT_ERROR", error);
-      });
+    void generateLocalVideoPosterUri(uri).then((posterUri) => {
+      const cleanPoster = String(posterUri || "").trim();
+      if (!cleanPoster) return;
+      setVideoPostPosterUri(cleanPoster);
+      console.log("KRISTO_VIDEO_POSTER_CLIENT_READY", { posterUri: cleanPoster });
+    });
 
     let pct = 8;
     const timer = setInterval(() => {
