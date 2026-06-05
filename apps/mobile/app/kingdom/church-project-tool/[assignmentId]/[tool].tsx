@@ -27,6 +27,7 @@ import { getSessionSync } from "@/src/lib/kristoSession";
 import {
   ACTIVE_MEDIA_SCHEDULE_ERROR,
   findActiveMediaScheduleForChurchFromSources,
+  findMediaScheduleFeedForChurch,
 } from "@/src/lib/mediaScheduleLock";
 import {
   applySilentMediaScheduleReload,
@@ -656,6 +657,10 @@ export default function ChurchProjectToolScreen() {
   const [backendScheduleCards, setBackendScheduleCards] = useState<any[]>([]);
   const mediaScheduleVersionRef = useRef(0);
   const mediaScheduleUpdatedAtRef = useRef("");
+  const schedulePublishInFlightRef = useRef(new Set<string>());
+  const scheduleBatchPublishInFlightRef = useRef(false);
+  const schedulePollPausedRef = useRef(false);
+  const schedulePublishedSlotIdsRef = useRef(new Set<string>());
   const isLockedMeetingOrSchedule = !isMediaSchedule && (isMeeting || isSchedule) && !hasMcAccess;
 
   const meetingDays = ["Today", "Tomorrow", "Friday", "Sunday"];
@@ -1536,138 +1541,41 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     }
 
     async function loadBackendScheduleCards() {
-      const reloadResult = await runToolMediaScheduleSilentReload("tool-backend-cards-poll");
-
-      if (reloadResult?.shouldForceLocalPurge || reloadResult?.backendHasActiveSchedule === false) {
-        if (alive) {
-          setBackendScheduleCards([]);
-          setScheduleConflictInfo(null);
-          setActiveScheduleBatchIndex(0);
-        }
+      if (schedulePollPausedRef.current || scheduleBatchPublishInFlightRef.current) {
         return;
       }
 
-      const headers = getKristoHeaders();
-      const res: any = await apiGet(
-        `/api/church/room-messages?roomId=${encodeURIComponent(targetRoomId)}`,
-        { headers: headers as any }
-      );
+      const needsMediaFeedSync = isMediaSchedule && !isMinistryLiveSchedule;
+      let reloadResult: Awaited<ReturnType<typeof runToolMediaScheduleSilentReload>> | null = null;
 
-      const rows = Array.isArray(res?.data) ? res.data : [];
-      const cards = rows
-        .filter((x: any) => String(x?.kind || "") === "assignment_card" && x?.card)
-        .map((x: any) => ({
-          ...x.card,
-          messageId: x.id,
-          id: String(x.card?.cardId || x.id),
-          name: String(x.card?.title || "Schedule slot"),
-          minutes: Number(x.card?.durationMin || 0),
-          startTime: String(x.card?.startTime || ""),
-          endTime: String(x.card?.endTime || ""),
-          timeLabel: String(x.card?.timeLabel || ""),
-          meetingDate: String(x.card?.meetingDate || ""),
-          role: String(x.card?.roleLabel || ""),
-          task: String(x.card?.task || ""),
-          script: String(x.card?.script || ""),
-          chat: Array.isArray(x.card?.notes) ? x.card.notes : [],
-        }))
-        .sort((a: any, b: any) => {
-          const an = Number(String(a.slotLabel || "").replace(/\D/g, "")) || 0;
-          const bn = Number(String(b.slotLabel || "").replace(/\D/g, "")) || 0;
-          return an - bn;
-        });
+      if (needsMediaFeedSync || isMediaGuests) {
+        reloadResult = await runToolMediaScheduleSilentReload("tool-backend-cards-poll");
 
-      let finalCards = cards;
-
-      // Media schedule claims are saved in church-feed.json, not room-messages.
-      // So pull latest feed scheduleSlots and let it override stale room-message cards.
-      try {
-        const feedId = String(
-          (params as any)?.feedId ||
-          (params as any)?.sourceFeedId ||
-          (params as any)?.liveId ||
-          ""
-        ).trim();
-
-        console.log("KRISTO_GUESTS_SYNC_PARAMS", {
-          feedId,
-          assignmentId,
-          targetRoomId,
-          paramsFeedId: (params as any)?.feedId,
-          paramsSourceFeedId: (params as any)?.sourceFeedId,
-          paramsLiveId: (params as any)?.liveId,
-          backendCards: cards.length,
-        });
-
-        if (feedId) {
-          const feedRes: any = await apiGet(`/api/church/feed?id=${encodeURIComponent(feedId)}`, {
-            headers: getKristoHeaders() as any,
-          });
-
-          const feedItem = feedRes?.data?.item || feedRes?.item || feedRes?.data || null;
-          const feedSlots = Array.isArray(feedItem?.scheduleSlots) ? feedItem.scheduleSlots : [];
-
-          if (feedSlots.length) {
-            finalCards = cards.map((card: any) => {
-              const fresh = feedSlots.find(
-                (slot: any) =>
-                  String(slot?.id || "") === String(card?.id || card?.cardId || "")
-              );
-
-              const freshClaimedByUserId = String(
-                fresh?.claimedByUserId ||
-                fresh?.claimedBy?.userId ||
-                ""
-              ).trim();
-
-              const freshClaimedByName = String(
-                fresh?.claimedByName ||
-                fresh?.claimedBy?.name ||
-                ""
-              ).trim();
-
-              const freshHasClaim =
-                !!freshClaimedByUserId ||
-                !!freshClaimedByName;
-
-              // IMPORTANT:
-              // Some claimed feed slots still keep status="open".
-              // So do not block merge by status when claim fields exist.
-              if (!fresh || !freshHasClaim) {
-                return card;
-              }
-
-              return {
-                ...card,
-                ...fresh,
-                claimedByUserId: freshClaimedByUserId,
-                claimedByName: freshClaimedByName,
-                claimedByAvatar:
-                  fresh?.claimedByAvatar ||
-                  fresh?.claimedBy?.avatarUri ||
-                  fresh?.avatarUri ||
-                  card?.claimedByAvatar ||
-                  "",
-                status: "claimed",
-              };
-            });
+        if (reloadResult?.shouldForceLocalPurge || reloadResult?.backendHasActiveSchedule === false) {
+          if (alive) {
+            setBackendScheduleCards([]);
+            setScheduleConflictInfo(null);
+            setActiveScheduleBatchIndex(0);
           }
+          return;
         }
-      } catch (e) {
-        console.log("KRISTO_MEDIA_GUESTS_FEED_SYNC_ERROR", e);
       }
 
-      if (alive) setBackendScheduleCards(finalCards);
+      await refreshBackendScheduleCardsFromRoom({
+        alive: () => alive,
+        feedSyncRows: reloadResult?.rows,
+        skipFeedById: !isMediaGuests && !needsMediaFeedSync,
+      });
     }
 
     loadBackendScheduleCards();
-    const timer = setInterval(loadBackendScheduleCards, 2500);
+    const timer = setInterval(loadBackendScheduleCards, 5000);
 
     return () => {
       alive = false;
       clearInterval(timer);
     };
-  }, [isSchedule, targetRoomId]);
+  }, [isSchedule, isMediaSchedule, isMinistryLiveSchedule, isMediaGuests, targetRoomId]);
 
   const visibleScheduleSlots = meetingSentToSchedule ? (activeScheduleBatch?.slots || []) : [];
   const [selectedScheduleMinuteStep, setSelectedScheduleMinuteStep] = useState(5);
@@ -2398,41 +2306,31 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     return idx >= 0 ? idx + 1 : 1;
   }
 
-async function publishScheduleSlot(slot: any) {
-    const headers = getKristoHeaders();
-    const churchId = String(getSessionSync()?.churchId || "").trim();
+  function isRoomMessageCardNotFound(res: any) {
+    if (res?.ok) return false;
+    const msg = String(res?.error || res?.message || res?.data?.error || "").toLowerCase();
+    return msg.includes("not found") || msg.includes("message/card");
+  }
 
-    if (
-      !(await requireActiveChurchSubscriptionForSchedule(churchId, headers as any, {
-        ...toolMediaSubscriptionGateOpts(),
-        screen: "church-project-tool.media-schedule",
-        gate: "publishScheduleSlot",
-      }))
-    ) {
-      return;
-    }
-
-    const now = Date.now();
-    const slotNumber = getScheduleSlotNumber(slot);
-    const parentTopic = String(
-      slot?.scheduleTopic ||
-      slot?.meetingTopic ||
-      slot?.parentTopic ||
-      meetingTopic ||
-      meetingTopicChoice ||
-      ""
-    ).trim();
+  function buildScheduleRoomCardPayload(
+    slot: any,
+    opts: { slotNumber: number; parentTopic: string; publishedAt?: number }
+  ) {
+    const now = opts.publishedAt ?? Date.now();
+    const parentTopic = String(opts.parentTopic || "").trim();
     const { script: resolvedScript } = resolveScheduleSlotScriptForSave(slot, parentTopic, {
-      slotNumber,
-      title: String(slot?.name || "Schedule slot"),
+      slotNumber: opts.slotNumber,
+      title: String(slot?.name || slot?.title || "Schedule slot"),
+      log: false,
     });
 
-    const card = {
+    return {
       cardId: String(slot?.id || ""),
-      slotLabel: String(slotNumber),
-      slotNumber,
-      order: slotNumber,
-      title: String(slot?.name || "Schedule slot"),
+      slotLabel: String(opts.slotNumber),
+      slotNumber: opts.slotNumber,
+      order: opts.slotNumber,
+      scheduleBatchId: String(slot?.scheduleBatchId || ""),
+      title: String(slot?.name || slot?.title || "Schedule slot"),
       subtitle: String(slot?.subtitle || "Schedule"),
       roleKey: String(slot?.role || "").toLowerCase(),
       roleLabel: String(slot?.role || ""),
@@ -2448,8 +2346,8 @@ async function publishScheduleSlot(slot: any) {
       parentTopic,
       notes: Array.isArray(slot?.chat) ? slot.chat : [],
       musicItems: Array.isArray(slot?.musicItems) ? slot.musicItems : [],
-      status: String(slot?.claimedByUserId || slot?.claimedByName || "") ? "taken" as const : "open" as const,
-      visibility: "published",
+      status: String(slot?.claimedByUserId || slot?.claimedByName || "") ? ("taken" as const) : ("open" as const),
+      visibility: "published" as const,
       claimedByUserId: String(slot?.claimedByUserId || ""),
       claimedByName: String(slot?.claimedByName || ""),
       claimedByRole: String(slot?.claimedByRole || ""),
@@ -2461,18 +2359,43 @@ async function publishScheduleSlot(slot: any) {
       liveId: `live_${assignmentId}_${new Date(String(slot?.meetingDate || now)).getTime()}`,
       meetingId: `meeting_${assignmentId}_${new Date(String(slot?.meetingDate || now)).getTime()}`,
     };
+  }
 
-    let res: any = await apiPatch(
-      "/api/church/room-messages",
-      {
-        roomId: targetRoomId,
-        cardId: String(slot?.id || ""),
-        patch: card,
-      },
-      { headers: headers as any }
+  async function upsertScheduleRoomMessageCard(
+    slot: any,
+    headers: Record<string, string>,
+    opts: {
+      slotNumber: number;
+      parentTopic: string;
+      preferCreate?: boolean;
+    }
+  ): Promise<{ ok: boolean; created: boolean; error?: string }> {
+    const cardId = String(slot?.id || "").trim();
+    if (!cardId || !targetRoomId) {
+      return { ok: false, created: false, error: "missing-slot-or-room" };
+    }
+
+    const card = buildScheduleRoomCardPayload(slot, {
+      slotNumber: opts.slotNumber,
+      parentTopic: opts.parentTopic,
+    });
+
+    const existsOnBackend = backendScheduleCards.some(
+      (x: any) => String(x.id || x.cardId || "") === cardId
     );
+    const wasPublishedBefore = schedulePublishedSlotIdsRef.current.has(cardId);
+    const shouldCreateFirst = !!opts.preferCreate || (!existsOnBackend && !wasPublishedBefore);
 
-    if (!res?.ok && String(res?.error || "").toLowerCase().includes("not found")) {
+    let res: any;
+    let created = false;
+
+    if (shouldCreateFirst) {
+      console.log("KRISTO_SCHEDULE_ROOM_CARD_CREATE_FALLBACK", {
+        cardId,
+        roomId: targetRoomId,
+        mode: opts.preferCreate ? "batch-create" : "create-first",
+        slotNumber: opts.slotNumber,
+      });
       res = await apiPost(
         "/api/church/room-messages",
         {
@@ -2485,36 +2408,305 @@ async function publishScheduleSlot(slot: any) {
         },
         { headers: headers as any }
       );
-    }
+      created = true;
+    } else {
+      res = await apiPatch(
+        "/api/church/room-messages",
+        {
+          roomId: targetRoomId,
+          cardId,
+          patch: card,
+        },
+        { headers: headers as any }
+      );
 
-    if (!res?.ok) {
-      if (
-        isChurchSubscriptionRequiredError(res, {
-          ...toolMediaSubscriptionGateOpts(),
-          screen: "church-project-tool.media-schedule",
-          gate: "publishScheduleSlot.api",
-        })
-      ) {
-        alertChurchSubscriptionRequired({
-          ...toolMediaSubscriptionGateOpts(),
-          screen: "church-project-tool.media-schedule",
-          gate: "publishScheduleSlot.api",
+      if (isRoomMessageCardNotFound(res)) {
+        console.log("KRISTO_SCHEDULE_ROOM_CARD_CREATE_FALLBACK", {
+          cardId,
+          roomId: targetRoomId,
+          mode: "patch-404",
+          slotNumber: opts.slotNumber,
         });
-        return;
+        res = await apiPost(
+          "/api/church/room-messages",
+          {
+            roomId: targetRoomId,
+            roomKind: isMinistryLiveSchedule ? "ministry-live" : sourceParam || "my_ministries",
+            senderName: "Schedule System",
+            text: "",
+            kind: "assignment_card",
+            card,
+          },
+          { headers: headers as any }
+        );
+        created = true;
       }
-      Alert.alert("Not published", String(res?.error || "Card could not be published."));
-      return;
     }
 
-    saveChurchProjectScheduleSlots(
-      assignmentId,
-      scheduleSpeakerSlots.map((x: any) =>
-        String(x.id) === String(slot.id)
-          ? { ...x, visibility: "published", publishedAt: String(now) }
-          : x
-      )
+    if (res?.ok) {
+      schedulePublishedSlotIdsRef.current.add(cardId);
+      return { ok: true, created };
+    }
+
+    return {
+      ok: false,
+      created,
+      error: String(res?.error || res?.message || "publish-failed"),
+    };
+  }
+
+  async function refreshBackendScheduleCardsFromRoom(opts?: {
+    alive?: () => boolean;
+    feedSyncRows?: any[];
+    skipFeedById?: boolean;
+  }) {
+    if (!targetRoomId) return;
+
+    const headers = getKristoHeaders();
+    const res: any = await apiGet(
+      `/api/church/room-messages?roomId=${encodeURIComponent(targetRoomId)}`,
+      { headers: headers as any }
     );
-}
+
+    const rows = Array.isArray(res?.data) ? res.data : [];
+    const cards = rows
+      .filter((x: any) => String(x?.kind || "") === "assignment_card" && x?.card)
+      .map((x: any) => ({
+        ...x.card,
+        messageId: x.id,
+        id: String(x.card?.cardId || x.id),
+        name: String(x.card?.title || "Schedule slot"),
+        minutes: Number(x.card?.durationMin || 0),
+        startTime: String(x.card?.startTime || ""),
+        endTime: String(x.card?.endTime || ""),
+        timeLabel: String(x.card?.timeLabel || ""),
+        meetingDate: String(x.card?.meetingDate || ""),
+        role: String(x.card?.roleLabel || ""),
+        task: String(x.card?.task || ""),
+        script: String(x.card?.script || ""),
+        chat: Array.isArray(x.card?.notes) ? x.card.notes : [],
+      }))
+      .sort((a: any, b: any) => {
+        const an = Number(String(a.slotLabel || "").replace(/\D/g, "")) || 0;
+        const bn = Number(String(b.slotLabel || "").replace(/\D/g, "")) || 0;
+        return an - bn;
+      });
+
+    let finalCards = cards;
+
+    if (!opts?.skipFeedById) {
+      try {
+        const churchId = String(getSessionSync()?.churchId || "").trim();
+        const backendFeedRow = churchId && Array.isArray(opts?.feedSyncRows)
+          ? findMediaScheduleFeedForChurch(opts.feedSyncRows, churchId, { strictChurch: true })
+          : null;
+        const feedId = String(backendFeedRow?.id || "").trim();
+
+        if (feedId) {
+          const feedRes: any = await apiGet(`/api/church/feed?id=${encodeURIComponent(feedId)}`, {
+            headers: getKristoHeaders() as any,
+          });
+
+          const feedItem = feedRes?.data?.item || feedRes?.item || feedRes?.data || null;
+          const feedSlots = Array.isArray(feedItem?.scheduleSlots) ? feedItem.scheduleSlots : [];
+
+          if (feedSlots.length) {
+            finalCards = cards.map((card: any) => {
+              const fresh = feedSlots.find(
+                (slot: any) => String(slot?.id || "") === String(card?.id || card?.cardId || "")
+              );
+
+              const freshClaimedByUserId = String(
+                fresh?.claimedByUserId || fresh?.claimedBy?.userId || ""
+              ).trim();
+              const freshClaimedByName = String(
+                fresh?.claimedByName || fresh?.claimedBy?.name || ""
+              ).trim();
+              const freshHasClaim = !!freshClaimedByUserId || !!freshClaimedByName;
+
+              if (!fresh || !freshHasClaim) return card;
+
+              return {
+                ...card,
+                ...fresh,
+                claimedByUserId: freshClaimedByUserId,
+                claimedByName: freshClaimedByName,
+                claimedByAvatar:
+                  fresh?.claimedByAvatar ||
+                  fresh?.claimedBy?.avatarUri ||
+                  fresh?.avatarUri ||
+                  card?.claimedByAvatar ||
+                  "",
+                status: "claimed",
+              };
+            });
+          }
+        }
+      } catch (e) {
+        console.log("KRISTO_MEDIA_GUESTS_FEED_SYNC_ERROR", e);
+      }
+    }
+
+    if (opts?.alive && !opts.alive()) return;
+    setBackendScheduleCards(finalCards);
+  }
+
+  async function publishScheduleSlotOnce(
+    slot: any,
+    opts?: { parentTopic?: string; preferCreate?: boolean; slotNumber?: number }
+  ): Promise<boolean> {
+    const slotId = String(slot?.id || "").trim();
+    if (!slotId) return false;
+
+    if (schedulePublishInFlightRef.current.has(slotId)) {
+      return false;
+    }
+
+    if (
+      String(slot?.visibility || "").toLowerCase() === "published" &&
+      schedulePublishedSlotIdsRef.current.has(slotId)
+    ) {
+      return true;
+    }
+
+    schedulePublishInFlightRef.current.add(slotId);
+
+    const slotNumber = Number(opts?.slotNumber || getScheduleSlotNumber(slot)) || 1;
+    const parentTopic = String(
+      opts?.parentTopic ||
+      slot?.scheduleTopic ||
+      slot?.meetingTopic ||
+      slot?.parentTopic ||
+      meetingTopic ||
+      meetingTopicChoice ||
+      ""
+    ).trim();
+
+    console.log("KRISTO_SCHEDULE_PUBLISH_SLOT_ONCE", {
+      slotId,
+      slotNumber,
+      roomId: targetRoomId,
+      preferCreate: !!opts?.preferCreate,
+    });
+
+    try {
+      const headers = getKristoHeaders() as Record<string, string>;
+      const churchId = String(getSessionSync()?.churchId || "").trim();
+
+      if (
+        !(await requireActiveChurchSubscriptionForSchedule(churchId, headers as any, {
+          ...toolMediaSubscriptionGateOpts(),
+          screen: "church-project-tool.media-schedule",
+          gate: "publishScheduleSlotOnce",
+        }))
+      ) {
+        return false;
+      }
+
+      const result = await upsertScheduleRoomMessageCard(slot, headers, {
+        slotNumber,
+        parentTopic,
+        preferCreate: opts?.preferCreate,
+      });
+
+      if (!result.ok) {
+        if (
+          isChurchSubscriptionRequiredError(
+            { ok: false, error: result.error },
+            {
+              ...toolMediaSubscriptionGateOpts(),
+              screen: "church-project-tool.media-schedule",
+              gate: "publishScheduleSlotOnce.api",
+            }
+          )
+        ) {
+          alertChurchSubscriptionRequired({
+            ...toolMediaSubscriptionGateOpts(),
+            screen: "church-project-tool.media-schedule",
+            gate: "publishScheduleSlotOnce.api",
+          });
+        }
+        return false;
+      }
+
+      const now = Date.now();
+      const latestSlots = getChurchProjectMcScheduleState(assignmentId).scheduleSlots || [];
+      saveChurchProjectScheduleSlots(
+        assignmentId,
+        latestSlots.map((x: any) =>
+          String(x.id) === slotId
+            ? { ...x, visibility: "published", publishedAt: String(now) }
+            : x
+        )
+      );
+
+      return true;
+    } finally {
+      schedulePublishInFlightRef.current.delete(slotId);
+    }
+  }
+
+  async function publishScheduleSlotsBatch(
+    slots: any[],
+    opts?: { reason?: string; parentTopic?: string }
+  ) {
+    const batchSlots = (Array.isArray(slots) ? slots : []).filter((slot) =>
+      String(slot?.id || "").trim()
+    );
+    if (!batchSlots.length) {
+      return { ok: 0, failed: 0 };
+    }
+
+    if (scheduleBatchPublishInFlightRef.current) {
+      return { ok: 0, failed: batchSlots.length };
+    }
+
+    scheduleBatchPublishInFlightRef.current = true;
+    schedulePollPausedRef.current = true;
+
+    console.log("KRISTO_SCHEDULE_PUBLISH_BATCH_START", {
+      count: batchSlots.length,
+      reason: opts?.reason || "batch",
+      roomId: targetRoomId,
+    });
+
+    let ok = 0;
+    let failed = 0;
+
+    try {
+      for (let index = 0; index < batchSlots.length; index += 1) {
+        const slot = batchSlots[index];
+        const published = await publishScheduleSlotOnce(slot, {
+          parentTopic: opts?.parentTopic,
+          preferCreate: true,
+          slotNumber: index + 1,
+        });
+        if (published) ok += 1;
+        else failed += 1;
+      }
+
+      console.log("KRISTO_SCHEDULE_PUBLISH_BATCH_DONE", {
+        count: batchSlots.length,
+        ok,
+        failed,
+        roomId: targetRoomId,
+      });
+
+      await refreshBackendScheduleCardsFromRoom({ skipFeedById: true });
+
+      return { ok, failed };
+    } finally {
+      scheduleBatchPublishInFlightRef.current = false;
+      schedulePollPausedRef.current = false;
+    }
+  }
+
+  async function publishScheduleSlot(slot: any) {
+    const published = await publishScheduleSlotOnce(slot);
+    if (!published) {
+      Alert.alert("Not published", "Card could not be published.");
+    }
+  }
 
 
   async function handleSendMeetingToSchedule() {
@@ -3049,6 +3241,9 @@ async function publishScheduleSlot(slot: any) {
       }
     }
 
+    const nextScheduleBatchCreatedAt = Date.now();
+    const nextScheduleBatchId = `batch_${nextScheduleBatchCreatedAt}`;
+
     const items: Array<{
       id: string;
       mcId: string;
@@ -3231,7 +3426,7 @@ async function publishScheduleSlot(slot: any) {
         );
 
         items.push({
-          id: `meeting-review-${row.key}-${roundIndex + 1}-${segmentCursor + 1}-${Date.now()}`,
+          id: `${nextScheduleBatchId}-slot-${segmentCursor + 1}`,
           mcId: `meeting-review-${segmentCursor + 1}`,
           name: slotName,
           role: row.detail,
@@ -3296,44 +3491,40 @@ async function publishScheduleSlot(slot: any) {
       sentToSchedule: true,
     });
 
-    const nextScheduleBatchCreatedAt = Date.now();
-    const nextScheduleBatchId = `batch_${nextScheduleBatchCreatedAt}`;
+    const newBatchSlots = items.map((item) => ({
+      id: item.id,
+      scheduleBatchId: nextScheduleBatchId,
+      scheduleBatchCreatedAt: nextScheduleBatchCreatedAt,
+      name: item.name,
+      minutes: item.durationMin,
+      startTime: item.startTime,
+      endTime: item.endTime,
+      timeLabel: `${item.startTime} - ${item.endTime}`,
+      meetingDate: parseTimeToDate(
+        meetingStartDay,
+        meetingStartMonth,
+        meetingStartYear,
+        item.startTime
+      ).toISOString(),
+      meetingDay: scheduleDay,
+      role: item.role,
+      task: item.task,
+      script: item.script,
+      scheduleTopic,
+      meetingTopic: scheduleTopic,
+      parentTopic: scheduleTopic,
+      chat: item.chat,
+      sourceSlotName: item.name,
+      visibility: "draft",
+      claimedByName: "",
+      claimedByUserId: "",
+      publishedAt: "",
+      isDurationLocked: true,
+    }));
 
     saveChurchProjectScheduleSlots(
       assignmentId,
-      [
-        ...items.map((item) => ({
-        id: item.id,
-        scheduleBatchId: nextScheduleBatchId,
-        scheduleBatchCreatedAt: nextScheduleBatchCreatedAt,
-        name: item.name,
-        minutes: item.durationMin,
-        startTime: item.startTime,
-        endTime: item.endTime,
-        timeLabel: `${item.startTime} - ${item.endTime}`,
-        meetingDate: parseTimeToDate(
-          meetingStartDay,
-          meetingStartMonth,
-          meetingStartYear,
-          item.startTime
-        ).toISOString(),
-        meetingDay: scheduleDay,
-        role: item.role,
-        task: item.task,
-        script: item.script,
-        scheduleTopic,
-        meetingTopic: scheduleTopic,
-        parentTopic: scheduleTopic,
-        chat: item.chat,
-        sourceSlotName: item.name,
-        visibility: "draft",
-        claimedByName: "",
-        claimedByUserId: "",
-        publishedAt: "",
-        isDurationLocked: true,
-      })),
-        ...scheduleSpeakerSlots,
-      ]
+      [...newBatchSlots, ...scheduleSpeakerSlots]
     );
 
     setActiveScheduleBatchIndex(0);
@@ -3362,6 +3553,8 @@ async function publishScheduleSlot(slot: any) {
 
 
     if (isMediaSchedule && !isMinistryLiveSchedule) {
+      schedulePollPausedRef.current = true;
+      try {
       const churchId = String(getSessionSync()?.churchId || "").trim();
       const apiHeaders = getKristoHeaders() as any;
 
@@ -3558,20 +3751,46 @@ async function publishScheduleSlot(slot: any) {
       });
 
       if (churchId) {
+        console.log("KRISTO_SCHEDULE_RELOAD_ONCE_AFTER_BATCH", {
+          churchId,
+          slotCount: items.length,
+          source: "media-feed-create",
+        });
         const sync = await fetchMediaScheduleFeedSync(churchId, apiHeaders);
         applySilentMediaScheduleReload({
           churchId,
           sync,
           reason: "tool-create-schedule",
           force: true,
+          ui: {
+            setBackendScheduleCards,
+            setScheduleConflictInfo,
+            setActiveScheduleBatchIndex,
+          },
         });
       }
 
       Alert.alert("Sent to Home Feed", `${items.length} media tools were sent as claimable live cards.`);
       router.push("/" as any);
       return;
+      } finally {
+        schedulePollPausedRef.current = false;
+      }
     }
-router.replace({
+
+    if (!isMediaSchedule) {
+      schedulePollPausedRef.current = true;
+      try {
+        await publishScheduleSlotsBatch(newBatchSlots, {
+          reason: "handleSendMeetingToSchedule",
+          parentTopic: scheduleTopic,
+        });
+      } finally {
+        schedulePollPausedRef.current = false;
+      }
+    }
+
+    router.replace({
       pathname: "/kingdom/church-project-tool/[assignmentId]/[tool]",
       params: {
         assignmentId,
