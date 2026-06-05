@@ -71,6 +71,7 @@ import {
   peekLiveControlMembersCache,
   peekMcHostsCache,
   peekRoomMessagesCache,
+  saveRoomMessagesCache,
 } from "@/src/lib/churchMediaRoomCache";
 import {
   CHURCH_MEDIA_ROOM_ID,
@@ -3285,8 +3286,11 @@ export default function MessageThreadScreen() {
         cacheFresh: mediaRoomCacheFreshRef.current,
         source: "hydrate-background",
       }).then((refresh) => {
-        if (!alive || !refresh.rawRows?.length) return;
-        applyVisibleRoomMessageRows(refresh.rawRows);
+        if (!alive) return;
+        // Apply even an empty result. applyVisibleRoomMessageRows itself guards
+        // against wiping existing local messages with an empty cache, so a
+        // cache:0 hydrate cannot erase a just-sent image/card.
+        applyVisibleRoomMessageRows(refresh.rawRows || []);
         if (!refresh.skipped) mediaRoomCacheFreshRef.current = true;
       });
 
@@ -3389,20 +3393,59 @@ export default function MessageThreadScreen() {
         if (!force && roomMessagesInflightRef.current) return false;
 
         roomMessagesInflightRef.current = true;
-        if (__DEV__) console.log("[RoomMessagesPoll] fetch-start", { backendRoomId: roomId, cached: true, force });
+        if (__DEV__) console.log("[RoomMessagesPoll] fetch-start", { backendRoomId: roomId, cached: !force, force });
 
         let count = 0;
         let updated = false;
 
         try {
+          // FORCED reload: bypass refreshRoomMessagesIfNeeded / cache entirely
+          // and always hit the network so a just-saved message can never be
+          // hidden behind a cache-fresh skip.
+          if (force) {
+            console.log("[RoomMessagesFreshGET] start", { roomId: CHURCH_MEDIA_ROOM_ID });
+            const res: any = await apiGet(
+              `/api/church/room-messages?roomId=${encodeURIComponent(CHURCH_MEDIA_ROOM_ID)}&limit=120&t=${Date.now()}`,
+              { headers },
+              { screen: `RoomMessagesFreshGET:${CHURCH_MEDIA_ROOM_ID}`, throttleMs: 0, dedupe: false }
+            );
+
+            if (!alive) return false;
+
+            const rawRows = Array.isArray(res?.data) ? res.data : [];
+            const visibleRows = filterVisibleRoomMessageRows(rawRows);
+            count = visibleRows.length;
+
+            // Keep the cache consistent with the fresh truth so later polls agree.
+            try {
+              await saveRoomMessagesCache({
+                churchId: cid,
+                userId: selfId,
+                roomId: CHURCH_MEDIA_ROOM_ID,
+                rawRows: visibleRows as any[],
+                updatedAt: Date.now(),
+              });
+              mediaRoomCacheFreshRef.current = true;
+            } catch {}
+
+            updated = applyVisibleRoomMessageRows(visibleRows);
+            console.log("[RoomMessagesFreshGET] done", {
+              roomId: CHURCH_MEDIA_ROOM_ID,
+              rawCount: rawRows.length,
+              mappedCount: count,
+            });
+            return updated;
+          }
+
+          // NON-FORCE poll: cache-aware path.
           const refresh = await refreshRoomMessagesIfNeeded({
             churchId: cid,
             userId: selfId,
             roomId: CHURCH_MEDIA_ROOM_ID,
             headers,
-            force,
-            cacheFresh: !force && mediaRoomCacheFreshRef.current,
-            source: force ? "post-send" : composerFocused ? "poll-active" : "poll",
+            force: false,
+            cacheFresh: mediaRoomCacheFreshRef.current,
+            source: composerFocused ? "poll-active" : "poll",
           });
 
           if (!alive) return false;
