@@ -259,6 +259,82 @@ function isRetryableUploadError(error: unknown) {
   );
 }
 
+function hasUploadedVideoUrl(stored: PersistedMediaUploadJob | null | undefined, fallback = "") {
+  return Boolean(String(stored?.videoUrl || fallback || "").trim());
+}
+
+async function tryPublishUploadedVideo(
+  job: MediaVideoUploadJob,
+  params: {
+    videoUrl: string;
+    posterPublicUrl: string;
+    publishMetadata: Awaited<ReturnType<typeof uploadVideoWithResume>>["publishMetadata"];
+    uploadHeaders: Record<string, string>;
+  }
+) {
+  const feedRes = await publishChurchVideoFeedPost({
+    title: job.title,
+    caption: job.caption,
+    videoUrl: params.videoUrl,
+    posterUri: params.posterPublicUrl || undefined,
+    videoPosterUri: params.posterPublicUrl || undefined,
+    thumbnailUri: params.posterPublicUrl || undefined,
+    headers: params.uploadHeaders,
+    durationMs: params.publishMetadata.durationMs,
+    sizeBytes: params.publishMetadata.sizeBytes,
+    bitrateEstimate: params.publishMetadata.bitrateEstimate,
+    faststart: params.publishMetadata.faststart,
+  });
+  return parsePublishedFeedResponse(feedRes);
+}
+
+async function recoverFalseUploadFailure(
+  jobId: string,
+  job: MediaVideoUploadJob,
+  params: {
+    reason: string;
+    stored: PersistedMediaUploadJob | null;
+    videoUrl: string;
+    posterUri?: string | null;
+    callbacks: MediaVideoUploadCallbacks;
+  }
+) {
+  const videoUrl = String(params.videoUrl || "").trim();
+  if (!videoUrl) return false;
+
+  const backendFeedId = String(params.stored?.backendFeedId || "").trim();
+
+  console.log("KRISTO_UPLOAD_FALSE_FAILED_PREVENTED", {
+    jobId,
+    reason: params.reason,
+    videoUrl,
+    backendFeedId: backendFeedId || null,
+  });
+
+  await markJobPatch(
+    jobId,
+    {
+      phase: "processing",
+      uploadProgress: 100,
+      videoUrl,
+      posterUri: params.posterUri || params.stored?.posterUri || undefined,
+      mediaStatus: backendFeedId ? String(params.stored?.mediaStatus || "ready") : "processing",
+      error: "",
+    },
+    params.callbacks
+  );
+
+  invokeUploadSuccess(params.callbacks, {
+    jobId,
+    backendFeedId,
+    videoUrl,
+    posterUri: params.posterUri || params.stored?.posterUri || null,
+    mediaStatus: backendFeedId ? String(params.stored?.mediaStatus || "ready") : "processing",
+  });
+
+  return true;
+}
+
 export const MULTIPART_BACKEND_NOT_DEPLOYED_REASON = "multipart-backend-not-deployed";
 
 export { MULTIPART_BACKEND_NOT_DEPLOYED_MESSAGE } from "@/src/lib/churchVideoChunkUpload";
@@ -409,6 +485,10 @@ async function runMediaVideoUpload(
 ) {
   const uploadHeaders = uploadHeadersForJob(job);
   let publishConfirmedFeedId = "";
+  let uploadedVideoUrl = "";
+  let posterPublicUrl = "";
+  let publishMetadata: Awaited<ReturnType<typeof uploadVideoWithResume>>["publishMetadata"] | null =
+    null;
 
   try {
     const storedBeforeRun = await getMediaUploadJob(jobId);
@@ -445,36 +525,42 @@ async function runMediaVideoUpload(
 
     await markJobPatch(jobId, { phase: "uploading", uploadProgress, error: "" }, callbacks);
 
-    const posterPublicUrl = await uploadPosterIfAvailable(job, uploadHeaders);
-    const { signed, publishMetadata } = await uploadVideoWithResume(job, jobId, callbacks);
+    posterPublicUrl = await uploadPosterIfAvailable(job, uploadHeaders);
+    const uploadResult = await uploadVideoWithResume(job, jobId, callbacks);
+    publishMetadata = uploadResult.publishMetadata;
+    uploadedVideoUrl = String(uploadResult.signed.videoUrl || "").trim();
 
-    await markJobPatch(jobId, { uploadProgress: 100, phase: "processing" }, callbacks);
+    await markJobPatch(
+      jobId,
+      {
+        uploadProgress: 100,
+        phase: "processing",
+        videoUrl: uploadedVideoUrl,
+        posterUri: posterPublicUrl || undefined,
+        mediaStatus: "processing",
+        error: "",
+      },
+      callbacks
+    );
 
     console.log("KRISTO_MEDIA_STATUS_PROCESSING", {
       jobId,
       title: job.title,
-      videoUrl: signed.videoUrl,
+      videoUrl: uploadedVideoUrl,
     });
 
-    const feedRes = await publishChurchVideoFeedPost({
-      title: job.title,
-      caption: job.caption,
-      videoUrl: signed.videoUrl,
-      posterUri: posterPublicUrl || undefined,
-      videoPosterUri: posterPublicUrl || undefined,
-      thumbnailUri: posterPublicUrl || undefined,
-      headers: uploadHeaders,
-      durationMs: publishMetadata.durationMs,
-      sizeBytes: publishMetadata.sizeBytes,
-      bitrateEstimate: publishMetadata.bitrateEstimate,
-      faststart: publishMetadata.faststart,
+    const publishedFromRetry = await tryPublishUploadedVideo(job, {
+      videoUrl: uploadedVideoUrl,
+      posterPublicUrl,
+      publishMetadata,
+      uploadHeaders,
     });
 
-    const published = parsePublishedFeedResponse(feedRes);
-    if (!published) {
+    if (!publishedFromRetry) {
       throw new Error("Video uploaded but feed post id was missing.");
     }
 
+    const published = publishedFromRetry;
     publishConfirmedFeedId = published.backendFeedId;
 
     console.log("KRISTO_MEDIA_STATUS_PROCESSING", {
@@ -489,7 +575,7 @@ async function runMediaVideoUpload(
       job,
       {
         backendFeedId: published.backendFeedId,
-        videoUrl: signed.videoUrl,
+        videoUrl: uploadedVideoUrl,
         posterUri: posterPublicUrl || null,
         mediaStatus: published.mediaStatus,
       },
@@ -501,6 +587,7 @@ async function runMediaVideoUpload(
     const recoveredFeedId = String(
       publishConfirmedFeedId || stored?.backendFeedId || ""
     ).trim();
+    const recoveredVideoUrl = String(stored?.videoUrl || uploadedVideoUrl || "").trim();
 
     if (recoveredFeedId) {
       console.log("KRISTO_UPLOAD_STATUS_RECOVERED_AFTER_PUBLISH", {
@@ -513,13 +600,61 @@ async function runMediaVideoUpload(
         job,
         {
           backendFeedId: recoveredFeedId,
-          videoUrl: String(stored?.videoUrl || "").trim(),
-          posterUri: stored?.posterUri || null,
-          mediaStatus: String(stored?.mediaStatus || "processing").trim() || "processing",
+          videoUrl: recoveredVideoUrl,
+          posterUri: stored?.posterUri || posterPublicUrl || null,
+          mediaStatus: String(stored?.mediaStatus || "ready").trim() || "ready",
         },
         callbacks
       );
       return;
+    }
+
+    if (recoveredVideoUrl) {
+      try {
+        const republishMetadata =
+          publishMetadata ||
+          buildChurchVideoPublishMetadata({
+            durationMs: job.durationMs,
+            sizeBytes: 0,
+            faststart: false,
+          });
+        const republished = await tryPublishUploadedVideo(job, {
+          videoUrl: recoveredVideoUrl,
+          posterPublicUrl: posterPublicUrl || String(stored?.posterUri || ""),
+          publishMetadata: republishMetadata,
+          uploadHeaders,
+        });
+        if (republished) {
+          await completePublishedUploadJob(
+            jobId,
+            job,
+            {
+              backendFeedId: republished.backendFeedId,
+              videoUrl: recoveredVideoUrl,
+              posterUri: posterPublicUrl || stored?.posterUri || null,
+              mediaStatus: republished.mediaStatus,
+            },
+            callbacks
+          );
+          return;
+        }
+      } catch (republishError) {
+        console.log("KRISTO_UPLOAD_PUBLISH_RECOVERY_FAILED", {
+          jobId,
+          message: String((republishError as any)?.message || republishError || "unknown"),
+        });
+      }
+    }
+
+    if (hasUploadedVideoUrl(stored, uploadedVideoUrl)) {
+      const recovered = await recoverFalseUploadFailure(jobId, job, {
+        reason: message,
+        stored,
+        videoUrl: recoveredVideoUrl,
+        posterUri: posterPublicUrl || stored?.posterUri || null,
+        callbacks,
+      });
+      if (recovered) return;
     }
 
     const pausedAtProgress = Math.max(0, Math.min(99, Number(stored?.uploadProgress || 0)));
@@ -551,6 +686,17 @@ async function runMediaVideoUpload(
     }
 
     if (isRetryableUploadError(error)) {
+      if (hasUploadedVideoUrl(stored, uploadedVideoUrl)) {
+        const recovered = await recoverFalseUploadFailure(jobId, job, {
+          reason: message,
+          stored,
+          videoUrl: recoveredVideoUrl,
+          posterUri: posterPublicUrl || stored?.posterUri || null,
+          callbacks,
+        });
+        if (recovered) return;
+      }
+
       await markJobPatch(
         jobId,
         {

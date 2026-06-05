@@ -11,8 +11,30 @@ export type SignedMediaUploadSession = {
 };
 
 export const SIGNED_UPLOAD_TIMEOUT_MS = 90_000;
+export const PUBLISH_TIMEOUT_MS = 90_000;
 export const VIDEO_SIGNED_UPLOAD_MAX_RETRIES = 2;
 export const POSTER_SIGNED_UPLOAD_MAX_RETRIES = 1;
+
+function isPublishTimeoutError(error: unknown) {
+  const message = String((error as any)?.message || error || "").toLowerCase();
+  return message.includes("timeout") || message.includes("timed out") || message.includes("abort");
+}
+
+async function withPublishTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`Publish timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 // TODO(multipart): Switch large uploads to R2/S3 multipart when backend exposes
 // initiate/complete multipart endpoints and part presign URLs.
@@ -396,7 +418,7 @@ export function parsePublishedFeedResponse(res: any): PublishedFeedPost | null {
   return {
     item: (item && typeof item === "object" ? item : { id: backendFeedId }) as Record<string, unknown>,
     backendFeedId,
-    mediaStatus: String(item?.mediaStatus || "processing").trim() || "processing",
+    mediaStatus: String(item?.mediaStatus || "ready").trim() || "ready",
   };
 }
 
@@ -431,7 +453,7 @@ export async function publishChurchVideoFeedPost(params: {
     postOrigin: "media",
     storageType: "media",
     isMediaPost: true,
-    mediaStatus: "processing" satisfies MediaStatus,
+    mediaStatus: "ready" satisfies MediaStatus,
     title: params.title,
     text: params.caption,
     videoUrl: params.videoUrl,
@@ -459,27 +481,48 @@ export async function publishChurchVideoFeedPost(params: {
     fileSizeBytes: metadata.sizeBytes > 0 ? metadata.sizeBytes : null,
   });
 
-  const res: any = await apiPost("/api/church/feed", publishBody, { headers: params.headers });
-  const published = parsePublishedFeedResponse(res);
+  console.log("KRISTO_VIDEO_PUBLISH_PAYLOAD", publishBody);
 
-  if (published) {
-    console.log("KRISTO_UPLOAD_PUBLISH_SUCCESS", {
-      backendFeedId: published.backendFeedId,
-      mediaStatus: published.mediaStatus,
-      httpStatus: Number(res?.status || 0) || null,
-      responseOk: res?.ok !== false,
-    });
-    return {
-      ...res,
-      ok: true,
-      item: published.item,
-      data: published.item,
-    };
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const res: any = await withPublishTimeout(
+        apiPost("/api/church/feed", publishBody, { headers: params.headers }),
+        PUBLISH_TIMEOUT_MS
+      );
+      const published = parsePublishedFeedResponse(res);
+
+      if (published) {
+        console.log("KRISTO_UPLOAD_PUBLISH_SUCCESS", {
+          backendFeedId: published.backendFeedId,
+          mediaStatus: published.mediaStatus,
+          httpStatus: Number(res?.status || 0) || null,
+          responseOk: res?.ok !== false,
+          attempt,
+        });
+        return {
+          ...res,
+          ok: true,
+          item: published.item,
+          data: published.item,
+        };
+      }
+
+      if (!res?.ok) {
+        throw new Error(uploadErrorMessage(res, "Could not publish video to feed."));
+      }
+
+      throw new Error("Video uploaded but feed post id was missing.");
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2 && isPublishTimeoutError(error)) {
+        console.log("KRISTO_UPLOAD_PUBLISH_TIMEOUT_RETRY", { attempt });
+        continue;
+      }
+      throw error;
+    }
   }
 
-  if (!res?.ok) {
-    throw new Error(uploadErrorMessage(res, "Could not publish video to feed."));
-  }
-
-  throw new Error("Video uploaded but feed post id was missing.");
+  throw lastError instanceof Error ? lastError : new Error("Could not publish video to feed.");
 }

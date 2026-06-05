@@ -3,8 +3,13 @@ import { Image, StyleSheet, View } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEvent } from "expo";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
+import { isValidVideoPosterUri } from "./homeFeedUtils";
+import { VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
 
 type Props = {
+  postId?: string;
+  title?: string;
+  mediaStatus?: string;
   uri: string;
   posterUri?: string;
   shouldPlay: boolean;
@@ -27,6 +32,9 @@ function hasPlaybackFrame(status: string, currentTime: number, playing: boolean)
  * Next row (preloadOnly): one muted paused player behind poster for faster handoff.
  */
 export const SimpleFeedVideo = memo(function SimpleFeedVideo({
+  postId = "",
+  title = "",
+  mediaStatus = "",
   uri,
   posterUri = "",
   shouldPlay,
@@ -117,15 +125,23 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   }, [shouldPlay, preloadOnly, screenFocused, status, currentTime, playing, player]);
 
   const poster = String(posterUri || "").trim();
-  const showPoster =
-    !!poster &&
-    (preloadOnly || !shouldPlay || !firstFrameReady);
-
+  const hasPoster = isValidVideoPosterUri(poster, uri);
+  const showPosterImage =
+    hasPoster && (preloadOnly || !shouldPlay || !firstFrameReady);
+  const showFallbackPoster = !hasPoster;
   const showVideoSurface = screenFocused && (preloadOnly || (shouldPlay && firstFrameReady));
 
   return (
     <View style={StyleSheet.absoluteFillObject}>
-      {showPoster ? (
+      {showFallbackPoster ? (
+        <VideoPostFallbackPoster
+          postId={postId}
+          title={title}
+          videoUrl={uri}
+          mediaStatus={mediaStatus}
+        />
+      ) : null}
+      {showPosterImage ? (
         <Image
           source={{ uri: poster }}
           style={[StyleSheet.absoluteFillObject, styles.posterLayer]}
@@ -141,9 +157,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
         contentFit="cover"
         nativeControls={false}
       />
-      {!poster && shouldPlay && !preloadOnly && !firstFrameReady ? (
-        <View style={styles.placeholder} />
-      ) : null}
     </View>
   );
 });
@@ -151,9 +164,5 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 const styles = StyleSheet.create({
   posterLayer: {
     zIndex: 2,
-  },
-  placeholder: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#0B0F17",
   },
 });

@@ -645,6 +645,15 @@ export function resolvePosterUri(item: any) {
   );
 }
 
+export function isValidVideoPosterUri(posterUri: string, videoUri: string) {
+  const poster = String(posterUri || "").trim();
+  const video = String(videoUri || "").trim();
+  if (!poster) return false;
+  if (video && poster === video) return false;
+  if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(poster)) return false;
+  return true;
+}
+
 export function isVideoPost(item: any) {
   const uri = resolveVideoUri(item);
   return Boolean(uri) && (item?.mediaType === "video" || isFeedVideoItem(item));

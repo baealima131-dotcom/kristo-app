@@ -19,7 +19,9 @@ import {
   resolvePostTitle,
   resolvePosterUri,
   resolveVideoUri,
+  isValidVideoPosterUri,
 } from "./homeFeedUtils";
+import { VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
 
 type Props = {
   item: any;
@@ -73,6 +75,7 @@ export const FeedRow = memo(function FeedRow({
   const videoUri = resolveVideoUri(item);
   const imageUri = resolveImageUri(item);
   const posterUri = resolvePosterUri(item);
+  const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
   const canMountPlayer = video && videoUri && screenFocused;
   const mountActivePlayer = Boolean(canMountPlayer && isActive);
   const mountPreloadPlayer = Boolean(canMountPlayer && isNext && !isActive);
@@ -87,6 +90,8 @@ export const FeedRow = memo(function FeedRow({
           mountActivePlayer || mountPreloadPlayer ? (
             <SimpleFeedVideo
               postId={postId}
+              title={title}
+              mediaStatus={mediaStatus}
               uri={videoUri}
               posterUri={posterUri}
               shouldPlay={mountActivePlayer}
@@ -94,7 +99,13 @@ export const FeedRow = memo(function FeedRow({
               screenFocused={screenFocused}
             />
           ) : (
-            <InactiveVideoPoster posterUri={posterUri} videoUri={videoUri} />
+            <InactiveVideoPoster
+              postId={postId}
+              title={title}
+              mediaStatus={mediaStatus}
+              posterUri={posterUri}
+              videoUri={videoUri}
+            />
           )
         ) : image && imageUri ? (
           <ImagePostCard imageUri={imageUri} />
@@ -151,12 +162,30 @@ export const FeedRow = memo(function FeedRow({
   );
 });
 
-function InactiveVideoPoster({ posterUri, videoUri }: { posterUri: string; videoUri: string }) {
-  const uri = String(posterUri || "").trim() || videoUri;
-  if (!uri) {
-    return <View style={styles.mediaFallback} />;
+function InactiveVideoPoster({
+  postId,
+  title,
+  mediaStatus,
+  posterUri,
+  videoUri,
+}: {
+  postId: string;
+  title: string;
+  mediaStatus: string;
+  posterUri: string;
+  videoUri: string;
+}) {
+  if (isValidVideoPosterUri(posterUri, videoUri)) {
+    return <Image source={{ uri: posterUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />;
   }
-  return <Image source={{ uri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />;
+  return (
+    <VideoPostFallbackPoster
+      postId={postId}
+      title={title}
+      videoUrl={videoUri}
+      mediaStatus={mediaStatus}
+    />
+  );
 }
 
 function TextPostPanel({ text }: { text: string }) {

@@ -1657,6 +1657,13 @@ async function handleFeedGet(
       scheduleIds: scheduleRows.map((x: any) => String(x?.id || "")),
     });
 
+    console.log("KRISTO_FEED_GET_VIDEO_ROWS", {
+      total: resolvedItems.length,
+      videoRows: resolvedItems.filter(
+        (x: any) => x?.type === "video" || x?.videoUrl
+      ).length,
+    });
+
     return feedListOk(churchId, resolvedItems);
   } catch (error: any) {
     console.error("[church/feed] GET handler failed", {
@@ -2437,9 +2444,9 @@ async function handleFeedPost(req: NextRequest, body: any) {
   const isMediaUploadVideo = type === "video" && Boolean(videoUrl) && isMediaUploadCreateBody(body);
   const requestedMediaStatus = normalizeMediaStatus(body?.mediaStatus);
   const mediaStatus: MediaStatus | undefined = isMediaUploadVideo
-    ? requestedMediaStatus === "uploading" || !requestedMediaStatus
+    ? requestedMediaStatus === "uploading"
       ? "processing"
-      : requestedMediaStatus
+      : requestedMediaStatus || "ready"
     : requestedMediaStatus;
 
   if (cleanText(body?.mediaType, 40)) {
@@ -2481,7 +2488,21 @@ async function handleFeedPost(req: NextRequest, body: any) {
     applyVideoMetadataFields(item as any, body);
   }
 
+  console.log("KRISTO_VIDEO_POST_BEFORE_SAVE", {
+    type,
+    videoUrl,
+    mediaType: (item as any).mediaType,
+    mediaStatus: (item as any).mediaStatus,
+    churchId,
+  });
+
   await upsertFeedItem(item);
+
+  console.log("KRISTO_VIDEO_POST_SAVED", {
+    id: item.id,
+    type: item.type,
+    videoUrl: item.videoUrl,
+  });
 
   if (isMediaUploadVideo && mediaStatus === "processing") {
     void finalizeMediaUploadVideoPost(String(item.id));

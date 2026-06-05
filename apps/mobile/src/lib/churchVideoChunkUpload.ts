@@ -6,8 +6,35 @@ type HeadersRec = Record<string, string>;
 
 export const CHUNK_SESSION_STORAGE_KEY = "kristo_media_chunk_sessions_v1";
 export const VIDEO_CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
+export const UPLOAD_PART_TIMEOUT_MS = 120_000;
+export const COMPLETE_TIMEOUT_MS = 120_000;
 export const MULTIPART_BACKEND_NOT_DEPLOYED_MESSAGE =
   "Resumable upload backend not deployed yet.";
+
+function isStallError(error: unknown) {
+  const message = String((error as any)?.message || error || "").toLowerCase();
+  return (
+    message.includes("abort") ||
+    message.includes("timeout") ||
+    message.includes("timed out")
+  );
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 export class MultipartBackendNotDeployedError extends Error {
   constructor(message = MULTIPART_BACKEND_NOT_DEPLOYED_MESSAGE) {
@@ -144,9 +171,39 @@ async function uploadChunkPart(params: {
     }
 
     return etag;
+  } catch (error) {
+    if ((error as any)?.name === "AbortError") {
+      throw new Error(`Chunk upload timed out after ${params.timeoutMs}ms`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function uploadChunkPartWithRetry(params: {
+  uploadUrl: string;
+  fileUri: string;
+  start: number;
+  length: number;
+  timeoutMs: number;
+  partNumber: number;
+  sessionId: string;
+}) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await uploadChunkPart(params);
+    } catch (error) {
+      const shouldRetry = attempt < 2 && params.partNumber === 2 && isStallError(error);
+      if (!shouldRetry) throw error;
+      console.log("KRISTO_UPLOAD_PART_RETRY", {
+        sessionId: params.sessionId,
+        partNumber: params.partNumber,
+        attempt,
+      });
+    }
+  }
+  throw new Error("Chunk upload failed after retry.");
 }
 
 async function initMultipartSession(params: {
@@ -226,6 +283,38 @@ async function completeMultipartSession(params: {
   return res?.data || res;
 }
 
+async function completeMultipartSessionWithRetry(params: {
+  key: string;
+  uploadId: string;
+  parts: ChunkUploadPartRecord[];
+  headers: HeadersRec;
+  sessionId: string;
+  timeoutMs: number;
+}) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await withTimeout(
+        completeMultipartSession({
+          key: params.key,
+          uploadId: params.uploadId,
+          parts: params.parts,
+          headers: params.headers,
+        }),
+        params.timeoutMs,
+        "Multipart complete"
+      );
+    } catch (error) {
+      const shouldRetry = attempt < 2 && isStallError(error);
+      if (!shouldRetry) throw error;
+      console.log("KRISTO_UPLOAD_COMPLETE_TIMEOUT_RETRY", {
+        jobId: params.sessionId,
+        attempt,
+      });
+    }
+  }
+  throw new Error("Multipart complete failed after retry.");
+}
+
 export async function uploadVideoWithChunkSession(params: {
   sessionId: string;
   fileUri: string;
@@ -237,7 +326,7 @@ export async function uploadVideoWithChunkSession(params: {
   onProgress?: (percent: number) => void;
   timeoutMs?: number;
 }): Promise<SignedMediaUploadSession & { resumableMode: "chunk"; sessionId: string }> {
-  const timeoutMs = params.timeoutMs ?? 90_000;
+  const timeoutMs = params.timeoutMs ?? UPLOAD_PART_TIMEOUT_MS;
   let session =
     params.existingSession ||
     (await getChunkUploadSession(params.sessionId));
@@ -297,12 +386,14 @@ export async function uploadVideoWithChunkSession(params: {
       headers: params.headers,
     });
 
-    const etag = await uploadChunkPart({
+    const etag = await uploadChunkPartWithRetry({
       uploadUrl: String(signedPart.uploadUrl || "").trim(),
       fileUri: session.fileUri,
       start,
       length,
       timeoutMs,
+      partNumber,
+      sessionId: session.sessionId,
     });
 
     completedMap.set(partNumber, etag);
@@ -327,11 +418,13 @@ export async function uploadVideoWithChunkSession(params: {
     params.onProgress?.(chunkProgress(session.completedParts.length, session.totalParts));
   }
 
-  const completed = await completeMultipartSession({
+  const completed = await completeMultipartSessionWithRetry({
     key: session.key,
     uploadId: session.uploadId,
     parts: session.completedParts,
     headers: params.headers,
+    sessionId: session.sessionId,
+    timeoutMs: COMPLETE_TIMEOUT_MS,
   });
 
   await removeChunkUploadSession(session.sessionId);
