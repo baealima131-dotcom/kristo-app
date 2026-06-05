@@ -618,6 +618,79 @@ function PersonRow({ item }: { item: MinistryPerson }) {
   );
 }
 
+function isPlaceholderSlotTopic(value: string) {
+  const v = String(value || "").trim();
+  if (!v) return true;
+  return /^(no topic|ready to execute)$/i.test(v);
+}
+
+function extractSlotReviewDetail(card: any): string {
+  const notes = Array.isArray(card?.notes) ? card.notes : [];
+  const hit = notes.find((x: any) => /^review detail:/i.test(String(x || "").trim()));
+  if (!hit) return "";
+  return String(hit).replace(/^review detail:\s*/i, "").trim();
+}
+
+function resolveSlotTopicForCard(card: any): {
+  resolvedTopic: string;
+  source: string;
+  parentTopic: string;
+  rawSlotKeys: string[];
+} {
+  const slot = card?.slot && typeof card.slot === "object" ? card.slot : card;
+  const parentTopic = String(
+    card?.parentTopic ||
+    card?.scheduleTopic ||
+    card?.meetingTopic ||
+    card?.meetingPlanTopic ||
+    ""
+  ).trim();
+  const sharedScript = String(card?.script || "").trim();
+  const effectiveParent = parentTopic || sharedScript;
+  const reviewDetail = extractSlotReviewDetail(card);
+
+  const rawSlotKeys = Object.keys(slot || {}).filter((key) =>
+    /topic|script|task|description|title|role|assignment/i.test(key)
+  );
+
+  const candidates: Array<{ source: string; value: string }> = [
+    { source: "slot.topic", value: String(slot?.topic || "").trim() },
+    { source: "card.topic", value: String(card?.topic || "").trim() },
+    { source: "slot.assignmentTopic", value: String(slot?.assignmentTopic || "").trim() },
+    { source: "card.assignmentTopic", value: String(card?.assignmentTopic || "").trim() },
+    { source: "slot.slotTopic", value: String(slot?.slotTopic || "").trim() },
+    { source: "card.slotTopic", value: String(card?.slotTopic || "").trim() },
+    { source: "slot.description", value: String(slot?.description || "").trim() },
+    { source: "card.description", value: String(card?.description || "").trim() },
+    { source: "card.task", value: String(card?.task || "").trim() },
+    { source: "card.roleLabel", value: String(card?.roleLabel || "").trim() },
+    { source: "card.role", value: String(card?.role || "").trim() },
+    { source: "notes.reviewDetail", value: reviewDetail },
+    { source: "card.title", value: String(card?.title || "").trim() },
+  ];
+
+  for (const { source, value } of candidates) {
+    if (isPlaceholderSlotTopic(value)) continue;
+    if (effectiveParent && value.toLowerCase() === effectiveParent.toLowerCase()) continue;
+    return {
+      resolvedTopic: value,
+      source,
+      parentTopic: effectiveParent,
+      rawSlotKeys,
+    };
+  }
+
+  const fallback =
+    effectiveParent && !isPlaceholderSlotTopic(effectiveParent) ? effectiveParent : "";
+
+  return {
+    resolvedTopic: fallback,
+    source: fallback ? (parentTopic ? "parentTopic" : "card.script") : "none",
+    parentTopic: effectiveParent,
+    rawSlotKeys,
+  };
+}
+
 function renderAssignmentCardBody(
   m: MsgItem,
   opts?: {
@@ -654,7 +727,20 @@ function renderAssignmentCardBody(
 
   const cleanTitle = String(card.title || "").trim();
   const cleanTask = String(card.task || "").trim();
-  const cleanScript = String(card.script || "").trim();
+
+  const slotTopicResolved = resolveSlotTopicForCard(card);
+  const slotNumber = String(
+    (card as any)?.slotNumber || (card as any)?.slotLabel || ""
+  ).trim();
+
+  console.log("KRISTO_SLOT_TOPIC_RESOLVE", {
+    slotNumber,
+    title: cleanTitle,
+    resolvedTopic: slotTopicResolved.resolvedTopic,
+    source: slotTopicResolved.source,
+    parentTopic: slotTopicResolved.parentTopic,
+    rawSlotKeys: slotTopicResolved.rawSlotKeys,
+  });
 
   const normalizedTask =
     cleanTask &&
@@ -663,7 +749,6 @@ function renderAssignmentCardBody(
       ? cleanTask
       : "";
 
-  
   const topicTone = (() => {
     const t = String(card.title || "").toLowerCase();
     const r = String(card.roleKey || "").toLowerCase();
@@ -721,12 +806,12 @@ function renderAssignmentCardBody(
     };
   })();
 
-const normalizedScript =
-    cleanScript &&
-    cleanScript.toLowerCase() !== cleanTitle.toLowerCase() &&
-    !/^(no topic|ready to execute)$/i.test(cleanScript) &&
-    !/^review detail:/i.test(cleanScript)
-      ? cleanScript
+  const normalizedScript =
+    slotTopicResolved.resolvedTopic &&
+    slotTopicResolved.resolvedTopic.toLowerCase() !== cleanTitle.toLowerCase() &&
+    !isPlaceholderSlotTopic(slotTopicResolved.resolvedTopic) &&
+    !/^review detail:/i.test(slotTopicResolved.resolvedTopic)
+      ? slotTopicResolved.resolvedTopic
       : "";
 
   const roleLine = String(card.roleLabel || card.subtitle || "").trim();

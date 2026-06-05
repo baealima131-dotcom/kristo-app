@@ -75,6 +75,71 @@ const PURPLE = "#B784FF";
 
 const RED = "#FF7D84";
 
+function isPlaceholderScheduleScript(value: string) {
+  const v = String(value || "").trim();
+  if (!v) return true;
+  return /^(no topic|ready to execute)$/i.test(v);
+}
+
+function resolveScheduleSlotScript(
+  slot: any,
+  parentTopic: string,
+  opts?: {
+    slotNumber?: string | number;
+    title?: string;
+    log?: boolean;
+  }
+): { script: string; source: string } {
+  const scheduleTopic = String(parentTopic || "").trim();
+  const title = String(opts?.title || slot?.name || slot?.title || "Schedule slot").trim();
+  const roleLabel = String(slot?.roleLabel || slot?.role || "").trim();
+
+  const candidates: Array<{ source: string; value: string }> = [
+    { source: "slot.topic", value: String(slot?.topic || "").trim() },
+    { source: "slot.assignmentTopic", value: String(slot?.assignmentTopic || "").trim() },
+    { source: "slot.slotTopic", value: String(slot?.slotTopic || "").trim() },
+    { source: "slot.description", value: String(slot?.description || "").trim() },
+    { source: "slot.task", value: String(slot?.task || "").trim() },
+    { source: "slot.roleLabel", value: roleLabel },
+    { source: "slot.role", value: String(slot?.role || "").trim() },
+    { source: "slot.title", value: String(slot?.title || "").trim() },
+    { source: "slot.name", value: String(slot?.name || "").trim() },
+    { source: "scheduleTopic", value: scheduleTopic },
+  ];
+
+  for (const { source, value } of candidates) {
+    if (isPlaceholderScheduleScript(value)) continue;
+
+    if (opts?.log !== false) {
+      console.log("KRISTO_SCHEDULE_SLOT_SCRIPT_SAVE", {
+        slotNumber: opts?.slotNumber ?? slot?.slotNumber ?? slot?.slotLabel ?? "",
+        title,
+        script: value,
+        source,
+        parentTopic: scheduleTopic,
+      });
+    }
+
+    return { script: value, source };
+  }
+
+  const fallback = scheduleTopic || title || "No topic";
+  if (opts?.log !== false) {
+    console.log("KRISTO_SCHEDULE_SLOT_SCRIPT_SAVE", {
+      slotNumber: opts?.slotNumber ?? slot?.slotNumber ?? slot?.slotLabel ?? "",
+      title,
+      script: fallback,
+      source: scheduleTopic ? "scheduleTopic" : "slot.title",
+      parentTopic: scheduleTopic,
+    });
+  }
+
+  return {
+    script: fallback,
+    source: scheduleTopic ? "scheduleTopic" : "slot.title",
+  };
+}
+
 type ToolRequirement = "member" | "leader" | "tlmc";
 
 type ToolMeta = {
@@ -2295,12 +2360,25 @@ async function publishScheduleSlot(slot: any) {
     }
 
     const now = Date.now();
+    const slotNumber = getScheduleSlotNumber(slot);
+    const parentTopic = String(
+      slot?.scheduleTopic ||
+      slot?.meetingTopic ||
+      slot?.parentTopic ||
+      meetingTopic ||
+      meetingTopicChoice ||
+      ""
+    ).trim();
+    const { script: resolvedScript } = resolveScheduleSlotScript(slot, parentTopic, {
+      slotNumber,
+      title: String(slot?.name || "Schedule slot"),
+    });
 
     const card = {
       cardId: String(slot?.id || ""),
-      slotLabel: String(getScheduleSlotNumber(slot)),
-      slotNumber: getScheduleSlotNumber(slot),
-      order: getScheduleSlotNumber(slot),
+      slotLabel: String(slotNumber),
+      slotNumber,
+      order: slotNumber,
       title: String(slot?.name || "Schedule slot"),
       subtitle: String(slot?.subtitle || "Schedule"),
       roleKey: String(slot?.role || "").toLowerCase(),
@@ -2311,7 +2389,10 @@ async function publishScheduleSlot(slot: any) {
       meetingDate: String(slot?.meetingDate || ""),
       timeLabel: String(slot?.timeLabel || ""),
       task: String(slot?.task || slot?.name || ""),
-      script: String(slot?.script || ""),
+      script: resolvedScript,
+      scheduleTopic: parentTopic,
+      meetingTopic: parentTopic,
+      parentTopic,
       notes: Array.isArray(slot?.chat) ? slot.chat : [],
       musicItems: Array.isArray(slot?.musicItems) ? slot.musicItems : [],
       status: String(slot?.claimedByUserId || slot?.claimedByName || "") ? "taken" as const : "open" as const,
@@ -2925,6 +3006,9 @@ async function publishScheduleSlot(slot: any) {
       durationMin: number;
       task: string;
       script: string;
+      scheduleTopic?: string;
+      meetingTopic?: string;
+      parentTopic?: string;
       chat: string[];
     }> = [];
 
@@ -3068,16 +3152,44 @@ async function publishScheduleSlot(slot: any) {
           partLabel = totalSegments > 1 ? ` Part ${roundIndex + 1}/${totalSegments}` : "";
         }
 
+        const slotName = isMediaSchedule
+          ? row.title
+          : row.key === "prayer"
+            ? partLabel.trim()
+            : `${row.title}${partLabel}`;
+        const slotTask = `${slotName} • ${scheduleType}`;
+        const { script: slotScript } = resolveScheduleSlotScript(
+          {
+            name: slotName,
+            title: slotName,
+            task: slotTask,
+            role: row.detail,
+            roleLabel: row.detail,
+            topic: (row as any)?.topic,
+            assignmentTopic: (row as any)?.assignmentTopic,
+            slotTopic: (row as any)?.slotTopic,
+            description: (row as any)?.description,
+          },
+          scheduleTopic,
+          {
+            slotNumber: segmentCursor + 1,
+            title: slotName,
+          }
+        );
+
         items.push({
           id: `meeting-review-${row.key}-${roundIndex + 1}-${segmentCursor + 1}-${Date.now()}`,
           mcId: `meeting-review-${segmentCursor + 1}`,
-          name: isMediaSchedule ? row.title : row.key === "prayer" ? partLabel.trim() : `${row.title}${partLabel}`,
+          name: slotName,
           role: row.detail,
           startTime: formatTime(start),
           endTime: formatTime(end),
           durationMin: segmentMin,
-          task: `${isMediaSchedule ? row.title : row.key === "prayer" ? partLabel.trim() : `${row.title}${partLabel}`} • ${scheduleType}`,
-          script: scheduleTopic,
+          task: slotTask,
+          script: slotScript,
+          scheduleTopic,
+          meetingTopic: scheduleTopic,
+          parentTopic: scheduleTopic,
           chat: [
             `Audience: ${scheduleTarget}`,
             `Review detail: ${row.detail}`,
@@ -3156,6 +3268,9 @@ async function publishScheduleSlot(slot: any) {
         role: item.role,
         task: item.task,
         script: item.script,
+        scheduleTopic,
+        meetingTopic: scheduleTopic,
+        parentTopic: scheduleTopic,
         chat: item.chat,
         sourceSlotName: item.name,
         visibility: "draft",
@@ -3256,6 +3371,9 @@ async function publishScheduleSlot(slot: any) {
         role: item.role,
         task: item.task,
         script: item.script,
+        scheduleTopic,
+        meetingTopic: scheduleTopic,
+        parentTopic: scheduleTopic,
         chat: item.chat,
         meetingDate: parseTimeToDate(
           meetingStartDay,
@@ -3421,32 +3539,57 @@ router.replace({
   }
 
   function handlePushScheduleToMc() {
-    const items = scheduleSpeakerSlots.map((slot, index) => ({
-      id: slot.id,
-      mcId: `mc-${index + 1}`,
-      name:
+    const parentTopic = String(meetingTopic || meetingTopicChoice || "").trim();
+    const items = scheduleSpeakerSlots.map((slot, index) => {
+      const slotName =
         index === 0
           ? "MC Opening"
           : index === scheduleSpeakerSlots.length - 1
             ? "MC Main"
-            : `MC ${index + 1}`,
-      role:
+            : `MC ${index + 1}`;
+      const slotRole =
         index === 0
           ? "Opening"
           : index === scheduleSpeakerSlots.length - 1
             ? "Main"
-            : "Support",
-      startTime: meetingTime,
-      endTime: meetingTime,
-      durationMin: slot.minutes,
-      task: slot.name,
-      script: `${meetingType} • ${meetingTopic} • ${meetingTarget}`,
-      chat: [
-        `Day: ${meetingDay}`,
-        `Time: ${meetingTime}`,
-        `Target: ${meetingTarget}`,
-      ],
-    }));
+            : "Support";
+      const { script: slotScript } = resolveScheduleSlotScript(
+        {
+          ...slot,
+          name: slotName,
+          title: slotName,
+          task: String(slot?.task || slot?.name || slotName),
+          role: slotRole,
+          roleLabel: slotRole,
+        },
+        parentTopic,
+        {
+          slotNumber: index + 1,
+          title: slotName,
+        }
+      );
+
+      return {
+        id: slot.id,
+        mcId: `mc-${index + 1}`,
+        name: slotName,
+        role: slotRole,
+        startTime: meetingTime,
+        endTime: meetingTime,
+        durationMin: slot.minutes,
+        task: String(slot?.task || slot?.name || slotName),
+        script: slotScript,
+        scheduleTopic: parentTopic,
+        meetingTopic: parentTopic,
+        parentTopic,
+        chat: [
+          `Day: ${meetingDay}`,
+          `Time: ${meetingTime}`,
+          `Target: ${meetingTarget}`,
+          parentTopic ? `Meeting topic: ${parentTopic}` : "",
+        ].filter(Boolean),
+      };
+    });
 
     saveChurchProjectMcSchedule(assignmentId, {
       eventTitle: `${meetingType} • ${assignmentTitle}`,
