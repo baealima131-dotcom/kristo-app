@@ -4375,9 +4375,33 @@ const displayHeaderTitle = assignmentDisplayTitle;
       meta.valid && now >= meta.startMs - 5 * 60 * 1000 ? "waiting" :
       "scheduled";
 
-    if (isChurchLiveControlAssignment && liveAssignmentCtaMeta.tone !== "scheduled" && !canPastorStartChurchLive) {
-      Alert.alert("Pastor only", "Only the pastor can start Church Live.");
-      return;
+    if (isChurchLiveControlAssignment) {
+      const currentUserId = String(effectiveAuthUserId || "").trim();
+      const claimedByUserId = String(
+        card?.claimedByUserId ||
+        card?.claimedUserId ||
+        card?.assigneeUserId ||
+        ""
+      ).trim();
+      const claimedByMe =
+        !!claimedByUserId && !!currentUserId && claimedByUserId === currentUserId;
+
+      const pastorCanOpenCard =
+        canPastorStartChurchLive && meta.valid && !meta.ended;
+
+      const claimerCanOpenCard =
+        claimedByMe &&
+        meta.valid &&
+        !meta.ended &&
+        (
+          !!meta.active ||
+          now >= meta.startMs - 3 * 60 * 60 * 1000
+        );
+
+      if (!pastorCanOpenCard && !claimerCanOpenCard) {
+        Alert.alert("Pastor only", "Only the pastor can start Church Live.");
+        return;
+      }
     }
 
     router.push({
@@ -5836,14 +5860,10 @@ function saveAssignmentVideoTrim() {
   }
 
   function handleSmartLivePress() {
-    if (isChurchLiveControlAssignment && liveAssignmentCtaMeta.tone !== "scheduled") {
-      Alert.alert(
-        "Schedule required",
-        "Church Live depends on active schedule slots. Create a schedule first, then enter when the slot time arrives."
-      );
-      return;
-    }
-
+    // Evaluate eligibility FIRST: a claimed/active/live slot (or a pastor instant
+    // start) already reports canOpenLive === true and must always be able to enter,
+    // regardless of tone. Gating on tone before this caused LIVE NOW slots to be
+    // rejected with "Schedule required".
     if (isChurchLiveControlAssignment && liveAssignmentCtaMeta.canOpenLive) {
       router.push({
         pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
@@ -5862,6 +5882,17 @@ function saveAssignmentVideoTrim() {
           mediaScope: "church",
         },
       });
+      return;
+    }
+
+    // Only block with "Schedule required" once we know there is genuinely no
+    // active/eligible slot to open. A "scheduled" tone still has slot cards to
+    // surface below, so it is allowed through.
+    if (isChurchLiveControlAssignment && liveAssignmentCtaMeta.tone !== "scheduled") {
+      Alert.alert(
+        "Schedule required",
+        "Church Live depends on active schedule slots. Create a schedule first, then enter when the slot time arrives."
+      );
       return;
     }
 
