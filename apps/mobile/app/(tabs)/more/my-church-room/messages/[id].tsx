@@ -64,6 +64,7 @@ import {
   getMcHostsCache,
   getRoomMessagesCache,
   invalidateMcHostsCache,
+  invalidateRoomMessagesCache,
   isChurchMediaRoomCacheFresh,
   liveControlMembersRawSignature,
   mcHostsSignature,
@@ -77,6 +78,7 @@ import {
   refreshLiveControlMembersIfNeeded,
   refreshMcHostsIfNeeded,
   refreshRoomMessagesIfNeeded,
+  resetRoomMessagesRefreshState,
 } from "@/src/lib/churchMediaRoomRefresh";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -3128,7 +3130,7 @@ export default function MessageThreadScreen() {
   const roomMessagesSigRef = useRef("");
   const roomMessagesInflightRef = useRef(false);
   const memberAvatarByUserIdRef = useRef<Map<string, string>>(new Map());
-  const reloadRoomMessagesRef = useRef<(() => Promise<boolean>) | null>(null);
+  const reloadRoomMessagesRef = useRef<((opts?: { force?: boolean }) => Promise<boolean>) | null>(null);
   const [composerFocused, setComposerFocused] = useState(false);
 
   const filterVisibleRoomMessageRows = useCallback((rows: any[]) => {
@@ -3371,7 +3373,8 @@ export default function MessageThreadScreen() {
 
     let alive = true;
 
-    async function loadBackendRoomMessages(): Promise<boolean> {
+    async function loadBackendRoomMessages(opts?: { force?: boolean }): Promise<boolean> {
+      const force = !!opts?.force;
       const roomId = backendRoomId;
       if (!roomId) return false;
 
@@ -3381,10 +3384,12 @@ export default function MessageThreadScreen() {
       if (isChurchLiveControlRoom) {
         const cid = String(churchId || headers?.["x-kristo-church-id"] || "").trim();
         if (!cid || !selfId) return false;
-        if (roomMessagesInflightRef.current) return false;
+        // A forced reload (e.g. right after a send) must not be blocked by an
+        // in-flight poll, otherwise it returns the stale cache:0 snapshot.
+        if (!force && roomMessagesInflightRef.current) return false;
 
         roomMessagesInflightRef.current = true;
-        if (__DEV__) console.log("[RoomMessagesPoll] fetch-start", { backendRoomId: roomId, cached: true });
+        if (__DEV__) console.log("[RoomMessagesPoll] fetch-start", { backendRoomId: roomId, cached: true, force });
 
         let count = 0;
         let updated = false;
@@ -3395,9 +3400,9 @@ export default function MessageThreadScreen() {
             userId: selfId,
             roomId: CHURCH_MEDIA_ROOM_ID,
             headers,
-            force: false,
-            cacheFresh: mediaRoomCacheFreshRef.current,
-            source: composerFocused ? "poll-active" : "poll",
+            force,
+            cacheFresh: !force && mediaRoomCacheFreshRef.current,
+            source: force ? "post-send" : composerFocused ? "poll-active" : "poll",
           });
 
           if (!alive) return false;
@@ -3413,7 +3418,7 @@ export default function MessageThreadScreen() {
         }
       }
 
-      if (roomMessagesInflightRef.current) return false;
+      if (!force && roomMessagesInflightRef.current) return false;
 
       roomMessagesInflightRef.current = true;
       if (__DEV__) console.log("[RoomMessagesPoll] fetch-start", { backendRoomId: roomId });
@@ -3456,6 +3461,29 @@ export default function MessageThreadScreen() {
       stop();
     };
   }, [threadId, backendRoomId, effectiveAuthUserId, churchId, title, sub, isAssignmentThread, isMinistryThread, isChurchLiveControlAssignment, isChurchLiveControlRoom, realMinistry, (params as any)?.ministryId, (params as any)?.assignmentId, isFocused, composerFocused, applyVisibleRoomMessageRows, filterVisibleRoomMessageRows]);
+
+  // Force a fresh room-messages GET that bypasses the media-room cache. Used
+  // right after a successful send/reconcile/card mutation so the next poll
+  // cannot return the stale cache:0 snapshot (CACHE_HIT / REFRESH_SKIPPED).
+  const forceReloadRoomMessages = useCallback(() => {
+    try {
+      const headers: any = getKristoHeaders();
+      const cid = String(churchId || headers?.["x-kristo-church-id"] || "").trim();
+      const uid = String(headers?.["x-kristo-user-id"] || effectiveAuthUserId || "").trim();
+      if (cid && uid) {
+        // Live-control room messages are cached under CHURCH_MEDIA_ROOM_ID.
+        invalidateRoomMessagesCache(cid, uid, CHURCH_MEDIA_ROOM_ID);
+        resetRoomMessagesRefreshState(cid, uid, CHURCH_MEDIA_ROOM_ID);
+        if (backendRoomId && backendRoomId !== CHURCH_MEDIA_ROOM_ID) {
+          invalidateRoomMessagesCache(cid, uid, backendRoomId);
+          resetRoomMessagesRefreshState(cid, uid, backendRoomId);
+        }
+      }
+    } catch {}
+    mediaRoomCacheFreshRef.current = false;
+    roomMessagesSigRef.current = "";
+    void reloadRoomMessagesRef.current?.({ force: true });
+  }, [churchId, effectiveAuthUserId, backendRoomId]);
 
   const listRef = useRef<any>(null);
   const inputRef = useRef<any>(null);
@@ -3972,8 +4000,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
               }
 
               if (anySuccess) {
-                roomMessagesSigRef.current = "";
-                void reloadRoomMessagesRef.current?.();
+                forceReloadRoomMessages();
               }
 
               exitMessageSelectionMode();
@@ -3983,7 +4010,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
         },
       ]);
     },
-    [messages, threadId, backendRoomId, effectiveAuthUserId, exitMessageSelectionMode, closeMessageActions]
+    [messages, threadId, backendRoomId, effectiveAuthUserId, exitMessageSelectionMode, closeMessageActions, forceReloadRoomMessages]
   );
 
   const handleMessageActionSelect = useCallback(() => {
@@ -4249,8 +4276,9 @@ const displayHeaderTitle = assignmentDisplayTitle;
         reconcileMessage(threadId, optimisticId, reconciled);
       }
 
-      roomMessagesSigRef.current = "";
-      void reloadRoomMessagesRef.current?.();
+      // Bust the media-room cache and force a fresh GET so the just-saved
+      // message isn't hidden by a stale cache:0 poll right after sending.
+      forceReloadRoomMessages();
     } catch (e: any) {
       deleteMessage(threadId, optimisticId);
 

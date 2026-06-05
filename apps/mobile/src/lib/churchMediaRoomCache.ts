@@ -111,6 +111,17 @@ export async function saveRoomMessagesCache(payload: RoomMessagesCachePayload) {
   await AsyncStorage.setItem(`${ROOM_MESSAGES_PREFIX}${key}`, JSON.stringify(next));
 }
 
+/**
+ * Drop the cached room-messages payload (memory + storage) so the next refresh
+ * is forced to hit the network instead of returning a stale (possibly count:0)
+ * snapshot. Used right after a successful send/reconcile.
+ */
+export function invalidateRoomMessagesCache(churchId: string, userId: string, roomId: string) {
+  const key = roomMessagesKey(churchId, userId, roomId);
+  roomMessagesMemory.delete(key);
+  void AsyncStorage.removeItem(`${ROOM_MESSAGES_PREFIX}${key}`);
+}
+
 export function peekLiveControlMembersCache(churchId: string, userId: string, roomId: string) {
   return liveControlMemory.get(liveControlKey(churchId, userId, roomId)) || null;
 }

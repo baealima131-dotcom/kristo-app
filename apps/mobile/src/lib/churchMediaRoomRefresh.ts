@@ -83,6 +83,18 @@ function normalizeMcHostIds(ids: any[]) {
     .slice(0, 2);
 }
 
+/**
+ * Clear the throttle + in-flight bookkeeping for a room so the very next
+ * refresh actually performs a network fetch. Pair with
+ * invalidateRoomMessagesCache after a send so the post-send poll cannot be
+ * skipped with a stale "recent" / "cache-fresh" result.
+ */
+export function resetRoomMessagesRefreshState(churchId: string, userId: string, roomId: string) {
+  const key = inflightKey("room-messages", churchId, userId, roomId);
+  roomMessagesLastAt.delete(key);
+  roomMessagesInflight.delete(key);
+}
+
 export async function refreshRoomMessagesIfNeeded(args: {
   churchId: string;
   userId: string;
