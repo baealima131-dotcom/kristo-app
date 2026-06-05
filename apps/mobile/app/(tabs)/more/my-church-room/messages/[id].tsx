@@ -2590,9 +2590,27 @@ export default function MessageThreadScreen() {
           : !isAssignmentThread && (threadId.startsWith("m") || String(params.tab || "") === "ministries");
   const isStructuredRoom = isMinistryThread || isAssignmentThread;
 
-  // V1: chat messaging in the assignment / church-live control room is not
-  // launched yet. Hide the composer and show a "coming in V2" notice instead.
-  const isMessagingDisabledV1 = isAssignmentThread;
+  // V1 messaging policy:
+  // - Enabled: ministry chat, assignment / church-live control chat.
+  // - Disabled until V2: church room threads + direct/private (DM) chats.
+  const isChurchRoomThread =
+    normalizedRoomKind === "church-room" ||
+    normalizedRoomKind === "church-thread" ||
+    normalizedRoomKind === "thread";
+  const isDirectOrPrivateRoom =
+    normalizedRoomKind === "direct" ||
+    normalizedRoomKind === "dm" ||
+    normalizedRoomKind === "private";
+  const hasDirectOrPrivateFlag =
+    (params as any)?.isDirect === true ||
+    (params as any)?.isPrivate === true ||
+    (params as any)?.isChurchThread === true ||
+    String((params as any)?.isDirect || "") === "1" ||
+    String((params as any)?.isPrivate || "") === "1" ||
+    String((params as any)?.isChurchThread || "") === "1";
+
+  const isMessagingDisabledV1 =
+    isChurchRoomThread || isDirectOrPrivateRoom || hasDirectOrPrivateFlag;
 
   const routeMinistryId = String((params as any)?.ministryId || "").trim();
 
@@ -7105,7 +7123,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               <Text style={t.emptyTitle}>No messages yet</Text>
               <Text style={t.emptySub}>
                 {isMessagingDisabledV1
-                  ? "Messages are coming in V2. For V1, communication happens through ministries, live, and church updates."
+                  ? "Messages are coming in V2. For V1, communication happens through ministries, live control, and church updates."
                   : isAssignmentThread
                     ? "This assignment room is ready. Send the first assignment message."
                     : isMinistryThread
@@ -7229,7 +7247,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
               }}
             >
               Messages are coming in V2. For V1, communication happens through
-              ministries, live, and church updates.
+              ministries, live control, and church updates.
             </Text>
           </View>
         ) : (

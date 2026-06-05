@@ -11,19 +11,31 @@ import { readJsonFile, writeJsonFile } from "@/app/api/_lib/store/fs";
 
 export const runtime = "nodejs";
 
-// V1: room chat messaging is not yet launched. The assignment / church-live
-// control room shows a V2 notice instead of a composer, and the server rejects
-// plain-text sends to that room with a clean response (no message persisted).
-// Assignment cards (live-control scheduling) still flow through this endpoint.
+// V1 messaging policy:
+// - Enabled: ministry chat, assignment / church-live control chat, and
+//   assignment/live-control cards.
+// - Disabled until V2: church room threads + direct/private (DM) chats. Plain
+//   text/attachment sends to those rooms are rejected with a clean response
+//   (no message persisted, no crash).
 const ROOM_MESSAGES_STORE_FILE = "room-messages.json";
 
 const V1_MESSAGING_DISABLED_NOTICE =
-  "Messages are coming in V2. For V1, communication happens through ministries, live, and church updates.";
+  "Messages are coming in V2. For V1, communication happens through ministries, live control, and church updates.";
+
+const V1_DISABLED_ROOM_KINDS = new Set([
+  "church-room",
+  "church-thread",
+  "thread",
+  "direct",
+  "dm",
+  "private",
+]);
 
 function isV1DisabledRoomTextSend(roomKind: string, kind: string) {
   const rk = String(roomKind || "").trim().toLowerCase();
-  const isAssignmentRoom = rk === "assignment" || rk === "church-live-control";
-  return isAssignmentRoom && String(kind || "").trim() !== "assignment_card";
+  // Cards always flow through (live-control scheduling).
+  if (String(kind || "").trim() === "assignment_card") return false;
+  return V1_DISABLED_ROOM_KINDS.has(rk);
 }
 
 type RoomMessage = {
