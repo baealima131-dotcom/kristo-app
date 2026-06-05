@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { updateJsonFile } from "@/app/api/_lib/store/fs";
+import { updateLiveJsonFile } from "@/app/api/_lib/store/liveDb";
 import {
   readMinistryJsonFile,
   updateMinistryJsonFile,
@@ -178,7 +178,7 @@ async function removeUserFromMcHostsForMinistry(args: {
   userId: string;
   updatedBy: string;
 }) {
-  await updateJsonFile<McHostsRow[]>(
+  await updateLiveJsonFile<McHostsRow[]>(
     MC_HOSTS_FILE,
     (rows) => {
       const list = Array.isArray(rows) ? rows : [];
