@@ -222,9 +222,10 @@ export function getStoragePostThumbnail(item: any): string {
   const thumb = activityCardBackgroundUri(item);
   if (thumb) return mediaUrl(thumb);
 
-  return mediaUrl(
-    String(item?.posterUri || item?.thumbnailUri || item?.thumbnailUrl || "").trim()
-  );
+  const poster = String(item?.posterUri || item?.thumbnailUri || item?.thumbnailUrl || "").trim();
+  if (poster.startsWith("kristo:")) return "";
+
+  return mediaUrl(poster);
 }
 
 export function getStoragePostTitle(item: any, mode: StorageMode = "church"): string {

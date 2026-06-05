@@ -17,6 +17,8 @@ export const MAX_VIDEO_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024;
 export const VIDEO_UPLOAD_URL_TTL_SECONDS = 2 * 60 * 60;
 export const VIDEO_MULTIPART_CHUNK_BYTES = 5 * 1024 * 1024;
 export const VIDEO_MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024;
+/** Files under this size upload as a single multipart part on the client. */
+export const VIDEO_SINGLE_PART_UPLOAD_MAX_BYTES = 6 * 1024 * 1024;
 
 export type VideoStorageConfig = {
   bucket: string;
@@ -290,7 +292,10 @@ export async function createMultipartVideoUpload(params: {
     contentType,
     kind: "video",
   });
-  const chunkSize = VIDEO_MULTIPART_CHUNK_BYTES;
+  const chunkSize =
+    params.fileSize > 0 && params.fileSize < VIDEO_SINGLE_PART_UPLOAD_MAX_BYTES
+      ? params.fileSize
+      : VIDEO_MULTIPART_CHUNK_BYTES;
   const totalParts = Math.max(1, Math.ceil(params.fileSize / chunkSize));
 
   const client = createStorageClient(config);

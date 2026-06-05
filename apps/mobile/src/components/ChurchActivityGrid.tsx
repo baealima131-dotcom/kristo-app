@@ -22,6 +22,7 @@ import {
   type ActivityGridItem,
   type ChurchActivityLabel,
 } from "@/src/lib/churchActivityPosts";
+import { VideoPostFallbackPoster } from "@/src/components/homeFeed/VideoPostFallbackPoster";
 
 const GRID_GAP = 14;
 const CARD_HEIGHT = 236;
@@ -78,44 +79,67 @@ function MediaActivityCard({
   const title = churchActivityTitle(item);
   const preview = churchActivityBody(item);
   const source: ImageSourcePropType = { uri: backgroundUri };
+  const cardBody = (
+    <LinearGradient
+      colors={[
+        "rgba(0,0,0,0.12)",
+        "rgba(0,0,0,0.34)",
+        "rgba(0,0,0,0.72)",
+        "rgba(0,0,0,0.96)",
+      ]}
+      locations={[0, 0.34, 0.72, 1]}
+      style={s.mediaGradient}
+    >
+      {isVideo ? (
+        <View style={s.playBadge}>
+          <Ionicons name="play" size={15} color="#FFFFFF" />
+        </View>
+      ) : null}
+
+      <View style={s.cardBottom}>
+        <View style={s.labelPill}>
+          <Text style={s.labelPillText} numberOfLines={1}>
+            {label}
+          </Text>
+        </View>
+        <Text style={s.mediaTitle} numberOfLines={2}>
+          {title}
+        </Text>
+        {preview && preview !== title ? (
+          <Text style={s.mediaPreview} numberOfLines={2}>
+            {preview}
+          </Text>
+        ) : null}
+        <ActivityMetaRow item={item} />
+      </View>
+    </LinearGradient>
+  );
 
   return (
     <Pressable onPress={onPress} style={s.cardBase}>
-      <ImageBackground source={source} style={s.mediaFill} resizeMode="cover">
+      {backgroundUri ? (
+        <ImageBackground source={source} style={s.mediaFill} resizeMode="cover">
+          {cardBody}
+        </ImageBackground>
+      ) : isVideo ? (
+        <View style={s.mediaFill}>
+          <VideoPostFallbackPoster
+            variant="full"
+            title={title}
+            videoUrl={String(item?.videoUrl || item?.mediaUri || "").trim()}
+          />
+          {cardBody}
+        </View>
+      ) : (
         <LinearGradient
-          colors={[
-            "rgba(0,0,0,0.12)",
-            "rgba(0,0,0,0.34)",
-            "rgba(0,0,0,0.72)",
-            "rgba(0,0,0,0.96)",
-          ]}
-          locations={[0, 0.34, 0.72, 1]}
-          style={s.mediaGradient}
+          colors={["#141A28", "#0A0F18", "#05070D"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={s.mediaFill}
         >
-          {isVideo ? (
-            <View style={s.playBadge}>
-              <Ionicons name="play" size={15} color="#FFFFFF" />
-            </View>
-          ) : null}
-
-          <View style={s.cardBottom}>
-            <View style={s.labelPill}>
-              <Text style={s.labelPillText} numberOfLines={1}>
-                {label}
-              </Text>
-            </View>
-            <Text style={s.mediaTitle} numberOfLines={2}>
-              {title}
-            </Text>
-            {preview && preview !== title ? (
-              <Text style={s.mediaPreview} numberOfLines={2}>
-                {preview}
-              </Text>
-            ) : null}
-            <ActivityMetaRow item={item} />
-          </View>
+          {cardBody}
         </LinearGradient>
-      </ImageBackground>
+      )}
     </Pressable>
   );
 }

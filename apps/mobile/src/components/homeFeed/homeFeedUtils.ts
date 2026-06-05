@@ -13,12 +13,14 @@ import {
   parseSlotStartMs,
   resolveScheduleSlotVisualState,
 } from "@/src/lib/scheduleSlotUtils";
+import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
 
 export function homeFeedMediaUrl(raw: unknown) {
   const v = String(raw || "").trim();
   if (!v) return "";
+  if (isBrandedPosterUri(v)) return "";
   if (v.startsWith("data:image/")) return v;
   if (/^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
   return `${API_BASE}${v.startsWith("/") ? "" : "/"}${v}`;
@@ -725,6 +727,7 @@ export function isValidVideoPosterUri(posterUri: string, videoUri: string) {
   const poster = String(posterUri || "").trim();
   const video = String(videoUri || "").trim();
   if (!poster) return false;
+  if (isBrandedPosterUri(poster)) return false;
   if (video && poster === video) return false;
   if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(poster)) return false;
   return true;

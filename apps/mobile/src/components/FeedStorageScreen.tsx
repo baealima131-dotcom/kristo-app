@@ -26,6 +26,8 @@ import {
   activityIsVideo,
   formatActivityWhen,
 } from "@/src/lib/churchActivityPosts";
+import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
+import { FeedVideoPosterImage } from "@/src/components/homeFeed/VideoPostFallbackPoster";
 import {
   canDeleteStoragePosts,
   canPreviewStoragePost,
@@ -148,7 +150,7 @@ function StorageMediaPreviewModal({
         <View style={[previewStyles.content, { maxHeight: height - insets.top - insets.bottom - 80 }]}>
           {isVideo && videoUri ? (
             <StorageVideoPreview uri={videoUri} />
-          ) : imageUri ? (
+          ) : imageUri && !isBrandedPosterUri(imageUri) ? (
             <Image source={{ uri: imageUri }} style={previewStyles.image} resizeMode="contain" />
           ) : (
             <View style={previewStyles.emptyPreview}>
@@ -224,9 +226,16 @@ function StoragePostCard({
           disabled={!canPreview}
           style={({ pressed }) => [s.thumbWrap, pressed && canPreview ? s.pressed : null]}
         >
-          {thumbnailUri ? (
+          {thumbnailUri && !isBrandedPosterUri(thumbnailUri) ? (
             <>
-              <Image source={{ uri: thumbnailUri }} style={s.thumbImage} resizeMode="cover" />
+              <FeedVideoPosterImage
+                uri={thumbnailUri}
+                style={s.thumbImage}
+                resizeMode="cover"
+                title={title}
+                videoUrl={isVideo ? getStoragePreviewVideoUri(item) : ""}
+                mediaStatus={mediaStatus}
+              />
               {isVideo ? (
                 <View style={s.videoOverlay}>
                   <Ionicons name="play" size={18} color="#FFFFFF" />

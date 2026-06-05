@@ -1,5 +1,5 @@
 import React, { memo, useMemo } from "react";
-import { Image, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SimpleFeedVideo } from "./SimpleFeedVideo";
@@ -21,7 +21,7 @@ import {
   resolveVideoUri,
   isValidVideoPosterUri,
 } from "./homeFeedUtils";
-import { VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
+import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
 
 type Props = {
@@ -180,7 +180,17 @@ function InactiveVideoPoster({
   videoUri: string;
 }) {
   if (isValidVideoPosterUri(posterUri, videoUri)) {
-    return <Image source={{ uri: posterUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />;
+    return (
+      <FeedVideoPosterImage
+        uri={posterUri}
+        style={StyleSheet.absoluteFillObject}
+        resizeMode="cover"
+        postId={postId}
+        title={title}
+        videoUrl={videoUri}
+        mediaStatus={mediaStatus}
+      />
+    );
   }
   return (
     <VideoPostFallbackPoster

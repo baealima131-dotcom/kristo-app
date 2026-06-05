@@ -31,6 +31,7 @@ export type ActivityGridItem = {
 export function normalizeActivityMediaUrl(uri?: string, apiBase?: string) {
   const raw = String(uri || "").trim();
   if (!raw) return "";
+  if (raw.startsWith("kristo:")) return "";
   if (/^(https?|file:|data:)/i.test(raw)) return raw;
 
   const base = String(apiBase || process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
@@ -83,7 +84,9 @@ export function activityCardBackgroundUri(item: any) {
   if (imageUri) return imageUri;
 
   if (activityIsVideo(item)) {
-    return String(item?.posterUri || item?.thumbnailUri || item?.thumbnailUrl || "").trim();
+    const poster = String(item?.posterUri || item?.thumbnailUri || item?.thumbnailUrl || "").trim();
+    if (poster.startsWith("kristo:")) return "";
+    return poster;
   }
 
   return "";

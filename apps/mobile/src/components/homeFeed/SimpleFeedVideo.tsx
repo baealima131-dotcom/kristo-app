@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Image, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEvent } from "expo";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
@@ -17,7 +17,7 @@ import {
 } from "@/src/lib/homeFeedVideoReadiness";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
 import { isValidVideoPosterUri } from "./homeFeedUtils";
-import { VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
+import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
 
 type Props = {
   postId?: string;
@@ -348,7 +348,15 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       />
       {showPosterOverlay ? (
         <View style={styles.overlay} pointerEvents="none">
-          <Image source={{ uri: poster }} style={styles.overlayFill} resizeMode="cover" />
+          <FeedVideoPosterImage
+            uri={poster}
+            style={styles.overlayFill}
+            resizeMode="cover"
+            postId={postId}
+            title={title}
+            videoUrl={uri}
+            mediaStatus={mediaStatus}
+          />
         </View>
       ) : null}
       {showGoldFallback ? (

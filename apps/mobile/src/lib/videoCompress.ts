@@ -11,6 +11,9 @@ export type VideoCompressResult = {
 /** Skip remux/compress for tiny clips (already negligible upload size). */
 const MIN_COMPRESS_BYTES = 200 * 1024;
 
+/** Only keep compressed output when it saves at least 10% vs original. */
+const MAX_COMPRESSED_TO_ORIGINAL_RATIO = 0.9;
+
 /** V1 iOS target: 720p long edge, ~800 kbps video (+ AAC audio). */
 const TARGET_MAX_SIZE = 720;
 const TARGET_BITRATE = 800_000;
@@ -147,6 +150,27 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
     }
 
     const ratio = compressionRatio(originalBytes, compressedBytes);
+    const savesEnough =
+      compressedBytes < originalBytes &&
+      compressedBytes <= originalBytes * MAX_COMPRESSED_TO_ORIGINAL_RATIO;
+
+    if (!savesEnough) {
+      console.log("KRISTO_VIDEO_COMPRESS_DISCARDED_LARGER", {
+        originalBytes,
+        compressedBytes,
+        ratio,
+        savedBytes: 0,
+        outputUri,
+      });
+      return {
+        uri: cleanUri,
+        originalBytes,
+        compressedBytes: originalBytes,
+        skipped: true,
+        reason:
+          compressedBytes >= originalBytes ? "larger-than-original" : "insufficient-savings",
+      };
+    }
 
     console.log("KRISTO_VIDEO_COMPRESS_DONE", {
       originalBytes,

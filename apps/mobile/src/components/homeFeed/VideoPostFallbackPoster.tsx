@@ -1,7 +1,8 @@
 import React, { memo, useEffect } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Image, ImageResizeMode, ImageStyle, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 
 const GOLD = "#F4D06F";
 
@@ -71,6 +72,40 @@ export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
     </View>
   );
 });
+
+type FeedVideoPosterImageProps = {
+  uri: string;
+  style?: ImageStyle;
+  resizeMode?: ImageResizeMode;
+  postId?: string;
+  title?: string;
+  videoUrl?: string;
+  mediaStatus?: string;
+};
+
+export function FeedVideoPosterImage({
+  uri,
+  style,
+  resizeMode = "cover",
+  postId = "",
+  title = "",
+  videoUrl = "",
+  mediaStatus = "",
+}: FeedVideoPosterImageProps) {
+  if (isBrandedPosterUri(uri)) {
+    return (
+      <VideoPostFallbackPoster
+        variant="full"
+        postId={postId}
+        title={title}
+        videoUrl={videoUrl}
+        mediaStatus={mediaStatus}
+      />
+    );
+  }
+
+  return <Image source={{ uri }} style={style} resizeMode={resizeMode} />;
+}
 
 const styles = StyleSheet.create({
   content: {

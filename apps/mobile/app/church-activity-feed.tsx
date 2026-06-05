@@ -41,6 +41,8 @@ import {
   stampChurchFeedScope,
   type ChurchActivityFeedMode,
 } from "@/src/lib/churchActivityPosts";
+import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
+import { VideoPostFallbackPoster } from "@/src/components/homeFeed/VideoPostFallbackPoster";
 
 function mediaUrl(uri?: string) {
   return normalizeActivityMediaUrl(uri);
@@ -363,11 +365,13 @@ const ActivityFeedVideo = memo(function ActivityFeedVideo({
   }, [player, shouldPlay]);
 
   const poster = String(posterUri || "").trim();
-  const showPoster = !!poster && !shouldPlay;
+  const showPoster = !!poster && !shouldPlay && !isBrandedPosterUri(poster);
 
   return (
     <View style={StyleSheet.absoluteFillObject}>
-      {showPoster ? (
+      {isBrandedPosterUri(poster) && !shouldPlay ? (
+        <VideoPostFallbackPoster variant="full" videoUrl={uri} />
+      ) : showPoster ? (
         <Image source={{ uri: poster }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
       ) : null}
       <VideoView player={player} style={StyleSheet.absoluteFillObject} contentFit="cover" nativeControls={false} />

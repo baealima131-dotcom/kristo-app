@@ -405,6 +405,16 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
       compressedBytes: compressed.compressedBytes,
       uploadUri,
     });
+  } else if (
+    compressed.reason === "larger-than-original" ||
+    compressed.reason === "insufficient-savings"
+  ) {
+    console.log("KRISTO_VIDEO_UPLOAD_USING_ORIGINAL", {
+      jobId,
+      originalBytes: compressed.originalBytes,
+      reason: compressed.reason,
+      uploadUri,
+    });
   }
   const uploadFileName = fileNameFromUri(uploadUri, job.fileName);
   const fileSize =

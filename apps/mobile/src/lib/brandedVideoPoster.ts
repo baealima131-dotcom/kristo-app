@@ -1,8 +1,11 @@
 export const BRANDED_VIDEO_POSTER_URI = "kristo:branded-poster";
 
+export function isBrandedPosterUri(uri?: string | null) {
+  return typeof uri === "string" && uri.startsWith("kristo:");
+}
+
 export function isBrandedVideoPosterUri(uri: unknown): boolean {
-  const value = String(uri || "").trim();
-  return value === BRANDED_VIDEO_POSTER_URI;
+  return isBrandedPosterUri(String(uri || "").trim() || null);
 }
 
 export function brandedVideoPosterPayload() {
