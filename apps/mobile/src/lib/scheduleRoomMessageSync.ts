@@ -1,4 +1,5 @@
 import {
+  clearRoomMessagesCacheAfterDelete,
   invalidateRoomMessagesCache,
 } from "@/src/lib/churchMediaRoomCache";
 import {
@@ -6,6 +7,7 @@ import {
   resetRoomMessagesRefreshState,
 } from "@/src/lib/churchMediaRoomRefresh";
 import { removeAssignmentCardsFromThreads } from "@/src/lib/messagesStore";
+import { markRoomMessagesForcePollAfterDelete } from "@/src/lib/roomMessagesDeletePoll";
 
 export type ScheduleRoomDeletePayload = {
   roomIds?: string[];
@@ -20,6 +22,8 @@ export type ScheduleRoomDeletePayload = {
 };
 
 const deleteListeners = new Set<(payload: ScheduleRoomDeletePayload) => void>();
+
+export { consumeRoomMessagesForcePollAfterDelete } from "@/src/lib/roomMessagesDeletePoll";
 
 export function subscribeScheduleRoomDeleteInvalidation(
   listener: (payload: ScheduleRoomDeletePayload) => void
@@ -68,10 +72,39 @@ export function applyScheduleDeleteToLocalRoom(
     reason: args.reason,
   });
 
-  const removedCount = removeAssignmentCardsFromThreads(threadIds, {
+  let mode = "cardIds";
+  let purgeResult = removeAssignmentCardsFromThreads(threadIds, {
     cardIds,
     clearAllAssignmentCards: args.clearAllAssignmentCards,
     scheduleBatchId: args.scheduleBatchId,
+  });
+
+  if (
+    purgeResult.removedCount === 0 &&
+    (args.clearAllAssignmentCards || cardIds.length > 0 || args.scheduleBatchId)
+  ) {
+    mode = "clearAllAssignmentCards-fallback";
+    purgeResult = removeAssignmentCardsFromThreads(
+      [CHURCH_MEDIA_ROOM_ID, ...threadIds],
+      { clearAllAssignmentCards: true }
+    );
+  }
+
+  if (args.clearAllAssignmentCards) {
+    mode = "clearAllAssignmentCards";
+    const churchRoomPurge = removeAssignmentCardsFromThreads([CHURCH_MEDIA_ROOM_ID], {
+      clearAllAssignmentCards: true,
+    });
+    purgeResult = {
+      removedCount: purgeResult.removedCount + churchRoomPurge.removedCount,
+      removedIds: [...purgeResult.removedIds, ...churchRoomPurge.removedIds],
+    };
+  }
+
+  console.log("KRISTO_SCHEDULE_DELETE_PURGE_MATCHES", {
+    count: purgeResult.removedCount,
+    ids: purgeResult.removedIds,
+    mode,
   });
 
   const churchId = String(args.churchId || "").trim();
@@ -88,13 +121,15 @@ export function applyScheduleDeleteToLocalRoom(
     for (const roomId of roomIds) {
       invalidateRoomMessagesCache(churchId, userId, roomId);
       resetRoomMessagesRefreshState(churchId, userId, roomId);
+      markRoomMessagesForcePollAfterDelete(roomId);
+      void clearRoomMessagesCacheAfterDelete(churchId, userId, roomId);
     }
 
     console.log("KRISTO_ROOM_MESSAGES_CACHE_INVALIDATED_AFTER_DELETE", {
       churchId,
       userId,
       roomIds,
-      removedCount,
+      removedCount: purgeResult.removedCount,
       reason: args.reason,
     });
   }
@@ -108,5 +143,10 @@ export function applyScheduleDeleteToLocalRoom(
 
   notifyScheduleRoomDeleteInvalidation(payload);
 
-  return { removedCount, threadIds, roomIds };
+  return {
+    removedCount: purgeResult.removedCount,
+    removedIds: purgeResult.removedIds,
+    threadIds,
+    roomIds,
+  };
 }

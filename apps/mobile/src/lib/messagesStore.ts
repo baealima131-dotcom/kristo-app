@@ -675,12 +675,19 @@ function shouldRemoveAssignmentCard(
   if (opts?.clearAllAssignmentCards) return true;
 
   const card = m.card as AssignmentCardPayload & Record<string, unknown>;
-  const cardId = String(card.cardId || m.id || "").trim();
+  const cardId = String(card.cardId || "").trim();
   const messageId = String(m.id || "").trim();
   const cardIdSet = opts?.cardIds;
 
   if (cardIdSet && cardIdSet.size > 0) {
     if (cardIdSet.has(cardId) || cardIdSet.has(messageId)) return true;
+
+    const slotLabel = String((card as any).slotLabel || "").trim();
+    const slotNumber = String((card as any).slotNumber || "").trim();
+    for (const id of cardIdSet) {
+      if (slotLabel && id.includes(slotLabel)) return true;
+      if (slotNumber && id.includes(slotNumber)) return true;
+    }
   }
 
   const scheduleBatchId = String(opts?.scheduleBatchId || "").trim();
@@ -701,8 +708,8 @@ export function removeAssignmentCardsFromThread(
     clearAllAssignmentCards?: boolean;
     scheduleBatchId?: string;
   }
-): number {
-  if (!threadId) return 0;
+): { removedCount: number; removedIds: string[] } {
+  if (!threadId) return { removedCount: 0, removedIds: [] };
 
   const arr = state.messages[threadId] || [];
   const cardIdSet = new Set(
@@ -713,25 +720,29 @@ export function removeAssignmentCardsFromThread(
     cardIdSet.size > 0 ||
     !!String(opts?.scheduleBatchId || "").trim();
 
-  if (!hasFilter) return 0;
+  if (!hasFilter) return { removedCount: 0, removedIds: [] };
 
-  const next = arr.filter(
-    (m) =>
-      !shouldRemoveAssignmentCard(m, {
-        cardIds: cardIdSet,
-        clearAllAssignmentCards: opts?.clearAllAssignmentCards,
-        scheduleBatchId: opts?.scheduleBatchId,
-      })
-  );
+  const removedIds: string[] = [];
+  const next = arr.filter((m) => {
+    const shouldRemove = shouldRemoveAssignmentCard(m, {
+      cardIds: cardIdSet,
+      clearAllAssignmentCards: opts?.clearAllAssignmentCards,
+      scheduleBatchId: opts?.scheduleBatchId,
+    });
+    if (shouldRemove) {
+      removedIds.push(String(m.id || (m.card as any)?.cardId || ""));
+    }
+    return !shouldRemove;
+  });
 
-  const removed = arr.length - next.length;
-  if (removed > 0) {
+  const removedCount = arr.length - next.length;
+  if (removedCount > 0) {
     state.messages[threadId] = next;
     persist();
     emit();
   }
 
-  return removed;
+  return { removedCount, removedIds: removedIds.filter(Boolean) };
 }
 
 export function removeAssignmentCardsFromThreads(
@@ -741,12 +752,17 @@ export function removeAssignmentCardsFromThreads(
     clearAllAssignmentCards?: boolean;
     scheduleBatchId?: string;
   }
-): number {
-  let total = 0;
+): { removedCount: number; removedIds: string[] } {
+  const removedIds: string[] = [];
+  let removedCount = 0;
+
   for (const threadId of threadIds) {
-    total += removeAssignmentCardsFromThread(threadId, opts);
+    const result = removeAssignmentCardsFromThread(threadId, opts);
+    removedCount += result.removedCount;
+    removedIds.push(...result.removedIds);
   }
-  return total;
+
+  return { removedCount, removedIds };
 }
 
 export function useThread(threadId: string): { messages: MsgItem[]; meta?: ThreadMeta } {

@@ -113,7 +113,17 @@ export async function refreshRoomMessagesIfNeeded(args: {
     return { skipped: true, reason: "cache-hit", rawRows: [] };
   }
 
-  if (!args.force && args.cacheFresh) {
+  const { hasRoomMessagesForcePollAfterDelete, consumeRoomMessagesForcePollAfterDelete } =
+    await import("@/src/lib/roomMessagesDeletePoll");
+  const forceAfterDelete = hasRoomMessagesForcePollAfterDelete(roomId);
+  const force = !!args.force || forceAfterDelete;
+
+  if (forceAfterDelete) {
+    consumeRoomMessagesForcePollAfterDelete(roomId);
+    console.log("KRISTO_ROOM_MESSAGES_POLL_FORCE_AFTER_DELETE", { roomId });
+  }
+
+  if (!force && args.cacheFresh) {
     const peek = peekRoomMessagesCache(churchId, userId, roomId);
     if (peek) {
       logMediaRoomCacheHit("/api/church/room-messages", { roomId, source: args.source });
@@ -133,7 +143,7 @@ export async function refreshRoomMessagesIfNeeded(args: {
 
   const cached = peekRoomMessagesCache(churchId, userId, roomId);
   const since = Date.now() - Number(roomMessagesLastAt.get(key) || cached?.updatedAt || 0);
-  if (!args.force && cached && (since < CHURCH_MEDIA_ROOM_REFRESH_MS || args.cacheFresh)) {
+  if (!force && cached && (since < CHURCH_MEDIA_ROOM_REFRESH_MS || args.cacheFresh)) {
     logMediaRoomCacheHit("/api/church/room-messages", { roomId, sinceLastMs: since, source: args.source });
     logMediaRoomRefreshSkipped("/api/church/room-messages", "recent", { roomId, sinceLastMs: since, source: args.source });
     return { skipped: true, reason: "recent", rawRows: cached.rawRows as any[] };
@@ -145,7 +155,7 @@ export async function refreshRoomMessagesIfNeeded(args: {
       { headers: args.headers },
       {
         screen: "ChurchMediaRoomRefresh",
-        throttleMs: args.force ? 0 : CHURCH_MEDIA_ROOM_REFRESH_MS,
+        throttleMs: force ? 0 : CHURCH_MEDIA_ROOM_REFRESH_MS,
       }
     );
 
@@ -163,7 +173,7 @@ export async function refreshRoomMessagesIfNeeded(args: {
     roomMessagesLastAt.set(key, Date.now());
 
     return {
-      skipped: Boolean(cached) && sig === prevSig && !args.force,
+      skipped: Boolean(cached) && sig === prevSig && !force,
       reason: cached && sig === prevSig ? "cache-hit" : undefined,
       rawRows: rows,
     };

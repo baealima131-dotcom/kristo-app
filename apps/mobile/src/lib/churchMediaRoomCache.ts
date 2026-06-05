@@ -122,6 +122,34 @@ export function invalidateRoomMessagesCache(churchId: string, userId: string, ro
   void AsyncStorage.removeItem(`${ROOM_MESSAGES_PREFIX}${key}`);
 }
 
+/** Wipe cached rows so cache-fresh polls cannot resurrect deleted assignment cards. */
+export async function clearRoomMessagesCacheAfterDelete(
+  churchId: string,
+  userId: string,
+  roomId: string
+) {
+  const cid = String(churchId || "").trim();
+  const uid = String(userId || "").trim();
+  const rid = String(roomId || "").trim();
+  if (!cid || !uid || !rid) return;
+
+  const key = roomMessagesKey(cid, uid, rid);
+  const cleared: RoomMessagesCachePayload = {
+    churchId: cid,
+    userId: uid,
+    roomId: rid,
+    rawRows: [],
+    updatedAt: 0,
+  };
+
+  roomMessagesMemory.set(key, cleared);
+  await AsyncStorage.setItem(`${ROOM_MESSAGES_PREFIX}${key}`, JSON.stringify(cleared));
+
+  console.log("KRISTO_ROOM_MESSAGES_CACHE_CLEARED_AFTER_DELETE", {
+    roomId: rid,
+  });
+}
+
 export function peekLiveControlMembersCache(churchId: string, userId: string, roomId: string) {
   return liveControlMemory.get(liveControlKey(churchId, userId, roomId)) || null;
 }

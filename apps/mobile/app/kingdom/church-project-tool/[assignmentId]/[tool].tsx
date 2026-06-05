@@ -46,6 +46,7 @@ import {
 } from "@/src/lib/churchSubscription";
 import { clearThreadMessages } from "@/src/lib/messagesStore";
 import { applyScheduleDeleteToLocalRoom } from "@/src/lib/scheduleRoomMessageSync";
+import { resolveScheduleSlotScriptForSaveForSave } from "@/src/lib/slotTopicUtils";
 import {
   configureChurchProjectElection,
   getChurchProjectElectionState,
@@ -75,71 +76,6 @@ const EMERALD = "#34D399";
 const PURPLE = "#B784FF";
 
 const RED = "#FF7D84";
-
-function isPlaceholderScheduleScript(value: string) {
-  const v = String(value || "").trim();
-  if (!v) return true;
-  return /^(no topic|ready to execute)$/i.test(v);
-}
-
-function resolveScheduleSlotScript(
-  slot: any,
-  parentTopic: string,
-  opts?: {
-    slotNumber?: string | number;
-    title?: string;
-    log?: boolean;
-  }
-): { script: string; source: string } {
-  const scheduleTopic = String(parentTopic || "").trim();
-  const title = String(opts?.title || slot?.name || slot?.title || "Schedule slot").trim();
-  const roleLabel = String(slot?.roleLabel || slot?.role || "").trim();
-
-  const candidates: Array<{ source: string; value: string }> = [
-    { source: "slot.topic", value: String(slot?.topic || "").trim() },
-    { source: "slot.assignmentTopic", value: String(slot?.assignmentTopic || "").trim() },
-    { source: "slot.slotTopic", value: String(slot?.slotTopic || "").trim() },
-    { source: "slot.description", value: String(slot?.description || "").trim() },
-    { source: "slot.task", value: String(slot?.task || "").trim() },
-    { source: "slot.roleLabel", value: roleLabel },
-    { source: "slot.role", value: String(slot?.role || "").trim() },
-    { source: "slot.title", value: String(slot?.title || "").trim() },
-    { source: "slot.name", value: String(slot?.name || "").trim() },
-    { source: "scheduleTopic", value: scheduleTopic },
-  ];
-
-  for (const { source, value } of candidates) {
-    if (isPlaceholderScheduleScript(value)) continue;
-
-    if (opts?.log !== false) {
-      console.log("KRISTO_SCHEDULE_SLOT_SCRIPT_SAVE", {
-        slotNumber: opts?.slotNumber ?? slot?.slotNumber ?? slot?.slotLabel ?? "",
-        title,
-        script: value,
-        source,
-        parentTopic: scheduleTopic,
-      });
-    }
-
-    return { script: value, source };
-  }
-
-  const fallback = scheduleTopic || title || "No topic";
-  if (opts?.log !== false) {
-    console.log("KRISTO_SCHEDULE_SLOT_SCRIPT_SAVE", {
-      slotNumber: opts?.slotNumber ?? slot?.slotNumber ?? slot?.slotLabel ?? "",
-      title,
-      script: fallback,
-      source: scheduleTopic ? "scheduleTopic" : "slot.title",
-      parentTopic: scheduleTopic,
-    });
-  }
-
-  return {
-    script: fallback,
-    source: scheduleTopic ? "scheduleTopic" : "slot.title",
-  };
-}
 
 type ToolRequirement = "member" | "leader" | "tlmc";
 
@@ -2486,7 +2422,7 @@ async function publishScheduleSlot(slot: any) {
       meetingTopicChoice ||
       ""
     ).trim();
-    const { script: resolvedScript } = resolveScheduleSlotScript(slot, parentTopic, {
+    const { script: resolvedScript } = resolveScheduleSlotScriptForSave(slot, parentTopic, {
       slotNumber,
       title: String(slot?.name || "Schedule slot"),
     });
@@ -3275,7 +3211,7 @@ async function publishScheduleSlot(slot: any) {
             ? partLabel.trim()
             : `${row.title}${partLabel}`;
         const slotTask = `${slotName} • ${scheduleType}`;
-        const { script: slotScript } = resolveScheduleSlotScript(
+        const { script: slotScript } = resolveScheduleSlotScriptForSave(
           {
             name: slotName,
             title: slotName,
@@ -3670,7 +3606,7 @@ router.replace({
           : index === scheduleSpeakerSlots.length - 1
             ? "Main"
             : "Support";
-      const { script: slotScript } = resolveScheduleSlotScript(
+      const { script: slotScript } = resolveScheduleSlotScriptForSave(
         {
           ...slot,
           name: slotName,

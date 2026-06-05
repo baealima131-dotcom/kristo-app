@@ -81,7 +81,11 @@ import {
   refreshRoomMessagesIfNeeded,
   resetRoomMessagesRefreshState,
 } from "@/src/lib/churchMediaRoomRefresh";
-import { subscribeScheduleRoomDeleteInvalidation } from "@/src/lib/scheduleRoomMessageSync";
+import {
+  consumeRoomMessagesForcePollAfterDelete,
+  subscribeScheduleRoomDeleteInvalidation,
+} from "@/src/lib/scheduleRoomMessageSync";
+import { resolveRealSlotTopic } from "@/src/lib/slotTopicUtils";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
@@ -619,79 +623,6 @@ function PersonRow({ item }: { item: MinistryPerson }) {
   );
 }
 
-function isPlaceholderSlotTopic(value: string) {
-  const v = String(value || "").trim();
-  if (!v) return true;
-  return /^(no topic|ready to execute)$/i.test(v);
-}
-
-function extractSlotReviewDetail(card: any): string {
-  const notes = Array.isArray(card?.notes) ? card.notes : [];
-  const hit = notes.find((x: any) => /^review detail:/i.test(String(x || "").trim()));
-  if (!hit) return "";
-  return String(hit).replace(/^review detail:\s*/i, "").trim();
-}
-
-function resolveSlotTopicForCard(card: any): {
-  resolvedTopic: string;
-  source: string;
-  parentTopic: string;
-  rawSlotKeys: string[];
-} {
-  const slot = card?.slot && typeof card.slot === "object" ? card.slot : card;
-  const parentTopic = String(
-    card?.parentTopic ||
-    card?.scheduleTopic ||
-    card?.meetingTopic ||
-    card?.meetingPlanTopic ||
-    ""
-  ).trim();
-  const sharedScript = String(card?.script || "").trim();
-  const effectiveParent = parentTopic || sharedScript;
-  const reviewDetail = extractSlotReviewDetail(card);
-
-  const rawSlotKeys = Object.keys(slot || {}).filter((key) =>
-    /topic|script|task|description|title|role|assignment/i.test(key)
-  );
-
-  const candidates: Array<{ source: string; value: string }> = [
-    { source: "slot.topic", value: String(slot?.topic || "").trim() },
-    { source: "card.topic", value: String(card?.topic || "").trim() },
-    { source: "slot.assignmentTopic", value: String(slot?.assignmentTopic || "").trim() },
-    { source: "card.assignmentTopic", value: String(card?.assignmentTopic || "").trim() },
-    { source: "slot.slotTopic", value: String(slot?.slotTopic || "").trim() },
-    { source: "card.slotTopic", value: String(card?.slotTopic || "").trim() },
-    { source: "slot.description", value: String(slot?.description || "").trim() },
-    { source: "card.description", value: String(card?.description || "").trim() },
-    { source: "card.task", value: String(card?.task || "").trim() },
-    { source: "card.roleLabel", value: String(card?.roleLabel || "").trim() },
-    { source: "card.role", value: String(card?.role || "").trim() },
-    { source: "notes.reviewDetail", value: reviewDetail },
-    { source: "card.title", value: String(card?.title || "").trim() },
-  ];
-
-  for (const { source, value } of candidates) {
-    if (isPlaceholderSlotTopic(value)) continue;
-    if (effectiveParent && value.toLowerCase() === effectiveParent.toLowerCase()) continue;
-    return {
-      resolvedTopic: value,
-      source,
-      parentTopic: effectiveParent,
-      rawSlotKeys,
-    };
-  }
-
-  const fallback =
-    effectiveParent && !isPlaceholderSlotTopic(effectiveParent) ? effectiveParent : "";
-
-  return {
-    resolvedTopic: fallback,
-    source: fallback ? (parentTopic ? "parentTopic" : "card.script") : "none",
-    parentTopic: effectiveParent,
-    rawSlotKeys,
-  };
-}
-
 function renderAssignmentCardBody(
   m: MsgItem,
   opts?: {
@@ -729,7 +660,7 @@ function renderAssignmentCardBody(
   const cleanTitle = String(card.title || "").trim();
   const cleanTask = String(card.task || "").trim();
 
-  const slotTopicResolved = resolveSlotTopicForCard(card);
+  const slotTopicResolved = resolveRealSlotTopic(card);
   const slotNumber = String(
     (card as any)?.slotNumber || (card as any)?.slotLabel || ""
   ).trim();
@@ -740,6 +671,7 @@ function renderAssignmentCardBody(
     resolvedTopic: slotTopicResolved.resolvedTopic,
     source: slotTopicResolved.source,
     parentTopic: slotTopicResolved.parentTopic,
+    meetingType: slotTopicResolved.meetingType,
     rawSlotKeys: slotTopicResolved.rawSlotKeys,
   });
 
@@ -807,13 +739,7 @@ function renderAssignmentCardBody(
     };
   })();
 
-  const normalizedScript =
-    slotTopicResolved.resolvedTopic &&
-    slotTopicResolved.resolvedTopic.toLowerCase() !== cleanTitle.toLowerCase() &&
-    !isPlaceholderSlotTopic(slotTopicResolved.resolvedTopic) &&
-    !/^review detail:/i.test(slotTopicResolved.resolvedTopic)
-      ? slotTopicResolved.resolvedTopic
-      : "";
+  const normalizedScript = slotTopicResolved.resolvedTopic || "";
 
   const roleLine = String(card.roleLabel || card.subtitle || "").trim();
   const timeLine = String((card as any).timeLabel || "").trim();
@@ -3238,6 +3164,7 @@ export default function MessageThreadScreen() {
   const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
   const roomMessagesSigRef = useRef("");
   const roomMessagesInflightRef = useRef(false);
+  const allowEmptyRoomOverwriteRef = useRef(false);
   const memberAvatarByUserIdRef = useRef<Map<string, string>>(new Map());
   const reloadRoomMessagesRef = useRef<((opts?: { force?: boolean }) => Promise<boolean>) | null>(null);
   const [composerFocused, setComposerFocused] = useState(false);
@@ -3301,8 +3228,11 @@ export default function MessageThreadScreen() {
       if (sig === roomMessagesSigRef.current) return false;
 
       roomMessagesSigRef.current = sig;
-      if (merged.length > 0 || messages.length === 0) {
+      if (merged.length > 0 || messages.length === 0 || allowEmptyRoomOverwriteRef.current) {
         setThreadMessages(threadId, merged, { title: roomTitle, sub: String(sub || "") });
+        if (allowEmptyRoomOverwriteRef.current && merged.length === 0) {
+          allowEmptyRoomOverwriteRef.current = false;
+        }
         console.log("KRISTO_ROOM_MESSAGES_BACKGROUND_REFRESH", {
           roomId: backendRoomId,
           count: merged.length,
@@ -3490,8 +3420,20 @@ export default function MessageThreadScreen() {
     let alive = true;
 
     async function loadBackendRoomMessages(opts?: { force?: boolean }): Promise<boolean> {
-      const force = !!opts?.force;
       const roomId = backendRoomId;
+      const forceAfterDelete =
+        consumeRoomMessagesForcePollAfterDelete(CHURCH_MEDIA_ROOM_ID) ||
+        consumeRoomMessagesForcePollAfterDelete(String(roomId || ""));
+      const force = !!opts?.force || forceAfterDelete;
+
+      if (forceAfterDelete) {
+        mediaRoomCacheFreshRef.current = false;
+        roomMessagesSigRef.current = "";
+        allowEmptyRoomOverwriteRef.current = true;
+        console.log("KRISTO_ROOM_MESSAGES_POLL_FORCE_AFTER_DELETE", {
+          roomId: roomId || CHURCH_MEDIA_ROOM_ID,
+        });
+      }
       if (!roomId) return false;
 
       const headers: any = getKristoHeaders();
@@ -3663,6 +3605,7 @@ export default function MessageThreadScreen() {
 
       mediaRoomCacheFreshRef.current = false;
       roomMessagesSigRef.current = "";
+      allowEmptyRoomOverwriteRef.current = true;
 
       console.log("KRISTO_ROOM_MESSAGES_FORCE_RELOAD_AFTER_DELETE", {
         threadId,
