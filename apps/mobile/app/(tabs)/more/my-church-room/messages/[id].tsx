@@ -2612,6 +2612,31 @@ export default function MessageThreadScreen() {
   const isMessagingDisabledV1 =
     isChurchRoomThread || isDirectOrPrivateRoom || hasDirectOrPrivateFlag;
 
+  // Precise roomKind sent to the backend so server-side V1 enforcement does not
+  // depend on the frontend. Never send a generic "chat" for a disabled room.
+  const resolvedSendRoomKind = (() => {
+    const known = new Set([
+      "ministry",
+      "assignment",
+      "church-live-control",
+      "church-room",
+      "church-thread",
+      "thread",
+      "direct",
+      "dm",
+      "private",
+    ]);
+    if (known.has(normalizedRoomKind)) return normalizedRoomKind;
+    if (isAssignmentThread) return "church-live-control";
+    if (isMinistryThread) return "ministry";
+    if (isChurchRoomThread) return "church-room";
+    if (isDirectOrPrivateRoom) return "direct";
+    // Any remaining disabled room (e.g. flagged church-thread/private without an
+    // explicit roomKind) must still report a disabled kind to the backend.
+    if (isMessagingDisabledV1) return "church-room";
+    return "chat";
+  })();
+
   const routeMinistryId = String((params as any)?.ministryId || "").trim();
 
   const resolvedMinistryId =
@@ -4104,7 +4129,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
         "/api/church/room-messages",
         {
           roomId,
-          roomKind: isAssignmentThread ? "assignment" : isMinistryThread ? "ministry" : "chat",
+          roomKind: resolvedSendRoomKind,
           senderName,
           text,
           attachments,
