@@ -4,7 +4,11 @@
  * Local dev fallback: data/memberships.json
  */
 
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  readCoreJsonFile as readJsonFile,
+  updateCoreJsonFile as updateJsonFile,
+} from "@/app/api/_lib/store/coreDb";
+import { updateMinistryJsonFile } from "@/app/api/_lib/store/ministryDb";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
 import {
   dbAddActiveMember,
@@ -343,7 +347,7 @@ export async function leaveActiveMembership(
   const activeMembership = (result as { ok: true; membership?: ChurchMembership }).membership;
   if (activeMembership?.churchId) {
     const leftChurchId = String(activeMembership.churchId || "");
-    await updateJsonFile<any[]>(
+    await updateMinistryJsonFile<any[]>(
       "ministry-members.json",
       (current) => {
         const list = Array.isArray(current) ? current : [];

@@ -1,4 +1,7 @@
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  readCoreJsonFile as readJsonFile,
+  updateCoreJsonFile as updateJsonFile,
+} from "@/app/api/_lib/store/coreDb";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
 import {
   dbGetChurchById,

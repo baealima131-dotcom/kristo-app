@@ -1,4 +1,7 @@
-import { readJsonFile, writeJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  readCoreJsonFile as readJsonFile,
+  writeCoreJsonFile as writeJsonFile,
+} from "@/app/api/_lib/store/coreDb";
 import {
   dbFindProfileByUserCode,
   dbGetProfile,

@@ -8,6 +8,7 @@ import { guard } from "@/app/api/_lib/rbac";
 import { readJsonFile } from "@/app/api/_lib/store/fs";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
 import { readMinistryJsonFile } from "@/app/api/_lib/store/ministryDb";
+import { getMembershipsForUser } from "@/app/api/_lib/memberships";
 
 export const runtime = "nodejs";
 
@@ -83,11 +84,20 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ userId: str
   // viewer info (role is useful for badges)
   const viewer = ctxOrRes.viewer;
 
-  // Best-effort reads (won't crash if files differ)
-  const memberships = await tryReadDevJson<any>(
-    ["memberships.json", "membership.json", "church-memberships.json"],
-    []
-  );
+  // Production: read memberships from durable storage (Postgres kristo_memberships
+  // via the memberships service). Local/dev keeps the best-effort .kristo-dev / fs
+  // fallback so existing workflows are unchanged.
+  const durableMemberships = hasDurableStore()
+    ? await getMembershipsForUser(targetUserId).catch(() => [])
+    : null;
+
+  const memberships =
+    durableMemberships && durableMemberships.length
+      ? durableMemberships
+      : await tryReadDevJson<any>(
+          ["memberships.json", "membership.json", "church-memberships.json"],
+          []
+        );
 
   // Production: read ministry members from durable storage. Local/dev keeps the
   // best-effort .kristo-dev / fs fallback so existing workflows are unchanged.

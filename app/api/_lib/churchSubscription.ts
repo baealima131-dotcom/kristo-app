@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readJsonFile } from "@/app/api/_lib/store/fs";
+import { getChurchMediaByChurchId } from "@/app/api/_lib/store/mediaDb";
 import {
   isChurchSubscriptionActiveFromRecord,
   type ChurchSubscriptionRecord,
@@ -9,8 +9,6 @@ import {
   isSubscriptionBypassEnabled,
   logServerSubscriptionGateCheck,
 } from "@/lib/subscriptionBypass";
-
-const STORE_FILE = "church-media.json";
 
 type ChurchMediaStoreRow = ChurchSubscriptionRecord & {
   churchId?: string;
@@ -22,8 +20,19 @@ export async function getChurchMediaSubscriptionRecord(
   const cid = String(churchId || "").trim();
   if (!cid) return null;
 
-  const store = await readJsonFile<Record<string, ChurchMediaStoreRow>>(STORE_FILE, {});
-  return Object.values(store).find((row) => String(row?.churchId || "").trim() === cid) || null;
+  // Church media (incl. subscription fields) is durably owned by mediaDb
+  // (Postgres kristo_church_media in production, church-media.json locally).
+  // Reading via mediaDb avoids the previous /tmp dependency that made
+  // subscriptions read empty on Vercel.
+  const media = await getChurchMediaByChurchId(cid);
+  if (!media) return null;
+
+  return {
+    churchId: media.churchId,
+    subscriptionActive: media.subscriptionActive,
+    subscriptionPlan: media.subscriptionPlan,
+    subscriptionUpdatedAt: media.subscriptionUpdatedAt,
+  };
 }
 
 export async function isChurchSubscriptionActive(
