@@ -86,6 +86,55 @@ export function resolveSlotPhase(slot: EnrichedScheduleSlot, claimed: boolean): 
   return "open";
 }
 
+export function resolveScheduleSlotClaimed(slot: any, optimisticClaim?: any): boolean {
+  const claimedByObj =
+    typeof slot?.claimedBy === "object" && slot?.claimedBy ? slot.claimedBy : null;
+  const claimUserId = String(
+    optimisticClaim?.userId || claimedByObj?.userId || slot?.claimedByUserId || ""
+  ).trim();
+  return Boolean(claimUserId || optimisticClaim);
+}
+
+export type ScheduleSlotVisualState = {
+  enriched: EnrichedScheduleSlot;
+  startMs: number;
+  endMs: number;
+  claimed: boolean;
+  phase: ScheduleSlotPhase;
+  expired: boolean;
+};
+
+/** Single source of truth for Home Feed schedule slot timing + phase (card + filter). */
+export function resolveScheduleSlotVisualState(
+  slot: any,
+  slotFeedIndex: number,
+  nowMs: number,
+  options?: { optimisticClaim?: any; slotId?: string }
+): ScheduleSlotVisualState | null {
+  if (!slot) return null;
+
+  const enriched = enrichScheduleSlot(slot, slotFeedIndex, nowMs);
+  const claimed = resolveScheduleSlotClaimed(enriched, options?.optimisticClaim);
+  const phase = resolveSlotPhase(enriched, claimed);
+  const state: ScheduleSlotVisualState = {
+    enriched,
+    startMs: enriched.startMs,
+    endMs: enriched.endMs,
+    claimed,
+    phase,
+    expired: phase === "ended",
+  };
+
+  console.log("KRISTO_SLOT_TIME_SHARED_HELPER", {
+    slotId: options?.slotId ?? String(slot?.id || ""),
+    startMs: state.startMs,
+    endMs: state.endMs,
+    phase: state.phase,
+  });
+
+  return state;
+}
+
 export function formatSlotDateLabel(iso?: string, fallback?: string) {
   if (!iso) return fallback || "Today";
   const d = new Date(iso);

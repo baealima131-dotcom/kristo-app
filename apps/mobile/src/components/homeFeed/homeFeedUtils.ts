@@ -7,7 +7,12 @@ import {
 } from "@/src/lib/homeFeedStore";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { avatarCacheBust, normalizeAvatarUpdatedAt } from "@/src/lib/avatarFreshness";
-import { baseFeedId, parseSlotClockMs, parseSlotStartMs } from "@/src/lib/scheduleSlotUtils";
+import {
+  baseFeedId,
+  parseSlotClockMs,
+  parseSlotStartMs,
+  resolveScheduleSlotVisualState,
+} from "@/src/lib/scheduleSlotUtils";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
 
@@ -300,9 +305,54 @@ export function shouldExpandHomeFeedScheduleRow(row: any): boolean {
   return String(row?.scheduleType || "").toLowerCase().includes("media-live-slots");
 }
 
-/** One Home Feed card per media-live-slots slot (all slots, including taken). */
-export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any): any[] {
-  if (!shouldExpandHomeFeedScheduleRow(scheduleRow)) return [scheduleRow];
+function resolveHomeFeedSlotFeedIndex(slot: any, fallbackIndex: number) {
+  const slotNumber = resolveHomeFeedSlotNumber(slot, fallbackIndex + 1);
+  return Math.max(0, slotNumber - 1);
+}
+
+function logHomeFeedSlotExpiryDebug(
+  scheduleId: string,
+  slot: any,
+  slotNumber: number,
+  visual: NonNullable<ReturnType<typeof resolveScheduleSlotVisualState>>
+) {
+  console.log("KRISTO_HOME_SLOT_EXPIRY_DEBUG", {
+    scheduleId,
+    slotId: String(slot?.id || `${scheduleId}:slot:${slotNumber}`),
+    slotNumber,
+    startMs: visual.startMs,
+    endMs: visual.endMs,
+    phase: visual.phase,
+    expired: visual.expired,
+    rawStart: String(slot?.startTime || slot?.time || ""),
+    rawEnd: String(slot?.endTime || ""),
+    date: String(slot?.meetingDate || slot?.meetingDay || ""),
+    startTime: String(slot?.startTime || slot?.time || ""),
+    endTime: String(slot?.endTime || ""),
+    durationMinutes: Number(slot?.durationMin || 0) || null,
+  });
+}
+
+/** One Home Feed card per active/upcoming media-live-slots slot (expired slots omitted). */
+export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Date.now()): any[] {
+  if (!shouldExpandHomeFeedScheduleRow(scheduleRow)) {
+    if (isHomeFeedExpandedScheduleSlotRow(scheduleRow)) {
+      const slot = Array.isArray(scheduleRow?.scheduleSlots)
+        ? scheduleRow.scheduleSlots[0]
+        : null;
+      const slotFeedIndex = resolveHomeFeedSlotFeedIndex(
+        slot,
+        Math.max(0, Number(scheduleRow?.slotNumber || 1) - 1)
+      );
+      const visual =
+        slot &&
+        resolveScheduleSlotVisualState(slot, slotFeedIndex, nowMs, {
+          slotId: String(slot?.id || scheduleRow?.id || ""),
+        });
+      if (visual?.expired) return [];
+    }
+    return [scheduleRow];
+  }
 
   const scheduleId = baseFeedId(
     String(scheduleRow?.id || scheduleRow?.sourceScheduleId || "")
@@ -310,7 +360,31 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any): any[] {
   const slots = Array.isArray(scheduleRow?.scheduleSlots) ? scheduleRow.scheduleSlots : [];
   if (!scheduleId || !slots.length) return [scheduleRow];
 
-  const expanded = slots.map((slot: any, index: number) => {
+  let expiryDebugLogged = 0;
+  const activeSlots = slots.filter((slot: any, index: number) => {
+    const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
+    const slotFeedIndex = resolveHomeFeedSlotFeedIndex(slot, index);
+    const visual = resolveScheduleSlotVisualState(slot, slotFeedIndex, nowMs, {
+      slotId: String(slot?.id || `${scheduleId}:slot:${slotNumber}`),
+    });
+    if (!visual) return false;
+    if (expiryDebugLogged < 3) {
+      logHomeFeedSlotExpiryDebug(scheduleId, slot, slotNumber, visual);
+      expiryDebugLogged += 1;
+    }
+    return !visual.expired;
+  });
+  const removedCount = slots.length - activeSlots.length;
+  if (removedCount > 0) {
+    console.log("KRISTO_HOME_EXPIRED_SLOTS_FILTERED", {
+      scheduleId,
+      removedCount,
+      keptCount: activeSlots.length,
+    });
+  }
+  if (!activeSlots.length) return [];
+
+  const expanded = activeSlots.map((slot: any, index: number) => {
     const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
     return {
       ...scheduleRow,
@@ -329,8 +403,9 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any): any[] {
 
   console.log("KRISTO_HOME_FEED_SCHEDULE_EXPANDED", {
     scheduleId,
-    slotCount: slots.length,
+    slotCount: activeSlots.length,
     expandedCount: expanded.length,
+    expiredFiltered: removedCount,
   });
 
   return expanded;

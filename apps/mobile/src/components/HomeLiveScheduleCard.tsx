@@ -27,12 +27,11 @@ import { getSessionSync } from "@/src/lib/kristoSession";
 import {
   baseFeedId,
   cleanFeedLabel,
-  enrichScheduleSlot,
   formatSlotDateLabel,
   patchMediaSlotClaimAvatarFields,
   resolveMediaSlotClaimedAvatar,
   resolveScheduleAvatarUri,
-  resolveSlotPhase,
+  resolveScheduleSlotVisualState,
   SLOT_STATE_THEMES,
 } from "@/src/lib/scheduleSlotUtils";
 import { loadProfileDraft } from "@/src/lib/profileStore";
@@ -434,16 +433,24 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const session = getSessionSync() as any;
   const currentUserId = String(session?.userId || "");
 
-  const slot = useMemo(
-    () => enrichScheduleSlot(activeSlot, slotFeedIndex, nowMs),
-    [activeSlot, slotFeedIndex, nowMs]
-  );
-
   const [optimisticClaim, setOptimisticClaim] = useState<any>(null);
   const claimingSlotRef = useRef<string | null>(null);
   const claimPress = useSharedValue(1);
   const [memberAvatarByUserId, setMemberAvatarByUserId] = useState<Record<string, string>>({});
   const [claimerProfileAvatar, setClaimerProfileAvatar] = useState("");
+
+  const slotVisual = useMemo(
+    () =>
+      resolveScheduleSlotVisualState(activeSlot, slotFeedIndex, nowMs, {
+        optimisticClaim,
+        slotId: String(activeSlot?.id || ""),
+      }),
+    [activeSlot, slotFeedIndex, nowMs, optimisticClaim]
+  );
+
+  const slot = slotVisual?.enriched || (activeSlot as any);
+  const claimed = Boolean(slotVisual?.claimed);
+  const phase = slotVisual?.phase || "open";
 
   useEffect(() => {
     let alive = true;
@@ -549,11 +556,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     ]
   );
 
-  const claimed = Boolean(claimUserId || optimisticClaim);
   const claimedByMe = !!claimUserId && claimUserId === currentUserId;
   const claimedByOther = !!claimUserId && claimUserId !== currentUserId;
 
-  const phase = resolveSlotPhase(slot, claimed);
   const theme = SLOT_STATE_THEMES[phase];
 
   const isLiveWindow = slot.startMs > 0 && slot.startMs <= nowMs && slot.endMs > nowMs;
@@ -567,12 +572,24 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     console.log("KRISTO_HOME_SLOT_VISUAL_STATE", {
       slotId: slot?.id,
       slotNumber: Number((slot as any)?.slot || (slot as any)?.slotNumber || slotFeedIndex + 1),
+      startMs: slotVisual?.startMs ?? slot?.startMs,
+      endMs: slotVisual?.endMs ?? slot?.endMs,
       claimed,
       phase,
       isLiveWindow,
       isUnclaimedLiveOpen,
     });
-  }, [slot?.id, slotFeedIndex, claimed, phase, isLiveWindow, isUnclaimedLiveOpen, slot]);
+  }, [
+    slot?.id,
+    slotFeedIndex,
+    claimed,
+    phase,
+    isLiveWindow,
+    isUnclaimedLiveOpen,
+    slot,
+    slotVisual?.startMs,
+    slotVisual?.endMs,
+  ]);
 
   const mediaName = cleanFeedLabel(item?.mediaName || item?.actorLabel, "Church Media");
   const churchName = cleanFeedLabel(item?.churchName || item?.churchLabel, "MY CHURCH");
@@ -790,6 +807,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const showSecondaryClaim = claimed && phase !== "ended";
   const compactOpenCard = !claimed && phase !== "ended";
   const edgeTint = phaseEdgeTint(phase, claimed, isUnclaimedLiveOpen);
+
+  if (!slotVisual || slotVisual.expired) {
+    return null;
+  }
 
   return (
     <Animated.View
