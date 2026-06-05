@@ -77,7 +77,12 @@ export const FeedRow = memo(function FeedRow({
   const imageUri = resolveImageUri(item);
   const posterUri = resolvePosterUri(item);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
-  const mountVideoPlayer = Boolean(video && videoUri && screenFocused && videoWarmMode !== "off");
+  const mountVideoPlayer = Boolean(
+    video &&
+      videoUri &&
+      videoWarmMode !== "off" &&
+      (screenFocused || videoWarmMode === "active")
+  );
   const shareCount = Number(item?.shareCount || 0);
   const saveCount = Number(item?.saveCount || 0);
   const animateCopy = isActive && screenFocused;
@@ -88,6 +93,7 @@ export const FeedRow = memo(function FeedRow({
         {video && videoUri ? (
           mountVideoPlayer ? (
             <SimpleFeedVideo
+              key={`feed-video-${postId}`}
               postId={postId}
               title={title}
               mediaStatus={mediaStatus}
