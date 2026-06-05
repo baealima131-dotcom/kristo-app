@@ -1687,6 +1687,71 @@ function optimisticMessageMatchesBackend(opt: MsgItem, backend: MsgItem) {
   return Math.abs(Number(opt.createdAt || 0) - Number(backend.createdAt || 0)) < 120000;
 }
 
+function messageClientId(m: any): string {
+  return String(m?.clientId || m?.localId || "").trim();
+}
+
+/**
+ * Strong identity match between a local message and a server row. Prefers the
+ * stable id / clientId so attachment- or card-only messages (empty text) are
+ * never confused with each other.
+ */
+function backendMatchesLocal(local: MsgItem, backend: MsgItem): boolean {
+  const lid = String(local.id || "");
+  const bid = String(backend.id || "");
+  if (lid && bid && lid === bid) return true;
+
+  const lc = messageClientId(local);
+  const bc = messageClientId(backend);
+  if (lc && bc && lc === bc) return true;
+  // The optimistic id often becomes the server row's clientId after reconcile.
+  if (lid && bc && lid === bc) return true;
+  if (bid && lc && bid === lc) return true;
+
+  return false;
+}
+
+function localMessageHasAttachments(m: MsgItem): boolean {
+  return Array.isArray(m.attachments) && m.attachments.length > 0;
+}
+
+/**
+ * A local message is "covered" by the server once a matching row arrives. We
+ * only fall back to the loose text+time heuristic for plain text messages that
+ * predate clientId, so recently-sent images/files/cards are never dropped.
+ */
+function localMessageResolvedByBackend(local: MsgItem, mapped: MsgItem[]): boolean {
+  return mapped.some((b) => {
+    if (backendMatchesLocal(local, b)) return true;
+    const hasText = String(local.text || "").trim().length > 0;
+    const noAttachments = !localMessageHasAttachments(local);
+    const notCard = String(local.kind || "") !== "assignment_card";
+    if (hasText && noAttachments && notCard) return optimisticMessageMatchesBackend(local, b);
+    return false;
+  });
+}
+
+/**
+ * When a server row matches a local message but is missing attachments/card
+ * (e.g. an eventually-consistent store hasn't caught up yet), keep the local
+ * preview so it doesn't flash and vanish after a poll.
+ */
+function preserveLocalRichFields(backend: MsgItem, local: MsgItem): MsgItem {
+  let next = backend;
+  if (!localMessageHasAttachments(backend) && localMessageHasAttachments(local)) {
+    next = { ...next, attachments: local.attachments };
+  }
+  if (!backend.card && local.card) {
+    next = { ...next, card: local.card, kind: next.kind || local.kind };
+  }
+  return next;
+}
+
+function isRecentOwnLocalMessage(m: MsgItem, windowMs = 10 * 60 * 1000): boolean {
+  if (m.sender !== "me" && !isOptimisticOutgoingMessage(m)) return false;
+  return Date.now() - Number(m.createdAt || 0) < windowMs;
+}
+
 type MessageAvatarSource =
   | "avatarUri"
   | "senderAvatar"
@@ -1777,6 +1842,7 @@ function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, _api
 
   return {
     id: String(x.id || `backend_${x.createdAt || Date.now()}`),
+    clientId: String(x.clientId || x.localId || "").trim() || undefined,
     threadId,
     sender: String(x.senderUserId || "") === selfId ? "me" : "other",
     displayName: String(x.senderName || "Member"),
@@ -3094,17 +3160,30 @@ export default function MessageThreadScreen() {
       );
 
       const currentLocalMessages = getSnapshot().messages?.[threadId] || [];
-      const localScheduleCards = currentLocalMessages.filter((m: any) =>
-        String(m?.kind || "") === "assignment_card" &&
-        String((m as any)?.card?.source || "") === "media-schedule"
-      );
-      const pendingOptimistic = currentLocalMessages.filter(isOptimisticOutgoingMessage);
-      const backendIds = new Set(mapped.map((m: any) => String(m.id || "")));
-      const safeLocalScheduleCards = localScheduleCards.filter((m: any) => !backendIds.has(String(m.id || "")));
-      const dedupedPending = pendingOptimistic.filter(
-        (opt) => !backendIds.has(String(opt.id || "")) && !mapped.some((b) => optimisticMessageMatchesBackend(opt, b))
-      );
-      const merged = [...safeLocalScheduleCards, ...dedupedPending, ...mapped].sort(
+
+      // Preserve attachments / card on server rows that haven't fully caught up
+      // (eventually-consistent store), so a sent image/file/card never flashes
+      // and disappears after a poll.
+      const enrichedMapped: MsgItem[] = mapped.map((b) => {
+        const local = currentLocalMessages.find((l) => backendMatchesLocal(l, b));
+        return local ? preserveLocalRichFields(b, local) : b;
+      });
+
+      // Keep local messages the server hasn't returned yet:
+      //  - media-schedule assignment cards (live-control scheduling)
+      //  - the user's own recently-sent / still-pending messages (text, image,
+      //    file, card) — covers optimistic AND reconciled-but-not-yet-polled.
+      const keptLocal = currentLocalMessages.filter((m: any) => {
+        if (localMessageResolvedByBackend(m, enrichedMapped)) return false;
+
+        const isScheduleCard =
+          String(m?.kind || "") === "assignment_card" &&
+          String((m as any)?.card?.source || "") === "media-schedule";
+
+        return isScheduleCard || isRecentOwnLocalMessage(m);
+      });
+
+      const merged = [...keptLocal, ...enrichedMapped].sort(
         (a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0)
       );
       const sig = messagesListSignature(merged);
@@ -4103,6 +4182,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
       threadId,
       {
         id: optimisticId,
+        clientId: optimisticId,
         text,
         attachments: optimisticAttachments.length ? optimisticAttachments : undefined,
         createdAt: optimisticCreatedAt,
@@ -4149,6 +4229,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
           senderName,
           text,
           attachments,
+          clientId: optimisticId,
         },
         { headers: sendHeaders }
       );

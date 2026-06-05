@@ -53,6 +53,9 @@ export type AssignmentCardPayload = {
 
 export type MsgItem = {
   id: string;
+  // Stable client-generated id used to reconcile an optimistic message with the
+  // server row it becomes, even across poll refreshes.
+  clientId?: string;
   threadId: string;
   sender: "me" | "other";
   displayName?: string;
@@ -332,6 +335,7 @@ export function sendMessage(
   threadId: string,
   payload: {
     id?: string;
+    clientId?: string;
     text?: string;
     attachments?: MsgAttachment[];
     pending?: boolean;
@@ -355,6 +359,7 @@ export function sendMessage(
 
   const item: MsgItem = {
     id,
+    clientId: payload.clientId || id,
     threadId,
     sender: opts?.seedOther ? "other" : "me",
     displayName: payload.displayName || (opts?.seedOther ? opts?.name || "User" : "Me"),
