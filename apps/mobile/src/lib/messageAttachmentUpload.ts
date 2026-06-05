@@ -10,6 +10,33 @@ export type PendingMessageAttachment = {
   size?: number;
 };
 
+/**
+ * Pull a human-readable message out of whatever an upload/send path throws or
+ * returns. Handles Error instances, API error results ({ error }), nested
+ * shapes ({ error: { message } }), and raw strings so the UI never surfaces
+ * "[object Object]".
+ */
+export function extractApiErrorMessage(err: any, fallback = "Something went wrong. Please try again."): string {
+  if (err == null) return fallback;
+  if (typeof err === "string") return err.trim() || fallback;
+
+  const candidates = [
+    err?.message,
+    err?.error?.message,
+    err?.error,
+    err?.body?.error?.message,
+    err?.body?.error,
+    err?.data?.error?.message,
+    err?.data?.error,
+  ];
+
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+
+  return fallback;
+}
+
 export function resolveMessageAttachmentUrl(uri?: string) {
   const v = String(uri || "").trim();
   if (!v) return "";
@@ -109,7 +136,16 @@ export async function uploadMessageAttachment(
   });
 
   if (!res?.ok || !res?.data?.url) {
-    throw new Error(String(res?.error || "Upload failed"));
+    const code = String(res?.code || "").trim();
+    const status = Number(res?.status || 0);
+    if (code === "ROOM_ATTACHMENT_TOO_LARGE" || status === 413) {
+      throw new Error(
+        item.kind === "image"
+          ? "Image is too large. Please choose a smaller image."
+          : "File is too large. Please choose a smaller file."
+      );
+    }
+    throw new Error(extractApiErrorMessage(res, "Upload failed. Please try again."));
   }
 
   const uploadedUrl = resolveMessageAttachmentUrl(String(res.data.url));

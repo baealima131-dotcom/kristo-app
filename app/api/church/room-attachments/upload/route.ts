@@ -65,8 +65,15 @@ export async function POST(req: NextRequest) {
   const maxSize = kind === "image" ? MAX_IMAGE_SIZE : MAX_FILE_SIZE;
   if (file.size > maxSize) {
     return NextResponse.json(
-      { ok: false, error: kind === "image" ? "Image too large (max 12MB)" : "File too large (max 25MB)" },
-      { status: 400 }
+      {
+        ok: false,
+        code: "ROOM_ATTACHMENT_TOO_LARGE",
+        error:
+          kind === "image"
+            ? "Image too large. Please choose a smaller image."
+            : "File too large. Please choose a smaller file.",
+      },
+      { status: 413 }
     );
   }
 

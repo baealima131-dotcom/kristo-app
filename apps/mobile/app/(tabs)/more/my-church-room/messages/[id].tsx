@@ -48,6 +48,7 @@ import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
 import { ensureThread, sendMessage, setThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import {
+  extractApiErrorMessage,
   formatAttachmentMimeLabel,
   formatAttachmentSize,
   normalizeMsgAttachment,
@@ -55,6 +56,7 @@ import {
   uploadMessageAttachment,
   type PendingMessageAttachment,
 } from "@/src/lib/messageAttachmentUpload";
+import { compressRoomImage, ROOM_IMAGE_TOO_LARGE_MESSAGE } from "@/src/lib/roomImageCompress";
 import { getChurchProjectMcScheduleState } from "@/src/store/churchProjectMcScheduleStore";
 import { apiGet, apiPatch, apiDelete, apiPost } from "@/src/lib/kristoApi";
 import {
@@ -3992,22 +3994,36 @@ const displayHeaderTitle = assignmentDisplayTitle;
         const localUri = String(asset.uri || "").trim();
         if (!localUri) return;
 
-        const name = String(asset.fileName || asset.uri?.split("/").pop() || `image_${Date.now()}.jpg`);
-        const mime = String((asset as any).mimeType || "image/jpeg");
+        const rawName = String(asset.fileName || asset.uri?.split("/").pop() || `image_${Date.now()}.jpg`);
+
+        // Compress/resize before queueing so we never ship a multi-MB iPhone
+        // photo to the server (which would 413 on Vercel).
+        let compressed;
+        try {
+          compressed = await compressRoomImage(localUri, asset.width, asset.height);
+        } catch (compressErr: any) {
+          Alert.alert(
+            "Image too large",
+            extractApiErrorMessage(compressErr, ROOM_IMAGE_TOO_LARGE_MESSAGE)
+          );
+          return;
+        }
+
+        const jpgName = rawName.replace(/\.[^.]+$/, "") + ".jpg";
 
         setPending((prev) => [
           ...prev,
           {
             id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
             kind: "image",
-            localUri,
-            name,
-            mime,
-            size: typeof asset.fileSize === "number" ? asset.fileSize : undefined,
+            localUri: compressed.uri,
+            name: jpgName,
+            mime: "image/jpeg",
+            size: compressed.size || (typeof asset.fileSize === "number" ? asset.fileSize : undefined),
           },
         ]);
       } catch (e: any) {
-        Alert.alert("Image picker error", String(e?.message || e || "Could not pick image."));
+        Alert.alert("Image picker error", extractApiErrorMessage(e, "Could not pick image."));
       }
     })();
   }
@@ -4156,7 +4172,24 @@ const displayHeaderTitle = assignmentDisplayTitle;
       void reloadRoomMessagesRef.current?.();
     } catch (e: any) {
       deleteMessage(threadId, optimisticId);
-      Alert.alert("Send failed", String(e?.message || e || "Could not send attachment message."));
+
+      // Keep the user's attachments (and text) so the preview doesn't silently
+      // vanish — they can retry by tapping send again, or remove the chip.
+      if (pendingSnapshot.length) {
+        setPending((prev) => {
+          const existing = new Set(prev.map((p) => p.id));
+          const restored = pendingSnapshot.filter((p) => !existing.has(p.id));
+          return [...restored, ...prev];
+        });
+      }
+      if (text && !String(draft || "").trim()) {
+        setDraft(text);
+      }
+
+      Alert.alert(
+        "Couldn't send",
+        extractApiErrorMessage(e, "Could not send attachment message. Please try again.")
+      );
     } finally {
       setAttachUploading(false);
     }
