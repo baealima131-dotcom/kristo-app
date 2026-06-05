@@ -277,7 +277,23 @@ export async function GET(req: Request) {
       { status: 503 }
     );
   }
-  const rows = (store[keyOf(churchId, roomId)] || []).filter((m: any) => {
+  const getStoreKey = keyOf(churchId, roomId);
+
+  // Diagnostics: the store is keyed by `${churchId}::${roomId}`, NOT by roomId
+  // alone. These logs make it obvious if POST wrote under a different key than
+  // GET is reading, or if the document loaded but the inner key missed.
+  console.log("KRISTO_ROOM_MESSAGES_GET_STORE", roomId, store[roomId]?.length);
+  console.log("KRISTO_ROOM_MESSAGES_GET_STORE_DETAIL", {
+    roomId,
+    churchId,
+    storeKey: getStoreKey,
+    rowsForStoreKey: store[getStoreKey]?.length || 0,
+    rowsForRoomIdOnly: store[roomId]?.length || 0,
+    totalDocKeys: Object.keys(store || {}).length,
+    docKeys: Object.keys(store || {}).slice(0, 30),
+  });
+
+  const rows = (store[getStoreKey] || []).filter((m: any) => {
     const deletedFor = Array.isArray(m?.deletedFor) ? m.deletedFor.map(String) : [];
     return !deletedFor.includes(String(userId));
   });
@@ -410,6 +426,19 @@ export async function POST(req: Request) {
 
   store[key] = [msg, ...(store[key] || [])].slice(0, 500);
 
+  // Diagnostics: confirm exactly which key POST writes under so it can be
+  // compared against KRISTO_ROOM_MESSAGES_GET_STORE for the same room.
+  console.log("KRISTO_ROOM_MESSAGES_POST_STORE", roomId, store[roomId]?.length);
+  console.log("KRISTO_ROOM_MESSAGES_POST_STORE_DETAIL", {
+    roomId,
+    churchId,
+    storeKey: key,
+    rowsForStoreKey: store[key]?.length || 0,
+    rowsForRoomIdOnly: store[roomId]?.length || 0,
+    totalDocKeys: Object.keys(store || {}).length,
+    docKeys: Object.keys(store || {}).slice(0, 30),
+  });
+
   console.log("KRISTO_ROOM_MESSAGE_POST_PERSISTED", {
     roomId,
     kind,
@@ -430,6 +459,24 @@ export async function POST(req: Request) {
       { ok: false, error: "Message store unavailable. Please try again later." },
       { status: 503 }
     );
+  }
+
+  // Verify durability by re-reading the document straight back from the store.
+  // If this shows the rows but the next GET shows 0, the problem is a key
+  // mismatch (different churchId/roomId), not the durable read/write itself.
+  try {
+    const verify = await readStore();
+    console.log("KRISTO_ROOM_MESSAGES_POST_VERIFY_READBACK", {
+      roomId,
+      storeKey: key,
+      rowsForStoreKey: verify[key]?.length || 0,
+      totalDocKeys: Object.keys(verify || {}).length,
+    });
+  } catch (e) {
+    console.log("KRISTO_ROOM_MESSAGES_POST_VERIFY_READBACK_FAILED", {
+      roomId,
+      error: String((e as any)?.message || e),
+    });
   }
 
   return NextResponse.json({ ok: true, data: msg });

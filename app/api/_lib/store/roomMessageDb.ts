@@ -101,6 +101,11 @@ async function readDocument<T>(key: RoomMessageStoreKey, fallback: T): Promise<T
     key,
     mode: "postgres",
     hit: Boolean(row && row.data != null),
+    dataType: typeof (row?.data),
+    topLevelKeys:
+      data && typeof data === "object" && !Array.isArray(data)
+        ? Object.keys(data as Record<string, unknown>).length
+        : -1,
   });
 
   return data;
@@ -118,6 +123,10 @@ async function writeDocument<T>(key: RoomMessageStoreKey, data: T): Promise<void
   console.log("KRISTO_ROOM_MESSAGES_DURABLE_WRITE", {
     key,
     mode: "postgres",
+    topLevelKeys:
+      data && typeof data === "object" && !Array.isArray(data)
+        ? Object.keys(data as Record<string, unknown>).length
+        : -1,
   });
 }
 
