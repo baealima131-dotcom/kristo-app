@@ -46,7 +46,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
-import { ensureThread, sendMessage, setThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
+import { ensureThread, sendMessage, setThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import {
   extractApiErrorMessage,
   formatAttachmentMimeLabel,
@@ -622,6 +622,7 @@ function renderAssignmentCardBody(
   m: MsgItem,
   opts?: {
     canClaim?: boolean;
+    isClaiming?: boolean;
     onClaim?: () => void;
     canAdd?: boolean;
     onAdd?: () => void;
@@ -1353,16 +1354,20 @@ const normalizedScript =
               </View>
             ) : null}
 
-            {canShowClaim ? (
+            {canShowClaim || (!!opts?.isClaiming && !!opts?.canClaim) ? (
               <Pressable
-                onPress={opts.onClaim}
+                onPress={opts?.isClaiming ? undefined : opts.onClaim}
+                disabled={!!opts?.isClaiming}
                 style={({ pressed }) => [
                   s.assignmentActionBtn,
                   s.assignmentActionBtnPrimary,
-                  pressed ? s.assignmentActionBtnPressed : null,
+                  opts?.isClaiming ? { opacity: 0.72 } : null,
+                  pressed && !opts?.isClaiming ? s.assignmentActionBtnPressed : null,
                 ]}
               >
-                <Text style={t.assignmentActionTextPrimary}>CLAIM</Text>
+                <Text style={t.assignmentActionTextPrimary}>
+                  {opts?.isClaiming ? "Claiming..." : "CLAIM"}
+                </Text>
               </Pressable>
             ) : null}
 
@@ -2147,6 +2152,7 @@ function Bubble({
   onAddVideoAssignmentCard,
   onOpenScheduledLive,
   onPreviewImage,
+  claimingAssignmentMessageIds,
 }: {
   m: MsgItem;
   showAvatar?: boolean;
@@ -2158,6 +2164,7 @@ function Bubble({
   canClaimAssignmentCard?: boolean;
   canAddAssignmentCard?: boolean;
   canAddVideoAssignmentCard?: boolean;
+  claimingAssignmentMessageIds?: Record<string, true>;
   onClaimAssignmentCard?: (messageId: string) => void;
   onAddAssignmentMember?: (messageId: string) => void;
   onAddVideoAssignmentCard?: (messageId: string) => void;
@@ -2227,6 +2234,7 @@ function Bubble({
             canClaim:
               !!canClaimAssignmentCard &&
               String(m.card?.status || "open").toLowerCase() === "open",
+            isClaiming: !!claimingAssignmentMessageIds?.[m.id],
             onClaim: () => onClaimAssignmentCard?.(m.id),
             canAdd:
               !!canAddAssignmentCard &&
@@ -3548,6 +3556,10 @@ export default function MessageThreadScreen() {
 
   const listRef = useRef<any>(null);
   const inputRef = useRef<any>(null);
+  const claimInFlightRef = useRef<Set<string>>(new Set());
+  const [claimingAssignmentMessageIds, setClaimingAssignmentMessageIds] = useState<
+    Record<string, true>
+  >({});
 
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<PendingMessageAttachment[]>([]);
@@ -5974,12 +5986,50 @@ function saveAssignmentVideoTrim() {
     );
   }
 
-  async function handleClaimAssignmentMessage(messageId: string) {
-    let profileRes: any = null;
-    try {
-      profileRes = await apiGet("/api/auth/profile", { headers: getKristoHeaders() as any });
-    } catch {}
+  function resolveClaimActorFromSession() {
+    const displayName = String(
+      (auth as any)?.displayName ||
+      (auth as any)?.name ||
+      (auth as any)?.fullName ||
+      "You"
+    ).trim();
 
+    const rawAvatar = String(
+      (auth as any)?.avatarUrl ||
+      (auth as any)?.avatarUri ||
+      (auth as any)?.avatar ||
+      (auth as any)?.photoUrl ||
+      (auth as any)?.imageUrl ||
+      ""
+    ).trim();
+
+    const avatar = rawAvatar.startsWith("/")
+      ? `${String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "")}${rawAvatar}`
+      : rawAvatar;
+
+    const roleRaw = String(
+      (auth as any)?.churchRole ||
+      (auth as any)?.role ||
+      currentRole ||
+      "Member"
+    ).trim();
+
+    const role =
+      roleRaw === "Pastor"
+        ? "Pastor"
+        : roleRaw === "Church_Admin" || roleRaw === "Admin" || roleRaw === "Leader"
+          ? "Admin"
+          : "Member";
+
+    return {
+      userId: effectiveAuthUserId,
+      name: displayName || "You",
+      avatar,
+      role,
+    };
+  }
+
+  function resolveClaimActorFromProfile(profileRes: any) {
     const profileData =
       profileRes?.profile ||
       profileRes?.data?.profile ||
@@ -5988,91 +6038,178 @@ function saveAssignmentVideoTrim() {
       profileRes?.data ||
       {};
 
-    const realDisplayName =
-      String(
-        profileData?.displayName ||
-        profileData?.name ||
-        profileData?.fullName ||
-        (auth as any)?.displayName ||
-        (auth as any)?.name ||
-        "You"
-      ).trim();
+    const sessionActor = resolveClaimActorFromSession();
 
-    const rawAvatar =
-      String(
-        profileData?.avatarUrl ||
-        profileData?.avatarUri ||
-        profileData?.avatar ||
-        profileData?.photoUrl ||
-        profileData?.imageUrl ||
-        profileData?.profileImageUrl ||
-        profileData?.picture ||
-        (auth as any)?.avatarUrl ||
-        (auth as any)?.avatarUri ||
-        ""
-      ).trim();
+    const displayName = String(
+      profileData?.displayName ||
+      profileData?.name ||
+      profileData?.fullName ||
+      sessionActor.name ||
+      "You"
+    ).trim();
 
-    const realAvatar = rawAvatar.startsWith("/")
+    const rawAvatar = String(
+      profileData?.avatarUrl ||
+      profileData?.avatarUri ||
+      profileData?.avatar ||
+      profileData?.photoUrl ||
+      profileData?.imageUrl ||
+      profileData?.profileImageUrl ||
+      profileData?.picture ||
+      sessionActor.avatar ||
+      ""
+    ).trim();
+
+    const avatar = rawAvatar.startsWith("/")
       ? `${String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "")}${rawAvatar}`
       : rawAvatar;
 
-    const realClaimRoleRaw = String(
+    const roleRaw = String(
       profileRes?.churchRole ||
       profileRes?.role ||
       profileRes?.activeMembership?.churchRole ||
-      currentRole ||
+      sessionActor.role ||
       "Member"
     ).trim();
 
-    const realClaimRole =
-      realClaimRoleRaw === "Pastor"
+    const role =
+      roleRaw === "Pastor"
         ? "Pastor"
-        : realClaimRoleRaw === "Church_Admin" || realClaimRoleRaw === "Admin" || realClaimRoleRaw === "Leader"
+        : roleRaw === "Church_Admin" || roleRaw === "Admin" || roleRaw === "Leader"
           ? "Admin"
           : "Member";
 
+    return {
+      userId: effectiveAuthUserId,
+      name: displayName || "You",
+      avatar,
+      role,
+    };
+  }
 
-    console.log("🧑 CLAIM_PROFILE_DEBUG", {
-      profileRes,
-      profileData,
-      realDisplayName,
-      rawAvatar,
-      realAvatar,
+  function markClaimInFlight(messageId: string) {
+    claimInFlightRef.current.add(messageId);
+    setClaimingAssignmentMessageIds((prev) =>
+      prev[messageId] ? prev : { ...prev, [messageId]: true }
+    );
+  }
+
+  function clearClaimInFlight(messageId: string) {
+    claimInFlightRef.current.delete(messageId);
+    setClaimingAssignmentMessageIds((prev) => {
+      if (!prev[messageId]) return prev;
+      const next = { ...prev };
+      delete next[messageId];
+      return next;
+    });
+  }
+
+  async function handleClaimAssignmentMessage(messageId: string) {
+    const tapAt = Date.now();
+    const slotId = String(messageId || "").trim();
+
+    console.log("KRISTO_SLOT_CLAIM_TAP", {
+      messageId: slotId,
+      tapAt,
     });
 
-    const ok = claimAssignmentCard(threadId, messageId, {
-      userId: effectiveAuthUserId,
-      name: realDisplayName || "You",
-      avatar: realAvatar,
-      role: realClaimRole,
+    if (claimInFlightRef.current.has(slotId)) {
+      console.log("KRISTO_SLOT_CLAIM_TAP", {
+        messageId: slotId,
+        ignored: true,
+        reason: "in-flight",
+      });
+      return;
+    }
+
+    markClaimInFlight(slotId);
+
+    const optimisticActor = resolveClaimActorFromSession();
+    const ok = claimAssignmentCard(threadId, slotId, optimisticActor);
+
+    console.log("KRISTO_SLOT_CLAIM_UI_UPDATED", {
+      messageId: slotId,
+      elapsedMs: Date.now() - tapAt,
+      optimistic: true,
+      ok,
     });
 
     if (!ok) {
+      clearClaimInFlight(slotId);
       Alert.alert("Already taken", "This assignment is no longer open.");
       return;
     }
 
-    try {
-      const targetMsg = messages.find((x) => String(x.id) === String(messageId));
-      const claimRoomId = String((params as any)?.ministryId || (params as any)?.assignmentId || resolvedMinistryId || threadId || "").trim();
+    const targetMsg = messages.find((x) => String(x.id) === String(slotId));
+    const claimRoomId = String(
+      (params as any)?.ministryId ||
+      (params as any)?.assignmentId ||
+      resolvedMinistryId ||
+      threadId ||
+      ""
+    ).trim();
 
-      apiPatch(
+    try {
+      console.log("KRISTO_SLOT_CLAIM_REQUEST_START", {
+        messageId: slotId,
+        elapsedMs: Date.now() - tapAt,
+        roomId: claimRoomId,
+      });
+
+      let profileRes: any = null;
+      try {
+        profileRes = await apiGet("/api/auth/profile", { headers: getKristoHeaders() as any });
+      } catch {}
+
+      const actor = profileRes ? resolveClaimActorFromProfile(profileRes) : optimisticActor;
+      enrichAssignmentCardClaim(threadId, slotId, actor);
+
+      const patchRes = await apiPatch(
         "/api/church/room-messages",
         {
           roomId: claimRoomId,
-          cardId: String((targetMsg?.card as any)?.cardId || messageId),
+          cardId: String((targetMsg?.card as any)?.cardId || slotId),
           patch: {
             status: "taken",
             claimedByUserId: effectiveAuthUserId,
-            claimedByName: realDisplayName || "You",
-            claimedByAvatar: realAvatar,
-            claimedByRole: realClaimRole,
+            claimedByName: actor.name || "You",
+            claimedByAvatar: actor.avatar,
+            claimedByRole: actor.role,
             claimedAt: Date.now(),
           },
         },
         { headers: getKristoHeaders() }
-      ).catch((e) => console.log("CLAIM_BACKEND_FAILED", e));
-    } catch {}
+      );
+
+      console.log("KRISTO_SLOT_CLAIM_RESPONSE", {
+        messageId: slotId,
+        elapsedMs: Date.now() - tapAt,
+        ok: !!patchRes?.ok,
+        error: patchRes?.error || null,
+      });
+
+      if (!patchRes?.ok) {
+        revertAssignmentCardClaim(threadId, slotId, effectiveAuthUserId);
+        Alert.alert(
+          "Claim failed",
+          String(patchRes?.error || "Could not save your claim. Please try again.")
+        );
+        return;
+      }
+
+      forceReloadRoomMessages();
+    } catch (e: any) {
+      console.log("KRISTO_SLOT_CLAIM_RESPONSE", {
+        messageId: slotId,
+        elapsedMs: Date.now() - tapAt,
+        ok: false,
+        error: String(e?.message || e || "unknown"),
+      });
+      revertAssignmentCardClaim(threadId, slotId, effectiveAuthUserId);
+      Alert.alert("Claim failed", "Could not save your claim. Please try again.");
+    } finally {
+      clearClaimInFlight(slotId);
+    }
   }
 
   function handleAddAssignmentMember(messageId: string) {
@@ -7369,6 +7506,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 canClaimAssignmentCard={canViewerClaimAssignmentCard}
                 canAddAssignmentCard={canViewerAddToAssignmentCard}
                 canAddVideoAssignmentCard={canViewerAddMusicAssignmentCard}
+                claimingAssignmentMessageIds={claimingAssignmentMessageIds}
                 onClaimAssignmentCard={handleClaimAssignmentMessage}
                 onAddAssignmentMember={handleAddAssignmentMember}
                 onAddVideoAssignmentCard={handleAddAssignmentVideo}

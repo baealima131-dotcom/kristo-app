@@ -472,7 +472,81 @@ export function claimAssignmentCard(
   return changed;
 }
 
+export function enrichAssignmentCardClaim(
+  threadId: string,
+  messageId: string,
+  actor: {
+    userId: string;
+    name?: string;
+    avatar?: string;
+    role?: string;
+  }
+) {
+  const arr = state.messages[threadId] || [];
+  let changed = false;
 
+  state.messages[threadId] = arr.map((m) => {
+    if (m.id !== messageId || m.kind !== "assignment_card" || !m.card) return m;
+    if (String(m.card.status || "").toLowerCase() !== "taken") return m;
+    if (String(m.card.claimedByUserId || "") !== String(actor.userId || "")) return m;
+
+    changed = true;
+    return {
+      ...m,
+      card: {
+        ...m.card,
+        ...(actor.name ? { claimedByName: actor.name } : {}),
+        ...(actor.avatar ? { claimedByAvatar: actor.avatar } : {}),
+        ...(actor.role ? { claimedByRole: actor.role } : {}),
+      },
+    };
+  });
+
+  if (changed) {
+    persist();
+    emit();
+  }
+
+  return changed;
+}
+
+export function revertAssignmentCardClaim(
+  threadId: string,
+  messageId: string,
+  claimedByUserId: string
+) {
+  const arr = state.messages[threadId] || [];
+  let changed = false;
+
+  state.messages[threadId] = arr.map((m) => {
+    if (m.id !== messageId || m.kind !== "assignment_card" || !m.card) return m;
+    if (String(m.card.claimedByUserId || "") !== String(claimedByUserId || "")) return m;
+    if (String(m.card.status || "").toLowerCase() !== "taken") return m;
+
+    changed = true;
+    const nextCard = { ...m.card };
+    delete (nextCard as any).claimedByUserId;
+    delete (nextCard as any).claimedByName;
+    delete (nextCard as any).claimedByAvatar;
+    delete (nextCard as any).claimedByRole;
+    delete (nextCard as any).claimedAt;
+
+    return {
+      ...m,
+      card: {
+        ...nextCard,
+        status: "open",
+      },
+    };
+  });
+
+  if (changed) {
+    persist();
+    emit();
+  }
+
+  return changed;
+}
 
 export function addAssignmentCardVideo(
   threadId: string,
