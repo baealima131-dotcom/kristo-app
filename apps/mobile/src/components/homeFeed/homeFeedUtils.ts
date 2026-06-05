@@ -361,19 +361,21 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
   if (!scheduleId || !slots.length) return [scheduleRow];
 
   let expiryDebugLogged = 0;
-  const activeSlots = slots.filter((slot: any, index: number) => {
-    const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
-    const slotFeedIndex = resolveHomeFeedSlotFeedIndex(slot, index);
-    const visual = resolveScheduleSlotVisualState(slot, slotFeedIndex, nowMs, {
-      slotId: String(slot?.id || `${scheduleId}:slot:${slotNumber}`),
+  const activeSlots = slots
+    .map((slot: any, index: number) => ({ slot, index }))
+    .filter(({ slot, index }: { slot: any; index: number }) => {
+      const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
+      const slotFeedIndex = resolveHomeFeedSlotFeedIndex(slot, index);
+      const visual = resolveScheduleSlotVisualState(slot, slotFeedIndex, nowMs, {
+        slotId: String(slot?.id || `${scheduleId}:slot:${slotNumber}`),
+      });
+      if (!visual) return false;
+      if (expiryDebugLogged < 3) {
+        logHomeFeedSlotExpiryDebug(scheduleId, slot, slotNumber, visual);
+        expiryDebugLogged += 1;
+      }
+      return !visual.expired;
     });
-    if (!visual) return false;
-    if (expiryDebugLogged < 3) {
-      logHomeFeedSlotExpiryDebug(scheduleId, slot, slotNumber, visual);
-      expiryDebugLogged += 1;
-    }
-    return !visual.expired;
-  });
   const removedCount = slots.length - activeSlots.length;
   if (removedCount > 0) {
     console.log("KRISTO_HOME_EXPIRED_SLOTS_FILTERED", {
@@ -384,7 +386,7 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
   }
   if (!activeSlots.length) return [];
 
-  const expanded = activeSlots.map((slot: any, index: number) => {
+  const expanded = activeSlots.map(({ slot, index }: { slot: any; index: number }) => {
     const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
     return {
       ...scheduleRow,
@@ -457,8 +459,61 @@ function pickRicherHomeFeedRow(prev: any, next: any) {
   return nextTs >= prevTs ? next : prev;
 }
 
-/** Merged Home Feed list: schedule rows first, not re-sorted with videos. */
-export function buildHomeFeedDisplayRows(backendRows: any[], localRows: any[]) {
+function homeFeedPostSortMs(row: any) {
+  return Date.parse(String(row?.createdAt || row?.updatedAt || "")) || 0;
+}
+
+/** Drop schedule slot rows whose shared visual helper resolves ended at build time. */
+export function isHomeFeedScheduleSlotRowVisible(row: any, nowMs = Date.now()): boolean {
+  if (!isHomeFeedScheduleCardRow(row)) return true;
+
+  if (isHomeFeedExpandedScheduleSlotRow(row)) {
+    const slot = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots[0] : null;
+    if (!slot) return false;
+    const slotNumber = Math.max(1, Number(row?.slotNumber || 1));
+    const slotFeedIndex = slotNumber - 1;
+    const visual = resolveScheduleSlotVisualState(slot, slotFeedIndex, nowMs, {
+      slotId: String(slot?.id || row?.id || ""),
+    });
+    return Boolean(visual && !visual.expired);
+  }
+
+  if (shouldExpandHomeFeedScheduleRow(row)) {
+    return expandHomeFeedScheduleIntoSlotRows(row, nowMs).length > 0;
+  }
+
+  const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+  if (!slots.length) return false;
+
+  return slots.some((slot: any, index: number) => {
+    const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
+    const slotFeedIndex = resolveHomeFeedSlotFeedIndex(slot, index);
+    const visual = resolveScheduleSlotVisualState(slot, slotFeedIndex, nowMs, {
+      slotId: String(slot?.id || `${row?.id || ""}:slot:${slotNumber}`),
+    });
+    return Boolean(visual && !visual.expired);
+  });
+}
+
+export function filterVisibleHomeFeedScheduleRows(rows: any[], nowMs = Date.now()) {
+  const filtered = rows.filter((row) => isHomeFeedScheduleSlotRowVisible(row, nowMs));
+  const removedCount = rows.length - filtered.length;
+  if (removedCount > 0) {
+    console.log("KRISTO_HOME_EXPIRED_SLOTS_FILTERED", {
+      removedCount,
+      keptCount: filtered.length,
+      stage: "display_builder",
+    });
+  }
+  return filtered;
+}
+
+/** Merged Home Feed list: video/posts first, then active schedule slot cards. */
+export function buildHomeFeedDisplayRows(
+  backendRows: any[],
+  localRows: any[],
+  nowMs = Date.now()
+) {
   const byId = new Map<string, any>();
 
   for (const row of [...backendRows, ...localRows]) {
@@ -476,8 +531,27 @@ export function buildHomeFeedDisplayRows(backendRows: any[], localRows: any[]) {
   const postRows = filtered.filter(
     (row) => !isExplicitHomeFeedMediaScheduleRow(row) && !isMediaLiveSlotsHomeFeedRow(row)
   );
-  const expandedScheduleRows = scheduleRows.flatMap(expandHomeFeedScheduleIntoSlotRows);
-  const display = [...expandedScheduleRows, ...postRows];
+  const expandedScheduleRows = scheduleRows.flatMap((row) =>
+    expandHomeFeedScheduleIntoSlotRows(row, nowMs)
+  );
+  const sortedPostRows = [...postRows].sort(
+    (a, b) => homeFeedPostSortMs(b) - homeFeedPostSortMs(a)
+  );
+  const display = filterVisibleHomeFeedScheduleRows(
+    [...sortedPostRows, ...expandedScheduleRows],
+    nowMs
+  );
+
+  const videoCount = display.filter((row) => isVideoPost(row)).length;
+  const scheduleSlotCount = display.filter(
+    (row) => isHomeFeedScheduleCardRow(row) || isHomeFeedExpandedScheduleSlotRow(row)
+  ).length;
+
+  console.log("KRISTO_HOME_FEED_ORDER_DEBUG", {
+    videoCount,
+    scheduleSlotCount,
+    firstIds: display.slice(0, 8).map((row) => String(row?.id || "")),
+  });
 
   console.log("KRISTO_HOME_FEED_VISIBLE_DATA", {
     backendCount: backendRows.length,
@@ -487,6 +561,8 @@ export function buildHomeFeedDisplayRows(backendRows: any[], localRows: any[]) {
     scheduleSourceCount: scheduleRows.length,
     scheduleCount: expandedScheduleRows.length,
     displayCount: display.length,
+    videoCount,
+    scheduleSlotCount,
     scheduleIds: scheduleRows.map((row) => String(row?.id || "")),
     scheduleSlotCounts: scheduleRows.map((row) => homeFeedScheduleSlotCount(row)),
     expandedScheduleIds: expandedScheduleRows.map((row) => String(row?.id || "")),
