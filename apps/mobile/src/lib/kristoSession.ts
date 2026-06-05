@@ -199,10 +199,9 @@ export async function loadSession(): Promise<KristoSession | null> {
 export async function saveSession(s: KristoSession): Promise<void> {
   const userId = String(s?.userId || "").trim();
   if (!userId) return;
-  if (await isLoggedOutFlagSet()) {
-    return;
-  }
 
+  // Login/session save must clear the intentional logout guard first.
+  // Otherwise the old KRISTO_LOGGED_OUT flag blocks every fresh login restore.
   await clearLoggedOutFlag();
 
   const now = Date.now();
