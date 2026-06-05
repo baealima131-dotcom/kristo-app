@@ -270,20 +270,25 @@ async function tryPublishUploadedVideo(
     posterPublicUrl: string;
     publishMetadata: Awaited<ReturnType<typeof uploadVideoWithResume>>["publishMetadata"];
     uploadHeaders: Record<string, string>;
+    faststartPending?: boolean;
+    faststartReason?: string | null;
   }
 ) {
+  const poster = String(params.posterPublicUrl || "").trim();
   const feedRes = await publishChurchVideoFeedPost({
     title: job.title,
     caption: job.caption,
     videoUrl: params.videoUrl,
-    posterUri: params.posterPublicUrl || undefined,
-    videoPosterUri: params.posterPublicUrl || undefined,
-    thumbnailUri: params.posterPublicUrl || undefined,
+    posterUri: poster || undefined,
+    videoPosterUri: poster || undefined,
+    thumbnailUri: poster || undefined,
     headers: params.uploadHeaders,
     durationMs: params.publishMetadata.durationMs,
     sizeBytes: params.publishMetadata.sizeBytes,
     bitrateEstimate: params.publishMetadata.bitrateEstimate,
     faststart: params.publishMetadata.faststart,
+    faststartPending: params.faststartPending === true,
+    faststartReason: params.faststartReason || null,
   });
   return parsePublishedFeedResponse(feedRes);
 }
@@ -497,6 +502,7 @@ async function runMediaVideoUpload(
   let publishConfirmedFeedId = "";
   let uploadedVideoUrl = "";
   let posterPublicUrl = "";
+  let publishPosterUri = "";
   let publishMetadata: Awaited<ReturnType<typeof uploadVideoWithResume>>["publishMetadata"] | null =
     null;
 
@@ -537,8 +543,27 @@ async function runMediaVideoUpload(
 
     posterPublicUrl = await uploadPosterIfAvailable(job, uploadHeaders);
     const uploadResult = await uploadVideoWithResume(job, jobId, callbacks);
+    const signed = uploadResult.signed;
     publishMetadata = uploadResult.publishMetadata;
-    uploadedVideoUrl = String(uploadResult.signed.videoUrl || "").trim();
+    uploadedVideoUrl = String(signed.videoUrl || "").trim();
+    const serverPosterUri = String(signed.posterUri || "").trim();
+    publishPosterUri = posterPublicUrl || serverPosterUri;
+
+    if (publishMetadata.faststart) {
+      console.log("KRISTO_VIDEO_FASTSTART_DONE", {
+        jobId,
+        videoUrl: uploadedVideoUrl,
+        posterUri: publishPosterUri || null,
+      });
+    } else {
+      console.log("KRISTO_VIDEO_FASTSTART_FAILED", {
+        jobId,
+        videoUrl: uploadedVideoUrl,
+        faststartPending: signed.faststartPending === true,
+        faststartReason: signed.faststartReason || null,
+        posterUri: publishPosterUri || null,
+      });
+    }
 
     await markJobPatch(
       jobId,
@@ -546,7 +571,7 @@ async function runMediaVideoUpload(
         uploadProgress: 100,
         phase: "processing",
         videoUrl: uploadedVideoUrl,
-        posterUri: posterPublicUrl || undefined,
+        posterUri: publishPosterUri || undefined,
         mediaStatus: "processing",
         error: "",
       },
@@ -557,13 +582,19 @@ async function runMediaVideoUpload(
       jobId,
       title: job.title,
       videoUrl: uploadedVideoUrl,
+      serverPosterUri: serverPosterUri || null,
+      faststart: publishMetadata.faststart,
+      faststartPending: signed.faststartPending === true,
+      faststartReason: signed.faststartReason || null,
     });
 
     const publishedFromRetry = await tryPublishUploadedVideo(job, {
       videoUrl: uploadedVideoUrl,
-      posterPublicUrl,
+      posterPublicUrl: publishPosterUri,
       publishMetadata,
       uploadHeaders,
+      faststartPending: signed.faststartPending,
+      faststartReason: signed.faststartReason,
     });
 
     if (!publishedFromRetry) {
@@ -586,7 +617,7 @@ async function runMediaVideoUpload(
       {
         backendFeedId: published.backendFeedId,
         videoUrl: uploadedVideoUrl,
-        posterUri: posterPublicUrl || null,
+        posterUri: publishPosterUri || posterPublicUrl || null,
         mediaStatus: published.mediaStatus,
       },
       callbacks
@@ -611,7 +642,7 @@ async function runMediaVideoUpload(
         {
           backendFeedId: recoveredFeedId,
           videoUrl: recoveredVideoUrl,
-          posterUri: stored?.posterUri || posterPublicUrl || null,
+          posterUri: publishPosterUri || stored?.posterUri || posterPublicUrl || null,
           mediaStatus: String(stored?.mediaStatus || "ready").trim() || "ready",
         },
         callbacks
@@ -630,9 +661,11 @@ async function runMediaVideoUpload(
           });
         const republished = await tryPublishUploadedVideo(job, {
           videoUrl: recoveredVideoUrl,
-          posterPublicUrl: posterPublicUrl || String(stored?.posterUri || ""),
+          posterPublicUrl: publishPosterUri || posterPublicUrl || String(stored?.posterUri || ""),
           publishMetadata: republishMetadata,
           uploadHeaders,
+          faststartPending: republishMetadata.faststart !== true,
+          faststartReason: republishMetadata.faststart ? null : "republish-recovery",
         });
         if (republished) {
           await completePublishedUploadJob(
@@ -641,7 +674,7 @@ async function runMediaVideoUpload(
             {
               backendFeedId: republished.backendFeedId,
               videoUrl: recoveredVideoUrl,
-              posterUri: posterPublicUrl || stored?.posterUri || null,
+              posterUri: publishPosterUri || posterPublicUrl || stored?.posterUri || null,
               mediaStatus: republished.mediaStatus,
             },
             callbacks
@@ -661,7 +694,7 @@ async function runMediaVideoUpload(
         reason: message,
         stored,
         videoUrl: recoveredVideoUrl,
-        posterUri: posterPublicUrl || stored?.posterUri || null,
+        posterUri: publishPosterUri || posterPublicUrl || stored?.posterUri || null,
         callbacks,
       });
       if (recovered) return;
@@ -701,7 +734,7 @@ async function runMediaVideoUpload(
           reason: message,
           stored,
           videoUrl: recoveredVideoUrl,
-          posterUri: posterPublicUrl || stored?.posterUri || null,
+          posterUri: publishPosterUri || posterPublicUrl || stored?.posterUri || null,
           callbacks,
         });
         if (recovered) return;

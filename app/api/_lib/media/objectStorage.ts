@@ -135,6 +135,44 @@ export function buildPublicVideoUrl(config: VideoStorageConfig, key: string) {
   return `${config.publicBaseUrl}/${encodedKey}`;
 }
 
+export function storageKeyFromPublicUrl(publicUrl: string): string | null {
+  const config = getVideoStorageConfig();
+  if (!config) return null;
+
+  const base = config.publicBaseUrl.replace(/\/+$/, "");
+  const normalized = String(publicUrl || "").trim().split("?")[0];
+  if (!normalized.startsWith(base)) return null;
+
+  const rawKey = normalized.slice(base.length).replace(/^\/+/, "");
+  if (!rawKey) return null;
+
+  try {
+    return rawKey
+      .split("/")
+      .map((segment) => decodeURIComponent(segment))
+      .join("/");
+  } catch {
+    return rawKey;
+  }
+}
+
+export function posterStorageKeyForVideoKey(videoKey: string): string {
+  const segments = String(videoKey || "").trim().split("/").filter(Boolean);
+  const churchSegment = segments[1] || "unknown";
+  const baseName = segments[segments.length - 1] || "video.mp4";
+  const stem = baseName.replace(/\.[^.]+$/, "");
+  return `church-video-posters/${churchSegment}/${stem}.jpg`;
+}
+
+export async function storageObjectExists(key: string): Promise<boolean> {
+  try {
+    const size = await getStorageObjectByteSize(key);
+    return size > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function createPresignedVideoUpload(params: {
   churchId: string;
   userId: string;

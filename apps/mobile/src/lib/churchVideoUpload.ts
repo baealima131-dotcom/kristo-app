@@ -10,6 +10,8 @@ export type SignedMediaUploadSession = {
   contentType: string;
   faststart?: boolean;
   faststartPending?: boolean;
+  faststartReason?: string | null;
+  posterUri?: string | null;
 };
 
 export const SIGNED_UPLOAD_TIMEOUT_MS = 90_000;
@@ -436,6 +438,8 @@ export async function publishChurchVideoFeedPost(params: {
   sizeBytes?: number;
   bitrateEstimate?: number;
   faststart?: boolean;
+  faststartPending?: boolean;
+  faststartReason?: string | null;
 }) {
   const poster = String(params.posterUri || params.videoPosterUri || params.thumbnailUri || "").trim();
   const metadata = buildChurchVideoPublishMetadata({
@@ -463,6 +467,10 @@ export async function publishChurchVideoFeedPost(params: {
     ...(metadata.sizeBytes > 0 ? { sizeBytes: metadata.sizeBytes } : {}),
     ...(publishBitrateEstimate ? { bitrateEstimate: publishBitrateEstimate } : {}),
     faststart: metadata.faststart,
+    faststartPending: params.faststartPending === true,
+    ...(params.faststartReason
+      ? { faststartReason: String(params.faststartReason).trim() }
+      : {}),
     ...(poster
       ? {
           posterUri: poster,
@@ -479,11 +487,18 @@ export async function publishChurchVideoFeedPost(params: {
     sizeBytes: metadata.sizeBytes || null,
     bitrateEstimate: publishBitrateEstimate ?? null,
     faststart: metadata.faststart,
+    faststartPending: params.faststartPending === true,
+    faststartReason: params.faststartReason || null,
     durationSec: metadata.durationMs ? metadata.durationMs / 1000 : null,
     fileSizeBytes: metadata.sizeBytes > 0 ? metadata.sizeBytes : null,
   });
 
-  console.log("KRISTO_VIDEO_PUBLISH_PAYLOAD", publishBody);
+  console.log("KRISTO_VIDEO_PUBLISH_PAYLOAD", {
+    ...publishBody,
+    faststart: metadata.faststart,
+    faststartPending: params.faststartPending === true,
+    faststartReason: params.faststartReason || null,
+  });
 
   let lastError: unknown = null;
 

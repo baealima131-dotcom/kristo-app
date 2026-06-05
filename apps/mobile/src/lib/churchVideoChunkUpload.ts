@@ -439,12 +439,27 @@ export async function uploadVideoWithChunkSession(params: {
 
   const faststart = completed.faststart === true;
 
-  if (!faststart) {
+  const faststartPending = completed.faststartPending === true;
+  const faststartReason = String(completed.faststartReason || "").trim() || null;
+  const posterUri = String(completed.posterUri || "").trim() || null;
+
+  if (faststart) {
+    console.log("KRISTO_VIDEO_FASTSTART_REPACK_DONE", {
+      videoUrl: publicUrl,
+      posterUri,
+    });
+  } else {
+    console.log("KRISTO_VIDEO_FASTSTART_REPACK_FAILED", {
+      videoUrl: publicUrl,
+      faststartPending,
+      faststartReason,
+      posterUri,
+    });
     console.log("KRISTO_VIDEO_FASTSTART_REQUIRED", {
       videoUrl: publicUrl,
       faststart: false,
-      faststartPending: completed.faststartPending === true,
-      reason: completed.faststartReason || null,
+      faststartPending,
+      faststartReason,
     });
   }
 
@@ -454,7 +469,9 @@ export async function uploadVideoWithChunkSession(params: {
     publicUrl,
     contentType: session.contentType,
     faststart,
-    faststartPending: completed.faststartPending === true,
+    faststartPending,
+    faststartReason,
+    posterUri,
     resumableMode: "chunk",
     sessionId: session.sessionId,
   };

@@ -97,11 +97,10 @@ export async function repackVideoFaststartForKey(params: {
   });
 
   if (!(await ffmpegAvailable())) {
-    const message = "ffmpeg unavailable on server";
     console.log("KRISTO_VIDEO_FASTSTART_REPACK_FAILED", {
       videoUrl,
       key,
-      reason: message,
+      reason: "ffmpeg-unavailable",
     });
     return {
       ok: false,
@@ -109,8 +108,8 @@ export async function repackVideoFaststartForKey(params: {
       videoUrl,
       key,
       skipped: true,
-      reason: message,
-      error: message,
+      reason: "ffmpeg-unavailable",
+      error: "ffmpeg-unavailable",
     };
   }
 
@@ -215,6 +214,22 @@ export async function repackVideoFaststartForKey(params: {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {}
   }
+}
+
+export function resolveFaststartResponseFields(repack: VideoFaststartRepackResult) {
+  const rawReason = String(repack.reason || repack.error || "").trim().toLowerCase();
+  const faststartReason =
+    repack.faststart === true
+      ? null
+      : rawReason.includes("ffmpeg unavailable") || rawReason === "ffmpeg-unavailable"
+        ? "ffmpeg-unavailable"
+        : String(repack.reason || repack.error || "").trim() || null;
+
+  return {
+    faststart: repack.faststart === true,
+    faststartPending: repack.faststart !== true,
+    faststartReason,
+  };
 }
 
 export function scheduleVideoFaststartRepack(params: {

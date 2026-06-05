@@ -275,6 +275,45 @@ function normalizeFeedVideoUrl(url: unknown) {
   return String(url || "").trim().split("?")[0];
 }
 
+export async function patchFeedItemsPosterByVideoUrl(
+  videoUrl: string,
+  posterUri: string
+): Promise<number> {
+  await ensureFeedStoreReady();
+  const target = normalizeFeedVideoUrl(videoUrl);
+  const poster = String(posterUri || "").trim();
+  if (!target || !poster) return 0;
+
+  const items = await listFeedItems();
+  let patched = 0;
+
+  for (const item of items) {
+    const itemUrl = normalizeFeedVideoUrl(item.videoUrl);
+    if (!itemUrl || itemUrl !== target) continue;
+
+    const existingPoster = String(item.posterUri || item.videoPosterUri || "").trim();
+    if (existingPoster === poster) continue;
+
+    await upsertFeedItem({
+      ...item,
+      posterUri: poster,
+      videoPosterUri: poster,
+      thumbnailUri: poster,
+    });
+    patched += 1;
+  }
+
+  if (patched > 0) {
+    console.log("KRISTO_VIDEO_POSTER_FEED_PATCHED", {
+      videoUrl: target,
+      posterUri: poster,
+      patchedCount: patched,
+    });
+  }
+
+  return patched;
+}
+
 export async function patchFeedItemsFaststartByVideoUrl(videoUrl: string): Promise<number> {
   await ensureFeedStoreReady();
   const target = normalizeFeedVideoUrl(videoUrl);

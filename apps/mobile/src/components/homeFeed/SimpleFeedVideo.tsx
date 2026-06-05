@@ -336,7 +336,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const poster = String(posterUri || "").trim();
   const hasPoster = isValidVideoPosterUri(poster, uri);
   const showPosterOverlay = hasPoster && !firstFrameReady;
-  const showMinimalActiveHint = !hasPoster && isActive && !firstFrameReady;
+  const showGoldFallback = !hasPoster && !firstFrameReady;
 
   return (
     <View style={styles.root}>
@@ -351,10 +351,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
           <Image source={{ uri: poster }} style={styles.overlayFill} resizeMode="cover" />
         </View>
       ) : null}
-      {showMinimalActiveHint ? (
+      {showGoldFallback ? (
         <View style={styles.overlay} pointerEvents="none">
           <VideoPostFallbackPoster
-            variant="minimal"
+            variant="full"
             postId={postId}
             title={title}
             videoUrl={uri}

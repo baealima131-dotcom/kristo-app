@@ -7,8 +7,10 @@ import {
   getVideoStorageConfig,
   videoStorageConfigError,
 } from "@/app/api/_lib/media/objectStorage";
+import { ensureVideoPosterForUrl } from "@/app/api/_lib/media/videoPoster";
 import {
   repackVideoFaststartForKey,
+  resolveFaststartResponseFields,
   scheduleVideoFaststartRepack,
 } from "@/app/api/_lib/media/videoFaststart";
 
@@ -76,13 +78,40 @@ export async function POST(req: NextRequest) {
       scheduleVideoFaststartRepack({ key, videoUrl: completed.videoUrl });
     }
 
+    const faststartFields = resolveFaststartResponseFields(repack);
+    let posterUri: string | null = null;
+    try {
+      posterUri = await ensureVideoPosterForUrl(completed.videoUrl);
+    } catch (posterError) {
+      console.log("KRISTO_VIDEO_POSTER_REMOTE_FAILED", {
+        videoUrl: completed.videoUrl,
+        stage: "multipart-complete",
+        error: posterError instanceof Error ? posterError.message : String(posterError),
+      });
+    }
+
+    if (repack.faststart) {
+      console.log("KRISTO_VIDEO_FASTSTART_REPACK_DONE", {
+        videoUrl: completed.videoUrl,
+        key,
+        posterUri: posterUri || null,
+      });
+    } else {
+      console.log("KRISTO_VIDEO_FASTSTART_REPACK_FAILED", {
+        videoUrl: completed.videoUrl,
+        key,
+        faststartPending: faststartFields.faststartPending,
+        faststartReason: faststartFields.faststartReason,
+        posterUri: posterUri || null,
+      });
+    }
+
     return NextResponse.json({
       ok: true,
       data: {
         ...completed,
-        faststart: repack.faststart === true,
-        faststartPending: !repack.faststart,
-        faststartReason: repack.reason || repack.error || null,
+        ...faststartFields,
+        posterUri: posterUri || null,
       },
     });
   } catch (error) {

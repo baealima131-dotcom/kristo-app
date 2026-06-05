@@ -71,6 +71,7 @@ import {
 import { isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
 import {
   ensureVideoPosterForUrl,
+  isUsableVideoPosterUri,
   posterPublicUrlForVideoUrl,
   publicUploadAbsPath,
 } from "@/app/api/_lib/media/videoPoster";
@@ -513,6 +514,9 @@ function applyVideoMetadataFields(item: any, body?: any) {
     parsePositiveNumber(item?.fileSizeBytes);
   const faststart =
     body?.faststart === true || item?.faststart === true || item?.hasFaststart === true;
+  const faststartPending =
+    body?.faststartPending === true || item?.faststartPending === true;
+  const faststartReason = String(body?.faststartReason || item?.faststartReason || "").trim();
   let bitrateEstimate =
     parsePositiveNumber(body?.bitrateEstimate) ?? parsePositiveNumber(item?.bitrateEstimate);
 
@@ -533,6 +537,13 @@ function applyVideoMetadataFields(item: any, body?: any) {
   }
   if (faststart) {
     item.faststart = true;
+    item.faststartPending = false;
+    delete item.faststartReason;
+  } else if (faststartPending) {
+    item.faststartPending = true;
+    if (faststartReason) item.faststartReason = faststartReason;
+  } else if (faststartReason) {
+    item.faststartReason = faststartReason;
   }
 
   return item;
@@ -631,9 +642,6 @@ async function finalizeMediaUploadVideoPost(itemId: string) {
 
     const existing = await getFeedItemById(itemId);
     if (!existing) return;
-
-    const current = normalizeMediaStatus((existing as any)?.mediaStatus);
-    if (current === "ready") return;
 
     let posterUri = String((existing as any)?.posterUri || (existing as any)?.videoPosterUri || "").trim();
     const videoUrl = String(existing.videoUrl || "").trim();
@@ -1072,6 +1080,8 @@ async function enrichFeedListItem(
     fallbackAuthor: author,
   });
 
+  const postId = String(item?.id || "").trim();
+
   let posterUri =
     String(item?.posterUri || item?.videoPosterUri || "").trim() || undefined;
   let thumbnailUri =
@@ -1080,18 +1090,38 @@ async function enrichFeedListItem(
   const isVideoItem =
     item?.type === "video" || Boolean(String(item?.videoUrl || "").trim());
 
-  if (isVideoItem && !posterUri && !thumbnailUri && item?.videoUrl) {
-    const existingPoster = posterPublicUrlForVideoUrl(String(item.videoUrl));
-    const posterAbsPath = publicUploadAbsPath(existingPoster);
-    if (posterAbsPath && fs.existsSync(posterAbsPath)) {
-      posterUri = existingPoster;
-      thumbnailUri = existingPoster;
+  if (isVideoItem && item?.videoUrl) {
+    const videoUrlStr = String(item.videoUrl).trim();
+    const hasUsablePoster =
+      isUsableVideoPosterUri(posterUri, videoUrlStr) ||
+      isUsableVideoPosterUri(thumbnailUri, videoUrlStr);
+
+    if (!hasUsablePoster) {
+      const existingPoster = posterPublicUrlForVideoUrl(videoUrlStr);
+      const posterAbsPath = publicUploadAbsPath(existingPoster);
+      if (posterAbsPath && fs.existsSync(posterAbsPath)) {
+        posterUri = existingPoster;
+        thumbnailUri = existingPoster;
+      } else {
+        const generatedPoster = await ensureVideoPosterForUrl(videoUrlStr);
+        if (generatedPoster) {
+          posterUri = generatedPoster;
+          thumbnailUri = generatedPoster;
+        }
+      }
+
+      if (postId && isUsableVideoPosterUri(posterUri, videoUrlStr)) {
+        void upsertFeedItem({
+          ...item,
+          posterUri,
+          videoPosterUri: posterUri,
+          thumbnailUri: posterUri,
+        }).catch(() => {});
+      }
     }
   }
 
   const videoPosterUri = posterUri || thumbnailUri;
-
-  const postId = String(item?.id || "").trim();
 
   if (postId) {
     console.log("KRISTO_FEED_AUTHOR_ENRICH", {
@@ -2501,6 +2531,9 @@ async function handleFeedPost(req: NextRequest, body: any) {
     mediaType: (item as any).mediaType,
     mediaStatus: (item as any).mediaStatus,
     faststart: (item as any).faststart === true,
+    faststartPending: (item as any).faststartPending === true,
+    faststartReason: (item as any).faststartReason || null,
+    posterUri: resolvedPosterUri || null,
     churchId,
   });
 

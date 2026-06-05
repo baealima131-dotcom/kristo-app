@@ -48,6 +48,15 @@ function publicUrlFromAbs(absPath: string): string {
   return `/${rel}`;
 }
 
+export function isUsableVideoPosterUri(posterUri: unknown, videoUrl?: unknown): boolean {
+  const poster = String(posterUri || "").trim().split("?")[0];
+  const video = String(videoUrl || "").trim().split("?")[0];
+  if (!poster) return false;
+  if (video && poster === video) return false;
+  if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(poster)) return false;
+  return true;
+}
+
 export function posterPublicUrlForVideoUrl(videoUrl: string): string {
   const clean = String(videoUrl || "").split("?")[0].replace(/^\/+/, "");
   const base = path.basename(clean, path.extname(clean));
@@ -122,9 +131,17 @@ export async function generateVideoPosterFromFile(
 }
 
 export async function ensureVideoPosterForUrl(videoUrl: string): Promise<string | null> {
-  const absPath = publicUploadAbsPath(videoUrl);
-  if (!absPath) return null;
-  return generateVideoPosterFromFile(absPath);
+  const normalized = String(videoUrl || "").trim().split("?")[0];
+  if (!normalized) return null;
+
+  const absPath = publicUploadAbsPath(normalized);
+  if (absPath) {
+    const localPoster = await generateVideoPosterFromFile(absPath);
+    if (localPoster) return localPoster;
+  }
+
+  const { ensureRemoteVideoPosterForUrl } = await import("@/app/api/_lib/media/videoPosterRemote");
+  return ensureRemoteVideoPosterForUrl(normalized);
 }
 
 export function saveClientPosterBuffer(buf: Buffer, videoFilename: string): string {
