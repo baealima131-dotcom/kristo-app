@@ -16,6 +16,7 @@ import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { feedPublishMediaScheduleLocal } from "@/src/lib/homeFeedStore";
 import {
+  clearLocalSchedulePendingBackend,
   markLocalSchedulePendingBackend,
   removeLocalScheduleAfterBackendFail,
   replaceLocalScheduleWithBackend,
@@ -38,6 +39,10 @@ import {
   enterMediaScheduleFlow,
   exitMediaScheduleFlow,
 } from "@/src/lib/mediaScheduleFlowFlags";
+import {
+  assignSequentialMediaSlotTimes,
+  formatLocalMeetingDateFromMs,
+} from "@/src/lib/mediaScheduleSlotTimes";
 import { buildMediaScheduleAuthorityFields } from "@/src/lib/liveMediaAuthority";
 import {
   fetchChurchPastorUserId,
@@ -3617,6 +3622,15 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       }
     }
 
+    const sequencedItems =
+      isMediaSchedule && !isMinistryLiveSchedule && items.length
+        ? assignSequentialMediaSlotTimes(items, meetingStartDate.getTime(), {
+            scheduleDay,
+            maxEndMs: meetingEndDate.getTime(),
+            reason: "handleSendMeetingToSchedule.media",
+          })
+        : items;
+
     saveChurchProjectMeetingPlan(assignmentId, {
       day: scheduleDay,
       time: meetingStartHour,
@@ -3626,7 +3640,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       sentToSchedule: true,
     });
 
-    const newBatchSlots = items.map((item) => ({
+    const newBatchSlots = sequencedItems.map((item) => ({
       id: item.id,
       scheduleBatchId: nextScheduleBatchId,
       scheduleBatchCreatedAt: nextScheduleBatchCreatedAt,
@@ -3634,13 +3648,20 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       minutes: item.durationMin,
       startTime: item.startTime,
       endTime: item.endTime,
+      startMs: Number((item as any).startMs || 0),
+      endMs: Number((item as any).endMs || 0),
       timeLabel: `${item.startTime} - ${item.endTime}`,
-      meetingDate: parseTimeToDate(
-        meetingStartDay,
-        meetingStartMonth,
-        meetingStartYear,
-        item.startTime
-      ).toISOString(),
+      meetingDate:
+        Number((item as any).startMs || 0) > 0
+          ? formatLocalMeetingDateFromMs(Number((item as any).startMs))
+          : formatLocalMeetingDateFromMs(
+              parseTimeToDate(
+                meetingStartDay,
+                meetingStartMonth,
+                meetingStartYear,
+                item.startTime
+              ).getTime()
+            ),
       meetingDay: scheduleDay,
       role: item.role,
       task: item.task,
@@ -3661,7 +3682,9 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
 
     saveChurchProjectScheduleSlots(
       assignmentId,
-      [...newBatchSlots, ...scheduleSpeakerSlots]
+      isMediaSchedule && !isMinistryLiveSchedule
+        ? newBatchSlots
+        : [...newBatchSlots, ...scheduleSpeakerSlots]
     );
 
     setActiveScheduleBatchIndex(0);
@@ -3672,14 +3695,19 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       eventTitle: `${scheduleType} • ${assignmentTitle}`,
       eventDateLabel: scheduleDay,
       liveStartsAt: formatTime(meetingStartDate),
-      items: items.map((item) => ({
+      items: sequencedItems.map((item) => ({
         ...item,
-        meetingDate: parseTimeToDate(
-          meetingStartDay,
-          meetingStartMonth,
-          meetingStartYear,
-          item.startTime
-        ).toISOString(),
+        meetingDate:
+          Number((item as any).startMs || 0) > 0
+            ? formatLocalMeetingDateFromMs(Number((item as any).startMs))
+            : formatLocalMeetingDateFromMs(
+                parseTimeToDate(
+                  meetingStartDay,
+                  meetingStartMonth,
+                  meetingStartYear,
+                  item.startTime
+                ).getTime()
+              ),
         meetingDay: scheduleDay,
       })),
       sentToMc: false,
@@ -3743,13 +3771,15 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         scheduleType: "media-live-slots",
       });
 
-      const scheduleSlotsPayload = items.map((item, index) => ({
+      const scheduleSlotsPayload = sequencedItems.map((item, index) => ({
         id: item.id,
         name: item.name,
         slotLabel: `Slot ${index + 1}`,
         durationMin: item.durationMin,
         startTime: item.startTime,
         endTime: item.endTime,
+        startMs: Number((item as any).startMs || 0),
+        endMs: Number((item as any).endMs || 0),
         timeLabel: `${item.startTime} - ${item.endTime}`,
         role: item.role,
         task: item.task,
@@ -3760,12 +3790,17 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         meetingTopic: scheduleTopic,
         parentTopic: scheduleTopic,
         chat: item.chat,
-        meetingDate: parseTimeToDate(
-          meetingStartDay,
-          meetingStartMonth,
-          meetingStartYear,
-          item.startTime
-        ).toISOString(),
+        meetingDate:
+          Number((item as any).startMs || 0) > 0
+            ? formatLocalMeetingDateFromMs(Number((item as any).startMs))
+            : formatLocalMeetingDateFromMs(
+                parseTimeToDate(
+                  meetingStartDay,
+                  meetingStartMonth,
+                  meetingStartYear,
+                  item.startTime
+                ).getTime()
+              ),
         meetingDay: scheduleDay,
       }));
 
@@ -3884,9 +3919,16 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       }
 
       const backendItem = createRes?.item || createRes?.data || createRes;
-      replaceLocalScheduleWithBackend(backendItem, localScheduleId, {
+      const normalizedBackendFeedId = replaceLocalScheduleWithBackend(backendItem, localScheduleId, {
         churchId,
         scheduleSlots: scheduleSlotsPayload,
+      });
+      clearLocalSchedulePendingBackend(localScheduleId);
+
+      console.log("KRISTO_SCHEDULE_LOCAL_REPLACED_IMMEDIATE", {
+        localScheduleId,
+        backendFeedId: normalizedBackendFeedId || backendFeedId || null,
+        slotCount: scheduleSlotsPayload.length,
       });
 
       if (churchId) {

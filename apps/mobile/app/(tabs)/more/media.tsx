@@ -55,6 +55,12 @@ import {
   findActiveMediaScheduleForChurch,
   isMediaScheduleFeedItem,
 } from "../../../src/lib/mediaScheduleLock";
+import {
+  countMediaSlotTimeConflicts,
+  findMediaSlotTimeConflict,
+  resolveCanonicalMediaScheduleForGuests,
+  resolveMediaSlotTimeWindow,
+} from "../../../src/lib/mediaScheduleSlotTimes";
 import { buildMediaScheduleAuthorityFields } from "../../../src/lib/liveMediaAuthority";
 import {
   fetchChurchPastorUserId,
@@ -1176,9 +1182,8 @@ export default function MediaStudioScreen() {
 
   const syncedGuestClaimSlots = useMemo(() => {
     const churchId = String(session?.churchId || "").trim();
-    const combined = backendFeedItems.length ? backendFeedItems : homeFeedItems;
     const activeSchedule = churchId
-      ? findActiveMediaScheduleForChurch(combined, churchId, { strictChurch: true })
+      ? resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, churchId)
       : null;
 
     if (!activeSchedule) return [];
@@ -1244,6 +1249,8 @@ export default function MediaStudioScreen() {
           slotStatus === "taken"
         );
 
+        const timeWindow = resolveMediaSlotTimeWindow(slot);
+
         return {
           id: String(slot?.id || `synced-slot-${index}`),
           sourceFeedId: sourceItemId,
@@ -1252,6 +1259,8 @@ export default function MediaStudioScreen() {
           meetingDay: String(slot?.meetingDay || "").trim(),
           startTime: String(slot?.startTime || "").trim(),
           endTime: String(slot?.endTime || "").trim(),
+          startMs: timeWindow.startMs,
+          endMs: timeWindow.endMs,
           time: `${slot?.meetingDay || "Today"} • ${slot?.startTime || ""}`.trim(),
           durationMin: Number(slot?.durationMin || 0),
           claimedBy: isClaimed ? guestName || "Claimed guest" : "Open",
@@ -1270,8 +1279,8 @@ export default function MediaStudioScreen() {
     const now = Date.now();
 
     return [...rows].sort((a: any, b: any) => {
-      const da = parseGuestSlotDate(a);
-      const db = parseGuestSlotDate(b);
+      const da = resolveMediaSlotTimeWindow(a);
+      const db = resolveMediaSlotTimeWindow(b);
 
       const aStart = Number(da?.startMs || 0);
       const bStart = Number(db?.startMs || 0);
@@ -1302,9 +1311,8 @@ export default function MediaStudioScreen() {
 
   useEffect(() => {
     const churchId = String(session?.churchId || "").trim();
-    const combined = backendFeedItems.length ? backendFeedItems : homeFeedItems;
     const activeSchedule = churchId
-      ? findActiveMediaScheduleForChurch(combined, churchId, { strictChurch: true })
+      ? resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, churchId)
       : null;
 
     console.log("KRISTO_GUEST_CLAIM_CENTER_LOAD", {
@@ -1332,7 +1340,10 @@ export default function MediaStudioScreen() {
   const guestClaimClaimedCount = syncedGuestClaimSlots.filter((slot) => slot.status === "Claimed" && !slot.approved).length;
   const guestClaimOpenCount = syncedGuestClaimSlots.filter((slot) => slot.status === "Open" && !slot.locked).length;
   const guestInvitationCount = Object.values(guestInvitedBySlot).filter(Boolean).length;
-  const guestClaimConflictCount = syncedGuestClaimSlots.filter((slot, index, rows) => !!getGuestSlotConflict(slot, index, rows)).length;
+  const guestClaimConflictCount = useMemo(
+    () => countMediaSlotTimeConflicts(syncedGuestClaimSlots, guestClockNow),
+    [syncedGuestClaimSlots, guestClockNow]
+  );
 
   const activeMediaLiveSlot = useMemo(() => {
     const now = Date.now();
@@ -2535,6 +2546,12 @@ export default function MediaStudioScreen() {
   }
 
   function parseGuestSlotDate(slot: any) {
+    const explicitStart = Number(slot?.startMs || 0);
+    const explicitEnd = Number(slot?.endMs || 0);
+    if (explicitStart > 0 && explicitEnd > explicitStart) {
+      return { startMs: explicitStart, endMs: explicitEnd };
+    }
+
     const rawDate = String(slot?.meetingDate || slot?.meetingDay || "").trim();
     const rawStart = String(slot?.startTime || "").trim();
     const rawEnd = String(slot?.endTime || "").trim();
@@ -2630,25 +2647,8 @@ export default function MediaStudioScreen() {
   }
 
   function getGuestSlotConflict(slot: any, index: number, slots: any[]) {
-    const current = parseGuestSlotDate(slot);
-    if (!current.startMs || !current.endMs) return "";
-
-    if (current.endMs <= current.startMs) {
-      return "Invalid time";
-    }
-
-    const prev = index > 0 ? parseGuestSlotDate(slots[index - 1]) : null;
-    const next = index < slots.length - 1 ? parseGuestSlotDate(slots[index + 1]) : null;
-
-    if (prev?.endMs && current.startMs < prev.endMs) {
-      return "Overlaps previous slot";
-    }
-
-    if (next?.startMs && current.endMs > next.startMs) {
-      return "Overlaps next slot";
-    }
-
-    return "";
+    void index;
+    return findMediaSlotTimeConflict(slot, slots, guestClockNow);
   }
 
   function fixGuestSlotConflict(slotId: string, sourceFeedId?: string) {
