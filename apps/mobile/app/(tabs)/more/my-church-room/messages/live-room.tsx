@@ -83,6 +83,8 @@ import {
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { runMediaScheduleSilentReload } from "@/src/lib/mediaScheduleSilentReload";
+import { resumeHomeFeedAfterLiveExit } from "@/src/lib/liveRoomStartup";
+import { markHomeFeedVideoNeedsRecovery } from "@/src/lib/homeFeedVideoController";
 import {
   getChurchProjectMcRuntime,
   getChurchProjectMcLiveSlotState,
@@ -1833,6 +1835,13 @@ export default function LiveRoomScreen() {
     () => parseLiveAllScheduleSlotsJson((params as any).liveAllScheduleSlotsJson),
     [(params as any).liveAllScheduleSlotsJson]
   );
+
+  useEffect(() => {
+    return () => {
+      resumeHomeFeedAfterLiveExit();
+      markHomeFeedVideoNeedsRecovery("live-room-exit");
+    };
+  }, []);
 
   useEffect(() => {
     liveRoomMountAtRef.current = Date.now();
@@ -6265,6 +6274,9 @@ export default function LiveRoomScreen() {
       roomName,
       forceReentry: true,
     });
+
+    resumeHomeFeedAfterLiveExit();
+    markHomeFeedVideoNeedsRecovery("live-room-exit");
 
     emitLiveRingRefresh("leave-live-room");
     void runMediaScheduleSilentReload("leave-live-room", true, {

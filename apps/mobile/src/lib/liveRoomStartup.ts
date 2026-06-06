@@ -7,6 +7,16 @@ export function setHomeFeedRenderPaused(paused: boolean) {
   (globalThis as any).__KRISTO_HOME_FEED_RENDER_PAUSED__ = paused;
 }
 
+/** Clear live-room render pause flags after exiting Live Room. */
+export function resumeHomeFeedAfterLiveExit() {
+  setHomeFeedRenderPaused(false);
+  const g = globalThis as any;
+  const liveCount = Number(g.__KRISTO_LIVE_ACTIVE_COUNT__ || 0);
+  if (liveCount <= 0) {
+    g.__KRISTO_LIVE_ACTIVE__ = false;
+  }
+}
+
 export function isHomeFeedRenderPaused(): boolean {
   return Boolean(
     (globalThis as any).__KRISTO_HOME_FEED_RENDER_PAUSED__ ||

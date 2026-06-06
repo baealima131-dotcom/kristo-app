@@ -32,6 +32,8 @@ const registry = new Map<string, RegistryEntry>();
 let activePostId: string | null = null;
 let lastAudioGuardKey = "";
 let lastRegisterKey = "";
+let pendingVideoRecoveryReason: string | null = null;
+const videoRecoveryListeners = new Set<() => void>();
 
 function devLog(event: string, meta: Record<string, unknown>) {
   if (!__DEV__ || !isKristoVerboseVideoControllerDebug()) return;
@@ -111,6 +113,90 @@ export function isStrictVideoFeedItem(item: any) {
 
 export function getActiveHomeFeedVideoId() {
   return activePostId;
+}
+
+export function markHomeFeedVideoNeedsRecovery(reason: string) {
+  pendingVideoRecoveryReason = String(reason || "unknown").trim() || "unknown";
+  console.log("KRISTO_LIVE_ROOM_EXIT_VIDEO_RECOVERY_MARKED", {
+    reason: pendingVideoRecoveryReason,
+  });
+  videoRecoveryListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch {}
+  });
+}
+
+export function peekHomeFeedVideoRecovery(): string | null {
+  return pendingVideoRecoveryReason;
+}
+
+export function consumeHomeFeedVideoRecovery(): string | null {
+  const reason = pendingVideoRecoveryReason;
+  pendingVideoRecoveryReason = null;
+  return reason;
+}
+
+export function subscribeHomeFeedVideoRecovery(listener: () => void) {
+  videoRecoveryListeners.add(listener);
+  return () => {
+    videoRecoveryListeners.delete(listener);
+  };
+}
+
+export function bumpHomeFeedVideoOwnership(postId: string) {
+  const id = String(postId || "").trim();
+  if (!id) {
+    activePostId = null;
+    return;
+  }
+  activePostId = null;
+  activePostId = id;
+}
+
+export function recoverHomeFeedPlaybackAfterLiveExit(
+  meta: HomeFeedVideoLogMeta & { postId?: string } = {}
+): boolean {
+  const id = String(meta.postId || activePostId || "").trim();
+  const reason = String(meta.reason || "live-room-exit").trim();
+
+  if (!id) {
+    console.log("KRISTO_HOME_FEED_VIDEO_RECOVERY_SKIPPED", {
+      reason,
+      why: "no-post-id",
+    });
+    return false;
+  }
+
+  const entry = registry.get(id);
+  if (!entry) {
+    console.log("KRISTO_HOME_FEED_VIDEO_RECOVERY_SKIPPED", {
+      postId: id,
+      reason,
+      why: "not-registered",
+    });
+    return false;
+  }
+
+  pauseAllHomeFeedVideos({
+    ...meta,
+    exceptPostId: id,
+    reason: reason || "live-exit-recovery-pause-inactive",
+  });
+  activePostId = id;
+
+  const shouldPlay = meta.videoReady !== false && meta.shouldPlay !== false;
+  if (shouldPlay) {
+    safePlayPlayer(entry.player, true);
+    logHomeFeedVideoAudioGuard(id, true, "activate-active");
+  }
+
+  console.log("KRISTO_HOME_FEED_VIDEO_RECOVERY_ACTIVE", {
+    postId: id,
+    reason,
+    shouldPlay,
+  });
+  return true;
 }
 
 export function registerHomeFeedVideo(
@@ -229,6 +315,8 @@ export function activateHomeFeedVideo(
   if (!id) return;
 
   if (activePostId === id && meta.shouldPlay && meta.videoReady) {
+    const entry = registry.get(id);
+    safePlayPlayer(entry?.player, true);
     logHomeFeedVideoAudioGuard(id, true, "activate-active");
     return;
   }

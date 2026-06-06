@@ -33,6 +33,7 @@ import {
   filterHomeFeedClaimableSlotRows,
   homeFeedScheduleEngagementId,
   isHomeFeedScheduleCardRow,
+  isVideoPost,
   readFeedItemLikedByMe,
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, homeFeedSlideHeight } from "./theme";
@@ -43,7 +44,13 @@ import {
   syncReportedPostIdsFromApi,
 } from "@/src/lib/homeFeedReport";
 import { isHomeFeedRenderPaused } from "@/src/lib/liveRoomStartup";
-import { pauseAllHomeFeedVideos } from "@/src/lib/homeFeedVideoController";
+import {
+  bumpHomeFeedVideoOwnership,
+  consumeHomeFeedVideoRecovery,
+  pauseAllHomeFeedVideos,
+  peekHomeFeedVideoRecovery,
+  recoverHomeFeedPlaybackAfterLiveExit,
+} from "@/src/lib/homeFeedVideoController";
 import {
   consumeHomeFeedScheduleDirty,
   peekHomeFeedScheduleDirty,
@@ -275,6 +282,50 @@ export default function HomeFeedScreen() {
     if (isClaimSlotFocus && claimableSlotRows.length) return claimableSlotRows;
     return feedRows;
   }, [feedRows, isClaimSlotFocus, claimableSlotRows]);
+
+  useEffect(() => {
+    if (!feedFocused) return;
+
+    const recoveryReason = peekHomeFeedVideoRecovery();
+    if (!recoveryReason) return;
+
+    console.log("KRISTO_HOME_FEED_VIDEO_RECOVERY_AFTER_LIVE", {
+      reason: recoveryReason,
+      activeIndex,
+      feedCount: displayFeedRows.length,
+    });
+
+    const activeItem = displayFeedRows[activeIndex];
+    const postId = String(activeItem?.id || "").trim();
+
+    if (!postId || !isVideoPost(activeItem)) {
+      console.log("KRISTO_HOME_FEED_VIDEO_RECOVERY_SKIPPED", {
+        reason: recoveryReason,
+        why: !postId ? "no-active-post" : "not-video-post",
+        activeIndex,
+      });
+      consumeHomeFeedVideoRecovery();
+      return;
+    }
+
+    bumpHomeFeedVideoOwnership(postId);
+    const recovered = recoverHomeFeedPlaybackAfterLiveExit({
+      postId,
+      shouldPlay: true,
+      videoReady: true,
+      reason: recoveryReason,
+      activeFeedIndex: activeIndex,
+      feedIndex: activeIndex,
+      activeFeedItemId: postId,
+      screenFocused: true,
+      appState: "active",
+      isStrictVideoPost: true,
+    });
+
+    if (recovered) {
+      consumeHomeFeedVideoRecovery();
+    }
+  }, [feedFocused, activeIndex, displayFeedRows]);
 
   useEffect(() => {
     const targetId = String(pendingScheduleFeedIdRef.current || "").trim();

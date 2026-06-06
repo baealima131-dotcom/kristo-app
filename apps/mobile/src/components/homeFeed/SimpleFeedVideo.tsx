@@ -5,8 +5,11 @@ import { useEvent } from "expo";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
 import {
   activateHomeFeedVideo,
+  consumeHomeFeedVideoRecovery,
   pauseHomeFeedVideo,
+  peekHomeFeedVideoRecovery,
   registerHomeFeedVideo,
+  subscribeHomeFeedVideoRecovery,
   unregisterHomeFeedVideo,
 } from "@/src/lib/homeFeedVideoController";
 import {
@@ -106,6 +109,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const firstFrameMsRef = useRef<number | null>(cachedReadyOnMount && isActive ? 0 : null);
   const timingLoggedRef = useRef(false);
   const activeHandoffRef = useRef(false);
+  const prevScreenFocusedRef = useRef(screenFocused);
   const lastRegisterKeyRef = useRef("");
 
   const logStartupTiming = (mode: HomeFeedVideoWarmMode) => {
@@ -179,6 +183,40 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       console.log("KRISTO_VIDEO_REUSED_WARM_PLAYER", { id: postId || null });
     }
   }, [postId]);
+
+  useEffect(() => {
+    const wasFocused = prevScreenFocusedRef.current;
+    prevScreenFocusedRef.current = screenFocused;
+
+    if (screenFocused && !wasFocused) {
+      activeHandoffRef.current = false;
+      if (isActive && firstFrameReady) {
+        activateActivePlayback(
+          peekHomeFeedVideoRecovery() ? "live-room-exit-refocus" : "screen-refocus"
+        );
+        if (peekHomeFeedVideoRecovery()) {
+          consumeHomeFeedVideoRecovery();
+        }
+      }
+    }
+  }, [screenFocused, isActive, firstFrameReady, postId]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    return subscribeHomeFeedVideoRecovery(() => {
+      if (!screenFocused || !peekHomeFeedVideoRecovery()) return;
+      activeHandoffRef.current = false;
+      if (firstFrameReady) {
+        activateActivePlayback("live-room-exit-recovery");
+        consumeHomeFeedVideoRecovery();
+        return;
+      }
+      try {
+        player.muted = true;
+        player.play();
+      } catch {}
+    });
+  }, [isActive, screenFocused, firstFrameReady, player, postId]);
 
   useEffect(() => {
     registerHomeFeedVideo(postId, player, {
