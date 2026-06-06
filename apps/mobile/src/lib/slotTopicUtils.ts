@@ -91,22 +91,30 @@ export function resolveRealSlotTopic(card: any): {
   ).trim();
 
   const rawSlotKeys = Object.keys(slot || {}).filter((key) =>
-    /topic|script|task|description|title|role|assignment|meeting/i.test(key)
+    /topic|script|assignment|slot/i.test(key)
   );
 
+  // Per-slot explicit topics only — never meeting type, role, title, or task.
   const explicitCandidates: Array<{ source: string; value: string }> = [
-    { source: "slot.topic", value: String(slot?.topic || "").trim() },
-    { source: "card.topic", value: String(card?.topic || "").trim() },
-    { source: "slot.assignmentTopic", value: String(slot?.assignmentTopic || "").trim() },
-    { source: "card.assignmentTopic", value: String(card?.assignmentTopic || "").trim() },
-    { source: "slot.slotTopic", value: String(slot?.slotTopic || "").trim() },
     { source: "card.slotTopic", value: String(card?.slotTopic || "").trim() },
-    { source: "slot.description", value: String(slot?.description || "").trim() },
-    { source: "card.description", value: String(card?.description || "").trim() },
+    { source: "slot.slotTopic", value: String(slot?.slotTopic || "").trim() },
+    { source: "card.assignmentTopic", value: String(card?.assignmentTopic || "").trim() },
+    { source: "slot.assignmentTopic", value: String(slot?.assignmentTopic || "").trim() },
+    { source: "card.topic", value: String(card?.topic || "").trim() },
+    { source: "slot.topic", value: String(slot?.topic || "").trim() },
+    { source: "card.script", value: String(card?.script || "").trim() },
+    { source: "slot.script", value: String(slot?.script || "").trim() },
   ];
 
   for (const { source, value } of explicitCandidates) {
     if (isRealUserTopic(value, parentTopic, meetingType, title)) {
+      console.log("KRISTO_SLOT_TOPIC_RESOLVE", {
+        resolvedTopic: value,
+        source,
+        parentTopic,
+        meetingType,
+        title,
+      });
       return {
         resolvedTopic: value,
         source,
@@ -117,24 +125,13 @@ export function resolveRealSlotTopic(card: any): {
     }
   }
 
-  const meetingLevelCandidates: Array<{ source: string; value: string }> = [
-    { source: "card.meetingTopic", value: String(card?.meetingTopic || "").trim() },
-    { source: "card.scheduleTopic", value: String(card?.scheduleTopic || "").trim() },
-    { source: "card.parentTopic", value: parentTopic },
-    { source: "card.script", value: String(card?.script || "").trim() },
-  ];
-
-  for (const { source, value } of meetingLevelCandidates) {
-    if (isRealUserTopic(value, parentTopic, meetingType, title)) {
-      return {
-        resolvedTopic: value,
-        source,
-        parentTopic,
-        meetingType,
-        rawSlotKeys,
-      };
-    }
-  }
+  console.log("KRISTO_SLOT_TOPIC_RESOLVE", {
+    resolvedTopic: "",
+    source: "none",
+    parentTopic,
+    meetingType,
+    title,
+  });
 
   return {
     resolvedTopic: "",
@@ -145,31 +142,67 @@ export function resolveRealSlotTopic(card: any): {
   };
 }
 
+export function resolveMeetingTopicForSlots(
+  parentTopic: string,
+  meetingType: string,
+  title = ""
+): string {
+  const topic = String(parentTopic || "").trim();
+  if (!topic || !isRealUserTopic(topic, "", meetingType, title)) return "";
+  return topic;
+}
+
 export function resolveScheduleSlotScriptForSave(
   slot: any,
   parentTopic: string,
   opts?: { slotNumber?: string | number; title?: string; log?: boolean }
-): { script: string; source: string } {
+): { script: string; source: string; slotTopic: string; assignmentTopic: string } {
+  const title = String(opts?.title || slot?.name || slot?.title || "Schedule slot").trim();
+  const meetingType = extractMeetingTypeFromSlot(slot);
   const resolved = resolveRealSlotTopic({
     ...slot,
-    scheduleTopic: parentTopic,
-    meetingTopic: parentTopic,
     parentTopic,
   });
 
-  const title = String(opts?.title || slot?.name || slot?.title || "Schedule slot").trim();
-
   if (resolved.resolvedTopic) {
     if (opts?.log !== false) {
-      console.log("KRISTO_SCHEDULE_SLOT_SCRIPT_SAVE", {
+      console.log("KRISTO_SLOT_TOPIC_SAVE_REAL", {
         slotNumber: opts?.slotNumber ?? slot?.slotNumber ?? slot?.slotLabel ?? "",
         title,
+        slotTopic: resolved.resolvedTopic,
+        assignmentTopic: resolved.resolvedTopic,
         script: resolved.resolvedTopic,
         source: resolved.source,
         parentTopic,
       });
     }
-    return { script: resolved.resolvedTopic, source: resolved.source };
+    return {
+      script: resolved.resolvedTopic,
+      source: resolved.source,
+      slotTopic: resolved.resolvedTopic,
+      assignmentTopic: resolved.resolvedTopic,
+    };
+  }
+
+  const meetingTopic = resolveMeetingTopicForSlots(parentTopic, meetingType, title);
+  if (meetingTopic) {
+    if (opts?.log !== false) {
+      console.log("KRISTO_SLOT_TOPIC_SAVE_REAL", {
+        slotNumber: opts?.slotNumber ?? slot?.slotNumber ?? slot?.slotLabel ?? "",
+        title,
+        slotTopic: meetingTopic,
+        assignmentTopic: meetingTopic,
+        script: meetingTopic,
+        source: "meeting.topic",
+        parentTopic,
+      });
+    }
+    return {
+      script: meetingTopic,
+      source: "meeting.topic",
+      slotTopic: meetingTopic,
+      assignmentTopic: meetingTopic,
+    };
   }
 
   if (opts?.log !== false) {
@@ -177,10 +210,13 @@ export function resolveScheduleSlotScriptForSave(
       slotNumber: opts?.slotNumber ?? slot?.slotNumber ?? slot?.slotLabel ?? "",
       title,
       script: "",
+      slotTopic: "",
+      assignmentTopic: "",
       source: "none",
       parentTopic,
+      meetingType,
     });
   }
 
-  return { script: "", source: "none" };
+  return { script: "", source: "none", slotTopic: "", assignmentTopic: "" };
 }

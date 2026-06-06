@@ -47,7 +47,7 @@ import {
 } from "@/src/lib/churchSubscription";
 import { clearThreadMessages } from "@/src/lib/messagesStore";
 import { applyScheduleDeleteToLocalRoom } from "@/src/lib/scheduleRoomMessageSync";
-import { resolveScheduleSlotScriptForSave } from "@/src/lib/slotTopicUtils";
+import { resolveRealSlotTopic, resolveScheduleSlotScriptForSave } from "@/src/lib/slotTopicUtils";
 import {
   configureChurchProjectElection,
   getChurchProjectElectionState,
@@ -2074,6 +2074,77 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
   }
 
 
+  function updateScheduleSlotTopic(slotId: string, nextTopic: string) {
+    const slotTopic = String(nextTopic || "").trim();
+    const latestSlots = getChurchProjectMcScheduleState(assignmentId).scheduleSlots || [];
+    const { script: nextScript } = resolveScheduleSlotScriptForSave(
+      {
+        ...latestSlots.find((x: any) => String(x.id) === String(slotId)),
+        slotTopic,
+      },
+      String(meetingTopic || meetingTopicChoice || "").trim(),
+      { log: false }
+    );
+
+    const nextSlots = latestSlots.map((slot: any) =>
+      String(slot.id) === String(slotId)
+        ? { ...slot, slotTopic, script: nextScript }
+        : slot
+    );
+
+    saveChurchProjectScheduleSlots(assignmentId, nextSlots);
+    setBackendScheduleCards((prev) =>
+      prev.map((slot: any) =>
+        String(slot.id || slot.cardId) === String(slotId)
+          ? { ...slot, slotTopic, script: nextScript }
+          : slot
+      )
+    );
+  }
+
+  async function syncScheduleSlotTopicToRoom(slot: any) {
+    const slotId = String(slot?.id || "").trim();
+    if (!slotId || !targetRoomId) return;
+
+    const slotTopic = String(slot?.slotTopic || "").trim();
+    const parentTopic = String(
+      slot?.parentTopic || slot?.scheduleTopic || meetingTopic || meetingTopicChoice || ""
+    ).trim();
+    const { script: nextScript } = resolveScheduleSlotScriptForSave(
+      { ...slot, slotTopic },
+      parentTopic,
+      { log: false }
+    );
+
+    const isPublished = String(slot?.visibility || "").toLowerCase() === "published";
+    if (!isPublished) return;
+
+    try {
+      const headers = getKristoHeaders();
+      let res: any = await apiPatch(
+        "/api/church/room-messages",
+        {
+          roomId: targetRoomId,
+          cardId: slotId,
+          patch: {
+            slotTopic,
+            assignmentTopic: String(slot?.assignmentTopic || "").trim(),
+            topic: String(slot?.topic || "").trim(),
+            script: nextScript,
+          },
+        },
+        { headers: headers as any }
+      );
+
+      if (isRoomMessageCardNotFound(res)) {
+        await publishScheduleSlotOnce(
+          { ...slot, slotTopic, script: nextScript },
+          { parentTopic, preferCreate: true }
+        );
+      }
+    } catch {}
+  }
+
   function changeSlotMinutes(slotId: string, nextMinutes: number) {
     const targetSlot = scheduleSpeakerSlots.find((slot: any) => String(slot.id) === String(slotId));
     const isPublished = String((targetSlot as any)?.visibility || "").toLowerCase() === "published";
@@ -2318,11 +2389,14 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
   ) {
     const now = opts.publishedAt ?? Date.now();
     const parentTopic = String(opts.parentTopic || "").trim();
-    const { script: resolvedScript } = resolveScheduleSlotScriptForSave(slot, parentTopic, {
-      slotNumber: opts.slotNumber,
-      title: String(slot?.name || slot?.title || "Schedule slot"),
-      log: false,
-    });
+    const { script: resolvedScript, slotTopic: resolvedSlotTopic, assignmentTopic: resolvedAssignmentTopic } =
+      resolveScheduleSlotScriptForSave(slot, parentTopic, {
+        slotNumber: opts.slotNumber,
+        title: String(slot?.name || slot?.title || "Schedule slot"),
+        log: false,
+      });
+    const slotTopic = String(slot?.slotTopic || resolvedSlotTopic || "").trim();
+    const assignmentTopic = String(slot?.assignmentTopic || resolvedAssignmentTopic || slotTopic || "").trim();
 
     return {
       cardId: String(slot?.id || ""),
@@ -2340,7 +2414,10 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       meetingDate: String(slot?.meetingDate || ""),
       timeLabel: String(slot?.timeLabel || ""),
       task: String(slot?.task || slot?.name || ""),
-      script: resolvedScript,
+      slotTopic,
+      assignmentTopic,
+      topic: String(slot?.topic || slotTopic || "").trim(),
+      script: slotTopic || resolvedScript,
       scheduleTopic: parentTopic,
       meetingTopic: parentTopic,
       parentTopic,
@@ -2484,6 +2561,9 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         role: String(x.card?.roleLabel || ""),
         task: String(x.card?.task || ""),
         script: String(x.card?.script || ""),
+        slotTopic: String(x.card?.slotTopic || ""),
+        assignmentTopic: String(x.card?.assignmentTopic || ""),
+        topic: String(x.card?.topic || ""),
         chat: Array.isArray(x.card?.notes) ? x.card.notes : [],
       }))
       .sort((a: any, b: any) => {
@@ -2805,7 +2885,19 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     }
 
     const scheduleType = meetingTitleChoice?.trim() || "Meeting";
-    const rawScheduleTopic = isMediaSchedule ? meetingTopicChoice?.trim() : meetingTopic?.trim();
+
+    console.log("KRISTO_MEETING_TOPIC_STATE", {
+      meetingTopic: String(meetingTopic || ""),
+      scheduleTopic: String(meetingTopicChoice || ""),
+      draftTopic: String(meetingTopicChoice || ""),
+      topicText: String(meetingTopicChoice || ""),
+      meetingPlanTopic: String(meetingTopic || ""),
+    });
+
+    const userEnteredTopic = String(
+      meetingTopicChoice?.trim() || meetingTopic?.trim() || ""
+    ).trim();
+    const rawScheduleTopic = userEnteredTopic;
     const badMediaTopic =
       isMediaSchedule &&
       (
@@ -2821,9 +2913,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       ? badMediaTopic
         ? "Upendo wa Mungu"
         : rawScheduleTopic
-      : isMinistryLiveSchedule
-        ? meetingTopicChoice?.trim() || meetingTopic?.trim() || "No topic"
-        : meetingTopic?.trim() || meetingTopicChoice?.trim() || "No topic";
+      : userEnteredTopic;
     const scheduleTarget = meetingAudience?.trim() || "Selected audience";
     const scheduleDay = `${meetingStartMonth} ${meetingStartDay}, ${meetingStartYear}`;
     const targetKey = scheduleTarget.toLowerCase();
@@ -3254,6 +3344,8 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       durationMin: number;
       task: string;
       script: string;
+      slotTopic?: string;
+      assignmentTopic?: string;
       scheduleTopic?: string;
       meetingTopic?: string;
       parentTopic?: string;
@@ -3406,7 +3498,12 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
             ? partLabel.trim()
             : `${row.title}${partLabel}`;
         const slotTask = `${slotName} • ${scheduleType}`;
-        const { script: slotScript } = resolveScheduleSlotScriptForSave(
+        const rowSlotTopic = String((row as any)?.slotTopic || "").trim();
+        const {
+          script: slotScript,
+          slotTopic: savedSlotTopic,
+          assignmentTopic: savedAssignmentTopic,
+        } = resolveScheduleSlotScriptForSave(
           {
             name: slotName,
             title: slotName,
@@ -3415,7 +3512,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
             roleLabel: row.detail,
             topic: (row as any)?.topic,
             assignmentTopic: (row as any)?.assignmentTopic,
-            slotTopic: (row as any)?.slotTopic,
+            slotTopic: rowSlotTopic,
             description: (row as any)?.description,
           },
           scheduleTopic,
@@ -3435,6 +3532,8 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           durationMin: segmentMin,
           task: slotTask,
           script: slotScript,
+          slotTopic: savedSlotTopic || rowSlotTopic,
+          assignmentTopic: savedAssignmentTopic || savedSlotTopic || rowSlotTopic,
           scheduleTopic,
           meetingTopic: scheduleTopic,
           parentTopic: scheduleTopic,
@@ -3510,6 +3609,8 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       role: item.role,
       task: item.task,
       script: item.script,
+      slotTopic: String(item.slotTopic || "").trim(),
+      assignmentTopic: String(item.assignmentTopic || item.slotTopic || "").trim(),
       scheduleTopic,
       meetingTopic: scheduleTopic,
       parentTopic: scheduleTopic,
@@ -3617,6 +3718,8 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         role: item.role,
         task: item.task,
         script: item.script,
+        slotTopic: String(item.slotTopic || "").trim(),
+        assignmentTopic: String(item.assignmentTopic || item.slotTopic || "").trim(),
         scheduleTopic,
         meetingTopic: scheduleTopic,
         parentTopic: scheduleTopic,
@@ -3825,7 +3928,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           : index === scheduleSpeakerSlots.length - 1
             ? "Main"
             : "Support";
-      const { script: slotScript } = resolveScheduleSlotScriptForSave(
+      const { script: slotScript, slotTopic: savedSlotTopic } = resolveScheduleSlotScriptForSave(
         {
           ...slot,
           name: slotName,
@@ -3851,6 +3954,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         durationMin: slot.minutes,
         task: String(slot?.task || slot?.name || slotName),
         script: slotScript,
+        slotTopic: savedSlotTopic || String(slot?.slotTopic || "").trim(),
         scheduleTopic: parentTopic,
         meetingTopic: parentTopic,
         parentTopic,
@@ -6280,6 +6384,7 @@ height: 24,
                     !!String((liveSlot as any)?.claimedByName || (liveSlot as any)?.claimedByUserId || "").trim();
                   const slotClaimedName = String((liveSlot as any)?.claimedByName || "").trim();
                   const slotClaimedAvatar = String((liveSlot as any)?.claimedByAvatar || "").trim();
+                  const slotTopicPreview = resolveRealSlotTopic(liveSlot).resolvedTopic;
 
                   return (
                     <View key={slot.id} style={s.scheduleSlotRow}>
@@ -6302,10 +6407,31 @@ height: 24,
                         </View>
 
                         <View style={s.scheduleTopicStrip}>
-                          <Text style={s.scheduleTopicLabel}>TOPIC</Text>
-                          <Text style={s.scheduleTopicValue} numberOfLines={2}>
-                            {String((liveSlot as any).script || (liveSlot as any).task || liveSlot.name || "")}
+                          <Text style={s.scheduleTopicLabel}>
+                            {slotPublished ? "SLOT TOPIC" : "SLOT TOPIC (OPTIONAL)"}
                           </Text>
+                          {slotPublished ? (
+                            slotTopicPreview ? (
+                              <Text style={s.scheduleTopicValue} numberOfLines={2}>
+                                {slotTopicPreview}
+                              </Text>
+                            ) : (
+                              <Text style={s.scheduleTopicPlaceholder}>
+                                No topic set for this slot
+                              </Text>
+                            )
+                          ) : (
+                            <TextInput
+                              value={String((liveSlot as any).slotTopic || "")}
+                              onChangeText={(text) => updateScheduleSlotTopic(String(slot.id), text)}
+                              onEndEditing={() => void syncScheduleSlotTopicToRoom(liveSlot)}
+                              editable={!slotPublished}
+                              placeholder="Add optional topic for this slot..."
+                              placeholderTextColor="rgba(255,255,255,0.34)"
+                              style={s.scheduleTopicInput}
+                              multiline
+                            />
+                          )}
                         </View>
 
                         <View style={s.scheduleMinuteGrid}>
@@ -7652,6 +7778,20 @@ const s = StyleSheet.create({
     fontSize: 14,
     fontWeight: "900",
     lineHeight: 18,
+  },
+  scheduleTopicPlaceholder: {
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
+  scheduleTopicInput: {
+    color: TEXT,
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 18,
+    marginTop: 4,
+    paddingVertical: 0,
   },
   scheduleAdjustRow: {
     flexDirection: "row",

@@ -668,6 +668,7 @@ function renderAssignmentCardBody(
   console.log("KRISTO_SLOT_TOPIC_RESOLVE", {
     slotNumber,
     title: cleanTitle,
+    slotTopic: String((card as any)?.slotTopic || "").trim() || null,
     resolvedTopic: slotTopicResolved.resolvedTopic,
     source: slotTopicResolved.source,
     parentTopic: slotTopicResolved.parentTopic,
@@ -3549,7 +3550,6 @@ export default function MessageThreadScreen() {
     const stop = startRoomMessagesPolling({
       roomId: backendRoomId,
       enabled: isFocused,
-      active: composerFocused,
       onTick: loadBackendRoomMessages,
     });
 
