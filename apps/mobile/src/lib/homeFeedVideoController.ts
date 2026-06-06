@@ -111,7 +111,7 @@ function logVideoAudioOwnerState(
     isSameActive?: boolean;
   } = {}
 ) {
-  console.log("KRISTO_VIDEO_AUDIO_OWNER_STATE", {
+  devLog("KRISTO_VIDEO_AUDIO_OWNER_STATE", {
     activePostId,
     requestedPostId: requestedPostId || null,
     action,

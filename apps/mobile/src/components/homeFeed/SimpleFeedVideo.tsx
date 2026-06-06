@@ -34,6 +34,10 @@ type Props = {
   screenFocused: boolean;
 };
 
+// V1 perf: only emit startup/first-frame timing for the first active video in
+// the session. Subsequent active videos stay quiet to keep logs minimal.
+let firstActiveTimingLogged = false;
+
 function statusLower(status: string) {
   return String(status || "").trim().toLowerCase();
 }
@@ -151,18 +155,21 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     lastMutedLogKeyRef.current = "";
     logMutedSet("recoverAudioIfNeeded", false, source);
-    console.log("KRISTO_VIDEO_AUDIO_RECOVERED_FROM_MUTED", {
-      postId: postId || null,
-      source,
-      warmMode,
-      effectiveShouldPlay,
-      videoReady,
-      firstFrameReady,
-    });
+    if (isKristoVerboseFeedDebug()) {
+      console.log("KRISTO_VIDEO_AUDIO_RECOVERED_FROM_MUTED", {
+        postId: postId || null,
+        source,
+        warmMode,
+        effectiveShouldPlay,
+        videoReady,
+        firstFrameReady,
+      });
+    }
     return true;
   };
 
   const logMutedSet = (source: string, muted: boolean, reason?: string) => {
+    if (!isKristoVerboseFeedDebug()) return;
     const key = `${postId}:${source}:${muted ? 1 : 0}:${warmMode}`;
     if (key === lastMutedLogKeyRef.current) return;
     lastMutedLogKeyRef.current = key;
@@ -198,6 +205,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     if (recoverAudioIfNeeded(reason)) return;
 
+    if (!isKristoVerboseFeedDebug()) return;
+
     const key = `${postId}:${reason}:${warmMode}:${firstFrameReady ? 1 : 0}`;
     if (key === lastExpectedMutedLogKeyRef.current) return;
     lastExpectedMutedLogKeyRef.current = key;
@@ -221,6 +230,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const logStartupTiming = (mode: HomeFeedVideoWarmMode) => {
     if (timingLoggedRef.current) return;
     timingLoggedRef.current = true;
+    // Only the first active video in the session emits startup timing.
+    if (!isActive || firstActiveTimingLogged) return;
+    firstActiveTimingLogged = true;
     console.log("KRISTO_VIDEO_STARTUP_TIMING", {
       id: postId || null,
       warmMode: mode,
@@ -233,12 +245,15 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const markFirstFrame = (fromCache = false) => {
     if (firstFrameMsRef.current === null) {
       firstFrameMsRef.current = fromCache ? 0 : Date.now() - mountMsRef.current;
-      console.log("KRISTO_VIDEO_FIRST_FRAME_DELAY", {
-        id: postId || null,
-        warmMode,
-        ms: firstFrameMsRef.current,
-        fromCache,
-      });
+      // Keep first-frame timing minimal: only the first active video logs it.
+      if (isActive && !firstActiveTimingLogged) {
+        console.log("KRISTO_VIDEO_FIRST_FRAME_DELAY", {
+          id: postId || null,
+          warmMode,
+          ms: firstFrameMsRef.current,
+          fromCache,
+        });
+      }
     }
     setFirstFrameReady((prev) => (prev ? prev : true));
   };
