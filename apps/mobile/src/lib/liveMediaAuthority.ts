@@ -150,11 +150,39 @@ export function buildMediaScheduleAuthorityFields(options: {
   };
 }
 
+export type ScheduleSlotCameraWindow = {
+  claimedByUserId?: string;
+  startMs?: number;
+  endMs?: number;
+};
+
+/** Camera requires slot ownership plus an open [startMs, endMs) window — not claim alone. */
+export function isScheduleSlotCameraWindowOpen(
+  slot: ScheduleSlotCameraWindow | null | undefined,
+  currentUserId: string,
+  nowMs: number
+): boolean {
+  const uid = String(currentUserId || "").trim();
+  const owner = String(slot?.claimedByUserId || "").trim();
+  if (!uid || !owner || owner !== uid) return false;
+
+  const startMs = Number(slot?.startMs || 0);
+  const endMs = Number(slot?.endMs || 0);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs <= 0 || endMs <= startMs) {
+    return false;
+  }
+
+  return nowMs >= startMs && nowMs < endMs;
+}
+
 export type LiveStageAuthorityInput = {
   isMediaInstantLive: boolean;
   currentUserId: string;
   currentSlotNumber: number;
   currentSlotOwnerId: string;
+  currentSlotStartMs?: number;
+  currentSlotEndMs?: number;
+  nowMs?: number;
   authority: LiveMediaAuthority;
   isDeclaredMediaHostForThisLive: boolean;
   claimedMicSlotNumbers: number[];
@@ -181,17 +209,29 @@ export type LiveStageAuthority = {
 /**
  * V1 Media Live (scheduled) authority:
  * - Mic: every claimed slot owner + pastor/trusted media host (even without a claim).
- * - Camera: only the current active slot owner; pastor/host need an active-slot claim too.
+ * - Camera: current active slot owner only, and only while startMs <= now < endMs.
+ * - Pastor/host without a claim: mic-only (never camera-by-role).
  * - Viewers without a claim: watch only.
- * Multiple claims per user are allowed.
  */
 export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): LiveStageAuthority {
+  const nowMs = Number(input.nowMs || Date.now());
+
   const userOwnsCurrentActiveSlot =
     !input.isMediaInstantLive &&
     !!input.currentSlotNumber &&
     !!input.currentSlotOwnerId &&
     !!input.currentUserId &&
     input.currentSlotOwnerId === input.currentUserId;
+
+  const activeSlotCameraWindowOpen = isScheduleSlotCameraWindowOpen(
+    {
+      claimedByUserId: input.currentSlotOwnerId,
+      startMs: input.currentSlotStartMs,
+      endMs: input.currentSlotEndMs,
+    },
+    input.currentUserId,
+    nowMs
+  );
 
   const userHasClaimedScheduleSlot = input.claimedMicSlotNumbers.length > 0;
 
@@ -215,11 +255,11 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
       input.roleLooksLikeHost ||
       input.approvedViewerSeatType === "big-screen" ||
       input.approvedViewerSeatType === "camera-mic"
-    : userOwnsCurrentActiveSlot;
+    : userOwnsCurrentActiveSlot && activeSlotCameraWindowOpen;
 
   const canPublishLiveVideoNow = input.isMediaInstantLive
     ? canPublishClaimedCameraNow
-    : userOwnsCurrentActiveSlot;
+    : canPublishClaimedCameraNow;
 
   return {
     pastorPermanentMicNow,
@@ -247,7 +287,7 @@ export function logMediaLiveV1StageAuthority(
     canPublishClaimedMicNow: stage.canPublishClaimedMicNow,
     canPublishClaimedCameraNow: stage.canPublishClaimedCameraNow,
     canPublishLiveVideoNow: stage.canPublishLiveVideoNow,
-    rules: "mic=claimed+pastor/host; camera=active-slot-owner-only",
+    rules: "mic=claimed+pastor/host; camera=active-slot-owner+time-window",
     ...extra,
   });
 }

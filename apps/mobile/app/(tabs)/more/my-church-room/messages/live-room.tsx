@@ -61,6 +61,7 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   evaluateLiveMediaAuthority,
   evaluateLiveStageAuthority,
+  isScheduleSlotCameraWindowOpen,
   logMediaLiveV1StageAuthority,
   logLiveMediaAuthority,
 } from "@/src/lib/liveMediaAuthority";
@@ -3037,12 +3038,24 @@ export default function LiveRoomScreen() {
         ? String((params as any)?.claimedByUserId || "").trim()
         : "");
 
+  const currentSlotStartMs = Number(currentMainStageSlot?.startMs || 0);
+  const currentSlotEndMs = Number(currentMainStageSlot?.endMs || 0);
+
   const isMyScheduledLiveTurn =
     !isMediaInstantLive &&
     !!currentSlotNumber &&
     !!currentSlotOwnerId &&
     !!currentUserId &&
-    currentSlotOwnerId === currentUserId;
+    currentSlotOwnerId === currentUserId &&
+    isScheduleSlotCameraWindowOpen(
+      {
+        claimedByUserId: currentSlotOwnerId,
+        startMs: currentSlotStartMs,
+        endMs: currentSlotEndMs,
+      },
+      currentUserId,
+      liveNowMs
+    );
 
   const myClaimedStageSlot = !isMediaInstantLive
     ? authorityStageSlots
@@ -3135,6 +3148,9 @@ export default function LiveRoomScreen() {
     currentUserId,
     currentSlotNumber,
     currentSlotOwnerId,
+    currentSlotStartMs,
+    currentSlotEndMs,
+    nowMs: liveNowMs,
     authority: liveMediaAuthority,
     isDeclaredMediaHostForThisLive,
     claimedMicSlotNumbers: myClaimedMicSlotNumbers,
@@ -3160,6 +3176,67 @@ export default function LiveRoomScreen() {
     isMediaInstantLive ||
     !canPublishLiveVideoNow ||
     (!!currentSlotNumber && userOwnsCurrentActiveSlot);
+
+  const pastorCameraPolicyLogRef = useRef("");
+
+  useEffect(() => {
+    if (isMediaInstantLive || !liveMediaAuthority.isActualChurchPastor) return;
+
+    const hasClaimedSlot = userHasClaimedScheduleSlot || !!myClaimedStageSlot;
+    const mySlotStartMs = Number(
+      myClaimedStageSlot?.startMs || currentSlotStartMs || 0
+    );
+    const mySlotEndMs = Number(myClaimedStageSlot?.endMs || currentSlotEndMs || 0);
+    const slotEnded = mySlotEndMs > 0 && liveNowMs >= mySlotEndMs;
+    const slotEarly = mySlotStartMs > liveNowMs;
+
+    let event = "";
+    let logKey = "";
+
+    if (!hasClaimedSlot) {
+      event = "KRISTO_LIVE_PASTOR_MIC_ONLY_NO_SLOT";
+      logKey = "mic-only-no-slot";
+    } else if (canPublishLiveVideoNow) {
+      event = "KRISTO_LIVE_SLOT_CAMERA_ALLOWED_NOW";
+      logKey = `camera-allowed-${currentSlotNumber}`;
+    } else if (slotEnded) {
+      event = "KRISTO_LIVE_SLOT_CAMERA_ENDED_DISABLED";
+      logKey = `camera-ended-${currentSlotNumber}`;
+    } else if (slotEarly || !userOwnsCurrentActiveSlot) {
+      event = "KRISTO_LIVE_SLOT_CAMERA_BLOCKED_EARLY";
+      logKey = `camera-blocked-${currentSlotNumber}-${mySlotStartMs}`;
+    }
+
+    if (!event || pastorCameraPolicyLogRef.current === logKey) return;
+    pastorCameraPolicyLogRef.current = logKey;
+
+    console.log(event, {
+      currentUserId,
+      currentSlotNumber,
+      currentSlotOwnerId,
+      hasClaimedSlot,
+      mySlotStartMs,
+      mySlotEndMs,
+      liveNowMs,
+      canPublishLiveVideoNow,
+      canPublishClaimedMicNow,
+      userOwnsCurrentActiveSlot,
+    });
+  }, [
+    isMediaInstantLive,
+    liveMediaAuthority.isActualChurchPastor,
+    userHasClaimedScheduleSlot,
+    myClaimedStageSlot,
+    canPublishLiveVideoNow,
+    canPublishClaimedMicNow,
+    userOwnsCurrentActiveSlot,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    currentSlotStartMs,
+    currentSlotEndMs,
+    liveNowMs,
+    currentUserId,
+  ]);
 
   const canUseLiveMic = canPublishClaimedMicNow;
 
@@ -3275,6 +3352,9 @@ export default function LiveRoomScreen() {
       canPublishLiveVideoNow,
       scheduledPublisherSlotReady,
       userOwnsCurrentActiveSlot,
+      currentSlotStartMs,
+      currentSlotEndMs,
+      liveNowMs,
     });
     console.log("KRISTO_ACTIVE_SLOT_OWNER", {
       currentSlotNumber,
@@ -5737,9 +5817,18 @@ export default function LiveRoomScreen() {
     const startMs = Number(slot?.startMs || 0);
     const endMs = Number(slot?.endMs || 0);
     const currentSlotNum = Number(currentMainStageSlot?.slot || 0);
-    const isLiveNow = slotNum > 0 && slotNum === currentSlotNum && !!currentMainStageSlot;
+    const isLiveNow =
+      slotNum > 0 &&
+      slotNum === currentSlotNum &&
+      !!currentMainStageSlot &&
+      isScheduleSlotCameraWindowOpen(
+        { claimedByUserId: currentUserId, startMs, endMs },
+        currentUserId,
+        liveNowMs
+      );
     const isWaiting = startMs > liveNowMs;
-    const isReady = !isLiveNow && startMs <= liveNowMs && (!endMs || endMs >= liveNowMs);
+    const isReady =
+      !isLiveNow && startMs <= liveNowMs && (!endMs || endMs > liveNowMs);
 
     let status = "WAITING";
     if (isLiveNow) status = "LIVE NOW";
@@ -5775,7 +5864,9 @@ export default function LiveRoomScreen() {
   const audienceMicStatus = useMemo(() => {
     const isLiveNow = claimedMemberPanelInfo?.status === "LIVE NOW";
     const micReady = !!(canPublishClaimedMicNow || liveMicPublisherReady);
-    const cameraAllowed = !!userOwnsCurrentActiveSlot;
+    const cameraAllowed = canPublishLiveVideoNow;
+    const slotStartsLater =
+      !!myClaimedStageSlot && Number((myClaimedStageSlot as any)?.startMs || 0) > liveNowMs;
 
     if (isLiveNow) {
       return {
@@ -5788,13 +5879,17 @@ export default function LiveRoomScreen() {
       micLabel: micReady ? "Mic ready" : "Mic unlocks when your slot is live",
       cameraLabel: cameraAllowed
         ? "Camera allowed for your active slot"
-        : "Camera opens when your slot is live",
+        : slotStartsLater
+          ? "Your camera opens when your slot starts"
+          : "Camera opens when your slot is live",
     };
   }, [
     claimedMemberPanelInfo?.status,
     canPublishClaimedMicNow,
     liveMicPublisherReady,
-    userOwnsCurrentActiveSlot,
+    canPublishLiveVideoNow,
+    myClaimedStageSlot,
+    liveNowMs,
   ]);
 
   const hostControlClaimedSpeakers = useMemo(() => {
@@ -7371,8 +7466,8 @@ return (
             {(canManageLive
               ? [
                   { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
-                  { icon: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "camera-reverse-outline" : "repeat-outline", color: "#63D1FF", label: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "Flip" : "Switch", action: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "flip" : "switch" },
-                  { icon: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? (cameraPaused ? "videocam-off-outline" : "videocam-outline") : "sparkles-outline", color: "#4FC3FF", label: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "Video" : "Guests", action: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "video" : "guests" },
+                  { icon: canPublishLiveVideoNow ? "camera-reverse-outline" : "repeat-outline", color: "#63D1FF", label: canPublishLiveVideoNow ? "Flip" : "Switch", action: canPublishLiveVideoNow ? "flip" : "switch" },
+                  { icon: canPublishLiveVideoNow ? (cameraPaused ? "videocam-off-outline" : "videocam-outline") : "sparkles-outline", color: "#4FC3FF", label: canPublishLiveVideoNow ? "Video" : "Guests", action: canPublishLiveVideoNow ? "video" : "guests" },
                   { icon: "repeat-outline", color: "#67F5B5", label: "Switch", action: "switch" },
                   { icon: "sparkles-outline", color: "#FFB36A", label: "Guests", action: "guests" },
                   { icon: "power-outline", color: "#FF6B6B", label: "End", action: "end-live" },
