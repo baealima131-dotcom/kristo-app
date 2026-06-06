@@ -39,6 +39,7 @@ import {
 } from "@/src/lib/scheduleSlotUtils";
 import { loadProfileDraft } from "@/src/lib/profileStore";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
+import { ensureProfileAvatarUploadedBeforeClaim } from "@/src/lib/ensureProfileAvatarForClaim";
 import {
   notifySlotClaimChanged,
   refreshSlotAfterClaimConflict,
@@ -884,7 +885,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     transform: [{ scale: claimPress.value }],
   }));
 
-  const claimThisSlot = useCallback(() => {
+  const claimThisSlot = useCallback(async () => {
     if (!userHasActiveChurchMembership(session)) return;
     if (claimed || !slot?.id) return;
     if (claimingSlotRef.current === slot.id || isClaimInFlight) return;
@@ -892,6 +893,12 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     claimingSlotRef.current = String(slot.id);
     setIsClaimInFlight(true);
     claimPress.value = withSequence(withSpring(0.94), withSpring(1));
+
+    const uploadedClaimAvatar = await ensureProfileAvatarUploadedBeforeClaim({
+      userId: currentUserId,
+      session,
+      profileAvatarUri,
+    });
 
     const seedId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
     const claimTarget = resolveClaimFeedTarget(seedId);
@@ -909,6 +916,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     }
 
     const claimAvatarUri =
+      uploadedClaimAvatar ||
       sanitizePersistedClaimAvatarUri(memberAvatarByUserId[currentUserId], "claim-member-cache") ||
       sanitizePersistedClaimAvatarUri(profileAvatarUri, "claim-profile-prop") ||
       sanitizePersistedClaimAvatarUri(session?.avatarUrl, "claim-session-url") ||

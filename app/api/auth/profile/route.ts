@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
 import { countsAsRealActiveMembership } from "@/app/api/_lib/demoMemberships";
 import { getChurchById } from "@/app/api/_lib/churches";
@@ -19,14 +17,9 @@ import {
   normalizePrivacy,
   type Gender,
 } from "@/app/api/auth/_lib/profile";
+import { saveProfileAvatarForProfilePost } from "@/app/api/_lib/profileAvatarUpload";
 
 export const runtime = "nodejs";
-
-function isServerlessRuntime() {
-  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
-}
-
-const MAX_AVATAR_DATA_URL_LEN = 2_800_000;
 
 type Body = {
   fullName?: string;
@@ -67,31 +60,6 @@ type Body = {
 
 function norm(s: any) {
   return String(s ?? "").trim();
-}
-
-async function saveAvatarData(userId: string, avatarData: string) {
-  const raw = String(avatarData || "").trim();
-  if (!raw) return "";
-  if (!raw.startsWith("data:image/")) return "";
-
-  const m = raw.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
-  if (!m) return "";
-
-  // Vercel/serverless: no writable public/ — store data URL in Postgres profile JSON.
-  if (isServerlessRuntime()) {
-    if (raw.length > MAX_AVATAR_DATA_URL_LEN) {
-      throw new Error("Avatar image is too large. Choose a smaller photo (max ~2MB).");
-    }
-    return raw;
-  }
-
-  const ext = m[1].toLowerCase().replace("jpeg", "jpg");
-  const dir = path.join(process.cwd(), "public", "uploads", "profile-avatars");
-  await fs.mkdir(dir, { recursive: true });
-  const safeUserId = String(userId || "user").replace(/[^a-zA-Z0-9_-]/g, "_");
-  const filename = `${safeUserId}-${Date.now()}.${ext}`;
-  await fs.writeFile(path.join(dir, filename), Buffer.from(m[2], "base64"));
-  return `/uploads/profile-avatars/${filename}`;
 }
 
 function isKristoUserCode(x: any) {
@@ -250,7 +218,9 @@ export async function POST(req: Request) {
     ...(typeof body.privateMode === "boolean" ? { privateMode: body.privateMode } : {}),
   };
 
-  const uploadedAvatarUrl = body.avatarData ? await saveAvatarData(u.id, body.avatarData) : "";
+  const uploadedAvatarUrl = body.avatarData
+    ? await saveProfileAvatarForProfilePost(u.id, body.avatarData)
+    : "";
 
   const next = {
     ...current,
@@ -299,7 +269,9 @@ export async function POST(req: Request) {
       avatarMode: uploadedAvatarUrl
         ? uploadedAvatarUrl.startsWith("data:image/")
           ? "postgres-data-url"
-          : "local-file"
+          : uploadedAvatarUrl.startsWith("http")
+            ? "object-storage"
+            : "local-file"
         : undefined,
     });
 

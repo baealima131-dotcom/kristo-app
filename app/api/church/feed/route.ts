@@ -6,6 +6,10 @@ import { guard, guardAuth } from "@/app/api/_lib/rbac";
 import { ensureActiveMembershipForSession, getActiveMembership } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { getProfile } from "@/app/api/auth/_lib/profile";
+import {
+  ensureProfileAvatarUrlForClaim,
+  isPersistedProfileAvatarUrl,
+} from "@/app/api/_lib/profileAvatarUpload";
 import { getChurchById } from "@/app/api/_lib/churches";
 import {
   churchAvatarUpdatedAtMs,
@@ -366,13 +370,28 @@ async function resolveClaimerAvatarUri(userId: string, claim?: any) {
     if (sanitized) return sanitized;
   }
 
-  const fromMap = sanitizeClaimSlotAvatarUri(profileAvatarForUserId(uid), "profile-map");
-  if (fromMap) {
-    console.log("KRISTO_CLAIMED_SLOT_AVATAR_HYDRATED", {
-      userId: uid,
-      source: "profile-map",
-    });
-    return fromMap;
+  const fromMapRaw = profileAvatarForUserId(uid);
+  if (isPersistedProfileAvatarUrl(fromMapRaw)) {
+    const fromMap = sanitizeClaimSlotAvatarUri(fromMapRaw, "profile-map");
+    if (fromMap) {
+      console.log("KRISTO_CLAIMED_SLOT_AVATAR_HYDRATED", {
+        userId: uid,
+        source: "profile-map",
+      });
+      return fromMap;
+    }
+  }
+
+  const ensured = await ensureProfileAvatarUrlForClaim(uid);
+  if (ensured) {
+    const sanitized = sanitizeClaimSlotAvatarUri(ensured, "ensure-profile-avatar");
+    if (sanitized) {
+      console.log("KRISTO_CLAIMED_SLOT_AVATAR_HYDRATED", {
+        userId: uid,
+        source: "ensureProfileAvatarUrlForClaim",
+      });
+      return sanitized;
+    }
   }
 
   try {

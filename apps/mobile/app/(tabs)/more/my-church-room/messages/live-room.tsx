@@ -86,6 +86,7 @@ import {
 } from "@/src/lib/scheduleSlotUtils";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
+import { ensureProfileAvatarUploadedBeforeClaim } from "@/src/lib/ensureProfileAvatarForClaim";
 import { runMediaScheduleSilentReload } from "@/src/lib/mediaScheduleSilentReload";
 import { resumeHomeFeedAfterLiveExit } from "@/src/lib/liveRoomStartup";
 import { markHomeFeedVideoNeedsRecovery } from "@/src/lib/homeFeedVideoController";
@@ -3791,7 +3792,14 @@ export default function LiveRoomScreen() {
       liveProfileName ||
       "Church Member";
 
+    const uploadedClaimAvatar = await ensureProfileAvatarUploadedBeforeClaim({
+      userId: currentUserId,
+      session: session as any,
+      profileAvatarUri: liveProfileAvatarUri,
+    });
+
     const claimAvatarUri =
+      uploadedClaimAvatar ||
       sanitizePersistedClaimAvatarUri(liveProfileAvatarUri, "live-room-claim-profile") ||
       sanitizePersistedClaimAvatarUri((session as any)?.avatarUrl, "live-room-claim-session-url") ||
       sanitizePersistedClaimAvatarUri((session as any)?.avatarUri, "live-room-claim-session-uri") ||
