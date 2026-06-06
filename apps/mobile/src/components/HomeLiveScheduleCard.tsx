@@ -30,6 +30,7 @@ import {
   formatSlotDateLabel,
   patchMediaSlotClaimAvatarFields,
   resolveMediaSlotClaimedAvatar,
+  resolvePersistedClaimAvatarUri,
   resolveScheduleAvatarUri,
   resolveScheduleSlotVisualState,
   SLOT_STATE_THEMES,
@@ -112,6 +113,7 @@ function AvatarRing({
   imageLogMeta?: {
     slotId?: string;
     claimedByUserId?: string;
+    kind?: "live-host" | "claimed";
   };
 }) {
   const pulse = useSharedValue(0);
@@ -145,8 +147,17 @@ function AvatarRing({
 
   const outer = size + 14;
   const inner = size - 4;
+  const imageLoadedEvent =
+    imageLogMeta?.kind === "live-host"
+      ? "KRISTO_LIVE_HOST_AVATAR_LOADED"
+      : "KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_LOADED";
+  const imageErrorEvent =
+    imageLogMeta?.kind === "live-host"
+      ? "KRISTO_LIVE_HOST_AVATAR_ERROR"
+      : "KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_ERROR";
   const shouldRenderImage = Boolean(uri) && (!forceShowImage || !imageError);
-  const showInitialFallback = Boolean(uri) && forceShowImage && imageError;
+  const showInitialFallback = Boolean(forceShowImage && imageError);
+  const showInitialOnly = !uri && !forceShowImage;
 
   return (
     <View style={{ width: outer + (live ? 8 : 0), height: outer + (live ? 8 : 0), alignItems: "center", justifyContent: "center" }}>
@@ -204,7 +215,7 @@ function AvatarRing({
               resizeMode="cover"
               onLoad={() => {
                 if (!imageLogMeta) return;
-                console.log("KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_LOADED", {
+                console.log(imageLoadedEvent, {
                   slotId: String(imageLogMeta.slotId || ""),
                   claimedByUserId: String(imageLogMeta.claimedByUserId || ""),
                   avatarUri: String(uri || ""),
@@ -213,7 +224,7 @@ function AvatarRing({
               onError={() => {
                 setImageError(true);
                 if (!imageLogMeta) return;
-                console.log("KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_ERROR", {
+                console.log(imageErrorEvent, {
                   slotId: String(imageLogMeta.slotId || ""),
                   claimedByUserId: String(imageLogMeta.claimedByUserId || ""),
                   avatarUri: String(uri || ""),
@@ -226,7 +237,7 @@ function AvatarRing({
               style={StyleSheet.absoluteFillObject}
             />
           </View>
-        ) : showInitialFallback ? (
+        ) : showInitialFallback || showInitialOnly ? (
           <View
             style={{
               width: inner,
@@ -534,21 +545,28 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const claimedBy =
     optimisticClaim ||
     slot?.claimedBy ||
-    (slot?.claimedByUserId
+    activeSlot?.claimedBy ||
+    (slot?.claimedByUserId || activeSlot?.claimedByUserId
       ? {
-          userId: slot.claimedByUserId,
-          name: slot.claimedByName || "Host",
+          userId: slot?.claimedByUserId || activeSlot?.claimedByUserId,
+          name: slot?.claimedByName || activeSlot?.claimedByName || "Host",
           role: "Member",
           avatarUri:
-            slot.claimedByAvatarUri ||
-            slot.claimedByAvatar ||
-            slot.claimedByPhotoUrl ||
-            slot.claimedBy?.avatarUri ||
+            activeSlot?.claimedByAvatarUri ||
+            activeSlot?.claimedByAvatar ||
+            activeSlot?.claimedByPhotoUrl ||
+            slot?.claimedByAvatarUri ||
+            slot?.claimedByAvatar ||
+            slot?.claimedByPhotoUrl ||
+            slot?.claimedBy?.avatarUri ||
+            activeSlot?.claimedBy?.avatarUri ||
             "",
         }
       : null);
 
-  const claimUserId = String(claimedBy?.userId || slot?.claimedByUserId || "").trim();
+  const claimUserId = String(
+    claimedBy?.userId || slot?.claimedByUserId || activeSlot?.claimedByUserId || ""
+  ).trim();
 
   useEffect(() => {
     let alive = true;
@@ -570,24 +588,84 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   }, [claimUserId]);
 
   const slotForAvatar = useMemo(() => {
-    if (!optimisticClaim) return slot;
-    const avatarUri = String(optimisticClaim.avatarUri || "").trim();
+    const claimedByObj =
+      typeof activeSlot?.claimedBy === "object" && activeSlot?.claimedBy
+        ? activeSlot.claimedBy
+        : typeof slot?.claimedBy === "object" && slot?.claimedBy
+          ? slot.claimedBy
+          : null;
+    const mergedBase = {
+      ...(activeSlot || {}),
+      ...(slot || {}),
+      claimedByUserId:
+        claimUserId ||
+        slot?.claimedByUserId ||
+        activeSlot?.claimedByUserId ||
+        claimedByObj?.userId ||
+        "",
+      claimedByName:
+        claimedBy?.name ||
+        slot?.claimedByName ||
+        activeSlot?.claimedByName ||
+        "",
+      claimedBy:
+        claimedBy ||
+        claimedByObj ||
+        (claimUserId
+          ? {
+              userId: claimUserId,
+              name: claimedBy?.name || slot?.claimedByName || "Host",
+              role: claimedBy?.role || "Member",
+              avatarUri:
+                activeSlot?.claimedByAvatarUri ||
+                activeSlot?.claimedByAvatar ||
+                activeSlot?.claimedByPhotoUrl ||
+                slot?.claimedByAvatarUri ||
+                slot?.claimedByAvatar ||
+                slot?.claimedByPhotoUrl ||
+                claimedBy?.avatarUri ||
+                claimedByObj?.avatarUri ||
+                "",
+            }
+          : null),
+    };
+    const persistedAvatar =
+      resolvePersistedClaimAvatarUri(activeSlot) ||
+      resolvePersistedClaimAvatarUri(slot) ||
+      resolvePersistedClaimAvatarUri(mergedBase) ||
+      (claimUserId ? memberAvatarByUserId[claimUserId] : "") ||
+      claimerProfileAvatar ||
+      "";
+
+    if (!optimisticClaim) {
+      return patchMediaSlotClaimAvatarFields(mergedBase, persistedAvatar);
+    }
+
+    const avatarUri = String(optimisticClaim.avatarUri || persistedAvatar || "").trim();
     return patchMediaSlotClaimAvatarFields(
       {
-        ...slot,
+        ...mergedBase,
         claimedByUserId: optimisticClaim.userId,
         claimedByName: optimisticClaim.name,
         claimedBy: optimisticClaim,
       },
       avatarUri
     );
-  }, [slot, optimisticClaim]);
+  }, [
+    activeSlot,
+    slot,
+    optimisticClaim,
+    claimUserId,
+    claimedBy,
+    memberAvatarByUserId,
+    claimerProfileAvatar,
+  ]);
 
   const claimedAvatarResolution = useMemo(
     () =>
       resolveMediaSlotClaimedAvatar({
         slot: slotForAvatar,
-        slotId: String(slot?.id || ""),
+        slotId: String(slot?.id || activeSlot?.id || ""),
         apiBase,
         profileAvatarByUserId:
           claimUserId && claimerProfileAvatar ? { [claimUserId]: claimerProfileAvatar } : {},
@@ -604,6 +682,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     [
       slotForAvatar,
       slot?.id,
+      activeSlot?.id,
       apiBase,
       claimUserId,
       claimerProfileAvatar,
@@ -614,32 +693,90 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     ]
   );
 
-  const resolvedClaimedAvatarUri = useMemo(
-    () => toMediaSlotAbsoluteAvatarUri(claimedAvatarResolution.uri, apiBase),
-    [claimedAvatarResolution.uri, apiBase]
-  );
+  const resolvedClaimedAvatarUri = useMemo(() => {
+    const fromResolver = toMediaSlotAbsoluteAvatarUri(claimedAvatarResolution.uri, apiBase);
+    if (fromResolver) return fromResolver;
+
+    const memberRaw = claimUserId ? memberAvatarByUserId[claimUserId] : "";
+    const memberUri = toMediaSlotAbsoluteAvatarUri(memberRaw, apiBase);
+    if (memberUri) return memberUri;
+
+    const profileRaw = claimUserId && claimerProfileAvatar ? claimerProfileAvatar : "";
+    const profileUri = toMediaSlotAbsoluteAvatarUri(profileRaw, apiBase);
+    if (profileUri) return profileUri;
+
+    return toMediaSlotAbsoluteAvatarUri(resolvePersistedClaimAvatarUri(slotForAvatar), apiBase);
+  }, [
+    claimedAvatarResolution.uri,
+    apiBase,
+    claimUserId,
+    memberAvatarByUserId,
+    claimerProfileAvatar,
+    slotForAvatar,
+  ]);
+
+  const liveHostHasAvatar = Boolean(resolvedClaimedAvatarUri);
 
   useEffect(() => {
-    if (!claimed || !claimedAvatarResolution.hasAvatar) return;
+    if (!claimed) return;
+
+    const rawAvatarUri = String(
+      claimedAvatarResolution.uri ||
+        resolvePersistedClaimAvatarUri(slotForAvatar) ||
+        ""
+    ).trim();
+    const avatarUri = String(resolvedClaimedAvatarUri || rawAvatarUri).trim();
+
+    console.log("KRISTO_LIVE_HOST_AVATAR_RENDER", {
+      slotId: String(slot?.id || activeSlot?.id || ""),
+      claimedByUserId: claimUserId,
+      claimedByName: String(claimedBy?.name || slot?.claimedByName || activeSlot?.claimedByName || ""),
+      avatarUri,
+      rawAvatarUri,
+      hasAvatar: liveHostHasAvatar || claimedAvatarResolution.hasAvatar,
+      isAbsolute: /^https?:\/\//i.test(avatarUri),
+      phase,
+      source: claimedAvatarResolution.source,
+    });
+  }, [
+    claimed,
+    slot?.id,
+    activeSlot?.id,
+    claimUserId,
+    claimedBy?.name,
+    slot?.claimedByName,
+    activeSlot?.claimedByName,
+    claimedAvatarResolution.uri,
+    claimedAvatarResolution.hasAvatar,
+    claimedAvatarResolution.source,
+    resolvedClaimedAvatarUri,
+    liveHostHasAvatar,
+    phase,
+    slotForAvatar,
+  ]);
+
+  useEffect(() => {
+    if (!claimed || !liveHostHasAvatar) return;
 
     const rawAvatarUri = String(claimedAvatarResolution.uri || "").trim();
     const avatarUri = String(resolvedClaimedAvatarUri || rawAvatarUri).trim();
 
     console.log("KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_RENDER", {
-      slotId: String(slot?.id || ""),
+      slotId: String(slot?.id || activeSlot?.id || ""),
       claimedByUserId: claimUserId,
       avatarUri,
       rawAvatarUri,
       isAbsolute: /^https?:\/\//i.test(avatarUri),
       startsWithUploads: /^\/?uploads\//i.test(rawAvatarUri),
       source: claimedAvatarResolution.source,
-      hasAvatar: claimedAvatarResolution.hasAvatar,
+      hasAvatar: liveHostHasAvatar,
     });
   }, [
     claimed,
+    liveHostHasAvatar,
     slot?.id,
+    activeSlot?.id,
     claimUserId,
-    claimedAvatarResolution.hasAvatar,
     claimedAvatarResolution.uri,
     claimedAvatarResolution.source,
     resolvedClaimedAvatarUri,
@@ -1240,10 +1377,11 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     size={58}
                     accent={theme.accent}
                     live={phase === "live"}
-                    forceShowImage={claimedAvatarResolution.hasAvatar}
+                    forceShowImage={liveHostHasAvatar}
                     imageLogMeta={{
-                      slotId: String(slot?.id || ""),
+                      slotId: String(slot?.id || activeSlot?.id || ""),
                       claimedByUserId: claimUserId,
+                      kind: "live-host",
                     }}
                   />
                   <View style={styles.hostTextWrap}>
