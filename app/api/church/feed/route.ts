@@ -2288,7 +2288,14 @@ async function handleFeedPost(req: NextRequest, body: any) {
     ).trim();
 
     if (existingOwner && existingOwner !== viewerUserId) {
-      return err("Slot already claimed", 409);
+      console.log("KRISTO_SLOT_CLAIM_CONFLICT", {
+        postId,
+        slotId,
+        existingOwner,
+        viewerUserId,
+        churchId,
+      });
+      return err("Slot already claimed by another member", 409);
     }
 
     const name = cleanText(claim?.name || actorLabel || "Church Member", 240) || "Church Member";

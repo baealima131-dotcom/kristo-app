@@ -31,6 +31,7 @@ import {
   hydrateFeedRowLikes,
   buildHomeFeedDisplayRows,
   filterHomeFeedClaimableSlotRows,
+  homeFeedRowChurchId,
   homeFeedScheduleEngagementId,
   isHomeFeedScheduleCardRow,
   isVideoPost,
@@ -56,6 +57,7 @@ import {
   peekHomeFeedScheduleDirty,
   subscribeHomeFeedScheduleDirty,
 } from "@/src/lib/homeFeedScheduleDirty";
+import { onSlotClaimChanged } from "@/src/lib/slotClaimSync";
 
 const CLAIM_SLOT_EMPTY_MESSAGE =
   "No open media slots right now. Check back when your church posts a live schedule.";
@@ -240,6 +242,14 @@ export default function HomeFeedScreen() {
   }, [feedFocused, loadFeed]);
 
   useEffect(() => {
+    return onSlotClaimChanged(() => {
+      if (isHomeFeedRenderPaused()) return;
+      setLocalTick((n) => n + 1);
+      void loadFeed("slot-claim-changed", { force: true });
+    });
+  }, [loadFeed]);
+
+  useEffect(() => {
     if (!feedFocused || homeFeedRenderPaused) return;
     const timer = setInterval(() => {
       setLocalTick((n) => n + 1);
@@ -282,6 +292,22 @@ export default function HomeFeedScreen() {
     if (isClaimSlotFocus && claimableSlotRows.length) return claimableSlotRows;
     return feedRows;
   }, [feedRows, isClaimSlotFocus, claimableSlotRows]);
+
+  const hasChurchScheduleSlots = useMemo(() => {
+    const cid = String(session?.churchId || "").trim();
+    if (!cid) return false;
+    return displayFeedRows.some(
+      (row) => isHomeFeedScheduleCardRow(row) && homeFeedRowChurchId(row) === cid
+    );
+  }, [displayFeedRows, session?.churchId]);
+
+  useEffect(() => {
+    if (!feedFocused || !hasChurchScheduleSlots || homeFeedRenderPaused) return;
+    const timer = setInterval(() => {
+      void loadFeed("slot-claim-poll", { force: true });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [feedFocused, hasChurchScheduleSlots, homeFeedRenderPaused, loadFeed]);
 
   useEffect(() => {
     if (!feedFocused) return;

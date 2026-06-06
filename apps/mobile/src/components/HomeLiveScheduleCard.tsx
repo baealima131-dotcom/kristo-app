@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, Image, Pressable, StyleSheet, Dimensions } from "react-native";
+import { View, Text, Image, Pressable, StyleSheet, Dimensions, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
@@ -36,6 +36,10 @@ import {
 } from "@/src/lib/scheduleSlotUtils";
 import { loadProfileDraft } from "@/src/lib/profileStore";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
+import {
+  notifySlotClaimChanged,
+  refreshSlotAfterClaimConflict,
+} from "@/src/lib/slotClaimSync";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -434,6 +438,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const currentUserId = String(session?.userId || "");
 
   const [optimisticClaim, setOptimisticClaim] = useState<any>(null);
+  const [isClaimInFlight, setIsClaimInFlight] = useState(false);
   const claimingSlotRef = useRef<string | null>(null);
   const claimPress = useSharedValue(1);
   const [memberAvatarByUserId, setMemberAvatarByUserId] = useState<Record<string, string>>({});
@@ -647,9 +652,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const claimThisSlot = useCallback(() => {
     if (!userHasActiveChurchMembership(session)) return;
     if (claimed || !slot?.id) return;
-    if (claimingSlotRef.current === slot.id) return;
+    if (claimingSlotRef.current === slot.id || isClaimInFlight) return;
 
     claimingSlotRef.current = String(slot.id);
+    setIsClaimInFlight(true);
     claimPress.value = withSequence(withSpring(0.94), withSpring(1));
 
     const seedId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
@@ -716,7 +722,39 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         headers: claimHeaders,
       }
     )
-      .then((res: any) => {
+      .then(async (res: any) => {
+        const churchId = String(item?.churchId || session?.churchId || "").trim();
+        const isConflict =
+          Number(res?.status || 0) === 409 ||
+          String(res?.error || "")
+            .toLowerCase()
+            .includes("already claimed");
+
+        if (isConflict) {
+          setOptimisticClaim(null);
+          feedUnclaimSchedule(seedId, {
+            slotId,
+            userId: currentUserId,
+            skipBackendSync: true,
+          });
+          Alert.alert(
+            "Slot already claimed",
+            "Slot already claimed by another member"
+          );
+          if (churchId) {
+            await refreshSlotAfterClaimConflict({
+              churchId,
+              postId: claimTarget.apiFeedId,
+              slotId,
+            });
+          }
+          return;
+        }
+
+        if (res?.ok === false || res?.error) {
+          throw new Error(String(res?.error || "claim failed"));
+        }
+
         if (isPastorClaim) {
           console.log("KRISTO_PASTOR_CLAIM_PERSISTED", {
             seedId: claimTarget.seedId,
@@ -734,8 +772,27 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             ok: res?.ok !== false,
           });
         }
-        if (res?.ok === false || res?.error) {
-          throw new Error(String(res?.error || "claim failed"));
+
+        console.log("KRISTO_SLOT_CLAIM_SUCCESS", {
+          stage: "backend-persisted",
+          churchId,
+          postId: claimTarget.apiFeedId,
+          slotId,
+          userId: currentUserId,
+        });
+
+        if (churchId) {
+          notifySlotClaimChanged(
+            {
+              churchId,
+              postId: claimTarget.apiFeedId,
+              slotId,
+              action: "claim",
+              userId: currentUserId,
+              source: "claim-api-success",
+            },
+            { fastSync: true }
+          );
         }
       })
       .catch((error) => {
@@ -752,10 +809,12 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       })
       .finally(() => {
         claimingSlotRef.current = null;
+        setIsClaimInFlight(false);
       });
   }, [
     session,
     claimed,
+    isClaimInFlight,
     slot?.id,
     item,
     currentUserId,
@@ -803,7 +862,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     claimThisSlot,
   ]);
 
-  const showPrimaryClaim = !claimed && phase !== "ended";
+  const showPrimaryClaim = !claimed && phase !== "ended" && !isClaimInFlight;
   const showSecondaryClaim = claimed && phase !== "ended";
   const compactOpenCard = !claimed && phase !== "ended";
   const edgeTint = phaseEdgeTint(phase, claimed, isUnclaimedLiveOpen);

@@ -9,6 +9,7 @@ import {
   resolveCanonicalScheduleFeedId,
 } from "@/src/lib/scheduleSlotUtils";
 import { emitClaimUpdated } from "@/src/lib/kristoProfileEvents";
+import { notifySlotClaimChanged } from "@/src/lib/slotClaimSync";
 import { persistClaimDeleteToBackend } from "@/src/lib/liveBridge";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -832,6 +833,25 @@ export function feedClaimSchedule(
       claimedAt,
     },
   });
+
+  const churchId = String(claim.churchId || claimMeta?.item?.churchId || "").trim();
+  if (anyChanged && churchId) {
+    console.log("KRISTO_SLOT_CLAIM_SUCCESS", {
+      stage: "local-optimistic",
+      churchId,
+      postId: baseId,
+      slotId,
+      userId,
+    });
+    notifySlotClaimChanged({
+      churchId,
+      postId: baseId,
+      slotId,
+      action: "claim",
+      userId,
+      source: "feedClaimSchedule",
+    });
+  }
 
   if (anyChanged) persistAndEmit();
   else emit();
@@ -1670,6 +1690,27 @@ export function feedUnclaimSchedule(
       userId: String(opts.userId || ""),
       action: "unclaim",
     });
+
+    const churchId = String(
+      store.items.find((it) => feedItemMatchesScheduleId(it, seedId))?.churchId || ""
+    ).trim();
+    if (churchId) {
+      console.log("KRISTO_SLOT_CLAIM_SUCCESS", {
+        stage: "local-unclaim",
+        churchId,
+        postId: canonicalId || seedId,
+        slotId: String(opts.slotId),
+        userId: String(opts.userId || ""),
+      });
+      notifySlotClaimChanged({
+        churchId,
+        postId: canonicalId || seedId,
+        slotId: String(opts.slotId),
+        action: "unclaim",
+        userId: String(opts.userId || ""),
+        source: "feedUnclaimSchedule",
+      });
+    }
   }
 
   if (anyChanged) persistAndEmit();
