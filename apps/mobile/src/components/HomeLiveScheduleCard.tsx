@@ -30,13 +30,12 @@ import {
   formatSlotDateLabel,
   patchMediaSlotClaimAvatarFields,
   isClaimSlotDataUrlAvatar,
-  resolveMediaSlotClaimedAvatar,
+  resolveChurchHeaderAvatarUri,
+  resolveClaimedUserAvatarUri,
   resolvePersistedClaimAvatarUri,
-  resolveScheduleAvatarUri,
   resolveScheduleSlotVisualState,
   sanitizePersistedClaimAvatarUri,
   SLOT_STATE_THEMES,
-  toMediaSlotAbsoluteAvatarUri,
 } from "@/src/lib/scheduleSlotUtils";
 import { loadProfileDraft } from "@/src/lib/profileStore";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
@@ -103,6 +102,7 @@ function AvatarRing({
   live,
   goldFallback,
   forceShowImage,
+  allowDataUrl,
   imageLogMeta,
 }: {
   uri?: string;
@@ -112,10 +112,11 @@ function AvatarRing({
   live?: boolean;
   goldFallback?: boolean;
   forceShowImage?: boolean;
+  allowDataUrl?: boolean;
   imageLogMeta?: {
     slotId?: string;
     claimedByUserId?: string;
-    kind?: "live-host" | "claimed";
+    kind?: "live-host" | "claimed" | "church-header";
   };
 }) {
   const pulse = useSharedValue(0);
@@ -123,7 +124,8 @@ function AvatarRing({
 
   const safeUri = useMemo(() => {
     const trimmed = String(uri || "").trim();
-    if (!trimmed || isClaimSlotDataUrlAvatar(trimmed)) {
+    if (!trimmed) return "";
+    if (!allowDataUrl && isClaimSlotDataUrlAvatar(trimmed)) {
       if (trimmed && isClaimSlotDataUrlAvatar(trimmed)) {
         console.log("KRISTO_CLAIMED_SLOT_AVATAR_DATA_URL_REJECTED", {
           context: "AvatarRing-render",
@@ -134,7 +136,7 @@ function AvatarRing({
       return "";
     }
     return trimmed;
-  }, [uri, imageLogMeta?.kind]);
+  }, [uri, allowDataUrl, imageLogMeta?.kind]);
 
   useEffect(() => {
     setImageError(false);
@@ -685,20 +687,19 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
   const claimedAvatarResolution = useMemo(
     () =>
-      resolveMediaSlotClaimedAvatar({
+      resolveClaimedUserAvatarUri({
         slot: slotForAvatar,
         slotId: String(slot?.id || activeSlot?.id || ""),
         apiBase,
         profileAvatarByUserId:
           claimUserId && claimerProfileAvatar ? { [claimUserId]: claimerProfileAvatar } : {},
         memberAvatarByUserId,
-        sessionAvatarUri: String(
-          session?.avatarUri ||
-            session?.avatarUrl ||
-            session?.profileImage ||
-            profileAvatarUri ||
-            ""
-        ).trim(),
+        sessionAvatarUri:
+          sanitizePersistedClaimAvatarUri(session?.avatarUrl, "claimed-session-url") ||
+          sanitizePersistedClaimAvatarUri(session?.avatarUri, "claimed-session-uri") ||
+          sanitizePersistedClaimAvatarUri(session?.profileImage, "claimed-session-profileImage") ||
+          sanitizePersistedClaimAvatarUri(profileAvatarUri, "claimed-profile-prop") ||
+          "",
         sessionUserId: currentUserId,
       }),
     [
@@ -715,48 +716,21 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     ]
   );
 
-  const resolvedClaimedAvatarUri = useMemo(() => {
-    const fromResolver = toMediaSlotAbsoluteAvatarUri(claimedAvatarResolution.uri, apiBase);
-    if (fromResolver) return fromResolver;
-
-    const memberRaw = claimUserId ? memberAvatarByUserId[claimUserId] : "";
-    const memberUri = toMediaSlotAbsoluteAvatarUri(memberRaw, apiBase);
-    if (memberUri) return memberUri;
-
-    const profileRaw = claimUserId && claimerProfileAvatar ? claimerProfileAvatar : "";
-    const profileUri = toMediaSlotAbsoluteAvatarUri(profileRaw, apiBase);
-    if (profileUri) return profileUri;
-
-    return toMediaSlotAbsoluteAvatarUri(resolvePersistedClaimAvatarUri(slotForAvatar), apiBase);
-  }, [
-    claimedAvatarResolution.uri,
-    apiBase,
-    claimUserId,
-    memberAvatarByUserId,
-    claimerProfileAvatar,
-    slotForAvatar,
-  ]);
-
-  const liveHostHasAvatar = Boolean(resolvedClaimedAvatarUri);
+  const resolvedClaimedAvatarUri = claimedAvatarResolution.uri;
+  const liveHostHasAvatar = claimedAvatarResolution.hasAvatar;
 
   useEffect(() => {
     if (!claimed) return;
 
-    const rawAvatarUri = String(
-      claimedAvatarResolution.uri ||
-        resolvePersistedClaimAvatarUri(slotForAvatar) ||
-        ""
-    ).trim();
-    const avatarUri = String(resolvedClaimedAvatarUri || rawAvatarUri).trim();
-
-    console.log("KRISTO_LIVE_HOST_AVATAR_RENDER", {
+    console.log("KRISTO_CLAIMED_HOST_AVATAR_RENDER", {
       slotId: String(slot?.id || activeSlot?.id || ""),
       claimedByUserId: claimUserId,
-      claimedByName: String(claimedBy?.name || slot?.claimedByName || activeSlot?.claimedByName || ""),
-      avatarUri,
-      rawAvatarUri,
-      hasAvatar: liveHostHasAvatar || claimedAvatarResolution.hasAvatar,
-      isAbsolute: /^https?:\/\//i.test(avatarUri),
+      claimedByName: String(
+        claimedBy?.name || slot?.claimedByName || activeSlot?.claimedByName || ""
+      ),
+      avatarUri: resolvedClaimedAvatarUri,
+      hasAvatar: liveHostHasAvatar,
+      isAbsolute: /^https?:\/\//i.test(resolvedClaimedAvatarUri),
       phase,
       source: claimedAvatarResolution.source,
     });
@@ -768,13 +742,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     claimedBy?.name,
     slot?.claimedByName,
     activeSlot?.claimedByName,
-    claimedAvatarResolution.uri,
-    claimedAvatarResolution.hasAvatar,
     claimedAvatarResolution.source,
     resolvedClaimedAvatarUri,
     liveHostHasAvatar,
     phase,
-    slotForAvatar,
   ]);
 
   useEffect(() => {
@@ -839,9 +810,33 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     slotVisual?.endMs,
   ]);
 
-  const mediaName = cleanFeedLabel(item?.mediaName || item?.actorLabel, "Church Media");
+  const mediaName = cleanFeedLabel(item?.mediaName || item?.actorLabel, "Kristo Media");
   const churchName = cleanFeedLabel(item?.churchName || item?.churchLabel, "MY CHURCH");
   const churchShort = churchName.replace(/\s+CHURCH$/i, "").trim() || churchName;
+  const mediaSubtitle = `${mediaName} • Church Media`;
+
+  const churchHeaderAvatar = useMemo(
+    () =>
+      resolveChurchHeaderAvatarUri(item, apiBase, {
+        sessionChurchAvatarUri: String(
+          session?.churchAvatarUri || session?.churchAvatarUrl || ""
+        ).trim(),
+      }),
+    [item, apiBase, session?.churchAvatarUri, session?.churchAvatarUrl]
+  );
+  const churchHeaderInitial =
+    churchShort.slice(0, 1).toUpperCase() || churchName.slice(0, 1).toUpperCase() || "C";
+
+  useEffect(() => {
+    console.log("KRISTO_MEDIA_CARD_AVATAR_RENDER", {
+      churchName: churchShort,
+      mediaName,
+      avatarUri: churchHeaderAvatar.uri,
+      source: churchHeaderAvatar.source,
+      hasAvatar: churchHeaderAvatar.hasAvatar,
+      isDataUrl: isClaimSlotDataUrlAvatar(churchHeaderAvatar.uri),
+    });
+  }, [churchShort, mediaName, churchHeaderAvatar.uri, churchHeaderAvatar.source, churchHeaderAvatar.hasAvatar]);
 
   const slotTitle = String(slot?.name || slot?.slotLabel || "Live Slot").trim();
   const slotTopic = cleanFeedLabel(
@@ -851,9 +846,6 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     .split("\n")
     .join(" ")
     .trim();
-
-  const avatarUri = resolveScheduleAvatarUri(item, apiBase);
-  const avatarInitial = mediaName.slice(0, 1).toUpperCase() || churchShort.slice(0, 1).toUpperCase() || "C";
 
   const msUntilStart = slot.startMs > 0 ? slot.startMs - nowMs : null;
   const minutesToStart = msUntilStart !== null ? Math.ceil(msUntilStart / 60000) : null;
@@ -1219,19 +1211,22 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           >
             <View style={styles.headerTopRow}>
               <AvatarRing
-                uri={avatarUri}
-                initial={avatarInitial}
+                uri={churchHeaderAvatar.uri}
+                initial={churchHeaderInitial}
                 size={68}
                 accent={visualTheme.accent}
                 live={phase === "live"}
                 goldFallback={!isUnclaimedLiveOpen}
+                allowDataUrl
+                forceShowImage={churchHeaderAvatar.hasAvatar}
+                imageLogMeta={{ kind: "church-header" }}
               />
               <View style={styles.headerTextBlock}>
                 <Text style={styles.mediaName} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
-                  {mediaName}
+                  {churchShort}
                 </Text>
                 <Text style={styles.churchSubline} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82}>
-                  {churchShort} • Church Media
+                  {mediaSubtitle}
                 </Text>
                 <View style={styles.badgeRow}>
                   <View style={styles.liveSchedulePill}>
@@ -1401,7 +1396,11 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                 <View style={styles.hostRow}>
                   <AvatarRing
                     uri={resolvedClaimedAvatarUri}
-                    initial={String(claimedBy?.name || "H").slice(0, 1).toUpperCase()}
+                    initial={String(
+                      claimedBy?.name || slot?.claimedByName || activeSlot?.claimedByName || "H"
+                    )
+                      .slice(0, 1)
+                      .toUpperCase()}
                     size={58}
                     accent={theme.accent}
                     live={phase === "live"}
@@ -1414,10 +1413,15 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   />
                   <View style={styles.hostTextWrap}>
                     <Text style={styles.hostName} numberOfLines={1}>
-                      {cleanFeedLabel(claimedBy?.name, "Host")}
+                      {cleanFeedLabel(
+                        claimedBy?.name || slot?.claimedByName || activeSlot?.claimedByName,
+                        "Host"
+                      )}
                     </Text>
                     <Text style={styles.hostRole} numberOfLines={1}>
-                      {String(claimedBy?.role || "Member").replaceAll("_", " ")}
+                      {String(
+                        claimedBy?.role || slot?.claimedByRole || activeSlot?.claimedByRole || "Member"
+                      ).replaceAll("_", " ")}
                     </Text>
                   </View>
                 </View>

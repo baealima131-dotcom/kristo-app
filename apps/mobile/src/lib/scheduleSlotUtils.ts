@@ -222,6 +222,46 @@ export function resolveAvatarUri(raw: string, apiBase: string) {
   return toMediaSlotAbsoluteAvatarUri(trimmed, apiBase);
 }
 
+/** Church/media card header avatars may use base64 data URLs — unlike claimed slot persistence. */
+export function toChurchHeaderAbsoluteAvatarUri(raw: string, apiBase?: string) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  if (/\/profile-avatars\//i.test(trimmed)) return "";
+  if (isClaimSlotDataUrlAvatar(trimmed)) return trimmed;
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("file://")) return trimmed;
+
+  const base = String(apiBase || resolveApiBase() || "").replace(/\/+$/, "");
+  if (trimmed.startsWith("/")) return base ? `${base}${trimmed}` : trimmed;
+  if (/^uploads\//i.test(trimmed)) return base ? `${base}/${trimmed}` : trimmed;
+  return trimmed;
+}
+
+export function resolveChurchHeaderAvatarUri(
+  item: any,
+  apiBase: string,
+  opts?: { sessionChurchAvatarUri?: string }
+): MediaSlotAvatarResolution {
+  const candidates: Array<[string, unknown]> = [
+    ["churchAvatarUri", item?.churchAvatarUri],
+    ["churchAvatarUrl", item?.churchAvatarUrl],
+    ["churchLogoUri", item?.churchLogoUri],
+    ["churchLogoUrl", item?.churchLogoUrl],
+    ["mediaAvatarUri", item?.mediaAvatarUri],
+    ["mediaAvatar", item?.mediaAvatar],
+    ["churchAvatar", item?.churchAvatar],
+    ["session.churchAvatarUri", opts?.sessionChurchAvatarUri],
+  ];
+
+  for (const [source, raw] of candidates) {
+    const uri = toChurchHeaderAbsoluteAvatarUri(String(raw || ""), apiBase);
+    if (uri) {
+      return { uri, source, hasAvatar: true };
+    }
+  }
+
+  return { uri: "", source: "initials", hasAvatar: false };
+}
+
 /** Hide raw user ids / emails from feed labels. */
 export function cleanFeedLabel(raw: unknown, fallback: string) {
   const s = String(raw || "").trim();
@@ -230,22 +270,6 @@ export function cleanFeedLabel(raw: unknown, fallback: string) {
   if (/^[a-f0-9-]{24,}$/i.test(s)) return fallback;
   if (s.includes("@") && !s.includes(" ")) return fallback;
   return s;
-}
-
-export function resolveScheduleAvatarUri(item: any, apiBase: string) {
-  const candidates = [
-    item?.mediaAvatarUri,
-    item?.churchAvatarUri,
-    item?.churchAvatarUrl,
-    item?.actorAvatarUri,
-    item?.avatarUri,
-  ];
-
-  for (const raw of candidates) {
-    const uri = resolveAvatarUri(String(raw || ""), apiBase);
-    if (uri) return uri;
-  }
-  return "";
 }
 
 export type MediaSlotAvatarResolution = {
@@ -295,7 +319,7 @@ export function sanitizePersistedClaimAvatarUri(
   return trimmed;
 }
 
-function pickMediaSlotAvatarRaw(slot: any, claimedBy: any): Array<[string, unknown]> {
+function pickClaimedUserAvatarRaw(slot: any, claimedBy: any): Array<[string, unknown]> {
   return [
     ["slot.claimedByAvatarUri", slot?.claimedByAvatarUri],
     ["slot.claimedByAvatar", slot?.claimedByAvatar],
@@ -307,12 +331,11 @@ function pickMediaSlotAvatarRaw(slot: any, claimedBy: any): Array<[string, unkno
     ["claimedBy.profileImage", claimedBy?.profileImage],
     ["claimedBy.photoURL", claimedBy?.photoURL],
     ["claimedBy.image", claimedBy?.image],
-    ["slot.avatarUri", slot?.avatarUri],
-    ["slot.avatarUrl", slot?.avatarUrl],
-    ["slot.profileImage", slot?.profileImage],
-    ["slot.photoURL", slot?.photoURL],
-    ["slot.image", slot?.image],
   ];
+}
+
+function pickMediaSlotAvatarRaw(slot: any, claimedBy: any): Array<[string, unknown]> {
+  return pickClaimedUserAvatarRaw(slot, claimedBy);
 }
 
 export function toMediaSlotAbsoluteAvatarUri(raw: string, apiBase?: string) {
@@ -337,7 +360,7 @@ function resolveRenderableClaimAvatarUri(raw: unknown, apiBase?: string): string
   return toMediaSlotAbsoluteAvatarUri(sanitized, apiBase);
 }
 
-export function resolveMediaSlotClaimedAvatar(args: {
+export function resolveClaimedUserAvatarUri(args: {
   slot: any;
   slotId?: string;
   apiBase: string;
@@ -351,10 +374,10 @@ export function resolveMediaSlotClaimedAvatar(args: {
   const claimedBy = slot?.claimedBy;
   const claimedByUserId = String(slot?.claimedByUserId || claimedBy?.userId || "").trim();
 
-  for (const [source, raw] of pickMediaSlotAvatarRaw(slot, claimedBy)) {
+  for (const [source, raw] of pickClaimedUserAvatarRaw(slot, claimedBy)) {
     if (isClaimSlotDataUrlAvatar(raw)) {
       console.log("KRISTO_CLAIMED_SLOT_AVATAR_DATA_URL_REJECTED", {
-        context: "resolveMediaSlotClaimedAvatar",
+        context: "resolveClaimedUserAvatarUri",
         source,
         slotId,
         claimedByUserId,
@@ -431,6 +454,23 @@ export function resolveMediaSlotClaimedAvatar(args: {
     source: "initials-fallback",
   });
   return { uri: "", source: "initials-fallback", hasAvatar: false };
+}
+
+export function resolveMediaSlotClaimedAvatar(args: {
+  slot: any;
+  slotId?: string;
+  apiBase: string;
+  profileAvatarByUserId?: Record<string, string>;
+  memberAvatarByUserId?: Record<string, string>;
+  sessionAvatarUri?: string;
+  sessionUserId?: string;
+}): MediaSlotAvatarResolution {
+  return resolveClaimedUserAvatarUri(args);
+}
+
+/** @deprecated Prefer resolveChurchHeaderAvatarUri for card headers. */
+export function resolveScheduleAvatarUri(item: any, apiBase: string) {
+  return resolveChurchHeaderAvatarUri(item, apiBase).uri;
 }
 
 export function patchMediaSlotClaimAvatarFields(slot: any, avatarUri: string) {
