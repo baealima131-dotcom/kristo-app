@@ -81,6 +81,7 @@ import {
   resolveLiveScheduleFeedId,
   resolvePersistedClaimAvatarUri,
   resolveMediaSlotClaimedAvatar,
+  buildLiveRoomSlotDisplayQueue,
   sanitizePersistedClaimAvatarUri,
   utf8JsonByteLength,
   cleanFeedLabel,
@@ -2549,7 +2550,7 @@ export default function LiveRoomScreen() {
 
   function isScheduleSlotExpired(slot: any, now: number) {
     const endMs = Number(slot?.endMs || 0);
-    return Number.isFinite(endMs) && endMs > 0 && now > endMs;
+    return Number.isFinite(endMs) && endMs > 0 && endMs <= now;
   }
 
   function isScheduleSlotUpcoming(slot: any, now: number) {
@@ -2567,12 +2568,19 @@ export default function LiveRoomScreen() {
       endMs > startMs &&
       startMs > 0 &&
       now >= startMs &&
-      now <= endMs
+      now < endMs
     );
   }
 
   function liveStageSlotLogId(slot: any) {
     return String(slot?.id || slot?.slotId || slot?.runtimeSlotKey || slot?.slot || slot?.slotNumber || "");
+  }
+
+  function liveRoomDisplaySlotKey(slot: any) {
+    const slotId = liveStageSlotLogId(slot);
+    if (slotId) return `id:${slotId}`;
+    const slotNumber = Number(slot?.slot || slot?.slotNumber || 0);
+    return slotNumber > 0 ? `num:${slotNumber}` : "";
   }
 
 
@@ -3659,119 +3667,139 @@ export default function LiveRoomScreen() {
     ? `stage-${currentMainStageSlot.slot}`
     : null;
 
-  const claimedStageSlots = useMemo(() => {
+  const displayScheduleSlots = useMemo(() => {
     const sourceSlots = authorityStageSlots.length
       ? authorityStageSlots
       : runtimeScheduleSlots.length
         ? runtimeScheduleSlots
         : activeStageSlots;
 
-    const source =
-      authorityStageSlots.length && runtimeScheduleSlots.length
-        ? "authority-runtime"
-        : authorityStageSlots.length
-          ? "authority-activeStage"
-          : runtimeScheduleSlots.length
-            ? "runtime"
-            : activeStageSlots.length
-              ? "activeStage"
-              : "none";
-
-    const rows = sourceSlots
+    return sourceSlots
       .map((slot: any, index: number) => {
         const win = getScheduleSlotWindow(slot, index);
         const slotNumber = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
-        const claimedByUserId = String(
-          slot?.claimedByUserId || slot?.claimedBy?.userId || ""
-        ).trim();
-        const claimedByName = String(
-          slot?.claimedByName || slot?.claimedBy?.name || slot?.name || ""
-        ).trim();
-
-        if (!claimedByUserId && !claimedByName) return null;
-        if (!Number.isFinite(slotNumber) || slotNumber <= 0 || slot?.skipped) return null;
-
-        const avatarResolution = resolveMediaSlotClaimedAvatar({
-          slot,
-          slotId: String(slot?.id || slot?.slotId || slotNumber),
-          apiBase: getApiBase(),
-          profileAvatarByUserId: resolvedAvatarByUserId,
-          memberAvatarByUserId: memberAvatarByUserId,
-          sessionAvatarUri: liveProfileAvatarUri,
-          sessionUserId: String(session?.userId || ""),
-        });
-
-        const avatar = avatarResolution.uri || resolveParticipantAvatarUri(slot);
-
-        const roleRaw = String(
-          slot?.role || slot?.roleLabel || slot?.claimedByRole || ""
-        ).toLowerCase();
-        const isLeader =
-          roleRaw.includes("pastor") ||
-          roleRaw.includes("leader") ||
-          roleRaw.includes("admin");
-
         return {
           ...slot,
-          id: `stage-${slotNumber}`,
           slot: slotNumber,
+          slotNumber,
           order: Number(slot?.order || slotNumber),
-          claimedByUserId,
-          claimedByName: claimedByName || `Guest ${slotNumber}`,
-          name: claimedByName || `Guest ${slotNumber}`,
-          role: isLeader
-            ? "Leader"
-            : String(slot?.role || slot?.roleLabel || slot?.claimedByRole || "Speaker"),
-          avatar,
           startMs: Number(win?.startMs || slot?.startMs || 0),
           endMs: Number(win?.endMs || slot?.endMs || 0),
-          approved: true,
-          stageTone:
-            slotNumber === Number(currentSlotNumber || 0)
-              ? "current"
-              : isLeader
-                ? "leader"
-                : index <= 2
-                  ? "next"
-                  : "waiting",
         };
       })
-      .filter(Boolean) as any[];
+      .filter((slot: any) => Number(slot?.slot || 0) > 0 && !slot?.skipped);
+  }, [authorityStageSlots, runtimeScheduleSlots, activeStageSlots]);
 
-    const bySlot = new Map<number, any>();
-    rows.forEach((row: any) => {
-      const n = Number(row?.slot || 0);
-      if (n > 0) bySlot.set(n, row);
+  function enrichLiveRoomDisplaySlot(slot: any, queueState?: string) {
+    const slotNumber = Number(slot?.slot || slot?.slotNumber || 0);
+    const claimedByUserId = String(
+      slot?.claimedByUserId || slot?.claimedBy?.userId || ""
+    ).trim();
+    const claimedByName = String(
+      slot?.claimedByName || slot?.claimedBy?.name || slot?.name || ""
+    ).trim();
+
+    const avatarResolution = resolveMediaSlotClaimedAvatar({
+      slot,
+      slotId: String(slot?.id || slot?.slotId || slotNumber),
+      apiBase: getApiBase(),
+      profileAvatarByUserId: resolvedAvatarByUserId,
+      memberAvatarByUserId: memberAvatarByUserId,
+      sessionAvatarUri: liveProfileAvatarUri,
+      sessionUserId: String(session?.userId || ""),
     });
 
-    const nonExpiredSlots = Array.from(bySlot.values())
-      .filter((row: any) => !isScheduleSlotExpired(row, liveNowMs))
-      .sort(
-        (a: any, b: any) => Number(a.order || a.slot || 0) - Number(b.order || b.slot || 0)
-      );
+    const avatar = avatarResolution.uri || resolveParticipantAvatarUri(slot);
+    const roleRaw = String(
+      slot?.role || slot?.roleLabel || slot?.claimedByRole || ""
+    ).toLowerCase();
+    const isLeader =
+      roleRaw.includes("pastor") ||
+      roleRaw.includes("leader") ||
+      roleRaw.includes("admin");
 
     return {
-      slots: nonExpiredSlots,
-      source,
+      ...slot,
+      id: `stage-${slotNumber}`,
+      slot: slotNumber,
+      slotNumber,
+      order: Number(slot?.order || slotNumber),
+      claimedByUserId,
+      claimedByName: claimedByName || `Guest ${slotNumber}`,
+      name: claimedByName || `Guest ${slotNumber}`,
+      role: isLeader
+        ? "Leader"
+        : String(slot?.role || slot?.roleLabel || slot?.claimedByRole || "Speaker"),
+      avatar,
+      title: String(slot?.title || slot?.name || slot?.slotLabel || `Slot ${slotNumber}`),
+      subtitle: String(slot?.subtitle || slot?.task || slot?.roleLabel || "Open speaking slot"),
+      queueState,
+      approved: true,
     };
+  }
+
+  const liveRoomSlotDisplayQueue = useMemo(
+    () =>
+      buildLiveRoomSlotDisplayQueue({
+        slots: displayScheduleSlots,
+        nowMs: liveNowMs,
+        sideRailLimit: 4,
+        bottomLimit: 4,
+        logContext: "live-room",
+      }),
+    [displayScheduleSlots, liveNowMs]
+  );
+
+  const sideRailDisplaySlots = useMemo(
+    () =>
+      liveRoomSlotDisplayQueue.sideRailSlots.map((item) =>
+        enrichLiveRoomDisplaySlot(item.slot, item.state)
+      ),
+    [
+      liveRoomSlotDisplayQueue.sideRailSlots,
+      memberAvatarByUserId,
+      resolvedAvatarByUserId,
+      liveProfileAvatarUri,
+      session?.userId,
+    ]
+  );
+
+  const bottomDisplaySlots = useMemo(
+    () =>
+      liveRoomSlotDisplayQueue.bottomSlots.map((item) =>
+        enrichLiveRoomDisplaySlot(item.slot, item.state)
+      ),
+    [
+      liveRoomSlotDisplayQueue.bottomSlots,
+      memberAvatarByUserId,
+      resolvedAvatarByUserId,
+      liveProfileAvatarUri,
+      session?.userId,
+    ]
+  );
+
+  const scheduledStagePeople = useMemo(() => {
+    const bySlot = new Map<number, any>();
+    displayScheduleSlots.forEach((slot: any, index: number) => {
+      if (!isClaimedScheduleSlot(slot)) return;
+      if (isScheduleSlotExpired(slot, liveNowMs)) return;
+      const enriched = enrichLiveRoomDisplaySlot(slot);
+      const n = Number(enriched.slot || 0);
+      if (n > 0) bySlot.set(n, enriched);
+    });
+    return Array.from(bySlot.values()).sort(
+      (a: any, b: any) =>
+        Number(a.startMs || 0) - Number(b.startMs || 0) ||
+        Number(a.slot || 0) - Number(b.slot || 0)
+    );
   }, [
-    authorityStageSlots,
-    runtimeScheduleSlots,
-    activeStageSlots,
-    currentSlotNumber,
+    displayScheduleSlots,
     liveNowMs,
     memberAvatarByUserId,
     resolvedAvatarByUserId,
     liveProfileAvatarUri,
     session?.userId,
   ]);
-
-  const scheduledStagePeople = useMemo(() => claimedStageSlots.slots, [claimedStageSlots]);
-
-  const upcomingStageSlots = useMemo(
-    () => claimedStageSlots.slots.filter((slot: any) => isScheduleSlotUpcoming(slot, liveNowMs)),
-    [claimedStageSlots, liveNowMs]
-  );
 
   const scheduledWaitingPeople = useMemo(() => {
     return waitingStageSlots.map((slot: any) => ({
@@ -3784,127 +3812,123 @@ export default function LiveRoomScreen() {
 
   const scheduledHiddenCount = hiddenStageSlots.length;
 
-  // V1 claimed-slots-only seats:
-  // - big screen = current active claimed slot (startMs <= now <= endMs)
-  // - upper seats + bottom cards = upcoming claimed slots only
-  const claimedSeatSlots = useMemo(() => {
-    return upcomingStageSlots
-      .sort((a: any, b: any) => Number(a?.slot || 0) - Number(b?.slot || 0))
-      .slice(0, 8);
-  }, [upcomingStageSlots]);
-
-  const visibleQueueSlots = claimedSeatSlots;
+  const visibleQueueSlots = sideRailDisplaySlots;
 
   const openClaimableSlots = useMemo(() => {
-    const currentUserId = String(session?.userId || "").trim();
     const now = liveNowMs;
-
-    return runtimeScheduleSlots
-      .map((slot: any, index: number) => {
-        const win = getScheduleSlotWindow(slot, index);
-        const n = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
-        const ownerId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
-        const ownerName = String(slot?.claimedByName || slot?.claimedBy?.name || "").trim();
-
-        return {
-          ...slot,
-          slot: n,
-          slotNumber: n,
-          order: Number(slot?.order || n),
-          startMs: Number(win.startMs || 0),
-          endMs: Number(win.endMs || 0),
-          claimedByUserId: ownerId,
-          claimedByName: ownerName,
-          title: String(slot?.title || slot?.name || slot?.slotLabel || `Slot ${n}`),
-          subtitle: String(slot?.subtitle || slot?.task || slot?.roleLabel || "Open speaking slot"),
-        };
-      })
-      .filter((slot: any) => Number(slot?.slot || 0) > 0)
-      .filter((slot: any) => !slot?.skipped)
-      .filter(
-        (slot: any) =>
-          !String(slot?.claimedByUserId || "").trim() &&
-          !String(slot?.claimedByName || "").trim()
-      )
-      .filter((slot: any) => !currentUserId || String(slot?.claimedByUserId || "") !== currentUserId)
-      .filter((slot: any) => !Number(slot?.endMs || 0) || Number(slot.endMs || 0) >= now)
-      .sort((a: any, b: any) => Number(a.slot || 0) - Number(b.slot || 0))
-      .slice(0, 4);
-  }, [runtimeScheduleSlots, liveNowMs, session?.userId]);
+    return displayScheduleSlots
+      .filter((slot: any) => !isClaimedScheduleSlot(slot))
+      .filter((slot: any) => !isScheduleSlotExpired(slot, now))
+      .filter((slot: any) => Number(slot?.startMs || 0) > now)
+      .map((slot: any) => enrichLiveRoomDisplaySlot(slot, "open_claimable"))
+      .sort(
+        (a: any, b: any) =>
+          Number(a.startMs || 0) - Number(b.startMs || 0) ||
+          Number(a.slot || 0) - Number(b.slot || 0)
+      );
+  }, [
+    displayScheduleSlots,
+    liveNowMs,
+    memberAvatarByUserId,
+    resolvedAvatarByUserId,
+    liveProfileAvatarUri,
+    session?.userId,
+  ]);
 
   const bottomStageDisplayBoxes = useMemo(() => {
-    const claimedForBottom = upcomingStageSlots;
-    const hasSchedule =
-      mergedScheduleSlots.length > 0 ||
-      routeScheduleSlots.length > 0 ||
-      approvedStageSlots.length > 0;
-    const allSlotsClosed =
-      claimedStageSlots.slots.length === 0 &&
-      openClaimableSlots.length === 0 &&
-      (!hasSchedule || !liveStillActive);
+    const BOTTOM_COUNT = 4;
+    const now = liveNowMs;
+    const usedKeys = new Set<string>();
+    const markUsed = (slot: any) => {
+      const key = liveRoomDisplaySlotKey(slot);
+      if (key) usedKeys.add(key);
+    };
 
-    return [0, 1, 2, 3].map((index) => {
-      const openSlot = openClaimableSlots[index] as any;
-      if (openSlot) {
-        return { kind: "open" as const, slot: openSlot };
+    if (liveRoomSlotDisplayQueue.activeSlot) {
+      markUsed(liveRoomSlotDisplayQueue.activeSlot.slot);
+    }
+    liveRoomSlotDisplayQueue.sideRailSlots.forEach((item) => markUsed(item.slot));
+
+    const bottomPool: any[] = [];
+    bottomDisplaySlots.forEach((slot: any) => {
+      bottomPool.push(slot);
+      markUsed(slot);
+    });
+
+    const supplementalOpen = openClaimableSlots
+      .filter((slot: any) => {
+        const key = liveRoomDisplaySlotKey(slot);
+        return key && !usedKeys.has(key);
+      })
+      .sort(
+        (a: any, b: any) =>
+          Number(a.startMs || 0) - Number(b.startMs || 0) ||
+          Number(a.slot || 0) - Number(b.slot || 0)
+      );
+
+    supplementalOpen.forEach((slot: any) => {
+      if (bottomPool.length >= BOTTOM_COUNT) return;
+      const key = liveRoomDisplaySlotKey(slot);
+      if (!key || usedKeys.has(key)) return;
+      bottomPool.push(slot);
+      markUsed(slot);
+    });
+
+    const hasFutureScheduleSlot = displayScheduleSlots.some((slot: any) => {
+      if (isScheduleSlotExpired(slot, now)) return false;
+      return Number(slot?.startMs || 0) > now;
+    });
+    const noRemainingFutureSlots = !hasFutureScheduleSlot;
+
+    return Array.from({ length: BOTTOM_COUNT }, (_, index) => {
+      const slot = bottomPool[index];
+      if (slot) {
+        const isOpen = String(slot?.queueState || "") === "open_claimable";
+        return {
+          kind: isOpen ? ("open" as const) : ("claimed" as const),
+          slot,
+          index,
+        };
       }
-
-      const claimedSlot = claimedForBottom[index] as any;
-      if (claimedSlot) {
-        return { kind: "claimed" as const, slot: claimedSlot };
+      if (noRemainingFutureSlots) {
+        return { kind: "locked_closed" as const, index };
       }
-
-      if (allSlotsClosed) {
-        return { kind: "closed" as const };
-      }
-
-      return { kind: "empty" as const };
+      return { kind: "empty" as const, index };
     });
   }, [
+    bottomDisplaySlots,
     openClaimableSlots,
-    upcomingStageSlots,
-    claimedStageSlots.slots.length,
-    mergedScheduleSlots.length,
-    routeScheduleSlots.length,
-    approvedStageSlots.length,
-    liveStillActive,
+    displayScheduleSlots,
+    liveRoomSlotDisplayQueue.activeSlot,
+    liveRoomSlotDisplayQueue.sideRailSlots,
+    liveNowMs,
   ]);
 
   useEffect(() => {
-    const slots = claimedStageSlots.slots;
-    console.log("KRISTO_LIVE_ROOM_CLAIMED_SLOTS_RENDER", {
-      totalSlots:
-        authorityStageSlots.length ||
-        runtimeScheduleSlots.length ||
-        activeStageSlots.length,
-      claimedCount: slots.length,
-      displayCount: visibleQueueSlots.length + openClaimableSlots.length,
-      upcomingCount: upcomingStageSlots.length,
-      currentSlotNumber: Number(currentMainStageSlot?.slot || currentSlotNumber || 0),
-      source: claimedStageSlots.source,
-    });
-    slots.forEach((slot: any) => {
-      console.log("KRISTO_LIVE_ROOM_CLAIMED_SLOT_ITEM", {
-        slotId: liveStageSlotLogId(slot),
-        slotNumber: Number(slot?.slot || 0),
-        claimedByUserId: String(slot?.claimedByUserId || ""),
-        claimedByName: String(slot?.claimedByName || slot?.name || ""),
-        hasAvatar: !!String(slot?.avatar || "").trim(),
-        startMs: Number(slot?.startMs || 0),
-        endMs: Number(slot?.endMs || 0),
+    bottomStageDisplayBoxes.forEach((box) => {
+      if (box.kind === "empty") return;
+      const slot = (box as any).slot;
+      console.log("KRISTO_LIVE_ROOM_BOTTOM_SLOT_CARD_STATE", {
+        index: box.index,
+        state:
+          box.kind === "open"
+            ? "open_claimable"
+            : box.kind === "claimed"
+              ? "claimed"
+              : "locked_closed",
+        slotId: slot ? liveStageSlotLogId(slot) : "",
+        slotNumber: slot ? Number(slot?.slot || slot?.slotNumber || 0) : null,
+        claimedByName: slot ? String(slot?.claimedByName || slot?.name || "") : "",
+        startMs: slot ? Number(slot?.startMs || 0) : null,
+        endMs: slot ? Number(slot?.endMs || 0) : null,
       });
     });
-  }, [
-    claimedStageSlots,
-    authorityStageSlots.length,
-    runtimeScheduleSlots.length,
-    activeStageSlots.length,
-    visibleQueueSlots.length,
-    openClaimableSlots.length,
-    upcomingStageSlots.length,
-    currentMainStageSlot?.slot,
-    currentSlotNumber,
-  ]);
+  }, [bottomStageDisplayBoxes]);
+
+  const hostDrawerQueueEntries = useMemo(
+    () => [...sideRailDisplaySlots, ...bottomDisplaySlots].slice(0, 8),
+    [sideRailDisplaySlots, bottomDisplaySlots]
+  );
 
   const prevActiveStageSlotRef = useRef<any>(null);
   const expiredStageSlotIdsRef = useRef<Set<string>>(new Set());
@@ -4169,8 +4193,6 @@ export default function LiveRoomScreen() {
   const hostDrawerNextLabel = hostDrawerNextSlot
     ? String((hostDrawerNextSlot as any)?.name || (hostDrawerNextSlot as any)?.title || `Slot ${(hostDrawerNextSlot as any)?.slot || ""}`)
     : "No next speaker";
-
-  const hostDrawerQueueEntries = visibleQueueSlots.slice(0, 8);
 
   const liveCountdownLabel = (() => {
     const endMs = Number(currentMainStageSlot?.endMs || 0);
@@ -6731,6 +6753,45 @@ export default function LiveRoomScreen() {
     router.replace("/(tabs)/more" as any);
   }
 
+  function navigateToHomeFeedForClaim(slot?: any) {
+    setCameraPaused(true);
+    refreshLiveStateAfterLeave();
+    resumeHomeFeedAfterLiveExit();
+
+    const churchId = String(
+      (session as any)?.churchId ||
+        (params as any)?.churchId ||
+        (params as any)?.churchLabel ||
+        ""
+    ).trim();
+    const focusPostId = String(
+      liveScheduleFeedId ||
+        slot?.feedId ||
+        slot?.sourceScheduleId ||
+        (params as any)?.feedId ||
+        (params as any)?.sourceScheduleId ||
+        ""
+    ).trim();
+
+    console.log("KRISTO_LIVE_ROOM_GO_CLAIM_NAV", {
+      focusPostId: focusPostId || null,
+      churchId: churchId || null,
+      slotNumber: Number(slot?.slot || slot?.slotNumber || 0) || null,
+      source: "live-room-bottom-claim",
+    });
+
+    router.replace({
+      pathname: "/(tabs)/",
+      params: {
+        ...(focusPostId
+          ? { focusPostId }
+          : { focus: "claim-media-slot" }),
+        ...(churchId ? { churchId } : {}),
+        source: "live-room-bottom-claim",
+      },
+    } as any);
+  }
+
   async function endLiveNow() {
     await pushLiveAction("end-live");
     endLive();
@@ -8145,7 +8206,7 @@ return (
                 return (
                   <Pressable
                     key={`open-claim-slot-${slot?.id || slot?.slot || index}`}
-                    onPress={() => router.push("/" as any)}
+                    onPress={() => navigateToHomeFeedForClaim(slot)}
                     style={({ pressed }) => ([
                       s.teamGridMiniCard,
                       ...positionStyle,
@@ -8165,10 +8226,10 @@ return (
 
                     <View style={s.teamGridRequestTextArea as any}>
                       <Text style={s.teamGridRequestName as any} numberOfLines={1}>
-                        {`Go Claim S${slot.slot}`}
+                        Go Claim
                       </Text>
                       <Text style={[s.teamGridRequestStatus as any, s.teamGridRequestStatusApproved]} numberOfLines={1}>
-                        {String(slot.title || "Open slot")}
+                        Open slot available
                       </Text>
                     </View>
                   </Pressable>
@@ -8221,7 +8282,7 @@ return (
 
               return (
                 <View
-                  key={`closed-stage-slot-${index}`}
+                  key={`locked-stage-slot-${index}`}
                   pointerEvents="none"
                   style={[
                     s.teamGridMiniCard,
@@ -8258,7 +8319,7 @@ return (
                       ]}
                       numberOfLines={1}
                     >
-                      Schedule ended
+                      No slots available
                     </Text>
                   </View>
                 </View>
