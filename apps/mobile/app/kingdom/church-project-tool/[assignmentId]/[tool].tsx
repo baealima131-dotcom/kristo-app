@@ -32,6 +32,7 @@ import {
 } from "@/src/lib/mediaScheduleLock";
 import {
   applySilentMediaScheduleReload,
+  clearStaleMediaScheduleSpeakerSlotsForChurch,
   fetchMediaScheduleFeedSync,
   purgeAllLocalMediaScheduleSources,
 } from "@/src/lib/mediaScheduleSilentReload";
@@ -1541,6 +1542,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         previousVersion: mediaScheduleVersionRef.current,
         previousUpdatedAt: mediaScheduleUpdatedAtRef.current,
         force,
+        assignmentId,
         ui: {
           setBackendScheduleCards,
           setScheduleConflictInfo,
@@ -1573,9 +1575,17 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
 
         if (reloadResult?.shouldForceLocalPurge || reloadResult?.backendHasActiveSchedule === false) {
           if (alive) {
-            setBackendScheduleCards([]);
-            setScheduleConflictInfo(null);
-            setActiveScheduleBatchIndex(0);
+            clearStaleMediaScheduleSpeakerSlotsForChurch({
+              churchId: String(getSessionSync()?.churchId || "").trim(),
+              assignmentIds: [assignmentId],
+              reason: "tool-backend-cards-poll-empty",
+              force: true,
+              ui: {
+                setBackendScheduleCards,
+                setScheduleConflictInfo,
+                setActiveScheduleBatchIndex,
+              },
+            });
           }
           return;
         }
@@ -2895,6 +2905,9 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
 
     let speakerSlotsForConflict = Array.isArray(scheduleSpeakerSlots) ? scheduleSpeakerSlots : [];
     let backendCardsForConflict = Array.isArray(backendScheduleCards) ? backendScheduleCards : [];
+    let backendActiveScheduleCount = 0;
+    let backendFeedId = "";
+    let backendSourceScheduleId = "";
 
     if (churchId && isMediaSchedule && !isMinistryLiveSchedule) {
       try {
@@ -2904,14 +2917,26 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         });
         if (!backendFeedRow) {
           backendCardsForConflict = [];
-          if (!meetingSentToSchedule) {
-            speakerSlotsForConflict = [];
-          }
+          speakerSlotsForConflict = [];
+          clearStaleMediaScheduleSpeakerSlotsForChurch({
+            churchId,
+            assignmentIds: [assignmentId],
+            reason: "handleSendMeetingToSchedule-backend-empty",
+            force: true,
+            ui: {
+              setBackendScheduleCards,
+              setScheduleConflictInfo,
+              setActiveScheduleBatchIndex,
+            },
+          });
         } else {
+          backendActiveScheduleCount = 1;
+          backendFeedId = String(backendFeedRow?.id || "");
+          backendSourceScheduleId = String(backendFeedRow?.sourceScheduleId || "");
           backendCardsForConflict = backendCardsForConflict.map((card: any) => ({
             ...card,
-            feedId: String(backendFeedRow?.id || ""),
-            sourceScheduleId: String(backendFeedRow?.sourceScheduleId || ""),
+            feedId: backendFeedId,
+            sourceScheduleId: backendSourceScheduleId,
             scheduleStatus: String(backendFeedRow?.status || ""),
             deleted: Boolean(backendFeedRow?.deleted),
           }));
@@ -2929,14 +2954,23 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           source: "schedule-speaker-slots",
           slots: speakerSlotsForConflict,
           churchId,
+          feedId: backendFeedId,
+          sourceScheduleId: backendSourceScheduleId,
         },
         {
           source: "backend-schedule-cards",
           slots: backendCardsForConflict,
           churchId,
+          feedId: backendFeedId,
+          sourceScheduleId: backendSourceScheduleId,
         },
       ],
-      { reason: "handleSendMeetingToSchedule", nowMs: Date.now() }
+      {
+        reason: "handleSendMeetingToSchedule",
+        nowMs: Date.now(),
+        backendActiveScheduleCount,
+        meetingSentToSchedule,
+      }
     );
     const conflictingSlot = windowConflict?.slot || null;
 

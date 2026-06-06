@@ -706,6 +706,26 @@ export function getChurchProjectMcLiveSlotState(
 }
 
 
+export function isStaleMediaBatchSpeakerSlot(slot: any) {
+  const slotId = String(slot?.id || slot?.cardId || "").trim();
+  const batchId = String(slot?.scheduleBatchId || "").trim();
+  return slotId.startsWith("batch_") || batchId.startsWith("batch_");
+}
+
+export function listStaleMediaBatchIds(slots: ScheduleSlotDraft[]) {
+  const batchIds = new Set<string>();
+  for (const slot of slots) {
+    const batchId = String(slot?.scheduleBatchId || "").trim();
+    if (batchId.startsWith("batch_")) batchIds.add(batchId);
+    const slotId = String(slot?.id || "").trim();
+    if (slotId.startsWith("batch_")) {
+      const prefix = slotId.split("-slot-")[0];
+      if (prefix.startsWith("batch_")) batchIds.add(prefix);
+    }
+  }
+  return Array.from(batchIds);
+}
+
 export function clearChurchProjectScheduleSlots(assignmentId: string) {
   const key = String(assignmentId || "default");
   const state = getChurchProjectMcScheduleState(key);
@@ -724,4 +744,50 @@ export function clearChurchProjectScheduleSlots(assignmentId: string) {
   store.set(key, next);
   persistState(key, next);
   emit();
+}
+
+export function hasStaleMediaBatchSpeakerSlots(assignmentId: string) {
+  const key = String(assignmentId || "media-schedule").trim() || "media-schedule";
+  const state = getChurchProjectMcScheduleState(key);
+  const slots = Array.isArray(state.scheduleSlots) ? state.scheduleSlots : [];
+  return slots.some((slot) => isStaleMediaBatchSpeakerSlot(slot));
+}
+
+export function shouldClearMediaScheduleSpeakerSlots(assignmentId: string) {
+  const key = String(assignmentId || "media-schedule").trim() || "media-schedule";
+  const state = getChurchProjectMcScheduleState(key);
+  const slots = Array.isArray(state.scheduleSlots) ? state.scheduleSlots : [];
+  if (!slots.length) return false;
+  return (
+    Boolean(state.meetingPlan?.sentToSchedule) ||
+    slots.some((slot) => isStaleMediaBatchSpeakerSlot(slot))
+  );
+}
+
+export function clearMediaScheduleSpeakerSlots(
+  assignmentId: string,
+  reason: string
+) {
+  const key = String(assignmentId || "media-schedule").trim() || "media-schedule";
+  const state = getChurchProjectMcScheduleState(key);
+  const previousSlots = Array.isArray(state.scheduleSlots) ? state.scheduleSlots : [];
+  const previousBatchIds = listStaleMediaBatchIds(previousSlots);
+
+  clearChurchProjectScheduleSlots(key);
+
+  const afterState = getChurchProjectMcScheduleState(key);
+
+  console.log("KRISTO_MEDIA_SPEAKER_SLOTS_STALE_CLEARED", {
+    assignmentId: key,
+    reason,
+    previousSlotCount: previousSlots.length,
+    previousBatchIds,
+    meetingSentToSchedule: Boolean(state.meetingPlan?.sentToSchedule),
+  });
+  console.log("KRISTO_MEDIA_SPEAKER_SLOTS_AFTER_CLEAR", {
+    assignmentId: key,
+    reason,
+    slotCount: afterState.scheduleSlots.length,
+    meetingSentToSchedule: afterState.meetingPlan.sentToSchedule,
+  });
 }

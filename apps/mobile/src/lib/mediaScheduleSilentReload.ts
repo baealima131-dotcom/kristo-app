@@ -13,8 +13,9 @@ import { resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import {
-  clearChurchProjectScheduleSlots,
+  clearMediaScheduleSpeakerSlots,
   getChurchProjectMcRuntime,
+  shouldClearMediaScheduleSpeakerSlots,
 } from "@/src/store/churchProjectMcScheduleStore";
 import {
   clearLocalSchedulePendingBackend,
@@ -47,6 +48,46 @@ function isLocalMediaScheduleFeedRow(it: any): boolean {
   );
 }
 
+const DEFAULT_MEDIA_SCHEDULE_ASSIGNMENT_IDS = ["media-schedule", "media-guests"];
+
+export function clearStaleMediaScheduleSpeakerSlotsForChurch(options: {
+  churchId?: string;
+  assignmentIds?: string[];
+  reason: string;
+  force?: boolean;
+  ui?: LocalMediaScheduleUiReset;
+}) {
+  const assignmentIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(options.assignmentIds) ? options.assignmentIds : []),
+        ...DEFAULT_MEDIA_SCHEDULE_ASSIGNMENT_IDS,
+      ]
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  const clearedAssignmentIds: string[] = [];
+  for (const assignmentId of assignmentIds) {
+    if (!options.force && !shouldClearMediaScheduleSpeakerSlots(assignmentId)) continue;
+    clearMediaScheduleSpeakerSlots(assignmentId, options.reason);
+    clearedAssignmentIds.push(assignmentId);
+  }
+
+  options.ui?.setBackendScheduleCards?.([]);
+  options.ui?.setScheduleConflictInfo?.(null);
+  options.ui?.setActiveScheduleBatchIndex?.(0);
+
+  if (clearedAssignmentIds.length) {
+    console.log("KRISTO_MEDIA_SPEAKER_SLOTS_STALE_CLEARED", {
+      churchId: String(options.churchId || "").trim() || null,
+      reason: options.reason,
+      assignmentIds: clearedAssignmentIds,
+    });
+  }
+}
+
 export function clearMediaScheduleCachesForChurch(churchId: string, reason: string) {
   const cid = String(churchId || "").trim();
   const session = getSessionSync() as any;
@@ -77,6 +118,7 @@ export function purgeAllLocalMediaScheduleSources(options: {
   const churchId = String(options.churchId || "").trim();
   const assignmentId = String(options.assignmentId || "media-schedule").trim() || "media-schedule";
   const removePending = options.removePending === true;
+  const forceSpeakerSlotClear = removePending;
 
   if (churchId) {
     clearMediaScheduleCachesForChurch(churchId, options.reason);
@@ -101,7 +143,18 @@ export function purgeAllLocalMediaScheduleSources(options: {
   }
 
   try {
-    clearChurchProjectScheduleSlots(assignmentId);
+    if (forceSpeakerSlotClear) {
+      for (const id of [assignmentId, ...DEFAULT_MEDIA_SCHEDULE_ASSIGNMENT_IDS]) {
+        clearMediaScheduleSpeakerSlots(id, options.reason);
+      }
+    } else {
+      clearStaleMediaScheduleSpeakerSlotsForChurch({
+        churchId,
+        assignmentIds: [assignmentId],
+        reason: options.reason,
+        ui: options.ui,
+      });
+    }
     const runtime = getChurchProjectMcRuntime?.(assignmentId);
     if (runtime) {
       runtime.items = [];
@@ -186,6 +239,7 @@ export function applySilentMediaScheduleReload(params: {
   previousVersion?: number;
   previousUpdatedAt?: string;
   force?: boolean;
+  assignmentId?: string;
   ui?: LocalMediaScheduleUiReset;
 }): SilentMediaScheduleReloadResult {
   const cid = String(params.churchId || "").trim();
@@ -205,6 +259,15 @@ export function applySilentMediaScheduleReload(params: {
     ? findActiveMediaScheduleForChurch(rows, cid, { strictChurch: true })
     : null;
   const backendHasActiveSchedule = Boolean(backendScheduleFeed || backendActive);
+
+  if (cid && !backendHasActiveSchedule) {
+    clearStaleMediaScheduleSpeakerSlotsForChurch({
+      churchId: cid,
+      assignmentIds: params.assignmentId ? [params.assignmentId] : undefined,
+      reason: `${params.reason}:backend-empty`,
+      ui: params.ui,
+    });
+  }
 
   if (backendScheduleFeed || backendActive) {
     console.log("[MediaSilentReload] active schedule source found", {

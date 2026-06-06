@@ -285,11 +285,100 @@ export function logMediaScheduleConflictItem(
   });
 }
 
+export function isStaleMediaBatchSpeakerSlot(slot: any) {
+  const slotId = String(slot?.id || slot?.cardId || "").trim();
+  const batchId = String(slot?.scheduleBatchId || "").trim();
+  return slotId.startsWith("batch_") || batchId.startsWith("batch_");
+}
+
+export function shouldIgnoreStaleMediaSpeakerSlot(
+  slot: any,
+  group: MediaScheduleConflictSlotGroup,
+  options?: {
+    backendActiveScheduleCount?: number;
+    meetingSentToSchedule?: boolean;
+    reason?: string;
+  }
+) {
+  if (String(group.source || "") !== "schedule-speaker-slots") return false;
+
+  const backendCount = Number(options?.backendActiveScheduleCount ?? -1);
+  const meetingSentToSchedule = Boolean(options?.meetingSentToSchedule);
+  const feedId = String(group.feedId || slot?.feedId || slot?.sourceFeedId || "").trim();
+  const sourceScheduleId = String(
+    group.sourceScheduleId || slot?.sourceScheduleId || slot?.scheduleId || ""
+  ).trim();
+  const slotId = String(slot?.id || slot?.cardId || "").trim();
+  const isStaleBatch = isStaleMediaBatchSpeakerSlot(slot);
+
+  const shouldIgnore =
+    backendCount === 0 &&
+    !sourceScheduleId &&
+    !feedId &&
+    isStaleBatch &&
+    !meetingSentToSchedule;
+
+  if (shouldIgnore) {
+    console.log("KRISTO_MEDIA_SPEAKER_SLOTS_IGNORED_STALE_BATCH", {
+      reason: String(options?.reason || "conflict-check"),
+      slotId,
+      slotName: String(slot?.name || slot?.title || ""),
+      backendActiveScheduleCount: backendCount,
+      meetingSentToSchedule,
+      feedId: feedId || null,
+      sourceScheduleId: sourceScheduleId || null,
+      scheduleBatchId: String(slot?.scheduleBatchId || "").trim() || null,
+    });
+  }
+
+  return shouldIgnore;
+}
+
+export function filterMediaSpeakerSlotsForConflict(
+  slots: any[],
+  group: MediaScheduleConflictSlotGroup,
+  options?: {
+    backendActiveScheduleCount?: number;
+    meetingSentToSchedule?: boolean;
+    reason?: string;
+    nowMs?: number;
+  }
+) {
+  const nowMs = options?.nowMs ?? Date.now();
+  const input = Array.isArray(slots) ? slots : [];
+  const kept = input.filter((slot) => {
+    if (!isMediaScheduleConflictCandidate(slot, nowMs)) return false;
+    if (shouldIgnoreStaleMediaSpeakerSlot(slot, group, options)) return false;
+    return true;
+  });
+
+  if (
+    String(group.source || "") === "schedule-speaker-slots" &&
+    input.length > 0 &&
+    kept.length === 0
+  ) {
+    console.log("KRISTO_MEDIA_SPEAKER_SLOTS_CONFLICT_ALLOWED", {
+      reason: String(options?.reason || "conflict-check"),
+      inputSlotCount: input.length,
+      keptSlotCount: kept.length,
+      backendActiveScheduleCount: Number(options?.backendActiveScheduleCount ?? -1),
+      meetingSentToSchedule: Boolean(options?.meetingSentToSchedule),
+    });
+  }
+
+  return kept;
+}
+
 export function findMediaScheduleWindowConflict(
   startMs: number,
   endMs: number,
   groups: MediaScheduleConflictSlotGroup[],
-  options?: { reason?: string; nowMs?: number }
+  options?: {
+    reason?: string;
+    nowMs?: number;
+    backendActiveScheduleCount?: number;
+    meetingSentToSchedule?: boolean;
+  }
 ) {
   const nowMs = options?.nowMs ?? Date.now();
   const reason = String(options?.reason || "findMediaScheduleWindowConflict");
@@ -300,7 +389,15 @@ export function findMediaScheduleWindowConflict(
 
   for (const group of groups) {
     const slots = Array.isArray(group.slots) ? group.slots : [];
-    const activeSlots = slots.filter((slot) => isMediaScheduleConflictCandidate(slot, nowMs));
+    const activeSlots =
+      String(group.source || "") === "schedule-speaker-slots"
+        ? filterMediaSpeakerSlotsForConflict(slots, group, {
+            backendActiveScheduleCount: options?.backendActiveScheduleCount,
+            meetingSentToSchedule: options?.meetingSentToSchedule,
+            reason,
+            nowMs,
+          })
+        : slots.filter((slot) => isMediaScheduleConflictCandidate(slot, nowMs));
 
     for (const slot of activeSlots) {
       const existing = resolveMediaSlotTimeWindow(slot, nowMs);
