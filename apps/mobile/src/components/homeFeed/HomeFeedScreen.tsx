@@ -43,6 +43,11 @@ import {
 } from "@/src/lib/homeFeedReport";
 import { isHomeFeedRenderPaused } from "@/src/lib/liveRoomStartup";
 import { pauseAllHomeFeedVideos } from "@/src/lib/homeFeedVideoController";
+import {
+  consumeHomeFeedScheduleDirty,
+  peekHomeFeedScheduleDirty,
+  subscribeHomeFeedScheduleDirty,
+} from "@/src/lib/homeFeedScheduleDirty";
 
 export default function HomeFeedScreen() {
   const { height: windowHeight } = useWindowDimensions();
@@ -71,6 +76,7 @@ export default function HomeFeedScreen() {
 
   const focusHandledRef = useRef("");
   const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingScheduleFeedIdRef = useRef<string | null>(null);
 
   const contentHeight = homeFeedSlideHeight(windowHeight, tabBarHeight);
   const homeFeedRenderPaused = isHomeFeedRenderPaused();
@@ -100,12 +106,16 @@ export default function HomeFeedScreen() {
     return () => sub.remove();
   }, []);
 
-  const loadFeed = useCallback(async (reason = "load") => {
+  const loadFeed = useCallback(async (reason = "load", opts?: { force?: boolean }) => {
     if (isHomeFeedRenderPaused()) return;
 
-    setLoading(true);
+    const force = opts?.force === true;
+    const hasLocalSchedule = feedList().some(isHomeFeedScheduleCardRow);
+    if (!force || !hasLocalSchedule) {
+      setLoading(true);
+    }
     try {
-      const rows = await fetchHomeFeedFromApi(reason);
+      const rows = await fetchHomeFeedFromApi(reason, { force });
       setBackendRows(rows);
       setOptimisticLikes((prev) => {
         let changed = false;
@@ -129,9 +139,72 @@ export default function HomeFeedScreen() {
     }
   }, []);
 
+  const forceReloadAfterSchedule = useCallback(
+    (source: string, backendFeedId?: string | null) => {
+      if (backendFeedId) {
+        pendingScheduleFeedIdRef.current = String(backendFeedId).trim();
+      }
+      console.log("KRISTO_HOME_FEED_FORCE_RELOAD_AFTER_SCHEDULE", {
+        source,
+        backendFeedId: pendingScheduleFeedIdRef.current,
+      });
+      setLocalTick((n) => n + 1);
+      void loadFeed("schedule-dirty", { force: true });
+    },
+    [loadFeed]
+  );
+
   useEffect(() => {
-    void loadFeed(screenFocused ? "focus" : "load");
-  }, [loadFeed, screenFocused]);
+    const reload = (source: string) => {
+      const dirty = peekHomeFeedScheduleDirty();
+      forceReloadAfterSchedule(source, dirty?.backendFeedId || null);
+    };
+    (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__ = reload;
+    return () => {
+      if ((globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__ === reload) {
+        delete (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__;
+      }
+    };
+  }, [forceReloadAfterSchedule]);
+
+  useEffect(() => {
+    const unsub = subscribeHomeFeedScheduleDirty(() => {
+      if (isHomeFeedRenderPaused()) return;
+
+      const session = getSessionSync() as any;
+      const churchId = String(session?.churchId || "").trim();
+      const dirty = peekHomeFeedScheduleDirty(churchId);
+      if (dirty?.backendFeedId) {
+        pendingScheduleFeedIdRef.current = dirty.backendFeedId;
+      }
+      setLocalTick((n) => n + 1);
+
+      if (!screenFocused) return;
+
+      const consumed = consumeHomeFeedScheduleDirty(churchId);
+      if (consumed) {
+        forceReloadAfterSchedule("schedule-dirty-subscribe", consumed.backendFeedId);
+      }
+    });
+    return unsub;
+  }, [forceReloadAfterSchedule, screenFocused]);
+
+  useEffect(() => {
+    const session = getSessionSync() as any;
+    const churchId = String(session?.churchId || "").trim();
+
+    if (screenFocused) {
+      const dirty = consumeHomeFeedScheduleDirty(churchId);
+      if (dirty) {
+        forceReloadAfterSchedule("schedule-dirty-focus", dirty.backendFeedId);
+        return;
+      }
+      void loadFeed("focus");
+      return;
+    }
+
+    void loadFeed("load");
+  }, [loadFeed, screenFocused, forceReloadAfterSchedule]);
 
   useEffect(() => {
     if (!feedFocused) return;
@@ -182,6 +255,31 @@ export default function HomeFeedScreen() {
     }
     return hydrated;
   }, [backendRows, localTick, serverLikeByPostId, homeFeedRenderPaused]);
+
+  useEffect(() => {
+    const targetId = String(pendingScheduleFeedIdRef.current || "").trim();
+    if (!targetId) return;
+
+    const visible = feedRows.some((row) => {
+      if (!isHomeFeedScheduleCardRow(row)) return false;
+      const rowId = String(row?.id || "").trim();
+      const parentId = String(row?.parentScheduleId || row?.sourceScheduleId || "").trim();
+      return (
+        rowId === targetId ||
+        parentId === targetId ||
+        baseFeedId(rowId) === baseFeedId(targetId)
+      );
+    });
+
+    if (!visible) return;
+
+    console.log("KRISTO_HOME_FEED_SCHEDULE_VISIBLE_AFTER_CREATE", {
+      backendFeedId: targetId,
+      feedCount: feedRows.length,
+      scheduleSlotCount: feedRows.filter(isHomeFeedScheduleCardRow).length,
+    });
+    pendingScheduleFeedIdRef.current = null;
+  }, [feedRows]);
 
   useEffect(() => {
     let alive = true;

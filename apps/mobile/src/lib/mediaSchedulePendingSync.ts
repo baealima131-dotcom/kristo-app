@@ -1,4 +1,5 @@
 import { feedList, feedRemoveWhere, feedSyncMediaScheduleFromBackend } from "@/src/lib/homeFeedStore";
+import { markHomeFeedScheduleDirty } from "@/src/lib/homeFeedScheduleDirty";
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 
 type PendingLocalSchedule = {
@@ -145,6 +146,7 @@ export function replaceLocalScheduleWithBackend(
 
   feedSyncMediaScheduleFromBackend(normalized, localId);
   clearLocalSchedulePendingBackend(localId);
+  markHomeFeedScheduleDirty(String(normalized.churchId || fallback?.churchId || ""), backendFeedId);
 
   console.log("KRISTO_SCHEDULE_LOCAL_REPLACED_WITH_BACKEND", {
     ok: true,

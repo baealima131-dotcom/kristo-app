@@ -14,10 +14,18 @@ function parseFeedRows(res: any): any[] {
   );
 }
 
-export async function fetchHomeFeedFromApi(reason = "load") {
+export async function fetchHomeFeedFromApi(
+  reason = "load",
+  opts?: { force?: boolean }
+) {
   const session = getSessionSync() as any;
   const viewerUserId = String(session?.userId || "").trim();
   const viewerChurchId = String(session?.churchId || "").trim();
+  const force = opts?.force === true;
+  const bypassThrottle =
+    force ||
+    reason === "focus" ||
+    reason.startsWith("schedule-dirty");
 
   const res: any = await apiGet(
     `/api/church/feed?_=${Date.now()}`,
@@ -29,7 +37,11 @@ export async function fetchHomeFeedFromApi(reason = "load") {
       }),
       cache: "no-store" as RequestCache,
     },
-    { screen: "HomeFeed", throttleMs: reason === "focus" ? 0 : 8000 }
+    {
+      screen: "HomeFeed",
+      throttleMs: bypassThrottle ? 0 : 8000,
+      dedupe: force ? false : undefined,
+    }
   );
 
   const rawRows = parseFeedRows(res);

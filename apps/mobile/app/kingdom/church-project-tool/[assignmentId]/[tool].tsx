@@ -3902,17 +3902,18 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           slotCount: items.length,
           source: "media-feed-create",
         });
-        const sync = await fetchMediaScheduleFeedSync(churchId, apiHeaders);
-        applySilentMediaScheduleReload({
-          churchId,
-          sync,
-          reason: "tool-create-schedule",
-          force: true,
-          ui: {
-            setBackendScheduleCards,
-            setScheduleConflictInfo,
-            setActiveScheduleBatchIndex,
-          },
+        void fetchMediaScheduleFeedSync(churchId, apiHeaders).then((sync) => {
+          applySilentMediaScheduleReload({
+            churchId,
+            sync,
+            reason: "tool-create-schedule",
+            force: true,
+            ui: {
+              setBackendScheduleCards,
+              setScheduleConflictInfo,
+              setActiveScheduleBatchIndex,
+            },
+          });
         });
       }
 

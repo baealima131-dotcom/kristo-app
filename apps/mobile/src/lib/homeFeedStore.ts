@@ -192,6 +192,7 @@ function getStore(): FeedStore {
 
 async function persistAndEmit() {
   const st = getStore();
+  emit();
 
   try {
     await AsyncStorage.setItem(
@@ -201,8 +202,6 @@ async function persistAndEmit() {
   } catch (e) {
     console.log("KRISTO_FEED_SAVE_ERROR", e);
   }
-
-  emit();
 }
 
 function emit() {
