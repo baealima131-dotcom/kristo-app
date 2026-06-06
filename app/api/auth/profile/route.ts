@@ -8,6 +8,7 @@ import {
   seedUserIfMissing,
   touchSession,
 } from "@/app/api/auth/_lib/session";
+import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 import {
   computeProfileStatus,
   ensureProfileDraft,
@@ -84,7 +85,8 @@ function pickActiveMembershipForProfile(m?: { status?: string; churchId?: string
 }
 
 async function resolveAuthedUser(req: Request) {
-  const headerUserId = String(req.headers.get("x-kristo-user-id") || "").trim();
+  // Production requires a valid signed token; dev still trusts the raw header.
+  const headerUserId = resolveRequestUserId(req).userId;
   if (!headerUserId) return null;
 
   const u = await getUserById(headerUserId);

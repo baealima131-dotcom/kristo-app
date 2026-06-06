@@ -30,6 +30,7 @@ import {
   normEmailLocal,
   normPhoneLocal,
 } from "@/app/api/_lib/store/localAuthStore";
+import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 
 export type IdentifierType = "email" | "phone";
 export type UserLite = UserRecord;
@@ -468,7 +469,9 @@ export function createSession(userId: string) {
 
 export async function readSession(req?: any) {
   try {
-    const headerUserId = String(req?.headers?.get?.("x-kristo-user-id") || "").trim();
+    // Header identity is only trusted with a valid signed session token in
+    // production (raw header still allowed in dev / KRISTO_DEV_HEADER_AUTH=1).
+    const headerUserId = resolveRequestUserId(req).userId;
     if (headerUserId) {
       const now = Date.now();
       return {

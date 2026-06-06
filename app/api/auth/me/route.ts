@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { getUserById, readSession, seedUserIfMissing, touchSession } from "@/app/api/auth/_lib/session";
+import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 import { ensureProfileDraft, getProfile } from "@/app/api/auth/_lib/profile";
 
 export const runtime = "nodejs";
 
 async function resolveAuthedUser(req: Request) {
-  const headerUserId = String(req.headers.get("x-kristo-user-id") || "").trim();
+  // Production requires a valid signed token; dev still trusts the raw header.
+  const headerUserId = resolveRequestUserId(req).userId;
   if (!headerUserId) return null;
   return getUserById(headerUserId);
 }

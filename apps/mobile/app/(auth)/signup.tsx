@@ -219,9 +219,10 @@ export default function SignupScreen() {
     setStep("verify");
   }
 
-  async function finalizeSignupAccount(finalUserId: string) {
+  async function finalizeSignupAccount(finalUserId: string, sessionToken = "") {
+    const token = String(sessionToken || "").trim();
     const profileRes: any = await apiGet("/api/auth/profile", {
-      headers: getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" }),
+      headers: getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "", sessionToken: token }),
     });
 
     if (!profileRes?.ok) {
@@ -256,7 +257,7 @@ export default function SignupScreen() {
     const profileData = await apiPost(
       "/api/auth/profile",
       profilePayload,
-      getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" })
+      getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "", sessionToken: token })
     );
 
     if (!profileData?.ok) {
@@ -271,6 +272,7 @@ export default function SignupScreen() {
 
     await setSession({
       userId: finalUserId,
+      sessionToken: token,
       kristoId,
       role: "Member",
       churchId: "",
@@ -481,7 +483,7 @@ export default function SignupScreen() {
         return;
       }
 
-      await finalizeSignupAccount(finalUserId);
+      await finalizeSignupAccount(finalUserId, String(data?.sessionToken || "").trim());
     } catch (error: any) {
       const message = String(error?.message || error || "Verification failed.");
       setErr(`Verification failed. ${message}`);

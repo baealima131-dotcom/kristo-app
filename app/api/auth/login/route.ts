@@ -13,6 +13,7 @@ import {
   touchUser,
   updateUserPersist,
 } from "@/app/api/auth/_lib/session";
+import { issueSessionToken } from "@/app/api/auth/_lib/sessionToken";
 
 export const runtime = "nodejs";
 
@@ -77,7 +78,12 @@ export async function POST(req: Request) {
     if (need === "password" || need === "none") {
       const sess = createSession(user.id);
       await touchUser(user.id);
-      let res = NextResponse.json({ ok: true, userId: user.id, mode: "password" });
+      let res = NextResponse.json({
+        ok: true,
+        userId: user.id,
+        sessionToken: issueSessionToken(user.id),
+        mode: "password",
+      });
       res = setSessionCookie(res, sess.id);
       return res;
     }
@@ -130,7 +136,11 @@ export async function POST(req: Request) {
     }
 
     const sess = createSession(v.userId);
-    let res = NextResponse.json({ ok: true, userId: v.userId });
+    let res = NextResponse.json({
+      ok: true,
+      userId: v.userId,
+      sessionToken: issueSessionToken(v.userId),
+    });
     res = setSessionCookie(res, sess.id);
     return res;
   }

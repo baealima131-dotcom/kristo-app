@@ -8,6 +8,7 @@ import {
   updateUserPersist,
   verifyChallenge,
 } from "@/app/api/auth/_lib/session";
+import { issueSessionToken } from "@/app/api/auth/_lib/sessionToken";
 
 export const runtime = "nodejs";
 
@@ -59,6 +60,7 @@ export async function POST(req: NextRequest) {
 
     const res = NextResponse.json({
       ok: true,
+      sessionToken: issueSessionToken(v.userId),
       session: {
         id: sess.id,
         userId: sess.userId,

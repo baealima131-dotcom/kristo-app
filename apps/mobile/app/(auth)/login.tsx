@@ -197,8 +197,10 @@ export default function LoginScreen() {
         return;
       }
 
+      const sessionToken = String(data.sessionToken || "").trim();
+
       const profileRes: any = await apiGet("/api/auth/profile", {
-        headers: getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "" }),
+        headers: getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "", sessionToken }),
       });
 
       const p = profileRes?.profile;
@@ -225,6 +227,7 @@ export default function LoginScreen() {
 
       const preSession = {
         userId: finalUserId,
+        sessionToken,
         kristoId: publicKristoId,
         role: sessionRole,
         churchId: sessionChurchId,

@@ -31,6 +31,7 @@ export type KristoMediaProfile = {
 
 export type KristoSession = {
   userId: string; // backend/internal id
+  sessionToken?: string; // signed token proving server-verified identity
   kristoId?: string; // public Kristo ID shown to user
   role: KristoRole;
   churchId: string; // empty => not joined
@@ -152,6 +153,7 @@ export async function loadSession(): Promise<KristoSession | null> {
 
     const s: KristoSession = {
       userId,
+      sessionToken: String(parsed.sessionToken || ""),
       kristoId: String(parsed.kristoId || parsed.publicKristoId || parsed.secureId || ""),
       role,
       churchId,

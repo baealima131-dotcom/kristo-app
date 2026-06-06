@@ -7,6 +7,7 @@ import {
   seedUserIfMissing,
   setSessionCookie,
 } from "@/app/api/auth/_lib/session";
+import { issueSessionToken } from "@/app/api/auth/_lib/sessionToken";
 import { authDatabaseErrorResponse } from "@/app/api/auth/_lib/authErrors";
 
 export const runtime = "nodejs";
@@ -112,6 +113,7 @@ export async function handleLogin(req: Request) {
     let res = NextResponse.json({
       ok: true,
       userId: user.id,
+      sessionToken: issueSessionToken(user.id),
       kristoId,
       publicKristoId: kristoId,
       email: user.email || "",
