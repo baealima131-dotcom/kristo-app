@@ -42,6 +42,8 @@ import {
 import {
   assignSequentialMediaSlotTimes,
   buildPersistedMediaSlotTimeFields,
+  findMediaScheduleWindowConflict,
+  isMediaScheduleConflictCandidate,
   logMediaSlotPayloadTime,
 } from "@/src/lib/mediaScheduleSlotTimes";
 import { buildMediaScheduleAuthorityFields } from "@/src/lib/liveMediaAuthority";
@@ -2054,6 +2056,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         churchId,
         assignmentId,
         reason: "tool-del-old",
+        removePending: true,
         ui: {
           setBackendScheduleCards,
           setScheduleConflictInfo,
@@ -2590,14 +2593,23 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         return an - bn;
       });
 
-    let finalCards = cards;
+    const churchId = String(getSessionSync()?.churchId || "").trim();
+    const hasFeedSyncRows = Array.isArray(opts?.feedSyncRows);
+    const backendFeedRow =
+      churchId && hasFeedSyncRows
+        ? findMediaScheduleFeedForChurch(opts!.feedSyncRows!, churchId, { strictChurch: true })
+        : null;
+
+    if (hasFeedSyncRows && !backendFeedRow) {
+      if (opts?.alive && !opts.alive()) return;
+      setBackendScheduleCards([]);
+      return;
+    }
+
+    let finalCards = cards.filter((card: any) => isMediaScheduleConflictCandidate(card));
 
     if (!opts?.skipFeedById) {
       try {
-        const churchId = String(getSessionSync()?.churchId || "").trim();
-        const backendFeedRow = churchId && Array.isArray(opts?.feedSyncRows)
-          ? findMediaScheduleFeedForChurch(opts.feedSyncRows, churchId, { strictChurch: true })
-          : null;
         const feedId = String(backendFeedRow?.id || "").trim();
 
         if (feedId) {
@@ -2609,7 +2621,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           const feedSlots = Array.isArray(feedItem?.scheduleSlots) ? feedItem.scheduleSlots : [];
 
           if (feedSlots.length) {
-            finalCards = cards.map((card: any) => {
+            finalCards = finalCards.map((card: any) => {
               const fresh = feedSlots.find(
                 (slot: any) => String(slot?.id || "") === String(card?.id || card?.cardId || "")
               );
@@ -2644,6 +2656,8 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         console.log("KRISTO_MEDIA_GUESTS_FEED_SYNC_ERROR", e);
       }
     }
+
+    finalCards = finalCards.filter((card: any) => isMediaScheduleConflictCandidate(card));
 
     if (opts?.alive && !opts.alive()) return;
     setBackendScheduleCards(finalCards);
@@ -2879,39 +2893,52 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       return;
     }
 
-    const parseSlotTimeMs = (slot: any, which: "start" | "end") => {
-      const dateText = String(slot?.meetingDate || "").split("T")[0];
-      const timeText = String(which === "start" ? slot?.startTime : slot?.endTime || "").trim();
+    let speakerSlotsForConflict = Array.isArray(scheduleSpeakerSlots) ? scheduleSpeakerSlots : [];
+    let backendCardsForConflict = Array.isArray(backendScheduleCards) ? backendScheduleCards : [];
 
-      if (!dateText || !timeText) return NaN;
+    if (churchId && isMediaSchedule && !isMinistryLiveSchedule) {
+      try {
+        const sync = await fetchMediaScheduleFeedSync(churchId, scheduleApiHeaders);
+        const backendFeedRow = findMediaScheduleFeedForChurch(sync.rows, churchId, {
+          strictChurch: true,
+        });
+        if (!backendFeedRow) {
+          backendCardsForConflict = [];
+          if (!meetingSentToSchedule) {
+            speakerSlotsForConflict = [];
+          }
+        } else {
+          backendCardsForConflict = backendCardsForConflict.map((card: any) => ({
+            ...card,
+            feedId: String(backendFeedRow?.id || ""),
+            sourceScheduleId: String(backendFeedRow?.sourceScheduleId || ""),
+            scheduleStatus: String(backendFeedRow?.status || ""),
+            deleted: Boolean(backendFeedRow?.deleted),
+          }));
+        }
+      } catch (e) {
+        console.log("KRISTO_MEDIA_SLOT_CONFLICT_PREFETCH_ERROR", e);
+      }
+    }
 
-      const [yy, mm, dd] = dateText.split("-").map(Number);
-      const [timePart = "12:00", meridiemRaw = "AM"] = timeText.split(" ");
-      const [hhRaw = "12", minRaw = "00"] = timePart.split(":");
-
-      let hh = Number(hhRaw || 0);
-      const min = Number(minRaw || 0);
-      const meridiem = meridiemRaw.toUpperCase();
-
-      if (meridiem === "PM" && hh < 12) hh += 12;
-      if (meridiem === "AM" && hh === 12) hh = 0;
-
-      return new Date(yy, (mm || 1) - 1, dd || 1, hh, min, 0, 0).getTime();
-    };
-
-    const allExistingScheduleSlots = [
-      ...(Array.isArray(scheduleSpeakerSlots) ? scheduleSpeakerSlots : []),
-      ...(Array.isArray(backendScheduleCards) ? backendScheduleCards : []),
-    ];
-
-    const conflictingSlot = allExistingScheduleSlots.find((slot: any) => {
-      const existingStart = parseSlotTimeMs(slot, "start");
-      const existingEnd = parseSlotTimeMs(slot, "end");
-
-      if (!Number.isFinite(existingStart) || !Number.isFinite(existingEnd)) return false;
-
-      return startMs < existingEnd && endMs > existingStart;
-    });
+    const windowConflict = findMediaScheduleWindowConflict(
+      startMs,
+      endMs,
+      [
+        {
+          source: "schedule-speaker-slots",
+          slots: speakerSlotsForConflict,
+          churchId,
+        },
+        {
+          source: "backend-schedule-cards",
+          slots: backendCardsForConflict,
+          churchId,
+        },
+      ],
+      { reason: "handleSendMeetingToSchedule", nowMs: Date.now() }
+    );
+    const conflictingSlot = windowConflict?.slot || null;
 
     if (conflictingSlot) {
       const label = String(conflictingSlot?.name || conflictingSlot?.title || "Existing schedule");

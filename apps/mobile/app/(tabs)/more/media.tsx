@@ -1443,6 +1443,7 @@ export default function MediaStudioScreen() {
               purgeAllLocalMediaScheduleSources({
                 churchId: targetChurchId,
                 reason: "del-old",
+                removePending: true,
                 ui: {
                   setGuestClaimSlots,
                   setGuestInvitedBySlot,

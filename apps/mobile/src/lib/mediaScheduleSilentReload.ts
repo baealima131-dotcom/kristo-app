@@ -6,15 +6,18 @@ import {
   feedPurgeMediaScheduleCardsForChurch,
   feedRemoveWhere,
 } from "@/src/lib/homeFeedStore";
+import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
 import { findActiveMediaScheduleForChurch, findMediaScheduleFeedForChurch } from "@/src/lib/mediaScheduleLock";
 import { findProtectedNearLiveSchedule, emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { getSessionSync } from "@/src/lib/kristoSession";
 import {
   clearChurchProjectScheduleSlots,
   getChurchProjectMcRuntime,
 } from "@/src/store/churchProjectMcScheduleStore";
 import {
+  clearLocalSchedulePendingBackend,
   hasPendingLocalScheduleForChurch,
   isPendingLocalMediaScheduleRow,
   listPendingLocalScheduleIds,
@@ -44,18 +47,51 @@ function isLocalMediaScheduleFeedRow(it: any): boolean {
   );
 }
 
+export function clearMediaScheduleCachesForChurch(churchId: string, reason: string) {
+  const cid = String(churchId || "").trim();
+  const session = getSessionSync() as any;
+  const userId = String(session?.userId || "").trim();
+  const pendingIds = cid ? listPendingLocalScheduleIds(cid) : [];
+
+  resetMediaScheduleSilentReloadCache();
+  clearHomeFeedApiCache(userId);
+
+  for (const pendingId of pendingIds) {
+    clearLocalSchedulePendingBackend(pendingId);
+  }
+
+  console.log("KRISTO_MEDIA_SCHEDULE_CACHES_CLEARED", {
+    churchId: cid,
+    reason,
+    pendingCleared: pendingIds.length,
+  });
+}
+
 export function purgeAllLocalMediaScheduleSources(options: {
   churchId?: string;
   assignmentId?: string;
   reason: string;
+  removePending?: boolean;
   ui?: LocalMediaScheduleUiReset;
 }) {
   const churchId = String(options.churchId || "").trim();
   const assignmentId = String(options.assignmentId || "media-schedule").trim() || "media-schedule";
+  const removePending = options.removePending === true;
+
+  if (churchId) {
+    clearMediaScheduleCachesForChurch(churchId, options.reason);
+  } else {
+    resetMediaScheduleSilentReloadCache();
+    clearHomeFeedApiCache();
+  }
 
   feedRemoveWhere((it: any) => {
     if (!isLocalMediaScheduleFeedRow(it)) return false;
-    if (isPendingLocalMediaScheduleRow(it, churchId)) return false;
+    if (churchId) {
+      const itemCid = String(it?.churchId || "").trim();
+      if (itemCid && itemCid !== churchId) return false;
+    }
+    if (!removePending && isPendingLocalMediaScheduleRow(it, churchId)) return false;
     return true;
   });
   feedCloseMediaScheduleCards();

@@ -190,6 +190,8 @@ export function isMediaSlotEndedOrStale(slot: any, nowMs = Date.now()) {
   const status = String(slot?.status || "").toLowerCase();
   if (
     slot?.deleted === true ||
+    slot?.deletedAt ||
+    slot?.pendingBackendFailed === true ||
     status === "deleted" ||
     status === "cancelled" ||
     status === "canceled" ||
@@ -197,13 +199,124 @@ export function isMediaSlotEndedOrStale(slot: any, nowMs = Date.now()) {
     status === "complete" ||
     status === "removed" ||
     status === "ended" ||
-    status === "closed"
+    status === "closed" ||
+    status === "cleared"
+  ) {
+    return true;
+  }
+
+  const scheduleStatus = String(slot?.scheduleStatus || "").toLowerCase();
+  if (
+    scheduleStatus === "deleted" ||
+    scheduleStatus === "ended" ||
+    scheduleStatus === "closed" ||
+    scheduleStatus === "cleared"
   ) {
     return true;
   }
 
   const { endMs } = resolveMediaSlotTimeWindow(slot, nowMs);
   return endMs > 0 && nowMs > endMs;
+}
+
+export function isMediaScheduleConflictCandidate(slot: any, nowMs = Date.now()) {
+  if (!slot || typeof slot !== "object") return false;
+  if (isMediaSlotEndedOrStale(slot, nowMs)) return false;
+  return true;
+}
+
+export type MediaScheduleConflictSlotGroup = {
+  source: string;
+  slots: any[];
+  feedId?: string;
+  sourceScheduleId?: string;
+  churchId?: string;
+  deleted?: boolean;
+  scheduleStatus?: string;
+};
+
+export function summarizeMediaSlotConflictItem(
+  slot: any,
+  group: Pick<
+    MediaScheduleConflictSlotGroup,
+    "source" | "feedId" | "sourceScheduleId" | "churchId" | "deleted" | "scheduleStatus"
+  >,
+  nowMs = Date.now()
+) {
+  const window = resolveMediaSlotTimeWindow(slot, nowMs);
+  return {
+    feedId: String(group.feedId || slot?.feedId || slot?.sourceFeedId || ""),
+    sourceScheduleId: String(
+      group.sourceScheduleId || slot?.sourceScheduleId || slot?.scheduleId || ""
+    ),
+    churchId: String(group.churchId || slot?.churchId || ""),
+    deleted: Boolean(group.deleted ?? slot?.deleted),
+    scheduleStatus: String(group.scheduleStatus || slot?.scheduleStatus || slot?.status || ""),
+    meetingDate: String(slot?.meetingDate || "").split("T")[0] || "",
+    slotStartMs: window.startMs || null,
+    slotEndMs: window.endMs || null,
+    slotStartTime: String(slot?.startTime || "").trim() || null,
+    slotEndTime: String(slot?.endTime || "").trim() || null,
+    slotId: String(slot?.id || slot?.cardId || ""),
+    slotName: String(slot?.name || slot?.title || ""),
+    source: group.source,
+  };
+}
+
+export function logMediaScheduleConflictItem(
+  slot: any,
+  group: MediaScheduleConflictSlotGroup,
+  reason: string,
+  nowMs = Date.now()
+) {
+  console.log("KRISTO_MEDIA_SLOT_CONFLICT_SOURCE", {
+    reason,
+    source: group.source,
+    feedId: String(group.feedId || ""),
+    sourceScheduleId: String(group.sourceScheduleId || ""),
+    churchId: String(group.churchId || ""),
+    deleted: Boolean(group.deleted),
+    scheduleStatus: String(group.scheduleStatus || ""),
+    slotCount: Array.isArray(group.slots) ? group.slots.length : 0,
+  });
+  console.log("KRISTO_MEDIA_SLOT_CONFLICT_ITEM", {
+    reason,
+    ...summarizeMediaSlotConflictItem(slot, group, nowMs),
+  });
+}
+
+export function findMediaScheduleWindowConflict(
+  startMs: number,
+  endMs: number,
+  groups: MediaScheduleConflictSlotGroup[],
+  options?: { reason?: string; nowMs?: number }
+) {
+  const nowMs = options?.nowMs ?? Date.now();
+  const reason = String(options?.reason || "findMediaScheduleWindowConflict");
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return null;
+  }
+
+  for (const group of groups) {
+    const slots = Array.isArray(group.slots) ? group.slots : [];
+    const activeSlots = slots.filter((slot) => isMediaScheduleConflictCandidate(slot, nowMs));
+
+    for (const slot of activeSlots) {
+      const existing = resolveMediaSlotTimeWindow(slot, nowMs);
+      if (!existing.startMs || !existing.endMs || existing.endMs <= existing.startMs) {
+        continue;
+      }
+
+      const overlaps = startMs < existing.endMs && endMs > existing.startMs;
+      if (!overlaps) continue;
+
+      logMediaScheduleConflictItem(slot, group, reason, nowMs);
+      return { slot, group, existing };
+    }
+  }
+
+  return null;
 }
 
 /** Assign non-overlapping times: each slot starts exactly when the previous ends. */
@@ -363,14 +476,24 @@ export function logMediaSlotConflictCheck(
   });
 
   for (const row of conflicts) {
-    console.log("KRISTO_MEDIA_SLOT_CONFLICT_FOUND", {
-      reason,
-      slotId: row.slotId,
-      name: row.name,
-      conflict: row.conflict,
-      startMs: row.startMs,
-      endMs: row.endMs,
-    });
+    const slot = active.find((s) => String(s?.id || "") === row.slotId);
+    const group: MediaScheduleConflictSlotGroup = {
+      source: reason,
+      slots: active,
+    };
+    if (slot) {
+      logMediaScheduleConflictItem(slot, group, reason, nowMs);
+    } else {
+      console.log("KRISTO_MEDIA_SLOT_CONFLICT_ITEM", {
+        reason,
+        source: reason,
+        slotId: row.slotId,
+        slotName: row.name,
+        conflict: row.conflict,
+        slotStartMs: row.startMs,
+        slotEndMs: row.endMs,
+      });
+    }
   }
 
   return conflicts.length;

@@ -2658,6 +2658,39 @@ async function handleFeedPost(req: NextRequest, body: any) {
     if (existingActive) {
       const activeSchedule = summarizeActiveMediaSchedule(existingActive);
       console.log("KRISTO_MEDIA_LOCK_BACKEND_ACTIVE", activeSchedule);
+      console.log("KRISTO_MEDIA_SLOT_CONFLICT_SOURCE", {
+        reason: "api-create-media-schedule",
+        source: "backend-feed",
+        feedId: String(existingActive?.id || ""),
+        sourceScheduleId: String(existingActive?.sourceScheduleId || ""),
+        churchId: String(existingActive?.churchId || churchId || ""),
+        deleted: Boolean(existingActive?.deleted),
+        scheduleStatus: String(existingActive?.status || ""),
+        slotCount: Array.isArray(existingActive?.scheduleSlots)
+          ? existingActive.scheduleSlots.length
+          : 0,
+      });
+      const activeSlots = Array.isArray(existingActive?.scheduleSlots)
+        ? existingActive.scheduleSlots
+        : [];
+      for (const slot of activeSlots) {
+        console.log("KRISTO_MEDIA_SLOT_CONFLICT_ITEM", {
+          reason: "api-create-media-schedule",
+          source: "backend-feed",
+          feedId: String(existingActive?.id || ""),
+          sourceScheduleId: String(existingActive?.sourceScheduleId || ""),
+          churchId: String(existingActive?.churchId || churchId || ""),
+          deleted: Boolean(slot?.deleted ?? existingActive?.deleted),
+          scheduleStatus: String(slot?.status || existingActive?.status || ""),
+          meetingDate: String(slot?.meetingDate || "").split("T")[0] || "",
+          slotStartMs: Number(slot?.startMs || 0) || null,
+          slotEndMs: Number(slot?.endMs || 0) || null,
+          slotStartTime: String(slot?.startTime || "").trim() || null,
+          slotEndTime: String(slot?.endTime || "").trim() || null,
+          slotId: String(slot?.id || ""),
+          slotName: String(slot?.name || ""),
+        });
+      }
       return NextResponse.json(
         {
           ok: false,
