@@ -209,48 +209,62 @@ export default function CreateAnnouncement() {
     await addPickedAssets(assets);
   }
 
-  async function uploadChurchRoomFeedImage(localUri: string): Promise<string> {
-    const fd = new FormData();
-    fd.append("file", {
-      uri: localUri,
-      name: `church-room-${Date.now()}.jpg`,
-      type: "image/jpeg",
-    } as any);
+  async function uploadChurchRoomFeedImage(
+    localUri: string
+  ): Promise<{ mediaUri: string; imageUrl: string } | null> {
+    try {
+      const fd = new FormData();
+      fd.append("file", {
+        uri: localUri,
+        name: `church-room-${Date.now()}.jpg`,
+        type: "image/jpeg",
+      } as any);
 
-    const uploadRes: any = await apiPost(
-      "/api/church/media/upload",
-      fd,
-      {
-        headers: {
-          accept: "application/json",
-          ...getKristoHeaders(),
-        },
-      }
-    );
+      const uploadRes: any = await apiPost(
+        "/api/church/media/upload",
+        fd,
+        {
+          headers: {
+            accept: "application/json",
+            ...getKristoHeaders(),
+          },
+        }
+      );
 
-    const mediaUri = String(
-      uploadRes?.data?.mediaUri || uploadRes?.data?.url || uploadRes?.data?.imageUrl || ""
-    ).trim();
-
-    if (uploadRes?.ok === false || !mediaUri) {
       const status = Number(uploadRes?.status || 0) || null;
-      const error = String(uploadRes?.error || "Image upload failed").trim();
-      console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
-        status,
-        error,
-      });
-      if (status === 413) {
-        throw new Error(CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE);
-      }
-      throw new Error(error || "Image upload failed");
-    }
+      const mediaUri = String(
+        uploadRes?.data?.mediaUri || uploadRes?.data?.url || uploadRes?.data?.imageUrl || ""
+      ).trim();
+      const imageUrl = String(
+        uploadRes?.data?.imageUrl || uploadRes?.data?.url || mediaUri
+      ).trim();
 
-    const imageUrl = String(uploadRes?.data?.imageUrl || mediaUri).trim() || mediaUri;
-    console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_OK", {
-      mediaUri,
-      imageUrl,
-    });
-    return mediaUri;
+      const failed =
+        uploadRes?.ok === false ||
+        (typeof status === "number" && status >= 400) ||
+        !mediaUri ||
+        !imageUrl;
+
+      if (failed) {
+        console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
+          status,
+          error: String(uploadRes?.error || "missing mediaUri/imageUrl").trim(),
+        });
+        return null;
+      }
+
+      console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_OK", {
+        mediaUri,
+        imageUrl,
+      });
+      return { mediaUri, imageUrl };
+    } catch (error) {
+      console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
+        status: null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   async function ensurePhotoPermission() {
@@ -343,13 +357,13 @@ export default function CreateAnnouncement() {
 
       const feedType = kind === "announcement" ? "announcement" : "post";
 
-      const uploadedImageUrl = await uploadChurchRoomFeedImage(images[0]);
-      if (!uploadedImageUrl) {
+      const uploaded = await uploadChurchRoomFeedImage(images[0]);
+      if (!uploaded?.mediaUri || !uploaded?.imageUrl) {
         setErr("Image upload failed. Please try again.");
         return;
       }
 
-      await apiPost(
+      const feedRes: any = await apiPost(
         "/api/church/feed",
         {
           action: "create_post",
@@ -357,8 +371,8 @@ export default function CreateAnnouncement() {
           title: t0,
           text: b0,
           body: b0,
-          mediaUri: uploadedImageUrl,
-          imageUrl: uploadedImageUrl,
+          mediaUri: uploaded.mediaUri,
+          imageUrl: uploaded.imageUrl,
           mediaType: "image",
           postType: kind,
           kind,
@@ -373,6 +387,10 @@ export default function CreateAnnouncement() {
         { headers: getKristoHeaders() }
       );
 
+      if (feedRes?.ok === false || Number(feedRes?.status || 0) >= 400) {
+        setErr("Failed to publish post. Please try again.");
+        return;
+      }
 
       router.replace("/(tabs)");
     } catch (e) {

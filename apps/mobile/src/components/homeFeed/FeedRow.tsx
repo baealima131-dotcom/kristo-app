@@ -23,6 +23,7 @@ import {
   isValidVideoPosterUri,
   hasBrandedVideoPoster,
   hasHomeFeedVideoPoster,
+  type HomeFeedPostAccent,
 } from "./homeFeedUtils";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
@@ -79,7 +80,10 @@ export const FeedRow = memo(function FeedRow({
   const video = isVideoPost(item);
   const videoUri = useMemo(() => resolveVideoUri(item), [item]);
   const resolvedImageUri = useMemo(() => resolvePostImageUri(item), [item]);
-  const willRenderImage = Boolean(resolvedImageUri) && !item?.videoUrl;
+  const hasVideo = Boolean(videoUri);
+  const hasImage = Boolean(resolvedImageUri) && !item?.videoUrl;
+  const willRenderImage = hasImage;
+  const churchRoomTextCard = churchRoomPost && !hasVideo && !hasImage;
   const posterUri = resolvePosterUri(item);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
   const mountVideoPlayer = Boolean(
@@ -128,7 +132,20 @@ export const FeedRow = memo(function FeedRow({
             />
           )
         ) : willRenderImage ? (
-          <ImagePostCard imageUri={resolvedImageUri} />
+          <ImagePostCard
+            imageUri={resolvedImageUri}
+            fallback={
+              churchRoomPost ? (
+                <ChurchRoomTextCard
+                  title={postTitle}
+                  caption={caption}
+                  accent={postAccent}
+                />
+              ) : undefined
+            }
+          />
+        ) : churchRoomTextCard ? (
+          <ChurchRoomTextCard title={postTitle} caption={caption} accent={postAccent} />
         ) : (
           <TextPostPanel text={churchRoomPost ? caption || postTitle : postTitle || postBody} />
         )}
@@ -243,6 +260,50 @@ function InactiveVideoPoster({
   );
 }
 
+function ChurchRoomTextCard({
+  title,
+  caption,
+  accent,
+}: {
+  title: string;
+  caption: string;
+  accent: HomeFeedPostAccent;
+}) {
+  const isTestimony = accent === "testimony";
+  const isAnnouncement = accent === "announcement";
+  const cardText = String(caption || title || "").trim() || " ";
+  const headline = String(title || "").trim();
+
+  return (
+    <LinearGradient
+      colors={
+        isTestimony
+          ? ["#071018", "#0B1A2E", "#102847"]
+          : isAnnouncement
+            ? ["#0A0C12", "#15120A", "#1A2230"]
+            : ["#0A0C12", "#121824", "#1A2230"]
+      }
+      style={styles.churchRoomCard}
+    >
+      <View
+        style={[
+          styles.churchRoomCardInner,
+          {
+            borderColor: isTestimony
+              ? "rgba(0,145,255,0.28)"
+              : "rgba(217,179,95,0.28)",
+          },
+        ]}
+      >
+        {headline && headline !== cardText ? (
+          <Text style={styles.churchRoomTitle}>{headline}</Text>
+        ) : null}
+        <Text style={styles.churchRoomBody}>{cardText}</Text>
+      </View>
+    </LinearGradient>
+  );
+}
+
 function TextPostPanel({ text }: { text: string }) {
   return (
     <View style={styles.textPanel}>
@@ -292,6 +353,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 160,
     backgroundColor: "#0B0F17",
+  },
+  churchRoomCard: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 20,
+    paddingBottom: 160,
+  },
+  churchRoomCardInner: {
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: 22,
+    paddingVertical: 28,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    gap: 12,
+  },
+  churchRoomTitle: {
+    color: "rgba(244,208,111,0.98)",
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: "800",
+  },
+  churchRoomBody: {
+    color: "rgba(255,255,255,0.94)",
+    fontSize: 22,
+    lineHeight: 30,
+    fontWeight: "700",
   },
   textBody: {
     color: "#FFFFFF",
