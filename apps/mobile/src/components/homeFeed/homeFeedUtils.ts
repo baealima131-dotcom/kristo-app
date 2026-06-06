@@ -15,6 +15,8 @@ import {
   resolveScheduleSlotVisualState,
 } from "@/src/lib/scheduleSlotUtils";
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
+import { isKristoVerboseFeedDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
+import { resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import { getSessionSync } from "@/src/lib/kristoSession";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
@@ -234,16 +236,18 @@ export function filterPhase1FeedRows(rows: any[]) {
     });
   }
 
-  const visibleSchedule = filtered.filter(
-    (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
-  );
-  console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
-    visibleCount: visibleSchedule.length,
-    feedCount: filtered.length,
-    scheduleCandidateCount: scheduleCandidates.length,
-    explicitScheduleCount: filtered.filter(isExplicitHomeFeedMediaScheduleRow).length,
-    visibleScheduleIds: visibleSchedule.map((row) => String(row?.id || "")),
-  });
+  if (isKristoVerboseFeedDebug()) {
+    const visibleSchedule = filtered.filter(
+      (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
+    );
+    console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
+      visibleCount: visibleSchedule.length,
+      feedCount: filtered.length,
+      scheduleCandidateCount: scheduleCandidates.length,
+      explicitScheduleCount: filtered.filter(isExplicitHomeFeedMediaScheduleRow).length,
+      visibleScheduleIds: visibleSchedule.map((row) => String(row?.id || "")),
+    });
+  }
 
   return filtered;
 }
@@ -315,6 +319,7 @@ function logHomeFeedSlotExpiryDebug(
   slotNumber: number,
   visual: NonNullable<ReturnType<typeof resolveScheduleSlotVisualState>>
 ) {
+  if (!isKristoVerboseSlotTimeDebug()) return;
   console.log("KRISTO_HOME_SLOT_EXPIRY_DEBUG", {
     scheduleId,
     slotId: String(slot?.id || `${scheduleId}:slot:${slotNumber}`),
@@ -332,8 +337,52 @@ function logHomeFeedSlotExpiryDebug(
   });
 }
 
+export function isHomeFeedMediaScheduleSourceRow(item: any) {
+  return isExplicitHomeFeedMediaScheduleRow(item) || isMediaLiveSlotsHomeFeedRow(item);
+}
+
+export function homeFeedSlotHasValidTimeWindow(slot: any) {
+  if (!slot) return false;
+  const { startMs, endMs } = resolveMediaSlotTimeWindow(slot);
+  return startMs > 0 && endMs > startMs;
+}
+
+/** Schedule rows need durable slot windows before Home Feed renders them. */
+export function scheduleRowHasValidSlotTimes(row: any) {
+  if (!isHomeFeedMediaScheduleSourceRow(row)) return true;
+  const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+  if (!slots.length) return false;
+  return slots.every((slot: any) => homeFeedSlotHasValidTimeWindow(slot));
+}
+
+function resolveHomeFeedScheduleSlotSortKey(row: any) {
+  const slot = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots[0] : null;
+  const slotNumber = Math.max(1, Number(row?.slotNumber || slot?.slot || slot?.slotNumber || 0));
+  const { startMs } = resolveMediaSlotTimeWindow(slot);
+  return { slotNumber, startMs: startMs > 0 ? startMs : Number.MAX_SAFE_INTEGER };
+}
+
+export function sortHomeFeedScheduleSlotRows(rows: any[]) {
+  return [...rows].sort((a, b) => {
+    const aKey = resolveHomeFeedScheduleSlotSortKey(a);
+    const bKey = resolveHomeFeedScheduleSlotSortKey(b);
+    if (aKey.slotNumber !== bKey.slotNumber) return aKey.slotNumber - bKey.slotNumber;
+    return aKey.startMs - bKey.startMs;
+  });
+}
+
 /** One Home Feed card per active/upcoming media-live-slots slot (expired slots omitted). */
 export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Date.now()): any[] {
+  if (shouldExpandHomeFeedScheduleRow(scheduleRow) && !scheduleRowHasValidSlotTimes(scheduleRow)) {
+    if (isKristoVerboseSlotTimeDebug()) {
+      console.log("KRISTO_HOME_FEED_SCHEDULE_DEFERRED_INVALID_TIME", {
+        scheduleId: String(scheduleRow?.id || ""),
+        slotCount: Array.isArray(scheduleRow?.scheduleSlots) ? scheduleRow.scheduleSlots.length : 0,
+      });
+    }
+    return [];
+  }
+
   if (!shouldExpandHomeFeedScheduleRow(scheduleRow)) {
     if (isHomeFeedExpandedScheduleSlotRow(scheduleRow)) {
       const slot = Array.isArray(scheduleRow?.scheduleSlots)
@@ -376,7 +425,7 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
       return !visual.expired;
     });
   const removedCount = slots.length - activeSlots.length;
-  if (removedCount > 0) {
+  if (removedCount > 0 && isKristoVerboseSlotTimeDebug()) {
     console.log("KRISTO_HOME_EXPIRED_SLOTS_FILTERED", {
       scheduleId,
       removedCount,
@@ -384,6 +433,15 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
     });
   }
   if (!activeSlots.length) return [];
+
+  activeSlots.sort((a, b) => {
+    const aNum = resolveHomeFeedSlotNumber(a.slot, a.index + 1);
+    const bNum = resolveHomeFeedSlotNumber(b.slot, b.index + 1);
+    if (aNum !== bNum) return aNum - bNum;
+    const aStart = resolveMediaSlotTimeWindow(a.slot).startMs;
+    const bStart = resolveMediaSlotTimeWindow(b.slot).startMs;
+    return aStart - bStart;
+  });
 
   const expanded = activeSlots.map(({ slot, index }: { slot: any; index: number }) => {
     const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
@@ -402,12 +460,14 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
     };
   });
 
-  console.log("KRISTO_HOME_FEED_SCHEDULE_EXPANDED", {
-    scheduleId,
-    slotCount: activeSlots.length,
-    expandedCount: expanded.length,
-    expiredFiltered: removedCount,
-  });
+  if (isKristoVerboseFeedDebug()) {
+    console.log("KRISTO_HOME_FEED_SCHEDULE_EXPANDED", {
+      scheduleId,
+      slotCount: activeSlots.length,
+      expandedCount: expanded.length,
+      expiredFiltered: removedCount,
+    });
+  }
 
   return expanded;
 }
@@ -449,6 +509,14 @@ function homeFeedScheduleSlotCount(item: any) {
 }
 
 function pickRicherHomeFeedRow(prev: any, next: any) {
+  const prevIsSchedule = isHomeFeedMediaScheduleSourceRow(prev);
+  const nextIsSchedule = isHomeFeedMediaScheduleSourceRow(next);
+  if (prevIsSchedule || nextIsSchedule) {
+    const prevValid = scheduleRowHasValidSlotTimes(prev);
+    const nextValid = scheduleRowHasValidSlotTimes(next);
+    if (prevValid !== nextValid) return nextValid ? next : prev;
+  }
+
   const prevSlots = homeFeedScheduleSlotCount(prev);
   const nextSlots = homeFeedScheduleSlotCount(next);
   if (nextSlots !== prevSlots) return nextSlots > prevSlots ? next : prev;
@@ -464,11 +532,10 @@ function homeFeedPostSortMs(row: any) {
 
 type HomeFeedRowBucket = "global_media" | "church_media" | "church_post" | "schedule" | "live";
 
-const HOME_FEED_INTERLEAVE_PATTERN: HomeFeedRowBucket[] = [
+const HOME_FEED_POST_INTERLEAVE_PATTERN: Array<Exclude<HomeFeedRowBucket, "schedule">> = [
   "global_media",
   "church_media",
   "church_post",
-  "schedule",
   "live",
 ];
 
@@ -488,10 +555,7 @@ function isHomeFeedLivestreamRow(row: any) {
   );
 }
 
-function classifyHomeFeedRowBucket(row: any, viewerChurchId: string): HomeFeedRowBucket {
-  if (isHomeFeedScheduleCardRow(row) || isHomeFeedExpandedScheduleSlotRow(row)) {
-    return "schedule";
-  }
+function classifyHomeFeedPostRowBucket(row: any, viewerChurchId: string): HomeFeedRowBucket {
   if (isHomeFeedLivestreamRow(row)) return "live";
   if (isVideoPost(row)) {
     const cid = homeFeedRowChurchId(row);
@@ -512,14 +576,14 @@ function homeFeedStableRank(row: any) {
 }
 
 function pickInterleaveRow(
-  bucket: HomeFeedRowBucket,
-  buckets: Record<HomeFeedRowBucket, any[]>,
+  bucket: Exclude<HomeFeedRowBucket, "schedule">,
+  buckets: Record<Exclude<HomeFeedRowBucket, "schedule">, any[]>,
   lastChurchId: string
 ) {
   const list = buckets[bucket];
   if (!list.length) return null;
 
-  if (bucket === "schedule" || !lastChurchId) {
+  if (!lastChurchId) {
     return list.shift() || null;
   }
 
@@ -528,40 +592,39 @@ function pickInterleaveRow(
   return list.splice(idx, 1)[0] || null;
 }
 
-/** Mix global media, church posts, schedules, and live cards — avoid same-church streaks. */
-function interleaveHomeFeedRows(rows: any[], viewerChurchId: string) {
-  const buckets: Record<HomeFeedRowBucket, any[]> = {
+/** Mix global media, church posts, and live cards — schedules stay in chronological block. */
+function interleaveHomeFeedPostRows(postRows: any[], viewerChurchId: string) {
+  const buckets: Record<Exclude<HomeFeedRowBucket, "schedule">, any[]> = {
     global_media: [],
     church_media: [],
     church_post: [],
-    schedule: [],
     live: [],
   };
 
   const incomingIds = new Set<string>();
-  for (const row of rows) {
+  for (const row of postRows) {
     const key = feedRenderKey(row) || String(row?.id || "").trim();
     if (!key) continue;
     incomingIds.add(key);
-    buckets[classifyHomeFeedRowBucket(row, viewerChurchId)].push(row);
+    buckets[classifyHomeFeedPostRowBucket(row, viewerChurchId)].push(row);
   }
 
   for (const key of [...homeFeedStableOrder.keys()]) {
     if (!incomingIds.has(key)) homeFeedStableOrder.delete(key);
   }
 
-  for (const bucket of Object.keys(buckets) as HomeFeedRowBucket[]) {
+  for (const bucket of Object.keys(buckets) as Array<Exclude<HomeFeedRowBucket, "schedule">>) {
     buckets[bucket].sort((a, b) => homeFeedStableRank(a) - homeFeedStableRank(b));
   }
 
   const interleaved: any[] = [];
   let lastChurchId = "";
   let idleRounds = 0;
-  const maxIdle = HOME_FEED_INTERLEAVE_PATTERN.length * 3;
+  const maxIdle = HOME_FEED_POST_INTERLEAVE_PATTERN.length * 3;
 
   while (idleRounds < maxIdle) {
     let pickedAny = false;
-    for (const bucket of HOME_FEED_INTERLEAVE_PATTERN) {
+    for (const bucket of HOME_FEED_POST_INTERLEAVE_PATTERN) {
       const row = pickInterleaveRow(bucket, buckets, lastChurchId);
       if (!row) continue;
       interleaved.push(row);
@@ -573,22 +636,58 @@ function interleaveHomeFeedRows(rows: any[], viewerChurchId: string) {
     if (!pickedAny) idleRounds += 1;
   }
 
-  for (const bucket of Object.keys(buckets) as HomeFeedRowBucket[]) {
+  for (const bucket of Object.keys(buckets) as Array<Exclude<HomeFeedRowBucket, "schedule">>) {
     interleaved.push(...buckets[bucket]);
   }
 
-  console.log("KRISTO_HOME_FEED_INTERLEAVE", {
-    viewerChurchId,
-    inputCount: rows.length,
-    outputCount: interleaved.length,
-    bucketCounts: Object.fromEntries(
-      (Object.keys(buckets) as HomeFeedRowBucket[]).map((k) => [k, buckets[k].length])
-    ),
-    firstIds: interleaved.slice(0, 8).map((row) => feedRenderKey(row) || String(row?.id || "")),
-    firstChurches: interleaved.slice(0, 8).map((row) => homeFeedRowChurchId(row) || null),
-  });
+  if (isKristoVerboseFeedDebug()) {
+    console.log("KRISTO_HOME_FEED_INTERLEAVE", {
+      viewerChurchId,
+      inputCount: postRows.length,
+      outputCount: interleaved.length,
+      bucketCounts: Object.fromEntries(
+        (Object.keys(buckets) as Array<Exclude<HomeFeedRowBucket, "schedule">>).map((k) => [
+          k,
+          buckets[k].length,
+        ])
+      ),
+      firstIds: interleaved.slice(0, 8).map((row) => feedRenderKey(row) || String(row?.id || "")),
+      firstChurches: interleaved.slice(0, 8).map((row) => homeFeedRowChurchId(row) || null),
+    });
+  }
 
   return interleaved;
+}
+
+let lastStableHomeFeedDisplayRows: any[] = [];
+
+function isHomeFeedExpandedOrScheduleSlotRow(row: any) {
+  return (
+    isHomeFeedExpandedScheduleSlotRow(row) ||
+    isHomeFeedScheduleCardRow(row) ||
+    isHomeFeedMediaScheduleSourceRow(row)
+  );
+}
+
+function mergePostsWithStableScheduleRows(postRows: any[], stableRows: any[]) {
+  const stableSchedules = sortHomeFeedScheduleSlotRows(
+    stableRows.filter(isHomeFeedExpandedOrScheduleSlotRow)
+  );
+  if (!stableSchedules.length) return postRows;
+  return [...postRows, ...stableSchedules];
+}
+
+function sanitizeHomeFeedLocalRows(localRows: any[]) {
+  return localRows.filter((row) => {
+    if (!isHomeFeedMediaScheduleSourceRow(row)) return true;
+    if (scheduleRowHasValidSlotTimes(row)) return true;
+    console.log("KRISTO_HOME_FEED_SCHEDULE_DEFERRED_INVALID_TIME", {
+      scheduleId: String(row?.id || ""),
+      pendingBackendSync: row?.pendingBackendSync === true,
+      slotCount: Array.isArray(row?.scheduleSlots) ? row.scheduleSlots.length : 0,
+    });
+    return false;
+  });
 }
 
 /** Drop schedule slot rows whose shared visual helper resolves ended at build time. */
@@ -598,6 +697,7 @@ export function isHomeFeedScheduleSlotRowVisible(row: any, nowMs = Date.now()): 
   if (isHomeFeedExpandedScheduleSlotRow(row)) {
     const slot = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots[0] : null;
     if (!slot) return false;
+    if (!homeFeedSlotHasValidTimeWindow(slot)) return false;
     const slotNumber = Math.max(1, Number(row?.slotNumber || 1));
     const slotFeedIndex = slotNumber - 1;
     const visual = resolveScheduleSlotVisualState(slot, slotFeedIndex, nowMs, {
@@ -626,7 +726,7 @@ export function isHomeFeedScheduleSlotRowVisible(row: any, nowMs = Date.now()): 
 export function filterVisibleHomeFeedScheduleRows(rows: any[], nowMs = Date.now()) {
   const filtered = rows.filter((row) => isHomeFeedScheduleSlotRowVisible(row, nowMs));
   const removedCount = rows.length - filtered.length;
-  if (removedCount > 0) {
+  if (removedCount > 0 && isKristoVerboseSlotTimeDebug()) {
     console.log("KRISTO_HOME_EXPIRED_SLOTS_FILTERED", {
       removedCount,
       keptCount: filtered.length,
@@ -636,15 +736,42 @@ export function filterVisibleHomeFeedScheduleRows(rows: any[], nowMs = Date.now(
   return filtered;
 }
 
+let lastHomeFeedBuildDigest = "";
+let lastHomeFeedBuildResult: any[] = [];
+
+function homeFeedBuildDigest(backendRows: any[], localRows: any[], nowMs: number) {
+  const summarize = (rows: any[]) =>
+    rows
+      .map((row) => {
+        const id = String(row?.id || "").trim();
+        const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots.length : 0;
+        const valid = isHomeFeedMediaScheduleSourceRow(row)
+          ? scheduleRowHasValidSlotTimes(row)
+            ? 1
+            : 0
+          : 2;
+        return `${id}:${slots}:${valid}`;
+      })
+      .join("|");
+  const scheduleTick = Math.floor(nowMs / 30_000);
+  return `${summarize(backendRows)}::${summarize(localRows)}::${scheduleTick}`;
+}
+
 /** Merged Home Feed list: video/posts first, then active schedule slot cards. */
 export function buildHomeFeedDisplayRows(
   backendRows: any[],
   localRows: any[],
   nowMs = Date.now()
 ) {
+  const sanitizedLocalRows = sanitizeHomeFeedLocalRows(localRows);
+  const digest = homeFeedBuildDigest(backendRows, sanitizedLocalRows, nowMs);
+  if (digest === lastHomeFeedBuildDigest && lastHomeFeedBuildResult.length) {
+    return lastHomeFeedBuildResult;
+  }
+
   const byId = new Map<string, any>();
 
-  for (const row of [...backendRows, ...localRows]) {
+  for (const row of [...backendRows, ...sanitizedLocalRows]) {
     if (!row) continue;
     const id = String(row?.id || "").trim();
     if (!id) continue;
@@ -666,36 +793,64 @@ export function buildHomeFeedDisplayRows(
     (a, b) => homeFeedPostSortMs(b) - homeFeedPostSortMs(a)
   );
   const viewerChurchId = String((getSessionSync() as any)?.churchId || "").trim();
-  const display = filterVisibleHomeFeedScheduleRows(
-    interleaveHomeFeedRows([...sortedPostRows, ...expandedScheduleRows], viewerChurchId),
+  const orderedScheduleRows = sortHomeFeedScheduleSlotRows(expandedScheduleRows);
+  const interleavedPosts = interleaveHomeFeedPostRows(sortedPostRows, viewerChurchId);
+  let display = filterVisibleHomeFeedScheduleRows(
+    [...interleavedPosts, ...orderedScheduleRows],
     nowMs
   );
 
-  const videoCount = display.filter((row) => isVideoPost(row)).length;
   const scheduleSlotCount = display.filter(
     (row) => isHomeFeedScheduleCardRow(row) || isHomeFeedExpandedScheduleSlotRow(row)
   ).length;
+  const hadDeferredLocalSchedule = localRows.some(
+    (row) => isHomeFeedMediaScheduleSourceRow(row) && !scheduleRowHasValidSlotTimes(row)
+  );
 
-  console.log("KRISTO_HOME_FEED_ORDER_DEBUG", {
-    videoCount,
-    scheduleSlotCount,
-    firstIds: display.slice(0, 8).map((row) => String(row?.id || "")),
-  });
+  if (scheduleSlotCount === 0 && hadDeferredLocalSchedule && lastStableHomeFeedDisplayRows.length) {
+    display = mergePostsWithStableScheduleRows(interleavedPosts, lastStableHomeFeedDisplayRows);
+    if (isKristoVerboseFeedDebug()) {
+      console.log("KRISTO_HOME_FEED_SCHEDULE_STABLE_FALLBACK", {
+        keptScheduleCount: display.filter(isHomeFeedExpandedOrScheduleSlotRow).length,
+        postCount: interleavedPosts.length,
+      });
+    }
+  }
 
-  console.log("KRISTO_HOME_FEED_VISIBLE_DATA", {
-    backendCount: backendRows.length,
-    localCount: localRows.length,
-    mergedCount: byId.size,
-    filteredCount: filtered.length,
-    scheduleSourceCount: scheduleRows.length,
-    scheduleCount: expandedScheduleRows.length,
-    displayCount: display.length,
-    videoCount,
-    scheduleSlotCount,
-    scheduleIds: scheduleRows.map((row) => String(row?.id || "")),
-    scheduleSlotCounts: scheduleRows.map((row) => homeFeedScheduleSlotCount(row)),
-    expandedScheduleIds: expandedScheduleRows.map((row) => String(row?.id || "")),
-  });
+  if (display.length) {
+    lastStableHomeFeedDisplayRows = display;
+  }
+
+  lastHomeFeedBuildDigest = digest;
+  lastHomeFeedBuildResult = display;
+
+  if (isKristoVerboseFeedDebug()) {
+    const videoCount = display.filter((row) => isVideoPost(row)).length;
+    console.log("KRISTO_HOME_FEED_ORDER_DEBUG", {
+      videoCount,
+      scheduleSlotCount,
+      firstIds: display.slice(0, 8).map((row) => String(row?.id || "")),
+      scheduleOrder: orderedScheduleRows
+        .slice(0, 12)
+        .map((row) => Number(row?.slotNumber || 0) || null),
+    });
+
+    console.log("KRISTO_HOME_FEED_VISIBLE_DATA", {
+      backendCount: backendRows.length,
+      localCount: localRows.length,
+      sanitizedLocalCount: sanitizedLocalRows.length,
+      mergedCount: byId.size,
+      filteredCount: filtered.length,
+      scheduleSourceCount: scheduleRows.length,
+      scheduleCount: orderedScheduleRows.length,
+      displayCount: display.length,
+      videoCount,
+      scheduleSlotCount,
+      scheduleIds: scheduleRows.map((row) => String(row?.id || "")),
+      scheduleSlotCounts: scheduleRows.map((row) => homeFeedScheduleSlotCount(row)),
+      expandedScheduleIds: orderedScheduleRows.map((row) => String(row?.id || "")),
+    });
+  }
 
   return display;
 }
@@ -807,12 +962,28 @@ export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
   };
 }
 
+function summarizeFeedAvatarUri(uri: string, fallbackSource = "unknown") {
+  const trimmed = String(uri || "").trim();
+  if (!trimmed) {
+    return { hasAvatar: false, avatarLength: 0, source: "none" as const };
+  }
+  if (trimmed.startsWith("data:image/")) {
+    return { hasAvatar: true, avatarLength: trimmed.length, source: "data-url" as const };
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return { hasAvatar: true, avatarLength: trimmed.length, source: "remote" as const };
+  }
+  return { hasAvatar: true, avatarLength: trimmed.length, source: fallbackSource as "relative" };
+}
+
 export function logHomeFeedIdentityAvatarResolve(
   item: any,
   authorName: string,
   finalAvatarUri: string,
   backupAvatarUri?: string
 ) {
+  const final = summarizeFeedAvatarUri(finalAvatarUri, "final");
+  const backup = summarizeFeedAvatarUri(backupAvatarUri || "", "backup");
   console.log("KRISTO_FEED_IDENTITY_AVATAR_RESOLVE", {
     postId: feedRenderKey(item),
     authorName,
@@ -820,8 +991,8 @@ export function logHomeFeedIdentityAvatarResolve(
     hasChurchAvatarUri: Boolean(String(item?.churchAvatarUri || "").trim()),
     hasMediaLogoUrl: Boolean(String(item?.mediaLogoUrl || item?.mediaLogo || "").trim()),
     churchAvatarUpdatedAt: item?.churchAvatarUpdatedAt ?? item?.avatarUpdatedAt ?? null,
-    finalAvatarUri,
-    backupAvatarUri: backupAvatarUri || "",
+    finalAvatar: final,
+    backupAvatar: backup,
   });
 }
 

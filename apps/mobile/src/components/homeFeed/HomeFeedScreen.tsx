@@ -235,26 +235,18 @@ export default function HomeFeedScreen() {
     return map;
   }, [backendRows]);
 
-  const feedRows = useMemo(() => {
+  const localFeedSnapshot = useMemo(() => {
     void localTick;
+    return feedList();
+  }, [localTick]);
+
+  const feedRows = useMemo(() => {
     if (homeFeedRenderPaused && backendRows.length) {
       return backendRows;
     }
-    const merged = buildHomeFeedDisplayRows(backendRows, feedList());
-    const hydrated = hydrateFeedRowLikes(merged, serverLikeByPostId);
-    if (!homeFeedRenderPaused) {
-      const visibleSchedule = hydrated.filter(isHomeFeedScheduleCardRow);
-      console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
-        stage: "home_feed_screen_merged",
-        visibleCount: visibleSchedule.length,
-        feedCount: hydrated.length,
-        displayBuilder: "buildHomeFeedDisplayRows",
-        expandedSlotCount: visibleSchedule.filter((row) => row?.homeFeedSlotExpanded).length,
-        visibleScheduleIds: visibleSchedule.map((row) => String(row?.id || "")),
-      });
-    }
-    return hydrated;
-  }, [backendRows, localTick, serverLikeByPostId, homeFeedRenderPaused]);
+    const merged = buildHomeFeedDisplayRows(backendRows, localFeedSnapshot);
+    return hydrateFeedRowLikes(merged, serverLikeByPostId);
+  }, [backendRows, localFeedSnapshot, serverLikeByPostId, homeFeedRenderPaused]);
 
   useEffect(() => {
     const targetId = String(pendingScheduleFeedIdRef.current || "").trim();
