@@ -3837,7 +3837,6 @@ export default function LiveRoomScreen() {
 
   const bottomStageDisplayBoxes = useMemo(() => {
     const BOTTOM_COUNT = 4;
-    const now = liveNowMs;
     const usedKeys = new Set<string>();
     const markUsed = (slot: any) => {
       const key = liveRoomDisplaySlotKey(slot);
@@ -3874,12 +3873,6 @@ export default function LiveRoomScreen() {
       markUsed(slot);
     });
 
-    const hasFutureScheduleSlot = displayScheduleSlots.some((slot: any) => {
-      if (isScheduleSlotExpired(slot, now)) return false;
-      return Number(slot?.startMs || 0) > now;
-    });
-    const noRemainingFutureSlots = !hasFutureScheduleSlot;
-
     return Array.from({ length: BOTTOM_COUNT }, (_, index) => {
       const slot = bottomPool[index];
       if (slot) {
@@ -3890,23 +3883,17 @@ export default function LiveRoomScreen() {
           index,
         };
       }
-      if (noRemainingFutureSlots) {
-        return { kind: "locked_closed" as const, index };
-      }
-      return { kind: "empty" as const, index };
+      return { kind: "locked_closed" as const, index };
     });
   }, [
     bottomDisplaySlots,
     openClaimableSlots,
-    displayScheduleSlots,
     liveRoomSlotDisplayQueue.activeSlot,
     liveRoomSlotDisplayQueue.sideRailSlots,
-    liveNowMs,
   ]);
 
   useEffect(() => {
     bottomStageDisplayBoxes.forEach((box) => {
-      if (box.kind === "empty") return;
       const slot = (box as any).slot;
       console.log("KRISTO_LIVE_ROOM_BOTTOM_SLOT_CARD_STATE", {
         index: box.index,
@@ -8191,15 +8178,11 @@ return (
         {layoutMode === "grid6" ? (
           <View pointerEvents="box-none" style={s.teamGridOverlayLayer as any}>
             {[0, 1, 2, 3].map((index) => {
-              const box = bottomStageDisplayBoxes[index];
+              const box = bottomStageDisplayBoxes[index] || { kind: "locked_closed" as const, index };
               const positionStyle = [
                 index % 2 === 0 ? s.teamGridMiniCardLeft : s.teamGridMiniCardRight,
                 index < 2 ? s.teamGridMiniCardRowOne : s.teamGridMiniCardRowTwo,
               ];
-
-              if (!box || box.kind === "empty") {
-                return null;
-              }
 
               if (box.kind === "open") {
                 const slot = box.slot as any;
