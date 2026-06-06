@@ -53,6 +53,7 @@ import {
   deleteFeedItemsWhere,
   ensureFeedStoreReady,
   getFeedItemById,
+  getFeedItemDebugSnapshot,
   isFeedDatabaseError,
   listFeedItems,
   listFeedItemsForChurch,
@@ -1206,6 +1207,61 @@ function applyFeedPostImageEnrichment(item: any) {
   };
 }
 
+function collectFeedItemStringFieldPaths(
+  value: unknown,
+  prefix = "",
+  depth = 0,
+  out: Array<{ path: string; value: string }> = []
+) {
+  if (depth > 6 || value == null) return out;
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) out.push({ path: prefix || "(root)", value: trimmed });
+    return out;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      collectFeedItemStringFieldPaths(entry, `${prefix}[${index}]`, depth + 1, out);
+    });
+    return out;
+  }
+
+  if (typeof value === "object") {
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      const nextPrefix = prefix ? `${prefix}.${key}` : key;
+      collectFeedItemStringFieldPaths(entry, nextPrefix, depth + 1, out);
+    }
+  }
+
+  return out;
+}
+
+function buildFeedItemImageDebugReport(item: any, rawPayload: Record<string, unknown> | null) {
+  const avatarFields = feedPostImageAvatarFields(item);
+  const explicitCandidates = collectExplicitFeedPostImageCandidates(item);
+  const resolved = resolveFeedPostImageFields(item);
+  const scannedImageUri = scanFeedItemForRepairImageUri(item, avatarFields);
+  const rawStringFields = collectFeedItemStringFieldPaths({
+    item,
+    rawPayload,
+  });
+  const imageLikeFields = rawStringFields.filter(({ value }) =>
+    isRepairableFeedPostImageUri(value)
+  );
+
+  return {
+    explicitCandidates,
+    scannedImageUri: scannedImageUri || null,
+    resolvedMediaUri: resolved.mediaUri || null,
+    resolvedImageUrl: resolved.imageUrl || null,
+    resolvedMediaType: resolved.mediaType || null,
+    repaired: resolved.repaired === true,
+    imageLikeFields,
+  };
+}
+
 function isRemotePosterUri(uri: unknown) {
   const value = String(uri || "").trim();
   if (!value) return false;
@@ -2244,6 +2300,41 @@ async function handleFeedGet(
       return feedListOk(viewerChurchId, resolvedStorageItems);
     }
 
+    if (url.searchParams.get("debug") === "feed_item") {
+      const debugId = String(url.searchParams.get("id") || "").trim();
+      if (!debugId) return err("id query param is required for debug=feed_item", 400);
+
+      const snapshot = await getFeedItemDebugSnapshot(debugId);
+      if (!snapshot) return err("Feed item not found", 404);
+
+      const imageReport = buildFeedItemImageDebugReport(snapshot.item, snapshot.rawPayload);
+
+      console.log("KRISTO_FEED_ITEM_DEBUG", {
+        postId: debugId,
+        store: snapshot.store,
+        source: snapshot.item?.source,
+        type: snapshot.item?.type,
+        rawMediaUri: snapshot.item?.mediaUri || null,
+        rawImageUrl: (snapshot.item as any)?.imageUrl || null,
+        mediaType: (snapshot.item as any)?.mediaType || null,
+        explicitCandidates: imageReport.explicitCandidates,
+        scannedImageUri: imageReport.scannedImageUri,
+        resolvedMediaUri: imageReport.resolvedMediaUri,
+        resolvedImageUrl: imageReport.resolvedImageUrl,
+        resolvedMediaType: imageReport.resolvedMediaType,
+        imageLikeFieldCount: imageReport.imageLikeFields.length,
+      });
+
+      return ok({
+        postId: debugId,
+        store: snapshot.store,
+        rowMeta: snapshot.rowMeta,
+        item: snapshot.item,
+        rawPayload: snapshot.rawPayload,
+        imageReport,
+      });
+    }
+
     if (url.searchParams.get("debug") === "feed") {
       const all = await listFeedItems();
       const byChurch = await listFeedItemsForChurch(churchId);
@@ -3044,6 +3135,78 @@ async function handleFeedPost(req: NextRequest, body: any) {
       postId,
       slotId,
       slot: slots[slotIndex],
+    });
+  }
+
+  if (action === "repair_feed_image") {
+    const postId = cleanText(body?.postId || body?.feedId || body?.id, 240);
+    if (!postId) return err("postId is required", 400);
+
+    const item = await getFeedItemById(postId);
+    if (!item) return err("Feed item not found", 404);
+
+    const itemChurchId = String(item?.churchId || churchId || "").trim();
+    if (!itemChurchId || itemChurchId !== String(churchId || "").trim()) {
+      return err("Feed item not in your church", 403);
+    }
+
+    const explicitMediaUri =
+      cleanText(body?.mediaUri, 2000) ||
+      cleanText(body?.imageUrl, 2000) ||
+      cleanText(body?.uploadedMediaUri, 2000) ||
+      "";
+    const imageReport = buildFeedItemImageDebugReport(item, null);
+    let mediaUri = explicitMediaUri || String(imageReport.resolvedMediaUri || "").trim();
+    const repairSource = explicitMediaUri ? "explicit" : imageReport.repaired ? "scan" : "none";
+
+    if (!mediaUri) {
+      console.log("KRISTO_FEED_IMAGE_REPAIR_MISSING", {
+        postId,
+        source: item?.source,
+        type: item?.type,
+        finalMediaUri: null,
+        explicitCandidates: imageReport.explicitCandidates,
+        scannedImageUri: imageReport.scannedImageUri,
+        imageLikeFields: imageReport.imageLikeFields,
+      });
+      return ok({
+        repaired: false,
+        postId,
+        finalMediaUri: null,
+        message: "No image URI found in stored item. Post must be recreated.",
+        imageReport,
+      });
+    }
+
+    if (!isRepairableFeedPostImageUri(mediaUri)) {
+      return err("mediaUri must be a valid /uploads/media/... or http(s) image URL", 400);
+    }
+
+    const imageUrl = cleanText(body?.imageUrl, 2000) || mediaUri;
+    const next = {
+      ...(item as ChurchFeedItem),
+      mediaUri,
+      imageUrl,
+      mediaType: "image",
+    };
+    const saved = await upsertFeedItem(next);
+
+    console.log("KRISTO_FEED_IMAGE_REPAIR_APPLIED", {
+      postId,
+      repairSource,
+      mediaUri,
+      imageUrl,
+      mediaType: "image",
+    });
+
+    return ok({
+      repaired: true,
+      postId,
+      repairSource,
+      item: saved,
+      mediaUri,
+      imageUrl,
+      mediaType: "image",
     });
   }
 
