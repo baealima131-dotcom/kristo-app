@@ -129,15 +129,19 @@ export function parseSlotEndMs(slot: any, startMs = 0) {
 export function enrichScheduleSlot(slot: any, index: number, nowMs: number): EnrichedScheduleSlot {
   const startMs = parseSlotStartMs(slot);
   const endMs = parseSlotEndMs(slot, startMs);
+  const persistedAvatar = resolvePersistedClaimAvatarUri(slot);
 
-  return {
-    ...slot,
-    startMs,
-    endMs,
-    isLiveNow: startMs > 0 && endMs > 0 && nowMs >= startMs && nowMs <= endMs,
-    isUpcoming: startMs > nowMs,
-    isEnded: endMs > 0 && nowMs > endMs,
-  };
+  return patchMediaSlotClaimAvatarFields(
+    {
+      ...slot,
+      startMs,
+      endMs,
+      isLiveNow: startMs > 0 && endMs > 0 && nowMs >= startMs && nowMs <= endMs,
+      isUpcoming: startMs > nowMs,
+      isEnded: endMs > 0 && nowMs > endMs,
+    },
+    persistedAvatar
+  );
 }
 
 export function resolveSlotPhase(slot: EnrichedScheduleSlot, claimed: boolean): ScheduleSlotPhase {
@@ -255,6 +259,8 @@ function pickMediaSlotAvatarRaw(slot: any, claimedBy: any): Array<[string, unkno
     ["slot.claimedByAvatarUri", slot?.claimedByAvatarUri],
     ["slot.claimedByAvatar", slot?.claimedByAvatar],
     ["slot.claimedByAvatarUrl", slot?.claimedByAvatarUrl],
+    ["slot.claimedByPhotoUrl", slot?.claimedByPhotoUrl],
+    ["slot.claimedByPhotoURL", slot?.claimedByPhotoURL],
     ["claimedBy.avatarUri", claimedBy?.avatarUri],
     ["claimedBy.avatarUrl", claimedBy?.avatarUrl],
     ["claimedBy.profileImage", claimedBy?.profileImage],
@@ -301,11 +307,11 @@ export function resolveMediaSlotClaimedAvatar(args: {
   for (const [source, raw] of pickMediaSlotAvatarRaw(slot, claimedBy)) {
     const uri = toMediaSlotAbsoluteAvatarUri(String(raw || ""), args.apiBase);
     if (uri) {
-      console.log("[MediaSlotAvatar]", {
+      console.log("KRISTO_CLAIMED_SLOT_AVATAR_RESOLVE", {
         slotId,
         claimedByUserId,
-        hasAvatar: true,
         source,
+        hasAvatar: true,
       });
       return { uri, source, hasAvatar: true };
     }
@@ -317,11 +323,11 @@ export function resolveMediaSlotClaimedAvatar(args: {
       args.apiBase
     );
     if (uri) {
-      console.log("[MediaSlotAvatar]", {
+      console.log("KRISTO_CLAIMED_SLOT_AVATAR_RESOLVE", {
         slotId,
         claimedByUserId,
-        hasAvatar: true,
         source: "profile-cache",
+        hasAvatar: true,
       });
       return { uri, source: "profile-cache", hasAvatar: true };
     }
@@ -333,11 +339,11 @@ export function resolveMediaSlotClaimedAvatar(args: {
       args.apiBase
     );
     if (uri) {
-      console.log("[MediaSlotAvatar]", {
+      console.log("KRISTO_CLAIMED_SLOT_AVATAR_RESOLVE", {
         slotId,
         claimedByUserId,
-        hasAvatar: true,
         source: "church-members-cache",
+        hasAvatar: true,
       });
       return { uri, source: "church-members-cache", hasAvatar: true };
     }
@@ -351,17 +357,17 @@ export function resolveMediaSlotClaimedAvatar(args: {
   ) {
     const uri = toMediaSlotAbsoluteAvatarUri(args.sessionAvatarUri, args.apiBase);
     if (uri) {
-      console.log("[MediaSlotAvatar]", {
+      console.log("KRISTO_CLAIMED_SLOT_AVATAR_RESOLVE", {
         slotId,
         claimedByUserId,
-        hasAvatar: true,
         source: "session-profile",
+        hasAvatar: true,
       });
       return { uri, source: "session-profile", hasAvatar: true };
     }
   }
 
-  console.log("[MediaSlotAvatar]", {
+  console.log("KRISTO_CLAIMED_SLOT_AVATAR_MISSING", {
     slotId,
     claimedByUserId,
     hasAvatar: false,
@@ -381,6 +387,7 @@ export function patchMediaSlotClaimAvatarFields(slot: any, avatarUri: string) {
     ...slot,
     claimedByAvatarUri: uri,
     claimedByAvatar: uri,
+    claimedByPhotoUrl: uri,
     ...(claimedByUserId
       ? {
           claimedBy: {
@@ -395,6 +402,26 @@ export function patchMediaSlotClaimAvatarFields(slot: any, avatarUri: string) {
         }
       : {}),
   };
+}
+
+/** Preserve persisted claim avatars — do not run lean-route sanitization here. */
+export function resolvePersistedClaimAvatarUri(slot: any): string {
+  const claimedByObj =
+    typeof slot?.claimedBy === "object" && slot?.claimedBy ? slot.claimedBy : null;
+
+  return String(
+    slot?.claimedByAvatarUri ||
+      slot?.claimedByAvatar ||
+      slot?.claimedByAvatarUrl ||
+      slot?.claimedByPhotoUrl ||
+      slot?.claimedByPhotoURL ||
+      claimedByObj?.avatarUri ||
+      claimedByObj?.avatarUrl ||
+      claimedByObj?.profileImage ||
+      claimedByObj?.photoURL ||
+      claimedByObj?.image ||
+      ""
+  ).trim();
 }
 
 export function baseFeedId(input: unknown) {
@@ -528,7 +555,7 @@ export function normalizeLiveScheduleSlot(slot: any, index = 0) {
   const slotNum = lean.slotNumber;
   const claimedByUserId = lean.claimedByUserId;
   const claimedByName = lean.claimedByName;
-  const claimedAvatar = lean.claimedByAvatarUri;
+  const claimedAvatar = resolvePersistedClaimAvatarUri(slot) || lean.claimedByAvatarUri;
   const isClaimed =
     lean.status === "claimed" ||
     lean.status === "taken" ||
@@ -563,11 +590,12 @@ export function normalizeLiveScheduleSlot(slot: any, index = 0) {
           isClaimed: true,
           claimedByAvatarUri: claimedAvatar,
           claimedByAvatar: claimedAvatar,
+          claimedByPhotoUrl: claimedAvatar,
           claimedBy: {
             userId: claimedByUserId,
             name: claimedByName,
             avatarUri: claimedAvatar,
-            role: "Member",
+            role: String(slot?.claimedByRole || slot?.claimedBy?.role || "Member"),
           },
         }
       : {}),
@@ -1025,6 +1053,7 @@ export function sanitizeLeanRouteAvatarUri(raw: unknown): string {
   if (!value || value.startsWith("data:")) return "";
   if (value.length > LEAN_ROUTE_AVATAR_MAX_LEN) return "";
   if (/^https?:\/\//i.test(value) || value.startsWith("file://")) return value;
+  if (value.startsWith("/uploads/")) return value;
   return "";
 }
 

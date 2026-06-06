@@ -5,6 +5,7 @@ import { resolveActorIdentity } from "@/app/api/_lib/notificationActor";
 import { guard, guardAuth } from "@/app/api/_lib/rbac";
 import { ensureActiveMembershipForSession, getActiveMembership } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
+import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getChurchById } from "@/app/api/_lib/churches";
 import {
   churchAvatarUpdatedAtMs,
@@ -319,7 +320,60 @@ function profileAvatarForUserId(userId: string) {
   ).trim();
 }
 
-function enrichScheduleSlotClaimAvatar(slot: any) {
+function pickProfileAvatar(profile: any) {
+  return String(
+    profile?.avatarUri ||
+      profile?.avatarUrl ||
+      profile?.profileImage ||
+      profile?.photoURL ||
+      profile?.image ||
+      ""
+  ).trim();
+}
+
+async function resolveClaimerAvatarUri(userId: string, claim?: any) {
+  const uid = String(userId || "").trim();
+  const fromClaim = String(
+    claim?.avatarUri ||
+      claim?.avatarUrl ||
+      claim?.claimedByAvatarUri ||
+      claim?.claimedByAvatar ||
+      claim?.claimedByPhotoUrl ||
+      ""
+  ).trim();
+  if (fromClaim) return fromClaim;
+
+  const fromMap = profileAvatarForUserId(uid);
+  if (fromMap) {
+    console.log("KRISTO_CLAIMED_SLOT_AVATAR_HYDRATED", {
+      userId: uid,
+      source: "profile-map",
+    });
+    return fromMap;
+  }
+
+  try {
+    const profile = await getProfile(uid);
+    const avatar = pickProfileAvatar(profile);
+    if (avatar) {
+      console.log("KRISTO_CLAIMED_SLOT_AVATAR_HYDRATED", {
+        userId: uid,
+        source: "getProfile",
+      });
+      return avatar;
+    }
+  } catch {
+    // ignore profile lookup failures
+  }
+
+  console.log("KRISTO_CLAIMED_SLOT_AVATAR_MISSING", {
+    userId: uid,
+    stage: "backend-avatar-resolve",
+  });
+  return "";
+}
+
+async function enrichScheduleSlotClaimAvatar(slot: any) {
   const userId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
   if (!userId) return slot;
 
@@ -327,6 +381,7 @@ function enrichScheduleSlotClaimAvatar(slot: any) {
     slot?.claimedByAvatarUri ||
       slot?.claimedByAvatar ||
       slot?.claimedByAvatarUrl ||
+      slot?.claimedByPhotoUrl ||
       slot?.claimedBy?.avatarUri ||
       slot?.claimedBy?.avatarUrl ||
       slot?.claimedBy?.profileImage ||
@@ -335,8 +390,16 @@ function enrichScheduleSlotClaimAvatar(slot: any) {
       ""
   ).trim();
 
-  const avatarUri = existing || profileAvatarForUserId(userId);
+  const avatarUri = existing || (await resolveClaimerAvatarUri(userId));
   if (!avatarUri) return slot;
+
+  if (!existing) {
+    console.log("KRISTO_CLAIMED_SLOT_AVATAR_HYDRATED", {
+      userId,
+      slotId: String(slot?.id || ""),
+      source: "feed-enrich",
+    });
+  }
 
   const claimedBy =
     slot?.claimedBy && typeof slot.claimedBy === "object"
@@ -356,13 +419,14 @@ function enrichScheduleSlotClaimAvatar(slot: any) {
     ...slot,
     claimedByAvatarUri: avatarUri,
     claimedByAvatar: avatarUri,
+    claimedByPhotoUrl: avatarUri,
     claimedBy,
   };
 }
 
-function enrichScheduleSlotsClaimAvatars(slots: any[]) {
+async function enrichScheduleSlotsClaimAvatars(slots: any[]) {
   if (!Array.isArray(slots)) return [];
-  return slots.map(enrichScheduleSlotClaimAvatar);
+  return Promise.all(slots.map((slot) => enrichScheduleSlotClaimAvatar(slot)));
 }
 
 type CommentActorIdentity = { name: string; avatar: string };
@@ -1247,7 +1311,7 @@ async function enrichFeedListItem(
     churchPrimaryLanguage: String((itemChurchProfile as any)?.primaryLanguage || "").trim(),
     churchPhoneCountryCode: String((itemChurchProfile as any)?.phoneCountryCode || "").trim(),
     mediaName: itemMediaName,
-    scheduleSlots: enrichScheduleSlotsClaimAvatars(
+    scheduleSlots: await enrichScheduleSlotsClaimAvatars(
       Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
     ),
     commentCount: discussion.commentCount,
@@ -1304,7 +1368,7 @@ async function safeEnrichFeedListItem(
       ...(authorEnrichment.churchLogoUrl ? { churchLogoUrl: authorEnrichment.churchLogoUrl } : {}),
       ...(authorEnrichment.mediaAvatarUri ? { mediaAvatarUri: authorEnrichment.mediaAvatarUri } : {}),
       ...(authorEnrichment.mediaLogoUrl ? { mediaLogoUrl: authorEnrichment.mediaLogoUrl } : {}),
-      scheduleSlots: enrichScheduleSlotsClaimAvatars(
+      scheduleSlots: await enrichScheduleSlotsClaimAvatars(
         Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
       ),
       commentCount: discussion.commentCount,
@@ -2303,14 +2367,23 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const name = cleanText(claim?.name || actorLabel || "Church Member", 240) || "Church Member";
     const role = cleanText(claim?.role || ctx?.viewer?.role || "Member", 120) || "Member";
     const avatarUri =
-      cleanText(
-        claim?.avatarUri ||
-          claim?.avatarUrl ||
-          claim?.claimedByAvatarUri ||
-          profileAvatarForUserId(viewerUserId) ||
-          "",
-        2000
-      ) || "";
+      cleanText(await resolveClaimerAvatarUri(viewerUserId, claim), 2000) || "";
+
+    if (avatarUri) {
+      console.log("KRISTO_CLAIMED_SLOT_AVATAR_PERSIST", {
+        postId,
+        slotId,
+        userId: viewerUserId,
+        hasAvatar: true,
+      });
+    } else {
+      console.log("KRISTO_CLAIMED_SLOT_AVATAR_MISSING", {
+        postId,
+        slotId,
+        userId: viewerUserId,
+        stage: "claim_schedule_slot",
+      });
+    }
 
     slots[slotIndex] = {
       ...existing,
@@ -2321,6 +2394,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       claimedByName: name,
       claimedByAvatarUri: avatarUri,
       claimedByAvatar: avatarUri,
+      claimedByPhotoUrl: avatarUri,
       claimedBy: {
         slotId,
         userId: viewerUserId,

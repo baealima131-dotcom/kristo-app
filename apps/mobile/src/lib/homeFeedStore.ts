@@ -545,9 +545,11 @@ function applyClaimPatchToSlot(
 
   const claimedAt = String(slot?.claimedAt || slot?.claimedBy?.claimedAt || new Date().toISOString());
 
-  const avatarUri = claim?.avatarUri || slot?.claimedByAvatarUri || slot?.claimedByAvatar || "";
+  const avatarUri = String(
+    claim?.avatarUri || slot?.claimedByAvatarUri || slot?.claimedByAvatar || ""
+  ).trim();
 
-  return {
+  const next = {
     ...slot,
     claimed: true,
     isClaimed: true,
@@ -557,6 +559,7 @@ function applyClaimPatchToSlot(
     claimedByName: claim?.name || slot?.claimedByName || "You",
     claimedByAvatarUri: avatarUri,
     claimedByAvatar: avatarUri,
+    claimedByPhotoUrl: avatarUri,
     claimedBy: {
       slotId,
       userId: String(claim?.userId || ""),
@@ -566,6 +569,22 @@ function applyClaimPatchToSlot(
       claimedAt,
     },
   };
+
+  if (avatarUri) {
+    console.log("KRISTO_CLAIMED_SLOT_AVATAR_PERSIST", {
+      slotId,
+      userId: String(claim?.userId || ""),
+      hasAvatar: true,
+    });
+  } else {
+    console.log("KRISTO_CLAIMED_SLOT_AVATAR_MISSING", {
+      slotId,
+      userId: String(claim?.userId || ""),
+      stage: "local-claim-patch",
+    });
+  }
+
+  return next;
 }
 
 function patchScheduleCollections(
@@ -734,6 +753,7 @@ export function feedClaimSchedule(
           claimedByName: claim.name || "You",
           claimedByAvatarUri: claim.avatarUri || "",
           claimedByAvatar: claim.avatarUri || "",
+          claimedByPhotoUrl: claim.avatarUri || "",
           claimedBy: {
             slotId,
             userId,

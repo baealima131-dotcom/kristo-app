@@ -491,7 +491,12 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           userId: slot.claimedByUserId,
           name: slot.claimedByName || "Host",
           role: "Member",
-          avatarUri: slot.claimedByAvatarUri || slot.claimedByAvatar || "",
+          avatarUri:
+            slot.claimedByAvatarUri ||
+            slot.claimedByAvatar ||
+            slot.claimedByPhotoUrl ||
+            slot.claimedBy?.avatarUri ||
+            "",
         }
       : null);
 
@@ -685,6 +690,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       role: isPastorClaim ? "Pastor" : String(session?.role || "Member"),
       avatarUri: claimAvatarUri,
       claimedByAvatarUri: claimAvatarUri,
+      claimedByPhotoUrl: claimAvatarUri,
       startMs: Number(slot.startMs || 0),
       endMs: Number(slot.endMs || 0),
       slotNumber: slotNumber || Number((slot as any).slot || (slot as any).slotNumber || 0),
@@ -780,6 +786,21 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           slotId,
           userId: currentUserId,
         });
+
+        const backendSlot = res?.slot;
+        const backendAvatar = String(
+          backendSlot?.claimedByAvatarUri ||
+            backendSlot?.claimedByAvatar ||
+            backendSlot?.claimedByPhotoUrl ||
+            backendSlot?.claimedBy?.avatarUri ||
+            ""
+        ).trim();
+        if (backendAvatar) {
+          feedClaimSchedule(seedId, {
+            ...claim,
+            avatarUri: backendAvatar,
+          });
+        }
 
         if (churchId) {
           notifySlotClaimChanged(
