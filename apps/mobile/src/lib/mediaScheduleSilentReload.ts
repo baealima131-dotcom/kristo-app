@@ -354,6 +354,11 @@ export function readFeedItemScheduleSlots(sourceFeedId: string, fallbackRows: an
 let lastMediaScheduleVersion = 0;
 let lastMediaScheduleUpdatedAt = "";
 
+export function resetMediaScheduleSilentReloadCache() {
+  lastMediaScheduleVersion = 0;
+  lastMediaScheduleUpdatedAt = "";
+}
+
 export async function runMediaScheduleSilentReload(
   reason: string,
   force = false,

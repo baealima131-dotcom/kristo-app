@@ -25,7 +25,8 @@ export async function fetchHomeFeedFromApi(
   const bypassThrottle =
     force ||
     reason === "focus" ||
-    reason.startsWith("schedule-dirty");
+    reason.startsWith("schedule-dirty") ||
+    reason.startsWith("slot-claim");
 
   const res: any = await apiGet(
     `/api/church/feed?scope=global&_=${Date.now()}`,
