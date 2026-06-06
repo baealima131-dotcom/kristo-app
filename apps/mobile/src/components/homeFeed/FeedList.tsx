@@ -24,6 +24,7 @@ import {
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 import { isHomeFeedRenderPaused } from "@/src/lib/liveRoomStartup";
+import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
   collectHomeFeedVideoWindowIds,
   resolveHomeFeedVideoWarmMode,
@@ -201,7 +202,7 @@ export const FeedList = memo(function FeedList({
   );
 
   useEffect(() => {
-    if (renderPaused) return;
+    if (renderPaused || !isKristoVerboseFeedDebug()) return;
     const warmIds = collectHomeFeedVideoWindowIds(rows, activeIndex);
     console.log("KRISTO_VIDEO_WINDOW_STATE", {
       activeIndex,
@@ -217,7 +218,7 @@ export const FeedList = memo(function FeedList({
         isExplicitHomeFeedMediaScheduleRow(item) || isMediaLiveSlotsHomeFeedRow(item);
       const isScheduleCard = isHomeFeedScheduleCardRow(item, scheduleNowMs);
 
-      if (!renderPaused) {
+      if (!renderPaused && isKristoVerboseFeedDebug()) {
         console.log("KRISTO_FEED_RENDER_ITEM", {
           index,
           id: feedRenderKey(item) || String(item?.id || ""),
@@ -230,7 +231,7 @@ export const FeedList = memo(function FeedList({
         });
       }
 
-      if (isScheduleCandidate && !isScheduleCard) {
+      if (isScheduleCandidate && !isScheduleCard && isKristoVerboseFeedDebug()) {
         console.log("KRISTO_HOME_FEED_SCHEDULE_ROW_DROPPED", {
           index,
           id: feedRenderKey(item) || String(item?.id || ""),
@@ -241,7 +242,7 @@ export const FeedList = memo(function FeedList({
 
       if (isScheduleCard) {
         const slot = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots[0] : null;
-        if (isHomeFeedExpandedScheduleSlotRow(item)) {
+        if (isHomeFeedExpandedScheduleSlotRow(item) && isKristoVerboseFeedDebug()) {
           console.log("KRISTO_HOME_FEED_SCHEDULE_SLOT_RENDERED", {
             index,
             parentScheduleId: String(item?.parentScheduleId || item?.sourceScheduleId || ""),
@@ -249,7 +250,7 @@ export const FeedList = memo(function FeedList({
             status: resolveHomeFeedSlotCardStatus(slot),
             rowKey: feedRenderKey(item),
           });
-        } else {
+        } else if (isKristoVerboseFeedDebug()) {
           console.log("KRISTO_HOME_FEED_SCHEDULE_ROW_RENDERED", {
             index,
             id: feedRenderKey(item) || String(item?.id || ""),

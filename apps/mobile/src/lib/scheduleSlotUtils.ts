@@ -1,3 +1,5 @@
+import { isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
+
 export type ScheduleSlotPhase = "open" | "claimed" | "live" | "ended" | "upcoming";
 
 export type EnrichedScheduleSlot = {
@@ -185,12 +187,14 @@ export function resolveScheduleSlotVisualState(
     expired: phase === "ended",
   };
 
-  console.log("KRISTO_SLOT_TIME_SHARED_HELPER", {
-    slotId: options?.slotId ?? String(slot?.id || ""),
-    startMs: state.startMs,
-    endMs: state.endMs,
-    phase: state.phase,
-  });
+  if (__DEV__ && isKristoVerboseSlotTimeDebug()) {
+    console.log("KRISTO_SLOT_TIME_SHARED_HELPER", {
+      slotId: options?.slotId ?? String(slot?.id || ""),
+      startMs: state.startMs,
+      endMs: state.endMs,
+      phase: state.phase,
+    });
+  }
 
   return state;
 }
