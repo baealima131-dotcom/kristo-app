@@ -21,6 +21,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getKristoAuth } from "@/src/lib/kristoHeaders";
 import { apiPatch, apiPost } from "@/src/lib/kristoApi";
+import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { fetchMinistryById } from "@/src/lib/ministriesApi";
 import * as ImagePicker from "expo-image-picker";
 
@@ -162,6 +163,7 @@ const [name, setName] = useState("");
         name: fileName,
         type: mimeType,
       } as any);
+      if (ministryId) form.append("ministryId", ministryId);
 
       const uploaded = await apiPost<{ ok?: boolean; data?: { url?: string }; error?: string }>(
         "/api/church/ministries/upload",
@@ -177,7 +179,7 @@ const [name, setName] = useState("");
       );
 
       if (!uploaded?.ok || !uploaded?.data?.url) {
-        throw new Error(String(uploaded?.error || "Failed to upload photo"));
+        throw new Error(extractApiErrorMessage(uploaded, "Failed to upload photo"));
       }
 
       const next = normalizeImageUri(String(uploaded.data.url || "").trim());
@@ -185,7 +187,7 @@ const [name, setName] = useState("");
 
       setItem((prev) => (prev ? { ...prev, avatarUri: next } : prev));
     } catch (e: any) {
-      Alert.alert("Upload failed", String(e?.message ?? e ?? "Could not upload image"));
+      Alert.alert("Upload failed", extractApiErrorMessage(e, "Could not upload image"));
     } finally {
       setUploadingPhoto(false);
     }
@@ -306,7 +308,7 @@ const [name, setName] = useState("");
       );
 
       if (!res?.ok) {
-        throw new Error(String(res?.error || "Failed to update ministry"));
+        throw new Error(extractApiErrorMessage(res, "Failed to update ministry"));
       }
 
       const savedAvatar =
@@ -334,7 +336,7 @@ const [name, setName] = useState("");
         },
       ]);
     } catch (e: any) {
-      setErr(String(e?.message ?? e ?? "Failed to update ministry"));
+      setErr(extractApiErrorMessage(e, "Failed to update ministry"));
     } finally {
       setSaving(false);
     }
