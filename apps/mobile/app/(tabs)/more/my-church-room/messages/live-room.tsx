@@ -74,6 +74,7 @@ import {
   enrichScheduleSlotsFromLiveRequests,
   mergeLiveRoomScheduleSlots,
   normalizeLiveScheduleSlots,
+  repairLiveMainStageSlotTimes,
   baseFeedId,
   isBackendFeedScheduleId,
   parseLiveAllScheduleSlotsJson,
@@ -2739,7 +2740,7 @@ export default function LiveRoomScreen() {
     ? runtimeScheduleSlots
     : activeStageSlots;
 
-  const currentMainStageSlot = useMemo(() => {
+  const currentMainStageSlotRaw = useMemo(() => {
     const now = liveNowMs;
 
     const allSlots = authorityStageSlots
@@ -2778,17 +2779,58 @@ export default function LiveRoomScreen() {
 
     // Fast-open: lean route slots may lack a valid live window — honor route currentSlotNumber.
     if (routeCurrentSlotNumber > 0 && (routeScheduleSlots.length > 0 || allSlots.length > 0)) {
-      const byRouteNumber = allSlots.find(
-        (slot: any) => Number(slot?.slot || slot?.slotNumber || 0) === routeCurrentSlotNumber
-      );
-      if (byRouteNumber) return byRouteNumber;
-
       const routeIndex = Math.max(0, routeCurrentSlotNumber - 1);
-      const routeSlot =
+      const routeSlotMatch =
         routeScheduleSlots.find(
           (slot: any) =>
             Number(slot?.slot || slot?.slotNumber || slot?.order || 0) === routeCurrentSlotNumber
         ) || routeScheduleSlots[routeIndex];
+
+      const byRouteNumber = allSlots.find(
+        (slot: any) => Number(slot?.slot || slot?.slotNumber || 0) === routeCurrentSlotNumber
+      );
+      if (byRouteNumber) {
+        if (routeSlotMatch) {
+          const routeWin = getScheduleSlotWindow(routeSlotMatch, routeIndex);
+          return {
+            ...routeSlotMatch,
+            ...byRouteNumber,
+            slot: routeCurrentSlotNumber,
+            slotNumber: routeCurrentSlotNumber,
+            order: Number(byRouteNumber?.order || routeSlotMatch?.order || routeCurrentSlotNumber),
+            startMs: Number(
+              byRouteNumber.startMs ||
+                routeSlotMatch.startMs ||
+                routeWin.startMs ||
+                0
+            ),
+            endMs: Number(
+              byRouteNumber.endMs ||
+                routeSlotMatch.endMs ||
+                routeWin.endMs ||
+                0
+            ),
+            claimedByUserId: String(
+              byRouteNumber.claimedByUserId ||
+                routeSlotMatch.claimedByUserId ||
+                routeSlotMatch?.claimedBy?.userId ||
+                ""
+            ).trim(),
+            name: String(
+              byRouteNumber.name ||
+                routeSlotMatch.claimedByName ||
+                routeSlotMatch.name ||
+                routeSlotMatch.title ||
+                `Guest ${routeCurrentSlotNumber}`
+            ),
+            avatar: resolveParticipantAvatarUri(byRouteNumber) || resolveParticipantAvatarUri(routeSlotMatch),
+            approved: true,
+          };
+        }
+        return byRouteNumber;
+      }
+
+      const routeSlot = routeSlotMatch;
 
       if (routeSlot) {
         const n = routeCurrentSlotNumber;
@@ -2853,6 +2895,37 @@ export default function LiveRoomScreen() {
     params,
     routeCurrentSlotNumber,
     routeScheduleSlots,
+  ]);
+
+  const currentMainStageSlot = useMemo(() => {
+    const feedSlots = liveScheduleFeedId ? feedScheduleSlotsForLive(liveScheduleFeedId) : [];
+    return repairLiveMainStageSlotTimes({
+      slot: currentMainStageSlotRaw,
+      routeScheduleSlots,
+      runtimeScheduleSlots,
+      backendScheduleSlots,
+      mergedScheduleSlots,
+      feedScheduleSlots: feedSlots,
+      ringClaimHints: getRingClaimHints(),
+      routeParams: {
+        scheduleStartMs: Number((params as any)?.scheduleStartMs || 0),
+        scheduleEndMs: Number((params as any)?.scheduleEndMs || 0),
+        currentSlotNumber: routeCurrentSlotNumber,
+      },
+      liveScheduleFeedId,
+      context: "live-room",
+    });
+  }, [
+    currentMainStageSlotRaw,
+    routeScheduleSlots,
+    runtimeScheduleSlots,
+    backendScheduleSlots,
+    mergedScheduleSlots,
+    liveScheduleFeedId,
+    feedScheduleTick,
+    routeCurrentSlotNumber,
+    (params as any)?.scheduleStartMs,
+    (params as any)?.scheduleEndMs,
   ]);
 
   const canAdvanceScheduleRuntime =
@@ -3304,6 +3377,8 @@ export default function LiveRoomScreen() {
         ? {
             slot: currentMainStageSlot.slot,
             claimedByUserId: currentMainStageSlot.claimedByUserId,
+            startMs: currentMainStageSlot.startMs,
+            endMs: currentMainStageSlot.endMs,
           }
         : null,
     });
@@ -3356,6 +3431,20 @@ export default function LiveRoomScreen() {
       currentSlotEndMs,
       liveNowMs,
     });
+    if (
+      currentSlotStartMs > 0 &&
+      currentSlotEndMs > currentSlotStartMs &&
+      canPublishLiveVideoNow
+    ) {
+      console.log("KRISTO_LIVE_CAMERA_GATE_READY_WITH_TIME", {
+        currentSlotNumber,
+        currentSlotOwnerId,
+        currentSlotStartMs,
+        currentSlotEndMs,
+        liveNowMs,
+        canPublishLiveVideoNow,
+      });
+    }
     console.log("KRISTO_ACTIVE_SLOT_OWNER", {
       currentSlotNumber,
       currentSlotOwnerId,

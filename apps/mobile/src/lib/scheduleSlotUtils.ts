@@ -598,6 +598,237 @@ function pickFresherScheduleSlot(prev: any, next: any) {
   return prev;
 }
 
+function resolveLiveRoomSlotTimeWindow(slot: any) {
+  const explicitStart = Number(slot?.startMs || 0);
+  const explicitEnd = Number(slot?.endMs || 0);
+  if (explicitStart > 0 && explicitEnd > explicitStart) {
+    return { startMs: explicitStart, endMs: explicitEnd };
+  }
+
+  const startsAtMs = parseIsoMs(slot?.startsAt);
+  const endsAtMs = parseIsoMs(slot?.endsAt);
+  if (startsAtMs > 0 && endsAtMs > startsAtMs) {
+    return { startMs: startsAtMs, endMs: endsAtMs };
+  }
+
+  const startMs = parseSlotStartMs(slot);
+  const endMs = parseSlotEndMs(slot, startMs);
+  return { startMs, endMs };
+}
+
+function liveStageSlotNumber(slot: any) {
+  return Number(slot?.slot || slot?.slotNumber || slot?.order || 0);
+}
+
+function liveStageSlotId(slot: any) {
+  return String(slot?.id || slot?.slotId || "").trim();
+}
+
+function slotMatchesLiveStageTarget(slot: any, target: any) {
+  const targetId = liveStageSlotId(target);
+  const slotId = liveStageSlotId(slot);
+  if (targetId && slotId && targetId === slotId) return true;
+
+  const targetNum = liveStageSlotNumber(target);
+  const slotNum = liveStageSlotNumber(slot);
+  return targetNum > 0 && slotNum > 0 && targetNum === slotNum;
+}
+
+function ringHintToScheduleSlot(hint: any) {
+  if (hint?.slot && typeof hint.slot === "object") return hint.slot;
+  return {
+    id: hint?.slotId,
+    slot: hint?.slotNumber,
+    slotNumber: hint?.slotNumber,
+    startMs: hint?.startMs,
+    endMs: hint?.endMs,
+    claimedByUserId: hint?.userId,
+    claimedByName: hint?.name,
+  };
+}
+
+function slotTimeRichnessScore(slot: any) {
+  const win = resolveLiveRoomSlotTimeWindow(slot);
+  if (win.startMs > 0 && win.endMs > win.startMs) return 3;
+  if (win.startMs > 0) return 2;
+  if (
+    Number(slot?.startMs || 0) > 0 ||
+    Number(slot?.endMs || 0) > 0 ||
+    String(slot?.startsAt || "").trim() ||
+    String(slot?.endsAt || "").trim() ||
+    String(slot?.startTime || "").trim()
+  ) {
+    return 1;
+  }
+  return 0;
+}
+
+/** Prefer the richest non-zero slot window across candidate rows. */
+export function pickRichestSlotTimeFromSources(...sources: any[]) {
+  let bestStart = 0;
+  let bestEnd = 0;
+  let bestScore = 0;
+
+  for (const raw of sources) {
+    if (!raw) continue;
+    const win = resolveLiveRoomSlotTimeWindow(raw);
+    const score = slotTimeRichnessScore(raw);
+    if (
+      score > bestScore ||
+      (score === bestScore && win.endMs > bestEnd && win.startMs > 0)
+    ) {
+      bestStart = win.startMs;
+      bestEnd = win.endMs;
+      bestScore = score;
+    }
+  }
+
+  return { startMs: bestStart, endMs: bestEnd };
+}
+
+export type LiveMainStageSlotRepairInput = {
+  slot: any | null;
+  routeScheduleSlots?: any[];
+  runtimeScheduleSlots?: any[];
+  backendScheduleSlots?: any[];
+  mergedScheduleSlots?: any[];
+  feedScheduleSlots?: any[];
+  ringClaimHints?: any[];
+  routeParams?: {
+    scheduleStartMs?: number;
+    scheduleEndMs?: number;
+    currentSlotNumber?: number;
+  };
+  liveScheduleFeedId?: string;
+  context?: string;
+};
+
+/** Repair lost startMs/endMs on the active live stage slot from richer schedule sources. */
+export function repairLiveMainStageSlotTimes(input: LiveMainStageSlotRepairInput) {
+  const slot = input.slot;
+  if (!slot) return null;
+
+  const currentWin = resolveLiveRoomSlotTimeWindow(slot);
+  const hasValidWindow =
+    currentWin.startMs > 0 && currentWin.endMs > currentWin.startMs;
+
+  if (hasValidWindow) {
+    return {
+      ...slot,
+      startMs: currentWin.startMs,
+      endMs: currentWin.endMs,
+    };
+  }
+
+  console.log("KRISTO_LIVE_SLOT_TIME_REPAIR_START", {
+    context: input.context || "live-room",
+    slot: liveStageSlotNumber(slot),
+    slotId: liveStageSlotId(slot),
+    startMs: currentWin.startMs,
+    endMs: currentWin.endMs,
+  });
+
+  const candidates: any[] = [slot];
+  const pools = [
+    ...(input.routeScheduleSlots || []),
+    ...(input.runtimeScheduleSlots || []),
+    ...(input.mergedScheduleSlots || []),
+    ...(input.backendScheduleSlots || []),
+    ...(input.feedScheduleSlots || []),
+  ];
+
+  for (const row of pools) {
+    if (slotMatchesLiveStageTarget(row, slot)) candidates.push(row);
+  }
+
+  const feedBase = baseFeedId(input.liveScheduleFeedId || "");
+  for (const hint of input.ringClaimHints || []) {
+    const hintBase = baseFeedId(String(hint?.baseFeedId || hint?.feedId || ""));
+    if (feedBase && hintBase && hintBase !== feedBase) continue;
+
+    const hintSlot = ringHintToScheduleSlot(hint);
+    if (
+      slotMatchesLiveStageTarget(hintSlot, slot) ||
+      Number(hint?.slotNumber || 0) === liveStageSlotNumber(slot)
+    ) {
+      candidates.push(hintSlot);
+    }
+  }
+
+  const routeStart = Number(input.routeParams?.scheduleStartMs || 0);
+  const routeEnd = Number(input.routeParams?.scheduleEndMs || 0);
+  if (routeStart > 0 && routeEnd > routeStart) {
+    candidates.push({ startMs: routeStart, endMs: routeEnd, source: "route-params" });
+  }
+
+  const richest = pickRichestSlotTimeFromSources(...candidates);
+  if (richest.startMs > 0 && richest.endMs > richest.startMs) {
+    console.log("KRISTO_LIVE_SLOT_TIME_REPAIR_DONE", {
+      context: input.context || "live-room",
+      slot: liveStageSlotNumber(slot),
+      slotId: liveStageSlotId(slot),
+      startMs: richest.startMs,
+      endMs: richest.endMs,
+      candidateCount: candidates.length,
+    });
+    return {
+      ...slot,
+      startMs: richest.startMs,
+      endMs: richest.endMs,
+    };
+  }
+
+  console.log("KRISTO_LIVE_SLOT_TIME_REPAIR_MISSING", {
+    context: input.context || "live-room",
+    slot: liveStageSlotNumber(slot),
+    slotId: liveStageSlotId(slot),
+    candidateCount: candidates.length,
+    routeStartMs: routeStart || null,
+    routeEndMs: routeEnd || null,
+  });
+
+  return {
+    ...slot,
+    startMs: currentWin.startMs,
+    endMs: currentWin.endMs,
+  };
+}
+
+function mergeLiveRoomScheduleSlotRow(prev: any, next: any) {
+  const picked = pickFresherScheduleSlot(prev, next);
+  const other = picked === prev ? next : prev;
+  const pickedWin = resolveLiveRoomSlotTimeWindow(picked);
+  const otherWin = resolveLiveRoomSlotTimeWindow(other);
+
+  const startMs =
+    pickedWin.startMs > 0
+      ? pickedWin.startMs
+      : otherWin.startMs > 0
+        ? otherWin.startMs
+        : Number(picked.startMs || other.startMs || 0);
+
+  let endMs =
+    pickedWin.endMs > startMs
+      ? pickedWin.endMs
+      : otherWin.endMs > startMs
+        ? otherWin.endMs
+        : Number(picked.endMs || other.endMs || 0);
+
+  return {
+    ...other,
+    ...picked,
+    startMs,
+    endMs,
+    startsAt: String(picked.startsAt || other.startsAt || "").trim(),
+    endsAt: String(picked.endsAt || other.endsAt || "").trim(),
+    startTime: String(picked.startTime || other.startTime || "").trim(),
+    endTime: String(picked.endTime || other.endTime || "").trim(),
+    meetingDate: String(picked.meetingDate || other.meetingDate || "").trim(),
+    meetingEndDate: String(picked.meetingEndDate || other.meetingEndDate || "").trim(),
+    durationMin: Math.max(Number(picked.durationMin || 0), Number(other.durationMin || 0), 1),
+  };
+}
+
 /** Merge schedule slot arrays for live room — prefers claimed / fresher rows. */
 export function mergeLiveRoomScheduleSlots(...sources: any[][]) {
   const byKey = new Map<string, any>();
@@ -608,7 +839,7 @@ export function mergeLiveRoomScheduleSlots(...sources: any[][]) {
     normalized.forEach((slot, index) => {
       const key = liveRoomSlotKey(slot, walkIndex + index);
       const prev = byKey.get(key);
-      byKey.set(key, prev ? pickFresherScheduleSlot(prev, slot) : slot);
+      byKey.set(key, prev ? mergeLiveRoomScheduleSlotRow(prev, slot) : slot);
     });
     walkIndex += normalized.length;
   }
