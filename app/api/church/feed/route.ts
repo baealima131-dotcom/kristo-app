@@ -2412,6 +2412,15 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const avatarUri =
       cleanText(await resolveClaimerAvatarUri(viewerUserId, claim), 2000) || "";
 
+    console.log("KRISTO_CLAIM_FINAL_AVATAR_URI", {
+      postId,
+      slotId,
+      userId: viewerUserId,
+      hasAvatar: Boolean(avatarUri),
+      avatarUri: avatarUri.slice(0, 160),
+      isDataUrl: avatarUri.toLowerCase().startsWith("data:image"),
+    });
+
     if (avatarUri) {
       console.log("KRISTO_CLAIMED_SLOT_AVATAR_PERSIST", {
         postId,

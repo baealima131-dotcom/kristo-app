@@ -666,7 +666,13 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       return patchMediaSlotClaimAvatarFields(mergedBase, persistedAvatar);
     }
 
-    const avatarUri = String(optimisticClaim.avatarUri || persistedAvatar || "").trim();
+    const avatarUri =
+      sanitizePersistedClaimAvatarUri(optimisticClaim.claimedByAvatarUri, "optimistic-claim") ||
+      sanitizePersistedClaimAvatarUri(optimisticClaim.claimedByAvatar, "optimistic-claim") ||
+      sanitizePersistedClaimAvatarUri(optimisticClaim.claimedByPhotoUrl, "optimistic-claim") ||
+      sanitizePersistedClaimAvatarUri(optimisticClaim.avatarUri, "optimistic-claim") ||
+      sanitizePersistedClaimAvatarUri(optimisticClaim.avatarUrl, "optimistic-claim") ||
+      persistedAvatar;
     return patchMediaSlotClaimAvatarFields(
       {
         ...mergedBase,
@@ -894,11 +900,13 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     setIsClaimInFlight(true);
     claimPress.value = withSequence(withSpring(0.94), withSpring(1));
 
-    const uploadedClaimAvatar = await ensureProfileAvatarUploadedBeforeClaim({
+    const beforeClaimAvatar = await ensureProfileAvatarUploadedBeforeClaim({
       userId: currentUserId,
       session,
       profileAvatarUri,
+      memberAvatarUri: memberAvatarByUserId[currentUserId],
     });
+    const uploadedClaimAvatar = beforeClaimAvatar.uploadedUrl;
 
     const seedId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
     const claimTarget = resolveClaimFeedTarget(seedId);
@@ -915,14 +923,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       });
     }
 
-    const claimAvatarUri =
-      uploadedClaimAvatar ||
-      sanitizePersistedClaimAvatarUri(memberAvatarByUserId[currentUserId], "claim-member-cache") ||
-      sanitizePersistedClaimAvatarUri(profileAvatarUri, "claim-profile-prop") ||
-      sanitizePersistedClaimAvatarUri(session?.avatarUrl, "claim-session-url") ||
-      sanitizePersistedClaimAvatarUri(session?.avatarUri, "claim-session-uri") ||
-      sanitizePersistedClaimAvatarUri(session?.profileImage, "claim-session-profileImage") ||
-      "";
+    const claimAvatarUri = uploadedClaimAvatar
+      ? uploadedClaimAvatar
+      : sanitizePersistedClaimAvatarUri(memberAvatarByUserId[currentUserId], "claim-member-cache") || "";
     const claim = {
       slotId,
       userId: currentUserId,
@@ -931,7 +934,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       ).trim(),
       role: isPastorClaim ? "Pastor" : String(session?.role || "Member"),
       avatarUri: claimAvatarUri,
+      avatarUrl: claimAvatarUri,
       claimedByAvatarUri: claimAvatarUri,
+      claimedByAvatar: claimAvatarUri,
       claimedByPhotoUrl: claimAvatarUri,
       startMs: Number(slot.startMs || 0),
       endMs: Number(slot.endMs || 0),
@@ -1035,12 +1040,16 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           sanitizePersistedClaimAvatarUri(backendSlot?.claimedByAvatar, "claim-api-slot") ||
           sanitizePersistedClaimAvatarUri(backendSlot?.claimedByPhotoUrl, "claim-api-slot") ||
           sanitizePersistedClaimAvatarUri(backendSlot?.claimedBy?.avatarUri, "claim-api-slot") ||
+          uploadedClaimAvatar ||
+          claimAvatarUri ||
           "";
         if (backendAvatar) {
           feedClaimSchedule(seedId, {
             ...claim,
             avatarUri: backendAvatar,
+            avatarUrl: backendAvatar,
             claimedByAvatarUri: backendAvatar,
+            claimedByAvatar: backendAvatar,
             claimedByPhotoUrl: backendAvatar,
           });
         }

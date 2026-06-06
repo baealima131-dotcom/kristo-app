@@ -17,9 +17,18 @@ import {
   normalizePrivacy,
   type Gender,
 } from "@/app/api/auth/_lib/profile";
-import { saveProfileAvatarForProfilePost } from "@/app/api/_lib/profileAvatarUpload";
+import {
+  isPersistedProfileAvatarUrl,
+  saveProfileAvatarForProfilePost,
+  uploadProfileAvatarFromDataUrl,
+} from "@/app/api/_lib/profileAvatarUpload";
+import { getVideoStorageConfig } from "@/app/api/_lib/media/objectStorage";
 
 export const runtime = "nodejs";
+
+function isServerlessRuntime() {
+  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+}
 
 type Body = {
   fullName?: string;
@@ -219,8 +228,21 @@ export async function POST(req: Request) {
   };
 
   const uploadedAvatarUrl = body.avatarData
-    ? await saveProfileAvatarForProfilePost(u.id, body.avatarData)
+    ? await uploadProfileAvatarFromDataUrl(u.id, body.avatarData)
     : "";
+
+  let storageMissing = false;
+  let displayAvatarUrl = uploadedAvatarUrl;
+  if (!displayAvatarUrl && body.avatarData) {
+    if (isServerlessRuntime() && !getVideoStorageConfig()) {
+      storageMissing = true;
+      console.log("KRISTO_PROFILE_AVATAR_UPLOAD_STORAGE_MISSING", {
+        userId: u.id,
+        stage: "profile-post",
+      });
+    }
+    displayAvatarUrl = await saveProfileAvatarForProfilePost(u.id, body.avatarData);
+  }
 
   const next = {
     ...current,
@@ -235,7 +257,11 @@ export async function POST(req: Request) {
       (current as any).userCode ||
       (isKristoUserCode(u.id) ? String(u.id).toUpperCase() : undefined),
 
-    avatarUrl: uploadedAvatarUrl || (typeof body.avatarUrl === "string" ? body.avatarUrl : (current as any).avatarUrl),
+    avatarUrl:
+      displayAvatarUrl ||
+      (typeof body.avatarUrl === "string" && isPersistedProfileAvatarUrl(body.avatarUrl)
+        ? body.avatarUrl
+        : (current as any).avatarUrl),
     bio: typeof body.bio === "string" ? body.bio : (current as any).bio,
 
     dobVisibility: body.dobVisibility || current.dobVisibility,
@@ -266,18 +292,34 @@ export async function POST(req: Request) {
       userId: u.id,
       fullName: next.fullName,
       userCode: (next as any).userCode,
+      uploadedAvatarUrl: uploadedAvatarUrl ? uploadedAvatarUrl.slice(0, 160) : "",
+      hasUploadedAvatarUrl: Boolean(uploadedAvatarUrl),
+      storageMissing,
       avatarMode: uploadedAvatarUrl
-        ? uploadedAvatarUrl.startsWith("data:image/")
+        ? uploadedAvatarUrl.startsWith("http")
+          ? "object-storage"
+          : "local-file"
+        : displayAvatarUrl?.startsWith("data:image/")
           ? "postgres-data-url"
-          : uploadedAvatarUrl.startsWith("http")
-            ? "object-storage"
-            : "local-file"
-        : undefined,
+          : undefined,
     });
+
+    if (uploadedAvatarUrl) {
+      console.log("KRISTO_PROFILE_AVATAR_URL_RESOLVED_FOR_CLAIM", {
+        userId: u.id,
+        source: "profile-post",
+        avatarUrl: uploadedAvatarUrl.slice(0, 160),
+      });
+    }
 
     return NextResponse.json({
       ok: true,
-      profile: next,
+      profile: {
+        ...next,
+        avatarUri: next.avatarUrl,
+      },
+      uploadedAvatarUrl: uploadedAvatarUrl || "",
+      storageMissing,
       activeMembership,
       churchId: activeMembership?.churchId || "",
       churchName: churchProfile?.name || "",
