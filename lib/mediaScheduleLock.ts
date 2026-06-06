@@ -59,8 +59,10 @@ function parseSlotEndMs(slot: AnyFeedItem): number {
 
 function isSlotStatusClosed(slot: AnyFeedItem): boolean {
   const status = String(slot?.status || "").toLowerCase();
+  const scheduleStatus = String(slot?.scheduleStatus || "").toLowerCase();
   return (
     slot?.deleted === true ||
+    slot?.deletedAt ||
     status === "deleted" ||
     status === "cancelled" ||
     status === "canceled" ||
@@ -68,7 +70,12 @@ function isSlotStatusClosed(slot: AnyFeedItem): boolean {
     status === "complete" ||
     status === "removed" ||
     status === "ended" ||
-    status === "closed"
+    status === "closed" ||
+    status === "cleared" ||
+    scheduleStatus === "deleted" ||
+    scheduleStatus === "ended" ||
+    scheduleStatus === "closed" ||
+    scheduleStatus === "cleared"
   );
 }
 
@@ -100,13 +107,18 @@ export function isMediaScheduleFeedItemClosed(item: AnyFeedItem): boolean {
   if (item?.deletedAt) return true;
 
   const status = String(item?.status || "").toLowerCase();
-  const deleted = item?.deleted === true || status === "deleted";
+  const scheduleStatus = String(item?.scheduleStatus || "").toLowerCase();
+  const deleted = item?.deleted === true || status === "deleted" || scheduleStatus === "deleted";
   const cancelled = status === "cancelled" || status === "canceled";
   const completed =
     status === "completed" ||
     status === "closed" ||
     status === "ended" ||
-    status === "complete";
+    status === "complete" ||
+    status === "cleared" ||
+    scheduleStatus === "ended" ||
+    scheduleStatus === "closed" ||
+    scheduleStatus === "cleared";
 
   return deleted || cancelled || completed;
 }
