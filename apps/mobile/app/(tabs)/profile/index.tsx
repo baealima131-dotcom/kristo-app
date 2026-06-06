@@ -18,19 +18,14 @@ import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExitFlags";
 import { loadProfileDraft, saveProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
 import { onUserProfileUpdated, onClaimUpdated } from "@/src/lib/kristoProfileEvents";
+import { onSlotClaimChanged } from "@/src/lib/slotClaimEvents";
 import {
   inviteEventTargetsCurrentUser,
   onChurchInviteSent,
   onChurchInviteAccepted,
   onChurchMembershipChanged,
 } from "@/src/lib/kristoChurchInviteEvents";
-import { getUserClaimedSlotEntries, getRingClaimHints } from "@/src/lib/homeFeedStore";
-import {
-  getSlotRingWindow,
-  isNearLiveOrActiveSlot,
-  slotClaimedByUser,
-} from "@/src/lib/liveScheduleRing";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { buildProfileClaimedSchedules } from "@/src/lib/liveScheduleRing";
 import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
 import {
   isSaveCooldown,
@@ -513,10 +508,14 @@ export default function MeScreen() {
     const claimEventUnsub = onClaimUpdated(() => {
       setClaimedFeedTick((v) => v + 1);
     });
+    const slotClaimUnsub = onSlotClaimChanged(() => {
+      setClaimedFeedTick((v) => v + 1);
+    });
 
     return () => {
       claimedFeedUnsub();
       claimEventUnsub();
+      slotClaimUnsub();
     };
   }, []);
   useEffect(() => {
@@ -1319,87 +1318,12 @@ export default function MeScreen() {
   }
 
   const claimedSchedules = useMemo(() => {
-    const now = Date.now();
-
-    const fromFeed = [...feedList(), ...profileFeedItems]
-      .filter((item: any) => !isMediaActivityPost(item))
-      .flatMap((item: any) => {
-        const slots = Array.isArray(item?.scheduleSlots)
-          ? item.scheduleSlots
-          : [];
-
-        return slots.map((slot: any, index: number) => ({
-          ...slot,
-          feedTitle:
-            item?.title ||
-            item?.mediaName ||
-            "Live Schedule",
-          __feedItem: item,
-          __slotIndex: index,
-        }));
-      })
-      .filter((slot: any) => slotClaimedByUser(slot, currentUserId));
-
-    const fromStore = getUserClaimedSlotEntries(currentUserId).map((entry: any) => ({
-      id: entry.slotId,
-      claimedByUserId: entry.userId,
-      claimedByName: entry.name,
-      feedTitle: "Claimed slot",
-      __fromClaimStore: true,
-    }));
-
-    const fromHints = getRingClaimHints(currentUserId).map((hint) => ({
-      id: hint.slotId,
-      claimedByUserId: hint.userId,
-      claimedByName: hint.name || "You",
-      startMs: hint.startMs,
-      endMs: hint.endMs,
-      slot: hint.slotNumber,
-      feedTitle:
-        hint.item?.title ||
-        hint.item?.mediaName ||
-        "Live Schedule",
-      __fromRingHint: true,
-      __feedItem: hint.item,
-      __slotIndex: Math.max(0, Number(hint.slotNumber || 1) - 1),
-    }));
-
-    const merged = [...fromFeed, ...fromStore, ...fromHints];
-    const seenKeys = new Set<string>();
-
-    const result = merged
-      .filter((slot: any, index: number) => {
-        const { endMs } = getSlotRingWindow(slot, Number(slot.__slotIndex || index), now);
-        if (endMs > 0 && endMs <= now) return false;
-
-        const startMs = getSlotRingWindow(slot, Number(slot.__slotIndex || index), now).startMs;
-        if (!startMs) return true;
-        return startMs > now || isNearLiveOrActiveSlot(slot, Number(slot.__slotIndex || index), now);
-      })
-      .filter((slot: any) => {
-        const feedKey = baseFeedId(String(slot.__feedItem?.sourceScheduleId || slot.__feedItem?.id || ""));
-        const slotKey = String(slot?.id || slot?.slotId || "");
-        if (!slotKey) return true;
-        if (seenKeys.has(`${feedKey}|${slotKey}`)) return false;
-        seenKeys.add(`${feedKey}|${slotKey}`);
-        return true;
-      })
-      .sort((a: any, b: any) => {
-        const aStart = getSlotRingWindow(a, Number(a.__slotIndex || 0), now).startMs;
-        const bStart = getSlotRingWindow(b, Number(b.__slotIndex || 0), now).startMs;
-        return aStart - bStart;
-      });
-
-    console.log("KRISTO_PROFILE_CLAIMED_COUNT_RECOMPUTE", {
-      userId: currentUserId,
-      fromFeed: fromFeed.length,
-      fromStore: fromStore.length,
-      fromHints: fromHints.length,
-      total: result.length,
+    return buildProfileClaimedSchedules({
+      viewerUserId: currentUserId,
+      churchId,
+      feedRows: profileFeedItems,
     });
-
-    return result;
-  }, [currentUserId, claimedFeedTick, profileFeedItems]);
+  }, [currentUserId, churchId, claimedFeedTick, profileFeedItems]);
 
   const allActivitySourcePosts = useMemo(() => {
     void homeFeedTick;

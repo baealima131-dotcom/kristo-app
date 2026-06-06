@@ -1,6 +1,7 @@
 import { DeviceEventEmitter } from "react-native";
 import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
+import { isMediaSlotEndedOrStale } from "@/src/lib/mediaScheduleSlotTimes";
 import { baseFeedId, collectScheduleAliasIds, enrichScheduleSlot, resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
 
 export const NEAR_LIVE_WINDOW_MS = 30 * 60 * 1000;
@@ -467,6 +468,288 @@ export function recomputeScheduleRingsFromRows(options: {
   }
 
   return { personal, church, rows };
+}
+
+export type ProfileClaimedScheduleSlot = {
+  id?: string;
+  slotId?: string;
+  slot?: number;
+  slotNumber?: number;
+  claimedByUserId?: string;
+  claimedByName?: string;
+  startMs?: number;
+  endMs?: number;
+  startTime?: string;
+  endTime?: string;
+  meetingDate?: string;
+  feedTitle?: string;
+  __feedItem?: any;
+  __slotIndex?: number;
+  __source?: string;
+};
+
+function scheduleRowChurchId(item: any): string {
+  return String(item?.churchId || item?.sourceChurchId || item?.church?.id || "").trim();
+}
+
+function scheduleRowMatchesChurch(item: any, churchId: string): boolean {
+  const cid = String(churchId || "").trim();
+  if (!cid) return false;
+  const rowChurch = scheduleRowChurchId(item);
+  return !rowChurch || rowChurch === cid;
+}
+
+function mergeProfileFeedRows(...sources: any[][]): any[] {
+  const byKey = new Map<string, any>();
+  for (const rows of sources) {
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const key =
+        String(row?.id || row?.sourceScheduleId || row?.feedId || "").trim() ||
+        `${scheduleRowChurchId(row)}|${String(row?.title || row?.mediaName || "")}`;
+      if (!key) continue;
+      byKey.set(key, row);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+function isActiveProfileClaimedSlot(slot: any, index: number, nowMs: number): boolean {
+  if (isMediaSlotEndedOrStale(slot, nowMs)) return false;
+  const { endMs } = getSlotRingWindow(slot, index, nowMs);
+  return endMs > nowMs;
+}
+
+function profileClaimedSlotKey(slot: any, index = 0): string {
+  const feedKey = baseFeedId(
+    String(slot?.__feedItem?.sourceScheduleId || slot?.__feedItem?.id || "")
+  );
+  const slotKey = String(slot?.id || slot?.slotId || slot?.slot || slot?.slotNumber || index);
+  return `${feedKey}|${slotKey}`;
+}
+
+function resolveFeedItemForClaimEntry(
+  entry: any,
+  feedRows: any[],
+  churchId: string
+): any | null {
+  const postId = String(entry?.postId || "").trim();
+  if (!postId) return null;
+
+  const aliases = new Set(collectScheduleAliasIds(postId, feedRows));
+  return (
+    feedRows.find((row) => {
+      if (!scheduleRowMatchesChurch(row, churchId)) return false;
+      const rowId = String(row?.id || "").trim();
+      const sourceId = String(row?.sourceScheduleId || "").trim();
+      return (
+        aliases.has(rowId) ||
+        aliases.has(sourceId) ||
+        aliases.has(baseFeedId(rowId)) ||
+        aliases.has(baseFeedId(sourceId))
+      );
+    }) || null
+  );
+}
+
+/** Active/upcoming media schedule slots claimed by the viewer in their church. */
+export function buildProfileClaimedSchedules(options: {
+  viewerUserId: string;
+  churchId: string;
+  feedRows?: any[];
+  nowMs?: number;
+}): ProfileClaimedScheduleSlot[] {
+  const viewerUserId = String(options.viewerUserId || "").trim();
+  const churchId = String(options.churchId || "").trim();
+  const nowMs = options.nowMs ?? Date.now();
+  const feedRows = mergeProfileFeedRows(
+    Array.isArray(options.feedRows) ? options.feedRows : [],
+    feedList() as any[]
+  );
+
+  console.log("KRISTO_PROFILE_CLAIMED_COUNT_BUILD", {
+    viewerUserId,
+    churchId,
+    feedRowCount: feedRows.length,
+  });
+
+  if (!viewerUserId || !churchId) {
+    console.log("KRISTO_PROFILE_CLAIMED_COUNT_UPDATED", {
+      viewerUserId,
+      churchId,
+      count: 0,
+      reason: "missing-viewer-or-church",
+    });
+    return [];
+  }
+
+  const merged: ProfileClaimedScheduleSlot[] = [];
+
+  for (const item of feedRows) {
+    if (!isMediaScheduleRow(item)) continue;
+    if (!scheduleRowMatchesChurch(item, churchId)) continue;
+
+    const feedId = resolveCanonicalScheduleFeedId(
+      String(item?.sourceScheduleId || item?.id || ""),
+      feedRows
+    );
+    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    const feedTitle = String(item?.title || item?.mediaName || "Live Schedule").trim();
+
+    slots.forEach((slot: any, index: number) => {
+      if (!slotClaimedByUser(slot, viewerUserId, feedId || baseFeedId(item?.id))) return;
+      if (!isActiveProfileClaimedSlot(slot, index, nowMs)) return;
+
+      const window = getSlotRingWindow(slot, index, nowMs);
+      console.log("KRISTO_PROFILE_CLAIMED_SLOT_COUNTED", {
+        source: "feed",
+        feedId: feedId || baseFeedId(item?.id),
+        slotId: String(slot?.id || slot?.slotId || ""),
+        slotNumber: Number(slot?.slot || slot?.slotNumber || index + 1),
+        startMs: window.startMs,
+        endMs: window.endMs,
+      });
+
+      merged.push({
+        ...slot,
+        startMs: window.startMs,
+        endMs: window.endMs,
+        feedTitle,
+        __feedItem: item,
+        __slotIndex: index,
+        __source: "feed",
+      });
+    });
+  }
+
+  for (const entry of getUserClaimedSlotEntries(viewerUserId)) {
+    const feedItem = resolveFeedItemForClaimEntry(entry, feedRows, churchId);
+    const feedId = feedItem
+      ? resolveCanonicalScheduleFeedId(
+          String(feedItem?.sourceScheduleId || feedItem?.id || entry?.postId || ""),
+          feedRows
+        )
+      : baseFeedId(String(entry?.postId || ""));
+
+    const slots = Array.isArray(feedItem?.scheduleSlots) ? feedItem.scheduleSlots : [];
+    const slotId = String(entry?.slotId || "").trim();
+    const matchedSlot = slots.find(
+      (slot: any) => String(slot?.id || slot?.slotId || "").trim() === slotId
+    );
+    const slotIndex = matchedSlot
+      ? slots.indexOf(matchedSlot)
+      : Math.max(0, Number(entry?.slotNumber || 1) - 1);
+    const slot =
+      matchedSlot ||
+      ({
+        id: slotId,
+        slotId,
+        claimedByUserId: entry.userId,
+        claimedByName: entry.name,
+        slot: Number(entry?.slotNumber || slotIndex + 1),
+      } as any);
+
+    if (!slotClaimedByUser(slot, viewerUserId, feedId)) continue;
+    if (!isActiveProfileClaimedSlot(slot, slotIndex, nowMs)) continue;
+
+    const window = getSlotRingWindow(slot, slotIndex, nowMs);
+    console.log("KRISTO_PROFILE_CLAIMED_SLOT_COUNTED", {
+      source: "claim-store",
+      feedId,
+      slotId,
+      slotNumber: Number(slot?.slot || slot?.slotNumber || slotIndex + 1),
+      startMs: window.startMs,
+      endMs: window.endMs,
+    });
+
+    merged.push({
+      ...slot,
+      startMs: window.startMs,
+      endMs: window.endMs,
+      feedTitle: String(feedItem?.title || feedItem?.mediaName || "Claimed slot").trim(),
+      __feedItem: feedItem || undefined,
+      __slotIndex: slotIndex,
+      __source: "claim-store",
+    });
+  }
+
+  for (const hint of getRingClaimHints(viewerUserId)) {
+    const hintChurchId = String(hint?.churchId || hint?.item?.churchId || "").trim();
+    if (hintChurchId && hintChurchId !== churchId) continue;
+
+    const endMs = Number(hint?.endMs || 0);
+    if (endMs > 0 && endMs <= nowMs) continue;
+
+    const slotIndex = Math.max(0, Number(hint.slotNumber || 1) - 1);
+    const slot =
+      hint.slot ||
+      ({
+        id: hint.slotId,
+        slotId: hint.slotId,
+        slot: hint.slotNumber,
+        slotNumber: hint.slotNumber,
+        claimedByUserId: hint.userId,
+        claimedByName: hint.name,
+        startMs: hint.startMs,
+        endMs: hint.endMs,
+      } as any);
+
+    if (isMediaSlotEndedOrStale(slot, nowMs)) continue;
+    if (!slotClaimedByUser(slot, viewerUserId, hint.baseFeedId)) continue;
+
+    const window = getSlotRingWindow(slot, slotIndex, nowMs);
+    if (!(window.endMs > nowMs)) continue;
+
+    console.log("KRISTO_PROFILE_CLAIMED_SLOT_COUNTED", {
+      source: "ring-hint",
+      feedId: hint.baseFeedId,
+      slotId: String(hint.slotId || ""),
+      slotNumber: Number(hint.slotNumber || slotIndex + 1),
+      startMs: window.startMs,
+      endMs: window.endMs,
+    });
+
+    merged.push({
+      ...slot,
+      startMs: window.startMs,
+      endMs: window.endMs,
+      feedTitle: String(
+        hint.item?.title || hint.item?.mediaName || "Live Schedule"
+      ).trim(),
+      __feedItem: hint.item,
+      __slotIndex: slotIndex,
+      __source: "ring-hint",
+    });
+  }
+
+  const seen = new Set<string>();
+  const result = merged
+    .filter((slot, index) => {
+      const key = profileClaimedSlotKey(slot, Number(slot.__slotIndex ?? index));
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => {
+      const aStart = Number(
+        a.startMs || getSlotRingWindow(a, Number(a.__slotIndex || 0), nowMs).startMs
+      );
+      const bStart = Number(
+        b.startMs || getSlotRingWindow(b, Number(b.__slotIndex || 0), nowMs).startMs
+      );
+      return aStart - bStart;
+    });
+
+  console.log("KRISTO_PROFILE_CLAIMED_COUNT_UPDATED", {
+    viewerUserId,
+    churchId,
+    count: result.length,
+    fromFeed: result.filter((row) => row.__source === "feed").length,
+    fromClaimStore: result.filter((row) => row.__source === "claim-store").length,
+    fromRingHint: result.filter((row) => row.__source === "ring-hint").length,
+  });
+
+  return result;
 }
 
 export const KRISTO_LIVE_RING_REFRESH = "kristo:live-ring-refresh";
