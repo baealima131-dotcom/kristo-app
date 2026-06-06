@@ -4954,13 +4954,16 @@ export default function LiveRoomScreen() {
   }, [isMediaInstantLive, mediaHeaderShimmerX]);
 
   const openHostDrawer = () => {
-    if (!canSeeLiveHostControls) {
-      console.log("KRISTO_LIVE_HOST_PANEL_BLOCKED_VIEWER", {
-        userId: currentUserId,
-        role: String((session as any)?.role || params.role || "viewer"),
-      });
-      return;
-    }
+    console.log("KRISTO_LIVE_HOST_PANEL_ACCESS", {
+      userId: currentUserId,
+      role: String((session as any)?.role || params.role || "viewer"),
+      isPastor: isPastorForLiveRoom,
+      isApprovedMediaHost: isApprovedMediaHostForLiveRoom,
+      isCurrentActiveSlotOwner: isCurrentActiveSlotOwnerForLiveRoom,
+      canSeeLiveHostControls,
+      canManageLiveHostActions,
+      source: "openHostDrawer",
+    });
     setHostDrawerOpen(true);
     Animated.spring(hostDrawerX, {
       toValue: 0,
@@ -5009,20 +5012,37 @@ export default function LiveRoomScreen() {
     }).start();
   }, [requestPolicyOpen, requestPolicyAnim]);
 
+  function logLiveHostActionBlocked(action: string) {
+    console.log("KRISTO_LIVE_HOST_PANEL_BLOCKED_VIEWER", {
+      userId: currentUserId,
+      role: String((session as any)?.role || params.role || "viewer"),
+      action,
+    });
+  }
+
   function pressNextLiveSlot() {
-    if (!canManageLiveHostActions) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("next-slot");
+      return;
+    }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     advanceToNextClaimedSlot("host-next-button");
   }
 
   function pressHostTool(label: string) {
-    if (!canManageLiveHostActions) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked(`host-tool:${label}`);
+      return;
+    }
     setSelectedHostTool(label);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   }
 
   function muteAllHostAudience() {
-    if (!canManageLiveHostActions) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("mute-all");
+      return;
+    }
     const next: Record<string, boolean> = { ...(miniVideoMutedById || {}) };
     [...scheduledStagePeople, ...guests].forEach((entry: any) => {
       const id = String(entry?.id || "");
@@ -5063,6 +5083,76 @@ export default function LiveRoomScreen() {
             {initials(name)}
           </Text>
         )}
+      </View>
+    );
+  }
+
+  function renderLiveHostManageActions() {
+    return (
+      <View style={s.hcActionsWrap as any}>
+        <Text style={s.hcActionsGroupTitle as any}>LIVE CONTROL</Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable onPress={() => endLiveNow()} style={({ pressed }) => [s.hcActionBtnDanger, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="stop-circle-outline" size={20} color="#FCA5A5" />
+            <Text style={s.hcActionBtnDangerText as any}>End Live</Text>
+          </Pressable>
+          <Pressable onPress={togglePaused} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="pause-circle-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Pause</Text>
+          </Pressable>
+          <Pressable onPress={openLayoutStudio} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="grid-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Switch Layout</Text>
+          </Pressable>
+        </View>
+
+        <Text style={s.hcActionsGroupTitle as any}>AUDIENCE CONTROL</Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable onPress={handleHostRequestsPress} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="hand-left-outline" size={20} color="#38BDF8" />
+            <Text style={s.hcActionBtnText as any}>View Requests</Text>
+          </Pressable>
+          <Pressable onPress={muteAllHostAudience} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="mic-off-outline" size={20} color="#38BDF8" />
+            <Text style={s.hcActionBtnText as any}>Mute All</Text>
+          </Pressable>
+          <Pressable onPress={() => applyLiveRequestPolicy("locked")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="lock-closed-outline" size={20} color="#EF4444" />
+            <Text style={s.hcActionBtnText as any}>Lock Room</Text>
+          </Pressable>
+        </View>
+
+        <Text style={s.hcActionsGroupTitle as any}>CONTENT CONTROL</Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable onPress={() => pressHostTool("Pin topic")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="bookmark-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Pin Topic</Text>
+          </Pressable>
+          <Pressable onPress={() => pressHostTool("Pin name")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="person-circle-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Pin Name</Text>
+          </Pressable>
+          <Pressable onPress={() => pressHostTool("Comment")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="chatbubble-ellipses-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Comment</Text>
+          </Pressable>
+        </View>
+
+        <Text style={s.hcActionsGroupTitle as any}>MEDIA CONTROL</Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable onPress={() => pressHostTool("Video")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="videocam-outline" size={20} color="#A78BFA" />
+            <Text style={s.hcActionBtnText as any}>Camera</Text>
+          </Pressable>
+          <Pressable onPress={() => pressHostTool("Photo")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="image-outline" size={20} color="#A78BFA" />
+            <Text style={s.hcActionBtnText as any}>Photo</Text>
+          </Pressable>
+          <Pressable onPress={pressNextLiveSlot} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="sparkles-outline" size={20} color="#A78BFA" />
+            <Text style={s.hcActionBtnText as any}>Next Slot</Text>
+          </Pressable>
+        </View>
       </View>
     );
   }
@@ -5121,10 +5211,7 @@ export default function LiveRoomScreen() {
   function renderLiveHostViewerSafePanel() {
     return (
       <View style={s.hcActionsWrap as any}>
-        <Text style={s.hcActionsGroupTitle as any}>WATCHING LIVE</Text>
-        <Text style={[s.hcEmptyText as any, { marginBottom: 12 }]}>
-          You are watching live. Host controls are not available for your account.
-        </Text>
+        <Text style={s.hcActionsGroupTitle as any}>YOUR ACTIONS</Text>
         <Pressable
           onPress={() => quitLiveRoom()}
           style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
@@ -5372,14 +5459,20 @@ export default function LiveRoomScreen() {
   }
 
   function openLayoutStudio() {
-    if (!canManageLiveHostActions) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("layout-studio");
+      return;
+    }
     pressHostTool("Layout");
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     return;
   }
 
   function chooseStudioLayout(next: LayoutMode) {
-    if (!canManageLiveHostActions) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("choose-layout");
+      return;
+    }
     if (next === "focus") {
       setLayoutDraftMode("focus");
       setLayoutMode("focus");
@@ -5531,7 +5624,7 @@ export default function LiveRoomScreen() {
       },
       onPanResponderRelease: (_, g) => {
         if (!hostDrawerOpen) {
-          if (g.dx < -70 && canSeeLiveHostControlsRef.current) {
+          if (g.dx < -70) {
             openHostDrawer();
           } else {
             Animated.timing(hostDrawerX, {
@@ -5983,12 +6076,6 @@ export default function LiveRoomScreen() {
   }, [canManageLive, canSeeLiveHostControls, isMyScheduledLiveTurn]);
 
   useEffect(() => {
-    if (!canSeeLiveHostControls && hostDrawerOpen) {
-      closeHostDrawer();
-    }
-  }, [canSeeLiveHostControls, hostDrawerOpen]);
-
-  useEffect(() => {
     console.log("KRISTO_LIVE_HOST_PANEL_ACCESS", {
       userId: currentUserId,
       role: String((session as any)?.role || params.role || "viewer"),
@@ -5996,14 +6083,9 @@ export default function LiveRoomScreen() {
       isApprovedMediaHost: isApprovedMediaHostForLiveRoom,
       isCurrentActiveSlotOwner: isCurrentActiveSlotOwnerForLiveRoom,
       canSeeLiveHostControls,
+      canManageLiveHostActions,
       source: "live-room",
     });
-    if (!canSeeLiveHostControls) {
-      console.log("KRISTO_LIVE_HOST_PANEL_BLOCKED_VIEWER", {
-        userId: currentUserId,
-        role: String((session as any)?.role || params.role || "viewer"),
-      });
-    }
   }, [
     currentUserId,
     (session as any)?.role,
@@ -6012,6 +6094,7 @@ export default function LiveRoomScreen() {
     isApprovedMediaHostForLiveRoom,
     isCurrentActiveSlotOwnerForLiveRoom,
     canSeeLiveHostControls,
+    canManageLiveHostActions,
   ]);
 
   useEffect(() => {
@@ -6850,7 +6933,10 @@ export default function LiveRoomScreen() {
   }, [canManageLive, livePresenceKey, liveEnabled]);
 
   function togglePaused() {
-    if (!canManageLiveHostActions) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("pause");
+      return;
+    }
     if (!liveEnabled) {
       Alert.alert("Ready room", "This ready room opens before official live starts.");
       return;
@@ -6926,7 +7012,10 @@ export default function LiveRoomScreen() {
   }
 
   async function endLiveNow() {
-    if (!canManageLiveHostActions) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("end-live");
+      return;
+    }
     await pushLiveAction("end-live");
     endLive();
     publishLiveEnded(liveBridgeId);
@@ -6990,7 +7079,10 @@ export default function LiveRoomScreen() {
   }
 
   function handleHostRequestsPress() {
-    if (!canManageLiveHostActions) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("view-requests");
+      return;
+    }
     closeMoreMenu();
 
     const pending = Object.entries(joinRequestsBySlot || {}).find(([, req]: any) => !!req && !req.approved);
@@ -7110,7 +7202,10 @@ ${scheduleAudienceAccessText}`,
           : ({ backgroundColor: "#FF4B6E", shadowColor: "#FF4B6E" } as ViewStyle);
 
   function applyLiveRequestPolicy(nextPolicy: LiveRequestPolicy) {
-    if (!canManageLiveHostActions) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("lock-room");
+      return;
+    }
     if (!canManageLive) return;
     setRequestPolicy(nextPolicy);
     publishLivePolicy(liveBridgeId, nextPolicy);
@@ -7143,12 +7238,7 @@ ${scheduleAudienceAccessText}`,
   }
 
   const bottomSpacer = <View style={{ height: 96 }} />;
-  const rootPanHandlers =
-    canSeeLiveHostControls
-      ? hostDrawerPanResponder.panHandlers
-      : canSeeAudiencePanel
-        ? viewerFlowPanResponder.panHandlers
-        : {};
+  const rootPanHandlers = hostDrawerPanResponder.panHandlers;
 
   const realFeelViewerCount = Number(live.viewerCount || 0);
 
@@ -7298,30 +7388,25 @@ return (
                 </Pressable>
 
                 <Pressable
-                  style={[s.vipSoloControl as any, viewerFlowOpen ? s.vipSoloControlOn as any : null]}
+                  style={[s.vipSoloControl as any, hostDrawerOpen ? s.vipSoloControlOn as any : null]}
                   onPress={() => {
                     Haptics.selectionAsync().catch(() => {});
-                    if (canSeeLiveHostControls) {
-                      if (hostDrawerOpen) closeHostDrawer();
-                      else openHostDrawer();
-                      return;
-                    }
-                    if (viewerFlowOpen) closeViewerFlow();
-                    else openViewerFlow();
+                    if (hostDrawerOpen) closeHostDrawer();
+                    else openHostDrawer();
                   }}
                 >
                   <Ionicons
                     name="sparkles-outline"
                     size={23}
-                    color={viewerFlowOpen || hostDrawerOpen ? "#F4D06F" : "#FFFFFF"}
+                    color={hostDrawerOpen ? "#F4D06F" : "#FFFFFF"}
                   />
                   <Text
                     style={[
                       s.vipSoloControlText as any,
-                      (viewerFlowOpen || hostDrawerOpen) ? s.vipSoloControlTextOn as any : null
+                      hostDrawerOpen ? s.vipSoloControlTextOn as any : null
                     ]}
                   >
-                    {canSeeLiveHostControls ? "Controls" : "Studio"}
+                    {canManageLiveHostActions ? "Controls" : "Live Info"}
                   </Text>
                 </Pressable>
 
@@ -9051,7 +9136,7 @@ return (
                 </Pressable>
 
                 <Pressable
-                  onPress={openViewerFlow}
+                  onPress={openHostDrawer}
                   style={({ pressed }) => ([
                     s.viewerActionBtn,
                     pressed ? ({ opacity: 0.92, transform: [{ scale: 0.98 }] } as ViewStyle) : null,
@@ -9067,11 +9152,11 @@ return (
 
         {canSeeAudiencePanel ? (
           <>
-            {!viewerFlowOpen ? (
+            {!hostDrawerOpen ? (
               <Pressable
-                onPress={openViewerFlow}
+                onPress={openHostDrawer}
                 pointerEvents="box-only"
-                {...viewerFlowPanResponder.panHandlers}
+                {...hostDrawerPanResponder.panHandlers}
                 style={s.viewerFlowEdgeHandle as any}
               />
             ) : null}
@@ -9326,7 +9411,6 @@ return (
         />
       ) : null}
 
-      {(canSeeLiveHostControls || hostDrawerOpen) ? (
       <Animated.View
         pointerEvents={hostDrawerOpen ? "auto" : "none"}
         style={[
@@ -9350,13 +9434,9 @@ return (
               ? isMediaInstantLive
                 ? "MEDIA COMMAND CENTER"
                 : "HOST COMMAND CENTER"
-              : canSeeActiveSlotOwnerPanel
-                ? "SPEAKER CONTROLS"
-                : "LIVE ROOM"}
+              : "LIVE ROOM"}
           </Text>
 
-          {canManageLiveHostActions ? (
-          <>
           {!isMediaInstantLive && hostControlLiveSpeaker ? (
             <View style={s.hcLiveHero as any}>
               <View style={s.hcLiveHeroTop as any}>
@@ -9518,80 +9598,13 @@ return (
             </View>
           ) : null}
 
-          <View style={s.hcActionsWrap as any}>
-            <Text style={s.hcActionsGroupTitle as any}>LIVE CONTROL</Text>
-            <View style={s.hcActionsRow as any}>
-              <Pressable onPress={() => endLiveNow()} style={({ pressed }) => [s.hcActionBtnDanger, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="stop-circle-outline" size={20} color="#FCA5A5" />
-                <Text style={s.hcActionBtnDangerText as any}>End Live</Text>
-              </Pressable>
-              <Pressable onPress={togglePaused} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="pause-circle-outline" size={20} color="#D9B35F" />
-                <Text style={s.hcActionBtnText as any}>Pause</Text>
-              </Pressable>
-              <Pressable onPress={openLayoutStudio} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="grid-outline" size={20} color="#D9B35F" />
-                <Text style={s.hcActionBtnText as any}>Switch Layout</Text>
-              </Pressable>
-            </View>
-
-            <Text style={s.hcActionsGroupTitle as any}>AUDIENCE CONTROL</Text>
-            <View style={s.hcActionsRow as any}>
-              <Pressable onPress={handleHostRequestsPress} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="hand-left-outline" size={20} color="#38BDF8" />
-                <Text style={s.hcActionBtnText as any}>View Requests</Text>
-              </Pressable>
-              <Pressable onPress={muteAllHostAudience} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="mic-off-outline" size={20} color="#38BDF8" />
-                <Text style={s.hcActionBtnText as any}>Mute All</Text>
-              </Pressable>
-              <Pressable onPress={() => applyLiveRequestPolicy("locked")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="lock-closed-outline" size={20} color="#EF4444" />
-                <Text style={s.hcActionBtnText as any}>Lock Room</Text>
-              </Pressable>
-            </View>
-
-            <Text style={s.hcActionsGroupTitle as any}>CONTENT CONTROL</Text>
-            <View style={s.hcActionsRow as any}>
-              <Pressable onPress={() => pressHostTool("Pin topic")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="bookmark-outline" size={20} color="#D9B35F" />
-                <Text style={s.hcActionBtnText as any}>Pin Topic</Text>
-              </Pressable>
-              <Pressable onPress={() => pressHostTool("Pin name")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="person-circle-outline" size={20} color="#D9B35F" />
-                <Text style={s.hcActionBtnText as any}>Pin Name</Text>
-              </Pressable>
-              <Pressable onPress={() => pressHostTool("Comment")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="chatbubble-ellipses-outline" size={20} color="#D9B35F" />
-                <Text style={s.hcActionBtnText as any}>Comment</Text>
-              </Pressable>
-            </View>
-
-            <Text style={s.hcActionsGroupTitle as any}>MEDIA CONTROL</Text>
-            <View style={s.hcActionsRow as any}>
-              <Pressable onPress={() => pressHostTool("Video")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="videocam-outline" size={20} color="#A78BFA" />
-                <Text style={s.hcActionBtnText as any}>Camera</Text>
-              </Pressable>
-              <Pressable onPress={() => pressHostTool("Photo")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="image-outline" size={20} color="#A78BFA" />
-                <Text style={s.hcActionBtnText as any}>Photo</Text>
-              </Pressable>
-              <Pressable onPress={pressNextLiveSlot} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
-                <Ionicons name="sparkles-outline" size={20} color="#A78BFA" />
-                <Text style={s.hcActionBtnText as any}>Next Slot</Text>
-              </Pressable>
-            </View>
-          </View>
-          </>
-          ) : canSeeActiveSlotOwnerPanel ? (
-            renderLiveHostSlotOwnerControls()
-          ) : (
-            renderLiveHostViewerSafePanel()
-          )}
+          {canManageLiveHostActions ? renderLiveHostManageActions() : null}
+          {canSeeActiveSlotOwnerPanel ? renderLiveHostSlotOwnerControls() : null}
+          {!canManageLiveHostActions && !canSeeActiveSlotOwnerPanel
+            ? renderLiveHostViewerSafePanel()
+            : null}
         </ScrollView>
       </Animated.View>
-      ) : null}
 
       
 <Modal
