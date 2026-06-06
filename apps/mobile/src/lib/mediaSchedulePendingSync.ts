@@ -102,12 +102,24 @@ export function normalizeMediaScheduleBackendItem(
       ? fallback.scheduleSlots
       : [];
 
+  const normalizedSlots = scheduleSlots.map((slot: any) => ({
+    ...slot,
+    startMs: Number(slot?.startMs || 0) || undefined,
+    endMs: Number(slot?.endMs || 0) || undefined,
+    startsAt: String(slot?.startsAt || "").trim() || undefined,
+    endsAt: String(slot?.endsAt || "").trim() || undefined,
+    meetingDate: String(slot?.meetingDate || "").trim() || undefined,
+    meetingEndDate: String(slot?.meetingEndDate || "").trim() || undefined,
+    durationMin: Number(slot?.durationMin || slot?.durationMinutes || 0) || undefined,
+    durationMinutes: Number(slot?.durationMinutes || slot?.durationMin || 0) || undefined,
+  }));
+
   return {
     ...backendItem,
     churchId,
     source: "media-schedule",
     scheduleType: "media-live-slots",
-    scheduleSlots,
+    scheduleSlots: normalizedSlots,
     pendingBackendSync: false,
   };
 }

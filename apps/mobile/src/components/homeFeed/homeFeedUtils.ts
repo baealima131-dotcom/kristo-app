@@ -10,6 +10,7 @@ import { avatarCacheBust, normalizeAvatarUpdatedAt } from "@/src/lib/avatarFresh
 import {
   baseFeedId,
   parseSlotClockMs,
+  parseSlotEndMs,
   parseSlotStartMs,
   resolveScheduleSlotVisualState,
 } from "@/src/lib/scheduleSlotUtils";
@@ -126,12 +127,7 @@ export function resolveHomeFeedActiveScheduleSlot(item: any, nowMs = Date.now())
       const startMs = parseSlotStartMs(slot);
       if (!startMs || startMs <= 0) return false;
 
-      const endMsFromClock = parseSlotClockMs(
-        String(slot?.meetingDate || slot?.meetingDay || ""),
-        String(slot?.endTime || "")
-      );
-      const fallbackDuration = Math.max(1, Number(slot?.durationMin || 10)) * 60000;
-      const endMs = endMsFromClock > startMs ? endMsFromClock : startMs + fallbackDuration;
+      const endMs = parseSlotEndMs(slot, startMs);
       return endMs > nowMs;
     }) || null;
 

@@ -30,11 +30,31 @@ export type EnrichedScheduleSlot = {
   queue?: any[];
 };
 
-export function parseSlotClockMs(rawDate: string, rawTime: string) {
-  if (!rawDate || !rawTime) return 0;
+function parseIsoMs(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return 0;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
 
-  const base = new Date(rawDate);
-  if (!Number.isFinite(base.getTime())) return 0;
+function preferSlotCalendarDate(slot: any) {
+  const meetingDate = String(slot?.meetingDate || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(meetingDate)) return meetingDate;
+  const meetingDay = String(slot?.meetingDay || "").trim();
+  return meetingDate || meetingDay;
+}
+
+export function parseSlotClockMs(
+  rawDate: string,
+  rawTime: string,
+  opts?: { startMsHint?: number; preferEndDate?: string }
+) {
+  if (!rawTime) return 0;
+
+  const dateCandidates = [
+    String(opts?.preferEndDate || "").trim(),
+    String(rawDate || "").trim(),
+  ].filter(Boolean);
 
   const [timePart = "12:00", meridiemRaw = "AM"] = rawTime.split(" ");
   const [hhRaw = "12", mmRaw = "00"] = timePart.split(":");
@@ -46,13 +66,31 @@ export function parseSlotClockMs(rawDate: string, rawTime: string) {
   if (meridiem === "PM" && hh < 12) hh += 12;
   if (meridiem === "AM" && hh === 12) hh = 0;
 
-  return new Date(base.getFullYear(), base.getMonth(), base.getDate(), hh, mm, 0, 0).getTime();
+  const startHint = Number(opts?.startMsHint || 0);
+
+  for (const dateText of dateCandidates) {
+    const base = new Date(dateText);
+    if (!Number.isFinite(base.getTime())) continue;
+
+    let result = new Date(base.getFullYear(), base.getMonth(), base.getDate(), hh, mm, 0, 0).getTime();
+    if (startHint > 0 && result <= startHint) {
+      result += 24 * 60 * 60 * 1000;
+    }
+    if (startHint <= 0 || result > startHint) return result;
+  }
+
+  return 0;
 }
 
 export function parseSlotStartMs(slot: any) {
-  const rawDate = String(slot?.meetingDate || slot?.meetingDay || "").trim();
-  const rawTime = String(slot?.startTime || slot?.time || "").trim();
+  const explicitStart = Number(slot?.startMs || 0);
+  if (explicitStart > 0) return explicitStart;
 
+  const startsAtMs = parseIsoMs(slot?.startsAt);
+  if (startsAtMs > 0) return startsAtMs;
+
+  const rawDate = preferSlotCalendarDate(slot);
+  const rawTime = String(slot?.startTime || slot?.time || "").trim();
   if (!rawDate) return 0;
 
   const base = new Date(rawDate);
@@ -62,11 +100,33 @@ export function parseSlotStartMs(slot: any) {
   return parseSlotClockMs(rawDate, rawTime);
 }
 
+export function parseSlotEndMs(slot: any, startMs = 0) {
+  const explicitEnd = Number(slot?.endMs || 0);
+  if (explicitEnd > startMs) return explicitEnd;
+
+  const endsAtMs = parseIsoMs(slot?.endsAt);
+  if (endsAtMs > startMs) return endsAtMs;
+
+  const endDate = String(
+    slot?.meetingEndDate || slot?.meetingDate || slot?.meetingDay || ""
+  ).trim();
+  const endTime = String(slot?.endTime || "").trim();
+  const endFromClock = endDate && endTime
+    ? parseSlotClockMs(endDate, endTime, { startMsHint: startMs, preferEndDate: endDate })
+    : 0;
+
+  if (endFromClock > startMs) return endFromClock;
+
+  const durationMs = Math.max(
+    1,
+    Number(slot?.durationMin || slot?.durationMinutes || 10)
+  ) * 60000;
+  return startMs > 0 ? startMs + durationMs : 0;
+}
+
 export function enrichScheduleSlot(slot: any, index: number, nowMs: number): EnrichedScheduleSlot {
   const startMs = parseSlotStartMs(slot);
-  const endMsFromClock = parseSlotClockMs(String(slot?.meetingDate || ""), String(slot?.endTime || ""));
-  const durationMs = Math.max(1, Number(slot?.durationMin || 10)) * 60000;
-  const endMs = endMsFromClock > startMs ? endMsFromClock : startMs + durationMs;
+  const endMs = parseSlotEndMs(slot, startMs);
 
   return {
     ...slot,
@@ -480,10 +540,14 @@ export function normalizeLiveScheduleSlot(slot: any, index = 0) {
     slotLabel: lean.title,
     title: lean.title,
     meetingDay: lean.meetingDay,
-    meetingDate: lean.meetingDay,
+    meetingDate: String(slot?.meetingDate || lean.meetingDay || "").trim(),
+    meetingEndDate: String(slot?.meetingEndDate || "").trim(),
+    startsAt: String(slot?.startsAt || "").trim(),
+    endsAt: String(slot?.endsAt || "").trim(),
     startTime: lean.startTime,
     endTime: lean.endTime,
     durationMin: lean.durationMin,
+    durationMinutes: lean.durationMin,
     startMs: lean.startMs,
     endMs: lean.endMs,
     status: lean.status,
@@ -740,20 +804,15 @@ export function utf8JsonByteLength(json: string): number {
 function leanSlotWindowMs(slot: any, index: number) {
   const existingStart = Number(slot?.startMs || 0);
   const existingEnd = Number(slot?.endMs || 0);
-  if (existingStart > 0 && existingEnd > 0) {
+  if (existingStart > 0 && existingEnd > existingStart) {
     return { startMs: existingStart, endMs: existingEnd };
   }
 
   const startMs = parseSlotStartMs(slot);
   if (!startMs) return { startMs: 0, endMs: 0 };
 
-  const endMsFromClock = parseSlotClockMs(
-    String(slot?.meetingDate || slot?.meetingDay || ""),
-    String(slot?.endTime || "")
-  );
-  const durationMs = Math.max(1, Number(slot?.durationMin || 10)) * 60000;
-  const endMs = endMsFromClock > startMs ? endMsFromClock : startMs + durationMs;
-  return { startMs, endMs };
+  const endMs = parseSlotEndMs(slot, startMs);
+  return { startMs, endMs: endMs > startMs ? endMs : 0 };
 }
 
 export function toLeanLiveRouteSlot(slot: any, index = 0): LeanLiveRouteSlot {
@@ -802,7 +861,10 @@ export function toLeanLiveRouteSlot(slot: any, index = 0): LeanLiveRouteSlot {
     meetingDay: String(slot?.meetingDay || slot?.meetingDate || "").trim().slice(0, 32),
     startTime: String(slot?.startTime || slot?.time || "").trim().slice(0, 16),
     endTime: String(slot?.endTime || "").trim().slice(0, 16),
-    durationMin: Math.max(0, Math.min(999, Number(slot?.durationMin || 0))),
+    durationMin: Math.max(
+      0,
+      Math.min(999, Number(slot?.durationMin || slot?.durationMinutes || 0))
+    ),
   };
 }
 

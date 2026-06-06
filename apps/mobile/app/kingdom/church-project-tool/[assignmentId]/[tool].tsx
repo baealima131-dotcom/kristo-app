@@ -41,7 +41,8 @@ import {
 } from "@/src/lib/mediaScheduleFlowFlags";
 import {
   assignSequentialMediaSlotTimes,
-  formatLocalMeetingDateFromMs,
+  buildPersistedMediaSlotTimeFields,
+  logMediaSlotPayloadTime,
 } from "@/src/lib/mediaScheduleSlotTimes";
 import { buildMediaScheduleAuthorityFields } from "@/src/lib/liveMediaAuthority";
 import {
@@ -3640,45 +3641,33 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       sentToSchedule: true,
     });
 
-    const newBatchSlots = sequencedItems.map((item) => ({
-      id: item.id,
-      scheduleBatchId: nextScheduleBatchId,
-      scheduleBatchCreatedAt: nextScheduleBatchCreatedAt,
-      name: item.name,
-      minutes: item.durationMin,
-      startTime: item.startTime,
-      endTime: item.endTime,
-      startMs: Number((item as any).startMs || 0),
-      endMs: Number((item as any).endMs || 0),
-      timeLabel: `${item.startTime} - ${item.endTime}`,
-      meetingDate:
-        Number((item as any).startMs || 0) > 0
-          ? formatLocalMeetingDateFromMs(Number((item as any).startMs))
-          : formatLocalMeetingDateFromMs(
-              parseTimeToDate(
-                meetingStartDay,
-                meetingStartMonth,
-                meetingStartYear,
-                item.startTime
-              ).getTime()
-            ),
-      meetingDay: scheduleDay,
-      role: item.role,
-      task: item.task,
-      script: item.script,
-      slotTopic: String(item.slotTopic || "").trim(),
-      assignmentTopic: String(item.assignmentTopic || item.slotTopic || "").trim(),
-      scheduleTopic,
-      meetingTopic: scheduleTopic,
-      parentTopic: scheduleTopic,
-      chat: item.chat,
-      sourceSlotName: item.name,
-      visibility: "draft",
-      claimedByName: "",
-      claimedByUserId: "",
-      publishedAt: "",
-      isDurationLocked: true,
-    }));
+    const newBatchSlots = sequencedItems.map((item) => {
+      const persisted = buildPersistedMediaSlotTimeFields(item);
+      return {
+        id: item.id,
+        scheduleBatchId: nextScheduleBatchId,
+        scheduleBatchCreatedAt: nextScheduleBatchCreatedAt,
+        name: item.name,
+        minutes: persisted.durationMin,
+        timeLabel: `${persisted.startTime} - ${persisted.endTime}`,
+        role: item.role,
+        task: item.task,
+        script: item.script,
+        slotTopic: String(item.slotTopic || "").trim(),
+        assignmentTopic: String(item.assignmentTopic || item.slotTopic || "").trim(),
+        scheduleTopic,
+        meetingTopic: scheduleTopic,
+        parentTopic: scheduleTopic,
+        chat: item.chat,
+        sourceSlotName: item.name,
+        visibility: "draft",
+        claimedByName: "",
+        claimedByUserId: "",
+        publishedAt: "",
+        isDurationLocked: true,
+        ...persisted,
+      };
+    });
 
     saveChurchProjectScheduleSlots(
       assignmentId,
@@ -3697,18 +3686,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       liveStartsAt: formatTime(meetingStartDate),
       items: sequencedItems.map((item) => ({
         ...item,
-        meetingDate:
-          Number((item as any).startMs || 0) > 0
-            ? formatLocalMeetingDateFromMs(Number((item as any).startMs))
-            : formatLocalMeetingDateFromMs(
-                parseTimeToDate(
-                  meetingStartDay,
-                  meetingStartMonth,
-                  meetingStartYear,
-                  item.startTime
-                ).getTime()
-              ),
-        meetingDay: scheduleDay,
+        ...buildPersistedMediaSlotTimeFields(item),
       })),
       sentToMc: false,
     });
@@ -3771,38 +3749,25 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         scheduleType: "media-live-slots",
       });
 
-      const scheduleSlotsPayload = sequencedItems.map((item, index) => ({
-        id: item.id,
-        name: item.name,
-        slotLabel: `Slot ${index + 1}`,
-        durationMin: item.durationMin,
-        startTime: item.startTime,
-        endTime: item.endTime,
-        startMs: Number((item as any).startMs || 0),
-        endMs: Number((item as any).endMs || 0),
-        timeLabel: `${item.startTime} - ${item.endTime}`,
-        role: item.role,
-        task: item.task,
-        script: item.script,
-        slotTopic: String(item.slotTopic || "").trim(),
-        assignmentTopic: String(item.assignmentTopic || item.slotTopic || "").trim(),
-        scheduleTopic,
-        meetingTopic: scheduleTopic,
-        parentTopic: scheduleTopic,
-        chat: item.chat,
-        meetingDate:
-          Number((item as any).startMs || 0) > 0
-            ? formatLocalMeetingDateFromMs(Number((item as any).startMs))
-            : formatLocalMeetingDateFromMs(
-                parseTimeToDate(
-                  meetingStartDay,
-                  meetingStartMonth,
-                  meetingStartYear,
-                  item.startTime
-                ).getTime()
-              ),
-        meetingDay: scheduleDay,
-      }));
+      const scheduleSlotsPayload = sequencedItems.map((item, index) => {
+        const persisted = logMediaSlotPayloadTime(item, index, "handleSendMeetingToSchedule.api");
+        return {
+          id: item.id,
+          name: item.name,
+          slotLabel: `Slot ${index + 1}`,
+          timeLabel: `${persisted.startTime} - ${persisted.endTime}`,
+          role: item.role,
+          task: item.task,
+          script: item.script,
+          slotTopic: String(item.slotTopic || "").trim(),
+          assignmentTopic: String(item.assignmentTopic || item.slotTopic || "").trim(),
+          scheduleTopic,
+          meetingTopic: scheduleTopic,
+          parentTopic: scheduleTopic,
+          chat: item.chat,
+          ...persisted,
+        };
+      });
 
       const localSchedulePayload = {
         id: localScheduleId,

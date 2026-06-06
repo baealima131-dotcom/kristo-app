@@ -2275,7 +2275,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
   const source = cleanText(body?.source, 80) || undefined;
   const scheduleType = cleanText(body?.scheduleType, 120) || undefined;
   const rawScheduleSlots = Array.isArray(body?.scheduleSlots) ? body.scheduleSlots : undefined;
-  const scheduleSlots = rawScheduleSlots?.map((slot: any) => {
+  const scheduleSlots = rawScheduleSlots?.map((slot: any, index: number) => {
     const cleaned = { ...slot };
 
     // Never let copied/local schedule templates create pre-claimed slots.
@@ -2287,6 +2287,73 @@ async function handleFeedPost(req: NextRequest, body: any) {
     delete cleaned.claimedBy;
     if (String(cleaned.status || "").toLowerCase() === "claimed") {
       delete cleaned.status;
+    }
+
+    const startMs = Number(cleaned.startMs || 0);
+    const endMs = Number(cleaned.endMs || 0);
+    const startsAt = String(cleaned.startsAt || "").trim();
+    const endsAt = String(cleaned.endsAt || "").trim();
+    const durationMin = Math.max(
+      1,
+      Number(cleaned.durationMin || cleaned.durationMinutes || cleaned.minutes || 1)
+    );
+
+    const normalizedStartMs =
+      startMs > 0 ? startMs : startsAt ? Date.parse(startsAt) : 0;
+    const normalizedEndMs =
+      endMs > normalizedStartMs
+        ? endMs
+        : endsAt
+          ? Date.parse(endsAt)
+          : normalizedStartMs > 0
+            ? normalizedStartMs + durationMin * 60 * 1000
+            : 0;
+
+    const formatLocalDate = (ms: number) => {
+      if (!Number.isFinite(ms) || ms <= 0) return "";
+      const d = new Date(ms);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    };
+
+    const formatClock = (ms: number) => {
+      if (!Number.isFinite(ms) || ms <= 0) return "";
+      const d = new Date(ms);
+      let hour = d.getHours();
+      const minute = String(d.getMinutes()).padStart(2, "0");
+      const meridiem = hour >= 12 ? "PM" : "AM";
+      hour = hour % 12;
+      if (hour === 0) hour = 12;
+      return `${hour}:${minute} ${meridiem}`;
+    };
+
+    if (normalizedStartMs > 0 && normalizedEndMs > normalizedStartMs) {
+      cleaned.startMs = normalizedStartMs;
+      cleaned.endMs = normalizedEndMs;
+      cleaned.startsAt = startsAt || new Date(normalizedStartMs).toISOString();
+      cleaned.endsAt = endsAt || new Date(normalizedEndMs).toISOString();
+      cleaned.meetingDate = formatLocalDate(normalizedStartMs);
+      cleaned.meetingEndDate = formatLocalDate(normalizedEndMs);
+      cleaned.startTime = String(cleaned.startTime || "").trim() || formatClock(normalizedStartMs);
+      cleaned.endTime = String(cleaned.endTime || "").trim() || formatClock(normalizedEndMs);
+      cleaned.durationMin = durationMin;
+      cleaned.durationMinutes = durationMin;
+    }
+
+    if (__DEV__ && normalizedStartMs > 0) {
+      console.log("KRISTO_MEDIA_SLOT_PAYLOAD_TIME", {
+        source: "api.church.feed.create",
+        index,
+        slotId: String(cleaned.id || ""),
+        startMs: normalizedStartMs,
+        endMs: normalizedEndMs > normalizedStartMs ? normalizedEndMs : null,
+        startsAt: cleaned.startsAt || null,
+        endsAt: cleaned.endsAt || null,
+        meetingDate: cleaned.meetingDate || null,
+        meetingEndDate: cleaned.meetingEndDate || null,
+      });
     }
 
     return cleaned;

@@ -58,6 +58,7 @@ import {
 import {
   countMediaSlotTimeConflicts,
   findMediaSlotTimeConflict,
+  logMediaSlotReloadTime,
   resolveCanonicalMediaScheduleForGuests,
   resolveMediaSlotTimeWindow,
 } from "../../../src/lib/mediaScheduleSlotTimes";
@@ -1204,6 +1205,8 @@ export default function MediaStudioScreen() {
     if (!isMyMediaSchedule) return [];
 
     const rows = slots.map((slot: any, index: number) => {
+        logMediaSlotReloadTime(slot, "syncedGuestClaimSlots.source", index);
+
         const rawClaimedBy =
           typeof slot?.claimedBy === "string"
             ? String(slot.claimedBy).trim()
@@ -2546,10 +2549,9 @@ export default function MediaStudioScreen() {
   }
 
   function parseGuestSlotDate(slot: any) {
-    const explicitStart = Number(slot?.startMs || 0);
-    const explicitEnd = Number(slot?.endMs || 0);
-    if (explicitStart > 0 && explicitEnd > explicitStart) {
-      return { startMs: explicitStart, endMs: explicitEnd };
+    const resolved = resolveMediaSlotTimeWindow(slot, guestClockNow);
+    if (resolved.startMs > 0 && resolved.endMs > resolved.startMs) {
+      return resolved;
     }
 
     const rawDate = String(slot?.meetingDate || slot?.meetingDay || "").trim();
