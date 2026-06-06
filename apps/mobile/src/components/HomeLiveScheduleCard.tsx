@@ -39,7 +39,7 @@ import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import {
   notifySlotClaimChanged,
   refreshSlotAfterClaimConflict,
-} from "@/src/lib/slotClaimSync";
+} from "@/src/lib/slotClaimApply";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
