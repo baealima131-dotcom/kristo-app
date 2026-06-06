@@ -116,15 +116,6 @@ async function saveToObjectStorage(params: {
   const ext = path.extname(params.filename);
   const key = `uploads/media/${params.filename}`;
 
-  console.log("KRISTO_CHURCH_MEDIA_UPLOAD_BEFORE_R2", {
-    key,
-    byteLength: params.buf.byteLength,
-    mime: params.mime,
-    bucket: storageConfig.bucket,
-    publicBaseUrl: storageConfig.publicBaseUrl,
-    endpointConfigured: Boolean(storageConfig.endpoint),
-  });
-
   const uploaded = await uploadBufferToStorage({
     key,
     body: params.buf,
@@ -155,32 +146,23 @@ async function saveToObjectStorage(params: {
     });
   }
 
-  console.log("KRISTO_CHURCH_MEDIA_UPLOAD_R2_OK", { key, url });
-
   return { url, posterUri, thumbnailUri };
 }
 
 export async function POST(req: NextRequest) {
   try {
-    console.log("KRISTO_CHURCH_MEDIA_UPLOAD_START");
-
     const ctxOrRes = await guard(req);
 
     if (ctxOrRes instanceof NextResponse) {
       return ctxOrRes;
     }
 
-    console.log("KRISTO_UPLOAD_SERVER_DEBUG", {
-      contentType: req.headers.get("content-type"),
-      contentLength: req.headers.get("content-length"),
-    });
-
     let form: FormData;
 
     try {
       form = await req.formData();
     } catch (err) {
-      console.log("KRISTO_CHURCH_MEDIA_UPLOAD_ERROR", {
+      console.error("KRISTO_CHURCH_MEDIA_UPLOAD_ERROR", {
         message: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,
       });
@@ -220,30 +202,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const fileName = String(file.name || "upload");
     const mimeType = String(file.type || "application/octet-stream");
     const fileSize = file.size;
-
-    console.log("KRISTO_CHURCH_MEDIA_UPLOAD_START", {
-      fileName,
-      mimeType,
-      size: fileSize,
-    });
 
     const storageConfig = getVideoStorageConfig();
     const useObjectStorage = isVercelRuntime() || Boolean(storageConfig);
 
-    console.log("KRISTO_CHURCH_MEDIA_UPLOAD_STORAGE_TARGET", {
-      runtime: isVercelRuntime() ? "vercel" : "local",
-      useObjectStorage,
-      hasStorageConfig: Boolean(storageConfig),
-      bucket: storageConfig?.bucket || null,
-      publicBaseUrl: storageConfig?.publicBaseUrl || null,
-    });
-
     if (useObjectStorage && !storageConfig) {
       const message = videoStorageConfigError();
-      console.log("KRISTO_CHURCH_MEDIA_UPLOAD_ERROR", {
+      console.error("KRISTO_CHURCH_MEDIA_UPLOAD_ERROR", {
         message,
         reason: "object-storage-not-configured",
       });
@@ -291,12 +258,6 @@ export async function POST(req: NextRequest) {
       posterUri = saved.posterUri;
       thumbnailUri = saved.thumbnailUri;
     }
-
-    console.log("KRISTO_CHURCH_MEDIA_UPLOAD_OK", {
-      url,
-      size: fileSize,
-      mime: mimeType,
-    });
 
     return NextResponse.json({
       ok: true,

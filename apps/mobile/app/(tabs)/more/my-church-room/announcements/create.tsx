@@ -158,25 +158,12 @@ export default function CreateAnnouncement() {
       const uri = String(asset?.uri || "").trim();
       if (!uri) continue;
 
-      console.log("KRISTO_CHURCH_ROOM_IMAGE_PICKED", {
-        uri,
-        width: asset?.width ?? null,
-        height: asset?.height ?? null,
-        fileSize: asset?.fileSize ?? null,
-      });
-
       try {
         const compressed = await compressChurchRoomFeedImage(
           uri,
           asset?.width,
           asset?.height
         );
-        console.log("KRISTO_CHURCH_ROOM_IMAGE_COMPRESSED", {
-          uri: compressed.uri,
-          width: compressed.width ?? null,
-          height: compressed.height ?? null,
-          fileSize: compressed.size ?? null,
-        });
         compressedUris.push(compressed.uri);
       } catch (compressErr) {
         const message =
@@ -246,20 +233,16 @@ export default function CreateAnnouncement() {
         !imageUrl;
 
       if (failed) {
-        console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
+        console.warn("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
           status,
           error: String(uploadRes?.error || "missing mediaUri/imageUrl").trim(),
         });
         return null;
       }
 
-      console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_OK", {
-        mediaUri,
-        imageUrl,
-      });
       return { mediaUri, imageUrl };
     } catch (error) {
-      console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
+      console.warn("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
         status: null,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -342,25 +325,25 @@ export default function CreateAnnouncement() {
       return;
     }
 
-    if (!images.length) {
-      setErr("Please add at least one image before publishing.");
-      return;
-    }
-
     try {
       setSaving(true);
       setErr(null);
 
-      const now = new Date();
-      const prefix = kind === "testimony" ? "test_" : kind === "counsel" ? "coun_" : kind === "post" ? "post_" : "ann_";
-      const id = prefix + now.getTime().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
-
       const feedType = kind === "announcement" ? "announcement" : "post";
 
-      const uploaded = await uploadChurchRoomFeedImage(images[0]);
-      if (!uploaded?.mediaUri || !uploaded?.imageUrl) {
-        setErr("Image upload failed. Please try again.");
-        return;
+      let mediaUri = "";
+      let imageUrl = "";
+      let mediaType = "none";
+
+      if (images.length > 0) {
+        const uploaded = await uploadChurchRoomFeedImage(images[0]);
+        if (!uploaded?.mediaUri || !uploaded?.imageUrl) {
+          setErr("Image upload failed. Please try again.");
+          return;
+        }
+        mediaUri = uploaded.mediaUri;
+        imageUrl = uploaded.imageUrl;
+        mediaType = "image";
       }
 
       const feedRes: any = await apiPost(
@@ -371,9 +354,13 @@ export default function CreateAnnouncement() {
           title: t0,
           text: b0,
           body: b0,
-          mediaUri: uploaded.mediaUri,
-          imageUrl: uploaded.imageUrl,
-          mediaType: "image",
+          ...(mediaUri
+            ? {
+                mediaUri,
+                imageUrl,
+                mediaType,
+              }
+            : { mediaType }),
           postType: kind,
           kind,
           source: kind,
@@ -476,7 +463,7 @@ export default function CreateAnnouncement() {
           <View style={s.imgRow}>
             <View style={{ flex: 1 }}>
               <Text style={t.label}>Images</Text>
-              <Text style={t.imgHint}>Add 1 to 3 photos • Required</Text>
+              <Text style={t.imgHint}>Add up to 3 photos • Optional</Text>
             </View>
 
             {images.length < 3 ? (
@@ -515,11 +502,11 @@ export default function CreateAnnouncement() {
       <View style={[s.bottomDock, { paddingBottom: Math.max(insets.bottom + 10, 18) }]}>
         <Pressable
           onPress={submit}
-          disabled={saving || !images.length}
+          disabled={saving}
           style={[
             s.btn,
             { backgroundColor: accent },
-            saving || !images.length ? { opacity: 0.55 } : null,
+            saving ? { opacity: 0.55 } : null,
           ]}
         >
           <Text style={t.btnText}>{saving ? "Saving…" : "Publish"}</Text>

@@ -1,27 +1,39 @@
 import React, { memo, useEffect, useMemo, useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
 import {
-  logHomeFeedIdentityAvatarResolve,
+  isChurchRoomMemberFeedPost,
+  resolveFeedIdentityHeadline,
+  resolveFeedIdentitySubline,
+  resolveFeedPostAccent,
+  resolveFeedPostTypeTitle,
   resolveHomeFeedDisplayAvatar,
 } from "./homeFeedUtils";
 import { HOME_FEED_GOLD, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 
 const AVATAR_SIZE = 58;
 const AVATAR_RING = AVATAR_SIZE + 10;
+const TESTIMONY_BLUE = "rgba(0,145,255,0.92)";
+const TESTIMONY_BLUE_SOFT = "rgba(120,200,255,0.95)";
 
 type Props = {
   item: any;
-  churchName: string;
-  mediaName: string;
   whenLabel: string;
 };
 
-export const FeedIdentity = memo(function FeedIdentity({
-  item,
-  churchName,
-  mediaName,
-  whenLabel,
-}: Props) {
+export const FeedIdentity = memo(function FeedIdentity({ item, whenLabel }: Props) {
+  const churchRoomPost = useMemo(() => isChurchRoomMemberFeedPost(item), [item]);
+  const headline = useMemo(() => resolveFeedIdentityHeadline(item), [item]);
+  const subline = useMemo(() => resolveFeedIdentitySubline(item, whenLabel), [item, whenLabel]);
+  const typeLabel = useMemo(
+    () => (churchRoomPost ? resolveFeedPostTypeTitle(item) : ""),
+    [churchRoomPost, item]
+  );
+  const accent = useMemo(() => resolveFeedPostAccent(item), [item]);
+  const accentColor = accent === "testimony" ? TESTIMONY_BLUE : HOME_FEED_GOLD;
+  const accentSoft = accent === "testimony" ? TESTIMONY_BLUE_SOFT : HOME_FEED_GOLD_SOFT;
+  const accentGlowBg = accent === "testimony" ? "rgba(0,145,255,0.18)" : "rgba(217,179,95,0.18)";
+  const accentFallbackBg = accent === "testimony" ? "rgba(0,145,255,0.14)" : "rgba(217,179,95,0.14)";
+
   const { uri: avatarUri, backupUri, initial } = useMemo(
     () => resolveHomeFeedDisplayAvatar(item),
     [item]
@@ -41,22 +53,19 @@ export const FeedIdentity = memo(function FeedIdentity({
   const showPhoto = Boolean(displayUri) && failedCount < avatarCandidates.length;
 
   useEffect(() => {
-    logHomeFeedIdentityAvatarResolve(item, churchName, displayUri, backupUri);
-  }, [item, churchName, displayUri, backupUri]);
-
-  const letter = String(initial || churchName || "K").trim().charAt(0).toUpperCase() || "K";
-
-  useEffect(() => {
     setFailedCount(0);
   }, [avatarCandidates]);
 
-  const subline = [mediaName, whenLabel].filter(Boolean).join(" • ");
+  const memberLine = [headline, subline].filter(Boolean).join(" • ");
 
   return (
     <View style={styles.row}>
       <View style={styles.avatarShell}>
-        <View style={styles.avatarGlow} pointerEvents="none" />
-        <View style={styles.avatarRing}>
+        <View
+          style={[styles.avatarGlow, { backgroundColor: accentGlowBg, shadowColor: accentColor }]}
+          pointerEvents="none"
+        />
+        <View style={[styles.avatarRing, { borderColor: accentColor }]}>
           {showPhoto ? (
             <Image
               source={{ uri: displayUri }}
@@ -66,22 +75,35 @@ export const FeedIdentity = memo(function FeedIdentity({
               }}
             />
           ) : (
-            <View style={[styles.avatarImage, styles.avatarFallback]}>
-              <Text style={styles.avatarInitial}>{letter}</Text>
+            <View style={[styles.avatarImage, styles.avatarFallback, { backgroundColor: accentFallbackBg }]}>
+              <Text style={[styles.avatarInitial, { color: accentSoft }]}>{letter}</Text>
             </View>
           )}
         </View>
       </View>
 
       <View style={styles.textCol}>
-        <Text style={styles.churchName} numberOfLines={1}>
-          {churchName}
-        </Text>
-        {subline ? (
-          <Text style={styles.subline} numberOfLines={1}>
-            {subline}
-          </Text>
-        ) : null}
+        {churchRoomPost ? (
+          <>
+            <Text style={[styles.typeLabel, { color: accentColor }]} numberOfLines={1}>
+              {typeLabel}
+            </Text>
+            <Text style={styles.churchName} numberOfLines={1}>
+              {memberLine}
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text style={styles.churchName} numberOfLines={1}>
+              {headline}
+            </Text>
+            {subline ? (
+              <Text style={styles.subline} numberOfLines={1}>
+                {subline}
+              </Text>
+            ) : null}
+          </>
+        )}
       </View>
     </View>
   );
@@ -104,8 +126,6 @@ const styles = StyleSheet.create({
     width: AVATAR_RING,
     height: AVATAR_RING,
     borderRadius: AVATAR_RING / 2,
-    backgroundColor: "rgba(217,179,95,0.18)",
-    shadowColor: HOME_FEED_GOLD,
     shadowOpacity: 0.85,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 0 },
@@ -117,7 +137,6 @@ const styles = StyleSheet.create({
     borderRadius: (AVATAR_SIZE + 4) / 2,
     padding: 2,
     borderWidth: 2,
-    borderColor: "rgba(217,179,95,0.92)",
     backgroundColor: "rgba(8,10,16,0.65)",
     overflow: "hidden",
   },
@@ -129,23 +148,30 @@ const styles = StyleSheet.create({
   avatarFallback: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.14)",
   },
   avatarInitial: {
-    color: HOME_FEED_GOLD_SOFT,
     fontSize: 24,
     fontWeight: "900",
   },
   textCol: {
     flex: 1,
     minWidth: 0,
-    gap: 3,
+    gap: 2,
+  },
+  typeLabel: {
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    textShadowColor: "rgba(0,0,0,0.55)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   churchName: {
     color: "#FFFFFF",
-    fontSize: 18,
-    fontWeight: "900",
-    letterSpacing: 0.2,
+    fontSize: 16,
+    fontWeight: "800",
+    letterSpacing: 0.15,
     textShadowColor: "rgba(0,0,0,0.55)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 6,

@@ -93,18 +93,6 @@ export const FeedRow = memo(function FeedRow({
   const saveCount = Number(item?.saveCount || 0);
   const animateCopy = isActive && screenFocused;
 
-  console.log("[KRISTO_FEED_RENDER_DECISION]", {
-    postId: item?.id,
-    source: item?.source,
-    type: item?.type,
-    mediaType: item?.mediaType,
-    hasVideoUrl: Boolean(item?.videoUrl),
-    mediaUri: item?.mediaUri,
-    imageUrl: item?.imageUrl,
-    resolvedImageUri,
-    willRenderImage,
-  });
-
   return (
     <View style={[styles.slide, { height }]}>
       <View style={styles.media}>

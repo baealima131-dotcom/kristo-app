@@ -254,19 +254,6 @@ export function normalizeHomeFeedApiRow(row: any) {
     if (!String(next?.profileAvatarUri || "").trim()) next.profileAvatarUri = authorAvatar;
   }
 
-  if (isChurchRoomMemberFeedPost(next)) {
-    console.log("[KRISTO_FEED_NORMALIZE]", {
-      postId: next?.id,
-      source: next?.source,
-      type: next?.type,
-      rawMediaUri: String(row?.mediaUri || "").trim(),
-      rawImageUrl: String(row?.imageUrl || "").trim(),
-      mediaUri: next?.mediaUri,
-      imageUrl: next?.imageUrl,
-      mediaType: next?.mediaType,
-    });
-  }
-
   return next;
 }
 
