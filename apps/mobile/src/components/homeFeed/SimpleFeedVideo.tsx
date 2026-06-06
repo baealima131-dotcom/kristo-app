@@ -132,9 +132,11 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const isWarm = warmMode === "warm";
   const shouldPrime = isPreload || isWarm;
 
-  const [firstFrameReady, setFirstFrameReady] = useState(
-    () => isActive && cachedReadyOnMount
-  );
+  // Never reveal the video surface from the readiness cache: a freshly created
+  // player has not decoded a frame yet, so hiding the poster/fallback before the
+  // real first frame paints a black flash. Keep the poster until markFirstFrame
+  // fires on an actual decoded frame.
+  const [firstFrameReady, setFirstFrameReady] = useState(false);
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
   const [slowFirstFrame, setSlowFirstFrame] = useState(false);
 
@@ -340,10 +342,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
         setPlayerMuted(true, "layout-effect-prime", "screen-focused-mount");
         player.play();
       } catch {}
-    }
-
-    if (warmModeRef.current === "active" && cachedReadyRef.current) {
-      markFirstFrame(true);
     }
   }, [player, screenFocused, uri, postId]);
 
