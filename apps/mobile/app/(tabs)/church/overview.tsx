@@ -1465,7 +1465,7 @@ export default function ChurchOverviewScreen() {
                 <LuxuryPressable
                   onPress={async () => {
                     try {
-                      const feedRes: any = await apiGet("/api/church/feed", {
+                      const feedRes: any = await apiGet("/api/church/feed?scope=church", {
                         headers: getHeaders(),
                       } as any);
 

@@ -12,6 +12,8 @@ type Props = {
   videoUrl?: string;
   mediaStatus?: string;
   variant?: "full" | "minimal";
+  /** When true, skip the black/gradient missing-poster diagnostic log. */
+  suppressMissingPosterLog?: boolean;
 };
 
 export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
@@ -20,19 +22,20 @@ export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
   videoUrl = "",
   mediaStatus = "",
   variant = "full",
+  suppressMissingPosterLog = false,
 }: Props) {
   const status = String(mediaStatus || "").trim().toLowerCase();
   const isProcessing = status === "processing" || status === "uploading";
   const displayTitle = String(title || "").trim();
 
   useEffect(() => {
-    if (variant !== "full") return;
+    if (variant !== "full" || suppressMissingPosterLog) return;
     console.log("KRISTO_VIDEO_POST_BLACK_FALLBACK_USED", {
       id: postId || null,
       videoUrl: videoUrl || null,
       mediaStatus: status || null,
     });
-  }, [postId, videoUrl, status, variant]);
+  }, [postId, videoUrl, status, variant, suppressMissingPosterLog]);
 
   if (variant === "minimal") {
     return (
@@ -92,6 +95,15 @@ export function FeedVideoPosterImage({
   videoUrl = "",
   mediaStatus = "",
 }: FeedVideoPosterImageProps) {
+  useEffect(() => {
+    if (!uri || isBrandedPosterUri(uri)) return;
+    console.log("KRISTO_VIDEO_POSTER_RENDERED", {
+      id: postId || null,
+      posterUri: uri,
+      videoUrl: videoUrl || null,
+    });
+  }, [uri, postId, videoUrl]);
+
   if (isBrandedPosterUri(uri)) {
     return (
       <VideoPostFallbackPoster
@@ -100,6 +112,7 @@ export function FeedVideoPosterImage({
         title={title}
         videoUrl={videoUrl}
         mediaStatus={mediaStatus}
+        suppressMissingPosterLog
       />
     );
   }

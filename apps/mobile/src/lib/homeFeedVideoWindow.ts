@@ -6,7 +6,7 @@ function isVideoFeedRow(item: any) {
   return item?.mediaType === "video" || item?.type === "video";
 }
 
-const WINDOW_OFFSETS = [-1, 0, 1, 2] as const;
+const WINDOW_OFFSETS = [-1, 0, 1, 2, 3] as const;
 
 export function resolveHomeFeedVideoWarmMode(
   index: number,
@@ -14,8 +14,8 @@ export function resolveHomeFeedVideoWarmMode(
 ): HomeFeedVideoWarmMode {
   const delta = index - activeIndex;
   if (delta === 0) return "active";
-  if (delta === 1) return "preload";
-  if (delta === -1 || delta === 2) return "warm";
+  if (delta === 1 || delta === 2) return "preload";
+  if (delta === -1 || delta === 3) return "warm";
   return "off";
 }
 

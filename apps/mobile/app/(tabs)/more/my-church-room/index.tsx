@@ -90,7 +90,7 @@ export default function MyChurchRoom() {
         const [overviewRes, feedRes] = await Promise.all([
           apiGet("/api/church/overview", { headers: getKristoHeaders() }) as Promise<{ ok: true; data: Overview }>,
           session?.userId
-            ? apiGet("/api/church/feed", {
+            ? apiGet("/api/church/feed?scope=church", {
                 headers: getKristoHeaders({
                   userId: session.userId,
                   role: (session.role || "Member") as any,

@@ -20,6 +20,8 @@ import {
   resolvePosterUri,
   resolveVideoUri,
   isValidVideoPosterUri,
+  hasBrandedVideoPoster,
+  hasHomeFeedVideoPoster,
 } from "./homeFeedUtils";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
@@ -78,10 +80,7 @@ export const FeedRow = memo(function FeedRow({
   const posterUri = resolvePosterUri(item);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
   const mountVideoPlayer = Boolean(
-    video &&
-      videoUri &&
-      videoWarmMode !== "off" &&
-      (screenFocused || videoWarmMode === "active")
+    video && videoUri && videoWarmMode !== "off" && screenFocused
   );
   const shareCount = Number(item?.shareCount || 0);
   const saveCount = Number(item?.saveCount || 0);
@@ -99,11 +98,13 @@ export const FeedRow = memo(function FeedRow({
               mediaStatus={mediaStatus}
               uri={videoUri}
               posterUri={posterUri}
+              brandedPoster={hasBrandedVideoPoster(item)}
               warmMode={videoWarmMode}
               screenFocused={screenFocused}
             />
           ) : (
             <InactiveVideoPoster
+              item={item}
               postId={postId}
               title={title}
               mediaStatus={mediaStatus}
@@ -167,28 +168,41 @@ export const FeedRow = memo(function FeedRow({
 });
 
 function InactiveVideoPoster({
+  item,
   postId,
   title,
   mediaStatus,
   posterUri,
   videoUri,
 }: {
+  item: any;
   postId: string;
   title: string;
   mediaStatus: string;
   posterUri: string;
   videoUri: string;
 }) {
-  if (isValidVideoPosterUri(posterUri, videoUri)) {
+  if (hasHomeFeedVideoPoster(item, videoUri)) {
+    if (isValidVideoPosterUri(posterUri, videoUri)) {
+      return (
+        <FeedVideoPosterImage
+          uri={posterUri}
+          style={StyleSheet.absoluteFillObject}
+          resizeMode="cover"
+          postId={postId}
+          title={title}
+          videoUrl={videoUri}
+          mediaStatus={mediaStatus}
+        />
+      );
+    }
     return (
-      <FeedVideoPosterImage
-        uri={posterUri}
-        style={StyleSheet.absoluteFillObject}
-        resizeMode="cover"
+      <VideoPostFallbackPoster
         postId={postId}
         title={title}
         videoUrl={videoUri}
         mediaStatus={mediaStatus}
+        suppressMissingPosterLog={hasBrandedVideoPoster(item)}
       />
     );
   }

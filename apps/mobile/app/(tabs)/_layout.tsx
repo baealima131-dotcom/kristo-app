@@ -615,7 +615,7 @@ export default function TabLayout() {
 
       try {
         const feedRes: any = await apiGet(
-          `/api/church/feed?_=${Date.now()}`,
+          `/api/church/feed?scope=church&_=${Date.now()}`,
           { headers, cache: "no-store" as RequestCache },
           { screen: "TabLayout", dedupe: false }
         );

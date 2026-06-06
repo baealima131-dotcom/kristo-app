@@ -16,7 +16,7 @@ import {
   touchHomeFeedVideoReadiness,
 } from "@/src/lib/homeFeedVideoReadiness";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
-import { isValidVideoPosterUri } from "./homeFeedUtils";
+import { hasBrandedVideoPoster, isValidVideoPosterUri } from "./homeFeedUtils";
 import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
 
 type Props = {
@@ -25,6 +25,7 @@ type Props = {
   mediaStatus?: string;
   uri: string;
   posterUri?: string;
+  brandedPoster?: boolean;
   warmMode: HomeFeedVideoWarmMode;
   screenFocused: boolean;
 };
@@ -65,6 +66,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   mediaStatus = "",
   uri,
   posterUri = "",
+  brandedPoster = false,
   warmMode,
   screenFocused,
 }: Props) {
@@ -119,6 +121,12 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const markFirstFrame = (fromCache = false) => {
     if (firstFrameMsRef.current === null) {
       firstFrameMsRef.current = fromCache ? 0 : Date.now() - mountMsRef.current;
+      console.log("KRISTO_VIDEO_FIRST_FRAME_DELAY", {
+        id: postId || null,
+        warmMode,
+        ms: firstFrameMsRef.current,
+        fromCache,
+      });
     }
     setFirstFrameReady((prev) => (prev ? prev : true));
   };
@@ -211,10 +219,17 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   }, [uri, postId, player]);
 
   useEffect(() => {
-    if (!shouldPrime || preloadStartLoggedRef.current) return;
+    if (!screenFocused) return;
+    if (!isActive && !shouldPrime) return;
+    if (preloadStartLoggedRef.current) return;
     preloadStartLoggedRef.current = true;
+    console.log("KRISTO_VIDEO_WARMUP_START", {
+      id: postId || null,
+      videoUrl: uri,
+      warmMode,
+    });
     console.log("KRISTO_VIDEO_PRELOAD_START", { id: postId || null, videoUrl: uri });
-  }, [shouldPrime, postId, uri]);
+  }, [shouldPrime, isActive, screenFocused, postId, uri, warmMode]);
 
   useEffect(() => {
     if (!screenFocused) {
@@ -269,6 +284,13 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     if (isPlayerReadyToStart(status, currentTime, playing) && readyMsRef.current === null) {
       readyMsRef.current = Date.now() - mountMsRef.current;
+      if (readyMsRef.current <= 800) {
+        console.log("KRISTO_VIDEO_READY_FAST", {
+          id: postId || null,
+          warmMode,
+          ms: readyMsRef.current,
+        });
+      }
     }
 
     if (isActive && isPlayerReadyToStart(status, currentTime, playing)) {
@@ -335,14 +357,17 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const poster = String(posterUri || "").trim();
   const hasPoster = isValidVideoPosterUri(poster, uri);
+  const hasBranded = brandedPoster || hasBrandedVideoPoster({ posterUri: poster, brandedPoster });
   const showPosterOverlay = hasPoster && !firstFrameReady;
-  const showGoldFallback = !hasPoster && !firstFrameReady;
+  const showBrandedCover = hasBranded && !hasPoster && !firstFrameReady;
+  const showGoldFallback = !hasPoster && !hasBranded && !firstFrameReady;
+  const hideVideoSurface = showPosterOverlay || showBrandedCover || showGoldFallback;
 
   return (
     <View style={styles.root}>
       <VideoView
         player={player}
-        style={styles.videoSurface}
+        style={[styles.videoSurface, hideVideoSurface && styles.videoHidden]}
         contentFit="cover"
         nativeControls={false}
       />
@@ -359,7 +384,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
           />
         </View>
       ) : null}
-      {showGoldFallback ? (
+      {showBrandedCover || showGoldFallback ? (
         <View style={styles.overlay} pointerEvents="none">
           <VideoPostFallbackPoster
             variant="full"
@@ -367,6 +392,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
             title={title}
             videoUrl={uri}
             mediaStatus={mediaStatus}
+            suppressMissingPosterLog={showBrandedCover}
           />
         </View>
       ) : null}
@@ -382,6 +408,9 @@ const styles = StyleSheet.create({
   videoSurface: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 1,
+  },
+  videoHidden: {
+    opacity: 0,
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,

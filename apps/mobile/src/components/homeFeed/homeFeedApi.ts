@@ -28,7 +28,7 @@ export async function fetchHomeFeedFromApi(
     reason.startsWith("schedule-dirty");
 
   const res: any = await apiGet(
-    `/api/church/feed?_=${Date.now()}`,
+    `/api/church/feed?scope=global&_=${Date.now()}`,
     {
       headers: getKristoHeaders({
         userId: viewerUserId,
@@ -51,13 +51,28 @@ export async function fetchHomeFeedFromApi(
       String(row?.source || "").includes("media-schedule")
   ).length;
 
+  const crossChurchCount = rawRows.filter((row) => {
+    const itemCid = String(row?.churchId || "").trim();
+    return itemCid && viewerChurchId && itemCid !== viewerChurchId;
+  }).length;
+
   console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
     stage: "api_before_phase1_filter",
     reason,
     churchId: viewerChurchId,
+    scope: "global",
     apiScheduleCount,
     apiRowCount: rawRows.length,
+    crossChurchCount,
   });
+
+  if (crossChurchCount > 0) {
+    console.log("KRISTO_GLOBAL_FEED_CROSS_CHURCH_INCLUDED", {
+      viewerChurchId,
+      count: crossChurchCount,
+      source: "home_feed_api",
+    });
+  }
 
   return filterPhase1FeedRows(rawRows);
 }

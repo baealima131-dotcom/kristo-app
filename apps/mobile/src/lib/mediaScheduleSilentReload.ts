@@ -126,7 +126,7 @@ export async function fetchMediaScheduleFeedSync(
   churchId: string,
   headers?: Record<string, string>
 ): Promise<MediaScheduleFeedSync> {
-  const res: any = await apiGet(`/api/church/feed?_=${Date.now()}`, {
+  const res: any = await apiGet(`/api/church/feed?scope=church&_=${Date.now()}`, {
     headers,
     cache: "no-store" as RequestCache,
   });

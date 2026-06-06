@@ -14,7 +14,8 @@ import {
   parseSlotStartMs,
   resolveScheduleSlotVisualState,
 } from "@/src/lib/scheduleSlotUtils";
-import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
+import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
+import { getSessionSync } from "@/src/lib/kristoSession";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
 
@@ -461,6 +462,135 @@ function homeFeedPostSortMs(row: any) {
   return Date.parse(String(row?.createdAt || row?.updatedAt || "")) || 0;
 }
 
+type HomeFeedRowBucket = "global_media" | "church_media" | "church_post" | "schedule" | "live";
+
+const HOME_FEED_INTERLEAVE_PATTERN: HomeFeedRowBucket[] = [
+  "global_media",
+  "church_media",
+  "church_post",
+  "schedule",
+  "live",
+];
+
+const homeFeedStableOrder = new Map<string, number>();
+let homeFeedOrderSeq = 0;
+
+function homeFeedRowChurchId(row: any) {
+  return String(row?.churchId || row?.ownerChurchId || "").trim();
+}
+
+function isHomeFeedLivestreamRow(row: any) {
+  if (!row) return false;
+  const id = String(row?.id || "").toLowerCase();
+  if (id.startsWith("church-live-now-") || id.startsWith("media-live-now-")) return true;
+  return (
+    Boolean(row?.isLiveNow || row?.kind === "live") && !isMediaLiveSlotsHomeFeedRow(row)
+  );
+}
+
+function classifyHomeFeedRowBucket(row: any, viewerChurchId: string): HomeFeedRowBucket {
+  if (isHomeFeedScheduleCardRow(row) || isHomeFeedExpandedScheduleSlotRow(row)) {
+    return "schedule";
+  }
+  if (isHomeFeedLivestreamRow(row)) return "live";
+  if (isVideoPost(row)) {
+    const cid = homeFeedRowChurchId(row);
+    if (cid && viewerChurchId && cid !== viewerChurchId) return "global_media";
+    return "church_media";
+  }
+  return "church_post";
+}
+
+function homeFeedStableRank(row: any) {
+  const key = feedRenderKey(row) || String(row?.id || "").trim();
+  if (!key) return Number.MAX_SAFE_INTEGER;
+  const cached = homeFeedStableOrder.get(key);
+  if (cached !== undefined) return cached;
+  const assigned = homeFeedOrderSeq++;
+  homeFeedStableOrder.set(key, assigned);
+  return assigned;
+}
+
+function pickInterleaveRow(
+  bucket: HomeFeedRowBucket,
+  buckets: Record<HomeFeedRowBucket, any[]>,
+  lastChurchId: string
+) {
+  const list = buckets[bucket];
+  if (!list.length) return null;
+
+  if (bucket === "schedule" || !lastChurchId) {
+    return list.shift() || null;
+  }
+
+  const altIdx = list.findIndex((row) => homeFeedRowChurchId(row) !== lastChurchId);
+  const idx = altIdx >= 0 ? altIdx : 0;
+  return list.splice(idx, 1)[0] || null;
+}
+
+/** Mix global media, church posts, schedules, and live cards — avoid same-church streaks. */
+function interleaveHomeFeedRows(rows: any[], viewerChurchId: string) {
+  const buckets: Record<HomeFeedRowBucket, any[]> = {
+    global_media: [],
+    church_media: [],
+    church_post: [],
+    schedule: [],
+    live: [],
+  };
+
+  const incomingIds = new Set<string>();
+  for (const row of rows) {
+    const key = feedRenderKey(row) || String(row?.id || "").trim();
+    if (!key) continue;
+    incomingIds.add(key);
+    buckets[classifyHomeFeedRowBucket(row, viewerChurchId)].push(row);
+  }
+
+  for (const key of [...homeFeedStableOrder.keys()]) {
+    if (!incomingIds.has(key)) homeFeedStableOrder.delete(key);
+  }
+
+  for (const bucket of Object.keys(buckets) as HomeFeedRowBucket[]) {
+    buckets[bucket].sort((a, b) => homeFeedStableRank(a) - homeFeedStableRank(b));
+  }
+
+  const interleaved: any[] = [];
+  let lastChurchId = "";
+  let idleRounds = 0;
+  const maxIdle = HOME_FEED_INTERLEAVE_PATTERN.length * 3;
+
+  while (idleRounds < maxIdle) {
+    let pickedAny = false;
+    for (const bucket of HOME_FEED_INTERLEAVE_PATTERN) {
+      const row = pickInterleaveRow(bucket, buckets, lastChurchId);
+      if (!row) continue;
+      interleaved.push(row);
+      const cid = homeFeedRowChurchId(row);
+      if (cid) lastChurchId = cid;
+      pickedAny = true;
+      idleRounds = 0;
+    }
+    if (!pickedAny) idleRounds += 1;
+  }
+
+  for (const bucket of Object.keys(buckets) as HomeFeedRowBucket[]) {
+    interleaved.push(...buckets[bucket]);
+  }
+
+  console.log("KRISTO_HOME_FEED_INTERLEAVE", {
+    viewerChurchId,
+    inputCount: rows.length,
+    outputCount: interleaved.length,
+    bucketCounts: Object.fromEntries(
+      (Object.keys(buckets) as HomeFeedRowBucket[]).map((k) => [k, buckets[k].length])
+    ),
+    firstIds: interleaved.slice(0, 8).map((row) => feedRenderKey(row) || String(row?.id || "")),
+    firstChurches: interleaved.slice(0, 8).map((row) => homeFeedRowChurchId(row) || null),
+  });
+
+  return interleaved;
+}
+
 /** Drop schedule slot rows whose shared visual helper resolves ended at build time. */
 export function isHomeFeedScheduleSlotRowVisible(row: any, nowMs = Date.now()): boolean {
   if (!isHomeFeedScheduleCardRow(row)) return true;
@@ -535,8 +665,9 @@ export function buildHomeFeedDisplayRows(
   const sortedPostRows = [...postRows].sort(
     (a, b) => homeFeedPostSortMs(b) - homeFeedPostSortMs(a)
   );
+  const viewerChurchId = String((getSessionSync() as any)?.churchId || "").trim();
   const display = filterVisibleHomeFeedScheduleRows(
-    [...sortedPostRows, ...expandedScheduleRows],
+    interleaveHomeFeedRows([...sortedPostRows, ...expandedScheduleRows], viewerChurchId),
     nowMs
   );
 
@@ -715,8 +846,15 @@ export function resolvePosterUri(item: any) {
       item?.thumbnailUri ||
       item?.thumbnailUrl ||
       item?.mediaPosterUri ||
-      item?.posterUrl
+      item?.posterUrl ||
+      item?.coverImage ||
+      item?.coverImageUrl ||
+      item?.poster
   );
+}
+
+export function hasBrandedVideoPoster(item: any) {
+  return itemUsesBrandedVideoPoster(item);
 }
 
 export function isValidVideoPosterUri(posterUri: string, videoUri: string) {
@@ -727,6 +865,12 @@ export function isValidVideoPosterUri(posterUri: string, videoUri: string) {
   if (video && poster === video) return false;
   if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(poster)) return false;
   return true;
+}
+
+export function hasHomeFeedVideoPoster(item: any, videoUri?: string) {
+  const video = String(videoUri || resolveVideoUri(item) || "").trim();
+  const poster = resolvePosterUri(item);
+  return isValidVideoPosterUri(poster, video) || hasBrandedVideoPoster(item);
 }
 
 export function isVideoPost(item: any) {

@@ -681,7 +681,7 @@ export default function ChurchActivityFeedScreen() {
     setLoading(true);
     try {
       const res = await apiGet<any>(
-        "/api/church/feed",
+        "/api/church/feed?scope=church",
         { headers: getKristoHeaders() },
         { screen: "ChurchActivityFeed", throttleMs: 0 }
       );

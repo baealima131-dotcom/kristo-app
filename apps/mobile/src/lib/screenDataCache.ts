@@ -409,10 +409,10 @@ export async function silentRefreshProfileScreen(
     apiGet<any>("/api/auth/profile", { headers }, { screen: "ScreenCache", throttleMs: SCREEN_CACHE_TTL_MS }),
     apiGet<any>(`/api/users/${encodeURIComponent(userId)}/posts?limit=60`, { headers }, { screen: "ScreenCache", throttleMs: 120000 }),
     churchId
-      ? apiGet<any>("/api/church/feed?type=announcement", { headers }, { screen: "ScreenCache", throttleMs: 120000 })
+      ? apiGet<any>("/api/church/feed?scope=church&type=announcement", { headers }, { screen: "ScreenCache", throttleMs: 120000 })
       : Promise.resolve(null),
     churchId
-      ? apiGet<any>("/api/church/feed", { headers }, { screen: "ScreenCache", throttleMs: 120000 })
+      ? apiGet<any>("/api/church/feed?scope=church", { headers }, { screen: "ScreenCache", throttleMs: 120000 })
       : Promise.resolve(null),
     apiGet<any>(`/api/users/${encodeURIComponent(userId)}/overview`, { headers }, { screen: "ScreenCache", throttleMs: 120000 }),
   ]);

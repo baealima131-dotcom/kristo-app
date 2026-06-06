@@ -1287,6 +1287,64 @@ function feedItemVisibility(item: any) {
   return String(item?.visibility || item?.audience || "public").toLowerCase();
 }
 
+function feedItemScopeLabel(item: any): "GLOBAL" | "CHURCH" {
+  if (isMediaScheduleFeedItem(item)) return "CHURCH";
+
+  const visibility = feedItemVisibility(item);
+  if (visibility.includes("private")) return "CHURCH";
+  if (visibility.includes("members")) return "CHURCH";
+  if (visibility.includes("church") && !visibility.includes("public") && !visibility.includes("global")) {
+    return "CHURCH";
+  }
+  if (visibility.includes("global") || visibility.includes("public")) return "GLOBAL";
+  return "GLOBAL";
+}
+
+function feedItemVisibilityLabel(item: any): "public" | "church" {
+  return feedItemScopeLabel(item) === "GLOBAL" ? "public" : "church";
+}
+
+function isPublicOrGlobalFeedItem(item: any) {
+  const visibility = feedItemVisibility(item);
+  if (visibility.includes("private") || visibility.includes("members")) return false;
+  if (visibility.includes("church") && !visibility.includes("public") && !visibility.includes("global")) {
+    return false;
+  }
+  return (
+    visibility.includes("public") ||
+    visibility.includes("global") ||
+    (!visibility.includes("church") && !visibility.includes("private"))
+  );
+}
+
+/** Home/global feed: public posts from all churches; schedules stay church-scoped. */
+function isGlobalFeedDiscoverable(item: any, viewerChurchId: string) {
+  const itemChurchId = String(item?.churchId || "").trim();
+  const viewerCid = String(viewerChurchId || "").trim();
+
+  if (isMediaScheduleFeedItem(item)) {
+    if (!viewerCid) return false;
+    return !itemChurchId || itemChurchId === viewerCid;
+  }
+
+  if (isPublicOrGlobalFeedItem(item)) return true;
+  return Boolean(viewerCid && itemChurchId === viewerCid);
+}
+
+/** Church tab/room: only the viewer's church (+ discoverability rules). */
+function isStrictChurchFeedDiscoverable(item: any, viewerChurchId: string) {
+  const itemChurchId = String(item?.churchId || "").trim();
+  const ownerCid = String(item?.ownerChurchId || "").trim();
+  const viewerCid = String(viewerChurchId || "").trim();
+  if (!viewerCid) return false;
+
+  if (itemChurchId && itemChurchId !== viewerCid) {
+    if (!ownerCid || ownerCid !== viewerCid) return false;
+  }
+
+  return isDiscoverableFeedItem(item, viewerChurchId);
+}
+
 function isDiscoverableFeedItem(item: any, viewerChurchId: string) {
   const itemChurchId = String(item?.churchId || "").trim();
   const viewerCid = String(viewerChurchId || "").trim();
@@ -1470,6 +1528,8 @@ async function handleFeedGet(
     const type = url.searchParams.get("type") as FeedType | null;
     const id = String(url.searchParams.get("id") || "").trim();
     const storageMode = String(url.searchParams.get("storage") || "").trim().toLowerCase();
+    const feedScope = String(url.searchParams.get("scope") || "church").trim().toLowerCase();
+    const isGlobalFeedScope = feedScope === "global" || feedScope === "home";
 
     if (storageMode === "media" || storageMode === "church") {
       const membershipOrRes = await guard(req);
@@ -1584,8 +1644,10 @@ async function handleFeedGet(
       return ok(detail);
     }
 
-    let rawRows = await listFeedItemsForChurch(churchId);
-    if (rawRows.length === 0) {
+    let rawRows = isGlobalFeedScope
+      ? await listFeedItems()
+      : await listFeedItemsForChurch(churchId);
+    if (!isGlobalFeedScope && rawRows.length === 0) {
       const fallbackRows = await listFeedItems();
       rawRows = fallbackRows.filter((x: any) => {
         const cid = String(x?.churchId || "").trim();
@@ -1622,15 +1684,64 @@ async function handleFeedGet(
       mediaAfterAsset: allRows.filter((x: any) => String(x?.source || "") === "media-upload").length,
     });
 
-    const afterDiscover = allRows.filter((x: any) => isDiscoverableFeedItem(x, churchId));
+    const discoverable = isGlobalFeedScope ? isGlobalFeedDiscoverable : isStrictChurchFeedDiscoverable;
+    const afterDiscover = allRows.filter((x: any) => discoverable(x, churchId));
     const homeReadyRows = afterDiscover.filter((x: any) => isHomeFeedReadyItem(x));
+
+    const crossChurchIncluded = isGlobalFeedScope
+      ? homeReadyRows.filter((x: any) => {
+          const itemCid = String(x?.churchId || "").trim();
+          return itemCid && churchId && itemCid !== churchId && isPublicOrGlobalFeedItem(x);
+        }).length
+      : 0;
+
+    if (isGlobalFeedScope) {
+      console.log("KRISTO_GLOBAL_FEED_FILTER", {
+        scope: "GLOBAL",
+        visibility: "public",
+        viewerChurchId: churchId,
+        rawRows: rawRows.length,
+        afterDiscover: afterDiscover.length,
+        homeReadyRows: homeReadyRows.length,
+        crossChurchIncluded,
+      });
+      if (crossChurchIncluded > 0) {
+        console.log("KRISTO_GLOBAL_FEED_CROSS_CHURCH_INCLUDED", {
+          viewerChurchId: churchId,
+          count: crossChurchIncluded,
+          sampleIds: homeReadyRows
+            .filter((x: any) => {
+              const itemCid = String(x?.churchId || "").trim();
+              return itemCid && churchId && itemCid !== churchId;
+            })
+            .slice(0, 6)
+            .map((x: any) => ({
+              id: String(x?.id || ""),
+              churchId: String(x?.churchId || ""),
+              scope: feedItemScopeLabel(x),
+              visibility: feedItemVisibilityLabel(x),
+            })),
+        });
+      }
+    } else {
+      console.log("KRISTO_CHURCH_FEED_FILTER_STRICT", {
+        scope: "CHURCH",
+        visibility: "church",
+        viewerChurchId: churchId,
+        rawRows: rawRows.length,
+        afterDiscover: afterDiscover.length,
+        homeReadyRows: homeReadyRows.length,
+      });
+    }
 
     console.log("KRISTO_FEED_DEBUG_AFTER_FILTERS", {
       churchId,
+      feedScope: isGlobalFeedScope ? "GLOBAL" : "CHURCH",
       afterDiscover: afterDiscover.length,
       homeReadyRows: homeReadyRows.length,
       mediaAfterDiscover: afterDiscover.filter((x: any) => String(x?.source || "") === "media-upload").length,
       mediaHomeReady: homeReadyRows.filter((x: any) => String(x?.source || "") === "media-upload").length,
+      crossChurchIncluded,
     });
 
     if (process.env.NODE_ENV !== 'production') {

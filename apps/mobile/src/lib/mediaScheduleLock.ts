@@ -330,7 +330,7 @@ export async function findActiveMediaScheduleForChurchFromSources(
   let backendRows: AnyFeedItem[] = [];
 
   try {
-    const res: any = await apiGet(`/api/church/feed?_=${Date.now()}`, {
+    const res: any = await apiGet(`/api/church/feed?scope=church&_=${Date.now()}`, {
       headers: options?.headers,
       cache: "no-store" as RequestCache,
     });
