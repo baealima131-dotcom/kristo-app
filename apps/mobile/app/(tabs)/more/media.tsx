@@ -1903,7 +1903,13 @@ export default function MediaStudioScreen() {
     ? "Pastor access required"
     : "V2 Feature";
 
-  async function handleCreateLiveSchedule() {
+  function handleCreateLiveSchedule() {
+    console.log("KRISTO_MEDIA_SLOTS_TAP", {
+      pathname,
+      isFocused,
+      churchId: String(session?.churchId || "").trim() || null,
+    });
+
     const scheduleGate = evaluateScheduleSubscriptionGate({
       screen: "media.handleCreateLiveSchedule",
       gate: "media.slots-card",
@@ -1924,44 +1930,64 @@ export default function MediaStudioScreen() {
       return;
     }
 
-    let churchAvatar = "";
-    let realChurchName = "";
-
-    try {
-      const res: any = await apiGet("/api/church/profile", {
-        headers: getKristoHeaders({
-          userId: session?.userId || "",
-          role: (session?.role || "Member") as any,
-          churchId: session?.churchId || "",
-        }),
-      });
-
-      const profile = res?.data?.profile || res?.profile || res?.data || {};
-      churchAvatar = String(profile?.avatarUri || profile?.avatarUrl || "").trim();
-      realChurchName = String(profile?.name || profile?.churchName || profile?.churchLabel || "").trim();
-    } catch (e) {
-      console.log("KRISTO_MEDIA_CHURCH_AVATAR_LOAD_ERROR", e);
-    }
+    const churchAvatar = String(
+      (session as any)?.churchAvatarUri ||
+        (session as any)?.church?.avatarUri ||
+        (session as any)?.church?.avatarUrl ||
+        ""
+    ).trim();
+    const realChurchName = String(
+      (session as any)?.churchName ||
+        (session as any)?.churchLabel ||
+        (session as any)?.church?.name ||
+        "Church"
+    ).trim();
 
     const mediaToolAvatar = encodeURIComponent(churchAvatar);
-
-    const mediaToolMediaName = encodeURIComponent(String(
-      form.mediaName.trim() ||
-      churchMediaProfile?.mediaName ||
-      "Church Media"
-    ));
-
-    const mediaToolChurchName = encodeURIComponent(String(
-      realChurchName ||
-      (session as any)?.churchName ||
-      (session as any)?.churchLabel ||
-      "Church"
-    ));
+    const mediaToolMediaName = encodeURIComponent(
+      String(form.mediaName.trim() || churchMediaProfile?.mediaName || "Church Media")
+    );
+    const mediaToolChurchName = encodeURIComponent(realChurchName);
 
     mediaRouterPush(
       `/kingdom/church-project-tool/media-schedule/meeting?source=media&roomId=media-schedule&title=Media%20Schedule&subtitle=Media%20Studio&avatar=${mediaToolAvatar}&mediaName=${mediaToolMediaName}&churchName=${mediaToolChurchName}`,
       "create-live-schedule-tool"
     );
+
+    console.log("KRISTO_MEDIA_SLOTS_NAVIGATED", {
+      pathname,
+      churchName: realChurchName || null,
+      hasAvatar: Boolean(churchAvatar),
+    });
+
+    const churchId = String(session?.churchId || "").trim();
+    const userId = String(session?.userId || "").trim();
+    if (churchId && userId) {
+      void (async () => {
+        try {
+          const res: any = await apiGet("/api/church/profile", {
+            headers: getKristoHeaders({
+              userId,
+              role: (session?.role || "Member") as any,
+              churchId,
+            }),
+          });
+          const profile = res?.data?.profile || res?.profile || res?.data || {};
+          const fetchedAvatar = String(profile?.avatarUri || profile?.avatarUrl || "").trim();
+          const fetchedChurchName = String(
+            profile?.name || profile?.churchName || profile?.churchLabel || ""
+          ).trim();
+          if (__DEV__ && (fetchedAvatar || fetchedChurchName)) {
+            console.log("KRISTO_MEDIA_SLOTS_CHURCH_PROFILE_BG", {
+              hasAvatar: Boolean(fetchedAvatar),
+              churchName: fetchedChurchName || null,
+            });
+          }
+        } catch (e) {
+          console.log("KRISTO_MEDIA_CHURCH_AVATAR_LOAD_ERROR", e);
+        }
+      })();
+    }
   }
 
   async function handleSendLiveScheduleToFeed() {

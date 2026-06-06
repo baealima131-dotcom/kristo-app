@@ -8,6 +8,7 @@ import { clearChurchProfileCache, saveChurchProfileCache } from "./churchStore";
 import { mergeChurchAvatarForDisplay, normalizeAvatarUpdatedAt } from "./avatarFreshness";
 import { saveProfileDraft } from "./profileStore";
 import { waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
+import { shouldPauseBackgroundProfileRefresh } from "./mediaScheduleFlowFlags";
 import { isSessionExitInProgress } from "./kristoSessionExitFlags";
 
 export const SCREEN_CACHE_TTL_MS = 45000;
@@ -378,6 +379,16 @@ export async function silentRefreshProfileScreen(
   opts?: { force?: boolean }
 ) {
   if (isSessionExitInProgress()) return null;
+
+  if (!opts?.force && shouldPauseBackgroundProfileRefresh()) {
+    if (__DEV__) {
+      console.log("KRISTO_PROFILE_SILENT_REFRESH_SKIPPED", {
+        reason: "media_schedule_flow_active",
+        userId: String(session?.userId || "").trim() || null,
+      });
+    }
+    return null;
+  }
 
   const userId = String(session?.userId || "").trim();
   const churchId = String(session?.churchId || "").trim();

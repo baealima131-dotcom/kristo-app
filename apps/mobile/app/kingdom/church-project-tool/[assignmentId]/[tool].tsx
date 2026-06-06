@@ -34,6 +34,10 @@ import {
   fetchMediaScheduleFeedSync,
   purgeAllLocalMediaScheduleSources,
 } from "@/src/lib/mediaScheduleSilentReload";
+import {
+  enterMediaScheduleFlow,
+  exitMediaScheduleFlow,
+} from "@/src/lib/mediaScheduleFlowFlags";
 import { buildMediaScheduleAuthorityFields } from "@/src/lib/liveMediaAuthority";
 import {
   fetchChurchPastorUserId,
@@ -660,6 +664,8 @@ export default function ChurchProjectToolScreen() {
   const schedulePublishInFlightRef = useRef(new Set<string>());
   const scheduleBatchPublishInFlightRef = useRef(false);
   const schedulePollPausedRef = useRef(false);
+  const sendMeetingToScheduleInFlightRef = useRef(false);
+  const [sendMeetingToScheduleSending, setSendMeetingToScheduleSending] = useState(false);
   const schedulePublishedSlotIdsRef = useRef(new Set<string>());
   const isLockedMeetingOrSchedule = !isMediaSchedule && (isMeeting || isSchedule) && !hasMcAccess;
 
@@ -1501,6 +1507,12 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     meetingTarget,
   ]);
 
+
+  useEffect(() => {
+    if (!isMediaSchedule || isMinistryLiveSchedule) return;
+    enterMediaScheduleFlow("church-project-tool.media-schedule");
+    return () => exitMediaScheduleFlow("church-project-tool.media-schedule");
+  }, [isMediaSchedule, isMinistryLiveSchedule]);
 
   useEffect(() => {
     // Guests screen also needs backend schedule/feed sync
@@ -2825,6 +2837,30 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       return;
     }
 
+    if (
+      sendMeetingToScheduleInFlightRef.current ||
+      scheduleBatchPublishInFlightRef.current ||
+      schedulePollPausedRef.current
+    ) {
+      console.log("KRISTO_SEND_TO_SCHEDULE_IGNORED_IN_FLIGHT", {
+        assignmentId,
+        meetingStep,
+        sendInFlight: sendMeetingToScheduleInFlightRef.current,
+        batchPublishInFlight: scheduleBatchPublishInFlightRef.current,
+        pollPaused: schedulePollPausedRef.current,
+      });
+      return;
+    }
+
+    sendMeetingToScheduleInFlightRef.current = true;
+    setSendMeetingToScheduleSending(true);
+    console.log("KRISTO_SEND_TO_SCHEDULE_TAP", {
+      assignmentId,
+      meetingStep,
+      isMediaSchedule,
+    });
+
+    try {
     const churchId = String(getSessionSync()?.churchId || "").trim();
     const scheduleApiHeaders = getKristoHeaders() as any;
     if (
@@ -3911,6 +3947,15 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         avatar: routeAvatar,
       },
     } as any);
+    } finally {
+      sendMeetingToScheduleInFlightRef.current = false;
+      setSendMeetingToScheduleSending(false);
+      console.log("KRISTO_SEND_TO_SCHEDULE_DONE", {
+        assignmentId,
+        meetingStep,
+        isMediaSchedule,
+      });
+    }
   }
 
   function handlePushScheduleToMc() {
@@ -6162,8 +6207,10 @@ height: 24,
                     ) : null}
 
                     <Pressable
+                      disabled={meetingStep === 5 && sendMeetingToScheduleSending}
                       onPress={() => {
                         if (meetingStep === 1 && !meetingCreateReady) return;
+                        if (meetingStep === 5 && sendMeetingToScheduleSending) return;
 
                         if (meetingStep === 1) {
                           setMeetingStep(2);
@@ -6261,7 +6308,10 @@ height: 24,
                                 : "rgba(239,68,68,0.16)"
                               : "rgba(217,179,95,0.12)",
                         },
-                        pressed ? s.pressed : null,
+                        meetingStep === 5 && sendMeetingToScheduleSending ? { opacity: 0.55 } : null,
+                        pressed && !(meetingStep === 5 && sendMeetingToScheduleSending)
+                          ? s.pressed
+                          : null,
                       ]}
                     >
                       <Ionicons
@@ -6286,7 +6336,9 @@ height: 24,
                               : meetingStep === 4
                                 ? "Next"
                                 : meetingStep === 5
-                                  ? "Send to Schedule"
+                                  ? sendMeetingToScheduleSending
+                                    ? "Sending..."
+                                    : "Send to Schedule"
                                   : "Done"}
                       </Text>
                     </Pressable>

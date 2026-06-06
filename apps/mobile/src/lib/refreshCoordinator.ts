@@ -9,6 +9,7 @@ import {
   type ChurchMediaAccessState,
 } from "./churchMediaAccess";
 import { deferStartupWorkAfterHomeFirstFrame, waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
+import { shouldPauseBackgroundProfileRefresh } from "./mediaScheduleFlowFlags";
 import { shouldThrottleFetch } from "./kristoTraffic";
 
 function logEndpointTiming(
@@ -346,8 +347,14 @@ export async function runCoordinatedAppRefresh(
       }
     }
 
-    if (!force) {
+    if (!force && !shouldPauseBackgroundProfileRefresh()) {
       await silentRefreshProfileScreen(session as KristoSession, opts);
+    } else if (shouldPauseBackgroundProfileRefresh() && __DEV__) {
+      console.log("KRISTO_REFRESH_COORDINATOR_SKIPPED", {
+        userId,
+        churchId,
+        reason: "media_schedule_flow_active",
+      });
     }
 
     lastCoordinatedRefreshAt = Date.now();

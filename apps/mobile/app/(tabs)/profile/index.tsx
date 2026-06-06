@@ -38,6 +38,7 @@ import {
   shouldAllowScreenRefresh,
   clearResponseCacheForRequest,
 } from "@/src/lib/kristoTraffic";
+import { shouldPauseBackgroundProfileRefresh } from "@/src/lib/mediaScheduleFlowFlags";
 import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -782,6 +783,7 @@ export default function MeScreen() {
 
   const refreshInvitations = useCallback(async () => {
     if (isSessionExitInProgress()) return;
+    if (shouldPauseBackgroundProfileRefresh()) return;
 
     const uid = String(session?.userId || "").trim();
     if (!uid) return;
@@ -995,10 +997,7 @@ export default function MeScreen() {
     async (opts?: { silent?: boolean; bypassThrottle?: boolean }) => {
       if (isSessionExitInProgress()) return;
 
-      if (
-        (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
-        Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) > 0
-      ) {
+      if (shouldPauseBackgroundProfileRefresh()) {
         return;
       }
 
@@ -1026,10 +1025,7 @@ export default function MeScreen() {
     if (isSessionExitInProgress()) return;
 
     const silent = !!opts?.silent;
-    if (
-      (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
-      Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) > 0
-    ) {
+    if (shouldPauseBackgroundProfileRefresh()) {
       return;
     }
 
@@ -1601,6 +1597,7 @@ const resolvedName = useMemo(() => {
     "ProfileTab",
     async () => {
       if (isSessionExitInProgress()) return;
+      if (shouldPauseBackgroundProfileRefresh()) return;
 
       console.log("[ProfileTab] silent refresh");
       await refreshInvitations();
