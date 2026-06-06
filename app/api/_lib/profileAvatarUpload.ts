@@ -76,6 +76,10 @@ export async function uploadProfileAvatarFromDataUrl(
   }
 
   if (isServerlessRuntime()) {
+    console.log("KRISTO_PROFILE_AVATAR_UPLOAD_STORAGE_MISSING", {
+      userId,
+      byteLen: raw.length,
+    });
     console.log("KRISTO_PROFILE_AVATAR_DATA_URL_NEEDS_UPLOAD", {
       userId,
       reason: "serverless-no-object-storage",

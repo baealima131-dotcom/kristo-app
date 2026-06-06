@@ -3792,20 +3792,18 @@ export default function LiveRoomScreen() {
       liveProfileName ||
       "Church Member";
 
-    const uploadedClaimAvatar = await ensureProfileAvatarUploadedBeforeClaim({
+    const beforeClaimAvatar = await ensureProfileAvatarUploadedBeforeClaim({
       userId: currentUserId,
       session: session as any,
       profileAvatarUri: liveProfileAvatarUri,
     });
+    const uploadedClaimAvatar = beforeClaimAvatar.uploadedUrl;
 
-    const claimAvatarUri =
-      uploadedClaimAvatar ||
-      sanitizePersistedClaimAvatarUri(liveProfileAvatarUri, "live-room-claim-profile") ||
-      sanitizePersistedClaimAvatarUri((session as any)?.avatarUrl, "live-room-claim-session-url") ||
-      sanitizePersistedClaimAvatarUri((session as any)?.avatarUri, "live-room-claim-session-uri") ||
-      sanitizePersistedClaimAvatarUri((session as any)?.profileImage, "live-room-claim-session-profileImage") ||
-      sanitizePersistedClaimAvatarUri((session as any)?.photoURL, "live-room-claim-session-photoURL") ||
-      "";
+    const claimAvatarUri = uploadedClaimAvatar
+      ? uploadedClaimAvatar
+      : sanitizePersistedClaimAvatarUri(liveProfileAvatarUri, "live-room-claim-profile") ||
+        sanitizePersistedClaimAvatarUri((session as any)?.avatarUrl, "live-room-claim-session-url") ||
+        "";
 
     try {
       const res: any = await apiPost(
@@ -3820,6 +3818,10 @@ export default function LiveRoomScreen() {
             name,
             role: String((session as any)?.role || "Member"),
             avatarUri: claimAvatarUri,
+            avatarUrl: claimAvatarUri,
+            claimedByAvatarUri: claimAvatarUri,
+            claimedByAvatar: claimAvatarUri,
+            claimedByPhotoUrl: claimAvatarUri,
           },
         },
         {
