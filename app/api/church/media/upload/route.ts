@@ -161,6 +161,8 @@ export async function POST(req: NextRequest) {
     ok: true,
     data: {
       url,
+      mediaUri: url,
+      imageUrl: url,
       filename,
       size: file.size,
       mime: file.type || "application/octet-stream",

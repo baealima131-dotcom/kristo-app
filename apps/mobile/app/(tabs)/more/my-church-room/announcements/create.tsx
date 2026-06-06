@@ -7,6 +7,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import {
+  CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE,
+  compressChurchRoomFeedImage,
+} from "@/src/lib/churchRoomFeedImageCompress";
 
 const BG = "#0B0F17";
 const CARD = "rgba(255,255,255,0.03)";
@@ -147,22 +151,106 @@ export default function CreateAnnouncement() {
 
 
 
+  async function addPickedAssets(assets: any[]) {
+    const compressedUris: string[] = [];
+
+    for (const asset of assets) {
+      const uri = String(asset?.uri || "").trim();
+      if (!uri) continue;
+
+      console.log("KRISTO_CHURCH_ROOM_IMAGE_PICKED", {
+        uri,
+        width: asset?.width ?? null,
+        height: asset?.height ?? null,
+        fileSize: asset?.fileSize ?? null,
+      });
+
+      try {
+        const compressed = await compressChurchRoomFeedImage(
+          uri,
+          asset?.width,
+          asset?.height
+        );
+        console.log("KRISTO_CHURCH_ROOM_IMAGE_COMPRESSED", {
+          uri: compressed.uri,
+          width: compressed.width ?? null,
+          height: compressed.height ?? null,
+          fileSize: compressed.size ?? null,
+        });
+        compressedUris.push(compressed.uri);
+      } catch (compressErr) {
+        const message =
+          compressErr instanceof Error
+            ? compressErr.message
+            : CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE;
+        setErr(message);
+        return;
+      }
+    }
+
+    if (!compressedUris.length) return;
+    setErr(null);
+    setImages((prev) => Array.from(new Set([...prev, ...compressedUris])).slice(0, 3));
+  }
+
   async function launchImagePicker() {
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ((ImagePicker as any).MediaType?.Images ?? (ImagePicker as any).MediaTypeOptions?.Images),
       allowsMultipleSelection: true,
-      quality: 0.9,
+      quality: 1,
       selectionLimit: 3,
     });
 
     if ((res as any).canceled) return;
 
     const assets = (res as any).assets || [];
-    const uris = assets.map((a: any) => a?.uri).filter(Boolean);
-    if (!uris.length) return;
+    if (!assets.length) return;
 
-    setErr(null);
-    setImages((prev) => Array.from(new Set([...prev, ...uris])).slice(0, 3));
+    await addPickedAssets(assets);
+  }
+
+  async function uploadChurchRoomFeedImage(localUri: string): Promise<string> {
+    const fd = new FormData();
+    fd.append("file", {
+      uri: localUri,
+      name: `church-room-${Date.now()}.jpg`,
+      type: "image/jpeg",
+    } as any);
+
+    const uploadRes: any = await apiPost(
+      "/api/church/media/upload",
+      fd,
+      {
+        headers: {
+          accept: "application/json",
+          ...getKristoHeaders(),
+        },
+      }
+    );
+
+    const mediaUri = String(
+      uploadRes?.data?.mediaUri || uploadRes?.data?.url || uploadRes?.data?.imageUrl || ""
+    ).trim();
+
+    if (uploadRes?.ok === false || !mediaUri) {
+      const status = Number(uploadRes?.status || 0) || null;
+      const error = String(uploadRes?.error || "Image upload failed").trim();
+      console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
+        status,
+        error,
+      });
+      if (status === 413) {
+        throw new Error(CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE);
+      }
+      throw new Error(error || "Image upload failed");
+    }
+
+    const imageUrl = String(uploadRes?.data?.imageUrl || mediaUri).trim() || mediaUri;
+    console.log("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_OK", {
+      mediaUri,
+      imageUrl,
+    });
+    return mediaUri;
   }
 
   async function ensurePhotoPermission() {
@@ -255,39 +343,32 @@ export default function CreateAnnouncement() {
 
       const feedType = kind === "announcement" ? "announcement" : "post";
 
-      let uploadedImageUrl = "";
-      if (images[0]) {
-        const fd = new FormData();
-        fd.append("file", {
-          uri: images[0],
-          name: `testimony-${Date.now()}.jpg`,
-          type: "image/jpeg",
-        } as any);
-
-        const uploadRes: any = await apiPost(
-          "/api/church/media/upload",
-          fd,
-          {
-            headers: {
-              accept: "application/json",
-              ...getKristoHeaders(),
-            },
-          }
-        );
-
-        uploadedImageUrl = String(uploadRes?.data?.url || "").trim();
+      const uploadedImageUrl = await uploadChurchRoomFeedImage(images[0]);
+      if (!uploadedImageUrl) {
+        setErr("Image upload failed. Please try again.");
+        return;
       }
 
-      const created = await apiPost(
+      await apiPost(
         "/api/church/feed",
         {
           action: "create_post",
           type: feedType,
           title: t0,
           text: b0,
+          body: b0,
           mediaUri: uploadedImageUrl,
+          imageUrl: uploadedImageUrl,
+          mediaType: "image",
+          postType: kind,
+          kind,
           source: kind,
-          visibility: "global",
+          visibility: postTarget === "home" ? "global" : "church",
+          authorName: profileName,
+          authorUserId: String(session?.userId || "").trim() || undefined,
+          actorLabel: profileName,
+          actorAvatarUri: profileAvatar || undefined,
+          authorAvatarUri: profileAvatar || undefined,
         },
         { headers: getKristoHeaders() }
       );
