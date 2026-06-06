@@ -13,7 +13,7 @@ import Animated, {
   withSpring,
   withTiming,
 } from "react-native-reanimated";
-import { apiPost } from "@/src/lib/kristoApi";
+import { apiPost, getApiBase } from "@/src/lib/kristoApi";
 import {
   feedClaimSchedule,
   feedJoinSlotQueue,
@@ -33,6 +33,7 @@ import {
   resolveScheduleAvatarUri,
   resolveScheduleSlotVisualState,
   SLOT_STATE_THEMES,
+  toMediaSlotAbsoluteAvatarUri,
 } from "@/src/lib/scheduleSlotUtils";
 import { loadProfileDraft } from "@/src/lib/profileStore";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
@@ -98,6 +99,8 @@ function AvatarRing({
   accent,
   live,
   goldFallback,
+  forceShowImage,
+  imageLogMeta,
 }: {
   uri?: string;
   initial: string;
@@ -105,8 +108,18 @@ function AvatarRing({
   accent: string;
   live?: boolean;
   goldFallback?: boolean;
+  forceShowImage?: boolean;
+  imageLogMeta?: {
+    slotId?: string;
+    claimedByUserId?: string;
+  };
 }) {
   const pulse = useSharedValue(0);
+  const [imageError, setImageError] = useState(false);
+
+  useEffect(() => {
+    setImageError(false);
+  }, [uri]);
 
   useEffect(() => {
     if (!live) return;
@@ -132,6 +145,8 @@ function AvatarRing({
 
   const outer = size + 14;
   const inner = size - 4;
+  const shouldRenderImage = Boolean(uri) && (!forceShowImage || !imageError);
+  const showInitialFallback = Boolean(uri) && forceShowImage && imageError;
 
   return (
     <View style={{ width: outer + (live ? 8 : 0), height: outer + (live ? 8 : 0), alignItems: "center", justifyContent: "center" }}>
@@ -181,18 +196,51 @@ function AvatarRing({
           padding: 2.5,
         }}
       >
-        {uri ? (
+        {shouldRenderImage ? (
           <View style={{ width: inner, height: inner, borderRadius: inner / 2, overflow: "hidden" }}>
             <Image
               source={{ uri }}
               style={{ width: inner, height: inner, borderRadius: inner / 2 }}
               resizeMode="cover"
+              onLoad={() => {
+                if (!imageLogMeta) return;
+                console.log("KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_LOADED", {
+                  slotId: String(imageLogMeta.slotId || ""),
+                  claimedByUserId: String(imageLogMeta.claimedByUserId || ""),
+                  avatarUri: String(uri || ""),
+                });
+              }}
+              onError={() => {
+                setImageError(true);
+                if (!imageLogMeta) return;
+                console.log("KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_ERROR", {
+                  slotId: String(imageLogMeta.slotId || ""),
+                  claimedByUserId: String(imageLogMeta.claimedByUserId || ""),
+                  avatarUri: String(uri || ""),
+                });
+              }}
             />
             <LinearGradient
               pointerEvents="none"
               colors={["rgba(255,255,255,0.12)", "transparent", "rgba(0,0,0,0.18)"]}
               style={StyleSheet.absoluteFillObject}
             />
+          </View>
+        ) : showInitialFallback ? (
+          <View
+            style={{
+              width: inner,
+              height: inner,
+              borderRadius: inner / 2,
+              alignItems: "center",
+              justifyContent: "center",
+              overflow: "hidden",
+              backgroundColor: `${accent}33`,
+            }}
+          >
+            <Text style={{ color: "#FFF", fontSize: size * 0.38, fontWeight: "900" }}>
+              {initial}
+            </Text>
           </View>
         ) : (
           <LinearGradient
@@ -433,7 +481,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   onShare,
   onToggleSave,
 }: HomeLiveScheduleCardProps) {
-  const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/$/, "");
+  const apiBase = getApiBase();
   const session = getSessionSync() as any;
   const currentUserId = String(session?.userId || "");
 
@@ -535,7 +583,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     );
   }, [slot, optimisticClaim]);
 
-  const claimedAvatarUri = useMemo(
+  const claimedAvatarResolution = useMemo(
     () =>
       resolveMediaSlotClaimedAvatar({
         slot: slotForAvatar,
@@ -552,7 +600,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             ""
         ).trim(),
         sessionUserId: currentUserId,
-      }).uri,
+      }),
     [
       slotForAvatar,
       slot?.id,
@@ -565,6 +613,37 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       currentUserId,
     ]
   );
+
+  const resolvedClaimedAvatarUri = useMemo(
+    () => toMediaSlotAbsoluteAvatarUri(claimedAvatarResolution.uri, apiBase),
+    [claimedAvatarResolution.uri, apiBase]
+  );
+
+  useEffect(() => {
+    if (!claimed || !claimedAvatarResolution.hasAvatar) return;
+
+    const rawAvatarUri = String(claimedAvatarResolution.uri || "").trim();
+    const avatarUri = String(resolvedClaimedAvatarUri || rawAvatarUri).trim();
+
+    console.log("KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_RENDER", {
+      slotId: String(slot?.id || ""),
+      claimedByUserId: claimUserId,
+      avatarUri,
+      rawAvatarUri,
+      isAbsolute: /^https?:\/\//i.test(avatarUri),
+      startsWithUploads: /^\/?uploads\//i.test(rawAvatarUri),
+      source: claimedAvatarResolution.source,
+      hasAvatar: claimedAvatarResolution.hasAvatar,
+    });
+  }, [
+    claimed,
+    slot?.id,
+    claimUserId,
+    claimedAvatarResolution.hasAvatar,
+    claimedAvatarResolution.uri,
+    claimedAvatarResolution.source,
+    resolvedClaimedAvatarUri,
+  ]);
 
   const claimedByMe = !!claimUserId && claimUserId === currentUserId;
   const claimedByOther = !!claimUserId && claimUserId !== currentUserId;
@@ -1156,11 +1235,16 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                 </View>
                 <View style={styles.hostRow}>
                   <AvatarRing
-                    uri={claimedAvatarUri}
+                    uri={resolvedClaimedAvatarUri}
                     initial={String(claimedBy?.name || "H").slice(0, 1).toUpperCase()}
                     size={58}
                     accent={theme.accent}
                     live={phase === "live"}
+                    forceShowImage={claimedAvatarResolution.hasAvatar}
+                    imageLogMeta={{
+                      slotId: String(slot?.id || ""),
+                      claimedByUserId: claimUserId,
+                    }}
                   />
                   <View style={styles.hostTextWrap}>
                     <Text style={styles.hostName} numberOfLines={1}>

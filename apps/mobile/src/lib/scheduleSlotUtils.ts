@@ -1,4 +1,5 @@
 import { isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
+import { resolveApiBase } from "@/src/lib/kristoEnv";
 
 export type ScheduleSlotPhase = "open" | "claimed" | "live" | "ended" | "upcoming";
 
@@ -217,9 +218,8 @@ export function formatSlotDateLabel(iso?: string, fallback?: string) {
 export function resolveAvatarUri(raw: string, apiBase: string) {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return "";
-  if (trimmed.includes("/profile-avatars/")) return "";
-  if (trimmed.startsWith("/uploads/")) return `${apiBase}${trimmed}`;
-  return trimmed;
+  if (trimmed.includes("/profile-avatars/") && !trimmed.startsWith("/uploads/")) return "";
+  return toMediaSlotAbsoluteAvatarUri(trimmed, apiBase);
 }
 
 /** Hide raw user ids / emails from feed labels. */
@@ -274,9 +274,10 @@ function pickMediaSlotAvatarRaw(slot: any, claimedBy: any): Array<[string, unkno
   ];
 }
 
-export function toMediaSlotAbsoluteAvatarUri(raw: string, apiBase: string) {
+export function toMediaSlotAbsoluteAvatarUri(raw: string, apiBase?: string) {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return "";
+
   if (
     trimmed.startsWith("data:image") ||
     /^https?:\/\//i.test(trimmed) ||
@@ -285,8 +286,11 @@ export function toMediaSlotAbsoluteAvatarUri(raw: string, apiBase: string) {
     return trimmed;
   }
 
-  const base = String(apiBase || "").replace(/\/$/, "");
-  if (trimmed.startsWith("/")) return base ? `${base}${trimmed}` : trimmed;
+  const base = String(apiBase || resolveApiBase() || "").replace(/\/+$/, "");
+  if (!base) return trimmed;
+
+  if (trimmed.startsWith("/")) return `${base}${trimmed}`;
+  if (/^uploads\//i.test(trimmed)) return `${base}/${trimmed}`;
   return trimmed;
 }
 
