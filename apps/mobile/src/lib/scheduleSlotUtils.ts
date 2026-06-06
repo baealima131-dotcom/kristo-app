@@ -1280,6 +1280,219 @@ export function parseLiveAllScheduleSlotsJson(rawParam: unknown) {
   }
 }
 
+export type LiveRoomSlotDisplayState = "active" | "upcoming_claimed" | "open_claimable";
+
+export type LiveRoomSlotQueueItem = {
+  slot: any;
+  slotId: string;
+  slotNumber: number;
+  startMs: number;
+  endMs: number;
+  claimedByUserId: string;
+  claimedByName: string;
+  state: LiveRoomSlotDisplayState;
+};
+
+export type LiveRoomSlotDisplayQueue = {
+  activeSlot: LiveRoomSlotQueueItem | null;
+  sideRailSlots: LiveRoomSlotQueueItem[];
+  bottomSlots: LiveRoomSlotQueueItem[];
+  expiredSlots: LiveRoomSlotQueueItem[];
+};
+
+function liveRoomSlotDedupeKey(slot: any, index = 0) {
+  const slotId = liveStageSlotId(slot);
+  if (slotId) return `id:${slotId}`;
+  const slotNumber = liveStageSlotNumber(slot) || index + 1;
+  return `num:${slotNumber}`;
+}
+
+function isLiveRoomSlotClaimed(slot: any) {
+  const uid = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+  const name = String(slot?.claimedByName || slot?.claimedBy?.name || "").trim();
+  return (
+    !!uid ||
+    !!name ||
+    slot?.claimed === true ||
+    slot?.isClaimed === true ||
+    String(slot?.status || "").toLowerCase() === "claimed" ||
+    String(slot?.status || "").toLowerCase() === "taken"
+  );
+}
+
+function isLiveRoomSlotClosedOrDeleted(slot: any) {
+  if (slot?.skipped) return true;
+  if (slot?.deleted === true || slot?.closed === true) return true;
+  const status = String(slot?.status || "").toLowerCase();
+  return status === "deleted" || status === "closed" || status === "removed";
+}
+
+function compareLiveRoomSlotQueueRows(a: LiveRoomSlotQueueItem, b: LiveRoomSlotQueueItem) {
+  const startDiff = Number(a.startMs || 0) - Number(b.startMs || 0);
+  if (startDiff !== 0) return startDiff;
+  return Number(a.slotNumber || 0) - Number(b.slotNumber || 0);
+}
+
+function toLiveRoomSlotQueueItem(
+  slot: any,
+  state: LiveRoomSlotDisplayState,
+  index = 0
+): LiveRoomSlotQueueItem {
+  const win = resolveLiveRoomSlotTimeWindow(slot);
+  const slotNumber = liveStageSlotNumber(slot) || index + 1;
+  const slotId = liveStageSlotId(slot) || String(slotNumber);
+  return {
+    slot,
+    slotId,
+    slotNumber,
+    startMs: Number(win.startMs || slot?.startMs || 0),
+    endMs: Number(win.endMs || slot?.endMs || 0),
+    claimedByUserId: String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim(),
+    claimedByName: String(
+      slot?.claimedByName || slot?.claimedBy?.name || slot?.name || ""
+    ).trim(),
+    state,
+  };
+}
+
+export function buildLiveRoomSlotDisplayQueue(input: {
+  slots: any[];
+  nowMs: number;
+  sideRailLimit?: number;
+  bottomLimit?: number;
+  logContext?: string;
+}): LiveRoomSlotDisplayQueue {
+  const nowMs = Number(input.nowMs || 0);
+  const sideRailLimit = Math.max(0, Number(input.sideRailLimit ?? 4));
+  const bottomLimit = Math.max(0, Number(input.bottomLimit ?? 4));
+  const sourceSlots = Array.isArray(input.slots) ? input.slots : [];
+
+  const deduped = new Map<string, any>();
+  sourceSlots.forEach((slot, index) => {
+    if (!slot || isLiveRoomSlotClosedOrDeleted(slot)) return;
+    const slotNumber = liveStageSlotNumber(slot) || index + 1;
+    if (!Number.isFinite(slotNumber) || slotNumber <= 0) return;
+    const key = liveRoomSlotDedupeKey(slot, index);
+    const prev = deduped.get(key);
+    deduped.set(key, prev ? pickFresherScheduleSlot(prev, slot) : slot);
+  });
+
+  const expiredSlots: LiveRoomSlotQueueItem[] = [];
+  let activeSlot: LiveRoomSlotQueueItem | null = null;
+  const upcomingClaimed: LiveRoomSlotQueueItem[] = [];
+  const openClaimable: LiveRoomSlotQueueItem[] = [];
+
+  Array.from(deduped.values()).forEach((slot, index) => {
+    const row = toLiveRoomSlotQueueItem(slot, "upcoming_claimed", index);
+    const endMs = Number(row.endMs || 0);
+    const startMs = Number(row.startMs || 0);
+
+    if (endMs > 0 && endMs <= nowMs) {
+      expiredSlots.push({ ...row, state: "upcoming_claimed" });
+      return;
+    }
+
+    const claimed = isLiveRoomSlotClaimed(row.slot);
+    const isActive = claimed && startMs <= nowMs && nowMs < endMs;
+
+    if (isActive) {
+      if (!activeSlot || compareLiveRoomSlotQueueRows(row, activeSlot) < 0) {
+        activeSlot = { ...row, state: "active" };
+      }
+      return;
+    }
+
+    if (claimed && startMs > nowMs) {
+      upcomingClaimed.push({ ...row, state: "upcoming_claimed" });
+      return;
+    }
+
+    if (!claimed && startMs > nowMs) {
+      openClaimable.push({ ...row, state: "open_claimable" });
+    }
+  });
+
+  upcomingClaimed.sort(compareLiveRoomSlotQueueRows);
+  openClaimable.sort(compareLiveRoomSlotQueueRows);
+
+  const activeKey = activeSlot
+    ? liveRoomSlotDedupeKey((activeSlot as LiveRoomSlotQueueItem).slot)
+    : "";
+
+  const sideRailCandidates = upcomingClaimed.filter((row) => {
+    if (!activeKey) return true;
+    return liveRoomSlotDedupeKey(row.slot) !== activeKey;
+  });
+
+  const sideRailSlots = sideRailCandidates.slice(0, sideRailLimit);
+  const sideRailKeys = new Set(sideRailSlots.map((row) => liveRoomSlotDedupeKey(row.slot)));
+
+  const bottomPool = [
+    ...upcomingClaimed.slice(sideRailLimit),
+    ...openClaimable.filter((row) => {
+      const key = liveRoomSlotDedupeKey(row.slot);
+      if (activeKey && key === activeKey) return false;
+      if (sideRailKeys.has(key)) return false;
+      return true;
+    }),
+  ]
+    .sort(compareLiveRoomSlotQueueRows)
+    .filter((row) => !sideRailKeys.has(liveRoomSlotDedupeKey(row.slot)))
+    .slice(0, bottomLimit);
+
+  const bottomSlots = bottomPool;
+
+  console.log("KRISTO_LIVE_ROOM_SLOT_QUEUE_BUILD", {
+    context: input.logContext || "live-room",
+    totalSlots: deduped.size,
+    activeSlotNumber: activeSlot ? Number((activeSlot as LiveRoomSlotQueueItem).slotNumber || 0) : null,
+    sideRailCount: sideRailSlots.length,
+    bottomCount: bottomSlots.length,
+    expiredCount: expiredSlots.length,
+  });
+
+  if (activeSlot) {
+    const row = activeSlot as LiveRoomSlotQueueItem;
+    console.log("KRISTO_LIVE_ROOM_SLOT_QUEUE_ITEM", {
+      area: "big",
+      index: 0,
+      slotId: row.slotId,
+      slotNumber: row.slotNumber,
+      claimedByName: row.claimedByName,
+      state: row.state,
+    });
+  }
+
+  sideRailSlots.forEach((row, index) => {
+    console.log("KRISTO_LIVE_ROOM_SLOT_QUEUE_ITEM", {
+      area: "side",
+      index,
+      slotId: row.slotId,
+      slotNumber: row.slotNumber,
+      claimedByName: row.claimedByName,
+      state: row.state,
+    });
+  });
+
+  bottomSlots.forEach((row, index) => {
+    console.log("KRISTO_LIVE_ROOM_SLOT_QUEUE_ITEM", {
+      area: "bottom",
+      index,
+      slotId: row.slotId,
+      slotNumber: row.slotNumber,
+      claimedByName: row.claimedByName,
+      state: row.state,
+    });
+  });
+
+  return {
+    activeSlot,
+    sideRailSlots,
+    bottomSlots,
+    expiredSlots,
+  };
+}
+
 export const SLOT_STATE_THEMES: Record<
   ScheduleSlotPhase,
   { accent: string; border: string; glow: string; label: string; gradient: [string, string, string] }
