@@ -42,6 +42,52 @@ function isLiveRoomActive() {
   );
 }
 
+// ---- RevenueCat diagnostics helpers --------------------------------------
+
+function describeApiKey(): { kind: "missing" | "placeholder" | "present"; masked: string } {
+  const v = String(getRevenueCatApiKey() || "").trim();
+  if (!v) return { kind: "missing", masked: "" };
+  if (isPlaceholderKey(v)) return { kind: "placeholder", masked: v.slice(0, 6) + "..." };
+  return { kind: "present", masked: `${v.slice(0, 8)}...(len ${v.length})` };
+}
+
+function revenueCatRuntimeInfo() {
+  const key = describeApiKey();
+  return {
+    platform: Platform.OS,
+    dev: __DEV__,
+    hasExpoConfig: Boolean(Constants.expoConfig),
+    hasExtra: Boolean(Constants.expoConfig?.extra),
+    apiKeyKind: key.kind,
+    apiKeyMasked: key.masked,
+    purchasingDisabled: isRevenueCatPurchasingDisabled(),
+  };
+}
+
+/** Human-readable reason the live purchase path is blocked, or null if fine. */
+function revenueCatUnavailableReason(): string | null {
+  if (isRevenueCatPurchasingDisabled()) {
+    return __DEV__
+      ? "dev-build: RevenueCat purchasing disabled in __DEV__"
+      : "subscription-bypass: EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS=1";
+  }
+  if (isLiveRoomActive()) return "live-room-active";
+  const key = describeApiKey();
+  if (key.kind !== "present") return `ios/android RevenueCat api key is ${key.kind}`;
+  return null;
+}
+
+function getRevenueCatErrorDetail(error: unknown) {
+  const e = error as any;
+  return {
+    message: String(e?.message || e || "unknown"),
+    code: e?.code ?? e?.userInfo?.code ?? null,
+    underlyingErrorMessage:
+      e?.underlyingErrorMessage ?? e?.userInfo?.readableErrorCode ?? null,
+    userCancelled: Boolean(e?.userCancelled),
+  };
+}
+
 let configuredAppUserId: string | null = null;
 let configurePromise: Promise<boolean> | null = null;
 let loginPromise: Promise<void> | null = null;
@@ -76,16 +122,23 @@ async function purchasesIsConfigured(): Promise<boolean> {
 }
 
 export async function ensurePurchasesConfigured(): Promise<boolean> {
+  console.log("KRISTO_RC_CONFIG_START", revenueCatRuntimeInfo());
+
   if (isRevenueCatPurchasingDisabled()) {
+    console.log("KRISTO_RC_CONFIG_FAILED", {
+      reason: __DEV__ ? "dev-build-purchasing-disabled" : "subscription-bypass",
+      ...revenueCatRuntimeInfo(),
+    });
     return false;
   }
 
   if (isLiveRoomActive()) {
-    console.log("RevenueCat skipped during live room");
+    console.log("KRISTO_RC_CONFIG_FAILED", { reason: "live-room-active" });
     return false;
   }
 
   if (await purchasesIsConfigured()) {
+    console.log("KRISTO_RC_CONFIG_SUCCESS", { reason: "already-configured" });
     return true;
   }
 
@@ -95,14 +148,31 @@ export async function ensurePurchasesConfigured(): Promise<boolean> {
 
   const apiKey = getRevenueCatApiKey();
   if (isPlaceholderKey(apiKey)) {
-    console.log("RevenueCat configure skipped: missing or placeholder API key");
+    console.log("KRISTO_RC_CONFIG_FAILED", {
+      reason: "missing-or-placeholder-api-key",
+      ...revenueCatRuntimeInfo(),
+    });
     return false;
   }
 
   configurePromise = (async () => {
     applyRevenueCatLogLevel();
-    await Purchases.configure({ apiKey });
-    return purchasesIsConfigured();
+    try {
+      await Purchases.configure({ apiKey });
+      const ok = await purchasesIsConfigured();
+      console.log(ok ? "KRISTO_RC_CONFIG_SUCCESS" : "KRISTO_RC_CONFIG_FAILED", {
+        reason: ok ? "configured" : "configure-returned-not-configured",
+        platform: Platform.OS,
+        apiKeyMasked: describeApiKey().masked,
+      });
+      return ok;
+    } catch (error) {
+      console.log("KRISTO_RC_CONFIG_FAILED", {
+        reason: "configure-threw",
+        ...getRevenueCatErrorDetail(error),
+      });
+      throw error;
+    }
   })();
 
   try {
@@ -135,8 +205,18 @@ export async function syncPurchasesAppUser(appUserID?: string): Promise<void> {
 
   loginAppUserId = safeAppUserId;
   loginPromise = (async () => {
-    await Purchases.logIn(safeAppUserId);
-    configuredAppUserId = safeAppUserId;
+    console.log("KRISTO_RC_LOGIN_START", { appUserId: safeAppUserId });
+    try {
+      await Purchases.logIn(safeAppUserId);
+      configuredAppUserId = safeAppUserId;
+      console.log("KRISTO_RC_LOGIN_SUCCESS", { appUserId: safeAppUserId });
+    } catch (error) {
+      console.log("KRISTO_RC_LOGIN_FAILED", {
+        appUserId: safeAppUserId,
+        ...getRevenueCatErrorDetail(error),
+      });
+      throw error;
+    }
   })();
 
   try {
@@ -162,7 +242,8 @@ async function requireConfiguredPurchases(action: string): Promise<void> {
 
   const ready = await ensurePurchasesConfigured();
   if (!ready || !(await purchasesIsConfigured())) {
-    throw new Error("RevenueCat is not configured yet.");
+    const reason = revenueCatUnavailableReason() || "configure-incomplete";
+    throw new Error(`RevenueCat is not configured yet. (reason: ${reason})`);
   }
 }
 
@@ -178,21 +259,24 @@ export function isOfferingsConfigurationError(error: unknown): boolean {
 }
 
 export function formatSubscriptionSetupError(error: unknown): string {
-  const message = String((error as any)?.message || error || "").trim();
+  const detail = getRevenueCatErrorDetail(error);
+  const message = detail.message.trim();
+  const codeSuffix = detail.code != null ? ` (code ${detail.code})` : "";
 
   if (message.includes("not configured")) {
-    return "RevenueCat is still starting. Close this screen and try again in a moment.";
+    // Surface the actual reason instead of a vague "still starting".
+    return message;
   }
 
   if (isOfferingsConfigurationError(error)) {
     return (
-      "RevenueCat is connected, but App Store products are not available yet. " +
-      "In App Store Connect, submit premium_monthly and premium_yearly " +
-      "with an app version (or attach a StoreKit Configuration file in Xcode for local testing)."
+      "App Store products are not available yet. Submit premium_monthly and " +
+      "premium_yearly in App Store Connect (or attach a StoreKit config in Xcode). " +
+      `Details: ${message}${codeSuffix}`
     );
   }
 
-  return message || "Subscription setup could not be completed. Try again later.";
+  return message ? `${message}${codeSuffix}` : "Subscription setup could not be completed. Try again later.";
 }
 
 export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
@@ -202,10 +286,22 @@ export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
 
   await requireConfiguredPurchases("offerings");
 
+  console.log("KRISTO_RC_OFFERINGS_START", { platform: Platform.OS });
   try {
-    return await Purchases.getOfferings();
+    const offerings = await Purchases.getOfferings();
+    const current = offerings.current;
+    console.log("KRISTO_RC_OFFERINGS_SUCCESS", {
+      currentOfferingId: current?.identifier || null,
+      allOfferingIds: Object.keys(offerings.all || {}),
+      currentPackageCount: current?.availablePackages?.length || 0,
+      currentProductIds: (current?.availablePackages || []).map((p) => p.product.identifier),
+    });
+    return offerings;
   } catch (error) {
-    throw new Error(formatSubscriptionSetupError(error));
+    const detail = getRevenueCatErrorDetail(error);
+    console.log("KRISTO_RC_OFFERINGS_FAILED", detail);
+    // Preserve the real RevenueCat message/code so the UI shows the true cause.
+    throw new Error(`${detail.message}${detail.code != null ? ` (code ${detail.code})` : ""}`);
   }
 }
 
