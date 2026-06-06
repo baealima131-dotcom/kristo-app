@@ -463,13 +463,6 @@ export default function HomeFeedScreen() {
         });
       }
 
-      console.log("KRISTO_COMMENT_COUNT_SOURCE", {
-        postId,
-        serverCount,
-        overrideCount: hasOverride ? overrideCount : null,
-        visibleCount,
-      });
-
       return visibleCount;
     },
     [commentCountOverrides, discussionCountFromItem]

@@ -15,7 +15,11 @@ import {
   resolveScheduleSlotVisualState,
 } from "@/src/lib/scheduleSlotUtils";
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
-import { isKristoVerboseFeedDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
+import { isKristoVerboseFeedDebug, isKristoVerboseFeedIdentityDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
+import {
+  isHiddenInvalidHomeFeedSchedule,
+  markHiddenInvalidHomeFeedSchedule,
+} from "@/src/lib/homeFeedInvalidSchedules";
 import { resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import { getSessionSync } from "@/src/lib/kristoSession";
 
@@ -677,15 +681,15 @@ function mergePostsWithStableScheduleRows(postRows: any[], stableRows: any[]) {
   return [...postRows, ...stableSchedules];
 }
 
-function sanitizeHomeFeedLocalRows(localRows: any[]) {
-  return localRows.filter((row) => {
+function filterRenderableHomeFeedScheduleRows(rows: any[], source: "backend" | "local") {
+  return rows.filter((row) => {
     if (!isHomeFeedMediaScheduleSourceRow(row)) return true;
+
+    const scheduleId = String(row?.id || "").trim();
+    if (scheduleId && isHiddenInvalidHomeFeedSchedule(scheduleId)) return false;
     if (scheduleRowHasValidSlotTimes(row)) return true;
-    console.log("KRISTO_HOME_FEED_SCHEDULE_DEFERRED_INVALID_TIME", {
-      scheduleId: String(row?.id || ""),
-      pendingBackendSync: row?.pendingBackendSync === true,
-      slotCount: Array.isArray(row?.scheduleSlots) ? row.scheduleSlots.length : 0,
-    });
+
+    markHiddenInvalidHomeFeedSchedule(row, source);
     return false;
   });
 }
@@ -763,15 +767,16 @@ export function buildHomeFeedDisplayRows(
   localRows: any[],
   nowMs = Date.now()
 ) {
-  const sanitizedLocalRows = sanitizeHomeFeedLocalRows(localRows);
-  const digest = homeFeedBuildDigest(backendRows, sanitizedLocalRows, nowMs);
+  const sanitizedBackendRows = filterRenderableHomeFeedScheduleRows(backendRows, "backend");
+  const sanitizedLocalRows = filterRenderableHomeFeedScheduleRows(localRows, "local");
+  const digest = homeFeedBuildDigest(sanitizedBackendRows, sanitizedLocalRows, nowMs);
   if (digest === lastHomeFeedBuildDigest && lastHomeFeedBuildResult.length) {
     return lastHomeFeedBuildResult;
   }
 
   const byId = new Map<string, any>();
 
-  for (const row of [...backendRows, ...sanitizedLocalRows]) {
+  for (const row of [...sanitizedBackendRows, ...sanitizedLocalRows]) {
     if (!row) continue;
     const id = String(row?.id || "").trim();
     if (!id) continue;
@@ -803,9 +808,12 @@ export function buildHomeFeedDisplayRows(
   const scheduleSlotCount = display.filter(
     (row) => isHomeFeedScheduleCardRow(row) || isHomeFeedExpandedScheduleSlotRow(row)
   ).length;
-  const hadDeferredLocalSchedule = localRows.some(
-    (row) => isHomeFeedMediaScheduleSourceRow(row) && !scheduleRowHasValidSlotTimes(row)
-  );
+  const hadDeferredLocalSchedule = localRows.some((row) => {
+    if (!isHomeFeedMediaScheduleSourceRow(row)) return false;
+    const id = String(row?.id || "").trim();
+    if (id && isHiddenInvalidHomeFeedSchedule(id)) return false;
+    return !scheduleRowHasValidSlotTimes(row);
+  });
 
   if (scheduleSlotCount === 0 && hadDeferredLocalSchedule && lastStableHomeFeedDisplayRows.length) {
     display = mergePostsWithStableScheduleRows(interleavedPosts, lastStableHomeFeedDisplayRows);
@@ -982,6 +990,8 @@ export function logHomeFeedIdentityAvatarResolve(
   finalAvatarUri: string,
   backupAvatarUri?: string
 ) {
+  if (!isKristoVerboseFeedIdentityDebug()) return;
+
   const final = summarizeFeedAvatarUri(finalAvatarUri, "final");
   const backup = summarizeFeedAvatarUri(backupAvatarUri || "", "backup");
   console.log("KRISTO_FEED_IDENTITY_AVATAR_RESOLVE", {

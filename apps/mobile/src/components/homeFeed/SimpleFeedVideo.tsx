@@ -5,7 +5,6 @@ import { useEvent } from "expo";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
 import {
   activateHomeFeedVideo,
-  pauseAllHomeFeedVideos,
   pauseHomeFeedVideo,
   registerHomeFeedVideo,
   unregisterHomeFeedVideo,
@@ -16,6 +15,7 @@ import {
   touchHomeFeedVideoReadiness,
 } from "@/src/lib/homeFeedVideoReadiness";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
+import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import { hasBrandedVideoPoster, isValidVideoPosterUri } from "./homeFeedUtils";
 import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
 
@@ -105,6 +105,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const readyMsRef = useRef<number | null>(cachedReadyOnMount ? 0 : null);
   const firstFrameMsRef = useRef<number | null>(cachedReadyOnMount && isActive ? 0 : null);
   const timingLoggedRef = useRef(false);
+  const activeHandoffRef = useRef(false);
+  const lastRegisterKeyRef = useRef("");
 
   const logStartupTiming = (mode: HomeFeedVideoWarmMode) => {
     if (timingLoggedRef.current) return;
@@ -132,11 +134,14 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   };
 
   const activateActivePlayback = (reason: string) => {
+    if (!isActive) return;
+    if (activeHandoffRef.current) return;
+    activeHandoffRef.current = true;
+
     try {
       player.muted = false;
       player.play();
     } catch {}
-    pauseAllHomeFeedVideos({ exceptPostId: postId, reason });
     activateHomeFeedVideo(postId, {
       postId,
       shouldPlay: true,
@@ -153,6 +158,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     readyMsRef.current = cachedReadyRef.current ? 0 : null;
     firstFrameMsRef.current = cachedReadyRef.current && warmModeRef.current === "active" ? 0 : null;
 
+    activeHandoffRef.current = false;
+
     if (!screenFocused) return;
 
     try {
@@ -168,7 +175,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   useEffect(() => {
     if (!cachedReadyRef.current || reusedWarmLoggedRef.current) return;
     reusedWarmLoggedRef.current = true;
-    console.log("KRISTO_VIDEO_REUSED_WARM_PLAYER", { id: postId || null });
+    if (isKristoVerboseFeedDebug()) {
+      console.log("KRISTO_VIDEO_REUSED_WARM_PLAYER", { id: postId || null });
+    }
   }, [postId]);
 
   useEffect(() => {
@@ -189,6 +198,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   }, [player, postId]);
 
   useEffect(() => {
+    const registerKey = `${postId}:${warmMode}:${isActive ? 1 : 0}:${firstFrameReady ? 1 : 0}`;
+    if (registerKey === lastRegisterKeyRef.current) return;
+    lastRegisterKeyRef.current = registerKey;
+
     registerHomeFeedVideo(postId, player, {
       postId,
       shouldPlay: isActive,
@@ -210,6 +223,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       readyMsRef.current = cachedReadyRef.current ? 0 : null;
       firstFrameMsRef.current = null;
       setFirstFrameReady(false);
+      activeHandoffRef.current = false;
+      lastRegisterKeyRef.current = "";
 
       try {
         player.muted = true;
@@ -223,12 +238,14 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (!isActive && !shouldPrime) return;
     if (preloadStartLoggedRef.current) return;
     preloadStartLoggedRef.current = true;
-    console.log("KRISTO_VIDEO_WARMUP_START", {
-      id: postId || null,
-      videoUrl: uri,
-      warmMode,
-    });
-    console.log("KRISTO_VIDEO_PRELOAD_START", { id: postId || null, videoUrl: uri });
+    if (isKristoVerboseFeedDebug()) {
+      console.log("KRISTO_VIDEO_WARMUP_START", {
+        id: postId || null,
+        videoUrl: uri,
+        warmMode,
+      });
+      console.log("KRISTO_VIDEO_PRELOAD_START", { id: postId || null, videoUrl: uri });
+    }
   }, [shouldPrime, isActive, screenFocused, postId, uri, warmMode]);
 
   useEffect(() => {
@@ -241,22 +258,17 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
 
     if (isActive) {
-      if (firstFrameReady) {
+      if (!activeHandoffRef.current) {
+        try {
+          player.muted = true;
+          player.play();
+        } catch {}
+      }
+
+      if (firstFrameReady && !activeHandoffRef.current) {
         activateActivePlayback("simple-feed-video-active-handoff");
         logStartupTiming(warmMode);
-        return;
       }
-
-      if (cachedReadyRef.current) {
-        markFirstFrame(true);
-        activateActivePlayback("simple-feed-video-cached-handoff");
-        logStartupTiming(warmMode);
-        return;
-      }
-
-      try {
-        player.play();
-      } catch {}
       return;
     }
 
@@ -315,7 +327,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       markHomeFeedVideoPreloadReady(postId, uri);
       cachedReadyRef.current = true;
       if (shouldPrime) {
-        console.log("KRISTO_VIDEO_PRELOAD_READY", { id: postId || null });
+        if (isKristoVerboseFeedDebug()) {
+          console.log("KRISTO_VIDEO_PRELOAD_READY", { id: postId || null });
+        }
       }
     } else if (isWarm || isPreload) {
       touchHomeFeedVideoReadiness(postId, uri);
@@ -323,8 +337,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     if (isActive) {
       markFirstFrame(false);
-      activateActivePlayback("simple-feed-video-active");
-      logStartupTiming(warmMode);
+      if (!activeHandoffRef.current) {
+        activateActivePlayback("simple-feed-video-active");
+        logStartupTiming(warmMode);
+      }
       return;
     }
 

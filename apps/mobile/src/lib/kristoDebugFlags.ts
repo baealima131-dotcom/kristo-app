@@ -15,6 +15,16 @@ export function isKristoVerboseSlotTimeDebug(): boolean {
   return KRISTO_VERBOSE_SLOT_TIME_DEBUG || KRISTO_VERBOSE_FEED_DEBUG;
 }
 
+/** Video controller register/pause/guard logs (off by default). */
+export function isKristoVerboseVideoControllerDebug(): boolean {
+  return KRISTO_VERBOSE_FEED_DEBUG;
+}
+
+/** Avatar resolve + comment count source logs (off by default). */
+export function isKristoVerboseFeedIdentityDebug(): boolean {
+  return KRISTO_VERBOSE_FEED_DEBUG;
+}
+
 export function shouldEnableRevenueCatDebug(_route?: string | null): boolean {
   if (process.env.EXPO_PUBLIC_KRISTO_REVENUECAT_DEBUG === "1") return true;
   if (!__DEV__) return false;

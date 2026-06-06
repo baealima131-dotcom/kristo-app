@@ -1,3 +1,5 @@
+import { isKristoVerboseVideoControllerDebug } from "@/src/lib/kristoDebugFlags";
+
 type HomeFeedVideoPlayer = {
   pause: () => void;
   play?: () => void;
@@ -28,9 +30,11 @@ type RegistryEntry = {
 
 const registry = new Map<string, RegistryEntry>();
 let activePostId: string | null = null;
+let lastAudioGuardKey = "";
+let lastRegisterKey = "";
 
 function devLog(event: string, meta: Record<string, unknown>) {
-  if (!__DEV__) return;
+  if (!__DEV__ || !isKristoVerboseVideoControllerDebug()) return;
   console.log(event, meta);
 }
 
@@ -86,6 +90,9 @@ function logHomeFeedVideoAudioGuard(
   shouldPlay: boolean,
   action: "force-pause-inactive" | "activate-active"
 ) {
+  const key = `${postId}:${action}:${shouldPlay ? 1 : 0}`;
+  if (key === lastAudioGuardKey) return;
+  lastAudioGuardKey = key;
   devLog("KRISTO_VIDEO_AUDIO_GUARD", {
     postId,
     shouldPlay,
@@ -114,8 +121,6 @@ export function registerHomeFeedVideo(
   const id = String(postId || "").trim();
   if (!id) return;
 
-  // Allow warmup/preload videos to register while muted.
-  // Audio/playback ownership is still blocked below until shouldPlay + videoReady.
   if (!meta.shouldPlay) {
     try {
       player.muted = true;
@@ -137,13 +142,13 @@ export function registerHomeFeedVideo(
 
   if (meta.shouldPlay && meta.videoReady) {
     logHomeFeedVideoAudioGuard(id, true, "activate-active");
-  } else if (__DEV__ && meta.shouldPlay) {
-    devLog("KRISTO_VIDEO_AUDIO_BLOCKED_NOT_READY", {
-      postId: id,
-      reason: meta.reason || "register-not-ready",
-    });
   }
-  devLog("KRISTO_FEED_VIDEO_REGISTER", { postId: id, ...meta });
+
+  const registerKey = `${id}:${meta.shouldPlay ? 1 : 0}:${meta.videoReady ? 1 : 0}:${meta.reason || ""}`;
+  if (registerKey !== lastRegisterKey) {
+    lastRegisterKey = registerKey;
+    devLog("KRISTO_FEED_VIDEO_REGISTER", { postId: id, ...meta });
+  }
 }
 
 export function unregisterHomeFeedVideo(
@@ -191,6 +196,7 @@ export function pauseHomeFeedVideo(
 export function pauseAllHomeFeedVideos(meta: HomeFeedVideoLogMeta = {}) {
   const exceptPostId = String(meta.exceptPostId || "").trim();
   const dead: string[] = [];
+  let pausedCount = 0;
 
   registry.forEach((entry, postId) => {
     if (isExceptActivePlayer(postId, exceptPostId)) return;
@@ -198,6 +204,7 @@ export function pauseAllHomeFeedVideos(meta: HomeFeedVideoLogMeta = {}) {
       dead.push(postId);
       return;
     }
+    pausedCount += 1;
     logHomeFeedVideoAudioGuard(postId, false, "force-pause-inactive");
   });
 
@@ -209,7 +216,9 @@ export function pauseAllHomeFeedVideos(meta: HomeFeedVideoLogMeta = {}) {
     activePostId = null;
   }
 
-  devLog("KRISTO_FEED_VIDEO_PAUSE_ALL", meta);
+  if (pausedCount > 0) {
+    devLog("KRISTO_FEED_VIDEO_PAUSE_ALL", { ...meta, pausedCount });
+  }
 }
 
 export function activateHomeFeedVideo(
@@ -218,6 +227,11 @@ export function activateHomeFeedVideo(
 ) {
   const id = String(postId || "").trim();
   if (!id) return;
+
+  if (activePostId === id && meta.shouldPlay && meta.videoReady) {
+    logHomeFeedVideoAudioGuard(id, true, "activate-active");
+    return;
+  }
 
   pauseAllHomeFeedVideos({
     ...meta,
@@ -228,11 +242,6 @@ export function activateHomeFeedVideo(
   activePostId = id;
   if (meta.shouldPlay && meta.videoReady) {
     logHomeFeedVideoAudioGuard(id, true, "activate-active");
-  } else if (__DEV__ && meta.shouldPlay) {
-    devLog("KRISTO_VIDEO_AUDIO_BLOCKED_NOT_READY", {
-      postId: id,
-      reason: meta.reason || "activate-not-ready",
-    });
   }
   devLog("KRISTO_FEED_VIDEO_ACTIVATE", { postId: id, ...meta });
 }

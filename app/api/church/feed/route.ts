@@ -752,6 +752,45 @@ function isClaimableScheduleFeedItem(item: any) {
   );
 }
 
+function mediaScheduleSlotHasValidTimeWindow(slot: any) {
+  if (!slot) return false;
+  const startMs = Number(slot?.startMs || 0);
+  const endMs = Number(slot?.endMs || 0);
+  if (startMs > 0 && endMs > startMs) return true;
+
+  const startsAtMs = Date.parse(String(slot?.startsAt || ""));
+  const endsAtMs = Date.parse(String(slot?.endsAt || ""));
+  return startsAtMs > 0 && endsAtMs > startsAtMs;
+}
+
+function mediaScheduleFeedItemHasValidSlotTimes(item: any) {
+  if (!isMediaScheduleFeedItem(item)) return true;
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  if (!slots.length) return false;
+  return slots.every((slot: any) => mediaScheduleSlotHasValidTimeWindow(slot));
+}
+
+const hiddenInvalidScheduleIdsServer = new Set<string>();
+
+function filterHomeFeedRenderableRows(rows: any[]) {
+  return rows.filter((item) => {
+    if (!isMediaScheduleFeedItem(item)) return true;
+    if (!mediaScheduleFeedItemHasValidSlotTimes(item)) {
+      const id = String(item?.id || "").trim();
+      if (id && !hiddenInvalidScheduleIdsServer.has(id)) {
+        hiddenInvalidScheduleIdsServer.add(id);
+        console.log("KRISTO_HOME_FEED_SCHEDULE_HIDDEN_INVALID_TIME", {
+          scheduleId: id,
+          source: "api",
+          slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
+        });
+      }
+      return false;
+    }
+    return true;
+  });
+}
+
 function inferOwnershipType(item: any): "church" | "media" | "member" {
   const explicit = String(item?.ownershipType || "").trim().toLowerCase();
   if (explicit === "church" || explicit === "media" || explicit === "member") {
@@ -1686,7 +1725,9 @@ async function handleFeedGet(
 
     const discoverable = isGlobalFeedScope ? isGlobalFeedDiscoverable : isStrictChurchFeedDiscoverable;
     const afterDiscover = allRows.filter((x: any) => discoverable(x, churchId));
-    const homeReadyRows = afterDiscover.filter((x: any) => isHomeFeedReadyItem(x));
+    const homeReadyRows = filterHomeFeedRenderableRows(
+      afterDiscover.filter((x: any) => isHomeFeedReadyItem(x))
+    );
 
     const crossChurchIncluded = isGlobalFeedScope
       ? homeReadyRows.filter((x: any) => {
