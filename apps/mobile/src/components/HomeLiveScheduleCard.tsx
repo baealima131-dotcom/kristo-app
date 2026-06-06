@@ -127,13 +127,6 @@ function AvatarRing({
     const trimmed = String(uri || "").trim();
     if (!trimmed) return "";
     if (!allowDataUrl && isClaimSlotDataUrlAvatar(trimmed)) {
-      if (trimmed && isClaimSlotDataUrlAvatar(trimmed)) {
-        console.log("KRISTO_CLAIMED_SLOT_AVATAR_DATA_URL_REJECTED", {
-          context: "AvatarRing-render",
-          kind: imageLogMeta?.kind,
-          byteLen: trimmed.length,
-        });
-      }
       return "";
     }
     return trimmed;

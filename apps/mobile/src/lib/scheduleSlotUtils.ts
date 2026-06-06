@@ -306,11 +306,6 @@ export function sanitizePersistedClaimAvatarUri(
   if (!trimmed) return "";
 
   if (isClaimSlotDataUrlAvatar(trimmed)) {
-    console.log("KRISTO_CLAIMED_SLOT_AVATAR_DATA_URL_REJECTED", {
-      context,
-      byteLen: trimmed.length,
-      preview: trimmed.slice(0, 48),
-    });
     return "";
   }
 
@@ -376,13 +371,6 @@ export function resolveClaimedUserAvatarUri(args: {
 
   for (const [source, raw] of pickClaimedUserAvatarRaw(slot, claimedBy)) {
     if (isClaimSlotDataUrlAvatar(raw)) {
-      console.log("KRISTO_CLAIMED_SLOT_AVATAR_DATA_URL_REJECTED", {
-        context: "resolveClaimedUserAvatarUri",
-        source,
-        slotId,
-        claimedByUserId,
-        byteLen: String(raw || "").length,
-      });
       continue;
     }
     const uri = resolveRenderableClaimAvatarUri(String(raw || ""), args.apiBase);

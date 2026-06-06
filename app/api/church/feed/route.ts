@@ -589,11 +589,6 @@ function sanitizeClaimSlotAvatarUri(raw: unknown, context = "backend") {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return "";
   if (trimmed.toLowerCase().startsWith("data:image")) {
-    console.log("KRISTO_CLAIMED_SLOT_AVATAR_DATA_URL_REJECTED", {
-      context,
-      byteLen: trimmed.length,
-      preview: trimmed.slice(0, 48),
-    });
     return "";
   }
   if (trimmed.startsWith("file://")) return "";
@@ -1124,16 +1119,7 @@ function resolveFeedPostImageFields(item: any) {
 
   const avatarFields = feedPostImageAvatarFields(item);
   const explicitCandidates = collectExplicitFeedPostImageCandidates(item);
-  let mediaUri = pickFeedPostImageCandidate(explicitCandidates, avatarFields);
-  let repaired = false;
-
-  if (!mediaUri && isChurchRoomFeedPost(item)) {
-    const scanned = scanFeedItemForRepairImageUri(item, avatarFields);
-    if (scanned) {
-      mediaUri = scanned;
-      repaired = true;
-    }
-  }
+  const mediaUri = pickFeedPostImageCandidate(explicitCandidates, avatarFields);
 
   if (!mediaUri) return { repaired: false as const };
 
@@ -1141,7 +1127,7 @@ function resolveFeedPostImageFields(item: any) {
   const existingType = String(item?.type || "").trim().toLowerCase();
 
   return {
-    repaired,
+    repaired: false as const,
     mediaUri,
     imageUrl: String(item?.imageUrl || mediaUri).trim(),
     mediaType: "image" as const,
@@ -1151,7 +1137,6 @@ function resolveFeedPostImageFields(item: any) {
 }
 
 function applyFeedPostImageEnrichment(item: any) {
-  const postId = String(item?.id || "").trim();
   const isVideoItem = isVideoFeedPostItem(item);
   const resolved = resolveFeedPostImageFields(item);
   const finalMediaUri = String(resolved.mediaUri || item?.mediaUri || item?.imageUrl || "").trim();
@@ -1164,40 +1149,12 @@ function applyFeedPostImageEnrichment(item: any) {
     finalMediaType = "image";
   }
 
-  if (isChurchRoomFeedPost(item) || isChurchRoomFeedSource(item?.source || item?.kind)) {
-    console.log("KRISTO_FEED_IMAGE_ENRICH", {
-      postId,
-      source: item?.source,
-      type: item?.type,
-      rawMediaUri: item?.mediaUri,
-      rawImageUrl: item?.imageUrl,
-      finalMediaUri: finalMediaUri || null,
-      finalImageUrl: finalImageUrl || null,
-      finalMediaType: finalMediaType || null,
-      repaired: resolved.repaired === true,
-    });
-  }
-
   if (!finalMediaUri || isVideoItem) {
     return { patch: {} as Record<string, unknown>, repaired: false as const };
   }
 
-  if (resolved.repaired && postId) {
-    void upsertFeedItem({
-      ...(item as ChurchFeedItem),
-      mediaUri: finalMediaUri,
-      imageUrl: finalImageUrl,
-      mediaType: "image",
-    }).catch((error) => {
-      console.warn("KRISTO_FEED_IMAGE_REPAIR_PERSIST_FAILED", {
-        postId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
-
   return {
-    repaired: resolved.repaired === true,
+    repaired: false as const,
     patch: {
       mediaUri: finalMediaUri,
       imageUrl: finalImageUrl,
