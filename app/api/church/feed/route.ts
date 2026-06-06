@@ -83,6 +83,8 @@ import {
 
 export const runtime = "nodejs";
 
+const isServerDev = process.env.NODE_ENV !== "production";
+
 const BUNDLED_DATA_DIR = path.join(process.cwd(), "data");
 const PROFILES_FILE = path.join(BUNDLED_DATA_DIR, "profiles.json");
 const FEED_GET_TIMEOUT_MS = isKristoServerlessRuntime() ? 12000 : 30000;
@@ -2501,7 +2503,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       cleaned.durationMinutes = durationMin;
     }
 
-    if (__DEV__ && normalizedStartMs > 0) {
+    if (isServerDev && normalizedStartMs > 0) {
       console.log("KRISTO_MEDIA_SLOT_PAYLOAD_TIME", {
         source: "api.church.feed.create",
         index,
