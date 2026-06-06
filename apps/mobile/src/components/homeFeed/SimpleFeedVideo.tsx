@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AppState, StyleSheet, View } from "react-native";
+import { ActivityIndicator, AppState, StyleSheet, View } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEvent } from "expo";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
@@ -14,8 +14,11 @@ import {
   unregisterHomeFeedVideo,
 } from "@/src/lib/homeFeedVideoController";
 import {
+  isHomeFeedActiveFirstFrameReady,
   isHomeFeedVideoPreloadReady,
+  markHomeFeedActiveFirstFrame,
   markHomeFeedVideoPreloadReady,
+  subscribeHomeFeedActiveFirstFrame,
   touchHomeFeedVideoReadiness,
 } from "@/src/lib/homeFeedVideoReadiness";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
@@ -37,6 +40,15 @@ type Props = {
 // V1 perf: only emit startup/first-frame timing for the first active video in
 // the session. Subsequent active videos stay quiet to keep logs minimal.
 let firstActiveTimingLogged = false;
+
+// If the active video's first frame takes longer than this, show a small
+// loading indicator over the poster instead of a bare poster/black screen.
+const SLOW_FIRST_FRAME_MS = 2500;
+
+function urlHost(url: string): string | null {
+  const match = String(url || "").match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i);
+  return match ? match[1] : null;
+}
 
 function statusLower(status: string) {
   return String(status || "").trim().toLowerCase();
@@ -83,7 +95,28 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const warmModeRef = useRef(warmMode);
   warmModeRef.current = warmMode;
 
-  const player = useVideoPlayer(uri, (p) => {
+  const isActive = warmMode === "active";
+
+  // V1 perf: the active video loads immediately; the next-video preload defers
+  // loading its source until the active video has reached its first frame, so a
+  // second large R2 download never competes with the active one.
+  const [preloadGateOpen, setPreloadGateOpen] = useState(() =>
+    isHomeFeedActiveFirstFrameReady()
+  );
+
+  useEffect(() => {
+    if (isActive || preloadGateOpen) return;
+    if (isHomeFeedActiveFirstFrameReady()) {
+      setPreloadGateOpen(true);
+      return;
+    }
+    return subscribeHomeFeedActiveFirstFrame(() => setPreloadGateOpen(true));
+  }, [isActive, preloadGateOpen]);
+
+  const sourceLoadAllowed = isActive || preloadGateOpen;
+  const playerSource = sourceLoadAllowed ? uri : null;
+
+  const player = useVideoPlayer(playerSource, (p) => {
     p.loop = true;
     p.muted = true;
     try {
@@ -95,7 +128,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const currentTime = Number((player as any)?.currentTime || 0);
   const playing = Boolean((player as any)?.playing);
 
-  const isActive = warmMode === "active";
   const isPreload = warmMode === "preload";
   const isWarm = warmMode === "warm";
   const shouldPrime = isPreload || isWarm;
@@ -104,6 +136,16 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     () => isActive && cachedReadyOnMount
   );
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
+  const [slowFirstFrame, setSlowFirstFrame] = useState(false);
+
+  useEffect(() => {
+    if (!isActive || firstFrameReady) {
+      setSlowFirstFrame(false);
+      return;
+    }
+    const timer = setTimeout(() => setSlowFirstFrame(true), SLOW_FIRST_FRAME_MS);
+    return () => clearTimeout(timer);
+  }, [isActive, firstFrameReady, uri]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -227,7 +269,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     });
   };
 
-  const logStartupTiming = (mode: HomeFeedVideoWarmMode) => {
+  const logStartupTiming = () => {
     if (timingLoggedRef.current) return;
     timingLoggedRef.current = true;
     // Only the first active video in the session emits startup timing.
@@ -235,26 +277,20 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     firstActiveTimingLogged = true;
     console.log("KRISTO_VIDEO_STARTUP_TIMING", {
       id: postId || null,
-      warmMode: mode,
       msToReady: readyMsRef.current,
       msToFirstFrame: firstFrameMsRef.current,
-      reusedReady: cachedReadyRef.current,
+      videoUrlHost: urlHost(uri),
+      posterHost: urlHost(posterUri),
     });
   };
 
   const markFirstFrame = (fromCache = false) => {
     if (firstFrameMsRef.current === null) {
       firstFrameMsRef.current = fromCache ? 0 : Date.now() - mountMsRef.current;
-      // Keep first-frame timing minimal: only the first active video logs it.
-      if (isActive && !firstActiveTimingLogged) {
-        console.log("KRISTO_VIDEO_FIRST_FRAME_DELAY", {
-          id: postId || null,
-          warmMode,
-          ms: firstFrameMsRef.current,
-          fromCache,
-        });
-      }
     }
+    // Active video first frame opens the preload gate so the next video can
+    // start warming without ever blocking the active one.
+    if (isActive) markHomeFeedActiveFirstFrame();
     setFirstFrameReady((prev) => (prev ? prev : true));
   };
 
@@ -434,7 +470,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       if (firstFrameReady && computeVideoReady()) {
         activateActivePlayback("simple-feed-video-active-handoff");
         recoverAudioIfNeeded("active-playback-effect");
-        logStartupTiming(warmMode);
+        logStartupTiming();
       } else if (!activeHandoffRef.current) {
         try {
           setPlayerMuted(true, "active-pre-handoff", "await-first-frame");
@@ -511,7 +547,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       markFirstFrame(false);
       activateActivePlayback("simple-feed-video-active");
       recoverAudioIfNeeded("status-ready-active");
-      logStartupTiming(warmMode);
+      logStartupTiming();
       return;
     }
 
@@ -586,6 +622,13 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
           />
         </View>
       ) : null}
+      {isActive && !firstFrameReady && slowFirstFrame ? (
+        <View style={styles.loadingOverlay} pointerEvents="none">
+          <View style={styles.loadingPill}>
+            <ActivityIndicator size="small" color="#F4D06F" />
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 });
@@ -610,5 +653,19 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     width: "100%",
     height: "100%",
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 3,
+  },
+  loadingPill: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(3,5,12,0.55)",
   },
 });

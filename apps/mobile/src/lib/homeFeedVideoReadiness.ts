@@ -40,3 +40,33 @@ export function touchHomeFeedVideoReadiness(postId: string, videoUrl: string) {
 export function clearHomeFeedVideoReadiness(postId: string, videoUrl: string) {
   readyByKey.delete(homeFeedVideoCacheKey(postId, videoUrl));
 }
+
+/**
+ * V1 perf gate: the next-video preload must not download concurrently with the
+ * first active video, or it halves the bandwidth and delays the active first
+ * frame. Preload rows defer loading their source until the active video has
+ * shown its first frame (or this gate has already opened earlier).
+ */
+let activeFirstFrameSeen = false;
+const activeFirstFrameListeners = new Set<() => void>();
+
+export function isHomeFeedActiveFirstFrameReady() {
+  return activeFirstFrameSeen;
+}
+
+export function markHomeFeedActiveFirstFrame() {
+  if (activeFirstFrameSeen) return;
+  activeFirstFrameSeen = true;
+  activeFirstFrameListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch {}
+  });
+}
+
+export function subscribeHomeFeedActiveFirstFrame(listener: () => void) {
+  activeFirstFrameListeners.add(listener);
+  return () => {
+    activeFirstFrameListeners.delete(listener);
+  };
+}
