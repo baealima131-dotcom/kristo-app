@@ -762,6 +762,47 @@ export function filterVisibleHomeFeedScheduleRows(rows: any[], nowMs = Date.now(
   return filtered;
 }
 
+const HOME_FEED_NEAR_LIVE_WINDOW_MS = 30 * 60 * 1000;
+
+/** True when a church schedule slot is live now or starting within the near-live window. */
+export function isHomeFeedActiveOrNearLiveChurchScheduleVisible(
+  rows: any[],
+  churchId: string,
+  nowMs = Date.now()
+): boolean {
+  const cid = String(churchId || "").trim();
+  if (!cid) return false;
+
+  return rows.some((row) => {
+    if (!isHomeFeedScheduleCardRow(row)) return false;
+    if (homeFeedRowChurchId(row) !== cid) return false;
+
+    const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+    const slot = slots[0];
+    if (!slot) return false;
+
+    const slotNumber = Math.max(
+      1,
+      Number(row?.slotNumber || slot?.slot || slot?.slotNumber || 1)
+    );
+    const visual = resolveScheduleSlotVisualState(slot, slotNumber - 1, nowMs, {
+      slotId: String(slot?.id || row?.id || ""),
+    });
+    if (!visual || visual.expired) return false;
+    if (visual.phase === "live") return true;
+
+    const isLiveWindow =
+      visual.startMs > 0 && visual.startMs <= nowMs && visual.endMs > nowMs;
+    if (isLiveWindow) return true;
+
+    if (visual.startMs > nowMs && visual.startMs - nowMs <= HOME_FEED_NEAR_LIVE_WINDOW_MS) {
+      return true;
+    }
+
+    return false;
+  });
+}
+
 function isHomeFeedClaimableScheduleSlot(
   slot: any,
   row: any,

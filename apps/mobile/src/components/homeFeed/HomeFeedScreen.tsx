@@ -33,7 +33,9 @@ import {
   filterHomeFeedClaimableSlotRows,
   homeFeedRowChurchId,
   homeFeedScheduleEngagementId,
+  isHomeFeedActiveOrNearLiveChurchScheduleVisible,
   isHomeFeedScheduleCardRow,
+  isImagePost,
   isVideoPost,
   readFeedItemLikedByMe,
 } from "./homeFeedUtils";
@@ -57,7 +59,12 @@ import {
   peekHomeFeedScheduleDirty,
   subscribeHomeFeedScheduleDirty,
 } from "@/src/lib/homeFeedScheduleDirty";
-import { onSlotClaimChanged } from "@/src/lib/slotClaimSync";
+import { onSlotClaimChanged } from "@/src/lib/slotClaimEvents";
+import { pollRemoteSlotClaimUpdates } from "@/src/lib/slotClaimApply";
+import {
+  SLOT_CLAIM_POLL_FALLBACK_MS,
+  SLOT_CLAIM_POLL_LIVE_MS,
+} from "@/src/lib/slotClaimSync";
 
 const CLAIM_SLOT_EMPTY_MESSAGE =
   "No open media slots right now. Check back when your church posts a live schedule.";
@@ -94,6 +101,7 @@ export default function HomeFeedScreen() {
   const [successBanner, setSuccessBanner] = useState("");
 
   const focusHandledRef = useRef("");
+  const reportablePostIdsDigestRef = useRef("");
   const claimSlotFocusHandledRef = useRef("");
   const claimSlotFocusReloadedRef = useRef(false);
   const claimSlotFocusLoadDoneRef = useRef(false);
@@ -242,12 +250,27 @@ export default function HomeFeedScreen() {
   }, [feedFocused, loadFeed]);
 
   useEffect(() => {
-    return onSlotClaimChanged(() => {
+    return onSlotClaimChanged((payload) => {
       if (isHomeFeedRenderPaused()) return;
+
+      console.log("KRISTO_SLOT_CLAIM_BROADCAST_RECEIVED", {
+        churchId: payload.churchId,
+        postId: payload.postId || null,
+        slotId: payload.slotId,
+        action: payload.action,
+        source: payload.source || null,
+      });
+
       setLocalTick((n) => n + 1);
-      void loadFeed("slot-claim-changed", { force: true });
+
+      console.log("KRISTO_SLOT_CLAIM_UI_UPDATED", {
+        source: "broadcast",
+        churchId: payload.churchId,
+        slotId: payload.slotId,
+        action: payload.action,
+      });
     });
-  }, [loadFeed]);
+  }, []);
 
   useEffect(() => {
     if (!feedFocused || homeFeedRenderPaused) return;
@@ -293,21 +316,60 @@ export default function HomeFeedScreen() {
     return feedRows;
   }, [feedRows, isClaimSlotFocus, claimableSlotRows]);
 
+  const viewerChurchId = String(session?.churchId || "").trim();
+
   const hasChurchScheduleSlots = useMemo(() => {
-    const cid = String(session?.churchId || "").trim();
-    if (!cid) return false;
+    if (!viewerChurchId) return false;
     return displayFeedRows.some(
-      (row) => isHomeFeedScheduleCardRow(row) && homeFeedRowChurchId(row) === cid
+      (row) =>
+        isHomeFeedScheduleCardRow(row) && homeFeedRowChurchId(row) === viewerChurchId
     );
-  }, [displayFeedRows, session?.churchId]);
+  }, [displayFeedRows, viewerChurchId]);
+
+  const hasActiveOrLiveChurchSchedule = useMemo(() => {
+    if (!viewerChurchId) return false;
+    return isHomeFeedActiveOrNearLiveChurchScheduleVisible(
+      displayFeedRows,
+      viewerChurchId
+    );
+  }, [displayFeedRows, viewerChurchId]);
+
+  const slotClaimPollIntervalMs = hasActiveOrLiveChurchSchedule
+    ? SLOT_CLAIM_POLL_LIVE_MS
+    : SLOT_CLAIM_POLL_FALLBACK_MS;
 
   useEffect(() => {
-    if (!feedFocused || !hasChurchScheduleSlots || homeFeedRenderPaused) return;
-    const timer = setInterval(() => {
-      void loadFeed("slot-claim-poll", { force: true });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [feedFocused, hasChurchScheduleSlots, homeFeedRenderPaused, loadFeed]);
+    if (!feedFocused || !hasChurchScheduleSlots || homeFeedRenderPaused || !viewerChurchId) {
+      return;
+    }
+
+    let alive = true;
+
+    const runPoll = () => {
+      void pollRemoteSlotClaimUpdates(viewerChurchId, "home-feed-fallback-poll").then(
+        (updated) => {
+          if (!alive || !updated) return;
+          setLocalTick((n) => n + 1);
+          console.log("KRISTO_SLOT_CLAIM_UI_UPDATED", {
+            source: "poll",
+            churchId: viewerChurchId,
+          });
+        }
+      );
+    };
+
+    const timer = setInterval(runPoll, slotClaimPollIntervalMs);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [
+    feedFocused,
+    hasChurchScheduleSlots,
+    homeFeedRenderPaused,
+    viewerChurchId,
+    slotClaimPollIntervalMs,
+  ]);
 
   useEffect(() => {
     if (!feedFocused) return;
@@ -395,12 +457,22 @@ export default function HomeFeedScreen() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!feedRows.length) return;
-
-    const ids = feedRows
+  const reportablePostIdsDigest = useMemo(() => {
+    return feedRows
+      .filter((item) => isVideoPost(item) || isImagePost(item))
       .map((item) => baseFeedId(String(item?.id || "")))
-      .filter(Boolean);
+      .filter(Boolean)
+      .sort()
+      .join("|");
+  }, [feedRows]);
+
+  useEffect(() => {
+    if (!reportablePostIdsDigest) return;
+    if (reportablePostIdsDigest === reportablePostIdsDigestRef.current) return;
+    reportablePostIdsDigestRef.current = reportablePostIdsDigest;
+
+    const ids = reportablePostIdsDigest.split("|").filter(Boolean);
+    if (!ids.length) return;
 
     let alive = true;
     void syncReportedPostIdsFromApi(ids).then((reported) => {
@@ -415,7 +487,7 @@ export default function HomeFeedScreen() {
     return () => {
       alive = false;
     };
-  }, [feedRows]);
+  }, [reportablePostIdsDigest]);
 
   useEffect(() => {
     return () => {

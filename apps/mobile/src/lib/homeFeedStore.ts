@@ -9,7 +9,7 @@ import {
   resolveCanonicalScheduleFeedId,
 } from "@/src/lib/scheduleSlotUtils";
 import { emitClaimUpdated } from "@/src/lib/kristoProfileEvents";
-import { notifySlotClaimChanged } from "@/src/lib/slotClaimSync";
+import { emitSlotClaimChanged } from "@/src/lib/slotClaimEvents";
 import { persistClaimDeleteToBackend } from "@/src/lib/liveBridge";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -843,7 +843,7 @@ export function feedClaimSchedule(
       slotId,
       userId,
     });
-    notifySlotClaimChanged({
+    emitSlotClaimChanged({
       churchId,
       postId: baseId,
       slotId,
@@ -1702,7 +1702,7 @@ export function feedUnclaimSchedule(
         slotId: String(opts.slotId),
         userId: String(opts.userId || ""),
       });
-      notifySlotClaimChanged({
+      emitSlotClaimChanged({
         churchId,
         postId: canonicalId || seedId,
         slotId: String(opts.slotId),

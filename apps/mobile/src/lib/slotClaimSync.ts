@@ -1,4 +1,3 @@
-import { DeviceEventEmitter } from "react-native";
 import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
 import { clearResponseCacheForRequest } from "@/src/lib/kristoTraffic";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -6,26 +5,16 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   fetchMediaScheduleFeedSync,
   resetMediaScheduleSilentReloadCache,
+  type MediaScheduleFeedSync,
 } from "@/src/lib/mediaScheduleSilentReload";
-import { feedSyncMediaScheduleFromBackend } from "@/src/lib/homeFeedStore";
 import { findMediaScheduleFeedForChurch } from "@/src/lib/mediaScheduleLock";
-import { markHomeFeedScheduleDirty } from "@/src/lib/homeFeedScheduleDirty";
 import {
   clearLocalSchedulePendingBackend,
   listPendingLocalScheduleIds,
 } from "@/src/lib/mediaSchedulePendingSync";
 
-export const KRISTO_SLOT_CLAIM_CHANGED = "kristo:slot-claim-changed";
-
-export type SlotClaimChangedPayload = {
-  churchId: string;
-  postId?: string;
-  slotId: string;
-  action: "claim" | "unclaim";
-  userId: string;
-  source?: string;
-  updatedAt?: number;
-};
+export const SLOT_CLAIM_POLL_LIVE_MS = 1000;
+export const SLOT_CLAIM_POLL_FALLBACK_MS = 7000;
 
 function sessionUserId() {
   const session = getSessionSync() as any;
@@ -52,39 +41,23 @@ export function clearSlotClaimCaches(churchId: string, userId?: string) {
   });
 }
 
-export function emitSlotClaimChanged(payload: SlotClaimChangedPayload) {
-  const event: SlotClaimChangedPayload = {
-    ...payload,
-    updatedAt: payload.updatedAt ?? Date.now(),
-  };
+export type ChurchSlotClaimFeedResult = MediaScheduleFeedSync & {
+  scheduleFeed: any | null;
+};
 
-  console.log("KRISTO_SLOT_CLAIM_BROADCAST", {
-    churchId: event.churchId,
-    postId: event.postId || null,
-    slotId: event.slotId,
-    action: event.action,
-    userId: event.userId,
-    source: event.source || null,
-  });
-
-  DeviceEventEmitter.emit(KRISTO_SLOT_CLAIM_CHANGED, event);
-}
-
-export function onSlotClaimChanged(listener: (payload: SlotClaimChangedPayload) => void) {
-  const sub = DeviceEventEmitter.addListener(KRISTO_SLOT_CLAIM_CHANGED, listener);
-  return () => sub.remove();
-}
-
-export async function runFastSlotClaimSync(
-  payload: SlotClaimChangedPayload
-): Promise<{ scheduleFeedId: string | null; rowCount: number } | null> {
-  const cid = String(payload.churchId || "").trim();
+export async function fetchChurchSlotClaimFeed(
+  churchId: string,
+  opts?: { clearCaches?: boolean }
+): Promise<ChurchSlotClaimFeedResult | null> {
+  const cid = String(churchId || "").trim();
   if (!cid) return null;
 
   const session = getSessionSync() as any;
   const userId = String(session?.userId || "").trim();
 
-  clearSlotClaimCaches(cid, userId);
+  if (opts?.clearCaches !== false) {
+    clearSlotClaimCaches(cid, userId);
+  }
 
   try {
     const headers = getKristoHeaders({
@@ -98,69 +71,15 @@ export async function runFastSlotClaimSync(
       strictChurch: true,
     });
 
-    if (scheduleFeed) {
-      feedSyncMediaScheduleFromBackend(scheduleFeed);
-      const feedId = String(scheduleFeed?.id || "").trim();
-      if (feedId) {
-        markHomeFeedScheduleDirty(cid, feedId);
-      }
-    }
-
-    console.log("KRISTO_SLOT_CLAIM_FAST_SYNC", {
-      churchId: cid,
-      postId: payload.postId || null,
-      slotId: payload.slotId,
-      action: payload.action,
-      source: payload.source || null,
-      scheduleFeedId: String(scheduleFeed?.id || ""),
-      rowCount: sync.rows.length,
-      mediaScheduleVersion: sync.mediaScheduleVersion,
-    });
-
     return {
-      scheduleFeedId: String(scheduleFeed?.id || "") || null,
-      rowCount: sync.rows.length,
+      ...sync,
+      scheduleFeed,
     };
   } catch (error) {
     console.log("KRISTO_SLOT_CLAIM_FAST_SYNC_ERROR", {
       churchId: cid,
-      slotId: payload.slotId,
       error: String((error as any)?.message || error),
     });
     return null;
   }
-}
-
-export function notifySlotClaimChanged(
-  payload: SlotClaimChangedPayload,
-  opts?: { fastSync?: boolean }
-) {
-  emitSlotClaimChanged(payload);
-  if (opts?.fastSync) {
-    void runFastSlotClaimSync(payload);
-  }
-}
-
-export async function refreshSlotAfterClaimConflict(options: {
-  churchId: string;
-  postId?: string;
-  slotId: string;
-}) {
-  const cid = String(options.churchId || "").trim();
-  const slotId = String(options.slotId || "").trim();
-
-  console.log("KRISTO_SLOT_ALREADY_CLAIMED_REFRESH", {
-    churchId: cid,
-    postId: options.postId || null,
-    slotId,
-  });
-
-  return runFastSlotClaimSync({
-    churchId: cid,
-    postId: options.postId,
-    slotId,
-    action: "claim",
-    userId: "",
-    source: "claim-conflict-refresh",
-  });
 }
