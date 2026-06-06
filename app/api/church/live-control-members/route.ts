@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
 import {
+  isLiveDatabaseError,
   readLiveJsonFile as readJsonFile,
   updateLiveJsonFile as updateJsonFile,
 } from "@/app/api/_lib/store/liveDb";
@@ -267,159 +268,260 @@ export async function GET(req: NextRequest) {
 
 type PatchAction = "suspend" | "unsuspend";
 
+function normalizePatchAction(raw: string): PatchAction | "" {
+  const action = String(raw || "").trim().toLowerCase();
+  if (action === "suspend" || action === "suspended") return "suspend";
+  if (action === "unsuspend" || action === "unsuspended" || action === "restore" || action === "restored") {
+    return "unsuspend";
+  }
+  return "";
+}
+
 export async function PATCH(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin"]);
-  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+  let churchId = "";
+  let viewerUserId = "";
+  let viewerRole = "";
+  let action: PatchAction | "" = "";
+  let userId = "";
+  let roomId = CHURCH_LIVE_CONTROL_ROOM_ID;
 
-  const { churchId, viewer } = ctxOrRes;
-  const body = await req.json().catch(() => null);
-  if (!body) return json({ ok: false, error: "Invalid JSON body" } satisfies ApiErr, { status: 400 });
+  try {
+    const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin"]);
+    if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
-  const action = String(body.action || "").trim().toLowerCase() as PatchAction;
-  const userId = String(body.userId || body.memberId || "").trim();
-  const roomId = String(body.roomId || CHURCH_LIVE_CONTROL_ROOM_ID).trim();
+    const ctx = ctxOrRes;
+    churchId = String(ctx.churchId || "").trim();
+    viewerUserId = String(ctx.viewer.userId || "").trim();
+    viewerRole = String(ctx.viewer.role || "").trim();
 
-  console.log("[LiveControlMembers] suspend request", {
-    action,
-    churchId,
-    roomId,
-    userId,
-    viewerUserId: viewer.userId,
-    viewerRole: viewer.role,
-  });
+    const body = await req.json().catch(() => null);
+    if (!body) {
+      return json({ ok: false, error: "Invalid JSON body" } satisfies ApiErr, { status: 400 });
+    }
 
-  if (roomId !== CHURCH_LIVE_CONTROL_ROOM_ID) {
-    console.log("[LiveControlMembers] suspend failed", { reason: "unsupported-room", roomId });
-    return json({ ok: false, error: "Unsupported roomId" } satisfies ApiErr, { status: 400 });
-  }
+    action = normalizePatchAction(body.action);
+    userId = String(body.userId || body.memberId || body.targetUserId || "").trim();
+    roomId = String(body.roomId || CHURCH_LIVE_CONTROL_ROOM_ID).trim();
+    const requesterId = String(
+      body.requesterId || body.actorId || viewerUserId || ""
+    ).trim();
 
-  if (action !== "suspend" && action !== "unsuspend") {
-    console.log("[LiveControlMembers] suspend failed", { reason: "invalid-action", action });
-    return json({ ok: false, error: "Invalid action. Use: suspend | unsuspend" } satisfies ApiErr, { status: 400 });
-  }
+    console.log("KRISTO_LIVE_CONTROL_MEMBER_ACTION_START", {
+      action,
+      churchId,
+      roomId,
+      userId,
+      requesterId,
+      viewerUserId,
+      viewerRole,
+    });
 
-  if (!userId) {
-    console.log("[LiveControlMembers] suspend failed", { reason: "missing-userId" });
-    return json({ ok: false, error: "Missing userId" } satisfies ApiErr, { status: 400 });
-  }
+    console.log("[LiveControlMembers] suspend request", {
+      action,
+      churchId,
+      roomId,
+      userId,
+      viewerUserId,
+      viewerRole,
+    });
 
-  const memberships = await getMembershipsForChurch(churchId, "Active");
-  const targetMembership = memberships.find((m) => String(m.userId || "") === userId);
-  if (!targetMembership) {
-    console.log("[LiveControlMembers] suspend failed", { reason: "not-active-church-member", userId });
-    return json({ ok: false, error: "Active church member not found" } satisfies ApiErr, { status: 404 });
-  }
+    if (roomId !== CHURCH_LIVE_CONTROL_ROOM_ID) {
+      console.log("[LiveControlMembers] suspend failed", { reason: "unsupported-room", roomId });
+      return json({ ok: false, error: "Unsupported roomId" } satisfies ApiErr, { status: 400 });
+    }
 
-  const targetChurchRole = (targetMembership.churchRole ?? "Member") as ChurchRole;
-  const viewerIsLeaderRole = viewer.role === "Leader" || viewer.role === "Church_Admin";
-  const viewerIsMcHostOnly =
-    !isPastorAppRole(viewer.role) &&
-    !viewerIsLeaderRole &&
-    (await isMcHostForRoom(churchId, roomId, viewer.userId));
+    if (!action) {
+      console.log("[LiveControlMembers] suspend failed", {
+        reason: "invalid-action",
+        action: String(body.action || ""),
+      });
+      return json(
+        { ok: false, error: "Invalid action. Use: suspend | unsuspend" } satisfies ApiErr,
+        { status: 400 }
+      );
+    }
 
-  if (action === "suspend") {
+    if (!userId) {
+      console.log("[LiveControlMembers] suspend failed", { reason: "missing-userId" });
+      return json({ ok: false, error: "Missing userId" } satisfies ApiErr, { status: 400 });
+    }
+
+    const memberships = await getMembershipsForChurch(churchId, "Active");
+    const targetMembership = memberships.find((m) => String(m.userId || "") === userId);
+    if (!targetMembership) {
+      console.log("[LiveControlMembers] suspend failed", { reason: "not-active-church-member", userId });
+      return json({ ok: false, error: "Active church member not found" } satisfies ApiErr, { status: 404 });
+    }
+
+    const targetChurchRole = (targetMembership.churchRole ?? "Member") as ChurchRole;
+    const viewerIsLeaderRole = viewerRole === "Leader" || viewerRole === "Church_Admin";
+    const viewerIsMcHostOnly =
+      !isPastorAppRole(viewerRole) &&
+      !viewerIsLeaderRole &&
+      (await isMcHostForRoom(churchId, roomId, viewerUserId));
+
+    if (action === "suspend") {
+      const modifyErr = assertCanManageLiveControlTarget({
+        viewerAppRole: viewerRole,
+        viewerUserId,
+        viewerIsMcHostOnly,
+        targetChurchRole,
+        targetUserId: userId,
+      });
+      if (modifyErr) {
+        console.log("[LiveControlMembers] suspend failed", { reason: modifyErr, userId });
+        return json({ ok: false, error: modifyErr } satisfies ApiErr, { status: 403 });
+      }
+
+      const allBefore = await readSuspensions();
+      const existing = allBefore.find(
+        (row) =>
+          row.churchId === churchId &&
+          row.roomId === roomId &&
+          row.userId === userId &&
+          row.status === "Suspended"
+      );
+
+      if (existing) {
+        console.log("[LiveControlMembers] suspend success", {
+          suspended: true,
+          userId,
+          roomId,
+          alreadySuspended: true,
+        });
+        console.log("KRISTO_LIVE_CONTROL_MEMBER_ACTION_DONE", {
+          action,
+          churchId,
+          roomId,
+          userId,
+          suspended: true,
+          alreadySuspended: true,
+        });
+        return json({ ok: true, suspended: true, userId, roomId });
+      }
+
+      const record: LiveControlMemberRow = {
+        id: id(),
+        churchId,
+        roomId,
+        userId,
+        status: "Suspended",
+        suspendedAt: nowIso(),
+        suspendedBy: viewerUserId,
+        updatedAt: nowIso(),
+      };
+
+      await updateJsonFile<LiveControlMemberRow[]>(
+        STORE_FILE,
+        (rows) => {
+          const list = Array.isArray(rows) ? rows : [];
+          return [
+            ...list.filter(
+              (row) => !(row.churchId === churchId && row.roomId === roomId && row.userId === userId)
+            ),
+            record,
+          ];
+        },
+        []
+      );
+
+      try {
+        await removeUserFromMcHosts({
+          churchId,
+          roomId,
+          userId,
+          updatedBy: viewerUserId,
+        });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "mc-host cleanup failed";
+        console.log("[LiveControlMembers] suspend mc-host cleanup warning", { userId, error: msg });
+      }
+
+      console.log("[LiveControlMembers] suspend success", { suspended: true, userId, roomId });
+      console.log("KRISTO_LIVE_CONTROL_MEMBER_ACTION_DONE", {
+        action,
+        churchId,
+        roomId,
+        userId,
+        suspended: true,
+      });
+      return json({ ok: true, suspended: true, userId, roomId });
+    }
+
     const modifyErr = assertCanManageLiveControlTarget({
-      viewerAppRole: viewer.role,
-      viewerUserId: viewer.userId,
+      viewerAppRole: viewerRole,
+      viewerUserId,
       viewerIsMcHostOnly,
       targetChurchRole,
       targetUserId: userId,
     });
     if (modifyErr) {
-      console.log("[LiveControlMembers] suspend failed", { reason: modifyErr, userId });
+      console.log("[LiveControlMembers] suspend failed", { reason: modifyErr, userId, action });
       return json({ ok: false, error: modifyErr } satisfies ApiErr, { status: 403 });
     }
 
     const allBefore = await readSuspensions();
-    const existing = allBefore.find(
-      (row) =>
-        row.churchId === churchId &&
-        row.roomId === roomId &&
-        row.userId === userId &&
-        row.status === "Suspended"
+    const hadSuspension = allBefore.some(
+      (row) => row.churchId === churchId && row.roomId === roomId && row.userId === userId
     );
-
-    if (existing) {
-      console.log("[LiveControlMembers] suspend success", {
-        suspended: true,
-        userId,
-        roomId,
-        alreadySuspended: true,
-      });
-      return json({ ok: true, suspended: true, userId, roomId });
-    }
-
-    const record: LiveControlMemberRow = {
-      id: id(),
-      churchId,
-      roomId,
-      userId,
-      status: "Suspended",
-      suspendedAt: nowIso(),
-      suspendedBy: viewer.userId,
-      updatedAt: nowIso(),
-    };
 
     await updateJsonFile<LiveControlMemberRow[]>(
       STORE_FILE,
       (rows) => {
         const list = Array.isArray(rows) ? rows : [];
-        return [...list.filter((row) => !(row.churchId === churchId && row.roomId === roomId && row.userId === userId)), record];
+        return list.filter(
+          (row) => !(row.churchId === churchId && row.roomId === roomId && row.userId === userId)
+        );
       },
       []
     );
 
-    try {
-      await removeUserFromMcHosts({
-        churchId,
-        roomId,
-        userId,
-        updatedBy: viewer.userId,
-      });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "mc-host cleanup failed";
-      console.log("[LiveControlMembers] suspend mc-host cleanup warning", { userId, error: msg });
-    }
+    console.log("[LiveControlMembers] suspend success", {
+      unsuspended: true,
+      userId,
+      roomId,
+      hadSuspension,
+    });
+    console.log("KRISTO_LIVE_CONTROL_MEMBER_ACTION_DONE", {
+      action,
+      churchId,
+      roomId,
+      userId,
+      unsuspended: true,
+      hadSuspension,
+    });
+    return json({ ok: true, unsuspended: true, userId, roomId });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || "suspend_failed");
+    console.log("KRISTO_LIVE_CONTROL_MEMBER_ACTION_ERROR", {
+      action,
+      churchId,
+      roomId,
+      userId,
+      viewerUserId,
+      viewerRole,
+      error: message,
+      liveDatabaseError: isLiveDatabaseError(error),
+    });
+    console.log("[LiveControlMembers] suspend failed", {
+      reason: "server-error",
+      userId,
+      error: message,
+    });
 
-    console.log("[LiveControlMembers] suspend success", { suspended: true, userId, roomId });
-    return json({ ok: true, suspended: true, userId, roomId });
+    const status = isLiveDatabaseError(error) ? 503 : 500;
+    return json(
+      {
+        ok: false,
+        error: isLiveDatabaseError(error)
+          ? "Live control storage is not configured on the server"
+          : "Could not update live control member",
+        details: { message },
+      } satisfies ApiErr,
+      { status }
+    );
   }
-
-  // unsuspend
-  const modifyErr = assertCanManageLiveControlTarget({
-    viewerAppRole: viewer.role,
-    viewerUserId: viewer.userId,
-    viewerIsMcHostOnly,
-    targetChurchRole,
-    targetUserId: userId,
-  });
-  if (modifyErr) {
-    console.log("[LiveControlMembers] suspend failed", { reason: modifyErr, userId, action });
-    return json({ ok: false, error: modifyErr } satisfies ApiErr, { status: 403 });
-  }
-
-  const allBefore = await readSuspensions();
-  const hadSuspension = allBefore.some(
-    (row) => row.churchId === churchId && row.roomId === roomId && row.userId === userId
-  );
-
-  await updateJsonFile<LiveControlMemberRow[]>(
-    STORE_FILE,
-    (rows) => {
-      const list = Array.isArray(rows) ? rows : [];
-      return list.filter((row) => !(row.churchId === churchId && row.roomId === roomId && row.userId === userId));
-    },
-    []
-  );
-
-  console.log("[LiveControlMembers] suspend success", {
-    unsuspended: true,
-    userId,
-    roomId,
-    hadSuspension,
-  });
-  return json({ ok: true, unsuspended: true, userId, roomId });
 }

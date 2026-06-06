@@ -6687,12 +6687,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         );
 
         if (!res || res.ok === false) {
+          const errMsg = extractApiErrorMessage(res, "Restore failed");
           console.log("[LiveControlMembers] suspend failed", {
             action: "unsuspend",
             userId,
-            error: String(res?.error || "Restore failed"),
+            error: errMsg,
+            status: res?.status ?? null,
           });
-          throw new Error(String(res?.error || "Restore failed"));
+          throw new Error(errMsg);
         }
 
         console.log("[LiveControlMembers] suspend success", {
@@ -6711,7 +6713,10 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
           userId,
           error: String(e?.message || e || "Please try again."),
         });
-        Alert.alert("Could not restore member", String(e?.message || "Please try again."));
+        Alert.alert(
+          "Could not restore member",
+          extractApiErrorMessage(e, String(e?.message || "Please try again."))
+        );
       } finally {
         setAddingAssignmentMember(false);
       }
@@ -6801,13 +6806,15 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         { headers: getKristoHeaders() as any }
       );
 
-      if (!res || res.ok === false) {
-        console.log("[LiveControlMembers] suspend failed", {
-          userId: targetUserId,
-          error: String(res?.error || "Suspend failed"),
-        });
-        throw new Error(String(res?.error || "Suspend failed"));
-      }
+        if (!res || res.ok === false) {
+          const errMsg = extractApiErrorMessage(res, "Suspend failed");
+          console.log("[LiveControlMembers] suspend failed", {
+            userId: targetUserId,
+            error: errMsg,
+            status: res?.status ?? null,
+          });
+          throw new Error(errMsg);
+        }
 
       console.log("[LiveControlMembers] suspend success", {
         suspended: !!res.suspended,
@@ -6834,7 +6841,10 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
         userId: targetUserId,
         error: String(e?.message || e || "Please try again."),
       });
-      Alert.alert("Could not suspend member", String(e?.message || "Please try again."));
+      Alert.alert(
+        "Could not suspend member",
+        extractApiErrorMessage(e, String(e?.message || "Please try again."))
+      );
     } finally {
       setSuspendingAssignmentMember(false);
     }
