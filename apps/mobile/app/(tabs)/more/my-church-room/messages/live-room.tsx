@@ -3300,6 +3300,59 @@ export default function LiveRoomScreen() {
     canPublishLiveVideoNow,
   } = liveStageAuthority;
 
+  const isPastorForLiveRoom =
+    !!currentUserId &&
+    (liveMediaAuthority.isActualChurchPastor || actualChurchPastorUserId === currentUserId);
+
+  const isApprovedMediaHostForLiveRoom =
+    liveMediaAuthority.isMediaHost || isDeclaredMediaHostForThisLive;
+
+  const isChurchAdminForLiveRoom =
+    !!currentUserId &&
+    (sessionRoleText.includes("admin") || routeRoleText.includes("admin")) &&
+    (
+      isMediaOwnerHost ||
+      isPastorForLiveRoom ||
+      isApprovedMediaHostForLiveRoom ||
+      liveMediaAuthority.isMediaScheduleCreator
+    );
+
+  const isSystemAdminForLiveRoom =
+    sessionRoleText.includes("system") ||
+    sessionRoleText.includes("superadmin") ||
+    routeRoleText.includes("system") ||
+    routeRoleText.includes("superadmin");
+
+  const isCurrentActiveSlotOwnerForLiveRoom =
+    !!currentUserId && !!userOwnsCurrentActiveSlot && !!isMyScheduledLiveTurn;
+
+  const canManageLiveHostActions = isMediaInstantLive
+    ? !!(
+        isPastorForLiveRoom ||
+        isApprovedMediaHostForLiveRoom ||
+        isMediaOwnerHost ||
+        isChurchAdminForLiveRoom ||
+        isSystemAdminForLiveRoom
+      )
+    : !!(
+        isPastorForLiveRoom ||
+        isApprovedMediaHostForLiveRoom ||
+        isChurchAdminForLiveRoom ||
+        isSystemAdminForLiveRoom
+      );
+
+  const canSeeLiveHostControls =
+    isPastorForLiveRoom ||
+    isApprovedMediaHostForLiveRoom ||
+    isChurchAdminForLiveRoom ||
+    isSystemAdminForLiveRoom ||
+    isCurrentActiveSlotOwnerForLiveRoom;
+
+  const canSeeActiveSlotOwnerPanel =
+    isCurrentActiveSlotOwnerForLiveRoom && !canManageLiveHostActions;
+
+  const canManageLive = canManageLiveHostActions;
+
   const scheduledPublisherSlotReady =
     isMediaInstantLive ||
     !canPublishLiveVideoNow ||
@@ -4682,6 +4735,7 @@ export default function LiveRoomScreen() {
   const livePatchSigRef = useRef("");
   const liveHeartbeatSigRef = useRef("");
   const canManageLiveRef = useRef(false);
+  const canSeeLiveHostControlsRef = useRef(false);
   const isMyScheduledLiveTurnRef = useRef(false);
 
   const applyBackendLivePatch = useCallback(
@@ -4900,6 +4954,13 @@ export default function LiveRoomScreen() {
   }, [isMediaInstantLive, mediaHeaderShimmerX]);
 
   const openHostDrawer = () => {
+    if (!canSeeLiveHostControls) {
+      console.log("KRISTO_LIVE_HOST_PANEL_BLOCKED_VIEWER", {
+        userId: currentUserId,
+        role: String((session as any)?.role || params.role || "viewer"),
+      });
+      return;
+    }
     setHostDrawerOpen(true);
     Animated.spring(hostDrawerX, {
       toValue: 0,
@@ -4949,17 +5010,19 @@ export default function LiveRoomScreen() {
   }, [requestPolicyOpen, requestPolicyAnim]);
 
   function pressNextLiveSlot() {
-    if (!canManageLive) return;
+    if (!canManageLiveHostActions) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     advanceToNextClaimedSlot("host-next-button");
   }
 
   function pressHostTool(label: string) {
+    if (!canManageLiveHostActions) return;
     setSelectedHostTool(label);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   }
 
   function muteAllHostAudience() {
+    if (!canManageLiveHostActions) return;
     const next: Record<string, boolean> = { ...(miniVideoMutedById || {}) };
     [...scheduledStagePeople, ...guests].forEach((entry: any) => {
       const id = String(entry?.id || "");
@@ -5000,6 +5063,75 @@ export default function LiveRoomScreen() {
             {initials(name)}
           </Text>
         )}
+      </View>
+    );
+  }
+
+  function renderLiveHostSlotOwnerControls() {
+    return (
+      <View style={s.hcActionsWrap as any}>
+        <Text style={s.hcActionsGroupTitle as any}>YOUR SPEAKING SLOT</Text>
+        <Text style={[s.hcEmptyText as any, { marginBottom: 10 }]}>
+          Mic and camera controls are available during your active slot window only.
+        </Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable
+            onPress={() => {
+              toggleMicMuted();
+              Haptics.selectionAsync().catch(() => {});
+            }}
+            style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
+          >
+            <Ionicons name={live.micMuted ? "mic-off-outline" : "mic-outline"} size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>{live.micMuted ? "Unmute" : "Mic"}</Text>
+          </Pressable>
+          {canPublishLiveVideoNow ? (
+            <>
+              <Pressable
+                onPress={() => {
+                  setCameraPaused((v) => !v);
+                  Haptics.selectionAsync().catch(() => {});
+                }}
+                style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
+              >
+                <Ionicons
+                  name={cameraPaused ? "videocam-off-outline" : "videocam-outline"}
+                  size={20}
+                  color="#A78BFA"
+                />
+                <Text style={s.hcActionBtnText as any}>{cameraPaused ? "Camera On" : "Camera Off"}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setCameraFacing((v) => (v === "front" ? "back" : "front"));
+                  Haptics.selectionAsync().catch(() => {});
+                }}
+                style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
+              >
+                <Ionicons name="camera-reverse-outline" size={20} color="#63D1FF" />
+                <Text style={s.hcActionBtnText as any}>Flip</Text>
+              </Pressable>
+            </>
+          ) : null}
+        </View>
+      </View>
+    );
+  }
+
+  function renderLiveHostViewerSafePanel() {
+    return (
+      <View style={s.hcActionsWrap as any}>
+        <Text style={s.hcActionsGroupTitle as any}>WATCHING LIVE</Text>
+        <Text style={[s.hcEmptyText as any, { marginBottom: 12 }]}>
+          You are watching live. Host controls are not available for your account.
+        </Text>
+        <Pressable
+          onPress={() => quitLiveRoom()}
+          style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
+        >
+          <Ionicons name="exit-outline" size={20} color="#DCE9FF" />
+          <Text style={s.hcActionBtnText as any}>Leave Live</Text>
+        </Pressable>
       </View>
     );
   }
@@ -5240,12 +5372,14 @@ export default function LiveRoomScreen() {
   }
 
   function openLayoutStudio() {
+    if (!canManageLiveHostActions) return;
     pressHostTool("Layout");
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     return;
   }
 
   function chooseStudioLayout(next: LayoutMode) {
+    if (!canManageLiveHostActions) return;
     if (next === "focus") {
       setLayoutDraftMode("focus");
       setLayoutMode("focus");
@@ -5397,7 +5531,7 @@ export default function LiveRoomScreen() {
       },
       onPanResponderRelease: (_, g) => {
         if (!hostDrawerOpen) {
-          if (g.dx < -70) {
+          if (g.dx < -70 && canSeeLiveHostControlsRef.current) {
             openHostDrawer();
           } else {
             Animated.timing(hostDrawerX, {
@@ -5839,26 +5973,46 @@ export default function LiveRoomScreen() {
   );
   const routeRoleLower = String(params.role || "").trim().toLowerCase();
 
-  // SECURITY: do not trust cached role/route role for live authority.
-  // Removed hosts must fall back to viewer until backend confirms them again.
-  // Only the church/media owner can manage the whole live.
-  // A claimed slot user can publish only their own mic/camera, but must NOT get host control.
-  // IMPORTANT:
-  // Only MY CHURCH scheduled lives get pastor/admin management authority.
-  // Media instant live keeps original behavior untouched.
-  // FINAL SECURITY RULE:
-  // Only the owner/media host of THIS live can manage the live.
-  // Pastor/admin role from another church must remain viewer.
-  // SECURITY:
-  // Only the REAL owner/media host of THIS live can manage authority controls.
-  // Generic pastors/admins from another church/media must remain viewers.
-  const canManageLive =
-    roleLooksLikeHost;
+  // SECURITY: host management authority is computed above (canManageLiveHostActions).
+  // Claimed slot users may open a limited speaker panel only during their active slot window.
 
   useEffect(() => {
     canManageLiveRef.current = canManageLive;
+    canSeeLiveHostControlsRef.current = canSeeLiveHostControls;
     isMyScheduledLiveTurnRef.current = !!isMyScheduledLiveTurn;
-  }, [canManageLive, isMyScheduledLiveTurn]);
+  }, [canManageLive, canSeeLiveHostControls, isMyScheduledLiveTurn]);
+
+  useEffect(() => {
+    if (!canSeeLiveHostControls && hostDrawerOpen) {
+      closeHostDrawer();
+    }
+  }, [canSeeLiveHostControls, hostDrawerOpen]);
+
+  useEffect(() => {
+    console.log("KRISTO_LIVE_HOST_PANEL_ACCESS", {
+      userId: currentUserId,
+      role: String((session as any)?.role || params.role || "viewer"),
+      isPastor: isPastorForLiveRoom,
+      isApprovedMediaHost: isApprovedMediaHostForLiveRoom,
+      isCurrentActiveSlotOwner: isCurrentActiveSlotOwnerForLiveRoom,
+      canSeeLiveHostControls,
+      source: "live-room",
+    });
+    if (!canSeeLiveHostControls) {
+      console.log("KRISTO_LIVE_HOST_PANEL_BLOCKED_VIEWER", {
+        userId: currentUserId,
+        role: String((session as any)?.role || params.role || "viewer"),
+      });
+    }
+  }, [
+    currentUserId,
+    (session as any)?.role,
+    params.role,
+    isPastorForLiveRoom,
+    isApprovedMediaHostForLiveRoom,
+    isCurrentActiveSlotOwnerForLiveRoom,
+    canSeeLiveHostControls,
+  ]);
 
   useEffect(() => {
     if (isMediaInstantLive) return;
@@ -5932,17 +6086,8 @@ export default function LiveRoomScreen() {
       (!!canEnterBackstage && (isLeaderRole || isClaimedViewer)));
   const isCoHostRole = normalizedRole.includes("co-host") || normalizedRole.includes("cohost");
   const isViewerRole = !canManageLive && !isCoHostRole;
-  const roleLooksLikeHostPanel =
-    sessionRoleText.includes("pastor") ||
-    sessionRoleText.includes("admin") ||
-    sessionRoleText.includes("host") ||
-    routeRoleText.includes("pastor") ||
-    routeRoleText.includes("admin") ||
-    routeRoleText.includes("host");
-  const canSeeHostCommandCenter =
-    canManageLive || isCoHostRole || roleLooksLikeHostPanel;
-
-  const canSeeAudiencePanel = !canSeeHostCommandCenter && !isMediaInstantLive;
+  const canSeeHostCommandCenter = canManageLiveHostActions;
+  const canSeeAudiencePanel = !canSeeLiveHostControls && !isMediaInstantLive;
   const isClaimedMemberAudience = canSeeAudiencePanel && !!myClaimedStageSlot;
 
   useEffect(() => {
@@ -6705,6 +6850,7 @@ export default function LiveRoomScreen() {
   }, [canManageLive, livePresenceKey, liveEnabled]);
 
   function togglePaused() {
+    if (!canManageLiveHostActions) return;
     if (!liveEnabled) {
       Alert.alert("Ready room", "This ready room opens before official live starts.");
       return;
@@ -6780,6 +6926,7 @@ export default function LiveRoomScreen() {
   }
 
   async function endLiveNow() {
+    if (!canManageLiveHostActions) return;
     await pushLiveAction("end-live");
     endLive();
     publishLiveEnded(liveBridgeId);
@@ -6843,7 +6990,7 @@ export default function LiveRoomScreen() {
   }
 
   function handleHostRequestsPress() {
-    if (!canManageLive) return;
+    if (!canManageLiveHostActions) return;
     closeMoreMenu();
 
     const pending = Object.entries(joinRequestsBySlot || {}).find(([, req]: any) => !!req && !req.approved);
@@ -6963,6 +7110,7 @@ ${scheduleAudienceAccessText}`,
           : ({ backgroundColor: "#FF4B6E", shadowColor: "#FF4B6E" } as ViewStyle);
 
   function applyLiveRequestPolicy(nextPolicy: LiveRequestPolicy) {
+    if (!canManageLiveHostActions) return;
     if (!canManageLive) return;
     setRequestPolicy(nextPolicy);
     publishLivePolicy(liveBridgeId, nextPolicy);
@@ -6996,7 +7144,7 @@ ${scheduleAudienceAccessText}`,
 
   const bottomSpacer = <View style={{ height: 96 }} />;
   const rootPanHandlers =
-    canSeeHostCommandCenter
+    canSeeLiveHostControls
       ? hostDrawerPanResponder.panHandlers
       : canSeeAudiencePanel
         ? viewerFlowPanResponder.panHandlers
@@ -7153,7 +7301,7 @@ return (
                   style={[s.vipSoloControl as any, viewerFlowOpen ? s.vipSoloControlOn as any : null]}
                   onPress={() => {
                     Haptics.selectionAsync().catch(() => {});
-                    if (canSeeHostCommandCenter) {
+                    if (canSeeLiveHostControls) {
                       if (hostDrawerOpen) closeHostDrawer();
                       else openHostDrawer();
                       return;
@@ -7165,32 +7313,36 @@ return (
                   <Ionicons
                     name="sparkles-outline"
                     size={23}
-                    color={viewerFlowOpen ? "#F4D06F" : "#FFFFFF"}
+                    color={viewerFlowOpen || hostDrawerOpen ? "#F4D06F" : "#FFFFFF"}
                   />
                   <Text
                     style={[
                       s.vipSoloControlText as any,
-                      viewerFlowOpen ? s.vipSoloControlTextOn as any : null
+                      (viewerFlowOpen || hostDrawerOpen) ? s.vipSoloControlTextOn as any : null
                     ]}
                   >
-                    Studio
+                    {canSeeLiveHostControls ? "Controls" : "Studio"}
                   </Text>
                 </Pressable>
 
-                <Pressable style={s.vipSoloControl as any} onPress={() => setLayoutStudioOpen(true)}>
-                  <Ionicons name="albums-outline" size={23} color="#FFFFFF" />
-                  <Text style={s.vipSoloControlText as any}>Layout</Text>
-                </Pressable>
+                {canManageLiveHostActions ? (
+                  <Pressable style={s.vipSoloControl as any} onPress={() => setLayoutStudioOpen(true)}>
+                    <Ionicons name="albums-outline" size={23} color="#FFFFFF" />
+                    <Text style={s.vipSoloControlText as any}>Layout</Text>
+                  </Pressable>
+                ) : null}
 
                 <Pressable style={s.vipSoloControl as any} onPress={() => Haptics.selectionAsync().catch(() => {})}>
                   <Ionicons name="share-social-outline" size={23} color="#FFFFFF" />
                   <Text style={s.vipSoloControlText as any}>Share</Text>
                 </Pressable>
 
-                <Pressable style={[s.vipSoloControl as any, s.vipSoloEndControl as any]} onPress={endLiveNow}>
-                  <Ionicons name="stop-circle-outline" size={22} color="#FFFFFF" />
-                  <Text style={s.vipSoloControlText as any}>End</Text>
-                </Pressable>
+                {canManageLiveHostActions ? (
+                  <Pressable style={[s.vipSoloControl as any, s.vipSoloEndControl as any]} onPress={endLiveNow}>
+                    <Ionicons name="stop-circle-outline" size={22} color="#FFFFFF" />
+                    <Text style={s.vipSoloControlText as any}>End</Text>
+                  </Pressable>
+                ) : null}
               </ScrollView>
             </View>
           </View>
@@ -9166,7 +9318,7 @@ return (
           </Pressable>
         </Modal>
       </View>
-      {canSeeHostCommandCenter && hostDrawerOpen ? (
+      {hostDrawerOpen ? (
         <Pressable
           pointerEvents="auto"
           style={s.hostDrawerScrim as any}
@@ -9174,7 +9326,7 @@ return (
         />
       ) : null}
 
-      {canSeeHostCommandCenter ? (
+      {(canSeeLiveHostControls || hostDrawerOpen) ? (
       <Animated.View
         pointerEvents={hostDrawerOpen ? "auto" : "none"}
         style={[
@@ -9194,9 +9346,17 @@ return (
         >
           <View style={s.hostDrawerHandle as any} />
           <Text style={s.hostDrawerEyebrow as any}>
-            {isMediaInstantLive ? "MEDIA COMMAND CENTER" : "HOST COMMAND CENTER"}
+            {canManageLiveHostActions
+              ? isMediaInstantLive
+                ? "MEDIA COMMAND CENTER"
+                : "HOST COMMAND CENTER"
+              : canSeeActiveSlotOwnerPanel
+                ? "SPEAKER CONTROLS"
+                : "LIVE ROOM"}
           </Text>
 
+          {canManageLiveHostActions ? (
+          <>
           {!isMediaInstantLive && hostControlLiveSpeaker ? (
             <View style={s.hcLiveHero as any}>
               <View style={s.hcLiveHeroTop as any}>
@@ -9423,6 +9583,12 @@ return (
               </Pressable>
             </View>
           </View>
+          </>
+          ) : canSeeActiveSlotOwnerPanel ? (
+            renderLiveHostSlotOwnerControls()
+          ) : (
+            renderLiveHostViewerSafePanel()
+          )}
         </ScrollView>
       </Animated.View>
       ) : null}
