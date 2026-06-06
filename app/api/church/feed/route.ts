@@ -321,29 +321,52 @@ function profileAvatarForUserId(userId: string) {
 }
 
 function pickProfileAvatar(profile: any) {
-  return String(
-    profile?.avatarUri ||
-      profile?.avatarUrl ||
-      profile?.profileImage ||
-      profile?.photoURL ||
-      profile?.image ||
-      ""
-  ).trim();
+  const candidates = [
+    profile?.avatarUrl,
+    profile?.avatarUri,
+    profile?.profileImage,
+    profile?.photoURL,
+    profile?.image,
+  ];
+  for (const raw of candidates) {
+    const sanitized = sanitizeClaimSlotAvatarUri(raw, "pickProfileAvatar");
+    if (sanitized) return sanitized;
+  }
+  return "";
+}
+
+function sanitizeClaimSlotAvatarUri(raw: unknown, context = "backend") {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  if (trimmed.toLowerCase().startsWith("data:image")) {
+    console.log("KRISTO_CLAIMED_SLOT_AVATAR_DATA_URL_REJECTED", {
+      context,
+      byteLen: trimmed.length,
+      preview: trimmed.slice(0, 48),
+    });
+    return "";
+  }
+  if (trimmed.startsWith("file://")) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/uploads/") || /^uploads\//i.test(trimmed)) return trimmed;
+  return "";
 }
 
 async function resolveClaimerAvatarUri(userId: string, claim?: any) {
   const uid = String(userId || "").trim();
-  const fromClaim = String(
-    claim?.avatarUri ||
-      claim?.avatarUrl ||
-      claim?.claimedByAvatarUri ||
-      claim?.claimedByAvatar ||
-      claim?.claimedByPhotoUrl ||
-      ""
-  ).trim();
-  if (fromClaim) return fromClaim;
+  const claimCandidates = [
+    claim?.avatarUrl,
+    claim?.avatarUri,
+    claim?.claimedByAvatarUri,
+    claim?.claimedByAvatar,
+    claim?.claimedByPhotoUrl,
+  ];
+  for (const raw of claimCandidates) {
+    const sanitized = sanitizeClaimSlotAvatarUri(raw, "claim-payload");
+    if (sanitized) return sanitized;
+  }
 
-  const fromMap = profileAvatarForUserId(uid);
+  const fromMap = sanitizeClaimSlotAvatarUri(profileAvatarForUserId(uid), "profile-map");
   if (fromMap) {
     console.log("KRISTO_CLAIMED_SLOT_AVATAR_HYDRATED", {
       userId: uid,
@@ -377,7 +400,7 @@ async function enrichScheduleSlotClaimAvatar(slot: any) {
   const userId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
   if (!userId) return slot;
 
-  const existing = String(
+  const existingRaw = String(
     slot?.claimedByAvatarUri ||
       slot?.claimedByAvatar ||
       slot?.claimedByAvatarUrl ||
@@ -389,6 +412,7 @@ async function enrichScheduleSlotClaimAvatar(slot: any) {
       slot?.claimedBy?.image ||
       ""
   ).trim();
+  const existing = sanitizeClaimSlotAvatarUri(existingRaw, "feed-enrich-existing");
 
   const avatarUri = existing || (await resolveClaimerAvatarUri(userId));
   if (!avatarUri) return slot;

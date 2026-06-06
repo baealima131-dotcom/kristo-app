@@ -79,6 +79,8 @@ import {
   isBackendFeedScheduleId,
   parseLiveAllScheduleSlotsJson,
   resolveLiveScheduleFeedId,
+  resolvePersistedClaimAvatarUri,
+  sanitizePersistedClaimAvatarUri,
   utf8JsonByteLength,
   cleanFeedLabel,
 } from "@/src/lib/scheduleSlotUtils";
@@ -3789,15 +3791,13 @@ export default function LiveRoomScreen() {
       liveProfileName ||
       "Church Member";
 
-    const avatarUri =
-      String(
-        liveProfileAvatarUri ||
-          (session as any)?.avatarUri ||
-          (session as any)?.avatarUrl ||
-          (session as any)?.profileImage ||
-          (session as any)?.photoURL ||
-          ""
-      ).trim();
+    const claimAvatarUri =
+      sanitizePersistedClaimAvatarUri(liveProfileAvatarUri, "live-room-claim-profile") ||
+      sanitizePersistedClaimAvatarUri((session as any)?.avatarUrl, "live-room-claim-session-url") ||
+      sanitizePersistedClaimAvatarUri((session as any)?.avatarUri, "live-room-claim-session-uri") ||
+      sanitizePersistedClaimAvatarUri((session as any)?.profileImage, "live-room-claim-session-profileImage") ||
+      sanitizePersistedClaimAvatarUri((session as any)?.photoURL, "live-room-claim-session-photoURL") ||
+      "";
 
     try {
       const res: any = await apiPost(
@@ -3811,7 +3811,7 @@ export default function LiveRoomScreen() {
             userId: currentUserId,
             name,
             role: String((session as any)?.role || "Member"),
-            avatarUri,
+            avatarUri: claimAvatarUri,
           },
         },
         {
@@ -3830,26 +3830,31 @@ export default function LiveRoomScreen() {
 
       const key = getRuntimeSlotKey(slot, Math.max(0, Number(slot.slot || 1) - 1));
       const savedSlot = res?.data?.slot || res?.slot || null;
+      const persistedAvatarUri =
+        resolvePersistedClaimAvatarUri(savedSlot) ||
+        claimAvatarUri;
 
       setRuntimeSlotOverrides((prev) => ({
         ...(prev || {}),
         [key]: {
           ...((prev || {})[key] || {}),
+          ...(savedSlot || {}),
           claimed: true,
           isClaimed: true,
           status: "claimed",
           claimedByUserId: currentUserId,
           claimedByName: name,
-          claimedByAvatarUri: avatarUri,
-          claimedByAvatar: avatarUri,
+          claimedByAvatarUri: persistedAvatarUri,
+          claimedByAvatar: persistedAvatarUri,
+          claimedByPhotoUrl: persistedAvatarUri,
           claimedBy: {
+            ...(typeof savedSlot?.claimedBy === "object" ? savedSlot.claimedBy : {}),
             slotId,
             userId: currentUserId,
             name,
             role: String((session as any)?.role || "Member"),
-            avatarUri,
+            avatarUri: persistedAvatarUri,
           },
-          ...(savedSlot || {}),
         },
       }));
 
@@ -3865,14 +3870,16 @@ export default function LiveRoomScreen() {
         status: "claimed",
         claimedByUserId: currentUserId,
         claimedByName: name,
-        claimedByAvatarUri: avatarUri,
-        claimedByAvatar: avatarUri,
+        claimedByAvatarUri: persistedAvatarUri,
+        claimedByAvatar: persistedAvatarUri,
+        claimedByPhotoUrl: persistedAvatarUri,
         claimedBy: {
+          ...(typeof savedSlot?.claimedBy === "object" ? savedSlot.claimedBy : {}),
           slotId,
           userId: currentUserId,
           name,
           role: String((session as any)?.role || "Member"),
-          avatarUri,
+          avatarUri: persistedAvatarUri,
         },
       } as any;
 
@@ -3885,7 +3892,7 @@ export default function LiveRoomScreen() {
         title: String(syncedSlot?.title || syncedSlot?.task || syncedSlot?.slotLabel || syncedSlot?.name || ""),
         claimedByUserId: currentUserId,
         claimedByName: name,
-        claimedByAvatarUri: avatarUri,
+        claimedByAvatarUri: persistedAvatarUri,
         startMs: Number(syncedSlot?.startMs || 0),
         endMs: Number(syncedSlot?.endMs || 0),
         createdAt: Date.now(),

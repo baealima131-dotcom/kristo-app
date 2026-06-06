@@ -29,10 +29,12 @@ import {
   cleanFeedLabel,
   formatSlotDateLabel,
   patchMediaSlotClaimAvatarFields,
+  isClaimSlotDataUrlAvatar,
   resolveMediaSlotClaimedAvatar,
   resolvePersistedClaimAvatarUri,
   resolveScheduleAvatarUri,
   resolveScheduleSlotVisualState,
+  sanitizePersistedClaimAvatarUri,
   SLOT_STATE_THEMES,
   toMediaSlotAbsoluteAvatarUri,
 } from "@/src/lib/scheduleSlotUtils";
@@ -119,9 +121,24 @@ function AvatarRing({
   const pulse = useSharedValue(0);
   const [imageError, setImageError] = useState(false);
 
+  const safeUri = useMemo(() => {
+    const trimmed = String(uri || "").trim();
+    if (!trimmed || isClaimSlotDataUrlAvatar(trimmed)) {
+      if (trimmed && isClaimSlotDataUrlAvatar(trimmed)) {
+        console.log("KRISTO_CLAIMED_SLOT_AVATAR_DATA_URL_REJECTED", {
+          context: "AvatarRing-render",
+          kind: imageLogMeta?.kind,
+          byteLen: trimmed.length,
+        });
+      }
+      return "";
+    }
+    return trimmed;
+  }, [uri, imageLogMeta?.kind]);
+
   useEffect(() => {
     setImageError(false);
-  }, [uri]);
+  }, [safeUri]);
 
   useEffect(() => {
     if (!live) return;
@@ -155,9 +172,9 @@ function AvatarRing({
     imageLogMeta?.kind === "live-host"
       ? "KRISTO_LIVE_HOST_AVATAR_ERROR"
       : "KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_ERROR";
-  const shouldRenderImage = Boolean(uri) && (!forceShowImage || !imageError);
+  const shouldRenderImage = Boolean(safeUri) && (!forceShowImage || !imageError);
   const showInitialFallback = Boolean(forceShowImage && imageError);
-  const showInitialOnly = !uri && !forceShowImage;
+  const showInitialOnly = !safeUri && !forceShowImage;
 
   return (
     <View style={{ width: outer + (live ? 8 : 0), height: outer + (live ? 8 : 0), alignItems: "center", justifyContent: "center" }}>
@@ -196,7 +213,7 @@ function AvatarRing({
       />
       <LinearGradient
         colors={
-          goldFallback && !uri
+          goldFallback && !safeUri
             ? ["#F7D36A", "#D4A843", "#9A6B1F"]
             : [`${accent}55`, `${accent}18`, "rgba(255,255,255,0.06)"]
         }
@@ -210,7 +227,7 @@ function AvatarRing({
         {shouldRenderImage ? (
           <View style={{ width: inner, height: inner, borderRadius: inner / 2, overflow: "hidden" }}>
             <Image
-              source={{ uri }}
+              source={{ uri: safeUri }}
               style={{ width: inner, height: inner, borderRadius: inner / 2 }}
               resizeMode="cover"
               onLoad={() => {
@@ -218,7 +235,7 @@ function AvatarRing({
                 console.log(imageLoadedEvent, {
                   slotId: String(imageLogMeta.slotId || ""),
                   claimedByUserId: String(imageLogMeta.claimedByUserId || ""),
-                  avatarUri: String(uri || ""),
+                  avatarUri: safeUri,
                 });
               }}
               onError={() => {
@@ -227,7 +244,7 @@ function AvatarRing({
                 console.log(imageErrorEvent, {
                   slotId: String(imageLogMeta.slotId || ""),
                   claimedByUserId: String(imageLogMeta.claimedByUserId || ""),
-                  avatarUri: String(uri || ""),
+                  avatarUri: safeUri,
                 });
               }}
             />
@@ -532,7 +549,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               member?.image ||
               ""
           ).trim();
-          if (userId && avatar) map[userId] = avatar;
+          if (userId && avatar) {
+            const sanitized = sanitizePersistedClaimAvatarUri(avatar, "home-live-member-cache");
+            if (sanitized) map[userId] = sanitized;
+          }
         }
         setMemberAvatarByUserId(map);
       })
@@ -579,7 +599,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     loadProfileDraft(claimUserId)
       .then((draft) => {
         if (!alive) return;
-        setClaimerProfileAvatar(String(draft?.avatarUri || "").trim());
+        setClaimerProfileAvatar(
+          sanitizePersistedClaimAvatarUri(draft?.avatarUri, "claimer-profile-draft")
+        );
       })
       .catch(() => {});
     return () => {
@@ -894,9 +916,13 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       });
     }
 
-    const claimAvatarUri = String(
-      session?.avatarUri || session?.avatarUrl || session?.profileImage || profileAvatarUri || ""
-    ).trim();
+    const claimAvatarUri =
+      sanitizePersistedClaimAvatarUri(memberAvatarByUserId[currentUserId], "claim-member-cache") ||
+      sanitizePersistedClaimAvatarUri(profileAvatarUri, "claim-profile-prop") ||
+      sanitizePersistedClaimAvatarUri(session?.avatarUrl, "claim-session-url") ||
+      sanitizePersistedClaimAvatarUri(session?.avatarUri, "claim-session-uri") ||
+      sanitizePersistedClaimAvatarUri(session?.profileImage, "claim-session-profileImage") ||
+      "";
     const claim = {
       slotId,
       userId: currentUserId,
@@ -1004,17 +1030,18 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         });
 
         const backendSlot = res?.slot;
-        const backendAvatar = String(
-          backendSlot?.claimedByAvatarUri ||
-            backendSlot?.claimedByAvatar ||
-            backendSlot?.claimedByPhotoUrl ||
-            backendSlot?.claimedBy?.avatarUri ||
-            ""
-        ).trim();
+        const backendAvatar =
+          sanitizePersistedClaimAvatarUri(backendSlot?.claimedByAvatarUri, "claim-api-slot") ||
+          sanitizePersistedClaimAvatarUri(backendSlot?.claimedByAvatar, "claim-api-slot") ||
+          sanitizePersistedClaimAvatarUri(backendSlot?.claimedByPhotoUrl, "claim-api-slot") ||
+          sanitizePersistedClaimAvatarUri(backendSlot?.claimedBy?.avatarUri, "claim-api-slot") ||
+          "";
         if (backendAvatar) {
           feedClaimSchedule(seedId, {
             ...claim,
             avatarUri: backendAvatar,
+            claimedByAvatarUri: backendAvatar,
+            claimedByPhotoUrl: backendAvatar,
           });
         }
 
@@ -1057,6 +1084,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     currentUserId,
     profileName,
     profileAvatarUri,
+    memberAvatarByUserId,
     onOptimisticClaim,
     claimPress,
   ]);

@@ -7,6 +7,8 @@ import {
   isLocalMediaScheduleId,
   normalizeLiveScheduleSlots,
   resolveCanonicalScheduleFeedId,
+  resolvePersistedClaimAvatarUri,
+  sanitizePersistedClaimAvatarUri,
 } from "@/src/lib/scheduleSlotUtils";
 import { emitClaimUpdated } from "@/src/lib/kristoProfileEvents";
 import { emitSlotClaimChanged } from "@/src/lib/slotClaimEvents";
@@ -545,9 +547,10 @@ function applyClaimPatchToSlot(
 
   const claimedAt = String(slot?.claimedAt || slot?.claimedBy?.claimedAt || new Date().toISOString());
 
-  const avatarUri = String(
-    claim?.avatarUri || slot?.claimedByAvatarUri || slot?.claimedByAvatar || ""
-  ).trim();
+  const avatarUri =
+    sanitizePersistedClaimAvatarUri(claim?.avatarUrl, "local-claim-patch") ||
+    sanitizePersistedClaimAvatarUri(claim?.avatarUri, "local-claim-patch") ||
+    resolvePersistedClaimAvatarUri(slot);
 
   const next = {
     ...slot,
@@ -744,6 +747,10 @@ export function feedClaimSchedule(
     }
 
     const isPerSlotRow = String(it.id || "").includes("__slot_");
+    const persistedClaimAvatar =
+      sanitizePersistedClaimAvatarUri(claim.avatarUrl, "feed-claim-top-level") ||
+      sanitizePersistedClaimAvatarUri(claim.avatarUri, "feed-claim-top-level") ||
+      "";
     const topLevelClaimPatch = isPerSlotRow
       ? {
           claimed: true,
@@ -751,15 +758,15 @@ export function feedClaimSchedule(
           status: "claimed",
           claimedByUserId: userId,
           claimedByName: claim.name || "You",
-          claimedByAvatarUri: claim.avatarUri || "",
-          claimedByAvatar: claim.avatarUri || "",
-          claimedByPhotoUrl: claim.avatarUri || "",
+          claimedByAvatarUri: persistedClaimAvatar,
+          claimedByAvatar: persistedClaimAvatar,
+          claimedByPhotoUrl: persistedClaimAvatar,
           claimedBy: {
             slotId,
             userId,
             name: claim.name || "You",
             role: claim.role || "Member",
-            avatarUri: claim.avatarUri || "",
+            avatarUri: persistedClaimAvatar,
             claimedAt: new Date().toISOString(),
           },
         }
@@ -780,6 +787,10 @@ export function feedClaimSchedule(
   const claimedAt = new Date().toISOString();
   syncUserClaimedSlotStore(baseId, slotId, claim);
 
+  const hintAvatarUri =
+    sanitizePersistedClaimAvatarUri(claim.avatarUrl, "ring-claim-hint") ||
+    sanitizePersistedClaimAvatarUri(claim.avatarUri, "ring-claim-hint") ||
+    "";
   const hint: RingClaimHint = {
     feedId: baseId,
     baseFeedId: baseId,
@@ -790,7 +801,7 @@ export function feedClaimSchedule(
     endMs: Number(claimMeta?.endMs || 0),
     name: claim.name,
     role: claim.role,
-    avatarUri: claim.avatarUri,
+    avatarUri: hintAvatarUri,
     claimedAt,
     churchId: String(claimMeta?.item?.churchId || ""),
     item: claimMeta?.item || null,
