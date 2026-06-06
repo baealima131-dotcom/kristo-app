@@ -53,7 +53,6 @@ import {
   deleteFeedItemsWhere,
   ensureFeedStoreReady,
   getFeedItemById,
-  getFeedItemDebugSnapshot,
   isFeedDatabaseError,
   listFeedItems,
   listFeedItemsForChurch,
@@ -2304,19 +2303,18 @@ async function handleFeedGet(
       const debugId = String(url.searchParams.get("id") || "").trim();
       if (!debugId) return err("id query param is required for debug=feed_item", 400);
 
-      const snapshot = await getFeedItemDebugSnapshot(debugId);
-      if (!snapshot) return err("Feed item not found", 404);
+      const item = await getFeedItemById(debugId);
+      if (!item) return err("Feed item not found", 404);
 
-      const imageReport = buildFeedItemImageDebugReport(snapshot.item, snapshot.rawPayload);
+      const imageReport = buildFeedItemImageDebugReport(item, null);
 
       console.log("KRISTO_FEED_ITEM_DEBUG", {
         postId: debugId,
-        store: snapshot.store,
-        source: snapshot.item?.source,
-        type: snapshot.item?.type,
-        rawMediaUri: snapshot.item?.mediaUri || null,
-        rawImageUrl: (snapshot.item as any)?.imageUrl || null,
-        mediaType: (snapshot.item as any)?.mediaType || null,
+        source: item?.source,
+        type: item?.type,
+        rawMediaUri: item?.mediaUri || null,
+        rawImageUrl: (item as any)?.imageUrl || null,
+        mediaType: (item as any)?.mediaType || null,
         explicitCandidates: imageReport.explicitCandidates,
         scannedImageUri: imageReport.scannedImageUri,
         resolvedMediaUri: imageReport.resolvedMediaUri,
@@ -2327,10 +2325,7 @@ async function handleFeedGet(
 
       return ok({
         postId: debugId,
-        store: snapshot.store,
-        rowMeta: snapshot.rowMeta,
-        item: snapshot.item,
-        rawPayload: snapshot.rawPayload,
+        item,
         imageReport,
       });
     }
