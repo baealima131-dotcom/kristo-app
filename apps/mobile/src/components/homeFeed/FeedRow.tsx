@@ -10,11 +10,12 @@ import { FeedTitleCaption } from "./FeedTitleCaption";
 import { homeFeedChromeOffsets } from "./theme";
 import {
   formatFeedTimestamp,
-  isImagePost,
+  isChurchRoomMemberFeedPost,
   isVideoPost,
-  resolveChurchName,
-  resolveImageUri,
-  resolveMediaName,
+  resolveChurchRoomFeedCaption,
+  resolveFeedPostAccent,
+  resolveFeedPostTypeTitle,
+  resolvePostImageUri,
   resolvePostBody,
   resolvePostTitle,
   resolvePosterUri,
@@ -67,16 +68,18 @@ export const FeedRow = memo(function FeedRow({
   const chrome = useMemo(() => homeFeedChromeOffsets(insets.bottom), [insets.bottom]);
 
   const postId = String(item?.id || "").trim();
-  const churchName = resolveChurchName(item);
-  const mediaName = resolveMediaName(item);
   const whenLabel = formatFeedTimestamp(item?.createdAt);
-  const title = resolvePostTitle(item);
-  const caption = resolvePostBody(item);
+  const churchRoomPost = isChurchRoomMemberFeedPost(item);
+  const postTitle = resolvePostTitle(item);
+  const postBody = resolvePostBody(item);
+  const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle;
+  const caption = churchRoomPost ? resolveChurchRoomFeedCaption(item) : postBody;
+  const postAccent = resolveFeedPostAccent(item);
 
   const video = isVideoPost(item);
-  const image = isImagePost(item);
-  const videoUri = resolveVideoUri(item);
-  const imageUri = resolveImageUri(item);
+  const videoUri = useMemo(() => resolveVideoUri(item), [item]);
+  const resolvedImageUri = useMemo(() => resolvePostImageUri(item), [item]);
+  const willRenderImage = Boolean(resolvedImageUri) && !item?.videoUrl;
   const posterUri = resolvePosterUri(item);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
   const mountVideoPlayer = Boolean(
@@ -85,6 +88,18 @@ export const FeedRow = memo(function FeedRow({
   const shareCount = Number(item?.shareCount || 0);
   const saveCount = Number(item?.saveCount || 0);
   const animateCopy = isActive && screenFocused;
+
+  console.log("[KRISTO_FEED_RENDER_DECISION]", {
+    postId: item?.id,
+    source: item?.source,
+    type: item?.type,
+    mediaType: item?.mediaType,
+    hasVideoUrl: Boolean(item?.videoUrl),
+    mediaUri: item?.mediaUri,
+    imageUrl: item?.imageUrl,
+    resolvedImageUri,
+    willRenderImage,
+  });
 
   return (
     <View style={[styles.slide, { height }]}>
@@ -112,10 +127,10 @@ export const FeedRow = memo(function FeedRow({
               videoUri={videoUri}
             />
           )
-        ) : image && imageUri ? (
-          <ImagePostCard imageUri={imageUri} />
+        ) : willRenderImage ? (
+          <ImagePostCard imageUri={resolvedImageUri} />
         ) : (
-          <TextPostPanel text={title || caption} />
+          <TextPostPanel text={churchRoomPost ? caption || postTitle : postTitle || postBody} />
         )}
       </View>
 
@@ -133,18 +148,30 @@ export const FeedRow = memo(function FeedRow({
       />
 
       <View style={[styles.meta, { bottom: chrome.metaBottom }]} pointerEvents="box-none">
-        <FeedIdentity
-          item={item}
-          churchName={churchName}
-          mediaName={mediaName}
-          whenLabel={whenLabel}
-        />
-        <FeedTitleCaption
-          postId={postId}
-          title={title}
-          caption={caption}
-          isActive={animateCopy}
-        />
+        {churchRoomPost ? (
+          <>
+            <FeedIdentity item={item} whenLabel={whenLabel} />
+            <FeedTitleCaption
+              postId={postId}
+              title=""
+              caption={caption}
+              isActive={animateCopy}
+              accent={postAccent}
+              captionOnly
+            />
+          </>
+        ) : (
+          <>
+            <FeedIdentity item={item} whenLabel={whenLabel} />
+            <FeedTitleCaption
+              postId={postId}
+              title={title}
+              caption={caption}
+              isActive={animateCopy}
+              accent={postAccent}
+            />
+          </>
+        )}
       </View>
 
       <PostActions

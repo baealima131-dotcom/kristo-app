@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveActorIdentity } from "@/app/api/_lib/notificationActor";
+import { getUserById } from "@/app/api/auth/_lib/session";
 import { guard, guardAuth } from "@/app/api/_lib/rbac";
 import { ensureActiveMembershipForSession, getActiveMembership } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
@@ -9,6 +10,7 @@ import { getProfile } from "@/app/api/auth/_lib/profile";
 import {
   ensureProfileAvatarUrlForClaim,
   isPersistedProfileAvatarUrl,
+  pickPersistedProfileAvatarUrl,
 } from "@/app/api/_lib/profileAvatarUpload";
 import { getChurchById } from "@/app/api/_lib/churches";
 import {
@@ -92,6 +94,7 @@ const isServerDev = process.env.NODE_ENV !== "production";
 
 const BUNDLED_DATA_DIR = path.join(process.cwd(), "data");
 const PROFILES_FILE = path.join(BUNDLED_DATA_DIR, "profiles.json");
+const USERS_FILE = path.join(BUNDLED_DATA_DIR, "users.json");
 const FEED_GET_TIMEOUT_MS = isKristoServerlessRuntime() ? 12000 : 30000;
 
 let feedEnrichChurchCache = new Map<string, any>();
@@ -165,6 +168,56 @@ function profileMap(): Record<string, any> {
   }
 }
 
+function usersMapFromFile(): Record<string, any> {
+  try {
+    if (!fs.existsSync(USERS_FILE)) return {};
+    const raw = fs.readFileSync(USERS_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return {};
+    const map: Record<string, any> = {};
+    for (const row of parsed) {
+      const id = String(row?.id || "").trim();
+      if (id) map[id] = row;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+function emailPrefixFromAddress(email: string) {
+  const raw = String(email || "").trim();
+  if (!raw.includes("@")) return "";
+  return raw.split("@")[0]?.trim() || "";
+}
+
+function pickSafeUserDisplayName(args: { userId: string; profile?: any; user?: any }) {
+  const { userId, profile, user } = args;
+  const emailPrefix = emailPrefixFromAddress(
+    String(profile?.email || user?.email || "").trim()
+  );
+  const candidates = [
+    profile?.fullName,
+    profile?.displayName,
+    profile?.name,
+    profile?.username,
+    user?.fullName,
+    user?.displayName,
+    user?.name,
+    user?.username,
+    emailPrefix,
+  ];
+
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (value && !commentAuthorNameLooksLikeUserId(value, userId)) {
+      return value;
+    }
+  }
+
+  return "";
+}
+
 async function churchMediaFor(churchId: string) {
   const cid = String(churchId || "").trim();
   if (!cid) return null;
@@ -192,19 +245,28 @@ async function churchProfileFor(churchId: string) {
 
 function publicUser(userId: string) {
   const p = profileMap()[userId] || {};
+  const u = usersMapFromFile()[userId] || {};
   const name =
-    String(p.fullName || p.displayName || p.name || p.username || "").trim() ||
-    String(p.email || "").split("@")[0] ||
-    userId;
+    pickSafeUserDisplayName({ userId, profile: p, user: u }) || "Member";
 
   const avatarUri = String(
-    p.avatarUri || p.avatarUrl || p.profileImage || p.photoURL || p.image || ""
+    p.avatarUri ||
+      p.avatarUrl ||
+      p.profileImage ||
+      p.photoURL ||
+      p.image ||
+      u.avatarUri ||
+      u.avatarUrl ||
+      u.profileImage ||
+      u.photoURL ||
+      u.image ||
+      ""
   ).trim();
 
   return {
     authorName: name,
     authorAvatarUri: avatarUri,
-    authorInitial: name.trim().charAt(0).toUpperCase() || "U",
+    authorInitial: name.trim().charAt(0).toUpperCase() || "M",
   };
 }
 
@@ -217,6 +279,143 @@ function commentAuthorNameLooksLikeUserId(value: string, userId: string) {
   if (/^[a-f0-9-]{18,}$/i.test(v)) return true;
   if (v.length >= 20 && !v.includes(" ")) return true;
   return false;
+}
+
+function resolveFeedAuthorDisplayName(item: any, fallbackAuthor: { authorName: string }) {
+  const userId = String(item?.createdBy || "").trim();
+  const storedCandidates = [
+    item?.authorName,
+    item?.actorLabel,
+    item?.postedByName,
+    item?.displayName,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  for (const candidate of storedCandidates) {
+    if (!commentAuthorNameLooksLikeUserId(candidate, userId)) return candidate;
+  }
+
+  const fallback = String(fallbackAuthor.authorName || "").trim();
+  if (fallback && !commentAuthorNameLooksLikeUserId(fallback, userId)) return fallback;
+
+  return "Member";
+}
+
+function buildPersistedAuthorFields(
+  name: string,
+  userId: string,
+  source?: any
+): {
+  authorName: string;
+  actorLabel: string;
+  postedByName: string;
+  displayName: string;
+  authorAvatarUri?: string;
+} {
+  const trimmed = String(name || "").trim();
+  const clean =
+    trimmed && !commentAuthorNameLooksLikeUserId(trimmed, userId) ? trimmed : "Member";
+  const avatar = firstNonEmptyAvatar(
+    source?.authorAvatarUri,
+    source?.actorAvatarUri,
+    source?.profileAvatarUri,
+    source?.avatarUri,
+    source?.profileImage
+  );
+
+  return {
+    authorName: clean,
+    actorLabel: clean,
+    postedByName: clean,
+    displayName: clean,
+    ...(avatar ? { authorAvatarUri: avatar } : {}),
+  };
+}
+
+async function resolvePersistedFeedAuthorFields(args: {
+  userId: string;
+  ctx?: any;
+  body?: any;
+  item?: any;
+}): Promise<{
+  authorName: string;
+  actorLabel: string;
+  postedByName: string;
+  displayName: string;
+  authorAvatarUri?: string;
+}> {
+  const userId = String(args.userId || "").trim();
+  const source = args.item || args.body || {};
+
+  const storedCandidates = [
+    source?.authorName,
+    source?.actorLabel,
+    source?.postedByName,
+    source?.displayName,
+    cleanText(args.body?.authorName, 240),
+    cleanText(args.body?.actorLabel, 240),
+    cleanText(args.body?.postedByName, 240),
+    cleanText(args.body?.displayName, 240),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  for (const candidate of storedCandidates) {
+    if (!commentAuthorNameLooksLikeUserId(candidate, userId)) {
+      return finalizePersistedAuthorFields(
+        buildPersistedAuthorFields(candidate, userId, source),
+        userId,
+        source
+      );
+    }
+  }
+
+  const viewerId = String(args.ctx?.viewer?.userId || args.ctx?.userId || "").trim();
+  if (userId && viewerId && userId === viewerId) {
+    const viewer = args.ctx?.viewer || {};
+    const ctxName = nameFromViewer(viewer);
+    if (ctxName && !commentAuthorNameLooksLikeUserId(ctxName, userId)) {
+      return finalizePersistedAuthorFields(
+        buildPersistedAuthorFields(ctxName, userId, {
+          ...source,
+          authorAvatarUri: avatarFromViewer(viewer) || source?.authorAvatarUri,
+          actorAvatarUri: avatarFromViewer(viewer) || source?.actorAvatarUri,
+        }),
+        userId,
+        {
+          ...source,
+          authorAvatarUri: avatarFromViewer(viewer) || source?.authorAvatarUri,
+          actorAvatarUri: avatarFromViewer(viewer) || source?.actorAvatarUri,
+        }
+      );
+    }
+  }
+
+  const identity = userId ? await resolveActorIdentity(userId) : { name: "", avatar: "" };
+  const authUser = userId ? await getUserById(userId).catch(() => null) : null;
+  const fallback = publicUser(userId);
+  let finalName = resolveReadAuthorName(userId, "", identity, fallback, authUser?.email);
+  if (finalName === "Member") {
+    const fromAuthUser = pickSafeUserDisplayName({
+      userId,
+      profile: profileMap()[userId],
+      user: authUser,
+    });
+    if (fromAuthUser) finalName = fromAuthUser;
+  }
+
+  const authorAvatarUri = await resolveFeedAuthorAvatarUri(userId, source, identity);
+
+  return finalizePersistedAuthorFields(
+    buildPersistedAuthorFields(finalName, userId, {
+      ...source,
+      authorAvatarUri,
+    }),
+    userId,
+    { ...source, authorAvatarUri },
+    identity
+  );
 }
 
 function nameFromViewer(viewer: any) {
@@ -273,6 +472,51 @@ function avatarFromProfileMap(userId: string) {
   );
 }
 
+async function resolveFeedAuthorAvatarUri(
+  userId: string,
+  source: any,
+  identity?: { avatar?: string }
+) {
+  const uid = String(userId || "").trim();
+  const fromSource = firstNonEmptyAvatar(
+    source?.authorAvatarUri,
+    source?.actorAvatarUri,
+    source?.profileAvatarUri,
+    source?.avatarUri,
+    source?.avatarUrl,
+    source?.profileImage,
+    source?.photoURL,
+    identity?.avatar,
+    avatarFromProfileMap(uid),
+    uid ? publicUser(uid).authorAvatarUri : ""
+  );
+  if (fromSource) return fromSource;
+
+  if (!uid) return "";
+
+  try {
+    const profile = (await getProfile(uid)) || null;
+    const persisted = profile ? pickPersistedProfileAvatarUrl(profile) : "";
+    if (persisted) return persisted;
+  } catch {
+    // ignore profile read errors
+  }
+
+  return "";
+}
+
+async function finalizePersistedAuthorFields(
+  fields: ReturnType<typeof buildPersistedAuthorFields>,
+  userId: string,
+  source: any,
+  identity?: { avatar?: string }
+) {
+  if (String(fields.authorAvatarUri || "").trim()) return fields;
+  const authorAvatarUri = await resolveFeedAuthorAvatarUri(userId, source, identity);
+  if (!authorAvatarUri) return fields;
+  return { ...fields, authorAvatarUri };
+}
+
 async function resolveCommentAuthorSnapshot(viewerUserId: string, ctx: any) {
   const viewer = ctx?.viewer || {};
   const ctxName = nameFromViewer(viewer);
@@ -284,10 +528,12 @@ async function resolveCommentAuthorSnapshot(viewerUserId: string, ctx: any) {
 
   let finalAuthorName = ctxName || identity.name || publicUserName;
   if (commentAuthorNameLooksLikeUserId(finalAuthorName, viewerUserId)) {
+    const authUser = await getUserById(viewerUserId).catch(() => null);
     const profileEmail = String(profileMap()[viewerUserId]?.email || "").trim();
-    const emailPrefix = String(viewer?.email || profileEmail || "")
-      .split("@")[0]
-      .trim();
+    const fileUserEmail = String(usersMapFromFile()[viewerUserId]?.email || "").trim();
+    const emailPrefix = emailPrefixFromAddress(
+      String(viewer?.email || authUser?.email || profileEmail || fileUserEmail || "").trim()
+    );
     if (emailPrefix && !commentAuthorNameLooksLikeUserId(emailPrefix, viewerUserId)) {
       finalAuthorName = emailPrefix;
     } else {
@@ -478,7 +724,8 @@ function resolveReadAuthorName(
   userId: string,
   snapName: string,
   identity: CommentActorIdentity,
-  fallback: ReturnType<typeof publicUser>
+  fallback: ReturnType<typeof publicUser>,
+  authUserEmail?: string
 ) {
   if (snapName && !commentAuthorNameLooksLikeUserId(snapName, userId)) {
     return snapName;
@@ -490,7 +737,10 @@ function resolveReadAuthorName(
   }
 
   const profileEmail = String(profileMap()[userId]?.email || "").trim();
-  const emailPrefix = profileEmail.includes("@") ? profileEmail.split("@")[0].trim() : "";
+  const fileUserEmail = String(usersMapFromFile()[userId]?.email || "").trim();
+  const emailPrefix = emailPrefixFromAddress(
+    String(authUserEmail || profileEmail || fileUserEmail || "").trim()
+  );
   if (emailPrefix && !commentAuthorNameLooksLikeUserId(emailPrefix, userId)) {
     return emailPrefix;
   }
@@ -539,8 +789,9 @@ async function enrichComment<T extends FeedComment>(
   const snapName = beforeName;
   const snapAvatar = String(c.authorAvatarUri || "").trim();
   const hasValidSnapName = Boolean(snapName) && !commentAuthorNameLooksLikeUserId(snapName, userId);
+  const authUser = userId ? await getUserById(userId).catch(() => null) : null;
 
-  const finalName = resolveReadAuthorName(userId, snapName, identity, fallback);
+  const finalName = resolveReadAuthorName(userId, snapName, identity, fallback, authUser?.email);
   const finalAuthorAvatarUri = firstNonEmptyAvatar(
     snapAvatar,
     identity.avatar,
@@ -708,6 +959,253 @@ function feedUriMatchesAvatarMetadata(uri: unknown, fields: unknown[]) {
   });
 }
 
+function isPersistedFeedPostImageUri(uri: unknown) {
+  const value = String(uri || "").trim();
+  if (!value) return false;
+  if (value.startsWith("data:image/")) return true;
+  if (/^https?:\/\//i.test(value)) return true;
+  if (value.includes("/uploads/media/")) return true;
+  if (value.startsWith("/uploads/") && !feedUrlLooksLikeAvatarOrLogo(value)) return true;
+  return false;
+}
+
+function isChurchRoomFeedSource(source: unknown) {
+  const normalized = String(source || "").trim().toLowerCase();
+  return ["testimony", "post", "announcement", "counsel"].includes(normalized);
+}
+
+function isChurchRoomFeedPost(item: any) {
+  const source = String(item?.source || item?.kind || "").trim().toLowerCase();
+  const type = String(item?.type || "").trim().toLowerCase();
+  if (!isChurchRoomFeedSource(source)) return false;
+  if (type === "video" || Boolean(String(item?.videoUrl || "").trim())) return false;
+  return type === "post" || type === "announcement" || !type;
+}
+
+function feedPostImageAvatarFields(item: any) {
+  return [
+    item?.authorAvatarUri,
+    item?.actorAvatarUri,
+    item?.profileAvatarUri,
+    item?.churchAvatarUri,
+    item?.churchAvatarUrl,
+    item?.avatarUri,
+    item?.profileImage,
+    item?.photoURL,
+    item?.logo,
+  ];
+}
+
+const FEED_POST_IMAGE_FIELD_KEYS = [
+  "mediaUri",
+  "imageUrl",
+  "imageUri",
+  "attachmentUrl",
+  "photoUri",
+  "uploadedMediaUri",
+  "mediaUrl",
+  "url",
+  "photo",
+  "image",
+  "coverImage",
+  "coverImageUrl",
+];
+
+const FEED_POST_IMAGE_AVATAR_FIELD_KEYS = new Set([
+  "authorAvatarUri",
+  "actorAvatarUri",
+  "profileAvatarUri",
+  "authorAvatar",
+  "churchAvatarUri",
+  "churchAvatarUrl",
+  "churchAvatar",
+  "avatarUri",
+  "avatarUrl",
+  "profileImage",
+  "photoURL",
+  "logo",
+  "logoUrl",
+  "logoUri",
+  "mediaAvatarUri",
+  "mediaLogoUrl",
+]);
+
+function isRepairableFeedPostImageUri(uri: unknown) {
+  return isPersistedFeedPostImageUri(uri);
+}
+
+function isVideoFeedPostItem(item: any) {
+  return (
+    String(item?.type || "").toLowerCase() === "video" ||
+    Boolean(String(item?.videoUrl || "").trim())
+  );
+}
+
+function pickFeedPostImageCandidate(candidates: string[], avatarFields: unknown[]) {
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (!value) continue;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(value)) continue;
+    if (!isRepairableFeedPostImageUri(value)) continue;
+    if (
+      feedUriMatchesAvatarMetadata(value, avatarFields) &&
+      !value.includes("/uploads/media/")
+    ) {
+      continue;
+    }
+    return value;
+  }
+  return "";
+}
+
+function collectExplicitFeedPostImageCandidates(item: any): string[] {
+  const roots = [item, item?.payload].filter((row) => row && typeof row === "object");
+  const candidates: string[] = [];
+
+  for (const root of roots) {
+    for (const key of FEED_POST_IMAGE_FIELD_KEYS) {
+      const value = String(root?.[key] || "").trim();
+      if (value) candidates.push(value);
+    }
+    if (Array.isArray(root?.images)) {
+      for (const value of root.images) {
+        const next = String(value || "").trim();
+        if (next) candidates.push(next);
+      }
+    }
+    if (Array.isArray(root?.mediaUrls)) {
+      for (const value of root.mediaUrls) {
+        const next = String(value || "").trim();
+        if (next) candidates.push(next);
+      }
+    }
+  }
+
+  return [...new Set(candidates)];
+}
+
+function scanFeedItemForRepairImageUri(item: any, avatarFields: unknown[]): string {
+  const queue: Array<{ value: unknown; key?: string; depth: number }> = [{ value: item, depth: 0 }];
+  const seen = new Set<string>();
+
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) continue;
+    const { value, key, depth } = current;
+    if (depth > 5 || value == null) continue;
+
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      const picked = pickFeedPostImageCandidate([trimmed], avatarFields);
+      if (picked) return picked;
+      continue;
+    }
+
+    if (Array.isArray(value)) {
+      for (const entry of value) queue.push({ value: entry, key, depth: depth + 1 });
+      continue;
+    }
+
+    if (typeof value === "object") {
+      for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
+        if (FEED_POST_IMAGE_AVATAR_FIELD_KEYS.has(entryKey)) continue;
+        queue.push({ value: entryValue, key: entryKey, depth: depth + 1 });
+      }
+    }
+  }
+
+  return "";
+}
+
+function resolveFeedPostImageFields(item: any) {
+  if (isVideoFeedPostItem(item)) return { repaired: false as const };
+
+  const avatarFields = feedPostImageAvatarFields(item);
+  const explicitCandidates = collectExplicitFeedPostImageCandidates(item);
+  let mediaUri = pickFeedPostImageCandidate(explicitCandidates, avatarFields);
+  let repaired = false;
+
+  if (!mediaUri && isChurchRoomFeedPost(item)) {
+    const scanned = scanFeedItemForRepairImageUri(item, avatarFields);
+    if (scanned) {
+      mediaUri = scanned;
+      repaired = true;
+    }
+  }
+
+  if (!mediaUri) return { repaired: false as const };
+
+  const source = String(item?.source || item?.kind || "").trim().toLowerCase();
+  const existingType = String(item?.type || "").trim().toLowerCase();
+
+  return {
+    repaired,
+    mediaUri,
+    imageUrl: String(item?.imageUrl || mediaUri).trim(),
+    mediaType: "image" as const,
+    ...(isChurchRoomFeedSource(source) && !existingType ? { type: "post" as const } : {}),
+    ...(isChurchRoomFeedSource(source) ? { source } : {}),
+  };
+}
+
+function applyFeedPostImageEnrichment(item: any) {
+  const postId = String(item?.id || "").trim();
+  const isVideoItem = isVideoFeedPostItem(item);
+  const resolved = resolveFeedPostImageFields(item);
+  const finalMediaUri = String(resolved.mediaUri || item?.mediaUri || item?.imageUrl || "").trim();
+  const finalImageUrl = String(resolved.imageUrl || item?.imageUrl || finalMediaUri || "").trim();
+  let finalMediaType = String(resolved.mediaType || item?.mediaType || "")
+    .trim()
+    .toLowerCase();
+
+  if (finalMediaUri && !isVideoItem) {
+    finalMediaType = "image";
+  }
+
+  if (isChurchRoomFeedPost(item) || isChurchRoomFeedSource(item?.source || item?.kind)) {
+    console.log("KRISTO_FEED_IMAGE_ENRICH", {
+      postId,
+      source: item?.source,
+      type: item?.type,
+      rawMediaUri: item?.mediaUri,
+      rawImageUrl: item?.imageUrl,
+      finalMediaUri: finalMediaUri || null,
+      finalImageUrl: finalImageUrl || null,
+      finalMediaType: finalMediaType || null,
+      repaired: resolved.repaired === true,
+    });
+  }
+
+  if (!finalMediaUri || isVideoItem) {
+    return { patch: {} as Record<string, unknown>, repaired: false as const };
+  }
+
+  if (resolved.repaired && postId) {
+    void upsertFeedItem({
+      ...(item as ChurchFeedItem),
+      mediaUri: finalMediaUri,
+      imageUrl: finalImageUrl,
+      mediaType: "image",
+    }).catch((error) => {
+      console.warn("KRISTO_FEED_IMAGE_REPAIR_PERSIST_FAILED", {
+        postId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  return {
+    repaired: resolved.repaired === true,
+    patch: {
+      mediaUri: finalMediaUri,
+      imageUrl: finalImageUrl,
+      mediaType: "image",
+    },
+  };
+}
+
 function isRemotePosterUri(uri: unknown) {
   const value = String(uri || "").trim();
   if (!value) return false;
@@ -823,7 +1321,10 @@ function sanitizeFeedPostMediaFields(input: {
 
   if (isVideo) {
     mediaUri = undefined;
-  } else if (feedUriMatchesAvatarMetadata(mediaUri, avatarFields)) {
+  } else if (
+    feedUriMatchesAvatarMetadata(mediaUri, avatarFields) &&
+    !isPersistedFeedPostImageUri(mediaUri)
+  ) {
     mediaUri = undefined;
   }
 
@@ -985,6 +1486,7 @@ function resolveFeedAuthorEnrichment(args: {
 
   const authorAvatarCandidate = firstNonEmptyAvatar(
     item?.authorAvatarUri,
+    item?.actorAvatarUri,
     fallbackAuthor.authorAvatarUri,
     item?.profileAvatarUri,
     item?.avatarUri,
@@ -1236,6 +1738,10 @@ async function enrichFeedListItem(
     ownershipType,
     fallbackAuthor: author,
   });
+  const persistedAuthor = await resolvePersistedFeedAuthorFields({
+    userId: String(item?.createdBy || ""),
+    item,
+  });
 
   const postId = String(item?.id || "").trim();
 
@@ -1326,8 +1832,11 @@ async function enrichFeedListItem(
     ? await getPostLikeMeta(itemChurchId, postId, viewerUserId, postIdAliases)
     : { likeCount: 0, likedByMe: false };
 
+  const postImageEnrichment = applyFeedPostImageEnrichment(item);
+
   return withVideoMetadataReturnFields({
     ...item,
+    ...postImageEnrichment.patch,
     ...(posterUri ? { posterUri } : {}),
     ...(thumbnailUri ? { thumbnailUri } : {}),
     ...(videoPosterUri ? { videoPosterUri } : {}),
@@ -1335,8 +1844,15 @@ async function enrichFeedListItem(
     ownershipType,
     ownerChurchId: String(item?.ownerChurchId || itemChurchId || ""),
     ownerMediaId: String(item?.ownerMediaId || item?.mediaName || itemMediaProfile?.mediaName || "").trim() || undefined,
-    authorName: author.authorName,
-    authorAvatarUri: authorEnrichment.finalAvatarUri || authorEnrichment.authorAvatarUri,
+    authorName: persistedAuthor.authorName,
+    actorLabel: persistedAuthor.actorLabel,
+    postedByName: persistedAuthor.postedByName,
+    displayName: persistedAuthor.displayName,
+    authorAvatarUri: firstNonEmptyAvatar(
+      persistedAuthor.authorAvatarUri,
+      authorEnrichment.finalAvatarUri,
+      authorEnrichment.authorAvatarUri
+    ),
     churchName: itemChurchName,
     churchAvatarUri: authorEnrichment.churchAvatarUri,
     ...(churchAvatarUpdatedAt
@@ -1395,6 +1911,12 @@ async function safeEnrichFeedListItem(
       : { likeCount: 0, likedByMe: false };
     const fallbackAuthor = publicUser(item?.createdBy);
     const ownershipType = inferOwnershipType(item);
+    const persistedAuthor = await resolvePersistedFeedAuthorFields({
+      userId: String(item?.createdBy || ""),
+      item,
+    }).catch(() =>
+      buildPersistedAuthorFields(fallbackAuthor.authorName, String(item?.createdBy || ""), item)
+    );
     const authorEnrichment = resolveFeedAuthorEnrichment({
       item,
       itemChurchProfile: null,
@@ -1404,9 +1926,17 @@ async function safeEnrichFeedListItem(
     });
     return {
       ...item,
+      ...applyFeedPostImageEnrichment(item).patch,
       ownershipType,
-      authorName: fallbackAuthor.authorName,
-      authorAvatarUri: authorEnrichment.finalAvatarUri || authorEnrichment.authorAvatarUri,
+      authorName: persistedAuthor.authorName,
+      actorLabel: persistedAuthor.actorLabel,
+      postedByName: persistedAuthor.postedByName,
+      displayName: persistedAuthor.displayName,
+      authorAvatarUri: firstNonEmptyAvatar(
+        persistedAuthor.authorAvatarUri,
+        authorEnrichment.finalAvatarUri,
+        authorEnrichment.authorAvatarUri
+      ),
       churchAvatarUri: authorEnrichment.churchAvatarUri,
       ...(authorEnrichment.churchLogoUrl ? { churchLogoUrl: authorEnrichment.churchLogoUrl } : {}),
       ...(authorEnrichment.mediaAvatarUri ? { mediaAvatarUri: authorEnrichment.mediaAvatarUri } : {}),
@@ -2559,6 +3089,8 @@ async function handleFeedPost(req: NextRequest, body: any) {
   const text = cleanText(body?.text, 5000) || undefined;
   const videoUrl = cleanText(body?.videoUrl, 2000) || undefined;
   const mediaUri = cleanText(body?.mediaUri, 2000) || undefined;
+  const rawImageUrl = cleanText(body?.imageUrl, 2000) || undefined;
+  const rawPostMediaUri = mediaUri || rawImageUrl || undefined;
   const source = cleanText(body?.source, 80) || undefined;
   const scheduleType = cleanText(body?.scheduleType, 120) || undefined;
   const rawScheduleSlots = Array.isArray(body?.scheduleSlots) ? body.scheduleSlots : undefined;
@@ -2647,10 +3179,18 @@ async function handleFeedPost(req: NextRequest, body: any) {
   });
   const visibility = cleanText(body?.visibility, 80) || undefined;
   const audience = body?.audience || undefined;
-  const mediaName = cleanText(body?.mediaName || body?.actorLabel, 240) || undefined;
+  const sourceNorm = String(source || "").trim().toLowerCase();
+  const isChurchRoomComposerPost = ["testimony", "post", "announcement", "counsel"].includes(sourceNorm);
+  const mediaName = isChurchRoomComposerPost
+    ? cleanText(body?.mediaName, 240) || undefined
+    : cleanText(body?.mediaName || body?.actorLabel, 240) || undefined;
   const churchName = cleanText(body?.churchName || body?.churchLabel, 240) || undefined;
   const churchLabel = cleanText(body?.churchLabel || body?.churchName, 240) || undefined;
-  const feedActorLabel = cleanText(body?.actorLabel || body?.mediaName, 240) || undefined;
+  const persistedAuthor = await resolvePersistedFeedAuthorFields({
+    userId: viewerUserId,
+    ctx,
+    body,
+  });
   const scheduleCreatedByUserId =
     cleanText(body?.scheduleCreatedByUserId || body?.createdByUserId || body?.createdBy, 240) || viewerUserId;
   const sourceScheduleId = cleanText(body?.sourceScheduleId || body?.liveId, 240) || undefined;
@@ -2693,7 +3233,10 @@ async function handleFeedPost(req: NextRequest, body: any) {
     body?.isGlobalMediaSlot === true ||
     String(body?.isGlobalMediaSlot || "").trim() === "1";
 
-  const actorAvatarUri = cleanText(body?.actorAvatarUri || body?.avatarUri || body?.profileImage, 2000) || undefined;
+  const actorAvatarUri =
+    cleanText(body?.actorAvatarUri || body?.avatarUri || body?.profileImage, 2000) ||
+    persistedAuthor.authorAvatarUri ||
+    undefined;
   const churchAvatarUri = cleanText(body?.churchAvatarUri || body?.churchAvatarUrl || body?.actorAvatarUri || body?.avatarUri || body?.profileImage, 2000) || undefined;
   const posterUri =
     cleanText(body?.posterUri || body?.videoPosterUri, 4000) || undefined;
@@ -2715,6 +3258,9 @@ async function handleFeedPost(req: NextRequest, body: any) {
     profileImage: cleanText(body?.profileImage, 2000) || undefined,
     logo: cleanText(body?.logo, 2000) || undefined,
   });
+  if (rawPostMediaUri && !sanitizedMedia.mediaUri && isPersistedFeedPostImageUri(rawPostMediaUri)) {
+    sanitizedMedia.mediaUri = rawPostMediaUri;
+  }
 
   let resolvedPosterUri =
     sanitizedMedia.posterUri || sanitizedMedia.thumbnailUri || videoPosterUri || undefined;
@@ -2743,9 +3289,11 @@ async function handleFeedPost(req: NextRequest, body: any) {
   const ownershipType =
     isIncomingMediaScheduleCreate(body) || String(source || "").toLowerCase().includes("media")
       ? "media"
-      : isPastorOrAdminRole(viewerRole)
-        ? "church"
-        : "member";
+      : isChurchRoomComposerPost
+        ? "member"
+        : isPastorOrAdminRole(viewerRole)
+          ? "church"
+          : "member";
   const ownerChurchId = churchId;
   const ownerMediaProfile =
     ownershipType === "media" ? await churchMediaFor(churchId) : null;
@@ -2844,8 +3392,17 @@ async function handleFeedPost(req: NextRequest, body: any) {
     mediaName,
     churchName,
     churchLabel,
-    actorLabel: feedActorLabel,
+    actorLabel: persistedAuthor.actorLabel,
     actorAvatarUri,
+    authorName: persistedAuthor.authorName,
+    postedByName: persistedAuthor.postedByName,
+    displayName: persistedAuthor.displayName,
+    ...(persistedAuthor.authorAvatarUri || actorAvatarUri
+      ? {
+          authorAvatarUri: actorAvatarUri || persistedAuthor.authorAvatarUri,
+          profileAvatarUri: actorAvatarUri || persistedAuthor.authorAvatarUri,
+        }
+      : {}),
     churchAvatarUri,
     avatarUri: actorAvatarUri,
     mediaOwnerPastorUserId,
@@ -2902,6 +3459,11 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
   if (cleanText(body?.mediaType, 40)) {
     (item as any).mediaType = cleanText(body?.mediaType, 40);
+  }
+  if (sanitizedMedia.mediaUri && type !== "video" && !String(videoUrl || "").trim()) {
+    item.mediaUri = sanitizedMedia.mediaUri;
+    (item as any).imageUrl = sanitizedMedia.mediaUri;
+    (item as any).mediaType = "image";
   }
   if (cleanText(body?.storageType, 40)) {
     (item as any).storageType = cleanText(body?.storageType, 40);

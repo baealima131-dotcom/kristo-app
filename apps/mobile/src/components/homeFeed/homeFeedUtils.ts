@@ -31,8 +31,260 @@ import {
 } from "@/src/lib/homeFeedPersonalOrder";
 import { resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { peekProfileScreenCache } from "@/src/lib/screenDataCache";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+
+const CHURCH_ROOM_MEMBER_SOURCES = new Set(["testimony", "post", "announcement", "counsel"]);
+
+export type HomeFeedPostAccent = "default" | "testimony" | "announcement";
+
+export function isChurchRoomMemberFeedPost(item: any) {
+  const source = String(item?.source || "").trim().toLowerCase();
+  const kind = String(item?.kind || "").trim().toLowerCase();
+  return CHURCH_ROOM_MEMBER_SOURCES.has(source) || CHURCH_ROOM_MEMBER_SOURCES.has(kind);
+}
+
+export function resolveFeedPostKind(item: any): "testimony" | "announcement" | "post" | "counsel" | null {
+  const source = String(item?.source || item?.kind || "").trim().toLowerCase();
+  const type = String(item?.type || "").trim().toLowerCase();
+  if (source === "testimony" || type === "testimony") return "testimony";
+  if (source === "announcement" || type === "announcement") return "announcement";
+  if (source === "counsel" || type === "counsel") return "counsel";
+  if (isChurchRoomMemberFeedPost(item)) return "post";
+  return null;
+}
+
+export function resolveFeedPostAccent(item: any): HomeFeedPostAccent {
+  const kind = resolveFeedPostKind(item);
+  if (kind === "testimony") return "testimony";
+  if (kind === "announcement") return "announcement";
+  return "default";
+}
+
+function looksLikeFeedAuthorId(value: unknown) {
+  const v = String(value || "").trim();
+  if (!v) return true;
+  if (v === "Member" || v === "u-unknown") return true;
+  if (/^u[-_]?/i.test(v)) return true;
+  if (/^[a-f0-9-]{18,}$/i.test(v)) return true;
+  if (v.length >= 20 && !v.includes(" ")) return true;
+  return false;
+}
+
+function profileNameFromCache(userId: string) {
+  const uid = String(userId || "").trim();
+  if (!uid) return "";
+
+  const cached = peekProfileScreenCache(uid);
+  const profile = cached?.profile;
+  if (!profile || typeof profile !== "object") return "";
+
+  const candidates = [
+    profile.fullName,
+    profile.displayName,
+    profile.name,
+    profile.username,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (!looksLikeFeedAuthorId(candidate)) return candidate;
+  }
+
+  return "";
+}
+
+function resolveChurchRoomMemberAuthorName(item: any) {
+  const createdBy = String(item?.createdBy || item?.authorUserId || "").trim();
+  const candidates = [
+    item?.authorName,
+    item?.actorLabel,
+    item?.postedByName,
+    item?.displayName,
+    item?.profileName,
+    item?.fullName,
+    item?.name,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (!looksLikeFeedAuthorId(candidate) && candidate !== createdBy) {
+      return candidate;
+    }
+  }
+
+  const cachedName = profileNameFromCache(createdBy);
+  if (cachedName) return cachedName;
+
+  const session = getSessionSync() as any;
+  if (createdBy && createdBy === String(session?.userId || "").trim()) {
+    const selfName = String(
+      session?.displayName || session?.name || session?.fullName || ""
+    ).trim();
+    if (selfName && !looksLikeFeedAuthorId(selfName)) return selfName;
+  }
+
+  return "Member";
+}
+
+export function resolveFeedPostTypeTitle(item: any) {
+  const kind = resolveFeedPostKind(item);
+  if (kind === "testimony") return "TESTIMONY";
+  if (kind === "announcement") return "ANNOUNCEMENT";
+  if (kind === "counsel") return "COUNSEL";
+  if (kind === "post") return "POST";
+  return "";
+}
+
+export function normalizeHomeFeedApiRow(row: any) {
+  if (!row || typeof row !== "object") return row;
+
+  const avatarUriCandidates = [
+    row?.authorAvatarUri,
+    row?.actorAvatarUri,
+    row?.profileAvatarUri,
+    row?.authorAvatar,
+    row?.churchAvatarUri,
+    row?.churchAvatarUrl,
+    row?.avatarUri,
+    row?.avatarUrl,
+    row?.profileImage,
+    row?.photoURL,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  const imageCandidates = [
+    row?.mediaUri,
+    row?.imageUrl,
+    row?.imageUri,
+    ...(Array.isArray(row?.images) ? row.images : []),
+    ...(Array.isArray(row?.mediaUrls) ? row.mediaUrls : []),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .filter((candidate) => !postImageUriMatchesAvatarCandidates(candidate, avatarUriCandidates));
+
+  let mediaUri = imageCandidates[0] || "";
+  if (!mediaUri) {
+    const rawPostMediaUri = [
+      row?.mediaUri,
+      row?.imageUrl,
+      row?.imageUri,
+      ...(Array.isArray(row?.images) ? row.images : []),
+      ...(Array.isArray(row?.mediaUrls) ? row.mediaUrls : []),
+    ]
+      .map((value) => String(value || "").trim())
+      .find(
+        (candidate) =>
+          candidate.includes("/uploads/media/") ||
+          (/^https?:\/\//i.test(candidate) && !candidate.includes("/profile-avatars/"))
+      );
+    if (rawPostMediaUri) mediaUri = rawPostMediaUri;
+  }
+  const videoUrl = String(row?.videoUrl || "").trim();
+  const next: any = {
+    ...row,
+    ...(Array.isArray(row?.images) ? { images: row.images } : {}),
+    ...(Array.isArray(row?.mediaUrls) ? { mediaUrls: row.mediaUrls } : {}),
+  };
+
+  if (mediaUri) {
+    next.mediaUri = mediaUri;
+    if (!String(next?.imageUrl || "").trim()) next.imageUrl = mediaUri;
+  }
+
+  const mediaType = String(next?.mediaType || "").trim().toLowerCase();
+  if (mediaUri && !videoUrl && mediaType !== "video" && !isFeedVideoItem(next)) {
+    if (!mediaType || mediaType === "none") next.mediaType = "image";
+  }
+
+  if (isChurchRoomMemberFeedPost(next)) {
+    if (!String(next?.type || "").trim()) next.type = "post";
+    if (!String(next?.source || "").trim()) {
+      next.source = String(next?.kind || "post").trim().toLowerCase() || "post";
+    }
+    if (mediaUri && !videoUrl && String(next?.mediaType || "").trim().toLowerCase() !== "video") {
+      next.mediaType = "image";
+    }
+  }
+
+  if (!String(next?.body || "").trim() && String(next?.text || "").trim()) {
+    next.body = String(next.text).trim();
+  }
+
+  const authorName = String(
+    next?.authorName || next?.actorLabel || next?.postedByName || next?.displayName || ""
+  ).trim();
+  const resolvedAuthorName = [
+    next?.authorName,
+    next?.actorLabel,
+    next?.postedByName,
+    next?.displayName,
+  ]
+    .map((value) => String(value || "").trim())
+    .find((value) => value && !looksLikeFeedAuthorId(value));
+
+  if (resolvedAuthorName) {
+    next.authorName = resolvedAuthorName;
+    next.actorLabel = resolvedAuthorName;
+    next.postedByName = resolvedAuthorName;
+    next.displayName = resolvedAuthorName;
+  } else if (authorName && !looksLikeFeedAuthorId(authorName) && !String(next?.authorName || "").trim()) {
+    next.authorName = authorName;
+  }
+
+  const authorAvatar = String(
+    next?.authorAvatarUri ||
+      next?.actorAvatarUri ||
+      next?.profileAvatarUri ||
+      next?.authorAvatar ||
+      next?.avatarUri ||
+      next?.avatarUrl ||
+      next?.profileImage ||
+      next?.photoURL ||
+      ""
+  ).trim();
+  if (authorAvatar) {
+    if (!String(next?.authorAvatarUri || "").trim()) next.authorAvatarUri = authorAvatar;
+    if (!String(next?.actorAvatarUri || "").trim()) next.actorAvatarUri = authorAvatar;
+    if (!String(next?.profileAvatarUri || "").trim()) next.profileAvatarUri = authorAvatar;
+  }
+
+  if (isChurchRoomMemberFeedPost(next)) {
+    console.log("[KRISTO_FEED_NORMALIZE]", {
+      postId: next?.id,
+      source: next?.source,
+      type: next?.type,
+      rawMediaUri: String(row?.mediaUri || "").trim(),
+      rawImageUrl: String(row?.imageUrl || "").trim(),
+      mediaUri: next?.mediaUri,
+      imageUrl: next?.imageUrl,
+      mediaType: next?.mediaType,
+    });
+  }
+
+  return next;
+}
+
+export function resolveFeedIdentityHeadline(item: any) {
+  if (isChurchRoomMemberFeedPost(item)) {
+    return resolveChurchRoomMemberAuthorName(item);
+  }
+  return resolveChurchName(item);
+}
+
+export function resolveFeedIdentitySubline(item: any, whenLabel: string) {
+  if (isChurchRoomMemberFeedPost(item)) {
+    return whenLabel;
+  }
+
+  const mediaName = resolveMediaName(item);
+  return [mediaName, whenLabel].filter(Boolean).join(" • ");
+}
 
 export function homeFeedMediaUrl(raw: unknown) {
   const v = String(raw || "").trim();
@@ -56,6 +308,8 @@ function homeFeedAvatarCacheBustAt(item: any) {
 }
 
 function isHomeFeedChurchMediaPost(item: any) {
+  if (isChurchRoomMemberFeedPost(item)) return false;
+
   const ownership = String(item?.ownershipType || "").trim().toLowerCase();
   if (ownership === "church" || ownership === "media") return true;
 
@@ -91,13 +345,22 @@ function homeFeedAvatarSourceFields(item: any, churchMediaFirst: boolean): unkno
 
   const authorSources = [
     item?.authorAvatarUri,
-    item?.profileAvatarUri,
     item?.actorAvatarUri,
+    item?.profileAvatarUri,
+    item?.authorAvatar,
     item?.avatarUri,
     item?.avatarUrl,
+    item?.profileImage,
+    item?.photoURL,
   ];
 
   if (churchMediaFirst) {
+    if (isChurchRoomMemberFeedPost(item)) {
+      const authorHasAvatar = authorSources.some((raw) => String(raw || "").trim());
+      if (authorHasAvatar) {
+        return [...authorSources, ...churchSources, ...mediaSources];
+      }
+    }
     return [...churchSources, ...mediaSources, ...authorSources];
   }
 
@@ -1063,8 +1326,6 @@ export function formatFeedTimestamp(createdAt?: string) {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-const FEED_AVATAR_BLOCKED = /\/profile-avatars\//i;
-
 export function resolveChurchName(item: any) {
   return String(
     item?.churchName ||
@@ -1105,21 +1366,25 @@ export function resolvePostCaption(item: any) {
   return title || body;
 }
 
+export function resolveChurchRoomFeedCaption(item: any) {
+  return resolvePostCaption(item);
+}
+
 function pickHomeFeedAvatarUri(raw: unknown, cacheBustAt?: number) {
   const trimmed = String(raw || "").trim();
-  if (!trimmed || FEED_AVATAR_BLOCKED.test(trimmed)) return "";
-  const base = homeFeedMediaUrl(trimmed);
+  if (!trimmed) return "";
+  const base = commentAvatarUrl(trimmed);
   if (!base) return "";
   if (base.startsWith("file://") || base.startsWith("data:image/")) return base;
   const bust = Number(cacheBustAt || 0);
   return bust > 0 ? avatarCacheBust(base, bust) : base;
 }
 
-/** Church/media posts: church logo first; backup URI for FeedIdentity on image error. */
+/** Church/media posts: church logo first; Church Room posts always use church avatar. */
 export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
-  const churchName = resolveChurchName(item);
-  const initial = String(churchName || "K").trim().charAt(0).toUpperCase() || "K";
-  const churchMediaFirst = isHomeFeedChurchMediaPost(item);
+  const churchRoomPost = isChurchRoomMemberFeedPost(item);
+  const initial = String(resolveChurchName(item) || "K").trim().charAt(0).toUpperCase() || "K";
+  const churchMediaFirst = churchRoomPost || isHomeFeedChurchMediaPost(item);
   const cacheBustAt = homeFeedAvatarCacheBustAt(item);
   const sources = homeFeedAvatarSourceFields(item, churchMediaFirst);
 
@@ -1180,11 +1445,68 @@ export function resolvePostAvatar(item: any) {
 export function resolveVideoUri(item: any) {
   const local = String(item?.localVideoUri || "").trim();
   if (local.startsWith("file://")) return local;
-  return homeFeedMediaUrl(item?.videoUrl || item?.mediaUri);
+  return homeFeedMediaUrl(item?.videoUrl || "");
+}
+
+function postMediaUriCandidates(item: any): string[] {
+  return [
+    item?.mediaUri,
+    item?.imageUrl,
+    item?.imageUri,
+    ...(Array.isArray(item?.images) ? item.images : []),
+    ...(Array.isArray(item?.mediaUrls) ? item.mediaUrls : []),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function homeFeedAvatarUriCandidates(item: any): string[] {
+  return [
+    item?.authorAvatarUri,
+    item?.actorAvatarUri,
+    item?.profileAvatarUri,
+    item?.authorAvatar,
+    item?.churchAvatarUri,
+    item?.churchAvatarUrl,
+    item?.avatarUri,
+    item?.avatarUrl,
+    item?.profileImage,
+    item?.photoURL,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function postImageUriMatchesAvatarCandidates(candidate: string, avatarCandidates: string[]) {
+  const trimmed = String(candidate || "").trim();
+  if (!trimmed) return true;
+  if (trimmed.includes("/uploads/media/")) return false;
+  if (/\/profile-avatars\//i.test(trimmed)) return true;
+  const resolvedCandidate = homeFeedMediaUrl(trimmed);
+  return avatarCandidates.some((avatar) => {
+    if (!avatar) return false;
+    if (avatar === trimmed) return true;
+    return homeFeedMediaUrl(avatar) === resolvedCandidate;
+  });
+}
+
+function postImageUriMatchesAvatar(item: any, candidate: string) {
+  return postImageUriMatchesAvatarCandidates(candidate, homeFeedAvatarUriCandidates(item));
+}
+
+export function resolvePostImageUri(item: any) {
+  for (const raw of postMediaUriCandidates(item)) {
+    if (postImageUriMatchesAvatar(item, raw)) continue;
+    const uri = homeFeedMediaUrl(raw);
+    if (!uri) continue;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(uri)) continue;
+    return uri;
+  }
+  return "";
 }
 
 export function resolveImageUri(item: any) {
-  return homeFeedMediaUrl(item?.mediaUri || item?.imageUrl);
+  return resolvePostImageUri(item);
 }
 
 export function resolvePosterUri(item: any) {
@@ -1227,6 +1549,14 @@ export function isVideoPost(item: any) {
 }
 
 export function isImagePost(item: any) {
-  const uri = resolveImageUri(item);
-  return Boolean(uri) && item?.mediaType === "image" && !isVideoPost(item);
+  if (isVideoPost(item)) return false;
+  const uri = resolvePostImageUri(item);
+  if (!uri) return false;
+
+  const mediaType = String(item?.mediaType || "").trim().toLowerCase();
+  if (mediaType === "image") return true;
+  if (mediaType === "video") return false;
+  if (isChurchRoomMemberFeedPost(item)) return true;
+
+  return !/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(uri);
 }

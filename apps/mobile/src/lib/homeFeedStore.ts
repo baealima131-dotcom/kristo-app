@@ -63,15 +63,16 @@ export type FeedAvatarResolution = {
   churchAvatarUri: string;
 };
 
-const FEED_AVATAR_BLOCKED = /\/profile-avatars\//i;
-
 export function resolveFeedItemAvatar(
   item: any,
   toAbsoluteUrl: (raw: string) => string
 ): FeedAvatarResolution {
   const candidates: Array<[string, unknown]> = [
-    ["actorAvatar", item?.actorAvatar],
+    ["authorAvatarUri", item?.authorAvatarUri],
     ["actorAvatarUri", item?.actorAvatarUri],
+    ["profileAvatarUri", item?.profileAvatarUri],
+    ["authorAvatar", item?.authorAvatar],
+    ["actorAvatar", item?.actorAvatar],
     ["avatarUri", item?.avatarUri],
     ["profileImage", item?.profileImage],
     ["photoURL", item?.photoURL],
@@ -82,13 +83,12 @@ export function resolveFeedItemAvatar(
     ["mediaAvatar", item?.mediaAvatar],
     ["mediaAvatarUri", item?.mediaAvatarUri],
     ["actorImage", item?.actorImage],
-    ["authorAvatarUri", item?.authorAvatarUri],
     ["avatarUrl", item?.avatarUrl],
   ];
 
   for (const [source, raw] of candidates) {
     const trimmed = String(raw || "").trim();
-    if (!trimmed || FEED_AVATAR_BLOCKED.test(trimmed)) continue;
+    if (!trimmed) continue;
     const uri = toAbsoluteUrl(trimmed);
     if (!uri) continue;
     return {
@@ -1038,6 +1038,18 @@ function mediaUriMatchesAvatarMetadata(item: any) {
 export function isStandaloneAvatarFeedPost(item: any) {
   if (!item) return false;
 
+  const source = String(item?.source || "").trim().toLowerCase();
+  const kind = String(item?.kind || "").trim().toLowerCase();
+  const isChurchRoomPost =
+    ["testimony", "post", "announcement", "counsel"].includes(source) ||
+    ["testimony", "post", "announcement", "counsel"].includes(kind);
+  if (isChurchRoomPost) {
+    const postImage = String(item?.mediaUri || item?.imageUrl || "").trim();
+    const title = String(item?.title || "").trim();
+    const body = String(item?.body || item?.text || "").trim();
+    if (postImage && (title || body)) return false;
+  }
+
   const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
   if (slots.length > 0) return false;
   if (String(item?.scheduleType || "").includes("media-live-slots")) return false;
@@ -1047,7 +1059,6 @@ export function isStandaloneAvatarFeedPost(item: any) {
   const id = String(item?.id || "").trim();
   if (id.includes("__slot_")) return false;
 
-  const source = String(item?.source || "").toLowerCase();
   if (/avatar|profile|logo/.test(source)) return true;
   if (/avatar|profile|logo/i.test(id)) return true;
 
