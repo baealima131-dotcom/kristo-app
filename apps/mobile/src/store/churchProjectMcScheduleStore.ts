@@ -36,6 +36,9 @@ export type ScheduleSlotDraft = {
   role?: string;
   task?: string;
   script?: string;
+  slotTopic?: string;
+  assignmentTopic?: string;
+  topic?: string;
   chat?: string[];
   sourceSlotName?: string;
   isDurationLocked?: boolean;
