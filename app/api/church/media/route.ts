@@ -10,12 +10,17 @@ import {
 } from "@/app/api/_lib/store/mediaDb";
 import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
 import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
+import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
+import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
 
 export const runtime = "nodejs";
 
 function auth(req: Request) {
   return {
-    userId: String(req.headers.get("x-kristo-user-id") || "").trim(),
+    // Identity comes from the signed session token in production (dev still
+    // trusts the raw header). Role/church-id stay header-derived; the actual
+    // pastor authority is verified server-side via evaluateChurchMediaAccess.
+    userId: resolveRequestUserId(req).userId,
     role: String(req.headers.get("x-kristo-role") || "").trim(),
     churchId: String(req.headers.get("x-kristo-church-id") || "").trim(),
   };
@@ -183,9 +188,42 @@ export async function PATCH(req: Request) {
       );
     }
 
+    // Never trust the client's `subscriptionActive: true`. Verify the pastor's
+    // RevenueCat `church_premium` entitlement server-side before activating.
+    const verification = await verifyChurchPremiumEntitlement(a.userId);
+    if (!verification.active) {
+      console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_REJECTED", {
+        churchId: a.churchId,
+        userId: a.userId,
+        reason: verification.reason,
+      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Subscription could not be verified with the App Store.",
+          reason: verification.reason,
+        },
+        { status: 402 }
+      );
+    }
+
+    // Prefer the plan from the verified RevenueCat product; fall back to the
+    // requested plan only when the product id was not resolvable.
+    const requestedPlan = String(body?.subscriptionPlan || "").trim();
+    const resolvedPlan = verification.plan || requestedPlan || "monthly";
+
+    console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_VERIFIED", {
+      churchId: a.churchId,
+      userId: a.userId,
+      plan: resolvedPlan,
+      productId: verification.productId,
+      bypassed: verification.bypassed,
+      reason: verification.reason,
+    });
+
     const next = await patchChurchMediaSubscription(a.churchId, {
       subscriptionActive: true,
-      subscriptionPlan: String(body?.subscriptionPlan || "monthly").trim(),
+      subscriptionPlan: resolvedPlan,
     });
 
     return NextResponse.json({ ok: true, media: next, storeMode: resolveMediaStoreMode() });
