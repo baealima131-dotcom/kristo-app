@@ -30,6 +30,7 @@ import {
   feedRenderKey,
   hydrateFeedRowLikes,
   buildHomeFeedDisplayRows,
+  filterHomeFeedClaimableSlotRows,
   homeFeedScheduleEngagementId,
   isHomeFeedScheduleCardRow,
   readFeedItemLikedByMe,
@@ -49,11 +50,20 @@ import {
   subscribeHomeFeedScheduleDirty,
 } from "@/src/lib/homeFeedScheduleDirty";
 
+const CLAIM_SLOT_EMPTY_MESSAGE =
+  "No open media slots right now. Check back when your church posts a live schedule.";
+
 export default function HomeFeedScreen() {
   const { height: windowHeight } = useWindowDimensions();
   const tabBarHeight = useBottomTabBarHeight();
   const screenFocused = useIsFocused();
-  const { focusPostId } = useLocalSearchParams<{ focusPostId?: string }>();
+  const { focusPostId, focus, churchId: focusChurchIdParam, source: focusSource } =
+    useLocalSearchParams<{
+      focusPostId?: string;
+      focus?: string;
+      churchId?: string;
+      source?: string;
+    }>();
 
   const [backendRows, setBackendRows] = useState<any[]>([]);
   const [localTick, setLocalTick] = useState(0);
@@ -75,8 +85,16 @@ export default function HomeFeedScreen() {
   const [successBanner, setSuccessBanner] = useState("");
 
   const focusHandledRef = useRef("");
+  const claimSlotFocusHandledRef = useRef("");
+  const claimSlotFocusReloadedRef = useRef(false);
+  const claimSlotFocusLoadDoneRef = useRef(false);
   const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingScheduleFeedIdRef = useRef<string | null>(null);
+
+  const session = getSessionSync();
+  const viewerUserId = String(session?.userId || "").trim();
+  const claimSlotFocusChurchId = String(focusChurchIdParam || session?.churchId || "").trim();
+  const isClaimSlotFocus = String(focus || "").trim() === "claim-media-slot";
 
   const contentHeight = homeFeedSlideHeight(windowHeight, tabBarHeight);
   const homeFeedRenderPaused = isHomeFeedRenderPaused();
@@ -111,7 +129,7 @@ export default function HomeFeedScreen() {
 
     const force = opts?.force === true;
     const hasLocalSchedule = feedList().some(isHomeFeedScheduleCardRow);
-    if (!force || !hasLocalSchedule) {
+    if (reason === "claim-slot-focus" || !force || !hasLocalSchedule) {
       setLoading(true);
     }
     try {
@@ -248,6 +266,16 @@ export default function HomeFeedScreen() {
     return hydrateFeedRowLikes(merged, serverLikeByPostId);
   }, [backendRows, localFeedSnapshot, serverLikeByPostId, homeFeedRenderPaused]);
 
+  const claimableSlotRows = useMemo(() => {
+    if (!isClaimSlotFocus || !claimSlotFocusChurchId) return [];
+    return filterHomeFeedClaimableSlotRows(feedRows, claimSlotFocusChurchId, viewerUserId);
+  }, [feedRows, isClaimSlotFocus, claimSlotFocusChurchId, viewerUserId]);
+
+  const displayFeedRows = useMemo(() => {
+    if (isClaimSlotFocus && claimableSlotRows.length) return claimableSlotRows;
+    return feedRows;
+  }, [feedRows, isClaimSlotFocus, claimableSlotRows]);
+
   useEffect(() => {
     const targetId = String(pendingScheduleFeedIdRef.current || "").trim();
     if (!targetId) return;
@@ -321,22 +349,85 @@ export default function HomeFeedScreen() {
   }, []);
 
   useEffect(() => {
+    if (!isClaimSlotFocus) return;
+    claimSlotFocusHandledRef.current = "";
+    claimSlotFocusReloadedRef.current = false;
+    claimSlotFocusLoadDoneRef.current = false;
+  }, [isClaimSlotFocus, focusChurchIdParam, focusSource]);
+
+  useEffect(() => {
+    if (!isClaimSlotFocus || !screenFocused || claimSlotFocusReloadedRef.current) return;
+    claimSlotFocusReloadedRef.current = true;
+    void loadFeed("claim-slot-focus", { force: true }).finally(() => {
+      claimSlotFocusLoadDoneRef.current = true;
+    });
+  }, [isClaimSlotFocus, screenFocused, loadFeed]);
+
+  useEffect(() => {
+    if (!isClaimSlotFocus || !claimSlotFocusChurchId) return;
+
+    const focusKey = `claim-media-slot:${claimSlotFocusChurchId}`;
+    if (claimSlotFocusHandledRef.current === focusKey) return;
+    if (!claimSlotFocusLoadDoneRef.current || loading) return;
+
+    console.log("KRISTO_HOME_FEED_CLAIM_SLOT_FOCUS", {
+      churchId: claimSlotFocusChurchId,
+      source: String(focusSource || ""),
+      feedCount: feedRows.length,
+      loading,
+    });
+
+    if (claimableSlotRows.length > 0) {
+      const firstRow = claimableSlotRows[0];
+      console.log("KRISTO_HOME_FEED_CLAIM_SLOT_FOUND", {
+        churchId: claimSlotFocusChurchId,
+        slotCount: claimableSlotRows.length,
+        firstSlotId: feedRenderKey(firstRow) || String(firstRow?.id || ""),
+        firstSlotNumber: Number(firstRow?.slotNumber || 0) || null,
+      });
+      claimSlotFocusHandledRef.current = focusKey;
+      setActiveIndex(0);
+      return;
+    }
+
+    console.log("KRISTO_HOME_FEED_CLAIM_SLOT_EMPTY", {
+      churchId: claimSlotFocusChurchId,
+      feedCount: feedRows.length,
+    });
+    claimSlotFocusHandledRef.current = focusKey;
+    setSuccessBanner(CLAIM_SLOT_EMPTY_MESSAGE);
+    if (successBannerTimerRef.current) {
+      clearTimeout(successBannerTimerRef.current);
+    }
+    successBannerTimerRef.current = setTimeout(() => {
+      setSuccessBanner("");
+    }, 4200);
+  }, [
+    isClaimSlotFocus,
+    claimSlotFocusChurchId,
+    claimableSlotRows,
+    feedRows.length,
+    focusSource,
+    loading,
+  ]);
+
+  useEffect(() => {
     const rawFocusId = String(focusPostId || "").trim();
-    if (!rawFocusId || !feedRows.length) return;
+    if (!rawFocusId || !displayFeedRows.length || isClaimSlotFocus) return;
     if (focusHandledRef.current === rawFocusId) return;
 
-    const matchIndex = feedRows.findIndex((item) => String(item?.id || "") === rawFocusId);
+    const matchIndex = displayFeedRows.findIndex((item) => String(item?.id || "") === rawFocusId);
     if (matchIndex < 0) return;
 
     focusHandledRef.current = rawFocusId;
     setActiveIndex(matchIndex);
-  }, [focusPostId, feedRows]);
+  }, [focusPostId, displayFeedRows, isClaimSlotFocus]);
 
   useEffect(() => {
-    if (activeIndex >= feedRows.length && feedRows.length > 0) {
-      setActiveIndex(Math.max(0, feedRows.length - 1));
+    if (activeIndex >= displayFeedRows.length && displayFeedRows.length > 0) {
+      setActiveIndex(Math.max(0, displayFeedRows.length - 1));
     }
-  }, [activeIndex, feedRows.length]);
+  }, [activeIndex, displayFeedRows.length]);
 
   const getLikeState = useCallback(
     (item: any, logContext?: { index?: number }) => {
@@ -573,7 +664,7 @@ export default function HomeFeedScreen() {
       ) : null}
 
       <FeedList
-        rows={feedRows}
+        rows={displayFeedRows}
         contentHeight={contentHeight}
         activeIndex={activeIndex}
         screenFocused={feedFocused}

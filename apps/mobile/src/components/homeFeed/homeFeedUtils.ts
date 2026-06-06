@@ -549,7 +549,7 @@ const HOME_FEED_POST_INTERLEAVE_PATTERN: Array<
   Exclude<HomeFeedRowBucket, "schedule" | "live">
 > = ["global_media", "church_media", "church_post"];
 
-function homeFeedRowChurchId(row: any) {
+export function homeFeedRowChurchId(row: any) {
   return String(row?.churchId || row?.ownerChurchId || "").trim();
 }
 
@@ -760,6 +760,78 @@ export function filterVisibleHomeFeedScheduleRows(rows: any[], nowMs = Date.now(
     });
   }
   return filtered;
+}
+
+function isHomeFeedClaimableScheduleSlot(
+  slot: any,
+  row: any,
+  slotFeedIndex: number,
+  nowMs: number
+): boolean {
+  if (!slot || !homeFeedSlotHasValidTimeWindow(slot)) return false;
+
+  const locked = slot?.locked === true || slot?.isLocked === true;
+  if (locked) return false;
+
+  if (resolveHomeFeedSlotCardStatus(slot) !== "available") return false;
+
+  const visual = resolveScheduleSlotVisualState(slot, slotFeedIndex, nowMs, {
+    slotId: String(slot?.id || row?.id || ""),
+  });
+  if (!visual || visual.expired) return false;
+  if (visual.phase === "ended") return false;
+
+  return true;
+}
+
+/** Open media schedule slot rows a member can claim for their church. */
+export function isHomeFeedClaimableSlotRow(
+  row: any,
+  targetChurchId: string,
+  _viewerUserId: string,
+  nowMs = Date.now()
+): boolean {
+  if (!row || !isHomeFeedScheduleCardRow(row)) return false;
+
+  const rowChurchId = homeFeedRowChurchId(row);
+  if (!targetChurchId || !rowChurchId || rowChurchId !== targetChurchId) return false;
+  if (!isHomeFeedScheduleSlotRowVisible(row, nowMs)) return false;
+
+  const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+  if (!slots.length) return false;
+
+  if (isHomeFeedExpandedScheduleSlotRow(row)) {
+    const slot = slots[0];
+    const slotNumber = Math.max(1, Number(row?.slotNumber || 1));
+    return isHomeFeedClaimableScheduleSlot(slot, row, slotNumber - 1, nowMs);
+  }
+
+  return slots.some((slot: any, index: number) => {
+    const slotFeedIndex = resolveHomeFeedSlotFeedIndex(slot, index);
+    return isHomeFeedClaimableScheduleSlot(slot, row, slotFeedIndex, nowMs);
+  });
+}
+
+export function filterHomeFeedClaimableSlotRows(
+  rows: any[],
+  targetChurchId: string,
+  viewerUserId: string,
+  nowMs = Date.now()
+): any[] {
+  return rows.filter((row) =>
+    isHomeFeedClaimableSlotRow(row, targetChurchId, viewerUserId, nowMs)
+  );
+}
+
+export function findFirstClaimableHomeFeedSlotIndex(
+  rows: any[],
+  targetChurchId: string,
+  viewerUserId: string,
+  nowMs = Date.now()
+): number {
+  return rows.findIndex((row) =>
+    isHomeFeedClaimableSlotRow(row, targetChurchId, viewerUserId, nowMs)
+  );
 }
 
 let lastHomeFeedBuildDigest = "";

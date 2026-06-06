@@ -1463,47 +1463,29 @@ export default function ChurchOverviewScreen() {
                 </LuxuryPressable>
 
                 <LuxuryPressable
-                  onPress={async () => {
-                    try {
-                      const feedRes: any = await apiGet("/api/church/feed?scope=church", {
-                        headers: getHeaders(),
-                      } as any);
-
-                      const rows = Array.isArray(feedRes?.items)
-                        ? feedRes.items
-                        : Array.isArray(feedRes?.data)
-                          ? feedRes.data
-                          : Array.isArray(feedRes)
-                            ? feedRes
-                            : [];
-
-                      const hasOpenMediaSlot = rows.some((item: any) => {
-                        const source = String(item?.source || "");
-                        const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-                        if (!source.includes("media-schedule") && !slots.length) return false;
-
-                        return slots.some((slot: any) => {
-                          const claimedByUserId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
-                          const locked = slot?.locked === true || slot?.isLocked === true;
-                          return !claimedByUserId && !locked;
-                        });
-                      });
-
-                      if (!hasOpenMediaSlot) {
-                        Alert.alert(
-                          "No media slots available",
-                          "There is no open media schedule slot right now. Please check again later when your church media team creates a schedule."
-                        );
-                        return;
-                      }
-
-                      router.push({ pathname: "/(tabs)", params: { tab: "home", focus: "media-slots" } } as any);
-                    } catch {
+                  onPress={() => {
+                    if (!churchId) {
                       Alert.alert(
-                        "Unable to check media slots",
-                        "Please try again in a moment."
+                        "Church not found",
+                        "Join a church before claiming a media slot."
                       );
+                      return;
                     }
+
+                    console.log("KRISTO_CLAIM_MEDIA_SLOT_TAP", {
+                      churchId,
+                      userId: effectiveAuthUserId,
+                      source: "church-overview",
+                    });
+
+                    router.replace({
+                      pathname: "/(tabs)/",
+                      params: {
+                        focus: "claim-media-slot",
+                        churchId,
+                        source: "church-overview",
+                      },
+                    } as any);
                   }}
                   style={s.powerBtnGoldWrap}
                 >
