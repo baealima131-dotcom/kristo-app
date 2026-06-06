@@ -103,9 +103,10 @@ async function readDocument<T>(key: MinistryStoreKey, fallback: T): Promise<T> {
 
 async function writeDocument<T>(key: MinistryStoreKey, data: T): Promise<void> {
   const sql = getSql();
+  const payload = JSON.stringify(data ?? null);
   await sql`
     INSERT INTO kristo_ministry_store (key, data, updated_at)
-    VALUES (${key}, ${data as any}, NOW())
+    VALUES (${key}, ${payload}::jsonb, NOW())
     ON CONFLICT (key)
     DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
   `;

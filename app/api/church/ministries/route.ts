@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
 import {
+  isMinistryDatabaseError,
   readMinistryJsonFile as readJsonFile,
   updateMinistryJsonFile as updateJsonFile,
 } from "@/app/api/_lib/store/ministryDb";
@@ -200,6 +201,21 @@ function asBody(req: NextRequest): Promise<Record<string, unknown> | null> {
   return req.json().catch(() => null) as Promise<Record<string, unknown> | null>;
 }
 
+function payloadFieldTypes(body: Record<string, unknown> | null) {
+  const typeOf = (value: unknown) => {
+    if (Array.isArray(value)) return "array";
+    if (value === null) return "null";
+    return typeof value;
+  };
+
+  return {
+    leadersType: typeOf(body?.leaders ?? body?.leaderIds),
+    membersType: typeOf(body?.members ?? body?.memberIds),
+    mediaAccessType: typeOf(body?.mediaAccess),
+    metadataType: typeOf(body?.metadata ?? body?.settings),
+  };
+}
+
 /* =========================
    GET /api/church/ministries
    ========================= */
@@ -280,6 +296,16 @@ export async function POST(req: NextRequest) {
   const description = parseDescription(body.description);
   const avatarUri = parseAvatarUri(body.avatarUri);
   const mediaAccess = body.mediaAccess === true;
+  const fieldTypes = payloadFieldTypes(body);
+
+  console.log("KRISTO_MINISTRY_SAVE_START", {
+    churchId,
+    userId: viewer.userId,
+    nameLength: name.length,
+    status,
+    mediaAccess,
+    ...fieldTypes,
+  });
 
   const created: Ministry = {
     id: id(),
@@ -303,13 +329,8 @@ export async function POST(req: NextRequest) {
       },
       []
     );
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Write failed";
-    return json({ ok: false, error: msg } satisfies ApiErr, { status: 500 });
-  }
 
-  // Pastor/creator is always member #1 and senior leader of every ministry.
-  try {
+    // Pastor/creator is always member #1 and senior leader of every ministry.
     await updateJsonFile<any[]>(
       "ministry-members.json",
       (current) => {
@@ -340,23 +361,48 @@ export async function POST(req: NextRequest) {
       },
       []
     );
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Failed to assign pastor as ministry leader";
-    return json({ ok: false, error: msg } satisfies ApiErr, { status: 500 });
+
+    await logAudit({
+      req,
+      viewer,
+      churchId,
+      action: "MINISTRY_CREATE",
+      targetType: "ministry",
+      targetId: created.id,
+      message: `${viewer.name || viewer.userId} created ministry ${name}.`,
+      meta: { name, status, description, avatarUri },
+    } as any);
+
+    console.log("KRISTO_MINISTRY_SAVE_DONE", {
+      churchId,
+      userId: viewer.userId,
+      ministryId: created.id,
+      mediaAccess,
+      ...fieldTypes,
+    });
+
+    return json<Ministry>({ ok: true, data: created }, { status: 201 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || "ministry_save_failed");
+
+    console.log("KRISTO_MINISTRY_SAVE_ERROR", {
+      churchId,
+      userId: viewer.userId,
+      ministryId: created.id,
+      error: message,
+      ministryDatabaseError: isMinistryDatabaseError(error),
+      ...fieldTypes,
+    });
+
+    const statusCode = isMinistryDatabaseError(error) ? 503 : 500;
+    return json(
+      {
+        ok: false,
+        error: isMinistryDatabaseError(error) ? "Ministry database not configured" : message,
+      } satisfies ApiErr,
+      { status: statusCode }
+    );
   }
-
-  await logAudit({
-    req,
-    viewer,
-    churchId,
-    action: "MINISTRY_CREATE",
-    targetType: "ministry",
-    targetId: created.id,
-    message: `${viewer.name || viewer.userId} created ministry ${name}.`,
-    meta: { name, status, description, avatarUri },
-  } as any);
-
-  return json<Ministry>({ ok: true, data: created }, { status: 201 });
 }
 
 /* =========================

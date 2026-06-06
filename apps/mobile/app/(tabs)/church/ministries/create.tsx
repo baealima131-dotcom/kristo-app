@@ -19,6 +19,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
+import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 import { vipAvatarBg, vipInitials } from "@/src/ui/vipUtil";
@@ -217,20 +218,8 @@ function BuilderGoldSweep() {
 async function apiCreateMinistry(body: { name: string; description?: string; status?: MinistryStatus; mediaAccess?: boolean }) {
   const res = await apiPost<any>("/api/church/ministries", body, { headers: getKristoHeaders() });
   if (!res) throw new Error("Network error");
-  if (!res.ok) throw new Error(res.error || "Create failed");
+  if (!res.ok) throw new Error(extractApiErrorMessage(res, "Create failed"));
   return res.data as Ministry;
-}
-
-function humanErr(e: any) {
-  const msg = String(e?.message ?? e ?? "Error");
-  const t = msg.trim();
-  if (t.startsWith("{") && t.endsWith("}")) {
-    try {
-      const j = JSON.parse(t);
-      if (j?.error) return String(j.error);
-    } catch {}
-  }
-  return msg;
 }
 
 type PickerKind = "members" | "leaders";
@@ -412,7 +401,7 @@ export default function ChurchMinistryCreateScreen() {
         setErr(`Ministry created, but ${failed.length} member assignment(s) failed.`);
       }
     } catch (e: any) {
-      setErr(humanErr(e));
+      setErr(extractApiErrorMessage(e, "Could not create ministry. Please try again."));
     } finally {
       setSaving(false);
     }
