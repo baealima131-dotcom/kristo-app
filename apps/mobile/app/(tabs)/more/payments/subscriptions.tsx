@@ -26,7 +26,7 @@ import {
   getSubscriptionOfferings,
   getCustomerSubscriptionInfo,
   getEffectiveSubscriptionState,
-  isPlanActive,
+  hasRealActiveEntitlement,
   resolveMonthlyPackage,
   resolveYearlyPackage,
   describeCurrentOfferingPackages,
@@ -34,7 +34,6 @@ import {
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
 import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
-import { SUBSCRIPTION_REVIEW_FALLBACK_MESSAGE } from "../../../../src/lib/subscriptionReviewFallback";
 
 const PLAN_CARDS: {
   key: SubscriptionPlanKey;
@@ -81,7 +80,8 @@ export default function PaymentsSubscriptionsScreen() {
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
   const [offersLoading, setOffersLoading] = useState(true);
-  const [subscriptionUnavailable, setSubscriptionUnavailable] = useState(false);
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
   const scrollRef = useRef<RNScrollView | null>(null);
   const [draftCurrentPlan, setDraftCurrentPlan] = useState<SubscriptionPlanKey>(() => getPaymentsState().subscriptions.selectedPlan);
 
@@ -105,6 +105,9 @@ export default function PaymentsSubscriptionsScreen() {
     async function boot() {
       if (sessionLoading) return;
 
+      setOffersLoading(true);
+      setSubscriptionError(null);
+
       try {
         const appUserID =
           String(
@@ -127,32 +130,40 @@ export default function PaymentsSubscriptionsScreen() {
           "RevenueCat offerings packages:\n" + describeCurrentOfferingPackages(offerings)
         );
 
-        const info = await getCustomerSubscriptionInfo();
-        const effective = getEffectiveSubscriptionState(info);
-
         if (!alive) return;
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
 
-        setSubscriptionSelectedPlan(effective.selectedPlan);
-        setSubscriptionPlanStatus(effective.planStatus);
+        // Active status must reflect a REAL StoreKit entitlement, never the
+        // dev/App-Review bypass. Otherwise the UI falsely shows "Active".
+        try {
+          const info = await getCustomerSubscriptionInfo();
+          const effective = getEffectiveSubscriptionState(info);
+          if (!alive) return;
+          setSubscriptionSelectedPlan(effective.selectedPlan);
+          setSubscriptionPlanStatus(hasRealActiveEntitlement(info) ? "active" : "expired");
+        } catch {
+          if (!alive) return;
+          setSubscriptionPlanStatus("expired");
+        }
+
+        if (!monthly && !yearly) {
+          setSubscriptionError(
+            "App Store packages are still loading. Tap retry in a moment."
+          );
+        }
       } catch (error: any) {
         if (!alive) return;
-        const reviewBypass = isAppleReviewBypassEnabled();
         const errorMessage = formatSubscriptionSetupError(error);
         console.log("KRISTO_REVENUECAT_OFFERINGS_UNAVAILABLE", {
           screen: "subscriptions",
-          reviewBypass,
+          reviewBypass: isAppleReviewBypassEnabled(),
           error: errorMessage,
         });
-        console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
-          screen: "subscriptions",
-          reviewBypass,
-          error: errorMessage,
-        });
-        if (!reviewBypass) {
-          setSubscriptionUnavailable(true);
-        }
+        // No review fallback: show an explicit error + retry instead of letting
+        // the screen present plans as if purchasing works.
+        setSubscriptionPlanStatus("expired");
+        setSubscriptionError(errorMessage);
       } finally {
         if (alive) setOffersLoading(false);
       }
@@ -162,7 +173,11 @@ export default function PaymentsSubscriptionsScreen() {
     return () => {
       alive = false;
     };
-  }, [sessionLoading, session]);
+  }, [sessionLoading, session, reloadToken]);
+
+  function retryLoadOfferings() {
+    setReloadToken((token) => token + 1);
+  }
 
   const currentPlan = paymentsState.subscriptions.selectedPlan;
   const planStatus = paymentsState.subscriptions.planStatus;
@@ -195,7 +210,8 @@ export default function PaymentsSubscriptionsScreen() {
       ? "ACTIVE"
       : "AVAILABLE";
 
-  const currentPlanIsActive = isPlanActive(currentPlan, planStatus);
+  // Strict: only a real, server-confirmed entitlement counts as active here.
+  const currentPlanIsActive = planStatus === "active";
 
   const draftPlanIsActive = draftCurrentPlan === currentPlan && currentPlanIsActive;
 
@@ -225,16 +241,21 @@ export default function PaymentsSubscriptionsScreen() {
             <Text style={s.sub}>Choose your access</Text>
           </View>
         </View>
-        {subscriptionUnavailable ? (
+        {offersLoading ? (
           <View style={s.reviewFallbackCard}>
-            <Ionicons name="sparkles-outline" size={22} color="rgba(255,230,190,0.96)" />
+            <ActivityIndicator color="rgba(255,230,190,0.96)" />
+            <Text style={s.reviewFallbackText}>Loading App Store packages...</Text>
+          </View>
+        ) : subscriptionError ? (
+          <View style={s.reviewFallbackCard}>
+            <Ionicons name="alert-circle-outline" size={22} color="rgba(255,230,190,0.96)" />
             <Text style={s.reviewFallbackTitle}>Premium</Text>
-            <Text style={s.reviewFallbackText}>{SUBSCRIPTION_REVIEW_FALLBACK_MESSAGE}</Text>
+            <Text style={s.reviewFallbackText}>{subscriptionError}</Text>
             <Pressable
-              onPress={() => router.back()}
+              onPress={retryLoadOfferings}
               style={({ pressed }) => [s.reviewFallbackBtn, pressed ? s.pressed : null]}
             >
-              <Text style={s.reviewFallbackBtnText}>Continue using Kristo</Text>
+              <Text style={s.reviewFallbackBtnText}>Retry</Text>
             </Pressable>
           </View>
         ) : null}
@@ -244,7 +265,7 @@ export default function PaymentsSubscriptionsScreen() {
           <Text style={s.sectionSub}>Monthly or yearly church premium.</Text>
         </View>
 
-        <View style={[s.planGrid, subscriptionUnavailable ? { opacity: 0.45 } : null]}>
+        <View style={[s.planGrid, subscriptionError ? { opacity: 0.45 } : null]}>
           {PLAN_CARDS.map((item) => {
             const isCurrent = item.key === draftCurrentPlan;
             const toneStyle =
@@ -254,10 +275,8 @@ export default function PaymentsSubscriptionsScreen() {
                 ? s.planCardBlue
                 : s.planCardSoft;
 
-            const displayPrice =
-              item.key === "monthly"
-                ? formatPrice(monthlyPackage || undefined, item.price)
-                : formatPrice(yearlyPackage || undefined, item.price);
+            const planPackage = item.key === "monthly" ? monthlyPackage : yearlyPackage;
+            const displayPrice = formatPrice(planPackage || undefined, item.price);
 
             return (
               <Pressable
@@ -311,10 +330,18 @@ export default function PaymentsSubscriptionsScreen() {
                       setDraftCurrentPlan(item.key);
 
                       const isSameActivePlan =
-                        item.key === currentPlan && isPlanActive(currentPlan, planStatus);
+                        item.key === currentPlan && currentPlanIsActive;
 
                       if (isSameActivePlan) return;
-                      if (subscriptionUnavailable) return;
+
+                      // Only continue to checkout when a real RevenueCat package
+                      // exists for this plan; otherwise surface error + retry.
+                      if (!planPackage) {
+                        setSubscriptionError(
+                          "App Store packages are not available yet. Tap retry, then try again."
+                        );
+                        return;
+                      }
 
                       setSubscriptionSelectedPlan(item.key);
                       router.push({

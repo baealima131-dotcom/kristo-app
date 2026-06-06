@@ -10,7 +10,7 @@ import {
   prefetchSubscriptionOfferings,
   syncPurchasesAppUser,
 } from "@/src/lib/payments/mobileSubscriptions";
-import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+import { isRevenueCatPurchasingDisabled } from "@/src/lib/subscriptionBypass";
 import { deferStartupWorkAfterHomeFirstFrame } from "@/src/lib/firstPaint";
 import JujujuAnimatedSplash, { SPLASH_BG } from "@/src/components/JujujuAnimatedSplash";
 
@@ -18,7 +18,7 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function RevenueCatBootstrap() {
   const { session, loading } = useKristoSession();
-  const bypassRevenueCat = isSubscriptionBypassEnabled();
+  const bypassRevenueCat = isRevenueCatPurchasingDisabled();
 
   React.useEffect(() => {
     if (bypassRevenueCat) return;

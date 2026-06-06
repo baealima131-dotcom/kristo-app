@@ -8,7 +8,10 @@ import Purchases, {
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 import type { PlanStatus, SubscriptionPlanKey } from "../../store/paymentsStore";
-import { isSubscriptionBypassEnabled } from "../subscriptionBypass";
+import {
+  isRevenueCatPurchasingDisabled,
+  isSubscriptionBypassEnabled,
+} from "../subscriptionBypass";
 import { shouldEnableRevenueCatDebug } from "../kristoDebugFlags";
 
 const extra =
@@ -73,7 +76,7 @@ async function purchasesIsConfigured(): Promise<boolean> {
 }
 
 export async function ensurePurchasesConfigured(): Promise<boolean> {
-  if (isSubscriptionBypassEnabled()) {
+  if (isRevenueCatPurchasingDisabled()) {
     return false;
   }
 
@@ -110,7 +113,7 @@ export async function ensurePurchasesConfigured(): Promise<boolean> {
 }
 
 export async function syncPurchasesAppUser(appUserID?: string): Promise<void> {
-  if (isSubscriptionBypassEnabled()) return;
+  if (isRevenueCatPurchasingDisabled()) return;
 
   const ready = await ensurePurchasesConfigured();
   if (!ready) return;
@@ -193,7 +196,7 @@ export function formatSubscriptionSetupError(error: unknown): string {
 }
 
 export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
-  if (isSubscriptionBypassEnabled()) {
+  if (isRevenueCatPurchasingDisabled()) {
     throw new Error("RevenueCat offerings skipped during subscription bypass testing");
   }
 
@@ -227,7 +230,7 @@ export async function restoreSubscriptionPurchases() {
 }
 
 export async function getCustomerSubscriptionInfo(): Promise<CustomerInfo> {
-  if (isSubscriptionBypassEnabled()) {
+  if (isRevenueCatPurchasingDisabled()) {
     throw new Error("RevenueCat customer info skipped during subscription bypass testing");
   }
 
@@ -241,6 +244,18 @@ export function hasActiveEntitlement(
 ) {
   if (isSubscriptionBypassEnabled()) return true;
   return Boolean(customerInfo.entitlements.active[entitlementId]);
+}
+
+/**
+ * Real entitlement check that IGNORES every dev/review bypass. Use this to drive
+ * the purchase UI ("Active" badge, post-purchase confirmation) so the screen can
+ * never claim a plan is active without an actual StoreKit purchase.
+ */
+export function hasRealActiveEntitlement(
+  customerInfo: CustomerInfo,
+  entitlementId = CHURCH_PREMIUM_ENTITLEMENT
+) {
+  return Boolean(customerInfo?.entitlements?.active?.[entitlementId]);
 }
 
 export function resolveActiveSubscriptionPlan(

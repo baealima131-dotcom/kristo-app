@@ -29,7 +29,7 @@ import {
   restoreSubscriptionPurchases,
   getCustomerSubscriptionInfo,
   getEffectiveSubscriptionState,
-  hasActiveEntitlement,
+  hasRealActiveEntitlement,
   resolveMonthlyPackage,
   resolveYearlyPackage,
   describeCurrentOfferingPackages,
@@ -43,7 +43,6 @@ import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedR
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
 import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
-import { SUBSCRIPTION_REVIEW_FALLBACK_MESSAGE } from "../../../../src/lib/subscriptionReviewFallback";
 
 const PLAN_META: Record<
   SubscriptionPlanKey,
@@ -85,10 +84,10 @@ export default function PaymentsCheckoutScreen() {
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
   const [loadingPackages, setLoadingPackages] = useState(true);
-  const didLoadPackagesRef = useRef(false);
   const didLogCheckoutPackagesRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
-  const [checkoutUnavailable, setCheckoutUnavailable] = useState(false);
+  const [packagesError, setPackagesError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     setPaymentsCurrentModule("subscriptions");
@@ -154,8 +153,9 @@ export default function PaymentsCheckoutScreen() {
 
     async function loadPackages() {
       if (sessionLoading) return;
-      if (didLoadPackagesRef.current) return;
-      didLoadPackagesRef.current = true;
+
+      setLoadingPackages(true);
+      setPackagesError(null);
 
       try {
         const appUserID =
@@ -185,23 +185,26 @@ export default function PaymentsCheckoutScreen() {
         if (!alive) return;
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
+
+        // The selected plan must map to a real RevenueCat package, otherwise we
+        // surface a clear error + retry instead of a broken/non-functional CTA.
+        const planPackage = safePlan === "monthly" ? monthly : yearly;
+        if (!planPackage) {
+          setPackagesError(
+            "App Store packages are still loading. Tap retry in a moment."
+          );
+        }
       } catch (error: any) {
         if (!alive) return;
-        const reviewBypass = isAppleReviewBypassEnabled();
         const errorMessage = formatSubscriptionSetupError(error);
         console.log("KRISTO_REVENUECAT_OFFERINGS_UNAVAILABLE", {
           screen: "checkout",
-          reviewBypass,
+          reviewBypass: isAppleReviewBypassEnabled(),
           error: errorMessage,
         });
-        console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
-          screen: "checkout",
-          reviewBypass,
-          error: errorMessage,
-        });
-        if (!reviewBypass) {
-          setCheckoutUnavailable(true);
-        }
+        // No review fallback here: never silently continue. Show an explicit
+        // error + retry so the purchase button can't masquerade as working.
+        setPackagesError(errorMessage);
       } finally {
         if (alive) setLoadingPackages(false);
       }
@@ -211,7 +214,11 @@ export default function PaymentsCheckoutScreen() {
     return () => {
       alive = false;
     };
-  }, [sessionLoading, session]);
+  }, [sessionLoading, session, safePlan, reloadToken]);
+
+  function retryLoadPackages() {
+    setReloadToken((token) => token + 1);
+  }
 
   const livePrice =
     safePlan === "monthly"
@@ -234,19 +241,11 @@ export default function PaymentsCheckoutScreen() {
   async function handleConfirmCheckout() {
     if (submitting) return;
 
+    // Only ever start a purchase when a real RevenueCat package exists. No
+    // review/bypass shortcut that marks the plan active without StoreKit.
     if (!targetPackage) {
-      if (checkoutUnavailable || isAppleReviewBypassEnabled()) {
-        console.log("KRISTO_SUBSCRIPTION_REVIEW_FALLBACK", {
-          screen: "checkout",
-          reason: "package_missing",
-          reviewBypass: isAppleReviewBypassEnabled(),
-        });
-        router.back();
-        return;
-      }
-      Alert.alert(
-        "Package missing",
-        "Monthly or yearly package was not found from RevenueCat offerings. Check Metro logs for packageType, identifier, and productIdentifier."
+      setPackagesError(
+        "App Store packages are not available yet. Tap retry, then try again."
       );
       return;
     }
@@ -257,12 +256,12 @@ export default function PaymentsCheckoutScreen() {
       await purchaseSubscriptionPackage(targetPackage);
 
       let info = await getCustomerSubscriptionInfo();
-      let active = hasActiveEntitlement(info);
+      let active = hasRealActiveEntitlement(info);
 
       for (let i = 0; i < 5 && !active; i++) {
         await new Promise((resolve) => setTimeout(resolve, 1200));
         info = await getCustomerSubscriptionInfo();
-        active = hasActiveEntitlement(info);
+        active = hasRealActiveEntitlement(info);
       }
 
       if (active) {
@@ -313,7 +312,7 @@ export default function PaymentsCheckoutScreen() {
       setSubmitting(true);
 
       const restored = await restoreSubscriptionPurchases();
-      const active = hasActiveEntitlement(restored);
+      const active = hasRealActiveEntitlement(restored);
 
       if (!active) {
         Alert.alert(
@@ -420,14 +419,14 @@ export default function PaymentsCheckoutScreen() {
             </View>
           ) : null}
 
-          {checkoutUnavailable ? (
+          {!loadingPackages && packagesError ? (
             <View style={s.reviewFallbackCard}>
-              <Text style={s.reviewFallbackText}>{SUBSCRIPTION_REVIEW_FALLBACK_MESSAGE}</Text>
+              <Text style={s.reviewFallbackText}>{packagesError}</Text>
               <Pressable
-                onPress={() => router.back()}
+                onPress={retryLoadPackages}
                 style={({ pressed }) => [s.reviewFallbackBtn, pressed ? s.pressed : null]}
               >
-                <Text style={s.reviewFallbackBtnText}>Continue using Kristo</Text>
+                <Text style={s.reviewFallbackBtnText}>Retry</Text>
               </Pressable>
             </View>
           ) : null}
@@ -449,18 +448,20 @@ export default function PaymentsCheckoutScreen() {
           <View style={s.actionRow}>
             <Pressable
               onPress={handleConfirmCheckout}
-              disabled={submitting || loadingPackages || checkoutUnavailable}
+              disabled={submitting || loadingPackages || !targetPackage}
               style={({ pressed }) => [
                 s.primaryBtn,
                 s.primaryBtnMain,
-                (submitting || loadingPackages) ? s.disabledBtn : null,
+                (submitting || loadingPackages || !targetPackage) ? s.disabledBtn : null,
                 pressed ? s.pressed : null,
               ]}
             >
               {submitting ? (
                 <ActivityIndicator />
               ) : (
-                <Text style={s.primaryBtnText}>{confirmLabel}</Text>
+                <Text style={s.primaryBtnText}>
+                  {loadingPackages ? "Loading package..." : confirmLabel}
+                </Text>
               )}
             </Pressable>
 
