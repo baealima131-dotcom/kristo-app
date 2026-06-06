@@ -5,11 +5,6 @@ import path from "path";
 
 import { guard } from "@/app/api/_lib/rbac";
 import {
-  generateVideoPosterFromFile,
-  saveClientPosterBuffer,
-  VIDEO_POSTERS_DIR,
-} from "@/app/api/_lib/media/videoPoster";
-import {
   getVideoStorageConfig,
   uploadBufferToStorage,
   videoStorageConfigError,
@@ -22,6 +17,7 @@ const MAX_FILE_SIZE = 120 * 1024 * 1024;
 
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 const UPLOAD_DIR = path.join(PUBLIC_DIR, "uploads", "media");
+const VIDEO_POSTERS_DIR = path.join(PUBLIC_DIR, "uploads", "media", "posters");
 
 function ensureLocalDir() {
   if (!fs.existsSync(UPLOAD_DIR)) {
@@ -67,6 +63,11 @@ async function saveToLocalFilesystem(params: {
   file: File;
   posterFile: FormDataEntryValue | null;
 }) {
+  const {
+    generateVideoPosterFromFile,
+    saveClientPosterBuffer,
+  } = await import("@/app/api/_lib/media/videoPoster");
+
   ensureLocalDir();
 
   const absPath = path.join(UPLOAD_DIR, params.filename);
@@ -114,6 +115,16 @@ async function saveToObjectStorage(params: {
 
   const ext = path.extname(params.filename);
   const key = `uploads/media/${params.filename}`;
+
+  console.log("KRISTO_CHURCH_MEDIA_UPLOAD_BEFORE_R2", {
+    key,
+    byteLength: params.buf.byteLength,
+    mime: params.mime,
+    bucket: storageConfig.bucket,
+    publicBaseUrl: storageConfig.publicBaseUrl,
+    endpointConfigured: Boolean(storageConfig.endpoint),
+  });
+
   const uploaded = await uploadBufferToStorage({
     key,
     body: params.buf,
@@ -144,16 +155,15 @@ async function saveToObjectStorage(params: {
     });
   }
 
+  console.log("KRISTO_CHURCH_MEDIA_UPLOAD_R2_OK", { key, url });
+
   return { url, posterUri, thumbnailUri };
 }
 
 export async function POST(req: NextRequest) {
-  let storageMode: "object-storage" | "local-fs" = "local-fs";
-  let fileName = "";
-  let mimeType = "";
-  let fileSize = 0;
-
   try {
+    console.log("KRISTO_CHURCH_MEDIA_UPLOAD_START");
+
     const ctxOrRes = await guard(req);
 
     if (ctxOrRes instanceof NextResponse) {
@@ -210,9 +220,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    fileName = String(file.name || "upload");
-    mimeType = String(file.type || "application/octet-stream");
-    fileSize = file.size;
+    const fileName = String(file.name || "upload");
+    const mimeType = String(file.type || "application/octet-stream");
+    const fileSize = file.size;
 
     console.log("KRISTO_CHURCH_MEDIA_UPLOAD_START", {
       fileName,
@@ -222,12 +232,26 @@ export async function POST(req: NextRequest) {
 
     const storageConfig = getVideoStorageConfig();
     const useObjectStorage = isVercelRuntime() || Boolean(storageConfig);
-    storageMode = useObjectStorage ? "object-storage" : "local-fs";
 
     console.log("KRISTO_CHURCH_MEDIA_UPLOAD_STORAGE_TARGET", {
       runtime: isVercelRuntime() ? "vercel" : "local",
       useObjectStorage,
+      hasStorageConfig: Boolean(storageConfig),
+      bucket: storageConfig?.bucket || null,
+      publicBaseUrl: storageConfig?.publicBaseUrl || null,
     });
+
+    if (useObjectStorage && !storageConfig) {
+      const message = videoStorageConfigError();
+      console.log("KRISTO_CHURCH_MEDIA_UPLOAD_ERROR", {
+        message,
+        reason: "object-storage-not-configured",
+      });
+      return NextResponse.json(
+        { ok: false, error: message },
+        { status: 503 }
+      );
+    }
 
     const ext = extFrom(file);
     const base = safeName(
@@ -268,6 +292,12 @@ export async function POST(req: NextRequest) {
       thumbnailUri = saved.thumbnailUri;
     }
 
+    console.log("KRISTO_CHURCH_MEDIA_UPLOAD_OK", {
+      url,
+      size: fileSize,
+      mime: mimeType,
+    });
+
     return NextResponse.json({
       ok: true,
       data: {
@@ -280,19 +310,14 @@ export async function POST(req: NextRequest) {
         ...(posterUri ? { posterUri, thumbnailUri, videoPosterUri: posterUri } : {}),
       },
     });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error || "upload_failed");
-    const stack = error instanceof Error ? error.stack : undefined;
+  } catch (error: any) {
+    console.error(
+      "KRISTO_CHURCH_MEDIA_UPLOAD_FATAL",
+      error?.message,
+      error?.stack
+    );
 
-    console.log("KRISTO_CHURCH_MEDIA_UPLOAD_ERROR", {
-      message,
-      stack,
-      storageMode,
-      fileName: fileName || null,
-      mimeType: mimeType || null,
-      size: fileSize || null,
-    });
-
+    const message = String(error?.message || error || "upload_failed");
     const lower = message.toLowerCase();
     const status =
       lower.includes("not configured") ||
@@ -305,7 +330,10 @@ export async function POST(req: NextRequest) {
       {
         ok: false,
         error: message,
-        ...(process.env.NODE_ENV !== "production" ? { detail: message } : {}),
+        stack:
+          process.env.NODE_ENV !== "production"
+            ? String(error?.stack || "")
+            : undefined,
       },
       { status }
     );
