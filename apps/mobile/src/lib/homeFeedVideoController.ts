@@ -102,6 +102,28 @@ function logHomeFeedVideoAudioGuard(
   });
 }
 
+function logVideoAudioOwnerState(
+  requestedPostId: string,
+  action: string,
+  meta: {
+    playerMuted?: boolean | null;
+    reason?: string;
+    isSameActive?: boolean;
+  } = {}
+) {
+  console.log("KRISTO_VIDEO_AUDIO_OWNER_STATE", {
+    activePostId,
+    requestedPostId: requestedPostId || null,
+    action,
+    playerMuted: meta.playerMuted ?? null,
+    isSameActive:
+      typeof meta.isSameActive === "boolean"
+        ? meta.isSameActive
+        : Boolean(requestedPostId) && activePostId === requestedPostId,
+    reason: meta.reason || null,
+  });
+}
+
 function isExceptActivePlayer(registryPostId: string, exceptPostId: string) {
   return Boolean(exceptPostId) && registryPostId === exceptPostId;
 }
@@ -178,12 +200,15 @@ export function recoverHomeFeedPlaybackAfterLiveExit(
     return false;
   }
 
+  const playerMutedBefore = Boolean(entry.player?.muted);
+
+  activePostId = id;
+
   pauseAllHomeFeedVideos({
     ...meta,
     exceptPostId: id,
     reason: reason || "live-exit-recovery-pause-inactive",
   });
-  activePostId = id;
 
   const shouldPlay = meta.videoReady !== false && meta.shouldPlay !== false;
   if (shouldPlay) {
@@ -191,10 +216,20 @@ export function recoverHomeFeedPlaybackAfterLiveExit(
     logHomeFeedVideoAudioGuard(id, true, "activate-active");
   }
 
+  const playerMutedAfter = Boolean(entry.player?.muted);
+
+  logVideoAudioOwnerState(id, "recover-after-live-exit", {
+    playerMuted: playerMutedAfter,
+    reason,
+    isSameActive: activePostId === id,
+  });
+
   console.log("KRISTO_HOME_FEED_VIDEO_RECOVERY_ACTIVE", {
     postId: id,
     reason,
     shouldPlay,
+    playerMutedBefore,
+    playerMutedAfter,
   });
   return true;
 }
@@ -207,11 +242,26 @@ export function registerHomeFeedVideo(
   const id = String(postId || "").trim();
   if (!id) return;
 
+  const isActiveOwner = activePostId === id;
+  const shouldOwnPlayback = Boolean(meta.shouldPlay && meta.videoReady);
+
   if (!meta.shouldPlay) {
-    try {
-      player.muted = true;
-      player.pause();
-    } catch {}
+    if (isActiveOwner) {
+      logVideoAudioOwnerState(id, "register-skip-mute-active-owner", {
+        playerMuted: Boolean(player.muted),
+        reason: meta.reason || "active-owner",
+        isSameActive: true,
+      });
+    } else if (meta.reason !== "simple-feed-video-mount") {
+      try {
+        player.muted = true;
+        player.pause();
+      } catch {}
+      logVideoAudioOwnerState(id, "register-muted", {
+        playerMuted: Boolean(player.muted),
+        reason: meta.reason || "shouldPlay-false",
+      });
+    }
   }
 
   const existing = registry.get(id);
@@ -226,8 +276,15 @@ export function registerHomeFeedVideo(
     feedOriginId: String(meta.feedOriginId || baseFeedId(id)).trim() || undefined,
   });
 
-  if (meta.shouldPlay && meta.videoReady) {
+  if (shouldOwnPlayback) {
+    activePostId = id;
+    safePlayPlayer(player, true);
     logHomeFeedVideoAudioGuard(id, true, "activate-active");
+    logVideoAudioOwnerState(id, "register-active-ready", {
+      playerMuted: Boolean(player.muted),
+      reason: meta.reason || "shouldPlay-ready",
+      isSameActive: true,
+    });
   }
 
   const registerKey = `${id}:${meta.shouldPlay ? 1 : 0}:${meta.videoReady ? 1 : 0}:${meta.reason || ""}`;
@@ -292,6 +349,11 @@ export function pauseAllHomeFeedVideos(meta: HomeFeedVideoLogMeta = {}) {
     }
     pausedCount += 1;
     logHomeFeedVideoAudioGuard(postId, false, "force-pause-inactive");
+    logVideoAudioOwnerState(postId, "pause-all-inactive", {
+      playerMuted: Boolean(entry.player?.muted),
+      reason: meta.reason || "pause-all",
+      isSameActive: activePostId === postId,
+    });
   });
 
   for (const postId of dead) {
@@ -314,12 +376,7 @@ export function activateHomeFeedVideo(
   const id = String(postId || "").trim();
   if (!id) return;
 
-  if (activePostId === id && meta.shouldPlay && meta.videoReady) {
-    const entry = registry.get(id);
-    safePlayPlayer(entry?.player, true);
-    logHomeFeedVideoAudioGuard(id, true, "activate-active");
-    return;
-  }
+  activePostId = id;
 
   pauseAllHomeFeedVideos({
     ...meta,
@@ -327,9 +384,21 @@ export function activateHomeFeedVideo(
     reason: meta.reason || "activate",
   });
 
-  activePostId = id;
   if (meta.shouldPlay && meta.videoReady) {
+    const entry = registry.get(id);
+    safePlayPlayer(entry?.player, true);
     logHomeFeedVideoAudioGuard(id, true, "activate-active");
+    logVideoAudioOwnerState(id, "activate-active-unmute", {
+      playerMuted: Boolean(entry?.player?.muted),
+      reason: meta.reason || "activate",
+      isSameActive: true,
+    });
+  } else {
+    logVideoAudioOwnerState(id, "activate-pending", {
+      playerMuted: Boolean(registry.get(id)?.player?.muted),
+      reason: meta.reason || "activate-not-ready",
+      isSameActive: true,
+    });
   }
   devLog("KRISTO_FEED_VIDEO_ACTIVATE", { postId: id, ...meta });
 }

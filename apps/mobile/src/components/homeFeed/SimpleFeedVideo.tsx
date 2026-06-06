@@ -1,11 +1,12 @@
 import React, { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { AppState, StyleSheet, View } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEvent } from "expo";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
 import {
   activateHomeFeedVideo,
   consumeHomeFeedVideoRecovery,
+  getActiveHomeFeedVideoId,
   pauseHomeFeedVideo,
   peekHomeFeedVideoRecovery,
   registerHomeFeedVideo,
@@ -98,6 +99,14 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const [firstFrameReady, setFirstFrameReady] = useState(
     () => isActive && cachedReadyOnMount
   );
+  const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      setAppActive(next === "active");
+    });
+    return () => sub.remove();
+  }, []);
 
   const mountedUriRef = useRef(uri);
   const preloadPrimedRef = useRef(false);
@@ -109,8 +118,105 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const firstFrameMsRef = useRef<number | null>(cachedReadyOnMount && isActive ? 0 : null);
   const timingLoggedRef = useRef(false);
   const activeHandoffRef = useRef(false);
+  const prevIsActiveRef = useRef(isActive);
   const prevScreenFocusedRef = useRef(screenFocused);
   const lastRegisterKeyRef = useRef("");
+  const lastMutedLogKeyRef = useRef("");
+  const lastExpectedMutedLogKeyRef = useRef("");
+
+  const readPlayerMuted = () => {
+    try {
+      return Boolean((player as any)?.muted);
+    } catch {
+      return true;
+    }
+  };
+
+  const computeEffectiveShouldPlay = () =>
+    isActive && screenFocused && firstFrameReady && appActive;
+
+  const computeVideoReady = () =>
+    readyMarkedRef.current || isPlayerReadyToStart(status, currentTime, playing);
+
+  const recoverAudioIfNeeded = (source: string) => {
+    const effectiveShouldPlay = computeEffectiveShouldPlay();
+    const videoReady = computeVideoReady();
+    if (!effectiveShouldPlay || !videoReady) return false;
+    if (!readPlayerMuted()) return false;
+
+    try {
+      player.muted = false;
+      player.play();
+    } catch {}
+
+    lastMutedLogKeyRef.current = "";
+    logMutedSet("recoverAudioIfNeeded", false, source);
+    console.log("KRISTO_VIDEO_AUDIO_RECOVERED_FROM_MUTED", {
+      postId: postId || null,
+      source,
+      warmMode,
+      effectiveShouldPlay,
+      videoReady,
+      firstFrameReady,
+    });
+    return true;
+  };
+
+  const logMutedSet = (source: string, muted: boolean, reason?: string) => {
+    const key = `${postId}:${source}:${muted ? 1 : 0}:${warmMode}`;
+    if (key === lastMutedLogKeyRef.current) return;
+    lastMutedLogKeyRef.current = key;
+    console.log("KRISTO_VIDEO_MUTED_SET", {
+      postId: postId || null,
+      muted,
+      source,
+      shouldPlay: isActive,
+      effectiveShouldPlay: isActive && screenFocused && firstFrameReady && appActive,
+      activePostId: getActiveHomeFeedVideoId(),
+      warmMode,
+      reason: reason || null,
+    });
+  };
+
+  const setPlayerMuted = (muted: boolean, source: string, reason?: string) => {
+    if (muted && isActive && computeEffectiveShouldPlay()) {
+      return;
+    }
+    try {
+      player.muted = muted;
+      logMutedSet(source, muted, reason);
+    } catch {}
+  };
+
+  const logExpectedButMuted = (reason: string) => {
+    const playerMuted = readPlayerMuted();
+    const shouldPlay = isActive;
+    const effectiveShouldPlay = computeEffectiveShouldPlay();
+    const videoReady = computeVideoReady();
+
+    if (!effectiveShouldPlay || !videoReady || !playerMuted) return;
+
+    if (recoverAudioIfNeeded(reason)) return;
+
+    const key = `${postId}:${reason}:${warmMode}:${firstFrameReady ? 1 : 0}`;
+    if (key === lastExpectedMutedLogKeyRef.current) return;
+    lastExpectedMutedLogKeyRef.current = key;
+
+    console.log("KRISTO_VIDEO_AUDIO_EXPECTED_BUT_MUTED", {
+      postId: postId || null,
+      shouldPlay,
+      effectiveShouldPlay,
+      videoReady,
+      firstFrameReady,
+      screenFocused,
+      appActive,
+      muted: playerMuted,
+      playerMuted,
+      manualPaused: false,
+      warmMode,
+      reason,
+    });
+  };
 
   const logStartupTiming = (mode: HomeFeedVideoWarmMode) => {
     if (timingLoggedRef.current) return;
@@ -139,12 +245,17 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const activateActivePlayback = (reason: string) => {
     if (!isActive) return;
-    if (activeHandoffRef.current) return;
+    if (!computeEffectiveShouldPlay()) return;
+
+    if (activeHandoffRef.current && !readPlayerMuted()) return;
+
     activeHandoffRef.current = true;
 
     try {
       player.muted = false;
       player.play();
+      lastMutedLogKeyRef.current = "";
+      logMutedSet("activateActivePlayback", false, reason);
     } catch {}
     activateHomeFeedVideo(postId, {
       postId,
@@ -156,6 +267,13 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     markHomeFirstVideoReady("simple-feed-video");
   };
 
+  useEffect(() => {
+    if (isActive && !prevIsActiveRef.current) {
+      activeHandoffRef.current = false;
+    }
+    prevIsActiveRef.current = isActive;
+  }, [isActive]);
+
   useLayoutEffect(() => {
     mountMsRef.current = Date.now();
     timingLoggedRef.current = false;
@@ -166,10 +284,12 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     if (!screenFocused) return;
 
-    try {
-      player.muted = true;
-      player.play();
-    } catch {}
+    if (warmModeRef.current !== "active" || !cachedReadyRef.current) {
+      try {
+        setPlayerMuted(true, "layout-effect-prime", "screen-focused-mount");
+        player.play();
+      } catch {}
+    }
 
     if (warmModeRef.current === "active" && cachedReadyRef.current) {
       markFirstFrame(true);
@@ -212,7 +332,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
         return;
       }
       try {
-        player.muted = true;
+        setPlayerMuted(true, "live-room-recovery-prime", "await-first-frame");
         player.play();
       } catch {}
     });
@@ -229,7 +349,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     return () => {
       try {
         player.pause();
-        player.muted = true;
+        setPlayerMuted(true, "unmount-cleanup");
       } catch {}
       unregisterHomeFeedVideo(postId, { postId, reason: "simple-feed-video-unmount" });
     };
@@ -265,7 +385,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       lastRegisterKeyRef.current = "";
 
       try {
-        player.muted = true;
+        setPlayerMuted(true, "uri-change-prime");
         player.play();
       } catch {}
     }
@@ -290,28 +410,27 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (!screenFocused) {
       try {
         player.pause();
-        player.muted = true;
+        setPlayerMuted(true, "screen-unfocused");
       } catch {}
       return;
     }
 
     if (isActive) {
-      if (!activeHandoffRef.current) {
+      if (firstFrameReady && computeVideoReady()) {
+        activateActivePlayback("simple-feed-video-active-handoff");
+        recoverAudioIfNeeded("active-playback-effect");
+        logStartupTiming(warmMode);
+      } else if (!activeHandoffRef.current) {
         try {
-          player.muted = true;
+          setPlayerMuted(true, "active-pre-handoff", "await-first-frame");
           player.play();
         } catch {}
-      }
-
-      if (firstFrameReady && !activeHandoffRef.current) {
-        activateActivePlayback("simple-feed-video-active-handoff");
-        logStartupTiming(warmMode);
       }
       return;
     }
 
     if (shouldPrime) {
-      player.muted = true;
+      setPlayerMuted(true, "warm-preload-prime", warmMode);
       if (!preloadPrimedRef.current) {
         preloadPrimedRef.current = true;
         try {
@@ -323,9 +442,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     try {
       player.pause();
-      player.muted = true;
+      setPlayerMuted(true, "inactive-off-screen");
     } catch {}
-  }, [player, isActive, shouldPrime, screenFocused, uri, warmMode, firstFrameReady]);
+  }, [player, isActive, shouldPrime, screenFocused, uri, warmMode, firstFrameReady, appActive]);
 
   useEffect(() => {
     if (!screenFocused) return;
@@ -349,10 +468,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       } catch {}
     }
 
-    if (shouldPrime && (lower === "readytoplay" || lower === "playing" || currentTime > 0)) {
+    if (shouldPrime && !isActive && (lower === "readytoplay" || lower === "playing" || currentTime > 0)) {
       try {
         player.pause();
-        player.muted = true;
+        setPlayerMuted(true, "preload-ready-pause", warmMode);
       } catch {}
     }
 
@@ -375,19 +494,20 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     if (isActive) {
       markFirstFrame(false);
-      if (!activeHandoffRef.current) {
-        activateActivePlayback("simple-feed-video-active");
-        logStartupTiming(warmMode);
-      }
+      activateActivePlayback("simple-feed-video-active");
+      recoverAudioIfNeeded("status-ready-active");
+      logStartupTiming(warmMode);
       return;
     }
 
     markFirstFrame(false);
 
-    try {
-      player.pause();
-      player.muted = true;
-    } catch {}
+    if (!isActive && !shouldPrime) {
+      try {
+        player.pause();
+        setPlayerMuted(true, "status-ready-inactive", warmMode);
+      } catch {}
+    }
   }, [
     isActive,
     shouldPrime,
@@ -402,6 +522,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     uri,
     warmMode,
     firstFrameReady,
+    appActive,
   ]);
 
   useEffect(() => {
