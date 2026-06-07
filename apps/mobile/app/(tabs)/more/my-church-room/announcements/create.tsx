@@ -236,6 +236,8 @@ export default function CreateAnnouncement() {
         console.warn("KRISTO_CHURCH_ROOM_IMAGE_UPLOAD_FAILED", {
           status,
           error: String(uploadRes?.error || "missing mediaUri/imageUrl").trim(),
+          detail: String(uploadRes?.detail || uploadRes?.debug || "").trim() || null,
+          reason: String(uploadRes?.reason || "").trim() || null,
         });
         return null;
       }

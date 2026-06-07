@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import fs from "fs";
 import path from "path";
 
-import { guard } from "@/app/api/_lib/rbac";
+import { guardAuth } from "@/app/api/_lib/rbac";
 import {
   getVideoStorageConfig,
   uploadBufferToStorage,
@@ -13,7 +13,9 @@ import { isVercelRuntime } from "@/app/api/_lib/store/authDb";
 
 export const runtime = "nodejs";
 
-const MAX_FILE_SIZE = 120 * 1024 * 1024;
+const MAX_VIDEO_SIZE = 120 * 1024 * 1024;
+/** Church Room feed images — keep under Vercel ~4.5MB request-body limit. */
+const MAX_IMAGE_SIZE = 12 * 1024 * 1024;
 
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 const UPLOAD_DIR = path.join(PUBLIC_DIR, "uploads", "media");
@@ -35,6 +37,17 @@ function safeName(name: string) {
     .slice(0, 120);
 }
 
+function safeChurchSegment(raw: string) {
+  const value = String(raw || "").trim();
+  if (!value) return "unknown";
+  return (
+    value
+      .replace(/[^\w.\- ]+/g, "_")
+      .replace(/\s+/g, "_")
+      .slice(0, 80) || "unknown"
+  );
+}
+
 function extFrom(file: File) {
   const byName = path.extname(String(file.name || "")).trim();
 
@@ -49,6 +62,10 @@ function extFrom(file: File) {
   if (mime.includes("mov")) return ".mov";
 
   return mime.includes("image/") ? ".jpg" : ".mp4";
+}
+
+function isImageFile(file: File) {
+  return String(file.type || "").toLowerCase().includes("image/");
 }
 
 function isAllowedMedia(file: File) {
@@ -149,13 +166,51 @@ async function saveToObjectStorage(params: {
   return { url, posterUri, thumbnailUri };
 }
 
+async function saveImageToObjectStorage(params: {
+  churchId: string;
+  filename: string;
+  buf: Buffer;
+  mime: string;
+}) {
+  const storageConfig = getVideoStorageConfig();
+  if (!storageConfig) {
+    throw new Error(videoStorageConfigError());
+  }
+
+  const key = `church-feed-images/${params.churchId}/${Date.now()}_${params.filename}`;
+  const uploaded = await uploadBufferToStorage({
+    key,
+    body: params.buf,
+    contentType: params.mime,
+  });
+
+  return uploaded.publicUrl;
+}
+
 export async function POST(req: NextRequest) {
+  let churchId = "";
+  let userId = "";
+  let storageMode: "object-storage" | "local-fs" = "local-fs";
+  let isImage = false;
+
   try {
-    const ctxOrRes = await guard(req);
+    // Church Room feed images use this route (not the signed upload-url video flow).
+    // Auth-only matches /api/church/room-attachments/upload and avoids membership
+    // store failures surfacing as opaque 500s during image upload on Vercel.
+    const ctxOrRes = await guardAuth(req);
 
     if (ctxOrRes instanceof NextResponse) {
       return ctxOrRes;
     }
+
+    userId = String(ctxOrRes.viewer?.userId || "").trim();
+    churchId = safeChurchSegment(
+      String(
+        (ctxOrRes.viewer as any)?.churchId ||
+          req.headers.get("x-kristo-church-id") ||
+          ""
+      ).trim()
+    );
 
     let form: FormData;
 
@@ -163,8 +218,11 @@ export async function POST(req: NextRequest) {
       form = await req.formData();
     } catch (err) {
       console.error("KRISTO_CHURCH_MEDIA_UPLOAD_ERROR", {
+        userId,
+        churchId,
+        reason: "invalid-form-data",
         message: err instanceof Error ? err.message : String(err),
-        stack: err instanceof Error ? err.stack : undefined,
+        contentType: req.headers.get("content-type"),
       });
 
       return NextResponse.json(
@@ -195,10 +253,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (file.size > MAX_FILE_SIZE) {
+    isImage = isImageFile(file);
+    const maxSize = isImage ? MAX_IMAGE_SIZE : MAX_VIDEO_SIZE;
+    if (file.size > maxSize) {
       return NextResponse.json(
-        { ok: false, error: "File too large" },
-        { status: 400 }
+        {
+          ok: false,
+          error: isImage ? "Image too large (max 12MB)" : "File too large",
+        },
+        { status: 413 }
       );
     }
 
@@ -207,15 +270,30 @@ export async function POST(req: NextRequest) {
 
     const storageConfig = getVideoStorageConfig();
     const useObjectStorage = isVercelRuntime() || Boolean(storageConfig);
+    storageMode = useObjectStorage ? "object-storage" : "local-fs";
+
+    console.log("KRISTO_CHURCH_MEDIA_UPLOAD_START", {
+      userId,
+      churchId,
+      isImage,
+      storageMode,
+      vercel: isVercelRuntime(),
+      hasStorageConfig: Boolean(storageConfig),
+      size: fileSize,
+      mime: mimeType,
+      contentType: req.headers.get("content-type"),
+    });
 
     if (useObjectStorage && !storageConfig) {
       const message = videoStorageConfigError();
       console.error("KRISTO_CHURCH_MEDIA_UPLOAD_ERROR", {
-        message,
+        userId,
+        churchId,
         reason: "object-storage-not-configured",
+        error: message,
       });
       return NextResponse.json(
-        { ok: false, error: message },
+        { ok: false, error: message, detail: message },
         { status: 503 }
       );
     }
@@ -223,7 +301,7 @@ export async function POST(req: NextRequest) {
     const ext = extFrom(file);
     const base = safeName(
       path.basename(
-        String(file.name || "video"),
+        String(file.name || "media"),
         path.extname(String(file.name || ""))
       )
     );
@@ -237,16 +315,25 @@ export async function POST(req: NextRequest) {
     let thumbnailUri: string | undefined;
 
     if (useObjectStorage) {
-      const saved = await saveToObjectStorage({
-        filename,
-        buf,
-        mime: mimeType,
-        file,
-        posterFile,
-      });
-      url = saved.url;
-      posterUri = saved.posterUri;
-      thumbnailUri = saved.thumbnailUri;
+      if (isImage) {
+        url = await saveImageToObjectStorage({
+          churchId,
+          filename,
+          buf,
+          mime: mimeType,
+        });
+      } else {
+        const saved = await saveToObjectStorage({
+          filename,
+          buf,
+          mime: mimeType,
+          file,
+          posterFile,
+        });
+        url = saved.url;
+        posterUri = saved.posterUri;
+        thumbnailUri = saved.thumbnailUri;
+      }
     } else {
       const saved = await saveToLocalFilesystem({
         filename,
@@ -258,6 +345,16 @@ export async function POST(req: NextRequest) {
       posterUri = saved.posterUri;
       thumbnailUri = saved.thumbnailUri;
     }
+
+    console.log("KRISTO_CHURCH_MEDIA_UPLOAD_DONE", {
+      userId,
+      churchId,
+      isImage,
+      storageMode,
+      urlHost: String(url).split("/").filter(Boolean).slice(0, 3).join("/"),
+      size: fileSize,
+      mime: mimeType,
+    });
 
     return NextResponse.json({
       ok: true,
@@ -272,25 +369,33 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error: any) {
-    console.error(
-      "KRISTO_CHURCH_MEDIA_UPLOAD_FATAL",
-      error?.message,
-      error?.stack
-    );
-
     const message = String(error?.message || error || "upload_failed");
+
+    console.error("KRISTO_CHURCH_MEDIA_UPLOAD_FATAL", {
+      userId,
+      churchId,
+      isImage,
+      storageMode,
+      error: message,
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+
     const lower = message.toLowerCase();
     const status =
       lower.includes("not configured") ||
+      lower.includes("missing:") ||
       lower.includes("erofs") ||
       lower.includes("read-only")
         ? 503
-        : 500;
+        : 502;
 
     return NextResponse.json(
       {
         ok: false,
-        error: message,
+        error: isImage
+          ? "Could not upload image. Please try again."
+          : message,
+        detail: message,
         stack:
           process.env.NODE_ENV !== "production"
             ? String(error?.stack || "")
