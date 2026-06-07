@@ -489,8 +489,12 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
   const publishMetadata = buildChurchVideoPublishMetadata({
     durationMs: job.durationMs,
     sizeBytes: fileSize,
-    faststart: signed.faststart === true,
+    faststart: compressed.faststart === true,
   });
+
+  const mobileFaststartPending = compressed.faststart !== true;
+  const mobileFaststartReason =
+    compressed.faststartReason ?? signed.faststartReason ?? null;
 
   console.log("KRISTO_VIDEO_METADATA_CAPTURED", {
     jobId,
@@ -499,8 +503,10 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     sizeBytes: publishMetadata.sizeBytes,
     bitrateEstimate: publishMetadata.bitrateEstimate ?? null,
     faststart: publishMetadata.faststart,
+    mobileFaststart: compressed.faststart === true,
     serverFaststart: signed.faststart === true,
-    faststartPending: signed.faststartPending === true,
+    faststartPending: mobileFaststartPending,
+    moovPositionHint: compressed.moovPositionHint ?? null,
     pickerDurationMs: job.durationMs ?? null,
     compressedSkipped: compressed.skipped,
     compressedReason: compressed.reason || null,
@@ -512,11 +518,17 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     console.log("KRISTO_VIDEO_FASTSTART_REQUIRED", {
       videoUrl: String(signed.videoUrl || "").trim(),
       faststart: false,
-      faststartPending: signed.faststartPending === true,
+      faststartPending: mobileFaststartPending,
+      faststartReason: mobileFaststartReason,
     });
   }
 
-  return { signed, publishMetadata };
+  return {
+    signed,
+    publishMetadata,
+    mobileFaststartPending,
+    mobileFaststartReason,
+  };
 }
 
 async function runMediaVideoUpload(
@@ -583,13 +595,15 @@ async function runMediaVideoUpload(
         jobId,
         videoUrl: uploadedVideoUrl,
         posterUri: publishPosterUri || null,
+        source: "mobile-verified",
       });
     } else {
       console.log("KRISTO_VIDEO_FASTSTART_FAILED", {
         jobId,
         videoUrl: uploadedVideoUrl,
-        faststartPending: signed.faststartPending === true,
-        faststartReason: signed.faststartReason || null,
+        faststartPending: uploadResult.mobileFaststartPending,
+        faststartReason: uploadResult.mobileFaststartReason,
+        serverFaststart: signed.faststart === true,
         posterUri: usingBrandedPoster ? null : publishPosterUri || null,
         brandedPoster: usingBrandedPoster,
       });
@@ -615,8 +629,10 @@ async function runMediaVideoUpload(
       serverPosterUri: serverPosterUri || null,
       brandedPoster: usingBrandedPoster,
       faststart: publishMetadata.faststart,
-      faststartPending: signed.faststartPending === true,
-      faststartReason: signed.faststartReason || null,
+      mobileFaststart: publishMetadata.faststart === true,
+      serverFaststart: signed.faststart === true,
+      faststartPending: uploadResult.mobileFaststartPending,
+      faststartReason: uploadResult.mobileFaststartReason,
     });
 
     const publishedFromRetry = await tryPublishUploadedVideo(job, {
@@ -624,8 +640,8 @@ async function runMediaVideoUpload(
       posterPublicUrl: usingBrandedPoster ? "" : publishPosterUri,
       publishMetadata,
       uploadHeaders,
-      faststartPending: signed.faststartPending,
-      faststartReason: signed.faststartReason,
+      faststartPending: uploadResult.mobileFaststartPending,
+      faststartReason: uploadResult.mobileFaststartReason,
     });
 
     if (!publishedFromRetry) {

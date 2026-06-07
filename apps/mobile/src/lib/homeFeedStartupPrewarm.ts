@@ -11,8 +11,8 @@ import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
 
 const COOLDOWN_MS = 60_000;
-const STARTUP_POSTER_MAX = 5;
-const STARTUP_VIDEO_MAX = 3;
+const STARTUP_POSTER_MAX = 10;
+const STARTUP_VIDEO_MAX = 5;
 const STARTUP_CONCURRENCY = 2;
 
 let inflight: Promise<void> | null = null;

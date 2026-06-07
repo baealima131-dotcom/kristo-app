@@ -1,4 +1,5 @@
 import { NativeModules, Platform, TurboModuleRegistry } from "react-native";
+import { probeMp4FaststartFromLocalUri } from "@/src/lib/mp4FaststartProbeLocal";
 
 export type VideoCompressResult = {
   uri: string;
@@ -11,6 +12,10 @@ export type VideoCompressResult = {
   durationSec?: number | null;
   mimeType?: string;
   feedExportApplied?: boolean;
+  faststart: boolean;
+  faststartPending: boolean;
+  faststartReason: string | null;
+  moovPositionHint?: string;
 };
 
 /** Skip remux/compress only for negligible clips. */
@@ -85,6 +90,7 @@ function logUploadCompressResult(params: {
   mimeType: string;
   skipped: boolean;
   reason?: string;
+  faststart: boolean;
 }) {
   console.log("KRISTO_VIDEO_UPLOAD_COMPRESS_RESULT", {
     originalBytes: params.originalBytes,
@@ -95,7 +101,69 @@ function logUploadCompressResult(params: {
     mimeType: params.mimeType,
     skipped: params.skipped,
     reason: params.reason || null,
+    faststart: params.faststart,
   });
+}
+
+type FaststartVerifyPhase =
+  | "post-compress"
+  | "compress-skipped"
+  | "compress-failed"
+  | "missing-uri";
+
+async function verifyLocalFaststart(
+  uri: string,
+  phase: FaststartVerifyPhase
+): Promise<Pick<VideoCompressResult, "faststart" | "faststartPending" | "faststartReason" | "moovPositionHint">> {
+  console.log("KRISTO_VIDEO_FASTSTART_VERIFY_START", {
+    uri: String(uri || "").trim(),
+    phase,
+  });
+
+  const probe = await probeMp4FaststartFromLocalUri(uri);
+
+  if (probe.hasFastStart) {
+    console.log("KRISTO_VIDEO_FASTSTART_VERIFY_RESULT", {
+      hasFastStart: true,
+      moovPositionHint: probe.moovPositionHint,
+      fileBytes: probe.fileBytes,
+      phase,
+    });
+    return {
+      faststart: true,
+      faststartPending: false,
+      faststartReason: null,
+      moovPositionHint: probe.moovPositionHint,
+    };
+  }
+
+  const faststartReason =
+    probe.moovPositionHint === "unknown" || probe.moovPositionHint === "not-mp4"
+      ? "mobile-faststart-unknown"
+      : "mobile-faststart-verify-failed";
+
+  console.log("KRISTO_VIDEO_FASTSTART_VERIFY_FAILED", {
+    hasFastStart: false,
+    moovPositionHint: probe.moovPositionHint,
+    fileBytes: probe.fileBytes,
+    phase,
+    faststartReason,
+  });
+
+  return {
+    faststart: false,
+    faststartPending: true,
+    faststartReason,
+    moovPositionHint: probe.moovPositionHint,
+  };
+}
+
+async function withVerifiedFaststart<T extends Omit<VideoCompressResult, "faststart" | "faststartPending" | "faststartReason" | "moovPositionHint">>(
+  result: T,
+  phase: FaststartVerifyPhase
+): Promise<VideoCompressResult> {
+  const verified = await verifyLocalFaststart(result.uri, phase);
+  return { ...result, ...verified };
 }
 
 export async function compressVideoForUpload(
@@ -120,6 +188,15 @@ export async function compressVideoForUpload(
   });
 
   if (!cleanUri) {
+    const base = {
+      uri: cleanUri,
+      originalBytes: 0,
+      compressedBytes: 0,
+      skipped: true,
+      reason: "missing-uri",
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
+    };
     logUploadCompressResult({
       originalBytes: 0,
       compressedBytes: 0,
@@ -129,16 +206,9 @@ export async function compressVideoForUpload(
       mimeType: FEED_EXPORT_MIME,
       skipped: true,
       reason: "missing-uri",
+      faststart: false,
     });
-    return {
-      uri: cleanUri,
-      originalBytes: 0,
-      compressedBytes: 0,
-      skipped: true,
-      reason: "missing-uri",
-      durationSec,
-      mimeType: FEED_EXPORT_MIME,
-    };
+    return withVerifiedFaststart(base, "missing-uri");
   }
 
   if (originalBytes > 0 && originalBytes < MIN_COMPRESS_BYTES) {
@@ -152,18 +222,22 @@ export async function compressVideoForUpload(
       mimeType: FEED_EXPORT_MIME,
       skipped: true,
       reason: "too-small",
+      faststart: false,
     });
-    return {
-      uri: cleanUri,
-      originalBytes,
-      compressedBytes: originalBytes,
-      skipped: true,
-      reason: "too-small",
-      width: dims.width,
-      height: dims.height,
-      durationSec,
-      mimeType: FEED_EXPORT_MIME,
-    };
+    return withVerifiedFaststart(
+      {
+        uri: cleanUri,
+        originalBytes,
+        compressedBytes: originalBytes,
+        skipped: true,
+        reason: "too-small",
+        width: dims.width,
+        height: dims.height,
+        durationSec,
+        mimeType: FEED_EXPORT_MIME,
+      },
+      "compress-skipped"
+    );
   }
 
   if (!isCompressorNativeLinked()) {
@@ -177,18 +251,22 @@ export async function compressVideoForUpload(
       mimeType: FEED_EXPORT_MIME,
       skipped: true,
       reason: "native-not-linked",
+      faststart: false,
     });
-    return {
-      uri: cleanUri,
-      originalBytes,
-      compressedBytes: originalBytes,
-      skipped: true,
-      reason: "native-not-linked",
-      width: dims.width,
-      height: dims.height,
-      durationSec,
-      mimeType: FEED_EXPORT_MIME,
-    };
+    return withVerifiedFaststart(
+      {
+        uri: cleanUri,
+        originalBytes,
+        compressedBytes: originalBytes,
+        skipped: true,
+        reason: "native-not-linked",
+        width: dims.width,
+        height: dims.height,
+        durationSec,
+        mimeType: FEED_EXPORT_MIME,
+      },
+      "compress-skipped"
+    );
   }
 
   try {
@@ -206,7 +284,6 @@ export async function compressVideoForUpload(
       output: FEED_EXPORT_MIME,
       codec: "h264+aac",
       keyframeIntervalSecTarget: TARGET_KEYFRAME_INTERVAL_SEC,
-      faststartTarget: true,
     });
 
     const compressedUri = await Video.compress(
@@ -243,6 +320,7 @@ export async function compressVideoForUpload(
       durationSec,
       mimeType: FEED_EXPORT_MIME,
       skipped: false,
+      faststart: false,
     });
 
     console.log("KRISTO_VIDEO_COMPRESS_DONE", {
@@ -252,21 +330,23 @@ export async function compressVideoForUpload(
       feedFriendly: true,
       maxSize: TARGET_MAX_SIZE,
       bitrate: TARGET_BITRATE,
-      faststartAssumed: true,
       keyframeIntervalSecTarget: TARGET_KEYFRAME_INTERVAL_SEC,
     });
 
-    return {
-      uri: outputUri,
-      originalBytes,
-      compressedBytes,
-      skipped: false,
-      feedExportApplied: true,
-      width: dims.width,
-      height: dims.height,
-      durationSec,
-      mimeType: FEED_EXPORT_MIME,
-    };
+    return withVerifiedFaststart(
+      {
+        uri: outputUri,
+        originalBytes,
+        compressedBytes,
+        skipped: false,
+        feedExportApplied: true,
+        width: dims.width,
+        height: dims.height,
+        durationSec,
+        mimeType: FEED_EXPORT_MIME,
+      },
+      "post-compress"
+    );
   } catch (error) {
     const message = String((error as any)?.message || error || "unknown");
     const dims = await probeVideoDimensions(cleanUri);
@@ -284,17 +364,21 @@ export async function compressVideoForUpload(
       mimeType: FEED_EXPORT_MIME,
       skipped: true,
       reason: "compress-failed",
+      faststart: false,
     });
-    return {
-      uri: cleanUri,
-      originalBytes,
-      compressedBytes: originalBytes,
-      skipped: true,
-      reason: "compress-failed",
-      width: dims.width,
-      height: dims.height,
-      durationSec,
-      mimeType: FEED_EXPORT_MIME,
-    };
+    return withVerifiedFaststart(
+      {
+        uri: cleanUri,
+        originalBytes,
+        compressedBytes: originalBytes,
+        skipped: true,
+        reason: "compress-failed",
+        width: dims.width,
+        height: dims.height,
+        durationSec,
+        mimeType: FEED_EXPORT_MIME,
+      },
+      "compress-failed"
+    );
   }
 }
