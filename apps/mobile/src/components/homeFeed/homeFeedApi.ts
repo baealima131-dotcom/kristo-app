@@ -2,13 +2,13 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
-import { filterPhase1FeedRows } from "./homeFeedUtils";
+import { filterPhase1FeedRows, normalizeHomeFeedApiRow } from "./homeFeedUtils";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
 import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
 
 function parseFeedRows(res: any): any[] {
-  const raw = parseChurchFeedListResponse(res).rows;
+  const raw = parseChurchFeedListResponse(res).rows.map(normalizeHomeFeedApiRow);
   return raw.filter(
     (row) => isMediaScheduleFeedItem(row) || isHomeFeedReadyMediaItem(row)
   );

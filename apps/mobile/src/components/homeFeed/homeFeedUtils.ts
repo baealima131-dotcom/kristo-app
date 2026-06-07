@@ -139,6 +139,45 @@ export function resolveFeedPostTypeTitle(item: any) {
   return "";
 }
 
+// Image URL keys a feed post may carry. Mirrors the backend's
+// FEED_POST_IMAGE_FIELD_KEYS so announcement/testimony (and locally-merged /
+// optimistic) image posts render regardless of which key holds the image URL,
+// instead of falling back to the dark text card.
+const POST_IMAGE_URI_KEYS = [
+  "mediaUri",
+  "imageUrl",
+  "imageUri",
+  "mediaUrl",
+  "attachmentUrl",
+  "photoUri",
+  "uploadedMediaUri",
+  "coverImage",
+  "coverImageUrl",
+  "image",
+  "photo",
+] as const;
+
+function collectPostImageUriValues(row: any): string[] {
+  const values: string[] = [];
+  for (const key of POST_IMAGE_URI_KEYS) {
+    const v = String(row?.[key] || "").trim();
+    if (v) values.push(v);
+  }
+  if (Array.isArray(row?.images)) {
+    for (const v of row.images) {
+      const s = String(v || "").trim();
+      if (s) values.push(s);
+    }
+  }
+  if (Array.isArray(row?.mediaUrls)) {
+    for (const v of row.mediaUrls) {
+      const s = String(v || "").trim();
+      if (s) values.push(s);
+    }
+  }
+  return values;
+}
+
 export function normalizeHomeFeedApiRow(row: any) {
   if (!row || typeof row !== "object") return row;
 
@@ -157,32 +196,17 @@ export function normalizeHomeFeedApiRow(row: any) {
     .map((value) => String(value || "").trim())
     .filter(Boolean);
 
-  const imageCandidates = [
-    row?.mediaUri,
-    row?.imageUrl,
-    row?.imageUri,
-    ...(Array.isArray(row?.images) ? row.images : []),
-    ...(Array.isArray(row?.mediaUrls) ? row.mediaUrls : []),
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean)
-    .filter((candidate) => !postImageUriMatchesAvatarCandidates(candidate, avatarUriCandidates));
+  const imageCandidates = collectPostImageUriValues(row).filter(
+    (candidate) => !postImageUriMatchesAvatarCandidates(candidate, avatarUriCandidates)
+  );
 
   let mediaUri = imageCandidates[0] || "";
   if (!mediaUri) {
-    const rawPostMediaUri = [
-      row?.mediaUri,
-      row?.imageUrl,
-      row?.imageUri,
-      ...(Array.isArray(row?.images) ? row.images : []),
-      ...(Array.isArray(row?.mediaUrls) ? row.mediaUrls : []),
-    ]
-      .map((value) => String(value || "").trim())
-      .find(
-        (candidate) =>
-          candidate.includes("/uploads/media/") ||
-          (/^https?:\/\//i.test(candidate) && !candidate.includes("/profile-avatars/"))
-      );
+    const rawPostMediaUri = collectPostImageUriValues(row).find(
+      (candidate) =>
+        candidate.includes("/uploads/media/") ||
+        (/^https?:\/\//i.test(candidate) && !candidate.includes("/profile-avatars/"))
+    );
     if (rawPostMediaUri) mediaUri = rawPostMediaUri;
   }
   const videoUrl = String(row?.videoUrl || "").trim();
@@ -1436,15 +1460,7 @@ export function resolveVideoUri(item: any) {
 }
 
 function postMediaUriCandidates(item: any): string[] {
-  return [
-    item?.mediaUri,
-    item?.imageUrl,
-    item?.imageUri,
-    ...(Array.isArray(item?.images) ? item.images : []),
-    ...(Array.isArray(item?.mediaUrls) ? item.mediaUrls : []),
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
+  return collectPostImageUriValues(item);
 }
 
 function homeFeedAvatarUriCandidates(item: any): string[] {
