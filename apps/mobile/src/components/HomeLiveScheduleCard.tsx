@@ -51,35 +51,138 @@ const GOLD = "#F7D36A";
 const GOLD_SOFT = "rgba(247,211,106,0.22)";
 const GOLD_BORDER = "rgba(247,211,106,0.42)";
 const GOLD_GLASS = "rgba(247,211,106,0.14)";
+const VIP_GOLD_LIGHT = "#F6D77A";
+const VIP_GOLD_MID = "#D9A441";
+const VIP_GOLD_DEEP = "#A97018";
+const VIP_GOLD_GLOW = "rgba(246,215,122,0.38)";
 const LIVE_PINK = "#FF375F";
+const LIVE_BURGUNDY = "#7A263A";
+const LIVE_BURGUNDY_SOFT = "rgba(122,38,58,0.14)";
+const LIVE_ROSE_GOLD = "#C9A08A";
 const CARD_MIN_HEIGHT = Math.min(790, Math.max(720, Dimensions.get("window").height * 0.86));
-const CARD_MIN_HEIGHT_COMPACT = Math.min(600, Math.max(520, Dimensions.get("window").height * 0.58));
 
 function phaseEdgeTint(phase: string, claimed: boolean, isUnclaimedLiveOpen?: boolean) {
-  if (isUnclaimedLiveOpen) return "rgba(255,55,95,0.13)";
+  if (isUnclaimedLiveOpen) return "rgba(122,38,58,0.09)";
   if (phase === "live") return "rgba(255,55,95,0.13)";
   if (claimed) return "rgba(167,139,250,0.11)";
   return "rgba(247,211,106,0.11)";
 }
 
-function PremiumSectionDivider({ unclaimed }: { unclaimed?: boolean }) {
+function PremiumSectionDivider({
+  unclaimed,
+  claimedCompact,
+}: {
+  unclaimed?: boolean;
+  claimedCompact?: boolean;
+}) {
   return (
-    <View pointerEvents="none" style={[styles.sectionDividerWrap, unclaimed && styles.sectionDividerWrapUnclaimed]}>
+    <View
+      pointerEvents="none"
+      style={[
+        styles.sectionDividerWrap,
+        unclaimed && styles.sectionDividerWrapUnclaimed,
+        claimedCompact && styles.sectionDividerWrapClaimedLive,
+      ]}
+    >
       <LinearGradient
-        colors={[
-          "transparent",
-          "rgba(247,211,106,0.05)",
-          "rgba(255,255,255,0.07)",
-          "rgba(247,211,106,0.05)",
-          "transparent",
-        ]}
+        colors={
+          unclaimed
+            ? [
+                "transparent",
+                "rgba(246,215,122,0.08)",
+                "rgba(255,255,255,0.14)",
+                "rgba(217,164,65,0.10)",
+                "transparent",
+              ]
+            : [
+                "transparent",
+                "rgba(247,211,106,0.05)",
+                "rgba(255,255,255,0.07)",
+                "rgba(247,211,106,0.05)",
+                "transparent",
+              ]
+        }
         start={{ x: 0, y: 0.5 }}
         end={{ x: 1, y: 0.5 }}
         style={styles.sectionDividerGradient}
       />
-      <View style={styles.sectionDividerGlowCore} />
+      <View style={[styles.sectionDividerGlowCore, unclaimed && styles.sectionDividerGlowCoreUnclaimed]} />
     </View>
   );
+}
+
+function PremiumUnclaimedCardAura({ liveOpen }: { liveOpen?: boolean }) {
+  return (
+    <>
+      <View
+        pointerEvents="none"
+        style={[styles.vipRadialGlow, liveOpen && styles.vipRadialGlowLiveOpen]}
+      />
+      <LinearGradient
+        pointerEvents="none"
+        colors={
+          liveOpen
+            ? ["rgba(122,38,58,0.045)", "transparent", "rgba(246,215,122,0.03)"]
+            : ["rgba(246,215,122,0.07)", "rgba(169,112,24,0.03)", "transparent"]
+        }
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={styles.vipVerticalWash}
+      />
+      <View pointerEvents="none" style={[styles.vipAbstractOrbA, liveOpen && styles.vipAbstractOrbALiveOpen]} />
+      <View pointerEvents="none" style={styles.vipAbstractOrbB} />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(255,255,255,0.08)", "transparent", "rgba(0,0,0,0.06)"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.vipGlassSheen}
+      />
+    </>
+  );
+}
+
+function ClaimButtonPremiumShimmer() {
+  const shimmer = useSharedValue(0);
+
+  useEffect(() => {
+    shimmer.value = withRepeat(
+      withTiming(1, { duration: 2800, easing: Easing.inOut(Easing.quad) }),
+      -1,
+      false
+    );
+  }, [shimmer]);
+
+  const shimmerStyle = useAnimatedStyle(() => ({
+    opacity: 0.08 + shimmer.value * 0.22,
+    transform: [{ translateX: -72 + shimmer.value * 144 }, { skewX: "-16deg" }],
+  }));
+
+  return (
+    <>
+      <View pointerEvents="none" style={styles.claimBtnVipTopHighlight} />
+      <Animated.View pointerEvents="none" style={[styles.claimBtnVipShimmer, shimmerStyle]} />
+    </>
+  );
+}
+
+function ProgressBarPremiumShimmer() {
+  const shimmer = useSharedValue(0);
+
+  useEffect(() => {
+    shimmer.value = withRepeat(
+      withTiming(1, { duration: 2200, easing: Easing.inOut(Easing.quad) }),
+      -1,
+      true
+    );
+  }, [shimmer]);
+
+  const shimmerStyle = useAnimatedStyle(() => ({
+    opacity: 0.18 + shimmer.value * 0.35,
+    transform: [{ translateX: -18 + shimmer.value * 36 }],
+  }));
+
+  return <Animated.View pointerEvents="none" style={[styles.progressShimmer, shimmerStyle]} />;
 }
 
 function userHasActiveChurchMembership(session?: { churchId?: string; activeChurchId?: string } | null) {
@@ -102,6 +205,7 @@ function AvatarRing({
   accent,
   live,
   goldFallback,
+  premiumEmblem,
   forceShowImage,
   allowDataUrl,
   imageLogMeta,
@@ -112,6 +216,7 @@ function AvatarRing({
   accent: string;
   live?: boolean;
   goldFallback?: boolean;
+  premiumEmblem?: boolean;
   forceShowImage?: boolean;
   allowDataUrl?: boolean;
   imageLogMeta?: {
@@ -121,6 +226,7 @@ function AvatarRing({
   };
 }) {
   const pulse = useSharedValue(0);
+  const emblemPulse = useSharedValue(0);
   const [imageError, setImageError] = useState(false);
 
   const safeUri = useMemo(() => {
@@ -137,28 +243,45 @@ function AvatarRing({
   }, [safeUri]);
 
   useEffect(() => {
-    if (!live) return;
+    if (!live && !premiumEmblem) return;
     pulse.value = withRepeat(
       withSequence(
-        withTiming(1, { duration: 1400, easing: Easing.inOut(Easing.quad) }),
-        withTiming(0, { duration: 1400 })
+        withTiming(1, { duration: live ? 1400 : 2200, easing: Easing.inOut(Easing.quad) }),
+        withTiming(0, { duration: live ? 1400 : 2200 })
       ),
       -1,
       false
     );
-  }, [live, pulse]);
+  }, [live, premiumEmblem, pulse]);
+
+  useEffect(() => {
+    if (!premiumEmblem) return;
+    emblemPulse.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 2600, easing: Easing.inOut(Easing.quad) }),
+        withTiming(0, { duration: 2600 })
+      ),
+      -1,
+      false
+    );
+  }, [premiumEmblem, emblemPulse]);
 
   const ringStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: live ? 1 + pulse.value * 0.06 : 1 }],
-    opacity: live ? 0.45 + pulse.value * 0.4 : 0.85,
+    transform: [{ scale: live || premiumEmblem ? 1 + pulse.value * (live ? 0.06 : 0.04) : 1 }],
+    opacity: live ? 0.45 + pulse.value * 0.4 : premiumEmblem ? 0.72 + pulse.value * 0.22 : 0.85,
+  }));
+
+  const outerRingStyle = useAnimatedStyle(() => ({
+    opacity: premiumEmblem ? 0.28 + emblemPulse.value * 0.32 : 0,
+    transform: [{ scale: premiumEmblem ? 1.06 + emblemPulse.value * 0.05 : 1 }],
   }));
 
   const liveHaloStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: live ? 1.04 + pulse.value * 0.1 : 1 }],
-    opacity: live ? 0.12 + pulse.value * 0.22 : 0,
+    transform: [{ scale: live || premiumEmblem ? 1.04 + pulse.value * 0.1 : 1 }],
+    opacity: live ? 0.12 + pulse.value * 0.22 : premiumEmblem ? 0.08 + pulse.value * 0.16 : 0,
   }));
 
-  const outer = size + 14;
+  const outer = size + (premiumEmblem ? 20 : 14);
   const inner = size - 4;
   const imageLoadedEvent =
     imageLogMeta?.kind === "live-host"
@@ -174,16 +297,36 @@ function AvatarRing({
 
   return (
     <View style={{ width: outer + (live ? 8 : 0), height: outer + (live ? 8 : 0), alignItems: "center", justifyContent: "center" }}>
-      {live ? (
+      {premiumEmblem ? (
         <Animated.View
           pointerEvents="none"
           style={[
             {
               position: "absolute",
-              width: outer + 10,
-              height: outer + 10,
-              borderRadius: (outer + 10) / 2,
-              backgroundColor: accent,
+              width: outer + 12,
+              height: outer + 12,
+              borderRadius: (outer + 12) / 2,
+              borderWidth: 1.5,
+              borderColor: "rgba(246,215,122,0.22)",
+              shadowColor: VIP_GOLD_LIGHT,
+              shadowOpacity: 0.45,
+              shadowRadius: 18,
+              shadowOffset: { width: 0, height: 0 },
+            },
+            outerRingStyle,
+          ]}
+        />
+      ) : null}
+      {live || premiumEmblem ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            {
+              position: "absolute",
+              width: outer + (premiumEmblem ? 8 : 10),
+              height: outer + (premiumEmblem ? 8 : 10),
+              borderRadius: (outer + (premiumEmblem ? 8 : 10)) / 2,
+              backgroundColor: premiumEmblem ? VIP_GOLD_GLOW : accent,
             },
             liveHaloStyle,
           ]}
@@ -197,27 +340,45 @@ function AvatarRing({
             width: outer,
             height: outer,
             borderRadius: outer / 2,
-            borderWidth: 2,
-            borderColor: goldFallback ? GOLD_BORDER : accent,
-            shadowColor: goldFallback ? GOLD : accent,
-            shadowOpacity: 0.55,
-            shadowRadius: 16,
+            borderWidth: premiumEmblem ? 2.5 : 2,
+            borderColor: goldFallback || premiumEmblem ? VIP_GOLD_LIGHT : accent,
+            shadowColor: goldFallback || premiumEmblem ? VIP_GOLD_MID : accent,
+            shadowOpacity: premiumEmblem ? 0.72 : 0.55,
+            shadowRadius: premiumEmblem ? 20 : 16,
             shadowOffset: { width: 0, height: 0 },
           },
           ringStyle,
         ]}
       />
+      {premiumEmblem ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            {
+              position: "absolute",
+              width: outer - 5,
+              height: outer - 5,
+              borderRadius: (outer - 5) / 2,
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.28)",
+            },
+            ringStyle,
+          ]}
+        />
+      ) : null}
       <LinearGradient
         colors={
-          goldFallback && !safeUri
-            ? ["#F7D36A", "#D4A843", "#9A6B1F"]
+          goldFallback || premiumEmblem
+            ? !safeUri
+              ? [VIP_GOLD_LIGHT, VIP_GOLD_MID, VIP_GOLD_DEEP]
+              : [VIP_GOLD_LIGHT, VIP_GOLD_MID, "rgba(255,255,255,0.10)"]
             : [`${accent}55`, `${accent}18`, "rgba(255,255,255,0.06)"]
         }
         style={{
           width: size,
           height: size,
           borderRadius: size / 2,
-          padding: 2.5,
+          padding: premiumEmblem ? 3 : 2.5,
         }}
       >
         {shouldRenderImage ? (
@@ -433,20 +594,40 @@ function SocialActionRail({
           <Pressable
             key={item.key}
             onPress={item.onPress}
-            style={({ pressed }) => [styles.actionRailItem, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.actionRailItem,
+              blendUnclaimed && styles.actionRailItemUnclaimed,
+              pressed && styles.pressed,
+            ]}
             hitSlop={6}
           >
             <View style={styles.actionRailIconWrap}>
               <LinearGradient
-                colors={["rgba(255,255,255,0.16)", "rgba(255,255,255,0.05)", "rgba(0,0,0,0.28)"]}
+                colors={
+                  blendUnclaimed
+                    ? ["rgba(255,255,255,0.20)", "rgba(246,215,122,0.10)", "rgba(0,0,0,0.32)"]
+                    : ["rgba(255,255,255,0.16)", "rgba(255,255,255,0.05)", "rgba(0,0,0,0.28)"]
+                }
                 start={{ x: 0.2, y: 0 }}
                 end={{ x: 0.8, y: 1 }}
                 style={StyleSheet.absoluteFillObject}
               />
-              <View pointerEvents="none" style={styles.actionRailIconRing} />
+              <View
+                pointerEvents="none"
+                style={[styles.actionRailIconRing, blendUnclaimed && styles.actionRailIconRingUnclaimed]}
+              />
+              {blendUnclaimed ? (
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={["rgba(255,255,255,0.18)", "transparent"]}
+                  start={{ x: 0.5, y: 0 }}
+                  end={{ x: 0.5, y: 0.42 }}
+                  style={styles.actionRailIconTopSheen}
+                />
+              ) : null}
               <Ionicons name={item.icon} size={22} color={item.iconColor} />
             </View>
-            <Text style={styles.actionRailLabel} numberOfLines={1}>
+            <Text style={[styles.actionRailLabel, blendUnclaimed && styles.actionRailLabelUnclaimed]} numberOfLines={1}>
               {item.label}
             </Text>
           </Pressable>
@@ -784,6 +965,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const isUnclaimedLiveOpen = isLiveWindow && !claimed;
   const isUnclaimedOpen = !claimed && (phase === "open" || phase === "upcoming");
   const compactUnclaimedLayout = isUnclaimedOpen || isUnclaimedLiveOpen;
+  const claimedLiveLayout = claimed && phase === "live";
+  const claimedPreLiveLayout = claimed && phase !== "live" && phase !== "ended";
+  const claimedCompactLayout = claimedLiveLayout || claimedPreLiveLayout;
   const visualTheme = isUnclaimedLiveOpen ? { ...theme, label: "LIVE NOW • OPEN" } : theme;
 
   useEffect(() => {
@@ -878,7 +1062,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const claimCtaText = isUnclaimedLiveOpen ? "Claim & Go Live" : "Claim This Live Slot";
 
   const titleFontSize = useMemo(() => resolveTitleFontSize(slotTitle), [slotTitle]);
-  const titleLineHeight = titleFontSize + 6;
+  const titleLineHeight = compactUnclaimedLayout ? titleFontSize + 4 : titleFontSize + 6;
+  const headerAvatarSize = compactUnclaimedLayout ? 63 : claimedCompactLayout ? 64 : 68;
+  const hostAvatarSize = claimedCompactLayout ? 54 : 58;
 
   const claimBtnStyle = useAnimatedStyle(() => ({
     transform: [{ scale: claimPress.value }],
@@ -1145,26 +1331,51 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         styles.frame,
         fullBleed && styles.frameFullBleed,
         fullBleed && compactOpenCard && styles.frameFullBleedCompact,
+        fullBleed && compactUnclaimedLayout && styles.frameFullBleedUnclaimed,
+        fullBleed && claimedCompactLayout && styles.frameFullBleedClaimedLive,
       ]}
     >
       <View
         style={[
           styles.card,
           fullBleed && (compactOpenCard ? styles.cardCompact : styles.cardTall),
+          claimedCompactLayout && styles.cardClaimedLive,
+          compactUnclaimedLayout && styles.cardVipUnclaimed,
           { borderColor: visualTheme.border, shadowColor: visualTheme.glow },
         ]}
       >
-        <LinearGradient colors={["#080A10", "#111520", "#070910"]} style={StyleSheet.absoluteFillObject} />
+        {compactUnclaimedLayout ? (
+          <LinearGradient
+            pointerEvents="none"
+            colors={[VIP_GOLD_LIGHT, VIP_GOLD_MID, VIP_GOLD_DEEP, VIP_GOLD_MID, VIP_GOLD_LIGHT]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.cardVipMetallicBorder}
+          />
+        ) : null}
         <LinearGradient
-          colors={[visualTheme.gradient[0], visualTheme.gradient[1], visualTheme.gradient[2]]}
-          style={[StyleSheet.absoluteFillObject, { opacity: 0.72 }]}
+          colors={
+            compactUnclaimedLayout
+              ? ["#05070D", "#0E1018", "#12141E", "#080A10"]
+              : ["#080A10", "#111520", "#070910"]
+          }
+          style={StyleSheet.absoluteFillObject}
         />
         <LinearGradient
-          colors={["rgba(247,211,106,0.08)", "transparent", "rgba(255,255,255,0.02)"]}
+          colors={[visualTheme.gradient[0], visualTheme.gradient[1], visualTheme.gradient[2]]}
+          style={[StyleSheet.absoluteFillObject, { opacity: compactUnclaimedLayout ? 0.58 : 0.72 }]}
+        />
+        <LinearGradient
+          colors={
+            compactUnclaimedLayout
+              ? ["rgba(246,215,122,0.18)", "rgba(169,112,24,0.09)", "rgba(255,255,255,0.04)"]
+              : ["rgba(247,211,106,0.08)", "transparent", "rgba(255,255,255,0.02)"]
+          }
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={StyleSheet.absoluteFillObject}
         />
+        {compactUnclaimedLayout ? <PremiumUnclaimedCardAura liveOpen={isUnclaimedLiveOpen} /> : null}
         <View
           pointerEvents="none"
           style={[
@@ -1178,7 +1389,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           pointerEvents="none"
           style={[
             styles.glowOrbBottom,
-            { backgroundColor: isUnclaimedLiveOpen ? "rgba(255,55,95,0.32)" : visualTheme.glow },
+            { backgroundColor: isUnclaimedLiveOpen ? LIVE_BURGUNDY_SOFT : visualTheme.glow },
           ]}
         />
         <LinearGradient
@@ -1186,7 +1397,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           colors={["rgba(255,255,255,0.07)", "rgba(255,255,255,0.02)", "transparent"]}
           style={styles.cardTopSheen}
         />
-        <View pointerEvents="none" style={styles.cardInnerRim} />
+        <View pointerEvents="none" style={[styles.cardInnerRim, compactUnclaimedLayout && styles.cardInnerRimVip]} />
         <View pointerEvents="none" style={styles.cardEdgeGlowLayer}>
           <LinearGradient
             colors={[edgeTint, "transparent"]}
@@ -1214,169 +1425,347 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           />
         </View>
 
-        <View style={[styles.cardInner, compactOpenCard && styles.cardInnerCompact]}>
+        <View
+          style={[
+            styles.cardInner,
+            compactOpenCard && styles.cardInnerCompact,
+            claimedCompactLayout && styles.cardInnerClaimedLive,
+          ]}
+        >
+          <View style={[compactOpenCard && styles.cardUpperBlockCompact]}>
           <Animated.View
             entering={FadeInDown.duration(300)}
-            style={[styles.headerSection, compactUnclaimedLayout && styles.headerSectionUnclaimed]}
+            style={[
+              styles.headerSection,
+              compactUnclaimedLayout && styles.headerSectionUnclaimed,
+              claimedCompactLayout && styles.headerSectionClaimedLive,
+            ]}
           >
             <View style={styles.headerTopRow}>
               <AvatarRing
                 uri={churchHeaderAvatar.uri}
                 initial={churchHeaderInitial}
-                size={68}
+                size={headerAvatarSize}
                 accent={visualTheme.accent}
                 live={phase === "live"}
                 goldFallback={!isUnclaimedLiveOpen}
+                premiumEmblem={compactUnclaimedLayout}
                 allowDataUrl
                 forceShowImage={churchHeaderAvatar.hasAvatar}
                 imageLogMeta={{ kind: "church-header" }}
               />
               <View style={styles.headerTextBlock}>
-                <Text style={styles.mediaName} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                <Text
+                  style={[styles.mediaName, compactUnclaimedLayout && styles.mediaNameVip]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                >
                   {churchShort}
                 </Text>
-                <Text style={styles.churchSubline} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82}>
+                <Text
+                  style={[styles.churchSubline, compactUnclaimedLayout && styles.churchSublineVip]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.82}
+                >
                   {mediaSubtitle}
                 </Text>
-                <View style={styles.badgeRow}>
-                  <View style={styles.liveSchedulePill}>
+                <View style={[styles.badgeRow, compactUnclaimedLayout && styles.badgeRowVip]}>
+                  <View style={[styles.liveSchedulePill, compactUnclaimedLayout && styles.liveSchedulePillVip]}>
                     <LinearGradient
-                      colors={[GOLD_GLASS, "rgba(255,255,255,0.05)", "rgba(0,0,0,0.12)"]}
+                      colors={
+                        compactUnclaimedLayout
+                          ? ["rgba(246,215,122,0.22)", "rgba(255,255,255,0.08)", "rgba(0,0,0,0.18)"]
+                          : [GOLD_GLASS, "rgba(255,255,255,0.05)", "rgba(0,0,0,0.12)"]
+                      }
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
                       style={StyleSheet.absoluteFillObject}
                     />
-                    <Ionicons name="radio" size={10} color={GOLD} />
-                    <Text style={styles.liveSchedulePillText} numberOfLines={1} ellipsizeMode="tail">
+                    <Ionicons name="radio" size={10} color={VIP_GOLD_LIGHT} />
+                    <Text style={[styles.liveSchedulePillText, compactUnclaimedLayout && styles.liveSchedulePillTextVip]} numberOfLines={1} ellipsizeMode="tail">
                       LIVE SCHEDULE
                     </Text>
                   </View>
-                  <View style={styles.verifiedBadge}>
+                  <View style={[styles.verifiedBadge, compactUnclaimedLayout && styles.verifiedBadgeVip]}>
                     <LinearGradient
-                      colors={["rgba(255,255,255,0.08)", "rgba(255,255,255,0.02)", "rgba(0,0,0,0.14)"]}
+                      colors={
+                        compactUnclaimedLayout
+                          ? ["rgba(246,215,122,0.18)", "rgba(255,255,255,0.06)", "rgba(0,0,0,0.16)"]
+                          : ["rgba(255,255,255,0.08)", "rgba(255,255,255,0.02)", "rgba(0,0,0,0.14)"]
+                      }
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
                       style={StyleSheet.absoluteFillObject}
                     />
-                    <Ionicons name="shield-checkmark" size={10} color={GOLD} />
-                    <Text style={styles.verifiedBadgeText} numberOfLines={1}>
+                    <Ionicons name="shield-checkmark" size={10} color={VIP_GOLD_LIGHT} />
+                    <Text style={[styles.verifiedBadgeText, compactUnclaimedLayout && styles.verifiedBadgeTextVip]} numberOfLines={1}>
                       VERIFIED
                     </Text>
                   </View>
                 </View>
               </View>
               {disableSlotCarousel ? (
-                <View style={styles.slotCounter}>
-                  <Text style={styles.slotCounterText}>
+                <View style={[styles.slotCounter, compactUnclaimedLayout && styles.slotCounterVip]}>
+                  <LinearGradient
+                    colors={[VIP_GOLD_LIGHT, VIP_GOLD_MID, VIP_GOLD_DEEP]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={StyleSheet.absoluteFillObject}
+                  />
+                  <View pointerEvents="none" style={styles.slotCounterVipSheen} />
+                  <Text style={styles.slotCounterTextVip}>
                     Slot {slotFeedIndex + 1}/{slotFeedTotal}
                   </Text>
                 </View>
               ) : (
                 <Pressable
                   onPress={onSkipSlots}
-                  style={({ pressed }) => [styles.slotCounter, pressed && styles.pressed]}
+                  style={({ pressed }) => [
+                    styles.slotCounter,
+                    compactUnclaimedLayout && styles.slotCounterVip,
+                    pressed && styles.pressed,
+                  ]}
                 >
-                  <Text style={styles.slotCounterText}>
+                  {compactUnclaimedLayout ? (
+                    <>
+                      <LinearGradient
+                        colors={[VIP_GOLD_LIGHT, VIP_GOLD_MID, VIP_GOLD_DEEP]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={StyleSheet.absoluteFillObject}
+                      />
+                      <View pointerEvents="none" style={styles.slotCounterVipSheen} />
+                    </>
+                  ) : null}
+                  <Text style={compactUnclaimedLayout ? styles.slotCounterTextVip : styles.slotCounterText}>
                     {slotFeedIndex + 1}/{slotFeedTotal}
                   </Text>
-                  <Ionicons name="play-skip-forward" size={14} color={GOLD} />
+                  <Ionicons name="play-skip-forward" size={14} color={compactUnclaimedLayout ? "#1A1205" : GOLD} />
                 </Pressable>
               )}
             </View>
           </Animated.View>
 
-          <PremiumSectionDivider unclaimed={compactUnclaimedLayout} />
+          <PremiumSectionDivider unclaimed={compactUnclaimedLayout} claimedCompact={claimedCompactLayout} />
 
-          <View style={[styles.bodySection, compactUnclaimedLayout && styles.bodySectionUnclaimed]}>
-            <View style={[styles.stateRow, compactUnclaimedLayout && styles.stateRowUnclaimed]}>
+          <View
+            style={[
+              styles.bodySection,
+              compactUnclaimedLayout && styles.bodySectionUnclaimed,
+              claimedCompactLayout && styles.bodySectionClaimedLive,
+            ]}
+          >
+            <View
+              style={[
+                styles.stateRow,
+                compactUnclaimedLayout && styles.stateRowUnclaimed,
+                claimedCompactLayout && styles.stateRowClaimedLive,
+              ]}
+            >
               <View
                 style={[
                   styles.statePill,
                   isUnclaimedLiveOpen && styles.statePillLiveOpen,
+                  isUnclaimedLiveOpen && compactUnclaimedLayout && styles.statePillLiveOpenVip,
+                  compactUnclaimedLayout && styles.statePillVip,
                   {
-                    borderColor: isUnclaimedLiveOpen ? "rgba(255,120,150,0.45)" : "rgba(255,255,255,0.08)",
-                    backgroundColor: `${visualTheme.accent}14`,
+                    borderColor: isUnclaimedLiveOpen
+                      ? compactUnclaimedLayout
+                        ? "rgba(122,38,58,0.38)"
+                        : "rgba(255,120,150,0.45)"
+                      : compactUnclaimedLayout
+                        ? "rgba(246,215,122,0.42)"
+                        : "rgba(255,255,255,0.08)",
+                    backgroundColor: isUnclaimedLiveOpen
+                      ? compactUnclaimedLayout
+                        ? "rgba(122,38,58,0.10)"
+                        : `${visualTheme.accent}14`
+                      : compactUnclaimedLayout
+                        ? "rgba(246,215,122,0.12)"
+                        : `${visualTheme.accent}14`,
                   },
                 ]}
               >
-                {phase === "live" ? <View style={[styles.liveDot, { backgroundColor: visualTheme.accent }]} /> : null}
-                <Text style={[styles.statePillText, { color: visualTheme.accent }]}>{visualTheme.label}</Text>
+                {compactUnclaimedLayout ? (
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={
+                      isUnclaimedLiveOpen
+                        ? ["rgba(246,215,122,0.08)", "transparent", "rgba(122,38,58,0.10)"]
+                        : ["rgba(255,255,255,0.10)", "transparent", "rgba(0,0,0,0.12)"]
+                    }
+                    style={StyleSheet.absoluteFillObject}
+                  />
+                ) : null}
+                {phase === "live" ? (
+                  <View
+                    style={[
+                      styles.liveDot,
+                      {
+                        backgroundColor: isUnclaimedLiveOpen && compactUnclaimedLayout ? LIVE_ROSE_GOLD : visualTheme.accent,
+                      },
+                    ]}
+                  />
+                ) : null}
+                <Text
+                  style={[
+                    styles.statePillText,
+                    compactUnclaimedLayout && styles.statePillTextVip,
+                    {
+                      color: isUnclaimedLiveOpen
+                        ? compactUnclaimedLayout
+                          ? LIVE_ROSE_GOLD
+                          : visualTheme.accent
+                        : compactUnclaimedLayout
+                          ? VIP_GOLD_LIGHT
+                          : visualTheme.accent,
+                    },
+                  ]}
+                >
+                  {visualTheme.label}
+                </Text>
               </View>
             </View>
 
-            <View style={[styles.titleBlock, compactUnclaimedLayout && styles.titleBlockUnclaimed]}>
+            <View
+              style={[
+                styles.titleBlock,
+                compactUnclaimedLayout && styles.titleBlockUnclaimed,
+                claimedCompactLayout && styles.titleBlockClaimedLive,
+              ]}
+            >
               <Text
-                style={[styles.slotTitle, { fontSize: titleFontSize, lineHeight: titleLineHeight }]}
+                style={[
+                  styles.slotTitle,
+                  compactUnclaimedLayout && styles.slotTitleVip,
+                  { fontSize: titleFontSize, lineHeight: titleLineHeight },
+                ]}
                 numberOfLines={2}
                 ellipsizeMode="tail"
               >
                 {slotTitle}
               </Text>
               {!!slotTopic ? (
-                <Text style={styles.slotTopic} numberOfLines={2}>
+                <Text style={[styles.slotTopic, compactUnclaimedLayout && styles.slotTopicVip]} numberOfLines={2}>
                   {slotTopic}
                 </Text>
               ) : null}
             </View>
 
-            <View style={[styles.metaRow, compactUnclaimedLayout && styles.metaRowUnclaimed]}>
-              <View style={styles.metaChip}>
-                <Ionicons name="calendar-outline" size={15} color={GOLD} />
-                <Text style={styles.metaText}>{formatSlotDateLabel(slot.meetingDate, slot.meetingDay)}</Text>
+            <View
+              style={[
+                styles.metaRow,
+                compactUnclaimedLayout && styles.metaRowUnclaimed,
+                claimedCompactLayout && styles.metaRowClaimedLive,
+              ]}
+            >
+              <View style={[styles.metaChip, compactUnclaimedLayout && styles.metaChipVip, claimedCompactLayout && styles.metaChipClaimedLive]}>
+                <Ionicons
+                  name="calendar-outline"
+                  size={15}
+                  color={compactUnclaimedLayout ? VIP_GOLD_LIGHT : visualTheme.accent}
+                />
+                <Text style={[styles.metaText, compactUnclaimedLayout && styles.metaTextVip]}>
+                  {formatSlotDateLabel(slot.meetingDate, slot.meetingDay)}
+                </Text>
               </View>
-              <View style={styles.metaChip}>
-                <Ionicons name="time-outline" size={15} color={GOLD} />
-                <Text style={styles.metaText} numberOfLines={1}>
+              <View style={[styles.metaChip, compactUnclaimedLayout && styles.metaChipVip, claimedCompactLayout && styles.metaChipClaimedLive]}>
+                <Ionicons
+                  name="time-outline"
+                  size={15}
+                  color={compactUnclaimedLayout ? VIP_GOLD_LIGHT : visualTheme.accent}
+                />
+                <Text style={[styles.metaText, compactUnclaimedLayout && styles.metaTextVip]} numberOfLines={1}>
                   {slot.startTime}
                   {slot.endTime ? ` – ${slot.endTime}` : ""}
                 </Text>
               </View>
             </View>
 
-            {compactUnclaimedLayout ? (
-              <View pointerEvents="none" style={styles.contentAmbientGlow}>
-                <LinearGradient
-                  colors={
-                    isUnclaimedLiveOpen
-                      ? ["transparent", "rgba(255,55,95,0.08)", "transparent"]
-                      : ["transparent", "rgba(247,211,106,0.06)", "transparent"]
-                  }
-                  start={{ x: 0, y: 0.5 }}
-                  end={{ x: 1, y: 0.5 }}
-                  style={StyleSheet.absoluteFillObject}
-                />
-              </View>
-            ) : null}
-
-            <View style={[styles.progressSection, compactUnclaimedLayout && styles.progressSectionUnclaimed]}>
-              <View style={[styles.progressTrack, { shadowColor: visualTheme.accent }]}>
-                <View style={[styles.progressFillGlow, { width: `${Math.round(progress * 100)}%`, shadowColor: visualTheme.accent }]}>
+            <View
+              style={[
+                styles.progressSection,
+                compactUnclaimedLayout && styles.progressSectionUnclaimed,
+                claimedCompactLayout && styles.progressSectionClaimedLive,
+              ]}
+            >
+              {compactUnclaimedLayout ? (
+                <View pointerEvents="none" style={styles.progressAmbientGlow}>
                   <LinearGradient
-                    colors={["rgba(255,255,255,0.22)", visualTheme.accent, `${visualTheme.accent}CC`, visualTheme.accent]}
+                    colors={
+                      isUnclaimedLiveOpen
+                        ? ["transparent", "rgba(122,38,58,0.04)", "transparent"]
+                        : ["transparent", "rgba(247,211,106,0.04)", "transparent"]
+                    }
+                    start={{ x: 0, y: 0.5 }}
+                    end={{ x: 1, y: 0.5 }}
+                    style={StyleSheet.absoluteFillObject}
+                  />
+                </View>
+              ) : null}
+              <View style={[styles.progressCluster, compactUnclaimedLayout && styles.progressClusterVip]}>
+              <View
+                style={[
+                  styles.progressTrack,
+                  compactUnclaimedLayout && styles.progressTrackVip,
+                  { shadowColor: compactUnclaimedLayout ? VIP_GOLD_MID : visualTheme.accent },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.progressFillGlow,
+                    compactUnclaimedLayout && styles.progressFillGlowVip,
+                    {
+                      width: `${Math.round(progress * 100)}%`,
+                      shadowColor: compactUnclaimedLayout ? VIP_GOLD_LIGHT : visualTheme.accent,
+                    },
+                  ]}
+                >
+                  <LinearGradient
+                    colors={
+                      compactUnclaimedLayout
+                        ? ["#FFF4C9", VIP_GOLD_LIGHT, VIP_GOLD_MID, VIP_GOLD_DEEP]
+                        : ["rgba(255,255,255,0.22)", visualTheme.accent, `${visualTheme.accent}CC`, visualTheme.accent]
+                    }
                     start={{ x: 0, y: 0.5 }}
                     end={{ x: 1, y: 0.5 }}
                     style={styles.progressFill}
                   />
+                  {compactUnclaimedLayout ? <ProgressBarPremiumShimmer /> : null}
                 </View>
               </View>
-              <View style={styles.progressFooter}>
-                <Text style={[styles.countdown, isUnclaimedLiveOpen && styles.countdownLiveOpen]}>{countdownLabel}</Text>
-                <Text style={styles.progressSlotHint}>
+              <View style={[styles.progressFooter, compactUnclaimedLayout && styles.progressFooterVip]}>
+                <Text
+                  style={[
+                    styles.countdown,
+                    compactUnclaimedLayout && styles.countdownVip,
+                    isUnclaimedLiveOpen && styles.countdownLiveOpen,
+                  ]}
+                >
+                  {countdownLabel}
+                </Text>
+                <Text style={[styles.progressSlotHint, compactUnclaimedLayout && styles.progressSlotHintVip]}>
                   Slot {slotFeedIndex + 1} of {slotFeedTotal}
                 </Text>
+              </View>
               </View>
             </View>
 
             {claimed ? (
-              <View style={styles.hostSectionWrap}>
+              <View style={[styles.hostSectionWrap, claimedCompactLayout && styles.hostSectionWrapClaimedLive]}>
                 <View pointerEvents="none" style={[styles.hostSectionGlow, { backgroundColor: theme.glow }]} />
-                <Animated.View entering={FadeInDown.duration(240)} style={styles.hostSection}>
+                <Animated.View
+                  entering={FadeInDown.duration(240)}
+                  style={[styles.hostSection, claimedCompactLayout && styles.hostSectionClaimedLive]}
+                >
                 <LinearGradient
                   pointerEvents="none"
                   colors={["rgba(255,255,255,0.06)", "transparent"]}
                   style={styles.hostSectionTopSheen}
                 />
-                <View style={styles.hostHeaderRow}>
+                <View style={[styles.hostHeaderRow, claimedCompactLayout && styles.hostHeaderRowClaimedLive]}>
                   <Text style={[styles.hostKicker, { color: theme.accent }]}>
                     {phase === "live" ? "LIVE HOST" : "CLAIMED BY"}
                   </Text>
@@ -1403,7 +1792,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     </View>
                   )}
                 </View>
-                <View style={styles.hostRow}>
+                <View style={[styles.hostRow, claimedCompactLayout && styles.hostRowClaimedLive]}>
                   <AvatarRing
                     uri={resolvedClaimedAvatarUri}
                     initial={String(
@@ -1411,7 +1800,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     )
                       .slice(0, 1)
                       .toUpperCase()}
-                    size={58}
+                    size={hostAvatarSize}
                     accent={theme.accent}
                     live={phase === "live"}
                     forceShowImage={liveHostHasAvatar}
@@ -1441,6 +1830,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     onPress={handleClaimPress}
                     style={[
                       styles.hostEnterButton,
+                      claimedCompactLayout && styles.hostEnterButtonClaimedLive,
                       claimBtnStyle,
                       { borderColor: theme.border, shadowColor: theme.glow },
                     ]}
@@ -1449,7 +1839,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                       colors={[`${theme.accent}F0`, `${theme.accent}BB`, `${theme.accent}88`, "rgba(255,255,255,0.12)"]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
-                      style={styles.hostEnterButtonGradient}
+                      style={[
+                        styles.hostEnterButtonGradient,
+                        claimedCompactLayout && styles.hostEnterButtonGradientClaimedLive,
+                      ]}
                     >
                       <EnterLiveButtonGloss />
                       {claimedByMe && phase === "live" ? (
@@ -1476,15 +1869,28 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               </View>
             ) : null}
           </View>
+          </View>
 
-          <View style={[styles.footerSection, compactUnclaimedLayout && styles.footerSectionUnclaimed]}>
+          <View
+            style={[
+              styles.footerSection,
+              compactUnclaimedLayout && styles.footerSectionUnclaimed,
+              claimedCompactLayout && styles.footerSectionClaimedLive,
+            ]}
+          >
             {showPrimaryClaim ? (
-              <View style={compactUnclaimedLayout ? styles.claimBtnPrimaryWrap : undefined}>
+              <View style={[compactUnclaimedLayout ? styles.claimBtnPrimaryWrapUnclaimed : undefined]}>
                 {compactUnclaimedLayout ? (
-                  <View
-                    pointerEvents="none"
-                    style={[styles.claimBtnPrimaryBloom, isUnclaimedLiveOpen && styles.claimBtnPrimaryBloomLiveOpen]}
-                  />
+                  <>
+                    <View
+                      pointerEvents="none"
+                      style={[styles.claimBtnPrimaryBloomOuter, isUnclaimedLiveOpen && styles.claimBtnPrimaryBloomOuterLiveOpen]}
+                    />
+                    <View
+                      pointerEvents="none"
+                      style={[styles.claimBtnPrimaryBloom, isUnclaimedLiveOpen && styles.claimBtnPrimaryBloomLiveOpen]}
+                    />
+                  </>
                 ) : null}
                 <AnimatedPressable
                   onPress={handleClaimPress}
@@ -1498,7 +1904,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   <LinearGradient
                     colors={
                       compactUnclaimedLayout
-                        ? ["#FFE08A", "#F7D36A", "#E7C46F", "#B8862E", "#8B5E14"]
+                        ? [VIP_GOLD_LIGHT, VIP_GOLD_MID, VIP_GOLD_DEEP, "#8B5E14"]
                         : [GOLD, "#E7C46F", "#C8943A"]
                     }
                     start={{ x: 0, y: 0 }}
@@ -1510,10 +1916,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   >
                     {compactUnclaimedLayout ? (
                       <>
-                        <View pointerEvents="none" style={styles.claimBtnPrimaryTopSheen} />
+                        <ClaimButtonPremiumShimmer />
                         <LinearGradient
                           pointerEvents="none"
-                          colors={["transparent", "rgba(0,0,0,0.12)", "rgba(0,0,0,0.22)"]}
+                          colors={["transparent", "rgba(0,0,0,0.10)", "rgba(0,0,0,0.20)"]}
                           start={{ x: 0.5, y: 0 }}
                           end={{ x: 0.5, y: 1 }}
                           style={styles.claimBtnPrimaryInnerShadow}
@@ -1525,7 +1931,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                       size={compactUnclaimedLayout ? 22 : 24}
                       color="#1A1205"
                     />
-                    <Text style={styles.claimBtnPrimaryText}>{claimCtaText}</Text>
+                    <Text style={[styles.claimBtnPrimaryText, compactUnclaimedLayout && styles.claimBtnPrimaryTextVip]}>
+                      {claimCtaText}
+                    </Text>
                   </LinearGradient>
                 </AnimatedPressable>
               </View>
@@ -1568,9 +1976,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingTop: 42,
     paddingBottom: 18,
+    overflow: "visible",
   },
   frameFullBleedCompact: {
     paddingTop: 22,
+    paddingBottom: 14,
+  },
+  frameFullBleedUnclaimed: {
+    paddingTop: 18,
+    paddingBottom: 12,
+  },
+  frameFullBleedClaimedLive: {
+    paddingTop: 34,
     paddingBottom: 14,
   },
   card: {
@@ -1582,11 +1999,88 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 12 },
     elevation: 18,
   },
+  cardVipUnclaimed: {
+    borderWidth: 1.1,
+    borderColor: "rgba(246,215,122,0.38)",
+    shadowColor: VIP_GOLD_MID,
+    shadowOpacity: 0.34,
+    shadowRadius: 38,
+    shadowOffset: { width: 0, height: 16 },
+    elevation: 20,
+  },
+  cardVipMetallicBorder: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 1.5,
+    opacity: 0.58,
+  },
+  vipRadialGlow: {
+    position: "absolute",
+    top: "18%",
+    alignSelf: "center",
+    width: 250,
+    height: 250,
+    borderRadius: 999,
+    backgroundColor: "rgba(246,215,122,0.05)",
+    shadowColor: VIP_GOLD_LIGHT,
+    shadowOpacity: 0.22,
+    shadowRadius: 52,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  vipRadialGlowLiveOpen: {
+    backgroundColor: "rgba(122,38,58,0.06)",
+    shadowColor: LIVE_BURGUNDY,
+  },
+  vipVerticalWash: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.58,
+  },
+  vipAbstractOrbA: {
+    position: "absolute",
+    top: 120,
+    right: -36,
+    width: 118,
+    height: 118,
+    borderRadius: 999,
+    backgroundColor: "rgba(246,215,122,0.024)",
+    shadowColor: VIP_GOLD_LIGHT,
+    shadowOpacity: 0.12,
+    shadowRadius: 30,
+    shadowOffset: { width: 0, height: 0 },
+    transform: [{ rotate: "18deg" }],
+  },
+  vipAbstractOrbALiveOpen: {
+    backgroundColor: "rgba(122,38,58,0.025)",
+    shadowColor: LIVE_BURGUNDY,
+  },
+  vipAbstractOrbB: {
+    position: "absolute",
+    bottom: 140,
+    left: -28,
+    width: 92,
+    height: 92,
+    borderRadius: 999,
+    backgroundColor: "rgba(169,112,24,0.032)",
+    shadowColor: VIP_GOLD_DEEP,
+    shadowOpacity: 0.10,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  vipGlassSheen: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.32,
+  },
   cardTall: {
     minHeight: CARD_MIN_HEIGHT,
   },
+  cardClaimedLive: {
+    minHeight: 0,
+    alignSelf: "stretch",
+  },
   cardCompact: {
-    minHeight: CARD_MIN_HEIGHT_COMPACT,
+    alignSelf: "stretch",
   },
   cardInner: {
     flex: 1,
@@ -1597,10 +2091,22 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   cardInnerCompact: {
-    minHeight: CARD_MIN_HEIGHT_COMPACT,
+    flex: 0,
+    minHeight: 0,
+    justifyContent: "flex-start",
+    paddingTop: 20,
+    paddingBottom: 14,
+  },
+  cardInnerClaimedLive: {
+    flex: 0,
+    minHeight: 0,
     justifyContent: "flex-start",
     paddingTop: 18,
-    paddingBottom: 14,
+    paddingBottom: 12,
+  },
+  cardUpperBlockCompact: {
+    flexShrink: 0,
+    flexGrow: 0,
   },
   glowOrbTop: {
     position: "absolute",
@@ -1612,19 +2118,19 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
   glowOrbTopUnclaimed: {
-    opacity: 0.62,
-    width: 190,
-    height: 190,
-    top: -56,
-    right: 12,
+    opacity: 0.48,
+    width: 158,
+    height: 158,
+    top: -50,
+    right: 16,
   },
   glowOrbTopLiveOpen: {
-    opacity: 0.52,
-    backgroundColor: "rgba(255,55,95,0.14)",
-    width: 200,
-    height: 200,
-    top: -60,
-    right: 8,
+    opacity: 0.30,
+    backgroundColor: "rgba(122,38,58,0.08)",
+    width: 168,
+    height: 168,
+    top: -52,
+    right: 10,
   },
   glowOrbBottom: {
     position: "absolute",
@@ -1652,6 +2158,13 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: "rgba(255,255,255,0.06)",
     borderRadius: 999,
+  },
+  cardInnerRimVip: {
+    backgroundColor: "rgba(246,215,122,0.14)",
+    shadowColor: VIP_GOLD_LIGHT,
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 0 },
   },
   cardEdgeGlowLayer: {
     ...StyleSheet.absoluteFillObject,
@@ -1692,19 +2205,25 @@ const styles = StyleSheet.create({
   },
   sectionDividerWrap: {
     alignSelf: "center",
-    width: "90%",
-    height: 2,
+    width: "86%",
+    height: 1,
     marginBottom: 10,
     justifyContent: "center",
     overflow: "visible",
   },
   sectionDividerWrapUnclaimed: {
-    marginBottom: 4,
+    marginTop: 6,
+    marginBottom: 14,
+    width: "82%",
+    opacity: 0.88,
+  },
+  sectionDividerWrapClaimedLive: {
+    marginBottom: 6,
   },
   sectionDividerGradient: {
     height: 1,
     borderRadius: 999,
-    opacity: 0.55,
+    opacity: 0.45,
   },
   sectionDividerGlowCore: {
     position: "absolute",
@@ -1718,10 +2237,19 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     borderRadius: 999,
   },
+  sectionDividerGlowCoreUnclaimed: {
+    backgroundColor: "rgba(246,215,122,0.18)",
+    shadowColor: VIP_GOLD_LIGHT,
+    shadowOpacity: 0.42,
+    shadowRadius: 12,
+  },
   headerSection: {
     marginBottom: 10,
   },
   headerSectionUnclaimed: {
+    marginBottom: 2,
+  },
+  headerSectionClaimedLive: {
     marginBottom: 6,
   },
   headerTopRow: {
@@ -1741,6 +2269,14 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
     marginBottom: 3,
   },
+  mediaNameVip: {
+    color: "#FFFFFF",
+    fontSize: 25,
+    letterSpacing: -0.6,
+    textShadowColor: "rgba(246,215,122,0.28)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 10,
+  },
   churchSubline: {
     color: "rgba(255,255,255,0.58)",
     fontSize: 13,
@@ -1748,12 +2284,21 @@ const styles = StyleSheet.create({
     letterSpacing: 0.1,
     marginBottom: 6,
   },
+  churchSublineVip: {
+    color: "rgba(255,255,255,0.68)",
+    letterSpacing: 0.2,
+    marginBottom: 10,
+  },
   badgeRow: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "nowrap",
     gap: 5,
     maxWidth: "100%",
+  },
+  badgeRowVip: {
+    marginTop: 2,
+    gap: 6,
   },
   liveSchedulePill: {
     flexDirection: "row",
@@ -1780,6 +2325,19 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     flexShrink: 1,
   },
+  liveSchedulePillVip: {
+    borderColor: "rgba(246,215,122,0.48)",
+    shadowColor: VIP_GOLD_LIGHT,
+    shadowOpacity: 0.38,
+    shadowRadius: 10,
+    paddingHorizontal: 7,
+    gap: 4,
+  },
+  liveSchedulePillTextVip: {
+    color: VIP_GOLD_LIGHT,
+    fontSize: 8,
+    letterSpacing: 1,
+  },
   verifiedBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -1803,6 +2361,18 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 0.8,
   },
+  verifiedBadgeVip: {
+    borderColor: "rgba(246,215,122,0.44)",
+    shadowColor: VIP_GOLD_LIGHT,
+    shadowOpacity: 0.32,
+    shadowRadius: 8,
+    paddingHorizontal: 6,
+  },
+  verifiedBadgeTextVip: {
+    color: VIP_GOLD_LIGHT,
+    fontSize: 8,
+    letterSpacing: 1,
+  },
   slotCounter: {
     alignItems: "center",
     justifyContent: "center",
@@ -1820,12 +2390,48 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "900",
   },
+  slotCounterVip: {
+    borderWidth: 1.1,
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "transparent",
+    overflow: "hidden",
+    minWidth: 52,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    shadowColor: VIP_GOLD_DEEP,
+    shadowOpacity: 0.34,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 6,
+  },
+  slotCounterVipSheen: {
+    position: "absolute",
+    top: 1,
+    left: 10,
+    right: 10,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.42)",
+    borderRadius: 999,
+  },
+  slotCounterTextVip: {
+    color: "#1A1205",
+    fontSize: 10.5,
+    fontWeight: "900",
+    letterSpacing: 0.25,
+    zIndex: 1,
+  },
   bodySection: {
     flex: 0,
     justifyContent: "flex-start",
   },
   bodySectionUnclaimed: {
     flex: 0,
+    paddingTop: 2,
+  },
+  bodySectionClaimedLive: {
+    flex: 0,
+    paddingTop: 0,
   },
   stateRow: {
     flexDirection: "row",
@@ -1833,8 +2439,11 @@ const styles = StyleSheet.create({
     marginTop: 0,
   },
   stateRowUnclaimed: {
-    marginBottom: 4,
+    marginBottom: 12,
     marginTop: 0,
+  },
+  stateRowClaimedLive: {
+    marginBottom: 8,
   },
   statePill: {
     flexDirection: "row",
@@ -1844,11 +2453,26 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
+    overflow: "hidden",
+  },
+  statePillVip: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    shadowColor: VIP_GOLD_LIGHT,
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
   },
   statePillText: {
     fontSize: 10,
     fontWeight: "800",
     letterSpacing: 1.2,
+  },
+  statePillTextVip: {
+    fontSize: 10.5,
+    letterSpacing: 1.4,
+    fontWeight: "900",
   },
   statePillLiveOpen: {
     borderWidth: 1.2,
@@ -1857,6 +2481,12 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 0 },
     elevation: 4,
+  },
+  statePillLiveOpenVip: {
+    shadowColor: LIVE_BURGUNDY,
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    elevation: 3,
   },
   liveDot: {
     width: 7,
@@ -1869,8 +2499,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   titleBlockUnclaimed: {
-    marginBottom: 8,
+    marginBottom: 12,
     minHeight: 0,
+    paddingTop: 2,
+  },
+  titleBlockClaimedLive: {
+    marginBottom: 10,
+    minHeight: 78,
   },
   slotTitle: {
     color: "#FAFAFA",
@@ -1881,6 +2516,14 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 10,
   },
+  slotTitleVip: {
+    color: "#FFFFFF",
+    letterSpacing: -0.6,
+    marginBottom: 10,
+    textShadowColor: "rgba(246,215,122,0.32)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 14,
+  },
   slotTopic: {
     color: "rgba(255,255,255,0.58)",
     fontSize: 15,
@@ -1889,6 +2532,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.15,
     marginTop: 2,
   },
+  slotTopicVip: {
+    color: "rgba(255,255,255,0.58)",
+    lineHeight: 21,
+    letterSpacing: 0.18,
+    marginTop: 4,
+  },
   metaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1896,16 +2545,22 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   metaRowUnclaimed: {
-    marginBottom: 4,
+    marginTop: 6,
+    marginBottom: 12,
+    gap: 10,
   },
-  contentAmbientGlow: {
-    height: 1,
-    marginBottom: 6,
+  metaRowClaimedLive: {
+    marginBottom: 11,
+    gap: 8,
+  },
+  progressAmbientGlow: {
+    position: "absolute",
+    top: -10,
+    left: 0,
+    right: 0,
+    height: 36,
     overflow: "hidden",
-    shadowColor: GOLD,
-    shadowOpacity: 0.14,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 0 },
+    opacity: 0.7,
   },
   metaChip: {
     flexDirection: "row",
@@ -1918,18 +2573,46 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.06)",
   },
+  metaChipVip: {
+    backgroundColor: "rgba(246,215,122,0.06)",
+    borderColor: "rgba(246,215,122,0.18)",
+  },
+  metaChipClaimedLive: {
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+  },
   metaText: {
     color: "rgba(255,255,255,0.92)",
     fontSize: 12,
     fontWeight: "700",
     letterSpacing: 0.1,
   },
+  metaTextVip: {
+    color: "rgba(255,255,255,0.96)",
+    letterSpacing: 0.15,
+  },
   progressSection: {
     marginBottom: 14,
   },
   progressSectionUnclaimed: {
-    marginTop: -12,
-    marginBottom: 2,
+    marginTop: 2,
+    marginBottom: 4,
+    position: "relative",
+  },
+  progressSectionClaimedLive: {
+    marginBottom: 8,
+  },
+  progressCluster: {
+    width: "100%",
+  },
+  progressClusterVip: {
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 8,
+    backgroundColor: "rgba(246,215,122,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(246,215,122,0.08)",
   },
   progressTrack: {
     height: 8,
@@ -1941,6 +2624,13 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
   },
+  progressTrackVip: {
+    height: 10,
+    backgroundColor: "rgba(246,215,122,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(246,215,122,0.14)",
+    marginBottom: 6,
+  },
   progressFillGlow: {
     height: "100%",
     borderRadius: 999,
@@ -1948,6 +2638,18 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.55,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 0 },
+  },
+  progressFillGlowVip: {
+    shadowOpacity: 0.72,
+    shadowRadius: 14,
+  },
+  progressShimmer: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: 28,
+    backgroundColor: "rgba(255,255,255,0.42)",
+    borderRadius: 999,
   },
   progressFill: {
     flex: 1,
@@ -1959,14 +2661,29 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  progressFooterVip: {
+    alignItems: "baseline",
+    paddingTop: 0,
+    minHeight: 18,
+  },
   countdown: {
     color: GOLD,
     fontSize: 13,
     fontWeight: "800",
     letterSpacing: 0.2,
+    lineHeight: 16,
+  },
+  countdownVip: {
+    color: VIP_GOLD_LIGHT,
+    fontWeight: "900",
+    fontSize: 13,
+    lineHeight: 16,
+    textShadowColor: "rgba(246,215,122,0.18)",
+    textShadowRadius: 6,
+    textShadowOffset: { width: 0, height: 0 },
   },
   countdownLiveOpen: {
-    color: LIVE_PINK,
+    color: LIVE_ROSE_GOLD,
   },
   progressSlotHint: {
     color: "rgba(255,255,255,0.38)",
@@ -1974,12 +2691,21 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     letterSpacing: 0.15,
   },
+  progressSlotHintVip: {
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+  },
   openSpacer: {
     minHeight: 12,
   },
   hostSectionWrap: {
     position: "relative",
     marginTop: 4,
+  },
+  hostSectionWrapClaimedLive: {
+    marginTop: 2,
   },
   hostSectionGlow: {
     position: "absolute",
@@ -2006,6 +2732,15 @@ const styles = StyleSheet.create({
     elevation: 10,
     overflow: "hidden",
   },
+  hostSectionClaimedLive: {
+    borderRadius: 24,
+    paddingHorizontal: 14,
+    paddingTop: 11,
+    paddingBottom: 11,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+  },
   hostSectionTopSheen: {
     position: "absolute",
     top: 0,
@@ -2019,6 +2754,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 10,
   },
+  hostHeaderRowClaimedLive: {
+    marginBottom: 7,
+  },
   hostKicker: {
     fontSize: 9,
     fontWeight: "800",
@@ -2029,6 +2767,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 14,
     marginBottom: 14,
+  },
+  hostRowClaimedLive: {
+    gap: 12,
+    marginBottom: 10,
   },
   hostTextWrap: {
     flex: 1,
@@ -2089,12 +2831,43 @@ const styles = StyleSheet.create({
     gap: 11,
   },
   footerSectionUnclaimed: {
-    marginTop: "auto",
-    gap: 9,
-    paddingTop: 8,
+    flexShrink: 0,
+    marginTop: 6,
+    gap: 8,
+    paddingTop: 0,
+    paddingBottom: 4,
+  },
+  footerSectionClaimedLive: {
+    flexShrink: 0,
+    marginTop: 8,
+    gap: 8,
+    paddingBottom: 2,
   },
   claimBtnPrimaryWrap: {
     position: "relative",
+  },
+  claimBtnPrimaryWrapUnclaimed: {
+    position: "relative",
+    marginTop: 2,
+  },
+  claimBtnPrimaryBloomOuter: {
+    position: "absolute",
+    top: -4,
+    left: 4,
+    right: 4,
+    bottom: -4,
+    borderRadius: 999,
+    backgroundColor: "rgba(246,215,122,0.14)",
+    shadowColor: VIP_GOLD_LIGHT,
+    shadowOpacity: 0.38,
+    shadowRadius: 34,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 4,
+  },
+  claimBtnPrimaryBloomOuterLiveOpen: {
+    backgroundColor: "rgba(122,38,58,0.08)",
+    shadowColor: LIVE_BURGUNDY,
+    shadowOpacity: 0.24,
   },
   claimBtnPrimaryBloom: {
     position: "absolute",
@@ -2110,10 +2883,26 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
   },
+  claimBtnVipTopHighlight: {
+    position: "absolute",
+    top: 0,
+    left: 24,
+    right: 24,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.55)",
+    borderRadius: 999,
+  },
+  claimBtnVipShimmer: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: 56,
+    backgroundColor: "rgba(255,255,255,0.24)",
+  },
   claimBtnPrimaryBloomLiveOpen: {
-    backgroundColor: "rgba(255,55,95,0.14)",
-    shadowColor: LIVE_PINK,
-    shadowOpacity: 0.32,
+    backgroundColor: "rgba(122,38,58,0.10)",
+    shadowColor: LIVE_BURGUNDY,
+    shadowOpacity: 0.22,
   },
   claimBtnPrimary: {
     borderRadius: 999,
@@ -2125,14 +2914,15 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   claimBtnPrimaryUnclaimed: {
-    shadowOpacity: 0.52,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 12,
+    shadowOpacity: 0.72,
+    shadowRadius: 32,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 16,
+    shadowColor: VIP_GOLD_MID,
   },
   claimBtnPrimaryLiveOpen: {
-    shadowColor: LIVE_PINK,
-    shadowOpacity: 0.38,
+    shadowColor: LIVE_BURGUNDY,
+    shadowOpacity: 0.26,
   },
   claimBtnPrimaryGradient: {
     minHeight: 58,
@@ -2144,9 +2934,10 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   claimBtnPrimaryGradientUnclaimed: {
-    minHeight: 52,
+    minHeight: 56,
     paddingVertical: 2,
-    gap: 9,
+    gap: 8,
+    borderRadius: 999,
   },
   claimBtnPrimaryTopSheen: {
     position: "absolute",
@@ -2164,6 +2955,13 @@ const styles = StyleSheet.create({
     color: "#1A1205",
     fontSize: 16,
     fontWeight: "900",
+  },
+  claimBtnPrimaryTextVip: {
+    fontSize: 16.5,
+    letterSpacing: 0.2,
+    textShadowColor: "rgba(255,255,255,0.18)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
   claimBtnSecondary: {
     minHeight: 54,
@@ -2192,6 +2990,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
     elevation: 16,
   },
+  hostEnterButtonClaimedLive: {
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 14,
+  },
   hostEnterButtonGradient: {
     minHeight: 58,
     flexDirection: "row",
@@ -2200,6 +3003,11 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 18,
     overflow: "hidden",
+  },
+  hostEnterButtonGradientClaimedLive: {
+    minHeight: 52,
+    gap: 8,
+    paddingHorizontal: 16,
   },
   hostEnterButtonTopSheen: {
     position: "absolute",
@@ -2242,15 +3050,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   actionRailUnclaimed: {
-    borderColor: "rgba(247,211,106,0.07)",
-    backgroundColor: "rgba(8,10,16,0.72)",
-    shadowOpacity: 0.22,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 4 },
+    borderColor: "rgba(246,215,122,0.12)",
+    backgroundColor: "rgba(8,10,16,0.78)",
+    shadowColor: VIP_GOLD_DEEP,
+    shadowOpacity: 0.24,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
     elevation: 8,
-    paddingVertical: 13,
+    paddingVertical: 11,
     paddingHorizontal: 10,
-    marginTop: 1,
+    marginTop: 0,
+    marginBottom: 0,
   },
   actionRailHighlight: {
     position: "absolute",
@@ -2302,6 +3112,10 @@ const styles = StyleSheet.create({
     gap: 6,
     minHeight: 64,
   },
+  actionRailItemUnclaimed: {
+    minHeight: 56,
+    gap: 5,
+  },
   actionRailIconWrap: {
     width: 50,
     height: 50,
@@ -2323,11 +3137,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.06)",
   },
+  actionRailIconRingUnclaimed: {
+    borderColor: "rgba(246,215,122,0.18)",
+  },
+  actionRailIconTopSheen: {
+    position: "absolute",
+    top: 0,
+    left: 6,
+    right: 6,
+    height: 14,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+  },
   actionRailLabel: {
     color: "rgba(255,255,255,0.66)",
     fontSize: 10,
     fontWeight: "700",
     letterSpacing: 0.15,
+  },
+  actionRailLabelUnclaimed: {
+    color: "rgba(255,255,255,0.78)",
+    letterSpacing: 0.2,
   },
   pressed: {
     opacity: 0.88,

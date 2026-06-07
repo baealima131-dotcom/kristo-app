@@ -601,6 +601,11 @@ export function homeFeedScheduleEngagementId(item: any) {
   return baseFeedId(String(item?.id || item?.feedOriginId || ""));
 }
 
+/** Comment drawer / discussion API id — mirrors likes (parent schedule, not :slot:N row id). */
+export function homeFeedCommentPostId(item: any) {
+  return homeFeedScheduleEngagementId(item);
+}
+
 /** FlatList row key — unique per expanded slot card. */
 export function feedRenderKey(item: any) {
   const id = String(item?.id || item?.feedOriginId || "").trim();

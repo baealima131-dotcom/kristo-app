@@ -53,6 +53,7 @@ import {
   filterHomeFeedClaimableSlotRows,
   homeFeedRowChurchId,
   homeFeedScheduleEngagementId,
+  homeFeedCommentPostId,
   isHomeFeedActiveOrNearLiveChurchScheduleVisible,
   isHomeFeedScheduleCardRow,
   isImagePost,
@@ -1044,7 +1045,7 @@ export default function HomeFeedScreen() {
 
   const getVisibleDiscussionCount = useCallback(
     (item: any) => {
-      const postId = normalizeCommentPostId(String(item?.id || ""));
+      const postId = homeFeedCommentPostId(item);
       const serverCount = discussionCountFromItem(item);
       const hasOverride =
         Boolean(postId) && Object.prototype.hasOwnProperty.call(commentCountOverrides, postId);
@@ -1068,7 +1069,7 @@ export default function HomeFeedScreen() {
   );
 
   const handleComment = useCallback((item: any) => {
-    const postId = normalizeCommentPostId(String(item?.id || "").trim());
+    const postId = homeFeedCommentPostId(item);
     if (!postId) return;
 
     const session = getSessionSync();
@@ -1100,9 +1101,7 @@ export default function HomeFeedScreen() {
       if (!cleanId || !Number.isFinite(delta) || delta === 0) return;
 
       setCommentCountOverrides((prev) => {
-        const item = feedRows.find(
-          (row) => normalizeCommentPostId(String(row?.id || "")) === cleanId
-        );
+        const item = feedRows.find((row) => homeFeedCommentPostId(row) === cleanId);
         const serverCount = discussionCountFromItem(item || {});
         const prevOverride = Object.prototype.hasOwnProperty.call(prev, cleanId)
           ? prev[cleanId]
