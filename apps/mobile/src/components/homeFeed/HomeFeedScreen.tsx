@@ -69,8 +69,10 @@ import {
   recoverHomeFeedPlaybackAfterLiveExit,
 } from "@/src/lib/homeFeedVideoController";
 import {
+  beginHomeFeedPrefetchSession,
+  endHomeFeedPrefetchSession,
   scheduleHomeFeedVideoBufferAhead,
-  warmVisibleHomeFeedVideoPosters,
+  warmHomeFeedVideoPostersNearActive,
 } from "@/src/lib/homeFeedVideoBufferAhead";
 import {
   consumeHomeFeedScheduleDirty,
@@ -135,6 +137,8 @@ export default function HomeFeedScreen() {
   const initialVideoBufferWarmedRef = useRef(false);
   const lastVideoBufferActiveRef = useRef(-1);
   const lastVideoBufferWindowRef = useRef(HOME_FEED_INITIAL_LIMIT);
+  const prefetchSessionIdRef = useRef(0);
+  const lastPosterWarmKeyRef = useRef("");
 
   const [stableDisplayRows, setStableDisplayRows] = useState<any[]>([]);
   const [visibleWindowSize, setVisibleWindowSize] = useState(HOME_FEED_INITIAL_LIMIT);
@@ -487,9 +491,30 @@ export default function HomeFeedScreen() {
   }, [visibleData]);
 
   useEffect(() => {
+    prefetchSessionIdRef.current = beginHomeFeedPrefetchSession();
+    return () => {
+      endHomeFeedPrefetchSession();
+    };
+  }, []);
+
+  const posterWarmKey = useMemo(() => {
+    const end = Math.min(visibleData.length, activeIndex + 6);
+    return visibleData
+      .slice(Math.max(0, activeIndex), end)
+      .map((row) => feedRenderKey(row) || String(row?.id || ""))
+      .join("|");
+  }, [visibleData, activeIndex]);
+
+  useEffect(() => {
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
-    warmVisibleHomeFeedVideoPosters(visibleData, visibleData.length);
-  }, [feedFocused, isClaimSlotFocus, visibleData]);
+    if (posterWarmKey === lastPosterWarmKeyRef.current) return;
+    lastPosterWarmKeyRef.current = posterWarmKey;
+    warmHomeFeedVideoPostersNearActive(
+      visibleData,
+      activeIndex,
+      prefetchSessionIdRef.current
+    );
+  }, [posterWarmKey, activeIndex, feedFocused, isClaimSlotFocus, visibleData]);
 
   useEffect(() => {
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
@@ -502,7 +527,7 @@ export default function HomeFeedScreen() {
       reason: "initial-feed-ready",
       enabled: feedFocused,
     });
-  }, [feedFocused, isClaimSlotFocus, visibleData]);
+  }, [feedFocused, isClaimSlotFocus, visibleData.length]);
 
   useEffect(() => {
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
@@ -515,7 +540,7 @@ export default function HomeFeedScreen() {
       reason: "active-index",
       enabled: feedFocused,
     });
-  }, [activeIndex, feedFocused, isClaimSlotFocus, visibleData]);
+  }, [activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
 
   useEffect(() => {
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
@@ -532,7 +557,7 @@ export default function HomeFeedScreen() {
       reason: "window-expand",
       enabled: feedFocused,
     });
-  }, [visibleWindowSize, activeIndex, feedFocused, isClaimSlotFocus, visibleData]);
+  }, [visibleWindowSize, activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
 
   const viewerChurchId = String(session?.churchId || "").trim();
 

@@ -10,15 +10,30 @@ import {
   HOME_FEED_PLAYER_WARM_BEHIND,
 } from "./homeFeedVideoWindow";
 
-const MAX_CONCURRENCY = 2;
+const MAX_VIDEO_CONCURRENCY = 2;
+const MAX_POSTER_CONCURRENCY = 2;
 const RANGE_BYTES = "bytes=0-65535";
+
+const STARTUP_COOLDOWN_MS = 3000;
+const INITIAL_VIDEO_WARM_MAX = 4;
+const ACTIVE_INDEX_VIDEO_WARM_MAX = 3;
+const WINDOW_EXPAND_VIDEO_WARM_MAX = 5;
+const POSTER_WARM_AHEAD_COUNT = 5;
 
 const warmedVideoUrls = new Set<string>();
 const warmedPosterUrls = new Set<string>();
 const inflightVideoUrls = new Set<string>();
+const inflightPosterUrls = new Set<string>();
 
-const pendingTasks: Array<() => Promise<void>> = [];
-let activeWorkers = 0;
+const pendingVideoTasks: Array<() => Promise<void>> = [];
+const pendingPosterUrls: string[] = [];
+let activeVideoWorkers = 0;
+let activePosterWorkers = 0;
+
+let prefetchSessionId = 0;
+let prefetchEnabled = false;
+let initialFeedReadyAtMs = 0;
+let initialFeedReadyActiveIndex = 0;
 
 type NetworkWarmPolicy = "allow" | "posters-only" | "skip";
 
@@ -32,6 +47,10 @@ type BufferAheadTarget = {
   posterUrl: string;
   rowIndex: number;
 };
+
+function normalizeUrl(url: string): string {
+  return String(url || "").trim().split("?")[0];
+}
 
 function urlHost(raw: string): string {
   const value = String(raw || "").trim();
@@ -48,6 +67,25 @@ function isNetworkVideoUrl(url: string): boolean {
   return Boolean(trimmed) && /^https?:\/\//i.test(trimmed);
 }
 
+export function beginHomeFeedPrefetchSession(): number {
+  prefetchSessionId += 1;
+  prefetchEnabled = true;
+  initialFeedReadyAtMs = 0;
+  initialFeedReadyActiveIndex = 0;
+  return prefetchSessionId;
+}
+
+export function endHomeFeedPrefetchSession(): void {
+  prefetchEnabled = false;
+  prefetchSessionId += 1;
+  pendingVideoTasks.length = 0;
+  pendingPosterUrls.length = 0;
+}
+
+function isPrefetchAllowed(sessionId: number): boolean {
+  return prefetchEnabled && sessionId === prefetchSessionId;
+}
+
 async function resolveNetworkWarmPolicy(): Promise<NetworkWarmPolicy> {
   const conn = (globalThis as any)?.navigator?.connection;
   if (conn) {
@@ -61,34 +99,69 @@ async function resolveNetworkWarmPolicy(): Promise<NetworkWarmPolicy> {
   return "allow";
 }
 
-function drainQueue() {
-  while (activeWorkers < MAX_CONCURRENCY && pendingTasks.length > 0) {
-    const task = pendingTasks.shift();
+function drainVideoQueue() {
+  while (activeVideoWorkers < MAX_VIDEO_CONCURRENCY && pendingVideoTasks.length > 0) {
+    const task = pendingVideoTasks.shift();
     if (!task) break;
-    activeWorkers += 1;
+    activeVideoWorkers += 1;
     void task()
       .catch(() => {})
       .finally(() => {
-        activeWorkers -= 1;
-        drainQueue();
+        activeVideoWorkers -= 1;
+        drainVideoQueue();
       });
   }
 }
 
-function enqueueTask(task: () => Promise<void>) {
-  pendingTasks.push(task);
-  drainQueue();
+function enqueueVideoTask(task: () => Promise<void>) {
+  pendingVideoTasks.push(task);
+  drainVideoQueue();
 }
 
-async function warmPosterUrl(posterUrl: string): Promise<void> {
-  const url = String(posterUrl || "").trim();
-  if (!url || warmedPosterUrls.has(url)) return;
-  warmedPosterUrls.add(url);
-  try {
-    await Image.prefetch(url);
-  } catch {
-    warmedPosterUrls.delete(url);
+function drainPosterQueue(sessionId: number) {
+  while (
+    activePosterWorkers < MAX_POSTER_CONCURRENCY &&
+    pendingPosterUrls.length > 0 &&
+    isPrefetchAllowed(sessionId)
+  ) {
+    const url = pendingPosterUrls.shift();
+    if (!url) break;
+    if (warmedPosterUrls.has(url) || inflightPosterUrls.has(url)) continue;
+
+    inflightPosterUrls.add(url);
+    activePosterWorkers += 1;
+    void (async () => {
+      try {
+        if (!isPrefetchAllowed(sessionId)) return;
+        await Image.prefetch(url);
+        warmedPosterUrls.add(url);
+      } catch {
+        warmedPosterUrls.delete(url);
+      } finally {
+        inflightPosterUrls.delete(url);
+        activePosterWorkers -= 1;
+        drainPosterQueue(sessionId);
+      }
+    })();
   }
+}
+
+function enqueuePosterWarm(posterUrl: string, sessionId: number) {
+  const url = normalizeUrl(posterUrl);
+  if (!url) return;
+  if (!isPrefetchAllowed(sessionId)) {
+    console.log("KRISTO_POSTER_PREFETCH_SKIP", { reason: "session-ended" });
+    return;
+  }
+  if (warmedPosterUrls.has(url)) {
+    return;
+  }
+  if (inflightPosterUrls.has(url) || pendingPosterUrls.includes(url)) {
+    return;
+  }
+
+  pendingPosterUrls.push(url);
+  drainPosterQueue(sessionId);
 }
 
 type VideoWarmNetworkResult = {
@@ -143,7 +216,7 @@ async function warmVideoUrlNetwork(videoUrl: string): Promise<VideoWarmNetworkRe
 }
 
 export function wasHomeFeedVideoUrlBufferedAhead(videoUrl: string): boolean {
-  const url = String(videoUrl || "").trim().split("?")[0];
+  const url = normalizeUrl(videoUrl);
   if (!url) return false;
   return warmedVideoUrls.has(url);
 }
@@ -195,26 +268,25 @@ export function selectHomeFeedVideoBufferAheadTargets(
   if (visibleEnd <= 0) return [];
 
   if (reason === "initial-feed-ready") {
-    return collectVideoPostsInRange(rows, 0, visibleEnd, 8);
+    return collectVideoPostsInRange(rows, 0, visibleEnd, INITIAL_VIDEO_WARM_MAX);
   }
 
   if (reason === "active-index") {
     const skip = playerWarmSkipIndices(activeIndex);
     const start = activeIndex + 1;
-    return collectVideoPostsInRange(rows, start, visibleEnd, 6, skip);
+    return collectVideoPostsInRange(rows, start, visibleEnd, ACTIVE_INDEX_VIDEO_WARM_MAX, skip);
   }
 
-  // window-expand: warm videos in the newly exposed tail slice.
   const tailStart = Math.max(0, visibleCount - 15);
   const skip = playerWarmSkipIndices(activeIndex);
-  return collectVideoPostsInRange(rows, tailStart, visibleEnd, 10, skip);
+  return collectVideoPostsInRange(rows, tailStart, visibleEnd, WINDOW_EXPAND_VIDEO_WARM_MAX, skip);
 }
 
 function dedupeTargets(targets: BufferAheadTarget[]): BufferAheadTarget[] {
   const seen = new Set<string>();
   const out: BufferAheadTarget[] = [];
   for (const target of targets) {
-    const key = target.videoUrl;
+    const key = normalizeUrl(target.videoUrl);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(target);
@@ -222,15 +294,47 @@ function dedupeTargets(targets: BufferAheadTarget[]): BufferAheadTarget[] {
   return out;
 }
 
-/** Poster-only warm for every video row in the visible window (no players). */
-export function warmVisibleHomeFeedVideoPosters(rows: any[], visibleCount: number): void {
-  const end = Math.min(Math.max(0, visibleCount), rows.length);
-  for (let i = 0; i < end; i += 1) {
+/** Prefetch posters for active row + next N video rows only. */
+export function warmHomeFeedVideoPostersNearActive(
+  rows: any[],
+  activeIndex: number,
+  sessionId = prefetchSessionId
+): void {
+  if (!isPrefetchAllowed(sessionId)) {
+    console.log("KRISTO_POSTER_PREFETCH_SKIP", { reason: "session-ended" });
+    return;
+  }
+  if (!rows.length) {
+    console.log("KRISTO_POSTER_PREFETCH_SKIP", { reason: "empty-rows" });
+    return;
+  }
+
+  const end = Math.min(rows.length, activeIndex + POSTER_WARM_AHEAD_COUNT + 1);
+  const queued: string[] = [];
+
+  for (let i = Math.max(0, activeIndex); i < end; i += 1) {
     const row = rows[i];
     if (!row || !isVideoPost(row)) continue;
-    const posterUrl = String(resolvePosterUri(row) || "").trim();
-    if (posterUrl) void warmPosterUrl(posterUrl);
+    const posterUrl = normalizeUrl(resolvePosterUri(row));
+    if (!posterUrl || warmedPosterUrls.has(posterUrl)) continue;
+    if (inflightPosterUrls.has(posterUrl) || queued.includes(posterUrl)) continue;
+    queued.push(posterUrl);
   }
+
+  if (!queued.length) {
+    console.log("KRISTO_POSTER_PREFETCH_SKIP", { reason: "already-warmed" });
+    return;
+  }
+
+  console.log("KRISTO_POSTER_PREFETCH_START", { queued: queued.length });
+  for (const posterUrl of queued) {
+    enqueuePosterWarm(posterUrl, sessionId);
+  }
+}
+
+/** @deprecated Use warmHomeFeedVideoPostersNearActive */
+export function warmVisibleHomeFeedVideoPosters(rows: any[], visibleCount: number): void {
+  warmHomeFeedVideoPostersNearActive(rows, 0);
 }
 
 export function scheduleHomeFeedVideoBufferAhead(params: {
@@ -240,9 +344,26 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
   reason: HomeFeedBufferAheadReason;
   enabled?: boolean;
 }): void {
+  const sessionId = prefetchSessionId;
+
+  if (!isPrefetchAllowed(sessionId)) {
+    console.log("KRISTO_VIDEO_BUFFER_AHEAD_SKIP", { reason: "session-ended" });
+    return;
+  }
+
   const enabled = params.enabled !== false;
   if (!enabled) {
     console.log("KRISTO_VIDEO_BUFFER_AHEAD_SKIP", { reason: "disabled" });
+    return;
+  }
+
+  if (
+    params.reason === "active-index" &&
+    initialFeedReadyAtMs > 0 &&
+    Date.now() - initialFeedReadyAtMs < STARTUP_COOLDOWN_MS &&
+    params.activeIndex === initialFeedReadyActiveIndex
+  ) {
+    console.log("KRISTO_VIDEO_BUFFER_AHEAD_SKIP", { reason: "startup-cooldown" });
     return;
   }
 
@@ -252,15 +373,21 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
     return;
   }
 
+  if (params.reason === "initial-feed-ready") {
+    initialFeedReadyAtMs = Date.now();
+    initialFeedReadyActiveIndex = params.activeIndex;
+  }
+
   const rawTargets = selectHomeFeedVideoBufferAheadTargets(
     params.rows,
     params.activeIndex,
     visibleCount,
     params.reason
   );
-  const targets = dedupeTargets(rawTargets).filter(
-    (t) => !warmedVideoUrls.has(t.videoUrl) && !inflightVideoUrls.has(t.videoUrl)
-  );
+  const targets = dedupeTargets(rawTargets).filter((t) => {
+    const key = normalizeUrl(t.videoUrl);
+    return key && !warmedVideoUrls.has(key) && !inflightVideoUrls.has(key);
+  });
 
   if (!targets.length) {
     console.log("KRISTO_VIDEO_BUFFER_AHEAD_SKIP", { reason: "already-warmed" });
@@ -275,29 +402,37 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
   });
 
   void (async () => {
+    if (!isPrefetchAllowed(sessionId)) return;
+
     const policy = await resolveNetworkWarmPolicy();
+    if (!isPrefetchAllowed(sessionId)) return;
     if (policy === "skip") {
       console.log("KRISTO_VIDEO_BUFFER_AHEAD_SKIP", { reason: "offline" });
       return;
     }
 
     const warmVideos = policy === "allow";
+    if (!warmVideos) return;
 
     for (const target of targets) {
-      if (target.posterUrl) {
-        void warmPosterUrl(target.posterUrl);
-      }
-      if (!warmVideos) continue;
-      if (warmedVideoUrls.has(target.videoUrl) || inflightVideoUrls.has(target.videoUrl)) {
+      if (!isPrefetchAllowed(sessionId)) return;
+
+      const videoUrl = normalizeUrl(target.videoUrl);
+      if (!videoUrl || warmedVideoUrls.has(videoUrl) || inflightVideoUrls.has(videoUrl)) {
         continue;
       }
 
-      const videoUrl = target.videoUrl;
       inflightVideoUrls.add(videoUrl);
-      enqueueTask(async () => {
+      enqueueVideoTask(async () => {
+        if (!isPrefetchAllowed(sessionId)) {
+          inflightVideoUrls.delete(videoUrl);
+          return;
+        }
+
         const host = urlHost(videoUrl);
         try {
           const result = await warmVideoUrlNetwork(videoUrl);
+          if (!isPrefetchAllowed(sessionId)) return;
           warmedVideoUrls.add(videoUrl);
           console.log("KRISTO_VIDEO_BUFFER_AHEAD_DONE", {
             urlHost: host,

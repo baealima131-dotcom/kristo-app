@@ -14,11 +14,9 @@ import {
   unregisterHomeFeedVideo,
 } from "@/src/lib/homeFeedVideoController";
 import {
-  isHomeFeedActiveFirstFrameReady,
   isHomeFeedVideoPreloadReady,
   markHomeFeedActiveFirstFrame,
   markHomeFeedVideoPreloadReady,
-  subscribeHomeFeedActiveFirstFrame,
   touchHomeFeedVideoReadiness,
 } from "@/src/lib/homeFeedVideoReadiness";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
@@ -128,6 +126,22 @@ function safePlayerPlay(player: any): void {
   } catch {}
 }
 
+function safeGetPlayerBuffered(player: any): number {
+  try {
+    return Number(player?.bufferedPosition ?? -1);
+  } catch {
+    return -1;
+  }
+}
+
+/** Low-latency progressive streaming: start playback early, buffer ahead in background. */
+const PROGRESSIVE_BUFFER_OPTIONS = {
+  preferredForwardBufferDuration: 2,
+  waitsToMinimizeStalling: false,
+  minBufferForPlayback: 0.5,
+  prioritizeTimeOverSizeThreshold: true,
+} as const;
+
 /**
  * Active row plays with audio; preload/warm rows keep muted paused players ready for handoff.
  */
@@ -150,30 +164,19 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const isActive = warmMode === "active";
 
-  // V1 perf: the active video loads immediately; the next-video preload defers
-  // loading its source until the active video has reached its first frame, so a
-  // second large R2 download never competes with the active one.
-  const [preloadGateOpen, setPreloadGateOpen] = useState(() =>
-    isHomeFeedActiveFirstFrameReady()
-  );
-
-  useEffect(() => {
-    if (isActive || preloadGateOpen) return;
-    if (isHomeFeedActiveFirstFrameReady()) {
-      setPreloadGateOpen(true);
-      return;
-    }
-    return subscribeHomeFeedActiveFirstFrame(() => setPreloadGateOpen(true));
-  }, [isActive, preloadGateOpen]);
-
   const isRetainPrev = warmMode === "warm" || warmMode === "cache";
   const isPreloadNext = warmMode === "preload";
-  const sourceLoadAllowed = isActive || preloadGateOpen || isRetainPrev;
-  const playerSource = sourceLoadAllowed ? uri : null;
+  // Active + next 2–3 preload rows + scroll-back retain rows load source immediately.
+  const sourceLoadAllowed = isActive || isPreloadNext || isRetainPrev;
+  const playerSource =
+    sourceLoadAllowed && uri ? { uri, contentType: "progressive" as const } : null;
 
   const player = useVideoPlayer(playerSource, (p) => {
     p.loop = true;
     p.muted = true;
+    try {
+      p.bufferOptions = { ...PROGRESSIVE_BUFFER_OPTIONS };
+    } catch {}
     const mode = warmModeRef.current;
     if (mode === "warm" || mode === "cache") {
       try {
@@ -248,6 +251,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const progressRestoredRef = useRef(false);
   const lastProgressSaveMsRef = useRef(0);
   const firstFrameDiagLoggedRef = useRef(false);
+  const playStartedLoggedRef = useRef(false);
+  const lastBufferLogKeyRef = useRef("");
 
   const readPlayerMuted = () => {
     try {
@@ -260,20 +265,50 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const computeVideoReady = () =>
     readyMarkedRef.current || isPlayerReadyToStart(status, currentTime, playing);
 
-  // Play/decode gate: start playback as soon as the player is ready, WITHOUT
-  // waiting for the first decoded frame. This is what unblocks startup.
-  const computeActiveShouldPlay = () =>
-    isActive && screenFocused && appActive && computeVideoReady();
+  // Decode/play gate: active + focused + app active + source set. Do NOT wait
+  // for readyToPlay, duration, or full buffer before calling play().
+  const computeDecodeShouldPlay = () =>
+    isActive && screenFocused && appActive && Boolean(playerSource);
 
-  // Audio gate: only unmute once the first frame has actually rendered, so we
-  // never play audio before the poster hands off to a visible frame.
+  const computePreloadShouldPlay = () =>
+    isPreloadNext && screenFocused && appActive && Boolean(playerSource);
+
+  // Audio gate: only unmute once the first frame has actually rendered.
   const computeAudioShouldPlay = () =>
     isActive && screenFocused && appActive && firstFrameReady;
 
+  const logPlayRequested = (reason: string) => {
+    console.log("KRISTO_VIDEO_PLAY_REQUESTED", {
+      id: postId || null,
+      status: statusLower(safeGetPlayerStatus(player)),
+      active: isActive,
+      msFromMount: Date.now() - mountMsRef.current,
+      reason,
+    });
+  };
+
+  const requestPlay = (reason: string) => {
+    if (playerDisposedRef.current) return;
+    logPlayRequested(reason);
+    safePlayerPlay(player);
+  };
+
+  const logBufferingState = (lower: string, t: number) => {
+    const buffered = safeGetPlayerBuffered(player);
+    const key = `${lower}:${buffered}:${Math.floor(t * 10)}`;
+    if (key === lastBufferLogKeyRef.current) return;
+    lastBufferLogKeyRef.current = key;
+    console.log("KRISTO_VIDEO_BUFFERING_STATE", {
+      id: postId || null,
+      status: lower,
+      buffered,
+      currentTime: t,
+    });
+  };
+
   const recoverAudioIfNeeded = (source: string) => {
     const effectiveShouldPlay = computeAudioShouldPlay();
-    const videoReady = computeVideoReady();
-    if (!effectiveShouldPlay || !videoReady) return false;
+    if (!effectiveShouldPlay) return false;
     if (!readPlayerMuted()) return false;
 
     if (playerDisposedRef.current) return false;
@@ -290,7 +325,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
         source,
         warmMode,
         effectiveShouldPlay,
-        videoReady,
         firstFrameReady,
       });
     }
@@ -405,9 +439,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const activateActivePlayback = (reason: string) => {
     if (!isActive) return;
-    // Start decode/playback as soon as the player is ready; do NOT wait for the
-    // first decoded frame. Audio stays muted until firstFrameReady.
-    if (!computeActiveShouldPlay()) return;
+    // Start decode/playback immediately when source is set; audio stays muted
+    // until firstFrameReady.
+    if (!computeDecodeShouldPlay()) return;
 
     const audioAllowed = computeAudioShouldPlay();
 
@@ -419,7 +453,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (playerDisposedRef.current) return;
     try {
       if (audioAllowed) player.muted = false;
-      safePlayerPlay(player);
+      requestPlay(`activateActivePlayback:${reason}`);
       lastMutedLogKeyRef.current = "";
       logMutedSet("activateActivePlayback", !audioAllowed, reason);
     } catch {}
@@ -485,6 +519,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (isActive && !wasActive) {
       activeHandoffRef.current = false;
       progressRestoredRef.current = false;
+      playStartedLoggedRef.current = false;
+      lastBufferLogKeyRef.current = "";
     }
     prevIsActiveRef.current = isActive;
   }, [isActive, status, postId]);
@@ -502,7 +538,12 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (warmModeRef.current !== "active" || !cachedReadyRef.current) {
       try {
         setPlayerMuted(true, "layout-effect-prime", "screen-focused-mount");
-        safePlayerPlay(player);
+        requestPlay("layout-effect-prime");
+      } catch {}
+    } else if (warmModeRef.current === "active") {
+      try {
+        setPlayerMuted(true, "layout-effect-active-prime", "screen-focused-mount");
+        requestPlay("layout-effect-active-prime");
       } catch {}
     }
   }, [player, screenFocused, uri, postId]);
@@ -523,20 +564,12 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       activeHandoffRef.current = false;
       if (!isActive) return;
 
-      if (computeVideoReady()) {
-        activateActivePlayback(
-          peekHomeFeedVideoRecovery() ? "live-room-exit-refocus" : "screen-refocus"
-        );
-        if (peekHomeFeedVideoRecovery()) {
-          consumeHomeFeedVideoRecovery();
-        }
-        return;
+      activateActivePlayback(
+        peekHomeFeedVideoRecovery() ? "live-room-exit-refocus" : "screen-refocus"
+      );
+      if (peekHomeFeedVideoRecovery()) {
+        consumeHomeFeedVideoRecovery();
       }
-
-      try {
-        setPlayerMuted(true, "screen-refocus-prime", "await-ready");
-        safePlayerPlay(player);
-      } catch {}
     }
   }, [screenFocused, isActive, firstFrameReady, postId, status]);
 
@@ -545,15 +578,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     return subscribeHomeFeedVideoRecovery(() => {
       if (!screenFocused || !peekHomeFeedVideoRecovery()) return;
       activeHandoffRef.current = false;
-      if (computeVideoReady()) {
-        activateActivePlayback("live-room-exit-recovery");
-        consumeHomeFeedVideoRecovery();
-        return;
-      }
-      try {
-        setPlayerMuted(true, "live-room-recovery-prime", "await-ready");
-        safePlayerPlay(player);
-      } catch {}
+      activateActivePlayback("live-room-exit-recovery");
+      consumeHomeFeedVideoRecovery();
     });
   }, [isActive, screenFocused, firstFrameReady, player, postId, status]);
 
@@ -631,10 +657,12 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       lastRegisterKeyRef.current = "";
       progressRestoredRef.current = false;
       firstFrameDiagLoggedRef.current = false;
+      playStartedLoggedRef.current = false;
+      lastBufferLogKeyRef.current = "";
 
       try {
         setPlayerMuted(true, "uri-change-prime");
-        safePlayerPlay(player);
+        requestPlay("uri-change-prime");
       } catch {}
     }
   }, [uri, postId, player]);
@@ -666,18 +694,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
 
     if (isActive) {
-      if (computeActiveShouldPlay()) {
-        // Begin decode/playback immediately (muted until first frame); claim
-        // ownership so other warming players are paused. Timing is emitted once
-        // the real first frame lands (here only if it already has).
+      if (computeDecodeShouldPlay()) {
         activateActivePlayback("simple-feed-video-active-handoff");
         recoverAudioIfNeeded("active-playback-effect");
         if (firstFrameReady) logStartupTiming();
-      } else if (!activeHandoffRef.current) {
-        try {
-          setPlayerMuted(true, "active-pre-handoff", "await-ready");
-          safePlayerPlay(player);
-        } catch {}
       }
       return;
     }
@@ -690,9 +710,13 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     if (shouldPrime) {
       setPlayerMuted(true, "warm-preload-prime", warmMode);
-      if (!preloadPrimedRef.current) {
-        preloadPrimedRef.current = true;
-        safePlayerPlay(player);
+      if (computePreloadShouldPlay()) {
+        if (!firstFrameReady) {
+          requestPlay("warm-preload-progressive");
+        } else if (!preloadPrimedRef.current) {
+          preloadPrimedRef.current = true;
+          safePlayerPause(player);
+        }
       }
       return;
     }
@@ -722,6 +746,17 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     const isPlaying = safeGetPlayerPlaying(player);
     lastKnownPlayingRef.current = isPlaying;
 
+    logBufferingState(lower, t);
+
+    if (isPlaying && !playStartedLoggedRef.current) {
+      playStartedLoggedRef.current = true;
+      console.log("KRISTO_VIDEO_PLAY_STARTED", {
+        id: postId || null,
+        status: lower,
+        currentTime: t,
+      });
+    }
+
     if (isPlayerReadyToStart(status, t, isPlaying) && readyMsRef.current === null) {
       readyMsRef.current = Date.now() - mountMsRef.current;
       if (readyMsRef.current <= 800) {
@@ -733,16 +768,17 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       }
     }
 
-    if (isActive && isPlayerReadyToStart(status, t, isPlaying)) {
-      safePlayerPlay(player);
+    if (isActive && computeDecodeShouldPlay()) {
       if (!firstFrameReady) {
-        activateActivePlayback("status-ready-pre-frame");
+        activateActivePlayback("status-progressive-pre-frame");
+      } else if (!isPlaying) {
+        requestPlay("status-active-continue");
       }
     }
 
-    if (shouldPrime && !isActive && (lower === "readytoplay" || lower === "playing" || t > 0)) {
+    if (shouldPrime && !isActive && firstFrameReady) {
       safePlayerPause(player);
-      setPlayerMuted(true, "preload-ready-pause", warmMode);
+      setPlayerMuted(true, "preload-first-frame-pause", warmMode);
     }
 
     if (!shouldMarkReadiness(status, t, isPlaying)) {
@@ -802,7 +838,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   useEffect(() => {
     if (!isKristoVerboseFeedDebug()) return;
     if (feedIndex < 0 || feedIndex > 2) return;
-    const videoShouldPlay = computeActiveShouldPlay();
+    const videoShouldPlay = computeDecodeShouldPlay();
     const videoReady = computeVideoReady();
     const key = `${feedIndex}:${isActive ? 1 : 0}:${firstFrameReady ? 1 : 0}:${videoReady ? 1 : 0}:${videoShouldPlay ? 1 : 0}:${screenFocused ? 1 : 0}:${appActive ? 1 : 0}:${warmMode}:${statusLower(status)}`;
     if (key === lastRowDiagKeyRef.current) return;

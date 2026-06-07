@@ -42,10 +42,9 @@ export function clearHomeFeedVideoReadiness(postId: string, videoUrl: string) {
 }
 
 /**
- * V1 perf gate: the next-video preload must not download concurrently with the
- * first active video, or it halves the bandwidth and delays the active first
- * frame. Preload rows defer loading their source until the active video has
- * shown its first frame (or this gate has already opened earlier).
+ * Tracks when the active feed video has rendered its first frame. Preload rows
+ * mount muted players immediately for progressive buffering; this flag is used
+ * for diagnostics and optional coordination elsewhere in the feed.
  */
 let activeFirstFrameSeen = false;
 const activeFirstFrameListeners = new Set<() => void>();
