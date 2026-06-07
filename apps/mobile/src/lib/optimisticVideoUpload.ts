@@ -29,6 +29,7 @@ import {
   mapCompressionToVisibleProgress,
   mapPublishToVisibleProgress,
 } from "@/src/lib/videoUploadProgress";
+import type { UploadProgressSmoothingMeta } from "@/src/lib/videoUploadProgressSmoothing";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import {
@@ -48,13 +49,22 @@ import {
 
 export type MediaVideoUploadStatus =
   | "preparing"
+  | "optimizing"
   | "uploading"
+  | "finalizing"
   | "processing"
   | "failed"
   | "done"
   | "paused"
   | "ready"
   | "posted_refreshing";
+
+export type MediaVideoUploadProgressMeta = {
+  realProgress: number;
+  chunkCompleted?: number;
+  chunkTotal?: number;
+  partUploading?: boolean;
+};
 
 export type MediaVideoUploadJob = {
   jobId?: string;
@@ -78,7 +88,11 @@ export type MediaVideoUploadResult = {
 };
 
 export type MediaVideoUploadCallbacks = {
-  onProgress?: (uploadProgress: number, uploadStatus?: MediaVideoUploadStatus) => void;
+  onProgress?: (
+    uploadProgress: number,
+    uploadStatus?: MediaVideoUploadStatus,
+    meta?: MediaVideoUploadProgressMeta
+  ) => void;
   onSuccess?: (result: MediaVideoUploadResult) => void;
   onError?: (message: string) => void;
 };
@@ -119,11 +133,37 @@ function jobInflightKey(jobId: string) {
 
 function mapPhaseToUploadStatus(phase: PersistedMediaUploadJob["phase"]): MediaVideoUploadStatus {
   if (phase === "preparing") return "preparing";
+  if (phase === "optimizing") return "optimizing";
+  if (phase === "uploading") return "uploading";
+  if (phase === "finalizing") return "finalizing";
   if (phase === "paused") return "paused";
-  if (phase === "processing") return "processing";
+  if (phase === "processing") return "finalizing";
   if (phase === "ready") return "ready";
   if (phase === "failed") return "failed";
   return "uploading";
+}
+
+function buildProgressMeta(
+  job: PersistedMediaUploadJob,
+  override?: UploadProgressSmoothingMeta
+): MediaVideoUploadProgressMeta {
+  return {
+    realProgress: Math.max(1, Math.round(job.uploadProgress || 1)),
+    chunkCompleted:
+      override?.chunkCompleted ?? job.uploadedChunkIndexes?.length ?? undefined,
+    chunkTotal: override?.chunkTotal ?? job.totalChunks ?? undefined,
+    partUploading: override?.partUploading,
+  };
+}
+
+function emitUploadProgress(
+  job: PersistedMediaUploadJob,
+  callbacks: MediaVideoUploadCallbacks | undefined,
+  override?: UploadProgressSmoothingMeta
+) {
+  const meta = buildProgressMeta(job, override);
+  if (meta.realProgress <= 0) return;
+  callbacks?.onProgress?.(meta.realProgress, mapPhaseToUploadStatus(job.phase), meta);
 }
 
 function invokeUploadSuccess(callbacks: MediaVideoUploadCallbacks, result: MediaVideoUploadResult) {
@@ -179,16 +219,14 @@ async function completePublishedUploadJob(
 async function markJobPatch(
   jobId: string,
   patch: Partial<PersistedMediaUploadJob>,
-  callbacks?: MediaVideoUploadCallbacks
+  callbacks?: MediaVideoUploadCallbacks,
+  progressMeta?: UploadProgressSmoothingMeta
 ) {
   const updated = await patchMediaUploadJob(jobId, patch);
   if (!updated) return null;
 
   if (typeof patch.uploadProgress === "number" || patch.phase) {
-    callbacks?.onProgress?.(
-      updated.uploadProgress,
-      mapPhaseToUploadStatus(updated.phase)
-    );
+    emitUploadProgress(updated, callbacks, progressMeta);
   }
 
   return updated;
@@ -378,7 +416,7 @@ function shouldResumeMediaUploadJob(job: PersistedMediaUploadJob) {
   if (String(job.backendFeedId || "").trim()) return false;
   if (isMultipartBackendNotDeployedJob(job)) return false;
   if (job.phase === "paused") return true;
-  if (job.phase === "preparing" || job.phase === "uploading") {
+  if (job.phase === "preparing" || job.phase === "optimizing" || job.phase === "uploading") {
     return !inflight.has(jobInflightKey(job.jobId));
   }
   if (isRetryableFailedMediaUploadJob(job)) return true;
@@ -408,11 +446,7 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
   const resumingChunkUpload = Boolean(existingChunkSessionBeforeCompress);
 
   if (!resumingChunkUpload) {
-    await markJobPatch(
-      jobId,
-      { phase: "preparing", uploadProgress: mapCompressionToVisibleProgress(0), error: "" },
-      callbacks
-    );
+    await markJobPatch(jobId, { phase: "preparing", uploadProgress: 1, error: "" }, callbacks);
   }
 
   const compressed = await compressVideoForUpload(job.fileUri, {
@@ -420,10 +454,11 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     onCompressProgress: resumingChunkUpload
       ? undefined
       : (pct) => {
+          if (pct <= 0) return;
           void markJobPatch(
             jobId,
             {
-              phase: "preparing",
+              phase: "optimizing",
               uploadProgress: mapCompressionToVisibleProgress(pct),
             },
             callbacks
@@ -492,13 +527,20 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
         phase: "uploading",
         error: "",
       },
-      callbacks
+      callbacks,
+      {
+        chunkCompleted: existingChunkSession.completedParts.length,
+        chunkTotal: existingChunkSession.totalParts,
+        partUploading:
+          existingChunkSession.completedParts.length < existingChunkSession.totalParts,
+      }
     );
   } else {
     await markJobPatch(
       jobId,
       { phase: "uploading", uploadProgress: mapChunkToVisibleProgress(0), error: "" },
-      callbacks
+      callbacks,
+      { chunkCompleted: 0, partUploading: true }
     );
   }
 
@@ -510,11 +552,22 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     fileSize,
     headers: uploadHeaders,
     existingSession: existingChunkSession,
-    onProgress: (pct) => {
+    onProgress: (pct, meta) => {
       void markJobPatch(
         jobId,
-        { uploadProgress: mapChunkToVisibleProgress(pct), phase: "uploading" },
-        callbacks
+        {
+          uploadProgress: mapChunkToVisibleProgress(pct),
+          phase: "uploading",
+          totalChunks: meta?.totalParts,
+        },
+        callbacks,
+        meta
+          ? {
+              chunkCompleted: meta.completedParts,
+              chunkTotal: meta.totalParts,
+              partUploading: meta.partUploading,
+            }
+          : undefined
       );
     },
   });
@@ -663,7 +716,7 @@ async function runMediaVideoUpload(
       jobId,
       {
         uploadProgress: mapPublishToVisibleProgress(25),
-        phase: "processing",
+        phase: "finalizing",
         videoUrl: uploadedVideoUrl,
         posterUri: usingBrandedPoster ? undefined : publishPosterUri || undefined,
         mediaStatus: "processing",
@@ -936,7 +989,10 @@ export async function retryMediaUploadJob(jobId: string, opts?: { manual?: boole
   }
   if (stored.phase === "processing" || stored.phase === "ready") return false;
   if (
-    (stored.phase === "preparing" || stored.phase === "uploading") &&
+    (stored.phase === "preparing" ||
+      stored.phase === "optimizing" ||
+      stored.phase === "uploading" ||
+      stored.phase === "finalizing") &&
     inflight.has(jobInflightKey(jobId))
   ) {
     return false;
@@ -959,7 +1015,12 @@ export async function retryMediaUploadJob(jobId: string, opts?: { manual?: boole
     return false;
   }
 
-  if (stored.phase === "uploading" || stored.phase === "preparing") {
+  if (
+    stored.phase === "uploading" ||
+    stored.phase === "preparing" ||
+    stored.phase === "optimizing" ||
+    stored.phase === "finalizing"
+  ) {
     if (isMultipartBackendNotDeployedJob(stored) && !opts?.manual) {
       console.log("KRISTO_MEDIA_UPLOAD_AUTO_RESUME_SKIP", {
         jobId,
@@ -1046,7 +1107,9 @@ export async function resumePausedMediaUploadJobs(reason = "manual") {
       job.phase === "failed" ||
       job.phase === "paused" ||
       job.phase === "preparing" ||
-      job.phase === "uploading"
+      job.phase === "optimizing" ||
+      job.phase === "uploading" ||
+      job.phase === "finalizing"
     ) {
       await patchMediaUploadJob(job.jobId, {
         phase: "processing",

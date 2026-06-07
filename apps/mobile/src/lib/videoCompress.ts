@@ -39,9 +39,10 @@ function reportCompressProgress(
   lastLogged?: { value: number }
 ) {
   const rounded = Math.max(0, Math.min(100, Math.round(pct)));
+  if (rounded <= 0) return;
+
   onCompressProgress?.(rounded);
   const shouldLog =
-    rounded === 0 ||
     rounded === 100 ||
     lastLogged === undefined ||
     Math.abs(rounded - lastLogged.value) >= 5;
@@ -308,7 +309,6 @@ export async function compressVideoForUpload(
     });
 
     const compressLogState = { value: -1 };
-    reportCompressProgress(opts?.onCompressProgress, 0, compressLogState);
 
     const compressedUri = await Video.compress(
       cleanUri,

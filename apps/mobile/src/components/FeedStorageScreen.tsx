@@ -28,6 +28,7 @@ import {
 } from "@/src/lib/churchActivityPosts";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { FeedVideoPosterImage } from "@/src/components/homeFeed/VideoPostFallbackPoster";
+import { useSmoothedJobUploadProgress } from "@/src/hooks/useSmoothedJobUploadProgress";
 import {
   canDeleteStoragePosts,
   canPreviewStoragePost,
@@ -332,33 +333,36 @@ function MediaUploadJobCard({
 }) {
   const phase = job.phase;
   const multipartBlocked = isMultipartBackendNotDeployedJob(job);
+  const smoothed = useSmoothedJobUploadProgress(job);
   const progress =
     phase === "processing" || phase === "ready"
       ? 100
-      : Math.max(
-          phase === "preparing" || phase === "uploading" || phase === "paused" ? 1 : 0,
-          Math.min(100, Math.round(job.uploadProgress || 0))
-        );
+      : phase === "paused"
+        ? Math.max(1, Math.round(job.pausedAtProgress ?? job.uploadProgress ?? 1))
+        : smoothed.displayedPercent;
 
   const statusLabel =
-    phase === "preparing"
-      ? `Preparing video… ${progress}%`
-      : phase === "uploading"
-        ? `Uploading ${progress}%`
-        : phase === "paused"
-          ? `Paused at ${Math.round(job.pausedAtProgress ?? progress)}%`
-          : phase === "processing"
-            ? "Processing..."
-            : phase === "ready"
-              ? "Ready"
-              : phase === "failed"
-                ? "Failed"
-                : "Uploading";
+    phase === "paused"
+      ? `Paused at ${Math.round(job.pausedAtProgress ?? progress)}%`
+      : phase === "processing" || phase === "finalizing"
+        ? `${smoothed.statusLabel} ${progress}%`
+        : phase === "ready"
+          ? "Ready"
+          : phase === "failed"
+            ? "Failed"
+            : `${smoothed.statusLabel} ${progress}%`;
 
-  const showProgressTrack = phase === "preparing" || phase === "uploading" || phase === "paused";
+  const showProgressTrack =
+    phase === "preparing" ||
+    phase === "optimizing" ||
+    phase === "uploading" ||
+    phase === "finalizing" ||
+    phase === "paused";
   const showSpinner =
     phase === "preparing" ||
+    phase === "optimizing" ||
     phase === "uploading" ||
+    phase === "finalizing" ||
     phase === "processing" ||
     (phase === "paused" && !multipartBlocked);
 

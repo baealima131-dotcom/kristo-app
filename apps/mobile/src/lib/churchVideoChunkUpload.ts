@@ -337,6 +337,12 @@ async function completeMultipartSessionWithRetry(params: {
   throw new Error("Multipart complete failed after retry.");
 }
 
+export type ChunkUploadProgressMeta = {
+  completedParts: number;
+  totalParts: number;
+  partUploading?: boolean;
+};
+
 export async function uploadVideoWithChunkSession(params: {
   sessionId: string;
   fileUri: string;
@@ -345,7 +351,7 @@ export async function uploadVideoWithChunkSession(params: {
   fileSize: number;
   headers: HeadersRec;
   existingSession?: PersistedChunkUploadSession | null;
-  onProgress?: (percent: number) => void;
+  onProgress?: (percent: number, meta?: ChunkUploadProgressMeta) => void;
   timeoutMs?: number;
 }): Promise<SignedMediaUploadSession & { resumableMode: "chunk"; sessionId: string }> {
   const timeoutMs = params.timeoutMs ?? UPLOAD_PART_TIMEOUT_MS;
@@ -386,7 +392,24 @@ export async function uploadVideoWithChunkSession(params: {
       totalParts: session.totalParts,
       chunkSize: session.chunkSize,
     });
+
+    params.onProgress?.(chunkProgress(0, session.totalParts), {
+      completedParts: 0,
+      totalParts: session.totalParts,
+      partUploading: true,
+    });
   }
+
+  const emitChunkProgress = (
+    completedParts: number,
+    partUploading: boolean
+  ) => {
+    params.onProgress?.(chunkProgress(completedParts, session.totalParts), {
+      completedParts,
+      totalParts: session.totalParts,
+      partUploading,
+    });
+  };
 
   const completedMap = new Map<number, string>(
     (session.completedParts || []).map((part) => [part.partNumber, part.etag])
@@ -394,9 +417,11 @@ export async function uploadVideoWithChunkSession(params: {
 
   for (let partNumber = 1; partNumber <= session.totalParts; partNumber += 1) {
     if (completedMap.has(partNumber)) {
-      params.onProgress?.(chunkProgress(completedMap.size, session.totalParts));
+      emitChunkProgress(completedMap.size, false);
       continue;
     }
+
+    emitChunkProgress(completedMap.size, true);
 
     const start = (partNumber - 1) * session.chunkSize;
     const remaining = Math.max(0, session.fileSize - start);
@@ -440,7 +465,7 @@ export async function uploadVideoWithChunkSession(params: {
       totalParts: session.totalParts,
     });
 
-    params.onProgress?.(chunkProgress(session.completedParts.length, session.totalParts));
+    emitChunkProgress(session.completedParts.length, false);
   }
 
   const completed = await completeMultipartSessionWithRetry({

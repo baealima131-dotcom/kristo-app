@@ -3,7 +3,9 @@ import { normalizeMediaStatus } from "@/src/lib/mediaStatus";
 
 export type MediaUploadJobPhase =
   | "preparing"
+  | "optimizing"
   | "uploading"
+  | "finalizing"
   | "paused"
   | "processing"
   | "ready"
@@ -304,7 +306,9 @@ export function filterMediaStorageUploadJobs(
           String(job.backendFeedId || "").trim() ||
           job.phase === "processing" ||
           job.phase === "preparing" ||
-          job.phase === "uploading"
+          job.phase === "optimizing" ||
+          job.phase === "uploading" ||
+          job.phase === "finalizing"
       )
       .map((job) => mediaUploadJobSignature(job))
   );

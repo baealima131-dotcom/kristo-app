@@ -36,7 +36,8 @@ import {
 import { apiGet, apiPost, getApiBase } from "../../../src/lib/kristoApi";
 import { fileNameFromUri } from "../../../src/lib/churchVideoUpload";
 import { generateLocalVideoPosterUri } from "../../../src/lib/videoPoster";
-import { startMediaVideoUpload, type MediaVideoUploadStatus } from "../../../src/lib/optimisticVideoUpload";
+import { startMediaVideoUpload } from "../../../src/lib/optimisticVideoUpload";
+import { useSmoothedVideoUploadProgress } from "../../../src/hooks/useSmoothedVideoUploadProgress";
 import { getKristoHeaders } from "../../../src/lib/kristoHeaders";
 import { sendAssignmentCards } from "../../../src/lib/messagesStore";
 import {
@@ -1071,8 +1072,7 @@ export default function MediaStudioScreen() {
   const [videoPostDetailsOpen, setVideoPostDetailsOpen] = useState(false);
   const [pendingDetailsScroll, setPendingDetailsScroll] = useState(false);
   const [videoPostUploading, setVideoPostUploading] = useState(false);
-  const [videoPostUploadPercent, setVideoPostUploadPercent] = useState(0);
-  const [videoPostUploadStatus, setVideoPostUploadStatus] = useState<MediaVideoUploadStatus | "idle">("idle");
+  const smoothedVideoUpload = useSmoothedVideoUploadProgress();
   const [videoPreparing, setVideoPreparing] = useState(false);
   const [videoPreparePercent, setVideoPreparePercent] = useState(0);
 
@@ -1717,8 +1717,7 @@ export default function MediaStudioScreen() {
     });
 
     setVideoPostUploading(true);
-    setVideoPostUploadPercent(1);
-    setVideoPostUploadStatus("preparing");
+    smoothedVideoUpload.start();
 
     startMediaVideoUpload(
       {
@@ -1733,23 +1732,15 @@ export default function MediaStudioScreen() {
         ...(videoPostDurationMs > 0 ? { durationMs: videoPostDurationMs } : {}),
       },
       {
-        onProgress: (uploadProgress, uploadStatus) => {
-          const status = uploadStatus || "uploading";
-          setVideoPostUploadStatus(status);
-          if (status === "processing" || status === "done") {
-            setVideoPostUploadPercent(100);
-            return;
-          }
-          setVideoPostUploadPercent(Math.max(1, Math.min(99, Math.round(uploadProgress))));
+        onProgress: (uploadProgress, uploadStatus, meta) => {
+          smoothedVideoUpload.ingest(uploadProgress, uploadStatus, meta);
         },
         onSuccess: ({ backendFeedId, videoUrl, posterUri, mediaStatus }) => {
-          setVideoPostUploadStatus("done");
-          setVideoPostUploadPercent(100);
+          smoothedVideoUpload.markComplete();
 
           const finishComposer = (refreshFailed = false) => {
             setVideoPostUploading(false);
-            setVideoPostUploadStatus("idle");
-            setVideoPostUploadPercent(0);
+            smoothedVideoUpload.stop();
             setVideoPostDetailsOpen(false);
             setVideoPostUri("");
             setVideoPostPosterUri("");
@@ -1804,14 +1795,13 @@ export default function MediaStudioScreen() {
                 message: String((error as any)?.message || error || "unknown"),
               });
               console.log("KRISTO_MEDIA_STORAGE_REFRESH_ERROR", error);
-              setVideoPostUploadStatus("posted_refreshing");
+              smoothedVideoUpload.ingest(100, "posted_refreshing");
               finishComposer(true);
             });
         },
         onError: (message) => {
           setVideoPostUploading(false);
-          setVideoPostUploadStatus("failed");
-          setVideoPostUploadPercent(0);
+          smoothedVideoUpload.stop();
           console.log("KRISTO_UPLOAD_STATUS_MARK_FAILED", { message, screen: "media-video-post" });
           console.log("KRISTO_MEDIA_VIDEO_UPLOAD_FAILED", { message });
           Alert.alert("Upload failed", message);
@@ -3160,20 +3150,12 @@ export default function MediaStudioScreen() {
                     <View style={s.videoSmartLoadingTop}>
                       <ActivityIndicator size="small" color="#F4C95D" />
                       <Text style={s.videoSmartLoadingTitle}>
-                        {videoPostUploadStatus === "preparing"
-                          ? "Preparing video…"
-                          : videoPostUploadStatus === "processing" ||
-                              videoPostUploadStatus === "done" ||
-                              videoPostUploadStatus === "posted_refreshing"
-                            ? "Processing…"
-                            : "Uploading video"}
+                        {smoothedVideoUpload.uploadStatus === "posted_refreshing"
+                          ? "Posted"
+                          : smoothedVideoUpload.statusLabel}
                       </Text>
                       <Text style={s.videoSmartLoadingPercent}>
-                        {videoPostUploadStatus === "processing" ||
-                        videoPostUploadStatus === "done" ||
-                        videoPostUploadStatus === "posted_refreshing"
-                          ? ""
-                          : `${Math.max(1, videoPostUploadPercent)}%`}
+                        {`${Math.max(1, smoothedVideoUpload.displayedPercent)}%`}
                       </Text>
                     </View>
 
@@ -3182,25 +3164,24 @@ export default function MediaStudioScreen() {
                         style={[
                           s.videoSmartProgressFill,
                           {
-                            width:
-                              videoPostUploadStatus === "processing" ||
-                              videoPostUploadStatus === "done" ||
-                              videoPostUploadStatus === "posted_refreshing"
-                                ? "100%"
-                                : `${Math.max(1, videoPostUploadPercent)}%`,
+                            width: `${Math.max(1, smoothedVideoUpload.displayedPercent)}%`,
                           },
                         ]}
                       />
                     </View>
 
                     <Text style={s.videoSmartLoadingText}>
-                      {videoPostUploadStatus === "posted_refreshing"
+                      {smoothedVideoUpload.uploadStatus === "posted_refreshing"
                         ? "Posted. Refreshing Media Storage…"
-                        : videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
+                        : smoothedVideoUpload.uploadStatus === "done" ||
+                            smoothedVideoUpload.uploadStatus === "finalizing" ||
+                            smoothedVideoUpload.uploadStatus === "processing"
                           ? "Publishing to Media Storage and preparing your Home Feed post."
-                          : videoPostUploadStatus === "preparing"
+                          : smoothedVideoUpload.uploadStatus === "preparing"
                             ? "Kristo is preparing your video for upload. Keep the app open."
-                            : "Keep Kristo open while your sermon uploads directly to video storage."}
+                            : smoothedVideoUpload.uploadStatus === "optimizing"
+                              ? "Kristo is optimizing your video for fast playback. Keep the app open."
+                              : "Keep Kristo open while your sermon uploads directly to video storage."}
                     </Text>
                   </View>
                 ) : videoPostUri ? (
@@ -3269,9 +3250,7 @@ export default function MediaStudioScreen() {
                 {videoPostUploading ? (
                   <>
                     <Text style={s.nextBtnPremiumText as any}>
-                      {videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
-                        ? "Processing…"
-                        : `Uploading ${videoPostUploadPercent}%`}
+                      {`${smoothedVideoUpload.statusLabel} ${Math.max(1, smoothedVideoUpload.displayedPercent)}%`}
                     </Text>
                     <ActivityIndicator color="#07111F" />
                   </>
