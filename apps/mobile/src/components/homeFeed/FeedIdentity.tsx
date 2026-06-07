@@ -76,7 +76,7 @@ export const FeedIdentity = memo(function FeedIdentity({ item, whenLabel }: Prop
             />
           ) : (
             <View style={[styles.avatarImage, styles.avatarFallback, { backgroundColor: accentFallbackBg }]}>
-              <Text style={[styles.avatarInitial, { color: accentSoft }]}>{letter}</Text>
+              <Text style={[styles.avatarInitial, { color: accentSoft }]}>{initial || "K"}</Text>
             </View>
           )}
         </View>
