@@ -1519,6 +1519,7 @@ export function resolveVideoUri(item: any) {
   return homeFeedMediaUrl(item?.videoUrl || "");
 }
 
+function homeFeedAvatarUriCandidates(item: any): string[] {
   return [
     item?.authorAvatarUri,
     item?.actorAvatarUri,
@@ -1554,14 +1555,100 @@ function postImageUriMatchesAvatarCandidates(candidate: string, avatarCandidates
   });
 }
 
+function isExplicitPostImageCandidate(row: any, candidate: string) {
+  const trimmed = String(candidate || "").trim();
+  if (!trimmed) return false;
+  const resolved = homeFeedMediaUrl(trimmed);
+  const keys = ["mediaUri", "imageUrl", "imageUri", "mediaUrl", "photoUrl"] as const;
+  const roots = [row, row?.payload].filter((entry) => entry && typeof entry === "object");
+
+  for (const root of roots) {
+    for (const key of keys) {
+      const value = String(root?.[key] || "").trim();
+      if (!value) continue;
+      if (value === trimmed || homeFeedMediaUrl(value) === resolved) return true;
+    }
+    if (Array.isArray(root?.images)) {
+      for (const value of root.images) {
+        const next = String(value || "").trim();
+        if (next && (next === trimmed || homeFeedMediaUrl(next) === resolved)) return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function resolveExplicitPostImageUri(row: any): string {
+  const mediaType = String(row?.mediaType || "").trim().toLowerCase();
+  const churchRoomPost = isChurchRoomMemberFeedPost(row);
+  if (mediaType === "video") return "";
+
+  const candidates = collectPostImageUriValues(row);
+  for (const raw of candidates) {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) continue;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(trimmed)) continue;
+    if (/\/profile-avatars\//i.test(trimmed)) continue;
+
+    const uri = homeFeedMediaUrl(trimmed);
+    if (!uri) continue;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(uri)) continue;
+
+    if (
+      mediaType === "image" ||
+      churchRoomPost ||
+      isExplicitPostImageCandidate(row, trimmed)
+    ) {
+      return uri;
+    }
+  }
+
+  return "";
+}
+
+export function logImagePostRenderDiag(item: any, resolvedImageUri: string, isVideo: boolean) {
+  const hasImageField = Boolean(
+    String(item?.imageUrl || item?.imageUri || item?.mediaUri || item?.mediaUrl || item?.photoUrl || "").trim() ||
+      (Array.isArray(item?.images) && item.images.length > 0) ||
+      (Array.isArray(item?.attachments) && item.attachments.length > 0)
+  );
+  const shouldLog =
+    isChurchRoomMemberFeedPost(item) ||
+    String(item?.mediaType || "").trim().toLowerCase() === "image" ||
+    hasImageField;
+
+  if (!shouldLog) return;
+
+  console.log("KRISTO_IMAGE_POST_RENDER_DIAG", {
+    id: String(item?.id || "").trim() || null,
+    kind: String(item?.kind || item?.source || "").trim() || null,
+    type: String(item?.type || "").trim() || null,
+    hasImageUrl: Boolean(String(item?.imageUrl || "").trim()),
+    imageUrl: String(item?.imageUrl || "").trim() || null,
+    imageUri: String(item?.imageUri || "").trim() || null,
+    mediaUrl: String(item?.mediaUrl || "").trim() || null,
+    photoUrl: String(item?.photoUrl || "").trim() || null,
+    attachmentsCount: Array.isArray(item?.attachments) ? item.attachments.length : 0,
+    imagesCount: Array.isArray(item?.images) ? item.images.length : 0,
+    resolvedImageUri: resolvedImageUri || null,
+    isVideo,
+  });
+}
+
 function postImageUriMatchesAvatar(item: any, candidate: string) {
+  if (isExplicitPostImageCandidate(item, candidate)) return false;
   return postImageUriMatchesAvatarCandidates(candidate, homeFeedAvatarUriCandidates(item));
 }
 
 export function resolvePostImageUri(item: any) {
   const row = normalizeHomeFeedApiRow(item);
+
+  const explicit = resolveExplicitPostImageUri(row);
+  if (explicit) return explicit;
+
   for (const raw of collectPostImageUriValues(row)) {
-    if (!isFeedPostImageUri(raw)) continue;
+    if (!isFeedPostImageUri(raw) && !isExplicitPostImageCandidate(row, raw)) continue;
     if (postImageUriMatchesAvatar(row, raw)) continue;
     const uri = homeFeedMediaUrl(raw);
     if (!uri) continue;

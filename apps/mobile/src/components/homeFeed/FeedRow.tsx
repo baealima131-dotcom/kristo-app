@@ -20,6 +20,7 @@ import {
   resolvePostTitle,
   resolvePosterUri,
   resolveVideoUri,
+  logImagePostRenderDiag,
   isValidVideoPosterUri,
   hasBrandedVideoPoster,
   hasHomeFeedVideoPoster,
@@ -137,10 +138,9 @@ export const FeedRow = memo(function FeedRow({
   const video = isVideoPost(item);
   const videoUri = useMemo(() => resolveVideoUri(item), [item]);
   const resolvedImageUri = useMemo(() => resolvePostImageUri(item), [item]);
-  const hasVideo = Boolean(videoUri);
-  const hasImage = Boolean(resolvedImageUri) && !video;
-  const willRenderImage = hasImage;
-  const churchRoomTextCard = churchRoomPost && !hasVideo && !hasImage;
+  const showVideoMedia = Boolean(video && videoUri);
+  const willRenderImage = Boolean(resolvedImageUri) && !showVideoMedia;
+  const churchRoomTextCard = churchRoomPost && !showVideoMedia && !willRenderImage;
   const posterUri = resolvePosterUri(item);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
   const mountVideoPlayer = Boolean(
@@ -152,49 +152,22 @@ export const FeedRow = memo(function FeedRow({
   const lastImageDiagKeyRef = useRef("");
 
   useEffect(() => {
-    const isTargetPost =
-      churchRoomPost || postAccent === "testimony" || postAccent === "announcement";
-    if (!isTargetPost) return;
-
-    const candidateFields = collectImageCandidateFields(item);
-    if (Object.keys(candidateFields).length === 0) return;
-
     const diagKey = [
       postId,
       resolvedImageUri,
-      hasImage ? 1 : 0,
       willRenderImage ? 1 : 0,
-      Object.keys(candidateFields).join(","),
+      showVideoMedia ? 1 : 0,
     ].join(":");
     if (diagKey === lastImageDiagKeyRef.current) return;
     lastImageDiagKeyRef.current = diagKey;
 
-    console.log("KRISTO_IMAGE_POST_DIAG", {
-      id: postId || null,
-      accent: postAccent,
-      source: String(item?.source || item?.kind || "").trim() || null,
-      mediaType: String(item?.mediaType || "").trim() || null,
-      candidateFields,
-      resolvedImageUri: resolvedImageUri || null,
-      hasImage,
-      willRenderImage,
-      churchRoomTextCard,
-    });
-  }, [
-    item,
-    postId,
-    postAccent,
-    churchRoomPost,
-    resolvedImageUri,
-    hasImage,
-    willRenderImage,
-    churchRoomTextCard,
-  ]);
+    logImagePostRenderDiag(item, resolvedImageUri, showVideoMedia);
+  }, [item, postId, resolvedImageUri, willRenderImage, showVideoMedia]);
 
   return (
     <View style={[styles.slide, { height }]}>
       <View style={styles.media}>
-        {video && videoUri ? (
+        {showVideoMedia ? (
           mountVideoPlayer ? (
             <SimpleFeedVideo
               key={`feed-video-${postId}`}
