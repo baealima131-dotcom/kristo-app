@@ -1,4 +1,5 @@
 import "react-native-gesture-handler";
+import "@/src/components/homeFeed/homeFeedRowsCache";
 
 import React, { useCallback, useLayoutEffect, useState } from "react";
 import { Slot } from "expo-router";

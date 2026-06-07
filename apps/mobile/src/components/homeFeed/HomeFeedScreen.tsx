@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   AppState,
@@ -31,6 +31,7 @@ import {
   getCachedHomeFeedBackendRows,
   syncHomeFeedLike,
 } from "./homeFeedApi";
+import { hydrateHomeFeedRowsCacheFromStorage } from "./homeFeedRowsCache";
 import {
   HOME_FEED_INITIAL_LIMIT,
   HOME_FEED_PAGE_SIZE,
@@ -101,10 +102,12 @@ export default function HomeFeedScreen() {
       source?: string;
     }>();
 
+  const hadCacheOnMountRef = useRef(getCachedHomeFeedBackendRows().length > 0);
+  const initialRenderSourceLoggedRef = useRef(false);
   const [backendRows, setBackendRows] = useState<any[]>(() => getCachedHomeFeedBackendRows());
   const [localTick, setLocalTick] = useState(0);
   const [loading, setLoading] = useState(
-    () => getCachedHomeFeedBackendRows().length === 0 && feedList().length === 0
+    () => !hadCacheOnMountRef.current && feedList().length === 0
   );
   const [activeIndex, setActiveIndex] = useState(0);
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
@@ -152,6 +155,21 @@ export default function HomeFeedScreen() {
   const homeFeedRenderPaused = isHomeFeedRenderPaused();
   const feedFocused = screenFocused && appActive && !homeFeedRenderPaused;
 
+  useLayoutEffect(() => {
+    let alive = true;
+    void (async () => {
+      const payload = await hydrateHomeFeedRowsCacheFromStorage();
+      if (!alive || !payload?.rows?.length) return;
+
+      hadCacheOnMountRef.current = true;
+      setBackendRows((prev) => (prev.length ? prev : payload.rows));
+      setLoading(false);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   useEffect(() => {
     if (!homeFeedRenderPaused) return;
     pauseAllHomeFeedVideos({ reason: "live-room-open" });
@@ -184,6 +202,7 @@ export default function HomeFeedScreen() {
     const hasVisibleRows =
       visibleRowCountRef.current > 0 ||
       backendRows.length > 0 ||
+      getCachedHomeFeedBackendRows().length > 0 ||
       feedList().length > 0;
     if (
       reason !== "page-prefetch" &&
@@ -489,6 +508,20 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     visibleRowCountRef.current = visibleData.length;
   }, [visibleData]);
+
+  useEffect(() => {
+    if (initialRenderSourceLoggedRef.current) return;
+    if (loading && visibleData.length === 0) return;
+
+    initialRenderSourceLoggedRef.current = true;
+    const source: "cache" | "api" | "empty" =
+      visibleData.length > 0
+        ? hadCacheOnMountRef.current
+          ? "cache"
+          : "api"
+        : "empty";
+    console.log("KRISTO_HOME_FEED_INITIAL_RENDER_SOURCE", { source });
+  }, [loading, visibleData.length]);
 
   useEffect(() => {
     prefetchSessionIdRef.current = beginHomeFeedPrefetchSession();

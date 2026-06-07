@@ -7,11 +7,23 @@ import { filterPhase1FeedRows, normalizeHomeFeedApiRow } from "./homeFeedUtils";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
 import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
+import { peekHomeFeedRowsCacheSync, saveHomeFeedRowsCache } from "./homeFeedRowsCache";
 
 let lastFetchedHomeFeedRows: any[] = [];
 
-/** Last successful API feed snapshot — used to paint Home Feed before refresh completes. */
+function commitHomeFeedBackendRows(rows: any[]) {
+  lastFetchedHomeFeedRows = rows;
+  void saveHomeFeedRowsCache(rows);
+  return rows;
+}
+
+/** Last successful feed snapshot — memory first, then persisted AsyncStorage cache. */
 export function getCachedHomeFeedBackendRows(): any[] {
+  if (lastFetchedHomeFeedRows.length) return lastFetchedHomeFeedRows;
+  const persisted = peekHomeFeedRowsCacheSync();
+  if (persisted.length) {
+    lastFetchedHomeFeedRows = persisted;
+  }
   return lastFetchedHomeFeedRows;
 }
 
@@ -21,10 +33,9 @@ export function getCachedHomeFeedBackendCount(): number {
 
 /** Merge incoming API rows into cache without dropping existing ids. */
 export function mergeCachedHomeFeedBackendRows(incoming: any[]): any[] {
-  if (!incoming.length) return lastFetchedHomeFeedRows;
-  const { merged } = stableMergeHomeFeedRows(lastFetchedHomeFeedRows, incoming);
-  lastFetchedHomeFeedRows = merged;
-  return merged;
+  if (!incoming.length) return getCachedHomeFeedBackendRows();
+  const { merged } = stableMergeHomeFeedRows(getCachedHomeFeedBackendRows(), incoming);
+  return commitHomeFeedBackendRows(merged);
 }
 
 function parseFeedRows(res: any): any[] {
@@ -96,13 +107,11 @@ export async function fetchHomeFeedFromApi(
   }
 
   const rows = filterPhase1FeedRows(rawRows);
-  if (rows.length) {
-    if (lastFetchedHomeFeedRows.length) {
-      return mergeCachedHomeFeedBackendRows(rows);
-    }
-    lastFetchedHomeFeedRows = rows;
+  if (!rows.length) return getCachedHomeFeedBackendRows();
+  if (getCachedHomeFeedBackendRows().length) {
+    return mergeCachedHomeFeedBackendRows(rows);
   }
-  return rows;
+  return commitHomeFeedBackendRows(rows);
 }
 
 export function syncHomeFeedLike(postId: string, liked?: boolean) {
