@@ -2,7 +2,7 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
-import { pruneHomeFeedBackendRowsNotInSnapshot } from "./homeFeedPagination";
+import { homeFeedRowKey, pruneHomeFeedBackendRowsNotInSnapshot } from "./homeFeedPagination";
 import { filterPhase1FeedRows, normalizeHomeFeedApiRow } from "./homeFeedUtils";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
@@ -11,6 +11,9 @@ import {
   peekHomeFeedRowsCacheSync,
   saveHomeFeedRowsCache,
   removeHomeFeedPostFromRowsCache,
+  setBackendSnapshotRowIds,
+  collectRemovedHomeFeedCacheIds,
+  logHomeFeedCachePruneDeleted,
 } from "./homeFeedRowsCache";
 
 let lastFetchedHomeFeedRows: any[] = [];
@@ -36,11 +39,32 @@ function homeFeedRowMatchesPostId(row: any, postId: string): boolean {
   return baseFeedId(rowId) === baseFeedId(target);
 }
 
-function commitHomeFeedBackendRows(rows: any[]) {
+async function commitHomeFeedBackendRows(rows: any[], snapshotRowIds?: string[]) {
   const active = filterActiveHomeFeedRows(rows);
+  const snapshotIds = (snapshotRowIds || active.map((row) => homeFeedRowKey(row)).filter(Boolean))
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  if (snapshotIds.length) {
+    setBackendSnapshotRowIds(snapshotIds);
+  }
   lastFetchedHomeFeedRows = active;
-  void saveHomeFeedRowsCache(active);
+  await saveHomeFeedRowsCache(active, undefined, snapshotIds);
   return active;
+}
+
+async function reconcileHomeFeedBackendCacheWithSnapshot(snapshot: any[]) {
+  const activeSnapshot = filterActiveHomeFeedRows(snapshot);
+  const existing = getCachedHomeFeedBackendRows();
+  const before = existing.length;
+  const removedIds = collectRemovedHomeFeedCacheIds(existing, activeSnapshot);
+  const reconciled = pruneHomeFeedBackendRowsNotInSnapshot(existing, activeSnapshot);
+  const snapshotRowIds = activeSnapshot.map((row) => homeFeedRowKey(row)).filter(Boolean);
+
+  if (removedIds.length > 0 || before > reconciled.length) {
+    logHomeFeedCachePruneDeleted(before, reconciled.length, removedIds);
+  }
+
+  return commitHomeFeedBackendRows(reconciled, snapshotRowIds);
 }
 
 /** Last successful feed snapshot — memory first, then persisted AsyncStorage cache. */
@@ -65,19 +89,17 @@ export async function persistHomeFeedBackendRowsSnapshot(maxRows: number, userId
   if (!merged.length || maxRows <= 0) return 0;
   const snapshot = merged.slice(0, maxRows);
   lastFetchedHomeFeedRows = snapshot;
-  await saveHomeFeedRowsCache(snapshot, userId);
+  await saveHomeFeedRowsCache(
+    snapshot,
+    userId,
+    snapshot.map((row) => homeFeedRowKey(row)).filter(Boolean)
+  );
   return snapshot.length;
 }
 
 /** Merge incoming API rows into cache and drop rows the snapshot no longer includes. */
-export function mergeCachedHomeFeedBackendRows(incoming: any[]): any[] {
-  const activeIncoming = filterActiveHomeFeedRows(incoming);
-  if (!activeIncoming.length) return getCachedHomeFeedBackendRows();
-  const pruned = pruneHomeFeedBackendRowsNotInSnapshot(
-    getCachedHomeFeedBackendRows(),
-    activeIncoming
-  );
-  return commitHomeFeedBackendRows(pruned);
+export async function mergeCachedHomeFeedBackendRows(incoming: any[]) {
+  return reconcileHomeFeedBackendCacheWithSnapshot(incoming);
 }
 
 /** Remove a deleted post from in-memory backend cache + persisted row cache. */
@@ -92,6 +114,13 @@ export async function purgeHomeFeedPostFromBackendCache(postId: string): Promise
   const memoryPurged = before > lastFetchedHomeFeedRows.length;
 
   const cachePurged = await removeHomeFeedPostFromRowsCache(target);
+  if (memoryPurged) {
+    await saveHomeFeedRowsCache(
+      lastFetchedHomeFeedRows,
+      undefined,
+      lastFetchedHomeFeedRows.map((row) => homeFeedRowKey(row)).filter(Boolean)
+    );
+  }
   return memoryPurged || cachePurged;
 }
 
@@ -110,10 +139,10 @@ export async function fetchHomeFeedFromApi(
   const viewerUserId = String(session?.userId || "").trim();
   const viewerChurchId = String(session?.churchId || "").trim();
   const force = opts?.force === true;
-  const reconcile = opts?.reconcile === true || reason.includes("post-delete");
   const bypassThrottle =
     force ||
-    reconcile ||
+    opts?.reconcile === true ||
+    reason.includes("post-delete") ||
     reason === "focus" ||
     reason === "startup-prewarm" ||
     reason.startsWith("schedule-dirty") ||
@@ -168,14 +197,7 @@ export async function fetchHomeFeedFromApi(
 
   const rows = filterPhase1FeedRows(rawRows);
   if (!rows.length) return getCachedHomeFeedBackendRows();
-  if (reconcile) {
-    const pruned = pruneHomeFeedBackendRowsNotInSnapshot(getCachedHomeFeedBackendRows(), rows);
-    return commitHomeFeedBackendRows(pruned);
-  }
-  if (getCachedHomeFeedBackendRows().length) {
-    return mergeCachedHomeFeedBackendRows(rows);
-  }
-  return commitHomeFeedBackendRows(rows);
+  return reconcileHomeFeedBackendCacheWithSnapshot(rows);
 }
 
 export function syncHomeFeedLike(postId: string, liked?: boolean) {

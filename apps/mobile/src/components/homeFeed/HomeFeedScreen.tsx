@@ -37,6 +37,7 @@ import { hydrateHomeFeedRowsCacheFromStorage } from "./homeFeedRowsCache";
 import {
   HOME_FEED_INITIAL_LIMIT,
   HOME_FEED_PAGE_SIZE,
+  homeFeedRowKey,
   initialHomeFeedVisibleWindowSize,
   nextHomeFeedVisibleWindowSize,
   shouldPrefetchHomeFeedPage,
@@ -163,7 +164,17 @@ export default function HomeFeedScreen() {
       if (!alive || !payload?.rows?.length) return;
 
       hadCacheOnMountRef.current = true;
-      setBackendRows((prev) => (prev.length ? prev : payload.rows));
+      setBackendRows((prev) => {
+        const hydrated = payload.rows;
+        if (!hydrated.length) return prev;
+        if (!prev.length) return hydrated;
+        const hydratedIds = new Set(hydrated.map((row) => homeFeedRowKey(row)).filter(Boolean));
+        const filtered = prev.filter((row) => {
+          const id = homeFeedRowKey(row);
+          return Boolean(id && hydratedIds.has(id));
+        });
+        return filtered.length ? filtered : hydrated;
+      });
       setLoading(false);
     })();
     return () => {
@@ -215,23 +226,18 @@ export default function HomeFeedScreen() {
     try {
       const rows = await fetchHomeFeedFromApi(reason, {
         force,
-        reconcile: reason.includes("post-delete"),
+        reconcile: true,
       });
       if (rows.length) {
-        setBackendRows((prev) => {
-          if (reason.includes("post-delete")) {
-            return rows;
-          }
-          const result = stableMergeHomeFeedRows(prev, rows);
-          if (result.appended > 0 || result.before !== result.after) {
-            console.log("KRISTO_HOME_FEED_STABLE_MERGE", {
-              before: result.before,
-              incoming: result.incoming,
-              after: result.after,
-              appended: result.appended,
-            });
-          }
-          return result.merged;
+        setBackendRows(rows);
+        setStableDisplayRows((prev) => {
+          const rowIds = new Set(rows.map((row) => homeFeedRowKey(row)).filter(Boolean));
+          const next = prev.filter((row) => {
+            const id = homeFeedRowKey(row);
+            return Boolean(id && rowIds.has(id));
+          });
+          stableDisplayRowsRef.current = next;
+          return next.length ? next : rows;
         });
       }
       setOptimisticLikes((prev) => {
