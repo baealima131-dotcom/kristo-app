@@ -1,13 +1,27 @@
-import React, { memo, useEffect, useState } from "react";
+import React, { isValidElement, memo, useEffect, useState } from "react";
 import { Image, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import type { HomeFeedPostAccent } from "./homeFeedUtils";
 
 type Props = {
   imageUri: string;
   fallback?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
+  accent?: HomeFeedPostAccent;
 };
+
+function isTestimonyOrAnnouncementAccent(accent?: HomeFeedPostAccent | null) {
+  return accent === "testimony" || accent === "announcement";
+}
+
+function resolveAccentFromFallback(fallback: React.ReactNode): HomeFeedPostAccent | undefined {
+  if (!isValidElement(fallback)) return undefined;
+  const accent = (fallback.props as { accent?: HomeFeedPostAccent }).accent;
+  return accent === "testimony" || accent === "announcement" || accent === "default"
+    ? accent
+    : undefined;
+}
 
 function ImagePostFallback({
   fallback,
@@ -39,10 +53,14 @@ export const ImagePostCard = memo(function ImagePostCard({
   imageUri,
   fallback = null,
   style,
+  accent: accentProp,
 }: Props) {
   const uri = String(imageUri || "").trim();
   const [failedUri, setFailedUri] = useState<string | null>(null);
   const loadFailed = failedUri !== null && failedUri === uri;
+  const accent = accentProp ?? resolveAccentFromFallback(fallback);
+  const useChurchRoomContain = isTestimonyOrAnnouncementAccent(accent);
+  const imageResizeMode = useChurchRoomContain ? "contain" : "cover";
 
   useEffect(() => {
     setFailedUri(null);
@@ -68,7 +86,7 @@ export const ImagePostCard = memo(function ImagePostCard({
         key={uri}
         source={{ uri }}
         style={StyleSheet.absoluteFillObject}
-        resizeMode="cover"
+        resizeMode={imageResizeMode}
         onLoad={() => {
           console.log("KRISTO_IMAGE_POST_LOAD_SUCCESS", { uri });
         }}
