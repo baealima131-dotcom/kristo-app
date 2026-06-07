@@ -1,4 +1,4 @@
-import React, { memo, useState } from "react";
+import React, { memo, useEffect, useState } from "react";
 import { Image, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 
 type Props = {
@@ -19,6 +19,11 @@ export const ImagePostCard = memo(function ImagePostCard({
   const [failedUri, setFailedUri] = useState<string | null>(null);
   const loadFailed = failedUri !== null && failedUri === uri;
 
+  useEffect(() => {
+    if (!uri) return;
+    console.log("KRISTO_IMAGE_POST_LOAD_START", { uri });
+  }, [uri]);
+
   if (!uri || loadFailed) {
     return fallback ? <View style={[styles.wrap, style]}>{fallback}</View> : null;
   }
@@ -30,7 +35,13 @@ export const ImagePostCard = memo(function ImagePostCard({
         source={{ uri }}
         style={StyleSheet.absoluteFillObject}
         resizeMode="cover"
-        onError={() => setFailedUri(uri)}
+        onLoad={() => {
+          console.log("KRISTO_IMAGE_POST_LOAD_SUCCESS", { uri });
+        }}
+        onError={() => {
+          console.log("KRISTO_IMAGE_POST_LOAD_FAILED", { uri });
+          setFailedUri(uri);
+        }}
       />
     </View>
   );

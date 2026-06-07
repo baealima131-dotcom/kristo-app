@@ -1,4 +1,4 @@
-import React, { memo, useMemo } from "react";
+import React, { memo, useEffect, useMemo, useRef } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -27,6 +27,41 @@ import {
 } from "./homeFeedUtils";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
+
+const IMAGE_CANDIDATE_KEYS = [
+  "mediaUri",
+  "imageUrl",
+  "imageUri",
+  "mediaUrl",
+  "attachmentUrl",
+  "photoUri",
+  "uploadedMediaUri",
+  "coverImage",
+  "coverImageUrl",
+  "image",
+  "photo",
+] as const;
+
+function collectImageCandidateFields(item: any): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const key of IMAGE_CANDIDATE_KEYS) {
+    const value = String(item?.[key] || "").trim();
+    if (value) fields[key] = value;
+  }
+  if (Array.isArray(item?.images)) {
+    item.images.forEach((entry: unknown, index: number) => {
+      const value = String(entry || "").trim();
+      if (value) fields[`images[${index}]`] = value;
+    });
+  }
+  if (Array.isArray(item?.mediaUrls)) {
+    item.mediaUrls.forEach((entry: unknown, index: number) => {
+      const value = String(entry || "").trim();
+      if (value) fields[`mediaUrls[${index}]`] = value;
+    });
+  }
+  return fields;
+}
 
 type Props = {
   item: any;
@@ -94,6 +129,47 @@ export const FeedRow = memo(function FeedRow({
   const shareCount = Number(item?.shareCount || 0);
   const saveCount = Number(item?.saveCount || 0);
   const animateCopy = isActive && screenFocused;
+  const lastImageDiagKeyRef = useRef("");
+
+  useEffect(() => {
+    const isTargetPost =
+      churchRoomPost || postAccent === "testimony" || postAccent === "announcement";
+    if (!isTargetPost) return;
+
+    const candidateFields = collectImageCandidateFields(item);
+    if (Object.keys(candidateFields).length === 0) return;
+
+    const diagKey = [
+      postId,
+      resolvedImageUri,
+      hasImage ? 1 : 0,
+      willRenderImage ? 1 : 0,
+      Object.keys(candidateFields).join(","),
+    ].join(":");
+    if (diagKey === lastImageDiagKeyRef.current) return;
+    lastImageDiagKeyRef.current = diagKey;
+
+    console.log("KRISTO_IMAGE_POST_DIAG", {
+      id: postId || null,
+      accent: postAccent,
+      source: String(item?.source || item?.kind || "").trim() || null,
+      mediaType: String(item?.mediaType || "").trim() || null,
+      candidateFields,
+      resolvedImageUri: resolvedImageUri || null,
+      hasImage,
+      willRenderImage,
+      churchRoomTextCard,
+    });
+  }, [
+    item,
+    postId,
+    postAccent,
+    churchRoomPost,
+    resolvedImageUri,
+    hasImage,
+    willRenderImage,
+    churchRoomTextCard,
+  ]);
 
   return (
     <View style={[styles.slide, { height }]}>
