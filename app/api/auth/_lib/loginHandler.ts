@@ -110,10 +110,22 @@ export async function handleLogin(req: Request) {
     const sess = createSession(user.id);
     const kristoId = await ensureUserKristoId(user);
 
+    const sessionToken = issueSessionToken(user.id);
+    console.log("KRISTO_SIGNIN_RESPONSE_TOKEN", {
+      hasSessionToken: Boolean(String(sessionToken || "").trim()),
+    });
+    if (!String(sessionToken || "").trim()) {
+      console.error("KRISTO_SIGNIN_TOKEN_ISSUE_FAILED", { userId: user.id });
+      return NextResponse.json(
+        { ok: false, error: "Sign-in temporarily unavailable.", reason: "session_token_unavailable" },
+        { status: 503 }
+      );
+    }
+
     let res = NextResponse.json({
       ok: true,
       userId: user.id,
-      sessionToken: issueSessionToken(user.id),
+      sessionToken,
       kristoId,
       publicKristoId: kristoId,
       email: user.email || "",

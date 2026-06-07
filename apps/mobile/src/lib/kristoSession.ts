@@ -151,9 +151,14 @@ export async function loadSession(): Promise<KristoSession | null> {
       return null;
     }
 
+    const loadedSessionToken = String(parsed.sessionToken || "").trim();
+    console.log("KRISTO_SESSION_LOAD_TOKEN", {
+      hasSessionToken: Boolean(loadedSessionToken),
+    });
+
     const s: KristoSession = {
       userId,
-      sessionToken: String(parsed.sessionToken || ""),
+      sessionToken: loadedSessionToken,
       kristoId: String(parsed.kristoId || parsed.publicKristoId || parsed.secureId || ""),
       role,
       churchId,
@@ -207,8 +212,18 @@ export async function saveSession(s: KristoSession): Promise<void> {
   await clearLoggedOutFlag();
 
   const now = Date.now();
+  const existing = getSessionSync();
+  const sessionToken =
+    String(s.sessionToken || "").trim() ||
+    (existing?.userId === userId ? String(existing.sessionToken || "").trim() : "");
+
+  console.log("KRISTO_SESSION_SAVE_TOKEN", {
+    hasSessionToken: Boolean(sessionToken),
+  });
+
   const next: KristoSession = {
     ...s,
+    ...(sessionToken ? { sessionToken } : {}),
     createdAt: Number(s.createdAt || now),
     lastSeenAt: now,
     expiresAt: Number(s.expiresAt || (now + MOBILE_SESSION_MAX_MS)),

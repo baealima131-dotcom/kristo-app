@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect } from "react";
 import { useRouter, Href } from "expo-router";
 import { Keyboard, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { setSessionSync } from "@/src/lib/kristoSession";
 import { loadProfileDraft } from "@/src/lib/profileStore";
 import { loadChurchDraft } from "@/src/lib/churchStore";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
@@ -198,6 +199,22 @@ export default function LoginScreen() {
       }
 
       const sessionToken = String(data.sessionToken || "").trim();
+      console.log("KRISTO_LOGIN_SAVE_SESSION_TOKEN", {
+        hasSessionToken: Boolean(sessionToken),
+      });
+
+      if (!sessionToken) {
+        setErr("Sign-in failed: missing session credentials. Please try again.");
+        return;
+      }
+
+      // Prime in-memory session before profile fetch so headers resolve immediately.
+      setSessionSync({
+        userId: finalUserId,
+        sessionToken,
+        role: "Member",
+        churchId: "",
+      } as any);
 
       const profileRes: any = await apiGet("/api/auth/profile", {
         headers: getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "", sessionToken }),

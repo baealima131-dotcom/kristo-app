@@ -21,8 +21,18 @@ const DEV_FALLBACK_SECRET = "kristo-dev-session-secret-not-for-production";
 const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, matches mobile session
 
 export function getSessionSecret(): string {
-  const secret = String(process.env.KRISTO_SESSION_SECRET || "").trim();
-  if (secret) return secret;
+  const dedicated = String(process.env.KRISTO_SESSION_SECRET || "").trim();
+  if (dedicated) return dedicated;
+
+  // Production may already have KRISTO_OTP_SECRET or RESEND_API_KEY configured
+  // (same chain as OTP signing) before KRISTO_SESSION_SECRET is added explicitly.
+  const shared = String(
+    process.env.KRISTO_OTP_SECRET?.trim() ||
+      process.env.RESEND_API_KEY?.trim() ||
+      ""
+  ).trim();
+  if (shared) return shared;
+
   // In dev we fall back so local flows work; in prod we return "" which makes
   // verification fail closed (and we log loudly below).
   if (process.env.NODE_ENV !== "production") return DEV_FALLBACK_SECRET;

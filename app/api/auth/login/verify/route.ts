@@ -58,9 +58,21 @@ export async function POST(req: NextRequest) {
       kristoId: user?.kristoId,
     });
 
+    const sessionToken = issueSessionToken(v.userId);
+    console.log("KRISTO_SIGNIN_RESPONSE_TOKEN", {
+      hasSessionToken: Boolean(String(sessionToken || "").trim()),
+      scope: "login-verify-route",
+    });
+    if (!String(sessionToken || "").trim()) {
+      return NextResponse.json(
+        { ok: false, error: "Sign-in temporarily unavailable.", reason: "session_token_unavailable" },
+        { status: 503 }
+      );
+    }
+
     const res = NextResponse.json({
       ok: true,
-      sessionToken: issueSessionToken(v.userId),
+      sessionToken,
       session: {
         id: sess.id,
         userId: sess.userId,

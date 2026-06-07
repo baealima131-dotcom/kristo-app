@@ -78,10 +78,21 @@ export async function POST(req: Request) {
     if (need === "password" || need === "none") {
       const sess = createSession(user.id);
       await touchUser(user.id);
+      const sessionToken = issueSessionToken(user.id);
+      console.log("KRISTO_SIGNIN_RESPONSE_TOKEN", {
+        hasSessionToken: Boolean(String(sessionToken || "").trim()),
+        scope: "login-start-password",
+      });
+      if (!String(sessionToken || "").trim()) {
+        return NextResponse.json(
+          { ok: false, error: "Sign-in temporarily unavailable.", reason: "session_token_unavailable" },
+          { status: 503 }
+        );
+      }
       let res = NextResponse.json({
         ok: true,
         userId: user.id,
-        sessionToken: issueSessionToken(user.id),
+        sessionToken,
         mode: "password",
       });
       res = setSessionCookie(res, sess.id);
@@ -136,10 +147,21 @@ export async function POST(req: Request) {
     }
 
     const sess = createSession(v.userId);
+    const sessionToken = issueSessionToken(v.userId);
+    console.log("KRISTO_SIGNIN_RESPONSE_TOKEN", {
+      hasSessionToken: Boolean(String(sessionToken || "").trim()),
+      scope: "login-verify",
+    });
+    if (!String(sessionToken || "").trim()) {
+      return NextResponse.json(
+        { ok: false, error: "Sign-in temporarily unavailable.", reason: "session_token_unavailable" },
+        { status: 503 }
+      );
+    }
     let res = NextResponse.json({
       ok: true,
       userId: v.userId,
-      sessionToken: issueSessionToken(v.userId),
+      sessionToken,
     });
     res = setSessionCookie(res, sess.id);
     return res;
