@@ -9,10 +9,21 @@ import {
   HOME_FEED_PLAYER_WARM_AHEAD,
   HOME_FEED_PLAYER_WARM_BEHIND,
 } from "./homeFeedVideoWindow";
+import {
+  getFirstHomeFeedVideoPlaybackPlans,
+  logHomeFeedVideoQualityTrace,
+} from "@/src/lib/homeFeedVideoQuality";
+import {
+  logHomeFeedNetworkTrace,
+  markVideoHeadWarmed,
+  wasVideoHeadRecentlyWarmed,
+} from "@/src/lib/homeFeedNetwork";
 
 const MAX_VIDEO_CONCURRENCY = 2;
 const MAX_POSTER_CONCURRENCY = 2;
 const RANGE_BYTES = "bytes=0-65535";
+const FIRST_VIDEO_RANGE_BYTES = "bytes=0-393215";
+const STARTUP_PREWARM_VIDEO_MAX = 2;
 
 const STARTUP_COOLDOWN_MS = 3000;
 const INITIAL_VIDEO_WARM_MAX = 4;
@@ -154,6 +165,7 @@ function enqueuePosterWarm(posterUrl: string, sessionId: number) {
     return;
   }
   if (warmedPosterUrls.has(url)) {
+    logHomeFeedNetworkTrace({ event: "poster-skip-cached", posterUrl: url });
     return;
   }
   if (inflightPosterUrls.has(url) || pendingPosterUrls.includes(url)) {
@@ -183,13 +195,34 @@ function parseHeaderContentLength(headers: Headers): number | null {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-async function warmVideoUrlNetwork(videoUrl: string): Promise<VideoWarmNetworkResult> {
+async function warmVideoUrlNetwork(
+  videoUrl: string,
+  opts?: { rangeHeader?: string }
+): Promise<VideoWarmNetworkResult> {
   const url = String(videoUrl || "").trim();
+  const normalized = normalizeUrl(url);
   const startMs = Date.now();
+  const rangeHeader = opts?.rangeHeader || RANGE_BYTES;
+
+  if (wasVideoHeadRecentlyWarmed(normalized)) {
+    logHomeFeedNetworkTrace({
+      event: "video-head-skip-cached",
+      videoUrl: normalized,
+    });
+    return {
+      status: 200,
+      bytesRange: false,
+      ms: 0,
+      contentLength: null,
+      acceptRanges: null,
+      contentType: null,
+    };
+  }
 
   try {
     const head = await fetch(url, { method: "HEAD" });
     if (head.ok || head.status === 206) {
+      markVideoHeadWarmed(normalized);
       return {
         status: head.status,
         bytesRange: false,
@@ -203,8 +236,9 @@ async function warmVideoUrlNetwork(videoUrl: string): Promise<VideoWarmNetworkRe
 
   const range = await fetch(url, {
     method: "GET",
-    headers: { Range: RANGE_BYTES },
+    headers: { Range: rangeHeader },
   });
+  markVideoHeadWarmed(normalized);
   return {
     status: range.status,
     bytesRange: true,
@@ -386,7 +420,11 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
   );
   const targets = dedupeTargets(rawTargets).filter((t) => {
     const key = normalizeUrl(t.videoUrl);
-    return key && !warmedVideoUrls.has(key) && !inflightVideoUrls.has(key);
+    if (!key) return false;
+    if (wasVideoHeadRecentlyWarmed(key) || warmedVideoUrls.has(key) || inflightVideoUrls.has(key)) {
+      return false;
+    }
+    return true;
   });
 
   if (!targets.length) {
@@ -486,7 +524,7 @@ export async function warmHomeFeedStartupMedia(
   const concurrency = Math.max(1, Number(opts?.concurrency ?? MAX_VIDEO_CONCURRENCY));
 
   const posterUrls: string[] = [];
-  const videoUrls: string[] = [];
+  const startupPlans = getFirstHomeFeedVideoPlaybackPlans(rows, STARTUP_PREWARM_VIDEO_MAX);
 
   for (const row of rows) {
     if (!row || !isVideoPost(row)) continue;
@@ -503,19 +541,7 @@ export async function warmHomeFeedStartupMedia(
       }
     }
 
-    if (videoUrls.length < maxVideos) {
-      const videoUrl = normalizeUrl(resolveVideoUri(row));
-      if (
-        isNetworkVideoUrl(videoUrl) &&
-        !warmedVideoUrls.has(videoUrl) &&
-        !inflightVideoUrls.has(videoUrl) &&
-        !videoUrls.includes(videoUrl)
-      ) {
-        videoUrls.push(videoUrl);
-      }
-    }
-
-    if (posterUrls.length >= maxPosters && videoUrls.length >= maxVideos) break;
+    if (posterUrls.length >= maxPosters && startupPlans.length >= maxVideos) break;
   }
 
   await runWithConcurrency(posterUrls, concurrency, async (posterUrl) => {
@@ -531,18 +557,42 @@ export async function warmHomeFeedStartupMedia(
     }
   });
 
-  await runWithConcurrency(videoUrls, concurrency, async (videoUrl) => {
-    if (warmedVideoUrls.has(videoUrl) || inflightVideoUrls.has(videoUrl)) return;
-    inflightVideoUrls.add(videoUrl);
-    try {
-      await warmVideoUrlNetwork(videoUrl);
-      warmedVideoUrls.add(videoUrl);
-    } catch {
-      warmedVideoUrls.delete(videoUrl);
-    } finally {
-      inflightVideoUrls.delete(videoUrl);
+  let videoCount = 0;
+  for (let index = 0; index < Math.min(startupPlans.length, maxVideos); index += 1) {
+    const plan = startupPlans[index];
+    const target = normalizeUrl(plan.startupUri);
+    if (!isNetworkVideoUrl(target) || warmedVideoUrls.has(target) || inflightVideoUrls.has(target)) {
+      continue;
     }
-  });
 
-  return { posterCount: posterUrls.length, videoCount: videoUrls.length };
+    inflightVideoUrls.add(target);
+    try {
+      logHomeFeedVideoQualityTrace({
+        event: "prewarm-start",
+        postId: plan.postId,
+        selectedStartupUrl: target,
+        lowResVideoUrl: plan.lowResVideoUrl,
+        originalVideoUrl: plan.fullQualityUri,
+        hasLowRes: plan.hasLowRes,
+        rangeHeader: index === 0 ? FIRST_VIDEO_RANGE_BYTES : RANGE_BYTES,
+      });
+      await warmVideoUrlNetwork(target, {
+        rangeHeader: index === 0 ? FIRST_VIDEO_RANGE_BYTES : RANGE_BYTES,
+      });
+      warmedVideoUrls.add(target);
+      videoCount += 1;
+      logHomeFeedVideoQualityTrace({
+        event: "prewarm-done",
+        postId: plan.postId,
+        selectedStartupUrl: target,
+        prewarmHit: true,
+      });
+    } catch {
+      warmedVideoUrls.delete(target);
+    } finally {
+      inflightVideoUrls.delete(target);
+    }
+  }
+
+  return { posterCount: posterUrls.length, videoCount };
 }

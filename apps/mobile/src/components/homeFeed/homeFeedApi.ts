@@ -18,7 +18,17 @@ import {
   setBackendSnapshotRowIds,
   collectRemovedHomeFeedCacheIds,
   logHomeFeedCachePruneDeleted,
+  peekHomeFeedRowsCacheSavedAt,
 } from "./homeFeedRowsCache";
+import {
+  getHomeFeedFetchGeneration,
+  getHomeFeedFetchInflight,
+  logHomeFeedNetworkTrace,
+  noteHomeFeedFetchSuccess,
+  resolveHomeFeedRefreshMode,
+  setHomeFeedFetchInflight,
+  shouldHardRefreshHomeFeed,
+} from "@/src/lib/homeFeedNetwork";
 
 let lastFetchedHomeFeedRows: any[] = [];
 
@@ -282,72 +292,117 @@ export async function fetchHomeFeedFromApi(
   const viewerUserId = String(session?.userId || "").trim();
   const viewerChurchId = String(session?.churchId || "").trim();
   const force = opts?.force === true;
-  const bypassThrottle =
-    force ||
-    opts?.reconcile === true ||
-    reason.includes("post-delete") ||
-    reason === "focus" ||
-    reason === "startup-prewarm" ||
-    reason.startsWith("schedule-dirty") ||
-    reason.startsWith("slot-claim");
+  const hardRefresh = shouldHardRefreshHomeFeed(reason, force);
+  const refreshMode = resolveHomeFeedRefreshMode(reason, force);
+  const cachedRows = getCachedHomeFeedBackendRows();
+  const generationAtStart = getHomeFeedFetchGeneration();
 
-  const res: any = await apiGet(
-    `/api/church/feed?scope=global&_=${Date.now()}`,
-    {
-      headers: getKristoHeaders({
-        userId: viewerUserId,
-        role: (session?.role || "Member") as any,
-        churchId: viewerChurchId,
-      }),
-      cache: "no-store" as RequestCache,
-    },
-    {
-      screen: "HomeFeed",
-      throttleMs: bypassThrottle ? 0 : 8000,
-      dedupe: force ? false : undefined,
-    }
-  );
-
-  const rawRows = parseFeedRows(res);
-  const apiScheduleCount = rawRows.filter(
-    (row) =>
-      String(row?.scheduleType || "").includes("media-live-slots") ||
-      String(row?.source || "").includes("media-schedule")
-  ).length;
-
-  const crossChurchCount = rawRows.filter((row) => {
-    const itemCid = String(row?.churchId || "").trim();
-    return itemCid && viewerChurchId && itemCid !== viewerChurchId;
-  }).length;
-
-  console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
-    stage: "api_before_phase1_filter",
+  logHomeFeedNetworkTrace({
+    event: "request-evaluated",
     reason,
-    churchId: viewerChurchId,
-    scope: "global",
-    apiScheduleCount,
-    apiRowCount: rawRows.length,
-    crossChurchCount,
+    force,
+    hardRefresh,
+    refreshMode,
+    cachedRows: cachedRows.length,
+    savedAt: peekHomeFeedRowsCacheSavedAt(viewerUserId),
   });
 
-  if (crossChurchCount > 0) {
-    console.log("KRISTO_GLOBAL_FEED_CROSS_CHURCH_INCLUDED", {
-      viewerChurchId,
-      count: crossChurchCount,
-      source: "home_feed_api",
+  if (refreshMode === "skip") {
+    logHomeFeedNetworkTrace({
+      event: "cache-skip",
+      reason,
+      cachedRows: cachedRows.length,
     });
+    return cachedRows;
   }
 
-  const rows = filterPhase1FeedRows(rawRows);
-  for (const row of rawRows) {
-    if (!isHomeFeedMediaScheduleBackendRow(row)) continue;
-    const kept = rows.some((item) => homeFeedRowKey(item) === homeFeedRowKey(row));
-    if (!kept) {
-      logScheduleRowSlotsVisibility(row, "api_phase1_filter", false, "removed_by_filterPhase1FeedRows");
-    }
+  const inflight = getHomeFeedFetchInflight();
+  if (inflight) {
+    logHomeFeedNetworkTrace({ event: "dedupe-join", reason });
+    return inflight;
   }
-  if (!rows.length) return getCachedHomeFeedBackendRows();
-  return reconcileHomeFeedBackendCacheWithSnapshot(rows);
+
+  const fetchPromise = (async () => {
+    logHomeFeedNetworkTrace({ event: "api-request", reason, refreshMode });
+
+    const res: any = await apiGet(
+      `/api/church/feed?scope=global&_=${Date.now()}`,
+      {
+        headers: getKristoHeaders({
+          userId: viewerUserId,
+          role: (session?.role || "Member") as any,
+          churchId: viewerChurchId,
+        }),
+        cache: "no-store" as RequestCache,
+      },
+      {
+        screen: "HomeFeed",
+        throttleMs: hardRefresh ? 0 : 8000,
+        dedupe: true,
+      }
+    );
+
+    if (generationAtStart !== getHomeFeedFetchGeneration()) {
+      logHomeFeedNetworkTrace({
+        event: "stale-cancelled",
+        reason,
+        generationAtStart,
+        currentGeneration: getHomeFeedFetchGeneration(),
+      });
+      return getCachedHomeFeedBackendRows();
+    }
+
+    const rawRows = parseFeedRows(res);
+    const apiScheduleCount = rawRows.filter(
+      (row) =>
+        String(row?.scheduleType || "").includes("media-live-slots") ||
+        String(row?.source || "").includes("media-schedule")
+    ).length;
+
+    const crossChurchCount = rawRows.filter((row) => {
+      const itemCid = String(row?.churchId || "").trim();
+      return itemCid && viewerChurchId && itemCid !== viewerChurchId;
+    }).length;
+
+    console.log("KRISTO_HOME_FEED_SCHEDULE_ROWS_VISIBLE", {
+      stage: "api_before_phase1_filter",
+      reason,
+      churchId: viewerChurchId,
+      scope: "global",
+      apiScheduleCount,
+      apiRowCount: rawRows.length,
+      crossChurchCount,
+    });
+
+    if (crossChurchCount > 0) {
+      console.log("KRISTO_GLOBAL_FEED_CROSS_CHURCH_INCLUDED", {
+        viewerChurchId,
+        count: crossChurchCount,
+        source: "home_feed_api",
+      });
+    }
+
+    const rows = filterPhase1FeedRows(rawRows);
+    for (const row of rawRows) {
+      if (!isHomeFeedMediaScheduleBackendRow(row)) continue;
+      const kept = rows.some((item) => homeFeedRowKey(item) === homeFeedRowKey(row));
+      if (!kept) {
+        logScheduleRowSlotsVisibility(row, "api_phase1_filter", false, "removed_by_filterPhase1FeedRows");
+      }
+    }
+
+    if (!rows.length) {
+      return getCachedHomeFeedBackendRows();
+    }
+
+    noteHomeFeedFetchSuccess();
+    return reconcileHomeFeedBackendCacheWithSnapshot(rows);
+  })().finally(() => {
+    setHomeFeedFetchInflight(null);
+  });
+
+  setHomeFeedFetchInflight(fetchPromise);
+  return fetchPromise;
 }
 
 export function syncHomeFeedLike(postId: string, liked?: boolean) {

@@ -1,3 +1,8 @@
+import {
+  logHomeFeedNetworkTrace,
+  markSlotPollStarted,
+  shouldThrottleSlotPoll,
+} from "@/src/lib/homeFeedNetwork";
 import { feedList, feedSyncMediaScheduleFromBackend } from "@/src/lib/homeFeedStore";
 import { markHomeFeedScheduleDirty } from "@/src/lib/homeFeedScheduleDirty";
 import {
@@ -31,9 +36,12 @@ function buildChurchScheduleClaimDigest(churchId: string) {
 function applyScheduleFeedToStore(scheduleFeed: any, churchId: string) {
   if (!scheduleFeed) return null;
 
+  const beforeDigest = buildChurchScheduleClaimDigest(churchId);
   feedSyncMediaScheduleFromBackend(scheduleFeed);
+  const afterDigest = buildChurchScheduleClaimDigest(churchId);
+
   const feedId = String(scheduleFeed?.id || "").trim();
-  if (feedId) {
+  if (feedId && beforeDigest !== afterDigest) {
     markHomeFeedScheduleDirty(churchId, feedId);
   }
   return feedId || null;
@@ -108,6 +116,17 @@ export async function pollRemoteSlotClaimUpdates(
 ): Promise<boolean> {
   const cid = String(churchId || "").trim();
   if (!cid) return false;
+
+  if (shouldThrottleSlotPoll(cid)) {
+    logHomeFeedNetworkTrace({
+      event: "slot-poll-throttled",
+      churchId: cid,
+      source,
+    });
+    return false;
+  }
+
+  markSlotPollStarted(cid);
 
   console.log("KRISTO_SLOT_CLAIM_POLL_TRIGGER", {
     churchId: cid,

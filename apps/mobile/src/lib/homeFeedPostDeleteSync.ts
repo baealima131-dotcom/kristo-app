@@ -2,7 +2,6 @@ import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
 import { feedRemoveWhere } from "@/src/lib/homeFeedStore";
 import {
-  fetchHomeFeedFromApi,
   purgeHomeFeedPostFromBackendCache,
 } from "@/src/components/homeFeed/homeFeedApi";
 
@@ -62,6 +61,4 @@ export async function syncHomeFeedPostDelete(args: {
     feedDeleted: args.feedDeleted === true,
     cachePurged,
   });
-
-  void fetchHomeFeedFromApi("post-delete-sync", { force: true, reconcile: true }).catch(() => {});
 }

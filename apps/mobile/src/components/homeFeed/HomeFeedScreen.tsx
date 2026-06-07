@@ -26,6 +26,11 @@ import {
 } from "@/src/lib/homeFeedComments";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import {
+  bumpHomeFeedFetchGeneration,
+  logHomeFeedNetworkTrace,
+  resolveHomeFeedRefreshMode,
+} from "@/src/lib/homeFeedNetwork";
 import { subscribeHomeFeedPostDelete } from "@/src/lib/homeFeedPostDeleteSync";
 import {
   fetchHomeFeedFromApi,
@@ -139,7 +144,6 @@ export default function HomeFeedScreen() {
   const pendingScheduleFeedIdRef = useRef<string | null>(null);
   const lastVisibleRowsRef = useRef<any[]>([]);
   const visibleRowCountRef = useRef(0);
-  const pagePrefetchInflightRef = useRef(false);
   const pageReadyLoggedRef = useRef(false);
   const stableDisplayRowsRef = useRef<any[]>([]);
   const initialVideoBufferWarmedRef = useRef(false);
@@ -210,28 +214,63 @@ export default function HomeFeedScreen() {
     return () => sub.remove();
   }, []);
 
+  const loadFeedGenerationRef = useRef(0);
+
   const loadFeed = useCallback(async (reason = "load", opts?: { force?: boolean }) => {
     if (isHomeFeedRenderPaused()) return;
 
     const force = opts?.force === true;
+    const refreshMode = resolveHomeFeedRefreshMode(reason, force);
+    const cachedRows = getCachedHomeFeedBackendRows();
+    const loadGeneration = loadFeedGenerationRef.current;
+
+    logHomeFeedNetworkTrace({
+      event: "load-feed",
+      reason,
+      force,
+      refreshMode,
+      cachedRows: cachedRows.length,
+    });
+
+    if (refreshMode === "skip") {
+      if (cachedRows.length) {
+        setBackendRows((prev) => (prev.length ? prev : cachedRows));
+      }
+      setLoading(false);
+      return;
+    }
+
     const hasLocalSchedule = feedList().some(isHomeFeedScheduleCardRow);
     const hasVisibleRows =
       visibleRowCountRef.current > 0 ||
       backendRows.length > 0 ||
-      getCachedHomeFeedBackendRows().length > 0 ||
+      cachedRows.length > 0 ||
       feedList().length > 0;
-    if (
-      reason !== "page-prefetch" &&
+    const showBlockingLoader =
+      refreshMode === "required" &&
       !hasVisibleRows &&
-      (reason === "claim-slot-focus" || !force || !hasLocalSchedule)
-    ) {
+      (reason === "claim-slot-focus" || !force || !hasLocalSchedule);
+
+    if (showBlockingLoader) {
       setLoading(true);
+    } else if (refreshMode === "background" && cachedRows.length) {
+      logHomeFeedNetworkTrace({
+        event: "swr-background",
+        reason,
+        cachedRows: cachedRows.length,
+      });
+      setBackendRows((prev) => (prev.length ? prev : cachedRows));
     }
+
     try {
       const rows = await fetchHomeFeedFromApi(reason, {
         force,
         reconcile: true,
       });
+      if (loadGeneration !== loadFeedGenerationRef.current) {
+        logHomeFeedNetworkTrace({ event: "load-feed-stale", reason });
+        return;
+      }
       if (rows.length) {
         setBackendRows(rows);
         setStableDisplayRows((prev) => {
@@ -259,7 +298,9 @@ export default function HomeFeedScreen() {
     } catch {
       setBackendRows((prev) => prev);
     } finally {
-      setLoading(false);
+      if (loadGeneration === loadFeedGenerationRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -343,6 +384,7 @@ export default function HomeFeedScreen() {
     const churchId = String(session?.churchId || "").trim();
 
     if (screenFocused) {
+      loadFeedGenerationRef.current += 1;
       const dirty = consumeHomeFeedScheduleDirty(churchId);
       if (dirty) {
         forceReloadAfterSchedule("schedule-dirty-focus", dirty.backendFeedId);
@@ -352,7 +394,8 @@ export default function HomeFeedScreen() {
       return;
     }
 
-    void loadFeed("load");
+    bumpHomeFeedFetchGeneration("blur");
+    loadFeedGenerationRef.current += 1;
   }, [loadFeed, screenFocused, forceReloadAfterSchedule]);
 
   useEffect(() => {
@@ -538,7 +581,6 @@ export default function HomeFeedScreen() {
     console.log("KRISTO_HOME_FEED_NEXT_PAGE_PREFETCH", {
       activeIndex,
       nextLimit,
-      inflight: pagePrefetchInflightRef.current,
     });
 
     if (nextLimit > visibleWindowSize) {
@@ -554,10 +596,11 @@ export default function HomeFeedScreen() {
       });
     }
 
-    if (pagePrefetchInflightRef.current) return;
-    pagePrefetchInflightRef.current = true;
-    void loadFeed("page-prefetch").finally(() => {
-      pagePrefetchInflightRef.current = false;
+    logHomeFeedNetworkTrace({
+      event: "page-prefetch-skip-api",
+      activeIndex,
+      nextLimit,
+      reason: "client-window-only",
     });
   }, [
     activeIndex,
@@ -565,7 +608,6 @@ export default function HomeFeedScreen() {
     stableDisplayRows.length,
     feedFocused,
     isClaimSlotFocus,
-    loadFeed,
   ]);
 
   const visibleData = useMemo(() => {
@@ -608,11 +650,16 @@ export default function HomeFeedScreen() {
   }, [loading, visibleData.length]);
 
   useEffect(() => {
+    if (!feedFocused) {
+      endHomeFeedPrefetchSession();
+      return;
+    }
+
     prefetchSessionIdRef.current = beginHomeFeedPrefetchSession();
     return () => {
       endHomeFeedPrefetchSession();
     };
-  }, []);
+  }, [feedFocused]);
 
   const posterWarmKey = useMemo(() => {
     const end = Math.min(visibleData.length, activeIndex + 6);

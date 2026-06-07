@@ -13,8 +13,8 @@ import {
   listPendingLocalScheduleIds,
 } from "@/src/lib/mediaSchedulePendingSync";
 
-export const SLOT_CLAIM_POLL_LIVE_MS = 1000;
-export const SLOT_CLAIM_POLL_FALLBACK_MS = 7000;
+export const SLOT_CLAIM_POLL_LIVE_MS = 4000;
+export const SLOT_CLAIM_POLL_FALLBACK_MS = 20_000;
 
 function sessionUserId() {
   const session = getSessionSync() as any;

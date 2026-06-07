@@ -170,6 +170,14 @@ export function posterStorageKeyForVideoKey(videoKey: string): string {
   return `church-video-posters/${churchSegment}/${stem}.jpg`;
 }
 
+export function previewStorageKeyForVideoKey(videoKey: string): string {
+  const segments = String(videoKey || "").trim().split("/").filter(Boolean);
+  const churchSegment = segments[1] || "unknown";
+  const baseName = segments[segments.length - 1] || "video.mp4";
+  const stem = baseName.replace(/\.[^.]+$/, "");
+  return `church-video-previews/${churchSegment}/${stem}.mp4`;
+}
+
 export async function storageObjectExists(key: string): Promise<boolean> {
   try {
     const size = await getStorageObjectByteSize(key);

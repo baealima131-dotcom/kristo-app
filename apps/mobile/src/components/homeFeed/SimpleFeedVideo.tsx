@@ -26,6 +26,12 @@ import {
   saveHomeFeedVideoProgress,
 } from "@/src/lib/homeFeedVideoProgressStore";
 import { wasHomeFeedVideoUrlBufferedAhead } from "@/src/lib/homeFeedVideoBufferAhead";
+import {
+  getFirstHomeFeedVideoPlaybackPlans,
+  logHomeFeedVideoQualityTrace,
+  resolveHomeFeedVideoPlaybackPlan,
+  resolveVerifiedStartupVideoUri,
+} from "@/src/lib/homeFeedVideoQuality";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import { hasBrandedVideoPoster, isValidVideoPosterUri } from "./homeFeedUtils";
 import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
@@ -35,6 +41,10 @@ type Props = {
   title?: string;
   mediaStatus?: string;
   uri: string;
+  startupUri?: string;
+  fullQualityUri?: string;
+  hasLowRes?: boolean;
+  prewarmHit?: boolean;
   posterUri?: string;
   brandedPoster?: boolean;
   warmMode: HomeFeedVideoWarmMode;
@@ -150,6 +160,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   title = "",
   mediaStatus = "",
   uri,
+  startupUri = "",
+  fullQualityUri = "",
+  hasLowRes = false,
+  prewarmHit = false,
   posterUri = "",
   brandedPoster = false,
   warmMode,
@@ -157,7 +171,27 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   feedIndex = -1,
   contentLength,
 }: Props) {
-  const cachedReadyOnMount = isHomeFeedVideoPreloadReady(postId, uri);
+  const resolvedFullUri = String(fullQualityUri || uri || "").trim();
+  const resolvedStartupUri = String(startupUri || resolvedFullUri).trim();
+  const canUpgradeQuality =
+    hasLowRes &&
+    Boolean(resolvedStartupUri && resolvedFullUri) &&
+    resolvedStartupUri.split("?")[0] !== resolvedFullUri.split("?")[0];
+
+  const [playbackUri, setPlaybackUri] = useState(resolvedStartupUri);
+  const upgradedQualityRef = useRef(false);
+  const upgradeStartedMsRef = useRef<number | null>(null);
+  const qualityTraceLoggedRef = useRef(false);
+  const qualityUpgradePendingRef = useRef(false);
+
+  useEffect(() => {
+    upgradedQualityRef.current = false;
+    upgradeStartedMsRef.current = null;
+    qualityTraceLoggedRef.current = false;
+    setPlaybackUri(resolvedStartupUri);
+  }, [postId, resolvedStartupUri, resolvedFullUri]);
+
+  const cachedReadyOnMount = isHomeFeedVideoPreloadReady(postId, playbackUri);
   const cachedReadyRef = useRef(cachedReadyOnMount);
   const warmModeRef = useRef(warmMode);
   warmModeRef.current = warmMode;
@@ -169,7 +203,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   // Active + next 2–3 preload rows + scroll-back retain rows load source immediately.
   const sourceLoadAllowed = isActive || isPreloadNext || isRetainPrev;
   const playerSource =
-    sourceLoadAllowed && uri ? { uri, contentType: "progressive" as const } : null;
+    sourceLoadAllowed && playbackUri
+      ? { uri: playbackUri, contentType: "progressive" as const }
+      : null;
 
   const player = useVideoPlayer(playerSource, (p) => {
     p.loop = true;
@@ -232,7 +268,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     return () => sub.remove();
   }, []);
 
-  const mountedUriRef = useRef(uri);
+  const mountedUriRef = useRef(playbackUri);
   const preloadPrimedRef = useRef(false);
   const preloadStartLoggedRef = useRef(false);
   const reusedWarmLoggedRef = useRef(false);
@@ -403,7 +439,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       id: postId || null,
       msToReady: readyMsRef.current,
       msToFirstFrame: firstFrameMsRef.current,
-      videoUrlHost: urlHost(uri),
+      videoUrlHost: urlHost(resolvedFullUri),
+      startupUrlHost: urlHost(playbackUri),
       posterHost: urlHost(posterUri),
     });
   };
@@ -417,9 +454,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       readyMs: readyMsRef.current,
       contentLength: Number(contentLength || 0) > 0 ? Number(contentLength) : null,
       warmMode,
-      wasBufferedAhead: wasHomeFeedVideoUrlBufferedAhead(uri),
+      wasBufferedAhead: wasHomeFeedVideoUrlBufferedAhead(playbackUri),
       wasRestored: progressRestoredRef.current,
-      videoHost: urlHost(uri),
+      videoHost: urlHost(playbackUri),
       posterHost: urlHost(posterUri),
     });
   };
@@ -433,6 +470,14 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (isActive) {
       markHomeFeedActiveFirstFrame();
       logFirstFrameDiag();
+      logHomeFeedVideoQualityTrace({
+        event: "first-frame-ready",
+        postId: postId || null,
+        msToFirstFrame: firstFrameMsRef.current,
+        selectedStartupUrl: playbackUri,
+        originalVideoUrl: resolvedFullUri,
+        prewarmHit,
+      });
     }
     setFirstFrameReady((prev) => (prev ? prev : true));
   };
@@ -641,14 +686,92 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   }, [player, postId, warmMode, isActive, firstFrameReady]);
 
   useEffect(() => {
-    if (mountedUriRef.current !== uri) {
-      mountedUriRef.current = uri;
+    if (!canUpgradeQuality) return;
+    let cancelled = false;
+    void resolveVerifiedStartupVideoUri({
+      postId,
+      originalVideoUrl: resolvedFullUri,
+      fullQualityUri: resolvedFullUri,
+      startupUri: resolvedStartupUri,
+      lowResVideoUrl: resolvedStartupUri,
+      hasLowRes: canUpgradeQuality,
+      prewarmHit,
+    }).then((verified) => {
+      if (cancelled || !verified) return;
+      setPlaybackUri((current) => (current === verified ? current : verified));
+      if (verified === resolvedFullUri) {
+        upgradedQualityRef.current = true;
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [postId, canUpgradeQuality, resolvedStartupUri, resolvedFullUri, prewarmHit]);
+
+  useEffect(() => {
+    if (!isActive || qualityTraceLoggedRef.current) return;
+    qualityTraceLoggedRef.current = true;
+    logHomeFeedVideoQualityTrace({
+      event: "startup-selected",
+      postId: postId || null,
+      feedIndex,
+      selectedStartupUrl: playbackUri,
+      lowResVideoUrl: canUpgradeQuality ? resolvedStartupUri : null,
+      originalVideoUrl: resolvedFullUri,
+      hasLowRes: canUpgradeQuality,
+      prewarmHit,
+      cacheHit: cachedReadyRef.current,
+    });
+  }, [isActive, postId, feedIndex, playbackUri, canUpgradeQuality, resolvedStartupUri, resolvedFullUri, prewarmHit]);
+
+  useEffect(() => {
+    if (!firstFrameReady || !canUpgradeQuality || upgradedQualityRef.current) return;
+    if (playbackUri === resolvedFullUri) return;
+
+    upgradedQualityRef.current = true;
+    upgradeStartedMsRef.current = Date.now();
+    qualityUpgradePendingRef.current = true;
+    logHomeFeedVideoQualityTrace({
+      event: "upgrade-start",
+      postId: postId || null,
+      fromUrl: playbackUri,
+      toUrl: resolvedFullUri,
+      msToFirstFrame: firstFrameMsRef.current,
+    });
+    setPlaybackUri(resolvedFullUri);
+  }, [firstFrameReady, canUpgradeQuality, playbackUri, resolvedFullUri, postId]);
+
+  useEffect(() => {
+    if (mountedUriRef.current !== playbackUri) {
+      const isQualityUpgrade = qualityUpgradePendingRef.current;
+      qualityUpgradePendingRef.current = false;
+      mountedUriRef.current = playbackUri;
       mountMsRef.current = Date.now();
       timingLoggedRef.current = false;
       preloadPrimedRef.current = false;
       preloadStartLoggedRef.current = false;
+
+      if (isQualityUpgrade) {
+        const savedTime = lastKnownTimeRef.current;
+        if (savedTime > 0.05) {
+          seekPlayerToSeconds(savedTime, "quality-upgrade");
+        }
+        requestPlay("quality-upgrade-resume");
+        if (upgradeStartedMsRef.current) {
+          logHomeFeedVideoQualityTrace({
+            event: "upgrade-applied",
+            postId: postId || null,
+            upgradeToHighQualityMs: Date.now() - upgradeStartedMsRef.current,
+            selectedStartupUrl: resolvedStartupUri,
+            originalVideoUrl: resolvedFullUri,
+          });
+          upgradeStartedMsRef.current = null;
+        }
+        return;
+      }
+
       readyMarkedRef.current = false;
-      cachedReadyRef.current = isHomeFeedVideoPreloadReady(postId, uri);
+      cachedReadyRef.current = isHomeFeedVideoPreloadReady(postId, playbackUri);
       reusedWarmLoggedRef.current = false;
       readyMsRef.current = cachedReadyRef.current ? 0 : null;
       firstFrameMsRef.current = null;
@@ -665,7 +788,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
         requestPlay("uri-change-prime");
       } catch {}
     }
-  }, [uri, postId, player]);
+  }, [playbackUri, postId, player, resolvedFullUri, resolvedStartupUri]);
 
   useEffect(() => {
     if (!screenFocused) return;
@@ -870,7 +993,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   ]);
 
   const poster = String(posterUri || "").trim();
-  const hasPoster = isValidVideoPosterUri(poster, uri);
+  const hasPoster = isValidVideoPosterUri(poster, resolvedFullUri);
   const hasBranded = brandedPoster || hasBrandedVideoPoster({ posterUri: poster, brandedPoster });
   const showCoverUntilFirstFrame = !firstFrameReady;
   const showPosterOverlay = showCoverUntilFirstFrame && hasPoster;
@@ -886,7 +1009,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       id: postId || null,
       hasPosterUrl: hasPoster,
       posterHost: urlHost(poster),
-      videoUrlHost: urlHost(uri),
+      videoUrlHost: urlHost(resolvedFullUri),
       contentLength: Number(contentLength || 0) > 0 ? Number(contentLength) : null,
       brandedPoster: hasBranded,
     });
@@ -913,7 +1036,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
             resizeMode="cover"
             postId={postId}
             title={title}
-            videoUrl={uri}
+            videoUrl={resolvedFullUri}
             mediaStatus={mediaStatus}
           />
         </View>
@@ -924,7 +1047,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
             variant="full"
             postId={postId}
             title={title}
-            videoUrl={uri}
+            videoUrl={resolvedFullUri}
             mediaStatus={mediaStatus}
             suppressMissingPosterLog={showBrandedCover}
           />

@@ -13,6 +13,7 @@ import {
   ensureVideoPosterForUrl,
   shouldAttemptServerFfmpeg,
 } from "@/app/api/_lib/media/videoPoster";
+import { ensureVideoPreviewForUrl } from "@/app/api/_lib/media/videoPreview";
 import {
   repackVideoFaststartForKey,
   resolveFaststartResponseFields,
@@ -128,6 +129,19 @@ export async function POST(req: NextRequest) {
       brandedPoster = true;
     }
 
+    let previewVideoUrl: string | null = null;
+    if (shouldAttemptServerFfmpeg()) {
+      try {
+        previewVideoUrl = await ensureVideoPreviewForUrl(completed.videoUrl);
+      } catch (previewError) {
+        console.log("KRISTO_VIDEO_PREVIEW_REMOTE_FAILED", {
+          videoUrl: completed.videoUrl,
+          stage: "multipart-complete",
+          error: previewError instanceof Error ? previewError.message : String(previewError),
+        });
+      }
+    }
+
     if (repack.faststart) {
       console.log("KRISTO_VIDEO_FASTSTART_REPACK_DONE", {
         videoUrl: completed.videoUrl,
@@ -150,6 +164,7 @@ export async function POST(req: NextRequest) {
         ...completed,
         ...faststartFields,
         posterUri,
+        ...(previewVideoUrl ? { previewVideoUrl, lowResVideoUrl: previewVideoUrl } : {}),
         ...(brandedPoster ? { brandedPoster: true } : {}),
       },
     });

@@ -28,6 +28,7 @@ import {
 } from "./homeFeedUtils";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
+import { resolveHomeFeedVideoPlaybackPlan } from "@/src/lib/homeFeedVideoQuality";
 
 const IMAGE_CANDIDATE_KEYS = [
   "mediaUri",
@@ -137,6 +138,7 @@ export const FeedRow = memo(function FeedRow({
 
   const video = isVideoPost(item);
   const videoUri = useMemo(() => resolveVideoUri(item), [item]);
+  const playbackPlan = useMemo(() => resolveHomeFeedVideoPlaybackPlan(item), [item]);
   const resolvedImageUri = useMemo(() => resolvePostImageUri(item), [item]);
   const showVideoMedia = Boolean(video && videoUri);
   const willRenderImage = Boolean(resolvedImageUri) && !showVideoMedia;
@@ -174,7 +176,11 @@ export const FeedRow = memo(function FeedRow({
               postId={postId}
               title={title}
               mediaStatus={mediaStatus}
-              uri={videoUri}
+              uri={playbackPlan.fullQualityUri}
+              startupUri={playbackPlan.startupUri}
+              fullQualityUri={playbackPlan.fullQualityUri}
+              hasLowRes={playbackPlan.hasLowRes}
+              prewarmHit={playbackPlan.prewarmHit}
               posterUri={posterUri}
               brandedPoster={hasBrandedVideoPoster(item)}
               warmMode={videoWarmMode}

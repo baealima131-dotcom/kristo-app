@@ -1,15 +1,12 @@
-let posterClientUnavailableLogged = false;
+import { generateVideoPosterFrame } from "@/src/lib/mediaVideoPoster";
 
-function logPosterClientUnavailableOnce() {
-  if (posterClientUnavailableLogged) return;
-  posterClientUnavailableLogged = true;
-  console.warn("KRISTO_VIDEO_POSTER_CLIENT_UNAVAILABLE", {
-    reason: "disabled-for-v1",
+export async function generateLocalVideoPosterUri(
+  videoUri: string,
+  durationMs?: number
+): Promise<string | null> {
+  const uri = await generateVideoPosterFrame({
+    videoUrl: videoUri,
+    durationMs,
   });
-}
-
-/** V1: client-side video posters disabled. */
-export async function generateLocalVideoPosterUri(_videoUri: string): Promise<string | null> {
-  logPosterClientUnavailableOnce();
-  return null;
+  return uri || null;
 }

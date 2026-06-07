@@ -11,6 +11,11 @@ import { saveProfileDraft } from "./profileStore";
 import { waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
 import { shouldPauseBackgroundProfileRefresh } from "./mediaScheduleFlowFlags";
 import { isSessionExitInProgress } from "./kristoSessionExitFlags";
+import {
+  exportMediaPosterCacheSnapshot,
+  hydrateMediaPosterCache,
+  importMediaPosterCacheSnapshot,
+} from "./mediaPosterCache";
 
 export const SCREEN_CACHE_TTL_MS = 45000;
 /** Fast re-check for church profile block on Church Overview focus. */
@@ -48,6 +53,7 @@ export type ProfileScreenCachePayload = {
   latestTestimony: Record<string, any> | null;
   latestPrayer: Record<string, any> | null;
   latestSaved: { title: string; body: string } | null;
+  mediaPosterEntries?: Record<string, import("./mediaPosterCache").MediaPosterCacheEntry>;
   updatedAt: number;
 };
 
@@ -94,7 +100,11 @@ export function peekChurchOverviewCache(churchId: string, userId: string) {
 
 export function peekProfileScreenCache(userId: string) {
   const key = profileScreenKey(userId);
-  return profileScreenMemory.get(key) || null;
+  const cached = profileScreenMemory.get(key) || null;
+  if (cached?.mediaPosterEntries && typeof cached.mediaPosterEntries === "object") {
+    importMediaPosterCacheSnapshot(cached.mediaPosterEntries);
+  }
+  return cached;
 }
 
 export function peekMinistriesCache(churchId: string, userId: string) {
@@ -228,6 +238,9 @@ export async function getProfileScreenCache(userId: string) {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as ProfileScreenCachePayload;
     if (!parsed?.userId) return null;
+    if (parsed.mediaPosterEntries && typeof parsed.mediaPosterEntries === "object") {
+      importMediaPosterCacheSnapshot(parsed.mediaPosterEntries);
+    }
     profileScreenMemory.set(key, parsed);
     return parsed;
   } catch {
@@ -237,7 +250,11 @@ export async function getProfileScreenCache(userId: string) {
 
 export async function saveProfileScreenCache(payload: ProfileScreenCachePayload) {
   const key = profileScreenKey(payload.userId);
-  const next = { ...payload, updatedAt: Date.now() };
+  const next = {
+    ...payload,
+    mediaPosterEntries: exportMediaPosterCacheSnapshot(),
+    updatedAt: Date.now(),
+  };
   profileScreenMemory.set(key, next);
   await AsyncStorage.setItem(`${PROFILE_SCREEN_PREFIX}${key}`, JSON.stringify(next));
 }
@@ -561,6 +578,7 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
 
   preloadInflight = (async () => {
     await waitForHomeFirstVideoReadyIfOnHome();
+    await hydrateMediaPosterCache();
 
     const tasks: Promise<unknown>[] = [silentRefreshProfileScreen(effectiveSession, opts)];
     if (churchId) {

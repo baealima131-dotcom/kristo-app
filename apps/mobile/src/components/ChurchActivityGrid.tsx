@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -6,19 +6,28 @@ import {
   Image,
   ImageBackground,
   Pressable,
-  type ImageSourcePropType,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import {
-  activityCardBackgroundUri,
   activityHasVisualMedia,
   activityIsVideo,
   churchActivityTitle,
+  computeActivityGridPreviewTrace,
+  logActivityGridPreviewTrace,
   postAuthorName,
   type ActivityGridItem,
 } from "@/src/lib/churchActivityPosts";
-import { VideoPostFallbackPoster } from "@/src/components/homeFeed/VideoPostFallbackPoster";
+import MediaVideoGridPoster from "@/src/components/MediaVideoGridPoster";
+import {
+  hydrateMediaPosterCache,
+  warmMediaPosterCacheForItems,
+} from "@/src/lib/mediaPosterCache";
+import {
+  isValidVideoPosterUri,
+  resolvePosterUri,
+  resolveVideoUri,
+} from "@/src/components/homeFeed/homeFeedUtils";
 
 const GRID_GAP = 14;
 const CARD_HEIGHT = 236;
@@ -69,14 +78,42 @@ function AuthorIdentityRow({ item }: { item: ActivityGridItem }) {
 function MediaActivityCard({
   item,
   onPress,
+  variant = "church",
 }: {
   item: ActivityGridItem;
   onPress?: () => void;
+  variant?: "church" | "media";
 }) {
-  const backgroundUri = activityCardBackgroundUri(item);
-  const isVideo = activityIsVideo(item);
+  const previewTrace = useMemo(() => computeActivityGridPreviewTrace(item), [item]);
+  const posterUri = useMemo(() => resolvePosterUri(item), [item]);
+  const videoUri = useMemo(
+    () => String(item?.videoUrl || resolveVideoUri(item) || previewTrace.resolvedVideoUri || "").trim(),
+    [item, previewTrace.resolvedVideoUri]
+  );
+  const hasValidPoster = isValidVideoPosterUri(posterUri, videoUri);
+  const backgroundUri = hasValidPoster ? posterUri : previewTrace.finalPreviewUri;
   const fallbackTitle = churchActivityTitle(item);
-  const source: ImageSourcePropType = { uri: backgroundUri };
+  const isVideo = activityIsVideo(item);
+
+  useEffect(() => {
+    logActivityGridPreviewTrace(previewTrace, {
+      variant,
+      isVideo,
+      posterUri,
+      hasValidPoster,
+      backgroundUri,
+    });
+  }, [
+    previewTrace.postId,
+    previewTrace.resolvedPreviewUrl,
+    previewTrace.resolvedVideoUri,
+    previewTrace.inferredPosterUri,
+    variant,
+    isVideo,
+    posterUri,
+    hasValidPoster,
+    backgroundUri,
+  ]);
   const cardOverlay = (
     <LinearGradient
       colors={["transparent", "rgba(0,0,0,0.42)", "rgba(0,0,0,0.82)"]}
@@ -94,19 +131,21 @@ function MediaActivityCard({
 
   return (
     <Pressable onPress={onPress} style={s.cardBase}>
-      {backgroundUri ? (
-        <ImageBackground source={source} style={s.mediaFill} resizeMode="cover">
-          {cardOverlay}
-        </ImageBackground>
-      ) : isVideo ? (
+      {isVideo ? (
         <View style={s.mediaFill}>
-          <VideoPostFallbackPoster
-            variant="full"
-            title={fallbackTitle}
-            videoUrl={String(item?.videoUrl || item?.mediaUri || "").trim()}
+          <MediaVideoGridPoster
+            item={item}
+            style={StyleSheet.absoluteFillObject}
+            resizeMode="cover"
+            postId={previewTrace.postId}
+            videoUrl={videoUri}
           />
           {cardOverlay}
         </View>
+      ) : backgroundUri ? (
+        <ImageBackground source={{ uri: backgroundUri }} style={s.mediaFill} resizeMode="cover">
+          {cardOverlay}
+        </ImageBackground>
       ) : (
         <LinearGradient
           colors={["#141A28", "#0A0F18", "#05070D"]}
@@ -146,6 +185,7 @@ export default function ChurchActivityGrid({
   emptyTitle = "No church activity yet",
   emptyBody = "Posts from church members will appear here.",
   onItemPress,
+  variant = "church",
 }: {
   items: ActivityGridItem[];
   emptyTitle?: string;
@@ -153,6 +193,30 @@ export default function ChurchActivityGrid({
   variant?: "church" | "media";
   onItemPress?: (item: ActivityGridItem) => void;
 }) {
+  useEffect(() => {
+    if (variant !== "media" || !items.length) return;
+
+    let cancelled = false;
+    void (async () => {
+      await hydrateMediaPosterCache();
+      if (cancelled) return;
+
+      const visibleCount = Math.min(items.length, 8);
+      await warmMediaPosterCacheForItems(items, 0, visibleCount);
+
+      if (cancelled || items.length <= visibleCount) return;
+      await warmMediaPosterCacheForItems(
+        items,
+        visibleCount,
+        Math.min(items.length - visibleCount, 8)
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [items, variant]);
+
   if (!items.length) {
     return (
       <View style={s.emptyCard}>
@@ -170,7 +234,14 @@ export default function ChurchActivityGrid({
         const handlePress = onItemPress ? () => onItemPress(item) : undefined;
 
         if (activityHasVisualMedia(item)) {
-          return <MediaActivityCard key={key} item={item} onPress={handlePress} />;
+          return (
+            <MediaActivityCard
+              key={key}
+              item={item}
+              onPress={handlePress}
+              variant={variant}
+            />
+          );
         }
 
         return <TextActivityCard key={key} item={item} onPress={handlePress} />;

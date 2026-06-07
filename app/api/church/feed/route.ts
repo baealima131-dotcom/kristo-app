@@ -80,6 +80,7 @@ import { isKristoServerlessRuntime } from "@/app/api/_lib/store/fs";
 import {
   applyBrandedVideoPosterFallback,
   brandedVideoPosterFields,
+  isBrandedVideoPosterUri,
 } from "@/app/api/_lib/media/brandedVideoPoster";
 import {
   ensureVideoPosterForUrl,
@@ -88,6 +89,7 @@ import {
   publicUploadAbsPath,
   shouldAttemptServerFfmpeg,
 } from "@/app/api/_lib/media/videoPoster";
+import { findExistingPreviewVideoUrl } from "@/app/api/_lib/media/videoPreview";
 import { probeMp4FaststartFromUrl } from "@/app/api/_lib/media/mp4FaststartProbe";
 import {
   headStorageObject,
@@ -1383,9 +1385,9 @@ async function finalizeMediaUploadVideoPost(itemId: string) {
     if (!existing) return;
 
     let posterUri = String((existing as any)?.posterUri || (existing as any)?.videoPosterUri || "").trim();
-    const videoUrl = String(existing.videoUrl || "").trim();
+    const videoUrl = resolveFeedItemVideoUrl(existing);
 
-    if (!posterUri && videoUrl) {
+    if (!isUsableVideoPosterUri(posterUri, videoUrl) && videoUrl) {
       if (shouldAttemptServerFfmpeg()) {
         const generated = await ensureVideoPosterForUrl(videoUrl);
         if (generated) posterUri = generated;
@@ -1397,10 +1399,11 @@ async function finalizeMediaUploadVideoPost(itemId: string) {
       mediaStatus: "ready",
     };
 
-    if (posterUri) {
+    if (posterUri && isUsableVideoPosterUri(posterUri, videoUrl)) {
       next.posterUri = posterUri;
       next.videoPosterUri = posterUri;
       next.thumbnailUri = posterUri;
+      next.brandedPoster = false;
     } else if (videoUrl) {
       Object.assign(next, brandedVideoPosterFields());
     }
@@ -1947,6 +1950,28 @@ async function removePostAndRelated(postId: string) {
   return feedDeleted;
 }
 
+function resolveFeedItemVideoUrl(item: any): string {
+  const isVideoTyped =
+    item?.type === "video" ||
+    String(item?.mediaType || "").trim().toLowerCase() === "video";
+
+  for (const key of ["videoUrl", "videoUri", "mediaUrl", "url"]) {
+    const raw = String(item?.[key] || "").trim();
+    if (!raw) continue;
+    const clean = raw.split("?")[0];
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(clean) || isVideoTyped) return raw;
+  }
+
+  const mediaUri = String(item?.mediaUri || "").trim();
+  if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(mediaUri.split("?")[0])) return mediaUri;
+
+  return String(item?.videoUrl || "").trim();
+}
+
+function isFeedVideoListItem(item: any) {
+  return item?.type === "video" || Boolean(resolveFeedItemVideoUrl(item));
+}
+
 type FeedListEngagementMeta = {
   discussionByPostId: Map<string, { commentCount: number; replyCount: number }>;
 };
@@ -1994,13 +2019,12 @@ async function enrichFeedListItem(
     String(item?.thumbnailUri || item?.thumbnailUrl || item?.videoPosterUri || "").trim() ||
     undefined;
   let videoBrandedPoster = item?.brandedPoster === true;
-  const isVideoItem =
-    item?.type === "video" || Boolean(String(item?.videoUrl || "").trim());
+  const resolvedVideoUrl = resolveFeedItemVideoUrl(item);
+  const isVideoItem = isFeedVideoListItem(item);
 
-  if (isVideoItem && item?.videoUrl) {
-    const videoUrlStr = String(item.videoUrl).trim();
+  if (isVideoItem && resolvedVideoUrl) {
+    const videoUrlStr = resolvedVideoUrl;
     const hasUsablePoster =
-      item?.brandedPoster === true ||
       isUsableVideoPosterUri(posterUri, videoUrlStr) ||
       isUsableVideoPosterUri(thumbnailUri, videoUrlStr);
 
@@ -2026,6 +2050,8 @@ async function enrichFeedListItem(
         posterUri = branded.posterUri;
         thumbnailUri = branded.thumbnailUri;
         videoBrandedPoster = true;
+      } else {
+        videoBrandedPoster = false;
       }
 
       if (postId) {
@@ -2034,16 +2060,35 @@ async function enrichFeedListItem(
           posterUri,
           videoPosterUri: posterUri,
           thumbnailUri,
-          ...(usingBranded ? brandedVideoPosterFields() : {}),
+          ...(usingBranded ? brandedVideoPosterFields() : { brandedPoster: false }),
+        }).catch(() => {});
+      }
+    } else if (item?.brandedPoster === true) {
+      videoBrandedPoster = false;
+      if (postId) {
+        void upsertFeedItem({
+          ...item,
+          posterUri,
+          videoPosterUri: posterUri,
+          thumbnailUri,
+          brandedPoster: false,
         }).catch(() => {});
       }
     }
   }
 
+  let previewVideoUrl =
+    String(item?.previewVideoUrl || item?.lowResVideoUrl || "").trim() || undefined;
+  if (isVideoItem && resolvedVideoUrl && !previewVideoUrl) {
+    try {
+      previewVideoUrl = (await findExistingPreviewVideoUrl(resolvedVideoUrl)) || undefined;
+    } catch {}
+  }
+
   const videoPosterUri = posterUri || thumbnailUri;
 
-  if (isVideoItem && item?.videoUrl) {
-    const videoUrlStr = String(item.videoUrl).trim();
+  if (isVideoItem && resolvedVideoUrl) {
+    const videoUrlStr = resolvedVideoUrl;
     const posterHost = (() => {
       try {
         return videoPosterUri ? new URL(videoPosterUri, "https://kristo.local").host : null;
@@ -2163,10 +2208,12 @@ async function enrichFeedListItem(
   return withVideoMetadataReturnFields({
     ...item,
     ...postImageEnrichment.patch,
+    ...(resolvedVideoUrl ? { videoUrl: resolvedVideoUrl } : {}),
+    ...(previewVideoUrl ? { previewVideoUrl, lowResVideoUrl: previewVideoUrl } : {}),
     ...(posterUri ? { posterUri } : {}),
     ...(thumbnailUri ? { thumbnailUri } : {}),
     ...(videoPosterUri ? { videoPosterUri } : {}),
-    ...(videoBrandedPoster ? { brandedPoster: true } : {}),
+    brandedPoster: videoBrandedPoster,
     ownershipType,
     ownerChurchId: String(item?.ownerChurchId || itemChurchId || ""),
     ownerMediaId: String(item?.ownerMediaId || item?.mediaName || itemMediaProfile?.mediaName || "").trim() || undefined,
@@ -3435,6 +3482,49 @@ async function handleFeedPost(req: NextRequest, body: any) {
     });
   }
 
+  if (action === "persist_video_poster") {
+    const postId = cleanText(body?.postId || body?.feedId || body?.id, 240);
+    const posterUri = cleanText(body?.posterUri || body?.videoPosterUri || body?.thumbnailUri, 4000);
+    const videoUrl = cleanText(body?.videoUrl, 2000) || undefined;
+    if (!postId) return err("postId is required", 400);
+    if (!posterUri) return err("posterUri is required", 400);
+
+    const item = await getFeedItemById(postId);
+    if (!item) return err("Feed item not found", 404);
+
+    const itemChurchId = String(item?.churchId || churchId || "").trim();
+    if (!itemChurchId || itemChurchId !== String(churchId || "").trim()) {
+      return err("Feed item not in your church", 403);
+    }
+
+    const resolvedVideoUrl = resolveFeedItemVideoUrl(item);
+    const normalizedVideoUrl = String(videoUrl || resolvedVideoUrl || "").trim();
+    if (!isUsableVideoPosterUri(posterUri, normalizedVideoUrl)) {
+      return err("posterUri must be a valid image URL for this video", 400);
+    }
+
+    const saved = await upsertFeedItem({
+      ...(item as ChurchFeedItem),
+      ...(normalizedVideoUrl ? { videoUrl: normalizedVideoUrl } : {}),
+      posterUri,
+      videoPosterUri: posterUri,
+      thumbnailUri: posterUri,
+      brandedPoster: false,
+    });
+
+    console.log("KRISTO_MEDIA_VIDEO_POSTER_PERSISTED", {
+      postId,
+      videoUrl: normalizedVideoUrl || null,
+      posterUri,
+    });
+
+    return ok({
+      postId,
+      posterUri,
+      item: saved,
+    });
+  }
+
   if (action === "repair_feed_image") {
     const postId = cleanText(body?.postId || body?.feedId || body?.id, 240);
     if (!postId) return err("postId is required", 400);
@@ -3750,6 +3840,9 @@ async function handleFeedPost(req: NextRequest, body: any) {
     sanitizedMedia.posterUri || sanitizedMedia.thumbnailUri || videoPosterUri || undefined;
   let resolvedThumbnailUri =
     sanitizedMedia.thumbnailUri || sanitizedMedia.posterUri || videoPosterUri || undefined;
+
+  if (isBrandedVideoPosterUri(resolvedPosterUri)) resolvedPosterUri = undefined;
+  if (isBrandedVideoPosterUri(resolvedThumbnailUri)) resolvedThumbnailUri = undefined;
 
   if ((type === "video" || videoUrl) && !resolvedPosterUri && videoUrl && shouldAttemptServerFfmpeg()) {
     const generatedPoster = await ensureVideoPosterForUrl(videoUrl);

@@ -1604,7 +1604,7 @@ export default function MediaStudioScreen() {
     setVideoPreparing(true);
     setVideoPreparePercent(8);
 
-    void generateLocalVideoPosterUri(uri).then((posterUri) => {
+    void generateLocalVideoPosterUri(uri, videoPostDurationMs > 0 ? videoPostDurationMs : undefined).then((posterUri) => {
       const cleanPoster = String(posterUri || "").trim();
       if (!cleanPoster) return;
       setVideoPostPosterUri(cleanPoster);

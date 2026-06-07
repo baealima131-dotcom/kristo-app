@@ -1,3 +1,18 @@
+import {
+  homeFeedMediaUrl,
+  inferPosterUriFromVideoUrl,
+  isInferredPosterUriForVideo,
+  isLikelySyntheticPosterPath,
+  isValidVideoPosterUri,
+  normalizeHomeFeedApiRow,
+  resolvePosterUri,
+  resolvePostImageUri,
+  resolveVideoUri,
+} from "@/src/components/homeFeed/homeFeedUtils";
+import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
+import { isFeedVideoItem } from "@/src/lib/homeFeedStore";
+import { peekCachedMediaPoster } from "@/src/lib/mediaPosterCache";
+
 export type ChurchActivityLabel =
   | "TESTIMONY"
   | "ANNOUNCEMENT"
@@ -20,13 +35,223 @@ export type ActivityGridItem = {
   churchName?: string;
   mediaUri?: string;
   videoUrl?: string;
+  videoPosterUri?: string;
   posterUri?: string;
   thumbnailUri?: string;
   thumbnailUrl?: string;
   mediaType?: string;
   imageUrl?: string;
   ownershipType?: string;
+  authorAvatarUri?: string;
 };
+
+function isVideoFileUri(uri: string) {
+  return /\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(String(uri || "").trim());
+}
+
+function applyActivityMediaUrl(uri: string, mediaUrlFn?: (uri?: string) => string) {
+  const value = String(uri || "").trim();
+  if (!value || value.startsWith("kristo:")) return "";
+  return mediaUrlFn ? mediaUrlFn(value) : homeFeedMediaUrl(value);
+}
+
+function enrichActivityGridRow(item: any) {
+  const row = normalizeHomeFeedApiRow(item && typeof item === "object" ? { ...item } : item);
+  if (!row || typeof row !== "object") return {};
+
+  const videoUrl = resolveVideoUri(row);
+  if (videoUrl) {
+    row.videoUrl = videoUrl;
+    if (String(row?.mediaType || "").trim().toLowerCase() !== "image") {
+      row.mediaType = row.mediaType || "video";
+    }
+  }
+
+  return row;
+}
+
+export type ActivityGridPreviewTrace = {
+  postId: string;
+  mediaUrl: string;
+  videoUrl: string;
+  resolvedVideoUri: string;
+  thumbnailUrl: string;
+  posterUrl: string;
+  coverUrl: string;
+  previewUrl: string;
+  inferredPosterUri: string;
+  finalPreviewUri: string;
+  resolvedPreviewUrl: string;
+  storedPosterUri: string;
+  storedVideoPosterUri: string;
+  storedThumbnailUri: string;
+  brandedPoster: boolean;
+};
+
+function activityRawField(item: any, key: string) {
+  return String(item?.[key] || "").trim();
+}
+
+function isVideoPreviewUri(uri: string) {
+  return /\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(String(uri || "").trim());
+}
+
+function firstValidPreviewUrl(row: any, keys: string[], videoUrl: string) {
+  for (const key of keys) {
+    const resolved = homeFeedMediaUrl(row?.[key]);
+    if (resolved && isValidVideoPosterUri(resolved, videoUrl)) return resolved;
+  }
+  return "";
+}
+
+function shouldUseStaticPosterCandidate(postId: string, posterUrl: string, videoUrl: string) {
+  if (!posterUrl || isBrandedPosterUri(posterUrl)) return false;
+  if (!isLikelySyntheticPosterPath(posterUrl) && !isInferredPosterUriForVideo(posterUrl, videoUrl)) {
+    return true;
+  }
+  const cached = peekCachedMediaPoster(postId, videoUrl);
+  if (!cached) return false;
+  const norm = (value: string) => String(value || "").trim().split("?")[0];
+  return norm(cached) === norm(posterUrl);
+}
+
+/** Ordered static preview URLs for Media grid cards (before auto frame generation). */
+export function resolveMediaVideoPreviewCandidates(item: any): string[] {
+  const row = enrichActivityGridRow(item);
+  const videoUrl = resolveVideoUri(row);
+  if (!videoUrl) return [];
+
+  const postId = String(item?.id || row?.id || "").trim();
+
+  const tiers = [
+    firstValidPreviewUrl(row, ["thumbnailUrl", "thumbnailUri"], videoUrl),
+    firstValidPreviewUrl(row, ["posterUrl", "posterUri", "videoPosterUri"], videoUrl),
+    firstValidPreviewUrl(row, ["coverUrl", "coverImageUrl", "coverImage"], videoUrl),
+    firstValidPreviewUrl(row, ["firstFrameUrl"], videoUrl),
+  ];
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const uri of tiers) {
+    if (!uri || seen.has(uri)) continue;
+    if (!shouldUseStaticPosterCandidate(postId, uri, videoUrl)) {
+      console.log("KRISTO_MEDIA_PREVIEW_DEBUG", {
+        postId,
+        videoUrl,
+        skippedSyntheticPoster: uri,
+        reason: "unverified-inferred-or-synthetic",
+      });
+      continue;
+    }
+    seen.add(uri);
+    out.push(uri);
+  }
+  return out;
+}
+
+/** Same poster resolution path as Home Feed `FeedRow` / `resolvePosterUri`. */
+export function resolveMediaPreviewUrl(item: any): string {
+  const row = enrichActivityGridRow(item);
+  if (activityIsVideo(row) || isFeedVideoItem(row) || resolveVideoUri(row)) {
+    const candidates = resolveMediaVideoPreviewCandidates(item);
+    if (candidates.length) return candidates[0];
+    return resolvePosterUri(row);
+  }
+  return resolvePostImageUri(row);
+}
+
+export function computeActivityGridPreviewTrace(
+  item: any,
+  mediaUrlFn?: (uri?: string) => string
+): ActivityGridPreviewTrace {
+  const row = enrichActivityGridRow(item);
+  const resolve = (uri?: string) => applyActivityMediaUrl(String(uri || ""), mediaUrlFn);
+
+  const resolvedVideoUri = resolve(resolveVideoUri(row));
+  const mediaUrl = resolve(activityRawField(row, "mediaUrl") || activityRawField(row, "mediaUri"));
+  const videoUrl = resolve(activityRawField(row, "videoUrl")) || resolvedVideoUri;
+  const thumbnailUrl = resolve(
+    activityRawField(row, "thumbnailUrl") || activityRawField(row, "thumbnailUri")
+  );
+  const posterUrl = resolve(
+    activityRawField(row, "posterUrl") ||
+      activityRawField(row, "posterUri") ||
+      activityRawField(row, "videoPosterUri")
+  );
+  const coverUrl = resolve(
+    activityRawField(row, "coverUrl") ||
+      activityRawField(row, "firstFrameUrl") ||
+      activityRawField(row, "coverImageUrl")
+  );
+  const previewUrl = resolve(activityRawField(row, "previewUrl"));
+  const inferredPosterUri = resolve(
+    inferPosterUriFromVideoUrl(resolvedVideoUri || videoUrl || mediaUrl)
+  );
+
+  const storedPosterUri = activityRawField(row, "posterUri");
+  const storedVideoPosterUri = activityRawField(row, "videoPosterUri");
+  const storedThumbnailUri =
+    activityRawField(row, "thumbnailUri") || activityRawField(row, "thumbnailUrl");
+  const brandedPoster = itemUsesBrandedVideoPoster(row);
+
+  const resolvedPreviewUrl = resolveMediaVideoPreviewCandidates(item)[0] || resolve(resolveMediaPreviewUrl(item));
+  const staticCandidates = resolveMediaVideoPreviewCandidates(item);
+  const finalPreviewUri =
+    resolvedPreviewUrl && !isVideoPreviewUri(resolvedPreviewUrl) ? resolvedPreviewUrl : "";
+
+  const trace: ActivityGridPreviewTrace = {
+    postId: String(item?.id || row?.id || ""),
+    mediaUrl,
+    videoUrl,
+    resolvedVideoUri,
+    thumbnailUrl,
+    posterUrl,
+    coverUrl,
+    previewUrl,
+    inferredPosterUri,
+    finalPreviewUri,
+    resolvedPreviewUrl: finalPreviewUri,
+    storedPosterUri,
+    storedVideoPosterUri,
+    storedThumbnailUri,
+    brandedPoster,
+  };
+
+  console.log("KRISTO_MEDIA_PREVIEW_DEBUG", {
+    postId: trace.postId,
+    videoUrl: trace.videoUrl,
+    mediaUrl: trace.mediaUrl,
+    thumbnailUrl: trace.thumbnailUrl,
+    posterUrl: trace.posterUrl,
+    coverUrl: trace.coverUrl,
+    previewUrl: trace.previewUrl,
+    resolvedPreviewUrl: trace.resolvedPreviewUrl,
+    storedPosterUri: trace.storedPosterUri,
+    storedVideoPosterUri: trace.storedVideoPosterUri,
+    storedThumbnailUri: trace.storedThumbnailUri,
+    inferredPosterUri: trace.inferredPosterUri,
+    brandedPoster: trace.brandedPoster,
+    staticCandidateCount: staticCandidates.length,
+    staticCandidates,
+  });
+
+  return trace;
+}
+
+export function logActivityGridPreviewTrace(trace: ActivityGridPreviewTrace, extra?: Record<string, unknown>) {
+  console.log("KRISTO_MEDIA_GRID_PREVIEW_TRACE", {
+    ...trace,
+    ...(extra || {}),
+  });
+}
+
+export function resolveActivityGridPreviewUri(
+  item: any,
+  mediaUrlFn?: (uri?: string) => string
+): string {
+  const preview = resolveMediaPreviewUrl(item);
+  return applyActivityMediaUrl(preview, mediaUrlFn);
+}
 
 export function normalizeActivityMediaUrl(uri?: string, apiBase?: string) {
   const raw = String(uri || "").trim();
@@ -43,57 +268,87 @@ export function normalizeActivityItem(
   item: any,
   mediaUrlFn?: (uri?: string) => string
 ): ActivityGridItem {
-  const resolve = mediaUrlFn || ((uri?: string) => normalizeActivityMediaUrl(uri));
-
-  const mediaUri = resolve(item?.mediaUri || item?.imageUrl || item?.imageUri);
-  const videoUrl = resolve(item?.videoUrl);
-  const posterUri = resolve(item?.posterUri || item?.thumbnailUri || item?.thumbnailUrl);
+  const row = enrichActivityGridRow(item);
+  const resolve = (uri?: string) => applyActivityMediaUrl(String(uri || ""), mediaUrlFn);
+  const videoUrl = resolve(resolveVideoUri(row));
+  const isVideo = activityIsVideo(row) || (Boolean(videoUrl) && isFeedVideoItem(row));
+  const previewUri = resolveActivityGridPreviewUri(item, mediaUrlFn);
+  const resolvedPoster = resolve(resolvePosterUri(row));
+  const imageUri = !isVideo ? resolve(resolvePostImageUri(row)) : "";
 
   return {
-    ...item,
-    id: String(item?.id || ""),
-    title: item?.title,
-    text: item?.text,
-    body: item?.body,
-    source: item?.source,
-    kind: item?.kind,
-    type: item?.type,
-    createdAt: item?.createdAt,
-    authorName: item?.authorName,
-    actorLabel: item?.actorLabel,
-    churchName: item?.churchName,
-    mediaUri: mediaUri || undefined,
+    ...row,
+    id: String(row?.id || item?.id || ""),
+    title: row?.title ?? item?.title,
+    text: row?.text ?? item?.text,
+    body: row?.body ?? item?.body,
+    source: row?.source ?? item?.source,
+    kind: row?.kind ?? item?.kind,
+    type: row?.type ?? item?.type,
+    createdAt: row?.createdAt ?? item?.createdAt,
+    authorName: row?.authorName ?? item?.authorName,
+    actorLabel: row?.actorLabel ?? item?.actorLabel,
+    churchName: row?.churchName ?? item?.churchName,
+    mediaUri: !isVideo && (imageUri || previewUri) ? imageUri || previewUri : undefined,
     videoUrl: videoUrl || undefined,
-    posterUri: posterUri || undefined,
-    thumbnailUri: resolve(item?.thumbnailUri) || undefined,
-    thumbnailUrl: resolve(item?.thumbnailUrl) || undefined,
-    mediaType: item?.mediaType,
-    imageUrl: resolve(item?.imageUrl) || undefined,
-    ownershipType: item?.ownershipType,
+    videoPosterUri: isVideo && resolvedPoster ? resolvedPoster : resolve(row?.videoPosterUri) || undefined,
+    posterUri: isVideo && resolvedPoster ? resolvedPoster : resolve(row?.posterUri) || undefined,
+    thumbnailUri:
+      (isVideo ? resolvedPoster || previewUri : imageUri || previewUri) ||
+      resolve(row?.thumbnailUri) ||
+      undefined,
+    thumbnailUrl:
+      (isVideo ? resolvedPoster || previewUri : imageUri || previewUri) ||
+      resolve(row?.thumbnailUrl) ||
+      undefined,
+    mediaType:
+      String(row?.mediaType || (isVideo ? "video" : imageUri || previewUri ? "image" : "")).trim() ||
+      undefined,
+    imageUrl: !isVideo ? imageUri || previewUri || resolve(row?.imageUrl) || undefined : resolve(row?.imageUrl) || undefined,
+    ownershipType: row?.ownershipType ?? item?.ownershipType,
+    authorAvatarUri:
+      resolve(
+        row?.authorAvatarUri ||
+          row?.actorAvatarUri ||
+          row?.avatarUri ||
+          row?.profileImage ||
+          item?.authorAvatarUri ||
+          item?.actorAvatarUri ||
+          ""
+      ) || undefined,
   };
 }
 
 export function activityIsVideo(item: any) {
-  const mediaType = String(item?.mediaType || "").trim().toLowerCase();
-  const type = String(item?.type || "").trim().toLowerCase();
-  return mediaType === "video" || type === "video" || Boolean(String(item?.videoUrl || "").trim());
+  const row = enrichActivityGridRow(item);
+  const mediaType = String(row?.mediaType || item?.mediaType || "").trim().toLowerCase();
+  const type = String(row?.type || item?.type || "").trim().toLowerCase();
+  if (mediaType === "video" || type === "video") return true;
+  if (Boolean(String(row?.videoUrl || item?.videoUrl || "").trim())) return true;
+
+  const videoUrl = resolveVideoUri(row);
+  if (videoUrl) return true;
+
+  const mediaUri = String(row?.mediaUri || row?.mediaUrl || item?.mediaUri || item?.mediaUrl || "").trim();
+  return isVideoFileUri(mediaUri);
 }
 
-export function activityCardBackgroundUri(item: any) {
-  const imageUri = String(item?.mediaUri || item?.imageUrl || "").trim();
-  if (imageUri) return imageUri;
+export function activityCardBackgroundUri(
+  item: any,
+  mediaUrlFn?: (uri?: string) => string
+) {
+  return resolveActivityGridPreviewUri(item, mediaUrlFn);
+}
 
-  if (activityIsVideo(item)) {
-    const poster = String(item?.posterUri || item?.thumbnailUri || item?.thumbnailUrl || "").trim();
-    if (poster.startsWith("kristo:")) return "";
-    return poster;
+export function activityHasVisualMedia(item: any, mediaUrlFn?: (uri?: string) => string) {
+  if (Boolean(resolveActivityGridPreviewUri(item, mediaUrlFn))) return true;
+
+  const row = enrichActivityGridRow(item);
+  if (activityIsVideo(row)) {
+    return Boolean(resolveVideoUri(row));
   }
 
-  return "";
-}
-
-export function activityHasVisualMedia(item: any) {
-  return Boolean(activityCardBackgroundUri(item));
+  return Boolean(resolvePostImageUri(row));
 }
 
 export function getActivityGridLabel(item: any, variant: "church" | "media" = "church"): ChurchActivityLabel {

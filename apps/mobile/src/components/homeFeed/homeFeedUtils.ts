@@ -327,7 +327,10 @@ export function normalizeHomeFeedApiRow(row: any) {
       next?.thumbnailUri ||
       next?.thumbnailUrl ||
       next?.posterUrl ||
+      next?.coverUrl ||
+      next?.firstFrameUrl ||
       next?.mediaPosterUri ||
+      next?.previewUrl ||
       ""
   ).trim();
   if (posterRaw) {
@@ -1545,6 +1548,23 @@ export function resolvePostAvatar(item: any) {
 export function resolveVideoUri(item: any) {
   const local = String(item?.localVideoUri || "").trim();
   if (local.startsWith("file://")) return local;
+
+  const isVideoTyped =
+    String(item?.mediaType || "").trim().toLowerCase() === "video" ||
+    String(item?.type || "").trim().toLowerCase() === "video" ||
+    String(item?.kind || "").trim().toLowerCase() === "media";
+
+  for (const key of ["videoUrl", "videoUri", "mediaUrl", "url"]) {
+    const raw = String(item?.[key] || "").trim();
+    if (!raw) continue;
+    const resolved = homeFeedMediaUrl(raw);
+    if (!resolved) continue;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(resolved) || isVideoTyped) return resolved;
+  }
+
+  const mediaUri = homeFeedMediaUrl(item?.mediaUri || "");
+  if (mediaUri && /\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(mediaUri)) return mediaUri;
+
   return homeFeedMediaUrl(item?.videoUrl || "");
 }
 
@@ -1692,6 +1712,21 @@ export function resolveImageUri(item: any) {
 }
 
 /** Infer upload/R2 poster path from video URL (matches server poster conventions). */
+function resolvePosterSeedForVideo(videoUrl: string): string {
+  try {
+    const seed = (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__;
+    if (!seed || typeof seed !== "object") return "";
+    const seedVideo = String(seed.videoUrl || "").trim().split("?")[0];
+    const seedPoster = String(seed.posterUri || "").trim();
+    const normalized = String(videoUrl || "").trim().split("?")[0];
+    if (!seedVideo || !seedPoster || !normalized || seedVideo !== normalized) return "";
+    if (isBrandedPosterUri(seedPoster)) return "";
+    return homeFeedMediaUrl(seedPoster);
+  } catch {
+    return "";
+  }
+}
+
 export function inferPosterUriFromVideoUrl(videoUrl: string): string {
   const raw = String(videoUrl || "").trim().split("?")[0];
   if (!raw) return "";
@@ -1717,28 +1752,75 @@ export function inferPosterUriFromVideoUrl(videoUrl: string): string {
 
 export function resolvePosterUri(item: any) {
   const video = resolveVideoUri(item);
-  const explicit = homeFeedMediaUrl(
-    item?.posterUri ||
-      item?.videoPosterUri ||
-      item?.thumbnailUri ||
-      item?.thumbnailUrl ||
-      item?.mediaPosterUri ||
-      item?.posterUrl ||
-      item?.coverImage ||
-      item?.coverImageUrl ||
-      item?.poster
-  );
+  const posterFields = [
+    item?.posterUri,
+    item?.videoPosterUri,
+    item?.thumbnailUri,
+    item?.thumbnailUrl,
+    item?.mediaPosterUri,
+    item?.posterUrl,
+    item?.coverUrl,
+    item?.firstFrameUrl,
+    item?.coverImage,
+    item?.coverImageUrl,
+    item?.previewUrl,
+    item?.thumbnail,
+    item?.poster,
+  ];
 
-  if (explicit && isValidVideoPosterUri(explicit, video)) return explicit;
+  for (const raw of posterFields) {
+    const resolved = homeFeedMediaUrl(raw);
+    if (resolved && isValidVideoPosterUri(resolved, video)) return resolved;
+  }
+
+  const seeded = resolvePosterSeedForVideo(video);
+  if (seeded && isValidVideoPosterUri(seeded, video)) return seeded;
 
   const inferred = inferPosterUriFromVideoUrl(video);
   if (inferred && isValidVideoPosterUri(inferred, video)) return inferred;
 
-  return explicit || inferred || "";
+  return inferred || "";
 }
 
-export function hasBrandedVideoPoster(item: any) {
-  return itemUsesBrandedVideoPoster(item);
+/** Low-res preview MP4 convention — only valid when preview file exists in storage. */
+export function inferPreviewVideoUriFromVideoUrl(videoUrl: string): string {
+  const raw = String(videoUrl || "").trim().split("?")[0];
+  if (!raw) return "";
+
+  const r2Marker = "/church-videos/";
+  const r2Idx = raw.indexOf(r2Marker);
+  if (r2Idx >= 0) {
+    const tail = raw.slice(r2Idx + r2Marker.length);
+    const match = tail.match(/^([^/]+)\/([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
+    if (match?.[1] && match?.[2]) {
+      const base = raw.slice(0, r2Idx);
+      return `${base}/church-video-previews/${match[1]}/${match[2]}.mp4`;
+    }
+  }
+
+  const uploadsMatch = raw.match(/\/uploads\/media\/(?:[^/]+\/)*([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
+  if (uploadsMatch?.[1]) {
+    return homeFeedMediaUrl(`/uploads/media/previews/${uploadsMatch[1]}.mp4`);
+  }
+
+  return "";
+}
+
+export function isLikelySyntheticPosterPath(posterUri: string): boolean {
+  const value = String(posterUri || "").trim().toLowerCase().split("?")[0];
+  if (!value) return false;
+  return (
+    value.includes("/church-video-posters/") || value.includes("/uploads/media/posters/")
+  );
+}
+
+export function isInferredPosterUriForVideo(posterUri: string, videoUri: string): boolean {
+  const poster = String(posterUri || "").trim().split("?")[0];
+  const video = String(videoUri || "").trim();
+  if (!poster || !video) return false;
+  const inferred = inferPosterUriFromVideoUrl(video);
+  if (!inferred) return isLikelySyntheticPosterPath(poster);
+  return poster === inferred.split("?")[0];
 }
 
 export function isValidVideoPosterUri(posterUri: string, videoUri: string) {
@@ -1749,6 +1831,10 @@ export function isValidVideoPosterUri(posterUri: string, videoUri: string) {
   if (video && poster === video) return false;
   if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(poster)) return false;
   return true;
+}
+
+export function hasBrandedVideoPoster(item: any) {
+  return itemUsesBrandedVideoPoster(item);
 }
 
 export function hasHomeFeedVideoPoster(item: any, videoUri?: string) {

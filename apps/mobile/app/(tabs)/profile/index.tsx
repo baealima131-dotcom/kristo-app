@@ -48,6 +48,7 @@ import {
   saveProfileScreenCache,
   type ProfileScreenCachePayload,
 } from "@/src/lib/screenDataCache";
+import { hydrateMediaPosterCache } from "@/src/lib/mediaPosterCache";
 import { ProfileHeroSkeleton } from "@/src/components/PremiumTabSkeletons";
 import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
 import ChurchActivityGrid from "@/src/components/ChurchActivityGrid";
@@ -60,6 +61,7 @@ import {
   type ActivityGridItem,
   type ChurchActivityMemberFilter,
 } from "@/src/lib/churchActivityPosts";
+import { homeFeedMediaUrl } from "@/src/components/homeFeed/homeFeedUtils";
 
 type AuthProfile = {
   userId: string;
@@ -611,6 +613,10 @@ export default function MeScreen() {
 
   const userId = String(session?.userId || "").trim();
   const profileCachePeek = userId ? peekProfileScreenCache(userId) : null;
+
+  React.useEffect(() => {
+    void hydrateMediaPosterCache();
+  }, []);
   const [profileDraft, setProfileDraft] = React.useState<ProfileDraft | null>(null);
   const publicKristoId = String(
     (session as any)?.kristoId ||
@@ -1377,7 +1383,7 @@ export default function MeScreen() {
       selectedMemberId: activityMemberId,
       currentUserId,
       churchId,
-      mediaUrlFn: toBackendImageUrl,
+      mediaUrlFn: homeFeedMediaUrl,
     });
   }, [
     allActivitySourcePosts,
@@ -1395,7 +1401,7 @@ export default function MeScreen() {
       selectedMemberId: activityMemberId,
       currentUserId,
       churchId,
-      mediaUrlFn: toBackendImageUrl,
+      mediaUrlFn: homeFeedMediaUrl,
     });
   }, [
     allActivitySourcePosts,

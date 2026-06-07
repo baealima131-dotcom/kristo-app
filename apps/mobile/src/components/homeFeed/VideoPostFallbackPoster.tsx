@@ -4,6 +4,13 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
+import {
+  getPreviewLoadTimeoutMs,
+  isLocalMediaUri,
+  resolveClientVideoThumbnailUri,
+} from "@/src/lib/videoGridThumbnail";
+import type { ActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
+import { logActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
 
 const GOLD = "#F4D06F";
 
@@ -86,7 +93,44 @@ type FeedVideoPosterImageProps = {
   title?: string;
   videoUrl?: string;
   mediaStatus?: string;
+  previewTrace?: ActivityGridPreviewTrace;
+  enableClientThumbnailFallback?: boolean;
+  previewLoadTimeoutMs?: number;
 };
+
+type PosterLoadState = "idle" | "loading" | "loaded" | "failed";
+
+function emptyPreviewTrace(
+  postId: string,
+  videoUrl: string
+): ActivityGridPreviewTrace {
+  return {
+    postId,
+    mediaUrl: "",
+    videoUrl,
+    resolvedVideoUri: videoUrl,
+    thumbnailUrl: "",
+    posterUrl: "",
+    coverUrl: "",
+    previewUrl: "",
+    inferredPosterUri: "",
+    finalPreviewUri: "",
+    resolvedPreviewUrl: "",
+    storedPosterUri: "",
+    storedVideoPosterUri: "",
+    storedThumbnailUri: "",
+    brandedPoster: false,
+  };
+}
+
+function logPreviewEvent(
+  previewTrace: ActivityGridPreviewTrace | undefined,
+  postId: string,
+  videoUrl: string,
+  extra: Record<string, unknown>
+) {
+  logActivityGridPreviewTrace(previewTrace || emptyPreviewTrace(postId, videoUrl), extra);
+}
 
 export function FeedVideoPosterImage({
   uri,
@@ -96,24 +140,107 @@ export function FeedVideoPosterImage({
   title = "",
   videoUrl = "",
   mediaStatus = "",
+  previewTrace,
+  enableClientThumbnailFallback = false,
+  previewLoadTimeoutMs = getPreviewLoadTimeoutMs(),
 }: FeedVideoPosterImageProps) {
-  const [imageFailed, setImageFailed] = React.useState(false);
+  const posterUri = String(uri || "").trim();
+  const hasPosterUri = Boolean(posterUri) && !isBrandedPosterUri(posterUri);
+
+  const [posterState, setPosterState] = React.useState<PosterLoadState>(
+    hasPosterUri ? "loading" : "failed"
+  );
+  const [clientThumbUri, setClientThumbUri] = React.useState("");
+  const [clientThumbState, setClientThumbState] = React.useState<PosterLoadState>("idle");
+
+  const canTryClientThumb =
+    enableClientThumbnailFallback && isLocalMediaUri(String(videoUrl || "").trim());
 
   useEffect(() => {
-    setImageFailed(false);
-  }, [uri]);
+    setPosterState(hasPosterUri ? "loading" : "failed");
+    setClientThumbUri("");
+    setClientThumbState("idle");
+  }, [posterUri, videoUrl, hasPosterUri]);
 
   useEffect(() => {
-    if (!uri || isBrandedPosterUri(uri)) return;
+    if (posterState !== "loading" || !hasPosterUri) return;
+
+    const timer = setTimeout(() => {
+      setPosterState("failed");
+      logPreviewEvent(previewTrace, postId, videoUrl, {
+        posterLoad: "timeout",
+        failedPosterUri: posterUri,
+        timeoutMs: previewLoadTimeoutMs,
+      });
+    }, previewLoadTimeoutMs);
+
+    return () => clearTimeout(timer);
+  }, [posterState, hasPosterUri, posterUri, postId, videoUrl, previewTrace, previewLoadTimeoutMs]);
+
+  useEffect(() => {
+    if (!canTryClientThumb) return;
+    if (posterState !== "failed") return;
+    if (clientThumbState !== "idle") return;
+
+    let cancelled = false;
+    setClientThumbState("loading");
+
+    void resolveClientVideoThumbnailUri(videoUrl).then((generated) => {
+      if (cancelled) return;
+
+      if (generated) {
+        setClientThumbUri(generated);
+        setClientThumbState("loaded");
+        logPreviewEvent(previewTrace, postId, videoUrl, {
+          posterLoad: "client-thumbnail-success",
+          clientThumbnailUri: generated,
+          failedPosterUri: posterUri || null,
+        });
+        return;
+      }
+
+      setClientThumbState("failed");
+      logPreviewEvent(previewTrace, postId, videoUrl, {
+        posterLoad: "client-thumbnail-failed",
+        failedPosterUri: posterUri || null,
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    canTryClientThumb,
+    posterState,
+    clientThumbState,
+    videoUrl,
+    posterUri,
+    postId,
+    previewTrace,
+  ]);
+
+  useEffect(() => {
+    if (!hasPosterUri || posterState !== "loading") return;
     if (!isKristoVerboseFeedDebug()) return;
     console.log("KRISTO_VIDEO_POSTER_RENDERED", {
       id: postId || null,
-      posterUri: uri,
+      posterUri,
       videoUrl: videoUrl || null,
     });
-  }, [uri, postId, videoUrl]);
+  }, [hasPosterUri, posterState, posterUri, postId, videoUrl]);
 
-  if (!uri || isBrandedPosterUri(uri) || imageFailed) {
+  const displayUri =
+    posterState === "loaded"
+      ? posterUri
+      : clientThumbState === "loaded" && clientThumbUri
+        ? clientThumbUri
+        : posterState === "loading" && hasPosterUri
+          ? posterUri
+          : "";
+
+  const shouldShowImage = Boolean(displayUri);
+
+  if (!shouldShowImage) {
     return (
       <VideoPostFallbackPoster
         variant="full"
@@ -121,7 +248,7 @@ export function FeedVideoPosterImage({
         title={title}
         videoUrl={videoUrl}
         mediaStatus={mediaStatus}
-        suppressMissingPosterLog={isBrandedPosterUri(uri)}
+        suppressMissingPosterLog={isBrandedPosterUri(posterUri)}
       />
     );
   }
@@ -134,10 +261,37 @@ export function FeedVideoPosterImage({
         style={StyleSheet.absoluteFillObject}
       />
       <Image
-        source={{ uri }}
+        source={{ uri: displayUri }}
         style={StyleSheet.absoluteFillObject}
         resizeMode={resizeMode}
-        onError={() => setImageFailed(true)}
+        onLoad={() => {
+          if (displayUri === posterUri) {
+            setPosterState("loaded");
+          } else {
+            setClientThumbState("loaded");
+          }
+          logPreviewEvent(previewTrace, postId, videoUrl, {
+            posterLoad: "success",
+            loadedUri: displayUri,
+          });
+        }}
+        onError={() => {
+          if (displayUri === clientThumbUri) {
+            setClientThumbUri("");
+            setClientThumbState("failed");
+            logPreviewEvent(previewTrace, postId, videoUrl, {
+              posterLoad: "client-thumbnail-image-fail",
+              failedPosterUri: displayUri,
+            });
+            return;
+          }
+
+          setPosterState("failed");
+          logPreviewEvent(previewTrace, postId, videoUrl, {
+            posterLoad: "fail",
+            failedPosterUri: posterUri || null,
+          });
+        }}
       />
     </View>
   );

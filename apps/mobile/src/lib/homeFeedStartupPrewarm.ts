@@ -12,7 +12,7 @@ import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
 
 const COOLDOWN_MS = 60_000;
 const STARTUP_POSTER_MAX = 10;
-const STARTUP_VIDEO_MAX = 5;
+const STARTUP_VIDEO_MAX = 2;
 const STARTUP_CONCURRENCY = 2;
 
 let inflight: Promise<void> | null = null;
@@ -84,7 +84,7 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
       setSessionSync(session);
       await hydrateHomeFeedRowsCacheFromStorage(session.userId);
 
-      const rows = await fetchHomeFeedFromApi("startup-prewarm", { force: true });
+      const rows = await fetchHomeFeedFromApi("startup-prewarm");
       const merged = getCachedHomeFeedBackendRows();
       const rowCount = merged.length || rows.length;
 
