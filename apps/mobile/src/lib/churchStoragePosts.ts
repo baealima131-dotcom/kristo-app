@@ -308,6 +308,7 @@ export function isPastorOrAdminRole(role?: string) {
   return value.includes("pastor") || value.includes("admin");
 }
 
+/** @deprecated Use canDeleteChurchActivityPostFromSession for per-post checks. */
 export function canDeleteStoragePosts(mode: StorageMode, session: any, isMediaHost = false) {
   if (isPastorOrAdminRole(session?.role)) return true;
   if (mode === "media" && isMediaHost) return true;

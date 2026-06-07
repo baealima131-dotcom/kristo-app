@@ -17,6 +17,10 @@ import {
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
 import { isKristoVerboseFeedDebug, isKristoVerboseFeedIdentityDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
 import {
+  logScheduleTopicTrace,
+  resolveHomeFeedScheduleSlotLabels,
+} from "@/src/lib/slotTopicUtils";
+import {
   isHiddenInvalidHomeFeedSchedule,
   markHiddenInvalidHomeFeedSchedule,
 } from "@/src/lib/homeFeedInvalidSchedules";
@@ -814,6 +818,26 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
       expandedCount: expanded.length,
       expiredFiltered: removedCount,
     });
+  }
+
+  if (expanded.length > 0) {
+    const sample = expanded[0];
+    const sampleSlot = Array.isArray(sample?.scheduleSlots) ? sample.scheduleSlots[0] : null;
+    if (sampleSlot) {
+      const mapped = resolveHomeFeedScheduleSlotLabels(sample, sampleSlot);
+      logScheduleTopicTrace("home_feed_api_mapped", {
+        scheduleId,
+        itemTopic: String(sample?.topic || ""),
+        itemScheduleTopic: String(sample?.scheduleTopic || ""),
+        slotParentTopic: String(sampleSlot?.parentTopic || ""),
+        slotScheduleTopic: String(sampleSlot?.scheduleTopic || ""),
+        slotSlotTopic: String(sampleSlot?.slotTopic || ""),
+        slotName: String(sampleSlot?.name || ""),
+        mappedTitle: mapped.title,
+        mappedSubtitle: mapped.subtitle,
+        topicSource: mapped.topicSource,
+      });
+    }
   }
 
   return expanded;

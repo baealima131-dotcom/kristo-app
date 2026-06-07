@@ -27,7 +27,13 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
-import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import { feedList, feedRemoveWhere, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import {
+  canDeleteChurchActivityPostFromSession,
+  parseChurchActivityDeleteResponse,
+} from "@/src/lib/churchActivityDelete";
+import { evaluateChurchMediaAccessFromSession } from "@/src/lib/churchMediaAccess";
+import { syncHomeFeedPostDelete } from "@/src/lib/homeFeedPostDeleteSync";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import {
   filterChurchActivityFeedRows,
@@ -385,20 +391,26 @@ const ActivityActionRail = memo(function ActivityActionRail({
   commentCount,
   shareCount,
   saved,
+  canDelete,
+  deleting,
   onLike,
   onComment,
   onShare,
   onSave,
+  onDelete,
 }: {
   liked: boolean;
   likeCount: number;
   commentCount: number;
   shareCount: number;
   saved: boolean;
+  canDelete?: boolean;
+  deleting?: boolean;
   onLike: () => void;
   onComment: () => void;
   onShare: () => void;
   onSave: () => void;
+  onDelete?: () => void;
 }) {
   const likeScale = useRef(new Animated.Value(1)).current;
   const likeRipple = useRef(new Animated.Value(0)).current;
@@ -497,6 +509,24 @@ const ActivityActionRail = memo(function ActivityActionRail({
           {saved ? "Saved" : "Save"}
         </Text>
       </Pressable>
+
+      {canDelete ? (
+        <Pressable
+          hitSlop={18}
+          style={styles.actionBtn}
+          onPress={onDelete}
+          disabled={deleting}
+        >
+          <BlurView intensity={38} tint="dark" style={[styles.actionIconWrap, styles.actionIconWrapDelete]}>
+            {deleting ? (
+              <ActivityIndicator size="small" color="#FFB4B4" />
+            ) : (
+              <Ionicons name="trash-outline" size={22} color="#FFB4B4" />
+            )}
+          </BlurView>
+          <Text style={[styles.actionSaveLabel, styles.actionTextDelete]}>Delete</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 });
@@ -514,6 +544,9 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
   onComment,
   onShare,
   onSave,
+  canDelete,
+  deleting,
+  onDelete,
 }: {
   item: any;
   height: number;
@@ -527,6 +560,9 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
   onComment: () => void;
   onShare: () => void;
   onSave: () => void;
+  canDelete?: boolean;
+  deleting?: boolean;
+  onDelete?: () => void;
 }) {
   const body = String(item?.body || item?.text || "").trim();
   const authorName = String(item?.authorName || item?.actorLabel || "Church member").trim();
@@ -570,10 +606,13 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
         commentCount={commentCount}
         shareCount={shareCount}
         saved={saved}
+        canDelete={canDelete}
+        deleting={deleting}
         onLike={onLike}
         onComment={onComment}
         onShare={onShare}
         onSave={onSave}
+        onDelete={onDelete}
       />
 
       <View style={styles.metaFooter}>
@@ -624,6 +663,7 @@ export default function ChurchActivityFeedScreen() {
   }>();
 
   const churchId = String(activityChurchId || "").trim();
+  const effectiveChurchId = String(churchId || session?.churchId || "").trim();
   const routeMemberId = String(activityMemberId || "").trim();
   const routeMode: ChurchActivityFeedMode =
     activityMode === "member" || activityMode === "media" ? activityMode : "church";
@@ -640,6 +680,12 @@ export default function ChurchActivityFeedScreen() {
     Record<string, { liked: boolean; likeCount: number }>
   >({});
   const [optimisticSaved, setOptimisticSaved] = useState<Record<string, boolean>>({});
+  const [deletingId, setDeletingId] = useState("");
+  const [deleteAccess, setDeleteAccess] = useState({
+    isActualChurchPastor: false,
+    isMediaHost: false,
+    actualPastorUserId: "",
+  });
 
   const listRef = useRef<FlatList<any>>(null);
   const focusHandledRef = useRef("");
@@ -649,6 +695,60 @@ export default function ChurchActivityFeedScreen() {
   useEffect(() => {
     return subscribeHomeFeed(() => setHomeFeedTick((v) => v + 1));
   }, []);
+
+  useEffect(() => {
+    if (!currentUserId || !effectiveChurchId) {
+      setDeleteAccess({
+        isActualChurchPastor: false,
+        isMediaHost: false,
+        actualPastorUserId: "",
+      });
+      return;
+    }
+
+    let alive = true;
+
+    void apiGet("/api/church/media-hosts", {
+      headers: getKristoHeaders({
+        userId: currentUserId,
+        role: (session?.role || "Member") as any,
+        churchId: effectiveChurchId,
+      }),
+    })
+      .then((res: any) => {
+        if (!alive) return;
+        const access = evaluateChurchMediaAccessFromSession(
+          {
+            userId: currentUserId,
+            role: session?.role,
+            churchRole: session?.churchRole,
+          },
+          res
+        );
+        setDeleteAccess({
+          isActualChurchPastor: access.isActualChurchPastor,
+          isMediaHost: access.isMediaHost,
+          actualPastorUserId: access.actualPastorUserId,
+        });
+      })
+      .catch(() => {
+        if (!alive) return;
+        const access = evaluateChurchMediaAccessFromSession({
+          userId: currentUserId,
+          role: session?.role,
+          churchRole: session?.churchRole,
+        });
+        setDeleteAccess({
+          isActualChurchPastor: access.isActualChurchPastor,
+          isMediaHost: access.isMediaHost,
+          actualPastorUserId: access.actualPastorUserId,
+        });
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [currentUserId, effectiveChurchId, session?.role, session?.churchRole]);
 
   useEffect(() => {
     if (!churchId) {
@@ -913,6 +1013,79 @@ export default function ChurchActivityFeedScreen() {
     } catch {}
   }, []);
 
+  const canDeletePost = useCallback(
+    (item: any) =>
+      canDeleteChurchActivityPostFromSession(item, session, deleteAccess, effectiveChurchId),
+    [session, deleteAccess, effectiveChurchId]
+  );
+
+  const handleDelete = useCallback(
+    (item: any) => {
+      const postId = String(item?.id || "").trim();
+      if (!postId || !effectiveChurchId || deletingId || !canDeletePost(item)) return;
+
+      Alert.alert(
+        "Delete post?",
+        "This removes the post from Church Activity and Home Feed.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => {
+              void (async () => {
+                setDeletingId(postId);
+                try {
+                  const res: any = await apiPost(
+                    "/api/church/feed",
+                    { action: "delete_post", postId },
+                    {
+                      headers: getKristoHeaders({
+                        userId: currentUserId,
+                        role: (session?.role || "Member") as any,
+                        churchId: effectiveChurchId,
+                      }),
+                    }
+                  );
+
+                  const parsed = parseChurchActivityDeleteResponse(res, postId);
+                  if (!parsed.deleted) {
+                    Alert.alert("Delete failed", "Could not delete post. Please try again.");
+                    return;
+                  }
+
+                  const deletedId = parsed.deletedId || postId;
+                  feedRemoveWhere((row) => String(row.id || "") === deletedId);
+                  setSourceRows((prev) =>
+                    prev.filter((row) => String(row.id || "") !== deletedId)
+                  );
+                  setActiveIndex((prev) => Math.max(0, prev));
+
+                  await syncHomeFeedPostDelete({
+                    postId: deletedId,
+                    storageDeleted: true,
+                    feedDeleted: true,
+                  });
+                } catch {
+                  Alert.alert("Delete failed", "Could not delete post. Please try again.");
+                } finally {
+                  setDeletingId("");
+                }
+              })();
+            },
+          },
+        ]
+      );
+    },
+    [
+      canDeletePost,
+      currentUserId,
+      deletingId,
+      effectiveChurchId,
+      session?.role,
+    ]
+  );
+
   useEffect(() => {
     const rawFocusId = String(focusPostId || "").trim();
     if (!rawFocusId || !feedRows.length) return;
@@ -944,6 +1117,8 @@ export default function ChurchActivityFeedScreen() {
     ({ item, index }: { item: any; index: number }) => {
       const likeState = getLikeState(item);
       const saved = getSavedState(item);
+      const postId = String(item?.id || "").trim();
+      const canDelete = canDeletePost(item);
 
       return (
         <ActivityFeedSlide
@@ -959,6 +1134,9 @@ export default function ChurchActivityFeedScreen() {
           onComment={handleComment}
           onShare={() => handleShare(item)}
           onSave={() => handleSave(item)}
+          canDelete={canDelete}
+          deleting={deletingId === postId}
+          onDelete={() => handleDelete(item)}
         />
       );
     },
@@ -973,6 +1151,9 @@ export default function ChurchActivityFeedScreen() {
       handleComment,
       handleShare,
       handleSave,
+      canDeletePost,
+      deletingId,
+      handleDelete,
     ]
   );
 
@@ -1396,6 +1577,10 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(243,210,143,0.14)",
     borderColor: "rgba(243,210,143,0.58)",
   },
+  actionIconWrapDelete: {
+    backgroundColor: "rgba(255,90,122,0.12)",
+    borderColor: "rgba(255,180,180,0.42)",
+  },
   likeRipple: {
     position: "absolute",
     width: 54,
@@ -1430,5 +1615,8 @@ const styles = StyleSheet.create({
   },
   actionTextSaved: {
     color: "#F3D28F",
+  },
+  actionTextDelete: {
+    color: "#FFB4B4",
   },
 });

@@ -204,6 +204,18 @@ export function resolveScheduleSlotVisualState(
   return state;
 }
 
+/** True when a schedule slot or room assignment card live window has ended. */
+export function isScheduleSlotExpired(slot: any, nowMs = Date.now()): boolean {
+  if (!slot || typeof slot !== "object") return false;
+
+  const startMs = parseSlotStartMs(slot);
+  const endMs = parseSlotEndMs(slot, startMs);
+  if (endMs <= 0) return false;
+  if (startMs > 0 && endMs <= startMs) return false;
+
+  return nowMs >= endMs;
+}
+
 export function formatSlotDateLabel(iso?: string, fallback?: string) {
   if (!iso) return fallback || "Today";
   const d = new Date(iso);
@@ -661,6 +673,18 @@ export function normalizeLiveScheduleSlot(slot: any, index = 0) {
     name: lean.title,
     slotLabel: lean.title,
     title: lean.title,
+    role: String(slot?.role || "").trim(),
+    task: String(slot?.task || "").trim(),
+    script: String(slot?.script || "").trim(),
+    slotTopic: String(slot?.slotTopic || "").trim(),
+    assignmentTopic: String(slot?.assignmentTopic || "").trim(),
+    parentTopic: String(slot?.parentTopic || "").trim(),
+    scheduleTopic: String(slot?.scheduleTopic || "").trim(),
+    meetingTopic: String(slot?.meetingTopic || "").trim(),
+    meetingType: String(slot?.meetingType || "").trim(),
+    liveCardType: String(slot?.liveCardType || "").trim(),
+    selectedCardType: String(slot?.selectedCardType || "").trim(),
+    cardTypeLabel: String(slot?.cardTypeLabel || "").trim(),
     meetingDay: lean.meetingDay,
     meetingDate: String(slot?.meetingDate || lean.meetingDay || "").trim(),
     meetingEndDate: String(slot?.meetingEndDate || "").trim(),

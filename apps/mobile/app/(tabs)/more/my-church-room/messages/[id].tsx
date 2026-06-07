@@ -86,6 +86,11 @@ import {
   subscribeScheduleRoomDeleteInvalidation,
 } from "@/src/lib/scheduleRoomMessageSync";
 import { resolveRealSlotTopic } from "@/src/lib/slotTopicUtils";
+import {
+  isScheduleSlotExpired,
+  parseSlotEndMs,
+  parseSlotStartMs,
+} from "@/src/lib/scheduleSlotUtils";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
@@ -1491,14 +1496,14 @@ function renderAssignmentCardBody(
   );
 }
 
-function getAssignmentMeetingWindow(messages: MsgItem[]) {
+function getAssignmentMeetingWindow(messages: MsgItem[], nowMs = Date.now()) {
   const rows = (messages || [])
-    .filter((m) => m.kind === "assignment_card" && m.card?.meetingDate)
+    .filter((m) => m.kind === "assignment_card" && m.card)
+    .filter((m) => !isScheduleSlotExpired(m.card, nowMs))
     .map((m) => {
-      const startMs = new Date(String(m.card?.meetingDate || "")).getTime();
-      const durationMin = Math.max(0, Number(m.card?.durationMin || 0));
-      const endMs = startMs + durationMin * 60 * 1000;
-      return Number.isFinite(startMs) ? { startMs, endMs } : null;
+      const startMs = parseSlotStartMs(m.card);
+      const endMs = parseSlotEndMs(m.card, startMs);
+      return startMs > 0 && endMs > startMs ? { startMs, endMs } : null;
     })
     .filter(Boolean) as Array<{ startMs: number; endMs: number }>;
 
@@ -1696,6 +1701,11 @@ function MessageImageGalleryModal({
 
 function isAssignmentCardMessage(m: MsgItem) {
   return String(m.kind || "") === "assignment_card";
+}
+
+function shouldHideExpiredAssignmentCardInRoom(m: MsgItem, nowMs: number) {
+  if (!isAssignmentCardMessage(m) || !m.card) return false;
+  return isScheduleSlotExpired(m.card, nowMs);
 }
 
 function isOptimisticOutgoingMessage(m: MsgItem) {
@@ -3160,7 +3170,22 @@ export default function MessageThreadScreen() {
     });
   }, [threadId, backendRoomId, messages.length]);
 
-  const visibleMessages = useMemo(() => paginateMessages(messages, 120), [messages]);
+  const [liveCountdownNow, setLiveCountdownNow] = useState(Date.now());
+
+  useEffect(() => {
+    const intervalMs = isStructuredRoom ? 10000 : 30000;
+    const timer = setInterval(() => {
+      setLiveCountdownNow(Date.now());
+    }, intervalMs);
+
+    return () => clearInterval(timer);
+  }, [isStructuredRoom]);
+
+  const visibleMessages = useMemo(() => {
+    const paginated = paginateMessages(messages, 120);
+    if (!isStructuredRoom) return paginated;
+    return paginated.filter((m) => !shouldHideExpiredAssignmentCardInRoom(m, liveCountdownNow));
+  }, [messages, isStructuredRoom, liveCountdownNow]);
   const roomImageGallery = useMemo(() => collectRoomImageGalleryUris(messages), [messages]);
   const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
   const roomMessagesSigRef = useRef("");
@@ -3724,15 +3749,6 @@ const displayHeaderTitle = assignmentDisplayTitle;
   const assignmentLiveBadge = isAssignmentThread && true;
 
   const livePulse = useRef(new Animated.Value(1)).current;
-  const [liveCountdownNow, setLiveCountdownNow] = useState(Date.now());
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setLiveCountdownNow(Date.now());
-    }, 30000);
-
-    return () => clearInterval(timer);
-  }, []);
 
   const meetingScheduleKey = String(
     resolvedMinistryId ||
@@ -3747,19 +3763,22 @@ const displayHeaderTitle = assignmentDisplayTitle;
   );
 
   const assignmentMeetingWindow = useMemo(
-    () => getAssignmentMeetingWindow(messages),
-    [messages]
+    () => getAssignmentMeetingWindow(messages, liveCountdownNow),
+    [messages, liveCountdownNow]
   );
 
   const PRELIVE_TEAM_OPEN_MS = 30 * 60 * 1000;
   const PRELIVE_AUDIENCE_OPEN_MS = 3 * 60 * 1000;
 
   const liveCta = useMemo(() => {
+    const now = liveCountdownNow;
+
     const cardsFromMessages = Array.isArray(messages)
       ? messages
           .map((m: any) => m?.card)
           .filter((card: any) => {
             if (!card) return false;
+            if (isScheduleSlotExpired(card, now)) return false;
             const slotLabel = String(card?.slotLabel || "").trim();
             const timeLabel = String(card?.timeLabel || "").trim();
             return !!slotLabel || !!timeLabel;
@@ -3811,8 +3830,6 @@ const displayHeaderTitle = assignmentDisplayTitle;
       hasUsableScheduleTime ||
       hasScheduleFromState;
 
-    const now = liveCountdownNow;
-
     const claimedOrAssignedCards = cardsFromMessages.filter((card: any) => {
       const claimedByName = String(card?.claimedByName || "").trim().toLowerCase();
       const claimedByUserId = String(
@@ -3861,7 +3878,12 @@ const displayHeaderTitle = assignmentDisplayTitle;
     const viewerCanEnterReadyRoom =
       viewerIsLeaderHost || claimedOrAssignedCards.length > 0;
 
-    const hasAssignmentCards = messages.some((m: any) => String(m?.kind || "") === "assignment_card");
+    const hasAssignmentCards = messages.some(
+      (m: any) =>
+        String(m?.kind || "") === "assignment_card" &&
+        m?.card &&
+        !isScheduleSlotExpired(m.card, now)
+    );
     const hasRealSchedule = !!hasSchedule && hasAssignmentCards;
 
     const canEnterEarlyReadyRoom =

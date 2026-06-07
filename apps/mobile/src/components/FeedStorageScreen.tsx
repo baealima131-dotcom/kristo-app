@@ -31,7 +31,9 @@ import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { FeedVideoPosterImage } from "@/src/components/homeFeed/VideoPostFallbackPoster";
 import { useSmoothedJobUploadProgress } from "@/src/hooks/useSmoothedJobUploadProgress";
 import {
-  canDeleteStoragePosts,
+  canDeleteChurchActivityPostFromSession,
+} from "@/src/lib/churchActivityDelete";
+import {
   canPreviewStoragePost,
   getStoragePostAuthor,
   getStoragePostThumbnail,
@@ -499,7 +501,20 @@ export default function FeedStorageScreen({
     [session?.userId, session?.role, (session as any)?.churchRole, isMediaHost]
   );
 
-  const canDelete = canDeleteStoragePosts(mode, session, mediaAccess.isMediaHost);
+  const deleteAccess = useMemo(
+    () => ({
+      isActualChurchPastor: mediaAccess.isActualChurchPastor,
+      isMediaHost: mediaAccess.isMediaHost,
+      actualPastorUserId: mediaAccess.actualPastorUserId,
+    }),
+    [mediaAccess.isActualChurchPastor, mediaAccess.isMediaHost, mediaAccess.actualPastorUserId]
+  );
+
+  const canDeletePost = useCallback(
+    (item: FeedStorageItem) =>
+      canDeleteChurchActivityPostFromSession(item, session, deleteAccess, churchId),
+    [session, deleteAccess, churchId]
+  );
 
   const refreshUploadJobs = useCallback(async () => {
     if (!churchId) {
@@ -670,7 +685,7 @@ export default function FeedStorageScreen({
   }, [loadRows]);
 
   async function handleDelete(item: FeedStorageItem) {
-    if (!session?.userId || !churchId || deletingId || !canDelete) return;
+    if (!session?.userId || !churchId || deletingId || !canDeletePost(item)) return;
 
     Alert.alert(
       "Delete post?",
@@ -826,7 +841,7 @@ export default function FeedStorageScreen({
                 key={item.id}
                 item={item}
                 mode={mode}
-                canDelete={canDelete}
+                canDelete={canDeletePost(item)}
                 deleting={deletingId === item.id}
                 onDelete={() => void handleDelete(item)}
                 onPreview={() => setPreviewItem(item)}

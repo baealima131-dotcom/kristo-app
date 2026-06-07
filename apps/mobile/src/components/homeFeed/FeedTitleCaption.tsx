@@ -1,17 +1,24 @@
 import React, { memo, useEffect, useRef, useState } from "react";
 import { Animated, Easing, StyleSheet, Text, View } from "react-native";
+import type { HomeFeedPostAccent } from "./homeFeedUtils";
 
 const TITLE_TYPE_MS = 46;
 const TITLE_FONT_SIZE = 23;
 const TITLE_LINE_HEIGHT = 28;
 const TITLE_HOLD_MS = 380;
 const TITLE_EXIT_MS = 240;
+const TESTIMONY_BLUE = "rgba(235,245,255,0.98)";
+const ANNOUNCEMENT_GOLD = "rgba(244,208,111,0.98)";
 
 type Props = {
   postId: string;
   title: string;
   caption: string;
   isActive: boolean;
+  accent?: HomeFeedPostAccent;
+  keepTitleVisible?: boolean;
+  middleSlot?: React.ReactNode;
+  captionOnly?: boolean;
 };
 
 /**
@@ -22,6 +29,10 @@ export const FeedTitleCaption = memo(function FeedTitleCaption({
   title,
   caption,
   isActive,
+  accent = "default",
+  keepTitleVisible = false,
+  middleSlot = null,
+  captionOnly = false,
 }: Props) {
   const [visibleChars, setVisibleChars] = useState(0);
   const [showTitle, setShowTitle] = useState(false);
@@ -40,6 +51,31 @@ export const FeedTitleCaption = memo(function FeedTitleCaption({
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
+    }
+
+    if (captionOnly) {
+      const cleanCaption = String(caption || "").trim();
+      if (!cleanCaption) {
+        setVisibleChars(0);
+        setShowTitle(false);
+        setShowCaption(false);
+        return;
+      }
+
+      setVisibleChars(0);
+      setShowTitle(false);
+      setShowCaption(true);
+      captionOpacity.setValue(1);
+      if (isActive) {
+        captionOpacity.setValue(0);
+        Animated.timing(captionOpacity, {
+          toValue: 1,
+          duration: 420,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start();
+      }
+      return;
     }
 
     if (!isActive) {
@@ -121,6 +157,14 @@ export const FeedTitleCaption = memo(function FeedTitleCaption({
       });
     };
 
+    const finishTitle = () => {
+      if (keepTitleVisible) {
+        revealCaption();
+        return;
+      }
+      dismissTitle();
+    };
+
     let index = 0;
     const tick = () => {
       if (activePostRef.current !== postId || !isActive) return;
@@ -132,7 +176,7 @@ export const FeedTitleCaption = memo(function FeedTitleCaption({
         return;
       }
 
-      timerRef.current = setTimeout(dismissTitle, TITLE_HOLD_MS);
+      timerRef.current = setTimeout(finishTitle, TITLE_HOLD_MS);
     };
 
     timerRef.current = setTimeout(tick, TITLE_TYPE_MS);
@@ -143,7 +187,7 @@ export const FeedTitleCaption = memo(function FeedTitleCaption({
         timerRef.current = null;
       }
     };
-  }, [isActive, postId, title, caption, titleScale, titleOpacity, captionOpacity]);
+  }, [isActive, postId, title, caption, titleScale, titleOpacity, captionOpacity, keepTitleVisible, captionOnly]);
 
   const cleanTitle = String(title || "")
     .trim()
@@ -152,7 +196,58 @@ export const FeedTitleCaption = memo(function FeedTitleCaption({
   const displayCaption =
     cleanCaption && cleanCaption.toUpperCase() !== cleanTitle ? cleanCaption : "";
 
-  if (!cleanTitle && !displayCaption) return null;
+  if (!cleanTitle && !displayCaption && !middleSlot) return null;
+
+  const titleColor =
+    accent === "testimony"
+      ? TESTIMONY_BLUE
+      : accent === "announcement"
+        ? ANNOUNCEMENT_GOLD
+        : "#FFFFFF";
+  const cursorColor =
+    accent === "testimony"
+      ? "rgba(120,200,255,0.85)"
+      : "rgba(244,208,111,0.85)";
+
+  if (captionOnly) {
+    if (!displayCaption) return null;
+    if (!isActive) {
+      return (
+        <View style={styles.wrap}>
+          <Text style={styles.caption} numberOfLines={6}>
+            {displayCaption}
+          </Text>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.wrap}>
+        {showCaption ? (
+          <Animated.Text style={[styles.caption, { opacity: captionOpacity }]} numberOfLines={6}>
+            {displayCaption}
+          </Animated.Text>
+        ) : null}
+      </View>
+    );
+  }
+
+  if (keepTitleVisible && !isActive) {
+    return (
+      <View style={styles.wrap}>
+        {cleanTitle ? (
+          <Text style={[styles.title, { color: titleColor }]} numberOfLines={1} ellipsizeMode="tail">
+            {cleanTitle}
+          </Text>
+        ) : null}
+        {middleSlot ? <View style={styles.middleSlot}>{middleSlot}</View> : null}
+        {displayCaption ? (
+          <Text style={styles.caption} numberOfLines={4}>
+            {displayCaption}
+          </Text>
+        ) : null}
+      </View>
+    );
+  }
 
   const typedTitle = cleanTitle.slice(0, visibleChars);
   const typing = showTitle && visibleChars < cleanTitle.length;
@@ -169,12 +264,14 @@ export const FeedTitleCaption = memo(function FeedTitleCaption({
             },
           ]}
         >
-          <Text style={styles.title} numberOfLines={1} ellipsizeMode="tail">
+          <Text style={[styles.title, { color: titleColor }]} numberOfLines={1} ellipsizeMode="tail">
             {typedTitle}
-            {typing ? <Text style={styles.cursor}>|</Text> : null}
+            {typing ? <Text style={[styles.cursor, { color: cursorColor }]}>|</Text> : null}
           </Text>
         </Animated.View>
       ) : null}
+
+      {middleSlot ? <View style={styles.middleSlot}>{middleSlot}</View> : null}
 
       {showCaption && displayCaption ? (
         <Animated.Text style={[styles.caption, { opacity: captionOpacity }]} numberOfLines={4}>
@@ -195,8 +292,12 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: "100%",
   },
+  middleSlot: {
+    width: "100%",
+    marginTop: 2,
+    marginBottom: 2,
+  },
   title: {
-    color: "#FFFFFF",
     fontSize: TITLE_FONT_SIZE,
     lineHeight: TITLE_LINE_HEIGHT,
     fontWeight: "800",
@@ -207,7 +308,6 @@ const styles = StyleSheet.create({
     textShadowRadius: 5,
   },
   cursor: {
-    color: "rgba(244,208,111,0.85)",
     fontWeight: "300",
   },
   caption: {

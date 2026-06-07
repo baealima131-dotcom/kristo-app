@@ -1483,6 +1483,42 @@ export function feedSyncMediaScheduleFromBackend(backendItem: any, localId?: str
   const claimedCount = countClaimedScheduleSlots(scheduleSlots);
 
   const s = getStore();
+  const localItem = localId
+    ? (s.items.find((it) => String(it.id) === localId) as any)
+    : null;
+
+  const mergedTopic = String(
+    backendItem?.topic ||
+      localItem?.topic ||
+      backendItem?.scheduleTopic ||
+      localItem?.scheduleTopic ||
+      ""
+  ).trim();
+  const mergedMeetingType = String(
+    backendItem?.meetingType ||
+      localItem?.meetingType ||
+      backendItem?.liveCardType ||
+      localItem?.liveCardType ||
+      ""
+  ).trim();
+  const mergedLiveCardType = String(
+    backendItem?.liveCardType ||
+      localItem?.liveCardType ||
+      mergedMeetingType ||
+      ""
+  ).trim();
+  const mergedSlots = scheduleSlots.map((slot: any) => ({
+    ...slot,
+    ...(mergedMeetingType
+      ? {
+          meetingType: String(slot?.meetingType || mergedMeetingType).trim() || mergedMeetingType,
+          liveCardType: String(slot?.liveCardType || mergedLiveCardType || mergedMeetingType).trim() || mergedLiveCardType || mergedMeetingType,
+          selectedCardType: String(slot?.selectedCardType || mergedMeetingType).trim() || mergedMeetingType,
+          cardTypeLabel: String(slot?.cardTypeLabel || mergedMeetingType).trim() || mergedMeetingType,
+        }
+      : {}),
+  }));
+
   s.items = s.items.filter((it) => {
     const anyIt = it as any;
     if (!isMediaScheduleCard(anyIt)) return true;
@@ -1497,14 +1533,25 @@ export function feedSyncMediaScheduleFromBackend(backendItem: any, localId?: str
     liked: false,
     saved: false,
     kind: "post",
-    body: String(backendItem.text || backendItem.body || ""),
+    body: String(backendItem.text || backendItem.body || localItem?.text || localItem?.body || ""),
     source: String(backendItem?.source || "media-schedule"),
     scheduleType: String(backendItem?.scheduleType || "media-live-slots"),
     ...backendItem,
+    topic: String(backendItem?.topic || localItem?.topic || "").trim() || undefined,
+    scheduleTopic:
+      String(backendItem?.scheduleTopic || localItem?.scheduleTopic || backendItem?.topic || localItem?.topic || "").trim() ||
+      undefined,
+    meetingTopic:
+      String(backendItem?.meetingTopic || localItem?.meetingTopic || backendItem?.topic || localItem?.topic || "").trim() ||
+      undefined,
+    meetingType: String(backendItem?.meetingType || localItem?.meetingType || "").trim() || undefined,
+    liveCardType: String(backendItem?.liveCardType || localItem?.liveCardType || mergedMeetingType || "").trim() || undefined,
+    selectedCardType: String(backendItem?.selectedCardType || localItem?.selectedCardType || mergedMeetingType || "").trim() || undefined,
+    cardTypeLabel: String(backendItem?.cardTypeLabel || localItem?.cardTypeLabel || mergedMeetingType || "").trim() || undefined,
     id: backendId,
     sourceScheduleId: localId || backendItem?.sourceScheduleId || backendId,
     liveId: localId || backendItem?.liveId || backendId,
-    scheduleSlots,
+    scheduleSlots: mergedSlots,
     claimedCount,
     updatedAt: nowMs,
     pendingBackendSync: false,

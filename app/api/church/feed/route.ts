@@ -21,6 +21,7 @@ import {
   logChurchPastorResolution,
   resolveChurchPastorUserId,
 } from "@/app/api/_lib/churchPastor";
+import { resolveCanDeleteChurchActivityPost } from "@/app/api/_lib/churchActivityDelete";
 import {
   churchSubscriptionRequiredResponse,
   isChurchSubscriptionActive,
@@ -1845,28 +1846,6 @@ async function canAccessMediaStorage(churchId: string, role: unknown, userId: st
   return isPastorOrAdminRole(role) || (await isMediaHostForChurch(churchId, userId));
 }
 
-async function canDeleteFeedPost(item: any, churchId: string, role: unknown, userId: string) {
-  const itemChurchId = String(item?.churchId || "");
-  if (!itemChurchId || itemChurchId !== String(churchId || "")) return false;
-
-  if (isPastorOrAdminRole(role)) return true;
-
-  const pastorResolution = await resolveChurchPastorUserId(churchId);
-  if (String(pastorResolution.actualChurchPastorUserId || "").trim() === String(userId || "")) {
-    return true;
-  }
-
-  const ownership = inferOwnershipType(item);
-  const isOwnPost = String(item?.createdBy || "") === String(userId || "");
-
-  if (await isMediaHostForChurch(churchId, userId)) {
-    if (ownership === "media") return true;
-  }
-  if (isOwnPost && ownership === "member") return true;
-
-  return false;
-}
-
 function resolveScheduleMinistryId(item: any, body: any) {
   return String(
     body?.ministryId ||
@@ -2946,6 +2925,24 @@ export async function POST(req: NextRequest) {
       slotCount: Array.isArray(body?.scheduleSlots) ? body.scheduleSlots.length : 0,
       visibility: String(body?.visibility || ""),
     });
+    console.log("KRISTO_SCHEDULE_TOPIC_TRACE", {
+      stage: "backend_create_received",
+      topic: String(body?.topic || "").trim(),
+      scheduleTopic: String(body?.scheduleTopic || "").trim(),
+      meetingTopic: String(body?.meetingTopic || "").trim(),
+      meetingType: String(body?.meetingType || "").trim(),
+      firstSlot: Array.isArray(body?.scheduleSlots) && body.scheduleSlots[0]
+        ? {
+            name: String(body.scheduleSlots[0]?.name || ""),
+            slotTopic: String(body.scheduleSlots[0]?.slotTopic || ""),
+            script: String(body.scheduleSlots[0]?.script || ""),
+            parentTopic: String(body.scheduleSlots[0]?.parentTopic || ""),
+            scheduleTopic: String(body.scheduleSlots[0]?.scheduleTopic || ""),
+            meetingTopic: String(body.scheduleSlots[0]?.meetingTopic || ""),
+            task: String(body.scheduleSlots[0]?.task || ""),
+          }
+        : null,
+    });
   }
 
   try {
@@ -3522,7 +3519,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     }
 
     const viewerRole = ctx?.viewer?.role;
-    if (!(await canDeleteFeedPost(item, churchId, viewerRole, viewerUserId))) {
+    if (!(await resolveCanDeleteChurchActivityPost(item, { churchId, userId: viewerUserId, role: viewerRole }))) {
       return err("Forbidden", 403);
     }
 
@@ -3562,6 +3559,12 @@ async function handleFeedPost(req: NextRequest, body: any) {
   const rawPostMediaUri = mediaUri || rawImageUrl || extractedCreateImageUri || undefined;
   const source = cleanText(body?.source, 80) || undefined;
   const scheduleType = cleanText(body?.scheduleType, 120) || undefined;
+  const scheduleTopic =
+    cleanText(body?.topic, 240) ||
+    cleanText(body?.scheduleTopic, 240) ||
+    cleanText(body?.meetingTopic, 240) ||
+    undefined;
+  const meetingType = cleanText(body?.meetingType, 120) || undefined;
   const rawScheduleSlots = Array.isArray(body?.scheduleSlots) ? body.scheduleSlots : undefined;
   const scheduleSlots = rawScheduleSlots?.map((slot: any, index: number) => {
     const cleaned = { ...slot };
@@ -3646,6 +3649,16 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     return cleaned;
   });
+  const enrichedScheduleSlots =
+    Array.isArray(scheduleSlots) && scheduleSlots.length && meetingType
+      ? scheduleSlots.map((slot: any) => ({
+          ...slot,
+          meetingType: String(slot?.meetingType || meetingType).trim() || meetingType,
+          liveCardType: String(slot?.liveCardType || meetingType).trim() || meetingType,
+          selectedCardType: String(slot?.selectedCardType || meetingType).trim() || meetingType,
+          cardTypeLabel: String(slot?.cardTypeLabel || meetingType).trim() || meetingType,
+        }))
+      : scheduleSlots;
   const visibility = cleanText(body?.visibility, 80) || undefined;
   const audience = body?.audience || undefined;
   const sourceNorm = String(source || "").trim().toLowerCase();
@@ -3857,7 +3870,16 @@ async function handleFeedPost(req: NextRequest, body: any) {
     mediaUri: resolvedCreateImageUri || sanitizedMedia.mediaUri,
     source,
     scheduleType,
-    scheduleSlots,
+    ...(scheduleTopic ? { topic: scheduleTopic, scheduleTopic, meetingTopic: scheduleTopic } : {}),
+    ...(meetingType
+      ? {
+          meetingType,
+          liveCardType: meetingType,
+          selectedCardType: meetingType,
+          cardTypeLabel: meetingType,
+        }
+      : {}),
+    scheduleSlots: enrichedScheduleSlots,
     visibility,
     audience,
     mediaName,
@@ -4001,6 +4023,31 @@ async function handleFeedPost(req: NextRequest, body: any) {
   });
 
   await upsertFeedItem(item);
+
+  if (isIncomingMediaScheduleCreate(body)) {
+    const savedFirstSlot = Array.isArray(enrichedScheduleSlots) && enrichedScheduleSlots[0]
+      ? enrichedScheduleSlots[0]
+      : null;
+    console.log("KRISTO_SCHEDULE_TOPIC_TRACE", {
+      stage: "backend_create_saved",
+      feedId: item.id,
+      topic: String((item as any).topic || "").trim(),
+      scheduleTopic: String((item as any).scheduleTopic || "").trim(),
+      meetingTopic: String((item as any).meetingTopic || "").trim(),
+      meetingType: String((item as any).meetingType || "").trim(),
+      firstSlot: savedFirstSlot
+        ? {
+            name: String(savedFirstSlot?.name || ""),
+            slotTopic: String(savedFirstSlot?.slotTopic || ""),
+            script: String(savedFirstSlot?.script || ""),
+            parentTopic: String(savedFirstSlot?.parentTopic || ""),
+            scheduleTopic: String(savedFirstSlot?.scheduleTopic || ""),
+            meetingTopic: String(savedFirstSlot?.meetingTopic || ""),
+            task: String(savedFirstSlot?.task || ""),
+          }
+        : null,
+    });
+  }
 
   console.log("KRISTO_VIDEO_POST_SAVED", {
     id: item.id,

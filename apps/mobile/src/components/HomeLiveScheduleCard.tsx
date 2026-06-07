@@ -24,6 +24,7 @@ import {
 import { persistClaimToLiveRequest } from "@/src/lib/liveBridge";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { resolveHomeFeedScheduleSlotLabels } from "@/src/lib/slotTopicUtils";
 import {
   baseFeedId,
   cleanFeedLabel,
@@ -1022,14 +1023,19 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     });
   }, [churchShort, mediaName, churchHeaderAvatar.uri, churchHeaderAvatar.source, churchHeaderAvatar.hasAvatar]);
 
-  const slotTitle = String(slot?.name || slot?.slotLabel || "Live Slot").trim();
-  const slotTopic = cleanFeedLabel(
-    slot?.script || slot?.task || slot?.role || item?.topic || item?.body,
-    "Live media topic"
-  )
-    .split("\n")
-    .join(" ")
-    .trim();
+  const { title: slotTitle, subtitle: slotTopic } = useMemo(
+    () => resolveHomeFeedScheduleSlotLabels(item, slot),
+    [item, slot]
+  );
+
+  const programOptionLabel = useMemo(() => {
+    const label = String(slot?.name || slot?.slotLabel || "").trim();
+    if (!label) return "";
+    const norm = (value: string) => value.trim().toLowerCase();
+    if (norm(label) === norm(slotTitle)) return "";
+    if (slotTopic && norm(label) === norm(slotTopic)) return "";
+    return label;
+  }, [slot?.name, slot?.slotLabel, slotTitle, slotTopic]);
 
   const msUntilStart = slot.startMs > 0 ? slot.startMs - nowMs : null;
   const minutesToStart = msUntilStart !== null ? Math.ceil(msUntilStart / 60000) : null;
@@ -1471,40 +1477,6 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                 >
                   {mediaSubtitle}
                 </Text>
-                <View style={[styles.badgeRow, compactUnclaimedLayout && styles.badgeRowVip]}>
-                  <View style={[styles.liveSchedulePill, compactUnclaimedLayout && styles.liveSchedulePillVip]}>
-                    <LinearGradient
-                      colors={
-                        compactUnclaimedLayout
-                          ? ["rgba(246,215,122,0.22)", "rgba(255,255,255,0.08)", "rgba(0,0,0,0.18)"]
-                          : [GOLD_GLASS, "rgba(255,255,255,0.05)", "rgba(0,0,0,0.12)"]
-                      }
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={StyleSheet.absoluteFillObject}
-                    />
-                    <Ionicons name="radio" size={10} color={VIP_GOLD_LIGHT} />
-                    <Text style={[styles.liveSchedulePillText, compactUnclaimedLayout && styles.liveSchedulePillTextVip]} numberOfLines={1} ellipsizeMode="tail">
-                      LIVE SCHEDULE
-                    </Text>
-                  </View>
-                  <View style={[styles.verifiedBadge, compactUnclaimedLayout && styles.verifiedBadgeVip]}>
-                    <LinearGradient
-                      colors={
-                        compactUnclaimedLayout
-                          ? ["rgba(246,215,122,0.18)", "rgba(255,255,255,0.06)", "rgba(0,0,0,0.16)"]
-                          : ["rgba(255,255,255,0.08)", "rgba(255,255,255,0.02)", "rgba(0,0,0,0.14)"]
-                      }
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={StyleSheet.absoluteFillObject}
-                    />
-                    <Ionicons name="shield-checkmark" size={10} color={VIP_GOLD_LIGHT} />
-                    <Text style={[styles.verifiedBadgeText, compactUnclaimedLayout && styles.verifiedBadgeTextVip]} numberOfLines={1}>
-                      VERIFIED
-                    </Text>
-                  </View>
-                </View>
               </View>
               {disableSlotCarousel ? (
                 <View style={[styles.slotCounter, compactUnclaimedLayout && styles.slotCounterVip]}>
@@ -1627,6 +1599,26 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   {visualTheme.label}
                 </Text>
               </View>
+              {!!programOptionLabel ? (
+                <View
+                  style={[
+                    styles.programOptionChip,
+                    compactUnclaimedLayout && styles.programOptionChipVip,
+                    claimedCompactLayout && styles.programOptionChipClaimedLive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.programOptionChipText,
+                      compactUnclaimedLayout && styles.programOptionChipTextVip,
+                    ]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {programOptionLabel.toUpperCase()}
+                  </Text>
+                </View>
+              ) : null}
             </View>
 
             <View
@@ -2435,6 +2427,9 @@ const styles = StyleSheet.create({
   },
   stateRow: {
     flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
     marginBottom: 12,
     marginTop: 0,
   },
@@ -2537,6 +2532,33 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     letterSpacing: 0.18,
     marginTop: 4,
+  },
+  programOptionChip: {
+    flexShrink: 1,
+    maxWidth: "100%",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(110,168,255,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(110,168,255,0.42)",
+  },
+  programOptionChipVip: {
+    backgroundColor: "rgba(139,159,217,0.18)",
+    borderColor: "rgba(139,159,217,0.48)",
+  },
+  programOptionChipClaimedLive: {
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+  },
+  programOptionChipText: {
+    color: "#B8CBFF",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.85,
+  },
+  programOptionChipTextVip: {
+    color: "#C9D8FF",
   },
   metaRow: {
     flexDirection: "row",
