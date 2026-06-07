@@ -6,10 +6,8 @@ function isVideoFeedRow(item: any) {
   return item?.mediaType === "video" || item?.type === "video";
 }
 
-// V1 perf: only the active video and the single next video are warmed.
-// No warming for offscreen videos below the first two rows, and no warming
-// for videos above the active one.
-const WINDOW_OFFSETS = [0, 1] as const;
+// V1 perf: active + next 2 rows may mount video players (posters for all others).
+const WINDOW_OFFSETS = [0, 1, 2] as const;
 
 export function resolveHomeFeedVideoWarmMode(
   index: number,
@@ -17,7 +15,7 @@ export function resolveHomeFeedVideoWarmMode(
 ): HomeFeedVideoWarmMode {
   const delta = index - activeIndex;
   if (delta === 0) return "active";
-  if (delta === 1) return "preload";
+  if (delta === 1 || delta === 2) return "preload";
   return "off";
 }
 

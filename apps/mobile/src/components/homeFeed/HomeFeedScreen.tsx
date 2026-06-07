@@ -25,7 +25,21 @@ import {
   userHasActiveChurchMembership,
 } from "@/src/lib/homeFeedComments";
 import { getSessionSync } from "@/src/lib/kristoSession";
-import { fetchHomeFeedFromApi, syncHomeFeedLike } from "./homeFeedApi";
+import {
+  fetchHomeFeedFromApi,
+  getCachedHomeFeedBackendCount,
+  getCachedHomeFeedBackendRows,
+  syncHomeFeedLike,
+} from "./homeFeedApi";
+import {
+  HOME_FEED_INITIAL_LIMIT,
+  HOME_FEED_PAGE_SIZE,
+  initialHomeFeedVisibleWindowSize,
+  nextHomeFeedVisibleWindowSize,
+  shouldPrefetchHomeFeedPage,
+  stableMergeHomeFeedRows,
+} from "./homeFeedPagination";
+import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
   feedRenderKey,
   hydrateFeedRowLikes,
@@ -81,9 +95,11 @@ export default function HomeFeedScreen() {
       source?: string;
     }>();
 
-  const [backendRows, setBackendRows] = useState<any[]>([]);
+  const [backendRows, setBackendRows] = useState<any[]>(() => getCachedHomeFeedBackendRows());
   const [localTick, setLocalTick] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(
+    () => getCachedHomeFeedBackendRows().length === 0 && feedList().length === 0
+  );
   const [activeIndex, setActiveIndex] = useState(0);
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
   const [optimisticLikes, setOptimisticLikes] = useState<
@@ -107,6 +123,14 @@ export default function HomeFeedScreen() {
   const claimSlotFocusLoadDoneRef = useRef(false);
   const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingScheduleFeedIdRef = useRef<string | null>(null);
+  const lastVisibleRowsRef = useRef<any[]>([]);
+  const visibleRowCountRef = useRef(0);
+  const pagePrefetchInflightRef = useRef(false);
+  const pageReadyLoggedRef = useRef(false);
+  const stableDisplayRowsRef = useRef<any[]>([]);
+
+  const [stableDisplayRows, setStableDisplayRows] = useState<any[]>([]);
+  const [visibleWindowSize, setVisibleWindowSize] = useState(HOME_FEED_INITIAL_LIMIT);
 
   const session = getSessionSync();
   const viewerUserId = String(session?.userId || "").trim();
@@ -146,12 +170,33 @@ export default function HomeFeedScreen() {
 
     const force = opts?.force === true;
     const hasLocalSchedule = feedList().some(isHomeFeedScheduleCardRow);
-    if (reason === "claim-slot-focus" || !force || !hasLocalSchedule) {
+    const hasVisibleRows =
+      visibleRowCountRef.current > 0 ||
+      backendRows.length > 0 ||
+      feedList().length > 0;
+    if (
+      reason !== "page-prefetch" &&
+      !hasVisibleRows &&
+      (reason === "claim-slot-focus" || !force || !hasLocalSchedule)
+    ) {
       setLoading(true);
     }
     try {
       const rows = await fetchHomeFeedFromApi(reason, { force });
-      setBackendRows(rows);
+      if (rows.length) {
+        setBackendRows((prev) => {
+          const result = stableMergeHomeFeedRows(prev, rows);
+          if (result.appended > 0 || result.before !== result.after) {
+            console.log("KRISTO_HOME_FEED_STABLE_MERGE", {
+              before: result.before,
+              incoming: result.incoming,
+              after: result.after,
+              appended: result.appended,
+            });
+          }
+          return result.merged;
+        });
+      }
       setOptimisticLikes((prev) => {
         let changed = false;
         const next = { ...prev };
@@ -316,23 +361,141 @@ export default function HomeFeedScreen() {
     return feedRows;
   }, [feedRows, isClaimSlotFocus, claimableSlotRows]);
 
+  useEffect(() => {
+    if (isClaimSlotFocus && claimableSlotRows.length) {
+      stableDisplayRowsRef.current = claimableSlotRows;
+      setStableDisplayRows(claimableSlotRows);
+      setVisibleWindowSize(claimableSlotRows.length);
+      return;
+    }
+
+    const incoming = displayFeedRows;
+    if (!incoming.length && stableDisplayRowsRef.current.length) return;
+
+    setStableDisplayRows((prev) => {
+      const base = prev.length ? prev : stableDisplayRowsRef.current;
+      if (!incoming.length) return base;
+      if (!base.length) {
+        stableDisplayRowsRef.current = incoming;
+        return incoming;
+      }
+      const result = stableMergeHomeFeedRows(base, incoming);
+      if (result.appended > 0 || result.before !== result.after) {
+        console.log("KRISTO_HOME_FEED_STABLE_MERGE", {
+          before: result.before,
+          incoming: result.incoming,
+          after: result.after,
+          appended: result.appended,
+        });
+      }
+      stableDisplayRowsRef.current = result.merged;
+      return result.merged;
+    });
+  }, [displayFeedRows, isClaimSlotFocus, claimableSlotRows]);
+
+  useEffect(() => {
+    if (!stableDisplayRows.length || pageReadyLoggedRef.current) return;
+    pageReadyLoggedRef.current = true;
+    const visibleCount = initialHomeFeedVisibleWindowSize(stableDisplayRows.length);
+    setVisibleWindowSize(visibleCount);
+    console.log("KRISTO_HOME_FEED_PAGE_READY", {
+      visibleCount,
+      totalCached: Math.max(
+        stableDisplayRows.length,
+        getCachedHomeFeedBackendCount()
+      ),
+      activeIndex: 0,
+      reason: "initial",
+    });
+  }, [stableDisplayRows.length]);
+
+  useEffect(() => {
+    if (isClaimSlotFocus || !feedFocused || !stableDisplayRows.length) return;
+
+    const visibleCount = Math.min(visibleWindowSize, stableDisplayRows.length);
+    if (!shouldPrefetchHomeFeedPage(activeIndex, visibleCount)) return;
+
+    const nextLimit = nextHomeFeedVisibleWindowSize(
+      visibleWindowSize,
+      stableDisplayRows.length,
+      HOME_FEED_PAGE_SIZE
+    );
+
+    console.log("KRISTO_HOME_FEED_NEXT_PAGE_PREFETCH", {
+      activeIndex,
+      nextLimit,
+      inflight: pagePrefetchInflightRef.current,
+    });
+
+    if (nextLimit > visibleWindowSize) {
+      setVisibleWindowSize(nextLimit);
+      console.log("KRISTO_HOME_FEED_PAGE_READY", {
+        visibleCount: nextLimit,
+        totalCached: Math.max(
+          stableDisplayRows.length,
+          getCachedHomeFeedBackendCount()
+        ),
+        activeIndex,
+        reason: "window-expand",
+      });
+    }
+
+    if (pagePrefetchInflightRef.current) return;
+    pagePrefetchInflightRef.current = true;
+    void loadFeed("page-prefetch").finally(() => {
+      pagePrefetchInflightRef.current = false;
+    });
+  }, [
+    activeIndex,
+    visibleWindowSize,
+    stableDisplayRows.length,
+    feedFocused,
+    isClaimSlotFocus,
+    loadFeed,
+  ]);
+
+  const visibleData = useMemo(() => {
+    const rowSource =
+      stableDisplayRows.length > 0 ? stableDisplayRows : displayFeedRows;
+    const windowed =
+      isClaimSlotFocus && claimableSlotRows.length
+        ? rowSource
+        : rowSource.slice(0, visibleWindowSize);
+
+    if (windowed.length > 0) {
+      lastVisibleRowsRef.current = windowed;
+      return windowed;
+    }
+    return lastVisibleRowsRef.current;
+  }, [
+    stableDisplayRows,
+    displayFeedRows,
+    visibleWindowSize,
+    isClaimSlotFocus,
+    claimableSlotRows.length,
+  ]);
+
+  useEffect(() => {
+    visibleRowCountRef.current = visibleData.length;
+  }, [visibleData]);
+
   const viewerChurchId = String(session?.churchId || "").trim();
 
   const hasChurchScheduleSlots = useMemo(() => {
     if (!viewerChurchId) return false;
-    return displayFeedRows.some(
+    return visibleData.some(
       (row) =>
         isHomeFeedScheduleCardRow(row) && homeFeedRowChurchId(row) === viewerChurchId
     );
-  }, [displayFeedRows, viewerChurchId]);
+  }, [visibleData, viewerChurchId]);
 
   const hasActiveOrLiveChurchSchedule = useMemo(() => {
     if (!viewerChurchId) return false;
     return isHomeFeedActiveOrNearLiveChurchScheduleVisible(
-      displayFeedRows,
+      visibleData,
       viewerChurchId
     );
-  }, [displayFeedRows, viewerChurchId]);
+  }, [visibleData, viewerChurchId]);
 
   const slotClaimPollIntervalMs = hasActiveOrLiveChurchSchedule
     ? SLOT_CLAIM_POLL_LIVE_MS
@@ -380,10 +543,10 @@ export default function HomeFeedScreen() {
     console.log("KRISTO_HOME_FEED_VIDEO_RECOVERY_AFTER_LIVE", {
       reason: recoveryReason,
       activeIndex,
-      feedCount: displayFeedRows.length,
+      feedCount: visibleData.length,
     });
 
-    const activeItem = displayFeedRows[activeIndex];
+    const activeItem = visibleData[activeIndex];
     const postId = String(activeItem?.id || "").trim();
 
     if (!postId || !isVideoPost(activeItem)) {
@@ -413,7 +576,7 @@ export default function HomeFeedScreen() {
     if (recovered) {
       consumeHomeFeedVideoRecovery();
     }
-  }, [feedFocused, activeIndex, displayFeedRows]);
+  }, [feedFocused, activeIndex, visibleData]);
 
   useEffect(() => {
     const targetId = String(pendingScheduleFeedIdRef.current || "").trim();
@@ -562,21 +725,21 @@ export default function HomeFeedScreen() {
 
   useEffect(() => {
     const rawFocusId = String(focusPostId || "").trim();
-    if (!rawFocusId || !displayFeedRows.length || isClaimSlotFocus) return;
+    if (!rawFocusId || !visibleData.length || isClaimSlotFocus) return;
     if (focusHandledRef.current === rawFocusId) return;
 
-    const matchIndex = displayFeedRows.findIndex((item) => String(item?.id || "") === rawFocusId);
+    const matchIndex = visibleData.findIndex((item) => String(item?.id || "") === rawFocusId);
     if (matchIndex < 0) return;
 
     focusHandledRef.current = rawFocusId;
     setActiveIndex(matchIndex);
-  }, [focusPostId, displayFeedRows, isClaimSlotFocus]);
+  }, [focusPostId, visibleData, isClaimSlotFocus]);
 
   useEffect(() => {
-    if (activeIndex >= displayFeedRows.length && displayFeedRows.length > 0) {
-      setActiveIndex(Math.max(0, displayFeedRows.length - 1));
+    if (activeIndex >= visibleData.length && visibleData.length > 0) {
+      setActiveIndex(Math.max(0, visibleData.length - 1));
     }
-  }, [activeIndex, displayFeedRows.length]);
+  }, [activeIndex, visibleData.length]);
 
   const getLikeState = useCallback(
     (item: any, logContext?: { index?: number }) => {
@@ -614,7 +777,7 @@ export default function HomeFeedScreen() {
         override ? Number(override.likeCount || 0) : 0
       );
 
-      if (logContext?.index === activeIndex) {
+      if (logContext?.index === activeIndex && isKristoVerboseFeedDebug()) {
         console.log("KRISTO_LIKE_UI_STATE", {
           postId,
           itemLikedByMe,
@@ -813,7 +976,7 @@ export default function HomeFeedScreen() {
       ) : null}
 
       <FeedList
-        rows={displayFeedRows}
+        rows={visibleData}
         contentHeight={contentHeight}
         activeIndex={activeIndex}
         screenFocused={feedFocused}

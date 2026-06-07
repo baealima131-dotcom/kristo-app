@@ -2,6 +2,7 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { stableMergeHomeFeedRows } from "./homeFeedPagination";
 import { filterPhase1FeedRows, normalizeHomeFeedApiRow } from "./homeFeedUtils";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
@@ -12,6 +13,18 @@ let lastFetchedHomeFeedRows: any[] = [];
 /** Last successful API feed snapshot — used to paint Home Feed before refresh completes. */
 export function getCachedHomeFeedBackendRows(): any[] {
   return lastFetchedHomeFeedRows;
+}
+
+export function getCachedHomeFeedBackendCount(): number {
+  return lastFetchedHomeFeedRows.length;
+}
+
+/** Merge incoming API rows into cache without dropping existing ids. */
+export function mergeCachedHomeFeedBackendRows(incoming: any[]): any[] {
+  if (!incoming.length) return lastFetchedHomeFeedRows;
+  const { merged } = stableMergeHomeFeedRows(lastFetchedHomeFeedRows, incoming);
+  lastFetchedHomeFeedRows = merged;
+  return merged;
 }
 
 function parseFeedRows(res: any): any[] {
@@ -84,6 +97,9 @@ export async function fetchHomeFeedFromApi(
 
   const rows = filterPhase1FeedRows(rawRows);
   if (rows.length) {
+    if (lastFetchedHomeFeedRows.length) {
+      return mergeCachedHomeFeedBackendRows(rows);
+    }
     lastFetchedHomeFeedRows = rows;
   }
   return rows;
