@@ -1488,15 +1488,139 @@ function isClaimableScheduleFeedItem(item: any) {
   );
 }
 
+function parseMeridiemTimeOnDate(base: Date, timeText: string): number {
+  const rawTime = String(timeText || "").trim();
+  if (!rawTime || !Number.isFinite(base.getTime())) return NaN;
+
+  const match = rawTime.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i);
+  if (!match) return NaN;
+
+  let hour = Number(match[1] || 0);
+  const minute = Number(match[2] || 0);
+  const meridiem = String(match[3] || "").toUpperCase();
+
+  if (meridiem === "PM" && hour < 12) hour += 12;
+  if (meridiem === "AM" && hour === 12) hour = 0;
+  if (!meridiem && hour >= 24) return NaN;
+
+  const d = new Date(base);
+  d.setHours(hour, minute, 0, 0);
+  return d.getTime();
+}
+
+function parseMediaScheduleSlotStartMs(slot: any): number {
+  const explicitStart = Number(slot?.startMs || 0);
+  if (explicitStart > 0) return explicitStart;
+
+  const startsAt = String(slot?.startsAt || "").trim();
+  if (startsAt) {
+    const parsed = Date.parse(startsAt);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  const meetingDate = String(slot?.meetingDate || slot?.meetingDay || "").trim();
+  const startTime = String(slot?.startTime || slot?.time || slot?.timeLabel || "").trim();
+  if (!meetingDate) return 0;
+
+  const base = new Date(meetingDate);
+  if (!Number.isFinite(base.getTime())) return 0;
+  if (!startTime) return base.getTime();
+
+  const startMs = parseMeridiemTimeOnDate(base, startTime);
+  return Number.isFinite(startMs) ? startMs : base.getTime();
+}
+
+function parseMediaScheduleSlotEndMs(slot: any, startMs = 0): number {
+  const explicitEnd = Number(slot?.endMs || 0);
+  if (explicitEnd > startMs) return explicitEnd;
+
+  const endsAt = String(slot?.endsAt || "").trim();
+  if (endsAt) {
+    const parsed = Date.parse(endsAt);
+    if (Number.isFinite(parsed) && parsed > startMs) return parsed;
+  }
+
+  const endDate = String(slot?.meetingEndDate || slot?.meetingDate || slot?.meetingDay || "").trim();
+  const endTime = String(slot?.endTime || "").trim();
+  if (endDate && endTime) {
+    const base = new Date(endDate);
+    if (Number.isFinite(base.getTime())) {
+      let endMs = parseMeridiemTimeOnDate(base, endTime);
+      if (Number.isFinite(endMs)) {
+        if (startMs > 0 && endMs <= startMs) {
+          endMs += 24 * 60 * 60 * 1000;
+        }
+        if (endMs > startMs) return endMs;
+      }
+    }
+  }
+
+  if (!startMs) return 0;
+  const durationMs = Math.max(1, Number(slot?.durationMin || slot?.durationMinutes || 1)) * 60000;
+  return startMs + durationMs;
+}
+
+function enrichMediaScheduleSlotTimes(slot: any) {
+  if (!slot || typeof slot !== "object") return slot;
+
+  const startMs = parseMediaScheduleSlotStartMs(slot);
+  const endMs = parseMediaScheduleSlotEndMs(slot, startMs);
+  if (!(startMs > 0 && endMs > startMs)) return slot;
+
+  return {
+    ...slot,
+    startMs,
+    endMs,
+    startsAt: String(slot?.startsAt || "").trim() || new Date(startMs).toISOString(),
+    endsAt: String(slot?.endsAt || "").trim() || new Date(endMs).toISOString(),
+  };
+}
+
+function enrichMediaScheduleFeedItemTimes(item: any) {
+  if (!isMediaScheduleFeedItem(item)) return item;
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  if (!slots.length) return item;
+  return {
+    ...item,
+    scheduleSlots: slots.map(enrichMediaScheduleSlotTimes),
+  };
+}
+
+function logMediaScheduleSlotHomeFeedVisibility(
+  item: any,
+  stage: string,
+  included: boolean,
+  reason: string
+) {
+  const scheduleId = String(item?.id || item?.sourceScheduleId || "").trim();
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  if (!slots.length) {
+    console.log("KRISTO_MEDIA_SLOT_HOME_FEED_VISIBILITY", {
+      slotId: null,
+      scheduleId: scheduleId || null,
+      stage,
+      included,
+      reason,
+    });
+    return;
+  }
+
+  for (const slot of slots) {
+    console.log("KRISTO_MEDIA_SLOT_HOME_FEED_VISIBILITY", {
+      slotId: String(slot?.id || "").trim() || null,
+      scheduleId: scheduleId || null,
+      stage,
+      included,
+      reason,
+    });
+  }
+}
+
 function mediaScheduleSlotHasValidTimeWindow(slot: any) {
   if (!slot) return false;
-  const startMs = Number(slot?.startMs || 0);
-  const endMs = Number(slot?.endMs || 0);
-  if (startMs > 0 && endMs > startMs) return true;
-
-  const startsAtMs = Date.parse(String(slot?.startsAt || ""));
-  const endsAtMs = Date.parse(String(slot?.endsAt || ""));
-  return startsAtMs > 0 && endsAtMs > startsAtMs;
+  const startMs = parseMediaScheduleSlotStartMs(slot);
+  const endMs = parseMediaScheduleSlotEndMs(slot, startMs);
+  return startMs > 0 && endMs > startMs;
 }
 
 function mediaScheduleFeedItemHasValidSlotTimes(item: any) {
@@ -1511,7 +1635,8 @@ const hiddenInvalidScheduleIdsServer = new Set<string>();
 function filterHomeFeedRenderableRows(rows: any[]) {
   return rows.filter((item) => {
     if (!isMediaScheduleFeedItem(item)) return true;
-    if (!mediaScheduleFeedItemHasValidSlotTimes(item)) {
+    const enriched = enrichMediaScheduleFeedItemTimes(item);
+    if (!mediaScheduleFeedItemHasValidSlotTimes(enriched)) {
       const id = String(item?.id || "").trim();
       if (id && !hiddenInvalidScheduleIdsServer.has(id)) {
         hiddenInvalidScheduleIdsServer.add(id);
@@ -1521,8 +1646,20 @@ function filterHomeFeedRenderableRows(rows: any[]) {
           slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
         });
       }
+      logMediaScheduleSlotHomeFeedVisibility(
+        enriched,
+        "api_filterHomeFeedRenderableRows",
+        false,
+        "invalid_slot_time_window"
+      );
       return false;
     }
+    logMediaScheduleSlotHomeFeedVisibility(
+      enriched,
+      "api_filterHomeFeedRenderableRows",
+      true,
+      "valid_slot_time_window"
+    );
     return true;
   });
 }
@@ -2584,16 +2721,18 @@ async function handleFeedGet(
         return cid === churchId || ownerCid === churchId;
       });
     }
-    const allRows = rawRows.filter((x: any) => {
-      if (isDeletedFeedItem(x)) return false;
-      const isMediaUpload =
-        String(x?.source || "") === "media-upload" ||
-        String(x?.ownershipType || "") === "media";
-      const hasRemoteVideo =
-        String(x?.videoUrl || x?.videoUri || x?.mediaUrl || "").startsWith("http");
-      if (isMediaUpload && hasRemoteVideo) return true;
-      return feedVideoAssetExists(x);
-    });
+    const allRows = rawRows
+      .filter((x: any) => {
+        if (isDeletedFeedItem(x)) return false;
+        const isMediaUpload =
+          String(x?.source || "") === "media-upload" ||
+          String(x?.ownershipType || "") === "media";
+        const hasRemoteVideo =
+          String(x?.videoUrl || x?.videoUri || x?.mediaUrl || "").startsWith("http");
+        if (isMediaUpload && hasRemoteVideo) return true;
+        return feedVideoAssetExists(x);
+      })
+      .map(enrichMediaScheduleFeedItemTimes);
     console.log("[FeedDb] list churchId count scheduleCount", {
       churchId,
       count: allRows.length,

@@ -2,11 +2,15 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
-import { homeFeedRowKey, pruneHomeFeedBackendRowsNotInSnapshot } from "./homeFeedPagination";
-import { filterPhase1FeedRows, normalizeHomeFeedApiRow } from "./homeFeedUtils";
+import { homeFeedRowKey, stableMergeHomeFeedRows } from "./homeFeedPagination";
+import { filterPhase1FeedRows, isHomeFeedExpandedScheduleSlotRow, normalizeHomeFeedApiRow } from "./homeFeedUtils";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
 import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
+import {
+  areAllScheduleSlotsExpired,
+  isMediaScheduleFeedItemClosed,
+} from "@/src/lib/mediaScheduleLock";
 import {
   peekHomeFeedRowsCacheSync,
   saveHomeFeedRowsCache,
@@ -17,6 +21,123 @@ import {
 } from "./homeFeedRowsCache";
 
 let lastFetchedHomeFeedRows: any[] = [];
+
+function isHomeFeedMediaScheduleBackendRow(row: any): boolean {
+  if (!row || typeof row !== "object") return false;
+  const source = String(row?.source || "").toLowerCase();
+  const scheduleType = String(row?.scheduleType || "").toLowerCase();
+  return (
+    isMediaScheduleFeedItem(row) ||
+    source.includes("media-schedule") ||
+    scheduleType.includes("media-live-slots")
+  );
+}
+
+function shouldPreserveHomeFeedScheduleBackendRow(row: any, nowMs = Date.now()): boolean {
+  if (!isHomeFeedMediaScheduleBackendRow(row)) return false;
+  if (isDeletedFeedRow(row)) return false;
+  if (isMediaScheduleFeedItemClosed(row)) return false;
+  if (areAllScheduleSlotsExpired(row, nowMs)) return false;
+  return true;
+}
+
+export function logMediaSlotHomeFeedVisibility(args: {
+  slotId?: string | null;
+  scheduleId?: string | null;
+  stage: string;
+  included: boolean;
+  reason: string;
+}) {
+  console.log("KRISTO_MEDIA_SLOT_HOME_FEED_VISIBILITY", {
+    slotId: args.slotId ?? null,
+    scheduleId: args.scheduleId ?? null,
+    stage: args.stage,
+    included: args.included,
+    reason: args.reason,
+  });
+}
+
+function logScheduleRowSlotsVisibility(
+  row: any,
+  stage: string,
+  included: boolean,
+  reason: string
+) {
+  const scheduleId =
+    baseFeedId(String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || "")) ||
+    String(row?.id || "").trim() ||
+    null;
+  const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+
+  if (!slots.length) {
+    logMediaSlotHomeFeedVisibility({ slotId: null, scheduleId, stage, included, reason });
+    return;
+  }
+
+  for (const slot of slots) {
+    logMediaSlotHomeFeedVisibility({
+      slotId: String(slot?.id || "").trim() || null,
+      scheduleId,
+      stage,
+      included,
+      reason,
+    });
+  }
+}
+
+/** Match API snapshot ids, including expanded slot cards tied to a parent schedule row. */
+export function homeFeedRowIncludedInBackendSnapshot(row: any, snapshotRowIds: Set<string>): boolean {
+  const id = homeFeedRowKey(row);
+  if (id && snapshotRowIds.has(id)) return true;
+
+  const parentScheduleId = baseFeedId(
+    String(row?.parentScheduleId || row?.sourceScheduleId || "")
+  );
+  if (!parentScheduleId) return false;
+
+  for (const snapId of snapshotRowIds) {
+    if (snapId === parentScheduleId || baseFeedId(snapId) === parentScheduleId) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function preserveActiveHomeFeedScheduleRows(existing: any[], incoming: any[], nowMs = Date.now()) {
+  const incomingIds = new Set(incoming.map((row) => homeFeedRowKey(row)).filter(Boolean));
+  const { merged } = stableMergeHomeFeedRows(existing, incoming);
+  if (!incomingIds.size) return merged;
+
+  return merged.filter((row) => {
+    const id = homeFeedRowKey(row);
+    if (!id) return false;
+    if (incomingIds.has(id)) return true;
+
+    if (shouldPreserveHomeFeedScheduleBackendRow(row, nowMs)) {
+      logScheduleRowSlotsVisibility(row, "cache_reconcile", true, "preserve_active_schedule");
+      return true;
+    }
+
+    if (isHomeFeedExpandedScheduleSlotRow(row)) {
+      const parentScheduleId = baseFeedId(
+        String(row?.parentScheduleId || row?.sourceScheduleId || "")
+      );
+      const parentKept = merged.some((candidate) => {
+        if (!shouldPreserveHomeFeedScheduleBackendRow(candidate, nowMs)) return false;
+        const candidateId = baseFeedId(String(candidate?.id || candidate?.sourceScheduleId || ""));
+        return candidateId === parentScheduleId;
+      });
+      if (parentKept) {
+        logScheduleRowSlotsVisibility(row, "cache_reconcile", true, "preserve_expanded_slot");
+        return true;
+      }
+    }
+
+    logScheduleRowSlotsVisibility(row, "cache_reconcile", false, "pruned_not_in_snapshot");
+    return false;
+  });
+}
 
 export function isDeletedFeedRow(row: any): boolean {
   if (!row || typeof row !== "object") return true;
@@ -57,14 +178,26 @@ async function reconcileHomeFeedBackendCacheWithSnapshot(snapshot: any[]) {
   const existing = getCachedHomeFeedBackendRows();
   const before = existing.length;
   const removedIds = collectRemovedHomeFeedCacheIds(existing, activeSnapshot);
-  const reconciled = pruneHomeFeedBackendRowsNotInSnapshot(existing, activeSnapshot);
-  const snapshotRowIds = activeSnapshot.map((row) => homeFeedRowKey(row)).filter(Boolean);
+  const reconciled = preserveActiveHomeFeedScheduleRows(existing, activeSnapshot);
+  const snapshotRowIds = [
+    ...activeSnapshot.map((row) => homeFeedRowKey(row)).filter(Boolean),
+    ...reconciled
+      .filter((row) => shouldPreserveHomeFeedScheduleBackendRow(row))
+      .map((row) => homeFeedRowKey(row))
+      .filter(Boolean),
+  ];
+  const uniqueSnapshotRowIds = Array.from(new Set(snapshotRowIds));
 
   if (removedIds.length > 0 || before > reconciled.length) {
     logHomeFeedCachePruneDeleted(before, reconciled.length, removedIds);
   }
 
-  return commitHomeFeedBackendRows(reconciled, snapshotRowIds);
+  for (const row of activeSnapshot) {
+    if (!isHomeFeedMediaScheduleBackendRow(row)) continue;
+    logScheduleRowSlotsVisibility(row, "api_snapshot", true, "included_in_api_snapshot");
+  }
+
+  return commitHomeFeedBackendRows(reconciled, uniqueSnapshotRowIds);
 }
 
 /** Last successful feed snapshot — memory first, then persisted AsyncStorage cache. */
@@ -126,9 +259,19 @@ export async function purgeHomeFeedPostFromBackendCache(postId: string): Promise
 
 function parseFeedRows(res: any): any[] {
   const raw = parseChurchFeedListResponse(res).rows.map(normalizeHomeFeedApiRow);
-  return filterActiveHomeFeedRows(
-    raw.filter((row) => isMediaScheduleFeedItem(row) || isHomeFeedReadyMediaItem(row))
-  );
+  const filtered = raw.filter((row) => {
+    const keep = isMediaScheduleFeedItem(row) || isHomeFeedReadyMediaItem(row);
+    if (isHomeFeedMediaScheduleBackendRow(row)) {
+      logScheduleRowSlotsVisibility(
+        row,
+        "api_parseFeedRows",
+        keep,
+        keep ? "media_schedule_or_ready_media" : "filtered_not_ready"
+      );
+    }
+    return keep;
+  });
+  return filterActiveHomeFeedRows(filtered);
 }
 
 export async function fetchHomeFeedFromApi(
@@ -196,6 +339,13 @@ export async function fetchHomeFeedFromApi(
   }
 
   const rows = filterPhase1FeedRows(rawRows);
+  for (const row of rawRows) {
+    if (!isHomeFeedMediaScheduleBackendRow(row)) continue;
+    const kept = rows.some((item) => homeFeedRowKey(item) === homeFeedRowKey(row));
+    if (!kept) {
+      logScheduleRowSlotsVisibility(row, "api_phase1_filter", false, "removed_by_filterPhase1FeedRows");
+    }
+  }
   if (!rows.length) return getCachedHomeFeedBackendRows();
   return reconcileHomeFeedBackendCacheWithSnapshot(rows);
 }

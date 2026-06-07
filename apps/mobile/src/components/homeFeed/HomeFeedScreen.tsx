@@ -31,6 +31,8 @@ import {
   fetchHomeFeedFromApi,
   getCachedHomeFeedBackendCount,
   getCachedHomeFeedBackendRows,
+  homeFeedRowIncludedInBackendSnapshot,
+  logMediaSlotHomeFeedVisibility,
   syncHomeFeedLike,
 } from "./homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "./homeFeedRowsCache";
@@ -144,6 +146,7 @@ export default function HomeFeedScreen() {
   const lastVideoBufferWindowRef = useRef(HOME_FEED_INITIAL_LIMIT);
   const prefetchSessionIdRef = useRef(0);
   const lastPosterWarmKeyRef = useRef("");
+  const lastScheduleVisibilityDigestRef = useRef("");
 
   const [stableDisplayRows, setStableDisplayRows] = useState<any[]>([]);
   const [visibleWindowSize, setVisibleWindowSize] = useState(HOME_FEED_INITIAL_LIMIT);
@@ -232,12 +235,9 @@ export default function HomeFeedScreen() {
         setBackendRows(rows);
         setStableDisplayRows((prev) => {
           const rowIds = new Set(rows.map((row) => homeFeedRowKey(row)).filter(Boolean));
-          const next = prev.filter((row) => {
-            const id = homeFeedRowKey(row);
-            return Boolean(id && rowIds.has(id));
-          });
-          stableDisplayRowsRef.current = next;
-          return next.length ? next : rows;
+          const next = prev.filter((row) => homeFeedRowIncludedInBackendSnapshot(row, rowIds));
+          stableDisplayRowsRef.current = next.length ? next : prev;
+          return next.length ? next : prev;
         });
       }
       setOptimisticLikes((prev) => {
@@ -418,6 +418,51 @@ export default function HomeFeedScreen() {
     const merged = buildHomeFeedDisplayRows(backendRows, localFeedSnapshot);
     return hydrateFeedRowLikes(merged, serverLikeByPostId);
   }, [backendRows, localFeedSnapshot, serverLikeByPostId, homeFeedRenderPaused]);
+
+  useEffect(() => {
+    const digest = feedRows
+      .filter((row) => isHomeFeedScheduleCardRow(row))
+      .map((row) => {
+        const scheduleId = baseFeedId(
+          String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || "")
+        );
+        const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+        const slotIds = slots.map((slot) => String(slot?.id || "").trim()).filter(Boolean);
+        return `${scheduleId}:${slotIds.join(",")}`;
+      })
+      .join("|");
+    if (!digest) return;
+    if (digest === lastScheduleVisibilityDigestRef.current) return;
+    lastScheduleVisibilityDigestRef.current = digest;
+
+    for (const row of feedRows) {
+      if (!isHomeFeedScheduleCardRow(row)) continue;
+      const scheduleId =
+        baseFeedId(String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || "")) ||
+        String(row?.id || "").trim() ||
+        null;
+      const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+      if (!slots.length) {
+        logMediaSlotHomeFeedVisibility({
+          slotId: null,
+          scheduleId,
+          stage: "display_build",
+          included: true,
+          reason: "schedule_card_without_slots",
+        });
+        continue;
+      }
+      for (const slot of slots) {
+        logMediaSlotHomeFeedVisibility({
+          slotId: String(slot?.id || "").trim() || null,
+          scheduleId,
+          stage: "display_build",
+          included: true,
+          reason: "visible_in_feed_rows",
+        });
+      }
+    }
+  }, [feedRows]);
 
   const claimableSlotRows = useMemo(() => {
     if (!isClaimSlotFocus || !claimSlotFocusChurchId) return [];
