@@ -378,33 +378,41 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     if (screenFocused && !wasFocused) {
       activeHandoffRef.current = false;
-      if (isActive && firstFrameReady) {
+      if (!isActive) return;
+
+      if (computeVideoReady()) {
         activateActivePlayback(
           peekHomeFeedVideoRecovery() ? "live-room-exit-refocus" : "screen-refocus"
         );
         if (peekHomeFeedVideoRecovery()) {
           consumeHomeFeedVideoRecovery();
         }
+        return;
       }
+
+      try {
+        setPlayerMuted(true, "screen-refocus-prime", "await-ready");
+        player.play();
+      } catch {}
     }
-  }, [screenFocused, isActive, firstFrameReady, postId]);
+  }, [screenFocused, isActive, firstFrameReady, postId, status, currentTime, playing]);
 
   useEffect(() => {
     if (!isActive) return;
     return subscribeHomeFeedVideoRecovery(() => {
       if (!screenFocused || !peekHomeFeedVideoRecovery()) return;
       activeHandoffRef.current = false;
-      if (firstFrameReady) {
+      if (computeVideoReady()) {
         activateActivePlayback("live-room-exit-recovery");
         consumeHomeFeedVideoRecovery();
         return;
       }
       try {
-        setPlayerMuted(true, "live-room-recovery-prime", "await-first-frame");
+        setPlayerMuted(true, "live-room-recovery-prime", "await-ready");
         player.play();
       } catch {}
     });
-  }, [isActive, screenFocused, firstFrameReady, player, postId]);
+  }, [isActive, screenFocused, firstFrameReady, player, postId, status, currentTime, playing]);
 
   useEffect(() => {
     registerHomeFeedVideo(postId, player, {
@@ -601,11 +609,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     pauseHomeFeedVideo(postId, { postId, reason: `warm-${warmMode}` });
   }, [isActive, warmMode, screenFocused, postId]);
 
-  // Diagnostic (first 3 video rows): reveals whether the first visible video is
-  // actually the active row and, if so, whether its first frame ever fires.
-  // If isActive stays false -> active-index selection. If isActive=true but
-  // videoReady/firstFrameReady stay false -> video decoder/network.
+  // Diagnostic (first 3 video rows): dev-only when KRISTO_VERBOSE_FEED_DEBUG is on.
   useEffect(() => {
+    if (!isKristoVerboseFeedDebug()) return;
     if (feedIndex < 0 || feedIndex > 2) return;
     const videoShouldPlay = computeActiveShouldPlay();
     const videoReady = computeVideoReady();

@@ -5,7 +5,7 @@ export const KRISTO_VERBOSE_FEED_DEBUG = false;
 export const KRISTO_VERBOSE_REVENUECAT_DEBUG = false;
 
 export function isKristoVerboseFeedDebug(): boolean {
-  return KRISTO_VERBOSE_FEED_DEBUG;
+  return __DEV__ && KRISTO_VERBOSE_FEED_DEBUG;
 }
 
 /** Slot time / expiry diagnostics (off by default). */

@@ -77,11 +77,17 @@ export function mergeChurchAvatarForDisplay(opts: {
   }
 
 
+  const cachedUri = String(opts.localUri || "").trim();
+  const uriKind: "data" | "remote" | "empty" = !cachedUri
+    ? "empty"
+    : /^data:image/i.test(cachedUri)
+      ? "data"
+      : "remote";
+
   console.log("KRISTO_CHURCH_AVATAR_CACHE_APPLY", {
     churchId: opts.churchId,
-    cachedAvatarUri: String(opts.localUri || ""),
-    serverAvatarUri: String(opts.serverUri || ""),
-    finalAvatarUri: merged.uri,
+    hasCachedAvatar: Boolean(cachedUri),
+    uriKind,
   });
 
   return merged;

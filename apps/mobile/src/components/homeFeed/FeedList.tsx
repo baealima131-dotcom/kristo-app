@@ -285,7 +285,7 @@ export const FeedList = memo(function FeedList({
       // Diagnostic for the first 3 video rows: shows whether the first visible
       // video is the active row and whether it even mounts a player. A 3rd video
       // row is intentionally "off" (no player) given the [0,1] warm window.
-      if (isVideoPost(item) && index <= 2) {
+      if (isKristoVerboseFeedDebug() && isVideoPost(item) && index <= 2) {
         const rowId = String(item?.id || "");
         const mountsPlayer = videoWarmMode !== "off" && effectiveScreenFocused;
         const diagKey = `${index}:${index === activeIndex ? 1 : 0}:${videoWarmMode}:${mountsPlayer ? 1 : 0}`;

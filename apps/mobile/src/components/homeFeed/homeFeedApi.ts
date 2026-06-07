@@ -7,6 +7,13 @@ import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
 import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
 
+let lastFetchedHomeFeedRows: any[] = [];
+
+/** Last successful API feed snapshot — used to paint Home Feed before refresh completes. */
+export function getCachedHomeFeedBackendRows(): any[] {
+  return lastFetchedHomeFeedRows;
+}
+
 function parseFeedRows(res: any): any[] {
   const raw = parseChurchFeedListResponse(res).rows.map(normalizeHomeFeedApiRow);
   return raw.filter(
@@ -75,7 +82,11 @@ export async function fetchHomeFeedFromApi(
     });
   }
 
-  return filterPhase1FeedRows(rawRows);
+  const rows = filterPhase1FeedRows(rawRows);
+  if (rows.length) {
+    lastFetchedHomeFeedRows = rows;
+  }
+  return rows;
 }
 
 export function syncHomeFeedLike(postId: string, liked?: boolean) {
