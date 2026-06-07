@@ -150,32 +150,71 @@ const POST_IMAGE_URI_KEYS = [
   "mediaUrl",
   "attachmentUrl",
   "photoUri",
+  "photoUrl",
   "uploadedMediaUri",
   "coverImage",
   "coverImageUrl",
   "image",
   "photo",
+  "url",
 ] as const;
+
+function pushPostImageCandidate(values: string[], raw: unknown) {
+  const v = String(raw || "").trim();
+  if (v) values.push(v);
+}
+
+function collectAttachmentImageUris(attachments: unknown, values: string[]) {
+  if (!Array.isArray(attachments)) return;
+  for (const entry of attachments) {
+    if (typeof entry === "string") {
+      pushPostImageCandidate(values, entry);
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const att = entry as Record<string, unknown>;
+    pushPostImageCandidate(values, att.url);
+    pushPostImageCandidate(values, att.uri);
+    pushPostImageCandidate(values, att.imageUrl);
+    pushPostImageCandidate(values, att.mediaUrl);
+    pushPostImageCandidate(values, att.publicUrl);
+  }
+}
 
 function collectPostImageUriValues(row: any): string[] {
   const values: string[] = [];
-  for (const key of POST_IMAGE_URI_KEYS) {
-    const v = String(row?.[key] || "").trim();
-    if (v) values.push(v);
-  }
-  if (Array.isArray(row?.images)) {
-    for (const v of row.images) {
-      const s = String(v || "").trim();
-      if (s) values.push(s);
+  const roots = [row, row?.payload].filter((entry) => entry && typeof entry === "object");
+
+  for (const root of roots) {
+    for (const key of POST_IMAGE_URI_KEYS) {
+      pushPostImageCandidate(values, root?.[key]);
     }
-  }
-  if (Array.isArray(row?.mediaUrls)) {
-    for (const v of row.mediaUrls) {
-      const s = String(v || "").trim();
-      if (s) values.push(s);
+    if (Array.isArray(root?.images)) {
+      for (const v of root.images) {
+        pushPostImageCandidate(values, v);
+      }
     }
+    if (Array.isArray(root?.mediaUrls)) {
+      for (const v of root.mediaUrls) {
+        pushPostImageCandidate(values, v);
+      }
+    }
+    collectAttachmentImageUris(root?.attachments, values);
   }
-  return values;
+
+  return [...new Set(values)];
+}
+
+function isFeedPostImageUri(uri: unknown) {
+  const value = String(uri || "").trim();
+  if (!value) return false;
+  if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(value)) return false;
+  if (value.startsWith("data:image/")) return true;
+  if (/^https?:\/\//i.test(value)) return true;
+  if (value.includes("/uploads/media/")) return true;
+  if (value.includes("/church-feed-images/")) return true;
+  if (value.startsWith("/uploads/") && !/\/profile-avatars\//i.test(value)) return true;
+  return false;
 }
 
 export function normalizeHomeFeedApiRow(row: any) {
@@ -318,6 +357,7 @@ export function homeFeedMediaUrl(raw: unknown) {
   if (isBrandedPosterUri(v)) return "";
   if (v.startsWith("data:image/")) return v;
   if (/^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
+  if (v.startsWith("//")) return `https:${v}`;
   return `${API_BASE}${v.startsWith("/") ? "" : "/"}${v}`;
 }
 
@@ -811,6 +851,11 @@ function homeFeedScheduleSlotCount(item: any) {
 }
 
 function pickRicherHomeFeedRow(prev: any, next: any) {
+  const prevImage = resolvePostImageUri(prev);
+  const nextImage = resolvePostImageUri(next);
+  if (nextImage && !prevImage) return next;
+  if (prevImage && !nextImage) return prev;
+
   const prevIsSchedule = isHomeFeedMediaScheduleSourceRow(prev);
   const nextIsSchedule = isHomeFeedMediaScheduleSourceRow(next);
   if (prevIsSchedule || nextIsSchedule) {
@@ -1474,11 +1519,6 @@ export function resolveVideoUri(item: any) {
   return homeFeedMediaUrl(item?.videoUrl || "");
 }
 
-function postMediaUriCandidates(item: any): string[] {
-  return collectPostImageUriValues(item);
-}
-
-function homeFeedAvatarUriCandidates(item: any): string[] {
   return [
     item?.authorAvatarUri,
     item?.actorAvatarUri,
@@ -1498,7 +1538,13 @@ function homeFeedAvatarUriCandidates(item: any): string[] {
 function postImageUriMatchesAvatarCandidates(candidate: string, avatarCandidates: string[]) {
   const trimmed = String(candidate || "").trim();
   if (!trimmed) return true;
-  if (trimmed.includes("/uploads/media/")) return false;
+  if (
+    trimmed.includes("/uploads/media/") ||
+    trimmed.includes("/church-feed-images/") ||
+    /\/feed-images\//i.test(trimmed)
+  ) {
+    return false;
+  }
   if (/\/profile-avatars\//i.test(trimmed)) return true;
   const resolvedCandidate = homeFeedMediaUrl(trimmed);
   return avatarCandidates.some((avatar) => {
@@ -1513,8 +1559,10 @@ function postImageUriMatchesAvatar(item: any, candidate: string) {
 }
 
 export function resolvePostImageUri(item: any) {
-  for (const raw of postMediaUriCandidates(item)) {
-    if (postImageUriMatchesAvatar(item, raw)) continue;
+  const row = normalizeHomeFeedApiRow(item);
+  for (const raw of collectPostImageUriValues(row)) {
+    if (!isFeedPostImageUri(raw)) continue;
+    if (postImageUriMatchesAvatar(row, raw)) continue;
     const uri = homeFeedMediaUrl(raw);
     if (!uri) continue;
     if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(uri)) continue;

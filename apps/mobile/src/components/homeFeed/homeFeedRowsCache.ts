@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { normalizeHomeFeedApiRow } from "@/src/components/homeFeed/homeFeedUtils";
 
 const STORAGE_PREFIX = "kristo_home_feed_rows_v1:";
 const SESSION_KEY = "kristo.session.v1";
@@ -40,7 +41,9 @@ async function resolveHydrateUserId(): Promise<string> {
 
 function normalizeCachedRows(rows: unknown): any[] {
   if (!Array.isArray(rows)) return [];
-  return rows.filter((row) => row && typeof row === "object");
+  return rows
+    .filter((row) => row && typeof row === "object")
+    .map((row) => normalizeHomeFeedApiRow(row));
 }
 
 export function peekHomeFeedRowsCacheSync(userId?: string): any[] {

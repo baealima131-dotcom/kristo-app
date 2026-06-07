@@ -35,30 +35,50 @@ const IMAGE_CANDIDATE_KEYS = [
   "mediaUrl",
   "attachmentUrl",
   "photoUri",
+  "photoUrl",
   "uploadedMediaUri",
   "coverImage",
   "coverImageUrl",
   "image",
   "photo",
+  "url",
 ] as const;
 
 function collectImageCandidateFields(item: any): Record<string, string> {
   const fields: Record<string, string> = {};
-  for (const key of IMAGE_CANDIDATE_KEYS) {
-    const value = String(item?.[key] || "").trim();
-    if (value) fields[key] = value;
-  }
-  if (Array.isArray(item?.images)) {
-    item.images.forEach((entry: unknown, index: number) => {
-      const value = String(entry || "").trim();
-      if (value) fields[`images[${index}]`] = value;
-    });
-  }
-  if (Array.isArray(item?.mediaUrls)) {
-    item.mediaUrls.forEach((entry: unknown, index: number) => {
-      const value = String(entry || "").trim();
-      if (value) fields[`mediaUrls[${index}]`] = value;
-    });
+  const roots = [item, item?.payload].filter((entry) => entry && typeof entry === "object");
+  for (const root of roots) {
+    for (const key of IMAGE_CANDIDATE_KEYS) {
+      const value = String(root?.[key] || "").trim();
+      if (value) fields[key] = value;
+    }
+    if (Array.isArray(root?.images)) {
+      root.images.forEach((entry: unknown, index: number) => {
+        const value = String(entry || "").trim();
+        if (value) fields[`images[${index}]`] = value;
+      });
+    }
+    if (Array.isArray(root?.mediaUrls)) {
+      root.mediaUrls.forEach((entry: unknown, index: number) => {
+        const value = String(entry || "").trim();
+        if (value) fields[`mediaUrls[${index}]`] = value;
+      });
+    }
+    if (Array.isArray(root?.attachments)) {
+      root.attachments.forEach((entry: unknown, index: number) => {
+        if (typeof entry === "string") {
+          const value = String(entry || "").trim();
+          if (value) fields[`attachments[${index}]`] = value;
+          return;
+        }
+        if (!entry || typeof entry !== "object") return;
+        const att = entry as Record<string, unknown>;
+        for (const key of ["url", "uri", "imageUrl", "mediaUrl", "publicUrl"]) {
+          const value = String(att[key] || "").trim();
+          if (value) fields[`attachments[${index}].${key}`] = value;
+        }
+      });
+    }
   }
   return fields;
 }
@@ -118,7 +138,7 @@ export const FeedRow = memo(function FeedRow({
   const videoUri = useMemo(() => resolveVideoUri(item), [item]);
   const resolvedImageUri = useMemo(() => resolvePostImageUri(item), [item]);
   const hasVideo = Boolean(videoUri);
-  const hasImage = Boolean(resolvedImageUri) && !item?.videoUrl;
+  const hasImage = Boolean(resolvedImageUri) && !video;
   const willRenderImage = hasImage;
   const churchRoomTextCard = churchRoomPost && !hasVideo && !hasImage;
   const posterUri = resolvePosterUri(item);
