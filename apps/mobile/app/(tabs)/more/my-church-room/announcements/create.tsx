@@ -6,7 +6,7 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { apiPost } from "@/src/lib/kristoApi";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { buildKristoRequestHeaders } from "@/src/lib/kristoHeaders";
 import {
   CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE,
   compressChurchRoomFeedImage,
@@ -207,16 +207,20 @@ export default function CreateAnnouncement() {
         type: "image/jpeg",
       } as any);
 
-      const uploadRes: any = await apiPost(
-        "/api/church/media/upload",
-        fd,
-        {
-          headers: {
-            accept: "application/json",
-            ...getKristoHeaders(),
+      const session = getSessionSync();
+      const uploadRes: any = await apiPost("/api/church/media/upload", fd, {
+        headers: buildKristoRequestHeaders(
+          "/api/church/media/upload",
+          {
+            userId: String(session?.userId || "").trim(),
+            role: (session?.role || "Member") as any,
+            churchId: String(session?.churchId || "").trim(),
+            sessionToken: session?.sessionToken,
           },
-        }
-      );
+          { accept: "application/json" },
+          "ChurchRoomImageUpload"
+        ),
+      });
 
       const status = Number(uploadRes?.status || 0) || null;
       const mediaUri = String(

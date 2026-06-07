@@ -1,5 +1,6 @@
 import { getSessionSync } from "./kristoSession";
 import { getApiBase } from "./kristoApi";
+import { buildKristoRequestHeaders } from "./kristoHeaders";
 import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import {
@@ -23,15 +24,23 @@ function getAuthBits() {
   return { churchId, userId, role };
 }
 
-function headers() {
+function headers(path = "/api/church/members") {
   const { churchId, userId, role } = getAuthBits();
-  return {
-    accept: "application/json",
-    "content-type": "application/json",
-    "x-kristo-user-id": userId,
-    "x-kristo-role": role,
-    "x-kristo-church-id": churchId,
-  };
+  const session = getSessionSync();
+  return buildKristoRequestHeaders(
+    path,
+    {
+      userId,
+      role: role as any,
+      churchId,
+      sessionToken: session?.sessionToken,
+    },
+    {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    "churchMembersApi"
+  );
 }
 
 // =====================
@@ -44,7 +53,7 @@ export async function fetchChurchMembers() {
   if (!userId) throw new Error("userId missing");
   if (!base) return getChurchMembers(getAuthBits().churchId);
 
-  const h = headers();
+  const h = headers("/api/church/members");
   const r = await fetch(`${base}/api/church/members`, {
     headers: h,
   });
@@ -237,13 +246,19 @@ export async function fetchMyActiveChurchMembership() {
 
   clearResponseCacheForRequest("GET", "/api/auth/profile", userId);
 
+  const session = getSessionSync();
   const r = await fetch(`${base}/api/auth/profile`, {
-    headers: {
-      accept: "application/json",
-      "x-kristo-user-id": userId,
-      "x-kristo-role": "Member",
-      "x-kristo-church-id": "",
-    },
+    headers: buildKristoRequestHeaders(
+      "/api/auth/profile",
+      {
+        userId,
+        role: "Member",
+        churchId: "",
+        sessionToken: session?.sessionToken,
+      },
+      { accept: "application/json" },
+      "churchMembersApi.profile"
+    ),
   });
 
   const j = await r.json().catch(() => ({} as any));

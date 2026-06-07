@@ -14,7 +14,7 @@ import {
   TextInput,
 } from "react-native";
 import { Stack, useRouter, router, useLocalSearchParams } from "expo-router";
-import { getKristoAuth } from "@/src/lib/kristoHeaders";
+import { buildKristoRequestHeaders, getKristoAuth } from "@/src/lib/kristoHeaders";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
@@ -453,12 +453,16 @@ const goOverview = () => router.push("/church/overview");
 
       if (!silent) setLoadingProfile(true);
 
-      const headers = {
-        accept: "application/json",
-        "x-kristo-user-id": effectiveAuthUserId,
-        "x-kristo-role": effectiveAuthRole,
-        "x-kristo-church-id": activeChurchId,
-      };
+      const headers = buildKristoRequestHeaders(
+        "/api/church/overview",
+        {
+          userId: effectiveAuthUserId,
+          role: effectiveAuthRole as any,
+          churchId: activeChurchId,
+        },
+        { accept: "application/json" },
+        "ChurchTab"
+      );
 
       try {
         const [overviewRes, membersRes, requestsRes] = await Promise.all([

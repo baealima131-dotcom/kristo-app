@@ -5,6 +5,7 @@ import {
   type TrafficOptions,
 } from "@/src/lib/kristoTraffic";
 import { resolveApiBase } from "@/src/lib/kristoEnv";
+import { getKristoHeaders, logKristoAuthHeadersDiag } from "@/src/lib/kristoHeaders";
 
 type Json = any;
 
@@ -80,6 +81,28 @@ function mergeHeaders(h?: HeadersRec) {
   return out;
 }
 
+/** Merge signed session token + identity headers into every authenticated request. */
+function withAuthHeaders(init: RequestInit | undefined, path: string): RequestInit {
+  const caller = mergeHeaders(init?.headers as any);
+  const auth = getKristoHeaders({
+    userId: String(caller["x-kristo-user-id"] || "").trim() || undefined,
+    role: (String(caller["x-kristo-role"] || "").trim() || undefined) as any,
+    churchId: String(caller["x-kristo-church-id"] || "").trim() || undefined,
+    sessionToken: String(caller["x-kristo-session-token"] || "").trim() || undefined,
+  });
+  const headers = { ...auth, ...caller };
+  if (auth["x-kristo-session-token"] && !headers["x-kristo-session-token"]) {
+    headers["x-kristo-session-token"] = auth["x-kristo-session-token"];
+  }
+  logKristoAuthHeadersDiag(path, headers, "kristoApi");
+  return { ...(init || {}), headers };
+}
+
+function stripFormDataContentType(headers: HeadersRec) {
+  delete headers["content-type"];
+  delete headers["Content-Type"];
+}
+
 // apiGet(path, { headers }, { screen, throttleMs })
 export async function apiGet<T = Json>(path: string, init?: RequestInit, traffic?: TrafficOptions) {
   const userId = headerUserId(init?.headers);
@@ -89,7 +112,8 @@ export async function apiGet<T = Json>(path: string, init?: RequestInit, traffic
 
   const run = async () => {
     try {
-      const res = await fetch(kristoUrl(path), { ...(init || {}), method: "GET" });
+      const reqInit = withAuthHeaders(init, path);
+      const res = await fetch(kristoUrl(path), { ...reqInit, method: "GET" });
       const body = await safeJson(res);
       if (!res.ok) return httpError(path, res, body) as T;
       return (body ?? { ok: false, error: "Empty server response", status: res.status }) as T;
@@ -114,7 +138,8 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
   const init: RequestInit =
     arg && typeof arg === "object" && "headers" in arg ? (arg as RequestInit) : ({ headers: arg as any } as RequestInit);
 
-  const headers = mergeHeaders(init.headers as any);
+  const prepared = withAuthHeaders(init, path);
+  const headers = mergeHeaders(prepared.headers as any);
 
   const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
 
@@ -122,6 +147,7 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
   if (body != null) {
     if (isFormData) {
       payload = body;
+      stripFormDataContentType(headers);
     } else if (typeof body === "string") {
       payload = body;
       headers["content-type"] = headers["content-type"] || "application/json";
@@ -133,7 +159,7 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
 
   try {
     const res = await fetch(kristoUrl(path), {
-      ...(init || {}),
+      ...prepared,
       method: "POST",
       headers,
       body: payload,
@@ -170,7 +196,8 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
   const init: RequestInit =
     arg && typeof arg === "object" && "headers" in arg ? (arg as RequestInit) : ({ headers: arg as any } as RequestInit);
 
-  const headers = mergeHeaders(init.headers as any);
+  const prepared = withAuthHeaders(init, path);
+  const headers = mergeHeaders(prepared.headers as any);
 
   const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
 
@@ -178,6 +205,7 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
   if (body != null) {
     if (isFormData) {
       payload = body;
+      stripFormDataContentType(headers);
     } else if (typeof body === "string") {
       payload = body;
       headers["content-type"] = headers["content-type"] || "application/json";
@@ -189,7 +217,7 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
 
   try {
     const res = await fetch(kristoUrl(path), {
-      ...(init || {}),
+      ...prepared,
       method: "PATCH",
       headers,
       body: payload,
@@ -204,7 +232,8 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
 
 export async function apiDelete<T = Json>(path: string, init?: RequestInit) {
   try {
-    const res = await fetch(kristoUrl(path), { ...(init || {}), method: "DELETE" });
+    const reqInit = withAuthHeaders(init, path);
+    const res = await fetch(kristoUrl(path), { ...reqInit, method: "DELETE" });
     const parsed = await safeJson(res);
     if (!res.ok) return httpError(path, res, parsed) as T;
     return (parsed ?? { ok: false, error: "Empty server response", status: res.status }) as T;

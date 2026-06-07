@@ -43,3 +43,33 @@ export function getKristoHeaders(auth?: Partial<KristoAuth> & { sessionToken?: s
     ...(displayName ? { "x-kristo-user-name": displayName, "x-kristo-display-name": displayName } : {}),
   } as const;
 }
+
+export function logKristoAuthHeadersDiag(
+  path: string,
+  headers: Record<string, string>,
+  source = "kristo"
+) {
+  console.log("KRISTO_AUTH_HEADERS_DIAG", {
+    path: String(path || "").split("?")[0],
+    source,
+    hasUserId: Boolean(headers["x-kristo-user-id"]),
+    hasChurchId: Boolean(headers["x-kristo-church-id"]),
+    hasRole: Boolean(headers["x-kristo-role"]),
+    hasSessionToken: Boolean(headers["x-kristo-session-token"]),
+  });
+}
+
+/** Authenticated fetch/api headers with signed session token. */
+export function buildKristoRequestHeaders(
+  path: string,
+  auth?: Partial<KristoAuth> & { sessionToken?: string },
+  extra?: Record<string, string>,
+  source = "buildKristoRequestHeaders"
+) {
+  const headers = {
+    ...getKristoHeaders(auth),
+    ...(extra || {}),
+  } as Record<string, string>;
+  logKristoAuthHeadersDiag(path, headers, source);
+  return headers;
+}

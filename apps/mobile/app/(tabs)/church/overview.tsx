@@ -19,7 +19,7 @@ import { BlurView } from "expo-blur";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { buildKristoRequestHeaders, getKristoAuth } from "@/src/lib/kristoHeaders";
 import { apiGet, apiPatch, getApiBase } from "@/src/lib/kristoApi";
 import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { useIsFocused } from "@react-navigation/native";
@@ -284,12 +284,17 @@ export default function ChurchOverviewScreen() {
     ? "Church_Admin"
     : String(session?.role || (session as any)?.churchRole || auth?.role || "Member");
 
-  const getHeaders = () => ({
-    accept: "application/json",
-    "x-kristo-user-id": effectiveAuthUserId,
-    "x-kristo-role": effectiveAuthRole,
-    "x-kristo-church-id": churchId,
-  });
+  const getHeaders = (path = "/api/church/overview") =>
+    buildKristoRequestHeaders(
+      path,
+      {
+        userId: effectiveAuthUserId,
+        role: effectiveAuthRole as any,
+        churchId,
+      },
+      { accept: "application/json" },
+      "ChurchOverview"
+    );
 
   const logOverviewRequest = (url: string) => {
     if (!__DEV__) return;
@@ -299,6 +304,7 @@ export default function ChurchOverviewScreen() {
       "x-kristo-user-id": h["x-kristo-user-id"],
       "x-kristo-role": h["x-kristo-role"],
       "x-kristo-church-id": h["x-kristo-church-id"],
+      hasSessionToken: Boolean(h["x-kristo-session-token"]),
       sessionChurchId: session?.churchId || "",
       paramChurchId,
     });
@@ -685,7 +691,7 @@ export default function ChurchOverviewScreen() {
 
       try {
         const hostsRes: any = await apiGet("/api/church/media-hosts", {
-          headers: getHeaders(),
+          headers: getHeaders("/api/church/media-hosts"),
         });
         const access = evaluateChurchMediaAccessClient({
           userId: effectiveAuthUserId,

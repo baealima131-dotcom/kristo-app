@@ -1011,6 +1011,7 @@ export default function MeScreen() {
             userId: session?.userId,
             role: opts?.bypassThrottle ? "Member" : (session?.role as any),
             churchId: opts?.bypassThrottle ? "" : session?.churchId || "",
+            sessionToken: session?.sessionToken,
           }),
         },
         { screen: "Profile", throttleMs: opts?.bypassThrottle ? 2500 : 45000 }

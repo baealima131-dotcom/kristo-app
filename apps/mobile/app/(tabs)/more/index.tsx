@@ -87,6 +87,14 @@ const ITEMS: Item[] = [
     href: "/more/media",
   },
   {
+    key: "kristo_guide",
+    title: "Kr. Guide",
+    sub: "Rules • Safety • Help",
+    iconLib: "ion",
+    icon: "book-outline",
+    href: "/more/kristo-guide",
+  },
+  {
     key: "church",
     title: "Church",
     sub: "Create • Join (unlock Church tab)",
@@ -130,7 +138,50 @@ const ITEMS: Item[] = [
   },
 ];
 
-const NO_CHURCH_VISIBLE_KEYS = new Set(["payments", "church"]);
+const NO_CHURCH_ONBOARDING_ORDER = [
+  "tlmc",
+  "church",
+  "kristo_guide",
+  "notifications",
+  "courtship",
+  "bible",
+] as const;
+
+const NO_CHURCH_ITEM_OVERRIDES: Partial<Record<string, Partial<Item>>> = {
+  church: {
+    sub: "Create or join your church",
+    href: CHURCH_GATE_HREF,
+  },
+  courtship: {
+    sub: "Family • faith • future",
+  },
+  bible: {
+    sub: "Read • study • grow",
+  },
+};
+
+function buildNoChurchOnboardingItems() {
+  const itemByKey = new Map(ITEMS.map((item) => [item.key, item]));
+  return NO_CHURCH_ONBOARDING_ORDER.map((key) => {
+    const base = itemByKey.get(key);
+    if (!base) return null;
+    const override = NO_CHURCH_ITEM_OVERRIDES[key];
+    return override ? { ...base, ...override } : { ...base };
+  }).filter((item): item is Item => !!item);
+}
+
+const V2_COMING_SOON_COPY: Partial<Record<string, { title: string; text: string }>> = {
+  bible: {
+    title: "Bible coming in V2",
+    text:
+      "Kristo Bible V2 is being prepared with a stronger experience, smarter tools, and advanced community systems.",
+  },
+  courtship: {
+    title: "Courtship coming in V2",
+    text:
+      "Kristo Courtship V2 is being prepared with guided relationships, family tools, and faith-centered features.",
+  },
+};
 
 function splitColumns(items: Item[]) {
   return {
@@ -201,6 +252,15 @@ function getCardSurface(key: string): CardSurface {
       shadowColor: "#54C492",
     };
   }
+  if (key === "kristo_guide") {
+    return {
+      base: ["rgba(6,22,24,0.98)", "rgba(5,18,20,0.97)", "rgba(3,12,14,0.96)"],
+      tint: ["rgba(45,212,191,0.18)", "rgba(20,184,166,0.08)", "transparent"],
+      sheen: ["rgba(255,255,255,0.14)", "rgba(94,234,212,0.12)", "transparent"],
+      glowColor: "rgba(45,212,191,0.24)",
+      shadowColor: "#2DD4BF",
+    };
+  }
   if (key === "courtship") {
     return {
       base: ["rgba(28,10,22,0.98)", "rgba(18,8,14,0.97)", "rgba(10,5,8,0.96)"],
@@ -239,15 +299,7 @@ export default function MoreScreen() {
 
   const visibleItems = React.useMemo(() => {
     if (hasChurch) return ITEMS;
-    return ITEMS.filter((item) => NO_CHURCH_VISIBLE_KEYS.has(item.key)).map((item) =>
-      item.key === "church"
-        ? {
-            ...item,
-            sub: "Create or join to unlock",
-            href: CHURCH_GATE_HREF,
-          }
-        : item
-    );
+    return buildNoChurchOnboardingItems();
   }, [hasChurch]);
 
   const { left: leftItems, right: rightItems } = React.useMemo(
@@ -257,6 +309,8 @@ export default function MoreScreen() {
 
   const [messagesV2Open, setMessagesV2Open] = React.useState(false);
   const [v2FeatureTitle, setV2FeatureTitle] = React.useState("Messages");
+  const [v2ModalTitle, setV2ModalTitle] = React.useState("Messages coming in V2");
+  const [v2ModalText, setV2ModalText] = React.useState("");
   const v2CardAnim = React.useRef(new Animated.Value(0)).current;
   const mediaOpenRef = React.useRef(false);
   const [canAccessChurchMedia, setCanAccessChurchMedia] = React.useState<boolean | null>(null);
@@ -277,6 +331,7 @@ export default function MoreScreen() {
           userId,
           role: (session?.role || "Member") as any,
           churchId,
+          sessionToken: session?.sessionToken,
         }),
       });
       const access = evaluateChurchMediaAccessClient({
@@ -343,6 +398,17 @@ export default function MoreScreen() {
 
   const scrollBottomPad = insets.bottom + TAB_BAR_HEIGHT + SCROLL_EXTRA_CLEARANCE;
 
+  const openV2ComingSoonModal = React.useCallback((item: Item) => {
+    const customCopy = V2_COMING_SOON_COPY[item.key];
+    setV2FeatureTitle(item.title);
+    setV2ModalTitle(customCopy?.title || `${item.title} coming in V2`);
+    setV2ModalText(
+      customCopy?.text ||
+        `Kristo ${item.title} V2 is being prepared with a stronger experience, smarter tools, and advanced community systems.`
+    );
+    setMessagesV2Open(true);
+  }, []);
+
   const renderCard = (item: Item) => {
     const isTlmc = item.key === "tlmc";
     const isChurchGate = !hasChurch && item.key === "church";
@@ -364,8 +430,10 @@ export default function MoreScreen() {
         ? [s.tilePurple, s.tileChurchWrap]
         : item.key === "my_church_room"
         ? [s.tileGoldStrong, s.tileRoomWrap]
-        : item.key === "bible"
-        ? [s.tileEmerald, s.tileBibleWrap]
+        : item.key === "bible" || item.key === "kristo_guide"
+        ? item.key === "kristo_guide"
+          ? [s.tileTeal, s.tileTariffWrap]
+          : [s.tileEmerald, s.tileBibleWrap]
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? [s.tileRose, s.tileGivingWrap]
         : item.key === "courtship"
@@ -381,8 +449,10 @@ export default function MoreScreen() {
         ? [s.tileInnerPurple, s.tileInnerChurch]
         : item.key === "my_church_room"
         ? [s.tileInnerAmber, s.tileInnerRoom]
-        : item.key === "bible"
-        ? [s.tileInnerEmerald, s.tileInnerBible]
+        : item.key === "bible" || item.key === "kristo_guide"
+        ? item.key === "kristo_guide"
+          ? [s.tileInnerTeal, s.tileInnerTariff]
+          : [s.tileInnerEmerald, s.tileInnerBible]
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? [s.tileInnerRose, s.tileInnerGiving]
         : item.key === "courtship"
@@ -398,8 +468,10 @@ export default function MoreScreen() {
         ? s.iconPillPurple
         : item.key === "my_church_room"
         ? s.iconPillAmber
-        : item.key === "bible"
-        ? s.iconPillEmerald
+        : item.key === "bible" || item.key === "kristo_guide"
+        ? item.key === "kristo_guide"
+          ? s.iconPillTeal
+          : s.iconPillEmerald
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? s.iconPillRose
         : item.key === "courtship"
@@ -415,8 +487,8 @@ export default function MoreScreen() {
         ? s.arrowPillPurple
         : item.key === "my_church_room"
         ? s.arrowPillAmber
-        : item.key === "bible"
-        ? s.arrowPillEmerald
+        : item.key === "bible" || item.key === "kristo_guide"
+        ? null
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? s.arrowPillRose
         : item.key === "courtship"
@@ -434,6 +506,8 @@ export default function MoreScreen() {
         ? s.tileTitleAmber
         : item.key === "bible"
         ? s.tileTitleEmerald
+        : item.key === "kristo_guide"
+        ? s.tileTitleTeal
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? s.tileTitleRose
         : item.key === "courtship"
@@ -451,6 +525,8 @@ export default function MoreScreen() {
         ? s.tileSubAmber
         : item.key === "bible"
         ? s.tileSubEmerald
+        : item.key === "kristo_guide"
+        ? s.tileSubTeal
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? s.tileSubRose
         : item.key === "courtship"
@@ -468,6 +544,8 @@ export default function MoreScreen() {
         ? s.tapHintAmber
         : item.key === "bible"
         ? s.tapHintEmerald
+        : item.key === "kristo_guide"
+        ? s.tapHintTeal
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? s.tapHintRose
         : item.key === "courtship"
@@ -485,6 +563,8 @@ export default function MoreScreen() {
         ? s.tileRoomWrap
         : item.key === "bible"
         ? s.tileBibleWrap
+        : item.key === "kristo_guide"
+        ? s.tileTariffWrap
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? s.tileGivingWrap
         : item.key === "courtship"
@@ -502,6 +582,8 @@ export default function MoreScreen() {
         ? s.tileInnerRoom
         : item.key === "bible"
         ? s.tileInnerBible
+        : item.key === "kristo_guide"
+        ? s.tileInnerTariff
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? s.tileInnerGiving
         : item.key === "courtship"
@@ -513,7 +595,7 @@ export default function MoreScreen() {
         ? 24
         : item.key === "church"
         ? 22
-        : item.key === "bible"
+        : item.key === "bible" || item.key === "kristo_guide"
         ? 22
         : 21;
 
@@ -561,6 +643,8 @@ export default function MoreScreen() {
         ? "Community"
         : item.key === "bible"
         ? "Word"
+        : item.key === "kristo_guide"
+        ? "Guide"
         : item.key === "testimony"
         ? "Stories"
         : item.key === "payments"
@@ -580,6 +664,8 @@ export default function MoreScreen() {
         ? s.miniTagAmber
         : item.key === "bible"
         ? s.miniTagEmerald
+        : item.key === "kristo_guide"
+        ? s.miniTagTeal
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? s.miniTagRose
         : item.key === "courtship"
@@ -597,6 +683,8 @@ export default function MoreScreen() {
         ? s.ctaPillAmber
         : item.key === "bible"
         ? s.ctaPillEmerald
+        : item.key === "kristo_guide"
+        ? s.ctaPillTeal
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? s.ctaPillRose
         : item.key === "courtship"
@@ -610,6 +698,8 @@ export default function MoreScreen() {
         ? "rgba(198,166,255,0.98)"
         : item.key === "bible"
         ? "rgba(120,224,178,0.98)"
+        : item.key === "kristo_guide"
+        ? "rgba(94,234,212,0.98)"
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? "rgba(255,158,210,0.98)"
         : item.key === "courtship"
@@ -623,6 +713,8 @@ export default function MoreScreen() {
         ? "rgba(228,212,255,0.96)"
         : item.key === "bible"
         ? "rgba(210,255,236,0.96)"
+        : item.key === "kristo_guide"
+        ? "rgba(204,251,241,0.96)"
         : item.key === "testimony" || item.key === "payments" || item.key === "media"
         ? "rgba(255,214,234,0.96)"
         : item.key === "courtship"
@@ -646,8 +738,7 @@ export default function MoreScreen() {
             item.key === "courtship" ||
             item.key === "testimony"
           ) {
-            setV2FeatureTitle(item.title);
-            setMessagesV2Open(true);
+            openV2ComingSoonModal(item);
             return;
           }
 
@@ -796,10 +887,16 @@ export default function MoreScreen() {
             <View style={s.ctaRow}>
               <View style={[s.ctaPill, ctaPillTone, isTlmc ? s.ctaPillTlmc : null]}>
                 <Text style={[s.ctaText, hintTone, isTlmc ? s.tapHintTlmc : null]}>
-                  {isChurchGate ? "Unlock" : isMediaLocked ? "Locked" : item.title === "Giving" ? "Give" : "Open"}
+                  {isChurchGate
+                    ? "Get Started"
+                    : isMediaLocked
+                      ? "Locked"
+                      : item.title === "Giving"
+                        ? "Give"
+                        : "Open"}
                 </Text>
               </View>
-              {isChurchGate || isMediaLocked ? (
+              {isMediaLocked ? (
                 <Ionicons name="lock-closed-outline" size={14} color="rgba(217,179,95,0.9)" />
               ) : null}
             </View>
@@ -896,12 +993,9 @@ export default function MoreScreen() {
               />
             </View>
 
-            <Text style={s.v2Title}>{v2FeatureTitle} coming in V2</Text>
+            <Text style={s.v2Title}>{v2ModalTitle}</Text>
 
-            <Text style={s.v2Text}>
-              Kristo {v2FeatureTitle} V2 is being prepared with a stronger
-              experience, smarter tools, and advanced community systems.
-            </Text>
+            <Text style={s.v2Text}>{v2ModalText}</Text>
 
             <View style={s.v2InfoBox}>
               <View style={s.v2LockCircle}>
@@ -1087,6 +1181,12 @@ const s = StyleSheet.create<any>({
     borderColor: "rgba(64,150,126,0.12)",
   },
 
+  tileTeal: {
+    backgroundColor: "rgba(120,255,240,0.018)",
+    borderWidth: 1,
+    borderColor: "rgba(45,212,191,0.14)",
+  },
+
   tileRose: {
     backgroundColor: "rgba(255,210,230,0.018)",
     borderWidth: 1,
@@ -1124,6 +1224,11 @@ const s = StyleSheet.create<any>({
     borderColor: "rgba(84,192,146,0.16)",
   },
 
+  tileInnerTeal: {
+    backgroundColor: "rgba(45,212,191,0.055)",
+    borderColor: "rgba(45,212,191,0.18)",
+  },
+
   tileInnerRose: {
     backgroundColor: "rgba(255,120,190,0.050)",
     borderColor: "rgba(214,106,162,0.15)",
@@ -1159,6 +1264,11 @@ const s = StyleSheet.create<any>({
     borderColor: "rgba(84,196,146,0.30)",
   },
 
+  iconPillTeal: {
+    backgroundColor: "rgba(10,46,48,0.44)",
+    borderColor: "rgba(45,212,191,0.32)",
+  },
+
   iconPillRose: {
     backgroundColor: "rgba(72,28,54,0.44)",
     borderColor: "rgba(228,120,176,0.28)",
@@ -1189,6 +1299,10 @@ const s = StyleSheet.create<any>({
     color: "rgba(232,255,244,0.99)",
   },
 
+  tileTitleTeal: {
+    color: "rgba(224,255,251,0.99)",
+  },
+
   tileTitleRose: {
     color: "rgba(255,236,246,0.99)",
   },
@@ -1217,6 +1331,10 @@ const s = StyleSheet.create<any>({
     color: "rgba(214,248,232,0.76)",
   },
 
+  tileSubTeal: {
+    color: "rgba(204,251,241,0.76)",
+  },
+
   tileSubRose: {
     color: "rgba(255,222,238,0.76)",
   },
@@ -1243,6 +1361,10 @@ const s = StyleSheet.create<any>({
 
   tapHintEmerald: {
     color: "rgba(120,224,178,0.97)",
+  },
+
+  tapHintTeal: {
+    color: "rgba(94,234,212,0.97)",
   },
 
   tapHintRose: {
@@ -1708,6 +1830,13 @@ const s = StyleSheet.create<any>({
     shadowOffset: { width: 0, height: 22 },
     elevation: 22,
   },
+  tileTariffWrap: {
+    shadowColor: "#2DD4BF",
+    shadowOpacity: 0.34,
+    shadowRadius: 30,
+    shadowOffset: { width: 0, height: 22 },
+    elevation: 22,
+  },
   tileGivingWrap: {
     shadowColor: "#000",
     shadowOpacity: 0.40,
@@ -1746,6 +1875,11 @@ const s = StyleSheet.create<any>({
   tileInnerBible: {
     backgroundColor: "rgba(74,196,146,0.078)",
     borderColor: "rgba(96,212,164,0.24)",
+  },
+
+  tileInnerTariff: {
+    backgroundColor: "rgba(45,212,191,0.078)",
+    borderColor: "rgba(94,234,212,0.24)",
   },
 
   tileInnerGiving: {
@@ -1844,6 +1978,11 @@ const s = StyleSheet.create<any>({
   ctaPillEmerald: {
     backgroundColor: "rgba(120,224,178,0.10)",
     borderColor: "rgba(120,224,178,0.18)",
+  },
+
+  ctaPillTeal: {
+    backgroundColor: "rgba(94,234,212,0.10)",
+    borderColor: "rgba(94,234,212,0.18)",
   },
 
   ctaPillRose: {

@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { KristoSession } from "./kristoSession";
 import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
+import { getSessionSync } from "./kristoSession";
 import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import { clearChurchProfileCache, saveChurchProfileCache } from "./churchStore";
@@ -332,9 +333,18 @@ export async function silentRefreshChurchOverview(
     clearResponseCacheForRequest("GET", "/api/church/overview", uid);
   }
 
+  const session = getSessionSync();
   const res = await apiGet<any>(
     "/api/church/overview",
-    { headers: headers || getKristoHeaders({ userId: uid, churchId: cid }) },
+    {
+      headers:
+        headers ||
+        getKristoHeaders({
+          userId: uid,
+          churchId: cid,
+          sessionToken: session?.sessionToken,
+        }),
+    },
     {
       screen: "ScreenCache",
       throttleMs: profileFresh ? 0 : SCREEN_CACHE_TTL_MS,
@@ -403,6 +413,7 @@ export async function silentRefreshProfileScreen(
     userId,
     role: (session.role || "Member") as any,
     churchId,
+    sessionToken: session.sessionToken,
   });
 
   const [profileRes, postsRes, announcementsRes, feedRes, overviewRes] = await Promise.all([
@@ -505,6 +516,7 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
           userId,
           role: "Member",
           churchId: "",
+          sessionToken: effectiveSession?.sessionToken,
         }),
       },
       { screen: "ScreenCache", throttleMs: opts?.force ? 0 : SCREEN_CACHE_TTL_MS }
@@ -560,6 +572,7 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
             userId,
             role: (effectiveSession?.role || "Member") as any,
             churchId,
+            sessionToken: effectiveSession?.sessionToken,
           }),
           opts
         )

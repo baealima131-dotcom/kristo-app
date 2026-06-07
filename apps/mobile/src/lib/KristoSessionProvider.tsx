@@ -125,6 +125,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
             userId: baseSession.userId,
             role: omitChurchHeader ? "Member" : baseSession.role,
             churchId: omitChurchHeader ? "" : headerChurchId,
+            sessionToken: baseSession.sessionToken,
           }),
         },
         { screen: "SessionProvider", throttleMs }
