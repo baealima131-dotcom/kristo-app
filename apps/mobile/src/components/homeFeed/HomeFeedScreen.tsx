@@ -69,6 +69,10 @@ import {
   recoverHomeFeedPlaybackAfterLiveExit,
 } from "@/src/lib/homeFeedVideoController";
 import {
+  scheduleHomeFeedVideoBufferAhead,
+  warmVisibleHomeFeedVideoPosters,
+} from "@/src/lib/homeFeedVideoBufferAhead";
+import {
   consumeHomeFeedScheduleDirty,
   peekHomeFeedScheduleDirty,
   subscribeHomeFeedScheduleDirty,
@@ -128,6 +132,9 @@ export default function HomeFeedScreen() {
   const pagePrefetchInflightRef = useRef(false);
   const pageReadyLoggedRef = useRef(false);
   const stableDisplayRowsRef = useRef<any[]>([]);
+  const initialVideoBufferWarmedRef = useRef(false);
+  const lastVideoBufferActiveRef = useRef(-1);
+  const lastVideoBufferWindowRef = useRef(HOME_FEED_INITIAL_LIMIT);
 
   const [stableDisplayRows, setStableDisplayRows] = useState<any[]>([]);
   const [visibleWindowSize, setVisibleWindowSize] = useState(HOME_FEED_INITIAL_LIMIT);
@@ -478,6 +485,54 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     visibleRowCountRef.current = visibleData.length;
   }, [visibleData]);
+
+  useEffect(() => {
+    if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
+    warmVisibleHomeFeedVideoPosters(visibleData, visibleData.length);
+  }, [feedFocused, isClaimSlotFocus, visibleData]);
+
+  useEffect(() => {
+    if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
+    if (initialVideoBufferWarmedRef.current) return;
+    initialVideoBufferWarmedRef.current = true;
+    scheduleHomeFeedVideoBufferAhead({
+      rows: visibleData,
+      activeIndex: 0,
+      visibleCount: visibleData.length,
+      reason: "initial-feed-ready",
+      enabled: feedFocused,
+    });
+  }, [feedFocused, isClaimSlotFocus, visibleData]);
+
+  useEffect(() => {
+    if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
+    if (lastVideoBufferActiveRef.current === activeIndex) return;
+    lastVideoBufferActiveRef.current = activeIndex;
+    scheduleHomeFeedVideoBufferAhead({
+      rows: visibleData,
+      activeIndex,
+      visibleCount: visibleData.length,
+      reason: "active-index",
+      enabled: feedFocused,
+    });
+  }, [activeIndex, feedFocused, isClaimSlotFocus, visibleData]);
+
+  useEffect(() => {
+    if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
+    const prevWindow = lastVideoBufferWindowRef.current;
+    if (visibleWindowSize <= prevWindow) {
+      lastVideoBufferWindowRef.current = visibleWindowSize;
+      return;
+    }
+    lastVideoBufferWindowRef.current = visibleWindowSize;
+    scheduleHomeFeedVideoBufferAhead({
+      rows: visibleData,
+      activeIndex,
+      visibleCount: visibleData.length,
+      reason: "window-expand",
+      enabled: feedFocused,
+    });
+  }, [visibleWindowSize, activeIndex, feedFocused, isClaimSlotFocus, visibleData]);
 
   const viewerChurchId = String(session?.churchId || "").trim();
 
