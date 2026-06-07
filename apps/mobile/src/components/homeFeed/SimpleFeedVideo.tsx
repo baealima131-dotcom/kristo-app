@@ -183,14 +183,21 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
   };
 
-  const computeEffectiveShouldPlay = () =>
-    isActive && screenFocused && firstFrameReady && appActive;
-
   const computeVideoReady = () =>
     readyMarkedRef.current || isPlayerReadyToStart(status, currentTime, playing);
 
+  // Play/decode gate: start playback as soon as the player is ready, WITHOUT
+  // waiting for the first decoded frame. This is what unblocks startup.
+  const computeActiveShouldPlay = () =>
+    isActive && screenFocused && appActive && computeVideoReady();
+
+  // Audio gate: only unmute once the first frame has actually rendered, so we
+  // never play audio before the poster hands off to a visible frame.
+  const computeAudioShouldPlay = () =>
+    isActive && screenFocused && appActive && firstFrameReady;
+
   const recoverAudioIfNeeded = (source: string) => {
-    const effectiveShouldPlay = computeEffectiveShouldPlay();
+    const effectiveShouldPlay = computeAudioShouldPlay();
     const videoReady = computeVideoReady();
     if (!effectiveShouldPlay || !videoReady) return false;
     if (!readPlayerMuted()) return false;
@@ -233,7 +240,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   };
 
   const setPlayerMuted = (muted: boolean, source: string, reason?: string) => {
-    if (muted && isActive && computeEffectiveShouldPlay()) {
+    // Only refuse to mute once audio is legitimately playing (post first frame);
+    // before that we must be free to keep the active video muted while it decodes.
+    if (muted && isActive && computeAudioShouldPlay()) {
       return;
     }
     try {
@@ -245,7 +254,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const logExpectedButMuted = (reason: string) => {
     const playerMuted = readPlayerMuted();
     const shouldPlay = isActive;
-    const effectiveShouldPlay = computeEffectiveShouldPlay();
+    const effectiveShouldPlay = computeAudioShouldPlay();
     const videoReady = computeVideoReady();
 
     if (!effectiveShouldPlay || !videoReady || !playerMuted) return;
@@ -301,22 +310,29 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const activateActivePlayback = (reason: string) => {
     if (!isActive) return;
-    if (!computeEffectiveShouldPlay()) return;
+    // Start decode/playback as soon as the player is ready; do NOT wait for the
+    // first decoded frame. Audio stays muted until firstFrameReady.
+    if (!computeActiveShouldPlay()) return;
 
-    if (activeHandoffRef.current && !readPlayerMuted()) return;
+    const audioAllowed = computeAudioShouldPlay();
+
+    // Nothing to do if we've already handed off and the audio state is correct.
+    if (activeHandoffRef.current && (!audioAllowed || !readPlayerMuted())) return;
 
     activeHandoffRef.current = true;
 
     try {
-      player.muted = false;
+      if (audioAllowed) player.muted = false;
       player.play();
       lastMutedLogKeyRef.current = "";
-      logMutedSet("activateActivePlayback", false, reason);
+      logMutedSet("activateActivePlayback", !audioAllowed, reason);
     } catch {}
     activateHomeFeedVideo(postId, {
       postId,
       shouldPlay: true,
-      videoReady: true,
+      // Before the first frame, claim ownership / pause other warming players but
+      // let the controller unmute only once audio is allowed.
+      videoReady: audioAllowed,
       reason,
     });
     markHomeFeedFirstPlaying("simple-feed-video");
@@ -468,13 +484,16 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
 
     if (isActive) {
-      if (firstFrameReady && computeVideoReady()) {
+      if (computeActiveShouldPlay()) {
+        // Begin decode/playback immediately (muted until first frame); claim
+        // ownership so other warming players are paused. Timing is emitted once
+        // the real first frame lands (here only if it already has).
         activateActivePlayback("simple-feed-video-active-handoff");
         recoverAudioIfNeeded("active-playback-effect");
-        logStartupTiming();
+        if (firstFrameReady) logStartupTiming();
       } else if (!activeHandoffRef.current) {
         try {
-          setPlayerMuted(true, "active-pre-handoff", "await-first-frame");
+          setPlayerMuted(true, "active-pre-handoff", "await-ready");
           player.play();
         } catch {}
       }
@@ -588,7 +607,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   // videoReady/firstFrameReady stay false -> video decoder/network.
   useEffect(() => {
     if (feedIndex < 0 || feedIndex > 2) return;
-    const videoShouldPlay = computeEffectiveShouldPlay();
+    const videoShouldPlay = computeActiveShouldPlay();
     const videoReady = computeVideoReady();
     const key = `${feedIndex}:${isActive ? 1 : 0}:${firstFrameReady ? 1 : 0}:${videoReady ? 1 : 0}:${videoShouldPlay ? 1 : 0}:${screenFocused ? 1 : 0}:${appActive ? 1 : 0}:${warmMode}:${statusLower(status)}`;
     if (key === lastRowDiagKeyRef.current) return;
