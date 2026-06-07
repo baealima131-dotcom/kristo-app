@@ -396,19 +396,21 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
   const stored = await getMediaUploadJob(jobId);
   const chunkSessionId = stored?.chunkSessionId || jobId;
 
-  const compressed = await compressVideoForUpload(job.fileUri);
+  const compressed = await compressVideoForUpload(job.fileUri, {
+    durationMs: job.durationMs,
+  });
   const uploadUri = compressed.uri;
-  if (!compressed.skipped) {
+  if (compressed.feedExportApplied) {
     console.log("KRISTO_VIDEO_UPLOAD_USING_COMPRESSED", {
       jobId,
       originalBytes: compressed.originalBytes,
       compressedBytes: compressed.compressedBytes,
       uploadUri,
+      mimeType: compressed.mimeType || "video/mp4",
+      width: compressed.width ?? null,
+      height: compressed.height ?? null,
     });
-  } else if (
-    compressed.reason === "larger-than-original" ||
-    compressed.reason === "insufficient-savings"
-  ) {
+  } else if (compressed.skipped) {
     console.log("KRISTO_VIDEO_UPLOAD_USING_ORIGINAL", {
       jobId,
       originalBytes: compressed.originalBytes,
@@ -421,7 +423,10 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     compressed.compressedBytes > 0
       ? compressed.compressedBytes
       : await resolveUploadFileSize(uploadUri);
-  const contentType = guessVideoContentType(uploadFileName);
+  const contentType =
+    compressed.feedExportApplied || compressed.mimeType === "video/mp4"
+      ? "video/mp4"
+      : guessVideoContentType(uploadFileName);
 
   if (!uploadUri || !fileSize) {
     throw new Error("Could not read the selected video file.");
@@ -481,24 +486,10 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     callbacks
   );
 
-  const clientAssumesFaststart = !compressed.skipped;
-  const faststart = signed.faststart === true || clientAssumesFaststart;
-
-  if (clientAssumesFaststart && signed.faststart !== true) {
-    console.log("KRISTO_VIDEO_FASTSTART_CLIENT_ASSUMED", {
-      jobId,
-      videoUrl: String(signed.videoUrl || "").trim(),
-      compressedSkipped: compressed.skipped,
-      compressedReason: compressed.reason || null,
-      targetMaxSize: 720,
-      targetBitrate: 800_000,
-    });
-  }
-
   const publishMetadata = buildChurchVideoPublishMetadata({
     durationMs: job.durationMs,
     sizeBytes: fileSize,
-    faststart,
+    faststart: signed.faststart === true,
   });
 
   console.log("KRISTO_VIDEO_METADATA_CAPTURED", {

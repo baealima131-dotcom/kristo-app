@@ -43,6 +43,7 @@ export async function POST(req: NextRequest) {
 
   const key = String(body?.key || "").trim();
   const uploadId = String(body?.uploadId || "").trim();
+  const postId = String(body?.postId || body?.feedId || "").trim() || null;
   const parts = Array.isArray(body?.parts) ? body.parts : [];
 
   if (!key || !uploadId || !parts.length) {
@@ -92,10 +93,11 @@ export async function POST(req: NextRequest) {
     const repack = await repackVideoFaststartForKey({
       key,
       videoUrl: completed.videoUrl,
+      postId,
     });
 
     if (!repack.faststart && repack.skipped && repack.reason === "object-too-large-for-inline-remux") {
-      scheduleVideoFaststartRepack({ key, videoUrl: completed.videoUrl });
+      scheduleVideoFaststartRepack({ key, videoUrl: completed.videoUrl, postId });
     }
 
     const faststartFields = resolveFaststartResponseFields(repack);
@@ -115,7 +117,8 @@ export async function POST(req: NextRequest) {
     } else {
       console.log("KRISTO_VIDEO_POSTER_SKIPPED", {
         videoUrl: completed.videoUrl,
-        reason: "serverless-ffmpeg-skipped",
+        reason: "server-ffmpeg-disabled",
+        postId,
       });
     }
 

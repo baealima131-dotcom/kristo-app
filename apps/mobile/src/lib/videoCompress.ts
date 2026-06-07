@@ -6,18 +6,26 @@ export type VideoCompressResult = {
   compressedBytes: number;
   skipped: boolean;
   reason?: string;
+  width?: number | null;
+  height?: number | null;
+  durationSec?: number | null;
+  mimeType?: string;
+  feedExportApplied?: boolean;
 };
 
-/** Skip remux/compress for tiny clips (already negligible upload size). */
-const MIN_COMPRESS_BYTES = 200 * 1024;
+/** Skip remux/compress only for negligible clips. */
+const MIN_COMPRESS_BYTES = 50 * 1024;
 
-/** Only keep compressed output when it saves at least 10% vs original. */
-const MAX_COMPRESSED_TO_ORIGINAL_RATIO = 0.9;
-
-/** V1 iOS target: 720p long edge, ~800 kbps video (+ AAC audio). */
+/** V1 feed export: 720p long edge, ~1 Mbps H.264 + AAC in MP4 container. */
 const TARGET_MAX_SIZE = 720;
-const TARGET_BITRATE = 800_000;
+const TARGET_BITRATE = 1_000_000;
+const TARGET_KEYFRAME_INTERVAL_SEC = 2;
 const MIN_FILE_SIZE_MB_FOR_COMPRESS = 0.15;
+const FEED_EXPORT_MIME = "video/mp4";
+
+export type VideoCompressOptions = {
+  durationMs?: number;
+};
 
 function isCompressorNativeLinked(): boolean {
   if (Boolean((NativeModules as Record<string, unknown>).Compressor)) {
@@ -50,36 +58,100 @@ async function resolveFileSize(uri: string): Promise<number> {
   }
 }
 
-function compressionRatio(originalBytes: number, compressedBytes: number) {
-  if (originalBytes <= 0 || compressedBytes <= 0) return null;
-  return Number((compressedBytes / originalBytes).toFixed(3));
+async function probeVideoDimensions(
+  uri: string
+): Promise<{ width: number | null; height: number | null }> {
+  try {
+    const VideoThumbnails = await import("expo-video-thumbnails");
+    const thumb = await VideoThumbnails.getThumbnailAsync(uri, {
+      time: 0,
+      quality: 0.2,
+    });
+    return {
+      width: Number(thumb?.width || 0) > 0 ? Number(thumb.width) : null,
+      height: Number(thumb?.height || 0) > 0 ? Number(thumb.height) : null,
+    };
+  } catch {
+    return { width: null, height: null };
+  }
 }
 
-export async function compressVideoForUpload(sourceUri: string): Promise<VideoCompressResult> {
+function logUploadCompressResult(params: {
+  originalBytes: number;
+  compressedBytes: number;
+  width: number | null;
+  height: number | null;
+  durationSec: number | null;
+  mimeType: string;
+  skipped: boolean;
+  reason?: string;
+}) {
+  console.log("KRISTO_VIDEO_UPLOAD_COMPRESS_RESULT", {
+    originalBytes: params.originalBytes,
+    compressedBytes: params.compressedBytes,
+    width: params.width,
+    height: params.height,
+    duration: params.durationSec,
+    mimeType: params.mimeType,
+    skipped: params.skipped,
+    reason: params.reason || null,
+  });
+}
+
+export async function compressVideoForUpload(
+  sourceUri: string,
+  opts?: VideoCompressOptions
+): Promise<VideoCompressResult> {
   const cleanUri = String(sourceUri || "").trim();
   const originalBytes = await resolveFileSize(cleanUri);
+  const durationSec =
+    Number(opts?.durationMs || 0) > 0
+      ? Math.round((Number(opts?.durationMs) / 1000) * 100) / 100
+      : null;
 
   console.log("KRISTO_VIDEO_COMPRESS_START", {
     originalBytes,
     sourceUri: cleanUri,
     platform: Platform.OS,
+    targetMaxSize: TARGET_MAX_SIZE,
+    targetBitrate: TARGET_BITRATE,
+    targetKeyframeIntervalSec: TARGET_KEYFRAME_INTERVAL_SEC,
+    outputMime: FEED_EXPORT_MIME,
   });
 
   if (!cleanUri) {
+    logUploadCompressResult({
+      originalBytes: 0,
+      compressedBytes: 0,
+      width: null,
+      height: null,
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
+      skipped: true,
+      reason: "missing-uri",
+    });
     return {
       uri: cleanUri,
       originalBytes: 0,
       compressedBytes: 0,
       skipped: true,
       reason: "missing-uri",
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
     };
   }
 
   if (originalBytes > 0 && originalBytes < MIN_COMPRESS_BYTES) {
-    console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
-      reason: "too-small",
+    const dims = await probeVideoDimensions(cleanUri);
+    logUploadCompressResult({
       originalBytes,
       compressedBytes: originalBytes,
+      width: dims.width,
+      height: dims.height,
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
+      skipped: true,
+      reason: "too-small",
     });
     return {
       uri: cleanUri,
@@ -87,19 +159,24 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       compressedBytes: originalBytes,
       skipped: true,
       reason: "too-small",
+      width: dims.width,
+      height: dims.height,
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
     };
   }
 
   if (!isCompressorNativeLinked()) {
-    console.log("KRISTO_VIDEO_COMPRESS_FAILED", {
-      reason: "native-not-linked",
-      originalBytes,
-      message: "react-native-compressor native module missing — rebuild iOS dev client after pod install",
-    });
-    console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
-      reason: "native-not-linked",
+    const dims = await probeVideoDimensions(cleanUri);
+    logUploadCompressResult({
       originalBytes,
       compressedBytes: originalBytes,
+      width: dims.width,
+      height: dims.height,
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
+      skipped: true,
+      reason: "native-not-linked",
     });
     return {
       uri: cleanUri,
@@ -107,6 +184,10 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       compressedBytes: originalBytes,
       skipped: true,
       reason: "native-not-linked",
+      width: dims.width,
+      height: dims.height,
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
     };
   }
 
@@ -122,7 +203,10 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       bitrate: TARGET_BITRATE,
       compressionMethod: "manual",
       stripAudio: false,
-      output: "mp4",
+      output: FEED_EXPORT_MIME,
+      codec: "h264+aac",
+      keyframeIntervalSecTarget: TARGET_KEYFRAME_INTERVAL_SEC,
+      faststartTarget: true,
     });
 
     const compressedUri = await Video.compress(
@@ -149,39 +233,27 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       throw new Error("Compression returned empty output.");
     }
 
-    const ratio = compressionRatio(originalBytes, compressedBytes);
-    const savesEnough =
-      compressedBytes < originalBytes &&
-      compressedBytes <= originalBytes * MAX_COMPRESSED_TO_ORIGINAL_RATIO;
+    const dims = await probeVideoDimensions(outputUri);
 
-    if (!savesEnough) {
-      console.log("KRISTO_VIDEO_COMPRESS_DISCARDED_LARGER", {
-        originalBytes,
-        compressedBytes,
-        ratio,
-        savedBytes: 0,
-        outputUri,
-      });
-      return {
-        uri: cleanUri,
-        originalBytes,
-        compressedBytes: originalBytes,
-        skipped: true,
-        reason:
-          compressedBytes >= originalBytes ? "larger-than-original" : "insufficient-savings",
-      };
-    }
+    logUploadCompressResult({
+      originalBytes,
+      compressedBytes,
+      width: dims.width,
+      height: dims.height,
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
+      skipped: false,
+    });
 
     console.log("KRISTO_VIDEO_COMPRESS_DONE", {
       originalBytes,
       compressedBytes,
-      ratio,
-      savedBytes: Math.max(0, originalBytes - compressedBytes),
       outputUri,
       feedFriendly: true,
       maxSize: TARGET_MAX_SIZE,
       bitrate: TARGET_BITRATE,
       faststartAssumed: true,
+      keyframeIntervalSecTarget: TARGET_KEYFRAME_INTERVAL_SEC,
     });
 
     return {
@@ -189,18 +261,29 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       originalBytes,
       compressedBytes,
       skipped: false,
+      feedExportApplied: true,
+      width: dims.width,
+      height: dims.height,
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
     };
   } catch (error) {
     const message = String((error as any)?.message || error || "unknown");
+    const dims = await probeVideoDimensions(cleanUri);
     console.log("KRISTO_VIDEO_COMPRESS_FAILED", {
       message,
       originalBytes,
       platform: Platform.OS,
     });
-    console.log("KRISTO_VIDEO_COMPRESS_SKIPPED", {
-      reason: "compress-failed",
+    logUploadCompressResult({
       originalBytes,
       compressedBytes: originalBytes,
+      width: dims.width,
+      height: dims.height,
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
+      skipped: true,
+      reason: "compress-failed",
     });
     return {
       uri: cleanUri,
@@ -208,6 +291,10 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       compressedBytes: originalBytes,
       skipped: true,
       reason: "compress-failed",
+      width: dims.width,
+      height: dims.height,
+      durationSec,
+      mimeType: FEED_EXPORT_MIME,
     };
   }
 }
