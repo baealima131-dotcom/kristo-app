@@ -35,6 +35,7 @@ type Props = {
   brandedPoster?: boolean;
   warmMode: HomeFeedVideoWarmMode;
   screenFocused: boolean;
+  feedIndex?: number;
 };
 
 // V1 perf: only emit startup/first-frame timing for the first active video in
@@ -89,6 +90,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   brandedPoster = false,
   warmMode,
   screenFocused,
+  feedIndex = -1,
 }: Props) {
   const cachedReadyOnMount = isHomeFeedVideoPreloadReady(postId, uri);
   const cachedReadyRef = useRef(cachedReadyOnMount);
@@ -171,6 +173,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const lastRegisterKeyRef = useRef("");
   const lastMutedLogKeyRef = useRef("");
   const lastExpectedMutedLogKeyRef = useRef("");
+  const lastRowDiagKeyRef = useRef("");
 
   const readPlayerMuted = () => {
     try {
@@ -578,6 +581,43 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (isActive || !screenFocused) return;
     pauseHomeFeedVideo(postId, { postId, reason: `warm-${warmMode}` });
   }, [isActive, warmMode, screenFocused, postId]);
+
+  // Diagnostic (first 3 video rows): reveals whether the first visible video is
+  // actually the active row and, if so, whether its first frame ever fires.
+  // If isActive stays false -> active-index selection. If isActive=true but
+  // videoReady/firstFrameReady stay false -> video decoder/network.
+  useEffect(() => {
+    if (feedIndex < 0 || feedIndex > 2) return;
+    const videoShouldPlay = computeEffectiveShouldPlay();
+    const videoReady = computeVideoReady();
+    const key = `${feedIndex}:${isActive ? 1 : 0}:${firstFrameReady ? 1 : 0}:${videoReady ? 1 : 0}:${videoShouldPlay ? 1 : 0}:${screenFocused ? 1 : 0}:${appActive ? 1 : 0}:${warmMode}:${statusLower(status)}`;
+    if (key === lastRowDiagKeyRef.current) return;
+    lastRowDiagKeyRef.current = key;
+    console.log("KRISTO_VIDEO_ROW_DIAG", {
+      id: postId || null,
+      index: feedIndex,
+      isActive,
+      shouldPlay: isActive,
+      videoShouldPlay,
+      warmMode,
+      videoReady,
+      firstFrameReady,
+      screenFocused,
+      appActive,
+      status: statusLower(status),
+    });
+  }, [
+    feedIndex,
+    isActive,
+    firstFrameReady,
+    screenFocused,
+    appActive,
+    status,
+    currentTime,
+    playing,
+    warmMode,
+    postId,
+  ]);
 
   const poster = String(posterUri || "").trim();
   const hasPoster = isValidVideoPosterUri(poster, uri);

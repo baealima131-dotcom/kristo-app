@@ -31,6 +31,9 @@ import {
 } from "@/src/lib/homeFeedVideoWindow";
 import { isVideoPost } from "./homeFeedUtils";
 
+// Dedupe for the first-3-video-rows index diagnostic (keyed by row id).
+const lastFeedVideoIndexDiag = new Map<string, string>();
+
 type Props = {
   rows: any[];
   contentHeight: number;
@@ -279,6 +282,27 @@ export const FeedList = memo(function FeedList({
         ? resolveHomeFeedVideoWarmMode(index, activeIndex)
         : "off";
 
+      // Diagnostic for the first 3 video rows: shows whether the first visible
+      // video is the active row and whether it even mounts a player. A 3rd video
+      // row is intentionally "off" (no player) given the [0,1] warm window.
+      if (isVideoPost(item) && index <= 2) {
+        const rowId = String(item?.id || "");
+        const mountsPlayer = videoWarmMode !== "off" && effectiveScreenFocused;
+        const diagKey = `${index}:${index === activeIndex ? 1 : 0}:${videoWarmMode}:${mountsPlayer ? 1 : 0}`;
+        if (lastFeedVideoIndexDiag.get(rowId) !== diagKey) {
+          lastFeedVideoIndexDiag.set(rowId, diagKey);
+          console.log("KRISTO_VIDEO_FEED_INDEX_DIAG", {
+            id: rowId || null,
+            index,
+            activeIndex,
+            isActive: index === activeIndex,
+            warmMode: videoWarmMode,
+            mountsPlayer,
+            screenFocused: effectiveScreenFocused,
+          });
+        }
+      }
+
       return (
         <FeedRow
           item={item}
@@ -286,6 +310,7 @@ export const FeedList = memo(function FeedList({
           isActive={index === activeIndex}
           videoWarmMode={videoWarmMode}
           screenFocused={effectiveScreenFocused}
+          feedIndex={index}
           likedByMe={likeState.likedByMe}
           liked={likeState.liked}
           likeCount={likeState.likeCount}

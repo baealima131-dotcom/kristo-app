@@ -34,6 +34,7 @@ type Props = {
   isActive: boolean;
   videoWarmMode: HomeFeedVideoWarmMode;
   screenFocused: boolean;
+  feedIndex?: number;
   likedByMe: boolean;
   liked: boolean;
   likeCount: number;
@@ -53,6 +54,7 @@ export const FeedRow = memo(function FeedRow({
   isActive,
   videoWarmMode,
   screenFocused,
+  feedIndex = -1,
   likedByMe,
   liked,
   likeCount,
@@ -108,6 +110,7 @@ export const FeedRow = memo(function FeedRow({
               brandedPoster={hasBrandedVideoPoster(item)}
               warmMode={videoWarmMode}
               screenFocused={screenFocused}
+              feedIndex={feedIndex}
             />
           ) : (
             <InactiveVideoPoster
