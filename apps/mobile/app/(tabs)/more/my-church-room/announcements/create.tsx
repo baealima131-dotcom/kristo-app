@@ -377,7 +377,19 @@ export default function CreateAnnouncement() {
           actorAvatarUri: profileAvatar || undefined,
           authorAvatarUri: profileAvatar || undefined,
         },
-        { headers: getKristoHeaders() }
+        {
+          headers: buildKristoRequestHeaders(
+            "/api/church/feed",
+            {
+              userId: String(session?.userId || "").trim(),
+              role: (session?.role || "Member") as any,
+              churchId: String(session?.churchId || "").trim(),
+              sessionToken: session?.sessionToken,
+            },
+            undefined,
+            "ChurchRoomFeedPublish"
+          ),
+        }
       );
 
       if (feedRes?.ok === false || Number(feedRes?.status || 0) >= 400) {
