@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -27,6 +27,7 @@ import { isHomeFeedRenderPaused } from "@/src/lib/liveRoomStartup";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
   collectHomeFeedVideoWindowIds,
+  computeHomeFeedMountedVideoIndexes,
   resolveHomeFeedVideoWarmMode,
 } from "@/src/lib/homeFeedVideoWindow";
 import { isVideoPost } from "./homeFeedUtils";
@@ -180,6 +181,38 @@ export const FeedList = memo(function FeedList({
   const renderPaused = isHomeFeedRenderPaused();
   const effectiveScreenFocused = screenFocused && !renderPaused;
 
+  const mountedVideoIndexes = useMemo(
+    () => computeHomeFeedMountedVideoIndexes(rows, activeIndex),
+    [rows, activeIndex]
+  );
+
+  const prevWarmWindowRef = useRef<{ key: string; postIds: string[] }>({
+    key: "",
+    postIds: [],
+  });
+
+  useEffect(() => {
+    const key = mountedVideoIndexes.join(",");
+    const postIds = mountedVideoIndexes
+      .map((idx) => String(rows[idx]?.id || "").trim())
+      .filter(Boolean);
+
+    if (key !== prevWarmWindowRef.current.key) {
+      for (const id of prevWarmWindowRef.current.postIds) {
+        if (!postIds.includes(id)) {
+          console.log("KRISTO_VIDEO_PLAYER_EVICT", { id, reason: "window-shift" });
+        }
+      }
+      prevWarmWindowRef.current = { key, postIds };
+
+      console.log("KRISTO_VIDEO_WARM_WINDOW", {
+        activeIndex,
+        mountedIndexes: mountedVideoIndexes,
+        reason: "window-update",
+      });
+    }
+  }, [mountedVideoIndexes, activeIndex, rows]);
+
   const syncActiveIndexFromOffset = useCallback(
     (y: number) => {
       const nextIndex = Math.max(0, Math.round(y / Math.max(1, contentHeight)));
@@ -279,12 +312,11 @@ export const FeedList = memo(function FeedList({
       }
 
       const videoWarmMode = isVideoPost(item)
-        ? resolveHomeFeedVideoWarmMode(index, activeIndex)
+        ? resolveHomeFeedVideoWarmMode(index, activeIndex, mountedVideoIndexes)
         : "off";
 
       // Diagnostic for the first 3 video rows: shows whether the first visible
-      // video is the active row and whether it even mounts a player. A 3rd video
-      // row is intentionally "off" (no player) given the [0,1] warm window.
+      // video is the active row and whether it mounts a player in the rolling window.
       if (isKristoVerboseFeedDebug() && isVideoPost(item) && index <= 2) {
         const rowId = String(item?.id || "");
         const mountsPlayer = videoWarmMode !== "off" && effectiveScreenFocused;
@@ -328,6 +360,7 @@ export const FeedList = memo(function FeedList({
     [
       contentHeight,
       activeIndex,
+      mountedVideoIndexes,
       screenFocused,
       effectiveScreenFocused,
       renderPaused,

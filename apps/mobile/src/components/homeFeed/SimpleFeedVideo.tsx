@@ -22,6 +22,11 @@ import {
   touchHomeFeedVideoReadiness,
 } from "@/src/lib/homeFeedVideoReadiness";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
+import {
+  getHomeFeedVideoProgress,
+  peekHomeFeedVideoRestoreSeek,
+  saveHomeFeedVideoProgress,
+} from "@/src/lib/homeFeedVideoProgressStore";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import { hasBrandedVideoPoster, isValidVideoPosterUri } from "./homeFeedUtils";
 import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
@@ -115,12 +120,21 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     return subscribeHomeFeedActiveFirstFrame(() => setPreloadGateOpen(true));
   }, [isActive, preloadGateOpen]);
 
-  const sourceLoadAllowed = isActive || preloadGateOpen;
+  const isRetainPrev = warmMode === "warm" || warmMode === "cache";
+  const isPreloadNext = warmMode === "preload";
+  const sourceLoadAllowed = isActive || preloadGateOpen || isRetainPrev;
   const playerSource = sourceLoadAllowed ? uri : null;
 
   const player = useVideoPlayer(playerSource, (p) => {
     p.loop = true;
     p.muted = true;
+    const mode = warmModeRef.current;
+    if (mode === "warm" || mode === "cache") {
+      try {
+        p.pause();
+      } catch {}
+      return;
+    }
     try {
       p.play();
     } catch {}
@@ -130,9 +144,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const currentTime = Number((player as any)?.currentTime || 0);
   const playing = Boolean((player as any)?.playing);
 
-  const isPreload = warmMode === "preload";
-  const isWarm = warmMode === "warm";
-  const shouldPrime = isPreload || isWarm;
+  const isPreload = isPreloadNext;
+  const shouldPrime = isPreloadNext;
 
   // Never reveal the video surface from the readiness cache: a freshly created
   // player has not decoded a frame yet, so hiding the poster/fallback before the
@@ -164,6 +177,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const lastMutedLogKeyRef = useRef("");
   const lastExpectedMutedLogKeyRef = useRef("");
   const lastRowDiagKeyRef = useRef("");
+  const progressRestoredRef = useRef(false);
+  const lastProgressSaveMsRef = useRef(0);
 
   const readPlayerMuted = () => {
     try {
@@ -329,12 +344,42 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     markHomeFirstVideoReady("simple-feed-video");
   };
 
+  const seekPlayerToSeconds = (seconds: number, source: string) => {
+    if (!Number.isFinite(seconds) || seconds < 0) return;
+    try {
+      (player as any).currentTime = seconds;
+      if (isKristoVerboseFeedDebug()) {
+        console.log("KRISTO_VIDEO_PROGRESS_SEEK", {
+          postId: postId || null,
+          seconds,
+          source,
+        });
+      }
+    } catch {}
+  };
+
+  const saveProgressIfNeeded = (source: string) => {
+    const id = String(postId || "").trim();
+    if (!id) return;
+    const now = Date.now();
+    if (now - lastProgressSaveMsRef.current < 400) return;
+    const t = Number((player as any)?.currentTime || 0);
+    if (t <= 0.25) return;
+    lastProgressSaveMsRef.current = now;
+    saveHomeFeedVideoProgress(id, t);
+  };
+
   useEffect(() => {
-    if (isActive && !prevIsActiveRef.current) {
+    const wasActive = prevIsActiveRef.current;
+    if (wasActive && !isActive) {
+      saveProgressIfNeeded("lost-active");
+    }
+    if (isActive && !wasActive) {
       activeHandoffRef.current = false;
+      progressRestoredRef.current = false;
     }
     prevIsActiveRef.current = isActive;
-  }, [isActive]);
+  }, [isActive, currentTime, postId, player]);
 
   useLayoutEffect(() => {
     mountMsRef.current = Date.now();
@@ -405,6 +450,30 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   }, [isActive, screenFocused, firstFrameReady, player, postId, status, currentTime, playing]);
 
   useEffect(() => {
+    if (!postId || progressRestoredRef.current) return;
+    if (!sourceLoadAllowed && !isActive) return;
+
+    const saved = getHomeFeedVideoProgress(postId);
+    if (saved === null || saved <= 0.1) return;
+
+    const current = Number((player as any)?.currentTime || 0);
+    if (current > 0.5 && Math.abs(current - saved) < 2) {
+      progressRestoredRef.current = true;
+      return;
+    }
+
+    const seekTo = peekHomeFeedVideoRestoreSeek(postId);
+    if (seekTo === null) return;
+
+    progressRestoredRef.current = true;
+    console.log("KRISTO_VIDEO_PROGRESS_RESTORE", { id: postId, seconds: seekTo });
+    seekPlayerToSeconds(seekTo, isActive ? "restore-on-active" : "restore-on-load");
+    if (isRetainPrev || isActive) {
+      setFirstFrameReady((prev) => (prev ? prev : true));
+    }
+  }, [sourceLoadAllowed, isActive, isRetainPrev, postId, player, currentTime]);
+
+  useEffect(() => {
     registerHomeFeedVideo(postId, player, {
       postId,
       shouldPlay: false,
@@ -413,6 +482,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     });
 
     return () => {
+      saveProgressIfNeeded("unmount");
       try {
         player.pause();
         setPlayerMuted(true, "unmount-cleanup");
@@ -449,6 +519,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       setFirstFrameReady(false);
       activeHandoffRef.current = false;
       lastRegisterKeyRef.current = "";
+      progressRestoredRef.current = false;
 
       try {
         setPlayerMuted(true, "uri-change-prime");
@@ -498,6 +569,14 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       return;
     }
 
+    if (isRetainPrev) {
+      setPlayerMuted(true, "retain-prev-paused", warmMode);
+      try {
+        player.pause();
+      } catch {}
+      return;
+    }
+
     if (shouldPrime) {
       setPlayerMuted(true, "warm-preload-prime", warmMode);
       if (!preloadPrimedRef.current) {
@@ -513,7 +592,17 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       player.pause();
       setPlayerMuted(true, "inactive-off-screen");
     } catch {}
-  }, [player, isActive, shouldPrime, screenFocused, uri, warmMode, firstFrameReady, appActive]);
+  }, [
+    player,
+    isActive,
+    isRetainPrev,
+    shouldPrime,
+    screenFocused,
+    uri,
+    warmMode,
+    firstFrameReady,
+    appActive,
+  ]);
 
   useEffect(() => {
     if (!screenFocused) return;
@@ -560,7 +649,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
           console.log("KRISTO_VIDEO_PRELOAD_READY", { id: postId || null });
         }
       }
-    } else if (isWarm || isPreload) {
+    } else if (isPreload || isRetainPrev) {
       touchHomeFeedVideoReadiness(postId, uri);
     }
 
@@ -583,7 +672,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   }, [
     isActive,
     shouldPrime,
-    isWarm,
+    isRetainPrev,
     isPreload,
     screenFocused,
     status,
