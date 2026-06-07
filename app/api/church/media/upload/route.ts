@@ -187,7 +187,58 @@ async function saveImageToObjectStorage(params: {
   return uploaded.publicUrl;
 }
 
-export async function POST(req: NextRequest) {
+function uploadFatalJson(
+  error: unknown,
+  context?: {
+    userId?: string;
+    churchId?: string;
+    isImage?: boolean;
+    storageMode?: string;
+    reason?: string;
+  }
+) {
+  const message = String(
+    (error as any)?.message || error || "upload_failed"
+  );
+
+  console.error("KRISTO_CHURCH_MEDIA_UPLOAD_FATAL", {
+    userId: context?.userId || "",
+    churchId: context?.churchId || "",
+    isImage: Boolean(context?.isImage),
+    storageMode: context?.storageMode || "unknown",
+    reason: context?.reason || "unhandled",
+    error: message,
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+
+  const lower = message.toLowerCase();
+  const status =
+    lower.includes("not configured") ||
+    lower.includes("missing:") ||
+    lower.includes("erofs") ||
+    lower.includes("read-only") ||
+    lower.includes("enoent")
+      ? 503
+      : 502;
+
+  return NextResponse.json(
+    {
+      ok: false,
+      error: context?.isImage
+        ? "Could not upload image. Please try again."
+        : message,
+      detail: message,
+      reason: context?.reason || "unhandled",
+      stack:
+        process.env.NODE_ENV !== "production"
+          ? String((error as any)?.stack || "")
+          : undefined,
+    },
+    { status }
+  );
+}
+
+async function handleChurchMediaUpload(req: NextRequest) {
   let churchId = "";
   let userId = "";
   let storageMode: "object-storage" | "local-fs" = "local-fs";
@@ -368,40 +419,22 @@ export async function POST(req: NextRequest) {
         ...(posterUri ? { posterUri, thumbnailUri, videoPosterUri: posterUri } : {}),
       },
     });
-  } catch (error: any) {
-    const message = String(error?.message || error || "upload_failed");
-
-    console.error("KRISTO_CHURCH_MEDIA_UPLOAD_FATAL", {
+  } catch (error: unknown) {
+    return uploadFatalJson(error, {
       userId,
       churchId,
       isImage,
       storageMode,
-      error: message,
-      stack: error instanceof Error ? error.stack : undefined,
+      reason: "handler",
     });
+  }
+}
 
-    const lower = message.toLowerCase();
-    const status =
-      lower.includes("not configured") ||
-      lower.includes("missing:") ||
-      lower.includes("erofs") ||
-      lower.includes("read-only")
-        ? 503
-        : 502;
-
-    return NextResponse.json(
-      {
-        ok: false,
-        error: isImage
-          ? "Could not upload image. Please try again."
-          : message,
-        detail: message,
-        stack:
-          process.env.NODE_ENV !== "production"
-            ? String(error?.stack || "")
-            : undefined,
-      },
-      { status }
-    );
+/** Top-level safety net so Vercel never returns an empty 500 body. */
+export async function POST(req: NextRequest) {
+  try {
+    return await handleChurchMediaUpload(req);
+  } catch (error: unknown) {
+    return uploadFatalJson(error, { reason: "top-level" });
   }
 }
