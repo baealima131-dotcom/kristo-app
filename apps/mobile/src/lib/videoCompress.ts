@@ -27,6 +27,14 @@ const TARGET_BITRATE = 1_000_000;
 const TARGET_KEYFRAME_INTERVAL_SEC = 2;
 const MIN_FILE_SIZE_MB_FOR_COMPRESS = 0.15;
 const FEED_EXPORT_MIME = "video/mp4";
+/** Require at least 10% smaller output before replacing the original upload. */
+const MIN_COMPRESS_SAVINGS_RATIO = 0.1;
+
+function meetsCompressSavingsThreshold(originalBytes: number, compressedBytes: number) {
+  if (originalBytes <= 0) return compressedBytes > 0;
+  const maxAllowedBytes = Math.floor(originalBytes * (1 - MIN_COMPRESS_SAVINGS_RATIO));
+  return compressedBytes > 0 && compressedBytes <= maxAllowedBytes;
+}
 
 export type VideoCompressOptions = {
   durationMs?: number;
@@ -128,6 +136,7 @@ function logUploadCompressResult(params: {
 type FaststartVerifyPhase =
   | "post-compress"
   | "compress-skipped"
+  | "compress-rejected"
   | "compress-failed"
   | "missing-uri";
 
@@ -335,6 +344,51 @@ export async function compressVideoForUpload(
     }
 
     const dims = await probeVideoDimensions(outputUri);
+
+    if (!meetsCompressSavingsThreshold(originalBytes, compressedBytes)) {
+      const originalDims = await probeVideoDimensions(cleanUri);
+      const savingsRatio =
+        originalBytes > 0 ? (originalBytes - compressedBytes) / originalBytes : 0;
+
+      console.log("KRISTO_VIDEO_COMPRESS_REJECTED", {
+        originalBytes,
+        compressedBytes,
+        savingsRatio: Math.round(savingsRatio * 1000) / 1000,
+        requiredMinSavingsRatio: MIN_COMPRESS_SAVINGS_RATIO,
+        reason:
+          compressedBytes >= originalBytes
+            ? "compressed-larger-than-original"
+            : "insufficient-savings",
+        uploadUri: cleanUri,
+      });
+
+      logUploadCompressResult({
+        originalBytes,
+        compressedBytes: originalBytes,
+        width: originalDims.width,
+        height: originalDims.height,
+        durationSec,
+        mimeType: FEED_EXPORT_MIME,
+        skipped: true,
+        reason: "insufficient-savings",
+        faststart: false,
+      });
+
+      return withVerifiedFaststart(
+        {
+          uri: cleanUri,
+          originalBytes,
+          compressedBytes: originalBytes,
+          skipped: true,
+          reason: "insufficient-savings",
+          width: originalDims.width,
+          height: originalDims.height,
+          durationSec,
+          mimeType: FEED_EXPORT_MIME,
+        },
+        "compress-rejected"
+      );
+    }
 
     logUploadCompressResult({
       originalBytes,
