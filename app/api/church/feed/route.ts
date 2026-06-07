@@ -965,6 +965,7 @@ function isPersistedFeedPostImageUri(uri: unknown) {
   if (value.startsWith("data:image/")) return true;
   if (/^https?:\/\//i.test(value)) return true;
   if (value.includes("/uploads/media/")) return true;
+  if (value.includes("/church-feed-images/")) return true;
   if (value.startsWith("/uploads/") && !feedUrlLooksLikeAvatarOrLogo(value)) return true;
   return false;
 }
@@ -999,6 +1000,7 @@ function feedPostImageAvatarFields(item: any) {
 const FEED_POST_IMAGE_FIELD_KEYS = [
   "mediaUri",
   "imageUrl",
+  "photoUrl",
   "imageUri",
   "attachmentUrl",
   "photoUri",
@@ -1048,8 +1050,8 @@ function pickFeedPostImageCandidate(candidates: string[], avatarFields: unknown[
     if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(value)) continue;
     if (!isRepairableFeedPostImageUri(value)) continue;
     if (
-      feedUriMatchesAvatarMetadata(value, avatarFields) &&
-      !value.includes("/uploads/media/")
+      !isPersistedFeedPostImageUri(value) &&
+      feedUriMatchesAvatarMetadata(value, avatarFields)
     ) {
       continue;
     }
@@ -1124,7 +1126,16 @@ function resolveFeedPostImageFields(item: any) {
 
   const avatarFields = feedPostImageAvatarFields(item);
   const explicitCandidates = collectExplicitFeedPostImageCandidates(item);
-  const mediaUri = pickFeedPostImageCandidate(explicitCandidates, avatarFields);
+  let mediaUri = pickFeedPostImageCandidate(explicitCandidates, avatarFields);
+  let repaired = false;
+
+  if (!mediaUri && isChurchRoomFeedPost(item)) {
+    const scanned = scanFeedItemForRepairImageUri(item, avatarFields);
+    if (scanned) {
+      mediaUri = scanned;
+      repaired = true;
+    }
+  }
 
   if (!mediaUri) return { repaired: false as const };
 
@@ -1132,20 +1143,102 @@ function resolveFeedPostImageFields(item: any) {
   const existingType = String(item?.type || "").trim().toLowerCase();
 
   return {
-    repaired: false as const,
+    repaired,
     mediaUri,
-    imageUrl: String(item?.imageUrl || mediaUri).trim(),
+    imageUrl: String(item?.imageUrl || item?.photoUrl || mediaUri).trim(),
     mediaType: "image" as const,
     ...(isChurchRoomFeedSource(source) && !existingType ? { type: "post" as const } : {}),
     ...(isChurchRoomFeedSource(source) ? { source } : {}),
   };
 }
 
+function buildFeedPostImageAttachment(uri: string) {
+  return {
+    url: uri,
+    uri,
+    imageUrl: uri,
+    type: "image",
+    mimeType: "image/jpeg",
+  };
+}
+
+function buildFeedPostImageFieldPatch(imageUri: string) {
+  const uri = String(imageUri || "").trim();
+  if (!uri) return {} as Record<string, unknown>;
+
+  return {
+    mediaUri: uri,
+    imageUrl: uri,
+    photoUrl: uri,
+    mediaType: "image",
+    images: [uri],
+    attachments: [buildFeedPostImageAttachment(uri)],
+  };
+}
+
+function applyFeedPostImageFieldsToItem(item: any, imageUri: string) {
+  Object.assign(item, buildFeedPostImageFieldPatch(imageUri));
+}
+
+function extractFeedPostCreateImageUri(body: any): string {
+  for (const key of FEED_POST_IMAGE_FIELD_KEYS) {
+    const value = cleanText(body?.[key], 2000);
+    if (value && isPersistedFeedPostImageUri(value)) return value;
+  }
+
+  if (Array.isArray(body?.images)) {
+    for (const raw of body.images) {
+      const value = cleanText(raw, 2000);
+      if (value && isPersistedFeedPostImageUri(value)) return value;
+    }
+  }
+
+  if (Array.isArray(body?.attachments)) {
+    for (const raw of body.attachments) {
+      if (typeof raw === "string") {
+        const value = cleanText(raw, 2000);
+        if (value && isPersistedFeedPostImageUri(value)) return value;
+      } else if (raw && typeof raw === "object") {
+        for (const key of ["url", "uri", "imageUrl", "mediaUrl", "publicUrl"]) {
+          const value = cleanText((raw as Record<string, unknown>)[key], 2000);
+          if (value && isPersistedFeedPostImageUri(value)) return value;
+        }
+      }
+    }
+  }
+
+  return "";
+}
+
+function logFeedPostImageFieldsDiag(item: any) {
+  const id = String(item?.id || "").trim();
+  if (!id) return;
+
+  const kind = String(item?.kind || item?.source || item?.type || "").trim().toLowerCase();
+  const imageUrl = String(item?.imageUrl || item?.photoUrl || item?.mediaUri || "").trim() || null;
+  const attachmentsCount = Array.isArray(item?.attachments) ? item.attachments.length : 0;
+  const imagesCount = Array.isArray(item?.images) ? item.images.length : 0;
+
+  console.log("KRISTO_FEED_IMAGE_FIELDS_DIAG", {
+    id,
+    kind,
+    hasImageUrl: Boolean(imageUrl),
+    imageUrl,
+    attachmentsCount,
+    imagesCount,
+  });
+}
+
 function applyFeedPostImageEnrichment(item: any) {
+  const postId = String(item?.id || "").trim();
   const isVideoItem = isVideoFeedPostItem(item);
   const resolved = resolveFeedPostImageFields(item);
-  const finalMediaUri = String(resolved.mediaUri || item?.mediaUri || item?.imageUrl || "").trim();
-  const finalImageUrl = String(resolved.imageUrl || item?.imageUrl || finalMediaUri || "").trim();
+  const finalMediaUri = String(
+    resolved.mediaUri || item?.mediaUri || item?.imageUrl || item?.photoUrl || ""
+  ).trim();
+  const finalImageUrl = String(
+    resolved.imageUrl || item?.imageUrl || item?.photoUrl || finalMediaUri || ""
+  ).trim();
   let finalMediaType = String(resolved.mediaType || item?.mediaType || "")
     .trim()
     .toLowerCase();
@@ -1155,16 +1248,32 @@ function applyFeedPostImageEnrichment(item: any) {
   }
 
   if (!finalMediaUri || isVideoItem) {
+    if (isChurchRoomFeedPost(item) || isChurchRoomFeedSource(item?.source || item?.kind)) {
+      logFeedPostImageFieldsDiag(item);
+    }
     return { patch: {} as Record<string, unknown>, repaired: false as const };
   }
 
+  const patch = buildFeedPostImageFieldPatch(finalMediaUri);
+  patch.imageUrl = finalImageUrl;
+
+  if (resolved.repaired && postId) {
+    void upsertFeedItem({
+      ...(item as ChurchFeedItem),
+      ...(patch as ChurchFeedItem),
+    }).catch((error) => {
+      console.warn("KRISTO_FEED_IMAGE_REPAIR_PERSIST_FAILED", {
+        postId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  logFeedPostImageFieldsDiag({ ...item, ...patch });
+
   return {
-    repaired: false as const,
-    patch: {
-      mediaUri: finalMediaUri,
-      imageUrl: finalImageUrl,
-      mediaType: "image",
-    },
+    repaired: resolved.repaired === true,
+    patch,
   };
 }
 
@@ -3225,9 +3334,8 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const imageUrl = cleanText(body?.imageUrl, 2000) || mediaUri;
     const next = {
       ...(item as ChurchFeedItem),
-      mediaUri,
+      ...buildFeedPostImageFieldPatch(mediaUri),
       imageUrl,
-      mediaType: "image",
     };
     const saved = await upsertFeedItem(next);
 
@@ -3293,7 +3401,8 @@ async function handleFeedPost(req: NextRequest, body: any) {
   const videoUrl = cleanText(body?.videoUrl, 2000) || undefined;
   const mediaUri = cleanText(body?.mediaUri, 2000) || undefined;
   const rawImageUrl = cleanText(body?.imageUrl, 2000) || undefined;
-  const rawPostMediaUri = mediaUri || rawImageUrl || undefined;
+  const extractedCreateImageUri = extractFeedPostCreateImageUri(body) || undefined;
+  const rawPostMediaUri = mediaUri || rawImageUrl || extractedCreateImageUri || undefined;
   const source = cleanText(body?.source, 80) || undefined;
   const scheduleType = cleanText(body?.scheduleType, 120) || undefined;
   const rawScheduleSlots = Array.isArray(body?.scheduleSlots) ? body.scheduleSlots : undefined;
@@ -3452,7 +3561,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
   const sanitizedMedia = sanitizeFeedPostMediaFields({
     type,
     videoUrl,
-    mediaUri,
+    mediaUri: rawPostMediaUri || mediaUri,
     posterUri,
     thumbnailUri,
     actorAvatarUri,
@@ -3464,6 +3573,8 @@ async function handleFeedPost(req: NextRequest, body: any) {
   if (rawPostMediaUri && !sanitizedMedia.mediaUri && isPersistedFeedPostImageUri(rawPostMediaUri)) {
     sanitizedMedia.mediaUri = rawPostMediaUri;
   }
+  const resolvedCreateImageUri =
+    String(sanitizedMedia.mediaUri || rawPostMediaUri || extractedCreateImageUri || "").trim() || "";
 
   let resolvedPosterUri =
     sanitizedMedia.posterUri || sanitizedMedia.thumbnailUri || videoPosterUri || undefined;
@@ -3586,7 +3697,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     title,
     text,
     videoUrl,
-    mediaUri: sanitizedMedia.mediaUri,
+    mediaUri: resolvedCreateImageUri || sanitizedMedia.mediaUri,
     source,
     scheduleType,
     scheduleSlots,
@@ -3663,10 +3774,18 @@ async function handleFeedPost(req: NextRequest, body: any) {
   if (cleanText(body?.mediaType, 40)) {
     (item as any).mediaType = cleanText(body?.mediaType, 40);
   }
-  if (sanitizedMedia.mediaUri && type !== "video" && !String(videoUrl || "").trim()) {
-    item.mediaUri = sanitizedMedia.mediaUri;
-    (item as any).imageUrl = sanitizedMedia.mediaUri;
-    (item as any).mediaType = "image";
+  if (resolvedCreateImageUri && type !== "video" && !String(videoUrl || "").trim()) {
+    applyFeedPostImageFieldsToItem(item, resolvedCreateImageUri);
+    console.log("KRISTO_FEED_IMAGE_CREATE_DIAG", {
+      id: item.id,
+      kind: String(source || type || "").trim().toLowerCase(),
+      hasImageUrl: true,
+      imageUrl: resolvedCreateImageUri,
+      attachmentsCount: Array.isArray((item as any).attachments)
+        ? (item as any).attachments.length
+        : 0,
+      imagesCount: Array.isArray((item as any).images) ? (item as any).images.length : 0,
+    });
   }
   if (cleanText(body?.storageType, 40)) {
     (item as any).storageType = cleanText(body?.storageType, 40);

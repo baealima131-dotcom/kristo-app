@@ -129,12 +129,38 @@ export async function ensureFeedSchema() {
   await schemaReady;
 }
 
+/** Image fields that must survive feedDb read/write normalization. */
+const FEED_IMAGE_FIELD_KEYS = [
+  "mediaUri",
+  "imageUrl",
+  "photoUrl",
+  "imageUri",
+  "mediaType",
+  "images",
+  "attachments",
+  "mediaUrls",
+] as const;
+
+function extractFeedImageFields(source: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of FEED_IMAGE_FIELD_KEYS) {
+    const value = source[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && !String(value).trim()) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 function rowToFeedItem(row: FeedRow): ChurchFeedItem {
   const payload =
     row.payload && typeof row.payload === "object" ? (row.payload as ChurchFeedItem) : ({} as ChurchFeedItem);
+  const imageFields = extractFeedImageFields(payload as Record<string, unknown>);
 
   return {
     ...payload,
+    ...imageFields,
     id: row.id,
     churchId: row.church_id || payload.churchId,
     type: (row.type || payload.type) as FeedType,
@@ -147,7 +173,8 @@ function rowToFeedItem(row: FeedRow): ChurchFeedItem {
 }
 
 function feedItemToPayload(item: ChurchFeedItem): ChurchFeedItem {
-  return { ...item };
+  const imageFields = extractFeedImageFields(item as Record<string, unknown>);
+  return { ...item, ...imageFields };
 }
 
 export function countScheduleFeedItems(items: ChurchFeedItem[]): number {
@@ -271,6 +298,84 @@ export async function getFeedItemById(id: string): Promise<ChurchFeedItem | null
   return null;
 }
 
+export type FeedItemDebugSnapshot = {
+  store: "postgres" | "local";
+  item: ChurchFeedItem;
+  rawPayload: Record<string, unknown> | null;
+  rowMeta: {
+    id: string;
+    churchId: string;
+    type: string;
+    source: string | null;
+    scheduleType: string | null;
+    createdBy: string;
+    visibility: string | null;
+    createdAt: string;
+    updatedAt: string | null;
+  };
+};
+
+export async function getFeedItemDebugSnapshot(id: string): Promise<FeedItemDebugSnapshot | null> {
+  const feedId = String(id || "").trim();
+  if (!feedId) return null;
+  await ensureFeedStoreReady();
+
+  if (usePostgres()) {
+    const sql = getSql();
+    const rows = await sql`
+      SELECT id, church_id, type, source, schedule_type, created_by, visibility, payload, created_at, updated_at
+      FROM kristo_church_feed
+      WHERE id = ${feedId}
+      LIMIT 1
+    `;
+    const row = (rows as FeedRow[])[0];
+    if (!row) return null;
+
+    const payload =
+      row.payload && typeof row.payload === "object"
+        ? (row.payload as Record<string, unknown>)
+        : null;
+
+    return {
+      store: "postgres",
+      item: rowToFeedItem(row),
+      rawPayload: payload,
+      rowMeta: {
+        id: row.id,
+        churchId: row.church_id,
+        type: row.type,
+        source: row.source,
+        scheduleType: row.schedule_type,
+        createdBy: row.created_by,
+        visibility: row.visibility,
+        createdAt: String(row.created_at || ""),
+        updatedAt: row.updated_at ? String(row.updated_at) : null,
+      },
+    };
+  }
+
+  const all = await readLocalFeedItems();
+  const direct = all.find((x) => String(x.id || "") === feedId);
+  if (!direct) return null;
+
+  return {
+    store: "local",
+    item: direct,
+    rawPayload: { ...direct },
+    rowMeta: {
+      id: String(direct.id || ""),
+      churchId: String(direct.churchId || ""),
+      type: String(direct.type || ""),
+      source: direct.source ? String(direct.source) : null,
+      scheduleType: direct.scheduleType ? String(direct.scheduleType) : null,
+      createdBy: String(direct.createdBy || ""),
+      visibility: direct.visibility ? String(direct.visibility) : null,
+      createdAt: String(direct.createdAt || ""),
+      updatedAt: null,
+    },
+  };
+}
+
 function normalizeFeedVideoUrl(url: unknown) {
   return String(url || "").trim().split("?")[0];
 }
@@ -353,8 +458,10 @@ export async function upsertFeedItem(item: ChurchFeedItem): Promise<ChurchFeedIt
   if (!id || !churchId) throw new Error("Feed item id and churchId are required");
 
   const payload = feedItemToPayload(item);
+  const imageFields = extractFeedImageFields(payload as Record<string, unknown>);
   const next: ChurchFeedItem = {
     ...payload,
+    ...imageFields,
     id,
     churchId,
     createdAt: payload.createdAt || nowIso(),
