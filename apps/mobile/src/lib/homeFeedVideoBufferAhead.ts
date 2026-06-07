@@ -455,3 +455,94 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
     }
   })();
 }
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+) {
+  if (!items.length) return;
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), items.length) },
+    async () => {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        await worker(items[index]);
+      }
+    }
+  );
+  await Promise.all(workers);
+}
+
+/** App-launch media warm — no video players; shares warmed URL sets with Home Feed. */
+export async function warmHomeFeedStartupMedia(
+  rows: any[],
+  opts?: { maxPosters?: number; maxVideos?: number; concurrency?: number }
+): Promise<{ posterCount: number; videoCount: number }> {
+  const maxPosters = Math.max(0, Number(opts?.maxPosters ?? 5));
+  const maxVideos = Math.max(0, Number(opts?.maxVideos ?? 3));
+  const concurrency = Math.max(1, Number(opts?.concurrency ?? MAX_VIDEO_CONCURRENCY));
+
+  const posterUrls: string[] = [];
+  const videoUrls: string[] = [];
+
+  for (const row of rows) {
+    if (!row || !isVideoPost(row)) continue;
+
+    if (posterUrls.length < maxPosters) {
+      const posterUrl = normalizeUrl(resolvePosterUri(row));
+      if (
+        posterUrl &&
+        !warmedPosterUrls.has(posterUrl) &&
+        !inflightPosterUrls.has(posterUrl) &&
+        !posterUrls.includes(posterUrl)
+      ) {
+        posterUrls.push(posterUrl);
+      }
+    }
+
+    if (videoUrls.length < maxVideos) {
+      const videoUrl = normalizeUrl(resolveVideoUri(row));
+      if (
+        isNetworkVideoUrl(videoUrl) &&
+        !warmedVideoUrls.has(videoUrl) &&
+        !inflightVideoUrls.has(videoUrl) &&
+        !videoUrls.includes(videoUrl)
+      ) {
+        videoUrls.push(videoUrl);
+      }
+    }
+
+    if (posterUrls.length >= maxPosters && videoUrls.length >= maxVideos) break;
+  }
+
+  await runWithConcurrency(posterUrls, concurrency, async (posterUrl) => {
+    if (warmedPosterUrls.has(posterUrl) || inflightPosterUrls.has(posterUrl)) return;
+    inflightPosterUrls.add(posterUrl);
+    try {
+      await Image.prefetch(posterUrl);
+      warmedPosterUrls.add(posterUrl);
+    } catch {
+      warmedPosterUrls.delete(posterUrl);
+    } finally {
+      inflightPosterUrls.delete(posterUrl);
+    }
+  });
+
+  await runWithConcurrency(videoUrls, concurrency, async (videoUrl) => {
+    if (warmedVideoUrls.has(videoUrl) || inflightVideoUrls.has(videoUrl)) return;
+    inflightVideoUrls.add(videoUrl);
+    try {
+      await warmVideoUrlNetwork(videoUrl);
+      warmedVideoUrls.add(videoUrl);
+    } catch {
+      warmedVideoUrls.delete(videoUrl);
+    } finally {
+      inflightVideoUrls.delete(videoUrl);
+    }
+  });
+
+  return { posterCount: posterUrls.length, videoCount: videoUrls.length };
+}

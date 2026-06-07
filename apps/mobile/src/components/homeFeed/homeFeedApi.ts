@@ -28,7 +28,17 @@ export function getCachedHomeFeedBackendRows(): any[] {
 }
 
 export function getCachedHomeFeedBackendCount(): number {
-  return lastFetchedHomeFeedRows.length;
+  return getCachedHomeFeedBackendRows().length;
+}
+
+/** Persist the first N merged rows for fast cold-start Home Feed paint. */
+export async function persistHomeFeedBackendRowsSnapshot(maxRows: number, userId?: string) {
+  const merged = getCachedHomeFeedBackendRows();
+  if (!merged.length || maxRows <= 0) return 0;
+  const snapshot = merged.slice(0, maxRows);
+  lastFetchedHomeFeedRows = snapshot;
+  await saveHomeFeedRowsCache(snapshot, userId);
+  return snapshot.length;
 }
 
 /** Merge incoming API rows into cache without dropping existing ids. */
@@ -56,6 +66,7 @@ export async function fetchHomeFeedFromApi(
   const bypassThrottle =
     force ||
     reason === "focus" ||
+    reason === "startup-prewarm" ||
     reason.startsWith("schedule-dirty") ||
     reason.startsWith("slot-claim");
 

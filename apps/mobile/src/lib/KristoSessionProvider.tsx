@@ -30,6 +30,7 @@ import {
   onChurchMembershipChanged,
 } from "./kristoChurchInviteEvents";
 import { startMediaUploadResumeSystem } from "./optimisticVideoUpload";
+import { startHomeFeedStartupPrewarm } from "./homeFeedStartupPrewarm";
 import {
   beginDeleteAccountExit,
   beginLogoutExit,
@@ -63,6 +64,8 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       setSessionState(s);
       setLoading(false);
 
+      startHomeFeedStartupPrewarm(s);
+
       // Session opens immediately; profile sync + cache warm run after Home first frame.
       deferStartupWorkAfterHomeFirstFrame(async () => {
         if (!alive || isSessionExitInProgress() || (await isLoggedOutFlagSet())) {
@@ -85,6 +88,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
         });
         setSessionSync(ready);
         setSessionState(ready);
+        startHomeFeedStartupPrewarm(ready);
         await runCoordinatedAppRefresh(ready, { deferMs: 0 });
       }, { reason: "session-profile-hydrate" });
     })();
