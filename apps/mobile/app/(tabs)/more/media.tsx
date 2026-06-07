@@ -1717,8 +1717,8 @@ export default function MediaStudioScreen() {
     });
 
     setVideoPostUploading(true);
-    setVideoPostUploadPercent(0);
-    setVideoPostUploadStatus("uploading");
+    setVideoPostUploadPercent(1);
+    setVideoPostUploadStatus("preparing");
 
     startMediaVideoUpload(
       {
@@ -1740,7 +1740,7 @@ export default function MediaStudioScreen() {
             setVideoPostUploadPercent(100);
             return;
           }
-          setVideoPostUploadPercent(Math.max(0, Math.min(99, Math.round(uploadProgress))));
+          setVideoPostUploadPercent(Math.max(1, Math.min(99, Math.round(uploadProgress))));
         },
         onSuccess: ({ backendFeedId, videoUrl, posterUri, mediaStatus }) => {
           setVideoPostUploadStatus("done");
@@ -3160,18 +3160,20 @@ export default function MediaStudioScreen() {
                     <View style={s.videoSmartLoadingTop}>
                       <ActivityIndicator size="small" color="#F4C95D" />
                       <Text style={s.videoSmartLoadingTitle}>
-                        {videoPostUploadStatus === "processing" ||
-                        videoPostUploadStatus === "done" ||
-                        videoPostUploadStatus === "posted_refreshing"
-                          ? "Processing…"
-                          : "Uploading video"}
+                        {videoPostUploadStatus === "preparing"
+                          ? "Preparing video…"
+                          : videoPostUploadStatus === "processing" ||
+                              videoPostUploadStatus === "done" ||
+                              videoPostUploadStatus === "posted_refreshing"
+                            ? "Processing…"
+                            : "Uploading video"}
                       </Text>
                       <Text style={s.videoSmartLoadingPercent}>
                         {videoPostUploadStatus === "processing" ||
                         videoPostUploadStatus === "done" ||
                         videoPostUploadStatus === "posted_refreshing"
                           ? ""
-                          : `${videoPostUploadPercent}%`}
+                          : `${Math.max(1, videoPostUploadPercent)}%`}
                       </Text>
                     </View>
 
@@ -3185,7 +3187,7 @@ export default function MediaStudioScreen() {
                               videoPostUploadStatus === "done" ||
                               videoPostUploadStatus === "posted_refreshing"
                                 ? "100%"
-                                : `${videoPostUploadPercent}%`,
+                                : `${Math.max(1, videoPostUploadPercent)}%`,
                           },
                         ]}
                       />
@@ -3196,7 +3198,9 @@ export default function MediaStudioScreen() {
                         ? "Posted. Refreshing Media Storage…"
                         : videoPostUploadStatus === "processing" || videoPostUploadStatus === "done"
                           ? "Publishing to Media Storage and preparing your Home Feed post."
-                          : "Keep Kristo open while your sermon uploads directly to video storage."}
+                          : videoPostUploadStatus === "preparing"
+                            ? "Kristo is preparing your video for upload. Keep the app open."
+                            : "Keep Kristo open while your sermon uploads directly to video storage."}
                     </Text>
                   </View>
                 ) : videoPostUri ? (

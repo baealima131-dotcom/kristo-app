@@ -30,7 +30,26 @@ const FEED_EXPORT_MIME = "video/mp4";
 
 export type VideoCompressOptions = {
   durationMs?: number;
+  onCompressProgress?: (percent: number) => void;
 };
+
+function reportCompressProgress(
+  onCompressProgress: VideoCompressOptions["onCompressProgress"],
+  pct: number,
+  lastLogged?: { value: number }
+) {
+  const rounded = Math.max(0, Math.min(100, Math.round(pct)));
+  onCompressProgress?.(rounded);
+  const shouldLog =
+    rounded === 0 ||
+    rounded === 100 ||
+    lastLogged === undefined ||
+    Math.abs(rounded - lastLogged.value) >= 5;
+  if (shouldLog) {
+    console.log("KRISTO_VIDEO_COMPRESS_PROGRESS", { progress: rounded });
+    if (lastLogged) lastLogged.value = rounded;
+  }
+}
 
 function isCompressorNativeLinked(): boolean {
   if (Boolean((NativeModules as Record<string, unknown>).Compressor)) {
@@ -212,6 +231,7 @@ export async function compressVideoForUpload(
   }
 
   if (originalBytes > 0 && originalBytes < MIN_COMPRESS_BYTES) {
+    opts?.onCompressProgress?.(100);
     const dims = await probeVideoDimensions(cleanUri);
     logUploadCompressResult({
       originalBytes,
@@ -241,6 +261,7 @@ export async function compressVideoForUpload(
   }
 
   if (!isCompressorNativeLinked()) {
+    opts?.onCompressProgress?.(100);
     const dims = await probeVideoDimensions(cleanUri);
     logUploadCompressResult({
       originalBytes,
@@ -286,6 +307,9 @@ export async function compressVideoForUpload(
       keyframeIntervalSecTarget: TARGET_KEYFRAME_INTERVAL_SEC,
     });
 
+    const compressLogState = { value: -1 };
+    reportCompressProgress(opts?.onCompressProgress, 0, compressLogState);
+
     const compressedUri = await Video.compress(
       cleanUri,
       {
@@ -297,11 +321,11 @@ export async function compressVideoForUpload(
       },
       (progress) => {
         const pct = Math.round(Number(progress || 0) * 100);
-        if (__DEV__ && pct > 0 && pct % 25 === 0) {
-          console.log("KRISTO_VIDEO_COMPRESS_PROGRESS", { progress: pct });
-        }
+        reportCompressProgress(opts?.onCompressProgress, pct, compressLogState);
       }
     );
+
+    reportCompressProgress(opts?.onCompressProgress, 100, compressLogState);
 
     const outputUri = String(compressedUri || "").trim() || cleanUri;
     const compressedBytes = await resolveFileSize(outputUri);

@@ -335,24 +335,32 @@ function MediaUploadJobCard({
   const progress =
     phase === "processing" || phase === "ready"
       ? 100
-      : Math.max(0, Math.min(100, Math.round(job.uploadProgress || 0)));
+      : Math.max(
+          phase === "preparing" || phase === "uploading" || phase === "paused" ? 1 : 0,
+          Math.min(100, Math.round(job.uploadProgress || 0))
+        );
 
   const statusLabel =
-    phase === "uploading"
-      ? `Uploading ${progress}%`
-      : phase === "paused"
-        ? `Paused at ${Math.round(job.pausedAtProgress ?? progress)}%`
-        : phase === "processing"
-          ? "Processing..."
-          : phase === "ready"
-            ? "Ready"
-            : phase === "failed"
-              ? "Failed"
-              : "Uploading";
+    phase === "preparing"
+      ? `Preparing video… ${progress}%`
+      : phase === "uploading"
+        ? `Uploading ${progress}%`
+        : phase === "paused"
+          ? `Paused at ${Math.round(job.pausedAtProgress ?? progress)}%`
+          : phase === "processing"
+            ? "Processing..."
+            : phase === "ready"
+              ? "Ready"
+              : phase === "failed"
+                ? "Failed"
+                : "Uploading";
 
-  const showProgressTrack = phase === "uploading" || phase === "paused";
+  const showProgressTrack = phase === "preparing" || phase === "uploading" || phase === "paused";
   const showSpinner =
-    phase === "uploading" || phase === "processing" || (phase === "paused" && !multipartBlocked);
+    phase === "preparing" ||
+    phase === "uploading" ||
+    phase === "processing" ||
+    (phase === "paused" && !multipartBlocked);
 
   return (
     <View style={s.uploadJobCard}>

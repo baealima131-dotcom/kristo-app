@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { normalizeMediaStatus } from "@/src/lib/mediaStatus";
 
 export type MediaUploadJobPhase =
+  | "preparing"
   | "uploading"
   | "paused"
   | "processing"
@@ -167,8 +168,8 @@ export async function createMediaUploadJob(
     userId: input.userId,
     role: input.role,
     durationMs: input.durationMs,
-    phase: "uploading",
-    uploadProgress: 0,
+    phase: "preparing",
+    uploadProgress: 1,
     resumableMode: input.resumableMode || "chunk",
     chunkSessionId: input.chunkSessionId || jobId,
     createdAt,
@@ -302,6 +303,7 @@ export function filterMediaStorageUploadJobs(
         (job) =>
           String(job.backendFeedId || "").trim() ||
           job.phase === "processing" ||
+          job.phase === "preparing" ||
           job.phase === "uploading"
       )
       .map((job) => mediaUploadJobSignature(job))
