@@ -493,40 +493,61 @@ const ActivityActionRail = memo(function ActivityActionRail({
         <Text style={styles.actionText}>{formatActionCount(shareCount)}</Text>
       </Pressable>
 
-      <Pressable
-        hitSlop={18}
-        style={[styles.actionBtn, saved ? styles.actionBtnActive : null]}
-        onPress={onSave}
-      >
-        <View style={[styles.actionIconWrap, saved ? styles.actionIconWrapSaved : null]}>
-          <Ionicons
-            name={saved ? "bookmark" : "bookmark-outline"}
-            size={24}
-            color={saved ? "#F3D28F" : "#FFFFFF"}
-          />
-        </View>
-        <Text style={[styles.actionSaveLabel, saved ? styles.actionTextSaved : null]}>
-          {saved ? "Saved" : "Save"}
-        </Text>
-      </Pressable>
-
-      {canDelete ? (
+      <View style={styles.actionSaveDeleteCluster}>
         <Pressable
           hitSlop={18}
-          style={styles.actionBtn}
-          onPress={onDelete}
-          disabled={deleting}
+          style={[styles.actionBtn, saved ? styles.actionBtnActive : null]}
+          onPress={onSave}
         >
-          <BlurView intensity={38} tint="dark" style={[styles.actionIconWrap, styles.actionIconWrapDelete]}>
-            {deleting ? (
-              <ActivityIndicator size="small" color="#FFB4B4" />
-            ) : (
-              <Ionicons name="trash-outline" size={22} color="#FFB4B4" />
-            )}
-          </BlurView>
-          <Text style={[styles.actionSaveLabel, styles.actionTextDelete]}>Delete</Text>
+          <View style={[styles.actionIconWrap, saved ? styles.actionIconWrapSaved : null]}>
+            <Ionicons
+              name={saved ? "bookmark" : "bookmark-outline"}
+              size={24}
+              color={saved ? "#F3D28F" : "#FFFFFF"}
+            />
+          </View>
+          <Text
+            style={[styles.actionSaveLabel, saved ? styles.actionTextSaved : null]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.82}
+          >
+            {saved ? "Saved" : "Save"}
+          </Text>
         </Pressable>
-      ) : null}
+
+        {canDelete ? (
+          <Pressable
+            hitSlop={20}
+            style={({ pressed }) => [
+              styles.actionBtn,
+              styles.actionBtnDelete,
+              pressed ? styles.actionBtnDeletePressed : null,
+              deleting ? styles.actionBtnDeleteBusy : null,
+            ]}
+            onPress={onDelete}
+            disabled={deleting}
+            accessibilityRole="button"
+            accessibilityLabel="Delete post"
+          >
+            <View style={styles.actionDeleteIconWrap}>
+              {deleting ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Ionicons name="trash" size={28} color="#FFFFFF" />
+              )}
+            </View>
+            <Text
+              style={styles.actionDeleteLabel}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.82}
+            >
+              Delete
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 });
@@ -1257,6 +1278,7 @@ export default function ChurchActivityFeedScreen() {
 }
 
 const ACTION_RAIL_BOTTOM = 108;
+const ACTION_RAIL_BTN_WIDTH = 78;
 
 const styles = StyleSheet.create({
   screen: {
@@ -1550,10 +1572,12 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   actionBtn: {
-    width: 58,
+    width: ACTION_RAIL_BTN_WIDTH,
+    minWidth: ACTION_RAIL_BTN_WIDTH,
     minHeight: 76,
     alignItems: "center",
     justifyContent: "flex-start",
+    paddingHorizontal: 4,
   },
   actionBtnActive: {
     transform: [{ scale: 1.03 }],
@@ -1577,9 +1601,51 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(243,210,143,0.14)",
     borderColor: "rgba(243,210,143,0.58)",
   },
-  actionIconWrapDelete: {
-    backgroundColor: "rgba(255,90,122,0.12)",
-    borderColor: "rgba(255,180,180,0.42)",
+  actionSaveDeleteCluster: {
+    width: ACTION_RAIL_BTN_WIDTH,
+    minWidth: ACTION_RAIL_BTN_WIDTH,
+    alignItems: "center",
+    gap: 14,
+    marginTop: 2,
+  },
+  actionBtnDelete: {
+    minHeight: 82,
+  },
+  actionBtnDeletePressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.97 }],
+  },
+  actionBtnDeleteBusy: {
+    opacity: 0.82,
+  },
+  actionDeleteIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E53935",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.72)",
+    shadowColor: "#E53935",
+    shadowOpacity: 0.72,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 10,
+  },
+  actionDeleteLabel: {
+    color: "#FFFFFF",
+    fontWeight: "900",
+    fontSize: 17,
+    lineHeight: 20,
+    marginTop: 6,
+    width: ACTION_RAIL_BTN_WIDTH,
+    paddingHorizontal: 6,
+    textAlign: "center",
+    letterSpacing: 0.2,
+    textShadowColor: "rgba(0,0,0,0.75)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 5,
   },
   likeRipple: {
     position: "absolute",
@@ -1605,6 +1671,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 18,
     marginTop: 5,
+    width: ACTION_RAIL_BTN_WIDTH,
+    paddingHorizontal: 6,
     textAlign: "center",
     textShadowColor: "rgba(0,0,0,0.65)",
     textShadowOffset: { width: 0, height: 1 },
@@ -1615,8 +1683,5 @@ const styles = StyleSheet.create({
   },
   actionTextSaved: {
     color: "#F3D28F",
-  },
-  actionTextDelete: {
-    color: "#FFB4B4",
   },
 });
