@@ -27,6 +27,7 @@ import {
   peekHomeFeedVideoRestoreSeek,
   saveHomeFeedVideoProgress,
 } from "@/src/lib/homeFeedVideoProgressStore";
+import { wasHomeFeedVideoUrlBufferedAhead } from "@/src/lib/homeFeedVideoBufferAhead";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import { hasBrandedVideoPoster, isValidVideoPosterUri } from "./homeFeedUtils";
 import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
@@ -246,6 +247,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const lastRowDiagKeyRef = useRef("");
   const progressRestoredRef = useRef(false);
   const lastProgressSaveMsRef = useRef(0);
+  const firstFrameDiagLoggedRef = useRef(false);
 
   const readPlayerMuted = () => {
     try {
@@ -372,13 +374,32 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     });
   };
 
+  const logFirstFrameDiag = () => {
+    if (!isActive || firstFrameDiagLoggedRef.current) return;
+    firstFrameDiagLoggedRef.current = true;
+    console.log("KRISTO_VIDEO_FIRST_FRAME_DIAG", {
+      id: postId || null,
+      firstFrameMs: firstFrameMsRef.current,
+      readyMs: readyMsRef.current,
+      contentLength: Number(contentLength || 0) > 0 ? Number(contentLength) : null,
+      warmMode,
+      wasBufferedAhead: wasHomeFeedVideoUrlBufferedAhead(uri),
+      wasRestored: progressRestoredRef.current,
+      videoHost: urlHost(uri),
+      posterHost: urlHost(posterUri),
+    });
+  };
+
   const markFirstFrame = (fromCache = false) => {
     if (firstFrameMsRef.current === null) {
       firstFrameMsRef.current = fromCache ? 0 : Date.now() - mountMsRef.current;
     }
     // Active video first frame opens the preload gate so the next video can
     // start warming without ever blocking the active one.
-    if (isActive) markHomeFeedActiveFirstFrame();
+    if (isActive) {
+      markHomeFeedActiveFirstFrame();
+      logFirstFrameDiag();
+    }
     setFirstFrameReady((prev) => (prev ? prev : true));
   };
 
@@ -609,6 +630,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       activeHandoffRef.current = false;
       lastRegisterKeyRef.current = "";
       progressRestoredRef.current = false;
+      firstFrameDiagLoggedRef.current = false;
 
       try {
         setPlayerMuted(true, "uri-change-prime");

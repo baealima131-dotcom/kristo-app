@@ -4,6 +4,7 @@ import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import {
   CompleteMultipartUploadCommand,
+  CopyObjectCommand,
   CreateMultipartUploadCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -17,6 +18,9 @@ export const MAX_VIDEO_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024;
 export const VIDEO_UPLOAD_URL_TTL_SECONDS = 2 * 60 * 60;
 export const VIDEO_MULTIPART_CHUNK_BYTES = 5 * 1024 * 1024;
 export const VIDEO_MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024;
+export const VIDEO_OBJECT_CACHE_CONTROL = "public, max-age=31536000, immutable";
+export const VIDEO_OBJECT_CONTENT_TYPE = "video/mp4";
+export const POSTER_OBJECT_CACHE_CONTROL = "public, max-age=31536000, immutable";
 /** Files under this size upload as a single multipart part on the client. */
 export const VIDEO_SINGLE_PART_UPLOAD_MAX_BYTES = 6 * 1024 * 1024;
 
@@ -230,6 +234,9 @@ export async function createPresignedMediaUpload(params: {
     Key: key,
     ContentType: contentType,
     ContentLength: params.fileSize,
+    ...(isPoster
+      ? { CacheControl: POSTER_OBJECT_CACHE_CONTROL }
+      : { CacheControl: VIDEO_OBJECT_CACHE_CONTROL }),
   });
 
   const uploadUrl = await getSignedUrl(client, command, {
@@ -303,7 +310,8 @@ export async function createMultipartVideoUpload(params: {
     new CreateMultipartUploadCommand({
       Bucket: config.bucket,
       Key: key,
-      ContentType: contentType,
+      ContentType: contentType || VIDEO_OBJECT_CONTENT_TYPE,
+      CacheControl: VIDEO_OBJECT_CACHE_CONTROL,
     })
   );
 
@@ -424,13 +432,24 @@ export async function uploadBufferToStorage(params: {
       Body: params.body,
       ContentType: contentType,
       ContentLength: params.body.byteLength,
+      CacheControl:
+        contentType.startsWith("image/")
+          ? POSTER_OBJECT_CACHE_CONTROL
+          : VIDEO_OBJECT_CACHE_CONTROL,
     })
   );
 
   return { key: params.key, publicUrl: buildPublicVideoUrl(config, params.key) };
 }
 
-export async function getStorageObjectByteSize(key: string): Promise<number> {
+export type StorageObjectHead = {
+  contentLength: number;
+  contentType: string | null;
+  cacheControl: string | null;
+  acceptRanges: string | null;
+};
+
+export async function headStorageObject(key: string): Promise<StorageObjectHead> {
   const config = getVideoStorageConfig();
   if (!config) {
     throw new Error(videoStorageConfigError());
@@ -444,7 +463,43 @@ export async function getStorageObjectByteSize(key: string): Promise<number> {
     })
   );
 
-  return Math.max(0, Number(head.ContentLength || 0));
+  return {
+    contentLength: Math.max(0, Number(head.ContentLength || 0)),
+    contentType: head.ContentType || null,
+    cacheControl: head.CacheControl || null,
+    acceptRanges: head.AcceptRanges || null,
+  };
+}
+
+export async function getStorageObjectByteSize(key: string): Promise<number> {
+  const head = await headStorageObject(key);
+  return head.contentLength;
+}
+
+export async function patchStorageObjectDeliveryMetadata(params: {
+  key: string;
+  contentType?: string;
+  cacheControl?: string;
+}): Promise<void> {
+  const config = getVideoStorageConfig();
+  if (!config) {
+    throw new Error(videoStorageConfigError());
+  }
+
+  const key = String(params.key || "").trim();
+  if (!key) return;
+
+  const client = createStorageClient(config);
+  await client.send(
+    new CopyObjectCommand({
+      Bucket: config.bucket,
+      Key: key,
+      CopySource: `${config.bucket}/${key.split("/").map(encodeURIComponent).join("/")}`,
+      MetadataDirective: "REPLACE",
+      ContentType: params.contentType || VIDEO_OBJECT_CONTENT_TYPE,
+      CacheControl: params.cacheControl || VIDEO_OBJECT_CACHE_CONTROL,
+    })
+  );
 }
 
 export async function downloadStorageObjectToPath(key: string, destPath: string): Promise<void> {
@@ -486,7 +541,8 @@ export async function replaceStorageObjectFromPath(params: {
       Bucket: config.bucket,
       Key: params.key,
       Body: body,
-      ContentType: String(params.contentType || "video/mp4").trim() || "video/mp4",
+      ContentType: String(params.contentType || VIDEO_OBJECT_CONTENT_TYPE).trim() || VIDEO_OBJECT_CONTENT_TYPE,
+      CacheControl: VIDEO_OBJECT_CACHE_CONTROL,
     })
   );
 }

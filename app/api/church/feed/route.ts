@@ -87,6 +87,11 @@ import {
   publicUploadAbsPath,
   shouldAttemptServerFfmpeg,
 } from "@/app/api/_lib/media/videoPoster";
+import { probeMp4FaststartFromUrl } from "@/app/api/_lib/media/mp4FaststartProbe";
+import {
+  headStorageObject,
+  storageKeyFromPublicUrl,
+} from "@/app/api/_lib/media/objectStorage";
 
 export const runtime = "nodejs";
 
@@ -1827,6 +1832,61 @@ async function enrichFeedListItem(
         return null;
       }
     })();
+    const storedContentLength =
+      Number(item?.sizeBytes || item?.fileSizeBytes || 0) || null;
+    const storageKey = storageKeyFromPublicUrl(videoUrlStr);
+    let objectHead: Awaited<ReturnType<typeof headStorageObject>> | null = null;
+    if (storageKey) {
+      try {
+        objectHead = await headStorageObject(storageKey);
+      } catch {}
+    }
+
+    const shouldProbeMp4 =
+      (item as any)?.faststart !== true || process.env.KRISTO_PROBE_MP4_FASTSTART === "1";
+
+    console.log("KRISTO_FEED_VIDEO_FILE_DIAG", {
+      id: postId,
+      videoUrlHost: videoHost,
+      posterHost,
+      contentLength: objectHead?.contentLength || storedContentLength,
+      contentType: objectHead?.contentType || null,
+      cacheControl: objectHead?.cacheControl || null,
+      hasPosterUrl: Boolean(videoPosterUri),
+      acceptRanges: objectHead?.acceptRanges || null,
+      storedFaststart: (item as any)?.faststart === true,
+      faststartPending: (item as any)?.faststartPending === true,
+      faststartReason: (item as any)?.faststartReason || null,
+    });
+
+    if (shouldProbeMp4) {
+      void probeMp4FaststartFromUrl(videoUrlStr)
+        .then((mp4Probe) => {
+          console.log("KRISTO_VIDEO_MP4_FASTSTART_DIAG", {
+            id: postId,
+            hasFastStart:
+              mp4Probe?.hasFastStart === true || (item as any)?.faststart === true,
+            moovPositionHint: mp4Probe?.moovPositionHint || "unknown",
+            contentLength:
+              mp4Probe?.contentLength ||
+              objectHead?.contentLength ||
+              storedContentLength,
+            probed: true,
+            storedFaststart: (item as any)?.faststart === true,
+          });
+        })
+        .catch(() => {
+          console.log("KRISTO_VIDEO_MP4_FASTSTART_DIAG", {
+            id: postId,
+            hasFastStart: (item as any)?.faststart === true,
+            moovPositionHint: "unknown",
+            contentLength: objectHead?.contentLength || storedContentLength,
+            probed: false,
+            storedFaststart: (item as any)?.faststart === true,
+          });
+        });
+    }
+
     console.log("KRISTO_FEED_VIDEO_POSTER_FIELDS", {
       postId,
       hasPosterUri: Boolean(posterUri),
@@ -1834,7 +1894,7 @@ async function enrichFeedListItem(
       hasPosterUrl: Boolean(videoPosterUri),
       posterHost,
       videoUrlHost: videoHost,
-      contentLength: Number(item?.sizeBytes || item?.fileSizeBytes || 0) || null,
+      contentLength: objectHead?.contentLength || storedContentLength,
       brandedPoster: videoBrandedPoster,
     });
   }

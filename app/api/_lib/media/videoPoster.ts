@@ -66,7 +66,11 @@ export function posterPublicUrlForVideoUrl(videoUrl: string): string {
 }
 
 export function shouldAttemptServerFfmpeg(): boolean {
-  return !isKristoServerlessRuntime();
+  if (process.env.KRISTO_DISABLE_SERVER_FFMPEG === "1") return false;
+  if (isKristoServerlessRuntime()) {
+    return process.env.KRISTO_ENABLE_SERVERLESS_FFMPEG === "1";
+  }
+  return true;
 }
 
 export async function ffmpegAvailable(): Promise<boolean> {

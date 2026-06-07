@@ -178,6 +178,10 @@ export async function compressVideoForUpload(sourceUri: string): Promise<VideoCo
       ratio,
       savedBytes: Math.max(0, originalBytes - compressedBytes),
       outputUri,
+      feedFriendly: true,
+      maxSize: TARGET_MAX_SIZE,
+      bitrate: TARGET_BITRATE,
+      faststartAssumed: true,
     });
 
     return {

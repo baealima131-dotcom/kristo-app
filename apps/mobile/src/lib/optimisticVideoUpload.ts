@@ -481,10 +481,24 @@ async function uploadVideoWithResume(job: MediaVideoUploadJob, jobId: string, ca
     callbacks
   );
 
+  const clientAssumesFaststart = !compressed.skipped;
+  const faststart = signed.faststart === true || clientAssumesFaststart;
+
+  if (clientAssumesFaststart && signed.faststart !== true) {
+    console.log("KRISTO_VIDEO_FASTSTART_CLIENT_ASSUMED", {
+      jobId,
+      videoUrl: String(signed.videoUrl || "").trim(),
+      compressedSkipped: compressed.skipped,
+      compressedReason: compressed.reason || null,
+      targetMaxSize: 720,
+      targetBitrate: 800_000,
+    });
+  }
+
   const publishMetadata = buildChurchVideoPublishMetadata({
     durationMs: job.durationMs,
     sizeBytes: fileSize,
-    faststart: signed.faststart === true,
+    faststart,
   });
 
   console.log("KRISTO_VIDEO_METADATA_CAPTURED", {

@@ -187,6 +187,7 @@ export const FeedRow = memo(function FeedRow({
               warmMode={videoWarmMode}
               screenFocused={screenFocused}
               feedIndex={feedIndex}
+              contentLength={Number(item?.sizeBytes || item?.fileSizeBytes || 0) || undefined}
             />
           ) : (
             <InactiveVideoPoster

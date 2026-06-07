@@ -5,6 +5,7 @@ import { guard } from "@/app/api/_lib/rbac";
 import {
   completeMultipartVideoUpload,
   getVideoStorageConfig,
+  patchStorageObjectDeliveryMetadata,
   videoStorageConfigError,
 } from "@/app/api/_lib/media/objectStorage";
 import { brandedVideoPosterFields } from "@/app/api/_lib/media/brandedVideoPoster";
@@ -72,6 +73,21 @@ export async function POST(req: NextRequest) {
       partCount: normalizedParts.length,
       videoUrl: completed.videoUrl,
     });
+
+    try {
+      await patchStorageObjectDeliveryMetadata({ key });
+      console.log("KRISTO_VIDEO_OBJECT_METADATA_PATCHED", {
+        key,
+        videoUrl: completed.videoUrl,
+      });
+    } catch (metadataError) {
+      console.log("KRISTO_VIDEO_OBJECT_METADATA_PATCH_FAILED", {
+        key,
+        videoUrl: completed.videoUrl,
+        error:
+          metadataError instanceof Error ? metadataError.message : String(metadataError),
+      });
+    }
 
     const repack = await repackVideoFaststartForKey({
       key,

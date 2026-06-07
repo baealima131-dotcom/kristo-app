@@ -5,8 +5,10 @@ import {
   resolveVideoUri,
 } from "@/src/components/homeFeed/homeFeedUtils";
 
-/** Player mount window: active + next 2 (handled by SimpleFeedVideo). */
-export const HOME_FEED_PLAYER_WARM_AHEAD = 2;
+import {
+  HOME_FEED_PLAYER_WARM_AHEAD,
+  HOME_FEED_PLAYER_WARM_BEHIND,
+} from "./homeFeedVideoWindow";
 
 const MAX_CONCURRENCY = 2;
 const RANGE_BYTES = "bytes=0-65535";
@@ -89,9 +91,26 @@ async function warmPosterUrl(posterUrl: string): Promise<void> {
   }
 }
 
-async function warmVideoUrlNetwork(
-  videoUrl: string
-): Promise<{ status: number; bytesRange: boolean; ms: number }> {
+type VideoWarmNetworkResult = {
+  status: number;
+  bytesRange: boolean;
+  ms: number;
+  contentLength: number | null;
+  acceptRanges: string | null;
+  contentType: string | null;
+};
+
+function readResponseHeader(headers: Headers, name: string): string | null {
+  const value = String(headers.get(name) || "").trim();
+  return value || null;
+}
+
+function parseHeaderContentLength(headers: Headers): number | null {
+  const value = Number(headers.get("content-length") || 0);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+async function warmVideoUrlNetwork(videoUrl: string): Promise<VideoWarmNetworkResult> {
   const url = String(videoUrl || "").trim();
   const startMs = Date.now();
 
@@ -102,6 +121,9 @@ async function warmVideoUrlNetwork(
         status: head.status,
         bytesRange: false,
         ms: Date.now() - startMs,
+        contentLength: parseHeaderContentLength(head.headers),
+        acceptRanges: readResponseHeader(head.headers, "accept-ranges"),
+        contentType: readResponseHeader(head.headers, "content-type"),
       };
     }
   } catch {}
@@ -114,7 +136,16 @@ async function warmVideoUrlNetwork(
     status: range.status,
     bytesRange: true,
     ms: Date.now() - startMs,
+    contentLength: parseHeaderContentLength(range.headers),
+    acceptRanges: readResponseHeader(range.headers, "accept-ranges"),
+    contentType: readResponseHeader(range.headers, "content-type"),
   };
+}
+
+export function wasHomeFeedVideoUrlBufferedAhead(videoUrl: string): boolean {
+  const url = String(videoUrl || "").trim().split("?")[0];
+  if (!url) return false;
+  return warmedVideoUrls.has(url);
 }
 
 function collectVideoPostsInRange(
@@ -144,7 +175,11 @@ function collectVideoPostsInRange(
 
 function playerWarmSkipIndices(activeIndex: number): Set<number> {
   const skip = new Set<number>();
-  for (let offset = 0; offset <= HOME_FEED_PLAYER_WARM_AHEAD; offset += 1) {
+  for (
+    let offset = -HOME_FEED_PLAYER_WARM_BEHIND;
+    offset <= HOME_FEED_PLAYER_WARM_AHEAD;
+    offset += 1
+  ) {
     skip.add(activeIndex + offset);
   }
   return skip;
@@ -269,6 +304,9 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
             status: result.status,
             bytesRange: result.bytesRange,
             ms: result.ms,
+            contentLength: result.contentLength,
+            acceptRanges: result.acceptRanges,
+            contentType: result.contentType,
           });
         } catch {
           console.log("KRISTO_VIDEO_BUFFER_AHEAD_SKIP", {
