@@ -25,6 +25,8 @@ import {
   userHasActiveChurchMembership,
 } from "@/src/lib/homeFeedComments";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { subscribeHomeFeedPostDelete } from "@/src/lib/homeFeedPostDeleteSync";
 import {
   fetchHomeFeedFromApi,
   getCachedHomeFeedBackendCount,
@@ -212,9 +214,15 @@ export default function HomeFeedScreen() {
       setLoading(true);
     }
     try {
-      const rows = await fetchHomeFeedFromApi(reason, { force });
+      const rows = await fetchHomeFeedFromApi(reason, {
+        force,
+        reconcile: reason.includes("post-delete"),
+      });
       if (rows.length) {
         setBackendRows((prev) => {
+          if (reason.includes("post-delete")) {
+            return rows;
+          }
           const result = stableMergeHomeFeedRows(prev, rows);
           if (result.appended > 0 || result.before !== result.after) {
             console.log("KRISTO_HOME_FEED_STABLE_MERGE", {
@@ -266,6 +274,10 @@ export default function HomeFeedScreen() {
 
   useEffect(() => {
     const reload = (source: string) => {
+      if (String(source || "").includes("post-delete")) {
+        void loadFeed("post-delete-sync", { force: true });
+        return;
+      }
       const dirty = peekHomeFeedScheduleDirty();
       forceReloadAfterSchedule(source, dirty?.backendFeedId || null);
     };
@@ -275,7 +287,28 @@ export default function HomeFeedScreen() {
         delete (globalThis as any).__KRISTO_HOME_FEED_FORCE_RELOAD__;
       }
     };
-  }, [forceReloadAfterSchedule]);
+  }, [forceReloadAfterSchedule, loadFeed]);
+
+  useEffect(() => {
+    return subscribeHomeFeedPostDelete((postId) => {
+      const target = String(postId || "").trim();
+      if (!target) return;
+
+      const matches = (row: any) => {
+        const rowId = String(row?.id || "").trim();
+        if (!rowId) return false;
+        if (rowId === target) return true;
+        return baseFeedId(rowId) === baseFeedId(target);
+      };
+
+      setBackendRows((prev) => prev.filter((row) => !matches(row)));
+      setStableDisplayRows((prev) => {
+        const next = prev.filter((row) => !matches(row));
+        stableDisplayRowsRef.current = next;
+        return next;
+      });
+    });
+  }, []);
 
   useEffect(() => {
     const unsub = subscribeHomeFeedScheduleDirty(() => {

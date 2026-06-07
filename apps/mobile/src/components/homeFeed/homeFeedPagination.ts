@@ -64,6 +64,24 @@ export function stableMergeHomeFeedRows(
   };
 }
 
+/** Drop cached backend rows the latest API snapshot no longer includes. */
+export function pruneHomeFeedBackendRowsNotInSnapshot(existing: any[], incoming: any[]) {
+  const incomingIds = new Set<string>();
+  for (const row of incoming) {
+    const id = homeFeedRowKey(row);
+    if (id) incomingIds.add(id);
+  }
+
+  const { merged } = stableMergeHomeFeedRows(existing, incoming);
+  if (!incomingIds.size) return merged;
+
+  return merged.filter((row) => {
+    const id = homeFeedRowKey(row);
+    if (!id) return false;
+    return incomingIds.has(id);
+  });
+}
+
 export function shouldPrefetchHomeFeedPage(
   activeIndex: number,
   visibleCount: number,

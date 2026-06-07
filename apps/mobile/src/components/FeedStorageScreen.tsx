@@ -21,6 +21,7 @@ import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { feedList, feedRemoveWhere } from "@/src/lib/homeFeedStore";
+import { syncHomeFeedPostDelete } from "@/src/lib/homeFeedPostDeleteSync";
 import { evaluateChurchMediaAccessFromSession } from "@/src/lib/churchMediaAccess";
 import {
   activityIsVideo,
@@ -728,6 +729,12 @@ export default function FeedStorageScreen({
 
               feedRemoveWhere((row) => String(row.id || "") === String(item.id));
               setRows((prev) => prev.filter((row) => row.id !== item.id));
+
+              await syncHomeFeedPostDelete({
+                postId: parsed.deletedId || postId,
+                storageDeleted: true,
+                feedDeleted: true,
+              });
             } catch (e) {
               console.log("KRISTO_STORAGE_DELETE_FAIL_DETAIL", {
                 postId,

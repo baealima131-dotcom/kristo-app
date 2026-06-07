@@ -2,25 +2,53 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
-import { stableMergeHomeFeedRows } from "./homeFeedPagination";
+import { pruneHomeFeedBackendRowsNotInSnapshot } from "./homeFeedPagination";
 import { filterPhase1FeedRows, normalizeHomeFeedApiRow } from "./homeFeedUtils";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
 import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
-import { peekHomeFeedRowsCacheSync, saveHomeFeedRowsCache } from "./homeFeedRowsCache";
+import {
+  peekHomeFeedRowsCacheSync,
+  saveHomeFeedRowsCache,
+  removeHomeFeedPostFromRowsCache,
+} from "./homeFeedRowsCache";
 
 let lastFetchedHomeFeedRows: any[] = [];
 
+export function isDeletedFeedRow(row: any): boolean {
+  if (!row || typeof row !== "object") return true;
+  if (row.deleted === true) return true;
+  if (String(row.deletedAt || "").trim()) return true;
+  const status = String(row.status || row.scheduleStatus || "").trim().toLowerCase();
+  return status === "deleted";
+}
+
+export function filterActiveHomeFeedRows(rows: any[]): any[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((row) => !isDeletedFeedRow(row));
+}
+
+function homeFeedRowMatchesPostId(row: any, postId: string): boolean {
+  const target = String(postId || "").trim();
+  const rowId = String(row?.id || "").trim();
+  if (!target || !rowId) return false;
+  if (rowId === target) return true;
+  return baseFeedId(rowId) === baseFeedId(target);
+}
+
 function commitHomeFeedBackendRows(rows: any[]) {
-  lastFetchedHomeFeedRows = rows;
-  void saveHomeFeedRowsCache(rows);
-  return rows;
+  const active = filterActiveHomeFeedRows(rows);
+  lastFetchedHomeFeedRows = active;
+  void saveHomeFeedRowsCache(active);
+  return active;
 }
 
 /** Last successful feed snapshot — memory first, then persisted AsyncStorage cache. */
 export function getCachedHomeFeedBackendRows(): any[] {
-  if (lastFetchedHomeFeedRows.length) return lastFetchedHomeFeedRows;
-  const persisted = peekHomeFeedRowsCacheSync();
+  if (lastFetchedHomeFeedRows.length) {
+    return filterActiveHomeFeedRows(lastFetchedHomeFeedRows);
+  }
+  const persisted = filterActiveHomeFeedRows(peekHomeFeedRowsCacheSync());
   if (persisted.length) {
     lastFetchedHomeFeedRows = persisted;
   }
@@ -41,30 +69,51 @@ export async function persistHomeFeedBackendRowsSnapshot(maxRows: number, userId
   return snapshot.length;
 }
 
-/** Merge incoming API rows into cache without dropping existing ids. */
+/** Merge incoming API rows into cache and drop rows the snapshot no longer includes. */
 export function mergeCachedHomeFeedBackendRows(incoming: any[]): any[] {
-  if (!incoming.length) return getCachedHomeFeedBackendRows();
-  const { merged } = stableMergeHomeFeedRows(getCachedHomeFeedBackendRows(), incoming);
-  return commitHomeFeedBackendRows(merged);
+  const activeIncoming = filterActiveHomeFeedRows(incoming);
+  if (!activeIncoming.length) return getCachedHomeFeedBackendRows();
+  const pruned = pruneHomeFeedBackendRowsNotInSnapshot(
+    getCachedHomeFeedBackendRows(),
+    activeIncoming
+  );
+  return commitHomeFeedBackendRows(pruned);
+}
+
+/** Remove a deleted post from in-memory backend cache + persisted row cache. */
+export async function purgeHomeFeedPostFromBackendCache(postId: string): Promise<boolean> {
+  const target = String(postId || "").trim();
+  if (!target) return false;
+
+  const before = lastFetchedHomeFeedRows.length;
+  lastFetchedHomeFeedRows = lastFetchedHomeFeedRows.filter(
+    (row) => !homeFeedRowMatchesPostId(row, target)
+  );
+  const memoryPurged = before > lastFetchedHomeFeedRows.length;
+
+  const cachePurged = await removeHomeFeedPostFromRowsCache(target);
+  return memoryPurged || cachePurged;
 }
 
 function parseFeedRows(res: any): any[] {
   const raw = parseChurchFeedListResponse(res).rows.map(normalizeHomeFeedApiRow);
-  return raw.filter(
-    (row) => isMediaScheduleFeedItem(row) || isHomeFeedReadyMediaItem(row)
+  return filterActiveHomeFeedRows(
+    raw.filter((row) => isMediaScheduleFeedItem(row) || isHomeFeedReadyMediaItem(row))
   );
 }
 
 export async function fetchHomeFeedFromApi(
   reason = "load",
-  opts?: { force?: boolean }
+  opts?: { force?: boolean; reconcile?: boolean }
 ) {
   const session = getSessionSync() as any;
   const viewerUserId = String(session?.userId || "").trim();
   const viewerChurchId = String(session?.churchId || "").trim();
   const force = opts?.force === true;
+  const reconcile = opts?.reconcile === true || reason.includes("post-delete");
   const bypassThrottle =
     force ||
+    reconcile ||
     reason === "focus" ||
     reason === "startup-prewarm" ||
     reason.startsWith("schedule-dirty") ||
@@ -119,6 +168,10 @@ export async function fetchHomeFeedFromApi(
 
   const rows = filterPhase1FeedRows(rawRows);
   if (!rows.length) return getCachedHomeFeedBackendRows();
+  if (reconcile) {
+    const pruned = pruneHomeFeedBackendRowsNotInSnapshot(getCachedHomeFeedBackendRows(), rows);
+    return commitHomeFeedBackendRows(pruned);
+  }
   if (getCachedHomeFeedBackendRows().length) {
     return mergeCachedHomeFeedBackendRows(rows);
   }

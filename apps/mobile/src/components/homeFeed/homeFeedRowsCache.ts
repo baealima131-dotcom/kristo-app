@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { normalizeHomeFeedApiRow } from "@/src/components/homeFeed/homeFeedUtils";
 
 const STORAGE_PREFIX = "kristo_home_feed_rows_v1:";
@@ -43,6 +44,14 @@ function normalizeCachedRows(rows: unknown): any[] {
   if (!Array.isArray(rows)) return [];
   return rows
     .filter((row) => row && typeof row === "object")
+    .filter((row) => {
+      if ((row as any).deleted === true) return false;
+      if (String((row as any).deletedAt || "").trim()) return false;
+      const status = String((row as any).status || (row as any).scheduleStatus || "")
+        .trim()
+        .toLowerCase();
+      return status !== "deleted";
+    })
     .map((row) => normalizeHomeFeedApiRow(row));
 }
 
@@ -120,7 +129,11 @@ export async function hydrateHomeFeedRowsCacheFromStorage(
 export async function saveHomeFeedRowsCache(rows: any[], userId?: string) {
   const uid = String(userId || activeCacheUserId()).trim() || "guest";
   const normalized = normalizeCachedRows(rows);
-  if (!normalized.length) return;
+  if (!normalized.length) {
+    memoryByUser.delete(uid);
+    await AsyncStorage.removeItem(homeFeedRowsCacheKey(uid));
+    return;
+  }
 
   const payload: HomeFeedRowsCachePayload = {
     userId: uid,
@@ -135,6 +148,44 @@ export async function saveHomeFeedRowsCache(rows: any[], userId?: string) {
   console.log("KRISTO_HOME_FEED_CACHE_SAVE", {
     count: normalized.length,
   });
+}
+
+function homeFeedRowMatchesPostId(row: any, postId: string): boolean {
+  const target = String(postId || "").trim();
+  const rowId = String(row?.id || "").trim();
+  if (!target || !rowId) return false;
+  if (rowId === target) return true;
+  return baseFeedId(rowId) === baseFeedId(target);
+}
+
+/** Drop a deleted post from memory + AsyncStorage Home Feed row cache. */
+export async function removeHomeFeedPostFromRowsCache(
+  postId: string,
+  userId?: string
+): Promise<boolean> {
+  const target = String(postId || "").trim();
+  if (!target) return false;
+
+  const uid = String(userId || activeCacheUserId()).trim() || "guest";
+  let currentRows = memoryByUser.get(uid)?.rows || [];
+
+  if (!currentRows.length) {
+    const hydrated = await hydrateHomeFeedRowsCacheFromStorage(uid);
+    currentRows = hydrated?.rows || [];
+  }
+
+  const before = currentRows.length;
+  const rows = currentRows.filter((row) => !homeFeedRowMatchesPostId(row, target));
+  if (rows.length === before) return false;
+
+  if (rows.length) {
+    await saveHomeFeedRowsCache(rows, uid);
+  } else {
+    memoryByUser.delete(uid);
+    await AsyncStorage.removeItem(homeFeedRowsCacheKey(uid));
+  }
+
+  return true;
 }
 
 /** Start AsyncStorage hydration as early as possible (safe to call multiple times). */

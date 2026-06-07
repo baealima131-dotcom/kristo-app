@@ -1826,8 +1826,9 @@ async function notifyScheduleSlotEdit(args: {
 }
 
 async function removePostAndRelated(postId: string) {
-  await deleteFeedItemById(postId);
+  const feedDeleted = await deleteFeedItemById(postId);
   await deleteEngagementForPost(postId);
+  return feedDeleted;
 }
 
 type FeedListEngagementMeta = {
@@ -2232,7 +2233,16 @@ function isStrictChurchFeedDiscoverable(item: any, viewerChurchId: string) {
   return isDiscoverableFeedItem(item, viewerChurchId);
 }
 
+function isDeletedFeedItem(item: any) {
+  if (item?.deleted === true) return true;
+  if (String(item?.deletedAt || "").trim()) return true;
+  const status = String(item?.status || item?.scheduleStatus || "").trim().toLowerCase();
+  return status === "deleted";
+}
+
 function isDiscoverableFeedItem(item: any, viewerChurchId: string) {
+  if (isDeletedFeedItem(item)) return false;
+
   const itemChurchId = String(item?.churchId || "").trim();
   const viewerCid = String(viewerChurchId || "").trim();
 
@@ -2441,6 +2451,7 @@ async function handleFeedGet(
       }
 
       const storageItems = (await listFeedItems())
+        .filter((x: any) => !isDeletedFeedItem(x))
         .filter((x: any) => String(x?.churchId || "") === viewerChurchId)
         .filter((x: any) => (storageMode === "media" ? isMediaOwnedFeedItem(x) : true))
         .filter((x) => (type ? x.type === type : true))
@@ -2574,6 +2585,7 @@ async function handleFeedGet(
       });
     }
     const allRows = rawRows.filter((x: any) => {
+      if (isDeletedFeedItem(x)) return false;
       const isMediaUpload =
         String(x?.source || "") === "media-upload" ||
         String(x?.ownershipType || "") === "media";
@@ -3379,9 +3391,15 @@ async function handleFeedPost(req: NextRequest, body: any) {
       bumpMediaScheduleSyncForFeedItem(item, "delete_post");
     }
 
-    await removePostAndRelated(String(item.id || postId));
+    const feedDeleted = await removePostAndRelated(String(item.id || postId));
 
     const deletedId = String(item.id || postId);
+    console.log("KRISTO_FEED_POST_DELETE_SYNC", {
+      postId: deletedId,
+      storageDeleted: true,
+      feedDeleted: feedDeleted === true,
+      cachePurged: false,
+    });
     return NextResponse.json({
       ok: true,
       data: { postId: deletedId, deleted: true },
