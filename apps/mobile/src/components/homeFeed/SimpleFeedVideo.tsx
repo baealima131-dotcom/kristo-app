@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ActivityIndicator, AppState, StyleSheet, View } from "react-native";
+import { AppState, Image, StyleSheet, View } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEvent } from "expo";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
@@ -36,15 +36,14 @@ type Props = {
   warmMode: HomeFeedVideoWarmMode;
   screenFocused: boolean;
   feedIndex?: number;
+  contentLength?: number;
 };
 
 // V1 perf: only emit startup/first-frame timing for the first active video in
 // the session. Subsequent active videos stay quiet to keep logs minimal.
 let firstActiveTimingLogged = false;
 
-// If the active video's first frame takes longer than this, show a small
-// loading indicator over the poster instead of a bare poster/black screen.
-const SLOW_FIRST_FRAME_MS = 2500;
+let firstPosterCheckLogged = false;
 
 function urlHost(url: string): string | null {
   const match = String(url || "").match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i);
@@ -91,6 +90,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   warmMode,
   screenFocused,
   feedIndex = -1,
+  contentLength,
 }: Props) {
   const cachedReadyOnMount = isHomeFeedVideoPreloadReady(postId, uri);
   const cachedReadyRef = useRef(cachedReadyOnMount);
@@ -140,16 +140,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   // fires on an actual decoded frame.
   const [firstFrameReady, setFirstFrameReady] = useState(false);
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
-  const [slowFirstFrame, setSlowFirstFrame] = useState(false);
-
-  useEffect(() => {
-    if (!isActive || firstFrameReady) {
-      setSlowFirstFrame(false);
-      return;
-    }
-    const timer = setTimeout(() => setSlowFirstFrame(true), SLOW_FIRST_FRAME_MS);
-    return () => clearTimeout(timer);
-  }, [isActive, firstFrameReady, uri]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -545,6 +535,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       try {
         player.play();
       } catch {}
+      if (!firstFrameReady) {
+        activateActivePlayback("status-ready-pre-frame");
+      }
     }
 
     if (shouldPrime && !isActive && (lower === "readytoplay" || lower === "playing" || currentTime > 0)) {
@@ -647,10 +640,30 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const poster = String(posterUri || "").trim();
   const hasPoster = isValidVideoPosterUri(poster, uri);
   const hasBranded = brandedPoster || hasBrandedVideoPoster({ posterUri: poster, brandedPoster });
-  const showPosterOverlay = hasPoster && !firstFrameReady;
-  const showBrandedCover = hasBranded && !hasPoster && !firstFrameReady;
-  const showGoldFallback = !hasPoster && !hasBranded && !firstFrameReady;
-  const hideVideoSurface = showPosterOverlay || showBrandedCover || showGoldFallback;
+  const showCoverUntilFirstFrame = !firstFrameReady;
+  const showPosterOverlay = showCoverUntilFirstFrame && hasPoster;
+  const showBrandedCover = showCoverUntilFirstFrame && !hasPoster && hasBranded;
+  const showGoldFallback = showCoverUntilFirstFrame && !hasPoster && !hasBranded;
+  const hideVideoSurface = showCoverUntilFirstFrame;
+
+  useEffect(() => {
+    if (!isActive || feedIndex !== 0) return;
+    if (firstPosterCheckLogged) return;
+    firstPosterCheckLogged = true;
+    console.log("KRISTO_VIDEO_FIRST_POSTER_CHECK", {
+      id: postId || null,
+      hasPosterUrl: hasPoster,
+      posterHost: urlHost(poster),
+      videoUrlHost: urlHost(uri),
+      contentLength: Number(contentLength || 0) > 0 ? Number(contentLength) : null,
+      brandedPoster: hasBranded,
+    });
+  }, [isActive, feedIndex, postId, poster, uri, hasPoster, hasBranded, contentLength]);
+
+  useEffect(() => {
+    if (!hasPoster || !isActive) return;
+    Image.prefetch(poster).catch(() => {});
+  }, [poster, hasPoster, isActive]);
 
   return (
     <View style={styles.root}>
@@ -685,13 +698,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
           />
         </View>
       ) : null}
-      {isActive && !firstFrameReady && slowFirstFrame ? (
-        <View style={styles.loadingOverlay} pointerEvents="none">
-          <View style={styles.loadingPill}>
-            <ActivityIndicator size="small" color="#F4D06F" />
-          </View>
-        </View>
-      ) : null}
     </View>
   );
 });
@@ -700,6 +706,7 @@ const styles = StyleSheet.create({
   root: {
     ...StyleSheet.absoluteFillObject,
     overflow: "hidden",
+    backgroundColor: "#1B2A44",
   },
   videoSurface: {
     ...StyleSheet.absoluteFillObject,
@@ -716,19 +723,5 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     width: "100%",
     height: "100%",
-  },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 3,
-  },
-  loadingPill: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(3,5,12,0.55)",
   },
 });

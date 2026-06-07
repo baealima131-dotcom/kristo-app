@@ -3,6 +3,7 @@ import { ActivityIndicator, Image, ImageResizeMode, ImageStyle, StyleSheet, Text
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
+import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 
 const GOLD = "#F4D06F";
 
@@ -30,6 +31,7 @@ export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
 
   useEffect(() => {
     if (variant !== "full" || suppressMissingPosterLog) return;
+    if (!isKristoVerboseFeedDebug()) return;
     console.log("KRISTO_VIDEO_POST_BLACK_FALLBACK_USED", {
       id: postId || null,
       videoUrl: videoUrl || null,
@@ -95,8 +97,15 @@ export function FeedVideoPosterImage({
   videoUrl = "",
   mediaStatus = "",
 }: FeedVideoPosterImageProps) {
+  const [imageFailed, setImageFailed] = React.useState(false);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [uri]);
+
   useEffect(() => {
     if (!uri || isBrandedPosterUri(uri)) return;
+    if (!isKristoVerboseFeedDebug()) return;
     console.log("KRISTO_VIDEO_POSTER_RENDERED", {
       id: postId || null,
       posterUri: uri,
@@ -104,7 +113,7 @@ export function FeedVideoPosterImage({
     });
   }, [uri, postId, videoUrl]);
 
-  if (isBrandedPosterUri(uri)) {
+  if (!uri || isBrandedPosterUri(uri) || imageFailed) {
     return (
       <VideoPostFallbackPoster
         variant="full"
@@ -112,12 +121,26 @@ export function FeedVideoPosterImage({
         title={title}
         videoUrl={videoUrl}
         mediaStatus={mediaStatus}
-        suppressMissingPosterLog
+        suppressMissingPosterLog={isBrandedPosterUri(uri)}
       />
     );
   }
 
-  return <Image source={{ uri }} style={style} resizeMode={resizeMode} />;
+  return (
+    <View style={style}>
+      <LinearGradient
+        colors={["#4A3D24", "#243B55", "#1B2A44"]}
+        locations={[0, 0.5, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <Image
+        source={{ uri }}
+        style={StyleSheet.absoluteFillObject}
+        resizeMode={resizeMode}
+        onError={() => setImageFailed(true)}
+      />
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({

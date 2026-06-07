@@ -1811,6 +1811,34 @@ async function enrichFeedListItem(
 
   const videoPosterUri = posterUri || thumbnailUri;
 
+  if (isVideoItem && item?.videoUrl) {
+    const videoUrlStr = String(item.videoUrl).trim();
+    const posterHost = (() => {
+      try {
+        return videoPosterUri ? new URL(videoPosterUri, "https://kristo.local").host : null;
+      } catch {
+        return null;
+      }
+    })();
+    const videoHost = (() => {
+      try {
+        return new URL(videoUrlStr).host;
+      } catch {
+        return null;
+      }
+    })();
+    console.log("KRISTO_FEED_VIDEO_POSTER_FIELDS", {
+      postId,
+      hasPosterUri: Boolean(posterUri),
+      hasThumbnailUri: Boolean(thumbnailUri),
+      hasPosterUrl: Boolean(videoPosterUri),
+      posterHost,
+      videoUrlHost: videoHost,
+      contentLength: Number(item?.sizeBytes || item?.fileSizeBytes || 0) || null,
+      brandedPoster: videoBrandedPoster,
+    });
+  }
+
   if (postId) {
     console.log("KRISTO_FEED_AUTHOR_ENRICH", {
       postId,

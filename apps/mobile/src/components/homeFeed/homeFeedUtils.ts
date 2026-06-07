@@ -278,6 +278,21 @@ export function normalizeHomeFeedApiRow(row: any) {
     if (!String(next?.profileAvatarUri || "").trim()) next.profileAvatarUri = authorAvatar;
   }
 
+  const posterRaw = String(
+    next?.posterUri ||
+      next?.videoPosterUri ||
+      next?.thumbnailUri ||
+      next?.thumbnailUrl ||
+      next?.posterUrl ||
+      next?.mediaPosterUri ||
+      ""
+  ).trim();
+  if (posterRaw) {
+    if (!String(next?.posterUri || "").trim()) next.posterUri = posterRaw;
+    if (!String(next?.videoPosterUri || "").trim()) next.videoPosterUri = posterRaw;
+    if (!String(next?.thumbnailUri || "").trim()) next.thumbnailUri = posterRaw;
+  }
+
   return next;
 }
 
@@ -1512,8 +1527,33 @@ export function resolveImageUri(item: any) {
   return resolvePostImageUri(item);
 }
 
+/** Infer upload/R2 poster path from video URL (matches server poster conventions). */
+export function inferPosterUriFromVideoUrl(videoUrl: string): string {
+  const raw = String(videoUrl || "").trim().split("?")[0];
+  if (!raw) return "";
+
+  const uploadsMatch = raw.match(/\/uploads\/media\/(?:[^/]+\/)*([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
+  if (uploadsMatch?.[1]) {
+    return homeFeedMediaUrl(`/uploads/media/posters/${uploadsMatch[1]}.jpg`);
+  }
+
+  const r2Marker = "/church-videos/";
+  const r2Idx = raw.indexOf(r2Marker);
+  if (r2Idx >= 0) {
+    const tail = raw.slice(r2Idx + r2Marker.length);
+    const match = tail.match(/^([^/]+)\/([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
+    if (match?.[1] && match?.[2]) {
+      const base = raw.slice(0, r2Idx);
+      return `${base}/church-video-posters/${match[1]}/${match[2]}.jpg`;
+    }
+  }
+
+  return "";
+}
+
 export function resolvePosterUri(item: any) {
-  return homeFeedMediaUrl(
+  const video = resolveVideoUri(item);
+  const explicit = homeFeedMediaUrl(
     item?.posterUri ||
       item?.videoPosterUri ||
       item?.thumbnailUri ||
@@ -1524,6 +1564,13 @@ export function resolvePosterUri(item: any) {
       item?.coverImageUrl ||
       item?.poster
   );
+
+  if (explicit && isValidVideoPosterUri(explicit, video)) return explicit;
+
+  const inferred = inferPosterUriFromVideoUrl(video);
+  if (inferred && isValidVideoPosterUri(inferred, video)) return inferred;
+
+  return explicit || inferred || "";
 }
 
 export function hasBrandedVideoPoster(item: any) {
