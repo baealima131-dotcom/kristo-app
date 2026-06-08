@@ -40,6 +40,9 @@ type ChurchRow = {
   address?: string;
   pastorName?: string;
   avatarUrl?: string;
+  avatarUri?: string;
+  logoUrl?: string;
+  churchLogoUrl?: string;
   verified?: boolean;
   score?: number;
 };
@@ -134,12 +137,52 @@ function countryFlagFor(country?: string, countryCode?: string) {
   return isoMap[iso] || "🌍";
 }
 
-function resolveAvatarUrl(raw?: string) {
+function resolveImageUrl(raw?: string) {
   const v = String(raw || "").trim();
-  if (!v) return undefined;
-  if (/^https?:\/\//i.test(v)) return v;
+  if (!v) return "";
+  if (/^(https?:|file:|data:image\/)/i.test(v)) return v;
   const base = getApiBase();
   return `${base}${v.startsWith("/") ? "" : "/"}${v}`;
+}
+
+function pickChurchDisplayImage(church: ChurchRow) {
+  const avatarUrlRaw = String(church.avatarUrl || "").trim();
+  const logoUrlRaw = String(church.logoUrl || church.churchLogoUrl || "").trim();
+  const avatarUriRaw = String(church.avatarUri || "").trim();
+
+  const hasAvatarUrl = Boolean(avatarUrlRaw);
+  const hasLogoUrl = Boolean(logoUrlRaw);
+
+  for (const raw of [avatarUrlRaw, logoUrlRaw, avatarUriRaw]) {
+    const imageUrl = resolveImageUrl(raw);
+    if (imageUrl) {
+      return { imageUrl, hasAvatarUrl, hasLogoUrl };
+    }
+  }
+
+  return { imageUrl: "", hasAvatarUrl, hasLogoUrl };
+}
+
+function logChurchAvatarSource(church: ChurchRow, imageUrl: string) {
+  const picked = pickChurchDisplayImage(church);
+  console.log("KRISTO_FIND_CHURCH_AVATAR_SOURCE", {
+    churchId: church.id,
+    churchName: church.name,
+    hasAvatarUrl: picked.hasAvatarUrl,
+    hasLogoUrl: picked.hasLogoUrl,
+    imageUrl,
+  });
+}
+
+function logChurchAvatarFallback(church: ChurchRow, reason: string) {
+  const picked = pickChurchDisplayImage(church);
+  console.log("KRISTO_FIND_CHURCH_AVATAR_FALLBACK", {
+    churchId: church.id,
+    churchName: church.name,
+    reason,
+    hasAvatarUrl: picked.hasAvatarUrl,
+    hasLogoUrl: picked.hasLogoUrl,
+  });
 }
 
 function isProductionChurchId(id: string) {
@@ -237,16 +280,38 @@ function AvatarRing({
   size?: number;
   verified?: boolean;
 }) {
-  const uri = resolveAvatarUrl(church.avatarUrl);
   const radius = size / 2;
   const initials = churchInitials(church.name);
+  const display = useMemo(() => pickChurchDisplayImage(church), [church]);
+  const [imageFailed, setImageFailed] = useState(false);
+  const imageUrl = !imageFailed ? display.imageUrl : "";
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [church.id, display.imageUrl]);
+
+  useEffect(() => {
+    if (imageUrl) {
+      logChurchAvatarSource(church, imageUrl);
+    } else {
+      logChurchAvatarFallback(church, display.hasAvatarUrl || display.hasLogoUrl ? "invalid-url" : "no-url");
+    }
+  }, [church.id, church.name, imageUrl, display.hasAvatarUrl, display.hasLogoUrl]);
 
   return (
     <View style={[s.avatarRing, verified && s.avatarRingVerified]}>
       {verified ? <View pointerEvents="none" style={[s.avatarGlow, { width: size + 18, height: size + 18, borderRadius: (size + 18) / 2 }]} /> : null}
       <View style={[s.avatarInner, { width: size, height: size, borderRadius: radius }]}>
-        {uri ? (
-          <Image source={{ uri }} style={{ width: size, height: size, borderRadius: radius }} resizeMode="cover" />
+        {imageUrl ? (
+          <Image
+            source={{ uri: imageUrl }}
+            style={{ width: size, height: size, borderRadius: radius }}
+            resizeMode="cover"
+            onError={() => {
+              logChurchAvatarFallback(church, "image-load-error");
+              setImageFailed(true);
+            }}
+          />
         ) : (
           <View style={[s.avatarFallback, { width: size, height: size, borderRadius: radius }]}>
             <Text style={[s.avatarInitials, { fontSize: size * 0.28 }]} allowFontScaling={false}>
@@ -513,7 +578,10 @@ export default function ChurchFindScreen() {
               province: c.province ? String(c.province) : undefined,
               address: c.address ? String(c.address) : undefined,
               pastorName: c.pastorName ? String(c.pastorName) : undefined,
-              avatarUrl: c.avatarUrl || c.avatarUri ? String(c.avatarUrl || c.avatarUri) : undefined,
+              avatarUrl: String(c.avatarUrl || c.avatarUri || c.churchAvatarUri || "").trim() || undefined,
+              avatarUri: String(c.avatarUri || c.churchAvatarUri || c.avatarUrl || "").trim() || undefined,
+              logoUrl: String(c.logoUrl || c.churchLogoUrl || c.logoUri || "").trim() || undefined,
+              churchLogoUrl: String(c.churchLogoUrl || c.logoUrl || "").trim() || undefined,
               verified: Boolean(c.verified),
               score: typeof c.score === "number" ? c.score : undefined,
             }))

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { searchChurches } from "@/app/api/_lib/churches";
+import { resolveChurchAvatarFields } from "@/app/api/_lib/churchAvatar";
 
 export const runtime = "nodejs";
 
@@ -20,7 +21,7 @@ export async function GET(req: Request) {
     const lng = num(url.searchParams.get("lng"));
     const limit = num(url.searchParams.get("limit"));
 
-    const churches = await searchChurches({
+    const churches = (await searchChurches({
       q: q || undefined,
       city: city || undefined,
       country: country || undefined,
@@ -28,6 +29,16 @@ export async function GET(req: Request) {
       lat,
       lng,
       limit,
+    })).map((church) => {
+      const avatar = resolveChurchAvatarFields(church);
+      return {
+        ...church,
+        avatarUri: avatar.finalAvatarUri || avatar.avatarUri || church.avatarUri,
+        avatarUrl: avatar.avatarUrl || avatar.finalAvatarUri || church.avatarUrl,
+        logoUrl: avatar.logoUrl || avatar.churchLogoUrl || (church as any).logoUrl,
+        churchLogoUrl: avatar.churchLogoUrl || avatar.logoUrl || (church as any).churchLogoUrl,
+        churchAvatarUri: avatar.churchAvatarUri || avatar.finalAvatarUri,
+      };
     });
 
     return NextResponse.json({
