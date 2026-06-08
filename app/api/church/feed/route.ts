@@ -1170,52 +1170,82 @@ function buildFeedPostImageAttachment(uri: string) {
   };
 }
 
-function buildFeedPostImageFieldPatch(imageUri: string) {
-  const uri = String(imageUri || "").trim();
-  if (!uri) return {} as Record<string, unknown>;
+const MAX_FEED_POST_IMAGES = 5;
 
-  return {
-    mediaUri: uri,
-    imageUrl: uri,
-    photoUrl: uri,
-    mediaType: "image",
-    images: [uri],
-    attachments: [buildFeedPostImageAttachment(uri)],
-  };
+function pushFeedPostCreateImageUri(
+  uris: string[],
+  seen: Set<string>,
+  raw: unknown,
+  max = MAX_FEED_POST_IMAGES
+) {
+  if (uris.length >= max) return;
+  const value = cleanText(raw, 2000);
+  if (!value || !isPersistedFeedPostImageUri(value)) return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  uris.push(value);
 }
 
-function applyFeedPostImageFieldsToItem(item: any, imageUri: string) {
-  Object.assign(item, buildFeedPostImageFieldPatch(imageUri));
-}
-
-function extractFeedPostCreateImageUri(body: any): string {
-  for (const key of FEED_POST_IMAGE_FIELD_KEYS) {
-    const value = cleanText(body?.[key], 2000);
-    if (value && isPersistedFeedPostImageUri(value)) return value;
-  }
+function extractFeedPostCreateImageUris(body: any, max = MAX_FEED_POST_IMAGES): string[] {
+  const seen = new Set<string>();
+  const uris: string[] = [];
 
   if (Array.isArray(body?.images)) {
-    for (const raw of body.images) {
-      const value = cleanText(raw, 2000);
-      if (value && isPersistedFeedPostImageUri(value)) return value;
-    }
+    for (const raw of body.images) pushFeedPostCreateImageUri(uris, seen, raw, max);
   }
-
+  if (Array.isArray(body?.mediaUrls)) {
+    for (const raw of body.mediaUrls) pushFeedPostCreateImageUri(uris, seen, raw, max);
+  }
   if (Array.isArray(body?.attachments)) {
     for (const raw of body.attachments) {
       if (typeof raw === "string") {
-        const value = cleanText(raw, 2000);
-        if (value && isPersistedFeedPostImageUri(value)) return value;
+        pushFeedPostCreateImageUri(uris, seen, raw, max);
       } else if (raw && typeof raw === "object") {
         for (const key of ["url", "uri", "imageUrl", "mediaUrl", "publicUrl"]) {
-          const value = cleanText((raw as Record<string, unknown>)[key], 2000);
-          if (value && isPersistedFeedPostImageUri(value)) return value;
+          pushFeedPostCreateImageUri(uris, seen, (raw as Record<string, unknown>)[key], max);
         }
       }
     }
   }
+  for (const key of FEED_POST_IMAGE_FIELD_KEYS) {
+    pushFeedPostCreateImageUri(uris, seen, body?.[key], max);
+  }
 
-  return "";
+  return uris;
+}
+
+function buildFeedPostImageFieldsPatch(imageUris: string[]) {
+  const uris = (Array.isArray(imageUris) ? imageUris : [])
+    .map((uri) => String(uri || "").trim())
+    .filter(Boolean)
+    .slice(0, MAX_FEED_POST_IMAGES);
+  if (!uris.length) return {} as Record<string, unknown>;
+
+  const primary = uris[0];
+  return {
+    mediaUri: primary,
+    imageUrl: primary,
+    photoUrl: primary,
+    mediaType: "image",
+    images: uris,
+    mediaUrls: uris,
+    attachments: uris.map(buildFeedPostImageAttachment),
+  };
+}
+
+function buildFeedPostImageFieldPatch(imageUri: string) {
+  return buildFeedPostImageFieldsPatch([String(imageUri || "").trim()].filter(Boolean));
+}
+
+function applyFeedPostImageFieldsToItem(item: any, imageUri: string | string[]) {
+  const uris = Array.isArray(imageUri)
+    ? imageUri
+    : [String(imageUri || "").trim()].filter(Boolean);
+  Object.assign(item, buildFeedPostImageFieldsPatch(uris));
+}
+
+function extractFeedPostCreateImageUri(body: any): string {
+  return extractFeedPostCreateImageUris(body, 1)[0] || "";
 }
 
 function logFeedPostImageFieldsDiag(item: any) {
@@ -1260,6 +1290,17 @@ function applyFeedPostImageEnrichment(item: any) {
       logFeedPostImageFieldsDiag(item);
     }
     return { patch: {} as Record<string, unknown>, repaired: false as const };
+  }
+
+  const storedImageUris = extractFeedPostCreateImageUris(item);
+  if (storedImageUris.length > 1) {
+    const patch = buildFeedPostImageFieldsPatch(storedImageUris);
+    if (finalImageUrl) patch.imageUrl = finalImageUrl;
+    logFeedPostImageFieldsDiag({ ...item, ...patch });
+    return {
+      repaired: false as const,
+      patch,
+    };
   }
 
   const patch = buildFeedPostImageFieldPatch(finalMediaUri);
@@ -3722,6 +3763,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
   const mediaUri = cleanText(body?.mediaUri, 2000) || undefined;
   const rawImageUrl = cleanText(body?.imageUrl, 2000) || undefined;
   const extractedCreateImageUri = extractFeedPostCreateImageUri(body) || undefined;
+  const createImageUris = extractFeedPostCreateImageUris(body);
   const rawPostMediaUri = mediaUri || rawImageUrl || extractedCreateImageUri || undefined;
   const source = cleanText(body?.source, 80) || undefined;
   const scheduleType = cleanText(body?.scheduleType, 120) || undefined;
@@ -3910,7 +3952,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     sanitizedMedia.mediaUri = rawPostMediaUri;
   }
   const resolvedCreateImageUri =
-    String(sanitizedMedia.mediaUri || rawPostMediaUri || extractedCreateImageUri || "").trim() || "";
+    String(createImageUris[0] || sanitizedMedia.mediaUri || rawPostMediaUri || extractedCreateImageUri || "").trim() || "";
 
   let resolvedPosterUri =
     sanitizedMedia.posterUri || sanitizedMedia.thumbnailUri || videoPosterUri || undefined;
@@ -4126,7 +4168,23 @@ async function handleFeedPost(req: NextRequest, body: any) {
   if (cleanText(body?.mediaType, 40)) {
     (item as any).mediaType = cleanText(body?.mediaType, 40);
   }
-  if (resolvedCreateImageUri && type !== "video" && !String(videoUrl || "").trim()) {
+  if (createImageUris.length > 0 && type !== "video" && !String(videoUrl || "").trim()) {
+    applyFeedPostImageFieldsToItem(item, createImageUris);
+    console.log("KRISTO_FEED_POST_IMAGES_SAVED", {
+      postId: item.id,
+      imagesCount: createImageUris.length,
+      attachmentsCount: createImageUris.length,
+      imageUrl: createImageUris[0],
+    });
+    console.log("KRISTO_FEED_IMAGE_CREATE_DIAG", {
+      id: item.id,
+      kind: String(source || type || "").trim().toLowerCase(),
+      hasImageUrl: true,
+      imageUrl: createImageUris[0],
+      attachmentsCount: createImageUris.length,
+      imagesCount: createImageUris.length,
+    });
+  } else if (resolvedCreateImageUri && type !== "video" && !String(videoUrl || "").trim()) {
     applyFeedPostImageFieldsToItem(item, resolvedCreateImageUri);
     console.log("KRISTO_FEED_IMAGE_CREATE_DIAG", {
       id: item.id,

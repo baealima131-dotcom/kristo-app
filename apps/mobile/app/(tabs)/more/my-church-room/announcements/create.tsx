@@ -177,7 +177,14 @@ export default function CreateAnnouncement() {
 
     if (!compressedUris.length) return;
     setErr(null);
-    setImages((prev) => Array.from(new Set([...prev, ...compressedUris])).slice(0, 3));
+    setImages((prev) => {
+      const next = Array.from(new Set([...prev, ...compressedUris])).slice(0, 5);
+      console.log("KRISTO_POST_COMPOSER_IMAGES_SELECTED", {
+        count: next.length,
+        uris: next,
+      });
+      return next;
+    });
   }
 
   async function launchImagePicker() {
@@ -185,7 +192,7 @@ export default function CreateAnnouncement() {
       mediaTypes: ((ImagePicker as any).MediaType?.Images ?? (ImagePicker as any).MediaTypeOptions?.Images),
       allowsMultipleSelection: true,
       quality: 1,
-      selectionLimit: 3,
+      selectionLimit: 5,
     });
 
     if ((res as any).canceled) return;
@@ -254,6 +261,18 @@ export default function CreateAnnouncement() {
       });
       return null;
     }
+  }
+
+  async function uploadAllChurchRoomFeedImages(localUris: string[]): Promise<string[] | null> {
+    const uploadedUrls: string[] = [];
+    for (const localUri of localUris) {
+      const uploaded = await uploadChurchRoomFeedImage(localUri);
+      if (!uploaded?.mediaUri || !uploaded?.imageUrl) {
+        return null;
+      }
+      uploadedUrls.push(String(uploaded.imageUrl || uploaded.mediaUri).trim());
+    }
+    return uploadedUrls;
   }
 
   async function ensurePhotoPermission() {
@@ -340,16 +359,51 @@ export default function CreateAnnouncement() {
       let mediaUri = "";
       let imageUrl = "";
       let mediaType = "none";
+      let uploadedImageUrls: string[] = [];
 
       if (images.length > 0) {
-        const uploaded = await uploadChurchRoomFeedImage(images[0]);
-        if (!uploaded?.mediaUri || !uploaded?.imageUrl) {
+        console.log("KRISTO_POST_COMPOSER_IMAGES_SELECTED", {
+          count: images.length,
+          uris: images,
+        });
+        uploadedImageUrls = (await uploadAllChurchRoomFeedImages(images)) || [];
+        if (uploadedImageUrls.length !== images.length) {
           setErr("Image upload failed. Please try again.");
           return;
         }
-        mediaUri = uploaded.mediaUri;
-        imageUrl = uploaded.imageUrl;
+        console.log("KRISTO_POST_CREATE_IMAGES_UPLOAD_DONE", {
+          count: uploadedImageUrls.length,
+          urls: uploadedImageUrls,
+        });
+        mediaUri = uploadedImageUrls[0];
+        imageUrl = uploadedImageUrls[0];
         mediaType = "image";
+      }
+
+      const imagePayload =
+        uploadedImageUrls.length > 0
+          ? {
+              mediaUri,
+              imageUrl,
+              mediaType,
+              images: uploadedImageUrls,
+              mediaUrls: uploadedImageUrls,
+              attachments: uploadedImageUrls.map((url) => ({
+                url,
+                uri: url,
+                imageUrl: url,
+                type: "image",
+                mimeType: "image/jpeg",
+              })),
+            }
+          : { mediaType };
+
+      if (uploadedImageUrls.length > 0) {
+        console.log("KRISTO_POST_CREATE_PAYLOAD_IMAGES", {
+          imagesCount: uploadedImageUrls.length,
+          attachmentsCount: uploadedImageUrls.length,
+          hasImageUrl: Boolean(imageUrl),
+        });
       }
 
       const feedRes: any = await apiPost(
@@ -360,13 +414,7 @@ export default function CreateAnnouncement() {
           title: t0,
           text: b0,
           body: b0,
-          ...(mediaUri
-            ? {
-                mediaUri,
-                imageUrl,
-                mediaType,
-              }
-            : { mediaType }),
+          ...imagePayload,
           postType: kind,
           kind,
           source: kind,
@@ -481,10 +529,10 @@ export default function CreateAnnouncement() {
           <View style={s.imgRow}>
             <View style={{ flex: 1 }}>
               <Text style={t.label}>Images</Text>
-              <Text style={t.imgHint}>Add up to 3 photos • Optional</Text>
+              <Text style={t.imgHint}>Add up to 5 photos • Optional</Text>
             </View>
 
-            {images.length < 3 ? (
+            {images.length < 5 ? (
             <Pressable onPress={pickImages} style={({ pressed }) => [s.imgBtn, { borderColor: accentBorder, backgroundColor: "rgba(217,179,95,0.18)" }, pressed ? { opacity: 0.9 } : null]}>
               <Ionicons name="image" size={16} color={accent} />
               <Text style={[t.imgBtnText, { color: accent }]}>Add</Text>
@@ -494,7 +542,7 @@ export default function CreateAnnouncement() {
 
           
 <View style={s.slotsRow}>
-  {[0,1,2].map((i)=>{
+  {[0, 1, 2, 3, 4].map((i) => {
     const uri = images[i];
     if(uri){
       return (
