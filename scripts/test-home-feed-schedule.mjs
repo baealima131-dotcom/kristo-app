@@ -155,7 +155,7 @@ async function testLifecycleLogging() {
       scheduleId: "sched-test",
       churchId: VIEWER_CHURCH,
       slotCount: 2,
-      source: "ministry-live",
+      source: "media-schedule",
     });
     mod.logHomeFeedScheduleExpired({
       scheduleId: "sched-test",
@@ -173,7 +173,7 @@ async function testLifecycleLogging() {
   assert(
     "KRISTO_HOME_FEED_SCHEDULE_CREATED logged",
     capturedLogs.some(
-      (l) => l.event === "KRISTO_HOME_FEED_SCHEDULE_CREATED" && l.payload?.source === "ministry-live"
+      (l) => l.event === "KRISTO_HOME_FEED_SCHEDULE_CREATED" && l.payload?.source === "media-schedule"
     )
   );
   assert(
@@ -202,12 +202,12 @@ async function testScheduleLifecycleAndVisibility() {
   const expiredRow = buildScheduleRow("sched-expired", VIEWER_CHURCH, [buildExpiredSlot(nowMs)]);
 
   assert(
-    "Church Live Control schedule has active slots (Home Feed visible)",
+    "Church Live Control schedule has active room slots",
     !lock.areAllScheduleSlotsExpired(churchLiveRow, nowMs),
     `active=${lock.getActiveScheduleSlots(churchLiveRow, nowMs).length}`
   );
   assert(
-    "Ministry schedule has active slots (Home Feed visible)",
+    "Ministry schedule has active room slots",
     !lock.areAllScheduleSlotsExpired(ministryRow, nowMs),
     `active=${lock.getActiveScheduleSlots(ministryRow, nowMs).length}`
   );
@@ -285,10 +285,20 @@ async function testToolWiringAndCacheCleanup() {
     "missing room-only church live control markers"
   );
   assert(
-    "Ministry live path publishes to Home Feed",
-    /if\s*\(\s*isMinistryLiveSchedule\s*\)\s*\{[\s\S]*publishScheduleBatchToHomeFeed/.test(toolSrc) &&
-      toolSrc.includes('source: "ministry-live"'),
-    "ministry-live home feed wiring missing"
+    "Ministry live does not publish to Home Feed",
+    !/if\s*\(\s*isMinistryLiveSchedule\s*\)\s*\{[\s\S]*publishScheduleBatchToHomeFeed/.test(toolSrc),
+    "ministry-live still wired to home feed publish"
+  );
+  assert(
+    "Ministry uses room schedule batch only",
+    toolSrc.includes("publishScheduleSlotsBatch") && toolSrc.includes("isMinistryLiveSchedule"),
+    "missing ministry room schedule path"
+  );
+  assert(
+    "Media schedule publishes to Home Feed",
+    toolSrc.includes("isMediaSchedule && !isMinistryLiveSchedule") &&
+      toolSrc.includes("publishScheduleBatchToHomeFeed"),
+    "media home feed publish wiring missing"
   );
   assert(
     "publishScheduleBatchToHomeFeed helper exists",

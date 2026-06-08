@@ -3862,38 +3862,6 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           reason: "handleSendMeetingToSchedule",
           parentTopic: scheduleTopic,
         });
-
-        if (isMinistryLiveSchedule) {
-          const homeFeedResult = await publishScheduleBatchToHomeFeed({
-            churchId,
-            scheduleSlots: newBatchSlots,
-            scheduleTopic,
-            scheduleType,
-            scheduleDay,
-            scheduleTarget,
-            source: "ministry-live",
-            headers: scheduleApiHeaders,
-            ministryId: routeMinistryId || assignmentId,
-            roomId: String(targetRoomId || assignmentId),
-            actorLabel: assignmentTitle,
-            mediaName: assignmentTitle,
-            churchName: routeChurchName || assignmentTitle,
-            churchLabel: routeChurchName || assignmentTitle,
-            avatarUri: routeAvatar,
-            title:
-              scheduleType === "Meeting" ? "Live Schedule" : `${scheduleType} Live Cards`,
-            screen: "church-project-tool.ministry-live",
-          });
-
-          if (homeFeedResult.ok) {
-            Alert.alert(
-              "Sent to Home Feed",
-              `${newBatchSlots.length} schedule slots were sent as claimable live cards.`
-            );
-            router.push("/" as any);
-            return;
-          }
-        }
       } finally {
         schedulePollPausedRef.current = false;
       }
