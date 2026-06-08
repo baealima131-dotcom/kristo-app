@@ -155,6 +155,15 @@ export const FeedRow = memo(function FeedRow({
   const lastImageDiagKeyRef = useRef("");
 
   useEffect(() => {
+    if (!postId || !willRenderImage) return;
+    console.log("KRISTO_IMAGE_CAROUSEL_RESOLVE", {
+      postId,
+      imageCount: postImageUris.length,
+      uris: postImageUris,
+    });
+  }, [postId, postImageUris, willRenderImage]);
+
+  useEffect(() => {
     const diagKey = [
       postId,
       resolvedImageUri,
@@ -170,7 +179,7 @@ export const FeedRow = memo(function FeedRow({
 
   return (
     <View style={[styles.slide, { height }]}>
-      <View style={styles.media}>
+      <View style={styles.media} pointerEvents="box-none">
         {showVideoMedia ? (
           mountVideoPlayer ? (
             <SimpleFeedVideo
@@ -202,6 +211,7 @@ export const FeedRow = memo(function FeedRow({
           )
         ) : willRenderImage ? (
           <ImagePostCarousel
+            postId={postId}
             imageUris={postImageUris}
             accent={postAccent}
             fallback={
@@ -391,6 +401,7 @@ const styles = StyleSheet.create({
   media: {
     flex: 1,
     backgroundColor: "#03050C",
+    zIndex: 1,
   },
   mediaFallback: {
     flex: 1,

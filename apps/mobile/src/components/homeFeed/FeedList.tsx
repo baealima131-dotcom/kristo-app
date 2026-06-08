@@ -2,6 +2,7 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
   StyleSheet,
   Text,
   View,
@@ -411,6 +412,8 @@ export const FeedList = memo(function FeedList({
       extraData={`${likeUiEpoch}:${activeIndex}:${scheduleNowMs}`}
       renderItem={renderItem}
       pagingEnabled
+      directionalLockEnabled={Platform.OS === "ios"}
+      nestedScrollEnabled
       decelerationRate="fast"
       snapToInterval={contentHeight}
       snapToAlignment="start"

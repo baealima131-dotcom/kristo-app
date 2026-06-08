@@ -1,21 +1,19 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  FlatList,
   Image,
-  NativeScrollEvent,
-  NativeSyntheticEvent,
+  Platform,
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
-  type ListRenderItemInfo,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import PagerView from "@/src/components/PagerView";
 import { ImagePostCard } from "./ImagePostCard";
 import type { HomeFeedPostAccent } from "./homeFeedUtils";
 
 type Props = {
+  postId?: string;
   imageUris: string[];
   fallback?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
@@ -24,16 +22,33 @@ type Props = {
 
 const MAX_CAROUSEL_IMAGES = 5;
 
+function logCarouselPageChange(postId: string, index: number, imageCount: number) {
+  console.log("KRISTO_IMAGE_CAROUSEL_PAGE_CHANGE", {
+    postId: postId || null,
+    index,
+    imageCount,
+  });
+}
+
+function logCarouselScrollBlocked(postId: string, reason: string) {
+  console.log("KRISTO_IMAGE_CAROUSEL_SCROLL_BLOCKED", {
+    postId: postId || null,
+    reason,
+  });
+}
+
 export const ImagePostCarousel = memo(function ImagePostCarousel({
+  postId = "",
   imageUris,
   fallback = null,
   style,
   accent,
 }: Props) {
-  const { width: windowWidth } = useWindowDimensions();
-  const [pageWidth, setPageWidth] = useState(windowWidth);
   const [activeIndex, setActiveIndex] = useState(0);
-  const listRef = useRef<FlatList<string>>(null);
+  const pagerRef = useRef<any>(null);
+  const touchLoggedRef = useRef(false);
+  const blockedLoggedRef = useRef(false);
+  const carouselPostId = String(postId || "").trim();
 
   const uris = useMemo(
     () =>
@@ -44,61 +59,74 @@ export const ImagePostCarousel = memo(function ImagePostCarousel({
     [imageUris]
   );
 
-  useEffect(() => {
-    setActiveIndex(0);
-    listRef.current?.scrollToOffset({ offset: 0, animated: false });
-  }, [uris.join("|")]);
+  const imageCount = uris.length;
+  const carouselEnabled = imageCount > 1;
 
   useEffect(() => {
-    if (uris.length <= 1) return;
+    setActiveIndex(0);
+    touchLoggedRef.current = false;
+    blockedLoggedRef.current = false;
+    if (!carouselEnabled) return;
+    requestAnimationFrame(() => {
+      try {
+        pagerRef.current?.setPageWithoutAnimation?.(0);
+      } catch {}
+    });
+  }, [carouselEnabled, uris.join("|")]);
+
+  useEffect(() => {
+    if (!carouselEnabled) return;
     const neighbors = [activeIndex - 1, activeIndex + 1].filter(
-      (index) => index >= 0 && index < uris.length
+      (index) => index >= 0 && index < imageCount
     );
     for (const index of neighbors) {
       const uri = uris[index];
       if (!uri) continue;
       Image.prefetch(uri).catch(() => {});
     }
-  }, [activeIndex, uris]);
+  }, [activeIndex, carouselEnabled, imageCount, uris]);
 
-  const updateIndexFromOffset = useCallback(
-    (offsetX: number) => {
-      if (pageWidth <= 0) return;
-      const nextIndex = Math.max(0, Math.min(uris.length - 1, Math.round(offsetX / pageWidth)));
-      setActiveIndex((current) => (current === nextIndex ? current : nextIndex));
+  const handleTouchStart = useCallback(() => {
+    if (!carouselEnabled || touchLoggedRef.current) return;
+    touchLoggedRef.current = true;
+    console.log("KRISTO_IMAGE_CAROUSEL_TOUCH_START", {
+      postId: carouselPostId || null,
+      imageCount,
+    });
+  }, [carouselEnabled, carouselPostId, imageCount]);
+
+  const handlePageSelected = useCallback(
+    (event: any) => {
+      const index = Number(event?.nativeEvent?.position ?? 0);
+      setActiveIndex((current) => {
+        if (current !== index) {
+          logCarouselPageChange(carouselPostId, index, imageCount);
+        }
+        return index;
+      });
     },
-    [pageWidth, uris.length]
+    [carouselPostId, imageCount]
   );
 
-  const onScroll = useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      updateIndexFromOffset(event.nativeEvent.contentOffset.x);
+  const handlePageScrollStateChanged = useCallback(
+    (event: any) => {
+      const state = String(event?.nativeEvent?.pageScrollState || "").trim();
+      if (state === "dragging" && carouselEnabled && !touchLoggedRef.current) {
+        handleTouchStart();
+      }
     },
-    [updateIndexFromOffset]
+    [carouselEnabled, handleTouchStart]
   );
 
-  const onMomentumScrollEnd = useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      updateIndexFromOffset(event.nativeEvent.contentOffset.x);
-    },
-    [updateIndexFromOffset]
-  );
+  useEffect(() => {
+    if (!carouselEnabled || blockedLoggedRef.current) return;
+    if (Platform.OS === "web") {
+      blockedLoggedRef.current = true;
+      logCarouselScrollBlocked(carouselPostId, "web_pager_fallback");
+    }
+  }, [carouselEnabled, carouselPostId]);
 
-  const renderItem = useCallback(
-    ({ item, index }: ListRenderItemInfo<string>) => (
-      <View style={[styles.page, { width: pageWidth }]}>
-        <ImagePostCard
-          imageUri={item}
-          accent={accent}
-          fallback={index === 0 ? fallback : undefined}
-          style={styles.pageImage}
-        />
-      </View>
-    ),
-    [accent, fallback, pageWidth]
-  );
-
-  if (uris.length <= 1) {
+  if (imageCount <= 1) {
     return (
       <ImagePostCard
         imageUri={uris[0] || ""}
@@ -112,44 +140,35 @@ export const ImagePostCarousel = memo(function ImagePostCarousel({
   return (
     <View
       style={[styles.wrap, style]}
-      onLayout={(event) => {
-        const nextWidth = Math.round(event.nativeEvent.layout.width);
-        if (nextWidth > 0 && nextWidth !== pageWidth) setPageWidth(nextWidth);
-      }}
+      pointerEvents="auto"
+      onTouchStart={handleTouchStart}
+      collapsable={false}
     >
-      <FlatList
-        ref={listRef}
-        data={uris}
-        horizontal
-        pagingEnabled
-        bounces={false}
-        decelerationRate="fast"
-        showsHorizontalScrollIndicator={false}
-        nestedScrollEnabled
-        scrollEventThrottle={16}
-        keyExtractor={(uri, index) => `${uri}:${index}`}
-        renderItem={renderItem}
-        onScroll={onScroll}
-        onMomentumScrollEnd={onMomentumScrollEnd}
-        getItemLayout={
-          pageWidth > 0
-            ? (_, index) => ({
-                length: pageWidth,
-                offset: pageWidth * index,
-                index,
-              })
-            : undefined
-        }
-        initialNumToRender={Math.min(uris.length, 2)}
-        windowSize={3}
-        maxToRenderPerBatch={2}
-        removeClippedSubviews={false}
-        style={styles.list}
-      />
+      <PagerView
+        ref={pagerRef}
+        style={styles.pager}
+        initialPage={0}
+        scrollEnabled={carouselEnabled}
+        overdrag={false}
+        offscreenPageLimit={1}
+        onPageSelected={handlePageSelected}
+        onPageScrollStateChanged={handlePageScrollStateChanged}
+      >
+        {uris.map((uri, index) => (
+          <View key={`${uri}:${index}`} style={styles.page} collapsable={false}>
+            <ImagePostCard
+              imageUri={uri}
+              accent={accent}
+              fallback={index === 0 ? fallback : undefined}
+              style={styles.pageImage}
+            />
+          </View>
+        ))}
+      </PagerView>
 
       <View pointerEvents="none" style={styles.counterPill}>
         <Text style={styles.counterText}>
-          {activeIndex + 1}/{uris.length}
+          {activeIndex + 1}/{imageCount}
         </Text>
       </View>
 
@@ -170,11 +189,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#0B0F17",
   },
-  list: {
+  pager: {
     flex: 1,
   },
   page: {
     flex: 1,
+    width: "100%",
     height: "100%",
   },
   pageImage: {
