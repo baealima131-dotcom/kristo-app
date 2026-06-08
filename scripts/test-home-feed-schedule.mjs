@@ -155,7 +155,7 @@ async function testLifecycleLogging() {
       scheduleId: "sched-test",
       churchId: VIEWER_CHURCH,
       slotCount: 2,
-      source: "church-live-control",
+      source: "ministry-live",
     });
     mod.logHomeFeedScheduleExpired({
       scheduleId: "sched-test",
@@ -173,7 +173,7 @@ async function testLifecycleLogging() {
   assert(
     "KRISTO_HOME_FEED_SCHEDULE_CREATED logged",
     capturedLogs.some(
-      (l) => l.event === "KRISTO_HOME_FEED_SCHEDULE_CREATED" && l.payload?.source === "church-live-control"
+      (l) => l.event === "KRISTO_HOME_FEED_SCHEDULE_CREATED" && l.payload?.source === "ministry-live"
     )
   );
   assert(
@@ -274,14 +274,21 @@ async function testToolWiringAndCacheCleanup() {
   const feedSrc = fs.readFileSync(feedPath, "utf8");
 
   assert(
-    "Church Live Control path publishes to Home Feed",
-    toolSrc.includes('sourceParam === "church-live-control"') &&
-      toolSrc.includes("publishScheduleBatchToHomeFeed") &&
-      toolSrc.includes("homeFeedResult")
+    "Church Live Control does not publish to Home Feed",
+    !toolSrc.includes('source: "church-live-control"'),
+    "church-live-control home feed source still present"
   );
   assert(
-    "Ministry/Meeting path publishes to Home Feed",
-    toolSrc.includes("isMinistryLiveSchedule") && toolSrc.includes("publishScheduleBatchToHomeFeed")
+    "Church Live Control uses room schedule batch only",
+    toolSrc.includes("publishScheduleSlotsBatch") &&
+      toolSrc.includes('sourceParam === "church-live-control"'),
+    "missing room-only church live control markers"
+  );
+  assert(
+    "Ministry live path publishes to Home Feed",
+    /if\s*\(\s*isMinistryLiveSchedule\s*\)\s*\{[\s\S]*publishScheduleBatchToHomeFeed/.test(toolSrc) &&
+      toolSrc.includes('source: "ministry-live"'),
+    "ministry-live home feed wiring missing"
   );
   assert(
     "publishScheduleBatchToHomeFeed helper exists",

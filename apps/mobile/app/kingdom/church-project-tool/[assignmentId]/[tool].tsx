@@ -3863,41 +3863,36 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           parentTopic: scheduleTopic,
         });
 
-        const feedSource =
-          sourceParam === "church-live-control"
-            ? "church-live-control"
-            : isMinistryLiveSchedule
-              ? "ministry-live"
-              : sourceParam || "ministry-live";
+        if (isMinistryLiveSchedule) {
+          const homeFeedResult = await publishScheduleBatchToHomeFeed({
+            churchId,
+            scheduleSlots: newBatchSlots,
+            scheduleTopic,
+            scheduleType,
+            scheduleDay,
+            scheduleTarget,
+            source: "ministry-live",
+            headers: scheduleApiHeaders,
+            ministryId: routeMinistryId || assignmentId,
+            roomId: String(targetRoomId || assignmentId),
+            actorLabel: assignmentTitle,
+            mediaName: assignmentTitle,
+            churchName: routeChurchName || assignmentTitle,
+            churchLabel: routeChurchName || assignmentTitle,
+            avatarUri: routeAvatar,
+            title:
+              scheduleType === "Meeting" ? "Live Schedule" : `${scheduleType} Live Cards`,
+            screen: "church-project-tool.ministry-live",
+          });
 
-        const homeFeedResult = await publishScheduleBatchToHomeFeed({
-          churchId,
-          scheduleSlots: newBatchSlots,
-          scheduleTopic,
-          scheduleType,
-          scheduleDay,
-          scheduleTarget,
-          source: feedSource,
-          headers: scheduleApiHeaders,
-          ministryId: routeMinistryId || assignmentId,
-          roomId: String(targetRoomId || assignmentId),
-          actorLabel: assignmentTitle,
-          mediaName: assignmentTitle,
-          churchName: routeChurchName || assignmentTitle,
-          churchLabel: routeChurchName || assignmentTitle,
-          avatarUri: routeAvatar,
-          title:
-            scheduleType === "Meeting" ? "Live Schedule" : `${scheduleType} Live Cards`,
-          screen: `church-project-tool.${feedSource}`,
-        });
-
-        if (homeFeedResult.ok) {
-          Alert.alert(
-            "Sent to Home Feed",
-            `${newBatchSlots.length} schedule slots were sent as claimable live cards.`
-          );
-          router.push("/" as any);
-          return;
+          if (homeFeedResult.ok) {
+            Alert.alert(
+              "Sent to Home Feed",
+              `${newBatchSlots.length} schedule slots were sent as claimable live cards.`
+            );
+            router.push("/" as any);
+            return;
+          }
         }
       } finally {
         schedulePollPausedRef.current = false;
