@@ -1788,6 +1788,9 @@ function postImageUriMatchesAvatar(item: any, candidate: string) {
 }
 
 export function resolvePostImageUri(item: any) {
+  const uris = resolvePostImageUris(item, 1);
+  if (uris.length) return uris[0];
+
   const row = normalizeHomeFeedApiRow(item);
 
   const explicit = resolveExplicitPostImageUri(row);
@@ -1802,6 +1805,73 @@ export function resolvePostImageUri(item: any) {
     return uri;
   }
   return "";
+}
+
+export function resolvePostImageUris(item: any, maxImages = 5): string[] {
+  const row = normalizeHomeFeedApiRow(item);
+  const mediaType = String(row?.mediaType || "").trim().toLowerCase();
+  if (mediaType === "video") return [];
+
+  const seen = new Set<string>();
+  const uris: string[] = [];
+  const churchRoomPost = isChurchRoomMemberFeedPost(row);
+
+  const tryPush = (raw: unknown) => {
+    if (uris.length >= maxImages) return;
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) return;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(trimmed)) return;
+    if (/\/profile-avatars\//i.test(trimmed)) return;
+    if (
+      !isFeedPostImageUri(trimmed) &&
+      !isExplicitPostImageCandidate(row, trimmed) &&
+      !churchRoomPost &&
+      mediaType !== "image"
+    ) {
+      return;
+    }
+    if (postImageUriMatchesAvatar(row, trimmed)) return;
+    const uri = homeFeedMediaUrl(trimmed);
+    if (!uri || seen.has(uri)) return;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(uri)) return;
+    seen.add(uri);
+    uris.push(uri);
+  };
+
+  const roots = [row, row?.payload].filter((entry) => entry && typeof entry === "object");
+
+  for (const root of roots) {
+    if (!Array.isArray(root?.images)) continue;
+    for (const value of root.images) tryPush(value);
+  }
+  for (const root of roots) {
+    if (!Array.isArray(root?.attachments)) continue;
+    for (const entry of root.attachments) {
+      if (typeof entry === "string") {
+        tryPush(entry);
+        continue;
+      }
+      if (!entry || typeof entry !== "object") continue;
+      const att = entry as Record<string, unknown>;
+      for (const key of ["url", "uri", "imageUrl", "mediaUrl", "publicUrl"]) {
+        tryPush(att[key]);
+      }
+    }
+  }
+  for (const root of roots) {
+    if (!Array.isArray(root?.mediaUrls)) continue;
+    for (const value of root.mediaUrls) tryPush(value);
+  }
+  for (const raw of collectPostImageUriValues(row)) {
+    tryPush(raw);
+  }
+
+  if (!uris.length) {
+    const explicit = resolveExplicitPostImageUri(row);
+    if (explicit) uris.push(explicit);
+  }
+
+  return uris;
 }
 
 export function resolveImageUri(item: any) {

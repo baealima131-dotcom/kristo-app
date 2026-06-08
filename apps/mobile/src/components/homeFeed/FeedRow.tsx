@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SimpleFeedVideo } from "./SimpleFeedVideo";
-import { ImagePostCard } from "./ImagePostCard";
+import { ImagePostCarousel } from "./ImagePostCarousel";
 import { PostActions } from "./PostActions";
 import { FeedIdentity } from "./FeedIdentity";
 import { FeedTitleCaption } from "./FeedTitleCaption";
@@ -15,7 +15,7 @@ import {
   resolveChurchRoomFeedCaption,
   resolveFeedPostAccent,
   resolveFeedPostTypeTitle,
-  resolvePostImageUri,
+  resolvePostImageUris,
   resolvePostBody,
   resolvePostTitle,
   resolvePosterUri,
@@ -139,9 +139,10 @@ export const FeedRow = memo(function FeedRow({
   const video = isVideoPost(item);
   const videoUri = useMemo(() => resolveVideoUri(item), [item]);
   const playbackPlan = useMemo(() => resolveHomeFeedVideoPlaybackPlan(item), [item]);
-  const resolvedImageUri = useMemo(() => resolvePostImageUri(item), [item]);
+  const postImageUris = useMemo(() => resolvePostImageUris(item), [item]);
+  const resolvedImageUri = postImageUris[0] || "";
   const showVideoMedia = Boolean(video && videoUri);
-  const willRenderImage = Boolean(resolvedImageUri) && !showVideoMedia;
+  const willRenderImage = postImageUris.length > 0 && !showVideoMedia;
   const churchRoomTextCard = churchRoomPost && !showVideoMedia && !willRenderImage;
   const posterUri = resolvePosterUri(item);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
@@ -157,6 +158,7 @@ export const FeedRow = memo(function FeedRow({
     const diagKey = [
       postId,
       resolvedImageUri,
+      postImageUris.length,
       willRenderImage ? 1 : 0,
       showVideoMedia ? 1 : 0,
     ].join(":");
@@ -164,7 +166,7 @@ export const FeedRow = memo(function FeedRow({
     lastImageDiagKeyRef.current = diagKey;
 
     logImagePostRenderDiag(item, resolvedImageUri, showVideoMedia);
-  }, [item, postId, resolvedImageUri, willRenderImage, showVideoMedia]);
+  }, [item, postId, postImageUris.length, resolvedImageUri, willRenderImage, showVideoMedia]);
 
   return (
     <View style={[styles.slide, { height }]}>
@@ -199,8 +201,9 @@ export const FeedRow = memo(function FeedRow({
             />
           )
         ) : willRenderImage ? (
-          <ImagePostCard
-            imageUri={resolvedImageUri}
+          <ImagePostCarousel
+            imageUris={postImageUris}
+            accent={postAccent}
             fallback={
               churchRoomPost ? (
                 <ChurchRoomTextCard
