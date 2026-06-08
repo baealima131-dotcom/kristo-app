@@ -73,10 +73,12 @@ export default function MoreMinistriesList() {
     [churchId, userId]
   );
 
+  const hasCachedSnapshot = Boolean(ministriesCachePeek);
   const [items, setItems] = useState<Ministry[]>(
     (ministriesCachePeek?.items as Ministry[]) || []
   );
-  const [loading, setLoading] = useState(!Boolean(ministriesCachePeek?.items?.length));
+  const [loading, setLoading] = useState(!hasCachedSnapshot);
+  const [hasLoaded, setHasLoaded] = useState(hasCachedSnapshot);
   const [err, setErr] = useState<string | null>(null);
   const itemsSigRef = useRef(
     ministriesCachePeek?.items?.length
@@ -90,7 +92,8 @@ export default function MoreMinistriesList() {
     )
   );
   const firstPaintLoggedRef = useRef(false);
-  const cacheHydratedRef = useRef(Boolean(ministriesCachePeek?.items?.length));
+  const cacheHydratedRef = useRef(hasCachedSnapshot);
+  const emptyStateLoggedRef = useRef(false);
 
   const role = String(session?.role || (session as any)?.churchRole || "Member");
   const canCreateMinistry =
@@ -114,12 +117,11 @@ export default function MoreMinistriesList() {
       setItems(cachedItems);
     }
     cacheHydratedRef.current = true;
-    if (shouldBlockVisibleLoading(CHURCH_MINISTRIES_SCREEN, cachedItems.length > 0)) {
-      setLoading(false);
-    }
+    setHasLoaded(true);
+    setLoading(false);
   }, []);
 
-  if (!cacheHydratedRef.current && ministriesCachePeek?.items?.length) {
+  if (!cacheHydratedRef.current && ministriesCachePeek) {
     cacheHydratedRef.current = true;
     seedMinistriesRefreshFromCache({
       churchId: ministriesCachePeek.churchId,
@@ -164,9 +166,12 @@ export default function MoreMinistriesList() {
           source: force ? "church-ministries-manual" : "church-ministries-screen",
         });
 
-        if (bundle.skipped && itemsSigRef.current) return;
+        if (bundle.skipped && itemsSigRef.current) {
+          setHasLoaded(true);
+          return;
+        }
 
-        const data = bundle.ministries as Ministry[];
+        const data = Array.isArray(bundle.ministries) ? (bundle.ministries as Ministry[]) : [];
         const withCounts = data.map((m) => {
           const rows = bundle.membersByMinistryId[String(m.id || "")] || [];
           const leaders = rows.filter((x: any) =>
@@ -199,6 +204,7 @@ export default function MoreMinistriesList() {
         });
         markScreenBackgroundRefresh(CHURCH_MINISTRIES_SCREEN);
         markChurchFeatureRefreshDone(CHURCH_MINISTRIES_SCREEN, churchId, userId);
+        setHasLoaded(true);
       } catch (e: any) {
         const msg = String(e?.message ?? e ?? "Error");
         if (msg.toLowerCase().includes("no active church membership")) {
@@ -209,6 +215,7 @@ export default function MoreMinistriesList() {
         }
       } finally {
         setLoading(false);
+        setHasLoaded(true);
       }
     },
     [churchId, userId, items.length]
@@ -221,7 +228,7 @@ export default function MoreMinistriesList() {
       (async () => {
         if (churchId && userId && !cacheHydratedRef.current) {
           const disk = await getMinistriesCache(churchId, userId);
-          if (disk?.items?.length && alive) {
+          if (disk && alive) {
             applyMinistriesCache((disk.items || []) as Ministry[]);
             cacheFreshRef.current = isScreenCacheFresh(disk.updatedAt, CHURCH_TAB_REFRESH_MS);
             seedMinistriesRefreshFromCache({
@@ -249,6 +256,10 @@ export default function MoreMinistriesList() {
           shouldSkipFocusRefresh(CHURCH_MINISTRIES_SCREEN, CHURCH_TAB_REFRESH_MS) ||
           shouldSkipChurchFeatureRefresh(CHURCH_MINISTRIES_SCREEN, churchId, userId)
         ) {
+          if (alive) {
+            setHasLoaded(true);
+            setLoading(false);
+          }
           return;
         }
 
@@ -301,7 +312,23 @@ export default function MoreMinistriesList() {
   }
 
   const hasItems = useMemo(() => items.length > 0, [items]);
-  const showSpinner = loading && !shouldBlockVisibleLoading(CHURCH_MINISTRIES_SCREEN, hasItems);
+  const showSpinner = loading && !hasLoaded;
+  const showEmptyState = hasLoaded && !err && !hasItems;
+
+  useEffect(() => {
+    emptyStateLoggedRef.current = false;
+  }, [churchId]);
+
+  useEffect(() => {
+    if (!showEmptyState || emptyStateLoggedRef.current) return;
+    emptyStateLoggedRef.current = true;
+    console.log("KRISTO_MINISTRIES_EMPTY_STATE_SHOWN", {
+      churchId,
+      userId,
+      role,
+      source: cacheHydratedRef.current ? "cache-or-fetch" : "fetch",
+    });
+  }, [showEmptyState, churchId, userId, role]);
 
   return (
     <View style={[s.screen, { paddingTop: insets.top }]}>
@@ -348,28 +375,35 @@ export default function MoreMinistriesList() {
             <Text style={s.btnGhostText}>Retry</Text>
           </Pressable>
         </View>
-      ) : !hasItems ? (
-        <View style={s.card}>
+      ) : showEmptyState ? (
+        <View style={s.emptyCard}>
+          <View style={s.emptyIconWrap}>
+            <Ionicons name="grid-outline" size={28} color={GOLD} />
+          </View>
           <Text style={s.emptyTitle}>No ministries yet</Text>
-          <Text style={s.muted}>Create ministry hapa.</Text>
+          <Text style={s.emptyBody}>
+            Create your first ministry room for leaders, members, and media access.
+          </Text>
 
-          <Pressable
-            onPress={handleCreateMinistryPress}
-            style={({ pressed }) => [
-              s.createBtn,
-              createMinistryLocked && s.createBtnLocked,
-              pressed && { transform: [{ scale: 0.99 }] },
-            ]}
-          >
-            <Ionicons
-              name={createMinistryLocked ? "lock-closed" : "add"}
-              size={18}
-              color="#0B0F17"
-            />
-            <Text style={s.createBtnText}>
-              {createMinistryLocked ? "Create ministry (Premium)" : "Create ministry"}
-            </Text>
-          </Pressable>
+          {canCreateMinistry ? (
+            <Pressable
+              onPress={handleCreateMinistryPress}
+              style={({ pressed }) => [
+                s.createBtn,
+                createMinistryLocked && s.createBtnLocked,
+                pressed && { transform: [{ scale: 0.99 }] },
+              ]}
+            >
+              <Ionicons
+                name={createMinistryLocked ? "lock-closed" : "add"}
+                size={18}
+                color="#0B0F17"
+              />
+              <Text style={s.createBtnText}>
+                {createMinistryLocked ? "Create Ministry (Premium)" : "Create Ministry"}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: PAD, paddingBottom: 26 }}>
@@ -428,7 +462,17 @@ export default function MoreMinistriesList() {
 
 const s = StyleSheet.create<any>({
   createBtnText: { color: "#0B0F17", fontWeight: "950" },
-  createBtn: { marginTop: 12, height: 52, borderRadius: 18, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8, backgroundColor: "rgba(217,179,95,0.95)" },
+  createBtn: {
+    marginTop: 18,
+    minWidth: 220,
+    height: 52,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    backgroundColor: "rgba(217,179,95,0.95)",
+  },
   createBtnLocked: {
     backgroundColor: "rgba(217,179,95,0.78)",
     borderWidth: 1,
@@ -459,9 +503,37 @@ const s = StyleSheet.create<any>({
   muted: { color: "rgba(255,255,255,0.65)", fontWeight: "700" },
 
   card: { margin: PAD, borderRadius: 20, padding: 14, borderWidth: 1, borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.04)" },
+  emptyCard: {
+    margin: PAD,
+    marginTop: 24,
+    borderRadius: 24,
+    padding: 22,
+    borderWidth: 1.2,
+    borderColor: "rgba(217,179,95,0.22)",
+    backgroundColor: "rgba(255,255,255,0.035)",
+    alignItems: "center",
+  },
+  emptyIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.24)",
+    marginBottom: 14,
+  },
   errTitle: { color: "white", fontWeight: "900", fontSize: 16 },
   errText: { marginTop: 6, color: "rgba(255,255,255,0.70)", fontWeight: "700" },
-  emptyTitle: { color: "white", fontWeight: "900", fontSize: 16 },
+  emptyTitle: { color: "white", fontWeight: "900", fontSize: 18, textAlign: "center" },
+  emptyBody: {
+    marginTop: 8,
+    color: "rgba(255,255,255,0.62)",
+    fontWeight: "700",
+    lineHeight: 22,
+    textAlign: "center",
+  },
 
   btnGhost: { marginTop: 12, borderRadius: 16, paddingVertical: 12, alignItems: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)", backgroundColor: "rgba(255,255,255,0.03)" },
   btnGhostText: { color: "rgba(255,255,255,0.85)", fontWeight: "900" },
