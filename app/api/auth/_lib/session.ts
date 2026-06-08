@@ -235,18 +235,17 @@ export async function touchUser(userId: string) {
 
 export async function updateUserPersist(userId: string, patch: Partial<UserRecord>) {
   await ensureAuthStoreReady();
-  const updated = hasDurableStore()
+  return hasDurableStore()
     ? await dbUpdateUser(userId, patch)
     : await localUpdateUser(userId, patch);
+}
 
-  if (updated) {
-    const sess = sessStore();
-    for (const [sid, s] of Object.entries(sess)) {
-      if (s.userId === userId) delete sess[sid];
-    }
+/** Drop in-memory cookie sessions for a user (e.g. explicit logout-all). */
+export function invalidateUserSessions(userId: string) {
+  const sess = sessStore();
+  for (const [sid, s] of Object.entries(sess)) {
+    if (s.userId === userId) delete sess[sid];
   }
-
-  return updated;
 }
 
 export async function ensureUserKristoId(user: UserRecord) {
@@ -497,11 +496,14 @@ export async function readSession(req?: any) {
 }
 
 export async function touchSession(sessionId: string) {
+  if (sessionId.startsWith("header-session-")) return;
+
   const store = sessStore();
   const s = store[sessionId];
   if (!s) return;
+
   s.lastSeenAt = Date.now();
-  await touchUser(s.userId);
+  await updateUserPersist(s.userId, { lastSeenAt: Date.now() });
 }
 
 export function setSessionCookie<T>(res: NextResponse<T>, sessionId: string): NextResponse<T> {

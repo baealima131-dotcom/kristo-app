@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { saveWebSessionFromLoginResponse, webAuthFetch } from "@/lib/webSession";
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -48,7 +49,7 @@ export default function Page() {
     let on = true;
     (async () => {
       try {
-        const r = await fetch("/api/auth/me", { cache: "no-store" });
+        const r = await webAuthFetch("/api/auth/me", { cache: "no-store" });
         const d = await r.json().catch(() => ({}));
         if (on && r.ok && d?.ok) {
           router.replace(next);
@@ -92,6 +93,7 @@ export default function Page() {
 
       // Step2: password-only => ok true + cookie set
       if (d?.mode === "password") {
+        saveWebSessionFromLoginResponse(d);
         router.replace(next);
         return;
       }
@@ -166,6 +168,7 @@ export default function Page() {
         setErr(String(d?.error || "Code imekataa. Jaribu tena."));
         return;
       }
+      saveWebSessionFromLoginResponse(d);
       router.replace(next);
     } catch (e: any) {
       setErr(e?.message || "Imeshindikana. Jaribu tena.");

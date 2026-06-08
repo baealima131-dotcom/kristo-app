@@ -1,14 +1,16 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { clearWebSession, webAuthFetch } from "@/lib/webSession";
 
 export default function UserMenu() {
   const router = useRouter();
 
   async function onLogout() {
     try {
-      await fetch("/api/auth/sign-out", { method: "POST" });
+      await webAuthFetch("/api/auth/logout", { method: "POST" });
     } finally {
+      clearWebSession();
       router.replace("/sign-in");
     }
   }

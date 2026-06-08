@@ -107,8 +107,8 @@ export async function handleLogin(req: Request) {
 
     clearFailedLogin(rawIdentifier);
 
-    const sess = createSession(user.id);
     const kristoId = await ensureUserKristoId(user);
+    const sess = createSession(user.id);
 
     const sessionToken = issueSessionToken(user.id);
     console.log("KRISTO_SIGNIN_RESPONSE_TOKEN", {

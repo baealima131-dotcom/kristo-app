@@ -2,6 +2,7 @@
 import Link from "next/link";
 import type { ReactNode, CSSProperties } from "react";
 import { Suspense } from "react";
+import WebAuthFetchBootstrap from "./_components/WebAuthFetchBootstrap";
 import ChurchNav from "./_components/ChurchNav";
 import UserMenu from "./_components/UserMenu";
 import DashboardGate from "./_components/DashboardGate";
@@ -9,6 +10,7 @@ import DashboardGate from "./_components/DashboardGate";
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   return (
     <div style={wrap}>
+      <WebAuthFetchBootstrap />
       {/* Sidebar */}
       <aside style={sidebar}>
         <div style={topRow}>

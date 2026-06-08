@@ -76,8 +76,8 @@ export async function POST(req: Request) {
     const need = forceOtp ? "otp" : requiredAuthForUser(user);
 
     if (need === "password" || need === "none") {
-      const sess = createSession(user.id);
       await touchUser(user.id);
+      const sess = createSession(user.id);
       const sessionToken = issueSessionToken(user.id);
       console.log("KRISTO_SIGNIN_RESPONSE_TOKEN", {
         hasSessionToken: Boolean(String(sessionToken || "").trim()),
