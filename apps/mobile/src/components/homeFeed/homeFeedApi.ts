@@ -12,6 +12,10 @@ import {
   isMediaScheduleFeedItemClosed,
 } from "@/src/lib/mediaScheduleLock";
 import {
+  logHomeFeedScheduleExpired,
+  logHomeFeedScheduleRemoved,
+} from "@/src/lib/homeFeedScheduleLifecycle";
+import {
   peekHomeFeedRowsCacheSync,
   saveHomeFeedRowsCache,
   removeHomeFeedPostFromRowsCache,
@@ -114,6 +118,33 @@ export function homeFeedRowIncludedInBackendSnapshot(row: any, snapshotRowIds: S
   return false;
 }
 
+function resolveHomeFeedScheduleEndedAt(row: any): string | null {
+  const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+  let lastEndMs = 0;
+  for (const slot of slots) {
+    const endMs = Number(slot?.endMs || 0);
+    if (endMs > lastEndMs) lastEndMs = endMs;
+  }
+  return lastEndMs > 0 ? new Date(lastEndMs).toISOString() : null;
+}
+
+function logHomeFeedScheduleCacheRemoval(row: any, nowMs: number, source: string) {
+  if (!isHomeFeedMediaScheduleBackendRow(row)) return;
+  const scheduleId = String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || "").trim();
+  const churchId = String(row?.churchId || "").trim();
+  if (!scheduleId) return;
+
+  if (areAllScheduleSlotsExpired(row, nowMs)) {
+    logHomeFeedScheduleExpired({
+      scheduleId,
+      churchId,
+      reason: "all_slots_expired",
+      endedAt: resolveHomeFeedScheduleEndedAt(row),
+    });
+  }
+  logHomeFeedScheduleRemoved({ scheduleId, churchId, source });
+}
+
 function preserveActiveHomeFeedScheduleRows(existing: any[], incoming: any[], nowMs = Date.now()) {
   const incomingIds = new Set(incoming.map((row) => homeFeedRowKey(row)).filter(Boolean));
   const { merged } = stableMergeHomeFeedRows(existing, incoming);
@@ -144,6 +175,7 @@ function preserveActiveHomeFeedScheduleRows(existing: any[], incoming: any[], no
       }
     }
 
+    logHomeFeedScheduleCacheRemoval(row, nowMs, "cache_reconcile");
     logScheduleRowSlotsVisibility(row, "cache_reconcile", false, "pruned_not_in_snapshot");
     return false;
   });

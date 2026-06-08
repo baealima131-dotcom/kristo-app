@@ -25,6 +25,11 @@ import {
   markHiddenInvalidHomeFeedSchedule,
 } from "@/src/lib/homeFeedInvalidSchedules";
 import {
+  logHomeFeedScheduleExpired,
+  logHomeFeedScheduleRemoved,
+} from "@/src/lib/homeFeedScheduleLifecycle";
+import { areAllScheduleSlotsExpired } from "@/src/lib/mediaScheduleLock";
+import {
   logHomeFeedFirstRows,
   logHomeFeedPersonalOrder,
   logHomeFeedPersonalSeed,
@@ -1061,7 +1066,10 @@ function mergePostsWithStableScheduleRows(
   nowMs: number
 ) {
   const stableSchedules = sortHomeFeedScheduleSlotRows(
-    stableRows.filter(isHomeFeedExpandedOrScheduleSlotRow)
+    filterVisibleHomeFeedScheduleRows(
+      stableRows.filter(isHomeFeedExpandedOrScheduleSlotRow),
+      nowMs
+    )
   );
   if (!stableSchedules.length) {
     return buildHomeFeedPriorityLayout(liveRows, [], personalizedPosts, nowMs);
@@ -1115,16 +1123,65 @@ export function isHomeFeedScheduleSlotRowVisible(row: any, nowMs = Date.now()): 
   });
 }
 
+function resolveHomeFeedScheduleEndedAt(row: any): string | null {
+  const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+  let lastEndMs = 0;
+  for (const slot of slots) {
+    const endMs = parseSlotEndMs(slot) || 0;
+    if (endMs > lastEndMs) lastEndMs = endMs;
+  }
+  return lastEndMs > 0 ? new Date(lastEndMs).toISOString() : null;
+}
+
+function logHomeFeedScheduleRowExpired(row: any, nowMs: number, reason: string) {
+  const scheduleId = String(
+    row?.parentScheduleId || row?.sourceScheduleId || row?.id || ""
+  ).trim();
+  const churchId = homeFeedRowChurchId(row);
+  if (!scheduleId) return;
+
+  logHomeFeedScheduleExpired({
+    scheduleId,
+    churchId,
+    reason,
+    endedAt: resolveHomeFeedScheduleEndedAt(row),
+  });
+  logHomeFeedScheduleRemoved({
+    scheduleId,
+    churchId,
+    source: "display_builder",
+  });
+}
+
 export function filterVisibleHomeFeedScheduleRows(rows: any[], nowMs = Date.now()) {
-  const filtered = rows.filter((row) => isHomeFeedScheduleSlotRowVisible(row, nowMs));
-  const removedCount = rows.length - filtered.length;
-  if (removedCount > 0 && isKristoVerboseSlotTimeDebug()) {
+  const filtered: any[] = [];
+
+  for (const row of rows) {
+    if (!isHomeFeedScheduleCardRow(row)) {
+      filtered.push(row);
+      continue;
+    }
+
+    if (isHomeFeedScheduleSlotRowVisible(row, nowMs)) {
+      filtered.push(row);
+      continue;
+    }
+
+    logHomeFeedScheduleRowExpired(
+      row,
+      nowMs,
+      areAllScheduleSlotsExpired(row, nowMs) ? "all_slots_expired" : "no_visible_slots"
+    );
+  }
+
+  if (rows.length !== filtered.length && isKristoVerboseSlotTimeDebug()) {
     console.log("KRISTO_HOME_EXPIRED_SLOTS_FILTERED", {
-      removedCount,
+      removedCount: rows.length - filtered.length,
       keptCount: filtered.length,
       stage: "display_builder",
     });
   }
+
   return filtered;
 }
 
@@ -1369,25 +1426,37 @@ export function buildHomeFeedDisplayRows(
   });
 
   if (scheduleSlotCount === 0 && hadDeferredLocalSchedule && lastStableHomeFeedDisplayRows.length) {
-    display = mergePostsWithStableScheduleRows(
-      liveRows,
-      personalizedPosts,
-      lastStableHomeFeedDisplayRows,
+    const visibleStableSchedules = filterVisibleHomeFeedScheduleRows(
+      lastStableHomeFeedDisplayRows.filter(isHomeFeedExpandedOrScheduleSlotRow),
       nowMs
     );
-    if (isKristoVerboseFeedDebug()) {
-      console.log("KRISTO_HOME_FEED_SCHEDULE_STABLE_FALLBACK", {
-        keptScheduleCount: display.filter(isHomeFeedExpandedOrScheduleSlotRow).length,
-        postCount: personalizedPosts.length,
-      });
+    if (visibleStableSchedules.length) {
+      display = mergePostsWithStableScheduleRows(
+        liveRows,
+        personalizedPosts,
+        visibleStableSchedules,
+        nowMs
+      );
+      if (isKristoVerboseFeedDebug()) {
+        console.log("KRISTO_HOME_FEED_SCHEDULE_STABLE_FALLBACK", {
+          keptScheduleCount: display.filter(isHomeFeedExpandedOrScheduleSlotRow).length,
+          postCount: personalizedPosts.length,
+        });
+      }
     }
   }
 
   logHomeFeedPersonalOrder(display, personalCtx, feedRenderKey);
   logHomeFeedFirstRows(display, feedRenderKey);
 
-  if (display.length) {
-    lastStableHomeFeedDisplayRows = display;
+  const visibleScheduleRows = display.filter((row) => {
+    if (!isHomeFeedExpandedOrScheduleSlotRow(row)) return false;
+    return isHomeFeedScheduleSlotRowVisible(row, nowMs);
+  });
+  if (visibleScheduleRows.length) {
+    lastStableHomeFeedDisplayRows = visibleScheduleRows;
+  } else if (!hadDeferredLocalSchedule) {
+    lastStableHomeFeedDisplayRows = [];
   }
 
   lastHomeFeedBuildDigest = digest;

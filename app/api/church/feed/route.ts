@@ -38,6 +38,7 @@ import {
 } from "@/app/api/_lib/ministryAuthority";
 import {
   ACTIVE_MEDIA_SCHEDULE_ERROR,
+  areAllScheduleSlotsExpired,
   findActiveMediaScheduleForChurch,
   findAllActiveMediaSchedulesForChurch,
   isIncomingMediaScheduleCreate,
@@ -45,6 +46,11 @@ import {
   isMediaScheduleFeedItem,
   summarizeActiveMediaSchedule,
 } from "@/lib/mediaScheduleLock";
+import {
+  logHomeFeedScheduleCreated,
+  logHomeFeedScheduleExpired,
+  logHomeFeedScheduleRemoved,
+} from "@/lib/homeFeedScheduleLifecycle";
 import { getChurchMediaByChurchId } from "@/app/api/_lib/store/mediaDb";
 import {
   ChurchFeedItem,
@@ -1570,12 +1576,36 @@ function enrichMediaScheduleSlotTimes(slot: any) {
   const endMs = parseMediaScheduleSlotEndMs(slot, startMs);
   if (!(startMs > 0 && endMs > startMs)) return slot;
 
+  const formatLocalDate = (ms: number) => {
+    const d = new Date(ms);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+
+  const formatClock = (ms: number) => {
+    const d = new Date(ms);
+    let hour = d.getHours();
+    const minute = String(d.getMinutes()).padStart(2, "0");
+    const meridiem = hour >= 12 ? "PM" : "AM";
+    hour = hour % 12;
+    if (hour === 0) hour = 12;
+    return `${hour}:${minute} ${meridiem}`;
+  };
+
   return {
     ...slot,
     startMs,
     endMs,
     startsAt: String(slot?.startsAt || "").trim() || new Date(startMs).toISOString(),
     endsAt: String(slot?.endsAt || "").trim() || new Date(endMs).toISOString(),
+    meetingDate: String(slot?.meetingDate || slot?.meetingDay || "").trim() || formatLocalDate(startMs),
+    meetingEndDate: String(slot?.meetingEndDate || "").trim() || formatLocalDate(endMs),
+    startTime: String(slot?.startTime || slot?.time || "").trim() || formatClock(startMs),
+    endTime: String(slot?.endTime || "").trim() || formatClock(endMs),
+    durationMin: Math.max(1, Number(slot?.durationMin || slot?.durationMinutes || 1)),
+    durationMinutes: Math.max(1, Number(slot?.durationMin || slot?.durationMinutes || 1)),
   };
 }
 
@@ -1635,10 +1665,13 @@ function mediaScheduleFeedItemHasValidSlotTimes(item: any) {
 
 const hiddenInvalidScheduleIdsServer = new Set<string>();
 
-function filterHomeFeedRenderableRows(rows: any[]) {
+function filterHomeFeedRenderableRows(rows: any[], nowMs = Date.now()) {
   return rows.filter((item) => {
     if (!isMediaScheduleFeedItem(item)) return true;
     const enriched = enrichMediaScheduleFeedItemTimes(item);
+    const scheduleId = String(item?.id || item?.sourceScheduleId || "").trim();
+    const churchId = String(item?.churchId || "").trim();
+
     if (!mediaScheduleFeedItemHasValidSlotTimes(enriched)) {
       const id = String(item?.id || "").trim();
       if (id && !hiddenInvalidScheduleIdsServer.has(id)) {
@@ -1657,6 +1690,33 @@ function filterHomeFeedRenderableRows(rows: any[]) {
       );
       return false;
     }
+
+    if (areAllScheduleSlotsExpired(enriched, nowMs)) {
+      const slots = Array.isArray(enriched?.scheduleSlots) ? enriched.scheduleSlots : [];
+      const lastEndMs = slots.reduce((max: number, slot: any) => {
+        const endMs = parseMediaScheduleSlotEndMs(slot, parseMediaScheduleSlotStartMs(slot));
+        return endMs > max ? endMs : max;
+      }, 0);
+      logHomeFeedScheduleExpired({
+        scheduleId,
+        churchId,
+        reason: "all_slots_expired",
+        endedAt: lastEndMs > 0 ? new Date(lastEndMs).toISOString() : null,
+      });
+      logHomeFeedScheduleRemoved({
+        scheduleId,
+        churchId,
+        source: "api_filterHomeFeedRenderableRows",
+      });
+      logMediaScheduleSlotHomeFeedVisibility(
+        enriched,
+        "api_filterHomeFeedRenderableRows",
+        false,
+        "all_slots_expired"
+      );
+      return false;
+    }
+
     logMediaScheduleSlotHomeFeedVisibility(
       enriched,
       "api_filterHomeFeedRenderableRows",
@@ -4191,6 +4251,13 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
   if (isIncomingMediaScheduleCreate(body)) {
     bumpMediaScheduleSync(churchId, "create_media_schedule");
+    const scheduleId = String(item.sourceScheduleId || item.id || "").trim();
+    logHomeFeedScheduleCreated({
+      scheduleId,
+      churchId,
+      slotCount: Array.isArray(item.scheduleSlots) ? item.scheduleSlots.length : 0,
+      source: String(item.source || body?.source || "media-schedule"),
+    });
     console.log("[ScheduleFeed] persisted row", {
       churchId,
       sourceScheduleId: item.sourceScheduleId || item.id,

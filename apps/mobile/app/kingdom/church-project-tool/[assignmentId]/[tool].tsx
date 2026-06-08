@@ -14,14 +14,7 @@ import {
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { feedPublishMediaScheduleLocal } from "@/src/lib/homeFeedStore";
-import {
-  clearLocalSchedulePendingBackend,
-  markLocalSchedulePendingBackend,
-  removeLocalScheduleAfterBackendFail,
-  replaceLocalScheduleWithBackend,
-  scheduleBackendFailAlertMessage,
-} from "@/src/lib/mediaSchedulePendingSync";
+import { publishScheduleBatchToHomeFeed } from "@/src/lib/homeFeedSchedulePublish";
 import { apiGet, apiPatch, apiPost, apiDelete } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -45,7 +38,6 @@ import {
   buildPersistedMediaSlotTimeFields,
   findMediaScheduleWindowConflict,
   isMediaScheduleConflictCandidate,
-  logMediaSlotPayloadTime,
 } from "@/src/lib/mediaScheduleSlotTimes";
 import { buildMediaScheduleAuthorityFields } from "@/src/lib/liveMediaAuthority";
 import {
@@ -3738,17 +3730,6 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       const churchId = String(getSessionSync()?.churchId || "").trim();
       const apiHeaders = getKristoHeaders() as any;
 
-      if (churchId) {
-        const activeSchedule = await findActiveMediaScheduleForChurchFromSources(churchId, {
-          headers: apiHeaders,
-        });
-
-        if (activeSchedule) {
-          Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
-          return;
-        }
-      }
-
       const creatorUserId = String(getSessionSync()?.userId || "").trim();
       let scheduleAuthority = buildMediaScheduleAuthorityFields({
         churchPastorUserId: "",
@@ -3775,188 +3756,74 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         });
       } catch {}
 
-      const localScheduleId = `media-schedule-${Date.now()}`;
-
       console.log("KRISTO_SCHEDULE_CREATE_REQUEST", {
         screen: "church-project-tool.media-schedule",
         churchId,
-        localScheduleId,
         slotCount: items.length,
         source: "media-schedule",
         scheduleType: "media-live-slots",
-      });
-
-      const scheduleSlotsPayload = sequencedItems.map((item, index) => {
-        const persisted = logMediaSlotPayloadTime(item, index, "handleSendMeetingToSchedule.api");
-        return {
-          id: item.id,
-          name: item.name,
-          slotLabel: `Slot ${index + 1}`,
-          timeLabel: `${persisted.startTime} - ${persisted.endTime}`,
-          role: item.role,
-          task: item.task,
-          script: item.script,
-          chat: item.chat,
-          ...persisted,
-        };
       });
 
       logScheduleTopicTrace("create_payload", {
         scheduleTopic,
         liveCardType: String(meetingTitleChoice || "").trim(),
         itemTopic: scheduleTopic,
-        slotCount: scheduleSlotsPayload.length,
-        firstSlot: scheduleSlotsPayload[0]
+        slotCount: sequencedItems.length,
+        firstSlot: sequencedItems[0]
           ? {
-              name: scheduleSlotsPayload[0].name,
-              slotTopic: scheduleSlotsPayload[0].slotTopic,
-              script: scheduleSlotsPayload[0].script,
-              parentTopic: scheduleSlotsPayload[0].parentTopic,
-              scheduleTopic: scheduleSlotsPayload[0].scheduleTopic,
-              meetingTopic: scheduleSlotsPayload[0].meetingTopic,
-              task: scheduleSlotsPayload[0].task,
+              name: sequencedItems[0].name,
+              slotTopic: (sequencedItems[0] as any).slotTopic,
+              script: sequencedItems[0].script,
+              parentTopic: (sequencedItems[0] as any).parentTopic,
+              scheduleTopic: (sequencedItems[0] as any).scheduleTopic,
+              meetingTopic: (sequencedItems[0] as any).meetingTopic,
+              task: sequencedItems[0].task,
             }
           : null,
       });
 
-      const localSchedulePayload = {
-        id: localScheduleId,
+      const feedResult = await publishScheduleBatchToHomeFeed({
         churchId,
-        kind: "post",
-        title: "Media Live Cards",
-        topic: scheduleTopic,
+        scheduleSlots: sequencedItems,
         scheduleTopic,
-        meetingTopic: scheduleTopic,
-        meetingType: scheduleType,
-        liveCardType: scheduleType,
-        selectedCardType: scheduleType,
-        cardTypeLabel: scheduleType,
-        text:
-          `${scheduleTopic}\n\n` +
-          `${items.length} claimable slots • ${scheduleDay}\n` +
-          `Audience: ${scheduleTarget}\n` +
-          `Swipe inside this post to claim a slot.`,
-        body:
-          `${scheduleTopic}\n\n` +
-          `${items.length} claimable slots • ${scheduleDay}\n` +
-          `Audience: ${scheduleTarget}\n` +
-          `Swipe inside this post to claim a slot.`,
-        createdAt: new Date().toISOString(),
+        scheduleType,
+        scheduleDay,
+        scheduleTarget,
         source: "media-schedule",
-        scheduleType: "media-live-slots",
-        pendingBackendSync: true,
+        headers: apiHeaders,
+        ministryId: String((params as any)?.ministryId || (params as any)?.roomId || assignmentId || ""),
+        roomId: String((params as any)?.roomId || (params as any)?.sourceRoomId || assignmentId || ""),
+        scheduleAuthority,
         actorLabel: routeMediaName || assignmentTitle || "MEDIA",
         mediaName: routeMediaName || assignmentTitle || "MEDIA",
-        churchLabel: routeChurchName || assignmentTitle || "Media Schedule",
         churchName: routeChurchName || assignmentTitle || "Media Schedule",
-        ...scheduleAuthority,
-        actorAvatarUri: routeAvatar,
-        churchAvatarUri: routeAvatar,
+        churchLabel: routeChurchName || assignmentTitle || "Media Schedule",
         avatarUri: routeAvatar,
-        scheduleSlots: scheduleSlotsPayload,
+        title: "Media Live Cards",
         visibility: "public",
         audience: "global",
         isGlobalMediaSlot: true,
-      };
-
-      feedPublishMediaScheduleLocal(localSchedulePayload);
-      markLocalSchedulePendingBackend(localScheduleId, churchId);
-
-      let createRes: any = null;
-      try {
-        createRes = await apiPost(
-          "/api/church/feed",
-          {
-            type: "post",
-            title: "Media Live Cards",
-            text: localSchedulePayload.text,
-            topic: scheduleTopic,
-            scheduleTopic,
-            meetingTopic: scheduleTopic,
-            meetingType: scheduleType,
-            liveCardType: scheduleType,
-            selectedCardType: scheduleType,
-            cardTypeLabel: scheduleType,
-            source: "media-schedule",
-            scheduleType: "media-live-slots",
-            ministryId: String((params as any)?.ministryId || (params as any)?.roomId || assignmentId || ""),
-            roomId: String((params as any)?.roomId || (params as any)?.sourceRoomId || assignmentId || ""),
-            ...scheduleAuthority,
-            actorLabel: routeMediaName || assignmentTitle || "MEDIA",
-            mediaName: routeMediaName || assignmentTitle || "MEDIA",
-            churchLabel: routeChurchName || assignmentTitle || "Media Schedule",
-            churchName: routeChurchName || assignmentTitle || "Media Schedule",
-            visibility: "public",
-            audience: "global",
-            isGlobalMediaSlot: true,
-            actorAvatarUri: routeAvatar,
-            churchAvatarUri: routeAvatar,
-            avatarUri: routeAvatar,
-            scheduleSlots: scheduleSlotsPayload,
-          },
-          { headers: apiHeaders }
-        );
-      } catch (e: any) {
-        createRes = {
-          ok: false,
-          error: String(e?.message || e?.error || e),
-          status: Number(e?.status || e?.response?.status || 0) || null,
-        };
-      }
-
-      const backendFeedId = String(
-        createRes?.data?.id || createRes?.item?.id || createRes?.id || ""
-      ).trim();
+        screen: "church-project-tool.media-schedule",
+      });
 
       console.log("KRISTO_SCHEDULE_CREATE_SUCCESS", {
         screen: "church-project-tool.media-schedule",
-        ok: Boolean(createRes?.ok),
+        ok: feedResult.ok,
         churchId,
-        localScheduleId,
-        backendFeedId: backendFeedId || null,
-        scheduleId: String(
-          createRes?.data?.sourceScheduleId ||
-            createRes?.item?.sourceScheduleId ||
-            backendFeedId ||
-            ""
-        ),
-        slotCount: scheduleSlotsPayload.length,
-        error: createRes?.ok ? null : String(createRes?.error || createRes?.message || ""),
-        status: Number(createRes?.status || 0) || null,
+        localScheduleId: feedResult.localScheduleId || null,
+        backendFeedId: feedResult.backendFeedId || null,
+        slotCount: sequencedItems.length,
+        error: feedResult.ok ? null : String(feedResult.error || ""),
       });
 
-      if (!createRes?.ok) {
-        const failStatus = Number(createRes?.status || 0) || null;
-        const failError = String(createRes?.error || createRes?.message || "").trim();
-
-        removeLocalScheduleAfterBackendFail({
-          localScheduleId,
-          churchId,
-          status: failStatus,
-          error: failError,
-          screen: "church-project-tool.media-schedule",
-          gate: "tool-create-schedule.api",
-        });
-
-        if (failStatus === 409) {
-          Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
-        } else {
-          Alert.alert("Schedule not saved", scheduleBackendFailAlertMessage(failStatus || 0, failError));
-        }
+      if (!feedResult.ok) {
         return;
       }
 
-      const backendItem = createRes?.item || createRes?.data || createRes;
-      const normalizedBackendFeedId = replaceLocalScheduleWithBackend(backendItem, localScheduleId, {
-        churchId,
-        scheduleSlots: scheduleSlotsPayload,
-      });
-      clearLocalSchedulePendingBackend(localScheduleId);
-
       console.log("KRISTO_SCHEDULE_LOCAL_REPLACED_IMMEDIATE", {
-        localScheduleId,
-        backendFeedId: normalizedBackendFeedId || backendFeedId || null,
-        slotCount: scheduleSlotsPayload.length,
+        localScheduleId: feedResult.localScheduleId || null,
+        backendFeedId: feedResult.backendFeedId || null,
+        slotCount: sequencedItems.length,
       });
 
       if (churchId) {
@@ -3995,6 +3862,43 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           reason: "handleSendMeetingToSchedule",
           parentTopic: scheduleTopic,
         });
+
+        const feedSource =
+          sourceParam === "church-live-control"
+            ? "church-live-control"
+            : isMinistryLiveSchedule
+              ? "ministry-live"
+              : sourceParam || "ministry-live";
+
+        const homeFeedResult = await publishScheduleBatchToHomeFeed({
+          churchId,
+          scheduleSlots: newBatchSlots,
+          scheduleTopic,
+          scheduleType,
+          scheduleDay,
+          scheduleTarget,
+          source: feedSource,
+          headers: scheduleApiHeaders,
+          ministryId: routeMinistryId || assignmentId,
+          roomId: String(targetRoomId || assignmentId),
+          actorLabel: assignmentTitle,
+          mediaName: assignmentTitle,
+          churchName: routeChurchName || assignmentTitle,
+          churchLabel: routeChurchName || assignmentTitle,
+          avatarUri: routeAvatar,
+          title:
+            scheduleType === "Meeting" ? "Live Schedule" : `${scheduleType} Live Cards`,
+          screen: `church-project-tool.${feedSource}`,
+        });
+
+        if (homeFeedResult.ok) {
+          Alert.alert(
+            "Sent to Home Feed",
+            `${newBatchSlots.length} schedule slots were sent as claimable live cards.`
+          );
+          router.push("/" as any);
+          return;
+        }
       } finally {
         schedulePollPausedRef.current = false;
       }
