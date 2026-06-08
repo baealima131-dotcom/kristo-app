@@ -1,4 +1,5 @@
 // app/(app)/dashboard/layout.tsx
+import "@/lib/webSessionBootstrap";
 import Link from "next/link";
 import type { ReactNode, CSSProperties } from "react";
 import { Suspense } from "react";

@@ -1,8 +1,9 @@
 "use client";
 
+import "@/lib/webSessionBootstrap";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { inspectWebSessionStorage, webAuthFetch } from "@/lib/webSession";
+import { hasValidWebSession, inspectWebSessionStorage, webAuthFetch } from "@/lib/webSession";
 
 export default function DashboardGate() {
   const router = useRouter();
@@ -17,6 +18,23 @@ export default function DashboardGate() {
     (async () => {
       const storage = inspectWebSessionStorage();
       console.log("KRISTO_DASHBOARD_GATE_AUTH_RESULT", { phase: "start", path: pathname, storage });
+
+      if (!hasValidWebSession()) {
+        const next = encodeURIComponent(pathname + (sp.toString() ? `?${sp.toString()}` : ""));
+        console.log("KRISTO_WEB_SESSION_SAVE_FAILED", {
+          reason: "dashboard-gate-no-local-session",
+          path: pathname,
+          storage,
+        });
+        console.log("KRISTO_WEB_SESSION_REDIRECT", {
+          reason: "no-local-session",
+          path: pathname,
+          next,
+          storage,
+        });
+        router.replace(`/sign-in?next=${next}`);
+        return;
+      }
 
       try {
         const isProfilePage = pathname === "/dashboard/profile";

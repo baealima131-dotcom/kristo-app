@@ -1,9 +1,15 @@
 "use client";
 
+import "@/lib/webSessionBootstrap";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { saveWebSessionFromLoginResponse, webAuthFetch } from "@/lib/webSession";
+import {
+  hasValidWebSession,
+  inspectWebSessionStorage,
+  persistWebSessionFromLogin,
+  webAuthFetch,
+} from "@/lib/webSession";
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -44,10 +50,20 @@ export default function Page() {
     return () => clearInterval(t);
   }, [cooldown]);
 
-  // ✅ Auto: <=12h only. If >12h, API returns 401 and we show sign-in.
+  // Only auto-redirect when localStorage already has a valid header token session.
+  // Cookie-only sessions are ignored — they fail on Vercel after instance rotation.
   useEffect(() => {
     let on = true;
     (async () => {
+      if (!hasValidWebSession()) {
+        console.log("KRISTO_WEB_SESSION_LOAD", {
+          found: false,
+          reason: "sign-in-auto-check-skipped-no-local-session",
+        });
+        if (on) setChecking(false);
+        return;
+      }
+
       try {
         const r = await webAuthFetch("/api/auth/me", { cache: "no-store" });
         const d = await r.json().catch(() => ({}));
@@ -93,7 +109,15 @@ export default function Page() {
 
       // Step2: password-only => ok true + cookie set
       if (d?.mode === "password") {
-        saveWebSessionFromLoginResponse(d);
+        const saved = persistWebSessionFromLogin(d);
+        if (!saved) {
+          setErr("Could not save web session. Check console for KRISTO_WEB_SESSION_SAVE_FAILED.");
+          return;
+        }
+        console.log("KRISTO_WEB_SESSION_SAVE", {
+          phase: "pre-redirect",
+          storage: inspectWebSessionStorage(),
+        });
         router.replace(next);
         return;
       }
@@ -168,7 +192,15 @@ export default function Page() {
         setErr(String(d?.error || "Code imekataa. Jaribu tena."));
         return;
       }
-      saveWebSessionFromLoginResponse(d);
+      const saved = persistWebSessionFromLogin(d);
+      if (!saved) {
+        setErr("Could not save web session. Check console for KRISTO_WEB_SESSION_SAVE_FAILED.");
+        return;
+      }
+      console.log("KRISTO_WEB_SESSION_SAVE", {
+        phase: "pre-redirect",
+        storage: inspectWebSessionStorage(),
+      });
       router.replace(next);
     } catch (e: any) {
       setErr(e?.message || "Imeshindikana. Jaribu tena.");
