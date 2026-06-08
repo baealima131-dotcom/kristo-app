@@ -66,6 +66,10 @@ const CHURCH_OVERVIEW_SCREEN = "ChurchOverview";
 import { ChurchPremiumSubscriptionModal, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+import {
+  isMinistryMediaAccessLimitReachedError,
+  MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE,
+} from "@/src/lib/ministryMediaAccessLimit";
 
 const VIP_BG = "#05070D";
 const VIP_BG_MID = "#0A101C";
@@ -1059,7 +1063,7 @@ export default function ChurchOverviewScreen() {
 
     setMediaTargetsLoading(true);
     try {
-      await Promise.all(
+      const results = await Promise.all(
         mediaTargets.map((m) =>
           apiPatch<any>(
             `/api/church/ministries?id=${encodeURIComponent(m.id)}`,
@@ -1068,6 +1072,14 @@ export default function ChurchOverviewScreen() {
           )
         )
       );
+
+      const limitError = results.find((r) => isMinistryMediaAccessLimitReachedError(r));
+      if (limitError) {
+        setSaveBanner(MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE);
+        setTimeout(() => setSaveBanner(""), 3200);
+        await openPastorMediaPicker(mediaPickerMode);
+        return;
+      }
 
       setMediaTargets((prev) =>
         prev

@@ -13,6 +13,13 @@ import {
   requireChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
 import { getUserJoinedMinistries, logMinistryScope, resolveMinistryViewerUserId } from "@/app/api/_lib/ministryMembership";
+import {
+  MINISTRY_MEDIA_ACCESS_LIMIT,
+  MINISTRY_MEDIA_ACCESS_LIMIT_CODE,
+  countChurchMinistriesWithMediaAccess,
+  logMinistryMediaAccessLimit,
+  ministryMediaAccessLimitPayload,
+} from "@/lib/ministryMediaAccessLimit";
 
 /* =========================
    TYPES
@@ -330,6 +337,18 @@ export async function POST(req: NextRequest) {
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
+        if (mediaAccess) {
+          const currentMediaAccessCount = countChurchMinistriesWithMediaAccess(list, churchId);
+          if (currentMediaAccessCount >= MINISTRY_MEDIA_ACCESS_LIMIT) {
+            logMinistryMediaAccessLimit({
+              churchId,
+              userId: viewerUserId,
+              currentMediaAccessCount,
+              action: "create_ministry",
+            });
+            throw new Error(MINISTRY_MEDIA_ACCESS_LIMIT_CODE);
+          }
+        }
         list.unshift(created);
         return list;
       },
@@ -391,6 +410,10 @@ export async function POST(req: NextRequest) {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error || "ministry_save_failed");
 
+    if (message === MINISTRY_MEDIA_ACCESS_LIMIT_CODE) {
+      return json(ministryMediaAccessLimitPayload(), { status: 403 });
+    }
+
     console.log("KRISTO_MINISTRY_SAVE_ERROR", {
       churchId,
       userId: viewer.userId,
@@ -424,6 +447,7 @@ export async function PATCH(req: NextRequest) {
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
+  const viewerUserId = String(viewer?.userId || viewer?.id || "").trim();
 
   const url = new URL(req.url);
   const mid = String(url.searchParams.get("id") || "").trim();
@@ -467,6 +491,21 @@ export async function PATCH(req: NextRequest) {
         const nextMediaAccess =
           body.mediaAccess !== undefined ? body.mediaAccess === true : !!(cur as any).mediaAccess;
 
+        const curHadMediaAccess = !!(cur as any).mediaAccess;
+        const enablingMediaAccess = nextMediaAccess && !curHadMediaAccess;
+        if (enablingMediaAccess) {
+          const currentMediaAccessCount = countChurchMinistriesWithMediaAccess(list, churchId, mid);
+          if (currentMediaAccessCount >= MINISTRY_MEDIA_ACCESS_LIMIT) {
+            logMinistryMediaAccessLimit({
+              churchId,
+              userId: viewerUserId,
+              currentMediaAccessCount,
+              action: "update_ministry_enable_media_access",
+            });
+            throw new Error(MINISTRY_MEDIA_ACCESS_LIMIT_CODE);
+          }
+        }
+
         const nextAvatarUri =
           body.avatarUri !== undefined ? parseAvatarUri(body.avatarUri) : cur.avatarUri;
 
@@ -490,6 +529,9 @@ export async function PATCH(req: NextRequest) {
     );
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Update failed";
+    if (msg === MINISTRY_MEDIA_ACCESS_LIMIT_CODE) {
+      return json(ministryMediaAccessLimitPayload(), { status: 403 });
+    }
     if (msg === "Ministry name is required" || msg === "Invalid status") {
       return json({ ok: false, error: msg } satisfies ApiErr, { status: 400 });
     }

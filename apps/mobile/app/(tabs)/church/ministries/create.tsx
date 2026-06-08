@@ -22,6 +22,12 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+import {
+  countMinistriesWithMediaAccess,
+  isMinistryMediaAccessLimitReachedError,
+  MINISTRY_MEDIA_ACCESS_LIMIT,
+  MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE,
+} from "@/src/lib/ministryMediaAccessLimit";
 import { vipAvatarBg, vipInitials } from "@/src/ui/vipUtil";
 
 type MinistryStatus = "Active" | "Paused";
@@ -218,7 +224,14 @@ function BuilderGoldSweep() {
 async function apiCreateMinistry(body: { name: string; description?: string; status?: MinistryStatus; mediaAccess?: boolean }) {
   const res = await apiPost<any>("/api/church/ministries", body, { headers: getKristoHeaders() });
   if (!res) throw new Error("Network error");
-  if (!res.ok) throw new Error(extractApiErrorMessage(res, "Create failed"));
+  if (!res.ok) {
+    if (isMinistryMediaAccessLimitReachedError(res)) {
+      const err = new Error(MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE) as Error & { code?: string };
+      err.code = res.code;
+      throw err;
+    }
+    throw new Error(extractApiErrorMessage(res, "Create failed"));
+  }
   return res.data as Ministry;
 }
 
@@ -233,9 +246,12 @@ export default function ChurchMinistryCreateScreen() {
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<MinistryStatus>("Active");
   const [mediaAccess, setMediaAccess] = useState(false);
+  const [mediaAccessCount, setMediaAccessCount] = useState(0);
 
   // TEMP premium gate for ministry media access
   const hasSubscription = isSubscriptionBypassEnabled();
+  const mediaAccessLimitReached = mediaAccessCount >= MINISTRY_MEDIA_ACCESS_LIMIT;
+  const mediaAccessToggleDisabled = !hasSubscription || mediaAccessLimitReached;
 
   const [members, setMembers] = useState<PickerMember[]>([]);
   const [pastorHints, setPastorHints] = useState<{ pastorUserId?: string; currentPastorId?: string }>({});
@@ -297,15 +313,21 @@ export default function ChurchMinistryCreateScreen() {
     }
   }, [autoPastorUserId]);
 
-  // Load church members for pickers
+  // Load church members for pickers and media access count
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const res = await apiGet<any>("/api/church/members?all=1", { headers: getKristoHeaders() });
+        const [membersRes, ministriesRes] = await Promise.all([
+          apiGet<any>("/api/church/members?all=1", { headers: getKristoHeaders() }),
+          apiGet<any>("/api/church/ministries", { headers: getKristoHeaders() }),
+        ]);
         if (!alive) return;
-        if (res?.ok && Array.isArray(res.data)) {
-          const list: PickerMember[] = res.data
+        if (ministriesRes?.ok && Array.isArray(ministriesRes.data)) {
+          setMediaAccessCount(countMinistriesWithMediaAccess(ministriesRes.data));
+        }
+        if (membersRes?.ok && Array.isArray(membersRes.data)) {
+          const list: PickerMember[] = membersRes.data
             .map((m: any) => ({
               userId: m.userId || m.id || m.memberId,
               name: m.name || m.fullName || m.displayName || m.email,
@@ -330,8 +352,8 @@ export default function ChurchMinistryCreateScreen() {
             .filter((x: PickerMember) => Boolean(x.userId));
           logPickerMemberDisplay(list);
           setPastorHints({
-            pastorUserId: String(res?.pastorUserId || res?.data?.pastorUserId || "").trim() || undefined,
-            currentPastorId: String(res?.currentPastorId || res?.data?.currentPastorId || "").trim() || undefined,
+            pastorUserId: String(membersRes?.pastorUserId || membersRes?.data?.pastorUserId || "").trim() || undefined,
+            currentPastorId: String(membersRes?.currentPastorId || membersRes?.data?.currentPastorId || "").trim() || undefined,
           });
           setMembers(list);
         }
@@ -401,7 +423,11 @@ export default function ChurchMinistryCreateScreen() {
         setErr(`Ministry created, but ${failed.length} member assignment(s) failed.`);
       }
     } catch (e: any) {
-      setErr(extractApiErrorMessage(e, "Could not create ministry. Please try again."));
+      if (isMinistryMediaAccessLimitReachedError(e)) {
+        setErr(MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE);
+      } else {
+        setErr(extractApiErrorMessage(e, "Could not create ministry. Please try again."));
+      }
     } finally {
       setSaving(false);
     }
@@ -673,6 +699,7 @@ export default function ChurchMinistryCreateScreen() {
                   </View>
 
                   <Pressable
+                    disabled={mediaAccessToggleDisabled}
                     onPress={() => {
                       if (!hasSubscription) {
                         Alert.alert(
@@ -681,12 +708,14 @@ export default function ChurchMinistryCreateScreen() {
                         );
                         return;
                       }
+                      if (mediaAccessLimitReached) return;
                       setMediaAccess((v) => !v);
                     }}
                     style={({ pressed }) => [
                       s.mediaAccessCard,
                       mediaAccess && s.mediaAccessCardOn,
-                      pressed && { opacity: 0.94 },
+                      mediaAccessToggleDisabled && s.mediaAccessCardDisabled,
+                      pressed && !mediaAccessToggleDisabled && { opacity: 0.94 },
                     ]}
                   >
                     {mediaAccess ? <View pointerEvents="none" style={s.mediaAccessGlow} /> : null}
@@ -722,6 +751,9 @@ export default function ChurchMinistryCreateScreen() {
                       </View>
                     </View>
                   </Pressable>
+                  {hasSubscription && mediaAccessLimitReached ? (
+                    <Text style={s.mediaAccessLimitHint}>{MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE}</Text>
+                  ) : null}
 
                   <View style={s.pickRow}>
                     <LuxuryPressable onPress={() => setPicker("leaders")} style={s.pickBtn}>
@@ -1078,6 +1110,16 @@ const s = StyleSheet.create<any>({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 3 },
     elevation: 4,
+  },
+  mediaAccessCardDisabled: {
+    opacity: 0.55,
+  },
+  mediaAccessLimitHint: {
+    marginTop: 6,
+    marginHorizontal: 4,
+    fontSize: 12,
+    color: "rgba(217,179,95,0.72)",
+    fontWeight: "600",
   },
   mediaAccessGlow: {
     position: "absolute",
