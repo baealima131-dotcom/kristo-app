@@ -10,7 +10,6 @@ import {
   Animated,
   Easing,
   Image,
-  Alert,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -23,6 +22,7 @@ import { resolveSessionChurchId } from "@/src/lib/churchStore";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
+import { isPastorSessionRole } from "@/src/lib/churchSubscription";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
@@ -297,10 +297,33 @@ export default function MoreScreen() {
     resolveSessionChurchId(session?.churchId || (session as any)?.activeChurchId || "")
   );
 
+  const isPastor = React.useMemo(
+    () =>
+      isPastorSessionRole(session?.role) ||
+      isPastorSessionRole((session as any)?.churchRole),
+    [session]
+  );
+
+  const [canAccessChurchMedia, setCanAccessChurchMedia] = React.useState<boolean | null>(null);
+
+  const canShowMediaCard = React.useMemo(() => {
+    if (!hasChurch) return false;
+    if (canAccessChurchMedia === true) return true;
+    // Keep Media visible for pastors while trusted-host access is loading.
+    if (canAccessChurchMedia === null && isPastor) return true;
+    return false;
+  }, [hasChurch, canAccessChurchMedia, isPastor]);
+
   const visibleItems = React.useMemo(() => {
-    if (hasChurch) return ITEMS;
-    return buildNoChurchOnboardingItems();
-  }, [hasChurch]);
+    let base = hasChurch ? ITEMS : buildNoChurchOnboardingItems();
+    if (!isPastor) {
+      base = base.filter((item) => item.key !== "payments");
+    }
+    if (!canShowMediaCard) {
+      base = base.filter((item) => item.key !== "media");
+    }
+    return base;
+  }, [hasChurch, isPastor, canShowMediaCard]);
 
   const { left: leftItems, right: rightItems } = React.useMemo(
     () => splitColumns(visibleItems),
@@ -313,7 +336,6 @@ export default function MoreScreen() {
   const [v2ModalText, setV2ModalText] = React.useState("");
   const v2CardAnim = React.useRef(new Animated.Value(0)).current;
   const mediaOpenRef = React.useRef(false);
-  const [canAccessChurchMedia, setCanAccessChurchMedia] = React.useState<boolean | null>(null);
 
   const refreshMediaAccess = React.useCallback(async () => {
     const churchId = resolveSessionChurchId(
@@ -336,6 +358,8 @@ export default function MoreScreen() {
       });
       const access = evaluateChurchMediaAccessClient({
         userId,
+        role: session?.role,
+        churchRole: (session as any)?.churchRole,
         actualPastorUserId: res?.actualPastorUserId,
         mediaHostUserIds: res?.mediaHostUserIds,
         isActualChurchPastor: res?.isActualChurchPastor,
@@ -345,9 +369,14 @@ export default function MoreScreen() {
       });
       setCanAccessChurchMedia(access.canAccessChurchMedia);
     } catch {
-      setCanAccessChurchMedia(false);
+      const fallback = evaluateChurchMediaAccessClient({
+        userId,
+        role: session?.role,
+        churchRole: (session as any)?.churchRole,
+      });
+      setCanAccessChurchMedia(fallback.canAccessChurchMedia);
     }
-  }, [session?.churchId, session?.role, session?.userId]);
+  }, [session]);
 
   const openMediaScreen = React.useCallback(() => {
     if (mediaOpenRef.current) return;
@@ -412,14 +441,8 @@ export default function MoreScreen() {
   const renderCard = (item: Item) => {
     const isTlmc = item.key === "tlmc";
     const isChurchGate = !hasChurch && item.key === "church";
-    const isMediaLocked =
-      item.key === "media" && hasChurch && canAccessChurchMedia === false;
-    const itemTitle = isMediaLocked ? "Media" : item.title;
-    const itemSub = isMediaLocked
-      ? "Pastor access required"
-      : item.key === "media" && hasChurch && canAccessChurchMedia
-        ? "Studio • live • videos • global feed"
-        : item.sub;
+    const itemTitle = item.title;
+    const itemSub = item.sub;
 
     const wrapTone =
       item.key === "ministries"
@@ -743,13 +766,6 @@ export default function MoreScreen() {
           }
 
           if (item.key === "media") {
-            if (isMediaLocked) {
-              Alert.alert(
-                "Pastor access required",
-                "Only the church Pastor and trusted media hosts can open Media Studio."
-              );
-              return;
-            }
             openMediaScreen();
             return;
           }
@@ -764,7 +780,6 @@ export default function MoreScreen() {
           isTlmc ? s.tileTlmcWrap : null,
           { shadowColor: surface.shadowColor },
           pressed ? { transform: [{ scale: 0.974 }], opacity: 0.95 } : null,
-          isMediaLocked ? { opacity: 0.82 } : null,
         ]}
       >
         <LinearGradient
@@ -889,16 +904,11 @@ export default function MoreScreen() {
                 <Text style={[s.ctaText, hintTone, isTlmc ? s.tapHintTlmc : null]}>
                   {isChurchGate
                     ? "Get Started"
-                    : isMediaLocked
-                      ? "Locked"
-                      : item.title === "Giving"
-                        ? "Give"
-                        : "Open"}
+                    : item.title === "Giving"
+                      ? "Give"
+                      : "Open"}
                 </Text>
               </View>
-              {isMediaLocked ? (
-                <Ionicons name="lock-closed-outline" size={14} color="rgba(217,179,95,0.9)" />
-              ) : null}
             </View>
           </View>
         </View>
