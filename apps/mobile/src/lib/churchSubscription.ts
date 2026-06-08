@@ -8,10 +8,13 @@ import {
   shouldSuppressPremiumPrompts,
 } from "./subscriptionBypass";
 
+export const CHURCH_SUBSCRIPTION_REQUIRED_CODE = "CHURCH_SUBSCRIPTION_REQUIRED";
 export const CHURCH_SUBSCRIPTION_REQUIRED_TITLE = "Subscription required";
 export const CHURCH_SUBSCRIPTION_PREMIUM_TITLE = "Premium subscription required";
 export const CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE =
   "Subscription required to schedule Live, Media, or Ministry activity.";
+export const CHURCH_SUBSCRIPTION_MEMBER_MESSAGE =
+  "This church needs an active subscription before live scheduling is available.";
 export const CHURCH_SUBSCRIPTION_MINISTRY_MESSAGE =
   "Subscription required to create ministries or schedule Live, Media, or Ministry activity.";
 
@@ -20,6 +23,10 @@ export type ChurchSubscriptionRecord = {
   subscriptionPlan?: string;
   subscriptionUpdatedAt?: number;
   subscriptionStatus?: string;
+  premiumTrialUsedAt?: number;
+  subscriptionSource?: "app_store" | "stripe";
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
 };
 export const CHURCH_SUBSCRIPTION_REQUIRED_MESSAGE = CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE;
 
@@ -193,6 +200,7 @@ export function alertChurchSubscriptionRequired(opts?: {
   isApprovedMediaHost?: boolean;
   screen?: string;
   gate?: string;
+  onUpgrade?: () => void;
 }) {
   const isPastor = resolveScheduleGateIsPastor(opts);
   const isApprovedMediaHost = opts?.isApprovedMediaHost === true;
@@ -225,7 +233,22 @@ export function alertChurchSubscriptionRequired(opts?: {
     allowed: false,
   });
 
-  Alert.alert("Subscription required", CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE);
+  if (isPastor) {
+    Alert.alert(
+      CHURCH_SUBSCRIPTION_PREMIUM_TITLE,
+      CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE,
+      [
+        { text: "Not now", style: "cancel" },
+        {
+          text: "Upgrade",
+          onPress: () => opts?.onUpgrade?.(),
+        },
+      ]
+    );
+    return;
+  }
+
+  Alert.alert(CHURCH_SUBSCRIPTION_REQUIRED_TITLE, CHURCH_SUBSCRIPTION_MEMBER_MESSAGE);
 }
 
 export async function fetchChurchSubscriptionActive(
@@ -261,6 +284,40 @@ export async function fetchChurchSubscriptionActive(
   }
 }
 
+export async function fetchChurchMediaTrialDebug(
+  headers?: Record<string, string>
+): Promise<{ response: any | null; error: string | null }> {
+  try {
+    const res: any = await apiGet("/api/church/media", {
+      headers,
+      cache: "no-store",
+    });
+    return { response: res, error: null };
+  } catch (error: any) {
+    return {
+      response: null,
+      error: String(error?.message || error || "fetch-church-media-failed"),
+    };
+  }
+}
+
+export async function fetchChurchMonthlyTrialEligibility(
+  headers?: Record<string, string>
+): Promise<{
+  eligible: boolean;
+  premiumTrialUsedAt?: number | null;
+} | null> {
+  const debug = await fetchChurchMediaTrialDebug(headers);
+  if (!debug.response || typeof debug.response?.monthlyTrialEligible !== "boolean") {
+    return null;
+  }
+
+  return {
+    eligible: Boolean(debug.response.monthlyTrialEligible),
+    premiumTrialUsedAt: debug.response?.media?.premiumTrialUsedAt ?? null,
+  };
+}
+
 export async function activateChurchSubscriptionForPastor(
   churchId: string,
   subscriptionPlan: "monthly" | "yearly",
@@ -288,7 +345,13 @@ export async function activateChurchSubscriptionForPastor(
 export async function requireActiveChurchSubscriptionForSchedule(
   churchId: string,
   headers?: Record<string, string>,
-  opts?: { isPastor?: boolean; isApprovedMediaHost?: boolean; screen?: string; gate?: string }
+  opts?: {
+    isPastor?: boolean;
+    isApprovedMediaHost?: boolean;
+    screen?: string;
+    gate?: string;
+    onUpgrade?: () => void;
+  }
 ) {
   const screen = String(opts?.screen || "requireActiveChurchSubscriptionForSchedule");
   const gate = String(opts?.gate || "requireActiveChurchSubscriptionForSchedule");
@@ -344,7 +407,7 @@ export async function requireActiveChurchSubscriptionForSchedule(
       hasSubscription: false,
       allowed: false,
     });
-    alertChurchSubscriptionRequired({ isPastor, isApprovedMediaHost, screen, gate });
+    alertChurchSubscriptionRequired({ isPastor, isApprovedMediaHost, screen, gate, onUpgrade: opts?.onUpgrade });
   }
 
   return active;
@@ -372,7 +435,9 @@ export function isChurchSubscriptionRequiredError(
 
   const error = String(res?.error || res?.message || "").trim();
   const status = Number(res?.status || 0);
+  const code = String(res?.code || "").trim();
   const blocked =
+    code === CHURCH_SUBSCRIPTION_REQUIRED_CODE ||
     error === "Subscription required" ||
     (status === 403 && error.includes("Subscription")) ||
     status === 402 ||

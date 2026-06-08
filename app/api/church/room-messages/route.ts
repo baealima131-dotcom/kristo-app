@@ -2,8 +2,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import {
-  churchSubscriptionRequiredResponse,
-  isChurchSubscriptionActive,
+  requireChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
@@ -379,11 +378,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Empty message" }, { status: 400 });
   }
 
-  if (kind === "assignment_card" && card) {
-    const subscriptionActive = await isChurchSubscriptionActive(churchId);
-    if (!subscriptionActive) {
-      return churchSubscriptionRequiredResponse();
-    }
+  const isScheduleOrClaimSlotCreate =
+    (kind === "assignment_card" && card) ||
+    optionalFields.schedule !== undefined ||
+    optionalFields.slot !== undefined;
+
+  if (isScheduleOrClaimSlotCreate) {
+    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
+      endpoint: "/api/church/room-messages",
+      churchId,
+      userId,
+      role: String(body?.role || req.headers.get("x-kristo-role") || ""),
+      action:
+        kind === "assignment_card"
+          ? "assignment_card"
+          : optionalFields.slot !== undefined
+            ? "claim_slot"
+            : "schedule_create",
+    });
+    if (subscriptionBlocked) return subscriptionBlocked;
   }
 
   let store: Record<string, RoomMessage[]>;

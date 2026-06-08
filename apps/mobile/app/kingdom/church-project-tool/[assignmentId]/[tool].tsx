@@ -2746,6 +2746,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
             ...toolMediaSubscriptionGateOpts(),
             screen: "church-project-tool.media-schedule",
             gate: "publishScheduleSlotOnce.api",
+            onUpgrade: () => router.push("/more/payments/subscriptions" as any),
           });
         }
         return false;

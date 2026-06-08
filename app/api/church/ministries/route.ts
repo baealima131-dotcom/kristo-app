@@ -10,8 +10,7 @@ import {
 import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
 import {
-  churchSubscriptionRequiredResponse,
-  isChurchSubscriptionActive,
+  requireChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
 import { getUserJoinedMinistries, logMinistryScope, resolveMinistryViewerUserId } from "@/app/api/_lib/ministryMembership";
 
@@ -279,10 +278,17 @@ export async function POST(req: NextRequest) {
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
+  const viewerUserId = String(viewer?.userId || viewer?.id || "").trim();
+  const viewerRole = String(viewer?.role || "").trim();
 
-  if (!(await isChurchSubscriptionActive(churchId))) {
-    return churchSubscriptionRequiredResponse();
-  }
+  const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
+    endpoint: "/api/church/ministries",
+    churchId,
+    userId: viewerUserId,
+    role: viewerRole,
+    action: "create_ministry",
+  });
+  if (subscriptionBlocked) return subscriptionBlocked;
 
   const body = await asBody(req);
   if (!body) return json({ ok: false, error: "Invalid JSON body" } satisfies ApiErr, { status: 400 });

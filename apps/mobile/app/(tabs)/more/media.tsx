@@ -2231,6 +2231,7 @@ export default function MediaStudioScreen() {
             gate: "media.schedule-create.api",
             isPastor: isActualChurchPastor,
             isApprovedMediaHost,
+            onUpgrade: () => mediaRouterPush("/more/payments/subscriptions", "subscription-required"),
           });
           return;
         }

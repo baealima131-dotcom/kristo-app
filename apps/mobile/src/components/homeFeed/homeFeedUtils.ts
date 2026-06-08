@@ -1267,6 +1267,31 @@ function homeFeedBuildDigest(
   return `${personalSeedKey}::${summarize(backendRows)}::${summarize(localRows)}::${scheduleTick}`;
 }
 
+export function filterSameChurchHomeFeedScheduleRows(
+  rows: any[],
+  viewerChurchId: string
+): any[] {
+  const viewerCid = String(viewerChurchId || "").trim();
+  if (!viewerCid) return rows;
+
+  return rows.filter((row) => {
+    if (!isHomeFeedScheduleCardRow(row) && !isHomeFeedExpandedScheduleSlotRow(row)) {
+      return true;
+    }
+
+    const rowCid = homeFeedRowChurchId(row);
+    if (!rowCid || rowCid === viewerCid) return true;
+
+    console.log("KRISTO_HOME_FEED_CROSS_CHURCH_SLOT_HIDDEN", {
+      viewerChurchId: viewerCid,
+      scheduleChurchId: rowCid,
+      scheduleId: String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || ""),
+      reason: "cross_church_claim_slot_v1",
+    });
+    return false;
+  });
+}
+
 /** Merged Home Feed list: video/posts first, then active schedule slot cards. */
 export function buildHomeFeedDisplayRows(
   backendRows: any[],
@@ -1313,7 +1338,10 @@ export function buildHomeFeedDisplayRows(
     (a, b) => homeFeedPostSortMs(b) - homeFeedPostSortMs(a)
   );
   const viewerChurchId = String((getSessionSync() as any)?.churchId || "").trim();
-  const orderedScheduleRows = sortHomeFeedScheduleSlotRows(expandedScheduleRows);
+  const orderedScheduleRows = filterSameChurchHomeFeedScheduleRows(
+    sortHomeFeedScheduleSlotRows(expandedScheduleRows),
+    viewerChurchId
+  );
   const liveRows = sortHomeFeedLivePriorityRows(
     sortedPostRows.filter((row) => isHomeFeedLivestreamRow(row))
   );

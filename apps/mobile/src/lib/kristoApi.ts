@@ -5,7 +5,7 @@ import {
   type TrafficOptions,
 } from "@/src/lib/kristoTraffic";
 import { resolveApiBase } from "@/src/lib/kristoEnv";
-import { getKristoHeaders, logKristoAuthHeadersDiag } from "@/src/lib/kristoHeaders";
+import { describeKristoSessionToken, getKristoHeaders, logKristoAuthHeadersDiag } from "@/src/lib/kristoHeaders";
 
 type Json = any;
 
@@ -14,6 +14,7 @@ export type { TrafficOptions };
 export type ApiErrorResult = {
   ok: false;
   error: string;
+  code?: string;
   reason?: string;
   status?: number;
   debug?: unknown;
@@ -64,9 +65,11 @@ function httpError(path: string, res: Response, body: any): ApiErrorResult {
       body,
     });
   }
+  const code = String(body?.code || "").trim() || undefined;
   return {
     ok: false,
     error,
+    code,
     reason: String(body?.reason || "http_error"),
     status: res.status,
     debug: body?.details ?? body?.debug,
@@ -84,17 +87,19 @@ function mergeHeaders(h?: HeadersRec) {
 /** Merge signed session token + identity headers into every authenticated request. */
 function withAuthHeaders(init: RequestInit | undefined, path: string): RequestInit {
   const caller = mergeHeaders(init?.headers as any);
-  const auth = getKristoHeaders({
+  const authInput = {
     userId: String(caller["x-kristo-user-id"] || "").trim() || undefined,
     role: (String(caller["x-kristo-role"] || "").trim() || undefined) as any,
     churchId: String(caller["x-kristo-church-id"] || "").trim() || undefined,
     sessionToken: String(caller["x-kristo-session-token"] || "").trim() || undefined,
-  });
+  };
+  const tokenMeta = describeKristoSessionToken(authInput);
+  const auth = getKristoHeaders(authInput);
   const headers = { ...auth, ...caller };
   if (auth["x-kristo-session-token"] && !headers["x-kristo-session-token"]) {
     headers["x-kristo-session-token"] = auth["x-kristo-session-token"];
   }
-  logKristoAuthHeadersDiag(path, headers, "kristoApi");
+  logKristoAuthHeadersDiag(path, headers, "kristoApi", tokenMeta);
   return { ...(init || {}), headers };
 }
 

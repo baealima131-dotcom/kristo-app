@@ -9,6 +9,7 @@ import {
   resolveChurchPastorUserId,
 } from "@/app/api/_lib/churchPastor";
 import { createNotification } from "@/app/api/_lib/notifications";
+import { requireChurchSubscriptionActive } from "@/app/api/_lib/churchSubscription";
 
 import { evaluateLiveMediaAuthority } from "@/lib/liveMediaAuthority";
 
@@ -300,6 +301,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Pastor only" }, { status: 403 });
   }
 
+  const subscriptionBlocked = await requireChurchSubscriptionActive(a.churchId, {
+    endpoint: "/api/church/live",
+    churchId: a.churchId,
+    userId: a.userId,
+    role: a.role,
+    action: "start_live",
+  });
+  if (subscriptionBlocked) return subscriptionBlocked;
+
   const body = await req.json().catch(() => ({}));
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
   const now = Date.now();
@@ -391,8 +401,29 @@ export async function PATCH(req: Request) {
 
   const store = await readJsonFile<Record<string, any>>(STORE_FILE, {});
   const now = Date.now();
+  const resolvedLiveId = liveId || `church-live-${now}`;
+  const existingSession = readLiveSession(store, a.churchId, resolvedLiveId);
+  const memberJoinActions = new Set([
+    "claim-schedule-request",
+    "request-join",
+    "comment",
+    "clear-claim-request",
+  ]);
+  const isMemberJoinAction =
+    memberJoinActions.has(action) || (action === "presence" && !isPastor(a.role));
 
-  const session = ensureLiveSession(store, a.churchId, liveId || `church-live-${now}`, now);
+  if (!existingSession.live && !isMemberJoinAction) {
+    const subscriptionBlocked = await requireChurchSubscriptionActive(a.churchId, {
+      endpoint: "/api/church/live",
+      churchId: a.churchId,
+      userId: a.userId,
+      role: a.role,
+      action: action || "open_live_session",
+    });
+    if (subscriptionBlocked) return subscriptionBlocked;
+  }
+
+  const session = ensureLiveSession(store, a.churchId, resolvedLiveId, now);
   const live = session.live;
 
   live.requests = live.requests || {};

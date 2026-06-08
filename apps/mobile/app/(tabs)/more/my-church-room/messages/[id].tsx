@@ -4555,7 +4555,16 @@ const displayHeaderTitle = assignmentDisplayTitle;
         churchId: cid,
       }) as Record<string, string>;
 
-      if (!(await requireActiveChurchSubscriptionForSchedule(cid, headers))) {
+      if (
+        !(await requireActiveChurchSubscriptionForSchedule(cid, headers, {
+          isPastor:
+            ministryAuthority.tier === "pastor" ||
+            String(effectiveAuthRole || "").toLowerCase().includes("pastor"),
+          screen: "my-church-room.openAssignmentToolScreen",
+          gate: `assignment-tool.${tool}`,
+          onUpgrade: () => router.push("/more/payments/subscriptions" as any),
+        }))
+      ) {
         return;
       }
     }

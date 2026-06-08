@@ -14,16 +14,22 @@ type ChurchMediaStoreRow = ChurchSubscriptionRecord & {
   churchId?: string;
 };
 
+export const CHURCH_SUBSCRIPTION_REQUIRED_CODE = "CHURCH_SUBSCRIPTION_REQUIRED";
+
+export type SubscriptionGuardContext = {
+  endpoint: string;
+  churchId: string;
+  userId: string;
+  role: string;
+  action: string;
+};
+
 export async function getChurchMediaSubscriptionRecord(
   churchId: string
 ): Promise<ChurchMediaStoreRow | null> {
   const cid = String(churchId || "").trim();
   if (!cid) return null;
 
-  // Church media (incl. subscription fields) is durably owned by mediaDb
-  // (Postgres kristo_church_media in production, church-media.json locally).
-  // Reading via mediaDb avoids the previous /tmp dependency that made
-  // subscriptions read empty on Vercel.
   const media = await getChurchMediaByChurchId(cid);
   if (!media) return null;
 
@@ -32,6 +38,10 @@ export async function getChurchMediaSubscriptionRecord(
     subscriptionActive: media.subscriptionActive,
     subscriptionPlan: media.subscriptionPlan,
     subscriptionUpdatedAt: media.subscriptionUpdatedAt,
+    subscriptionSource: media.subscriptionSource,
+    subscriptionStatus: media.subscriptionStatus,
+    stripeCustomerId: media.stripeCustomerId,
+    stripeSubscriptionId: media.stripeSubscriptionId,
   };
 }
 
@@ -64,6 +74,48 @@ export async function isChurchSubscriptionActive(
   return isChurchSubscriptionActiveFromRecord(media);
 }
 
+export function logSubscriptionGuardBlocked(
+  ctx: SubscriptionGuardContext,
+  subscriptionActive: boolean
+) {
+  console.log("KRISTO_SUBSCRIPTION_GUARD_BLOCKED", {
+    endpoint: ctx.endpoint,
+    churchId: ctx.churchId,
+    userId: ctx.userId,
+    role: ctx.role,
+    action: ctx.action,
+    subscriptionActive,
+  });
+}
+
 export function churchSubscriptionRequiredResponse() {
-  return NextResponse.json({ ok: false, error: "Subscription required" }, { status: 403 });
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "Subscription required",
+      code: CHURCH_SUBSCRIPTION_REQUIRED_CODE,
+    },
+    { status: 403 }
+  );
+}
+
+export async function requireChurchSubscriptionActive(
+  churchId: string,
+  ctx: SubscriptionGuardContext
+): Promise<NextResponse | null> {
+  const cid = String(churchId || "").trim();
+  if (!cid) {
+    return NextResponse.json({ ok: false, error: "churchId is required" }, { status: 400 });
+  }
+
+  const role = String(ctx.role || "").trim();
+  const subscriptionActive = await isChurchSubscriptionActive(cid, {
+    isPastor: role.toLowerCase().includes("pastor"),
+    gate: ctx.action,
+  });
+
+  if (subscriptionActive) return null;
+
+  logSubscriptionGuardBlocked(ctx, false);
+  return churchSubscriptionRequiredResponse();
 }
