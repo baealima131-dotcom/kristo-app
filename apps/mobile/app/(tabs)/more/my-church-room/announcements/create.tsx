@@ -51,15 +51,15 @@ const TESTIMONY_CROP_MIN = 72;
 const TESTIMONY_CROP_HANDLE = 28;
 const TESTIMONY_CROP_MAX_SCALE = 5;
 
-type TestimonyCropExport = {
+type ComposerCropExport = {
   originX: number;
   originY: number;
   width: number;
   height: number;
 };
 
-type TestimonyTouchCropEditorRef = {
-  getCropExport: () => TestimonyCropExport | null;
+type ComposerTouchCropEditorRef = {
+  getCropExport: () => ComposerCropExport | null;
 };
 
 function composerImageLimit(kind: "announcement" | "post" | "testimony" | "counsel") {
@@ -69,6 +69,10 @@ function composerImageLimit(kind: "announcement" | "post" | "testimony" | "couns
 }
 
 function composerUsesThreeSlotLayout(kind: "announcement" | "post" | "testimony" | "counsel") {
+  return kind === "testimony" || kind === "announcement";
+}
+
+function composerUsesTouchCropEditor(kind: "announcement" | "post" | "testimony" | "counsel") {
   return kind === "testimony" || kind === "announcement";
 }
 
@@ -83,7 +87,7 @@ function getImageDimensions(uri: string): Promise<{ width: number; height: numbe
   });
 }
 
-function computeTestimonyCropExport(
+function computeComposerCropExport(
   imageWidth: number,
   imageHeight: number,
   viewportWidth: number,
@@ -96,7 +100,7 @@ function computeTestimonyCropExport(
   cropY: number,
   cropWidth: number,
   cropHeight: number
-): TestimonyCropExport {
+): ComposerCropExport {
   const factor = baseScale * scale;
   const displayWidth = imageWidth * factor;
   const displayHeight = imageHeight * factor;
@@ -121,9 +125,9 @@ function computeTestimonyCropExport(
   };
 }
 
-async function applyTestimonyVisualCrop(
+async function applyComposerVisualCrop(
   sourceUri: string,
-  crop: TestimonyCropExport
+  crop: ComposerCropExport
 ): Promise<string> {
   const edited = await ImageManipulator.manipulateAsync(
     sourceUri,
@@ -144,7 +148,7 @@ async function applyTestimonyVisualCrop(
   return compressed.uri;
 }
 
-type TestimonyTouchCropEditorProps = {
+type ComposerTouchCropEditorProps = {
   uri: string;
   viewportWidth: number;
   viewportHeight: number;
@@ -152,14 +156,14 @@ type TestimonyTouchCropEditorProps = {
   accentBorder: string;
 };
 
-const TestimonyTouchCropEditor = forwardRef<
-  TestimonyTouchCropEditorRef,
-  TestimonyTouchCropEditorProps
->(function TestimonyTouchCropEditor(
+const ComposerTouchCropEditor = forwardRef<
+  ComposerTouchCropEditorRef,
+  ComposerTouchCropEditorProps
+>(function ComposerTouchCropEditor(
   { uri, viewportWidth, viewportHeight, accent, accentBorder },
   ref
 ) {
-  const exportRef = useRef<TestimonyCropExport | null>(null);
+  const exportRef = useRef<ComposerCropExport | null>(null);
   const imageWidthRef = useRef(0);
   const imageHeightRef = useRef(0);
   const baseScaleRef = useRef(1);
@@ -197,7 +201,7 @@ const TestimonyTouchCropEditor = forwardRef<
       exportRef.current = null;
       return;
     }
-    exportRef.current = computeTestimonyCropExport(
+    exportRef.current = computeComposerCropExport(
       imageWidthRef.current,
       imageHeightRef.current,
       viewportWidth,
@@ -733,12 +737,12 @@ export default function CreateAnnouncement() {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [photoPermissionModalOpen, setPhotoPermissionModalOpen] = useState(false);
-  const [testimonyPreviewOpen, setTestimonyPreviewOpen] = useState(false);
-  const [testimonyPreviewUri, setTestimonyPreviewUri] = useState<string | null>(null);
-  const [testimonyPreviewIndex, setTestimonyPreviewIndex] = useState<number | null>(null);
-  const [testimonyEditSaving, setTestimonyEditSaving] = useState(false);
-  const [testimonyCropViewport, setTestimonyCropViewport] = useState({ width: 0, height: 0 });
-  const testimonyCropEditorRef = useRef<TestimonyTouchCropEditorRef>(null);
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const [imagePreviewUri, setImagePreviewUri] = useState<string | null>(null);
+  const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
+  const [imageEditSaving, setImageEditSaving] = useState(false);
+  const [imageCropViewport, setImageCropViewport] = useState({ width: 0, height: 0 });
+  const composerCropEditorRef = useRef<ComposerTouchCropEditorRef>(null);
 
   const maxComposerImages = composerImageLimit(kind);
 
@@ -953,41 +957,41 @@ export default function CreateAnnouncement() {
     setImages((prev) => prev.filter((u) => u !== uri));
   }
 
-  function openTestimonyImagePreview(uri: string, slotIndex: number) {
-    setTestimonyPreviewUri(uri);
-    setTestimonyPreviewIndex(slotIndex);
-    setTestimonyPreviewOpen(true);
+  function openComposerImagePreview(uri: string, slotIndex: number) {
+    setImagePreviewUri(uri);
+    setImagePreviewIndex(slotIndex);
+    setImagePreviewOpen(true);
   }
 
-  function closeTestimonyImagePreview() {
-    if (testimonyEditSaving) return;
-    setTestimonyPreviewOpen(false);
-    setTestimonyPreviewUri(null);
-    setTestimonyPreviewIndex(null);
+  function closeComposerImagePreview() {
+    if (imageEditSaving) return;
+    setImagePreviewOpen(false);
+    setImagePreviewUri(null);
+    setImagePreviewIndex(null);
   }
 
-  async function saveTestimonyImageEdit() {
-    const sourceUri = String(testimonyPreviewUri || "").trim();
-    const slotIndex = testimonyPreviewIndex;
+  async function saveComposerImageEdit() {
+    const sourceUri = String(imagePreviewUri || "").trim();
+    const slotIndex = imagePreviewIndex;
     if (!sourceUri || slotIndex == null) return;
 
     try {
-      setTestimonyEditSaving(true);
+      setImageEditSaving(true);
       setErr(null);
-      const cropExport = testimonyCropEditorRef.current?.getCropExport();
+      const cropExport = composerCropEditorRef.current?.getCropExport();
       if (!cropExport) {
         setErr(CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE);
         return;
       }
-      const editedUri = await applyTestimonyVisualCrop(sourceUri, cropExport);
+      const editedUri = await applyComposerVisualCrop(sourceUri, cropExport);
       setImages((prev) => {
         const next = [...prev];
         next[slotIndex] = editedUri;
         return next.slice(0, maxComposerImages);
       });
-      setTestimonyPreviewOpen(false);
-      setTestimonyPreviewUri(null);
-      setTestimonyPreviewIndex(null);
+      setImagePreviewOpen(false);
+      setImagePreviewUri(null);
+      setImagePreviewIndex(null);
     } catch (editErr) {
       const message =
         editErr instanceof Error
@@ -995,15 +999,15 @@ export default function CreateAnnouncement() {
           : CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE;
       setErr(message);
     } finally {
-      setTestimonyEditSaving(false);
+      setImageEditSaving(false);
     }
   }
 
-  function removeTestimonyPreviewImage() {
-    const sourceUri = String(testimonyPreviewUri || "").trim();
+  function removeComposerPreviewImage() {
+    const sourceUri = String(imagePreviewUri || "").trim();
     if (!sourceUri) return;
     removeImage(sourceUri);
-    closeTestimonyImagePreview();
+    closeComposerImagePreview();
   }
 
   const threeSlotSize = useMemo(() => {
@@ -1021,7 +1025,7 @@ export default function CreateAnnouncement() {
   ) {
     const uri = images[slotIndex];
     const slotRadius = Math.max(18, Math.round(slotSize * 0.24));
-    const testimonyFilled = kind === "testimony" && Boolean(uri);
+    const usesTouchCropEditor = composerUsesTouchCropEditor(kind) && Boolean(uri);
 
     if (uri) {
       return (
@@ -1040,8 +1044,8 @@ export default function CreateAnnouncement() {
         >
           <Pressable
             onPress={
-              testimonyFilled
-                ? () => openTestimonyImagePreview(uri, slotIndex)
+              usesTouchCropEditor
+                ? () => openComposerImagePreview(uri, slotIndex)
                 : () => removeImage(uri)
             }
             style={s.slotTapArea}
@@ -1361,16 +1365,16 @@ export default function CreateAnnouncement() {
       </Modal>
 
       <Modal
-        visible={kind === "testimony" && testimonyPreviewOpen}
+        visible={composerUsesTouchCropEditor(kind) && imagePreviewOpen}
         transparent
         animationType="fade"
-        onRequestClose={closeTestimonyImagePreview}
+        onRequestClose={closeComposerImagePreview}
       >
         <View style={s.editOverlay}>
           <View style={[s.editHeader, { paddingTop: insets.top + 10 }]}>
             <Pressable
-              onPress={closeTestimonyImagePreview}
-              disabled={testimonyEditSaving}
+              onPress={closeComposerImagePreview}
+              disabled={imageEditSaving}
               style={s.editHeaderBtn}
               accessibilityLabel="Cancel"
             >
@@ -1378,16 +1382,16 @@ export default function CreateAnnouncement() {
             </Pressable>
             <View style={s.editHeaderSpacer} />
             <Pressable
-              onPress={() => void saveTestimonyImageEdit()}
-              disabled={testimonyEditSaving}
+              onPress={() => void saveComposerImageEdit()}
+              disabled={imageEditSaving}
               style={({ pressed }) => [
                 s.editSaveBtn,
                 { backgroundColor: accent },
-                testimonyEditSaving || pressed ? { opacity: 0.88 } : null,
+                imageEditSaving || pressed ? { opacity: 0.88 } : null,
               ]}
               accessibilityLabel="Save"
             >
-              {testimonyEditSaving ? (
+              {imageEditSaving ? (
                 <ActivityIndicator size="small" color="#08111D" />
               ) : (
                 <>
@@ -1403,16 +1407,16 @@ export default function CreateAnnouncement() {
             onLayout={(event) => {
               const { width, height } = event.nativeEvent.layout;
               if (width > 0 && height > 0) {
-                setTestimonyCropViewport({ width, height });
+                setImageCropViewport({ width, height });
               }
             }}
           >
-            {testimonyPreviewUri && testimonyCropViewport.width > 0 ? (
-              <TestimonyTouchCropEditor
-                ref={testimonyCropEditorRef}
-                uri={testimonyPreviewUri}
-                viewportWidth={testimonyCropViewport.width}
-                viewportHeight={testimonyCropViewport.height}
+            {imagePreviewUri && imageCropViewport.width > 0 ? (
+              <ComposerTouchCropEditor
+                ref={composerCropEditorRef}
+                uri={imagePreviewUri}
+                viewportWidth={imageCropViewport.width}
+                viewportHeight={imageCropViewport.height}
                 accent={accent}
                 accentBorder={accentBorder}
               />
@@ -1421,8 +1425,8 @@ export default function CreateAnnouncement() {
 
           <View style={[s.editPanel, { paddingBottom: Math.max(insets.bottom + 16, 24) }]}>
             <Pressable
-              onPress={removeTestimonyPreviewImage}
-              disabled={testimonyEditSaving}
+              onPress={removeComposerPreviewImage}
+              disabled={imageEditSaving}
               style={({ pressed }) => [
                 s.editRemoveBtn,
                 { borderColor: accentBorder },
