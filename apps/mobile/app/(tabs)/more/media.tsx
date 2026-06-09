@@ -3974,6 +3974,28 @@ export default function MediaStudioScreen() {
                     <Text style={s.cardHint}>Manage posts</Text>
                   </Pressable>
                 ) : null}
+
+                {isActualChurchPastor || isApprovedMediaHost ? (
+                  <Pressable
+                    onPress={() => {
+                      console.log("KRISTO_MEDIA_REPORTS_OPEN", {
+                        churchId: String(session?.churchId || "").trim(),
+                        userId: String(session?.userId || "").trim(),
+                      });
+                      mediaRouterPush("/(tabs)/more/media-reports", "media-reports-card");
+                    }}
+                    style={({ pressed }) => [s.smallCard, s.glassStorageReports, pressed ? s.pressed : null]}
+                  >
+                    <View style={s.cardAura} />
+                    <View style={s.cardTopShine} />
+                    <View style={[s.iconRing, s.ringStorageReports]}>
+                      <Ionicons name="warning-outline" size={27} color="#FCA5A5" />
+                    </View>
+                    <Text style={s.smallTitle}>Reports</Text>
+                    <Text style={s.smallSub}>Review</Text>
+                    <Text style={s.cardHint}>Review flagged posts</Text>
+                  </Pressable>
+                ) : null}
                 </View>
               </ScrollView>
             </>
@@ -6103,6 +6125,11 @@ showcaseBadgeText: {
     backgroundColor: "rgba(244,201,93,0.10)",
     shadowColor: "#F4C95D",
   },
+  glassStorageReports: {
+    borderColor: "rgba(252,165,165,0.50)",
+    backgroundColor: "rgba(239,68,68,0.12)",
+    shadowColor: "#FCA5A5",
+  },
   ringFollowers: { borderColor: "rgba(125,211,252,0.68)", shadowColor: "#7DD3FC", shadowOpacity: 0.35, shadowRadius: 16 },
   ringSubscription: { borderColor: "rgba(244,201,93,0.70)", shadowColor: "#F4C95D", shadowOpacity: 0.38, shadowRadius: 16 },
   ringPost: { borderColor: "rgba(167,139,250,0.68)", shadowColor: "#A78BFA", shadowOpacity: 0.35, shadowRadius: 16 },
@@ -6111,6 +6138,7 @@ showcaseBadgeText: {
   ringGuests: { borderColor: "rgba(253,186,116,0.68)", shadowColor: "#FDBA74", shadowOpacity: 0.35, shadowRadius: 16 },
   ringStorageMedia: { borderColor: "rgba(125,211,252,0.68)", shadowColor: "#7DD3FC", shadowOpacity: 0.35, shadowRadius: 16 },
   ringStorageChurch: { borderColor: "rgba(244,201,93,0.70)", shadowColor: "#F4C95D", shadowOpacity: 0.36, shadowRadius: 16 },
+  ringStorageReports: { borderColor: "rgba(252,165,165,0.68)", shadowColor: "#FCA5A5", shadowOpacity: 0.35, shadowRadius: 16 },
 
   dashboardToolsScroll: {
     marginTop: 20,
