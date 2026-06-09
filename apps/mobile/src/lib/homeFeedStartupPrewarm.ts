@@ -5,8 +5,8 @@ import {
   persistHomeFeedBackendRowsSnapshot,
 } from "@/src/components/homeFeed/homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
+import { prepareHomeFirstVideoBeforeOpen } from "@/src/lib/homeFeedFirstVideoPrepare";
 import {
-  earlyWarmHomeFeedFirstVideo,
   warmHomeFeedStartupMedia,
 } from "@/src/lib/homeFeedVideoBufferAhead";
 import { buildHomeFeedDisplayRows } from "@/src/components/homeFeed/homeFeedUtils";
@@ -107,17 +107,10 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
       failures.push("hydrate-cache");
     }
 
-    // CRITICAL PATH: prime the exact first video HomeFeedScreen will mount,
-    // using cached rows in the SAME display order as the screen, before any API
-    // refresh. This is what makes the first frame land at ~0s on cold launch.
     try {
-      const orderedRows = buildHomeFeedDisplayRows(
-        getCachedHomeFeedBackendRows(),
-        feedList()
-      );
-      await earlyWarmHomeFeedFirstVideo(orderedRows);
+      await prepareHomeFirstVideoBeforeOpen(session);
     } catch {
-      failures.push("early-warm-first-video");
+      failures.push("prepare-first-video-before-open");
     }
 
     let rowCount = 0;

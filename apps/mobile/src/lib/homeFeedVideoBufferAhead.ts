@@ -684,7 +684,7 @@ export async function earlyWarmHomeFeedFirstVideo(
   for (const row of orderedRows || []) {
     if (!row || !isVideoPost(row)) continue;
     const plan = resolveHomeFeedVideoPlaybackPlan(row);
-    const candidate = normalizeUrl(plan.fullQualityUri);
+    const candidate = normalizeUrl(plan.startupUri || plan.fullQualityUri);
     if (!isNetworkVideoUrl(candidate)) continue;
     rowId = String(row?.id || "").trim();
     url = candidate;

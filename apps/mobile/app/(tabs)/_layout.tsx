@@ -5,6 +5,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { silentPreloadTabScreens } from "@/src/lib/screenDataCache";
 import { deferStartupWorkAfterHomeFirstFrame, setHomeTabFocused } from "@/src/lib/firstPaint";
+import { startMoreTabPremount } from "@/src/lib/moreTabPremount";
 import {
   beginMoreTabPressTransition,
   endMoreTabPressTransition,
@@ -223,6 +224,11 @@ export default function TabLayout() {
   const [, redrawMoreShell] = useReducer((value: number) => value + 1, 0);
 
   useEffect(() => subscribeMoreTabTransition(redrawMoreShell), []);
+
+  useEffect(() => {
+    if (loading || !session?.userId) return;
+    startMoreTabPremount(session);
+  }, [loading, session?.userId, session?.churchId, session?.role]);
 
   useLayoutEffect(() => {
     const tab = String(segments[1] || "index");
