@@ -85,6 +85,18 @@ function hasDecodedFrame(status: string, currentTime: number, playing: boolean) 
   );
 }
 
+/**
+ * A truly painted frame: playback position has advanced past 0. Unlike
+ * `hasDecodedFrame`, a bare `readyToPlay`/`playing` status at currentTime 0 does
+ * not count — that state still shows a black surface because no pixel has been
+ * decoded yet. Hold the poster over the video until this is true so the first
+ * Home Feed video never exposes a black/loading frame.
+ */
+function hasPaintedFrame(currentTime: number, status?: unknown, playing?: unknown) {
+  const st = String(status || "").toLowerCase();
+  return currentTime > 0.03 || playing === true || st === "readytoplay" || st === "playing";
+}
+
 function isPlayerReadyToStart(status: string, currentTime: number, playing: boolean) {
   const lower = statusLower(status);
   return (
@@ -186,6 +198,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 }: Props) {
   const isRecycledRow = Boolean(String(recycleKey || "").trim());
   const recycledStartResetLoggedRef = useRef(false);
+  const firstVideoHoldLoggedRef = useRef(false);
+  const firstVideoSwapLoggedRef = useRef(false);
   const resolvedFullUri = String(fullQualityUri || uri || "").trim();
   const resolvedStartupUri = String(startupUri || resolvedFullUri).trim();
   const canUpgradeQuality =
@@ -325,6 +339,17 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     } catch {
       return true;
     }
+  };
+
+  /** V1: once decode/play has begun, never swap playbackUri (startup fallback / HQ upgrade). */
+  const hasPlaybackStartedOrReady = () => {
+    if (playStartedLoggedRef.current) return true;
+    if (playerDisposedRef.current) return false;
+    const lower = statusLower(safeGetPlayerStatus(player));
+    if (lower === "readytoplay" || lower === "playing") return true;
+    const t = safeGetPlayerCurrentTime(player);
+    if (t > 0) return true;
+    return safeGetPlayerBuffered(player) > 0;
   };
 
   const computeVideoReady = () =>
@@ -495,6 +520,14 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (firstFrameMsRef.current === null) {
       firstFrameMsRef.current = fromCache ? 0 : Date.now() - mountMsRef.current;
     }
+    if (isFirstFeedVideo && !firstVideoSwapLoggedRef.current) {
+      firstVideoSwapLoggedRef.current = true;
+      console.log("KRISTO_FIRST_VIDEO_FRAME_SWAP", {
+        id: postId || null,
+        firstFrameMs: firstFrameMsRef.current,
+        fromCache,
+      });
+    }
     // Active video first frame opens the preload gate so the next video can
     // start warming without ever blocking the active one.
     if (countsForStartupTiming) {
@@ -620,7 +653,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       if (!cachedReadyRef.current) {
         try {
           setPlayerMuted(true, "layout-effect-prime", "screen-focused-mount");
-          requestPlay("layout-effect-prime");
+          safePlayerPause(player);
         } catch {}
       }
       return;
@@ -806,8 +839,17 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   ]);
 
   useEffect(() => {
-    if (!firstFrameReady || !canUpgradeQuality || upgradedQualityRef.current) return;
+    if (!canUpgradeQuality || upgradedQualityRef.current) return;
     if (playbackUri === resolvedFullUri) return;
+
+    if (playStartedLoggedRef.current || firstFrameReady) {
+      console.log("KRISTO_VIDEO_QUALITY_UPGRADE_SKIPPED_PLAYING", {
+        id: postId || null,
+        playStarted: playStartedLoggedRef.current,
+        firstFrameReady,
+      });
+      return;
+    }
 
     if (qualityUpgradeTimerRef.current) {
       clearTimeout(qualityUpgradeTimerRef.current);
@@ -816,6 +858,15 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     qualityUpgradeTimerRef.current = setTimeout(() => {
       qualityUpgradeTimerRef.current = null;
       if (upgradedQualityRef.current) return;
+      if (playStartedLoggedRef.current || firstFrameReady || hasPlaybackStartedOrReady()) {
+        console.log("KRISTO_VIDEO_QUALITY_UPGRADE_SKIPPED_PLAYING", {
+          id: postId || null,
+          playStarted: playStartedLoggedRef.current,
+          firstFrameReady,
+          phase: "timer",
+        });
+        return;
+      }
 
       upgradedQualityRef.current = true;
       upgradeStartedMsRef.current = Date.now();
@@ -884,6 +935,16 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     startupUriFallbackTimerRef.current = setTimeout(() => {
       if (firstFrameReady || playbackFallbackRef.current) return;
+      if (hasPlaybackStartedOrReady()) {
+        console.log("KRISTO_VIDEO_STARTUP_FALLBACK_SKIPPED_PLAYING", {
+          id: postId || null,
+          playStarted: playStartedLoggedRef.current,
+          status: statusLower(safeGetPlayerStatus(player)),
+          currentTime: safeGetPlayerCurrentTime(player),
+          buffered: safeGetPlayerBuffered(player),
+        });
+        return;
+      }
       fallbackToFullQuality("startup-timeout");
     }, STARTUP_LOW_RES_FALLBACK_MS);
 
@@ -1005,7 +1066,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       setPlayerMuted(true, "warm-preload-prime", warmMode);
       if (computePreloadShouldPlay()) {
         if (!firstFrameReady) {
-          requestPlay("warm-preload-progressive");
+          safePlayerPause(player);
         } else if (!preloadPrimedRef.current) {
           preloadPrimedRef.current = true;
           safePlayerPause(player);
@@ -1080,6 +1141,19 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
 
     if (!shouldMarkReadiness(status, t, isPlaying)) {
+      return;
+    }
+
+    if (isFirstFeedVideo && countsForStartupTiming && !hasPaintedFrame(t, status, playing)) {
+      if (!firstVideoHoldLoggedRef.current) {
+        firstVideoHoldLoggedRef.current = true;
+        console.log("KRISTO_FIRST_VIDEO_POSTER_HOLD", {
+          id: postId || null,
+          status: statusLower(status),
+          currentTime: t,
+          playing: isPlaying,
+        });
+      }
       return;
     }
 
