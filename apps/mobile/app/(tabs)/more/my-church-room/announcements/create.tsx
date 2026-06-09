@@ -42,8 +42,9 @@ const GOLD = "rgba(217,179,95,0.92)";
 const BLUE = "rgba(0,145,255,0.92)";
 const PAD = 16;
 const MAX_COMPOSER_IMAGES = 5;
+const MAX_ANNOUNCEMENT_IMAGES = 3;
 const MAX_TESTIMONY_IMAGES = 3;
-const TESTIMONY_SLOT_COUNT = 3;
+const COMPOSER_THREE_SLOT_COUNT = 3;
 const CARD_HORIZONTAL_PADDING = 18;
 const SLOT_GAP = 10;
 const TESTIMONY_CROP_MIN = 72;
@@ -62,7 +63,13 @@ type TestimonyTouchCropEditorRef = {
 };
 
 function composerImageLimit(kind: "announcement" | "post" | "testimony" | "counsel") {
-  return kind === "testimony" ? MAX_TESTIMONY_IMAGES : MAX_COMPOSER_IMAGES;
+  if (kind === "testimony") return MAX_TESTIMONY_IMAGES;
+  if (kind === "announcement") return MAX_ANNOUNCEMENT_IMAGES;
+  return MAX_COMPOSER_IMAGES;
+}
+
+function composerUsesThreeSlotLayout(kind: "announcement" | "post" | "testimony" | "counsel") {
+  return kind === "testimony" || kind === "announcement";
 }
 
 function composerImageHint(kind: "announcement" | "post" | "testimony" | "counsel") {
@@ -976,7 +983,7 @@ export default function CreateAnnouncement() {
       setImages((prev) => {
         const next = [...prev];
         next[slotIndex] = editedUri;
-        return next.slice(0, MAX_TESTIMONY_IMAGES);
+        return next.slice(0, maxComposerImages);
       });
       setTestimonyPreviewOpen(false);
       setTestimonyPreviewUri(null);
@@ -999,10 +1006,13 @@ export default function CreateAnnouncement() {
     closeTestimonyImagePreview();
   }
 
-  const testimonySlotSize = useMemo(() => {
+  const threeSlotSize = useMemo(() => {
+    if (!composerUsesThreeSlotLayout(kind)) return 84;
     const cardInnerWidth = windowWidth - PAD * 2 - CARD_HORIZONTAL_PADDING * 2;
-    return Math.floor((cardInnerWidth - SLOT_GAP * (TESTIMONY_SLOT_COUNT - 1)) / TESTIMONY_SLOT_COUNT);
-  }, [windowWidth]);
+    return Math.floor(
+      (cardInnerWidth - SLOT_GAP * (COMPOSER_THREE_SLOT_COUNT - 1)) / COMPOSER_THREE_SLOT_COUNT
+    );
+  }, [kind, windowWidth]);
 
   function renderImageSlot(
     slotIndex: number,
@@ -1084,8 +1094,8 @@ export default function CreateAnnouncement() {
       return;
     }
 
-    if (kind === "testimony" && images.length > MAX_TESTIMONY_IMAGES) {
-      setErr("You can add up to 3 images for a testimony.");
+    if (images.length > maxComposerImages) {
+      setErr(`You can add up to ${maxComposerImages} images.`);
       return;
     }
 
@@ -1280,10 +1290,10 @@ export default function CreateAnnouncement() {
           </View>
 
           
-          {kind === "testimony" ? (
+          {composerUsesThreeSlotLayout(kind) ? (
             <View style={[s.slotsRow, s.slotsRowTestimony]}>
-              {Array.from({ length: TESTIMONY_SLOT_COUNT }, (_, i) => i).map((i) =>
-                renderImageSlot(i, testimonySlotSize)
+              {Array.from({ length: COMPOSER_THREE_SLOT_COUNT }, (_, i) => i).map((i) =>
+                renderImageSlot(i, threeSlotSize)
               )}
             </View>
           ) : (

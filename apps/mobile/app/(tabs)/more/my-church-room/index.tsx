@@ -241,7 +241,7 @@ export default function MyChurchRoom() {
     <View style={[s.screen, { paddingTop: insets.top + 12 }]}>
       <View style={s.header}>
         <Text style={t.title}>My Church Room</Text>
-        <Text style={t.sub}>Announce, pray, counsel, and grow together</Text>
+        <Text style={t.sub}>Announce, share, and grow together</Text>
       </View>
 
       <ScrollView
@@ -368,9 +368,9 @@ export default function MyChurchRoom() {
 
         <View style={s.sectionBlock}>
           <Text style={t.section}>Quick actions</Text>
-          <Text style={t.sectionSub}>Four focused ways to serve your church</Text>
+          <Text style={t.sectionSub}>Share church updates and testimonies</Text>
 
-          <View style={s.grid}>
+          <View style={s.quickActionsGrid}>
             <GridCard
               label="Announcements"
               sub="Church-wide updates"
@@ -386,28 +386,12 @@ export default function MyChurchRoom() {
               tint={"rgba(0,145,255,0.92)"}
               onPress={() => router.push("/more/my-church-room/announcements/create?kind=testimony" as any)}
             />
-
-            <GridCard
-              label="I Need Counsel"
-              sub="Private pastoral help"
-              icon="chatbubbles"
-              tint={"rgba(80,220,180,0.92)"}
-              onPress={() => router.push("/more/my-church-room/counsel" as any)}
-            />
-
-            <GridCard
-              label="Prayer Requests"
-              sub="Send prayer needs"
-              icon="heart"
-              tint={"rgba(255,120,120,0.92)"}
-              onPress={() => router.push("/more/my-church-room/prayer-requests" as any)}
-            />
           </View>
         </View>
 
         <View style={s.sectionBlock}>
           <Text style={t.section}>Church Activity</Text>
-          <Text style={t.sectionSub}>Announcements, testimonies, prayer, and counsel</Text>
+          <Text style={t.sectionSub}>Announcements and testimonies from your church</Text>
         <ChurchActivityGrid
           items={roomFeedItems}
           emptyTitle="No church activity yet"
@@ -652,6 +636,14 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.28)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
+  } as ViewStyle,
+
+  quickActionsGrid: {
+    flexDirection: "row",
+    flexWrap: "nowrap",
+    justifyContent: "center",
+    gap: GRID_GAP,
+    marginTop: 14,
   } as ViewStyle,
 
   grid: {
