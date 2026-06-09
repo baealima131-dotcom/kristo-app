@@ -160,3 +160,8 @@ export async function resolveClientVideoThumbnailUri(videoUrl: string): Promise<
   inflight.set(key, promise);
   return promise;
 }
+
+export {
+  logMediaPosterCacheHit,
+  resolveCachedMediaPoster,
+} from "@/src/lib/mediaPosterCache";

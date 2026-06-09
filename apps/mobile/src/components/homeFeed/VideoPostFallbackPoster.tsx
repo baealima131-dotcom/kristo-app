@@ -6,6 +6,11 @@ import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import { generateVideoPosterFrame } from "@/src/lib/mediaVideoPoster";
 import {
+  logMediaPosterCacheHit,
+  rememberMediaPoster,
+  resolveCachedMediaPoster,
+} from "@/src/lib/mediaPosterCache";
+import {
   getPreviewLoadTimeoutMs,
   isLocalMediaUri,
   probePosterUrlReachability,
@@ -203,11 +208,39 @@ export function FeedVideoPosterImage({
     },
     posterUri
   );
+  const cachedPosterUri = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+  const cacheHitLoggedRef = React.useRef("");
 
-  const [posterState, setPosterState] = React.useState<PosterLoadState>(
-    hasPosterUri ? "probing" : "failed"
+  const logCacheHitOnce = React.useCallback(
+    (cachedUri: string) => {
+      const key = `${postId}|${resolvedVideoUrl}|${cachedUri}`;
+      if (cacheHitLoggedRef.current === key) return;
+      cacheHitLoggedRef.current = key;
+      logMediaPosterCacheHit({
+        postId,
+        videoUrl: resolvedVideoUrl,
+        posterUri: cachedUri,
+      });
+    },
+    [postId, resolvedVideoUrl]
   );
-  const [displayUri, setDisplayUri] = React.useState("");
+
+  const applyCachedPoster = React.useCallback(
+    (cachedUri: string) => {
+      setDisplayUri(cachedUri);
+      setPosterState("loaded");
+      setClientThumbUri("");
+      setClientThumbState("idle");
+      setLastProbe(null);
+      logCacheHitOnce(cachedUri);
+    },
+    [logCacheHitOnce]
+  );
+
+  const [posterState, setPosterState] = React.useState<PosterLoadState>(() =>
+    cachedPosterUri ? "loaded" : hasPosterUri ? "probing" : "failed"
+  );
+  const [displayUri, setDisplayUri] = React.useState(() => cachedPosterUri || "");
   const [clientThumbUri, setClientThumbUri] = React.useState("");
   const [clientThumbState, setClientThumbState] = React.useState<PosterLoadState>("idle");
   const [lastProbe, setLastProbe] = React.useState<Awaited<
@@ -220,17 +253,30 @@ export function FeedVideoPosterImage({
     enableVideoFrameFallback && Boolean(resolvedVideoUrl);
 
   useEffect(() => {
+    cacheHitLoggedRef.current = "";
+    const cached = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+    if (cached) {
+      applyCachedPoster(cached);
+      return;
+    }
     setPosterState(hasPosterUri ? "probing" : "failed");
     setDisplayUri("");
     setClientThumbUri("");
     setClientThumbState("idle");
     setLastProbe(null);
-  }, [posterUri, resolvedVideoUrl, hasPosterUri]);
+  }, [posterUri, resolvedVideoUrl, hasPosterUri, postId, applyCachedPoster]);
 
   useEffect(() => {
     let cancelled = false;
 
     const run = async () => {
+      const cached = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+      if (cached) {
+        if (cancelled) return;
+        applyCachedPoster(cached);
+        return;
+      }
+
       if (!hasPosterUri) {
         logPosterPipelineDiag({
           postId,
@@ -306,9 +352,8 @@ export function FeedVideoPosterImage({
     hasPosterUri,
     postId,
     canTryVideoFrameFallback,
-    metadata,
-    resolution,
     previewTrace,
+    applyCachedPoster,
   ]);
 
   useEffect(() => {
@@ -345,6 +390,12 @@ export function FeedVideoPosterImage({
   useEffect(() => {
     if (posterState !== "generating" || !canTryVideoFrameFallback) return;
 
+    const cached = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+    if (cached) {
+      applyCachedPoster(cached);
+      return;
+    }
+
     let cancelled = false;
     logPosterPipelineDiag({
       postId,
@@ -360,14 +411,21 @@ export function FeedVideoPosterImage({
       postId,
       videoUrl: resolvedVideoUrl,
       durationMs: videoDurationMs,
-    }).then((generated) => {
+    }).then(async (generated) => {
       if (cancelled) return;
       if (generated) {
-        setDisplayUri(generated);
+        const persisted = await rememberMediaPoster({
+          postId,
+          videoUrl: resolvedVideoUrl,
+          posterUri: generated,
+          source: generated.startsWith("http") ? "remote" : "generated",
+          persistFile: generated.startsWith("file://") && Boolean(postId),
+        });
+        setDisplayUri(persisted);
         setPosterState("loaded");
         logPreviewEvent(previewTrace, postId, resolvedVideoUrl, {
           posterLoad: "video-frame-success",
-          loadedUri: generated,
+          loadedUri: persisted,
           failedPosterUri: posterUri || null,
         });
         logPosterPipelineDiag({
@@ -378,7 +436,7 @@ export function FeedVideoPosterImage({
           resolution,
           probe: lastProbe || undefined,
           fallbackPath: "video-frame-generate",
-          extra: { loadedUri: generated },
+          extra: { loadedUri: persisted },
         });
         return;
       }
@@ -401,9 +459,8 @@ export function FeedVideoPosterImage({
     posterUri,
     previewTrace,
     videoDurationMs,
-    metadata,
-    resolution,
     lastProbe,
+    applyCachedPoster,
   ]);
 
   useEffect(() => {
@@ -456,8 +513,6 @@ export function FeedVideoPosterImage({
     posterUri,
     postId,
     previewTrace,
-    metadata,
-    resolution,
     lastProbe,
   ]);
 

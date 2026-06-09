@@ -10,6 +10,7 @@ import {
   getCachedMediaPoster,
   peekCachedMediaPoster,
   rememberMediaPoster,
+  resolveCachedMediaPoster,
 } from "@/src/lib/mediaPosterCache";
 import { withPreviewTimeout } from "@/src/lib/videoGridThumbnail";
 
@@ -54,8 +55,8 @@ export async function generateVideoPosterFrame(params: {
   const postId = String(params.postId || "").trim();
   if (!videoUrl) return "";
 
-  if (postId) {
-    const cached = peekCachedMediaPoster(postId, videoUrl);
+  if (postId || videoUrl) {
+    const cached = resolveCachedMediaPoster(postId, videoUrl);
     if (cached) return cached;
   }
 
@@ -84,25 +85,21 @@ export async function generateVideoPosterFrame(params: {
             const uri = String(result?.uri || "").trim();
             if (!uri) continue;
 
-            if (postId) {
-              const persisted = await rememberMediaPoster({
-                postId,
-                videoUrl,
-                posterUri: uri,
-                source: "generated",
-                persistFile: true,
-              });
-              console.log("KRISTO_MEDIA_VIDEO_POSTER_GENERATED", {
-                postId,
-                videoUrl: normalizeVideoKey(videoUrl),
-                captureTimeMs,
-                durationMs: params.durationMs ?? null,
-                posterUri: persisted,
-              });
-              return persisted;
-            }
-
-            return uri;
+            const persisted = await rememberMediaPoster({
+              postId,
+              videoUrl,
+              posterUri: uri,
+              source: "generated",
+              persistFile: Boolean(postId),
+            });
+            console.log("KRISTO_MEDIA_VIDEO_POSTER_GENERATED", {
+              postId: postId || null,
+              videoUrl: normalizeVideoKey(videoUrl),
+              captureTimeMs,
+              durationMs: params.durationMs ?? null,
+              posterUri: persisted,
+            });
+            return persisted;
           } catch (attemptError) {
             console.log("KRISTO_MEDIA_VIDEO_POSTER_CAPTURE_RETRY", {
               postId: postId || null,

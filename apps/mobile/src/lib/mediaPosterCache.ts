@@ -22,6 +22,7 @@ type MediaPosterCacheIndex = {
 };
 
 const memoryEntries = new Map<string, MediaPosterCacheEntry>();
+const videoUrlPosterEntries = new Map<string, string>();
 const prefetchedUris = new Set<string>();
 let hydratePromise: Promise<void> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -113,6 +114,7 @@ export async function hydrateMediaPosterCache(): Promise<void> {
       }
 
       rememberMemoryEntry(entry);
+      rememberVideoUrlPoster(entry.videoUrl, entry.posterUri);
     }
 
     console.log("KRISTO_MEDIA_POSTER_CACHE_HYDRATED", {
@@ -125,6 +127,50 @@ export async function hydrateMediaPosterCache(): Promise<void> {
   return hydratePromise;
 }
 
+function rememberVideoUrlPoster(videoUrl: string, posterUri: string) {
+  const normalizedVideoUrl = normalizeVideoUrl(videoUrl);
+  const normalizedPosterUri = String(posterUri || "").trim();
+  if (!normalizedVideoUrl || !normalizedPosterUri) return;
+  videoUrlPosterEntries.set(normalizedVideoUrl, normalizedPosterUri);
+}
+
+/** Instant lookup by video URL when postId is missing or mismatched. */
+export function peekCachedMediaPosterByVideoUrl(videoUrl: string): string | null {
+  const normalizedVideoUrl = normalizeVideoUrl(videoUrl);
+  if (!normalizedVideoUrl) return null;
+
+  const direct = videoUrlPosterEntries.get(normalizedVideoUrl);
+  if (direct) return direct;
+
+  for (const entry of memoryEntries.values()) {
+    if (normalizeVideoUrl(entry.videoUrl) === normalizedVideoUrl) {
+      const posterUri = String(entry.posterUri || "").trim();
+      if (posterUri) return posterUri;
+    }
+  }
+
+  return null;
+}
+
+/** Prefer postId+videoUrl cache, then fall back to videoUrl-only. */
+export function resolveCachedMediaPoster(postId: string, videoUrl: string): string | null {
+  const byPost = peekCachedMediaPoster(postId, videoUrl);
+  if (byPost) return byPost;
+  return peekCachedMediaPosterByVideoUrl(videoUrl);
+}
+
+export function logMediaPosterCacheHit(params: {
+  postId: string;
+  videoUrl: string;
+  posterUri: string;
+}) {
+  console.log("KRISTO_VIDEO_POSTER_CACHE_HIT", {
+    postId: params.postId || null,
+    videoUrl: normalizeVideoUrl(params.videoUrl) || null,
+    posterUri: params.posterUri || null,
+  });
+}
+
 /** Instant memory lookup — safe during first render. */
 export function peekCachedMediaPoster(postId: string, videoUrl: string): string | null {
   const key = mediaPosterCacheKey(postId, videoUrl);
@@ -135,11 +181,11 @@ export function peekCachedMediaPoster(postId: string, videoUrl: string): string 
 }
 
 export async function getCachedMediaPoster(postId: string, videoUrl: string): Promise<string | null> {
-  const sync = peekCachedMediaPoster(postId, videoUrl);
+  const sync = resolveCachedMediaPoster(postId, videoUrl);
   if (sync) return sync;
 
   await hydrateMediaPosterCache();
-  return peekCachedMediaPoster(postId, videoUrl);
+  return resolveCachedMediaPoster(postId, videoUrl);
 }
 
 async function ensurePosterDiskDir() {
@@ -174,7 +220,7 @@ export async function persistPosterFileToDisk(params: {
 }
 
 export async function rememberMediaPoster(params: {
-  postId: string;
+  postId?: string;
   videoUrl: string;
   posterUri: string;
   source: MediaPosterSource;
@@ -183,29 +229,34 @@ export async function rememberMediaPoster(params: {
   const postId = String(params.postId || "").trim();
   const videoUrl = normalizeVideoUrl(params.videoUrl);
   let posterUri = String(params.posterUri || "").trim();
-  if (!postId || !videoUrl || !posterUri) return posterUri;
+  if (!videoUrl || !posterUri) return posterUri;
 
-  if (params.persistFile !== false && posterUri.startsWith("file://")) {
+  if (postId && params.persistFile !== false && posterUri.startsWith("file://")) {
     posterUri = await persistPosterFileToDisk({ postId, videoUrl, sourceUri: posterUri });
   }
 
-  const entry: MediaPosterCacheEntry = {
-    postId,
-    videoUrl,
-    videoUrlHash: hashMediaUrl(videoUrl),
-    posterUri,
-    source: params.source,
-    savedAt: Date.now(),
-  };
+  rememberVideoUrlPoster(videoUrl, posterUri);
 
-  rememberMemoryEntry(entry);
-  schedulePersistIndex();
+  if (postId) {
+    const entry: MediaPosterCacheEntry = {
+      postId,
+      videoUrl,
+      videoUrlHash: hashMediaUrl(videoUrl),
+      posterUri,
+      source: params.source,
+      savedAt: Date.now(),
+    };
+
+    rememberMemoryEntry(entry);
+    schedulePersistIndex();
+  }
+
   prefetchMediaPosterImages([posterUri]);
 
   console.log("KRISTO_MEDIA_POSTER_CACHE_SAVED", {
-    postId,
-    videoUrlHash: entry.videoUrlHash,
-    source: entry.source,
+    postId: postId || null,
+    videoUrlHash: hashMediaUrl(videoUrl),
+    source: params.source,
     posterUri,
   });
 
@@ -235,7 +286,7 @@ export function collectMediaPosterPrefetchUris(
     const item = items[i];
     const postId = String(item?.id || "").trim();
     const videoUrl = String(item?.videoUrl || "").trim();
-    const cached = peekCachedMediaPoster(postId, videoUrl);
+    const cached = resolveCachedMediaPoster(postId, videoUrl);
     if (cached) {
       uris.push(cached);
       continue;
@@ -276,8 +327,11 @@ export function exportMediaPosterCacheSnapshot(): Record<string, MediaPosterCach
 
 export function importMediaPosterCacheSnapshot(entries: Record<string, MediaPosterCacheEntry>) {
   for (const entry of Object.values(entries || {})) {
-    if (!entry?.postId || !entry?.posterUri || !entry?.videoUrl) continue;
-    rememberMemoryEntry(entry);
+    if (!entry?.posterUri || !entry?.videoUrl) continue;
+    if (entry.postId) {
+      rememberMemoryEntry(entry);
+    }
+    rememberVideoUrlPoster(entry.videoUrl, entry.posterUri);
   }
   schedulePersistIndex();
 }
