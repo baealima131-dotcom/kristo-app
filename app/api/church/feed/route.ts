@@ -162,6 +162,29 @@ function feedListOk<T>(churchId: string, data: T, init?: ResponseInit) {
   );
 }
 
+/** Paginated feed response: data page + cursor metadata for endless scroll. */
+function feedListPageOk<T>(
+  churchId: string,
+  data: T,
+  page: { hasMore: boolean; nextCursor: string | null; total: number; offset: number },
+  init?: ResponseInit
+) {
+  const sync = getMediaScheduleSync(churchId);
+  return NextResponse.json(
+    {
+      ok: true,
+      data,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
+      total: page.total,
+      offset: page.offset,
+      mediaScheduleVersion: sync.version,
+      mediaScheduleUpdatedAt: sync.updatedAt,
+    },
+    init
+  );
+}
+
 function err(error: string, status = 400) {
   return NextResponse.json({ ok: false, error } satisfies ApiErr, { status });
 }
@@ -2691,6 +2714,18 @@ async function handleFeedGet(
     const feedScope = String(url.searchParams.get("scope") || "church").trim().toLowerCase();
     const isGlobalFeedScope = feedScope === "global" || feedScope === "home";
 
+    // Endless-feed paging. When `limit` is provided we return a page sliced at
+    // `cursor`/`offset`; without it the full list is returned (legacy behavior).
+    const limitParamRaw = Number(url.searchParams.get("limit") || 0);
+    const cursorParamRaw = String(
+      url.searchParams.get("cursor") ?? url.searchParams.get("offset") ?? ""
+    ).trim();
+    const pageLimit =
+      Number.isFinite(limitParamRaw) && limitParamRaw > 0
+        ? Math.min(Math.floor(limitParamRaw), 100)
+        : 0;
+    const pageOffset = Math.max(0, Math.floor(Number(cursorParamRaw) || 0));
+
     if (storageMode === "media" || storageMode === "church") {
       const membershipOrRes = await guard(req);
       if ("ok" in (membershipOrRes as any) === false && membershipOrRes instanceof NextResponse) {
@@ -2997,13 +3032,20 @@ async function handleFeedGet(
       .slice()
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
-    const listPostIds = listRows
+    const totalListRows = listRows.length;
+    const pageRows =
+      pageLimit > 0 ? listRows.slice(pageOffset, pageOffset + pageLimit) : listRows;
+    const nextOffset = pageOffset + (pageLimit > 0 ? pageLimit : pageRows.length);
+    const pageHasMore = pageLimit > 0 ? nextOffset < totalListRows : false;
+    const pageNextCursor = pageHasMore ? String(nextOffset) : null;
+
+    const listPostIds = pageRows
       .map((x: any) => String(x?.id || "").trim())
       .filter(Boolean);
     const discussionByPostId = await countDiscussionForPostIds(listPostIds);
     const listEngagement: FeedListEngagementMeta = { discussionByPostId };
 
-    const items = listRows.map((item) =>
+    const items = pageRows.map((item) =>
       safeEnrichFeedListItem(item, viewerUserId, listEngagement)
     );
 
@@ -3032,6 +3074,25 @@ async function handleFeedGet(
         (x: any) => x?.type === "video" || x?.videoUrl
       ).length,
     });
+
+    if (pageLimit > 0) {
+      console.log("KRISTO_FEED_GET_PAGE", {
+        churchId,
+        scope: isGlobalFeedScope ? "GLOBAL" : "CHURCH",
+        offset: pageOffset,
+        limit: pageLimit,
+        total: totalListRows,
+        returned: resolvedItems.length,
+        hasMore: pageHasMore,
+        nextCursor: pageNextCursor,
+      });
+      return feedListPageOk(churchId, resolvedItems, {
+        hasMore: pageHasMore,
+        nextCursor: pageNextCursor,
+        total: totalListRows,
+        offset: pageOffset,
+      });
+    }
 
     return feedListOk(churchId, resolvedItems);
   } catch (error: any) {

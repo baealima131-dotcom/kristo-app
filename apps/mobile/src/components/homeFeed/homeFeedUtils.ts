@@ -620,6 +620,10 @@ export function homeFeedCommentPostId(item: any) {
 
 /** FlatList row key — unique per expanded slot card. */
 export function feedRenderKey(item: any) {
+  // Endless-feed recycled rows reuse a real post id (for likes/comments) but need
+  // a unique render key per cycle so React/FlatList don't collapse duplicates.
+  const recycleKey = String(item?.homeFeedRecycleKey || "").trim();
+  if (recycleKey) return recycleKey;
   const id = String(item?.id || item?.feedOriginId || "").trim();
   if (item?.homeFeedSlotExpanded || /:slot:\d+/i.test(id)) return id;
   return baseFeedId(id);
@@ -1949,27 +1953,16 @@ export function resolvePosterUri(item: any) {
   return inferred || "";
 }
 
-/** Low-res preview MP4 convention — only valid when preview file exists in storage. */
-export function inferPreviewVideoUriFromVideoUrl(videoUrl: string): string {
-  const raw = String(videoUrl || "").trim().split("?")[0];
-  if (!raw) return "";
-
-  const r2Marker = "/church-videos/";
-  const r2Idx = raw.indexOf(r2Marker);
-  if (r2Idx >= 0) {
-    const tail = raw.slice(r2Idx + r2Marker.length);
-    const match = tail.match(/^([^/]+)\/([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
-    if (match?.[1] && match?.[2]) {
-      const base = raw.slice(0, r2Idx);
-      return `${base}/church-video-previews/${match[1]}/${match[2]}.mp4`;
-    }
-  }
-
-  const uploadsMatch = raw.match(/\/uploads\/media\/(?:[^/]+\/)*([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
-  if (uploadsMatch?.[1]) {
-    return homeFeedMediaUrl(`/uploads/media/previews/${uploadsMatch[1]}.mp4`);
-  }
-
+/**
+ * Inferred low-res preview URLs were guessed from the full video URL (e.g.
+ * /church-video-previews/* or /uploads/media/previews/*). Many of those objects
+ * do not exist in storage, so the player hit 404s → player errors → failed
+ * prewarm → unnecessary fallback retries. We no longer invent preview URLs:
+ * only an explicit backend-provided previewUrl is used as the low-res startup
+ * source, otherwise playback falls back to the full video URL. Backend preview
+ * generation is unchanged.
+ */
+export function inferPreviewVideoUriFromVideoUrl(_videoUrl: string): string {
   return "";
 }
 

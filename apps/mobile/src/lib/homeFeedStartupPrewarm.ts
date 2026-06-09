@@ -5,14 +5,19 @@ import {
   persistHomeFeedBackendRowsSnapshot,
 } from "@/src/components/homeFeed/homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
-import { warmHomeFeedStartupMedia } from "@/src/lib/homeFeedVideoBufferAhead";
+import {
+  earlyWarmHomeFeedFirstVideo,
+  warmHomeFeedStartupMedia,
+} from "@/src/lib/homeFeedVideoBufferAhead";
+import { buildHomeFeedDisplayRows } from "@/src/components/homeFeed/homeFeedUtils";
+import { feedList } from "@/src/lib/homeFeedStore";
 import type { KristoSession } from "@/src/lib/kristoSession";
 import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
 
 const COOLDOWN_MS = 60_000;
 const STARTUP_POSTER_MAX = 10;
-const STARTUP_VIDEO_MAX = 2;
+const STARTUP_VIDEO_MAX = 3;
 const STARTUP_CONCURRENCY = 2;
 
 let inflight: Promise<void> | null = null;
@@ -63,7 +68,7 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
 
   const now = Date.now();
   if (inflight) {
-    logSkip("inflight");
+    await inflight;
     return;
   }
   if (lastStartedAt > 0 && now - lastStartedAt < COOLDOWN_MS && completedIdentityKey) {
@@ -80,53 +85,106 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
   });
 
   inflight = (async () => {
+    const failures: string[] = [];
+    let snapshotCount = 0;
+    let warmRows: any[] = [];
+    let media = {
+      posterCount: 0,
+      videoCount: 0,
+      posterFailed: 0,
+      videoFailed: 0,
+    };
+
     try {
       setSessionSync(session);
-      await hydrateHomeFeedRowsCacheFromStorage(session.userId);
+    } catch {
+      failures.push("session-sync");
+    }
 
+    try {
+      await hydrateHomeFeedRowsCacheFromStorage(session.userId);
+    } catch {
+      failures.push("hydrate-cache");
+    }
+
+    // CRITICAL PATH: prime the exact first video HomeFeedScreen will mount,
+    // using cached rows in the SAME display order as the screen, before any API
+    // refresh. This is what makes the first frame land at ~0s on cold launch.
+    try {
+      const orderedRows = buildHomeFeedDisplayRows(
+        getCachedHomeFeedBackendRows(),
+        feedList()
+      );
+      await earlyWarmHomeFeedFirstVideo(orderedRows);
+    } catch {
+      failures.push("early-warm-first-video");
+    }
+
+    let rowCount = 0;
+    try {
       const rows = await fetchHomeFeedFromApi("startup-prewarm");
       const merged = getCachedHomeFeedBackendRows();
-      const rowCount = merged.length || rows.length;
+      rowCount = merged.length || rows.length;
+    } catch {
+      failures.push("fetch-feed");
+      rowCount = getCachedHomeFeedBackendRows().length;
+    }
 
-      console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_ROWS", {
-        count: Math.min(rowCount, HOME_FEED_INITIAL_LIMIT),
-      });
+    console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_ROWS", {
+      count: Math.min(rowCount, HOME_FEED_INITIAL_LIMIT),
+    });
 
-      const snapshotCount = await persistHomeFeedBackendRowsSnapshot(
+    try {
+      snapshotCount = await persistHomeFeedBackendRowsSnapshot(
         HOME_FEED_INITIAL_LIMIT,
         session.userId
       );
+    } catch {
+      failures.push("persist-snapshot");
+    }
 
-      const warmRows = getCachedHomeFeedBackendRows().slice(0, HOME_FEED_INITIAL_LIMIT);
-      const media = await warmHomeFeedStartupMedia(warmRows, {
+    warmRows = buildHomeFeedDisplayRows(
+      getCachedHomeFeedBackendRows(),
+      feedList()
+    ).slice(0, HOME_FEED_INITIAL_LIMIT);
+
+    try {
+      media = await warmHomeFeedStartupMedia(warmRows, {
         maxPosters: STARTUP_POSTER_MAX,
         maxVideos: STARTUP_VIDEO_MAX,
         concurrency: STARTUP_CONCURRENCY,
       });
-
-      console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_MEDIA", {
-        posterCount: media.posterCount,
-        videoCount: media.videoCount,
-      });
-
-      completedIdentityKey = key;
-      console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_DONE", {
-        ms: Date.now() - startedAt,
-        rows: snapshotCount || warmRows.length,
-      });
     } catch {
-      logSkip("failed");
-    } finally {
-      inflight = null;
+      failures.push("warm-media");
     }
-  })();
+
+    console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_MEDIA", {
+      posterCount: media.posterCount,
+      videoCount: media.videoCount,
+      posterFailed: media.posterFailed,
+      videoFailed: media.videoFailed,
+    });
+
+    completedIdentityKey = key;
+    console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_DONE", {
+      ms: Date.now() - startedAt,
+      rows: snapshotCount || warmRows.length,
+      posterCount: media.posterCount,
+      videoCount: media.videoCount,
+      posterFailed: media.posterFailed,
+      videoFailed: media.videoFailed,
+      failures: failures.length ? failures : undefined,
+    });
+  })().finally(() => {
+    inflight = null;
+  });
 
   await inflight;
 }
 
 /** Fire-and-forget Home Feed startup prewarm (rows + posters + video byte warm). */
 export function startHomeFeedStartupPrewarm(session: KristoSession | null | undefined) {
-  if (!isSessionReadyForPrewarm(session)) {
+  if (!session || !isSessionReadyForPrewarm(session)) {
     logSkip("missing-session");
     return;
   }

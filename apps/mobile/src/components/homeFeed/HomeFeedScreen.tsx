@@ -24,6 +24,11 @@ import {
   normalizeCommentPostId,
   userHasActiveChurchMembership,
 } from "@/src/lib/homeFeedComments";
+import {
+  beginHomeFirstVideoPriorityMode,
+  markHomeFirstFrame,
+  markHomeMount,
+} from "@/src/lib/firstPaint";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import {
@@ -34,6 +39,7 @@ import {
 import { subscribeHomeFeedPostDelete } from "@/src/lib/homeFeedPostDeleteSync";
 import {
   fetchHomeFeedFromApi,
+  fetchHomeFeedNextPage,
   getCachedHomeFeedBackendCount,
   getCachedHomeFeedBackendRows,
   homeFeedRowIncludedInBackendSnapshot,
@@ -44,10 +50,11 @@ import { hydrateHomeFeedRowsCacheFromStorage } from "./homeFeedRowsCache";
 import {
   HOME_FEED_INITIAL_LIMIT,
   HOME_FEED_PAGE_SIZE,
+  buildRecycledHomeFeedRows,
   homeFeedRowKey,
   initialHomeFeedVisibleWindowSize,
+  isHomeFeedNearEnd,
   nextHomeFeedVisibleWindowSize,
-  shouldPrefetchHomeFeedPage,
   stableMergeHomeFeedRows,
 } from "./homeFeedPagination";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
@@ -85,6 +92,10 @@ import {
   scheduleHomeFeedVideoBufferAhead,
   warmHomeFeedVideoPostersNearActive,
 } from "@/src/lib/homeFeedVideoBufferAhead";
+import {
+  isHomeFeedActiveFirstFrameReady,
+  subscribeHomeFeedActiveFirstFrame,
+} from "@/src/lib/homeFeedVideoReadiness";
 import {
   consumeHomeFeedScheduleDirty,
   peekHomeFeedScheduleDirty,
@@ -142,11 +153,17 @@ export default function HomeFeedScreen() {
   const claimSlotFocusLoadDoneRef = useRef(false);
   const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingScheduleFeedIdRef = useRef<string | null>(null);
+  const lastNearEndLoadAtMsRef = useRef(0);
+  const appendMoreInflightRef = useRef(false);
+  const feedNextCursorRef = useRef<string | null>(null);
+  const feedHasMoreRef = useRef(true);
+  const recycleCycleRef = useRef(0);
   const lastVisibleRowsRef = useRef<any[]>([]);
   const visibleRowCountRef = useRef(0);
   const pageReadyLoggedRef = useRef(false);
   const stableDisplayRowsRef = useRef<any[]>([]);
   const initialVideoBufferWarmedRef = useRef(false);
+  const initialWarmCleanupRef = useRef<(() => void) | null>(null);
   const lastVideoBufferActiveRef = useRef(-1);
   const lastVideoBufferWindowRef = useRef(HOME_FEED_INITIAL_LIMIT);
   const prefetchSessionIdRef = useRef(0);
@@ -164,6 +181,11 @@ export default function HomeFeedScreen() {
   const contentHeight = homeFeedSlideHeight(windowHeight, tabBarHeight);
   const homeFeedRenderPaused = isHomeFeedRenderPaused();
   const feedFocused = screenFocused && appActive && !homeFeedRenderPaused;
+
+  useLayoutEffect(() => {
+    markHomeMount();
+    beginHomeFirstVideoPriorityMode("home-feed-screen");
+  }, []);
 
   useLayoutEffect(() => {
     let alive = true;
@@ -564,44 +586,162 @@ export default function HomeFeedScreen() {
       activeIndex: 0,
       reason: "initial",
     });
+    markHomeFirstFrame({ reason: "page-ready", visibleCount });
   }, [stableDisplayRows.length]);
 
+  // Staged endless feed: at ~70% through the visible window, first reveal the
+  // next batch of already-loaded rows (cheap, no network), then — only when the
+  // window already covers every loaded row — append more from the API. The
+  // append is single-flight, throttled, and never deletes existing rows.
   useEffect(() => {
     if (isClaimSlotFocus || !feedFocused || !stableDisplayRows.length) return;
 
     const visibleCount = Math.min(visibleWindowSize, stableDisplayRows.length);
-    if (!shouldPrefetchHomeFeedPage(activeIndex, visibleCount)) return;
+    if (!isHomeFeedNearEnd(activeIndex, visibleCount)) return;
 
+    console.log("KRISTO_HOME_FEED_NEAR_END_TRIGGER", {
+      activeIndex,
+      visibleCount,
+      loadedRows: stableDisplayRows.length,
+    });
+
+    // STAGED reveal of the next page of already-loaded rows.
     const nextLimit = nextHomeFeedVisibleWindowSize(
       visibleWindowSize,
       stableDisplayRows.length,
       HOME_FEED_PAGE_SIZE
     );
-
-    console.log("KRISTO_HOME_FEED_NEXT_PAGE_PREFETCH", {
-      activeIndex,
-      nextLimit,
-    });
-
     if (nextLimit > visibleWindowSize) {
       setVisibleWindowSize(nextLimit);
       console.log("KRISTO_HOME_FEED_PAGE_READY", {
         visibleCount: nextLimit,
-        totalCached: Math.max(
-          stableDisplayRows.length,
-          getCachedHomeFeedBackendCount()
-        ),
+        totalCached: Math.max(stableDisplayRows.length, getCachedHomeFeedBackendCount()),
         activeIndex,
         reason: "window-expand",
       });
     }
 
-    logHomeFeedNetworkTrace({
-      event: "page-prefetch-skip-api",
+    // Only fetch more when the window already shows every loaded row.
+    if (nextLimit < stableDisplayRows.length) {
+      logHomeFeedNetworkTrace({
+        event: "page-prefetch-skip-api",
+        activeIndex,
+        nextLimit,
+        reason: "client-window-only",
+      });
+      return;
+    }
+
+    if (appendMoreInflightRef.current) {
+      logHomeFeedNetworkTrace({
+        event: "page-prefetch-skip-api",
+        activeIndex,
+        reason: "append-more-inflight",
+      });
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastNearEndLoadAtMsRef.current < 10_000) {
+      logHomeFeedNetworkTrace({
+        event: "page-prefetch-skip-api",
+        activeIndex,
+        reason: "append-more-throttled",
+      });
+      return;
+    }
+
+    lastNearEndLoadAtMsRef.current = now;
+    appendMoreInflightRef.current = true;
+    const before = getCachedHomeFeedBackendCount();
+    // Ask the backend for rows beyond what we already hold. The cursor advances
+    // as pages arrive; on a fresh feed it starts at the current loaded count.
+    const cursor = feedNextCursorRef.current ?? String(before);
+    console.log("KRISTO_HOME_FEED_APPEND_MORE_START", {
       activeIndex,
-      nextLimit,
-      reason: "client-window-only",
+      visibleCount,
+      before,
+      cursor,
     });
+
+    const recycleEndlessFeed = (reason: string) => {
+      const tail = stableDisplayRowsRef.current;
+      const cycle = recycleCycleRef.current + 1;
+      const recycled = buildRecycledHomeFeedRows(tail, cycle, {
+        isRecyclable: (row) =>
+          !isHomeFeedScheduleCardRow(row) && (isVideoPost(row) || isImagePost(row)),
+        avoidLeadingId: String(tail[tail.length - 1]?.id || ""),
+      });
+      if (!recycled.length) {
+        console.log("KRISTO_HOME_FEED_RECYCLE_SKIP", { reason, cycle, recyclable: 0 });
+        return 0;
+      }
+      recycleCycleRef.current = cycle;
+      setStableDisplayRows((prev) => {
+        const base = prev.length ? prev : stableDisplayRowsRef.current;
+        const merged = stableMergeHomeFeedRows(base, recycled);
+        stableDisplayRowsRef.current = merged.merged;
+        return merged.merged;
+      });
+      console.log("KRISTO_HOME_FEED_RECYCLE_APPEND", {
+        reason,
+        cycle,
+        appended: recycled.length,
+      });
+      return recycled.length;
+    };
+
+    void fetchHomeFeedNextPage(cursor, HOME_FEED_PAGE_SIZE)
+      .then((page) => {
+        const after = getCachedHomeFeedBackendCount();
+        let appended = page.appended;
+
+        if (appended > 0 && page.rows.length) {
+          setBackendRows(page.rows);
+        }
+
+        feedHasMoreRef.current = page.hasMore;
+        feedNextCursorRef.current = page.hasMore ? page.nextCursor : null;
+
+        // Backend exhausted (or returned nothing new) → recycle for endless feel.
+        if (appended === 0) {
+          appended = recycleEndlessFeed(
+            page.hasMore ? "no-new-rows" : "backend-exhausted"
+          );
+        }
+
+        const finalAfter = getCachedHomeFeedBackendCount();
+        console.log("KRISTO_HOME_FEED_APPEND_MORE_DONE", {
+          activeIndex,
+          visibleCount,
+          before,
+          incoming: page.incoming,
+          appended,
+          after: finalAfter,
+          nextCursor: feedNextCursorRef.current,
+          hasMore: page.hasMore,
+        });
+
+        if (appended > 0) {
+          const loaded = Math.max(finalAfter, stableDisplayRowsRef.current.length);
+          setVisibleWindowSize((prev) =>
+            Math.min(loaded, nextHomeFeedVisibleWindowSize(prev, loaded, HOME_FEED_PAGE_SIZE))
+          );
+        }
+      })
+      .catch(() => {
+        // Network failure shouldn't dead-end the feed — recycle so scroll continues.
+        const appended = recycleEndlessFeed("page-fetch-error");
+        if (appended > 0) {
+          const loaded = stableDisplayRowsRef.current.length;
+          setVisibleWindowSize((prev) =>
+            Math.min(loaded, nextHomeFeedVisibleWindowSize(prev, loaded, HOME_FEED_PAGE_SIZE))
+          );
+        }
+      })
+      .finally(() => {
+        appendMoreInflightRef.current = false;
+      });
   }, [
     activeIndex,
     visibleWindowSize,
@@ -680,18 +820,60 @@ export default function HomeFeedScreen() {
     );
   }, [posterWarmKey, activeIndex, feedFocused, isClaimSlotFocus, visibleData]);
 
+  // Initial buffer-ahead is deferred until the FIRST video's first frame paints
+  // (or a short fallback). This guarantees the first video keeps full startup
+  // priority and we only warm the next 2–3 rows once it is playing. The pending
+  // subscription is tracked in a ref so feed re-renders never cancel it.
   useEffect(() => {
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
     if (initialVideoBufferWarmedRef.current) return;
     initialVideoBufferWarmedRef.current = true;
-    scheduleHomeFeedVideoBufferAhead({
-      rows: visibleData,
-      activeIndex: 0,
-      visibleCount: visibleData.length,
-      reason: "initial-feed-ready",
-      enabled: feedFocused,
-    });
+
+    const runInitialWarm = () => {
+      const rows = lastVisibleRowsRef.current;
+      if (!rows.length) return;
+      scheduleHomeFeedVideoBufferAhead({
+        rows,
+        activeIndex: 0,
+        visibleCount: rows.length,
+        reason: "initial-feed-ready",
+        enabled: true,
+      });
+    };
+
+    if (isHomeFeedActiveFirstFrameReady()) {
+      runInitialWarm();
+      return;
+    }
+
+    const cancel = () => {
+      try {
+        initialWarmCleanupRef.current?.();
+      } catch {}
+      initialWarmCleanupRef.current = null;
+    };
+    const fire = () => {
+      cancel();
+      runInitialWarm();
+    };
+    const unsubscribe = subscribeHomeFeedActiveFirstFrame(fire);
+    const fallbackTimer = setTimeout(fire, 4000);
+    initialWarmCleanupRef.current = () => {
+      try {
+        unsubscribe();
+      } catch {}
+      clearTimeout(fallbackTimer);
+    };
   }, [feedFocused, isClaimSlotFocus, visibleData.length]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        initialWarmCleanupRef.current?.();
+      } catch {}
+      initialWarmCleanupRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;

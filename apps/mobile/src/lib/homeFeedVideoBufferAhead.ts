@@ -1,4 +1,5 @@
 import { Image } from "react-native";
+import { getPosterPrefetchTimeoutMs, withPreviewTimeout } from "@/src/lib/videoGridThumbnail";
 import {
   isVideoPost,
   resolvePosterUri,
@@ -12,24 +13,38 @@ import {
 import {
   getFirstHomeFeedVideoPlaybackPlans,
   logHomeFeedVideoQualityTrace,
+  resolveHomeFeedVideoPlaybackPlan,
 } from "@/src/lib/homeFeedVideoQuality";
 import {
   logHomeFeedNetworkTrace,
   markVideoHeadWarmed,
   wasVideoHeadRecentlyWarmed,
 } from "@/src/lib/homeFeedNetwork";
+import {
+  isHomeFeedActiveFirstFrameReady,
+  subscribeHomeFeedActiveFirstFrame,
+} from "@/src/lib/homeFeedVideoReadiness";
 
 const MAX_VIDEO_CONCURRENCY = 2;
 const MAX_POSTER_CONCURRENCY = 2;
 const RANGE_BYTES = "bytes=0-65535";
 const FIRST_VIDEO_RANGE_BYTES = "bytes=0-393215";
-const STARTUP_PREWARM_VIDEO_MAX = 2;
+const STARTUP_PREWARM_VIDEO_MAX = 3;
+
+// Startup critical path: only the first video is awaited before
+// KRISTO_HOME_FEED_STARTUP_PREWARM_DONE fires, with a tight timeout so the DONE
+// log never waits on slow R2 fetches.
+const FIRST_VIDEO_WARM_TIMEOUT_MS = 3000;
+// Remaining posters/videos warm only after the first frame paints (or this
+// fallback elapses) so they never steal bandwidth from the first video.
+const BACKGROUND_WARM_AFTER_FIRST_FRAME_MS = 5000;
 
 const STARTUP_COOLDOWN_MS = 3000;
-const INITIAL_VIDEO_WARM_MAX = 4;
-const ACTIVE_INDEX_VIDEO_WARM_MAX = 3;
-const WINDOW_EXPAND_VIDEO_WARM_MAX = 5;
-const POSTER_WARM_AHEAD_COUNT = 5;
+// Staged buffering: active video + next 2 only (never the whole feed at once).
+const INITIAL_VIDEO_WARM_MAX = 3;
+const ACTIVE_INDEX_VIDEO_WARM_MAX = 2;
+const WINDOW_EXPAND_VIDEO_WARM_MAX = 3;
+const POSTER_WARM_AHEAD_COUNT = 3;
 
 const warmedVideoUrls = new Set<string>();
 const warmedPosterUrls = new Set<string>();
@@ -195,14 +210,17 @@ function parseHeaderContentLength(headers: Headers): number | null {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
+const VIDEO_WARM_FETCH_TIMEOUT_MS = 8000;
+
 async function warmVideoUrlNetwork(
   videoUrl: string,
-  opts?: { rangeHeader?: string }
+  opts?: { rangeHeader?: string; timeoutMs?: number }
 ): Promise<VideoWarmNetworkResult> {
   const url = String(videoUrl || "").trim();
   const normalized = normalizeUrl(url);
   const startMs = Date.now();
   const rangeHeader = opts?.rangeHeader || RANGE_BYTES;
+  const timeoutMs = Math.max(1000, Number(opts?.timeoutMs ?? VIDEO_WARM_FETCH_TIMEOUT_MS));
 
   if (wasVideoHeadRecentlyWarmed(normalized)) {
     logHomeFeedNetworkTrace({
@@ -219,10 +237,34 @@ async function warmVideoUrlNetwork(
     };
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
-    const head = await fetch(url, { method: "HEAD" });
+    // Range-first: moov-at-front videos start decoding sooner than HEAD alone.
+    const range = await fetch(url, {
+      method: "GET",
+      headers: { Range: rangeHeader },
+      signal: controller.signal,
+    });
+    if (range.ok || range.status === 206) {
+      markVideoHeadWarmed(normalized);
+      return {
+        status: range.status,
+        bytesRange: true,
+        ms: Date.now() - startMs,
+        contentLength: parseHeaderContentLength(range.headers),
+        acceptRanges: readResponseHeader(range.headers, "accept-ranges"),
+        contentType: readResponseHeader(range.headers, "content-type"),
+      };
+    }
+  } catch {}
+
+  try {
+    const head = await fetch(url, { method: "HEAD", signal: controller.signal });
     if (head.ok || head.status === 206) {
       markVideoHeadWarmed(normalized);
+      clearTimeout(timeout);
       return {
         status: head.status,
         bytesRange: false,
@@ -234,25 +276,20 @@ async function warmVideoUrlNetwork(
     }
   } catch {}
 
-  const range = await fetch(url, {
-    method: "GET",
-    headers: { Range: rangeHeader },
-  });
-  markVideoHeadWarmed(normalized);
-  return {
-    status: range.status,
-    bytesRange: true,
-    ms: Date.now() - startMs,
-    contentLength: parseHeaderContentLength(range.headers),
-    acceptRanges: readResponseHeader(range.headers, "accept-ranges"),
-    contentType: readResponseHeader(range.headers, "content-type"),
-  };
+  clearTimeout(timeout);
+  throw new Error("video-warm-failed");
 }
 
 export function wasHomeFeedVideoUrlBufferedAhead(videoUrl: string): boolean {
   const url = normalizeUrl(videoUrl);
   if (!url) return false;
   return warmedVideoUrls.has(url);
+}
+
+export function wasHomeFeedPosterWarmed(posterUrl: string): boolean {
+  const url = normalizeUrl(posterUrl);
+  if (!url) return false;
+  return warmedPosterUrls.has(url);
 }
 
 function collectVideoPostsInRange(
@@ -270,7 +307,8 @@ function collectVideoPostsInRange(
     const row = rows[i];
     if (!row || !isVideoPost(row)) continue;
 
-    const videoUrl = resolveVideoUri(row);
+    const plan = resolveHomeFeedVideoPlaybackPlan(row);
+    const videoUrl = String(plan.startupUri || resolveVideoUri(row) || "").trim();
     if (!isNetworkVideoUrl(videoUrl)) continue;
 
     const posterUrl = String(resolvePosterUri(row) || "").trim();
@@ -514,85 +552,264 @@ async function runWithConcurrency<T>(
   await Promise.all(workers);
 }
 
-/** App-launch media warm — no video players; shares warmed URL sets with Home Feed. */
+export type HomeFeedStartupMediaWarmResult = {
+  posterCount: number;
+  videoCount: number;
+  posterFailed: number;
+  videoFailed: number;
+};
+
+/** Run a background warm task once the active first frame paints (or after a fallback). */
+function runAfterActiveFirstFrame(task: () => void, fallbackMs: number) {
+  if (isHomeFeedActiveFirstFrameReady()) {
+    task();
+    return;
+  }
+
+  let done = false;
+  const fire = () => {
+    if (done) return;
+    done = true;
+    try {
+      unsubscribe();
+    } catch {}
+    clearTimeout(timer);
+    task();
+  };
+
+  const unsubscribe = subscribeHomeFeedActiveFirstFrame(fire);
+  const timer = setTimeout(fire, Math.max(0, fallbackMs));
+}
+
+/** Prefetch a single poster; failures are swallowed and never block the caller. */
+async function warmStartupPoster(
+  posterUrl: string,
+  timeoutMs: number
+): Promise<"ok" | "failed" | "skip"> {
+  if (!posterUrl) return "skip";
+  if (warmedPosterUrls.has(posterUrl)) return "ok";
+  if (inflightPosterUrls.has(posterUrl)) return "skip";
+
+  inflightPosterUrls.add(posterUrl);
+  try {
+    const ok = await withPreviewTimeout(
+      Image.prefetch(posterUrl).then(() => true),
+      timeoutMs,
+      false
+    );
+    if (ok) {
+      warmedPosterUrls.add(posterUrl);
+      return "ok";
+    }
+    warmedPosterUrls.delete(posterUrl);
+    return "failed";
+  } catch {
+    warmedPosterUrls.delete(posterUrl);
+    return "failed";
+  } finally {
+    inflightPosterUrls.delete(posterUrl);
+  }
+}
+
+/** Warm a single video plan's startup bytes; failures are swallowed (non-blocking). */
+async function warmStartupVideoPlan(
+  plan: ReturnType<typeof getFirstHomeFeedVideoPlaybackPlans>[number],
+  isFirst: boolean,
+  timeoutMs: number
+): Promise<"ok" | "failed" | "skip"> {
+  const target = normalizeUrl(plan.startupUri);
+  if (!isNetworkVideoUrl(target)) return "skip";
+  if (warmedVideoUrls.has(target)) return "ok";
+  if (inflightVideoUrls.has(target)) return "skip";
+
+  inflightVideoUrls.add(target);
+  try {
+    logHomeFeedVideoQualityTrace({
+      event: "prewarm-start",
+      postId: plan.postId,
+      selectedStartupUrl: target,
+      lowResVideoUrl: plan.lowResVideoUrl,
+      originalVideoUrl: plan.fullQualityUri,
+      hasLowRes: plan.hasLowRes,
+      rangeHeader: isFirst ? FIRST_VIDEO_RANGE_BYTES : RANGE_BYTES,
+      firstVideo: isFirst,
+    });
+    await warmVideoUrlNetwork(target, {
+      rangeHeader: isFirst ? FIRST_VIDEO_RANGE_BYTES : RANGE_BYTES,
+      timeoutMs,
+    });
+    warmedVideoUrls.add(target);
+    logHomeFeedVideoQualityTrace({
+      event: "prewarm-done",
+      postId: plan.postId,
+      selectedStartupUrl: target,
+      prewarmHit: true,
+      firstVideo: isFirst,
+    });
+    return "ok";
+  } catch {
+    warmedVideoUrls.delete(target);
+    logHomeFeedVideoQualityTrace({
+      event: "prewarm-failed",
+      postId: plan.postId,
+      selectedStartupUrl: target,
+      firstVideo: isFirst,
+    });
+    return "failed";
+  } finally {
+    inflightVideoUrls.delete(target);
+  }
+}
+
+export type HomeFeedEarlyWarmResult = {
+  rowId: string;
+  url: string;
+  status: number;
+  ms: number;
+  prewarmHit: boolean;
+};
+
+/**
+ * Cold-start critical path: prime the EXACT first playable video that
+ * HomeFeedScreen will mount (display-ordered rows, not raw backend order) by
+ * fetching its full video URL with Range bytes. Marks the URL warmed on a
+ * 200/206 so the mounted player resolves prewarmHit=true and decodes from the
+ * already-primed HTTP cache. Runs before API refresh / posters / next videos.
+ */
+export async function earlyWarmHomeFeedFirstVideo(
+  orderedRows: any[]
+): Promise<HomeFeedEarlyWarmResult | null> {
+  let rowId = "";
+  let url = "";
+  for (const row of orderedRows || []) {
+    if (!row || !isVideoPost(row)) continue;
+    const plan = resolveHomeFeedVideoPlaybackPlan(row);
+    const candidate = normalizeUrl(plan.fullQualityUri);
+    if (!isNetworkVideoUrl(candidate)) continue;
+    rowId = String(row?.id || "").trim();
+    url = candidate;
+    break;
+  }
+
+  if (!url) return null;
+
+  if (warmedVideoUrls.has(url)) {
+    const cached = { rowId, url, status: 200, ms: 0, prewarmHit: true };
+    console.log("KRISTO_FIRST_VIDEO_EARLY_WARM_DONE", { ...cached, reason: "already-warmed" });
+    return cached;
+  }
+
+  const startMs = Date.now();
+  console.log("KRISTO_FIRST_VIDEO_EARLY_WARM_START", {
+    rowId,
+    url,
+    rangeHeader: FIRST_VIDEO_RANGE_BYTES,
+  });
+
+  inflightVideoUrls.add(url);
+  try {
+    const result = await warmVideoUrlNetwork(url, {
+      rangeHeader: FIRST_VIDEO_RANGE_BYTES,
+      timeoutMs: FIRST_VIDEO_WARM_TIMEOUT_MS,
+    });
+    const ok = result.status === 206 || result.status === 200;
+    if (ok) warmedVideoUrls.add(url);
+    const done = {
+      rowId,
+      url,
+      status: result.status,
+      ms: Date.now() - startMs,
+      prewarmHit: ok,
+    };
+    console.log("KRISTO_FIRST_VIDEO_EARLY_WARM_DONE", done);
+    return done;
+  } catch {
+    const done = { rowId, url, status: 0, ms: Date.now() - startMs, prewarmHit: false };
+    console.log("KRISTO_FIRST_VIDEO_EARLY_WARM_DONE", done);
+    return done;
+  } finally {
+    inflightVideoUrls.delete(url);
+  }
+}
+
+/**
+ * App-launch media warm — first-video-first. Only the first playable video is
+ * awaited (with a tight timeout) before returning so the startup-prewarm DONE
+ * log fires fast. The first poster is then warmed (non-blocking on failure).
+ * All remaining posters/videos are warmed in the background only after the
+ * active first frame paints, so they never compete with the first video for
+ * bandwidth. Shares warmed URL sets with Home Feed.
+ */
 export async function warmHomeFeedStartupMedia(
   rows: any[],
   opts?: { maxPosters?: number; maxVideos?: number; concurrency?: number }
-): Promise<{ posterCount: number; videoCount: number }> {
+): Promise<HomeFeedStartupMediaWarmResult> {
   const maxPosters = Math.max(0, Number(opts?.maxPosters ?? 5));
   const maxVideos = Math.max(0, Number(opts?.maxVideos ?? 3));
-  const concurrency = Math.max(1, Number(opts?.concurrency ?? MAX_VIDEO_CONCURRENCY));
+  const posterPrefetchTimeoutMs = getPosterPrefetchTimeoutMs();
 
   const posterUrls: string[] = [];
-  const startupPlans = getFirstHomeFeedVideoPlaybackPlans(rows, STARTUP_PREWARM_VIDEO_MAX);
+  const startupPlans = getFirstHomeFeedVideoPlaybackPlans(
+    rows,
+    Math.max(1, Math.min(maxVideos, STARTUP_PREWARM_VIDEO_MAX))
+  );
 
   for (const row of rows) {
     if (!row || !isVideoPost(row)) continue;
+    if (posterUrls.length >= maxPosters) break;
 
-    if (posterUrls.length < maxPosters) {
-      const posterUrl = normalizeUrl(resolvePosterUri(row));
-      if (
-        posterUrl &&
-        !warmedPosterUrls.has(posterUrl) &&
-        !inflightPosterUrls.has(posterUrl) &&
-        !posterUrls.includes(posterUrl)
-      ) {
-        posterUrls.push(posterUrl);
-      }
+    const posterUrl = normalizeUrl(resolvePosterUri(row));
+    if (
+      posterUrl &&
+      !warmedPosterUrls.has(posterUrl) &&
+      !inflightPosterUrls.has(posterUrl) &&
+      !posterUrls.includes(posterUrl)
+    ) {
+      posterUrls.push(posterUrl);
     }
-
-    if (posterUrls.length >= maxPosters && startupPlans.length >= maxVideos) break;
   }
 
-  await runWithConcurrency(posterUrls, concurrency, async (posterUrl) => {
-    if (warmedPosterUrls.has(posterUrl) || inflightPosterUrls.has(posterUrl)) return;
-    inflightPosterUrls.add(posterUrl);
-    try {
-      await Image.prefetch(posterUrl);
-      warmedPosterUrls.add(posterUrl);
-    } catch {
-      warmedPosterUrls.delete(posterUrl);
-    } finally {
-      inflightPosterUrls.delete(posterUrl);
-    }
-  });
-
+  let posterCount = 0;
+  let posterFailed = 0;
   let videoCount = 0;
-  for (let index = 0; index < Math.min(startupPlans.length, maxVideos); index += 1) {
-    const plan = startupPlans[index];
-    const target = normalizeUrl(plan.startupUri);
-    if (!isNetworkVideoUrl(target) || warmedVideoUrls.has(target) || inflightVideoUrls.has(target)) {
-      continue;
-    }
+  let videoFailed = 0;
 
-    inflightVideoUrls.add(target);
-    try {
-      logHomeFeedVideoQualityTrace({
-        event: "prewarm-start",
-        postId: plan.postId,
-        selectedStartupUrl: target,
-        lowResVideoUrl: plan.lowResVideoUrl,
-        originalVideoUrl: plan.fullQualityUri,
-        hasLowRes: plan.hasLowRes,
-        rangeHeader: index === 0 ? FIRST_VIDEO_RANGE_BYTES : RANGE_BYTES,
-      });
-      await warmVideoUrlNetwork(target, {
-        rangeHeader: index === 0 ? FIRST_VIDEO_RANGE_BYTES : RANGE_BYTES,
-      });
-      warmedVideoUrls.add(target);
-      videoCount += 1;
-      logHomeFeedVideoQualityTrace({
-        event: "prewarm-done",
-        postId: plan.postId,
-        selectedStartupUrl: target,
-        prewarmHit: true,
-      });
-    } catch {
-      warmedVideoUrls.delete(target);
-    } finally {
-      inflightVideoUrls.delete(target);
-    }
+  // CRITICAL PATH — first playable video only, awaited with a tight timeout.
+  const firstPlan = startupPlans[0];
+  if (firstPlan) {
+    const result = await warmStartupVideoPlan(firstPlan, true, FIRST_VIDEO_WARM_TIMEOUT_MS);
+    if (result === "ok") videoCount += 1;
+    else if (result === "failed") videoFailed += 1;
   }
 
-  return { posterCount: posterUrls.length, videoCount };
+  // First poster — awaited so the poster fallback is ready immediately, but a
+  // failed/slow R2 fetch can never block (timeout returns false).
+  const firstPoster = posterUrls[0];
+  if (firstPoster) {
+    const result = await warmStartupPoster(firstPoster, posterPrefetchTimeoutMs);
+    if (result === "ok") posterCount += 1;
+    else if (result === "failed") posterFailed += 1;
+  }
+
+  // BACKGROUND — remaining posters + videos warm only after first frame paints
+  // (or a short fallback). Never awaited, never blocks the DONE log.
+  const remainingPlans = startupPlans.slice(1);
+  const remainingPosters = posterUrls.slice(1);
+  if (remainingPlans.length || remainingPosters.length) {
+    runAfterActiveFirstFrame(() => {
+      void runWithConcurrency(remainingPosters, MAX_POSTER_CONCURRENCY, async (posterUrl) => {
+        await warmStartupPoster(posterUrl, posterPrefetchTimeoutMs);
+      });
+      for (const plan of remainingPlans) {
+        const target = normalizeUrl(plan.startupUri);
+        if (!isNetworkVideoUrl(target)) continue;
+        if (warmedVideoUrls.has(target) || inflightVideoUrls.has(target)) continue;
+        enqueueVideoTask(() =>
+          warmStartupVideoPlan(plan, false, VIDEO_WARM_FETCH_TIMEOUT_MS).then(() => {})
+        );
+      }
+    }, BACKGROUND_WARM_AFTER_FIRST_FRAME_MS);
+  }
+
+  return { posterCount, videoCount, posterFailed, videoFailed };
 }

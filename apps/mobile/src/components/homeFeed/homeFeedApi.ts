@@ -20,6 +20,7 @@ import {
   saveHomeFeedRowsCache,
   removeHomeFeedPostFromRowsCache,
   setBackendSnapshotRowIds,
+  getBackendSnapshotRowIds,
   collectRemovedHomeFeedCacheIds,
   logHomeFeedCachePruneDeleted,
   peekHomeFeedRowsCacheSavedAt,
@@ -101,6 +102,10 @@ function logScheduleRowSlotsVisibility(
 
 /** Match API snapshot ids, including expanded slot cards tied to a parent schedule row. */
 export function homeFeedRowIncludedInBackendSnapshot(row: any, snapshotRowIds: Set<string>): boolean {
+  // Client-recycled rows are synthetic (endless-feed fallback) and must never be
+  // pruned by the backend snapshot — they are keyed off real posts we still have.
+  if (row?.homeFeedRecycleKey) return true;
+
   const id = homeFeedRowKey(row);
   if (id && snapshotRowIds.has(id)) return true;
 
@@ -258,11 +263,17 @@ export function getCachedHomeFeedBackendCount(): number {
   return getCachedHomeFeedBackendRows().length;
 }
 
-/** Persist the first N merged rows for fast cold-start Home Feed paint. */
-export async function persistHomeFeedBackendRowsSnapshot(maxRows: number, userId?: string) {
+/**
+ * Persist the merged feed for fast cold-start Home Feed paint. We persist at
+ * LEAST `minRows`, but never shrink the live in-memory feed or the snapshot id
+ * set below what the API already returned — otherwise an extended (e.g. 25-row)
+ * feed would be clobbered back to the old startup slice. The visible WINDOW (not
+ * the cache size) governs first-paint speed.
+ */
+export async function persistHomeFeedBackendRowsSnapshot(minRows: number, userId?: string) {
   const merged = getCachedHomeFeedBackendRows();
-  if (!merged.length || maxRows <= 0) return 0;
-  const snapshot = merged.slice(0, maxRows);
+  if (!merged.length) return 0;
+  const snapshot = merged.length >= minRows ? merged : merged.slice(0, minRows);
   lastFetchedHomeFeedRows = snapshot;
   await saveHomeFeedRowsCache(
     snapshot,
@@ -435,6 +446,97 @@ export async function fetchHomeFeedFromApi(
 
   setHomeFeedFetchInflight(fetchPromise);
   return fetchPromise;
+}
+
+export type HomeFeedPageResult = {
+  rows: any[];
+  appended: number;
+  incoming: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
+/**
+ * Append a page of API rows into the backend cache WITHOUT pruning. Unlike the
+ * reconcile path (which treats the API response as the full snapshot and drops
+ * everything else), this UNIONs the new page's ids with the existing snapshot so
+ * earlier pages survive. Used by near-end pagination.
+ */
+async function appendHomeFeedBackendRows(pageRows: any[]) {
+  const active = filterActiveHomeFeedRows(pageRows);
+  const existing = getCachedHomeFeedBackendRows();
+  const before = existing.length;
+  const { merged } = stableMergeHomeFeedRows(existing, active);
+  const appended = Math.max(0, merged.length - before);
+
+  const prevSnapshot = Array.from(getBackendSnapshotRowIds() || []);
+  const snapshotIds = Array.from(
+    new Set([
+      ...prevSnapshot,
+      ...merged.map((row) => homeFeedRowKey(row)).filter(Boolean),
+    ])
+  );
+
+  lastFetchedHomeFeedRows = merged;
+  setBackendSnapshotRowIds(snapshotIds);
+  await saveHomeFeedRowsCache(merged, undefined, snapshotIds);
+  return { merged, appended };
+}
+
+/**
+ * Fetch the next page of the global feed at `cursor` (offset) and append it to
+ * the cache without pruning existing rows. Returns paging metadata so callers
+ * can advance the cursor or fall back to recycling when the backend is exhausted.
+ */
+export async function fetchHomeFeedNextPage(
+  cursor: string | null,
+  limit: number
+): Promise<HomeFeedPageResult> {
+  const session = getSessionSync() as any;
+  const viewerUserId = String(session?.userId || "").trim();
+  const viewerChurchId = String(session?.churchId || "").trim();
+  const offset = String(cursor ?? "").trim();
+  const pageLimit = Math.max(1, Math.floor(limit) || 1);
+
+  const params = new URLSearchParams({
+    scope: "global",
+    limit: String(pageLimit),
+    _: String(Date.now()),
+  });
+  if (offset) params.set("cursor", offset);
+
+  const res: any = await apiGet(
+    `/api/church/feed?${params.toString()}`,
+    {
+      headers: getKristoHeaders({
+        userId: viewerUserId,
+        role: (session?.role || "Member") as any,
+        churchId: viewerChurchId,
+      }),
+      cache: "no-store" as RequestCache,
+    },
+    { screen: "HomeFeed", throttleMs: 0, dedupe: false }
+  );
+
+  const hasMore = res?.hasMore === true;
+  const nextCursor = res?.nextCursor != null ? String(res.nextCursor) : null;
+
+  const rawRows = parseFeedRows(res);
+  const incoming = rawRows.length;
+  const rows = filterPhase1FeedRows(rawRows);
+
+  if (!rows.length) {
+    return {
+      rows: getCachedHomeFeedBackendRows(),
+      appended: 0,
+      incoming,
+      hasMore,
+      nextCursor,
+    };
+  }
+
+  const { merged, appended } = await appendHomeFeedBackendRows(rows);
+  return { rows: merged, appended, incoming, hasMore, nextCursor };
 }
 
 export function syncHomeFeedLike(postId: string, liked?: boolean) {

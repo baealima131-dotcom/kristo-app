@@ -92,6 +92,7 @@ type Props = {
   videoWarmMode: HomeFeedVideoWarmMode;
   screenFocused: boolean;
   feedIndex?: number;
+  isFirstFeedVideo?: boolean;
   likedByMe: boolean;
   liked: boolean;
   likeCount: number;
@@ -112,6 +113,7 @@ export const FeedRow = memo(function FeedRow({
   videoWarmMode,
   screenFocused,
   feedIndex = -1,
+  isFirstFeedVideo = false,
   likedByMe,
   liked,
   likeCount,
@@ -183,8 +185,9 @@ export const FeedRow = memo(function FeedRow({
         {showVideoMedia ? (
           mountVideoPlayer ? (
             <SimpleFeedVideo
-              key={`feed-video-${postId}`}
+              key={`feed-video-${String(item?.homeFeedRecycleKey || postId)}`}
               postId={postId}
+              recycleKey={String(item?.homeFeedRecycleKey || "")}
               title={title}
               mediaStatus={mediaStatus}
               uri={playbackPlan.fullQualityUri}
@@ -197,6 +200,7 @@ export const FeedRow = memo(function FeedRow({
               warmMode={videoWarmMode}
               screenFocused={screenFocused}
               feedIndex={feedIndex}
+              isFirstFeedVideo={isFirstFeedVideo}
               contentLength={Number(item?.sizeBytes || item?.fileSizeBytes || 0) || undefined}
             />
           ) : (

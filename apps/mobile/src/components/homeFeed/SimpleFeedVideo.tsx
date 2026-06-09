@@ -29,10 +29,12 @@ import { wasHomeFeedVideoUrlBufferedAhead } from "@/src/lib/homeFeedVideoBufferA
 import {
   getFirstHomeFeedVideoPlaybackPlans,
   logHomeFeedVideoQualityTrace,
+  markHomeFeedLowResPreviewFailed,
   resolveHomeFeedVideoPlaybackPlan,
   resolveVerifiedStartupVideoUri,
 } from "@/src/lib/homeFeedVideoQuality";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
+import { getHomeFeedPosterLoadTimeoutMs } from "@/src/lib/videoGridThumbnail";
 import { hasBrandedVideoPoster, isValidVideoPosterUri } from "./homeFeedUtils";
 import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
 
@@ -50,7 +52,12 @@ type Props = {
   warmMode: HomeFeedVideoWarmMode;
   screenFocused: boolean;
   feedIndex?: number;
+  isFirstFeedVideo?: boolean;
   contentLength?: number;
+  /** Endless-feed recycle key (`${id}:cycle:N`). When set, this is a recycled copy
+   *  of an existing post: it must always start at 0 and must not save/restore the
+   *  original post's watch progress (likes/comments still use the original `postId`). */
+  recycleKey?: string;
 };
 
 // V1 perf: only emit startup/first-frame timing for the first active video in
@@ -152,6 +159,10 @@ const PROGRESSIVE_BUFFER_OPTIONS = {
   prioritizeTimeOverSizeThreshold: true,
 } as const;
 
+/** Keep low-res playing before upgrading; avoids black flash during HQ source swap. */
+const QUALITY_UPGRADE_DELAY_MS = 2800;
+const STARTUP_LOW_RES_FALLBACK_MS = 1800;
+
 /**
  * Active row plays with audio; preload/warm rows keep muted paused players ready for handoff.
  */
@@ -169,8 +180,12 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   warmMode,
   screenFocused,
   feedIndex = -1,
+  isFirstFeedVideo = false,
   contentLength,
+  recycleKey = "",
 }: Props) {
+  const isRecycledRow = Boolean(String(recycleKey || "").trim());
+  const recycledStartResetLoggedRef = useRef(false);
   const resolvedFullUri = String(fullQualityUri || uri || "").trim();
   const resolvedStartupUri = String(startupUri || resolvedFullUri).trim();
   const canUpgradeQuality =
@@ -179,15 +194,25 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     resolvedStartupUri.split("?")[0] !== resolvedFullUri.split("?")[0];
 
   const [playbackUri, setPlaybackUri] = useState(resolvedStartupUri);
+  const [upgradingQuality, setUpgradingQuality] = useState(false);
   const upgradedQualityRef = useRef(false);
   const upgradeStartedMsRef = useRef<number | null>(null);
   const qualityTraceLoggedRef = useRef(false);
   const qualityUpgradePendingRef = useRef(false);
+  const qualityUpgradeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playbackFallbackRef = useRef(false);
+  const startupUriFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    playbackFallbackRef.current = false;
     upgradedQualityRef.current = false;
     upgradeStartedMsRef.current = null;
     qualityTraceLoggedRef.current = false;
+    setUpgradingQuality(false);
+    if (qualityUpgradeTimerRef.current) {
+      clearTimeout(qualityUpgradeTimerRef.current);
+      qualityUpgradeTimerRef.current = null;
+    }
     setPlaybackUri(resolvedStartupUri);
   }, [postId, resolvedStartupUri, resolvedFullUri]);
 
@@ -197,11 +222,13 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   warmModeRef.current = warmMode;
 
   const isActive = warmMode === "active";
+  const isStartupPriority = warmMode === "startup-priority";
+  const countsForStartupTiming = isActive || isStartupPriority;
 
   const isRetainPrev = warmMode === "warm" || warmMode === "cache";
   const isPreloadNext = warmMode === "preload";
-  // Active + next 2–3 preload rows + scroll-back retain rows load source immediately.
-  const sourceLoadAllowed = isActive || isPreloadNext || isRetainPrev;
+  const sourceLoadAllowed =
+    isActive || isStartupPriority || isPreloadNext || isRetainPrev;
   const playerSource =
     sourceLoadAllowed && playbackUri
       ? { uri: playbackUri, contentType: "progressive" as const }
@@ -275,7 +302,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const readyMarkedRef = useRef(cachedReadyOnMount);
   const mountMsRef = useRef(Date.now());
   const readyMsRef = useRef<number | null>(cachedReadyOnMount ? 0 : null);
-  const firstFrameMsRef = useRef<number | null>(cachedReadyOnMount && isActive ? 0 : null);
+  const firstFrameMsRef = useRef<number | null>(
+    cachedReadyOnMount && countsForStartupTiming ? 0 : null
+  );
   const timingLoggedRef = useRef(false);
   const activeHandoffRef = useRef(false);
   const prevIsActiveRef = useRef(isActive);
@@ -304,7 +333,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   // Decode/play gate: active + focused + app active + source set. Do NOT wait
   // for readyToPlay, duration, or full buffer before calling play().
   const computeDecodeShouldPlay = () =>
-    isActive && screenFocused && appActive && Boolean(playerSource);
+    countsForStartupTiming && screenFocused && appActive && Boolean(playerSource);
 
   const computePreloadShouldPlay = () =>
     isPreloadNext && screenFocused && appActive && Boolean(playerSource);
@@ -432,8 +461,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const logStartupTiming = () => {
     if (timingLoggedRef.current) return;
     timingLoggedRef.current = true;
-    // Only the first active video in the session emits startup timing.
-    if (!isActive || firstActiveTimingLogged) return;
+    if (!countsForStartupTiming || firstActiveTimingLogged) return;
     firstActiveTimingLogged = true;
     console.log("KRISTO_VIDEO_STARTUP_TIMING", {
       id: postId || null,
@@ -442,11 +470,13 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       videoUrlHost: urlHost(resolvedFullUri),
       startupUrlHost: urlHost(playbackUri),
       posterHost: urlHost(posterUri),
+      warmMode,
+      startupPriority: isStartupPriority,
     });
   };
 
   const logFirstFrameDiag = () => {
-    if (!isActive || firstFrameDiagLoggedRef.current) return;
+    if (!countsForStartupTiming || firstFrameDiagLoggedRef.current) return;
     firstFrameDiagLoggedRef.current = true;
     console.log("KRISTO_VIDEO_FIRST_FRAME_DIAG", {
       id: postId || null,
@@ -467,7 +497,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
     // Active video first frame opens the preload gate so the next video can
     // start warming without ever blocking the active one.
-    if (isActive) {
+    if (countsForStartupTiming) {
       markHomeFeedActiveFirstFrame();
       logFirstFrameDiag();
       logHomeFeedVideoQualityTrace({
@@ -477,9 +507,12 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
         selectedStartupUrl: playbackUri,
         originalVideoUrl: resolvedFullUri,
         prewarmHit,
+        warmMode,
+        startupPriority: isStartupPriority,
       });
     }
     setFirstFrameReady((prev) => (prev ? prev : true));
+    setUpgradingQuality(false);
   };
 
   const activateActivePlayback = (reason: string) => {
@@ -533,6 +566,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     const id = String(postId || "").trim();
     if (!id) return;
 
+    // Recycled copies must never write progress back to the original post id.
+    if (isRecycledRow) return;
+
     if (!opts?.refOnly && !playerDisposedRef.current) {
       const live = safeGetPlayerCurrentTime(player);
       if (live > 0) lastKnownTimeRef.current = live;
@@ -574,23 +610,34 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     mountMsRef.current = Date.now();
     timingLoggedRef.current = false;
     readyMsRef.current = cachedReadyRef.current ? 0 : null;
-    firstFrameMsRef.current = cachedReadyRef.current && warmModeRef.current === "active" ? 0 : null;
+    firstFrameMsRef.current = cachedReadyRef.current && countsForStartupTiming ? 0 : null;
 
     activeHandoffRef.current = false;
 
     if (!screenFocused) return;
 
-    if (warmModeRef.current !== "active" || !cachedReadyRef.current) {
-      try {
-        setPlayerMuted(true, "layout-effect-prime", "screen-focused-mount");
-        requestPlay("layout-effect-prime");
-      } catch {}
-    } else if (warmModeRef.current === "active") {
+    if (warmModeRef.current !== "active" && warmModeRef.current !== "startup-priority") {
+      if (!cachedReadyRef.current) {
+        try {
+          setPlayerMuted(true, "layout-effect-prime", "screen-focused-mount");
+          requestPlay("layout-effect-prime");
+        } catch {}
+      }
+      return;
+    }
+
+    if (!cachedReadyRef.current) {
       try {
         setPlayerMuted(true, "layout-effect-active-prime", "screen-focused-mount");
         requestPlay("layout-effect-active-prime");
       } catch {}
+      return;
     }
+
+    try {
+      setPlayerMuted(true, "layout-effect-active-prime", "screen-focused-mount");
+      requestPlay("layout-effect-active-cached");
+    } catch {}
   }, [player, screenFocused, uri, postId]);
 
   useEffect(() => {
@@ -633,6 +680,23 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (!postId || progressRestoredRef.current) return;
     if (!sourceLoadAllowed && !isActive) return;
 
+    // Recycled copies are treated as brand-new feed cards: never restore the
+    // original post's watch position — always start at 0.
+    if (isRecycledRow) {
+      progressRestoredRef.current = true;
+      if (!recycledStartResetLoggedRef.current) {
+        recycledStartResetLoggedRef.current = true;
+        console.log("KRISTO_RECYCLED_VIDEO_START_RESET", {
+          id: String(postId || ""),
+          feedRenderKey: String(recycleKey || ""),
+          homeFeedRecycleKey: String(recycleKey || ""),
+          currentTime: 0,
+        });
+      }
+      seekPlayerToSeconds(0, "recycled-start-reset");
+      return;
+    }
+
     const saved = getHomeFeedVideoProgress(postId);
     if (saved === null || saved <= 0.1) return;
 
@@ -651,7 +715,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (isRetainPrev || isActive) {
       setFirstFrameReady((prev) => (prev ? prev : true));
     }
-  }, [sourceLoadAllowed, isActive, isRetainPrev, postId, player, status]);
+  }, [sourceLoadAllowed, isActive, isRetainPrev, postId, player, status, isRecycledRow, recycleKey]);
 
   useEffect(() => {
     registerHomeFeedVideo(postId, player, {
@@ -698,7 +762,11 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       prewarmHit,
     }).then((verified) => {
       if (cancelled || !verified) return;
-      setPlaybackUri((current) => (current === verified ? current : verified));
+      // Only apply verification before first frame; never downgrade after playback starts.
+      setPlaybackUri((current) => {
+        if (firstFrameReady) return current;
+        return current === verified ? current : verified;
+      });
       if (verified === resolvedFullUri) {
         upgradedQualityRef.current = true;
       }
@@ -706,10 +774,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     return () => {
       cancelled = true;
     };
-  }, [postId, canUpgradeQuality, resolvedStartupUri, resolvedFullUri, prewarmHit]);
+  }, [postId, canUpgradeQuality, resolvedStartupUri, resolvedFullUri, prewarmHit, firstFrameReady]);
 
   useEffect(() => {
-    if (!isActive || qualityTraceLoggedRef.current) return;
+    if (!countsForStartupTiming || qualityTraceLoggedRef.current) return;
     qualityTraceLoggedRef.current = true;
     logHomeFeedVideoQualityTrace({
       event: "startup-selected",
@@ -721,25 +789,118 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       hasLowRes: canUpgradeQuality,
       prewarmHit,
       cacheHit: cachedReadyRef.current,
+      warmMode,
+      startupPriority: isStartupPriority,
     });
-  }, [isActive, postId, feedIndex, playbackUri, canUpgradeQuality, resolvedStartupUri, resolvedFullUri, prewarmHit]);
+  }, [
+    countsForStartupTiming,
+    isStartupPriority,
+    postId,
+    feedIndex,
+    playbackUri,
+    canUpgradeQuality,
+    resolvedStartupUri,
+    resolvedFullUri,
+    prewarmHit,
+    warmMode,
+  ]);
 
   useEffect(() => {
     if (!firstFrameReady || !canUpgradeQuality || upgradedQualityRef.current) return;
     if (playbackUri === resolvedFullUri) return;
 
+    if (qualityUpgradeTimerRef.current) {
+      clearTimeout(qualityUpgradeTimerRef.current);
+    }
+
+    qualityUpgradeTimerRef.current = setTimeout(() => {
+      qualityUpgradeTimerRef.current = null;
+      if (upgradedQualityRef.current) return;
+
+      upgradedQualityRef.current = true;
+      upgradeStartedMsRef.current = Date.now();
+      qualityUpgradePendingRef.current = true;
+      setUpgradingQuality(true);
+      logHomeFeedVideoQualityTrace({
+        event: "upgrade-start",
+        postId: postId || null,
+        fromUrl: playbackUri,
+        toUrl: resolvedFullUri,
+        msToFirstFrame: firstFrameMsRef.current,
+        delayMs: QUALITY_UPGRADE_DELAY_MS,
+      });
+      setPlaybackUri(resolvedFullUri);
+    }, QUALITY_UPGRADE_DELAY_MS);
+
+    return () => {
+      if (qualityUpgradeTimerRef.current) {
+        clearTimeout(qualityUpgradeTimerRef.current);
+        qualityUpgradeTimerRef.current = null;
+      }
+    };
+  }, [firstFrameReady, canUpgradeQuality, playbackUri, resolvedFullUri, postId]);
+
+  const fallbackToFullQuality = (reason: string) => {
+    const playbackNorm = playbackUri.split("?")[0];
+    const startupNorm = resolvedStartupUri.split("?")[0];
+    const fullNorm = resolvedFullUri.split("?")[0];
+    if (playbackFallbackRef.current) return false;
+    if (!canUpgradeQuality || playbackNorm !== startupNorm || playbackNorm === fullNorm) {
+      return false;
+    }
+
+    playbackFallbackRef.current = true;
+    markHomeFeedLowResPreviewFailed(resolvedStartupUri);
     upgradedQualityRef.current = true;
-    upgradeStartedMsRef.current = Date.now();
-    qualityUpgradePendingRef.current = true;
+    setUpgradingQuality(false);
     logHomeFeedVideoQualityTrace({
-      event: "upgrade-start",
+      event: "startup-fallback-full",
       postId: postId || null,
+      reason,
       fromUrl: playbackUri,
       toUrl: resolvedFullUri,
-      msToFirstFrame: firstFrameMsRef.current,
     });
     setPlaybackUri(resolvedFullUri);
-  }, [firstFrameReady, canUpgradeQuality, playbackUri, resolvedFullUri, postId]);
+    return true;
+  };
+
+  useEffect(() => {
+    if (playerDisposedRef.current) return;
+    if (statusLower(status) !== "error") return;
+
+    console.log("KRISTO_VIDEO_PLAYER_ERROR", {
+      id: postId || null,
+      playbackUri,
+      fullUri: resolvedFullUri,
+      warmMode,
+    });
+
+    fallbackToFullQuality("player-error");
+  }, [status, playbackUri, resolvedFullUri, resolvedStartupUri, canUpgradeQuality, postId, warmMode]);
+
+  useEffect(() => {
+    if (!countsForStartupTiming || !canUpgradeQuality || firstFrameReady) return;
+    if (playbackUri.split("?")[0] === resolvedFullUri.split("?")[0]) return;
+
+    startupUriFallbackTimerRef.current = setTimeout(() => {
+      if (firstFrameReady || playbackFallbackRef.current) return;
+      fallbackToFullQuality("startup-timeout");
+    }, STARTUP_LOW_RES_FALLBACK_MS);
+
+    return () => {
+      if (startupUriFallbackTimerRef.current) {
+        clearTimeout(startupUriFallbackTimerRef.current);
+        startupUriFallbackTimerRef.current = null;
+      }
+    };
+  }, [
+    countsForStartupTiming,
+    canUpgradeQuality,
+    playbackUri,
+    resolvedFullUri,
+    firstFrameReady,
+    postId,
+  ]);
 
   useEffect(() => {
     if (mountedUriRef.current !== playbackUri) {
@@ -752,6 +913,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       preloadStartLoggedRef.current = false;
 
       if (isQualityUpgrade) {
+        setUpgradingQuality(true);
         const savedTime = lastKnownTimeRef.current;
         if (savedTime > 0.05) {
           seekPlayerToSeconds(savedTime, "quality-upgrade");
@@ -825,6 +987,14 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       return;
     }
 
+    if (isStartupPriority) {
+      setPlayerMuted(true, "startup-priority-prime", warmMode);
+      if (computeDecodeShouldPlay() && !firstFrameReady) {
+        requestPlay("startup-priority-decode");
+      }
+      return;
+    }
+
     if (isRetainPrev) {
       setPlayerMuted(true, "retain-prev-paused", warmMode);
       safePlayerPause(player);
@@ -851,6 +1021,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   }, [
     player,
     isActive,
+    isStartupPriority,
     isRetainPrev,
     shouldPrime,
     screenFocused,
@@ -891,15 +1062,19 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       }
     }
 
-    if (isActive && computeDecodeShouldPlay()) {
+    if (countsForStartupTiming && computeDecodeShouldPlay()) {
       if (!firstFrameReady) {
-        activateActivePlayback("status-progressive-pre-frame");
-      } else if (!isPlaying) {
+        if (isActive) {
+          activateActivePlayback("status-progressive-pre-frame");
+        } else {
+          requestPlay("status-startup-priority-pre-frame");
+        }
+      } else if (isActive && !isPlaying) {
         requestPlay("status-active-continue");
       }
     }
 
-    if (shouldPrime && !isActive && firstFrameReady) {
+    if (shouldPrime && !countsForStartupTiming && firstFrameReady) {
       safePlayerPause(player);
       setPlayerMuted(true, "preload-first-frame-pause", warmMode);
     }
@@ -921,10 +1096,12 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       touchHomeFeedVideoReadiness(postId, uri);
     }
 
-    if (isActive) {
+    if (countsForStartupTiming) {
       markFirstFrame(false);
-      activateActivePlayback("simple-feed-video-active");
-      recoverAudioIfNeeded("status-ready-active");
+      if (isActive) {
+        activateActivePlayback("simple-feed-video-active");
+        recoverAudioIfNeeded("status-ready-active");
+      }
       logStartupTiming();
       return;
     }
@@ -953,9 +1130,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   ]);
 
   useEffect(() => {
-    if (isActive || !screenFocused) return;
+    if (countsForStartupTiming || !screenFocused) return;
     pauseHomeFeedVideo(postId, { postId, reason: `warm-${warmMode}` });
-  }, [isActive, warmMode, screenFocused, postId]);
+  }, [countsForStartupTiming, isActive, warmMode, screenFocused, postId]);
 
   // Diagnostic (first 3 video rows): dev-only when KRISTO_VERBOSE_FEED_DEBUG is on.
   useEffect(() => {
@@ -995,14 +1172,15 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const poster = String(posterUri || "").trim();
   const hasPoster = isValidVideoPosterUri(poster, resolvedFullUri);
   const hasBranded = brandedPoster || hasBrandedVideoPoster({ posterUri: poster, brandedPoster });
-  const showCoverUntilFirstFrame = !firstFrameReady;
+  const showCoverUntilFirstFrame = !firstFrameReady || upgradingQuality;
   const showPosterOverlay = showCoverUntilFirstFrame && hasPoster;
   const showBrandedCover = showCoverUntilFirstFrame && !hasPoster && hasBranded;
   const showGoldFallback = showCoverUntilFirstFrame && !hasPoster && !hasBranded;
   const hideVideoSurface = showCoverUntilFirstFrame;
+  const homeFeedPosterTimeoutMs = getHomeFeedPosterLoadTimeoutMs();
 
   useEffect(() => {
-    if (!isActive || feedIndex !== 0) return;
+    if (!isFirstFeedVideo || !countsForStartupTiming) return;
     if (firstPosterCheckLogged) return;
     firstPosterCheckLogged = true;
     console.log("KRISTO_VIDEO_FIRST_POSTER_CHECK", {
@@ -1012,13 +1190,26 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       videoUrlHost: urlHost(resolvedFullUri),
       contentLength: Number(contentLength || 0) > 0 ? Number(contentLength) : null,
       brandedPoster: hasBranded,
+      warmMode,
+      startupPriority: isStartupPriority,
     });
-  }, [isActive, feedIndex, postId, poster, uri, hasPoster, hasBranded, contentLength]);
+  }, [
+    isFirstFeedVideo,
+    countsForStartupTiming,
+    isStartupPriority,
+    postId,
+    poster,
+    hasPoster,
+    hasBranded,
+    contentLength,
+    warmMode,
+    resolvedFullUri,
+  ]);
 
   useEffect(() => {
-    if (!hasPoster || !isActive) return;
+    if (!hasPoster || !countsForStartupTiming) return;
     Image.prefetch(poster).catch(() => {});
-  }, [poster, hasPoster, isActive]);
+  }, [poster, hasPoster, countsForStartupTiming]);
 
   return (
     <View style={styles.root}>
@@ -1038,6 +1229,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
             title={title}
             videoUrl={resolvedFullUri}
             mediaStatus={mediaStatus}
+            showBrandedUnderlay
+            previewLoadTimeoutMs={homeFeedPosterTimeoutMs}
           />
         </View>
       ) : null}
