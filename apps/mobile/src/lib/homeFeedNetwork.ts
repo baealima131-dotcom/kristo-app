@@ -1,4 +1,5 @@
 import { peekHomeFeedRowsCacheSavedAt, peekHomeFeedRowsCacheSync } from "@/src/components/homeFeed/homeFeedRowsCache";
+import { isMoreTabTransitionBlocking } from "./refreshCoordinator";
 
 /** Minimum interval between global Home Feed API refreshes (unless forced). */
 export const HOME_FEED_REFRESH_TTL_MS = 45_000;
@@ -41,6 +42,14 @@ const slotPollLastAt = new Map<string, number>();
 const videoHeadWarmedAt = new Map<string, number>();
 
 export function bumpHomeFeedFetchGeneration(reason = "unfocus"): number {
+  if (isMoreTabTransitionBlocking()) {
+    logHomeFeedNetworkTrace({
+      event: "cancel-generation-skipped",
+      reason: "more-tab-transition-blocked",
+      generation: fetchGeneration,
+    });
+    return fetchGeneration;
+  }
   fetchGeneration += 1;
   logHomeFeedNetworkTrace({ event: "cancel-generation", reason, generation: fetchGeneration });
   return fetchGeneration;
@@ -83,6 +92,9 @@ export function shouldHardRefreshHomeFeed(reason: string, force?: boolean) {
 }
 
 export function resolveHomeFeedRefreshMode(reason: string, force?: boolean): HomeFeedRefreshMode {
+  if (isMoreTabTransitionBlocking() && !shouldHardRefreshHomeFeed(reason, force)) {
+    return "skip";
+  }
   if (shouldHardRefreshHomeFeed(reason, force)) return "required";
   if (isHomeFeedNetworkFresh()) return "skip";
 

@@ -12,8 +12,7 @@ import { waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
 import {
   logMoreDeferredRefreshSkip,
   logMoreDeferredRefreshStart,
-  runAfterMoreTabReadyForRefresh,
-  shouldBlockChurchBackgroundWorkForMoreTab,
+  isMoreTabTransitionBlocking,
 } from "./refreshCoordinator";
 import { shouldPauseBackgroundProfileRefresh } from "./mediaScheduleFlowFlags";
 import { isSessionExitInProgress } from "./kristoSessionExitFlags";
@@ -356,8 +355,8 @@ export async function silentRefreshChurchOverview(
     clearResponseCacheForRequest("GET", "/api/church/overview", uid);
   }
 
-  if (shouldBlockChurchBackgroundWorkForMoreTab()) {
-    logMoreDeferredRefreshSkip("silentRefreshChurchOverview", "more-first-paint-pending", {
+  if (isMoreTabTransitionBlocking()) {
+    logMoreDeferredRefreshSkip("silentRefreshChurchOverview", "more-tab-transition-blocked", {
       churchId: cid,
       userId: uid,
     });
@@ -532,15 +531,12 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
   const userId = String(session?.userId || "").trim();
   if (!userId) return;
 
-  if (shouldBlockChurchBackgroundWorkForMoreTab()) {
-    logMoreDeferredRefreshSkip("silentPreloadTabScreens", "more-first-paint-pending", {
+  if (isMoreTabTransitionBlocking()) {
+    logMoreDeferredRefreshSkip("silentPreloadTabScreens", "more-tab-transition-blocked", {
       userId,
       churchId: String(session?.churchId || "").trim(),
     });
-    runAfterMoreTabReadyForRefresh(() => {
-      void silentPreloadTabScreens(session, opts);
-    });
-    return preloadInflight;
+    return null;
   }
 
   let effectiveSession = session as KristoSession;
@@ -623,8 +619,8 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
             churchId,
             userId,
           });
-        } else if (shouldBlockChurchBackgroundWorkForMoreTab()) {
-          logMoreDeferredRefreshSkip("silentPreloadTabScreens", "church-overview-deferred", {
+        } else if (isMoreTabTransitionBlocking()) {
+          logMoreDeferredRefreshSkip("silentPreloadTabScreens", "more-tab-transition-blocked", {
             churchId,
             userId,
           });

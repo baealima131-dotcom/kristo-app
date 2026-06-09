@@ -1,16 +1,18 @@
 import { Tabs, useGlobalSearchParams, useSegments, useRouter } from "expo-router";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { silentPreloadTabScreens } from "@/src/lib/screenDataCache";
 import { deferStartupWorkAfterHomeFirstFrame, setHomeTabFocused } from "@/src/lib/firstPaint";
 import {
-  beginMoreTabTransition,
-  endMoreTabTransition,
+  beginMoreTabPressTransition,
+  endMoreTabPressTransition,
+  hideMoreTabShell,
+  isMoreTabShellVisible,
+  isMoreTabTransitionBlocking,
   logMoreDeferredRefreshSkip,
-  runAfterMoreTabReadyForRefresh,
-  shouldBlockChurchBackgroundWorkForMoreTab,
+  subscribeMoreTabTransition,
 } from "@/src/lib/refreshCoordinator";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet } from "@/src/lib/kristoApi";
@@ -30,7 +32,7 @@ import {
   onLiveRingRefresh,
 } from "@/src/lib/liveScheduleRing";
 import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
-import { Animated, InteractionManager, Pressable, Text, View } from "react-native";
+import { Animated, InteractionManager, Pressable, StyleSheet, Text, View } from "react-native";
 import { ensureChurchAccessOrSetup } from "@/src/lib/churchLockedRecovery";
 import { fetchLightLiveState, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
 
@@ -40,6 +42,7 @@ const GOLD = "#D9B35F";
 const MUTED = "rgba(255,255,255,0.55)";
 const TAB_BG = "rgba(8,12,20,0.96)";
 const TAB_BORDER = "rgba(255,255,255,0.05)";
+const MORE_SHELL_BG = "#0B0F17";
 /** Hold time before onLongPress; RN default is 500ms. */
 const LIVE_RING_LONG_PRESS_MS = 150;
 
@@ -217,15 +220,18 @@ export default function TabLayout() {
   const router = useRouter();
   const { session, loading, setSession } = useKristoSession();
   const prevTabRef = useRef("");
+  const [, redrawMoreShell] = useReducer((value: number) => value + 1, 0);
+
+  useEffect(() => subscribeMoreTabTransition(redrawMoreShell), []);
 
   useLayoutEffect(() => {
     const tab = String(segments[1] || "index");
     setHomeTabFocused(tab === "index");
     const prevTab = prevTabRef.current;
-    if (tab === "more" && prevTab !== "more") {
-      beginMoreTabTransition();
-    } else if (tab !== "more" && prevTab === "more") {
-      endMoreTabTransition();
+    if (tab === "more") {
+      hideMoreTabShell();
+    } else if (prevTab === "more") {
+      endMoreTabPressTransition();
     }
     prevTabRef.current = tab;
   }, [segments.join("/")]);
@@ -242,7 +248,7 @@ export default function TabLayout() {
     if (loading || !session?.userId) return;
     const tab = String(segments[1] || "index");
     if (tab !== "index") return;
-    if (shouldBlockChurchBackgroundWorkForMoreTab()) return;
+    if (isMoreTabTransitionBlocking()) return;
     deferStartupWorkAfterHomeFirstFrame(
       () => silentPreloadTabScreens(session),
       { reason: "screen-cache-preload-home-focus" }
@@ -616,12 +622,9 @@ export default function TabLayout() {
 
       if (!session?.userId || !session?.churchId) return;
 
-      if (shouldBlockChurchBackgroundWorkForMoreTab()) {
-        logMoreDeferredRefreshSkip("refreshChurchLiveAndRings", "more-first-paint-pending", {
+      if (isMoreTabTransitionBlocking()) {
+        logMoreDeferredRefreshSkip("refreshChurchLiveAndRings", "more-tab-transition-blocked", {
           source,
-        });
-        runAfterMoreTabReadyForRefresh(() => {
-          void refreshChurchLiveAndRings(source);
         });
         return;
       }
@@ -711,12 +714,9 @@ export default function TabLayout() {
     const unsubFeed = subscribeHomeFeed(() => applyScheduleRings("feed"));
     const unsubClaim = onClaimUpdated((payload) => scheduleClaimRingSync(payload));
     const unsubRingRefresh = onLiveRingRefresh(({ reason }) => {
-      if (shouldBlockChurchBackgroundWorkForMoreTab()) {
-        logMoreDeferredRefreshSkip("refreshChurchLiveAndRings", "more-first-paint-pending", {
+      if (isMoreTabTransitionBlocking()) {
+        logMoreDeferredRefreshSkip("refreshChurchLiveAndRings", "more-tab-transition-blocked", {
           source: reason,
-        });
-        runAfterMoreTabReadyForRefresh(() => {
-          void refreshChurchLiveAndRings(reason);
         });
         return;
       }
@@ -790,9 +790,11 @@ export default function TabLayout() {
 
   const churchLiveColor = String(mediaScheduleTabLive?.color || "#EF4444");
   const churchTabTitle = churchIsLive ? "LIVE" : churchTitle;
+  const showMoreTabShell = isMoreTabShellVisible();
 
   return (
-    <Tabs
+    <>
+      <Tabs
       initialRouteName="index"
       screenOptions={{
         headerShown: false,
@@ -860,10 +862,11 @@ export default function TabLayout() {
                   onPress={() => router.replace("/more/my-church-room/ministry" as any)}
                 />
               )
-            : ({ children }: any) => (
+            : ({ children, onPress: _defaultOnPress, ...rest }: any) => (
                 <Pressable
+                  {...rest}
                   onPress={() => {
-                    beginMoreTabTransition();
+                    beginMoreTabPressTransition();
                     router.replace("/(tabs)/more" as any);
                   }}
                   style={{
@@ -1009,5 +1012,12 @@ export default function TabLayout() {
 
       <Tabs.Screen name="_ministry_hidden/index" options={{ href: null }} />
     </Tabs>
+    {showMoreTabShell ? (
+      <View
+        pointerEvents="none"
+        style={[StyleSheet.absoluteFillObject, { backgroundColor: MORE_SHELL_BG, zIndex: 2 }]}
+      />
+    ) : null}
+    </>
   );
 }

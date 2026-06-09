@@ -64,119 +64,102 @@ let lastCoordinatedRefreshAt = 0;
 let coordinatedRefreshInflight: Promise<void> | null = null;
 
 let moreTabFocused = false;
-let moreTabTransitionUntil = 0;
-let moreTabFirstPaintFired = false;
-let moreTabFirstPaintAt = 0;
-let moreReadyRefreshScheduled = false;
-const moreReadyRefreshQueue: Array<() => void | Promise<void>> = [];
+let moreTabPressTransitionBlocking = false;
+let moreTabPressTransitionStartedAt = 0;
+let moreTabShellVisible = false;
+let moreTabFirstPaintLogged = false;
+let moreTabPressTransitionEndTimer: ReturnType<typeof setTimeout> | null = null;
 
-const MORE_TAB_TRANSITION_MS = 2400;
-const MORE_TAB_POST_PAINT_COOLDOWN_MS = 800;
+const MORE_TAB_PRESS_BLOCK_MS = 1500;
+const moreTabTransitionListeners = new Set<() => void>();
 
-export function beginMoreTabTransition() {
-  const entering = !moreTabFocused;
-  moreTabFocused = true;
-  moreTabTransitionUntil = Date.now() + MORE_TAB_TRANSITION_MS;
-  if (entering) {
-    moreTabFirstPaintFired = false;
-    moreTabFirstPaintAt = 0;
+function notifyMoreTabTransition() {
+  for (const listener of moreTabTransitionListeners) {
+    listener();
   }
 }
 
-export function endMoreTabTransition() {
-  moreTabFocused = false;
-  moreTabFirstPaintFired = false;
-  moreTabFirstPaintAt = 0;
-  moreTabTransitionUntil = 0;
-  moreReadyRefreshQueue.length = 0;
-  moreReadyRefreshScheduled = false;
+function scheduleMoreTabPressTransitionEnd() {
+  if (moreTabPressTransitionEndTimer) clearTimeout(moreTabPressTransitionEndTimer);
+  moreTabPressTransitionEndTimer = setTimeout(() => {
+    moreTabPressTransitionBlocking = false;
+    moreTabPressTransitionEndTimer = null;
+    moreTabShellVisible = false;
+    notifyMoreTabTransition();
+  }, MORE_TAB_PRESS_BLOCK_MS);
 }
 
-export function setMoreTabFocused(focused: boolean) {
-  if (focused) beginMoreTabTransition();
-  else endMoreTabTransition();
-}
-
-export function markMoreTabFirstPaint() {
-  if (moreTabFirstPaintFired) return;
-  moreTabFirstPaintFired = true;
-  moreTabFirstPaintAt = Date.now();
-  console.log("KRISTO_MORE_FIRST_PAINT");
-}
-
-export function hasMoreTabFirstPaintFired() {
-  return moreTabFirstPaintFired;
-}
-
-export function isMoreTabFocused() {
-  return moreTabFocused;
-}
-
-export function isMoreTabTransitionActive() {
-  return moreTabFocused && Date.now() < moreTabTransitionUntil;
-}
-
-export function shouldBlockChurchBackgroundWorkForMoreTab() {
-  if (!moreTabFocused) return false;
-  if (!moreTabFirstPaintFired) return true;
-  return Date.now() - moreTabFirstPaintAt < MORE_TAB_POST_PAINT_COOLDOWN_MS;
-}
-
-export function shouldDeferChurchBackgroundWorkForMoreTab() {
-  return shouldBlockChurchBackgroundWorkForMoreTab();
-}
-
-function drainMoreReadyRefreshQueue() {
-  moreReadyRefreshScheduled = false;
-  const tasks = moreReadyRefreshQueue.splice(0, moreReadyRefreshQueue.length);
-  for (const task of tasks) {
-    void task();
-  }
-}
-
-function scheduleMoreReadyRefreshDrain() {
-  if (moreReadyRefreshScheduled) return;
-  moreReadyRefreshScheduled = true;
-
-  const waitUntilReady = () => {
-    if (!moreTabFirstPaintFired) {
-      requestAnimationFrame(waitUntilReady);
-      return;
-    }
-
-    const waitMs = Math.max(
-      0,
-      MORE_TAB_POST_PAINT_COOLDOWN_MS - (Date.now() - moreTabFirstPaintAt)
-    );
-
-    setTimeout(() => {
-      requestAnimationFrame(() => {
-        InteractionManager.runAfterInteractions(() => {
-          drainMoreReadyRefreshQueue();
-        });
-      });
-    }, waitMs);
+export function subscribeMoreTabTransition(listener: () => void) {
+  moreTabTransitionListeners.add(listener);
+  return () => {
+    moreTabTransitionListeners.delete(listener);
   };
-
-  waitUntilReady();
 }
 
-export function runAfterMoreTabReadyForRefresh(task: () => void | Promise<void>) {
-  if (!shouldBlockChurchBackgroundWorkForMoreTab()) {
+export function isMoreTabShellVisible() {
+  return moreTabShellVisible;
+}
+
+export function hideMoreTabShell() {
+  if (!moreTabShellVisible) return;
+  moreTabShellVisible = false;
+  notifyMoreTabTransition();
+}
+
+export function beginMoreTabPressTransition() {
+  console.log("KRISTO_MORE_TAB_PRESS");
+  moreTabPressTransitionBlocking = true;
+  moreTabPressTransitionStartedAt = Date.now();
+  moreTabFocused = true;
+  moreTabShellVisible = true;
+  notifyMoreTabTransition();
+  console.log("KRISTO_MORE_TRANSITION_BLOCK_BACKGROUND_WORK");
+  if (!moreTabFirstPaintLogged) {
+    moreTabFirstPaintLogged = true;
+    console.log("KRISTO_MORE_FIRST_PAINT");
+  }
+  scheduleMoreTabPressTransitionEnd();
+}
+
+export function isMoreTabTransitionBlocking() {
+  return moreTabPressTransitionBlocking;
+}
+
+export function endMoreTabPressTransition() {
+  moreTabPressTransitionBlocking = false;
+  moreTabFocused = false;
+  moreTabShellVisible = false;
+  moreTabFirstPaintLogged = false;
+  moreTabPressTransitionStartedAt = 0;
+  if (moreTabPressTransitionEndTimer) {
+    clearTimeout(moreTabPressTransitionEndTimer);
+    moreTabPressTransitionEndTimer = null;
+  }
+  notifyMoreTabTransition();
+}
+
+export function getMoreTabTransitionBlockRemainingMs() {
+  if (!moreTabPressTransitionBlocking) return 0;
+  return Math.max(
+    0,
+    MORE_TAB_PRESS_BLOCK_MS - (Date.now() - moreTabPressTransitionStartedAt)
+  );
+}
+
+export function runAfterMoreTabPressTransition(task: () => void | Promise<void>) {
+  const waitMs = getMoreTabTransitionBlockRemainingMs();
+  const run = () => {
     requestAnimationFrame(() => {
       InteractionManager.runAfterInteractions(() => {
         void task();
       });
     });
+  };
+  if (waitMs <= 0) {
+    run();
     return;
   }
-
-  moreReadyRefreshQueue.push(task);
-  scheduleMoreReadyRefreshDrain();
-}
-
-export function runAfterMoreTabFirstPaint(task: () => void | Promise<void>) {
-  runAfterMoreTabReadyForRefresh(task);
+  setTimeout(run, waitMs);
 }
 
 export function logMoreDeferredRefreshSkip(
@@ -262,16 +245,24 @@ export async function refreshChurchMediaAccess(args: {
   const scope = `${args.churchId}:${args.userId}`;
   const inflightKey = laneKey("mediaAccess", scope);
 
-  if (shouldBlockChurchBackgroundWorkForMoreTab()) {
-    logMoreDeferredRefreshSkip("refreshChurchMediaAccess", "more-first-paint-pending", {
+  if (isMoreTabTransitionBlocking()) {
+    logMoreDeferredRefreshSkip("refreshChurchMediaAccess", "more-tab-transition-blocked", {
       churchId: args.churchId,
       userId: args.userId,
     });
-    return new Promise<ChurchMediaAccessState>((resolve) => {
-      runAfterMoreTabReadyForRefresh(() => {
-        void refreshChurchMediaAccess(args).then(resolve);
-      });
-    });
+    const blockedSession: ChurchMediaAccessSession = {
+      userId: args.userId,
+      role: args.role,
+      churchRole: args.churchRole,
+    };
+    return (
+      cachedMediaAccess ||
+      publishMediaAccess(
+        null,
+        evaluateChurchMediaAccessFromSession(blockedSession),
+        blockedSession
+      )
+    );
   }
 
   if (laneInflight.has(inflightKey)) {
@@ -347,6 +338,10 @@ export function cancelAllScheduledRefreshes() {
   lastCoordinatedRefreshAt = 0;
   laneInflight.clear();
   laneLastDone.clear();
+  if (moreTabPressTransitionEndTimer) {
+    clearTimeout(moreTabPressTransitionEndTimer);
+    moreTabPressTransitionEndTimer = null;
+  }
 }
 
 export function resetAuthRefreshStateForLogout() {
@@ -392,14 +387,9 @@ export async function runCoordinatedAppRefresh(
   const userId = String(session?.userId || "").trim();
   if (!userId) return;
 
-  if (shouldBlockChurchBackgroundWorkForMoreTab()) {
-    logMoreDeferredRefreshSkip("runCoordinatedAppRefresh", "more-first-paint-pending", {
+  if (isMoreTabTransitionBlocking()) {
+    logMoreDeferredRefreshSkip("runCoordinatedAppRefresh", "more-tab-transition-blocked", {
       lanes: opts?.lanes,
-    });
-    await new Promise<void>((resolve) => {
-      runAfterMoreTabReadyForRefresh(() => {
-        void runCoordinatedAppRefresh(session, opts).finally(resolve);
-      });
     });
     return;
   }
