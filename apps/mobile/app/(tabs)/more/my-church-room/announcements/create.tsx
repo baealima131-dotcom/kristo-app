@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from "react";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import {
+  ActivityIndicator,
   Pressable,
   StyleSheet,
   Text,
@@ -34,9 +36,119 @@ const GOLD = "rgba(217,179,95,0.92)";
 const BLUE = "rgba(0,145,255,0.92)";
 const PAD = 16;
 const MAX_COMPOSER_IMAGES = 5;
-const TESTIMONY_INITIAL_VISIBLE_SLOTS = 3;
+const MAX_TESTIMONY_IMAGES = 3;
+const TESTIMONY_SLOT_COUNT = 3;
 const CARD_HORIZONTAL_PADDING = 18;
 const SLOT_GAP = 10;
+
+type TestimonyCropPreset = "original" | "1:1" | "4:3" | "3:4";
+type TestimonySizePreset = "compact" | "standard" | "full";
+
+const TESTIMONY_CROP_PRESETS: { id: TestimonyCropPreset; label: string }[] = [
+  { id: "original", label: "Original" },
+  { id: "1:1", label: "Square" },
+  { id: "4:3", label: "Landscape" },
+  { id: "3:4", label: "Portrait" },
+];
+
+const TESTIMONY_SIZE_PRESETS: { id: TestimonySizePreset; label: string; maxSide: number }[] = [
+  { id: "compact", label: "Compact", maxSide: 1280 },
+  { id: "standard", label: "Balanced", maxSide: 1600 },
+  { id: "full", label: "Detail", maxSide: 2048 },
+];
+
+function composerImageLimit(kind: "announcement" | "post" | "testimony" | "counsel") {
+  return kind === "testimony" ? MAX_TESTIMONY_IMAGES : MAX_COMPOSER_IMAGES;
+}
+
+function composerImageHint(kind: "announcement" | "post" | "testimony" | "counsel") {
+  const limit = composerImageLimit(kind);
+  return `Add up to ${limit} photo${limit === 1 ? "" : "s"} • Optional`;
+}
+
+function getImageDimensions(uri: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    Image.getSize(uri, (width, height) => resolve({ width, height }), reject);
+  });
+}
+
+function testimonyCropRatio(preset: TestimonyCropPreset): number | null {
+  if (preset === "1:1") return 1;
+  if (preset === "4:3") return 4 / 3;
+  if (preset === "3:4") return 3 / 4;
+  return null;
+}
+
+function centerCropRect(
+  imageWidth: number,
+  imageHeight: number,
+  aspectRatio: number
+) {
+  let cropWidth = imageWidth;
+  let cropHeight = imageHeight;
+
+  if (imageWidth / imageHeight > aspectRatio) {
+    cropHeight = imageHeight;
+    cropWidth = cropHeight * aspectRatio;
+  } else {
+    cropWidth = imageWidth;
+    cropHeight = cropWidth / aspectRatio;
+  }
+
+  return {
+    originX: Math.max(0, Math.round((imageWidth - cropWidth) / 2)),
+    originY: Math.max(0, Math.round((imageHeight - cropHeight) / 2)),
+    width: Math.max(1, Math.round(cropWidth)),
+    height: Math.max(1, Math.round(cropHeight)),
+  };
+}
+
+function resizeActionsForMaxSide(
+  maxSide: number,
+  width?: number,
+  height?: number
+): ImageManipulator.Action[] {
+  const w = Number(width || 0);
+  const h = Number(height || 0);
+  if (!w || !h) return [{ resize: { width: maxSide } }];
+  if (w <= maxSide && h <= maxSide) return [];
+  return w >= h ? [{ resize: { width: maxSide } }] : [{ resize: { height: maxSide } }];
+}
+
+async function applyTestimonyImageEdit(
+  sourceUri: string,
+  cropPreset: TestimonyCropPreset,
+  sizePreset: TestimonySizePreset
+): Promise<string> {
+  const { width, height } = await getImageDimensions(sourceUri);
+  const actions: ImageManipulator.Action[] = [];
+  const ratio = testimonyCropRatio(cropPreset);
+
+  if (ratio) {
+    actions.push({ crop: centerCropRect(width, height, ratio) });
+  }
+
+  let edited = await ImageManipulator.manipulateAsync(
+    sourceUri,
+    actions,
+    { compress: 1, format: ImageManipulator.SaveFormat.JPEG }
+  );
+
+  const maxSide =
+    TESTIMONY_SIZE_PRESETS.find((preset) => preset.id === sizePreset)?.maxSide || 1600;
+  const resizeActions = resizeActionsForMaxSide(maxSide, edited.width, edited.height);
+
+  if (resizeActions.length) {
+    edited = await ImageManipulator.manipulateAsync(
+      edited.uri,
+      resizeActions,
+      { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+    );
+  }
+
+  const compressed = await compressChurchRoomFeedImage(edited.uri, edited.width, edited.height);
+  return compressed.uri;
+}
 
 
 function stripGarbageLines(input: string) {
@@ -142,6 +254,14 @@ export default function CreateAnnouncement() {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [photoPermissionModalOpen, setPhotoPermissionModalOpen] = useState(false);
+  const [testimonyPreviewOpen, setTestimonyPreviewOpen] = useState(false);
+  const [testimonyPreviewUri, setTestimonyPreviewUri] = useState<string | null>(null);
+  const [testimonyPreviewIndex, setTestimonyPreviewIndex] = useState<number | null>(null);
+  const [testimonyCropPreset, setTestimonyCropPreset] = useState<TestimonyCropPreset>("original");
+  const [testimonySizePreset, setTestimonySizePreset] = useState<TestimonySizePreset>("standard");
+  const [testimonyEditSaving, setTestimonyEditSaving] = useState(false);
+
+  const maxComposerImages = composerImageLimit(kind);
 
   const ACCENT = kind === "testimony" ? BLUE : GOLD;
   const ACCENT_BG = kind === "testimony" ? "rgba(0,145,255,0.12)" : "rgba(217,179,95,0.12)";
@@ -196,7 +316,7 @@ export default function CreateAnnouncement() {
     if (!compressedUris.length) return;
     setErr(null);
     setImages((prev) => {
-      const next = Array.from(new Set([...prev, ...compressedUris])).slice(0, 5);
+      const next = Array.from(new Set([...prev, ...compressedUris])).slice(0, maxComposerImages);
       console.log("KRISTO_POST_COMPOSER_IMAGES_SELECTED", {
         count: next.length,
         uris: next,
@@ -210,7 +330,7 @@ export default function CreateAnnouncement() {
       mediaTypes: ((ImagePicker as any).MediaType?.Images ?? (ImagePicker as any).MediaTypeOptions?.Images),
       allowsMultipleSelection: true,
       quality: 1,
-      selectionLimit: 5,
+      selectionLimit: maxComposerImages,
     });
 
     if ((res as any).canceled) return;
@@ -354,27 +474,64 @@ export default function CreateAnnouncement() {
     setImages((prev) => prev.filter((u) => u !== uri));
   }
 
+  function openTestimonyImagePreview(uri: string, slotIndex: number) {
+    setTestimonyPreviewUri(uri);
+    setTestimonyPreviewIndex(slotIndex);
+    setTestimonyCropPreset("original");
+    setTestimonySizePreset("standard");
+    setTestimonyPreviewOpen(true);
+  }
+
+  function closeTestimonyImagePreview() {
+    if (testimonyEditSaving) return;
+    setTestimonyPreviewOpen(false);
+    setTestimonyPreviewUri(null);
+    setTestimonyPreviewIndex(null);
+  }
+
+  async function saveTestimonyImageEdit() {
+    const sourceUri = String(testimonyPreviewUri || "").trim();
+    const slotIndex = testimonyPreviewIndex;
+    if (!sourceUri || slotIndex == null) return;
+
+    try {
+      setTestimonyEditSaving(true);
+      setErr(null);
+      const editedUri = await applyTestimonyImageEdit(
+        sourceUri,
+        testimonyCropPreset,
+        testimonySizePreset
+      );
+      setImages((prev) => {
+        const next = [...prev];
+        next[slotIndex] = editedUri;
+        return next.slice(0, MAX_TESTIMONY_IMAGES);
+      });
+      setTestimonyPreviewOpen(false);
+      setTestimonyPreviewUri(null);
+      setTestimonyPreviewIndex(null);
+    } catch (editErr) {
+      const message =
+        editErr instanceof Error
+          ? editErr.message
+          : CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE;
+      setErr(message);
+    } finally {
+      setTestimonyEditSaving(false);
+    }
+  }
+
+  function removeTestimonyPreviewImage() {
+    const sourceUri = String(testimonyPreviewUri || "").trim();
+    if (!sourceUri) return;
+    removeImage(sourceUri);
+    closeTestimonyImagePreview();
+  }
+
   const testimonySlotSize = useMemo(() => {
     const cardInnerWidth = windowWidth - PAD * 2 - CARD_HORIZONTAL_PADDING * 2;
-    return Math.floor((cardInnerWidth - SLOT_GAP * (TESTIMONY_INITIAL_VISIBLE_SLOTS - 1)) / TESTIMONY_INITIAL_VISIBLE_SLOTS);
+    return Math.floor((cardInnerWidth - SLOT_GAP * (TESTIMONY_SLOT_COUNT - 1)) / TESTIMONY_SLOT_COUNT);
   }, [windowWidth]);
-
-  const testimonyVisibleSlotCount = useMemo(() => {
-    if (kind !== "testimony") return MAX_COMPOSER_IMAGES;
-    return images.length >= TESTIMONY_INITIAL_VISIBLE_SLOTS
-      ? MAX_COMPOSER_IMAGES
-      : TESTIMONY_INITIAL_VISIBLE_SLOTS;
-  }, [kind, images.length]);
-
-  const testimonySlotRows = useMemo(() => {
-    if (testimonyVisibleSlotCount <= TESTIMONY_INITIAL_VISIBLE_SLOTS) {
-      return [Array.from({ length: testimonyVisibleSlotCount }, (_, i) => i)];
-    }
-    return [
-      [0, 1, 2],
-      [3, 4],
-    ];
-  }, [testimonyVisibleSlotCount]);
 
   function renderImageSlot(
     slotIndex: number,
@@ -383,12 +540,12 @@ export default function CreateAnnouncement() {
   ) {
     const uri = images[slotIndex];
     const slotRadius = Math.max(18, Math.round(slotSize * 0.24));
+    const testimonyFilled = kind === "testimony" && Boolean(uri);
 
     if (uri) {
       return (
-        <Pressable
-          key={`filled-${uri}`}
-          onPress={() => removeImage(uri)}
+        <View
+          key={`filled-${uri}-${slotIndex}`}
           style={[
             s.slot,
             {
@@ -400,11 +557,24 @@ export default function CreateAnnouncement() {
             slotStyle,
           ]}
         >
-          <Image source={{ uri }} style={s.slotImg} />
-          <View style={[s.slotX, { backgroundColor: accentStrong }]}>
+          <Pressable
+            onPress={
+              testimonyFilled
+                ? () => openTestimonyImagePreview(uri, slotIndex)
+                : () => removeImage(uri)
+            }
+            style={s.slotTapArea}
+          >
+            <Image source={{ uri }} style={s.slotImg} />
+          </Pressable>
+          <Pressable
+            onPress={() => removeImage(uri)}
+            style={[s.slotX, { backgroundColor: accentStrong }]}
+            hitSlop={8}
+          >
             <Ionicons name="close" size={14} color="#0B0F17" />
-          </View>
-        </Pressable>
+          </Pressable>
+        </View>
       );
     }
 
@@ -440,6 +610,11 @@ export default function CreateAnnouncement() {
 
     if (!b0) {
       setErr(kind === "testimony" ? "Testimony is required" : kind === "counsel" ? "Details are required" : "Message is required");
+      return;
+    }
+
+    if (kind === "testimony" && images.length > MAX_TESTIMONY_IMAGES) {
+      setErr("You can add up to 3 images for a testimony.");
       return;
     }
 
@@ -622,10 +797,10 @@ export default function CreateAnnouncement() {
           <View style={s.imgRow}>
             <View style={{ flex: 1 }}>
               <Text style={t.label}>Images</Text>
-              <Text style={t.imgHint}>Add up to 5 photos • Optional</Text>
+              <Text style={t.imgHint}>{composerImageHint(kind)}</Text>
             </View>
 
-            {images.length < 5 ? (
+            {images.length < maxComposerImages ? (
             <Pressable onPress={pickImages} style={({ pressed }) => [s.imgBtn, { borderColor: accentBorder, backgroundColor: "rgba(217,179,95,0.18)" }, pressed ? { opacity: 0.9 } : null]}>
               <Ionicons name="image" size={16} color={accent} />
               <Text style={[t.imgBtnText, { color: accent }]}>Add</Text>
@@ -635,18 +810,10 @@ export default function CreateAnnouncement() {
 
           
           {kind === "testimony" ? (
-            <View style={s.slotsWrap}>
-              {testimonySlotRows.map((row, rowIndex) => (
-                <View
-                  key={`testimony-slot-row-${rowIndex}`}
-                  style={[
-                    s.slotsRow,
-                    row.length < TESTIMONY_INITIAL_VISIBLE_SLOTS ? s.slotsRowCompact : null,
-                  ]}
-                >
-                  {row.map((slotIndex) => renderImageSlot(slotIndex, testimonySlotSize))}
-                </View>
-              ))}
+            <View style={[s.slotsRow, s.slotsRowTestimony]}>
+              {Array.from({ length: TESTIMONY_SLOT_COUNT }, (_, i) => i).map((i) =>
+                renderImageSlot(i, testimonySlotSize)
+              )}
             </View>
           ) : (
             <View style={s.slotsRow}>
@@ -707,6 +874,110 @@ export default function CreateAnnouncement() {
               style={({ pressed }) => [s.permissionCancelBtn, pressed ? { opacity: 0.88 } : null]}
             >
               <Text style={s.permissionCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={kind === "testimony" && testimonyPreviewOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={closeTestimonyImagePreview}
+      >
+        <View style={s.editOverlay}>
+          <View style={[s.editHeader, { paddingTop: insets.top + 10 }]}>
+            <Pressable
+              onPress={closeTestimonyImagePreview}
+              disabled={testimonyEditSaving}
+              style={s.editHeaderBtn}
+            >
+              <Ionicons name="close" size={22} color={TEXT} />
+            </Pressable>
+            <Text style={s.editTitle}>Edit image</Text>
+            <Pressable
+              onPress={() => void saveTestimonyImageEdit()}
+              disabled={testimonyEditSaving}
+              style={({ pressed }) => [
+                s.editSaveBtn,
+                { backgroundColor: accent },
+                testimonyEditSaving || pressed ? { opacity: 0.88 } : null,
+              ]}
+            >
+              {testimonyEditSaving ? (
+                <ActivityIndicator size="small" color="#08111D" />
+              ) : (
+                <Text style={s.editSaveText}>Save</Text>
+              )}
+            </Pressable>
+          </View>
+
+          <View style={s.editPreviewWrap}>
+            {testimonyPreviewUri ? (
+              <Image
+                source={{ uri: testimonyPreviewUri }}
+                style={s.editPreviewImage}
+                resizeMode="contain"
+              />
+            ) : null}
+          </View>
+
+          <View style={[s.editPanel, { paddingBottom: Math.max(insets.bottom + 16, 24) }]}>
+            <Text style={s.editSectionLabel}>Crop</Text>
+            <View style={s.editChipRow}>
+              {TESTIMONY_CROP_PRESETS.map((preset) => {
+                const active = testimonyCropPreset === preset.id;
+                return (
+                  <Pressable
+                    key={preset.id}
+                    onPress={() => setTestimonyCropPreset(preset.id)}
+                    style={[
+                      s.editChip,
+                      { borderColor: accentBorder },
+                      active ? { backgroundColor: accentSoft, borderColor: accent } : null,
+                    ]}
+                  >
+                    <Text style={[s.editChipText, active ? { color: accent } : null]}>
+                      {preset.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <Text style={[s.editSectionLabel, { marginTop: 14 }]}>Size</Text>
+            <View style={s.editChipRow}>
+              {TESTIMONY_SIZE_PRESETS.map((preset) => {
+                const active = testimonySizePreset === preset.id;
+                return (
+                  <Pressable
+                    key={preset.id}
+                    onPress={() => setTestimonySizePreset(preset.id)}
+                    style={[
+                      s.editChip,
+                      { borderColor: accentBorder },
+                      active ? { backgroundColor: accentSoft, borderColor: accent } : null,
+                    ]}
+                  >
+                    <Text style={[s.editChipText, active ? { color: accent } : null]}>
+                      {preset.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <Pressable
+              onPress={removeTestimonyPreviewImage}
+              disabled={testimonyEditSaving}
+              style={({ pressed }) => [
+                s.editRemoveBtn,
+                { borderColor: accentBorder },
+                pressed ? { opacity: 0.9 } : null,
+              ]}
+            >
+              <Ionicons name="trash-outline" size={16} color="rgba(255,120,120,0.92)" />
+              <Text style={s.editRemoveText}>Remove image</Text>
             </Pressable>
           </View>
         </View>
@@ -780,25 +1051,25 @@ const s = StyleSheet.create({
   thumbWrap: { width: 74, height: 74, borderRadius: 16, overflow: "hidden", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" } as ViewStyle,
   thumb: { width: "100%", height: "100%" } as any,
   thumbX: { position: "absolute", top: 6, right: 6, width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: GOLD } as ViewStyle,
-  slotsWrap: {
-    marginTop: 12,
-    gap: 10,
-    alignItems: "center",
-  } as ViewStyle,
   slotsRow: {
     flexDirection: "row",
     gap: SLOT_GAP,
     justifyContent: "center",
     alignSelf: "stretch",
   } as ViewStyle,
-  slotsRowCompact: {
-    alignSelf: "center",
+  slotsRowTestimony: {
+    marginTop: 12,
   } as ViewStyle,
   slot: {
     overflow: "hidden",
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.18)",
     backgroundColor: "rgba(255,255,255,0.028)",
+  } as ViewStyle,
+  slotTapArea: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
   } as ViewStyle,
   slotImg: { width: "100%", height: "100%" } as any,
   slotEmpty: {
@@ -920,6 +1191,112 @@ const s = StyleSheet.create({
   } as ViewStyle,
   permissionCancelText: {
     color: "rgba(255,255,255,0.62)",
+    fontWeight: "800",
+    fontSize: 14,
+  } as TextStyle,
+  editOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(5,8,14,0.98)",
+  } as ViewStyle,
+  editHeader: {
+    paddingHorizontal: PAD,
+    paddingBottom: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  } as ViewStyle,
+  editHeaderBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+  } as ViewStyle,
+  editTitle: {
+    flex: 1,
+    textAlign: "center",
+    color: TEXT,
+    fontWeight: "900",
+    fontSize: 17,
+    letterSpacing: -0.1,
+  } as TextStyle,
+  editSaveBtn: {
+    minWidth: 74,
+    height: 42,
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  } as ViewStyle,
+  editSaveText: {
+    color: "#08111D",
+    fontWeight: "900",
+    fontSize: 14,
+  } as TextStyle,
+  editPreviewWrap: {
+    flex: 1,
+    marginHorizontal: PAD,
+    borderRadius: 24,
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  } as ViewStyle,
+  editPreviewImage: {
+    width: "100%",
+    height: "100%",
+  } as any,
+  editPanel: {
+    paddingHorizontal: PAD,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(11,15,23,0.98)",
+  } as ViewStyle,
+  editSectionLabel: {
+    color: "rgba(255,255,255,0.72)",
+    fontWeight: "900",
+    fontSize: 12,
+    letterSpacing: 0.18,
+    marginBottom: 10,
+  } as TextStyle,
+  editChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  } as ViewStyle,
+  editChip: {
+    minWidth: 72,
+    paddingHorizontal: 12,
+    height: 38,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    backgroundColor: "rgba(255,255,255,0.03)",
+  } as ViewStyle,
+  editChipText: {
+    color: SUB,
+    fontWeight: "800",
+    fontSize: 13,
+  } as TextStyle,
+  editRemoveBtn: {
+    marginTop: 16,
+    minHeight: 46,
+    borderRadius: 16,
+    borderWidth: 1,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  } as ViewStyle,
+  editRemoveText: {
+    color: "rgba(255,120,120,0.92)",
     fontWeight: "800",
     fontSize: 14,
   } as TextStyle,
