@@ -250,7 +250,17 @@ export function FeedVideoPosterImage({
       setPosterState("probing");
       const probe = await probePosterUrlReachability(posterUri);
       if (cancelled) return;
-      setLastProbe(probe);
+      setLastProbe((prev) => {
+        if (
+          prev?.url === probe?.url &&
+          prev?.httpStatus === probe?.httpStatus &&
+          prev?.reachable === probe?.reachable &&
+          prev?.reason === probe?.reason
+        ) {
+          return prev;
+        }
+        return probe;
+      });
 
       logPosterPipelineDiag({
         postId,
