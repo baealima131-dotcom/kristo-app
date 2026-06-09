@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { memo } from "react";
 import { Animated, AppState, Easing, Image, StyleSheet, View } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEvent } from "expo";
@@ -29,11 +29,13 @@ import {
   saveHomeFeedVideoProgress,
 } from "@/src/lib/homeFeedVideoProgressStore";
 import { wasHomeFeedVideoUrlBufferedAhead } from "@/src/lib/homeFeedVideoBufferAhead";
+import { logFirstMountedHomeFeedVideoFileDiag } from "@/src/lib/homeFeedVideoFileDiag";
 import {
   getFirstHomeFeedVideoPlaybackPlans,
   logHomeFeedVideoQualityTrace,
   markHomeFeedLowResPreviewFailed,
   resolveHomeFeedVideoPlaybackPlan,
+  resolveInitialStartupPlaybackUri,
   resolveVerifiedStartupVideoUri,
 } from "@/src/lib/homeFeedVideoQuality";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
@@ -82,13 +84,8 @@ function statusLower(status: string) {
 }
 
 function hasDecodedFrame(status: string, currentTime: number, playing: boolean) {
-  const lower = statusLower(status);
-  return (
-    currentTime > 0.03 ||
-    playing ||
-    lower === "playing" ||
-    lower === "readytoplay"
-  );
+  void status;
+  return currentTime > 0.03 || (playing && currentTime > 0);
 }
 
 /**
@@ -98,18 +95,12 @@ function hasDecodedFrame(status: string, currentTime: number, playing: boolean) 
  * decoded yet. Hold the poster over the video until this is true so the first
  * Home Feed video never exposes a black/loading frame.
  */
-function hasPaintedFrame(currentTime: number, status?: unknown, playing?: unknown) {
-  const st = String(status || "").toLowerCase();
-  return currentTime > 0.03 || playing === true || st === "readytoplay" || st === "playing";
+function hasPaintedFrame(currentTime: number) {
+  return currentTime > 0.03;
 }
 
 function isPlayerReadyToStart(status: string, currentTime: number, playing: boolean) {
-  const lower = statusLower(status);
-  return (
-    hasDecodedFrame(status, currentTime, playing) ||
-    lower === "loading" ||
-    lower === "loaded"
-  );
+  return hasDecodedFrame(status, currentTime, playing);
 }
 
 function shouldMarkReadiness(status: string, currentTime: number, playing: boolean) {
@@ -161,12 +152,30 @@ function safePlayerPlay(player: any): void {
   } catch {}
 }
 
+function safeGetPlayerDuration(player: any): number {
+  try {
+    return Number(player?.duration || 0);
+  } catch {
+    return 0;
+  }
+}
+
 function safeGetPlayerBuffered(player: any): number {
   try {
     return Number(player?.bufferedPosition ?? -1);
   } catch {
     return -1;
   }
+}
+
+function isPlayerStalledForRefocus(status: string, currentTime: number, playing: boolean) {
+  const lower = statusLower(status);
+  if (lower === "error") return true;
+  if (lower === "loading" || lower === "idle") return true;
+  if (!playing && currentTime <= 0.03 && (lower === "readytoplay" || lower === "loaded")) {
+    return true;
+  }
+  return false;
 }
 
 /** Low-latency progressive streaming: start playback early, buffer ahead in background. */
@@ -179,7 +188,6 @@ const PROGRESSIVE_BUFFER_OPTIONS = {
 
 /** Keep low-res playing before upgrading; avoids black flash during HQ source swap. */
 const QUALITY_UPGRADE_DELAY_MS = 2800;
-const STARTUP_LOW_RES_FALLBACK_MS = 1800;
 
 /**
  * Active row plays with audio; preload/warm rows keep muted paused players ready for handoff.
@@ -206,27 +214,43 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   onDoubleTap,
 }: Props) {
   const isRecycledRow = Boolean(String(recycleKey || "").trim());
-  const recycledStartResetLoggedRef = useRef(false);
-  const firstVideoHoldLoggedRef = useRef(false);
-  const firstVideoSwapLoggedRef = useRef(false);
+  const recycledStartResetLoggedRef = React.useRef(false);
+  const firstVideoHoldLoggedRef = React.useRef(false);
+  const firstVideoSwapLoggedRef = React.useRef(false);
   const resolvedFullUri = String(fullQualityUri || uri || "").trim();
   const resolvedStartupUri = String(startupUri || resolvedFullUri).trim();
   const canUpgradeQuality =
     hasLowRes &&
     Boolean(resolvedStartupUri && resolvedFullUri) &&
     resolvedStartupUri.split("?")[0] !== resolvedFullUri.split("?")[0];
+  const playbackPlan = React.useMemo(
+    () => ({
+      postId,
+      originalVideoUrl: resolvedFullUri,
+      fullQualityUri: resolvedFullUri,
+      startupUri: resolvedStartupUri,
+      lowResVideoUrl: canUpgradeQuality ? resolvedStartupUri : null,
+      hasLowRes: canUpgradeQuality,
+      prewarmHit,
+    }),
+    [postId, resolvedFullUri, resolvedStartupUri, canUpgradeQuality, prewarmHit]
+  );
+  const initialPlaybackUri = React.useMemo(
+    () => resolveInitialStartupPlaybackUri(playbackPlan),
+    [playbackPlan]
+  );
 
-  const [playbackUri, setPlaybackUri] = useState(resolvedStartupUri);
-  const [upgradingQuality, setUpgradingQuality] = useState(false);
-  const upgradedQualityRef = useRef(false);
-  const upgradeStartedMsRef = useRef<number | null>(null);
-  const qualityTraceLoggedRef = useRef(false);
-  const qualityUpgradePendingRef = useRef(false);
-  const qualityUpgradeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const playbackFallbackRef = useRef(false);
-  const startupUriFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [playbackUri, setPlaybackUri] = React.useState(initialPlaybackUri);
+  const [playerSourceAttached, setPlayerSourceAttached] = React.useState(true);
+  const [upgradingQuality, setUpgradingQuality] = React.useState(false);
+  const upgradedQualityRef = React.useRef(false);
+  const upgradeStartedMsRef = React.useRef<number | null>(null);
+  const qualityTraceLoggedRef = React.useRef(false);
+  const qualityUpgradePendingRef = React.useRef(false);
+  const qualityUpgradeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playbackFallbackRef = React.useRef(false);
 
-  useEffect(() => {
+  React.useEffect(() => {
     playbackFallbackRef.current = false;
     upgradedQualityRef.current = false;
     upgradeStartedMsRef.current = null;
@@ -236,12 +260,12 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       clearTimeout(qualityUpgradeTimerRef.current);
       qualityUpgradeTimerRef.current = null;
     }
-    setPlaybackUri(resolvedStartupUri);
-  }, [postId, resolvedStartupUri, resolvedFullUri]);
+    setPlaybackUri(initialPlaybackUri);
+  }, [postId, resolvedStartupUri, resolvedFullUri, initialPlaybackUri]);
 
   const cachedReadyOnMount = isHomeFeedVideoPreloadReady(postId, playbackUri);
-  const cachedReadyRef = useRef(cachedReadyOnMount);
-  const warmModeRef = useRef(warmMode);
+  const cachedReadyRef = React.useRef(cachedReadyOnMount);
+  const warmModeRef = React.useRef(warmMode);
   warmModeRef.current = warmMode;
 
   const isActive = warmMode === "active";
@@ -253,7 +277,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const sourceLoadAllowed =
     isActive || isStartupPriority || isPreloadNext || isRetainPrev;
   const playerSource =
-    sourceLoadAllowed && playbackUri
+    sourceLoadAllowed && playbackUri && playerSourceAttached
       ? { uri: playbackUri, contentType: "progressive" as const }
       : null;
 
@@ -275,21 +299,21 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     } catch {}
   });
 
-  const lastKnownTimeRef = useRef(0);
-  const lastKnownPlayingRef = useRef(false);
-  const playerDisposedRef = useRef(false);
+  const lastKnownTimeRef = React.useRef(0);
+  const lastKnownPlayingRef = React.useRef(false);
+  const playerDisposedRef = React.useRef(false);
 
   const { status } = useEvent(player, "statusChange", {
     status: safeGetPlayerStatus(player),
   });
 
-  useEffect(() => {
+  React.useEffect(() => {
     playerDisposedRef.current = false;
     lastKnownTimeRef.current = 0;
     lastKnownPlayingRef.current = false;
   }, [player]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (playerDisposedRef.current) return;
     const t = safeGetPlayerCurrentTime(player);
     if (Number.isFinite(t) && t >= 0) {
@@ -308,45 +332,47 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   // player has not decoded a frame yet, so hiding the poster/fallback before the
   // real first frame paints a black flash. Keep the poster until markFirstFrame
   // fires on an actual decoded frame.
-  const [firstFrameReady, setFirstFrameReady] = useState(false);
-  const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
+  const [firstFrameReady, setFirstFrameReady] = React.useState(false);
+  const [appActive, setAppActive] = React.useState(() => AppState.currentState === "active");
 
-  useEffect(() => {
+  React.useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
       setAppActive(next === "active");
     });
     return () => sub.remove();
   }, []);
 
-  const mountedUriRef = useRef(playbackUri);
-  const preloadPrimedRef = useRef(false);
-  const preloadStartLoggedRef = useRef(false);
-  const reusedWarmLoggedRef = useRef(false);
-  const readyMarkedRef = useRef(cachedReadyOnMount);
-  const mountMsRef = useRef(Date.now());
-  const readyMsRef = useRef<number | null>(cachedReadyOnMount ? 0 : null);
-  const firstFrameMsRef = useRef<number | null>(
+  const mountedUriRef = React.useRef(playbackUri);
+  const preloadPrimedRef = React.useRef(false);
+  const preloadStartLoggedRef = React.useRef(false);
+  const reusedWarmLoggedRef = React.useRef(false);
+  const readyMarkedRef = React.useRef(cachedReadyOnMount);
+  const mountMsRef = React.useRef(Date.now());
+  const readyMsRef = React.useRef<number | null>(cachedReadyOnMount ? 0 : null);
+  const firstFrameMsRef = React.useRef<number | null>(
     cachedReadyOnMount && countsForStartupTiming ? 0 : null
   );
-  const timingLoggedRef = useRef(false);
-  const activeHandoffRef = useRef(false);
-  const prevIsActiveRef = useRef(isActive);
-  const prevScreenFocusedRef = useRef(screenFocused);
-  const lastRegisterKeyRef = useRef("");
-  const lastMutedLogKeyRef = useRef("");
-  const lastExpectedMutedLogKeyRef = useRef("");
-  const lastRowDiagKeyRef = useRef("");
-  const progressRestoredRef = useRef(false);
-  const lastProgressSaveMsRef = useRef(0);
-  const firstFrameDiagLoggedRef = useRef(false);
-  const playStartedLoggedRef = useRef(false);
-  const lastBufferLogKeyRef = useRef("");
-  const userPausedRef = useRef(false);
-  const centerPlayOpacity = useRef(new Animated.Value(0)).current;
-  const cornerBadgeOpacity = useRef(new Animated.Value(0)).current;
-  const controlsEpochRef = useRef(0);
-  const prevControlsActiveRef = useRef(isActive);
-  const prevControlsPostKeyRef = useRef("");
+  const timingLoggedRef = React.useRef(false);
+  const activeHandoffRef = React.useRef(false);
+  const prevIsActiveRef = React.useRef(isActive);
+  const prevScreenFocusedRef = React.useRef(screenFocused);
+  const hadFirstFrameBeforeBlurRef = React.useRef(false);
+  const pendingRefocusReloadRef = React.useRef(false);
+  const lastRegisterKeyRef = React.useRef("");
+  const lastMutedLogKeyRef = React.useRef("");
+  const lastExpectedMutedLogKeyRef = React.useRef("");
+  const lastRowDiagKeyRef = React.useRef("");
+  const progressRestoredRef = React.useRef(false);
+  const lastProgressSaveMsRef = React.useRef(0);
+  const firstFrameDiagLoggedRef = React.useRef(false);
+  const playStartedLoggedRef = React.useRef(false);
+  const lastBufferLogKeyRef = React.useRef("");
+  const userPausedRef = React.useRef(false);
+  const centerPlayOpacity = React.useRef(new Animated.Value(0)).current;
+  const cornerBadgeOpacity = React.useRef(new Animated.Value(0)).current;
+  const controlsEpochRef = React.useRef(0);
+  const prevControlsActiveRef = React.useRef(isActive);
+  const prevControlsPostKeyRef = React.useRef("");
 
   const readPlayerMuted = () => {
     try {
@@ -354,17 +380,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     } catch {
       return true;
     }
-  };
-
-  /** V1: once decode/play has begun, never swap playbackUri (startup fallback / HQ upgrade). */
-  const hasPlaybackStartedOrReady = () => {
-    if (playStartedLoggedRef.current) return true;
-    if (playerDisposedRef.current) return false;
-    const lower = statusLower(safeGetPlayerStatus(player));
-    if (lower === "readytoplay" || lower === "playing") return true;
-    const t = safeGetPlayerCurrentTime(player);
-    if (t > 0) return true;
-    return safeGetPlayerBuffered(player) > 0;
   };
 
   const computeVideoReady = () =>
@@ -397,6 +412,45 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (isActive && userPausedRef.current) return;
     logPlayRequested(reason);
     safePlayerPlay(player);
+  };
+
+  const requestRefocusPlayback = (reason: string) => {
+    console.log("KRISTO_VIDEO_REFOCUS_PLAY_REQUEST", {
+      id: postId || null,
+      reason,
+      status: statusLower(safeGetPlayerStatus(player)),
+      currentTime: safeGetPlayerCurrentTime(player),
+      firstFrameReady,
+      playbackUri,
+      warmMode,
+    });
+    activeHandoffRef.current = false;
+    activateActivePlayback(reason);
+    recoverAudioIfNeeded(reason);
+  };
+
+  const reloadStalledPlaybackSource = (reason: string) => {
+    const lower = statusLower(safeGetPlayerStatus(player));
+    const t = safeGetPlayerCurrentTime(player);
+    const isPlaying = safeGetPlayerPlaying(player);
+    console.log("KRISTO_VIDEO_REFOCUS_RELOAD_IF_STALLED", {
+      id: postId || null,
+      reason,
+      status: lower,
+      currentTime: t,
+      playing: isPlaying,
+      firstFrameReady,
+      playbackUri,
+    });
+    activeHandoffRef.current = false;
+    playStartedLoggedRef.current = false;
+    setFirstFrameReady(false);
+    firstFrameDiagLoggedRef.current = false;
+    pendingRefocusReloadRef.current = true;
+    setPlayerSourceAttached(false);
+    queueMicrotask(() => {
+      setPlayerSourceAttached(true);
+    });
   };
 
   const logBufferingState = (lower: string, t: number) => {
@@ -549,6 +603,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     // start warming without ever blocking the active one.
     if (countsForStartupTiming) {
       markHomeFeedActiveFirstFrame();
+      markHomeFirstVideoReady("first-frame");
       logFirstFrameDiag();
       logHomeFeedVideoQualityTrace({
         event: "first-frame-ready",
@@ -595,7 +650,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       reason,
     });
     markHomeFeedFirstPlaying("simple-feed-video");
-    markHomeFirstVideoReady("simple-feed-video");
   };
 
   const seekPlayerToSeconds = (seconds: number, source: string) => {
@@ -643,7 +697,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     saveHomeFeedVideoProgress(id, t);
   };
 
-  useEffect(() => {
+  React.useEffect(() => {
     const wasActive = prevIsActiveRef.current;
     if (wasActive && !isActive) {
       saveProgressIfNeeded("lost-active");
@@ -658,7 +712,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     prevIsActiveRef.current = isActive;
   }, [isActive, status, postId]);
 
-  useLayoutEffect(() => {
+  React.useLayoutEffect(() => {
     mountMsRef.current = Date.now();
     timingLoggedRef.current = false;
     readyMsRef.current = cachedReadyRef.current ? 0 : null;
@@ -692,7 +746,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     } catch {}
   }, [player, screenFocused, uri, postId]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (!cachedReadyRef.current || reusedWarmLoggedRef.current) return;
     reusedWarmLoggedRef.current = true;
     if (isKristoVerboseFeedDebug()) {
@@ -700,24 +754,79 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
   }, [postId]);
 
-  useEffect(() => {
+  React.useEffect(() => {
+    if (!pendingRefocusReloadRef.current) return;
+    if (!playerSourceAttached || !screenFocused || !isActive) return;
+    if (!player || playerDisposedRef.current) return;
+    pendingRefocusReloadRef.current = false;
+    try {
+      setPlayerMuted(true, "refocus-reload-prime");
+      requestPlay("refocus-reload-prime");
+    } catch {}
+  }, [playerSourceAttached, player, screenFocused, isActive, postId]);
+
+  React.useEffect(() => {
     const wasFocused = prevScreenFocusedRef.current;
     prevScreenFocusedRef.current = screenFocused;
 
-    if (screenFocused && !wasFocused) {
-      activeHandoffRef.current = false;
-      if (!isActive) return;
-
-      activateActivePlayback(
-        peekHomeFeedVideoRecovery() ? "live-room-exit-refocus" : "screen-refocus"
-      );
-      if (peekHomeFeedVideoRecovery()) {
-        consumeHomeFeedVideoRecovery();
+    if (wasFocused && !screenFocused) {
+      hadFirstFrameBeforeBlurRef.current = firstFrameReady;
+      if (isActive) {
+        saveProgressIfNeeded("screen-blur");
+        console.log("KRISTO_VIDEO_BLUR_PAUSE", {
+          id: postId || null,
+          status: statusLower(safeGetPlayerStatus(player)),
+          currentTime: safeGetPlayerCurrentTime(player),
+          firstFrameReady,
+          warmMode,
+        });
+        pauseHomeFeedVideo(postId, { postId, reason: "screen-blur" });
+        safePlayerPause(player);
+        try {
+          setPlayerMuted(true, "screen-blur-pause");
+        } catch {}
       }
+      return;
     }
-  }, [screenFocused, isActive, firstFrameReady, postId, status]);
 
-  useEffect(() => {
+    if (!screenFocused || wasFocused) return;
+    if (!isActive) return;
+
+    const recoveryReason = peekHomeFeedVideoRecovery();
+    const refocusReason = recoveryReason ? "live-room-exit-refocus" : "screen-refocus";
+
+    if (
+      hadFirstFrameBeforeBlurRef.current &&
+      safeGetPlayerCurrentTime(player) > 0.03 &&
+      !isPlayerStalledForRefocus(
+        statusLower(safeGetPlayerStatus(player)),
+        safeGetPlayerCurrentTime(player),
+        safeGetPlayerPlaying(player)
+      )
+    ) {
+      setFirstFrameReady((prev) => (prev ? prev : true));
+      requestRefocusPlayback(refocusReason);
+      if (recoveryReason) consumeHomeFeedVideoRecovery();
+      return;
+    }
+
+    if (
+      isPlayerStalledForRefocus(
+        statusLower(safeGetPlayerStatus(player)),
+        safeGetPlayerCurrentTime(player),
+        safeGetPlayerPlaying(player)
+      )
+    ) {
+      reloadStalledPlaybackSource(refocusReason);
+      if (recoveryReason) consumeHomeFeedVideoRecovery();
+      return;
+    }
+
+    requestRefocusPlayback(refocusReason);
+    if (recoveryReason) consumeHomeFeedVideoRecovery();
+  }, [screenFocused, isActive, firstFrameReady, postId, status, player, warmMode, playbackUri]);
+
+  React.useEffect(() => {
     if (!isActive) return;
     return subscribeHomeFeedVideoRecovery(() => {
       if (!screenFocused || !peekHomeFeedVideoRecovery()) return;
@@ -727,7 +836,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     });
   }, [isActive, screenFocused, firstFrameReady, player, postId, status]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (playerDisposedRef.current) return;
     if (!postId || progressRestoredRef.current) return;
     if (!sourceLoadAllowed && !isActive) return;
@@ -764,12 +873,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     progressRestoredRef.current = true;
     console.log("KRISTO_VIDEO_PROGRESS_RESTORE", { id: postId, seconds: seekTo });
     seekPlayerToSeconds(seekTo, isActive ? "restore-on-active" : "restore-on-load");
-    if (isRetainPrev || isActive) {
-      setFirstFrameReady((prev) => (prev ? prev : true));
-    }
   }, [sourceLoadAllowed, isActive, isRetainPrev, postId, player, status, isRecycledRow, recycleKey]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     registerHomeFeedVideo(postId, player, {
       postId,
       shouldPlay: false,
@@ -788,7 +894,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     };
   }, [player, postId]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     const registerKey = `${postId}:${warmMode}:${isActive ? 1 : 0}:${firstFrameReady ? 1 : 0}`;
     if (registerKey === lastRegisterKeyRef.current) return;
     lastRegisterKeyRef.current = registerKey;
@@ -801,7 +907,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     });
   }, [player, postId, warmMode, isActive, firstFrameReady]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (!canUpgradeQuality) return;
     let cancelled = false;
     void resolveVerifiedStartupVideoUri({
@@ -828,7 +934,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     };
   }, [postId, canUpgradeQuality, resolvedStartupUri, resolvedFullUri, prewarmHit, firstFrameReady]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (!countsForStartupTiming || qualityTraceLoggedRef.current) return;
     qualityTraceLoggedRef.current = true;
     logHomeFeedVideoQualityTrace({
@@ -857,18 +963,13 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     warmMode,
   ]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (!canUpgradeQuality || upgradedQualityRef.current) return;
     if (playbackUri === resolvedFullUri) return;
-
-    if (playStartedLoggedRef.current || firstFrameReady) {
-      console.log("KRISTO_VIDEO_QUALITY_UPGRADE_SKIPPED_PLAYING", {
-        id: postId || null,
-        playStarted: playStartedLoggedRef.current,
-        firstFrameReady,
-      });
-      return;
-    }
+    // Never swap to full quality before the startup URI has painted a frame —
+    // a premature swap remounts AVPlayer on an unwarmed full file and can add
+    // tens of seconds before the first visible pixel.
+    if (!firstFrameReady) return;
 
     if (qualityUpgradeTimerRef.current) {
       clearTimeout(qualityUpgradeTimerRef.current);
@@ -876,16 +977,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     qualityUpgradeTimerRef.current = setTimeout(() => {
       qualityUpgradeTimerRef.current = null;
-      if (upgradedQualityRef.current) return;
-      if (playStartedLoggedRef.current || firstFrameReady || hasPlaybackStartedOrReady()) {
-        console.log("KRISTO_VIDEO_QUALITY_UPGRADE_SKIPPED_PLAYING", {
-          id: postId || null,
-          playStarted: playStartedLoggedRef.current,
-          firstFrameReady,
-          phase: "timer",
-        });
-        return;
-      }
+      if (upgradedQualityRef.current || !firstFrameReady) return;
+      if (playbackFallbackRef.current) return;
 
       upgradedQualityRef.current = true;
       upgradeStartedMsRef.current = Date.now();
@@ -934,7 +1027,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     return true;
   };
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (playerDisposedRef.current) return;
     if (statusLower(status) !== "error") return;
 
@@ -948,41 +1041,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     fallbackToFullQuality("player-error");
   }, [status, playbackUri, resolvedFullUri, resolvedStartupUri, canUpgradeQuality, postId, warmMode]);
 
-  useEffect(() => {
-    if (!countsForStartupTiming || !canUpgradeQuality || firstFrameReady) return;
-    if (playbackUri.split("?")[0] === resolvedFullUri.split("?")[0]) return;
-
-    startupUriFallbackTimerRef.current = setTimeout(() => {
-      if (firstFrameReady || playbackFallbackRef.current) return;
-      if (hasPlaybackStartedOrReady()) {
-        console.log("KRISTO_VIDEO_STARTUP_FALLBACK_SKIPPED_PLAYING", {
-          id: postId || null,
-          playStarted: playStartedLoggedRef.current,
-          status: statusLower(safeGetPlayerStatus(player)),
-          currentTime: safeGetPlayerCurrentTime(player),
-          buffered: safeGetPlayerBuffered(player),
-        });
-        return;
-      }
-      fallbackToFullQuality("startup-timeout");
-    }, STARTUP_LOW_RES_FALLBACK_MS);
-
-    return () => {
-      if (startupUriFallbackTimerRef.current) {
-        clearTimeout(startupUriFallbackTimerRef.current);
-        startupUriFallbackTimerRef.current = null;
-      }
-    };
-  }, [
-    countsForStartupTiming,
-    canUpgradeQuality,
-    playbackUri,
-    resolvedFullUri,
-    firstFrameReady,
-    postId,
-  ]);
-
-  useEffect(() => {
+  React.useEffect(() => {
     if (mountedUriRef.current !== playbackUri) {
       const isQualityUpgrade = qualityUpgradePendingRef.current;
       qualityUpgradePendingRef.current = false;
@@ -1032,7 +1091,25 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
   }, [playbackUri, postId, player, resolvedFullUri, resolvedStartupUri]);
 
-  useEffect(() => {
+  React.useEffect(() => {
+    if (!countsForStartupTiming || !playbackUri || !screenFocused) return;
+    void logFirstMountedHomeFeedVideoFileDiag({
+      playbackUri,
+      contentLength,
+      durationMs: videoDurationMs,
+      playerDurationSec: safeGetPlayerDuration(player) || null,
+    });
+  }, [
+    countsForStartupTiming,
+    playbackUri,
+    screenFocused,
+    contentLength,
+    videoDurationMs,
+    player,
+    postId,
+  ]);
+
+  React.useEffect(() => {
     if (!screenFocused) return;
     if (!isActive && !shouldPrime) return;
     if (preloadStartLoggedRef.current) return;
@@ -1047,7 +1124,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
   }, [shouldPrime, isActive, screenFocused, postId, uri, warmMode]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (playerDisposedRef.current) return;
 
     if (!screenFocused) {
@@ -1111,7 +1188,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     appActive,
   ]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (!screenFocused || playerDisposedRef.current) return;
 
     const lower = statusLower(status);
@@ -1163,7 +1240,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       return;
     }
 
-    if (isFirstFeedVideo && countsForStartupTiming && !hasPaintedFrame(t, status, playing)) {
+    if (isFirstFeedVideo && countsForStartupTiming && !hasPaintedFrame(t)) {
       if (!firstVideoHoldLoggedRef.current) {
         firstVideoHoldLoggedRef.current = true;
         console.log("KRISTO_FIRST_VIDEO_POSTER_HOLD", {
@@ -1178,7 +1255,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
     if (!readyMarkedRef.current) {
       readyMarkedRef.current = true;
-      markHomeFeedVideoPreloadReady(postId, uri);
+      markHomeFeedVideoPreloadReady(postId, playbackUri);
       cachedReadyRef.current = true;
       if (shouldPrime) {
         if (isKristoVerboseFeedDebug()) {
@@ -1222,13 +1299,13 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     appActive,
   ]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (countsForStartupTiming || !screenFocused) return;
     pauseHomeFeedVideo(postId, { postId, reason: `warm-${warmMode}` });
   }, [countsForStartupTiming, isActive, warmMode, screenFocused, postId]);
 
   // Diagnostic (first 3 video rows): dev-only when KRISTO_VERBOSE_FEED_DEBUG is on.
-  useEffect(() => {
+  React.useEffect(() => {
     if (!isKristoVerboseFeedDebug()) return;
     if (feedIndex < 0 || feedIndex > 2) return;
     const videoShouldPlay = computeDecodeShouldPlay();
@@ -1276,7 +1353,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     brandedPoster,
   });
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (!isFirstFeedVideo || !countsForStartupTiming) return;
     if (firstPosterCheckLogged) return;
     firstPosterCheckLogged = true;
@@ -1303,14 +1380,14 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     resolvedFullUri,
   ]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (!hasPoster || !countsForStartupTiming) return;
     Image.prefetch(poster).catch(() => {});
   }, [poster, hasPoster, countsForStartupTiming]);
 
   const showPlaybackControls = isActive && screenFocused && firstFrameReady;
 
-  const showPausedControls = useCallback(() => {
+  const showPausedControls = React.useCallback(() => {
     Animated.parallel([
       Animated.timing(centerPlayOpacity, {
         toValue: 1,
@@ -1327,13 +1404,13 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     ]).start();
   }, [centerPlayOpacity, cornerBadgeOpacity]);
 
-  const resetPlaybackControls = useCallback(() => {
+  const resetPlaybackControls = React.useCallback(() => {
     controlsEpochRef.current += 1;
     centerPlayOpacity.setValue(0);
     cornerBadgeOpacity.setValue(0);
   }, [centerPlayOpacity, cornerBadgeOpacity]);
 
-  const resetPlaybackControlsWithLog = useCallback(
+  const resetPlaybackControlsWithLog = React.useCallback(
     (reason: "inactive" | "active-autoplay") => {
       userPausedRef.current = false;
       resetPlaybackControls();
@@ -1345,7 +1422,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     [postId, resetPlaybackControls]
   );
 
-  const hidePlayingControls = useCallback(() => {
+  const hidePlayingControls = React.useCallback(() => {
     centerPlayOpacity.setValue(0);
     Animated.timing(cornerBadgeOpacity, {
       toValue: 0,
@@ -1355,7 +1432,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }).start();
   }, [centerPlayOpacity, cornerBadgeOpacity]);
 
-  const togglePlayPause = useCallback(() => {
+  const togglePlayPause = React.useCallback(() => {
     if (!showPlaybackControls || playerDisposedRef.current) return;
 
     const isPlaying = safeGetPlayerPlaying(player);
@@ -1376,7 +1453,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     hidePlayingControls();
   }, [showPlaybackControls, player, showPausedControls, hidePlayingControls]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (!showPlaybackControls) {
       resetPlaybackControls();
       return;
@@ -1394,7 +1471,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     hidePlayingControls();
   }, [showPlaybackControls, playing, showPausedControls, hidePlayingControls, resetPlaybackControls]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     const postKey = `${postId}|${uri}|${recycleKey}`;
     if (postKey !== prevControlsPostKeyRef.current) {
       prevControlsPostKeyRef.current = postKey;
@@ -1402,7 +1479,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
   }, [postId, uri, recycleKey, resetPlaybackControlsWithLog]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     const wasActive = prevControlsActiveRef.current;
     if (wasActive && !isActive) {
       resetPlaybackControlsWithLog("inactive");

@@ -10,12 +10,16 @@ import {
   earlyWarmHomeFeedFirstVideo,
   type HomeFeedEarlyWarmResult,
 } from "@/src/lib/homeFeedVideoBufferAhead";
+import {
+  resolveHomeFeedVideoPlaybackPlan,
+  verifyHomeFeedStartupPlaybackUri,
+} from "@/src/lib/homeFeedVideoQuality";
 import { feedList } from "@/src/lib/homeFeedStore";
 import { markHomeFeedVideoPreloadReady } from "@/src/lib/homeFeedVideoReadiness";
 import type { KristoSession } from "@/src/lib/kristoSession";
 import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
-import { getPosterPrefetchTimeoutMs, withPreviewTimeout } from "@/src/lib/videoGridThumbnail";
+import {  withPreviewTimeout } from "@/src/lib/videoGridThumbnail";
 
 let prepareInflight: Promise<HomeFeedEarlyWarmResult | null> | null = null;
 let prepareReady = false;
@@ -66,14 +70,21 @@ export async function prepareHomeFirstVideoBeforeOpen(
     if (posterUri) {
       void withPreviewTimeout(
         Image.prefetch(posterUri).then(() => true),
-        getPosterPrefetchTimeoutMs(),
+        3000,
         false
       );
     }
 
-    const result = await earlyWarmHomeFeedFirstVideo(orderedRows);
-    if (result?.rowId && result.url) {
-      markHomeFeedVideoPreloadReady(result.rowId, result.url);
+    let result: HomeFeedEarlyWarmResult | null = null;
+    if (firstVideoRow) {
+      const plan = resolveHomeFeedVideoPlaybackPlan(firstVideoRow);
+      const verifiedStartupUri = await verifyHomeFeedStartupPlaybackUri(plan);
+      result = await earlyWarmHomeFeedFirstVideo(orderedRows, verifiedStartupUri);
+      if (result?.rowId && result.url) {
+        markHomeFeedVideoPreloadReady(result.rowId, result.url);
+      }
+    } else {
+      result = await earlyWarmHomeFeedFirstVideo(orderedRows);
     }
 
     prepareReady = true;

@@ -152,9 +152,9 @@ export const FeedRow = memo(function FeedRow({
   const posterMetadata = useMemo(() => snapshotPosterMetadata(item), [item]);
   const videoDurationMs = useMemo(() => resolveVideoDurationMs(item), [item]);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
-  const mountVideoPlayer = Boolean(
-    video && videoUri && videoWarmMode !== "off" && screenFocused
-  );
+  // Keep warm-window players mounted while Home is blurred so AVPlayer buffer,
+  // readiness cache, and first-frame state survive tab switches.
+  const mountVideoPlayer = Boolean(video && videoUri && videoWarmMode !== "off");
   const shareCount = Number(item?.shareCount || 0);
   const saveCount = Number(item?.saveCount || 0);
   const animateCopy = isActive && screenFocused;

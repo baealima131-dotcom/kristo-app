@@ -672,19 +672,23 @@ export type HomeFeedEarlyWarmResult = {
 /**
  * Cold-start critical path: prime the EXACT first playable video that
  * HomeFeedScreen will mount (display-ordered rows, not raw backend order) by
- * fetching its full video URL with Range bytes. Marks the URL warmed on a
- * 200/206 so the mounted player resolves prewarmHit=true and decodes from the
- * already-primed HTTP cache. Runs before API refresh / posters / next videos.
+ * fetching startup URI bytes with Range. Marks warmedVideoUrls so diagnostics
+ * report prewarmHit=true; AVPlayer still opens its own progressive download —
+ * this does not guarantee a fast first frame by itself. Runs before API
+ * refresh / posters / next videos.
  */
 export async function earlyWarmHomeFeedFirstVideo(
-  orderedRows: any[]
+  orderedRows: any[],
+  verifiedStartupUri?: string
 ): Promise<HomeFeedEarlyWarmResult | null> {
   let rowId = "";
   let url = "";
   for (const row of orderedRows || []) {
     if (!row || !isVideoPost(row)) continue;
     const plan = resolveHomeFeedVideoPlaybackPlan(row);
-    const candidate = normalizeUrl(plan.startupUri || plan.fullQualityUri);
+    const candidate = normalizeUrl(
+      verifiedStartupUri || plan.startupUri || plan.fullQualityUri
+    );
     if (!isNetworkVideoUrl(candidate)) continue;
     rowId = String(row?.id || "").trim();
     url = candidate;

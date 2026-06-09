@@ -107,7 +107,6 @@ import {
   SLOT_CLAIM_POLL_FALLBACK_MS,
   SLOT_CLAIM_POLL_LIVE_MS,
 } from "@/src/lib/slotClaimSync";
-
 const CLAIM_SLOT_EMPTY_MESSAGE =
   "No open media slots right now. Check back when your church posts a live schedule.";
 
@@ -788,6 +787,23 @@ export default function HomeFeedScreen() {
         : "empty";
     console.log("KRISTO_HOME_FEED_INITIAL_RENDER_SOURCE", { source });
   }, [loading, visibleData.length]);
+
+  const prevFeedFocusedRef = useRef(feedFocused);
+
+  useEffect(() => {
+    const wasFocused = prevFeedFocusedRef.current;
+    prevFeedFocusedRef.current = feedFocused;
+
+    if (!wasFocused && feedFocused) {
+      const activeRow = visibleData[activeIndex];
+      console.log("KRISTO_HOME_FEED_FOCUS_RESTORE", {
+        activeIndex,
+        postId: String(activeRow?.id || "").trim() || null,
+        visibleCount: visibleData.length,
+        hadCacheOnMount: hadCacheOnMountRef.current,
+      });
+    }
+  }, [feedFocused, activeIndex, visibleData]);
 
   useEffect(() => {
     if (!feedFocused) {

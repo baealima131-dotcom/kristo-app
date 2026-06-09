@@ -320,7 +320,7 @@ export const FeedList = memo(function FeedList({
       // video is the active row and whether it mounts a player in the rolling window.
       if (isKristoVerboseFeedDebug() && isVideoPost(item) && index <= 2) {
         const rowId = String(item?.id || "");
-        const mountsPlayer = videoWarmMode !== "off" && effectiveScreenFocused;
+        const mountsPlayer = videoWarmMode !== "off";
         const diagKey = `${index}:${index === activeIndex ? 1 : 0}:${videoWarmMode}:${mountsPlayer ? 1 : 0}`;
         if (lastFeedVideoIndexDiag.get(rowId) !== diagKey) {
           lastFeedVideoIndexDiag.set(rowId, diagKey);
