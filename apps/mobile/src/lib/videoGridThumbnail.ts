@@ -1,5 +1,6 @@
 const PREVIEW_LOAD_TIMEOUT_MS = 3500;
 const CLIENT_THUMB_TIMEOUT_MS = 4000;
+const HOME_FEED_POSTER_LOAD_TIMEOUT_MS = 5000;
 
 const thumbnailCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string>>();
@@ -23,6 +24,10 @@ export function withPreviewTimeout<T>(promise: Promise<T>, ms: number, fallback:
 
 export function getPreviewLoadTimeoutMs() {
   return PREVIEW_LOAD_TIMEOUT_MS;
+}
+
+export function getHomeFeedPosterLoadTimeoutMs() {
+  return HOME_FEED_POSTER_LOAD_TIMEOUT_MS;
 }
 
 export function getClientThumbTimeoutMs() {
