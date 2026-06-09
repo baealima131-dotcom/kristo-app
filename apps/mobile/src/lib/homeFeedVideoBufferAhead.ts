@@ -31,10 +31,13 @@ const RANGE_BYTES = "bytes=0-65535";
 const FIRST_VIDEO_RANGE_BYTES = "bytes=0-393215";
 const STARTUP_PREWARM_VIDEO_MAX = 3;
 
-// Startup critical path: only the first video is awaited before
-// KRISTO_HOME_FEED_STARTUP_PREWARM_DONE fires, with a tight timeout so the DONE
-// log never waits on slow R2 fetches.
-const FIRST_VIDEO_WARM_TIMEOUT_MS = 3000;
+// Startup critical path: the first playable video's startup bytes are warmed
+// with a realistic budget so the warm actually LANDS (priming the CDN edge for
+// AVPlayer's own range requests). The whole startup-prewarm runs fire-and-forget
+// (void), so a larger budget never blocks Home Feed mount — and a 3s budget was
+// too tight to ever complete a cold R2 fetch, leaving videoCount:0 / prewarmHit
+// false. Matches the buffer-ahead fetch budget below.
+const FIRST_VIDEO_WARM_TIMEOUT_MS = 8000;
 // Remaining posters/videos warm only after the first frame paints (or this
 // fallback elapses) so they never steal bandwidth from the first video.
 const BACKGROUND_WARM_AFTER_FIRST_FRAME_MS = 5000;
@@ -249,6 +252,7 @@ async function warmVideoUrlNetwork(
     });
     if (range.ok || range.status === 206) {
       markVideoHeadWarmed(normalized);
+      clearTimeout(timeout);
       return {
         status: range.status,
         bytesRange: true,
