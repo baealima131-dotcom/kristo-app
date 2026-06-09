@@ -9,21 +9,25 @@ import {
   Modal,
   Animated,
   Easing,
-  Image,
-  InteractionManager,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { TLMC_UNIVERSE_IMAGE, preloadTlmcAssets } from "@/src/lib/tlmcPreload";
-import { MEDIA_STUDIO_BACKGROUND, preloadMediaAssets } from "@/src/lib/mediaPreload";
+import { preloadTlmcAssets } from "@/src/lib/tlmcPreload";
+import { preloadMediaAssets } from "@/src/lib/mediaPreload";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { resolveSessionChurchId } from "@/src/lib/churchStore";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
 import { isPastorSessionRole } from "@/src/lib/churchSubscription";
+import {
+  logMoreDeferredRefreshSkip,
+  logMoreDeferredRefreshStart,
+  runAfterMoreTabFirstPaint,
+  setMoreTabFocused,
+} from "@/src/lib/refreshCoordinator";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
@@ -398,6 +402,21 @@ export default function MoreScreen() {
   const [v2ModalText, setV2ModalText] = React.useState("");
   const v2CardAnim = React.useRef(new Animated.Value(0)).current;
   const mediaOpenRef = React.useRef(false);
+  const moreFirstPaintLoggedRef = React.useRef(false);
+
+  const resolveMediaAccessIdentity = React.useCallback(() => {
+    const churchId = resolveSessionChurchId(
+      session?.churchId || (session as any)?.activeChurchId || ""
+    );
+    const userId = String(session?.userId || "").trim();
+    return { churchId, userId };
+  }, [session]);
+
+  React.useLayoutEffect(() => {
+    if (moreFirstPaintLoggedRef.current) return;
+    moreFirstPaintLoggedRef.current = true;
+    console.log("KRISTO_MORE_FIRST_PAINT");
+  }, []);
 
   const refreshMediaAccess = React.useCallback(async (options?: { force?: boolean }) => {
     const churchId = resolveSessionChurchId(
@@ -473,9 +492,34 @@ export default function MoreScreen() {
     router.push(MEDIA_HREF as any);
   }, [router]);
 
-  React.useEffect(() => {
-    void preloadTlmcAssets();
-    void preloadMediaAssets();
+  const runMoreDeferredRefresh = React.useCallback(
+    (reason: string) => {
+      runAfterMoreTabFirstPaint(async () => {
+        if (!hasChurch) return;
+
+        const { churchId, userId } = resolveMediaAccessIdentity();
+        if (!churchId || !userId) return;
+
+        const cached = readCachedMediaAccess(churchId, userId);
+        if (cached !== null) {
+          logMoreDeferredRefreshSkip("more-media-access", "cache-fresh", { reason });
+          setCanAccessChurchMedia(cached);
+          setMediaAccessLoading(false);
+          return;
+        }
+
+        logMoreDeferredRefreshStart("more-media-access", { reason, churchId, userId });
+        await refreshMediaAccess();
+      });
+    },
+    [hasChurch, refreshMediaAccess, resolveMediaAccessIdentity]
+  );
+
+  const runMoreDeferredAssetWarmup = React.useCallback(() => {
+    runAfterMoreTabFirstPaint(() => {
+      void preloadTlmcAssets();
+      void preloadMediaAssets();
+    });
   }, []);
 
   React.useEffect(() => {
@@ -485,10 +529,7 @@ export default function MoreScreen() {
       return;
     }
 
-    const churchId = resolveSessionChurchId(
-      session?.churchId || (session as any)?.activeChurchId || ""
-    );
-    const userId = String(session?.userId || "").trim();
+    const { churchId, userId } = resolveMediaAccessIdentity();
     if (!churchId || !userId) {
       setCanAccessChurchMedia(isPastor ? true : null);
       setMediaAccessLoading(false);
@@ -505,42 +546,19 @@ export default function MoreScreen() {
     if (isPastor) {
       setCanAccessChurchMedia(true);
     }
-
-    let cancelled = false;
-    const frame = requestAnimationFrame(() => {
-      InteractionManager.runAfterInteractions(() => {
-        if (!cancelled) {
-          void refreshMediaAccess();
-        }
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(frame);
-    };
-  }, [hasChurch, isPastor, session?.userId, session?.churchId, refreshMediaAccess]);
+  }, [hasChurch, isPastor, resolveMediaAccessIdentity]);
 
   useFocusEffect(
     React.useCallback(() => {
+      setMoreTabFocused(true);
       mediaOpenRef.current = false;
-      void preloadTlmcAssets();
-      void preloadMediaAssets();
-
-      let cancelled = false;
-      const frame = requestAnimationFrame(() => {
-        InteractionManager.runAfterInteractions(() => {
-          if (!cancelled) {
-            void refreshMediaAccess();
-          }
-        });
-      });
+      runMoreDeferredRefresh("focus");
+      runMoreDeferredAssetWarmup();
 
       return () => {
-        cancelled = true;
-        cancelAnimationFrame(frame);
+        setMoreTabFocused(false);
       };
-    }, [refreshMediaAccess])
+    }, [runMoreDeferredAssetWarmup, runMoreDeferredRefresh])
   );
 
   React.useEffect(() => {
@@ -1068,20 +1086,6 @@ export default function MoreScreen() {
         colors={["#121826", "#0B0F17", "#070A11"]}
         locations={[0, 0.52, 1]}
         style={StyleSheet.absoluteFillObject}
-      />
-      <Image
-        source={TLMC_UNIVERSE_IMAGE}
-        style={s.tlmcPreloadGhost}
-        resizeMode="cover"
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-      />
-      <Image
-        source={MEDIA_STUDIO_BACKGROUND}
-        style={s.tlmcPreloadGhost}
-        resizeMode="cover"
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
       />
       <View pointerEvents="none" style={s.headerGlowPurple} />
       <View pointerEvents="none" style={s.headerGlowBlue} />

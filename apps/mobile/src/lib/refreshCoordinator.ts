@@ -1,4 +1,5 @@
 import type { KristoSession } from "./kristoSession";
+import { InteractionManager } from "react-native";
 import { isSessionExitInProgress } from "./kristoSessionExitFlags";
 import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
@@ -61,6 +62,59 @@ const COORDINATED_REFRESH_MIN_MS = 90000;
 const COORDINATED_REFRESH_FORCE_MIN_MS = 30000;
 let lastCoordinatedRefreshAt = 0;
 let coordinatedRefreshInflight: Promise<void> | null = null;
+
+let moreTabFocused = false;
+let moreTabTransitionUntil = 0;
+const MORE_TAB_TRANSITION_MS = 1400;
+
+export function setMoreTabFocused(focused: boolean) {
+  moreTabFocused = focused;
+  if (focused) {
+    moreTabTransitionUntil = Date.now() + MORE_TAB_TRANSITION_MS;
+  }
+}
+
+export function isMoreTabFocused() {
+  return moreTabFocused;
+}
+
+export function isMoreTabTransitionActive() {
+  return moreTabFocused && Date.now() < moreTabTransitionUntil;
+}
+
+export function shouldDeferChurchBackgroundWorkForMoreTab() {
+  return isMoreTabTransitionActive();
+}
+
+export function runAfterMoreTabFirstPaint(task: () => void | Promise<void>) {
+  requestAnimationFrame(() => {
+    InteractionManager.runAfterInteractions(() => {
+      void task();
+    });
+  });
+}
+
+export function logMoreDeferredRefreshSkip(
+  scope: string,
+  reason: string,
+  extra?: Record<string, unknown>
+) {
+  console.log("KRISTO_MORE_DEFERRED_REFRESH_SKIP", {
+    scope,
+    reason,
+    ...(extra || {}),
+  });
+}
+
+export function logMoreDeferredRefreshStart(
+  scope: string,
+  extra?: Record<string, unknown>
+) {
+  console.log("KRISTO_MORE_DEFERRED_REFRESH_START", {
+    scope,
+    ...(extra || {}),
+  });
+}
 
 export function getCachedChurchMediaAccess() {
   return cachedMediaAccess;
@@ -145,7 +199,28 @@ export async function refreshChurchMediaAccess(args: {
   seedChurchMediaAccessFromSession(session);
 
   const job = (async () => {
-    await waitForHomeFirstVideoReadyIfOnHome();
+    if (shouldDeferChurchBackgroundWorkForMoreTab()) {
+      logMoreDeferredRefreshSkip("refreshChurchMediaAccess", "more-tab-transition");
+      await new Promise<void>((resolve) => {
+        runAfterMoreTabFirstPaint(async () => {
+          if (isSessionExitInProgress()) {
+            resolve();
+            return;
+          }
+          logMoreDeferredRefreshStart("refreshChurchMediaAccess");
+          await waitForHomeFirstVideoReadyIfOnHome();
+          resolve();
+        });
+      });
+      if (isSessionExitInProgress()) {
+        return (
+          cachedMediaAccess ||
+          publishMediaAccess(null, evaluateChurchMediaAccessFromSession(session), session)
+        );
+      }
+    } else {
+      await waitForHomeFirstVideoReadyIfOnHome();
+    }
 
     const headers =
       args.headers ||
@@ -303,6 +378,18 @@ export async function runCoordinatedAppRefresh(
   }) as Record<string, string>;
 
   const job = (async () => {
+    if (shouldDeferChurchBackgroundWorkForMoreTab()) {
+      logMoreDeferredRefreshSkip("runCoordinatedAppRefresh", "more-tab-transition", {
+        lanes,
+      });
+      await new Promise<void>((resolve) => {
+        runAfterMoreTabFirstPaint(() => {
+          logMoreDeferredRefreshStart("runCoordinatedAppRefresh", { lanes });
+          resolve();
+        });
+      });
+    }
+
     await waitForHomeFirstVideoReadyIfOnHome();
 
     console.log("KRISTO_REFRESH_COORDINATOR_START", {

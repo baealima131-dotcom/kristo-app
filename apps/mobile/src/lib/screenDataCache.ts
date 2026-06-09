@@ -9,6 +9,12 @@ import { clearChurchProfileCache, saveChurchProfileCache } from "./churchStore";
 import { mergeChurchAvatarForDisplay, normalizeAvatarUpdatedAt } from "./avatarFreshness";
 import { saveProfileDraft } from "./profileStore";
 import { waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
+import {
+  logMoreDeferredRefreshSkip,
+  logMoreDeferredRefreshStart,
+  runAfterMoreTabFirstPaint,
+  shouldDeferChurchBackgroundWorkForMoreTab,
+} from "./refreshCoordinator";
 import { shouldPauseBackgroundProfileRefresh } from "./mediaScheduleFlowFlags";
 import { isSessionExitInProgress } from "./kristoSessionExitFlags";
 import {
@@ -577,26 +583,66 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
   lastPreloadAt = Date.now();
 
   preloadInflight = (async () => {
-    await waitForHomeFirstVideoReadyIfOnHome();
-    await hydrateMediaPosterCache();
+    const runPreloadBody = async () => {
+      await waitForHomeFirstVideoReadyIfOnHome();
+      await hydrateMediaPosterCache();
 
-    const tasks: Promise<unknown>[] = [silentRefreshProfileScreen(effectiveSession, opts)];
-    if (churchId) {
-      tasks.push(
-        silentRefreshChurchOverview(
-          churchId,
-          userId,
-          getKristoHeaders({
-            userId,
-            role: (effectiveSession?.role || "Member") as any,
+      const tasks: Promise<unknown>[] = [silentRefreshProfileScreen(effectiveSession, opts)];
+      if (churchId) {
+        const existingOverview = await getChurchOverviewCache(churchId, userId);
+        const overviewFresh =
+          !opts?.force &&
+          existingOverview &&
+          isScreenCacheFresh(existingOverview.updatedAt) &&
+          !(
+            Number(existingOverview.stats?.ministries || 0) === 0 &&
+            Number(existingOverview.stats?.ministryMembers || 0) === 0
+          );
+
+        if (overviewFresh) {
+          logMoreDeferredRefreshSkip("silentPreloadTabScreens", "church-overview-cache-fresh", {
             churchId,
-            sessionToken: effectiveSession?.sessionToken,
-          }),
-          opts
-        )
-      );
+            userId,
+          });
+        } else {
+          logMoreDeferredRefreshStart("silentPreloadTabScreens-church-overview", {
+            churchId,
+            userId,
+          });
+          tasks.push(
+            silentRefreshChurchOverview(
+              churchId,
+              userId,
+              getKristoHeaders({
+                userId,
+                role: (effectiveSession?.role || "Member") as any,
+                churchId,
+                sessionToken: effectiveSession?.sessionToken,
+              }),
+              opts
+            )
+          );
+        }
+      }
+      await Promise.allSettled(tasks);
+    };
+
+    if (shouldDeferChurchBackgroundWorkForMoreTab()) {
+      logMoreDeferredRefreshSkip("silentPreloadTabScreens", "more-tab-transition", {
+        userId,
+        churchId,
+      });
+      await new Promise<void>((resolve) => {
+        runAfterMoreTabFirstPaint(async () => {
+          logMoreDeferredRefreshStart("silentPreloadTabScreens", { userId, churchId });
+          await runPreloadBody();
+          resolve();
+        });
+      });
+      return;
     }
-    await Promise.allSettled(tasks);
+
+    await runPreloadBody();
   })().finally(() => {
     preloadInflight = null;
   });

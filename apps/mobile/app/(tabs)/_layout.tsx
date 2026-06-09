@@ -23,7 +23,7 @@ import {
   onLiveRingRefresh,
 } from "@/src/lib/liveScheduleRing";
 import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
-import { Animated, Pressable, Text, View } from "react-native";
+import { Animated, InteractionManager, Pressable, Text, View } from "react-native";
 import { ensureChurchAccessOrSetup } from "@/src/lib/churchLockedRecovery";
 import { fetchLightLiveState, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
 
@@ -711,8 +711,26 @@ export default function TabLayout() {
   useFocusEffect(
     useCallback(() => {
       if (!liveRingPollingStartedRef.current) return;
-      void refreshChurchLiveAndRings("focus");
-    }, [refreshChurchLiveAndRings])
+
+      const tab = String(segments[1] || "index");
+      if (tab === "more") {
+        return;
+      }
+
+      let cancelled = false;
+      const frame = requestAnimationFrame(() => {
+        InteractionManager.runAfterInteractions(() => {
+          if (!cancelled) {
+            void refreshChurchLiveAndRings("focus");
+          }
+        });
+      });
+
+      return () => {
+        cancelled = true;
+        cancelAnimationFrame(frame);
+      };
+    }, [refreshChurchLiveAndRings, segments.join("/")])
   );
 
   useEffect(() => {
