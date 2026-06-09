@@ -3,7 +3,7 @@ import { guard } from "@/app/api/_lib/rbac";
 import { setMemberRole } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
 
-type ChurchRole = "Member" | "Leader" | "Church_Admin" | "Pastor";
+type ChurchRole = "Member" | "Leader" | "Church_Admin" | "Pastor" | "System_Admin";
 type ApiErr = { ok: false; error: string; details?: unknown };
 
 function json(data: unknown, init?: ResponseInit) {
@@ -11,7 +11,7 @@ function json(data: unknown, init?: ResponseInit) {
 }
 
 function isChurchRole(x: unknown): x is ChurchRole {
-  return x === "Member" || x === "Leader" || x === "Church_Admin" || x === "Pastor";
+  return x === "Member" || x === "Leader" || x === "Church_Admin" || x === "Pastor" || x === "System_Admin";
 }
 
 export async function POST(req: NextRequest) {
@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
 
     if (!isChurchRole(role)) {
       return json(
-        { ok: false, error: "Invalid role. Use Member | Leader | Church_Admin | Pastor" } satisfies ApiErr,
+        { ok: false, error: "Invalid role. Use Member | Leader | Church_Admin | Pastor | System_Admin" } satisfies ApiErr,
         { status: 400 }
       );
     }

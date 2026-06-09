@@ -28,7 +28,7 @@ import {
 import { countsAsRealActiveMembership, isBlockedDemoChurchId, STALE_DEMO_MEMBERSHIP_NOTE } from "@/app/api/_lib/demoMemberships";
 
 export type MembershipStatus = "Requested" | "Active" | "Rejected" | "Banned" | "Left";
-export type ChurchRole = "Member" | "Leader" | "Ministry_Leader" | "Church_Admin" | "Pastor";
+export type ChurchRole = "Member" | "Leader" | "Ministry_Leader" | "Church_Admin" | "Pastor" | "System_Admin";
 
 export type ChurchMembership = {
   id: string;
@@ -768,7 +768,7 @@ export async function devPromoteToRoleIfActive(
       if (!m) return s;
 
       // only promote upward; don’t downgrade if already higher
-      const priority: Record<ChurchRole, number> = { Member: 0, Leader: 1, Ministry_Leader: 2, Church_Admin: 3, Pastor: 4 };
+      const priority: Record<ChurchRole, number> = { Member: 0, Leader: 1, Ministry_Leader: 2, Church_Admin: 3, Pastor: 4, System_Admin: 5 };
       const cur = m.churchRole || "Member";
       if (priority[cur] >= priority[role]) return s;
 

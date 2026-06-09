@@ -9,7 +9,7 @@ import {
 neonConfig.fetchConnectionCache = true;
 
 export type MembershipStatus = "Requested" | "Active" | "Rejected" | "Banned" | "Left";
-export type ChurchRole = "Member" | "Leader" | "Ministry_Leader" | "Church_Admin" | "Pastor";
+export type ChurchRole = "Member" | "Leader" | "Ministry_Leader" | "Church_Admin" | "Pastor" | "System_Admin";
 
 export type ChurchMembership = {
   id: string;
@@ -559,6 +559,7 @@ export async function dbDevPromoteToRoleIfActive(
     Ministry_Leader: 2,
     Church_Admin: 3,
     Pastor: 4,
+    System_Admin: 5,
   };
   const cur = m.churchRole || "Member";
   if (priority[cur] >= priority[role]) return;
