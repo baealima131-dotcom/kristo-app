@@ -1,7 +1,10 @@
-import React, { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AppState, Image, StyleSheet, View } from "react-native";
+import React, { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Animated, AppState, Easing, Image, StyleSheet, View } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEvent } from "expo";
+import { Ionicons } from "@expo/vector-icons";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { runOnJS } from "react-native-reanimated";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
 import {
   activateHomeFeedVideo,
@@ -60,6 +63,7 @@ type Props = {
    *  of an existing post: it must always start at 0 and must not save/restore the
    *  original post's watch progress (likes/comments still use the original `postId`). */
   recycleKey?: string;
+  onDoubleTap?: () => void;
 };
 
 // V1 perf: only emit startup/first-frame timing for the first active video in
@@ -199,6 +203,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   isFirstFeedVideo = false,
   contentLength,
   recycleKey = "",
+  onDoubleTap,
 }: Props) {
   const isRecycledRow = Boolean(String(recycleKey || "").trim());
   const recycledStartResetLoggedRef = useRef(false);
@@ -336,6 +341,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const firstFrameDiagLoggedRef = useRef(false);
   const playStartedLoggedRef = useRef(false);
   const lastBufferLogKeyRef = useRef("");
+  const userPausedRef = useRef(false);
+  const centerPlayOpacity = useRef(new Animated.Value(0)).current;
 
   const readPlayerMuted = () => {
     try {
@@ -383,6 +390,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const requestPlay = (reason: string) => {
     if (playerDisposedRef.current) return;
+    if (isActive && userPausedRef.current) return;
     logPlayRequested(reason);
     safePlayerPlay(player);
   };
@@ -401,6 +409,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   };
 
   const recoverAudioIfNeeded = (source: string) => {
+    if (userPausedRef.current) return false;
     const effectiveShouldPlay = computeAudioShouldPlay();
     if (!effectiveShouldPlay) return false;
     if (!readPlayerMuted()) return false;
@@ -481,7 +490,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       appActive,
       muted: playerMuted,
       playerMuted,
-      manualPaused: false,
+      manualPaused: userPausedRef.current,
       warmMode,
       reason,
     });
@@ -554,6 +563,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const activateActivePlayback = (reason: string) => {
     if (!isActive) return;
+    if (userPausedRef.current) return;
     // Start decode/playback immediately when source is set; audio stays muted
     // until firstFrameReady.
     if (!computeDecodeShouldPlay()) return;
@@ -639,6 +649,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       progressRestoredRef.current = false;
       playStartedLoggedRef.current = false;
       lastBufferLogKeyRef.current = "";
+      userPausedRef.current = false;
+    }
+    if (!isActive && wasActive) {
+      userPausedRef.current = false;
     }
     prevIsActiveRef.current = isActive;
   }, [isActive, status, postId]);
@@ -1293,8 +1307,66 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     Image.prefetch(poster).catch(() => {});
   }, [poster, hasPoster, countsForStartupTiming]);
 
+  const showPlaybackControls = isActive && screenFocused && firstFrameReady;
+
+  const togglePlayPause = useCallback(() => {
+    if (!showPlaybackControls || playerDisposedRef.current) return;
+
+    const isPlaying = safeGetPlayerPlaying(player);
+    if (isPlaying) {
+      userPausedRef.current = true;
+      safePlayerPause(player);
+      return;
+    }
+
+    userPausedRef.current = false;
+    if (computeAudioShouldPlay()) {
+      try {
+        player.muted = false;
+      } catch {}
+    }
+    safePlayerPlay(player);
+  }, [showPlaybackControls, player]);
+
+  useEffect(() => {
+    if (!showPlaybackControls) {
+      centerPlayOpacity.setValue(0);
+      return;
+    }
+
+    Animated.timing(centerPlayOpacity, {
+      toValue: playing ? 0 : 1,
+      duration: playing ? 180 : 120,
+      easing: playing ? Easing.out(Easing.quad) : Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [showPlaybackControls, playing, centerPlayOpacity]);
+
+  const videoTapGesture = React.useMemo(() => {
+    const singleTap = Gesture.Tap()
+      .numberOfTaps(1)
+      .maxDuration(250)
+      .onEnd(() => {
+        runOnJS(togglePlayPause)();
+      });
+
+    if (!onDoubleTap) {
+      return singleTap;
+    }
+
+    const doubleTap = Gesture.Tap()
+      .numberOfTaps(2)
+      .maxDelay(300)
+      .onEnd(() => {
+        runOnJS(onDoubleTap)();
+      });
+
+    return Gesture.Exclusive(doubleTap, singleTap);
+  }, [togglePlayPause, onDoubleTap]);
+
   return (
-    <View style={styles.root}>
+    <GestureDetector gesture={videoTapGesture}>
+      <View style={styles.root}>
       <VideoView
         player={player}
         style={[styles.videoSurface, hideVideoSurface && styles.videoHidden]}
@@ -1330,7 +1402,27 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
           />
         </View>
       ) : null}
-    </View>
+      {showPlaybackControls ? (
+        <>
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.centerPlayOverlay, { opacity: centerPlayOpacity }]}
+          >
+            <View style={styles.centerPlayButton}>
+              <Ionicons name="play" size={34} color="rgba(255,255,255,0.96)" />
+            </View>
+          </Animated.View>
+          <View pointerEvents="none" style={styles.cornerPlaybackBadge}>
+            <Ionicons
+              name={playing ? "pause" : "play"}
+              size={16}
+              color="rgba(255,255,255,0.94)"
+            />
+          </View>
+        </>
+      ) : null}
+      </View>
+    </GestureDetector>
   );
 });
 
@@ -1355,5 +1447,36 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     width: "100%",
     height: "100%",
+  },
+  centerPlayOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 3,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  centerPlayButton: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.42)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.24)",
+    paddingLeft: 4,
+  },
+  cornerPlaybackBadge: {
+    position: "absolute",
+    right: 14,
+    bottom: 14,
+    zIndex: 4,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.44)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
   },
 });

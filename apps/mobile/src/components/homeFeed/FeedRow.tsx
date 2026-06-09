@@ -208,6 +208,7 @@ export const FeedRow = memo(function FeedRow({
               feedIndex={feedIndex}
               isFirstFeedVideo={isFirstFeedVideo}
               contentLength={Number(item?.sizeBytes || item?.fileSizeBytes || 0) || undefined}
+              onDoubleTap={onLike}
             />
           ) : (
             <InactiveVideoPoster
