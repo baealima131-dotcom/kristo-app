@@ -8,7 +8,7 @@ import {
   seedUserIfMissing,
   touchSession,
 } from "@/app/api/auth/_lib/session";
-import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
+import { resolveRequestUserId, logAuthRequestDiag } from "@/app/api/auth/_lib/sessionToken";
 import {
   computeProfileStatus,
   ensureProfileDraft,
@@ -126,6 +126,8 @@ export async function GET(req: Request) {
   try {
     await seedUserIfMissing();
 
+    logAuthRequestDiag(req, "auth/profile.GET");
+
     const sess = await readSession(req);
     let u = sess ? await getUserById(sess.userId) : null;
 
@@ -136,7 +138,13 @@ export async function GET(req: Request) {
       u = fallback?.user || null;
     }
 
-    if (!u) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    if (!u) {
+      logAuthRequestDiag(req, "auth/profile.GET.unauthorized", {
+        hadCookieSession: Boolean(sess?.userId),
+        cookieSessionUserId: sess?.userId || null,
+      });
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
 
     const headerChurchId = String((req as any).headers?.get?.("x-kristo-church-id") || "").trim();
     const headerRole = String((req as any).headers?.get?.("x-kristo-role") || "").trim();
