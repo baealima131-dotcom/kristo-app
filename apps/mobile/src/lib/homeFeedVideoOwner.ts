@@ -149,6 +149,14 @@ export function markHomeFeedVideoFirstFrame(
   markHomeFeedFirstPlaying("home-feed-video-first-frame", { postId: meta.postId });
 }
 
+/**
+ * Compat no-op: legacy callers "bumped" ownership to a post id before recovery.
+ * In the owner model the active row is asserted by the player's own effect (and
+ * by recoverHomeFeedPlaybackAfterLiveExit), so this no longer needs to mutate
+ * state. Kept so HomeFeedScreen stays unchanged.
+ */
+export function bumpHomeFeedVideoOwnership(_postId: string): void {}
+
 /** Pause + mute every player and drop active ownership (live-room open, blur, etc.). */
 export function pauseAllHomeFeedVideos(meta: { reason?: string } = {}): void {
   const reason = meta.reason || "pause-all";
@@ -198,7 +206,7 @@ export function subscribeHomeFeedVideoRecovery(listener: () => void): () => void
  * hook HomeFeedScreen calls. Returns true when a matching player was found.
  */
 export function recoverHomeFeedPlaybackAfterLiveExit(
-  meta: { postId?: string; reason?: string } = {}
+  meta: { postId?: string; reason?: string; [key: string]: unknown } = {}
 ): boolean {
   const targetPostId = String(meta.postId || getActiveHomeFeedVideoId() || "").trim();
   const reason = String(meta.reason || "live-room-exit").trim();

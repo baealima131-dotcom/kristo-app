@@ -1,4 +1,5 @@
 import { isKristoVerboseVideoControllerDebug } from "@/src/lib/kristoDebugFlags";
+import { markHomeFeedVideoNeedsRecovery as ownerMarkHomeFeedVideoNeedsRecovery } from "@/src/lib/homeFeedVideoOwner";
 
 type HomeFeedVideoPlayer = {
   pause: () => void;
@@ -147,6 +148,12 @@ export function markHomeFeedVideoNeedsRecovery(reason: string) {
       listener();
     } catch {}
   });
+  // Forward to the new owner so HomeFeedScreen (which now reads the owner's
+  // recovery flag) sees the same signal. live-room keeps importing this from the
+  // controller untouched; the controller's own flag stays for legacy callers.
+  try {
+    ownerMarkHomeFeedVideoNeedsRecovery(pendingVideoRecoveryReason);
+  } catch {}
 }
 
 export function peekHomeFeedVideoRecovery(): string | null {

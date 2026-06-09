@@ -2,7 +2,7 @@ import React, { memo, useEffect, useMemo, useRef } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { SimpleFeedVideo } from "./SimpleFeedVideo";
+import { HomeFeedVideoPlayer, type HomeFeedVideoRole } from "./HomeFeedVideoPlayer";
 import { ImagePostCarousel } from "./ImagePostCarousel";
 import { PostActions } from "./PostActions";
 import { FeedIdentity } from "./FeedIdentity";
@@ -29,8 +29,19 @@ import {
 } from "./homeFeedUtils";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
-import { resolveHomeFeedVideoPlaybackPlan } from "@/src/lib/homeFeedVideoQuality";
+import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
+
+/**
+ * Map the mount-window warm mode to the player's 3-state role. Everything that
+ * is mounted but not active is buffer-only ("preload"); the player never plays
+ * a non-active row. Off rows are not mounted at all.
+ */
+function warmModeToRole(mode: HomeFeedVideoWarmMode): HomeFeedVideoRole {
+  if (mode === "active") return "active";
+  if (mode === "off") return "inactive";
+  return "preload";
+}
 
 const IMAGE_CANDIDATE_KEYS = [
   "mediaUri",
@@ -142,7 +153,7 @@ export const FeedRow = memo(function FeedRow({
 
   const video = isVideoPost(item);
   const videoUri = useMemo(() => resolveVideoUri(item), [item]);
-  const playbackPlan = useMemo(() => resolveHomeFeedVideoPlaybackPlan(item), [item]);
+  const playbackUri = useMemo(() => resolveHomeFeedVideoUri(item), [item]);
   const postImageUris = useMemo(() => resolvePostImageUris(item), [item]);
   const resolvedImageUri = postImageUris[0] || "";
   const showVideoMedia = Boolean(video && videoUri);
@@ -188,26 +199,21 @@ export const FeedRow = memo(function FeedRow({
       <View style={styles.media} pointerEvents="box-none">
         {showVideoMedia ? (
           mountVideoPlayer ? (
-            <SimpleFeedVideo
+            <HomeFeedVideoPlayer
               key={`feed-video-${String(item?.homeFeedRecycleKey || postId)}`}
               postId={postId}
               recycleKey={String(item?.homeFeedRecycleKey || "")}
+              uri={playbackUri}
               title={title}
               mediaStatus={mediaStatus}
-              uri={playbackPlan.fullQualityUri}
-              startupUri={playbackPlan.startupUri}
-              fullQualityUri={playbackPlan.fullQualityUri}
-              hasLowRes={playbackPlan.hasLowRes}
-              prewarmHit={playbackPlan.prewarmHit}
               posterUri={posterUri}
               posterMetadata={posterMetadata}
               videoDurationMs={videoDurationMs}
               brandedPoster={hasBrandedVideoPoster(item)}
-              warmMode={videoWarmMode}
+              role={warmModeToRole(videoWarmMode)}
               screenFocused={screenFocused}
               feedIndex={feedIndex}
               isFirstFeedVideo={isFirstFeedVideo}
-              contentLength={Number(item?.sizeBytes || item?.fileSizeBytes || 0) || undefined}
               onDoubleTap={onLike}
             />
           ) : (

@@ -5,7 +5,7 @@ import {
   persistHomeFeedBackendRowsSnapshot,
 } from "@/src/components/homeFeed/homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
-import { prepareHomeFirstVideoBeforeOpen } from "@/src/lib/homeFeedFirstVideoPrepare";
+import { prepareFirstHomeFeedVideo } from "@/src/lib/homeFeedVideoStartup";
 import {
   warmHomeFeedStartupMedia,
 } from "@/src/lib/homeFeedVideoBufferAhead";
@@ -108,7 +108,7 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
     }
 
     try {
-      await prepareHomeFirstVideoBeforeOpen(session);
+      await prepareFirstHomeFeedVideo(session);
     } catch {
       failures.push("prepare-first-video-before-open");
     }
@@ -157,6 +157,17 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
       posterFailed: media.posterFailed,
       videoFailed: media.videoFailed,
     });
+
+    // Now that the feed exists and the first video's startup bytes are warmed,
+    // publish readiness on the EXACT URL the player will mount. On cold start the
+    // first prepare pass (above) ran against an empty cache and was intentionally
+    // not locked, so this re-run warms the real first URL and marks the readiness
+    // store — satisfying "prepared before open" + restore.
+    try {
+      await prepareFirstHomeFeedVideo(session);
+    } catch {
+      failures.push("prepare-first-video-after-fetch");
+    }
 
     completedIdentityKey = key;
     console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_DONE", {

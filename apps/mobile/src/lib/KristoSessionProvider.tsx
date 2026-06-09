@@ -31,7 +31,7 @@ import {
 } from "./kristoChurchInviteEvents";
 import { startMediaUploadResumeSystem } from "./optimisticVideoUpload";
 import { startHomeFeedStartupPrewarm } from "./homeFeedStartupPrewarm";
-import { startHomeFirstVideoPrepareBeforeOpen } from "./homeFeedFirstVideoPrepare";
+import { startFirstHomeFeedVideoPrepare } from "./homeFeedVideoStartup";
 import { startMoreTabPremount } from "./moreTabPremount";
 import {
   beginDeleteAccountExit,
@@ -66,7 +66,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       setSessionState(s);
       setLoading(false);
 
-      startHomeFirstVideoPrepareBeforeOpen(s);
+      startFirstHomeFeedVideoPrepare(s);
       startMoreTabPremount(s);
       startHomeFeedStartupPrewarm(s);
 
@@ -92,7 +92,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
         });
         setSessionSync(ready);
         setSessionState(ready);
-        startHomeFirstVideoPrepareBeforeOpen(ready);
+        startFirstHomeFeedVideoPrepare(ready);
         startMoreTabPremount(ready);
         startHomeFeedStartupPrewarm(ready);
         await runCoordinatedAppRefresh(ready, { deferMs: 0 });

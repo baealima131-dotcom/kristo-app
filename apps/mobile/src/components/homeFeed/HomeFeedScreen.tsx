@@ -85,11 +85,11 @@ import {
   pauseAllHomeFeedVideos,
   peekHomeFeedVideoRecovery,
   recoverHomeFeedPlaybackAfterLiveExit,
-} from "@/src/lib/homeFeedVideoController";
+} from "@/src/lib/homeFeedVideoOwner";
+import { warmHomeFeedUpcoming } from "@/src/lib/homeFeedVideoStartup";
 import {
   beginHomeFeedPrefetchSession,
   endHomeFeedPrefetchSession,
-  scheduleHomeFeedVideoBufferAhead,
   warmHomeFeedVideoPostersNearActive,
 } from "@/src/lib/homeFeedVideoBufferAhead";
 import {
@@ -796,7 +796,7 @@ export default function HomeFeedScreen() {
 
     if (!wasFocused && feedFocused) {
       const activeRow = visibleData[activeIndex];
-      console.log("KRISTO_HOME_FEED_FOCUS_RESTORE", {
+      console.log("KRISTO_HOME_FEED_RESTORE", {
         activeIndex,
         postId: String(activeRow?.id || "").trim() || null,
         visibleCount: visibleData.length,
@@ -848,13 +848,7 @@ export default function HomeFeedScreen() {
     const runInitialWarm = () => {
       const rows = lastVisibleRowsRef.current;
       if (!rows.length) return;
-      scheduleHomeFeedVideoBufferAhead({
-        rows,
-        activeIndex: 0,
-        visibleCount: rows.length,
-        reason: "initial-feed-ready",
-        enabled: true,
-      });
+      warmHomeFeedUpcoming(rows, 0);
     };
 
     if (isHomeFeedActiveFirstFrameReady()) {
@@ -895,13 +889,7 @@ export default function HomeFeedScreen() {
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
     if (lastVideoBufferActiveRef.current === activeIndex) return;
     lastVideoBufferActiveRef.current = activeIndex;
-    scheduleHomeFeedVideoBufferAhead({
-      rows: visibleData,
-      activeIndex,
-      visibleCount: visibleData.length,
-      reason: "active-index",
-      enabled: feedFocused,
-    });
+    warmHomeFeedUpcoming(visibleData, activeIndex);
   }, [activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
 
   useEffect(() => {
@@ -912,13 +900,7 @@ export default function HomeFeedScreen() {
       return;
     }
     lastVideoBufferWindowRef.current = visibleWindowSize;
-    scheduleHomeFeedVideoBufferAhead({
-      rows: visibleData,
-      activeIndex,
-      visibleCount: visibleData.length,
-      reason: "window-expand",
-      enabled: feedFocused,
-    });
+    warmHomeFeedUpcoming(visibleData, activeIndex);
   }, [visibleWindowSize, activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
 
   const viewerChurchId = String(session?.churchId || "").trim();
