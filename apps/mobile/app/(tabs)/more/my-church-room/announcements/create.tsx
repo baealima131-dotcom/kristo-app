@@ -1,6 +1,19 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import * as ImagePicker from "expo-image-picker";
-import { Pressable, StyleSheet, Text, TextInput, View, type TextStyle, type ViewStyle, Image, ScrollView, Modal, Linking } from "react-native";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type TextStyle,
+  type ViewStyle,
+  Image,
+  ScrollView,
+  Modal,
+  Linking,
+  useWindowDimensions,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -20,6 +33,10 @@ const SUB = "rgba(255,255,255,0.66)";
 const GOLD = "rgba(217,179,95,0.92)";
 const BLUE = "rgba(0,145,255,0.92)";
 const PAD = 16;
+const MAX_COMPOSER_IMAGES = 5;
+const TESTIMONY_INITIAL_VISIBLE_SLOTS = 3;
+const CARD_HORIZONTAL_PADDING = 18;
+const SLOT_GAP = 10;
 
 
 function stripGarbageLines(input: string) {
@@ -104,6 +121,7 @@ function photoPermissionDeniedMessage(kind: "announcement" | "post" | "testimony
 
 export default function CreateAnnouncement() {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const kindParam = String((params as any)?.kind || "announcement");
@@ -336,6 +354,81 @@ export default function CreateAnnouncement() {
     setImages((prev) => prev.filter((u) => u !== uri));
   }
 
+  const testimonySlotSize = useMemo(() => {
+    const cardInnerWidth = windowWidth - PAD * 2 - CARD_HORIZONTAL_PADDING * 2;
+    return Math.floor((cardInnerWidth - SLOT_GAP * (TESTIMONY_INITIAL_VISIBLE_SLOTS - 1)) / TESTIMONY_INITIAL_VISIBLE_SLOTS);
+  }, [windowWidth]);
+
+  const testimonyVisibleSlotCount = useMemo(() => {
+    if (kind !== "testimony") return MAX_COMPOSER_IMAGES;
+    return images.length >= TESTIMONY_INITIAL_VISIBLE_SLOTS
+      ? MAX_COMPOSER_IMAGES
+      : TESTIMONY_INITIAL_VISIBLE_SLOTS;
+  }, [kind, images.length]);
+
+  const testimonySlotRows = useMemo(() => {
+    if (testimonyVisibleSlotCount <= TESTIMONY_INITIAL_VISIBLE_SLOTS) {
+      return [Array.from({ length: testimonyVisibleSlotCount }, (_, i) => i)];
+    }
+    return [
+      [0, 1, 2],
+      [3, 4],
+    ];
+  }, [testimonyVisibleSlotCount]);
+
+  function renderImageSlot(
+    slotIndex: number,
+    slotSize: number,
+    slotStyle?: ViewStyle
+  ) {
+    const uri = images[slotIndex];
+    const slotRadius = Math.max(18, Math.round(slotSize * 0.24));
+
+    if (uri) {
+      return (
+        <Pressable
+          key={`filled-${uri}`}
+          onPress={() => removeImage(uri)}
+          style={[
+            s.slot,
+            {
+              width: slotSize,
+              height: slotSize,
+              borderRadius: slotRadius,
+              borderColor: accentBorder,
+            },
+            slotStyle,
+          ]}
+        >
+          <Image source={{ uri }} style={s.slotImg} />
+          <View style={[s.slotX, { backgroundColor: accentStrong }]}>
+            <Ionicons name="close" size={14} color="#0B0F17" />
+          </View>
+        </Pressable>
+      );
+    }
+
+    return (
+      <Pressable
+        key={`empty-${slotIndex}`}
+        onPress={pickImages}
+        style={[
+          s.slotEmpty,
+          {
+            width: slotSize,
+            height: slotSize,
+            borderRadius: slotRadius,
+            borderColor: accentBorder,
+            backgroundColor: accentSoft,
+          },
+          slotStyle,
+        ]}
+      >
+        <Ionicons name="add" size={20} color={accent} />
+      </Pressable>
+    );
+  }
+
   async function submit() {
     const t0 = cleanSingleLine(title);
     const b0 = cleanComposerText(body);
@@ -541,26 +634,27 @@ export default function CreateAnnouncement() {
           </View>
 
           
-<View style={s.slotsRow}>
-  {[0, 1, 2, 3, 4].map((i) => {
-    const uri = images[i];
-    if(uri){
-      return (
-        <Pressable key={uri} onPress={()=>removeImage(uri)} style={s.slot}>
-          <Image source={{uri}} style={s.slotImg}/>
-          <View style={[s.slotX, { backgroundColor: accentStrong }]}>
-            <Ionicons name="close" size={14} color="#0B0F17"/>
-          </View>
-        </Pressable>
-      );
-    }
-    return (
-      <Pressable key={i} onPress={pickImages} style={[s.slotEmpty, { borderColor: accentBorder, backgroundColor: "rgba(217,179,95,0.18)" }]}>
-        <Ionicons name="add" size={20} color={accent} />
-      </Pressable>
-    );
-  })}
-</View>
+          {kind === "testimony" ? (
+            <View style={s.slotsWrap}>
+              {testimonySlotRows.map((row, rowIndex) => (
+                <View
+                  key={`testimony-slot-row-${rowIndex}`}
+                  style={[
+                    s.slotsRow,
+                    row.length < TESTIMONY_INITIAL_VISIBLE_SLOTS ? s.slotsRowCompact : null,
+                  ]}
+                >
+                  {row.map((slotIndex) => renderImageSlot(slotIndex, testimonySlotSize))}
+                </View>
+              ))}
+            </View>
+          ) : (
+            <View style={s.slotsRow}>
+              {Array.from({ length: MAX_COMPOSER_IMAGES }, (_, i) => i).map((i) =>
+                renderImageSlot(i, 84)
+              )}
+            </View>
+          )}
 
         </View>
       </ScrollView>
@@ -686,11 +780,21 @@ const s = StyleSheet.create({
   thumbWrap: { width: 74, height: 74, borderRadius: 16, overflow: "hidden", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" } as ViewStyle,
   thumb: { width: "100%", height: "100%" } as any,
   thumbX: { position: "absolute", top: 6, right: 6, width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: GOLD } as ViewStyle,
-  slotsRow: { flexDirection: "row", gap: 10, marginTop: 12 } as ViewStyle,
+  slotsWrap: {
+    marginTop: 12,
+    gap: 10,
+    alignItems: "center",
+  } as ViewStyle,
+  slotsRow: {
+    flexDirection: "row",
+    gap: SLOT_GAP,
+    justifyContent: "center",
+    alignSelf: "stretch",
+  } as ViewStyle,
+  slotsRowCompact: {
+    alignSelf: "center",
+  } as ViewStyle,
   slot: {
-    width: 84,
-    height: 84,
-    borderRadius: 22,
     overflow: "hidden",
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.18)",
@@ -698,9 +802,6 @@ const s = StyleSheet.create({
   } as ViewStyle,
   slotImg: { width: "100%", height: "100%" } as any,
   slotEmpty: {
-    width: 84,
-    height: 84,
-    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
