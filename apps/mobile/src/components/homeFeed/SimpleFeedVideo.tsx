@@ -66,6 +66,8 @@ type Props = {
   onDoubleTap?: () => void;
 };
 
+const CORNER_CONTROLS_HIDE_MS = 1000;
+
 // V1 perf: only emit startup/first-frame timing for the first active video in
 // the session. Subsequent active videos stay quiet to keep logs minimal.
 let firstActiveTimingLogged = false;
@@ -343,6 +345,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const lastBufferLogKeyRef = useRef("");
   const userPausedRef = useRef(false);
   const centerPlayOpacity = useRef(new Animated.Value(0)).current;
+  const cornerBadgeOpacity = useRef(new Animated.Value(0)).current;
+  const hideCornerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const readPlayerMuted = () => {
     try {
@@ -1309,6 +1313,71 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const showPlaybackControls = isActive && screenFocused && firstFrameReady;
 
+  const clearHideCornerTimer = useCallback(() => {
+    if (!hideCornerTimerRef.current) return;
+    clearTimeout(hideCornerTimerRef.current);
+    hideCornerTimerRef.current = null;
+  }, []);
+
+  const showPausedControls = useCallback(() => {
+    clearHideCornerTimer();
+    Animated.parallel([
+      Animated.timing(centerPlayOpacity, {
+        toValue: 1,
+        duration: 120,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(cornerBadgeOpacity, {
+        toValue: 1,
+        duration: 120,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [centerPlayOpacity, cornerBadgeOpacity, clearHideCornerTimer]);
+
+  const hidePlayingControls = useCallback(
+    (delayCornerMs = CORNER_CONTROLS_HIDE_MS) => {
+      clearHideCornerTimer();
+      centerPlayOpacity.setValue(0);
+
+      if (delayCornerMs <= 0) {
+        Animated.timing(cornerBadgeOpacity, {
+          toValue: 0,
+          duration: 180,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }).start();
+        return;
+      }
+
+      Animated.timing(cornerBadgeOpacity, {
+        toValue: 1,
+        duration: 120,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+
+      hideCornerTimerRef.current = setTimeout(() => {
+        hideCornerTimerRef.current = null;
+        Animated.timing(cornerBadgeOpacity, {
+          toValue: 0,
+          duration: 180,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }).start();
+      }, delayCornerMs);
+    },
+    [centerPlayOpacity, cornerBadgeOpacity, clearHideCornerTimer]
+  );
+
+  const resetPlaybackControls = useCallback(() => {
+    clearHideCornerTimer();
+    centerPlayOpacity.setValue(0);
+    cornerBadgeOpacity.setValue(0);
+  }, [centerPlayOpacity, cornerBadgeOpacity, clearHideCornerTimer]);
+
   const togglePlayPause = useCallback(() => {
     if (!showPlaybackControls || playerDisposedRef.current) return;
 
@@ -1316,6 +1385,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     if (isPlaying) {
       userPausedRef.current = true;
       safePlayerPause(player);
+      showPausedControls();
       return;
     }
 
@@ -1326,21 +1396,32 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       } catch {}
     }
     safePlayerPlay(player);
-  }, [showPlaybackControls, player]);
+    hidePlayingControls();
+  }, [showPlaybackControls, player, showPausedControls, hidePlayingControls]);
 
   useEffect(() => {
     if (!showPlaybackControls) {
-      centerPlayOpacity.setValue(0);
+      resetPlaybackControls();
       return;
     }
 
-    Animated.timing(centerPlayOpacity, {
-      toValue: playing ? 0 : 1,
-      duration: playing ? 180 : 120,
-      easing: playing ? Easing.out(Easing.quad) : Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [showPlaybackControls, playing, centerPlayOpacity]);
+    if (!playing) {
+      if (userPausedRef.current || playStartedLoggedRef.current) {
+        showPausedControls();
+      } else {
+        resetPlaybackControls();
+      }
+      return;
+    }
+
+    hidePlayingControls();
+  }, [showPlaybackControls, playing, showPausedControls, hidePlayingControls, resetPlaybackControls]);
+
+  useEffect(() => {
+    return () => {
+      clearHideCornerTimer();
+    };
+  }, [clearHideCornerTimer]);
 
   const videoTapGesture = React.useMemo(() => {
     const singleTap = Gesture.Tap()
@@ -1412,13 +1493,16 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
               <Ionicons name="play" size={34} color="rgba(255,255,255,0.96)" />
             </View>
           </Animated.View>
-          <View pointerEvents="none" style={styles.cornerPlaybackBadge}>
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.cornerPlaybackBadge, { opacity: cornerBadgeOpacity }]}
+          >
             <Ionicons
               name={playing ? "pause" : "play"}
               size={16}
               color="rgba(255,255,255,0.94)"
             />
-          </View>
+          </Animated.View>
         </>
       ) : null}
       </View>
