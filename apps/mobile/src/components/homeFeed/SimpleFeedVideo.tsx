@@ -66,8 +66,6 @@ type Props = {
   onDoubleTap?: () => void;
 };
 
-const CORNER_CONTROLS_HIDE_MS = 1000;
-
 // V1 perf: only emit startup/first-frame timing for the first active video in
 // the session. Subsequent active videos stay quiet to keep logs minimal.
 let firstActiveTimingLogged = false;
@@ -346,7 +344,9 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const userPausedRef = useRef(false);
   const centerPlayOpacity = useRef(new Animated.Value(0)).current;
   const cornerBadgeOpacity = useRef(new Animated.Value(0)).current;
-  const hideCornerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const controlsEpochRef = useRef(0);
+  const prevControlsActiveRef = useRef(isActive);
+  const prevControlsPostKeyRef = useRef("");
 
   const readPlayerMuted = () => {
     try {
@@ -653,9 +653,6 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
       progressRestoredRef.current = false;
       playStartedLoggedRef.current = false;
       lastBufferLogKeyRef.current = "";
-      userPausedRef.current = false;
-    }
-    if (!isActive && wasActive) {
       userPausedRef.current = false;
     }
     prevIsActiveRef.current = isActive;
@@ -1313,14 +1310,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
 
   const showPlaybackControls = isActive && screenFocused && firstFrameReady;
 
-  const clearHideCornerTimer = useCallback(() => {
-    if (!hideCornerTimerRef.current) return;
-    clearTimeout(hideCornerTimerRef.current);
-    hideCornerTimerRef.current = null;
-  }, []);
-
   const showPausedControls = useCallback(() => {
-    clearHideCornerTimer();
     Animated.parallel([
       Animated.timing(centerPlayOpacity, {
         toValue: 1,
@@ -1335,48 +1325,35 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
         useNativeDriver: true,
       }),
     ]).start();
-  }, [centerPlayOpacity, cornerBadgeOpacity, clearHideCornerTimer]);
-
-  const hidePlayingControls = useCallback(
-    (delayCornerMs = CORNER_CONTROLS_HIDE_MS) => {
-      clearHideCornerTimer();
-      centerPlayOpacity.setValue(0);
-
-      if (delayCornerMs <= 0) {
-        Animated.timing(cornerBadgeOpacity, {
-          toValue: 0,
-          duration: 180,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }).start();
-        return;
-      }
-
-      Animated.timing(cornerBadgeOpacity, {
-        toValue: 1,
-        duration: 120,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start();
-
-      hideCornerTimerRef.current = setTimeout(() => {
-        hideCornerTimerRef.current = null;
-        Animated.timing(cornerBadgeOpacity, {
-          toValue: 0,
-          duration: 180,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }).start();
-      }, delayCornerMs);
-    },
-    [centerPlayOpacity, cornerBadgeOpacity, clearHideCornerTimer]
-  );
+  }, [centerPlayOpacity, cornerBadgeOpacity]);
 
   const resetPlaybackControls = useCallback(() => {
-    clearHideCornerTimer();
+    controlsEpochRef.current += 1;
     centerPlayOpacity.setValue(0);
     cornerBadgeOpacity.setValue(0);
-  }, [centerPlayOpacity, cornerBadgeOpacity, clearHideCornerTimer]);
+  }, [centerPlayOpacity, cornerBadgeOpacity]);
+
+  const resetPlaybackControlsWithLog = useCallback(
+    (reason: "inactive" | "active-autoplay") => {
+      userPausedRef.current = false;
+      resetPlaybackControls();
+      console.log("KRISTO_VIDEO_CONTROLS_RESET", {
+        id: postId || null,
+        reason,
+      });
+    },
+    [postId, resetPlaybackControls]
+  );
+
+  const hidePlayingControls = useCallback(() => {
+    centerPlayOpacity.setValue(0);
+    Animated.timing(cornerBadgeOpacity, {
+      toValue: 0,
+      duration: 180,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [centerPlayOpacity, cornerBadgeOpacity]);
 
   const togglePlayPause = useCallback(() => {
     if (!showPlaybackControls || playerDisposedRef.current) return;
@@ -1406,7 +1383,7 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
     }
 
     if (!playing) {
-      if (userPausedRef.current || playStartedLoggedRef.current) {
+      if (userPausedRef.current) {
         showPausedControls();
       } else {
         resetPlaybackControls();
@@ -1418,10 +1395,22 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   }, [showPlaybackControls, playing, showPausedControls, hidePlayingControls, resetPlaybackControls]);
 
   useEffect(() => {
-    return () => {
-      clearHideCornerTimer();
-    };
-  }, [clearHideCornerTimer]);
+    const postKey = `${postId}|${uri}|${recycleKey}`;
+    if (postKey !== prevControlsPostKeyRef.current) {
+      prevControlsPostKeyRef.current = postKey;
+      resetPlaybackControlsWithLog("active-autoplay");
+    }
+  }, [postId, uri, recycleKey, resetPlaybackControlsWithLog]);
+
+  useEffect(() => {
+    const wasActive = prevControlsActiveRef.current;
+    if (wasActive && !isActive) {
+      resetPlaybackControlsWithLog("inactive");
+    } else if (isActive && !wasActive) {
+      resetPlaybackControlsWithLog("active-autoplay");
+    }
+    prevControlsActiveRef.current = isActive;
+  }, [isActive, resetPlaybackControlsWithLog]);
 
   const videoTapGesture = React.useMemo(() => {
     const singleTap = Gesture.Tap()
