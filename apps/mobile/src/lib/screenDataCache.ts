@@ -12,8 +12,8 @@ import { waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
 import {
   logMoreDeferredRefreshSkip,
   logMoreDeferredRefreshStart,
-  runAfterMoreTabFirstPaint,
-  shouldDeferChurchBackgroundWorkForMoreTab,
+  runAfterMoreTabReadyForRefresh,
+  shouldBlockChurchBackgroundWorkForMoreTab,
 } from "./refreshCoordinator";
 import { shouldPauseBackgroundProfileRefresh } from "./mediaScheduleFlowFlags";
 import { isSessionExitInProgress } from "./kristoSessionExitFlags";
@@ -356,6 +356,14 @@ export async function silentRefreshChurchOverview(
     clearResponseCacheForRequest("GET", "/api/church/overview", uid);
   }
 
+  if (shouldBlockChurchBackgroundWorkForMoreTab()) {
+    logMoreDeferredRefreshSkip("silentRefreshChurchOverview", "more-first-paint-pending", {
+      churchId: cid,
+      userId: uid,
+    });
+    return existing || null;
+  }
+
   const session = getSessionSync();
   const res = await apiGet<any>(
     "/api/church/overview",
@@ -524,6 +532,17 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
   const userId = String(session?.userId || "").trim();
   if (!userId) return;
 
+  if (shouldBlockChurchBackgroundWorkForMoreTab()) {
+    logMoreDeferredRefreshSkip("silentPreloadTabScreens", "more-first-paint-pending", {
+      userId,
+      churchId: String(session?.churchId || "").trim(),
+    });
+    runAfterMoreTabReadyForRefresh(() => {
+      void silentPreloadTabScreens(session, opts);
+    });
+    return preloadInflight;
+  }
+
   let effectiveSession = session as KristoSession;
   let churchId = String(effectiveSession?.churchId || "").trim();
 
@@ -604,6 +623,11 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
             churchId,
             userId,
           });
+        } else if (shouldBlockChurchBackgroundWorkForMoreTab()) {
+          logMoreDeferredRefreshSkip("silentPreloadTabScreens", "church-overview-deferred", {
+            churchId,
+            userId,
+          });
         } else {
           logMoreDeferredRefreshStart("silentPreloadTabScreens-church-overview", {
             churchId,
@@ -626,21 +650,6 @@ export async function silentPreloadTabScreens(session: KristoSession | null, opt
       }
       await Promise.allSettled(tasks);
     };
-
-    if (shouldDeferChurchBackgroundWorkForMoreTab()) {
-      logMoreDeferredRefreshSkip("silentPreloadTabScreens", "more-tab-transition", {
-        userId,
-        churchId,
-      });
-      await new Promise<void>((resolve) => {
-        runAfterMoreTabFirstPaint(async () => {
-          logMoreDeferredRefreshStart("silentPreloadTabScreens", { userId, churchId });
-          await runPreloadBody();
-          resolve();
-        });
-      });
-      return;
-    }
 
     await runPreloadBody();
   })().finally(() => {

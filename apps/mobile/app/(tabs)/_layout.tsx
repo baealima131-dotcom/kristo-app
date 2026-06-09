@@ -5,6 +5,13 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { silentPreloadTabScreens } from "@/src/lib/screenDataCache";
 import { deferStartupWorkAfterHomeFirstFrame, setHomeTabFocused } from "@/src/lib/firstPaint";
+import {
+  beginMoreTabTransition,
+  endMoreTabTransition,
+  logMoreDeferredRefreshSkip,
+  runAfterMoreTabReadyForRefresh,
+  shouldBlockChurchBackgroundWorkForMoreTab,
+} from "@/src/lib/refreshCoordinator";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet } from "@/src/lib/kristoApi";
 import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
@@ -209,10 +216,18 @@ export default function TabLayout() {
   const params = useGlobalSearchParams<{ profileMode?: string }>();
   const router = useRouter();
   const { session, loading, setSession } = useKristoSession();
+  const prevTabRef = useRef("");
 
   useLayoutEffect(() => {
     const tab = String(segments[1] || "index");
     setHomeTabFocused(tab === "index");
+    const prevTab = prevTabRef.current;
+    if (tab === "more" && prevTab !== "more") {
+      beginMoreTabTransition();
+    } else if (tab !== "more" && prevTab === "more") {
+      endMoreTabTransition();
+    }
+    prevTabRef.current = tab;
   }, [segments.join("/")]);
 
   useEffect(() => {
@@ -227,6 +242,7 @@ export default function TabLayout() {
     if (loading || !session?.userId) return;
     const tab = String(segments[1] || "index");
     if (tab !== "index") return;
+    if (shouldBlockChurchBackgroundWorkForMoreTab()) return;
     deferStartupWorkAfterHomeFirstFrame(
       () => silentPreloadTabScreens(session),
       { reason: "screen-cache-preload-home-focus" }
@@ -600,6 +616,16 @@ export default function TabLayout() {
 
       if (!session?.userId || !session?.churchId) return;
 
+      if (shouldBlockChurchBackgroundWorkForMoreTab()) {
+        logMoreDeferredRefreshSkip("refreshChurchLiveAndRings", "more-first-paint-pending", {
+          source,
+        });
+        runAfterMoreTabReadyForRefresh(() => {
+          void refreshChurchLiveAndRings(source);
+        });
+        return;
+      }
+
       const headers = getKristoHeaders({
         userId: session.userId,
         role: (session.role || "Member") as any,
@@ -685,6 +711,15 @@ export default function TabLayout() {
     const unsubFeed = subscribeHomeFeed(() => applyScheduleRings("feed"));
     const unsubClaim = onClaimUpdated((payload) => scheduleClaimRingSync(payload));
     const unsubRingRefresh = onLiveRingRefresh(({ reason }) => {
+      if (shouldBlockChurchBackgroundWorkForMoreTab()) {
+        logMoreDeferredRefreshSkip("refreshChurchLiveAndRings", "more-first-paint-pending", {
+          source: reason,
+        });
+        runAfterMoreTabReadyForRefresh(() => {
+          void refreshChurchLiveAndRings(reason);
+        });
+        return;
+      }
       void refreshChurchLiveAndRings(reason);
     });
 
@@ -827,7 +862,10 @@ export default function TabLayout() {
               )
             : ({ children }: any) => (
                 <Pressable
-                  onPress={() => router.replace("/(tabs)/more" as any)}
+                  onPress={() => {
+                    beginMoreTabTransition();
+                    router.replace("/(tabs)/more" as any);
+                  }}
                   style={{
                     flex: 1,
                     height: 70,

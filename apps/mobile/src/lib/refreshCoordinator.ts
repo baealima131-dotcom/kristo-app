@@ -65,13 +65,47 @@ let coordinatedRefreshInflight: Promise<void> | null = null;
 
 let moreTabFocused = false;
 let moreTabTransitionUntil = 0;
-const MORE_TAB_TRANSITION_MS = 1400;
+let moreTabFirstPaintFired = false;
+let moreTabFirstPaintAt = 0;
+let moreReadyRefreshScheduled = false;
+const moreReadyRefreshQueue: Array<() => void | Promise<void>> = [];
+
+const MORE_TAB_TRANSITION_MS = 2400;
+const MORE_TAB_POST_PAINT_COOLDOWN_MS = 800;
+
+export function beginMoreTabTransition() {
+  const entering = !moreTabFocused;
+  moreTabFocused = true;
+  moreTabTransitionUntil = Date.now() + MORE_TAB_TRANSITION_MS;
+  if (entering) {
+    moreTabFirstPaintFired = false;
+    moreTabFirstPaintAt = 0;
+  }
+}
+
+export function endMoreTabTransition() {
+  moreTabFocused = false;
+  moreTabFirstPaintFired = false;
+  moreTabFirstPaintAt = 0;
+  moreTabTransitionUntil = 0;
+  moreReadyRefreshQueue.length = 0;
+  moreReadyRefreshScheduled = false;
+}
 
 export function setMoreTabFocused(focused: boolean) {
-  moreTabFocused = focused;
-  if (focused) {
-    moreTabTransitionUntil = Date.now() + MORE_TAB_TRANSITION_MS;
-  }
+  if (focused) beginMoreTabTransition();
+  else endMoreTabTransition();
+}
+
+export function markMoreTabFirstPaint() {
+  if (moreTabFirstPaintFired) return;
+  moreTabFirstPaintFired = true;
+  moreTabFirstPaintAt = Date.now();
+  console.log("KRISTO_MORE_FIRST_PAINT");
+}
+
+export function hasMoreTabFirstPaintFired() {
+  return moreTabFirstPaintFired;
 }
 
 export function isMoreTabFocused() {
@@ -82,16 +116,67 @@ export function isMoreTabTransitionActive() {
   return moreTabFocused && Date.now() < moreTabTransitionUntil;
 }
 
+export function shouldBlockChurchBackgroundWorkForMoreTab() {
+  if (!moreTabFocused) return false;
+  if (!moreTabFirstPaintFired) return true;
+  return Date.now() - moreTabFirstPaintAt < MORE_TAB_POST_PAINT_COOLDOWN_MS;
+}
+
 export function shouldDeferChurchBackgroundWorkForMoreTab() {
-  return isMoreTabTransitionActive();
+  return shouldBlockChurchBackgroundWorkForMoreTab();
+}
+
+function drainMoreReadyRefreshQueue() {
+  moreReadyRefreshScheduled = false;
+  const tasks = moreReadyRefreshQueue.splice(0, moreReadyRefreshQueue.length);
+  for (const task of tasks) {
+    void task();
+  }
+}
+
+function scheduleMoreReadyRefreshDrain() {
+  if (moreReadyRefreshScheduled) return;
+  moreReadyRefreshScheduled = true;
+
+  const waitUntilReady = () => {
+    if (!moreTabFirstPaintFired) {
+      requestAnimationFrame(waitUntilReady);
+      return;
+    }
+
+    const waitMs = Math.max(
+      0,
+      MORE_TAB_POST_PAINT_COOLDOWN_MS - (Date.now() - moreTabFirstPaintAt)
+    );
+
+    setTimeout(() => {
+      requestAnimationFrame(() => {
+        InteractionManager.runAfterInteractions(() => {
+          drainMoreReadyRefreshQueue();
+        });
+      });
+    }, waitMs);
+  };
+
+  waitUntilReady();
+}
+
+export function runAfterMoreTabReadyForRefresh(task: () => void | Promise<void>) {
+  if (!shouldBlockChurchBackgroundWorkForMoreTab()) {
+    requestAnimationFrame(() => {
+      InteractionManager.runAfterInteractions(() => {
+        void task();
+      });
+    });
+    return;
+  }
+
+  moreReadyRefreshQueue.push(task);
+  scheduleMoreReadyRefreshDrain();
 }
 
 export function runAfterMoreTabFirstPaint(task: () => void | Promise<void>) {
-  requestAnimationFrame(() => {
-    InteractionManager.runAfterInteractions(() => {
-      void task();
-    });
-  });
+  runAfterMoreTabReadyForRefresh(task);
 }
 
 export function logMoreDeferredRefreshSkip(
@@ -176,6 +261,19 @@ export async function refreshChurchMediaAccess(args: {
 }): Promise<ChurchMediaAccessState> {
   const scope = `${args.churchId}:${args.userId}`;
   const inflightKey = laneKey("mediaAccess", scope);
+
+  if (shouldBlockChurchBackgroundWorkForMoreTab()) {
+    logMoreDeferredRefreshSkip("refreshChurchMediaAccess", "more-first-paint-pending", {
+      churchId: args.churchId,
+      userId: args.userId,
+    });
+    return new Promise<ChurchMediaAccessState>((resolve) => {
+      runAfterMoreTabReadyForRefresh(() => {
+        void refreshChurchMediaAccess(args).then(resolve);
+      });
+    });
+  }
+
   if (laneInflight.has(inflightKey)) {
     return laneInflight.get(inflightKey)! as Promise<ChurchMediaAccessState>;
   }
@@ -199,28 +297,7 @@ export async function refreshChurchMediaAccess(args: {
   seedChurchMediaAccessFromSession(session);
 
   const job = (async () => {
-    if (shouldDeferChurchBackgroundWorkForMoreTab()) {
-      logMoreDeferredRefreshSkip("refreshChurchMediaAccess", "more-tab-transition");
-      await new Promise<void>((resolve) => {
-        runAfterMoreTabFirstPaint(async () => {
-          if (isSessionExitInProgress()) {
-            resolve();
-            return;
-          }
-          logMoreDeferredRefreshStart("refreshChurchMediaAccess");
-          await waitForHomeFirstVideoReadyIfOnHome();
-          resolve();
-        });
-      });
-      if (isSessionExitInProgress()) {
-        return (
-          cachedMediaAccess ||
-          publishMediaAccess(null, evaluateChurchMediaAccessFromSession(session), session)
-        );
-      }
-    } else {
-      await waitForHomeFirstVideoReadyIfOnHome();
-    }
+    await waitForHomeFirstVideoReadyIfOnHome();
 
     const headers =
       args.headers ||
@@ -315,6 +392,18 @@ export async function runCoordinatedAppRefresh(
   const userId = String(session?.userId || "").trim();
   if (!userId) return;
 
+  if (shouldBlockChurchBackgroundWorkForMoreTab()) {
+    logMoreDeferredRefreshSkip("runCoordinatedAppRefresh", "more-first-paint-pending", {
+      lanes: opts?.lanes,
+    });
+    await new Promise<void>((resolve) => {
+      runAfterMoreTabReadyForRefresh(() => {
+        void runCoordinatedAppRefresh(session, opts).finally(resolve);
+      });
+    });
+    return;
+  }
+
   if (
     (globalThis as any).__KRISTO_HOME_FEED_RENDER_PAUSED__ ||
     (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
@@ -378,18 +467,6 @@ export async function runCoordinatedAppRefresh(
   }) as Record<string, string>;
 
   const job = (async () => {
-    if (shouldDeferChurchBackgroundWorkForMoreTab()) {
-      logMoreDeferredRefreshSkip("runCoordinatedAppRefresh", "more-tab-transition", {
-        lanes,
-      });
-      await new Promise<void>((resolve) => {
-        runAfterMoreTabFirstPaint(() => {
-          logMoreDeferredRefreshStart("runCoordinatedAppRefresh", { lanes });
-          resolve();
-        });
-      });
-    }
-
     await waitForHomeFirstVideoReadyIfOnHome();
 
     console.log("KRISTO_REFRESH_COORDINATOR_START", {

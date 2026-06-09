@@ -25,8 +25,7 @@ import { isPastorSessionRole } from "@/src/lib/churchSubscription";
 import {
   logMoreDeferredRefreshSkip,
   logMoreDeferredRefreshStart,
-  runAfterMoreTabFirstPaint,
-  setMoreTabFocused,
+  runAfterMoreTabReadyForRefresh,
 } from "@/src/lib/refreshCoordinator";
 
 const MEDIA_HREF = "/more/media";
@@ -402,7 +401,6 @@ export default function MoreScreen() {
   const [v2ModalText, setV2ModalText] = React.useState("");
   const v2CardAnim = React.useRef(new Animated.Value(0)).current;
   const mediaOpenRef = React.useRef(false);
-  const moreFirstPaintLoggedRef = React.useRef(false);
 
   const resolveMediaAccessIdentity = React.useCallback(() => {
     const churchId = resolveSessionChurchId(
@@ -411,12 +409,6 @@ export default function MoreScreen() {
     const userId = String(session?.userId || "").trim();
     return { churchId, userId };
   }, [session]);
-
-  React.useLayoutEffect(() => {
-    if (moreFirstPaintLoggedRef.current) return;
-    moreFirstPaintLoggedRef.current = true;
-    console.log("KRISTO_MORE_FIRST_PAINT");
-  }, []);
 
   const refreshMediaAccess = React.useCallback(async (options?: { force?: boolean }) => {
     const churchId = resolveSessionChurchId(
@@ -494,32 +486,28 @@ export default function MoreScreen() {
 
   const runMoreDeferredRefresh = React.useCallback(
     (reason: string) => {
-      runAfterMoreTabFirstPaint(async () => {
-        if (!hasChurch) return;
+      if (!hasChurch) return;
 
-        const { churchId, userId } = resolveMediaAccessIdentity();
-        if (!churchId || !userId) return;
+      const { churchId, userId } = resolveMediaAccessIdentity();
+      if (!churchId || !userId) return;
 
-        const cached = readCachedMediaAccess(churchId, userId);
-        if (cached !== null) {
-          logMoreDeferredRefreshSkip("more-media-access", "cache-fresh", { reason });
-          setCanAccessChurchMedia(cached);
-          setMediaAccessLoading(false);
-          return;
-        }
+      const cached = readCachedMediaAccess(churchId, userId);
+      if (cached !== null) {
+        logMoreDeferredRefreshSkip("more-media-access", "cache-fresh", { reason });
+        setCanAccessChurchMedia(cached);
+        setMediaAccessLoading(false);
+        return;
+      }
 
-        logMoreDeferredRefreshStart("more-media-access", { reason, churchId, userId });
-        await refreshMediaAccess();
-      });
+      logMoreDeferredRefreshStart("more-media-access", { reason, churchId, userId });
+      void refreshMediaAccess();
     },
     [hasChurch, refreshMediaAccess, resolveMediaAccessIdentity]
   );
 
   const runMoreDeferredAssetWarmup = React.useCallback(() => {
-    runAfterMoreTabFirstPaint(() => {
-      void preloadTlmcAssets();
-      void preloadMediaAssets();
-    });
+    void preloadTlmcAssets();
+    void preloadMediaAssets();
   }, []);
 
   React.useEffect(() => {
@@ -550,14 +538,13 @@ export default function MoreScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      setMoreTabFocused(true);
       mediaOpenRef.current = false;
-      runMoreDeferredRefresh("focus");
-      runMoreDeferredAssetWarmup();
+      runAfterMoreTabReadyForRefresh(() => {
+        runMoreDeferredRefresh("focus");
+        runMoreDeferredAssetWarmup();
+      });
 
-      return () => {
-        setMoreTabFocused(false);
-      };
+      return () => {};
     }, [runMoreDeferredAssetWarmup, runMoreDeferredRefresh])
   );
 
