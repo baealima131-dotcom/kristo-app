@@ -10,6 +10,7 @@ import {
   Animated,
   Easing,
   Image,
+  InteractionManager,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -26,6 +27,39 @@ import { isPastorSessionRole } from "@/src/lib/churchSubscription";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
+const MEDIA_ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+type MediaAccessCacheEntry = {
+  canAccessChurchMedia: boolean;
+  fetchedAt: number;
+};
+
+const mediaAccessCache = new Map<string, MediaAccessCacheEntry>();
+
+function mediaAccessCacheKey(churchId: string, userId: string) {
+  return `${churchId}:${userId}`;
+}
+
+function readCachedMediaAccess(churchId: string, userId: string): boolean | null {
+  const entry = mediaAccessCache.get(mediaAccessCacheKey(churchId, userId));
+  if (!entry) return null;
+  if (Date.now() - entry.fetchedAt > MEDIA_ACCESS_CACHE_TTL_MS) {
+    mediaAccessCache.delete(mediaAccessCacheKey(churchId, userId));
+    return null;
+  }
+  return entry.canAccessChurchMedia;
+}
+
+function rememberCachedMediaAccess(
+  churchId: string,
+  userId: string,
+  canAccessChurchMedia: boolean
+) {
+  mediaAccessCache.set(mediaAccessCacheKey(churchId, userId), {
+    canAccessChurchMedia,
+    fetchedAt: Date.now(),
+  });
+}
 
 type Item = {
   key: string;
@@ -190,6 +224,23 @@ function splitColumns(items: Item[]) {
   };
 }
 
+function MediaAccessSkeletonCard() {
+  return (
+    <View style={[s.tileWrap, s.skeletonTile, { width: CARD_W, height: CARD_H }]}>
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(26,10,18,0.98)", "rgba(16,8,12,0.97)", "rgba(9,5,7,0.96)"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={s.skeletonIcon} />
+      <View style={s.skeletonLineWide} />
+      <View style={s.skeletonLineNarrow} />
+    </View>
+  );
+}
+
 const GAP = 18;
 const PAD = 16;
 const CARD_H = 240;
@@ -305,6 +356,8 @@ export default function MoreScreen() {
   );
 
   const [canAccessChurchMedia, setCanAccessChurchMedia] = React.useState<boolean | null>(null);
+  const [mediaAccessLoading, setMediaAccessLoading] = React.useState(false);
+  const mediaAccessFetchRef = React.useRef<Promise<void> | null>(null);
 
   const canShowMediaCard = React.useMemo(() => {
     if (!hasChurch) return false;
@@ -313,6 +366,15 @@ export default function MoreScreen() {
     if (canAccessChurchMedia === null && isPastor) return true;
     return false;
   }, [hasChurch, canAccessChurchMedia, isPastor]);
+
+  const showMediaAccessSkeleton = React.useMemo(
+    () =>
+      hasChurch &&
+      !isPastor &&
+      mediaAccessLoading &&
+      canAccessChurchMedia === null,
+    [hasChurch, isPastor, mediaAccessLoading, canAccessChurchMedia]
+  );
 
   const visibleItems = React.useMemo(() => {
     let base = hasChurch ? ITEMS : buildNoChurchOnboardingItems();
@@ -337,45 +399,72 @@ export default function MoreScreen() {
   const v2CardAnim = React.useRef(new Animated.Value(0)).current;
   const mediaOpenRef = React.useRef(false);
 
-  const refreshMediaAccess = React.useCallback(async () => {
+  const refreshMediaAccess = React.useCallback(async (options?: { force?: boolean }) => {
     const churchId = resolveSessionChurchId(
       session?.churchId || (session as any)?.activeChurchId || ""
     );
     const userId = String(session?.userId || "").trim();
     if (!churchId || !userId) {
       setCanAccessChurchMedia(null);
+      setMediaAccessLoading(false);
       return;
     }
 
-    try {
-      const res: any = await apiGet("/api/church/media-hosts", {
-        headers: getKristoHeaders({
-          userId,
-          role: (session?.role || "Member") as any,
-          churchId,
-          sessionToken: session?.sessionToken,
-        }),
-      });
-      const access = evaluateChurchMediaAccessClient({
-        userId,
-        role: session?.role,
-        churchRole: (session as any)?.churchRole,
-        actualPastorUserId: res?.actualPastorUserId,
-        mediaHostUserIds: res?.mediaHostUserIds,
-        isActualChurchPastor: res?.isActualChurchPastor,
-        isMediaHost: res?.isMediaHost,
-        canAccessChurchMedia: res?.canAccessChurchMedia,
-        canManageMediaHosts: res?.canManageMediaHosts,
-      });
-      setCanAccessChurchMedia(access.canAccessChurchMedia);
-    } catch {
-      const fallback = evaluateChurchMediaAccessClient({
-        userId,
-        role: session?.role,
-        churchRole: (session as any)?.churchRole,
-      });
-      setCanAccessChurchMedia(fallback.canAccessChurchMedia);
+    if (!options?.force) {
+      const cached = readCachedMediaAccess(churchId, userId);
+      if (cached !== null) {
+        setCanAccessChurchMedia(cached);
+        setMediaAccessLoading(false);
+        return;
+      }
     }
+
+    if (mediaAccessFetchRef.current) {
+      await mediaAccessFetchRef.current;
+      return;
+    }
+
+    setMediaAccessLoading(true);
+
+    const fetchPromise = (async () => {
+      try {
+        const res: any = await apiGet("/api/church/media-hosts", {
+          headers: getKristoHeaders({
+            userId,
+            role: (session?.role || "Member") as any,
+            churchId,
+            sessionToken: session?.sessionToken,
+          }),
+        });
+        const access = evaluateChurchMediaAccessClient({
+          userId,
+          role: session?.role,
+          churchRole: (session as any)?.churchRole,
+          actualPastorUserId: res?.actualPastorUserId,
+          mediaHostUserIds: res?.mediaHostUserIds,
+          isActualChurchPastor: res?.isActualChurchPastor,
+          isMediaHost: res?.isMediaHost,
+          canAccessChurchMedia: res?.canAccessChurchMedia,
+          canManageMediaHosts: res?.canManageMediaHosts,
+        });
+        rememberCachedMediaAccess(churchId, userId, access.canAccessChurchMedia);
+        setCanAccessChurchMedia(access.canAccessChurchMedia);
+      } catch {
+        const fallback = evaluateChurchMediaAccessClient({
+          userId,
+          role: session?.role,
+          churchRole: (session as any)?.churchRole,
+        });
+        rememberCachedMediaAccess(churchId, userId, fallback.canAccessChurchMedia);
+        setCanAccessChurchMedia(fallback.canAccessChurchMedia);
+      } finally {
+        setMediaAccessLoading(false);
+        mediaAccessFetchRef.current = null;
+      }
+    })();
+
+    mediaAccessFetchRef.current = fetchPromise;
+    await fetchPromise;
   }, [session]);
 
   const openMediaScreen = React.useCallback(() => {
@@ -389,12 +478,68 @@ export default function MoreScreen() {
     void preloadMediaAssets();
   }, []);
 
+  React.useEffect(() => {
+    if (!hasChurch) {
+      setCanAccessChurchMedia(null);
+      setMediaAccessLoading(false);
+      return;
+    }
+
+    const churchId = resolveSessionChurchId(
+      session?.churchId || (session as any)?.activeChurchId || ""
+    );
+    const userId = String(session?.userId || "").trim();
+    if (!churchId || !userId) {
+      setCanAccessChurchMedia(isPastor ? true : null);
+      setMediaAccessLoading(false);
+      return;
+    }
+
+    const cached = readCachedMediaAccess(churchId, userId);
+    if (cached !== null) {
+      setCanAccessChurchMedia(cached);
+      setMediaAccessLoading(false);
+      return;
+    }
+
+    if (isPastor) {
+      setCanAccessChurchMedia(true);
+    }
+
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      InteractionManager.runAfterInteractions(() => {
+        if (!cancelled) {
+          void refreshMediaAccess();
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [hasChurch, isPastor, session?.userId, session?.churchId, refreshMediaAccess]);
+
   useFocusEffect(
     React.useCallback(() => {
       mediaOpenRef.current = false;
       void preloadTlmcAssets();
       void preloadMediaAssets();
-      void refreshMediaAccess();
+
+      let cancelled = false;
+      const frame = requestAnimationFrame(() => {
+        InteractionManager.runAfterInteractions(() => {
+          if (!cancelled) {
+            void refreshMediaAccess();
+          }
+        });
+      });
+
+      return () => {
+        cancelled = true;
+        cancelAnimationFrame(frame);
+      };
     }, [refreshMediaAccess])
   );
 
@@ -918,6 +1063,12 @@ export default function MoreScreen() {
 
   return (
     <View style={s.screen}>
+      <LinearGradient
+        pointerEvents="none"
+        colors={["#121826", "#0B0F17", "#070A11"]}
+        locations={[0, 0.52, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
       <Image
         source={TLMC_UNIVERSE_IMAGE}
         style={s.tlmcPreloadGhost}
@@ -959,6 +1110,7 @@ export default function MoreScreen() {
           style={s.columnScroll}
         >
           {rightItems.map(renderCard)}
+          {showMediaAccessSkeleton ? <MediaAccessSkeletonCard key="media-access-skeleton" /> : null}
         </ScrollView>
       </View>
 
@@ -1044,6 +1196,38 @@ const s = StyleSheet.create<any>({
   screen: {
     flex: 1,
     backgroundColor: "#0B0F17",
+  },
+
+  skeletonTile: {
+    paddingHorizontal: 17,
+    paddingTop: 18,
+    paddingBottom: 16,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+
+  skeletonIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+
+  skeletonLineWide: {
+    marginTop: 16,
+    width: "72%",
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+
+  skeletonLineNarrow: {
+    marginTop: 10,
+    width: "54%",
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: "rgba(255,255,255,0.06)",
   },
 
   tlmcPreloadGhost: {
