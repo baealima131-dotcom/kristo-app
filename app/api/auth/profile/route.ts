@@ -68,15 +68,6 @@ type Body = {
   privateMode?: boolean;
 };
 
-function resolveFounderSystemAdminRole(userId: string, fallbackRole: string) {
-  const ids = String(process.env.KRISTO_SYSTEM_ADMIN_USER_IDS || "u_3fd77ddd48591819e5de65894")
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
-
-  return ids.includes(String(userId || "").trim()) ? "System_Admin" : fallbackRole;
-}
-
 function norm(s: any) {
   return String(s ?? "").trim();
 }
@@ -200,8 +191,8 @@ export async function GET(req: Request) {
       activeMembership,
       churchId: activeMembership?.churchId || "",
       churchName: churchProfile?.name || "",
-      churchRole: resolveFounderSystemAdminRole(u.id, activeMembership?.churchRole || ""),
-      role: resolveFounderSystemAdminRole(u.id, activeMembership?.churchRole || ""),
+      churchRole: activeMembership?.churchRole || "",
+      role: activeMembership?.churchRole || "",
     });
   } catch (error: any) {
     const message = String(error?.message || error || "Failed to load profile.");
@@ -342,8 +333,8 @@ export async function POST(req: Request) {
       activeMembership,
       churchId: activeMembership?.churchId || "",
       churchName: churchProfile?.name || "",
-      churchRole: resolveFounderSystemAdminRole(u.id, activeMembership?.churchRole || ""),
-      role: resolveFounderSystemAdminRole(u.id, activeMembership?.churchRole || ""),
+      churchRole: activeMembership?.churchRole || "",
+      role: activeMembership?.churchRole || "",
     });
   } catch (error: any) {
     const message = String(error?.message || error || "Failed to save profile.");
