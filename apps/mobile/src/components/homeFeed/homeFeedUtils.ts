@@ -1953,6 +1953,88 @@ export function resolvePosterUri(item: any) {
   return inferred || "";
 }
 
+export type PosterMetadataSnapshot = {
+  posterUri: string | null;
+  videoPosterUri: string | null;
+  thumbnailUri: string | null;
+  thumbnailUrl: string | null;
+  posterUrl: string | null;
+  brandedPoster: boolean;
+};
+
+export function snapshotPosterMetadata(item: any): PosterMetadataSnapshot {
+  return {
+    posterUri: String(item?.posterUri || "").trim() || null,
+    videoPosterUri: String(item?.videoPosterUri || "").trim() || null,
+    thumbnailUri: String(item?.thumbnailUri || "").trim() || null,
+    thumbnailUrl: String(item?.thumbnailUrl || "").trim() || null,
+    posterUrl: String(item?.posterUrl || "").trim() || null,
+    brandedPoster: hasBrandedVideoPoster(item),
+  };
+}
+
+export function describePosterResolution(item: any, resolvedPoster: string) {
+  const video = resolveVideoUri(item);
+  const normalized = String(resolvedPoster || "").trim().split("?")[0];
+  const metadata = snapshotPosterMetadata(item);
+  const metaFields: Array<[string, string | null]> = [
+    ["posterUri", metadata.posterUri],
+    ["videoPosterUri", metadata.videoPosterUri],
+    ["thumbnailUri", metadata.thumbnailUri],
+    ["thumbnailUrl", metadata.thumbnailUrl],
+    ["posterUrl", metadata.posterUrl],
+  ];
+
+  for (const [field, raw] of metaFields) {
+    const resolved = homeFeedMediaUrl(raw);
+    if (resolved && resolved.split("?")[0] === normalized) {
+      return {
+        source: `metadata:${field}`,
+        metadata,
+        generatedPosterUrl: resolvedPoster,
+        videoUrl: video,
+        posterExistsInMetadata: true,
+      };
+    }
+  }
+
+  const seeded = resolvePosterSeedForVideo(video);
+  if (seeded && seeded.split("?")[0] === normalized) {
+    return {
+      source: "seed",
+      metadata,
+      generatedPosterUrl: resolvedPoster,
+      videoUrl: video,
+      posterExistsInMetadata: false,
+    };
+  }
+
+  const inferred = inferPosterUriFromVideoUrl(video);
+  if (inferred && inferred.split("?")[0] === normalized) {
+    return {
+      source: "inferred-from-video-url",
+      metadata,
+      generatedPosterUrl: resolvedPoster,
+      videoUrl: video,
+      posterExistsInMetadata: false,
+    };
+  }
+
+  return {
+    source: normalized ? "unknown" : "empty",
+    metadata,
+    generatedPosterUrl: resolvedPoster,
+    videoUrl: video,
+    posterExistsInMetadata: Boolean(
+      metadata.posterUri ||
+        metadata.videoPosterUri ||
+        metadata.thumbnailUri ||
+        metadata.thumbnailUrl ||
+        metadata.posterUrl
+    ),
+  };
+}
+
 /**
  * Inferred low-res preview URLs were guessed from the full video URL (e.g.
  * /church-video-previews/* or /uploads/media/previews/*). Many of those objects

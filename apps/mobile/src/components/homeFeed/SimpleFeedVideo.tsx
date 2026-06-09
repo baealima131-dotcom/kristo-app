@@ -35,7 +35,7 @@ import {
 } from "@/src/lib/homeFeedVideoQuality";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import { getHomeFeedPosterLoadTimeoutMs } from "@/src/lib/videoGridThumbnail";
-import { hasBrandedVideoPoster, isValidVideoPosterUri } from "./homeFeedUtils";
+import { hasBrandedVideoPoster, isValidVideoPosterUri, type PosterMetadataSnapshot, snapshotPosterMetadata } from "./homeFeedUtils";
 import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
 
 type Props = {
@@ -48,6 +48,8 @@ type Props = {
   hasLowRes?: boolean;
   prewarmHit?: boolean;
   posterUri?: string;
+  posterMetadata?: PosterMetadataSnapshot;
+  videoDurationMs?: number;
   brandedPoster?: boolean;
   warmMode: HomeFeedVideoWarmMode;
   screenFocused: boolean;
@@ -188,6 +190,8 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   hasLowRes = false,
   prewarmHit = false,
   posterUri = "",
+  posterMetadata,
+  videoDurationMs,
   brandedPoster = false,
   warmMode,
   screenFocused,
@@ -1252,6 +1256,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const showGoldFallback = showCoverUntilFirstFrame && !hasPoster && !hasBranded;
   const hideVideoSurface = showCoverUntilFirstFrame;
   const homeFeedPosterTimeoutMs = getHomeFeedPosterLoadTimeoutMs();
+  const resolvedPosterMetadata = posterMetadata || snapshotPosterMetadata({
+    posterUri,
+    brandedPoster,
+  });
 
   useEffect(() => {
     if (!isFirstFeedVideo || !countsForStartupTiming) return;
@@ -1303,8 +1311,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
             title={title}
             videoUrl={resolvedFullUri}
             mediaStatus={mediaStatus}
-            showBrandedUnderlay
             previewLoadTimeoutMs={homeFeedPosterTimeoutMs}
+            posterMetadata={resolvedPosterMetadata}
+            videoDurationMs={videoDurationMs}
+            enableVideoFrameFallback
           />
         </View>
       ) : null}

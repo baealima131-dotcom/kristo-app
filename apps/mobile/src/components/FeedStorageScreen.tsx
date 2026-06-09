@@ -29,6 +29,8 @@ import {
 } from "@/src/lib/churchActivityPosts";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { FeedVideoPosterImage } from "@/src/components/homeFeed/VideoPostFallbackPoster";
+import { snapshotPosterMetadata } from "@/src/components/homeFeed/homeFeedUtils";
+import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import { useSmoothedJobUploadProgress } from "@/src/hooks/useSmoothedJobUploadProgress";
 import {
   canDeleteChurchActivityPostFromSession,
@@ -185,6 +187,9 @@ function StoragePostCard({
 }) {
   const author = getStoragePostAuthor(item);
   const thumbnailUri = getStoragePostThumbnail(item);
+  const posterMetadata = useMemo(() => snapshotPosterMetadata(item), [item]);
+  const videoDurationMs = useMemo(() => resolveVideoDurationMs(item), [item]);
+  const postId = String(item?.id || item?.postId || "").trim();
   const title = getStoragePostTitle(item, mode);
   const typeBadge = getStoragePostTypeBadge(item, mode);
   const whenLabel = formatActivityWhen(item.createdAt);
@@ -236,9 +241,13 @@ function StoragePostCard({
                 uri={thumbnailUri}
                 style={s.thumbImage}
                 resizeMode="cover"
+                postId={postId}
                 title={title}
                 videoUrl={isVideo ? getStoragePreviewVideoUri(item) : ""}
                 mediaStatus={mediaStatus}
+                posterMetadata={posterMetadata}
+                videoDurationMs={videoDurationMs}
+                enableVideoFrameFallback
               />
               {isVideo ? (
                 <View style={s.videoOverlay}>

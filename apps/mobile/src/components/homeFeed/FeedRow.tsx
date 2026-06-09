@@ -20,6 +20,7 @@ import {
   resolvePostTitle,
   resolvePosterUri,
   resolveVideoUri,
+  snapshotPosterMetadata,
   logImagePostRenderDiag,
   isValidVideoPosterUri,
   hasBrandedVideoPoster,
@@ -29,6 +30,7 @@ import {
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
 import { resolveHomeFeedVideoPlaybackPlan } from "@/src/lib/homeFeedVideoQuality";
+import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 
 const IMAGE_CANDIDATE_KEYS = [
   "mediaUri",
@@ -147,6 +149,8 @@ export const FeedRow = memo(function FeedRow({
   const willRenderImage = postImageUris.length > 0 && !showVideoMedia;
   const churchRoomTextCard = churchRoomPost && !showVideoMedia && !willRenderImage;
   const posterUri = resolvePosterUri(item);
+  const posterMetadata = useMemo(() => snapshotPosterMetadata(item), [item]);
+  const videoDurationMs = useMemo(() => resolveVideoDurationMs(item), [item]);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
   const mountVideoPlayer = Boolean(
     video && videoUri && videoWarmMode !== "off" && screenFocused
@@ -196,6 +200,8 @@ export const FeedRow = memo(function FeedRow({
               hasLowRes={playbackPlan.hasLowRes}
               prewarmHit={playbackPlan.prewarmHit}
               posterUri={posterUri}
+              posterMetadata={posterMetadata}
+              videoDurationMs={videoDurationMs}
               brandedPoster={hasBrandedVideoPoster(item)}
               warmMode={videoWarmMode}
               screenFocused={screenFocused}
@@ -210,6 +216,8 @@ export const FeedRow = memo(function FeedRow({
               title={title}
               mediaStatus={mediaStatus}
               posterUri={posterUri}
+              posterMetadata={posterMetadata}
+              videoDurationMs={videoDurationMs}
               videoUri={videoUri}
             />
           )
@@ -301,6 +309,8 @@ function InactiveVideoPoster({
   title,
   mediaStatus,
   posterUri,
+  posterMetadata,
+  videoDurationMs,
   videoUri,
 }: {
   item: any;
@@ -308,6 +318,8 @@ function InactiveVideoPoster({
   title: string;
   mediaStatus: string;
   posterUri: string;
+  posterMetadata: ReturnType<typeof snapshotPosterMetadata>;
+  videoDurationMs?: number;
   videoUri: string;
 }) {
   if (hasHomeFeedVideoPoster(item, videoUri)) {
@@ -321,6 +333,9 @@ function InactiveVideoPoster({
           title={title}
           videoUrl={videoUri}
           mediaStatus={mediaStatus}
+          posterMetadata={posterMetadata}
+          videoDurationMs={videoDurationMs}
+          enableVideoFrameFallback
         />
       );
     }
