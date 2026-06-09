@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from "react";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import {
@@ -16,6 +16,12 @@ import {
   Linking,
   useWindowDimensions,
 } from "react-native";
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+} from "react-native-reanimated";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -40,22 +46,20 @@ const MAX_TESTIMONY_IMAGES = 3;
 const TESTIMONY_SLOT_COUNT = 3;
 const CARD_HORIZONTAL_PADDING = 18;
 const SLOT_GAP = 10;
+const TESTIMONY_CROP_MIN = 72;
+const TESTIMONY_CROP_HANDLE = 28;
+const TESTIMONY_CROP_MAX_SCALE = 5;
 
-type TestimonyCropPreset = "original" | "1:1" | "4:3" | "3:4";
-type TestimonySizePreset = "compact" | "standard" | "full";
+type TestimonyCropExport = {
+  originX: number;
+  originY: number;
+  width: number;
+  height: number;
+};
 
-const TESTIMONY_CROP_PRESETS: { id: TestimonyCropPreset; label: string }[] = [
-  { id: "original", label: "Original" },
-  { id: "1:1", label: "Square" },
-  { id: "4:3", label: "Landscape" },
-  { id: "3:4", label: "Portrait" },
-];
-
-const TESTIMONY_SIZE_PRESETS: { id: TestimonySizePreset; label: string; maxSide: number }[] = [
-  { id: "compact", label: "Compact", maxSide: 1280 },
-  { id: "standard", label: "Balanced", maxSide: 1600 },
-  { id: "full", label: "Detail", maxSide: 2048 },
-];
+type TestimonyTouchCropEditorRef = {
+  getCropExport: () => TestimonyCropExport | null;
+};
 
 function composerImageLimit(kind: "announcement" | "post" | "testimony" | "counsel") {
   return kind === "testimony" ? MAX_TESTIMONY_IMAGES : MAX_COMPOSER_IMAGES;
@@ -72,83 +76,551 @@ function getImageDimensions(uri: string): Promise<{ width: number; height: numbe
   });
 }
 
-function testimonyCropRatio(preset: TestimonyCropPreset): number | null {
-  if (preset === "1:1") return 1;
-  if (preset === "4:3") return 4 / 3;
-  if (preset === "3:4") return 3 / 4;
-  return null;
-}
-
-function centerCropRect(
+function computeTestimonyCropExport(
   imageWidth: number,
   imageHeight: number,
-  aspectRatio: number
-) {
-  let cropWidth = imageWidth;
-  let cropHeight = imageHeight;
+  viewportWidth: number,
+  viewportHeight: number,
+  baseScale: number,
+  scale: number,
+  translateX: number,
+  translateY: number,
+  cropX: number,
+  cropY: number,
+  cropWidth: number,
+  cropHeight: number
+): TestimonyCropExport {
+  const factor = baseScale * scale;
+  const displayWidth = imageWidth * factor;
+  const displayHeight = imageHeight * factor;
+  const imageLeft = (viewportWidth - displayWidth) / 2 + translateX;
+  const imageTop = (viewportHeight - displayHeight) / 2 + translateY;
 
-  if (imageWidth / imageHeight > aspectRatio) {
-    cropHeight = imageHeight;
-    cropWidth = cropHeight * aspectRatio;
-  } else {
-    cropWidth = imageWidth;
-    cropHeight = cropWidth / aspectRatio;
-  }
+  const originX = (cropX - imageLeft) / factor;
+  const originY = (cropY - imageTop) / factor;
+  const width = cropWidth / factor;
+  const height = cropHeight / factor;
+
+  const clampedOriginX = Math.max(0, Math.min(originX, imageWidth - 1));
+  const clampedOriginY = Math.max(0, Math.min(originY, imageHeight - 1));
+  const maxWidth = imageWidth - clampedOriginX;
+  const maxHeight = imageHeight - clampedOriginY;
 
   return {
-    originX: Math.max(0, Math.round((imageWidth - cropWidth) / 2)),
-    originY: Math.max(0, Math.round((imageHeight - cropHeight) / 2)),
-    width: Math.max(1, Math.round(cropWidth)),
-    height: Math.max(1, Math.round(cropHeight)),
+    originX: clampedOriginX,
+    originY: clampedOriginY,
+    width: Math.max(1, Math.min(width, maxWidth)),
+    height: Math.max(1, Math.min(height, maxHeight)),
   };
 }
 
-function resizeActionsForMaxSide(
-  maxSide: number,
-  width?: number,
-  height?: number
-): ImageManipulator.Action[] {
-  const w = Number(width || 0);
-  const h = Number(height || 0);
-  if (!w || !h) return [{ resize: { width: maxSide } }];
-  if (w <= maxSide && h <= maxSide) return [];
-  return w >= h ? [{ resize: { width: maxSide } }] : [{ resize: { height: maxSide } }];
-}
-
-async function applyTestimonyImageEdit(
+async function applyTestimonyVisualCrop(
   sourceUri: string,
-  cropPreset: TestimonyCropPreset,
-  sizePreset: TestimonySizePreset
+  crop: TestimonyCropExport
 ): Promise<string> {
-  const { width, height } = await getImageDimensions(sourceUri);
-  const actions: ImageManipulator.Action[] = [];
-  const ratio = testimonyCropRatio(cropPreset);
-
-  if (ratio) {
-    actions.push({ crop: centerCropRect(width, height, ratio) });
-  }
-
-  let edited = await ImageManipulator.manipulateAsync(
+  const edited = await ImageManipulator.manipulateAsync(
     sourceUri,
-    actions,
+    [
+      {
+        crop: {
+          originX: Math.max(0, Math.round(crop.originX)),
+          originY: Math.max(0, Math.round(crop.originY)),
+          width: Math.max(1, Math.round(crop.width)),
+          height: Math.max(1, Math.round(crop.height)),
+        },
+      },
+    ],
     { compress: 1, format: ImageManipulator.SaveFormat.JPEG }
   );
-
-  const maxSide =
-    TESTIMONY_SIZE_PRESETS.find((preset) => preset.id === sizePreset)?.maxSide || 1600;
-  const resizeActions = resizeActionsForMaxSide(maxSide, edited.width, edited.height);
-
-  if (resizeActions.length) {
-    edited = await ImageManipulator.manipulateAsync(
-      edited.uri,
-      resizeActions,
-      { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
-    );
-  }
 
   const compressed = await compressChurchRoomFeedImage(edited.uri, edited.width, edited.height);
   return compressed.uri;
 }
+
+type TestimonyTouchCropEditorProps = {
+  uri: string;
+  viewportWidth: number;
+  viewportHeight: number;
+  accent: string;
+  accentBorder: string;
+};
+
+const TestimonyTouchCropEditor = forwardRef<
+  TestimonyTouchCropEditorRef,
+  TestimonyTouchCropEditorProps
+>(function TestimonyTouchCropEditor(
+  { uri, viewportWidth, viewportHeight, accent, accentBorder },
+  ref
+) {
+  const exportRef = useRef<TestimonyCropExport | null>(null);
+  const imageWidthRef = useRef(0);
+  const imageHeightRef = useRef(0);
+  const baseScaleRef = useRef(1);
+
+  const viewportW = useSharedValue(viewportWidth);
+  const viewportH = useSharedValue(viewportHeight);
+  const imageW = useSharedValue(0);
+  const imageH = useSharedValue(0);
+  const baseScale = useSharedValue(1);
+  const scale = useSharedValue(1);
+  const savedScale = useSharedValue(1);
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const savedTranslateX = useSharedValue(0);
+  const savedTranslateY = useSharedValue(0);
+  const cropX = useSharedValue(0);
+  const cropY = useSharedValue(0);
+  const cropW = useSharedValue(0);
+  const cropH = useSharedValue(0);
+  const savedCropX = useSharedValue(0);
+  const savedCropY = useSharedValue(0);
+  const savedCropW = useSharedValue(0);
+  const savedCropH = useSharedValue(0);
+
+  function syncExportRef(
+    nextScale = scale.value,
+    nextTranslateX = translateX.value,
+    nextTranslateY = translateY.value,
+    nextCropX = cropX.value,
+    nextCropY = cropY.value,
+    nextCropW = cropW.value,
+    nextCropH = cropH.value
+  ) {
+    if (!imageWidthRef.current || !imageHeightRef.current || !nextCropW) {
+      exportRef.current = null;
+      return;
+    }
+    exportRef.current = computeTestimonyCropExport(
+      imageWidthRef.current,
+      imageHeightRef.current,
+      viewportWidth,
+      viewportHeight,
+      baseScaleRef.current,
+      nextScale,
+      nextTranslateX,
+      nextTranslateY,
+      nextCropX,
+      nextCropY,
+      nextCropW,
+      nextCropH
+    );
+  }
+
+  function pushExportRef() {
+    "worklet";
+    runOnJS(syncExportRef)(
+      scale.value,
+      translateX.value,
+      translateY.value,
+      cropX.value,
+      cropY.value,
+      cropW.value,
+      cropH.value
+    );
+  }
+
+  function clampImageToCrop() {
+    "worklet";
+    if (!imageW.value || !imageH.value || !cropW.value || !cropH.value) return;
+
+    const minScaleX = cropW.value / (imageW.value * baseScale.value);
+    const minScaleY = cropH.value / (imageH.value * baseScale.value);
+    const minScale = Math.max(minScaleX, minScaleY, 1);
+    if (scale.value < minScale) scale.value = minScale;
+
+    const factor = baseScale.value * scale.value;
+    const displayWidth = imageW.value * factor;
+    const displayHeight = imageH.value * factor;
+    const minTx =
+      cropX.value + cropW.value - displayWidth - (viewportW.value - displayWidth) / 2;
+    const maxTx = cropX.value - (viewportW.value - displayWidth) / 2;
+    const minTy =
+      cropY.value + cropH.value - displayHeight - (viewportH.value - displayHeight) / 2;
+    const maxTy = cropY.value - (viewportH.value - displayHeight) / 2;
+
+    translateX.value = Math.max(minTx, Math.min(maxTx, translateX.value));
+    translateY.value = Math.max(minTy, Math.min(maxTy, translateY.value));
+  }
+
+  useEffect(() => {
+    viewportW.value = viewportWidth;
+    viewportH.value = viewportHeight;
+  }, [viewportHeight, viewportWidth, viewportH, viewportW]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { width, height } = await getImageDimensions(uri);
+        if (cancelled || !width || !height) return;
+
+        imageWidthRef.current = width;
+        imageHeightRef.current = height;
+
+        const fitScale = Math.min(viewportWidth / width, viewportHeight / height);
+        baseScaleRef.current = fitScale;
+
+        const initialCropSize = Math.min(viewportWidth, viewportHeight) * 0.78;
+        const initialCropW = initialCropSize;
+        const initialCropH = initialCropSize;
+
+        imageW.value = width;
+        imageH.value = height;
+        baseScale.value = fitScale;
+        scale.value = 1;
+        savedScale.value = 1;
+        translateX.value = 0;
+        translateY.value = 0;
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
+        cropW.value = initialCropW;
+        cropH.value = initialCropH;
+        cropX.value = (viewportWidth - initialCropW) / 2;
+        cropY.value = (viewportHeight - initialCropH) / 2;
+
+        clampImageToCrop();
+        syncExportRef();
+      } catch {
+        exportRef.current = null;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    uri,
+    viewportHeight,
+    viewportWidth,
+    baseScale,
+    cropH,
+    cropW,
+    cropX,
+    cropY,
+    imageH,
+    imageW,
+    savedScale,
+    savedTranslateX,
+    savedTranslateY,
+    scale,
+    translateX,
+    translateY,
+  ]);
+
+  useImperativeHandle(ref, () => ({
+    getCropExport: () => {
+      syncExportRef();
+      return exportRef.current;
+    },
+  }));
+
+  const imageAnimatedStyle = useAnimatedStyle(() => {
+    const factor = baseScale.value * scale.value;
+    const displayWidth = imageW.value * factor;
+    const displayHeight = imageH.value * factor;
+
+    return {
+      width: displayWidth,
+      height: displayHeight,
+      left: (viewportW.value - displayWidth) / 2 + translateX.value,
+      top: (viewportH.value - displayHeight) / 2 + translateY.value,
+    };
+  });
+
+  const topMaskStyle = useAnimatedStyle(() => ({
+    top: 0,
+    left: 0,
+    width: viewportW.value,
+    height: Math.max(0, cropY.value),
+  }));
+
+  const bottomMaskStyle = useAnimatedStyle(() => ({
+    top: cropY.value + cropH.value,
+    left: 0,
+    width: viewportW.value,
+    height: Math.max(0, viewportH.value - (cropY.value + cropH.value)),
+  }));
+
+  const leftMaskStyle = useAnimatedStyle(() => ({
+    top: cropY.value,
+    left: 0,
+    width: Math.max(0, cropX.value),
+    height: cropH.value,
+  }));
+
+  const rightMaskStyle = useAnimatedStyle(() => ({
+    top: cropY.value,
+    left: cropX.value + cropW.value,
+    width: Math.max(0, viewportW.value - (cropX.value + cropW.value)),
+    height: cropH.value,
+  }));
+
+  const frameTouchStyle = useAnimatedStyle(() => ({
+    left: cropX.value - 16,
+    top: cropY.value - 16,
+    width: cropW.value + 32,
+    height: cropH.value + 32,
+  }));
+
+  const frameStyle = useAnimatedStyle(() => ({
+    left: 16,
+    top: 16,
+    width: cropW.value,
+    height: cropH.value,
+  }));
+
+  function makeCornerGesture(
+    corner: "tl" | "tr" | "bl" | "br"
+  ) {
+    return Gesture.Pan()
+      .onBegin(() => {
+        savedCropX.value = cropX.value;
+        savedCropY.value = cropY.value;
+        savedCropW.value = cropW.value;
+        savedCropH.value = cropH.value;
+      })
+      .onUpdate((event) => {
+        if (corner === "br") {
+          cropW.value = Math.max(
+            TESTIMONY_CROP_MIN,
+            Math.min(savedCropW.value + event.translationX, viewportW.value - cropX.value)
+          );
+          cropH.value = Math.max(
+            TESTIMONY_CROP_MIN,
+            Math.min(savedCropH.value + event.translationY, viewportH.value - cropY.value)
+          );
+        } else if (corner === "bl") {
+          const nextX = Math.max(
+            0,
+            Math.min(savedCropX.value + event.translationX, savedCropX.value + savedCropW.value - TESTIMONY_CROP_MIN)
+          );
+          cropW.value = savedCropW.value + (savedCropX.value - nextX);
+          cropX.value = nextX;
+          cropH.value = Math.max(
+            TESTIMONY_CROP_MIN,
+            Math.min(savedCropH.value + event.translationY, viewportH.value - cropY.value)
+          );
+        } else if (corner === "tr") {
+          cropW.value = Math.max(
+            TESTIMONY_CROP_MIN,
+            Math.min(savedCropW.value + event.translationX, viewportW.value - cropX.value)
+          );
+          const nextY = Math.max(
+            0,
+            Math.min(savedCropY.value + event.translationY, savedCropY.value + savedCropH.value - TESTIMONY_CROP_MIN)
+          );
+          cropH.value = savedCropH.value + (savedCropY.value - nextY);
+          cropY.value = nextY;
+        } else {
+          const nextX = Math.max(
+            0,
+            Math.min(savedCropX.value + event.translationX, savedCropX.value + savedCropW.value - TESTIMONY_CROP_MIN)
+          );
+          const nextY = Math.max(
+            0,
+            Math.min(savedCropY.value + event.translationY, savedCropY.value + savedCropH.value - TESTIMONY_CROP_MIN)
+          );
+          cropW.value = savedCropW.value + (savedCropX.value - nextX);
+          cropH.value = savedCropH.value + (savedCropY.value - nextY);
+          cropX.value = nextX;
+          cropY.value = nextY;
+        }
+      })
+      .onEnd(() => {
+        clampImageToCrop();
+        pushExportRef();
+      });
+  }
+
+  const frameMoveGesture = Gesture.Pan()
+    .onBegin(() => {
+      savedCropX.value = cropX.value;
+      savedCropY.value = cropY.value;
+    })
+    .onUpdate((event) => {
+      cropX.value = Math.max(
+        0,
+        Math.min(savedCropX.value + event.translationX, viewportW.value - cropW.value)
+      );
+      cropY.value = Math.max(
+        0,
+        Math.min(savedCropY.value + event.translationY, viewportH.value - cropH.value)
+      );
+    })
+    .onEnd(() => {
+      clampImageToCrop();
+      pushExportRef();
+    });
+
+  const imagePanGesture = Gesture.Pan()
+    .onBegin(() => {
+      savedTranslateX.value = translateX.value;
+      savedTranslateY.value = translateY.value;
+    })
+    .onUpdate((event) => {
+      translateX.value = savedTranslateX.value + event.translationX;
+      translateY.value = savedTranslateY.value + event.translationY;
+    })
+    .onEnd(() => {
+      clampImageToCrop();
+      pushExportRef();
+    });
+
+  const imagePinchGesture = Gesture.Pinch()
+    .onBegin(() => {
+      savedScale.value = scale.value;
+    })
+    .onUpdate((event) => {
+      scale.value = Math.max(
+        1,
+        Math.min(savedScale.value * event.scale, TESTIMONY_CROP_MAX_SCALE)
+      );
+    })
+    .onEnd(() => {
+      clampImageToCrop();
+      pushExportRef();
+    });
+
+  const imageGestures = Gesture.Simultaneous(imagePanGesture, imagePinchGesture);
+
+  const tlHandleStyle = useAnimatedStyle(() => ({
+    left: cropX.value - TESTIMONY_CROP_HANDLE / 2,
+    top: cropY.value - TESTIMONY_CROP_HANDLE / 2,
+  }));
+  const trHandleStyle = useAnimatedStyle(() => ({
+    left: cropX.value + cropW.value - TESTIMONY_CROP_HANDLE / 2,
+    top: cropY.value - TESTIMONY_CROP_HANDLE / 2,
+  }));
+  const blHandleStyle = useAnimatedStyle(() => ({
+    left: cropX.value - TESTIMONY_CROP_HANDLE / 2,
+    top: cropY.value + cropH.value - TESTIMONY_CROP_HANDLE / 2,
+  }));
+  const brHandleStyle = useAnimatedStyle(() => ({
+    left: cropX.value + cropW.value - TESTIMONY_CROP_HANDLE / 2,
+    top: cropY.value + cropH.value - TESTIMONY_CROP_HANDLE / 2,
+  }));
+
+  return (
+    <View style={[cropStyles.viewport, { width: viewportWidth, height: viewportHeight }]}>
+      <GestureDetector gesture={imageGestures}>
+        <Animated.View style={cropStyles.imageLayer}>
+          <Animated.Image
+            source={{ uri }}
+            style={[cropStyles.image, imageAnimatedStyle]}
+            resizeMode="cover"
+          />
+        </Animated.View>
+      </GestureDetector>
+
+      <View style={cropStyles.overlay} pointerEvents="box-none">
+        <Animated.View style={[cropStyles.mask, topMaskStyle]} pointerEvents="none" />
+        <Animated.View style={[cropStyles.mask, bottomMaskStyle]} pointerEvents="none" />
+        <Animated.View style={[cropStyles.mask, leftMaskStyle]} pointerEvents="none" />
+        <Animated.View style={[cropStyles.mask, rightMaskStyle]} pointerEvents="none" />
+
+        <GestureDetector gesture={frameMoveGesture}>
+          <Animated.View style={[cropStyles.frameTouch, frameTouchStyle]}>
+            <Animated.View style={[cropStyles.frame, frameStyle, { borderColor: accent }]}>
+              <View style={[cropStyles.gridLineH, cropStyles.gridLineTop]} />
+              <View style={[cropStyles.gridLineH, cropStyles.gridLineBottom]} />
+              <View style={[cropStyles.gridLineV, cropStyles.gridLineLeft]} />
+              <View style={[cropStyles.gridLineV, cropStyles.gridLineRight]} />
+            </Animated.View>
+          </Animated.View>
+        </GestureDetector>
+
+        <GestureDetector gesture={makeCornerGesture("tl")}>
+          <Animated.View style={[cropStyles.handleHit, tlHandleStyle]}>
+            <View style={[cropStyles.handleDot, { backgroundColor: accent, borderColor: accentBorder }]} />
+          </Animated.View>
+        </GestureDetector>
+        <GestureDetector gesture={makeCornerGesture("tr")}>
+          <Animated.View style={[cropStyles.handleHit, trHandleStyle]}>
+            <View style={[cropStyles.handleDot, { backgroundColor: accent, borderColor: accentBorder }]} />
+          </Animated.View>
+        </GestureDetector>
+        <GestureDetector gesture={makeCornerGesture("bl")}>
+          <Animated.View style={[cropStyles.handleHit, blHandleStyle]}>
+            <View style={[cropStyles.handleDot, { backgroundColor: accent, borderColor: accentBorder }]} />
+          </Animated.View>
+        </GestureDetector>
+        <GestureDetector gesture={makeCornerGesture("br")}>
+          <Animated.View style={[cropStyles.handleHit, brHandleStyle]}>
+            <View style={[cropStyles.handleDot, { backgroundColor: accent, borderColor: accentBorder }]} />
+          </Animated.View>
+        </GestureDetector>
+      </View>
+    </View>
+  );
+});
+
+const cropStyles = StyleSheet.create({
+  viewport: {
+    overflow: "hidden",
+    backgroundColor: "#05080E",
+  } as ViewStyle,
+  imageLayer: {
+    ...StyleSheet.absoluteFillObject,
+  } as ViewStyle,
+  image: {
+    position: "absolute",
+  } as ViewStyle,
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+  } as ViewStyle,
+  mask: {
+    position: "absolute",
+    backgroundColor: "rgba(0,0,0,0.58)",
+  } as ViewStyle,
+  frameTouch: {
+    position: "absolute",
+  } as ViewStyle,
+  frame: {
+    position: "absolute",
+    borderWidth: 2,
+  } as ViewStyle,
+  gridLineH: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.28)",
+  } as ViewStyle,
+  gridLineV: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: 1,
+    backgroundColor: "rgba(255,255,255,0.28)",
+  } as ViewStyle,
+  gridLineTop: {
+    top: "33.33%",
+  } as ViewStyle,
+  gridLineBottom: {
+    top: "66.66%",
+  } as ViewStyle,
+  gridLineLeft: {
+    left: "33.33%",
+  } as ViewStyle,
+  gridLineRight: {
+    left: "66.66%",
+  } as ViewStyle,
+  handleHit: {
+    position: "absolute",
+    width: TESTIMONY_CROP_HANDLE,
+    height: TESTIMONY_CROP_HANDLE,
+    alignItems: "center",
+    justifyContent: "center",
+  } as ViewStyle,
+  handleDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    backgroundColor: "#FFFFFF",
+  } as ViewStyle,
+});
 
 
 function stripGarbageLines(input: string) {
@@ -257,9 +729,9 @@ export default function CreateAnnouncement() {
   const [testimonyPreviewOpen, setTestimonyPreviewOpen] = useState(false);
   const [testimonyPreviewUri, setTestimonyPreviewUri] = useState<string | null>(null);
   const [testimonyPreviewIndex, setTestimonyPreviewIndex] = useState<number | null>(null);
-  const [testimonyCropPreset, setTestimonyCropPreset] = useState<TestimonyCropPreset>("original");
-  const [testimonySizePreset, setTestimonySizePreset] = useState<TestimonySizePreset>("standard");
   const [testimonyEditSaving, setTestimonyEditSaving] = useState(false);
+  const [testimonyCropViewport, setTestimonyCropViewport] = useState({ width: 0, height: 0 });
+  const testimonyCropEditorRef = useRef<TestimonyTouchCropEditorRef>(null);
 
   const maxComposerImages = composerImageLimit(kind);
 
@@ -477,8 +949,6 @@ export default function CreateAnnouncement() {
   function openTestimonyImagePreview(uri: string, slotIndex: number) {
     setTestimonyPreviewUri(uri);
     setTestimonyPreviewIndex(slotIndex);
-    setTestimonyCropPreset("original");
-    setTestimonySizePreset("standard");
     setTestimonyPreviewOpen(true);
   }
 
@@ -497,11 +967,12 @@ export default function CreateAnnouncement() {
     try {
       setTestimonyEditSaving(true);
       setErr(null);
-      const editedUri = await applyTestimonyImageEdit(
-        sourceUri,
-        testimonyCropPreset,
-        testimonySizePreset
-      );
+      const cropExport = testimonyCropEditorRef.current?.getCropExport();
+      if (!cropExport) {
+        setErr(CHURCH_ROOM_FEED_IMAGE_TOO_LARGE_MESSAGE);
+        return;
+      }
+      const editedUri = await applyTestimonyVisualCrop(sourceUri, cropExport);
       setImages((prev) => {
         const next = [...prev];
         next[slotIndex] = editedUri;
@@ -891,10 +1362,11 @@ export default function CreateAnnouncement() {
               onPress={closeTestimonyImagePreview}
               disabled={testimonyEditSaving}
               style={s.editHeaderBtn}
+              accessibilityLabel="Cancel"
             >
               <Ionicons name="close" size={22} color={TEXT} />
             </Pressable>
-            <Text style={s.editTitle}>Edit image</Text>
+            <View style={s.editHeaderSpacer} />
             <Pressable
               onPress={() => void saveTestimonyImageEdit()}
               disabled={testimonyEditSaving}
@@ -903,70 +1375,41 @@ export default function CreateAnnouncement() {
                 { backgroundColor: accent },
                 testimonyEditSaving || pressed ? { opacity: 0.88 } : null,
               ]}
+              accessibilityLabel="Save"
             >
               {testimonyEditSaving ? (
                 <ActivityIndicator size="small" color="#08111D" />
               ) : (
-                <Text style={s.editSaveText}>Save</Text>
+                <>
+                  <Ionicons name="checkmark" size={18} color="#08111D" />
+                  <Text style={s.editSaveText}>Save</Text>
+                </>
               )}
             </Pressable>
           </View>
 
-          <View style={s.editPreviewWrap}>
-            {testimonyPreviewUri ? (
-              <Image
-                source={{ uri: testimonyPreviewUri }}
-                style={s.editPreviewImage}
-                resizeMode="contain"
+          <View
+            style={s.editPreviewWrap}
+            onLayout={(event) => {
+              const { width, height } = event.nativeEvent.layout;
+              if (width > 0 && height > 0) {
+                setTestimonyCropViewport({ width, height });
+              }
+            }}
+          >
+            {testimonyPreviewUri && testimonyCropViewport.width > 0 ? (
+              <TestimonyTouchCropEditor
+                ref={testimonyCropEditorRef}
+                uri={testimonyPreviewUri}
+                viewportWidth={testimonyCropViewport.width}
+                viewportHeight={testimonyCropViewport.height}
+                accent={accent}
+                accentBorder={accentBorder}
               />
             ) : null}
           </View>
 
           <View style={[s.editPanel, { paddingBottom: Math.max(insets.bottom + 16, 24) }]}>
-            <Text style={s.editSectionLabel}>Crop</Text>
-            <View style={s.editChipRow}>
-              {TESTIMONY_CROP_PRESETS.map((preset) => {
-                const active = testimonyCropPreset === preset.id;
-                return (
-                  <Pressable
-                    key={preset.id}
-                    onPress={() => setTestimonyCropPreset(preset.id)}
-                    style={[
-                      s.editChip,
-                      { borderColor: accentBorder },
-                      active ? { backgroundColor: accentSoft, borderColor: accent } : null,
-                    ]}
-                  >
-                    <Text style={[s.editChipText, active ? { color: accent } : null]}>
-                      {preset.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <Text style={[s.editSectionLabel, { marginTop: 14 }]}>Size</Text>
-            <View style={s.editChipRow}>
-              {TESTIMONY_SIZE_PRESETS.map((preset) => {
-                const active = testimonySizePreset === preset.id;
-                return (
-                  <Pressable
-                    key={preset.id}
-                    onPress={() => setTestimonySizePreset(preset.id)}
-                    style={[
-                      s.editChip,
-                      { borderColor: accentBorder },
-                      active ? { backgroundColor: accentSoft, borderColor: accent } : null,
-                    ]}
-                  >
-                    <Text style={[s.editChipText, active ? { color: accent } : null]}>
-                      {preset.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
             <Pressable
               onPress={removeTestimonyPreviewImage}
               disabled={testimonyEditSaving}
@@ -975,9 +1418,10 @@ export default function CreateAnnouncement() {
                 { borderColor: accentBorder },
                 pressed ? { opacity: 0.9 } : null,
               ]}
+              accessibilityLabel="Remove image"
             >
-              <Ionicons name="trash-outline" size={16} color="rgba(255,120,120,0.92)" />
-              <Text style={s.editRemoveText}>Remove image</Text>
+              <Ionicons name="trash-outline" size={18} color="rgba(255,120,120,0.92)" />
+              <Text style={s.editRemoveText}>Remove Image</Text>
             </Pressable>
           </View>
         </View>
@@ -1206,6 +1650,9 @@ const s = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12,
   } as ViewStyle,
+  editHeaderSpacer: {
+    flex: 1,
+  } as ViewStyle,
   editHeaderBtn: {
     width: 42,
     height: 42,
@@ -1216,21 +1663,15 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
   } as ViewStyle,
-  editTitle: {
-    flex: 1,
-    textAlign: "center",
-    color: TEXT,
-    fontWeight: "900",
-    fontSize: 17,
-    letterSpacing: -0.1,
-  } as TextStyle,
   editSaveBtn: {
-    minWidth: 74,
+    minWidth: 92,
     height: 42,
     borderRadius: 18,
     paddingHorizontal: 16,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 6,
   } as ViewStyle,
   editSaveText: {
     color: "#08111D",
@@ -1246,10 +1687,6 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
   } as ViewStyle,
-  editPreviewImage: {
-    width: "100%",
-    height: "100%",
-  } as any,
   editPanel: {
     paddingHorizontal: PAD,
     paddingTop: 16,
@@ -1257,35 +1694,7 @@ const s = StyleSheet.create({
     borderTopColor: "rgba(255,255,255,0.06)",
     backgroundColor: "rgba(11,15,23,0.98)",
   } as ViewStyle,
-  editSectionLabel: {
-    color: "rgba(255,255,255,0.72)",
-    fontWeight: "900",
-    fontSize: 12,
-    letterSpacing: 0.18,
-    marginBottom: 10,
-  } as TextStyle,
-  editChipRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  } as ViewStyle,
-  editChip: {
-    minWidth: 72,
-    paddingHorizontal: 12,
-    height: 38,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    backgroundColor: "rgba(255,255,255,0.03)",
-  } as ViewStyle,
-  editChipText: {
-    color: SUB,
-    fontWeight: "800",
-    fontSize: 13,
-  } as TextStyle,
   editRemoveBtn: {
-    marginTop: 16,
     minHeight: 46,
     borderRadius: 16,
     borderWidth: 1,
