@@ -455,7 +455,7 @@ export function commentAvatarUrl(raw: unknown) {
 }
 
 /** Active church media schedule row (media-live-slots) for Home Feed / Guest Claim / Live ring.
- *  V1: visible to church members for claim; ranking pipeline unchanged. */
+ *  Visible cross-church; claim eligibility uses the viewer's own church subscription. */
 export function isMediaLiveSlotsHomeFeedRow(item: any): boolean {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
   if (!isMediaScheduleFeedItem(item)) return false;
@@ -1202,7 +1202,6 @@ export function isHomeFeedActiveOrNearLiveChurchScheduleVisible(
 
   return rows.some((row) => {
     if (!isHomeFeedScheduleCardRow(row)) return false;
-    if (homeFeedRowChurchId(row) !== cid) return false;
 
     const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
     const slot = slots[0];
@@ -1252,17 +1251,16 @@ function isHomeFeedClaimableScheduleSlot(
   return true;
 }
 
-/** Open media schedule slot rows a member can claim for their church. */
+/** Open media schedule slot rows a subscribed church member can claim (cross-church allowed). */
 export function isHomeFeedClaimableSlotRow(
   row: any,
-  targetChurchId: string,
+  viewerChurchId: string,
   _viewerUserId: string,
   nowMs = Date.now()
 ): boolean {
   if (!row || !isHomeFeedScheduleCardRow(row)) return false;
 
-  const rowChurchId = homeFeedRowChurchId(row);
-  if (!targetChurchId || !rowChurchId || rowChurchId !== targetChurchId) return false;
+  if (!String(viewerChurchId || "").trim()) return false;
   if (!isHomeFeedScheduleSlotRowVisible(row, nowMs)) return false;
 
   const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
@@ -1305,6 +1303,34 @@ export function findFirstClaimableHomeFeedSlotIndex(
 let lastHomeFeedBuildDigest = "";
 let lastHomeFeedBuildResult: any[] = [];
 
+let homeFeedViewerCanSeeMediaSlots: { churchId: string; value: boolean } | null = null;
+
+/** Home Feed media slot visibility: viewer church member + active subscription. */
+export function setHomeFeedViewerCanSeeMediaSlots(churchId: string, canSee: boolean) {
+  homeFeedViewerCanSeeMediaSlots = {
+    churchId: String(churchId || "").trim(),
+    value: canSee,
+  };
+}
+
+function resolveHomeFeedCanSeeMediaSlots(viewerChurchId: string): boolean {
+  const cid = String(viewerChurchId || "").trim();
+  if (!cid) return false;
+  if (homeFeedViewerCanSeeMediaSlots?.churchId === cid) {
+    return homeFeedViewerCanSeeMediaSlots.value;
+  }
+  return false;
+}
+
+function isHomeFeedMediaScheduleSlotDisplayRow(row: any): boolean {
+  return (
+    isHomeFeedScheduleCardRow(row) ||
+    isHomeFeedExpandedScheduleSlotRow(row) ||
+    isExplicitHomeFeedMediaScheduleRow(row) ||
+    isMediaLiveSlotsHomeFeedRow(row)
+  );
+}
+
 function homeFeedBuildDigest(
   backendRows: any[],
   localRows: any[],
@@ -1335,22 +1361,21 @@ export function filterSameChurchHomeFeedScheduleRows(
   const viewerCid = String(viewerChurchId || "").trim();
   if (!viewerCid) return rows;
 
-  return rows.filter((row) => {
-    if (!isHomeFeedScheduleCardRow(row) && !isHomeFeedExpandedScheduleSlotRow(row)) {
-      return true;
-    }
+  for (const row of rows) {
+    if (!isHomeFeedScheduleCardRow(row) && !isHomeFeedExpandedScheduleSlotRow(row)) continue;
 
     const rowCid = homeFeedRowChurchId(row);
-    if (!rowCid || rowCid === viewerCid) return true;
+    if (rowCid && rowCid !== viewerCid) {
+      console.log("KRISTO_HOME_FEED_CROSS_CHURCH_SLOT_VISIBLE", {
+        viewerChurchId: viewerCid,
+        scheduleChurchId: rowCid,
+        scheduleId: String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || ""),
+        reason: "cross_church_claim_slot_v2",
+      });
+    }
+  }
 
-    console.log("KRISTO_HOME_FEED_CROSS_CHURCH_SLOT_HIDDEN", {
-      viewerChurchId: viewerCid,
-      scheduleChurchId: rowCid,
-      scheduleId: String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || ""),
-      reason: "cross_church_claim_slot_v1",
-    });
-    return false;
-  });
+  return rows;
 }
 
 /** Merged Home Feed list: video/posts first, then active schedule slot cards. */
@@ -1365,12 +1390,12 @@ export function buildHomeFeedDisplayRows(
   resetHomeFeedPersonalOrderIfNeeded(personalCtx.seedKey);
   logHomeFeedPersonalSeed(personalCtx);
 
-  const digest = homeFeedBuildDigest(
+  const digest = `${canSeeMediaSlots ? 1 : 0}::${homeFeedBuildDigest(
     sanitizedBackendRows,
     sanitizedLocalRows,
     nowMs,
     personalCtx.seedKey
-  );
+  )}`;
   if (digest === lastHomeFeedBuildDigest && lastHomeFeedBuildResult.length) {
     return lastHomeFeedBuildResult;
   }
@@ -1386,9 +1411,13 @@ export function buildHomeFeedDisplayRows(
   }
 
   const filtered = filterPhase1FeedRows(Array.from(byId.values()));
-  const scheduleRows = filtered.filter(
-    (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
-  );
+  const viewerChurchId = String((getSessionSync() as any)?.churchId || "").trim();
+  const canSeeMediaSlots = resolveHomeFeedCanSeeMediaSlots(viewerChurchId);
+  const scheduleRows = canSeeMediaSlots
+    ? filtered.filter(
+        (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
+      )
+    : [];
   const postRows = filtered.filter(
     (row) => !isExplicitHomeFeedMediaScheduleRow(row) && !isMediaLiveSlotsHomeFeedRow(row)
   );
@@ -1398,7 +1427,6 @@ export function buildHomeFeedDisplayRows(
   const sortedPostRows = [...postRows].sort(
     (a, b) => homeFeedPostSortMs(b) - homeFeedPostSortMs(a)
   );
-  const viewerChurchId = String((getSessionSync() as any)?.churchId || "").trim();
   const orderedScheduleRows = filterSameChurchHomeFeedScheduleRows(
     sortHomeFeedScheduleSlotRows(expandedScheduleRows),
     viewerChurchId
@@ -1429,7 +1457,12 @@ export function buildHomeFeedDisplayRows(
     return !scheduleRowHasValidSlotTimes(row);
   });
 
-  if (scheduleSlotCount === 0 && hadDeferredLocalSchedule && lastStableHomeFeedDisplayRows.length) {
+  if (
+    canSeeMediaSlots &&
+    scheduleSlotCount === 0 &&
+    hadDeferredLocalSchedule &&
+    lastStableHomeFeedDisplayRows.length
+  ) {
     const visibleStableSchedules = filterVisibleHomeFeedScheduleRows(
       lastStableHomeFeedDisplayRows.filter(isHomeFeedExpandedOrScheduleSlotRow),
       nowMs
@@ -1453,13 +1486,18 @@ export function buildHomeFeedDisplayRows(
   logHomeFeedPersonalOrder(display, personalCtx, feedRenderKey);
   logHomeFeedFirstRows(display, feedRenderKey);
 
-  const visibleScheduleRows = display.filter((row) => {
-    if (!isHomeFeedExpandedOrScheduleSlotRow(row)) return false;
-    return isHomeFeedScheduleSlotRowVisible(row, nowMs);
-  });
-  if (visibleScheduleRows.length) {
-    lastStableHomeFeedDisplayRows = visibleScheduleRows;
-  } else if (!hadDeferredLocalSchedule) {
+  if (canSeeMediaSlots) {
+    const visibleScheduleRows = display.filter((row) => {
+      if (!isHomeFeedExpandedOrScheduleSlotRow(row)) return false;
+      return isHomeFeedScheduleSlotRowVisible(row, nowMs);
+    });
+    if (visibleScheduleRows.length) {
+      lastStableHomeFeedDisplayRows = visibleScheduleRows;
+    } else if (!hadDeferredLocalSchedule) {
+      lastStableHomeFeedDisplayRows = [];
+    }
+  } else {
+    display = display.filter((row) => !isHomeFeedMediaScheduleSlotDisplayRow(row));
     lastStableHomeFeedDisplayRows = [];
   }
 

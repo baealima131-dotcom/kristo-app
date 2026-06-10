@@ -23,6 +23,7 @@ import {
 } from "@/app/api/_lib/churchPastor";
 import { resolveCanDeleteChurchActivityPost } from "@/app/api/_lib/churchActivityDelete";
 import {
+  isChurchSubscriptionActive,
   requireChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
 import {
@@ -2497,8 +2498,8 @@ function isGlobalFeedDiscoverable(item: any, viewerChurchId: string) {
   const viewerCid = String(viewerChurchId || "").trim();
 
   if (isMediaScheduleFeedItem(item)) {
-    if (!viewerCid) return false;
-    return !itemChurchId || itemChurchId === viewerCid;
+    // Cross-church: any member can discover active media schedules in Home Feed.
+    return Boolean(viewerCid);
   }
 
   if (isPublicOrGlobalFeedItem(item)) return true;
@@ -2533,9 +2534,7 @@ function isDiscoverableFeedItem(item: any, viewerChurchId: string) {
   const viewerCid = String(viewerChurchId || "").trim();
 
   if (isMediaScheduleFeedItem(item)) {
-    if (!viewerCid) return false;
-    if (!itemChurchId) return true;
-    return itemChurchId === viewerCid;
+    return Boolean(viewerCid);
   }
 
   const visibility = feedItemVisibility(item);
@@ -2833,10 +2832,6 @@ async function handleFeedGet(
         return err("Feed item not found", 404);
       }
 
-      if (isClaimableScheduleFeedItem(item) && !(await viewerHasActiveChurchMembership(churchId, viewerUserId))) {
-        return err("Feed item not found", 404);
-      }
-
       const postIdAliases = commentPostIdAliases(item, requestPostId);
       const discussion = await countDiscussionForPostIdSet(postIdAliases);
       const commentCount = discussion.commentCount;
@@ -2994,6 +2989,10 @@ async function handleFeedGet(
     });
 
     const hasMembership = await viewerHasActiveChurchMembership(churchId, viewerUserId);
+    const viewerSubscriptionActive = churchId
+      ? await isChurchSubscriptionActive(churchId, { gate: "home_feed_media_slots" })
+      : false;
+    const viewerCanSeeMediaSlots = hasMembership && viewerSubscriptionActive;
 
     const forcedMediaHomeRows = rawRows.filter((x: any) => {
       const sameChurch =
@@ -3011,19 +3010,18 @@ async function handleFeedGet(
 
     const listRows = mergedHomeRows
       .filter((x: any) => {
-        if (isClaimableScheduleFeedItem(x) && !hasMembership) {
+        if (isClaimableScheduleFeedItem(x) && !viewerCanSeeMediaSlots) {
           return false;
         }
-        if (isClaimableScheduleFeedItem(x)) {
+        if (isClaimableScheduleFeedItem(x) && viewerCanSeeMediaSlots) {
           const itemCid = String(x?.churchId || "").trim();
           if (itemCid && churchId && itemCid !== churchId) {
-            console.log("KRISTO_HOME_FEED_CROSS_CHURCH_SLOT_HIDDEN", {
+            console.log("KRISTO_HOME_FEED_CROSS_CHURCH_SLOT_VISIBLE", {
               viewerChurchId: churchId,
               scheduleChurchId: itemCid,
               scheduleId: String(x?.id || ""),
-              reason: "cross_church_claim_slot_v1",
+              reason: "cross_church_claim_slot_v2",
             });
-            return false;
           }
         }
         return true;
@@ -3058,6 +3056,8 @@ async function handleFeedGet(
       viewerUserId,
       viewerRole,
       hasMembership,
+      viewerSubscriptionActive,
+      viewerCanSeeMediaSlots,
       total: resolvedItems.length,
       scheduleCount: scheduleRows.length,
       scheduleIds: scheduleRows.map((x: any) => String(x?.id || "")),
@@ -3518,6 +3518,15 @@ async function handleFeedPost(req: NextRequest, body: any) {
       return err("Join a church to claim schedule slots", 403);
     }
 
+    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
+      endpoint: "/api/church/feed",
+      churchId,
+      userId: viewerUserId,
+      role: String(ctx?.viewer?.role || ""),
+      action: "claim_schedule_slot",
+    });
+    if (subscriptionBlocked) return subscriptionBlocked;
+
     const postId = cleanText(body?.postId, 240);
     const slotId = cleanText(body?.slotId, 240);
     const claim = body?.claim || {};
@@ -3527,6 +3536,17 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     const item = await getFeedItemById(postId);
     if (!item) return err("Feed item not found", 404);
+
+    const ownerChurchId = String(item?.churchId || "").trim();
+    if (ownerChurchId && churchId && ownerChurchId !== churchId) {
+      console.log("KRISTO_CROSS_CHURCH_SLOT_CLAIM", {
+        viewerChurchId: churchId,
+        ownerChurchId,
+        postId,
+        slotId,
+        viewerUserId,
+      });
+    }
 
     const slots = Array.isArray((item as any).scheduleSlots) ? (item as any).scheduleSlots : [];
     const slotIndex = slots.findIndex((slot: any) => String(slot?.id || "") === String(slotId));
@@ -3546,6 +3566,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
         existingOwner,
         viewerUserId,
         churchId,
+        ownerChurchId: ownerChurchId || null,
       });
       return err("Slot already claimed by another member", 409);
     }

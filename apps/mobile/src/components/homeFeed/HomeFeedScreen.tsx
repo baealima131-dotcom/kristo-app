@@ -71,6 +71,7 @@ import {
   isImagePost,
   isVideoPost,
   readFeedItemLikedByMe,
+  setHomeFeedViewerCanSeeMediaSlots,
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, homeFeedSlideHeight } from "./theme";
 import {
@@ -107,6 +108,8 @@ import {
   SLOT_CLAIM_POLL_FALLBACK_MS,
   SLOT_CLAIM_POLL_LIVE_MS,
 } from "@/src/lib/slotClaimSync";
+import { fetchChurchSubscriptionActiveThrottled } from "@/src/lib/churchResourceRefresh";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 const CLAIM_SLOT_EMPTY_MESSAGE =
   "No open media slots right now. Check back when your church posts a live schedule.";
 
@@ -175,6 +178,8 @@ export default function HomeFeedScreen() {
 
   const session = getSessionSync();
   const viewerUserId = String(session?.userId || "").trim();
+  const viewerChurchId = String(session?.churchId || "").trim();
+  const [viewerCanSeeMediaSlots, setViewerCanSeeMediaSlots] = useState(false);
   const claimSlotFocusChurchId = String(focusChurchIdParam || session?.churchId || "").trim();
   const isClaimSlotFocus = String(focus || "").trim() === "claim-media-slot";
 
@@ -477,13 +482,41 @@ export default function HomeFeedScreen() {
     return feedList();
   }, [localTick]);
 
+  useEffect(() => {
+    if (!viewerChurchId || !viewerUserId) {
+      setHomeFeedViewerCanSeeMediaSlots("", false);
+      setViewerCanSeeMediaSlots(false);
+      return;
+    }
+
+    let cancelled = false;
+    void fetchChurchSubscriptionActiveThrottled(
+      viewerChurchId,
+      getKristoHeaders({
+        userId: viewerUserId,
+        role: (session?.role || "Member") as any,
+        churchId: viewerChurchId,
+      }) as Record<string, string>,
+      { userId: viewerUserId }
+    ).then((active) => {
+      if (cancelled) return;
+      const canSee = active === true;
+      setHomeFeedViewerCanSeeMediaSlots(viewerChurchId, canSee);
+      setViewerCanSeeMediaSlots(canSee);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [viewerChurchId, viewerUserId, session?.role]);
+
   const feedRows = useMemo(() => {
     if (homeFeedRenderPaused && backendRows.length) {
       return backendRows;
     }
     const merged = buildHomeFeedDisplayRows(backendRows, localFeedSnapshot);
     return hydrateFeedRowLikes(merged, serverLikeByPostId);
-  }, [backendRows, localFeedSnapshot, serverLikeByPostId, homeFeedRenderPaused]);
+  }, [backendRows, localFeedSnapshot, serverLikeByPostId, homeFeedRenderPaused, viewerCanSeeMediaSlots]);
 
   useEffect(() => {
     const digest = feedRows
@@ -904,23 +937,15 @@ export default function HomeFeedScreen() {
     warmHomeFeedUpcoming(visibleData, activeIndex);
   }, [visibleWindowSize, activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
 
-  const viewerChurchId = String(session?.churchId || "").trim();
-
   const hasChurchScheduleSlots = useMemo(() => {
-    if (!viewerChurchId) return false;
-    return visibleData.some(
-      (row) =>
-        isHomeFeedScheduleCardRow(row) && homeFeedRowChurchId(row) === viewerChurchId
-    );
-  }, [visibleData, viewerChurchId]);
+    if (!viewerCanSeeMediaSlots) return false;
+    return visibleData.some((row) => isHomeFeedScheduleCardRow(row));
+  }, [visibleData, viewerCanSeeMediaSlots]);
 
   const hasActiveOrLiveChurchSchedule = useMemo(() => {
-    if (!viewerChurchId) return false;
-    return isHomeFeedActiveOrNearLiveChurchScheduleVisible(
-      visibleData,
-      viewerChurchId
-    );
-  }, [visibleData, viewerChurchId]);
+    if (!viewerCanSeeMediaSlots) return false;
+    return isHomeFeedActiveOrNearLiveChurchScheduleVisible(visibleData, viewerChurchId);
+  }, [visibleData, viewerChurchId, viewerCanSeeMediaSlots]);
 
   const slotClaimPollIntervalMs = hasActiveOrLiveChurchSchedule
     ? SLOT_CLAIM_POLL_LIVE_MS
