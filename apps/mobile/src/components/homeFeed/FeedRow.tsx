@@ -106,6 +106,7 @@ type Props = {
   screenFocused: boolean;
   feedIndex?: number;
   isFirstFeedVideo?: boolean;
+  decodePrime?: boolean;
   likedByMe: boolean;
   liked: boolean;
   likeCount: number;
@@ -127,6 +128,7 @@ export const FeedRow = memo(function FeedRow({
   screenFocused,
   feedIndex = -1,
   isFirstFeedVideo = false,
+  decodePrime = false,
   likedByMe,
   liked,
   likeCount,
@@ -214,6 +216,14 @@ export const FeedRow = memo(function FeedRow({
               screenFocused={screenFocused}
               feedIndex={feedIndex}
               isFirstFeedVideo={isFirstFeedVideo}
+              decodePrime={decodePrime}
+              feedFaststart={
+                item?.faststart === true || item?.hasFaststart === true
+                  ? true
+                  : item?.faststart === false
+                    ? false
+                    : null
+              }
               onDoubleTap={onLike}
             />
           ) : (

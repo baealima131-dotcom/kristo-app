@@ -1,7 +1,8 @@
 import React, { memo } from "react";
 import { AppState, Image, StyleSheet, View } from "react-native";
-import { VideoView, useVideoPlayer } from "expo-video";
+import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import { useEvent } from "expo";
+import { adoptPrimedHomeFeedPlayer } from "@/src/lib/homeFeedVideoPrime";
 import { Ionicons } from "@expo/vector-icons";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
@@ -19,6 +20,7 @@ import {
   saveHomeFeedVideoProgress,
 } from "@/src/lib/homeFeedVideoProgressStore";
 import { getHomeFeedPosterLoadTimeoutMs } from "@/src/lib/videoGridThumbnail";
+import { logFirstMountedHomeFeedVideoFileDiag } from "@/src/lib/homeFeedVideoFileDiag";
 import {
   hasBrandedVideoPoster,
   isValidVideoPosterUri,
@@ -44,8 +46,18 @@ type Props = {
   screenFocused: boolean;
   feedIndex?: number;
   isFirstFeedVideo?: boolean;
+  /**
+   * When true and role==="preload", briefly decode-prime this row (play muted
+   * until the first frame paints, then pause). Set for the forward neighbors so
+   * they are decode-ready before the user scrolls to them.
+   */
+  decodePrime?: boolean;
+  feedFaststart?: boolean | null;
   onDoubleTap?: () => void;
 };
+
+/** Decode-prime watchdog: never keep a preload row playing longer than this. */
+const DECODE_PRIME_TIMEOUT_MS = 12_000;
 
 /** Low-latency progressive streaming: start fast, buffer ahead in background. */
 const PROGRESSIVE_BUFFER_OPTIONS = {
@@ -96,14 +108,36 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   screenFocused,
   feedIndex = -1,
   isFirstFeedVideo = false,
+  decodePrime = false,
+  feedFaststart = null,
   onDoubleTap,
 }: Props) {
   const key = String(recycleKey || postId).trim();
   const isRecycledRow = Boolean(String(recycleKey || "").trim());
   const playbackUri = String(uri || "").trim();
 
+  const sourceAttached = role !== "inactive";
+
+  // Handoff: if a decode-primed player was parked during app open, adopt it here
+  // so the first frame is ALREADY decoded — no second decode, no second scroll.
+  // Adoption transfers release ownership to this component. We adopt for the
+  // active row (the frame the user is about to see) and for the first feed
+  // video (the one primed before Home opened), whichever mounts first.
+  const [adoptedPlayer] = React.useState<VideoPlayer | null>(() =>
+    (role === "active" || isFirstFeedVideo) && sourceAttached && playbackUri
+      ? adoptPrimedHomeFeedPlayer(playbackUri)
+      : null
+  );
+
   const [appActive, setAppActive] = React.useState(() => AppState.currentState === "active");
-  const [firstFrameReady, setFirstFrameReady] = React.useState(false);
+  const [firstFrameReady, setFirstFrameReady] = React.useState(() => {
+    if (!adoptedPlayer) return false;
+    try {
+      return Number((adoptedPlayer as any).currentTime) > 0.03;
+    } catch {
+      return false;
+    }
+  });
 
   const playerDisposedRef = React.useRef(false);
   const mountMsRef = React.useRef(Date.now());
@@ -114,14 +148,21 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   const preloadReadyLoggedRef = React.useRef(false);
   const firstFrameMarkedRef = React.useRef(false);
   const lastSavedMsRef = React.useRef(0);
+  // Decode-prime state for preload rows (one-shot per mount).
+  const decodePrimedRef = React.useRef(false);
+  const decodePrimingRef = React.useRef(false);
 
-  const sourceAttached = role !== "inactive";
   const isActiveIntent = role === "active" && screenFocused && appActive;
 
-  const player = useVideoPlayer(
-    sourceAttached && playbackUri
-      ? { uri: playbackUri, contentType: "progressive" as const }
-      : null,
+  // When we adopted a primed player, create the hook player with a null source
+  // (cheap idle player, auto-released by the hook) and use the adopted one. The
+  // adopted player was already configured during priming.
+  const hookPlayer = useVideoPlayer(
+    adoptedPlayer
+      ? null
+      : sourceAttached && playbackUri
+        ? { uri: playbackUri, contentType: "progressive" as const }
+        : null,
     (p) => {
       p.loop = true;
       p.muted = true;
@@ -134,6 +175,8 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       } catch {}
     }
   );
+
+  const player = adoptedPlayer ?? hookPlayer;
 
   // expo-video's StatusChangeEventPayload typing is loose; read defensively and
   // normalize to a lowercased string we control.
@@ -199,6 +242,13 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         player.pause();
       } catch {}
       unregisterHomeFeedPlayer(key);
+      // useVideoPlayer auto-releases the hook player; an adopted (manually
+      // created) player is ours to release.
+      if (adoptedPlayer) {
+        try {
+          adoptedPlayer.release();
+        } catch {}
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, player]);
@@ -207,6 +257,28 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     const sub = AppState.addEventListener("change", (next) => setAppActive(next === "active"));
     return () => sub.remove();
   }, []);
+
+  // One-shot file diagnostic for the first/active video: HEAD content-length,
+  // first-byte latency, and moov position. moovPositionHint==="end" proves the
+  // front-byte prewarm cannot accelerate frame 0 (AVPlayer needs the trailing
+  // moov first). Runs once globally; the helper self-dedupes.
+  React.useEffect(() => {
+    if (role !== "active" || !playbackUri) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      if (cancelled) return;
+      void logFirstMountedHomeFeedVideoFileDiag({
+        playbackUri,
+        durationMs: videoDurationMs,
+        playerDurationSec: safeNumber(() => (player as any).duration) || null,
+        feedFaststart,
+      });
+    }, 1200);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [role, playbackUri, videoDurationMs, feedFaststart, player]);
 
   // Restore saved playback position once when this row owns playback.
   React.useEffect(() => {
@@ -248,17 +320,23 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       return;
     }
 
-    // Preload + inactive: buffer-only. Never play, always muted.
-    safePause();
+    // Preload + inactive: never play audibly, always muted. Decode-priming
+    // (a brief muted play to paint the first frame) is owned by the dedicated
+    // effect below — don't pause here while that's in flight or we'd kill it.
     safeSetMuted(true);
-
-    if (role === "preload" && !preloadStartedLoggedRef.current && sourceAttached && playbackUri) {
-      preloadStartedLoggedRef.current = true;
-      console.log("KRISTO_VIDEO_PRELOAD_STARTED", { key, postId, index: feedIndex });
+    const willDecodePrime =
+      role === "preload" &&
+      decodePrime &&
+      !decodePrimedRef.current &&
+      sourceAttached &&
+      Boolean(playbackUri);
+    if (!willDecodePrime) {
+      safePause();
     }
   }, [
     role,
     isActiveIntent,
+    decodePrime,
     key,
     postId,
     feedIndex,
@@ -270,6 +348,94 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     saveProgress,
   ]);
 
+  // Decode-prime a preload row: play muted until the first frame paints, then
+  // pause AT that frame and stay muted. This makes a neighbor decode-ready
+  // (not just byte-warmed) before the user scrolls to it, so it never needs a
+  // second scroll. Self-contained + one-shot; honors the single-active rule by
+  // always ending paused.
+  React.useEffect(() => {
+    if (role !== "preload" || !decodePrime) return;
+    if (!sourceAttached || !playbackUri) return;
+    if (decodePrimedRef.current || playerDisposedRef.current) return;
+
+    let settled = false;
+
+    const finishPrime = (painted: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      clearTimeout(watchdog);
+      decodePrimingRef.current = false;
+      if (playerDisposedRef.current) return;
+      // A preload row must never keep playing: end paused + muted regardless.
+      safeSetMuted(true);
+      safePause();
+      if (painted) {
+        decodePrimedRef.current = true;
+        if (!preloadReadyLoggedRef.current) {
+          preloadReadyLoggedRef.current = true;
+          markHomeFeedVideoPreloadReady(postId, playbackUri);
+          console.log("KRISTO_VIDEO_PRELOAD_READY", {
+            key,
+            postId,
+            index: feedIndex,
+            reason: "decode-primed",
+          });
+        }
+      }
+    };
+
+    decodePrimingRef.current = true;
+    safeSetMuted(true);
+    safePlay();
+    if (!preloadStartedLoggedRef.current) {
+      preloadStartedLoggedRef.current = true;
+      console.log("KRISTO_VIDEO_PRELOAD_STARTED", {
+        key,
+        postId,
+        index: feedIndex,
+        reason: "decode-prime",
+      });
+    }
+
+    const poll = setInterval(() => {
+      if (settled || playerDisposedRef.current) return;
+      const t = safeNumber(() => (player as any).currentTime);
+      if (t > 0) lastTimeRef.current = t;
+      if (hasPaintedFrame(t)) {
+        finishPrime(true);
+        return;
+      }
+      // Something (e.g. the owner promoting another row) paused us before the
+      // first frame landed — re-kick the muted prime until it does.
+      const playing = safeNumber(() => ((player as any).playing ? 1 : 0)) === 1;
+      if (!playing) safePlay();
+    }, 80);
+
+    const watchdog = setTimeout(() => finishPrime(false), DECODE_PRIME_TIMEOUT_MS);
+
+    return () => {
+      settled = true;
+      clearInterval(poll);
+      clearTimeout(watchdog);
+      decodePrimingRef.current = false;
+      // Leave the player paused; never hand a still-playing preload row away.
+      safePause();
+    };
+  }, [
+    role,
+    decodePrime,
+    sourceAttached,
+    playbackUri,
+    key,
+    postId,
+    feedIndex,
+    player,
+    safePlay,
+    safePause,
+    safeSetMuted,
+  ]);
+
   // Status-driven: first frame detection, audio gate, preload-ready signal.
   React.useEffect(() => {
     if (playerDisposedRef.current) return;
@@ -277,15 +443,18 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     const t = safeNumber(() => (player as any).currentTime);
     if (t > 0) lastTimeRef.current = t;
 
-    // Preload buffered enough to hand off instantly.
+    // Preload metadata loaded — bytes/headers are warm, but this is NOT a
+    // painted frame. Decode-readiness (KRISTO_VIDEO_PRELOAD_READY) is owned by
+    // the decode-prime effect, which only fires once the first frame paints.
     if (
       role === "preload" &&
-      !preloadReadyLoggedRef.current &&
-      (lower === "readytoplay" || lower === "loaded")
+      !preloadStartedLoggedRef.current &&
+      (lower === "readytoplay" || lower === "loaded") &&
+      sourceAttached &&
+      playbackUri
     ) {
-      preloadReadyLoggedRef.current = true;
-      markHomeFeedVideoPreloadReady(postId, playbackUri);
-      console.log("KRISTO_VIDEO_PRELOAD_READY", { key, postId, index: feedIndex });
+      preloadStartedLoggedRef.current = true;
+      console.log("KRISTO_VIDEO_PRELOAD_BUFFERED", { key, postId, index: feedIndex });
     }
 
     if (role !== "active") return;
@@ -303,7 +472,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         safePlay();
       }
     }
-  }, [status, role, key, postId, playbackUri, feedIndex, isActiveIntent, firstFrameReady, player, safePlay, safeSetMuted]);
+  }, [status, role, key, postId, playbackUri, feedIndex, sourceAttached, isActiveIntent, firstFrameReady, player, safePlay, safeSetMuted]);
 
   const poster = String(posterUri || "").trim();
   const hasPoster = isValidVideoPosterUri(poster, playbackUri);

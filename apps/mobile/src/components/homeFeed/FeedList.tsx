@@ -187,6 +187,10 @@ export const FeedList = memo(function FeedList({
     [rows, activeIndex]
   );
 
+  // The first video row — adopts the player decode-primed during app open so its
+  // first frame is already painted when Home opens.
+  const firstVideoIndex = useMemo(() => rows.findIndex((row) => isVideoPost(row)), [rows]);
+
   const prevWarmWindowRef = useRef<{ key: string; postIds: string[] }>({
     key: "",
     postIds: [],
@@ -316,6 +320,12 @@ export const FeedList = memo(function FeedList({
         ? resolveHomeFeedVideoWarmMode(index, activeIndex, mountedVideoIndexes)
         : "off";
 
+      // Decode-prime the immediate forward neighbors (next, next+1) so they are
+      // frame-ready before the user scrolls to them — not just byte-warmed.
+      const videoDelta = index - activeIndex;
+      const decodePrime =
+        videoWarmMode === "preload" && (videoDelta === 1 || videoDelta === 2);
+
       // Diagnostic for the first 3 video rows: shows whether the first visible
       // video is the active row and whether it mounts a player in the rolling window.
       if (isKristoVerboseFeedDebug() && isVideoPost(item) && index <= 2) {
@@ -344,6 +354,8 @@ export const FeedList = memo(function FeedList({
           videoWarmMode={videoWarmMode}
           screenFocused={effectiveScreenFocused}
           feedIndex={index}
+          isFirstFeedVideo={index === firstVideoIndex}
+          decodePrime={decodePrime}
           likedByMe={likeState.likedByMe}
           liked={likeState.liked}
           likeCount={likeState.likeCount}
@@ -362,6 +374,7 @@ export const FeedList = memo(function FeedList({
       contentHeight,
       activeIndex,
       mountedVideoIndexes,
+      firstVideoIndex,
       screenFocused,
       effectiveScreenFocused,
       renderPaused,

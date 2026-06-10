@@ -10,6 +10,10 @@ import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeed
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
 import { feedList } from "@/src/lib/homeFeedStore";
 import { markHomeFeedVideoPreloadReady } from "@/src/lib/homeFeedVideoReadiness";
+import {
+  primeHomeFeedVideoPlayer,
+  __resetHomeFeedVideoPrimeForTest,
+} from "@/src/lib/homeFeedVideoPrime";
 import type { KristoSession } from "@/src/lib/kristoSession";
 import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
@@ -154,10 +158,18 @@ export async function prepareFirstHomeFeedVideo(
     const posterUri = String(resolvePosterUri(firstVideoRow) || "").trim();
     if (posterUri) Image.prefetch(posterUri).catch(() => {});
 
-    const prewarmHit = await warmVideoBytes(url, FIRST_VIDEO_RANGE);
+    // Decode-prime the REAL player (parses moov + decodes the first frame and
+    // parks it for adoption) in parallel with a plain byte warm. The byte warm
+    // is just a backstop; readiness is gated on an actual painted first frame.
+    const [primedPlayer, prewarmHit] = await Promise.all([
+      primeHomeFeedVideoPlayer(url),
+      warmVideoBytes(url, FIRST_VIDEO_RANGE),
+    ]);
+    const firstFramePrimed = Boolean(primedPlayer);
 
-    // Publish readiness ONLY when bytes actually landed — never lie to the player.
-    if (prewarmHit && rowId && url) {
+    // Publish readiness ONLY when a first frame is actually decoded — never lie
+    // to the player. A byte warm alone is not "ready to display".
+    if (firstFramePrimed && rowId && url) {
       markHomeFeedVideoPreloadReady(rowId, url);
       preparedKey = key;
     }
@@ -167,11 +179,12 @@ export async function prepareFirstHomeFeedVideo(
       rowId: rowId || null,
       url: url || null,
       prewarmHit,
-      prepared: prewarmHit,
+      firstFramePrimed,
+      prepared: firstFramePrimed,
       cachedRowCount: rows.length,
     });
 
-    return { rowId, url, prewarmHit };
+    return { rowId, url, prewarmHit: firstFramePrimed };
   })().finally(() => {
     prepareInflight = null;
   });
@@ -214,11 +227,13 @@ export function warmHomeFeedUpcoming(
     targets.push(url);
   }
   if (!targets.length) return;
-  console.log("KRISTO_VIDEO_PRELOAD_STARTED", { scope: "network-upcoming", count: targets.length });
+  console.log("KRISTO_VIDEO_NETWORK_WARM_STARTED", { scope: "network-upcoming", count: targets.length });
   for (const url of targets) {
     void warmVideoBytes(url, UPCOMING_RANGE).then((ok) => {
       if (ok) {
-        console.log("KRISTO_VIDEO_PRELOAD_READY", { scope: "network-upcoming", url: normalizeUrl(url) });
+        // Network bytes only — NOT a painted/decoded frame. Decode-readiness is
+        // owned by the mounted preload rows (KRISTO_VIDEO_PRELOAD_READY).
+        console.log("KRISTO_VIDEO_NETWORK_WARMED", { scope: "network-upcoming", url: normalizeUrl(url) });
       }
     });
   }
@@ -230,4 +245,5 @@ export function __resetHomeFeedVideoStartupForTest(): void {
   inflightUrls.clear();
   prepareInflight = null;
   preparedKey = "";
+  __resetHomeFeedVideoPrimeForTest();
 }
