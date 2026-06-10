@@ -7,6 +7,7 @@ import {
   normalizeHomeFeedApiRow,
   resolvePosterUri,
   resolvePostImageUri,
+  resolvePostImageUris,
   resolveVideoUri,
 } from "@/src/components/homeFeed/homeFeedUtils";
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
@@ -41,6 +42,8 @@ export type ActivityGridItem = {
   thumbnailUrl?: string;
   mediaType?: string;
   imageUrl?: string;
+  mediaUrls?: string[];
+  images?: string[];
   ownershipType?: string;
   authorAvatarUri?: string;
 };
@@ -253,6 +256,35 @@ export function resolveActivityGridPreviewUri(
   return applyActivityMediaUrl(preview, mediaUrlFn);
 }
 
+/** All image URLs for a post (same resolution path as Home Feed carousel). */
+export function resolveActivityPostImageUris(
+  item: any,
+  mediaUrlFn?: (uri?: string) => string
+): string[] {
+  const row = enrichActivityGridRow(item);
+  const resolve = (uri?: string) => applyActivityMediaUrl(String(uri || ""), mediaUrlFn);
+  const mediaType = String(row?.mediaType || "").trim().toLowerCase();
+  if (mediaType === "video" || activityIsVideo(row)) return [];
+
+  const seen = new Set<string>();
+  const uris: string[] = [];
+  const push = (uri?: string) => {
+    const resolved = resolve(uri);
+    if (!resolved || seen.has(resolved)) return;
+    seen.add(resolved);
+    uris.push(resolved);
+  };
+
+  for (const uri of resolvePostImageUris(row)) {
+    push(uri);
+  }
+
+  if (uris.length) return uris;
+
+  push(resolvePostImageUri(row));
+  return uris;
+}
+
 export function normalizeActivityMediaUrl(uri?: string, apiBase?: string) {
   const raw = String(uri || "").trim();
   if (!raw) return "";
@@ -274,7 +306,8 @@ export function normalizeActivityItem(
   const isVideo = activityIsVideo(row) || (Boolean(videoUrl) && isFeedVideoItem(row));
   const previewUri = resolveActivityGridPreviewUri(item, mediaUrlFn);
   const resolvedPoster = resolve(resolvePosterUri(row));
-  const imageUri = !isVideo ? resolve(resolvePostImageUri(row)) : "";
+  const imageUris = !isVideo ? resolveActivityPostImageUris(item, mediaUrlFn) : [];
+  const imageUri = imageUris[0] || (!isVideo ? resolve(resolvePostImageUri(row)) : "");
 
   return {
     ...row,
@@ -305,6 +338,8 @@ export function normalizeActivityItem(
       String(row?.mediaType || (isVideo ? "video" : imageUri || previewUri ? "image" : "")).trim() ||
       undefined,
     imageUrl: !isVideo ? imageUri || previewUri || resolve(row?.imageUrl) || undefined : resolve(row?.imageUrl) || undefined,
+    mediaUrls: imageUris.length ? imageUris : undefined,
+    images: imageUris.length ? imageUris : Array.isArray(row?.images) ? row.images : undefined,
     ownershipType: row?.ownershipType ?? item?.ownershipType,
     authorAvatarUri:
       resolve(
@@ -348,7 +383,7 @@ export function activityHasVisualMedia(item: any, mediaUrlFn?: (uri?: string) =>
     return Boolean(resolveVideoUri(row));
   }
 
-  return Boolean(resolvePostImageUri(row));
+  return resolveActivityPostImageUris(row, mediaUrlFn).length > 0 || Boolean(resolvePostImageUri(row));
 }
 
 export function getActivityGridLabel(item: any, variant: "church" | "media" = "church"): ChurchActivityLabel {
@@ -854,7 +889,8 @@ export function normalizeChurchActivityFeedItem(
 ) {
   const normalized = normalizeActivityItem(item, mediaUrlFn);
   const isVideo = activityIsVideo(normalized);
-  const imageUri = String(normalized.mediaUri || normalized.imageUrl || "").trim();
+  const imageUris = !isVideo ? resolveActivityPostImageUris(normalized, mediaUrlFn) : [];
+  const imageUri = imageUris[0] || String(normalized.mediaUri || normalized.imageUrl || "").trim();
   const videoUri = String(normalized.videoUrl || "").trim();
 
   return {
@@ -863,6 +899,8 @@ export function normalizeChurchActivityFeedItem(
     body: churchActivityBody(normalized),
     mediaType: isVideo ? "video" : imageUri ? "image" : "none",
     mediaUri: isVideo ? videoUri || imageUri : imageUri,
+    mediaUrls: imageUris.length ? imageUris : normalized.mediaUrls,
+    images: imageUris.length ? imageUris : normalized.images,
     videoUrl: videoUri || undefined,
     authorName: postAuthorName(normalized),
   };

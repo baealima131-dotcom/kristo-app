@@ -62,6 +62,56 @@ type ComposerTouchCropEditorRef = {
   getCropExport: () => ComposerCropExport | null;
 };
 
+type PublishProgressPhase = "idle" | "preparing" | "uploading" | "publishing" | "done";
+
+type PublishProgressState = {
+  phase: PublishProgressPhase;
+  pct: number;
+  currentImage: number;
+  totalImages: number;
+};
+
+const PUBLISH_PROGRESS_PREP_MAX = 10;
+const PUBLISH_PROGRESS_UPLOAD_MAX = 85;
+const PUBLISH_PROGRESS_PUBLISH = 95;
+const PUBLISH_PROGRESS_DONE = 100;
+
+const IDLE_PUBLISH_PROGRESS: PublishProgressState = {
+  phase: "idle",
+  pct: 0,
+  currentImage: 0,
+  totalImages: 0,
+};
+
+function progressAfterImagesCompleted(completed: number, total: number) {
+  if (total <= 0) return PUBLISH_PROGRESS_UPLOAD_MAX;
+  return Math.round(
+    PUBLISH_PROGRESS_PREP_MAX +
+      (completed / total) * (PUBLISH_PROGRESS_UPLOAD_MAX - PUBLISH_PROGRESS_PREP_MAX)
+  );
+}
+
+function progressDuringImageUpload(index: number, total: number) {
+  if (total <= 0) return PUBLISH_PROGRESS_PREP_MAX;
+  const completedBefore =
+    index === 0 ? PUBLISH_PROGRESS_PREP_MAX : progressAfterImagesCompleted(index, total);
+  const completedAfter = progressAfterImagesCompleted(index + 1, total);
+  const weight = index === 0 ? 0.55 : 0.35;
+  return Math.round(completedBefore + (completedAfter - completedBefore) * weight);
+}
+
+function formatPublishProgressLabel(state: PublishProgressState, saving: boolean) {
+  if (!saving) return "Publish";
+  const { phase, pct, currentImage, totalImages } = state;
+  if (phase === "preparing") return `Preparing... • ${pct}%`;
+  if (phase === "uploading" && totalImages > 0) {
+    return `Uploading ${currentImage}/${totalImages} photos • ${pct}%`;
+  }
+  if (phase === "publishing") return `Publishing... • ${pct}%`;
+  if (phase === "done") return `Done • ${pct}%`;
+  return pct > 0 ? `Saving... • ${pct}%` : "Saving...";
+}
+
 function composerImageLimit(kind: "announcement" | "post" | "testimony" | "counsel") {
   if (kind === "testimony") return MAX_TESTIMONY_IMAGES;
   if (kind === "announcement") return MAX_ANNOUNCEMENT_IMAGES;
@@ -735,6 +785,7 @@ export default function CreateAnnouncement() {
 
   const [images, setImages] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [publishProgress, setPublishProgress] = useState<PublishProgressState>(IDLE_PUBLISH_PROGRESS);
   const [err, setErr] = useState<string | null>(null);
   const [photoPermissionModalOpen, setPhotoPermissionModalOpen] = useState(false);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
@@ -745,6 +796,11 @@ export default function CreateAnnouncement() {
   const composerCropEditorRef = useRef<ComposerTouchCropEditorRef>(null);
 
   const maxComposerImages = composerImageLimit(kind);
+
+  const publishButtonLabel = useMemo(
+    () => formatPublishProgressLabel(publishProgress, saving),
+    [publishProgress, saving]
+  );
 
   const ACCENT = kind === "testimony" ? BLUE : GOLD;
   const ACCENT_BG = kind === "testimony" ? "rgba(0,145,255,0.12)" : "rgba(217,179,95,0.12)";
@@ -884,14 +940,21 @@ export default function CreateAnnouncement() {
     }
   }
 
-  async function uploadAllChurchRoomFeedImages(localUris: string[]): Promise<string[] | null> {
+  async function uploadAllChurchRoomFeedImages(
+    localUris: string[],
+    onProgress?: (update: { index: number; total: number; completed: boolean }) => void
+  ): Promise<string[] | null> {
     const uploadedUrls: string[] = [];
-    for (const localUri of localUris) {
+    const total = localUris.length;
+    for (let index = 0; index < localUris.length; index++) {
+      const localUri = localUris[index];
+      onProgress?.({ index, total, completed: false });
       const uploaded = await uploadChurchRoomFeedImage(localUri);
       if (!uploaded?.mediaUri || !uploaded?.imageUrl) {
         return null;
       }
       uploadedUrls.push(String(uploaded.imageUrl || uploaded.mediaUri).trim());
+      onProgress?.({ index, total, completed: true });
     }
     return uploadedUrls;
   }
@@ -1106,6 +1169,17 @@ export default function CreateAnnouncement() {
     try {
       setSaving(true);
       setErr(null);
+      setPublishProgress({
+        phase: "preparing",
+        pct: 5,
+        currentImage: 0,
+        totalImages: images.length,
+      });
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      setPublishProgress((prev) => ({
+        ...prev,
+        pct: PUBLISH_PROGRESS_PREP_MAX,
+      }));
 
       const feedType = kind === "announcement" ? "announcement" : "post";
 
@@ -1119,7 +1193,24 @@ export default function CreateAnnouncement() {
           count: images.length,
           uris: images,
         });
-        uploadedImageUrls = (await uploadAllChurchRoomFeedImages(images)) || [];
+        uploadedImageUrls =
+          (await uploadAllChurchRoomFeedImages(images, ({ index, total, completed }) => {
+            if (!completed) {
+              setPublishProgress({
+                phase: "uploading",
+                currentImage: index + 1,
+                totalImages: total,
+                pct: progressDuringImageUpload(index, total),
+              });
+              return;
+            }
+            setPublishProgress({
+              phase: "uploading",
+              currentImage: index + 1,
+              totalImages: total,
+              pct: progressAfterImagesCompleted(index + 1, total),
+            });
+          })) || [];
         if (uploadedImageUrls.length !== images.length) {
           setErr("Image upload failed. Please try again.");
           return;
@@ -1132,6 +1223,12 @@ export default function CreateAnnouncement() {
         imageUrl = uploadedImageUrls[0];
         mediaType = "image";
       }
+
+      setPublishProgress((prev) => ({
+        ...prev,
+        phase: "publishing",
+        pct: 90,
+      }));
 
       const imagePayload =
         uploadedImageUrls.length > 0
@@ -1158,6 +1255,12 @@ export default function CreateAnnouncement() {
           hasImageUrl: Boolean(imageUrl),
         });
       }
+
+      setPublishProgress((prev) => ({
+        ...prev,
+        phase: "publishing",
+        pct: PUBLISH_PROGRESS_PUBLISH,
+      }));
 
       const feedRes: any = await apiPost(
         "/api/church/feed",
@@ -1198,12 +1301,20 @@ export default function CreateAnnouncement() {
         return;
       }
 
+      setPublishProgress({
+        phase: "done",
+        pct: PUBLISH_PROGRESS_DONE,
+        currentImage: 0,
+        totalImages: images.length,
+      });
+
       router.replace("/(tabs)");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to create";
       setErr(msg);
     } finally {
       setSaving(false);
+      setPublishProgress(IDLE_PUBLISH_PROGRESS);
     }
   }
 
@@ -1312,6 +1423,19 @@ export default function CreateAnnouncement() {
       </ScrollView>
 
       <View style={[s.bottomDock, { paddingBottom: Math.max(insets.bottom + 10, 18) }]}>
+        {saving ? (
+          <View style={s.progressTrack}>
+            <View
+              style={[
+                s.progressFill,
+                {
+                  width: `${Math.max(0, Math.min(100, publishProgress.pct))}%`,
+                  backgroundColor: accent,
+                },
+              ]}
+            />
+          </View>
+        ) : null}
         <Pressable
           onPress={submit}
           disabled={saving}
@@ -1321,7 +1445,7 @@ export default function CreateAnnouncement() {
             saving ? { opacity: 0.55 } : null,
           ]}
         >
-          <Text style={t.btnText}>{saving ? "Saving…" : "Publish"}</Text>
+          <Text style={t.btnText}>{publishButtonLabel}</Text>
         </Pressable>
       </View>
 
@@ -1451,6 +1575,17 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(11,15,23,0.985)",
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.045)",
+  } as ViewStyle,
+  progressTrack: {
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    overflow: "hidden",
+    marginBottom: 10,
+  } as ViewStyle,
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
   } as ViewStyle,
   screen: { flex: 1, backgroundColor: BG } as ViewStyle,
   header: {

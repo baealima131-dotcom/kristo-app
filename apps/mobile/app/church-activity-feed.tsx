@@ -45,10 +45,13 @@ import {
   normalizeActivityMediaUrl,
   postAuthorName,
   stampChurchFeedScope,
+  resolveActivityPostImageUris,
   type ChurchActivityFeedMode,
 } from "@/src/lib/churchActivityPosts";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { VideoPostFallbackPoster } from "@/src/components/homeFeed/VideoPostFallbackPoster";
+import { ImagePostCarousel } from "@/src/components/homeFeed/ImagePostCarousel";
+import { resolveFeedPostAccent } from "@/src/components/homeFeed/homeFeedUtils";
 
 function mediaUrl(uri?: string) {
   return normalizeActivityMediaUrl(uri);
@@ -596,20 +599,31 @@ const ActivityFeedSlide = memo(function ActivityFeedSlide({
       .toUpperCase() || "?";
   const authorAvatarUri = resolvePostAuthorAvatar(item, memberAvatarMap);
   const isVideo = item?.mediaType === "video" && Boolean(String(item?.videoUrl || item?.mediaUri || "").trim());
-  const imageUri = String(item?.mediaUri || item?.imageUrl || "").trim();
+  const postImageUris = useMemo(
+    () => resolveActivityPostImageUris(item, mediaUrl),
+    [item]
+  );
+  const imageUri = postImageUris[0] || String(item?.mediaUri || item?.imageUrl || "").trim();
   const videoUri = mediaUrl(item?.videoUrl || item?.mediaUri);
   const posterUri = mediaUrl(item?.posterUri || item?.thumbnailUri || item?.thumbnailUrl);
   const shouldPlayVideo = isVideo && isActive && screenFocused;
   const commentCount = Number(item?.commentCount || 0);
   const shareCount = Number(item?.shareCount || 0);
-  const hasImage = Boolean(imageUri);
+  const hasImage = postImageUris.length > 0 || Boolean(imageUri);
+  const postAccent = resolveFeedPostAccent(item);
+  const postId = String(item?.id || "").trim();
 
   return (
     <View style={[styles.slide, { height }]}>
       {isVideo && videoUri ? (
         <ActivityFeedVideo uri={videoUri} posterUri={posterUri} shouldPlay={shouldPlayVideo} />
       ) : hasImage ? (
-        <Image source={{ uri: mediaUrl(imageUri) }} style={styles.mediaFill} resizeMode="cover" />
+        <ImagePostCarousel
+          postId={postId}
+          imageUris={postImageUris.length ? postImageUris : [mediaUrl(imageUri)]}
+          accent={postAccent}
+          style={styles.mediaFill}
+        />
       ) : (
         <LinearGradient colors={["#050814", "#0A1020", "#03050C"]} style={StyleSheet.absoluteFillObject} />
       )}
