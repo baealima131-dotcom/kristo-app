@@ -60,14 +60,12 @@ export function isSubscriptionBypassEnabled() {
  * Whether the live RevenueCat purchase path (configure / offerings / purchase /
  * customer info) should be DISABLED.
  *
- * IMPORTANT: App Store review builds use EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE=1 to
- * relax church feature gating, but reviewers MUST still be able to load store
- * packages and complete a real StoreKit purchase. So review mode does NOT
- * disable purchasing here. We only disable RevenueCat for local dev (no StoreKit
- * configured) or the explicit full-testing bypass.
+ * Only the explicit full-testing bypass disables RevenueCat. Dev clients and
+ * App Store review builds may still configure Purchases and load StoreKit
+ * offerings; church/media subscription gates remain strict separately.
  */
 export function isRevenueCatPurchasingDisabled() {
-  return __DEV__ || BYPASS_SUBSCRIPTION_FOR_TESTING;
+  return BYPASS_SUBSCRIPTION_FOR_TESTING;
 }
 
 export type ChurchMediaSubscriptionGateResult = {
