@@ -11,7 +11,8 @@ import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/h
 import { feedList } from "@/src/lib/homeFeedStore";
 import { markHomeFeedVideoPreloadReady } from "@/src/lib/homeFeedVideoReadiness";
 import {
-  primeHomeFeedVideoPlayer,
+  requestHomeFeedVideoPrime,
+  markStartupFirstVideoPrepared,
   __resetHomeFeedVideoPrimeForTest,
 } from "@/src/lib/homeFeedVideoPrime";
 import type { KristoSession } from "@/src/lib/kristoSession";
@@ -155,23 +156,32 @@ export async function prepareFirstHomeFeedVideo(
     const rowId = String(firstVideoRow?.id || "").trim();
     const url = resolveHomeFeedVideoUri(firstVideoRow);
 
+    // Register the startup target immediately so the first feed row waits for
+    // reuse instead of mounting a second player while priming is in flight.
+    if (rowId && url) {
+      markStartupFirstVideoPrepared(rowId, url, false);
+    }
+
     const posterUri = String(resolvePosterUri(firstVideoRow) || "").trim();
     if (posterUri) Image.prefetch(posterUri).catch(() => {});
 
-    // Decode-prime the REAL player (parses moov + decodes the first frame and
-    // parks it for adoption) in parallel with a plain byte warm. The byte warm
-    // is just a backstop; readiness is gated on an actual painted first frame.
-    const [primedPlayer, prewarmHit] = await Promise.all([
-      primeHomeFeedVideoPlayer(url),
+    // Decode-prime the REAL player through the hidden attached VideoView
+    // (parses moov + decodes the first frame and parks it for adoption) in
+    // parallel with a plain byte warm. The byte warm is just a backstop;
+    // readiness is gated on an actual painted first frame.
+    const [firstFramePrimed, prewarmHit] = await Promise.all([
+      requestHomeFeedVideoPrime(url),
       warmVideoBytes(url, FIRST_VIDEO_RANGE),
     ]);
-    const firstFramePrimed = Boolean(primedPlayer);
 
     // Publish readiness ONLY when a first frame is actually decoded — never lie
     // to the player. A byte warm alone is not "ready to display".
     if (firstFramePrimed && rowId && url) {
       markHomeFeedVideoPreloadReady(rowId, url);
       preparedKey = key;
+    }
+    if (rowId && url) {
+      markStartupFirstVideoPrepared(rowId, url, firstFramePrimed);
     }
 
     console.log("KRISTO_HOME_FIRST_VIDEO_PREPARE_READY", {

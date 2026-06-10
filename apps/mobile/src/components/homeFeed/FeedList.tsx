@@ -1,4 +1,13 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  forwardRef,
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -8,6 +17,7 @@ import {
   View,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ViewToken,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -35,6 +45,21 @@ import { isVideoPost } from "./homeFeedUtils";
 
 // Dedupe for the first-3-video-rows index diagnostic (keyed by row id).
 const lastFeedVideoIndexDiag = new Map<string, string>();
+
+/** Imperative scroll API for programmatic focus (deep links, claim-slot, clamp). */
+export type FeedListHandle = {
+  scrollToIndex: (index: number, animated?: boolean) => void;
+};
+
+/**
+ * Row becomes a viewability candidate once ≥80% visible — Reels/TikTok-style
+ * handoff (one primary row; avoids 50% round() flips mid-drag).
+ */
+const VIEWABILITY_CONFIG = {
+  itemVisiblePercentThreshold: 80,
+  minimumViewTime: 0,
+  waitForInteraction: false,
+} as const;
 
 type Props = {
   rows: any[];
@@ -160,27 +185,92 @@ const FeedScheduleRow = memo(function FeedScheduleRow({
   );
 });
 
-export const FeedList = memo(function FeedList({
-  rows,
-  contentHeight,
-  activeIndex,
-  screenFocused,
-  loading,
-  likeUiEpoch,
-  getLikeState,
-  getSavedState,
-  getVisibleDiscussionCount,
-  isPostReported,
-  onActiveIndexChange,
-  onLike,
-  onComment,
-  onShare,
-  onSave,
-  onReport,
-}: Props) {
+export const FeedList = memo(
+  forwardRef<FeedListHandle, Props>(function FeedList(
+    {
+      rows,
+      contentHeight,
+      activeIndex,
+      screenFocused,
+      loading,
+      likeUiEpoch,
+      getLikeState,
+      getSavedState,
+      getVisibleDiscussionCount,
+      isPostReported,
+      onActiveIndexChange,
+      onLike,
+      onComment,
+      onShare,
+      onSave,
+      onReport,
+    },
+    ref
+  ) {
   const [scheduleNowMs] = useState(() => Date.now());
   const renderPaused = isHomeFeedRenderPaused();
   const effectiveScreenFocused = screenFocused && !renderPaused;
+  const listRef = useRef<FlatList>(null);
+  const activeIndexRef = useRef(activeIndex);
+  const onActiveIndexChangeRef = useRef(onActiveIndexChange);
+
+  activeIndexRef.current = activeIndex;
+  onActiveIndexChangeRef.current = onActiveIndexChange;
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToIndex(index: number, animated = true) {
+        const clamped = Math.max(0, index);
+        listRef.current?.scrollToOffset({
+          offset: clamped * Math.max(1, contentHeight),
+          animated,
+        });
+      },
+    }),
+    [contentHeight]
+  );
+
+  const viewabilityConfig = useRef(VIEWABILITY_CONFIG).current;
+
+  const publishActiveIndex = useCallback(
+    (nextIndex: number, source: "viewability" | "momentum-fallback") => {
+      if (nextIndex < 0 || nextIndex === activeIndexRef.current) return;
+      console.log("KRISTO_FEED_ACTIVE_INDEX", {
+        from: activeIndexRef.current,
+        to: nextIndex,
+        source,
+      });
+      onActiveIndexChangeRef.current(nextIndex);
+    },
+    []
+  );
+
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ViewToken[]; changed: ViewToken[] }) => {
+      const viewable = viewableItems.filter(
+        (token) => token.isViewable && token.index != null && token.index >= 0
+      );
+      if (!viewable.length) return;
+
+      let nextIndex = viewable[0].index as number;
+      if (viewable.length > 1) {
+        nextIndex = viewable.reduce((best, token) => {
+          const idx = token.index as number;
+          const bestIdx = best.index as number;
+          return idx > bestIdx ? token : best;
+        }).index as number;
+      }
+
+      if (nextIndex < 0 || nextIndex === activeIndexRef.current) return;
+      console.log("KRISTO_FEED_ACTIVE_INDEX", {
+        from: activeIndexRef.current,
+        to: nextIndex,
+        source: "viewability",
+      });
+      onActiveIndexChangeRef.current(nextIndex);
+    }
+  ).current;
 
   const mountedVideoIndexes = useMemo(
     () => computeHomeFeedMountedVideoIndexes(rows, activeIndex),
@@ -218,28 +308,14 @@ export const FeedList = memo(function FeedList({
     }
   }, [mountedVideoIndexes, activeIndex, rows]);
 
-  const syncActiveIndexFromOffset = useCallback(
-    (y: number) => {
-      const nextIndex = Math.max(0, Math.round(y / Math.max(1, contentHeight)));
-      if (nextIndex !== activeIndex) {
-        onActiveIndexChange(nextIndex);
-      }
-    },
-    [activeIndex, contentHeight, onActiveIndexChange]
-  );
-
-  const handleScroll = useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      syncActiveIndexFromOffset(Number(event?.nativeEvent?.contentOffset?.y || 0));
-    },
-    [syncActiveIndexFromOffset]
-  );
-
+  // Fallback only: if viewability did not fire after snap (fast fling, edge case).
   const handleMomentumScrollEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      syncActiveIndexFromOffset(Number(event?.nativeEvent?.contentOffset?.y || 0));
+      const y = Number(event?.nativeEvent?.contentOffset?.y || 0);
+      const nextIndex = Math.max(0, Math.round(y / Math.max(1, contentHeight)));
+      publishActiveIndex(nextIndex, "momentum-fallback");
     },
-    [syncActiveIndexFromOffset]
+    [contentHeight, publishActiveIndex]
   );
 
   useEffect(() => {
@@ -420,6 +496,7 @@ export const FeedList = memo(function FeedList({
 
   return (
     <FlatList
+      ref={listRef}
       data={rows}
       keyExtractor={keyExtractor}
       extraData={`${likeUiEpoch}:${activeIndex}:${scheduleNowMs}`}
@@ -432,8 +509,8 @@ export const FeedList = memo(function FeedList({
       snapToAlignment="start"
       disableIntervalMomentum
       showsVerticalScrollIndicator={false}
-      onScroll={handleScroll}
-      scrollEventThrottle={16}
+      onViewableItemsChanged={onViewableItemsChanged}
+      viewabilityConfig={viewabilityConfig}
       onMomentumScrollEnd={handleMomentumScrollEnd}
       getItemLayout={(_, index) => ({
         length: contentHeight,
@@ -447,7 +524,8 @@ export const FeedList = memo(function FeedList({
       style={[styles.list, viewportStyle]}
     />
   );
-});
+  })
+);
 
 const scheduleStyles = StyleSheet.create({
   slide: {

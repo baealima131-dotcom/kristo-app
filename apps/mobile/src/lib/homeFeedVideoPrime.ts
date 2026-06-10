@@ -1,41 +1,15 @@
 import { createVideoPlayer, type VideoPlayer } from "expo-video";
 
 /**
- * Decode-prime cache for Home Feed videos.
+ * Decode-prime store for the first Home Feed video.
  *
- * The point of this module is the difference between "bytes are on disk" and
- * "a frame is decoded and ready to paint". A network range fetch only warms the
- * HTTP layer; AVPlayer still has to parse the moov atom and decode the first GOP
- * before anything appears on screen — that decode is what takes seconds.
- *
- * Here we build the *actual* `expo-video` player while the app is still opening,
- * play it muted until the first frame is decoded (currentTime advances past the
- * first-frame threshold), then immediately pause it at that frame. The primed
- * player is parked in a small cache keyed by playback URL.
- *
- * When the Home Feed mounts the row for that URL, `HomeFeedVideoPlayer` *adopts*
- * the parked player instead of creating a fresh one, so the very first frame is
- * already decoded and playback resumes instantly.
- *
- * Players created with `createVideoPlayer` do NOT auto-release, so ownership is
- * explicit: whoever adopts a player owns its `release()`. Anything left parked
- * is released by the TTL/size sweep below.
+ * Startup creates + primes ONE player in HomeFeedVideoPrimer (attached
+ * VideoView). The first Home Feed row must claim that same instance only after
+ * primed=true — never before, or the primer loses its surface mid-decode.
  */
 
-/** Matches HomeFeedVideoPlayer.hasPaintedFrame — a real, painted frame. */
-const FIRST_FRAME_TIME = 0.03;
-
-/** Decode can legitimately take many seconds on a cold moov-at-end file. */
-const PRIME_FIRST_FRAME_TIMEOUT_MS = 30_000;
-
-/** How often we poll currentTime while waiting for the first frame. */
-const PRIME_POLL_MS = 100;
-
-/** Park at most this many primed players (first video + a small safety margin). */
-const MAX_PRIMED_PLAYERS = 2;
-
-/** Release a parked-but-never-adopted player after this long. */
 const PRIME_TTL_MS = 120_000;
+const FIRST_FRAME_TIME = 0.03;
 
 /** Low-latency progressive streaming — mirror of the React player options. */
 const PROGRESSIVE_BUFFER_OPTIONS = {
@@ -45,14 +19,36 @@ const PROGRESSIVE_BUFFER_OPTIONS = {
   prioritizeTimeOverSizeThreshold: true,
 } as const;
 
-type PrimedEntry = {
+type PrimeState = {
   url: string;
-  player: VideoPlayer;
-  primedAt: number;
+  rawUrl: string;
+  player: VideoPlayer | null;
+  primed: boolean;
+  adopted: boolean;
+  createdAt: number;
 };
 
-const primedByUrl = new Map<string, PrimedEntry>();
-const inflightByUrl = new Map<string, Promise<VideoPlayer | null>>();
+/** Set when prepareFirstHomeFeedVideo reports firstFramePrimed=true. */
+type StartupFirstVideoTarget = {
+  rowId: string;
+  url: string;
+  rawUrl: string;
+  firstFramePrimed: boolean;
+};
+
+/** Held across React strict-mode remounts so we don't release + re-decode. */
+type HeldStartupPlayer = {
+  rowId: string;
+  url: string;
+  player: VideoPlayer;
+};
+
+let state: PrimeState | null = null;
+let startupTarget: StartupFirstVideoTarget | null = null;
+let heldStartupPlayer: HeldStartupPlayer | null = null;
+const listeners = new Set<() => void>();
+let primedResolvers: Array<(ok: boolean) => void> = [];
+let ttlTimer: ReturnType<typeof setTimeout> | null = null;
 
 function normalizeUrl(url: string): string {
   return String(url || "").trim().split("?")[0];
@@ -73,172 +69,312 @@ function safeRelease(player: VideoPlayer | null | undefined) {
   } catch {}
 }
 
-/** Release anything stale or beyond the cache cap (oldest first). */
-function sweepPrimedCache() {
-  const now = Date.now();
-
-  for (const [url, entry] of [...primedByUrl.entries()]) {
-    if (now - entry.primedAt > PRIME_TTL_MS) {
-      primedByUrl.delete(url);
-      safeRelease(entry.player);
-      console.log("KRISTO_VIDEO_PRIME_RELEASED", { url, reason: "ttl" });
-    }
-  }
-
-  while (primedByUrl.size > MAX_PRIMED_PLAYERS) {
-    let oldestUrl = "";
-    let oldestAt = Infinity;
-    for (const [url, entry] of primedByUrl.entries()) {
-      if (entry.primedAt < oldestAt) {
-        oldestAt = entry.primedAt;
-        oldestUrl = url;
-      }
-    }
-    if (!oldestUrl) break;
-    const entry = primedByUrl.get(oldestUrl);
-    primedByUrl.delete(oldestUrl);
-    safeRelease(entry?.player);
-    console.log("KRISTO_VIDEO_PRIME_RELEASED", { url: oldestUrl, reason: "cap" });
+function playerCurrentTime(player: VideoPlayer): number {
+  try {
+    return Number((player as any).currentTime) || 0;
+  } catch {
+    return 0;
   }
 }
 
-/**
- * Play `player` muted until the first frame is decoded (or we time out), then
- * leave it paused exactly at that frame. Resolves true when a frame was painted.
- */
-function decodePrimeToFirstFrame(player: VideoPlayer): Promise<boolean> {
-  return new Promise((resolve) => {
-    let settled = false;
-    let poll: ReturnType<typeof setInterval> | null = null;
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    let statusSub: { remove: () => void } | null = null;
-
-    const finish = (painted: boolean) => {
-      if (settled) return;
-      settled = true;
-      if (poll) clearInterval(poll);
-      if (timeout) clearTimeout(timeout);
-      try {
-        statusSub?.remove();
-      } catch {}
-      // Always end paused at the painted frame: a primed player must never keep
-      // running in the background.
-      try {
-        player.pause();
-      } catch {}
-      resolve(painted);
-    };
-
+function notify() {
+  listeners.forEach((listener) => {
     try {
-      statusSub = player.addListener("statusChange", ({ status }) => {
-        if (status === "error") finish(false);
-      });
+      listener();
     } catch {}
-
-    try {
-      player.muted = true;
-      player.play();
-    } catch {
-      finish(false);
-      return;
-    }
-
-    poll = setInterval(() => {
-      let t = 0;
-      try {
-        t = Number((player as any).currentTime) || 0;
-      } catch {}
-      if (t > FIRST_FRAME_TIME) {
-        finish(true);
-      }
-    }, PRIME_POLL_MS);
-
-    timeout = setTimeout(() => finish(false), PRIME_FIRST_FRAME_TIMEOUT_MS);
   });
 }
 
-/**
- * Build + decode-prime the real player for `url` and park it for adoption.
- * Idempotent per URL: concurrent/repeat calls share one in-flight prime and one
- * parked player. Returns the parked player, or null if priming failed.
- */
-export async function primeHomeFeedVideoPlayer(url: string): Promise<VideoPlayer | null> {
-  const key = normalizeUrl(url);
-  if (!key || !isNetworkUrl(url)) return null;
-
-  const existing = primedByUrl.get(key);
-  if (existing) return existing.player;
-
-  const inflight = inflightByUrl.get(key);
-  if (inflight) return inflight;
-
-  const job = (async (): Promise<VideoPlayer | null> => {
-    let player: VideoPlayer | null = null;
+function resolvePending(ok: boolean) {
+  const resolvers = primedResolvers;
+  primedResolvers = [];
+  resolvers.forEach((resolve) => {
     try {
-      player = createVideoPlayer({ uri: url, contentType: "progressive" as const });
-      player.loop = true;
-      player.muted = true;
-      try {
-        player.bufferOptions = { ...PROGRESSIVE_BUFFER_OPTIONS };
-      } catch {}
-
-      console.log("KRISTO_VIDEO_PRIME_STARTED", { url: key });
-      const painted = await decodePrimeToFirstFrame(player);
-
-      if (!painted) {
-        safeRelease(player);
-        console.log("KRISTO_VIDEO_PRIME_FAILED", { url: key, reason: "no-first-frame" });
-        return null;
-      }
-
-      primedByUrl.set(key, { url: key, player, primedAt: Date.now() });
-      sweepPrimedCache();
-      console.log("KRISTO_VIDEO_PRIME_READY", { url: key });
-      return player;
-    } catch {
-      safeRelease(player);
-      console.log("KRISTO_VIDEO_PRIME_FAILED", { url: key, reason: "exception" });
-      return null;
-    }
-  })();
-
-  inflightByUrl.set(key, job);
-  void job.finally(() => inflightByUrl.delete(key));
-  return job;
+      resolve(ok);
+    } catch {}
+  });
 }
 
-/** True when a fully decode-primed player is parked for this URL. */
-export function hasPrimedHomeFeedPlayer(url: string): boolean {
-  return primedByUrl.has(normalizeUrl(url));
+function clearTtl() {
+  if (ttlTimer) {
+    clearTimeout(ttlTimer);
+    ttlTimer = null;
+  }
+}
+
+function scheduleTtl() {
+  clearTtl();
+  ttlTimer = setTimeout(() => {
+    if (state && !state.adopted) {
+      console.log("KRISTO_VIDEO_PRIME_RELEASED", { url: state.url, reason: "ttl" });
+      teardownState();
+      notify();
+    }
+  }, PRIME_TTL_MS);
+}
+
+function teardownState() {
+  clearTtl();
+  if (state && state.player && !state.adopted) {
+    safeRelease(state.player);
+  }
+  state = null;
+  resolvePending(false);
+}
+
+function matchesStartupTarget(rawUrl: string, postId: string): boolean {
+  if (!startupTarget) return false;
+  const url = normalizeUrl(rawUrl);
+  const id = String(postId || "").trim();
+  return url === startupTarget.url && id === startupTarget.rowId;
+}
+
+function takeParkedPlayer(requirePrimed: boolean): VideoPlayer | null {
+  if (!state || !state.player || state.adopted) return null;
+  if (requirePrimed && !state.primed) return null;
+
+  const player = state.player;
+  const wasPrimed = state.primed;
+  const url = state.url;
+
+  state.adopted = true;
+  state.player = null;
+  clearTtl();
+  console.log("KRISTO_VIDEO_PRIME_ADOPTED", { url, primed: wasPrimed });
+  state = null;
+  resolvePending(true);
+  queueMicrotask(notify);
+  return player;
+}
+
+// ---------------------------------------------------------------------------
+// Startup prepare → marks the row/url the feed must reuse.
+// ---------------------------------------------------------------------------
+
+export function markStartupFirstVideoPrepared(
+  rowId: string,
+  rawUrl: string,
+  firstFramePrimed: boolean
+) {
+  const url = normalizeUrl(rawUrl);
+  const id = String(rowId || "").trim();
+  if (!id || !url) return;
+  startupTarget = {
+    rowId: id,
+    url,
+    rawUrl: String(rawUrl || "").trim(),
+    firstFramePrimed: Boolean(firstFramePrimed),
+  };
+}
+
+export function isStartupFirstVideoTarget(rawUrl: string, postId: string): boolean {
+  return matchesStartupTarget(rawUrl, postId);
+}
+
+export function isStartupVideoPendingAdoption(rawUrl: string, postId: string): boolean {
+  if (!matchesStartupTarget(rawUrl, postId)) return false;
+  return Boolean(state && state.url === normalizeUrl(rawUrl) && !state.adopted && !state.primed);
+}
+
+export function isStartupVideoReadyForAdoption(rawUrl: string, postId: string): boolean {
+  if (!matchesStartupTarget(rawUrl, postId)) return false;
+  const url = normalizeUrl(rawUrl);
+  return Boolean(state && state.url === url && state.player && state.primed && !state.adopted);
 }
 
 /**
- * Hand the parked player for `url` to the caller, transferring release
- * ownership. Returns null when nothing is parked. After adoption the cache no
- * longer tracks the player — the adopter must `release()` it on unmount.
+ * Claim the startup-primed player for the first feed video row.
+ * Returns null while priming is still in flight (subscribe + retry).
+ * Logs KRISTO_STARTUP_VIDEO_REUSED or KRISTO_STARTUP_VIDEO_REUSE_FAILED.
  */
-export function adoptPrimedHomeFeedPlayer(url: string): VideoPlayer | null {
-  const key = normalizeUrl(url);
-  const entry = primedByUrl.get(key);
-  if (!entry) return null;
-  primedByUrl.delete(key);
-  console.log("KRISTO_VIDEO_PRIME_ADOPTED", { url: key });
-  return entry.player;
+export function claimStartupVideoPlayer(rawUrl: string, postId: string): VideoPlayer | null {
+  const url = normalizeUrl(rawUrl);
+  const id = String(postId || "").trim();
+
+  if (!matchesStartupTarget(rawUrl, postId)) {
+    return null;
+  }
+
+  // Strict-mode remount: reuse the held instance, no second player.
+  if (heldStartupPlayer && heldStartupPlayer.url === url && heldStartupPlayer.rowId === id) {
+    const player = heldStartupPlayer.player;
+    heldStartupPlayer = null;
+    console.log("KRISTO_STARTUP_VIDEO_REUSED", {
+      postId: id,
+      url,
+      primed: playerCurrentTime(player) > FIRST_FRAME_TIME,
+      reason: "reattach-after-remount",
+    });
+    return player;
+  }
+
+  if (!state || state.url !== url || !state.player) {
+    return null;
+  }
+
+  if (!state.primed) {
+    return null;
+  }
+
+  const player = takeParkedPlayer(true);
+  if (!player) {
+    console.log("KRISTO_STARTUP_VIDEO_REUSE_FAILED", {
+      postId: id,
+      url,
+      reason: "take-parked-failed",
+    });
+    return null;
+  }
+
+  console.log("KRISTO_STARTUP_VIDEO_REUSED", {
+    postId: id,
+    url,
+    primed: true,
+    currentTime: playerCurrentTime(player),
+    reason: "startup-primed",
+  });
+  return player;
 }
 
-/** Release a parked player without adopting it (e.g. its row will never mount). */
-export function releasePrimedHomeFeedPlayer(url: string): void {
-  const key = normalizeUrl(url);
-  const entry = primedByUrl.get(key);
-  if (!entry) return;
-  primedByUrl.delete(key);
-  safeRelease(entry.player);
-  console.log("KRISTO_VIDEO_PRIME_RELEASED", { url: key, reason: "manual" });
+/** Keep startup player alive across brief unmount/remount (strict mode, row recycle). */
+export function holdStartupVideoPlayerForRemount(
+  rawUrl: string,
+  postId: string,
+  player: VideoPlayer
+): void {
+  if (!matchesStartupTarget(rawUrl, postId)) {
+    safeRelease(player);
+    return;
+  }
+  heldStartupPlayer = {
+    rowId: String(postId || "").trim(),
+    url: normalizeUrl(rawUrl),
+    player,
+  };
 }
 
-/** Test/diagnostic reset. */
+// ---------------------------------------------------------------------------
+// Prime request (hidden VideoView).
+// ---------------------------------------------------------------------------
+
+export async function requestHomeFeedVideoPrime(rawUrl: string): Promise<boolean> {
+  const url = normalizeUrl(rawUrl);
+  if (!url || !isNetworkUrl(rawUrl)) return Promise.resolve(false);
+
+  if (state && state.url === url) {
+    if (state.primed) return Promise.resolve(true);
+    if (state.adopted) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => primedResolvers.push(resolve));
+  }
+
+  if (state) {
+    console.log("KRISTO_VIDEO_PRIME_RELEASED", { url: state.url, reason: "new-request" });
+    teardownState();
+  }
+
+  let player: VideoPlayer | null = null;
+  try {
+    player = createVideoPlayer({ uri: rawUrl, contentType: "progressive" as const });
+    player.loop = true;
+    player.muted = true;
+    try {
+      player.bufferOptions = { ...PROGRESSIVE_BUFFER_OPTIONS };
+    } catch {}
+  } catch {
+    safeRelease(player);
+    return Promise.resolve(false);
+  }
+
+  state = {
+    url,
+    rawUrl: String(rawUrl || "").trim(),
+    player,
+    primed: false,
+    adopted: false,
+    createdAt: Date.now(),
+  };
+  scheduleTtl();
+  console.log("KRISTO_VIDEO_PRIME_REQUESTED", { url });
+  notify();
+
+  return new Promise<boolean>((resolve) => primedResolvers.push(resolve));
+}
+
+// ---------------------------------------------------------------------------
+// Primer component bridge.
+// ---------------------------------------------------------------------------
+
+export type HomeFeedVideoPrimeSnapshot = {
+  url: string;
+  rawUrl: string;
+  player: VideoPlayer;
+  primed: boolean;
+} | null;
+
+export function getHomeFeedVideoPrimeSnapshot(): HomeFeedVideoPrimeSnapshot {
+  if (!state || !state.player || state.adopted) return null;
+  return {
+    url: state.url,
+    rawUrl: state.rawUrl,
+    player: state.player,
+    primed: state.primed,
+  };
+}
+
+export function subscribeHomeFeedVideoPrime(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function markHomeFeedVideoPrimed(rawUrl: string): void {
+  const url = normalizeUrl(rawUrl);
+  if (!state || state.url !== url || state.primed) return;
+  state.primed = true;
+  console.log("KRISTO_VIDEO_PRIME_READY", { url, attached: true });
+  resolvePending(true);
+  notify();
+}
+
+export function markHomeFeedVideoPrimeFailed(rawUrl: string, reason: string): void {
+  const url = normalizeUrl(rawUrl);
+  if (!state || state.url !== url) return;
+  console.log("KRISTO_VIDEO_PRIME_FAILED", { url, reason });
+  teardownState();
+  notify();
+}
+
+// ---------------------------------------------------------------------------
+// Legacy adoption API — requires primed unless explicitly relaxed.
+// ---------------------------------------------------------------------------
+
+export function hasPrimedHomeFeedPlayer(rawUrl: string): boolean {
+  const url = normalizeUrl(rawUrl);
+  return Boolean(state && state.url === url && state.player && state.primed && !state.adopted);
+}
+
+/** @deprecated Prefer claimStartupVideoPlayer for the first feed video row. */
+export function adoptPrimedHomeFeedPlayer(rawUrl: string): VideoPlayer | null {
+  const url = normalizeUrl(rawUrl);
+  if (!state || state.url !== url) return null;
+  return takeParkedPlayer(true);
+}
+
+export function releasePrimedHomeFeedPlayer(rawUrl: string): void {
+  const url = normalizeUrl(rawUrl);
+  if (!state || state.url !== url) return;
+  console.log("KRISTO_VIDEO_PRIME_RELEASED", { url, reason: "manual" });
+  teardownState();
+  notify();
+}
+
 export function __resetHomeFeedVideoPrimeForTest(): void {
-  for (const entry of primedByUrl.values()) safeRelease(entry.player);
-  primedByUrl.clear();
-  inflightByUrl.clear();
+  teardownState();
+  startupTarget = null;
+  if (heldStartupPlayer) {
+    safeRelease(heldStartupPlayer.player);
+    heldStartupPlayer = null;
+  }
+  listeners.clear();
 }

@@ -1,8 +1,14 @@
 import React, { memo } from "react";
-import { AppState, Image, StyleSheet, View } from "react-native";
+import { ActivityIndicator, AppState, Image, StyleSheet, View } from "react-native";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import { useEvent } from "expo";
-import { adoptPrimedHomeFeedPlayer } from "@/src/lib/homeFeedVideoPrime";
+import {
+  claimStartupVideoPlayer,
+  holdStartupVideoPlayerForRemount,
+  isStartupFirstVideoTarget,
+  isStartupVideoPendingAdoption,
+  subscribeHomeFeedVideoPrime,
+} from "@/src/lib/homeFeedVideoPrime";
 import { Ionicons } from "@expo/vector-icons";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
@@ -117,27 +123,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   const playbackUri = String(uri || "").trim();
 
   const sourceAttached = role !== "inactive";
-
-  // Handoff: if a decode-primed player was parked during app open, adopt it here
-  // so the first frame is ALREADY decoded — no second decode, no second scroll.
-  // Adoption transfers release ownership to this component. We adopt for the
-  // active row (the frame the user is about to see) and for the first feed
-  // video (the one primed before Home opened), whichever mounts first.
-  const [adoptedPlayer] = React.useState<VideoPlayer | null>(() =>
-    (role === "active" || isFirstFeedVideo) && sourceAttached && playbackUri
-      ? adoptPrimedHomeFeedPlayer(playbackUri)
-      : null
-  );
-
-  const [appActive, setAppActive] = React.useState(() => AppState.currentState === "active");
-  const [firstFrameReady, setFirstFrameReady] = React.useState(() => {
-    if (!adoptedPlayer) return false;
-    try {
-      return Number((adoptedPlayer as any).currentTime) > 0.03;
-    } catch {
-      return false;
-    }
-  });
+  const startupTarget = isStartupFirstVideoTarget(playbackUri, postId);
 
   const playerDisposedRef = React.useRef(false);
   const mountMsRef = React.useRef(Date.now());
@@ -148,21 +134,85 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   const preloadReadyLoggedRef = React.useRef(false);
   const firstFrameMarkedRef = React.useRef(false);
   const lastSavedMsRef = React.useRef(0);
-  // Decode-prime state for preload rows (one-shot per mount).
   const decodePrimedRef = React.useRef(false);
   const decodePrimingRef = React.useRef(false);
+  const startupReuseFailedRef = React.useRef(false);
+
+  // Wait for startup-primed player (primed=true) — never steal it mid-decode.
+  const [adoptedPlayer, setAdoptedPlayer] = React.useState<VideoPlayer | null>(null);
+  const [startupReuseResolved, setStartupReuseResolved] = React.useState(!startupTarget);
+
+  const [appActive, setAppActive] = React.useState(() => AppState.currentState === "active");
+  const [firstFrameReady, setFirstFrameReady] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!startupTarget || adoptedPlayer) return;
+
+    const attemptClaim = (): boolean => {
+      const player = claimStartupVideoPlayer(playbackUri, postId);
+      if (player) {
+        setAdoptedPlayer(player);
+        setStartupReuseResolved(true);
+        const t = safeNumber(() => (player as any).currentTime);
+        if (hasPaintedFrame(t)) {
+          setFirstFrameReady(true);
+          lastTimeRef.current = t;
+        }
+        return true;
+      }
+
+      if (isStartupVideoPendingAdoption(playbackUri, postId)) {
+        return false;
+      }
+
+      if (!startupReuseFailedRef.current) {
+        startupReuseFailedRef.current = true;
+        console.log("KRISTO_STARTUP_VIDEO_REUSE_FAILED", {
+          postId,
+          url: playbackUri,
+          reason: "not-available-after-prime",
+        });
+      }
+      setStartupReuseResolved(true);
+      return true;
+    };
+
+    if (attemptClaim()) return;
+
+    const unsub = subscribeHomeFeedVideoPrime(() => {
+      if (attemptClaim()) unsub();
+    });
+
+    const fallbackTimer = setTimeout(() => {
+      if (!startupReuseFailedRef.current) {
+        console.log("KRISTO_STARTUP_VIDEO_REUSE_FAILED", {
+          postId,
+          url: playbackUri,
+          reason: "claim-timeout",
+        });
+        startupReuseFailedRef.current = true;
+      }
+      setStartupReuseResolved(true);
+      unsub();
+    }, 35_000);
+
+    return () => {
+      clearTimeout(fallbackTimer);
+      unsub();
+    };
+  }, [startupTarget, adoptedPlayer, playbackUri, postId]);
 
   const isActiveIntent = role === "active" && screenFocused && appActive;
 
-  // When we adopted a primed player, create the hook player with a null source
-  // (cheap idle player, auto-released by the hook) and use the adopted one. The
-  // adopted player was already configured during priming.
+  // Defer hook player until startup reuse resolves — avoids a second decode instance.
   const hookPlayer = useVideoPlayer(
     adoptedPlayer
       ? null
-      : sourceAttached && playbackUri
-        ? { uri: playbackUri, contentType: "progressive" as const }
-        : null,
+      : startupTarget && !startupReuseResolved
+        ? null
+        : sourceAttached && playbackUri
+          ? { uri: playbackUri, contentType: "progressive" as const }
+          : null,
     (p) => {
       p.loop = true;
       p.muted = true;
@@ -242,12 +292,14 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         player.pause();
       } catch {}
       unregisterHomeFeedPlayer(key);
-      // useVideoPlayer auto-releases the hook player; an adopted (manually
-      // created) player is ours to release.
       if (adoptedPlayer) {
-        try {
-          adoptedPlayer.release();
-        } catch {}
+        if (startupTarget) {
+          holdStartupVideoPlayerForRemount(playbackUri, postId, adoptedPlayer);
+        } else {
+          try {
+            adoptedPlayer.release();
+          } catch {}
+        }
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -354,7 +406,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   // second scroll. Self-contained + one-shot; honors the single-active rule by
   // always ending paused.
   React.useEffect(() => {
-    if (role !== "preload" || !decodePrime) return;
+    if (role !== "preload" || !decodePrime || startupTarget) return;
     if (!sourceAttached || !playbackUri) return;
     if (decodePrimedRef.current || playerDisposedRef.current) return;
 
@@ -424,6 +476,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     };
   }, [
     role,
+    startupTarget,
     decodePrime,
     sourceAttached,
     playbackUri,
@@ -493,6 +546,10 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   }, [role, hasPoster, poster]);
 
   const showControls = role === "active" && screenFocused && firstFrameReady;
+  // Active video is auto-starting (priming/decoding its first frame): show a
+  // loading state, never a tap-to-play affordance.
+  const showAutoStartLoading =
+    role === "active" && screenFocused && !firstFrameReady && !userPausedRef.current;
 
   const togglePlayPause = React.useCallback(() => {
     if (!showControls || playerDisposedRef.current) return;
@@ -558,6 +615,11 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
               mediaStatus={mediaStatus}
               suppressMissingPosterLog={hasBranded}
             />
+          </View>
+        ) : null}
+        {showAutoStartLoading ? (
+          <View style={styles.centerPlayOverlay} pointerEvents="none">
+            <ActivityIndicator size="large" color="rgba(255,255,255,0.92)" />
           </View>
         ) : null}
         {showControls && userPausedRef.current ? (

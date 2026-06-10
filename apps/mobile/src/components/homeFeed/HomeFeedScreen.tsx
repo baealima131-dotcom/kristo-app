@@ -17,7 +17,7 @@ import {
   feedToggleSave,
   subscribe as subscribeHomeFeed,
 } from "@/src/lib/homeFeedStore";
-import { FeedList } from "./FeedList";
+import { FeedList, type FeedListHandle } from "./FeedList";
 import { FeedReportSheet } from "./FeedReportSheet";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
 import {
@@ -168,6 +168,7 @@ export default function HomeFeedScreen() {
   const prefetchSessionIdRef = useRef(0);
   const lastPosterWarmKeyRef = useRef("");
   const lastScheduleVisibilityDigestRef = useRef("");
+  const feedListRef = useRef<FeedListHandle>(null);
 
   const [stableDisplayRows, setStableDisplayRows] = useState<any[]>([]);
   const [visibleWindowSize, setVisibleWindowSize] = useState(HOME_FEED_INITIAL_LIMIT);
@@ -1123,6 +1124,7 @@ export default function HomeFeedScreen() {
       });
       claimSlotFocusHandledRef.current = focusKey;
       setActiveIndex(0);
+      feedListRef.current?.scrollToIndex(0, false);
       return;
     }
 
@@ -1157,11 +1159,14 @@ export default function HomeFeedScreen() {
 
     focusHandledRef.current = rawFocusId;
     setActiveIndex(matchIndex);
+    feedListRef.current?.scrollToIndex(matchIndex, false);
   }, [focusPostId, visibleData, isClaimSlotFocus]);
 
   useEffect(() => {
     if (activeIndex >= visibleData.length && visibleData.length > 0) {
-      setActiveIndex(Math.max(0, visibleData.length - 1));
+      const next = Math.max(0, visibleData.length - 1);
+      setActiveIndex(next);
+      feedListRef.current?.scrollToIndex(next, false);
     }
   }, [activeIndex, visibleData.length]);
 
@@ -1398,6 +1403,7 @@ export default function HomeFeedScreen() {
       ) : null}
 
       <FeedList
+        ref={feedListRef}
         rows={visibleData}
         contentHeight={contentHeight}
         activeIndex={activeIndex}
