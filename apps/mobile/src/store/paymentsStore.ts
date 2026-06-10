@@ -1,20 +1,16 @@
 export type PaymentMainModuleKey =
   | "subscriptions"
   | "donations"
-  | "premium_live"
-  | "billing";
+  | "premium_live";
 
 export type SubscriptionModuleKey = "plans" | "status";
 export type DonationModuleKey = "tithes" | "offerings" | "campaigns";
 export type PremiumLiveModuleKey = "tickets" | "rooms" | "access";
-export type BillingModuleKey = "transactions" | "invoices" | "payouts";
 
 export type PlanStatus = "active" | "expired";
 export type GateState = "closed" | "preview" | "open";
-export type FinanceStatus = "healthy" | "review" | "delayed";
 export type GivingType = "tithe" | "offering" | "support";
 export type EventType = "service" | "conference" | "concert";
-export type FinanceMode = "transactions" | "invoices" | "payouts";
 export type SubscriptionPlanKey = "monthly" | "yearly";
 export type PremiumLiveTicketTierKey = "standard" | "vip" | "partner";
 
@@ -39,12 +35,6 @@ export type PaymentsState = {
     ticketTier: PremiumLiveTicketTierKey;
     gateState: GateState;
     activeModule: PremiumLiveModuleKey;
-  };
-
-  billing: {
-    financeMode: FinanceMode;
-    financeStatus: FinanceStatus;
-    activeModule: BillingModuleKey;
   };
 };
 
@@ -71,12 +61,6 @@ let state: PaymentsState = {
     ticketTier: "vip",
     gateState: "preview",
     activeModule: "tickets",
-  },
-
-  billing: {
-    financeMode: "transactions",
-    financeStatus: "healthy",
-    activeModule: "transactions",
   },
 };
 
@@ -233,39 +217,6 @@ export function setPremiumLiveActiveModule(activeModule: PremiumLiveModuleKey) {
     ...state,
     premiumLive: {
       ...state.premiumLive,
-      activeModule,
-    },
-  };
-  emit();
-}
-
-export function setBillingFinanceMode(financeMode: FinanceMode) {
-  state = {
-    ...state,
-    billing: {
-      ...state.billing,
-      financeMode,
-    },
-  };
-  emit();
-}
-
-export function setBillingFinanceStatus(financeStatus: FinanceStatus) {
-  state = {
-    ...state,
-    billing: {
-      ...state.billing,
-      financeStatus,
-    },
-  };
-  emit();
-}
-
-export function setBillingActiveModule(activeModule: BillingModuleKey) {
-  state = {
-    ...state,
-    billing: {
-      ...state.billing,
       activeModule,
     },
   };
