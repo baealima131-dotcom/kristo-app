@@ -1601,6 +1601,20 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
   }, [room, canPublishMic, micMuted]);
 
   useEffect(() => {
+    try {
+      const existingCameraPub =
+        (room as any)?.localParticipant?.getTrackPublication?.(Track.Source.Camera) ||
+        Array.from((room as any)?.localParticipant?.trackPublications?.values?.() || []).find((pub: any) =>
+          String(pub?.source || "").toLowerCase().includes("camera")
+        );
+      (globalThis as any).__KRISTO_LIVE_CAMERA_FLIP_STATE__ = {
+        hasLocalTrack: !!localVideoTrackRef.current,
+        isPublishing: !!existingCameraPub?.track || !!existingCameraPub?.videoTrack,
+      };
+    } catch {}
+  }, [room, localVideoTrack, canPublishCamera]);
+
+  useEffect(() => {
     if (!room || !canPublishCamera) return;
 
     let cancelled = false;
@@ -1617,6 +1631,10 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
 
       videoPublishBusyRef.current = true;
 
+      const fromFacing = videoFacingRef.current || "";
+      const isFlip = fromFacing === "front" || fromFacing === "back";
+      let isPublishing = false;
+
       try {
         const existingCameraPub =
           (room as any)?.localParticipant?.getTrackPublication?.(Track.Source.Camera) ||
@@ -1629,6 +1647,8 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
           existingCameraPub?.track ||
           existingCameraPub?.videoTrack ||
           null;
+
+        isPublishing = !!existingCameraPub?.track || !!existingCameraPub?.videoTrack;
 
         if (existingTrack && videoFacingRef.current === cameraFacing) {
           setLocalVideoTrack(existingTrack);
@@ -1664,11 +1684,30 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         setLocalVideoTrack(localTrack);
 
         console.log("KRISTO_MANUAL_PUBLISH_TRACK_DONE", { cameraFacing });
+
+        if (isFlip && fromFacing !== cameraFacing) {
+          console.log("KRISTO_LIVE_CAMERA_FLIP_SUCCESS", {
+            fromFacing,
+            toFacing: cameraFacing,
+            hasLocalTrack: !!localTrack,
+            isPublishing: true,
+          });
+        }
       } catch (e: any) {
+        const error = String(e?.message || e);
         console.log("KRISTO_MANUAL_CAMERA_ERROR", {
           cameraFacing,
-          message: String(e?.message || e),
+          message: error,
         });
+        if (isFlip && fromFacing !== cameraFacing) {
+          console.log("KRISTO_LIVE_CAMERA_FLIP_FAILED", {
+            fromFacing,
+            toFacing: cameraFacing,
+            hasLocalTrack: !!localVideoTrackRef.current,
+            isPublishing,
+            error,
+          });
+        }
       } finally {
         videoPublishBusyRef.current = false;
       }
@@ -1743,7 +1782,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     return (
       <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]}>
         <RTCView
-          key={`local-preview-stable-${localPreviewURL}`}
+          key={`local-preview-${cameraFacing}-${localPreviewURL}`}
           streamURL={localPreviewURL}
           style={({ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, width: "100%", height: "100%", backgroundColor: "#000" } as any)}
           mirror={cameraFacing === "front"}
@@ -5193,7 +5232,7 @@ export default function LiveRoomScreen() {
               </Pressable>
               <Pressable
                 onPress={() => {
-                  setCameraFacing((v) => (v === "front" ? "back" : "front"));
+                  toggleCameraFacing();
                   Haptics.selectionAsync().catch(() => {});
                 }}
                 style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
@@ -6846,7 +6885,17 @@ export default function LiveRoomScreen() {
   }
 
   function toggleCameraFacing() {
-    setCameraFacing((v) => (v === "front" ? "back" : "front"));
+    setCameraFacing((fromFacing) => {
+      const toFacing = fromFacing === "front" ? "back" : "front";
+      const flipState = (globalThis as any).__KRISTO_LIVE_CAMERA_FLIP_STATE__ || {};
+      console.log("KRISTO_LIVE_CAMERA_FLIP_REQUEST", {
+        fromFacing,
+        toFacing,
+        hasLocalTrack: !!flipState.hasLocalTrack,
+        isPublishing: !!flipState.isPublishing || !!canPublishLiveVideoNow,
+      });
+      return toFacing;
+    });
   }
 
   const [actualMicEnabledForUi, setActualMicEnabledForUi] = useState<boolean | null>(null);
@@ -7309,7 +7358,7 @@ return (
                     renderLocalPreview={canPublishLiveVideoNow}
                     preferredIdentityPrefix={`${String(session?.userId || "")}-slot-${myOwnClaimedSlotNumber || currentSlotNumber || 1}`}
                     identity={`${String(session?.userId || "host")}-slot-${myOwnClaimedSlotNumber || currentSlotNumber || 1}`}
-                    cameraFacing={"front"}
+                    cameraFacing={cameraFacing}
                     micMuted={canPublishLiveVideoNow ? false : live.micMuted}
                     cameraPaused={cameraPaused}
                     style={s.vipSoloCamera as any}
@@ -7382,7 +7431,7 @@ return (
                   <Text style={[s.vipSoloControlText as any, cameraPaused ? null : s.vipSoloControlTextOn as any]}>{cameraPaused ? "Off" : "Camera"}</Text>
                 </Pressable>
 
-                <Pressable style={s.vipSoloControl as any} onPress={() => setCameraFacing((v) => (v === "front" ? "back" : "front"))}>
+                <Pressable style={s.vipSoloControl as any} onPress={() => toggleCameraFacing()}>
                   <Ionicons name="camera-reverse-outline" size={23} color="#FFFFFF" />
                   <Text style={s.vipSoloControlText as any}>Flip</Text>
                 </Pressable>
@@ -7484,7 +7533,7 @@ return (
                         )}`
                       : `${String(session?.userId || "viewer")}-viewer-${currentSlotNumber || "live"}`
                   }
-                  cameraFacing={"front"}
+                  cameraFacing={cameraFacing}
                   micMuted={canPublishLiveVideoNow ? false : live.micMuted}
                   cameraPaused={cameraPaused}
                   style={s.teamGridLiveCamera as any}
@@ -8122,7 +8171,7 @@ return (
                   }
 
                   if (control.action === "flip") {
-                    setCameraFacing((v: any) => (v === "front" ? "back" : "front"));
+                    toggleCameraFacing();
                     Haptics.selectionAsync().catch(() => {});
                     return;
                   }
@@ -8197,7 +8246,7 @@ return (
                   }
 
                   if (control.action === "flip") {
-                    setCameraFacing((v: any) => (v === "front" ? "back" : "front"));
+                    toggleCameraFacing();
                     Haptics.selectionAsync().catch(() => {});
                     return;
                   }
