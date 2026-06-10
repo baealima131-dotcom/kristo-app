@@ -75,10 +75,6 @@ import {
   evaluateScheduleSubscriptionGate,
   requireActiveChurchSubscriptionForSchedule,
 } from "../../../src/lib/churchSubscription";
-import {
-  evaluateChurchMediaSubscriptionGate,
-  shouldSuppressPremiumPrompts,
-} from "../../../src/lib/subscriptionBypass";
 import { MEDIA_STUDIO_BACKGROUND } from "../../../src/lib/mediaPreload";
 import {
   loadChurchMediaProfileCache,
@@ -92,6 +88,8 @@ import {
   evaluateChurchMediaAccessFromSession,
   isChurchMediaHostsApiSuccess,
   stabilizeChurchMediaAccess,
+  logMediaScreenAccessDiag,
+  logPastorRoleAudit,
   MAX_CHURCH_MEDIA_HOSTS,
 } from "../../../src/lib/churchMediaAccess";
 import {
@@ -201,6 +199,13 @@ const CATEGORIES: KristoMediaCategory[] = [
   "Bible Educator",
   "Church Media",
 ];
+
+const MEDIA_STUDIO_SUBSCRIPTION_TITLE = "Church subscription required";
+const MEDIA_STUDIO_SUBSCRIPTION_MESSAGE =
+  "Activate your church subscription to use Media Studio tools.";
+const MEDIA_STUDIO_ROLE_TITLE = "Pastor access required";
+const MEDIA_STUDIO_ROLE_MESSAGE =
+  "Only the church Pastor and trusted media hosts can access Media Studio.";
 
 export default function MediaStudioScreen() {
   const router = useRouter();
@@ -352,7 +357,7 @@ export default function MediaStudioScreen() {
         churchId,
       }) as any;
 
-      const slots = readFeedItemScheduleSlots(feedId, backendFeedItems);
+      const slots = readFeedItemScheduleSlots(feedId, [...feedList(), ...backendFeedItems]);
       if (!slots.length) return;
 
       await syncMediaScheduleSlotsToBackend(feedId, slots, headers);
@@ -360,6 +365,22 @@ export default function MediaStudioScreen() {
     },
     [backendFeedItems, runMediaScheduleSilentReload, session?.churchId, session?.role, session?.userId]
   );
+
+  const applyScheduleSlotsToFeedState = useCallback((sourceFeedId: string, slots: any[]) => {
+    const seed = String(sourceFeedId || "").trim();
+    if (!seed) return;
+
+    const apply = (prev: any[]) =>
+      prev.map((item: any) => {
+        const id = String(item?.id || "");
+        const sourceId = String(item?.sourceScheduleId || "");
+        if (id !== seed && sourceId !== seed) return item;
+        return { ...item, scheduleSlots: slots };
+      });
+
+    setHomeFeedItems(apply);
+    setBackendFeedItems(apply);
+  }, []);
 
   useEffect(() => {
     if (!isFocused) return;
@@ -425,14 +446,19 @@ export default function MediaStudioScreen() {
   useEffect(() => {
     return subscribeChurchMediaAccess((access) => {
       setChurchMediaAccess((prev) =>
-        stabilizeChurchMediaAccess(prev, access, {
-          userId: session?.userId,
-          role: session?.role,
-          churchRole: (session as any)?.churchRole,
-        })
+        stabilizeChurchMediaAccess(
+          prev,
+          access,
+          {
+            userId: session?.userId,
+            role: session?.role,
+            churchRole: (session as any)?.churchRole,
+          },
+          churchSubscriptionActiveFromApi
+        )
       );
     });
-  }, [session?.userId, session?.role, (session as any)?.churchRole]);
+  }, [session?.userId, session?.role, (session as any)?.churchRole, churchSubscriptionActiveFromApi]);
   const [trustedHosts, setTrustedHosts] = useState<any[]>(mediaSessionPeek?.trustedHosts || []);
   const mediaFetchCountRef = useRef(0);
   const [activeBackendLive, setActiveBackendLive] = useState<any>(null);
@@ -539,7 +565,16 @@ export default function MediaStudioScreen() {
             userId: session.userId,
             role: session.role,
             churchRole: (session as any)?.churchRole,
-          }
+          },
+          Boolean(res?.subscriptionActive)
+            ? true
+            : res?.subscriptionActive === false
+              ? false
+              : Boolean(hostsRes?.subscriptionActive)
+                ? true
+                : hostsRes?.subscriptionActive === false
+                  ? false
+                  : null
         );
         setChurchMediaAccess(nextAccess);
         setTrustedHosts(
@@ -769,21 +804,20 @@ export default function MediaStudioScreen() {
     existingMedia || (cachedMedia?.mediaName ? cachedMedia : null);
 
   const hasChurchMembership = Boolean(String(session?.churchId || "").trim());
-  const sessionIsPastor =
-    String(session?.role || "").trim().toLowerCase() === "pastor" ||
-    String((session as any)?.churchRole || "").trim().toLowerCase() === "pastor";
-
-  const isActualChurchPastor = churchMediaAccess.isActualChurchPastor || sessionIsPastor;
+  const isActualChurchPastor = churchMediaAccess.isActualChurchPastor;
   const isMediaHostFromProfile = churchMediaAccess.isMediaHost;
-  const canAccessChurchMedia = churchMediaAccess.canAccessChurchMedia || sessionIsPastor;
-  const canManageMediaHosts = churchMediaAccess.canManageMediaHosts || sessionIsPastor;
+  const canOpenMediaScreen =
+    churchMediaAccess.canOpenMediaScreen || isActualChurchPastor || isMediaHostFromProfile;
+  const canAccessChurchMedia = canOpenMediaScreen;
+  const canManageMediaHosts =
+    churchMediaAccess.canManageMediaHosts || isActualChurchPastor;
 
   if (__DEV__) {
     console.log("KRISTO_MEDIA_ACCESS_EFFECTIVE", {
       sessionRole: session?.role,
       churchRole: (session as any)?.churchRole,
-      sessionIsPastor,
       isActualChurchPastor,
+      canOpenMediaScreen,
       canAccessChurchMedia,
       canManageMediaHosts,
       isMediaHostFromProfile,
@@ -796,63 +830,43 @@ export default function MediaStudioScreen() {
       : [];
   const viewerCanManageEffective = canManageMediaHosts || viewerCanManage;
   const viewerIsHostEffective = isMediaHostFromProfile || viewerIsHost;
-  const canCreateMedia = canManageMediaHosts;
-  const canUseMediaTools =
-    canAccessChurchMedia || isActualChurchPastor || viewerCanManageEffective;
-  const canManageChurchStorage = canManageMediaHosts;
-  const canManageMediaStorage = canUseMediaTools;
+  const canCreateMedia = isActualChurchPastor;
   const hasChurchMediaProfile = Boolean(String(churchMediaProfile?.mediaName || "").trim());
-  const showHostSetupPending =
-    mediaProfileReady && !hasChurchMediaProfile && viewerIsHostEffective && !viewerCanManageEffective;
-  const showAccessLocked =
-    mediaProfileReady && hasChurchMembership && !canAccessChurchMedia;
-  const showCreateWizard =
-    mediaProfileReady && !hasChurchMediaProfile && canCreateMedia && !showHostSetupPending && !showAccessLocked;
 
-  // Church-level subscription: Pastor pays; approved hosts use Media when church is active.
-  const isApprovedMediaHost = Boolean(isMediaHostFromProfile && canAccessChurchMedia);
+  // Church-level subscription: Pastor pays; hosts use Media when church subscription is active.
+  const isApprovedMediaHostRole = Boolean(isMediaHostFromProfile);
   const churchSubActiveFromApi =
     churchSubscriptionActiveFromApi === true ||
     Boolean((churchMediaProfile as any)?.subscriptionActive);
 
-  const mediaSubscriptionGate = evaluateChurchMediaSubscriptionGate({
-    isPastor: isActualChurchPastor,
-    isApprovedMediaHost,
-    churchSubscriptionActive: churchSubActiveFromApi
-      ? true
-      : churchSubscriptionActiveFromApi === false
-        ? false
-        : null,
-    screen: "media",
-    gate: "media.churchSubscription",
-    churchId: String(session?.churchId || ""),
-  });
-
-  const scheduleSubscriptionBypassed = mediaSubscriptionGate.bypassed;
   const churchMediaSubscriptionActive =
-    isActualChurchPastor || isApprovedMediaHost
-      ? mediaSubscriptionGate.subscriptionAllowed
-      : false;
+    churchSubActiveFromApi === true && (isActualChurchPastor || isApprovedMediaHostRole);
+  const isApprovedMediaHost = isApprovedMediaHostRole && churchMediaSubscriptionActive;
 
   const subscriptionLocked =
-    (isActualChurchPastor || isApprovedMediaHost) &&
+    (isActualChurchPastor || isApprovedMediaHostRole) &&
     churchSubscriptionActiveFromApi !== null &&
-    !churchMediaSubscriptionActive;
+    churchSubActiveFromApi !== true;
+
+  const canUseMediaTools = churchMediaSubscriptionActive && canOpenMediaScreen;
+  const canManageChurchStorage = canUseMediaTools;
+  const canManageMediaStorage = canUseMediaTools;
+  const showHostSetupPending =
+    mediaProfileReady && !hasChurchMediaProfile && viewerIsHostEffective && !viewerCanManageEffective;
+  const showAccessLocked =
+    mediaProfileReady && hasChurchMembership && !canOpenMediaScreen && !subscriptionLocked;
+  const showCreateWizard =
+    mediaProfileReady &&
+    !hasChurchMediaProfile &&
+    canCreateMedia &&
+    !showHostSetupPending &&
+    !showAccessLocked;
+
+  const canGuestClaimManage =
+    churchMediaSubscriptionActive &&
+    (isActualChurchPastor || canManageMediaHosts || isApprovedMediaHostRole || viewerCanManageEffective);
 
   function showSubscriptionRequired() {
-    if (
-      shouldSuppressPremiumPrompts(isActualChurchPastor, isApprovedMediaHost) ||
-      scheduleSubscriptionBypassed
-    ) {
-      console.log("KRISTO_APP_REVIEW_SUBSCRIPTION_BLOCK_SUPPRESSED", {
-        screen: "media",
-        gate: "showSubscriptionRequired",
-        isPastor: isActualChurchPastor,
-        isApprovedMediaHost,
-      });
-      return;
-    }
-
     if (isActualChurchPastor) {
       setVipNotice({
         title: "Premium subscription required",
@@ -872,12 +886,6 @@ export default function MediaStudioScreen() {
   }
 
   function openSubscriptionSchedulePrompt() {
-    if (
-      shouldSuppressPremiumPrompts(isActualChurchPastor, isApprovedMediaHost) ||
-      scheduleSubscriptionBypassed
-    ) {
-      return;
-    }
     setSubscriptionPromptOpen(true);
   }
 
@@ -888,15 +896,46 @@ export default function MediaStudioScreen() {
     }
   }
 
-  // SECURITY UX: hosts must not see create wizard; pastors/admins create once per church.
-  const hasMediaAccount = hasChurchMediaProfile && canUseMediaTools;
+  // Dashboard when profile exists and viewer may enter Media screen (subscription upsell shown separately).
+  const hasMediaAccount = hasChurchMediaProfile && canOpenMediaScreen;
 
-  function requireMediaManager() {
+  function alertMediaStudioRoleRequired(
+    message: string = MEDIA_STUDIO_ROLE_MESSAGE
+  ) {
+    Alert.alert(MEDIA_STUDIO_ROLE_TITLE, message);
+  }
+
+  function alertMediaStudioSubscriptionRequired() {
+    Alert.alert(MEDIA_STUDIO_SUBSCRIPTION_TITLE, MEDIA_STUDIO_SUBSCRIPTION_MESSAGE, [
+      { text: "Not now", style: "cancel" },
+      ...(isActualChurchPastor
+        ? [{ text: "View subscription", onPress: handleSubscriptionOpen }]
+        : []),
+    ]);
+  }
+
+  /** Tool actions (post, schedule, guests, etc.) require active subscription. */
+  function promptMediaStudioToolAccess(): boolean {
     if (canUseMediaTools) return true;
-    Alert.alert(
-      "Pastor access required",
-      "Only the church Pastor and trusted media hosts can access Media Studio."
-    );
+    if (canOpenMediaScreen) {
+      alertMediaStudioSubscriptionRequired();
+      return false;
+    }
+    alertMediaStudioRoleRequired();
+    return false;
+  }
+
+  /** Profile create/update: pastor may save without subscription; others need tools access. */
+  function promptMediaStudioProfileSave(): boolean {
+    if (!canOpenMediaScreen) {
+      alertMediaStudioRoleRequired(
+        "Only the church Pastor and trusted media hosts can set up Church Media."
+      );
+      return false;
+    }
+    if (isActualChurchPastor) return true;
+    if (canUseMediaTools) return true;
+    alertMediaStudioSubscriptionRequired();
     return false;
   }
   const currentPlan = paymentsState.subscriptions.selectedPlan;
@@ -1115,6 +1154,48 @@ export default function MediaStudioScreen() {
   ]);
 
   useEffect(() => {
+    logPastorRoleAudit({
+      sessionRole: session?.role,
+      membershipRole: (session as any)?.churchRole,
+      profileRole: session?.role,
+      churchRole: (session as any)?.churchRole,
+      isActualChurchPastor,
+      canOpenMediaScreen,
+      canUseMediaTools,
+      actualPastorUserId: churchMediaAccess.actualPastorUserId,
+      userId: session?.userId,
+      source: "media.screen",
+    });
+
+    const reason = !canOpenMediaScreen
+      ? "role_blocked"
+      : subscriptionLocked
+        ? "subscription_locked_tools_only"
+        : canUseMediaTools
+          ? "tools_active"
+          : "screen_open_tools_locked";
+    logMediaScreenAccessDiag({
+      role: session?.role,
+      churchRole: (session as any)?.churchRole,
+      isActualChurchPastor,
+      churchId: String(session?.churchId || "").trim() || undefined,
+      churchSubscriptionActive: churchSubActiveFromApi === true ? true : churchSubActiveFromApi === false ? false : null,
+      canOpenMediaScreen,
+      canUseMediaTools,
+      reason,
+    });
+  }, [
+    session?.role,
+    (session as any)?.churchRole,
+    session?.churchId,
+    isActualChurchPastor,
+    churchSubActiveFromApi,
+    canOpenMediaScreen,
+    canUseMediaTools,
+    subscriptionLocked,
+  ]);
+
+  useEffect(() => {
     console.log("KRISTO_MEDIA_RENDER_STATE", {
       showAccessLocked,
       showHostSetupPending,
@@ -1192,17 +1273,10 @@ export default function MediaStudioScreen() {
     const item = activeSchedule;
     const sourceItemId = String(item?.sourceScheduleId || item?.id || "");
     const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-    const ownerId = String(item?.mediaOwnerId || item?.createdByUserId || item?.authorId || "").trim();
-    const currentOwnerId = String(session?.userId || "").trim();
-    const sessionRole = String(session?.role || "").toLowerCase();
-    const isPastorOrAdmin = sessionRole.includes("pastor") || sessionRole.includes("admin");
 
     if (!slots.length || !isMediaScheduleFeedItem(item)) return [];
 
-    const isMyMediaSchedule =
-      isPastorOrAdmin || (!!ownerId && ownerId === currentOwnerId);
-
-    if (!isMyMediaSchedule) return [];
+    if (!canGuestClaimManage) return [];
 
     const rows = slots.map((slot: any, index: number) => {
         logMediaSlotReloadTime(slot, "syncedGuestClaimSlots.source", index);
@@ -1310,7 +1384,7 @@ export default function MediaStudioScreen() {
       if (ar === 2) return bEnd - aEnd; // newest ended first, but still below active/upcoming
       return aStart - bStart;
     });
-    }, [homeFeedItems, backendFeedItems, session?.userId, session?.churchId, guestClockNow]);
+    }, [homeFeedItems, backendFeedItems, session?.userId, session?.churchId, guestClockNow, canGuestClaimManage]);
 
   useEffect(() => {
     const churchId = String(session?.churchId || "").trim();
@@ -1340,8 +1414,12 @@ export default function MediaStudioScreen() {
   ]);
 
   const guestClaimTotalMinutes = syncedGuestClaimSlots.reduce((sum, slot) => sum + slot.durationMin, 0);
-  const guestClaimClaimedCount = syncedGuestClaimSlots.filter((slot) => slot.status === "Claimed" && !slot.approved).length;
-  const guestClaimOpenCount = syncedGuestClaimSlots.filter((slot) => slot.status === "Open" && !slot.locked).length;
+  const guestClaimClaimedCount = syncedGuestClaimSlots.filter(
+    (slot) => getGuestSlotUiState(slot) === "claimed"
+  ).length;
+  const guestClaimOpenCount = syncedGuestClaimSlots.filter(
+    (slot) => getGuestSlotUiState(slot) === "open"
+  ).length;
   const guestInvitationCount = Object.values(guestInvitedBySlot).filter(Boolean).length;
   const guestClaimConflictCount = useMemo(
     () => countMediaSlotTimeConflicts(syncedGuestClaimSlots, guestClockNow),
@@ -1492,18 +1570,10 @@ export default function MediaStudioScreen() {
   }
 
   async function handleSaveMediaProfile() {
-    if (!requireMediaManager()) return;
+    if (!promptMediaStudioProfileSave()) return;
 
     if (!session?.userId) {
       Alert.alert("Account missing", "Please sign in first.");
-      return;
-    }
-
-    if (!canUseMediaTools) {
-      Alert.alert(
-        "Approval required",
-        "You can build your media profile, but you cannot save it until your pastor makes you a Church Media host or you create your own church as Pastor."
-      );
       return;
     }
 
@@ -1821,20 +1891,10 @@ export default function MediaStudioScreen() {
       return;
     }
 
+    if (!promptMediaStudioToolAccess()) return;
+
     if (kind === "video") {
       await pickMediaVideoForPost();
-      return;
-    }
-
-    if (!hasSubscription) {
-      Alert.alert(
-        "Subscription required",
-        "To go live to global feed, open subscriptions first.",
-        [
-          { text: "Not now", style: "cancel" },
-          { text: "Open subscriptions", onPress: handleSubscriptionOpen },
-        ]
-      );
       return;
     }
 
@@ -1892,8 +1952,10 @@ export default function MediaStudioScreen() {
     ? "Pastor create first"
     : !hasChurchMembership
     ? "Join a church first"
-    : !canUseMediaTools
+    : !canOpenMediaScreen
     ? "Pastor access required"
+    : !canUseMediaTools
+    ? "Subscription required"
     : "Ready";
 
   const goLiveHint = activeMediaLiveSlot
@@ -1902,10 +1964,12 @@ export default function MediaStudioScreen() {
     ? "Pastor create first"
     : !hasChurchMembership
     ? "Join a church first"
+    : !canOpenMediaScreen
+    ? "Pastor access required"
     : !hasSubscription
     ? "Subscription required"
     : !canUseMediaTools
-    ? "Pastor access required"
+    ? "Subscription required"
     : "V2 Feature";
 
   function handleCreateLiveSchedule() {
@@ -1920,7 +1984,7 @@ export default function MediaStudioScreen() {
       gate: "media.slots-card",
       isPastor: isActualChurchPastor,
       isApprovedMediaHost,
-      hasSubscription: churchMediaSubscriptionActive,
+      hasSubscription: churchSubActiveFromApi === true,
       subscriptionLocked,
     });
     if (!scheduleGate.allowed) {
@@ -1928,8 +1992,7 @@ export default function MediaStudioScreen() {
       return;
     }
     if (!isActualChurchPastor && !isApprovedMediaHost) {
-      Alert.alert(
-        "Pastor access required",
+      alertMediaStudioRoleRequired(
         "Only the church Pastor and trusted media hosts can create live schedules."
       );
       return;
@@ -2386,7 +2449,21 @@ export default function MediaStudioScreen() {
     return Math.max(1, Math.round((endMs - startMs) / 60000));
   }
 
+  function ensureGuestClaimManagePermission(action: string) {
+    if (canGuestClaimManage) return true;
+    if (canOpenMediaScreen && !canUseMediaTools) {
+      alertMediaStudioSubscriptionRequired();
+    } else if (!canOpenMediaScreen) {
+      alertMediaStudioRoleRequired();
+    } else {
+      alertMediaStudioSubscriptionRequired();
+    }
+    console.log("KRISTO_GUEST_CLAIM_CONTROL_BLOCKED", { action, userId: session?.userId || "" });
+    return false;
+  }
+
   function addGuestClaimTime(slotId: string, minutes: number, sourceFeedId?: string) {
+    if (!ensureGuestClaimManagePermission("add-time")) return;
     console.log("KRISTO_ADD_TIME_TOUCH", { slotId, minutes, sourceFeedId });
 
     const applyUpdate = (slots: any[]) => {
@@ -2437,17 +2514,10 @@ export default function MediaStudioScreen() {
 
     if (sourceFeedId) {
       feedUpdateScheduleSlots(sourceFeedId, applyUpdate);
-
-      setHomeFeedItems((prev) =>
-        prev.map((item: any) => {
-          const id = String(item?.id || "");
-          const sourceId = String(item?.sourceScheduleId || "");
-          if (id !== String(sourceFeedId) && sourceId !== String(sourceFeedId)) return item;
-
-          const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-          return { ...item, scheduleSlots: applyUpdate(slots) };
-        })
+      const updatedSlots = applyUpdate(
+        readFeedItemScheduleSlots(sourceFeedId, [...feedList(), ...backendFeedItems])
       );
+      applyScheduleSlotsToFeedState(sourceFeedId, updatedSlots);
 
       apiPost("/api/church/feed", {
         action: "update-schedule-slots",
@@ -2472,8 +2542,9 @@ export default function MediaStudioScreen() {
   }
 
   function removeGuestClaimant(slotId: string, sourceFeedId?: string) {
+    if (!ensureGuestClaimManagePermission("remove-guest")) return;
     if (sourceFeedId) {
-      feedUnclaimSchedule(sourceFeedId, { slotId });
+      feedUnclaimSchedule(sourceFeedId, { slotId, skipBackendSync: true });
       void syncGuestScheduleSlotsToBackend(sourceFeedId, "remove-guest");
       return;
     }
@@ -2488,8 +2559,9 @@ export default function MediaStudioScreen() {
   }
 
   function approveGuestClaim(slotId: string, sourceFeedId?: string) {
+    if (!ensureGuestClaimManagePermission("approve")) return;
     const slot = syncedGuestClaimSlots.find((x: any) => x.id === slotId);
-    if (!slot || slot.status !== "Claimed") return;
+    if (!slot || getGuestSlotUiState(slot) !== "claimed") return;
 
     const patch = {
       status: "claimed",
@@ -2513,8 +2585,9 @@ export default function MediaStudioScreen() {
   }
 
   function rejectGuestClaim(slotId: string, sourceFeedId?: string) {
+    if (!ensureGuestClaimManagePermission("reject")) return;
     if (sourceFeedId) {
-      feedUnclaimSchedule(sourceFeedId, { slotId });
+      feedUnclaimSchedule(sourceFeedId, { slotId, skipBackendSync: true });
       void syncGuestScheduleSlotsToBackend(sourceFeedId, "reject-guest");
       return;
     }
@@ -2529,7 +2602,8 @@ export default function MediaStudioScreen() {
   }
 
   function toggleGuestClaimLock(slotId: string, locked: boolean, sourceFeedId?: string) {
-    const patch = { locked, approved: locked ? false : false };
+    if (!ensureGuestClaimManagePermission("toggle-lock")) return;
+    const patch = { locked };
 
     if (sourceFeedId) {
       feedUpdateScheduleSlot(sourceFeedId, { slotId, patch });
@@ -2646,6 +2720,7 @@ export default function MediaStudioScreen() {
   }
 
   function fixGuestSlotConflict(slotId: string, sourceFeedId?: string) {
+    if (!ensureGuestClaimManagePermission("fix-conflict")) return;
     const applyFix = (rows: any[]) => {
       let previousEnd = "";
 
@@ -2670,6 +2745,11 @@ export default function MediaStudioScreen() {
 
     if (sourceFeedId) {
       feedUpdateScheduleSlots(sourceFeedId, applyFix);
+      const fixedSlots = applyFix(
+        readFeedItemScheduleSlots(sourceFeedId, [...feedList(), ...backendFeedItems])
+      );
+      applyScheduleSlotsToFeedState(sourceFeedId, fixedSlots);
+      void syncGuestScheduleSlotsToBackend(sourceFeedId, "fix-conflict");
       return;
     }
 
@@ -2677,6 +2757,7 @@ export default function MediaStudioScreen() {
   }
 
   function moveGuestSlot(slotId: string, direction: "up" | "down", sourceFeedId?: string) {
+    if (!ensureGuestClaimManagePermission("move-slot")) return;
     const allFeedRows = [
       ...(Array.isArray(homeFeedItems) ? homeFeedItems : []),
       ...(Array.isArray(backendFeedItems) ? backendFeedItems : []),
@@ -2694,15 +2775,19 @@ export default function MediaStudioScreen() {
       ? (Array.isArray((feedItem as any)?.scheduleSlots) ? (feedItem as any).scheduleSlots : [])
       : guestClaimSlots;
 
+    const from = sourceRows.findIndex((x: any) => String(x?.id || "") === String(slotId));
+    const to = direction === "up" ? from - 1 : from + 1;
+    if (from < 0 || to < 0 || to >= sourceRows.length) return;
+
     const applyMove = (rows: any[]) => {
       const items = [...rows];
-      const from = items.findIndex((x: any) => String(x?.id || "") === String(slotId));
-      if (from < 0) return rows;
+      const fromIndex = items.findIndex((x: any) => String(x?.id || "") === String(slotId));
+      if (fromIndex < 0) return rows;
 
-      const to = direction === "up" ? from - 1 : from + 1;
-      if (to < 0 || to >= items.length) return rows;
+      const toIndex = direction === "up" ? fromIndex - 1 : fromIndex + 1;
+      if (toIndex < 0 || toIndex >= items.length) return rows;
 
-      const pickedRaw = items[from];
+      const pickedRaw = items[fromIndex];
 
       // If a live slot is moved after time has already passed,
       // keep only the remaining minutes instead of restarting full duration.
@@ -2725,8 +2810,8 @@ export default function MediaStudioScreen() {
         durationMin: remainingDurationMin,
       };
 
-      items[from] = items[to];
-      items[to] = picked;
+      items[fromIndex] = items[toIndex];
+      items[toIndex] = picked;
 
       let previousEnd = "";
 
@@ -2770,18 +2855,7 @@ export default function MediaStudioScreen() {
 
     if (sourceFeedId) {
       feedUpdateScheduleSlots(sourceFeedId, () => movedSlots);
-
-      const applyMovedSlotsToFeed = (prev: any[]) =>
-        prev.map((item: any) => {
-          const id = String(item?.id || "");
-          const sourceId = String(item?.sourceScheduleId || "");
-          return id === String(sourceFeedId) || sourceId === String(sourceFeedId)
-            ? { ...item, scheduleSlots: movedSlots }
-            : item;
-        });
-
-      setHomeFeedItems(applyMovedSlotsToFeed);
-      setBackendFeedItems(applyMovedSlotsToFeed);
+      applyScheduleSlotsToFeedState(sourceFeedId, movedSlots);
 
       apiPost("/api/church/feed", {
         action: "update-schedule-slots",
@@ -2851,7 +2925,13 @@ export default function MediaStudioScreen() {
   }
 
   function messageGuestClaimant(slot: any) {
-    const name = String(slot?.claimedBy || "Open").trim();
+    if (!ensureGuestClaimManagePermission("message")) return;
+    const userId = String(slot?.claimedByUserId || "").trim();
+    const name = String(slot?.claimedByName || slot?.claimedBy || "").trim();
+    if (!userId) {
+      Alert.alert("Message guest", "This guest does not have a user id yet. Try again after the claim syncs.");
+      return;
+    }
     if (!name || name === "Open") {
       Alert.alert("Message guest", "No guest has claimed this slot yet.");
       return;
@@ -2872,6 +2952,9 @@ export default function MediaStudioScreen() {
           source: "media",
           backTo: "/more/media",
           guestName: name,
+          guestUserId: userId,
+          targetUserId: userId,
+          memberUserId: userId,
           guestAvatarUri: String(slot?.avatarUri || ""),
           slotId: String(slot?.id || ""),
           sourceFeedId: String(slot?.sourceFeedId || ""),
@@ -3323,7 +3406,7 @@ export default function MediaStudioScreen() {
                     gate: "media.send-to-global-feed-button",
                     isPastor: isActualChurchPastor,
                     isApprovedMediaHost,
-                    hasSubscription: churchMediaSubscriptionActive,
+                    hasSubscription: churchSubActiveFromApi === true,
                     subscriptionLocked,
                   });
                   if (!scheduleGate.allowed) {
@@ -3627,26 +3710,30 @@ export default function MediaStudioScreen() {
                       <Text style={s.guestClaimInfoText}>{slot.locked ? "Locked after approval" : "Editable slot"}</Text>
                     </View>
 
+                    {canGuestClaimManage ? (
                     <View pointerEvents="box-none" style={s.guestClaimMoveRow}>
                       <Pressable
-                        onPressIn={() => moveGuestSlot(slot.id, "up", slot.sourceFeedId)}
+                        onPress={() => moveGuestSlot(slot.id, "up", slot.sourceFeedId)}
                         style={[s.guestClaimMiniBtn, s.guestClaimMoveUpBtn]}
                       >
                         <Text style={[s.guestClaimMiniBtnText, s.guestClaimMoveUpText]}>↑ Move Up</Text>
                       </Pressable>
 
                       <Pressable
-                        onPressIn={() => moveGuestSlot(slot.id, "down", slot.sourceFeedId)}
+                        onPress={() => moveGuestSlot(slot.id, "down", slot.sourceFeedId)}
                         style={[s.guestClaimMiniBtn, s.guestClaimMoveDownBtn]}
                       >
                         <Text style={[s.guestClaimMiniBtnText, s.guestClaimMoveDownText]}>↓ Move Down</Text>
                       </Pressable>
                     </View>
+                    ) : null}
 
+                    {canGuestClaimManage ? (
+                    <>
                     <View pointerEvents="box-none" style={s.guestClaimActions}>
                       <Pressable
   hitSlop={14}
-  onPressIn={() => {
+  onPress={() => {
     console.log("KRISTO_PLUS_5_TOUCH", slot.id, slot.sourceFeedId);
     addGuestClaimTime(slot.id, 5, slot.sourceFeedId);
   }}
@@ -3657,7 +3744,7 @@ export default function MediaStudioScreen() {
 
                       <Pressable
   hitSlop={14}
-  onPressIn={() => {
+  onPress={() => {
     console.log("KRISTO_MINUS_5_TOUCH", slot.id, slot.sourceFeedId);
     addGuestClaimTime(slot.id, -5, slot.sourceFeedId);
   }}
@@ -3710,7 +3797,11 @@ export default function MediaStudioScreen() {
                       <Animated.View style={getGuestSlotUiState(slot) === "claimed" ? { flex: 1, transform: [{ scale: claimActionScale }] } : { flex: 1 }}>
                         <Pressable
                           disabled={getGuestSlotUiState(slot) === "open" || getGuestSlotUiState(slot) === "locked"}
-                          onPress={() => (slot.status === "Claimed" || slot.approved ? rejectGuestClaim(slot.id, slot.sourceFeedId) : removeGuestClaimant(slot.id, slot.sourceFeedId))}
+                          onPress={() =>
+                            getGuestSlotUiState(slot) === "claimed" || slot.approved
+                              ? rejectGuestClaim(slot.id, slot.sourceFeedId)
+                              : removeGuestClaimant(slot.id, slot.sourceFeedId)
+                          }
                           style={[
                             s.guestClaimActionBtn,
                             s.guestClaimDangerBtn,
@@ -3723,6 +3814,8 @@ export default function MediaStudioScreen() {
                         </Pressable>
                       </Animated.View>
                     </View>
+                    </>
+                    ) : null}
                   </View>
                   );
                 })}
@@ -3833,15 +3926,9 @@ export default function MediaStudioScreen() {
               </Modal>
 
               <View style={s.grid}>
+                {canManageMediaHosts && churchMediaSubscriptionActive ? (
                 <Pressable
                   onPress={() => {
-                    if (!canManageMediaHosts) {
-                      Alert.alert(
-                        "Pastor access required",
-                        "Only the church Pastor can add or remove trusted media hosts."
-                      );
-                      return;
-                    }
                     mediaRouterPush("/more/media/select-hosts", "manage-hosts-card");
                   }}
                   style={({ pressed }) => [s.smallCard, s.glassFollowers, pressed ? s.pressed : null]}
@@ -3856,7 +3943,9 @@ export default function MediaStudioScreen() {
                     {mediaHosts.length}/{MAX_CHURCH_MEDIA_HOSTS} max
                   </Text>
                 </Pressable>
+                ) : null}
 
+                {isActualChurchPastor ? (
                 <Pressable
                   onPress={handleSubscriptionOpen}
                   style={({ pressed }) => [
@@ -3873,6 +3962,7 @@ export default function MediaStudioScreen() {
                   <Text style={s.smallTitle}>Premium</Text>
                   <Text style={s.smallSub}>{churchMediaSubscriptionActive ? "Active" : "Plans"}</Text>
                 </Pressable>
+                ) : null}
 
                 <Pressable
                   onPress={handlePostVideo}
@@ -3907,13 +3997,13 @@ export default function MediaStudioScreen() {
                   </Text>
                 </Pressable>
 
+                {churchMediaSubscriptionActive ? (
                 <Pressable
                   onPress={handleCreateLiveSchedule}
                   style={({ pressed }) => [
                     s.smallCard,
                     s.glassSchedule,
-                    subscriptionLocked ? s.glassVipLocked : null,
-                    pressed && !subscriptionLocked ? s.pressed : null,
+                    pressed ? s.pressed : null,
                   ]}
                 >
                   <View style={s.cardAura} />
@@ -3922,15 +4012,17 @@ export default function MediaStudioScreen() {
                     <Ionicons name="calendar-outline" size={27} color="#34D399" />
                   </View>
                   <Text style={s.smallTitle}>Slots</Text>
-                  <Text style={s.cardHint}>
-                    {subscriptionLocked ? "Locked" : "Ready"}
-                  </Text>
+                  <Text style={s.cardHint}>Ready</Text>
                   <Text style={s.smallSub}>Invitations</Text>
                   <Text style={s.cardHint}>Schedule</Text>
                 </Pressable>
+                ) : null}
 
+                {canGuestClaimManage ? (
                 <Pressable
-                  onPress={() => setIsManagingGuests(true)}
+                  onPress={() => {
+                    setIsManagingGuests(true);
+                  }}
                   style={({ pressed }) => [s.smallCard, s.glassGuests, pressed ? s.pressed : null]}
                 >
                   <View style={s.cardAura} />
@@ -3942,6 +4034,7 @@ export default function MediaStudioScreen() {
                   <Text style={s.smallSub}>Claims</Text>
                   <Text style={s.cardHint}>View</Text>
                 </Pressable>
+                ) : null}
 
                 {canManageMediaStorage ? (
                   <Pressable
@@ -4007,9 +4100,9 @@ export default function MediaStudioScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={s.heroKicker}>Church Media</Text>
-                  <Text style={s.heroTitle}>Pastor access required</Text>
+                  <Text style={s.heroTitle}>{MEDIA_STUDIO_ROLE_TITLE}</Text>
                   <Text style={s.heroText}>
-                    Only the church Pastor and trusted media hosts can access Media Studio. Ask your pastor if you need access.
+                    {MEDIA_STUDIO_ROLE_MESSAGE} Ask your pastor if you need access.
                   </Text>
                 </View>
               </View>

@@ -3433,7 +3433,8 @@ async function handleFeedPost(req: NextRequest, body: any) {
     }
 
     if (nextSlots) {
-      const updatedItem = { ...item, scheduleSlots: nextSlots };
+      const enrichedSlots = nextSlots.map(enrichMediaScheduleSlotTimes);
+      const updatedItem = { ...item, scheduleSlots: enrichedSlots };
       await upsertFeedItem(updatedItem);
       bumpMediaScheduleSyncForFeedItem(updatedItem, "update-schedule-slots");
 
@@ -3447,7 +3448,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
         slotLabel: formatScheduleSlotLabel(firstSlot),
       });
 
-      return ok({ postId, slots: nextSlots });
+      return ok({ postId, slots: enrichedSlots });
     }
 
     if (!slotId) return err("slotId is required", 400);
@@ -3632,6 +3633,15 @@ async function handleFeedPost(req: NextRequest, body: any) {
   }
 
   if (action === "unclaim_schedule_slot") {
+    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
+      endpoint: "/api/church/feed",
+      churchId,
+      userId: viewerUserId,
+      role: String(ctx?.viewer?.role || ""),
+      action: "unclaim_schedule_slot",
+    });
+    if (subscriptionBlocked) return subscriptionBlocked;
+
     const postId = cleanText(body?.postId || body?.feedId, 240);
     const slotId = cleanText(body?.slotId, 240);
     const targetUserId = cleanText(body?.userId || viewerUserId, 240);
@@ -3642,6 +3652,16 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const item = await getFeedItemById(postId);
     if (!item) return err("Feed item not found", 404);
 
+    const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
+    const managerPermissionErr = await assertScheduleEditPermission({
+      churchId,
+      viewerUserId,
+      viewerAppRole,
+      item,
+      body,
+    });
+    const canManageSchedule = !managerPermissionErr;
+
     const slots = Array.isArray((item as any).scheduleSlots) ? (item as any).scheduleSlots : [];
     const slotIndex = slots.findIndex((slot: any) => String(slot?.id || "") === String(slotId));
     if (slotIndex < 0) return err("Slot not found", 404);
@@ -3651,7 +3671,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       existing.claimedByUserId || existing.claimedBy?.userId || ""
     ).trim();
 
-    if (existingOwner && targetUserId && existingOwner !== targetUserId) {
+    if (existingOwner && targetUserId && existingOwner !== targetUserId && !canManageSchedule) {
       return err("Slot claimed by another member", 409);
     }
 

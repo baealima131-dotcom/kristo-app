@@ -69,6 +69,7 @@ import {
   fetchChurchPastorUserId,
   logChurchPastorResolution,
 } from "@/src/lib/churchPastorResolver";
+import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import {
   applyRingClaimHintsToScheduleSlots,
   enrichScheduleSlotsFromLiveRequests,
@@ -1877,6 +1878,31 @@ export default function LiveRoomScreen() {
     canPublish?: string;
   }>();
 
+  const liveRouteChurchId = String((params as any)?.churchId || session?.churchId || "").trim();
+  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!liveRouteChurchId) {
+      setChurchSubscriptionActive(null);
+      return;
+    }
+
+    let alive = true;
+    void fetchChurchSubscriptionActive(
+      liveRouteChurchId,
+      getKristoHeaders({
+        ...(session || {}),
+        churchId: liveRouteChurchId,
+      } as any)
+    ).then((active) => {
+      if (alive) setChurchSubscriptionActive(active);
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [liveRouteChurchId, session?.userId, session?.role, (session as any)?.churchRole]);
+
   const initialRouteScheduleSlots = useMemo(
     () => parseLiveAllScheduleSlotsJson((params as any).liveAllScheduleSlotsJson),
     [(params as any).liveAllScheduleSlotsJson]
@@ -3326,6 +3352,7 @@ export default function LiveRoomScreen() {
     isPastorLiveOwner,
     roleLooksLikeHost,
     approvedViewerSeatType,
+    churchSubscriptionActive,
   });
 
   const {
@@ -3365,20 +3392,22 @@ export default function LiveRoomScreen() {
   const isCurrentActiveSlotOwnerForLiveRoom =
     !!currentUserId && !!userOwnsCurrentActiveSlot && !!isMyScheduledLiveTurn;
 
-  const canManageLiveHostActions = isMediaInstantLive
-    ? !!(
-        isPastorForLiveRoom ||
-        isApprovedMediaHostForLiveRoom ||
-        isMediaOwnerHost ||
-        isChurchAdminForLiveRoom ||
-        isSystemAdminForLiveRoom
-      )
-    : !!(
-        isPastorForLiveRoom ||
-        isApprovedMediaHostForLiveRoom ||
-        isChurchAdminForLiveRoom ||
-        isSystemAdminForLiveRoom
-      );
+  const canManageLiveHostActions =
+    churchSubscriptionActive === true &&
+    (isMediaInstantLive
+      ? !!(
+          isPastorForLiveRoom ||
+          isApprovedMediaHostForLiveRoom ||
+          isMediaOwnerHost ||
+          isChurchAdminForLiveRoom ||
+          isSystemAdminForLiveRoom
+        )
+      : !!(
+          isPastorForLiveRoom ||
+          isApprovedMediaHostForLiveRoom ||
+          isChurchAdminForLiveRoom ||
+          isSystemAdminForLiveRoom
+        ));
 
   const canSeeLiveHostControls =
     isPastorForLiveRoom ||
@@ -4408,8 +4437,6 @@ export default function LiveRoomScreen() {
     scheduledStagePeople.length,
     visibleQueueSlots.length,
   ]);
-
-  const liveRouteChurchId = String((params as any)?.churchId || session?.churchId || "").trim();
 
   const liveApiHeaders = useMemo(
     () =>

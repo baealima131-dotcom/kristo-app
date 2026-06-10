@@ -2,13 +2,9 @@ import { NextResponse } from "next/server";
 import { getChurchMediaByChurchId } from "@/app/api/_lib/store/mediaDb";
 import {
   isChurchSubscriptionActiveFromRecord,
+  logSubscriptionGateBlocked,
   type ChurchSubscriptionRecord,
 } from "@/lib/churchSubscription";
-import {
-  isServerSubscriptionGateBypassed,
-  isSubscriptionBypassEnabled,
-  logServerSubscriptionGateCheck,
-} from "@/lib/subscriptionBypass";
 
 type ChurchMediaStoreRow = ChurchSubscriptionRecord & {
   churchId?: string;
@@ -50,25 +46,7 @@ export async function isChurchSubscriptionActive(
   opts?: { isPastor?: boolean; isMediaHost?: boolean; gate?: string }
 ): Promise<boolean> {
   const cid = String(churchId || "").trim();
-  if (isSubscriptionBypassEnabled()) {
-    logServerSubscriptionGateCheck({
-      churchId: cid,
-      isPastor: opts?.isPastor,
-      isMediaHost: opts?.isMediaHost,
-      gate: opts?.gate || "isChurchSubscriptionActive",
-    });
-    if (
-      isServerSubscriptionGateBypassed({
-        churchId: cid,
-        isPastor: opts?.isPastor,
-        isMediaHost: opts?.isMediaHost,
-        gate: opts?.gate || "isChurchSubscriptionActive",
-      })
-    ) {
-      return true;
-    }
-    return false;
-  }
+  if (!cid) return false;
 
   const media = await getChurchMediaSubscriptionRecord(cid);
   return isChurchSubscriptionActiveFromRecord(media);
@@ -116,6 +94,12 @@ export async function requireChurchSubscriptionActive(
 
   if (subscriptionActive) return null;
 
+  logSubscriptionGateBlocked(ctx.action, false, {
+    endpoint: ctx.endpoint,
+    churchId: cid,
+    userId: ctx.userId,
+    role: ctx.role,
+  });
   logSubscriptionGuardBlocked(ctx, false);
   return churchSubscriptionRequiredResponse();
 }

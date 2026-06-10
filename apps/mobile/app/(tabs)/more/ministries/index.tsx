@@ -28,7 +28,6 @@ import {
   CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE,
   fetchChurchSubscriptionActive,
 } from "@/src/lib/churchSubscription";
-import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 import {
   getMinistriesCache,
   isScreenCacheFresh,
@@ -331,9 +330,7 @@ export default function MoreMinistriesList() {
     useState<LiveControlSelfStatus>(
       ministriesPeek?.churchLiveControlStatus === "Suspended" ? "Suspended" : "Active"
     );
-  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
-    isSubscriptionBypassEnabled() ? true : null
-  );
+  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(null);
   const [premiumModalOpen, setPremiumModalOpen] = useState(false);
   const [churchAvatarContext, setChurchAvatarContext] = useState<{
     session: Record<string, any> | null;
@@ -753,7 +750,7 @@ export default function MoreMinistriesList() {
           contentContainerStyle={[s.gridContent, { paddingBottom: Math.max(insets.bottom, 16) + 28 }]}
         >
           <View style={[s.grid, { columnGap: GRID_GAP, rowGap: GRID_GAP }]}>
-            {shouldShowChurchControl ? (
+            {shouldShowChurchControl && !churchLiveControlSubscriptionLocked ? (
             <Pressable
               onPress={() => {
                 if (isChurchLiveControlSuspended) {
@@ -761,15 +758,6 @@ export default function MoreMinistriesList() {
                     "Access suspended",
                     "Your Church Live Control access is suspended."
                   );
-                  return;
-                }
-
-                if (churchLiveControlSubscriptionLocked) {
-                  if (isChurchAuthority) {
-                    setPremiumModalOpen(true);
-                  } else {
-                    Alert.alert("Subscription required", CHURCH_SUBSCRIPTION_MEMBER_MESSAGE);
-                  }
                   return;
                 }
 

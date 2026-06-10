@@ -9,7 +9,6 @@ import {
   confirmChurchMediaPersisted,
 } from "@/app/api/_lib/store/mediaDb";
 import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
-import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
 
@@ -39,8 +38,9 @@ export async function GET(req: Request) {
       userId: a.userId,
     });
     const hasProfile = Boolean(String(media?.mediaName || "").trim());
-    const canViewProfile = hasProfile && access.canAccessChurchMedia;
-    const subscriptionActive = isChurchSubscriptionActiveFromRecord(media);
+    const canOpenMediaScreen = access.canOpenMediaScreen;
+    const canViewProfile = hasProfile && canOpenMediaScreen;
+    const subscriptionActive = access.subscriptionActive;
 
     if (hasProfile) {
       await confirmChurchMediaPersisted(a.churchId, media?.mediaName);
@@ -52,6 +52,8 @@ export async function GET(req: Request) {
         userId: a.userId,
         found: hasProfile,
         subscriptionActive,
+        canOpenMediaScreen,
+        canUseMediaTools: access.canUseMediaTools,
         canAccessChurchMedia: access.canAccessChurchMedia,
         isActualChurchPastor: access.isActualChurchPastor,
         isMediaHost: access.isMediaHost,
@@ -67,6 +69,8 @@ export async function GET(req: Request) {
       subscriptionActive,
       viewerCanManage: access.canManageMediaHosts,
       viewerIsHost: access.isMediaHost,
+      canOpenMediaScreen: access.canOpenMediaScreen,
+      canUseMediaTools: access.canUseMediaTools,
       canAccessChurchMedia: access.canAccessChurchMedia,
       isActualChurchPastor: access.isActualChurchPastor,
       actualPastorUserId: access.actualPastorUserId,

@@ -2,8 +2,18 @@ import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
 import { getChurchMediaByChurchId, upsertChurchMedia, type ChurchMediaProfile } from "@/app/api/_lib/store/mediaDb";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getChurchById } from "@/app/api/_lib/churches";
+import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 
 export const MAX_CHURCH_MEDIA_HOSTS = 3;
+
+function normalizeChurchRoleToken(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isPastorChurchRole(value: unknown): boolean {
+  const normalized = normalizeChurchRoleToken(value);
+  return normalized === "pastor" || normalized.includes("pastor");
+}
 
 export type MediaHostRecord = {
   userId: string;
@@ -25,7 +35,7 @@ export async function resolveActualChurchPastorUserId(churchId: string): Promise
   if (!cid) return "";
 
   const members = await getMembershipsForChurch(cid, "Active");
-  const pastor = members.find((row) => String(row.churchRole || "") === "Pastor");
+  const pastor = members.find((row) => isPastorChurchRole(row.churchRole));
   return String(pastor?.userId || "").trim();
 }
 
@@ -57,7 +67,10 @@ export async function evaluateChurchMediaAccess(args: {
 
   const isActualChurchPastor = !!userId && userId === actualPastorUserId;
   const isMediaHost = !!userId && mediaHostUserIds.includes(userId);
-  const canAccessChurchMedia = isActualChurchPastor || isMediaHost;
+  const media = await getChurchMediaByChurchId(churchId);
+  const subscriptionActive = isChurchSubscriptionActiveFromRecord(media);
+  const canOpenMediaScreen = isActualChurchPastor || isMediaHost;
+  const canUseMediaTools = subscriptionActive && canOpenMediaScreen;
 
   return {
     actualPastorUserId,
@@ -65,7 +78,10 @@ export async function evaluateChurchMediaAccess(args: {
     mediaHostUserIds,
     isActualChurchPastor,
     isMediaHost,
-    canAccessChurchMedia,
+    subscriptionActive,
+    canOpenMediaScreen,
+    canUseMediaTools,
+    canAccessChurchMedia: canOpenMediaScreen,
     canManageMediaHosts: isActualChurchPastor,
   };
 }

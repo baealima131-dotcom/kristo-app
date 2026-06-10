@@ -65,7 +65,6 @@ import {
 const CHURCH_OVERVIEW_SCREEN = "ChurchOverview";
 import { ChurchPremiumSubscriptionModal, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
-import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 import {
   isMinistryMediaAccessLimitReachedError,
   MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE,
@@ -383,9 +382,7 @@ export default function ChurchOverviewScreen() {
   const [previewChecked, setPreviewChecked] = useState(!invitePreview);
   const [previewCount, setPreviewCount] = useState(0);
   const [previewLimitReached, setPreviewLimitReached] = useState(false);
-  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
-    isSubscriptionBypassEnabled() ? true : null
-  );
+  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(null);
   const [premiumModalOpen, setPremiumModalOpen] = useState(false);
   const contentOpacity = useRef(new Animated.Value(0)).current;
 
@@ -401,8 +398,8 @@ export default function ChurchOverviewScreen() {
   }, [bootLoading, err, invitePreview, previewLimitReached, contentOpacity]);
 
   useEffect(() => {
-    if (!churchId || invitePreview || isSubscriptionBypassEnabled()) {
-      setChurchSubscriptionActive(isSubscriptionBypassEnabled() ? true : null);
+    if (!churchId || invitePreview) {
+      setChurchSubscriptionActive(null);
       return;
     }
 
@@ -979,9 +976,19 @@ export default function ChurchOverviewScreen() {
     String((session as any)?.churchRole || ""),
   ].join(" ");
   const isPastorSession = /\bPastor\b/i.test(sessionRoleText);
-  const canManageMinistryMediaAccess = !invitePreview && (isActualChurchPastor || isPastor || isPastorSession);
-  const canOpenMediaStudio = !invitePreview && (canAccessChurchMedia || isPastor || isPastorSession);
-  const showMediaControlCard = canOpenMediaStudio || canManageMinistryMediaAccess;
+  const canManageMinistryMediaAccess =
+    !invitePreview &&
+    churchSubscriptionActive === true &&
+    (isActualChurchPastor || isPastor || isPastorSession);
+  const canOpenMediaStudio =
+    !invitePreview &&
+    churchSubscriptionActive === true &&
+    (canAccessChurchMedia || isPastor || isPastorSession);
+  const showMediaControlCard =
+    !invitePreview &&
+    (canOpenMediaStudio ||
+      canManageMinistryMediaAccess ||
+      ((isPastor || isPastorSession) && churchSubscriptionActive !== true));
   const showMemberChurchAccessCard = !invitePreview && isMember && !showMediaControlCard;
 
   useEffect(() => {
@@ -1035,7 +1042,7 @@ export default function ChurchOverviewScreen() {
     }
 
     let active = churchSubscriptionActive;
-    if (active === null && !isSubscriptionBypassEnabled()) {
+    if (active === null) {
       active = await fetchChurchSubscriptionActive(churchId, getHeaders());
       setChurchSubscriptionActive(active);
     }

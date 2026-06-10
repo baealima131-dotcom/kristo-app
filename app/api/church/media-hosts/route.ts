@@ -12,6 +12,7 @@ import {
   type MediaHostRecord,
 } from "@/app/api/_lib/churchMediaAccess";
 import { guard } from "@/app/api/_lib/rbac";
+import { requireChurchSubscriptionActive } from "@/app/api/_lib/churchSubscription";
 import { getChurchMediaByChurchId, upsertChurchMedia } from "@/app/api/_lib/store/mediaDb";
 
 export const runtime = "nodejs";
@@ -97,6 +98,9 @@ export async function GET(req: NextRequest) {
       actualPastorUserId: access.actualPastorUserId,
       isActualChurchPastor: access.isActualChurchPastor,
       isMediaHost: access.isMediaHost,
+      subscriptionActive: access.subscriptionActive,
+      canOpenMediaScreen: access.canOpenMediaScreen,
+      canUseMediaTools: access.canUseMediaTools,
       canAccessChurchMedia: access.canAccessChurchMedia,
       canManageMediaHosts: access.canManageMediaHosts,
       maxHosts: MAX_CHURCH_MEDIA_HOSTS,
@@ -123,6 +127,15 @@ export async function POST(req: NextRequest) {
     if (!access.canManageMediaHosts) {
       return json({ ok: false, error: "Only the church Pastor can manage media hosts" }, { status: 403 });
     }
+
+    const subscriptionBlocked = await requireChurchSubscriptionActive(ctxOrRes.churchId, {
+      endpoint: "/api/church/media-hosts",
+      churchId: ctxOrRes.churchId,
+      userId: ctxOrRes.viewer.userId,
+      role: String(ctxOrRes.viewer.role || ""),
+      action: "manage_media_hosts",
+    });
+    if (subscriptionBlocked) return subscriptionBlocked;
 
     const body = await req.json().catch(() => ({}));
 
@@ -240,6 +253,15 @@ export async function DELETE(req: NextRequest) {
     if (!access.canManageMediaHosts) {
       return json({ ok: false, error: "Only the church Pastor can manage media hosts" }, { status: 403 });
     }
+
+    const subscriptionBlocked = await requireChurchSubscriptionActive(ctxOrRes.churchId, {
+      endpoint: "/api/church/media-hosts",
+      churchId: ctxOrRes.churchId,
+      userId: ctxOrRes.viewer.userId,
+      role: String(ctxOrRes.viewer.role || ""),
+      action: "remove_media_host",
+    });
+    if (subscriptionBlocked) return subscriptionBlocked;
 
     const body = await req.json().catch(() => ({}));
     const userId = cleanText(body?.userId, 120);

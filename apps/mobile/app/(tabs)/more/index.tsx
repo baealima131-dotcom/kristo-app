@@ -348,11 +348,11 @@ export default function MoreScreen() {
 
   const canShowMediaCard = React.useMemo(() => {
     if (!hasChurch) return false;
+    if (isPastor) return true;
     if (canAccessChurchMedia === true) return true;
-    // Keep Media visible for pastors while trusted-host access is loading.
-    if (canAccessChurchMedia === null && isPastor) return true;
+    if (canAccessChurchMedia === null && mediaAccessLoading) return false;
     return false;
-  }, [hasChurch, canAccessChurchMedia, isPastor]);
+  }, [hasChurch, canAccessChurchMedia, isPastor, mediaAccessLoading]);
 
   const showMediaAccessSkeleton = React.useMemo(
     () =>

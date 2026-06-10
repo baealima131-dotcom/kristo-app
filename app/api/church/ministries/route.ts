@@ -456,6 +456,18 @@ export async function PATCH(req: NextRequest) {
   const body = await asBody(req);
   if (!body) return json({ ok: false, error: "Invalid JSON body" } satisfies ApiErr, { status: 400 });
 
+  if (body.mediaAccess === true) {
+    const viewerRole = String(viewer?.role || "").trim();
+    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
+      endpoint: "/api/church/ministries",
+      churchId,
+      userId: viewerUserId,
+      role: viewerRole,
+      action: "grant_ministry_media_access",
+    });
+    if (subscriptionBlocked) return subscriptionBlocked;
+  }
+
   let updated: Ministry | null = null;
   let notFound = false;
 

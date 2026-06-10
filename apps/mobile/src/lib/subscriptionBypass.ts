@@ -1,3 +1,5 @@
+import { logSubscriptionGateBlocked } from "./churchSubscriptionGate";
+
 /** Full testing bypass: EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS=1 */
 export const BYPASS_SUBSCRIPTION_FOR_TESTING =
   process.env.EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS === "1";
@@ -84,71 +86,33 @@ export type ChurchMediaSubscriptionGateContext = {
 };
 
 /**
- * Church-level subscription entitlement.
- * Testing bypass: Pastor OR approved Media Host of the church.
- * Production: Pastor pays; hosts use Media/Schedule only when church subscription is active.
+ * Church-level subscription entitlement for media/live.
+ * V1: always requires churchSubscriptionActive === true — dev/review bypass never applies here.
  */
 export function evaluateChurchMediaSubscriptionGate(
   ctx: ChurchMediaSubscriptionGateContext
 ): ChurchMediaSubscriptionGateResult {
   const isPastor = ctx.isPastor === true;
   const isApprovedMediaHost = ctx.isApprovedMediaHost === true;
-  const testingBypass = isAppleReviewBypassEnabled();
-  const churchActive = ctx.churchSubscriptionActive === true;
+  const churchSubscriptionActive = ctx.churchSubscriptionActive ?? null;
+  const gate = String(ctx.gate || "unknown");
 
   console.log("KRISTO_SUBSCRIPTION_GATE_CHECK", {
     screen: ctx.screen || null,
-    gate: ctx.gate || null,
+    gate,
     churchId: ctx.churchId || null,
     isPastor,
     isApprovedMediaHost,
-    testingBypass,
-    churchSubscriptionActive: ctx.churchSubscriptionActive ?? null,
+    testingBypass: false,
+    churchSubscriptionActive,
   });
 
-  if (testingBypass) {
-    if (isPastor || isApprovedMediaHost) {
-      console.log("KRISTO_SUBSCRIPTION_BYPASSED_FOR_TESTING", {
-        screen: ctx.screen || null,
-        gate: ctx.gate || null,
-        churchId: ctx.churchId || null,
-        isPastor,
-        isApprovedMediaHost,
-      });
-      if (isApprovedMediaHost && !isPastor) {
-        console.log("KRISTO_MEDIA_HOST_SUBSCRIPTION_ALLOWED", {
-          mode: "testing_bypass",
-          gate: ctx.gate || null,
-          churchId: ctx.churchId || null,
-        });
-      }
-      return {
-        subscriptionAllowed: true,
-        bypassed: true,
-        reason: "testing_bypass",
-      };
-    }
-
-    console.log("KRISTO_MEDIA_HOST_SUBSCRIPTION_BLOCKED", {
-      reason: "testing_bypass_requires_pastor_or_approved_host",
-      screen: ctx.screen || null,
-      gate: ctx.gate || null,
-      isPastor,
-      isApprovedMediaHost,
-    });
-    return {
-      subscriptionAllowed: false,
-      bypassed: false,
-      reason: "not_media_role",
-    };
-  }
-
   if (isPastor || isApprovedMediaHost) {
-    if (churchActive) {
+    if (churchSubscriptionActive === true) {
       if (isApprovedMediaHost && !isPastor) {
         console.log("KRISTO_MEDIA_HOST_SUBSCRIPTION_ALLOWED", {
           mode: "church_subscription_active",
-          gate: ctx.gate || null,
+          gate,
           churchId: ctx.churchId || null,
         });
       }
@@ -159,12 +123,12 @@ export function evaluateChurchMediaSubscriptionGate(
       };
     }
 
-    console.log("KRISTO_MEDIA_HOST_SUBSCRIPTION_BLOCKED", {
-      reason: "church_subscription_inactive",
+    logSubscriptionGateBlocked(gate, churchSubscriptionActive, {
       screen: ctx.screen || null,
-      gate: ctx.gate || null,
+      churchId: ctx.churchId || null,
       isPastor,
       isApprovedMediaHost,
+      reason: "church_subscription_inactive",
     });
     return {
       subscriptionAllowed: false,
@@ -173,9 +137,9 @@ export function evaluateChurchMediaSubscriptionGate(
     };
   }
 
-  console.log("KRISTO_MEDIA_HOST_SUBSCRIPTION_BLOCKED", {
+  logSubscriptionGateBlocked(gate, churchSubscriptionActive, {
+    screen: ctx.screen || null,
     reason: "not_pastor_or_approved_host",
-    gate: ctx.gate || null,
   });
   return {
     subscriptionAllowed: false,
@@ -184,29 +148,11 @@ export function evaluateChurchMediaSubscriptionGate(
   };
 }
 
-/** Schedule/live-media gate bypass for Pastor or approved Media Host during testing. */
+/** Media/live schedule gates never honor dev or review subscription bypass in V1. */
 export function isScheduleSubscriptionBypassEnabled(
-  isPastor = false,
-  isApprovedMediaHost = false
+  _isPastor = false,
+  _isApprovedMediaHost = false
 ) {
-  if (isAppleReviewBypassEnabled() && (isPastor || isApprovedMediaHost)) {
-    logSubscriptionGateBypassedForTest("schedule-review", { isPastor, isApprovedMediaHost });
-    return true;
-  }
-
-  if (BYPASS_SUBSCRIPTION_FOR_TESTING) {
-    return evaluateChurchMediaSubscriptionGate({
-      isPastor,
-      isApprovedMediaHost,
-      gate: "isScheduleSubscriptionBypassEnabled",
-    }).bypassed;
-  }
-
-  if (__DEV__ && isDevScheduleBypassFlagEnabled() && isPastor) {
-    logSubscriptionGateBypassedForTest("schedule-dev-pastor", { isPastor: true });
-    return true;
-  }
-
   return false;
 }
 

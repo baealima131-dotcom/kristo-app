@@ -22,3 +22,15 @@ export function isChurchSubscriptionActiveFromRecord(
 
   return status === "active" || status === "trialing";
 }
+
+export function logSubscriptionGateBlocked(
+  gate: string,
+  churchSubscriptionActive: boolean | null,
+  extra?: Record<string, unknown>
+) {
+  console.log("KRISTO_SUBSCRIPTION_GATE_BLOCKED", {
+    gate,
+    churchSubscriptionActive,
+    ...(extra || {}),
+  });
+}

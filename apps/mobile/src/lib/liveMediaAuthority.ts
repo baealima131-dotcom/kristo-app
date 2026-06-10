@@ -191,6 +191,8 @@ export type LiveStageAuthorityInput = {
   isPastorLiveOwner: boolean;
   roleLooksLikeHost: boolean;
   approvedViewerSeatType: string;
+  /** When false, all publish/management media ops are blocked (view-only). */
+  churchSubscriptionActive?: boolean | null;
 };
 
 export type LiveStageAuthority = {
@@ -261,7 +263,7 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
     ? canPublishClaimedCameraNow
     : canPublishClaimedCameraNow;
 
-  return {
+  const result: LiveStageAuthority = {
     pastorPermanentMicNow,
     mediaHostPermanentMicNow,
     userOwnsCurrentActiveSlot,
@@ -271,6 +273,19 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
     canPublishClaimedCameraNow,
     canPublishLiveVideoNow,
   };
+
+  if (input.churchSubscriptionActive !== true) {
+    return {
+      ...result,
+      pastorPermanentMicNow: false,
+      mediaHostPermanentMicNow: false,
+      canPublishClaimedMicNow: false,
+      canPublishClaimedCameraNow: false,
+      canPublishLiveVideoNow: false,
+    };
+  }
+
+  return result;
 }
 
 export function logMediaLiveV1StageAuthority(
