@@ -67,7 +67,9 @@ function revenueCatRuntimeInfo() {
 /** Human-readable reason the live purchase path is blocked, or null if fine. */
 function revenueCatUnavailableReason(): string | null {
   if (isRevenueCatPurchasingDisabled()) {
-    return "subscription-bypass: EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS=1";
+    return __DEV__
+      ? "dev-build: RevenueCat purchasing disabled in __DEV__"
+      : "subscription-bypass: EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS=1";
   }
   if (isLiveRoomActive()) return "live-room-active";
   const key = describeApiKey();
@@ -124,7 +126,7 @@ export async function ensurePurchasesConfigured(): Promise<boolean> {
 
   if (isRevenueCatPurchasingDisabled()) {
     console.log("KRISTO_RC_CONFIG_FAILED", {
-      reason: "subscription-bypass",
+      reason: __DEV__ ? "dev-build-purchasing-disabled" : "subscription-bypass",
       ...revenueCatRuntimeInfo(),
     });
     return false;
