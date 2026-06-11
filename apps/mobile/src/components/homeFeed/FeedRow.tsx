@@ -33,9 +33,9 @@ import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 
 /**
- * Map the mount-window warm mode to the player's 3-state role. Everything that
- * is mounted but not active is buffer-only ("preload"); the player never plays
- * a non-active row. Off rows are not mounted at all.
+ * Map the mount-window warm mode to the player's 3-state role. Active row plays;
+ * forward preload rows decode-prime under poster; previous warm/cache rows stay
+ * mounted buffer-only until they fall out of the rolling window.
  */
 function warmModeToRole(mode: HomeFeedVideoWarmMode): HomeFeedVideoRole {
   if (mode === "active") return "active";
@@ -174,13 +174,13 @@ export const FeedRow = memo(function FeedRow({
   const lastImageDiagKeyRef = useRef("");
 
   useEffect(() => {
-    if (!postId || !willRenderImage) return;
+    if (!postId || !willRenderImage || !isActive) return;
     console.log("KRISTO_IMAGE_CAROUSEL_RESOLVE", {
       postId,
       imageCount: postImageUris.length,
       uris: postImageUris,
     });
-  }, [postId, postImageUris, willRenderImage]);
+  }, [postId, postImageUris, willRenderImage, isActive]);
 
   useEffect(() => {
     const diagKey = [

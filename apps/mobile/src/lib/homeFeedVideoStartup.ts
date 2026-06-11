@@ -10,6 +10,7 @@ import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeed
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
 import { feedList } from "@/src/lib/homeFeedStore";
 import { markHomeFeedVideoPreloadReady } from "@/src/lib/homeFeedVideoReadiness";
+import { cacheVideoUrl, hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
 import {
   requestHomeFeedVideoPrime,
   markStartupFirstVideoPrepared,
@@ -46,6 +47,12 @@ const FIRST_VIDEO_RANGE = "bytes=0-393215";
 const UPCOMING_RANGE = "bytes=0-65535";
 const WARM_TIMEOUT_MS = 8000;
 const UPCOMING_MAX = 3;
+/** Max wait before opening Home Feed when first-video prepare is still in flight. */
+export const FIRST_VIDEO_PREPARE_GATE_MAX_MS = 3500;
+
+let lastPrepareResult: FirstHomeFeedVideoPrepareResult | null = null;
+let lastPrepareFinishedAt = 0;
+const prepareWaiters = new Set<(result: FirstHomeFeedVideoPrepareResult | null) => void>();
 
 const warmedUrls = new Set<string>();
 const inflightUrls = new Set<string>();
@@ -107,6 +114,61 @@ export function isFirstHomeFeedVideoPrepared(): boolean {
   return Boolean(preparedKey);
 }
 
+function notifyPrepareWaiters(result: FirstHomeFeedVideoPrepareResult | null) {
+  lastPrepareResult = result;
+  lastPrepareFinishedAt = Date.now();
+  const waiters = [...prepareWaiters];
+  prepareWaiters.clear();
+  waiters.forEach((resolve) => {
+    try {
+      resolve(result);
+    } catch {}
+  });
+}
+
+/** Latest completed first-video prepare pass (may be null when no video row exists). */
+export function peekFirstHomeFeedVideoPrepareResult(): FirstHomeFeedVideoPrepareResult | null {
+  return lastPrepareResult;
+}
+
+/**
+ * Block Home Feed open until the first-video prepare pass finishes (prime + poster),
+ * or until `maxMs` elapses. Returns the prepare result when available.
+ */
+export async function waitForFirstHomeFeedVideoPrepare(
+  maxMs = FIRST_VIDEO_PREPARE_GATE_MAX_MS
+): Promise<FirstHomeFeedVideoPrepareResult | null> {
+  if (prepareInflight) {
+    return Promise.race([
+      prepareInflight,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), maxMs)),
+    ]);
+  }
+
+  if (lastPrepareFinishedAt > 0) {
+    return lastPrepareResult;
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      prepareWaiters.delete(onDone);
+      resolve(lastPrepareResult);
+    }, maxMs);
+
+    const onDone = (result: FirstHomeFeedVideoPrepareResult | null) => {
+      clearTimeout(timer);
+      prepareWaiters.delete(onDone);
+      resolve(result);
+    };
+
+    prepareWaiters.add(onDone);
+
+    if (prepareInflight) {
+      void prepareInflight.then(onDone).catch(() => onDone(null));
+    }
+  });
+}
+
 function buildCachedDisplayRows(): any[] {
   return buildHomeFeedDisplayRows(getCachedHomeFeedBackendRows(), feedList());
 }
@@ -120,7 +182,7 @@ export async function prepareFirstHomeFeedVideo(
   session: KristoSession
 ): Promise<FirstHomeFeedVideoPrepareResult | null> {
   const key = `${session.userId}:${session.churchId || ""}`;
-  if (preparedKey === key) return null;
+  if (preparedKey === key) return lastPrepareResult;
   if (prepareInflight) return prepareInflight;
 
   console.log("KRISTO_HOME_FIRST_VIDEO_PREPARE_BEFORE_OPEN", {
@@ -130,7 +192,10 @@ export async function prepareFirstHomeFeedVideo(
 
   const startedAt = Date.now();
   prepareInflight = (async () => {
-    if ((await isLoggedOutFlagSet()) || isSessionExitInProgress()) return null;
+    if ((await isLoggedOutFlagSet()) || isSessionExitInProgress()) {
+      notifyPrepareWaiters(null);
+      return null;
+    }
 
     try {
       setSessionSync(session);
@@ -138,19 +203,25 @@ export async function prepareFirstHomeFeedVideo(
     try {
       await hydrateHomeFeedRowsCacheFromStorage(session.userId);
     } catch {}
+    try {
+      await hydrateHomeFeedVideoDiskCache();
+    } catch {}
 
     const rows = buildCachedDisplayRows();
     const firstVideoRow = rows.find((row) => row && isVideoPost(row));
     if (!firstVideoRow) {
+      const emptyResult = null;
       console.log("KRISTO_HOME_FIRST_VIDEO_PREPARE_READY", {
         ms: Date.now() - startedAt,
         rowId: null,
         url: null,
         prewarmHit: false,
         prepared: false,
+        firstFramePrimed: false,
         cachedRowCount: rows.length,
       });
-      return null;
+      notifyPrepareWaiters(emptyResult);
+      return emptyResult;
     }
 
     const rowId = String(firstVideoRow?.id || "").trim();
@@ -164,6 +235,8 @@ export async function prepareFirstHomeFeedVideo(
 
     const posterUri = String(resolvePosterUri(firstVideoRow) || "").trim();
     if (posterUri) Image.prefetch(posterUri).catch(() => {});
+
+    void cacheVideoUrl(url);
 
     // Decode-prime the REAL player through the hidden attached VideoView
     // (parses moov + decodes the first frame and parks it for adoption) in
@@ -184,6 +257,12 @@ export async function prepareFirstHomeFeedVideo(
       markStartupFirstVideoPrepared(rowId, url, firstFramePrimed);
     }
 
+    const result: FirstHomeFeedVideoPrepareResult = {
+      rowId,
+      url,
+      prewarmHit: firstFramePrimed,
+    };
+
     console.log("KRISTO_HOME_FIRST_VIDEO_PREPARE_READY", {
       ms: Date.now() - startedAt,
       rowId: rowId || null,
@@ -194,7 +273,8 @@ export async function prepareFirstHomeFeedVideo(
       cachedRowCount: rows.length,
     });
 
-    return { rowId, url, prewarmHit: firstFramePrimed };
+    notifyPrepareWaiters(result);
+    return result;
   })().finally(() => {
     prepareInflight = null;
   });
@@ -221,7 +301,7 @@ export function startFirstHomeFeedVideoPrepare(
 export function warmHomeFeedUpcoming(
   rows: any[],
   fromIndex: number,
-  count = UPCOMING_MAX
+  count = 1
 ): void {
   if (!Array.isArray(rows) || !rows.length) return;
   const start = Math.max(0, fromIndex) + 1;
@@ -255,5 +335,8 @@ export function __resetHomeFeedVideoStartupForTest(): void {
   inflightUrls.clear();
   prepareInflight = null;
   preparedKey = "";
+  lastPrepareResult = null;
+  lastPrepareFinishedAt = 0;
+  prepareWaiters.clear();
   __resetHomeFeedVideoPrimeForTest();
 }

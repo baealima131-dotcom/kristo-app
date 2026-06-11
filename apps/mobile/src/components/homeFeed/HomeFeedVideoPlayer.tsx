@@ -1,5 +1,5 @@
 import React, { memo } from "react";
-import { ActivityIndicator, AppState, Image, StyleSheet, View } from "react-native";
+import { ActivityIndicator, AppState, Image, StyleSheet, Text, View } from "react-native";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import { useEvent } from "expo";
 import {
@@ -25,8 +25,18 @@ import {
   peekHomeFeedVideoRestoreSeek,
   saveHomeFeedVideoProgress,
 } from "@/src/lib/homeFeedVideoProgressStore";
+import {
+  markHomeFeedVideoFirstFrameShown,
+  markHomeFeedVideoWatched,
+  wasHomeFeedVideoFirstFrameShown,
+} from "@/src/lib/homeFeedVideoRetention";
 import { getHomeFeedPosterLoadTimeoutMs } from "@/src/lib/videoGridThumbnail";
 import { logFirstMountedHomeFeedVideoFileDiag } from "@/src/lib/homeFeedVideoFileDiag";
+import {
+  getCachedVideoUri,
+  resolveHomeFeedPlaybackUri,
+  subscribeHomeFeedVideoDiskCache,
+} from "@/src/lib/homeFeedVideoDiskCache";
 import {
   hasBrandedVideoPoster,
   isValidVideoPosterUri,
@@ -78,6 +88,19 @@ function hasPaintedFrame(currentTime: number) {
   return currentTime > 0.03;
 }
 
+/** iOS keeps AVPlayerLayer composited at this opacity (see HomeFeedVideoPrimer). */
+const VIDEO_COVER_OPACITY = 0.02;
+
+const SEEK_VISIBLE_TOLERANCE_SEC = 0.75;
+const ACTIVE_BUFFER_READY_PCT = 50;
+const STUCK_RECOVERY_INITIAL_MS = 1000;
+const STUCK_RECOVERY_STEP_MS = 800;
+const BUFFER_PROGRESS_LOG_MS = 600;
+const PLAYBACK_STALL_POLL_MS = 700;
+const PLAYBACK_STALL_THRESHOLD_MS = 1200;
+const PLAYBACK_STALL_ADVANCE_SEC = 0.05;
+const PLAYBACK_STALL_RECOVERY_STEP_MS = 700;
+
 function statusLower(status: unknown) {
   return String(status || "").trim().toLowerCase();
 }
@@ -91,6 +114,57 @@ function safeNumber(read: () => number, fallback = 0) {
   }
 }
 
+function computeBufferPercent(
+  player: VideoPlayer | null,
+  status: string,
+  currentTime: number
+): number {
+  if (!player) return 0;
+  const lower = statusLower(status);
+  if (hasPaintedFrame(currentTime)) return 100;
+
+  const buffered = safeNumber(() => (player as any).bufferedPosition, -1);
+  const duration = safeNumber(() => (player as any).duration, 0);
+
+  if (buffered < 0) {
+    if (lower === "readytoplay" || lower === "loaded") return ACTIVE_BUFFER_READY_PCT;
+    return 0;
+  }
+
+  if (duration > 0.5) {
+    return Math.min(100, Math.round((buffered / duration) * 100));
+  }
+
+  const ahead = Math.max(0, buffered - currentTime);
+  return Math.min(100, Math.round((ahead / 4) * 100));
+}
+
+function isActiveBufferReady(
+  bufferPercent: number,
+  status: string,
+  primed: boolean,
+  currentTime: number
+): boolean {
+  if (primed || hasPaintedFrame(currentTime)) return true;
+  if (bufferPercent >= ACTIVE_BUFFER_READY_PCT) return true;
+  const lower = statusLower(status);
+  return lower === "readytoplay" || lower === "loaded";
+}
+
+function readPlayerPlaybackSnapshot(player: VideoPlayer | null) {
+  return {
+    currentTime: safeNumber(() => (player as any)?.currentTime),
+    playing: safeNumber(() => (((player as any)?.playing ? 1 : 0) as number)) === 1,
+    muted: safeNumber(() => (((player as any)?.muted ? 1 : 0) as number)) === 1,
+  };
+}
+
+function appendRemountQuery(uri: string, epoch: number): string {
+  if (!uri || epoch <= 0) return uri;
+  const sep = uri.includes("?") ? "&" : "?";
+  return `${uri}${sep}_kristoRm=${epoch}`;
+}
+
 /**
  * Thin Home Feed video. All "who plays" decisions live in homeFeedVideoOwner.
  * This component only:
@@ -98,7 +172,7 @@ function safeNumber(read: () => number, fallback = 0) {
  *  - reports active/inactive intent + first frame to the owner,
  *  - plays ONLY when it is the active row (muted until first frame),
  *  - never plays when preloading (buffer-only, currentTime never advances),
- *  - holds the poster until a real frame paints.
+ *  - holds the poster until an active visible frame is confirmed (not preload decode alone),
  */
 export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   postId = "",
@@ -120,10 +194,31 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
 }: Props) {
   const key = String(recycleKey || postId).trim();
   const isRecycledRow = Boolean(String(recycleKey || "").trim());
-  const playbackUri = String(uri || "").trim();
+  const remotePlaybackUri = String(uri || "").trim();
+  const [diskCacheRevision, setDiskCacheRevision] = React.useState(0);
+
+  React.useEffect(() => subscribeHomeFeedVideoDiskCache(() => setDiskCacheRevision((n) => n + 1)), []);
+
+  const playbackUri = React.useMemo(
+    () => resolveHomeFeedPlaybackUri(remotePlaybackUri),
+    [remotePlaybackUri, diskCacheRevision]
+  );
 
   const sourceAttached = role !== "inactive";
-  const startupTarget = isStartupFirstVideoTarget(playbackUri, postId);
+  const startupTarget = isStartupFirstVideoTarget(remotePlaybackUri, postId);
+
+  React.useEffect(() => {
+    if (isFirstFeedVideo || role === "active") {
+      console.log("KRISTO_STARTUP_TARGET_DIAG", {
+        key,
+        postId,
+        role,
+        isFirstFeedVideo,
+        startupTarget,
+        remotePlaybackUri,
+      });
+    }
+  }, [key, postId, role, isFirstFeedVideo, startupTarget, remotePlaybackUri]);
 
   const playerDisposedRef = React.useRef(false);
   const mountMsRef = React.useRef(Date.now());
@@ -132,36 +227,77 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   const progressRestoredRef = React.useRef(false);
   const preloadStartedLoggedRef = React.useRef(false);
   const preloadReadyLoggedRef = React.useRef(false);
+  const preloadReadyRef = React.useRef(false);
   const firstFrameMarkedRef = React.useRef(false);
+  const visibleConfirmLoggedRef = React.useRef(false);
   const lastSavedMsRef = React.useRef(0);
   const decodePrimedRef = React.useRef(false);
   const decodePrimingRef = React.useRef(false);
   const startupReuseFailedRef = React.useRef(false);
+  const prevRoleRef = React.useRef(role);
+  const seekPendingRef = React.useRef<number | null>(null);
+  const stuckRecoveryStepRef = React.useRef(0);
+  const stuckRecoveryStartedRef = React.useRef(false);
+  const playbackStallSinceMsRef = React.useRef<number | null>(null);
+  const playbackStallRecoveringRef = React.useRef(false);
+  const playbackStallRecoveryStepRef = React.useRef(0);
+  const lastBufferLogAtRef = React.useRef(0);
+  const [playerRemountEpoch, setPlayerRemountEpoch] = React.useState(0);
+  const [bufferPercent, setBufferPercent] = React.useState(0);
+
+  const effectivePlaybackUri = React.useMemo(
+    () => appendRemountQuery(playbackUri, playerRemountEpoch),
+    [playbackUri, playerRemountEpoch]
+  );
+
+  React.useEffect(() => {
+    if (!role || !effectivePlaybackUri) return;
+    console.log("KRISTO_VIDEO_PLAYBACK_SOURCE", {
+      key,
+      postId,
+      index: feedIndex,
+      source: effectivePlaybackUri.startsWith("file://") ? "file" : "remote",
+      uri: effectivePlaybackUri,
+      remoteUri: remotePlaybackUri,
+    });
+  }, [effectivePlaybackUri, role, key, postId, feedIndex, remotePlaybackUri]);
 
   // Wait for startup-primed player (primed=true) — never steal it mid-decode.
   const [adoptedPlayer, setAdoptedPlayer] = React.useState<VideoPlayer | null>(null);
   const [startupReuseResolved, setStartupReuseResolved] = React.useState(!startupTarget);
 
   const [appActive, setAppActive] = React.useState(() => AppState.currentState === "active");
-  const [firstFrameReady, setFirstFrameReady] = React.useState(false);
+  /** Visible first frame while active — poster stays until this is true. */
+  const [firstFrameReady, setFirstFrameReady] = React.useState(
+    () => Boolean(postId) && wasHomeFeedVideoFirstFrameShown(postId)
+  );
+  const firstFrameReadyRef = React.useRef(firstFrameReady);
+
+  React.useEffect(() => {
+    if (!postId) return;
+    if (wasHomeFeedVideoFirstFrameShown(postId) && !firstFrameReadyRef.current) {
+      firstFrameReadyRef.current = true;
+      setFirstFrameReady(true);
+    }
+  }, [postId]);
 
   React.useEffect(() => {
     if (!startupTarget || adoptedPlayer) return;
 
     const attemptClaim = (): boolean => {
-      const player = claimStartupVideoPlayer(playbackUri, postId);
+      const player = claimStartupVideoPlayer(remotePlaybackUri, postId);
       if (player) {
         setAdoptedPlayer(player);
         setStartupReuseResolved(true);
         const t = safeNumber(() => (player as any).currentTime);
         if (hasPaintedFrame(t)) {
-          setFirstFrameReady(true);
+          preloadReadyRef.current = true;
           lastTimeRef.current = t;
         }
         return true;
       }
 
-      if (isStartupVideoPendingAdoption(playbackUri, postId)) {
+      if (isStartupVideoPendingAdoption(remotePlaybackUri, postId)) {
         return false;
       }
 
@@ -169,7 +305,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         startupReuseFailedRef.current = true;
         console.log("KRISTO_STARTUP_VIDEO_REUSE_FAILED", {
           postId,
-          url: playbackUri,
+          url: remotePlaybackUri,
           reason: "not-available-after-prime",
         });
       }
@@ -187,7 +323,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       if (!startupReuseFailedRef.current) {
         console.log("KRISTO_STARTUP_VIDEO_REUSE_FAILED", {
           postId,
-          url: playbackUri,
+          url: remotePlaybackUri,
           reason: "claim-timeout",
         });
         startupReuseFailedRef.current = true;
@@ -200,7 +336,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       clearTimeout(fallbackTimer);
       unsub();
     };
-  }, [startupTarget, adoptedPlayer, playbackUri, postId]);
+  }, [startupTarget, adoptedPlayer, remotePlaybackUri, postId]);
 
   const isActiveIntent = role === "active" && screenFocused && appActive;
 
@@ -210,8 +346,8 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       ? null
       : startupTarget && !startupReuseResolved
         ? null
-        : sourceAttached && playbackUri
-          ? { uri: playbackUri, contentType: "progressive" as const }
+        : sourceAttached && effectivePlaybackUri
+          ? { uri: effectivePlaybackUri, contentType: "progressive" as const }
           : null,
     (p) => {
       p.loop = true;
@@ -257,6 +393,124 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     [player]
   );
 
+  const resumeActivePlayback = React.useCallback(
+    (reason: string) => {
+      if (playerDisposedRef.current || userPausedRef.current) return;
+      if (role !== "active" || !isActiveIntent) return;
+
+      const t = safeNumber(() => (player as any).currentTime);
+      const retainedVisible =
+        firstFrameReadyRef.current || wasHomeFeedVideoFirstFrameShown(postId);
+      const primedAtFrame =
+        !retainedVisible &&
+        (decodePrimedRef.current || preloadReadyRef.current) &&
+        hasPaintedFrame(t);
+
+      if (retainedVisible) {
+        safeSetMuted(false);
+        safePlay();
+        const playing = safeNumber(() => (((player as any).playing ? 1 : 0) as number)) === 1;
+        if (!playing) {
+          safePause();
+          safePlay();
+        }
+        return;
+      }
+
+      if (primedAtFrame) {
+        console.log("KRISTO_VIDEO_SCROLL_BLACK_GAP_GUARD", {
+          key,
+          postId,
+          index: feedIndex,
+          reason: "resume-preloaded-without-extra-pause",
+          currentTime: t,
+          trigger: reason,
+        });
+        safeSetMuted(true);
+        safePlay();
+        return;
+      }
+
+      safeSetMuted(true);
+      safePlay();
+    },
+    [
+      role,
+      isActiveIntent,
+      postId,
+      player,
+      key,
+      feedIndex,
+      safePlay,
+      safePause,
+      safeSetMuted,
+    ]
+  );
+
+  const confirmVisibleFrame = React.useCallback(
+    (reason: string) => {
+      if (playerDisposedRef.current || firstFrameReadyRef.current) return;
+
+      firstFrameReadyRef.current = true;
+      if (postId) {
+        markHomeFeedVideoFirstFrameShown(postId);
+      }
+
+      if (!visibleConfirmLoggedRef.current) {
+        visibleConfirmLoggedRef.current = true;
+        console.log("KRISTO_VIDEO_POSTER_HIDDEN_AFTER_VISIBLE_FRAME", {
+          key,
+          postId,
+          index: feedIndex,
+          reason,
+          preloadReady: preloadReadyRef.current,
+          decodePrimed: decodePrimedRef.current,
+        });
+      }
+
+      if (!firstFrameMarkedRef.current) {
+        firstFrameMarkedRef.current = true;
+        markHomeFeedVideoFirstFrame(key, {
+          postId,
+          msFromMount: Date.now() - mountMsRef.current,
+        });
+      }
+
+      setFirstFrameReady(true);
+
+      const activeNow = role === "active" && screenFocused && appActive;
+      if (activeNow && !userPausedRef.current) {
+        safeSetMuted(false);
+        safePlay();
+      }
+    },
+    [key, postId, feedIndex, role, screenFocused, appActive, safePlay, safeSetMuted]
+  );
+
+  const resetPlaybackSurface = React.useCallback(
+    (reason: string) => {
+      firstFrameReadyRef.current = false;
+      setFirstFrameReady(false);
+      firstFrameMarkedRef.current = false;
+      visibleConfirmLoggedRef.current = false;
+      decodePrimedRef.current = false;
+      preloadReadyRef.current = false;
+      stuckRecoveryStepRef.current = 0;
+      stuckRecoveryStartedRef.current = false;
+      setBufferPercent(0);
+      setAdoptedPlayer(null);
+      setStartupReuseResolved(!startupTarget);
+      setPlayerRemountEpoch((epoch) => epoch + 1);
+      console.log("KRISTO_VIDEO_STUCK_RECOVERY_REMOUNT", {
+        key,
+        postId,
+        index: feedIndex,
+        reason,
+      });
+    },
+    [key, postId, feedIndex, startupTarget]
+  );
+
   const saveProgress = React.useCallback(
     (reason: string) => {
       if (isRecycledRow || !postId) return;
@@ -268,6 +522,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         if (now - lastSavedMsRef.current < 400 && reason !== "unmount") return;
         lastSavedMsRef.current = now;
         saveHomeFeedVideoProgress(postId, t);
+        markHomeFeedVideoWatched(postId);
       }
     },
     [isRecycledRow, postId, player]
@@ -294,7 +549,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       unregisterHomeFeedPlayer(key);
       if (adoptedPlayer) {
         if (startupTarget) {
-          holdStartupVideoPlayerForRemount(playbackUri, postId, adoptedPlayer);
+          holdStartupVideoPlayerForRemount(remotePlaybackUri, postId, adoptedPlayer);
         } else {
           try {
             adoptedPlayer.release();
@@ -347,12 +602,105 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       return;
     }
     progressRestoredRef.current = true;
+    seekPendingRef.current = seekTo;
+    const keepPosterHidden = wasHomeFeedVideoFirstFrameShown(postId);
+    if (!keepPosterHidden) {
+      firstFrameReadyRef.current = false;
+      setFirstFrameReady(false);
+      firstFrameMarkedRef.current = false;
+      visibleConfirmLoggedRef.current = false;
+    }
     try {
       (player as any).currentTime = seekTo;
       lastTimeRef.current = seekTo;
     } catch {}
-    console.log("KRISTO_HOME_FEED_RESTORE", { scope: "video-position", postId, seconds: seekTo });
+    console.log("KRISTO_HOME_FEED_RESTORE", {
+      scope: "video-position",
+      postId,
+      seconds: seekTo,
+      keepPosterHidden,
+    });
   }, [role, isRecycledRow, postId, player, status]);
+
+  // Reset visible-frame state on scroll promotion; preloadReady stays separate.
+  React.useEffect(() => {
+    const prev = prevRoleRef.current;
+    if (prev === role) return;
+
+    if (role === "active" && prev !== "active") {
+      const snap = readPlayerPlaybackSnapshot(player);
+      console.log("KRISTO_VIDEO_REACTIVATE", {
+        postId,
+        roleBefore: prev,
+        roleAfter: role,
+        currentTime: snap.currentTime,
+        playing: snap.playing,
+        muted: snap.muted,
+      });
+    }
+
+    if (role === "active" && prev === "preload") {
+      if (wasHomeFeedVideoFirstFrameShown(postId)) {
+        firstFrameReadyRef.current = true;
+        setFirstFrameReady(true);
+      } else {
+        firstFrameReadyRef.current = false;
+        setFirstFrameReady(false);
+        firstFrameMarkedRef.current = false;
+        visibleConfirmLoggedRef.current = false;
+        if (decodePrimedRef.current || preloadReadyRef.current) {
+          console.log("KRISTO_VIDEO_SCROLL_BLACK_GAP_GUARD", {
+            key,
+            postId,
+            index: feedIndex,
+            reason: "scroll-to-preloaded-row",
+            decodePrimed: decodePrimedRef.current,
+            preloadReady: preloadReadyRef.current,
+          });
+        }
+      }
+    } else if (role !== "active") {
+      if (!wasHomeFeedVideoFirstFrameShown(postId)) {
+        firstFrameReadyRef.current = false;
+        setFirstFrameReady(false);
+        firstFrameMarkedRef.current = false;
+        visibleConfirmLoggedRef.current = false;
+      }
+      seekPendingRef.current = null;
+    }
+
+    prevRoleRef.current = role;
+
+    if (role === "active" && prev !== "active") {
+      resumeActivePlayback("role-promotion");
+    }
+  }, [role, key, postId, feedIndex, player, resumeActivePlayback]);
+
+  // Watched row re-promoted to active: resume saved position without poster flash.
+  React.useEffect(() => {
+    if (playerDisposedRef.current || role !== "active" || isRecycledRow || !postId) return;
+    if (!wasHomeFeedVideoFirstFrameShown(postId)) return;
+
+    const saved = getHomeFeedVideoProgress(postId);
+    if (saved === null || saved <= 0.1) return;
+
+    const seekTo = peekHomeFeedVideoRestoreSeek(postId);
+    if (seekTo === null) return;
+
+    const t = safeNumber(() => (player as any).currentTime);
+    if (Math.abs(t - seekTo) <= SEEK_VISIBLE_TOLERANCE_SEC) return;
+
+    try {
+      (player as any).currentTime = seekTo;
+      lastTimeRef.current = seekTo;
+    } catch {}
+    console.log("KRISTO_HOME_FEED_RESTORE", {
+      scope: "video-reactivate",
+      postId,
+      seconds: seekTo,
+      keepPosterHidden: true,
+    });
+  }, [role, isRecycledRow, postId, player]);
 
   // Core ownership/playback effect — single place that decides play vs pause.
   React.useEffect(() => {
@@ -361,7 +709,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     if (role === "active") {
       if (isActiveIntent) {
         setActiveHomeFeedVideo(key, { postId, index: feedIndex });
-        if (!userPausedRef.current) safePlay();
+        resumeActivePlayback("active-intent");
       } else {
         // Active row but screen blurred / app backgrounded: stop & release.
         safePause();
@@ -394,7 +742,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     feedIndex,
     sourceAttached,
     playbackUri,
-    safePlay,
+    resumeActivePlayback,
     safePause,
     safeSetMuted,
     saveProgress,
@@ -424,14 +772,16 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       safePause();
       if (painted) {
         decodePrimedRef.current = true;
+        preloadReadyRef.current = true;
         if (!preloadReadyLoggedRef.current) {
           preloadReadyLoggedRef.current = true;
-          markHomeFeedVideoPreloadReady(postId, playbackUri);
+          markHomeFeedVideoPreloadReady(postId, remotePlaybackUri);
           console.log("KRISTO_VIDEO_PRELOAD_READY", {
             key,
             postId,
             index: feedIndex,
             reason: "decode-primed",
+            note: "buffer/decode ready — poster stays until active visible frame",
           });
         }
       }
@@ -471,8 +821,10 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       clearInterval(poll);
       clearTimeout(watchdog);
       decodePrimingRef.current = false;
-      // Leave the player paused; never hand a still-playing preload row away.
-      safePause();
+      // Already paused at primed frame — skip redundant pause on scroll promotion.
+      if (!decodePrimedRef.current) {
+        safePause();
+      }
     };
   }, [
     role,
@@ -489,16 +841,13 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     safeSetMuted,
   ]);
 
-  // Status-driven: first frame detection, audio gate, preload-ready signal.
+  // Status-driven preload buffer signal only — visible frame is confirmed separately.
   React.useEffect(() => {
     if (playerDisposedRef.current) return;
     const lower = statusLower(status);
     const t = safeNumber(() => (player as any).currentTime);
     if (t > 0) lastTimeRef.current = t;
 
-    // Preload metadata loaded — bytes/headers are warm, but this is NOT a
-    // painted frame. Decode-readiness (KRISTO_VIDEO_PRELOAD_READY) is owned by
-    // the decode-prime effect, which only fires once the first frame paints.
     if (
       role === "preload" &&
       !preloadStartedLoggedRef.current &&
@@ -509,26 +858,385 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       preloadStartedLoggedRef.current = true;
       console.log("KRISTO_VIDEO_PRELOAD_BUFFERED", { key, postId, index: feedIndex });
     }
+  }, [status, role, key, postId, playbackUri, feedIndex, sourceAttached, player]);
 
-    if (role !== "active") return;
+  // Active visible-frame gate: poster stays until compositor-ready paint while active.
+  React.useEffect(() => {
+    if (role !== "active" || !isActiveIntent || firstFrameReady) return;
+    if (!sourceAttached || !playbackUri || playerDisposedRef.current) return;
 
-    if (hasPaintedFrame(t)) {
-      if (!firstFrameMarkedRef.current) {
-        firstFrameMarkedRef.current = true;
-        markHomeFeedVideoPreloadReady(postId, playbackUri);
-        markHomeFeedVideoFirstFrame(key, { postId, msFromMount: Date.now() - mountMsRef.current });
+    let cancelled = false;
+    let compositorScheduled = false;
+
+    const tryConfirm = () => {
+      if (cancelled || playerDisposedRef.current || firstFrameReadyRef.current) return;
+
+      const t = safeNumber(() => (player as any).currentTime);
+      if (t > 0) lastTimeRef.current = t;
+
+      const pendingSeek = seekPendingRef.current;
+      if (pendingSeek != null) {
+        if (Math.abs(t - pendingSeek) > SEEK_VISIBLE_TOLERANCE_SEC || !hasPaintedFrame(t)) {
+          return;
+        }
+        seekPendingRef.current = null;
       }
-      if (!firstFrameReady) setFirstFrameReady(true);
-      // Audio is allowed only after the first real frame, while focused.
-      if (isActiveIntent && !userPausedRef.current) {
+
+      if (!hasPaintedFrame(t)) return;
+
+      const playing = safeNumber(() => ((player as any).playing ? 1 : 0)) === 1;
+      const primed =
+        decodePrimedRef.current || preloadReadyRef.current || startupTarget;
+      if (!playing && !primed && pendingSeek == null) return;
+
+      if (compositorScheduled) return;
+      compositorScheduled = true;
+
+      const reason =
+        pendingSeek != null
+          ? "seek-visible-frame"
+          : startupTarget
+            ? "startup-adopted-visible-frame"
+            : primed
+              ? "scroll-preloaded-visible-frame"
+              : "active-visible-frame";
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (cancelled || playerDisposedRef.current) return;
+          confirmVisibleFrame(reason);
+        });
+      });
+    };
+
+    const poll = setInterval(tryConfirm, 50);
+    tryConfirm();
+
+    return () => {
+      cancelled = true;
+      clearInterval(poll);
+    };
+  }, [
+    role,
+    isActiveIntent,
+    firstFrameReady,
+    sourceAttached,
+    playbackUri,
+    startupTarget,
+    player,
+    confirmVisibleFrame,
+  ]);
+
+  // Active buffer progress + KRISTO_VIDEO_BUFFER_PROGRESS logs.
+  React.useEffect(() => {
+    if (role !== "active" || !sourceAttached || playerDisposedRef.current) return;
+
+    const tick = () => {
+      if (playerDisposedRef.current) return;
+      const t = safeNumber(() => (player as any).currentTime);
+      const pct = computeBufferPercent(player, status, t);
+      setBufferPercent((prev) => (prev === pct ? prev : pct));
+
+      const primed =
+        decodePrimedRef.current || preloadReadyRef.current || startupTarget;
+      const ready = isActiveBufferReady(pct, status, primed, t);
+      const now = Date.now();
+      if (now - lastBufferLogAtRef.current >= BUFFER_PROGRESS_LOG_MS) {
+        lastBufferLogAtRef.current = now;
+        console.log("KRISTO_VIDEO_BUFFER_PROGRESS", {
+          key,
+          postId,
+          index: feedIndex,
+          percent: pct,
+          bufferReady: ready,
+          status: statusLower(status),
+          bufferedPosition: safeNumber(() => (player as any).bufferedPosition, -1),
+          duration: safeNumber(() => (player as any).duration, 0),
+          currentTime: t,
+          isFirstFeedVideo,
+        });
+      }
+    };
+
+    tick();
+    const poll = setInterval(tick, 200);
+    return () => clearInterval(poll);
+  }, [
+    role,
+    sourceAttached,
+    status,
+    player,
+    key,
+    postId,
+    feedIndex,
+    isFirstFeedVideo,
+    startupTarget,
+    playerRemountEpoch,
+  ]);
+
+  // Automatic stuck recovery for the active row (no user scroll required).
+  React.useEffect(() => {
+    if (role !== "active" || !isActiveIntent || firstFrameReady || userPausedRef.current) {
+      stuckRecoveryStepRef.current = 0;
+      stuckRecoveryStartedRef.current = false;
+      return;
+    }
+    if (!sourceAttached || !playbackUri || playerDisposedRef.current) return;
+
+    const primedAtStart =
+      decodePrimedRef.current || preloadReadyRef.current || startupTarget;
+    const t0 = safeNumber(() => (player as any).currentTime);
+    if (primedAtStart && hasPaintedFrame(t0)) {
+      return;
+    }
+
+    let cancelled = false;
+    let stepTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const runStep = (step: number) => {
+      if (cancelled || playerDisposedRef.current || firstFrameReadyRef.current) return;
+
+      if (step === 0 && !stuckRecoveryStartedRef.current) {
+        stuckRecoveryStartedRef.current = true;
+        console.log("KRISTO_VIDEO_STUCK_RECOVERY_START", {
+          key,
+          postId,
+          index: feedIndex,
+          bufferPercent,
+          status: statusLower(status),
+        });
+      }
+
+      if (step === 0 || step === 1) {
+        console.log("KRISTO_VIDEO_STUCK_RECOVERY_PLAY", {
+          key,
+          postId,
+          index: feedIndex,
+          step,
+          action: step === 0 ? "play" : "pause-play",
+        });
+        if (step === 1) {
+          safePause();
+        }
+        safeSetMuted(true);
+        safePlay();
+        stuckRecoveryStepRef.current = step + 1;
+        stepTimer = setTimeout(() => runStep(step + 1), STUCK_RECOVERY_STEP_MS);
+        return;
+      }
+
+      if (step === 2) {
+        const t = safeNumber(() => (player as any).currentTime);
+        try {
+          (player as any).currentTime = t + 0.01;
+        } catch {}
+        console.log("KRISTO_VIDEO_STUCK_RECOVERY_PLAY", {
+          key,
+          postId,
+          index: feedIndex,
+          step,
+          action: "seek-nudge",
+          currentTime: t,
+        });
+        safePlay();
+        stuckRecoveryStepRef.current = step + 1;
+        stepTimer = setTimeout(() => runStep(step + 1), STUCK_RECOVERY_STEP_MS);
+        return;
+      }
+
+      if (step >= 3) {
+        resetPlaybackSurface("stuck-recovery-remount");
+      }
+    };
+
+    stepTimer = setTimeout(() => runStep(0), STUCK_RECOVERY_INITIAL_MS);
+
+    return () => {
+      cancelled = true;
+      if (stepTimer) clearTimeout(stepTimer);
+    };
+  }, [
+    role,
+    isActiveIntent,
+    firstFrameReady,
+    sourceAttached,
+    playbackUri,
+    player,
+    key,
+    playerRemountEpoch,
+    resetPlaybackSurface,
+    safePlay,
+    safePause,
+    safeSetMuted,
+  ]);
+
+  // Playback stall watchdog — frozen currentTime after visible playback already started.
+  React.useEffect(() => {
+    if (role !== "active" || !screenFocused || !appActive) {
+      playbackStallSinceMsRef.current = null;
+      playbackStallRecoveringRef.current = false;
+      playbackStallRecoveryStepRef.current = 0;
+      return;
+    }
+    if (!firstFrameReady || !sourceAttached || !playbackUri || playerDisposedRef.current) {
+      playbackStallSinceMsRef.current = null;
+      return;
+    }
+
+    let cancelled = false;
+    let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearRecoveryTimer = () => {
+      if (recoveryTimer) {
+        clearTimeout(recoveryTimer);
+        recoveryTimer = null;
+      }
+    };
+
+    const markRecovered = (reason: string) => {
+      if (playbackStallSinceMsRef.current == null && !playbackStallRecoveringRef.current) return;
+      playbackStallRecoveringRef.current = false;
+      playbackStallRecoveryStepRef.current = 0;
+      playbackStallSinceMsRef.current = null;
+      clearRecoveryTimer();
+      console.log("KRISTO_VIDEO_PLAYBACK_STALL_RECOVERED", {
+        key,
+        postId,
+        index: feedIndex,
+        reason,
+      });
+    };
+
+    const runRecoveryStep = (step: number) => {
+      if (cancelled || playerDisposedRef.current || userPausedRef.current) return;
+      if (!firstFrameReadyRef.current) return;
+
+      const t = safeNumber(() => (player as any).currentTime);
+      if (t >= lastTimeRef.current + PLAYBACK_STALL_ADVANCE_SEC) {
+        lastTimeRef.current = t;
+        markRecovered("time-advanced-during-recovery");
+        return;
+      }
+
+      if (step === 0) {
+        console.log("KRISTO_VIDEO_PLAYBACK_STALL_DETECTED", {
+          key,
+          postId,
+          index: feedIndex,
+          currentTime: t,
+          lastTime: lastTimeRef.current,
+          status: statusLower(status),
+          bufferedPosition: safeNumber(() => (player as any).bufferedPosition, -1),
+        });
+      }
+
+      if (step === 0 || step === 1) {
+        console.log("KRISTO_VIDEO_PLAYBACK_STALL_RECOVERY_PLAY", {
+          key,
+          postId,
+          index: feedIndex,
+          step,
+          action: step === 0 ? "play" : "pause-play",
+          currentTime: t,
+        });
+        if (step === 1) safePause();
         safeSetMuted(false);
         safePlay();
+        playbackStallRecoveryStepRef.current = step + 1;
+        recoveryTimer = setTimeout(() => runRecoveryStep(step + 1), PLAYBACK_STALL_RECOVERY_STEP_MS);
+        return;
       }
-    }
-  }, [status, role, key, postId, playbackUri, feedIndex, sourceAttached, isActiveIntent, firstFrameReady, player, safePlay, safeSetMuted]);
+
+      if (step === 2) {
+        const seekTo = t + PLAYBACK_STALL_ADVANCE_SEC;
+        try {
+          (player as any).currentTime = seekTo;
+          lastTimeRef.current = seekTo;
+        } catch {}
+        console.log("KRISTO_VIDEO_PLAYBACK_STALL_RECOVERY_SEEK", {
+          key,
+          postId,
+          index: feedIndex,
+          from: t,
+          to: seekTo,
+        });
+        safePlay();
+        playbackStallRecoveryStepRef.current = step + 1;
+        recoveryTimer = setTimeout(() => runRecoveryStep(step + 1), PLAYBACK_STALL_RECOVERY_STEP_MS);
+        return;
+      }
+
+      if (step >= 3) {
+        console.log("KRISTO_VIDEO_PLAYBACK_STALL_RECOVERY_REMOUNT", {
+          key,
+          postId,
+          index: feedIndex,
+          currentTime: t,
+        });
+        setPlayerRemountEpoch((epoch) => epoch + 1);
+        playbackStallRecoveringRef.current = false;
+        playbackStallRecoveryStepRef.current = 0;
+        playbackStallSinceMsRef.current = null;
+      }
+    };
+
+    const poll = setInterval(() => {
+      if (cancelled || playerDisposedRef.current || userPausedRef.current) {
+        playbackStallSinceMsRef.current = null;
+        return;
+      }
+
+      const t = safeNumber(() => (player as any).currentTime);
+      if (t >= lastTimeRef.current + PLAYBACK_STALL_ADVANCE_SEC) {
+        lastTimeRef.current = t;
+        if (playbackStallSinceMsRef.current != null || playbackStallRecoveringRef.current) {
+          markRecovered("time-advanced");
+        } else {
+          playbackStallSinceMsRef.current = null;
+        }
+        return;
+      }
+
+      if (playbackStallRecoveringRef.current) return;
+
+      if (playbackStallSinceMsRef.current == null) {
+        playbackStallSinceMsRef.current = Date.now();
+        return;
+      }
+
+      if (Date.now() - playbackStallSinceMsRef.current >= PLAYBACK_STALL_THRESHOLD_MS) {
+        playbackStallRecoveringRef.current = true;
+        runRecoveryStep(0);
+      }
+    }, PLAYBACK_STALL_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(poll);
+      clearRecoveryTimer();
+      playbackStallRecoveringRef.current = false;
+      playbackStallRecoveryStepRef.current = 0;
+      playbackStallSinceMsRef.current = null;
+    };
+  }, [
+    role,
+    screenFocused,
+    appActive,
+    firstFrameReady,
+    sourceAttached,
+    playbackUri,
+    player,
+    status,
+    key,
+    postId,
+    feedIndex,
+    safePlay,
+    safePause,
+    safeSetMuted,
+  ]);
 
   const poster = String(posterUri || "").trim();
-  const hasPoster = isValidVideoPosterUri(poster, playbackUri);
+  const hasPoster = isValidVideoPosterUri(poster, remotePlaybackUri);
   const hasBranded = brandedPoster || hasBrandedVideoPoster({ posterUri: poster, brandedPoster });
   const showCover = !firstFrameReady;
   const showPosterOverlay = showCover && hasPoster;
@@ -550,6 +1258,8 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   // loading state, never a tap-to-play affordance.
   const showAutoStartLoading =
     role === "active" && screenFocused && !firstFrameReady && !userPausedRef.current;
+  const showBufferPercentLabel =
+    showAutoStartLoading && bufferPercent > 0 && bufferPercent < 100;
 
   const togglePlayPause = React.useCallback(() => {
     if (!showControls || playerDisposedRef.current) return;
@@ -579,10 +1289,10 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
 
   return (
     <GestureDetector gesture={gesture}>
-      <View style={styles.root}>
+      <View style={styles.root} needsOffscreenAlphaCompositing>
         <VideoView
           player={player}
-          style={[styles.videoSurface, showCover && styles.videoHidden]}
+          style={[styles.videoSurface, showCover && styles.videoUnderPoster]}
           contentFit="cover"
           nativeControls={false}
         />
@@ -594,7 +1304,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
               resizeMode="cover"
               postId={postId}
               title={title}
-              videoUrl={playbackUri}
+              videoUrl={remotePlaybackUri}
               mediaStatus={mediaStatus}
               previewLoadTimeoutMs={posterTimeoutMs}
               posterMetadata={resolvedPosterMetadata}
@@ -608,18 +1318,21 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         {showBrandedOrFallback ? (
           <View style={styles.overlay} pointerEvents="none">
             <VideoPostFallbackPoster
-              variant="full"
+              variant={showAutoStartLoading ? "minimal" : "full"}
               postId={postId}
-              title={title}
-              videoUrl={playbackUri}
+              title={showAutoStartLoading ? "" : title}
+              videoUrl={remotePlaybackUri}
               mediaStatus={mediaStatus}
-              suppressMissingPosterLog={hasBranded}
+              suppressMissingPosterLog={hasBranded || showAutoStartLoading}
             />
           </View>
         ) : null}
         {showAutoStartLoading ? (
           <View style={styles.centerPlayOverlay} pointerEvents="none">
             <ActivityIndicator size="large" color="rgba(255,255,255,0.92)" />
+            {showBufferPercentLabel ? (
+              <Text style={styles.bufferProgressText}>{bufferPercent}%</Text>
+            ) : null}
           </View>
         ) : null}
         {showControls && userPausedRef.current ? (
@@ -644,8 +1357,8 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     zIndex: 1,
   },
-  videoHidden: {
-    opacity: 0,
+  videoUnderPoster: {
+    opacity: VIDEO_COVER_OPACITY,
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
@@ -661,6 +1374,13 @@ const styles = StyleSheet.create({
     zIndex: 3,
     alignItems: "center",
     justifyContent: "center",
+    gap: 10,
+  },
+  bufferProgressText: {
+    marginTop: 8,
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 15,
+    fontWeight: "700",
   },
   centerPlayButton: {
     width: 76,

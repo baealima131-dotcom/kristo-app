@@ -6,14 +6,15 @@ import {
 } from "@/src/components/homeFeed/homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
 import { prepareFirstHomeFeedVideo } from "@/src/lib/homeFeedVideoStartup";
-import {
-  warmHomeFeedStartupMedia,
-} from "@/src/lib/homeFeedVideoBufferAhead";
+import { deferStartupWorkAfterHomeFirstFrame } from "./firstPaint";
 import { buildHomeFeedDisplayRows } from "@/src/components/homeFeed/homeFeedUtils";
 import { feedList } from "@/src/lib/homeFeedStore";
 import type { KristoSession } from "@/src/lib/kristoSession";
 import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
+import {
+  warmHomeFeedStartupMedia,
+} from "@/src/lib/homeFeedVideoBufferAhead";
 
 const COOLDOWN_MS = 60_000;
 const STARTUP_POSTER_MAX = 10;
@@ -88,12 +89,6 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
     const failures: string[] = [];
     let snapshotCount = 0;
     let warmRows: any[] = [];
-    let media = {
-      posterCount: 0,
-      videoCount: 0,
-      posterFailed: 0,
-      videoFailed: 0,
-    };
 
     try {
       setSessionSync(session);
@@ -141,22 +136,27 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
       feedList()
     ).slice(0, HOME_FEED_INITIAL_LIMIT);
 
-    try {
-      media = await warmHomeFeedStartupMedia(warmRows, {
-        maxPosters: STARTUP_POSTER_MAX,
-        maxVideos: STARTUP_VIDEO_MAX,
-        concurrency: STARTUP_CONCURRENCY,
-      });
-    } catch {
-      failures.push("warm-media");
-    }
-
-    console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_MEDIA", {
-      posterCount: media.posterCount,
-      videoCount: media.videoCount,
-      posterFailed: media.posterFailed,
-      videoFailed: media.videoFailed,
-    });
+    // Poster/byte warm for remaining rows — only after first video frame paints.
+    deferStartupWorkAfterHomeFirstFrame(
+      async () => {
+        try {
+          const warmed = await warmHomeFeedStartupMedia(warmRows, {
+            maxPosters: STARTUP_POSTER_MAX,
+            maxVideos: STARTUP_VIDEO_MAX,
+            concurrency: STARTUP_CONCURRENCY,
+          });
+          console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_MEDIA", {
+            posterCount: warmed.posterCount,
+            videoCount: warmed.videoCount,
+            posterFailed: warmed.posterFailed,
+            videoFailed: warmed.videoFailed,
+          });
+        } catch {
+          failures.push("warm-media");
+        }
+      },
+      { reason: "startup-prewarm-media", delayMs: 400 }
+    );
 
     // Now that the feed exists and the first video's startup bytes are warmed,
     // publish readiness on the EXACT URL the player will mount. On cold start the
@@ -173,10 +173,7 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
     console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_DONE", {
       ms: Date.now() - startedAt,
       rows: snapshotCount || warmRows.length,
-      posterCount: media.posterCount,
-      videoCount: media.videoCount,
-      posterFailed: media.posterFailed,
-      videoFailed: media.videoFailed,
+      mediaWarm: "deferred-after-first-frame",
       failures: failures.length ? failures : undefined,
     });
   })().finally(() => {

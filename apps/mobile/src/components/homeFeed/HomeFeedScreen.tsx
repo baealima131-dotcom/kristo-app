@@ -26,8 +26,9 @@ import {
 } from "@/src/lib/homeFeedComments";
 import {
   beginHomeFirstVideoPriorityMode,
-  markHomeFirstFrame,
+  logFirstPaintReady,
   markHomeMount,
+  deferStartupWorkAfterHomeFirstFrame,
 } from "@/src/lib/firstPaint";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
@@ -87,7 +88,7 @@ import {
   peekHomeFeedVideoRecovery,
   recoverHomeFeedPlaybackAfterLiveExit,
 } from "@/src/lib/homeFeedVideoOwner";
-import { warmHomeFeedUpcoming } from "@/src/lib/homeFeedVideoStartup";
+import { warmHomeFeedUpcoming, startFirstHomeFeedVideoPrepare } from "@/src/lib/homeFeedVideoStartup";
 import {
   beginHomeFeedPrefetchSession,
   endHomeFeedPrefetchSession,
@@ -191,6 +192,11 @@ export default function HomeFeedScreen() {
     markHomeMount();
     beginHomeFirstVideoPriorityMode("home-feed-screen");
   }, []);
+
+  useEffect(() => {
+    if (!session?.userId || !session?.sessionToken || !session?.churchId) return;
+    startFirstHomeFeedVideoPrepare(session as any);
+  }, [session?.userId, session?.sessionToken, session?.churchId]);
 
   useLayoutEffect(() => {
     let alive = true;
@@ -490,19 +496,27 @@ export default function HomeFeedScreen() {
     }
 
     let cancelled = false;
-    void fetchChurchSubscriptionActiveThrottled(
-      viewerChurchId,
-      getKristoHeaders({
-        userId: viewerUserId,
-        role: (session?.role || "Member") as any,
-        churchId: viewerChurchId,
-      }) as Record<string, string>,
-      { userId: viewerUserId }
-    ).then((active) => {
-      if (cancelled) return;
-      const canSee = active === true;
-      setHomeFeedViewerCanSeeMediaSlots(viewerChurchId, canSee);
-      setViewerCanSeeMediaSlots(canSee);
+
+    const loadSubscription = () => {
+      void fetchChurchSubscriptionActiveThrottled(
+        viewerChurchId,
+        getKristoHeaders({
+          userId: viewerUserId,
+          role: (session?.role || "Member") as any,
+          churchId: viewerChurchId,
+        }) as Record<string, string>,
+        { userId: viewerUserId }
+      ).then((active) => {
+        if (cancelled) return;
+        const canSee = active === true;
+        setHomeFeedViewerCanSeeMediaSlots(viewerChurchId, canSee);
+        setViewerCanSeeMediaSlots(canSee);
+      });
+    };
+
+    deferStartupWorkAfterHomeFirstFrame(loadSubscription, {
+      reason: "home-feed-church-subscription",
+      delayMs: 600,
     });
 
     return () => {
@@ -619,7 +633,7 @@ export default function HomeFeedScreen() {
       activeIndex: 0,
       reason: "initial",
     });
-    markHomeFirstFrame({ reason: "page-ready", visibleCount });
+    logFirstPaintReady("HomeFeed", { reason: "page-ready", visibleCount });
   }, [stableDisplayRows.length]);
 
   // Staged endless feed: at ~70% through the visible window, first reveal the
@@ -808,6 +822,15 @@ export default function HomeFeedScreen() {
     visibleRowCountRef.current = visibleData.length;
   }, [visibleData]);
 
+  // Cold start: rows may arrive after the prepare gate — re-run prime once feed data exists.
+  useEffect(() => {
+    if (!session?.userId || !session?.sessionToken || !session?.churchId) {
+      return;
+    }
+    if (!visibleData.some((row) => isVideoPost(row))) return;
+    startFirstHomeFeedVideoPrepare(session as any);
+  }, [visibleData, session?.userId, session?.sessionToken, session?.churchId]);
+
   useEffect(() => {
     if (initialRenderSourceLoggedRef.current) return;
     if (loading && visibleData.length === 0) return;
@@ -901,7 +924,7 @@ export default function HomeFeedScreen() {
       runInitialWarm();
     };
     const unsubscribe = subscribeHomeFeedActiveFirstFrame(fire);
-    const fallbackTimer = setTimeout(fire, 4000);
+    const fallbackTimer = setTimeout(fire, 1500);
     initialWarmCleanupRef.current = () => {
       try {
         unsubscribe();
@@ -1088,14 +1111,20 @@ export default function HomeFeedScreen() {
     if (!ids.length) return;
 
     let alive = true;
-    void syncReportedPostIdsFromApi(ids).then((reported) => {
-      if (!alive || !reported.length) return;
-      setReportedPostIds((prev) => {
-        const next = { ...prev };
-        for (const id of reported) next[id] = true;
-        return next;
-      });
-    });
+
+    deferStartupWorkAfterHomeFirstFrame(
+      () => {
+        void syncReportedPostIdsFromApi(ids).then((reported) => {
+          if (!alive || !reported.length) return;
+          setReportedPostIds((prev) => {
+            const next = { ...prev };
+            for (const id of reported) next[id] = true;
+            return next;
+          });
+        });
+      },
+      { reason: "home-feed-report-sync", delayMs: 800 }
+    );
 
     return () => {
       alive = false;

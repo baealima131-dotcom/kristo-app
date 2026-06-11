@@ -41,7 +41,9 @@ Presigned PUT writes objects; playback uses a **separate public URL**:
 2. Ensure DNS is proxied through Cloudflare as needed
 3. Objects must be readable at `{publicBaseUrl}/{key}` without auth
 
-Optional: R2.dev subdomain for staging only — not recommended for production.
+Optional: R2.dev subdomain for staging only — **not recommended for production** (rate-limited; first-1MB fetches can take 15–30+ seconds).
+
+**Production cutover:** see [`docs/VIDEO_DELIVERY_CUSTOM_DOMAIN.md`](./VIDEO_DELIVERY_CUSTOM_DOMAIN.md).
 
 ### CORS (recommended)
 

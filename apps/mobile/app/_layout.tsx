@@ -8,45 +8,25 @@ import * as SplashScreen from "expo-splash-screen";
 import { KristoSessionProvider, useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
   ensurePurchasesConfigured,
-  logInRevenueCatForChurchSubscription,
-  prefetchSubscriptionOfferings,
 } from "@/src/lib/payments/mobileSubscriptions";
 import { isRevenueCatPurchasingDisabled } from "@/src/lib/subscriptionBypass";
-import { deferStartupWorkAfterHomeFirstFrame } from "@/src/lib/firstPaint";
 import JujujuAnimatedSplash, { SPLASH_BG } from "@/src/components/JujujuAnimatedSplash";
 import { HomeFeedVideoPrimer } from "@/src/components/homeFeed/HomeFeedVideoPrimer";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function RevenueCatBootstrap() {
-  const { session, loading } = useKristoSession();
+  const { loading } = useKristoSession();
   const bypassRevenueCat = isRevenueCatPurchasingDisabled();
-  const churchId = String((session as any)?.churchId || "").trim();
 
   React.useEffect(() => {
-    if (bypassRevenueCat) return;
+    if (bypassRevenueCat || loading) return;
 
+    // SDK configure only — login/offerings wait until after first Home video frame.
     ensurePurchasesConfigured().catch((error) => {
       console.log("RevenueCat boot configure error", error);
     });
-  }, [bypassRevenueCat]);
-
-  React.useEffect(() => {
-    if (bypassRevenueCat || loading || !churchId) return;
-
-    logInRevenueCatForChurchSubscription(churchId)
-      .then(() => {
-        deferStartupWorkAfterHomeFirstFrame(
-          async () => {
-            await prefetchSubscriptionOfferings();
-          },
-          { reason: "revenuecat-offerings" }
-        );
-      })
-      .catch((error) => {
-        console.log("RevenueCat church logIn error", error);
-      });
-  }, [bypassRevenueCat, loading, churchId]);
+  }, [bypassRevenueCat, loading]);
 
   return <Slot />;
 }

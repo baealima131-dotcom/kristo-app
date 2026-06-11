@@ -1,4 +1,5 @@
 import type { KristoSession } from "./kristoSession";
+import { deferStartupWorkAfterHomeFirstFrame } from "./firstPaint";
 import { seedChurchMediaAccessFromSession } from "./refreshCoordinator";
 import { resolveSessionChurchId } from "./churchStore";
 import { isPastorSessionRole } from "./churchSubscription";
@@ -79,6 +80,10 @@ export async function runMoreTabPremount(session: KristoSession) {
 
 export function startMoreTabPremount(session: KristoSession | null | undefined) {
   const userId = String(session?.userId || "").trim();
-  if (!userId) return;
-  void runMoreTabPremount(session as KristoSession);
+  if (!userId || !session) return;
+
+  deferStartupWorkAfterHomeFirstFrame(
+    () => runMoreTabPremount(session),
+    { reason: "more-tab-premount", delayMs: 800 }
+  );
 }

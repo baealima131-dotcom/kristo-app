@@ -1,5 +1,9 @@
 import { InteractionManager } from "react-native";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
+import {
+  isHomeFeedActiveFirstFrameReady,
+  subscribeHomeFeedActiveFirstFrame,
+} from "@/src/lib/homeFeedVideoReadiness";
 
 const loggedScreens = new Set<string>();
 
@@ -97,19 +101,39 @@ export function waitForHomeFirstFrame(): Promise<void> {
   });
 }
 
+/** Wait until the active Home Feed video paints its first visible frame (or timeout). */
+export function waitForHomeFeedActiveFirstFrame(
+  maxMs = HOME_FIRST_FRAME_MAX_WAIT_MS
+): Promise<void> {
+  if (isHomeFeedActiveFirstFrameReady()) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      unsub();
+      resolve();
+    }, maxMs);
+    const unsub = subscribeHomeFeedActiveFirstFrame(() => {
+      clearTimeout(timer);
+      unsub();
+      resolve();
+    });
+  });
+}
+
 export type StartupDeferredWorkOptions = {
   reason: string;
   delayMs?: number;
 };
 
-/** Delay non-critical startup work until Home first frame + 2–4s. */
+/** Delay non-critical startup work until the active Home Feed video first frame (+ optional delay). */
 export function deferStartupWorkAfterHomeFirstFrame(
   task: () => void | Promise<void>,
   opts: StartupDeferredWorkOptions
 ) {
   const delayMs = Math.max(0, Number(opts.delayMs ?? HOME_STARTUP_DEFER_MS));
   void (async () => {
-    await waitForHomeFirstFrame();
+    await waitForHomeFeedActiveFirstFrame();
     if (delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
@@ -117,7 +141,7 @@ export function deferStartupWorkAfterHomeFirstFrame(
       console.log("KRISTO_STARTUP_DEFERRED_WORK", {
         reason: opts.reason,
         delayMs,
-        homeFirstFrameReady,
+        activeFirstFrameReady: isHomeFeedActiveFirstFrameReady(),
       });
     }
     await task();

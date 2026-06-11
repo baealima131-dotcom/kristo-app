@@ -7,6 +7,9 @@ export type HomeFeedVideoFileDiag = {
   height: number | null;
   duration: number | null;
   codec: string | null;
+  moovPositionHint: string;
+  firstByteMs: number | null;
+  acceptRanges: string | null;
 };
 
 const PROBE_START_BYTES = 524_287;
@@ -113,6 +116,23 @@ async function fetchRange(url: string, start: number, end: number, signal: Abort
   return new Uint8Array(await res.arrayBuffer());
 }
 
+/** Time-to-first-byte for a small front range GET (proxy for AVPlayer's open cost). */
+async function measureFirstByteMs(url: string, signal: AbortSignal): Promise<number | null> {
+  const started = Date.now();
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Range: "bytes=0-1" },
+      signal,
+    });
+    if (!res.ok && res.status !== 206) return null;
+    await res.arrayBuffer();
+    return Date.now() - started;
+  } catch {
+    return null;
+  }
+}
+
 export async function probeHomeFeedVideoFileDiag(
   videoUrl: string,
   hints?: { contentLength?: number; durationMs?: number }
@@ -138,6 +158,9 @@ export async function probeHomeFeedVideoFileDiag(
       height: null,
       duration: durationHintSec,
       codec: null,
+      moovPositionHint: "not-mp4",
+      firstByteMs: null,
+      acceptRanges: null,
     };
   }
 
@@ -146,12 +169,16 @@ export async function probeHomeFeedVideoFileDiag(
 
   try {
     let contentLength =
-      Number(hints?.contentLength || 0) > 0 ? Number(hints.contentLength) : null;
+      Number(hints?.contentLength || 0) > 0 ? Number(hints?.contentLength) : null;
+    let acceptRanges: string | null = null;
 
     try {
       const head = await fetch(url, { method: "HEAD", signal: controller.signal });
       contentLength = parseHeaderContentLength(head.headers) ?? contentLength;
+      acceptRanges = String(head.headers.get("accept-ranges") || "").trim() || null;
     } catch {}
+
+    const firstByteMs = await measureFirstByteMs(url, controller.signal);
 
     const startBuf = await fetchRange(url, 0, PROBE_START_BYTES, controller.signal);
     let tailBuf: Uint8Array | null = null;
@@ -176,19 +203,21 @@ export async function probeHomeFeedVideoFileDiag(
         ? computeVideoBitrateEstimate(contentLength, durationMsHint) ?? null
         : null;
 
-    if (__DEV__ && moovHint === "end") {
-      console.log("KRISTO_VIDEO_FILE_DIAG_MOOV", {
-        moovPositionHint: moovHint,
-        contentLength,
-        videoUrlHost: (() => {
-          try {
-            return new URL(url).host;
-          } catch {
-            return null;
-          }
-        })(),
-      });
-    }
+    // moov-at-end is THE first-frame killer: AVPlayer must read the trailing
+    // moov before it can decode frame 0, so a front-bytes prewarm never helps.
+    console.log("KRISTO_VIDEO_FILE_DIAG_MOOV", {
+      moovPositionHint: moovHint,
+      contentLength,
+      firstByteMs,
+      acceptRanges,
+      videoUrlHost: (() => {
+        try {
+          return new URL(url).host;
+        } catch {
+          return null;
+        }
+      })(),
+    });
 
     return {
       contentLength,
@@ -197,6 +226,9 @@ export async function probeHomeFeedVideoFileDiag(
       height: dims?.height ?? null,
       duration: durationHintSec,
       codec,
+      moovPositionHint: moovHint,
+      firstByteMs,
+      acceptRanges,
     };
   } catch {
     const contentLength =
@@ -212,6 +244,9 @@ export async function probeHomeFeedVideoFileDiag(
       height: null,
       duration: durationHintSec,
       codec: null,
+      moovPositionHint: "unknown",
+      firstByteMs: null,
+      acceptRanges: null,
     };
   } finally {
     clearTimeout(timer);
@@ -224,6 +259,8 @@ export async function logFirstMountedHomeFeedVideoFileDiag(params: {
   contentLength?: number;
   durationMs?: number;
   playerDurationSec?: number | null;
+  /** faststart flag the feed item reported (server only patches true after repack). */
+  feedFaststart?: boolean | null;
 }) {
   if (firstMountedVideoFileDiagLogged) return;
   firstMountedVideoFileDiagLogged = true;
@@ -251,6 +288,12 @@ export async function logFirstMountedHomeFeedVideoFileDiag(params: {
     height: diag.height,
     duration,
     codec: diag.codec,
+    // First-frame diagnostics: if moovPositionHint==="end", the front-byte
+    // prewarm cannot help and AVPlayer must read the trailing moov first.
+    moovPositionHint: diag.moovPositionHint,
+    firstByteMs: diag.firstByteMs,
+    acceptRanges: diag.acceptRanges,
+    feedFaststart: params.feedFaststart ?? null,
   });
 }
 

@@ -39,8 +39,11 @@ import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
   collectHomeFeedVideoWindowIds,
   computeHomeFeedMountedVideoIndexes,
+  collectVideoFeedIndexes,
+  resolveActiveVideoRank,
   resolveHomeFeedVideoWarmMode,
 } from "@/src/lib/homeFeedVideoWindow";
+import { prepareVideoDiskCacheWindow, hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
 import { isVideoPost } from "./homeFeedUtils";
 
 // Dedupe for the first-3-video-rows index diagnostic (keyed by row id).
@@ -295,7 +298,7 @@ export const FeedList = memo(
     if (key !== prevWarmWindowRef.current.key) {
       for (const id of prevWarmWindowRef.current.postIds) {
         if (!postIds.includes(id)) {
-          console.log("KRISTO_VIDEO_PLAYER_EVICT", { id, reason: "window-shift" });
+          console.log("KRISTO_VIDEO_PLAYER_EVICT", { id, reason: "retention-distance" });
         }
       }
       prevWarmWindowRef.current = { key, postIds };
@@ -307,6 +310,15 @@ export const FeedList = memo(
       });
     }
   }, [mountedVideoIndexes, activeIndex, rows]);
+
+  useEffect(() => {
+    if (!rows.length) return;
+    prepareVideoDiskCacheWindow(rows, activeIndex);
+  }, [rows, activeIndex]);
+
+  useEffect(() => {
+    void hydrateHomeFeedVideoDiskCache();
+  }, []);
 
   // Fallback only: if viewability did not fire after snap (fast fling, edge case).
   const handleMomentumScrollEnd = useCallback(
@@ -393,14 +405,17 @@ export const FeedList = memo(
       }
 
       const videoWarmMode = isVideoPost(item)
-        ? resolveHomeFeedVideoWarmMode(index, activeIndex, mountedVideoIndexes)
+        ? resolveHomeFeedVideoWarmMode(index, activeIndex, mountedVideoIndexes, rows)
         : "off";
 
-      // Decode-prime the immediate forward neighbors (next, next+1) so they are
-      // frame-ready before the user scrolls to them — not just byte-warmed.
-      const videoDelta = index - activeIndex;
+      const videoIndexes = collectVideoFeedIndexes(rows);
+      const indexRank = videoIndexes.indexOf(index);
+      const activeVideoRank = resolveActiveVideoRank(videoIndexes, activeIndex);
+      const videoRankDelta = indexRank >= 0 ? indexRank - activeVideoRank : index - activeIndex;
+
+      // Decode-prime the next 2–3 forward neighbors before the user scrolls there.
       const decodePrime =
-        videoWarmMode === "preload" && (videoDelta === 1 || videoDelta === 2);
+        videoWarmMode === "preload" && videoRankDelta >= 1 && videoRankDelta <= 3;
 
       // Diagnostic for the first 3 video rows: shows whether the first visible
       // video is the active row and whether it mounts a player in the rolling window.
@@ -450,6 +465,7 @@ export const FeedList = memo(
       contentHeight,
       activeIndex,
       mountedVideoIndexes,
+      rows,
       firstVideoIndex,
       screenFocused,
       effectiveScreenFocused,

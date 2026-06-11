@@ -141,17 +141,13 @@ export function buildPublicVideoUrl(config: VideoStorageConfig, key: string) {
   return `${config.publicBaseUrl}/${encodedKey}`;
 }
 
-export function storageKeyFromPublicUrl(publicUrl: string): string | null {
-  const config = getVideoStorageConfig();
-  if (!config) return null;
+const PUBLIC_VIDEO_KEY_PREFIXES = [
+  "church-videos/",
+  "church-video-posters/",
+  "church-video-previews/",
+] as const;
 
-  const base = config.publicBaseUrl.replace(/\/+$/, "");
-  const normalized = String(publicUrl || "").trim().split("?")[0];
-  if (!normalized.startsWith(base)) return null;
-
-  const rawKey = normalized.slice(base.length).replace(/^\/+/, "");
-  if (!rawKey) return null;
-
+function decodePublicVideoKeyPath(rawKey: string): string {
   try {
     return rawKey
       .split("/")
@@ -160,6 +156,55 @@ export function storageKeyFromPublicUrl(publicUrl: string): string | null {
   } catch {
     return rawKey;
   }
+}
+
+function isPublicVideoStorageKey(key: string) {
+  return PUBLIC_VIDEO_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+/** Extract object key from current public base or legacy `*.r2.dev` playback URLs. */
+export function extractPublicVideoStorageKey(publicUrl: string): string | null {
+  const normalized = String(publicUrl || "").trim().split("?")[0];
+  if (!normalized) return null;
+
+  const config = getVideoStorageConfig();
+  if (config) {
+    const base = config.publicBaseUrl.replace(/\/+$/, "");
+    if (normalized.startsWith(base)) {
+      const rawKey = normalized.slice(base.length).replace(/^\/+/, "");
+      return rawKey ? decodePublicVideoKeyPath(rawKey) : null;
+    }
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    if (!parsed.hostname.endsWith(".r2.dev")) return null;
+    const rawKey = parsed.pathname.replace(/^\/+/, "");
+    if (!rawKey || !isPublicVideoStorageKey(rawKey)) return null;
+    return decodePublicVideoKeyPath(rawKey);
+  } catch {
+    return null;
+  }
+}
+
+/** Rewrite legacy R2 public-dev URLs to the configured custom delivery domain (same object key). */
+export function canonicalPublicVideoUrl(publicUrl: string): string {
+  const raw = String(publicUrl || "").trim();
+  if (!raw || !/^https?:\/\//i.test(raw)) return raw;
+
+  const config = getVideoStorageConfig();
+  if (!config) return raw;
+
+  const key = extractPublicVideoStorageKey(raw);
+  if (!key) return raw;
+
+  const canonical = buildPublicVideoUrl(config, key);
+  const queryIndex = raw.indexOf("?");
+  return queryIndex >= 0 ? `${canonical}${raw.slice(queryIndex)}` : canonical;
+}
+
+export function storageKeyFromPublicUrl(publicUrl: string): string | null {
+  return extractPublicVideoStorageKey(publicUrl);
 }
 
 export function posterStorageKeyForVideoKey(videoKey: string): string {
@@ -563,6 +608,7 @@ function logVideoStorageStartupConfig() {
       region: config.region,
       endpointConfigured: Boolean(config.endpoint),
       publicBaseUrl: config.publicBaseUrl,
+      publicBaseUrlUsesR2Dev: /\.r2\.dev(?:\/|$)/i.test(config.publicBaseUrl),
       maxUploadGb: Math.floor(MAX_VIDEO_UPLOAD_BYTES / (1024 * 1024 * 1024)),
       uploadUrlTtlSeconds: VIDEO_UPLOAD_URL_TTL_SECONDS,
     });
