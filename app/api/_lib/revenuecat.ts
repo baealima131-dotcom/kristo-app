@@ -12,7 +12,7 @@
  * present and not expired. No webhooks (that is a V2 concern).
  */
 
-export const CHURCH_PREMIUM_ENTITLEMENT = "church_premium";
+export const CHURCH_PREMIUM_ENTITLEMENT = "Premium";
 export const PREMIUM_MONTHLY_PRODUCT_ID = "premium_monthly";
 export const PREMIUM_YEARLY_PRODUCT_ID = "premium_yearly";
 
