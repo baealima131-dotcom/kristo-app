@@ -6,7 +6,7 @@ import Purchases, {
   PACKAGE_TYPE,
 } from "react-native-purchases";
 import Constants from "expo-constants";
-import { Platform } from "react-native";
+import { Linking, Platform } from "react-native";
 import type { PlanStatus, SubscriptionPlanKey } from "../../store/paymentsStore";
 import {
   isRevenueCatPurchasingDisabled,
@@ -23,6 +23,7 @@ const ANDROID_REVENUECAT_API_KEY = extra.revenuecatAndroidApiKey || "";
 export const CHURCH_PREMIUM_ENTITLEMENT = "church_premium";
 export const PREMIUM_MONTHLY_PRODUCT_ID = "premium_monthly";
 export const PREMIUM_YEARLY_PRODUCT_ID = "premium_yearly";
+export const MONTHLY_INTRO_TRIAL_DAYS = 14;
 
 function getRevenueCatApiKey() {
   if (Platform.OS === "ios") return IOS_REVENUECAT_API_KEY;
@@ -489,4 +490,109 @@ export function describeCurrentOfferingPackages(offerings: PurchasesOfferings) {
         ].join(" | ")
     )
     .join("\n");
+}
+
+/** True when the user has never purchased a church premium product before. */
+export function isEligibleForMonthlyIntroTrial(
+  customerInfo: CustomerInfo | null | undefined
+): boolean {
+  if (!customerInfo) return true;
+  if (hasRealActiveEntitlement(customerInfo)) return false;
+
+  const purchased = customerInfo.allPurchasedProductIdentifiers ?? [];
+  if (
+    purchased.includes(PREMIUM_MONTHLY_PRODUCT_ID) ||
+    purchased.includes(PREMIUM_YEARLY_PRODUCT_ID)
+  ) {
+    return false;
+  }
+
+  if (customerInfo.entitlements?.all?.[CHURCH_PREMIUM_ENTITLEMENT]) {
+    return false;
+  }
+
+  return true;
+}
+
+export function packageHasIntroductoryOffer(
+  pkg: PurchasesPackage | null | undefined
+): boolean {
+  return Boolean((pkg?.product as { introPrice?: unknown })?.introPrice);
+}
+
+export function formatMonthlySubscriptionPrice(
+  priceString: string,
+  eligibleForTrial: boolean
+): string {
+  const price = String(priceString || "").trim() || "$49.99";
+  if (eligibleForTrial) {
+    return `${MONTHLY_INTRO_TRIAL_DAYS} days free, then ${price}/month`;
+  }
+  return `${price}/month`;
+}
+
+export function formatYearlySubscriptionPrice(
+  priceString: string,
+  pkg: PurchasesPackage | null | undefined
+): string {
+  const price = String(priceString || "").trim() || "$499.99";
+  if (!packageHasIntroductoryOffer(pkg)) {
+    return `${price}/year`;
+  }
+
+  const intro = (pkg?.product as { introPrice?: { priceString?: string; periodNumberOfUnits?: number; periodUnit?: string } })
+    ?.introPrice;
+  const introPrice = String(intro?.priceString || "").trim();
+  if (!introPrice) {
+    return `${price}/year`;
+  }
+
+  const units = intro?.periodNumberOfUnits;
+  const unit = String(intro?.periodUnit || "").toLowerCase();
+  const trialLabel =
+    units && unit ? `${units} ${unit}${units === 1 ? "" : "s"}` : "intro offer";
+  return `${introPrice} for ${trialLabel}, then ${price}/year`;
+}
+
+/** Opens native subscription management (StoreKit sheet or store URL). */
+export async function openSubscriptionManagement(
+  customerInfo?: CustomerInfo | null
+): Promise<boolean> {
+  try {
+    const showManage = (Purchases as { showManageSubscriptions?: () => Promise<void> })
+      .showManageSubscriptions;
+    if (typeof showManage === "function") {
+      await showManage.call(Purchases);
+      return true;
+    }
+  } catch (error) {
+    console.log("KRISTO_RC_MANAGE_SUBSCRIPTIONS_FAILED", getRevenueCatErrorDetail(error));
+  }
+
+  let info = customerInfo ?? null;
+  if (!info) {
+    try {
+      info = await getCustomerSubscriptionInfo();
+    } catch {
+      info = null;
+    }
+  }
+
+  const managementUrl = String(info?.managementURL || "").trim();
+  if (managementUrl) {
+    await Linking.openURL(managementUrl);
+    return true;
+  }
+
+  if (Platform.OS === "ios") {
+    await Linking.openURL("https://apps.apple.com/account/subscriptions");
+    return true;
+  }
+
+  if (Platform.OS === "android") {
+    await Linking.openURL("https://play.google.com/store/account/subscriptions");
+    return true;
+  }
+
+  return false;
 }

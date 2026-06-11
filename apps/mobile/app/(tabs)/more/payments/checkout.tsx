@@ -11,8 +11,7 @@ import {
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import Constants from "expo-constants";
-import type { PurchasesPackage } from "react-native-purchases";
+import type { CustomerInfo, PurchasesPackage } from "react-native-purchases";
 import {
   getPaymentsState,
   setPaymentsCurrentModule,
@@ -23,13 +22,16 @@ import {
 } from "../../../../src/store/paymentsStore";
 import {
   configureMobileSubscriptions,
+  formatMonthlySubscriptionPrice,
   formatSubscriptionSetupError,
+  formatYearlySubscriptionPrice,
   getSubscriptionOfferings,
-  purchaseSubscriptionPackage,
-  restoreSubscriptionPurchases,
   getCustomerSubscriptionInfo,
   getEffectiveSubscriptionState,
   hasRealActiveEntitlement,
+  isEligibleForMonthlyIntroTrial,
+  openSubscriptionManagement,
+  purchaseSubscriptionPackage,
   resolveMonthlyPackage,
   resolveYearlyPackage,
   describeCurrentOfferingPackages,
@@ -48,31 +50,21 @@ const PLAN_META: Record<
   SubscriptionPlanKey,
   {
     title: string;
-    price: string;
-    cycle: string;
-    note: string;
+    fallbackPrice: string;
+    benefits: string[];
   }
 > = {
   monthly: {
     title: "Premium Monthly",
-    price: "$49.99",
-    cycle: "/ month",
-    note: "Media tools for church growth.",
+    fallbackPrice: "$49.99",
+    benefits: ["Media Live streaming", "Video posts & scheduling", "Guest invites"],
   },
   yearly: {
     title: "Premium Yearly",
-    price: "$499.99",
-    cycle: "/ year",
-    note: "Best yearly value.",
+    fallbackPrice: "$499.99",
+    benefits: ["Everything in Monthly", "Best yearly value", "Priority media upgrades"],
   },
 };
-
-const extra =
-  (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
-
-const isTestStoreRevenueCat =
-  /test/i.test(String(extra.revenuecatIosApiKey || "")) ||
-  /test/i.test(String(extra.revenuecatAndroidApiKey || ""));
 
 export default function PaymentsCheckoutScreen() {
   const router = useRouter();
@@ -83,6 +75,7 @@ export default function PaymentsCheckoutScreen() {
   const [paymentsState, setPaymentsState] = useState(() => getPaymentsState());
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
+  const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
   const [loadingPackages, setLoadingPackages] = useState(true);
   const didLogCheckoutPackagesRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
@@ -182,14 +175,20 @@ export default function PaymentsCheckoutScreen() {
           didLogCheckoutPackagesRef.current = true;
         }
 
+        let info: CustomerInfo | null = null;
+        try {
+          info = await getCustomerSubscriptionInfo();
+        } catch {
+          info = null;
+        }
+
         if (!alive) return;
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
+        setCustomerInfo(info);
 
-        // The selected plan must map to a real RevenueCat package, otherwise we
-        // surface a clear error + retry instead of a broken/non-functional CTA.
         const planPackage = safePlan === "monthly" ? monthly : yearly;
-        if (!planPackage) {
+        if (!planPackage && !hasRealActiveEntitlement(info)) {
           setPackagesError(
             "App Store packages are still loading. Tap retry in a moment."
           );
@@ -202,8 +201,6 @@ export default function PaymentsCheckoutScreen() {
           reviewBypass: isAppleReviewBypassEnabled(),
           error: errorMessage,
         });
-        // No review fallback here: never silently continue. Show an explicit
-        // error + retry so the purchase button can't masquerade as working.
         setPackagesError(errorMessage);
       } finally {
         if (alive) setLoadingPackages(false);
@@ -220,29 +217,41 @@ export default function PaymentsCheckoutScreen() {
     setReloadToken((token) => token + 1);
   }
 
+  const targetPackage = safePlan === "monthly" ? monthlyPackage : yearlyPackage;
+  const planMeta = PLAN_META[safePlan];
   const livePrice =
-    safePlan === "monthly"
-      ? monthlyPackage?.product.priceString || PLAN_META.monthly.price
-      : yearlyPackage?.product.priceString || PLAN_META.yearly.price;
+    targetPackage?.product.priceString || planMeta.fallbackPrice;
+  const monthlyTrialEligible =
+    safePlan === "monthly" && isEligibleForMonthlyIntroTrial(customerInfo);
+  const isSubscribed = hasRealActiveEntitlement(customerInfo);
 
-  const planData = useMemo(
-    () => ({
-      ...PLAN_META[safePlan],
-      price: livePrice,
-    }),
-    [safePlan, livePrice]
-  );
+  const priceLine = useMemo(() => {
+    if (safePlan === "monthly") {
+      return formatMonthlySubscriptionPrice(livePrice, monthlyTrialEligible);
+    }
+    return formatYearlySubscriptionPrice(livePrice, targetPackage);
+  }, [safePlan, livePrice, monthlyTrialEligible, targetPackage]);
 
   const confirmLabel =
     safePlan === "monthly" ? "Subscribe Monthly" : "Subscribe Yearly";
 
-  const targetPackage = safePlan === "monthly" ? monthlyPackage : yearlyPackage;
+  async function refreshCustomerInfoAfterPurchase() {
+    let info = await getCustomerSubscriptionInfo();
+    let active = hasRealActiveEntitlement(info);
+
+    for (let i = 0; i < 5 && !active; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      info = await getCustomerSubscriptionInfo();
+      active = hasRealActiveEntitlement(info);
+    }
+
+    setCustomerInfo(info);
+    return { info, active };
+  }
 
   async function handleConfirmCheckout() {
-    if (submitting) return;
+    if (submitting || isSubscribed) return;
 
-    // Only ever start a purchase when a real RevenueCat package exists. No
-    // review/bypass shortcut that marks the plan active without StoreKit.
     if (!targetPackage) {
       setPackagesError(
         "App Store packages are not available yet. Tap retry, then try again."
@@ -252,17 +261,9 @@ export default function PaymentsCheckoutScreen() {
 
     try {
       setSubmitting(true);
-
       await purchaseSubscriptionPackage(targetPackage);
 
-      let info = await getCustomerSubscriptionInfo();
-      let active = hasRealActiveEntitlement(info);
-
-      for (let i = 0; i < 5 && !active; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 1200));
-        info = await getCustomerSubscriptionInfo();
-        active = hasRealActiveEntitlement(info);
-      }
+      const { info, active } = await refreshCustomerInfoAfterPurchase();
 
       if (active) {
         const effective = getEffectiveSubscriptionState(info);
@@ -275,18 +276,15 @@ export default function PaymentsCheckoutScreen() {
           resolvedPlan === "monthly"
             ? "Monthly subscription is now active."
             : "Yearly subscription is now active.";
-        const churchNote =
-          activation.skipped
-            ? ""
-            : activation.activated
-            ? " Church schedule access is now unlocked."
-            : " Create your church media profile to unlock schedule access.";
+        const churchNote = activation.skipped
+          ? ""
+          : activation.activated
+          ? " Church schedule access is now unlocked."
+          : " Create your church media profile to unlock schedule access.";
 
-        Alert.alert(
-          "Success",
-          `${successMessage}${churchNote}`,
-          [{ text: "OK", onPress: () => router.back() }]
-        );
+        Alert.alert("Success", `${successMessage}${churchNote}`, [
+          { text: "OK", onPress: () => router.back() },
+        ]);
       } else {
         Alert.alert(
           "Purchase syncing",
@@ -296,7 +294,7 @@ export default function PaymentsCheckoutScreen() {
     } catch (error: any) {
       const msg = String(error?.message || "");
       if (/cancel/i.test(msg)) {
-        Alert.alert("Cancel anytime • No charges todayled", "Purchase was cancelled.");
+        Alert.alert("Purchase cancelled", "No charge was made.");
       } else {
         Alert.alert("Purchase failed", msg || "Could not complete subscription purchase.");
       }
@@ -305,50 +303,29 @@ export default function PaymentsCheckoutScreen() {
     }
   }
 
-  async function handleRestorePurchases() {
+  async function handleManageSubscription() {
     if (submitting) return;
 
     try {
       setSubmitting(true);
-
-      const restored = await restoreSubscriptionPurchases();
-      const active = hasRealActiveEntitlement(restored);
-
-      if (!active) {
+      const opened = await openSubscriptionManagement(customerInfo);
+      if (!opened) {
         Alert.alert(
-          "Nothing restored",
-          "No active premium purchases were found for this account."
+          "Manage subscription",
+          "Open Settings → Apple ID → Subscriptions to manage or cancel your plan."
         );
         return;
       }
 
-      const effective = getEffectiveSubscriptionState(restored);
-      const resolvedPlan = effective.selectedPlan;
-
-      setSubscriptionSelectedPlan(resolvedPlan);
-      setSubscriptionPlanStatus(effective.planStatus);
-
-      const activation = await maybeActivateChurchSubscription(resolvedPlan);
-      const restoreMessage =
-        resolvedPlan === "yearly"
-          ? "Yearly subscription restored."
-          : "Monthly subscription restored.";
-      const churchNote =
-        activation.skipped
-          ? ""
-          : activation.activated
-          ? " Church schedule access is now unlocked."
-          : " Create your church media profile to unlock schedule access.";
-
-      Alert.alert(
-        "Restored",
-        `${restoreMessage}${churchNote}`,
-        [{ text: "OK", onPress: () => router.back() }]
-      );
+      const info = await getCustomerSubscriptionInfo();
+      setCustomerInfo(info);
+      const effective = getEffectiveSubscriptionState(info);
+      setSubscriptionSelectedPlan(effective.selectedPlan);
+      setSubscriptionPlanStatus(hasRealActiveEntitlement(info) ? "active" : "expired");
     } catch (error: any) {
       Alert.alert(
-        "Restore failed",
-        String(error?.message || "Could not restore purchases.")
+        "Could not open subscriptions",
+        String(error?.message || "Try again from Settings → Subscriptions.")
       );
     } finally {
       setSubmitting(false);
@@ -363,8 +340,9 @@ export default function PaymentsCheckoutScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
-          paddingTop: insets.top + 18,
-          paddingBottom: insets.bottom + 150,
+          paddingTop: insets.top + 14,
+          paddingBottom: insets.bottom + 28,
+          paddingHorizontal: 16,
         }}
       >
         <View style={s.headerRow}>
@@ -376,114 +354,110 @@ export default function PaymentsCheckoutScreen() {
           </Pressable>
 
           <View style={{ flex: 1 }}>
-            <Text style={s.churchName}>GLORY CITY CHURCH</Text>
-<Text style={s.title}>Confirm plan</Text>
-            <Text style={s.sub}>Premium access for your church</Text>
+            <Text style={s.title}>Confirm plan</Text>
+            <Text style={s.sub}>Media Premium for your church</Text>
           </View>
         </View>
 
-        <View style={s.hero}>
-          <View pointerEvents="none" style={s.heroGlow} />
-          <View style={s.heroTopRow}>
-            <View style={s.heroMiniLeft}>
-              <View style={s.heroIconWrap}>
-                <Ionicons name="card" size={18} color="rgba(255,215,145,0.98)" />
-              </View>
-              <View>
-                <Text style={s.heroEyebrow}>SELECTED PLAN</Text>
-                <Text style={s.heroTitle}>{planData.title}</Text>
-              </View>
-            </View>
+        <View style={s.confirmCard}>
+          <View pointerEvents="none" style={s.cardGlow} />
 
-            <View style={s.heroMiniPill}>
-              <Text style={s.heroMiniPillText}>MEDIA</Text>
+          <View style={s.cardTopRow}>
+            <View style={s.planBadge}>
+              <Ionicons name="diamond-outline" size={16} color="#F4D06F" />
+              <Text style={s.planBadgeText}>SELECTED</Text>
             </View>
+            {isSubscribed ? (
+              <View style={s.activePill}>
+                <Text style={s.activePillText}>ACTIVE</Text>
+              </View>
+            ) : null}
           </View>
 
-          <Text style={s.heroPrice}>
-            {planData.price}
-            <Text style={s.heroCycle}>{planData.cycle}</Text>
-          </Text>
+          <Text style={s.planTitle}>{planMeta.title}</Text>
+          <Text style={s.priceLine}>{priceLine}</Text>
 
-          <View style={s.heroDateRow}>
-            <Ionicons name="calendar-outline" size={14} color="rgba(255,255,255,0.72)" />
-            <Text style={s.heroDateText}>Starts today</Text>
+          {monthlyTrialEligible ? (
+            <Text style={s.trialNote}>Free trial for new subscribers. Cancel anytime.</Text>
+          ) : null}
+
+          <View style={s.benefitsBlock}>
+            <Text style={s.benefitsLabel}>INCLUDED</Text>
+            {planMeta.benefits.map((benefit) => (
+              <View key={benefit} style={s.benefitRow}>
+                <Ionicons name="checkmark-circle" size={15} color="#F4C95D" />
+                <Text style={s.benefitText}>{benefit}</Text>
+              </View>
+            ))}
           </View>
-
-          <Text style={s.heroText}>{planData.note}</Text>
 
           {loadingPackages ? (
             <View style={s.loadingRow}>
-              <ActivityIndicator />
-              <Text style={s.loadingText}>Loading checkout package...</Text>
+              <ActivityIndicator color="#F4C95D" />
+              <Text style={s.loadingText}>Loading plan details...</Text>
             </View>
           ) : null}
 
           {!loadingPackages && packagesError ? (
-            <View style={s.reviewFallbackCard}>
-              <Text style={s.reviewFallbackText}>{packagesError}</Text>
+            <View style={s.errorCard}>
+              <Text style={s.errorText}>{packagesError}</Text>
               <Pressable
                 onPress={retryLoadPackages}
-                style={({ pressed }) => [s.reviewFallbackBtn, pressed ? s.pressed : null]}
+                style={({ pressed }) => [s.retryBtn, pressed ? s.pressed : null]}
               >
-                <Text style={s.reviewFallbackBtnText}>Retry</Text>
+                <Text style={s.retryBtnText}>Retry</Text>
               </Pressable>
             </View>
           ) : null}
-        </View>
 
-        <View style={s.summaryCard}>
-          <View pointerEvents="none" style={s.summaryGlow} />
-
-          <View style={s.summaryTopRow}>
-            <Text style={s.summaryLabel}>WHAT YOU UNLOCK</Text>
-            <View style={s.summaryStatePill}>
-              <Text style={s.summaryStatePillText}>READY</Text>
-            </View>
-          </View>
-          <Text style={s.metaText}>
-            Unlock Media Live, video posts, guest invites, and scheduled church media.
-          </Text>
-
-          <View style={s.actionRow}>
-            <Pressable
-              onPress={handleConfirmCheckout}
-              disabled={submitting || loadingPackages || !targetPackage}
-              style={({ pressed }) => [
-                s.primaryBtn,
-                s.primaryBtnMain,
-                (submitting || loadingPackages || !targetPackage) ? s.disabledBtn : null,
-                pressed ? s.pressed : null,
-              ]}
-            >
-              {submitting ? (
-                <ActivityIndicator />
-              ) : (
-                <Text style={s.primaryBtnText}>
-                  {loadingPackages ? "Loading package..." : confirmLabel}
-                </Text>
-              )}
-            </Pressable>
-
-            {!isTestStoreRevenueCat ? (
+          <View style={s.ctaBlock}>
+            {isSubscribed ? (
               <Pressable
-                onPress={handleRestorePurchases}
+                onPress={handleManageSubscription}
+                disabled={submitting}
                 style={({ pressed }) => [
                   s.primaryBtn,
-                  s.cancelBtn,
+                  submitting ? s.disabledBtn : null,
                   pressed ? s.pressed : null,
                 ]}
               >
-                <Text style={s.cancelBtnText}>Restore Purchases</Text>
+                {submitting ? (
+                  <ActivityIndicator color="#111" />
+                ) : (
+                  <>
+                    <Ionicons name="settings-outline" size={18} color="#111" />
+                    <Text style={s.primaryBtnText}>Manage / Cancel Subscription</Text>
+                  </>
+                )}
               </Pressable>
-            ) : null}
-          </View>
+            ) : (
+              <Pressable
+                onPress={handleConfirmCheckout}
+                disabled={submitting || loadingPackages || !targetPackage}
+                style={({ pressed }) => [
+                  s.primaryBtn,
+                  (submitting || loadingPackages || !targetPackage) ? s.disabledBtn : null,
+                  pressed ? s.pressed : null,
+                ]}
+              >
+                {submitting ? (
+                  <ActivityIndicator color="#111" />
+                ) : (
+                  <Text style={s.primaryBtnText}>
+                    {loadingPackages ? "Loading..." : confirmLabel}
+                  </Text>
+                )}
+              </Pressable>
+            )}
 
-          <Text style={s.footText}>
-            {isTestStoreRevenueCat
-              ? "Test Store mode • Restore disabled in development"
-              : "No charges today • Cancel anytime • No charges today anytime"}
-          </Text>
+            <Text style={s.footText}>
+              {isSubscribed
+                ? "Subscriptions are managed through Apple. Changes apply on your next billing date."
+                : monthlyTrialEligible
+                ? "No charge during the free trial. Cancel anytime in Apple Subscriptions."
+                : "Secure checkout through Apple. Cancel anytime."}
+            </Text>
+          </View>
         </View>
       </ScrollView>
     </View>
@@ -491,58 +465,44 @@ export default function PaymentsCheckoutScreen() {
 }
 
 const s = StyleSheet.create({
-  churchName: {
-    textAlign: "center",
-    color: "#F4D06F",
-    fontSize: 13,
-    fontWeight: "800",
-    letterSpacing: 2,
-    marginBottom: 6,
-  },
   screen: { flex: 1, backgroundColor: "#0B0F17" },
 
   glowTopLeft: {
     position: "absolute",
-    top: -110,
-    left: -110,
-    width: 220,
-    height: 220,
+    top: -90,
+    left: -90,
+    width: 200,
+    height: 200,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.018)",
+    backgroundColor: "rgba(244,201,93,0.08)",
   },
 
   glowBottomRight: {
     position: "absolute",
-    right: -70,
-    bottom: 100,
-    width: 240,
-    height: 240,
+    right: -60,
+    bottom: 80,
+    width: 180,
+    height: 180,
     borderRadius: 999,
-    backgroundColor: "rgba(255,220,120,0.05)",
+    backgroundColor: "rgba(120,80,255,0.06)",
   },
 
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-    paddingHorizontal: 18,
-    marginBottom: 20,
+    gap: 12,
+    marginBottom: 16,
   },
 
   backBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.045)",
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
-    shadowColor: "#000",
-    shadowOpacity: 0.10,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 3,
   },
 
   pressed: {
@@ -552,430 +512,223 @@ const s = StyleSheet.create({
 
   title: {
     color: "#fff",
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: "900",
-    letterSpacing: -0.6,
-    lineHeight: 32,
+    letterSpacing: -0.5,
   },
 
   sub: {
-    marginTop: 6,
-    color: "rgba(255,255,255,0.54)",
+    marginTop: 4,
+    color: "rgba(255,255,255,0.52)",
     fontSize: 12.5,
     fontWeight: "700",
   },
 
-  reviewFallbackCard: {
-    marginTop: 14,
-    borderRadius: 18,
-    padding: 14,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    gap: 10,
-  },
-  reviewFallbackText: {
-    color: "rgba(255,255,255,0.78)",
-    fontSize: 14,
-    fontWeight: "700",
-    lineHeight: 20,
-  },
-  reviewFallbackBtn: {
-    minHeight: 44,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.16)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.32)",
-  },
-  reviewFallbackBtnText: {
-    color: "#fff",
-    fontWeight: "900",
-    fontSize: 14,
-  },
-
-  hero: {
-    marginHorizontal: 16,
-    borderRadius: 34,
-    paddingHorizontal: 22,
+  confirmCard: {
+    borderRadius: 28,
+    paddingHorizontal: 20,
     paddingVertical: 20,
-    backgroundColor: "rgba(8,12,24,0.82)",
-    borderWidth: 1.4,
-    borderColor: "rgba(244,201,93,0.24)",
+    backgroundColor: "rgba(6,10,20,0.94)",
+    borderWidth: 1.2,
+    borderColor: "rgba(244,201,93,0.32)",
     overflow: "hidden",
     shadowColor: "#F4C95D",
-    shadowOpacity: 0.16,
+    shadowOpacity: 0.18,
     shadowRadius: 24,
-    shadowOffset: { width: 0, height: 12 },
+    shadowOffset: { width: 0, height: 10 },
     elevation: 12,
   },
 
-  heroGlow: {
+  cardGlow: {
     position: "absolute",
-    top: -42,
-    right: -38,
-    width: 110,
-    height: 110,
+    top: -50,
+    right: -40,
+    width: 120,
+    height: 120,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.02)",
+    backgroundColor: "rgba(244,201,93,0.10)",
   },
 
-  heroTopRow: {
+  cardTopRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 10,
   },
 
-  heroMiniLeft: {
+  planBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    flex: 1,
-    paddingRight: 10,
-  },
-
-  heroIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(244,201,93,0.12)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    borderColor: "rgba(244,201,93,0.24)",
   },
 
-  heroEyebrow: {
-    color: "rgba(255,255,255,0.48)",
+  planBadgeText: {
+    color: "#F4D06F",
     fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 1.1,
+    fontWeight: "900",
+    letterSpacing: 0.8,
   },
 
-  heroTitle: {
-    marginTop: 4,
+  activePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(34,197,94,0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(74,222,128,0.34)",
+  },
+
+  activePillText: {
+    color: "#86EFAC",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.7,
+  },
+
+  planTitle: {
+    marginTop: 14,
     color: "#fff",
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: "900",
     letterSpacing: -0.4,
+  },
+
+  priceLine: {
+    marginTop: 8,
+    color: "#F8E6B0",
+    fontSize: 18,
+    fontWeight: "800",
     lineHeight: 24,
   },
 
-  heroMiniPill: {
-    minHeight: 30,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-  },
-
-  heroMiniPillText: {
-    color: "rgba(255,255,255,0.84)",
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.9,
-  },
-
-  heroPrice: {
-    marginTop: 18,
-    color: "#fff",
-    fontSize: 42,
-    fontWeight: "900",
-    letterSpacing: -1.4,
-  },
-
-  heroCycle: {
-    color: "rgba(255,255,255,0.62)",
-    fontSize: 15,
-    fontWeight: "800",
-  },
-
-  heroDateRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    marginTop: 10,
-  },
-
-  heroDateText: {
-    color: "rgba(255,255,255,0.68)",
-    fontSize: 12.5,
+  trialNote: {
+    marginTop: 6,
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 12,
     fontWeight: "700",
   },
 
-  heroText: {
-    marginTop: 10,
-    color: "rgba(255,255,255,0.72)",
+  benefitsBlock: {
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.08)",
+    gap: 8,
+  },
+
+  benefitsLabel: {
+    color: "rgba(255,220,150,0.72)",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+    marginBottom: 2,
+  },
+
+  benefitRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  benefitText: {
+    flex: 1,
+    color: "rgba(255,255,255,0.86)",
     fontSize: 13.5,
-    lineHeight: 21,
-    fontWeight: "600",
+    fontWeight: "700",
   },
 
   loadingRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    marginTop: 12,
+    marginTop: 14,
   },
 
   loadingText: {
-    color: "rgba(255,255,255,0.7)",
+    color: "rgba(255,255,255,0.68)",
     fontSize: 12.5,
     fontWeight: "700",
   },
 
-  summaryCard: {
-    marginTop: 18,
-    marginHorizontal: 16,
-    borderRadius: 34,
-    paddingHorizontal: 22,
-    paddingTop: 24,
-    paddingBottom: 22,
-    backgroundColor: "rgba(4,9,18,0.92)",
-    borderWidth: 1.2,
-    borderColor: "rgba(244,201,93,0.28)",
-    overflow: "hidden",
-  },
-
-  summaryGlow: {
-    position: "absolute",
-    right: -42,
-    bottom: -42,
-    width: 110,
-    height: 110,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.018)",
-  },
-
-  summaryTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-
-  summaryLabel: {
-    color: "rgba(255,220,150,0.72)",
-    fontSize: 10.5,
-    fontWeight: "900",
-    letterSpacing: 1.5,
-  },
-
-  summaryStatePill: {
-    minHeight: 28,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
+  errorCard: {
+    marginTop: 14,
+    borderRadius: 16,
+    padding: 12,
     backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
+    gap: 10,
   },
 
-  summaryStatePillText: {
-    color: "#fff",
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.9,
-  },
-
-  priceSpotlight: {
-    marginTop: 16,
-  },
-
-  priceSpotlightValue: {
-    color: "#fff",
-    fontSize: 32,
-    fontWeight: "900",
-    letterSpacing: -1,
-  },
-
-  priceSpotlightCycle: {
-    color: "rgba(255,255,255,0.62)",
-    fontSize: 14,
-    fontWeight: "800",
-  },
-
-  priceSpotlightTitle: {
-    marginTop: 5,
-    color: "rgba(255,255,255,0.74)",
+  errorText: {
+    color: "rgba(255,255,255,0.78)",
     fontSize: 13.5,
     fontWeight: "700",
+    lineHeight: 19,
   },
 
-  summaryGrid: {
-    flexDirection: "row",
-    gap: 12,
-    marginTop: 18,
-  },
-
-  infoChip: {
-    flex: 1,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: "rgba(255,255,255,0.045)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-  },
-
-  infoChipLabel: {
-    color: "rgba(255,255,255,0.46)",
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.9,
-  },
-
-  infoChipValue: {
-    marginTop: 6,
-    color: "#fff",
-    fontSize: 13,
-    fontWeight: "800",
-  },
-
-  divider: {
-    marginTop: 16,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.08)",
-  },
-
-  metaText: {
-    marginTop: 18,
-    color: "rgba(255,255,255,0.78)",
-    fontSize: 15,
-    lineHeight: 24,
-    fontWeight: "800",
-  },
-
-  benefitLine: {
-    marginTop: 12,
-    color: "rgba(255,224,160,0.92)",
-    fontSize: 13.2,
-    lineHeight: 22,
-    fontWeight: "900",
-  },
-
-  benefitGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 9,
-    marginTop: 14,
-  },
-
-  benefitChip: {
-    width: "48%",
-    minHeight: 42,
-    borderRadius: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    backgroundColor: "rgba(248,209,94,0.075)",
-    borderWidth: 1,
-    borderColor: "rgba(248,209,94,0.15)",
-  },
-
-  benefitText: {
-    color: "#fff",
-    fontSize: 12.5,
-    fontWeight: "900",
-  },
-
-  cleanBenefits: {
-    marginTop: 14,
-    color: "rgba(255,255,255,0.78)",
-    fontSize: 14,
-    lineHeight: 22,
-    fontWeight: "800",
-  },
-
-  safeRow: {
-    flexDirection: "row",
-    gap: 9,
-    marginTop: 14,
-  },
-
-  safeItem: {
-    flex: 1,
-    flexDirection: "row",
+  retryBtn: {
+    minHeight: 40,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    gap: 7,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.045)",
+    backgroundColor: "rgba(217,179,95,0.16)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.09)",
+    borderColor: "rgba(217,179,95,0.32)",
   },
 
-  safeItemText: {
-    color: "rgba(255,255,255,0.80)",
-    fontSize: 12,
-    fontWeight: "700",
+  retryBtnText: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 13,
+  },
+
+  ctaBlock: {
+    marginTop: 18,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.08)",
   },
 
   primaryBtn: {
-    minHeight: 58,
-    borderRadius: 24,
+    minHeight: 54,
+    borderRadius: 999,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 18,
-  },
-
-  primaryBtnSolo: {
-    marginTop: 18,
-    backgroundColor: "#F4C56A",
-  },
-
-  primaryBtnMain: {
-    flex: 1,
-    backgroundColor: "#F8D15E",
+    gap: 8,
+    paddingHorizontal: 20,
+    backgroundColor: "#F4C95D",
     shadowColor: "#F4C95D",
-    shadowOpacity: 0.35,
-    shadowRadius: 22,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 14,
+    shadowOpacity: 0.32,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
   },
 
   disabledBtn: {
-    opacity: 0.6,
+    opacity: 0.58,
   },
 
   primaryBtnText: {
     color: "#111",
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "900",
-    letterSpacing: 0.2,
-  },
-
-  actionRow: {
-    marginTop: 20,
-  },
-
-  cancelBtn: {
-    flex: 0.75,
-    minWidth: 96,
-    backgroundColor: "rgba(255,255,255,0.055)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-  },
-
-  cancelBtnText: {
-    color: "#fff",
-    fontSize: 13.5,
-    fontWeight: "900",
+    letterSpacing: 0.15,
   },
 
   footText: {
-    marginTop: 14,
-    color: "rgba(255,255,255,0.38)",
+    marginTop: 12,
+    color: "rgba(255,255,255,0.42)",
     fontSize: 11,
     lineHeight: 16,
-    fontWeight: "800",
+    fontWeight: "700",
+    textAlign: "center",
   },
 });
