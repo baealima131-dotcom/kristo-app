@@ -63,7 +63,8 @@
       ],
       "expo-video",
       "@livekit/react-native-expo-plugin",
-      "react-native-compressor"
+      "react-native-compressor",
+      "./plugins/withStoreKitConfiguration"
     ],
     "experiments": {
       "typedRoutes": true

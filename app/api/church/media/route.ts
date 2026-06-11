@@ -8,7 +8,11 @@ import {
   upsertChurchMedia,
   confirmChurchMediaPersisted,
 } from "@/app/api/_lib/store/mediaDb";
-import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
+import {
+  ChurchMediaAutoCreateForbiddenError,
+  ensureChurchMediaProfileForPastor,
+  evaluateChurchMediaAccess,
+} from "@/app/api/_lib/churchMediaAccess";
 import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
 
@@ -182,14 +186,32 @@ export async function PATCH(req: Request) {
     }
 
     const existing = await getChurchMediaByChurchId(a.churchId);
-    if (!existing) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "Church media profile required before activating subscription",
-        },
-        { status: 400 }
-      );
+    if (!existing?.mediaName) {
+      try {
+        await ensureChurchMediaProfileForPastor({
+          churchId: a.churchId,
+          actualPastorUserId: access.actualPastorUserId,
+          requesterUserId: a.userId,
+        });
+      } catch (error: any) {
+        if (error instanceof ChurchMediaAutoCreateForbiddenError) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "Only the church Pastor can activate a church subscription",
+            },
+            { status: 403 }
+          );
+        }
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "Church media profile required before activating subscription",
+            reason: String(error?.message || error || "profile-create-failed"),
+          },
+          { status: 400 }
+        );
+      }
     }
 
     // Never trust the client's `subscriptionActive: true`. Verify the pastor's

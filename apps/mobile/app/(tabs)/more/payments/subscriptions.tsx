@@ -11,7 +11,7 @@ import {
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import type { CustomerInfo, PurchasesPackage } from "react-native-purchases";
+import type { CustomerInfo, INTRO_ELIGIBILITY_STATUS, PurchasesPackage } from "react-native-purchases";
 import {
   getPaymentsState,
   setPaymentsCurrentModule,
@@ -27,14 +27,17 @@ import {
   getCustomerSubscriptionInfo,
   getEffectiveSubscriptionState,
   hasRealActiveEntitlement,
-  isEligibleForMonthlyIntroTrial,
-  MONTHLY_INTRO_TRIAL_DAYS,
+  fetchMonthlyIntroTrialEligibility,
+  resolveMonthlyIntroTrialEligible,
+  resolveMonthlyIntroTrialLabel,
+  logMonthlyIntroOfferFromStoreKit,
   openSubscriptionManagement,
   resolveMonthlyPackage,
   resolveYearlyPackage,
   describeCurrentOfferingPackages,
   setRevenueCatDebugRouteEnabled,
 } from "../../../../src/lib/payments/mobileSubscriptions";
+import { isPastorSessionRole } from "../../../../src/lib/churchSubscription";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
 import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
 
@@ -80,6 +83,8 @@ export default function PaymentsSubscriptionsScreen() {
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
+  const [monthlyIntroEligibility, setMonthlyIntroEligibility] =
+    useState<INTRO_ELIGIBILITY_STATUS | null>(null);
   const [offersLoading, setOffersLoading] = useState(true);
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
@@ -136,6 +141,7 @@ export default function PaymentsSubscriptionsScreen() {
         if (!alive) return;
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
+        logMonthlyIntroOfferFromStoreKit(monthly);
 
         try {
           const info = await getCustomerSubscriptionInfo();
@@ -148,6 +154,15 @@ export default function PaymentsSubscriptionsScreen() {
           if (!alive) return;
           setCustomerInfo(null);
           setSubscriptionPlanStatus("expired");
+        }
+
+        try {
+          const introEligibility = await fetchMonthlyIntroTrialEligibility();
+          if (!alive) return;
+          setMonthlyIntroEligibility(introEligibility);
+        } catch {
+          if (!alive) return;
+          setMonthlyIntroEligibility(null);
         }
 
         if (!monthly && !yearly) {
@@ -199,13 +214,24 @@ export default function PaymentsSubscriptionsScreen() {
 
   const currentPlan = paymentsState.subscriptions.selectedPlan;
   const planStatus = paymentsState.subscriptions.planStatus;
+  const sessionRole = String(
+    (session as any)?.role || (session as any)?.churchRole || ""
+  ).trim();
+  const isPastor = isPastorSessionRole(sessionRole);
 
   useEffect(() => {
     setDraftCurrentPlan(currentPlan);
   }, [currentPlan, planStatus]);
 
   const currentPlanIsActive = planStatus === "active";
-  const monthlyTrialEligible = isEligibleForMonthlyIntroTrial(customerInfo);
+  const monthlyTrialEligible = resolveMonthlyIntroTrialEligible(
+    customerInfo,
+    monthlyPackage,
+    monthlyIntroEligibility
+  );
+  const monthlyTrialLabel = monthlyTrialEligible
+    ? resolveMonthlyIntroTrialLabel(monthlyPackage)
+    : null;
 
   return (
     <View style={s.screen}>
@@ -284,16 +310,14 @@ export default function PaymentsSubscriptionsScreen() {
                   ) : null}
                 </View>
 
-                {item.key === "monthly" && monthlyTrialEligible ? (
-                  <Text style={s.planTrialLine}>
-                    {MONTHLY_INTRO_TRIAL_DAYS} Days Free Trial
-                  </Text>
+                {item.key === "monthly" && monthlyTrialLabel ? (
+                  <Text style={s.planTrialLine}>{monthlyTrialLabel}</Text>
                 ) : null}
 
                 <Text
                   style={[
                     s.planCardPrice,
-                    item.key === "monthly" && monthlyTrialEligible
+                    item.key === "monthly" && monthlyTrialLabel
                       ? s.planCardPriceAfterTrial
                       : null,
                   ]}
@@ -316,6 +340,13 @@ export default function PaymentsSubscriptionsScreen() {
                     setDraftCurrentPlan(item.key);
 
                     if (isActivePlan) {
+                      if (isPastor) {
+                        router.push({
+                          pathname: "/more/payments/checkout" as any,
+                          params: { plan: item.key },
+                        });
+                        return;
+                      }
                       void handleManageSubscription();
                       return;
                     }
@@ -340,7 +371,11 @@ export default function PaymentsSubscriptionsScreen() {
                   ]}
                 >
                   <Text style={[s.planBtnText, isActivePlan ? s.planBtnTextManage : null]}>
-                    {isActivePlan ? "Manage / Cancel" : "Choose"}
+                    {isActivePlan
+                      ? isPastor
+                        ? "Sync / Unlock"
+                        : "Manage / Cancel"
+                      : "Choose"}
                   </Text>
                 </Pressable>
               </Pressable>

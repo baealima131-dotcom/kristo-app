@@ -1,6 +1,8 @@
 import Purchases, {
   LOG_LEVEL,
   CustomerInfo,
+  INTRO_ELIGIBILITY_STATUS,
+  PurchasesIntroPrice,
   PurchasesOfferings,
   PurchasesPackage,
   PACKAGE_TYPE,
@@ -316,7 +318,42 @@ export async function prefetchSubscriptionOfferings(): Promise<boolean> {
 
 export async function purchaseSubscriptionPackage(pkg: PurchasesPackage) {
   await requireConfiguredPurchases("purchase");
-  return Purchases.purchasePackage(pkg);
+  const result = await Purchases.purchasePackage(pkg);
+  try {
+    await Purchases.syncPurchases();
+  } catch (error) {
+    console.log("KRISTO_RC_SYNC_PURCHASES_FAILED", getRevenueCatErrorDetail(error));
+  }
+  return result;
+}
+
+function sleepMs(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Poll RevenueCat after StoreKit purchase until `church_premium` appears. */
+export async function refreshCustomerInfoAfterStorePurchase(
+  initialInfo?: CustomerInfo | null,
+  opts?: { maxAttempts?: number; delayMs?: number }
+): Promise<{ info: CustomerInfo; entitlementActive: boolean }> {
+  const maxAttempts = Math.max(1, opts?.maxAttempts ?? 8);
+  const delayMs = Math.max(0, opts?.delayMs ?? 1500);
+
+  let info = initialInfo ?? (await getCustomerSubscriptionInfo());
+  let entitlementActive = hasRealActiveEntitlement(info);
+
+  for (let i = 0; i < maxAttempts && !entitlementActive; i++) {
+    try {
+      await Purchases.syncPurchases();
+    } catch (error) {
+      console.log("KRISTO_RC_SYNC_PURCHASES_FAILED", getRevenueCatErrorDetail(error));
+    }
+    await sleepMs(delayMs);
+    info = await getCustomerSubscriptionInfo();
+    entitlementActive = hasRealActiveEntitlement(info);
+  }
+
+  return { info, entitlementActive };
 }
 
 export async function restoreSubscriptionPurchases() {
@@ -474,6 +511,20 @@ export function resolveYearlyPackage(
   return byText;
 }
 
+export function describeIntroOffer(
+  intro: PurchasesIntroPrice | null | undefined
+): string {
+  if (!intro) return "none";
+  return [
+    `price=${intro.price}`,
+    `priceString=${intro.priceString}`,
+    `period=${intro.period}`,
+    `periodUnit=${intro.periodUnit}`,
+    `periodNumberOfUnits=${intro.periodNumberOfUnits}`,
+    `cycles=${intro.cycles}`,
+  ].join(" | ");
+}
+
 export function describeCurrentOfferingPackages(offerings: PurchasesOfferings) {
   const current = offerings.current;
   if (!current?.availablePackages?.length) return "No available packages in current offering.";
@@ -486,6 +537,7 @@ export function describeCurrentOfferingPackages(offerings: PurchasesOfferings) {
           `identifier=${String(pkg.identifier)}`,
           `productIdentifier=${String(pkg.product.identifier)}`,
           `price=${String(pkg.product.priceString || "")}`,
+          `introOffer=${describeIntroOffer(pkg.product.introPrice)}`,
           `title=${String(pkg.product.title || "")}`,
         ].join(" | ")
     )
@@ -517,18 +569,151 @@ export function isEligibleForMonthlyIntroTrial(
 export function packageHasIntroductoryOffer(
   pkg: PurchasesPackage | null | undefined
 ): boolean {
-  return Boolean((pkg?.product as { introPrice?: unknown })?.introPrice);
+  return Boolean(pkg?.product?.introPrice);
+}
+
+export function getMonthlyIntroOffer(
+  pkg: PurchasesPackage | null | undefined
+): PurchasesIntroPrice | null {
+  return pkg?.product?.introPrice ?? null;
+}
+
+export function isIntroOfferFreeTrial(
+  intro: PurchasesIntroPrice | null | undefined
+): boolean {
+  if (!intro) return false;
+  return intro.price === 0;
+}
+
+function parseIso8601PeriodDays(period: string): number | null {
+  const raw = String(period || "").trim().toUpperCase();
+  if (!raw.startsWith("P")) return null;
+
+  const match = raw.match(/^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?$/);
+  if (!match) return null;
+
+  const years = Number(match[1] || 0);
+  const months = Number(match[2] || 0);
+  const weeks = Number(match[3] || 0);
+  const days = Number(match[4] || 0);
+  const total = years * 365 + months * 30 + weeks * 7 + days;
+  return total > 0 ? total : null;
+}
+
+export function resolveIntroTrialDays(
+  intro: PurchasesIntroPrice | null | undefined
+): number | null {
+  if (!intro) return null;
+
+  const fromPeriod = parseIso8601PeriodDays(intro.period);
+  if (fromPeriod) return fromPeriod;
+
+  const units = Number(intro.periodNumberOfUnits || 0);
+  const cycles = Number(intro.cycles || 1);
+  const unit = String(intro.periodUnit || "").toUpperCase();
+  if (!units) return null;
+
+  const unitDays =
+    unit === "DAY"
+      ? 1
+      : unit === "WEEK"
+        ? 7
+        : unit === "MONTH"
+          ? 30
+          : unit === "YEAR"
+            ? 365
+            : 0;
+  if (!unitDays) return null;
+
+  return units * cycles * unitDays;
+}
+
+export function formatIntroTrialLabel(
+  intro: PurchasesIntroPrice | null | undefined,
+  fallbackDays = MONTHLY_INTRO_TRIAL_DAYS
+): string | null {
+  if (!intro || !isIntroOfferFreeTrial(intro)) return null;
+
+  const days = resolveIntroTrialDays(intro) ?? fallbackDays;
+  const dayLabel = days === 1 ? "Day" : "Days";
+  return `${days} ${dayLabel} Free Trial`;
+}
+
+export function logMonthlyIntroOfferFromStoreKit(
+  monthlyPackage: PurchasesPackage | null | undefined
+) {
+  const intro = getMonthlyIntroOffer(monthlyPackage);
+  console.log("KRISTO_RC_PRODUCT_INTRO_OFFER", {
+    productId: monthlyPackage?.product.identifier || null,
+    hasIntroPrice: Boolean(intro),
+    introOffer: describeIntroOffer(intro),
+    isFreeTrial: isIntroOfferFreeTrial(intro),
+    trialDays: resolveIntroTrialDays(intro),
+  });
+}
+
+export async function fetchMonthlyIntroTrialEligibility(): Promise<INTRO_ELIGIBILITY_STATUS | null> {
+  if (isRevenueCatPurchasingDisabled()) return null;
+
+  const ready = await ensurePurchasesConfigured();
+  if (!ready) return null;
+
+  try {
+    const result = await Purchases.checkTrialOrIntroductoryPriceEligibility([
+      PREMIUM_MONTHLY_PRODUCT_ID,
+    ]);
+    return result[PREMIUM_MONTHLY_PRODUCT_ID]?.status ?? null;
+  } catch (error) {
+    console.log("KRISTO_RC_INTRO_ELIGIBILITY_FAILED", getRevenueCatErrorDetail(error));
+    return null;
+  }
+}
+
+export function resolveMonthlyIntroTrialEligible(
+  customerInfo: CustomerInfo | null | undefined,
+  monthlyPackage: PurchasesPackage | null | undefined,
+  introEligibilityStatus?: INTRO_ELIGIBILITY_STATUS | null
+): boolean {
+  const intro = getMonthlyIntroOffer(monthlyPackage);
+  if (!intro || !isIntroOfferFreeTrial(intro)) {
+    return false;
+  }
+
+  if (introEligibilityStatus === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_INELIGIBLE) {
+    return false;
+  }
+  if (
+    introEligibilityStatus ===
+    INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_NO_INTRO_OFFER_EXISTS
+  ) {
+    return false;
+  }
+  if (introEligibilityStatus === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_ELIGIBLE) {
+    return true;
+  }
+
+  return isEligibleForMonthlyIntroTrial(customerInfo);
+}
+
+export function resolveMonthlyIntroTrialLabel(
+  monthlyPackage: PurchasesPackage | null | undefined
+): string | null {
+  return formatIntroTrialLabel(getMonthlyIntroOffer(monthlyPackage));
 }
 
 export function formatMonthlySubscriptionPrice(
   priceString: string,
+  monthlyPackage: PurchasesPackage | null | undefined,
   eligibleForTrial: boolean
 ): string {
   const price = String(priceString || "").trim() || "$49.99";
-  if (eligibleForTrial) {
-    return `${MONTHLY_INTRO_TRIAL_DAYS} days free, then ${price}/month`;
+  if (!eligibleForTrial) {
+    return `${price}/month`;
   }
-  return `${price}/month`;
+
+  const intro = getMonthlyIntroOffer(monthlyPackage);
+  const days = resolveIntroTrialDays(intro) ?? MONTHLY_INTRO_TRIAL_DAYS;
+  return `${days} days free, then ${price}/month`;
 }
 
 export function formatYearlySubscriptionPrice(
@@ -540,8 +725,7 @@ export function formatYearlySubscriptionPrice(
     return `${price}/year`;
   }
 
-  const intro = (pkg?.product as { introPrice?: { priceString?: string; periodNumberOfUnits?: number; periodUnit?: string } })
-    ?.introPrice;
+  const intro = pkg?.product?.introPrice;
   const introPrice = String(intro?.priceString || "").trim();
   if (!introPrice) {
     return `${price}/year`;

@@ -11,7 +11,7 @@ import {
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import type { CustomerInfo, PurchasesPackage } from "react-native-purchases";
+import type { CustomerInfo, INTRO_ELIGIBILITY_STATUS, PurchasesPackage } from "react-native-purchases";
 import {
   getPaymentsState,
   setPaymentsCurrentModule,
@@ -29,17 +29,19 @@ import {
   getCustomerSubscriptionInfo,
   getEffectiveSubscriptionState,
   hasRealActiveEntitlement,
-  isEligibleForMonthlyIntroTrial,
+  fetchMonthlyIntroTrialEligibility,
+  resolveMonthlyIntroTrialEligible,
   openSubscriptionManagement,
   purchaseSubscriptionPackage,
   resolveMonthlyPackage,
   resolveYearlyPackage,
   describeCurrentOfferingPackages,
+  logMonthlyIntroOfferFromStoreKit,
   setRevenueCatDebugRouteEnabled,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
-  activateChurchSubscriptionForPastor,
   isPastorSessionRole,
+  syncChurchSubscriptionAfterPurchase,
 } from "../../../../src/lib/churchSubscription";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
@@ -76,6 +78,8 @@ export default function PaymentsCheckoutScreen() {
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
+  const [monthlyIntroEligibility, setMonthlyIntroEligibility] =
+    useState<INTRO_ELIGIBILITY_STATUS | null>(null);
   const [loadingPackages, setLoadingPackages] = useState(true);
   const didLogCheckoutPackagesRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
@@ -108,9 +112,12 @@ export default function PaymentsCheckoutScreen() {
   const sessionChurchId = String((session as any)?.churchId || "").trim();
   const sessionUserId = String((session as any)?.userId || "").trim();
 
-  async function maybeActivateChurchSubscription(resolvedPlan: SubscriptionPlanKey) {
+  async function maybeActivateChurchSubscription(
+    resolvedPlan: SubscriptionPlanKey,
+    initialCustomerInfo?: CustomerInfo | null
+  ) {
     if (!isPastorSessionRole(sessionRole)) {
-      return { activated: false, skipped: true as const };
+      return { activated: false, skipped: true as const, canUseMediaTools: false };
     }
 
     let churchId = sessionChurchId;
@@ -121,9 +128,9 @@ export default function PaymentsCheckoutScreen() {
 
     if (!churchId) {
       if (isAppleReviewBypassEnabled()) {
-        return { activated: false, skipped: true as const };
+        return { activated: false, skipped: true as const, canUseMediaTools: false };
       }
-      return { activated: false, skipped: false as const };
+      return { activated: false, skipped: false as const, canUseMediaTools: false };
     }
 
     const headers = getKristoHeaders({
@@ -132,13 +139,23 @@ export default function PaymentsCheckoutScreen() {
       churchId,
     }) as Record<string, string>;
 
-    const activated = await activateChurchSubscriptionForPastor(
+    const sync = await syncChurchSubscriptionAfterPurchase({
       churchId,
-      resolvedPlan,
-      headers
-    );
+      userId: sessionUserId,
+      role: sessionRole,
+      churchRole: String((session as any)?.churchRole || "").trim() || undefined,
+      subscriptionPlan: resolvedPlan,
+      headers,
+      purchaseConfirmed: true,
+      initialCustomerInfo: initialCustomerInfo ?? null,
+    });
 
-    return { activated, skipped: false as const };
+    return {
+      activated: sync.churchActivated,
+      skipped: false as const,
+      canUseMediaTools: sync.canUseMediaTools,
+      churchSubscriptionActive: sync.churchSubscriptionActive,
+    };
   }
 
   useEffect(() => {
@@ -186,6 +203,16 @@ export default function PaymentsCheckoutScreen() {
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
         setCustomerInfo(info);
+        logMonthlyIntroOfferFromStoreKit(monthly);
+
+        try {
+          const introEligibility = await fetchMonthlyIntroTrialEligibility();
+          if (!alive) return;
+          setMonthlyIntroEligibility(introEligibility);
+        } catch {
+          if (!alive) return;
+          setMonthlyIntroEligibility(null);
+        }
 
         const planPackage = safePlan === "monthly" ? monthly : yearly;
         if (!planPackage && !hasRealActiveEntitlement(info)) {
@@ -222,31 +249,80 @@ export default function PaymentsCheckoutScreen() {
   const livePrice =
     targetPackage?.product.priceString || planMeta.fallbackPrice;
   const monthlyTrialEligible =
-    safePlan === "monthly" && isEligibleForMonthlyIntroTrial(customerInfo);
-  const isSubscribed = hasRealActiveEntitlement(customerInfo);
+    safePlan === "monthly" &&
+    resolveMonthlyIntroTrialEligible(customerInfo, monthlyPackage, monthlyIntroEligibility);
+  const planStatus = paymentsState.subscriptions.planStatus;
+  const isSubscribed =
+    hasRealActiveEntitlement(customerInfo) || planStatus === "active";
+  const isPastor = isPastorSessionRole(sessionRole);
 
   const priceLine = useMemo(() => {
     if (safePlan === "monthly") {
-      return formatMonthlySubscriptionPrice(livePrice, monthlyTrialEligible);
+      return formatMonthlySubscriptionPrice(livePrice, monthlyPackage, monthlyTrialEligible);
     }
     return formatYearlySubscriptionPrice(livePrice, targetPackage);
-  }, [safePlan, livePrice, monthlyTrialEligible, targetPackage]);
+  }, [safePlan, livePrice, monthlyTrialEligible, monthlyPackage, targetPackage]);
 
   const confirmLabel =
     safePlan === "monthly" ? "Subscribe Monthly" : "Subscribe Yearly";
 
-  async function refreshCustomerInfoAfterPurchase() {
-    let info = await getCustomerSubscriptionInfo();
-    let active = hasRealActiveEntitlement(info);
-
-    for (let i = 0; i < 5 && !active; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-      info = await getCustomerSubscriptionInfo();
-      active = hasRealActiveEntitlement(info);
+  function churchActivationNote(activation: {
+    skipped?: boolean;
+    canUseMediaTools?: boolean;
+    churchSubscriptionActive?: boolean;
+    activated?: boolean;
+  }) {
+    if (activation.skipped) return "";
+    if (activation.canUseMediaTools) return " Media tools are now unlocked.";
+    if (activation.churchSubscriptionActive || activation.activated) {
+      return " Church subscription synced. Open Media to refresh if tools are still locked.";
     }
+    return " Church subscription sync is still completing. Open Media again in a moment.";
+  }
 
-    setCustomerInfo(info);
-    return { info, active };
+  async function handleSyncMediaTools() {
+    if (submitting || !isSubscribed || !isPastor) return;
+
+    try {
+      setSubmitting(true);
+
+      let info = customerInfo;
+      if (!info) {
+        info = await getCustomerSubscriptionInfo();
+        setCustomerInfo(info);
+      }
+
+      const resolvedPlan =
+        getEffectiveSubscriptionState(info).selectedPlan || safePlan;
+      setSubscriptionSelectedPlan(resolvedPlan);
+      setSubscriptionPlanStatus("active");
+
+      const activation = await maybeActivateChurchSubscription(resolvedPlan, info);
+      const churchNote = churchActivationNote(activation);
+
+      if (activation.canUseMediaTools) {
+        Alert.alert("Media tools unlocked", `Your church subscription is synced.${churchNote}`, [
+          { text: "OK", onPress: () => router.back() },
+        ]);
+        return;
+      }
+
+      Alert.alert(
+        activation.activated || activation.churchSubscriptionActive
+          ? "Subscription synced"
+          : "Sync in progress",
+        activation.activated || activation.churchSubscriptionActive
+          ? `Your active subscription is linked to church media.${churchNote}`
+          : `Your subscription is active, but church sync is still completing.${churchNote}`
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Sync failed",
+        String(error?.message || "Could not sync church subscription. Try again.")
+      );
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleConfirmCheckout() {
@@ -261,36 +337,32 @@ export default function PaymentsCheckoutScreen() {
 
     try {
       setSubmitting(true);
-      await purchaseSubscriptionPackage(targetPackage);
+      const purchaseResult = await purchaseSubscriptionPackage(targetPackage);
+      const initialInfo = purchaseResult.customerInfo;
+      setCustomerInfo(initialInfo);
 
-      const { info, active } = await refreshCustomerInfoAfterPurchase();
+      const resolvedPlan =
+        getEffectiveSubscriptionState(initialInfo).selectedPlan || safePlan;
+      setSubscriptionSelectedPlan(resolvedPlan);
+      setSubscriptionPlanStatus("active");
 
-      if (active) {
-        const effective = getEffectiveSubscriptionState(info);
-        const resolvedPlan = effective.selectedPlan;
-        setSubscriptionSelectedPlan(resolvedPlan);
-        setSubscriptionPlanStatus(effective.planStatus);
+      const activation = await maybeActivateChurchSubscription(resolvedPlan, initialInfo);
 
-        const activation = await maybeActivateChurchSubscription(resolvedPlan);
-        const successMessage =
-          resolvedPlan === "monthly"
-            ? "Monthly subscription is now active."
-            : "Yearly subscription is now active.";
-        const churchNote = activation.skipped
-          ? ""
-          : activation.activated
-          ? " Church schedule access is now unlocked."
-          : " Create your church media profile to unlock schedule access.";
-
-        Alert.alert("Success", `${successMessage}${churchNote}`, [
-          { text: "OK", onPress: () => router.back() },
-        ]);
-      } else {
-        Alert.alert(
-          "Purchase syncing",
-          "Purchase finished, but subscription sync is still completing. Please wait a moment and try again."
-        );
+      if (hasRealActiveEntitlement(initialInfo)) {
+        setSubscriptionPlanStatus("active");
+      } else if (activation.canUseMediaTools || activation.churchSubscriptionActive) {
+        setSubscriptionPlanStatus("active");
       }
+
+      const successMessage =
+        resolvedPlan === "monthly"
+          ? "Monthly subscription is now active."
+          : "Yearly subscription is now active.";
+      const churchNote = churchActivationNote(activation);
+
+      Alert.alert("Success", `${successMessage}${churchNote}`, [
+        { text: "OK", onPress: () => router.back() },
+      ]);
     } catch (error: any) {
       const msg = String(error?.message || "");
       if (/cancel/i.test(msg)) {
@@ -412,24 +484,53 @@ export default function PaymentsCheckoutScreen() {
 
           <View style={s.ctaBlock}>
             {isSubscribed ? (
-              <Pressable
-                onPress={handleManageSubscription}
-                disabled={submitting}
-                style={({ pressed }) => [
-                  s.primaryBtn,
-                  submitting ? s.disabledBtn : null,
-                  pressed ? s.pressed : null,
-                ]}
-              >
-                {submitting ? (
-                  <ActivityIndicator color="#111" />
-                ) : (
-                  <>
-                    <Ionicons name="settings-outline" size={18} color="#111" />
-                    <Text style={s.primaryBtnText}>Manage / Cancel Subscription</Text>
-                  </>
-                )}
-              </Pressable>
+              <>
+                {isPastor ? (
+                  <Pressable
+                    onPress={handleSyncMediaTools}
+                    disabled={submitting}
+                    style={({ pressed }) => [
+                      s.primaryBtn,
+                      submitting ? s.disabledBtn : null,
+                      pressed ? s.pressed : null,
+                    ]}
+                  >
+                    {submitting ? (
+                      <ActivityIndicator color="#111" />
+                    ) : (
+                      <>
+                        <Ionicons name="lock-open-outline" size={18} color="#111" />
+                        <Text style={s.primaryBtnText}>Sync / Unlock Media Tools</Text>
+                      </>
+                    )}
+                  </Pressable>
+                ) : null}
+
+                <Pressable
+                  onPress={handleManageSubscription}
+                  disabled={submitting}
+                  style={({ pressed }) => [
+                    isPastor ? s.secondaryBtn : s.primaryBtn,
+                    submitting ? s.disabledBtn : null,
+                    pressed ? s.pressed : null,
+                  ]}
+                >
+                  {submitting && !isPastor ? (
+                    <ActivityIndicator color="#111" />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name="settings-outline"
+                        size={18}
+                        color={isPastor ? "#F4C95D" : "#111"}
+                      />
+                      <Text style={isPastor ? s.secondaryBtnText : s.primaryBtnText}>
+                        Manage / Cancel Subscription
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
+              </>
             ) : (
               <Pressable
                 onPress={handleConfirmCheckout}
@@ -452,7 +553,9 @@ export default function PaymentsCheckoutScreen() {
 
             <Text style={s.footText}>
               {isSubscribed
-                ? "Subscriptions are managed through Apple. Changes apply on your next billing date."
+                ? isPastor
+                  ? "Tap Sync if Media tools are still locked after an active trial or subscription."
+                  : "Subscriptions are managed through Apple. Changes apply on your next billing date."
                 : monthlyTrialEligible
                 ? "No charge during the free trial. Cancel anytime in Apple Subscriptions."
                 : "Secure checkout through Apple. Cancel anytime."}
@@ -721,6 +824,27 @@ const s = StyleSheet.create({
     fontSize: 15,
     fontWeight: "900",
     letterSpacing: 0.15,
+  },
+
+  secondaryBtn: {
+    minHeight: 54,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 20,
+    marginTop: 10,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.28)",
+  },
+
+  secondaryBtnText: {
+    color: "#F4C95D",
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: 0.1,
   },
 
   footText: {

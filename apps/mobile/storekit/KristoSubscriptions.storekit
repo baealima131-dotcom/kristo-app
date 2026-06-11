@@ -21,7 +21,11 @@
     {
       "id" : "A4F8C2E1",
       "localizations" : [
-
+        {
+          "description" : "Kristo church premium subscriptions.",
+          "displayName" : "Kristo Premium",
+          "locale" : "en_US"
+        }
       ],
       "name" : "Kristo Premium",
       "subscriptions" : [
@@ -36,7 +40,13 @@
           "familyShareable" : false,
           "groupNumber" : 1,
           "internalID" : "M0N7H3L9",
-          "introductoryOffer" : null,
+          "introductoryOffer" : {
+            "displayPrice" : "0",
+            "internalID" : "M0N7H3L9_INTRO",
+            "numberOfPeriods" : 1,
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P14D"
+          },
           "localizations" : [
             {
               "description" : "Kristo church premium monthly access.",
