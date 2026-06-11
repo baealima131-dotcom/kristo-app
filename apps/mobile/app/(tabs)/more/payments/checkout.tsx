@@ -21,7 +21,7 @@ import {
   type SubscriptionPlanKey,
 } from "../../../../src/store/paymentsStore";
 import {
-  configureMobileSubscriptions,
+  configureChurchMobileSubscriptions,
   formatMonthlySubscriptionPrice,
   formatSubscriptionSetupError,
   formatYearlySubscriptionPrice,
@@ -29,6 +29,9 @@ import {
   getCustomerSubscriptionInfo,
   getEffectiveSubscriptionState,
   hasRealActiveEntitlement,
+  hasActivePremiumProduct,
+  logInRevenueCatForChurchSubscription,
+  resolvePremiumPlanFromCustomerInfo,
   fetchMonthlyIntroTrialEligibility,
   resolveMonthlyIntroTrialEligible,
   openSubscriptionManagement,
@@ -112,6 +115,15 @@ export default function PaymentsCheckoutScreen() {
   const sessionChurchId = String((session as any)?.churchId || "").trim();
   const sessionUserId = String((session as any)?.userId || "").trim();
 
+  async function resolveCheckoutChurchId(): Promise<string> {
+    let churchId = sessionChurchId;
+    if (!churchId) {
+      const recovered = await recoverChurchIdFromMembership(session, setSession);
+      churchId = recovered.churchId;
+    }
+    return String(churchId || "").trim();
+  }
+
   async function maybeActivateChurchSubscription(
     resolvedPlan: SubscriptionPlanKey,
     initialCustomerInfo?: CustomerInfo | null
@@ -168,15 +180,12 @@ export default function PaymentsCheckoutScreen() {
       setPackagesError(null);
 
       try {
-        const appUserID =
-          String(
-            (session as any)?.userId ||
-              (session as any)?.id ||
-              (session as any)?.profile?.userId ||
-              ""
-          ).trim();
+        const churchId = await resolveCheckoutChurchId();
+        if (!churchId) {
+          throw new Error("Church id is required before loading subscription packages.");
+        }
 
-        const configured = await configureMobileSubscriptions(appUserID);
+        const configured = await configureChurchMobileSubscriptions(churchId);
         if (!configured) {
           throw new Error("RevenueCat is not configured yet.");
         }
@@ -252,9 +261,27 @@ export default function PaymentsCheckoutScreen() {
     safePlan === "monthly" &&
     resolveMonthlyIntroTrialEligible(customerInfo, monthlyPackage, monthlyIntroEligibility);
   const planStatus = paymentsState.subscriptions.planStatus;
+  const hasRealEntitlement = hasRealActiveEntitlement(customerInfo);
+  const hasActivePremiumProductFlag = hasActivePremiumProduct(customerInfo);
   const isSubscribed =
-    hasRealActiveEntitlement(customerInfo) || planStatus === "active";
+    hasRealEntitlement || hasActivePremiumProductFlag || planStatus === "active";
   const isPastor = isPastorSessionRole(sessionRole);
+
+  useEffect(() => {
+    console.log("KRISTO_CHECKOUT_SUBSCRIBED_STATE", {
+      isSubscribed,
+      hasRealEntitlement,
+      hasActivePremiumProduct: hasActivePremiumProductFlag,
+      planStatus,
+      isPastor,
+    });
+  }, [
+    isSubscribed,
+    hasRealEntitlement,
+    hasActivePremiumProductFlag,
+    planStatus,
+    isPastor,
+  ]);
 
   const priceLine = useMemo(() => {
     if (safePlan === "monthly") {
@@ -281,7 +308,8 @@ export default function PaymentsCheckoutScreen() {
   }
 
   async function handleSyncMediaTools() {
-    if (submitting || !isSubscribed || !isPastor) return;
+    if (submitting || !isPastor) return;
+    if (!isSubscribed && !hasActivePremiumProductFlag) return;
 
     try {
       setSubmitting(true);
@@ -293,7 +321,9 @@ export default function PaymentsCheckoutScreen() {
       }
 
       const resolvedPlan =
-        getEffectiveSubscriptionState(info).selectedPlan || safePlan;
+        getEffectiveSubscriptionState(info).selectedPlan ||
+        resolvePremiumPlanFromCustomerInfo(info) ||
+        safePlan;
       setSubscriptionSelectedPlan(resolvedPlan);
       setSubscriptionPlanStatus("active");
 
@@ -327,6 +357,7 @@ export default function PaymentsCheckoutScreen() {
 
   async function handleConfirmCheckout() {
     if (submitting || isSubscribed) return;
+    if (isPastor && hasActivePremiumProductFlag) return;
 
     if (!targetPackage) {
       setPackagesError(
@@ -337,6 +368,14 @@ export default function PaymentsCheckoutScreen() {
 
     try {
       setSubmitting(true);
+
+      const churchId = await resolveCheckoutChurchId();
+      if (!churchId) {
+        setPackagesError("Church id is required before purchasing church premium.");
+        return;
+      }
+
+      await logInRevenueCatForChurchSubscription(churchId);
       const purchaseResult = await purchaseSubscriptionPackage(targetPackage);
       const initialInfo = purchaseResult.customerInfo;
       setCustomerInfo(initialInfo);
@@ -483,7 +522,7 @@ export default function PaymentsCheckoutScreen() {
           ) : null}
 
           <View style={s.ctaBlock}>
-            {isSubscribed ? (
+            {isSubscribed || (isPastor && hasActivePremiumProductFlag) ? (
               <>
                 {isPastor ? (
                   <Pressable

@@ -8,8 +8,8 @@ import * as SplashScreen from "expo-splash-screen";
 import { KristoSessionProvider, useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
   ensurePurchasesConfigured,
+  logInRevenueCatForChurchSubscription,
   prefetchSubscriptionOfferings,
-  syncPurchasesAppUser,
 } from "@/src/lib/payments/mobileSubscriptions";
 import { isRevenueCatPurchasingDisabled } from "@/src/lib/subscriptionBypass";
 import { deferStartupWorkAfterHomeFirstFrame } from "@/src/lib/firstPaint";
@@ -21,6 +21,7 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 function RevenueCatBootstrap() {
   const { session, loading } = useKristoSession();
   const bypassRevenueCat = isRevenueCatPurchasingDisabled();
+  const churchId = String((session as any)?.churchId || "").trim();
 
   React.useEffect(() => {
     if (bypassRevenueCat) return;
@@ -31,12 +32,9 @@ function RevenueCatBootstrap() {
   }, [bypassRevenueCat]);
 
   React.useEffect(() => {
-    if (bypassRevenueCat || loading) return;
+    if (bypassRevenueCat || loading || !churchId) return;
 
-    const appUserId = String(session?.userId || "").trim();
-    if (!appUserId) return;
-
-    syncPurchasesAppUser(appUserId)
+    logInRevenueCatForChurchSubscription(churchId)
       .then(() => {
         deferStartupWorkAfterHomeFirstFrame(
           async () => {
@@ -46,9 +44,9 @@ function RevenueCatBootstrap() {
         );
       })
       .catch((error) => {
-        console.log("RevenueCat logIn error", error);
+        console.log("RevenueCat church logIn error", error);
       });
-  }, [bypassRevenueCat, loading, session?.userId]);
+  }, [bypassRevenueCat, loading, churchId]);
 
   return <Slot />;
 }

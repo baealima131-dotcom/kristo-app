@@ -12,6 +12,7 @@ import {
   CHURCH_PREMIUM_ENTITLEMENT,
   getCustomerSubscriptionInfo,
   hasRealActiveEntitlement,
+  logInRevenueCatForChurchSubscription,
   refreshCustomerInfoAfterStorePurchase,
 } from "./payments/mobileSubscriptions";
 
@@ -355,7 +356,8 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
     isPastor,
   });
 
-  let info: CustomerInfo | null = args.initialCustomerInfo ?? null;
+  const churchCustomerInfo = await logInRevenueCatForChurchSubscription(churchId);
+  let info: CustomerInfo | null = churchCustomerInfo ?? args.initialCustomerInfo ?? null;
   let entitlementActive = hasRealActiveEntitlement(info);
   let churchActivated = false;
   const shouldAttemptChurchActivation =

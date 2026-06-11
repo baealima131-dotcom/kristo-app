@@ -214,9 +214,12 @@ export async function PATCH(req: Request) {
       }
     }
 
-    // Never trust the client's `subscriptionActive: true`. Verify the pastor's
+    // Never trust the client's `subscriptionActive: true`. Verify the church's
     // RevenueCat `church_premium` entitlement server-side before activating.
-    const verification = await verifyChurchPremiumEntitlement(a.userId);
+    console.log("KRISTO_CHURCH_SUBSCRIPTION_VERIFY_APP_USER_ID", {
+      appUserId: a.churchId,
+    });
+    const verification = await verifyChurchPremiumEntitlement(a.churchId);
     if (!verification.active) {
       console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_REJECTED", {
         churchId: a.churchId,

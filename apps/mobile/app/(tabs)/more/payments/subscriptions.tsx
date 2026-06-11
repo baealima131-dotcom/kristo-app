@@ -21,7 +21,7 @@ import {
   type SubscriptionPlanKey,
 } from "../../../../src/store/paymentsStore";
 import {
-  configureMobileSubscriptions,
+  configureChurchMobileSubscriptions,
   formatSubscriptionSetupError,
   getSubscriptionOfferings,
   getCustomerSubscriptionInfo,
@@ -38,6 +38,7 @@ import {
   setRevenueCatDebugRouteEnabled,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import { isPastorSessionRole } from "../../../../src/lib/churchSubscription";
+import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
 import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
 
@@ -77,7 +78,7 @@ function formatPrice(pkg?: PurchasesPackage, fallback?: string) {
 export default function PaymentsSubscriptionsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { session, loading: sessionLoading } = useKristoSession();
+  const { session, loading: sessionLoading, setSession } = useKristoSession();
 
   const [paymentsState, setPaymentsState] = useState(() => getPaymentsState());
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
@@ -117,15 +118,16 @@ export default function PaymentsSubscriptionsScreen() {
       setSubscriptionError(null);
 
       try {
-        const appUserID =
-          String(
-            (session as any)?.userId ||
-              (session as any)?.id ||
-              (session as any)?.profile?.userId ||
-              ""
-          ).trim();
+        let churchId = String((session as any)?.churchId || "").trim();
+        if (!churchId) {
+          const recovered = await recoverChurchIdFromMembership(session, setSession);
+          churchId = recovered.churchId;
+        }
+        if (!churchId) {
+          throw new Error("Church id is required before loading subscription packages.");
+        }
 
-        const configured = await configureMobileSubscriptions(appUserID);
+        const configured = await configureChurchMobileSubscriptions(churchId);
         if (!configured) {
           throw new Error("RevenueCat is not configured yet.");
         }

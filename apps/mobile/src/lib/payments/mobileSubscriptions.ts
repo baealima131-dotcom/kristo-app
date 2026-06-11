@@ -191,7 +191,7 @@ export async function syncPurchasesAppUser(appUserID?: string): Promise<void> {
 
   const safeAppUserId = getDefaultAppUserId(appUserID);
   if (!safeAppUserId) {
-    console.log("RevenueCat logIn skipped: missing real userId");
+    console.log("RevenueCat logIn skipped: missing app user id");
     return;
   }
 
@@ -226,6 +226,60 @@ export async function syncPurchasesAppUser(appUserID?: string): Promise<void> {
     loginPromise = null;
     loginAppUserId = null;
   }
+}
+
+/** Church premium subscriptions use churchId as the RevenueCat App User ID. */
+export async function logInRevenueCatForChurchSubscription(
+  churchId: string
+): Promise<CustomerInfo | null> {
+  const cid = String(churchId || "").trim();
+  if (!cid) return null;
+  if (isRevenueCatPurchasingDisabled()) return null;
+
+  const ready = await ensurePurchasesConfigured();
+  if (!ready) return null;
+
+  console.log("KRISTO_RC_LOGIN_FOR_CHURCH_SUBSCRIPTION", { churchId: cid });
+
+  try {
+    if (configuredAppUserId !== cid) {
+      if (loginPromise && loginAppUserId === cid) {
+        await loginPromise;
+      } else {
+        loginAppUserId = cid;
+        loginPromise = (async () => {
+          await Purchases.logIn(cid);
+          configuredAppUserId = cid;
+        })();
+        try {
+          await loginPromise;
+        } finally {
+          loginPromise = null;
+          loginAppUserId = null;
+        }
+      }
+    }
+
+    await Purchases.syncPurchases();
+    return await Purchases.getCustomerInfo();
+  } catch (error) {
+    console.log("KRISTO_RC_LOGIN_FOR_CHURCH_SUBSCRIPTION_FAILED", {
+      churchId: cid,
+      ...getRevenueCatErrorDetail(error),
+    });
+    return null;
+  }
+}
+
+export async function configureChurchMobileSubscriptions(churchId: string): Promise<boolean> {
+  const cid = String(churchId || "").trim();
+  if (!cid) return false;
+
+  const ready = await ensurePurchasesConfigured();
+  if (!ready) return false;
+
+  const info = await logInRevenueCatForChurchSubscription(cid);
+  return Boolean(info) || (await purchasesIsConfigured());
 }
 
 export async function configureMobileSubscriptions(appUserID?: string): Promise<boolean> {
@@ -384,10 +438,118 @@ export function hasActiveEntitlement(
  * never claim a plan is active without an actual StoreKit purchase.
  */
 export function hasRealActiveEntitlement(
-  customerInfo: CustomerInfo,
+  customerInfo: CustomerInfo | null | undefined,
   entitlementId = CHURCH_PREMIUM_ENTITLEMENT
 ) {
   return Boolean(customerInfo?.entitlements?.active?.[entitlementId]);
+}
+
+function isPremiumProductIdentifier(productId: string): boolean {
+  const id = String(productId || "").trim();
+  if (!id) return false;
+  return (
+    id === PREMIUM_MONTHLY_PRODUCT_ID ||
+    id === PREMIUM_YEARLY_PRODUCT_ID ||
+    /premium_monthly|premium_yearly|monthly|\$rc_monthly|yearly|annual|\$rc_annual/i.test(id)
+  );
+}
+
+function subscriptionExpirationIsActive(expires: string | null | undefined): boolean {
+  if (expires === null || expires === undefined) return true;
+  const ms = Date.parse(String(expires));
+  if (Number.isNaN(ms)) return false;
+  return ms > Date.now();
+}
+
+/** True when StoreKit/RC shows an active premium_monthly or premium_yearly product, even if church_premium entitlement is delayed. */
+export function hasActivePremiumProduct(
+  customerInfo: CustomerInfo | null | undefined
+): boolean {
+  if (!customerInfo) return false;
+
+  if ((customerInfo.activeSubscriptions || []).some(isPremiumProductIdentifier)) {
+    return true;
+  }
+
+  for (const [productId, expires] of Object.entries(
+    customerInfo.allExpirationDates || {}
+  )) {
+    if (isPremiumProductIdentifier(productId) && subscriptionExpirationIsActive(expires)) {
+      return true;
+    }
+  }
+
+  for (const [productId, subscription] of Object.entries(
+    customerInfo.subscriptionsByProductIdentifier || {}
+  )) {
+    if (
+      isPremiumProductIdentifier(productId) &&
+      subscriptionExpirationIsActive(subscription?.expiresDate)
+    ) {
+      return true;
+    }
+  }
+
+  if (
+    subscriptionExpirationIsActive(customerInfo.latestExpirationDate) &&
+    (customerInfo.allPurchasedProductIdentifiers || []).some(isPremiumProductIdentifier)
+  ) {
+    return true;
+  }
+
+  for (const entitlement of Object.values(customerInfo.entitlements?.all || {})) {
+    const productId = String(entitlement?.productIdentifier || "").trim();
+    if (
+      isPremiumProductIdentifier(productId) &&
+      subscriptionExpirationIsActive(entitlement?.expirationDate)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function resolvePremiumPlanFromCustomerInfo(
+  customerInfo: CustomerInfo | null | undefined
+): SubscriptionPlanKey | null {
+  if (!customerInfo) return null;
+
+  const candidates = [
+    ...(customerInfo.activeSubscriptions || []),
+    ...Object.keys(customerInfo.subscriptionsByProductIdentifier || {}),
+    ...(customerInfo.allPurchasedProductIdentifiers || []),
+  ];
+
+  for (const productId of candidates) {
+    if (!isPremiumProductIdentifier(productId)) continue;
+
+    const subscription = customerInfo.subscriptionsByProductIdentifier?.[productId];
+    if (subscription && !subscriptionExpirationIsActive(subscription.expiresDate)) {
+      continue;
+    }
+
+    const expires = customerInfo.allExpirationDates?.[productId];
+    if (expires !== undefined && !subscriptionExpirationIsActive(expires)) {
+      continue;
+    }
+
+    if (
+      productId === PREMIUM_YEARLY_PRODUCT_ID ||
+      /premium_yearly|yearly|annual|\$rc_annual/i.test(productId)
+    ) {
+      return "yearly";
+    }
+
+    if (
+      productId === PREMIUM_MONTHLY_PRODUCT_ID ||
+      /premium_monthly|monthly|\$rc_monthly/i.test(productId)
+    ) {
+      return "monthly";
+    }
+  }
+
+  return null;
 }
 
 export function resolveActiveSubscriptionPlan(
