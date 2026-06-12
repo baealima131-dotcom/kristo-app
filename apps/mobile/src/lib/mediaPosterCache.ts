@@ -31,6 +31,7 @@ const videoUrlPosterEntries = new Map<string, string>();
 const prefetchedUris = new Set<string>();
 const posterListeners = new Map<string, Set<(posterUri: string) => void>>();
 let hydratePromise: Promise<void> | null = null;
+let hydrateSessionReady = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let persistDirty = false;
 let deferredHydrateRequested = false;
@@ -155,6 +156,12 @@ async function readPersistedIndex(): Promise<MediaPosterCacheIndex | null> {
 }
 
 export async function hydrateMediaPosterCache(): Promise<void> {
+  if (hydrateSessionReady) {
+    console.log("KRISTO_MEDIA_POSTER_CACHE_HYDRATE_SKIPPED_ALREADY_READY", {
+      count: memoryEntries.size,
+    });
+    return;
+  }
   if (shouldDeferBackgroundMediaJobs()) {
     deferredHydrateRequested = true;
     return;
@@ -163,7 +170,10 @@ export async function hydrateMediaPosterCache(): Promise<void> {
 
   hydratePromise = (async () => {
     const index = await readPersistedIndex();
-    if (!index) return;
+    if (!index) {
+      hydrateSessionReady = true;
+      return;
+    }
 
     for (const entry of Object.values(index.entries)) {
       if (!entry?.postId || !entry?.posterUri || !entry?.videoUrl) continue;
@@ -182,6 +192,7 @@ export async function hydrateMediaPosterCache(): Promise<void> {
       rememberVideoUrlPoster(entry.videoUrl, entry.posterUri);
     }
 
+    hydrateSessionReady = true;
     console.log("KRISTO_MEDIA_POSTER_CACHE_HYDRATED", {
       count: memoryEntries.size,
     });

@@ -3,9 +3,11 @@ import {
   isHomeFeedScheduleCardRow,
   isMediaLiveSlotsHomeFeedRow,
 } from "@/src/components/homeFeed/homeFeedUtils";
+import type { HomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 
 export const YOUTUBE_CARD_H_PADDING = 12;
 export const YOUTUBE_THUMB_ASPECT = 16 / 9;
+export const TIKTOK_THUMB_ASPECT = 9 / 16;
 export const YOUTUBE_ACTIONS_HEIGHT = 48;
 export const YOUTUBE_META_BLOCK_HEIGHT = 88;
 
@@ -17,6 +19,23 @@ export function homeFeedLiveCardHeight(windowHeight: number): number {
 export function youtubeThumbnailHeight(windowWidth: number): number {
   const width = Math.max(280, windowWidth - YOUTUBE_CARD_H_PADDING * 2);
   return Math.round(width / YOUTUBE_THUMB_ASPECT);
+}
+
+export function tiktokThumbnailWidth(windowWidth: number): number {
+  return Math.min(320, Math.max(220, Math.round(windowWidth * 0.56)));
+}
+
+export function tiktokThumbnailHeight(windowWidth: number): number {
+  return Math.round(tiktokThumbnailWidth(windowWidth) / TIKTOK_THUMB_ASPECT);
+}
+
+export function homeFeedVideoThumbnailHeight(
+  windowWidth: number,
+  displayType: HomeFeedVideoDisplayType = "youtube"
+): number {
+  return displayType === "tiktok"
+    ? tiktokThumbnailHeight(windowWidth)
+    : youtubeThumbnailHeight(windowWidth);
 }
 
 export function estimateYouTubeFeedCardHeight(

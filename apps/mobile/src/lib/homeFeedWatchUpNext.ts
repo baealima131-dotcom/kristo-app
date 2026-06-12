@@ -215,3 +215,35 @@ export function buildWatchUpNextVideos(params: {
 
   return result;
 }
+
+/** Keep rows up to the current video fixed; reshuffle the tail for fresh recommendations. */
+export function reshuffleHomeFeedRowsAfterWatchSelection(params: {
+  rows: any[];
+  currentItem: any;
+  viewerChurchId?: string;
+  generationSeed?: number;
+}): any[] {
+  const rows = params.rows || [];
+  if (!rows.length) return rows;
+
+  const currentId = normalizePostId(params.currentItem);
+  if (!currentId) return rows;
+
+  const currentIndex = rows.findIndex((row) => normalizePostId(row) === currentId);
+  const head = currentIndex >= 0 ? rows.slice(0, currentIndex + 1) : rows.slice(0, 1);
+  const tail = currentIndex >= 0 ? rows.slice(currentIndex + 1) : rows.slice(1);
+  if (!tail.length) return rows;
+
+  const reshuffledTail = buildWatchUpNextVideos({
+    currentItem: params.currentItem,
+    candidates: tail,
+    viewerChurchId: params.viewerChurchId,
+    limit: tail.length,
+    generationSeed: params.generationSeed,
+  });
+
+  const pickedIds = new Set(reshuffledTail.map((row) => normalizePostId(row)));
+  const remainder = tail.filter((row) => !pickedIds.has(normalizePostId(row)));
+
+  return [...head, ...reshuffledTail, ...remainder];
+}

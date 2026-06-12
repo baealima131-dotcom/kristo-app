@@ -55,6 +55,8 @@ import {
   HOME_FEED_INITIAL_LIMIT,
   HOME_FEED_PAGE_SIZE,
   buildRecycledHomeFeedRows,
+  homeFeedBackendRowsDigest,
+  homeFeedLocalRowsDigest,
   homeFeedRowKey,
   initialHomeFeedVisibleWindowSize,
   isHomeFeedNearEnd,
@@ -64,7 +66,6 @@ import {
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
   feedRenderKey,
-  hydrateFeedRowLikes,
   buildHomeFeedDisplayRows,
   homeFeedScheduleEngagementId,
   homeFeedCommentPostId,
@@ -76,11 +77,23 @@ import {
   filterHomeFeedRowsByPostKind,
   type HomeFeedPostKindFilter,
 } from "./homeFeedUtils";
+import {
+  hydrateHomeFeedReportedPostIds,
+  resolveHomeFeedDiscussionCount,
+  resolveHomeFeedLikeState,
+  resolveHomeFeedSavedState,
+  setHomeFeedDiscussionCountOverride,
+  setHomeFeedOptimisticLike,
+  setHomeFeedOptimisticSaved,
+  setHomeFeedReported,
+  syncHomeFeedEngagementFromServerLikes,
+} from "@/src/lib/homeFeedEngagement";
 import { HOME_FEED_BG, homeFeedSlideHeight, homeFeedTopBarTotalHeight } from "./theme";
 import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
 import {
   buildWatchUpNextVideos,
   recordWatchSessionVideo,
+  reshuffleHomeFeedRowsAfterWatchSelection,
 } from "@/src/lib/homeFeedWatchUpNext";
 import { subscribeBackgroundMediaJobsPaused } from "@/src/lib/homeFeedWatchPlaybackPriority";
 import {
@@ -122,6 +135,7 @@ import {
 } from "@/src/lib/homeFeedScheduleDirty";
 import {
   prewarmHomeFeedPostersOnNearEnd,
+  resetHomeFeedPosterPrewarmForFeedRefresh,
   startInitialHomeFeedPosterPrewarm,
 } from "@/src/lib/homeFeedPosterPrewarm";
 import { fetchChurchSubscriptionActiveThrottled } from "@/src/lib/churchResourceRefresh";
@@ -163,24 +177,19 @@ export default function HomeFeedScreen() {
   const hadCacheOnMountRef = useRef(getCachedHomeFeedBackendRows().length > 0);
   const initialRenderSourceLoggedRef = useRef(false);
   const [backendRows, setBackendRows] = useState<any[]>(() => getCachedHomeFeedBackendRows());
-  const [localTick, setLocalTick] = useState(0);
+  const [localFeedDigest, setLocalFeedDigest] = useState(() => homeFeedLocalRowsDigest(feedList()));
+  const [scheduleTick, setScheduleTick] = useState(() => Math.floor(Date.now() / 30_000));
+  const localFeedDigestRef = useRef(localFeedDigest);
   const [loading, setLoading] = useState(
     () => !hadCacheOnMountRef.current && feedList().length === 0
   );
   const [activeIndex, setActiveIndex] = useState(0);
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
-  const [optimisticLikes, setOptimisticLikes] = useState<
-    Record<string, { likedByMe: boolean; likeCount: number }>
-  >({});
-  const [likeUiEpoch, setLikeUiEpoch] = useState(0);
-  const [optimisticSaved, setOptimisticSaved] = useState<Record<string, boolean>>({});
-  const [reportedPostIds, setReportedPostIds] = useState<Record<string, true>>({});
   const [reportSheetOpen, setReportSheetOpen] = useState(false);
   const [reportTargetPostId, setReportTargetPostId] = useState("");
   const [commentsSheetOpen, setCommentsSheetOpen] = useState(false);
   const [commentTargetPostId, setCommentTargetPostId] = useState("");
   const [commentRailCount, setCommentRailCount] = useState(0);
-  const [commentCountOverrides, setCommentCountOverrides] = useState<Record<string, number>>({});
   const [successBanner, setSuccessBanner] = useState("");
   const [videoModalPayload, setVideoModalPayload] = useState<HomeFeedVideoOpenPayload | null>(
     null
@@ -224,6 +233,36 @@ export default function HomeFeedScreen() {
   const feedViewportHeight = Math.max(280, contentHeight - topBarHeight);
   const homeFeedRenderPaused = isHomeFeedRenderPaused();
   const feedFocused = screenFocused && appActive && !homeFeedRenderPaused;
+
+  const bumpLocalFeedIfChanged = useCallback(() => {
+    const nextDigest = homeFeedLocalRowsDigest(feedList());
+    if (nextDigest === localFeedDigestRef.current) return;
+    localFeedDigestRef.current = nextDigest;
+    setLocalFeedDigest(nextDigest);
+  }, []);
+
+  const applyBackendRowsIfChanged = useCallback((next: any[]) => {
+    setBackendRows((prev) => {
+      if (!next.length) return prev;
+      if (homeFeedBackendRowsDigest(prev) === homeFeedBackendRowsDigest(next)) {
+        return prev;
+      }
+      return next;
+    });
+  }, []);
+
+  const buildServerLikeMap = useCallback((rows: any[]) => {
+    const map: Record<string, { likedByMe: boolean; likeCount: number }> = {};
+    for (const row of rows) {
+      const postId = homeFeedScheduleEngagementId(row);
+      if (!postId) continue;
+      map[postId] = {
+        likedByMe: readFeedItemLikedByMe(row),
+        likeCount: Number(row?.likeCount || 0),
+      };
+    }
+    return map;
+  }, []);
 
   useEffect(() => subscribeBackgroundMediaJobsPaused(setBackgroundMediaPaused), []);
   const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
@@ -280,14 +319,14 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     const unsub = subscribeHomeFeed(() => {
       if (isHomeFeedRenderPaused()) return;
-      setLocalTick((n) => n + 1);
+      bumpLocalFeedIfChanged();
     });
     return () => {
       try {
         (unsub as any)?.();
       } catch {}
     };
-  }, []);
+  }, [bumpLocalFeedIfChanged]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -350,7 +389,15 @@ export default function HomeFeedScreen() {
         return;
       }
       if (rows.length) {
-        setBackendRows(rows);
+        const refreshFeedKey = rows
+          .slice(0, 8)
+          .map((row) => String(row?.id || "").trim())
+          .filter(Boolean)
+          .join("|");
+        if (refreshFeedKey) {
+          resetHomeFeedPosterPrewarmForFeedRefresh(refreshFeedKey);
+        }
+        applyBackendRowsIfChanged(rows);
         setStableDisplayRows((prev) => {
           const rowIds = new Set(rows.map((row) => homeFeedRowKey(row)).filter(Boolean));
           const next = prev.filter((row) => homeFeedRowIncludedInBackendSnapshot(row, rowIds));
@@ -358,21 +405,7 @@ export default function HomeFeedScreen() {
           return next.length ? next : prev;
         });
       }
-      setOptimisticLikes((prev) => {
-        let changed = false;
-        const next = { ...prev };
-        for (const row of rows) {
-          const postId = homeFeedScheduleEngagementId(row);
-          if (!postId || !(postId in next)) continue;
-          const serverLikedByMe = readFeedItemLikedByMe(row);
-          if (serverLikedByMe || next[postId].likedByMe === serverLikedByMe) {
-            delete next[postId];
-            changed = true;
-          }
-        }
-        return changed ? next : prev;
-      });
-      setLikeUiEpoch((n) => n + 1);
+      syncHomeFeedEngagementFromServerLikes(rows, buildServerLikeMap(rows));
     } catch {
       setBackendRows((prev) => prev);
     } finally {
@@ -391,10 +424,10 @@ export default function HomeFeedScreen() {
         source,
         backendFeedId: pendingScheduleFeedIdRef.current,
       });
-      setLocalTick((n) => n + 1);
+      bumpLocalFeedIfChanged();
       void loadFeed("schedule-dirty", { force: true });
     },
-    [loadFeed]
+    [bumpLocalFeedIfChanged, loadFeed]
   );
 
   useEffect(() => {
@@ -445,7 +478,7 @@ export default function HomeFeedScreen() {
       if (dirty?.backendFeedId) {
         pendingScheduleFeedIdRef.current = dirty.backendFeedId;
       }
-      setLocalTick((n) => n + 1);
+      bumpLocalFeedIfChanged();
 
       if (!screenFocused) return;
 
@@ -455,7 +488,7 @@ export default function HomeFeedScreen() {
       }
     });
     return unsub;
-  }, [forceReloadAfterSchedule, screenFocused]);
+  }, [forceReloadAfterSchedule, screenFocused, bumpLocalFeedIfChanged]);
 
   useEffect(() => {
     const session = getSessionSync() as any;
@@ -487,28 +520,16 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     if (!feedFocused || homeFeedRenderPaused) return;
     const timer = setInterval(() => {
-      setLocalTick((n) => n + 1);
-    }, 20_000);
+      setScheduleTick(Math.floor(Date.now() / 30_000));
+    }, 30_000);
     return () => clearInterval(timer);
   }, [feedFocused, homeFeedRenderPaused]);
 
-  const serverLikeByPostId = useMemo(() => {
-    const map: Record<string, { likedByMe: boolean; likeCount: number }> = {};
-    for (const row of backendRows) {
-      const postId = homeFeedScheduleEngagementId(row);
-      if (!postId) continue;
-      map[postId] = {
-        likedByMe: readFeedItemLikedByMe(row),
-        likeCount: Number(row?.likeCount || 0),
-      };
-    }
-    return map;
-  }, [backendRows]);
-
   const localFeedSnapshot = useMemo(() => {
-    void localTick;
+    void localFeedDigest;
+    void scheduleTick;
     return feedList();
-  }, [localTick]);
+  }, [localFeedDigest, scheduleTick]);
 
   useEffect(() => {
     if (!viewerChurchId || !viewerUserId) {
@@ -550,9 +571,8 @@ export default function HomeFeedScreen() {
     if (homeFeedRenderPaused && backendRows.length) {
       return backendRows;
     }
-    const merged = buildHomeFeedDisplayRows(backendRows, localFeedSnapshot);
-    return hydrateFeedRowLikes(merged, serverLikeByPostId);
-  }, [backendRows, localFeedSnapshot, serverLikeByPostId, homeFeedRenderPaused, viewerCanSeeMediaSlots]);
+    return buildHomeFeedDisplayRows(backendRows, localFeedSnapshot);
+  }, [backendRows, localFeedSnapshot, homeFeedRenderPaused, viewerCanSeeMediaSlots]);
 
   const displayFeedRows = feedRows;
 
@@ -706,7 +726,8 @@ export default function HomeFeedScreen() {
         let appended = page.appended;
 
         if (appended > 0 && page.rows.length) {
-          setBackendRows(page.rows);
+          applyBackendRowsIfChanged(page.rows);
+          syncHomeFeedEngagementFromServerLikes(page.rows, buildServerLikeMap(page.rows));
         }
 
         feedHasMoreRef.current = page.hasMore;
@@ -1026,11 +1047,25 @@ export default function HomeFeedScreen() {
     videoModalPayload,
   ]);
 
-  const handleVideoPress = useCallback((payload: HomeFeedVideoOpenPayload) => {
-    const generation = recordWatchSessionVideo(payload.postId);
-    setWatchUpNextGeneration(generation);
-    setVideoModalPayload(payload);
-  }, []);
+  const handleVideoPress = useCallback(
+    (payload: HomeFeedVideoOpenPayload) => {
+      const generation = recordWatchSessionVideo(payload.postId);
+      setWatchUpNextGeneration(generation);
+      setStableDisplayRows((prev) => {
+        const base = prev.length ? prev : stableDisplayRowsRef.current;
+        const next = reshuffleHomeFeedRowsAfterWatchSelection({
+          rows: base,
+          currentItem: payload.item,
+          viewerChurchId,
+          generationSeed: generation,
+        });
+        stableDisplayRowsRef.current = next;
+        return next;
+      });
+      setVideoModalPayload(payload);
+    },
+    [viewerChurchId]
+  );
 
   const handleCloseVideo = useCallback(() => {
     setVideoModalPayload(null);
@@ -1145,11 +1180,7 @@ export default function HomeFeedScreen() {
 
     void getLocallyReportedPostIds().then((ids) => {
       if (!alive || !ids.length) return;
-      setReportedPostIds((prev) => {
-        const next = { ...prev };
-        for (const id of ids) next[id] = true;
-        return next;
-      });
+      hydrateHomeFeedReportedPostIds(ids);
     });
 
     return () => {
@@ -1180,11 +1211,7 @@ export default function HomeFeedScreen() {
       () => {
         void syncReportedPostIdsFromApi(ids).then((reported) => {
           if (!alive || !reported.length) return;
-          setReportedPostIds((prev) => {
-            const next = { ...prev };
-            for (const id of reported) next[id] = true;
-            return next;
-          });
+          hydrateHomeFeedReportedPostIds(reported);
         });
       },
       { reason: "home-feed-report-sync", delayMs: 800 }
@@ -1224,135 +1251,39 @@ export default function HomeFeedScreen() {
     }
   }, [activeIndex, visibleData.length]);
 
-  const getLikeState = useCallback(
-    (item: any, logContext?: { index?: number }) => {
-      const postId = homeFeedScheduleEngagementId(item);
-      if (!postId) {
-        return { likedByMe: false, liked: false, likeCount: 0 };
-      }
+  const handleLike = useCallback((item: any) => {
+    const postId = homeFeedScheduleEngagementId(item);
+    if (!postId) return;
 
-      const itemLikedByMe = readFeedItemLikedByMe(item);
-      const hydrated = serverLikeByPostId[postId];
-      const serverLikedByMe = hydrated?.likedByMe === true || itemLikedByMe;
-      const serverLikeCount = Math.max(
-        Number(item?.likeCount || 0),
-        Number(hydrated?.likeCount || 0)
-      );
+    const current = resolveHomeFeedLikeState(item, postId);
+    const nextLikedByMe = !current.likedByMe;
+    const nextCount = Math.max(0, current.likeCount + (nextLikedByMe ? 1 : -1));
 
-      const override = Object.prototype.hasOwnProperty.call(optimisticLikes, postId)
-        ? optimisticLikes[postId]
-        : undefined;
-      const overrideLikedByMe = override?.likedByMe;
+    if (isKristoVerboseFeedDebug()) {
+      console.log("KRISTO_LIKE_UI_STATE", {
+        postId,
+        finalLikedByMe: nextLikedByMe,
+        likeCount: nextCount,
+      });
+    }
 
-      let finalLikedByMe = serverLikedByMe;
-      if (override) {
-        if (serverLikedByMe) {
-          finalLikedByMe = true;
-        } else if (overrideLikedByMe === true) {
-          finalLikedByMe = true;
-        } else {
-          finalLikedByMe = false;
-        }
-      }
-
-      const likeCount = Math.max(
-        serverLikeCount,
-        override ? Number(override.likeCount || 0) : 0
-      );
-
-      if (logContext?.index === activeIndex && isKristoVerboseFeedDebug()) {
-        console.log("KRISTO_LIKE_UI_STATE", {
-          postId,
-          itemLikedByMe,
-          overrideLikedByMe: overrideLikedByMe ?? null,
-          finalLikedByMe,
-          likeCount,
-        });
-      }
-
-      return {
-        likedByMe: finalLikedByMe,
-        liked: finalLikedByMe,
-        likeCount,
-      };
-    },
-    [activeIndex, optimisticLikes, serverLikeByPostId]
-  );
-
-  const getSavedState = useCallback(
-    (item: any) => {
-      const postId = String(item?.id || "");
-      if (Object.prototype.hasOwnProperty.call(optimisticSaved, postId)) {
-        return optimisticSaved[postId];
-      }
-      return Boolean(item?.saved);
-    },
-    [optimisticSaved]
-  );
-
-  const handleLike = useCallback(
-    (item: any) => {
-      const postId = homeFeedScheduleEngagementId(item);
-      if (!postId) return;
-
-      const current = getLikeState(item);
-      const nextLikedByMe = !current.likedByMe;
-      const nextCount = Math.max(0, current.likeCount + (nextLikedByMe ? 1 : -1));
-
-      setOptimisticLikes((prev) => ({
-        ...prev,
-        [postId]: { likedByMe: nextLikedByMe, likeCount: nextCount },
-      }));
-      setLikeUiEpoch((n) => n + 1);
-
-      feedToggleLike(postId);
-      syncHomeFeedLike(postId, nextLikedByMe);
-    },
-    [getLikeState]
-  );
-
-  const handleSave = useCallback(
-    (item: any) => {
-      const postId = String(item?.id || "").trim();
-      if (!postId) return;
-
-      const nextSaved = !getSavedState(item);
-      setOptimisticSaved((prev) => ({ ...prev, [postId]: nextSaved }));
-      feedToggleSave(postId);
-    },
-    [getSavedState]
-  );
-
-  const discussionCountFromItem = useCallback((item: any) => {
-    const total = Number(item?.totalDiscussionCount || 0);
-    if (total > 0) return total;
-    return Number(item?.commentCount || 0) + Number(item?.replyCount || 0);
+    setHomeFeedOptimisticLike(postId, {
+      likedByMe: nextLikedByMe,
+      liked: nextLikedByMe,
+      likeCount: nextCount,
+    });
+    feedToggleLike(postId);
+    syncHomeFeedLike(postId, nextLikedByMe);
   }, []);
 
-  const getVisibleDiscussionCount = useCallback(
-    (item: any) => {
-      const postId = homeFeedCommentPostId(item);
-      const serverCount = discussionCountFromItem(item);
-      const hasOverride =
-        Boolean(postId) && Object.prototype.hasOwnProperty.call(commentCountOverrides, postId);
-      const overrideCount = hasOverride ? commentCountOverrides[postId] : undefined;
-      const visibleCount = hasOverride
-        ? Math.max(serverCount, overrideCount ?? 0)
-        : serverCount;
+  const handleSave = useCallback((item: any) => {
+    const postId = String(item?.id || "").trim();
+    if (!postId) return;
 
-      if (hasOverride && serverCount < (overrideCount ?? 0)) {
-        console.log("KRISTO_COMMENT_COUNT_STALE_FEED_IGNORED", {
-          postId,
-          serverCount,
-          overrideCount,
-          visibleCount,
-        });
-      }
-
-      return visibleCount;
-    },
-    [commentCountOverrides, discussionCountFromItem]
-  );
+    const nextSaved = !resolveHomeFeedSavedState(item, postId);
+    setHomeFeedOptimisticSaved(postId, nextSaved);
+    feedToggleSave(postId);
+  }, []);
 
   const handleComment = useCallback((item: any) => {
     const postId = homeFeedCommentPostId(item);
@@ -1365,22 +1296,14 @@ export default function HomeFeedScreen() {
     }
 
     setCommentTargetPostId(postId);
-    setCommentRailCount(getVisibleDiscussionCount(item));
+    setCommentRailCount(resolveHomeFeedDiscussionCount(item, postId));
     setCommentsSheetOpen(true);
-  }, [getVisibleDiscussionCount]);
+  }, []);
 
   const handleWatchComment = useCallback(() => {
     if (!watchEngagementItem) return;
     handleComment(watchEngagementItem);
   }, [watchEngagementItem, handleComment]);
-
-  const watchLikeState = useMemo(() => {
-    if (!watchEngagementItem) return null;
-    const index = feedListRows.findIndex(
-      (row) => String(row?.id || "").trim() === String(watchEngagementItem?.id || "").trim()
-    );
-    return getLikeState(watchEngagementItem, { index: Math.max(index, 0) });
-  }, [watchEngagementItem, feedListRows, getLikeState, likeUiEpoch]);
 
   const handleDiscussionCountChange = useCallback((postId: string, count: number) => {
     const cleanId = normalizeCommentPostId(postId);
@@ -1391,7 +1314,7 @@ export default function HomeFeedScreen() {
       count: nextCount,
       source: "comments_confirmed",
     });
-    setCommentCountOverrides((prev) => ({ ...prev, [cleanId]: nextCount }));
+    setHomeFeedDiscussionCountOverride(cleanId, nextCount);
   }, []);
 
   const handleDiscussionCountBump = useCallback(
@@ -1399,25 +1322,18 @@ export default function HomeFeedScreen() {
       const cleanId = normalizeCommentPostId(postId);
       if (!cleanId || !Number.isFinite(delta) || delta === 0) return;
 
-      setCommentCountOverrides((prev) => {
-        const item = feedRows.find((row) => homeFeedCommentPostId(row) === cleanId);
-        const serverCount = discussionCountFromItem(item || {});
-        const prevOverride = Object.prototype.hasOwnProperty.call(prev, cleanId)
-          ? prev[cleanId]
-          : undefined;
-        const visibleBase =
-          prevOverride !== undefined ? Math.max(serverCount, prevOverride) : serverCount;
-        const nextCount = Math.max(0, visibleBase + delta);
-        console.log("KRISTO_COMMENT_COUNT_OVERRIDE_SET", {
-          postId: cleanId,
-          count: nextCount,
-          source: delta > 0 ? "optimistic_bump" : "optimistic_rollback",
-          delta,
-        });
-        return { ...prev, [cleanId]: nextCount };
+      const item = feedRows.find((row) => homeFeedCommentPostId(row) === cleanId);
+      const current = resolveHomeFeedDiscussionCount(item || {}, cleanId);
+      const nextCount = Math.max(0, current + delta);
+      console.log("KRISTO_COMMENT_COUNT_OVERRIDE_SET", {
+        postId: cleanId,
+        count: nextCount,
+        source: delta > 0 ? "optimistic_bump" : "optimistic_rollback",
+        delta,
       });
+      setHomeFeedDiscussionCountOverride(cleanId, nextCount);
     },
-    [feedRows, discussionCountFromItem]
+    [feedRows]
   );
 
   const handleShare = useCallback(async (item: any) => {
@@ -1429,14 +1345,6 @@ export default function HomeFeedScreen() {
       await Share.share({ message: message || "Shared from Kristo", title: title || "Kristo" });
     } catch {}
   }, []);
-
-  const isPostReported = useCallback(
-    (item: any) => {
-      const postId = baseFeedId(String(item?.id || ""));
-      return Boolean(postId && reportedPostIds[postId]);
-    },
-    [reportedPostIds]
-  );
 
   const handleReport = useCallback((item: any) => {
     const postId = normalizeCommentPostId(String(item?.id || "").trim());
@@ -1450,7 +1358,7 @@ export default function HomeFeedScreen() {
     if (!cleanId) return;
 
     void markPostReportedLocally(cleanId);
-    setReportedPostIds((prev) => ({ ...prev, [cleanId]: true }));
+    setHomeFeedReported(cleanId);
     setSuccessBanner("Report submitted. Thank you for helping keep Kristo safe.");
 
     if (successBannerTimerRef.current) {
@@ -1489,11 +1397,6 @@ export default function HomeFeedScreen() {
           activeIndex={activeIndex}
           screenFocused={feedFocused}
           loading={loading}
-          likeUiEpoch={likeUiEpoch}
-          getLikeState={getLikeState}
-          getSavedState={getSavedState}
-          getVisibleDiscussionCount={getVisibleDiscussionCount}
-          isPostReported={isPostReported}
           onActiveIndexChange={setActiveIndex}
           onLike={handleLike}
           onComment={handleComment}
@@ -1510,14 +1413,6 @@ export default function HomeFeedScreen() {
         visible={Boolean(videoModalPayload)}
         payload={videoModalPayload}
         relatedItems={relatedVideoItems}
-        likedByMe={watchLikeState?.likedByMe ?? false}
-        liked={watchLikeState?.liked ?? false}
-        likeCount={watchLikeState?.likeCount ?? 0}
-        commentCount={watchEngagementItem ? getVisibleDiscussionCount(watchEngagementItem) : 0}
-        shareCount={Number(watchEngagementItem?.shareCount || 0)}
-        saveCount={Number(watchEngagementItem?.saveCount || 0)}
-        saved={watchEngagementItem ? getSavedState(watchEngagementItem) : false}
-        reported={watchEngagementItem ? isPostReported(watchEngagementItem) : false}
         onClose={handleCloseVideo}
         onSelectRelated={handleVideoPress}
         onLike={() => {
@@ -1533,10 +1428,6 @@ export default function HomeFeedScreen() {
         onReport={() => {
           if (watchEngagementItem) handleReport(watchEngagementItem);
         }}
-        getLikeState={getLikeState}
-        getSavedState={getSavedState}
-        getVisibleDiscussionCount={getVisibleDiscussionCount}
-        isPostReported={isPostReported}
         onItemLike={handleLike}
         onItemComment={handleComment}
         onItemShare={(item) => void handleShare(item)}

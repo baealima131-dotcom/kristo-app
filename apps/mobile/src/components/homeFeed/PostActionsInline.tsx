@@ -1,8 +1,9 @@
 import React, { memo } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { formatActionCount } from "./homeFeedUtils";
-import { HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
+import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
+import { HOME_FEED_GOLD_SOFT } from "./theme";
 
 type Props = {
   liked: boolean;
@@ -32,36 +33,38 @@ export const PostActionsInline = memo(function PostActionsInline({
   onReport,
 }: Props) {
   return (
-    <View style={styles.row}>
-      <InlineAction
-        icon={liked ? "heart" : "heart-outline"}
-        label={formatActionCount(likeCount)}
-        active={liked}
-        activeColor="#FF5A7A"
-        onPress={onLike}
-      />
-      <InlineAction
-        icon="chatbubble-ellipses-outline"
-        label={formatActionCount(commentCount)}
-        onPress={onComment}
-      />
-      <InlineAction
-        icon="arrow-redo-outline"
-        label={formatActionCount(shareCount)}
-        onPress={onShare}
-      />
-      <InlineAction
-        icon={saved ? "bookmark" : "bookmark-outline"}
-        label={saved ? "Saved" : "Save"}
-        active={saved}
-        onPress={onSave}
-      />
-      <InlineAction
-        icon={reported ? "flag" : "flag-outline"}
-        label={reported ? "Reported" : "Report"}
-        active={reported}
-        onPress={onReport}
-      />
+    <View style={premium.actionsGlassBar}>
+      <View style={premium.inlineActionRow}>
+        <InlineAction
+          icon={liked ? "heart" : "heart-outline"}
+          label={formatActionCount(likeCount)}
+          active={liked}
+          activeColor="#FF6B8A"
+          onPress={onLike}
+        />
+        <InlineAction
+          icon="chatbubble-ellipses-outline"
+          label={formatActionCount(commentCount)}
+          onPress={onComment}
+        />
+        <InlineAction
+          icon="arrow-redo-outline"
+          label={formatActionCount(shareCount)}
+          onPress={onShare}
+        />
+        <InlineAction
+          icon={saved ? "bookmark" : "bookmark-outline"}
+          label={saved ? "Saved" : "Save"}
+          active={saved}
+          onPress={onSave}
+        />
+        <InlineAction
+          icon={reported ? "flag" : "flag-outline"}
+          label={reported ? "Reported" : "Report"}
+          active={reported}
+          onPress={onReport}
+        />
+      </View>
     </View>
   );
 });
@@ -80,36 +83,14 @@ function InlineAction({
   activeColor?: string;
 }) {
   return (
-    <Pressable style={styles.action} onPress={onPress} hitSlop={8}>
-      <Ionicons name={icon} size={22} color={active ? activeColor : "#FFFFFF"} />
-      <Text style={[styles.label, active ? styles.labelActive : null]} numberOfLines={1}>
+    <Pressable style={premium.inlineAction} onPress={onPress} hitSlop={8}>
+      <Ionicons name={icon} size={21} color={active ? activeColor : "#FFFFFF"} />
+      <Text
+        style={[premium.inlineLabel, active ? premium.inlineLabelActive : null]}
+        numberOfLines={1}
+      >
         {label}
       </Text>
     </Pressable>
   );
 }
-
-const styles = StyleSheet.create({
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 4,
-    paddingTop: 4,
-  },
-  action: {
-    flex: 1,
-    alignItems: "center",
-    gap: 4,
-    minWidth: 0,
-  },
-  label: {
-    color: HOME_FEED_MUTED,
-    fontSize: 11,
-    fontWeight: "700",
-    textAlign: "center",
-  },
-  labelActive: {
-    color: HOME_FEED_GOLD_SOFT,
-  },
-});

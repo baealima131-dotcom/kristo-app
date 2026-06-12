@@ -1,6 +1,14 @@
 import { feedRenderKey } from "./homeFeedUtils";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 
+export function homeFeedBackendRowsDigest(rows: any[]): string {
+  return rows.map((row) => homeFeedRowCardFingerprint(row)).join("\n");
+}
+
+export function homeFeedLocalRowsDigest(rows: any[]): string {
+  return rows.map((row) => homeFeedRowKey(row)).join("|");
+}
+
 /** First paint window — TikTok-style fast initial load. */
 export const HOME_FEED_INITIAL_LIMIT = 20;
 
@@ -32,6 +40,40 @@ export function homeFeedRowKey(row: any): string {
   return feedRenderKey(row) || String(row?.id || "").trim();
 }
 
+/** Stable fingerprint for card render props — ignores object identity churn. */
+export function homeFeedRowCardFingerprint(row: any): string {
+  if (!row || typeof row !== "object") return "";
+  return [
+    String(row?.id || "").trim(),
+    String(row?.updatedAt || ""),
+    String(row?.createdAt || ""),
+    String(row?.mediaStatus || row?.status || ""),
+    String(row?.videoUrl || row?.mediaUrl || row?.mediaUri || ""),
+    String(row?.posterUri || ""),
+    String(row?.videoPosterUri || ""),
+    String(row?.thumbnailUri || ""),
+    String(row?.thumbnailUrl || ""),
+    String(row?.posterUrl || ""),
+    String(row?.title || row?.postTitle || ""),
+    String(row?.likeCount || ""),
+    row?.likedByMe ? "1" : "0",
+    row?.liked ? "1" : "0",
+    row?.saved ? "1" : "0",
+    String(row?.commentCount || ""),
+    String(row?.shareCount || ""),
+    String(row?.homeFeedRecycleKey || ""),
+  ].join("|");
+}
+
+function mergeHomeFeedRowPreservingReference(existing: any, fresh: any) {
+  if (!fresh) return existing;
+  const merged = { ...existing, ...fresh, id: existing.id ?? fresh.id };
+  if (homeFeedRowCardFingerprint(existing) === homeFeedRowCardFingerprint(merged)) {
+    return existing;
+  }
+  return merged;
+}
+
 export type HomeFeedStableMergeResult = {
   merged: any[];
   before: number;
@@ -60,7 +102,7 @@ export function stableMergeHomeFeedRows(
     if (!id) continue;
     seen.add(id);
     const fresh = incomingById.get(id);
-    merged.push(fresh ? { ...row, ...fresh, id: row.id ?? fresh.id } : row);
+    merged.push(fresh ? mergeHomeFeedRowPreservingReference(row, fresh) : row);
   }
 
   for (const row of incoming) {

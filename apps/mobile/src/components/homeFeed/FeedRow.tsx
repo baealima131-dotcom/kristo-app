@@ -26,8 +26,10 @@ import {
   isValidVideoPosterUri,
   hasBrandedVideoPoster,
   hasHomeFeedVideoPoster,
+  posterMetadataFingerprint,
   type HomeFeedPostAccent,
 } from "./homeFeedUtils";
+import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import { Ionicons } from "@expo/vector-icons";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
@@ -111,12 +113,6 @@ type Props = {
   feedIndex?: number;
   isFirstFeedVideo?: boolean;
   decodePrime?: boolean;
-  likedByMe: boolean;
-  liked: boolean;
-  likeCount: number;
-  visibleDiscussionCount: number;
-  saved: boolean;
-  reported: boolean;
   onLike: () => void;
   onComment: () => void;
   onShare: () => void;
@@ -125,7 +121,8 @@ type Props = {
   onVideoPress?: (payload: HomeFeedVideoOpenPayload) => void;
 };
 
-export const FeedRow = memo(function FeedRow({
+export const FeedRow = memo(
+  function FeedRow({
   item,
   height,
   isActive,
@@ -134,12 +131,6 @@ export const FeedRow = memo(function FeedRow({
   feedIndex = -1,
   isFirstFeedVideo = false,
   decodePrime = false,
-  likedByMe,
-  liked,
-  likeCount,
-  visibleDiscussionCount,
-  saved,
-  reported,
   onLike,
   onComment,
   onShare,
@@ -147,10 +138,12 @@ export const FeedRow = memo(function FeedRow({
   onReport,
   onVideoPress,
 }: Props) {
+  const engagement = useHomeFeedRowEngagement(item);
   const insets = useSafeAreaInsets();
   const chrome = useMemo(() => homeFeedChromeOffsets(insets.bottom), [insets.bottom]);
 
   const postId = String(item?.id || "").trim();
+  const posterFieldsKey = posterMetadataFingerprint(item);
   const whenLabel = formatFeedTimestamp(item?.createdAt);
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const postTitle = resolvePostTitle(item);
@@ -160,16 +153,45 @@ export const FeedRow = memo(function FeedRow({
   const postAccent = resolveFeedPostAccent(item);
 
   const video = isVideoPost(item);
-  const videoUri = useMemo(() => resolveVideoUri(item), [item]);
-  const playbackUri = useMemo(() => resolveHomeFeedVideoUri(item), [item]);
-  const postImageUris = useMemo(() => resolvePostImageUris(item), [item]);
+  const videoUri = useMemo(
+    () => resolveVideoUri(item),
+    [
+      postId,
+      item?.localVideoUri,
+      item?.videoUrl,
+      item?.videoUri,
+      item?.mediaUrl,
+      item?.url,
+      item?.mediaUri,
+      item?.mediaType,
+      item?.type,
+      item?.kind,
+    ]
+  );
+  const playbackUri = useMemo(
+    () => resolveHomeFeedVideoUri(item),
+    [postId, videoUri, item?.localVideoUri]
+  );
+  const postImageUris = useMemo(
+    () => resolvePostImageUris(item),
+    [postId, item?.imageUrls, item?.images, item?.mediaUri, item?.mediaUrl]
+  );
   const resolvedImageUri = postImageUris[0] || "";
   const showVideoMedia = Boolean(video && videoUri);
   const willRenderImage = postImageUris.length > 0 && !showVideoMedia;
   const churchRoomTextCard = churchRoomPost && !showVideoMedia && !willRenderImage;
-  const posterUri = resolvePosterUri(item);
-  const posterMetadata = useMemo(() => snapshotPosterMetadata(item), [item]);
-  const videoDurationMs = useMemo(() => resolveVideoDurationMs(item), [item]);
+  const posterUri = useMemo(
+    () => resolvePosterUri(item),
+    [postId, posterFieldsKey]
+  );
+  const posterMetadata = useMemo(
+    () => snapshotPosterMetadata(item),
+    [posterFieldsKey]
+  );
+  const videoDurationMs = useMemo(
+    () => resolveVideoDurationMs(item),
+    [postId, item?.durationMs, item?.videoDurationMs, item?.duration]
+  );
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
   const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
   // YouTube-style: poster only in feed. TikTok-style: mount players in warm window.
@@ -316,14 +338,13 @@ export const FeedRow = memo(function FeedRow({
       </View>
 
       <PostActions
-        likedByMe={likedByMe}
-        liked={liked}
-        likeCount={likeCount}
-        commentCount={visibleDiscussionCount}
+        liked={engagement.likedByMe || engagement.liked}
+        likeCount={engagement.likeCount}
+        commentCount={engagement.commentCount}
         shareCount={shareCount}
         saveCount={saveCount}
-        saved={saved}
-        reported={reported}
+        saved={engagement.saved}
+        reported={engagement.reported}
         bottomOffset={chrome.actionBottom}
         onLike={onLike}
         onComment={onComment}
@@ -333,7 +354,23 @@ export const FeedRow = memo(function FeedRow({
       />
     </View>
   );
-});
+},
+(prev, next) =>
+  prev.item === next.item &&
+  prev.height === next.height &&
+  prev.isActive === next.isActive &&
+  prev.videoWarmMode === next.videoWarmMode &&
+  prev.screenFocused === next.screenFocused &&
+  prev.feedIndex === next.feedIndex &&
+  prev.isFirstFeedVideo === next.isFirstFeedVideo &&
+  prev.decodePrime === next.decodePrime &&
+  prev.onLike === next.onLike &&
+  prev.onComment === next.onComment &&
+  prev.onShare === next.onShare &&
+  prev.onSave === next.onSave &&
+  prev.onReport === next.onReport &&
+  prev.onVideoPress === next.onVideoPress
+);
 
 function HomeFeedVideoPosterCard({
   item,

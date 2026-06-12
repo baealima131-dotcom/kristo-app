@@ -21,7 +21,12 @@ import {
   notifyWatchScreenClosed,
   notifyWatchScreenOpened,
 } from "@/src/lib/homeFeedWatchPlaybackPriority";
-import { YOUTUBE_CARD_H_PADDING, YOUTUBE_THUMB_ASPECT } from "@/src/lib/homeFeedYouTubeLayout";
+import {
+  YOUTUBE_CARD_H_PADDING,
+  YOUTUBE_THUMB_ASPECT,
+  TIKTOK_THUMB_ASPECT,
+} from "@/src/lib/homeFeedYouTubeLayout";
+import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import {
   formatFeedMetaLine,
@@ -31,11 +36,12 @@ import {
   resolveFeedChurchVerified,
   resolveFeedPostTypeTitle,
   resolveHomeFeedDisplayAvatar,
-  resolvePostTitle,
+  resolveHomeFeedVideoTitle,
   resolveVideoUri,
 } from "./homeFeedUtils";
 import { FeedYouTubeCard } from "./FeedYouTubeCard";
 import { PostActionsInline } from "./PostActionsInline";
+import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
 import { FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import {
   HOME_FEED_BG,
@@ -48,17 +54,17 @@ import {
 const AVATAR_SIZE = 46;
 const STATS_COLOR = "rgba(255,255,255,0.45)";
 
-type LikeState = {
-  likedByMe: boolean;
-  liked: boolean;
-  likeCount: number;
-};
-
-type FeedEngagementHelpers = {
-  getLikeState: (item: any, ctx?: { index?: number }) => LikeState;
-  getSavedState: (item: any) => boolean;
-  getVisibleDiscussionCount: (item: any) => number;
-  isPostReported: (item: any) => boolean;
+type Props = {
+  visible: boolean;
+  payload: HomeFeedVideoOpenPayload | null;
+  relatedItems: any[];
+  onClose: () => void;
+  onSelectRelated: (payload: HomeFeedVideoOpenPayload) => void;
+  onLike: () => void;
+  onComment: () => void;
+  onShare: () => void;
+  onSave: () => void;
+  onReport: () => void;
   onItemLike: (item: any) => void;
   onItemComment: (item: any) => void;
   onItemShare: (item: any) => void;
@@ -66,30 +72,39 @@ type FeedEngagementHelpers = {
   onItemReport: (item: any) => void;
 };
 
-type WatchEngagementProps = {
-  likedByMe: boolean;
-  liked: boolean;
-  likeCount: number;
-  commentCount: number;
-  shareCount: number;
-  saveCount: number;
-  saved: boolean;
-  reported: boolean;
+function WatchVideoEngagementActions({
+  item,
+  onLike,
+  onComment,
+  onShare,
+  onSave,
+  onReport,
+}: {
+  item: any;
   onLike: () => void;
   onComment: () => void;
   onShare: () => void;
   onSave: () => void;
   onReport: () => void;
-};
+}) {
+  const engagement = useHomeFeedRowEngagement(item);
 
-type Props = {
-  visible: boolean;
-  payload: HomeFeedVideoOpenPayload | null;
-  relatedItems: any[];
-  onClose: () => void;
-  onSelectRelated: (payload: HomeFeedVideoOpenPayload) => void;
-} & WatchEngagementProps &
-  FeedEngagementHelpers;
+  return (
+    <PostActionsInline
+      liked={engagement.likedByMe || engagement.liked}
+      likeCount={engagement.likeCount}
+      commentCount={engagement.commentCount}
+      shareCount={Number(item?.shareCount || 0)}
+      saved={engagement.saved}
+      reported={engagement.reported}
+      onLike={onLike}
+      onComment={onComment}
+      onShare={onShare}
+      onSave={onSave}
+      onReport={onReport}
+    />
+  );
+}
 
 function resolveWatchScreenPlaybackUri(payload: HomeFeedVideoOpenPayload): string {
   const fromPayload = String(payload.videoUri || "").trim();
@@ -99,7 +114,13 @@ function resolveWatchScreenPlaybackUri(payload: HomeFeedVideoOpenPayload): strin
   return "";
 }
 
-function WatchVideoSurface({ payload }: { payload: HomeFeedVideoOpenPayload }) {
+function WatchVideoSurface({
+  payload,
+  isTikTokLayout = false,
+}: {
+  payload: HomeFeedVideoOpenPayload;
+  isTikTokLayout?: boolean;
+}) {
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
   const playbackUri = resolveWatchScreenPlaybackUri(payload);
@@ -156,7 +177,11 @@ function WatchVideoSurface({ payload }: { payload: HomeFeedVideoOpenPayload }) {
   const churchName = item ? resolveChurchName(item) : "";
   const churchRoomPost = Boolean(item && isChurchRoomMemberFeedPost(item));
   const title =
-    item && churchRoomPost ? resolveFeedPostTypeTitle(item) : item ? resolvePostTitle(item) : payload.title;
+    item && churchRoomPost
+      ? resolveFeedPostTypeTitle(item)
+      : item
+        ? resolveHomeFeedVideoTitle(item)
+        : payload.title;
   const videoUri = item ? resolveVideoUri(item) || payload.videoUri : payload.videoUri;
   const videoDurationMs = payload.videoDurationMs ?? (item ? resolveVideoDurationMs(item) : undefined);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
@@ -166,7 +191,12 @@ function WatchVideoSurface({ payload }: { payload: HomeFeedVideoOpenPayload }) {
   return (
     <View style={styles.playerSurface}>
       {!ended ? (
-        <VideoView player={player} style={styles.video} contentFit="contain" nativeControls />
+        <VideoView
+          player={player}
+          style={styles.video}
+          contentFit={isTikTokLayout ? "cover" : "contain"}
+          nativeControls
+        />
       ) : null}
       {ended ? (
         <Pressable style={styles.replayOverlay} onPress={handleReplay} accessibilityLabel="Replay video">
@@ -199,7 +229,7 @@ function WatchVideoSurface({ payload }: { payload: HomeFeedVideoOpenPayload }) {
 /** Same metadata block as FeedYouTubeCard — church row, then title, then stats. */
 function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle?: string }) {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
-  const postTitle = resolvePostTitle(item);
+  const postTitle = resolveHomeFeedVideoTitle(item);
   const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle || fallbackTitle;
   const churchName = resolveChurchName(item);
   const churchVerified = resolveFeedChurchVerified(item);
@@ -256,14 +286,6 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   visible,
   payload,
   relatedItems,
-  likedByMe,
-  liked,
-  likeCount,
-  commentCount,
-  shareCount,
-  saveCount,
-  saved,
-  reported,
   onClose,
   onSelectRelated,
   onLike,
@@ -271,10 +293,6 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   onShare,
   onSave,
   onReport,
-  getLikeState,
-  getSavedState,
-  getVisibleDiscussionCount,
-  isPostReported,
   onItemLike,
   onItemComment,
   onItemShare,
@@ -282,8 +300,12 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   onItemReport,
 }: Props) {
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
-  const playerHeight = Math.round(width / YOUTUBE_THUMB_ASPECT);
+  const { width, height: windowHeight } = useWindowDimensions();
+  const displayType = resolveHomeFeedVideoDisplayType(payload?.item);
+  const isTikTokLayout = displayType === "tiktok";
+  const playerHeight = isTikTokLayout
+    ? Math.min(Math.round(width / TIKTOK_THUMB_ASPECT), Math.round(windowHeight * 0.72))
+    : Math.round(width / YOUTUBE_THUMB_ASPECT);
   const scrollRef = useRef<ScrollView | null>(null);
 
   const item = payload?.item;
@@ -322,26 +344,29 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
           <View style={styles.topBarSpacer} />
         </View>
 
-        <View style={[styles.playerWrap, { height: playerHeight }]}>
-          <WatchVideoSurface payload={payload} />
+        <View
+          style={[
+            styles.playerWrap,
+            { height: playerHeight },
+            isTikTokLayout ? styles.playerWrapTikTok : null,
+          ]}
+        >
+          <WatchVideoSurface payload={payload} isTikTokLayout={isTikTokLayout} />
         </View>
 
         <View style={styles.currentVideoPanel}>
           {item ? <WatchVideoMeta item={item} fallbackTitle={payload.title} /> : null}
           <View style={styles.actionsWrap}>
-            <PostActionsInline
-              liked={likedByMe || liked}
-              likeCount={likeCount}
-              commentCount={commentCount}
-              shareCount={shareCount}
-              saved={saved}
-              reported={reported}
-              onLike={onLike}
-              onComment={onComment}
-              onShare={onShare}
-              onSave={onSave}
-              onReport={onReport}
-            />
+            {item ? (
+              <WatchVideoEngagementActions
+                item={item}
+                onLike={onLike}
+                onComment={onComment}
+                onShare={onShare}
+                onSave={onSave}
+                onReport={onReport}
+              />
+            ) : null}
           </View>
         </View>
 
@@ -352,22 +377,13 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
           showsVerticalScrollIndicator={false}
         >
           <Text style={styles.upNextLabel}>Up next</Text>
-          {relatedItems.map((related, index) => {
+          {relatedItems.map((related) => {
             const key = String(related?.id || related?.homeFeedRecycleKey || "").trim();
             if (!key) return null;
-            const likeState = getLikeState(related, { index });
             return (
               <FeedYouTubeCard
                 key={key}
                 item={related}
-                likedByMe={likeState.likedByMe}
-                liked={likeState.liked}
-                likeCount={likeState.likeCount}
-                commentCount={getVisibleDiscussionCount(related)}
-                shareCount={Number(related?.shareCount || 0)}
-                saveCount={Number(related?.saveCount || 0)}
-                saved={getSavedState(related)}
-                reported={isPostReported(related)}
                 onLike={() => onItemLike(related)}
                 onComment={() => onItemComment(related)}
                 onShare={() => onItemShare(related)}
@@ -409,6 +425,10 @@ const styles = StyleSheet.create({
   playerWrap: {
     width: "100%",
     backgroundColor: "#000000",
+  },
+  playerWrapTikTok: {
+    alignItems: "center",
+    justifyContent: "center",
   },
   playerSurface: {
     flex: 1,

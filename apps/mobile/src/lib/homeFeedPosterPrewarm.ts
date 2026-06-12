@@ -28,8 +28,14 @@ const inflight = new Map<string, Promise<boolean>>();
 let nextScrollPrewarmOrdinal = 0;
 let lastInitialFeedKey = "";
 let lastScrollPrewarmAt = 0;
+let batchPrewarmInflight: Promise<void> | null = null;
+let initialPrewarmCompletedFeedKey = "";
 
 const SCROLL_PREWARM_COOLDOWN_MS = 4000;
+
+function logPosterPrewarmSkipped(reason: string, extra: Record<string, unknown> = {}) {
+  console.log("KRISTO_POSTER_PREWARM_SKIPPED_ALREADY_RUNNING", { reason, ...extra });
+}
 
 function prewarmKey(postId: string, videoUrl: string) {
   const id = String(postId || "").trim();
@@ -194,11 +200,22 @@ export async function prewarmHomeFeedVideoPosters(
   const videos = items.filter((item) => isVideoPost(item) && !isVideoProcessing(item));
   if (!videos.length) return;
 
-  await hydrateMediaPosterCache();
-  await runWithConcurrency(videos, opts?.concurrency ?? PREWARM_CONCURRENCY, async (item) => {
-    if (shouldDeferBackgroundMediaJobs()) return;
-    await queueHomeFeedPosterPrewarm(item);
+  if (batchPrewarmInflight) {
+    logPosterPrewarmSkipped("batch-inflight", { count: videos.length });
+    return batchPrewarmInflight;
+  }
+
+  batchPrewarmInflight = (async () => {
+    await hydrateMediaPosterCache();
+    await runWithConcurrency(videos, opts?.concurrency ?? PREWARM_CONCURRENCY, async (item) => {
+      if (shouldDeferBackgroundMediaJobs()) return;
+      await queueHomeFeedPosterPrewarm(item);
+    });
+  })().finally(() => {
+    batchPrewarmInflight = null;
   });
+
+  return batchPrewarmInflight;
 }
 
 /** Prewarm the first 20 video posts as soon as feed rows are available. */
@@ -212,9 +229,20 @@ export function startInitialHomeFeedPosterPrewarm(rows: any[]) {
     .filter(Boolean)
     .join("|");
 
+  if (feedKey && feedKey === initialPrewarmCompletedFeedKey) {
+    logPosterPrewarmSkipped("initial-already-completed", { feedKey });
+    return;
+  }
+
+  if (batchPrewarmInflight) {
+    logPosterPrewarmSkipped("initial-batch-inflight", { feedKey: feedKey || null });
+    return;
+  }
+
   if (feedKey && feedKey !== lastInitialFeedKey) {
     lastInitialFeedKey = feedKey;
     nextScrollPrewarmOrdinal = 0;
+    initialPrewarmCompletedFeedKey = "";
   }
 
   const batch = sliceHomeFeedVideoPosts(rows, 0, INITIAL_VIDEO_COUNT);
@@ -224,9 +252,12 @@ export function startInitialHomeFeedPosterPrewarm(rows: any[]) {
     phase: "initial",
     count: batch.length,
     nextScrollPrewarmOrdinal,
+    feedKey: feedKey || null,
   });
 
-  void prewarmHomeFeedVideoPosters(batch);
+  void prewarmHomeFeedVideoPosters(batch).then(() => {
+    if (feedKey) initialPrewarmCompletedFeedKey = feedKey;
+  });
 }
 
 /** Prewarm the next 10 video posts when the user nears the end of loaded content. */
@@ -263,6 +294,15 @@ export function prewarmHomeFeedPostersOnNearEnd(
 export function isHomeFeedPosterPrewarmFailed(postId: string, videoUrl: string): boolean {
   const key = prewarmKey(postId, videoUrl);
   return Boolean(key && failedKeys.has(key));
+}
+
+/** Reset initial prewarm guard when feed content materially changes (refresh / pagination). */
+export function resetHomeFeedPosterPrewarmForFeedRefresh(feedKey: string) {
+  const key = String(feedKey || "").trim();
+  if (!key || key === lastInitialFeedKey) return;
+  lastInitialFeedKey = key;
+  initialPrewarmCompletedFeedKey = "";
+  nextScrollPrewarmOrdinal = 0;
 }
 
 export function isHomeFeedPosterPrewarmPending(postId: string, videoUrl: string): boolean {

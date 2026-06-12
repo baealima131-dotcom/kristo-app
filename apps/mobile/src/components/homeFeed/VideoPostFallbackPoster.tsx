@@ -6,7 +6,6 @@ import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
   logMediaPosterCacheHit,
-  peekCachedMediaPosterCaptureTimeMs,
   resolveCachedMediaPoster,
   subscribeMediaPosterCache,
 } from "@/src/lib/mediaPosterCache";
@@ -26,14 +25,16 @@ import type { ActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
 import { logActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
 import {
   collectFeedVideoPosterCandidates,
-  classifyHomeFeedPosterUriSource,
   describePosterResolution,
-  type HomeFeedPosterSourceKind,
+  posterMetadataFingerprint,
   type PosterMetadataSnapshot,
-  resolveBestFeedPosterUri,
   snapshotPosterMetadata,
 } from "./homeFeedUtils";
-import { computeHomeFeedPosterCaptureTimeMs } from "@/src/lib/mediaVideoPoster";
+import {
+  logHomeFeedPosterSourceOnce,
+  promoteHomeFeedPosterCache,
+  resolveHomeFeedPosterDisplay,
+} from "@/src/lib/homeFeedPosterSource";
 
 const GOLD = "#F4D06F";
 
@@ -199,33 +200,11 @@ function logPosterPipelineDiag(params: {
   });
 }
 
-function logHomeFeedPosterSource(
-  postId: string,
-  videoUrl: string,
-  source: HomeFeedPosterSourceKind,
-  durationMs?: number
-) {
-  console.log("KRISTO_HOME_FEED_POSTER_SOURCE", {
-    postId: postId || null,
-    source,
-    captureTimeMs:
-      peekCachedMediaPosterCaptureTimeMs(postId, videoUrl) ??
-      computeHomeFeedPosterCaptureTimeMs(durationMs),
-  });
-}
-
 export function FeedVideoPosterImage(props: FeedVideoPosterImageProps) {
   if (props.youtubeMode) {
     return <YouTubeFeedVideoPoster {...props} />;
   }
   return <LegacyFeedVideoPosterImage {...props} />;
-}
-
-function resolveYouTubeFeedPosterUri(item: any, postId: string, videoUrl: string) {
-  const cached = resolveCachedMediaPoster(postId, videoUrl);
-  if (cached) return cached;
-  if (item) return resolveBestFeedPosterUri(item, postId);
-  return "";
 }
 
 function YouTubeFeedVideoPoster({
@@ -242,56 +221,54 @@ function YouTubeFeedVideoPoster({
   const resolvedVideoUrl = String(videoUrl || "").trim();
   const status = String(mediaStatus || "").trim().toLowerCase();
   const isProcessing = status === "processing" || status === "uploading";
+  const posterFingerprint = posterMetadataFingerprint(item);
+  const posterDisplay = React.useMemo(
+    () =>
+      resolvedVideoUrl
+        ? resolveHomeFeedPosterDisplay(
+            postId,
+            resolvedVideoUrl,
+            item,
+            posterFingerprint
+          )
+        : { uri: "", source: "inferred" as const },
+    [postId, resolvedVideoUrl, posterFingerprint]
+  );
   const posterCandidates = React.useMemo(() => {
     if (item) return collectFeedVideoPosterCandidates(item, postId);
     return [];
-  }, [item, postId]);
+  }, [item, postId, posterFingerprint]);
 
-  const [imageUri, setImageUri] = React.useState(() =>
-    resolvedVideoUrl ? resolveYouTubeFeedPosterUri(item, postId, resolvedVideoUrl) : ""
-  );
+  const [imageUri, setImageUri] = React.useState(() => posterDisplay.uri);
   const [frameGenFailed, setFrameGenFailed] = React.useState(false);
-  const posterSourceLoggedRef = React.useRef("");
   const imageUriRef = React.useRef(imageUri);
   imageUriRef.current = imageUri;
 
-  const logPosterSource = React.useCallback(
-    (source: HomeFeedPosterSourceKind) => {
-      const key = `${postId}|${source}`;
-      if (posterSourceLoggedRef.current === key) return;
-      posterSourceLoggedRef.current = key;
-      logHomeFeedPosterSource(postId, resolvedVideoUrl, source, videoDurationMs);
-    },
-    [postId, resolvedVideoUrl, videoDurationMs]
-  );
+  React.useEffect(() => {
+    logHomeFeedPosterSourceOnce(
+      postId,
+      resolvedVideoUrl,
+      posterDisplay.source,
+      videoDurationMs
+    );
+  }, [postId, resolvedVideoUrl, posterDisplay.source, videoDurationMs]);
 
   React.useEffect(() => {
-    posterSourceLoggedRef.current = "";
     setFrameGenFailed(false);
-    const nextUri = resolvedVideoUrl
-      ? resolveYouTubeFeedPosterUri(item, postId, resolvedVideoUrl)
-      : "";
-    setImageUri(nextUri);
-    if (nextUri) {
-      const source =
-        resolveCachedMediaPoster(postId, resolvedVideoUrl) === nextUri
-          ? "cache"
-          : item
-            ? classifyHomeFeedPosterUriSource(item, nextUri, postId, resolvedVideoUrl)
-            : "metadata";
-      logPosterSource(source);
+    if (posterDisplay.uri && posterDisplay.uri !== imageUriRef.current) {
+      setImageUri(posterDisplay.uri);
     }
-  }, [postId, resolvedVideoUrl, item, logPosterSource]);
+  }, [posterDisplay.uri]);
 
   React.useEffect(() => {
     if (!postId || !resolvedVideoUrl) return;
     return subscribeMediaPosterCache(postId, resolvedVideoUrl, (uri) => {
       if (!uri) return;
+      promoteHomeFeedPosterCache(postId, resolvedVideoUrl, uri);
       setImageUri(uri);
       setFrameGenFailed(false);
-      logPosterSource("cache");
     });
-  }, [postId, resolvedVideoUrl, logPosterSource]);
+  }, [postId, resolvedVideoUrl]);
 
   React.useEffect(() => {
     if (!item || isProcessing || !resolvedVideoUrl) return;
@@ -321,7 +298,7 @@ function YouTubeFeedVideoPoster({
       cancelled = true;
       clearTimeout(failTimer);
     };
-  }, [item, postId, resolvedVideoUrl, isProcessing]);
+  }, [item, postId, resolvedVideoUrl, isProcessing, posterFingerprint]);
 
   const handleImageError = React.useCallback(() => {
     const current = imageUriRef.current;
@@ -330,11 +307,6 @@ function YouTubeFeedVideoPoster({
     );
     if (nextCandidate) {
       setImageUri(nextCandidate);
-      if (item) {
-        logPosterSource(
-          classifyHomeFeedPosterUriSource(item, nextCandidate, postId, resolvedVideoUrl)
-        );
-      }
       return;
     }
     if (item && !isProcessing) {
@@ -342,7 +314,7 @@ function YouTubeFeedVideoPoster({
         if (!ok && !imageUriRef.current) setFrameGenFailed(true);
       });
     }
-  }, [posterCandidates, item, postId, resolvedVideoUrl, isProcessing, logPosterSource]);
+  }, [posterCandidates, item, isProcessing]);
 
   const showProcessingPoster = isProcessing;
   const showFailurePoster =
@@ -353,8 +325,8 @@ function YouTubeFeedVideoPoster({
 
   React.useEffect(() => {
     if (!showBrandedFallback || imageUri) return;
-    logPosterSource("branded-fallback");
-  }, [showBrandedFallback, imageUri, logPosterSource]);
+    logHomeFeedPosterSourceOnce(postId, resolvedVideoUrl, "branded-fallback", videoDurationMs);
+  }, [showBrandedFallback, imageUri, postId, resolvedVideoUrl, videoDurationMs]);
 
   return (
     <View style={style}>

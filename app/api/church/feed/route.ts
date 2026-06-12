@@ -4270,6 +4270,10 @@ async function handleFeedPost(req: NextRequest, body: any) {
   if (cleanText(body?.mediaType, 40)) {
     (item as any).mediaType = cleanText(body?.mediaType, 40);
   }
+  const videoDisplayType = cleanText(body?.videoDisplayType, 40).toLowerCase();
+  if (videoDisplayType === "youtube" || videoDisplayType === "tiktok") {
+    (item as any).videoDisplayType = videoDisplayType;
+  }
   if (createImageUris.length > 0 && type !== "video" && !String(videoUrl || "").trim()) {
     applyFeedPostImageFieldsToItem(item, createImageUris);
     console.log("KRISTO_FEED_POST_IMAGES_SAVED", {

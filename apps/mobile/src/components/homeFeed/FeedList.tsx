@@ -6,7 +6,6 @@ import React, {
   useImperativeHandle,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import {
   ActivityIndicator,
@@ -67,14 +66,6 @@ type Props = {
   activeIndex: number;
   screenFocused: boolean;
   loading: boolean;
-  likeUiEpoch: number;
-  getLikeState: (
-    item: any,
-    logContext?: { index?: number }
-  ) => { likedByMe: boolean; liked: boolean; likeCount: number };
-  getSavedState: (item: any) => boolean;
-  getVisibleDiscussionCount: (item: any) => number;
-  isPostReported: (item: any) => boolean;
   onActiveIndexChange: (index: number) => void;
   onLike: (item: any) => void;
   onComment: (item: any) => void;
@@ -94,11 +85,6 @@ export const FeedList = memo(
       activeIndex,
       screenFocused,
       loading,
-      likeUiEpoch,
-      getLikeState,
-      getSavedState,
-      getVisibleDiscussionCount,
-      isPostReported,
       onActiveIndexChange,
       onLike,
       onComment,
@@ -113,15 +99,30 @@ export const FeedList = memo(
   ) {
   const youtubeLayout = isHomeFeedYouTubeStyleVideo();
   const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
-  const [scheduleNowMs] = useState(() => Date.now());
   const renderPaused = isHomeFeedRenderPaused();
   const effectiveScreenFocused = screenFocused && !renderPaused;
   const listRef = useRef<FlatList>(null);
   const activeIndexRef = useRef(activeIndex);
   const onActiveIndexChangeRef = useRef(onActiveIndexChange);
+  const handlersRef = useRef({
+    onLike,
+    onComment,
+    onShare,
+    onSave,
+    onReport,
+    onVideoPress,
+  });
 
   activeIndexRef.current = activeIndex;
   onActiveIndexChangeRef.current = onActiveIndexChange;
+  handlersRef.current = {
+    onLike,
+    onComment,
+    onShare,
+    onSave,
+    onReport,
+    onVideoPress,
+  };
 
   useImperativeHandle(
     ref,
@@ -251,8 +252,6 @@ export const FeedList = memo(
 
   const renderItem = useCallback(
     ({ item, index }: { item: any; index: number }) => {
-      const likeState = getLikeState(item, { index });
-
       const videoWarmMode = isVideoPost(item)
         ? resolveHomeFeedVideoWarmMode(index, activeIndex, mountedVideoIndexes, rows)
         : "off";
@@ -299,18 +298,12 @@ export const FeedList = memo(
           feedIndex={index}
           isFirstFeedVideo={index === firstVideoIndex}
           decodePrime={decodePrime}
-          likedByMe={likeState.likedByMe}
-          liked={likeState.liked}
-          likeCount={likeState.likeCount}
-          visibleDiscussionCount={getVisibleDiscussionCount(item)}
-          saved={getSavedState(item)}
-          reported={isPostReported(item)}
-          onLike={() => onLike(item)}
-          onComment={() => onComment(item)}
-          onShare={() => onShare(item)}
-          onSave={() => onSave(item)}
-          onReport={() => onReport(item)}
-          onVideoPress={onVideoPress}
+          onLike={() => handlersRef.current.onLike(item)}
+          onComment={() => handlersRef.current.onComment(item)}
+          onShare={() => handlersRef.current.onShare(item)}
+          onSave={() => handlersRef.current.onSave(item)}
+          onReport={() => handlersRef.current.onReport(item)}
+          onVideoPress={handlersRef.current.onVideoPress}
         />
       );
     },
@@ -320,21 +313,8 @@ export const FeedList = memo(
       mountedVideoIndexes,
       rows,
       firstVideoIndex,
-      screenFocused,
       effectiveScreenFocused,
-      renderPaused,
-      scheduleNowMs,
-      likeUiEpoch,
-      getLikeState,
-      getSavedState,
-      getVisibleDiscussionCount,
-      isPostReported,
-      onLike,
-      onComment,
-      onShare,
-      onSave,
-      onReport,
-      onVideoPress,
+      inlineVideoAutoplay,
     ]
   );
 
@@ -344,41 +324,18 @@ export const FeedList = memo(
   );
 
   const renderYouTubeItem = useCallback(
-    ({ item, index }: { item: any; index: number }) => {
-      const likeState = getLikeState(item, { index });
-
-      return (
-        <FeedYouTubeCard
-          item={item}
-          likedByMe={likeState.likedByMe}
-          liked={likeState.liked}
-          likeCount={likeState.likeCount}
-          commentCount={getVisibleDiscussionCount(item)}
-          shareCount={Number(item?.shareCount || 0)}
-          saveCount={Number(item?.saveCount || 0)}
-          saved={getSavedState(item)}
-          reported={isPostReported(item)}
-          onLike={() => onLike(item)}
-          onComment={() => onComment(item)}
-          onShare={() => onShare(item)}
-          onSave={() => onSave(item)}
-          onReport={() => onReport(item)}
-          onVideoPress={onVideoPress}
-        />
-      );
-    },
-    [
-      getLikeState,
-      getSavedState,
-      getVisibleDiscussionCount,
-      isPostReported,
-      onLike,
-      onComment,
-      onShare,
-      onSave,
-      onReport,
-      onVideoPress,
-    ]
+    ({ item }: { item: any; index: number }) => (
+      <FeedYouTubeCard
+        item={item}
+        onLike={() => handlersRef.current.onLike(item)}
+        onComment={() => handlersRef.current.onComment(item)}
+        onShare={() => handlersRef.current.onShare(item)}
+        onSave={() => handlersRef.current.onSave(item)}
+        onReport={() => handlersRef.current.onReport(item)}
+        onVideoPress={handlersRef.current.onVideoPress}
+      />
+    ),
+    []
   );
 
   const viewportStyle = youtubeLayout ? styles.youtubeList : { height: contentHeight };
@@ -408,7 +365,6 @@ export const FeedList = memo(
         ref={listRef}
         data={rows}
         keyExtractor={keyExtractor}
-        extraData={`${likeUiEpoch}:${scheduleNowMs}`}
         renderItem={renderYouTubeItem}
         showsVerticalScrollIndicator={false}
         initialNumToRender={4}
@@ -426,7 +382,7 @@ export const FeedList = memo(
       ref={listRef}
       data={rows}
       keyExtractor={keyExtractor}
-      extraData={`${likeUiEpoch}:${activeIndex}:${scheduleNowMs}`}
+      extraData={activeIndex}
       renderItem={renderItem}
       pagingEnabled
       directionalLockEnabled={Platform.OS === "ios"}
@@ -464,7 +420,8 @@ const styles = StyleSheet.create({
     backgroundColor: HOME_FEED_BG,
   },
   youtubeContent: {
-    paddingBottom: 24,
+    paddingTop: 10,
+    paddingBottom: 28,
   },
   center: {
     alignItems: "center",

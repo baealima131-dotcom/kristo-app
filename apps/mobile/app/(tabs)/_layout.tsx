@@ -36,14 +36,17 @@ import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfil
 import { Animated, InteractionManager, Pressable, StyleSheet, Text, View } from "react-native";
 import { ensureChurchAccessOrSetup } from "@/src/lib/churchLockedRecovery";
 import { fetchLightLiveState, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
+import {
+  HOME_FEED_GOLD,
+  HOME_FEED_INACTIVE,
+} from "@/src/components/homeFeed/theme";
+import { homeFeedPremiumStyles as homeFeedPremium } from "@/src/components/homeFeed/homeFeedPremiumStyles";
 
-const VIP_BG = "#0B0F17";
-const VIP_BORDER = "rgba(255,255,255,0.10)";
-const GOLD = "#D9B35F";
-const MUTED = "rgba(255,255,255,0.55)";
-const TAB_BG = "rgba(8,12,20,0.96)";
-const TAB_BORDER = "rgba(255,255,255,0.05)";
-const MORE_SHELL_BG = "#0B0F17";
+const VIP_BG = "#010102";
+const VIP_BORDER = "rgba(255,255,255,0.08)";
+const GOLD = HOME_FEED_GOLD;
+const MUTED = HOME_FEED_INACTIVE;
+const MORE_SHELL_BG = "#010102";
 /** Hold time before onLongPress; RN default is 500ms. */
 const LIVE_RING_LONG_PRESS_MS = 150;
 
@@ -118,15 +121,12 @@ function ChurchLiveTabIcon({ focused, isLive, pulse, liveColor = "#EF4444" }: { 
           pointerEvents="none"
           style={{
             position: "absolute",
-            width: 42,
-            height: 42,
+            width: 40,
+            height: 40,
             borderRadius: 999,
-            backgroundColor: "rgba(217,179,95,0.14)",
-            shadowColor: GOLD,
-            shadowOpacity: 0.55,
-            shadowRadius: 14,
-            shadowOffset: { width: 0, height: 0 },
-            elevation: 8,
+            backgroundColor: "rgba(212,175,101,0.12)",
+            borderWidth: 1,
+            borderColor: "rgba(212,175,101,0.45)",
           }}
         />
       ) : null}
@@ -806,26 +806,7 @@ export default function TabLayout() {
         headerShown: false,
         tabBarStyle: hideTabBar
           ? { display: "none" }
-          : {
-              position: "absolute",
-              left: 0,
-              right: 0,
-              bottom: 0,
-              backgroundColor: TAB_BG,
-              borderTopColor: TAB_BORDER,
-              borderTopWidth: 1,
-              borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.05)",
-              height: 70,
-              paddingTop: 6,
-              paddingBottom: 12,
-              borderRadius: 0,
-              elevation: 6,
-              shadowColor: "#000",
-              shadowOpacity: 0.18,
-              shadowRadius: 20,
-              shadowOffset: { width: 0, height: -10 },
-            },
+          : homeFeedPremium.tabBarGlass,
         tabBarActiveTintColor: GOLD,
         tabBarInactiveTintColor: MUTED,
         tabBarLabelStyle: { fontWeight: "800", fontSize: 11, paddingBottom: 0 },

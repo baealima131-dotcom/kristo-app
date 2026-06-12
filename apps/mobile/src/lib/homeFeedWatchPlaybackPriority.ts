@@ -1,11 +1,17 @@
-const PLAYBACK_IDLE_RESUME_MS = 2500;
-
 type PauseListener = (paused: boolean) => void;
+
+const BACKGROUND_JOB_NAMES = [
+  "poster-prewarm",
+  "poster-cache-hydrate",
+  "video-disk-cache",
+  "video-buffer-ahead",
+  "video-thumbnail",
+  "feed-polling",
+] as const;
 
 let watchScreenOpen = false;
 let playbackActive = false;
 let jobsPaused = false;
-let idleResumeTimer: ReturnType<typeof setTimeout> | null = null;
 const pauseListeners = new Set<PauseListener>();
 const resumeListeners = new Set<() => void>();
 
@@ -25,16 +31,14 @@ function notifyResumeListeners() {
   }
 }
 
-function clearIdleResumeTimer() {
-  if (!idleResumeTimer) return;
-  clearTimeout(idleResumeTimer);
-  idleResumeTimer = null;
-}
-
 function pauseBackgroundMediaJobs(reason: string) {
   if (jobsPaused) return;
   jobsPaused = true;
   emitPaused(true);
+  console.log("KRISTO_PLAYBACK_PRIORITY_PAUSED_JOB", {
+    reason,
+    jobs: BACKGROUND_JOB_NAMES,
+  });
   console.log("KRISTO_BACKGROUND_MEDIA_JOBS_PAUSED_FOR_PLAYBACK", { reason });
 }
 
@@ -42,24 +46,15 @@ function resumeBackgroundMediaJobs(reason: string) {
   if (!jobsPaused) return;
   jobsPaused = false;
   emitPaused(false);
+  console.log("KRISTO_PLAYBACK_PRIORITY_RESUMED_JOB", {
+    reason,
+    jobs: BACKGROUND_JOB_NAMES,
+  });
   console.log("KRISTO_BACKGROUND_MEDIA_JOBS_RESUMED_AFTER_PLAYBACK", { reason });
   notifyResumeListeners();
 }
 
-function scheduleIdleResume() {
-  clearIdleResumeTimer();
-  if (!watchScreenOpen) {
-    resumeBackgroundMediaJobs("watch-screen-closed");
-    return;
-  }
-  idleResumeTimer = setTimeout(() => {
-    idleResumeTimer = null;
-    if (playbackActive) return;
-    resumeBackgroundMediaJobs("playback-idle");
-  }, PLAYBACK_IDLE_RESUME_MS);
-}
-
-/** True while watch playback owns the device — poster prewarm, cache I/O, polling, etc. should defer. */
+/** True while the watch screen owns the device — poster prewarm, cache I/O, polling, etc. should defer. */
 export function shouldDeferBackgroundMediaJobs(): boolean {
   return jobsPaused;
 }
@@ -85,11 +80,8 @@ export function onBackgroundMediaJobsResumed(listener: () => void): () => void {
 
 export function notifyWatchScreenOpened(postId: string) {
   watchScreenOpen = true;
-  clearIdleResumeTimer();
-  if (playbackActive) {
-    pauseBackgroundMediaJobs("watch-screen-open-playing");
-  }
-  console.log("KRISTO_WATCH_PLAYBACK_ACTIVE", {
+  pauseBackgroundMediaJobs("watch-screen-open");
+  console.log("KRISTO_PLAYBACK_PRIORITY_ACTIVE", {
     postId: String(postId || "").trim() || null,
     phase: "watch-screen-open",
   });
@@ -98,23 +90,25 @@ export function notifyWatchScreenOpened(postId: string) {
 export function notifyWatchScreenClosed() {
   watchScreenOpen = false;
   playbackActive = false;
-  clearIdleResumeTimer();
   resumeBackgroundMediaJobs("watch-screen-closed");
 }
 
 export function notifyWatchPlaybackActive(postId: string) {
   const id = String(postId || "").trim();
   playbackActive = true;
-  clearIdleResumeTimer();
   pauseBackgroundMediaJobs("playback-active");
-  console.log("KRISTO_WATCH_PLAYBACK_ACTIVE", { postId: id || null });
+  console.log("KRISTO_PLAYBACK_PRIORITY_ACTIVE", { postId: id || null, phase: "playback-active" });
 }
 
 export function notifyWatchPlaybackPaused(postId?: string) {
   playbackActive = false;
-  scheduleIdleResume();
+  // Keep background jobs paused while the watch modal stays open.
+  if (watchScreenOpen) {
+    pauseBackgroundMediaJobs("playback-paused-watch-open");
+  }
   console.log("KRISTO_WATCH_PLAYBACK_PAUSED", {
     postId: String(postId || "").trim() || null,
-    resumeAfterMs: PLAYBACK_IDLE_RESUME_MS,
+    watchScreenOpen,
+    jobsPaused,
   });
 }

@@ -46,6 +46,7 @@ import { peekProfileScreenCache } from "@/src/lib/screenDataCache";
 import { tryRegisterStartupFirstVideoTarget } from "@/src/lib/homeFeedVideoPrime";
 import { isHomeFeedInlineVideoAutoplayEnabled, type HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
+import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
@@ -1609,6 +1610,14 @@ export function resolvePostTitle(item: any) {
   return String(item?.title || item?.postTitle || "").trim();
 }
 
+/** Video posts use title only — never fall back to caption/body text. */
+export function resolveHomeFeedVideoTitle(item: any): string {
+  const title = resolvePostTitle(item);
+  if (title) return title;
+  if (isVideoPost(item)) return "";
+  return resolvePostBody(item);
+}
+
 export function resolvePostBody(item: any) {
   return String(item?.body || item?.text || item?.description || item?.caption || "").trim();
 }
@@ -2077,6 +2086,21 @@ export function snapshotPosterMetadata(item: any): PosterMetadataSnapshot {
   };
 }
 
+/** Stable fingerprint for poster-related useMemo deps (immune to feed poll object churn). */
+export function posterMetadataFingerprint(item: any): string {
+  const metadata = snapshotPosterMetadata(item);
+  const video = resolveVideoUri(item);
+  return [
+    metadata.posterUri,
+    metadata.videoPosterUri,
+    metadata.thumbnailUri,
+    metadata.thumbnailUrl,
+    metadata.posterUrl,
+    metadata.brandedPoster ? "1" : "0",
+    video.split("?")[0],
+  ].join("|");
+}
+
 export function describePosterResolution(item: any, resolvedPoster: string) {
   const video = resolveVideoUri(item);
   const normalized = String(resolvedPoster || "").trim().split("?")[0];
@@ -2204,9 +2228,10 @@ export function buildHomeFeedVideoOpenPayload(item: any): HomeFeedVideoOpenPaylo
   if (!postId || !videoUri) return null;
 
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
-  const postTitle = resolvePostTitle(item);
+  const postTitle = resolveHomeFeedVideoTitle(item);
   const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle;
   const playbackUri = resolveHomeFeedVideoUri(item) || videoUri;
+  const videoDisplayType = resolveHomeFeedVideoDisplayType(item);
 
   return {
     postId,
@@ -2214,6 +2239,7 @@ export function buildHomeFeedVideoOpenPayload(item: any): HomeFeedVideoOpenPaylo
     videoUri: playbackUri,
     posterUri: resolveBestFeedPosterUri(item, postId),
     videoDurationMs: resolveVideoDurationMs(item),
+    videoDisplayType,
     item,
   };
 }

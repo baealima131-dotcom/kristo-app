@@ -1,8 +1,21 @@
-export const HOME_FEED_BG = "#03050C";
-export const HOME_FEED_GOLD = "#D9B35F";
-export const HOME_FEED_GOLD_SOFT = "#F4D06F";
-export const HOME_FEED_MUTED = "rgba(255,255,255,0.68)";
-export const HOME_FEED_BORDER = "rgba(255,255,255,0.10)";
+/** Deep black canvas for Home Feed luxury layout. */
+export const HOME_FEED_BG = "#010102";
+
+export const HOME_FEED_GOLD = "#D4AF65";
+export const HOME_FEED_GOLD_SOFT = "#E8C878";
+export const HOME_FEED_GOLD_GLOW = "rgba(212,175,101,0.52)";
+export const HOME_FEED_MUTED = "rgba(255,255,255,0.62)";
+export const HOME_FEED_INACTIVE = "rgba(255,255,255,0.42)";
+export const HOME_FEED_BORDER = "rgba(255,255,255,0.08)";
+
+/** Faux glass — semi-transparent fills, no BlurView. */
+export const HOME_FEED_GLASS_BG = "rgba(255,255,255,0.06)";
+export const HOME_FEED_GLASS_BORDER = "rgba(255,255,255,0.10)";
+export const HOME_FEED_GLASS_GOLD_BORDER = "rgba(212,175,101,0.22)";
+export const HOME_FEED_CARD_BORDER = "rgba(212,175,101,0.24)";
+
+export const HOME_FEED_THUMB_RADIUS = 20;
+export const HOME_FEED_CARD_RADIUS = 22;
 
 /** Tab bar height in tab layout (reserve above home indicator). */
 export const HOME_FEED_TAB_BAR_HEIGHT = 70;
