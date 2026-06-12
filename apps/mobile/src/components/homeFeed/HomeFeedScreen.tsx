@@ -20,6 +20,9 @@ import {
 import { FeedList, type FeedListHandle } from "./FeedList";
 import { FeedReportSheet } from "./FeedReportSheet";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
+import { HomeFeedVideoModal } from "./HomeFeedVideoModal";
+import { HomeFeedStickyPlayer } from "./HomeFeedStickyPlayer";
+import { HomeFeedLiveStreamsSheet } from "./HomeFeedLiveSection";
 import {
   normalizeCommentPostId,
   userHasActiveChurchMembership,
@@ -75,6 +78,7 @@ import {
   setHomeFeedViewerCanSeeMediaSlots,
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, homeFeedSlideHeight } from "./theme";
+import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
 import {
   getLocallyReportedPostIds,
   markPostReportedLocally,
@@ -89,6 +93,19 @@ import {
   recoverHomeFeedPlaybackAfterLiveExit,
 } from "@/src/lib/homeFeedVideoOwner";
 import { warmHomeFeedUpcoming, startFirstHomeFeedVideoPrepare } from "@/src/lib/homeFeedVideoStartup";
+import {
+  isHomeFeedInlineVideoAutoplayEnabled,
+  type HomeFeedVideoOpenPayload,
+} from "@/src/lib/homeFeedVideoMode";
+import {
+  homeFeedLiveCardHeight,
+  partitionHomeFeedYouTubeRows,
+} from "@/src/lib/homeFeedYouTubeLayout";
+import {
+  areHomeFeedForwardVideosDiskCached,
+  scheduleHomeFeedVideoDiskCacheBackground,
+  subscribeHomeFeedVideoDiskCache,
+} from "@/src/lib/homeFeedVideoDiskCache";
 import {
   beginHomeFeedPrefetchSession,
   endHomeFeedPrefetchSession,
@@ -115,6 +132,27 @@ const CLAIM_SLOT_EMPTY_MESSAGE =
   "No open media slots right now. Check back when your church posts a live schedule.";
 
 export default function HomeFeedScreen() {
+  React.useEffect(() => {
+    if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
+    let cancelled = false;
+    console.log("KRISTO_VIDEO_DISK_CACHE_EARLY_HYDRATE_START");
+    hydrateHomeFeedVideoDiskCache()
+      .then(() => {
+        if (!cancelled) {
+          console.log("KRISTO_VIDEO_DISK_CACHE_EARLY_HYDRATE_READY");
+        }
+      })
+      .catch((error) => {
+        console.log("KRISTO_VIDEO_DISK_CACHE_EARLY_HYDRATE_FAILED", {
+          error: String(error?.message || error || "hydrate-failed"),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+
   const { height: windowHeight } = useWindowDimensions();
   const tabBarHeight = useBottomTabBarHeight();
   const screenFocused = useIsFocused();
@@ -148,6 +186,10 @@ export default function HomeFeedScreen() {
   const [commentRailCount, setCommentRailCount] = useState(0);
   const [commentCountOverrides, setCommentCountOverrides] = useState<Record<string, number>>({});
   const [successBanner, setSuccessBanner] = useState("");
+  const [videoModalPayload, setVideoModalPayload] = useState<HomeFeedVideoOpenPayload | null>(
+    null
+  );
+  const [liveStreamsSheetOpen, setLiveStreamsSheetOpen] = useState(false);
 
   const focusHandledRef = useRef("");
   const reportablePostIdsDigestRef = useRef("");
@@ -187,16 +229,22 @@ export default function HomeFeedScreen() {
   const contentHeight = homeFeedSlideHeight(windowHeight, tabBarHeight);
   const homeFeedRenderPaused = isHomeFeedRenderPaused();
   const feedFocused = screenFocused && appActive && !homeFeedRenderPaused;
+  const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
+  const youtubeLayout = !inlineVideoAutoplay;
+  const liveCardHeight = homeFeedLiveCardHeight(windowHeight);
 
   useLayoutEffect(() => {
     markHomeMount();
-    beginHomeFirstVideoPriorityMode("home-feed-screen");
-  }, []);
+    if (inlineVideoAutoplay) {
+      beginHomeFirstVideoPriorityMode("home-feed-screen");
+    }
+  }, [inlineVideoAutoplay]);
 
   useEffect(() => {
+    if (!inlineVideoAutoplay) return;
     if (!session?.userId || !session?.sessionToken || !session?.churchId) return;
     startFirstHomeFeedVideoPrepare(session as any);
-  }, [session?.userId, session?.sessionToken, session?.churchId]);
+  }, [inlineVideoAutoplay, session?.userId, session?.sessionToken, session?.churchId]);
 
   useLayoutEffect(() => {
     let alive = true;
@@ -822,14 +870,28 @@ export default function HomeFeedScreen() {
     visibleRowCountRef.current = visibleData.length;
   }, [visibleData]);
 
+  // Full-feed disk cache: inline autoplay only.
+  useEffect(() => {
+    if (!inlineVideoAutoplay) return;
+    if (!stableDisplayRows.length) return;
+    scheduleHomeFeedVideoDiskCacheBackground(stableDisplayRows, activeIndex);
+  }, [inlineVideoAutoplay, stableDisplayRows, activeIndex]);
+
   // Cold start: rows may arrive after the prepare gate — re-run prime once feed data exists.
   useEffect(() => {
+    if (!inlineVideoAutoplay) return;
     if (!session?.userId || !session?.sessionToken || !session?.churchId) {
       return;
     }
     if (!visibleData.some((row) => isVideoPost(row))) return;
     startFirstHomeFeedVideoPrepare(session as any);
-  }, [visibleData, session?.userId, session?.sessionToken, session?.churchId]);
+  }, [
+    inlineVideoAutoplay,
+    visibleData,
+    session?.userId,
+    session?.sessionToken,
+    session?.churchId,
+  ]);
 
   useEffect(() => {
     if (initialRenderSourceLoggedRef.current) return;
@@ -884,13 +946,26 @@ export default function HomeFeedScreen() {
 
   useEffect(() => {
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
-    if (posterWarmKey === lastPosterWarmKeyRef.current) return;
-    lastPosterWarmKeyRef.current = posterWarmKey;
-    warmHomeFeedVideoPostersNearActive(
-      visibleData,
-      activeIndex,
-      prefetchSessionIdRef.current
-    );
+
+    const tryPosterWarm = () => {
+      if (!isHomeFeedActiveFirstFrameReady()) return;
+      if (!areHomeFeedForwardVideosDiskCached(visibleData, activeIndex)) return;
+      if (posterWarmKey === lastPosterWarmKeyRef.current) return;
+      lastPosterWarmKeyRef.current = posterWarmKey;
+      warmHomeFeedVideoPostersNearActive(
+        visibleData,
+        activeIndex,
+        prefetchSessionIdRef.current
+      );
+    };
+
+    tryPosterWarm();
+    const unsubFrame = subscribeHomeFeedActiveFirstFrame(tryPosterWarm);
+    const unsubCache = subscribeHomeFeedVideoDiskCache(tryPosterWarm);
+    return () => {
+      unsubFrame();
+      unsubCache();
+    };
   }, [posterWarmKey, activeIndex, feedFocused, isClaimSlotFocus, visibleData]);
 
   // Initial buffer-ahead is deferred until the FIRST video's first frame paints
@@ -898,6 +973,7 @@ export default function HomeFeedScreen() {
   // priority and we only warm the next 2–3 rows once it is playing. The pending
   // subscription is tracked in a ref so feed re-renders never cancel it.
   useEffect(() => {
+    if (!inlineVideoAutoplay) return;
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
     if (initialVideoBufferWarmedRef.current) return;
     initialVideoBufferWarmedRef.current = true;
@@ -931,7 +1007,7 @@ export default function HomeFeedScreen() {
       } catch {}
       clearTimeout(fallbackTimer);
     };
-  }, [feedFocused, isClaimSlotFocus, visibleData.length]);
+  }, [inlineVideoAutoplay, feedFocused, isClaimSlotFocus, visibleData.length]);
 
   useEffect(() => {
     return () => {
@@ -943,13 +1019,15 @@ export default function HomeFeedScreen() {
   }, []);
 
   useEffect(() => {
+    if (!inlineVideoAutoplay) return;
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
     if (lastVideoBufferActiveRef.current === activeIndex) return;
     lastVideoBufferActiveRef.current = activeIndex;
     warmHomeFeedUpcoming(visibleData, activeIndex);
-  }, [activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
+  }, [inlineVideoAutoplay, activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
 
   useEffect(() => {
+    if (!inlineVideoAutoplay) return;
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
     const prevWindow = lastVideoBufferWindowRef.current;
     if (visibleWindowSize <= prevWindow) {
@@ -958,7 +1036,32 @@ export default function HomeFeedScreen() {
     }
     lastVideoBufferWindowRef.current = visibleWindowSize;
     warmHomeFeedUpcoming(visibleData, activeIndex);
-  }, [visibleWindowSize, activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
+  }, [inlineVideoAutoplay, visibleWindowSize, activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
+
+  const youtubeFeedPartition = useMemo(
+    () => partitionHomeFeedYouTubeRows(visibleData),
+    [visibleData]
+  );
+
+  const feedListRows = youtubeLayout ? youtubeFeedPartition.feedRows : visibleData;
+
+  const handleVideoPress = useCallback((payload: HomeFeedVideoOpenPayload) => {
+    setVideoModalPayload(payload);
+  }, []);
+
+  const handleCloseVideo = useCallback(() => {
+    setVideoModalPayload(null);
+  }, []);
+
+  const youtubeLiveHeader = useMemo(() => {
+    if (!youtubeLayout || !youtubeFeedPartition.primaryLive) return null;
+    return {
+      primaryLive: youtubeFeedPartition.primaryLive,
+      extraLiveCount: youtubeFeedPartition.extraLiveRows.length,
+      liveCardHeight,
+      onViewMoreLive: () => setLiveStreamsSheetOpen(true),
+    };
+  }, [youtubeLayout, youtubeFeedPartition, liveCardHeight]);
 
   const hasChurchScheduleSlots = useMemo(() => {
     if (!viewerCanSeeMediaSlots) return false;
@@ -1449,16 +1552,20 @@ export default function HomeFeedScreen() {
   }, []);
 
   return (
-    <View style={[styles.screen, { height: contentHeight }]}>
+    <View style={[styles.screen, youtubeLayout ? styles.screenYoutube : { height: contentHeight }]}>
       {successBanner ? (
         <View style={styles.successBanner} pointerEvents="none">
           <Text style={styles.successBannerText}>{successBanner}</Text>
         </View>
       ) : null}
 
+      {youtubeLayout ? (
+        <HomeFeedStickyPlayer payload={videoModalPayload} onClose={handleCloseVideo} />
+      ) : null}
+
       <FeedList
         ref={feedListRef}
-        rows={visibleData}
+        rows={feedListRows}
         contentHeight={contentHeight}
         activeIndex={activeIndex}
         screenFocused={feedFocused}
@@ -1474,6 +1581,23 @@ export default function HomeFeedScreen() {
         onShare={handleShare}
         onSave={handleSave}
         onReport={handleReport}
+        onVideoPress={handleVideoPress}
+        youtubeLiveHeader={youtubeLiveHeader}
+      />
+
+      {!youtubeLayout ? (
+        <HomeFeedVideoModal
+          visible={Boolean(videoModalPayload)}
+          payload={videoModalPayload}
+          onClose={handleCloseVideo}
+        />
+      ) : null}
+
+      <HomeFeedLiveStreamsSheet
+        visible={liveStreamsSheetOpen}
+        rows={youtubeFeedPartition.extraLiveRows}
+        cardHeight={liveCardHeight}
+        onClose={() => setLiveStreamsSheetOpen(false)}
       />
 
       <FeedReportSheet
@@ -1500,6 +1624,10 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
     backgroundColor: HOME_FEED_BG,
     overflow: "hidden",
+  },
+  screenYoutube: {
+    flex: 1,
+    height: undefined,
   },
   successBanner: {
     position: "absolute",

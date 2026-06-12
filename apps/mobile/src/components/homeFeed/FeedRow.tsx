@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HomeFeedVideoPlayer, type HomeFeedVideoRole } from "./HomeFeedVideoPlayer";
@@ -28,9 +28,11 @@ import {
   type HomeFeedPostAccent,
 } from "./homeFeedUtils";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
+import { Ionicons } from "@expo/vector-icons";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
+import { isHomeFeedInlineVideoAutoplayEnabled, type HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
 
 /**
  * Map the mount-window warm mode to the player's 3-state role. Active row plays;
@@ -118,6 +120,7 @@ type Props = {
   onShare: () => void;
   onSave: () => void;
   onReport: () => void;
+  onVideoPress?: (payload: HomeFeedVideoOpenPayload) => void;
 };
 
 export const FeedRow = memo(function FeedRow({
@@ -140,6 +143,7 @@ export const FeedRow = memo(function FeedRow({
   onShare,
   onSave,
   onReport,
+  onVideoPress,
 }: Props) {
   const insets = useSafeAreaInsets();
   const chrome = useMemo(() => homeFeedChromeOffsets(insets.bottom), [insets.bottom]);
@@ -165,9 +169,11 @@ export const FeedRow = memo(function FeedRow({
   const posterMetadata = useMemo(() => snapshotPosterMetadata(item), [item]);
   const videoDurationMs = useMemo(() => resolveVideoDurationMs(item), [item]);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
-  // Keep warm-window players mounted while Home is blurred so AVPlayer buffer,
-  // readiness cache, and first-frame state survive tab switches.
-  const mountVideoPlayer = Boolean(video && videoUri && videoWarmMode !== "off");
+  const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
+  // YouTube-style: poster only in feed. TikTok-style: mount players in warm window.
+  const mountVideoPlayer = Boolean(
+    inlineVideoAutoplay && video && videoUri && videoWarmMode !== "off"
+  );
   const shareCount = Number(item?.shareCount || 0);
   const saveCount = Number(item?.saveCount || 0);
   const animateCopy = isActive && screenFocused;
@@ -195,6 +201,17 @@ export const FeedRow = memo(function FeedRow({
 
     logImagePostRenderDiag(item, resolvedImageUri, showVideoMedia);
   }, [item, postId, postImageUris.length, resolvedImageUri, willRenderImage, showVideoMedia]);
+
+  const handleVideoPress = () => {
+    if (!showVideoMedia || !videoUri) return;
+    onVideoPress?.({
+      postId,
+      title,
+      videoUri: playbackUri || videoUri,
+      posterUri,
+      videoDurationMs,
+    });
+  };
 
   return (
     <View style={[styles.slide, { height }]}>
@@ -227,7 +244,7 @@ export const FeedRow = memo(function FeedRow({
               onDoubleTap={onLike}
             />
           ) : (
-            <InactiveVideoPoster
+            <HomeFeedVideoPosterCard
               item={item}
               postId={postId}
               title={title}
@@ -236,6 +253,7 @@ export const FeedRow = memo(function FeedRow({
               posterMetadata={posterMetadata}
               videoDurationMs={videoDurationMs}
               videoUri={videoUri}
+              onPress={handleVideoPress}
             />
           )
         ) : willRenderImage ? (
@@ -319,6 +337,68 @@ export const FeedRow = memo(function FeedRow({
     </View>
   );
 });
+
+function HomeFeedVideoPosterCard({
+  item,
+  postId,
+  title,
+  mediaStatus,
+  posterUri,
+  posterMetadata,
+  videoDurationMs,
+  videoUri,
+  onPress,
+}: {
+  item: any;
+  postId: string;
+  title: string;
+  mediaStatus: string;
+  posterUri: string;
+  posterMetadata: ReturnType<typeof snapshotPosterMetadata>;
+  videoDurationMs?: number;
+  videoUri: string;
+  onPress?: () => void;
+}) {
+  const durationSec = videoDurationMs && videoDurationMs > 0 ? Math.round(videoDurationMs / 1000) : 0;
+  const durationLabel =
+    durationSec >= 3600
+      ? `${Math.floor(durationSec / 3600)}:${String(Math.floor((durationSec % 3600) / 60)).padStart(2, "0")}:${String(durationSec % 60).padStart(2, "0")}`
+      : durationSec >= 60
+        ? `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, "0")}`
+        : durationSec > 0
+          ? `0:${String(durationSec).padStart(2, "0")}`
+          : "";
+
+  return (
+    <Pressable
+      style={styles.posterCard}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Play video"
+    >
+      <InactiveVideoPoster
+        item={item}
+        postId={postId}
+        title={title}
+        mediaStatus={mediaStatus}
+        posterUri={posterUri}
+        posterMetadata={posterMetadata}
+        videoDurationMs={videoDurationMs}
+        videoUri={videoUri}
+      />
+      <View style={styles.playOverlay} pointerEvents="none">
+        <View style={styles.playBadge}>
+          <Ionicons name="play" size={28} color="#FFFFFF" style={styles.playIcon} />
+        </View>
+      </View>
+      {durationLabel ? (
+        <View style={styles.durationBadge} pointerEvents="none">
+          <Text style={styles.durationText}>{durationLabel}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
 
 function InactiveVideoPoster({
   item,
@@ -438,6 +518,42 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#03050C",
     zIndex: 1,
+  },
+  posterCard: {
+    flex: 1,
+    backgroundColor: "#03050C",
+  },
+  playOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  playBadge: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.85)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  playIcon: {
+    marginLeft: 4,
+  },
+  durationBadge: {
+    position: "absolute",
+    right: 12,
+    bottom: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: "rgba(0,0,0,0.72)",
+  },
+  durationText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
   },
   mediaFallback: {
     flex: 1,

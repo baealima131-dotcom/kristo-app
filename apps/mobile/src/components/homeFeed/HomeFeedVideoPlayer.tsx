@@ -7,6 +7,7 @@ import {
   holdStartupVideoPlayerForRemount,
   isStartupFirstVideoTarget,
   isStartupVideoPendingAdoption,
+  isStartupVideoReadyForAdoption,
   subscribeHomeFeedVideoPrime,
 } from "@/src/lib/homeFeedVideoPrime";
 import { Ionicons } from "@expo/vector-icons";
@@ -161,6 +162,7 @@ function readPlayerPlaybackSnapshot(player: VideoPlayer | null) {
 
 function appendRemountQuery(uri: string, epoch: number): string {
   if (!uri || epoch <= 0) return uri;
+  if (uri.startsWith("file://")) return uri;
   const sep = uri.includes("?") ? "&" : "?";
   return `${uri}${sep}_kristoRm=${epoch}`;
 }
@@ -196,15 +198,19 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   const isRecycledRow = Boolean(String(recycleKey || "").trim());
   const remotePlaybackUri = String(uri || "").trim();
   const [diskCacheRevision, setDiskCacheRevision] = React.useState(0);
+  const [, setPrimeRevision] = React.useState(0);
 
   React.useEffect(() => subscribeHomeFeedVideoDiskCache(() => setDiskCacheRevision((n) => n + 1)), []);
+  React.useEffect(() => subscribeHomeFeedVideoPrime(() => setPrimeRevision((n) => n + 1)), []);
 
   const playbackUri = React.useMemo(
     () => resolveHomeFeedPlaybackUri(remotePlaybackUri),
     [remotePlaybackUri, diskCacheRevision]
   );
+  const diskCacheReady = Boolean(getCachedVideoUri(remotePlaybackUri));
 
   const sourceAttached = role !== "inactive";
+  const isStartupFirstVideoRow = isFirstFeedVideo && role === "active";
   const startupTarget = isStartupFirstVideoTarget(remotePlaybackUri, postId);
 
   React.useEffect(() => {
@@ -262,9 +268,33 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     });
   }, [effectivePlaybackUri, role, key, postId, feedIndex, remotePlaybackUri]);
 
+  React.useEffect(() => {
+    if (role !== "active") return;
+    const source = effectivePlaybackUri.startsWith("file://") ? "file" : "remote";
+    if (source === "remote") {
+      console.log("KRISTO_VIDEO_STARTUP_BLOCKER", {
+        key,
+        postId,
+        index: feedIndex,
+        reason: "active-remote-source",
+        source,
+        uri: effectivePlaybackUri,
+        remoteUri: remotePlaybackUri,
+        isFirstFeedVideo,
+      });
+    }
+  }, [role, effectivePlaybackUri, key, postId, feedIndex, remotePlaybackUri, isFirstFeedVideo]);
+
   // Wait for startup-primed player (primed=true) — never steal it mid-decode.
   const [adoptedPlayer, setAdoptedPlayer] = React.useState<VideoPlayer | null>(null);
-  const [startupReuseResolved, setStartupReuseResolved] = React.useState(!startupTarget);
+  const adoptedPlayerRef = React.useRef<VideoPlayer | null>(null);
+  const [startupReuseResolved, setStartupReuseResolved] = React.useState(
+    () => !(startupTarget || isStartupFirstVideoRow)
+  );
+
+  React.useEffect(() => {
+    adoptedPlayerRef.current = adoptedPlayer;
+  }, [adoptedPlayer]);
 
   const [appActive, setAppActive] = React.useState(() => AppState.currentState === "active");
   /** Visible first frame while active — poster stays until this is true. */
@@ -281,70 +311,21 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     }
   }, [postId]);
 
-  React.useEffect(() => {
-    if (!startupTarget || adoptedPlayer) return;
-
-    const attemptClaim = (): boolean => {
-      const player = claimStartupVideoPlayer(remotePlaybackUri, postId);
-      if (player) {
-        setAdoptedPlayer(player);
-        setStartupReuseResolved(true);
-        const t = safeNumber(() => (player as any).currentTime);
-        if (hasPaintedFrame(t)) {
-          preloadReadyRef.current = true;
-          lastTimeRef.current = t;
-        }
-        return true;
-      }
-
-      if (isStartupVideoPendingAdoption(remotePlaybackUri, postId)) {
-        return false;
-      }
-
-      if (!startupReuseFailedRef.current) {
-        startupReuseFailedRef.current = true;
-        console.log("KRISTO_STARTUP_VIDEO_REUSE_FAILED", {
-          postId,
-          url: remotePlaybackUri,
-          reason: "not-available-after-prime",
-        });
-      }
-      setStartupReuseResolved(true);
-      return true;
-    };
-
-    if (attemptClaim()) return;
-
-    const unsub = subscribeHomeFeedVideoPrime(() => {
-      if (attemptClaim()) unsub();
-    });
-
-    const fallbackTimer = setTimeout(() => {
-      if (!startupReuseFailedRef.current) {
-        console.log("KRISTO_STARTUP_VIDEO_REUSE_FAILED", {
-          postId,
-          url: remotePlaybackUri,
-          reason: "claim-timeout",
-        });
-        startupReuseFailedRef.current = true;
-      }
-      setStartupReuseResolved(true);
-      unsub();
-    }, 35_000);
-
-    return () => {
-      clearTimeout(fallbackTimer);
-      unsub();
-    };
-  }, [startupTarget, adoptedPlayer, remotePlaybackUri, postId]);
-
   const isActiveIntent = role === "active" && screenFocused && appActive;
 
+  const startupSourceAllowed =
+    !isStartupFirstVideoRow ||
+    Boolean(adoptedPlayer) ||
+    diskCacheReady ||
+    firstFrameReady ||
+    startupReuseResolved;
+
   // Defer hook player until startup reuse resolves — avoids a second decode instance.
+  const hookPlayerRef = React.useRef<VideoPlayer | null>(null);
   const hookPlayer = useVideoPlayer(
     adoptedPlayer
       ? null
-      : startupTarget && !startupReuseResolved
+      : !startupSourceAllowed
         ? null
         : sourceAttached && effectivePlaybackUri
           ? { uri: effectivePlaybackUri, contentType: "progressive" as const }
@@ -361,6 +342,8 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       } catch {}
     }
   );
+
+  hookPlayerRef.current = hookPlayer;
 
   const player = adoptedPlayer ?? hookPlayer;
 
@@ -407,7 +390,6 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         hasPaintedFrame(t);
 
       if (retainedVisible) {
-        safeSetMuted(false);
         safePlay();
         const playing = safeNumber(() => (((player as any).playing ? 1 : 0) as number)) === 1;
         if (!playing) {
@@ -487,6 +469,145 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     [key, postId, feedIndex, role, screenFocused, appActive, safePlay, safeSetMuted]
   );
 
+  const applyStartupAdoption = React.useCallback(
+    (primedPlayer: VideoPlayer) => {
+      setAdoptedPlayer(primedPlayer);
+      setStartupReuseResolved(true);
+      startupReuseFailedRef.current = false;
+      const t = safeNumber(() => (primedPlayer as any).currentTime);
+      if (hasPaintedFrame(t)) {
+        preloadReadyRef.current = true;
+        lastTimeRef.current = t;
+        if (role === "active" && screenFocused && appActive) {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => confirmVisibleFrame("startup-adopted-primed"));
+          });
+        }
+      }
+    },
+    [role, screenFocused, appActive, confirmVisibleFrame]
+  );
+
+  const applyLateStartupAdoption = React.useCallback(
+    (primedPlayer: VideoPlayer) => {
+      try {
+        hookPlayerRef.current?.pause();
+      } catch {}
+
+      applyStartupAdoption(primedPlayer);
+      stuckRecoveryStepRef.current = 0;
+      stuckRecoveryStartedRef.current = false;
+      playbackStallSinceMsRef.current = null;
+      playbackStallRecoveringRef.current = false;
+      playbackStallRecoveryStepRef.current = 0;
+      userPausedRef.current = false;
+
+      const t = safeNumber(() => (primedPlayer as any).currentTime);
+      try {
+        (primedPlayer as any).muted = false;
+      } catch {}
+      try {
+        primedPlayer.play();
+      } catch {}
+
+      if (hasPaintedFrame(t)) {
+        confirmVisibleFrame("startup-late-adopted");
+      }
+
+      console.log("KRISTO_STARTUP_VIDEO_LATE_ADOPTED", {
+        postId,
+        url: remotePlaybackUri,
+        currentTime: t,
+      });
+    },
+    [applyStartupAdoption, confirmVisibleFrame, postId, remotePlaybackUri]
+  );
+
+  // Claim startup-primed player; keep listening for late prime after remote fallback.
+  React.useEffect(() => {
+    if (adoptedPlayer) return;
+    if (!startupTarget && !isStartupFirstVideoRow) return;
+
+    const shouldWaitForStartupPrime = () =>
+      isStartupVideoPendingAdoption(remotePlaybackUri, postId) ||
+      isStartupVideoReadyForAdoption(remotePlaybackUri, postId) ||
+      !startupReuseFailedRef.current;
+
+    const tryClaimStartupPlayer = (): "adopted" | "pending" | "fallback" => {
+      const primed = claimStartupVideoPlayer(remotePlaybackUri, postId);
+      if (primed) {
+        applyStartupAdoption(primed);
+        return "adopted";
+      }
+
+      if (diskCacheReady) {
+        setStartupReuseResolved(true);
+        return "pending";
+      }
+
+      if (shouldWaitForStartupPrime()) return "pending";
+
+      if (isFirstFeedVideo) return "pending";
+
+      if (!startupReuseFailedRef.current) {
+        startupReuseFailedRef.current = true;
+        console.log("KRISTO_STARTUP_VIDEO_REUSE_FAILED", {
+          postId,
+          url: remotePlaybackUri,
+          reason: "not-available-after-prime",
+        });
+      }
+      setStartupReuseResolved(true);
+      return "fallback";
+    };
+
+    const handlePrimeUpdate = () => {
+      if (adoptedPlayerRef.current) return;
+
+      if (role === "active" && isFirstFeedVideo) {
+        const primed = claimStartupVideoPlayer(remotePlaybackUri, postId);
+        if (primed) {
+          applyLateStartupAdoption(primed);
+          return;
+        }
+      }
+
+      tryClaimStartupPlayer();
+    };
+
+    if (tryClaimStartupPlayer() === "adopted") return;
+
+    const unsub = subscribeHomeFeedVideoPrime(handlePrimeUpdate);
+
+    const fallbackTimer = setTimeout(() => {
+      if (!startupReuseFailedRef.current) {
+        console.log("KRISTO_STARTUP_VIDEO_REUSE_FAILED", {
+          postId,
+          url: remotePlaybackUri,
+          reason: "claim-timeout",
+        });
+        startupReuseFailedRef.current = true;
+      }
+      setStartupReuseResolved(true);
+    }, 35_000);
+
+    return () => {
+      clearTimeout(fallbackTimer);
+      unsub();
+    };
+  }, [
+    startupTarget,
+    adoptedPlayer,
+    remotePlaybackUri,
+    postId,
+    role,
+    isFirstFeedVideo,
+    isStartupFirstVideoRow,
+    diskCacheReady,
+    applyStartupAdoption,
+    applyLateStartupAdoption,
+  ]);
+
   const resetPlaybackSurface = React.useCallback(
     (reason: string) => {
       firstFrameReadyRef.current = false;
@@ -499,7 +620,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       stuckRecoveryStartedRef.current = false;
       setBufferPercent(0);
       setAdoptedPlayer(null);
-      setStartupReuseResolved(!startupTarget);
+      setStartupReuseResolved(!(startupTarget || isStartupFirstVideoRow));
       setPlayerRemountEpoch((epoch) => epoch + 1);
       console.log("KRISTO_VIDEO_STUCK_RECOVERY_REMOUNT", {
         key,
@@ -508,7 +629,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         reason,
       });
     },
-    [key, postId, feedIndex, startupTarget]
+    [key, postId, feedIndex, startupTarget, isStartupFirstVideoRow]
   );
 
   const saveProgress = React.useCallback(
@@ -637,6 +758,18 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         playing: snap.playing,
         muted: snap.muted,
       });
+      if (
+        !adoptedPlayerRef.current &&
+        !diskCacheReady &&
+        !effectivePlaybackUri.startsWith("file://")
+      ) {
+        console.log("KRISTO_VIDEO_ACTIVE_SOURCE_NOT_READY", {
+          postId,
+          index: feedIndex,
+          source: "remote",
+          uri: effectivePlaybackUri,
+        });
+      }
     }
 
     if (role === "active" && prev === "preload") {
@@ -674,7 +807,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     if (role === "active" && prev !== "active") {
       resumeActivePlayback("role-promotion");
     }
-  }, [role, key, postId, feedIndex, player, resumeActivePlayback]);
+  }, [role, key, postId, feedIndex, player, resumeActivePlayback, adoptedPlayer, diskCacheReady, effectivePlaybackUri]);
 
   // Watched row re-promoted to active: resume saved position without poster flash.
   React.useEffect(() => {
@@ -981,7 +1114,17 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       stuckRecoveryStartedRef.current = false;
       return;
     }
-    if (!sourceAttached || !playbackUri || playerDisposedRef.current) return;
+    if (!sourceAttached || !playbackUri || playerDisposedRef.current || !player) return;
+    if (
+      isStartupFirstVideoRow &&
+      !adoptedPlayerRef.current &&
+      !startupReuseResolved &&
+      (startupTarget ||
+        isStartupVideoPendingAdoption(remotePlaybackUri, postId) ||
+        isStartupVideoReadyForAdoption(remotePlaybackUri, postId))
+    ) {
+      return;
+    }
 
     const primedAtStart =
       decodePrimedRef.current || preloadReadyRef.current || startupTarget;
@@ -1045,6 +1188,14 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       }
 
       if (step >= 3) {
+        if (
+          isStartupFirstVideoRow &&
+          startupTarget &&
+          !startupReuseFailedRef.current &&
+          !adoptedPlayerRef.current
+        ) {
+          return;
+        }
         resetPlaybackSurface("stuck-recovery-remount");
       }
     };
@@ -1063,6 +1214,14 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     playbackUri,
     player,
     key,
+    postId,
+    feedIndex,
+    bufferPercent,
+    status,
+    isStartupFirstVideoRow,
+    startupTarget,
+    startupReuseResolved,
+    remotePlaybackUri,
     playerRemountEpoch,
     resetPlaybackSurface,
     safePlay,
@@ -1239,6 +1398,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   const hasPoster = isValidVideoPosterUri(poster, remotePlaybackUri);
   const hasBranded = brandedPoster || hasBrandedVideoPoster({ posterUri: poster, brandedPoster });
   const showCover = !firstFrameReady;
+  const showVideoSurface = Boolean(player);
   const showPosterOverlay = showCover && hasPoster;
   const showBrandedOrFallback = showCover && !hasPoster;
   const resolvedPosterMetadata =
@@ -1257,7 +1417,11 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   // Active video is auto-starting (priming/decoding its first frame): show a
   // loading state, never a tap-to-play affordance.
   const showAutoStartLoading =
-    role === "active" && screenFocused && !firstFrameReady && !userPausedRef.current;
+    role === "active" &&
+    screenFocused &&
+    Boolean(player) &&
+    !firstFrameReady &&
+    !userPausedRef.current;
   const showBufferPercentLabel =
     showAutoStartLoading && bufferPercent > 0 && bufferPercent < 100;
 
@@ -1290,12 +1454,14 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   return (
     <GestureDetector gesture={gesture}>
       <View style={styles.root} needsOffscreenAlphaCompositing>
-        <VideoView
-          player={player}
-          style={[styles.videoSurface, showCover && styles.videoUnderPoster]}
-          contentFit="cover"
-          nativeControls={false}
-        />
+        {showVideoSurface ? (
+          <VideoView
+            player={player}
+            style={[styles.videoSurface, showCover && styles.videoUnderPoster]}
+            contentFit="cover"
+            nativeControls={false}
+          />
+        ) : null}
         {showPosterOverlay ? (
           <View style={styles.overlay} pointerEvents="none">
             <FeedVideoPosterImage

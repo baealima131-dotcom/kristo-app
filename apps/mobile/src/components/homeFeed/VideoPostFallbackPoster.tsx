@@ -187,7 +187,7 @@ export function FeedVideoPosterImage({
   mediaStatus = "",
   previewTrace,
   enableClientThumbnailFallback = false,
-  enableVideoFrameFallback = true,
+  enableVideoFrameFallback = false,
   previewLoadTimeoutMs = getPreviewLoadTimeoutMs(),
   posterMetadata,
   videoDurationMs,
@@ -249,8 +249,7 @@ export function FeedVideoPosterImage({
 
   const canTryClientThumb =
     enableClientThumbnailFallback && isLocalMediaUri(resolvedVideoUrl);
-  const canTryVideoFrameFallback =
-    enableVideoFrameFallback && Boolean(resolvedVideoUrl);
+  const canTryVideoFrameFallback = false;
 
   useEffect(() => {
     cacheHitLoggedRef.current = "";
@@ -407,7 +406,7 @@ export function FeedVideoPosterImage({
       fallbackPath: "video-frame-generate",
     });
 
-    void generateVideoPosterFrame({
+    if (false) void generateVideoPosterFrame({
       postId,
       videoUrl: resolvedVideoUrl,
       durationMs: videoDurationMs,

@@ -36,11 +36,14 @@ import {
   resetHomeFeedPersonalOrderIfNeeded,
   resolveHomeFeedPersonalOrderContext,
   sortRowsByPersonalSeed,
+  arrangeHomeFeedVideoBlockFirst,
   type HomeFeedPersonalOrderContext,
 } from "@/src/lib/homeFeedPersonalOrder";
 import { resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { peekProfileScreenCache } from "@/src/lib/screenDataCache";
+import { tryRegisterStartupFirstVideoTarget } from "@/src/lib/homeFeedVideoPrime";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
 
@@ -928,7 +931,7 @@ export function homeFeedRowChurchId(row: any) {
   return String(row?.churchId || row?.ownerChurchId || "").trim();
 }
 
-function isHomeFeedLivestreamRow(row: any) {
+export function isHomeFeedLivestreamRow(row: any) {
   if (!row) return false;
   const id = String(row?.id || "").toLowerCase();
   if (id.startsWith("church-live-now-") || id.startsWith("media-live-now-")) return true;
@@ -951,7 +954,7 @@ function sortBucketByPersonalSeed(
   rows: any[],
   ctx: HomeFeedPersonalOrderContext
 ) {
-  return sortRowsByPersonalSeed(rows, ctx, (row) => feedRenderKey(row), homeFeedPostSortMs);
+  return arrangeHomeFeedVideoBlockFirst(rows, ctx, (row) => feedRenderKey(row), homeFeedPostSortMs, 10, 4);
 }
 
 function pickInterleaveRow(
@@ -977,63 +980,26 @@ function interleaveHomeFeedPostRows(
   viewerChurchId: string,
   personalCtx: HomeFeedPersonalOrderContext
 ) {
-  const buckets: Record<Exclude<HomeFeedRowBucket, "schedule" | "live">, any[]> = {
-    global_media: [],
-    church_media: [],
-    church_post: [],
-  };
+  const sorted = sortBucketByPersonalSeed(postRows, personalCtx);
 
-  for (const row of postRows) {
-    const bucket = classifyHomeFeedPostRowBucket(row, viewerChurchId);
-    if (bucket === "live") continue;
-    buckets[bucket as Exclude<HomeFeedRowBucket, "schedule" | "live">].push(row);
-  }
+  const videos = sorted.filter((row) => isVideoPost(row));
+  const posts = sorted.filter((row) => !isVideoPost(row));
 
-  for (const bucket of Object.keys(buckets) as Array<Exclude<HomeFeedRowBucket, "schedule" | "live">>) {
-    buckets[bucket] = sortBucketByPersonalSeed(buckets[bucket], personalCtx);
-  }
+  const output = [...videos, ...posts];
 
-  const interleaved: any[] = [];
-  let lastChurchId = "";
-  let idleRounds = 0;
-  const maxIdle = HOME_FEED_POST_INTERLEAVE_PATTERN.length * 3;
+  console.log("KRISTO_HOME_FEED_POST_ROWS_VIDEO_FIRST", {
+    inputCount: postRows.length,
+    outputCount: output.length,
+    videos: videos.length,
+    posts: posts.length,
+    viewerChurchId: viewerChurchId || null,
+    firstKinds: output.slice(0, 12).map((row) => isVideoPost(row) ? "video" : "post"),
+    firstIds: output.slice(0, 12).map((row) => feedRenderKey(row) || String(row?.id || "")),
+  });
 
-  while (idleRounds < maxIdle) {
-    let pickedAny = false;
-    for (const bucket of HOME_FEED_POST_INTERLEAVE_PATTERN) {
-      const row = pickInterleaveRow(bucket, buckets, lastChurchId);
-      if (!row) continue;
-      interleaved.push(row);
-      const cid = homeFeedRowChurchId(row);
-      if (cid) lastChurchId = cid;
-      pickedAny = true;
-      idleRounds = 0;
-    }
-    if (!pickedAny) idleRounds += 1;
-  }
-
-  for (const bucket of Object.keys(buckets) as Array<Exclude<HomeFeedRowBucket, "schedule" | "live">>) {
-    interleaved.push(...buckets[bucket]);
-  }
-
-  if (isKristoVerboseFeedDebug()) {
-    console.log("KRISTO_HOME_FEED_INTERLEAVE", {
-      viewerChurchId,
-      seedKey: personalCtx.seedKey,
-      inputCount: postRows.length,
-      outputCount: interleaved.length,
-      bucketCounts: Object.fromEntries(
-        (Object.keys(buckets) as Array<Exclude<HomeFeedRowBucket, "schedule" | "live">>).map(
-          (k) => [k, buckets[k].length]
-        )
-      ),
-      firstIds: interleaved.slice(0, 8).map((row) => feedRenderKey(row) || String(row?.id || "")),
-      firstChurches: interleaved.slice(0, 8).map((row) => homeFeedRowChurchId(row) || null),
-    });
-  }
-
-  return interleaved;
+  return output;
 }
+
 
 function sortHomeFeedLivePriorityRows(rows: any[]) {
   return [...rows].sort(
@@ -1486,6 +1452,14 @@ export function buildHomeFeedDisplayRows(
   logHomeFeedPersonalOrder(display, personalCtx, feedRenderKey);
   logHomeFeedFirstRows(display, feedRenderKey);
 
+  const firstVideoRow = display.find((row) => isVideoPost(row));
+  if (firstVideoRow && isHomeFeedInlineVideoAutoplayEnabled()) {
+    const rowId = feedRenderKey(firstVideoRow) || String(firstVideoRow?.id || "").trim();
+    const original = resolveVideoUri(firstVideoRow);
+    const url = homeFeedMediaUrl(original) || original;
+    if (rowId && url) tryRegisterStartupFirstVideoTarget(rowId, url);
+  }
+
   if (canSeeMediaSlots) {
     const visibleScheduleRows = display.filter((row) => {
       if (!isHomeFeedExpandedOrScheduleSlotRow(row)) return false;
@@ -1552,6 +1526,27 @@ export function formatActionCount(value?: number) {
     return `${compact.toFixed(digits).replace(/\.0$/, "")}K`;
   }
   return String(n);
+}
+
+export function resolveFeedViewCount(item: any): number {
+  const n = Number(
+    item?.viewCount ?? item?.views ?? item?.stats?.views ?? item?.playCount ?? 0
+  );
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+export function formatFeedViewLabel(item: any): string {
+  const count = resolveFeedViewCount(item);
+  if (count <= 0) return "";
+  return `${formatActionCount(count)} views`;
+}
+
+export function formatFeedMetaLine(item: any, whenLabel: string): string {
+  const views = formatFeedViewLabel(item);
+  const church = resolveChurchName(item);
+  const media = resolveMediaName(item);
+  const name = media || church;
+  return [name, views, whenLabel].filter(Boolean).join(" • ");
 }
 
 export function formatFeedTimestamp(createdAt?: string) {

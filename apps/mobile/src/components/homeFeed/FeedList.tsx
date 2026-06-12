@@ -25,6 +25,8 @@ import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { FeedRow } from "./FeedRow";
+import { FeedYouTubeCard } from "./FeedYouTubeCard";
+import { HomeFeedLiveHeader } from "./HomeFeedLiveSection";
 import {
   feedRenderKey,
   isExplicitHomeFeedMediaScheduleRow,
@@ -32,6 +34,7 @@ import {
   isHomeFeedScheduleCardRow,
   isMediaLiveSlotsHomeFeedRow,
   resolveHomeFeedSlotCardStatus,
+  isVideoPost,
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 import { isHomeFeedRenderPaused } from "@/src/lib/liveRoomStartup";
@@ -43,8 +46,13 @@ import {
   resolveActiveVideoRank,
   resolveHomeFeedVideoWarmMode,
 } from "@/src/lib/homeFeedVideoWindow";
-import { prepareVideoDiskCacheWindow, hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
-import { isVideoPost } from "./homeFeedUtils";
+import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
+import { enforceHomeFeedVideoAudioOwnership } from "@/src/lib/homeFeedVideoOwner";
+import {
+  isHomeFeedYouTubeStyleVideo,
+  isHomeFeedInlineVideoAutoplayEnabled,
+  type HomeFeedVideoOpenPayload,
+} from "@/src/lib/homeFeedVideoMode";
 
 // Dedupe for the first-3-video-rows index diagnostic (keyed by row id).
 const lastFeedVideoIndexDiag = new Map<string, string>();
@@ -84,6 +92,13 @@ type Props = {
   onShare: (item: any) => void;
   onSave: (item: any) => void;
   onReport: (item: any) => void;
+  onVideoPress?: (payload: HomeFeedVideoOpenPayload) => void;
+  youtubeLiveHeader?: {
+    primaryLive: any;
+    extraLiveCount: number;
+    liveCardHeight: number;
+    onViewMoreLive: () => void;
+  } | null;
 };
 
 type FeedScheduleRowProps = {
@@ -207,9 +222,13 @@ export const FeedList = memo(
       onShare,
       onSave,
       onReport,
+      onVideoPress,
+      youtubeLiveHeader,
     },
     ref
   ) {
+  const youtubeLayout = isHomeFeedYouTubeStyleVideo();
+  const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
   const [scheduleNowMs] = useState(() => Date.now());
   const renderPaused = isHomeFeedRenderPaused();
   const effectiveScreenFocused = screenFocused && !renderPaused;
@@ -225,13 +244,17 @@ export const FeedList = memo(
     () => ({
       scrollToIndex(index: number, animated = true) {
         const clamped = Math.max(0, index);
+        if (youtubeLayout) {
+          listRef.current?.scrollToIndex({ index: clamped, animated });
+          return;
+        }
         listRef.current?.scrollToOffset({
           offset: clamped * Math.max(1, contentHeight),
           animated,
         });
       },
     }),
-    [contentHeight]
+    [contentHeight, youtubeLayout]
   );
 
   const viewabilityConfig = useRef(VIEWABILITY_CONFIG).current;
@@ -290,6 +313,7 @@ export const FeedList = memo(
   });
 
   useEffect(() => {
+    if (!inlineVideoAutoplay) return;
     const key = mountedVideoIndexes.join(",");
     const postIds = mountedVideoIndexes
       .map((idx) => String(rows[idx]?.id || "").trim())
@@ -309,16 +333,17 @@ export const FeedList = memo(
         reason: "window-update",
       });
     }
-  }, [mountedVideoIndexes, activeIndex, rows]);
+  }, [mountedVideoIndexes, activeIndex, rows, inlineVideoAutoplay]);
 
   useEffect(() => {
-    if (!rows.length) return;
-    prepareVideoDiskCacheWindow(rows, activeIndex);
-  }, [rows, activeIndex]);
+    if (!inlineVideoAutoplay) return;
+    enforceHomeFeedVideoAudioOwnership(activeIndex);
+  }, [activeIndex, inlineVideoAutoplay]);
 
   useEffect(() => {
+    if (!inlineVideoAutoplay) return;
     void hydrateHomeFeedVideoDiskCache();
-  }, []);
+  }, [inlineVideoAutoplay]);
 
   // Fallback only: if viewability did not fire after snap (fast fling, edge case).
   const handleMomentumScrollEnd = useCallback(
@@ -415,7 +440,10 @@ export const FeedList = memo(
 
       // Decode-prime the next 2–3 forward neighbors before the user scrolls there.
       const decodePrime =
-        videoWarmMode === "preload" && videoRankDelta >= 1 && videoRankDelta <= 3;
+        inlineVideoAutoplay &&
+        videoWarmMode === "preload" &&
+        videoRankDelta >= 1 &&
+        videoRankDelta <= 3;
 
       // Diagnostic for the first 3 video rows: shows whether the first visible
       // video is the active row and whether it mounts a player in the rolling window.
@@ -458,6 +486,7 @@ export const FeedList = memo(
           onShare={() => onShare(item)}
           onSave={() => onSave(item)}
           onReport={() => onReport(item)}
+          onVideoPress={onVideoPress}
         />
       );
     },
@@ -481,6 +510,7 @@ export const FeedList = memo(
       onShare,
       onSave,
       onReport,
+      onVideoPress,
     ]
   );
 
@@ -489,9 +519,95 @@ export const FeedList = memo(
     []
   );
 
-  const viewportStyle = { height: contentHeight };
+  const scheduleCardHeight = Math.round(
+    (youtubeLiveHeader?.liveCardHeight || contentHeight) * 0.88
+  );
 
-  if (loading && !rows.length) {
+  const renderYouTubeItem = useCallback(
+    ({ item, index }: { item: any; index: number }) => {
+      const likeState = getLikeState(item, { index });
+      const isScheduleCandidate =
+        isExplicitHomeFeedMediaScheduleRow(item) || isMediaLiveSlotsHomeFeedRow(item);
+      const isScheduleCard = isHomeFeedScheduleCardRow(item, scheduleNowMs);
+
+      if (isScheduleCandidate && isScheduleCard) {
+        return (
+          <FeedScheduleRow
+            item={item}
+            height={scheduleCardHeight}
+            isActive={false}
+            likedByMe={likeState.likedByMe}
+            liked={likeState.liked}
+            likeCount={likeState.likeCount}
+            saved={getSavedState(item)}
+            onLike={() => onLike(item)}
+            onComment={() => onComment(item)}
+            onShare={() => onShare(item)}
+            onSave={() => onSave(item)}
+          />
+        );
+      }
+
+      return (
+        <FeedYouTubeCard
+          item={item}
+          likedByMe={likeState.likedByMe}
+          liked={likeState.liked}
+          likeCount={likeState.likeCount}
+          commentCount={getVisibleDiscussionCount(item)}
+          shareCount={Number(item?.shareCount || 0)}
+          saveCount={Number(item?.saveCount || 0)}
+          saved={getSavedState(item)}
+          reported={isPostReported(item)}
+          onLike={() => onLike(item)}
+          onComment={() => onComment(item)}
+          onShare={() => onShare(item)}
+          onSave={() => onSave(item)}
+          onReport={() => onReport(item)}
+          onVideoPress={onVideoPress}
+        />
+      );
+    },
+    [
+      scheduleNowMs,
+      scheduleCardHeight,
+      getLikeState,
+      getSavedState,
+      getVisibleDiscussionCount,
+      isPostReported,
+      onLike,
+      onComment,
+      onShare,
+      onSave,
+      onReport,
+      onVideoPress,
+    ]
+  );
+
+  const renderLiveHeader = useCallback(() => {
+    if (!youtubeLiveHeader?.primaryLive) return null;
+    const likeState = getLikeState(youtubeLiveHeader.primaryLive);
+    return (
+      <HomeFeedLiveHeader
+        primaryLive={youtubeLiveHeader.primaryLive}
+        extraLiveCount={youtubeLiveHeader.extraLiveCount}
+        cardHeight={youtubeLiveHeader.liveCardHeight}
+        onViewMoreLive={youtubeLiveHeader.onViewMoreLive}
+        likedByMe={likeState.likedByMe}
+        liked={likeState.liked}
+        likeCount={likeState.likeCount}
+        saved={getSavedState(youtubeLiveHeader.primaryLive)}
+        onLike={() => onLike(youtubeLiveHeader.primaryLive)}
+        onComment={() => onComment(youtubeLiveHeader.primaryLive)}
+        onShare={() => onShare(youtubeLiveHeader.primaryLive)}
+        onSave={() => onSave(youtubeLiveHeader.primaryLive)}
+      />
+    );
+  }, [youtubeLiveHeader, getLikeState, getSavedState, onLike, onComment, onShare, onSave]);
+
+  const viewportStyle = youtubeLayout ? styles.youtubeList : { height: contentHeight };
+
+  if (loading && !rows.length && !youtubeLiveHeader?.primaryLive) {
     return (
       <View style={[styles.center, viewportStyle]}>
         <ActivityIndicator color={HOME_FEED_GOLD_SOFT} size="large" />
@@ -499,7 +615,7 @@ export const FeedList = memo(
     );
   }
 
-  if (!rows.length) {
+  if (!rows.length && !youtubeLiveHeader?.primaryLive) {
     return (
       <View style={[styles.center, viewportStyle]}>
         <Text style={styles.emptyTitle}>Your feed is quiet</Text>
@@ -507,6 +623,26 @@ export const FeedList = memo(
           Posts from your church and community will appear here.
         </Text>
       </View>
+    );
+  }
+
+  if (youtubeLayout) {
+    return (
+      <FlatList
+        ref={listRef}
+        data={rows}
+        keyExtractor={keyExtractor}
+        extraData={`${likeUiEpoch}:${scheduleNowMs}`}
+        renderItem={renderYouTubeItem}
+        ListHeaderComponent={renderLiveHeader}
+        showsVerticalScrollIndicator={false}
+        initialNumToRender={4}
+        windowSize={8}
+        maxToRenderPerBatch={6}
+        removeClippedSubviews
+        style={[styles.list, viewportStyle]}
+        contentContainerStyle={styles.youtubeContent}
+      />
     );
   }
 
@@ -555,6 +691,13 @@ const styles = StyleSheet.create({
   list: {
     backgroundColor: HOME_FEED_BG,
     overflow: "hidden",
+  },
+  youtubeList: {
+    flex: 1,
+    backgroundColor: HOME_FEED_BG,
+  },
+  youtubeContent: {
+    paddingBottom: 24,
   },
   center: {
     alignItems: "center",
