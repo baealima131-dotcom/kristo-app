@@ -44,7 +44,9 @@ import { resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { peekProfileScreenCache } from "@/src/lib/screenDataCache";
 import { tryRegisterStartupFirstVideoTarget } from "@/src/lib/homeFeedVideoPrime";
-import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
+import { isHomeFeedInlineVideoAutoplayEnabled, type HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
+import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
+import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
 
@@ -2193,6 +2195,27 @@ export function hasHomeFeedVideoPoster(item: any, videoUri?: string) {
 export function isVideoPost(item: any) {
   const uri = resolveVideoUri(item);
   return Boolean(uri) && (item?.mediaType === "video" || isFeedVideoItem(item));
+}
+
+export function buildHomeFeedVideoOpenPayload(item: any): HomeFeedVideoOpenPayload | null {
+  if (!item || !isVideoPost(item)) return null;
+  const postId = String(item?.id || "").trim();
+  const videoUri = resolveVideoUri(item);
+  if (!postId || !videoUri) return null;
+
+  const churchRoomPost = isChurchRoomMemberFeedPost(item);
+  const postTitle = resolvePostTitle(item);
+  const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle;
+  const playbackUri = resolveHomeFeedVideoUri(item) || videoUri;
+
+  return {
+    postId,
+    title,
+    videoUri: playbackUri,
+    posterUri: resolveBestFeedPosterUri(item, postId),
+    videoDurationMs: resolveVideoDurationMs(item),
+    item,
+  };
 }
 
 export function isImagePost(item: any) {

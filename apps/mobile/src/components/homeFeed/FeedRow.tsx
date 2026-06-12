@@ -21,6 +21,7 @@ import {
   resolvePosterUri,
   resolveVideoUri,
   snapshotPosterMetadata,
+  buildHomeFeedVideoOpenPayload,
   logImagePostRenderDiag,
   isValidVideoPosterUri,
   hasBrandedVideoPoster,
@@ -32,7 +33,8 @@ import { Ionicons } from "@expo/vector-icons";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
-import { isHomeFeedInlineVideoAutoplayEnabled, type HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
+import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 
 /**
  * Map the mount-window warm mode to the player's 3-state role. Active row plays;
@@ -203,14 +205,9 @@ export const FeedRow = memo(function FeedRow({
   }, [item, postId, postImageUris.length, resolvedImageUri, willRenderImage, showVideoMedia]);
 
   const handleVideoPress = () => {
-    if (!showVideoMedia || !videoUri) return;
-    onVideoPress?.({
-      postId,
-      title,
-      videoUri: playbackUri || videoUri,
-      posterUri,
-      videoDurationMs,
-    });
+    const payload = buildHomeFeedVideoOpenPayload(item);
+    if (!payload) return;
+    onVideoPress?.(payload);
   };
 
   return (

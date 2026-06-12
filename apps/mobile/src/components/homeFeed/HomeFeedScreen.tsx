@@ -21,8 +21,7 @@ import {
 import { FeedList, type FeedListHandle } from "./FeedList";
 import { FeedReportSheet } from "./FeedReportSheet";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
-import { HomeFeedVideoModal } from "./HomeFeedVideoModal";
-import { HomeFeedStickyPlayer } from "./HomeFeedStickyPlayer";
+import { HomeFeedWatchScreen } from "./HomeFeedWatchScreen";
 import { HomeFeedTopBar } from "./HomeFeedTopBar";
 import { HomeFeedSearchSheet } from "./HomeFeedSearchSheet";
 import {
@@ -988,6 +987,22 @@ export default function HomeFeedScreen() {
     setVideoModalPayload(null);
   }, []);
 
+  const relatedVideoItems = useMemo(() => {
+    if (!videoModalPayload?.postId) return [];
+    const currentId = videoModalPayload.postId;
+    const sourceRows =
+      feedListRows.length > 0
+        ? feedListRows
+        : stableDisplayRows.length > 0
+          ? stableDisplayRows
+          : displayFeedRows;
+    return sourceRows
+      .filter((row) => isVideoPost(row) && String(row?.id || "").trim() !== currentId)
+      .slice(0, 20);
+  }, [feedListRows, stableDisplayRows, displayFeedRows, videoModalPayload?.postId]);
+
+  const watchEngagementItem = videoModalPayload?.item ?? null;
+
   const scrollFeedToRow = useCallback((row: any) => {
     const rowKey = feedRenderKey(row) || String(row?.id || "").trim();
     if (!rowKey) return;
@@ -1294,6 +1309,19 @@ export default function HomeFeedScreen() {
     setCommentsSheetOpen(true);
   }, [getVisibleDiscussionCount]);
 
+  const handleWatchComment = useCallback(() => {
+    if (!watchEngagementItem) return;
+    handleComment(watchEngagementItem);
+  }, [watchEngagementItem, handleComment]);
+
+  const watchLikeState = useMemo(() => {
+    if (!watchEngagementItem) return null;
+    const index = feedListRows.findIndex(
+      (row) => String(row?.id || "").trim() === String(watchEngagementItem?.id || "").trim()
+    );
+    return getLikeState(watchEngagementItem, { index: Math.max(index, 0) });
+  }, [watchEngagementItem, feedListRows, getLikeState, likeUiEpoch]);
+
   const handleDiscussionCountChange = useCallback((postId: string, count: number) => {
     const cleanId = normalizeCommentPostId(postId);
     if (!cleanId || !Number.isFinite(count)) return;
@@ -1388,10 +1416,6 @@ export default function HomeFeedScreen() {
         </View>
       ) : null}
 
-      {youtubeLayout ? (
-        <HomeFeedStickyPlayer payload={videoModalPayload} onClose={handleCloseVideo} />
-      ) : null}
-
       <View
         style={[
           styles.feedBody,
@@ -1422,13 +1446,43 @@ export default function HomeFeedScreen() {
         />
       </View>
 
-      {!youtubeLayout ? (
-        <HomeFeedVideoModal
-          visible={Boolean(videoModalPayload)}
-          payload={videoModalPayload}
-          onClose={handleCloseVideo}
-        />
-      ) : null}
+      <HomeFeedWatchScreen
+        visible={Boolean(videoModalPayload)}
+        payload={videoModalPayload}
+        relatedItems={relatedVideoItems}
+        likedByMe={watchLikeState?.likedByMe ?? false}
+        liked={watchLikeState?.liked ?? false}
+        likeCount={watchLikeState?.likeCount ?? 0}
+        commentCount={watchEngagementItem ? getVisibleDiscussionCount(watchEngagementItem) : 0}
+        shareCount={Number(watchEngagementItem?.shareCount || 0)}
+        saveCount={Number(watchEngagementItem?.saveCount || 0)}
+        saved={watchEngagementItem ? getSavedState(watchEngagementItem) : false}
+        reported={watchEngagementItem ? isPostReported(watchEngagementItem) : false}
+        onClose={handleCloseVideo}
+        onSelectRelated={handleVideoPress}
+        onLike={() => {
+          if (watchEngagementItem) handleLike(watchEngagementItem);
+        }}
+        onComment={handleWatchComment}
+        onShare={() => {
+          if (watchEngagementItem) void handleShare(watchEngagementItem);
+        }}
+        onSave={() => {
+          if (watchEngagementItem) handleSave(watchEngagementItem);
+        }}
+        onReport={() => {
+          if (watchEngagementItem) handleReport(watchEngagementItem);
+        }}
+        getLikeState={getLikeState}
+        getSavedState={getSavedState}
+        getVisibleDiscussionCount={getVisibleDiscussionCount}
+        isPostReported={isPostReported}
+        onItemLike={handleLike}
+        onItemComment={handleComment}
+        onItemShare={(item) => void handleShare(item)}
+        onItemSave={handleSave}
+        onItemReport={handleReport}
+      />
 
       <HomeFeedSearchSheet
         visible={searchSheetOpen}

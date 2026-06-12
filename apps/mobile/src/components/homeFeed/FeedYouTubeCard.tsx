@@ -21,9 +21,9 @@ import {
   resolvePostTitle,
   resolveVideoUri,
   snapshotPosterMetadata,
+  buildHomeFeedVideoOpenPayload,
   type HomeFeedPostAccent,
 } from "./homeFeedUtils";
-import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
 import {
@@ -86,7 +86,6 @@ export const FeedYouTubeCard = memo(function FeedYouTubeCard({
 
   const video = isVideoPost(item);
   const videoUri = useMemo(() => resolveVideoUri(item), [item]);
-  const playbackUri = useMemo(() => resolveHomeFeedVideoUri(item), [item]);
   const postImageUris = useMemo(() => resolvePostImageUris(item), [item]);
   const posterMetadata = useMemo(() => snapshotPosterMetadata(item), [item]);
   const videoDurationMs = useMemo(() => resolveVideoDurationMs(item), [item]);
@@ -100,13 +99,9 @@ export const FeedYouTubeCard = memo(function FeedYouTubeCard({
   const avatarSrc = String(avatarUri || backupUri || "").trim();
 
   const handleVideoPress = () => {
-    if (!video || !videoUri) return;
-    onVideoPress?.({
-      postId,
-      title,
-      videoUri: playbackUri || videoUri,
-      videoDurationMs,
-    });
+    const payload = buildHomeFeedVideoOpenPayload(item);
+    if (!payload) return;
+    onVideoPress?.(payload);
   };
 
   const durationLabel = formatDurationLabel(videoDurationMs);

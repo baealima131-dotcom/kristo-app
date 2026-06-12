@@ -22,4 +22,6 @@ export type HomeFeedVideoOpenPayload = {
   videoUri: string;
   posterUri?: string;
   videoDurationMs?: number;
+  /** Full feed row — preserves church, caption, and engagement metadata on Watch Screen. */
+  item: any;
 };
