@@ -24,6 +24,7 @@ import {
   isHomeFeedActiveFirstFrameReady,
   subscribeHomeFeedActiveFirstFrame,
 } from "@/src/lib/homeFeedVideoReadiness";
+import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 const MAX_VIDEO_CONCURRENCY = 2;
 const MAX_POSTER_CONCURRENCY = 2;
@@ -376,6 +377,7 @@ export function warmHomeFeedVideoPostersNearActive(
   activeIndex: number,
   sessionId = prefetchSessionId
 ): void {
+  if (shouldDeferBackgroundMediaJobs()) return;
   if (!isPrefetchAllowed(sessionId)) {
     console.log("KRISTO_POSTER_PREFETCH_SKIP", { reason: "session-ended" });
     return;
@@ -420,6 +422,8 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
   reason: HomeFeedBufferAheadReason;
   enabled?: boolean;
 }): void {
+  if (shouldDeferBackgroundMediaJobs()) return;
+
   const sessionId = prefetchSessionId;
 
   if (!isPrefetchAllowed(sessionId)) {
@@ -752,6 +756,10 @@ export async function warmHomeFeedStartupMedia(
   rows: any[],
   opts?: { maxPosters?: number; maxVideos?: number; concurrency?: number }
 ): Promise<HomeFeedStartupMediaWarmResult> {
+  if (shouldDeferBackgroundMediaJobs()) {
+    return { posterCount: 0, posterFailed: 0, videoCount: 0, videoFailed: 0 };
+  }
+
   const maxPosters = Math.max(0, Number(opts?.maxPosters ?? 5));
   const maxVideos = Math.max(0, Number(opts?.maxVideos ?? 3));
   const posterPrefetchTimeoutMs = getPosterPrefetchTimeoutMs();

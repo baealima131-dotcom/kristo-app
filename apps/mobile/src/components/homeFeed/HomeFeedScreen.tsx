@@ -79,6 +79,11 @@ import {
 import { HOME_FEED_BG, homeFeedSlideHeight, homeFeedTopBarTotalHeight } from "./theme";
 import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
 import {
+  buildWatchUpNextVideos,
+  recordWatchSessionVideo,
+} from "@/src/lib/homeFeedWatchUpNext";
+import { subscribeBackgroundMediaJobsPaused } from "@/src/lib/homeFeedWatchPlaybackPriority";
+import {
   getLocallyReportedPostIds,
   markPostReportedLocally,
   syncReportedPostIdsFromApi,
@@ -180,6 +185,8 @@ export default function HomeFeedScreen() {
   const [videoModalPayload, setVideoModalPayload] = useState<HomeFeedVideoOpenPayload | null>(
     null
   );
+  const [watchUpNextGeneration, setWatchUpNextGeneration] = useState(0);
+  const [backgroundMediaPaused, setBackgroundMediaPaused] = useState(false);
   const [searchSheetOpen, setSearchSheetOpen] = useState(false);
   const [feedPostFilter, setFeedPostFilter] = useState<HomeFeedPostKindFilter | null>(null);
 
@@ -217,6 +224,8 @@ export default function HomeFeedScreen() {
   const feedViewportHeight = Math.max(280, contentHeight - topBarHeight);
   const homeFeedRenderPaused = isHomeFeedRenderPaused();
   const feedFocused = screenFocused && appActive && !homeFeedRenderPaused;
+
+  useEffect(() => subscribeBackgroundMediaJobsPaused(setBackgroundMediaPaused), []);
   const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
   const youtubeLayout = !inlineVideoAutoplay;
 
@@ -468,12 +477,12 @@ export default function HomeFeedScreen() {
   }, [loadFeed, screenFocused, forceReloadAfterSchedule]);
 
   useEffect(() => {
-    if (!feedFocused) return;
+    if (!feedFocused || videoModalPayload) return;
     const timer = setInterval(() => {
       void loadFeed("poll");
     }, 45000);
     return () => clearInterval(timer);
-  }, [feedFocused, loadFeed]);
+  }, [feedFocused, loadFeed, videoModalPayload]);
 
   useEffect(() => {
     if (!feedFocused || homeFeedRenderPaused) return;
@@ -793,24 +802,40 @@ export default function HomeFeedScreen() {
 
   // YouTube-style poster prewarm: first 20 videos as soon as feed rows exist.
   useEffect(() => {
+    if (backgroundMediaPaused || videoModalPayload) return;
     const rows = stableDisplayRows.length ? stableDisplayRows : displayFeedRows;
     if (!rows.length) return;
     startInitialHomeFeedPosterPrewarm(rows);
-  }, [stableDisplayRows, displayFeedRows]);
+  }, [stableDisplayRows, displayFeedRows, backgroundMediaPaused, videoModalPayload]);
 
   // Prewarm the next 10 videos when the user nears the end of loaded content.
   useEffect(() => {
-    if (!feedFocused || !stableDisplayRows.length) return;
+    if (!feedFocused || !stableDisplayRows.length || backgroundMediaPaused || videoModalPayload) {
+      return;
+    }
     const visibleCount = Math.min(visibleWindowSize, stableDisplayRows.length);
     prewarmHomeFeedPostersOnNearEnd(stableDisplayRows, activeIndex, visibleCount);
-  }, [feedFocused, stableDisplayRows, activeIndex, visibleWindowSize]);
+  }, [
+    feedFocused,
+    stableDisplayRows,
+    activeIndex,
+    visibleWindowSize,
+    backgroundMediaPaused,
+    videoModalPayload,
+  ]);
 
   // Full-feed disk cache: inline autoplay only.
   useEffect(() => {
     if (!inlineVideoAutoplay) return;
-    if (!stableDisplayRows.length) return;
+    if (!stableDisplayRows.length || backgroundMediaPaused || videoModalPayload) return;
     scheduleHomeFeedVideoDiskCacheBackground(stableDisplayRows, activeIndex);
-  }, [inlineVideoAutoplay, stableDisplayRows, activeIndex]);
+  }, [
+    inlineVideoAutoplay,
+    stableDisplayRows,
+    activeIndex,
+    backgroundMediaPaused,
+    videoModalPayload,
+  ]);
 
   // Cold start: rows may arrive after the prepare gate — re-run prime once feed data exists.
   useEffect(() => {
@@ -880,9 +905,10 @@ export default function HomeFeedScreen() {
   }, [visibleData, activeIndex]);
 
   useEffect(() => {
-    if (!feedFocused || !visibleData.length) return;
+    if (!feedFocused || !visibleData.length || backgroundMediaPaused || videoModalPayload) return;
 
     const tryPosterWarm = () => {
+      if (backgroundMediaPaused || videoModalPayload) return;
       if (inlineVideoAutoplay) {
         if (!isHomeFeedActiveFirstFrameReady()) return;
         if (!areHomeFeedForwardVideosDiskCached(visibleData, activeIndex)) return;
@@ -907,7 +933,7 @@ export default function HomeFeedScreen() {
       unsubFrame();
       unsubCache();
     };
-  }, [posterWarmKey, activeIndex, feedFocused, visibleData]);
+  }, [posterWarmKey, activeIndex, feedFocused, visibleData, backgroundMediaPaused, videoModalPayload]);
 
   // Initial buffer-ahead is deferred until the FIRST video's first frame paints
   // (or a short fallback). This guarantees the first video keeps full startup
@@ -915,7 +941,7 @@ export default function HomeFeedScreen() {
   // subscription is tracked in a ref so feed re-renders never cancel it.
   useEffect(() => {
     if (!inlineVideoAutoplay) return;
-    if (!feedFocused || !visibleData.length) return;
+    if (!feedFocused || !visibleData.length || backgroundMediaPaused || videoModalPayload) return;
     if (initialVideoBufferWarmedRef.current) return;
     initialVideoBufferWarmedRef.current = true;
 
@@ -948,7 +974,13 @@ export default function HomeFeedScreen() {
       } catch {}
       clearTimeout(fallbackTimer);
     };
-  }, [inlineVideoAutoplay, feedFocused, visibleData.length]);
+  }, [
+    inlineVideoAutoplay,
+    feedFocused,
+    visibleData.length,
+    backgroundMediaPaused,
+    videoModalPayload,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -961,15 +993,22 @@ export default function HomeFeedScreen() {
 
   useEffect(() => {
     if (!inlineVideoAutoplay) return;
-    if (!feedFocused || !visibleData.length) return;
+    if (!feedFocused || !visibleData.length || backgroundMediaPaused || videoModalPayload) return;
     if (lastVideoBufferActiveRef.current === activeIndex) return;
     lastVideoBufferActiveRef.current = activeIndex;
     warmHomeFeedUpcoming(visibleData, activeIndex);
-  }, [inlineVideoAutoplay, activeIndex, feedFocused, visibleData.length]);
+  }, [
+    inlineVideoAutoplay,
+    activeIndex,
+    feedFocused,
+    visibleData.length,
+    backgroundMediaPaused,
+    videoModalPayload,
+  ]);
 
   useEffect(() => {
     if (!inlineVideoAutoplay) return;
-    if (!feedFocused || !visibleData.length) return;
+    if (!feedFocused || !visibleData.length || backgroundMediaPaused || videoModalPayload) return;
     const prevWindow = lastVideoBufferWindowRef.current;
     if (visibleWindowSize <= prevWindow) {
       lastVideoBufferWindowRef.current = visibleWindowSize;
@@ -977,9 +1016,19 @@ export default function HomeFeedScreen() {
     }
     lastVideoBufferWindowRef.current = visibleWindowSize;
     warmHomeFeedUpcoming(visibleData, activeIndex);
-  }, [inlineVideoAutoplay, visibleWindowSize, activeIndex, feedFocused, visibleData.length]);
+  }, [
+    inlineVideoAutoplay,
+    visibleWindowSize,
+    activeIndex,
+    feedFocused,
+    visibleData.length,
+    backgroundMediaPaused,
+    videoModalPayload,
+  ]);
 
   const handleVideoPress = useCallback((payload: HomeFeedVideoOpenPayload) => {
+    const generation = recordWatchSessionVideo(payload.postId);
+    setWatchUpNextGeneration(generation);
     setVideoModalPayload(payload);
   }, []);
 
@@ -988,18 +1037,29 @@ export default function HomeFeedScreen() {
   }, []);
 
   const relatedVideoItems = useMemo(() => {
-    if (!videoModalPayload?.postId) return [];
-    const currentId = videoModalPayload.postId;
+    if (!videoModalPayload?.postId || !videoModalPayload?.item) return [];
     const sourceRows =
       feedListRows.length > 0
         ? feedListRows
         : stableDisplayRows.length > 0
           ? stableDisplayRows
           : displayFeedRows;
-    return sourceRows
-      .filter((row) => isVideoPost(row) && String(row?.id || "").trim() !== currentId)
-      .slice(0, 20);
-  }, [feedListRows, stableDisplayRows, displayFeedRows, videoModalPayload?.postId]);
+    return buildWatchUpNextVideos({
+      currentItem: videoModalPayload.item,
+      candidates: sourceRows,
+      viewerChurchId,
+      limit: 20,
+      generationSeed: watchUpNextGeneration,
+    });
+  }, [
+    feedListRows,
+    stableDisplayRows,
+    displayFeedRows,
+    videoModalPayload?.postId,
+    videoModalPayload?.item,
+    viewerChurchId,
+    watchUpNextGeneration,
+  ]);
 
   const watchEngagementItem = videoModalPayload?.item ?? null;
 

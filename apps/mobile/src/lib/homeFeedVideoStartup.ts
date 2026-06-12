@@ -20,6 +20,7 @@ import type { KristoSession } from "@/src/lib/kristoSession";
 import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
+import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 /**
  * Consolidated Home Feed video startup/preload (TikTok-style, v1).
@@ -72,6 +73,8 @@ export function wasHomeFeedVideoWarmed(url: string): boolean {
 }
 
 async function warmVideoBytes(url: string, rangeHeader: string): Promise<boolean> {
+  if (shouldDeferBackgroundMediaJobs()) return false;
+
   const normalized = normalizeUrl(url);
   if (warmedUrls.has(normalized)) return true;
   if (!isNetworkUrl(url) || inflightUrls.has(normalized)) return false;
@@ -309,6 +312,7 @@ export function warmHomeFeedUpcoming(
   fromIndex: number,
   count = 1
 ): void {
+  if (shouldDeferBackgroundMediaJobs()) return;
   if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
   if (!Array.isArray(rows) || !rows.length) return;
   const start = Math.max(0, fromIndex) + 1;

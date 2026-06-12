@@ -14,6 +14,7 @@ import {
   isHomeFeedPosterPrewarmFailed,
   queueHomeFeedPosterPrewarm,
 } from "@/src/lib/homeFeedPosterPrewarm";
+import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 import {
   getHomeFeedPosterLoadTimeoutMs,
   isLocalMediaUri,
@@ -294,6 +295,7 @@ function YouTubeFeedVideoPoster({
 
   React.useEffect(() => {
     if (!item || isProcessing || !resolvedVideoUrl) return;
+    if (shouldDeferBackgroundMediaJobs()) return;
     if (resolveCachedMediaPoster(postId, resolvedVideoUrl)) return;
 
     let cancelled = false;

@@ -1,6 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { Image } from "react-native";
+import {
+  onBackgroundMediaJobsResumed,
+  shouldDeferBackgroundMediaJobs,
+} from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 const STORAGE_KEY = "kristo_media_poster_cache_v1";
 const POSTER_DISK_DIR = `${FileSystem.cacheDirectory || ""}media-posters/`;
@@ -29,6 +33,7 @@ const posterListeners = new Map<string, Set<(posterUri: string) => void>>();
 let hydratePromise: Promise<void> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let persistDirty = false;
+let deferredHydrateRequested = false;
 
 function normalizeVideoUrl(videoUrl: string) {
   return String(videoUrl || "").trim().split("?")[0];
@@ -103,6 +108,7 @@ export function subscribeMediaPosterCache(
 
 function schedulePersistIndex() {
   persistDirty = true;
+  if (shouldDeferBackgroundMediaJobs()) return;
   if (persistTimer) return;
   persistTimer = setTimeout(() => {
     persistTimer = null;
@@ -110,7 +116,21 @@ function schedulePersistIndex() {
   }, 250);
 }
 
+export function flushDeferredMediaPosterCacheWork() {
+  if (shouldDeferBackgroundMediaJobs()) return;
+  if (deferredHydrateRequested) {
+    deferredHydrateRequested = false;
+    void hydrateMediaPosterCache();
+  }
+  if (persistDirty && !persistTimer) {
+    schedulePersistIndex();
+  }
+}
+
+onBackgroundMediaJobsResumed(flushDeferredMediaPosterCacheWork);
+
 async function flushPersistIndex() {
+  if (shouldDeferBackgroundMediaJobs()) return;
   if (!persistDirty) return;
   persistDirty = false;
   try {
@@ -135,6 +155,10 @@ async function readPersistedIndex(): Promise<MediaPosterCacheIndex | null> {
 }
 
 export async function hydrateMediaPosterCache(): Promise<void> {
+  if (shouldDeferBackgroundMediaJobs()) {
+    deferredHydrateRequested = true;
+    return;
+  }
   if (hydratePromise) return hydratePromise;
 
   hydratePromise = (async () => {
@@ -285,7 +309,9 @@ export async function rememberMediaPoster(params: {
   let posterUri = String(params.posterUri || "").trim();
   if (!videoUrl || !posterUri) return posterUri;
 
-  if (postId && params.persistFile !== false && posterUri.startsWith("file://")) {
+  const deferHeavyWork = shouldDeferBackgroundMediaJobs();
+
+  if (postId && params.persistFile !== false && posterUri.startsWith("file://") && !deferHeavyWork) {
     posterUri = await persistPosterFileToDisk({ postId, videoUrl, sourceUri: posterUri });
   }
 
@@ -304,23 +330,30 @@ export async function rememberMediaPoster(params: {
     };
 
     rememberMemoryEntry(entry);
-    schedulePersistIndex();
-    notifyPosterListeners(postId, videoUrl, posterUri);
+    if (!deferHeavyWork) {
+      schedulePersistIndex();
+      notifyPosterListeners(postId, videoUrl, posterUri);
+    }
   }
 
-  prefetchMediaPosterImages([posterUri]);
+  if (!deferHeavyWork) {
+    prefetchMediaPosterImages([posterUri]);
+  }
 
-  console.log("KRISTO_MEDIA_POSTER_CACHE_SAVED", {
-    postId: postId || null,
-    videoUrlHash: hashMediaUrl(videoUrl),
-    source: params.source,
-    posterUri,
-  });
+  if (!deferHeavyWork) {
+    console.log("KRISTO_MEDIA_POSTER_CACHE_SAVED", {
+      postId: postId || null,
+      videoUrlHash: hashMediaUrl(videoUrl),
+      source: params.source,
+      posterUri,
+    });
+  }
 
   return posterUri;
 }
 
 export function prefetchMediaPosterImages(uris: string[]) {
+  if (shouldDeferBackgroundMediaJobs()) return;
   for (const raw of uris) {
     const uri = String(raw || "").trim();
     if (!uri || prefetchedUris.has(uri)) continue;
@@ -373,6 +406,7 @@ export async function warmMediaPosterCacheForItems(
   startIndex = 0,
   count = 8
 ) {
+  if (shouldDeferBackgroundMediaJobs()) return;
   await hydrateMediaPosterCache();
   const uris = collectMediaPosterPrefetchUris(items, startIndex, count);
   prefetchMediaPosterImages(uris);

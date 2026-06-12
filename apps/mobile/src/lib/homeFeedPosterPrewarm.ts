@@ -15,6 +15,7 @@ import {
   resolveVideoDurationMs,
 } from "@/src/lib/mediaVideoPoster";
 import { probePosterUrlReachability } from "@/src/lib/videoGridThumbnail";
+import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 const INITIAL_VIDEO_COUNT = 20;
 const SCROLL_VIDEO_COUNT = 10;
@@ -98,6 +99,8 @@ async function resolveReachablePosterUri(
 }
 
 async function prewarmOneHomeFeedVideoPoster(item: any): Promise<boolean> {
+  if (shouldDeferBackgroundMediaJobs()) return false;
+
   const postId = String(item?.id || "").trim();
   const videoUrl = resolveVideoUri(item);
   const key = prewarmKey(postId, videoUrl);
@@ -149,6 +152,8 @@ async function prewarmOneHomeFeedVideoPoster(item: any): Promise<boolean> {
 
 /** Idempotent background prewarm for a single feed video row. */
 export function queueHomeFeedPosterPrewarm(item: any): Promise<boolean> {
+  if (shouldDeferBackgroundMediaJobs()) return Promise.resolve(false);
+
   const postId = String(item?.id || "").trim();
   const videoUrl = resolveVideoUri(item);
   const key = prewarmKey(postId, videoUrl);
@@ -184,17 +189,21 @@ export async function prewarmHomeFeedVideoPosters(
   items: any[],
   opts?: { concurrency?: number }
 ) {
+  if (shouldDeferBackgroundMediaJobs()) return;
+
   const videos = items.filter((item) => isVideoPost(item) && !isVideoProcessing(item));
   if (!videos.length) return;
 
   await hydrateMediaPosterCache();
   await runWithConcurrency(videos, opts?.concurrency ?? PREWARM_CONCURRENCY, async (item) => {
+    if (shouldDeferBackgroundMediaJobs()) return;
     await queueHomeFeedPosterPrewarm(item);
   });
 }
 
 /** Prewarm the first 20 video posts as soon as feed rows are available. */
 export function startInitialHomeFeedPosterPrewarm(rows: any[]) {
+  if (shouldDeferBackgroundMediaJobs()) return;
   if (!rows.length) return;
 
   const feedKey = rows
@@ -226,6 +235,7 @@ export function prewarmHomeFeedPostersOnNearEnd(
   activeIndex: number,
   visibleCount: number
 ) {
+  if (shouldDeferBackgroundMediaJobs()) return;
   if (!rows.length || !isHomeFeedNearEnd(activeIndex, visibleCount)) return;
 
   const now = Date.now();

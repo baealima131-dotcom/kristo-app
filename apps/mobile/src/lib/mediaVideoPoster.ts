@@ -19,6 +19,7 @@ import {
   selectBestPosterFrameCandidate,
   type PosterFrameCandidate,
 } from "@/src/lib/homeFeedPosterFrameQuality";
+import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 const GENERATE_TIMEOUT_MS = 45000;
 const HOME_FEED_GENERATE_TIMEOUT_MS = 70000;
@@ -136,6 +137,8 @@ export async function generateVideoPosterFrame(params: {
   durationMs?: number;
   mode?: "home-feed" | "default";
 }): Promise<string> {
+  if (shouldDeferBackgroundMediaJobs()) return "";
+
   const videoUrl = String(params.videoUrl || "").trim();
   const postId = String(params.postId || "").trim();
   if (!videoUrl) return "";
@@ -309,6 +312,8 @@ export async function ensureMediaVideoPosterFrame(params: {
   durationMs?: number;
   persistToFeed?: boolean;
 }): Promise<string> {
+  if (shouldDeferBackgroundMediaJobs()) return "";
+
   const videoUrl = String(params.videoUrl || "").trim();
   const postId = String(params.postId || "").trim();
   if (!videoUrl) return "";

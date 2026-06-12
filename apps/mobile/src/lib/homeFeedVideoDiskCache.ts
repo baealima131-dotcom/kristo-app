@@ -14,6 +14,7 @@ import {
 } from "@/src/lib/homeFeedVideoReadiness";
 import { hashMediaUrl } from "@/src/lib/mediaPosterCache";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
+import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 const STORAGE_KEY = "kristo_home_feed_video_disk_cache_v1";
 const VIDEO_DISK_DIR = `${FileSystem.cacheDirectory || ""}home-feed-videos/`;
@@ -213,6 +214,8 @@ async function deleteCachedEntry(key: string, entry: DiskCacheEntry) {
 }
 
 export async function cacheVideoUrl(url: string): Promise<string | null> {
+  if (shouldDeferBackgroundMediaJobs()) return null;
+
   const remote = String(url || "").trim();
   const normalized = normalizeUrl(remote);
   if (!normalized || !isNetworkUrl(remote)) return null;
@@ -409,6 +412,8 @@ async function cacheUrlOrSkip(
 }
 
 async function runDiskCacheQueue(rows: any[], activeIndex: number, generation: number) {
+  if (shouldDeferBackgroundMediaJobs()) return;
+
   await hydrateHomeFeedVideoDiskCache();
   if (generation !== queueGeneration) return;
 
@@ -479,6 +484,7 @@ async function runDiskCacheQueue(rows: any[], activeIndex: number, generation: n
  * then every remaining feed video after first-frame (non-blocking).
  */
 export function scheduleHomeFeedVideoDiskCacheBackground(rows: any[], activeIndex: number): void {
+  if (shouldDeferBackgroundMediaJobs()) return;
   if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
   if (!Array.isArray(rows) || !rows.length) return;
 

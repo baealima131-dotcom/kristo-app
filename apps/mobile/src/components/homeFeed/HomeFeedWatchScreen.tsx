@@ -14,7 +14,13 @@ import { useEventListener } from "expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
-import { resolveHomeFeedPlaybackUri } from "@/src/lib/homeFeedVideoDiskCache";
+import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
+import {
+  notifyWatchPlaybackActive,
+  notifyWatchPlaybackPaused,
+  notifyWatchScreenClosed,
+  notifyWatchScreenOpened,
+} from "@/src/lib/homeFeedWatchPlaybackPriority";
 import { YOUTUBE_CARD_H_PADDING, YOUTUBE_THUMB_ASPECT } from "@/src/lib/homeFeedYouTubeLayout";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import {
@@ -85,36 +91,67 @@ type Props = {
 } & WatchEngagementProps &
   FeedEngagementHelpers;
 
+function resolveWatchScreenPlaybackUri(payload: HomeFeedVideoOpenPayload): string {
+  const fromPayload = String(payload.videoUri || "").trim();
+  if (fromPayload) return fromPayload;
+  const item = payload.item;
+  if (item) return resolveHomeFeedVideoUri(item);
+  return "";
+}
+
 function WatchVideoSurface({ payload }: { payload: HomeFeedVideoOpenPayload }) {
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
-  const playbackUri = resolveHomeFeedPlaybackUri(payload.videoUri) || payload.videoUri;
+  const playbackUri = resolveWatchScreenPlaybackUri(payload);
   const [ended, setEnded] = useState(false);
+  const initialUriRef = useRef(playbackUri);
 
-  const player = useVideoPlayer(playbackUri, (p) => {
+  const player = useVideoPlayer(initialUriRef.current || playbackUri, (p) => {
     p.loop = false;
     p.muted = false;
   });
 
   useEventListener(player, "playToEnd", () => {
     setEnded(true);
+    notifyWatchPlaybackPaused(postId);
   });
 
   useEffect(() => {
-    setEnded(false);
     if (!playbackUri) return;
+    setEnded(false);
     try {
+      const currentUri = String((player as any)?.source?.uri || "").trim();
+      if (currentUri && currentUri !== playbackUri) {
+        player.replace({ uri: playbackUri, contentType: "progressive" });
+      } else if (!currentUri) {
+        player.replace({ uri: playbackUri, contentType: "progressive" });
+      }
       player.play();
+      notifyWatchPlaybackActive(postId);
     } catch {}
   }, [player, playbackUri, postId]);
+
+  useEffect(() => {
+    let lastPlaying: boolean | null = null;
+    const poll = setInterval(() => {
+      if (ended) return;
+      const playing = Boolean((player as any)?.playing);
+      if (playing === lastPlaying) return;
+      lastPlaying = playing;
+      if (playing) notifyWatchPlaybackActive(postId);
+      else notifyWatchPlaybackPaused(postId);
+    }, 400);
+    return () => clearInterval(poll);
+  }, [player, postId, ended]);
 
   const handleReplay = useCallback(() => {
     setEnded(false);
     try {
       player.currentTime = 0;
       player.play();
+      notifyWatchPlaybackActive(postId);
     } catch {}
-  }, [player]);
+  }, [player, postId]);
 
   const churchName = item ? resolveChurchName(item) : "";
   const churchRoomPost = Boolean(item && isChurchRoomMemberFeedPost(item));
@@ -260,6 +297,12 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   );
 
   useEffect(() => {
+    if (!visible) return;
+    notifyWatchScreenOpened(String(payload?.postId || "").trim());
+    return () => notifyWatchScreenClosed();
+  }, [visible]);
+
+  useEffect(() => {
     if (!payload?.postId) return;
     scrollRef.current?.scrollTo({ y: 0, animated: false });
   }, [payload?.postId]);
@@ -280,7 +323,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         </View>
 
         <View style={[styles.playerWrap, { height: playerHeight }]}>
-          <WatchVideoSurface key={payload.postId} payload={payload} />
+          <WatchVideoSurface payload={payload} />
         </View>
 
         <View style={styles.currentVideoPanel}>
