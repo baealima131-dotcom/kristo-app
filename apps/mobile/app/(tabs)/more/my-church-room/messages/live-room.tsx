@@ -7075,16 +7075,19 @@ export default function LiveRoomScreen() {
       source: "live-room-bottom-claim",
     });
 
-    router.replace({
-      pathname: "/(tabs)/",
-      params: {
-        ...(focusPostId
-          ? { focusPostId }
-          : { focus: "claim-media-slot" }),
-        ...(churchId ? { churchId } : {}),
-        source: "live-room-bottom-claim",
-      },
-    } as any);
+    if (focusPostId) {
+      router.replace({
+        pathname: "/(tabs)/",
+        params: {
+          focusPostId,
+          ...(churchId ? { churchId } : {}),
+          source: "live-room-bottom-claim",
+        },
+      } as any);
+      return;
+    }
+
+    router.replace("/more/live-slots" as any);
   }
 
   async function endLiveNow() {

@@ -109,6 +109,14 @@ const ITEMS: Item[] = [
     href: "/more/media",
   },
   {
+    key: "live_slots",
+    title: "Live Slots",
+    sub: "Claim • schedule • go live",
+    iconLib: "ion",
+    icon: "radio",
+    href: "/more/live-slots",
+  },
+  {
     key: "kristo_guide",
     title: "Kr. Guide",
     sub: "Rules • Safety • Help",
@@ -307,6 +315,15 @@ function getCardSurface(key: string): CardSurface {
       sheen: ["rgba(255,255,255,0.14)", "rgba(255,154,196,0.10)", "transparent"],
       glowColor: "rgba(248,132,182,0.22)",
       shadowColor: "#F884B6",
+    };
+  }
+  if (key === "live_slots") {
+    return {
+      base: ["rgba(28,10,18,0.98)", "rgba(16,8,12,0.97)", "rgba(9,5,7,0.96)"],
+      tint: ["rgba(255,90,122,0.16)", "rgba(176,92,118,0.06)", "transparent"],
+      sheen: ["rgba(255,255,255,0.14)", "rgba(255,158,210,0.10)", "transparent"],
+      glowColor: "rgba(255,90,122,0.24)",
+      shadowColor: "#FF5A7A",
     };
   }
   if (key === "testimony" || key === "payments" || key === "media") {
@@ -721,6 +738,8 @@ export default function MoreScreen() {
         ? "Finance"
         : item.key === "media"
         ? "Creator"
+        : item.key === "live_slots"
+        ? "Live"
         : "Love";
 
     const miniTagTone =

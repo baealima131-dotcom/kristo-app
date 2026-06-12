@@ -19,21 +19,10 @@ import {
   type NativeSyntheticEvent,
   type ViewToken,
 } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
-import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
-import { getSessionSync } from "@/src/lib/kristoSession";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { FeedRow } from "./FeedRow";
 import { FeedYouTubeCard } from "./FeedYouTubeCard";
-import { HomeFeedLiveHeader } from "./HomeFeedLiveSection";
 import {
   feedRenderKey,
-  isExplicitHomeFeedMediaScheduleRow,
-  isHomeFeedExpandedScheduleSlotRow,
-  isHomeFeedScheduleCardRow,
-  isMediaLiveSlotsHomeFeedRow,
-  resolveHomeFeedSlotCardStatus,
   isVideoPost,
 } from "./homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
@@ -93,115 +82,9 @@ type Props = {
   onSave: (item: any) => void;
   onReport: (item: any) => void;
   onVideoPress?: (payload: HomeFeedVideoOpenPayload) => void;
-  youtubeLiveHeader?: {
-    primaryLive: any;
-    extraLiveCount: number;
-    liveCardHeight: number;
-    onViewMoreLive: () => void;
-  } | null;
+  emptyTitle?: string;
+  emptyBody?: string;
 };
-
-type FeedScheduleRowProps = {
-  item: any;
-  height: number;
-  isActive: boolean;
-  likedByMe: boolean;
-  liked: boolean;
-  likeCount: number;
-  saved: boolean;
-  onLike: () => void;
-  onComment: () => void;
-  onShare: () => void;
-  onSave: () => void;
-};
-
-const FeedScheduleRow = memo(function FeedScheduleRow({
-  item,
-  height,
-  isActive,
-  likedByMe,
-  liked,
-  likeCount,
-  saved,
-  onLike,
-  onComment,
-  onShare,
-  onSave,
-}: FeedScheduleRowProps) {
-  const router = useRouter();
-  const session = getSessionSync() as any;
-  const [nowMs, setNowMs] = useState(Date.now());
-  const isExpandedSlot = item?.homeFeedSlotExpanded === true;
-
-  useEffect(() => {
-    const timer = setInterval(() => setNowMs(Date.now()), 20_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const activeSlot = useMemo(() => {
-    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-    return slots[0] || null;
-  }, [item?.scheduleSlots]);
-
-  const slotNumber = Math.max(1, Number(item?.slotNumber || 1));
-  const slotFeedTotal = Math.max(
-    1,
-    Number(item?.parentScheduleSlotCount || item?.scheduleSlots?.length || 1)
-  );
-  const slotFeedIndex = slotNumber - 1;
-
-  const openLiveRoom = useCallback(() => {
-    (globalThis as any).__KRISTO_LIVE_ACTIVE__ = true;
-    const feedId = baseFeedId(
-      String(item?.parentScheduleId || item?.sourceScheduleId || item?.id || "")
-    );
-    router.push({
-      pathname: "/(tabs)/more/my-church-room/messages/live-room",
-      params: {
-        id: "church-media-room",
-        feedId,
-        sourceScheduleId: feedId,
-        scheduleType: String(item?.scheduleType || "media-live-slots"),
-      },
-    } as any);
-  }, [item?.id, item?.scheduleType, item?.sourceScheduleId, router]);
-
-  const profileName = String(
-    session?.displayName || session?.name || session?.fullName || "You"
-  ).trim();
-  const profileAvatarUri = String(
-    session?.avatarUri || session?.avatarUrl || session?.profileImage || ""
-  ).trim();
-
-  return (
-    <View style={[scheduleStyles.slide, { height }]}>
-      <LinearGradient
-        colors={["#030508", "#0A0F18", "#050810"]}
-        style={StyleSheet.absoluteFillObject}
-      />
-      <HomeLiveScheduleCard
-        item={item}
-        activeSlot={activeSlot}
-        slotFeedIndex={slotFeedIndex}
-        slotFeedTotal={slotFeedTotal}
-        nowMs={nowMs}
-        isActive={isActive}
-        fullBleed
-        disableSlotCarousel={isExpandedSlot}
-        profileName={profileName}
-        profileAvatarUri={profileAvatarUri}
-        onOpenLiveRoom={openLiveRoom}
-        displayLiked={likedByMe || liked}
-        likeCount={likeCount}
-        localSaved={saved}
-        onLike={onLike}
-        onComment={onComment}
-        onShare={onShare}
-        onToggleSave={onSave}
-      />
-    </View>
-  );
-});
 
 export const FeedList = memo(
   forwardRef<FeedListHandle, Props>(function FeedList(
@@ -223,7 +106,8 @@ export const FeedList = memo(
       onSave,
       onReport,
       onVideoPress,
-      youtubeLiveHeader,
+      emptyTitle,
+      emptyBody,
     },
     ref
   ) {
@@ -368,66 +252,6 @@ export const FeedList = memo(
   const renderItem = useCallback(
     ({ item, index }: { item: any; index: number }) => {
       const likeState = getLikeState(item, { index });
-      const isScheduleCandidate =
-        isExplicitHomeFeedMediaScheduleRow(item) || isMediaLiveSlotsHomeFeedRow(item);
-      const isScheduleCard = isHomeFeedScheduleCardRow(item, scheduleNowMs);
-
-      if (!renderPaused && isKristoVerboseFeedDebug()) {
-        console.log("KRISTO_FEED_RENDER_ITEM", {
-          index,
-          id: feedRenderKey(item) || String(item?.id || ""),
-          scheduleType: String(item?.scheduleType || ""),
-          source: String(item?.source || ""),
-          slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
-          isScheduleCandidate,
-          isScheduleCard,
-          rowKind: isScheduleCard ? "schedule-card" : "feed-row",
-        });
-      }
-
-      if (isScheduleCandidate && !isScheduleCard && isKristoVerboseFeedDebug()) {
-        console.log("KRISTO_HOME_FEED_SCHEDULE_ROW_DROPPED", {
-          index,
-          id: feedRenderKey(item) || String(item?.id || ""),
-          scheduleType: String(item?.scheduleType || ""),
-          reason: "schedule_card_gate",
-        });
-      }
-
-      if (isScheduleCard) {
-        const slot = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots[0] : null;
-        if (isHomeFeedExpandedScheduleSlotRow(item) && isKristoVerboseFeedDebug()) {
-          console.log("KRISTO_HOME_FEED_SCHEDULE_SLOT_RENDERED", {
-            index,
-            parentScheduleId: String(item?.parentScheduleId || item?.sourceScheduleId || ""),
-            slotNumber: Number(item?.slotNumber || 0),
-            status: resolveHomeFeedSlotCardStatus(slot),
-            rowKey: feedRenderKey(item),
-          });
-        } else if (isKristoVerboseFeedDebug()) {
-          console.log("KRISTO_HOME_FEED_SCHEDULE_ROW_RENDERED", {
-            index,
-            id: feedRenderKey(item) || String(item?.id || ""),
-            scheduleType: String(item?.scheduleType || ""),
-            slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
-          });
-        }
-        return (
-          <FeedScheduleRow
-            item={item}
-            height={contentHeight}
-            isActive={index === activeIndex}
-            likedByMe={likeState.likedByMe}
-            liked={likeState.liked}
-            likeCount={likeState.likeCount}
-            saved={getSavedState(item)}
-            onLike={() => onLike(item)}
-            onComment={() => onComment(item)}
-            onShare={() => onShare(item)}
-            onSave={() => onSave(item)}
-          />
-        );
-      }
 
       const videoWarmMode = isVideoPost(item)
         ? resolveHomeFeedVideoWarmMode(index, activeIndex, mountedVideoIndexes, rows)
@@ -519,34 +343,9 @@ export const FeedList = memo(
     []
   );
 
-  const scheduleCardHeight = Math.round(
-    (youtubeLiveHeader?.liveCardHeight || contentHeight) * 0.88
-  );
-
   const renderYouTubeItem = useCallback(
     ({ item, index }: { item: any; index: number }) => {
       const likeState = getLikeState(item, { index });
-      const isScheduleCandidate =
-        isExplicitHomeFeedMediaScheduleRow(item) || isMediaLiveSlotsHomeFeedRow(item);
-      const isScheduleCard = isHomeFeedScheduleCardRow(item, scheduleNowMs);
-
-      if (isScheduleCandidate && isScheduleCard) {
-        return (
-          <FeedScheduleRow
-            item={item}
-            height={scheduleCardHeight}
-            isActive={false}
-            likedByMe={likeState.likedByMe}
-            liked={likeState.liked}
-            likeCount={likeState.likeCount}
-            saved={getSavedState(item)}
-            onLike={() => onLike(item)}
-            onComment={() => onComment(item)}
-            onShare={() => onShare(item)}
-            onSave={() => onSave(item)}
-          />
-        );
-      }
 
       return (
         <FeedYouTubeCard
@@ -569,8 +368,6 @@ export const FeedList = memo(
       );
     },
     [
-      scheduleNowMs,
-      scheduleCardHeight,
       getLikeState,
       getSavedState,
       getVisibleDiscussionCount,
@@ -584,30 +381,9 @@ export const FeedList = memo(
     ]
   );
 
-  const renderLiveHeader = useCallback(() => {
-    if (!youtubeLiveHeader?.primaryLive) return null;
-    const likeState = getLikeState(youtubeLiveHeader.primaryLive);
-    return (
-      <HomeFeedLiveHeader
-        primaryLive={youtubeLiveHeader.primaryLive}
-        extraLiveCount={youtubeLiveHeader.extraLiveCount}
-        cardHeight={youtubeLiveHeader.liveCardHeight}
-        onViewMoreLive={youtubeLiveHeader.onViewMoreLive}
-        likedByMe={likeState.likedByMe}
-        liked={likeState.liked}
-        likeCount={likeState.likeCount}
-        saved={getSavedState(youtubeLiveHeader.primaryLive)}
-        onLike={() => onLike(youtubeLiveHeader.primaryLive)}
-        onComment={() => onComment(youtubeLiveHeader.primaryLive)}
-        onShare={() => onShare(youtubeLiveHeader.primaryLive)}
-        onSave={() => onSave(youtubeLiveHeader.primaryLive)}
-      />
-    );
-  }, [youtubeLiveHeader, getLikeState, getSavedState, onLike, onComment, onShare, onSave]);
-
   const viewportStyle = youtubeLayout ? styles.youtubeList : { height: contentHeight };
 
-  if (loading && !rows.length && !youtubeLiveHeader?.primaryLive) {
+  if (loading && !rows.length) {
     return (
       <View style={[styles.center, viewportStyle]}>
         <ActivityIndicator color={HOME_FEED_GOLD_SOFT} size="large" />
@@ -615,12 +391,12 @@ export const FeedList = memo(
     );
   }
 
-  if (!rows.length && !youtubeLiveHeader?.primaryLive) {
+  if (!rows.length) {
     return (
       <View style={[styles.center, viewportStyle]}>
-        <Text style={styles.emptyTitle}>Your feed is quiet</Text>
+        <Text style={styles.emptyTitle}>{emptyTitle || "Your feed is quiet"}</Text>
         <Text style={styles.emptyBody}>
-          Posts from your church and community will appear here.
+          {emptyBody || "Posts from your church and community will appear here."}
         </Text>
       </View>
     );
@@ -634,7 +410,6 @@ export const FeedList = memo(
         keyExtractor={keyExtractor}
         extraData={`${likeUiEpoch}:${scheduleNowMs}`}
         renderItem={renderYouTubeItem}
-        ListHeaderComponent={renderLiveHeader}
         showsVerticalScrollIndicator={false}
         initialNumToRender={4}
         windowSize={8}
@@ -678,14 +453,6 @@ export const FeedList = memo(
   );
   })
 );
-
-const scheduleStyles = StyleSheet.create({
-  slide: {
-    width: "100%",
-    backgroundColor: "#03050C",
-    overflow: "hidden",
-  },
-});
 
 const styles = StyleSheet.create({
   list: {

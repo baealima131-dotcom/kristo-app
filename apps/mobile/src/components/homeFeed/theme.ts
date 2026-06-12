@@ -7,6 +7,13 @@ export const HOME_FEED_BORDER = "rgba(255,255,255,0.10)";
 /** Tab bar height in tab layout (reserve above home indicator). */
 export const HOME_FEED_TAB_BAR_HEIGHT = 70;
 
+/** Fixed Home top bar body (title row + chip row), excluding safe-area inset. */
+export const HOME_FEED_TOP_BAR_BODY_HEIGHT = 88;
+
+export function homeFeedTopBarTotalHeight(insetTop = 0) {
+  return HOME_FEED_TOP_BAR_BODY_HEIGHT + Math.max(insetTop, 0);
+}
+
 /** Base offsets inside each feed slide; add safe-area bottom in components. */
 export const HOME_FEED_META_BOTTOM_BASE = 34;
 export const HOME_FEED_ACTION_BOTTOM_BASE = 26;

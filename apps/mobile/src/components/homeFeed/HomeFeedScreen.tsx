@@ -10,7 +10,8 @@ import {
 } from "react-native";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { useIsFocused } from "@react-navigation/native";
-import { useLocalSearchParams } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   feedList,
   feedToggleLike,
@@ -22,7 +23,8 @@ import { FeedReportSheet } from "./FeedReportSheet";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
 import { HomeFeedVideoModal } from "./HomeFeedVideoModal";
 import { HomeFeedStickyPlayer } from "./HomeFeedStickyPlayer";
-import { HomeFeedLiveStreamsSheet } from "./HomeFeedLiveSection";
+import { HomeFeedTopBar } from "./HomeFeedTopBar";
+import { HomeFeedSearchSheet } from "./HomeFeedSearchSheet";
 import {
   normalizeCommentPostId,
   userHasActiveChurchMembership,
@@ -47,7 +49,6 @@ import {
   getCachedHomeFeedBackendCount,
   getCachedHomeFeedBackendRows,
   homeFeedRowIncludedInBackendSnapshot,
-  logMediaSlotHomeFeedVisibility,
   syncHomeFeedLike,
 } from "./homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "./homeFeedRowsCache";
@@ -66,18 +67,17 @@ import {
   feedRenderKey,
   hydrateFeedRowLikes,
   buildHomeFeedDisplayRows,
-  filterHomeFeedClaimableSlotRows,
-  homeFeedRowChurchId,
   homeFeedScheduleEngagementId,
   homeFeedCommentPostId,
-  isHomeFeedActiveOrNearLiveChurchScheduleVisible,
   isHomeFeedScheduleCardRow,
   isImagePost,
   isVideoPost,
   readFeedItemLikedByMe,
   setHomeFeedViewerCanSeeMediaSlots,
+  filterHomeFeedRowsByPostKind,
+  type HomeFeedPostKindFilter,
 } from "./homeFeedUtils";
-import { HOME_FEED_BG, homeFeedSlideHeight } from "./theme";
+import { HOME_FEED_BG, homeFeedSlideHeight, homeFeedTopBarTotalHeight } from "./theme";
 import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
 import {
   getLocallyReportedPostIds,
@@ -98,10 +98,6 @@ import {
   type HomeFeedVideoOpenPayload,
 } from "@/src/lib/homeFeedVideoMode";
 import {
-  homeFeedLiveCardHeight,
-  partitionHomeFeedYouTubeRows,
-} from "@/src/lib/homeFeedYouTubeLayout";
-import {
   areHomeFeedForwardVideosDiskCached,
   scheduleHomeFeedVideoDiskCacheBackground,
   subscribeHomeFeedVideoDiskCache,
@@ -120,16 +116,8 @@ import {
   peekHomeFeedScheduleDirty,
   subscribeHomeFeedScheduleDirty,
 } from "@/src/lib/homeFeedScheduleDirty";
-import { onSlotClaimChanged } from "@/src/lib/slotClaimEvents";
-import { pollRemoteSlotClaimUpdates } from "@/src/lib/slotClaimApply";
-import {
-  SLOT_CLAIM_POLL_FALLBACK_MS,
-  SLOT_CLAIM_POLL_LIVE_MS,
-} from "@/src/lib/slotClaimSync";
 import { fetchChurchSubscriptionActiveThrottled } from "@/src/lib/churchResourceRefresh";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
-const CLAIM_SLOT_EMPTY_MESSAGE =
-  "No open media slots right now. Check back when your church posts a live schedule.";
 
 export default function HomeFeedScreen() {
   React.useEffect(() => {
@@ -153,16 +141,16 @@ export default function HomeFeedScreen() {
   }, []);
 
 
+  const router = useRouter();
   const { height: windowHeight } = useWindowDimensions();
   const tabBarHeight = useBottomTabBarHeight();
+  const insets = useSafeAreaInsets();
+  const topBarHeight = homeFeedTopBarTotalHeight(insets.top);
   const screenFocused = useIsFocused();
-  const { focusPostId, focus, churchId: focusChurchIdParam, source: focusSource } =
-    useLocalSearchParams<{
-      focusPostId?: string;
-      focus?: string;
-      churchId?: string;
-      source?: string;
-    }>();
+  const { focusPostId, focus } = useLocalSearchParams<{
+    focusPostId?: string;
+    focus?: string;
+  }>();
 
   const hadCacheOnMountRef = useRef(getCachedHomeFeedBackendRows().length > 0);
   const initialRenderSourceLoggedRef = useRef(false);
@@ -189,13 +177,12 @@ export default function HomeFeedScreen() {
   const [videoModalPayload, setVideoModalPayload] = useState<HomeFeedVideoOpenPayload | null>(
     null
   );
-  const [liveStreamsSheetOpen, setLiveStreamsSheetOpen] = useState(false);
+  const [searchSheetOpen, setSearchSheetOpen] = useState(false);
+  const [feedPostFilter, setFeedPostFilter] = useState<HomeFeedPostKindFilter | null>(null);
 
   const focusHandledRef = useRef("");
+  const pendingScrollRowKeyRef = useRef("");
   const reportablePostIdsDigestRef = useRef("");
-  const claimSlotFocusHandledRef = useRef("");
-  const claimSlotFocusReloadedRef = useRef(false);
-  const claimSlotFocusLoadDoneRef = useRef(false);
   const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingScheduleFeedIdRef = useRef<string | null>(null);
   const lastNearEndLoadAtMsRef = useRef(0);
@@ -213,7 +200,6 @@ export default function HomeFeedScreen() {
   const lastVideoBufferWindowRef = useRef(HOME_FEED_INITIAL_LIMIT);
   const prefetchSessionIdRef = useRef(0);
   const lastPosterWarmKeyRef = useRef("");
-  const lastScheduleVisibilityDigestRef = useRef("");
   const feedListRef = useRef<FeedListHandle>(null);
 
   const [stableDisplayRows, setStableDisplayRows] = useState<any[]>([]);
@@ -223,15 +209,18 @@ export default function HomeFeedScreen() {
   const viewerUserId = String(session?.userId || "").trim();
   const viewerChurchId = String(session?.churchId || "").trim();
   const [viewerCanSeeMediaSlots, setViewerCanSeeMediaSlots] = useState(false);
-  const claimSlotFocusChurchId = String(focusChurchIdParam || session?.churchId || "").trim();
-  const isClaimSlotFocus = String(focus || "").trim() === "claim-media-slot";
 
   const contentHeight = homeFeedSlideHeight(windowHeight, tabBarHeight);
+  const feedViewportHeight = Math.max(280, contentHeight - topBarHeight);
   const homeFeedRenderPaused = isHomeFeedRenderPaused();
   const feedFocused = screenFocused && appActive && !homeFeedRenderPaused;
   const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
   const youtubeLayout = !inlineVideoAutoplay;
-  const liveCardHeight = homeFeedLiveCardHeight(windowHeight);
+
+  useEffect(() => {
+    if (String(focus || "").trim() !== "claim-media-slot") return;
+    router.replace("/more/live-slots" as any);
+  }, [focus, router]);
 
   useLayoutEffect(() => {
     markHomeMount();
@@ -321,16 +310,12 @@ export default function HomeFeedScreen() {
       return;
     }
 
-    const hasLocalSchedule = feedList().some(isHomeFeedScheduleCardRow);
     const hasVisibleRows =
       visibleRowCountRef.current > 0 ||
       backendRows.length > 0 ||
       cachedRows.length > 0 ||
       feedList().length > 0;
-    const showBlockingLoader =
-      refreshMode === "required" &&
-      !hasVisibleRows &&
-      (reason === "claim-slot-focus" || !force || !hasLocalSchedule);
+    const showBlockingLoader = refreshMode === "required" && !hasVisibleRows;
 
     if (showBlockingLoader) {
       setLoading(true);
@@ -488,29 +473,6 @@ export default function HomeFeedScreen() {
   }, [feedFocused, loadFeed]);
 
   useEffect(() => {
-    return onSlotClaimChanged((payload) => {
-      if (isHomeFeedRenderPaused()) return;
-
-      console.log("KRISTO_SLOT_CLAIM_BROADCAST_RECEIVED", {
-        churchId: payload.churchId,
-        postId: payload.postId || null,
-        slotId: payload.slotId,
-        action: payload.action,
-        source: payload.source || null,
-      });
-
-      setLocalTick((n) => n + 1);
-
-      console.log("KRISTO_SLOT_CLAIM_UI_UPDATED", {
-        source: "broadcast",
-        churchId: payload.churchId,
-        slotId: payload.slotId,
-        action: payload.action,
-      });
-    });
-  }, []);
-
-  useEffect(() => {
     if (!feedFocused || homeFeedRenderPaused) return;
     const timer = setInterval(() => {
       setLocalTick((n) => n + 1);
@@ -580,69 +542,9 @@ export default function HomeFeedScreen() {
     return hydrateFeedRowLikes(merged, serverLikeByPostId);
   }, [backendRows, localFeedSnapshot, serverLikeByPostId, homeFeedRenderPaused, viewerCanSeeMediaSlots]);
 
-  useEffect(() => {
-    const digest = feedRows
-      .filter((row) => isHomeFeedScheduleCardRow(row))
-      .map((row) => {
-        const scheduleId = baseFeedId(
-          String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || "")
-        );
-        const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
-        const slotIds = slots.map((slot) => String(slot?.id || "").trim()).filter(Boolean);
-        return `${scheduleId}:${slotIds.join(",")}`;
-      })
-      .join("|");
-    if (!digest) return;
-    if (digest === lastScheduleVisibilityDigestRef.current) return;
-    lastScheduleVisibilityDigestRef.current = digest;
-
-    for (const row of feedRows) {
-      if (!isHomeFeedScheduleCardRow(row)) continue;
-      const scheduleId =
-        baseFeedId(String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || "")) ||
-        String(row?.id || "").trim() ||
-        null;
-      const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
-      if (!slots.length) {
-        logMediaSlotHomeFeedVisibility({
-          slotId: null,
-          scheduleId,
-          stage: "display_build",
-          included: true,
-          reason: "schedule_card_without_slots",
-        });
-        continue;
-      }
-      for (const slot of slots) {
-        logMediaSlotHomeFeedVisibility({
-          slotId: String(slot?.id || "").trim() || null,
-          scheduleId,
-          stage: "display_build",
-          included: true,
-          reason: "visible_in_feed_rows",
-        });
-      }
-    }
-  }, [feedRows]);
-
-  const claimableSlotRows = useMemo(() => {
-    if (!isClaimSlotFocus || !claimSlotFocusChurchId) return [];
-    return filterHomeFeedClaimableSlotRows(feedRows, claimSlotFocusChurchId, viewerUserId);
-  }, [feedRows, isClaimSlotFocus, claimSlotFocusChurchId, viewerUserId]);
-
-  const displayFeedRows = useMemo(() => {
-    if (isClaimSlotFocus && claimableSlotRows.length) return claimableSlotRows;
-    return feedRows;
-  }, [feedRows, isClaimSlotFocus, claimableSlotRows]);
+  const displayFeedRows = feedRows;
 
   useEffect(() => {
-    if (isClaimSlotFocus && claimableSlotRows.length) {
-      stableDisplayRowsRef.current = claimableSlotRows;
-      setStableDisplayRows(claimableSlotRows);
-      setVisibleWindowSize(claimableSlotRows.length);
-      return;
-    }
-
     const incoming = displayFeedRows;
     if (!incoming.length && stableDisplayRowsRef.current.length) return;
 
@@ -665,7 +567,7 @@ export default function HomeFeedScreen() {
       stableDisplayRowsRef.current = result.merged;
       return result.merged;
     });
-  }, [displayFeedRows, isClaimSlotFocus, claimableSlotRows]);
+  }, [displayFeedRows]);
 
   useEffect(() => {
     if (!stableDisplayRows.length || pageReadyLoggedRef.current) return;
@@ -689,7 +591,7 @@ export default function HomeFeedScreen() {
   // window already covers every loaded row — append more from the API. The
   // append is single-flight, throttled, and never deletes existing rows.
   useEffect(() => {
-    if (isClaimSlotFocus || !feedFocused || !stableDisplayRows.length) return;
+    if (!feedFocused || !stableDisplayRows.length) return;
 
     const visibleCount = Math.min(visibleWindowSize, stableDisplayRows.length);
     if (!isHomeFeedNearEnd(activeIndex, visibleCount)) return;
@@ -842,29 +744,45 @@ export default function HomeFeedScreen() {
     visibleWindowSize,
     stableDisplayRows.length,
     feedFocused,
-    isClaimSlotFocus,
   ]);
 
   const visibleData = useMemo(() => {
     const rowSource =
       stableDisplayRows.length > 0 ? stableDisplayRows : displayFeedRows;
-    const windowed =
-      isClaimSlotFocus && claimableSlotRows.length
-        ? rowSource
-        : rowSource.slice(0, visibleWindowSize);
+    const windowed = rowSource.slice(0, visibleWindowSize);
 
     if (windowed.length > 0) {
       lastVisibleRowsRef.current = windowed;
       return windowed;
     }
     return lastVisibleRowsRef.current;
-  }, [
-    stableDisplayRows,
-    displayFeedRows,
-    visibleWindowSize,
-    isClaimSlotFocus,
-    claimableSlotRows.length,
-  ]);
+  }, [stableDisplayRows, displayFeedRows, visibleWindowSize]);
+
+  const filteredVisibleData = useMemo(
+    () => filterHomeFeedRowsByPostKind(visibleData, feedPostFilter),
+    [visibleData, feedPostFilter]
+  );
+
+  const feedListRows = filteredVisibleData;
+
+  const feedEmptyCopy = useMemo(() => {
+    if (feedPostFilter === "testimony") {
+      return {
+        title: "No testimonies yet",
+        body: "Testimony posts from your churches will appear here.",
+      };
+    }
+    if (feedPostFilter === "announcement") {
+      return {
+        title: "No announcements yet",
+        body: "Announcement posts from your churches will appear here.",
+      };
+    }
+    return {
+      title: "Your feed is quiet",
+      body: "Posts from your church and community will appear here.",
+    };
+  }, [feedPostFilter]);
 
   useEffect(() => {
     visibleRowCountRef.current = visibleData.length;
@@ -945,7 +863,7 @@ export default function HomeFeedScreen() {
   }, [visibleData, activeIndex]);
 
   useEffect(() => {
-    if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
+    if (!feedFocused || !visibleData.length) return;
 
     const tryPosterWarm = () => {
       if (inlineVideoAutoplay) {
@@ -972,14 +890,7 @@ export default function HomeFeedScreen() {
       unsubFrame();
       unsubCache();
     };
-  }, [
-    inlineVideoAutoplay,
-    posterWarmKey,
-    activeIndex,
-    feedFocused,
-    isClaimSlotFocus,
-    visibleData,
-  ]);
+  }, [posterWarmKey, activeIndex, feedFocused, visibleData]);
 
   // Initial buffer-ahead is deferred until the FIRST video's first frame paints
   // (or a short fallback). This guarantees the first video keeps full startup
@@ -987,7 +898,7 @@ export default function HomeFeedScreen() {
   // subscription is tracked in a ref so feed re-renders never cancel it.
   useEffect(() => {
     if (!inlineVideoAutoplay) return;
-    if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
+    if (!feedFocused || !visibleData.length) return;
     if (initialVideoBufferWarmedRef.current) return;
     initialVideoBufferWarmedRef.current = true;
 
@@ -1020,7 +931,7 @@ export default function HomeFeedScreen() {
       } catch {}
       clearTimeout(fallbackTimer);
     };
-  }, [inlineVideoAutoplay, feedFocused, isClaimSlotFocus, visibleData.length]);
+  }, [inlineVideoAutoplay, feedFocused, visibleData.length]);
 
   useEffect(() => {
     return () => {
@@ -1033,15 +944,15 @@ export default function HomeFeedScreen() {
 
   useEffect(() => {
     if (!inlineVideoAutoplay) return;
-    if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
+    if (!feedFocused || !visibleData.length) return;
     if (lastVideoBufferActiveRef.current === activeIndex) return;
     lastVideoBufferActiveRef.current = activeIndex;
     warmHomeFeedUpcoming(visibleData, activeIndex);
-  }, [inlineVideoAutoplay, activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
+  }, [inlineVideoAutoplay, activeIndex, feedFocused, visibleData.length]);
 
   useEffect(() => {
     if (!inlineVideoAutoplay) return;
-    if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
+    if (!feedFocused || !visibleData.length) return;
     const prevWindow = lastVideoBufferWindowRef.current;
     if (visibleWindowSize <= prevWindow) {
       lastVideoBufferWindowRef.current = visibleWindowSize;
@@ -1049,14 +960,7 @@ export default function HomeFeedScreen() {
     }
     lastVideoBufferWindowRef.current = visibleWindowSize;
     warmHomeFeedUpcoming(visibleData, activeIndex);
-  }, [inlineVideoAutoplay, visibleWindowSize, activeIndex, feedFocused, isClaimSlotFocus, visibleData.length]);
-
-  const youtubeFeedPartition = useMemo(
-    () => partitionHomeFeedYouTubeRows(visibleData),
-    [visibleData]
-  );
-
-  const feedListRows = youtubeLayout ? youtubeFeedPartition.feedRows : visibleData;
+  }, [inlineVideoAutoplay, visibleWindowSize, activeIndex, feedFocused, visibleData.length]);
 
   const handleVideoPress = useCallback((payload: HomeFeedVideoOpenPayload) => {
     setVideoModalPayload(payload);
@@ -1066,62 +970,37 @@ export default function HomeFeedScreen() {
     setVideoModalPayload(null);
   }, []);
 
-  const youtubeLiveHeader = useMemo(() => {
-    if (!youtubeLayout || !youtubeFeedPartition.primaryLive) return null;
-    return {
-      primaryLive: youtubeFeedPartition.primaryLive,
-      extraLiveCount: youtubeFeedPartition.extraLiveRows.length,
-      liveCardHeight,
-      onViewMoreLive: () => setLiveStreamsSheetOpen(true),
-    };
-  }, [youtubeLayout, youtubeFeedPartition, liveCardHeight]);
-
-  const hasChurchScheduleSlots = useMemo(() => {
-    if (!viewerCanSeeMediaSlots) return false;
-    return visibleData.some((row) => isHomeFeedScheduleCardRow(row));
-  }, [visibleData, viewerCanSeeMediaSlots]);
-
-  const hasActiveOrLiveChurchSchedule = useMemo(() => {
-    if (!viewerCanSeeMediaSlots) return false;
-    return isHomeFeedActiveOrNearLiveChurchScheduleVisible(visibleData, viewerChurchId);
-  }, [visibleData, viewerChurchId, viewerCanSeeMediaSlots]);
-
-  const slotClaimPollIntervalMs = hasActiveOrLiveChurchSchedule
-    ? SLOT_CLAIM_POLL_LIVE_MS
-    : SLOT_CLAIM_POLL_FALLBACK_MS;
+  const scrollFeedToRow = useCallback((row: any) => {
+    const rowKey = feedRenderKey(row) || String(row?.id || "").trim();
+    if (!rowKey) return;
+    pendingScrollRowKeyRef.current = rowKey;
+    setFeedPostFilter(null);
+    setSearchSheetOpen(false);
+  }, []);
 
   useEffect(() => {
-    if (!feedFocused || !hasChurchScheduleSlots || homeFeedRenderPaused || !viewerChurchId) {
-      return;
-    }
+    const rowKey = pendingScrollRowKeyRef.current;
+    if (!rowKey) return;
+    const index = feedListRows.findIndex(
+      (row) => (feedRenderKey(row) || String(row?.id || "").trim()) === rowKey
+    );
+    if (index < 0) return;
+    pendingScrollRowKeyRef.current = "";
+    setActiveIndex(index);
+    feedListRef.current?.scrollToIndex(index, true);
+  }, [feedListRows, feedPostFilter]);
 
-    let alive = true;
+  const handleTestimoniesPress = useCallback(() => {
+    setFeedPostFilter((prev) => (prev === "testimony" ? null : "testimony"));
+    setActiveIndex(0);
+    feedListRef.current?.scrollToIndex(0, false);
+  }, []);
 
-    const runPoll = () => {
-      void pollRemoteSlotClaimUpdates(viewerChurchId, "home-feed-fallback-poll").then(
-        (updated) => {
-          if (!alive || !updated) return;
-          setLocalTick((n) => n + 1);
-          console.log("KRISTO_SLOT_CLAIM_UI_UPDATED", {
-            source: "poll",
-            churchId: viewerChurchId,
-          });
-        }
-      );
-    };
-
-    const timer = setInterval(runPoll, slotClaimPollIntervalMs);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [
-    feedFocused,
-    hasChurchScheduleSlots,
-    homeFeedRenderPaused,
-    viewerChurchId,
-    slotClaimPollIntervalMs,
-  ]);
+  const handleAnnouncementsPress = useCallback(() => {
+    setFeedPostFilter((prev) => (prev === "announcement" ? null : "announcement"));
+    setActiveIndex(0);
+    feedListRef.current?.scrollToIndex(0, false);
+  }, []);
 
   useEffect(() => {
     if (!inlineVideoAutoplay) return;
@@ -1167,31 +1046,6 @@ export default function HomeFeedScreen() {
       consumeHomeFeedVideoRecovery();
     }
   }, [inlineVideoAutoplay, feedFocused, activeIndex, visibleData]);
-
-  useEffect(() => {
-    const targetId = String(pendingScheduleFeedIdRef.current || "").trim();
-    if (!targetId) return;
-
-    const visible = feedRows.some((row) => {
-      if (!isHomeFeedScheduleCardRow(row)) return false;
-      const rowId = String(row?.id || "").trim();
-      const parentId = String(row?.parentScheduleId || row?.sourceScheduleId || "").trim();
-      return (
-        rowId === targetId ||
-        parentId === targetId ||
-        baseFeedId(rowId) === baseFeedId(targetId)
-      );
-    });
-
-    if (!visible) return;
-
-    console.log("KRISTO_HOME_FEED_SCHEDULE_VISIBLE_AFTER_CREATE", {
-      backendFeedId: targetId,
-      feedCount: feedRows.length,
-      scheduleSlotCount: feedRows.filter(isHomeFeedScheduleCardRow).length,
-    });
-    pendingScheduleFeedIdRef.current = null;
-  }, [feedRows]);
 
   useEffect(() => {
     let alive = true;
@@ -1257,72 +1111,8 @@ export default function HomeFeedScreen() {
   }, []);
 
   useEffect(() => {
-    if (!isClaimSlotFocus) return;
-    claimSlotFocusHandledRef.current = "";
-    claimSlotFocusReloadedRef.current = false;
-    claimSlotFocusLoadDoneRef.current = false;
-  }, [isClaimSlotFocus, focusChurchIdParam, focusSource]);
-
-  useEffect(() => {
-    if (!isClaimSlotFocus || !screenFocused || claimSlotFocusReloadedRef.current) return;
-    claimSlotFocusReloadedRef.current = true;
-    void loadFeed("claim-slot-focus", { force: true }).finally(() => {
-      claimSlotFocusLoadDoneRef.current = true;
-    });
-  }, [isClaimSlotFocus, screenFocused, loadFeed]);
-
-  useEffect(() => {
-    if (!isClaimSlotFocus || !claimSlotFocusChurchId) return;
-
-    const focusKey = `claim-media-slot:${claimSlotFocusChurchId}`;
-    if (claimSlotFocusHandledRef.current === focusKey) return;
-    if (!claimSlotFocusLoadDoneRef.current || loading) return;
-
-    console.log("KRISTO_HOME_FEED_CLAIM_SLOT_FOCUS", {
-      churchId: claimSlotFocusChurchId,
-      source: String(focusSource || ""),
-      feedCount: feedRows.length,
-      loading,
-    });
-
-    if (claimableSlotRows.length > 0) {
-      const firstRow = claimableSlotRows[0];
-      console.log("KRISTO_HOME_FEED_CLAIM_SLOT_FOUND", {
-        churchId: claimSlotFocusChurchId,
-        slotCount: claimableSlotRows.length,
-        firstSlotId: feedRenderKey(firstRow) || String(firstRow?.id || ""),
-        firstSlotNumber: Number(firstRow?.slotNumber || 0) || null,
-      });
-      claimSlotFocusHandledRef.current = focusKey;
-      setActiveIndex(0);
-      feedListRef.current?.scrollToIndex(0, false);
-      return;
-    }
-
-    console.log("KRISTO_HOME_FEED_CLAIM_SLOT_EMPTY", {
-      churchId: claimSlotFocusChurchId,
-      feedCount: feedRows.length,
-    });
-    claimSlotFocusHandledRef.current = focusKey;
-    setSuccessBanner(CLAIM_SLOT_EMPTY_MESSAGE);
-    if (successBannerTimerRef.current) {
-      clearTimeout(successBannerTimerRef.current);
-    }
-    successBannerTimerRef.current = setTimeout(() => {
-      setSuccessBanner("");
-    }, 4200);
-  }, [
-    isClaimSlotFocus,
-    claimSlotFocusChurchId,
-    claimableSlotRows,
-    feedRows.length,
-    focusSource,
-    loading,
-  ]);
-
-  useEffect(() => {
     const rawFocusId = String(focusPostId || "").trim();
-    if (!rawFocusId || !visibleData.length || isClaimSlotFocus) return;
+    if (!rawFocusId || !visibleData.length) return;
     if (focusHandledRef.current === rawFocusId) return;
 
     const matchIndex = visibleData.findIndex((item) => String(item?.id || "") === rawFocusId);
@@ -1331,7 +1121,7 @@ export default function HomeFeedScreen() {
     focusHandledRef.current = rawFocusId;
     setActiveIndex(matchIndex);
     feedListRef.current?.scrollToIndex(matchIndex, false);
-  }, [focusPostId, visibleData, isClaimSlotFocus]);
+  }, [focusPostId, visibleData]);
 
   useEffect(() => {
     if (activeIndex >= visibleData.length && visibleData.length > 0) {
@@ -1567,8 +1357,15 @@ export default function HomeFeedScreen() {
 
   return (
     <View style={[styles.screen, youtubeLayout ? styles.screenYoutube : { height: contentHeight }]}>
+      <HomeFeedTopBar
+        activeFilter={feedPostFilter}
+        onSearchPress={() => setSearchSheetOpen(true)}
+        onTestimoniesPress={handleTestimoniesPress}
+        onAnnouncementsPress={handleAnnouncementsPress}
+      />
+
       {successBanner ? (
-        <View style={styles.successBanner} pointerEvents="none">
+        <View style={[styles.successBanner, { top: topBarHeight + 12 }]} pointerEvents="none">
           <Text style={styles.successBannerText}>{successBanner}</Text>
         </View>
       ) : null}
@@ -1577,27 +1374,35 @@ export default function HomeFeedScreen() {
         <HomeFeedStickyPlayer payload={videoModalPayload} onClose={handleCloseVideo} />
       ) : null}
 
-      <FeedList
-        ref={feedListRef}
-        rows={feedListRows}
-        contentHeight={contentHeight}
-        activeIndex={activeIndex}
-        screenFocused={feedFocused}
-        loading={loading}
-        likeUiEpoch={likeUiEpoch}
-        getLikeState={getLikeState}
-        getSavedState={getSavedState}
-        getVisibleDiscussionCount={getVisibleDiscussionCount}
-        isPostReported={isPostReported}
-        onActiveIndexChange={setActiveIndex}
-        onLike={handleLike}
-        onComment={handleComment}
-        onShare={handleShare}
-        onSave={handleSave}
-        onReport={handleReport}
-        onVideoPress={handleVideoPress}
-        youtubeLiveHeader={youtubeLiveHeader}
-      />
+      <View
+        style={[
+          styles.feedBody,
+          youtubeLayout ? styles.feedBodyYoutube : { height: feedViewportHeight },
+        ]}
+      >
+        <FeedList
+          ref={feedListRef}
+          rows={feedListRows}
+          contentHeight={feedViewportHeight}
+          activeIndex={activeIndex}
+          screenFocused={feedFocused}
+          loading={loading}
+          likeUiEpoch={likeUiEpoch}
+          getLikeState={getLikeState}
+          getSavedState={getSavedState}
+          getVisibleDiscussionCount={getVisibleDiscussionCount}
+          isPostReported={isPostReported}
+          onActiveIndexChange={setActiveIndex}
+          onLike={handleLike}
+          onComment={handleComment}
+          onShare={handleShare}
+          onSave={handleSave}
+          onReport={handleReport}
+          onVideoPress={handleVideoPress}
+          emptyTitle={feedEmptyCopy.title}
+          emptyBody={feedEmptyCopy.body}
+        />
+      </View>
 
       {!youtubeLayout ? (
         <HomeFeedVideoModal
@@ -1607,11 +1412,11 @@ export default function HomeFeedScreen() {
         />
       ) : null}
 
-      <HomeFeedLiveStreamsSheet
-        visible={liveStreamsSheetOpen}
-        rows={youtubeFeedPartition.extraLiveRows}
-        cardHeight={liveCardHeight}
-        onClose={() => setLiveStreamsSheetOpen(false)}
+      <HomeFeedSearchSheet
+        visible={searchSheetOpen}
+        rows={stableDisplayRows.length ? stableDisplayRows : displayFeedRows}
+        onClose={() => setSearchSheetOpen(false)}
+        onSelectRow={scrollFeedToRow}
       />
 
       <FeedReportSheet
@@ -1642,6 +1447,14 @@ const styles = StyleSheet.create({
   screenYoutube: {
     flex: 1,
     height: undefined,
+  },
+  feedBody: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: HOME_FEED_BG,
+  },
+  feedBodyYoutube: {
+    flex: 1,
   },
   successBanner: {
     position: "absolute",

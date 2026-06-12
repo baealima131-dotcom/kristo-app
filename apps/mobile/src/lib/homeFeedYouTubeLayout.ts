@@ -9,7 +9,7 @@ export const YOUTUBE_THUMB_ASPECT = 16 / 9;
 export const YOUTUBE_ACTIONS_HEIGHT = 48;
 export const YOUTUBE_META_BLOCK_HEIGHT = 88;
 
-/** Full-size live card height — matches HomeLiveScheduleCard sizing. */
+/** Full-size live card height — used by Live Slots screen. */
 export function homeFeedLiveCardHeight(windowHeight: number): number {
   return Math.min(790, Math.max(720, windowHeight * 0.86));
 }
@@ -28,40 +28,20 @@ export function estimateYouTubeFeedCardHeight(
   return thumb + meta + YOUTUBE_ACTIONS_HEIGHT + 20;
 }
 
-function isScheduleRowLiveNow(row: any, nowMs: number): boolean {
-  if (!row) return false;
-  if (row?.isLiveNow || row?.kind === "live") return true;
-  const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
-  const slot = slots[0];
-  if (!slot) return false;
-  const status = String(slot?.status || "").toLowerCase();
-  return status === "live" || slot?.isLive === true;
+/** Home Feed is content-only — no live header partition. */
+export function partitionHomeFeedYouTubeRows(rows: any[]) {
+  return {
+    primaryLive: null,
+    extraLiveRows: [] as any[],
+    feedRows: Array.isArray(rows) ? rows : [],
+  };
 }
 
-/** Rows promoted to the live header (not mixed into the scrollable feed). */
-export function isHomeFeedLiveFeaturedRow(row: any, nowMs = Date.now()): boolean {
+/** @deprecated Live rows are excluded from Home Feed. */
+export function isHomeFeedLiveFeaturedRow(row: any, _nowMs = Date.now()): boolean {
   if (isHomeFeedLivestreamRow(row)) return true;
-  if (!isHomeFeedScheduleCardRow(row, nowMs) && !isMediaLiveSlotsHomeFeedRow(row)) {
+  if (!isHomeFeedScheduleCardRow(row) && !isMediaLiveSlotsHomeFeedRow(row)) {
     return false;
   }
-  return isScheduleRowLiveNow(row, nowMs);
-}
-
-export function partitionHomeFeedYouTubeRows(rows: any[], nowMs = Date.now()) {
-  const liveRows: any[] = [];
-  const feedRows: any[] = [];
-
-  for (const row of rows) {
-    if (isHomeFeedLiveFeaturedRow(row, nowMs)) {
-      liveRows.push(row);
-    } else {
-      feedRows.push(row);
-    }
-  }
-
-  return {
-    primaryLive: liveRows[0] || null,
-    extraLiveRows: liveRows.slice(1),
-    feedRows,
-  };
+  return false;
 }

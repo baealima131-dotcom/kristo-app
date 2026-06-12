@@ -86,6 +86,46 @@ export function sortRowsByPersonalSeed<T extends { id?: string; feedOriginId?: s
   });
 }
 
+
+function isHomeFeedVideoRow(row: any): boolean {
+  return row?.mediaType === "video" || row?.type === "video" || Boolean(row?.videoUrl || row?.mediaUri);
+}
+
+/**
+ * V1 Home Feed UX: avoid boring video/post/video/post alternation.
+ * Put a strong video block first so 8–10 videos can be preloaded and played quickly.
+ */
+export function arrangeHomeFeedVideoBlockFirst<T extends { id?: string; feedOriginId?: string }>(
+  rows: T[],
+  ctx: HomeFeedPersonalOrderContext,
+  rowKeyFn: (row: T) => string,
+  tieBreakMs: (row: T) => number,
+  videoBlockSize = 10,
+  postBreakSize = 4
+): T[] {
+  const personallySorted = sortRowsByPersonalSeed(rows, ctx, rowKeyFn, tieBreakMs);
+  const videos = personallySorted.filter((row) => isHomeFeedVideoRow(row));
+  const posts = personallySorted.filter((row) => !isHomeFeedVideoRow(row));
+
+  const arranged = [
+    ...videos.slice(0, videoBlockSize),
+    ...posts.slice(0, postBreakSize),
+    ...videos.slice(videoBlockSize),
+    ...posts.slice(postBreakSize),
+  ];
+
+  console.log("KRISTO_HOME_FEED_VIDEO_BLOCK_ORDER", {
+    total: arranged.length,
+    videos: videos.length,
+    posts: posts.length,
+    videoBlockSize,
+    firstKinds: arranged.slice(0, 12).map((row: any) => isHomeFeedVideoRow(row) ? "video" : "post"),
+    firstIds: arranged.slice(0, 12).map((row: any) => rowKeyFn(row) || String(row?.id || "")),
+  });
+
+  return arranged;
+}
+
 export function logHomeFeedPersonalSeed(ctx: HomeFeedPersonalOrderContext) {
   if (ctx.seedKey === lastLoggedPersonalSeedKey) return;
   lastLoggedPersonalSeedKey = ctx.seedKey;

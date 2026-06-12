@@ -1503,14 +1503,7 @@ export default function ChurchOverviewScreen() {
                       source: "church-overview",
                     });
 
-                    router.replace({
-                      pathname: "/(tabs)/",
-                      params: {
-                        focus: "claim-media-slot",
-                        churchId,
-                        source: "church-overview",
-                      },
-                    } as any);
+                    router.replace("/more/live-slots" as any);
                   }}
                   style={s.powerBtnGoldWrap}
                 >
@@ -1597,6 +1590,10 @@ export default function ChurchOverviewScreen() {
 
                 <LuxuryPressable
                   onPress={() => {
+                    if (isActualChurchPastor || isPastor || isPastorSession) {
+                      openMediaStudio();
+                      return;
+                    }
                     if (!canOpenMediaStudio) {
                       Alert.alert(
                         "Pastor access required",

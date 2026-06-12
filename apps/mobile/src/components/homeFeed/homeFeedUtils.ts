@@ -74,6 +74,39 @@ export function resolveFeedPostAccent(item: any): HomeFeedPostAccent {
   return "default";
 }
 
+export type HomeFeedPostKindFilter = "testimony" | "announcement";
+
+export function filterHomeFeedRowsByPostKind(
+  rows: any[],
+  kind: HomeFeedPostKindFilter | null
+): any[] {
+  if (!kind || !Array.isArray(rows)) return rows;
+  return rows.filter((row) => resolveFeedPostKind(row) === kind);
+}
+
+export function buildHomeFeedSearchHaystack(item: any): string {
+  const parts = [
+    resolvePostTitle(item),
+    resolvePostBody(item),
+    resolveChurchName(item),
+    resolveMediaName(item),
+    resolveFeedIdentityHeadline(item),
+    resolveFeedPostTypeTitle(item),
+    String(item?.authorName || item?.author?.name || ""),
+  ];
+  return parts
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+export function filterHomeFeedRowsBySearchQuery(rows: any[], query: string): any[] {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle || !Array.isArray(rows)) return rows;
+  return rows.filter((row) => buildHomeFeedSearchHaystack(row).includes(needle));
+}
+
 function looksLikeFeedAuthorId(value: unknown) {
   const v = String(value || "").trim();
   if (!v) return true;
@@ -1356,6 +1389,9 @@ export function buildHomeFeedDisplayRows(
   resetHomeFeedPersonalOrderIfNeeded(personalCtx.seedKey);
   logHomeFeedPersonalSeed(personalCtx);
 
+  const viewerChurchId = String((getSessionSync() as any)?.churchId || "").trim();
+  const canSeeMediaSlots = resolveHomeFeedCanSeeMediaSlots(viewerChurchId);
+
   const digest = `${canSeeMediaSlots ? 1 : 0}::${homeFeedBuildDigest(
     sanitizedBackendRows,
     sanitizedLocalRows,
@@ -1377,77 +1413,48 @@ export function buildHomeFeedDisplayRows(
   }
 
   const filtered = filterPhase1FeedRows(Array.from(byId.values()));
-  const viewerChurchId = String((getSessionSync() as any)?.churchId || "").trim();
-  const canSeeMediaSlots = resolveHomeFeedCanSeeMediaSlots(viewerChurchId);
-  const scheduleRows = canSeeMediaSlots
-    ? filtered.filter(
-        (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
-      )
-    : [];
-  const postRows = filtered.filter(
-    (row) => !isExplicitHomeFeedMediaScheduleRow(row) && !isMediaLiveSlotsHomeFeedRow(row)
+
+  // Stable schedule rows power More > Live Slots — never mixed into Home Feed display.
+  if (canSeeMediaSlots) {
+    const scheduleRows = filtered.filter(
+      (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
+    );
+    const expandedScheduleRows = scheduleRows.flatMap((row) =>
+      expandHomeFeedScheduleIntoSlotRows(row, nowMs)
+    );
+    const orderedScheduleRows = filterSameChurchHomeFeedScheduleRows(
+      sortHomeFeedScheduleSlotRows(expandedScheduleRows),
+      viewerChurchId
+    );
+    lastStableHomeFeedDisplayRows = orderedScheduleRows.filter((row) =>
+      isHomeFeedScheduleSlotRowVisible(row, nowMs)
+    );
+  } else {
+    lastStableHomeFeedDisplayRows = [];
+  }
+
+  const contentRows = filtered.filter(
+    (row) =>
+      !isExplicitHomeFeedMediaScheduleRow(row) &&
+      !isMediaLiveSlotsHomeFeedRow(row) &&
+      !isLegacyScheduleFeedRow(row) &&
+      !isHomeFeedExpandedScheduleSlotRow(row) &&
+      !isHomeFeedLivestreamRow(row)
   );
-  const expandedScheduleRows = scheduleRows.flatMap((row) =>
-    expandHomeFeedScheduleIntoSlotRows(row, nowMs)
-  );
-  const sortedPostRows = [...postRows].sort(
+  const sortedContentRows = [...contentRows].sort(
     (a, b) => homeFeedPostSortMs(b) - homeFeedPostSortMs(a)
   );
-  const orderedScheduleRows = filterSameChurchHomeFeedScheduleRows(
-    sortHomeFeedScheduleSlotRows(expandedScheduleRows),
-    viewerChurchId
-  );
-  const liveRows = sortHomeFeedLivePriorityRows(
-    sortedPostRows.filter((row) => isHomeFeedLivestreamRow(row))
-  );
-  const nonLivePosts = sortedPostRows.filter((row) => !isHomeFeedLivestreamRow(row));
   const personalizedPosts = interleaveHomeFeedPostRows(
-    nonLivePosts,
+    sortedContentRows,
     viewerChurchId,
     personalCtx
   );
-  let display = buildHomeFeedPriorityLayout(
-    liveRows,
-    orderedScheduleRows,
-    personalizedPosts,
-    nowMs
+  let display = personalizedPosts.filter(
+    (row) =>
+      !isHomeFeedMediaScheduleSlotDisplayRow(row) && !isHomeFeedLivestreamRow(row)
   );
 
-  const scheduleSlotCount = display.filter(
-    (row) => isHomeFeedScheduleCardRow(row) || isHomeFeedExpandedScheduleSlotRow(row)
-  ).length;
-  const hadDeferredLocalSchedule = localRows.some((row) => {
-    if (!isHomeFeedMediaScheduleSourceRow(row)) return false;
-    const id = String(row?.id || "").trim();
-    if (id && isHiddenInvalidHomeFeedSchedule(id)) return false;
-    return !scheduleRowHasValidSlotTimes(row);
-  });
-
-  if (
-    canSeeMediaSlots &&
-    scheduleSlotCount === 0 &&
-    hadDeferredLocalSchedule &&
-    lastStableHomeFeedDisplayRows.length
-  ) {
-    const visibleStableSchedules = filterVisibleHomeFeedScheduleRows(
-      lastStableHomeFeedDisplayRows.filter(isHomeFeedExpandedOrScheduleSlotRow),
-      nowMs
-    );
-    if (visibleStableSchedules.length) {
-      display = mergePostsWithStableScheduleRows(
-        liveRows,
-        personalizedPosts,
-        visibleStableSchedules,
-        nowMs
-      );
-      if (isKristoVerboseFeedDebug()) {
-        console.log("KRISTO_HOME_FEED_SCHEDULE_STABLE_FALLBACK", {
-          keptScheduleCount: display.filter(isHomeFeedExpandedOrScheduleSlotRow).length,
-          postCount: personalizedPosts.length,
-        });
-      }
-    }
-  }
+  const scheduleSlotCount = 0;
 
   logHomeFeedPersonalOrder(display, personalCtx, feedRenderKey);
   logHomeFeedFirstRows(display, feedRenderKey);
@@ -1461,18 +1468,9 @@ export function buildHomeFeedDisplayRows(
   }
 
   if (canSeeMediaSlots) {
-    const visibleScheduleRows = display.filter((row) => {
-      if (!isHomeFeedExpandedOrScheduleSlotRow(row)) return false;
-      return isHomeFeedScheduleSlotRowVisible(row, nowMs);
-    });
-    if (visibleScheduleRows.length) {
-      lastStableHomeFeedDisplayRows = visibleScheduleRows;
-    } else if (!hadDeferredLocalSchedule) {
-      lastStableHomeFeedDisplayRows = [];
-    }
+    display = display.filter((row) => !isHomeFeedMediaScheduleSlotDisplayRow(row));
   } else {
     display = display.filter((row) => !isHomeFeedMediaScheduleSlotDisplayRow(row));
-    lastStableHomeFeedDisplayRows = [];
   }
 
   lastHomeFeedBuildDigest = digest;
@@ -1484,7 +1482,7 @@ export function buildHomeFeedDisplayRows(
       videoCount,
       scheduleSlotCount,
       firstIds: display.slice(0, 8).map((row) => String(row?.id || "")),
-      scheduleOrder: orderedScheduleRows
+      scheduleOrder: lastStableHomeFeedDisplayRows
         .slice(0, 12)
         .map((row) => Number(row?.slotNumber || 0) || null),
     });
@@ -1495,14 +1493,16 @@ export function buildHomeFeedDisplayRows(
       sanitizedLocalCount: sanitizedLocalRows.length,
       mergedCount: byId.size,
       filteredCount: filtered.length,
-      scheduleSourceCount: scheduleRows.length,
-      scheduleCount: orderedScheduleRows.length,
+      scheduleSourceCount: lastStableHomeFeedDisplayRows.length,
+      scheduleCount: lastStableHomeFeedDisplayRows.length,
       displayCount: display.length,
       videoCount,
       scheduleSlotCount,
-      scheduleIds: scheduleRows.map((row) => String(row?.id || "")),
-      scheduleSlotCounts: scheduleRows.map((row) => homeFeedScheduleSlotCount(row)),
-      expandedScheduleIds: orderedScheduleRows.map((row) => String(row?.id || "")),
+      scheduleIds: lastStableHomeFeedDisplayRows.map((row) => String(row?.id || "")),
+      scheduleSlotCounts: lastStableHomeFeedDisplayRows.map((row) =>
+        homeFeedScheduleSlotCount(row)
+      ),
+      expandedScheduleIds: lastStableHomeFeedDisplayRows.map((row) => String(row?.id || "")),
     });
   }
 

@@ -10,6 +10,7 @@ import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
 import { findActiveMediaScheduleForChurch, findMediaScheduleFeedForChurch } from "@/src/lib/mediaScheduleLock";
 import { findProtectedNearLiveSchedule, emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
+import { resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import {
@@ -402,6 +403,20 @@ export function applySilentMediaScheduleReload(params: {
   };
 }
 
+function normalizeScheduleSlotsForBackend(slots: any[]) {
+  return slots.map((slot, index) => {
+    const window = resolveMediaSlotTimeWindow(slot);
+    return {
+      ...slot,
+      order: index + 1,
+      slot: index + 1,
+      slotNumber: index + 1,
+      startMs: window.startMs || slot?.startMs,
+      endMs: window.endMs || slot?.endMs,
+    };
+  });
+}
+
 export async function syncMediaScheduleSlotsToBackend(
   sourceFeedId: string,
   slots: any[],
@@ -411,6 +426,7 @@ export async function syncMediaScheduleSlotsToBackend(
   if (!seed) return null;
 
   const feedId = resolveCanonicalScheduleFeedId(seed, feedList() as any[]) || seed;
+  const normalizedSlots = normalizeScheduleSlotsForBackend(slots);
 
   return apiPost(
     "/api/church/feed",
@@ -418,7 +434,7 @@ export async function syncMediaScheduleSlotsToBackend(
       action: "update-schedule-slots",
       feedId,
       postId: feedId,
-      slots,
+      slots: normalizedSlots,
     },
     { headers }
   );

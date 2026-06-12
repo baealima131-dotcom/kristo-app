@@ -1626,9 +1626,11 @@ export function feedUpdateScheduleSlots(
   updater: (slots: any[]) => any[]
 ) {
   const st = getStore();
+  const seedId = baseFeedId(id) || String(id || "").trim();
+  if (!seedId) return;
 
   st.items = st.items.map((it) => {
-    if (it.id !== id) return it;
+    if (!feedItemMatchesScheduleId(it, seedId)) return it;
     const anyIt = it as any;
     if (!Array.isArray(anyIt.scheduleSlots)) return it;
 
@@ -1649,18 +1651,20 @@ export function feedUpdateScheduleSlot(
   }
 ) {
   const st = getStore();
-  const slotId = opts?.slotId || "";
+  const slotId = String(opts?.slotId || "").trim();
   const patch = opts?.patch || {};
+  const seedId = baseFeedId(id) || String(id || "").trim();
+  if (!seedId || !slotId) return;
 
   st.items = st.items.map((it) => {
-    if (it.id !== id) return it;
+    if (!feedItemMatchesScheduleId(it, seedId)) return it;
     const anyIt = it as any;
-    if (!Array.isArray(anyIt.scheduleSlots) || !slotId) return it;
+    if (!Array.isArray(anyIt.scheduleSlots)) return it;
 
     return {
       ...it,
       scheduleSlots: anyIt.scheduleSlots.map((slot: any) =>
-        slot.id === slotId ? { ...slot, ...patch } : slot
+        slotIdsMatch(slot, slotId) ? { ...slot, ...patch } : slot
       ),
     } as any;
   });
