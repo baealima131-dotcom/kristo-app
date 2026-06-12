@@ -14,6 +14,7 @@ export type MediaPosterCacheEntry = {
   posterUri: string;
   source: MediaPosterSource;
   savedAt: number;
+  captureTimeMs?: number;
 };
 
 type MediaPosterCacheIndex = {
@@ -24,6 +25,7 @@ type MediaPosterCacheIndex = {
 const memoryEntries = new Map<string, MediaPosterCacheEntry>();
 const videoUrlPosterEntries = new Map<string, string>();
 const prefetchedUris = new Set<string>();
+const posterListeners = new Map<string, Set<(posterUri: string) => void>>();
 let hydratePromise: Promise<void> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let persistDirty = false;
@@ -58,6 +60,45 @@ function rememberMemoryEntry(entry: MediaPosterCacheEntry) {
   const key = mediaPosterCacheKey(entry.postId, entry.videoUrl);
   if (!key || !entry.posterUri) return;
   memoryEntries.set(key, entry);
+}
+
+function notifyPosterListeners(postId: string, videoUrl: string, posterUri: string) {
+  const key = mediaPosterCacheKey(postId, videoUrl);
+  if (!key || !posterUri) return;
+  const listeners = posterListeners.get(key);
+  if (!listeners?.size) return;
+  for (const listener of listeners) {
+    try {
+      listener(posterUri);
+    } catch {}
+  }
+}
+
+/** Subscribe to poster cache writes for a post — fires immediately when cached. */
+export function subscribeMediaPosterCache(
+  postId: string,
+  videoUrl: string,
+  listener: (posterUri: string) => void
+): () => void {
+  const key = mediaPosterCacheKey(postId, videoUrl);
+  if (!key) return () => {};
+
+  let listeners = posterListeners.get(key);
+  if (!listeners) {
+    listeners = new Set();
+    posterListeners.set(key, listeners);
+  }
+  listeners.add(listener);
+
+  const existing = peekCachedMediaPoster(postId, videoUrl);
+  if (existing) listener(existing);
+
+  return () => {
+    listeners?.delete(listener);
+    if (listeners && listeners.size === 0) {
+      posterListeners.delete(key);
+    }
+  };
 }
 
 function schedulePersistIndex() {
@@ -180,6 +221,18 @@ export function peekCachedMediaPoster(postId: string, videoUrl: string): string 
   return String(entry?.posterUri || "").trim() || null;
 }
 
+export function peekCachedMediaPosterCaptureTimeMs(
+  postId: string,
+  videoUrl: string
+): number | undefined {
+  const key = mediaPosterCacheKey(postId, videoUrl);
+  if (!key) return undefined;
+  const entry = memoryEntries.get(key);
+  if (!entryMatchesVideo(entry, videoUrl)) return undefined;
+  const captureTimeMs = Number(entry?.captureTimeMs || 0);
+  return Number.isFinite(captureTimeMs) && captureTimeMs > 0 ? captureTimeMs : undefined;
+}
+
 export async function getCachedMediaPoster(postId: string, videoUrl: string): Promise<string | null> {
   const sync = resolveCachedMediaPoster(postId, videoUrl);
   if (sync) return sync;
@@ -225,6 +278,7 @@ export async function rememberMediaPoster(params: {
   posterUri: string;
   source: MediaPosterSource;
   persistFile?: boolean;
+  captureTimeMs?: number;
 }): Promise<string> {
   const postId = String(params.postId || "").trim();
   const videoUrl = normalizeVideoUrl(params.videoUrl);
@@ -238,6 +292,7 @@ export async function rememberMediaPoster(params: {
   rememberVideoUrlPoster(videoUrl, posterUri);
 
   if (postId) {
+    const captureTimeMs = Number(params.captureTimeMs || 0);
     const entry: MediaPosterCacheEntry = {
       postId,
       videoUrl,
@@ -245,10 +300,12 @@ export async function rememberMediaPoster(params: {
       posterUri,
       source: params.source,
       savedAt: Date.now(),
+      ...(Number.isFinite(captureTimeMs) && captureTimeMs > 0 ? { captureTimeMs } : {}),
     };
 
     rememberMemoryEntry(entry);
     schedulePersistIndex();
+    notifyPosterListeners(postId, videoUrl, posterUri);
   }
 
   prefetchMediaPosterImages([posterUri]);

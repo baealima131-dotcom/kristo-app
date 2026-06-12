@@ -1,34 +1,45 @@
 import React, { memo, useEffect } from "react";
-import { ActivityIndicator, Image, ImageResizeMode, ImageStyle, StyleSheet, Text, View } from "react-native";
+import { Image, ImageResizeMode, ImageStyle, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
-import { generateVideoPosterFrame } from "@/src/lib/mediaVideoPoster";
 import {
   logMediaPosterCacheHit,
-  rememberMediaPoster,
+  peekCachedMediaPosterCaptureTimeMs,
   resolveCachedMediaPoster,
+  subscribeMediaPosterCache,
 } from "@/src/lib/mediaPosterCache";
 import {
-  getPreviewLoadTimeoutMs,
+  isHomeFeedPosterPrewarmFailed,
+  queueHomeFeedPosterPrewarm,
+} from "@/src/lib/homeFeedPosterPrewarm";
+import {
+  getHomeFeedPosterLoadTimeoutMs,
   isLocalMediaUri,
   probePosterUrlReachability,
   resolveClientVideoThumbnailUri,
+  resolveVideoThumbnailUri,
 } from "@/src/lib/videoGridThumbnail";
 import type { ActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
 import { logActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
 import {
+  collectFeedVideoPosterCandidates,
+  classifyHomeFeedPosterUriSource,
   describePosterResolution,
+  type HomeFeedPosterSourceKind,
   type PosterMetadataSnapshot,
+  resolveBestFeedPosterUri,
   snapshotPosterMetadata,
 } from "./homeFeedUtils";
+import { computeHomeFeedPosterCaptureTimeMs } from "@/src/lib/mediaVideoPoster";
 
 const GOLD = "#F4D06F";
 
 type Props = {
   postId?: string;
   title?: string;
+  churchName?: string;
   videoUrl?: string;
   mediaStatus?: string;
   variant?: "full" | "minimal";
@@ -39,6 +50,7 @@ type Props = {
 export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
   postId = "",
   title = "",
+  churchName = "",
   videoUrl = "",
   mediaStatus = "",
   variant = "full",
@@ -47,6 +59,7 @@ export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
   const status = String(mediaStatus || "").trim().toLowerCase();
   const isProcessing = status === "processing" || status === "uploading";
   const displayTitle = String(title || "").trim();
+  const displayChurch = String(churchName || "").trim();
 
   useEffect(() => {
     if (variant !== "full" || suppressMissingPosterLog) return;
@@ -62,7 +75,6 @@ export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
     return (
       <View style={styles.minimalRoot} pointerEvents="none">
         <View style={styles.minimalPill}>
-          <ActivityIndicator size="small" color={GOLD} />
           <Text style={styles.minimalText}>
             {isProcessing ? "Processing video…" : "Loading video…"}
           </Text>
@@ -82,6 +94,11 @@ export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
         <View style={styles.playBadge}>
           <Ionicons name="play" size={28} color="#1B2A44" />
         </View>
+        {displayChurch ? (
+          <Text style={styles.churchName} numberOfLines={1}>
+            {displayChurch}
+          </Text>
+        ) : null}
         {displayTitle ? (
           <Text style={styles.title} numberOfLines={3}>
             {displayTitle}
@@ -98,11 +115,13 @@ export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
 });
 
 type FeedVideoPosterImageProps = {
-  uri: string;
+  uri?: string;
+  item?: any;
   style?: ImageStyle;
   resizeMode?: ImageResizeMode;
   postId?: string;
   title?: string;
+  churchName?: string;
   videoUrl?: string;
   mediaStatus?: string;
   previewTrace?: ActivityGridPreviewTrace;
@@ -111,6 +130,8 @@ type FeedVideoPosterImageProps = {
   previewLoadTimeoutMs?: number;
   posterMetadata?: PosterMetadataSnapshot;
   videoDurationMs?: number;
+  /** YouTube Home Feed: branded poster immediately, no spinner, bg frame gen. */
+  youtubeMode?: boolean;
 };
 
 type PosterLoadState = "idle" | "probing" | "loading" | "loaded" | "failed" | "generating";
@@ -177,8 +198,190 @@ function logPosterPipelineDiag(params: {
   });
 }
 
-export function FeedVideoPosterImage({
-  uri,
+function logHomeFeedPosterSource(
+  postId: string,
+  videoUrl: string,
+  source: HomeFeedPosterSourceKind,
+  durationMs?: number
+) {
+  console.log("KRISTO_HOME_FEED_POSTER_SOURCE", {
+    postId: postId || null,
+    source,
+    captureTimeMs:
+      peekCachedMediaPosterCaptureTimeMs(postId, videoUrl) ??
+      computeHomeFeedPosterCaptureTimeMs(durationMs),
+  });
+}
+
+export function FeedVideoPosterImage(props: FeedVideoPosterImageProps) {
+  if (props.youtubeMode) {
+    return <YouTubeFeedVideoPoster {...props} />;
+  }
+  return <LegacyFeedVideoPosterImage {...props} />;
+}
+
+function resolveYouTubeFeedPosterUri(item: any, postId: string, videoUrl: string) {
+  const cached = resolveCachedMediaPoster(postId, videoUrl);
+  if (cached) return cached;
+  if (item) return resolveBestFeedPosterUri(item, postId);
+  return "";
+}
+
+function YouTubeFeedVideoPoster({
+  item,
+  style,
+  resizeMode = "cover",
+  postId = "",
+  title = "",
+  churchName = "",
+  videoUrl = "",
+  mediaStatus = "",
+  videoDurationMs,
+}: FeedVideoPosterImageProps) {
+  const resolvedVideoUrl = String(videoUrl || "").trim();
+  const status = String(mediaStatus || "").trim().toLowerCase();
+  const isProcessing = status === "processing" || status === "uploading";
+  const posterCandidates = React.useMemo(() => {
+    if (item) return collectFeedVideoPosterCandidates(item, postId);
+    return [];
+  }, [item, postId]);
+
+  const [imageUri, setImageUri] = React.useState(() =>
+    resolvedVideoUrl ? resolveYouTubeFeedPosterUri(item, postId, resolvedVideoUrl) : ""
+  );
+  const [frameGenFailed, setFrameGenFailed] = React.useState(false);
+  const posterSourceLoggedRef = React.useRef("");
+  const imageUriRef = React.useRef(imageUri);
+  imageUriRef.current = imageUri;
+
+  const logPosterSource = React.useCallback(
+    (source: HomeFeedPosterSourceKind) => {
+      const key = `${postId}|${source}`;
+      if (posterSourceLoggedRef.current === key) return;
+      posterSourceLoggedRef.current = key;
+      logHomeFeedPosterSource(postId, resolvedVideoUrl, source, videoDurationMs);
+    },
+    [postId, resolvedVideoUrl, videoDurationMs]
+  );
+
+  React.useEffect(() => {
+    posterSourceLoggedRef.current = "";
+    setFrameGenFailed(false);
+    const nextUri = resolvedVideoUrl
+      ? resolveYouTubeFeedPosterUri(item, postId, resolvedVideoUrl)
+      : "";
+    setImageUri(nextUri);
+    if (nextUri) {
+      const source =
+        resolveCachedMediaPoster(postId, resolvedVideoUrl) === nextUri
+          ? "cache"
+          : item
+            ? classifyHomeFeedPosterUriSource(item, nextUri, postId, resolvedVideoUrl)
+            : "metadata";
+      logPosterSource(source);
+    }
+  }, [postId, resolvedVideoUrl, item, logPosterSource]);
+
+  React.useEffect(() => {
+    if (!postId || !resolvedVideoUrl) return;
+    return subscribeMediaPosterCache(postId, resolvedVideoUrl, (uri) => {
+      if (!uri) return;
+      setImageUri(uri);
+      setFrameGenFailed(false);
+      logPosterSource("cache");
+    });
+  }, [postId, resolvedVideoUrl, logPosterSource]);
+
+  React.useEffect(() => {
+    if (!item || isProcessing || !resolvedVideoUrl) return;
+    if (resolveCachedMediaPoster(postId, resolvedVideoUrl)) return;
+
+    let cancelled = false;
+    const failTimer = setTimeout(() => {
+      if (cancelled || imageUriRef.current) return;
+      if (isHomeFeedPosterPrewarmFailed(postId, resolvedVideoUrl)) {
+        setFrameGenFailed(true);
+      }
+    }, 1500);
+
+    void queueHomeFeedPosterPrewarm(item).then((ok) => {
+      if (cancelled) return;
+      if (ok) {
+        setFrameGenFailed(false);
+        return;
+      }
+      if (!imageUriRef.current) {
+        setFrameGenFailed(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(failTimer);
+    };
+  }, [item, postId, resolvedVideoUrl, isProcessing]);
+
+  const handleImageError = React.useCallback(() => {
+    const current = imageUriRef.current;
+    const nextCandidate = posterCandidates.find(
+      (candidate) => candidate && candidate.split("?")[0] !== current.split("?")[0]
+    );
+    if (nextCandidate) {
+      setImageUri(nextCandidate);
+      if (item) {
+        logPosterSource(
+          classifyHomeFeedPosterUriSource(item, nextCandidate, postId, resolvedVideoUrl)
+        );
+      }
+      return;
+    }
+    if (item && !isProcessing) {
+      void queueHomeFeedPosterPrewarm(item).then((ok) => {
+        if (!ok && !imageUriRef.current) setFrameGenFailed(true);
+      });
+    }
+  }, [posterCandidates, item, postId, resolvedVideoUrl, isProcessing, logPosterSource]);
+
+  const showProcessingPoster = isProcessing;
+  const showFailurePoster =
+    !isProcessing &&
+    !imageUri &&
+    (frameGenFailed || isHomeFeedPosterPrewarmFailed(postId, resolvedVideoUrl));
+  const showBrandedFallback = showProcessingPoster || showFailurePoster;
+
+  React.useEffect(() => {
+    if (!showBrandedFallback || imageUri) return;
+    logPosterSource("branded-fallback");
+  }, [showBrandedFallback, imageUri, logPosterSource]);
+
+  return (
+    <View style={style}>
+      {showBrandedFallback ? (
+        <VideoPostFallbackPoster
+          variant="full"
+          postId={postId}
+          title={title}
+          churchName={churchName}
+          videoUrl={videoUrl}
+          mediaStatus={mediaStatus}
+          suppressMissingPosterLog
+        />
+      ) : null}
+      {imageUri && !showProcessingPoster ? (
+        <Image
+          source={{ uri: imageUri }}
+          style={StyleSheet.absoluteFillObject}
+          resizeMode={resizeMode}
+          onError={handleImageError}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function LegacyFeedVideoPosterImage({
+  uri = "",
+  item,
   style,
   resizeMode = "cover",
   postId = "",
@@ -188,16 +391,24 @@ export function FeedVideoPosterImage({
   previewTrace,
   enableClientThumbnailFallback = false,
   enableVideoFrameFallback = false,
-  previewLoadTimeoutMs = getPreviewLoadTimeoutMs(),
+  previewLoadTimeoutMs = getHomeFeedPosterLoadTimeoutMs(),
   posterMetadata,
   videoDurationMs,
 }: FeedVideoPosterImageProps) {
-  const posterUri = String(uri || "").trim();
   const resolvedVideoUrl = String(videoUrl || "").trim();
-  const hasPosterUri = Boolean(posterUri) && !isBrandedPosterUri(posterUri);
-  const metadata = posterMetadata || snapshotPosterMetadata(null);
+  const status = String(mediaStatus || "").trim().toLowerCase();
+  const isProcessing = status === "processing" || status === "uploading";
+  const posterCandidates = React.useMemo(() => {
+    if (item) return collectFeedVideoPosterCandidates(item, postId);
+    const single = String(uri || "").trim();
+    if (single && !isBrandedPosterUri(single)) return [single];
+    return [];
+  }, [item, postId, uri]);
+  const posterUri = posterCandidates[0] || "";
+  const hasPosterUri = posterCandidates.length > 0;
+  const metadata = posterMetadata || snapshotPosterMetadata(item || null);
   const resolution = describePosterResolution(
-    {
+    item || {
       posterUri: metadata.posterUri,
       videoPosterUri: metadata.videoPosterUri,
       thumbnailUri: metadata.thumbnailUri,
@@ -248,8 +459,12 @@ export function FeedVideoPosterImage({
   > | null>(null);
 
   const canTryClientThumb =
-    enableClientThumbnailFallback && isLocalMediaUri(resolvedVideoUrl);
-  const canTryVideoFrameFallback = false;
+    enableClientThumbnailFallback &&
+    Boolean(resolvedVideoUrl) &&
+    isLocalMediaUri(resolvedVideoUrl) &&
+    !isProcessing;
+  const canTryVideoFrameFallback =
+    enableVideoFrameFallback && Boolean(resolvedVideoUrl) && !isProcessing;
 
   useEffect(() => {
     cacheHitLoggedRef.current = "";
@@ -263,7 +478,7 @@ export function FeedVideoPosterImage({
     setClientThumbUri("");
     setClientThumbState("idle");
     setLastProbe(null);
-  }, [posterUri, resolvedVideoUrl, hasPosterUri, postId, applyCachedPoster]);
+  }, [posterCandidates, resolvedVideoUrl, hasPosterUri, postId, applyCachedPoster]);
 
   useEffect(() => {
     let cancelled = false;
@@ -280,54 +495,64 @@ export function FeedVideoPosterImage({
         logPosterPipelineDiag({
           postId,
           videoUrl: resolvedVideoUrl,
-          posterUri,
+          posterUri: "",
           posterMetadata: metadata,
           resolution,
           fallbackPath: canTryVideoFrameFallback ? "video-frame-generate" : "gradient",
-          extra: { reason: "missing-poster-uri" },
+          extra: { reason: "missing-poster-uri", candidateCount: posterCandidates.length },
         });
         if (canTryVideoFrameFallback) {
           setPosterState("generating");
+        } else {
+          setPosterState("failed");
         }
         return;
       }
 
       setPosterState("probing");
-      const probe = await probePosterUrlReachability(posterUri);
-      if (cancelled) return;
-      setLastProbe((prev) => {
-        if (
-          prev?.url === probe?.url &&
-          prev?.httpStatus === probe?.httpStatus &&
-          prev?.reachable === probe?.reachable &&
-          prev?.reason === probe?.reason
-        ) {
-          return prev;
+
+      for (const candidate of posterCandidates) {
+        const probe = await probePosterUrlReachability(candidate);
+        if (cancelled) return;
+
+        if (probe.reachable) {
+          setLastProbe(probe);
+          logPosterPipelineDiag({
+            postId,
+            videoUrl: resolvedVideoUrl,
+            posterUri: candidate,
+            posterMetadata: metadata,
+            resolution,
+            probe,
+            fallbackPath: "static-poster",
+          });
+          setDisplayUri(candidate);
+          setPosterState("loading");
+          return;
         }
-        return probe;
-      });
+      }
+
+      const lastCandidate = posterCandidates[posterCandidates.length - 1] || posterUri;
+      const lastProbeResult = await probePosterUrlReachability(lastCandidate);
+      if (cancelled) return;
+      setLastProbe(lastProbeResult);
 
       logPosterPipelineDiag({
         postId,
         videoUrl: resolvedVideoUrl,
-        posterUri,
+        posterUri: lastCandidate,
         posterMetadata: metadata,
         resolution,
-        probe,
-        fallbackPath: probe.reachable ? "static-poster" : canTryVideoFrameFallback ? "video-frame-generate" : "gradient",
+        probe: lastProbeResult,
+        fallbackPath: canTryVideoFrameFallback ? "video-frame-generate" : "gradient",
+        extra: { candidateCount: posterCandidates.length },
       });
-
-      if (probe.reachable) {
-        setDisplayUri(posterUri);
-        setPosterState("loading");
-        return;
-      }
 
       logPreviewEvent(previewTrace, postId, resolvedVideoUrl, {
         posterLoad: "probe-failed",
-        failedPosterUri: posterUri,
-        httpStatus: probe.httpStatus,
-        probeReason: probe.reason || null,
+        failedPosterUri: lastCandidate,
+        httpStatus: lastProbeResult.httpStatus,
+        probeReason: lastProbeResult.reason || null,
       });
 
       if (canTryVideoFrameFallback) {
@@ -346,13 +571,14 @@ export function FeedVideoPosterImage({
       cancelled = true;
     };
   }, [
-    posterUri,
+    posterCandidates,
     resolvedVideoUrl,
     hasPosterUri,
     postId,
     canTryVideoFrameFallback,
     previewTrace,
     applyCachedPoster,
+    posterUri,
   ]);
 
   useEffect(() => {
@@ -406,25 +632,17 @@ export function FeedVideoPosterImage({
       fallbackPath: "video-frame-generate",
     });
 
-    if (false) void generateVideoPosterFrame({
+    void resolveVideoThumbnailUri(resolvedVideoUrl, {
       postId,
-      videoUrl: resolvedVideoUrl,
       durationMs: videoDurationMs,
-    }).then(async (generated) => {
+    }).then((generated) => {
       if (cancelled) return;
       if (generated) {
-        const persisted = await rememberMediaPoster({
-          postId,
-          videoUrl: resolvedVideoUrl,
-          posterUri: generated,
-          source: generated.startsWith("http") ? "remote" : "generated",
-          persistFile: generated.startsWith("file://") && Boolean(postId),
-        });
-        setDisplayUri(persisted);
+        setDisplayUri(generated);
         setPosterState("loaded");
         logPreviewEvent(previewTrace, postId, resolvedVideoUrl, {
           posterLoad: "video-frame-success",
-          loadedUri: persisted,
+          loadedUri: generated,
           failedPosterUri: posterUri || null,
         });
         logPosterPipelineDiag({
@@ -435,7 +653,7 @@ export function FeedVideoPosterImage({
           resolution,
           probe: lastProbe || undefined,
           fallbackPath: "video-frame-generate",
-          extra: { loadedUri: persisted },
+          extra: { loadedUri: generated },
         });
         return;
       }
@@ -544,18 +762,15 @@ export function FeedVideoPosterImage({
         title={title}
         videoUrl={videoUrl}
         mediaStatus={mediaStatus}
-        suppressMissingPosterLog={isBrandedPosterUri(posterUri)}
+        suppressMissingPosterLog={posterCandidates.some((candidate) =>
+          isBrandedPosterUri(candidate)
+        )}
       />
     );
   }
 
   return (
     <View style={style}>
-      <LinearGradient
-        colors={["#4A3D24", "#243B55", "#1B2A44"]}
-        locations={[0, 0.5, 1]}
-        style={StyleSheet.absoluteFillObject}
-      />
       <Image
         source={{ uri: activeDisplayUri }}
         style={StyleSheet.absoluteFillObject}
@@ -629,6 +844,14 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     fontWeight: "700",
     textAlign: "center",
+  },
+  churchName: {
+    color: GOLD,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "800",
+    textAlign: "center",
+    letterSpacing: 0.2,
   },
   processingOverlay: {
     ...StyleSheet.absoluteFillObject,

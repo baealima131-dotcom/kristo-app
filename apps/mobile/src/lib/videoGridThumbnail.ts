@@ -161,6 +161,39 @@ export async function resolveClientVideoThumbnailUri(videoUrl: string): Promise<
   return promise;
 }
 
+/** Local or remote video → cached/generated thumbnail frame. */
+export async function resolveVideoThumbnailUri(
+  videoUrl: string,
+  opts?: { postId?: string; durationMs?: number; homeFeed?: boolean }
+): Promise<string> {
+  const key = normalizeVideoKey(videoUrl);
+  if (!key) return "";
+
+  const homeFeed = opts?.homeFeed !== false;
+  const pendingKey = `thumb:${String(opts?.postId || "").trim()}:${key}:${homeFeed ? "hf" : "legacy"}`;
+  const pending = inflight.get(pendingKey);
+  if (pending) return pending;
+
+  const promise = (async () => {
+    try {
+      const { generateVideoPosterFrame } = await import("@/src/lib/mediaVideoPoster");
+      return generateVideoPosterFrame({
+        postId: opts?.postId,
+        videoUrl: key,
+        durationMs: opts?.durationMs,
+        mode: homeFeed ? "home-feed" : "default",
+      });
+    } catch {
+      return "";
+    } finally {
+      inflight.delete(pendingKey);
+    }
+  })();
+
+  inflight.set(pendingKey, promise);
+  return promise;
+}
+
 export {
   logMediaPosterCacheHit,
   resolveCachedMediaPoster,

@@ -116,6 +116,10 @@ import {
   peekHomeFeedScheduleDirty,
   subscribeHomeFeedScheduleDirty,
 } from "@/src/lib/homeFeedScheduleDirty";
+import {
+  prewarmHomeFeedPostersOnNearEnd,
+  startInitialHomeFeedPosterPrewarm,
+} from "@/src/lib/homeFeedPosterPrewarm";
 import { fetchChurchSubscriptionActiveThrottled } from "@/src/lib/churchResourceRefresh";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
@@ -787,6 +791,20 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     visibleRowCountRef.current = visibleData.length;
   }, [visibleData]);
+
+  // YouTube-style poster prewarm: first 20 videos as soon as feed rows exist.
+  useEffect(() => {
+    const rows = stableDisplayRows.length ? stableDisplayRows : displayFeedRows;
+    if (!rows.length) return;
+    startInitialHomeFeedPosterPrewarm(rows);
+  }, [stableDisplayRows, displayFeedRows]);
+
+  // Prewarm the next 10 videos when the user nears the end of loaded content.
+  useEffect(() => {
+    if (!feedFocused || !stableDisplayRows.length) return;
+    const visibleCount = Math.min(visibleWindowSize, stableDisplayRows.length);
+    prewarmHomeFeedPostersOnNearEnd(stableDisplayRows, activeIndex, visibleCount);
+  }, [feedFocused, stableDisplayRows, activeIndex, visibleWindowSize]);
 
   // Full-feed disk cache: inline autoplay only.
   useEffect(() => {

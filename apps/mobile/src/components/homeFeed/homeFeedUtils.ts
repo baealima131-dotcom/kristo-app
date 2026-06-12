@@ -15,6 +15,7 @@ import {
   resolveScheduleSlotVisualState,
 } from "@/src/lib/scheduleSlotUtils";
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
+import { resolveCachedMediaPoster } from "@/src/lib/mediaPosterCache";
 import { isKristoVerboseFeedDebug, isKristoVerboseFeedIdentityDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
 import {
   logScheduleTopicTrace,
@@ -1543,24 +1544,42 @@ export function formatFeedViewLabel(item: any): string {
 
 export function formatFeedMetaLine(item: any, whenLabel: string): string {
   const views = formatFeedViewLabel(item);
-  const church = resolveChurchName(item);
-  const media = resolveMediaName(item);
-  const name = media || church;
-  return [name, views, whenLabel].filter(Boolean).join(" • ");
+  return [whenLabel, views].filter(Boolean).join(" • ");
+}
+
+export function resolveFeedChurchVerified(item: any): boolean {
+  if (item?.churchVerified === true || item?.church?.verified === true) return true;
+  if (item?.verified === true) return true;
+
+  const ownership = String(item?.ownershipType || "").trim().toLowerCase();
+  if (ownership === "church" || ownership === "media") return true;
+
+  const source = String(item?.source || "").toLowerCase();
+  return source.includes("media") || source === "media-upload";
 }
 
 export function formatFeedTimestamp(createdAt?: string) {
   const ms = Date.parse(String(createdAt || ""));
   if (!Number.isFinite(ms)) return "";
+
+  const then = new Date(ms);
+  const now = new Date();
+  const sameCalendarDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+
+  if (sameCalendarDay(then, now)) return "Today";
+
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (sameCalendarDay(then, yesterday)) return "Yesterday";
+
   const diff = Date.now() - ms;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const days = Math.floor(diff / 86_400_000);
+  if (days < 7) return `${days}d ago`;
+
+  return then.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 export function resolveChurchName(item: any) {
@@ -1954,9 +1973,29 @@ export function inferPosterUriFromVideoUrl(videoUrl: string): string {
   return "";
 }
 
-export function resolvePosterUri(item: any) {
+/** Ordered poster candidates for Home Feed — cache + metadata + inferred, never branded. */
+export function collectFeedVideoPosterCandidates(item: any, postId = ""): string[] {
   const video = resolveVideoUri(item);
-  const posterFields = [
+  if (!video) return [];
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const pid = String(postId || item?.id || "").trim();
+
+  const push = (raw: unknown) => {
+    const resolved = homeFeedMediaUrl(raw);
+    if (!resolved || isBrandedPosterUri(resolved)) return;
+    if (!isValidVideoPosterUri(resolved, video)) return;
+    const key = resolved.split("?")[0];
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(resolved);
+  };
+
+  const cached = resolveCachedMediaPoster(pid, video);
+  if (cached) push(cached);
+
+  for (const raw of [
     item?.posterUri,
     item?.videoPosterUri,
     item?.thumbnailUri,
@@ -1970,20 +2009,50 @@ export function resolvePosterUri(item: any) {
     item?.previewUrl,
     item?.thumbnail,
     item?.poster,
-  ];
-
-  for (const raw of posterFields) {
-    const resolved = homeFeedMediaUrl(raw);
-    if (resolved && isValidVideoPosterUri(resolved, video)) return resolved;
+  ]) {
+    push(raw);
   }
 
-  const seeded = resolvePosterSeedForVideo(video);
-  if (seeded && isValidVideoPosterUri(seeded, video)) return seeded;
+  push(resolvePosterSeedForVideo(video));
+  push(inferPosterUriFromVideoUrl(video));
 
-  const inferred = inferPosterUriFromVideoUrl(video);
-  if (inferred && isValidVideoPosterUri(inferred, video)) return inferred;
+  return out;
+}
 
-  return inferred || "";
+export function resolveBestFeedPosterUri(item: any, postId = ""): string {
+  return collectFeedVideoPosterCandidates(item, postId)[0] || "";
+}
+
+export type HomeFeedPosterSourceKind =
+  | "cache"
+  | "metadata"
+  | "inferred"
+  | "generated-frame"
+  | "branded-fallback";
+
+export function classifyHomeFeedPosterUriSource(
+  item: any,
+  posterUri: string,
+  postId: string,
+  videoUrl: string
+): "cache" | "metadata" | "inferred" {
+  const normalized = String(posterUri || "").trim().split("?")[0];
+  if (!normalized) return "inferred";
+
+  const cached = resolveCachedMediaPoster(postId, videoUrl);
+  if (cached && cached.split("?")[0] === normalized) return "cache";
+
+  const resolution = describePosterResolution(item, posterUri);
+  if (String(resolution.source).startsWith("metadata:")) return "metadata";
+  if (resolution.source === "inferred-from-video-url" || resolution.source === "seed") {
+    return "inferred";
+  }
+
+  return "metadata";
+}
+
+export function resolvePosterUri(item: any) {
+  return resolveBestFeedPosterUri(item, String(item?.id || "").trim());
 }
 
 export type PosterMetadataSnapshot = {
@@ -2114,8 +2183,11 @@ export function hasBrandedVideoPoster(item: any) {
 
 export function hasHomeFeedVideoPoster(item: any, videoUri?: string) {
   const video = String(videoUri || resolveVideoUri(item) || "").trim();
-  const poster = resolvePosterUri(item);
-  return isValidVideoPosterUri(poster, video) || hasBrandedVideoPoster(item);
+  if (!video) return false;
+  const poster = resolveBestFeedPosterUri(item, String(item?.id || "").trim());
+  if (isValidVideoPosterUri(poster, video)) return true;
+  if (resolveCachedMediaPoster(String(item?.id || "").trim(), video)) return true;
+  return hasBrandedVideoPoster(item);
 }
 
 export function isVideoPost(item: any) {

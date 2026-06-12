@@ -7,8 +7,8 @@ export const HOME_FEED_BORDER = "rgba(255,255,255,0.10)";
 /** Tab bar height in tab layout (reserve above home indicator). */
 export const HOME_FEED_TAB_BAR_HEIGHT = 70;
 
-/** Fixed Home top bar body (title row + chip row), excluding safe-area inset. */
-export const HOME_FEED_TOP_BAR_BODY_HEIGHT = 88;
+/** Fixed Home top bar body (single title + action row), excluding safe-area inset. */
+export const HOME_FEED_TOP_BAR_BODY_HEIGHT = 44;
 
 export function homeFeedTopBarTotalHeight(insetTop = 0) {
   return HOME_FEED_TOP_BAR_BODY_HEIGHT + Math.max(insetTop, 0);

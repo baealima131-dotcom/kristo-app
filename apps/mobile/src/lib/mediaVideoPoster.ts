@@ -13,9 +13,23 @@ import {
   resolveCachedMediaPoster,
 } from "@/src/lib/mediaPosterCache";
 import { withPreviewTimeout } from "@/src/lib/videoGridThumbnail";
+import {
+  computeHomeFeedPosterCandidateTimesMs,
+  computeHomeFeedPosterCaptureTimeMs,
+  selectBestPosterFrameCandidate,
+  type PosterFrameCandidate,
+} from "@/src/lib/homeFeedPosterFrameQuality";
 
 const GENERATE_TIMEOUT_MS = 45000;
+const HOME_FEED_GENERATE_TIMEOUT_MS = 70000;
 const MIN_CAPTURE_MS = 500;
+/** Home Feed default frame grab — 7.5 seconds into the video. */
+export const HOME_FEED_POSTER_CAPTURE_MS = 7500;
+
+export {
+  computeHomeFeedPosterCandidateTimesMs,
+  computeHomeFeedPosterCaptureTimeMs,
+} from "@/src/lib/homeFeedPosterFrameQuality";
 
 const inflight = new Map<string, Promise<string>>();
 
@@ -38,6 +52,76 @@ export function computePosterCaptureTimeMs(durationMs?: number): number {
   return Math.min(Math.max(targetMs, MIN_CAPTURE_MS), maxMs);
 }
 
+async function capturePosterFrameCandidates(
+  videoUrl: string,
+  captureTimesMs: number[]
+): Promise<PosterFrameCandidate[]> {
+  const VideoThumbnails = await import("expo-video-thumbnails");
+  const captured: PosterFrameCandidate[] = [];
+
+  await Promise.all(
+    captureTimesMs.map(async (captureTimeMs) => {
+      try {
+        const result = await VideoThumbnails.getThumbnailAsync(videoUrl, {
+          time: captureTimeMs,
+          quality: 0.82,
+        });
+        const uri = String(result?.uri || "").trim();
+        if (!uri) return;
+        captured.push({
+          captureTimeMs,
+          uri,
+          width: Number(result?.width || 0),
+          height: Number(result?.height || 0),
+        });
+      } catch (attemptError) {
+        console.log("KRISTO_MEDIA_VIDEO_POSTER_CAPTURE_RETRY", {
+          videoUrl: normalizeVideoKey(videoUrl),
+          captureTimeMs,
+          error:
+            attemptError instanceof Error ? attemptError.message : String(attemptError),
+        });
+      }
+    })
+  );
+
+  return captured.sort((a, b) => a.captureTimeMs - b.captureTimeMs);
+}
+
+async function generateHomeFeedPosterFrame(params: {
+  postId: string;
+  videoUrl: string;
+  durationMs?: number;
+}): Promise<string> {
+  const candidateTimes = computeHomeFeedPosterCandidateTimesMs(params.durationMs);
+  const candidates = await capturePosterFrameCandidates(params.videoUrl, candidateTimes);
+  if (!candidates.length) return "";
+
+  const best = await selectBestPosterFrameCandidate(candidates);
+  if (!best) return "";
+
+  const persisted = await rememberMediaPoster({
+    postId: params.postId,
+    videoUrl: params.videoUrl,
+    posterUri: best.candidate.uri,
+    source: "generated",
+    persistFile: Boolean(params.postId),
+    captureTimeMs: best.breakdown.captureTimeMs,
+  });
+
+  console.log("KRISTO_MEDIA_VIDEO_POSTER_GENERATED", {
+    postId: params.postId || null,
+    videoUrl: normalizeVideoKey(params.videoUrl),
+    captureTimeMs: best.breakdown.captureTimeMs,
+    durationMs: params.durationMs ?? null,
+    qualityScore: Number(best.breakdown.total.toFixed(3)),
+    posterUri: persisted,
+    candidateCount: candidates.length,
+  });
+
+  return persisted;
+}
+
 function normalizeVideoKey(videoUrl: string) {
   return String(videoUrl || "").trim().split("?")[0];
 }
@@ -50,6 +134,7 @@ export async function generateVideoPosterFrame(params: {
   postId?: string;
   videoUrl: string;
   durationMs?: number;
+  mode?: "home-feed" | "default";
 }): Promise<string> {
   const videoUrl = String(params.videoUrl || "").trim();
   const postId = String(params.postId || "").trim();
@@ -64,16 +149,25 @@ export async function generateVideoPosterFrame(params: {
   const pending = inflight.get(pendingKey);
   if (pending) return pending;
 
-  const captureTimes = [
-    computePosterCaptureTimeMs(params.durationMs),
-    1000,
-    500,
-  ];
-  const uniqueCaptureTimes = [...new Set(captureTimes.map((ms) => Math.max(MIN_CAPTURE_MS, ms)))];
+  const isHomeFeed = params.mode === "home-feed";
+  const timeoutMs = isHomeFeed ? HOME_FEED_GENERATE_TIMEOUT_MS : GENERATE_TIMEOUT_MS;
 
   const promise = withPreviewTimeout(
     (async () => {
       try {
+        if (isHomeFeed) {
+          return generateHomeFeedPosterFrame({
+            postId,
+            videoUrl,
+            durationMs: params.durationMs,
+          });
+        }
+
+        const primaryCapture = computePosterCaptureTimeMs(params.durationMs);
+        const captureTimes = [primaryCapture, 1000, 500];
+        const uniqueCaptureTimes = [
+          ...new Set(captureTimes.map((ms) => Math.max(MIN_CAPTURE_MS, ms))),
+        ];
         const VideoThumbnails = await import("expo-video-thumbnails");
 
         for (const captureTimeMs of uniqueCaptureTimes) {
@@ -91,6 +185,7 @@ export async function generateVideoPosterFrame(params: {
               posterUri: uri,
               source: "generated",
               persistFile: Boolean(postId),
+              captureTimeMs,
             });
             console.log("KRISTO_MEDIA_VIDEO_POSTER_GENERATED", {
               postId: postId || null,
@@ -123,7 +218,7 @@ export async function generateVideoPosterFrame(params: {
         inflight.delete(pendingKey);
       }
     })(),
-    GENERATE_TIMEOUT_MS,
+    timeoutMs,
     ""
   );
 

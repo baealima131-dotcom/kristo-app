@@ -7,7 +7,9 @@ import {
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
 import { prepareFirstHomeFeedVideo } from "@/src/lib/homeFeedVideoStartup";
 import { deferStartupWorkAfterHomeFirstFrame } from "./firstPaint";
-import { buildHomeFeedDisplayRows } from "@/src/components/homeFeed/homeFeedUtils";
+import {
+  buildHomeFeedDisplayRows,
+} from "@/src/components/homeFeed/homeFeedUtils";
 import { feedList } from "@/src/lib/homeFeedStore";
 import type { KristoSession } from "@/src/lib/kristoSession";
 import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
@@ -16,6 +18,7 @@ import {
   warmHomeFeedStartupMedia,
 } from "@/src/lib/homeFeedVideoBufferAhead";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
+import { startInitialHomeFeedPosterPrewarm } from "@/src/lib/homeFeedPosterPrewarm";
 
 const COOLDOWN_MS = 60_000;
 const STARTUP_POSTER_MAX = 10;
@@ -136,10 +139,13 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
       failures.push("persist-snapshot");
     }
 
-    warmRows = buildHomeFeedDisplayRows(
+    const displayRows = buildHomeFeedDisplayRows(
       getCachedHomeFeedBackendRows(),
       feedList()
-    ).slice(0, HOME_FEED_INITIAL_LIMIT);
+    );
+    startInitialHomeFeedPosterPrewarm(displayRows);
+
+    warmRows = displayRows.slice(0, HOME_FEED_INITIAL_LIMIT);
 
     // Poster/byte warm for remaining rows — only after first video frame paints.
     deferStartupWorkAfterHomeFirstFrame(

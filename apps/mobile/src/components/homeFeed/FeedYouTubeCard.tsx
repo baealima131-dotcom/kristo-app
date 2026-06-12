@@ -1,26 +1,24 @@
 import React, { memo, useMemo } from "react";
 import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import { ImagePostCarousel } from "./ImagePostCarousel";
 import { PostActionsInline } from "./PostActionsInline";
 import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
 import {
   formatFeedMetaLine,
   formatFeedTimestamp,
-  hasBrandedVideoPoster,
-  hasHomeFeedVideoPoster,
   isChurchRoomMemberFeedPost,
-  isValidVideoPosterUri,
   isVideoPost,
+  resolveChurchName,
   resolveChurchRoomFeedCaption,
-  resolveFeedIdentityHeadline,
+  resolveFeedChurchVerified,
   resolveFeedPostAccent,
   resolveFeedPostTypeTitle,
   resolveHomeFeedDisplayAvatar,
   resolvePostBody,
   resolvePostImageUris,
   resolvePostTitle,
-  resolvePosterUri,
   resolveVideoUri,
   snapshotPosterMetadata,
   type HomeFeedPostAccent,
@@ -32,8 +30,10 @@ import {
   YOUTUBE_CARD_H_PADDING,
   youtubeThumbnailHeight,
 } from "@/src/lib/homeFeedYouTubeLayout";
-import { HOME_FEED_BG, HOME_FEED_BORDER, HOME_FEED_MUTED } from "./theme";
-import { LinearGradient } from "expo-linear-gradient";
+import { HOME_FEED_BG, HOME_FEED_BORDER, HOME_FEED_GOLD, HOME_FEED_GOLD_SOFT } from "./theme";
+
+const AVATAR_SIZE = 46;
+const STATS_COLOR = "rgba(255,255,255,0.45)";
 
 type Props = {
   item: any;
@@ -80,14 +80,14 @@ export const FeedYouTubeCard = memo(function FeedYouTubeCard({
   const postBody = resolvePostBody(item);
   const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle;
   const caption = churchRoomPost ? resolveChurchRoomFeedCaption(item) : postBody;
-  const metaLine = formatFeedMetaLine(item, whenLabel);
-  const headline = resolveFeedIdentityHeadline(item);
+  const churchName = resolveChurchName(item);
+  const churchVerified = resolveFeedChurchVerified(item);
+  const statsLine = formatFeedMetaLine(item, whenLabel);
 
   const video = isVideoPost(item);
   const videoUri = useMemo(() => resolveVideoUri(item), [item]);
   const playbackUri = useMemo(() => resolveHomeFeedVideoUri(item), [item]);
   const postImageUris = useMemo(() => resolvePostImageUris(item), [item]);
-  const posterUri = resolvePosterUri(item);
   const posterMetadata = useMemo(() => snapshotPosterMetadata(item), [item]);
   const videoDurationMs = useMemo(() => resolveVideoDurationMs(item), [item]);
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
@@ -105,7 +105,6 @@ export const FeedYouTubeCard = memo(function FeedYouTubeCard({
       postId,
       title,
       videoUri: playbackUri || videoUri,
-      posterUri,
       videoDurationMs,
     });
   };
@@ -121,8 +120,8 @@ export const FeedYouTubeCard = memo(function FeedYouTubeCard({
               item={item}
               postId={postId}
               title={title}
+              churchName={churchName}
               mediaStatus={mediaStatus}
-              posterUri={posterUri}
               posterMetadata={posterMetadata}
               videoDurationMs={videoDurationMs}
               videoUri={videoUri}
@@ -167,17 +166,29 @@ export const FeedYouTubeCard = memo(function FeedYouTubeCard({
           </View>
         )}
         <View style={styles.metaTextCol}>
-          <Text style={styles.title} numberOfLines={2}>
-            {title || headline}
-          </Text>
-          {caption && caption !== title ? (
-            <Text style={styles.caption} numberOfLines={2}>
-              {caption}
+          {churchName ? (
+            <View style={styles.churchNameRow}>
+              <Text style={styles.churchName} numberOfLines={1}>
+                {churchName}
+              </Text>
+              {churchVerified ? (
+                <Ionicons
+                  name="checkmark-circle"
+                  size={15}
+                  color={HOME_FEED_GOLD}
+                  style={styles.verifiedBadge}
+                />
+              ) : null}
+            </View>
+          ) : null}
+          {title ? (
+            <Text style={styles.videoTitle} numberOfLines={2}>
+              {title}
             </Text>
           ) : null}
-          {metaLine ? (
-            <Text style={styles.metaLine} numberOfLines={1}>
-              {metaLine}
+          {statsLine ? (
+            <Text style={styles.statsLine} numberOfLines={1}>
+              {statsLine}
             </Text>
           ) : null}
         </View>
@@ -217,8 +228,8 @@ function VideoThumbnail({
   item,
   postId,
   title,
+  churchName,
   mediaStatus,
-  posterUri,
   posterMetadata,
   videoDurationMs,
   videoUri,
@@ -226,35 +237,27 @@ function VideoThumbnail({
   item: any;
   postId: string;
   title: string;
+  churchName: string;
   mediaStatus: string;
-  posterUri: string;
   posterMetadata: ReturnType<typeof snapshotPosterMetadata>;
   videoDurationMs?: number;
   videoUri: string;
 }) {
-  if (hasHomeFeedVideoPoster(item, videoUri) && isValidVideoPosterUri(posterUri, videoUri)) {
-    return (
-      <FeedVideoPosterImage
-        uri={posterUri}
-        style={StyleSheet.absoluteFillObject}
-        resizeMode="cover"
-        postId={postId}
-        title={title}
-        videoUrl={videoUri}
-        mediaStatus={mediaStatus}
-        posterMetadata={posterMetadata}
-        videoDurationMs={videoDurationMs}
-        enableVideoFrameFallback
-      />
-    );
-  }
   return (
-    <VideoPostFallbackPoster
+    <FeedVideoPosterImage
+      item={item}
+      style={StyleSheet.absoluteFillObject}
+      resizeMode="cover"
       postId={postId}
       title={title}
+      churchName={churchName}
       videoUrl={videoUri}
       mediaStatus={mediaStatus}
-      suppressMissingPosterLog={hasBrandedVideoPoster(item)}
+      posterMetadata={posterMetadata}
+      videoDurationMs={videoDurationMs}
+      enableClientThumbnailFallback
+      enableVideoFrameFallback
+      youtubeMode
     />
   );
 }
@@ -344,22 +347,22 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
   avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: AVATAR_SIZE,
+    height: AVATAR_SIZE,
+    borderRadius: AVATAR_SIZE / 2,
     backgroundColor: "#1A2230",
   },
   avatarFallback: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: AVATAR_SIZE,
+    height: AVATAR_SIZE,
+    borderRadius: AVATAR_SIZE / 2,
     backgroundColor: "rgba(217,179,95,0.14)",
     alignItems: "center",
     justifyContent: "center",
   },
   avatarInitial: {
-    color: "#F4D06F",
-    fontSize: 15,
+    color: HOME_FEED_GOLD_SOFT,
+    fontSize: 18,
     fontWeight: "900",
   },
   metaTextCol: {
@@ -367,22 +370,37 @@ const styles = StyleSheet.create({
     minWidth: 0,
     gap: 4,
   },
-  title: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    lineHeight: 20,
+  churchNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    minWidth: 0,
+  },
+  churchName: {
+    flexShrink: 1,
+    color: HOME_FEED_GOLD,
+    fontSize: 17,
+    lineHeight: 22,
     fontWeight: "800",
+    letterSpacing: 0.15,
   },
-  caption: {
-    color: HOME_FEED_MUTED,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "600",
+  verifiedBadge: {
+    flexShrink: 0,
+    marginTop: 1,
   },
-  metaLine: {
-    color: HOME_FEED_MUTED,
-    fontSize: 12,
+  videoTitle: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    lineHeight: 19,
     fontWeight: "600",
+    letterSpacing: 0.05,
+  },
+  statsLine: {
+    color: STATS_COLOR,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "500",
+    marginTop: 2,
   },
   textPreview: {
     flex: 1,
