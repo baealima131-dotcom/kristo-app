@@ -4,6 +4,7 @@ import {
   isHomeFeedActiveFirstFrameReady,
   subscribeHomeFeedActiveFirstFrame,
 } from "@/src/lib/homeFeedVideoReadiness";
+import { isHomeFeedYouTubeStyleVideo } from "@/src/lib/homeFeedVideoMode";
 
 const loggedScreens = new Set<string>();
 
@@ -133,7 +134,9 @@ export function deferStartupWorkAfterHomeFirstFrame(
 ) {
   const delayMs = Math.max(0, Number(opts.delayMs ?? HOME_STARTUP_DEFER_MS));
   void (async () => {
-    await waitForHomeFeedActiveFirstFrame();
+    if (!isHomeFeedYouTubeStyleVideo()) {
+      await waitForHomeFeedActiveFirstFrame();
+    }
     if (delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }

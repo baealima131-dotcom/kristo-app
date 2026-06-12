@@ -12,6 +12,7 @@ import {
 import { isRevenueCatPurchasingDisabled } from "@/src/lib/subscriptionBypass";
 import JujujuAnimatedSplash, { SPLASH_BG } from "@/src/components/JujujuAnimatedSplash";
 import { HomeFeedVideoPrimer } from "@/src/components/homeFeed/HomeFeedVideoPrimer";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -45,9 +46,8 @@ export default function RootLayout() {
       <KristoSessionProvider>
         <RevenueCatBootstrap />
       </KristoSessionProvider>
-      {/* Hidden, attached VideoView that decode-primes the first Home Feed
-          video before Home opens, then hands the decoded player to the row. */}
-      <HomeFeedVideoPrimer />
+      {/* Hidden primer — inline TikTok-style autoplay only. */}
+      {isHomeFeedInlineVideoAutoplayEnabled() ? <HomeFeedVideoPrimer /> : null}
     </GestureHandlerRootView>
   );
 }

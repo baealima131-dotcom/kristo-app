@@ -33,6 +33,7 @@ import { startMediaUploadResumeSystem } from "./optimisticVideoUpload";
 import { startHomeFeedStartupPrewarm } from "./homeFeedStartupPrewarm";
 import { startFirstHomeFeedVideoPrepare } from "./homeFeedVideoStartup";
 import { startMoreTabPremount } from "./moreTabPremount";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "./homeFeedVideoMode";
 import {
   beginDeleteAccountExit,
   beginLogoutExit,
@@ -66,9 +67,11 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       setSessionState(s);
       setLoading(false);
 
-      startFirstHomeFeedVideoPrepare(s);
+      if (isHomeFeedInlineVideoAutoplayEnabled()) {
+        startFirstHomeFeedVideoPrepare(s);
+        startHomeFeedStartupPrewarm(s);
+      }
       startMoreTabPremount(s);
-      startHomeFeedStartupPrewarm(s);
 
       // Session opens immediately; profile sync + cache warm run after Home first frame.
       deferStartupWorkAfterHomeFirstFrame(async () => {
@@ -92,9 +95,11 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
         });
         setSessionSync(ready);
         setSessionState(ready);
-        startFirstHomeFeedVideoPrepare(ready);
+        if (isHomeFeedInlineVideoAutoplayEnabled()) {
+          startFirstHomeFeedVideoPrepare(ready);
+          startHomeFeedStartupPrewarm(ready);
+        }
         startMoreTabPremount(ready);
-        startHomeFeedStartupPrewarm(ready);
         await runCoordinatedAppRefresh(ready, { deferMs: 0 });
       }, { reason: "session-profile-hydrate" });
     })();

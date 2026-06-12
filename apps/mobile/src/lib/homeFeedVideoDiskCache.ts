@@ -1,19 +1,27 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
 import {
-  collectHomeFeedVideoDiskCacheUrls,
+  collectAllFeedVideoDiskCacheUrls,
+  collectForwardVideoDiskCacheUrls,
+  collectPrioritizedDiskCacheUrls,
   collectVideoFeedIndexes,
   resolveActiveVideoRank,
   resolveHomeFeedRowPlaybackUrl,
-  shouldRetainHomeFeedVideoDiskCache,
 } from "@/src/lib/homeFeedVideoWindow";
+import {
+  isHomeFeedActiveFirstFrameReady,
+  subscribeHomeFeedActiveFirstFrame,
+} from "@/src/lib/homeFeedVideoReadiness";
 import { hashMediaUrl } from "@/src/lib/mediaPosterCache";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 
 const STORAGE_KEY = "kristo_home_feed_video_disk_cache_v1";
 const VIDEO_DISK_DIR = `${FileSystem.cacheDirectory || ""}home-feed-videos/`;
 
-const MAX_CONCURRENT_DOWNLOADS = 2;
+const WINDOW_CONCURRENCY = 2;
+const BACKGROUND_CONCURRENCY = 1;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
+const BACKGROUND_START_FALLBACK_MS = 2500;
 
 type DiskCacheEntry = {
   remoteUrl: string;
@@ -34,6 +42,12 @@ const listeners = new Set<() => void>();
 let hydratePromise: Promise<void> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let persistDirty = false;
+
+let queueGeneration = 0;
+let queueRunning = false;
+let backgroundUnblocked = false;
+let backgroundUnblockWait: Promise<void> | null = null;
+let pendingQueue: { rows: any[]; activeIndex: number } | null = null;
 
 function normalizeUrl(url: string) {
   return String(url || "").trim().split("?")[0];
@@ -176,8 +190,14 @@ export function resolveHomeFeedPlaybackUri(remoteUrl: string): string {
   return getCachedVideoUri(remote) || remote;
 }
 
-function collectWindowVideoUrls(rows: any[], activeIndex: number): string[] {
-  return collectHomeFeedVideoDiskCacheUrls(rows, activeIndex);
+export function isHomeFeedVideoDiskCached(url: string): boolean {
+  return Boolean(getCachedVideoUri(url));
+}
+
+export function areHomeFeedForwardVideosDiskCached(rows: any[], activeIndex: number): boolean {
+  const targets = collectForwardVideoDiskCacheUrls(rows, activeIndex);
+  if (!targets.length) return true;
+  return targets.every((url) => isHomeFeedVideoDiskCached(url));
 }
 
 async function deleteCachedEntry(key: string, entry: DiskCacheEntry) {
@@ -301,48 +321,195 @@ async function runLimited<T>(tasks: Array<() => Promise<T>>, limit: number): Pro
   await Promise.all(workers);
 }
 
-export function evictFarVideoCache(activeIndex: number, rows: any[]) {
-  const evicted: string[] = [];
+function ensureBackgroundUnblockWait(): Promise<void> {
+  if (backgroundUnblocked) return Promise.resolve();
+  if (backgroundUnblockWait) return backgroundUnblockWait;
 
-  for (const [key, entry] of memory.entries()) {
-    if (shouldRetainHomeFeedVideoDiskCache(rows, activeIndex, entry.remoteUrl)) continue;
-    evicted.push(key);
-    void deleteCachedEntry(key, entry);
-  }
+  backgroundUnblockWait = new Promise((resolve) => {
+    const finish = () => {
+      backgroundUnblocked = true;
+      resolve();
+    };
 
-  if (evicted.length) {
-    console.log("KRISTO_VIDEO_DISK_CACHE_WINDOW_EVICT", {
-      activeIndex,
-      evicted: evicted.length,
-      retained: memory.size,
-    });
-  }
-}
-
-/** Download active + next 3 + previous 2 videos to local file:// storage. */
-export function prepareVideoDiskCacheWindow(rows: any[], activeIndex: number): void {
-  void (async () => {
-    await hydrateHomeFeedVideoDiskCache();
-
-    const targets = collectWindowVideoUrls(rows, activeIndex);
-    if (!targets.length) {
-      evictFarVideoCache(activeIndex, rows);
+    if (isHomeFeedActiveFirstFrameReady()) {
+      finish();
       return;
     }
 
-    console.log("KRISTO_VIDEO_DISK_CACHE_WINDOW_PREPARE", {
-      activeIndex,
-      count: targets.length,
-      urls: targets.map(normalizeUrl),
+    const unsub = subscribeHomeFeedActiveFirstFrame(() => {
+      try {
+        unsub();
+      } catch {}
+      clearTimeout(fallbackTimer);
+      finish();
     });
 
-    await runLimited(
-      targets.map((url) => () => cacheVideoUrl(url)),
-      MAX_CONCURRENT_DOWNLOADS
-    );
+    const fallbackTimer = setTimeout(() => {
+      try {
+        unsub();
+      } catch {}
+      finish();
+    }, BACKGROUND_START_FALLBACK_MS);
+  });
 
-    evictFarVideoCache(activeIndex, rows);
-  })();
+  return backgroundUnblockWait;
+}
+
+function buildDiskCacheQueue(rows: any[], activeIndex: number): {
+  priorityUrls: string[];
+  backgroundUrls: string[];
+} {
+  const seen = new Set<string>();
+  const priorityUrls: string[] = [];
+  const backgroundUrls: string[] = [];
+
+  const addUnique = (url: string, bucket: string[]) => {
+    const normalized = normalizeUrl(url);
+    if (!normalized || !isNetworkUrl(url) || seen.has(normalized)) return;
+    seen.add(normalized);
+    bucket.push(url);
+  };
+
+  const videoIndexes = collectVideoFeedIndexes(rows);
+  if (videoIndexes.length) {
+    const firstRow = rows[videoIndexes[0]];
+    if (firstRow) {
+      addUnique(resolveHomeFeedRowPlaybackUrl(firstRow), priorityUrls);
+    }
+  }
+
+  for (const url of collectPrioritizedDiskCacheUrls(rows, activeIndex)) {
+    addUnique(url, priorityUrls);
+  }
+
+  for (const url of collectAllFeedVideoDiskCacheUrls(rows)) {
+    addUnique(url, backgroundUrls);
+  }
+
+  return { priorityUrls, backgroundUrls };
+}
+
+async function cacheUrlOrSkip(
+  url: string,
+  opts: { logBackgroundSkip?: boolean } = {}
+): Promise<"cached" | "downloaded" | "skipped" | "failed"> {
+  if (getCachedVideoUri(url)) {
+    if (opts.logBackgroundSkip) {
+      console.log("KRISTO_VIDEO_DISK_CACHE_BACKGROUND_SKIP_CACHED", {
+        remoteUrl: normalizeUrl(url),
+      });
+    }
+    return "skipped";
+  }
+
+  const result = await cacheVideoUrl(url);
+  if (result) return "downloaded";
+  if (getCachedVideoUri(url)) return "cached";
+  return "failed";
+}
+
+async function runDiskCacheQueue(rows: any[], activeIndex: number, generation: number) {
+  await hydrateHomeFeedVideoDiskCache();
+  if (generation !== queueGeneration) return;
+
+  const { priorityUrls, backgroundUrls } = buildDiskCacheQueue(rows, activeIndex);
+
+  console.log("KRISTO_VIDEO_DISK_CACHE_WINDOW_PREPARE", {
+    activeIndex,
+    priorityCount: priorityUrls.length,
+    backgroundCount: backgroundUrls.length,
+    mode: "priority-then-background-all",
+  });
+
+  await runLimited(
+    priorityUrls.map((url) => () => cacheUrlOrSkip(url)),
+    WINDOW_CONCURRENCY
+  );
+
+  if (generation !== queueGeneration) return;
+
+  await ensureBackgroundUnblockWait();
+  if (generation !== queueGeneration) return;
+
+  if (!backgroundUrls.length) {
+    console.log("KRISTO_VIDEO_DISK_CACHE_BACKGROUND_ALL_READY", {
+      activeIndex,
+      total: 0,
+      downloaded: 0,
+      skipped: 0,
+      failed: 0,
+    });
+    return;
+  }
+
+  console.log("KRISTO_VIDEO_DISK_CACHE_BACKGROUND_ALL_START", {
+    activeIndex,
+    count: backgroundUrls.length,
+    concurrency: BACKGROUND_CONCURRENCY,
+  });
+
+  let downloaded = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  await runLimited(
+    backgroundUrls.map((url) => async () => {
+      if (generation !== queueGeneration) return;
+      const outcome = await cacheUrlOrSkip(url, { logBackgroundSkip: true });
+      if (outcome === "downloaded" || outcome === "cached") downloaded += 1;
+      else if (outcome === "skipped") skipped += 1;
+      else failed += 1;
+    }),
+    BACKGROUND_CONCURRENCY
+  );
+
+  if (generation !== queueGeneration) return;
+
+  console.log("KRISTO_VIDEO_DISK_CACHE_BACKGROUND_ALL_READY", {
+    activeIndex,
+    total: backgroundUrls.length,
+    downloaded,
+    skipped,
+    failed,
+  });
+}
+
+/**
+ * Schedule full-feed disk cache: first video + active window immediately,
+ * then every remaining feed video after first-frame (non-blocking).
+ */
+export function scheduleHomeFeedVideoDiskCacheBackground(rows: any[], activeIndex: number): void {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
+  if (!Array.isArray(rows) || !rows.length) return;
+
+  pendingQueue = { rows, activeIndex };
+  queueGeneration += 1;
+  void drainDiskCacheQueue();
+}
+
+async function drainDiskCacheQueue() {
+  if (queueRunning) return;
+  queueRunning = true;
+
+  try {
+    while (pendingQueue) {
+      const job = pendingQueue;
+      pendingQueue = null;
+      const generation = queueGeneration;
+      await runDiskCacheQueue(job.rows, job.activeIndex, generation);
+      if (generation === queueGeneration) break;
+    }
+  } finally {
+    queueRunning = false;
+    if (pendingQueue) {
+      void drainDiskCacheQueue();
+    }
+  }
+}
+
+/** @deprecated Use scheduleHomeFeedVideoDiskCacheBackground */
+export function prepareVideoDiskCacheWindow(rows: any[], activeIndex: number): void {
+  scheduleHomeFeedVideoDiskCacheBackground(rows, activeIndex);
 }
 
 /** Drop distant disk entries when the OS signals memory pressure. */
@@ -386,6 +553,11 @@ export function __resetHomeFeedVideoDiskCacheForTest() {
   listeners.clear();
   hydratePromise = null;
   persistDirty = false;
+  queueGeneration = 0;
+  queueRunning = false;
+  backgroundUnblocked = false;
+  backgroundUnblockWait = null;
+  pendingQueue = null;
   if (persistTimer) {
     clearTimeout(persistTimer);
     persistTimer = null;

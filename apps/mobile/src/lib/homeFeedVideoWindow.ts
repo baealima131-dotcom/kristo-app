@@ -191,13 +191,83 @@ export function collectHomeFeedVideoDiskCacheRanks(
 }
 
 export function collectHomeFeedVideoDiskCacheUrls(rows: any[], activeIndex: number): string[] {
+  return collectPrioritizedDiskCacheUrls(rows, activeIndex);
+}
+
+/** Active video first, then +1/+2/+3, then behind — for download priority. */
+export function collectPrioritizedDiskCacheUrls(rows: any[], activeIndex: number): string[] {
   const videoIndexes = collectVideoFeedIndexes(rows);
-  const ranks = collectHomeFeedVideoDiskCacheRanks(rows, activeIndex);
+  if (!videoIndexes.length) return [];
+
+  const activeRank = resolveActiveVideoRank(videoIndexes, activeIndex);
+  const rankOrder: number[] = [];
+  const seenRanks = new Set<number>();
+
+  const pushRank = (rank: number) => {
+    if (rank < 0 || rank >= videoIndexes.length || seenRanks.has(rank)) return;
+    seenRanks.add(rank);
+    rankOrder.push(rank);
+  };
+
+  pushRank(activeRank);
+  for (let delta = 1; delta <= HOME_FEED_PLAYER_WARM_AHEAD; delta += 1) {
+    pushRank(activeRank + delta);
+  }
+  for (let delta = 1; delta <= HOME_FEED_PLAYER_WARM_BEHIND; delta += 1) {
+    pushRank(activeRank - delta);
+  }
+
+  for (const feedIndex of collectRetainedWatchedIndexes(rows, videoIndexes, activeRank)) {
+    pushRank(videoIndexes.indexOf(feedIndex));
+  }
+
+  const urls: string[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const rank of rankOrder) {
+    const row = rows[videoIndexes[rank]];
+    if (!row) continue;
+    const url = String(resolveHomeFeedRowPlaybackUrl(row) || "").trim();
+    const normalized = url.split("?")[0];
+    if (!url || !/^https?:\/\//i.test(url) || !normalized || seenUrls.has(normalized)) continue;
+    seenUrls.add(normalized);
+    urls.push(url);
+  }
+
+  return urls;
+}
+
+export function collectForwardVideoDiskCacheUrls(rows: any[], activeIndex: number): string[] {
+  const videoIndexes = collectVideoFeedIndexes(rows);
+  if (!videoIndexes.length) return [];
+
+  const activeRank = resolveActiveVideoRank(videoIndexes, activeIndex);
   const urls: string[] = [];
   const seen = new Set<string>();
 
-  for (const rank of ranks) {
+  for (let delta = 1; delta <= HOME_FEED_PLAYER_WARM_AHEAD; delta += 1) {
+    const rank = activeRank + delta;
+    if (rank < 0 || rank >= videoIndexes.length) continue;
     const row = rows[videoIndexes[rank]];
+    if (!row) continue;
+    const url = String(resolveHomeFeedRowPlaybackUrl(row) || "").trim();
+    const normalized = url.split("?")[0];
+    if (!url || !/^https?:\/\//i.test(url) || !normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    urls.push(url);
+  }
+
+  return urls;
+}
+
+/** Every video row in feed order — deduped network URLs. */
+export function collectAllFeedVideoDiskCacheUrls(rows: any[]): string[] {
+  const videoIndexes = collectVideoFeedIndexes(rows);
+  const urls: string[] = [];
+  const seen = new Set<string>();
+
+  for (const feedIndex of videoIndexes) {
+    const row = rows[feedIndex];
     if (!row) continue;
     const url = String(resolveHomeFeedRowPlaybackUrl(row) || "").trim();
     const normalized = url.split("?")[0];

@@ -38,6 +38,7 @@ import {
   resolveHomeFeedPlaybackUri,
   subscribeHomeFeedVideoDiskCache,
 } from "@/src/lib/homeFeedVideoDiskCache";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 import {
   hasBrandedVideoPoster,
   isValidVideoPosterUri,
@@ -1109,6 +1110,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
 
   // Automatic stuck recovery for the active row (no user scroll required).
   React.useEffect(() => {
+    if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
     if (role !== "active" || !isActiveIntent || firstFrameReady || userPausedRef.current) {
       stuckRecoveryStepRef.current = 0;
       stuckRecoveryStartedRef.current = false;

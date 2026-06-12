@@ -1,5 +1,6 @@
 import { markHomeFeedActiveFirstFrame } from "@/src/lib/homeFeedVideoReadiness";
 import { markHomeFeedFirstPlaying, markHomeFirstVideoReady } from "@/src/lib/firstPaint";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 
 /**
  * Single owner/controller for Home Feed video playback (TikTok-style).
@@ -34,6 +35,7 @@ export type HomeFeedPlayerHandle = {
 
 const registry = new Map<string, HomeFeedPlayerHandle>();
 let activeKey: string | null = null;
+let lastEnforcedActiveIndex = -1;
 
 // Recovery hand-off used by live-room exit (compat surface).
 let pendingRecoveryReason: string | null = null;
@@ -60,10 +62,11 @@ function logPausedInactive(handle: HomeFeedPlayerHandle | undefined, reason: str
 
 export function registerHomeFeedPlayer(handle: HomeFeedPlayerHandle): void {
   registry.set(handle.key, handle);
-  // Newly mounted players must never start hot: only the active row may play.
-  if (handle.key !== activeKey) {
-    silence(handle);
+  if (handle.index === lastEnforcedActiveIndex && lastEnforcedActiveIndex >= 0) {
+    enforceHomeFeedVideoAudioOwnership(handle.index);
+    return;
   }
+  silence(handle);
 }
 
 export function unregisterHomeFeedPlayer(key: string): void {
@@ -95,28 +98,86 @@ export function setActiveHomeFeedVideo(
   key: string,
   meta: { postId: string; index: number }
 ): void {
-  if (activeKey === key) return;
-
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
   const prevKey = activeKey;
   activeKey = key;
+  lastEnforcedActiveIndex = meta.index;
+
+  registry.forEach((handle, k) => {
+    if (k === key) return;
+    silence(handle);
+    if (k !== prevKey) {
+      logPausedInactive(handle, "active-changed");
+    }
+  });
 
   if (prevKey && prevKey !== key) {
-    const prev = registry.get(prevKey);
-    silence(prev);
-    logPausedInactive(prev, "active-changed");
+    logPausedInactive(registry.get(prevKey), "active-changed");
   }
-
-  // Defensive: silence any stray player that isn't the new active row.
-  registry.forEach((handle, k) => {
-    if (k === key || k === prevKey) return;
-    silence(handle);
-  });
 
   console.log("KRISTO_VIDEO_ACTIVE_CHANGED", {
     key,
     postId: meta.postId,
     index: meta.index,
     prevKey: prevKey ?? null,
+  });
+}
+
+/**
+ * Single audio gate: on every feed activeIndex change, mute + pause every
+ * non-active row player and unmute + play the player mounted at activeIndex.
+ */
+export function enforceHomeFeedVideoAudioOwnership(activeFeedIndex: number): void {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
+  if (activeFeedIndex < 0) return;
+
+  let activeHandle: HomeFeedPlayerHandle | undefined;
+
+  registry.forEach((handle) => {
+    if (handle.index === activeFeedIndex) {
+      activeHandle = handle;
+      return;
+    }
+    silence(handle);
+  });
+
+  if (!activeHandle) {
+    if (activeKey) {
+      registry.forEach((handle) => {
+        silence(handle);
+        logPausedInactive(handle, "non-video-active-row");
+      });
+    }
+    activeKey = null;
+    lastEnforcedActiveIndex = activeFeedIndex;
+    console.log("KRISTO_VIDEO_AUDIO_OWNER_ENFORCED", {
+      activeIndex: activeFeedIndex,
+      activeKey: null,
+      activePostId: null,
+      registered: registry.size,
+      audible: false,
+    });
+    return;
+  }
+
+  activeKey = activeHandle.key;
+  registry.forEach((handle, k) => {
+    if (k === activeHandle!.key) return;
+    silence(handle);
+  });
+
+  try {
+    activeHandle.setMuted(false);
+    activeHandle.play();
+  } catch {}
+
+  lastEnforcedActiveIndex = activeFeedIndex;
+  console.log("KRISTO_VIDEO_AUDIO_OWNER_ENFORCED", {
+    activeIndex: activeFeedIndex,
+    activeKey: activeHandle.key,
+    activePostId: activeHandle.postId,
+    registered: registry.size,
+    audible: true,
   });
 }
 
@@ -143,6 +204,11 @@ export function markHomeFeedVideoFirstFrame(
     postId: meta.postId,
     msFromMount: meta.msFromMount ?? null,
     isActive: activeKey === key,
+  });
+  console.log("KRISTO_VIDEO_FIRST_PLAYING", {
+    key,
+    postId: meta.postId,
+    msFromMount: meta.msFromMount ?? null,
   });
   markHomeFeedActiveFirstFrame();
   markHomeFirstVideoReady("first-frame");
@@ -208,6 +274,7 @@ export function subscribeHomeFeedVideoRecovery(listener: () => void): () => void
 export function recoverHomeFeedPlaybackAfterLiveExit(
   meta: { postId?: string; reason?: string; [key: string]: unknown } = {}
 ): boolean {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return false;
   const targetPostId = String(meta.postId || getActiveHomeFeedVideoId() || "").trim();
   const reason = String(meta.reason || "live-room-exit").trim();
 
@@ -244,6 +311,7 @@ export function recoverHomeFeedPlaybackAfterLiveExit(
 export function __resetHomeFeedVideoOwnerForTest(): void {
   registry.clear();
   activeKey = null;
+  lastEnforcedActiveIndex = -1;
   pendingRecoveryReason = null;
   recoveryListeners.clear();
 }

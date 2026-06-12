@@ -948,8 +948,10 @@ export default function HomeFeedScreen() {
     if (!feedFocused || isClaimSlotFocus || !visibleData.length) return;
 
     const tryPosterWarm = () => {
-      if (!isHomeFeedActiveFirstFrameReady()) return;
-      if (!areHomeFeedForwardVideosDiskCached(visibleData, activeIndex)) return;
+      if (inlineVideoAutoplay) {
+        if (!isHomeFeedActiveFirstFrameReady()) return;
+        if (!areHomeFeedForwardVideosDiskCached(visibleData, activeIndex)) return;
+      }
       if (posterWarmKey === lastPosterWarmKeyRef.current) return;
       lastPosterWarmKeyRef.current = posterWarmKey;
       warmHomeFeedVideoPostersNearActive(
@@ -960,13 +962,24 @@ export default function HomeFeedScreen() {
     };
 
     tryPosterWarm();
-    const unsubFrame = subscribeHomeFeedActiveFirstFrame(tryPosterWarm);
-    const unsubCache = subscribeHomeFeedVideoDiskCache(tryPosterWarm);
+    const unsubFrame = inlineVideoAutoplay
+      ? subscribeHomeFeedActiveFirstFrame(tryPosterWarm)
+      : () => {};
+    const unsubCache = inlineVideoAutoplay
+      ? subscribeHomeFeedVideoDiskCache(tryPosterWarm)
+      : () => {};
     return () => {
       unsubFrame();
       unsubCache();
     };
-  }, [posterWarmKey, activeIndex, feedFocused, isClaimSlotFocus, visibleData]);
+  }, [
+    inlineVideoAutoplay,
+    posterWarmKey,
+    activeIndex,
+    feedFocused,
+    isClaimSlotFocus,
+    visibleData,
+  ]);
 
   // Initial buffer-ahead is deferred until the FIRST video's first frame paints
   // (or a short fallback). This guarantees the first video keeps full startup
@@ -1111,6 +1124,7 @@ export default function HomeFeedScreen() {
   ]);
 
   useEffect(() => {
+    if (!inlineVideoAutoplay) return;
     if (!feedFocused) return;
 
     const recoveryReason = peekHomeFeedVideoRecovery();
@@ -1152,7 +1166,7 @@ export default function HomeFeedScreen() {
     if (recovered) {
       consumeHomeFeedVideoRecovery();
     }
-  }, [feedFocused, activeIndex, visibleData]);
+  }, [inlineVideoAutoplay, feedFocused, activeIndex, visibleData]);
 
   useEffect(() => {
     const targetId = String(pendingScheduleFeedIdRef.current || "").trim();

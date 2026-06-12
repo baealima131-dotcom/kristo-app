@@ -15,6 +15,7 @@ import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
 import {
   warmHomeFeedStartupMedia,
 } from "@/src/lib/homeFeedVideoBufferAhead";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 
 const COOLDOWN_MS = 60_000;
 const STARTUP_POSTER_MAX = 10;
@@ -45,6 +46,10 @@ function isSessionReadyForPrewarm(session: KristoSession | null): session is Kri
 }
 
 async function runHomeFeedStartupPrewarm(session: KristoSession) {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) {
+    logSkip("youtube-style-feed");
+    return;
+  }
   if (await isLoggedOutFlagSet()) {
     logSkip("logged-out");
     return;
@@ -185,6 +190,10 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
 
 /** Fire-and-forget Home Feed startup prewarm (rows + posters + video byte warm). */
 export function startHomeFeedStartupPrewarm(session: KristoSession | null | undefined) {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) {
+    logSkip("youtube-style-feed");
+    return;
+  }
   if (!session || !isSessionReadyForPrewarm(session)) {
     logSkip("missing-session");
     return;

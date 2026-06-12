@@ -19,6 +19,7 @@ import {
 import type { KristoSession } from "@/src/lib/kristoSession";
 import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 
 /**
  * Consolidated Home Feed video startup/preload (TikTok-style, v1).
@@ -181,6 +182,7 @@ function buildCachedDisplayRows(): any[] {
 export async function prepareFirstHomeFeedVideo(
   session: KristoSession
 ): Promise<FirstHomeFeedVideoPrepareResult | null> {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return null;
   const key = `${session.userId}:${session.churchId || ""}`;
   if (preparedKey === key) return lastPrepareResult;
   if (prepareInflight) return prepareInflight;
@@ -203,9 +205,6 @@ export async function prepareFirstHomeFeedVideo(
     try {
       await hydrateHomeFeedRowsCacheFromStorage(session.userId);
     } catch {}
-    try {
-      await hydrateHomeFeedVideoDiskCache();
-    } catch {}
 
     const rows = buildCachedDisplayRows();
     const firstVideoRow = rows.find((row) => row && isVideoPost(row));
@@ -227,16 +226,22 @@ export async function prepareFirstHomeFeedVideo(
     const rowId = String(firstVideoRow?.id || "").trim();
     const url = resolveHomeFeedVideoUri(firstVideoRow);
 
-    // Register the startup target immediately so the first feed row waits for
-    // reuse instead of mounting a second player while priming is in flight.
+    // Register before disk hydrate / Home mount so the first row waits for
+    // prime adoption instead of mounting a second remote player.
     if (rowId && url) {
       markStartupFirstVideoPrepared(rowId, url, false);
     }
 
+    try {
+      await hydrateHomeFeedVideoDiskCache();
+    } catch {}
+
     const posterUri = String(resolvePosterUri(firstVideoRow) || "").trim();
     if (posterUri) Image.prefetch(posterUri).catch(() => {});
 
-    void cacheVideoUrl(url);
+    try {
+      await cacheVideoUrl(url);
+    } catch {}
 
     // Decode-prime the REAL player through the hidden attached VideoView
     // (parses moov + decodes the first frame and parks it for adoption) in
@@ -286,6 +291,7 @@ export async function prepareFirstHomeFeedVideo(
 export function startFirstHomeFeedVideoPrepare(
   session: KristoSession | null | undefined
 ): void {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
   const userId = String(session?.userId || "").trim();
   const sessionToken = String(session?.sessionToken || "").trim();
   const churchId = String(session?.churchId || "").trim();
@@ -303,6 +309,7 @@ export function warmHomeFeedUpcoming(
   fromIndex: number,
   count = 1
 ): void {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
   if (!Array.isArray(rows) || !rows.length) return;
   const start = Math.max(0, fromIndex) + 1;
   const targets: string[] = [];

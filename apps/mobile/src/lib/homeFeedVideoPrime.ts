@@ -1,4 +1,5 @@
 import { createVideoPlayer, type VideoPlayer } from "expo-video";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 
 /**
  * Decode-prime store for the first Home Feed video.
@@ -156,15 +157,33 @@ export function markStartupFirstVideoPrepared(
   rawUrl: string,
   firstFramePrimed: boolean
 ) {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
   const url = normalizeUrl(rawUrl);
   const id = String(rowId || "").trim();
   if (!id || !url) return;
+  const nextPrimed = Boolean(firstFramePrimed);
+  const changed =
+    !startupTarget ||
+    startupTarget.rowId !== id ||
+    startupTarget.url !== url ||
+    startupTarget.firstFramePrimed !== nextPrimed;
   startupTarget = {
     rowId: id,
     url,
     rawUrl: String(rawUrl || "").trim(),
-    firstFramePrimed: Boolean(firstFramePrimed),
+    firstFramePrimed: nextPrimed,
   };
+  if (changed) notify();
+}
+
+/** Sync registration when display rows are built — before the feed player mounts. */
+export function tryRegisterStartupFirstVideoTarget(rowId: string, rawUrl: string): void {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
+  const url = normalizeUrl(rawUrl);
+  const id = String(rowId || "").trim();
+  if (!id || !url) return;
+  if (startupTarget?.rowId === id && startupTarget.url === url) return;
+  markStartupFirstVideoPrepared(rowId, rawUrl, false);
 }
 
 export function isStartupFirstVideoTarget(rawUrl: string, postId: string): boolean {
@@ -258,6 +277,7 @@ export function holdStartupVideoPlayerForRemount(
 // ---------------------------------------------------------------------------
 
 export async function requestHomeFeedVideoPrime(rawUrl: string): Promise<boolean> {
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) return false;
   const url = normalizeUrl(rawUrl);
   if (!url || !isNetworkUrl(rawUrl)) return Promise.resolve(false);
 
