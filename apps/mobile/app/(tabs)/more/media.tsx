@@ -1107,7 +1107,8 @@ export default function MediaStudioScreen() {
   const [videoPostPosterUri, setVideoPostPosterUri] = useState("");
   const [videoPostDurationMs, setVideoPostDurationMs] = useState(0);
   const [videoPostTitle, setVideoPostTitle] = useState("");
-  const [videoPostCaption, setVideoPostCaption] = useState("");
+  const [videoPostCustomCoverUri, setVideoPostCustomCoverUri] = useState("");
+  const [videoPostDisplayType, setVideoPostDisplayType] = useState<"youtube" | "tiktok">("youtube");
   const [videoPostDetailsOpen, setVideoPostDetailsOpen] = useState(false);
   const [pendingDetailsScroll, setPendingDetailsScroll] = useState(false);
   const [videoPostUploading, setVideoPostUploading] = useState(false);
@@ -1116,16 +1117,12 @@ export default function MediaStudioScreen() {
   const [videoPreparePercent, setVideoPreparePercent] = useState(0);
 
   const cleanVideoPostTitle = videoPostTitle.trim();
-  const cleanVideoPostCaption = videoPostCaption.trim();
 
   const videoPostTitleOk =
     cleanVideoPostTitle.length >= 7 && cleanVideoPostTitle.length <= 15;
 
-  const videoPostCaptionOk =
-    cleanVideoPostCaption.length >= 10 && cleanVideoPostCaption.length <= 30;
-
   const videoPostReadyToPublish =
-    !!videoPostUri && videoPostTitleOk && videoPostCaptionOk;
+    !!videoPostUri && videoPostTitleOk && (videoPostDisplayType === "youtube" || videoPostDisplayType === "tiktok");
 
   const [guestClaimSlots, setGuestClaimSlots] = useState<any[]>([]);
 
@@ -1663,8 +1660,9 @@ export default function MediaStudioScreen() {
     setIsCreatingVideoPost(true);
     setVideoPostUri("");
     setVideoPostPosterUri("");
+    setVideoPostCustomCoverUri("");
     setVideoPostTitle("");
-    setVideoPostCaption("");
+    setVideoPostDisplayType("youtube");
     setVideoPostDetailsOpen(false);
     setVideoPostDurationMs(
       Number.isFinite(Number(durationMs)) && Number(durationMs) > 0
@@ -1738,6 +1736,24 @@ export default function MediaStudioScreen() {
     );
   }
 
+  async function pickVideoPostCover() {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert("Permission needed", "Allow photo access to choose a cover image.");
+      return;
+    }
+
+    const picked = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"] as any,
+      allowsEditing: true,
+      aspect: videoPostDisplayType === "tiktok" ? [9, 16] : [16, 9],
+      quality: 0.88,
+    });
+
+    if (picked.canceled || !picked.assets?.[0]?.uri) return;
+    setVideoPostCustomCoverUri(String(picked.assets[0].uri || "").trim());
+  }
+
   function publishVideoPostToFeed() {
     if (!videoPostDetailsOpen) {
       setVideoPostDetailsOpen(true);
@@ -1759,19 +1775,17 @@ export default function MediaStudioScreen() {
     }
 
     const typedTitle = videoPostTitle.trim();
-    const typedCaption = videoPostCaption.trim();
 
-    if (!typedTitle || !typedCaption) {
+    if (!typedTitle) {
       setVideoPostDetailsOpen(true);
       setPendingDetailsScroll(true);
-      Alert.alert("Title and caption required", "Please write both title and caption before posting.");
+      Alert.alert("Title required", "Please write a title before posting.");
       return;
     }
 
     const title = typedTitle;
-    const caption = typedCaption;
     const fileUri = String(videoPostUri || "").trim();
-    const localPosterUri = String(videoPostPosterUri || "").trim();
+    const localPosterUri = String(videoPostCustomCoverUri || videoPostPosterUri || "").trim();
     const fileName = fileNameFromUri(fileUri, `video-${Date.now()}.mp4`);
     const churchId = String(session?.churchId || "").trim();
 
@@ -1783,6 +1797,8 @@ export default function MediaStudioScreen() {
     console.log("KRISTO_MEDIA_VIDEO_UPLOAD_START", {
       fileUri,
       localPosterUri: localPosterUri || null,
+      customCover: Boolean(videoPostCustomCoverUri),
+      videoDisplayType: videoPostDisplayType,
       title,
     });
 
@@ -1795,7 +1811,7 @@ export default function MediaStudioScreen() {
         localPosterUri: localPosterUri || undefined,
         fileName,
         title,
-        caption,
+        videoDisplayType: videoPostDisplayType,
         churchId,
         userId: String(session?.userId || "").trim(),
         role: String(session?.role || "Member"),
@@ -1814,8 +1830,9 @@ export default function MediaStudioScreen() {
             setVideoPostDetailsOpen(false);
             setVideoPostUri("");
             setVideoPostPosterUri("");
+            setVideoPostCustomCoverUri("");
             setVideoPostTitle("");
-            setVideoPostCaption("");
+            setVideoPostDisplayType("youtube");
             setIsCreatingVideoPost(false);
 
             if (posterUri && videoUrl) {
@@ -3226,7 +3243,7 @@ export default function MediaStudioScreen() {
                     </View>
 
                     <Text style={s.videoSmartLoadingText}>
-                      You can write title and caption while Kristo prepares this video for preview.
+                      You can write the title while Kristo prepares this video for preview.
                     </Text>
                   </View>
                 ) : videoPostUploading ? (
@@ -3294,18 +3311,71 @@ export default function MediaStudioScreen() {
                       <Ionicons name="videocam-outline" size={18} color="#A78BFA" />
                     </View>
 
-                    <Text style={s.fieldLabel}>CAPTION</Text>
-                    <View style={[s.inputWrap as any, s.scheduleTextArea]}>
-                      <TextInput
-                        value={videoPostCaption}
-                        onChangeText={setVideoPostCaption}
-                        maxLength={30}
-                        placeholder="Caption 10-30 letters..."
-                        placeholderTextColor="rgba(255,255,255,0.42)"
-                        style={[s.inputPremium as any, s.scheduleTextAreaInput]}
-                        multiline
+                    <Text style={[s.fieldLabel, { marginTop: 14 }]}>COVER</Text>
+                    <Text style={s.videoCoverHint}>
+                      Choose a cover image for Home Feed. If you skip this, Kristo uses a generated thumbnail.
+                    </Text>
+                    {(videoPostCustomCoverUri || videoPostPosterUri) ? (
+                      <Image
+                        source={{ uri: videoPostCustomCoverUri || videoPostPosterUri }}
+                        style={s.videoCoverPreview}
+                        resizeMode="cover"
                       />
-                      <Ionicons name="create-outline" size={18} color="#F4C95D" />
+                    ) : (
+                      <View style={[s.videoCoverPreview, s.videoCoverPreviewEmpty]}>
+                        <Ionicons name="image-outline" size={28} color="rgba(255,255,255,0.35)" />
+                      </View>
+                    )}
+                    <View style={s.videoCoverActions}>
+                      <Pressable
+                        onPress={() => void pickVideoPostCover()}
+                        style={({ pressed }) => [s.videoCoverBtn, pressed ? s.pressed : null]}
+                      >
+                        <Ionicons name="images-outline" size={16} color="#F4C95D" />
+                        <Text style={s.videoCoverBtnText}>
+                          {videoPostCustomCoverUri ? "Change Cover" : "Choose Cover"}
+                        </Text>
+                      </Pressable>
+                      {videoPostCustomCoverUri ? (
+                        <Pressable
+                          onPress={() => setVideoPostCustomCoverUri("")}
+                          style={({ pressed }) => [s.videoCoverBtnGhost, pressed ? s.pressed : null]}
+                        >
+                          <Text style={s.videoCoverBtnGhostText}>Use generated</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+
+                    <Text style={[s.fieldLabel, { marginTop: 14 }]}>VIDEO SIZE</Text>
+                    <View style={s.videoDisplayTypeRow}>
+                      <Pressable
+                        onPress={() => setVideoPostDisplayType("youtube")}
+                        style={({ pressed }) => [
+                          s.videoDisplayTypeBox,
+                          videoPostDisplayType === "youtube" ? s.videoDisplayTypeBoxActive : null,
+                          pressed ? s.pressed : null,
+                        ]}
+                      >
+                        <View style={s.videoDisplayTypePreviewYoutube}>
+                          <Ionicons name="play" size={16} color="rgba(255,255,255,0.72)" />
+                        </View>
+                        <Text style={s.videoDisplayTypeLabel}>YouTube</Text>
+                        <Text style={s.videoDisplayTypeSub}>16:9 landscape</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => setVideoPostDisplayType("tiktok")}
+                        style={({ pressed }) => [
+                          s.videoDisplayTypeBox,
+                          videoPostDisplayType === "tiktok" ? s.videoDisplayTypeBoxActive : null,
+                          pressed ? s.pressed : null,
+                        ]}
+                      >
+                        <View style={s.videoDisplayTypePreviewTiktok}>
+                          <Ionicons name="play" size={14} color="rgba(255,255,255,0.72)" />
+                        </View>
+                        <Text style={s.videoDisplayTypeLabel}>TikTok</Text>
+                        <Text style={s.videoDisplayTypeSub}>9:16 vertical</Text>
+                      </Pressable>
                     </View>
                   </View>
                 ) : null}
@@ -3340,7 +3410,7 @@ export default function MediaStudioScreen() {
                   </>
                 ) : (
                   <>
-                    <Text style={s.nextBtnPremiumText as any}>{videoPostDetailsOpen ? "Post to Home Feed" : "Add Title & Caption"}</Text>
+                    <Text style={s.nextBtnPremiumText as any}>{videoPostDetailsOpen ? "Post to Home Feed" : "Add Title & Cover"}</Text>
                     <Ionicons name="paper-plane-outline" size={24} color="#07111F" />
                   </>
                 )}
@@ -6456,6 +6526,105 @@ showcaseBadgeText: {
     backgroundColor: "rgba(255,255,255,0.045)",
     borderWidth: 1,
     borderColor: "rgba(244,201,93,0.16)",
+  },
+  videoCoverHint: {
+    marginTop: 4,
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
+  },
+  videoCoverPreview: {
+    width: "100%",
+    height: 132,
+    borderRadius: 14,
+    marginTop: 8,
+    backgroundColor: "#0B0F17",
+  },
+  videoCoverPreviewEmpty: {
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  videoCoverActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+  },
+  videoCoverBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(244,201,93,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.24)",
+  },
+  videoCoverBtnText: {
+    color: "#F4C95D",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  videoCoverBtnGhost: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  videoCoverBtnGhostText: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  videoDisplayTypeRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 8,
+  },
+  videoDisplayTypeBox: {
+    flex: 1,
+    borderRadius: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  videoDisplayTypeBoxActive: {
+    borderColor: "rgba(244,201,93,0.55)",
+    backgroundColor: "rgba(244,201,93,0.08)",
+  },
+  videoDisplayTypePreviewYoutube: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    borderRadius: 10,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoDisplayTypePreviewTiktok: {
+    width: "56%",
+    aspectRatio: 9 / 16,
+    borderRadius: 10,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoDisplayTypeLabel: {
+    marginTop: 8,
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  videoDisplayTypeSub: {
+    marginTop: 2,
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 11,
+    fontWeight: "600",
   },
 
 

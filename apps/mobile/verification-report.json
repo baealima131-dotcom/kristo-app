@@ -1,0 +1,196 @@
+{
+  "generatedAt": "2026-06-12T07:37:01.928Z",
+  "summary": {
+    "total": 36,
+    "failed": 0
+  },
+  "checks": [
+    {
+      "name": "1a KRISTO_PLAYBACK_PRIORITY_ACTIVE",
+      "pass": true,
+      "detail": "count=2"
+    },
+    {
+      "name": "1b KRISTO_PLAYBACK_PRIORITY_PAUSED_JOB",
+      "pass": true,
+      "detail": "count=1"
+    },
+    {
+      "name": "1c KRISTO_PLAYBACK_PRIORITY_RESUMED_JOB",
+      "pass": true,
+      "detail": "count=1"
+    },
+    {
+      "name": "1d Jobs stay paused while watch open + playback paused",
+      "pass": true,
+      "detail": "defer-paused-still-open true"
+    },
+    {
+      "name": "1e Jobs resume after watch closed",
+      "pass": true,
+      "detail": "defer-closed false"
+    },
+    {
+      "name": "2a Up Next excludes current video",
+      "pass": true,
+      "detail": "up1-has-current false"
+    },
+    {
+      "name": "2b Up Next order changes per selection",
+      "pass": true,
+      "detail": "up-orders-differ true"
+    },
+    {
+      "name": "2c Feed tail keeps current video fixed at head",
+      "pass": true,
+      "detail": "tail1-head v1 tail1-len 5"
+    },
+    {
+      "name": "2d KRISTO_WATCH_UP_NEXT_BUILT logged",
+      "pass": true,
+      "detail": "count=2"
+    },
+    {
+      "name": "3 marker KRISTO_RC_BEFORE_${step} in src/lib/payments/mobileSubscriptions.ts",
+      "pass": true,
+      "detail": "KRISTO_RC_BEFORE_${step}"
+    },
+    {
+      "name": "3 marker KRISTO_RC_AFTER_${step} in src/lib/payments/mobileSubscriptions.ts",
+      "pass": true,
+      "detail": "KRISTO_RC_AFTER_${step}"
+    },
+    {
+      "name": "3 marker runRevenueCatNativeStep in src/lib/payments/mobileSubscriptions.ts",
+      "pass": true,
+      "detail": "runRevenueCatNativeStep"
+    },
+    {
+      "name": "3 marker \"LOGIN\" in src/lib/payments/mobileSubscriptions.ts",
+      "pass": true,
+      "detail": "\"LOGIN\""
+    },
+    {
+      "name": "3 marker \"CUSTOMER_INFO\" in src/lib/payments/mobileSubscriptions.ts",
+      "pass": true,
+      "detail": "\"CUSTOMER_INFO\""
+    },
+    {
+      "name": "3 marker KRISTO_POSTER_PREWARM_SKIPPED_ALREADY_RUNNING in src/lib/homeFeedPosterPrewarm.ts",
+      "pass": true,
+      "detail": "KRISTO_POSTER_PREWARM_SKIPPED_ALREADY_RUNNING"
+    },
+    {
+      "name": "3 marker KRISTO_MEDIA_POSTER_CACHE_HYDRATE_SKIPPED_ALREADY_READY in src/lib/mediaPosterCache.ts",
+      "pass": true,
+      "detail": "KRISTO_MEDIA_POSTER_CACHE_HYDRATE_SKIPPED_ALREADY_READY"
+    },
+    {
+      "name": "3 marker videoModalPayload in src/components/homeFeed/HomeFeedScreen.tsx",
+      "pass": true,
+      "detail": "videoModalPayload"
+    },
+    {
+      "name": "3 marker videoPostDisplayType in app/(tabs)/more/media.tsx",
+      "pass": true,
+      "detail": "videoPostDisplayType"
+    },
+    {
+      "name": "3 marker videoPostCustomCoverUri in app/(tabs)/more/media.tsx",
+      "pass": true,
+      "detail": "videoPostCustomCoverUri"
+    },
+    {
+      "name": "4 player outside ScrollView",
+      "pass": true,
+      "detail": "player outside ScrollView"
+    },
+    {
+      "name": "4 PostActionsInline outside ScrollView",
+      "pass": true,
+      "detail": "PostActionsInline outside ScrollView"
+    },
+    {
+      "name": "4 Up next inside ScrollView",
+      "pass": true,
+      "detail": "Up next inside ScrollView"
+    },
+    {
+      "name": "4 TikTok layout branch",
+      "pass": true,
+      "detail": "TikTok layout branch"
+    },
+    {
+      "name": "4 YouTube layout branch",
+      "pass": true,
+      "detail": "YouTube layout branch"
+    },
+    {
+      "name": "5a Title field in video composer",
+      "pass": true,
+      "detail": "videoPostTitle present"
+    },
+    {
+      "name": "5b Custom cover in video composer",
+      "pass": true,
+      "detail": "custom cover present"
+    },
+    {
+      "name": "5c Display type selector",
+      "pass": true,
+      "detail": "youtube/tiktok selector"
+    },
+    {
+      "name": "5d No video caption input in composer block",
+      "pass": true,
+      "detail": "no video caption field"
+    },
+    {
+      "name": "6a Initial prewarm starts once",
+      "pass": true,
+      "detail": "starts=1"
+    },
+    {
+      "name": "6b Duplicate blocked with skip log",
+      "pass": true,
+      "detail": "skips=2"
+    },
+    {
+      "name": "7a Hydrate once per session",
+      "pass": true,
+      "detail": "hydrated=1"
+    },
+    {
+      "name": "7b Skip log on repeat",
+      "pass": true,
+      "detail": "skips=2"
+    },
+    {
+      "name": "8a Legacy log predates skip guards (hydrate repeated)",
+      "pass": true,
+      "detail": "legacy HYDRATED count=3 (expected >1 before fix)"
+    },
+    {
+      "name": "8b Legacy log has no HostFunction errors",
+      "pass": true,
+      "detail": "HostFunction count=0"
+    },
+    {
+      "name": "8c Legacy log lacks new skip markers (needs device re-run)",
+      "pass": true,
+      "detail": "legacy skip prewarm=0 — reload app to capture fresh logs"
+    },
+    {
+      "name": "8d Legacy RC CONFIG_FAILED absent",
+      "pass": true,
+      "detail": "CONFIG_FAILED count=0"
+    }
+  ],
+  "deviceRerunRequired": [
+    "Reload app on iPhone after Metro rebundle to capture KRISTO_RC_BEFORE_* / AFTER_* on cold configure",
+    "Scroll Home Feed 3+ min — expect KRISTO_POSTER_PREWARM_SKIPPED_ALREADY_RUNNING",
+    "Second hydrate call — expect KRISTO_MEDIA_POSTER_CACHE_HYDRATE_SKIPPED_ALREADY_READY",
+    "Open 5–30 min video — expect KRISTO_PLAYBACK_PRIORITY_* and no KRISTO_POSTER_PREFETCH during playback",
+    "Screenshots: Watch screen fixed chrome, upload composer, feed cover before play"
+  ]
+}

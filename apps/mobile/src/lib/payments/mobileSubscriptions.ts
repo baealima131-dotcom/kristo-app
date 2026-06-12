@@ -101,12 +101,40 @@ export function setRevenueCatDebugRouteEnabled(enabled: boolean) {
 }
 
 function applyRevenueCatLogLevel() {
-  if (!__DEV__) {
-    Purchases.setLogLevel(LOG_LEVEL.WARN);
-    return;
+  try {
+    if (!__DEV__) {
+      Purchases.setLogLevel(LOG_LEVEL.WARN);
+      return;
+    }
+    const debug = shouldEnableRevenueCatDebug(revenueCatDebugRouteEnabled ? "payments" : null);
+    Purchases.setLogLevel(debug ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN);
+  } catch (error) {
+    console.log("KRISTO_RC_SET_LOG_LEVEL_FAILED", getRevenueCatErrorDetail(error));
   }
-  const debug = shouldEnableRevenueCatDebug(revenueCatDebugRouteEnabled ? "payments" : null);
-  Purchases.setLogLevel(debug ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN);
+}
+
+function isRevenueCatNativePlatform() {
+  return Platform.OS === "ios" || Platform.OS === "android";
+}
+
+async function runRevenueCatNativeStep<T>(
+  step: "CONFIGURE" | "LOGIN" | "CUSTOMER_INFO" | "IS_CONFIGURED" | "SYNC_PURCHASES",
+  fn: () => Promise<T> | T,
+  meta: Record<string, unknown> = {}
+): Promise<T> {
+  console.log(`KRISTO_RC_BEFORE_${step}`, meta);
+  try {
+    const result = await fn();
+    console.log(`KRISTO_RC_AFTER_${step}`, { ok: true, ...meta });
+    return result;
+  } catch (error) {
+    console.log(`KRISTO_RC_AFTER_${step}`, {
+      ok: false,
+      ...meta,
+      ...getRevenueCatErrorDetail(error),
+    });
+    throw error;
+  }
 }
 
 export function getDefaultAppUserId(appUserID?: string) {
@@ -115,8 +143,11 @@ export function getDefaultAppUserId(appUserID?: string) {
 }
 
 async function purchasesIsConfigured(): Promise<boolean> {
+  if (!isRevenueCatNativePlatform()) return false;
   try {
-    return Boolean(await Purchases.isConfigured());
+    return Boolean(
+      await runRevenueCatNativeStep("IS_CONFIGURED", () => Purchases.isConfigured())
+    );
   } catch {
     return false;
   }
@@ -124,6 +155,14 @@ async function purchasesIsConfigured(): Promise<boolean> {
 
 export async function ensurePurchasesConfigured(): Promise<boolean> {
   console.log("KRISTO_RC_CONFIG_START", revenueCatRuntimeInfo());
+
+  if (!isRevenueCatNativePlatform()) {
+    console.log("KRISTO_RC_CONFIG_FAILED", {
+      reason: "unsupported-platform",
+      platform: Platform.OS,
+    });
+    return false;
+  }
 
   if (isRevenueCatPurchasingDisabled()) {
     console.log("KRISTO_RC_CONFIG_FAILED", {
@@ -157,9 +196,16 @@ export async function ensurePurchasesConfigured(): Promise<boolean> {
   }
 
   configurePromise = (async () => {
-    applyRevenueCatLogLevel();
     try {
-      await Purchases.configure({ apiKey });
+      await runRevenueCatNativeStep(
+        "CONFIGURE",
+        () => Purchases.configure({ apiKey }),
+        {
+          platform: Platform.OS,
+          apiKeyMasked: describeApiKey().masked,
+        }
+      );
+      applyRevenueCatLogLevel();
       const ok = await purchasesIsConfigured();
       console.log(ok ? "KRISTO_RC_CONFIG_SUCCESS" : "KRISTO_RC_CONFIG_FAILED", {
         reason: ok ? "configured" : "configure-returned-not-configured",
@@ -208,7 +254,11 @@ export async function syncPurchasesAppUser(appUserID?: string): Promise<void> {
   loginPromise = (async () => {
     console.log("KRISTO_RC_LOGIN_START", { appUserId: safeAppUserId });
     try {
-      await Purchases.logIn(safeAppUserId);
+      await runRevenueCatNativeStep(
+        "LOGIN",
+        () => Purchases.logIn(safeAppUserId),
+        { appUserId: safeAppUserId }
+      );
       configuredAppUserId = safeAppUserId;
       console.log("KRISTO_RC_LOGIN_SUCCESS", { appUserId: safeAppUserId });
     } catch (error) {
@@ -248,7 +298,7 @@ export async function logInRevenueCatForChurchSubscription(
       } else {
         loginAppUserId = cid;
         loginPromise = (async () => {
-          await Purchases.logIn(cid);
+          await runRevenueCatNativeStep("LOGIN", () => Purchases.logIn(cid), { churchId: cid });
           configuredAppUserId = cid;
         })();
         try {
@@ -260,8 +310,12 @@ export async function logInRevenueCatForChurchSubscription(
       }
     }
 
-    await Purchases.syncPurchases();
-    return await Purchases.getCustomerInfo();
+    await runRevenueCatNativeStep("SYNC_PURCHASES", () => Purchases.syncPurchases(), {
+      churchId: cid,
+    });
+    return await runRevenueCatNativeStep("CUSTOMER_INFO", () => Purchases.getCustomerInfo(), {
+      churchId: cid,
+    });
   } catch (error) {
     console.log("KRISTO_RC_LOGIN_FOR_CHURCH_SUBSCRIPTION_FAILED", {
       churchId: cid,
@@ -421,7 +475,7 @@ export async function getCustomerSubscriptionInfo(): Promise<CustomerInfo> {
   }
 
   await requireConfiguredPurchases("customer info");
-  return Purchases.getCustomerInfo();
+  return runRevenueCatNativeStep("CUSTOMER_INFO", () => Purchases.getCustomerInfo());
 }
 
 export function hasActiveEntitlement(

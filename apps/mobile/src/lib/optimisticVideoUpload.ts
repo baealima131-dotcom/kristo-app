@@ -72,7 +72,8 @@ export type MediaVideoUploadJob = {
   localPosterUri?: string;
   fileName: string;
   title: string;
-  caption: string;
+  caption?: string;
+  videoDisplayType?: "youtube" | "tiktok";
   churchId: string;
   userId: string;
   role: string;
@@ -335,6 +336,7 @@ async function tryPublishUploadedVideo(
     faststart: params.publishMetadata.faststart,
     faststartPending: params.faststartPending === true,
     faststartReason: params.faststartReason || null,
+    videoDisplayType: job.videoDisplayType,
   });
   return parsePublishedFeedResponse(feedRes);
 }
@@ -431,6 +433,7 @@ function storedJobToUploadJob(stored: PersistedMediaUploadJob): MediaVideoUpload
     fileName: stored.fileName,
     title: stored.title,
     caption: stored.caption,
+    videoDisplayType: stored.videoDisplayType,
     churchId: stored.churchId,
     userId: stored.userId,
     role: stored.role,
@@ -949,7 +952,7 @@ export function enqueueMediaVideoUpload(job: MediaVideoUploadJob, callbacks: Med
     await createMediaUploadJob({
       jobId,
       title: job.title,
-      caption: job.caption,
+      caption: job.caption || "",
       fileUri: job.fileUri,
       localPosterUri: job.localPosterUri,
       fileName: job.fileName,
@@ -957,6 +960,7 @@ export function enqueueMediaVideoUpload(job: MediaVideoUploadJob, callbacks: Med
       userId: job.userId,
       role: job.role,
       durationMs: job.durationMs,
+      videoDisplayType: job.videoDisplayType,
       resumableMode: "chunk",
       chunkSessionId: jobId,
     });

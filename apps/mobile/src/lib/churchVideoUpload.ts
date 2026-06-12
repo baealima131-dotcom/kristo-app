@@ -3,6 +3,7 @@ import {
   brandedVideoPosterPayload,
   isBrandedVideoPosterUri,
 } from "@/src/lib/brandedVideoPoster";
+import type { HomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import type { MediaStatus } from "@/src/lib/mediaStatus";
 
 type HeadersRec = Record<string, string>;
@@ -433,7 +434,7 @@ export function parsePublishedFeedResponse(res: any): PublishedFeedPost | null {
 
 export async function publishChurchVideoFeedPost(params: {
   title: string;
-  caption: string;
+  caption?: string;
   videoUrl: string;
   posterUri?: string;
   videoPosterUri?: string;
@@ -445,6 +446,7 @@ export async function publishChurchVideoFeedPost(params: {
   faststart?: boolean;
   faststartPending?: boolean;
   faststartReason?: string | null;
+  videoDisplayType?: HomeFeedVideoDisplayType;
 }) {
   const poster = String(params.posterUri || params.videoPosterUri || params.thumbnailUri || "").trim();
   const branded = !poster || isBrandedVideoPosterUri(poster);
@@ -474,8 +476,9 @@ export async function publishChurchVideoFeedPost(params: {
     isMediaPost: true,
     mediaStatus: "ready" satisfies MediaStatus,
     title: params.title,
-    text: params.caption,
+    ...(String(params.caption || "").trim() ? { text: String(params.caption).trim() } : {}),
     videoUrl: params.videoUrl,
+    videoDisplayType: params.videoDisplayType === "tiktok" ? "tiktok" : "youtube",
     ...(metadata.durationMs ? { durationMs: metadata.durationMs } : {}),
     ...(metadata.sizeBytes > 0 ? { sizeBytes: metadata.sizeBytes } : {}),
     ...(publishBitrateEstimate ? { bitrateEstimate: publishBitrateEstimate } : {}),

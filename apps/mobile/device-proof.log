@@ -1,0 +1,11 @@
+
+> mobile@1.0.0 start:dev
+> expo start --dev-client -c --host lan --port 8084
+
+env: load .env
+env: export EXPO_PUBLIC_KRISTO_DEV_BYPASS_SUBSCRIPTION EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS EXPO_PUBLIC_KRISTO_DISABLE_REVENUECAT
+Starting project at /Users/princefariji/kristo-app/apps/mobile
+Starting Metro Bundler
+warning: Bundler cache is empty, rebuilding (this may take a minute)
+Waiting on http://localhost:8084
+Logs for your project will appear below.

@@ -1,0 +1,966 @@
+env: load .env
+env: export EXPO_PUBLIC_KRISTO_DEV_BYPASS_SUBSCRIPTION EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS EXPO_PUBLIC_KRISTO_DISABLE_REVENUECAT
+- Installing CocoaPods...
+⚠️  Something went wrong running `pod install` in the `ios` directory.
+Command `pod install` failed.
+└─ Cause: CocoaPods could not find compatible versions for pod "WebRTC-SDK":
+  In snapshot (Podfile.lock):
+    WebRTC-SDK (= 144.7559.01)
+
+  In Podfile:
+    livekit-react-native-webrtc (from `../node_modules/@livekit/react-native-webrtc`) was resolved to 144.1.0, which depends on
+      WebRTC-SDK (= 144.7559.04)
+
+
+You have either:
+ * changed the constraints of dependency `WebRTC-SDK` inside your development pod `livekit-react-native-webrtc`.
+   You should run `pod update WebRTC-SDK` to apply changes you've made.[0m
+
+pod install --repo-update --ansi exited with non-zero code: 1
+env: load .env
+env: export EXPO_PUBLIC_KRISTO_DEV_BYPASS_SUBSCRIPTION EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS EXPO_PUBLIC_KRISTO_DISABLE_REVENUECAT
+- Installing CocoaPods...
+✔ Installed CocoaPods
+CommandError: --port and --no-bundler are mutually exclusive arguments
+env: load .env
+env: export EXPO_PUBLIC_KRISTO_DEV_BYPASS_SUBSCRIPTION EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS EXPO_PUBLIC_KRISTO_DISABLE_REVENUECAT
+Unexpected devicectl JSON version output from devicectl. Connecting to physical Apple devices may not work as expected.
+› Using --device 00008110-001A1DD63E44801E
+› Auto signing app using team(s): LSPAUB72W8
+› Planning build
+› Preparing Pods/nanopb-nanopb_Privacy » ResourceBundle-nanopb_Privacy-nanopb-Info.plist
+› Preparing Pods/StripeCore-StripeCoreBundle » ResourceBundle-StripeCoreBundle-StripeCore-Info.plist
+› Preparing expo-image Pods/SDWebImage-SDWebImage » ResourceBundle-SDWebImage-SDWebImage-Info.plist
+› Preparing Pods/Protobuf-Protobuf_Privacy » ResourceBundle-Protobuf_Privacy-Protobuf-Info.plist
+› Preparing Pods/GoogleDataTransport-GoogleDataTransport_Privacy » ResourceBundle-GoogleDataTransport_Privacy-GoogleDataTransport-Info.plist
+› Executing react-native Pods/ReactNativeDependencies » [CP-User] [RNDeps] Replace React Native Dependencies for the right configuration, if needed
+› Executing react-native Pods/hermes-engine » [CP-User] [Hermes] Replace Hermes for the right configuration, if needed
+› Preparing Pods/GoogleUtilities-GoogleUtilities_Privacy » ResourceBundle-GoogleUtilities_Privacy-GoogleUtilities-Info.plist
+› Preparing Pods/PromisesObjC-FBLPromises_Privacy » ResourceBundle-FBLPromises_Privacy-PromisesObjC-Info.plist
+› Preparing expo-constants Pods/EXConstants-EXConstants » ResourceBundle-EXConstants-EXConstants-Info.plist
+› Copying   react-native-purchases RevenueCat/RevenueCat.bundle/PrivacyInfo.xcprivacy ➜ apps/mobile/ios/Pods/RevenueCat/Sources/PrivacyInfo.xcprivacy
+› Copying   react-native-purchases PurchasesHybridCommon/PurchasesHybridCommon.bundle/PrivacyInfo.xcprivacy ➜ apps/mobile/ios/Pods/PurchasesHybridCommon/ios/PurchasesHybridCommon/PurchasesHybridCommon/PrivacyInfo.xcprivacy
+› Copying   ExpoFileSystem/ExpoFileSystem_privacy.bundle/PrivacyInfo.xcprivacy ➜ apps/mobile/node_modules/expo-file-system/ios/PrivacyInfo.xcprivacy
+› Preparing Pods/ExpoFileSystem-ExpoFileSystem_privacy » ResourceBundle-ExpoFileSystem_privacy-ExpoFileSystem-Info.plist
+› Preparing react-native-purchases Pods/RevenueCat-RevenueCat » ResourceBundle-RevenueCat-RevenueCat-Info.plist
+› Preparing react-native-purchases Pods/PurchasesHybridCommon-PurchasesHybridCommon » ResourceBundle-PurchasesHybridCommon-PurchasesHybridCommon-Info.plist
+› Executing @livekit/react-native-webrtc Pods/WebRTC-SDK » [CP] Copy XCFrameworks
+› Copying   EXConstants/ExpoConstants_privacy.bundle/PrivacyInfo.xcprivacy ➜ apps/mobile/node_modules/expo-constants/ios/PrivacyInfo.xcprivacy
+› Preparing Pods/EXConstants-ExpoConstants_privacy » ResourceBundle-ExpoConstants_privacy-EXConstants-Info.plist
+› Executing react-native Pods/ReactNativeDependencies » [CP] Copy XCFrameworks
+› Executing react-native Pods/hermes-engine » [CP] Copy XCFrameworks
+› Executing react-native Pods/React-Core-prebuilt » [CP-User] [RNDeps] Replace React Native Core for the right configuration, if needed
+› Executing react-native Pods/React-Core-prebuilt » [CP] Copy XCFrameworks
+› Executing @stripe/stripe-react-native Pods/StripeCore » Copy generated compatibility header
+› Preparing Pods/Stripe-StripeBundle » ResourceBundle-StripeBundle-Stripe-Info.plist
+› Executing expo-face-detector Pods/Protobuf » Copy generated compatibility header
+› Compiling expo-json-utils Pods/EXJSONUtils » NSDictionary+EXJSONUtils.m
+› Packaging expo-json-utils Pods/EXJSONUtils » libEXJSONUtils.a
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModuleOptions.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule+VideoTrackAdapter.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule+Transceivers.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule+RTCPeerConnection.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule+RTCMediaStream.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule+RTCFrameCryptor.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule+RTCDataChannel.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule+RTCAudioSession.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule+RTCAudioDeviceModule.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » WebRTCModule+Permissions.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » VideoEffectProcessor.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » VideoCaptureController.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » SocketConnection.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » TrackCapturerEventsEmitter.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » SerializeUtils.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » ScreenCapturer.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » ScreenCapturePickerViewManager.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » ScreenCaptureController.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » SampleBufferVideoCallView.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » RTCMediaStreamTrack+React.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » RTCVideoViewManager.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » RCTConvert+WebRTC.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » ProcessorProvider.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » PIPController.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » I420Converter.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » DataChannelWrapper.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » CaptureController.m
+› Compiling @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » AudioDeviceModuleObserver.m
+› Compiling react-native-pager-view Pods/SwiftUIIntrospect » SwiftUIIntrospect-dummy.m
+› Packaging react-native-pager-view Pods/SwiftUIIntrospect » libSwiftUIIntrospect.a
+› Executing expo-dev-menu-interface Pods/expo-dev-menu-interface » Copy generated compatibility header
+› Executing react-native-pager-view Pods/SwiftUIIntrospect » Copy generated compatibility header
+› Packaging react-native-purchases Pods/RevenueCat » libRevenueCat.a
+› Compiling @stripe/stripe-react-native Pods/StripeUICore » StripeUICore-dummy.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » UIViewController+Stripe3DS2.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » UIView+LayoutSupport.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » UIFont+DefaultFonts.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » UIColor+ThirteenSupport.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » UIColor+DefaultColors.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » UIButton+CustomInitialization.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » StripePayments-dummy.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSWhitelistView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSWebView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSWarning.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSUICustomization.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSTransaction.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSThreeDSProtocolVersion.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSThreeDS2Service.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSTextFieldCustomization.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSTextChallengeView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSSynchronousLocationManager.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSSwiftTryCatch.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSStripe3DS2Error.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSStackView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSSpacerView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSSimulatorChecker.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSSelectionCustomization.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSSelectionButton.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSSecTypeUtilities.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSRuntimeException.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSRuntimeErrorEvent.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSProtocolErrorEvent.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSProgressViewController.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSProcessingView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSOSVersionChecker.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSNotInitializedException.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSNavigationBarCustomization.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSLabelCustomization.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSJailbreakChecker.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSJSONWebSignature.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSJSONWebEncryption.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSJSONEncoder.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSInvalidInputException.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSIntegrityChecker.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSImageLoader.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSIPAddress.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSFooterCustomization.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSExpandableInformationView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSException.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSErrorMessage.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSErrorMessage+Internal.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSEphemeralKeyPair.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSEllipticCurvePoint.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSDirectoryServerCertificate.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSDeviceInformationParameter.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSDeviceInformationManager.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSDeviceInformation.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSDebuggerChecker.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSCustomization.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSConfigParameters.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSCompletionEvent.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSChallengeSelectionView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSChallengeResponseViewController.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSChallengeResponseSelectionInfoObject.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSChallengeResponseObject.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSChallengeResponseMessageExtensionObject.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSChallengeResponseImageObject.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSChallengeRequestParameters.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSChallengeParameters.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSChallengeInformationView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSButtonCustomization.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSBundleLocator.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSBrandingView.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSAuthenticationResponseObject.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSAuthenticationRequestParameters.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSAlreadyInitializedException.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » STDSACSNetworkingManager.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » NSString+JWEHelpers.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » NSString+EmptyChecking.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » NSLayoutConstraint+LayoutSupport.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » NSError+Stripe3DS2.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » NSDictionary+DecodingHelpers.m
+› Compiling @stripe/stripe-react-native Pods/StripePayments » NSData+JWEHelpers.m
+› Compiling @stripe/stripe-react-native Pods/StripeApplePay » StripeApplePay-dummy.m
+› Preparing Pods/StripeFinancialConnections-StripeFinancialConnectionsBundle » ResourceBundle-StripeFinancialConnectionsBundle-StripeFinancialConnections-Info.plist
+› Executing react-native-purchases Pods/RevenueCat » Copy generated compatibility header
+› Copying   React-cxxreact/React-cxxreact_privacy.bundle/PrivacyInfo.xcprivacy ➜ apps/mobile/node_modules/react-native/ReactCommon/cxxreact/PrivacyInfo.xcprivacy
+› Packaging @stripe/stripe-react-native Pods/StripeApplePay » libStripeApplePay.a
+› Preparing Pods/React-cxxreact-React-cxxreact_privacy » ResourceBundle-React-cxxreact_privacy-React-cxxreact-Info.plist
+› Copying   React-Core/React-Core_privacy.bundle/PrivacyInfo.xcprivacy ➜ apps/mobile/node_modules/react-native/React/Resources/PrivacyInfo.xcprivacy
+› Preparing Pods/MLKitFaceDetection-GoogleMVFaceDetectorResources » ResourceBundle-GoogleMVFaceDetectorResources-MLKitFaceDetection-Info.plist
+› Preparing Pods/React-Core-React-Core_privacy » ResourceBundle-React-Core_privacy-React-Core-Info.plist
+› Executing @stripe/stripe-react-native Pods/StripeApplePay » Copy generated compatibility header
+› Compiling react-native-incall-manager Pods/ReactNativeIncallManager » RNInCallManager.m
+› Packaging @livekit/react-native-webrtc Pods/livekit-react-native-webrtc » liblivekit-react-native-webrtc.a
+› Executing react-native Pods/React-RCTFBReactNativeSpec » [CP-User] [RN]Check FBReactNativeSpec
+› Copying   RNCAsyncStorage/RNCAsyncStorage_resources.bundle/PrivacyInfo.xcprivacy ➜ apps/mobile/node_modules/@react-native-async-storage/async-storage/ios/PrivacyInfo.xcprivacy
+› Preparing Pods/RNCAsyncStorage-RNCAsyncStorage_resources » ResourceBundle-RNCAsyncStorage_resources-RNCAsyncStorage-Info.plist
+› Packaging react-native-incall-manager Pods/ReactNativeIncallManager » libReactNativeIncallManager.a
+› Compiling react-native-purchases Pods/PurchasesHybridCommon » PurchasesHybridCommon-dummy.m
+› Executing mobile Pods/ReactCodegen » [CP-User] Generate Specs
+› Packaging react-native-purchases Pods/PurchasesHybridCommon » libPurchasesHybridCommon.a
+› Executing react-native-purchases Pods/PurchasesHybridCommon » Copy generated compatibility header
+› Compiling mobile Pods/ReactCodegen » safeareacontextJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnstripeJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnworkletsJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » safeareacontext-generated.mm
+› Compiling mobile Pods/ReactCodegen » rnworklets-generated.mm
+› Compiling mobile Pods/ReactCodegen » rnstripe-generated.mm
+› Compiling mobile Pods/ReactCodegen » rnscreensJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnscreens-generated.mm
+› Compiling mobile Pods/ReactCodegen » rnreanimatedJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnreanimated-generated.mm
+› Compiling mobile Pods/ReactCodegen » rngesturehandler_codegenJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rngesturehandler_codegen-generated.mm
+› Compiling mobile Pods/ReactCodegen » rnasyncstorageJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnasyncstorage-generated.mm
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » RNCompressorSpecJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » RNCompressorSpec-generated.mm
+› Compiling mobile Pods/ReactCodegen » RCTUnstableModulesRequiringMainQueueSetupProvider.mm
+› Compiling mobile Pods/ReactCodegen » RCTThirdPartyComponentsProvider.mm
+› Compiling mobile Pods/ReactCodegen » RCTModulesConformingToProtocolsProvider.mm
+› Compiling mobile Pods/ReactCodegen » RCTModuleProviders.mm
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Preparing Pods/StripeUICore-StripeUICoreBundle » ResourceBundle-StripeUICoreBundle-StripeUICore-Info.plist
+› Preparing Pods/StripePayments-Stripe3DS2 » ResourceBundle-Stripe3DS2-StripePayments-Info.plist
+› Preparing Pods/StripePaymentSheet-StripePaymentSheetBundle » ResourceBundle-StripePaymentSheetBundle-StripePaymentSheet-Info.plist
+› Compiling react-native-color-matrix-image-filters Pods/react-native-color-matrix-image-filters » CMIFColorMatrixImageFilter.mm
+› Compiling mobile Pods/ReactAppDependencyProvider » RCTAppDependencyProvider.mm
+› Compiling react-native-worklets Pods/RNWorklets » AnimationFrameBatchinator.cpp
+› Compiling react-native-screens Pods/RNScreens » NSString+RNSUtility.mm
+› Compiling @react-native-community/slider Pods/react-native-slider » RNCSlider.m
+› Compiling @react-native-community/slider Pods/react-native-slider » RNCSliderShadowNode.cpp
+› Compiling @react-native-community/slider Pods/react-native-slider » RNCSliderMeasurementsManager.cpp
+› Compiling @react-native-community/slider Pods/react-native-slider » RNCSliderComponentView.mm
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCOnInsetsChangeEvent.m
+› Compiling react-native-screens Pods/RNScreens » UIWindow+RNScreens.mm
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewState.cpp
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewShadowNode.cpp
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewComponentView.mm
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaProviderComponentView.mm
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaContext.mm
+› Compiling react-native-color-matrix-image-filters Pods/react-native-color-matrix-image-filters » CMIFColorMatrixImageFilterManager.mm
+› Compiling react-native-worklets Pods/RNWorklets » WorkletsVersion.cpp
+› Compiling react-native-worklets Pods/RNWorklets » WorkletsModuleProxy.cpp
+› Compiling react-native-worklets Pods/RNWorklets » WorkletsModule.mm
+› Compiling react-native-worklets Pods/RNWorklets » WorkletsMessageThread.mm
+› Compiling react-native-worklets Pods/RNWorklets » WorkletsJSIUtils.cpp
+› Compiling react-native-worklets Pods/RNWorklets » WorkletRuntimeRegistry.cpp
+› Compiling react-native-worklets Pods/RNWorklets » WorkletRuntimeDecorator.cpp
+› Compiling react-native-worklets Pods/RNWorklets » WorkletRuntime.cpp
+› Compiling react-native-worklets Pods/RNWorklets » WorkletHermesRuntime.cpp
+› Compiling react-native-worklets Pods/RNWorklets » WorkletEventHandler.cpp
+› Compiling react-native-worklets Pods/RNWorklets » VersionUtils.cpp
+› Compiling react-native-worklets Pods/RNWorklets » ValueUnpacker.cpp
+› Compiling react-native-worklets Pods/RNWorklets » UIScheduler.cpp
+› Compiling react-native-worklets Pods/RNWorklets » UIRuntimeDecorator.cpp
+› Compiling react-native-worklets Pods/RNWorklets » SynchronizableUnpacker.cpp
+› Compiling react-native-worklets Pods/RNWorklets » SynchronizableAccess.cpp
+› Compiling react-native-worklets Pods/RNWorklets » Synchronizable.cpp
+› Compiling react-native-worklets Pods/RNWorklets » SlowAnimations.mm
+› Compiling react-native-worklets Pods/RNWorklets » Serializable.cpp
+› Compiling react-native-worklets Pods/RNWorklets » RuntimeManager.cpp
+› Compiling react-native-worklets Pods/RNWorklets » RuntimeData.cpp
+› Compiling react-native-worklets Pods/RNWorklets » RNRuntimeWorkletDecorator.cpp
+› Compiling react-native-worklets Pods/RNWorklets » PlatformLogger.mm
+› Compiling react-native-worklets Pods/RNWorklets » JSScheduler.cpp
+› Compiling react-native-worklets Pods/RNWorklets » JSLogger.cpp
+› Compiling react-native-worklets Pods/RNWorklets » JSIWorkletsModuleProxy.cpp
+› Compiling react-native-worklets Pods/RNWorklets » JSISerializer.cpp
+› Compiling react-native-worklets Pods/RNWorklets » IOSUIScheduler.mm
+› Compiling react-native-worklets Pods/RNWorklets » FeatureFlags.cpp
+› Compiling react-native-worklets Pods/RNWorklets » EventLoop.cpp
+› Compiling react-native-worklets Pods/RNWorklets » EventHandlerRegistry.cpp
+› Compiling react-native-worklets Pods/RNWorklets » AsyncQueueImpl.cpp
+› Compiling react-native-worklets Pods/RNWorklets » AnimationFrameQueue.mm
+› Compiling react-native-screens Pods/RNScreens » UIViewController+RNScreens.mm
+› Compiling react-native-screens Pods/RNScreens » UIView+RNSUtility.mm
+› Compiling react-native-screens Pods/RNScreens » UIScrollView+RNScreens.mm
+› Compiling react-native-screens Pods/RNScreens » UINavigationBar+RNSUtility.mm
+› Compiling react-native-screens Pods/RNScreens » RNScreensTurboModule.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSViewControllerInvalidator.mm
+› Compiling react-native-screens Pods/RNScreens » RNSTabsScreenViewController.mm
+› Compiling react-native-screens Pods/RNScreens » RNSTabBarControllerDelegate.mm
+› Compiling react-native-screens Pods/RNScreens » RNSTabBarController.mm
+› Compiling react-native-screens Pods/RNScreens » RNSTabBarAppearanceCoordinator.mm
+› Compiling react-native-screens Pods/RNScreens » RNSSplitViewScreenShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSSearchBar.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScrollViewHelper.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScrollViewFinder.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenWindowTraits.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenViewEvent.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenState.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderSubviewState.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderSubviewShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderSubview.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderConfigState.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderConfigShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderConfig.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackAnimator.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStack.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenRemovalListener.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenNavigationContainer.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenFooter.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenContentWrapper.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenContainer.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreen.mm
+› Compiling react-native-screens Pods/RNScreens » RNSReactBaseView.mm
+› Compiling react-native-screens Pods/RNScreens » RNSPercentDrivenInteractiveTransition.mm
+› Compiling react-native-screens Pods/RNScreens » RNSModule.mm
+› Compiling react-native-screens Pods/RNScreens » RNSModalScreenShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSModalScreen.mm
+› Compiling react-native-screens Pods/RNScreens » RNSInvalidatedComponentsRegistry.mm
+› Compiling react-native-screens Pods/RNScreens » RNSHeaderHeightChangeEvent.mm
+› Compiling react-native-screens Pods/RNScreens » RNSGammaStubs.mm
+› Compiling react-native-screens Pods/RNScreens » RNSFullWindowOverlayShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSFullWindowOverlay.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConvert.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConversions.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConversions-SplitView.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConversions-Fabric.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConversions-BottomTabs.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsState.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsScreenEventEmitter.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsScreenComponentViewManager.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsScreenComponentView.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsHostEventEmitter.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsHostComponentViewManager.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsHostComponentView.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsHostComponentView+RNSImageLoader.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBackBarButtonItem.mm
+› Compiling react-native-screens Pods/RNScreens » RCTTouchHandler+RNSUtility.mm
+› Compiling react-native-screens Pods/RNScreens » RCTSurfaceTouchHandler+RNSUtility.mm
+› Compiling react-native-screens Pods/RNScreens » RCTImageComponentView+RNSScreenStackHeaderConfig.mm
+› Compiling react-native-screens Pods/RNScreens » RCTConvert+RNScreens.mm
+› Compiling react-native-screens Pods/RNScreens » RCTConvert+RNSBottomTabs.mm
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewMode.m
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewManager.m
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewLocalData.m
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewEdges.m
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewEdgeMode.m
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaView.m
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaUtils.m
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaShadowView.m
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaProviderManager.m
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaProvider.m
+› Packaging mobile Pods/ReactCodegen » libReactCodegen.a
+› Compiling react-native-pager-view Pods/react-native-pager-view » RNCPagerViewComponentView.mm
+› Compiling react-native-compressor Pods/react-native-compressor » Compressor.mm
+› Compiling react-native-reanimated Pods/RNReanimated » algorithms.cpp
+› Compiling react-native-purchases Pods/RNPurchases » RNPurchases-dummy.m
+› Compiling @react-native-async-storage/async-storage Pods/RNCAsyncStorage » RNCAsyncStorage.mm
+› Compiling @livekit/react-native Pods/livekit-react-native » LivekitReactNativeModule.m
+› Compiling @livekit/react-native Pods/livekit-react-native » LivekitReactNative.m
+› Compiling @livekit/react-native Pods/livekit-react-native » LKAudioProcessingManager.m
+› Compiling react-native-pager-view Pods/react-native-pager-view » react-native-pager-view-dummy.m
+› Compiling react-native-pager-view Pods/react-native-pager-view » RCTOnPageScrollEvent.m
+› Packaging @stripe/stripe-react-native Pods/StripeUICore » libStripeUICore.a
+› Compiling @livekit/react-native Pods/livekit-react-native » LKAudioProcessingAdapter.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNFlingHandler.m
+› Executing @stripe/stripe-react-native Pods/StripeUICore » Copy generated compatibility header
+› Compiling @react-native-masked-view/masked-view Pods/RNCMaskedView » RNCMaskedView.m
+› Compiling react-native-reanimated Pods/RNReanimated » vectors.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » steps.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » props.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » matrix.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » linear.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » keyframes.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » interpolators.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » cubicBezier.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » common.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ViewStylesRepository.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ValueInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » UpdatesRegistryManager.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » UpdatesRegistry.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » UIRuntimeDecorator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » TransitionStyleInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » TransitionProgressProvider.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » TransformsStyleInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » TransformOperationInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » TransformOperation.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » TransformOp.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » TransformMatrix3D.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » TransformMatrix2D.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » StaticPropsRegistry.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » SimpleValueInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ShadowTreeCloner.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » SetGestureState.mm
+› Compiling react-native-reanimated Pods/RNReanimated » SVGStrokeDashArray.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » SVGLength.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ResolvableValueInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » RecordPropertiesInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ReanimatedVersion.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ReanimatedMountHook.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ReanimatedModuleProxySpec.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ReanimatedModuleProxy.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ReanimatedModule.mm
+› Compiling react-native-reanimated Pods/RNReanimated » ReanimatedCommitHook.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » RawProgressProvider.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » RNRuntimeDecorator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » REASlowAnimations.mm
+› Compiling react-native-reanimated Pods/RNReanimated » REANodesManager.mm
+› Compiling react-native-reanimated Pods/RNReanimated » REAKeyboardEventObserver.mm
+› Compiling react-native-reanimated Pods/RNReanimated » Quaternion.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » PropertyInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » PropValueProcessor.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » PlatformDepMethodsHolderImpl.mm
+› Compiling react-native-reanimated Pods/RNReanimated » NativeProxy.mm
+› Compiling react-native-reanimated Pods/RNReanimated » LayoutAnimationsUtils.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » LayoutAnimationsProxy.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » LayoutAnimationsManager.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » InterpolatorRegistry.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » InterpolatorFactory.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » GroupPropertiesInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » FeatureFlags.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » EasingFunctions.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » DelayedItemsManager.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSValueVariant.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSTransitionsRegistry.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSTransitionConfig.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSTransition.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSNumber.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSLength.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSKeyword.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSKeyframesRegistry.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSKeyframesConfig.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSDiscreteArray.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSColor.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSBoolean.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSAnimationsRegistry.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSAnimationConfig.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSAnimation.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » CSSAngle.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » ArrayPropertiesInterpolator.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » AnimationProgressProvider.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » AnimatedSensorModule.cpp
+› Compiling react-native-reanimated Pods/RNReanimated » AnimatedPropsRegistry.cpp
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNNativeViewHandler.mm
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerRootViewComponentView.mm
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerModule.mm
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerManager.mm
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerButtonManager.mm
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerButtonComponentView.mm
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerButton.mm
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandler.mm
+› Compiling react-native-purchases Pods/RNPurchases » RNPurchases.m
+› Preparing Pods/StripePayments-StripePaymentsBundle » ResourceBundle-StripePaymentsBundle-StripePayments-Info.plist
+› Packaging @react-native-community/slider Pods/react-native-slider » libreact-native-slider.a
+› Packaging react-native-safe-area-context Pods/react-native-safe-area-context » libreact-native-safe-area-context.a
+› Packaging react-native-color-matrix-image-filters Pods/react-native-color-matrix-image-filters » libreact-native-color-matrix-image-filters.a
+› Packaging @stripe/stripe-react-native Pods/StripePayments » libStripePayments.a
+› Packaging mobile Pods/ReactAppDependencyProvider » libReactAppDependencyProvider.a
+› Packaging react-native-worklets Pods/RNWorklets » libRNWorklets.a
+› Packaging react-native-screens Pods/RNScreens » libRNScreens.a
+› Packaging @react-native-async-storage/async-storage Pods/RNCAsyncStorage » libRNCAsyncStorage.a
+› Compiling react-native-reanimated Pods/RNReanimated » ReanimatedSensorContainer.m
+› Compiling react-native-reanimated Pods/RNReanimated » ReanimatedSensor.m
+› Packaging react-native-pager-view Pods/react-native-pager-view » libreact-native-pager-view.a
+› Packaging react-native-compressor Pods/react-native-compressor » libreact-native-compressor.a
+› Packaging @livekit/react-native Pods/livekit-react-native » liblivekit-react-native.a
+› Packaging react-native-purchases Pods/RNPurchases » libRNPurchases.a
+› Compiling react-native-reanimated Pods/RNReanimated » RCTUIView+Reanimated.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNTapHandler.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNRotationHandler.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNRootViewGestureRecognizer.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNPinchHandler.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNPanHandler.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNManualHandler.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNManualActivationRecognizer.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNLongPressHandler.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNHoverHandler.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerRegistry.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerPointerTracker.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerEvents.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGHVector.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGHStylusData.m
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNForceTouchHandler.m
+› Executing react-native-pager-view Pods/react-native-pager-view » Copy generated compatibility header
+› Executing react-native-compressor Pods/react-native-compressor » Copy generated compatibility header
+› Executing @livekit/react-native Pods/livekit-react-native » Copy generated compatibility header
+› Compiling @react-native-masked-view/masked-view Pods/RNCMaskedView » RNCMaskedViewManager.m
+› Executing @stripe/stripe-react-native Pods/StripePayments » Copy generated compatibility header
+› Executing react-native-purchases Pods/RNPurchases » Copy generated compatibility header
+› Compiling expo-modules-core Pods/ExpoModulesCore » TypedArray.cpp
+› Packaging @react-native-masked-view/masked-view Pods/RNCMaskedView » libRNCMaskedView.a
+› Compiling expo-modules-core Pods/ExpoModulesCore » SwiftUIVirtualViewObjC.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » SharedRef.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » SharedObject.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » ObjectDeallocator.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » NativeModule.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » MainThreadInvoker.mm
+› Packaging react-native-gesture-handler Pods/RNGestureHandler » libRNGestureHandler.a
+› Compiling expo-modules-core Pods/ExpoModulesCore » LazyObject.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » JSIUtils.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » ExpoViewShadowNode.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » ExpoViewProps.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » ExpoViewEventEmitter.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » ExpoViewComponentDescriptor.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » ExpoModulesHostObject.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » ExpoFabricViewObjC.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » ExpoBridgeModule.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EventEmitter.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXStringUtils.cpp
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXSharedObjectUtils.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXReactNativeAdapter.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXReactDelegateWrapper.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXRawJavaScriptFunction.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXNativeModulesProxy.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXJavaScriptWeakObject.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXJavaScriptValue.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXJavaScriptTypedArray.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXJavaScriptSharedObjectBinding.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXJavaScriptRuntime.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXJavaScriptObject.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXJSIUtils.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXJSIInstaller.mm
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXJSIConversions.mm
+› Packaging react-native-reanimated Pods/RNReanimated » libRNReanimated.a
+› Compiling expo-modules-core Pods/ExpoModulesCore » RCTComponentData+Privates.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXUtilities.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXSingletonModule.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXReactNativeUserNotificationCenterProxy.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXReactNativeEventEmitter.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXReactLogHandler.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXPermissionsService.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXPermissionsMethodsDelegate.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXModuleRegistryProvider.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXModuleRegistryHolderReactModule.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXModuleRegistryAdapter.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXLogManager.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXModuleRegistry.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXExportedModule.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » EXAppDefines.m
+› Compiling expo-modules-core Pods/ExpoModulesCore » CoreModuleHelper.m
+› Compiling @stripe/stripe-react-native Pods/StripeFinancialConnections » StripeFinancialConnections-dummy.m
+› Packaging expo-modules-core Pods/ExpoModulesCore » libExpoModulesCore.a
+› Executing expo-modules-core Pods/ExpoModulesCore » Copy generated compatibility header
+› Compiling @stripe/stripe-react-native Pods/StripePaymentsUI » StripePaymentsUI-dummy.m
+› Packaging @stripe/stripe-react-native Pods/StripeFinancialConnections » libStripeFinancialConnections.a
+› Preparing Pods/StripePaymentsUI-StripePaymentsUIBundle » ResourceBundle-StripePaymentsUIBundle-StripePaymentsUI-Info.plist
+› Compiling expo-image-loader Pods/EXImageLoader » EXImageLoader.m
+› Compiling expo-image-loader Pods/EXImageLoader » EXImageLoader-dummy.m
+› Compiling expo-face-detector Pods/EXFaceDetector » EXFaceDetector-dummy.m
+› Compiling expo-face-detector Pods/EXFaceDetector » EXCSBufferOrientationCalculator.m
+› Packaging expo-image-loader Pods/EXImageLoader » libEXImageLoader.a
+› Compiling expo-face-detector Pods/EXFaceDetector » EXFaceEncoder.m
+› Compiling expo-face-detector Pods/EXFaceDetector » EXFaceDetectorUtils.m
+› Compiling expo-face-detector Pods/EXFaceDetector » EXFaceDetectorModule.m
+› Compiling expo-face-detector Pods/EXFaceDetector » EXFaceDetectorManagerProvider.m
+› Executing @stripe/stripe-react-native Pods/StripeFinancialConnections » Copy generated compatibility header
+› Executing expo-constants Pods/EXConstants » [CP-User] Generate app.config for prebuilt Constants.manifest
+› Compiling @livekit/react-native-expo-plugin Pods/LiveKitExpoPlugin » LiveKitExpoPlugin-dummy.m
+› Compiling expo-web-browser Pods/ExpoWebBrowser » ExpoWebBrowser-dummy.m
+› Compiling expo-video-thumbnails Pods/ExpoVideoThumbnails » ExpoVideoThumbnails-dummy.m
+› Compiling expo-video Pods/ExpoVideo » ExpoVideo-dummy.m
+› Compiling expo-splash-screen Pods/ExpoSplashScreen » ExpoSplashScreen-dummy.m
+› Compiling expo-sharing Pods/ExpoSharing » ExpoSharing-dummy.m
+› Compiling expo-print Pods/ExpoPrint » ExpoPrint-dummy.m
+› Compiling expo-linking Pods/ExpoLinking » ExpoLinking-dummy.m
+› Compiling expo-linear-gradient Pods/ExpoLinearGradient » ExpoLinearGradient-dummy.m
+› Compiling expo-keep-awake Pods/ExpoKeepAwake » ExpoKeepAwake-dummy.m
+› Compiling expo-image-picker Pods/ExpoImagePicker » ExpoImagePicker-dummy.m
+› Compiling expo-image-manipulator Pods/ExpoImageManipulator » ExpoImageManipulator-dummy.m
+› Compiling expo-image Pods/ExpoImage » ExpoImage-dummy.m
+› Compiling expo-router Pods/ExpoHead » LinkPreviewNativeNavigation.mm
+› Compiling expo-router Pods/ExpoHead » ExpoHead-dummy.m
+› Compiling expo-haptics Pods/ExpoHaptics » ExpoHaptics-dummy.m
+› Compiling expo-font Pods/ExpoFont » ExpoFont-dummy.m
+› Compiling expo-file-system Pods/ExpoFileSystem » ExpoFileSystem-dummy.m
+› Compiling expo-document-picker Pods/ExpoDocumentPicker » ExpoDocumentPicker-dummy.m
+› Compiling expo-clipboard Pods/ExpoClipboard » ExpoClipboard-dummy.m
+› Compiling expo-camera Pods/ExpoCamera » ExpoCamera-dummy.m
+› Compiling expo-blur Pods/ExpoBlur » ExpoBlur-dummy.m
+› Compiling expo-asset Pods/ExpoAsset » ExpoAsset-dummy.m
+› Compiling expo Pods/Expo » Expo-dummy.m
+› Compiling expo Pods/Expo » EXReactRootViewFactory.mm
+› Compiling expo Pods/Expo » EXAppDelegateWrapper.mm
+› Compiling expo-updates-interface Pods/EXUpdatesInterface » EXUpdatesInterface-dummy.m
+› Compiling expo-manifests Pods/EXManifests » EXManifests-dummy.m
+› Compiling expo-face-detector Pods/EXFaceDetector » EXFaceDetectorManager.m
+› Compiling expo-face-detector Pods/EXFaceDetector » EXFaceDetector.m
+› Packaging @livekit/react-native-expo-plugin Pods/LiveKitExpoPlugin » libLiveKitExpoPlugin.a
+› Packaging @stripe/stripe-react-native Pods/StripePaymentsUI » libStripePaymentsUI.a
+› Packaging expo-web-browser Pods/ExpoWebBrowser » libExpoWebBrowser.a
+› Packaging expo-video-thumbnails Pods/ExpoVideoThumbnails » libExpoVideoThumbnails.a
+› Packaging expo-video Pods/ExpoVideo » libExpoVideo.a
+› Packaging expo-splash-screen Pods/ExpoSplashScreen » libExpoSplashScreen.a
+› Packaging expo-sharing Pods/ExpoSharing » libExpoSharing.a
+› Packaging expo-print Pods/ExpoPrint » libExpoPrint.a
+› Packaging expo-face-detector Pods/EXFaceDetector » libEXFaceDetector.a
+› Packaging expo-linking Pods/ExpoLinking » libExpoLinking.a
+› Packaging expo-linear-gradient Pods/ExpoLinearGradient » libExpoLinearGradient.a
+› Packaging expo-keep-awake Pods/ExpoKeepAwake » libExpoKeepAwake.a
+› Packaging expo-image-picker Pods/ExpoImagePicker » libExpoImagePicker.a
+› Packaging expo-haptics Pods/ExpoHaptics » libExpoHaptics.a
+› Packaging expo-font Pods/ExpoFont » libExpoFont.a
+› Compiling expo-file-system Pods/ExpoFileSystem » EXTaskHandlersManager.m
+› Compiling expo-file-system Pods/ExpoFileSystem » NSData+EXFileSystem.m
+› Compiling expo-file-system Pods/ExpoFileSystem » EXSessionUploadTaskDelegate.m
+› Compiling expo-file-system Pods/ExpoFileSystem » EXSessionTaskDispatcher.m
+› Compiling expo-file-system Pods/ExpoFileSystem » EXSessionResumableDownloadTaskDelegate.m
+› Compiling expo-file-system Pods/ExpoFileSystem » EXSessionHandler.m
+› Compiling expo-file-system Pods/ExpoFileSystem » EXSessionTaskDelegate.m
+› Compiling expo-file-system Pods/ExpoFileSystem » EXSessionDownloadTaskDelegate.m
+› Compiling expo-file-system Pods/ExpoFileSystem » EXSessionCancelableUploadTaskDelegate.m
+› Packaging expo-document-picker Pods/ExpoDocumentPicker » libExpoDocumentPicker.a
+› Packaging expo-clipboard Pods/ExpoClipboard » libExpoClipboard.a
+› Packaging expo-camera Pods/ExpoCamera » libExpoCamera.a
+› Packaging expo-blur Pods/ExpoBlur » libExpoBlur.a
+› Compiling expo-file-system Pods/ExpoFileSystem » EXFileSystemLocalFileHandler.m
+› Compiling expo-file-system Pods/ExpoFileSystem » EXFileSystemAssetLibraryHandler.m
+› Packaging expo-asset Pods/ExpoAsset » libExpoAsset.a
+› Compiling expo Pods/Expo » EXLegacyAppDelegateWrapper.m
+› Compiling expo Pods/Expo » EXAppDelegatesLoader.m
+› Packaging expo-image Pods/ExpoImage » libExpoImage.a
+› Compiling expo Pods/Expo » EXAppDefinesLoader.m
+› Packaging expo-manifests Pods/EXManifests » libEXManifests.a
+› Packaging expo-file-system Pods/ExpoFileSystem » libExpoFileSystem.a
+› Executing @stripe/stripe-react-native Pods/StripePaymentsUI » Copy generated compatibility header
+› Executing @livekit/react-native-expo-plugin Pods/LiveKitExpoPlugin » Copy generated compatibility header
+› Executing expo-web-browser Pods/ExpoWebBrowser » Copy generated compatibility header
+› Compiling expo-updates-interface Pods/EXUpdatesInterface » noop-file.m
+› Packaging expo-updates-interface Pods/EXUpdatesInterface » libEXUpdatesInterface.a
+› Packaging expo-image-manipulator Pods/ExpoImageManipulator » libExpoImageManipulator.a
+› Packaging expo-router Pods/ExpoHead » libExpoHead.a
+› Executing expo-video-thumbnails Pods/ExpoVideoThumbnails » Copy generated compatibility header
+› Executing expo-video Pods/ExpoVideo » Copy generated compatibility header
+› Executing expo-splash-screen Pods/ExpoSplashScreen » Copy generated compatibility header
+› Executing expo-file-system Pods/ExpoFileSystem » Copy generated compatibility header
+› Executing expo-sharing Pods/ExpoSharing » Copy generated compatibility header
+› Executing expo-print Pods/ExpoPrint » Copy generated compatibility header
+› Executing expo-linking Pods/ExpoLinking » Copy generated compatibility header
+› Executing expo-linear-gradient Pods/ExpoLinearGradient » Copy generated compatibility header
+› Executing expo-keep-awake Pods/ExpoKeepAwake » Copy generated compatibility header
+› Executing expo-image-picker Pods/ExpoImagePicker » Copy generated compatibility header
+› Executing expo-image-manipulator Pods/ExpoImageManipulator » Copy generated compatibility header
+› Executing expo-image Pods/ExpoImage » Copy generated compatibility header
+› Executing expo-router Pods/ExpoHead » Copy generated compatibility header
+› Executing expo-haptics Pods/ExpoHaptics » Copy generated compatibility header
+› Executing expo-font Pods/ExpoFont » Copy generated compatibility header
+› Executing expo-document-picker Pods/ExpoDocumentPicker » Copy generated compatibility header
+› Executing expo-clipboard Pods/ExpoClipboard » Copy generated compatibility header
+› Executing expo-camera Pods/ExpoCamera » Copy generated compatibility header
+› Executing expo-blur Pods/ExpoBlur » Copy generated compatibility header
+› Executing expo-asset Pods/ExpoAsset » Copy generated compatibility header
+› Packaging expo Pods/Expo » libExpo.a
+› Executing expo-updates-interface Pods/EXUpdatesInterface » Copy generated compatibility header
+› Executing expo-manifests Pods/EXManifests » Copy generated compatibility header
+› Executing expo Pods/Expo » Copy generated compatibility header
+› Compiling expo-constants Pods/EXConstants » EXConstants-dummy.m
+› Compiling expo-constants Pods/EXConstants » EXConstantsInstallationIdProvider.m
+› Compiling expo-constants Pods/EXConstants » EXConstantsService.m
+› Packaging expo-constants Pods/EXConstants » libEXConstants.a
+› Compiling expo-dev-menu Pods/expo-dev-menu » expo-dev-menu-dummy.m
+› Compiling expo-dev-menu Pods/expo-dev-menu » DevClientNoOpLoadingView.m
+› Executing expo-constants Pods/EXConstants » Copy generated compatibility header
+› Compiling @stripe/stripe-react-native Pods/StripePaymentSheet » StripePaymentSheet-dummy.m
+› Compiling expo-dev-menu Pods/expo-dev-menu » EXDevMenuAppInfo.m
+› Compiling @stripe/stripe-react-native Pods/Stripe » Stripe-dummy.m
+› Packaging @stripe/stripe-react-native Pods/Stripe » libStripe.a
+› Preparing Pods/expo-dev-menu-EXDevMenu » ResourceBundle-EXDevMenu-expo-dev-menu-Info.plist
+› Executing @stripe/stripe-react-native Pods/Stripe » Copy generated compatibility header
+› Packaging expo-dev-menu Pods/expo-dev-menu » libexpo-dev-menu.a
+› Executing expo-dev-menu Pods/expo-dev-menu » Copy generated compatibility header
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » RCTPackagerConnection+EXDevLauncherPackagerConnectionInterceptor.m
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » expo-dev-launcher-dummy.m
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherReactNativeFactory.mm
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherUpdatesHelper.m
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherRCTDevSettings.m
+› Preparing Pods/expo-dev-launcher-EXDevLauncher » ResourceBundle-EXDevLauncher-expo-dev-launcher-Info.plist
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherRCTBridge.m
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherRedBox.m
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherManifestParser.m
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherDevMenuExtensions.m
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherDeferredRCTRootView.m
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncher.m
+› Packaging @stripe/stripe-react-native Pods/StripePaymentSheet » libStripePaymentSheet.a
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherController.m
+› Executing @stripe/stripe-react-native Pods/StripePaymentSheet » Copy generated compatibility header
+› Packaging expo-dev-launcher Pods/expo-dev-launcher » libexpo-dev-launcher.a
+› Executing expo-dev-launcher Pods/expo-dev-launcher » Copy generated compatibility header
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » StripeNewArchConversions.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » StripeContainerComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » StripeSdk.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » GooglePayButtonComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » EmbeddedPaymentElementViewComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » CardFormComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » stripe-react-native-dummy.m
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » CardFieldComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » AuBECSDebitFormComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » ApplePayButtonComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » AddressSheetViewComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » AddToWalletButtonComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » StripeSdkEventEmitterCompat.m
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » StripeContainerManager.m
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » EmbeddedPaymentElementManager.m
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » CardFormManager.m
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » CardFieldManager.m
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » AuBECSDebitFormManager.m
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » ApplePayButtonManager.m
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » AddToWalletButtonManager.m
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » AddressSheetViewManager.m
+› Packaging @stripe/stripe-react-native Pods/stripe-react-native » libstripe-react-native.a
+› Executing @stripe/stripe-react-native Pods/stripe-react-native » Copy generated compatibility header
+› Compiling Pods/Pods-KristoApp » Pods-KristoApp-dummy.m
+› Packaging Pods/Pods-KristoApp » libPods-KristoApp.a
+› Executing KristoApp » [CP] Check Pods Manifest.lock
+› Executing KristoApp » [Expo] Configure project
+› Compiling KristoApp » SplashScreen.storyboard
+› Linking   KristoApp » __preview.dylib
+› Copying   ./PrivacyInfo.xcprivacy ➜ apps/mobile/ios/KristoApp/PrivacyInfo.xcprivacy
+› Copying   ios/KristoApp/Supporting/Expo.plist ➜ ./Expo.plist
+› Preparing KristoApp » Info.plist
+› Compiling KristoApp » KristoApp_vers.c
+› Linking   KristoApp » KristoApp.debug.dylib
+⚠️  ld: ignoring duplicate libraries: '-lc++'
+› Linking   KristoApp » KristoApp
+› Executing KristoApp » Bundle React Native code and images
+› Executing KristoApp » [CP] Copy Pods Resources
+› Executing KristoApp » [CP] Embed Pods Frameworks
+› Generating debug KristoApp » KristoApp.app.dSYM
+› Generating debug KristoApp » KristoApp.app.dSYM
+› Signing   KristoApp » KristoApp.debug.dylib
+› Signing   KristoApp » __preview.dylib
+› Signing   KristoApp » KristoApp.app
+⚠️  Pods/nanopb-nanopb_Privacy: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/SDWebImage-SDWebImage: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/PromisesObjC-FBLPromises_Privacy: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/GoogleUtilities-GoogleUtilities_Privacy: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/GoogleDataTransport-GoogleDataTransport_Privacy: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/Protobuf-Protobuf_Privacy: iOS@10.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/MLKitFaceDetection-GoogleMVFaceDetectorResources: iOS@10.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+› Build Succeeded
+
+› 0 error(s), and 8 warning(s)
+
+Waiting on http://localhost:8081
+› Installing /Users/princefariji/Library/Developer/Xcode/DerivedData/KristoApp-ariyrrwfckfukzemkykhkvzlwpyt/Build/Products/Debug-iphoneos/KristoApp.app
+- GeneratingApplicationMap
+✔ Complete 100%
+env: load .env
+env: export EXPO_PUBLIC_KRISTO_DEV_BYPASS_SUBSCRIPTION EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS EXPO_PUBLIC_KRISTO_DISABLE_REVENUECAT
+Unexpected devicectl JSON version output from devicectl. Connecting to physical Apple devices may not work as expected.
+› Using --device 00008110-001A1DD63E44801E
+› Auto signing app using team(s): LSPAUB72W8
+› Planning build
+› Executing react-native Pods/ReactNativeDependencies » [CP-User] [RNDeps] Replace React Native Dependencies for the right configuration, if needed
+› Executing react-native Pods/hermes-engine » [CP-User] [Hermes] Replace Hermes for the right configuration, if needed
+› Executing react-native Pods/React-Core-prebuilt » [CP-User] [RNDeps] Replace React Native Core for the right configuration, if needed
+› Preparing Pods/React-Core-React-Core_privacy » ResourceBundle-React-Core_privacy-React-Core-Info.plist
+› Preparing Pods/React-cxxreact-React-cxxreact_privacy » ResourceBundle-React-cxxreact_privacy-React-cxxreact-Info.plist
+› Executing react-native Pods/React-RCTFBReactNativeSpec » [CP-User] [RN]Check FBReactNativeSpec
+› Compiling mobile Pods/ReactCodegen » safeareacontext-generated.mm
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » safeareacontextJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnworkletsJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnworklets-generated.mm
+› Compiling mobile Pods/ReactCodegen » rnstripeJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnstripe-generated.mm
+› Compiling mobile Pods/ReactCodegen » rnscreensJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnscreens-generated.mm
+› Compiling mobile Pods/ReactCodegen » rnreanimatedJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnreanimated-generated.mm
+› Compiling mobile Pods/ReactCodegen » rngesturehandler_codegenJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rngesturehandler_codegen-generated.mm
+› Compiling mobile Pods/ReactCodegen » rnasyncstorageJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » rnasyncstorage-generated.mm
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » States.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » ShadowNodes.cpp
+› Compiling mobile Pods/ReactCodegen » RNCompressorSpecJSI-generated.cpp
+› Compiling mobile Pods/ReactCodegen » RNCompressorSpec-generated.mm
+› Compiling mobile Pods/ReactCodegen » RCTUnstableModulesRequiringMainQueueSetupProvider.mm
+› Compiling mobile Pods/ReactCodegen » RCTThirdPartyComponentsProvider.mm
+› Compiling mobile Pods/ReactCodegen » RCTModulesConformingToProtocolsProvider.mm
+› Compiling mobile Pods/ReactCodegen » RCTModuleProviders.mm
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » Props.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » EventEmitters.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Compiling mobile Pods/ReactCodegen » ComponentDescriptors.cpp
+› Packaging mobile Pods/ReactCodegen » libReactCodegen.a
+› Compiling react-native-pager-view Pods/react-native-pager-view » RNCPagerViewComponentView.mm
+› Packaging react-native-pager-view Pods/react-native-pager-view » libreact-native-pager-view.a
+› Preparing Pods/StripeCore-StripeCoreBundle » ResourceBundle-StripeCoreBundle-StripeCore-Info.plist
+› Compiling react-native-compressor Pods/react-native-compressor » Compressor.mm
+› Preparing Pods/expo-dev-menu-EXDevMenu » ResourceBundle-EXDevMenu-expo-dev-menu-Info.plist
+› Preparing Pods/nanopb-nanopb_Privacy » ResourceBundle-nanopb_Privacy-nanopb-Info.plist
+› Preparing react-native-purchases Pods/RevenueCat-RevenueCat » ResourceBundle-RevenueCat-RevenueCat-Info.plist
+› Preparing Pods/Protobuf-Protobuf_Privacy » ResourceBundle-Protobuf_Privacy-Protobuf-Info.plist
+› Preparing expo-image Pods/SDWebImage-SDWebImage » ResourceBundle-SDWebImage-SDWebImage-Info.plist
+› Preparing Pods/PromisesObjC-FBLPromises_Privacy » ResourceBundle-FBLPromises_Privacy-PromisesObjC-Info.plist
+› Preparing Pods/GoogleUtilities-GoogleUtilities_Privacy » ResourceBundle-GoogleUtilities_Privacy-GoogleUtilities-Info.plist
+› Preparing Pods/GoogleDataTransport-GoogleDataTransport_Privacy » ResourceBundle-GoogleDataTransport_Privacy-GoogleDataTransport-Info.plist
+› Preparing Pods/ExpoFileSystem-ExpoFileSystem_privacy » ResourceBundle-ExpoFileSystem_privacy-ExpoFileSystem-Info.plist
+› Compiling react-native-screens Pods/RNScreens » UIViewController+RNScreens.mm
+› Compiling @react-native-community/slider Pods/react-native-slider » RNCSliderShadowNode.cpp
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewState.cpp
+› Compiling react-native-color-matrix-image-filters Pods/react-native-color-matrix-image-filters » CMIFColorMatrixImageFilter.mm
+› Compiling mobile Pods/ReactAppDependencyProvider » RCTAppDependencyProvider.mm
+› Compiling react-native-worklets Pods/RNWorklets » WorkletsModule.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsHostComponentView+RNSImageLoader.mm
+› Packaging mobile Pods/ReactAppDependencyProvider » libReactAppDependencyProvider.a
+› Compiling react-native-reanimated Pods/RNReanimated » ReanimatedModule.mm
+› Packaging react-native-compressor Pods/react-native-compressor » libreact-native-compressor.a
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerModule.mm
+› Compiling @react-native-async-storage/async-storage Pods/RNCAsyncStorage » RNCAsyncStorage.mm
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewShadowNode.cpp
+› Compiling @react-native-community/slider Pods/react-native-slider » RNCSliderComponentView.mm
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaViewComponentView.mm
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaProviderComponentView.mm
+› Packaging react-native-color-matrix-image-filters Pods/react-native-color-matrix-image-filters » libreact-native-color-matrix-image-filters.a
+› Packaging react-native-worklets Pods/RNWorklets » libRNWorklets.a
+› Compiling react-native-safe-area-context Pods/react-native-safe-area-context » RNCSafeAreaContext.mm
+› Compiling react-native-screens Pods/RNScreens » RNSTabsScreenViewController.mm
+› Compiling react-native-screens Pods/RNScreens » RNSTabBarControllerDelegate.mm
+› Compiling react-native-screens Pods/RNScreens » RNSTabBarController.mm
+› Compiling react-native-screens Pods/RNScreens » RNSTabBarAppearanceCoordinator.mm
+› Compiling react-native-screens Pods/RNScreens » RNSSplitViewScreenShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSSearchBar.mm
+› Packaging @react-native-community/slider Pods/react-native-slider » libreact-native-slider.a
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderSubviewShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderSubview.mm
+› Packaging react-native-safe-area-context Pods/react-native-safe-area-context » libreact-native-safe-area-context.a
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderConfigShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStackHeaderConfig.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenStack.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSScreenNavigationContainer.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenFooter.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenContentWrapper.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreenContainer.mm
+› Compiling react-native-screens Pods/RNScreens » RNSScreen.mm
+› Compiling react-native-screens Pods/RNScreens » RNSModule.mm
+› Compiling react-native-screens Pods/RNScreens » RNSModalScreenShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSModalScreen.mm
+› Compiling react-native-screens Pods/RNScreens » RNSFullWindowOverlayShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSFullWindowOverlay.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConvert.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConversions.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConversions-SplitView.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConversions-Fabric.mm
+› Compiling react-native-screens Pods/RNScreens » RNSConversions-BottomTabs.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsShadowNode.cpp
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsScreenEventEmitter.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsScreenComponentView.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsHostEventEmitter.mm
+› Compiling react-native-screens Pods/RNScreens » RNSBottomTabsHostComponentView.mm
+› Compiling react-native-reanimated Pods/RNReanimated » NativeProxy.mm
+› Compiling react-native-gesture-handler Pods/RNGestureHandler » RNGestureHandlerButtonComponentView.mm
+› Preparing Pods/StripeUICore-StripeUICoreBundle » ResourceBundle-StripeUICoreBundle-StripeUICore-Info.plist
+› Preparing Pods/StripePayments-Stripe3DS2 » ResourceBundle-Stripe3DS2-StripePayments-Info.plist
+› Preparing Pods/RNCAsyncStorage-RNCAsyncStorage_resources » ResourceBundle-RNCAsyncStorage_resources-RNCAsyncStorage-Info.plist
+› Preparing react-native-purchases Pods/PurchasesHybridCommon-PurchasesHybridCommon » ResourceBundle-PurchasesHybridCommon-PurchasesHybridCommon-Info.plist
+› Preparing Pods/StripeFinancialConnections-StripeFinancialConnectionsBundle » ResourceBundle-StripeFinancialConnectionsBundle-StripeFinancialConnections-Info.plist
+› Packaging @react-native-async-storage/async-storage Pods/RNCAsyncStorage » libRNCAsyncStorage.a
+› Preparing Pods/StripePayments-StripePaymentsBundle » ResourceBundle-StripePaymentsBundle-StripePayments-Info.plist
+› Preparing Pods/Stripe-StripeBundle » ResourceBundle-StripeBundle-Stripe-Info.plist
+› Preparing Pods/MLKitFaceDetection-GoogleMVFaceDetectorResources » ResourceBundle-GoogleMVFaceDetectorResources-MLKitFaceDetection-Info.plist
+› Preparing expo-constants Pods/EXConstants-EXConstants » ResourceBundle-EXConstants-EXConstants-Info.plist
+› Preparing Pods/StripePaymentsUI-StripePaymentsUIBundle » ResourceBundle-StripePaymentsUIBundle-StripePaymentsUI-Info.plist
+› Preparing Pods/expo-dev-launcher-EXDevLauncher » ResourceBundle-EXDevLauncher-expo-dev-launcher-Info.plist
+› Preparing Pods/StripePaymentSheet-StripePaymentSheetBundle » ResourceBundle-StripePaymentSheetBundle-StripePaymentSheet-Info.plist
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » AddressSheetViewComponentView.mm
+› Compiling expo-dev-launcher Pods/expo-dev-launcher » EXDevLauncherController.m
+› Packaging expo-dev-launcher Pods/expo-dev-launcher » libexpo-dev-launcher.a
+› Preparing Pods/EXConstants-ExpoConstants_privacy » ResourceBundle-ExpoConstants_privacy-EXConstants-Info.plist
+› Executing expo-constants Pods/EXConstants » [CP-User] Generate app.config for prebuilt Constants.manifest
+› Packaging expo Pods/Expo » libExpo.a
+› Packaging react-native-screens Pods/RNScreens » libRNScreens.a
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » AuBECSDebitFormComponentView.mm
+› Packaging react-native-gesture-handler Pods/RNGestureHandler » libRNGestureHandler.a
+› Packaging react-native-reanimated Pods/RNReanimated » libRNReanimated.a
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » EmbeddedPaymentElementViewComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » StripeSdk.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » StripeContainerComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » CardFormComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » CardFieldComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » ApplePayButtonComponentView.mm
+› Compiling @stripe/stripe-react-native Pods/stripe-react-native » AddToWalletButtonComponentView.mm
+› Packaging @stripe/stripe-react-native Pods/stripe-react-native » libstripe-react-native.a
+› Executing KristoApp » [CP] Check Pods Manifest.lock
+› Executing KristoApp » [Expo] Configure project
+› Compiling KristoApp » SplashScreen.storyboard
+› Linking   KristoApp » KristoApp.debug.dylib
+⚠️  ld: ignoring duplicate libraries: '-lc++'
+› Linking   KristoApp » KristoApp
+› Copying   ./PrivacyInfo.xcprivacy ➜ apps/mobile/ios/KristoApp/PrivacyInfo.xcprivacy
+› Copying   ios/KristoApp/Supporting/Expo.plist ➜ ./Expo.plist
+› Preparing KristoApp » Info.plist
+› Executing KristoApp » Bundle React Native code and images
+› Executing KristoApp » [CP] Copy Pods Resources
+› Executing KristoApp » [CP] Embed Pods Frameworks
+› Generating debug KristoApp » KristoApp.app.dSYM
+› Generating debug KristoApp » KristoApp.app.dSYM
+› Signing   KristoApp » KristoApp.debug.dylib
+› Signing   KristoApp » __preview.dylib
+› Signing   KristoApp » KristoApp.app
+⚠️  Pods/nanopb-nanopb_Privacy: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/Protobuf-Protobuf_Privacy: iOS@10.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/SDWebImage-SDWebImage: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/PromisesObjC-FBLPromises_Privacy: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/GoogleUtilities-GoogleUtilities_Privacy: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/GoogleDataTransport-GoogleDataTransport_Privacy: iOS@9.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+⚠️  Pods/MLKitFaceDetection-GoogleMVFaceDetectorResources: iOS@10.0 deployment version mismatch, expected >= 2.0 <= 26.2.99
+› Build Succeeded
+
+› 0 error(s), and 8 warning(s)
+
+Waiting on http://localhost:8081
+› Installing /Users/princefariji/Library/Developer/Xcode/DerivedData/KristoApp-ariyrrwfckfukzemkykhkvzlwpyt/Build/Products/Debug-iphoneos/KristoApp.app
+- GeneratingApplicationMap
+✔ Complete 100%
+✖ Complete 100%
+CommandError: Cannot launch KristoApp on BOYKID because the device is locked.

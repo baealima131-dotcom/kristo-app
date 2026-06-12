@@ -11,7 +11,31 @@ export type HomeFeedLikeState = {
   likeCount: number;
 };
 
+export type HomeFeedRowEngagementSnapshot = HomeFeedLikeState & {
+  saved: boolean;
+  reported: boolean;
+  commentCount: number;
+};
+
+const EMPTY_LIKE_STATE: HomeFeedLikeState = {
+  likedByMe: false,
+  liked: false,
+  likeCount: 0,
+};
+
+const EMPTY_ROW_ENGAGEMENT: HomeFeedRowEngagementSnapshot = {
+  ...EMPTY_LIKE_STATE,
+  saved: false,
+  reported: false,
+  commentCount: 0,
+};
+
 type ServerLikeSnapshot = { likedByMe: boolean; likeCount: number };
+
+const rowEngagementSnapshotCache = new Map<
+  string,
+  { fingerprint: string; snapshot: HomeFeedRowEngagementSnapshot }
+>();
 
 const serverLikeByPostId: Record<string, ServerLikeSnapshot> = {};
 const optimisticLikes: Record<string, HomeFeedLikeState> = {};
@@ -57,7 +81,7 @@ export function resolveHomeFeedLikeState(
   postId = homeFeedScheduleEngagementId(item)
 ): HomeFeedLikeState {
   if (!postId) {
-    return { likedByMe: false, liked: false, likeCount: 0 };
+    return EMPTY_LIKE_STATE;
   }
 
   const itemLikedByMe = readFeedItemLikedByMe(item);
@@ -205,9 +229,67 @@ export function hydrateHomeFeedReportedPostIds(ids: string[]) {
   return changed;
 }
 
+function rowEngagementFingerprint(snapshot: HomeFeedRowEngagementSnapshot): string {
+  return [
+    snapshot.likedByMe ? 1 : 0,
+    snapshot.likeCount,
+    snapshot.saved ? 1 : 0,
+    snapshot.reported ? 1 : 0,
+    snapshot.commentCount,
+  ].join(":");
+}
+
+function buildRowEngagementSnapshot(
+  item: any,
+  postId: string,
+  commentPostId: string,
+  itemPostId: string
+): HomeFeedRowEngagementSnapshot {
+  if (!postId && !itemPostId) {
+    return EMPTY_ROW_ENGAGEMENT;
+  }
+
+  const like = resolveHomeFeedLikeState(item, postId);
+  return {
+    likedByMe: like.likedByMe,
+    liked: like.liked,
+    likeCount: like.likeCount,
+    saved: resolveHomeFeedSavedState(item, itemPostId),
+    reported: resolveHomeFeedReportedState(item, itemPostId),
+    commentCount: resolveHomeFeedDiscussionCount(item, commentPostId),
+  };
+}
+
+/** Referentially stable snapshot for useSyncExternalStore — new object only when values change. */
+export function getHomeFeedRowEngagementSnapshot(
+  item: any,
+  postId = homeFeedScheduleEngagementId(item),
+  commentPostId = homeFeedCommentPostId(item),
+  itemPostId = String(item?.id || "").trim()
+): HomeFeedRowEngagementSnapshot {
+  const cacheKey = postId || itemPostId;
+  if (!cacheKey) {
+    return EMPTY_ROW_ENGAGEMENT;
+  }
+
+  const next = buildRowEngagementSnapshot(item, postId, commentPostId, itemPostId);
+  const fingerprint = rowEngagementFingerprint(next);
+  const cached = rowEngagementSnapshotCache.get(cacheKey);
+  if (cached?.fingerprint === fingerprint) {
+    return cached.snapshot;
+  }
+
+  rowEngagementSnapshotCache.set(cacheKey, { fingerprint, snapshot: next });
+  return next;
+}
+
 export function useHomeFeedRowEngagement(item: any) {
   const postId = homeFeedScheduleEngagementId(item);
   const commentPostId = homeFeedCommentPostId(item);
+  const itemPostId = String(item?.id || "").trim();
+
+  const getSnapshot = () =>
+    getHomeFeedRowEngagementSnapshot(item, postId, commentPostId, itemPostId);
 
   return useSyncExternalStore(
     (listener) => {
@@ -216,23 +298,15 @@ export function useHomeFeedRowEngagement(item: any) {
         commentPostId && commentPostId !== postId
           ? subscribePost(commentPostId, listener)
           : () => {},
-        subscribePost(String(item?.id || "").trim(), listener),
+        itemPostId && itemPostId !== postId && itemPostId !== commentPostId
+          ? subscribePost(itemPostId, listener)
+          : () => {},
       ];
       return () => {
         for (const unsub of unsubs) unsub();
       };
     },
-    () => ({
-      ...resolveHomeFeedLikeState(item, postId),
-      saved: resolveHomeFeedSavedState(item, String(item?.id || "").trim()),
-      reported: resolveHomeFeedReportedState(item, String(item?.id || "").trim()),
-      commentCount: resolveHomeFeedDiscussionCount(item, commentPostId),
-    }),
-    () => ({
-      ...resolveHomeFeedLikeState(item, postId),
-      saved: resolveHomeFeedSavedState(item, String(item?.id || "").trim()),
-      reported: resolveHomeFeedReportedState(item, String(item?.id || "").trim()),
-      commentCount: resolveHomeFeedDiscussionCount(item, commentPostId),
-    })
+    getSnapshot,
+    getSnapshot
   );
 }
