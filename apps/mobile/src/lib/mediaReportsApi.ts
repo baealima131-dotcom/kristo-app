@@ -1,6 +1,15 @@
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
+export type MediaReportReasonBreakdown = {
+  reason: string;
+  severity: "critical" | "ai" | "medium" | "low" | "unknown";
+  severityLabel: string;
+  pendingCount: number;
+  uniqueUsers: number;
+  uniqueChurches: number;
+};
+
 export type MediaReportQueueRow = {
   postId: string;
   churchId: string;
@@ -9,14 +18,21 @@ export type MediaReportQueueRow = {
   videoUrl?: string;
   pendingReportCount: number;
   uniqueReporterCount: number;
+  uniqueChurchCount: number;
+  primaryReason: string;
+  primarySeverity: "critical" | "ai" | "medium" | "low" | "unknown";
+  severityLabel: string;
   latestReportAt: string;
   topReasons: string[];
+  reasonBreakdown: MediaReportReasonBreakdown[];
+  autoHideEligible: boolean;
   hiddenByReports: boolean;
   reports: Array<{
     id: string;
     reason: string;
     details?: string;
     reporterUserId: string;
+    reporterChurchId?: string;
     createdAt: string;
   }>;
 };

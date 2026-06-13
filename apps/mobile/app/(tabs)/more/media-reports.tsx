@@ -33,6 +33,20 @@ function formatReportWhen(value: string) {
   return date.toLocaleString();
 }
 
+function severityBadgeStyle(severity: MediaReportQueueRow["primarySeverity"]) {
+  switch (severity) {
+    case "critical":
+      return styles.severityCritical;
+    case "ai":
+      return styles.severityAi;
+    case "low":
+      return styles.severityLow;
+    case "medium":
+    default:
+      return styles.severityMedium;
+  }
+}
+
 function ReportCard({
   item,
   busy,
@@ -45,9 +59,7 @@ function ReportCard({
   onDelete: (item: MediaReportQueueRow) => void;
 }) {
   const posterUri = homeFeedMediaUrl(item.posterUri || "");
-  const reasonLine = item.topReasons.length
-    ? item.topReasons.join(" · ")
-    : item.reports[0]?.reason || "Reported";
+  const primaryReason = String(item.primaryReason || item.topReasons[0] || item.reports[0]?.reason || "Reported").trim();
 
   return (
     <View style={styles.card}>
@@ -64,19 +76,42 @@ function ReportCard({
           <Text style={styles.cardTitle} numberOfLines={2}>
             {item.title || "Reported post"}
           </Text>
-          <Text style={styles.cardMeta}>
-            {item.uniqueReporterCount} member{item.uniqueReporterCount === 1 ? "" : "s"} ·{" "}
-            {item.pendingReportCount} report{item.pendingReportCount === 1 ? "" : "s"}
-          </Text>
+
+          <View style={[styles.severityBadge, severityBadgeStyle(item.primarySeverity)]}>
+            <Text style={styles.severityBadgeText}>{item.severityLabel || "Report"}</Text>
+          </View>
+
           <Text style={styles.cardReason} numberOfLines={2}>
-            {reasonLine}
+            {primaryReason}
           </Text>
+
+          <Text style={styles.cardMeta}>
+            {item.uniqueReporterCount} unique user{item.uniqueReporterCount === 1 ? "" : "s"} ·{" "}
+            {item.uniqueChurchCount} church{item.uniqueChurchCount === 1 ? "" : "es"} ·{" "}
+            {item.pendingReportCount} pending report{item.pendingReportCount === 1 ? "" : "s"}
+          </Text>
+
+          {item.reasonBreakdown.length > 0 ? (
+            <View style={styles.breakdownWrap}>
+              {item.reasonBreakdown.slice(0, 3).map((row) => (
+                <Text key={row.reason} style={styles.breakdownLine} numberOfLines={2}>
+                  {row.reason}: {row.uniqueUsers} users / {row.uniqueChurches} churches
+                </Text>
+              ))}
+            </View>
+          ) : null}
+
           {item.latestReportAt ? (
             <Text style={styles.cardWhen}>{formatReportWhen(item.latestReportAt)}</Text>
           ) : null}
+
           {item.hiddenByReports ? (
             <View style={styles.hiddenBadge}>
               <Text style={styles.hiddenBadgeText}>Hidden from feed</Text>
+            </View>
+          ) : item.autoHideEligible ? (
+            <View style={[styles.hiddenBadge, styles.pendingHideBadge]}>
+              <Text style={styles.pendingHideBadgeText}>Auto-hide threshold met</Text>
             </View>
           ) : null}
         </View>
@@ -381,13 +416,49 @@ const styles = StyleSheet.create({
   },
   cardMeta: {
     color: "#FCA5A5",
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "600",
+    lineHeight: 17,
   },
   cardReason: {
-    color: "rgba(255,255,255,0.78)",
-    fontSize: 13,
-    lineHeight: 18,
+    color: "#FFFFFF",
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "700",
+  },
+  severityBadge: {
+    alignSelf: "flex-start",
+    marginTop: 2,
+    marginBottom: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  severityBadgeText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#FFFFFF",
+  },
+  severityCritical: {
+    backgroundColor: "rgba(239,68,68,0.28)",
+  },
+  severityAi: {
+    backgroundColor: "rgba(168,85,247,0.28)",
+  },
+  severityMedium: {
+    backgroundColor: "rgba(244,201,93,0.18)",
+  },
+  severityLow: {
+    backgroundColor: "rgba(96,165,250,0.22)",
+  },
+  breakdownWrap: {
+    gap: 2,
+    marginTop: 2,
+  },
+  breakdownLine: {
+    color: "rgba(255,255,255,0.68)",
+    fontSize: 12,
+    lineHeight: 16,
   },
   cardWhen: {
     color: "rgba(255,255,255,0.48)",
@@ -403,6 +474,14 @@ const styles = StyleSheet.create({
   },
   hiddenBadgeText: {
     color: "#FCA5A5",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  pendingHideBadge: {
+    backgroundColor: "rgba(244,201,93,0.14)",
+  },
+  pendingHideBadgeText: {
+    color: "#F4C95D",
     fontSize: 11,
     fontWeight: "700",
   },

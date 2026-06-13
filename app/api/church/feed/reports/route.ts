@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
 import { resolveCanDeleteChurchActivityPost } from "@/app/api/_lib/churchActivityDelete";
 import {
+  buildPostReportModerationSummary,
   clearFeedItemHiddenByReports,
-  countUniqueChurchMemberReportersForPost,
   isFeedItemHiddenByReports,
 } from "@/app/api/_lib/feedReportModeration";
 import { guard } from "@/app/api/_lib/rbac";
@@ -48,7 +48,11 @@ async function requireMediaReportsAccess(req: NextRequest) {
   return { ctx: ctxOrRes, churchId, userId, access };
 }
 
-function enrichQueueRow(item: Awaited<ReturnType<typeof listMediaReportQueueForChurch>>[number], feedItem: any | null) {
+function enrichQueueRow(
+  item: Awaited<ReturnType<typeof listMediaReportQueueForChurch>>[number],
+  feedItem: any | null,
+  moderation: Awaited<ReturnType<typeof buildPostReportModerationSummary>> | null
+) {
   const title = String(
     feedItem?.title || feedItem?.text || feedItem?.mediaName || "Reported post"
   ).trim();
@@ -68,15 +72,22 @@ function enrichQueueRow(item: Awaited<ReturnType<typeof listMediaReportQueueForC
     posterUri: posterUri || undefined,
     videoUrl: videoUrl || undefined,
     pendingReportCount: item.pendingReportCount,
-    uniqueReporterCount: item.uniqueReporterCount,
+    uniqueReporterCount: moderation?.uniqueUsers ?? item.uniqueReporterCount,
+    uniqueChurchCount: moderation?.uniqueChurches ?? 0,
+    primaryReason: moderation?.primaryReason || item.topReasons[0] || "",
+    primarySeverity: moderation?.primarySeverity || "unknown",
+    severityLabel: moderation?.severityLabel || "Report",
     latestReportAt: item.latestReportAt,
-    topReasons: item.topReasons,
+    topReasons: moderation?.topReasons?.length ? moderation.topReasons : item.topReasons,
+    reasonBreakdown: moderation?.reasonBreakdown || [],
+    autoHideEligible: Boolean(moderation?.autoHideEligible),
     hiddenByReports: item.hiddenByReports,
     reports: item.reports.map((report) => ({
       id: report.id,
       reason: report.reason,
       details: report.details,
       reporterUserId: report.reporterUserId,
+      reporterChurchId: report.reporterChurchId,
       createdAt: report.createdAt,
     })),
   };
@@ -94,19 +105,16 @@ export async function GET(req: NextRequest) {
   const rows = await Promise.all(
     queue.map(async (item) => {
       const feedItem = await getFeedItemById(item.postId);
+      const moderation = await buildPostReportModerationSummary(item.postId);
       const hidden = feedItem ? isFeedItemHiddenByReports(feedItem) : item.hiddenByReports;
       hiddenByPostId[item.postId] = hidden;
-      const uniqueReporterCount = await countUniqueChurchMemberReportersForPost(
-        item.postId,
-        churchId
-      );
       return enrichQueueRow(
         {
           ...item,
           hiddenByReports: hidden,
-          uniqueReporterCount,
         },
-        feedItem
+        feedItem,
+        moderation
       );
     })
   );

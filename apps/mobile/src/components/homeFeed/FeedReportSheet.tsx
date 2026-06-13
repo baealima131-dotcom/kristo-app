@@ -115,86 +115,93 @@ export const FeedReportSheet = memo(function FeedReportSheet({
           behavior={Platform.OS === "ios" ? "padding" : undefined}
           style={styles.keyboardWrap}
         >
-          <Pressable
-            style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
-            onPress={(e) => e.stopPropagation()}
-          >
+          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
             <View style={styles.handle} />
 
-            <Text style={styles.title}>Report post</Text>
-            <Text style={styles.subtitle}>
-              Help us review content that violates community standards.
-            </Text>
-
-            {loadingStatus ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator color={HOME_FEED_GOLD_SOFT} />
-              </View>
-            ) : alreadyReported ? (
-              <View style={styles.alreadyBox}>
-                <Ionicons name="checkmark-circle" size={22} color={HOME_FEED_GOLD_SOFT} />
-                <Text style={styles.alreadyText}>Already reported</Text>
-              </View>
-            ) : (
-              <ScrollView style={styles.reasonList} showsVerticalScrollIndicator={false}>
-                {HOME_FEED_REPORT_REASONS.map((reason) => {
-                  const active = selectedReason === reason;
-                  return (
-                    <Pressable
-                      key={reason}
-                      style={[styles.reasonRow, active ? styles.reasonRowActive : null]}
-                      onPress={() => {
-                        setSelectedReason(reason);
-                        setError("");
-                      }}
-                    >
-                      <View style={[styles.radio, active ? styles.radioActive : null]}>
-                        {active ? <View style={styles.radioDot} /> : null}
-                      </View>
-                      <Text style={[styles.reasonText, active ? styles.reasonTextActive : null]}>
-                        {reason}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-            )}
-
-            {!alreadyReported && !loadingStatus ? (
-              <TextInput
-                value={details}
-                onChangeText={setDetails}
-                placeholder="Optional details"
-                placeholderTextColor="rgba(255,255,255,0.45)"
-                style={styles.detailsInput}
-                multiline
-                maxLength={2000}
-                editable={!submitting}
-              />
-            ) : null}
-
-            {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
-            <Pressable
-              style={[
-                styles.submitBtn,
-                alreadyReported || submitting || loadingStatus ? styles.submitBtnDisabled : null,
-              ]}
-              disabled={alreadyReported || submitting || loadingStatus}
-              onPress={handleSubmit}
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              bounces={false}
             >
-              {submitting ? (
-                <ActivityIndicator color="#0B0F17" />
-              ) : (
-                <Text style={styles.submitBtnText}>
-                  {alreadyReported ? "Already reported" : "Submit report"}
-                </Text>
-              )}
-            </Pressable>
+              <Text style={styles.title}>Report post</Text>
+              <Text style={styles.subtitle}>
+                Help us review content that violates community standards.
+              </Text>
 
-            <Pressable style={styles.cancelBtn} onPress={onClose} hitSlop={10}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </Pressable>
+              {loadingStatus ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color={HOME_FEED_GOLD_SOFT} />
+                </View>
+              ) : alreadyReported ? (
+                <View style={styles.alreadyBox}>
+                  <Ionicons name="checkmark-circle" size={22} color={HOME_FEED_GOLD_SOFT} />
+                  <Text style={styles.alreadyText}>Already reported</Text>
+                </View>
+              ) : (
+                <View style={styles.reasonList}>
+                  {HOME_FEED_REPORT_REASONS.map((reason) => {
+                    const active = selectedReason === reason;
+                    return (
+                      <Pressable
+                        key={reason}
+                        style={[styles.reasonRow, active ? styles.reasonRowActive : null]}
+                        onPress={() => {
+                          setSelectedReason(reason);
+                          setError("");
+                        }}
+                      >
+                        <View style={[styles.radio, active ? styles.radioActive : null]}>
+                          {active ? <View style={styles.radioDot} /> : null}
+                        </View>
+                        <Text style={[styles.reasonText, active ? styles.reasonTextActive : null]}>
+                          {reason}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+
+              {!alreadyReported && !loadingStatus ? (
+                <TextInput
+                  value={details}
+                  onChangeText={setDetails}
+                  placeholder="Optional details"
+                  placeholderTextColor="rgba(255,255,255,0.45)"
+                  style={styles.detailsInput}
+                  multiline
+                  maxLength={2000}
+                  editable={!submitting}
+                />
+              ) : null}
+
+              {error ? <Text style={styles.errorText}>{error}</Text> : null}
+            </ScrollView>
+
+            <View style={[styles.footer, { paddingBottom: insets.bottom + 28 }]}>
+              <Pressable
+                style={[
+                  styles.submitBtn,
+                  alreadyReported || submitting || loadingStatus ? styles.submitBtnDisabled : null,
+                ]}
+                disabled={alreadyReported || submitting || loadingStatus}
+                onPress={handleSubmit}
+              >
+                {submitting ? (
+                  <ActivityIndicator color="#0B0F17" />
+                ) : (
+                  <Text style={styles.submitBtnText}>
+                    {alreadyReported ? "Already reported" : "Submit report"}
+                  </Text>
+                )}
+              </Pressable>
+
+              <Pressable style={styles.cancelBtn} onPress={onClose} hitSlop={10}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </Pressable>
+            </View>
           </Pressable>
         </KeyboardAvoidingView>
       </Pressable>
@@ -215,11 +222,24 @@ const styles = StyleSheet.create({
     backgroundColor: "#0B0F17",
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
-    paddingHorizontal: 18,
     paddingTop: 10,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
     maxHeight: "82%",
+  },
+  scroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: 18,
+    paddingBottom: 12,
+  },
+  footer: {
+    paddingHorizontal: 18,
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.06)",
   },
   handle: {
     alignSelf: "center",
@@ -263,7 +283,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   reasonList: {
-    maxHeight: 280,
     marginBottom: 10,
   },
   reasonRow: {
@@ -334,7 +353,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: "center",
-    marginTop: 4,
   },
   submitBtnDisabled: {
     opacity: 0.55,

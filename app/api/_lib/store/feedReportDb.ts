@@ -8,6 +8,7 @@ export type FeedReportRecord = {
   id: string;
   postId: string;
   reporterUserId: string;
+  reporterChurchId?: string;
   reportedUserId?: string;
   churchId?: string;
   mediaId?: string;
@@ -96,6 +97,7 @@ export async function listReportedPostIdsForUser(
 export type CreateFeedReportInput = {
   postId: string;
   reporterUserId: string;
+  reporterChurchId?: string;
   reportedUserId?: string;
   churchId?: string;
   mediaId?: string;
@@ -137,6 +139,7 @@ export async function createFeedReport(
     id: newReportId(),
     postId,
     reporterUserId,
+    reporterChurchId: String(input.reporterChurchId || "").trim() || undefined,
     reportedUserId: String(input.reportedUserId || "").trim() || undefined,
     churchId: String(input.churchId || "").trim() || undefined,
     mediaId: String(input.mediaId || "").trim() || undefined,
@@ -194,6 +197,30 @@ export function uniqueReporterIdsFromReports(rows: FeedReportRecord[]): string[]
     ids.push(reporterUserId);
   }
   return ids;
+}
+
+export function uniqueReporterChurchIdsFromReports(rows: FeedReportRecord[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const row of rows) {
+    const reporterChurchId = String(row.reporterChurchId || "").trim();
+    if (!reporterChurchId || seen.has(reporterChurchId)) continue;
+    seen.add(reporterChurchId);
+    ids.push(reporterChurchId);
+  }
+  return ids;
+}
+
+export async function listReportsForPost(postId: string): Promise<FeedReportRecord[]> {
+  const cleanPostId = normalizeFeedReportPostId(postId);
+  if (!cleanPostId) return [];
+
+  const rows = await readReports();
+  return rows.filter((row) => normalizeFeedReportPostId(row.postId) === cleanPostId);
+}
+
+export function listNonDismissedReportsForPost(rows: FeedReportRecord[]): FeedReportRecord[] {
+  return rows.filter((row) => String(row.status || "").trim() !== "dismissed");
 }
 
 export async function dismissPendingReportsForPost(args: {

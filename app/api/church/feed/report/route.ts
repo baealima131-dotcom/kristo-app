@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { guardAuth } from "@/app/api/_lib/rbac";
+import { getActiveMembership } from "@/app/api/_lib/memberships";
 import { getFeedItemById } from "@/app/api/_lib/store/feedDb";
 import { maybeAutoHideFeedItemByReports } from "@/app/api/_lib/feedReportModeration";
 import {
@@ -113,10 +114,16 @@ export async function POST(req: NextRequest) {
     (feedItem as any)?.ownerMediaId || (feedItem as any)?.mediaId || ""
   ).trim();
 
+  const headerChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
+  const activeMembership = await getActiveMembership(viewerUserId);
+  const reporterChurchId =
+    headerChurchId || String(activeMembership?.churchId || "").trim() || undefined;
+
   try {
     const result = await createFeedReport({
       postId,
       reporterUserId: viewerUserId,
+      reporterChurchId,
       reportedUserId: reportedUserId || undefined,
       churchId: churchId || undefined,
       mediaId: mediaId || undefined,
