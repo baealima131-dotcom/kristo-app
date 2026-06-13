@@ -77,6 +77,11 @@ export function resolveHomeFeedPosterDisplay(
         return upgraded;
       }
     }
+    if (existing.source === "inferred" && existing.uri) {
+      const cleaned = { uri: "", source: "inferred" as const };
+      posterDisplayByKey.set(key, cleaned);
+      return cleaned;
+    }
     return existing;
   }
 
@@ -88,6 +93,11 @@ export function resolveHomeFeedPosterDisplay(
 
   const uri = item ? resolveBestFeedPosterUri(item, postId) : "";
   const source = resolvePosterSourceForUri(item, uri, postId, videoUrl);
+  if (source === "inferred") {
+    const state = { uri: "", source: "inferred" as const };
+    posterDisplayByKey.set(key, state);
+    return state;
+  }
   const state = { uri, source };
   posterDisplayByKey.set(key, state);
   return state;

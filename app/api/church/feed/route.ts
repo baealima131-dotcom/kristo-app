@@ -1412,6 +1412,23 @@ function isRemotePosterUri(uri: unknown) {
   return value.includes("/church-video-posters/") || value.includes("/uploads/media/posters/");
 }
 
+function resolveClientUploadPosterUri(body: any, videoUrl?: string): string | undefined {
+  const candidates = [
+    body?.posterUri,
+    body?.videoPosterUri,
+    body?.thumbnailUri,
+    body?.thumbnailUrl,
+  ];
+  for (const raw of candidates) {
+    const uri = cleanText(raw, 4000);
+    if (!uri || isBrandedVideoPosterUri(uri)) continue;
+    if (isRemotePosterUri(uri) || isUsableVideoPosterUri(uri, videoUrl)) {
+      return uri;
+    }
+  }
+  return undefined;
+}
+
 type MediaStatus = "uploading" | "processing" | "ready";
 
 function normalizeMediaStatus(value: unknown): MediaStatus | undefined {
@@ -1456,6 +1473,24 @@ async function finalizeMediaUploadVideoPost(itemId: string) {
 
     let posterUri = String((existing as any)?.posterUri || (existing as any)?.videoPosterUri || "").trim();
     const videoUrl = resolveFeedItemVideoUrl(existing);
+
+    if (isUsableVideoPosterUri(posterUri, videoUrl)) {
+      await upsertFeedItem({
+        ...existing,
+        mediaStatus: "ready",
+        posterUri,
+        videoPosterUri: posterUri,
+        thumbnailUri: String((existing as any)?.thumbnailUri || posterUri).trim() || posterUri,
+        brandedPoster: false,
+      });
+      logMediaStatus("KRISTO_MEDIA_STATUS_READY", {
+        id: itemId,
+        videoUrl,
+        posterUri,
+        source: "client-saved-cover",
+      });
+      return;
+    }
 
     if (!isUsableVideoPosterUri(posterUri, videoUrl) && videoUrl) {
       if (shouldAttemptServerFfmpeg()) {
@@ -4064,6 +4099,12 @@ async function handleFeedPost(req: NextRequest, body: any) {
   if (isBrandedVideoPosterUri(resolvedPosterUri)) resolvedPosterUri = undefined;
   if (isBrandedVideoPosterUri(resolvedThumbnailUri)) resolvedThumbnailUri = undefined;
 
+  const clientUploadPoster = resolveClientUploadPosterUri(body, videoUrl);
+  if (clientUploadPoster) {
+    resolvedPosterUri = clientUploadPoster;
+    resolvedThumbnailUri = clientUploadPoster;
+  }
+
   if ((type === "video" || videoUrl) && !resolvedPosterUri && videoUrl && shouldAttemptServerFfmpeg()) {
     const generatedPoster = await ensureVideoPosterForUrl(videoUrl);
     if (generatedPoster) {
@@ -4242,13 +4283,13 @@ async function handleFeedPost(req: NextRequest, body: any) {
   if (resolvedPosterUri) {
     (item as any).posterUri = resolvedPosterUri;
     (item as any).videoPosterUri = resolvedPosterUri;
-  }
-  if (resolvedThumbnailUri) {
+    (item as any).thumbnailUri = resolvedThumbnailUri || resolvedPosterUri;
+    (item as any).brandedPoster = false;
+  } else if (resolvedThumbnailUri) {
     (item as any).thumbnailUri = resolvedThumbnailUri;
-    if (!resolvedPosterUri) {
-      (item as any).posterUri = resolvedThumbnailUri;
-      (item as any).videoPosterUri = resolvedThumbnailUri;
-    }
+    (item as any).posterUri = resolvedThumbnailUri;
+    (item as any).videoPosterUri = resolvedThumbnailUri;
+    (item as any).brandedPoster = false;
   }
 
   if (type === "video" || videoUrl) {

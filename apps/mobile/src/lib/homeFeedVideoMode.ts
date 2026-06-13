@@ -16,6 +16,11 @@ export function isHomeFeedInlineVideoAutoplayEnabled(): boolean {
   return !HOME_FEED_YOUTUBE_STYLE_VIDEO;
 }
 
+/** Disk-cache feed videos for fast Watch open (YouTube tap-to-play) or inline playback. */
+export function isHomeFeedVideoDiskCacheEnabled(): boolean {
+  return true;
+}
+
 export type HomeFeedVideoOpenPayload = {
   postId: string;
   title: string;

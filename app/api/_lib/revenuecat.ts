@@ -65,8 +65,8 @@ function entitlementIsActive(expiresDate: unknown): boolean {
 
 /**
  * Verify the given RevenueCat app user id has an active `church_premium`
- * entitlement. `appUserId` is the Kristo user id (the app calls
- * `Purchases.logIn(userId)`), so the server can look the subscriber up directly.
+ * entitlement. For church premium, `appUserId` is the Kristo churchId (the app
+ * calls `Purchases.logIn(churchId)`), so the server looks the subscriber up by church.
  */
 export async function verifyChurchPremiumEntitlement(
   appUserId: string

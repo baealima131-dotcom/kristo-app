@@ -141,6 +141,15 @@ const FEED_IMAGE_FIELD_KEYS = [
   "mediaUrls",
 ] as const;
 
+/** Video poster fields that must survive feedDb read/write normalization. */
+const FEED_VIDEO_POSTER_FIELD_KEYS = [
+  "posterUri",
+  "videoPosterUri",
+  "thumbnailUri",
+  "thumbnailUrl",
+  "brandedPoster",
+] as const;
+
 function extractFeedImageFields(source: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of FEED_IMAGE_FIELD_KEYS) {
@@ -153,14 +162,27 @@ function extractFeedImageFields(source: Record<string, unknown>): Record<string,
   return out;
 }
 
+function extractFeedVideoPosterFields(source: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of FEED_VIDEO_POSTER_FIELD_KEYS) {
+    const value = source[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && !String(value).trim()) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 function rowToFeedItem(row: FeedRow): ChurchFeedItem {
   const payload =
     row.payload && typeof row.payload === "object" ? (row.payload as ChurchFeedItem) : ({} as ChurchFeedItem);
   const imageFields = extractFeedImageFields(payload as Record<string, unknown>);
+  const posterFields = extractFeedVideoPosterFields(payload as Record<string, unknown>);
 
   return {
     ...payload,
     ...imageFields,
+    ...posterFields,
     id: row.id,
     churchId: row.church_id || payload.churchId,
     type: (row.type || payload.type) as FeedType,
@@ -174,7 +196,8 @@ function rowToFeedItem(row: FeedRow): ChurchFeedItem {
 
 function feedItemToPayload(item: ChurchFeedItem): ChurchFeedItem {
   const imageFields = extractFeedImageFields(item as Record<string, unknown>);
-  return { ...item, ...imageFields };
+  const posterFields = extractFeedVideoPosterFields(item as Record<string, unknown>);
+  return { ...item, ...imageFields, ...posterFields };
 }
 
 export function countScheduleFeedItems(items: ChurchFeedItem[]): number {
@@ -459,9 +482,11 @@ export async function upsertFeedItem(item: ChurchFeedItem): Promise<ChurchFeedIt
 
   const payload = feedItemToPayload(item);
   const imageFields = extractFeedImageFields(payload as Record<string, unknown>);
+  const posterFields = extractFeedVideoPosterFields(payload as Record<string, unknown>);
   const next: ChurchFeedItem = {
     ...payload,
     ...imageFields,
+    ...posterFields,
     id,
     churchId,
     createdAt: payload.createdAt || nowIso(),

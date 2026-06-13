@@ -135,6 +135,8 @@ export function evaluateChurchMediaAccessClient(args: {
   isActualChurchPastor?: boolean;
   isMediaHost?: boolean;
   subscriptionActive?: boolean;
+  canOpenMediaScreen?: boolean;
+  canUseMediaTools?: boolean;
   canAccessChurchMedia?: boolean;
   canManageMediaHosts?: boolean;
   viewerRole?: string;

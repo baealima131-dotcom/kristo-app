@@ -57,7 +57,7 @@ import {
   resolveCachedLiveAvatar,
   startAdaptiveLivePolling,
 } from "@/src/lib/liveRealtime";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { getKristoHeaders, type KristoRole } from "@/src/lib/kristoHeaders";
 import {
   evaluateLiveMediaAuthority,
   evaluateLiveStageAuthority,
@@ -4129,11 +4129,10 @@ export default function LiveRoomScreen() {
   async function claimOpenScheduleSlotFromLive(slot: any) {
     const slotId = String(slot?.id || slot?.slotId || "").trim();
 
-    const scheduleKey = String(liveScheduleFeedId || sourceScheduleId || liveId || "").trim();
-    const feedSource = [
-      ...(Array.isArray(backendFeedItems) ? backendFeedItems : []),
-      ...(Array.isArray(homeFeedItems) ? homeFeedItems : []),
-    ];
+    const paramSourceScheduleId = String((params as any)?.sourceScheduleId || "").trim();
+    const paramLiveId = String((params as any)?.liveId || "").trim();
+    const scheduleKey = String(liveScheduleFeedId || paramSourceScheduleId || paramLiveId || "").trim();
+    const feedSource: any[] = Array.isArray(feedList()) ? feedList() : [];
 
     const matchingFeedItem = feedSource.find((item: any) => {
       const id = String(item?.id || "").trim();
@@ -4197,7 +4196,7 @@ export default function LiveRoomScreen() {
         {
           headers: getKristoHeaders({
             userId: currentUserId,
-            role: String((session as any)?.role || "Member"),
+            role: String((session as any)?.role || "Member") as KristoRole,
             churchId: String((session as any)?.churchId || (params as any)?.churchId || ""),
           }),
         }

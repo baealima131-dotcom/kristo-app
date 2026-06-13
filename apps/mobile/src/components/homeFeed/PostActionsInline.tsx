@@ -3,7 +3,7 @@ import { Pressable, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { formatActionCount } from "./homeFeedUtils";
 import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
-import { HOME_FEED_GOLD_SOFT } from "./theme";
+import { HOME_FEED_GOLD_SOFT, HOME_FEED_INACTIVE } from "./theme";
 
 type Props = {
   liked: boolean;
@@ -33,7 +33,7 @@ export const PostActionsInline = memo(function PostActionsInline({
   onReport,
 }: Props) {
   return (
-    <View style={premium.actionsGlassBar}>
+    <View style={premium.actionsBar}>
       <View style={premium.inlineActionRow}>
         <InlineAction
           icon={liked ? "heart" : "heart-outline"}
@@ -84,7 +84,11 @@ function InlineAction({
 }) {
   return (
     <Pressable style={premium.inlineAction} onPress={onPress} hitSlop={8}>
-      <Ionicons name={icon} size={21} color={active ? activeColor : "#FFFFFF"} />
+      <Ionicons
+        name={icon}
+        size={21}
+        color={active ? activeColor : "rgba(255,255,255,0.72)"}
+      />
       <Text
         style={[premium.inlineLabel, active ? premium.inlineLabelActive : null]}
         numberOfLines={1}

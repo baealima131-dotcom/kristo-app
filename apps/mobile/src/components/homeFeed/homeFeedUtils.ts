@@ -837,7 +837,7 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
   }
   if (!activeSlots.length) return [];
 
-  activeSlots.sort((a, b) => {
+  activeSlots.sort((a: any, b: any) => {
     const aNum = resolveHomeFeedSlotNumber(a.slot, a.index + 1);
     const bNum = resolveHomeFeedSlotNumber(b.slot, b.index + 1);
     if (aNum !== bNum) return aNum - bNum;
@@ -2034,12 +2034,35 @@ export function resolveBestFeedPosterUri(item: any, postId = ""): string {
   return collectFeedVideoPosterCandidates(item, postId)[0] || "";
 }
 
+/** Saved backend poster from upload metadata — excludes inferred/branded guesses. */
+export function resolveSavedFeedVideoPosterUri(item: any, videoUrl?: string): string {
+  const video = String(videoUrl || resolveVideoUri(item) || "").trim();
+  if (!item || !video) return "";
+
+  for (const raw of [
+    item?.posterUri,
+    item?.videoPosterUri,
+    item?.thumbnailUri,
+    item?.thumbnailUrl,
+    item?.posterUrl,
+  ]) {
+    const uri = homeFeedMediaUrl(raw);
+    if (!uri || isBrandedPosterUri(uri)) continue;
+    if (!isValidVideoPosterUri(uri, video)) continue;
+    if (isInferredPosterUriForVideo(uri, video)) continue;
+    return uri;
+  }
+
+  return "";
+}
+
 export type HomeFeedPosterSourceKind =
   | "cache"
   | "metadata"
   | "inferred"
   | "generated-frame"
-  | "branded-fallback";
+  | "branded-fallback"
+  | "video-preview";
 
 export function classifyHomeFeedPosterUriSource(
   item: any,

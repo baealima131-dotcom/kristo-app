@@ -501,6 +501,8 @@ export default function MeScreen() {
   const [claimedFeedTick, setClaimedFeedTick] = useState(0);
   const insets = useSafeAreaInsets();
   const { session, setSession } = useKristoSession();
+  const userId = String(session?.userId || "").trim();
+  const churchId = String(session?.churchId || "").trim();
 
   useEffect(() => {
     const claimedFeedUnsub = subscribeHomeFeed(() => {
@@ -611,7 +613,6 @@ export default function MeScreen() {
   }, [canShowMediaTab, contentMode]);
 
 
-  const userId = String(session?.userId || "").trim();
   const profileCachePeek = userId ? peekProfileScreenCache(userId) : null;
 
   React.useEffect(() => {
@@ -634,7 +635,6 @@ export default function MeScreen() {
   React.useEffect(() => {
     refreshProfileDraft();
   }, [refreshProfileDraft]);
-  const churchId = String(session?.churchId || "").trim();
   const role = prettyRole(session?.role);
   const [churchDisplayName, setChurchDisplayName] = useState(
     String((session as any)?.churchName || "").trim()

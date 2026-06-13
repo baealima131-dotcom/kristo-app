@@ -189,7 +189,7 @@ function StoragePostCard({
   const thumbnailUri = getStoragePostThumbnail(item);
   const posterMetadata = useMemo(() => snapshotPosterMetadata(item), [item]);
   const videoDurationMs = useMemo(() => resolveVideoDurationMs(item), [item]);
-  const postId = String(item?.id || item?.postId || "").trim();
+  const postId = String(item?.id || (item as any)?.postId || "").trim();
   const title = getStoragePostTitle(item, mode);
   const typeBadge = getStoragePostTypeBadge(item, mode);
   const whenLabel = formatActivityWhen(item.createdAt);

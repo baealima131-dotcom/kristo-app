@@ -1,10 +1,10 @@
-import React, { memo, useMemo } from "react";
+import React, { memo, useEffect, useMemo } from "react";
 import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { ImagePostCarousel } from "./ImagePostCarousel";
 import { PostActionsInline } from "./PostActionsInline";
-import { FeedVideoPosterImage, VideoPostFallbackPoster } from "./VideoPostFallbackPoster";
+import { FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import {
   formatFeedMetaLine,
   formatFeedTimestamp,
@@ -35,6 +35,10 @@ import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayT
 import { HOME_FEED_GOLD, HOME_FEED_THUMB_RADIUS } from "./theme";
 import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
+import {
+  itemNeedsVisiblePosterGeneration,
+  queueHomeFeedPosterPrewarm,
+} from "@/src/lib/homeFeedPosterPrewarm";
 
 type Props = {
   item: any;
@@ -124,6 +128,12 @@ export const FeedYouTubeCard = memo(
 
   const durationLabel = formatDurationLabel(videoDurationMs);
 
+  useEffect(() => {
+    if (!video || !videoUri || !postId) return;
+    if (!itemNeedsVisiblePosterGeneration(item)) return;
+    void queueHomeFeedPosterPrewarm(item, { priority: "visible" });
+  }, [item, postId, video, videoUri, posterFieldsKey]);
+
   return (
     <View style={premium.feedCard}>
       <View
@@ -145,8 +155,6 @@ export const FeedYouTubeCard = memo(
             <MemoVideoThumbnail
               item={item}
               postId={postId}
-              title={title}
-              churchName={churchName}
               mediaStatus={mediaStatus}
               posterMetadata={posterMetadata}
               videoDurationMs={videoDurationMs}
@@ -155,7 +163,7 @@ export const FeedYouTubeCard = memo(
             />
             <View style={styles.playOverlay} pointerEvents="none">
               <View style={premium.playBadge}>
-                <Ionicons name="play" size={22} color="#FFFFFF" style={styles.playIcon} />
+                <Ionicons name="play" size={26} color="#FFFFFF" style={styles.playIcon} />
               </View>
             </View>
             {durationLabel ? (
@@ -265,8 +273,6 @@ function formatDurationLabel(videoDurationMs?: number) {
 function VideoThumbnail({
   item,
   postId,
-  title,
-  churchName,
   mediaStatus,
   posterMetadata,
   videoDurationMs,
@@ -275,8 +281,6 @@ function VideoThumbnail({
 }: {
   item: any;
   postId: string;
-  title: string;
-  churchName: string;
   mediaStatus: string;
   posterMetadata: ReturnType<typeof snapshotPosterMetadata>;
   videoDurationMs?: number;
@@ -289,8 +293,6 @@ function VideoThumbnail({
       style={StyleSheet.absoluteFillObject}
       resizeMode="cover"
       postId={postId}
-      title={title}
-      churchName={churchName}
       videoUrl={videoUri}
       mediaStatus={mediaStatus}
       posterMetadata={posterMetadata}
@@ -309,9 +311,7 @@ const MemoVideoThumbnail = memo(
     prev.videoUri === next.videoUri &&
     prev.mediaStatus === next.mediaStatus &&
     prev.posterFieldsKey === next.posterFieldsKey &&
-    prev.videoDurationMs === next.videoDurationMs &&
-    prev.title === next.title &&
-    prev.churchName === next.churchName
+    prev.videoDurationMs === next.videoDurationMs
 );
 
 function TextCardPreview({
@@ -352,6 +352,7 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: HOME_FEED_THUMB_RADIUS,
     overflow: "hidden",
+    backgroundColor: "#000000",
   },
   playOverlay: {
     ...StyleSheet.absoluteFillObject,

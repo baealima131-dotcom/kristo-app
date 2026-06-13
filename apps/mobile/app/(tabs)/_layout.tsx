@@ -121,12 +121,11 @@ function ChurchLiveTabIcon({ focused, isLive, pulse, liveColor = "#EF4444" }: { 
           pointerEvents="none"
           style={{
             position: "absolute",
-            width: 40,
-            height: 40,
+            width: 36,
+            height: 36,
             borderRadius: 999,
-            backgroundColor: "rgba(212,175,101,0.12)",
-            borderWidth: 1,
-            borderColor: "rgba(212,175,101,0.45)",
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: "rgba(201,169,98,0.45)",
           }}
         />
       ) : null}
@@ -245,7 +244,9 @@ export default function TabLayout() {
   useEffect(() => {
     if (loading || !session?.userId) return;
     deferStartupWorkAfterHomeFirstFrame(
-      () => silentPreloadTabScreens(session),
+      () => {
+        void silentPreloadTabScreens(session);
+      },
       { reason: "screen-cache-preload" }
     );
   }, [loading, session?.userId, session?.churchId, session?.role]);
@@ -256,7 +257,9 @@ export default function TabLayout() {
     if (tab !== "index") return;
     if (isMoreTabTransitionBlocking()) return;
     deferStartupWorkAfterHomeFirstFrame(
-      () => silentPreloadTabScreens(session),
+      () => {
+        void silentPreloadTabScreens(session);
+      },
       { reason: "screen-cache-preload-home-focus" }
     );
   }, [loading, session, segments.join("/")]);
@@ -806,7 +809,7 @@ export default function TabLayout() {
         headerShown: false,
         tabBarStyle: hideTabBar
           ? { display: "none" }
-          : homeFeedPremium.tabBarGlass,
+          : homeFeedPremium.tabBarSolid,
         tabBarActiveTintColor: GOLD,
         tabBarInactiveTintColor: MUTED,
         tabBarLabelStyle: { fontWeight: "800", fontSize: 11, paddingBottom: 0 },

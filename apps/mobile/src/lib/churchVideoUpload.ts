@@ -432,6 +432,23 @@ export function parsePublishedFeedResponse(res: any): PublishedFeedPost | null {
   };
 }
 
+export function resolveChurchVideoPublishPosterUri(params: {
+  userPosterUrl?: string;
+  serverPosterUrl?: string;
+}): { posterUri: string; usingBrandedPoster: boolean } {
+  const userPoster = String(params.userPosterUrl || "").trim();
+  if (userPoster && !isBrandedVideoPosterUri(userPoster)) {
+    return { posterUri: userPoster, usingBrandedPoster: false };
+  }
+
+  const serverPoster = String(params.serverPosterUrl || "").trim();
+  if (serverPoster && !isBrandedVideoPosterUri(serverPoster)) {
+    return { posterUri: serverPoster, usingBrandedPoster: false };
+  }
+
+  return { posterUri: "", usingBrandedPoster: true };
+}
+
 export async function publishChurchVideoFeedPost(params: {
   title: string;
   caption?: string;
@@ -489,6 +506,12 @@ export async function publishChurchVideoFeedPost(params: {
       : {}),
     ...posterFields,
   };
+
+  console.log("KRISTO_VIDEO_PUBLISH_POSTER", {
+    posterUri: poster || null,
+    branded,
+    fields: branded ? "branded-fallback" : "saved-cover",
+  });
 
   console.log("KRISTO_VIDEO_METADATA_PUBLISHED", {
     title: params.title,

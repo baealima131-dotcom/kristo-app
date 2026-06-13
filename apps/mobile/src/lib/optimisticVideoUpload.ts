@@ -13,6 +13,7 @@ import {
   resolveUploadFileSize,
   buildChurchVideoPublishMetadata,
   uploadPosterToStorageWithRetry,
+  resolveChurchVideoPublishPosterUri,
 } from "@/src/lib/churchVideoUpload";
 import {
   chunkSessionResumeProgress,
@@ -21,8 +22,8 @@ import {
   MULTIPART_BACKEND_NOT_DEPLOYED_MESSAGE,
   removeChunkUploadSession,
   uploadVideoWithChunkSession,
+
 } from "@/src/lib/churchVideoChunkUpload";
-import { isBrandedVideoPosterUri } from "@/src/lib/brandedVideoPoster";
 import { compressVideoForUpload } from "@/src/lib/videoCompress";
 import {
   mapChunkToVisibleProgress,
@@ -692,9 +693,21 @@ async function runMediaVideoUpload(
     publishMetadata = uploadResult.publishMetadata;
     uploadedVideoUrl = String(signed.videoUrl || "").trim();
     const serverPosterUri = String(signed.posterUri || "").trim();
-    publishPosterUri = posterPublicUrl || serverPosterUri;
-    const usingBrandedPoster =
-      signed.brandedPoster === true || isBrandedVideoPosterUri(publishPosterUri);
+    const resolvedPublishPoster = resolveChurchVideoPublishPosterUri({
+      userPosterUrl: posterPublicUrl,
+      serverPosterUrl: serverPosterUri,
+    });
+    publishPosterUri = resolvedPublishPoster.posterUri;
+    const usingBrandedPoster = resolvedPublishPoster.usingBrandedPoster;
+
+    console.log("KRISTO_UPLOAD_PUBLISH_POSTER_RESOLVED", {
+      jobId,
+      userPosterUrl: posterPublicUrl || null,
+      serverPosterUri: serverPosterUri || null,
+      publishPosterUri: publishPosterUri || null,
+      usingBrandedPoster,
+      serverBrandedFlag: signed.brandedPoster === true,
+    });
 
     if (publishMetadata.faststart) {
       console.log("KRISTO_VIDEO_FASTSTART_DONE", {
@@ -756,6 +769,13 @@ async function runMediaVideoUpload(
 
     const published = publishedFromRetry;
     publishConfirmedFeedId = published.backendFeedId;
+    const savedPosterUri = String(
+      published.item?.posterUri ||
+        published.item?.videoPosterUri ||
+        published.item?.thumbnailUri ||
+        publishPosterUri ||
+        ""
+    ).trim();
 
     console.log("KRISTO_MEDIA_STATUS_PROCESSING", {
       jobId,
@@ -770,7 +790,7 @@ async function runMediaVideoUpload(
       {
         backendFeedId: published.backendFeedId,
         videoUrl: uploadedVideoUrl,
-        posterUri: publishPosterUri || posterPublicUrl || null,
+        posterUri: savedPosterUri || publishPosterUri || posterPublicUrl || null,
         mediaStatus: published.mediaStatus,
       },
       callbacks

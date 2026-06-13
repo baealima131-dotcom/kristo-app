@@ -312,6 +312,7 @@ export async function purgeHomeFeedPostFromBackendCache(postId: string): Promise
 
 function parseFeedRows(res: any): any[] {
   const raw = parseChurchFeedListResponse(res).rows.map(normalizeHomeFeedApiRow);
+
   const filtered = raw.filter((row) => {
     const keep = isMediaScheduleFeedItem(row) || isHomeFeedReadyMediaItem(row);
     if (isHomeFeedMediaScheduleBackendRow(row)) {

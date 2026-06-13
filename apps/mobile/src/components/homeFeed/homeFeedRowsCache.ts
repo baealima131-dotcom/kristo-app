@@ -122,7 +122,7 @@ export function peekHomeFeedRowsCacheSync(userId?: string): any[] {
 
 export function peekHomeFeedRowsCacheSavedAt(userId?: string): number | null {
   const uid = String(userId || activeCacheUserId()).trim() || "guest";
-  const savedAt = memoryByUser.get(uid)?.savedAt;
+  const savedAt = memoryByUser.get(uid)?.savedAt ?? 0;
   return Number.isFinite(savedAt) && savedAt > 0 ? savedAt : null;
 }
 

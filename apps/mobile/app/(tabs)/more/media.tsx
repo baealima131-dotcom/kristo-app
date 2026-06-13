@@ -315,10 +315,6 @@ export default function MediaStudioScreen() {
         mediaScheduleVersionRef.current = result.mediaScheduleVersion;
         mediaScheduleUpdatedAtRef.current = result.mediaScheduleUpdatedAt;
 
-        if (result.fetchFailed) {
-          return result;
-        }
-
         if (result.shouldForceLocalPurge) {
           setBackendFeedItems([]);
           setHomeFeedItems([...feedList()]);
@@ -445,7 +441,7 @@ export default function MediaStudioScreen() {
 
   useEffect(() => {
     return subscribeChurchMediaAccess((access) => {
-      setChurchMediaAccess((prev) =>
+      setChurchMediaAccess((prev: any) =>
         stabilizeChurchMediaAccess(
           prev,
           access,
@@ -3014,7 +3010,7 @@ export default function MediaStudioScreen() {
     return;
 
     if (subscriptionLocked) {
-      showSubscriptionRequired("live");
+      showSubscriptionRequired();
       return;
     }
 

@@ -19,7 +19,7 @@ import { BlurView } from "expo-blur";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { buildKristoRequestHeaders, getKristoAuth } from "@/src/lib/kristoHeaders";
+import { buildKristoRequestHeaders, getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet, apiPatch, getApiBase } from "@/src/lib/kristoApi";
 import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { useIsFocused } from "@react-navigation/native";

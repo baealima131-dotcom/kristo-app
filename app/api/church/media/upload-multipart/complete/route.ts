@@ -8,7 +8,6 @@ import {
   patchStorageObjectDeliveryMetadata,
   videoStorageConfigError,
 } from "@/app/api/_lib/media/objectStorage";
-import { brandedVideoPosterFields } from "@/app/api/_lib/media/brandedVideoPoster";
 import {
   ensureVideoPosterForUrl,
   shouldAttemptServerFfmpeg,
@@ -103,7 +102,6 @@ export async function POST(req: NextRequest) {
 
     const faststartFields = resolveFaststartResponseFields(repack);
     let posterUri: string | null = null;
-    let brandedPoster = false;
 
     if (shouldAttemptServerFfmpeg()) {
       try {
@@ -123,11 +121,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (!posterUri) {
-      const branded = brandedVideoPosterFields();
-      posterUri = branded.posterUri;
-      brandedPoster = true;
-    }
+    // Client-selected covers are uploaded separately; do not inject branded placeholders here.
 
     let previewVideoUrl: string | null = null;
     if (shouldAttemptServerFfmpeg()) {
@@ -165,7 +159,6 @@ export async function POST(req: NextRequest) {
         ...faststartFields,
         posterUri,
         ...(previewVideoUrl ? { previewVideoUrl, lowResVideoUrl: previewVideoUrl } : {}),
-        ...(brandedPoster ? { brandedPoster: true } : {}),
       },
     });
   } catch (error) {

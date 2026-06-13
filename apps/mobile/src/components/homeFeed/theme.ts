@@ -1,27 +1,27 @@
-/** Deep black canvas for Home Feed luxury layout. */
-export const HOME_FEED_BG = "#010102";
+/** Deep navy-black canvas — subtle tint, not pure black. */
+export const HOME_FEED_BG = "#03050C";
 
-export const HOME_FEED_GOLD = "#D4AF65";
-export const HOME_FEED_GOLD_SOFT = "#E8C878";
-export const HOME_FEED_GOLD_GLOW = "rgba(212,175,101,0.52)";
-export const HOME_FEED_MUTED = "rgba(255,255,255,0.62)";
-export const HOME_FEED_INACTIVE = "rgba(255,255,255,0.42)";
-export const HOME_FEED_BORDER = "rgba(255,255,255,0.08)";
+export const HOME_FEED_GOLD = "#C9A962";
+export const HOME_FEED_GOLD_SOFT = "#E2C27A";
+export const HOME_FEED_GOLD_GLOW = "rgba(201,169,98,0.55)";
+export const HOME_FEED_MUTED = "rgba(255,255,255,0.55)";
+export const HOME_FEED_INACTIVE = "rgba(255,255,255,0.38)";
+export const HOME_FEED_BORDER = "rgba(255,255,255,0.06)";
 
-/** Faux glass — semi-transparent fills, no BlurView. */
-export const HOME_FEED_GLASS_BG = "rgba(255,255,255,0.06)";
-export const HOME_FEED_GLASS_BORDER = "rgba(255,255,255,0.10)";
-export const HOME_FEED_GLASS_GOLD_BORDER = "rgba(212,175,101,0.22)";
-export const HOME_FEED_CARD_BORDER = "rgba(212,175,101,0.24)";
+/** Subtle inner-card surface only — not for tab bar or header. */
+export const HOME_FEED_GLASS_BG = "rgba(255,255,255,0.045)";
+export const HOME_FEED_GLASS_BORDER = "rgba(255,255,255,0.08)";
+export const HOME_FEED_GLASS_GOLD_BORDER = "rgba(201,169,98,0.22)";
+export const HOME_FEED_CARD_BORDER = "rgba(201,169,98,0.14)";
 
-export const HOME_FEED_THUMB_RADIUS = 20;
-export const HOME_FEED_CARD_RADIUS = 22;
+export const HOME_FEED_THUMB_RADIUS = 18;
+export const HOME_FEED_CARD_RADIUS = 20;
 
 /** Tab bar height in tab layout (reserve above home indicator). */
 export const HOME_FEED_TAB_BAR_HEIGHT = 70;
 
 /** Fixed Home top bar body (single title + action row), excluding safe-area inset. */
-export const HOME_FEED_TOP_BAR_BODY_HEIGHT = 44;
+export const HOME_FEED_TOP_BAR_BODY_HEIGHT = 52;
 
 export function homeFeedTopBarTotalHeight(insetTop = 0) {
   return HOME_FEED_TOP_BAR_BODY_HEIGHT + Math.max(insetTop, 0);

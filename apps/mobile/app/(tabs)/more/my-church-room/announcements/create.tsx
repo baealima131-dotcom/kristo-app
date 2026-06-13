@@ -10,6 +10,7 @@ import {
   View,
   type TextStyle,
   type ViewStyle,
+  type ImageStyle,
   Image,
   ScrollView,
   Modal,
@@ -128,7 +129,7 @@ function composerUsesTouchCropEditor(kind: "announcement" | "post" | "testimony"
 
 function composerImageHint(kind: "announcement" | "post" | "testimony" | "counsel") {
   const limit = composerImageLimit(kind);
-  return `Add up to ${limit} photo${limit === 1 ? "" : "s"} • Optional`;
+  return `Add up to ${limit} photo${(limit as number) === 1 ? "" : "s"} • Optional`;
 }
 
 function getImageDimensions(uri: string): Promise<{ width: number; height: number }> {
@@ -626,7 +627,7 @@ const cropStyles = StyleSheet.create({
   } as ViewStyle,
   image: {
     position: "absolute",
-  } as ViewStyle,
+  } as ImageStyle,
   overlay: {
     ...StyleSheet.absoluteFillObject,
   } as ViewStyle,

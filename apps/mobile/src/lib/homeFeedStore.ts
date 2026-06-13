@@ -32,6 +32,7 @@ export type FeedItem = {
   createdAt: string; // ISO
   actorLabel?: string; // e.g. "ADMIN"
   churchLabel?: string; // e.g. "TLMC"
+  churchId?: string;
 
   scheduleSlots?: Array<{
     id: string;
@@ -533,6 +534,7 @@ function applyClaimPatchToSlot(
     name?: string;
     role?: string;
     avatarUri?: string;
+    avatarUrl?: string;
   }
 ) {
   if (!slotIdsMatch(slot, slotId)) return slot;
@@ -666,6 +668,10 @@ export function feedClaimSchedule(
     name?: string;
     role?: string;
     avatarUri?: string;
+    avatarUrl?: string;
+    claimedByAvatarUri?: string;
+    claimedByAvatar?: string;
+    claimedByPhotoUrl?: string;
     startMs?: number;
     endMs?: number;
     slotNumber?: number;

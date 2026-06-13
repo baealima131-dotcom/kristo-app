@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
+import { Paths } from "expo-file-system";
 import { Image } from "react-native";
 import {
   onBackgroundMediaJobsResumed,
@@ -7,7 +8,7 @@ import {
 } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 const STORAGE_KEY = "kristo_media_poster_cache_v1";
-const POSTER_DISK_DIR = `${FileSystem.cacheDirectory || ""}media-posters/`;
+const POSTER_DISK_DIR = `${String(Paths.cache.uri || "").replace(/\/$/, "")}/media-posters/`;
 
 export type MediaPosterSource = "static" | "generated" | "remote" | "server";
 

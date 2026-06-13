@@ -39,6 +39,7 @@ import { enforceHomeFeedVideoAudioOwnership } from "@/src/lib/homeFeedVideoOwner
 import {
   isHomeFeedYouTubeStyleVideo,
   isHomeFeedInlineVideoAutoplayEnabled,
+  isHomeFeedVideoDiskCacheEnabled,
   type HomeFeedVideoOpenPayload,
 } from "@/src/lib/homeFeedVideoMode";
 
@@ -226,9 +227,9 @@ export const FeedList = memo(
   }, [activeIndex, inlineVideoAutoplay]);
 
   useEffect(() => {
-    if (!inlineVideoAutoplay) return;
+    if (!isHomeFeedVideoDiskCacheEnabled()) return;
     void hydrateHomeFeedVideoDiskCache();
-  }, [inlineVideoAutoplay]);
+  }, []);
 
   // Fallback only: if viewability did not fire after snap (fast fling, edge case).
   const handleMomentumScrollEnd = useCallback(
@@ -420,8 +421,8 @@ const styles = StyleSheet.create({
     backgroundColor: HOME_FEED_BG,
   },
   youtubeContent: {
-    paddingTop: 10,
-    paddingBottom: 28,
+    paddingTop: 6,
+    paddingBottom: 16,
   },
   center: {
     alignItems: "center",

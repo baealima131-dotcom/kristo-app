@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { HomeFeedPostKindFilter } from "./homeFeedUtils";
 import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
-import { HOME_FEED_GOLD, HOME_FEED_INACTIVE } from "./theme";
+import { HOME_FEED_BG, HOME_FEED_GOLD, HOME_FEED_INACTIVE } from "./theme";
 
 type Props = {
   activeFilter: HomeFeedPostKindFilter | null;
@@ -13,13 +13,12 @@ type Props = {
   onAnnouncementsPress: () => void;
 };
 
-const ICON_SIZE = 22;
-const TOP_BAR_ROW_HEIGHT = 58;
+const ICON_SIZE = 21;
+const TOP_BAR_ROW_HEIGHT = 52;
 
 export const HomeFeedTopBar = memo(function HomeFeedTopBar({
   activeFilter,
   onSearchPress,
-  onTestimoniesPress,
   onAnnouncementsPress,
 }: Props) {
   const insets = useSafeAreaInsets();
@@ -27,8 +26,11 @@ export const HomeFeedTopBar = memo(function HomeFeedTopBar({
     activeFilter === "announcement" || activeFilter === "testimony";
 
   return (
-    <View style={[styles.shell, { paddingTop: insets.top }]} pointerEvents="box-none">
-      <View style={[premium.headerGlass, styles.titleRow]}>
+    <View
+      style={[styles.shell, premium.headerSolid, { paddingTop: insets.top }]}
+      pointerEvents="box-none"
+    >
+      <View style={styles.titleRow}>
         <TopBarIconButton
           icon="search"
           active={false}
@@ -36,7 +38,7 @@ export const HomeFeedTopBar = memo(function HomeFeedTopBar({
           accessibilityLabel="Search Home Feed"
         />
 
-        <View style={premium.logoGlowShell} pointerEvents="none">
+        <View style={styles.logoCenter} pointerEvents="none">
           <Text style={premium.logoTitle}>KRISTO</Text>
         </View>
 
@@ -66,11 +68,11 @@ function TopBarIconButton({
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [
-        premium.glassCircleButton,
-        active ? premium.glassCircleButtonActive : null,
+        premium.headerIconButton,
+        active ? premium.headerIconButtonActive : null,
         pressed ? styles.pressed : null,
       ]}
-      hitSlop={6}
+      hitSlop={8}
       accessibilityLabel={accessibilityLabel}
       accessibilityState={{ selected: active }}
     >
@@ -90,15 +92,24 @@ export function measureHomeFeedTopBarHeight(insetTop = 0) {
 const styles = StyleSheet.create({
   shell: {
     zIndex: 20,
+    backgroundColor: HOME_FEED_BG,
   },
   titleRow: {
     minHeight: TOP_BAR_ROW_HEIGHT,
-    paddingHorizontal: 16,
+    backgroundColor: "#2A0F45",
+    paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
+  logoCenter: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   pressed: {
-    opacity: 0.88,
+    opacity: 0.75,
   },
 });

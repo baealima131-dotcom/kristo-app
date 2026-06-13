@@ -13,7 +13,7 @@ import {
   subscribeHomeFeedActiveFirstFrame,
 } from "@/src/lib/homeFeedVideoReadiness";
 import { hashMediaUrl } from "@/src/lib/mediaPosterCache";
-import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
+import { isHomeFeedVideoDiskCacheEnabled } from "@/src/lib/homeFeedVideoMode";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 const STORAGE_KEY = "kristo_home_feed_video_disk_cache_v1";
@@ -485,7 +485,7 @@ async function runDiskCacheQueue(rows: any[], activeIndex: number, generation: n
  */
 export function scheduleHomeFeedVideoDiskCacheBackground(rows: any[], activeIndex: number): void {
   if (shouldDeferBackgroundMediaJobs()) return;
-  if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
+  if (!isHomeFeedVideoDiskCacheEnabled()) return;
   if (!Array.isArray(rows) || !rows.length) return;
 
   pendingQueue = { rows, activeIndex };

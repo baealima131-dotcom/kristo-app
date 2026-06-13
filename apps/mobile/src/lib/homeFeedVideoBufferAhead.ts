@@ -1,5 +1,5 @@
 import { Image } from "react-native";
-import { getPosterPrefetchTimeoutMs, withPreviewTimeout } from "@/src/lib/videoGridThumbnail";
+import { getHomeFeedPosterLoadTimeoutMs, withPreviewTimeout } from "@/src/lib/videoGridThumbnail";
 import {
   isVideoPost,
   resolvePosterUri,
@@ -762,7 +762,7 @@ export async function warmHomeFeedStartupMedia(
 
   const maxPosters = Math.max(0, Number(opts?.maxPosters ?? 5));
   const maxVideos = Math.max(0, Number(opts?.maxVideos ?? 3));
-  const posterPrefetchTimeoutMs = getPosterPrefetchTimeoutMs();
+  const posterPrefetchTimeoutMs = getHomeFeedPosterLoadTimeoutMs();
 
   const posterUrls: string[] = [];
   const startupPlans = getFirstHomeFeedVideoPlaybackPlans(
