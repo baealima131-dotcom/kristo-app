@@ -47,6 +47,9 @@ import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
 import { ensureThread, sendMessage, setThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
+import { SharedContentCard } from "@/src/components/messages/SharedContentCard";
+import { queueOpenSharedHomeFeedPost } from "@/src/lib/homeFeedOpenSharedPost";
+import type { SharedContentPayload } from "@/src/lib/messagesStore";
 import {
   extractApiErrorMessage,
   formatAttachmentMimeLabel,
@@ -1703,6 +1706,10 @@ function isAssignmentCardMessage(m: MsgItem) {
   return String(m.kind || "") === "assignment_card";
 }
 
+function isSharedContentMessage(m: MsgItem) {
+  return String(m.kind || "") === "shared_content" && !!m.sharedContent;
+}
+
 function shouldHideExpiredAssignmentCardInRoom(m: MsgItem, nowMs: number) {
   if (!isAssignmentCardMessage(m) || !m.card) return false;
   return isScheduleSlotExpired(m.card, nowMs);
@@ -1870,6 +1877,13 @@ function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, _api
   const senderRole = String(x.senderRole || x.role || "").trim();
   const churchRole = String(x.churchRole || x.senderRole || x.role || "").trim();
   const senderAvatar = resolveMessageSenderAvatar(x).uri;
+  const sharedContent =
+    x?.sharedContent && typeof x.sharedContent === "object"
+      ? x.sharedContent
+      : String(x?.kind || "") === "shared_content" && x?.payload && typeof x.payload === "object"
+        ? x.payload
+        : undefined;
+  const kind = (sharedContent ? "shared_content" : String(x.kind || "text")) as MsgItem["kind"];
 
   return {
     id: String(x.id || `backend_${x.createdAt || Date.now()}`),
@@ -1888,7 +1902,8 @@ function mapBackendRoomMessageRow(x: any, threadId: string, selfId: string, _api
       ? x.attachments.map((att: any) => normalizeMsgAttachment(att))
       : undefined,
     createdAt: Number(x.createdAt || Date.now()),
-    kind: String(x.kind || "text") as any,
+    kind,
+    sharedContent,
     card: x.card || undefined,
   };
 }
@@ -2175,6 +2190,7 @@ function Bubble({
   onAddVideoAssignmentCard,
   onOpenScheduledLive,
   onPreviewImage,
+  onOpenSharedPost,
   claimingAssignmentMessageIds,
 }: {
   m: MsgItem;
@@ -2193,6 +2209,7 @@ function Bubble({
   onAddVideoAssignmentCard?: (messageId: string) => void;
   onOpenScheduledLive?: (m: MsgItem) => void;
   onPreviewImage?: (uri: string) => void;
+  onOpenSharedPost?: (shared: SharedContentPayload) => void;
 }) {
   const mine = m.sender === "me";
   const pastorMessage = isPastorMessage(m, { churchPastorUserId });
@@ -2204,6 +2221,30 @@ function Bubble({
     hasAvatar: !!senderAvatar.uri,
     source: senderAvatar.source,
   });
+
+  if (m.kind === "shared_content" && m.sharedContent) {
+    const highlightStyle = selected || actionHighlighted ? s.bubbleSelectedGlow : null;
+
+    return (
+      <Pressable
+        onPress={onPress}
+        onLongPress={onLongPress}
+        delayLongPress={280}
+        style={[
+          s.bubbleWrap,
+          mine ? ({ alignSelf: "flex-end" } as ViewStyle) : ({ alignSelf: "flex-start" } as ViewStyle),
+          highlightStyle,
+        ]}
+      >
+        <SharedContentCard
+          shared={m.sharedContent}
+          mine={mine}
+          senderLabel={!mine ? String(m.displayName || "") : undefined}
+          onOpenPost={onOpenSharedPost}
+        />
+      </Pressable>
+    );
+  }
 
   if (m.kind === "assignment_card") {
     const cardIndexMatch = String(m.card?.slotLabel || m.card?.cardId || m.id || "").match(/(\d+)/);
@@ -4218,6 +4259,24 @@ const displayHeaderTitle = assignmentDisplayTitle;
     closeMessageActions();
     void Share.share({ message: payload }).catch(() => {});
   }, [messageActionsTarget, closeMessageActions]);
+
+  const handleOpenSharedPost = useCallback(
+    (shared: SharedContentPayload) => {
+      const queued = queueOpenSharedHomeFeedPost(shared);
+      const postId = String(shared.postId || "").trim();
+      console.log("KRISTO_SHARED_POST_OPEN_TAP", {
+        postId,
+        queued,
+        hasVideoUri: Boolean(String(shared.videoUri || "").trim()),
+      });
+
+      router.replace({
+        pathname: "/(tabs)/",
+        params: postId ? { openPostId: postId } : {},
+      } as any);
+    },
+    [router]
+  );
 
   const handleMessageActionSelectAll = useCallback(() => {
     console.log("[MessageActions] select-all");
@@ -7625,6 +7684,7 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 onAddVideoAssignmentCard={handleAddAssignmentVideo}
                 onOpenScheduledLive={openScheduledLiveFromCard}
                 onPreviewImage={openImagePreview}
+                onOpenSharedPost={handleOpenSharedPost}
               />
             );
           }}

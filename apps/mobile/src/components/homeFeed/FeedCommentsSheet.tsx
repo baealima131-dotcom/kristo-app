@@ -433,6 +433,13 @@ export const FeedCommentsSheet = memo(function FeedCommentsSheet({
   const [error, setError] = useState("");
   const [reportCommentId, setReportCommentId] = useState("");
 
+  useEffect(() => {
+    console.log("KRISTO_COMMENT_SHEET_VISIBLE", {
+      visible,
+      postId,
+    });
+  }, [visible, postId]);
+
   const resetDraft = useCallback(() => {
     setDraft("");
     setReplyTo(null);

@@ -42,6 +42,13 @@ export const FeedReportSheet = memo(function FeedReportSheet({
   const [details, setDetails] = useState("");
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    console.log("KRISTO_REPORT_SHEET_VISIBLE", {
+      visible,
+      postId,
+    });
+  }, [visible, postId]);
+
   const resetForm = useCallback(() => {
     setSelectedReason(null);
     setDetails("");

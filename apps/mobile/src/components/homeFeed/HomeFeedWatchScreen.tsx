@@ -12,8 +12,11 @@ import {
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEventListener } from "expo";
 import { Ionicons } from "@expo/vector-icons";
+import { BlurView } from "expo-blur";
+import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
+import { resolveHomeFeedPlaybackUri } from "@/src/lib/homeFeedVideoDiskCache";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import {
   notifyWatchPlaybackActive,
@@ -29,7 +32,6 @@ import {
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import {
-  formatFeedMetaLine,
   formatFeedTimestamp,
   isChurchRoomMemberFeedPost,
   resolveChurchName,
@@ -40,9 +42,14 @@ import {
   resolveVideoUri,
 } from "./homeFeedUtils";
 import { FeedYouTubeCard } from "./FeedYouTubeCard";
-import { PostActionsInline } from "./PostActionsInline";
+import { FeedCommentsSheet } from "./FeedCommentsSheet";
+import { FeedReportSheet } from "./FeedReportSheet";
+import { HomeFeedShareSheet } from "./HomeFeedShareSheet";
+import { ShareToChatSheet } from "./ShareToChatSheet";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
+import type { HomeFeedSharePayload } from "@/src/lib/homeFeedShare";
 import { FeedVideoPosterImage } from "./VideoPostFallbackPoster";
+import { formatActionCount } from "./homeFeedUtils";
 import {
   HOME_FEED_BG,
   HOME_FEED_BORDER,
@@ -52,7 +59,12 @@ import {
 } from "./theme";
 
 const AVATAR_SIZE = 46;
-const STATS_COLOR = "rgba(255,255,255,0.45)";
+const WATCH_ACTION_ICON_SIZE = 20;
+const WATCH_PANEL_BORDER_TOP = "rgba(244, 208, 111, 0.30)";
+const WATCH_PANEL_BORDER_BOTTOM = "rgba(168, 85, 247, 0.38)";
+const WATCH_DATE_COLOR = "rgba(255,255,255,0.45)";
+const AVATAR_RING_SIZE = AVATAR_SIZE + 6;
+const WATCH_PANEL_TOP_RADIUS = 38;
 
 type Props = {
   visible: boolean;
@@ -70,9 +82,26 @@ type Props = {
   onItemShare: (item: any) => void;
   onItemSave: (item: any) => void;
   onItemReport: (item: any) => void;
+  commentsSheetOpen: boolean;
+  commentTargetPostId: string;
+  commentRailCount: number;
+  onCloseComments: () => void;
+  onDiscussionCountChange: (postId: string, count: number) => void;
+  onDiscussionCountBump: (postId: string, delta: number) => void;
+  reportSheetOpen: boolean;
+  reportTargetPostId: string;
+  onCloseReport: () => void;
+  onReported: (postId: string) => void;
+  shareSheetOpen: boolean;
+  sharePayload: HomeFeedSharePayload | null;
+  onCloseShare: () => void;
+  onOpenShareToChat: () => void;
+  shareToChatOpen: boolean;
+  shareSourceItem: any;
+  onCloseShareToChat: () => void;
 };
 
-function WatchVideoEngagementActions({
+function WatchPanelActions({
   item,
   onLike,
   onComment,
@@ -90,13 +119,88 @@ function WatchVideoEngagementActions({
   const engagement = useHomeFeedRowEngagement(item);
 
   return (
-    <PostActionsInline
-      liked={engagement.likedByMe || engagement.liked}
-      likeCount={engagement.likeCount}
-      commentCount={engagement.commentCount}
-      shareCount={Number(item?.shareCount || 0)}
-      saved={engagement.saved}
-      reported={engagement.reported}
+    <View style={styles.watchActionsRow}>
+      <WatchPanelAction
+        icon={engagement.likedByMe || engagement.liked ? "heart" : "heart-outline"}
+        label={formatActionCount(engagement.likeCount)}
+        active={engagement.likedByMe || engagement.liked}
+        activeColor="#FF6B8A"
+        onPress={onLike}
+      />
+      <WatchPanelAction
+        icon="chatbubble-ellipses-outline"
+        label={formatActionCount(engagement.commentCount)}
+        onPress={onComment}
+      />
+      <WatchPanelAction
+        icon="arrow-redo-outline"
+        label={formatActionCount(Number(item?.shareCount || 0))}
+        onPress={onShare}
+      />
+      <WatchPanelAction
+        icon={engagement.saved ? "bookmark" : "bookmark-outline"}
+        label={engagement.saved ? "Saved" : "Save"}
+        active={engagement.saved}
+        onPress={onSave}
+      />
+      <WatchPanelAction
+        icon={engagement.reported ? "flag" : "flag-outline"}
+        label={engagement.reported ? "Reported" : "Report"}
+        active={engagement.reported}
+        onPress={onReport}
+      />
+    </View>
+  );
+}
+
+function WatchPanelAction({
+  icon,
+  label,
+  onPress,
+  active,
+  activeColor = HOME_FEED_GOLD_SOFT,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+  active?: boolean;
+  activeColor?: string;
+}) {
+  return (
+    <Pressable style={styles.watchAction} onPress={onPress} hitSlop={8}>
+      <Ionicons
+        name={icon}
+        size={WATCH_ACTION_ICON_SIZE}
+        color={active ? activeColor : "rgba(255,255,255,0.68)"}
+      />
+      <Text
+        style={[styles.watchActionLabel, active ? styles.watchActionLabelActive : null]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function WatchVideoEngagementActions({
+  item,
+  onLike,
+  onComment,
+  onShare,
+  onSave,
+  onReport,
+}: {
+  item: any;
+  onLike: () => void;
+  onComment: () => void;
+  onShare: () => void;
+  onSave: () => void;
+  onReport: () => void;
+}) {
+  return (
+    <WatchPanelActions
+      item={item}
       onLike={onLike}
       onComment={onComment}
       onShare={onShare}
@@ -108,10 +212,10 @@ function WatchVideoEngagementActions({
 
 function resolveWatchScreenPlaybackUri(payload: HomeFeedVideoOpenPayload): string {
   const fromPayload = String(payload.videoUri || "").trim();
-  if (fromPayload) return fromPayload;
-  const item = payload.item;
-  if (item) return resolveHomeFeedVideoUri(item);
-  return "";
+  const remoteUri =
+    fromPayload || (payload.item ? resolveHomeFeedVideoUri(payload.item) : "");
+  if (!remoteUri) return "";
+  return resolveHomeFeedPlaybackUri(remoteUri) || remoteUri;
 }
 
 function WatchVideoSurface({
@@ -127,9 +231,24 @@ function WatchVideoSurface({
   const [ended, setEnded] = useState(false);
   const initialUriRef = useRef(playbackUri);
 
+  useEffect(() => {
+    console.log("KRISTO_WATCH_BACKDROP_DIAG", {
+      postId,
+      isTikTokLayout,
+      playbackUri,
+      hasItem: Boolean(item),
+      displayType: item ? resolveHomeFeedVideoDisplayType(item) : null,
+    });
+  }, [postId, isTikTokLayout, playbackUri, item]);
+
   const player = useVideoPlayer(initialUriRef.current || playbackUri, (p) => {
     p.loop = false;
     p.muted = false;
+  });
+
+  const backdropPlayer = useVideoPlayer(initialUriRef.current || playbackUri, (p) => {
+    p.loop = true;
+    p.muted = true;
   });
 
   useEventListener(player, "playToEnd", () => {
@@ -140,17 +259,65 @@ function WatchVideoSurface({
   useEffect(() => {
     if (!playbackUri) return;
     setEnded(false);
-    try {
-      const currentUri = String((player as any)?.source?.uri || "").trim();
-      if (currentUri && currentUri !== playbackUri) {
-        player.replace({ uri: playbackUri, contentType: "progressive" });
-      } else if (!currentUri) {
-        player.replace({ uri: playbackUri, contentType: "progressive" });
-      }
-      player.play();
-      notifyWatchPlaybackActive(postId);
-    } catch {}
-  }, [player, playbackUri, postId]);
+
+    let cancelled = false;
+    const source = { uri: playbackUri, contentType: "progressive" as const };
+
+    void (async () => {
+      try {
+        const currentUri = String((player as any)?.source?.uri || "").trim();
+        const needsReplace = !currentUri || currentUri !== playbackUri;
+
+        if (needsReplace) {
+          if (typeof player.replaceAsync === "function") {
+            console.log("KRISTO_WATCH_VIDEO_REPLACE_ASYNC_START", {
+              postId,
+              playbackUri,
+              at: Date.now(),
+            });
+            await player.replaceAsync(source);
+            if (cancelled) return;
+            console.log("KRISTO_WATCH_VIDEO_REPLACE_ASYNC_END", {
+              postId,
+              at: Date.now(),
+            });
+          } else {
+            console.log("KRISTO_WATCH_VIDEO_REPLACE_FALLBACK_SYNC", {
+              postId,
+              playbackUri,
+              at: Date.now(),
+            });
+            player.replace(source);
+            if (cancelled) return;
+          }
+        }
+
+        if (cancelled) return;
+
+        if (isTikTokLayout) {
+          const backdropCurrentUri = String((backdropPlayer as any)?.source?.uri || "").trim();
+          const backdropNeedsReplace = !backdropCurrentUri || backdropCurrentUri !== playbackUri;
+          if (backdropNeedsReplace) {
+            if (typeof backdropPlayer.replaceAsync === "function") {
+              await backdropPlayer.replaceAsync(source);
+            } else {
+              backdropPlayer.replace(source);
+            }
+          }
+          backdropPlayer.muted = true;
+          backdropPlayer.loop = true;
+          backdropPlayer.play();
+        }
+
+        player.play();
+        notifyWatchPlaybackActive(postId);
+      } catch {}
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [player, backdropPlayer, playbackUri, postId, isTikTokLayout]);
 
   useEffect(() => {
     let lastPlaying: boolean | null = null;
@@ -190,11 +357,22 @@ function WatchVideoSurface({
 
   return (
     <View style={styles.playerSurface}>
+      {!ended && isTikTokLayout ? (
+        <>
+          <VideoView
+            player={backdropPlayer}
+            style={styles.tikTokVideoBackdrop}
+            contentFit="cover"
+            pointerEvents="none"
+          />
+          <View style={styles.tikTokBackdropOverlay} pointerEvents="none" />
+        </>
+      ) : null}
       {!ended ? (
         <VideoView
           player={player}
-          style={styles.video}
-          contentFit={isTikTokLayout ? "cover" : "contain"}
+          style={isTikTokLayout ? styles.videoOverBackdrop : styles.video}
+          contentFit="contain"
           nativeControls
         />
       ) : null}
@@ -217,7 +395,7 @@ function WatchVideoSurface({
           ) : null}
           <View style={styles.replayBadgeWrap} pointerEvents="none">
             <View style={styles.replayBadge}>
-              <Ionicons name="play" size={28} color="#FFFFFF" style={styles.replayIcon} />
+              <Ionicons name="play" size={32} color="#FFFFFF" style={styles.replayIcon} />
             </View>
           </View>
         </Pressable>
@@ -226,15 +404,14 @@ function WatchVideoSurface({
   );
 }
 
-/** Same metadata block as FeedYouTubeCard — church row, then title, then stats. */
+/** Current-video metadata — avatar, church, title, date. */
 function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle?: string }) {
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const postTitle = resolveHomeFeedVideoTitle(item);
-  const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle || fallbackTitle;
+  const titleLine = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle || fallbackTitle;
   const churchName = resolveChurchName(item);
   const churchVerified = resolveFeedChurchVerified(item);
   const whenLabel = formatFeedTimestamp(item?.createdAt);
-  const statsLine = formatFeedMetaLine(item, whenLabel);
 
   const { uri: avatarUri, backupUri, initial } = useMemo(
     () => resolveHomeFeedDisplayAvatar(item),
@@ -242,15 +419,19 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
   );
   const avatarSrc = String(avatarUri || backupUri || "").trim();
 
+  const avatarNode = avatarSrc ? (
+    <Image source={{ uri: avatarSrc }} style={styles.avatar} />
+  ) : (
+    <View style={styles.avatarFallback}>
+      <Text style={styles.avatarInitial}>{initial || "K"}</Text>
+    </View>
+  );
+
   return (
     <View style={styles.metaRow}>
-      {avatarSrc ? (
-        <Image source={{ uri: avatarSrc }} style={styles.avatar} />
-      ) : (
-        <View style={styles.avatarFallback}>
-          <Text style={styles.avatarInitial}>{initial || "K"}</Text>
-        </View>
-      )}
+      <View style={styles.avatarRing}>
+        <View style={styles.avatarGlow}>{avatarNode}</View>
+      </View>
       <View style={styles.metaTextCol}>
         {churchName ? (
           <View style={styles.churchNameRow}>
@@ -267,14 +448,14 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
             ) : null}
           </View>
         ) : null}
-        {title ? (
+        {titleLine ? (
           <Text style={styles.videoTitle} numberOfLines={3}>
-            {title}
+            {titleLine}
           </Text>
         ) : null}
-        {statsLine ? (
-          <Text style={styles.statsLine} numberOfLines={1}>
-            {statsLine}
+        {whenLabel ? (
+          <Text style={styles.dateMuted} numberOfLines={1}>
+            {whenLabel}
           </Text>
         ) : null}
       </View>
@@ -298,6 +479,23 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   onItemShare,
   onItemSave,
   onItemReport,
+  commentsSheetOpen,
+  commentTargetPostId,
+  commentRailCount,
+  onCloseComments,
+  onDiscussionCountChange,
+  onDiscussionCountBump,
+  reportSheetOpen,
+  reportTargetPostId,
+  onCloseReport,
+  onReported,
+  shareSheetOpen,
+  sharePayload,
+  onCloseShare,
+  onOpenShareToChat,
+  shareToChatOpen,
+  shareSourceItem,
+  onCloseShareToChat,
 }: Props) {
   const insets = useSafeAreaInsets();
   const { width, height: windowHeight } = useWindowDimensions();
@@ -336,7 +534,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
       <View style={[styles.screen, { paddingTop: insets.top }]}>
         <View style={styles.topBar}>
           <Pressable onPress={onClose} hitSlop={12} accessibilityLabel="Close video">
-            <Ionicons name="chevron-back" size={28} color="#FFFFFF" />
+            <Ionicons name="chevron-back" size={32} color="#FFFFFF" />
           </Pressable>
           <Text style={styles.topBarTitle} numberOfLines={1}>
             Watch
@@ -355,18 +553,32 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
         </View>
 
         <View style={styles.currentVideoPanel}>
-          {item ? <WatchVideoMeta item={item} fallbackTitle={payload.title} /> : null}
-          <View style={styles.actionsWrap}>
-            {item ? (
-              <WatchVideoEngagementActions
-                item={item}
-                onLike={onLike}
-                onComment={onComment}
-                onShare={onShare}
-                onSave={onSave}
-                onReport={onReport}
-              />
-            ) : null}
+          <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
+          <LinearGradient
+            colors={[
+              "rgba(52, 4, 82, 0.76)",
+              "rgba(46, 3, 73, 0.72)",
+              "rgba(38, 2, 62, 0.74)",
+            ]}
+            locations={[0, 0.5, 1]}
+            style={StyleSheet.absoluteFillObject}
+            pointerEvents="none"
+          />
+          <View style={styles.panelContent}>
+            {item ? <WatchVideoMeta item={item} fallbackTitle={payload.title} /> : null}
+            {item ? <View style={styles.actionsDivider} /> : null}
+            <View style={styles.actionsWrap}>
+              {item ? (
+                <WatchVideoEngagementActions
+                  item={item}
+                  onLike={onLike}
+                  onComment={onComment}
+                  onShare={onShare}
+                  onSave={onSave}
+                  onReport={onReport}
+                />
+              ) : null}
+            </View>
           </View>
         </View>
 
@@ -394,6 +606,36 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             );
           })}
         </ScrollView>
+
+        <FeedCommentsSheet
+          visible={commentsSheetOpen}
+          postId={commentTargetPostId}
+          railDiscussionCount={commentRailCount}
+          onClose={onCloseComments}
+          onDiscussionCountChange={onDiscussionCountChange}
+          onDiscussionCountBump={onDiscussionCountBump}
+        />
+
+        <FeedReportSheet
+          visible={reportSheetOpen}
+          postId={reportTargetPostId}
+          onClose={onCloseReport}
+          onReported={onReported}
+        />
+
+        <HomeFeedShareSheet
+          visible={shareSheetOpen}
+          payload={sharePayload}
+          onClose={onCloseShare}
+          onOpenShareToChat={onOpenShareToChat}
+        />
+
+        <ShareToChatSheet
+          visible={shareToChatOpen}
+          payload={sharePayload}
+          sourceItem={shareSourceItem}
+          onClose={onCloseShareToChat}
+        />
       </View>
     </Modal>
   );
@@ -410,7 +652,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HOME_FEED_BORDER,
+    borderBottomColor: "rgba(244,208,111,0.18)",
   },
   topBarTitle: {
     flex: 1,
@@ -433,12 +675,31 @@ const styles = StyleSheet.create({
   playerSurface: {
     flex: 1,
     width: "100%",
-    backgroundColor: "#000000",
+    backgroundColor: "#12031F",
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
   },
   video: {
     flex: 1,
     width: "100%",
     height: "100%",
+  },
+  videoOverBackdrop: {
+    height: "100%",
+    aspectRatio: 9 / 16,
+    alignSelf: "center",
+    zIndex: 2,
+    backgroundColor: "transparent",
+  },
+  tikTokVideoBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 0,
+  },
+  tikTokBackdropOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(18,3,31,0.24)",
+    zIndex: 1,
   },
   replayOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -454,7 +715,7 @@ const styles = StyleSheet.create({
     height: 58,
     borderRadius: 29,
     backgroundColor: "rgba(0,0,0,0.55)",
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: "rgba(255,255,255,0.92)",
     alignItems: "center",
     justifyContent: "center",
@@ -466,17 +727,49 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   currentVideoPanel: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: HOME_FEED_BORDER,
-    backgroundColor: HOME_FEED_BG,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(244,208,111,0.28)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(168,85,247,0.30)",
+    backgroundColor: "rgba(46,3,73,0.96)",
+    shadowColor: "#A855F7",
+    shadowOpacity: 0.26,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 9,
+  },
+  panelContent: {
+    position: "relative",
+    zIndex: 1,
   },
   metaRow: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
     paddingHorizontal: YOUTUBE_CARD_H_PADDING,
-    paddingTop: 10,
+    paddingTop: 14,
     paddingBottom: 4,
+  },
+  avatarRing: {
+    width: AVATAR_RING_SIZE,
+    height: AVATAR_RING_SIZE,
+    borderRadius: AVATAR_RING_SIZE / 2,
+    borderWidth: 3,
+    borderColor: "rgba(244, 208, 111, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#9333EA",
+    shadowOpacity: 0.48,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 5,
+  },
+  avatarGlow: {
+    width: AVATAR_SIZE,
+    height: AVATAR_SIZE,
+    borderRadius: AVATAR_SIZE / 2,
+    overflow: "hidden",
+    backgroundColor: "rgba(124, 58, 237, 0.16)",
   },
   avatar: {
     width: AVATAR_SIZE,
@@ -527,20 +820,57 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     letterSpacing: 0.05,
   },
-  statsLine: {
-    color: STATS_COLOR,
+  dateMuted: {
+    color: WATCH_DATE_COLOR,
     fontSize: 11,
     lineHeight: 15,
     fontWeight: "500",
     marginTop: 2,
   },
+  actionsDivider: {
+    height: 1,
+    backgroundColor: "rgba(244,208,111,0.18)",
+    marginHorizontal: YOUTUBE_CARD_H_PADDING,
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.16,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 1 },
+  },
   actionsWrap: {
-    paddingHorizontal: YOUTUBE_CARD_H_PADDING,
-    paddingBottom: 8,
+    paddingTop: 11,
+    paddingBottom: 9,
+    backgroundColor: "rgba(7,1,16,0.18)",
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.045)",
+    shadowColor: "#000000",
+    shadowOpacity: 0.28,
+    shadowRadius: 9,
+    shadowOffset: { width: 0, height: -3 },
+  },
+  watchActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  watchAction: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 3,
+    paddingVertical: 4,
+  },
+  watchActionLabel: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 11,
+    lineHeight: 13,
+    fontWeight: "600",
+  },
+  watchActionLabelActive: {
+    color: HOME_FEED_GOLD_SOFT,
   },
   upNextLabel: {
     color: HOME_FEED_MUTED,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: "800",
     paddingHorizontal: YOUTUBE_CARD_H_PADDING,
     paddingTop: 12,

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import {
   Alert,
   AppState,
-  Share,
+  InteractionManager,
   StyleSheet,
   Text,
   View,
@@ -21,9 +21,16 @@ import {
 import { FeedList, type FeedListHandle } from "./FeedList";
 import { FeedReportSheet } from "./FeedReportSheet";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
+import { HomeFeedShareSheet } from "./HomeFeedShareSheet";
+import { ShareToChatSheet } from "./ShareToChatSheet";
 import { HomeFeedWatchScreen } from "./HomeFeedWatchScreen";
 import { HomeFeedTopBar } from "./HomeFeedTopBar";
 import { HomeFeedSearchSheet } from "./HomeFeedSearchSheet";
+import {
+  consumePendingHomeFeedOpenRequest,
+  peekPendingHomeFeedOpenRequest,
+  resolveSharedPostOpenAction,
+} from "@/src/lib/homeFeedOpenSharedPost";
 import {
   normalizeCommentPostId,
   userHasActiveChurchMembership,
@@ -42,6 +49,10 @@ import {
   resolveHomeFeedRefreshMode,
 } from "@/src/lib/homeFeedNetwork";
 import { subscribeHomeFeedPostDelete } from "@/src/lib/homeFeedPostDeleteSync";
+import {
+  buildHomeFeedSharePayload,
+  type HomeFeedSharePayload,
+} from "@/src/lib/homeFeedShare";
 import {
   fetchHomeFeedFromApi,
   fetchHomeFeedNextPage,
@@ -95,7 +106,7 @@ import {
   recordWatchSessionVideo,
   reshuffleHomeFeedRowsAfterWatchSelection,
 } from "@/src/lib/homeFeedWatchUpNext";
-import { subscribeBackgroundMediaJobsPaused } from "@/src/lib/homeFeedWatchPlaybackPriority";
+import { subscribeBackgroundMediaJobsPaused, notifyWatchScreenOpened } from "@/src/lib/homeFeedWatchPlaybackPriority";
 import {
   getLocallyReportedPostIds,
   markPostReportedLocally,
@@ -112,6 +123,7 @@ import {
 import { warmHomeFeedUpcoming, startFirstHomeFeedVideoPrepare } from "@/src/lib/homeFeedVideoStartup";
 import {
   isHomeFeedInlineVideoAutoplayEnabled,
+  isHomeFeedVideoDiskCacheEnabled,
   type HomeFeedVideoOpenPayload,
 } from "@/src/lib/homeFeedVideoMode";
 import {
@@ -135,15 +147,17 @@ import {
 } from "@/src/lib/homeFeedScheduleDirty";
 import {
   prewarmHomeFeedPostersOnNearEnd,
+  prewarmVisibleHomeFeedVideoPosters,
   resetHomeFeedPosterPrewarmForFeedRefresh,
   startInitialHomeFeedPosterPrewarm,
+  VISIBLE_PRIORITY_COUNT,
 } from "@/src/lib/homeFeedPosterPrewarm";
 import { fetchChurchSubscriptionActiveThrottled } from "@/src/lib/churchResourceRefresh";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
 export default function HomeFeedScreen() {
   React.useEffect(() => {
-    if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
+    if (!isHomeFeedVideoDiskCacheEnabled()) return;
     let cancelled = false;
     console.log("KRISTO_VIDEO_DISK_CACHE_EARLY_HYDRATE_START");
     hydrateHomeFeedVideoDiskCache()
@@ -169,9 +183,10 @@ export default function HomeFeedScreen() {
   const insets = useSafeAreaInsets();
   const topBarHeight = homeFeedTopBarTotalHeight(insets.top);
   const screenFocused = useIsFocused();
-  const { focusPostId, focus } = useLocalSearchParams<{
+  const { focusPostId, focus, openPostId } = useLocalSearchParams<{
     focusPostId?: string;
     focus?: string;
+    openPostId?: string;
   }>();
 
   const hadCacheOnMountRef = useRef(getCachedHomeFeedBackendRows().length > 0);
@@ -190,16 +205,22 @@ export default function HomeFeedScreen() {
   const [commentsSheetOpen, setCommentsSheetOpen] = useState(false);
   const [commentTargetPostId, setCommentTargetPostId] = useState("");
   const [commentRailCount, setCommentRailCount] = useState(0);
+  const [shareSheetOpen, setShareSheetOpen] = useState(false);
+  const [shareToChatOpen, setShareToChatOpen] = useState(false);
+  const [sharePayload, setSharePayload] = useState<HomeFeedSharePayload | null>(null);
+  const [shareSourceItem, setShareSourceItem] = useState<any>(null);
   const [successBanner, setSuccessBanner] = useState("");
   const [videoModalPayload, setVideoModalPayload] = useState<HomeFeedVideoOpenPayload | null>(
     null
   );
   const [watchUpNextGeneration, setWatchUpNextGeneration] = useState(0);
+  const [relatedVideoItems, setRelatedVideoItems] = useState<any[]>([]);
   const [backgroundMediaPaused, setBackgroundMediaPaused] = useState(false);
   const [searchSheetOpen, setSearchSheetOpen] = useState(false);
   const [feedPostFilter, setFeedPostFilter] = useState<HomeFeedPostKindFilter | null>(null);
 
   const focusHandledRef = useRef("");
+  const openPostHandledRef = useRef("");
   const pendingScrollRowKeyRef = useRef("");
   const reportablePostIdsDigestRef = useRef("");
   const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -797,6 +818,10 @@ export default function HomeFeedScreen() {
   );
 
   const feedListRows = filteredVisibleData;
+  const feedListRowsRef = useRef(feedListRows);
+  const displayFeedRowsRef = useRef(displayFeedRows);
+  feedListRowsRef.current = feedListRows;
+  displayFeedRowsRef.current = displayFeedRows;
 
   const feedEmptyCopy = useMemo(() => {
     if (feedPostFilter === "testimony") {
@@ -845,13 +870,12 @@ export default function HomeFeedScreen() {
     videoModalPayload,
   ]);
 
-  // Full-feed disk cache: inline autoplay only.
+  // Full-feed disk cache: YouTube tap-to-play + inline autoplay.
   useEffect(() => {
-    if (!inlineVideoAutoplay) return;
+    if (!isHomeFeedVideoDiskCacheEnabled()) return;
     if (!stableDisplayRows.length || backgroundMediaPaused || videoModalPayload) return;
     scheduleHomeFeedVideoDiskCacheBackground(stableDisplayRows, activeIndex);
   }, [
-    inlineVideoAutoplay,
     stableDisplayRows,
     activeIndex,
     backgroundMediaPaused,
@@ -924,6 +948,25 @@ export default function HomeFeedScreen() {
       .map((row) => feedRenderKey(row) || String(row?.id || ""))
       .join("|");
   }, [visibleData, activeIndex]);
+
+  // Visible-window poster priority — all on-screen rows, rechecked every 500ms.
+  useEffect(() => {
+    if (backgroundMediaPaused || videoModalPayload) return;
+    if (!visibleData.length) return;
+    if (!feedFocused) return;
+    const windowCount = Math.min(
+      VISIBLE_PRIORITY_COUNT,
+      Math.max(1, visibleData.length - Math.max(0, activeIndex))
+    );
+    prewarmVisibleHomeFeedVideoPosters(visibleData, activeIndex, windowCount);
+  }, [
+    visibleData,
+    activeIndex,
+    posterWarmKey,
+    backgroundMediaPaused,
+    videoModalPayload,
+    feedFocused,
+  ]);
 
   useEffect(() => {
     if (!feedFocused || !visibleData.length || backgroundMediaPaused || videoModalPayload) return;
@@ -1049,47 +1092,80 @@ export default function HomeFeedScreen() {
 
   const handleVideoPress = useCallback(
     (payload: HomeFeedVideoOpenPayload) => {
+      const postId = String(payload.postId || "").trim();
+      console.log("KRISTO_WATCH_OPEN_TAP", { postId, at: Date.now() });
+      notifyWatchScreenOpened(postId);
+
       const generation = recordWatchSessionVideo(payload.postId);
       setWatchUpNextGeneration(generation);
-      setStableDisplayRows((prev) => {
-        const base = prev.length ? prev : stableDisplayRowsRef.current;
-        const next = reshuffleHomeFeedRowsAfterWatchSelection({
-          rows: base,
-          currentItem: payload.item,
-          viewerChurchId,
-          generationSeed: generation,
-        });
-        stableDisplayRowsRef.current = next;
-        return next;
-      });
       setVideoModalPayload(payload);
+
+      InteractionManager.runAfterInteractions(() => {
+        setStableDisplayRows((prev) => {
+          const base = prev.length ? prev : stableDisplayRowsRef.current;
+          const next = reshuffleHomeFeedRowsAfterWatchSelection({
+            rows: base,
+            currentItem: payload.item,
+            viewerChurchId,
+            generationSeed: generation,
+          });
+          stableDisplayRowsRef.current = next;
+          return next;
+        });
+      });
     },
     [viewerChurchId]
   );
 
   const handleCloseVideo = useCallback(() => {
     setVideoModalPayload(null);
+    setRelatedVideoItems([]);
   }, []);
 
-  const relatedVideoItems = useMemo(() => {
-    if (!videoModalPayload?.postId || !videoModalPayload?.item) return [];
-    const sourceRows =
-      feedListRows.length > 0
-        ? feedListRows
-        : stableDisplayRows.length > 0
-          ? stableDisplayRows
-          : displayFeedRows;
-    return buildWatchUpNextVideos({
-      currentItem: videoModalPayload.item,
-      candidates: sourceRows,
-      viewerChurchId,
-      limit: 20,
-      generationSeed: watchUpNextGeneration,
+  useEffect(() => {
+    if (!videoModalPayload?.postId || !videoModalPayload?.item) {
+      setRelatedVideoItems([]);
+      return;
+    }
+
+    const payload = videoModalPayload;
+    const generation = watchUpNextGeneration;
+    let cancelled = false;
+
+    const task = InteractionManager.runAfterInteractions(() => {
+      const timeout = setTimeout(() => {
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          const sourceRows =
+            feedListRowsRef.current.length > 0
+              ? feedListRowsRef.current
+              : stableDisplayRowsRef.current.length > 0
+                ? stableDisplayRowsRef.current
+                : displayFeedRowsRef.current;
+          const items = buildWatchUpNextVideos({
+            currentItem: payload.item,
+            candidates: sourceRows,
+            viewerChurchId,
+            limit: 20,
+            generationSeed: generation,
+          });
+          console.log("KRISTO_WATCH_UP_NEXT_DEFERRED", {
+            postId: String(payload.postId || "").trim(),
+            count: items.length,
+            at: Date.now(),
+          });
+          setRelatedVideoItems(items);
+        });
+      }, 900);
+
+      return () => clearTimeout(timeout);
     });
+
+    return () => {
+      cancelled = true;
+      task.cancel?.();
+    };
   }, [
-    feedListRows,
-    stableDisplayRows,
-    displayFeedRows,
     videoModalPayload?.postId,
     videoModalPayload?.item,
     viewerChurchId,
@@ -1243,6 +1319,53 @@ export default function HomeFeedScreen() {
     feedListRef.current?.scrollToIndex(matchIndex, false);
   }, [focusPostId, visibleData]);
 
+  const tryOpenSharedPost = useCallback(() => {
+    const pending = peekPendingHomeFeedOpenRequest();
+    const rawId = normalizeCommentPostId(
+      String(openPostId || pending?.postId || "").trim()
+    );
+    if (!rawId) return;
+    if (openPostHandledRef.current === rawId) return;
+
+    const shared = pending?.sharedContent || {
+      type: "post" as const,
+      postId: rawId,
+    };
+    const action = resolveSharedPostOpenAction(shared, visibleData);
+
+    if (action.mode === "watch" && action.payload) {
+      openPostHandledRef.current = rawId;
+      consumePendingHomeFeedOpenRequest();
+      handleVideoPress(action.payload);
+      console.log("KRISTO_SHARED_POST_OPEN_WATCH", { postId: rawId });
+      return;
+    }
+
+    if (action.mode === "scroll" && action.item) {
+      openPostHandledRef.current = rawId;
+      consumePendingHomeFeedOpenRequest();
+      scrollFeedToRow(action.item);
+      console.log("KRISTO_SHARED_POST_OPEN_SCROLL", { postId: rawId });
+      return;
+    }
+
+    const matchIndex = visibleData.findIndex(
+      (row) => normalizeCommentPostId(String(row?.id || "")) === rawId
+    );
+    if (matchIndex >= 0) {
+      openPostHandledRef.current = rawId;
+      consumePendingHomeFeedOpenRequest();
+      setActiveIndex(matchIndex);
+      feedListRef.current?.scrollToIndex(matchIndex, false);
+      console.log("KRISTO_SHARED_POST_OPEN_SCROLL_LATE", { postId: rawId });
+    }
+  }, [openPostId, visibleData, handleVideoPress, scrollFeedToRow]);
+
+  useEffect(() => {
+    if (!screenFocused) return;
+    tryOpenSharedPost();
+  }, [screenFocused, openPostId, visibleData, tryOpenSharedPost]);
+
   useEffect(() => {
     if (activeIndex >= visibleData.length && visibleData.length > 0) {
       const next = Math.max(0, visibleData.length - 1);
@@ -1305,6 +1428,14 @@ export default function HomeFeedScreen() {
     handleComment(watchEngagementItem);
   }, [watchEngagementItem, handleComment]);
 
+  useEffect(() => {
+    console.log("KRISTO_COMMENT_OPEN_STATE", {
+      commentsSheetOpen,
+      commentTargetPostId,
+      watchOpen: Boolean(videoModalPayload),
+    });
+  }, [commentsSheetOpen, commentTargetPostId, videoModalPayload]);
+
   const handleDiscussionCountChange = useCallback((postId: string, count: number) => {
     const cleanId = normalizeCommentPostId(postId);
     if (!cleanId || !Number.isFinite(count)) return;
@@ -1336,15 +1467,22 @@ export default function HomeFeedScreen() {
     [feedRows]
   );
 
-  const handleShare = useCallback(async (item: any) => {
-    const title = String(item?.title || "").trim();
-    const body = String(item?.body || item?.text || "").trim();
-    const church = String(item?.churchName || item?.churchLabel || "").trim();
-    const message = [title, body, church].filter(Boolean).join("\n\n");
-    try {
-      await Share.share({ message: message || "Shared from Kristo", title: title || "Kristo" });
-    } catch {}
+  const handleShare = useCallback((item: any) => {
+    const payload = buildHomeFeedSharePayload(item);
+    if (!payload) return;
+    setShareSourceItem(item);
+    setSharePayload(payload);
+    setShareSheetOpen(true);
   }, []);
+
+  useEffect(() => {
+    console.log("KRISTO_SHARE_OPEN_STATE", {
+      shareSheetOpen,
+      postId: sharePayload?.postId || "",
+      shareUrl: sharePayload?.shareUrl || "",
+      watchOpen: Boolean(videoModalPayload),
+    });
+  }, [shareSheetOpen, sharePayload, videoModalPayload]);
 
   const handleReport = useCallback((item: any) => {
     const postId = normalizeCommentPostId(String(item?.id || "").trim());
@@ -1352,6 +1490,14 @@ export default function HomeFeedScreen() {
     setReportTargetPostId(postId);
     setReportSheetOpen(true);
   }, []);
+
+  useEffect(() => {
+    console.log("KRISTO_REPORT_OPEN_STATE", {
+      reportSheetOpen,
+      reportTargetPostId,
+      watchOpen: Boolean(videoModalPayload),
+    });
+  }, [reportSheetOpen, reportTargetPostId, videoModalPayload]);
 
   const handleReported = useCallback((postId: string) => {
     const cleanId = baseFeedId(postId);
@@ -1433,6 +1579,23 @@ export default function HomeFeedScreen() {
         onItemShare={(item) => void handleShare(item)}
         onItemSave={handleSave}
         onItemReport={handleReport}
+        commentsSheetOpen={commentsSheetOpen}
+        commentTargetPostId={commentTargetPostId}
+        commentRailCount={commentRailCount}
+        onCloseComments={() => setCommentsSheetOpen(false)}
+        onDiscussionCountChange={handleDiscussionCountChange}
+        onDiscussionCountBump={handleDiscussionCountBump}
+        reportSheetOpen={reportSheetOpen}
+        reportTargetPostId={reportTargetPostId}
+        onCloseReport={() => setReportSheetOpen(false)}
+        onReported={handleReported}
+        shareSheetOpen={shareSheetOpen}
+        sharePayload={sharePayload}
+        onCloseShare={() => setShareSheetOpen(false)}
+        onOpenShareToChat={() => setShareToChatOpen(true)}
+        shareToChatOpen={shareToChatOpen}
+        shareSourceItem={shareSourceItem}
+        onCloseShareToChat={() => setShareToChatOpen(false)}
       />
 
       <HomeFeedSearchSheet
@@ -1442,21 +1605,43 @@ export default function HomeFeedScreen() {
         onSelectRow={scrollFeedToRow}
       />
 
-      <FeedReportSheet
-        visible={reportSheetOpen}
-        postId={reportTargetPostId}
-        onClose={() => setReportSheetOpen(false)}
-        onReported={handleReported}
-      />
+      {!videoModalPayload ? (
+        <HomeFeedShareSheet
+          visible={shareSheetOpen}
+          payload={sharePayload}
+          onClose={() => setShareSheetOpen(false)}
+          onOpenShareToChat={() => setShareToChatOpen(true)}
+        />
+      ) : null}
 
-      <FeedCommentsSheet
-        visible={commentsSheetOpen}
-        postId={commentTargetPostId}
-        railDiscussionCount={commentRailCount}
-        onClose={() => setCommentsSheetOpen(false)}
-        onDiscussionCountChange={handleDiscussionCountChange}
-        onDiscussionCountBump={handleDiscussionCountBump}
-      />
+      {!videoModalPayload ? (
+        <ShareToChatSheet
+          visible={shareToChatOpen}
+          payload={sharePayload}
+          sourceItem={shareSourceItem}
+          onClose={() => setShareToChatOpen(false)}
+        />
+      ) : null}
+
+      {!videoModalPayload ? (
+        <FeedReportSheet
+          visible={reportSheetOpen}
+          postId={reportTargetPostId}
+          onClose={() => setReportSheetOpen(false)}
+          onReported={handleReported}
+        />
+      ) : null}
+
+      {!videoModalPayload ? (
+        <FeedCommentsSheet
+          visible={commentsSheetOpen}
+          postId={commentTargetPostId}
+          railDiscussionCount={commentRailCount}
+          onClose={() => setCommentsSheetOpen(false)}
+          onDiscussionCountChange={handleDiscussionCountChange}
+          onDiscussionCountBump={handleDiscussionCountBump}
+        />
+      ) : null}
     </View>
   );
 }

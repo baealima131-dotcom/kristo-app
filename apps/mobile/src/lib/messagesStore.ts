@@ -51,6 +51,26 @@ export type AssignmentCardPayload = {
   commentCount?: number;
 };
 
+export type SharedContentType =
+  | "video"
+  | "post"
+  | "announcement"
+  | "testimony"
+  | "image"
+  | "live";
+
+export type SharedContentPayload = {
+  type: SharedContentType;
+  postId?: string;
+  title?: string;
+  caption?: string;
+  churchName?: string;
+  authorName?: string;
+  posterUri?: string;
+  videoUri?: string;
+  shareUrl?: string;
+};
+
 export type MsgItem = {
   id: string;
   // Stable client-generated id used to reconcile an optimistic message with the
@@ -63,8 +83,9 @@ export type MsgItem = {
   text?: string;
   attachments?: MsgAttachment[];
   createdAt: number;
-  kind?: "text" | "assignment_card";
+  kind?: "text" | "assignment_card" | "shared_content";
   card?: AssignmentCardPayload;
+  sharedContent?: SharedContentPayload;
   pending?: boolean;
   senderUserId?: string;
   senderRole?: string;
@@ -347,6 +368,9 @@ export function sendMessage(
     churchRole?: string;
     avatarUri?: string;
     senderAvatar?: string;
+    kind?: "text" | "assignment_card" | "shared_content";
+    sharedContent?: SharedContentPayload;
+    card?: AssignmentCardPayload;
   },
   opts?: { seedOther?: boolean; name?: string; disableAutoReply?: boolean }
 ) {
@@ -366,7 +390,9 @@ export function sendMessage(
     text: payload.text || "",
     attachments: payload.attachments?.length ? payload.attachments : undefined,
     createdAt: now,
-    kind: "text",
+    kind: payload.kind || "text",
+    card: payload.card,
+    sharedContent: payload.sharedContent,
     pending: payload.pending,
     senderUserId: payload.senderUserId,
     senderRole: payload.senderRole,

@@ -35,8 +35,9 @@ const V1_DISABLED_ROOM_KINDS = new Set([
 
 function isV1DisabledRoomTextSend(roomKind: string, kind: string) {
   const rk = String(roomKind || "").trim().toLowerCase();
-  // Cards always flow through (live-control scheduling).
-  if (String(kind || "").trim() === "assignment_card") return false;
+  const messageKind = String(kind || "").trim();
+  // Rich cards always flow through (live-control scheduling, shared feed posts).
+  if (messageKind === "assignment_card" || messageKind === "shared_content") return false;
   return V1_DISABLED_ROOM_KINDS.has(rk);
 }
 
@@ -68,6 +69,7 @@ type RoomMessage = {
   slotId?: string;
   parentScheduleId?: string;
   metadata?: any;
+  sharedContent?: any;
   createdAt: number;
   deletedFor?: string[];
 };
@@ -87,6 +89,9 @@ function pickOptionalRoomMessageFields(body: any): Partial<RoomMessage> {
   if (body?.schedule !== undefined && body?.schedule !== null) out.schedule = body.schedule;
   if (body?.slot !== undefined && body?.slot !== null) out.slot = body.slot;
   if (body?.metadata !== undefined && body?.metadata !== null) out.metadata = body.metadata;
+  if (body?.sharedContent !== undefined && body?.sharedContent !== null) {
+    out.sharedContent = body.sharedContent;
+  }
 
   const scheduleId = String(body?.scheduleId || "").trim();
   if (scheduleId) out.scheduleId = scheduleId;
@@ -370,6 +375,7 @@ export async function POST(req: Request) {
   const hasRichPayload =
     !!card ||
     optionalFields.payload !== undefined ||
+    optionalFields.sharedContent !== undefined ||
     optionalFields.assignment !== undefined ||
     optionalFields.schedule !== undefined ||
     optionalFields.slot !== undefined;
