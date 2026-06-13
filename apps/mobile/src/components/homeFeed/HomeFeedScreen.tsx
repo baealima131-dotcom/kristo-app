@@ -28,6 +28,8 @@ import { HomeFeedTopBar } from "./HomeFeedTopBar";
 import { HomeFeedSearchSheet } from "./HomeFeedSearchSheet";
 import {
   consumePendingHomeFeedOpenRequest,
+  dropStalePendingHomeFeedOpenRequest,
+  isPendingHomeFeedOpenRequestFresh,
   peekPendingHomeFeedOpenRequest,
   resolveSharedPostOpenAction,
 } from "@/src/lib/homeFeedOpenSharedPost";
@@ -1320,9 +1322,17 @@ export default function HomeFeedScreen() {
   }, [focusPostId, visibleData]);
 
   const tryOpenSharedPost = useCallback(() => {
+    dropStalePendingHomeFeedOpenRequest();
+
+    const routePostId = normalizeCommentPostId(String(openPostId || "").trim());
     const pending = peekPendingHomeFeedOpenRequest();
+    const hasRouteIntent = Boolean(routePostId);
+    const hasFreshQueueIntent = isPendingHomeFeedOpenRequestFresh(pending);
+
+    if (!hasRouteIntent && !hasFreshQueueIntent) return;
+
     const rawId = normalizeCommentPostId(
-      String(openPostId || pending?.postId || "").trim()
+      String(routePostId || pending?.postId || "").trim()
     );
     if (!rawId) return;
     if (openPostHandledRef.current === rawId) return;

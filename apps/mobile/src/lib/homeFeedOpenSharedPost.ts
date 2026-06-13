@@ -8,28 +8,56 @@ import { feedList } from "@/src/lib/homeFeedStore";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
 import type { SharedContentPayload } from "@/src/lib/messagesStore";
 
+export const PENDING_HOME_FEED_OPEN_TTL_MS = 10_000;
+
 export type PendingHomeFeedOpenRequest = {
   postId: string;
   preferWatch: boolean;
   sharedContent: SharedContentPayload;
+  createdAt: number;
 };
 
 let pendingOpenRequest: PendingHomeFeedOpenRequest | null = null;
+
+export function isPendingHomeFeedOpenRequestFresh(
+  pending: PendingHomeFeedOpenRequest | null,
+  now = Date.now()
+): boolean {
+  if (!pending) return false;
+  const createdAt = Number(pending.createdAt);
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return false;
+  return now - createdAt <= PENDING_HOME_FEED_OPEN_TTL_MS;
+}
+
+export function dropStalePendingHomeFeedOpenRequest(now = Date.now()): boolean {
+  const pending = pendingOpenRequest;
+  if (!pending || isPendingHomeFeedOpenRequestFresh(pending, now)) return false;
+
+  pendingOpenRequest = null;
+  console.log("KRISTO_SHARED_POST_OPEN_DROPPED_STALE", {
+    postId: pending.postId,
+    ageMs: now - Number(pending.createdAt || 0),
+  });
+  return true;
+}
 
 export function queueOpenSharedHomeFeedPost(shared: SharedContentPayload): boolean {
   const postId = normalizeCommentPostId(String(shared.postId || "").trim());
   if (!postId) return false;
 
+  const createdAt = Date.now();
   pendingOpenRequest = {
     postId,
     preferWatch: Boolean(String(shared.videoUri || "").trim()),
     sharedContent: shared,
+    createdAt,
   };
 
   console.log("KRISTO_SHARED_POST_OPEN_QUEUE", {
     postId,
     preferWatch: pendingOpenRequest.preferWatch,
     hasVideoUri: Boolean(String(shared.videoUri || "").trim()),
+    createdAt,
   });
   return true;
 }
