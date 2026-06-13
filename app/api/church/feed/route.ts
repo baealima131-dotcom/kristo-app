@@ -2562,8 +2562,13 @@ function isDeletedFeedItem(item: any) {
   return status === "deleted";
 }
 
+function isHiddenByReportsFeedItem(item: any) {
+  return item?.hiddenByReports === true;
+}
+
 function isDiscoverableFeedItem(item: any, viewerChurchId: string) {
   if (isDeletedFeedItem(item)) return false;
+  if (isHiddenByReportsFeedItem(item)) return false;
 
   const itemChurchId = String(item?.churchId || "").trim();
   const viewerCid = String(viewerChurchId || "").trim();

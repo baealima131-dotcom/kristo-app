@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { guardAuth } from "@/app/api/_lib/rbac";
 import { getFeedItemById } from "@/app/api/_lib/store/feedDb";
+import { maybeAutoHideFeedItemByReports } from "@/app/api/_lib/feedReportModeration";
 import {
   createFeedReport,
   FEED_REPORT_REASONS,
@@ -141,6 +142,10 @@ export async function POST(req: NextRequest) {
       reportId: result.record.id,
       reporterUserId: viewerUserId,
     });
+
+    if (churchId) {
+      await maybeAutoHideFeedItemByReports({ postId, churchId });
+    }
 
     return ok({
       duplicate: false,

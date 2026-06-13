@@ -2,6 +2,8 @@ import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
 
 export type FeedReportStatus = "pending" | "reviewed" | "actioned" | "dismissed";
 
+export const MEDIA_REPORT_AUTO_HIDE_THRESHOLD = 10;
+
 export type FeedReportRecord = {
   id: string;
   postId: string;
@@ -14,6 +16,7 @@ export type FeedReportRecord = {
   status: FeedReportStatus;
   createdAt: string;
   updatedAt: string;
+  reviewedByUserId?: string;
 };
 
 const REPORTS_FILE = "church-feed-reports.json";
@@ -154,4 +157,176 @@ export async function createFeedReport(
   );
 
   return { ok: true, duplicate: false, record };
+}
+
+export async function listReportsForChurch(churchId: string): Promise<FeedReportRecord[]> {
+  const cleanChurchId = String(churchId || "").trim();
+  if (!cleanChurchId) return [];
+
+  const rows = await readReports();
+  return rows.filter((row) => String(row.churchId || "").trim() === cleanChurchId);
+}
+
+export async function listPendingReportsForPost(
+  postId: string,
+  churchId?: string
+): Promise<FeedReportRecord[]> {
+  const cleanPostId = normalizeFeedReportPostId(postId);
+  if (!cleanPostId) return [];
+
+  const cleanChurchId = String(churchId || "").trim();
+  const rows = await readReports();
+  return rows.filter((row) => {
+    if (normalizeFeedReportPostId(row.postId) !== cleanPostId) return false;
+    if (String(row.status || "").trim() !== "pending") return false;
+    if (cleanChurchId && String(row.churchId || "").trim() !== cleanChurchId) return false;
+    return true;
+  });
+}
+
+export function uniqueReporterIdsFromReports(rows: FeedReportRecord[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const row of rows) {
+    const reporterUserId = String(row.reporterUserId || "").trim();
+    if (!reporterUserId || seen.has(reporterUserId)) continue;
+    seen.add(reporterUserId);
+    ids.push(reporterUserId);
+  }
+  return ids;
+}
+
+export async function dismissPendingReportsForPost(args: {
+  postId: string;
+  churchId: string;
+  reviewerUserId: string;
+}): Promise<number> {
+  const cleanPostId = normalizeFeedReportPostId(args.postId);
+  const cleanChurchId = String(args.churchId || "").trim();
+  const reviewerUserId = String(args.reviewerUserId || "").trim();
+  if (!cleanPostId || !cleanChurchId) return 0;
+
+  const stamp = nowIso();
+  let updatedCount = 0;
+
+  await updateJsonFile<FeedReportRecord[]>(
+    REPORTS_FILE,
+    (current) => {
+      const rows = Array.isArray(current) ? current : [];
+      return rows.map((row) => {
+        if (normalizeFeedReportPostId(row.postId) !== cleanPostId) return row;
+        if (String(row.churchId || "").trim() !== cleanChurchId) return row;
+        if (String(row.status || "").trim() !== "pending") return row;
+
+        updatedCount += 1;
+        return {
+          ...row,
+          status: "dismissed" as FeedReportStatus,
+          updatedAt: stamp,
+          reviewedByUserId: reviewerUserId,
+        };
+      });
+    },
+    []
+  );
+
+  return updatedCount;
+}
+
+export async function markPendingReportsActionedForPost(args: {
+  postId: string;
+  churchId: string;
+  reviewerUserId: string;
+}): Promise<number> {
+  const cleanPostId = normalizeFeedReportPostId(args.postId);
+  const cleanChurchId = String(args.churchId || "").trim();
+  const reviewerUserId = String(args.reviewerUserId || "").trim();
+  if (!cleanPostId || !cleanChurchId) return 0;
+
+  const stamp = nowIso();
+  let updatedCount = 0;
+
+  await updateJsonFile<FeedReportRecord[]>(
+    REPORTS_FILE,
+    (current) => {
+      const rows = Array.isArray(current) ? current : [];
+      return rows.map((row) => {
+        if (normalizeFeedReportPostId(row.postId) !== cleanPostId) return row;
+        if (String(row.churchId || "").trim() !== cleanChurchId) return row;
+        if (String(row.status || "").trim() !== "pending") return row;
+
+        updatedCount += 1;
+        return {
+          ...row,
+          status: "actioned" as FeedReportStatus,
+          updatedAt: stamp,
+          reviewedByUserId: reviewerUserId,
+        };
+      });
+    },
+    []
+  );
+
+  return updatedCount;
+}
+
+export type MediaReportQueueItem = {
+  postId: string;
+  churchId: string;
+  pendingReportCount: number;
+  uniqueReporterCount: number;
+  latestReportAt: string;
+  topReasons: string[];
+  hiddenByReports: boolean;
+  reports: FeedReportRecord[];
+};
+
+export async function listMediaReportQueueForChurch(
+  churchId: string,
+  options?: { hiddenByPostId?: Record<string, boolean> }
+): Promise<MediaReportQueueItem[]> {
+  const cleanChurchId = String(churchId || "").trim();
+  if (!cleanChurchId) return [];
+
+  const rows = await listReportsForChurch(cleanChurchId);
+  const grouped = new Map<string, FeedReportRecord[]>();
+
+  for (const row of rows) {
+    if (String(row.status || "").trim() !== "pending") continue;
+    const postId = normalizeFeedReportPostId(row.postId);
+    if (!postId) continue;
+    const bucket = grouped.get(postId) || [];
+    bucket.push(row);
+    grouped.set(postId, bucket);
+  }
+
+  const queue: MediaReportQueueItem[] = [];
+  for (const [postId, reports] of grouped.entries()) {
+    const sorted = reports
+      .slice()
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    const reasonCounts = new Map<string, number>();
+    for (const report of sorted) {
+      const reason = String(report.reason || "").trim();
+      if (!reason) continue;
+      reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+    }
+    const topReasons = [...reasonCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([reason]) => reason);
+
+    queue.push({
+      postId,
+      churchId: cleanChurchId,
+      pendingReportCount: sorted.length,
+      uniqueReporterCount: uniqueReporterIdsFromReports(sorted).length,
+      latestReportAt: String(sorted[0]?.createdAt || ""),
+      topReasons,
+      hiddenByReports: Boolean(options?.hiddenByPostId?.[postId]),
+      reports: sorted,
+    });
+  }
+
+  return queue.sort((a, b) => String(b.latestReportAt).localeCompare(String(a.latestReportAt)));
 }
