@@ -55,6 +55,7 @@ import ChurchActivityGrid from "@/src/components/ChurchActivityGrid";
 import ChurchActivityMemberChips from "@/src/components/ChurchActivityMemberChips";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import {
+  activityIsVideo,
   getChurchActivityPosts,
   isChurchActivityPost,
   isMediaActivityPost,
@@ -1415,6 +1416,25 @@ export default function MeScreen() {
     (post: ActivityGridItem) => {
       const focusPostId = String(post?.id || "").trim();
       if (!focusPostId || !churchId) return;
+
+      if (showMediaActivityTab && activityIsVideo(post)) {
+        console.log("CHURCH_ACTIVITY_OPEN_WATCH", {
+          postId: focusPostId,
+          pathname: "/(tabs)",
+          videoDisplayType:
+            String((post as any)?.videoDisplayType || (post as any)?.displayType || "")
+              .trim()
+              .toLowerCase() === "tiktok"
+              ? "tiktok"
+              : "youtube",
+        });
+
+        router.push({
+          pathname: "/(tabs)",
+          params: { openPostId: focusPostId },
+        });
+        return;
+      }
 
       const activityMode: "church" | "member" | "media" = showMediaActivityTab
         ? "media"
