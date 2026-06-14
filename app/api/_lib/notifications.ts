@@ -7,6 +7,7 @@ import {
   type ActorIdentity,
 } from "@/app/api/_lib/notificationActor";
 import {
+  dbCountNotifications,
   dbCreateNotification,
   dbListNotifications,
   dbMarkAllRead,

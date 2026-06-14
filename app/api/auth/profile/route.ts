@@ -54,6 +54,7 @@ type Body = {
   allowMessages?: boolean;
   showPhone?: boolean;
   showChurch?: boolean;
+  showAddress?: boolean;
   privateMode?: boolean;
 };
 

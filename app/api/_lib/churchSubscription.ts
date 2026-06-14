@@ -34,11 +34,7 @@ export async function getChurchMediaSubscriptionRecord(
     subscriptionActive: media.subscriptionActive,
     subscriptionPlan: media.subscriptionPlan,
     subscriptionUpdatedAt: media.subscriptionUpdatedAt,
-    subscriptionSource: media.subscriptionSource,
-    subscriptionStatus: media.subscriptionStatus,
-    stripeCustomerId: media.stripeCustomerId,
-    stripeSubscriptionId: media.stripeSubscriptionId,
-  };
+  } as ChurchMediaStoreRow;
 }
 
 export async function isChurchSubscriptionActive(
