@@ -1,7 +1,7 @@
 /**
  * V1 subscription hardening (launch-blocker item #2).
  *
- * Server-side verification of a user's RevenueCat `church_premium` entitlement
+ * Server-side verification of the RevenueCat church premium entitlement
  * before we activate a church subscription. The mobile checkout flow performs a
  * client-side entitlement check, but the server must not trust it: previously
  * `PATCH /api/church/media` accepted `subscriptionActive: true` from the client
@@ -12,9 +12,17 @@
  * present and not expired. No webhooks (that is a V2 concern).
  */
 
-export const CHURCH_PREMIUM_ENTITLEMENT = "Premium";
-export const PREMIUM_MONTHLY_PRODUCT_ID = "premium_monthly";
-export const PREMIUM_YEARLY_PRODUCT_ID = "premium_yearly";
+import {
+  CHURCH_PREMIUM_ENTITLEMENT,
+  PREMIUM_MONTHLY_PRODUCT_ID,
+  PREMIUM_YEARLY_PRODUCT_ID,
+} from "@/lib/churchPremiumRevenueCat";
+
+export {
+  CHURCH_PREMIUM_ENTITLEMENT,
+  PREMIUM_MONTHLY_PRODUCT_ID,
+  PREMIUM_YEARLY_PRODUCT_ID,
+} from "@/lib/churchPremiumRevenueCat";
 
 const REVENUECAT_API_BASE = "https://api.revenuecat.com/v1";
 const REQUEST_TIMEOUT_MS = 8000;
@@ -66,8 +74,8 @@ function entitlementIsActive(expiresDate: unknown): boolean {
 }
 
 /**
- * Verify the given RevenueCat app user id has an active `church_premium`
- * entitlement. For church premium, `appUserId` is the Kristo churchId (the app
+ * Verify the given RevenueCat app user id has an active church premium
+ * entitlement (`CHURCH_PREMIUM_ENTITLEMENT`). For church premium, `appUserId` is the Kristo churchId (the app
  * calls `Purchases.logIn(churchId)`), so the server looks the subscriber up by church.
  */
 export async function verifyChurchPremiumEntitlement(

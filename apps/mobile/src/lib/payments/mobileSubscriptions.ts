@@ -15,6 +15,18 @@ import {
   isSubscriptionBypassEnabled,
 } from "../subscriptionBypass";
 import { shouldEnableRevenueCatDebug } from "../kristoDebugFlags";
+import {
+  CHURCH_PREMIUM_ENTITLEMENT,
+  PREMIUM_MONTHLY_INTRO_TRIAL_DAYS,
+  PREMIUM_MONTHLY_PRODUCT_ID,
+  PREMIUM_YEARLY_PRODUCT_ID,
+} from "../../../../../lib/churchPremiumRevenueCat";
+
+export {
+  CHURCH_PREMIUM_ENTITLEMENT,
+  PREMIUM_MONTHLY_PRODUCT_ID,
+  PREMIUM_YEARLY_PRODUCT_ID,
+} from "../../../../../lib/churchPremiumRevenueCat";
 
 const extra =
   (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
@@ -22,10 +34,7 @@ const extra =
 const IOS_REVENUECAT_API_KEY = extra.revenuecatIosApiKey || "";
 const ANDROID_REVENUECAT_API_KEY = extra.revenuecatAndroidApiKey || "";
 
-export const CHURCH_PREMIUM_ENTITLEMENT = "church_premium";
-export const PREMIUM_MONTHLY_PRODUCT_ID = "premium_monthly";
-export const PREMIUM_YEARLY_PRODUCT_ID = "premium_yearly";
-export const MONTHLY_INTRO_TRIAL_DAYS = 14;
+export const MONTHLY_INTRO_TRIAL_DAYS = PREMIUM_MONTHLY_INTRO_TRIAL_DAYS;
 
 function getRevenueCatApiKey() {
   if (Platform.OS === "ios") return IOS_REVENUECAT_API_KEY;
