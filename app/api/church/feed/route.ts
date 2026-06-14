@@ -4,9 +4,9 @@ import path from "node:path";
 import { resolveActorIdentity } from "@/app/api/_lib/notificationActor";
 import { getUserById } from "@/app/api/auth/_lib/session";
 import { guard, guardAuth } from "@/app/api/_lib/rbac";
-import { ensureActiveMembershipForSession, getActiveMembership } from "@/app/api/_lib/memberships";
+import { ensureActiveMembershipForSession, getActiveMembership, getMembershipsForUser } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
-import { getProfile } from "@/app/api/auth/_lib/profile";
+import { getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
 import {
   ensureProfileAvatarUrlForClaim,
   isPersistedProfileAvatarUrl,
@@ -3757,6 +3757,158 @@ async function handleFeedPost(req: NextRequest, body: any) {
       postId: String(item.id || postId),
       slotId,
       slot: slots[slotIndex],
+    });
+  }
+
+  if (action === "assign_schedule_slot") {
+    const postId = cleanText(body?.postId || body?.feedId, 240);
+    const slotId = cleanText(body?.slotId, 240);
+    let targetUserId = cleanText(body?.userId || body?.targetUserId, 240);
+    const kristoId = cleanText(body?.kristoId || body?.userCode, 80).toUpperCase();
+
+    if (!postId) return err("postId is required", 400);
+    if (!slotId) return err("slotId is required", 400);
+
+    const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
+    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
+      endpoint: "/api/church/feed",
+      churchId,
+      userId: viewerUserId,
+      role: viewerAppRole,
+      action: "assign_schedule_slot",
+    });
+    if (subscriptionBlocked) return subscriptionBlocked;
+
+    const item = await getFeedItemById(postId);
+    if (!item) return err("Feed item not found", 404);
+
+    const permissionErr = await assertScheduleEditPermission({
+      churchId,
+      viewerUserId,
+      viewerAppRole,
+      item,
+      body,
+    });
+    if (permissionErr) return err(permissionErr, 403);
+
+    if (!targetUserId && kristoId) {
+      const profile = await getProfileByUserCode(kristoId);
+      if (!profile?.userId) return err("Kristo ID not found", 404);
+      targetUserId = String(profile.userId).trim();
+    }
+    if (!targetUserId) return err("userId or kristoId is required", 400);
+
+    const slots = Array.isArray((item as any).scheduleSlots) ? (item as any).scheduleSlots : [];
+    const slotIndex = slots.findIndex((slot: any) => String(slot?.id || "") === String(slotId));
+    if (slotIndex < 0) return err("Slot not found", 404);
+
+    const previousSlots = slots.map((slot: any) => ({ ...slot }));
+    const existing = slots[slotIndex] || {};
+    const existingOwner = String(
+      existing.claimedByUserId || existing.claimedBy?.userId || ""
+    ).trim();
+
+    if (existing.locked && existingOwner && existingOwner !== targetUserId) {
+      return err("Slot is locked", 409);
+    }
+
+    if (existingOwner && existingOwner !== targetUserId) {
+      return err("Slot already claimed by another member", 409);
+    }
+
+    const duplicateSlot = slots.find(
+      (slot: any) =>
+        String(slot?.id || "") !== String(slotId) &&
+        String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim() === targetUserId
+    );
+    if (duplicateSlot) {
+      return err("Member is already assigned to another slot in this schedule", 409);
+    }
+
+    const memberships = await getMembershipsForUser(targetUserId);
+    const activeMembership = memberships.find((m) => String(m?.status || "") === "Active");
+    const targetChurchId = String(activeMembership?.churchId || "").trim();
+    if (!targetChurchId) {
+      return err("Member must belong to an active church", 403);
+    }
+
+    const targetChurchSubActive = await isChurchSubscriptionActive(targetChurchId);
+    if (!targetChurchSubActive) {
+      return err(
+        "This member's church must have an active subscription before they can be assigned.",
+        403
+      );
+    }
+
+    const profile = (await getProfile(targetUserId)) || null;
+    const name =
+      cleanText(
+        body?.name ||
+          profile?.fullName ||
+          profile?.displayName ||
+          activeMembership?.name ||
+          "Church Member",
+        240
+      ) || "Church Member";
+    const role =
+      cleanText(
+        body?.role || profile?.role || activeMembership?.churchRole || "Member",
+        120
+      ) || "Member";
+    const avatarUri =
+      cleanText(await resolveClaimerAvatarUri(targetUserId, body?.claim || body), 2000) || "";
+
+    slots[slotIndex] = {
+      ...existing,
+      claimed: true,
+      isClaimed: true,
+      status: "claimed",
+      approved: false,
+      locked: false,
+      claimedByUserId: targetUserId,
+      claimedByName: name,
+      claimedByAvatarUri: avatarUri,
+      claimedByAvatar: avatarUri,
+      claimedByPhotoUrl: avatarUri,
+      claimedByRole: role,
+      claimedAt: new Date().toISOString(),
+      assignedByUserId: viewerUserId,
+      assignedAt: new Date().toISOString(),
+      claimedBy: {
+        slotId,
+        userId: targetUserId,
+        name,
+        role,
+        avatarUri,
+      },
+    };
+
+    const updatedItem = { ...item, scheduleSlots: slots };
+    await upsertFeedItem(updatedItem);
+    bumpMediaScheduleSyncForFeedItem(updatedItem, "assign_schedule_slot");
+
+    try {
+      await notifyLiveSlotAssignmentDiff({
+        churchId,
+        postId: String(item.id || postId),
+        feedItem: updatedItem,
+        previousSlots,
+        nextSlots: slots,
+        assignerUserId: viewerUserId,
+      });
+    } catch (notifyError: any) {
+      console.log("KRISTO_LIVE_SLOT_NOTIFY_FAILED", {
+        postId,
+        action: "assign_schedule_slot",
+        message: String(notifyError?.message || notifyError),
+      });
+    }
+
+    return ok({
+      postId: String(item.id || postId),
+      slotId,
+      slot: slots[slotIndex],
+      userId: targetUserId,
     });
   }
 

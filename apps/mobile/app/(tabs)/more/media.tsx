@@ -41,6 +41,8 @@ import { startMediaVideoUpload } from "../../../src/lib/optimisticVideoUpload";
 import { useSmoothedVideoUploadProgress } from "../../../src/hooks/useSmoothedVideoUploadProgress";
 import { getKristoHeaders } from "../../../src/lib/kristoHeaders";
 import { sendAssignmentCards } from "../../../src/lib/messagesStore";
+import { GuestClaimCenterPanel } from "../../../src/components/media/GuestClaimCenterPanel";
+import { MIN_GUEST_SLOT_DURATION_MIN } from "../../../src/lib/guestClaimCenterUtils";
 import {
   applySilentMediaScheduleReload,
   fetchMediaScheduleFeedSync,
@@ -475,8 +477,6 @@ export default function MediaStudioScreen() {
           force,
           ui: {
             setGuestClaimSlots,
-            setGuestInvitedBySlot,
-            setGuestInviteDraftBySlot,
             setBackendFeedItems,
             setHomeFeedItems,
           },
@@ -489,8 +489,6 @@ export default function MediaStudioScreen() {
           setBackendFeedItems([]);
           setHomeFeedItems([...feedList()]);
           setGuestClaimSlots([]);
-          setGuestInvitedBySlot({});
-          setGuestInviteDraftBySlot({});
         } else {
           setBackendFeedItems(result.rows);
         }
@@ -580,8 +578,6 @@ export default function MediaStudioScreen() {
 
   const mediaBootstrapKeyRef = useRef("");
   const [guestClockNow, setGuestClockNow] = useState(() => Date.now());
-  const [guestInviteDraftBySlot, setGuestInviteDraftBySlot] = useState<Record<string, string>>({});
-  const [guestInvitedBySlot, setGuestInvitedBySlot] = useState<Record<string, string>>({});
   const [backendMedia, setBackendMedia] = useState<any>(mediaSessionPeek?.backendMedia ?? null);
   const [backendMediaConfirmed, setBackendMediaConfirmed] = useState(
     Boolean(mediaSessionPeek?.backendMediaConfirmed)
@@ -1605,7 +1601,7 @@ export default function MediaStudioScreen() {
   const guestClaimOpenCount = syncedGuestClaimSlots.filter(
     (slot) => getGuestSlotUiState(slot) === "open"
   ).length;
-  const guestInvitationCount = Object.values(guestInvitedBySlot).filter(Boolean).length;
+  const guestInvitationCount = 0;
   const guestClaimConflictCount = useMemo(
     () => countMediaSlotTimeConflicts(syncedGuestClaimSlots, guestClockNow),
     [syncedGuestClaimSlots, guestClockNow]
@@ -1691,8 +1687,6 @@ export default function MediaStudioScreen() {
                 removePending: true,
                 ui: {
                   setGuestClaimSlots,
-                  setGuestInvitedBySlot,
-                  setGuestInviteDraftBySlot,
                   setBackendFeedItems,
                   setHomeFeedItems,
                 },
@@ -2758,6 +2752,24 @@ export default function MediaStudioScreen() {
 
   function addGuestClaimTime(slotId: string, minutes: number, sourceFeedId?: string) {
     if (!ensureGuestClaimManagePermission("add-time")) return;
+
+    const sourceRows = sourceFeedId
+      ? readFeedItemScheduleSlots(sourceFeedId, [...feedList(), ...backendFeedItems])
+      : guestClaimSlots;
+    const targetSlot = sourceRows.find((slot: any) => String(slot?.id || "") === String(slotId));
+    const currentDuration = Math.max(
+      MIN_GUEST_SLOT_DURATION_MIN,
+      Number(targetSlot?.durationMin || MIN_GUEST_SLOT_DURATION_MIN)
+    );
+
+    if (minutes < 0 && currentDuration + minutes < MIN_GUEST_SLOT_DURATION_MIN) {
+      Alert.alert(
+        "Duration limit",
+        `Slots must stay at least ${MIN_GUEST_SLOT_DURATION_MIN} minutes.`
+      );
+      return;
+    }
+
     console.log("KRISTO_ADD_TIME_TOUCH", { slotId, minutes, sourceFeedId });
 
     const applyUpdate = (slots: any[]) => {
@@ -2776,8 +2788,8 @@ export default function MediaStudioScreen() {
 
         if (index === targetIndex) {
           const startTime = String(current.startTime || "");
-          const currentDuration = Number(current.durationMin || 1);
-          const nextDuration = Math.max(1, currentDuration + minutes);
+          const currentDuration = Number(current.durationMin || MIN_GUEST_SLOT_DURATION_MIN);
+          const nextDuration = Math.max(MIN_GUEST_SLOT_DURATION_MIN, currentDuration + minutes);
           const endTime = startTime ? addMinutesToClock(startTime, nextDuration) : current.endTime;
 
           previousEnd = String(endTime || previousEnd || "");
@@ -3218,44 +3230,14 @@ export default function MediaStudioScreen() {
     return "Open";
   }
 
-  function messageGuestClaimant(slot: any) {
-    if (!ensureGuestClaimManagePermission("message")) return;
-    const userId = String(slot?.claimedByUserId || "").trim();
-    const name = String(slot?.claimedByName || slot?.claimedBy || "").trim();
-    if (!userId) {
-      Alert.alert("Message guest", "This guest does not have a user id yet. Try again after the claim syncs.");
+  function handleGuestReject(slotId: string, sourceFeedId?: string) {
+    const slot = syncedGuestClaimSlots.find((x: any) => String(x?.id || "") === String(slotId));
+    const state = getGuestSlotUiState(slot);
+    if (state === "claimed" || slot?.approved) {
+      rejectGuestClaim(slotId, sourceFeedId);
       return;
     }
-    if (!name || name === "Open") {
-      Alert.alert("Message guest", "No guest has claimed this slot yet.");
-      return;
-    }
-
-    const roomId = `guest-claim-${String(slot?.id || "slot")}`;
-    mediaRouterPush(
-      {
-        pathname: "/more/my-church-room/messages/[id]",
-        params: {
-          id: roomId,
-          assignmentTitle: `Guest Claim • ${String(slot?.title || "Live Slot")}`,
-          assignmentSubtitle: name,
-          assignmentRole: "MEDIA_GUEST",
-          assignmentStatus: slot?.approved ? "approved" : "claimed",
-          assignmentInitials: name.slice(0, 1).toUpperCase(),
-          roomKind: "media-guest",
-          source: "media",
-          backTo: "/more/media",
-          guestName: name,
-          guestUserId: userId,
-          targetUserId: userId,
-          memberUserId: userId,
-          guestAvatarUri: String(slot?.avatarUri || ""),
-          slotId: String(slot?.id || ""),
-          sourceFeedId: String(slot?.sourceFeedId || ""),
-        },
-      },
-      "message-guest-claimant"
-    );
+    removeGuestClaimant(slotId, sourceFeedId);
   }
 
   function enterBackendLiveAsViewer() {
@@ -3877,372 +3859,37 @@ export default function MediaStudioScreen() {
               </Pressable>
             </>
           ) : !isEditingMedia && hasMediaAccount && isManagingGuests ? (
-            <>
-              <View style={s.scheduleCreatorHero}>
-                <Pressable onPress={() => setIsManagingGuests(false)} style={s.scheduleBackBtn}>
-                  <Ionicons name="chevron-back" size={22} color="#F4C95D" />
-                </Pressable>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.heroKicker}>Guests claim center</Text>
-                  <Text style={s.heroTitle}>Guests</Text>
-                  <Text style={s.heroText}>View claimed time cards, adjust time, remove guests, and keep your schedule clean.</Text>
-                </View>
-              </View>
-
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={s.guestClaimSummaryScroll}
-                contentContainerStyle={s.guestClaimSummaryRow}
-              >
-                <View style={s.guestClaimSummaryPill}>
-                  <Text style={s.guestClaimSummaryValue}>{guestClaimTotalMinutes}</Text>
-                  <Text style={s.guestClaimSummaryLabel}>Min</Text>
-                </View>
-
-                <View style={s.guestClaimSummaryPill}>
-                  <Text style={s.guestClaimSummaryValue}>{guestClaimClaimedCount}</Text>
-                  <Text style={s.guestClaimSummaryLabel}>Claimed</Text>
-                </View>
-
-                <View style={s.guestClaimSummaryPill}>
-                  <Text style={s.guestClaimSummaryValue}>{guestClaimOpenCount}</Text>
-                  <Text style={s.guestClaimSummaryLabel}>Open</Text>
-                </View>
-
-                <View style={[s.guestClaimSummaryPill, s.guestClaimSummaryInvitePill]}>
-                  <Text style={s.guestClaimSummaryValue}>{guestInvitationCount}</Text>
-                  <Text style={s.guestClaimSummaryLabel}>Invites</Text>
-                </View>
-
-                <Pressable
-                  onPress={handleClearMediaSchedules}
-                  style={[s.guestClaimSummaryPill, s.guestClaimDangerBtn]}
-                >
-                  <Text style={[s.guestClaimSummaryValue, { color: "#FCA5A5" }]}>DEL</Text>
-                  <Text style={s.guestClaimSummaryLabel}>Old</Text>
-                </Pressable>
-              </ScrollView>
-
-              {guestClaimConflictCount > 0 ? (
-                <View style={s.guestClaimConflictBanner}>
-                  <Ionicons name="warning-outline" size={18} color="#FCA5A5" />
-                  <Text style={s.guestClaimConflictBannerText}>
-                    {guestClaimConflictCount} time conflict{guestClaimConflictCount > 1 ? "s" : ""} detected
-                  </Text>
-                </View>
-              ) : null}
-
-
-              <ScrollView
-                style={s.guestClaimList}
-                contentContainerStyle={s.guestClaimListContent}
-                showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="always"
-                nestedScrollEnabled
-                scrollEnabled
-              >
-                {!syncedGuestClaimSlots.length ? (
-                  <View style={s.guestClaimEmptyCard}>
-                    <Ionicons name="calendar-outline" size={28} color="#F4C95D" />
-                    <Text style={s.guestClaimEmptyTitle}>No guest claims yet</Text>
-                    <Text style={s.guestClaimEmptyText}>Create a schedule first. When people claim your Home Feed time cards, they will appear here with name and avatar.</Text>
-                  </View>
-                ) : null}
-
-                {syncedGuestClaimSlots.map((rawSlot: any, index: number) => {
-                  const rawClaimedBy =
-                    typeof rawSlot?.claimedBy === "string"
-                      ? String(rawSlot.claimedBy).trim()
-                      : "";
-
-                  const normalizedClaimedBy =
-                    rawClaimedBy.toLowerCase() === "open"
-                      ? ""
-                      : rawClaimedBy;
-
-                  const rawClaimedByObj =
-                    typeof rawSlot?.claimedBy === "object" && rawSlot?.claimedBy
-                      ? rawSlot.claimedBy
-                      : null;
-
-                  const claimantName = String(
-                    rawSlot?.claimedByName ||
-                    rawClaimedByObj?.name ||
-                    normalizedClaimedBy ||
-                    ""
-                  ).trim();
-
-                  const rawClaimantAvatar = String(
-                    rawSlot?.claimedByAvatar ||
-                    rawClaimedByObj?.avatarUri ||
-                    rawSlot?.avatarUri ||
-                    ""
-                  ).trim();
-
-                  const apiBase = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/$/, "");
-                  const claimantAvatar =
-                    rawClaimantAvatar.startsWith("/uploads/")
-                      ? `${apiBase}${rawClaimantAvatar}`
-                      : rawClaimantAvatar;
-
-                  const slotStatus = String(rawSlot?.status || "").toLowerCase().trim();
-                  const hasClaimant =
-                    slotStatus === "claimed" ||
-                    slotStatus === "taken" ||
-                    !!(claimantName && claimantName.toLowerCase() !== "open") ||
-                    !!String(rawSlot?.claimedByUserId || rawClaimedByObj?.userId || "").trim();
-
-                  const slot = {
-                    ...rawSlot,
-                    claimedBy: claimantName || (hasClaimant ? "Claimed" : "Open"),
-                    avatarUri: claimantAvatar,
-                    status: hasClaimant ? "claimed" : rawSlot.status,
-                  };
-
-
-
-                  return (
-                  <View
-                    key={slot.id}
-                    pointerEvents="box-none"
-                    style={[
-                      s.guestClaimCard,
-                      index % 6 === 0 ? s.guestClaimCardEmerald : null,
-                      index % 6 === 1 ? s.guestClaimCardBlue : null,
-                      index % 6 === 2 ? s.guestClaimCardViolet : null,
-                      index % 6 === 3 ? s.guestClaimCardAmber : null,
-                      index % 6 === 4 ? s.guestClaimCardPink : null,
-                      index % 6 === 5 ? s.guestClaimCardCyan : null,
-                    ]}
-                  >
-                    <View style={s.guestClaimTopRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.guestClaimLabel}>{formatGuestSlotDate(slot)}</Text>
-                        <Text style={s.guestClaimTitle}>{slot.title}</Text>
-                      </View>
-                      <View
-                        style={[
-                          s.guestClaimStatus,
-                          getGuestSlotUiState(slot) === "claimed" ? s.guestClaimStatusHot : null,
-                          getGuestSlotUiState(slot) === "approved" ? s.guestClaimStatusApproved : null,
-                          getGuestSlotUiState(slot) === "locked" ? s.guestClaimStatusLocked : null,
-                        ]}
-                      >
-                        <Text style={s.guestClaimStatusText}>{getGuestSlotBadgeLabel(slot)}</Text>
-                      </View>
-                    </View>
-
-                    <View style={[s.guestClaimPersonHero, getGuestSlotUiState(slot) === "claimed" || getGuestSlotUiState(slot) === "approved" ? s.guestClaimPersonHeroActive : null]}>
-                      {slot.avatarUri ? (
-                        <Image source={{ uri: slot.avatarUri }} style={s.guestClaimHeroAvatar} resizeMode="cover" />
-                      ) : (
-                        <View style={s.guestClaimHeroAvatarFallback}>
-                          <Text style={s.guestClaimHeroAvatarText}>{String(slot.claimedBy || "O").slice(0, 1).toUpperCase()}</Text>
-                        </View>
-                      )}
-
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.guestClaimPersonKicker}>
-                          {getGuestSlotUiState(slot) === "open" ? "No claimant yet" : getGuestSlotUiState(slot) === "approved" ? "Approved guest" : "Claimed by"}
-                        </Text>
-                        <Text style={s.guestClaimPersonName} numberOfLines={1}>{slot.claimedBy}</Text>
-
-                        {getGuestSlotUiState(slot) === "open" ? (
-                          <View style={s.guestInviteBox}>
-                            <TextInput
-                              value={guestInviteDraftBySlot[String(slot.id)] || ""}
-                              onChangeText={(text) =>
-                                setGuestInviteDraftBySlot((prev) => ({
-                                  ...prev,
-                                  [String(slot.id)]: text.toUpperCase(),
-                                }))
-                              }
-                              placeholder="Invite MD / MB number"
-                              placeholderTextColor="rgba(255,255,255,0.38)"
-                              autoCapitalize="characters"
-                              style={s.guestInviteInput}
-                            />
-
-                            <Pressable
-                              onPress={() => {
-                                const code = String(guestInviteDraftBySlot[String(slot.id)] || "").trim().toUpperCase();
-                                if (!code) return;
-                                setGuestInvitedBySlot((prev) => ({
-                                  ...prev,
-                                  [String(slot.id)]: code,
-                                }));
-                              }}
-                              style={s.guestInviteBtn}
-                            >
-                              <Text style={s.guestInviteBtnText}>Invite</Text>
-                            </Pressable>
-                          </View>
-                        ) : null}
-
-                        {guestInvitedBySlot[String(slot.id)] ? (
-                          <Text style={s.guestInviteSentText}>
-                            Invitation sent to {guestInvitedBySlot[String(slot.id)]}
-                          </Text>
-                        ) : null}
-                      </View>
-                    </View>
-
-                    <View style={[
-                      s.guestSlotInfoGlass,
-                      index % 6 === 0 ? s.guestSlotInfoGlassEmerald : null,
-                      index % 6 === 1 ? s.guestSlotInfoGlassBlue : null,
-                      index % 6 === 2 ? s.guestSlotInfoGlassViolet : null,
-                      index % 6 === 3 ? s.guestSlotInfoGlassAmber : null,
-                      index % 6 === 4 ? s.guestSlotInfoGlassPink : null,
-                      index % 6 === 5 ? s.guestSlotInfoGlassCyan : null,
-                      getGuestSlotTimeState(slot) === "live" ? s.guestClaimCountdownLive : getGuestSlotTimeState(slot) === "ended" ? s.guestClaimCountdownEnded : null,
-                    ]}>
-                      <View style={s.guestSlotInfoItem}>
-                        <Ionicons name="time-outline" size={14} color="#F4C95D" />
-                        <Text style={s.guestSlotInfoText}>{slot.durationMin} min • {slot.startTime || "Start"} - {slot.endTime || "End"}</Text>
-                      </View>
-
-                      <View style={s.guestSlotInfoDot} />
-
-                      <View style={s.guestSlotInfoItem}>
-                        <Ionicons name={getGuestSlotTimeState(slot) === "live" ? "radio-outline" : "hourglass-outline"} size={14} color="#F4C95D" />
-                        <Text style={s.guestSlotInfoText}>{formatGuestSlotCountdown(slot)}</Text>
-                      </View>
-                    </View>
-
-                    {getGuestSlotConflict(slot, syncedGuestClaimSlots.findIndex((x: any) => x.id === slot.id), syncedGuestClaimSlots) ? (
-                      <View style={s.guestClaimConflictRow}>
-                        <Ionicons name="alert-circle-outline" size={16} color="#FCA5A5" />
-                        <Text style={s.guestClaimConflictText}>
-                          TIME CONFLICT • {getGuestSlotConflict(slot, syncedGuestClaimSlots.findIndex((x: any) => x.id === slot.id), syncedGuestClaimSlots)}
-                        </Text>
-
-                        <Pressable
-                          onPress={() => fixGuestSlotConflict(slot.id, slot.sourceFeedId)}
-                          style={s.guestClaimFixBtn}
-                        >
-                          <Text style={s.guestClaimFixBtnText}>FIX NOW</Text>
-                        </Pressable>
-                      </View>
-                    ) : null}
-
-                    <View style={s.guestClaimInfoRow}>
-                      <Ionicons name={slot.locked ? "lock-closed-outline" : "lock-open-outline"} size={15} color="#F4C95D" />
-                      <Text style={s.guestClaimInfoText}>{slot.locked ? "Locked after approval" : "Editable slot"}</Text>
-                    </View>
-
-                    {canGuestClaimManage ? (
-                    <View pointerEvents="box-none" style={s.guestClaimMoveRow}>
-                      <Pressable
-                        onPress={() => moveGuestSlot(slot.id, "up", slot.sourceFeedId)}
-                        style={[s.guestClaimMiniBtn, s.guestClaimMoveUpBtn]}
-                      >
-                        <Text style={[s.guestClaimMiniBtnText, s.guestClaimMoveUpText]}>↑ Move Up</Text>
-                      </Pressable>
-
-                      <Pressable
-                        onPress={() => moveGuestSlot(slot.id, "down", slot.sourceFeedId)}
-                        style={[s.guestClaimMiniBtn, s.guestClaimMoveDownBtn]}
-                      >
-                        <Text style={[s.guestClaimMiniBtnText, s.guestClaimMoveDownText]}>↓ Move Down</Text>
-                      </Pressable>
-                    </View>
-                    ) : null}
-
-                    {canGuestClaimManage ? (
-                    <>
-                    <View pointerEvents="box-none" style={s.guestClaimActions}>
-                      <Pressable
-  hitSlop={14}
-  onPress={() => {
-    console.log("KRISTO_PLUS_5_TOUCH", slot.id, slot.sourceFeedId);
-    addGuestClaimTime(slot.id, 5, slot.sourceFeedId);
-  }}
-  style={s.guestClaimActionBtn}
->
-                        <Text style={s.guestClaimActionText}>+5 min</Text>
-                      </Pressable>
-
-                      <Pressable
-  hitSlop={14}
-  onPress={() => {
-    console.log("KRISTO_MINUS_5_TOUCH", slot.id, slot.sourceFeedId);
-    addGuestClaimTime(slot.id, -5, slot.sourceFeedId);
-  }}
-  style={s.guestClaimActionBtn}
->
-                        <Text style={s.guestClaimActionText}>-5 min</Text>
-                      </Pressable>
-
-                      <Pressable
-                        disabled={getGuestSlotUiState(slot) === "open" || getGuestSlotUiState(slot) === "locked"}
-                        onPress={() => messageGuestClaimant(slot)}
-                        style={[
-                          s.guestClaimActionBtn,
-                          getGuestSlotUiState(slot) === "claimed" || getGuestSlotUiState(slot) === "approved" ? s.guestClaimMessageBtn : null,
-                          getGuestSlotUiState(slot) === "open" || getGuestSlotUiState(slot) === "locked" ? s.guestClaimDisabledBtn : null,
-                        ]}
-                      >
-                        <Text style={s.guestClaimActionText}>Message</Text>
-                      </Pressable>
-                    </View>
-
-                    <View pointerEvents="box-none" style={s.guestClaimActions}>
-                      <Animated.View style={getGuestSlotUiState(slot) === "claimed" ? { flex: 1, transform: [{ scale: claimActionScale }] } : { flex: 1 }}>
-                        <Pressable
-                          disabled={getGuestSlotUiState(slot) !== "claimed"}
-                          onPress={() => approveGuestClaim(slot.id, slot.sourceFeedId)}
-                          style={[
-                            s.guestClaimActionBtn,
-                            s.guestClaimApproveBtn,
-                            getGuestSlotUiState(slot) === "approved" ? s.guestClaimApprovedBtn : null,
-                            getGuestSlotUiState(slot) !== "claimed" ? s.guestClaimDisabledBtn : null,
-                          ]}
-                        >
-                          <Text style={s.guestClaimActionText}>{getGuestSlotUiState(slot) === "approved" ? "Approved ✓" : "Approve"}</Text>
-                        </Pressable>
-                      </Animated.View>
-
-                      <Pressable
-                        onPress={() => toggleGuestClaimLock(slot.id, !slot.locked, slot.sourceFeedId)}
-                        style={[
-                          s.guestClaimActionBtn,
-                          getGuestSlotUiState(slot) === "locked" ? s.guestClaimLockedBtn : null,
-                        ]}
-                      >
-                        <Text style={s.guestClaimActionText}>
-                          {slot.locked ? "Unlock Slot" : "Lock Slot"}
-                        </Text>
-                      </Pressable>
-
-                      <Animated.View style={getGuestSlotUiState(slot) === "claimed" ? { flex: 1, transform: [{ scale: claimActionScale }] } : { flex: 1 }}>
-                        <Pressable
-                          disabled={getGuestSlotUiState(slot) === "open" || getGuestSlotUiState(slot) === "locked"}
-                          onPress={() =>
-                            getGuestSlotUiState(slot) === "claimed" || slot.approved
-                              ? rejectGuestClaim(slot.id, slot.sourceFeedId)
-                              : removeGuestClaimant(slot.id, slot.sourceFeedId)
-                          }
-                          style={[
-                            s.guestClaimActionBtn,
-                            s.guestClaimDangerBtn,
-                            getGuestSlotUiState(slot) === "open" || getGuestSlotUiState(slot) === "locked" ? s.guestClaimDisabledBtn : null,
-                          ]}
-                        >
-                          <Text style={s.guestClaimActionText}>
-                            {getGuestSlotUiState(slot) === "approved" ? "Remove Guest" : getGuestSlotUiState(slot) === "claimed" ? "Reject" : "Remove"}
-                          </Text>
-                        </Pressable>
-                      </Animated.View>
-                    </View>
-                    </>
-                    ) : null}
-                  </View>
-                  );
-                })}
-              </ScrollView>
-            </>
+            <GuestClaimCenterPanel
+              canManage={canGuestClaimManage}
+              slots={syncedGuestClaimSlots}
+              guestClockNow={guestClockNow}
+              churchId={String(session?.churchId || "")}
+              churchName={String(session?.churchName || (session as any)?.churchLabel || "Church")}
+              sessionUserId={String(session?.userId || "")}
+              apiHeaders={getKristoHeaders({
+                userId: session?.userId,
+                churchId: session?.churchId,
+                role: session?.role,
+              })}
+              guestClaimTotalMinutes={guestClaimTotalMinutes}
+              guestClaimClaimedCount={guestClaimClaimedCount}
+              guestClaimOpenCount={guestClaimOpenCount}
+              guestInvitationCount={guestInvitationCount}
+              guestClaimConflictCount={guestClaimConflictCount}
+              onBack={() => setIsManagingGuests(false)}
+              onClearSchedules={handleClearMediaSchedules}
+              onMoveSlot={moveGuestSlot}
+              onAdjustTime={addGuestClaimTime}
+              onApprove={approveGuestClaim}
+              onReject={handleGuestReject}
+              onToggleLock={toggleGuestClaimLock}
+              onFixConflict={fixGuestSlotConflict}
+              onAssignComplete={() => void runMediaScheduleSilentReload("assign-slot", true)}
+              formatGuestSlotDate={formatGuestSlotDate}
+              formatGuestSlotCountdown={formatGuestSlotCountdown}
+              getGuestSlotTimeState={getGuestSlotTimeState}
+              getGuestSlotConflict={getGuestSlotConflict}
+            />
           ) : !isEditingMedia && hasMediaAccount ? (
             <>
 
