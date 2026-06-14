@@ -192,11 +192,12 @@ function userHasActiveChurchMembership(session?: { churchId?: string; activeChur
 
 function resolveTitleFontSize(title: string) {
   const len = title.length;
-  if (len > 52) return 22;
-  if (len > 38) return 25;
-  if (len > 28) return 28;
-  if (len > 18) return 31;
-  return 34;
+  let base = 34;
+  if (len > 52) base = 22;
+  else if (len > 38) base = 25;
+  else if (len > 28) base = 28;
+  else if (len > 18) base = 31;
+  return Math.max(16, Math.round(base * 0.7));
 }
 
 function AvatarRing({
@@ -1634,7 +1635,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   compactUnclaimedLayout && styles.slotTitleVip,
                   { fontSize: titleFontSize, lineHeight: titleLineHeight },
                 ]}
-                numberOfLines={2}
+                numberOfLines={1}
                 ellipsizeMode="tail"
               >
                 {slotTitle}
