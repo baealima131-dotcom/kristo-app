@@ -13,8 +13,14 @@ import {
   ensureChurchMediaProfileForPastor,
   evaluateChurchMediaAccess,
 } from "@/app/api/_lib/churchMediaAccess";
+import {
+  notifyChurchSubscriptionActivated,
+  parseSubscriptionExpiresAtMs,
+  reconcileChurchSubscriptionExpiryNotifications,
+} from "@/app/api/_lib/churchMediaNotifications";
 import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
+import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 
 export const runtime = "nodejs";
 
@@ -41,13 +47,33 @@ export async function GET(req: Request) {
       churchId: a.churchId,
       userId: a.userId,
     });
+    let mediaForResponse = media;
     const hasProfile = Boolean(String(media?.mediaName || "").trim());
     const canOpenMediaScreen = access.canOpenMediaScreen;
     const canViewProfile = hasProfile && canOpenMediaScreen;
-    const subscriptionActive = access.subscriptionActive;
+    let subscriptionActive = access.subscriptionActive;
 
     if (hasProfile) {
       await confirmChurchMediaPersisted(a.churchId, media?.mediaName);
+    }
+
+    if (access.canManageMediaHosts && access.actualPastorUserId && hasProfile && media) {
+      try {
+        const reconcileResult = await reconcileChurchSubscriptionExpiryNotifications({
+          churchId: a.churchId,
+          pastorUserId: access.actualPastorUserId,
+          media,
+        });
+        if (reconcileResult.expired) {
+          mediaForResponse = await getChurchMediaByChurchId(a.churchId);
+          subscriptionActive = isChurchSubscriptionActiveFromRecord(mediaForResponse);
+        }
+      } catch (notifyError: any) {
+        console.log("KRISTO_SUBSCRIPTION_RECONCILE_FAILED", {
+          churchId: a.churchId,
+          message: String(notifyError?.message || notifyError),
+        });
+      }
     }
 
     if (process.env.KRISTO_DEBUG_AUTH === "1" || process.env.NODE_ENV !== "production") {
@@ -68,7 +94,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       ok: true,
-      media: canViewProfile ? media : null,
+      media: canViewProfile ? mediaForResponse : null,
       profileMissing: !hasProfile,
       subscriptionActive,
       viewerCanManage: access.canManageMediaHosts,
@@ -250,10 +276,48 @@ export async function PATCH(req: Request) {
       reason: verification.reason,
     });
 
+    const wasActive = existing?.subscriptionActive === true;
+    const expiresAtMs = verification.bypassed
+      ? null
+      : parseSubscriptionExpiresAtMs(verification.expiresAt);
+
     const next = await patchChurchMediaSubscription(a.churchId, {
       subscriptionActive: true,
       subscriptionPlan: resolvedPlan,
+      subscriptionExpiresAt: expiresAtMs,
     });
+
+    if (!wasActive && access.actualPastorUserId) {
+      try {
+        await notifyChurchSubscriptionActivated({
+          churchId: a.churchId,
+          pastorUserId: access.actualPastorUserId,
+          plan: resolvedPlan,
+        });
+      } catch (notifyError: any) {
+        console.log("KRISTO_SUBSCRIPTION_NOTIFY_FAILED", {
+          churchId: a.churchId,
+          action: "activated",
+          message: String(notifyError?.message || notifyError),
+        });
+      }
+    }
+
+    if (expiresAtMs && access.actualPastorUserId && !verification.bypassed && next) {
+      try {
+        await reconcileChurchSubscriptionExpiryNotifications({
+          churchId: a.churchId,
+          pastorUserId: access.actualPastorUserId,
+          media: next,
+        });
+      } catch (notifyError: any) {
+        console.log("KRISTO_SUBSCRIPTION_NOTIFY_FAILED", {
+          churchId: a.churchId,
+          action: "reconcile-after-activate",
+          message: String(notifyError?.message || notifyError),
+        });
+      }
+    }
 
     return NextResponse.json({ ok: true, media: next, storeMode: resolveMediaStoreMode() });
   } catch (error: any) {

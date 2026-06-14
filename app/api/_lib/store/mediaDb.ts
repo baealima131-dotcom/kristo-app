@@ -22,6 +22,7 @@ export type ChurchMediaProfile = {
   subscriptionActive?: boolean;
   subscriptionPlan?: string;
   subscriptionUpdatedAt?: number;
+  subscriptionExpiresAt?: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -290,22 +291,33 @@ export async function upsertChurchMedia(input: {
 
 export async function patchChurchMediaSubscription(
   churchId: string,
-  patch: { subscriptionActive: boolean; subscriptionPlan?: string }
+  patch: {
+    subscriptionActive: boolean;
+    subscriptionPlan?: string;
+    subscriptionExpiresAt?: number | null;
+  }
 ): Promise<ChurchMediaProfile | null> {
   const existing = await getChurchMediaByChurchId(churchId);
   if (!existing) return null;
 
   const now = Date.now();
+  const nextPatch: Partial<ChurchMediaProfile> = {
+    ...existing,
+    mediaName: existing.mediaName,
+    subscriptionActive: patch.subscriptionActive,
+    subscriptionPlan: patch.subscriptionPlan || existing.subscriptionPlan,
+    subscriptionUpdatedAt: now,
+  };
+
+  if (patch.subscriptionExpiresAt !== undefined) {
+    nextPatch.subscriptionExpiresAt =
+      patch.subscriptionExpiresAt === null ? undefined : patch.subscriptionExpiresAt;
+  }
+
   return upsertChurchMedia({
     churchId,
     ownerUserId: existing.ownerUserId,
-    patch: {
-      ...existing,
-      mediaName: existing.mediaName,
-      subscriptionActive: patch.subscriptionActive,
-      subscriptionPlan: patch.subscriptionPlan || existing.subscriptionPlan,
-      subscriptionUpdatedAt: now,
-    },
+    patch: nextPatch as Partial<ChurchMediaProfile> & { mediaName: string },
   });
 }
 

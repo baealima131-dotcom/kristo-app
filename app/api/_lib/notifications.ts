@@ -33,6 +33,11 @@ export type NotificationType =
   | "FeedCommentOnPost"
   | "FeedReplyToComment"
   | "PrayerRequestPrayedFor"
+  | "TrustedMediaHostAdded"
+  | "TrustedMediaHostRemoved"
+  | "ChurchSubscriptionActivated"
+  | "ChurchSubscriptionExpiringSoon"
+  | "ChurchSubscriptionExpired"
   | "Generic";
 
 export type AppNotification = {

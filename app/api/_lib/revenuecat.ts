@@ -27,6 +27,8 @@ export type ChurchPremiumVerification = {
   productId: string | null;
   reason: string;
   bypassed: boolean;
+  /** ISO timestamp from RevenueCat entitlement, null for lifetime / unknown. */
+  expiresAt: string | null;
 };
 
 function getSecretKey(): string {
@@ -80,11 +82,19 @@ export async function verifyChurchPremiumEntitlement(
       productId: null,
       reason: "bypass",
       bypassed: true,
+      expiresAt: null,
     };
   }
 
   if (!uid) {
-    return { active: false, plan: null, productId: null, reason: "missing-app-user-id", bypassed: false };
+    return {
+      active: false,
+      plan: null,
+      productId: null,
+      reason: "missing-app-user-id",
+      bypassed: false,
+      expiresAt: null,
+    };
   }
 
   const secret = getSecretKey();
@@ -92,7 +102,7 @@ export async function verifyChurchPremiumEntitlement(
     console.error("KRISTO_REVENUECAT_SECRET_MISSING", {
       note: "Set REVENUECAT_SECRET_API_KEY in the production environment.",
     });
-    return { active: false, plan: null, productId: null, reason: "no-secret", bypassed: false };
+    return { active: false, plan: null, productId: null, reason: "no-secret", bypassed: false, expiresAt: null };
   }
 
   const controller = new AbortController();
@@ -116,6 +126,7 @@ export async function verifyChurchPremiumEntitlement(
         productId: null,
         reason: `revenuecat-http-${res.status}`,
         bypassed: false,
+        expiresAt: null,
       };
     }
 
@@ -123,14 +134,34 @@ export async function verifyChurchPremiumEntitlement(
     const entitlement = data?.subscriber?.entitlements?.[CHURCH_PREMIUM_ENTITLEMENT];
 
     if (!entitlement) {
-      return { active: false, plan: null, productId: null, reason: "no-entitlement", bypassed: false };
+      return {
+        active: false,
+        plan: null,
+        productId: null,
+        reason: "no-entitlement",
+        bypassed: false,
+        expiresAt: null,
+      };
     }
 
-    const active = entitlementIsActive(entitlement.expires_date);
+    const expiresAtRaw = entitlement.expires_date;
+    const expiresAt =
+      expiresAtRaw === null || expiresAtRaw === undefined
+        ? null
+        : String(expiresAtRaw).trim() || null;
+
+    const active = entitlementIsActive(expiresAtRaw);
     const productId = String(entitlement.product_identifier || "").trim() || null;
 
     if (!active) {
-      return { active: false, plan: planFromProductId(productId), productId, reason: "expired", bypassed: false };
+      return {
+        active: false,
+        plan: planFromProductId(productId),
+        productId,
+        reason: "expired",
+        bypassed: false,
+        expiresAt,
+      };
     }
 
     return {
@@ -139,6 +170,7 @@ export async function verifyChurchPremiumEntitlement(
       productId,
       reason: "verified",
       bypassed: false,
+      expiresAt,
     };
   } catch (error: any) {
     const reason = error?.name === "AbortError" ? "timeout" : "fetch-error";
@@ -146,7 +178,7 @@ export async function verifyChurchPremiumEntitlement(
       reason,
       error: String(error?.message || error || "unknown"),
     });
-    return { active: false, plan: null, productId: null, reason, bypassed: false };
+    return { active: false, plan: null, productId: null, reason, bypassed: false, expiresAt: null };
   } finally {
     clearTimeout(timer);
   }

@@ -13,6 +13,10 @@ import {
 } from "@/app/api/_lib/churchMediaAccess";
 import { guard } from "@/app/api/_lib/rbac";
 import { requireChurchSubscriptionActive } from "@/app/api/_lib/churchSubscription";
+import {
+  notifyTrustedMediaHostAdded,
+  notifyTrustedMediaHostRemoved,
+} from "@/app/api/_lib/churchMediaNotifications";
 import { getChurchMediaByChurchId, upsertChurchMedia } from "@/app/api/_lib/store/mediaDb";
 
 export const runtime = "nodejs";
@@ -141,6 +145,7 @@ export async function POST(req: NextRequest) {
 
     if (Array.isArray(body?.hosts)) {
       const requested = body.hosts.slice(0, MAX_CHURCH_MEDIA_HOSTS);
+      const beforeHosts = await getStoredMediaHosts(ctxOrRes.churchId);
       const nextHosts: MediaHostRecord[] = [];
       const hadProfileBeforeSave = Boolean(await getChurchMediaByChurchId(ctxOrRes.churchId));
 
@@ -172,6 +177,37 @@ export async function POST(req: NextRequest) {
         hostCount: confirmedHosts.length,
         mediaAutoCreated: Boolean(media?.mediaName),
       });
+
+      try {
+        const beforeIds = new Set(beforeHosts.map((host) => host.userId));
+        const afterIds = new Set(confirmedHosts.map((host) => host.userId));
+
+        for (const host of confirmedHosts) {
+          if (beforeIds.has(host.userId)) continue;
+          await notifyTrustedMediaHostAdded({
+            churchId: ctxOrRes.churchId,
+            hostUserId: host.userId,
+            hostName: host.name,
+            pastorUserId: access.actualPastorUserId,
+          });
+        }
+
+        for (const host of beforeHosts) {
+          if (afterIds.has(host.userId)) continue;
+          await notifyTrustedMediaHostRemoved({
+            churchId: ctxOrRes.churchId,
+            hostUserId: host.userId,
+            hostName: host.name,
+            pastorUserId: access.actualPastorUserId,
+          });
+        }
+      } catch (notifyError: any) {
+        console.log("KRISTO_MEDIA_HOST_NOTIFY_FAILED", {
+          churchId: ctxOrRes.churchId,
+          action: "replace",
+          message: String(notifyError?.message || notifyError),
+        });
+      }
 
       return json({
         ok: true,
@@ -219,6 +255,21 @@ export async function POST(req: NextRequest) {
       hostUserId: userId,
       hostCount: confirmedHosts.length,
     });
+
+    try {
+      await notifyTrustedMediaHostAdded({
+        churchId: ctxOrRes.churchId,
+        hostUserId: nextHost.userId,
+        hostName: nextHost.name,
+        pastorUserId: access.actualPastorUserId,
+      });
+    } catch (notifyError: any) {
+      console.log("KRISTO_MEDIA_HOST_NOTIFY_FAILED", {
+        churchId: ctxOrRes.churchId,
+        action: "add",
+        message: String(notifyError?.message || notifyError),
+      });
+    }
 
     return json({
       ok: true,
@@ -281,6 +332,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     const current = await getStoredMediaHosts(ctxOrRes.churchId);
+    const removedHost = current.find((host) => host.userId === userId);
     const nextHosts = current.filter((host) => host.userId !== userId);
     if (nextHosts.length === current.length) {
       return json({ ok: false, error: "Media host not found" }, { status: 404 });
@@ -300,6 +352,21 @@ export async function DELETE(req: NextRequest) {
       hostUserId: userId,
       hostCount: confirmedHosts.length,
     });
+
+    try {
+      await notifyTrustedMediaHostRemoved({
+        churchId: ctxOrRes.churchId,
+        hostUserId: userId,
+        hostName: removedHost?.name,
+        pastorUserId: access.actualPastorUserId,
+      });
+    } catch (notifyError: any) {
+      console.log("KRISTO_MEDIA_HOST_NOTIFY_FAILED", {
+        churchId: ctxOrRes.churchId,
+        action: "remove",
+        message: String(notifyError?.message || notifyError),
+      });
+    }
 
     return json({
       ok: true,
