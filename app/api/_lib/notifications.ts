@@ -30,6 +30,9 @@ export type NotificationType =
   | "ChurchTestimonyPosted"
   | "ChurchPrayerRequestPosted"
   | "ChurchMediaPosted"
+  | "FeedCommentOnPost"
+  | "FeedReplyToComment"
+  | "PrayerRequestPrayedFor"
   | "Generic";
 
 export type AppNotification = {

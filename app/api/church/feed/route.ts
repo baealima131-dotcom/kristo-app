@@ -24,6 +24,11 @@ import {
 import { resolveCanDeleteChurchActivityPost } from "@/app/api/_lib/churchActivityDelete";
 import { notifyChurchFeedPostPublished } from "@/app/api/_lib/churchContentNotifications";
 import {
+  notifyFeedCommentOnPost,
+  notifyFeedReplyToComment,
+  notifyPrayerRequestPrayedFor,
+} from "@/app/api/_lib/feedEngagementNotifications";
+import {
   isChurchSubscriptionActive,
   requireChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
@@ -3309,6 +3314,8 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const itemChurchId = String(item.churchId || churchId);
     const canonicalPostId = String(item.id || requestPostId).trim();
 
+    const beforeLikeMeta = await getPostLikeMeta(itemChurchId, canonicalPostId, viewerUserId);
+
     const wantsLiked =
       typeof body?.liked === "boolean" ? Boolean(body.liked) : null;
 
@@ -3325,6 +3332,29 @@ async function handleFeedPost(req: NextRequest, body: any) {
       likedByMe: likeResult.likedByMe,
       likeCount: likeResult.likeCount,
     });
+
+    if (likeResult.likedByMe && !beforeLikeMeta.likedByMe) {
+      try {
+        const notified = await notifyPrayerRequestPrayedFor({
+          churchId: itemChurchId,
+          postId: canonicalPostId,
+          actorUserId: viewerUserId,
+          feedItem: item,
+          actorName: viewerName || actorLabel,
+        });
+        if (notified) {
+          console.log("KRISTO_PRAYER_NOTIFY", {
+            postId: canonicalPostId,
+            actorUserId: viewerUserId,
+          });
+        }
+      } catch (notifyError: any) {
+        console.log("KRISTO_PRAYER_NOTIFY_FAILED", {
+          postId: canonicalPostId,
+          message: String(notifyError?.message || notifyError),
+        });
+      }
+    }
 
     return ok({
       postId: canonicalPostId,
@@ -3386,6 +3416,41 @@ async function handleFeedPost(req: NextRequest, body: any) {
       storeMode: resolveCommentStoreMode(),
       totalForPost: discussion.commentCount + discussion.replyCount,
     });
+
+    try {
+      if (action === "add_comment") {
+        await notifyFeedCommentOnPost({
+          churchId: itemChurchId,
+          postId: canonicalPostId,
+          commentId: comment.id,
+          commenterUserId: viewerUserId,
+          commentText: text,
+          feedItem: item,
+          actorName: author.authorName,
+        });
+      } else if (comment.parentCommentId) {
+        const parentComment = await findFeedCommentById(comment.parentCommentId);
+        const parentAuthorUserId = String(parentComment?.createdBy || "").trim();
+        if (parentAuthorUserId) {
+          await notifyFeedReplyToComment({
+            churchId: itemChurchId,
+            postId: canonicalPostId,
+            replyCommentId: comment.id,
+            replierUserId: viewerUserId,
+            replyText: text,
+            parentCommentAuthorUserId: parentAuthorUserId,
+            actorName: author.authorName,
+          });
+        }
+      }
+    } catch (notifyError: any) {
+      console.log("KRISTO_COMMENT_NOTIFY_FAILED", {
+        postId: canonicalPostId,
+        commentId: comment.id,
+        action,
+        message: String(notifyError?.message || notifyError),
+      });
+    }
 
     const identityByUser = await hydrateCommentIdentityMap([comment]);
 
