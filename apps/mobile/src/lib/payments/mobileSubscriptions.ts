@@ -99,6 +99,12 @@ function getRevenueCatErrorDetail(error: unknown) {
 }
 
 let configuredAppUserId: string | null = null;
+
+/** RevenueCat App User ID last configured for church premium (equals churchId). */
+export function getRevenueCatConfiguredAppUserId(): string | null {
+  return configuredAppUserId;
+}
+
 let configurePromise: Promise<boolean> | null = null;
 let loginPromise: Promise<void> | null = null;
 let loginAppUserId: string | null = null;
@@ -571,6 +577,28 @@ export function hasActivePremiumProduct(
   }
 
   return false;
+}
+
+export function describeCustomerInfoSubscriptionDebug(
+  customerInfo: CustomerInfo | null | undefined
+) {
+  const activeEntitlementKeys = Object.keys(customerInfo?.entitlements?.active || {});
+  const activeProductIdentifiers = new Set<string>();
+
+  for (const productId of customerInfo?.activeSubscriptions || []) {
+    if (productId) activeProductIdentifiers.add(String(productId));
+  }
+  for (const entitlement of Object.values(customerInfo?.entitlements?.active || {})) {
+    const productId = String(entitlement?.productIdentifier || "").trim();
+    if (productId) activeProductIdentifiers.add(productId);
+  }
+
+  return {
+    activeEntitlementKeys,
+    activeProductIdentifiers: [...activeProductIdentifiers],
+    hasRealEntitlement: hasRealActiveEntitlement(customerInfo),
+    hasActivePremiumProduct: hasActivePremiumProduct(customerInfo),
+  };
 }
 
 export function resolvePremiumPlanFromCustomerInfo(

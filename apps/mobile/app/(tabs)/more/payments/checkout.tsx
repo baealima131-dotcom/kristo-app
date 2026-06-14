@@ -45,6 +45,8 @@ import {
 import {
   isPastorSessionRole,
   syncChurchSubscriptionAfterPurchase,
+  fetchChurchSubscriptionStatus,
+  logChurchSubscriptionContext,
 } from "../../../../src/lib/churchSubscription";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
@@ -88,6 +90,8 @@ export default function PaymentsCheckoutScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [packagesError, setPackagesError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [checkoutChurchId, setCheckoutChurchId] = useState("");
+  const [serverSubscriptionActive, setServerSubscriptionActive] = useState(false);
 
   useEffect(() => {
     setPaymentsCurrentModule("subscriptions");
@@ -185,6 +189,12 @@ export default function PaymentsCheckoutScreen() {
           throw new Error("Church id is required before loading subscription packages.");
         }
 
+        const headers = getKristoHeaders({
+          userId: sessionUserId,
+          role: sessionRole as any,
+          churchId,
+        }) as Record<string, string>;
+
         const configured = await configureChurchMobileSubscriptions(churchId);
         if (!configured) {
           throw new Error("RevenueCat is not configured yet.");
@@ -208,11 +218,24 @@ export default function PaymentsCheckoutScreen() {
           info = null;
         }
 
+        const server = await fetchChurchSubscriptionStatus(headers);
+
         if (!alive) return;
+        setCheckoutChurchId(churchId);
+        setServerSubscriptionActive(server.subscriptionActive);
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
         setCustomerInfo(info);
         logMonthlyIntroOfferFromStoreKit(monthly);
+        setSubscriptionPlanStatus(hasRealActiveEntitlement(info) ? "active" : "expired");
+
+        logChurchSubscriptionContext({
+          screen: "checkout",
+          churchId,
+          customerInfo: info,
+          churchSubscriptionActive: server.subscriptionActive,
+          canUseMediaTools: server.canUseMediaTools,
+        });
 
         try {
           const introEligibility = await fetchMonthlyIntroTrialEligibility();
@@ -260,26 +283,27 @@ export default function PaymentsCheckoutScreen() {
   const monthlyTrialEligible =
     safePlan === "monthly" &&
     resolveMonthlyIntroTrialEligible(customerInfo, monthlyPackage, monthlyIntroEligibility);
-  const planStatus = paymentsState.subscriptions.planStatus;
   const hasRealEntitlement = hasRealActiveEntitlement(customerInfo);
   const hasActivePremiumProductFlag = hasActivePremiumProduct(customerInfo);
-  const isSubscribed =
-    hasRealEntitlement || hasActivePremiumProductFlag || planStatus === "active";
+  const isSubscribedForCurrentChurch =
+    hasRealEntitlement || hasActivePremiumProductFlag || serverSubscriptionActive;
   const isPastor = isPastorSessionRole(sessionRole);
 
   useEffect(() => {
     console.log("KRISTO_CHECKOUT_SUBSCRIBED_STATE", {
-      isSubscribed,
+      checkoutChurchId,
+      isSubscribedForCurrentChurch,
       hasRealEntitlement,
       hasActivePremiumProduct: hasActivePremiumProductFlag,
-      planStatus,
+      serverSubscriptionActive,
       isPastor,
     });
   }, [
-    isSubscribed,
+    checkoutChurchId,
+    isSubscribedForCurrentChurch,
     hasRealEntitlement,
     hasActivePremiumProductFlag,
-    planStatus,
+    serverSubscriptionActive,
     isPastor,
   ]);
 
@@ -309,7 +333,7 @@ export default function PaymentsCheckoutScreen() {
 
   async function handleSyncMediaTools() {
     if (submitting || !isPastor) return;
-    if (!isSubscribed && !hasActivePremiumProductFlag) return;
+    if (!isSubscribedForCurrentChurch && !hasActivePremiumProductFlag) return;
 
     try {
       setSubmitting(true);
@@ -356,7 +380,7 @@ export default function PaymentsCheckoutScreen() {
   }
 
   async function handleConfirmCheckout() {
-    if (submitting || isSubscribed) return;
+    if (submitting || isSubscribedForCurrentChurch) return;
     if (isPastor && hasActivePremiumProductFlag) return;
 
     if (!targetPackage) {
@@ -478,12 +502,23 @@ export default function PaymentsCheckoutScreen() {
               <Ionicons name="diamond-outline" size={16} color="#F4D06F" />
               <Text style={s.planBadgeText}>SELECTED</Text>
             </View>
-            {isSubscribed ? (
+            {isSubscribedForCurrentChurch ? (
               <View style={s.activePill}>
                 <Text style={s.activePillText}>ACTIVE</Text>
               </View>
             ) : null}
           </View>
+
+          {checkoutChurchId ? (
+            <View style={s.churchContextCard}>
+              <Text style={s.churchContextTitle}>Subscribing church: {checkoutChurchId}</Text>
+              <Text style={s.churchContextSub}>
+                {isSubscribedForCurrentChurch
+                  ? "This church has an active subscription."
+                  : "This church is not subscribed yet. Purchases apply to this church only."}
+              </Text>
+            </View>
+          ) : null}
 
           <Text style={s.planTitle}>{planMeta.title}</Text>
           <Text style={s.priceLine}>{priceLine}</Text>
@@ -522,7 +557,7 @@ export default function PaymentsCheckoutScreen() {
           ) : null}
 
           <View style={s.ctaBlock}>
-            {isSubscribed || (isPastor && hasActivePremiumProductFlag) ? (
+            {isSubscribedForCurrentChurch || (isPastor && hasActivePremiumProductFlag) ? (
               <>
                 {isPastor ? (
                   <Pressable
@@ -591,7 +626,7 @@ export default function PaymentsCheckoutScreen() {
             )}
 
             <Text style={s.footText}>
-              {isSubscribed
+              {isSubscribedForCurrentChurch
                 ? isPastor
                   ? "Tap Sync if Media tools are still locked after an active trial or subscription."
                   : "Subscriptions are managed through Apple. Changes apply on your next billing date."
@@ -739,6 +774,30 @@ const s = StyleSheet.create({
     fontSize: 24,
     fontWeight: "900",
     letterSpacing: -0.4,
+  },
+
+  churchContextCard: {
+    marginTop: 14,
+    marginBottom: 4,
+    borderRadius: 14,
+    padding: 12,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(196,171,114,0.18)",
+    gap: 4,
+  },
+
+  churchContextTitle: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  churchContextSub: {
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
   },
 
   priceLine: {

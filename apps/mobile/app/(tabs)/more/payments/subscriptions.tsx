@@ -6,6 +6,7 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
+  Alert,
   type ScrollView as RNScrollView,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -36,9 +37,18 @@ import {
   resolveYearlyPackage,
   describeCurrentOfferingPackages,
   setRevenueCatDebugRouteEnabled,
+  getRevenueCatConfiguredAppUserId,
+  resolvePremiumPlanFromCustomerInfo,
 } from "../../../../src/lib/payments/mobileSubscriptions";
-import { isPastorSessionRole } from "../../../../src/lib/churchSubscription";
+import {
+  fetchChurchSubscriptionStatus,
+  isPastorSessionRole,
+  logChurchSubscriptionContext,
+  syncChurchSubscriptionAfterPurchase,
+  type ChurchSubscriptionServerStatus,
+} from "../../../../src/lib/churchSubscription";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
+import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
 import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
 
@@ -81,18 +91,32 @@ export default function PaymentsSubscriptionsScreen() {
   const { session, loading: sessionLoading, setSession } = useKristoSession();
 
   const [paymentsState, setPaymentsState] = useState(() => getPaymentsState());
+  const [churchId, setChurchId] = useState("");
+  const [serverStatus, setServerStatus] = useState<ChurchSubscriptionServerStatus>({
+    subscriptionActive: false,
+    canUseMediaTools: false,
+    subscriptionPlan: null,
+  });
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
   const [monthlyIntroEligibility, setMonthlyIntroEligibility] =
     useState<INTRO_ELIGIBILITY_STATUS | null>(null);
   const [offersLoading, setOffersLoading] = useState(true);
+  const [submittingSync, setSubmittingSync] = useState(false);
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [showPlanPicker, setShowPlanPicker] = useState(false);
   const scrollRef = useRef<RNScrollView | null>(null);
   const [draftCurrentPlan, setDraftCurrentPlan] = useState<SubscriptionPlanKey>(
     () => getPaymentsState().subscriptions.selectedPlan
   );
+
+  const sessionRole = String(
+    (session as any)?.role || (session as any)?.churchRole || ""
+  ).trim();
+  const sessionUserId = String((session as any)?.userId || "").trim();
+  const isPastor = isPastorSessionRole(sessionRole);
 
   useEffect(() => {
     setPaymentsCurrentModule("subscriptions");
@@ -118,21 +142,32 @@ export default function PaymentsSubscriptionsScreen() {
       setSubscriptionError(null);
 
       try {
-        let churchId = String((session as any)?.churchId || "").trim();
-        if (!churchId) {
+        let resolvedChurchId = String((session as any)?.churchId || "").trim();
+        if (!resolvedChurchId) {
           const recovered = await recoverChurchIdFromMembership(session, setSession);
-          churchId = recovered.churchId;
+          resolvedChurchId = recovered.churchId;
         }
-        if (!churchId) {
+        if (!resolvedChurchId) {
           throw new Error("Church id is required before loading subscription packages.");
         }
 
-        const configured = await configureChurchMobileSubscriptions(churchId);
+        const headers = getKristoHeaders({
+          userId: sessionUserId,
+          role: sessionRole as any,
+          churchId: resolvedChurchId,
+        }) as Record<string, string>;
+
+        const configured = await configureChurchMobileSubscriptions(resolvedChurchId);
         if (!configured) {
           throw new Error("RevenueCat is not configured yet.");
         }
 
-        const offerings = await getSubscriptionOfferings();
+        const [offerings, server, infoResult] = await Promise.all([
+          getSubscriptionOfferings(),
+          fetchChurchSubscriptionStatus(headers),
+          getCustomerSubscriptionInfo().catch(() => null),
+        ]);
+
         const monthly = resolveMonthlyPackage(offerings);
         const yearly = resolveYearlyPackage(offerings);
 
@@ -140,32 +175,41 @@ export default function PaymentsSubscriptionsScreen() {
           "RevenueCat offerings packages:\n" + describeCurrentOfferingPackages(offerings)
         );
 
+        let introEligibility: INTRO_ELIGIBILITY_STATUS | null = null;
+        try {
+          introEligibility = await fetchMonthlyIntroTrialEligibility();
+        } catch {
+          introEligibility = null;
+        }
+
         if (!alive) return;
+
+        setChurchId(resolvedChurchId);
+        setServerStatus(server);
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
         logMonthlyIntroOfferFromStoreKit(monthly);
+        setCustomerInfo(infoResult);
 
-        try {
-          const info = await getCustomerSubscriptionInfo();
-          const effective = getEffectiveSubscriptionState(info);
-          if (!alive) return;
-          setCustomerInfo(info);
+        const hasRealEntitlement = hasRealActiveEntitlement(infoResult);
+        if (infoResult) {
+          const effective = getEffectiveSubscriptionState(infoResult);
           setSubscriptionSelectedPlan(effective.selectedPlan);
-          setSubscriptionPlanStatus(hasRealActiveEntitlement(info) ? "active" : "expired");
-        } catch {
-          if (!alive) return;
-          setCustomerInfo(null);
-          setSubscriptionPlanStatus("expired");
         }
+        setSubscriptionPlanStatus(hasRealEntitlement ? "active" : "expired");
+        setMonthlyIntroEligibility(introEligibility);
 
-        try {
-          const introEligibility = await fetchMonthlyIntroTrialEligibility();
-          if (!alive) return;
-          setMonthlyIntroEligibility(introEligibility);
-        } catch {
-          if (!alive) return;
-          setMonthlyIntroEligibility(null);
-        }
+        logChurchSubscriptionContext({
+          screen: "subscriptions",
+          churchId: resolvedChurchId,
+          customerInfo: infoResult,
+          churchSubscriptionActive: server.subscriptionActive,
+          canUseMediaTools: server.canUseMediaTools,
+        });
+
+        const showActive =
+          server.subscriptionActive || hasRealEntitlement;
+        setShowPlanPicker(!showActive);
 
         if (!monthly && !yearly) {
           setSubscriptionError(
@@ -182,6 +226,7 @@ export default function PaymentsSubscriptionsScreen() {
         });
         setSubscriptionPlanStatus("expired");
         setSubscriptionError(errorMessage);
+        setShowPlanPicker(true);
       } finally {
         if (alive) setOffersLoading(false);
       }
@@ -191,41 +236,152 @@ export default function PaymentsSubscriptionsScreen() {
     return () => {
       alive = false;
     };
-  }, [sessionLoading, session, reloadToken]);
+  }, [sessionLoading, session, reloadToken, sessionRole, sessionUserId, setSession]);
 
   function retryLoadOfferings() {
     setReloadToken((token) => token + 1);
   }
 
+  async function refreshAfterCustomerInfoChange(info: CustomerInfo | null) {
+    setCustomerInfo(info);
+    const hasRealEntitlement = hasRealActiveEntitlement(info);
+    if (info) {
+      const effective = getEffectiveSubscriptionState(info);
+      setSubscriptionSelectedPlan(effective.selectedPlan);
+    }
+    setSubscriptionPlanStatus(hasRealEntitlement ? "active" : "expired");
+
+    if (!churchId) return;
+    const headers = getKristoHeaders({
+      userId: sessionUserId,
+      role: sessionRole as any,
+      churchId,
+    }) as Record<string, string>;
+    const server = await fetchChurchSubscriptionStatus(headers);
+    setServerStatus(server);
+    logChurchSubscriptionContext({
+      screen: "subscriptions",
+      churchId,
+      customerInfo: info,
+      churchSubscriptionActive: server.subscriptionActive,
+      canUseMediaTools: server.canUseMediaTools,
+    });
+  }
+
   async function handleManageSubscription() {
     try {
       const opened = await openSubscriptionManagement(customerInfo);
-      if (!opened) return;
+      if (!opened) {
+        Alert.alert(
+          "Manage subscription",
+          "Subscriptions are managed through Apple.\n\nOpen Settings → Apple ID → Subscriptions to cancel or change your plan."
+        );
+        return;
+      }
 
       const info = await getCustomerSubscriptionInfo();
-      setCustomerInfo(info);
-      const effective = getEffectiveSubscriptionState(info);
-      setSubscriptionSelectedPlan(effective.selectedPlan);
-      setSubscriptionPlanStatus(hasRealActiveEntitlement(info) ? "active" : "expired");
+      await refreshAfterCustomerInfoChange(info);
     } catch (error: any) {
       console.log("KRISTO_SUBSCRIPTION_MANAGE_FAILED", {
         message: String(error?.message || error || ""),
       });
+      Alert.alert(
+        "Could not open subscriptions",
+        "Open Settings → Apple ID → Subscriptions on your iPhone."
+      );
+    }
+  }
+
+  async function handleSyncPurchase() {
+    if (!isPastor || submittingSync || !churchId) return;
+
+    try {
+      setSubmittingSync(true);
+
+      let info = customerInfo;
+      if (!info) {
+        info = await getCustomerSubscriptionInfo();
+        setCustomerInfo(info);
+      }
+
+      const resolvedPlan =
+        resolvePremiumPlanFromCustomerInfo(info) ||
+        getEffectiveSubscriptionState(info).selectedPlan ||
+        paymentsState.subscriptions.selectedPlan ||
+        "monthly";
+
+      const headers = getKristoHeaders({
+        userId: sessionUserId,
+        role: sessionRole as any,
+        churchId,
+      }) as Record<string, string>;
+
+      const sync = await syncChurchSubscriptionAfterPurchase({
+        churchId,
+        userId: sessionUserId,
+        role: sessionRole,
+        churchRole: String((session as any)?.churchRole || "").trim() || undefined,
+        subscriptionPlan: resolvedPlan,
+        headers,
+        purchaseConfirmed: true,
+        initialCustomerInfo: info,
+      });
+
+      const server = await fetchChurchSubscriptionStatus(headers);
+      setServerStatus(server);
+
+      logChurchSubscriptionContext({
+        screen: "subscriptions-sync",
+        churchId,
+        customerInfo: info,
+        churchSubscriptionActive: server.subscriptionActive,
+        canUseMediaTools: sync.canUseMediaTools || server.canUseMediaTools,
+      });
+
+      if (sync.canUseMediaTools || server.subscriptionActive) {
+        setShowPlanPicker(false);
+        Alert.alert(
+          "Subscription synced",
+          "Church subscription is active. Media Studio is unlocked for this church."
+        );
+        return;
+      }
+
+      if (sync.churchActivated) {
+        Alert.alert(
+          "Church activated",
+          "Server recorded your subscription. Open Media Studio to confirm tools are unlocked."
+        );
+        return;
+      }
+
+      Alert.alert(
+        "Sync in progress",
+        hasRealActiveEntitlement(info)
+          ? "Your App Store purchase is active for this church. Server verification may take a moment — try again shortly."
+          : "No active App Store entitlement found for this church yet. Complete a purchase for this church, or manage an existing subscription through Apple."
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Sync failed",
+        String(error?.message || "Could not sync church subscription. Try again.")
+      );
+    } finally {
+      setSubmittingSync(false);
     }
   }
 
   const currentPlan = paymentsState.subscriptions.selectedPlan;
-  const planStatus = paymentsState.subscriptions.planStatus;
-  const sessionRole = String(
-    (session as any)?.role || (session as any)?.churchRole || ""
-  ).trim();
-  const isPastor = isPastorSessionRole(sessionRole);
+  const hasRealEntitlement = hasRealActiveEntitlement(customerInfo);
+  const revenueCatAppUserId = getRevenueCatConfiguredAppUserId();
+  const churchSubscriptionActive =
+    serverStatus.subscriptionActive || hasRealEntitlement;
+  const showActivePrimaryScreen = churchSubscriptionActive && !showPlanPicker;
 
   useEffect(() => {
     setDraftCurrentPlan(currentPlan);
-  }, [currentPlan, planStatus]);
+  }, [currentPlan]);
 
-  const currentPlanIsActive = planStatus === "active";
   const monthlyTrialEligible = resolveMonthlyIntroTrialEligible(
     customerInfo,
     monthlyPackage,
@@ -258,14 +414,38 @@ export default function PaymentsSubscriptionsScreen() {
 
           <View style={{ flex: 1 }}>
             <Text style={s.title}>Media Premium</Text>
-            <Text style={s.sub}>Choose your access</Text>
+            <Text style={s.sub}>
+              {showActivePrimaryScreen
+                ? "Church subscription active"
+                : "Subscribe this church"}
+            </Text>
           </View>
         </View>
+
+        {churchId ? (
+          <View style={s.churchContextCard}>
+            <View style={s.churchContextRow}>
+              <Ionicons name="business-outline" size={16} color="rgba(196,171,114,0.85)" />
+              <Text style={s.churchContextLabel}>Current church</Text>
+            </View>
+            <Text style={s.churchContextId}>{churchId}</Text>
+            <Text style={s.churchContextMeta}>
+              RevenueCat subscriber: {revenueCatAppUserId || "—"}
+              {revenueCatAppUserId && revenueCatAppUserId !== churchId
+                ? " (mismatch — tap Sync purchase)"
+                : ""}
+            </Text>
+            <Text style={s.churchContextNote}>
+              Subscriptions are per church. A subscription on another church does not
+              unlock Media Studio here.
+            </Text>
+          </View>
+        ) : null}
 
         {offersLoading ? (
           <View style={s.reviewFallbackCard}>
             <ActivityIndicator color="rgba(196,171,114,0.72)" />
-            <Text style={s.reviewFallbackText}>Loading App Store packages...</Text>
+            <Text style={s.reviewFallbackText}>Loading subscription status...</Text>
           </View>
         ) : subscriptionError ? (
           <View style={s.reviewFallbackCard}>
@@ -280,110 +460,195 @@ export default function PaymentsSubscriptionsScreen() {
           </View>
         ) : null}
 
-        <View style={[s.planGrid, subscriptionError ? { opacity: 0.45 } : null]}>
-          {PLAN_CARDS.map((item) => {
-            const isSelected = item.key === draftCurrentPlan;
-            const cardStyle = item.tone === "gold" ? s.planCardGold : s.planCardBlue;
-            const planPackage = item.key === "monthly" ? monthlyPackage : yearlyPackage;
-            const displayPrice = formatPrice(planPackage || undefined, item.price);
-            const isActivePlan = item.key === currentPlan && currentPlanIsActive;
+        {showActivePrimaryScreen ? (
+          <View style={s.activeCard}>
+            <View style={s.activeHeaderRow}>
+              <View style={s.activeIconWrap}>
+                <Ionicons name="checkmark-circle" size={28} color="rgba(120,220,160,0.95)" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={s.activeTitle}>Church subscription active</Text>
+                <Text style={s.activeSub}>
+                  {serverStatus.canUseMediaTools || hasRealEntitlement
+                    ? "Media Studio unlocked"
+                    : "Sync purchase if Media Studio is still locked"}
+                </Text>
+              </View>
+            </View>
 
-            return (
+            {serverStatus.subscriptionPlan ? (
+              <Text style={s.activePlanLine}>
+                Plan: {String(serverStatus.subscriptionPlan)}
+              </Text>
+            ) : null}
+
+            <View style={s.activeActions}>
+              {isPastor ? (
+                <Pressable
+                  onPress={handleSyncPurchase}
+                  disabled={submittingSync}
+                  style={({ pressed }) => [
+                    s.primaryActionBtn,
+                    submittingSync ? s.disabledBtn : null,
+                    pressed ? s.pressed : null,
+                  ]}
+                >
+                  {submittingSync ? (
+                    <ActivityIndicator color="#1A1610" />
+                  ) : (
+                    <>
+                      <Ionicons name="refresh-outline" size={18} color="#1A1610" />
+                      <Text style={s.primaryActionBtnText}>Sync purchase</Text>
+                    </>
+                  )}
+                </Pressable>
+              ) : null}
+
               <Pressable
-                key={item.key}
-                onPress={() => setDraftCurrentPlan(item.key)}
+                onPress={handleManageSubscription}
+                disabled={submittingSync}
                 style={({ pressed }) => [
-                  s.planCard,
-                  cardStyle,
-                  isSelected ? s.planCardSelected : null,
+                  isPastor ? s.secondaryActionBtn : s.primaryActionBtn,
+                  submittingSync ? s.disabledBtn : null,
                   pressed ? s.pressed : null,
                 ]}
               >
-                <View style={s.planCardTop}>
-                  <View style={s.planCardHead}>
-                    {item.badge ? <Text style={s.planBadge}>{item.badge}</Text> : null}
-                    <Text style={s.planCardTitle}>{item.title}</Text>
-                  </View>
-
-                  {isSelected ? (
-                    <View style={s.selectedDotWrap}>
-                      <Ionicons name="checkmark" size={12} color="rgba(196,171,114,0.95)" />
-                    </View>
-                  ) : null}
-                </View>
-
-                {item.key === "monthly" && monthlyTrialLabel ? (
-                  <Text style={s.planTrialLine}>{monthlyTrialLabel}</Text>
-                ) : null}
-
+                <Ionicons
+                  name="logo-apple"
+                  size={18}
+                  color={isPastor ? "rgba(255,255,255,0.88)" : "#1A1610"}
+                />
                 <Text
-                  style={[
-                    s.planCardPrice,
-                    item.key === "monthly" && monthlyTrialLabel
-                      ? s.planCardPriceAfterTrial
-                      : null,
-                  ]}
+                  style={isPastor ? s.secondaryActionBtnText : s.primaryActionBtnText}
                 >
-                  {displayPrice}
-                  <Text style={s.planCardCycle}>{item.cycle}</Text>
+                  Manage subscription
                 </Text>
+              </Pressable>
+            </View>
 
-                <View style={s.planPointList}>
-                  {item.points.map((point) => (
-                    <View key={point} style={s.planPointRow}>
-                      <View style={s.planPointDot} />
-                      <Text style={s.planPointText}>{point}</Text>
+            <Text style={s.manageHint}>
+              Cancel or change billing in Apple Subscriptions — not inside Kristo.
+            </Text>
+
+            <Pressable
+              onPress={() => setShowPlanPicker(true)}
+              style={({ pressed }) => [s.changePlanLink, pressed ? s.pressed : null]}
+            >
+              <Text style={s.changePlanLinkText}>View plans</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <>
+            <View style={s.notSubscribedBanner}>
+              <Ionicons name="information-circle-outline" size={20} color="rgba(196,171,114,0.9)" />
+              <Text style={s.notSubscribedText}>This church is not subscribed yet</Text>
+            </View>
+
+            <View style={[s.planGrid, subscriptionError ? { opacity: 0.45 } : null]}>
+              {PLAN_CARDS.map((item) => {
+                const isSelected = item.key === draftCurrentPlan;
+                const cardStyle = item.tone === "gold" ? s.planCardGold : s.planCardBlue;
+                const planPackage = item.key === "monthly" ? monthlyPackage : yearlyPackage;
+                const displayPrice = formatPrice(planPackage || undefined, item.price);
+                const isActivePlan =
+                  hasRealEntitlement && item.key === currentPlan;
+
+                return (
+                  <Pressable
+                    key={item.key}
+                    onPress={() => setDraftCurrentPlan(item.key)}
+                    style={({ pressed }) => [
+                      s.planCard,
+                      cardStyle,
+                      isSelected ? s.planCardSelected : null,
+                      pressed ? s.pressed : null,
+                    ]}
+                  >
+                    <View style={s.planCardTop}>
+                      <View style={s.planCardHead}>
+                        {item.badge ? <Text style={s.planBadge}>{item.badge}</Text> : null}
+                        <Text style={s.planCardTitle}>{item.title}</Text>
+                      </View>
+
+                      {isSelected ? (
+                        <View style={s.selectedDotWrap}>
+                          <Ionicons name="checkmark" size={12} color="rgba(196,171,114,0.95)" />
+                        </View>
+                      ) : null}
                     </View>
-                  ))}
-                </View>
 
-                <Pressable
-                  onPress={() => {
-                    setDraftCurrentPlan(item.key);
+                    {item.key === "monthly" && monthlyTrialLabel ? (
+                      <Text style={s.planTrialLine}>{monthlyTrialLabel}</Text>
+                    ) : null}
 
-                    if (isActivePlan) {
-                      if (isPastor) {
+                    <Text
+                      style={[
+                        s.planCardPrice,
+                        item.key === "monthly" && monthlyTrialLabel
+                          ? s.planCardPriceAfterTrial
+                          : null,
+                      ]}
+                    >
+                      {displayPrice}
+                      <Text style={s.planCardCycle}>{item.cycle}</Text>
+                    </Text>
+
+                    <View style={s.planPointList}>
+                      {item.points.map((point) => (
+                        <View key={point} style={s.planPointRow}>
+                          <View style={s.planPointDot} />
+                          <Text style={s.planPointText}>{point}</Text>
+                        </View>
+                      ))}
+                    </View>
+
+                    <Pressable
+                      onPress={() => {
+                        setDraftCurrentPlan(item.key);
+
+                        if (isActivePlan && isPastor) {
+                          void handleSyncPurchase();
+                          return;
+                        }
+
+                        if (!planPackage) {
+                          setSubscriptionError(
+                            "App Store packages are not available yet. Tap retry, then try again."
+                          );
+                          return;
+                        }
+
+                        setSubscriptionSelectedPlan(item.key);
                         router.push({
                           pathname: "/more/payments/checkout" as any,
                           params: { plan: item.key },
                         });
-                        return;
-                      }
-                      void handleManageSubscription();
-                      return;
-                    }
+                      }}
+                      style={({ pressed }) => [
+                        s.planBtn,
+                        isActivePlan ? s.planBtnManage : null,
+                        pressed ? s.pressed : null,
+                      ]}
+                    >
+                      <Text style={[s.planBtnText, isActivePlan ? s.planBtnTextManage : null]}>
+                        {isActivePlan ? "Sync purchase" : "Choose"}
+                      </Text>
+                    </Pressable>
+                  </Pressable>
+                );
+              })}
+            </View>
 
-                    if (!planPackage) {
-                      setSubscriptionError(
-                        "App Store packages are not available yet. Tap retry, then try again."
-                      );
-                      return;
-                    }
-
-                    setSubscriptionSelectedPlan(item.key);
-                    router.push({
-                      pathname: "/more/payments/checkout" as any,
-                      params: { plan: item.key },
-                    });
-                  }}
-                  style={({ pressed }) => [
-                    s.planBtn,
-                    isActivePlan ? s.planBtnManage : null,
-                    pressed ? s.pressed : null,
-                  ]}
-                >
-                  <Text style={[s.planBtnText, isActivePlan ? s.planBtnTextManage : null]}>
-                    {isActivePlan
-                      ? isPastor
-                        ? "Sync / Unlock"
-                        : "Manage / Cancel"
-                      : "Choose"}
-                  </Text>
-                </Pressable>
+            {churchSubscriptionActive ? (
+              <Pressable
+                onPress={() => setShowPlanPicker(false)}
+                style={({ pressed }) => [s.backToActiveLink, pressed ? s.pressed : null]}
+              >
+                <Text style={s.backToActiveLinkText}>Back to active subscription</Text>
               </Pressable>
-            );
-          })}
-        </View>
+            ) : null}
+          </>
+        )}
       </ScrollView>
     </View>
   );
@@ -454,6 +719,53 @@ const s = StyleSheet.create({
     fontWeight: "700",
   },
 
+  churchContextCard: {
+    marginHorizontal: 18,
+    marginBottom: 14,
+    borderRadius: 20,
+    padding: 16,
+    backgroundColor: "rgba(255,255,255,0.035)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(196,171,114,0.18)",
+    gap: 6,
+  },
+
+  churchContextRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  churchContextLabel: {
+    color: "rgba(196,171,114,0.78)",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+
+  churchContextId: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+
+  churchContextMeta: {
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
+
+  churchContextNote: {
+    marginTop: 4,
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
+
   reviewFallbackCard: {
     marginHorizontal: 18,
     marginBottom: 14,
@@ -487,6 +799,143 @@ const s = StyleSheet.create({
     color: "#fff",
     fontWeight: "800",
     fontSize: 14,
+  },
+
+  activeCard: {
+    marginHorizontal: 18,
+    marginBottom: 14,
+    borderRadius: 24,
+    padding: 20,
+    backgroundColor: "rgba(16, 28, 22, 0.92)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(120, 220, 160, 0.22)",
+    gap: 14,
+  },
+
+  activeHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+
+  activeIconWrap: {
+    marginTop: 2,
+  },
+
+  activeTitle: {
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: -0.3,
+  },
+
+  activeSub: {
+    marginTop: 4,
+    color: "rgba(120,220,160,0.88)",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+
+  activePlanLine: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  activeActions: {
+    gap: 10,
+  },
+
+  primaryActionBtn: {
+    minHeight: 52,
+    borderRadius: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "rgba(196, 171, 114, 0.88)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(210, 188, 138, 0.30)",
+  },
+
+  primaryActionBtnText: {
+    color: "#1A1610",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  secondaryActionBtn: {
+    minHeight: 52,
+    borderRadius: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+
+  secondaryActionBtnText: {
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+
+  disabledBtn: {
+    opacity: 0.6,
+  },
+
+  manageHint: {
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+    textAlign: "center",
+  },
+
+  changePlanLink: {
+    alignSelf: "center",
+    paddingVertical: 8,
+  },
+
+  changePlanLinkText: {
+    color: "rgba(196,171,114,0.78)",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  notSubscribedBanner: {
+    marginHorizontal: 18,
+    marginBottom: 14,
+    borderRadius: 16,
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(196,171,114,0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(196,171,114,0.18)",
+  },
+
+  notSubscribedText: {
+    flex: 1,
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 19,
+  },
+
+  backToActiveLink: {
+    alignSelf: "center",
+    marginTop: 8,
+    paddingVertical: 10,
+  },
+
+  backToActiveLinkText: {
+    color: "rgba(120,220,160,0.88)",
+    fontSize: 13,
+    fontWeight: "800",
   },
 
   planGrid: {

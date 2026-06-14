@@ -10,7 +10,9 @@ import { refreshChurchMediaIfNeeded } from "./churchResourceRefresh";
 import { refreshChurchMediaAccess } from "./refreshCoordinator";
 import {
   CHURCH_PREMIUM_ENTITLEMENT,
+  describeCustomerInfoSubscriptionDebug,
   getCustomerSubscriptionInfo,
+  getRevenueCatConfiguredAppUserId,
   hasRealActiveEntitlement,
   logInRevenueCatForChurchSubscription,
   refreshCustomerInfoAfterStorePurchase,
@@ -216,20 +218,65 @@ export async function fetchChurchSubscriptionActive(
   headers?: Record<string, string>,
   _opts?: { isPastor?: boolean; isApprovedMediaHost?: boolean }
 ): Promise<boolean> {
-  const cid = String(churchId || "").trim();
-  if (!cid) return false;
+  const status = await fetchChurchSubscriptionStatus(headers);
+  return status.subscriptionActive;
+}
 
+export type ChurchSubscriptionServerStatus = {
+  subscriptionActive: boolean;
+  canUseMediaTools: boolean;
+  subscriptionPlan?: string | null;
+};
+
+export async function fetchChurchSubscriptionStatus(
+  headers?: Record<string, string>
+): Promise<ChurchSubscriptionServerStatus> {
   try {
     const res: any = await apiGet("/api/church/media", {
       headers,
       cache: "no-store",
     });
-    return (
-      isChurchSubscriptionActiveFromRecord(res?.media) || Boolean(res?.subscriptionActive)
-    );
+    const subscriptionActive =
+      isChurchSubscriptionActiveFromRecord(res?.media) || Boolean(res?.subscriptionActive);
+    return {
+      subscriptionActive,
+      canUseMediaTools: res?.canUseMediaTools === true,
+      subscriptionPlan: res?.media?.subscriptionPlan || res?.subscriptionPlan || null,
+    };
   } catch {
-    return false;
+    return {
+      subscriptionActive: false,
+      canUseMediaTools: false,
+      subscriptionPlan: null,
+    };
   }
+}
+
+export function logChurchSubscriptionContext(args: {
+  screen: string;
+  churchId: string;
+  customerInfo?: CustomerInfo | null;
+  churchSubscriptionActive?: boolean;
+  canUseMediaTools?: boolean;
+}) {
+  const churchId = String(args.churchId || "").trim();
+  const revenueCatAppUserId = getRevenueCatConfiguredAppUserId();
+  const rcDebug = describeCustomerInfoSubscriptionDebug(args.customerInfo);
+
+  console.log("KRISTO_CHURCH_SUBSCRIPTION_CONTEXT", {
+    screen: args.screen,
+    currentChurchId: churchId,
+    revenueCatAppUserId,
+    churchIdMatchesRcAppUserId: Boolean(churchId && revenueCatAppUserId === churchId),
+    activeEntitlementKeys: rcDebug.activeEntitlementKeys,
+    activeProductIdentifiers: rcDebug.activeProductIdentifiers,
+    hasRealEntitlement: rcDebug.hasRealEntitlement,
+    hasActivePremiumProduct: rcDebug.hasActivePremiumProduct,
+    serverChurchSubscriptionActive: args.churchSubscriptionActive === true,
+    canUseMediaTools: args.canUseMediaTools === true,
+    entitlementId: CHURCH_PREMIUM_ENTITLEMENT,
+    note: "RevenueCat App User ID is churchId — subscription is per church, not per user.",
+  });
 }
 
 export async function fetchChurchMediaTrialDebug(
