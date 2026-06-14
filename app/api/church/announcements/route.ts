@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getViewer } from "@/app/api/_lib/auth";
+import { notifyChurchAnnouncementPosted } from "@/app/api/_lib/churchContentNotifications";
 
 export const runtime = "nodejs";
 
@@ -67,5 +68,21 @@ export async function POST(req: NextRequest) {
   };
 
   store().push(a);
+
+  try {
+    const notified = await notifyChurchAnnouncementPosted({
+      churchId: v.churchId,
+      announcementId: a.id,
+      title: a.title,
+      authorUserId: v.userId,
+    });
+    console.log("KRISTO_ANNOUNCEMENT_NOTIFY", { announcementId: a.id, churchId: v.churchId, notified });
+  } catch (notifyError: any) {
+    console.log("KRISTO_ANNOUNCEMENT_NOTIFY_FAILED", {
+      announcementId: a.id,
+      message: String(notifyError?.message || notifyError),
+    });
+  }
+
   return json<Ok<Announcement>>({ ok: true, data: a }, 201);
 }

@@ -22,6 +22,7 @@ import {
   resolveChurchPastorUserId,
 } from "@/app/api/_lib/churchPastor";
 import { resolveCanDeleteChurchActivityPost } from "@/app/api/_lib/churchActivityDelete";
+import { notifyChurchFeedPostPublished } from "@/app/api/_lib/churchContentNotifications";
 import {
   isChurchSubscriptionActive,
   requireChurchSubscriptionActive,
@@ -4406,6 +4407,32 @@ async function handleFeedPost(req: NextRequest, body: any) {
   });
 
   await upsertFeedItem(item);
+
+  if (!isIncomingMediaScheduleCreate(body)) {
+    try {
+      const notified = await notifyChurchFeedPostPublished({
+        churchId,
+        postId: String(item.id),
+        authorUserId: viewerUserId,
+        item,
+        body,
+        actorName: actorLabel,
+      });
+      if (notified > 0) {
+        console.log("KRISTO_FEED_POST_NOTIFY", {
+          postId: item.id,
+          churchId,
+          notified,
+        });
+      }
+    } catch (notifyError: any) {
+      console.log("KRISTO_FEED_POST_NOTIFY_FAILED", {
+        postId: item.id,
+        churchId,
+        message: String(notifyError?.message || notifyError),
+      });
+    }
+  }
 
   if (isIncomingMediaScheduleCreate(body)) {
     const savedFirstSlot = Array.isArray(enrichedScheduleSlots) && enrichedScheduleSlots[0]

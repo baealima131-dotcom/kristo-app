@@ -26,6 +26,10 @@ export type NotificationType =
   | "ContentReportReceived"
   | "ContentAutoHiddenAdmin"
   | "ContentAutoHiddenAuthor"
+  | "ChurchAnnouncementPosted"
+  | "ChurchTestimonyPosted"
+  | "ChurchPrayerRequestPosted"
+  | "ChurchMediaPosted"
   | "Generic";
 
 export type AppNotification = {
