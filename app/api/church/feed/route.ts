@@ -3581,52 +3581,73 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     if (!slotId) return err("slotId is required", 400);
 
-    const targetIndex = slots.findIndex((slot: any) => String(slot?.id || "") === String(slotId));
+    const MIN_SLOT_DURATION_MIN = 5;
+
+    function sortSlotsChronologically(list: any[]) {
+      return [...list].sort((a, b) => {
+        const aStart = parseMediaScheduleSlotStartMs(a);
+        const bStart = parseMediaScheduleSlotStartMs(b);
+        if (aStart !== bStart) return aStart - bStart;
+        return String(a?.id || "").localeCompare(String(b?.id || ""));
+      });
+    }
+
+    const ordered = sortSlotsChronologically(slots);
+    const targetIndex = ordered.findIndex((slot: any) => String(slot?.id || "") === String(slotId));
     if (targetIndex < 0) return err("Slot not found", 404);
 
-    let previousEnd = "";
+    const target = ordered[targetIndex];
+    const startMs = parseMediaScheduleSlotStartMs(target);
+    const currentEndMs = parseMediaScheduleSlotEndMs(target, startMs);
+    if (!(startMs > 0 && currentEndMs > startMs)) {
+      return err("Slot time window is missing", 409);
+    }
 
-    const updated = slots.map((slot: any, index: number) => {
-      const current = { ...slot };
+    const currentDurationMin = Math.max(
+      MIN_SLOT_DURATION_MIN,
+      Math.round((currentEndMs - startMs) / 60000)
+    );
+    if (minutes < 0 && currentDurationMin + minutes < MIN_SLOT_DURATION_MIN) {
+      return err(`Slots must stay at least ${MIN_SLOT_DURATION_MIN} minutes`, 409);
+    }
 
-      if (index < targetIndex) {
-        previousEnd = String(current.endTime || previousEnd || "");
-        return current;
-      }
-
-      if (index === targetIndex) {
-        const startTime = String(current.startTime || "");
-        const currentDuration = Number(current.durationMin || 1);
-        const nextDuration = Math.max(1, currentDuration + minutes);
-        const endTime = startTime ? addMinutesToClock(startTime, nextDuration) : current.endTime;
-        const timeLabel = startTime && endTime ? `${startTime} - ${endTime}` : current.timeLabel;
-
-        previousEnd = String(endTime || previousEnd || "");
-
-        return {
-          ...current,
-          durationMin: nextDuration,
-          endTime,
-          timeLabel,
-          manuallyModified: true,
-        };
-      }
-
-      const duration = Number(current.durationMin || 1);
-      const startTime = previousEnd || current.startTime;
-      const endTime = startTime ? addMinutesToClock(startTime, duration) : current.endTime;
-      const timeLabel = startTime && endTime ? `${startTime} - ${endTime}` : current.timeLabel;
-      previousEnd = String(endTime || previousEnd || "");
-
-      return {
-        ...current,
-        startTime,
-        endTime,
-        timeLabel,
-      };
+    const nextEndMs = Math.max(
+      startMs + MIN_SLOT_DURATION_MIN * 60000,
+      currentEndMs + minutes * 60000
+    );
+    ordered[targetIndex] = enrichMediaScheduleSlotTimes({
+      ...target,
+      startMs,
+      endMs: nextEndMs,
+      durationMin: Math.max(MIN_SLOT_DURATION_MIN, Math.round((nextEndMs - startMs) / 60000)),
+      manuallyModified: true,
     });
 
-    const updatedItem = { ...item, scheduleSlots: updated };
+    for (let index = targetIndex + 1; index < ordered.length; index++) {
+      const prev = ordered[index - 1];
+      const prevEnd = parseMediaScheduleSlotEndMs(prev, parseMediaScheduleSlotStartMs(prev));
+      const current = ordered[index];
+      const curStart = parseMediaScheduleSlotStartMs(current);
+      const curEnd = parseMediaScheduleSlotEndMs(current, curStart);
+      const durationMin = Math.max(
+        MIN_SLOT_DURATION_MIN,
+        curEnd > curStart
+          ? Math.round((curEnd - curStart) / 60000)
+          : Number(current?.durationMin || MIN_SLOT_DURATION_MIN)
+      );
+      ordered[index] = enrichMediaScheduleSlotTimes({
+        ...current,
+        startMs: prevEnd,
+        endMs: prevEnd + durationMin * 60000,
+        durationMin,
+      });
+    }
+
+    const byId = new Map(ordered.map((slot: any) => [String(slot?.id || ""), slot]));
+    const updated = slots.map((slot: any) => byId.get(String(slot?.id || "")) || slot);
+    const enrichedUpdated = updated.map(enrichMediaScheduleSlotTimes);
+
+    const updatedItem = { ...item, scheduleSlots: enrichedUpdated };
     await upsertFeedItem(updatedItem);
     bumpMediaScheduleSyncForFeedItem(updatedItem, "update-schedule-slots");
 
@@ -3636,10 +3657,12 @@ async function handleFeedPost(req: NextRequest, body: any) {
       editorName: actorLabel,
       editorAppRole: viewerAppRole,
       ministryId,
-      slotLabel: formatScheduleSlotLabel(updated[targetIndex]),
+      slotLabel: formatScheduleSlotLabel(
+        enrichedUpdated.find((slot: any) => String(slot?.id || "") === String(slotId))
+      ),
     });
 
-    return ok({ postId, slotId, slots: updated, slot: updated[targetIndex] });
+    return ok({ postId, slotId, slots: enrichedUpdated, slot: enrichedUpdated.find((slot: any) => String(slot?.id || "") === String(slotId)) });
   }
 
   if (action === "claim_schedule_slot") {

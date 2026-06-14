@@ -640,3 +640,223 @@ export function resolveCanonicalMediaScheduleForGuests(
 
   return backendActive || homeActive || null;
 }
+
+export function deriveMediaSlotDurationMin(slot: any) {
+  const window = resolveMediaSlotTimeWindow(slot);
+  if (window.endMs > window.startMs) {
+    return Math.max(1, Math.round((window.endMs - window.startMs) / 60000));
+  }
+  return Math.max(0, Number(slot?.durationMin || slot?.durationMinutes || 0));
+}
+
+export function summarizeGuestClaimSlotForLog(slot: any, order = 0) {
+  const window = resolveMediaSlotTimeWindow(slot);
+  return {
+    order,
+    slotId: String(slot?.id || ""),
+    startMs: window.startMs || null,
+    endMs: window.endMs || null,
+    startsAt: String(slot?.startsAt || "").trim() || null,
+    endsAt: String(slot?.endsAt || "").trim() || null,
+    startTime: String(slot?.startTime || "").trim() || null,
+    endTime: String(slot?.endTime || "").trim() || null,
+    durationMin: deriveMediaSlotDurationMin(slot),
+    slotOrder: Number(slot?.order || slot?.slot || slot?.slotNumber || 0) || null,
+  };
+}
+
+export function sortSlotsForGuestClaimCenter(slots: any[], nowMs = Date.now()) {
+  return [...slots].sort((a: any, b: any) => {
+    const da = resolveMediaSlotTimeWindow(a, nowMs);
+    const db = resolveMediaSlotTimeWindow(b, nowMs);
+
+    const aStart = Number(da?.startMs || 0);
+    const bStart = Number(db?.startMs || 0);
+
+    const aEnd =
+      Number(da?.endMs || 0) ||
+      (aStart ? aStart + Math.max(1, deriveMediaSlotDurationMin(a)) * 60 * 1000 : 0);
+
+    const bEnd =
+      Number(db?.endMs || 0) ||
+      (bStart ? bStart + Math.max(1, deriveMediaSlotDurationMin(b)) * 60 * 1000 : 0);
+
+    const rank = (start: number, end: number) => {
+      if (start && end && nowMs >= start && nowMs <= end) return 0;
+      if (end && nowMs > end) return 2;
+      return 1;
+    };
+
+    const ar = rank(aStart, aEnd);
+    const br = rank(bStart, bEnd);
+
+    if (ar !== br) return ar - br;
+    if (ar === 2) return bEnd - aEnd;
+    return aStart - bStart;
+  });
+}
+
+function sortSlotsChronologically(slots: any[]) {
+  return [...slots].sort((a, b) => {
+    const wa = resolveMediaSlotTimeWindow(a);
+    const wb = resolveMediaSlotTimeWindow(b);
+    const startDiff = wa.startMs - wb.startMs;
+    if (startDiff !== 0) return startDiff;
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+  });
+}
+
+export function materializeMediaSlotTimeFields(slot: any) {
+  const window = resolveMediaSlotTimeWindow(slot);
+  const startMs = Number(slot?.startMs || window.startMs || 0);
+  let endMs = Number(slot?.endMs || window.endMs || 0);
+  if (!(startMs > 0 && endMs > startMs)) {
+    return { ...slot };
+  }
+
+  const durationMin = Math.max(1, Math.round((endMs - startMs) / 60000));
+  endMs = startMs + durationMin * 60000;
+  const startTime = formatClockFromMs(startMs);
+  const endTime = formatClockFromMs(endMs);
+
+  return {
+    ...slot,
+    startMs,
+    endMs,
+    startsAt: new Date(startMs).toISOString(),
+    endsAt: new Date(endMs).toISOString(),
+    meetingDate: formatLocalMeetingDateFromMs(startMs),
+    meetingEndDate: formatLocalMeetingDateFromMs(endMs),
+    meetingDay: formatMeetingDayLabel(startMs) || String(slot?.meetingDay || "").trim(),
+    startTime,
+    endTime,
+    timeLabel: `${startTime} - ${endTime}`,
+    durationMin,
+    durationMinutes: durationMin,
+  };
+}
+
+function cascadeMediaScheduleSlotsFromIndex(slots: any[], fromIndex: number) {
+  const out = slots.map((slot) => ({ ...slot }));
+  for (let i = Math.max(0, fromIndex + 1); i < out.length; i++) {
+    const prev = materializeMediaSlotTimeFields(out[i - 1]);
+    out[i - 1] = prev;
+    const prevEnd = Number(prev.endMs || 0);
+    if (!prevEnd) continue;
+
+    const cur = out[i];
+    const curWindow = resolveMediaSlotTimeWindow(cur);
+    const durationMin = Math.max(
+      1,
+      deriveMediaSlotDurationMin(cur) ||
+        (curWindow.endMs > curWindow.startMs
+          ? Math.round((curWindow.endMs - curWindow.startMs) / 60000)
+          : 1)
+    );
+
+    out[i] = materializeMediaSlotTimeFields({
+      ...cur,
+      startMs: prevEnd,
+      endMs: prevEnd + durationMin * 60000,
+      durationMin,
+      manuallyModified: true,
+    });
+  }
+  return out;
+}
+
+export function applyGuestClaimDurationDelta(
+  slots: any[],
+  slotId: string,
+  minutesDelta: number,
+  minDurationMin = 5
+) {
+  const ordered = sortSlotsChronologically(slots);
+  const targetIdx = ordered.findIndex((slot) => String(slot?.id || "") === String(slotId));
+  if (targetIdx < 0) return { slots, changed: false };
+
+  const target = ordered[targetIdx];
+  const window = resolveMediaSlotTimeWindow(target);
+  if (!(window.startMs > 0 && window.endMs > window.startMs)) {
+    return { slots, changed: false };
+  }
+
+  const nextEndMs = Math.max(
+    window.startMs + minDurationMin * 60000,
+    window.endMs + minutesDelta * 60000
+  );
+
+  ordered[targetIdx] = materializeMediaSlotTimeFields({
+    ...target,
+    startMs: window.startMs,
+    endMs: nextEndMs,
+    manuallyModified: true,
+  });
+
+  const cascaded = cascadeMediaScheduleSlotsFromIndex(ordered, targetIdx);
+  const byId = new Map(cascaded.map((slot) => [String(slot?.id || ""), slot]));
+  return {
+    slots: slots.map((slot) => byId.get(String(slot?.id || "")) || slot),
+    changed: true,
+  };
+}
+
+const GUEST_CLAIM_SLOT_TIME_KEYS = [
+  "startMs",
+  "endMs",
+  "startsAt",
+  "endsAt",
+  "meetingDate",
+  "meetingEndDate",
+  "meetingDay",
+  "startTime",
+  "endTime",
+  "timeLabel",
+  "durationMin",
+  "durationMinutes",
+] as const;
+
+function extractGuestClaimSlotTimeFields(slot: any) {
+  const out: Record<string, unknown> = {};
+  for (const key of GUEST_CLAIM_SLOT_TIME_KEYS) {
+    if (slot?.[key] !== undefined) out[key] = slot[key];
+  }
+  return out;
+}
+
+export function swapGuestClaimSlotTimesWithNeighbor(
+  slots: any[],
+  slotId: string,
+  direction: "up" | "down",
+  nowMs = Date.now()
+) {
+  const ordered = sortSlotsForGuestClaimCenter(slots, nowMs);
+  const fromIdx = ordered.findIndex((slot) => String(slot?.id || "") === String(slotId));
+  const toIdx = direction === "up" ? fromIdx - 1 : fromIdx + 1;
+  if (fromIdx < 0 || toIdx < 0 || toIdx >= ordered.length) {
+    return { slots, changed: false, fromIdx, toIdx: -1, neighborSlotId: "" };
+  }
+
+  const idA = String(ordered[fromIdx]?.id || "");
+  const idB = String(ordered[toIdx]?.id || "");
+  const byId = new Map(slots.map((slot) => [String(slot?.id || ""), { ...slot }]));
+  const slotA = byId.get(idA);
+  const slotB = byId.get(idB);
+  if (!slotA || !slotB) {
+    return { slots, changed: false, fromIdx, toIdx, neighborSlotId: idB };
+  }
+
+  const aTimes = extractGuestClaimSlotTimeFields(slotA);
+  const bTimes = extractGuestClaimSlotTimeFields(slotB);
+
+  byId.set(idA, materializeMediaSlotTimeFields({ ...slotA, ...bTimes }));
+  byId.set(idB, materializeMediaSlotTimeFields({ ...slotB, ...aTimes }));
+
+  return {
+    slots: slots.map((slot) => byId.get(String(slot?.id || "")) || slot),
+    changed: true,
+    fromIdx,
+    toIdx,
+    neighborSlotId: idB,
+  };
+}
