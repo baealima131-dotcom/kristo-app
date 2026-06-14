@@ -28,7 +28,8 @@ import {
   getSubscriptionOfferings,
   getCustomerSubscriptionInfo,
   getEffectiveSubscriptionState,
-  hasRealActiveEntitlement,
+  hasPremiumEntitlement,
+  logEntitlementAudit,
   openSubscriptionManagement,
   resolveMonthlyPackage,
   resolveYearlyPackage,
@@ -141,12 +142,12 @@ export default function PaymentsSubscriptionsScreen() {
         setYearlyPackage(yearly);
         setCustomerInfo(infoResult);
 
-        const hasRealEntitlement = hasRealActiveEntitlement(infoResult);
+        const hasPremium = hasPremiumEntitlement(infoResult);
         if (infoResult) {
           const effective = getEffectiveSubscriptionState(infoResult);
           setSubscriptionSelectedPlan(effective.selectedPlan);
         }
-        setSubscriptionPlanStatus(hasRealEntitlement ? "active" : "expired");
+        setSubscriptionPlanStatus(hasPremium ? "active" : "expired");
 
         logChurchSubscriptionContext({
           screen: "subscriptions",
@@ -154,6 +155,11 @@ export default function PaymentsSubscriptionsScreen() {
           customerInfo: infoResult,
           churchSubscriptionActive: server.subscriptionActive,
           canUseMediaTools: server.canUseMediaTools,
+        });
+        logEntitlementAudit({
+          customerInfo: infoResult,
+          churchId: resolvedChurchId,
+          source: "subscriptions-boot",
         });
 
         if (!monthly && !yearly) {
@@ -188,12 +194,12 @@ export default function PaymentsSubscriptionsScreen() {
 
   async function refreshAfterCustomerInfoChange(info: CustomerInfo | null) {
     setCustomerInfo(info);
-    const hasRealEntitlement = hasRealActiveEntitlement(info);
+    const hasPremium = hasPremiumEntitlement(info);
     if (info) {
       const effective = getEffectiveSubscriptionState(info);
       setSubscriptionSelectedPlan(effective.selectedPlan);
     }
-    setSubscriptionPlanStatus(hasRealEntitlement ? "active" : "expired");
+    setSubscriptionPlanStatus(hasPremium ? "active" : "expired");
 
     if (!churchId) return;
     const headers = getKristoHeaders({
@@ -241,9 +247,9 @@ export default function PaymentsSubscriptionsScreen() {
   }
 
   const currentPlan = paymentsState.subscriptions.selectedPlan;
-  const hasRealEntitlement = hasRealActiveEntitlement(customerInfo);
+  const hasPremium = hasPremiumEntitlement(customerInfo);
   const churchSubscriptionActive =
-    serverStatus.subscriptionActive || hasRealEntitlement;
+    serverStatus.subscriptionActive || hasPremium;
   const showActivePrimaryScreen = churchSubscriptionActive;
 
   const activePlanKey: SubscriptionPlanKey = (() => {

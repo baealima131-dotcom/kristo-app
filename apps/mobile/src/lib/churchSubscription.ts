@@ -9,11 +9,12 @@ import {
 import { refreshChurchMediaIfNeeded } from "./churchResourceRefresh";
 import { refreshChurchMediaAccess } from "./refreshCoordinator";
 import {
-  CHURCH_PREMIUM_ENTITLEMENT,
   describeCustomerInfoSubscriptionDebug,
+  getActivePremiumEntitlement,
   getCustomerSubscriptionInfo,
   getRevenueCatConfiguredAppUserId,
-  hasRealActiveEntitlement,
+  hasPremiumEntitlement,
+  logEntitlementAudit,
   logInRevenueCatForChurchSubscription,
   refreshCustomerInfoAfterStorePurchase,
 } from "./payments/mobileSubscriptions";
@@ -262,6 +263,11 @@ export function logChurchSubscriptionContext(args: {
   const churchId = String(args.churchId || "").trim();
   const revenueCatAppUserId = getRevenueCatConfiguredAppUserId();
   const rcDebug = describeCustomerInfoSubscriptionDebug(args.customerInfo);
+  logEntitlementAudit({
+    customerInfo: args.customerInfo,
+    churchId,
+    source: `church-subscription-context:${args.screen}`,
+  });
 
   console.log("KRISTO_CHURCH_SUBSCRIPTION_CONTEXT", {
     screen: args.screen,
@@ -270,11 +276,12 @@ export function logChurchSubscriptionContext(args: {
     churchIdMatchesRcAppUserId: Boolean(churchId && revenueCatAppUserId === churchId),
     activeEntitlementKeys: rcDebug.activeEntitlementKeys,
     activeProductIdentifiers: rcDebug.activeProductIdentifiers,
+    detectedEntitlement: rcDebug.detectedEntitlement,
+    hasPremiumEntitlement: rcDebug.hasPremiumEntitlement,
     hasRealEntitlement: rcDebug.hasRealEntitlement,
     hasActivePremiumProduct: rcDebug.hasActivePremiumProduct,
     serverChurchSubscriptionActive: args.churchSubscriptionActive === true,
     canUseMediaTools: args.canUseMediaTools === true,
-    entitlementId: CHURCH_PREMIUM_ENTITLEMENT,
     note: "RevenueCat App User ID is churchId — subscription is per church, not per user.",
   });
 }
@@ -405,7 +412,7 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
 
   const churchCustomerInfo = await logInRevenueCatForChurchSubscription(churchId);
   let info: CustomerInfo | null = churchCustomerInfo ?? args.initialCustomerInfo ?? null;
-  let entitlementActive = hasRealActiveEntitlement(info);
+  let entitlementActive = hasPremiumEntitlement(info);
   let churchActivated = false;
   const shouldAttemptChurchActivation =
     isPastor && (entitlementActive || purchaseConfirmed);
@@ -470,7 +477,7 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
     if (!info) {
       try {
         info = await getCustomerSubscriptionInfo();
-        entitlementActive = hasRealActiveEntitlement(info);
+        entitlementActive = hasPremiumEntitlement(info);
       } catch (error: any) {
         console.log("KRISTO_RC_CUSTOMER_INFO_REFRESH_FAILED", {
           mode: "quick",
@@ -497,7 +504,7 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
   }
 
   if (entitlementActive) {
-    const churchPremium = info?.entitlements.active[CHURCH_PREMIUM_ENTITLEMENT];
+    const churchPremium = getActivePremiumEntitlement(info);
     console.log("KRISTO_SUBSCRIPTION_ENTITLEMENT_ACTIVE", {
       churchId,
       userId,
@@ -577,7 +584,7 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
         entitlementActive,
       });
       if (entitlementActive) {
-        const churchPremium = info.entitlements.active[CHURCH_PREMIUM_ENTITLEMENT];
+        const churchPremium = getActivePremiumEntitlement(info);
         console.log("KRISTO_SUBSCRIPTION_ENTITLEMENT_ACTIVE", {
           churchId,
           userId,

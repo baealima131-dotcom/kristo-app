@@ -14,12 +14,15 @@
 
 import {
   CHURCH_PREMIUM_ENTITLEMENT,
+  CHURCH_PREMIUM_ENTITLEMENT_IDS,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "@/lib/churchPremiumRevenueCat";
 
 export {
   CHURCH_PREMIUM_ENTITLEMENT,
+  CHURCH_PREMIUM_ENTITLEMENT_IDS,
+  LEGACY_PREMIUM_ENTITLEMENT,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "@/lib/churchPremiumRevenueCat";
@@ -75,7 +78,7 @@ function entitlementIsActive(expiresDate: unknown): boolean {
 
 /**
  * Verify the given RevenueCat app user id has an active church premium
- * entitlement (`CHURCH_PREMIUM_ENTITLEMENT`). For church premium, `appUserId` is the Kristo churchId (the app
+ * entitlement (`church_premium` or legacy `Premium`). For church premium, `appUserId` is the Kristo churchId (the app
  * calls `Purchases.logIn(churchId)`), so the server looks the subscriber up by church.
  */
 export async function verifyChurchPremiumEntitlement(
@@ -139,7 +142,32 @@ export async function verifyChurchPremiumEntitlement(
     }
 
     const data: any = await res.json().catch(() => ({}));
-    const entitlement = data?.subscriber?.entitlements?.[CHURCH_PREMIUM_ENTITLEMENT];
+    const entitlements = data?.subscriber?.entitlements || {};
+    const activeEntitlementKeys = Object.keys(entitlements);
+
+    let detectedEntitlement: string | null = null;
+    let entitlement: any = null;
+    for (const id of CHURCH_PREMIUM_ENTITLEMENT_IDS) {
+      const candidate = entitlements[id];
+      if (!candidate) continue;
+      if (entitlementIsActive(candidate.expires_date)) {
+        detectedEntitlement = id;
+        entitlement = candidate;
+        break;
+      }
+      if (!entitlement) {
+        detectedEntitlement = id;
+        entitlement = candidate;
+      }
+    }
+
+    console.log("KRISTO_ENTITLEMENT_AUDIT", {
+      source: "server-verifyChurchPremiumEntitlement",
+      activeEntitlementKeys,
+      detectedEntitlement,
+      hasPremiumEntitlement: Boolean(detectedEntitlement && entitlementIsActive(entitlement?.expires_date)),
+      currentChurchId: uid,
+    });
 
     if (!entitlement) {
       return {

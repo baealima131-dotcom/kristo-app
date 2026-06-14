@@ -17,6 +17,10 @@ import {
 import { shouldEnableRevenueCatDebug } from "../kristoDebugFlags";
 import {
   CHURCH_PREMIUM_ENTITLEMENT,
+  CHURCH_PREMIUM_ENTITLEMENT_IDS,
+  detectPremiumEntitlementKey,
+  isChurchPremiumEntitlementId,
+  LEGACY_PREMIUM_ENTITLEMENT,
   PREMIUM_MONTHLY_INTRO_TRIAL_DAYS,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
@@ -24,6 +28,8 @@ import {
 
 export {
   CHURCH_PREMIUM_ENTITLEMENT,
+  CHURCH_PREMIUM_ENTITLEMENT_IDS,
+  LEGACY_PREMIUM_ENTITLEMENT,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "./churchPremiumRevenueCat";
@@ -454,7 +460,7 @@ function sleepMs(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Poll RevenueCat after StoreKit purchase until `church_premium` appears. */
+/** Poll RevenueCat after StoreKit purchase until a premium entitlement appears. */
 export async function refreshCustomerInfoAfterStorePurchase(
   initialInfo?: CustomerInfo | null,
   opts?: { maxAttempts?: number; delayMs?: number }
@@ -463,7 +469,7 @@ export async function refreshCustomerInfoAfterStorePurchase(
   const delayMs = Math.max(0, opts?.delayMs ?? 1500);
 
   let info = initialInfo ?? (await getCustomerSubscriptionInfo());
-  let entitlementActive = hasRealActiveEntitlement(info);
+  let entitlementActive = hasPremiumEntitlement(info);
 
   for (let i = 0; i < maxAttempts && !entitlementActive; i++) {
     try {
@@ -473,7 +479,7 @@ export async function refreshCustomerInfoAfterStorePurchase(
     }
     await sleepMs(delayMs);
     info = await getCustomerSubscriptionInfo();
-    entitlementActive = hasRealActiveEntitlement(info);
+    entitlementActive = hasPremiumEntitlement(info);
   }
 
   return { info, entitlementActive };
@@ -493,12 +499,56 @@ export async function getCustomerSubscriptionInfo(): Promise<CustomerInfo> {
   return runRevenueCatNativeStep("CUSTOMER_INFO", () => Purchases.getCustomerInfo());
 }
 
+export function getActiveEntitlementKeys(
+  customerInfo: CustomerInfo | null | undefined
+): string[] {
+  return Object.keys(customerInfo?.entitlements?.active || {});
+}
+
+export { detectPremiumEntitlementKey } from "./churchPremiumRevenueCat";
+
+/** Single source of truth: Premium or church_premium from RevenueCat. */
+export function hasPremiumEntitlement(
+  customerInfo: CustomerInfo | null | undefined
+): boolean {
+  return detectPremiumEntitlementKey(getActiveEntitlementKeys(customerInfo)) !== null;
+}
+
+export function getActivePremiumEntitlement(
+  customerInfo: CustomerInfo | null | undefined
+) {
+  const active = customerInfo?.entitlements?.active || {};
+  for (const id of CHURCH_PREMIUM_ENTITLEMENT_IDS) {
+    if (active[id]) return active[id];
+  }
+  return null;
+}
+
+export function logEntitlementAudit(args: {
+  customerInfo?: CustomerInfo | null;
+  churchId?: string | null;
+  source?: string;
+}) {
+  const activeEntitlementKeys = getActiveEntitlementKeys(args.customerInfo);
+  const detectedEntitlement = detectPremiumEntitlementKey(activeEntitlementKeys);
+  console.log("KRISTO_ENTITLEMENT_AUDIT", {
+    source: args.source || null,
+    activeEntitlementKeys,
+    detectedEntitlement,
+    hasPremiumEntitlement: hasPremiumEntitlement(args.customerInfo),
+    currentChurchId: String(args.churchId || "").trim() || null,
+  });
+}
+
 export function hasActiveEntitlement(
   customerInfo: CustomerInfo,
-  entitlementId = CHURCH_PREMIUM_ENTITLEMENT
+  entitlementId?: string
 ) {
   if (isSubscriptionBypassEnabled()) return true;
-  return Boolean(customerInfo.entitlements.active[entitlementId]);
+  if (entitlementId && !isChurchPremiumEntitlementId(entitlementId)) {
+    return Boolean(customerInfo.entitlements.active[entitlementId]);
+  }
+  return hasPremiumEntitlement(customerInfo);
 }
 
 /**
@@ -508,9 +558,12 @@ export function hasActiveEntitlement(
  */
 export function hasRealActiveEntitlement(
   customerInfo: CustomerInfo | null | undefined,
-  entitlementId = CHURCH_PREMIUM_ENTITLEMENT
+  entitlementId?: string
 ) {
-  return Boolean(customerInfo?.entitlements?.active?.[entitlementId]);
+  if (entitlementId && !isChurchPremiumEntitlementId(entitlementId)) {
+    return Boolean(customerInfo?.entitlements?.active?.[entitlementId]);
+  }
+  return hasPremiumEntitlement(customerInfo);
 }
 
 function isPremiumProductIdentifier(productId: string): boolean {
@@ -596,7 +649,9 @@ export function describeCustomerInfoSubscriptionDebug(
   return {
     activeEntitlementKeys,
     activeProductIdentifiers: [...activeProductIdentifiers],
-    hasRealEntitlement: hasRealActiveEntitlement(customerInfo),
+    detectedEntitlement: detectPremiumEntitlementKey(activeEntitlementKeys),
+    hasPremiumEntitlement: hasPremiumEntitlement(customerInfo),
+    hasRealEntitlement: hasPremiumEntitlement(customerInfo),
     hasActivePremiumProduct: hasActivePremiumProduct(customerInfo),
   };
 }
@@ -648,7 +703,7 @@ export function resolveChurchPremiumRenewalDate(
 ): Date | null {
   if (!customerInfo) return null;
 
-  const entitlement = customerInfo.entitlements?.active?.[CHURCH_PREMIUM_ENTITLEMENT];
+  const entitlement = getActivePremiumEntitlement(customerInfo);
   const raw =
     entitlement?.expirationDate ||
     customerInfo.latestExpirationDate ||
@@ -720,8 +775,8 @@ export function resolveActiveSubscriptionPlan(
     return null;
   }
 
-  const churchPremium = customerInfo.entitlements.active[CHURCH_PREMIUM_ENTITLEMENT];
-  const productId = String(churchPremium?.productIdentifier || "").trim();
+  const premiumEntitlement = getActivePremiumEntitlement(customerInfo);
+  const productId = String(premiumEntitlement?.productIdentifier || "").trim();
 
   if (!productId) {
     return null;
@@ -872,7 +927,7 @@ export function isEligibleForMonthlyIntroTrial(
   customerInfo: CustomerInfo | null | undefined
 ): boolean {
   if (!customerInfo) return true;
-  if (hasRealActiveEntitlement(customerInfo)) return false;
+  if (hasPremiumEntitlement(customerInfo)) return false;
 
   const purchased = customerInfo.allPurchasedProductIdentifiers ?? [];
   if (
@@ -882,7 +937,8 @@ export function isEligibleForMonthlyIntroTrial(
     return false;
   }
 
-  if (customerInfo.entitlements?.all?.[CHURCH_PREMIUM_ENTITLEMENT]) {
+  const allEntitlements = customerInfo.entitlements?.all || {};
+  if (CHURCH_PREMIUM_ENTITLEMENT_IDS.some((id) => Boolean(allEntitlements[id]))) {
     return false;
   }
 

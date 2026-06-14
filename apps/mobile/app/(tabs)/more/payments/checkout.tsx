@@ -28,8 +28,8 @@ import {
   getSubscriptionOfferings,
   getCustomerSubscriptionInfo,
   getEffectiveSubscriptionState,
-  hasRealActiveEntitlement,
-  hasActivePremiumProduct,
+  hasPremiumEntitlement,
+  logEntitlementAudit,
   logInRevenueCatForChurchSubscription,
   resolvePremiumPlanFromCustomerInfo,
   fetchMonthlyIntroTrialEligibility,
@@ -227,7 +227,7 @@ export default function PaymentsCheckoutScreen() {
         setYearlyPackage(yearly);
         setCustomerInfo(info);
         logMonthlyIntroOfferFromStoreKit(monthly);
-        setSubscriptionPlanStatus(hasRealActiveEntitlement(info) ? "active" : "expired");
+        setSubscriptionPlanStatus(hasPremiumEntitlement(info) ? "active" : "expired");
 
         logChurchSubscriptionContext({
           screen: "checkout",
@@ -235,6 +235,11 @@ export default function PaymentsCheckoutScreen() {
           customerInfo: info,
           churchSubscriptionActive: server.subscriptionActive,
           canUseMediaTools: server.canUseMediaTools,
+        });
+        logEntitlementAudit({
+          customerInfo: info,
+          churchId,
+          source: "checkout-boot",
         });
 
         try {
@@ -247,7 +252,7 @@ export default function PaymentsCheckoutScreen() {
         }
 
         const planPackage = safePlan === "monthly" ? monthly : yearly;
-        if (!planPackage && !hasRealActiveEntitlement(info)) {
+        if (!planPackage && !hasPremiumEntitlement(info)) {
           setPackagesError(
             "App Store packages are still loading. Tap retry in a moment."
           );
@@ -283,26 +288,22 @@ export default function PaymentsCheckoutScreen() {
   const monthlyTrialEligible =
     safePlan === "monthly" &&
     resolveMonthlyIntroTrialEligible(customerInfo, monthlyPackage, monthlyIntroEligibility);
-  const hasRealEntitlement = hasRealActiveEntitlement(customerInfo);
-  const hasActivePremiumProductFlag = hasActivePremiumProduct(customerInfo);
-  const isSubscribedForCurrentChurch =
-    hasRealEntitlement || hasActivePremiumProductFlag || serverSubscriptionActive;
+  const hasPremium = hasPremiumEntitlement(customerInfo);
+  const isSubscribedForCurrentChurch = hasPremium || serverSubscriptionActive;
   const isPastor = isPastorSessionRole(sessionRole);
 
   useEffect(() => {
     console.log("KRISTO_CHECKOUT_SUBSCRIBED_STATE", {
       checkoutChurchId,
       isSubscribedForCurrentChurch,
-      hasRealEntitlement,
-      hasActivePremiumProduct: hasActivePremiumProductFlag,
+      hasPremiumEntitlement: hasPremium,
       serverSubscriptionActive,
       isPastor,
     });
   }, [
     checkoutChurchId,
     isSubscribedForCurrentChurch,
-    hasRealEntitlement,
-    hasActivePremiumProductFlag,
+    hasPremium,
     serverSubscriptionActive,
     isPastor,
   ]);
@@ -333,7 +334,7 @@ export default function PaymentsCheckoutScreen() {
 
   async function handleSyncMediaTools() {
     if (submitting || !isPastor) return;
-    if (!isSubscribedForCurrentChurch && !hasActivePremiumProductFlag) return;
+    if (!isSubscribedForCurrentChurch) return;
 
     try {
       setSubmitting(true);
@@ -381,7 +382,6 @@ export default function PaymentsCheckoutScreen() {
 
   async function handleConfirmCheckout() {
     if (submitting || isSubscribedForCurrentChurch) return;
-    if (isPastor && hasActivePremiumProductFlag) return;
 
     if (!targetPackage) {
       setPackagesError(
@@ -411,11 +411,17 @@ export default function PaymentsCheckoutScreen() {
 
       const activation = await maybeActivateChurchSubscription(resolvedPlan, initialInfo);
 
-      if (hasRealActiveEntitlement(initialInfo)) {
+      if (hasPremiumEntitlement(initialInfo)) {
         setSubscriptionPlanStatus("active");
       } else if (activation.canUseMediaTools || activation.churchSubscriptionActive) {
         setSubscriptionPlanStatus("active");
       }
+
+      logEntitlementAudit({
+        customerInfo: initialInfo,
+        churchId,
+        source: "checkout-purchase-success",
+      });
 
       const successMessage =
         resolvedPlan === "monthly"
@@ -456,7 +462,7 @@ export default function PaymentsCheckoutScreen() {
       setCustomerInfo(info);
       const effective = getEffectiveSubscriptionState(info);
       setSubscriptionSelectedPlan(effective.selectedPlan);
-      setSubscriptionPlanStatus(hasRealActiveEntitlement(info) ? "active" : "expired");
+      setSubscriptionPlanStatus(hasPremiumEntitlement(info) ? "active" : "expired");
     } catch (error: any) {
       Alert.alert(
         "Could not open subscriptions",
@@ -557,7 +563,7 @@ export default function PaymentsCheckoutScreen() {
           ) : null}
 
           <View style={s.ctaBlock}>
-            {isSubscribedForCurrentChurch || (isPastor && hasActivePremiumProductFlag) ? (
+            {isSubscribedForCurrentChurch ? (
               <>
                 {isPastor ? (
                   <Pressable
