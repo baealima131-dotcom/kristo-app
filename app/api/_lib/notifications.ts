@@ -23,6 +23,9 @@ export type NotificationType =
   | "MinistryMemberRoleChanged"
   | "MembershipRejected"
   | "ChurchProfileUpdated"
+  | "ContentReportReceived"
+  | "ContentAutoHiddenAdmin"
+  | "ContentAutoHiddenAuthor"
   | "Generic";
 
 export type AppNotification = {
@@ -70,7 +73,7 @@ export type ClientNotification = {
 export { resolveNotificationStoreMode };
 
 export async function createNotification(
-  input: Omit<AppNotification, "id" | "createdAt" | "isRead">
+  input: Omit<AppNotification, "id" | "createdAt" | "isRead"> & { id?: string }
 ): Promise<AppNotification> {
   return dbCreateNotification(input);
 }

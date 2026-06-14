@@ -3,6 +3,7 @@ import { guardAuth } from "@/app/api/_lib/rbac";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
 import { getFeedItemById } from "@/app/api/_lib/store/feedDb";
 import { maybeAutoHideFeedItemByReports } from "@/app/api/_lib/feedReportModeration";
+import { notifyContentReportReceived } from "@/app/api/_lib/feedReportNotifications";
 import {
   createFeedReport,
   FEED_REPORT_REASONS,
@@ -151,6 +152,22 @@ export async function POST(req: NextRequest) {
     });
 
     if (churchId) {
+      try {
+        const notified = await notifyContentReportReceived({
+          churchId,
+          reportId: result.record.id,
+          postId,
+          reporterUserId: viewerUserId,
+        });
+        console.log("KRISTO_REPORT_NOTIFY_ADMINS", { postId, reportId: result.record.id, notified });
+      } catch (notifyError: any) {
+        console.log("KRISTO_REPORT_NOTIFY_FAILED", {
+          postId,
+          reportId: result.record.id,
+          message: String(notifyError?.message || notifyError),
+        });
+      }
+
       await maybeAutoHideFeedItemByReports({ postId, churchId });
     }
 

@@ -1,4 +1,5 @@
 import { getActiveMembership } from "@/app/api/_lib/memberships";
+import { notifyContentAutoHidden } from "@/app/api/_lib/feedReportNotifications";
 import { getFeedItemById, upsertFeedItem } from "@/app/api/_lib/store/feedDb";
 import {
   FEED_REPORT_REASONS,
@@ -336,6 +337,14 @@ export async function maybeAutoHideFeedItemByReports(args: {
     [...new Set(subset.map((row) => String(row.reason || "").trim()).filter(Boolean))][0] ||
     summary.primaryReason;
 
+  const authorUserId = String(
+    (item as any)?.createdBy ||
+      (item as any)?.authorId ||
+      (item as any)?.actorUserId ||
+      (item as any)?.postedByUserId ||
+      ""
+  ).trim();
+
   await upsertFeedItem({
     ...item,
     hiddenByReports: true,
@@ -357,6 +366,26 @@ export async function maybeAutoHideFeedItemByReports(args: {
     minUniqueUsers: rule.minUniqueUsers,
     minUniqueChurches: rule.minUniqueChurches,
   });
+
+  try {
+    const notifyResult = await notifyContentAutoHidden({
+      churchId: cleanChurchId,
+      postId: cleanPostId,
+      feedItem: item,
+      authorUserId,
+    });
+    console.log("KRISTO_AUTO_HIDE_NOTIFY", {
+      postId: cleanPostId,
+      churchId: cleanChurchId,
+      ...notifyResult,
+    });
+  } catch (notifyError: any) {
+    console.log("KRISTO_AUTO_HIDE_NOTIFY_FAILED", {
+      postId: cleanPostId,
+      churchId: cleanChurchId,
+      message: String(notifyError?.message || notifyError),
+    });
+  }
 
   return {
     hidden: true,

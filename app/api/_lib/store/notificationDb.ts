@@ -143,16 +143,52 @@ async function readLocalNotifications(): Promise<AppNotification[]> {
   return Array.isArray(rows) ? rows : [];
 }
 
+export type CreateNotificationInput = Omit<AppNotification, "id" | "createdAt" | "isRead"> & {
+  id?: string;
+};
+
+export async function dbGetNotificationById(id: string): Promise<AppNotification | null> {
+  const notificationId = String(id || "").trim();
+  if (!notificationId) return null;
+  await ensureNotificationStoreReady();
+
+  if (usePostgres()) {
+    const sql = getSql();
+    const rows = await sql`
+      SELECT id, church_id, type, title, message,
+             actor_name, actor_user_id, actor_avatar_uri, actor_role,
+             ministry_id, ministry_member_id, target_user_id,
+             is_read, created_at, read_at
+      FROM kristo_notifications
+      WHERE id = ${notificationId}
+      LIMIT 1
+    `;
+    const row = (rows as NotificationRow[])[0];
+    return row ? rowToNotification(row) : null;
+  }
+
+  const all = await readLocalNotifications();
+  return all.find((n) => n.id === notificationId) ?? null;
+}
+
 export async function dbCreateNotification(
-  input: Omit<AppNotification, "id" | "createdAt" | "isRead">
+  input: CreateNotificationInput
 ): Promise<AppNotification> {
   await ensureNotificationStoreReady();
 
+  const requestedId = String(input.id || "").trim();
+  const notificationId = requestedId || newNotificationId();
+
+  if (requestedId) {
+    const existing = await dbGetNotificationById(notificationId);
+    if (existing) return existing;
+  }
+
   const n: AppNotification = {
-    id: newNotificationId(),
+    ...input,
+    id: notificationId,
     createdAt: nowIso(),
     isRead: false,
-    ...input,
   };
 
   if (usePostgres()) {
