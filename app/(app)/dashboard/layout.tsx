@@ -1,9 +1,12 @@
 // app/(app)/dashboard/layout.tsx
 import Link from "next/link";
 import type { ReactNode, CSSProperties } from "react";
+import { Suspense } from "react";
 import ChurchNav from "./_components/ChurchNav";
 import UserMenu from "./_components/UserMenu";
 import DashboardGate from "./_components/DashboardGate";
+
+export const dynamic = "force-dynamic";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   return (
@@ -45,7 +48,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
 
       {/* Content */}
       <main style={main}>
-        <DashboardGate />
+        <Suspense fallback={<div style={{ padding: 16, opacity: 0.75, fontSize: 13 }}>Loading...</div>}>
+          <DashboardGate />
+        </Suspense>
         <div style={content}>{children}</div>
       </main>
     </div>
