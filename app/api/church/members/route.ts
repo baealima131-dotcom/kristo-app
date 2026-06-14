@@ -207,7 +207,7 @@ export async function PATCH(req: NextRequest) {
       });
     }
 
-    createNotification({
+    await createNotification({
       churchId: ctxOrRes.churchId,
       type: "Generic",
       title: "Church membership updated",
@@ -222,7 +222,7 @@ export async function PATCH(req: NextRequest) {
   if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
 
   // ✅ notify the target user
-  createNotification({
+  await createNotification({
     churchId: ctxOrRes.churchId,
     type: "Generic",
     title: "Church role updated",

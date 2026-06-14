@@ -9,7 +9,6 @@ import {
   createNotification,
   toClientNotification,
   toClientNotifications,
-  type AppNotification,
   type NotificationType,
 } from "@/app/api/_lib/notifications";
 import { resolveActorFromViewer } from "@/app/api/_lib/notificationActor";
@@ -30,7 +29,7 @@ export async function GET(req: NextRequest) {
   const canSeeAllTargets =
     role === "Pastor" || role === "Church_Admin" || role === "System_Admin";
 
-  const items = listNotifications({
+  const items = await listNotifications({
     churchId: ctxOrRes.churchId,
     userId: ctxOrRes.viewer.userId,
     unreadOnly,
@@ -83,7 +82,7 @@ export async function POST(req: NextRequest) {
     return json({ ok: false, error: "Missing title" }, { status: 400 });
   }
 
-  const created = createNotification({
+  const created = await createNotification({
     churchId,
     type,
     title,
@@ -119,20 +118,20 @@ export async function PATCH(req: NextRequest) {
   const canSeeAllTargets =
     role === "Pastor" || role === "Church_Admin" || role === "System_Admin";
 
-  const visible = listNotifications({
+  const visible = await listNotifications({
     churchId: ctxOrRes.churchId,
     userId: ctxOrRes.viewer.userId,
     unreadOnly: false,
     limit: 5000,
     includeAllTargets: canSeeAllTargets,
-  }) as AppNotification[];
+  });
 
-  const found = Array.isArray(visible) ? visible.find((n) => String(n.id) === id) : null;
+  const found = visible.find((n) => String(n.id) === id) ?? null;
   if (!found) {
     return json({ ok: false, error: "Notification not found" }, { status: 404 });
   }
 
-  const updated = setRead(id, isRead);
+  const updated = await setRead(id, isRead);
   if (!updated) return json({ ok: false, error: "Notification not found" }, { status: 404 });
 
   const data = await toClientNotification(updated);
@@ -154,21 +153,21 @@ export async function DELETE(req: NextRequest) {
   const canSeeAllTargets =
     role === "Pastor" || role === "Church_Admin" || role === "System_Admin";
 
-  const visible = listNotifications({
+  const visible = await listNotifications({
     churchId: ctxOrRes.churchId,
     userId: ctxOrRes.viewer.userId,
     unreadOnly: false,
     limit: 5000,
     includeAllTargets: canSeeAllTargets,
-  }) as AppNotification[];
+  });
 
-  const found = Array.isArray(visible) ? visible.find((n) => String(n.id) === id) : null;
+  const found = visible.find((n) => String(n.id) === id) ?? null;
   if (!found) {
     return json({ ok: false, error: "Notification not found" }, { status: 404 });
   }
 
-  const removed = removeNotification(id);
+  const removed = await removeNotification(id);
   if (!removed) return json({ ok: false, error: "Notification not found" }, { status: 404 });
 
-  return json({ ok: true, data: removed as AppNotification });
+  return json({ ok: true, data: removed });
 }

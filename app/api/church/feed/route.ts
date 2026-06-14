@@ -2092,7 +2092,7 @@ async function notifyScheduleSlotEdit(args: {
   const message = `${args.editorName || args.editorUserId} edited ${args.slotLabel}`;
 
   for (const targetUserId of notifyIds) {
-    createNotification({
+    await createNotification({
       churchId: args.churchId,
       type: "Generic",
       title: "Schedule updated",

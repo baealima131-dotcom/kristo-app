@@ -173,13 +173,15 @@ export async function GET(req: NextRequest) {
   const canSeeAllTargets =
     role === "Pastor" || role === "Church_Admin" || role === "System_Admin";
 
-  const unreadNotifications = listNotifications({
-    churchId,
-    userId: ctxOrRes.viewer.userId,
-    unreadOnly: true,
-    limit: 9999,
-    includeAllTargets: canSeeAllTargets,
-  }).length;
+  const unreadNotifications = (
+    await listNotifications({
+      churchId,
+      userId: ctxOrRes.viewer.userId,
+      unreadOnly: true,
+      limit: 9999,
+      includeAllTargets: canSeeAllTargets,
+    })
+  ).length;
 
   return json({
     ok: true,

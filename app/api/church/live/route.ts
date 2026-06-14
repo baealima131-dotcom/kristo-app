@@ -374,7 +374,7 @@ export async function POST(req: Request) {
     for (const member of members) {
       if (!member.userId || member.userId === a.userId) continue;
 
-      createNotification({
+      await createNotification({
         churchId: a.churchId,
         targetUserId: member.userId,
         type: "Generic",

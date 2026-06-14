@@ -48,7 +48,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const r = await approveMembership(String(id), a.viewer.userId);
   if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
 
-  createNotification({
+  await createNotification({
     churchId: r.membership.churchId,
     type: "Generic",
     title: "Membership approved ✅",

@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const out = markAllRead({
+  const out = await markAllRead({
     churchId: ctxOrRes.churchId,
     userId: ctxOrRes.viewer.userId,
     includeAllTargets: all,

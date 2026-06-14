@@ -199,7 +199,7 @@ export async function PATCH(req: NextRequest) {
 
     for (const m of activeMembers) {
       if (!m.userId) continue;
-      addNotification({
+      await addNotification({
         churchId,
         type: "ChurchProfileUpdated",
         title: "Church profile updated",

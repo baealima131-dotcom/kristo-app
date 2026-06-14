@@ -36,7 +36,7 @@ export async function PATCH(req: NextRequest) {
     const r = await approveMembership(membershipId, a.viewer.userId);
     if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
 
-    createNotification({
+    await createNotification({
       churchId: r.membership.churchId,
       type: "Generic",
       title: "You joined a church",

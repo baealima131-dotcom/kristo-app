@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
   }
   if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
 
-  createNotification({
+  await createNotification({
     churchId: r.membership?.churchId || churchId,
     type: "Generic",
     title: "You left the church",

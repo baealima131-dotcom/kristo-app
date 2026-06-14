@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
       return json({ ok: false, error: "Membership not found or could not be updated" } satisfies ApiErr, { status: 404 });
     }
 
-    const notification = createNotification({
+    const notification = await createNotification({
       churchId,
       type: "Generic",
       title: "Role updated",

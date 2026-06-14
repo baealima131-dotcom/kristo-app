@@ -92,7 +92,7 @@ export async function POST(req: NextRequest) {
 
   r.membership.churchRole = role;
 
-  createNotification({
+  await createNotification({
     churchId: ctx.churchId,
     type: "Generic",
     title: "Church invite received",

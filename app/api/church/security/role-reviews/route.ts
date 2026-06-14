@@ -52,7 +52,7 @@ export async function PATCH(req: NextRequest) {
 
     let notification = null;
     if (userId) {
-      notification = createNotification({
+      notification = await createNotification({
         churchId,
         type: "Generic",
         title: status === "approved" ? "Role request approved" : "Role request denied",

@@ -12,6 +12,6 @@ export async function POST(req: NextRequest) {
   const ctxOrRes = await guard(req);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
-  const r = markAllRead({ churchId: ctxOrRes.churchId, userId: ctxOrRes.viewer.userId });
+  const r = await markAllRead({ churchId: ctxOrRes.churchId, userId: ctxOrRes.viewer.userId });
   return json({ ok: true, ...r });
 }

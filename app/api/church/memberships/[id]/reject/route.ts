@@ -51,7 +51,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const r = await rejectMembership(String(id), a.viewer.userId, note);
   if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
 
-  createNotification({
+  await createNotification({
     churchId: r.membership.churchId,
     targetUserId: r.membership.userId,
     type: "MembershipRejected",

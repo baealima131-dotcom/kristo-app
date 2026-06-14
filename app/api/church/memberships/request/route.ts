@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
   if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
 
   // ✅ Notify requester
-  createNotification({
+  await createNotification({
     churchId,
     type: "Generic",
     title: "Membership request sent",
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   );
 
   for (const p of approvers) {
-    createNotification({
+    await createNotification({
       churchId,
       type: "Generic",
       title: "New membership request",
