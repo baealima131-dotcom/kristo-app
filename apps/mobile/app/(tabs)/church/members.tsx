@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Animated, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { approveRequest, fetchChurchMembers, fetchJoinRequests, rejectRequest, removeChurchMember, sendChurchInvite } from "@/src/lib/churchMembersApi";
@@ -59,6 +59,7 @@ function resolveMemberAvatar(row: any) {
 
 export default function ChurchMembersDirectory() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ tab?: string }>();
   const insets = useSafeAreaInsets();
   const { session } = useKristoSession();
   const canManageMembers = ["Pastor", "Church_Admin", "System_Admin"].includes(String(session?.role || ""));
@@ -70,7 +71,10 @@ export default function ChurchMembersDirectory() {
     [churchId, userId]
   );
 
-  const [tab, setTab] = useState<Tab>("active");
+  const [tab, setTab] = useState<Tab>(() => {
+    const initial = String(params.tab || "").trim().toLowerCase();
+    return initial === "requests" ? "requests" : "active";
+  });
   const [members, setMembers] = useState<any[]>(
     (membersCachePeek?.members as any[]) || []
   );
@@ -102,6 +106,11 @@ export default function ChurchMembersDirectory() {
     icon: "alert-circle" as any,
     tone: "red" as "red" | "gold",
   });
+
+  useEffect(() => {
+    const nextTab = String(params.tab || "").trim().toLowerCase();
+    if (nextTab === "requests") setTab("requests");
+  }, [params.tab]);
 
   function showSmartAlert(title: string, message: string, tone: "red" | "gold" = "red") {
     setSmartAlert({

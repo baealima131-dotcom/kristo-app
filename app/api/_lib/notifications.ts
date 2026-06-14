@@ -158,6 +158,15 @@ export async function listNotifications(args: {
   return dbListNotifications(args);
 }
 
+export async function countNotifications(args: {
+  churchId: string;
+  userId: string;
+  unreadOnly?: boolean;
+  includeAllTargets?: boolean;
+}): Promise<number> {
+  return dbCountNotifications(args);
+}
+
 export async function setRead(id: string, isRead: boolean): Promise<AppNotification | null> {
   return dbSetRead(id, isRead);
 }

@@ -11,6 +11,92 @@ export type NotificationLike = {
   avatarUrl?: string;
   profileImage?: string;
   type?: string;
+  ministryId?: string;
+};
+
+export type NotificationListScope = "forMe" | "churchAdmin";
+
+export type NotificationCategory =
+  | "Admin"
+  | "Safety"
+  | "Ministry"
+  | "Live"
+  | "Prayer"
+  | "Subscription"
+  | "Feed"
+  | "General";
+
+export type NotificationCategoryStyle = {
+  label: NotificationCategory;
+  icon: string;
+  accent: string;
+  border: string;
+  background: string;
+};
+
+const CATEGORY_ICONS = {
+  Admin: "shield-checkmark-outline",
+  Safety: "alert-circle-outline",
+  Ministry: "people-outline",
+  Live: "radio-outline",
+  Prayer: "heart-outline",
+  Subscription: "card-outline",
+  Feed: "newspaper-outline",
+  General: "notifications-outline",
+} as const;
+
+const CATEGORY_STYLES: Record<
+  NotificationCategory,
+  Omit<NotificationCategoryStyle, "label" | "icon"> & { icon: string }
+> = {
+  Admin: {
+    icon: CATEGORY_ICONS.Admin,
+    accent: "#7DB7FF",
+    border: "rgba(96,165,250,0.35)",
+    background: "rgba(18,30,55,0.95)",
+  },
+  Safety: {
+    icon: CATEGORY_ICONS.Safety,
+    accent: "#FF8A8A",
+    border: "rgba(248,113,113,0.35)",
+    background: "rgba(45,16,16,0.95)",
+  },
+  Ministry: {
+    icon: CATEGORY_ICONS.Ministry,
+    accent: "#B794F6",
+    border: "rgba(167,139,250,0.35)",
+    background: "rgba(28,18,48,0.95)",
+  },
+  Live: {
+    icon: CATEGORY_ICONS.Live,
+    accent: "#FF7A9E",
+    border: "rgba(255,122,158,0.35)",
+    background: "rgba(45,14,28,0.95)",
+  },
+  Prayer: {
+    icon: CATEGORY_ICONS.Prayer,
+    accent: "#63D18C",
+    border: "rgba(52,211,153,0.35)",
+    background: "rgba(12,45,32,0.95)",
+  },
+  Subscription: {
+    icon: CATEGORY_ICONS.Subscription,
+    accent: "#D9B35F",
+    border: "rgba(217,179,95,0.35)",
+    background: "rgba(35,28,14,0.95)",
+  },
+  Feed: {
+    icon: CATEGORY_ICONS.Feed,
+    accent: "#F4B860",
+    border: "rgba(245,158,11,0.35)",
+    background: "rgba(45,32,12,0.92)",
+  },
+  General: {
+    icon: CATEGORY_ICONS.General,
+    accent: "#D9B35F",
+    border: "rgba(255,255,255,0.10)",
+    background: "rgba(14,18,28,0.95)",
+  },
 };
 
 const RAW_USER_ID_RX = /^u_[a-f0-9]{8,}$/i;
@@ -30,6 +116,122 @@ export function roleFallbackLabel(role?: string | null): string {
   if (r === "Leader") return "Leader";
   if (r === "Member") return "Member";
   return "Church Admin";
+}
+
+function notificationTitleLower(notification: NotificationLike): string {
+  return String(notification?.title || "").trim().toLowerCase();
+}
+
+function notificationType(notification: NotificationLike): string {
+  return String(notification?.type || "").trim();
+}
+
+export function resolveNotificationCategory(notification: NotificationLike): NotificationCategory {
+  const type = notificationType(notification);
+  const title = notificationTitleLower(notification);
+
+  if (
+    type === "ContentReportReceived" ||
+    type === "ContentAutoHiddenAdmin" ||
+    (type === "Generic" && title.includes("membership request"))
+  ) {
+    return "Admin";
+  }
+
+  if (type === "ContentAutoHiddenAuthor" || type === "MembershipRejected") {
+    return "Safety";
+  }
+
+  if (
+    type.startsWith("Ministry") ||
+    type === "MinistryChatMessageCreated"
+  ) {
+    return "Ministry";
+  }
+
+  if (
+    type === "LiveEventScheduled" ||
+    type === "LiveSlotAssigned" ||
+    type === "LiveSlotCancelled" ||
+    (type === "Generic" &&
+      (title.includes("live") || title.includes("schedule updated")))
+  ) {
+    return "Live";
+  }
+
+  if (type === "ChurchPrayerRequestPosted" || type === "PrayerRequestPrayedFor") {
+    return "Prayer";
+  }
+
+  if (type.startsWith("ChurchSubscription")) {
+    return "Subscription";
+  }
+
+  if (
+    type === "ChurchAnnouncementPosted" ||
+    type === "ChurchTestimonyPosted" ||
+    type === "ChurchMediaPosted" ||
+    type === "FeedCommentOnPost" ||
+    type === "FeedReplyToComment" ||
+    type === "ChurchProfileUpdated"
+  ) {
+    return "Feed";
+  }
+
+  return "General";
+}
+
+export function resolveNotificationCategoryStyle(
+  notification: NotificationLike
+): NotificationCategoryStyle {
+  const label = resolveNotificationCategory(notification);
+  const style = CATEGORY_STYLES[label];
+  return {
+    label,
+    icon: style.icon,
+    accent: style.accent,
+    border: style.border,
+    background: style.background,
+  };
+}
+
+export function resolveNotificationRoute(notification: NotificationLike): string | null {
+  const type = notificationType(notification);
+  const title = notificationTitleLower(notification);
+
+  if (type === "ContentReportReceived" || type === "ContentAutoHiddenAdmin") {
+    return "/more/media-reports";
+  }
+
+  if (type === "TrustedMediaHostAdded" || type === "TrustedMediaHostRemoved") {
+    return "/more/media";
+  }
+
+  if (type.startsWith("ChurchSubscription")) {
+    return "/more/media";
+  }
+
+  if (
+    type === "LiveEventScheduled" ||
+    type === "LiveSlotAssigned" ||
+    type === "LiveSlotCancelled"
+  ) {
+    return "/more/live-slots";
+  }
+
+  if (type === "ChurchProfileUpdated") {
+    return "/church/overview";
+  }
+
+  if (type === "Generic" && title.includes("membership request")) {
+    return "/church/members?tab=requests";
+  }
+
+  if (notification.ministryId && type === "MinistryChatMessageCreated") {
+    return `/more/my-church-room/messages/${encodeURIComponent(String(notification.ministryId))}`;
+  }
+
+  return null;
 }
 
 function extractActorNameFromBody(body: string): string {
@@ -120,4 +322,9 @@ export function safeInitial(notification: NotificationLike): string {
 
   if (!parts.length) return "N";
   return parts.map((x) => x[0]?.toUpperCase() || "").join("");
+}
+
+export function canUseChurchAdminNotificationScope(role: string): boolean {
+  const r = String(role || "").trim();
+  return r === "Pastor" || r === "Church_Admin" || r === "System_Admin";
 }

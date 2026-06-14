@@ -23,6 +23,7 @@ import {
   logMoreDeferredRefreshSkip,
   runAfterMoreTabPressTransition,
 } from "@/src/lib/refreshCoordinator";
+import { peekChurchOverviewCache, silentRefreshChurchOverview } from "@/src/lib/screenDataCache";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
@@ -397,6 +398,7 @@ export default function MoreScreen() {
   );
 
   const [messagesV2Open, setMessagesV2Open] = React.useState(false);
+  const [notificationUnread, setNotificationUnread] = React.useState(0);
   const [v2FeatureTitle, setV2FeatureTitle] = React.useState("Messages");
   const [v2ModalTitle, setV2ModalTitle] = React.useState("Messages coming in V2");
   const [v2ModalText, setV2ModalText] = React.useState("");
@@ -421,6 +423,28 @@ export default function MoreScreen() {
     void preloadTlmcAssets();
     void preloadMediaAssets();
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const churchId = resolveSessionChurchId(
+        session?.churchId || (session as any)?.activeChurchId || ""
+      );
+      const userId = String(session?.userId || "").trim();
+      if (!churchId || !userId) {
+        setNotificationUnread(0);
+        return;
+      }
+
+      const cached = peekChurchOverviewCache(churchId, userId);
+      setNotificationUnread(Number(cached?.stats?.unreadNotifications || 0));
+
+      void silentRefreshChurchOverview(churchId, userId).then((next) => {
+        if (next) {
+          setNotificationUnread(Number(next.stats?.unreadNotifications || 0));
+        }
+      });
+    }, [session?.churchId, session?.userId, session])
+  );
 
   React.useEffect(() => {
     if (!hasChurch) {
@@ -506,7 +530,10 @@ export default function MoreScreen() {
     const isTlmc = item.key === "tlmc";
     const isChurchGate = !hasChurch && item.key === "church";
     const itemTitle = item.title;
-    const itemSub = item.sub;
+    const itemSub =
+      item.key === "notifications" && notificationUnread > 0
+        ? `${notificationUnread} unread`
+        : item.sub;
 
     const wrapTone =
       item.key === "ministries"

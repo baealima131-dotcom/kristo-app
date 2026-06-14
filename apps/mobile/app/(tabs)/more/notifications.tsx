@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -11,25 +11,28 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { getSessionSync } from "@/src/lib/kristoSession";
-import { getKristoHeaders, describeKristoSessionToken } from "@/src/lib/kristoHeaders";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { createDebouncer, shouldAllowScreenRefresh } from "@/src/lib/kristoTraffic";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
+  canUseChurchAdminNotificationScope,
+  resolveNotificationCategoryStyle,
+  resolveNotificationRoute,
   safeAvatarUri,
   safeBody,
   safeDisplayName,
-  safeInitial,
   type NotificationLike,
+  type NotificationListScope,
 } from "@/src/lib/notificationDisplay";
 
 const FETCH_TIMEOUT_MS = 12000;
 
 const notificationsScreenCache = new Map<string, Notice[]>();
 
-function notificationsCacheKey(userId: string, churchId: string) {
-  return `${userId}:${churchId}`;
+function notificationsCacheKey(userId: string, churchId: string, scope: NotificationListScope) {
+  return `${userId}:${churchId}:${scope}`;
 }
 function filterInviteSafeNotices(raw: any[]): any[] {
   return raw.filter((x: any) => {
@@ -76,6 +79,7 @@ const BLUE = "#7DB7FF";
 
 type Notice = NotificationLike & {
   membershipId?: string;
+  ministryId?: string;
   id: string;
   title: string;
   body: string;
@@ -138,17 +142,6 @@ function formatWhen(input?: string) {
   return d.toLocaleString();
 }
 
-function cardTone(n: Notice): "approved" | "rejected" | "role" | "request" | "default" {
-  const t = String(n.type || "");
-  const title = String(n.title || "").toLowerCase();
-
-  if (t === "MembershipRejected" || title.includes("rejected")) return "rejected";
-  if (title.includes("approved")) return "approved";
-  if (title.includes("role updated") || title.includes("leader assigned") || t === "MinistryLeaderAssigned") return "role";
-  if (title.includes("request") || title.includes("requested")) return "request";
-  return "default";
-}
-
 function mapApiNotice(x: any, i: number): Notice {
   const raw: NotificationLike = {
     title: String(x?.title || x?.subject || "Notification"),
@@ -162,10 +155,12 @@ function mapApiNotice(x: any, i: number): Notice {
     avatarUrl: x?.avatarUrl,
     profileImage: x?.profileImage,
     type: String(x?.type || ""),
+    ministryId: x?.ministryId,
   };
 
   return {
     membershipId: x?.membershipId || x?.meta?.membershipId,
+    ministryId: x?.ministryId,
     id: String(x?.id || `n-${i}`),
     title: String(raw.title || "Notification"),
     body: safeBody(raw),
@@ -192,27 +187,21 @@ export default function MoreNotificationsScreen() {
 
   const effectiveAuthUserId = String(auth?.userId || "");
   const effectiveAuthRole = String(auth?.role || "Member");
-  const cacheKey = notificationsCacheKey(effectiveAuthUserId, churchId);
+  const canUseChurchAdmin = canUseChurchAdminNotificationScope(effectiveAuthRole);
+  const [scope, setScope] = useState<NotificationListScope>("forMe");
+  const cacheKey = notificationsCacheKey(effectiveAuthUserId, churchId, scope);
   const bootCache = withoutLegacyDemoNotices(notificationsScreenCache.get(cacheKey) || []);
 
   const notificationRequestHeaders = useCallback(() => {
-    const headers = {
+    return {
       accept: "application/json",
       "content-type": "application/json",
       ...getKristoHeaders(),
     } as Record<string, string>;
-    const tokenMeta = describeKristoSessionToken();
-    console.log("KRISTO_NOTIFICATIONS_TOKEN_PRESENT", {
-      hasSessionToken: tokenMeta.hasSessionToken,
-      sessionTokenLen: tokenMeta.sessionTokenLen,
-      source: tokenMeta.source,
-      hasUserId: Boolean(headers["x-kristo-user-id"]),
-      hasChurchId: Boolean(headers["x-kristo-church-id"]),
-    });
-    return headers;
   }, []);
 
   const [items, setItems] = useState<Notice[]>(bootCache);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(bootCache.length === 0);
   const [refreshing, setRefreshing] = useState(false);
   const [busyId, setBusyId] = useState("");
@@ -223,11 +212,6 @@ export default function MoreNotificationsScreen() {
   const debouncedRefresh = useRef(createDebouncer(900)).current;
   const loadSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
-
-  const canMarkAll =
-    effectiveAuthRole === "Pastor" ||
-    effectiveAuthRole === "Church_Admin" ||
-    effectiveAuthRole === "System_Admin";
 
   const load = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -248,11 +232,7 @@ export default function MoreNotificationsScreen() {
         if (!effectiveAuthUserId) throw new Error("userId missing");
 
         const headers = notificationRequestHeaders();
-        const url = `${base}/api/church/notifications`;
-        console.log("KRISTO_NOTIFICATIONS_REQUEST", {
-          url,
-          hasSessionToken: Boolean(headers["x-kristo-session-token"]),
-        });
+        const url = `${base}/api/church/notifications?scope=${encodeURIComponent(scope)}&limit=200`;
 
         const r = await fetch(url, {
           headers,
@@ -260,16 +240,8 @@ export default function MoreNotificationsScreen() {
         });
 
         const j = await r.json().catch(() => ({} as any));
-        console.log("KRISTO_NOTIFICATIONS_RESPONSE", {
-          status: r.status,
-          ok: Boolean(j?.ok),
-          error: j?.error ? String(j.error) : null,
-        });
         if (r.status === 401) {
-          console.log("KRISTO_NOTIFICATIONS_401", {
-            error: String(j?.error || "Unauthorized"),
-            hasSessionToken: Boolean(headers["x-kristo-session-token"]),
-          });
+          throw new Error(String(j?.error || "Unauthorized"));
         }
         if (!r.ok || !j?.ok) {
           throw new Error(String(j?.error || `Request failed (${r.status})`));
@@ -281,6 +253,7 @@ export default function MoreNotificationsScreen() {
         const mapped = mapNoticesFromApi(raw);
         notificationsScreenCache.set(cacheKey, mapped);
         setItems(mapped);
+        setUnreadCount(Number(j?.meta?.unreadCount ?? mapped.filter((x) => !x.read).length));
         setErr(null);
       } catch (e: unknown) {
         if (seq !== loadSeqRef.current) return;
@@ -289,6 +262,7 @@ export default function MoreNotificationsScreen() {
         const cached = withoutLegacyDemoNotices(notificationsScreenCache.get(cacheKey) || []);
         if (cached.length) {
           setItems(cached);
+          setUnreadCount(cached.filter((x) => !x.read).length);
           setErr(null);
         } else {
           setErr(fetchErrorMessage(e, aborted));
@@ -300,7 +274,7 @@ export default function MoreNotificationsScreen() {
         setRefreshing(false);
       }
     },
-    [base, cacheKey, effectiveAuthUserId, notificationRequestHeaders]
+    [base, cacheKey, effectiveAuthUserId, notificationRequestHeaders, scope]
   );
 
   async function markOneRead(id: string) {
@@ -308,11 +282,14 @@ export default function MoreNotificationsScreen() {
       if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
       setBusyId(id);
 
-      const r = await fetch(`${base}/api/church/notifications?id=${encodeURIComponent(id)}`, {
-        method: "PATCH",
-        headers: notificationRequestHeaders(),
-        body: JSON.stringify({ isRead: true }),
-      });
+      const r = await fetch(
+        `${base}/api/church/notifications?id=${encodeURIComponent(id)}&scope=${encodeURIComponent(scope)}`,
+        {
+          method: "PATCH",
+          headers: notificationRequestHeaders(),
+          body: JSON.stringify({ isRead: true }),
+        }
+      );
 
       const j = await r.json().catch(() => ({} as any));
       if (!r.ok || !j?.ok) {
@@ -320,6 +297,7 @@ export default function MoreNotificationsScreen() {
       }
 
       setItems((cur) => cur.map((x) => (x.id === id ? { ...x, read: true } : x)));
+      setUnreadCount((cur) => Math.max(0, cur - 1));
     } catch (e: any) {
       Alert.alert("Failed", String(e?.message ?? e ?? "Error"));
     } finally {
@@ -332,17 +310,27 @@ export default function MoreNotificationsScreen() {
       if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
       setDeletingId(id);
 
-      const r = await fetch(`${base}/api/church/notifications?id=${encodeURIComponent(id)}`, {
-        method: "DELETE",
-        headers: notificationRequestHeaders(),
-      });
+      const r = await fetch(
+        `${base}/api/church/notifications?id=${encodeURIComponent(id)}&scope=${encodeURIComponent(scope)}`,
+        {
+          method: "DELETE",
+          headers: notificationRequestHeaders(),
+        }
+      );
 
       const j = await r.json().catch(() => ({} as any));
       if (!r.ok || !j?.ok) {
         throw new Error(String(j?.error || `Request failed (${r.status})`));
       }
 
-      setItems((cur) => cur.filter((x) => x.id !== id));
+      setItems((cur) => {
+        const target = cur.find((x) => x.id === id);
+        const next = cur.filter((x) => x.id !== id);
+        if (target && !target.read) {
+          setUnreadCount((count) => Math.max(0, count - 1));
+        }
+        return next;
+      });
       setOpenedIds((cur) => {
         const next = { ...cur };
         delete next[id];
@@ -360,7 +348,7 @@ export default function MoreNotificationsScreen() {
       if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
       setMarkingAll(true);
 
-      const r = await fetch(`${base}/api/church/notifications/mark-all`, {
+      const r = await fetch(`${base}/api/church/notifications/mark-all?scope=${encodeURIComponent(scope)}`, {
         method: "POST",
         headers: notificationRequestHeaders(),
       });
@@ -371,6 +359,7 @@ export default function MoreNotificationsScreen() {
       }
 
       setItems((cur) => cur.map((x) => ({ ...x, read: true })));
+      setUnreadCount(0);
     } catch (e: any) {
       Alert.alert("Failed", String(e?.message ?? e ?? "Error"));
     } finally {
@@ -380,26 +369,47 @@ export default function MoreNotificationsScreen() {
 
   const openNotice = useCallback(
     async (n: Notice) => {
-      setOpenedIds((cur) => ({ ...cur, [n.id]: !cur[n.id] }));
+      const route = resolveNotificationRoute(n);
 
       if (!n.read && !busyId) {
         try {
           await markOneRead(n.id);
         } catch {}
       }
+
+      if (route) {
+        router.push(route as any);
+        return;
+      }
+
+      setOpenedIds((cur) => ({ ...cur, [n.id]: !cur[n.id] }));
     },
-    [busyId]
+    [busyId, router]
   );
+
+  useEffect(() => {
+    const cached = withoutLegacyDemoNotices(notificationsScreenCache.get(cacheKey) || []);
+    if (cached.length) {
+      setItems(cached);
+      setUnreadCount(cached.filter((x) => !x.read).length);
+      setLoading(false);
+    } else {
+      setItems([]);
+      setUnreadCount(0);
+    }
+    void load({ silent: cached.length > 0 });
+  }, [scope, cacheKey, load]);
 
   useFocusEffect(
     useCallback(() => {
       const cached = withoutLegacyDemoNotices(notificationsScreenCache.get(cacheKey) || []);
       if (cached.length) {
         setItems(cached);
+        setUnreadCount(cached.filter((x) => !x.read).length);
         setLoading(false);
       }
 
-      const throttled = !shouldAllowScreenRefresh("Notifications", { minMs: 60000 });
+      const throttled = !shouldAllowScreenRefresh(`Notifications:${scope}`, { minMs: 60000 });
       if (throttled && cached.length > 0) {
         setLoading(false);
         setRefreshing(false);
@@ -413,64 +423,55 @@ export default function MoreNotificationsScreen() {
       return () => {
         abortRef.current?.abort();
       };
-    }, [cacheKey, load])
+    }, [cacheKey, load, scope])
   );
-
-  const unreadCount = useMemo(() => items.filter((x) => !x.read).length, [items]);
   const groupedItems = useMemo(() => groupNotices(items), [items]);
 
   const renderNoticeCard = (n: Notice) => {
-    const tone = cardTone(n);
+    const category = resolveNotificationCategoryStyle(n);
     const expanded = !!openedIds[n.id];
     const visuallyRead = !!n.read;
-    const isGeneric = tone === "default";
     const avatarUri = safeAvatarUri(n);
     const actorName = safeDisplayName(n);
-    const actorInitial = safeInitial(n);
     const displayBody = safeBody(n);
+    const route = resolveNotificationRoute(n);
 
     return (
       <Pressable
         key={n.id}
         onPress={() => {
-          openNotice(n);
+          void openNotice(n);
         }}
         style={[
           s.card,
-          tone === "approved" && s.cardApproved,
-          tone === "rejected" && s.cardRejected,
-          tone === "role" && s.cardRole,
-          tone === "request" && s.cardRequest,
+          { borderColor: category.border, backgroundColor: category.background },
           !n.read && s.cardUnread,
           n.read && s.cardReadDone,
           expanded && s.cardExpanded,
-          expanded && isGeneric && s.cardExpandedGeneric,
         ]}
       >
-        <View
-          style={[
-            s.cardAccent,
-            tone === "approved" && s.cardAccentApproved,
-            tone === "rejected" && s.cardAccentRejected,
-            tone === "role" && s.cardAccentRole,
-            tone === "request" && s.cardAccentRequest,
-            tone === "default" && !n.read && s.cardAccentUnread,
-            n.read && s.cardAccentRead,
-            expanded && isGeneric && s.cardAccentExpandedGeneric,
-          ]}
-        />
+        <View style={[s.cardAccent, { backgroundColor: category.accent }, n.read && s.cardAccentRead]} />
 
         <View style={s.rowTop}>
           <View style={s.titleWrap}>
-            <View style={s.avatarWrap}>
+            <View style={[s.avatarWrap, { borderColor: category.border }]}>
               {avatarUri ? (
                 <Image source={{ uri: avatarUri }} style={s.avatarImage} resizeMode="cover" />
               ) : (
-                <Text style={s.avatarText}>{actorInitial}</Text>
+                <Ionicons name={category.icon as any} size={16} color={category.accent} />
               )}
             </View>
 
             <View style={s.titleTextWrap}>
+              <View style={s.categoryRow}>
+                <View style={[s.categoryBadge, { borderColor: category.border }]}>
+                  <Text style={[s.categoryBadgeText, { color: category.accent }]}>{category.label}</Text>
+                </View>
+                {route ? (
+                  <Ionicons name="open-outline" size={13} color="rgba(255,255,255,0.55)" />
+                ) : null}
+              </View>
+
               {!!actorName ? (
                 <Text style={s.actorName} numberOfLines={1}>
                   {actorName}
@@ -498,13 +499,15 @@ export default function MoreNotificationsScreen() {
               </Text>
             </View>
 
-            <View style={s.chevWrap}>
-              <Ionicons
-                name={expanded ? "chevron-up" : "chevron-down"}
-                size={16}
-                color="rgba(255,255,255,0.74)"
-              />
-            </View>
+            {!route ? (
+              <View style={s.chevWrap}>
+                <Ionicons
+                  name={expanded ? "chevron-up" : "chevron-down"}
+                  size={16}
+                  color="rgba(255,255,255,0.74)"
+                />
+              </View>
+            ) : null}
           </View>
         </View>
 
@@ -522,7 +525,7 @@ export default function MoreNotificationsScreen() {
           )
         ) : null}
 
-        {expanded ? (
+        {expanded && !route ? (
           <View style={s.actionsWrap}>
             <View style={s.actionsRow}>
               {!n.read ? (
@@ -568,7 +571,9 @@ export default function MoreNotificationsScreen() {
 
         <View style={{ flex: 1 }}>
           <Text style={s.h1}>Notifications</Text>
-          <Text style={s.h2}>{refreshing ? "Refreshing..." : "Church activity updates"}</Text>
+          <Text style={s.h2}>
+            {refreshing ? "Refreshing..." : scope === "churchAdmin" ? "Church admin alerts" : "Your alerts"}
+          </Text>
         </View>
 
         <Pressable onPress={() => debouncedRefresh(() => load({ silent: true }))} style={s.iconBtn} hitSlop={10}>
@@ -576,31 +581,39 @@ export default function MoreNotificationsScreen() {
         </Pressable>
       </View>
 
-      {canMarkAll ? (
-        <View style={s.utilityRow}>
-          <View style={s.utilityCount}>
-            <Ionicons name="notifications" size={15} color={GOLD} />
-            <Text style={s.utilityCountText}>{unreadCount} unread</Text>
-
-
-          </View>
-
+      {canUseChurchAdmin ? (
+        <View style={s.scopeRow}>
           <Pressable
-            onPress={markEverythingRead}
-            disabled={markingAll || unreadCount === 0}
-            style={[s.markAllBtn, (markingAll || unreadCount === 0) && s.markAllBtnDisabled]}
+            onPress={() => setScope("forMe")}
+            style={[s.scopeBtn, scope === "forMe" && s.scopeBtnActive]}
           >
-            <Text style={s.markAllBtnText}>{markingAll ? "Working..." : "Mark all"}</Text>
+            <Text style={[s.scopeBtnText, scope === "forMe" && s.scopeBtnTextActive]}>For Me</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setScope("churchAdmin")}
+            style={[s.scopeBtn, scope === "churchAdmin" && s.scopeBtnActive]}
+          >
+            <Text style={[s.scopeBtnText, scope === "churchAdmin" && s.scopeBtnTextActive]}>
+              Church Admin
+            </Text>
           </Pressable>
         </View>
-      ) : (
-        <View style={s.utilityRowSolo}>
-          <View style={s.utilityCount}>
-            <Ionicons name="notifications" size={15} color={GOLD} />
-            <Text style={s.utilityCountText}>{unreadCount} unread</Text>
-          </View>
+      ) : null}
+
+      <View style={s.utilityRow}>
+        <View style={s.utilityCount}>
+          <Ionicons name="notifications" size={15} color={GOLD} />
+          <Text style={s.utilityCountText}>{unreadCount} unread</Text>
         </View>
-      )}
+
+        <Pressable
+          onPress={markEverythingRead}
+          disabled={markingAll || unreadCount === 0}
+          style={[s.markAllBtn, (markingAll || unreadCount === 0) && s.markAllBtnDisabled]}
+        >
+          <Text style={s.markAllBtnText}>{markingAll ? "Working..." : "Mark all"}</Text>
+        </Pressable>
+      </View>
 
       {loading && items.length === 0 ? (
         <View style={s.center}>
@@ -656,6 +669,59 @@ const s = StyleSheet.create({
 
   h1: { color: "white", fontSize: 24, fontWeight: "900" },
   h2: { color: MUTED, marginTop: 1, fontSize: 13, fontWeight: "700" },
+
+  scopeRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+
+  scopeBtn: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+
+  scopeBtnActive: {
+    borderColor: "rgba(217,179,95,0.34)",
+    backgroundColor: "rgba(217,179,95,0.14)",
+  },
+
+  scopeBtnText: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  scopeBtnTextActive: {
+    color: GOLD,
+  },
+
+  categoryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+
+  categoryBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+
+  categoryBadgeText: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
 
   groupSection: {
     marginBottom: 8,

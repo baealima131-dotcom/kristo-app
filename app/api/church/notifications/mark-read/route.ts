@@ -12,6 +12,10 @@ export async function POST(req: NextRequest) {
   const ctxOrRes = await guard(req);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
-  const r = await markAllRead({ churchId: ctxOrRes.churchId, userId: ctxOrRes.viewer.userId });
-  return json({ ok: true, ...r });
+  const r = await markAllRead({
+    churchId: ctxOrRes.churchId,
+    userId: ctxOrRes.viewer.userId,
+    includeAllTargets: false,
+  });
+  return json({ ok: true, ...r, scope: "forMe" });
 }

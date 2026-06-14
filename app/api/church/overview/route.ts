@@ -9,7 +9,7 @@ import {
   logChurchOverviewGetAvatar,
   resolveChurchAvatarFields,
 } from "@/app/api/_lib/churchAvatar";
-import { listNotifications } from "@/app/api/_lib/notifications";
+import { countNotifications } from "@/app/api/_lib/notifications";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { readMinistryJsonFile as readJsonFile } from "@/app/api/_lib/store/ministryDb";
 import {
@@ -170,18 +170,12 @@ export async function GET(req: NextRequest) {
   const ministriesCount = ministryScope.ministriesCount;
   const ministryMembersCount = ministryScope.ministryMembersCount;
 
-  const canSeeAllTargets =
-    role === "Pastor" || role === "Church_Admin" || role === "System_Admin";
-
-  const unreadNotifications = (
-    await listNotifications({
-      churchId,
-      userId: ctxOrRes.viewer.userId,
-      unreadOnly: true,
-      limit: 9999,
-      includeAllTargets: canSeeAllTargets,
-    })
-  ).length;
+  const unreadNotifications = await countNotifications({
+    churchId,
+    userId: ctxOrRes.viewer.userId,
+    unreadOnly: true,
+    includeAllTargets: false,
+  });
 
   return json({
     ok: true,

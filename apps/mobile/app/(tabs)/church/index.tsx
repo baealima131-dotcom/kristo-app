@@ -423,7 +423,7 @@ export default function ChurchTabFeed() {
   const router = useRouter();
 const goOverview = () => router.push("/church/overview");
   const goMembers = () => router.push("/church/members");
-  const goNotifications = () => router.push("/church/notifications");
+  const goNotifications = () => router.push("/more/notifications");
   const goCreateChurch = () => router.push("/church/create" as any);
   const goJoinChurch = () => router.push("/church/join" as any);
 

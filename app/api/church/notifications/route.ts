@@ -4,6 +4,7 @@ import type { NextRequest } from "next/server";
 import { guard } from "@/app/api/_lib/rbac";
 import {
   listNotifications,
+  countNotifications,
   setRead,
   removeNotification,
   createNotification,
@@ -12,9 +13,40 @@ import {
   type NotificationType,
 } from "@/app/api/_lib/notifications";
 import { resolveActorFromViewer } from "@/app/api/_lib/notificationActor";
+import {
+  parseNotificationListScope,
+  scopeToIncludeAllTargets,
+  type NotificationListScope,
+} from "@/app/api/_lib/notificationScope";
 
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
+}
+
+function resolveScopeFromRequest(req: NextRequest, role: string): NotificationListScope {
+  const url = new URL(req.url);
+  const legacyAll =
+    url.searchParams.get("all") === "1" || url.searchParams.get("all") === "true";
+  const rawScope = url.searchParams.get("scope") || (legacyAll ? "churchAdmin" : "forMe");
+  return parseNotificationListScope(rawScope, role);
+}
+
+async function assertNotificationVisible(args: {
+  churchId: string;
+  userId: string;
+  role: string;
+  id: string;
+  scope: NotificationListScope;
+}) {
+  const includeAllTargets = scopeToIncludeAllTargets(args.scope);
+  const visible = await listNotifications({
+    churchId: args.churchId,
+    userId: args.userId,
+    unreadOnly: false,
+    limit: 5000,
+    includeAllTargets,
+  });
+  return visible.find((n) => String(n.id) === args.id) ?? null;
 }
 
 export async function GET(req: NextRequest) {
@@ -23,23 +55,39 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url);
   const unreadOnly = url.searchParams.get("unread") === "1" || url.searchParams.get("unread") === "true";
-  const limit = Number(url.searchParams.get("limit") || "50");
-
+  const limit = Number(url.searchParams.get("limit") || "100");
   const role = String(ctxOrRes.viewer.role || "");
-  const canSeeAllTargets =
-    role === "Pastor" || role === "Church_Admin" || role === "System_Admin";
+  const scope = resolveScopeFromRequest(req, role);
+  const includeAllTargets = scopeToIncludeAllTargets(scope);
 
-  const items = await listNotifications({
+  const listArgs = {
     churchId: ctxOrRes.churchId,
     userId: ctxOrRes.viewer.userId,
     unreadOnly,
-    limit: Number.isFinite(limit) ? limit : 50,
-    includeAllTargets: canSeeAllTargets,
+    limit: Number.isFinite(limit) ? Math.min(Math.max(1, limit), 500) : 100,
+    includeAllTargets,
+  };
+
+  const items = await listNotifications(listArgs);
+  const data = await toClientNotifications(items);
+  const unreadCount = await countNotifications({
+    churchId: ctxOrRes.churchId,
+    userId: ctxOrRes.viewer.userId,
+    unreadOnly: true,
+    includeAllTargets,
   });
 
-  const data = await toClientNotifications(items);
-
-  return json({ ok: true, data });
+  return json({
+    ok: true,
+    data,
+    meta: {
+      scope,
+      unreadCount,
+      limit: listArgs.limit,
+      canUseChurchAdminScope:
+        role === "Pastor" || role === "Church_Admin" || role === "System_Admin",
+    },
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -115,18 +163,15 @@ export async function PATCH(req: NextRequest) {
       : !!body.isRead;
 
   const role = String(ctxOrRes.viewer.role || "");
-  const canSeeAllTargets =
-    role === "Pastor" || role === "Church_Admin" || role === "System_Admin";
+  const scope = resolveScopeFromRequest(req, role);
 
-  const visible = await listNotifications({
+  const found = await assertNotificationVisible({
     churchId: ctxOrRes.churchId,
     userId: ctxOrRes.viewer.userId,
-    unreadOnly: false,
-    limit: 5000,
-    includeAllTargets: canSeeAllTargets,
+    role,
+    id,
+    scope,
   });
-
-  const found = visible.find((n) => String(n.id) === id) ?? null;
   if (!found) {
     return json({ ok: false, error: "Notification not found" }, { status: 404 });
   }
@@ -150,18 +195,15 @@ export async function DELETE(req: NextRequest) {
   if (!id) return json({ ok: false, error: "Missing id" }, { status: 400 });
 
   const role = String(ctxOrRes.viewer.role || "");
-  const canSeeAllTargets =
-    role === "Pastor" || role === "Church_Admin" || role === "System_Admin";
+  const scope = resolveScopeFromRequest(req, role);
 
-  const visible = await listNotifications({
+  const found = await assertNotificationVisible({
     churchId: ctxOrRes.churchId,
     userId: ctxOrRes.viewer.userId,
-    unreadOnly: false,
-    limit: 5000,
-    includeAllTargets: canSeeAllTargets,
+    role,
+    id,
+    scope,
   });
-
-  const found = visible.find((n) => String(n.id) === id) ?? null;
   if (!found) {
     return json({ ok: false, error: "Notification not found" }, { status: 404 });
   }

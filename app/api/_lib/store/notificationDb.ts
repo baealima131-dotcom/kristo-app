@@ -301,6 +301,54 @@ export async function dbListNotifications(args: {
   );
 }
 
+export async function dbCountNotifications(args: {
+  churchId: string;
+  userId: string;
+  unreadOnly?: boolean;
+  includeAllTargets?: boolean;
+}): Promise<number> {
+  const { churchId, userId, unreadOnly = true, includeAllTargets = false } = args;
+  await ensureNotificationStoreReady();
+
+  if (usePostgres()) {
+    const sql = getSql();
+    const rows = includeAllTargets
+      ? unreadOnly
+        ? await sql`
+            SELECT COUNT(*)::int AS count
+            FROM kristo_notifications
+            WHERE church_id = ${churchId}
+              AND is_read = FALSE
+          `
+        : await sql`
+            SELECT COUNT(*)::int AS count
+            FROM kristo_notifications
+            WHERE church_id = ${churchId}
+          `
+      : unreadOnly
+        ? await sql`
+            SELECT COUNT(*)::int AS count
+            FROM kristo_notifications
+            WHERE church_id = ${churchId}
+              AND is_read = FALSE
+              AND (target_user_id IS NULL OR target_user_id = ${userId})
+          `
+        : await sql`
+            SELECT COUNT(*)::int AS count
+            FROM kristo_notifications
+            WHERE church_id = ${churchId}
+              AND (target_user_id IS NULL OR target_user_id = ${userId})
+          `;
+    return Number((rows as { count: number }[])[0]?.count || 0);
+  }
+
+  const all = await readLocalNotifications();
+  return all
+    .filter((n) => n.churchId === churchId)
+    .filter((n) => matchesViewerFilter(n, userId, includeAllTargets))
+    .filter((n) => (unreadOnly ? !n.isRead : true)).length;
+}
+
 export async function dbSetRead(id: string, isRead: boolean): Promise<AppNotification | null> {
   const notificationId = String(id || "").trim();
   if (!notificationId) return null;
