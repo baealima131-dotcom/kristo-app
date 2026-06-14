@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { getKristoHeaders, describeKristoSessionToken } from "@/src/lib/kristoHeaders";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { createDebouncer, shouldAllowScreenRefresh } from "@/src/lib/kristoTraffic";
@@ -30,7 +31,6 @@ const notificationsScreenCache = new Map<string, Notice[]>();
 function notificationsCacheKey(userId: string, churchId: string) {
   return `${userId}:${churchId}`;
 }
-
 function filterInviteSafeNotices(raw: any[]): any[] {
   return raw.filter((x: any) => {
     const title = String(x?.title || x?.subject || "").toLowerCase();
@@ -57,24 +57,6 @@ function mapNoticesFromApi(raw: any[]): Notice[] {
       const bb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
       return bb - aa;
     });
-}
-
-function buildFetchHeaders(auth: {
-  userId: string;
-  role: string;
-  churchId: string;
-  displayName: string;
-}) {
-  return {
-    accept: "application/json",
-    "content-type": "application/json",
-    "x-kristo-user-id": auth.userId,
-    "x-kristo-role": auth.role,
-    "x-kristo-church-id": auth.churchId,
-    ...(auth.displayName
-      ? { "x-kristo-user-name": auth.displayName, "x-kristo-display-name": auth.displayName }
-      : {}),
-  };
 }
 
 function fetchErrorMessage(error: unknown, aborted: boolean) {
@@ -288,20 +270,25 @@ export default function MoreNotificationsScreen() {
 
   const effectiveAuthUserId = String(auth?.userId || "");
   const effectiveAuthRole = String(auth?.role || "Member");
-  const effectiveDisplayName = String(auth?.displayName || auth?.name || "").trim();
   const cacheKey = notificationsCacheKey(effectiveAuthUserId, churchId);
   const bootCache = notificationsScreenCache.get(cacheKey) || [];
 
-  const getHeaders = useCallback(
-    () =>
-      buildFetchHeaders({
-        userId: effectiveAuthUserId,
-        role: effectiveAuthRole,
-        churchId,
-        displayName: effectiveDisplayName,
-      }),
-    [effectiveAuthUserId, effectiveAuthRole, churchId, effectiveDisplayName]
-  );
+  const notificationRequestHeaders = useCallback(() => {
+    const headers = {
+      accept: "application/json",
+      "content-type": "application/json",
+      ...getKristoHeaders(),
+    } as Record<string, string>;
+    const tokenMeta = describeKristoSessionToken();
+    console.log("KRISTO_NOTIFICATIONS_TOKEN_PRESENT", {
+      hasSessionToken: tokenMeta.hasSessionToken,
+      sessionTokenLen: tokenMeta.sessionTokenLen,
+      source: tokenMeta.source,
+      hasUserId: Boolean(headers["x-kristo-user-id"]),
+      hasChurchId: Boolean(headers["x-kristo-church-id"]),
+    });
+    return headers;
+  }, []);
 
   const [items, setItems] = useState<Notice[]>(bootCache);
   const [loading, setLoading] = useState(bootCache.length === 0);
@@ -339,12 +326,30 @@ export default function MoreNotificationsScreen() {
         if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
         if (!effectiveAuthUserId) throw new Error("userId missing");
 
-        const r = await fetch(`${base}/api/church/notifications`, {
-          headers: getHeaders(),
+        const headers = notificationRequestHeaders();
+        const url = `${base}/api/church/notifications`;
+        console.log("KRISTO_NOTIFICATIONS_REQUEST", {
+          url,
+          hasSessionToken: Boolean(headers["x-kristo-session-token"]),
+        });
+
+        const r = await fetch(url, {
+          headers,
           signal: controller.signal,
         });
 
         const j = await r.json().catch(() => ({} as any));
+        console.log("KRISTO_NOTIFICATIONS_RESPONSE", {
+          status: r.status,
+          ok: Boolean(j?.ok),
+          error: j?.error ? String(j.error) : null,
+        });
+        if (r.status === 401) {
+          console.log("KRISTO_NOTIFICATIONS_401", {
+            error: String(j?.error || "Unauthorized"),
+            hasSessionToken: Boolean(headers["x-kristo-session-token"]),
+          });
+        }
         if (!r.ok || !j?.ok) {
           throw new Error(String(j?.error || `Request failed (${r.status})`));
         }
@@ -384,7 +389,7 @@ export default function MoreNotificationsScreen() {
         setRefreshing(false);
       }
     },
-    [base, cacheKey, effectiveAuthUserId, getHeaders]
+    [base, cacheKey, effectiveAuthUserId, notificationRequestHeaders]
   );
 
   async function markOneRead(id: string) {
@@ -399,7 +404,7 @@ export default function MoreNotificationsScreen() {
 
       const r = await fetch(`${base}/api/church/notifications?id=${encodeURIComponent(id)}`, {
         method: "PATCH",
-        headers: getHeaders(),
+        headers: notificationRequestHeaders(),
         body: JSON.stringify({ isRead: true }),
       });
 
@@ -433,7 +438,7 @@ export default function MoreNotificationsScreen() {
 
       const r = await fetch(`${base}/api/church/notifications?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
-        headers: getHeaders(),
+        headers: notificationRequestHeaders(),
       });
 
       const j = await r.json().catch(() => ({} as any));
@@ -466,7 +471,7 @@ export default function MoreNotificationsScreen() {
 
       const r = await fetch(`${base}/api/church/notifications/mark-all`, {
         method: "POST",
-        headers: getHeaders(),
+        headers: notificationRequestHeaders(),
       });
 
       const j = await r.json().catch(() => ({} as any));
