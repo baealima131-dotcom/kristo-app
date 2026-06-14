@@ -643,6 +643,76 @@ export function resolvePremiumPlanFromCustomerInfo(
   return null;
 }
 
+export function resolveChurchPremiumRenewalDate(
+  customerInfo: CustomerInfo | null | undefined
+): Date | null {
+  if (!customerInfo) return null;
+
+  const entitlement = customerInfo.entitlements?.active?.[CHURCH_PREMIUM_ENTITLEMENT];
+  const raw =
+    entitlement?.expirationDate ||
+    customerInfo.latestExpirationDate ||
+    null;
+
+  if (raw === null || raw === undefined) return null;
+  const ms = Date.parse(String(raw));
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms);
+}
+
+export function formatYearlyUpgradeSavingsLabel(
+  monthlyPackage: PurchasesPackage | null | undefined,
+  yearlyPackage: PurchasesPackage | null | undefined
+): string {
+  const monthlyPrice = monthlyPackage?.product?.price;
+  const yearlyPrice = yearlyPackage?.product?.price;
+  const currency = yearlyPackage?.product?.priceString?.replace(/[\d.,\s]/g, "").trim() || "$";
+
+  if (typeof monthlyPrice === "number" && typeof yearlyPrice === "number" && yearlyPrice > 0) {
+    const savings = Math.max(0, monthlyPrice * 12 - yearlyPrice);
+    if (savings >= 1) {
+      return `Save ${currency}${Math.round(savings)}/year compared to monthly billing`;
+    }
+  }
+
+  return "Save about $100/year compared to monthly billing";
+}
+
+export function formatShortYearlySavingsLabel(
+  monthlyPackage: PurchasesPackage | null | undefined,
+  yearlyPackage: PurchasesPackage | null | undefined
+): string {
+  return resolveYearlySavingsDisplay(monthlyPackage, yearlyPackage).amountLabel;
+}
+
+export function resolveYearlySavingsDisplay(
+  monthlyPackage: PurchasesPackage | null | undefined,
+  yearlyPackage: PurchasesPackage | null | undefined
+): { percentLabel: string; amountLabel: string } {
+  const monthlyPrice = monthlyPackage?.product?.price ?? 49.99;
+  const yearlyPrice = yearlyPackage?.product?.price ?? 499.99;
+  const currency = yearlyPackage?.product?.priceString?.replace(/[\d.,\s]/g, "").trim() || "$";
+  const annualMonthly = monthlyPrice * 12;
+  const savings = Math.max(0, annualMonthly - yearlyPrice);
+  const percent =
+    annualMonthly > 0 ? Math.round((savings / annualMonthly) * 100) : 17;
+
+  const amountText =
+    savings >= 0.01
+      ? `Save ${currency}${savings.toFixed(2)}/year`
+      : "Save $99.89/year";
+
+  return {
+    percentLabel: `Save ${percent}%`,
+    amountLabel: amountText,
+  };
+}
+
+export function getSubscriptionStoreLabel(): string {
+  if (Platform.OS === "android") return "Google Play Subscriptions";
+  return "Apple Subscriptions";
+}
+
 export function resolveActiveSubscriptionPlan(
   customerInfo: CustomerInfo
 ): SubscriptionPlanKey | null {

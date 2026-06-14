@@ -7,6 +7,7 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
+  Platform,
   type ScrollView as RNScrollView,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -39,6 +40,9 @@ import {
   setRevenueCatDebugRouteEnabled,
   getRevenueCatConfiguredAppUserId,
   resolvePremiumPlanFromCustomerInfo,
+  resolveChurchPremiumRenewalDate,
+  resolveYearlySavingsDisplay,
+  getSubscriptionStoreLabel,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
   fetchChurchSubscriptionStatus,
@@ -274,7 +278,9 @@ export default function PaymentsSubscriptionsScreen() {
       if (!opened) {
         Alert.alert(
           "Manage subscription",
-          "Subscriptions are managed through Apple.\n\nOpen Settings → Apple ID → Subscriptions to cancel or change your plan."
+          Platform.OS === "android"
+            ? "Open Google Play → Payments & subscriptions → Subscriptions to manage or cancel your plan."
+            : "Open Settings → Apple ID → Subscriptions to manage or cancel your plan."
         );
         return;
       }
@@ -287,7 +293,9 @@ export default function PaymentsSubscriptionsScreen() {
       });
       Alert.alert(
         "Could not open subscriptions",
-        "Open Settings → Apple ID → Subscriptions on your iPhone."
+        Platform.OS === "android"
+          ? "Try Google Play → Payments & subscriptions → Subscriptions."
+          : "Try Settings → Apple ID → Subscriptions."
       );
     }
   }
@@ -391,6 +399,44 @@ export default function PaymentsSubscriptionsScreen() {
     ? resolveMonthlyIntroTrialLabel(monthlyPackage)
     : null;
 
+  const activePlanKey: SubscriptionPlanKey = (() => {
+    const fromRc = resolvePremiumPlanFromCustomerInfo(customerInfo);
+    if (fromRc) return fromRc;
+    const fromServer = String(serverStatus.subscriptionPlan || "").trim().toLowerCase();
+    if (fromServer === "yearly" || fromServer === "monthly") return fromServer;
+    return currentPlan;
+  })();
+  const isYearlyPlan = activePlanKey === "yearly";
+  const isMonthlyPlan = activePlanKey === "monthly";
+  const renewalDate = resolveChurchPremiumRenewalDate(customerInfo);
+  const renewalDateLabel = renewalDate
+    ? renewalDate.toLocaleDateString(undefined, {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
+  const monthlyDisplayPrice = formatPrice(monthlyPackage || undefined, "$49.99");
+  const yearlyDisplayPrice = formatPrice(yearlyPackage || undefined, "$499.99");
+  const yearlySavings = resolveYearlySavingsDisplay(monthlyPackage, yearlyPackage);
+  const activePlanLabel = isYearlyPlan ? "Yearly" : "Monthly";
+  const subscriptionStoreLabel = getSubscriptionStoreLabel();
+
+  function handleUpgradeToYearly() {
+    if (!yearlyPackage) {
+      setSubscriptionError(
+        "Yearly plan is not available yet. Tap retry, then try again."
+      );
+      return;
+    }
+    setSubscriptionSelectedPlan("yearly");
+    setDraftCurrentPlan("yearly");
+    router.push({
+      pathname: "/more/payments/checkout" as any,
+      params: { plan: "yearly" },
+    });
+  }
+
   return (
     <View style={s.screen}>
       <View pointerEvents="none" style={s.glowTopLeft} />
@@ -461,82 +507,157 @@ export default function PaymentsSubscriptionsScreen() {
         ) : null}
 
         {showActivePrimaryScreen ? (
-          <View style={s.activeCard}>
-            <View style={s.activeHeaderRow}>
-              <View style={s.activeIconWrap}>
-                <Ionicons name="checkmark-circle" size={28} color="rgba(120,220,160,0.95)" />
+          <>
+            <View style={s.activeCard}>
+              <View style={s.activeHeaderRow}>
+                <View style={s.activeIconWrap}>
+                  <Ionicons name="checkmark-circle" size={28} color="rgba(120,220,160,0.95)" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.activeTitle}>Church subscription active</Text>
+                  <Text style={s.activeSub}>
+                    {serverStatus.canUseMediaTools || hasRealEntitlement
+                      ? "Media Studio unlocked"
+                      : "Sync purchase if Media Studio is still locked"}
+                  </Text>
+                </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.activeTitle}>Church subscription active</Text>
-                <Text style={s.activeSub}>
-                  {serverStatus.canUseMediaTools || hasRealEntitlement
-                    ? "Media Studio unlocked"
-                    : "Sync purchase if Media Studio is still locked"}
-                </Text>
+
+              <View style={s.planDetailsCard}>
+                <View style={s.planDetailRow}>
+                  <Text style={s.planDetailLabel}>Current plan</Text>
+                  <Text style={s.planDetailValue}>{activePlanLabel}</Text>
+                </View>
+
+                {renewalDateLabel ? (
+                  <View style={s.planDetailRow}>
+                    <Text style={s.planDetailLabel}>Renewal date</Text>
+                    <Text style={s.planDetailValue}>{renewalDateLabel}</Text>
+                  </View>
+                ) : null}
+
+                <View style={s.planDetailRow}>
+                  <Text style={s.planDetailLabel}>Status</Text>
+                  <Text style={[s.planDetailValue, s.planDetailValueActive]}>Active</Text>
+                </View>
               </View>
             </View>
 
-            {serverStatus.subscriptionPlan ? (
-              <Text style={s.activePlanLine}>
-                Plan: {String(serverStatus.subscriptionPlan)}
-              </Text>
-            ) : null}
+            <View style={s.planSelectorRow}>
+              <View
+                style={[
+                  s.planSelectorCard,
+                  isMonthlyPlan ? s.planSelectorCardSelected : s.planSelectorCardDimmed,
+                ]}
+              >
+                {isMonthlyPlan ? (
+                  <View style={s.planCornerBadge}>
+                    <Ionicons name="checkmark" size={10} color="rgba(120,220,160,0.98)" />
+                    <Text style={s.planCornerBadgeText}>ACTIVE</Text>
+                  </View>
+                ) : null}
 
-            <View style={s.activeActions}>
-              {isPastor ? (
+                <Text style={s.planSelectorTitle}>MONTHLY</Text>
+                <Text style={s.planSelectorPrice}>
+                  {monthlyDisplayPrice}
+                  <Text style={s.planSelectorCycle}>/month</Text>
+                </Text>
+                <View style={s.planSelectorSavingsBlock} />
+                <View style={s.planSelectorFooter}>
+                  <Text style={s.planSelectorFooterMuted}>Billed monthly</Text>
+                </View>
+              </View>
+
+              <Pressable
+                onPress={isMonthlyPlan ? handleUpgradeToYearly : undefined}
+                disabled={!isMonthlyPlan}
+                style={({ pressed }) => [
+                  s.planSelectorCard,
+                  isYearlyPlan ? s.planSelectorCardSelected : s.planSelectorCardEqual,
+                  isMonthlyPlan && pressed ? s.pressed : null,
+                ]}
+              >
+                {isYearlyPlan ? (
+                  <>
+                    <View style={s.planCornerBadge}>
+                      <Ionicons name="checkmark" size={10} color="rgba(120,220,160,0.98)" />
+                      <Text style={s.planCornerBadgeText}>ACTIVE</Text>
+                    </View>
+                    <View style={s.planValueBadge}>
+                      <Text style={s.planValueBadgeText}>BEST VALUE</Text>
+                    </View>
+                  </>
+                ) : null}
+
+                <Text style={s.planSelectorTitle}>YEARLY</Text>
+                <Text style={s.planSelectorPrice}>
+                  {yearlyDisplayPrice}
+                  <Text style={s.planSelectorCycle}>/year</Text>
+                </Text>
+                <View style={s.planSelectorSavingsBlock}>
+                  <Text style={s.planSelectorSavingsPercent}>{yearlySavings.percentLabel}</Text>
+                  <Text style={s.planSelectorSavingsAmount}>{yearlySavings.amountLabel}</Text>
+                </View>
+                <View style={s.planSelectorFooter}>
+                  {isMonthlyPlan ? (
+                    <Text style={s.planSelectorFooterUpgrade}>Tap to upgrade</Text>
+                  ) : (
+                    <Text style={s.planSelectorFooterMuted}>Billed yearly</Text>
+                  )}
+                </View>
+              </Pressable>
+            </View>
+
+            <View style={s.activeFooter}>
+              <View style={s.activeActions}>
+                {isPastor ? (
+                  <Pressable
+                    onPress={handleSyncPurchase}
+                    disabled={submittingSync}
+                    style={({ pressed }) => [
+                      s.primaryActionBtn,
+                      submittingSync ? s.disabledBtn : null,
+                      pressed ? s.pressed : null,
+                    ]}
+                  >
+                    {submittingSync ? (
+                      <ActivityIndicator color="#1A1610" />
+                    ) : (
+                      <>
+                        <Ionicons name="refresh-outline" size={18} color="#1A1610" />
+                        <Text style={s.primaryActionBtnText}>Sync purchase</Text>
+                      </>
+                    )}
+                  </Pressable>
+                ) : null}
+
                 <Pressable
-                  onPress={handleSyncPurchase}
+                  onPress={handleManageSubscription}
                   disabled={submittingSync}
                   style={({ pressed }) => [
-                    s.primaryActionBtn,
+                    isPastor ? s.secondaryActionBtn : s.primaryActionBtn,
                     submittingSync ? s.disabledBtn : null,
                     pressed ? s.pressed : null,
                   ]}
                 >
-                  {submittingSync ? (
-                    <ActivityIndicator color="#1A1610" />
-                  ) : (
-                    <>
-                      <Ionicons name="refresh-outline" size={18} color="#1A1610" />
-                      <Text style={s.primaryActionBtnText}>Sync purchase</Text>
-                    </>
-                  )}
+                  <Ionicons
+                    name={Platform.OS === "android" ? "logo-google-playstore" : "logo-apple"}
+                    size={18}
+                    color={isPastor ? "rgba(255,255,255,0.88)" : "#1A1610"}
+                  />
+                  <Text
+                    style={isPastor ? s.secondaryActionBtnText : s.primaryActionBtnText}
+                  >
+                    Manage subscription
+                  </Text>
                 </Pressable>
-              ) : null}
+              </View>
 
-              <Pressable
-                onPress={handleManageSubscription}
-                disabled={submittingSync}
-                style={({ pressed }) => [
-                  isPastor ? s.secondaryActionBtn : s.primaryActionBtn,
-                  submittingSync ? s.disabledBtn : null,
-                  pressed ? s.pressed : null,
-                ]}
-              >
-                <Ionicons
-                  name="logo-apple"
-                  size={18}
-                  color={isPastor ? "rgba(255,255,255,0.88)" : "#1A1610"}
-                />
-                <Text
-                  style={isPastor ? s.secondaryActionBtnText : s.primaryActionBtnText}
-                >
-                  Manage subscription
-                </Text>
-              </Pressable>
+              <Text style={s.manageHint}>
+                Billing is managed in {subscriptionStoreLabel}, not inside Kristo.
+              </Text>
             </View>
-
-            <Text style={s.manageHint}>
-              Cancel or change billing in Apple Subscriptions — not inside Kristo.
-            </Text>
-
-            <Pressable
-              onPress={() => setShowPlanPicker(true)}
-              style={({ pressed }) => [s.changePlanLink, pressed ? s.pressed : null]}
-            >
-              <Text style={s.changePlanLinkText}>View plans</Text>
-            </Pressable>
-          </View>
+          </>
         ) : (
           <>
             <View style={s.notSubscribedBanner}>
@@ -836,10 +957,176 @@ const s = StyleSheet.create({
     fontWeight: "700",
   },
 
-  activePlanLine: {
-    color: "rgba(255,255,255,0.55)",
+  planDetailsCard: {
+    borderRadius: 16,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+    gap: 10,
+  },
+
+  planDetailRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  planDetailLabel: {
+    color: "rgba(255,255,255,0.48)",
     fontSize: 13,
     fontWeight: "700",
+  },
+
+  planDetailValue: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "800",
+    textAlign: "right",
+    flexShrink: 1,
+  },
+
+  planDetailValueActive: {
+    color: "rgba(120,220,160,0.95)",
+  },
+
+  planSelectorRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginHorizontal: 18,
+    marginBottom: 14,
+    alignItems: "stretch",
+  },
+
+  planSelectorCard: {
+    flex: 1,
+    position: "relative",
+    flexDirection: "column",
+    borderRadius: 18,
+    padding: 14,
+    minHeight: 168,
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.10)",
+  },
+
+  planSelectorCardEqual: {
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderColor: "rgba(255,255,255,0.10)",
+  },
+
+  planSelectorCardSelected: {
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderColor: "rgba(120,220,160,0.24)",
+  },
+
+  planSelectorCardDimmed: {
+    opacity: 0.52,
+  },
+
+  planCornerBadge: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(120,220,160,0.12)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(120,220,160,0.22)",
+  },
+
+  planCornerBadgeText: {
+    color: "rgba(120,220,160,0.95)",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+
+  planValueBadge: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(196,171,114,0.12)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(196,171,114,0.24)",
+  },
+
+  planValueBadgeText: {
+    color: "rgba(196,171,114,0.95)",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+
+  planSelectorTitle: {
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    marginTop: 4,
+  },
+
+  planSelectorPrice: {
+    marginTop: 10,
+    color: "#fff",
+    fontSize: 21,
+    fontWeight: "900",
+    letterSpacing: -0.4,
+  },
+
+  planSelectorCycle: {
+    color: "rgba(255,255,255,0.46)",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  planSelectorSavingsBlock: {
+    marginTop: 8,
+    minHeight: 34,
+    gap: 2,
+    justifyContent: "center",
+  },
+
+  planSelectorSavingsPercent: {
+    color: "rgba(196,171,114,0.95)",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  planSelectorSavingsAmount: {
+    color: "rgba(196,171,114,0.72)",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  planSelectorFooter: {
+    marginTop: "auto",
+    paddingTop: 10,
+  },
+
+  planSelectorFooterMuted: {
+    color: "rgba(255,255,255,0.34)",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+
+  planSelectorFooterUpgrade: {
+    color: "rgba(196,171,114,0.78)",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  activeFooter: {
+    marginHorizontal: 18,
+    gap: 10,
   },
 
   activeActions: {
@@ -892,17 +1179,6 @@ const s = StyleSheet.create({
     fontWeight: "600",
     lineHeight: 17,
     textAlign: "center",
-  },
-
-  changePlanLink: {
-    alignSelf: "center",
-    paddingVertical: 8,
-  },
-
-  changePlanLinkText: {
-    color: "rgba(196,171,114,0.78)",
-    fontSize: 13,
-    fontWeight: "800",
   },
 
   notSubscribedBanner: {
