@@ -1139,10 +1139,6 @@ export default function MediaStudioScreen() {
   const [isEditingMedia, setIsEditingMedia] = useState(!hasMediaAccount);
   const [isCreatingSchedule, setIsCreatingSchedule] = useState(false);
   const [isManagingGuests, setIsManagingGuests] = useState(false);
-  const [v2VipOpen, setV2VipOpen] = useState(false);
-  const v2VipScale = useRef(new Animated.Value(0.92)).current;
-  const v2VipFade = useRef(new Animated.Value(0)).current;
-  const v2VipLift = useRef(new Animated.Value(18)).current;
   const [subscriptionPromptOpen, setSubscriptionPromptOpen] = useState(false);
   const subPromptScale = useRef(new Animated.Value(0.9)).current;
   const subPromptFade = useRef(new Animated.Value(0)).current;
@@ -1176,35 +1172,6 @@ export default function MediaStudioScreen() {
       }),
     ]).start();
   }, [subscriptionPromptOpen, subPromptScale, subPromptFade, subPromptLift]);
-
-  useEffect(() => {
-    if (!v2VipOpen) {
-      v2VipScale.setValue(0.92);
-      v2VipFade.setValue(0);
-      v2VipLift.setValue(18);
-      return;
-    }
-
-    Animated.parallel([
-      Animated.spring(v2VipScale, {
-        toValue: 1,
-        useNativeDriver: true,
-        friction: 7,
-        tension: 80,
-      }),
-      Animated.timing(v2VipFade, {
-        toValue: 1,
-        duration: 180,
-        useNativeDriver: true,
-      }),
-      Animated.spring(v2VipLift, {
-        toValue: 0,
-        useNativeDriver: true,
-        friction: 7,
-        tension: 72,
-      }),
-    ]).start();
-  }, [v2VipOpen, v2VipScale, v2VipFade, v2VipLift]);
 
   // sync form from church media profile (backend-confirmed or cached)
   React.useEffect(() => {
@@ -1623,9 +1590,6 @@ export default function MediaStudioScreen() {
         ? activeSchedule.scheduleSlots.length
         : 0,
       guestClaimSlotCount: syncedGuestClaimSlots.length,
-      headerMediaIdDisplay: "MD-102948",
-      summaryMediaIdDisplay: "MD-000000",
-      mediaIdMismatchNote: "header/summary IDs are hardcoded UI placeholders, not feed mediaId",
     });
   }, [
     backendFeedItems,
@@ -1647,24 +1611,6 @@ export default function MediaStudioScreen() {
     [syncedGuestClaimSlots, guestClockNow]
   );
 
-  const activeMediaLiveSlot = useMemo(() => {
-    const now = Date.now();
-
-    return syncedGuestClaimSlots.find((slot: any) => {
-      const startMs = parseGuestSlotDate({
-        meetingDay: slot?.meetingDay || slot?.meetingDate || "Today",
-        startTime: slot?.startTime || "",
-        endTime: slot?.endTime || "",
-      }).startMs;
-
-      const durationMs =
-        Math.max(1, Number(slot?.durationMin || 0)) * 60 * 1000;
-
-      const endMs = startMs + durationMs;
-
-      return startMs && now >= startMs && now <= endMs;
-    }) || null;
-  }, [syncedGuestClaimSlots]);
   const claimActionScale = claimActionPulse.interpolate({
     inputRange: [0, 1],
     outputRange: [1, 1.045],
@@ -2319,20 +2265,6 @@ export default function MediaStudioScreen() {
     : !canUseMediaTools
     ? "Subscription required"
     : "Ready";
-
-  const goLiveHint = activeMediaLiveSlot
-    ? "V2 ACTIVE"
-    : !hasMediaAccount
-    ? "Pastor create first"
-    : !hasChurchMembership
-    ? "Join a church first"
-    : !canOpenMediaScreen
-    ? "Pastor access required"
-    : !hasSubscription
-    ? "Subscription required"
-    : !canUseMediaTools
-    ? "Subscription required"
-    : "V2 Feature";
 
   function handleCreateLiveSchedule() {
     console.log("KRISTO_MEDIA_SLOTS_TAP", {
@@ -3354,51 +3286,6 @@ export default function MediaStudioScreen() {
     handleLockedAction("video");
   }
 
-  function handleGoLive() {
-    setV2VipOpen(true);
-    return;
-
-    if (subscriptionLocked) {
-      showSubscriptionRequired();
-      return;
-    }
-
-    if (activeMediaLiveSlot) {
-      mediaRouterPush(
-        {
-          pathname: "/more/my-church-room/messages/live-room",
-          params: {
-            source: "media",
-            liveMode: "instant",
-            layout: "focus",
-            role: canUseMediaTools ? "host" : "Viewer",
-            mode: canUseMediaTools ? "host" : "viewer",
-            entryMode: "live",
-            room: "media",
-            mediaName:
-              form.mediaName.trim() ||
-              churchMediaProfile?.mediaName ||
-              "Church Media",
-            liveId: String(
-              activeMediaLiveSlot?.sourceFeedId ||
-              activeMediaLiveSlot?.id ||
-              "media-live"
-            ),
-            title: String(
-              activeMediaLiveSlot?.title ||
-              "Church Live"
-            ),
-          },
-        },
-        "handle-go-live-active-slot"
-      );
-
-      return;
-    }
-
-    handleLockedAction("live");
-  }
-
   return (
     <ImageBackground
       source={MEDIA_STUDIO_BACKGROUND}
@@ -3545,17 +3432,7 @@ export default function MediaStudioScreen() {
             <View style={s.backBtnGhost} />
           )}
 
-          {hasMediaAccount && !isEditingMedia ? (
-            <Pressable
-              onPress={() => Alert.alert("Media ID", "MD-102948")}
-              style={({ pressed }) => [s.headerMediaIdPill, pressed ? s.pressed : null]}
-            >
-              <Ionicons name="copy-outline" size={14} color="#F4C95D" />
-              <Text style={s.headerMediaIdText}>MD-102948</Text>
-            </Pressable>
-          ) : (
-            <View style={s.headerMediaIdSpacer} />
-          )}
+          <View style={s.headerMediaIdSpacer} />
 
           {hasMediaAccount && !isEditingMedia ? (
             <Pressable
@@ -4018,29 +3895,6 @@ export default function MediaStudioScreen() {
                 style={s.guestClaimSummaryScroll}
                 contentContainerStyle={s.guestClaimSummaryRow}
               >
-                <Pressable style={s.guestClaimSummaryWideCard}>
-                  <View style={s.guestMiniBlue}>
-                    <Ionicons name="people-outline" size={14} color="#60A5FA" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.guestWideTitle} numberOfLines={1}>MD List</Text>
-                    <Text style={s.guestWideText} numberOfLines={1}>MD-000000</Text>
-                  </View>
-                </Pressable>
-
-                <Pressable
-                  onPress={() => setIsManagingGuests(true)}
-                  style={s.guestClaimSummaryWideCard}
-                >
-                  <View style={s.guestMiniGold}>
-                    <Ionicons name="chatbubble-outline" size={14} color="#F4C95D" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.guestWideTitle}>Messages</Text>
-                    <Text style={s.guestWideText} numberOfLines={1}>Chat inbox</Text>
-                  </View>
-                </Pressable>
-
                 <View style={s.guestClaimSummaryPill}>
                   <Text style={s.guestClaimSummaryValue}>{guestClaimTotalMinutes}</Text>
                   <Text style={s.guestClaimSummaryLabel}>Min</Text>
@@ -4401,7 +4255,7 @@ export default function MediaStudioScreen() {
                   <Text style={s.heroKicker}>Pastor Media Center</Text>
                   <Text style={s.heroTitle}>{churchMediaProfile?.mediaName || form.mediaName || "Media Studio"}</Text>
                   <Text style={s.heroText}>
-                    Create live, schedule invitation slots, and manage up to 3 trusted hosts.
+                    Schedule live sessions, manage invitation slots, and up to 3 trusted hosts.
                   </Text>
                 </View>
 
@@ -4409,10 +4263,6 @@ export default function MediaStudioScreen() {
               </View>
 
               <View style={s.statusStrip}>
-                <View style={s.statusMini}>
-                  <Ionicons name="people-outline" size={14} color="#F4C95D" />
-                  <Text style={s.statusMiniText}>Audience</Text>
-                </View>
                 <View style={s.statusMini}>
                   <Ionicons name={churchMediaSubscriptionActive ? "checkmark-circle" : "lock-closed-outline"} size={14} color="#F4C95D" />
                   <Text style={s.statusMiniText}>
@@ -4444,55 +4294,6 @@ export default function MediaStudioScreen() {
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={s.dashboardToolsContent}
               >
-                <Modal
-                visible={v2VipOpen}
-                transparent
-                animationType="fade"
-                onRequestClose={() => setV2VipOpen(false)}
-              >
-                <View style={s.v2VipOverlay}>
-                  <Pressable style={s.v2VipBackdrop} onPress={() => setV2VipOpen(false)} />
-                  <Animated.View style={[s.v2VipCard, { opacity: v2VipFade, transform: [{ translateY: v2VipLift }, { scale: v2VipScale }] }]}>
-                    <View style={s.v2VipGlow} />
-
-                    <View style={s.v2VipTopRow}>
-                      <View style={s.v2VipIconRing}>
-                        <Ionicons name="diamond-outline" size={30} color="#F4C95D" />
-                      </View>
-
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.v2VipKicker}>KRISTO V2 • VIP</Text>
-                        <Text style={s.v2VipTitle}>Church Connect Live</Text>
-                      </View>
-                    </View>
-
-                    <Text style={s.v2VipText}>
-                      This feature will connect churches for joint meetings, conferences, and global prayer rooms.
-                    </Text>
-
-                    <View style={s.v2VipPillRow}>
-                      <View style={s.v2VipPill}>
-                        <Ionicons name="business-outline" size={15} color="#F4C95D" />
-                        <Text style={s.v2VipPillText}>Multi-church</Text>
-                      </View>
-
-                      <View style={s.v2VipPill}>
-                        <Ionicons name="radio-outline" size={15} color="#FB7185" />
-                        <Text style={s.v2VipPillText}>Coming V2</Text>
-                      </View>
-                    </View>
-
-                    <Pressable
-                      onPress={() => setV2VipOpen(false)}
-                      style={({ pressed }) => [s.v2VipBtn, pressed ? s.pressed : null]}
-                    >
-                      <Text style={s.v2VipBtnText}>Got it</Text>
-                      <Ionicons name="checkmark-circle-outline" size={20} color="#07111F" />
-                    </Pressable>
-                  </Animated.View>
-                </View>
-              </Modal>
-
               <View style={s.grid}>
                 {canManageMediaHosts && churchMediaSubscriptionActive ? (
                 <Pressable
@@ -4547,26 +4348,6 @@ export default function MediaStudioScreen() {
                 </Pressable>
 
                 <Pressable
-                  onPress={handleGoLive}
-                  style={({ pressed }) => [s.smallCard, s.glassLive, pressed ? s.pressed : null]}
-                >
-                  <View style={s.cardAura} />
-                  <View style={s.cardTopShine} />
-                  <View style={[s.iconRing, s.ringLive]}>
-                    <Ionicons name="radio-outline" size={28} color="#FB7185" />
-                  </View>
-                  <Text style={s.smallTitle}>Create</Text>
-                  <Text style={s.smallSub}>
-                    {activeMediaLiveSlot ? "V2 active" : "V2 soon"}
-                  </Text>
-
-                  <Text style={s.cardHint}>
-                    {activeMediaLiveSlot ? "Join live" : "VIP V2"}
-                  </Text>
-                </Pressable>
-
-                {churchMediaSubscriptionActive ? (
-                <Pressable
                   onPress={handleCreateLiveSchedule}
                   style={({ pressed }) => [
                     s.smallCard,
@@ -4579,12 +4360,12 @@ export default function MediaStudioScreen() {
                   <View style={[s.iconRing, s.ringSchedule]}>
                     <Ionicons name="calendar-outline" size={27} color="#34D399" />
                   </View>
-                  <Text style={s.smallTitle}>Slots</Text>
-                  <Text style={s.cardHint}>Ready</Text>
-                  <Text style={s.smallSub}>Invitations</Text>
-                  <Text style={s.cardHint}>Schedule</Text>
+                  <Text style={s.smallTitle}>Schedule</Text>
+                  <Text style={s.smallSub}>Live</Text>
+                  <Text style={s.cardHint}>
+                    {churchMediaSubscriptionActive && canUseMediaTools ? "Ready" : "Locked"}
+                  </Text>
                 </Pressable>
-                ) : null}
 
                 {canGuestClaimManage ? (
                 <Pressable
@@ -4837,103 +4618,6 @@ export default function MediaStudioScreen() {
 }
 
 const s = StyleSheet.create({
-  v2VipOverlay: {
-    flex: 1,
-    justifyContent: "center",
-    paddingHorizontal: 34,
-    paddingTop: 110,
-    backgroundColor: "rgba(1,8,22,0.74)",
-  },
-  v2VipBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  v2VipCard: {
-    borderRadius: 30,
-    padding: 20,
-    overflow: "hidden",
-    backgroundColor: "rgba(8,18,38,0.98)",
-    borderWidth: 1.5,
-    borderColor: "rgba(96,165,250,0.46)",
-  },
-  v2VipGlow: {
-    position: "absolute",
-    width: 230,
-    height: 230,
-    borderRadius: 150,
-    right: -80,
-    top: -90,
-    backgroundColor: "rgba(59,130,246,0.22)",
-  },
-  v2VipTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 16,
-    marginBottom: 14,
-  },
-  v2VipIconRing: {
-    width: 58,
-    height: 52,
-    borderRadius: 23,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(96,165,250,0.16)",
-    borderWidth: 2,
-    borderColor: "rgba(125,211,252,0.60)",
-  },
-  v2VipKicker: {
-    color: "#7DD3FC",
-    fontWeight: "900",
-    letterSpacing: 3.5,
-    fontSize: 12,
-  },
-  v2VipTitle: {
-    color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "900",
-    marginTop: 5,
-  },
-  v2VipText: {
-    color: "rgba(255,255,255,0.78)",
-    fontSize: 15,
-    lineHeight: 23,
-    fontWeight: "700",
-  },
-  v2VipPillRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 14,
-    marginBottom: 18,
-  },
-  v2VipPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.07)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-  },
-  v2VipPillText: {
-    color: "rgba(255,255,255,0.84)",
-    fontWeight: "900",
-    fontSize: 12,
-  },
-  v2VipBtn: {
-    height: 52,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 9,
-    backgroundColor: "#7DD3FC",
-  },
-  v2VipBtnText: {
-    color: "#07111F",
-    fontWeight: "900",
-    fontSize: 18,
-  },
   subPromptOverlay: {
     flex: 1,
     justifyContent: "center",
