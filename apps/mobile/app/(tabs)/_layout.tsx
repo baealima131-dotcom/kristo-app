@@ -27,6 +27,7 @@ import {
   utf8JsonByteLength,
 } from "@/src/lib/scheduleSlotUtils";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
+import { pauseHomeFeedBackgroundWorkForLiveNavigation } from "@/src/lib/liveRoomStartup";
 import {
   RING_RECOMPUTE_INTERVAL_MS,
   recomputeScheduleRingsFromRows,
@@ -400,6 +401,9 @@ export default function TabLayout() {
       durationMs: Date.now() - pressStartedAt,
     });
 
+    pauseHomeFeedBackgroundWorkForLiveNavigation("live-ring-profile-nav");
+    (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = Date.now();
+
     router.replace({
       pathname: "/more/my-church-room/messages/live-room",
       params: navigateParams,
@@ -480,6 +484,7 @@ export default function TabLayout() {
 
       const paramsBuildMs = Date.now() - paramsBuildStart;
       const navAt = Date.now();
+      pauseHomeFeedBackgroundWorkForLiveNavigation("live-ring-schedule-nav");
       (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = navAt;
 
       router.replace({
@@ -530,6 +535,7 @@ export default function TabLayout() {
     };
 
     const navAt = Date.now();
+    pauseHomeFeedBackgroundWorkForLiveNavigation("live-ring-instant-nav");
     (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = navAt;
 
     router.replace({
@@ -617,6 +623,7 @@ export default function TabLayout() {
         viewerUserId: String(session.userId || ""),
         viewerChurchId: String(session.churchId || ""),
         source,
+        backendFeedLoaded: source.includes("backend"),
       });
 
       setMediaScheduleTabLive(church);
@@ -910,6 +917,7 @@ export default function TabLayout() {
               delayLongPress={LIVE_RING_LONG_PRESS_MS}
               onPress={async () => {
                 if (isMessagesMode) {
+                  pauseHomeFeedBackgroundWorkForLiveNavigation("live-ring-messages-tab");
                   router.replace("/more/my-church-room/messages/live-room" as any);
                   return;
                 }

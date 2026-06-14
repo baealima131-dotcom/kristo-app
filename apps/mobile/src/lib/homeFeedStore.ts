@@ -463,6 +463,20 @@ export function feedRemoveScheduleMirrors(scheduleId: string) {
   });
 }
 
+/** Drop ring hints, claimed-slot memory, and stale local mirrors for one schedule. */
+export function clearScheduleClaimRuntimeState(scheduleId: string, rows?: any[]) {
+  const seed = String(scheduleId || "").trim();
+  if (!seed) return;
+
+  const merged = [...(rows || []), ...(feedList() as any[])];
+  const canonicalId = resolveCanonicalScheduleFeedId(seed, merged) || seed;
+  const aliases = collectScheduleAliasIds(canonicalId, merged);
+
+  clearRingClaimHintsForAliases(aliases, "");
+  clearUserClaimedSlotsForAliases(aliases, "");
+  purgeStaleLocalScheduleMirrors(canonicalId, aliases);
+}
+
 function migrateClaimStoresToCanonical(localId: string, canonicalId: string) {
   const local = String(localId || "").trim();
   const canonical = String(canonicalId || "").trim();
@@ -499,7 +513,7 @@ function migrateClaimStoresToCanonical(localId: string, canonicalId: string) {
   });
 }
 
-function slotIdsMatch(slot: any, slotId: string): boolean {
+export function slotIdsMatch(slot: any, slotId: string): boolean {
   const target = String(slotId || "").trim();
   if (!target) return false;
   const candidates = [

@@ -19,6 +19,10 @@ import {
 } from "@/src/lib/mediaVideoPoster";
 import { probePosterUrlReachability } from "@/src/lib/videoGridThumbnail";
 
+function isLiveNavBackgroundPaused() {
+  return Boolean((globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__);
+}
+
 const INITIAL_VIDEO_COUNT = 20;
 const SCROLL_VIDEO_COUNT = 10;
 /** Approximate on-screen feed window — all items in this range get visible priority. */
@@ -653,6 +657,8 @@ export function queueHomeFeedPosterPrewarm(
   item: any,
   opts?: { priority?: PrewarmPriority }
 ): Promise<boolean> {
+  if (isLiveNavBackgroundPaused()) return Promise.resolve(false);
+
   const priority = opts?.priority || "background";
   const postId = String(item?.id || "").trim();
   const videoUrl = resolveVideoUri(item);
@@ -733,6 +739,8 @@ export function prewarmVisibleHomeFeedVideoPosters(
   startIndex = 0,
   count = VISIBLE_PRIORITY_COUNT
 ): void {
+  if (isLiveNavBackgroundPaused()) return;
+
   const windowCount = Math.max(1, Math.min(count, rows.length - Math.max(0, startIndex)));
   const items = collectVisibleVideoPosts(rows, startIndex, windowCount);
   if (!items.length) return;
@@ -752,6 +760,8 @@ export function prewarmVisibleHomeFeedVideoPosters(
 
 /** Prewarm feed posters: all visible on screen first, then background batch. */
 export function startInitialHomeFeedPosterPrewarm(rows: any[]) {
+  if (isLiveNavBackgroundPaused()) return;
+
   if (!rows.length) return;
 
   const feedKey = rows
@@ -869,4 +879,17 @@ export function notifyVisibleHomeFeedPosterFocus(
   count = VISIBLE_PRIORITY_COUNT
 ) {
   prewarmVisibleHomeFeedVideoPosters(rows, startIndex, count);
+}
+
+/** Stop visible/background poster generation when Live Room navigation starts. */
+export function pauseHomeFeedPosterWorkForLiveNavigation(reason = "live-navigation") {
+  visibleRunId += 1;
+  backgroundRunId += 1;
+  visibleGenPending.length = 0;
+  backgroundGenPending.length = 0;
+  backgroundQueue.length = 0;
+  backgroundKeySet.clear();
+  visibleGenerationComplete = true;
+  stopVisiblePosterRecheck();
+  cancelBackgroundPosterGeneration(reason);
 }

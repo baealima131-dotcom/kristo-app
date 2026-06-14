@@ -809,7 +809,7 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
     String(scheduleRow?.id || scheduleRow?.sourceScheduleId || "")
   );
   const slots = Array.isArray(scheduleRow?.scheduleSlots) ? scheduleRow.scheduleSlots : [];
-  if (!scheduleId || !slots.length) return [scheduleRow];
+  if (!scheduleId || !slots.length) return [];
 
   let expiryDebugLogged = 0;
   const activeSlots = slots
@@ -846,18 +846,21 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
     return aStart - bStart;
   });
 
-  const expanded = activeSlots.map(({ slot, index }: { slot: any; index: number }) => {
-    const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
+  const expanded = activeSlots.map(
+    ({ slot, index }: { slot: any; index: number }, displayIndex: number) => {
+    const displayNumber = displayIndex + 1;
+    const slotFeedIndex = displayIndex;
     return {
       ...scheduleRow,
-      id: `${scheduleId}:slot:${slotNumber}`,
-      feedOriginId: `${scheduleId}:slot:${slotNumber}`,
+      id: `${scheduleId}:slot:${String(slot?.id || displayNumber)}`,
+      feedOriginId: `${scheduleId}:slot:${String(slot?.id || displayNumber)}`,
       parentScheduleId: scheduleId,
       sourceScheduleId: scheduleId,
       scheduleSlots: [slot],
-      slotNumber,
+      slotNumber: displayNumber,
       homeFeedSlotExpanded: true,
-      parentScheduleSlotCount: slots.length,
+      parentScheduleSlotCount: activeSlots.length,
+      slotFeedIndex,
       source: String(scheduleRow?.source || "media-schedule"),
       scheduleType: String(scheduleRow?.scheduleType || "media-live-slots"),
     };

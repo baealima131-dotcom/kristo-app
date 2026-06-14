@@ -161,7 +161,7 @@ export function isActiveScheduleSlot(
 
   if (endMs > 0 && nowMs > endMs) return false;
 
-  return true;
+  return false;
 }
 
 export function getActiveScheduleSlots(
@@ -229,14 +229,15 @@ export function findActiveMediaScheduleForChurch(
   return null;
 }
 
-/** Any persisted media schedule row for a church (not time-window filtered). */
+/** Any persisted media schedule row for a church with at least one active slot. */
 export function findMediaScheduleFeedForChurch(
   items: AnyFeedItem[],
   churchId: string,
-  options?: { strictChurch?: boolean }
+  options?: { strictChurch?: boolean; nowMs?: number }
 ): AnyFeedItem | null {
   const cid = String(churchId || "").trim();
   if (!cid) return null;
+  const nowMs = options?.nowMs ?? Date.now();
 
   const belongsToChurch = options?.strictChurch
     ? (item: AnyFeedItem) => feedItemBelongsToChurchStrict(item, cid)
@@ -246,8 +247,7 @@ export function findMediaScheduleFeedForChurch(
     if (!isMediaScheduleFeedItem(item)) continue;
     if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) continue;
     if (!belongsToChurch(item)) continue;
-    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-    if (slots.length > 0) return item;
+    if (getActiveScheduleSlots(item, nowMs).length > 0) return item;
   }
 
   return null;

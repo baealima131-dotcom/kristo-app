@@ -19,6 +19,7 @@ import {
 } from "@/src/lib/homeFeedVideoBufferAhead";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 import { startInitialHomeFeedPosterPrewarm } from "@/src/lib/homeFeedPosterPrewarm";
+import { isHomeFeedLiveNavBackgroundPaused } from "@/src/lib/liveRoomStartup";
 
 const COOLDOWN_MS = 60_000;
 const STARTUP_POSTER_MAX = 10;
@@ -49,6 +50,10 @@ function isSessionReadyForPrewarm(session: KristoSession | null): session is Kri
 }
 
 async function runHomeFeedStartupPrewarm(session: KristoSession) {
+  if (isHomeFeedLiveNavBackgroundPaused()) {
+    logSkip("live-navigation");
+    return;
+  }
   if (!isHomeFeedInlineVideoAutoplayEnabled()) {
     logSkip("youtube-style-feed");
     return;
@@ -150,6 +155,7 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
     // Poster/byte warm for remaining rows — only after first video frame paints.
     deferStartupWorkAfterHomeFirstFrame(
       async () => {
+        if (isHomeFeedLiveNavBackgroundPaused()) return;
         try {
           const warmed = await warmHomeFeedStartupMedia(warmRows, {
             maxPosters: STARTUP_POSTER_MAX,
@@ -196,6 +202,10 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
 
 /** Fire-and-forget Home Feed startup prewarm (rows + posters + video byte warm). */
 export function startHomeFeedStartupPrewarm(session: KristoSession | null | undefined) {
+  if (isHomeFeedLiveNavBackgroundPaused()) {
+    logSkip("live-navigation");
+    return;
+  }
   if (!isHomeFeedInlineVideoAutoplayEnabled()) {
     logSkip("youtube-style-feed");
     return;

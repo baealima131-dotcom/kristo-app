@@ -45,11 +45,23 @@ import { GuestClaimAssignModal } from "../../../src/components/media/GuestClaimA
 import { MIN_GUEST_SLOT_DURATION_MIN, normalizeGuestClaimSlot } from "../../../src/lib/guestClaimCenterUtils";
 import {
   applySilentMediaScheduleReload,
+  applyBackendMediaScheduleToLocalFeed,
   fetchMediaScheduleFeedSync,
   purgeAllLocalMediaScheduleSources,
   readFeedItemScheduleSlots,
   syncMediaScheduleSlotsToBackend,
 } from "../../../src/lib/mediaScheduleSilentReload";
+import {
+  autoDeleteExpiredOpenGuestSlots,
+  buildGuestSlotsSourceSnapshot,
+  isGuestScheduleSlotExpired,
+  isGuestScheduleSlotOpenUnclaimed,
+  logDelOldScanDiagnostics,
+  logGuestSlotSourceDiagnostics,
+  persistDeleteOpenGuestSlots,
+  persistGuestSlotClaimClear,
+  summarizeGuestScheduleSlotBuckets,
+} from "../../../src/lib/guestClaimPersistence";
 import {
   markLocalSchedulePendingBackend,
   replaceLocalScheduleWithBackend,
@@ -57,6 +69,7 @@ import {
 import {
   ACTIVE_MEDIA_SCHEDULE_ERROR,
   findActiveMediaScheduleForChurch,
+  findActiveMediaScheduleForChurchFromSources,
   isMediaScheduleFeedItem,
 } from "../../../src/lib/mediaScheduleLock";
 import {
@@ -496,14 +509,30 @@ export default function MediaStudioScreen() {
           setGuestClaimSlots([]);
         } else {
           setBackendFeedItems(result.rows);
+          applyBackendMediaScheduleToLocalFeed(result.rows, churchId);
+          setHomeFeedItems([...feedList()]);
         }
 
         if (result.versionChanged || force) {
           setGuestClockNow(Date.now());
-          if (!result.shouldForceLocalPurge) {
-            setHomeFeedItems([...feedList()]);
-          }
         }
+
+        await autoDeleteExpiredOpenGuestSlots({
+          reason: `media-reload:${reason}`,
+          churchId,
+          headers: getKristoHeaders({
+            userId: session?.userId || "",
+            role: (session?.role || "Member") as any,
+            churchId,
+          }) as Record<string, string>,
+          backendFeedItems: result.rows,
+          homeFeedItems: [...feedList()],
+          nowMs: Date.now(),
+          userId: String(session?.userId || "").trim(),
+          setBackendFeedItems,
+          setHomeFeedItems,
+          setGuestClaimSlots,
+        });
 
         return result;
       } catch (e) {
@@ -518,7 +547,7 @@ export default function MediaStudioScreen() {
     async (sourceFeedId?: string, reason = "guest-slot-action") => {
       const churchId = String(session?.churchId || "").trim();
       const feedId = String(sourceFeedId || "").trim();
-      if (!churchId || !feedId) return;
+      if (!churchId || !feedId) return null;
 
       const headers = getKristoHeaders({
         userId: session?.userId || "",
@@ -527,12 +556,23 @@ export default function MediaStudioScreen() {
       }) as any;
 
       const slots = readFeedItemScheduleSlots(feedId, [...feedList(), ...backendFeedItems]);
-      if (!slots.length) return;
+      if (!slots.length) return null;
 
-      await syncMediaScheduleSlotsToBackend(feedId, slots, headers);
+      const res = await syncMediaScheduleSlotsToBackend(feedId, slots, headers);
       await runMediaScheduleSilentReload(reason, true);
+      return res;
     },
     [backendFeedItems, runMediaScheduleSilentReload, session?.churchId, session?.role, session?.userId]
+  );
+
+  const guestClaimHeaders = useMemo(
+    () =>
+      getKristoHeaders({
+        userId: session?.userId || "",
+        role: (session?.role || "Member") as any,
+        churchId: String(session?.churchId || "").trim(),
+      }) as Record<string, string>,
+    [session?.churchId, session?.role, session?.userId]
   );
 
   const applyScheduleSlotsToFeedState = useCallback((sourceFeedId: string, slots: any[]) => {
@@ -1506,20 +1546,12 @@ export default function MediaStudioScreen() {
           ""
         ).trim();
 
-        const slotStatus = String(slot?.status || "").toLowerCase().trim();
-        const isClaimed = Boolean(
-          (guestName && guestName.toLowerCase() !== "open") ||
-          claimedByUserId ||
-          slot?.claimed === true ||
-          slot?.isClaimed === true ||
-          slotStatus === "claimed" ||
-          slotStatus === "taken"
-        );
+        const isClaimed = Boolean(claimedByUserId);
 
         const timeWindow = resolveMediaSlotTimeWindow(slot);
 
         return {
-          id: String(slot?.id || `synced-slot-${index}`),
+          id: String(slot?.id || slot?.slotId || slot?.slot || slot?.order || `slot-${index + 1}`),
           sourceFeedId: sourceItemId,
           title: String(slot?.name || slot?.slotLabel || `Slot ${index + 1}`),
           meetingDate: String(slot?.meetingDate || "").trim(),
@@ -1580,6 +1612,133 @@ export default function MediaStudioScreen() {
     (slot) => getGuestSlotUiState(slot) === "open"
   ).length;
   const guestInvitationCount = 0;
+
+  useEffect(() => {
+    const churchId = String(session?.churchId || "").trim();
+    const activeSchedule = churchId
+      ? resolveCanonicalMediaScheduleForGuests(
+          homeFeedItems,
+          backendFeedItems,
+          churchId,
+          guestClockNow
+        )
+      : null;
+    const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "");
+    const rawScheduleSlots = Array.isArray(activeSchedule?.scheduleSlots)
+      ? activeSchedule.scheduleSlots
+      : [];
+    const sourceLabel =
+      backendFeedItems.length > 0
+        ? "backend"
+        : homeFeedItems.some(
+            (item: any) =>
+              String(item?.id || "") === sourceFeedId ||
+              String(item?.sourceScheduleId || "") === sourceFeedId
+          )
+          ? "routes"
+          : "local";
+
+    console.log("KRISTO_GUEST_SLOTS_SOURCE", {
+      ...buildGuestSlotsSourceSnapshot({
+        sourceFeedId,
+        backendFeedItems,
+        homeFeedItems,
+        runtimeSlots: syncedGuestClaimSlots,
+        nowMs: guestClockNow,
+      }),
+      activeScheduleId: sourceFeedId,
+      source: sourceLabel,
+    });
+
+    logGuestSlotSourceDiagnostics({
+      feedId: sourceFeedId,
+      slotCount: rawScheduleSlots.length,
+      source: sourceLabel,
+      guestCenterSlots: syncedGuestClaimSlots,
+      delOldSlots: rawScheduleSlots,
+      nowMs: guestClockNow,
+    });
+
+    logDelOldScanDiagnostics(rawScheduleSlots, guestClockNow, {
+      openSlotCount: guestClaimOpenCount,
+      context: "guest-center-schedule-slots",
+    });
+
+    logDelOldScanDiagnostics(syncedGuestClaimSlots, guestClockNow, {
+      openSlotCount: guestClaimOpenCount,
+      context: "guest-center-synced-slots",
+    });
+  }, [
+    backendFeedItems,
+    homeFeedItems,
+    syncedGuestClaimSlots,
+    guestClaimOpenCount,
+    session?.churchId,
+    guestClockNow,
+  ]);
+
+  const guestAutoDeleteExpiredRef = useRef("");
+
+  useEffect(() => {
+    if (!canGuestClaimManage) return;
+
+    const churchId = String(session?.churchId || "").trim();
+    if (!churchId) return;
+
+    const activeSchedule = resolveCanonicalMediaScheduleForGuests(
+      homeFeedItems,
+      backendFeedItems,
+      churchId,
+      guestClockNow
+    );
+    const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "").trim();
+    const rawScheduleSlots = Array.isArray(activeSchedule?.scheduleSlots)
+      ? activeSchedule.scheduleSlots
+      : [];
+    const buckets = summarizeGuestScheduleSlotBuckets(rawScheduleSlots, guestClockNow);
+    if (buckets.expiredOpenSlots <= 0) return;
+
+    const expiredIds = rawScheduleSlots
+      .filter(
+        (slot: any) =>
+          isGuestScheduleSlotOpenUnclaimed(slot) &&
+          isGuestScheduleSlotExpired(slot, guestClockNow)
+      )
+      .map((slot: any) => String(slot?.id || slot?.slotId || ""))
+      .filter(Boolean)
+      .sort()
+      .join("|");
+    const autoKey = `${sourceFeedId}|${expiredIds}|${guestClockNow}`;
+    if (!sourceFeedId || !expiredIds || guestAutoDeleteExpiredRef.current === autoKey) return;
+    guestAutoDeleteExpiredRef.current = autoKey;
+
+    void autoDeleteExpiredOpenGuestSlots({
+      reason: "guest-claim-center-load",
+      churchId,
+      headers: guestClaimHeaders,
+      backendFeedItems,
+      homeFeedItems,
+      sourceFeedId,
+      nowMs: guestClockNow,
+      userId: String(session?.userId || "").trim(),
+      setBackendFeedItems,
+      setHomeFeedItems,
+      setGuestClaimSlots,
+    }).then((result) => {
+      if (Number(result?.removedCount || 0) > 0) {
+        setGuestClockNow(Date.now());
+      }
+    });
+  }, [
+    canGuestClaimManage,
+    backendFeedItems,
+    homeFeedItems,
+    guestClaimHeaders,
+    session?.churchId,
+    session?.userId,
+    guestClockNow,
+  ]);
+
   const guestClaimConflictCount = useMemo(
     () => countMediaSlotTimeConflicts(syncedGuestClaimSlots, guestClockNow),
     [syncedGuestClaimSlots, guestClockNow]
@@ -1589,6 +1748,67 @@ export default function MediaStudioScreen() {
     inputRange: [0, 1],
     outputRange: [1, 1.045],
   });
+
+  function handleDeleteOldGuestSlots() {
+    if (!ensureGuestClaimManagePermission("delete-open-slots")) return;
+
+    const churchId = String(session?.churchId || "").trim();
+    const activeSchedule = churchId
+      ? resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, churchId, guestClockNow)
+      : null;
+    const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "").trim();
+    const slots = Array.isArray(activeSchedule?.scheduleSlots) ? activeSchedule.scheduleSlots : [];
+    const buckets = summarizeGuestScheduleSlotBuckets(slots, guestClockNow);
+
+    if (!sourceFeedId || !slots.length) {
+      Alert.alert("Delete open slots", "No active schedule found.");
+      return;
+    }
+
+    if (buckets.openSlots <= 0) {
+      Alert.alert("Delete open slots", "No open slots to delete.");
+      return;
+    }
+
+    Alert.alert(
+      "Delete open slots",
+      "Delete all open slots? Claimed slots will stay.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              const result = await persistDeleteOpenGuestSlots({
+                sourceFeedId,
+                backendFeedItems,
+                homeFeedItems,
+                headers: guestClaimHeaders,
+                churchId,
+                userId: String(session?.userId || "").trim(),
+                nowMs: guestClockNow,
+                setBackendFeedItems,
+                setHomeFeedItems,
+                setGuestClaimSlots,
+              });
+
+              if (!result.ok) {
+                Alert.alert("Delete failed", result.error || "Could not delete open slots.");
+                return;
+              }
+
+              setGuestClockNow(Date.now());
+              Alert.alert(
+                "Done",
+                `Removed ${result.removedCount} open slot${result.removedCount === 1 ? "" : "s"}.`
+              );
+            })();
+          },
+        },
+      ]
+    );
+  }
 
   function handleClearMediaSchedules() {
     Alert.alert(
@@ -2372,11 +2592,11 @@ export default function MediaStudioScreen() {
       }
 
       if (churchId) {
-        const localActive = findActiveMediaScheduleForChurch(feedList() as any[], churchId, {
-          strictChurch: true,
+        const activeSchedule = await findActiveMediaScheduleForChurchFromSources(churchId, {
+          headers: apiHeaders as Record<string, string>,
         });
 
-        if (localActive) {
+        if (activeSchedule) {
           Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
           return;
         }
@@ -2868,19 +3088,40 @@ export default function MediaStudioScreen() {
 
   function removeGuestClaimant(slotId: string, sourceFeedId?: string) {
     if (!ensureGuestClaimManagePermission("remove-guest")) return;
-    if (sourceFeedId) {
-      feedUnclaimSchedule(sourceFeedId, { slotId, skipBackendSync: true });
-      void syncGuestScheduleSlotsToBackend(sourceFeedId, "remove-guest");
+    if (!sourceFeedId) {
+      updateGuestClaimSlot(slotId, {
+        claimedBy: "Open",
+        avatarUri: "",
+        status: "Open",
+        approved: false,
+        locked: false,
+      });
       return;
     }
 
-    updateGuestClaimSlot(slotId, {
-      claimedBy: "Open",
-      avatarUri: "",
-      status: "Open",
-      approved: false,
-      locked: false,
-    });
+    void (async () => {
+      const result = await persistGuestSlotClaimClear({
+        sourceFeedId,
+        slotId,
+        action: "remove",
+        backendFeedItems,
+        homeFeedItems,
+        headers: guestClaimHeaders,
+        churchId: String(session?.churchId || "").trim(),
+        userId: String(session?.userId || "").trim(),
+        nowMs: guestClockNow,
+        setBackendFeedItems,
+        setHomeFeedItems,
+        setGuestClaimSlots,
+      });
+
+      if (!result.ok) {
+        Alert.alert("Remove failed", result.error || "Could not remove guest from slot.");
+        return;
+      }
+
+      setGuestClockNow(Date.now());
+    })();
   }
 
   function approveGuestClaim(slotId: string, sourceFeedId?: string) {
@@ -2911,19 +3152,40 @@ export default function MediaStudioScreen() {
 
   function rejectGuestClaim(slotId: string, sourceFeedId?: string) {
     if (!ensureGuestClaimManagePermission("reject")) return;
-    if (sourceFeedId) {
-      feedUnclaimSchedule(sourceFeedId, { slotId, skipBackendSync: true });
-      void syncGuestScheduleSlotsToBackend(sourceFeedId, "reject-guest");
+    if (!sourceFeedId) {
+      updateGuestClaimSlot(slotId, {
+        claimedBy: "Open",
+        avatarUri: "",
+        status: "Open",
+        approved: false,
+        locked: false,
+      });
       return;
     }
 
-    updateGuestClaimSlot(slotId, {
-      claimedBy: "Open",
-      avatarUri: "",
-      status: "Open",
-      approved: false,
-      locked: false,
-    });
+    void (async () => {
+      const result = await persistGuestSlotClaimClear({
+        sourceFeedId,
+        slotId,
+        action: "reject",
+        backendFeedItems,
+        homeFeedItems,
+        headers: guestClaimHeaders,
+        churchId: String(session?.churchId || "").trim(),
+        userId: String(session?.userId || "").trim(),
+        nowMs: guestClockNow,
+        setBackendFeedItems,
+        setHomeFeedItems,
+        setGuestClaimSlots,
+      });
+
+      if (!result.ok) {
+        Alert.alert("Reject failed", result.error || "Could not reject guest claim.");
+        return;
+      }
+
+      setGuestClockNow(Date.now());
+    })();
   }
 
   function toggleGuestClaimLock(slotId: string, locked: boolean, sourceFeedId?: string) {
@@ -3920,11 +4182,15 @@ export default function MediaStudioScreen() {
                 </View>
 
                 <Pressable
-                  onPress={handleClearMediaSchedules}
+                  onPress={handleDeleteOldGuestSlots}
                   style={[s.guestClaimSummaryPill, s.guestClaimDangerBtn]}
                 >
-                  <Text style={[s.guestClaimSummaryValue, { color: "#FCA5A5" }]}>DEL</Text>
-                  <Text style={s.guestClaimSummaryLabel}>Old</Text>
+                  <Text style={[s.guestClaimSummaryValue, { color: "#FCA5A5", fontSize: 13 }]}>
+                    Delete Open
+                  </Text>
+                  <Text style={s.guestClaimSummaryLabel}>
+                    {guestClaimOpenCount > 0 ? `${guestClaimOpenCount} open` : "0 open"}
+                  </Text>
                 </Pressable>
               </ScrollView>
 

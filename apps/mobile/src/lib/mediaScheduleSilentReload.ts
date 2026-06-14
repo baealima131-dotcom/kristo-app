@@ -5,6 +5,7 @@ import {
   feedPurgeMediaScheduleCards,
   feedPurgeMediaScheduleCardsForChurch,
   feedRemoveWhere,
+  feedSyncMediaScheduleFromBackend,
 } from "@/src/lib/homeFeedStore";
 import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
 import { findActiveMediaScheduleForChurch, findMediaScheduleFeedForChurch } from "@/src/lib/mediaScheduleLock";
@@ -435,6 +436,21 @@ export async function syncMediaScheduleSlotsToBackend(
     },
     { headers }
   );
+}
+
+/** After backend fetch, replace local schedule row slots with authoritative backend data. */
+export function applyBackendMediaScheduleToLocalFeed(rows: any[], churchId: string) {
+  const cid = String(churchId || "").trim();
+  if (!cid || !rows.length) return null;
+
+  const backendSchedule =
+    findMediaScheduleFeedForChurch(rows, cid, { strictChurch: true }) ||
+    findActiveMediaScheduleForChurch(rows, cid, { strictChurch: true });
+
+  if (!backendSchedule) return null;
+
+  feedSyncMediaScheduleFromBackend(backendSchedule);
+  return backendSchedule;
 }
 
 export function readFeedItemScheduleSlots(sourceFeedId: string, fallbackRows: any[] = []) {

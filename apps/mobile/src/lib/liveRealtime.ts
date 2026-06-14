@@ -155,7 +155,8 @@ export function invalidateCachedParticipant(key: string) {
 export async function fetchLightLiveState(
   headers: Record<string, string>,
   screen = "LiveRoom",
-  liveId?: string
+  liveId?: string,
+  opts?: { force?: boolean }
 ): Promise<LightLivePayload> {
   const userId = String(headers["x-kristo-user-id"] || "").trim();
   const liveIdParam = String(liveId || "").trim();
@@ -163,12 +164,12 @@ export async function fetchLightLiveState(
     ? `/api/church/live?lite=1&liveId=${encodeURIComponent(liveIdParam)}`
     : "/api/church/live?lite=1";
   const key = requestKey("GET", path, userId);
-  if (shouldThrottleFetch(key, 2500)) {
+  if (!opts?.force && shouldThrottleFetch(key, 2500)) {
     logLiveTraffic("duplicate live sync prevented", { screen, liveId: liveIdParam || null });
     return {};
   }
 
-  const res: any = await apiGet(path, { headers: headers as any }, { screen, throttleMs: 2500 });
+  const res: any = await apiGet(path, { headers: headers as any }, { screen, throttleMs: opts?.force ? 0 : 2500 });
   return extractLightLivePayload(res);
 }
 

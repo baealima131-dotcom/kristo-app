@@ -18,12 +18,17 @@ import { fetchHomeFeedFromApi, getCachedHomeFeedBackendRows } from "@/src/compon
 import { resolveChurchName } from "@/src/components/homeFeed/homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "@/src/components/homeFeed/theme";
 import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { fetchMediaScheduleFeedSync } from "@/src/lib/mediaScheduleSilentReload";
+import { autoDeleteExpiredOpenGuestSlots } from "@/src/lib/guestClaimPersistence";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import {
   buildLiveSlotsCatalogFromFeedRows,
-  mergeLiveSlotsFeedSources,
+  resolveLiveSlotsBackendFeedRows,
+  summarizeLiveSlotsRenderRows,
 } from "@/src/lib/liveSlotsCatalog";
+import { onLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { onSlotClaimChanged } from "@/src/lib/slotClaimEvents";
 
 type TabKey = "my-church" | "other-churches";
@@ -44,6 +49,9 @@ export default function LiveSlotsScreen() {
   const [loading, setLoading] = useState(false);
   const [tick, setTick] = useState(0);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [churchBackendRows, setChurchBackendRows] = useState<any[]>([]);
+  const [globalBackendRows, setGlobalBackendRows] = useState<any[]>([]);
+  const [churchFeedLoaded, setChurchFeedLoaded] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 20_000);
@@ -51,14 +59,44 @@ export default function LiveSlotsScreen() {
   }, []);
 
   const reloadFeed = useCallback(async () => {
+    if (!viewerChurchId) return;
     setLoading(true);
     try {
+      const headers = getKristoHeaders({
+        userId: viewerUserId,
+        role: (session?.role || "Member") as any,
+        churchId: viewerChurchId,
+      }) as Record<string, string>;
+
+      const churchSync = await fetchMediaScheduleFeedSync(viewerChurchId, headers);
+      let churchRows = Array.isArray(churchSync.rows) ? churchSync.rows : [];
+
+      const autoResult = await autoDeleteExpiredOpenGuestSlots({
+        reason: "live-slots-load",
+        churchId: viewerChurchId,
+        headers,
+        backendFeedItems: churchRows,
+        homeFeedItems: [...(feedList() as any[])],
+        nowMs: Date.now(),
+        userId: viewerUserId,
+      });
+
+      if (Number(autoResult?.removedCount || 0) > 0) {
+        const resync = await fetchMediaScheduleFeedSync(viewerChurchId, headers);
+        churchRows = Array.isArray(resync.rows) ? resync.rows : [];
+      }
+
+      setChurchBackendRows(churchRows);
+      setChurchFeedLoaded(true);
+
       await fetchHomeFeedFromApi("live-slots-screen", { force: true, reconcile: true });
+      setGlobalBackendRows(getCachedHomeFeedBackendRows());
+      setTick((n) => n + 1);
     } catch {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [session?.role, viewerChurchId, viewerUserId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -67,15 +105,62 @@ export default function LiveSlotsScreen() {
   );
 
   useEffect(() => subscribeHomeFeed(() => setTick((n) => n + 1)), []);
-  useEffect(() => onSlotClaimChanged(() => setTick((n) => n + 1)), []);
+  useEffect(() => onSlotClaimChanged(() => void reloadFeed()), [reloadFeed]);
+  useEffect(
+    () =>
+      onLiveRingRefresh(() => {
+        void reloadFeed();
+      }),
+    [reloadFeed]
+  );
 
-  const catalog = useMemo(() => {
+  const { catalog, sourceSnapshot } = useMemo(() => {
     void tick;
-    const merged = mergeLiveSlotsFeedSources(getCachedHomeFeedBackendRows(), feedList() as any[]);
-    return buildLiveSlotsCatalogFromFeedRows(merged, viewerChurchId, viewerUserId, nowMs);
-  }, [tick, viewerChurchId, viewerUserId, nowMs]);
+    const localRows = feedList() as any[];
+    const globalRows = globalBackendRows.length ? globalBackendRows : getCachedHomeFeedBackendRows();
+    const resolved = resolveLiveSlotsBackendFeedRows({
+      churchBackendRows,
+      globalBackendRows: globalRows,
+      viewerChurchId,
+      localRows,
+      churchFeedLoaded,
+    });
+
+    console.log("KRISTO_LIVE_SLOTS_BACKEND_SOURCE", {
+      backendFeedCount: resolved.snapshot.backendFeedCount,
+      backendSlotCount: resolved.snapshot.backendSlotCount,
+      localSlotCount: resolved.snapshot.localSlotCount,
+      routeSlotCount: resolved.snapshot.routeSlotCount,
+      churchBackendRowCount: churchBackendRows.length,
+      globalBackendRowCount: globalRows.length,
+      sourceUsed: resolved.snapshot.sourceUsed,
+    });
+
+    const nextCatalog = buildLiveSlotsCatalogFromFeedRows(
+      resolved.rows,
+      viewerChurchId,
+      viewerUserId,
+      nowMs
+    );
+
+    return { catalog: nextCatalog, sourceSnapshot: resolved.snapshot };
+  }, [churchBackendRows, globalBackendRows, churchFeedLoaded, tick, viewerChurchId, viewerUserId, nowMs]);
 
   const activeRows = tab === "my-church" ? catalog.myChurch : catalog.otherChurches;
+
+  useEffect(() => {
+    const renderSummary = summarizeLiveSlotsRenderRows(activeRows);
+    console.log("KRISTO_LIVE_SLOTS_RENDER_ROWS", {
+      backendFeedCount: sourceSnapshot.backendFeedCount,
+      backendSlotCount: sourceSnapshot.backendSlotCount,
+      localSlotCount: sourceSnapshot.localSlotCount,
+      routeSlotCount: sourceSnapshot.routeSlotCount,
+      renderedCardCount: renderSummary.renderedCardCount,
+      renderedSlotNumbers: renderSummary.renderedSlotNumbers,
+      sourceUsed: sourceSnapshot.sourceUsed,
+      tab,
+    });
+  }, [activeRows, sourceSnapshot, tab]);
 
   const profileName = String(
     session?.displayName || session?.name || session?.fullName || "You"
@@ -136,9 +221,10 @@ export default function LiveSlotsScreen() {
         </View>
       ) : (
         <ScrollView
+          style={styles.scroll}
           contentContainerStyle={{
             paddingHorizontal: 12,
-            paddingBottom: insets.bottom + 24,
+            paddingBottom: insets.bottom + 260,
             gap: 14,
           }}
           showsVerticalScrollIndicator={false}
@@ -159,10 +245,10 @@ export default function LiveSlotsScreen() {
             activeRows.map((item, index) => {
               const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
               const activeSlot = slots[0] || null;
-              const slotNumber = Math.max(1, Number(item?.slotNumber || 1));
-              const slotFeedTotal = Math.max(
-                1,
-                Number(item?.parentScheduleSlotCount || slots.length || 1)
+              const slotFeedTotal = Math.max(1, Number(item?.parentScheduleSlotCount || 1));
+              const slotNumber = Math.min(
+                Math.max(1, Number(item?.slotNumber || index + 1)),
+                slotFeedTotal
               );
               const churchLabel = resolveChurchName(item);
 
@@ -229,6 +315,9 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: HOME_FEED_BG,
+  },
+  scroll: {
+    flex: 1,
   },
   header: {
     flexDirection: "row",

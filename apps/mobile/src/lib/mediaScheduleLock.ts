@@ -6,6 +6,11 @@ import {
 } from "@/src/lib/homeFeedStore";
 import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
 import { findProtectedClaimableSchedule, findProtectedNearLiveSchedule } from "@/src/lib/liveScheduleRing";
+import { buildLiveSlotsCatalogFromFeedRows } from "@/src/lib/liveSlotsCatalog";
+import {
+  backendConfirmsZeroSlotsForFeedId,
+  purgeStaleLocalScheduleRowsWhenBackendZero,
+} from "@/src/lib/staleBackendZeroSlotGuard";
 
 export const ACTIVE_MEDIA_SCHEDULE_ERROR =
   "A media schedule is already active. Please end or delete it before creating another one.";
@@ -178,7 +183,7 @@ export function isActiveScheduleSlot(
 
   if (endMs > 0 && nowMs > endMs) return false;
 
-  return true;
+  return false;
 }
 
 export function getActiveScheduleSlots(
@@ -245,14 +250,15 @@ export function findActiveMediaScheduleForChurch(
   return null;
 }
 
-/** Any persisted media schedule row for a church (not time-window filtered). */
+/** Any persisted media schedule row for a church with at least one active slot. */
 export function findMediaScheduleFeedForChurch(
   items: AnyFeedItem[],
   churchId: string,
-  options?: { strictChurch?: boolean }
+  options?: { strictChurch?: boolean; nowMs?: number }
 ): AnyFeedItem | null {
   const cid = String(churchId || "").trim();
   if (!cid) return null;
+  const nowMs = options?.nowMs ?? Date.now();
 
   const belongsToChurch = options?.strictChurch
     ? (item: AnyFeedItem) => feedItemBelongsToChurchStrict(item, cid)
@@ -262,8 +268,7 @@ export function findMediaScheduleFeedForChurch(
     if (!isMediaScheduleFeedItem(item)) continue;
     if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) continue;
     if (!belongsToChurch(item)) continue;
-    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-    if (slots.length > 0) return item;
+    if (getActiveScheduleSlots(item, nowMs).length > 0) return item;
   }
 
   return null;
@@ -324,6 +329,47 @@ function purgeStaleLocalMediaSchedules(churchId: string, localActive: AnyFeedIte
   }
 }
 
+function countRenderedLiveSlotsForSchedule(item: AnyFeedItem, churchId: string, nowMs: number) {
+  const cid = String(churchId || "").trim();
+  if (!cid) return 0;
+  const catalog = buildLiveSlotsCatalogFromFeedRows([item], cid, "", nowMs);
+  return catalog.myChurch.length + catalog.otherChurches.length;
+}
+
+export function scanMediaScheduleRowForLock(
+  item: AnyFeedItem | null | undefined,
+  churchId: string,
+  nowMs = Date.now()
+) {
+  const feedId = String(item?.id || item?.sourceScheduleId || "").trim();
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  const activeSlots = item ? getActiveScheduleSlots(item, nowMs) : [];
+  const renderedInLiveSlots = item ? countRenderedLiveSlotsForSchedule(item, churchId, nowMs) : 0;
+  const claimable =
+    item && isMediaScheduleFeedItem(item)
+      ? findProtectedClaimableSchedule([item], churchId, nowMs)
+      : null;
+  const protectedRow =
+    Boolean(claimable) && activeSlots.length > 0 && renderedInLiveSlots > 0;
+
+  return {
+    feedId,
+    slotCount: slots.length,
+    activeSlotCount: activeSlots.length,
+    renderedInLiveSlots,
+    protected: protectedRow,
+    reason: protectedRow
+      ? "open-claimable-slot"
+      : activeSlots.length > 0
+        ? renderedInLiveSlots > 0
+          ? "active-slots"
+          : "stale-non-rendered-slots"
+        : slots.length > 0
+          ? "inactive-slots"
+          : "empty-slots",
+  };
+}
+
 export async function findActiveMediaScheduleForChurchFromSources(
   churchId: string,
   options?: {
@@ -341,6 +387,7 @@ export async function findActiveMediaScheduleForChurchFromSources(
   const looseFindOpts = { excludeId, nowMs, strictChurch: false as const };
 
   let backendRows: AnyFeedItem[] = [];
+  let backendFetchOk = false;
 
   try {
     const res: any = await apiGet(`/api/church/feed?scope=church&_=${Date.now()}`, {
@@ -348,8 +395,24 @@ export async function findActiveMediaScheduleForChurchFromSources(
       cache: "no-store" as RequestCache,
     });
     backendRows = parseFeedApiRows(res);
+    backendFetchOk = true;
   } catch (e) {
     console.log("KRISTO_MEDIA_LOCK_BACKEND_FETCH_ERROR", e);
+  }
+
+  if (backendFetchOk) {
+    purgeStaleLocalScheduleRowsWhenBackendZero({
+      backendRows,
+      backendFeedLoaded: true,
+      churchId: cid,
+      reason: "media-lock-scan",
+    });
+  }
+
+  for (const row of backendRows) {
+    if (!isMediaScheduleFeedItem(row)) continue;
+    if (!feedItemBelongsToChurchStrict(row, cid)) continue;
+    console.log("KRISTO_ACTIVE_SCHEDULE_SCAN", scanMediaScheduleRowForLock(row, cid, nowMs));
   }
 
   const backendActive = findActiveMediaScheduleForChurch(backendRows, cid, strictFindOpts);
@@ -368,29 +431,72 @@ export async function findActiveMediaScheduleForChurchFromSources(
     return backendActive;
   }
 
+  if (backendFetchOk) {
+    const localActive = findActiveMediaScheduleForChurch(feedList() as any[], cid, looseFindOpts);
+    const hasLocalMediaCards = (feedList() as any[]).some((item) => isLocalMediaScheduleCard(item));
+    if (localActive || hasLocalMediaCards) {
+      purgeStaleLocalMediaSchedules(cid, localActive);
+    }
+    return null;
+  }
+
   const localActive = findActiveMediaScheduleForChurch(feedList() as any[], cid, looseFindOpts);
   const hasLocalMediaCards = (feedList() as any[]).some((item) => isLocalMediaScheduleCard(item));
   const protectedClaimable = findProtectedClaimableSchedule(feedList() as any[], cid, nowMs);
   const protectedNearLive = findProtectedNearLiveSchedule(feedList() as any[], cid, nowMs);
 
   if (protectedClaimable) {
-    console.log("KRISTO_ACTIVE_SCHEDULE_PROTECTED", {
-      churchId: cid,
-      reason: "media-lock-open-claimable-slot",
-      feedId: String(protectedClaimable.item?.id || ""),
-      slotId: String(protectedClaimable.slot?.id || ""),
-    });
-    return protectedClaimable.item;
+    const scan = scanMediaScheduleRowForLock(protectedClaimable.item, cid, nowMs);
+    console.log("KRISTO_ACTIVE_SCHEDULE_SCAN", scan);
+    const backendZero = backendConfirmsZeroSlotsForFeedId(
+      String(protectedClaimable.item?.id || scan.feedId || ""),
+      backendRows,
+      backendFetchOk
+    );
+    if (backendZero) {
+      console.log("KRISTO_STALE_ROUTE_SLOTS_IGNORED", {
+        canonicalFeedId: scan.feedId,
+        localScheduleId: String(protectedClaimable.item?.id || ""),
+        backendSlotCount: 0,
+        routeSlotCount: scan.slotCount,
+        reason: "media-lock-protected-claimable-backend-zero",
+      });
+    } else if (scan.protected && scan.renderedInLiveSlots > 0) {
+      console.log("KRISTO_ACTIVE_SCHEDULE_PROTECTED", {
+        ...scan,
+        churchId: cid,
+        reason: "media-lock-open-claimable-slot",
+        slotId: String(protectedClaimable.slot?.id || ""),
+      });
+      return protectedClaimable.item;
+    }
   }
 
   if (protectedNearLive) {
-    console.log("KRISTO_ACTIVE_SCHEDULE_PROTECTED", {
-      churchId: cid,
-      reason: "media-lock-backend-miss",
-      feedId: String(protectedNearLive.item?.id || ""),
-      slotId: String(protectedNearLive.slot?.id || ""),
-    });
-    return protectedNearLive.item;
+    const scan = scanMediaScheduleRowForLock(protectedNearLive.item, cid, nowMs);
+    console.log("KRISTO_ACTIVE_SCHEDULE_SCAN", scan);
+    const backendZero = backendConfirmsZeroSlotsForFeedId(
+      String(protectedNearLive.item?.id || scan.feedId || ""),
+      backendRows,
+      backendFetchOk
+    );
+    if (backendZero) {
+      console.log("KRISTO_STALE_ROUTE_SLOTS_IGNORED", {
+        canonicalFeedId: scan.feedId,
+        localScheduleId: String(protectedNearLive.item?.id || ""),
+        backendSlotCount: 0,
+        routeSlotCount: scan.slotCount,
+        reason: "media-lock-protected-near-live-backend-zero",
+      });
+    } else if (scan.activeSlotCount > 0 && scan.renderedInLiveSlots > 0) {
+      console.log("KRISTO_ACTIVE_SCHEDULE_PROTECTED", {
+        ...scan,
+        churchId: cid,
+        reason: "media-lock-backend-miss",
+        slotId: String(protectedNearLive.slot?.id || ""),
+      });
+      return protectedNearLive.item;
+    }
   }
 
   if (localActive || hasLocalMediaCards) {

@@ -1,6 +1,7 @@
 import { isPendingLocalMediaScheduleRow } from "@/src/lib/mediaSchedulePendingSync";
 import {
   findActiveMediaScheduleForChurch,
+  findMediaScheduleFeedForChurch,
   isMediaScheduleFeedItemClosed,
 } from "@/src/lib/mediaScheduleLock";
 import {
@@ -596,7 +597,7 @@ export function logMediaSlotConflictCheck(
   return conflicts.length;
 }
 
-/** Prefer durable backend schedule over optimistic local pending duplicate. */
+/** Prefer durable backend schedule; route/local only before backend loads. */
 export function resolveCanonicalMediaScheduleForGuests(
   homeFeedItems: any[],
   backendFeedItems: any[],
@@ -613,32 +614,26 @@ export function resolveCanonicalMediaScheduleForGuests(
       })
     : null;
 
-  const homeActive = findActiveMediaScheduleForChurch(homeFeedItems, cid, {
-    strictChurch: true,
-    nowMs,
-  });
+  const backendScheduleFeed = backendFeedItems.length
+    ? findMediaScheduleFeedForChurch(backendFeedItems, cid, { strictChurch: true })
+    : null;
 
-  if (backendActive && !isPendingLocalMediaScheduleRow(backendActive, cid)) {
-    if (
-      homeActive &&
-      homeActive.pendingBackendSync === true &&
-      String(homeActive.id || "") !== String(backendActive.id || "")
-    ) {
-      return backendActive;
-    }
-    return backendActive;
+  const backendSchedule = backendActive || backendScheduleFeed;
+  if (backendSchedule && !isPendingLocalMediaScheduleRow(backendSchedule, cid)) {
+    return backendSchedule;
   }
 
-  if (homeActive) {
-    if (homeActive.pendingBackendSync === true && backendActive) {
-      return backendActive;
-    }
-    if (!isMediaScheduleFeedItemClosed(homeActive)) {
+  if (!backendFeedItems.length) {
+    const homeActive = findActiveMediaScheduleForChurch(homeFeedItems, cid, {
+      strictChurch: true,
+      nowMs,
+    });
+    if (homeActive && !isMediaScheduleFeedItemClosed(homeActive)) {
       return homeActive;
     }
   }
 
-  return backendActive || homeActive || null;
+  return backendSchedule || null;
 }
 
 export function deriveMediaSlotDurationMin(slot: any) {

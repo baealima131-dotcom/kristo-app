@@ -10,6 +10,7 @@ import {
 } from "@/app/api/_lib/churchPastor";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { requireChurchSubscriptionActive } from "@/app/api/_lib/churchSubscription";
+import { endChurchLiveSessionsForSchedule } from "@/app/api/_lib/churchLiveControl";
 
 import { evaluateLiveMediaAuthority } from "@/lib/liveMediaAuthority";
 
@@ -443,6 +444,27 @@ export async function PATCH(req: Request) {
     await writeJsonFile(STORE_FILE, store);
 
     return NextResponse.json({ ok: true, live });
+  }
+
+  if (action === "clear-schedule-live") {
+    const targetLiveId = String(body.liveId || liveId || live.liveId || "").trim();
+    const ended = await endChurchLiveSessionsForSchedule({
+      churchId: a.churchId,
+      liveId: targetLiveId,
+      reason: String(body.reason || "clear-schedule-live"),
+    });
+
+    console.log("KRISTO_LIVE_CLEAR_SCHEDULE_LIVE", {
+      churchId: a.churchId,
+      liveId: targetLiveId || null,
+      endedKeys: ended.endedKeys,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      endedKeys: ended.endedKeys,
+      live: null,
+    });
   }
 
   if (action === "set-policy") {

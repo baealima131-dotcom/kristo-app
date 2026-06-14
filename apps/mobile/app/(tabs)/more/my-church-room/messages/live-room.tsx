@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Animated,
@@ -34,7 +34,7 @@ import {
 } from "@/src/lib/liveStore";
 import { projectStore } from "@/src/lib/projectStore";
 import { getSnapshot, subscribe as subscribeMessages } from "@/src/lib/messagesStore";
-import { feedList, feedRemoveWhere, feedScheduleSlotsForLive, getRingClaimHints, syncUserClaimedSlotStore, writeRingClaimHint, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import { feedList, feedRemoveWhere, feedScheduleSlotsForLive, getRingClaimHints, syncUserClaimedSlotStore, writeRingClaimHint, subscribe as subscribeHomeFeed, clearScheduleClaimRuntimeState } from "@/src/lib/homeFeedStore";
 import { onClaimUpdated } from "@/src/lib/kristoProfileEvents";
 import {
   getLiveJoinBridge,
@@ -59,11 +59,14 @@ import {
 } from "@/src/lib/liveRealtime";
 import { getKristoHeaders, type KristoRole } from "@/src/lib/kristoHeaders";
 import {
+  applyFastLiveStageAuthorityBoost,
+  evaluateFastLiveSessionAuthority,
   evaluateLiveMediaAuthority,
   evaluateLiveStageAuthority,
   isScheduleSlotCameraWindowOpen,
   logMediaLiveV1StageAuthority,
   logLiveMediaAuthority,
+  resolveFastActiveSlotWindow,
 } from "@/src/lib/liveMediaAuthority";
 import {
   fetchChurchPastorUserId,
@@ -89,9 +92,16 @@ import {
 } from "@/src/lib/scheduleSlotUtils";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
+import {
+  endLiveBridgeForStaleScheduleFeedId,
+  shouldIgnoreRouteSlotsForBackendFeedId,
+} from "@/src/lib/staleBackendZeroSlotGuard";
 import { ensureProfileAvatarUploadedBeforeClaim } from "@/src/lib/ensureProfileAvatarForClaim";
 import { runMediaScheduleSilentReload } from "@/src/lib/mediaScheduleSilentReload";
-import { resumeHomeFeedAfterLiveExit } from "@/src/lib/liveRoomStartup";
+import {
+  pauseHomeFeedBackgroundWorkForLiveNavigation,
+  resumeHomeFeedAfterLiveExit,
+} from "@/src/lib/liveRoomStartup";
 import { markHomeFeedVideoNeedsRecovery } from "@/src/lib/homeFeedVideoController";
 import {
   getChurchProjectMcRuntime,
@@ -257,6 +267,45 @@ function subscribeKristoActualMicEnabled(fn: (enabled: boolean) => void) {
   return () => {
     try { gAny.__KRISTO_MIC_ACTUAL_LISTENERS__.delete(fn); } catch {}
   };
+}
+
+function logLivePerf(stage: string, extra?: Record<string, unknown>) {
+  const mountAt = Number((globalThis as any).__KRISTO_LIVE_ROOM_PERF_MOUNT_AT__ || 0);
+  console.log("KRISTO_LIVE_PERF", {
+    stage,
+    msSinceMount: mountAt > 0 ? Date.now() - mountAt : 0,
+    ...(extra || {}),
+  });
+}
+
+async function fetchLightLiveStateWithPerf(
+  headers: Record<string, string>,
+  screen: string,
+  liveId: string | undefined,
+  source: string
+) {
+  logLivePerf("fetchLightLiveState_start", { source, liveId: liveId || "" });
+  logLivePerf("api_church_live_start", { source, liveId: liveId || "" });
+  try {
+    const patch = await fetchLightLiveState(headers as any, screen, liveId);
+    logLivePerf("api_church_live_end", { source, liveId: liveId || "", ok: true });
+    logLivePerf("fetchLightLiveState_end", { source, liveId: liveId || "", ok: true });
+    return patch;
+  } catch (e: any) {
+    logLivePerf("api_church_live_end", {
+      source,
+      liveId: liveId || "",
+      ok: false,
+      message: String(e?.message || e),
+    });
+    logLivePerf("fetchLightLiveState_end", {
+      source,
+      liveId: liveId || "",
+      ok: false,
+      message: String(e?.message || e),
+    });
+    throw e;
+  }
 }
 
 // LiveKit browser detector calls navigator.userAgent.toLowerCase() during publishTrack.
@@ -521,6 +570,29 @@ type LiveSeatType =
   | "camera-mic"
   | "big-screen";
 
+function KristoLiveKitPerfConnected() {
+  const room = useRoomContext();
+
+  useEffect(() => {
+    if (!room) return;
+
+    const onConnected = () => {
+      logLivePerf("livekit_publisher_mount_end", { event: "connected" });
+    };
+
+    if (String((room as any)?.state || "").toLowerCase() === "connected") {
+      onConnected();
+    }
+
+    room.on(RoomEvent.Connected, onConnected);
+    return () => {
+      room.off(RoomEvent.Connected, onConnected);
+    };
+  }, [room]);
+
+  return null;
+}
+
 function KristoLiveKitStage({
   roomName,
   headers,
@@ -557,6 +629,13 @@ function KristoLiveKitStage({
   const [livekitDisabled, setLivekitDisabled] = useState(false);
   const [stageMountAllowed, setStageMountAllowed] = useState(false);
   const [liveKitRemountNonce, setLiveKitRemountNonce] = useState(0);
+  const liveKitPerfMountLoggedRef = useRef(false);
+
+  useEffect(() => {
+    if (liveKitPerfMountLoggedRef.current) return;
+    liveKitPerfMountLoggedRef.current = true;
+    logLivePerf("livekit_publisher_mount_start", { roomName, identity });
+  }, [roomName, identity]);
 
   useEffect(() => {
     AudioSession.configureAudio({
@@ -748,6 +827,8 @@ const headersKey = JSON.stringify(headers || {});
       const wantsPublish =
         String(stableHeaders?.["x-kristo-live-may-publish"] || "") === "1";
 
+      logLivePerf("livekit_token_fetch_start", { roomName, identity: stableIdentity, wantsPublish });
+
       console.log("KRISTO_LIVEKIT_PRELOAD_START", {
         roomName,
         identity: stableIdentity,
@@ -810,12 +891,29 @@ const headersKey = JSON.stringify(headers || {});
         if (res?.ok && res?.url && res?.token) {
           const nextUrl = String(res.url);
           const nextToken = String(res.token);
+          logLivePerf("livekit_token_fetch_end", {
+            roomName,
+            identity: stableIdentity,
+            ok: true,
+          });
           setTokenState((prev) => {
             if (prev?.url === nextUrl && prev?.token === nextToken) return prev;
             return { url: nextUrl, token: nextToken };
           });
+        } else {
+          logLivePerf("livekit_token_fetch_end", {
+            roomName,
+            identity: stableIdentity,
+            ok: false,
+          });
         }
       } catch (e: any) {
+        logLivePerf("livekit_token_fetch_end", {
+          roomName,
+          identity: stableIdentity,
+          ok: false,
+          message: String(e?.message || e),
+        });
         console.log("KRISTO_LIVEKIT_TOKEN_ERROR", {
           message: String(e?.message || e),
           wantsPublish,
@@ -893,6 +991,7 @@ const headersKey = JSON.stringify(headers || {});
       options={liveKitOptions as any}
     >
       <KristoLiveKitCleanupGuard />
+      <KristoLiveKitPerfConnected />
       <KristoLiveKitNativeRemoteAudio />
       <KristoViewerJoinRetryWatch
         enabled={!canPublish}
@@ -1823,9 +1922,20 @@ export default function LiveRoomScreen() {
   const [cameraReady, setCameraReady] = useState(false);
   const [liveKitAccountEpoch, setLiveKitAccountEpoch] = useState(0);
   const prevSessionUserIdRef = useRef("");
-  const liveRoomMountAtRef = useRef(Date.now());
+  const liveRoomMountAtRef = useRef(0);
   const liveRoomBootstrapAtRef = useRef(0);
   const liveRoomReadyLoggedRef = useRef(false);
+  const livePerfFirstRenderLoggedRef = useRef(false);
+  const livePerfInteractLoggedRef = useRef(false);
+  const livePerfScheduleMergeLoggedRef = useRef(false);
+  const liveFastAuthInitialLoggedRef = useRef(false);
+  const liveFastAuthResolutionLoggedRef = useRef(false);
+
+  if (!liveRoomMountAtRef.current) {
+    liveRoomMountAtRef.current = Date.now();
+    (globalThis as any).__KRISTO_LIVE_ROOM_PERF_MOUNT_AT__ = liveRoomMountAtRef.current;
+  }
+  const [livePerfPermissionsDone, setLivePerfPermissionsDone] = useState(false);
   const router = useRouter();
   const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
@@ -1879,7 +1989,23 @@ export default function LiveRoomScreen() {
   }>();
 
   const liveRouteChurchId = String((params as any)?.churchId || session?.churchId || "").trim();
-  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(null);
+  const routePublisherEligibleEarly =
+    String((params as any)?.canPublish || "") === "1" ||
+    String((params as any)?.canPublishCamera || "") === "1" ||
+    String((params as any)?.mediaSlotPublisher || "") === "1";
+  const routeClaimedByUserIdEarly = String((params as any)?.claimedByUserId || "").trim();
+  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(() => {
+    const uid = String(session?.userId || "").trim();
+    if (
+      routePublisherEligibleEarly &&
+      uid &&
+      routeClaimedByUserIdEarly &&
+      routeClaimedByUserIdEarly === uid
+    ) {
+      return true;
+    }
+    return null;
+  });
 
   useEffect(() => {
     if (!liveRouteChurchId) {
@@ -1915,18 +2041,32 @@ export default function LiveRoomScreen() {
     };
   }, []);
 
+  useLayoutEffect(() => {
+    if (livePerfFirstRenderLoggedRef.current) return;
+    livePerfFirstRenderLoggedRef.current = true;
+    logLivePerf("first_render");
+  }, []);
+
   useEffect(() => {
-    liveRoomMountAtRef.current = Date.now();
     liveRoomReadyLoggedRef.current = false;
     const routeSlotCount = initialRouteScheduleSlots.length;
     const routeSlotsRaw = String((params as any)?.liveAllScheduleSlotsJson || "");
     const routeSlotsByteLen = utf8JsonByteLength(routeSlotsRaw);
+    const ringNavAt = Number((globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ || 0);
+    logLivePerf("router_navigation_received", {
+      sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
+      feedId: String((params as any)?.feedId || ""),
+      liveId: String((params as any)?.liveId || ""),
+    });
+    logLivePerf("component_mount", {
+      sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
+    });
+    pauseHomeFeedBackgroundWorkForLiveNavigation("live-room-mount");
     console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_SIZE", {
       byteLen: routeSlotsByteLen,
       charLen: routeSlotsRaw.length,
       slotCount: routeSlotCount,
     });
-    const ringNavAt = Number((globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ || 0);
     console.log("KRISTO_LIVE_ROOM_MOUNT_START", {
       at: liveRoomMountAtRef.current,
       sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
@@ -1939,6 +2079,9 @@ export default function LiveRoomScreen() {
         console.log("KRISTO_LIVE_ROOM_FIRST_PAINT", {
           at: paintAt,
           sinceMountMs: paintAt - liveRoomMountAtRef.current,
+          sinceRingNavMs: ringNavAt ? paintAt - ringNavAt : null,
+        });
+        logLivePerf("first_paint", {
           sinceRingNavMs: ringNavAt ? paintAt - ringNavAt : null,
         });
       });
@@ -2115,9 +2258,30 @@ export default function LiveRoomScreen() {
   const sessionRoleText = String((session as any)?.role || "").toLowerCase();
   const routeRoleText = String(roleParam || "").toLowerCase();
 
+  const fastLiveAuthEarly = useMemo(
+    () =>
+      evaluateFastLiveSessionAuthority({
+        currentUserId,
+        sessionRoleText,
+        sessionChurchRole: String((session as any)?.churchRole || ""),
+        routePastorUserId: routePastorCandidate,
+        routeScheduleCreatorUserId: routeScheduleCreator,
+        routeClaimedByUserId: String((params as any)?.claimedByUserId || ""),
+      }),
+    [
+      currentUserId,
+      sessionRoleText,
+      (session as any)?.churchRole,
+      routePastorCandidate,
+      routeScheduleCreator,
+      (params as any)?.claimedByUserId,
+    ]
+  );
+
   const liveMediaAuthority = evaluateLiveMediaAuthority({
     currentUserId,
     actualChurchPastorUserId: String(
+      fastLiveAuthEarly.trustedActualChurchPastorUserId ||
       resolvedActualChurchPastorUserId ||
       backendChurchLive?.actualChurchPastorUserId ||
       (!routePastorLooksLikeCreator ? routePastorCandidate : "") ||
@@ -2655,6 +2819,7 @@ export default function LiveRoomScreen() {
   const backendLiveRequestsRef = useRef<Record<string, any>>({});
   const [backendLiveRequests, setBackendLiveRequests] = useState<Record<string, any>>({});
   const [backendScheduleSlots, setBackendScheduleSlots] = useState<any[]>([]);
+  const [backendScheduleHydrated, setBackendScheduleHydrated] = useState(false);
   const [runtimeSlotOverrides, setRuntimeSlotOverrides] = useState<Record<string, any>>({});
 
   const liveScheduleFeedId = useMemo(() => {
@@ -2697,7 +2862,21 @@ export default function LiveRoomScreen() {
     return resolved;
   }, [params, feedScheduleTick]);
 
+  const ignoreRouteSlotsForStaleBackend = useMemo(() => {
+    if (!liveScheduleFeedId || !isBackendFeedScheduleId(liveScheduleFeedId)) return false;
+    return shouldIgnoreRouteSlotsForBackendFeedId({
+      feedId: liveScheduleFeedId,
+      backendRows: backendScheduleHydrated ? [{ id: liveScheduleFeedId, scheduleSlots: backendScheduleSlots }] : [],
+      backendFeedLoaded: backendScheduleHydrated,
+      backendSlotCount: backendScheduleSlots.length,
+    });
+  }, [liveScheduleFeedId, backendScheduleHydrated, backendScheduleSlots]);
+
   const routeScheduleSlots = useMemo(() => {
+    if (ignoreRouteSlotsForStaleBackend) {
+      return [];
+    }
+
     if (initialRouteScheduleSlots.length) return initialRouteScheduleSlots;
 
     const fromFeedStore = liveScheduleFeedId
@@ -2705,7 +2884,12 @@ export default function LiveRoomScreen() {
       : [];
 
     return fromFeedStore;
-  }, [initialRouteScheduleSlots, liveScheduleFeedId, feedScheduleTick]);
+  }, [
+    ignoreRouteSlotsForStaleBackend,
+    initialRouteScheduleSlots,
+    liveScheduleFeedId,
+    feedScheduleTick,
+  ]);
 
   // Preserve ring/nav slot before time-based stage resolution (fast lean route open).
   const routeCurrentSlotNumber = useMemo(() => {
@@ -2726,6 +2910,10 @@ export default function LiveRoomScreen() {
   ]);
 
   const mergedScheduleSlots = useMemo(() => {
+    if (ignoreRouteSlotsForStaleBackend) {
+      return [];
+    }
+
     const feedSlots = liveScheduleFeedId ? feedScheduleSlotsForLive(liveScheduleFeedId) : [];
     const merged = mergeLiveRoomScheduleSlots(
       backendScheduleSlots,
@@ -2744,12 +2932,51 @@ export default function LiveRoomScreen() {
       liveScheduleFeedId || String((params as any)?.liveId || "")
     );
   }, [
+    ignoreRouteSlotsForStaleBackend,
     backendScheduleSlots,
     routeScheduleSlots,
     liveScheduleFeedId,
     feedScheduleTick,
     backendLiveRequests,
     (params as any)?.liveId,
+  ]);
+
+  useEffect(() => {
+    if (!ignoreRouteSlotsForStaleBackend || !liveScheduleFeedId) return;
+
+    console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_DROPPED_STALE", {
+      feedId: liveScheduleFeedId,
+      routeSlotCount: initialRouteScheduleSlots.length,
+      backendSlotCount: backendScheduleSlots.length,
+      localScheduleId: String((params as any)?.localScheduleId || ""),
+    });
+
+    clearScheduleClaimRuntimeState(liveScheduleFeedId);
+    endLiveBridgeForStaleScheduleFeedId(liveScheduleFeedId);
+    emitLiveRingRefresh("live-room-stale-backend-zero");
+  }, [
+    ignoreRouteSlotsForStaleBackend,
+    liveScheduleFeedId,
+    initialRouteScheduleSlots.length,
+    backendScheduleSlots.length,
+    (params as any)?.localScheduleId,
+  ]);
+
+  useEffect(() => {
+    if (livePerfScheduleMergeLoggedRef.current && mergedScheduleSlots.length === 0) return;
+    if (!livePerfScheduleMergeLoggedRef.current) {
+      livePerfScheduleMergeLoggedRef.current = true;
+      logLivePerf("schedule_merge_start");
+    }
+    logLivePerf("schedule_merge_done", {
+      mergedSlotCount: mergedScheduleSlots.length,
+      routeSlotCount: routeScheduleSlots.length,
+      backendSlotCount: backendScheduleSlots.length,
+    });
+  }, [
+    mergedScheduleSlots.length,
+    routeScheduleSlots.length,
+    backendScheduleSlots.length,
   ]);
 
   useEffect(() => {
@@ -2762,6 +2989,7 @@ export default function LiveRoomScreen() {
   }, []);
 
   const backendScheduleReady =
+    backendScheduleHydrated ||
     mergedScheduleSlots.length > 0 ||
     routeScheduleSlots.length > 0;
 
@@ -2795,13 +3023,17 @@ export default function LiveRoomScreen() {
       backendSlotCount: backendScheduleSlots.length,
     });
     const readySource =
-      routeScheduleSlots.length > 0 && backendScheduleSlots.length === 0
-        ? "route-slots"
-        : backendScheduleSlots.length > 0
-          ? "backend"
-          : routeScheduleSlots.length > 0
-            ? "route-slots"
-            : "backend";
+      ignoreRouteSlotsForStaleBackend
+        ? "backend-empty-ended"
+        : routeScheduleSlots.length > 0 && backendScheduleSlots.length === 0
+          ? "route-slots"
+          : backendScheduleSlots.length > 0
+            ? "backend"
+            : routeScheduleSlots.length > 0
+              ? "route-slots"
+              : backendScheduleHydrated
+                ? "backend"
+                : "route-slots";
 
     console.log("KRISTO_LIVE_ROOM_READY", {
       source: readySource,
@@ -3161,14 +3393,22 @@ export default function LiveRoomScreen() {
   const isDeclaredMediaHostForThisLive =
     !!currentUserId && routeMediaHostIds.includes(String(currentUserId));
 
+  const routeClaimedByUserId = String((params as any)?.claimedByUserId || "").trim();
+  const routeClaimsOwnSlot =
+    !!currentUserId && routeClaimedByUserId === currentUserId;
+  const routeOwnsPublishedSlot =
+    routeClaimsOwnSlot &&
+    (rawRouteCanPublishMic || rawRouteCanPublishCamera || routePublisherEligibleEarly);
+
   // Never trust Pastor/Host role from another church/media.
   // For scheduled media live, route publish is valid only for this live owner/media hosts.
   // V1 scheduled: route hints may prime mic session only — camera follows active-slot ownership.
   const routeCanPublish =
     isMediaInstantLive
       ? rawRouteCanPublishMic || rawRouteCanPublishCamera
-      : rawRouteCanPublishMic &&
-        (isPastorLiveOwner || isMediaOwnerHost || isDeclaredMediaHostForThisLive);
+      : routeOwnsPublishedSlot ||
+        (rawRouteCanPublishMic &&
+          (isPastorLiveOwner || isMediaOwnerHost || isDeclaredMediaHostForThisLive));
 
   const runtimeCurrentSlotNumber = Number((currentMainStageSlot as any)?.slot || 0);
   const rawCurrentSlotOwnerId = String((currentMainStageSlot as any)?.claimedByUserId || "").trim();
@@ -3336,7 +3576,7 @@ export default function LiveRoomScreen() {
   const approvedViewerCanMic = false;
   const approvedViewerIsCurrentCameraTurn = false;
 
-  const liveStageAuthority = evaluateLiveStageAuthority({
+  const liveStageAuthorityBase = evaluateLiveStageAuthority({
     isMediaInstantLive,
     currentUserId,
     currentSlotNumber,
@@ -3353,6 +3593,60 @@ export default function LiveRoomScreen() {
     roleLooksLikeHost,
     approvedViewerSeatType,
     churchSubscriptionActive,
+  });
+
+  const fastLiveAuth = useMemo(
+    () =>
+      evaluateFastLiveSessionAuthority({
+        currentUserId,
+        sessionRoleText,
+        sessionChurchRole: String((session as any)?.churchRole || ""),
+        routePastorUserId: routePastorCandidate,
+        routeScheduleCreatorUserId: routeScheduleCreator,
+        routeClaimedByUserId,
+        currentSlotOwnerId,
+      }),
+    [
+      currentUserId,
+      sessionRoleText,
+      (session as any)?.churchRole,
+      routePastorCandidate,
+      routeScheduleCreator,
+      routeClaimedByUserId,
+      currentSlotOwnerId,
+    ]
+  );
+
+  const fastActiveSlotWindow = useMemo(
+    () =>
+      resolveFastActiveSlotWindow({
+        currentUserId,
+        currentSlotOwnerId,
+        currentSlotStartMs,
+        currentSlotEndMs,
+        routeClaimedByUserId,
+        routeScheduleStartMs: Number(String((params as any)?.scheduleStartMs || "").trim() || 0),
+        routeScheduleEndMs: Number(String((params as any)?.scheduleEndMs || "").trim() || 0),
+        nowMs: liveNowMs,
+      }),
+    [
+      currentUserId,
+      currentSlotOwnerId,
+      currentSlotStartMs,
+      currentSlotEndMs,
+      routeClaimedByUserId,
+      (params as any)?.scheduleStartMs,
+      (params as any)?.scheduleEndMs,
+      liveNowMs,
+    ]
+  );
+
+  const liveStageAuthority = applyFastLiveStageAuthorityBoost(liveStageAuthorityBase, {
+    isMediaInstantLive,
+    fastSession: fastLiveAuth,
+    fastSlotWindowOpen: fastActiveSlotWindow.windowOpen,
+    churchSubscriptionActive,
+    routePublisherEligible: routePublisherEligibleEarly,
   });
 
   const {
@@ -3491,13 +3785,21 @@ export default function LiveRoomScreen() {
 
   // Sticky for the live session: token fetch must not follow per-tick camera/slot flags.
   const [liveKitSessionMayPublish, setLiveKitSessionMayPublish] = useState(
-    () =>
-      isMediaInstantLive
-        ? routeCanPublish
-        : pastorPermanentMicNow ||
-          mediaHostPermanentMicNow ||
-          isDeclaredMediaHostForThisLive ||
-          myClaimedMicSlotNumbers.length > 0
+    () => {
+      if (isMediaInstantLive) {
+        return routeCanPublishEarly;
+      }
+      if (routeOwnsPublishedSlot && routePublisherEligibleEarly) {
+        return true;
+      }
+      return (
+        fastLiveAuthEarly.trustedIsActualChurchPastor ||
+        fastLiveAuthEarly.trustedIsMediaScheduleCreator ||
+        fastLiveAuthEarly.trustedOwnsActiveSlot ||
+        isDeclaredMediaHostForThisLive ||
+        myClaimedMicSlotNumbers.length > 0
+      );
+    }
   );
 
   useEffect(() => {
@@ -3512,15 +3814,24 @@ export default function LiveRoomScreen() {
           roleLooksLikeHost
         );
       }
-      return canPublishClaimedMicNow || canPublishLiveVideoNow;
+      if (routeOwnsPublishedSlot && canPublishLiveVideoNow) return true;
+      return (
+        canPublishClaimedMicNow ||
+        canPublishLiveVideoNow ||
+        fastLiveAuth.trustedIsActualChurchPastor ||
+        fastLiveAuth.trustedOwnsActiveSlot
+      );
     });
   }, [
     canPublishClaimedMicNow,
     canPublishLiveVideoNow,
     routeCanPublish,
+    routeOwnsPublishedSlot,
     isMediaInstantLive,
     isPastorLiveOwner,
     roleLooksLikeHost,
+    fastLiveAuth.trustedIsActualChurchPastor,
+    fastLiveAuth.trustedOwnsActiveSlot,
   ]);
 
   const liveMicPublisherReady = canPublishClaimedMicNow;
@@ -3530,6 +3841,77 @@ export default function LiveRoomScreen() {
 
   // Publisher LiveKit mount: mic-eligible OR current camera slot owner.
   const mountLiveKitPublisherStage = canPublishClaimedMicNow || canPublishLiveVideoNow;
+
+  useEffect(() => {
+    if (liveFastAuthInitialLoggedRef.current) return;
+    liveFastAuthInitialLoggedRef.current = true;
+    console.log("KRISTO_LIVE_FAST_AUTH_INITIAL", {
+      currentUserId,
+      trustedIsActualChurchPastor: fastLiveAuth.trustedIsActualChurchPastor,
+      trustedIsMediaScheduleCreator: fastLiveAuth.trustedIsMediaScheduleCreator,
+      trustedOwnsActiveSlot: fastLiveAuth.trustedOwnsActiveSlot,
+      fastSlotWindowOpen: fastActiveSlotWindow.windowOpen,
+      canPublishLiveVideoNow,
+      canPublishClaimedCameraNow,
+      mountLiveKitPublisherStage,
+      liveKitSessionMayPublish,
+      reasons: fastLiveAuth.reasons,
+    });
+  }, [
+    currentUserId,
+    fastLiveAuth,
+    fastActiveSlotWindow.windowOpen,
+    canPublishLiveVideoNow,
+    canPublishClaimedCameraNow,
+    mountLiveKitPublisherStage,
+    liveKitSessionMayPublish,
+  ]);
+
+  useEffect(() => {
+    if (!resolvedActualChurchPastorUserId || liveFastAuthResolutionLoggedRef.current) return;
+
+    const resolvedIsPastor = resolvedActualChurchPastorUserId === currentUserId;
+    const fastWasPastor = fastLiveAuth.trustedIsActualChurchPastor;
+
+    if (resolvedIsPastor && fastWasPastor) {
+      liveFastAuthResolutionLoggedRef.current = true;
+      console.log("KRISTO_LIVE_FAST_AUTH_CONFIRMED", {
+        currentUserId,
+        resolvedActualChurchPastorUserId,
+        canPublishLiveVideoNow,
+        mountLiveKitPublisherStage,
+      });
+      return;
+    }
+
+    if (!resolvedIsPastor && fastWasPastor) {
+      liveFastAuthResolutionLoggedRef.current = true;
+      console.log("KRISTO_LIVE_FAST_AUTH_DOWNGRADED", {
+        currentUserId,
+        resolvedActualChurchPastorUserId,
+        canPublishLiveVideoNow,
+        mountLiveKitPublisherStage,
+      });
+      return;
+    }
+
+    if (resolvedIsPastor && !fastWasPastor) {
+      liveFastAuthResolutionLoggedRef.current = true;
+      console.log("KRISTO_LIVE_FAST_AUTH_CONFIRMED", {
+        currentUserId,
+        resolvedActualChurchPastorUserId,
+        lateConfirm: true,
+        canPublishLiveVideoNow,
+        mountLiveKitPublisherStage,
+      });
+    }
+  }, [
+    resolvedActualChurchPastorUserId,
+    currentUserId,
+    fastLiveAuth.trustedIsActualChurchPastor,
+    canPublishLiveVideoNow,
+    mountLiveKitPublisherStage,
+  ]);
 
   useEffect(() => {
     logMediaLiveV1StageAuthority("live-room", liveStageAuthority, {
@@ -4501,14 +4883,34 @@ export default function LiveRoomScreen() {
           Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
         );
 
-        if (cancelled || !slots.length) {
-          if (!cancelled) {
-            console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
-              feedId: hydrateFeedId,
-              source,
-              hadRouteSlots: routeScheduleSlots.length,
-            });
-          }
+        if (cancelled) return;
+
+        setBackendScheduleHydrated(true);
+
+        if (!slots.length) {
+          setBackendScheduleSlots([]);
+          console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
+            feedId: hydrateFeedId,
+            source,
+            hadRouteSlots: routeScheduleSlots.length,
+          });
+          console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_DROPPED_STALE", {
+            feedId: hydrateFeedId,
+            routeSlotCount: routeScheduleSlots.length,
+            backendSlotCount: 0,
+            localScheduleId: String((params as any)?.localScheduleId || ""),
+            source,
+          });
+          console.log("KRISTO_STALE_ROUTE_SLOTS_IGNORED", {
+            canonicalFeedId: hydrateFeedId,
+            localScheduleId: String((params as any)?.localScheduleId || ""),
+            backendSlotCount: 0,
+            routeSlotCount: routeScheduleSlots.length,
+            reason: "live-room-hydrate-empty",
+          });
+          clearScheduleClaimRuntimeState(hydrateFeedId);
+          endLiveBridgeForStaleScheduleFeedId(hydrateFeedId);
+          emitLiveRingRefresh("live-room-hydrate-empty");
           return;
         }
 
@@ -4526,6 +4928,28 @@ export default function LiveRoomScreen() {
         });
       } catch (e: any) {
         const status = Number(e?.status || e?.response?.status || 0);
+        if (!cancelled && (status === 404 || status === 410)) {
+          setBackendScheduleHydrated(true);
+          setBackendScheduleSlots([]);
+          console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
+            feedId: hydrateFeedId,
+            source,
+            hadRouteSlots: routeScheduleSlots.length,
+            status,
+          });
+          console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_DROPPED_STALE", {
+            feedId: hydrateFeedId,
+            routeSlotCount: routeScheduleSlots.length,
+            backendSlotCount: 0,
+            localScheduleId: String((params as any)?.localScheduleId || ""),
+            source,
+            status,
+          });
+          clearScheduleClaimRuntimeState(hydrateFeedId);
+          endLiveBridgeForStaleScheduleFeedId(hydrateFeedId);
+          emitLiveRingRefresh("live-room-hydrate-missing");
+          return;
+        }
         console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_ERROR", {
           feedId: hydrateFeedId,
           source,
@@ -4545,17 +4969,27 @@ export default function LiveRoomScreen() {
       }
     }
 
+    void hydrateScheduleFromFeed("immediate");
+
     if (hasRouteSlots) {
       const timer = setTimeout(() => {
         void hydrateScheduleFromFeed("background");
       }, 0);
+      const stopPoll = startAdaptiveLivePolling({
+        screen: "LiveRoomSchedule",
+        enabled: isFocused,
+        activeMs: 90000,
+        idleMs: 120000,
+        onTick: async () => {
+          await hydrateScheduleFromFeed("poll");
+        },
+      });
       return () => {
         cancelled = true;
         clearTimeout(timer);
+        stopPoll?.();
       };
     }
-
-    void hydrateScheduleFromFeed("immediate");
 
     const stopPoll = startAdaptiveLivePolling({
       screen: "LiveRoomSchedule",
@@ -4870,7 +5304,7 @@ export default function LiveRoomScreen() {
     if (!liveBridgeId || isMediaInstantLive) return;
     let cancelled = false;
 
-    void fetchLightLiveState(liveApiHeaders as any, "LiveRoomImmediate", liveBridgeId)
+    void fetchLightLiveStateWithPerf(liveApiHeaders as any, "LiveRoomImmediate", liveBridgeId, "immediate")
       .then((patch) => {
         if (!cancelled) applyBackendLivePatch(patch, "immediate");
       })
@@ -4893,9 +5327,12 @@ export default function LiveRoomScreen() {
   useEffect(() => {
     const unsubClaim = onClaimUpdated(() => {
       if (!liveBridgeId || isMediaInstantLive) return;
-      void fetchLightLiveState(liveApiHeaders as any, "LiveRoomClaimRefresh", liveBridgeId).then(
-        (patch) => applyBackendLivePatch(patch, "claim-refresh")
-      );
+      void fetchLightLiveStateWithPerf(
+        liveApiHeaders as any,
+        "LiveRoomClaimRefresh",
+        liveBridgeId,
+        "claim-refresh"
+      ).then((patch) => applyBackendLivePatch(patch, "claim-refresh"));
     });
     return unsubClaim;
   }, [liveBridgeId, liveApiHeaders, isMediaInstantLive, applyBackendLivePatch]);
@@ -4909,7 +5346,12 @@ export default function LiveRoomScreen() {
       activeMs: canManageLiveRef.current ? 3000 : 6000,
       idleMs: 22000,
       onTick: async () => {
-        const patch = await fetchLightLiveState(liveApiHeaders as any, "LiveRoom", liveBridgeId);
+        const patch = await fetchLightLiveStateWithPerf(
+          liveApiHeaders as any,
+          "LiveRoom",
+          liveBridgeId,
+          "poll"
+        );
         applyBackendLivePatch(patch, "poll");
       },
     });
@@ -6221,7 +6663,12 @@ export default function LiveRoomScreen() {
 
   useEffect(() => {
     if (!canManageLive || !isFocused || isMediaInstantLive || !liveBridgeId) return;
-    void fetchLightLiveState(liveApiHeaders as any, "LiveRoomPastorFast", liveBridgeId).then((patch) => {
+    void fetchLightLiveStateWithPerf(
+      liveApiHeaders as any,
+      "LiveRoomPastorFast",
+      liveBridgeId,
+      "pastor-fast"
+    ).then((patch) => {
       applyBackendLivePatch(patch, "pastor-fast");
     });
   }, [canManageLive, isFocused, feedScheduleTick, liveApiHeaders, isMediaInstantLive, liveBridgeId, applyBackendLivePatch]);
@@ -6963,22 +7410,29 @@ export default function LiveRoomScreen() {
   }
 
   useEffect(() => {
-
-
     let alive = true;
 
     (async () => {
       try {
+        logLivePerf("camera_permission_start", {
+          alreadyGranted: !!cameraPermission?.granted,
+        });
         const camOk = cameraPermission?.granted
           ? true
           : !!(await requestCameraPermission())?.granted;
+        logLivePerf("camera_permission_end", { granted: camOk });
 
+        logLivePerf("mic_permission_start", {
+          alreadyGranted: !!micPermission?.granted,
+        });
         const micOk = micPermission?.granted
           ? true
           : !!(await requestMicPermission())?.granted;
+        logLivePerf("mic_permission_end", { granted: micOk });
 
         if (alive) {
           setCameraPaused(false);
+          setLivePerfPermissionsDone(true);
           if (!camOk) {
             console.log("live-room camera permission not granted");
           }
@@ -6987,6 +7441,7 @@ export default function LiveRoomScreen() {
           }
         }
       } catch (e) {
+        setLivePerfPermissionsDone(true);
         console.log("live-room permission error", e);
       }
     })();
@@ -6995,6 +7450,30 @@ export default function LiveRoomScreen() {
       alive = false;
     };
   }, [cameraPermission?.granted, micPermission?.granted]);
+
+  useEffect(() => {
+    if (livePerfInteractLoggedRef.current) return;
+    if (!livePerfPermissionsDone) return;
+    if (!liveEnabled && !isMediaInstantLive) return;
+
+    livePerfInteractLoggedRef.current = true;
+    logLivePerf("user_can_interact", {
+      liveEnabled,
+      canEnterRoom,
+      liveScheduleReady,
+      isMediaInstantLive,
+      cameraGranted: !!cameraPermission?.granted,
+      micGranted: !!micPermission?.granted,
+    });
+  }, [
+    livePerfPermissionsDone,
+    liveEnabled,
+    canEnterRoom,
+    liveScheduleReady,
+    isMediaInstantLive,
+    cameraPermission?.granted,
+    micPermission?.granted,
+  ]);
 
   useEffect(() => {
     if (!liveEnabled) return;

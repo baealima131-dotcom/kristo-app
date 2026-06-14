@@ -2,6 +2,10 @@ import { DeviceEventEmitter } from "react-native";
 import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
 import { isMediaSlotEndedOrStale } from "@/src/lib/mediaScheduleSlotTimes";
+import {
+  filterLocalRowsWhenBackendZeroSlots,
+  purgeStaleLocalScheduleRowsWhenBackendZero,
+} from "@/src/lib/staleBackendZeroSlotGuard";
 import { baseFeedId, collectScheduleAliasIds, enrichScheduleSlot, resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
 
 export const NEAR_LIVE_WINDOW_MS = 30 * 60 * 1000;
@@ -139,8 +143,11 @@ function isOpenClaimableScheduleSlot(slot: any, index = 0, nowMs = Date.now()): 
     return false;
   }
 
-  const { endMs } = getSlotRingWindow(slot, index, nowMs);
-  return endMs > nowMs;
+  const { startMs, endMs } = getSlotRingWindow(slot, index, nowMs);
+  if (endMs > 0 && nowMs > endMs) return false;
+  if (startMs > nowMs) return true;
+  if (endMs > nowMs) return true;
+  return false;
 }
 
 /** Protect open media schedule slots that members can still claim (not only near-live). */
@@ -199,46 +206,51 @@ function buildClaimedPersonalAlert(
   };
 }
 
-export function mergeFeedRowsForScheduleScan(backendRows: any[] = []): any[] {
+export function mergeFeedRowsForScheduleScan(
+  backendRows: any[] = [],
+  options?: { backendFeedLoaded?: boolean; churchId?: string }
+): any[] {
+  const backendFeedLoaded = options?.backendFeedLoaded === true;
+
+  if (backendFeedLoaded) {
+    purgeStaleLocalScheduleRowsWhenBackendZero({
+      backendRows,
+      backendFeedLoaded: true,
+      churchId: options?.churchId,
+      reason: "ring-merge-scan",
+    });
+  }
+
   const localRows = (() => {
     try {
-      return feedList() as any[];
+      const rows = feedList() as any[];
+      return filterLocalRowsWhenBackendZeroSlots(rows, backendRows, backendFeedLoaded);
     } catch {
       return [];
     }
   })();
 
-  const byBase = new Map<string, any>();
   const mergedRows = [...localRows, ...backendRows];
+  const byBase = new Map<string, any>();
 
-  for (const row of mergedRows) {
+  for (const row of localRows) {
     const seed = String(row?.sourceScheduleId || row?.id || "");
     const key =
       resolveCanonicalScheduleFeedId(seed, mergedRows) ||
       baseFeedId(seed) ||
       String(row?.id || "");
     if (!key) continue;
+    byBase.set(key, row);
+  }
 
-    const prev = byBase.get(key);
-    if (!prev) {
-      byBase.set(key, row);
-      continue;
-    }
-
-    const prevClaimed = (Array.isArray(prev.scheduleSlots) ? prev.scheduleSlots : []).filter(
-      (slot: any) => String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()
-    ).length;
-    const nextClaimed = (Array.isArray(row.scheduleSlots) ? row.scheduleSlots : []).filter(
-      (slot: any) => String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()
-    ).length;
-    const prevUpdated = Number(prev.updatedAt || prev.publishedAt || 0);
-    const nextUpdated = Number(row.updatedAt || row.publishedAt || 0);
-
-    if (nextClaimed > prevClaimed || (nextClaimed === prevClaimed && nextUpdated >= prevUpdated)) {
-      byBase.set(key, row);
-    } else {
-      byBase.set(key, prev);
-    }
+  for (const row of backendRows) {
+    const seed = String(row?.sourceScheduleId || row?.id || "");
+    const key =
+      resolveCanonicalScheduleFeedId(seed, mergedRows) ||
+      baseFeedId(seed) ||
+      String(row?.id || "");
+    if (!key) continue;
+    byBase.set(key, row);
   }
 
   return Array.from(byBase.values());
@@ -282,6 +294,7 @@ export function computeChurchScheduleTabLive(options: {
     if (String(item?.churchId || "").trim() !== viewerChurchId) continue;
 
     const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    if (!slots.length) continue;
     slots.forEach((slot: any, index: number) => {
       const { startMs, endMs, isLiveNow } = getSlotRingWindow(slot, index, nowMs);
       if (!startMs || endMs <= nowMs) return;
@@ -477,9 +490,13 @@ export function recomputeScheduleRingsFromRows(options: {
   viewerChurchId: string;
   nowMs?: number;
   source?: string;
+  backendFeedLoaded?: boolean;
 }) {
   const nowMs = options.nowMs ?? Date.now();
-  const rows = mergeFeedRowsForScheduleScan(options.rows);
+  const rows = mergeFeedRowsForScheduleScan(options.rows, {
+    backendFeedLoaded: options.backendFeedLoaded,
+    churchId: options.viewerChurchId,
+  });
 
   const personal = computePersonalScheduleTabAlert({
     rows,
