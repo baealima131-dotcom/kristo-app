@@ -1,4 +1,13 @@
-import { generateVideoPosterFrame } from "@/src/lib/mediaVideoPoster";
+import {
+  generateUploadStudioCoverOptions,
+  generateVideoPosterFrame,
+} from "@/src/lib/mediaVideoPoster";
+
+export {
+  generateUploadStudioCoverOptions,
+  releaseUploadStudioCoverUris,
+  type UploadStudioCoverOptionsResult,
+} from "@/src/lib/mediaVideoPoster";
 
 export async function generateLocalVideoPosterUri(
   videoUri: string,

@@ -17,7 +17,9 @@ import {
   computeHomeFeedPosterCandidateTimesMs,
   computeHomeFeedPosterCaptureTimeMs,
   selectBestPosterFrameCandidate,
+  selectDiverseUploadStudioCovers,
   type PosterFrameCandidate,
+  type UploadStudioCoverBatchResult,
 } from "@/src/lib/homeFeedPosterFrameQuality";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
@@ -51,6 +53,90 @@ export function computePosterCaptureTimeMs(durationMs?: number): number {
   const targetMs = Math.round(totalMs * 0.1);
   const maxMs = Math.max(MIN_CAPTURE_MS, totalMs - 250);
   return Math.min(Math.max(targetMs, MIN_CAPTURE_MS), maxMs);
+}
+
+function uniqueSortedCaptureTimes(times: number[]) {
+  return [...new Set(times.map((ms) => Math.max(MIN_CAPTURE_MS, Math.round(ms))))].sort(
+    (a, b) => a - b
+  );
+}
+
+/** Evenly spaced capture points for upload-studio cover grids (default 10). */
+export function computeUploadStudioCoverTimesMs(
+  durationMs?: number,
+  count = 10,
+  batchOffset = 0
+): number[] {
+  const totalMs =
+    Number(durationMs || 0) > 0 ? Math.round(Number(durationMs)) : 45_000;
+  const maxMs = Math.max(MIN_CAPTURE_MS, totalMs - 250);
+  const phase = ((batchOffset % 7) + 1) * 0.028;
+  const times: number[] = [];
+
+  for (let i = 0; i < count; i += 1) {
+    let ratio = (i + 0.5) / count + phase;
+    ratio = ratio % 1;
+    if (ratio < 0.05) ratio += 0.05;
+    if (ratio > 0.95) ratio -= 0.05;
+    times.push(Math.min(Math.max(Math.round(totalMs * ratio), MIN_CAPTURE_MS), maxMs));
+  }
+
+  return uniqueSortedCaptureTimes(times);
+}
+
+/** Extra probe timestamps — merges home-feed anchors with a phased grid for diversity. */
+export function computeUploadStudioProbeTimesMs(
+  durationMs?: number,
+  probeCount = 24,
+  batchOffset = 0
+): number[] {
+  const homeTimes = computeHomeFeedPosterCandidateTimesMs(durationMs);
+  const gridTimes = computeUploadStudioCoverTimesMs(durationMs, probeCount, batchOffset);
+  return uniqueSortedCaptureTimes([...homeTimes, ...gridTimes]);
+}
+
+export type UploadStudioCoverOptionsResult = UploadStudioCoverBatchResult;
+
+export async function generateUploadStudioCoverOptions(params: {
+  videoUrl: string;
+  durationMs?: number;
+  count?: number;
+  batchOffset?: number;
+}): Promise<UploadStudioCoverOptionsResult> {
+  if (shouldDeferBackgroundMediaJobs()) return { covers: [], bestIndex: 0 };
+
+  const videoUrl = String(params.videoUrl || "").trim();
+  if (!videoUrl) return { covers: [], bestIndex: 0 };
+
+  const count = Math.max(1, Math.min(12, Number(params.count || 10)));
+  const probeCount = Math.max(22, count * 2 + 4);
+  const times = computeUploadStudioProbeTimesMs(
+    params.durationMs,
+    probeCount,
+    params.batchOffset ?? 0
+  );
+  const candidates = await capturePosterFrameCandidates(videoUrl, times);
+  if (!candidates.length) return { covers: [], bestIndex: 0 };
+
+  return selectDiverseUploadStudioCovers(candidates, params.durationMs, count);
+}
+
+/** Best-effort cleanup of temp thumbnail files from upload-studio cover batches. */
+export async function releaseUploadStudioCoverUris(uris: string[]): Promise<void> {
+  const unique = [...new Set(uris.map((uri) => String(uri || "").trim()).filter(Boolean))];
+  if (!unique.length) return;
+
+  try {
+    const FileSystem = await import("expo-file-system/legacy");
+    await Promise.all(
+      unique.map((uri) => {
+        if (!uri.startsWith("file://")) return Promise.resolve();
+        return FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+      })
+    );
+  } catch {
+    // Non-fatal — OS will reclaim temp files eventually.
+  }
 }
 
 async function capturePosterFrameCandidates(

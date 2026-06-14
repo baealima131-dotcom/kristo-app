@@ -12,6 +12,7 @@ import {
   View,
   ActivityIndicator,
   Modal,
+  useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -35,7 +36,7 @@ import {
 } from "../../../src/lib/homeFeedStore";
 import { apiGet, apiPost, getApiBase } from "../../../src/lib/kristoApi";
 import { fileNameFromUri } from "../../../src/lib/churchVideoUpload";
-import { generateLocalVideoPosterUri } from "../../../src/lib/videoPoster";
+import { generateUploadStudioCoverOptions, releaseUploadStudioCoverUris } from "../../../src/lib/videoPoster";
 import { startMediaVideoUpload } from "../../../src/lib/optimisticVideoUpload";
 import { useSmoothedVideoUploadProgress } from "../../../src/hooks/useSmoothedVideoUploadProgress";
 import { getKristoHeaders } from "../../../src/lib/kristoHeaders";
@@ -112,6 +113,12 @@ import {
   saveScreenSessionData,
   shouldSkipFocusRefresh,
 } from "../../../src/lib/screenOpenState";
+import { homeFeedPremiumStyles as homeFeedPremium } from "../../../src/components/homeFeed/homeFeedPremiumStyles";
+import { HOME_FEED_GOLD } from "../../../src/components/homeFeed/theme";
+import {
+  homeFeedVideoThumbnailHeight,
+  tiktokThumbnailWidth,
+} from "../../../src/lib/homeFeedYouTubeLayout";
 
 const MEDIA_SCREEN = "MediaScreen";
 
@@ -140,6 +147,165 @@ function runAfterFirstFrame(task: () => void) {
   setTimeout(task, 0);
 }
 
+
+const VIDEO_POST_TITLE_MIN = 5;
+const VIDEO_POST_TITLE_MAX = 30;
+const VIDEO_POST_COVER_COUNT = 10;
+const VIDEO_POST_TITLE_EXAMPLES = [
+  "The Power of Prayer",
+  "Sunday Worship Service",
+  "Jesus Still Saves",
+  "Testimony of Healing",
+] as const;
+
+function formatVideoPostDurationLabel(durationMs?: number) {
+  const ms = Number(durationMs || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  const totalSec = Math.max(1, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSec / 60);
+  const seconds = totalSec % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function VideoPostPublishPreview({
+  coverUri,
+  displayType,
+  title,
+  mediaName,
+  churchName,
+  avatarUri,
+  durationMs,
+  coversGenerating,
+  onChangeVideo,
+}: {
+  coverUri: string;
+  displayType: "youtube" | "tiktok";
+  title: string;
+  mediaName?: string;
+  churchName?: string;
+  avatarUri?: string;
+  durationMs?: number;
+  coversGenerating?: boolean;
+  onChangeVideo?: () => void;
+}) {
+  const { width: windowWidth } = useWindowDimensions();
+  const isTiktok = displayType === "tiktok";
+  const brandLabel = String(churchName || mediaName || "").trim();
+  const initial = (brandLabel || "K").charAt(0).toUpperCase();
+  const avatarSrc = String(avatarUri || "").trim();
+  const durationLabel = formatVideoPostDurationLabel(durationMs);
+  const hasTitle = Boolean(String(title || "").trim());
+  const thumbHeight = homeFeedVideoThumbnailHeight(windowWidth, displayType);
+  const tiktokWidth = tiktokThumbnailWidth(windowWidth);
+  const previewStatsLine = [mediaName, "Just now"].filter(Boolean).join(" • ");
+
+  return (
+    <View style={s.videoPublishPreviewShell}>
+      <LinearGradient
+        colors={["rgba(244,201,93,0.10)", "rgba(167,139,250,0.06)", "rgba(255,255,255,0.02)"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={s.videoPublishPreviewGlow}
+      />
+      <View style={homeFeedPremium.feedCard}>
+        <View
+          style={[
+            homeFeedPremium.thumbFrame,
+            { height: thumbHeight },
+            isTiktok ? s.videoPublishThumbWrapTiktok : null,
+          ]}
+        >
+          <View
+            style={[
+              s.videoPublishThumbPress,
+              isTiktok
+                ? { width: tiktokWidth, height: thumbHeight }
+                : { width: "100%", height: thumbHeight },
+            ]}
+          >
+            {coverUri ? (
+              <Image source={{ uri: coverUri }} style={s.videoPublishPreviewImage} resizeMode="cover" />
+            ) : (
+              <View style={[s.videoPublishPreviewPlaceholder, { minHeight: thumbHeight }]}>
+                {coversGenerating ? (
+                  <ActivityIndicator size="small" color="#F4C95D" />
+                ) : (
+                  <Ionicons name="image-outline" size={34} color="rgba(255,255,255,0.28)" />
+                )}
+                <Text style={s.videoPublishPreviewPlaceholderText}>
+                  {coversGenerating ? "Generating cover preview…" : "Cover preview"}
+                </Text>
+              </View>
+            )}
+            <View style={s.videoPublishPlayOverlay} pointerEvents="none">
+              <View style={homeFeedPremium.playBadge}>
+                <Ionicons name="play" size={26} color="#FFFFFF" style={s.videoPublishPlayIcon} />
+              </View>
+            </View>
+            <View style={s.videoPublishPreviewFormatBadge}>
+              <Ionicons
+                name={isTiktok ? "phone-portrait-outline" : "tv-outline"}
+                size={14}
+                color="#F4C95D"
+              />
+              <Text style={s.videoPublishPreviewFormatText}>
+                {isTiktok ? "TikTok · 9:16" : "YouTube · 16:9"}
+              </Text>
+            </View>
+            {durationLabel ? (
+              <View style={homeFeedPremium.durationBadge} pointerEvents="none">
+                <Text style={s.videoPublishDurationText}>{durationLabel}</Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+
+        <View style={homeFeedPremium.metaSection}>
+          <View style={homeFeedPremium.metaRow}>
+            {avatarSrc ? (
+              <Image source={{ uri: avatarSrc }} style={homeFeedPremium.avatar} />
+            ) : (
+              <View style={homeFeedPremium.avatarFallback}>
+                <Text style={homeFeedPremium.avatarInitial}>{initial}</Text>
+              </View>
+            )}
+            <View style={homeFeedPremium.metaTextCol}>
+              {churchName ? (
+                <View style={homeFeedPremium.churchNameRow}>
+                  <Text style={homeFeedPremium.churchName} numberOfLines={1}>
+                    {churchName}
+                  </Text>
+                  <Ionicons name="checkmark-circle" size={14} color={HOME_FEED_GOLD} />
+                </View>
+              ) : null}
+              {hasTitle ? (
+                <Text style={homeFeedPremium.videoTitle} numberOfLines={2}>
+                  {title}
+                </Text>
+              ) : (
+                <Text style={s.videoPublishFeedTitlePlaceholder}>Your title will appear here</Text>
+              )}
+              {previewStatsLine ? (
+                <Text style={homeFeedPremium.statsLine} numberOfLines={1}>
+                  {previewStatsLine}
+                </Text>
+              ) : null}
+            </View>
+          </View>
+        </View>
+      </View>
+      {onChangeVideo ? (
+        <Pressable
+          onPress={onChangeVideo}
+          style={({ pressed }) => [s.videoPublishChangeVideoBtn, pressed ? s.pressed : null]}
+        >
+          <Ionicons name="swap-horizontal-outline" size={16} color="#F4C95D" />
+          <Text style={s.videoPublishChangeVideoText}>Change Video</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
 
 function MediaPostVideoPreview({ uri, onChange }: { uri: string; onChange?: () => void }) {
   const [muted, setMuted] = useState(true);
@@ -256,6 +422,10 @@ export default function MediaStudioScreen() {
 
   const scrollRef = useRef<any>(null);
   const detailsCardYRef = useRef(0);
+  const videoPostCoverGenerationIdRef = useRef(0);
+  const videoPostCoverOptionsRef = useRef<string[]>([]);
+  const videoPostCoverManuallySelectedRef = useRef(false);
+  const videoPostCustomCoverUriRef = useRef("");
   const { session, setSession } = useKristoSession();
 
   const [paymentsState, setPaymentsState] = useState(() => getPaymentsState());
@@ -1101,9 +1271,15 @@ export default function MediaStudioScreen() {
   const [isCreatingVideoPost, setIsCreatingVideoPost] = useState(false);
   const [videoPostUri, setVideoPostUri] = useState("");
   const [videoPostPosterUri, setVideoPostPosterUri] = useState("");
+  const [videoPostCoverOptions, setVideoPostCoverOptions] = useState<string[]>([]);
+  const [videoPostSelectedCoverIndex, setVideoPostSelectedCoverIndex] = useState(0);
+  const [videoPostCoverBatch, setVideoPostCoverBatch] = useState(0);
+  const [videoPostCoversGenerating, setVideoPostCoversGenerating] = useState(false);
+  const [videoPostCoverGenerationFailed, setVideoPostCoverGenerationFailed] = useState(false);
   const [videoPostDurationMs, setVideoPostDurationMs] = useState(0);
   const [videoPostTitle, setVideoPostTitle] = useState("");
   const [videoPostCustomCoverUri, setVideoPostCustomCoverUri] = useState("");
+  videoPostCustomCoverUriRef.current = videoPostCustomCoverUri;
   const [videoPostDisplayType, setVideoPostDisplayType] = useState<"youtube" | "tiktok">("youtube");
   const [videoPostDetailsOpen, setVideoPostDetailsOpen] = useState(false);
   const [pendingDetailsScroll, setPendingDetailsScroll] = useState(false);
@@ -1115,10 +1291,62 @@ export default function MediaStudioScreen() {
   const cleanVideoPostTitle = videoPostTitle.trim();
 
   const videoPostTitleOk =
-    cleanVideoPostTitle.length >= 7 && cleanVideoPostTitle.length <= 15;
+    cleanVideoPostTitle.length >= VIDEO_POST_TITLE_MIN &&
+    cleanVideoPostTitle.length <= VIDEO_POST_TITLE_MAX;
+
+  const activeVideoPostCoverUri = useMemo(() => {
+    if (videoPostCustomCoverUri) return videoPostCustomCoverUri;
+    const generated =
+      videoPostCoverOptions[videoPostSelectedCoverIndex] ||
+      videoPostCoverOptions[0] ||
+      videoPostPosterUri;
+    return String(generated || "").trim();
+  }, [
+    videoPostCustomCoverUri,
+    videoPostCoverOptions,
+    videoPostSelectedCoverIndex,
+    videoPostPosterUri,
+  ]);
+
+  const videoPostCoverReady = Boolean(activeVideoPostCoverUri);
 
   const videoPostReadyToPublish =
-    !!videoPostUri && videoPostTitleOk && (videoPostDisplayType === "youtube" || videoPostDisplayType === "tiktok");
+    !!videoPostUri &&
+    videoPostTitleOk &&
+    videoPostCoverReady &&
+    (videoPostDisplayType === "youtube" || videoPostDisplayType === "tiktok");
+
+  const videoPostPreviewBranding = useMemo(() => {
+    const mediaName = String(form.mediaName.trim() || churchMediaProfile?.mediaName || "").trim();
+    const churchName = String(
+      (session as any)?.churchName ||
+        (session as any)?.churchLabel ||
+        (session as any)?.church?.name ||
+        ""
+    ).trim();
+    const avatarUri = String(
+      (session as any)?.churchAvatarUri ||
+        (session as any)?.church?.avatarUri ||
+        (session as any)?.church?.avatarUrl ||
+        (session as any)?.avatarUri ||
+        (session as any)?.avatarUrl ||
+        (session as any)?.profileImage ||
+        ""
+    ).trim();
+    return { mediaName, churchName, avatarUri };
+  }, [
+    form.mediaName,
+    churchMediaProfile?.mediaName,
+    (session as any)?.churchName,
+    (session as any)?.churchLabel,
+    (session as any)?.church?.name,
+    (session as any)?.churchAvatarUri,
+    (session as any)?.church?.avatarUri,
+    (session as any)?.church?.avatarUrl,
+    (session as any)?.avatarUri,
+    (session as any)?.avatarUrl,
+    (session as any)?.profileImage,
+  ]);
 
   const [guestClaimSlots, setGuestClaimSlots] = useState<any[]>([]);
 
@@ -1652,28 +1880,140 @@ export default function MediaStudioScreen() {
     mediaRouterPush("/more/payments/subscriptions", "subscription-open-handler");
   }
 
+  function releaseStoredVideoPostCovers() {
+    const uris = videoPostCoverOptionsRef.current;
+    if (!uris.length) return;
+    void releaseUploadStudioCoverUris(uris);
+    videoPostCoverOptionsRef.current = [];
+  }
+
+  function resetVideoPostComposerState() {
+    releaseStoredVideoPostCovers();
+    videoPostCoverManuallySelectedRef.current = false;
+    videoPostCoverGenerationIdRef.current += 1;
+    setVideoPostDetailsOpen(false);
+    setVideoPostUri("");
+    setVideoPostPosterUri("");
+    setVideoPostCoverOptions([]);
+    setVideoPostSelectedCoverIndex(0);
+    setVideoPostCoverBatch(0);
+    setVideoPostCoversGenerating(false);
+    setVideoPostCoverGenerationFailed(false);
+    setVideoPostCustomCoverUri("");
+    setVideoPostTitle("");
+    setVideoPostDisplayType("youtube");
+    setVideoPostDurationMs(0);
+    setIsCreatingVideoPost(false);
+  }
+
+  async function loadVideoPostCoverOptions(
+    uri: string,
+    durationMs?: number,
+    batchOffset = 0
+  ) {
+    const cleanUri = String(uri || "").trim();
+    if (!cleanUri) return;
+
+    const generationId = videoPostCoverGenerationIdRef.current + 1;
+    videoPostCoverGenerationIdRef.current = generationId;
+
+    releaseStoredVideoPostCovers();
+    setVideoPostCoverOptions([]);
+
+    setVideoPostCoversGenerating(true);
+    setVideoPostCoverGenerationFailed(false);
+
+    try {
+      const result = await generateUploadStudioCoverOptions({
+        videoUrl: cleanUri,
+        durationMs,
+        count: VIDEO_POST_COVER_COUNT,
+        batchOffset,
+      });
+
+      if (generationId !== videoPostCoverGenerationIdRef.current) return;
+
+      const covers = Array.isArray(result?.covers) ? result.covers : [];
+      if (!covers.length) {
+        setVideoPostCoverOptions([]);
+        videoPostCoverOptionsRef.current = [];
+        setVideoPostCoverGenerationFailed(true);
+        return;
+      }
+
+      const bestIndex = Math.max(
+        0,
+        Math.min(covers.length - 1, Number(result?.bestIndex ?? 0))
+      );
+
+      videoPostCoverOptionsRef.current = covers;
+      setVideoPostCoverOptions(covers);
+
+      if (videoPostCoverManuallySelectedRef.current) {
+        setVideoPostSelectedCoverIndex((prev) => {
+          const nextIndex = prev < covers.length ? prev : bestIndex;
+          const uri = String(covers[nextIndex] || "").trim();
+          if (uri && !videoPostCustomCoverUriRef.current) setVideoPostPosterUri(uri);
+          return nextIndex;
+        });
+      } else {
+        setVideoPostSelectedCoverIndex(bestIndex);
+        const bestUri = String(covers[bestIndex] || covers[0] || "").trim();
+        if (bestUri && !videoPostCustomCoverUriRef.current) setVideoPostPosterUri(bestUri);
+      }
+    } catch (error) {
+      if (generationId !== videoPostCoverGenerationIdRef.current) return;
+      console.log("KRISTO_VIDEO_COVER_BATCH_FAILED", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      setVideoPostCoverOptions([]);
+      setVideoPostCoverGenerationFailed(true);
+    } finally {
+      if (generationId === videoPostCoverGenerationIdRef.current) {
+        setVideoPostCoversGenerating(false);
+      }
+    }
+  }
+
+  function regenerateVideoPostCovers() {
+    if (!videoPostUri || videoPostCoversGenerating) return;
+    const nextBatch = videoPostCoverBatch + 1;
+    setVideoPostCoverBatch(nextBatch);
+    videoPostCoverManuallySelectedRef.current = false;
+    setVideoPostCustomCoverUri("");
+    void loadVideoPostCoverOptions(videoPostUri, videoPostDurationMs, nextBatch);
+  }
+
+  function selectGeneratedVideoPostCover(index: number) {
+    videoPostCoverManuallySelectedRef.current = true;
+    setVideoPostCustomCoverUri("");
+    setVideoPostSelectedCoverIndex(index);
+    const uri = String(videoPostCoverOptions[index] || "").trim();
+    if (uri) setVideoPostPosterUri(uri);
+  }
+
   function beginSmartVideoPrepare(uri: string, durationMs?: number) {
+    releaseStoredVideoPostCovers();
+    videoPostCoverManuallySelectedRef.current = false;
+    videoPostCoverGenerationIdRef.current += 1;
     setIsCreatingVideoPost(true);
     setVideoPostUri("");
     setVideoPostPosterUri("");
+    setVideoPostCoverOptions([]);
+    setVideoPostSelectedCoverIndex(0);
+    setVideoPostCoverBatch(0);
+    setVideoPostCoverGenerationFailed(false);
     setVideoPostCustomCoverUri("");
     setVideoPostTitle("");
     setVideoPostDisplayType("youtube");
     setVideoPostDetailsOpen(false);
-    setVideoPostDurationMs(
+    const resolvedDurationMs =
       Number.isFinite(Number(durationMs)) && Number(durationMs) > 0
         ? Math.round(Number(durationMs))
-        : 0
-    );
+        : 0;
+    setVideoPostDurationMs(resolvedDurationMs);
     setVideoPreparing(true);
     setVideoPreparePercent(8);
-
-    void generateLocalVideoPosterUri(uri, videoPostDurationMs > 0 ? videoPostDurationMs : undefined).then((posterUri) => {
-      const cleanPoster = String(posterUri || "").trim();
-      if (!cleanPoster) return;
-      setVideoPostPosterUri(cleanPoster);
-      console.log("KRISTO_VIDEO_POSTER_CLIENT_READY", { posterUri: cleanPoster });
-    });
 
     let pct = 8;
     const timer = setInterval(() => {
@@ -1684,7 +2024,9 @@ export default function MediaStudioScreen() {
     setTimeout(() => {
       clearInterval(timer);
       setVideoPostUri(uri);
+      setVideoPostDetailsOpen(true);
       setVideoPreparePercent(100);
+      void loadVideoPostCoverOptions(uri, resolvedDurationMs, 0);
       setTimeout(() => setVideoPreparing(false), 350);
     }, 2600);
   }
@@ -1696,6 +2038,7 @@ export default function MediaStudioScreen() {
 
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
+      setVideoPreparing(false);
       Alert.alert("Permission needed", "Allow photo/video access to upload media posts.");
       return;
     }
@@ -1712,6 +2055,7 @@ export default function MediaStudioScreen() {
       });
     } catch (e) {
       console.log("KRISTO_VIDEO_PICKER_ERROR", e);
+      setVideoPreparing(false);
       Alert.alert(
         "Video not ready",
         "This video may still be in iCloud or too large. Open it in Photos first so it downloads, then try again."
@@ -1747,6 +2091,7 @@ export default function MediaStudioScreen() {
     });
 
     if (picked.canceled || !picked.assets?.[0]?.uri) return;
+    videoPostCoverManuallySelectedRef.current = true;
     setVideoPostCustomCoverUri(String(picked.assets[0].uri || "").trim());
   }
 
@@ -1779,9 +2124,19 @@ export default function MediaStudioScreen() {
       return;
     }
 
+    if (typedTitle.length < VIDEO_POST_TITLE_MIN || typedTitle.length > VIDEO_POST_TITLE_MAX) {
+      setVideoPostDetailsOpen(true);
+      setPendingDetailsScroll(true);
+      Alert.alert(
+        "Title length",
+        `Use between ${VIDEO_POST_TITLE_MIN} and ${VIDEO_POST_TITLE_MAX} characters.`
+      );
+      return;
+    }
+
     const title = typedTitle;
     const fileUri = String(videoPostUri || "").trim();
-    const localPosterUri = String(videoPostCustomCoverUri || videoPostPosterUri || "").trim();
+    const localPosterUri = String(activeVideoPostCoverUri || "").trim();
     const fileName = fileNameFromUri(fileUri, `video-${Date.now()}.mp4`);
     const churchId = String(session?.churchId || "").trim();
 
@@ -1823,13 +2178,7 @@ export default function MediaStudioScreen() {
           const finishComposer = (refreshFailed = false) => {
             setVideoPostUploading(false);
             smoothedVideoUpload.stop();
-            setVideoPostDetailsOpen(false);
-            setVideoPostUri("");
-            setVideoPostPosterUri("");
-            setVideoPostCustomCoverUri("");
-            setVideoPostTitle("");
-            setVideoPostDisplayType("youtube");
-            setIsCreatingVideoPost(false);
+            resetVideoPostComposerState();
 
             if (posterUri && videoUrl) {
               (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__ = {
@@ -3281,68 +3630,166 @@ export default function MediaStudioScreen() {
                               : "Keep Kristo open while your sermon uploads directly to video storage."}
                     </Text>
                   </View>
-                ) : videoPostUri ? (
-                  <MediaPostVideoPreview uri={videoPostUri} onChange={pickMediaVideoForPost} />
-                ) : null}
+                ) : videoPostUri && videoPostDetailsOpen ? (
+                  <View style={s.videoStudioCard}>
+                    <Text style={s.videoStudioSectionLabel}>VIDEO PREVIEW</Text>
+                    <VideoPostPublishPreview
+                      coverUri={activeVideoPostCoverUri}
+                      displayType={videoPostDisplayType}
+                      title={cleanVideoPostTitle}
+                      mediaName={videoPostPreviewBranding.mediaName}
+                      churchName={videoPostPreviewBranding.churchName}
+                      avatarUri={videoPostPreviewBranding.avatarUri}
+                      durationMs={videoPostDurationMs}
+                      coversGenerating={videoPostCoversGenerating && !activeVideoPostCoverUri}
+                      onChangeVideo={pickMediaVideoForPost}
+                    />
 
-                {!videoPostUri ? (
-                  <Pressable onPress={pickMediaVideoForPost} style={({ pressed }) => [s.videoChangeBtn, pressed ? s.pressed : null]}>
-                    <Ionicons name="swap-horizontal-outline" size={16} color="#F4C95D" />
-                    <Text style={s.videoChangeBtnText}>Choose Video</Text>
-                  </Pressable>
-                ) : null}
-
-                {videoPostDetailsOpen ? (
-                  <View style={s.videoDetailsCard}>
-                    <Text style={s.fieldLabel}>TITLE</Text>
-                    <View style={s.inputWrap as any}>
+                    <Text style={[s.videoStudioSectionLabel, { marginTop: 18 }]}>TITLE</Text>
+                    <View style={[s.inputWrap as any, videoPostTitleOk ? s.videoTitleInputWrapValid : null]}>
                       <TextInput
                         value={videoPostTitle}
                         onChangeText={setVideoPostTitle}
-                        maxLength={15}
-                        placeholder="Title 7-15 letters..."
+                        maxLength={VIDEO_POST_TITLE_MAX}
+                        placeholder="Enter a title (up to 30 characters)"
                         placeholderTextColor="rgba(255,255,255,0.42)"
-                        style={s.inputPremium as any}
+                        style={[s.inputPremium as any, videoPostTitleOk ? s.videoTitleInputValid : null]}
                       />
-                      <Ionicons name="videocam-outline" size={18} color="#A78BFA" />
-                    </View>
-
-                    <Text style={[s.fieldLabel, { marginTop: 14 }]}>COVER</Text>
-                    <Text style={s.videoCoverHint}>
-                      Choose a cover image for Home Feed. If you skip this, Kristo uses a generated thumbnail.
-                    </Text>
-                    {(videoPostCustomCoverUri || videoPostPosterUri) ? (
-                      <Image
-                        source={{ uri: videoPostCustomCoverUri || videoPostPosterUri }}
-                        style={s.videoCoverPreview}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={[s.videoCoverPreview, s.videoCoverPreviewEmpty]}>
-                        <Ionicons name="image-outline" size={28} color="rgba(255,255,255,0.35)" />
-                      </View>
-                    )}
-                    <View style={s.videoCoverActions}>
-                      <Pressable
-                        onPress={() => void pickVideoPostCover()}
-                        style={({ pressed }) => [s.videoCoverBtn, pressed ? s.pressed : null]}
-                      >
-                        <Ionicons name="images-outline" size={16} color="#F4C95D" />
-                        <Text style={s.videoCoverBtnText}>
-                          {videoPostCustomCoverUri ? "Change Cover" : "Choose Cover"}
-                        </Text>
-                      </Pressable>
-                      {videoPostCustomCoverUri ? (
-                        <Pressable
-                          onPress={() => setVideoPostCustomCoverUri("")}
-                          style={({ pressed }) => [s.videoCoverBtnGhost, pressed ? s.pressed : null]}
-                        >
-                          <Text style={s.videoCoverBtnGhostText}>Use generated</Text>
-                        </Pressable>
+                      {videoPostTitleOk ? (
+                        <Ionicons name="checkmark-circle" size={16} color="#34C759" style={s.videoTitleValidIcon} />
                       ) : null}
+                      <Text style={s.videoTitleCounter}>
+                        {cleanVideoPostTitle.length}/{VIDEO_POST_TITLE_MAX}
+                      </Text>
+                    </View>
+                    <Text style={s.videoTitleHelper}>
+                      Choose a clear title that members can recognize quickly.
+                    </Text>
+                    <Text style={[s.videoTitleHint, videoPostTitleOk ? s.videoTitleHintValid : null]}>
+                      {videoPostTitleOk
+                        ? "Title looks good."
+                        : `Use ${VIDEO_POST_TITLE_MIN}-${VIDEO_POST_TITLE_MAX} characters.`}
+                    </Text>
+                    <View style={s.videoTitleExamplesRow}>
+                      {VIDEO_POST_TITLE_EXAMPLES.map((example) => (
+                        <Pressable
+                          key={example}
+                          onPress={() => setVideoPostTitle(example.slice(0, VIDEO_POST_TITLE_MAX))}
+                          style={({ pressed }) => [s.videoTitleExampleChip, pressed ? s.pressed : null]}
+                        >
+                          <Text style={s.videoTitleExampleText}>{example}</Text>
+                        </Pressable>
+                      ))}
                     </View>
 
-                    <Text style={[s.fieldLabel, { marginTop: 14 }]}>VIDEO SIZE</Text>
+                    <Text style={[s.videoStudioSectionLabel, { marginTop: 18 }]}>COVER SELECTION</Text>
+                    <Text style={s.videoCoverHint}>
+                      Kristo generated cover options from your video. Pick one or upload your own.
+                    </Text>
+
+                    <Text style={s.videoCoverSubLabel}>Generated Covers</Text>
+                    {videoPostCoverGenerationFailed &&
+                    !videoPostCoversGenerating &&
+                    !videoPostCoverOptions.length ? (
+                      <View style={s.videoCoverFailureCard}>
+                        <Ionicons name="alert-circle-outline" size={20} color="#F4C95D" />
+                        <Text style={s.videoCoverFailureText}>
+                          Kristo could not generate covers. Upload a custom cover or try again.
+                        </Text>
+                      </View>
+                    ) : null}
+                    <View style={s.videoCoverGrid}>
+                      {Array.from({ length: VIDEO_POST_COVER_COUNT }).map((_, index) => {
+                        const uri = videoPostCoverOptions[index] || "";
+                        const selected =
+                          !videoPostCustomCoverUri && videoPostSelectedCoverIndex === index && !!uri;
+
+                        return (
+                          <Pressable
+                            key={`video-cover-${index}-${uri || "empty"}`}
+                            disabled={!uri && !videoPostCoversGenerating}
+                            onPress={() => {
+                              if (uri) selectGeneratedVideoPostCover(index);
+                            }}
+                            style={({ pressed }) => [
+                              s.videoCoverGridCell,
+                              selected ? s.videoCoverGridCellSelected : null,
+                              pressed && uri ? s.pressed : null,
+                            ]}
+                          >
+                            {uri ? (
+                              <Image source={{ uri }} style={s.videoCoverGridImage} resizeMode="cover" />
+                            ) : (
+                              <View style={s.videoCoverGridSkeleton}>
+                                {videoPostCoversGenerating ? (
+                                  <ActivityIndicator size="small" color="#F4C95D" />
+                                ) : (
+                                  <Ionicons name="image-outline" size={18} color="rgba(255,255,255,0.28)" />
+                                )}
+                              </View>
+                            )}
+                            <View style={s.videoCoverGridIndexBadge}>
+                              <Text style={s.videoCoverGridIndexText}>{index + 1}</Text>
+                            </View>
+                            {selected ? (
+                              <View style={s.videoCoverGridSelectedBadge}>
+                                <Ionicons name="checkmark-circle" size={18} color="#F4C95D" />
+                              </View>
+                            ) : null}
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+
+                    <Pressable
+                      onPress={() => void regenerateVideoPostCovers()}
+                      disabled={videoPostCoversGenerating || !videoPostUri}
+                      style={({ pressed }) => [
+                        s.videoCoverRegenerateBtn,
+                        (videoPostCoversGenerating || !videoPostUri) && { opacity: 0.5 },
+                        pressed ? s.pressed : null,
+                      ]}
+                    >
+                      <Ionicons name="refresh-outline" size={16} color="#F4C95D" />
+                      <Text style={s.videoCoverRegenerateText}>
+                        {videoPostCoversGenerating ? "Generating covers..." : "Regenerate Covers"}
+                      </Text>
+                    </Pressable>
+
+                    <View style={s.videoCoverOrRow}>
+                      <View style={s.videoCoverOrLine} />
+                      <Text style={s.videoCoverOrText}>OR</Text>
+                      <View style={s.videoCoverOrLine} />
+                    </View>
+
+                    <Pressable
+                      onPress={() => void pickVideoPostCover()}
+                      style={({ pressed }) => [s.videoCoverUploadBtn, pressed ? s.pressed : null]}
+                    >
+                      <Ionicons name="cloud-upload-outline" size={18} color="#07111F" />
+                      <Text style={s.videoCoverUploadBtnText}>
+                        {videoPostCustomCoverUri ? "Change Custom Cover" : "Upload Custom Cover"}
+                      </Text>
+                    </Pressable>
+                    {videoPostCustomCoverUri ? (
+                      <Pressable
+                        onPress={() => {
+                          setVideoPostCustomCoverUri("");
+                          const uri = String(
+                            videoPostCoverOptions[videoPostSelectedCoverIndex] ||
+                              videoPostCoverOptions[0] ||
+                              videoPostPosterUri ||
+                              ""
+                          ).trim();
+                          if (uri) setVideoPostPosterUri(uri);
+                        }}
+                        style={({ pressed }) => [s.videoCoverUseGeneratedBtn, pressed ? s.pressed : null]}
+                      >
+                        <Text style={s.videoCoverUseGeneratedText}>Use generated covers instead</Text>
+                      </Pressable>
+                    ) : null}
+
+                    <Text style={[s.videoStudioSectionLabel, { marginTop: 18 }]}>VIDEO FORMAT</Text>
                     <View style={s.videoDisplayTypeRow}>
                       <Pressable
                         onPress={() => setVideoPostDisplayType("youtube")}
@@ -3352,11 +3799,21 @@ export default function MediaStudioScreen() {
                           pressed ? s.pressed : null,
                         ]}
                       >
+                        <View style={s.videoDisplayTypeBadgeRecommended}>
+                          <Text style={s.videoDisplayTypeBadgeRecommendedText}>Recommended</Text>
+                        </View>
                         <View style={s.videoDisplayTypePreviewYoutube}>
                           <Ionicons name="play" size={16} color="rgba(255,255,255,0.72)" />
                         </View>
                         <Text style={s.videoDisplayTypeLabel}>YouTube</Text>
-                        <Text style={s.videoDisplayTypeSub}>16:9 landscape</Text>
+                        <Text style={s.videoDisplayTypeSub}>Best for Home Feed</Text>
+                        <Text style={s.videoDisplayTypeMeta}>16:9 Landscape</Text>
+                        {videoPostDisplayType === "youtube" ? (
+                          <View style={s.videoDisplayTypeSelectedPill}>
+                            <Ionicons name="checkmark-circle" size={14} color="#F4C95D" />
+                            <Text style={s.videoDisplayTypeSelectedText}>Selected</Text>
+                          </View>
+                        ) : null}
                       </Pressable>
                       <Pressable
                         onPress={() => setVideoPostDisplayType("tiktok")}
@@ -3370,10 +3827,55 @@ export default function MediaStudioScreen() {
                           <Ionicons name="play" size={14} color="rgba(255,255,255,0.72)" />
                         </View>
                         <Text style={s.videoDisplayTypeLabel}>TikTok</Text>
-                        <Text style={s.videoDisplayTypeSub}>9:16 vertical</Text>
+                        <Text style={s.videoDisplayTypeSub}>Vertical · Shorts Style</Text>
+                        <Text style={s.videoDisplayTypeMeta}>9:16 Portrait</Text>
+                        {videoPostDisplayType === "tiktok" ? (
+                          <View style={s.videoDisplayTypeSelectedPill}>
+                            <Ionicons name="checkmark-circle" size={14} color="#F4C95D" />
+                            <Text style={s.videoDisplayTypeSelectedText}>Selected</Text>
+                          </View>
+                        ) : null}
                       </Pressable>
                     </View>
+
+                    <View style={s.videoPublishReadiness}>
+                      <Text style={s.videoStudioSectionLabel}>READY TO PUBLISH</Text>
+                      {[
+                        { ok: !!videoPostUri, label: "Video selected" },
+                        { ok: videoPostTitleOk, label: "Title ready" },
+                        { ok: videoPostCoverReady, label: "Cover selected" },
+                        {
+                          ok: videoPostDisplayType === "youtube" || videoPostDisplayType === "tiktok",
+                          label: "Format selected",
+                        },
+                      ].map((item) => (
+                        <View key={item.label} style={s.videoPublishReadinessRow}>
+                          <Ionicons
+                            name={item.ok ? "checkmark-circle" : "ellipse-outline"}
+                            size={16}
+                            color={item.ok ? "#34C759" : "rgba(255,255,255,0.28)"}
+                          />
+                          <Text
+                            style={[
+                              s.videoPublishReadinessText,
+                              item.ok ? s.videoPublishReadinessTextOk : null,
+                            ]}
+                          >
+                            {item.label}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
                   </View>
+                ) : videoPostUri ? (
+                  <MediaPostVideoPreview uri={videoPostUri} onChange={pickMediaVideoForPost} />
+                ) : null}
+
+                {!videoPostUri ? (
+                  <Pressable onPress={pickMediaVideoForPost} style={({ pressed }) => [s.videoChangeBtn, pressed ? s.pressed : null]}>
+                    <Ionicons name="swap-horizontal-outline" size={16} color="#F4C95D" />
+                    <Text style={s.videoChangeBtnText}>Choose Video</Text>
+                  </Pressable>
                 ) : null}
               </View>
 
@@ -6523,6 +7025,302 @@ showcaseBadgeText: {
     borderWidth: 1,
     borderColor: "rgba(244,201,93,0.16)",
   },
+  videoStudioCard: {
+    marginTop: 8,
+    borderRadius: 24,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.18)",
+  },
+  videoStudioSectionLabel: {
+    color: "rgba(244,201,93,0.88)",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.1,
+  },
+  videoPublishPreviewShell: {
+    marginTop: 10,
+    borderRadius: 22,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.22)",
+    backgroundColor: "rgba(8,12,20,0.92)",
+    padding: 12,
+  },
+  videoPublishPreviewGlow: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  videoPublishThumbWrapTiktok: {
+    alignItems: "center",
+  },
+  videoPublishThumbPress: {
+    overflow: "hidden",
+    backgroundColor: "#050505",
+  },
+  videoPublishPreviewImage: {
+    width: "100%",
+    height: "100%",
+  },
+  videoPublishPreviewPlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#0B0F17",
+  },
+  videoPublishPreviewPlaceholderText: {
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  videoPublishPlayOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoPublishPlayIcon: {
+    marginLeft: 3,
+  },
+  videoPublishPreviewFormatBadge: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.28)",
+    zIndex: 2,
+  },
+  videoPublishPreviewFormatText: {
+    color: "#F4C95D",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  videoPublishDurationText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  videoPublishFeedTitlePlaceholder: {
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 19,
+  },
+  videoPublishChangeVideoBtn: {
+    marginTop: 10,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.24)",
+    backgroundColor: "rgba(244,201,93,0.08)",
+  },
+  videoPublishChangeVideoText: {
+    color: "#F4C95D",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  videoTitleCounter: {
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 11,
+    fontWeight: "800",
+    marginLeft: 8,
+  },
+  videoTitleInputWrapValid: {
+    borderColor: "rgba(52,199,89,0.72)",
+  },
+  videoTitleInputValid: {
+    color: "#FFFFFF",
+  },
+  videoTitleValidIcon: {
+    marginLeft: 6,
+  },
+  videoTitleHelper: {
+    marginTop: 6,
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 11,
+    fontWeight: "600",
+    lineHeight: 15,
+  },
+  videoTitleHint: {
+    marginTop: 4,
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  videoTitleHintValid: {
+    color: "rgba(52,199,89,0.92)",
+  },
+  videoTitleExamplesRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  videoTitleExampleChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  videoTitleExampleText: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  videoCoverSubLabel: {
+    marginTop: 10,
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  videoCoverFailureCard: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.28)",
+    backgroundColor: "rgba(244,201,93,0.08)",
+  },
+  videoCoverFailureText: {
+    flex: 1,
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 17,
+  },
+  videoCoverGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  videoCoverGridCell: {
+    width: "48%",
+    aspectRatio: 16 / 9,
+    borderRadius: 10,
+    overflow: "hidden",
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "#0B0F17",
+  },
+  videoCoverGridCellSelected: {
+    borderColor: "rgba(244,201,93,0.92)",
+    shadowColor: "#F4C95D",
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
+  },
+  videoCoverGridImage: {
+    width: "100%",
+    height: "100%",
+  },
+  videoCoverGridSkeleton: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoCoverGridIndexBadge: {
+    position: "absolute",
+    top: 4,
+    left: 4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.62)",
+    paddingHorizontal: 4,
+  },
+  videoCoverGridIndexText: {
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 10,
+    fontWeight: "900",
+  },
+  videoCoverGridSelectedBadge: {
+    position: "absolute",
+    right: 3,
+    bottom: 3,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderRadius: 999,
+  },
+  videoCoverRegenerateBtn: {
+    marginTop: 12,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.28)",
+    backgroundColor: "rgba(244,201,93,0.10)",
+  },
+  videoCoverRegenerateText: {
+    color: "#F4C95D",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  videoCoverOrRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginVertical: 14,
+  },
+  videoCoverOrLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  videoCoverOrText: {
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+  videoCoverUploadBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: "#F4C95D",
+  },
+  videoCoverUploadBtnText: {
+    color: "#07111F",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  videoCoverUseGeneratedBtn: {
+    marginTop: 8,
+    alignSelf: "center",
+    paddingVertical: 6,
+  },
+  videoCoverUseGeneratedText: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   videoCoverHint: {
     marginTop: 4,
     color: "rgba(255,255,255,0.52)",
@@ -6582,17 +7380,40 @@ showcaseBadgeText: {
   },
   videoDisplayTypeBox: {
     flex: 1,
-    borderRadius: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    borderRadius: 18,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
     alignItems: "center",
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: "rgba(255,255,255,0.10)",
     backgroundColor: "rgba(255,255,255,0.03)",
+    minHeight: 188,
   },
   videoDisplayTypeBoxActive: {
-    borderColor: "rgba(244,201,93,0.55)",
-    backgroundColor: "rgba(244,201,93,0.08)",
+    borderColor: "rgba(244,201,93,0.72)",
+    backgroundColor: "rgba(244,201,93,0.12)",
+    shadowColor: "#F4C95D",
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 3,
+  },
+  videoDisplayTypeBadgeRecommended: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(244,201,93,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.35)",
+  },
+  videoDisplayTypeBadgeRecommendedText: {
+    color: "#F4C95D",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.4,
   },
   videoDisplayTypePreviewYoutube: {
     width: "100%",
@@ -6618,9 +7439,56 @@ showcaseBadgeText: {
   },
   videoDisplayTypeSub: {
     marginTop: 2,
-    color: "rgba(255,255,255,0.52)",
+    color: "rgba(255,255,255,0.68)",
     fontSize: 11,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  videoDisplayTypeMeta: {
+    marginTop: 2,
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 10,
     fontWeight: "600",
+    textAlign: "center",
+  },
+  videoDisplayTypeSelectedPill: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(244,201,93,0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.35)",
+  },
+  videoDisplayTypeSelectedText: {
+    color: "#F4C95D",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  videoPublishReadiness: {
+    marginTop: 18,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.18)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    gap: 8,
+  },
+  videoPublishReadinessRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  videoPublishReadinessText: {
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  videoPublishReadinessTextOk: {
+    color: "rgba(255,255,255,0.88)",
   },
 
 
