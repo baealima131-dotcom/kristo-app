@@ -763,28 +763,241 @@ const AR: GuideContent = {
   ],
 };
 
-const LN = mirrorFromEnglish({
+const LN: GuideContent = {
   pageTitle: "Guide ya Kristo",
   pageSubtitle: "Mibeko • Libateli • Lisalisi — ndenge Kristo App esalaka na eglise na yo.",
   languageLabel: "Lokota",
   updatedLabel: "Ebandeli mposa",
   faqTitle: "Mituna minene",
-  sections: SW.sections.map((s) => ({
-    ...s,
-    title: s.title.replace("Kristo App ni nini", "Kristo App ezali nini"),
-  })),
-  faq: SW.faq,
-});
+  sections: [
+    {
+      id: "about",
+      title: "Kristo App ezali nini",
+      bullets: [
+        "Kristo App ezali système ya eglise mpo na kosolola, media, makambo ya live, bosakoli, bondoki, sango, mpe bomoi ya lisanga.",
+        "Baleglise basalelaka Kristo mpo na kokabola solo, kosalela bamembre, kotinda liturgie, mpe kobatela ndako ya kotya confiance na internet.",
+        "Eloko nyonso esalemi mpo na kobatela baleglise, bakpastor, bamembre, bondimi, mpe confiance.",
+      ],
+    },
+    {
+      id: "ai",
+      title: "Video mpe audio ya elimo ya AI epekisami",
+      bullets: [
+        "Video mpe audio ya elimo ya AI epekisami na kati ya Kristo App mpo na prédication, prophétie, adoration, bosakoli, to bondimeli ya eglise.",
+        "Oyo ezali kati na prédication, prophétie, adoration, bosakoli ya AI, to audio/video ya pasteur ya lokuta oyo etindami lokola service ya solo.",
+        "Kristo App epekisi AI te na ndenge mobimba. AI ekoki kosalelama libanda ya app to na mosala oyo ezali te ya bondimi.",
+        "Na kati ya Kristo App tozali kopekisa makambo ya elimo ya AI mpo na kobatela baleglise, bamembre, solo, confiance, mpe bondimi ya solo.",
+        "Soki omoni prédication, prophétie, adoration, bosakoli, to bondimeli ya AI, yebisa yango mbala moko.",
+      ],
+    },
+    {
+      id: "ownership",
+      title: "Bozwi ya makambo ya eglise",
+      bullets: [
+        "Membre akobondaka na nse ya eglise, bondoki wana ekomaka likambo ya lisanga ya eglise wana.",
+        "Soki membre alongi to abimisami, bondoki ya kala ekoki kozala lokola lisolo ya eglise soki moderasyon ebimisi yango te.",
+        "Bapasteur mpe basaidi ya media ya confiance bakoki kotala, kobomba, to kobimisa makambo engebene na mibeko ya eglise mpe ya Kristo.",
+      ],
+    },
+    {
+      id: "reporting",
+      title: "Koyebisa mpe libateli",
+      bullets: [
+        "Yebisa makambo ya mapiko, kozanga bato, makambo ya kobangisa, arnaque, kozala moto mosusu, miujiza ya lokuta, prophétie ya lokuta, udanganyifu ya AI, violence, harassment, mpe makambo ya kobangisa.",
+        "Membre moko akoki koyebisa bondoki moko mbala moko. Bayebisi batali na pasteur mpe basaidi ya media na Media Studio → Reports.",
+        "Bayebisi ya risk ya likolo ekoki kobomba video na feed ya bato nyonso tango batali. Pasteur akoki kobomba to kobimisa makambo.",
+        "Kozanga kosalela koyebisa mpo kozanga koyoka bato kaka mpo na ndenge ya bakanisi. Bayebisi ya False Teaching esengaka accord ya minene liboso ya kobomba yango.",
+      ],
+    },
+    {
+      id: "subscription",
+      title: "Abonnement ya eglise",
+      bullets: [
+        "Pasteur to mwana ya eglise nde moko alobaka mpo na abonnement ya eglise. Bamembre balobaka te mpo na kokota na eglise na ndenge ya momesano.",
+        "Bamembre balobisami te mpo na bondoki, bosakoli, makambo ya lisanga, to makambo ya mokolo na mokolo ya eglise.",
+        "Abonnement efungolaka bisaleli ya media ya eglise, live, mpe Media Studio mpo na ekipi ya direction.",
+      ],
+    },
+    {
+      id: "media",
+      title: "Media mpe basaidi ya confiance",
+      bullets: [
+        "Pasteur azali kobatela media ya eglise mpe akoki kopona basaidi ya media ya confiance.",
+        "Basaidi basalisaka mpo na kotinda, kobongisa, mpe kotala media kasi bakoki te kozwa autorité ya pasteur.",
+        "Bayebisi ya media, esika ya kobomba, mpe bisaleli ya live emonisami na pasteur mpe basaidi ya confiance oyo bamondeli.",
+      ],
+    },
+    {
+      id: "live",
+      title: "Mibeko ya live",
+      bullets: [
+        "Live esengeli kozala makambo ya solo ya eglise to ya service — te lokuta, te AI, te makambo ya kobangisa, te makambo ya kobebisa.",
+        "Kozanga kotinda biloko ya droits d'auteur, kozala moto mosusu, manipulation, to makambo oyo ekobangisa bamembre.",
+        "Chambre ya live esengeli koyamika Kristo, eglise na yo, mpe bato oyo bazali kotala.",
+      ],
+    },
+    {
+      id: "conduct",
+      title: "Comportement ya respect",
+      bullets: [
+        "Kozanga mabe, kobunda, harassment, to kozanga bapasteur, bakambi, to bamembre.",
+        "Kozanga kobebisa bondimi, manipulation, to kofandisa bamembre mpo na kokabola, kolanda, to koloba mpo na baraka.",
+        "Solola na grace. Bakanisi ekoki kozala ndenge mosusu kozanga kobebisa boyokani, libateli, to confiance.",
+        "Salela bondoki mpe bosakoli mpo na kotonga bondimi — te mpo na kobimisa doutou, kobuka boyokani, to exploitation.",
+      ],
+    },
+  ],
+  faq: [
+    {
+      question: "Nakoki kosalela AI mpo na kobongisa video na ngai liboso ya kotinda?",
+      answer:
+        "Ee mpo na kobongisa ya momesano — kasi kotinda prédication, prophétie, adoration, to elilingi ya pasteur ya lokuta ya AI na kati ya Kristo App te.",
+    },
+    {
+      question: "Nani alobaka mpo na Kristo?",
+      answer:
+        "Pasteur to mwana ya eglise nde moko alobaka mpo na abonnement ya eglise. Bamembre balobaka te mpo na kokota na eglise na ndenge ya momesano.",
+    },
+    {
+      question: "Nini esalemaka soki nayebisi video?",
+      answer:
+        "Bayebisi na yo ekende na Media Studio → Reports ya eglise na yo. Pasteur mpe basaidi bakoki kobomba to kobimisa makambo. Makambo ya risk ekoki kobomba video na feed mpo na mwa ntango.",
+    },
+    {
+      question: "Bondoki na ngai ya kala ebimaka soki nalongi eglise?",
+      answer:
+        "Bondoki oyo obondaki na nse ya eglise ekoki kozala lokola lisolo ya eglise soki direction to moderasyon ebimisi yango te.",
+    },
+    {
+      question: "Bamembre bakoki kobatela media ya eglise?",
+      answer:
+        "Pasteur mpe basaidi ya media ya confiance oyo pasteur aponi nde bato moko bakoki kobatela Media Studio, hosts, mpe kotala bayebisi.",
+    },
+    {
+      question: "Kristo ezali contre technologie to AI?",
+      answer:
+        "Te. Kristo epekisi makambo ya elimo ya AI na kati ya app mpo na kobatela bondimi mpe confiance. AI ekoki nayo kosalelama libanda ya app to na mosala oyo ezali te ya bondimi.",
+    },
+  ],
+};
 
-const RW = mirrorFromEnglish({
+const RW: GuideContent = {
   pageTitle: "Umuyoboro wa Kristo",
   pageSubtitle: "Amategeko • Umutekano • Ubufasha — uko Kristo App ikora mu itorero ryawe.",
   languageLabel: "Ururimi",
   updatedLabel: "Byavuguruwe",
   faqTitle: "Ibibazo bisanzwe",
-  sections: SW.sections,
-  faq: SW.faq,
-});
+  sections: [
+    {
+      id: "about",
+      title: "Kristo App ni iki",
+      bullets: [
+        "Kristo App ni sisitemu y'itorero yo guhana amakuru, media, ibikorwa bya live, ubuhamya, amatangazo, amamenyesha, n'ubuzima bw'umuryango.",
+        "Amatorero akoresha Kristo gusangira ukuri, gukorera abanyamuryango, gutanga ibitangaza by'ibada, no kubaka inzu y'icyizere y'umwuka kuri interineti.",
+        "Buri kintu cyakozwe kugira ngo kirinde amatorero, abayobozi, abanyamuryango, inyigisho, n'icyizere.",
+      ],
+    },
+    {
+      id: "ai",
+      title: "Amashusho n'amajwi y'umwuka ya AI ntibemewe",
+      bullets: [
+        "Amashusho n'amajwi y'umwuka ya AI ntibemewe muri Kristo App mu guhubiriza, guhanura, guhimbaza, guhamya, cyangwa mu kwigisha itorero.",
+        "Ibi birimo guhubiriza, ubuhanuzi, indirimbo z'ishyimbo, ubuhamya, cyangwa amajwi/amashusho y'umuyobozi w'ibinyoma bya AI byerekanwa nk'umurimo nyawo w'itorero.",
+        "Kristo App si iy'kwanga AI muri rusange. AI ishobora gukoreshwa hanze y'app cyangwa mu mirimo itari y'inyigisho.",
+        "Muri Kristo App dufata ingamba zo guhagarika ibirimo by'umwuka bya AI kugira ngo turinde amatorero, abanyamuryango, ukuri, icyizere, n'inyigisho nziza.",
+        "Niwabona guhubiriza, ubuhanuzi, guhimbaza, ubuhamya, cyangwa kwigisha itorero byakozwe na AI, menyesha ako kanya.",
+      ],
+    },
+    {
+      id: "ownership",
+      title: "Uburenganzira ku birimo by'itorero",
+      bullets: [
+        "Umunyamuryango iyo atangaje munsi y'itorero, icyo gisohoka kiba igice cy'inyandiko y'umuryango w'itorero.",
+        "Niyavuye cyangwa akurwaho, ibyo yari yatanze bishobora kuguma nk'amateka y'itorero keretse ubuyobozi buhubuye.",
+        "Abayobozi n'abafasha ba media b'icyizere bashobora gusuzuma, gusiga, cyangwa gukuraho ibirimo ukurikije amategeko y'itorero na Kristo.",
+      ],
+    },
+    {
+      id: "reporting",
+      title: "Kumenyesha no kurinda",
+      bullets: [
+        "Menyesha ibirimo by'ubwuzu, urwango, iterabwoba, ubujura, kwigana, ibitangaza by'ibinyoma, ubuhanuzi bw'ibinyoma, udanganya bwa AI, urwango, gukubita, n'ibindi byangiza.",
+        "Buri munyamuryango ashobora kumenyesha inshuro imwe. Raporo zisuzumwa n'umuyobozi n'abafasha ba media muri Media Studio → Reports.",
+        "Raporo zikomeye zishobora guhisha video mu feed igihe isuzuma riri gukomeza. Umuyobozi ashobora gusiga cyangwa gukuraho ibirimo.",
+        "Ntukoreshe raporo gusa kugira ngo ucice intege impaka isanzwe. Raporo za False Teaching zisaba icyemezo kinini cy'amatorero menshi mbere yo guhisha.",
+      ],
+    },
+    {
+      id: "subscription",
+      title: "Ifatabuguzi ry'itorero",
+      bullets: [
+        "Umuyobozi w'itorero/nyir'itorero ni we gusa yishyura ifatabuguzi ry'itorero. Abanyamuryango ntibishyura ku giti cyabo kugira ngo babone ibirimo bisanzwe by'itorero.",
+        "Abanyamuryango ntibishyurwa ku giti cyabo ku matangazo, ubuhamya, ibirimo by'umuryango, cyangwa ibirimo bisanzwe by'itorero.",
+        "Ifatabuguzi ifungura ibikoresho bya media, live, na Media Studio ku buyobozi bw'itorero.",
+      ],
+    },
+    {
+      id: "media",
+      title: "Media n'abafasha b'icyizere",
+      bullets: [
+        "Umuyobozi acunga media y'itorero kandi ashobora gutora abafasha ba media b'icyizere.",
+        "Abafasha bafasha kohereza, gushiraho gahunda, no gusuzuma media ariko ntibasimbuza ububasha bw'umuyobozi.",
+        "Raporo za media, ububiko, n'ibikoresho bya live bigaragara ku muyobozi n'abafasha bemewe.",
+      ],
+    },
+    {
+      id: "live",
+      title: "Amategeko ya live",
+      bullets: [
+        "Live igomba kuba ibirimo nyakuri by'itorero cyangwa umurimo — si ibinyoma, si AI, si ibikubita, cyangwa ibinyoma.",
+        "Ntutere inkunga ibirimo by'uruhare, kwigana, udanganya, cyangwa ibyagora abanyamuryango.",
+        "Icyumba cya live kigomba guha icyubahiro Kristo, itorero ryawe, n'abareba.",
+      ],
+    },
+    {
+      id: "conduct",
+      title: "Imyitwarire y'icyubahiro",
+      bullets: [
+        "Nta mvumo, nta guhangana, nta gusebanya, nta gukubita abayobozi cyangwa abanyamuryango.",
+        "Nta gukoresha inyigisho nabi, udanganya, cyangwa gutera abantu gusangira, gukurikira, cyangwa kwishyura kubera imigisha.",
+        "Vuga mu neza. Tandukana mu bitekerezo utacumika umwe n'icyizere.",
+        "Koresha amatangazo n'ubuhamya mu kubaka imana — si mu gukwirakwiza ubwoba, kugabanya, cyangwa gukoresha abantu.",
+      ],
+    },
+  ],
+  faq: [
+    {
+      question: "Nshobora gukoresha AI mu guhindura video yanjye mbere yo kuyohereza?",
+      answer:
+        "Yego ku guhindura bisanzwe — ariko ntutere amajwi cyangwa amashusho ya AI y'ubuhubirizi, ubuhanuzi, indirimbo z'ishyimbo, cyangwa ishusho y'umuyobozi w'ibinyoma muri Kristo App.",
+    },
+    {
+      question: "Ni nde yishyura Kristo?",
+      answer:
+        "Umuyobozi w'itorero/nyir'itorero ni we gusa yishyura ifatabuguzi ry'itorero. Abanyamuryango ntibishyura ku giti cyabo kugira ngo babone ibirimo bisanzwe by'itorero.",
+    },
+    {
+      question: "Ni iki kiba kiriho nmenyesheje video?",
+      answer:
+        "Raporo yawe igera muri Media Studio → Reports y'itorero ryawe. Umuyobozi n'abafasha bashobora gusiga cyangwa gukuraho ibirimo. Raporo zikomeye zishobora guhisha video mu feed mu gihe gito.",
+    },
+    {
+      question: "Ibyo natanze kera biragenda nse nivuye mu itorero?",
+      answer:
+        "Ibyo wasangije munsi y'itorero bishobora kuguma nk'amateka y'itorero keretse ubuyobozi buhubuye.",
+    },
+    {
+      question: "Abanyamuryango bashobora gucunga media y'itorero?",
+      answer:
+        "Umuyobozi n'abafasha ba media b'icyizere batowe n'umuyobozi ni bo gusa bacunga Media Studio, abashyitsi, no gusuzuma raporo.",
+    },
+    {
+      question: "Kristo irwanya AI cyangwa ikoranabuhanga?",
+      answer:
+        "Oya. Kristo irinda ibirimo by'umwuka bya AI muri app kugira ngo irinde inyigisho n'icyizere. AI ishobora gukoreshwa neza hanze y'app cyangwa mu mirimo itari y'inyigisho.",
+    },
+  ],
+};
 
 const AM: GuideContent = {
   pageTitle: "Kristo መመሪያ",
@@ -811,3 +1024,19 @@ export const GUIDE_CONTENT: Record<GuideLanguageCode, GuideContent> = {
 };
 
 export const GUIDE_LAST_UPDATED = "June 2026";
+
+import {
+  assertGuideTranslationsComplete,
+  auditAllGuideTranslations,
+  getSelectableGuideLanguageCodes,
+} from "./kristoGuideTranslationAudit";
+
+assertGuideTranslationsComplete(GUIDE_CONTENT);
+
+export const GUIDE_TRANSLATION_AUDIT = auditAllGuideTranslations(GUIDE_CONTENT);
+
+export const GUIDE_SELECTABLE_LANGUAGE_CODES = getSelectableGuideLanguageCodes(GUIDE_CONTENT);
+
+export const GUIDE_SELECTABLE_LANGUAGES = GUIDE_LANGUAGES.filter((lang) =>
+  GUIDE_SELECTABLE_LANGUAGE_CODES.includes(lang.code)
+);

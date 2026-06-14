@@ -12,7 +12,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   GUIDE_CONTENT,
-  GUIDE_LANGUAGES,
+  GUIDE_SELECTABLE_LANGUAGES,
   GUIDE_LAST_UPDATED,
   GUIDE_SCREEN_TITLE,
   type GuideLanguageCode,
@@ -65,7 +65,7 @@ export default function KristoGuideScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.languageRow}
         >
-          {GUIDE_LANGUAGES.map((item) => {
+          {GUIDE_SELECTABLE_LANGUAGES.map((item) => {
             const active = item.code === language;
             return (
               <Pressable
