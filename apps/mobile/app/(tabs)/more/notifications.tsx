@@ -90,86 +90,8 @@ type NoticeGroup = {
   items: Notice[];
 };
 
-function buildDemoNotifications(): Notice[] {
-  const now = Date.now();
-  const minutesAgo = (m: number) => new Date(now - m * 60_000).toISOString();
-  const hoursAgo = (h: number) => new Date(now - h * 3_600_000).toISOString();
-  const daysAgo = (d: number) => new Date(now - d * 86_400_000).toISOString();
-
-  const rows = [
-    {
-      id: "demo-live-prayer",
-      title: "Pastor started live prayer",
-      body: "Join the live prayer room now.",
-      createdAt: minutesAgo(12),
-      read: false,
-      type: "LiveStarted",
-    },
-    {
-      id: "demo-media-video",
-      title: "TLMC Media uploaded a new video",
-      body: "A new worship video is now on the global feed.",
-      createdAt: minutesAgo(48),
-      read: false,
-      type: "MediaUpload",
-    },
-    {
-      id: "demo-ministry-added",
-      title: "You were added to Worship ministry",
-      body: "Welcome to the Worship team. Check your ministry room for updates.",
-      createdAt: hoursAgo(3),
-      read: true,
-      type: "MinistryAdded",
-    },
-    {
-      id: "demo-testimony-comment",
-      title: "Prince commented on your testimony",
-      body: "Prince: \"This testimony blessed me. Glory to God.\"",
-      createdAt: hoursAgo(8),
-      read: false,
-      type: "Comment",
-    },
-    {
-      id: "demo-live-soon",
-      title: "Live room starts in 10 minutes",
-      body: "Sunday service live room opens soon. Tap to enter the waiting room.",
-      createdAt: hoursAgo(20),
-      read: true,
-      type: "LiveReminder",
-    },
-    {
-      id: "demo-schedule-approved",
-      title: "Prayer schedule approved",
-      body: "Your Friday prayer slot was approved by church media.",
-      createdAt: daysAgo(1),
-      read: true,
-      type: "ScheduleApproved",
-    },
-    {
-      id: "demo-post-likes",
-      title: "Your post received 24 likes",
-      body: "Members are engaging with your latest testimony post.",
-      createdAt: daysAgo(2),
-      read: true,
-      type: "Engagement",
-    },
-  ];
-
-  return rows
-    .map((row) => ({
-      ...row,
-      actorName: safeDisplayName(row),
-      body: safeBody(row),
-    }))
-    .sort((a, b) => {
-      const aa = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return bb - aa;
-    });
-}
-
-function isDemoNoticeId(id: string) {
-  return String(id || "").startsWith("demo-");
+function withoutLegacyDemoNotices(items: Notice[]): Notice[] {
+  return items.filter((n) => !String(n.id || "").startsWith("demo-"));
 }
 
 function groupNotices(items: Notice[]): NoticeGroup[] {
@@ -271,7 +193,7 @@ export default function MoreNotificationsScreen() {
   const effectiveAuthUserId = String(auth?.userId || "");
   const effectiveAuthRole = String(auth?.role || "Member");
   const cacheKey = notificationsCacheKey(effectiveAuthUserId, churchId);
-  const bootCache = notificationsScreenCache.get(cacheKey) || [];
+  const bootCache = withoutLegacyDemoNotices(notificationsScreenCache.get(cacheKey) || []);
 
   const notificationRequestHeaders = useCallback(() => {
     const headers = {
@@ -298,7 +220,6 @@ export default function MoreNotificationsScreen() {
   const [deletingId, setDeletingId] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [openedIds, setOpenedIds] = useState<Record<string, boolean>>({});
-  const [usingDemo, setUsingDemo] = useState(false);
   const debouncedRefresh = useRef(createDebouncer(900)).current;
   const loadSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -358,24 +279,14 @@ export default function MoreNotificationsScreen() {
 
         const raw = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
         const mapped = mapNoticesFromApi(raw);
-
-        if (mapped.length) {
-          setUsingDemo(false);
-          notificationsScreenCache.set(cacheKey, mapped);
-          setItems(mapped);
-          setErr(null);
-        } else {
-          const demo = buildDemoNotifications();
-          setUsingDemo(true);
-          notificationsScreenCache.set(cacheKey, demo);
-          setItems(demo);
-          setErr(null);
-        }
+        notificationsScreenCache.set(cacheKey, mapped);
+        setItems(mapped);
+        setErr(null);
       } catch (e: unknown) {
         if (seq !== loadSeqRef.current) return;
 
         const aborted = (e as any)?.name === "AbortError";
-        const cached = notificationsScreenCache.get(cacheKey) || [];
+        const cached = withoutLegacyDemoNotices(notificationsScreenCache.get(cacheKey) || []);
         if (cached.length) {
           setItems(cached);
           setErr(null);
@@ -394,11 +305,6 @@ export default function MoreNotificationsScreen() {
 
   async function markOneRead(id: string) {
     try {
-      if (isDemoNoticeId(id) || usingDemo) {
-        setItems((cur) => cur.map((x) => (x.id === id ? { ...x, read: true } : x)));
-        return;
-      }
-
       if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
       setBusyId(id);
 
@@ -423,16 +329,6 @@ export default function MoreNotificationsScreen() {
 
   async function deleteOne(id: string) {
     try {
-      if (isDemoNoticeId(id) || usingDemo) {
-        setItems((cur) => cur.filter((x) => x.id !== id));
-        setOpenedIds((cur) => {
-          const next = { ...cur };
-          delete next[id];
-          return next;
-        });
-        return;
-      }
-
       if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
       setDeletingId(id);
 
@@ -461,11 +357,6 @@ export default function MoreNotificationsScreen() {
 
   async function markEverythingRead() {
     try {
-      if (usingDemo) {
-        setItems((cur) => cur.map((x) => ({ ...x, read: true })));
-        return;
-      }
-
       if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
       setMarkingAll(true);
 
@@ -502,7 +393,7 @@ export default function MoreNotificationsScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      const cached = notificationsScreenCache.get(cacheKey) || [];
+      const cached = withoutLegacyDemoNotices(notificationsScreenCache.get(cacheKey) || []);
       if (cached.length) {
         setItems(cached);
         setLoading(false);
