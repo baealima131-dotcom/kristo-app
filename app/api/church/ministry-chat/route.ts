@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { guard } from "@/app/api/_lib/rbac";
+import { listMinistryMemberUserIds } from "@/app/api/_lib/ministryAuthority";
 import { addNotification } from "@/app/api/_lib/notifications";
 export const runtime = "nodejs";
 type ChatMessage = {
@@ -72,19 +73,30 @@ export async function POST(req: NextRequest) {
   };
   const store = getStore();
   store.push(msg);
-  // ✅ Notification: new ministry chat message (non-blocking)
-  try {
-    await addNotification({
-      churchId: msg.churchId,
-      type: "MinistryChatMessageCreated",
-      title: "New ministry chat message",
-      message: String(msg.text || "").slice(0, 140),
-      ministryId: msg.ministryId,
-      // If your notifications are user-targeted, set this to the sender:
-      targetUserId: msg.userId || "",
-    } as any);
-  } catch {
-    // ignore notification errors
+  // Notification: fan out to other ministry members (never the sender).
+  if (churchId && churchId !== "unknown" && userId) {
+    try {
+      const memberIds = await listMinistryMemberUserIds(churchId, ministryId);
+      const senderLabel = String(msg.userName || "Someone").trim() || "Someone";
+      const preview = String(msg.text || "").slice(0, 140);
+
+      for (const targetUserId of memberIds) {
+        if (!targetUserId || targetUserId === userId) continue;
+
+        await addNotification({
+          churchId,
+          type: "MinistryChatMessageCreated",
+          title: "New ministry chat message",
+          message: `${senderLabel}: ${preview}`,
+          ministryId,
+          targetUserId,
+          actorName: msg.userName,
+          actorUserId: userId,
+        });
+      }
+    } catch {
+      // ignore notification errors
+    }
   }
 return json({ ok: true, data: msg }, { status: 201 });
 }

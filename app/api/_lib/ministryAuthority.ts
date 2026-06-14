@@ -44,6 +44,25 @@ export async function listMinistryLeaderUserIds(churchId: string, ministryId: st
     .filter(Boolean);
 }
 
+export async function listMinistryMemberUserIds(churchId: string, ministryId: string) {
+  const cid = String(churchId || "").trim();
+  const mid = String(ministryId || "").trim();
+  if (!cid || !mid) return [];
+
+  const all = await readJsonFile<MinistryMemberRow[]>(STORE_FILE, []);
+  return [
+    ...new Set(
+      all
+        .filter(
+          (mm) =>
+            String(mm.churchId || "") === cid && String(mm.ministryId || "") === mid
+        )
+        .map((mm) => String(mm.userId || ""))
+        .filter(Boolean)
+    ),
+  ];
+}
+
 export function assertLeaderCanAssignRole(args: {
   viewerAppRole: string;
   viewerMinistryRole: MinistryMemberRole | "";
