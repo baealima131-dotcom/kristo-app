@@ -38,6 +38,9 @@ export type NotificationType =
   | "ChurchSubscriptionActivated"
   | "ChurchSubscriptionExpiringSoon"
   | "ChurchSubscriptionExpired"
+  | "LiveEventScheduled"
+  | "LiveSlotAssigned"
+  | "LiveSlotCancelled"
   | "Generic";
 
 export type AppNotification = {

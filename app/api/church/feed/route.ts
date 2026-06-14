@@ -29,6 +29,11 @@ import {
   notifyPrayerRequestPrayedFor,
 } from "@/app/api/_lib/feedEngagementNotifications";
 import {
+  notifyLiveEventScheduled,
+  notifyLiveSlotAssignmentDiff,
+  notifyLiveSlotCancelled,
+} from "@/app/api/_lib/liveEventNotifications";
+import {
   isChurchSubscriptionActive,
   requireChurchSubscriptionActive,
 } from "@/app/api/_lib/churchSubscription";
@@ -3544,6 +3549,23 @@ async function handleFeedPost(req: NextRequest, body: any) {
       await upsertFeedItem(updatedItem);
       bumpMediaScheduleSyncForFeedItem(updatedItem, "update-schedule-slots");
 
+      try {
+        await notifyLiveSlotAssignmentDiff({
+          churchId,
+          postId: String(item.id || postId),
+          feedItem: updatedItem,
+          previousSlots: slots,
+          nextSlots: enrichedSlots,
+          assignerUserId: viewerUserId,
+        });
+      } catch (notifyError: any) {
+        console.log("KRISTO_LIVE_SLOT_NOTIFY_FAILED", {
+          postId,
+          action: "update-schedule-slots",
+          message: String(notifyError?.message || notifyError),
+        });
+      }
+
       const firstSlot = nextSlots[0];
       void notifyScheduleSlotEdit({
         churchId,
@@ -3781,6 +3803,8 @@ async function handleFeedPost(req: NextRequest, body: any) {
       return err("Slot claimed by another member", 409);
     }
 
+    const cancelledOwner = existingOwner;
+
     const nextSlot = { ...existing };
     delete nextSlot.claimed;
     delete nextSlot.isClaimed;
@@ -3799,6 +3823,25 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const updatedItem = { ...item, scheduleSlots: slots };
     await upsertFeedItem(updatedItem);
     bumpMediaScheduleSyncForFeedItem(updatedItem, "unclaim_schedule_slot");
+
+    if (cancelledOwner) {
+      try {
+        await notifyLiveSlotCancelled({
+          churchId,
+          postId: String(item.id || postId),
+          slotId,
+          previousUserId: cancelledOwner,
+          slot: existing,
+          feedItem: item,
+        });
+      } catch (notifyError: any) {
+        console.log("KRISTO_LIVE_SLOT_NOTIFY_FAILED", {
+          postId,
+          action: "unclaim_schedule_slot",
+          message: String(notifyError?.message || notifyError),
+        });
+      }
+    }
 
     return ok({
       postId,
@@ -4577,6 +4620,21 @@ async function handleFeedPost(req: NextRequest, body: any) {
       ministryId: scheduleMinistryId,
       slotLabel: formatScheduleSlotLabel(firstSlot || { name: title || "schedule" }),
     });
+
+    try {
+      await notifyLiveEventScheduled({
+        churchId,
+        postId: String(item.id),
+        feedItem: item,
+        editorUserId: viewerUserId,
+      });
+    } catch (notifyError: any) {
+      console.log("KRISTO_LIVE_SCHEDULE_NOTIFY_FAILED", {
+        postId: item.id,
+        churchId,
+        message: String(notifyError?.message || notifyError),
+      });
+    }
   }
 
   return NextResponse.json(
