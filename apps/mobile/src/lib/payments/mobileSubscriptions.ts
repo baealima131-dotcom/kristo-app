@@ -20,13 +20,13 @@ import {
   PREMIUM_MONTHLY_INTRO_TRIAL_DAYS,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
-} from "../../../../../lib/churchPremiumRevenueCat";
+} from "./churchPremiumRevenueCat";
 
 export {
   CHURCH_PREMIUM_ENTITLEMENT,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
-} from "../../../../../lib/churchPremiumRevenueCat";
+} from "./churchPremiumRevenueCat";
 
 const extra =
   (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
