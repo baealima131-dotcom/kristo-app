@@ -7,7 +7,7 @@ export const GUIDE_TRANSLATION_COPY_THRESHOLD = 0.2;
 const FALLBACK_REFERENCE_LANGUAGES: GuideLanguageCode[] = ["en", "sw"];
 
 /** Languages that must pass the fallback audit in dev/CI builds. */
-const STRICT_AUDIT_LANGUAGE_CODES: GuideLanguageCode[] = ["ln", "rw"];
+const STRICT_AUDIT_LANGUAGE_CODES: GuideLanguageCode[] = ["ln", "rw", "am"];
 
 export type GuideTranslationAuditResult = {
   code: GuideLanguageCode;
