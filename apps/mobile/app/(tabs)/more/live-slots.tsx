@@ -22,7 +22,7 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { fetchMediaScheduleFeedSync } from "@/src/lib/mediaScheduleSilentReload";
 import { autoDeleteExpiredOpenGuestSlots } from "@/src/lib/guestClaimPersistence";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { enterLiveRoomFromScheduleCard } from "@/src/lib/enterLiveRoomNavigation";
 import {
   buildLiveSlotsCatalogFromFeedRows,
   resolveLiveSlotsBackendFeedRows,
@@ -122,6 +122,7 @@ export default function LiveSlotsScreen() {
       churchBackendRows,
       globalBackendRows: globalRows,
       viewerChurchId,
+      viewerUserId,
       localRows,
       churchFeedLoaded,
     });
@@ -157,10 +158,12 @@ export default function LiveSlotsScreen() {
       routeSlotCount: sourceSnapshot.routeSlotCount,
       renderedCardCount: renderSummary.renderedCardCount,
       renderedSlotNumbers: renderSummary.renderedSlotNumbers,
+      slotClaimStates: renderSummary.slotClaimStates,
+      viewerUserId,
       sourceUsed: sourceSnapshot.sourceUsed,
       tab,
     });
-  }, [activeRows, sourceSnapshot, tab]);
+  }, [activeRows, sourceSnapshot, tab, viewerUserId]);
 
   const profileName = String(
     session?.displayName || session?.name || session?.fullName || "You"
@@ -169,23 +172,22 @@ export default function LiveSlotsScreen() {
     session?.avatarUri || session?.avatarUrl || session?.profileImage || ""
   ).trim();
 
-  const openLiveRoom = useCallback(
+  const handleEnterLiveRoom = useCallback(
     (item: any) => {
-      (globalThis as any).__KRISTO_LIVE_ACTIVE__ = true;
-      const feedId = baseFeedId(
-        String(item?.parentScheduleId || item?.sourceScheduleId || item?.id || "")
-      );
-      router.push({
-        pathname: "/(tabs)/more/my-church-room/messages/live-room",
-        params: {
-          id: "church-media-room",
-          feedId,
-          sourceScheduleId: feedId,
-          scheduleType: String(item?.scheduleType || "media-live-slots"),
-        },
-      } as any);
+      const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+      const activeSlot = slots[0] || null;
+
+      enterLiveRoomFromScheduleCard({
+        router,
+        item,
+        activeSlot,
+        viewerUserId,
+        viewerChurchId,
+        nowMs,
+        source: "live-slots-card",
+      });
     },
-    [router]
+    [router, viewerUserId, viewerChurchId, nowMs]
   );
 
   return (
@@ -275,7 +277,7 @@ export default function LiveSlotsScreen() {
                       disableSlotCarousel={item?.homeFeedSlotExpanded === true}
                       profileName={profileName}
                       profileAvatarUri={profileAvatarUri}
-                      onOpenLiveRoom={() => openLiveRoom(item)}
+                      onOpenLiveRoom={() => handleEnterLiveRoom(item)}
                     />
                   </View>
                 </View>

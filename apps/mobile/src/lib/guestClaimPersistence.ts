@@ -657,6 +657,16 @@ export async function persistGuestSlotClaimClear(input: {
     sourceUsed,
   });
 
+  if (action === "remove") {
+    return persistRemoveGuestScheduleSlotRecord({
+      ...input,
+      feedId,
+      beforeSlots,
+      resolvedSlotId,
+      sourceUsed: sourceUsed as "backend" | "local",
+    });
+  }
+
   const clearedSlots = beforeSlots.map((slot: any, index: number) => {
     if (
       slotIdsMatch(slot, resolvedSlotId) ||
@@ -791,6 +801,155 @@ export async function persistGuestSlotClaimClear(input: {
   };
 }
 
+async function persistRemoveGuestScheduleSlotRecord(input: {
+  sourceFeedId: string;
+  slotId: string;
+  feedId: string;
+  beforeSlots: any[];
+  resolvedSlotId: string;
+  sourceUsed: "backend" | "local";
+  backendFeedItems: any[];
+  homeFeedItems: any[];
+  headers: Record<string, string>;
+  churchId: string;
+  nowMs?: number;
+  userId?: string;
+  setBackendFeedItems: (items: any[]) => void;
+  setHomeFeedItems: (items: any[]) => void;
+  setGuestClaimSlots?: (slots: any[]) => void;
+}) {
+  const { remaining, removed, removedCount } = removeGuestScheduleSlotById(
+    input.beforeSlots,
+    input.slotId
+  );
+
+  console.log("KRISTO_GUEST_SLOT_DELETE_START", {
+    feedId: input.feedId,
+    slotId: input.slotId,
+    resolvedSlotId: input.resolvedSlotId,
+    sourceUsed: input.sourceUsed,
+    beforeCount: input.beforeSlots.length,
+    removedCount,
+    remainingCount: remaining.length,
+  });
+
+  if (removedCount <= 0) {
+    return {
+      feedId: input.feedId,
+      resolvedSlotId: input.resolvedSlotId,
+      ok: false,
+      error: "slot-not-found",
+      removedCount: 0,
+    };
+  }
+
+  const removedSlot = removed[0];
+  let unclaimOk = false;
+  let syncOk = false;
+  let error: string | null = null;
+
+  if (guestScheduleSlotHasClaimant(removedSlot)) {
+    try {
+      const unclaimRes: any = await apiPost(
+        "/api/church/feed",
+        {
+          action: "unclaim_schedule_slot",
+          postId: input.feedId,
+          feedId: input.feedId,
+          slotId: input.resolvedSlotId,
+        },
+        { headers: input.headers as any }
+      );
+      unclaimOk = unclaimRes?.ok !== false && !unclaimRes?.error;
+    } catch (e: any) {
+      error = String(e?.message || e);
+    }
+  }
+
+  try {
+    const clearRes = await clearMediaScheduleSlotsOnBackend({
+      feedId: input.feedId,
+      churchId: input.churchId,
+      headers: input.headers,
+      slots: remaining,
+      reason: "remove-guest-slot-record",
+    });
+    syncOk = clearRes.ok;
+    if (!syncOk && clearRes.error) {
+      error = String(clearRes.error);
+    }
+  } catch (e: any) {
+    error = String(e?.message || e);
+  }
+
+  const ok = syncOk;
+
+  console.log("KRISTO_GUEST_SLOT_DELETE_RESULT", {
+    feedId: input.feedId,
+    slotId: input.slotId,
+    resolvedSlotId: input.resolvedSlotId,
+    unclaimOk,
+    syncOk,
+    ok,
+    error,
+    removedCount,
+    remainingCount: remaining.length,
+  });
+
+  if (!ok) {
+    return {
+      feedId: input.feedId,
+      resolvedSlotId: input.resolvedSlotId,
+      ok: false,
+      error: error || "slot-delete-failed",
+      removedCount: 0,
+    };
+  }
+
+  const reload = await forceReloadGuestScheduleFromBackend({
+    churchId: input.churchId,
+    headers: input.headers,
+    setBackendFeedItems: input.setBackendFeedItems,
+    setHomeFeedItems: input.setHomeFeedItems,
+    setGuestClaimSlots: input.setGuestClaimSlots,
+  });
+
+  const verify = logGuestAfterReloadVerify({
+    selectedSlotId: input.slotId,
+    feedId: reload.feedId || input.feedId,
+    backendFeedItems: reload.rows,
+    runtimeSlots: reload.backendSlots,
+    nowMs: input.nowMs,
+    sourceUsed: reload.sourceUsed,
+  });
+
+  const invalidate = await invalidateGuestClaimGlobalLiveState({
+    churchId: input.churchId,
+    userId: String(input.userId || input.headers?.["x-kristo-user-id"] || ""),
+    scheduleId: reload.feedId || input.feedId,
+    headers: input.headers,
+    reloadRows: reload.rows,
+    backendSlotCount: reload.backendSlots.length,
+    reason: "remove-guest-slot-record",
+    slotId: input.slotId,
+    nowMs: input.nowMs,
+    setBackendFeedItems: input.setBackendFeedItems,
+    setHomeFeedItems: input.setHomeFeedItems,
+    setGuestClaimSlots: input.setGuestClaimSlots,
+  });
+
+  return {
+    feedId: input.feedId,
+    resolvedSlotId: input.resolvedSlotId,
+    ok: true,
+    error: null,
+    removedCount,
+    verify,
+    reload,
+    invalidate,
+  };
+}
+
 export function guestScheduleSlotHasClaimant(slot: any): boolean {
   const status = String(slot?.status || "").toLowerCase().trim();
   if (status === "claimed" || status === "taken") return true;
@@ -850,6 +1009,34 @@ export function summarizeGuestScheduleSlotBuckets(slots: any[], nowMs = Date.now
 export function removeOpenGuestScheduleSlots(slots: any[]) {
   const removed = slots.filter((slot) => isGuestScheduleSlotOpenUnclaimed(slot));
   const remaining = slots.filter((slot) => !isGuestScheduleSlotOpenUnclaimed(slot));
+  return { remaining, removed, removedCount: removed.length };
+}
+
+export function removeClaimedGuestScheduleSlots(slots: any[]) {
+  const removed = slots.filter((slot) => guestScheduleSlotHasClaimant(slot));
+  const remaining = slots.filter((slot) => !guestScheduleSlotHasClaimant(slot));
+  return { remaining, removed, removedCount: removed.length };
+}
+
+export function removeEndedGuestScheduleSlots(slots: any[], nowMs = Date.now()) {
+  const removed = slots.filter((slot) => isGuestScheduleSlotExpired(slot, nowMs));
+  const remaining = slots.filter((slot) => !isGuestScheduleSlotExpired(slot, nowMs));
+  return { remaining, removed, removedCount: removed.length };
+}
+
+export function removeGuestScheduleSlotById(slots: any[], slotId: string) {
+  const resolvedSlotId = resolveGuestActionSlotId(slots, slotId);
+  const remaining = slots.filter((slot: any, index: number) => {
+    if (slotIdsMatch(slot, resolvedSlotId) || slotIdsMatch(slot, slotId)) return false;
+    const syncedIndexMatch = String(slotId).match(/^synced-slot-(\d+)$/i);
+    if (syncedIndexMatch && Number(syncedIndexMatch[1]) === index) return false;
+    return true;
+  });
+  const removed = slots.filter((slot: any, index: number) => {
+    if (slotIdsMatch(slot, resolvedSlotId) || slotIdsMatch(slot, slotId)) return true;
+    const syncedIndexMatch = String(slotId).match(/^synced-slot-(\d+)$/i);
+    return Boolean(syncedIndexMatch && Number(syncedIndexMatch[1]) === index);
+  });
   return { remaining, removed, removedCount: removed.length };
 }
 
@@ -924,7 +1111,7 @@ async function persistGuestScheduleSlotRemoval(input: {
   nowMs?: number;
   userId?: string;
   reason: string;
-  mode: "delete-open" | "auto-delete-expired-open";
+  mode: "delete-open" | "delete-claimed" | "delete-ended" | "delete-all" | "auto-delete-expired-open";
   setBackendFeedItems: (items: any[]) => void;
   setHomeFeedItems: (items: any[]) => void;
   setGuestClaimSlots?: (slots: any[]) => void;
@@ -944,6 +1131,12 @@ async function persistGuestScheduleSlotRemoval(input: {
     };
     if (input.mode === "delete-open") {
       console.log("KRISTO_DELETE_OPEN_SLOTS_RESULT", emptyResult);
+    } else if (input.mode === "delete-claimed") {
+      console.log("KRISTO_DELETE_CLAIMED_SLOTS_RESULT", emptyResult);
+    } else if (input.mode === "delete-ended") {
+      console.log("KRISTO_DELETE_ENDED_SLOTS_RESULT", emptyResult);
+    } else if (input.mode === "delete-all") {
+      console.log("KRISTO_DELETE_ALL_GUEST_SLOTS_RESULT", emptyResult);
     } else {
       console.log("KRISTO_AUTO_DELETE_EXPIRED_SLOTS_RESULT", emptyResult);
     }
@@ -954,13 +1147,40 @@ async function persistGuestScheduleSlotRemoval(input: {
   const { feedId, slots: sourceSlots, sourceUsed } = context;
   const beforeBuckets = summarizeGuestScheduleSlotBuckets(sourceSlots, nowMs);
   const partition =
-    input.mode === "delete-open"
+    input.mode === "delete-all"
+      ? { remaining: [] as any[], removed: sourceSlots, removedCount: sourceSlots.length }
+      : input.mode === "delete-open"
       ? removeOpenGuestScheduleSlots(sourceSlots)
-      : removeExpiredOpenGuestScheduleSlots(sourceSlots, nowMs);
+      : input.mode === "delete-claimed"
+        ? removeClaimedGuestScheduleSlots(sourceSlots)
+        : input.mode === "delete-ended"
+          ? removeEndedGuestScheduleSlots(sourceSlots, nowMs)
+          : removeExpiredOpenGuestScheduleSlots(sourceSlots, nowMs);
   const { remaining, removed, removedCount } = partition;
 
   if (input.mode === "delete-open") {
     console.log("KRISTO_DELETE_OPEN_SLOTS_START", {
+      feedId,
+      reason: input.reason,
+      sourceUsed,
+      ...beforeBuckets,
+    });
+  } else if (input.mode === "delete-claimed") {
+    console.log("KRISTO_DELETE_CLAIMED_SLOTS_START", {
+      feedId,
+      reason: input.reason,
+      sourceUsed,
+      ...beforeBuckets,
+    });
+  } else if (input.mode === "delete-ended") {
+    console.log("KRISTO_DELETE_ENDED_SLOTS_START", {
+      feedId,
+      reason: input.reason,
+      sourceUsed,
+      ...beforeBuckets,
+    });
+  } else if (input.mode === "delete-all") {
+    console.log("KRISTO_DELETE_ALL_GUEST_SLOTS_START", {
       feedId,
       reason: input.reason,
       sourceUsed,
@@ -989,7 +1209,38 @@ async function persistGuestScheduleSlotRemoval(input: {
       syncOk: true,
       error: null,
     };
-  } else {
+  }
+
+  if (
+    removedCount <= 0 &&
+    (input.mode === "delete-open" ||
+      input.mode === "delete-claimed" ||
+      input.mode === "delete-ended" ||
+      input.mode === "delete-all")
+  ) {
+    const skippedResult = {
+      ok: true,
+      skipped: true,
+      feedId,
+      ...beforeBuckets,
+      removedCount: 0,
+      remainingCount: sourceSlots.length,
+      syncOk: true,
+      error: null as string | null,
+    };
+    if (input.mode === "delete-open") {
+      console.log("KRISTO_DELETE_OPEN_SLOTS_RESULT", skippedResult);
+    } else if (input.mode === "delete-claimed") {
+      console.log("KRISTO_DELETE_CLAIMED_SLOTS_RESULT", skippedResult);
+    } else if (input.mode === "delete-ended") {
+      console.log("KRISTO_DELETE_ENDED_SLOTS_RESULT", skippedResult);
+    } else {
+      console.log("KRISTO_DELETE_ALL_GUEST_SLOTS_RESULT", skippedResult);
+    }
+    return skippedResult;
+  }
+
+  if (input.mode === "auto-delete-expired-open") {
     for (const slot of removed) {
       const { startMs, endMs } = resolveMediaSlotTimeWindow(slot, nowMs);
       console.log("KRISTO_AUTO_DELETE_EXPIRED_SLOT", {
@@ -1038,6 +1289,12 @@ async function persistGuestScheduleSlotRemoval(input: {
 
   if (input.mode === "delete-open") {
     console.log("KRISTO_DELETE_OPEN_SLOTS_RESULT", resultPayload);
+  } else if (input.mode === "delete-claimed") {
+    console.log("KRISTO_DELETE_CLAIMED_SLOTS_RESULT", resultPayload);
+  } else if (input.mode === "delete-ended") {
+    console.log("KRISTO_DELETE_ENDED_SLOTS_RESULT", resultPayload);
+  } else if (input.mode === "delete-all") {
+    console.log("KRISTO_DELETE_ALL_GUEST_SLOTS_RESULT", resultPayload);
   } else {
     console.log("KRISTO_AUTO_DELETE_EXPIRED_SLOTS_RESULT", resultPayload);
   }
@@ -1092,6 +1349,25 @@ async function persistGuestScheduleSlotRemoval(input: {
   };
 }
 
+export async function persistDeleteAllGuestSlots(input: {
+  sourceFeedId?: string;
+  backendFeedItems: any[];
+  homeFeedItems: any[];
+  headers: Record<string, string>;
+  churchId: string;
+  nowMs?: number;
+  userId?: string;
+  setBackendFeedItems: (items: any[]) => void;
+  setHomeFeedItems: (items: any[]) => void;
+  setGuestClaimSlots?: (slots: any[]) => void;
+}) {
+  return persistGuestScheduleSlotRemoval({
+    ...input,
+    reason: "delete-all-guest-slots",
+    mode: "delete-all",
+  });
+}
+
 export async function persistDeleteOpenGuestSlots(input: {
   sourceFeedId: string;
   backendFeedItems: any[];
@@ -1108,6 +1384,44 @@ export async function persistDeleteOpenGuestSlots(input: {
     ...input,
     reason: "delete-open-slots",
     mode: "delete-open",
+  });
+}
+
+export async function persistDeleteClaimedGuestSlots(input: {
+  sourceFeedId: string;
+  backendFeedItems: any[];
+  homeFeedItems: any[];
+  headers: Record<string, string>;
+  churchId: string;
+  nowMs?: number;
+  userId?: string;
+  setBackendFeedItems: (items: any[]) => void;
+  setHomeFeedItems: (items: any[]) => void;
+  setGuestClaimSlots?: (slots: any[]) => void;
+}) {
+  return persistGuestScheduleSlotRemoval({
+    ...input,
+    reason: "delete-claimed-slots",
+    mode: "delete-claimed",
+  });
+}
+
+export async function persistDeleteEndedGuestSlots(input: {
+  sourceFeedId: string;
+  backendFeedItems: any[];
+  homeFeedItems: any[];
+  headers: Record<string, string>;
+  churchId: string;
+  nowMs?: number;
+  userId?: string;
+  setBackendFeedItems: (items: any[]) => void;
+  setHomeFeedItems: (items: any[]) => void;
+  setGuestClaimSlots?: (slots: any[]) => void;
+}) {
+  return persistGuestScheduleSlotRemoval({
+    ...input,
+    reason: "delete-ended-slots",
+    mode: "delete-ended",
   });
 }
 

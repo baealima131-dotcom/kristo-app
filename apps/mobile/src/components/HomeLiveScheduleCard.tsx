@@ -970,27 +970,42 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const claimedLiveLayout = claimed && phase === "live";
   const claimedPreLiveLayout = claimed && phase !== "live" && phase !== "ended";
   const claimedCompactLayout = claimedLiveLayout || claimedPreLiveLayout;
+  const canEnterLiveRoom = claimedByMe && isLiveWindow && phase !== "ended";
   const visualTheme = isUnclaimedLiveOpen ? { ...theme, label: "LIVE NOW • OPEN" } : theme;
 
   useEffect(() => {
-    if (!__DEV__) return;
     console.log("KRISTO_HOME_SLOT_VISUAL_STATE", {
       slotId: slot?.id,
       slotNumber: Number((slot as any)?.slot || (slot as any)?.slotNumber || slotFeedIndex + 1),
       startMs: slotVisual?.startMs ?? slot?.startMs,
       endMs: slotVisual?.endMs ?? slot?.endMs,
+      currentUserId,
+      claimedByUserId: claimUserId,
       claimed,
+      claimedByMe,
+      claimedByOther,
       phase,
       isLiveWindow,
       isUnclaimedLiveOpen,
+      canEnterLiveRoom,
+      hasOptimisticClaim: !!optimisticClaim,
+      activeSlotClaimedByUserId: String(activeSlot?.claimedByUserId || activeSlot?.claimedBy?.userId || ""),
     });
   }, [
     slot?.id,
     slotFeedIndex,
     claimed,
+    claimedByMe,
+    claimedByOther,
+    claimUserId,
+    currentUserId,
     phase,
     isLiveWindow,
     isUnclaimedLiveOpen,
+    canEnterLiveRoom,
+    optimisticClaim,
+    activeSlot?.claimedByUserId,
+    activeSlot?.claimedBy?.userId,
     slot,
     slotVisual?.startMs,
     slotVisual?.endMs,
@@ -1066,7 +1081,91 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               ? "1m left"
               : "Starting now";
 
-  const claimCtaText = isUnclaimedLiveOpen ? "Claim & Go Live" : "Claim This Live Slot";
+  const claimCtaText = canEnterLiveRoom
+    ? "Enter Live Room"
+    : isUnclaimedLiveOpen
+      ? "Claim & Go Live"
+      : "Claim This Live Slot";
+
+  const showPrimaryClaim = !claimed && phase !== "ended" && !isClaimInFlight;
+  const showEnterLivePrimary = canEnterLiveRoom && !isClaimInFlight;
+  const showSecondaryClaim = claimed && phase !== "ended";
+  const compactOpenCard = !claimed && phase !== "ended";
+  const edgeTint = phaseEdgeTint(phase, claimed, isUnclaimedLiveOpen);
+
+  const liveRoomNavigationTarget = useMemo(() => {
+    const seedId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
+    return {
+      pathname: "/(tabs)/more/my-church-room/messages/live-room",
+      feedId: seedId,
+      sourceScheduleId: seedId,
+      scheduleType: String(item?.scheduleType || "media-live-slots"),
+    };
+  }, [item?.sourceScheduleId, item?.id, item?.scheduleType]);
+
+  useEffect(() => {
+    const ctaText = showEnterLivePrimary
+      ? "Enter Live Room"
+      : showPrimaryClaim
+        ? claimCtaText
+        : showSecondaryClaim
+          ? canEnterLiveRoom
+            ? "Enter Live Room"
+            : claimedByMe
+              ? "Claimed • Tap to Release"
+              : "Taken • Join Queue"
+          : "(hidden)";
+
+    const navigationTarget = canEnterLiveRoom
+      ? liveRoomNavigationTarget
+      : showPrimaryClaim
+        ? "claim-action"
+        : claimedByMe
+          ? "unclaim-or-hold"
+          : claimedByOther
+            ? "join-queue"
+            : "none";
+
+    console.log("KRISTO_HOME_SLOT_CTA_STATE", {
+      slotId: String(slot?.id || activeSlot?.id || ""),
+      currentUserId,
+      claimedByUserId: claimUserId,
+      claimed,
+      claimedByMe,
+      claimedByOther,
+      phase,
+      isLiveWindow,
+      isUnclaimedLiveOpen,
+      canEnterLiveRoom,
+      showPrimaryClaim,
+      showEnterLivePrimary,
+      showSecondaryClaim,
+      ctaText,
+      navigationTarget,
+      hasOptimisticClaim: !!optimisticClaim,
+      activeSlotClaimedByUserId: String(activeSlot?.claimedByUserId || activeSlot?.claimedBy?.userId || ""),
+    });
+  }, [
+    slot?.id,
+    activeSlot?.id,
+    currentUserId,
+    claimUserId,
+    claimed,
+    claimedByMe,
+    claimedByOther,
+    phase,
+    isLiveWindow,
+    isUnclaimedLiveOpen,
+    canEnterLiveRoom,
+    showPrimaryClaim,
+    showEnterLivePrimary,
+    showSecondaryClaim,
+    claimCtaText,
+    liveRoomNavigationTarget,
+    optimisticClaim,
+    activeSlot?.claimedByUserId,
+    activeSlot?.claimedBy?.userId,
+  ]);
 
   const titleFontSize = useMemo(() => resolveTitleFontSize(slotTitle), [slotTitle]);
   const titleLineHeight = compactUnclaimedLayout ? titleFontSize + 4 : titleFontSize + 6;
@@ -1218,6 +1317,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           postId: claimTarget.apiFeedId,
           slotId,
           userId: currentUserId,
+          canEnterLiveRoom:
+            Number(slot.startMs || 0) > 0 &&
+            Number(slot.startMs || 0) <= Date.now() &&
+            Number(slot.endMs || 0) > Date.now(),
         });
 
         const backendSlot = res?.slot;
@@ -1285,8 +1388,33 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   ]);
 
   const handleClaimPress = useCallback(() => {
-    if (phase === "live" && claimedByMe) {
-      onOpenLiveRoom?.();
+    console.log("KRISTO_HOME_SLOT_CTA_PRESS", {
+      slotId: String(slot?.id || activeSlot?.id || ""),
+      currentUserId,
+      claimedByUserId: claimUserId,
+      claimed,
+      claimedByMe,
+      canEnterLiveRoom,
+      hasOnOpenLiveRoom: typeof onOpenLiveRoom === "function",
+    });
+
+    if (canEnterLiveRoom) {
+      console.log("KRISTO_HOME_SLOT_CTA_NAV", {
+        action: "enter-live",
+        slotId: String(slot?.id || activeSlot?.id || ""),
+        currentUserId,
+        claimedByUserId: claimUserId,
+        navigationTarget: liveRoomNavigationTarget,
+        hasOnOpenLiveRoom: typeof onOpenLiveRoom === "function",
+      });
+      if (!onOpenLiveRoom) {
+        console.log("KRISTO_HOME_SLOT_CTA_NAV_BLOCKED", {
+          reason: "missing-onOpenLiveRoom",
+          slotId: String(slot?.id || activeSlot?.id || ""),
+        });
+        return;
+      }
+      onOpenLiveRoom();
       return;
     }
     if (claimedByOther) {
@@ -1309,23 +1437,22 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     }
     claimThisSlot();
   }, [
-    phase,
+    canEnterLiveRoom,
     claimedByMe,
     claimedByOther,
     onOpenLiveRoom,
     item,
+    slot?.id,
+    activeSlot?.id,
     slot.id,
     currentUserId,
+    claimUserId,
+    liveRoomNavigationTarget,
     profileName,
     profileAvatarUri,
     session?.role,
     claimThisSlot,
   ]);
-
-  const showPrimaryClaim = !claimed && phase !== "ended" && !isClaimInFlight;
-  const showSecondaryClaim = claimed && phase !== "ended";
-  const compactOpenCard = !claimed && phase !== "ended";
-  const edgeTint = phaseEdgeTint(phase, claimed, isUnclaimedLiveOpen);
 
   if (!slotVisual || slotVisual.expired) {
     return null;
@@ -1838,7 +1965,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                       ]}
                     >
                       <EnterLiveButtonGloss />
-                      {claimedByMe && phase === "live" ? (
+                      {claimedByMe && canEnterLiveRoom ? (
                         <>
                           <Ionicons name="radio" size={24} color="#FFF" />
                           <Text style={styles.hostEnterButtonText}>Enter Live Room</Text>
@@ -1871,6 +1998,27 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               claimedCompactLayout && styles.footerSectionClaimedLive,
             ]}
           >
+            {showEnterLivePrimary ? (
+              <AnimatedPressable
+                onPress={handleClaimPress}
+                style={[
+                  styles.claimBtnPrimary,
+                  styles.claimBtnPrimaryLiveOpen,
+                  claimBtnStyle,
+                ]}
+              >
+                <LinearGradient
+                  colors={["#FF3B63", "#D81B60", "#9C1748"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.claimBtnPrimaryGradient}
+                >
+                  <Ionicons name="radio" size={24} color="#FFF" />
+                  <Text style={[styles.claimBtnPrimaryText, { color: "#FFF" }]}>Enter Live Room</Text>
+                </LinearGradient>
+              </AnimatedPressable>
+            ) : null}
+
             {showPrimaryClaim ? (
               <View style={[compactUnclaimedLayout ? styles.claimBtnPrimaryWrapUnclaimed : undefined]}>
                 {compactUnclaimedLayout ? (

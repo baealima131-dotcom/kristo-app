@@ -7,8 +7,14 @@ import {
   isMediaLiveSlotsHomeFeedRow,
   sortHomeFeedScheduleSlotRows,
 } from "@/src/components/homeFeed/homeFeedUtils";
+import { getRingClaimHints } from "@/src/lib/homeFeedStore";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import {
+  applyRingClaimHintsToScheduleSlots,
+  baseFeedId,
+  mergeScheduleSlotClaimState,
+  scheduleSlotClaimUserId,
+} from "@/src/lib/scheduleSlotUtils";
 
 export type LiveSlotsCatalog = {
   myChurch: any[];
@@ -44,11 +50,72 @@ function countBackendSlotsInRows(rows: any[]) {
   }, 0);
 }
 
-/** Backend church feed wins for viewer church; global backend only — never merge local/route rows. */
+function resolveLiveSlotMatchKey(slot: any, index = 0) {
+  const id = String(slot?.id || slot?.slotId || "").trim();
+  if (id) return id;
+  const slotNumber = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+  return `num:${slotNumber > 0 ? slotNumber : index + 1}`;
+}
+
+/** Overlay fresher claim fields from home feed / ring hints onto backend schedule rows. */
+export function overlayLocalScheduleClaimsOnFeedRows(
+  backendRows: any[],
+  localRows: any[],
+  viewerUserId?: string
+): any[] {
+  if (!Array.isArray(backendRows) || !backendRows.length) return backendRows;
+
+  const localByScheduleKey = new Map<string, any>();
+  for (const row of localRows || []) {
+    if (!isLiveSlotsScheduleSourceRow(row)) continue;
+    const key = resolveLiveSlotsScheduleKey(row);
+    if (!key) continue;
+    localByScheduleKey.set(key, row);
+  }
+
+  const allRows = [...backendRows, ...(localRows || [])];
+  const hints = getRingClaimHints(viewerUserId);
+
+  return backendRows.map((row) => {
+    const scheduleKey = resolveLiveSlotsScheduleKey(row);
+    const localRow = scheduleKey ? localByScheduleKey.get(scheduleKey) : null;
+    let slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+    let changed = false;
+
+    if (localRow && Array.isArray(localRow.scheduleSlots) && localRow.scheduleSlots.length) {
+      const localSlotsByKey = new Map<string, any>();
+      localRow.scheduleSlots.forEach((slot: any, index: number) => {
+        localSlotsByKey.set(resolveLiveSlotMatchKey(slot, index), slot);
+      });
+
+      slots = slots.map((slot: any, index: number) => {
+        const localSlot = localSlotsByKey.get(resolveLiveSlotMatchKey(slot, index));
+        if (!localSlot) return slot;
+        const merged = mergeScheduleSlotClaimState(slot, localSlot);
+        if (merged !== slot) changed = true;
+        return merged;
+      });
+    }
+
+    if (scheduleKey && hints.length) {
+      const hinted = applyRingClaimHintsToScheduleSlots(slots, scheduleKey, hints, allRows);
+      if (hinted !== slots) {
+        slots = hinted;
+        changed = true;
+      }
+    }
+
+    if (!changed) return row;
+    return { ...row, scheduleSlots: slots };
+  });
+}
+
+/** Backend church feed wins for viewer church; local claim overlay fills stale reload gaps. */
 export function resolveLiveSlotsBackendFeedRows(input: {
   churchBackendRows: any[];
   globalBackendRows: any[];
   viewerChurchId: string;
+  viewerUserId?: string;
   localRows?: any[];
   churchFeedLoaded?: boolean;
 }): { rows: any[]; snapshot: LiveSlotsBackendSourceSnapshot } {
@@ -99,7 +166,8 @@ export function resolveLiveSlotsBackendFeedRows(input: {
     }
   }
 
-  const rows = Array.from(byScheduleKey.values());
+  let rows = Array.from(byScheduleKey.values());
+  rows = overlayLocalScheduleClaimsOnFeedRows(rows, localRows, input.viewerUserId);
   const backendSlotCount = countBackendSlotsInRows(rows);
   const localSlotCount = localRows.reduce((sum, row) => {
     if (!isLiveSlotsScheduleSourceRow(row)) return sum;
@@ -224,5 +292,16 @@ export function summarizeLiveSlotsRenderRows(rows: any[]) {
     renderedSlotNumbers: rows.map((row, index) =>
       Math.max(1, Number(row?.slotNumber || index + 1))
     ),
+    slotClaimStates: rows.map((row, index) => {
+      const slot = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots[0] : null;
+      const claimedByUserId = scheduleSlotClaimUserId(slot);
+      return {
+        slotNumber: Math.max(1, Number(row?.slotNumber || index + 1)),
+        slotId: String(slot?.id || ""),
+        claimedByUserId,
+        status: String(slot?.status || ""),
+        claimed: Boolean(claimedByUserId || slot?.claimed === true || slot?.isClaimed === true),
+      };
+    }),
   };
 }

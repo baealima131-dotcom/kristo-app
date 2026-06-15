@@ -22,7 +22,10 @@ import {
   ACTIVE_MEDIA_SCHEDULE_ERROR,
   findActiveMediaScheduleForChurchFromSources,
   findMediaScheduleFeedForChurch,
+  resolveChurchMediaScheduleFromFeedRows,
+  summarizeActiveMediaSchedule,
 } from "@/src/lib/mediaScheduleLock";
+import { hydrateActiveMediaScheduleFromBackend } from "@/src/lib/mediaScheduleActiveHydration";
 import {
   applySilentMediaScheduleReload,
   clearStaleMediaScheduleSpeakerSlotsForChurch,
@@ -1439,6 +1442,14 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
 
   const scheduleSpeakerSlots = mcScheduleState.scheduleSlots;
   const [activeScheduleBatchIndex, setActiveScheduleBatchIndex] = useState(0);
+  const [backendActiveScheduleMeta, setBackendActiveScheduleMeta] = useState<any>(null);
+
+  const hasBackendActiveSchedule = Boolean(
+    backendActiveScheduleMeta?.id ||
+      (meetingSentToSchedule && Array.isArray(scheduleSpeakerSlots) && scheduleSpeakerSlots.length > 0)
+  );
+  const blockMediaSendToSchedule =
+    isMediaSchedule && !isMinistryLiveSchedule && hasBackendActiveSchedule;
 
   const scheduleBatches = useMemo(() => {
     const groups = new Map<string, any[]>();
@@ -1516,6 +1527,44 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
   }, [isMediaSchedule, isMinistryLiveSchedule]);
 
   useEffect(() => {
+    if (!isMediaSchedule || isMinistryLiveSchedule) return;
+
+    let alive = true;
+
+    async function prefetchBackendActiveSchedule() {
+      const churchId = String(getSessionSync()?.churchId || "").trim();
+      if (!churchId) return;
+
+      try {
+        const sync = await fetchMediaScheduleFeedSync(churchId, getKristoHeaders() as any);
+        const backendRow = resolveChurchMediaScheduleFromFeedRows(sync.rows, churchId, {
+          strictChurch: true,
+        });
+        if (!alive || !backendRow) return;
+
+        await hydrateActiveMediaScheduleFromBackend({
+          activeSchedule: backendRow,
+          churchId,
+          assignmentId,
+          headers: getKristoHeaders() as any,
+          screen: "church-project-tool.media-schedule",
+          reason: "prefetch-active-schedule",
+        });
+
+        if (!alive) return;
+        setBackendActiveScheduleMeta(summarizeActiveMediaSchedule(backendRow));
+      } catch (e) {
+        console.log("KRISTO_MEDIA_ACTIVE_SCHEDULE_PREFETCH_ERROR", e);
+      }
+    }
+
+    void prefetchBackendActiveSchedule();
+    return () => {
+      alive = false;
+    };
+  }, [isMediaSchedule, isMinistryLiveSchedule, assignmentId]);
+
+  useEffect(() => {
     // Guests screen also needs backend schedule/feed sync
     // because media claims are rendered there.
     if ((!isSchedule && !isMediaGuests) || !targetRoomId) return;
@@ -1565,7 +1614,16 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       if (needsMediaFeedSync || isMediaGuests) {
         reloadResult = await runToolMediaScheduleSilentReload("tool-backend-cards-poll");
 
-        if (reloadResult?.shouldForceLocalPurge || reloadResult?.backendHasActiveSchedule === false) {
+        if (reloadResult?.shouldForceLocalPurge) {
+          if (alive) {
+            setBackendScheduleCards([]);
+            setScheduleConflictInfo(null);
+            setActiveScheduleBatchIndex(0);
+          }
+          return;
+        }
+
+        if (reloadResult?.backendHasActiveSchedule === false) {
           if (alive) {
             clearStaleMediaScheduleSpeakerSlotsForChurch({
               churchId: String(getSessionSync()?.churchId || "").trim(),
@@ -1580,6 +1638,18 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
             });
           }
           return;
+        }
+
+        if (reloadResult?.backendHasActiveSchedule && alive) {
+          const churchId = String(getSessionSync()?.churchId || "").trim();
+          const backendRow = churchId
+            ? resolveChurchMediaScheduleFromFeedRows(reloadResult.rows, churchId, {
+                strictChurch: true,
+              })
+            : null;
+          if (backendRow) {
+            setBackendActiveScheduleMeta(summarizeActiveMediaSchedule(backendRow));
+          }
         }
       }
 
@@ -2599,7 +2669,9 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     const hasFeedSyncRows = Array.isArray(opts?.feedSyncRows);
     const backendFeedRow =
       churchId && hasFeedSyncRows
-        ? findMediaScheduleFeedForChurch(opts!.feedSyncRows!, churchId, { strictChurch: true })
+        ? resolveChurchMediaScheduleFromFeedRows(opts!.feedSyncRows!, churchId, {
+            strictChurch: true,
+          })
         : null;
 
     if (hasFeedSyncRows && !backendFeedRow) {
@@ -2905,7 +2977,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     if (churchId && isMediaSchedule && !isMinistryLiveSchedule) {
       try {
         const sync = await fetchMediaScheduleFeedSync(churchId, scheduleApiHeaders);
-        const backendFeedRow = findMediaScheduleFeedForChurch(sync.rows, churchId, {
+        const backendFeedRow = resolveChurchMediaScheduleFromFeedRows(sync.rows, churchId, {
           strictChurch: true,
         });
         if (!backendFeedRow) {
@@ -2923,16 +2995,28 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
             },
           });
         } else {
-          backendActiveScheduleCount = 1;
+          await hydrateActiveMediaScheduleFromBackend({
+            activeSchedule: backendFeedRow,
+            churchId,
+            assignmentId,
+            headers: scheduleApiHeaders,
+            screen: "church-project-tool.media-schedule",
+            reason: "handleSendMeetingToSchedule-prefetch",
+          });
+          setBackendActiveScheduleMeta(summarizeActiveMediaSchedule(backendFeedRow));
+
+          const slots = Array.isArray(backendFeedRow?.scheduleSlots)
+            ? backendFeedRow.scheduleSlots
+            : [];
+          backendActiveScheduleCount = slots.length || Number(backendFeedRow?.activeSlotCount || 0) || 1;
           backendFeedId = String(backendFeedRow?.id || "");
           backendSourceScheduleId = String(backendFeedRow?.sourceScheduleId || "");
-          backendCardsForConflict = backendCardsForConflict.map((card: any) => ({
-            ...card,
-            feedId: backendFeedId,
-            sourceScheduleId: backendSourceScheduleId,
-            scheduleStatus: String(backendFeedRow?.status || ""),
-            deleted: Boolean(backendFeedRow?.deleted),
-          }));
+
+          Alert.alert(
+            "Schedule already active",
+            `${slots.length || backendActiveScheduleCount} slot(s) are already live on the backend. Manage the existing schedule instead of creating a new one.`
+          );
+          return;
         }
       } catch (e) {
         console.log("KRISTO_MEDIA_SLOT_CONFLICT_PREFETCH_ERROR", e);
@@ -3804,6 +3888,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         audience: "global",
         isGlobalMediaSlot: true,
         screen: "church-project-tool.media-schedule",
+        assignmentId,
       });
 
       console.log("KRISTO_SCHEDULE_CREATE_SUCCESS", {
@@ -3817,6 +3902,23 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       });
 
       if (!feedResult.ok) {
+        if (
+          String(feedResult.error || "").includes("already active") ||
+          feedResult.error === ACTIVE_MEDIA_SCHEDULE_ERROR
+        ) {
+          const churchIdForHydrate = String(getSessionSync()?.churchId || "").trim();
+          if (churchIdForHydrate) {
+            const sync = await fetchMediaScheduleFeedSync(churchIdForHydrate, apiHeaders);
+            const backendRow = resolveChurchMediaScheduleFromFeedRows(sync.rows, churchIdForHydrate, {
+              strictChurch: true,
+            });
+            if (backendRow) {
+              setBackendActiveScheduleMeta(summarizeActiveMediaSchedule(backendRow));
+            }
+          }
+        } else {
+          saveChurchProjectMeetingPlan(assignmentId, { sentToSchedule: false });
+        }
         return;
       }
 
@@ -4417,6 +4519,64 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
               <Text style={[s.cardSub, { color: "rgba(226,232,240,0.88)", marginBottom: 12 }]}>
                 {liveStatusBody}
               </Text>
+
+              {isMediaSchedule && !isMinistryLiveSchedule && hasBackendActiveSchedule ? (
+                <View
+                  style={{
+                    marginBottom: 14,
+                    borderRadius: 18,
+                    borderWidth: 1,
+                    borderColor: "rgba(110,168,255,0.34)",
+                    backgroundColor: "rgba(110,168,255,0.10)",
+                    padding: 14,
+                    gap: 10,
+                  }}
+                >
+                  <Text style={{ color: "#93C5FD", fontSize: 12, fontWeight: "900", letterSpacing: 1.4 }}>
+                    ACTIVE BACKEND SCHEDULE
+                  </Text>
+                  <Text style={{ color: TEXT, fontSize: 16, fontWeight: "800" }}>
+                    {String(backendActiveScheduleMeta?.title || meetingTopicChoice || "Live schedule").trim()}
+                  </Text>
+                  <Text style={{ color: SOFT, fontSize: 14, fontWeight: "700" }}>
+                    {Array.isArray(scheduleSpeakerSlots) && scheduleSpeakerSlots.length
+                      ? `${scheduleSpeakerSlots.length} slot(s) synced from backend`
+                      : `${Number(backendActiveScheduleMeta?.activeSlotCount || backendActiveScheduleMeta?.slotCount || 0)} slot(s) on backend`}
+                  </Text>
+
+                  {scheduleBatches[0]?.slots?.length ? (
+                    <View style={{ gap: 6 }}>
+                      {scheduleBatches[0].slots.slice(0, 5).map((slot: any, index: number) => (
+                        <Text key={`active-slot-${String(slot.id || index)}`} style={{ color: SOFT, fontSize: 13 }}>
+                          {index + 1}. {String(slot.name || slot.title || `Slot ${index + 1}`)} •{" "}
+                          {String(slot.timeLabel || `${slot.startTime || ""} - ${slot.endTime || ""}`).trim()}
+                        </Text>
+                      ))}
+                    </View>
+                  ) : null}
+
+                  <Pressable
+                    onPress={() => router.push("/more/live-slots" as any)}
+                    style={({ pressed }) => [
+                      {
+                        marginTop: 4,
+                        height: 48,
+                        borderRadius: 16,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        borderWidth: 1,
+                        borderColor: "rgba(110,168,255,0.42)",
+                        backgroundColor: "rgba(110,168,255,0.14)",
+                      },
+                      pressed ? s.pressed : null,
+                    ]}
+                  >
+                    <Text style={{ color: "#BFDBFE", fontSize: 15, fontWeight: "900" }}>
+                      Manage Existing Schedule
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
 
               <View
                 style={{
@@ -6182,10 +6342,20 @@ height: 24,
                     ) : null}
 
                     <Pressable
-                      disabled={meetingStep === 5 && sendMeetingToScheduleSending}
+                      disabled={
+                        (meetingStep === 5 && sendMeetingToScheduleSending) ||
+                        (meetingStep === 5 && blockMediaSendToSchedule)
+                      }
                       onPress={() => {
                         if (meetingStep === 1 && !meetingCreateReady) return;
                         if (meetingStep === 5 && sendMeetingToScheduleSending) return;
+                        if (meetingStep === 5 && blockMediaSendToSchedule) {
+                          Alert.alert(
+                            "Schedule already active",
+                            ACTIVE_MEDIA_SCHEDULE_ERROR
+                          );
+                          return;
+                        }
 
                         if (meetingStep === 1) {
                           setMeetingStep(2);
@@ -6275,16 +6445,25 @@ height: 24,
                               ? meetingCreateReady
                                 ? "rgba(16,185,129,0.48)"
                                 : "rgba(239,68,68,0.48)"
-                              : "rgba(217,179,95,0.24)",
+                              : meetingStep === 5 && blockMediaSendToSchedule
+                                ? "rgba(110,168,255,0.34)"
+                                : "rgba(217,179,95,0.24)",
                           backgroundColor:
                             meetingStep === 1
                               ? meetingCreateReady
                                 ? "rgba(16,185,129,0.16)"
                                 : "rgba(239,68,68,0.16)"
-                              : "rgba(217,179,95,0.12)",
+                              : meetingStep === 5 && blockMediaSendToSchedule
+                                ? "rgba(110,168,255,0.10)"
+                                : "rgba(217,179,95,0.12)",
                         },
-                        meetingStep === 5 && sendMeetingToScheduleSending ? { opacity: 0.55 } : null,
-                        pressed && !(meetingStep === 5 && sendMeetingToScheduleSending)
+                        meetingStep === 5 &&
+                        (sendMeetingToScheduleSending || blockMediaSendToSchedule)
+                          ? { opacity: 0.55 }
+                          : null,
+                        pressed &&
+                        !(meetingStep === 5 && sendMeetingToScheduleSending) &&
+                        !(meetingStep === 5 && blockMediaSendToSchedule)
                           ? s.pressed
                           : null,
                       ]}
@@ -6313,7 +6492,9 @@ height: 24,
                                 : meetingStep === 5
                                   ? sendMeetingToScheduleSending
                                     ? "Sending..."
-                                    : "Send to Schedule"
+                                    : blockMediaSendToSchedule
+                                      ? "Schedule Active"
+                                      : "Send to Schedule"
                                   : "Done"}
                       </Text>
                     </Pressable>

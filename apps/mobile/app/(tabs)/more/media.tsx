@@ -58,7 +58,7 @@ import {
   isGuestScheduleSlotOpenUnclaimed,
   logDelOldScanDiagnostics,
   logGuestSlotSourceDiagnostics,
-  persistDeleteOpenGuestSlots,
+  persistDeleteAllGuestSlots,
   persistGuestSlotClaimClear,
   summarizeGuestScheduleSlotBuckets,
 } from "../../../src/lib/guestClaimPersistence";
@@ -1643,6 +1643,57 @@ export default function MediaStudioScreen() {
   ).length;
   const guestInvitationCount = 0;
 
+  function handleDeleteAllGuestSlots() {
+    if (!ensureGuestClaimManagePermission("delete-all-guest-slots")) return;
+
+    const churchId = String(session?.churchId || "").trim();
+    const activeSchedule = churchId
+      ? resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, churchId, guestClockNow)
+      : null;
+    const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "").trim();
+    const slots = Array.isArray(activeSchedule?.scheduleSlots) ? activeSchedule.scheduleSlots : [];
+
+    if (!sourceFeedId || !slots.length) {
+      Alert.alert("Delete", "No guest slots to delete.");
+      return;
+    }
+
+    Alert.alert(
+      "Delete all guest slots?",
+      "This will remove open, claimed, invited, and expired guest slots.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              const result = await persistDeleteAllGuestSlots({
+                sourceFeedId,
+                backendFeedItems,
+                homeFeedItems,
+                headers: guestClaimHeaders,
+                churchId,
+                userId: String(session?.userId || "").trim(),
+                nowMs: guestClockNow,
+                setBackendFeedItems,
+                setHomeFeedItems,
+                setGuestClaimSlots,
+              });
+
+              if (!result.ok) {
+                Alert.alert("Delete failed", result.error || "Could not delete guest slots.");
+                return;
+              }
+
+              setGuestClockNow(Date.now());
+            })();
+          },
+        },
+      ]
+    );
+  }
+
   useEffect(() => {
     const churchId = String(session?.churchId || "").trim();
     const activeSchedule = churchId
@@ -1778,67 +1829,6 @@ export default function MediaStudioScreen() {
     inputRange: [0, 1],
     outputRange: [1, 1.045],
   });
-
-  function handleDeleteOldGuestSlots() {
-    if (!ensureGuestClaimManagePermission("delete-open-slots")) return;
-
-    const churchId = String(session?.churchId || "").trim();
-    const activeSchedule = churchId
-      ? resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, churchId, guestClockNow)
-      : null;
-    const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "").trim();
-    const slots = Array.isArray(activeSchedule?.scheduleSlots) ? activeSchedule.scheduleSlots : [];
-    const buckets = summarizeGuestScheduleSlotBuckets(slots, guestClockNow);
-
-    if (!sourceFeedId || !slots.length) {
-      Alert.alert("Delete open slots", "No active schedule found.");
-      return;
-    }
-
-    if (buckets.openSlots <= 0) {
-      Alert.alert("Delete open slots", "No open slots to delete.");
-      return;
-    }
-
-    Alert.alert(
-      "Delete open slots",
-      "Delete all open slots? Claimed slots will stay.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              const result = await persistDeleteOpenGuestSlots({
-                sourceFeedId,
-                backendFeedItems,
-                homeFeedItems,
-                headers: guestClaimHeaders,
-                churchId,
-                userId: String(session?.userId || "").trim(),
-                nowMs: guestClockNow,
-                setBackendFeedItems,
-                setHomeFeedItems,
-                setGuestClaimSlots,
-              });
-
-              if (!result.ok) {
-                Alert.alert("Delete failed", result.error || "Could not delete open slots.");
-                return;
-              }
-
-              setGuestClockNow(Date.now());
-              Alert.alert(
-                "Done",
-                `Removed ${result.removedCount} open slot${result.removedCount === 1 ? "" : "s"}.`
-              );
-            })();
-          },
-        },
-      ]
-    );
-  }
 
   function handleClearMediaSchedules() {
     Alert.alert(
@@ -3156,6 +3146,10 @@ export default function MediaStudioScreen() {
       }
 
       setGuestClockNow(Date.now());
+      const removedCount = Number((result as any)?.removedCount || 0);
+      if (removedCount > 0) {
+        Alert.alert("Slot removed", "The slot was deleted from the schedule.");
+      }
     })();
   }
 
@@ -3519,7 +3513,11 @@ export default function MediaStudioScreen() {
   function handleGuestReject(slotId: string, sourceFeedId?: string) {
     const slot = syncedGuestClaimSlots.find((x: any) => String(x?.id || "") === String(slotId));
     const state = getGuestSlotUiState(slot);
-    if (state === "claimed" || slot?.approved) {
+    if (state === "approved") {
+      removeGuestClaimant(slotId, sourceFeedId);
+      return;
+    }
+    if (state === "claimed") {
       rejectGuestClaim(slotId, sourceFeedId);
       return;
     }
@@ -4217,15 +4215,13 @@ export default function MediaStudioScreen() {
                 </View>
 
                 <Pressable
-                  onPress={handleDeleteOldGuestSlots}
+                  onPress={handleDeleteAllGuestSlots}
                   style={[s.guestClaimSummaryPill, s.guestClaimDangerBtn]}
                 >
                   <Text style={[s.guestClaimSummaryValue, { color: "#FCA5A5", fontSize: 13 }]}>
-                    Delete Open
+                    DELETE
                   </Text>
-                  <Text style={s.guestClaimSummaryLabel}>
-                    {guestClaimOpenCount > 0 ? `${guestClaimOpenCount} open` : "0 open"}
-                  </Text>
+                  <Text style={s.guestClaimSummaryLabel}>All slots</Text>
                 </Pressable>
               </ScrollView>
 

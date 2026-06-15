@@ -8,7 +8,12 @@ import {
   feedSyncMediaScheduleFromBackend,
 } from "@/src/lib/homeFeedStore";
 import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
-import { findActiveMediaScheduleForChurch, findMediaScheduleFeedForChurch } from "@/src/lib/mediaScheduleLock";
+import { hydrateActiveMediaScheduleFromBackend } from "@/src/lib/mediaScheduleActiveHydration";
+import {
+  findActiveMediaScheduleForChurch,
+  findMediaScheduleFeedForChurch,
+  resolveChurchMediaScheduleFromFeedRows,
+} from "@/src/lib/mediaScheduleLock";
 import { findProtectedNearLiveSchedule, emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
 import { materializeMediaSlotTimeFields } from "@/src/lib/mediaScheduleSlotTimes";
@@ -254,13 +259,14 @@ export function applySilentMediaScheduleReload(params: {
     mediaScheduleVersion !== previousVersion ||
     (!!mediaScheduleUpdatedAt && mediaScheduleUpdatedAt !== previousUpdatedAt);
 
-  const backendScheduleFeed = cid
-    ? findMediaScheduleFeedForChurch(rows, cid, { strictChurch: true })
+  const backendScheduleRow = cid
+    ? resolveChurchMediaScheduleFromFeedRows(rows, cid, { strictChurch: true })
     : null;
+  const backendScheduleFeed = backendScheduleRow;
   const backendActive = cid
     ? findActiveMediaScheduleForChurch(rows, cid, { strictChurch: true })
     : null;
-  const backendHasActiveSchedule = Boolean(backendScheduleFeed || backendActive);
+  const backendHasActiveSchedule = Boolean(backendScheduleRow);
 
   if (cid && !backendHasActiveSchedule) {
     clearStaleMediaScheduleSpeakerSlotsForChurch({
@@ -269,15 +275,23 @@ export function applySilentMediaScheduleReload(params: {
       reason: `${params.reason}:backend-empty`,
       ui: params.ui,
     });
+  } else if (backendScheduleRow && params.assignmentId) {
+    void hydrateActiveMediaScheduleFromBackend({
+      activeSchedule: backendScheduleRow,
+      churchId: cid,
+      assignmentId: params.assignmentId,
+      reason: `${params.reason}:silent-reload-hydrate`,
+    });
+    applyBackendMediaScheduleToLocalFeed(rows, cid);
   }
 
-  if (backendScheduleFeed || backendActive) {
+  if (backendScheduleRow) {
     console.log("[MediaSilentReload] active schedule source found", {
       churchId: cid,
-      feedId: String((backendScheduleFeed || backendActive)?.id || ""),
-      source: backendScheduleFeed ? "schedule-feed-row" : "time-active-schedule",
-      slotCount: Array.isArray((backendScheduleFeed || backendActive)?.scheduleSlots)
-        ? (backendScheduleFeed || backendActive)?.scheduleSlots.length
+      feedId: String(backendScheduleRow?.id || ""),
+      source: backendActive ? "time-active-schedule" : "schedule-feed-row",
+      slotCount: Array.isArray(backendScheduleRow?.scheduleSlots)
+        ? backendScheduleRow.scheduleSlots.length
         : 0,
     });
   }
@@ -288,7 +302,7 @@ export function applySilentMediaScheduleReload(params: {
   );
 
   const shouldForceLocalPurge = Boolean(
-    versionChanged && cid && !backendScheduleFeed && !backendActive && !hasPendingLocalSchedule
+    versionChanged && cid && !backendHasActiveSchedule && !hasPendingLocalSchedule
   );
 
   let purgedLocal = false;
@@ -306,7 +320,7 @@ export function applySilentMediaScheduleReload(params: {
     ? findProtectedNearLiveSchedule(localRows, cid, Date.now())
     : null;
 
-  if (versionChanged && cid && !backendScheduleFeed && !backendActive && hasPendingLocalSchedule) {
+  if (versionChanged && cid && !backendHasActiveSchedule && hasPendingLocalSchedule) {
     console.log("KRISTO_SCHEDULE_LOCAL_KEEP_PENDING_BACKEND", {
       churchId: cid,
       reason: params.reason,
@@ -444,6 +458,7 @@ export function applyBackendMediaScheduleToLocalFeed(rows: any[], churchId: stri
   if (!cid || !rows.length) return null;
 
   const backendSchedule =
+    resolveChurchMediaScheduleFromFeedRows(rows, cid, { strictChurch: true }) ||
     findMediaScheduleFeedForChurch(rows, cid, { strictChurch: true }) ||
     findActiveMediaScheduleForChurch(rows, cid, { strictChurch: true });
 

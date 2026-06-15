@@ -2073,6 +2073,25 @@ export default function LiveRoomScreen() {
       sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
     });
 
+    console.log("KRISTO_LIVE_ROOM_SCREEN_MOUNT", {
+      at: liveRoomMountAtRef.current,
+      sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
+      feedId: String((params as any)?.feedId || ""),
+      sourceScheduleId: String((params as any)?.sourceScheduleId || ""),
+      liveId: String((params as any)?.liveId || ""),
+      localScheduleId: String((params as any)?.localScheduleId || ""),
+      churchId: String((params as any)?.churchId || session?.churchId || ""),
+      currentUserId: String(session?.userId || ""),
+      routeClaimedByUserId: String((params as any)?.claimedByUserId || ""),
+      canPublish: String((params as any)?.canPublish || ""),
+      canPublishMic: String((params as any)?.canPublishMic || ""),
+      canPublishCamera: String((params as any)?.canPublishCamera || ""),
+      entryMode: String((params as any)?.entryMode || ""),
+      currentSlotNumber: String((params as any)?.currentSlotNumber || ""),
+      routeSlotCount,
+      hasRouteSlots: routeSlotCount > 0,
+    });
+
     let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
@@ -6591,6 +6610,85 @@ export default function LiveRoomScreen() {
     canEnterMainLive;
 
   const liveEnabled = isMediaInstantLive || canEnterRoom;
+
+  useEffect(() => {
+    const routeClaimedByUserId = String((params as any)?.claimedByUserId || "").trim();
+    const claimedByMeRoute =
+      !!currentUserId && !!routeClaimedByUserId && routeClaimedByUserId === currentUserId;
+    const accessAllowed =
+      isMediaInstantLive ||
+      canEnterRoom ||
+      canPublishClaimedMicNow ||
+      canPublishLiveVideoNow ||
+      userOwnsCurrentActiveSlot;
+
+    let blockedReason = "";
+    if (!accessAllowed) {
+      if (!liveScheduleReady) blockedReason = "schedule-not-ready";
+      else if (!finalAudienceGateAllowed) blockedReason = "audience-gate";
+      else if (!liveStillActive && requestedEntryMode === "live") blockedReason = "live-not-active";
+      else if (!canEnterRoom) blockedReason = "room-entry-closed";
+      else if (claimedByMeRoute && !canPublishClaimedMicNow && !canPublishLiveVideoNow) {
+        blockedReason = "claimed-but-publish-blocked";
+      } else blockedReason = "unknown";
+    }
+
+    console.log("KRISTO_LIVE_ROOM_ACCESS_RESULT", {
+      currentUserId,
+      routeClaimedByUserId,
+      claimedByMeRoute,
+      churchSubscriptionActive,
+      audienceGateAllowed,
+      finalAudienceGateAllowed,
+      liveScheduleReady,
+      liveStillActive,
+      backstageOpen,
+      audienceOpen,
+      requestedEntryMode,
+      canEnterBackstage,
+      canEnterWaitingRoom,
+      canEnterMainLive,
+      canEnterRoom,
+      liveEnabled,
+      canPublishClaimedMicNow,
+      canPublishLiveVideoNow,
+      userOwnsCurrentActiveSlot,
+      userHasClaimedScheduleSlot,
+      isCurrentActiveSlotOwnerForLiveRoom,
+      routeCanPublish: String((params as any)?.canPublish || ""),
+      routeCanPublishMic: String((params as any)?.canPublishMic || ""),
+      routeCanPublishCamera: String((params as any)?.canPublishCamera || ""),
+      accessAllowed,
+      blockedReason,
+      showsAccessRestrictedOverlay: !finalAudienceGateAllowed && !isMediaInstantLive,
+    });
+  }, [
+    currentUserId,
+    (params as any)?.claimedByUserId,
+    (params as any)?.canPublish,
+    (params as any)?.canPublishMic,
+    (params as any)?.canPublishCamera,
+    churchSubscriptionActive,
+    audienceGateAllowed,
+    finalAudienceGateAllowed,
+    liveScheduleReady,
+    liveStillActive,
+    backstageOpen,
+    audienceOpen,
+    requestedEntryMode,
+    canEnterBackstage,
+    canEnterWaitingRoom,
+    canEnterMainLive,
+    canEnterRoom,
+    liveEnabled,
+    canPublishClaimedMicNow,
+    canPublishLiveVideoNow,
+    userOwnsCurrentActiveSlot,
+    userHasClaimedScheduleSlot,
+    isCurrentActiveSlotOwnerForLiveRoom,
+    isMediaInstantLive,
+  ]);
+
   const livePresenceKey = useMemo(
     () => `live:${String(params.title || "Youth")}:${isHost ? "host" : "viewer"}:${String(params.role || "viewer")}:${Math.random().toString(36).slice(2, 10)}`,
     []

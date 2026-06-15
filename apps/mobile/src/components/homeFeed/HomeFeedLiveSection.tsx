@@ -5,7 +5,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
 import { getSessionSync } from "@/src/lib/kristoSession";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { enterLiveRoomFromScheduleCard } from "@/src/lib/enterLiveRoomNavigation";
 import { homeFeedLiveCardHeight } from "@/src/lib/homeFeedYouTubeLayout";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 
@@ -45,22 +45,18 @@ function LiveStreamListItem({
     Number(item?.parentScheduleSlotCount || item?.scheduleSlots?.length || 1)
   );
 
-  const openLiveRoom = useCallback(() => {
+  const handleEnterLiveRoom = useCallback(() => {
     onClose();
-    (globalThis as any).__KRISTO_LIVE_ACTIVE__ = true;
-    const feedId = baseFeedId(
-      String(item?.parentScheduleId || item?.sourceScheduleId || item?.id || "")
-    );
-    router.push({
-      pathname: "/(tabs)/more/my-church-room/messages/live-room",
-      params: {
-        id: "church-media-room",
-        feedId,
-        sourceScheduleId: feedId,
-        scheduleType: String(item?.scheduleType || "media-live-slots"),
-      },
-    } as any);
-  }, [item?.id, item?.scheduleType, item?.sourceScheduleId, onClose, router]);
+    enterLiveRoomFromScheduleCard({
+      router,
+      item,
+      activeSlot,
+      viewerUserId: String(session?.userId || "").trim(),
+      viewerChurchId: String(session?.churchId || "").trim(),
+      nowMs,
+      source: "home-feed-live-section",
+    });
+  }, [activeSlot, item, nowMs, onClose, router, session?.churchId, session?.userId]);
 
   const profileName = String(
     session?.displayName || session?.name || session?.fullName || "You"
@@ -83,7 +79,7 @@ function LiveStreamListItem({
         disableSlotCarousel={item?.homeFeedSlotExpanded === true}
         profileName={profileName}
         profileAvatarUri={profileAvatarUri}
-        onOpenLiveRoom={openLiveRoom}
+        onOpenLiveRoom={handleEnterLiveRoom}
       />
     </View>
   );
@@ -170,21 +166,17 @@ export function HomeFeedLiveHeader({
     Number(primaryLive?.parentScheduleSlotCount || primaryLive?.scheduleSlots?.length || 1)
   );
 
-  const openLiveRoom = useCallback(() => {
-    (globalThis as any).__KRISTO_LIVE_ACTIVE__ = true;
-    const feedId = baseFeedId(
-      String(primaryLive?.parentScheduleId || primaryLive?.sourceScheduleId || primaryLive?.id || "")
-    );
-    router.push({
-      pathname: "/(tabs)/more/my-church-room/messages/live-room",
-      params: {
-        id: "church-media-room",
-        feedId,
-        sourceScheduleId: feedId,
-        scheduleType: String(primaryLive?.scheduleType || "media-live-slots"),
-      },
-    } as any);
-  }, [primaryLive, router]);
+  const handleEnterLiveRoom = useCallback(() => {
+    enterLiveRoomFromScheduleCard({
+      router,
+      item: primaryLive,
+      activeSlot,
+      viewerUserId: String(session?.userId || "").trim(),
+      viewerChurchId: String(session?.churchId || "").trim(),
+      nowMs,
+      source: "home-feed-live-section",
+    });
+  }, [activeSlot, nowMs, primaryLive, router, session?.churchId, session?.userId]);
 
   const profileName = String(
     session?.displayName || session?.name || session?.fullName || "You"
@@ -208,7 +200,7 @@ export function HomeFeedLiveHeader({
           disableSlotCarousel={primaryLive?.homeFeedSlotExpanded === true}
           profileName={profileName}
           profileAvatarUri={profileAvatarUri}
-          onOpenLiveRoom={openLiveRoom}
+          onOpenLiveRoom={handleEnterLiveRoom}
           displayLiked={likedByMe || liked}
           likeCount={likeCount}
           localSaved={saved}

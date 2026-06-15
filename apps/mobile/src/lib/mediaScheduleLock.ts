@@ -8,6 +8,12 @@ import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload
 import { findProtectedClaimableSchedule, findProtectedNearLiveSchedule } from "@/src/lib/liveScheduleRing";
 import { buildLiveSlotsCatalogFromFeedRows } from "@/src/lib/liveSlotsCatalog";
 import {
+  isMediaSlotEndedOrStale,
+  materializeMediaSlotTimeFields,
+  resolveMediaSlotTimeWindow,
+} from "@/src/lib/mediaScheduleSlotTimes";
+import { parseSlotEndMs, parseSlotStartMs } from "@/src/lib/scheduleSlotUtils";
+import {
   backendConfirmsZeroSlotsForFeedId,
   purgeStaleLocalScheduleRowsWhenBackendZero,
 } from "@/src/lib/staleBackendZeroSlotGuard";
@@ -17,84 +23,22 @@ export const ACTIVE_MEDIA_SCHEDULE_ERROR =
 
 type AnyFeedItem = Record<string, any>;
 
-function parseMeridiemTimeOnDate(base: Date, timeText: string): number {
-  const rawTime = String(timeText || "").trim();
-  if (!rawTime || !Number.isFinite(base.getTime())) return NaN;
+export function prepareMediaScheduleFeedItemForClient(item: AnyFeedItem | null | undefined) {
+  if (!item || typeof item !== "object") return item;
+  const slots = Array.isArray(item.scheduleSlots) ? item.scheduleSlots : [];
+  if (!slots.length) return item;
 
-  const match = rawTime.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i);
-  if (!match) return NaN;
-
-  let hour = Number(match[1] || 0);
-  const minute = Number(match[2] || 0);
-  const meridiem = String(match[3] || "").toUpperCase();
-
-  if (meridiem === "PM" && hour < 12) hour += 12;
-  if (meridiem === "AM" && hour === 12) hour = 0;
-  if (!meridiem && hour >= 24) return NaN;
-
-  const d = new Date(base);
-  d.setHours(hour, minute, 0, 0);
-  return d.getTime();
-}
-
-function parseSlotStartMs(slot: AnyFeedItem): number {
-  const explicitStart = Number(slot?.startMs || 0);
-  if (explicitStart > 0) return explicitStart;
-
-  const startsAt = String(slot?.startsAt || "").trim();
-  if (startsAt) {
-    const parsed = Date.parse(startsAt);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  }
-
-  const meetingDate = String(slot?.meetingDate || "").trim();
-  const meetingDay = String(slot?.meetingDay || "").trim();
-  const dateText = /^\d{4}-\d{2}-\d{2}/.test(meetingDate) ? meetingDate : meetingDay || meetingDate;
-  const startTime = String(slot?.startTime || slot?.time || slot?.timeLabel || "").trim();
-
-  if (!dateText) return 0;
-
-  const base = new Date(dateText);
-  if (!Number.isFinite(base.getTime())) return 0;
-
-  if (!startTime) return base.getTime();
-
-  const startMs = parseMeridiemTimeOnDate(base, startTime);
-  return Number.isFinite(startMs) ? startMs : base.getTime();
-}
-
-function parseSlotEndMs(slot: AnyFeedItem): number {
-  const startMs = parseSlotStartMs(slot);
-
-  const explicitEnd = Number(slot?.endMs || 0);
-  if (explicitEnd > startMs) return explicitEnd;
-
-  const endsAt = String(slot?.endsAt || "").trim();
-  if (endsAt) {
-    const parsed = Date.parse(endsAt);
-    if (Number.isFinite(parsed) && parsed > startMs) return parsed;
-  }
-
-  const endDate = String(slot?.meetingEndDate || slot?.meetingDate || slot?.meetingDay || "").trim();
-  const endTime = String(slot?.endTime || "").trim();
-
-  if (endDate && endTime) {
-    const base = new Date(endDate);
-    if (Number.isFinite(base.getTime())) {
-      let endMs = parseMeridiemTimeOnDate(base, endTime);
-      if (Number.isFinite(endMs)) {
-        if (startMs > 0 && endMs <= startMs) {
-          endMs += 24 * 60 * 60 * 1000;
-        }
-        if (endMs > startMs) return endMs;
-      }
-    }
-  }
-
-  if (!startMs) return 0;
-
-  const durationMs = Math.max(1, Number(slot?.durationMin || slot?.durationMinutes || 1)) * 60000;
-  return startMs + durationMs;
+  return {
+    ...item,
+    scheduleSlots: slots.map((slot: any, index: number) =>
+      materializeMediaSlotTimeFields({
+        ...slot,
+        order: Number(slot?.order || slot?.slot || index + 1),
+        slot: Number(slot?.slot || slot?.slotNumber || index + 1),
+        slotNumber: Number(slot?.slotNumber || slot?.slot || index + 1),
+      })
+    ),
+  };
 }
 
 function isSlotStatusClosed(slot: AnyFeedItem): boolean {
@@ -169,19 +113,16 @@ export function isActiveScheduleSlot(
   nowMs = Date.now()
 ): boolean {
   if (!slot || typeof slot !== "object") return false;
-  if (isSlotStatusClosed(slot)) return false;
+  if (isSlotStatusClosed(slot) || isMediaSlotEndedOrStale(slot, nowMs)) return false;
 
-  const startMs = parseSlotStartMs(slot);
-  const endMs = parseSlotEndMs(slot);
-
+  const { startMs, endMs } = resolveMediaSlotTimeWindow(slot, nowMs);
   if (startMs > nowMs) return true;
+  if (startMs > 0 && endMs > startMs && nowMs <= endMs) return true;
 
   if (isSlotClaimedOrLive(slot)) {
     if (endMs <= 0) return true;
     return nowMs <= endMs;
   }
-
-  if (endMs > 0 && nowMs > endMs) return false;
 
   return false;
 }
@@ -268,10 +209,69 @@ export function findMediaScheduleFeedForChurch(
     if (!isMediaScheduleFeedItem(item)) continue;
     if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) continue;
     if (!belongsToChurch(item)) continue;
-    if (getActiveScheduleSlots(item, nowMs).length > 0) return item;
+    const prepared = prepareMediaScheduleFeedItemForClient(item);
+    if (prepared && getActiveScheduleSlots(prepared, nowMs).length > 0) return prepared;
+  }
+
+  return findPersistedMediaScheduleFeedForChurch(items, churchId, options);
+}
+
+/** Non-closed backend schedule row with slots — matches backend create lock even when time parsing is partial. */
+export function findPersistedMediaScheduleFeedForChurch(
+  items: AnyFeedItem[],
+  churchId: string,
+  options?: { strictChurch?: boolean; nowMs?: number }
+): AnyFeedItem | null {
+  const cid = String(churchId || "").trim();
+  if (!cid) return null;
+  void options?.nowMs;
+
+  const belongsToChurch = options?.strictChurch
+    ? (item: AnyFeedItem) => feedItemBelongsToChurchStrict(item, cid)
+    : (item: AnyFeedItem) => feedItemBelongsToChurch(item, cid);
+
+  for (const item of items) {
+    if (!isMediaScheduleFeedItem(item)) continue;
+    if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) continue;
+    if (!belongsToChurch(item)) continue;
+    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    if (slots.length > 0) {
+      const prepared = prepareMediaScheduleFeedItemForClient(item);
+      return prepared || item;
+    }
   }
 
   return null;
+}
+
+export function resolveChurchMediaScheduleFromFeedRows(
+  items: AnyFeedItem[],
+  churchId: string,
+  options?: { strictChurch?: boolean; nowMs?: number; excludeId?: string }
+): AnyFeedItem | null {
+  const nowMs = options?.nowMs ?? Date.now();
+  const strictFindOpts = {
+    excludeId: options?.excludeId,
+    nowMs,
+    strictChurch: options?.strictChurch !== false,
+  };
+
+  const active = findActiveMediaScheduleForChurch(items, churchId, strictFindOpts);
+  if (active) {
+    const prepared = prepareMediaScheduleFeedItemForClient(active);
+    return prepared || active;
+  }
+
+  const feed = findMediaScheduleFeedForChurch(items, churchId, {
+    strictChurch: options?.strictChurch !== false,
+    nowMs,
+  });
+  if (feed) return feed;
+
+  return findPersistedMediaScheduleFeedForChurch(items, churchId, {
+    strictChurch: options?.strictChurch !== false,
+    nowMs,
+  });
 }
 
 export function isIncomingMediaScheduleCreate(body: AnyFeedItem | null | undefined): boolean {
@@ -292,6 +292,7 @@ export function summarizeActiveMediaSchedule(item: AnyFeedItem | null | undefine
     title: String(item.title || item.text || ""),
     createdBy: String(item.createdBy || ""),
     scheduleSlots: slots,
+    slotCount: slots.length,
     activeSlotCount: activeSlots.length,
     status: String(item.status || ""),
     deletedAt: item.deletedAt || null,
@@ -343,11 +344,15 @@ export function scanMediaScheduleRowForLock(
 ) {
   const feedId = String(item?.id || item?.sourceScheduleId || "").trim();
   const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-  const activeSlots = item ? getActiveScheduleSlots(item, nowMs) : [];
-  const renderedInLiveSlots = item ? countRenderedLiveSlotsForSchedule(item, churchId, nowMs) : 0;
+  const prepared = prepareMediaScheduleFeedItemForClient(item);
+  const rawActiveSlots = item ? getActiveScheduleSlots(item, nowMs) : [];
+  const activeSlots = prepared ? getActiveScheduleSlots(prepared, nowMs) : [];
+  const renderedInLiveSlots = prepared
+    ? countRenderedLiveSlotsForSchedule(prepared, churchId, nowMs)
+    : 0;
   const claimable =
-    item && isMediaScheduleFeedItem(item)
-      ? findProtectedClaimableSchedule([item], churchId, nowMs)
+    prepared && isMediaScheduleFeedItem(prepared)
+      ? findProtectedClaimableSchedule([prepared], churchId, nowMs)
       : null;
   const protectedRow =
     Boolean(claimable) && activeSlots.length > 0 && renderedInLiveSlots > 0;
@@ -356,6 +361,8 @@ export function scanMediaScheduleRowForLock(
     feedId,
     slotCount: slots.length,
     activeSlotCount: activeSlots.length,
+    rawActiveSlotCount: rawActiveSlots.length,
+    materializedActiveSlotCount: activeSlots.length,
     renderedInLiveSlots,
     protected: protectedRow,
     reason: protectedRow
@@ -365,7 +372,7 @@ export function scanMediaScheduleRowForLock(
           ? "active-slots"
           : "stale-non-rendered-slots"
         : slots.length > 0
-          ? "inactive-slots"
+          ? "inactive-or-unparsed-slots"
           : "empty-slots",
   };
 }
@@ -415,7 +422,13 @@ export async function findActiveMediaScheduleForChurchFromSources(
     console.log("KRISTO_ACTIVE_SCHEDULE_SCAN", scanMediaScheduleRowForLock(row, cid, nowMs));
   }
 
-  const backendActive = findActiveMediaScheduleForChurch(backendRows, cid, strictFindOpts);
+  const backendActive =
+    resolveChurchMediaScheduleFromFeedRows(backendRows, cid, {
+      strictChurch: true,
+      nowMs,
+      excludeId,
+    }) ||
+    findActiveMediaScheduleForChurch(backendRows, cid, strictFindOpts);
   if (backendActive) {
     console.log("KRISTO_MEDIA_LOCK_BACKEND_ACTIVE", summarizeActiveMediaSchedule(backendActive));
 

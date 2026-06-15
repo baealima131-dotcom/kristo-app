@@ -18,6 +18,7 @@ export type ApiErrorResult = {
   reason?: string;
   status?: number;
   debug?: unknown;
+  activeSchedule?: unknown;
 };
 
 export function getApiBase() {
@@ -73,6 +74,7 @@ function httpError(path: string, res: Response, body: any): ApiErrorResult {
     reason: String(body?.reason || "http_error"),
     status: res.status,
     debug: body?.details ?? body?.debug,
+    activeSchedule: body?.activeSchedule,
   };
 }
 

@@ -7,6 +7,7 @@ import {
   buildPersistedMediaSlotTimeFields,
   logMediaSlotPayloadTime,
 } from "@/src/lib/mediaScheduleSlotTimes";
+import { hydrateActiveMediaScheduleFromBackend } from "@/src/lib/mediaScheduleActiveHydration";
 import {
   ACTIVE_MEDIA_SCHEDULE_ERROR,
   findActiveMediaScheduleForChurchFromSources,
@@ -38,6 +39,7 @@ export type PublishScheduleBatchToHomeFeedArgs = {
   churchLabel?: string;
   avatarUri?: string;
   screen?: string;
+  assignmentId?: string;
   skipActiveCheck?: boolean;
   navigateHomeOnSuccess?: boolean;
   onSuccess?: (backendFeedId: string) => void;
@@ -188,6 +190,8 @@ export async function publishScheduleBatchToHomeFeed(
   if (!createRes?.ok) {
     const failStatus = Number(createRes?.status || 0) || null;
     const failError = String(createRes?.error || createRes?.message || "").trim();
+    const activeSchedule = (createRes as any)?.activeSchedule;
+
     removeLocalScheduleAfterBackendFail({
       localScheduleId,
       churchId,
@@ -196,7 +200,19 @@ export async function publishScheduleBatchToHomeFeed(
       screen: args.screen || "publishScheduleBatchToHomeFeed",
       gate: "publishScheduleBatchToHomeFeed.api",
     });
-    if (failStatus === 409) {
+
+    if (failStatus === 409 && activeSchedule && churchId) {
+      await hydrateActiveMediaScheduleFromBackend({
+        activeSchedule,
+        churchId,
+        localScheduleId,
+        headers: args.headers,
+        assignmentId: args.assignmentId,
+        screen: args.screen || "publishScheduleBatchToHomeFeed",
+        reason: "409-active-schedule",
+      });
+      Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
+    } else if (failStatus === 409) {
       Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
     } else if (failError) {
       Alert.alert("Schedule not saved", scheduleBackendFailAlertMessage(failStatus || 0, failError));
