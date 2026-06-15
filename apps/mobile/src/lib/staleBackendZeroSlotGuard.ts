@@ -2,6 +2,7 @@ import {
   clearScheduleClaimRuntimeState,
   feedList,
   feedRemoveScheduleMirrors,
+  getUserClaimedSlotEntries,
 } from "@/src/lib/homeFeedStore";
 import { isMediaScheduleFeedItem, isMediaScheduleFeedItemClosed } from "@/src/lib/mediaScheduleLock";
 import { normalizeLiveScheduleSlots } from "@/src/lib/scheduleSlotUtils";
@@ -128,6 +129,7 @@ export function purgeStaleLocalScheduleRowsWhenBackendZero(input: {
   backendFeedLoaded?: boolean;
   churchId?: string;
   reason?: string;
+  viewerUserId?: string;
 }) {
   const backendRows = Array.isArray(input.backendRows) ? input.backendRows : [];
   const backendFeedLoaded = input.backendFeedLoaded === true;
@@ -190,6 +192,25 @@ export function purgeStaleLocalScheduleRowsWhenBackendZero(input: {
   }
 
   for (const canonicalFeedId of canonicalFeedIds) {
+    const aliases = collectScheduleAliasIds(canonicalFeedId, merged);
+    const aliasSet = new Set(aliases.flatMap((id) => [id, baseFeedId(id)].filter(Boolean)));
+    const viewerUserId = String(input.viewerUserId || "").trim();
+    const hasPreservedClaim = viewerUserId
+      ? getUserClaimedSlotEntries(viewerUserId).some((entry) => {
+          const postId = baseFeedId(String(entry?.postId || ""));
+          return aliasSet.has(postId) || aliasSet.has(String(entry?.postId || ""));
+        })
+      : false;
+
+    if (hasPreservedClaim) {
+      console.log("KRISTO_CLAIM_RUNTIME_PRESERVED", {
+        canonicalFeedId,
+        reason: input.reason || "backend-zero-slots",
+        viewerUserId,
+      });
+      continue;
+    }
+
     clearScheduleClaimRuntimeState(canonicalFeedId, merged);
     feedRemoveScheduleMirrors(canonicalFeedId);
     endLiveBridgeForStaleScheduleFeedId(canonicalFeedId, merged);

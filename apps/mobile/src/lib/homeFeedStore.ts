@@ -309,6 +309,9 @@ export function syncUserClaimedSlotStore(
     name?: string;
     role?: string;
     avatarUri?: string;
+    churchId?: string;
+    targetChurchId?: string;
+    slotNumber?: number;
   } | null
 ) {
   const g = globalThis as any;
@@ -331,6 +334,9 @@ export function syncUserClaimedSlotStore(
     name: claim.name || "You",
     role: claim.role || "Member",
     avatarUri: claim.avatarUri || "",
+    churchId: String(claim.churchId || claim.targetChurchId || "").trim() || undefined,
+    targetChurchId: String(claim.targetChurchId || claim.churchId || "").trim() || undefined,
+    slotNumber: Number(claim.slotNumber || 0) || undefined,
     claimedAt: new Date().toISOString(),
   };
 }
@@ -805,7 +811,15 @@ export function feedClaimSchedule(
   });
 
   const claimedAt = new Date().toISOString();
-  syncUserClaimedSlotStore(baseId, slotId, claim);
+  syncUserClaimedSlotStore(baseId, slotId, {
+    userId,
+    name: claim.name,
+    role: claim.role,
+    avatarUri: claim.avatarUri || claim.avatarUrl,
+    churchId: String(claim.churchId || claimMeta?.item?.churchId || "").trim(),
+    targetChurchId: String(claim.churchId || claimMeta?.item?.churchId || "").trim(),
+    slotNumber: claimMeta?.slotNumber,
+  });
 
   const hintAvatarUri =
     sanitizePersistedClaimAvatarUri(claim.avatarUrl, "ring-claim-hint") ||

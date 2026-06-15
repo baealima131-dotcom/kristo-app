@@ -1,3 +1,4 @@
+import { markClaimHydrationPending, resolveClaimHydration } from "@/src/lib/claimHydrationState";
 import { apiGet } from "@/src/lib/kristoApi";
 import { feedSyncMediaScheduleFromBackend } from "@/src/lib/homeFeedStore";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -55,6 +56,13 @@ export function buildScheduleSlotClaimBody(input: ScheduleSlotClaimBodyInput) {
     claimantUserId: String(input.claim?.userId || "").trim() || null,
     claimantHomeChurchId,
     crossChurch: Boolean(scheduleChurchId && viewerChurchId && scheduleChurchId !== viewerChurchId),
+  });
+
+  markClaimHydrationPending({
+    targetChurchId: scheduleChurchId,
+    scheduleFeedId,
+    slotId: body.slotId,
+    userId: String(input.claim?.userId || "").trim(),
   });
 
   return body;
@@ -141,6 +149,15 @@ export async function refetchTargetScheduleAfterClaim(input: {
 
   if (scheduleItem) {
     feedSyncMediaScheduleFromBackend(scheduleItem);
+  }
+
+  if (backendClaimedByUserId) {
+    resolveClaimHydration({
+      targetChurchId: scheduleChurchId,
+      scheduleFeedId: postId,
+      slotId,
+      userId: viewerUserId,
+    });
   }
 
   return scheduleItem;

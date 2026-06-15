@@ -18,6 +18,15 @@ import {
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet } from "@/src/lib/kristoApi";
 import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
+import {
+  beginClaimHydrationStartup,
+  collectScheduleRowsForRingScan,
+  finishClaimHydrationStartup,
+  prefetchCrossChurchClaimSchedules,
+  rehydrateClaimStoresFromFeedRows,
+  resolveStablePersonalScheduleAlert,
+} from "@/src/lib/claimStateMerge";
 import {
   buildLeanLiveScheduleSlotsJson,
   isBackendFeedScheduleId,
@@ -610,25 +619,35 @@ export default function TabLayout() {
   const [personalScheduleTabAlert, setPersonalScheduleTabAlert] = useState<any>(null);
   const churchLivePulse = useRef(new Animated.Value(0)).current;
   const backendFeedRowsRef = useRef<any[]>([]);
+  const personalAlertRef = useRef<any>(null);
   const claimRingTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const liveRingPollingStartedRef = useRef(false);
   const liveRingPollStopRef = useRef<(() => void) | null>(null);
   const ringRecomputeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const applyScheduleRings = useCallback(
-    (source: string, backendRows: any[] = backendFeedRowsRef.current) => {
+    (source: string, churchBackendRows: any[] = backendFeedRowsRef.current) => {
       if (!session?.userId) return;
 
+      const scanRows = collectScheduleRowsForRingScan(churchBackendRows, String(session.userId || ""));
       const { personal, church } = recomputeScheduleRingsFromRows({
-        rows: backendRows,
+        rows: scanRows,
         viewerUserId: String(session.userId || ""),
         viewerChurchId: String(session.churchId || ""),
         source,
         backendFeedLoaded: source.includes("backend"),
       });
 
+      const stablePersonal = resolveStablePersonalScheduleAlert({
+        computed: personal,
+        previous: personalAlertRef.current,
+        viewerUserId: String(session.userId || ""),
+        source,
+      });
+
+      personalAlertRef.current = stablePersonal;
       setMediaScheduleTabLive(church);
-      setPersonalScheduleTabAlert(personal);
+      setPersonalScheduleTabAlert(stablePersonal);
     },
     [session?.userId, session?.churchId]
   );
@@ -647,7 +666,7 @@ export default function TabLayout() {
       }
 
       const churchRing = recomputeScheduleRingsFromRows({
-        rows: backendFeedRowsRef.current,
+        rows: collectScheduleRowsForRingScan(backendFeedRowsRef.current, String(session.userId || "")),
         viewerUserId: String(session.userId || ""),
         viewerChurchId: String(session.churchId || ""),
         source: `${source}-live-resolve`,
@@ -699,8 +718,17 @@ export default function TabLayout() {
 
         backendFeedRowsRef.current = rows;
         applyScheduleRings(`${source}-backend`, rows);
+        void prefetchCrossChurchClaimSchedules({
+          viewerUserId: String(session.userId || ""),
+          viewerChurchId: String(session.churchId || ""),
+          viewerRole: String(session.role || "Member"),
+        }).finally(() => {
+          applyScheduleRings(`${source}-cross-church-prefetch`, backendFeedRowsRef.current);
+          finishClaimHydrationStartup(`${source}-cross-church-prefetch`);
+        });
       } catch {
         applyScheduleRings(`${source}-backend-error`);
+        finishClaimHydrationStartup(`${source}-backend-error`);
       }
     },
     [session?.userId, session?.churchId, session?.role, applyScheduleRings]
@@ -753,8 +781,22 @@ export default function TabLayout() {
   }, [applyScheduleRings, refreshChurchLiveAndRings]);
 
   useEffect(() => {
+    beginClaimHydrationStartup();
     applyScheduleRings("mount");
-    const unsubFeed = subscribeHomeFeed(() => applyScheduleRings("feed"));
+    const rehydrateClaimStores = () => {
+      const uid = String(session?.userId || "").trim();
+      if (!uid) return;
+      rehydrateClaimStoresFromFeedRows(
+        [...feedList(), ...getCachedHomeFeedBackendRows()],
+        uid
+      );
+      applyScheduleRings("claim-rehydrate");
+    };
+    rehydrateClaimStores();
+    const unsubFeed = subscribeHomeFeed(() => {
+      rehydrateClaimStores();
+      applyScheduleRings("feed");
+    });
     const unsubClaim = onClaimUpdated((payload) => scheduleClaimRingSync(payload));
     const unsubRingRefresh = onLiveRingRefresh(({ reason }) => {
       if (isMoreTabTransitionBlocking()) {

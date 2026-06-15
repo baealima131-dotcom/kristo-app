@@ -1,6 +1,11 @@
 import { DeviceEventEmitter } from "react-native";
 import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
 import {
+  injectClaimStoreScheduleRows,
+  mergeScheduleFeedClaimRows,
+  overlayStableClaimsOnFeedRows,
+} from "@/src/lib/claimStateMerge";
+import {
   isActiveScheduleSlot,
   isMediaScheduleFeedItem,
 } from "@/src/lib/mediaScheduleLock";
@@ -233,9 +238,10 @@ function buildClaimedPersonalAlert(
 
 export function mergeFeedRowsForScheduleScan(
   backendRows: any[] = [],
-  options?: { backendFeedLoaded?: boolean; churchId?: string }
+  options?: { backendFeedLoaded?: boolean; churchId?: string; viewerUserId?: string }
 ): any[] {
   const backendFeedLoaded = options?.backendFeedLoaded === true;
+  const viewerUserId = String(options?.viewerUserId || "").trim();
 
   if (backendFeedLoaded) {
     purgeStaleLocalScheduleRowsWhenBackendZero({
@@ -243,6 +249,7 @@ export function mergeFeedRowsForScheduleScan(
       backendFeedLoaded: true,
       churchId: options?.churchId,
       reason: "ring-merge-scan",
+      viewerUserId,
     });
   }
 
@@ -275,10 +282,17 @@ export function mergeFeedRowsForScheduleScan(
       baseFeedId(seed) ||
       String(row?.id || "");
     if (!key) continue;
-    byBase.set(key, row);
+    const existing = byBase.get(key);
+    byBase.set(
+      key,
+      existing ? mergeScheduleFeedClaimRows(existing, row, viewerUserId) : row
+    );
   }
 
-  return Array.from(byBase.values());
+  let result = Array.from(byBase.values());
+  result = overlayStableClaimsOnFeedRows(result, viewerUserId, { allSources: mergedRows });
+  result = injectClaimStoreScheduleRows(result, viewerUserId, { allSources: mergedRows });
+  return result;
 }
 
 export function findProtectedNearLiveSchedule(
@@ -412,6 +426,76 @@ function computePersonalAlertFromClaimHints(
   return alerts[0] || null;
 }
 
+function computePersonalAlertFromClaimStore(
+  viewerUserId: string,
+  nowMs: number,
+  rows: any[]
+): ScheduleRingAlert | null {
+  const uid = String(viewerUserId || "").trim();
+  if (!uid) return null;
+
+  const alerts: ScheduleRingAlert[] = [];
+
+  for (const entry of getUserClaimedSlotEntries(uid)) {
+    const feedId = baseFeedId(String(entry?.postId || ""));
+    const slotId = String(entry?.slotId || "").trim();
+    if (!feedId || !slotId) continue;
+
+    const item =
+      rows.find((row) => {
+        const rowFeedId = baseFeedId(String(row?.sourceScheduleId || row?.id || ""));
+        return rowFeedId === feedId;
+      }) ||
+      ({
+        id: feedId,
+        sourceScheduleId: feedId,
+        churchId: String(entry?.churchId || entry?.targetChurchId || "").trim(),
+        title: "Live Schedule",
+      } as any);
+
+    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    const matchedSlot =
+      slots.find(
+        (slot: any) => String(slot?.id || slot?.slotId || "").trim() === slotId
+      ) ||
+      normalizeLiveScheduleSlots([
+        {
+          id: slotId,
+          slotId,
+          claimedByUserId: entry.userId,
+          claimedByName: entry.name,
+          slot: Number(entry?.slotNumber || 1),
+        },
+      ])[0];
+
+    const slotIndex = Math.max(0, Number(entry?.slotNumber || matchedSlot?.slot || 1) - 1);
+    const alert = buildClaimedPersonalAlert(
+      item,
+      matchedSlot,
+      slotIndex,
+      nowMs,
+      feedId,
+      Number(entry?.slotNumber || matchedSlot?.slot || slotIndex + 1)
+    );
+
+    if (alert) {
+      console.log("KRISTO_RING_PERSONAL_SLOT_MATCH", {
+        source: "claim-store",
+        feedId,
+        slotId,
+        slotNumber: alert.slotNumber,
+        startMs: alert.startMs,
+        endMs: alert.endMs,
+        isLiveNow: alert.isLiveNow,
+      });
+      alerts.push(alert);
+    }
+  }
+
+  alerts.sort((a, b) => a.startMs - b.startMs);
+  return alerts[0] || null;
+}
+
 export function computePersonalScheduleTabAlert(options: {
   rows: any[];
   viewerUserId: string;
@@ -502,9 +586,15 @@ export function computePersonalScheduleTabAlert(options: {
   });
 
   const feedPersonal = personalUpcoming[0] || null;
+  const storePersonal = computePersonalAlertFromClaimStore(
+    viewerUserId,
+    nowMs,
+    options.rows
+  );
   const hintPersonal = computePersonalAlertFromClaimHints(viewerUserId, nowMs);
 
   if (feedPersonal?.match === "claimed") return feedPersonal;
+  if (storePersonal) return storePersonal;
   if (hintPersonal) return hintPersonal;
   return feedPersonal;
 }
@@ -521,6 +611,7 @@ export function recomputeScheduleRingsFromRows(options: {
   const rows = mergeFeedRowsForScheduleScan(options.rows, {
     backendFeedLoaded: options.backendFeedLoaded,
     churchId: options.viewerChurchId,
+    viewerUserId: options.viewerUserId,
   });
 
   const personal = computePersonalScheduleTabAlert({
@@ -828,9 +919,6 @@ export function buildProfileClaimedSchedules(options: {
   }
 
   for (const hint of getRingClaimHints(viewerUserId)) {
-    const hintChurchId = String(hint?.churchId || hint?.item?.churchId || "").trim();
-    if (hintChurchId && hintChurchId !== churchId) continue;
-
     const slotIndex = Math.max(0, Number(hint.slotNumber || 1) - 1);
     const slot = normalizeLiveScheduleSlots([
       hint.slot ||

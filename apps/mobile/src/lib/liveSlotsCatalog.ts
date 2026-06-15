@@ -7,7 +7,11 @@ import {
   isMediaLiveSlotsHomeFeedRow,
   sortHomeFeedScheduleSlotRows,
 } from "@/src/components/homeFeed/homeFeedUtils";
-import { getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
+import {
+  injectClaimStoreScheduleRows,
+  overlayStableClaimsOnFeedRows,
+} from "@/src/lib/claimStateMerge";
+import { getRingClaimHints } from "@/src/lib/homeFeedStore";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
 import {
   applyRingClaimHintsToScheduleSlots,
@@ -55,61 +59,6 @@ function resolveLiveSlotMatchKey(slot: any, index = 0) {
   if (id) return id;
   const slotNumber = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
   return `num:${slotNumber > 0 ? slotNumber : index + 1}`;
-}
-
-function overlayClaimStoreEntriesOnFeedRows(
-  backendRows: any[],
-  viewerUserId?: string
-): any[] {
-  const uid = String(viewerUserId || "").trim();
-  if (!uid || !Array.isArray(backendRows) || !backendRows.length) return backendRows;
-
-  const entries = getUserClaimedSlotEntries(uid);
-  if (!entries.length) return backendRows;
-
-  const entriesBySchedule = new Map<string, any[]>();
-  for (const entry of entries) {
-    const key = baseFeedId(String(entry?.postId || ""));
-    if (!key) continue;
-    if (!entriesBySchedule.has(key)) entriesBySchedule.set(key, []);
-    entriesBySchedule.get(key)!.push(entry);
-  }
-
-  return backendRows.map((row) => {
-    const scheduleKey = resolveLiveSlotsScheduleKey(row);
-    const matchedEntries = scheduleKey ? entriesBySchedule.get(scheduleKey) || [] : [];
-    if (!matchedEntries.length) return row;
-
-    let slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
-    let changed = false;
-
-    slots = slots.map((slot: any, index: number) => {
-      const slotKey = resolveLiveSlotMatchKey(slot, index);
-      const entry =
-        matchedEntries.find(
-          (candidate) =>
-            String(candidate?.slotId || "").trim() === slotKey ||
-            String(candidate?.slotId || "").trim() === String(slot?.id || slot?.slotId || "").trim()
-        ) || null;
-      if (!entry) return slot;
-
-      const merged = mergeScheduleSlotClaimState(slot, {
-        ...slot,
-        id: entry.slotId || slot?.id,
-        slotId: entry.slotId || slot?.slotId,
-        claimedByUserId: entry.userId,
-        claimedByName: entry.name,
-        status: "claimed",
-        claimed: true,
-        isClaimed: true,
-      });
-      if (merged !== slot) changed = true;
-      return merged;
-    });
-
-    if (!changed) return row;
-    return { ...row, scheduleSlots: slots };
-  });
 }
 
 /** Overlay fresher claim fields from home feed / ring hints onto backend schedule rows. */
@@ -164,7 +113,11 @@ export function overlayLocalScheduleClaimsOnFeedRows(
     return { ...row, scheduleSlots: slots };
   });
 
-  return overlayClaimStoreEntriesOnFeedRows(mergedRows, viewerUserId);
+  return injectClaimStoreScheduleRows(
+    overlayStableClaimsOnFeedRows(mergedRows, viewerUserId, { allSources: allRows }),
+    String(viewerUserId || ""),
+    { allSources: allRows }
+  );
 }
 
 /** Backend church feed wins for viewer church; local claim overlay fills stale reload gaps. */
