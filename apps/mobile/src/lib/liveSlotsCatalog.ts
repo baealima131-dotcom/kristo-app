@@ -14,6 +14,10 @@ import {
 import { getRingClaimHints } from "@/src/lib/homeFeedStore";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
 import {
+  resolveRingMergedScheduleRows,
+} from "@/src/lib/liveScheduleRing";
+import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
+import {
   applyRingClaimHintsToScheduleSlots,
   baseFeedId,
   mergeScheduleSlotClaimState,
@@ -120,7 +124,7 @@ export function overlayLocalScheduleClaimsOnFeedRows(
   );
 }
 
-/** Backend church feed wins for viewer church; local claim overlay fills stale reload gaps. */
+/** Backend church feed wins for viewer church; use ring-merged rows as canonical source. */
 export function resolveLiveSlotsBackendFeedRows(input: {
   churchBackendRows: any[];
   globalBackendRows: any[];
@@ -130,54 +134,31 @@ export function resolveLiveSlotsBackendFeedRows(input: {
   churchFeedLoaded?: boolean;
 }): { rows: any[]; snapshot: LiveSlotsBackendSourceSnapshot } {
   const viewerCid = String(input.viewerChurchId || "").trim();
-  const churchRows = (input.churchBackendRows || []).filter(
-    (row) => row && (!viewerCid || String(row?.churchId || "").trim() === viewerCid)
-  );
+  const churchRows = (input.churchBackendRows || []).filter(Boolean);
   const globalRows = (input.globalBackendRows || []).filter(Boolean);
+  const cachedRows = getCachedHomeFeedBackendRows();
   const localRows = Array.isArray(input.localRows) ? input.localRows : [];
   const churchFeedLoaded = input.churchFeedLoaded === true;
 
-  const byScheduleKey = new Map<string, any>();
+  const churchBackendForRing = churchRows.length
+    ? churchRows
+    : globalRows.length
+      ? globalRows
+      : cachedRows;
+  const hasBackendSignal =
+    churchRows.length > 0 || globalRows.length > 0 || cachedRows.length > 0 || churchFeedLoaded;
 
-  for (const row of globalRows) {
-    if (!isLiveSlotsScheduleSourceRow(row)) continue;
-    if (!scheduleRowHasBackendSlots(row)) continue;
-    const key = resolveLiveSlotsScheduleKey(row);
-    if (!key) continue;
-    byScheduleKey.set(key, row);
-  }
+  let rows = resolveRingMergedScheduleRows({
+    churchBackendRows: churchBackendForRing,
+    viewerUserId: input.viewerUserId,
+    viewerChurchId: viewerCid,
+    backendFeedLoaded: hasBackendSignal,
+  });
 
-  for (const row of churchRows) {
-    if (!isLiveSlotsScheduleSourceRow(row)) continue;
-    const key = resolveLiveSlotsScheduleKey(row);
-    if (!key) continue;
-    if (!scheduleRowHasBackendSlots(row)) {
-      byScheduleKey.delete(key);
-      continue;
-    }
-    byScheduleKey.set(key, row);
-  }
+  rows = rows.filter(
+    (row) => isLiveSlotsScheduleSourceRow(row) && scheduleRowHasBackendSlots(row)
+  );
 
-  if (viewerCid && churchFeedLoaded) {
-    const churchScheduleKeys = new Set(
-      churchRows
-        .filter(isLiveSlotsScheduleSourceRow)
-        .filter(scheduleRowHasBackendSlots)
-        .map((row) => resolveLiveSlotsScheduleKey(row))
-        .filter(Boolean)
-    );
-
-    for (const [key, row] of [...byScheduleKey.entries()]) {
-      if (String(row?.churchId || "").trim() !== viewerCid) continue;
-      if (!isLiveSlotsScheduleSourceRow(row)) continue;
-      if (!churchScheduleKeys.has(key)) {
-        byScheduleKey.delete(key);
-      }
-    }
-  }
-
-  let rows = Array.from(byScheduleKey.values());
-  rows = overlayLocalScheduleClaimsOnFeedRows(rows, localRows, input.viewerUserId);
   const backendSlotCount = countBackendSlotsInRows(rows);
   const localSlotCount = localRows.reduce((sum, row) => {
     if (!isLiveSlotsScheduleSourceRow(row)) return sum;
@@ -186,7 +167,7 @@ export function resolveLiveSlotsBackendFeedRows(input: {
   }, 0);
 
   let sourceUsed: LiveSlotsBackendSourceSnapshot["sourceUsed"] = "empty";
-  if (churchRows.length || globalRows.length) {
+  if (rows.length) {
     sourceUsed = "backend";
   } else if (localRows.length) {
     sourceUsed = "local";
@@ -198,7 +179,7 @@ export function resolveLiveSlotsBackendFeedRows(input: {
       backendFeedCount: rows.length,
       backendSlotCount,
       localSlotCount,
-      routeSlotCount: 0,
+      routeSlotCount: localSlotCount,
       sourceUsed,
     },
   };

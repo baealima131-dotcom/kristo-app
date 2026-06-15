@@ -1,12 +1,15 @@
 import { isPendingLocalMediaScheduleRow } from "@/src/lib/mediaSchedulePendingSync";
+import { feedList } from "@/src/lib/homeFeedStore";
 import {
   findActiveMediaScheduleForChurch,
   findMediaScheduleFeedForChurch,
   isMediaScheduleFeedItemClosed,
 } from "@/src/lib/mediaScheduleLock";
 import {
+  baseFeedId,
   parseSlotEndMs,
   parseSlotStartMs,
+  resolveCanonicalScheduleFeedId,
 } from "@/src/lib/scheduleSlotUtils";
 
 export type MediaSlotTimeWindow = {
@@ -597,6 +600,40 @@ export function logMediaSlotConflictCheck(
   return conflicts.length;
 }
 
+/** Prefer durable backend schedule; hydrate empty backend rows from local/route mirrors. */
+function hydrateCanonicalGuestScheduleFromLocal(
+  schedule: any,
+  homeFeedItems: any[],
+  backendFeedItems: any[],
+  churchId: string
+) {
+  if (!schedule) return schedule;
+  const slots = Array.isArray(schedule?.scheduleSlots) ? schedule.scheduleSlots : [];
+  if (slots.length > 0) return schedule;
+
+  const seed = String(schedule?.sourceScheduleId || schedule?.id || "").trim();
+  const merged = [...(feedList() as any[]), ...homeFeedItems, ...backendFeedItems];
+  const canonicalId =
+    resolveCanonicalScheduleFeedId(seed, merged) || baseFeedId(seed) || seed;
+
+  for (const row of merged) {
+    const rowSeed = String(row?.sourceScheduleId || row?.id || "").trim();
+    const rowCanon =
+      resolveCanonicalScheduleFeedId(rowSeed, merged) || baseFeedId(rowSeed);
+    if (rowCanon !== canonicalId && rowSeed !== seed && baseFeedId(rowSeed) !== canonicalId) {
+      continue;
+    }
+    const rowCid = String(row?.churchId || "").trim();
+    if (rowCid && rowCid !== churchId) continue;
+    const rowSlots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+    if (rowSlots.length > 0) {
+      return { ...schedule, scheduleSlots: rowSlots };
+    }
+  }
+
+  return schedule;
+}
+
 /** Prefer durable backend schedule; route/local only before backend loads. */
 export function resolveCanonicalMediaScheduleForGuests(
   homeFeedItems: any[],
@@ -615,11 +652,17 @@ export function resolveCanonicalMediaScheduleForGuests(
     : null;
 
   const backendScheduleFeed = backendFeedItems.length
-    ? findMediaScheduleFeedForChurch(backendFeedItems, cid, { strictChurch: true })
+    ? findMediaScheduleFeedForChurch(backendFeedItems, cid, { strictChurch: true, nowMs })
     : null;
 
-  const backendSchedule = backendActive || backendScheduleFeed;
+  let backendSchedule = backendActive || backendScheduleFeed;
   if (backendSchedule && !isPendingLocalMediaScheduleRow(backendSchedule, cid)) {
+    backendSchedule = hydrateCanonicalGuestScheduleFromLocal(
+      backendSchedule,
+      homeFeedItems,
+      backendFeedItems,
+      cid
+    );
     return backendSchedule;
   }
 
@@ -633,7 +676,16 @@ export function resolveCanonicalMediaScheduleForGuests(
     }
   }
 
-  return backendSchedule || null;
+  if (backendSchedule) {
+    return hydrateCanonicalGuestScheduleFromLocal(
+      backendSchedule,
+      homeFeedItems,
+      backendFeedItems,
+      cid
+    );
+  }
+
+  return null;
 }
 
 export function deriveMediaSlotDurationMin(slot: any) {

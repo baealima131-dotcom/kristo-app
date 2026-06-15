@@ -2,6 +2,7 @@ import { apiPost } from "@/src/lib/kristoApi";
 import {
   clearScheduleClaimRuntimeState,
   feedList,
+  feedScheduleSlotsForLive,
   slotIdsMatch,
 } from "@/src/lib/homeFeedStore";
 import {
@@ -17,8 +18,13 @@ import {
 import {
   findActiveMediaScheduleForChurch,
   findMediaScheduleFeedForChurch,
+  findPersistedMediaScheduleFeedForChurch,
   getActiveScheduleSlots,
+  isMediaScheduleFeedItem,
+  isMediaScheduleFeedItemClosed,
+  resolveChurchMediaScheduleFromFeedRows,
 } from "@/src/lib/mediaScheduleLock";
+import { overlayLocalScheduleClaimsOnFeedRows } from "@/src/lib/liveSlotsCatalog";
 import {
   clearActiveLiveAfterGuestSlotDelete,
   shouldClearActiveLiveAfterGuestDelete,
@@ -27,14 +33,18 @@ import { publishLiveEnded } from "@/src/lib/liveBridge";
 import {
   computeChurchScheduleTabLive,
   emitLiveRingRefresh,
+  logRingToGuestCenterBridge,
   mergeFeedRowsForScheduleScan,
   recomputeScheduleRingsFromRows,
+  resolveRingChurchScheduleSnapshot,
+  resolveRingMergedScheduleRows,
 } from "@/src/lib/liveScheduleRing";
 import {
   baseFeedId,
   collectScheduleAliasIds,
   isBackendFeedScheduleId,
   isLocalMediaScheduleId,
+  mergeLiveRoomScheduleSlots,
   resolveCanonicalScheduleFeedId,
 } from "@/src/lib/scheduleSlotUtils";
 import {
@@ -100,6 +110,379 @@ export function resolveGuestActionSlotId(slots: any[], slotId: string) {
 export function isGuestScheduleSlotExpired(slot: any, nowMs = Date.now()) {
   const { endMs } = resolveMediaSlotTimeWindow(slot, nowMs);
   return Number.isFinite(endMs) && endMs > 0 && endMs <= nowMs;
+}
+
+export type GuestCenterCanonicalResult = {
+  schedule: any | null;
+  source:
+    | "ring-live"
+    | "ring-merged"
+    | "backend-merged"
+    | "backend"
+    | "home"
+    | "merged-scan"
+    | "best-row"
+    | "none";
+  mergedRowCount: number;
+  backendSlotCount: number;
+  mergedSlotCount: number;
+  scheduleChurchId: string;
+  viewerChurchId: string;
+  targetChurchId: string;
+  feedId: string;
+  ringMergedRowCount: number;
+};
+
+export function isGuestCenterScheduleRow(item: any): boolean {
+  if (!item || typeof item !== "object") return false;
+  if (isMediaScheduleFeedItem(item)) return true;
+
+  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  if (!slots.length) return false;
+
+  const id = String(item?.id || item?.sourceScheduleId || "").trim();
+  if (id.startsWith("feed_") || id.startsWith("media-schedule-")) return true;
+
+  const source = String(item?.source || "").toLowerCase();
+  const scheduleType = String(item?.scheduleType || "").toLowerCase();
+  return source.includes("media-schedule") || scheduleType.includes("media-live-slots");
+}
+
+function guestCenterRowMatchesChurch(row: any, churchId: string, strict = false): boolean {
+  const cid = String(churchId || "").trim();
+  if (!cid) return true;
+  const rowCid = String(row?.churchId || row?.sourceChurchId || "").trim();
+  if (!rowCid) return !strict;
+  return rowCid === cid;
+}
+
+function findBestGuestCenterScheduleRow(rows: any[], churchIds: string[]): any | null {
+  const ids = churchIds.map((id) => String(id || "").trim()).filter(Boolean);
+  let best: any = null;
+  let bestCount = 0;
+
+  for (const row of rows) {
+    if (!isGuestCenterScheduleRow(row)) continue;
+    if (isMediaScheduleFeedItemClosed(row)) continue;
+
+    const matchesChurch =
+      ids.length === 0 ||
+      ids.some((cid) => guestCenterRowMatchesChurch(row, cid, false));
+    if (!matchesChurch) continue;
+
+    const displayCount = filterGuestCenterDisplaySlots(
+      Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : []
+    ).length;
+    if (displayCount > bestCount) {
+      best = row;
+      bestCount = displayCount;
+    }
+  }
+
+  return bestCount > 0 ? best : null;
+}
+
+function mergeGuestCenterScheduleSlotSources(input: {
+  schedule: any;
+  feedId: string;
+  backendFeedItems: any[];
+  overlayMatch: any | null;
+  ringMergedRows?: any[];
+}) {
+  const seed = String(input.feedId || "").trim();
+  const backendLookup = [
+    ...(Array.isArray(input.backendFeedItems) ? input.backendFeedItems : []),
+    ...(Array.isArray(input.ringMergedRows) ? input.ringMergedRows : []),
+  ];
+  const backendItem = seed ? findScheduleRow(backendLookup, seed) : null;
+  const backendSlots = Array.isArray(backendItem?.scheduleSlots)
+    ? backendItem.scheduleSlots
+    : Array.isArray(input.schedule?.scheduleSlots)
+      ? input.schedule.scheduleSlots
+      : [];
+  const feedSlots = seed ? feedScheduleSlotsForLive(seed) : [];
+  const localSlots = Array.isArray(input.overlayMatch?.scheduleSlots)
+    ? input.overlayMatch.scheduleSlots
+    : [];
+
+  const mergedSlots = mergeLiveRoomScheduleSlots(backendSlots, feedSlots, localSlots);
+  if (!mergedSlots.length) return input.schedule;
+  return { ...input.schedule, scheduleSlots: mergedSlots };
+}
+
+/** Guest Claim Center must read the same ring-merged schedule rows as KRISTO_LIVE_RING_FAST_SYNC. */
+export function resolveGuestCenterCanonicalSchedule(input: {
+  homeFeedItems: any[];
+  backendFeedItems: any[];
+  churchId: string;
+  targetChurchId?: string;
+  viewerUserId?: string;
+  nowMs?: number;
+}): GuestCenterCanonicalResult {
+  const viewerChurchId = String(input.churchId || "").trim();
+  const targetChurchId = String(input.targetChurchId || input.churchId || "").trim();
+  const churchIds = Array.from(new Set([targetChurchId, viewerChurchId].filter(Boolean)));
+  const nowMs = Number(input.nowMs || Date.now());
+  const backendFeedItems = Array.isArray(input.backendFeedItems) ? input.backendFeedItems : [];
+  const homeFeedItems = Array.isArray(input.homeFeedItems) ? input.homeFeedItems : [];
+  const viewerUserId = String(input.viewerUserId || "").trim();
+  const cachedGlobalRows = getCachedHomeFeedBackendRows();
+  const hasBackendSignal = backendFeedItems.length > 0 || cachedGlobalRows.length > 0;
+
+  const ringMergedRows = resolveRingMergedScheduleRows({
+    churchBackendRows: backendFeedItems,
+    viewerUserId,
+    viewerChurchId: targetChurchId || viewerChurchId,
+    backendFeedLoaded: hasBackendSignal,
+  });
+
+  const localOverlaySource = [...homeFeedItems, ...(feedList() as any[])];
+  const overlayRows = overlayLocalScheduleClaimsOnFeedRows(
+    ringMergedRows,
+    localOverlaySource,
+    viewerUserId
+  );
+
+  let ringSnapshot = { schedule: null as any | null, feedId: "", slotCount: 0 };
+  for (const cid of churchIds) {
+    const snap = resolveRingChurchScheduleSnapshot({
+      mergedRows: ringMergedRows,
+      viewerChurchId: cid,
+      nowMs,
+    });
+    if (snap.schedule && snap.slotCount >= ringSnapshot.slotCount) {
+      ringSnapshot = snap;
+    }
+  }
+
+  const resolveForChurch = (cid: string, strict: boolean) =>
+    resolveChurchMediaScheduleFromFeedRows(overlayRows, cid, {
+      strictChurch: strict,
+      nowMs,
+    }) ||
+    findMediaScheduleFeedForChurch(overlayRows, cid, {
+      strictChurch: strict,
+      nowMs,
+    }) ||
+    findPersistedMediaScheduleFeedForChurch(overlayRows, cid, {
+      strictChurch: strict,
+      nowMs,
+    });
+
+  let schedule: any | null = ringSnapshot.schedule;
+  let source: GuestCenterCanonicalResult["source"] = schedule ? "ring-live" : "none";
+
+  if (!schedule) {
+    for (const cid of churchIds) {
+      schedule = resolveForChurch(cid, true);
+      if (schedule) {
+        source = hasBackendSignal ? "ring-merged" : "home";
+        break;
+      }
+    }
+  }
+
+  if (!schedule) {
+    for (const cid of churchIds) {
+      schedule = resolveForChurch(cid, false);
+      if (schedule) {
+        source = "merged-scan";
+        break;
+      }
+    }
+  }
+
+  if (!schedule) {
+    schedule =
+      resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, targetChurchId, nowMs) ||
+      resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, viewerChurchId, nowMs);
+    if (schedule) source = hasBackendSignal ? "backend" : "home";
+  }
+
+  if (!schedule) {
+    schedule = findBestGuestCenterScheduleRow(overlayRows, churchIds);
+    if (schedule) source = "best-row";
+  }
+
+  if (schedule && isMediaScheduleFeedItemClosed(schedule)) {
+    schedule = null;
+    source = "none";
+  }
+
+  let overlayMatch: any | null = null;
+  if (schedule) {
+    const seed = String(schedule?.sourceScheduleId || schedule?.id || "").trim();
+    const canonicalId =
+      resolveCanonicalScheduleFeedId(seed, [...overlayRows, ...ringMergedRows, ...localOverlaySource]) ||
+      baseFeedId(seed) ||
+      seed;
+
+    overlayMatch =
+      overlayRows.find((row) => {
+        const rowSeed = String(row?.sourceScheduleId || row?.id || "").trim();
+        const rowCanon =
+          resolveCanonicalScheduleFeedId(rowSeed, overlayRows) || baseFeedId(rowSeed);
+        return rowCanon === canonicalId || rowSeed === seed || baseFeedId(rowSeed) === canonicalId;
+      }) || null;
+
+    schedule = mergeGuestCenterScheduleSlotSources({
+      schedule,
+      feedId: seed,
+      backendFeedItems,
+      overlayMatch,
+      ringMergedRows,
+    });
+
+    if (source === "ring-live" || source === "ring-merged" || source === "backend" || source === "home" || source === "merged-scan") {
+      const backendItem = seed ? findScheduleRow([...backendFeedItems, ...ringMergedRows], seed) : null;
+      const backendSlotCount = Array.isArray(backendItem?.scheduleSlots)
+        ? backendItem.scheduleSlots.length
+        : 0;
+      const mergedSlotCount = Array.isArray(schedule?.scheduleSlots)
+        ? schedule.scheduleSlots.length
+        : 0;
+      if (backendSlotCount === 0 && mergedSlotCount > 0) {
+        source = "backend-merged";
+      }
+    }
+  }
+
+  const scheduleChurchId = String(schedule?.churchId || schedule?.sourceChurchId || "").trim();
+  const feedId = String(schedule?.sourceScheduleId || schedule?.id || "").trim();
+  const backendItem = feedId ? findScheduleRow([...backendFeedItems, ...ringMergedRows], feedId) : null;
+  const backendSlotCount = Array.isArray(backendItem?.scheduleSlots)
+    ? backendItem.scheduleSlots.length
+    : 0;
+  const mergedSlotCount = Array.isArray(schedule?.scheduleSlots) ? schedule.scheduleSlots.length : 0;
+
+  logRingToGuestCenterBridge({
+    ringMergedRowCount: ringMergedRows.length,
+    guestMergedRowCount: overlayRows.length,
+    ringFeedId: ringSnapshot.feedId,
+    guestFeedId: feedId,
+    ringSlotCount: ringSnapshot.slotCount,
+    guestSlotCount: mergedSlotCount,
+  });
+
+  console.log("KRISTO_GUEST_CENTER_CANONICAL_SCHEDULE", {
+    feedId: feedId || null,
+    source,
+    mergedRowCount: ringMergedRows.length,
+    backendSlotCount,
+    mergedSlotCount,
+    backendFeedLoaded: hasBackendSignal,
+    hasSchedule: Boolean(schedule),
+    ringFeedId: ringSnapshot.feedId || null,
+    ringSlotCount: ringSnapshot.slotCount,
+  });
+
+  console.log("KRISTO_GUEST_CENTER_CHURCH_SCOPE", {
+    viewerChurchId,
+    targetChurchId,
+    scheduleChurchId,
+    churchScopeMatch:
+      !scheduleChurchId ||
+      scheduleChurchId === targetChurchId ||
+      scheduleChurchId === viewerChurchId,
+    feedId: feedId || null,
+  });
+
+  console.log("KRISTO_GUEST_CENTER_SOURCE", {
+    feedId: feedId || null,
+    source,
+    backendFeedCount: backendFeedItems.length,
+    cachedGlobalFeedCount: cachedGlobalRows.length,
+    homeFeedCount: homeFeedItems.length,
+    mergedRowCount: ringMergedRows.length,
+    backendSlotCount,
+    mergedSlotCount,
+  });
+
+  return {
+    schedule,
+    source,
+    mergedRowCount: ringMergedRows.length,
+    backendSlotCount,
+    mergedSlotCount,
+    scheduleChurchId,
+    viewerChurchId,
+    targetChurchId,
+    feedId,
+    ringMergedRowCount: ringMergedRows.length,
+  };
+}
+
+/** Keep all backend slots visible until explicitly deleted — do not hide by local expiry. */
+export function filterGuestCenterDisplaySlots(slots: any[]) {
+  return (Array.isArray(slots) ? slots : []).filter((slot) => {
+    if (!slot || typeof slot !== "object") return false;
+    if (slot.deleted === true || slot.deletedAt) return false;
+    const status = String(slot?.status || "").toLowerCase();
+    return status !== "deleted" && status !== "removed";
+  });
+}
+
+export function logGuestCenterSlotFilterResult(input: {
+  feedId: string;
+  source: string;
+  rawSlotCount: number;
+  displaySlotCount: number;
+  claimedCount: number;
+  openCount: number;
+  nowMs?: number;
+}) {
+  console.log("KRISTO_GUEST_CENTER_SLOT_FILTER_RESULT", {
+    feedId: input.feedId || null,
+    source: input.source,
+    rawSlotCount: input.rawSlotCount,
+    displaySlotCount: input.displaySlotCount,
+    claimedCount: input.claimedCount,
+    openCount: input.openCount,
+    nowMs: Number(input.nowMs || Date.now()),
+    filter: "deleted-only",
+  });
+}
+
+export function shouldBlockGuestCenterStaleClear(input: {
+  churchId: string;
+  scheduleId?: string;
+  backendSlotCount: number;
+  mergedSlotCount?: number;
+  rows?: any[];
+  nowMs?: number;
+  reason?: string;
+}): boolean {
+  const churchId = String(input.churchId || "").trim();
+  const nowMs = Number(input.nowMs || Date.now());
+  const mergedSlotCount = Number(input.mergedSlotCount ?? input.backendSlotCount ?? 0);
+  const rows = Array.isArray(input.rows) ? input.rows : [];
+
+  if (mergedSlotCount > 0) {
+    console.log("KRISTO_GUEST_CENTER_STALE_CLEAR_BLOCKED", {
+      reason: input.reason || "merged-slots-present",
+      churchId,
+      scheduleId: String(input.scheduleId || ""),
+      backendSlotCount: input.backendSlotCount,
+      mergedSlotCount,
+    });
+    return true;
+  }
+
+  const churchLive = churchId
+    ? computeChurchScheduleTabLive({ rows, viewerChurchId: churchId, nowMs })
+    : null;
+  if (churchLive) {
+    console.log("KRISTO_GUEST_CENTER_STALE_CLEAR_BLOCKED", {
+      reason: input.reason || "church-ring-live",
+      churchId,
+      scheduleId: String(input.scheduleId || ""),
+      feedId: String(churchLive?.feedId || ""),
+      isLiveNow: churchLive.isLiveNow,
+    });
+    return true;
+  }
+
+  return false;
 }
 
 export function countExpiredGuestScheduleSlots(slots: any[], nowMs = Date.now()) {
@@ -232,9 +615,35 @@ export function readGuestActionScheduleSlots(input: {
   if (input.backendFeedItems.length) {
     const backendItem = findScheduleRow(input.backendFeedItems, feedId);
     if (backendItem && Array.isArray(backendItem.scheduleSlots)) {
+      if (backendItem.scheduleSlots.length > 0) {
+        return {
+          feedId,
+          slots: backendItem.scheduleSlots,
+          sourceUsed: "backend" as const,
+        };
+      }
+
+      const localSlots = readFeedItemScheduleSlots(feedId, [
+        ...(feedList() as any[]),
+        ...input.homeFeedItems,
+      ]);
+      if (localSlots.length > 0) {
+        console.log("KRISTO_GUEST_CENTER_SOURCE", {
+          feedId,
+          source: "backend-local-fallback",
+          backendSlotCount: 0,
+          mergedSlotCount: localSlots.length,
+        });
+        return {
+          feedId,
+          slots: localSlots,
+          sourceUsed: "backend-local-fallback" as const,
+        };
+      }
+
       return {
         feedId,
-        slots: backendItem.scheduleSlots,
+        slots: [],
         sourceUsed: "backend" as const,
       };
     }
@@ -341,17 +750,36 @@ export async function forceReloadGuestScheduleFromBackend(input: {
   applyBackendMediaScheduleToLocalFeed(rows, churchId);
   input.setBackendFeedItems(rows);
   input.setHomeFeedItems([...feedList()]);
-  input.setGuestClaimSlots?.([]);
 
   const backendSchedule =
     findMediaScheduleFeedForChurch(rows, churchId, { strictChurch: true }) ||
     findActiveMediaScheduleForChurch(rows, churchId, { strictChurch: true });
 
+  const canonical = resolveGuestCenterCanonicalSchedule({
+    homeFeedItems: [...feedList()],
+    backendFeedItems: rows,
+    churchId,
+  });
+  if (canonical.mergedSlotCount > 0 && Array.isArray(canonical.schedule?.scheduleSlots)) {
+    input.setGuestClaimSlots?.(canonical.schedule.scheduleSlots);
+  } else {
+    input.setGuestClaimSlots?.([]);
+  }
+
   return {
     rows,
-    backendSchedule,
-    feedId: String(backendSchedule?.id || backendSchedule?.sourceScheduleId || "").trim(),
-    backendSlots: Array.isArray(backendSchedule?.scheduleSlots) ? backendSchedule.scheduleSlots : [],
+    backendSchedule: canonical.schedule || backendSchedule,
+    feedId: String(
+      canonical.feedId ||
+        backendSchedule?.id ||
+        backendSchedule?.sourceScheduleId ||
+        ""
+    ).trim(),
+    backendSlots: Array.isArray(canonical.schedule?.scheduleSlots)
+      ? canonical.schedule.scheduleSlots
+      : Array.isArray(backendSchedule?.scheduleSlots)
+        ? backendSchedule.scheduleSlots
+        : [],
     sourceUsed: rows.length ? ("backend" as const) : ("local" as const),
   };
 }
@@ -438,12 +866,32 @@ export async function invalidateGuestClaimGlobalLiveState(input: {
     ? getActiveScheduleSlots(backendSchedule, nowMs).length
     : 0;
 
+  const mergedCanonical = resolveGuestCenterCanonicalSchedule({
+    homeFeedItems: [...(feedList() as any[])],
+    backendFeedItems: reloadRows,
+    churchId,
+    viewerUserId: userId,
+    nowMs,
+  });
+  const mergedSlotCount = mergedCanonical.mergedSlotCount;
+
+  const blockStaleClear = shouldBlockGuestCenterStaleClear({
+    churchId,
+    scheduleId,
+    backendSlotCount,
+    mergedSlotCount,
+    rows: ringBefore.rows,
+    nowMs,
+    reason: input.reason,
+  });
+
   if (
     scheduleId &&
     shouldEndStaleMediaScheduleFeedRow({
       remainingSlotCount: backendSlotCount,
       activeSlotCount: backendActiveSlotCount,
-    })
+    }) &&
+    !blockStaleClear
   ) {
     const mergedForAliases = [...reloadRows, ...(feedList() as any[])];
     const aliases = collectScheduleAliasIds(scheduleId, mergedForAliases);
@@ -486,7 +934,7 @@ export async function invalidateGuestClaimGlobalLiveState(input: {
       : 0;
   }
 
-  if (!backendSchedule || backendSlotCount === 0) {
+  if ((!backendSchedule || backendSlotCount === 0) && !blockStaleClear) {
     purgeAllLocalMediaScheduleSources({
       churchId,
       reason: input.reason,
@@ -497,11 +945,14 @@ export async function invalidateGuestClaimGlobalLiveState(input: {
       },
     });
     endLiveBridgeForSchedule(scheduleId, reloadRows);
-  } else {
+  } else if (backendSchedule || mergedSlotCount > 0) {
+    const canonicalSchedule = mergedCanonical.schedule || backendSchedule;
     applyBackendMediaScheduleToLocalFeed(reloadRows, churchId);
     input.setBackendFeedItems?.(reloadRows);
     input.setHomeFeedItems?.([...feedList()]);
-    input.setGuestClaimSlots?.([]);
+    input.setGuestClaimSlots?.(
+      Array.isArray(canonicalSchedule?.scheduleSlots) ? canonicalSchedule.scheduleSlots : []
+    );
 
     clearStaleMediaScheduleSpeakerSlotsForChurch({
       churchId,

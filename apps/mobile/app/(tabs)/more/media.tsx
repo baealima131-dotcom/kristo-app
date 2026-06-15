@@ -54,12 +54,16 @@ import {
 import {
   autoDeleteExpiredOpenGuestSlots,
   buildGuestSlotsSourceSnapshot,
+  filterGuestCenterDisplaySlots,
+  isGuestCenterScheduleRow,
   isGuestScheduleSlotExpired,
   isGuestScheduleSlotOpenUnclaimed,
   logDelOldScanDiagnostics,
+  logGuestCenterSlotFilterResult,
   logGuestSlotSourceDiagnostics,
   persistDeleteAllGuestSlots,
   persistGuestSlotClaimClear,
+  resolveGuestCenterCanonicalSchedule,
   summarizeGuestScheduleSlotBuckets,
 } from "../../../src/lib/guestClaimPersistence";
 import {
@@ -1104,6 +1108,44 @@ export default function MediaStudioScreen() {
     churchMediaSubscriptionActive &&
     (isActualChurchPastor || canManageMediaHosts || isApprovedMediaHostRole || viewerCanManageEffective);
 
+  const guestCenterChurchId = useMemo(
+    () =>
+      String(
+        (churchMediaProfile as any)?.churchId ||
+          backendMedia?.churchId ||
+          session?.churchId ||
+          ""
+      ).trim(),
+    [churchMediaProfile, backendMedia?.churchId, session?.churchId]
+  );
+
+  const guestCenterCanonical = useMemo(() => {
+    if (!guestCenterChurchId) {
+      return {
+        schedule: null,
+        source: "none" as const,
+        mergedSlotCount: 0,
+        feedId: "",
+      };
+    }
+
+    return resolveGuestCenterCanonicalSchedule({
+      homeFeedItems,
+      backendFeedItems,
+      churchId: String(session?.churchId || "").trim() || guestCenterChurchId,
+      targetChurchId: guestCenterChurchId,
+      viewerUserId: String(session?.userId || "").trim(),
+      nowMs: guestClockNow,
+    });
+  }, [
+    homeFeedItems,
+    backendFeedItems,
+    guestCenterChurchId,
+    session?.churchId,
+    session?.userId,
+    guestClockNow,
+  ]);
+
   function showSubscriptionRequired() {
     if (isActualChurchPastor) {
       setVipNotice({
@@ -1523,20 +1565,28 @@ export default function MediaStudioScreen() {
   ]);
 
   const syncedGuestClaimSlots = useMemo(() => {
-    const churchId = String(session?.churchId || "").trim();
-    const activeSchedule = churchId
-      ? resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, churchId)
-      : null;
+    const activeSchedule = guestCenterCanonical.schedule;
 
     if (!activeSchedule) return [];
 
     const item = activeSchedule;
     const sourceItemId = String(item?.sourceScheduleId || item?.id || "");
-    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    const rawSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    const slots = filterGuestCenterDisplaySlots(rawSlots);
 
-    if (!slots.length || !isMediaScheduleFeedItem(item)) return [];
+    if (!slots.length || !isGuestCenterScheduleRow(item)) return [];
 
-    if (!canGuestClaimManage) return [];
+    logGuestCenterSlotFilterResult({
+      feedId: sourceItemId,
+      source: guestCenterCanonical.source,
+      rawSlotCount: rawSlots.length,
+      displaySlotCount: slots.length,
+      claimedCount: slots.filter((slot: any) =>
+        Boolean(String(slot?.claimedByUserId || "").trim())
+      ).length,
+      openCount: slots.filter((slot: any) => !String(slot?.claimedByUserId || "").trim()).length,
+      nowMs: guestClockNow,
+    });
 
     const rows = slots.map((slot: any, index: number) => {
         logMediaSlotReloadTime(slot, "syncedGuestClaimSlots.source", index);
@@ -1605,32 +1655,34 @@ export default function MediaStudioScreen() {
         };
       });
 
-    const now = Date.now();
+    const now = guestClockNow;
 
     return sortSlotsForGuestClaimCenter(rows, now);
-    }, [homeFeedItems, backendFeedItems, session?.userId, session?.churchId, guestClockNow, canGuestClaimManage]);
+    }, [guestCenterCanonical, guestClockNow]);
 
   useEffect(() => {
-    const churchId = String(session?.churchId || "").trim();
-    const activeSchedule = churchId
-      ? resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, churchId)
-      : null;
+    const activeSchedule = guestCenterCanonical.schedule;
 
     console.log("KRISTO_GUEST_CLAIM_CENTER_LOAD", {
-      churchId,
+      churchId: guestCenterChurchId,
+      viewerChurchId: String(session?.churchId || "").trim(),
       backendFeedCount: backendFeedItems.length,
       homeFeedCount: homeFeedItems.length,
       activeScheduleId: String(activeSchedule?.id || activeSchedule?.sourceScheduleId || ""),
-      activeScheduleSource: String(activeSchedule?.source || ""),
+      activeScheduleSource: String(activeSchedule?.source || guestCenterCanonical.source || ""),
       slotCount: Array.isArray(activeSchedule?.scheduleSlots)
         ? activeSchedule.scheduleSlots.length
         : 0,
       guestClaimSlotCount: syncedGuestClaimSlots.length,
+      canonicalSource: guestCenterCanonical.source,
+      mergedSlotCount: guestCenterCanonical.mergedSlotCount,
     });
   }, [
     backendFeedItems,
     homeFeedItems,
+    guestCenterChurchId,
     session?.churchId,
+    guestCenterCanonical,
     syncedGuestClaimSlots.length,
   ]);
 
@@ -1646,10 +1698,8 @@ export default function MediaStudioScreen() {
   function handleDeleteAllGuestSlots() {
     if (!ensureGuestClaimManagePermission("delete-all-guest-slots")) return;
 
-    const churchId = String(session?.churchId || "").trim();
-    const activeSchedule = churchId
-      ? resolveCanonicalMediaScheduleForGuests(homeFeedItems, backendFeedItems, churchId, guestClockNow)
-      : null;
+    const churchId = guestCenterChurchId;
+    const activeSchedule = guestCenterCanonical.schedule;
     const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "").trim();
     const slots = Array.isArray(activeSchedule?.scheduleSlots) ? activeSchedule.scheduleSlots : [];
 
@@ -1695,15 +1745,7 @@ export default function MediaStudioScreen() {
   }
 
   useEffect(() => {
-    const churchId = String(session?.churchId || "").trim();
-    const activeSchedule = churchId
-      ? resolveCanonicalMediaScheduleForGuests(
-          homeFeedItems,
-          backendFeedItems,
-          churchId,
-          guestClockNow
-        )
-      : null;
+    const activeSchedule = guestCenterCanonical.schedule;
     const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "");
     const rawScheduleSlots = Array.isArray(activeSchedule?.scheduleSlots)
       ? activeSchedule.scheduleSlots
@@ -1754,7 +1796,7 @@ export default function MediaStudioScreen() {
     homeFeedItems,
     syncedGuestClaimSlots,
     guestClaimOpenCount,
-    session?.churchId,
+    guestCenterCanonical,
     guestClockNow,
   ]);
 
@@ -1763,15 +1805,10 @@ export default function MediaStudioScreen() {
   useEffect(() => {
     if (!canGuestClaimManage) return;
 
-    const churchId = String(session?.churchId || "").trim();
+    const churchId = guestCenterChurchId;
     if (!churchId) return;
 
-    const activeSchedule = resolveCanonicalMediaScheduleForGuests(
-      homeFeedItems,
-      backendFeedItems,
-      churchId,
-      guestClockNow
-    );
+    const activeSchedule = guestCenterCanonical.schedule;
     const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "").trim();
     const rawScheduleSlots = Array.isArray(activeSchedule?.scheduleSlots)
       ? activeSchedule.scheduleSlots
@@ -1815,7 +1852,8 @@ export default function MediaStudioScreen() {
     backendFeedItems,
     homeFeedItems,
     guestClaimHeaders,
-    session?.churchId,
+    guestCenterChurchId,
+    guestCenterCanonical,
     session?.userId,
     guestClockNow,
   ]);
@@ -4245,8 +4283,10 @@ export default function MediaStudioScreen() {
                 {!syncedGuestClaimSlots.length ? (
                   <View style={s.guestClaimEmptyCard}>
                     <Ionicons name="calendar-outline" size={28} color="#F4C95D" />
-                    <Text style={s.guestClaimEmptyTitle}>No guest claims yet</Text>
-                    <Text style={s.guestClaimEmptyText}>Create a schedule first. When people claim your Home Feed time cards, they will appear here with name and avatar.</Text>
+                    <Text style={s.guestClaimEmptyTitle}>No schedule slots yet</Text>
+                    <Text style={s.guestClaimEmptyText}>
+                      Create a schedule first. Open and claimed time slots from your Home Feed will appear here.
+                    </Text>
                   </View>
                 ) : null}
 

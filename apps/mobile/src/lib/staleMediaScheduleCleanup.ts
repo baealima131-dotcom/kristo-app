@@ -123,9 +123,9 @@ export function shouldEndStaleMediaScheduleFeedRow(input: {
   remainingSlotCount: number;
   activeSlotCount?: number;
 }) {
-  if (Number(input.remainingSlotCount || 0) === 0) return true;
-  if (Number(input.activeSlotCount ?? -1) === 0) return true;
-  return false;
+  // Only end when backend explicitly has zero slots — not when local time windows expired.
+  void input.activeSlotCount;
+  return Number(input.remainingSlotCount || 0) === 0;
 }
 
 export { cleanupStaleMediaSchedulePair } from "@/src/lib/staleBackendZeroSlotGuard";

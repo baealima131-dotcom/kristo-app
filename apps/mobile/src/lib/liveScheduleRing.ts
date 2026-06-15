@@ -1,6 +1,7 @@
 import { DeviceEventEmitter } from "react-native";
 import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
 import {
+  collectScheduleRowsForRingScan,
   injectClaimStoreScheduleRows,
   mergeScheduleFeedClaimRows,
   overlayStableClaimsOnFeedRows,
@@ -293,6 +294,83 @@ export function mergeFeedRowsForScheduleScan(
   result = overlayStableClaimsOnFeedRows(result, viewerUserId, { allSources: mergedRows });
   result = injectClaimStoreScheduleRows(result, viewerUserId, { allSources: mergedRows });
   return result;
+}
+
+/** Same merged row source as KRISTO_LIVE_RING_FAST_SYNC / recomputeScheduleRingsFromRows. */
+export function resolveRingMergedScheduleRows(options: {
+  churchBackendRows?: any[];
+  viewerUserId?: string;
+  viewerChurchId?: string;
+  backendFeedLoaded?: boolean;
+}): any[] {
+  const viewerUserId = String(options.viewerUserId || "").trim();
+  const scanRows = collectScheduleRowsForRingScan(
+    Array.isArray(options.churchBackendRows) ? options.churchBackendRows : [],
+    viewerUserId
+  );
+  return mergeFeedRowsForScheduleScan(scanRows, {
+    backendFeedLoaded: options.backendFeedLoaded === true,
+    churchId: String(options.viewerChurchId || "").trim(),
+    viewerUserId,
+  });
+}
+
+export function resolveRingChurchScheduleSnapshot(options: {
+  mergedRows: any[];
+  viewerChurchId: string;
+  nowMs?: number;
+}): { schedule: any | null; feedId: string; slotCount: number } {
+  const viewerChurchId = String(options.viewerChurchId || "").trim();
+  const nowMs = options.nowMs ?? Date.now();
+
+  const churchLive = computeChurchScheduleTabLive({
+    rows: options.mergedRows,
+    viewerChurchId,
+    nowMs,
+  });
+
+  if (churchLive?.item) {
+    const item = churchLive.item;
+    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    return {
+      schedule: item,
+      feedId: String(item?.sourceScheduleId || item?.id || "").trim(),
+      slotCount: slots.length,
+    };
+  }
+
+  let best: any = null;
+  let bestCount = 0;
+  for (const row of options.mergedRows) {
+    if (!isMediaScheduleFeedItem(row)) continue;
+    if (String(row?.churchId || row?.sourceChurchId || "").trim() !== viewerChurchId) continue;
+    const count = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots.length : 0;
+    if (count > bestCount) {
+      best = row;
+      bestCount = count;
+    }
+  }
+
+  if (best) {
+    return {
+      schedule: best,
+      feedId: String(best?.sourceScheduleId || best?.id || "").trim(),
+      slotCount: bestCount,
+    };
+  }
+
+  return { schedule: null, feedId: "", slotCount: 0 };
+}
+
+export function logRingToGuestCenterBridge(input: {
+  ringMergedRowCount: number;
+  guestMergedRowCount: number;
+  ringFeedId: string;
+  guestFeedId: string;
+  ringSlotCount: number;
+  guestSlotCount: number;
+}) {
+  console.log("KRISTO_RING_TO_GUEST_CENTER_BRIDGE", input);
 }
 
 export function findProtectedNearLiveSchedule(
