@@ -95,6 +95,8 @@ import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import {
   endLiveBridgeForStaleScheduleFeedId,
+  isMediaScheduleFeedExplicitlyEnded,
+  liveRoomRouteSlotsHaveActiveWindow,
   shouldIgnoreRouteSlotsForBackendFeedId,
 } from "@/src/lib/staleBackendZeroSlotGuard";
 import { ensureProfileAvatarUploadedBeforeClaim } from "@/src/lib/ensureProfileAvatarForClaim";
@@ -2840,6 +2842,7 @@ export default function LiveRoomScreen() {
   const [backendLiveRequests, setBackendLiveRequests] = useState<Record<string, any>>({});
   const [backendScheduleSlots, setBackendScheduleSlots] = useState<any[]>([]);
   const [backendScheduleHydrated, setBackendScheduleHydrated] = useState(false);
+  const [backendScheduleExplicitlyEnded, setBackendScheduleExplicitlyEnded] = useState(false);
   const [runtimeSlotOverrides, setRuntimeSlotOverrides] = useState<Record<string, any>>({});
 
   const liveScheduleFeedId = useMemo(() => {
@@ -2889,8 +2892,26 @@ export default function LiveRoomScreen() {
       backendRows: backendScheduleHydrated ? [{ id: liveScheduleFeedId, scheduleSlots: backendScheduleSlots }] : [],
       backendFeedLoaded: backendScheduleHydrated,
       backendSlotCount: backendScheduleSlots.length,
+      routeSlotCount: initialRouteScheduleSlots.length,
+      routeSlotsHaveActiveWindow: liveRoomRouteSlotsHaveActiveWindow(
+        initialRouteScheduleSlots,
+        liveNowMs
+      ),
+      feedItemExplicitlyEnded: backendScheduleExplicitlyEnded,
     });
-  }, [liveScheduleFeedId, backendScheduleHydrated, backendScheduleSlots]);
+  }, [
+    liveScheduleFeedId,
+    backendScheduleHydrated,
+    backendScheduleSlots,
+    backendScheduleExplicitlyEnded,
+    initialRouteScheduleSlots,
+    liveNowMs,
+  ]);
+
+  const routeSlotsStillLive = useMemo(
+    () => liveRoomRouteSlotsHaveActiveWindow(initialRouteScheduleSlots, liveNowMs),
+    [initialRouteScheduleSlots, liveNowMs]
+  );
 
   const routeScheduleSlots = useMemo(() => {
     if (ignoreRouteSlotsForStaleBackend) {
@@ -4880,9 +4901,9 @@ export default function LiveRoomScreen() {
       return;
     }
 
-    const hasRouteSlots = routeScheduleSlots.length > 0;
+    const hasRouteSlots = initialRouteScheduleSlots.length > 0;
     let cancelled = false;
-    let slotsSig = hasRouteSlots ? JSON.stringify(routeScheduleSlots) : "";
+    let slotsSig = hasRouteSlots ? JSON.stringify(initialRouteScheduleSlots) : "";
 
     async function hydrateScheduleFromFeed(source: "immediate" | "poll" | "background") {
       if (hasRouteSlots && source === "poll") return;
@@ -4907,32 +4928,60 @@ export default function LiveRoomScreen() {
 
         setBackendScheduleHydrated(true);
 
+        const explicitlyEnded = isMediaScheduleFeedExplicitlyEnded(item);
+
         if (!slots.length) {
+          if (hasRouteSlots && !explicitlyEnded) {
+            console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
+              feedId: hydrateFeedId,
+              source,
+              hadRouteSlots: routeScheduleSlots.length,
+              preservedRoute: true,
+              routeSlotCount: initialRouteScheduleSlots.length,
+            });
+            return;
+          }
+
+          if (explicitlyEnded) {
+            setBackendScheduleExplicitlyEnded(true);
+          }
+
           setBackendScheduleSlots([]);
           console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
             feedId: hydrateFeedId,
             source,
             hadRouteSlots: routeScheduleSlots.length,
+            explicitlyEnded,
           });
-          console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_DROPPED_STALE", {
-            feedId: hydrateFeedId,
-            routeSlotCount: routeScheduleSlots.length,
-            backendSlotCount: 0,
-            localScheduleId: String((params as any)?.localScheduleId || ""),
-            source,
-          });
-          console.log("KRISTO_STALE_ROUTE_SLOTS_IGNORED", {
-            canonicalFeedId: hydrateFeedId,
-            localScheduleId: String((params as any)?.localScheduleId || ""),
-            backendSlotCount: 0,
-            routeSlotCount: routeScheduleSlots.length,
-            reason: "live-room-hydrate-empty",
-          });
-          clearScheduleClaimRuntimeState(hydrateFeedId);
-          endLiveBridgeForStaleScheduleFeedId(hydrateFeedId);
-          emitLiveRingRefresh("live-room-hydrate-empty");
+
+          if (explicitlyEnded || !hasRouteSlots) {
+            console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_DROPPED_STALE", {
+              feedId: hydrateFeedId,
+              routeSlotCount: routeScheduleSlots.length,
+              backendSlotCount: 0,
+              localScheduleId: String((params as any)?.localScheduleId || ""),
+              source,
+              explicitlyEnded,
+            });
+            console.log("KRISTO_STALE_ROUTE_SLOTS_IGNORED", {
+              canonicalFeedId: hydrateFeedId,
+              localScheduleId: String((params as any)?.localScheduleId || ""),
+              backendSlotCount: 0,
+              routeSlotCount: routeScheduleSlots.length,
+              reason: explicitlyEnded
+                ? "live-room-hydrate-explicitly-ended"
+                : "live-room-hydrate-empty",
+            });
+            clearScheduleClaimRuntimeState(hydrateFeedId);
+            endLiveBridgeForStaleScheduleFeedId(hydrateFeedId);
+            emitLiveRingRefresh(
+              explicitlyEnded ? "live-room-hydrate-ended" : "live-room-hydrate-empty"
+            );
+          }
           return;
         }
+
+        setBackendScheduleExplicitlyEnded(false);
 
         const sig = JSON.stringify(slots);
         if ((source === "poll" || source === "background") && sig === slotsSig) return;
@@ -4948,14 +4997,16 @@ export default function LiveRoomScreen() {
         });
       } catch (e: any) {
         const status = Number(e?.status || e?.response?.status || 0);
-        if (!cancelled && (status === 404 || status === 410)) {
+        if (!cancelled && status === 410) {
           setBackendScheduleHydrated(true);
+          setBackendScheduleExplicitlyEnded(true);
           setBackendScheduleSlots([]);
           console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
             feedId: hydrateFeedId,
             source,
             hadRouteSlots: routeScheduleSlots.length,
             status,
+            explicitlyEnded: true,
           });
           console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_DROPPED_STALE", {
             feedId: hydrateFeedId,
@@ -4963,6 +5014,33 @@ export default function LiveRoomScreen() {
             backendSlotCount: 0,
             localScheduleId: String((params as any)?.localScheduleId || ""),
             source,
+            status,
+            explicitlyEnded: true,
+          });
+          clearScheduleClaimRuntimeState(hydrateFeedId);
+          endLiveBridgeForStaleScheduleFeedId(hydrateFeedId);
+          emitLiveRingRefresh("live-room-hydrate-gone");
+          return;
+        }
+        if (!cancelled && status === 404 && hasRouteSlots) {
+          console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
+            feedId: hydrateFeedId,
+            source,
+            hadRouteSlots: routeScheduleSlots.length,
+            status,
+            preservedRoute: true,
+          });
+          setBackendScheduleHydrated(true);
+          return;
+        }
+        if (!cancelled && status === 404) {
+          setBackendScheduleHydrated(true);
+          setBackendScheduleExplicitlyEnded(true);
+          setBackendScheduleSlots([]);
+          console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
+            feedId: hydrateFeedId,
+            source,
+            hadRouteSlots: routeScheduleSlots.length,
             status,
           });
           clearScheduleClaimRuntimeState(hydrateFeedId);
@@ -5033,6 +5111,7 @@ export default function LiveRoomScreen() {
     isFocused,
     isMediaInstantLive,
     routeScheduleSlots.length,
+    initialRouteScheduleSlots.length,
   ]);
   useEffect(() => {
     let alive = true;
@@ -8133,7 +8212,7 @@ return (
               setLastStageTapAt(now);
             }}
           >
-{(isMediaInstantLive || !!currentMainStageSlot || (pastorPermanentMicNow && backendScheduleReady && !!currentSlotNumber)) ? (
+{(isMediaInstantLive || !!currentMainStageSlot || routeSlotsStillLive || (pastorPermanentMicNow && backendScheduleReady && !!currentSlotNumber)) ? (
               mountLiveKitPublisherStage ? (
                 <KristoLiveKitStage
                   key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
@@ -8171,8 +8250,8 @@ return (
                     <View style={s.teamGridLiveFallback as any}>
                       <View style={s.livePausedWrap as any}>
                         <Ionicons name="radio-outline" size={64} color="#F4C95D" />
-                        <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : currentMainStageSlot ? `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE` : "LIVE WINDOW ENDED"}</Text>
-                        <Text style={s.livePausedSub as any}>{currentMainStageSlot || isMediaInstantLive ? "Connecting video..." : "No active speaker right now"}</Text>
+                        <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : currentMainStageSlot ? `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE` : routeSlotsStillLive ? "LIVE SLOT ACTIVE" : "LIVE WINDOW ENDED"}</Text>
+                        <Text style={s.livePausedSub as any}>{currentMainStageSlot || isMediaInstantLive || routeSlotsStillLive ? "Connecting video..." : "No active speaker right now"}</Text>
                       </View>
                     </View>
                   }

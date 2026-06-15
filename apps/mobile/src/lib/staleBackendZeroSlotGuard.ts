@@ -3,7 +3,8 @@ import {
   feedList,
   feedRemoveScheduleMirrors,
 } from "@/src/lib/homeFeedStore";
-import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
+import { isMediaScheduleFeedItem, isMediaScheduleFeedItemClosed } from "@/src/lib/mediaScheduleLock";
+import { normalizeLiveScheduleSlots } from "@/src/lib/scheduleSlotUtils";
 import { publishLiveEnded } from "@/src/lib/liveBridge";
 import {
   baseFeedId,
@@ -48,6 +49,29 @@ export function resolveBackendSlotCountForCanonicalFeedId(
   return 0;
 }
 
+export function isMediaScheduleFeedExplicitlyEnded(item: any): boolean {
+  if (!item || typeof item !== "object") return false;
+  if (item?.deleted === true || item?.deletedAt) return true;
+  return isMediaScheduleFeedItemClosed(item);
+}
+
+export function liveRoomRouteSlotsHaveActiveWindow(slots: any[], nowMs = Date.now()): boolean {
+  const normalized = normalizeLiveScheduleSlots(Array.isArray(slots) ? slots : []);
+  return normalized.some((slot) => {
+    const startMs = Number(slot?.startMs || 0);
+    const endMs = Number(slot?.endMs || 0);
+    if (startMs > 0 && endMs > startMs && nowMs >= startMs && nowMs < endMs) return true;
+
+    const status = String(slot?.status || "").toLowerCase();
+    const claimedByUserId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+    if ((status === "claimed" || status === "live" || claimedByUserId) && (!endMs || endMs > nowMs)) {
+      return true;
+    }
+
+    return false;
+  });
+}
+
 export function backendConfirmsZeroSlotsForFeedId(
   feedId: string,
   backendRows: any[],
@@ -62,15 +86,27 @@ export function shouldIgnoreRouteSlotsForBackendFeedId(input: {
   backendRows: any[];
   backendFeedLoaded: boolean;
   backendSlotCount?: number;
+  routeSlotCount?: number;
+  routeSlotsHaveActiveWindow?: boolean;
+  feedItemExplicitlyEnded?: boolean;
 }) {
   const feedId = String(input.feedId || "").trim();
   if (!isBackendFeedScheduleId(feedId)) return false;
+  if (!input.backendFeedLoaded) return false;
 
-  if (input.backendFeedLoaded && Number(input.backendSlotCount ?? -1) === 0) {
-    return true;
-  }
+  const backendZero =
+    Number(input.backendSlotCount ?? -1) === 0 ||
+    backendConfirmsZeroSlotsForFeedId(feedId, input.backendRows, true);
 
-  return backendConfirmsZeroSlotsForFeedId(feedId, input.backendRows, input.backendFeedLoaded);
+  if (!backendZero) return false;
+
+  // Empty backend hydration alone must not beat valid route slots.
+  if (input.feedItemExplicitlyEnded === true) return true;
+
+  const routeSlotCount = Number(input.routeSlotCount ?? 0);
+  if (routeSlotCount > 0) return false;
+
+  return true;
 }
 
 export function endLiveBridgeForStaleScheduleFeedId(feedId: string, rows?: any[]) {
