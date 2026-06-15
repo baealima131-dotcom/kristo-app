@@ -15,7 +15,10 @@ export type LightLivePayload = {
   actualChurchPastorUserId?: string;
   raw?: any;
   routeFailed?: boolean;
+  /** True only when backend returned an ended live object — never for null/missing bridge. */
   explicitlyEnded?: boolean;
+  /** GET returned 200 with live:null — no bridge session row yet, not schedule ended. */
+  noBridgeSession?: boolean;
   endpointStatus?: number | null;
 };
 
@@ -96,15 +99,18 @@ export function extractLightLivePayload(res: any): LightLivePayload {
   if (!live) {
     return {
       isLive: false,
-      explicitlyEnded: true,
+      noBridgeSession: true,
+      explicitlyEnded: false,
       endpointStatus,
     };
   }
 
   const isActive = live.isLive === true && !live.endedAt;
+  const hasEndedAt = Boolean(live.endedAt);
   return {
     isLive: isActive,
-    explicitlyEnded: !isActive,
+    explicitlyEnded: !isActive && hasEndedAt,
+    noBridgeSession: false,
     liveId: String(live.liveId || ""),
     requestPolicy: String(live.requestPolicy || ""),
     requests: live.requests && typeof live.requests === "object" ? live.requests : undefined,
@@ -128,28 +134,65 @@ export function resolveChurchLiveStateUpdate(input: {
   patch: LightLivePayload;
   previousLive: any | null;
   churchId?: string;
+  /** Feed/schedule ring reports a slot in its live window right now. */
+  scheduleLiveActive?: boolean;
+  /** Schedule feed was explicitly ended/deleted on backend. */
+  scheduleExplicitlyEnded?: boolean;
 }): ChurchLiveStateUpdate {
   const churchId = String(input.churchId || input.previousLive?.churchId || "").trim();
+  const scheduleLiveActive = input.scheduleLiveActive === true;
+  const preservedFallback =
+    input.previousLive || (churchId ? readPreservedChurchLive(churchId) : null);
 
   if (input.patch.routeFailed) {
-    const preserved =
-      input.previousLive ||
-      (churchId ? readPreservedChurchLive(churchId) : null);
     return {
-      nextLive: preserved,
+      nextLive: preservedFallback,
       shouldUpdate: false,
       preserved: true,
-      source: preserved ? "route_failed_preserved_previous" : "route_failed_no_previous",
+      source: preservedFallback ? "route_failed_preserved_previous" : "route_failed_no_previous",
     };
   }
 
-  if (input.patch.removedFromLive || input.patch.explicitlyEnded) {
+  if (input.patch.removedFromLive) {
     if (churchId) clearPreservedChurchLive(churchId);
     return {
       nextLive: null,
       shouldUpdate: true,
       preserved: false,
-      source: input.patch.removedFromLive ? "backend_removed_from_live" : "backend_explicit_ended",
+      source: "backend_removed_from_live",
+    };
+  }
+
+  if (input.scheduleExplicitlyEnded && (input.patch.explicitlyEnded || input.patch.noBridgeSession)) {
+    if (churchId) clearPreservedChurchLive(churchId);
+    return {
+      nextLive: null,
+      shouldUpdate: true,
+      preserved: false,
+      source: "schedule_explicitly_ended",
+    };
+  }
+
+  if (input.patch.explicitlyEnded) {
+    if (scheduleLiveActive) {
+      console.log("KRISTO_LIVE_NULL_PRESERVED_BY_ACTIVE_SCHEDULE", {
+        churchId,
+        reason: "explicitly_ended_signal_while_schedule_live",
+        hadPreviousLive: Boolean(preservedFallback?.isLive),
+      });
+      return {
+        nextLive: preservedFallback,
+        shouldUpdate: false,
+        preserved: true,
+        source: "schedule_live_preserved_over_ended_signal",
+      };
+    }
+    if (churchId) clearPreservedChurchLive(churchId);
+    return {
+      nextLive: null,
+      shouldUpdate: true,
+      preserved: false,
+      source: "backend_explicit_ended",
     };
   }
 
@@ -163,13 +206,36 @@ export function resolveChurchLiveStateUpdate(input: {
     };
   }
 
-  if (input.patch.isLive === false) {
-    if (churchId) clearPreservedChurchLive(churchId);
+  if (input.patch.noBridgeSession || input.patch.isLive === false) {
+    if (scheduleLiveActive) {
+      console.log("KRISTO_LIVE_NULL_PRESERVED_BY_ACTIVE_SCHEDULE", {
+        churchId,
+        reason: "no_bridge_session_while_schedule_live",
+        hadPreviousLive: Boolean(preservedFallback?.isLive),
+        noBridgeSession: input.patch.noBridgeSession === true,
+      });
+      return {
+        nextLive: preservedFallback,
+        shouldUpdate: false,
+        preserved: true,
+        source: "no_bridge_session_schedule_active",
+      };
+    }
+
+    if (preservedFallback) {
+      return {
+        nextLive: preservedFallback,
+        shouldUpdate: false,
+        preserved: true,
+        source: "no_bridge_session_preserved",
+      };
+    }
+
     return {
       nextLive: null,
-      shouldUpdate: true,
+      shouldUpdate: false,
       preserved: false,
-      source: "backend_no_live",
+      source: "no_bridge_session_no_previous",
     };
   }
 
@@ -306,6 +372,7 @@ export async function fetchLightLiveState(
     routeFailed: patch.routeFailed === true,
     isLive: patch.isLive ?? null,
     explicitlyEnded: patch.explicitlyEnded === true,
+    noBridgeSession: patch.noBridgeSession === true,
     liveId: patch.liveId || patch.raw?.liveId || null,
     responseBody: res,
   });

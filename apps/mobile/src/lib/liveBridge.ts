@@ -91,6 +91,75 @@ export function subscribeLiveJoin(fn: () => void) {
   };
 }
 
+export async function ensureLiveBridgeFromActiveScheduleSlot(opts: {
+  liveId: string;
+  slotId?: string;
+  slot?: number;
+  userId: string;
+  name: string;
+  avatar: string;
+  headers: Record<string, string>;
+  role?: string;
+  claimedSlot?: boolean;
+}) {
+  const liveId = String(opts.liveId || "").trim();
+  const userId = String(opts.userId || "").trim();
+
+  console.log("KRISTO_LIVE_BRIDGE_CREATE_FROM_SLOT_START", {
+    liveId,
+    slotId: String(opts.slotId || ""),
+    slot: Number(opts.slot || 0) || null,
+    userId,
+    claimedSlot: opts.claimedSlot === true,
+  });
+
+  try {
+    let res: any;
+    if (opts.claimedSlot && liveId) {
+      res = await persistClaimToLiveRequest({
+        liveId,
+        slotId: String(opts.slotId || ""),
+        slot: opts.slot,
+        userId,
+        name: opts.name,
+        avatar: opts.avatar,
+        headers: opts.headers,
+      });
+    } else if (liveId) {
+      res = await apiPatch(
+        "/api/church/live",
+        {
+          action: "presence",
+          liveId,
+          viewerCount: 1,
+          role: String(opts.role || "viewer"),
+        },
+        { headers: opts.headers as any }
+      );
+    }
+
+    console.log("KRISTO_LIVE_BRIDGE_CREATE_FROM_SLOT_RESULT", {
+      liveId,
+      slotId: String(opts.slotId || ""),
+      userId,
+      ok: res?.ok !== false,
+      bridgeIsLive: res?.live?.isLive === true,
+      requestKeys: res?.live?.requests ? Object.keys(res.live.requests) : [],
+    });
+
+    return res;
+  } catch (error) {
+    console.log("KRISTO_LIVE_BRIDGE_CREATE_FROM_SLOT_RESULT", {
+      liveId,
+      slotId: String(opts.slotId || ""),
+      userId,
+      ok: false,
+      error: String((error as any)?.message || error),
+    });
+    throw error;
+  }
+}
+
 export async function persistClaimToLiveRequest(opts: {
   liveId: string;
   slotId: string;

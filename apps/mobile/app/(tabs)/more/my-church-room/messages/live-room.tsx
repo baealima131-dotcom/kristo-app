@@ -38,6 +38,7 @@ import { feedList, feedRemoveWhere, feedScheduleSlotsForLive, getRingClaimHints,
 import { onClaimUpdated } from "@/src/lib/kristoProfileEvents";
 import {
   getLiveJoinBridge,
+  ensureLiveBridgeFromActiveScheduleSlot,
   publishLiveEnded,
   publishLiveJoin,
   publishLivePolicy,
@@ -50,6 +51,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { apiGet, apiPatch, apiPost, getApiBase } from "@/src/lib/kristoApi";
 import {
+  extractLightLivePayload,
   fetchLightLiveState,
   messagesListSignature,
   paginateMessages,
@@ -5377,6 +5379,20 @@ export default function LiveRoomScreen() {
         patch,
         previousLive: backendChurchLive,
         churchId: String(session?.churchId || ""),
+        scheduleLiveActive: routeSlotsStillLive || !!currentMainStageSlot,
+        scheduleExplicitlyEnded: backendScheduleExplicitlyEnded,
+      });
+
+      console.log("KRISTO_CHURCH_LIVE_STATE_RESULT", {
+        screen: "LiveRoom",
+        source,
+        routeFailed: patch.routeFailed === true,
+        noBridgeSession: patch.noBridgeSession === true,
+        preserved: resolved.preserved,
+        shouldUpdate: resolved.shouldUpdate,
+        updateSource: resolved.source,
+        hasNextLive: Boolean(resolved.nextLive?.isLive),
+        scheduleLiveActive: routeSlotsStillLive || !!currentMainStageSlot,
       });
 
       if (resolved.shouldUpdate) {
@@ -5419,8 +5435,113 @@ export default function LiveRoomScreen() {
 
       if (patch.viewerPresence) setLiveViewerPresence(patch.viewerPresence);
     },
-    [liveBridgeId, router, backendChurchLive, session?.churchId]
+    [liveBridgeId, router, backendChurchLive, session?.churchId, routeSlotsStillLive, currentMainStageSlot, backendScheduleExplicitlyEnded]
   );
+
+  const bridgeCreateInflightRef = useRef(false);
+
+  useEffect(() => {
+    if (isMediaInstantLive || !liveBridgeId || !currentUserId) return;
+    if (!routeSlotsStillLive && !myClaimedStageSlot && !currentMainStageSlot) return;
+    if (bridgeCreateInflightRef.current) return;
+
+    let cancelled = false;
+    bridgeCreateInflightRef.current = true;
+
+    void (async () => {
+      try {
+        const patch = await fetchLightLiveStateWithPerf(
+          liveApiHeaders as any,
+          "LiveRoomBridgeEnsure",
+          liveBridgeId,
+          "bridge-ensure"
+        );
+        if (cancelled) return;
+        if (patch.isLive === true || patch.removedFromLive || patch.explicitlyEnded) {
+          applyBackendLivePatch(patch, "bridge-ensure-prefetch");
+          return;
+        }
+        if (!patch.noBridgeSession && !patch.routeFailed) return;
+
+        const stageSlot = myClaimedStageSlot || currentMainStageSlot;
+        const routeSlot =
+          stageSlot ||
+          initialRouteScheduleSlots.find((slot: any) => {
+            const startMs = Number(slot?.startMs || 0);
+            const endMs = Number(slot?.endMs || 0);
+            return startMs > 0 && endMs > startMs && liveNowMs >= startMs && liveNowMs <= endMs;
+          }) ||
+          null;
+        const slotNum = Math.max(1, Number((routeSlot as any)?.slot || (routeSlot as any)?.slotNumber || 0));
+        const slotId = String((routeSlot as any)?.id || (routeSlot as any)?.slotId || "");
+        const claimedSlot = !!myClaimedStageSlot;
+        const name = String(
+          (routeSlot as any)?.claimedByName ||
+            (routeSlot as any)?.name ||
+            (session as any)?.displayName ||
+            (session as any)?.fullName ||
+            (session as any)?.name ||
+            "Member"
+        ).trim();
+        const avatar = String(
+          (routeSlot as any)?.claimedByAvatar ||
+            (routeSlot as any)?.avatar ||
+            liveProfileAvatarUri ||
+            (session as any)?.avatarUri ||
+            name.slice(0, 1).toUpperCase()
+        ).trim();
+
+        const res = await ensureLiveBridgeFromActiveScheduleSlot({
+          liveId: liveBridgeId,
+          slotId,
+          slot: slotNum,
+          userId: currentUserId,
+          name,
+          avatar,
+          headers: liveApiHeaders as Record<string, string>,
+          role: String((session as any)?.role || "Member"),
+          claimedSlot,
+        });
+
+        if (cancelled) return;
+
+        if (res?.live) {
+          applyBackendLivePatch(
+            extractLightLivePayload({ ok: true, live: res.live }),
+            "bridge-create"
+          );
+          return;
+        }
+
+        const refetch = await fetchLightLiveStateWithPerf(
+          liveApiHeaders as any,
+          "LiveRoomBridgeEnsureRefetch",
+          liveBridgeId,
+          "bridge-ensure-refetch"
+        );
+        if (!cancelled) applyBackendLivePatch(refetch, "bridge-create-refetch");
+      } catch {
+        bridgeCreateInflightRef.current = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isMediaInstantLive,
+    liveBridgeId,
+    currentUserId,
+    routeSlotsStillLive,
+    myClaimedStageSlot,
+    currentMainStageSlot,
+    initialRouteScheduleSlots,
+    liveNowMs,
+    liveApiHeaders,
+    liveProfileAvatarUri,
+    session,
+    applyBackendLivePatch,
+  ]);
 
   useEffect(() => {
     if (!liveBridgeId || isMediaInstantLive) return;

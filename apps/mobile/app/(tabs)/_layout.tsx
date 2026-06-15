@@ -646,6 +646,14 @@ export default function TabLayout() {
         return;
       }
 
+      const churchRing = recomputeScheduleRingsFromRows({
+        rows: backendFeedRowsRef.current,
+        viewerUserId: String(session.userId || ""),
+        viewerChurchId: String(session.churchId || ""),
+        source: `${source}-live-resolve`,
+        backendFeedLoaded: true,
+      }).church;
+
       const headers = getKristoHeaders({
         userId: session.userId,
         role: (session.role || "Member") as any,
@@ -658,6 +666,7 @@ export default function TabLayout() {
           patch,
           previousLive: backendChurchLiveRef.current,
           churchId: String(session.churchId || ""),
+          scheduleLiveActive: churchRing?.isLiveNow === true,
         });
 
         console.log("KRISTO_CHURCH_LIVE_STATE_RESULT", {
