@@ -1,5 +1,108 @@
 import { endLiveBridgeForStaleScheduleFeedId } from "@/src/lib/staleBackendZeroSlotGuard";
 
+type LiveKitHostLockListener = () => void;
+
+function liveKitHostLockListeners(): Set<LiveKitHostLockListener> {
+  const g = pinStore();
+  if (!(g.__KRISTO_LIVEKIT_HOST_LOCK_LISTENERS__ instanceof Set)) {
+    g.__KRISTO_LIVEKIT_HOST_LOCK_LISTENERS__ = new Set<LiveKitHostLockListener>();
+  }
+  return g.__KRISTO_LIVEKIT_HOST_LOCK_LISTENERS__ as Set<LiveKitHostLockListener>;
+}
+
+export function subscribeLiveKitHostLock(listener: LiveKitHostLockListener) {
+  const listeners = liveKitHostLockListeners();
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function notifyLiveKitHostLock(reason?: string) {
+  const snapshot = readLiveKitHostLockSnapshot();
+  console.log("KRISTO_LIVEKIT_HOST_LOCK_NOTIFY", {
+    reason: reason || "unknown",
+    snapshot,
+  });
+  for (const listener of liveKitHostLockListeners()) {
+    try {
+      listener();
+    } catch {}
+  }
+}
+
+export function readLiveKitHostLockSnapshot() {
+  const pin = readLiveKitPublisherStagePin();
+  const sticky = pinStore().__KRISTO_LIVEKIT_STAGE_MOUNT_STICKY__;
+  const beforeToken = readLiveKitPublisherHostBeforeTokenPin();
+  return JSON.stringify({
+    pinLiveBridgeId: pin?.liveBridgeId || "",
+    pinAt: pin?.pinnedAt || 0,
+    tokenReady: pin?.tokenReady === true,
+    stickyRoom: sticky?.roomName || "",
+    stickyAt: sticky?.pinnedAt || 0,
+    stickyTokenReady: sticky?.tokenReady === true,
+    beforeTokenLiveBridgeId: beforeToken?.liveBridgeId || "",
+    beforeTokenAt: beforeToken?.pinnedAt || 0,
+  });
+}
+
+export type LiveKitPublisherHostBeforeTokenPin = {
+  liveBridgeId: string;
+  stableIdentity?: string;
+  pinnedAt: number;
+  source?: string;
+};
+
+export function pinLiveKitPublisherHostBeforeToken(
+  liveBridgeId: string,
+  source?: string,
+  opts?: { stableIdentity?: string }
+) {
+  const id = String(liveBridgeId || "").trim();
+  if (!id) return;
+
+  const prev = readLiveKitPublisherHostBeforeTokenPin();
+  if (prev?.liveBridgeId === id) return;
+
+  pinStore().__KRISTO_LIVEKIT_HOST_PINNED_BEFORE_TOKEN__ = {
+    liveBridgeId: id,
+    stableIdentity: opts?.stableIdentity,
+    pinnedAt: Date.now(),
+    source: source || "unknown",
+  } satisfies LiveKitPublisherHostBeforeTokenPin;
+
+  console.log("KRISTO_LIVEKIT_HOST_PINNED_BEFORE_TOKEN", {
+    liveBridgeId: id,
+    stableIdentity: opts?.stableIdentity || "",
+    source: source || "unknown",
+  });
+  notifyLiveKitHostLock(source || "host-pinned-before-token");
+}
+
+export function readLiveKitPublisherHostBeforeTokenPin(): LiveKitPublisherHostBeforeTokenPin | null {
+  const pin = pinStore().__KRISTO_LIVEKIT_HOST_PINNED_BEFORE_TOKEN__;
+  if (!pin || typeof pin !== "object") return null;
+  return pin as LiveKitPublisherHostBeforeTokenPin;
+}
+
+export function isLiveKitPublisherHostPinnedBeforeToken(liveBridgeId: string): boolean {
+  const id = String(liveBridgeId || "").trim();
+  if (!id) return false;
+  return readLiveKitPublisherHostBeforeTokenPin()?.liveBridgeId === id;
+}
+
+export function clearLiveKitPublisherHostBeforeToken(reason?: string) {
+  const pin = readLiveKitPublisherHostBeforeTokenPin();
+  if (pin) {
+    console.log("KRISTO_LIVEKIT_HOST_BEFORE_TOKEN_UNPINNED", {
+      reason: reason || "unknown",
+      liveBridgeId: pin.liveBridgeId,
+    });
+  }
+  delete pinStore().__KRISTO_LIVEKIT_HOST_PINNED_BEFORE_TOKEN__;
+}
+
 export type LiveRoomSessionPin = {
   liveBridgeId: string;
   userId: string;
@@ -69,9 +172,25 @@ export function markLiveRoomLiveKitConnected(liveBridgeId: string) {
     userId: pin?.liveBridgeId === id ? pin.userId : undefined,
     routeSlotCount: pin?.liveBridgeId === id ? pin.routeSlotCount : undefined,
     liveKitConnected: true,
-    liveKitConnecting: true,
+    liveKitConnecting: false,
     source: "livekit-connected",
   });
+}
+
+export function isLiveRoomLiveKitConnecting(liveBridgeId?: string): boolean {
+  const pin = readLiveRoomSessionPin();
+  if (!pin?.liveKitConnecting) return false;
+  const id = String(liveBridgeId || "").trim();
+  if (id && String(pin.liveBridgeId || "") !== id) return false;
+  return true;
+}
+
+export function isLiveRoomLiveKitSessionActive(liveBridgeId?: string): boolean {
+  const pin = readLiveRoomSessionPin();
+  if (!pin) return false;
+  const id = String(liveBridgeId || "").trim();
+  if (id && String(pin.liveBridgeId || "") !== id) return false;
+  return pin.liveKitConnecting === true || pin.liveKitConnected === true;
 }
 
 export function readLiveRoomSessionPin(): LiveRoomSessionPin | null {
@@ -171,22 +290,292 @@ export function tryEndLiveBridgeForSchedule(feedId: string, reason: string): boo
 
 export type LiveKitPublisherStagePin = {
   liveBridgeId: string;
+  lockKey?: string;
+  stableIdentity?: string;
   pinnedAt: number;
+  tokenReady?: boolean;
   source?: string;
 };
 
-export function pinLiveKitPublisherStage(liveBridgeId: string, source?: string) {
+export type LiveKitStageLockEntry = {
+  count: number;
+  tokenReady: boolean;
+  sticky: boolean;
+  primaryInstanceId: string;
+};
+
+export function buildLiveKitStageLockKey(roomName: string, stableIdentity: string) {
+  return `${String(roomName || "").trim()}|${String(stableIdentity || "").trim()}`;
+}
+
+function liveKitStageLocksMap(): Map<string, LiveKitStageLockEntry> {
+  const g = pinStore();
+  if (!(g.__KRISTO_LIVEKIT_STAGE_LOCKS__ instanceof Map)) {
+    const prev = g.__KRISTO_LIVEKIT_STAGE_LOCKS__;
+    const next = new Map<string, LiveKitStageLockEntry>();
+    if (prev instanceof Set) {
+      for (const key of prev) {
+        next.set(String(key), {
+          count: 1,
+          tokenReady: false,
+          sticky: false,
+          primaryInstanceId: "legacy",
+        });
+      }
+    }
+    g.__KRISTO_LIVEKIT_STAGE_LOCKS__ = next;
+  }
+  return g.__KRISTO_LIVEKIT_STAGE_LOCKS__ as Map<string, LiveKitStageLockEntry>;
+}
+
+export function readLiveKitStageLockEntry(lockKey: string): LiveKitStageLockEntry | null {
+  const key = String(lockKey || "").trim();
+  if (!key) return null;
+  return liveKitStageLocksMap().get(key) || null;
+}
+
+export function logLiveKitStageMountAllowedTransition(input: {
+  prev: boolean;
+  next: boolean;
+  source: string;
+  lockKey?: string;
+  roomName?: string;
+  stableIdentity?: string;
+  detail?: Record<string, unknown>;
+}) {
+  if (input.prev === input.next) return;
+  console.log("KRISTO_LIVEKIT_STAGE_MOUNT_ALLOWED_TRANSITION", {
+    prev: input.prev,
+    next: input.next,
+    source: input.source,
+    lockKey: input.lockKey || "",
+    roomName: input.roomName || "",
+    stableIdentity: input.stableIdentity || "",
+    publisherStagePin: readLiveKitPublisherStagePin(),
+    lockEntry: input.lockKey ? readLiveKitStageLockEntry(input.lockKey) : null,
+    ...(input.detail || {}),
+  });
+}
+
+export function logShouldMountLiveKitPublisherStageTransition(input: {
+  prev: boolean;
+  next: boolean;
+  source: string;
+  detail?: Record<string, unknown>;
+}) {
+  if (input.prev === input.next) return;
+  console.log("KRISTO_SHOULD_MOUNT_LIVEKIT_PUBLISHER_STAGE_TRANSITION", {
+    prev: input.prev,
+    next: input.next,
+    source: input.source,
+    publisherStagePin: readLiveKitPublisherStagePin(),
+    ...(input.detail || {}),
+  });
+}
+
+export function acquireLiveKitStageLock(input: {
+  lockKey: string;
+  instanceId: string;
+  roomName?: string;
+  stableIdentity?: string;
+}): { allowed: boolean; reason: string; isPrimary: boolean } {
+  const lockKey = String(input.lockKey || "").trim();
+  const instanceId = String(input.instanceId || "").trim();
+  if (!lockKey) {
+    return { allowed: false, reason: "empty-lock-key", isPrimary: false };
+  }
+
+  const locks = liveKitStageLocksMap();
+  const sticky = isLiveKitStageMountSticky(input.roomName || "", input.stableIdentity || "");
+  const existing = locks.get(lockKey);
+
+  if (!existing) {
+    locks.set(lockKey, {
+      count: 1,
+      tokenReady: sticky,
+      sticky,
+      primaryInstanceId: instanceId,
+    });
+    return { allowed: true, reason: "lock-acquired-first", isPrimary: true };
+  }
+
+  if (sticky || existing.sticky || existing.tokenReady) {
+    existing.sticky = existing.sticky || sticky;
+    existing.tokenReady = existing.tokenReady || sticky;
+
+    const primaryVacant =
+      !existing.primaryInstanceId ||
+      existing.primaryInstanceId === instanceId;
+
+    if (primaryVacant) {
+      existing.count = Math.max(1, existing.count);
+      existing.primaryInstanceId = instanceId;
+      return {
+        allowed: true,
+        reason: sticky ? "sticky-primary-reclaim" : "token-ready-primary-reclaim",
+        isPrimary: true,
+      };
+    }
+
+    if (existing.primaryInstanceId === instanceId) {
+      existing.count += 1;
+      return { allowed: true, reason: "sticky-primary-refcount", isPrimary: true };
+    }
+
+    return { allowed: false, reason: "duplicate-blocked-sticky-primary-active", isPrimary: false };
+  }
+
+  if (existing.primaryInstanceId !== instanceId) {
+    return { allowed: false, reason: "duplicate-blocked", isPrimary: false };
+  }
+
+  existing.count += 1;
+  return { allowed: true, reason: "lock-refcount-inc", isPrimary: true };
+}
+
+export function releaseLiveKitStageLock(input: {
+  lockKey: string;
+  instanceId: string;
+  reason?: string;
+}): void {
+  const lockKey = String(input.lockKey || "").trim();
+  const instanceId = String(input.instanceId || "").trim();
+  if (!lockKey) return;
+
+  const locks = liveKitStageLocksMap();
+  const existing = locks.get(lockKey);
+  if (!existing) return;
+
+  if (existing.sticky || existing.tokenReady) {
+    if (existing.primaryInstanceId === instanceId) {
+      existing.primaryInstanceId = "";
+    }
+    existing.count = Math.max(0, existing.count - 1);
+    if (existing.count <= 0) {
+      existing.count = 0;
+    }
+    console.log("KRISTO_LIVEKIT_STAGE_LOCK_RETAINED", {
+      lockKey,
+      reason: input.reason || "sticky-or-token-ready",
+      count: existing.count,
+      tokenReady: existing.tokenReady,
+      sticky: existing.sticky,
+      primaryInstanceId: existing.primaryInstanceId || null,
+    });
+    return;
+  }
+
+  existing.count = Math.max(0, existing.count - 1);
+  if (existing.count <= 0) {
+    locks.delete(lockKey);
+    console.log("KRISTO_LIVEKIT_STAGE_LOCK_RELEASED", {
+      lockKey,
+      reason: input.reason || "refcount-zero",
+    });
+  }
+}
+
+export function markLiveKitStageLockTokenReady(lockKey: string) {
+  const key = String(lockKey || "").trim();
+  if (!key) return;
+  const locks = liveKitStageLocksMap();
+  const existing = locks.get(key);
+  if (existing) {
+    existing.tokenReady = true;
+    existing.sticky = true;
+  } else {
+    locks.set(key, {
+      count: 1,
+      tokenReady: true,
+      sticky: true,
+      primaryInstanceId: "token-ready",
+    });
+  }
+}
+
+export function pinLiveKitPublisherStage(
+  liveBridgeId: string,
+  source?: string,
+  opts?: { lockKey?: string; stableIdentity?: string }
+) {
   const id = String(liveBridgeId || "").trim();
   if (!id) return;
+  const lockKey = String(opts?.lockKey || buildLiveKitStageLockKey(id, opts?.stableIdentity || "")).trim();
+  if (lockKey.includes("|")) {
+    markLiveKitStageLockTokenReady(lockKey);
+  }
   pinStore().__KRISTO_LIVEKIT_PUBLISHER_STAGE_PIN__ = {
     liveBridgeId: id,
+    lockKey: lockKey || undefined,
+    stableIdentity: opts?.stableIdentity,
     pinnedAt: Date.now(),
+    tokenReady: true,
     source: source || "unknown",
   } satisfies LiveKitPublisherStagePin;
+  pinLiveKitStageMountSticky(id, opts?.stableIdentity || "", source || "publisher-stage-pin", lockKey);
+  notifyLiveKitHostLock(source || "publisher-stage-pin");
   console.log("KRISTO_LIVEKIT_PUBLISHER_STAGE_PINNED", {
     liveBridgeId: id,
+    lockKey,
     source: source || "unknown",
   });
+}
+
+export function pinLiveKitStageMountSticky(
+  roomName: string,
+  stableIdentity: string,
+  source?: string,
+  lockKey?: string
+) {
+  const room = String(roomName || "").trim();
+  const identity = String(stableIdentity || "").trim();
+  const key = String(lockKey || buildLiveKitStageLockKey(room, identity)).trim();
+  if (!room || !key) return;
+
+  markLiveKitStageLockTokenReady(key);
+  pinStore().__KRISTO_LIVEKIT_STAGE_MOUNT_STICKY__ = {
+    roomName: room,
+    stableIdentity: identity,
+    lockKey: key,
+    pinnedAt: Date.now(),
+    tokenReady: true,
+    source: source || "unknown",
+  };
+  console.log("KRISTO_LIVEKIT_STAGE_MOUNT_STICKY", {
+    roomName: room,
+    stableIdentity: identity,
+    lockKey: key,
+    source: source || "unknown",
+  });
+  notifyLiveKitHostLock(source || "stage-mount-sticky");
+}
+
+export function isLiveKitStageMountSticky(roomName: string, stableIdentity?: string): boolean {
+  const sticky = pinStore().__KRISTO_LIVEKIT_STAGE_MOUNT_STICKY__;
+  if (!sticky || typeof sticky !== "object") return false;
+  const room = String(roomName || "").trim();
+  if (!room) return false;
+  if (String(sticky.roomName || "") !== room) return false;
+  if (stableIdentity && String(sticky.stableIdentity || "") !== String(stableIdentity || "")) {
+    return false;
+  }
+  return sticky.tokenReady === true;
+}
+
+export function clearLiveKitStageMountSticky(reason?: string) {
+  const sticky = pinStore().__KRISTO_LIVEKIT_STAGE_MOUNT_STICKY__;
+  if (sticky) {
+    console.log("KRISTO_LIVEKIT_STAGE_MOUNT_UNSTICKY", {
+      reason: reason || "unknown",
+      lockKey: sticky.lockKey || "",
+      roomName: sticky.roomName || "",
+    });
+  }
+  delete pinStore().__KRISTO_LIVEKIT_STAGE_MOUNT_STICKY__;
+  if (sticky?.lockKey) {
+    const locks = liveKitStageLocksMap();
+    locks.delete(String(sticky.lockKey));
+  }
 }
 
 export function readLiveKitPublisherStagePin(): LiveKitPublisherStagePin | null {
@@ -210,6 +599,8 @@ export function clearLiveKitPublisherStagePin(reason?: string) {
     });
   }
   delete pinStore().__KRISTO_LIVEKIT_PUBLISHER_STAGE_PIN__;
+  clearLiveKitStageMountSticky(reason || "publisher-stage-unpin");
+  clearLiveKitPublisherHostBeforeToken(reason || "publisher-stage-unpin");
 }
 
 export function logLiveRoomGuardRedirect(input: {

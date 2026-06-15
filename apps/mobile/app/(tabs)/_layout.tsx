@@ -38,6 +38,10 @@ import {
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
 import { pauseHomeFeedBackgroundWorkForLiveNavigation } from "@/src/lib/liveRoomStartup";
 import {
+  pinLiveKitPublisherHostBeforeToken,
+  pinLiveRoomSession,
+} from "@/src/lib/liveRoomSessionGuard";
+import {
   RING_RECOMPUTE_INTERVAL_MS,
   recomputeScheduleRingsFromRows,
   onLiveRingRefresh,
@@ -412,6 +416,22 @@ export default function TabLayout() {
 
     pauseHomeFeedBackgroundWorkForLiveNavigation("live-ring-profile-nav");
     (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = Date.now();
+
+    const liveBridgeId = String(navigateParams.liveId || navigateParams.feedId || "").trim();
+    const viewerUserId = String(session?.userId || "").trim();
+    if (liveBridgeId && viewerUserId) {
+      pinLiveRoomSession({
+        liveBridgeId,
+        userId: viewerUserId,
+        routeSlotCount: allSlots.length,
+        source: "live-ring-profile-nav",
+      });
+      if (claimedByMe && isLiveNow) {
+        pinLiveKitPublisherHostBeforeToken(liveBridgeId, "live-ring-profile-nav", {
+          stableIdentity: viewerUserId.replace(/[^a-zA-Z0-9_]/g, ""),
+        });
+      }
+    }
 
     router.replace({
       pathname: "/more/my-church-room/messages/live-room",

@@ -42,6 +42,13 @@ export function logLiveKitConnectResult(extra?: Record<string, unknown>) {
   console.log("KRISTO_LIVEKIT_CONNECT_RESULT", perfPayload(extra));
 }
 
+export function logLiveKitRoomEvent(
+  event: string,
+  extra?: Record<string, unknown>
+) {
+  console.log(`KRISTO_LIVEKIT_${event}`, perfPayload(extra));
+}
+
 export function logCameraTrackCreateStart(extra?: Record<string, unknown>) {
   console.log("KRISTO_CAMERA_TRACK_CREATE_START", perfPayload(extra));
 }

@@ -2,7 +2,7 @@ import type { Router } from "expo-router";
 import { feedList } from "@/src/lib/homeFeedStore";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
 import { markLiveEnterTap } from "@/src/lib/liveKitPerf";
-import { pinLiveRoomSession, clearStaleLiveEndedFlag } from "@/src/lib/liveRoomSessionGuard";
+import { pinLiveRoomSession, clearStaleLiveEndedFlag, pinLiveKitPublisherHostBeforeToken } from "@/src/lib/liveRoomSessionGuard";
 import { prefetchLiveKitToken } from "@/src/lib/liveKitTokenPrefetch";
 import {
   pauseHomeFeedBackgroundWorkForLiveNavigation,
@@ -202,6 +202,9 @@ export function enterLiveRoomFromScheduleCard(input: {
     routeParams.canPublishCamera === "1" ||
     routeParams.mediaSlotPublisher === "1";
   if (liveBridgeId && viewerUserId && wantsPublish) {
+    pinLiveKitPublisherHostBeforeToken(liveBridgeId, `enter-live-${input.source}`, {
+      stableIdentity: viewerUserId.replace(/[^a-zA-Z0-9_]/g, ""),
+    });
     const viewerChurchId = String(input.viewerChurchId || routeParams.churchId || "").trim();
     prefetchLiveKitToken({
       roomName: liveBridgeId,

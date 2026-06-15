@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Alert,
   Animated,
@@ -113,6 +113,7 @@ import {
   resumeHomeFeedAfterLiveExit,
 } from "@/src/lib/liveRoomStartup";
 import { fetchLiveKitToken } from "@/src/lib/liveKitTokenPrefetch";
+import { logLiveKitTokenClaims } from "@/src/lib/liveKitTokenDecode";
 import {
   logCameraPublishResult,
   logCameraPublishStart,
@@ -121,6 +122,9 @@ import {
   logLiveFirstFrameRendered,
   logLiveKitConnectResult,
   logLiveKitConnectStart,
+  logLiveKitRoomEvent,
+  msSinceLiveEnterTap,
+  msSinceLiveRoomMount,
 } from "@/src/lib/liveKitPerf";
 import {
   buildLiveKitRoomOptions,
@@ -129,17 +133,32 @@ import {
 import {
   clearLiveRoomSessionPin,
   clearLiveKitPublisherStagePin,
+  clearLiveKitStageMountSticky,
   clearStaleLiveEndedFlag,
+  acquireLiveKitStageLock,
+  buildLiveKitStageLockKey,
   isLiveKitPublisherStagePinned,
+  isLiveKitPublisherHostPinnedBeforeToken,
+  isLiveKitStageMountSticky,
+  logLiveKitStageMountAllowedTransition,
   logLiveRoomGuardRedirect,
   logLiveRoomNavAway,
   logLiveRoomShowEndedOverlay,
   logLiveRoomUnmountReason,
+  logShouldMountLiveKitPublisherStageTransition,
   markLiveRoomLiveKitConnected,
   markLiveRoomLiveKitConnecting,
+  isLiveRoomLiveKitConnecting,
+  isLiveRoomLiveKitSessionActive,
   pinLiveKitPublisherStage,
+  pinLiveKitPublisherHostBeforeToken,
+  pinLiveKitStageMountSticky,
   pinLiveRoomSession,
+  readLiveKitHostLockSnapshot,
+  readLiveKitStageLockEntry,
+  releaseLiveKitStageLock,
   shouldBlockLiveRoomAutoNavigation,
+  subscribeLiveKitHostLock,
   tryEndLiveBridgeForSchedule,
 } from "@/src/lib/liveRoomSessionGuard";
 import { markHomeFeedVideoNeedsRecovery } from "@/src/lib/homeFeedVideoController";
@@ -222,7 +241,7 @@ registerGlobals();
 (globalThis as any).__KRISTO_LIVE_ACTIVE__ = false;
 (globalThis as any).__KRISTO_DISABLE_LIVEKIT__ = false;
 (globalThis as any).__KRISTO_LIVEKIT_STAGE_LOCKS__ =
-  (globalThis as any).__KRISTO_LIVEKIT_STAGE_LOCKS__ || new Set();
+  (globalThis as any).__KRISTO_LIVEKIT_STAGE_LOCKS__ || new Map();
 
 (globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ =
   (globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ || new Set();
@@ -471,7 +490,19 @@ function clearKristoLiveKitGlobalsForSession(options?: {
   }
 
   const locks = g.__KRISTO_LIVEKIT_STAGE_LOCKS__;
-  if (locks instanceof Set) {
+  if (locks instanceof Map) {
+    for (const key of Array.from(locks.keys())) {
+      const keyText = String(key || "");
+      if (
+        options?.accountSwitch ||
+        unlockReentry ||
+        (userId && keyText.endsWith(`|${userId}`)) ||
+        (roomName && keyText.startsWith(`${roomName}|`))
+      ) {
+        locks.delete(key);
+      }
+    }
+  } else if (locks instanceof Set) {
     if (options?.accountSwitch || unlockReentry) {
       for (const key of Array.from(locks)) {
         const keyText = String(key || "");
@@ -610,23 +641,139 @@ type LiveSeatType =
   | "camera-mic"
   | "big-screen";
 
-function KristoLiveKitPerfConnected({ roomName }: { roomName: string }) {
+function KristoLiveKitConnectionLifecycle({
+  roomName,
+  expectedIdentity,
+}: {
+  roomName: string;
+  expectedIdentity?: string;
+}) {
   const room = useRoomContext();
   const connectStartedRef = useRef(false);
+  const connectedLoggedRef = useRef(false);
+  const lastStateRef = useRef("");
 
   useEffect(() => {
-    if (!room) return;
+    if (!room) {
+      console.log("KRISTO_LIVEKIT_ROOM_CONNECT_LIFECYCLE_NO_ROOM", {
+        roomName,
+        expectedIdentity: String(expectedIdentity || ""),
+      });
+      return;
+    }
 
     const bridgeId = String(roomName || (room as any)?.name || "").trim();
+    const roomState = () => String((room as any)?.state || (room as any)?.connectionState || "");
+    const tokenClaims = () =>
+      (globalThis as any).__KRISTO_LIVEKIT_ACTIVE_TOKEN_CLAIMS__ || null;
+    const identity = () => String((room as any)?.localParticipant?.identity || "");
+    const localSid = () => String((room as any)?.localParticipant?.sid || "");
 
-    const onConnected = () => {
-      logLivePerf("livekit_publisher_mount_end", { event: "connected" });
+    const logLocalParticipant = (source: string) => {
+      const claims = tokenClaims();
+      const localIdentity = identity();
+      console.log("KRISTO_LIVEKIT_LOCAL_PARTICIPANT", {
+        source,
+        roomName: bridgeId,
+        connectionState: roomState(),
+        localParticipantIdentity: localIdentity,
+        localParticipantSid: localSid(),
+        expectedIdentity: String(expectedIdentity || claims?.identity || ""),
+        tokenIdentity: String(claims?.identity || ""),
+        tokenRoom: String(claims?.room || ""),
+        identityEmptyBeforeJoin: !localIdentity,
+        identityMatchesToken:
+          !!localIdentity &&
+          !!claims?.identity &&
+          localIdentity === String(claims.identity),
+      });
+    };
+
+    const logConnectionStateChanged = (nextState: string, source: string) => {
+      if (lastStateRef.current === nextState) return;
+      lastStateRef.current = nextState;
+      logLocalParticipant(`connection-state-${source}`);
+      console.log("KRISTO_LIVEKIT_ROOM_EVENT_CONNECTION_STATE_CHANGED", {
+        roomName: bridgeId,
+        connectionState: nextState,
+        identity: identity(),
+        expectedIdentity: String(expectedIdentity || tokenClaims()?.identity || ""),
+        tokenIdentity: String(tokenClaims()?.identity || ""),
+        source,
+        msSinceEnterTap: msSinceLiveEnterTap(),
+        msSinceLiveRoomMount: msSinceLiveRoomMount(),
+      });
+    };
+
+    const emitConnectedOnce = (source: string) => {
+      if (connectedLoggedRef.current) return;
+      connectedLoggedRef.current = true;
+      logLivePerf("livekit_publisher_mount_end", { event: "connected", source });
       markLiveRoomLiveKitConnected(bridgeId);
+      console.log("KRISTO_LIVEKIT_ROOM_EVENT_CONNECTED", {
+        roomName: bridgeId,
+        connectionState: roomState(),
+        identity: identity(),
+        source,
+        msSinceEnterTap: msSinceLiveEnterTap(),
+        msSinceLiveRoomMount: msSinceLiveRoomMount(),
+      });
       logLiveKitConnectResult({
         ok: true,
         roomName: bridgeId,
-        identity: String((room as any)?.localParticipant?.identity || ""),
+        identity: identity(),
+        source,
       });
+    };
+
+    const onConnected = () => {
+      logConnectionStateChanged("connected", "RoomEvent.Connected");
+      emitConnectedOnce("RoomEvent.Connected");
+    };
+
+    const onDisconnected = (reason?: unknown) => {
+      logConnectionStateChanged("disconnected", "RoomEvent.Disconnected");
+      const reasonText = String(
+        (reason as any)?.reason ||
+          (reason as any)?.message ||
+          reason ||
+          ""
+      );
+      console.log("KRISTO_LIVEKIT_ROOM_EVENT_DISCONNECTED", {
+        roomName: bridgeId,
+        connectionState: roomState(),
+        identity: identity(),
+        expectedIdentity: String(expectedIdentity || tokenClaims()?.identity || ""),
+        reason: reasonText,
+        reasonName: String((reason as any)?.name || ""),
+        reasonCode: String((reason as any)?.code || ""),
+        msSinceEnterTap: msSinceLiveEnterTap(),
+        msSinceLiveRoomMount: msSinceLiveRoomMount(),
+      });
+      logLiveKitConnectResult({
+        ok: false,
+        roomName: bridgeId,
+        identity: identity() || String(expectedIdentity || ""),
+        reason: reasonText,
+        source: "RoomEvent.Disconnected",
+      });
+    };
+
+    const onReconnecting = () => {
+      logConnectionStateChanged("reconnecting", "RoomEvent.Reconnecting");
+    };
+
+    const onReconnected = () => {
+      logConnectionStateChanged("connected", "RoomEvent.Reconnected");
+      emitConnectedOnce("RoomEvent.Reconnected");
+    };
+
+    const onConnectionStateChanged = (state: unknown) => {
+      const nextState = String(state || roomState());
+      logConnectionStateChanged(nextState, "RoomEvent.ConnectionStateChanged");
+      if (nextState.toLowerCase() === "connected") {
+        emitConnectedOnce("RoomEvent.ConnectionStateChanged");
+      }
     };
 
     if (!connectStartedRef.current) {
@@ -634,19 +781,67 @@ function KristoLiveKitPerfConnected({ roomName }: { roomName: string }) {
       markLiveRoomLiveKitConnecting(bridgeId);
       logLiveKitConnectStart({
         roomName: bridgeId,
-        state: String((room as any)?.state || ""),
+        state: roomState(),
+      });
+      console.log("KRISTO_LIVEKIT_ROOM_CONNECT_LIFECYCLE_START", {
+        roomName: bridgeId,
+        initialState: roomState(),
+        identity: identity(),
       });
     }
 
-    if (String((room as any)?.state || "").toLowerCase() === "connected") {
-      onConnected();
+    logConnectionStateChanged(roomState(), "lifecycle-mount");
+    logLocalParticipant("lifecycle-mount");
+    console.log("KRISTO_LIVEKIT_ROOM_CONNECT_LIFECYCLE_MOUNT", {
+      roomName: bridgeId,
+      initialState: roomState(),
+      identity: identity(),
+      expectedIdentity: String(expectedIdentity || tokenClaims()?.identity || ""),
+      tokenIdentity: String(tokenClaims()?.identity || ""),
+      tokenRoom: String(tokenClaims()?.room || ""),
+    });
+
+    if (roomState().toLowerCase() === "connected") {
+      emitConnectedOnce("initial-state-connected");
     }
 
     room.on(RoomEvent.Connected, onConnected);
+    room.on(RoomEvent.Disconnected, onDisconnected);
+    room.on(RoomEvent.Reconnecting, onReconnecting);
+    room.on(RoomEvent.Reconnected, onReconnected);
+
+    const connectionStateChangedEvent =
+      (RoomEvent as any).ConnectionStateChanged || "connectionStateChanged";
+    room.on(connectionStateChangedEvent, onConnectionStateChanged);
+
+    const statePoll = setInterval(() => {
+      const state = roomState();
+      logConnectionStateChanged(state, "state-poll");
+      if (state.toLowerCase() === "connecting") {
+        logLocalParticipant("state-poll-connecting");
+      }
+      if (state.toLowerCase() === "connected") {
+        logLocalParticipant("state-poll-connected");
+        emitConnectedOnce("state-poll-connected");
+      }
+    }, 400);
+
     return () => {
+      clearInterval(statePoll);
+      console.log("KRISTO_LIVEKIT_ROOM_CONNECT_LIFECYCLE_UNMOUNT", {
+        roomName: bridgeId,
+        finalState: roomState(),
+        connectedLogged: connectedLoggedRef.current,
+        expectedIdentity: String(expectedIdentity || tokenClaims()?.identity || ""),
+        localParticipantIdentity: identity(),
+      });
       room.off(RoomEvent.Connected, onConnected);
+      room.off(RoomEvent.Disconnected, onDisconnected);
+      room.off(RoomEvent.Reconnecting, onReconnecting);
+      room.off(RoomEvent.Reconnected, onReconnected);
+      room.off(connectionStateChangedEvent, onConnectionStateChanged);
     };
-  }, [room, roomName]);
+  }, [room, roomName, expectedIdentity]);
 
   return null;
 }
@@ -682,10 +877,15 @@ function KristoLiveKitStage({
 }) {
 
   const [tokenState, setTokenState] = useState<{ url: string; token: string } | null>(null);
+  const tokenStateRef = useRef<{ url: string; token: string } | null>(null);
+  const tokenFetchInFlightRef = useRef(false);
+  const tokenReadyLatchRef = useRef(false);
+  const stableIdentityRef = useRef("");
 
-  
   const [livekitDisabled, setLivekitDisabled] = useState(false);
   const [stageMountAllowed, setStageMountAllowed] = useState(false);
+  const stageMountAllowedRef = useRef(false);
+  const stageInstanceIdRef = useRef(`stage-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const [liveKitRemountNonce, setLiveKitRemountNonce] = useState(0);
   const liveKitPerfMountLoggedRef = useRef(false);
 
@@ -722,7 +922,7 @@ const headersKey = JSON.stringify(headers || {});
 
   const stableConnectOptions = useMemo(() => ({
     autoSubscribe: true,
-    maxRetries: 0,
+    maxRetries: 2,
     websocketTimeout: 15000,
   }), []);
 
@@ -733,7 +933,29 @@ const headersKey = JSON.stringify(headers || {});
     (globalThis as any).__KRISTO_LIVEKIT_ERROR_LOCK__ = true;
 
     const message = String(e?.message || e || "");
-    console.log("KRISTO_LIVEKIT_ROOM_ERROR", { message });
+    const roomNameForLog = String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "");
+    console.log("KRISTO_LIVEKIT_ROOM_ERROR", {
+      message,
+      name: String(e?.name || ""),
+      code: String(e?.code || ""),
+      reason: String(e?.reason || ""),
+      roomName: roomNameForLog,
+      identity: stableIdentityRef.current,
+    });
+    logLiveKitRoomEvent("ROOM_ON_ERROR", {
+      message,
+      name: String(e?.name || ""),
+      code: String(e?.code || ""),
+      roomName: roomNameForLog,
+      identity: stableIdentityRef.current,
+    });
+    logLiveKitConnectResult({
+      ok: false,
+      roomName: roomNameForLog,
+      identity: stableIdentityRef.current,
+      message,
+      source: "LiveKitRoom.onError",
+    });
     if (
       message.includes("429") ||
       message.toLowerCase().includes("bad response") ||
@@ -746,6 +968,20 @@ const headersKey = JSON.stringify(headers || {});
       console.log("KRISTO_LIVEKIT_DISABLED_AFTER_FATAL_ERROR");
     }
   }, []);
+
+  const handleLiveKitRoomConnected = React.useCallback(() => {
+    logLiveKitRoomEvent("ROOM_ON_CONNECTED", {
+      roomName,
+      identity: stableIdentityRef.current,
+    });
+  }, [roomName]);
+
+  const handleLiveKitRoomDisconnected = React.useCallback(() => {
+    logLiveKitRoomEvent("ROOM_ON_DISCONNECTED", {
+      roomName,
+      identity: stableIdentityRef.current,
+    });
+  }, [roomName]);
 
   // CRITICAL:
   // LiveKit identity MUST stay stable for the lifetime of the room.
@@ -765,10 +1001,58 @@ const headersKey = JSON.stringify(headers || {});
     () => publishIdentity,
     [publishIdentity]
   );
+  stableIdentityRef.current = stableIdentity;
+
+  const setStageMountAllowedLogged = useCallback(
+    (next: boolean, source: string, detail?: Record<string, unknown>) => {
+      const prev = stageMountAllowedRef.current;
+      if (prev === next) return;
+      stageMountAllowedRef.current = next;
+      setStageMountAllowed(next);
+      logLiveKitStageMountAllowedTransition({
+        prev,
+        next,
+        source,
+        lockKey: buildLiveKitStageLockKey(roomName, stableIdentity),
+        roomName,
+        stableIdentity,
+        detail,
+      });
+    },
+    [roomName, stableIdentity]
+  );
+
+  const stageLockKey = buildLiveKitStageLockKey(roomName, stableIdentity);
+  const stageMountSticky = isLiveKitStageMountSticky(roomName, stableIdentity);
+  const hostPinnedBeforeToken = isLiveKitPublisherHostPinnedBeforeToken(roomName);
+  const effectiveStageMountAllowed = stageMountAllowed || stageMountSticky;
+  const effectiveStageMountAllowedRef = useRef(false);
+  effectiveStageMountAllowedRef.current = effectiveStageMountAllowed;
+
+  useLayoutEffect(() => {
+    if (!canPublish || !roomName) return;
+    pinLiveKitPublisherHostBeforeToken(roomName, "stage-mount-before-token", {
+      stableIdentity,
+    });
+  }, [canPublish, roomName, stableIdentity]);
 
   // Account switch / identity change: drop stale JWT and remount LiveKitRoom cleanly.
   useEffect(() => {
+    if (
+      isLiveKitStageMountSticky(roomName, stableIdentity) ||
+      isLiveKitPublisherStagePinned(roomName) ||
+      isLiveKitPublisherHostPinnedBeforeToken(roomName)
+    ) {
+      console.log("KRISTO_LIVEKIT_TOKEN_RESET_SKIPPED", {
+        roomName,
+        stableIdentity,
+        reason: "stage-mount-sticky-or-pinned",
+      });
+      return;
+    }
     setTokenState(null);
+    tokenStateRef.current = null;
+    tokenFetchInFlightRef.current = false;
     if (!(globalThis as any).__KRISTO_DISABLE_LIVEKIT__) {
       setLivekitDisabled(false);
     }
@@ -840,36 +1124,84 @@ const headersKey = JSON.stringify(headers || {});
 
 
   useEffect(() => {
-    const locks = (globalThis as any).__KRISTO_LIVEKIT_STAGE_LOCKS__ || new Set();
-    (globalThis as any).__KRISTO_LIVEKIT_STAGE_LOCKS__ = locks;
+    const instanceId = stageInstanceIdRef.current;
+    const acquired = acquireLiveKitStageLock({
+      lockKey: stageLockKey,
+      instanceId,
+      roomName,
+      stableIdentity,
+    });
 
-    const lockKey = `${roomName}|${stableIdentity || publishIdentity || "viewer"}`;
-
-    if (locks.has(lockKey)) {
-      console.log("KRISTO_LIVEKIT_STAGE_DUPLICATE_BLOCKED", { lockKey });
-      setStageMountAllowed(false);
-      return;
+    if (acquired.allowed) {
+      setStageMountAllowedLogged(true, acquired.reason, {
+        instanceId,
+        isPrimary: acquired.isPrimary,
+      });
+    } else {
+      console.log("KRISTO_LIVEKIT_STAGE_DUPLICATE_BLOCKED", {
+        lockKey: stageLockKey,
+        instanceId,
+        reason: acquired.reason,
+        sticky: stageMountSticky,
+      });
+      setStageMountAllowedLogged(false, acquired.reason, { instanceId });
     }
 
-    locks.add(lockKey);
-    setStageMountAllowed(true);
-
     return () => {
-      try { locks.delete(lockKey); } catch {}
+      const lockEntry = readLiveKitStageLockEntry(stageLockKey);
+      const stickyOrTokenReady =
+        lockEntry?.sticky === true || lockEntry?.tokenReady === true;
+      releaseLiveKitStageLock({
+        lockKey: stageLockKey,
+        instanceId,
+        reason: stickyOrTokenReady ? "sticky-stage-cleanup" : "stage-effect-cleanup",
+      });
     };
-  }, [roomName, stableIdentity, publishIdentity]);
+  }, [roomName, stableIdentity, stageLockKey, setStageMountAllowedLogged]);
+
+  useEffect(() => {
+    if (stageMountSticky && !stageMountAllowedRef.current) {
+      setStageMountAllowedLogged(true, "sticky-hydrate", {
+        instanceId: stageInstanceIdRef.current,
+      });
+    }
+  }, [stageMountSticky, setStageMountAllowedLogged]);
+
+  const stageUnmountLogRef = useRef({
+    roomName,
+    stableIdentity,
+    stageLockKey,
+    livekitDisabled,
+    instanceId: stageInstanceIdRef.current,
+  });
+  stageUnmountLogRef.current = {
+    roomName,
+    stableIdentity,
+    stageLockKey,
+    livekitDisabled,
+    instanceId: stageInstanceIdRef.current,
+  };
 
   useEffect(() => {
     return () => {
+      const snap = stageUnmountLogRef.current;
+      const lockEntry = readLiveKitStageLockEntry(snap.stageLockKey);
       console.log("KRISTO_LIVEKIT_STAGE_UNMOUNT", {
-        roomName,
-        identity: stableIdentity,
-        hadToken: !!tokenState?.token,
-        stageMountAllowed,
-        livekitDisabled,
+        roomName: snap.roomName,
+        identity: snap.stableIdentity,
+        lockKey: snap.stageLockKey,
+        hadToken: !!tokenStateRef.current?.token,
+        stageMountAllowed: stageMountAllowedRef.current,
+        effectiveStageMountAllowed:
+          stageMountAllowedRef.current || lockEntry?.sticky === true,
+        stageMountSticky: lockEntry?.sticky === true,
+        livekitDisabled: snap.livekitDisabled,
+        instanceId: snap.instanceId,
+        parentDropReason: (globalThis as any).__KRISTO_LIVEKIT_STAGE_DROP_REASON__ || null,
+        lockEntry,
       });
     };
-  }, [roomName, stableIdentity, tokenState?.token, stageMountAllowed, livekitDisabled]);
+  }, []);
 
   useEffect(() => {
     (globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ =
@@ -888,9 +1220,32 @@ const headersKey = JSON.stringify(headers || {});
     });
 
     async function loadToken() {
+      if (tokenStateRef.current?.token || tokenFetchInFlightRef.current) {
+        return;
+      }
+
+      if (
+        !stageMountAllowedRef.current &&
+        !effectiveStageMountAllowedRef.current &&
+        !isLiveKitStageMountSticky(roomName, stableIdentity) &&
+        !isLiveKitPublisherStagePinned(roomName) &&
+        !isLiveKitPublisherHostPinnedBeforeToken(roomName)
+      ) {
+        console.log("KRISTO_LIVEKIT_TOKEN_FETCH_SKIP", {
+          roomName,
+          stableIdentity,
+          lockKey: stageLockKey,
+          reason: "stage-not-primary",
+          instanceId: stageInstanceIdRef.current,
+        });
+        return;
+      }
+
       // Token publish grant is session-stable (x-kristo-live-may-publish header); runtime mic/camera must not refetch.
       const wantsPublish =
         String(stableHeaders?.["x-kristo-live-may-publish"] || "") === "1";
+
+      tokenFetchInFlightRef.current = true;
 
       logLivePerf("livekit_token_fetch_start", { roomName, identity: stableIdentity, wantsPublish });
 
@@ -957,8 +1312,32 @@ const headersKey = JSON.stringify(headers || {});
         if (tokenResult?.url && tokenResult?.token) {
           const nextUrl = String(tokenResult.url);
           const nextToken = String(tokenResult.token);
+          const tokenClaims = logLiveKitTokenClaims(nextToken, {
+            roomName,
+            stableIdentity,
+            wantsPublish,
+          });
+          (globalThis as any).__KRISTO_LIVEKIT_ACTIVE_TOKEN_CLAIMS__ = tokenClaims;
+          (globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ = roomName;
+          tokenStateRef.current = { url: nextUrl, token: nextToken };
+          tokenReadyLatchRef.current = true;
           markLiveRoomLiveKitConnecting(roomName);
-          pinLiveKitPublisherStage(roomName, "livekit-token-ready");
+          pinLiveKitPublisherStage(roomName, "livekit-token-ready", {
+            lockKey: stageLockKey,
+            stableIdentity,
+          });
+          pinLiveKitStageMountSticky(roomName, stableIdentity, "livekit-token-ready", stageLockKey);
+          setStageMountAllowedLogged(true, "token-ready-sticky", {
+            instanceId: stageInstanceIdRef.current,
+          });
+          console.log("KRISTO_LIVEKIT_TOKEN_READY_HOST_STILL_MOUNTED", {
+            roomName,
+            stableIdentity,
+            hostPinnedBeforeToken: isLiveKitPublisherHostPinnedBeforeToken(roomName),
+            stageMountAllowed: stageMountAllowedRef.current,
+            effectiveStageMountAllowed:
+              stageMountAllowedRef.current || isLiveKitStageMountSticky(roomName, stableIdentity),
+          });
           logLivePerf("livekit_token_fetch_end", {
             roomName,
             identity: stableIdentity,
@@ -990,12 +1369,15 @@ const headersKey = JSON.stringify(headers || {});
           roomName,
           apiBase: getApiBase(),
         });
+      } finally {
+        tokenFetchInFlightRef.current = false;
       }
     }
 
     loadToken();
 
     return () => {
+      tokenFetchInFlightRef.current = false;
       (globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ =
         Math.max(0, Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) - 1);
       (globalThis as any).__KRISTO_LIVE_ACTIVE__ =
@@ -1009,7 +1391,14 @@ const headersKey = JSON.stringify(headers || {});
       } catch {}
       alive = false;
     };
-  }, [roomName, stableIdentity, headersKey]);
+  }, [roomName, stableIdentity, headersKey, canPublish]);
+
+  const liveKitCredentials =
+    tokenState?.url && tokenState?.token
+      ? tokenState
+      : tokenStateRef.current?.url && tokenStateRef.current?.token
+        ? tokenStateRef.current
+        : null;
 
   const isPublisherStage = canPublishMic || canPublishCamera;
   const activePublisherRoom = String((globalThis as any).__KRISTO_ACTIVE_PUBLISHER_ROOM__ || "");
@@ -1018,16 +1407,65 @@ const headersKey = JSON.stringify(headers || {});
     (globalThis as any).__KRISTO_ACTIVE_PUBLISHER_ROOM__ = roomName;
   }
 
+  const logStageEarlyReturn = (reason: string, extra?: Record<string, unknown>) => {
+    console.log("KRISTO_LIVEKIT_STAGE_EARLY_RETURN", {
+      reason,
+      roomName,
+      stableIdentity,
+      lockKey: stageLockKey,
+      hadToken: !!tokenState?.url && !!tokenState?.token,
+      stageMountAllowed: stageMountAllowedRef.current,
+      effectiveStageMountAllowed,
+      stageMountSticky,
+      isPublisherStage,
+      shouldSkipViewerMount,
+      livekitDisabled,
+      ...(extra || {}),
+    });
+  };
+
   if (shouldSkipViewerMount || (!isPublisherStage && activePublisherRoom === roomName)) {
+    logStageEarlyReturn("skip-viewer-or-active-publisher-room", {
+      shouldSkipViewerMount,
+      activePublisherRoom,
+    });
     return <>{fallback}</>;
   }
 
   const livekitCooldownUntil = Number((globalThis as any).__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ || 0);
   if (livekitDisabled || Date.now() < livekitCooldownUntil || (globalThis as any).__KRISTO_DISABLE_LIVEKIT__) {
+    logStageEarlyReturn("livekit-disabled-or-cooldown", {
+      livekitDisabled,
+      livekitCooldownUntil,
+    });
     return <>{fallback}</>;
   }
 
-  if (!tokenState?.url || !tokenState?.token) {
+  if (!liveKitCredentials?.url || !liveKitCredentials?.token) {
+    logStageEarlyReturn("awaiting-token");
+    if (isLiveKitPublisherHostPinnedBeforeToken(roomName)) {
+      console.log("KRISTO_LIVEKIT_TOKEN_AWAITING_STABLE_HOST", {
+        roomName,
+        stableIdentity,
+        lockKey: stageLockKey,
+        stageMountAllowed: stageMountAllowedRef.current,
+        effectiveStageMountAllowed,
+        hostPinnedBeforeToken: true,
+      });
+    }
+    return <>{fallback}</>;
+  }
+
+  const keepLiveKitRoomMountedWhileConnecting =
+    tokenReadyLatchRef.current ||
+    isLiveRoomLiveKitConnecting(roomName) ||
+    isLiveRoomLiveKitSessionActive(roomName) ||
+    stageMountSticky ||
+    isLiveKitPublisherStagePinned(roomName) ||
+    hostPinnedBeforeToken;
+
+  if (!effectiveStageMountAllowed && !keepLiveKitRoomMountedWhileConnecting) {
+    logStageEarlyReturn("stage-mount-not-allowed");
     return <>{fallback}</>;
   }
 
@@ -1040,17 +1478,35 @@ const headersKey = JSON.stringify(headers || {});
     stableIdentity,
   ].join("|");
 
-  if (!stageMountAllowed) {
-    return <>{fallback}</>;
-  }
+  const livekitRoomReactKey = isPublisherStage
+    ? livekitRoomKey
+    : `${livekitRoomKey}|r${liveKitRemountNonce}`;
+
+  console.log("KRISTO_LIVEKIT_ROOM_RENDER", {
+    roomName,
+    stableIdentity,
+    lockKey: stageLockKey,
+    livekitRoomKey,
+    livekitRoomReactKey,
+    remountNonce: liveKitRemountNonce,
+    serverUrlHost: String(liveKitCredentials.url || "").split("?")[0].slice(0, 80),
+    hasToken: !!liveKitCredentials.token,
+    stageMountAllowed: stageMountAllowedRef.current,
+    effectiveStageMountAllowed,
+    keepLiveKitRoomMountedWhileConnecting,
+    stageMountSticky,
+    liveKitConnecting: isLiveRoomLiveKitConnecting(roomName),
+  });
 
   return (
     <LiveKitRoom
-      key={`${livekitRoomKey}|r${liveKitRemountNonce}`}
-      serverUrl={tokenState.url}
-      token={tokenState.token}
+      key={livekitRoomReactKey}
+      serverUrl={liveKitCredentials.url}
+      token={liveKitCredentials.token}
       connect={true}
       onError={handleLiveKitError}
+      onConnected={handleLiveKitRoomConnected}
+      onDisconnected={handleLiveKitRoomDisconnected}
       // Keep audio enabled because this is the only path currently producing remote sound.
       // TODO: remove AudioContext error separately without disabling playback.
       audio={true}
@@ -1059,7 +1515,7 @@ const headersKey = JSON.stringify(headers || {});
       options={liveKitOptions as any}
     >
       <KristoLiveKitCleanupGuard />
-      <KristoLiveKitPerfConnected roomName={roomName} />
+      <KristoLiveKitConnectionLifecycle roomName={roomName} expectedIdentity={stableIdentity} />
       <KristoLiveKitNativeRemoteAudio />
       <KristoViewerJoinRetryWatch
         enabled={!canPublish}
@@ -2054,6 +2510,9 @@ export default function LiveRoomScreen() {
   const liveFastAuthInitialLoggedRef = useRef(false);
   const liveFastAuthResolutionLoggedRef = useRef(false);
   const liveRoomGuardStateRef = useRef<Record<string, unknown>>({});
+  const liveKitPublisherStageStickyRef = useRef(false);
+  const prevShouldMountLiveKitRef = useRef<boolean | null>(null);
+  const prevPublisherHostActiveRef = useRef(false);
 
   if (!liveRoomMountAtRef.current) {
     liveRoomMountAtRef.current = Date.now();
@@ -2119,6 +2578,7 @@ export default function LiveRoomScreen() {
     String((params as any)?.canPublishCamera || "") === "1" ||
     String((params as any)?.mediaSlotPublisher || "") === "1";
   const routeClaimedByUserIdEarly = String((params as any)?.claimedByUserId || "").trim();
+  const [liveKitHostLocked, setLiveKitHostLocked] = useState(() => routePublisherEligibleEarly);
   const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(() => {
     const uid = String(session?.userId || "").trim();
     if (
@@ -3771,6 +4231,34 @@ export default function LiveRoomScreen() {
     stablePublisherSlotRef.current || preferredStableSlot || 1
   );
 
+  const liveKitPublisherIdentity = useMemo(() => {
+    const uid = String(
+      (session as any)?.coreId ||
+        (session as any)?.kristoId ||
+        session?.userId ||
+        "slot"
+    ).trim();
+    const slotNum = Math.max(
+      1,
+      Number(
+        stablePublisherSlotNumber ||
+          routeCurrentSlotNumber ||
+          (params as any)?.claimedSlotNumber ||
+          (params as any)?.preferredSlotNumber ||
+          1
+      )
+    );
+    return `${uid.replace(/[^a-zA-Z0-9_]/g, "")}-slot-${slotNum}`;
+  }, [
+    session?.userId,
+    (session as any)?.coreId,
+    (session as any)?.kristoId,
+    stablePublisherSlotNumber,
+    routeCurrentSlotNumber,
+    (params as any)?.claimedSlotNumber,
+    (params as any)?.preferredSlotNumber,
+  ]);
+
   // V1: request approval removed. Requests never grant mic/camera.
   const approvedViewerStageSlot = null;
   const approvedViewerSlotNumber = 0;
@@ -4980,10 +5468,123 @@ export default function LiveRoomScreen() {
 
   const liveKitPublisherStagePinned = isLiveKitPublisherStagePinned(liveBridgeId);
 
+  const liveKitHostLockSnapshot = useSyncExternalStore(
+    subscribeLiveKitHostLock,
+    readLiveKitHostLockSnapshot,
+    readLiveKitHostLockSnapshot
+  );
+
   const shouldMountLiveKitPublisherStage =
     effectiveMountLiveKitPublisherStage ||
     routeActiveSlotSpeakerMount ||
     liveKitPublisherStagePinned;
+
+  useEffect(() => {
+    const next = shouldMountLiveKitPublisherStage;
+    const prev = prevShouldMountLiveKitRef.current;
+    if (prev !== null && prev !== next) {
+      logShouldMountLiveKitPublisherStageTransition({
+        prev,
+        next,
+        source: "live-room-authority-recompute",
+        detail: {
+          ...(liveRoomGuardStateRef.current || {}),
+          effectiveMountLiveKitPublisherStage,
+          routeActiveSlotSpeakerMount,
+          liveKitPublisherStagePinned,
+        },
+      });
+    }
+    prevShouldMountLiveKitRef.current = next;
+    if (next) {
+      liveKitPublisherStageStickyRef.current = true;
+    }
+  }, [
+    shouldMountLiveKitPublisherStage,
+    effectiveMountLiveKitPublisherStage,
+    routeActiveSlotSpeakerMount,
+    liveKitPublisherStagePinned,
+  ]);
+
+  const renderLiveKitPublisherStage =
+    shouldMountLiveKitPublisherStage || liveKitPublisherStageStickyRef.current;
+
+  const publisherHostPinnedBeforeToken = isLiveKitPublisherHostPinnedBeforeToken(liveBridgeId);
+
+  const publisherEligibleForHostPin =
+    canPublishLiveVideoNow ||
+    routeActiveSlotSpeakerMount ||
+    (!!rawRouteCanPublishCamera &&
+      !!currentUserId &&
+      (userOwnsCurrentActiveSlot || routeClaimedByUserIdEarly === currentUserId));
+
+  useLayoutEffect(() => {
+    if (!liveBridgeId || !publisherEligibleForHostPin) return;
+    pinLiveKitPublisherHostBeforeToken(liveBridgeId, "live-room-publisher-eligible", {
+      stableIdentity: liveKitPublisherIdentity,
+    });
+    setLiveKitHostLocked(true);
+    liveKitPublisherStageStickyRef.current = true;
+  }, [
+    liveBridgeId,
+    publisherEligibleForHostPin,
+    liveKitPublisherIdentity,
+    currentUserId,
+    userOwnsCurrentActiveSlot,
+    routeClaimedByUserIdEarly,
+    rawRouteCanPublishCamera,
+    canPublishLiveVideoNow,
+    routeActiveSlotSpeakerMount,
+  ]);
+
+  const publisherHostActive =
+    liveKitHostLocked ||
+    publisherHostPinnedBeforeToken ||
+    shouldMountLiveKitPublisherStage ||
+    isLiveKitPublisherStagePinned(liveBridgeId) ||
+    isLiveKitStageMountSticky(liveBridgeId, liveKitPublisherIdentity);
+
+  const keepPublisherLiveKitStage =
+    publisherHostActive ||
+    isLiveRoomLiveKitConnecting(liveBridgeId) ||
+    isLiveRoomLiveKitSessionActive(liveBridgeId);
+
+  useEffect(() => {
+    if (
+      isLiveKitPublisherStagePinned(liveBridgeId) ||
+      isLiveKitStageMountSticky(liveBridgeId, liveKitPublisherIdentity) ||
+      isLiveKitPublisherHostPinnedBeforeToken(liveBridgeId)
+    ) {
+      setLiveKitHostLocked(true);
+    }
+  }, [liveBridgeId, liveKitHostLockSnapshot, liveKitPublisherIdentity]);
+
+  useEffect(() => {
+    if (prevPublisherHostActiveRef.current && !publisherHostActive) {
+      const dropReason = {
+        at: Date.now(),
+        liveKitHostLockSnapshot,
+        liveKitHostLocked,
+        publisherHostPinnedBeforeToken,
+        shouldMountLiveKitPublisherStage,
+        renderLiveKitPublisherStage,
+        publisherHostActive,
+        guardState: liveRoomGuardStateRef.current,
+      };
+      (globalThis as any).__KRISTO_LIVEKIT_STAGE_DROP_REASON__ = dropReason;
+      console.log("KRISTO_LIVEKIT_HOST_DROPPED", dropReason);
+    }
+    prevPublisherHostActiveRef.current = publisherHostActive;
+  }, [
+    publisherHostActive,
+    liveKitHostLockSnapshot,
+    liveKitHostLocked,
+    publisherHostPinnedBeforeToken,
+    shouldMountLiveKitPublisherStage,
+    renderLiveKitPublisherStage,
+  ]);
+
+  const liveKitPublisherStageKey = `lk-publisher-host|${liveBridgeId}|${currentUserId || "anon"}`;
 
   const showLiveKitStageShell =
     isMediaInstantLive ||
@@ -4991,7 +5592,8 @@ export default function LiveRoomScreen() {
     routeSlotsStillLive ||
     routeScheduleSlots.length > 0 ||
     liveKitPublisherStagePinned ||
-    shouldMountLiveKitPublisherStage;
+    publisherHostActive ||
+    isLiveKitStageMountSticky(liveBridgeId, "");
 
   useEffect(() => {
     liveRoomGuardStateRef.current = {
@@ -5002,6 +5604,10 @@ export default function LiveRoomScreen() {
       canPublishClaimedMicNow,
       effectiveMountLiveKitPublisherStage,
       shouldMountLiveKitPublisherStage,
+      renderLiveKitPublisherStage,
+      publisherHostActive,
+      liveKitHostLocked,
+      liveKitHostLockSnapshot,
       routeActiveSlotSpeakerMount,
       liveKitPublisherStagePinned,
       rawRouteCanPublishCamera,
@@ -5020,6 +5626,7 @@ export default function LiveRoomScreen() {
     canPublishClaimedMicNow,
     effectiveMountLiveKitPublisherStage,
     shouldMountLiveKitPublisherStage,
+    renderLiveKitPublisherStage,
     routeActiveSlotSpeakerMount,
     liveKitPublisherStagePinned,
     rawRouteCanPublishCamera,
@@ -8176,6 +8783,9 @@ export default function LiveRoomScreen() {
 
     clearLiveRoomSessionPin("leave-live-room");
     clearLiveKitPublisherStagePin("leave-live-room");
+    liveKitPublisherStageStickyRef.current = false;
+    prevShouldMountLiveKitRef.current = null;
+    setLiveKitHostLocked(false);
 
     forceKristoLiveCleanup("leave-live-room", {
       userId,
@@ -8539,14 +9149,14 @@ return (
                 canPublishLiveVideoNow ||
                 canPublishClaimedMicNow ||
                 routeActiveSlotSpeakerMount ||
-                shouldMountLiveKitPublisherStage) &&
+                keepPublisherLiveKitStage) &&
               canShowCamera ? (
                 <>
                   <KristoLiveKitStage
-                    key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
+                    key={liveKitPublisherStageKey}
                     roomName={liveBridgeId}
                     headers={liveKitApiHeaders}
-                    canPublish={shouldMountLiveKitPublisherStage}
+                    canPublish={keepPublisherLiveKitStage}
                     canPublishMicOverride={liveKitMicOverrideReady}
                     canPublishCameraOverride={liveKitCameraOverrideReady}
                     renderLocalPreview={canPublishLiveVideoNow}
@@ -8698,35 +9308,21 @@ return (
             }}
           >
 {showLiveKitStageShell ? (
-              shouldMountLiveKitPublisherStage ? (
+              keepPublisherLiveKitStage ? (
                 <KristoLiveKitStage
-                  key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
+                  key={liveKitPublisherStageKey}
                   roomName={liveBridgeId}
                   headers={liveKitApiHeaders}
-                  canPublish={shouldMountLiveKitPublisherStage}
+                  canPublish={keepPublisherLiveKitStage}
                   canPublishMicOverride={liveKitMicOverrideReady}
                   canPublishCameraOverride={liveKitCameraOverrideReady}
                   renderLocalPreview={canPublishLiveVideoNow}
                   preferredIdentityPrefix={
                     isMediaInstantLive
                       ? ""
-                      : `slot:${Number((currentMainStageSlot as any)?.slot || currentSlotNumber || (params as any).preferredSlotNumber || 0)}`
+                      : `slot:${Number(stablePublisherSlotNumber || (params as any)?.preferredSlotNumber || 0)}`
                   }
-                  identity={
-                    mountLiveKitPublisherStage
-                      ? `${String(
-                          (session as any)?.coreId ||
-                          (session as any)?.kristoId ||
-                          session?.userId ||
-                          "slot"
-                        )}-slot-${Number(
-                          (params as any).claimedSlotNumber ||
-                          (params as any).preferredSlotNumber ||
-                          approvedViewerSlotNumber ||
-                          stablePublisherSlotNumber
-                        )}`
-                      : `${String(session?.userId || "viewer")}-viewer-${currentSlotNumber || "live"}`
-                  }
+                  identity={liveKitPublisherIdentity}
                   cameraFacing={cameraFacing}
                   micMuted={canPublishLiveVideoNow ? false : live.micMuted}
                   cameraPaused={cameraPaused}

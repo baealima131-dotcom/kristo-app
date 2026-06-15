@@ -1,4 +1,5 @@
 import { apiPost, getApiBase } from "@/src/lib/kristoApi";
+import { logLiveKitTokenClaims } from "@/src/lib/liveKitTokenDecode";
 import { logLiveKitTokenResult, logLiveKitTokenStart } from "@/src/lib/liveKitPerf";
 
 export type LiveKitTokenRequest = {
@@ -117,6 +118,12 @@ export async function fetchLiveKitToken(
       });
 
       if (!ok) return null;
+
+      logLiveKitTokenClaims(String(res.token), {
+        source: input.source || "fetch",
+        roomName,
+        requestIdentity: identity,
+      });
 
       const entry = {
         url: String(res.url),
