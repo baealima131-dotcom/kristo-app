@@ -1,7 +1,14 @@
 import type { Router } from "expo-router";
 import { feedList } from "@/src/lib/homeFeedStore";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
-import { pauseHomeFeedBackgroundWorkForLiveNavigation } from "@/src/lib/liveRoomStartup";
+import { markLiveEnterTap } from "@/src/lib/liveKitPerf";
+import { pinLiveRoomSession, clearStaleLiveEndedFlag } from "@/src/lib/liveRoomSessionGuard";
+import { prefetchLiveKitToken } from "@/src/lib/liveKitTokenPrefetch";
+import {
+  pauseHomeFeedBackgroundWorkForLiveNavigation,
+  prewarmLiveRoomMediaPermissions,
+} from "@/src/lib/liveRoomStartup";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   buildLeanLiveScheduleSlotsJson,
   resolveLiveRingCanonicalFeedId,
@@ -136,6 +143,16 @@ export function enterLiveRoomFromScheduleCard(input: {
     navigationMethod: input.navigationMethod || "push",
   });
 
+  markLiveEnterTap(input.source, {
+    viewerUserId,
+    feedId: String(item?.parentScheduleId || item?.sourceScheduleId || item?.id || ""),
+    claimedByMe,
+    isLiveNow,
+    routeSlotNumber,
+  });
+  prewarmLiveRoomMediaPermissions(input.source);
+  pauseHomeFeedBackgroundWorkForLiveNavigation(`enter-live-${input.source}`);
+
   const routeParams = buildScheduleLiveRoomRouteParams(item, {
     slot,
     allSlots,
@@ -168,7 +185,36 @@ export function enterLiveRoomFromScheduleCard(input: {
 
   (globalThis as any).__KRISTO_LIVE_ACTIVE__ = true;
   (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = Date.now();
-  pauseHomeFeedBackgroundWorkForLiveNavigation(`enter-live-${input.source}`);
+
+  const liveBridgeId = String(routeParams.liveId || routeParams.feedId || "").trim();
+  if (liveBridgeId) {
+    pinLiveRoomSession({
+      liveBridgeId,
+      userId: viewerUserId,
+      routeSlotCount: allSlots.length,
+      source: `enter-live-${input.source}`,
+    });
+    clearStaleLiveEndedFlag(liveBridgeId, "enter-live-nav");
+  }
+
+  const wantsPublish =
+    routeParams.canPublish === "1" ||
+    routeParams.canPublishCamera === "1" ||
+    routeParams.mediaSlotPublisher === "1";
+  if (liveBridgeId && viewerUserId && wantsPublish) {
+    const viewerChurchId = String(input.viewerChurchId || routeParams.churchId || "").trim();
+    prefetchLiveKitToken({
+      roomName: liveBridgeId,
+      identity: viewerUserId.replace(/[^a-zA-Z0-9_]/g, ""),
+      canPublish: true,
+      source: `enter-live-${input.source}`,
+      headers: getKristoHeaders({
+        userId: viewerUserId,
+        role: "Member",
+        churchId: viewerChurchId,
+      }) as Record<string, string>,
+    });
+  }
 
   if (input.navigationMethod === "replace") {
     input.router.replace({ pathname, params: routeParams } as any);

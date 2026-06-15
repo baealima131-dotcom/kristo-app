@@ -176,8 +176,8 @@ export function applyFastLiveStageAuthorityBoost(
   if (input.isMediaInstantLive || stage.canPublishLiveVideoNow) return stage;
 
   const subscriptionOk =
-    input.churchSubscriptionActive === true ||
-    (input.churchSubscriptionActive === null && input.routePublisherEligible);
+    input.churchSubscriptionActive !== false ||
+    input.routePublisherEligible;
 
   if (!subscriptionOk || !input.fastSlotWindowOpen || !input.fastSession.trustedOwnsActiveSlot) {
     return stage;
@@ -400,14 +400,18 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
     canPublishLiveVideoNow,
   };
 
-  if (input.churchSubscriptionActive !== true) {
+  // Church subscription gates Media Studio tools (pastor/host). Claimed schedule slot
+  // speakers may publish their slot without target-church media-tool entitlement.
+  if (input.churchSubscriptionActive === false) {
+    const claimedSlotMic = userHasClaimedScheduleSlot;
+    const claimedSlotCamera = userOwnsCurrentActiveSlot && activeSlotCameraWindowOpen;
     return {
       ...result,
       pastorPermanentMicNow: false,
       mediaHostPermanentMicNow: false,
-      canPublishClaimedMicNow: false,
-      canPublishClaimedCameraNow: false,
-      canPublishLiveVideoNow: false,
+      canPublishClaimedMicNow: claimedSlotMic,
+      canPublishClaimedCameraNow: claimedSlotCamera,
+      canPublishLiveVideoNow: input.isMediaInstantLive ? false : claimedSlotCamera,
     };
   }
 

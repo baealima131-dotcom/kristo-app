@@ -1,4 +1,5 @@
 import { InteractionManager } from "react-native";
+import { Camera } from "expo-camera";
 import { pauseHomeFeedPosterWorkForLiveNavigation } from "@/src/lib/homeFeedPosterPrewarm";
 
 export const LIVE_ROOM_DEFER_MS = 300;
@@ -18,6 +19,41 @@ export function pauseHomeFeedBackgroundWorkForLiveNavigation(reason = "live-ring
   (globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__ = true;
   pauseHomeFeedPosterWorkForLiveNavigation(reason);
   console.log("KRISTO_LIVE_BACKGROUND_WORK_PAUSED", { reason });
+}
+
+/** Request camera/mic permissions as soon as Enter Live is tapped — before room mount. */
+export function prewarmLiveRoomMediaPermissions(source = "enter-live") {
+  void (async () => {
+    try {
+      const [camera, mic] = await Promise.all([
+        Camera.getCameraPermissionsAsync().catch(() => null),
+        Camera.getMicrophonePermissionsAsync().catch(() => null),
+      ]);
+
+      const tasks: Promise<unknown>[] = [];
+      if (!camera?.granted) {
+        tasks.push(Camera.requestCameraPermissionsAsync());
+      }
+      if (!mic?.granted) {
+        tasks.push(Camera.requestMicrophonePermissionsAsync());
+      }
+      if (tasks.length) {
+        await Promise.all(tasks);
+      }
+
+      console.log("KRISTO_LIVE_MEDIA_PERMISSIONS_PREWARM", {
+        source,
+        cameraGranted: camera?.granted === true,
+        micGranted: mic?.granted === true,
+        requested: tasks.length,
+      });
+    } catch (e: any) {
+      console.log("KRISTO_LIVE_MEDIA_PERMISSIONS_PREWARM_ERROR", {
+        source,
+        message: String(e?.message || e),
+      });
+    }
+  })();
 }
 
 /** Clear live-room render pause and global active-live flags (e.g. after schedule slots deleted). */
