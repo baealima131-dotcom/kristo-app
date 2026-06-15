@@ -94,7 +94,9 @@ import {
   CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE,
   isChurchSubscriptionRequiredError,
   evaluateScheduleSubscriptionGate,
+  parseExplicitServerSubscriptionFromMediaRoute,
   requireActiveChurchSubscriptionForSchedule,
+  resolveScheduleGateSubscriptionInputs,
 } from "../../../src/lib/churchSubscription";
 import { MEDIA_STUDIO_BACKGROUND } from "../../../src/lib/mediaPreload";
 import {
@@ -104,6 +106,10 @@ import {
 } from "../../../src/lib/churchMediaProfileStore";
 import { logTrafficCache, shouldAllowScreenRefresh } from "../../../src/lib/kristoTraffic";
 import { useFocusedPolling } from "../../../src/lib/useFocusedPolling";
+import {
+  fetchLightLiveState,
+  resolveChurchLiveStateUpdate,
+} from "../../../src/lib/liveRealtime";
 import {
   evaluateChurchMediaAccessMerged,
   evaluateChurchMediaAccessFromSession,
@@ -670,6 +676,7 @@ export default function MediaStudioScreen() {
   const [trustedHosts, setTrustedHosts] = useState<any[]>(mediaSessionPeek?.trustedHosts || []);
   const mediaFetchCountRef = useRef(0);
   const [activeBackendLive, setActiveBackendLive] = useState<any>(null);
+  const activeBackendLiveRef = useRef<any>(null);
   const [vipNotice, setVipNotice] = useState<{ title: string; message: string } | null>(null);
 
   const claimActionPulse = useRef(new Animated.Value(0)).current;
@@ -750,13 +757,7 @@ export default function MediaStudioScreen() {
         const res = refresh.mediaRes;
         const hostsRes = refresh.hostsRes;
 
-        setChurchSubscriptionActiveFromApi(
-          Boolean(res?.subscriptionActive) ||
-            Boolean(res?.media?.subscriptionActive) ||
-            String(res?.media?.subscriptionStatus || "")
-              .trim()
-              .toLowerCase() === "active"
-        );
+        setChurchSubscriptionActiveFromApi(parseExplicitServerSubscriptionFromMediaRoute(res));
 
         const nextAccess = stabilizeChurchMediaAccess(
           churchMediaAccess,
@@ -970,20 +971,39 @@ export default function MediaStudioScreen() {
   const loadActiveBackendLive = useCallback(async () => {
     if (!session?.userId || !session?.churchId) return;
 
-    const res: any = await apiGet(
-      "/api/church/live",
-      {
-        headers: getKristoHeaders({
-          userId: session.userId,
-          role: (session.role || "Member") as any,
-          churchId: session.churchId || "",
-        }),
-      },
-      { screen: "MediaScreen", throttleMs: 45000 }
-    );
+    const headers = getKristoHeaders({
+      userId: session.userId,
+      role: (session.role || "Member") as any,
+      churchId: session.churchId || "",
+    }) as Record<string, string>;
 
-    setActiveBackendLive(res?.live?.isLive ? res.live : null);
-  }, [isFocused, pathname, session?.churchId, session?.role, session?.userId]);
+    const patch = await fetchLightLiveState(
+      headers,
+      "MediaScreen",
+      undefined,
+      { force: false }
+    );
+    const resolved = resolveChurchLiveStateUpdate({
+      patch,
+      previousLive: activeBackendLiveRef.current,
+      churchId: String(session.churchId || ""),
+    });
+
+    console.log("KRISTO_CHURCH_LIVE_STATE_RESULT", {
+      screen: "MediaScreen",
+      churchId: String(session.churchId || ""),
+      routeFailed: patch.routeFailed === true,
+      preserved: resolved.preserved,
+      shouldUpdate: resolved.shouldUpdate,
+      updateSource: resolved.source,
+      hasNextLive: Boolean(resolved.nextLive?.isLive),
+    });
+
+    if (resolved.shouldUpdate) {
+      activeBackendLiveRef.current = resolved.nextLive;
+      setActiveBackendLive(resolved.nextLive);
+    }
+  }, [session?.churchId, session?.role, session?.userId]);
 
   useFocusedPolling("MediaScreenLive", () => loadActiveBackendLive(), 120000, isFocused);
 
@@ -1043,8 +1063,19 @@ export default function MediaStudioScreen() {
 
   // Church-level subscription: Pastor pays; hosts use Media when church subscription is active.
   const isApprovedMediaHostRole = Boolean(isMediaHostFromProfile);
+  const scheduleGateSubscription = React.useMemo(
+    () =>
+      resolveScheduleGateSubscriptionInputs({
+        serverSubscriptionActive: churchSubscriptionActiveFromApi,
+      }),
+    [
+      churchSubscriptionActiveFromApi,
+      paymentsState.subscriptions.planStatus,
+      paymentsState.subscriptions.selectedPlan,
+    ]
+  );
   const churchSubActiveFromApi =
-    churchSubscriptionActiveFromApi === true ||
+    scheduleGateSubscription.churchSubscriptionActive === true ||
     Boolean((churchMediaProfile as any)?.subscriptionActive);
 
   const churchMediaSubscriptionActive =
@@ -1053,8 +1084,7 @@ export default function MediaStudioScreen() {
 
   const subscriptionLocked =
     (isActualChurchPastor || isApprovedMediaHostRole) &&
-    churchSubscriptionActiveFromApi !== null &&
-    churchSubActiveFromApi !== true;
+    scheduleGateSubscription.subscriptionLocked;
 
   const canUseMediaTools = churchMediaSubscriptionActive && canOpenMediaScreen;
   const canManageChurchStorage = canUseMediaTools;
@@ -2401,14 +2431,19 @@ export default function MediaStudioScreen() {
     if (!isActualChurchPastor) {
       let activeChurchLive: any = null;
       try {
-        const res: any = await apiGet("/api/church/live", {
-          headers: getKristoHeaders({
+        const patch = await fetchLightLiveState(
+          getKristoHeaders({
             userId: session?.userId || "",
             role: (session?.role || "Member") as any,
             churchId: session?.churchId || "",
-          }),
-        });
-        activeChurchLive = res?.live?.isLive ? res.live : null;
+          }) as Record<string, string>,
+          "MediaScreenLockedAction"
+        );
+        if (!patch.routeFailed && patch.isLive === true && patch.raw) {
+          activeChurchLive = patch.raw;
+        } else if (patch.routeFailed) {
+          activeChurchLive = activeBackendLiveRef.current;
+        }
       } catch {}
 
       if (!activeChurchLive) {
@@ -2470,7 +2505,7 @@ export default function MediaStudioScreen() {
       gate: "media.slots-card",
       isPastor: isActualChurchPastor,
       isApprovedMediaHost,
-      hasSubscription: churchSubActiveFromApi === true,
+      hasSubscription: scheduleGateSubscription.hasSubscription,
       subscriptionLocked,
     });
     if (!scheduleGate.allowed) {
@@ -4117,7 +4152,7 @@ export default function MediaStudioScreen() {
                     gate: "media.send-to-global-feed-button",
                     isPastor: isActualChurchPastor,
                     isApprovedMediaHost,
-                    hasSubscription: churchSubActiveFromApi === true,
+                    hasSubscription: scheduleGateSubscription.hasSubscription,
                     subscriptionLocked,
                   });
                   if (!scheduleGate.allowed) {

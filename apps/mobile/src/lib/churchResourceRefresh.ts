@@ -1,4 +1,10 @@
 import { apiGet } from "@/src/lib/kristoApi";
+import {
+  isChurchMediaRouteFailure,
+  mergeScheduleSubscriptionSignals,
+  parseExplicitServerSubscriptionFromMediaRoute,
+  readLocalScheduleEntitlementActive,
+} from "@/src/lib/churchSubscription";
 
 export const CHURCH_RESOURCE_REFRESH_MS = 75000;
 
@@ -444,13 +450,11 @@ export async function fetchChurchSubscriptionActiveThrottled(
   const res = result.mediaRes;
   if (!res) return null;
 
-  const status = String(res?.media?.subscriptionStatus || "")
-    .trim()
-    .toLowerCase();
-  return (
-    Boolean(res?.subscriptionActive) ||
-    Boolean(res?.media?.subscriptionActive) ||
-    status === "active" ||
-    status === "trialing"
-  );
+  const explicitServerActive = parseExplicitServerSubscriptionFromMediaRoute(res);
+  const merged = mergeScheduleSubscriptionSignals({
+    explicitServerActive,
+    routeFailed: isChurchMediaRouteFailure(res),
+    entitlementActive: readLocalScheduleEntitlementActive(),
+  });
+  return merged.hasSubscription;
 }

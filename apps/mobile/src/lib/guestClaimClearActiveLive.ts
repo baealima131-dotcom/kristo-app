@@ -26,7 +26,8 @@ function scheduleLiveIds(scheduleId: string, rows: any[]) {
   return Array.from(ids).filter(Boolean);
 }
 
-function readLiveActiveFromLite(patch: { isLive?: boolean; raw?: any }) {
+function readLiveActiveFromLite(patch: { isLive?: boolean; raw?: any; routeFailed?: boolean }) {
+  if (patch?.routeFailed) return null;
   return patch?.isLive === true && patch?.raw && !patch.raw?.endedAt;
 }
 
@@ -49,6 +50,9 @@ export async function clearActiveLiveAfterGuestSlotDelete(input: {
       force: true,
     });
     liveActiveBefore = readLiveActiveFromLite(liteBefore);
+    if (liveActiveBefore === null) {
+      liveActiveBefore = Boolean((globalThis as any).__KRISTO_LIVE_ACTIVE__);
+    }
   } catch {
     liveActiveBefore = Boolean((globalThis as any).__KRISTO_LIVE_ACTIVE__);
   }
@@ -104,6 +108,9 @@ export async function clearActiveLiveAfterGuestSlotDelete(input: {
       force: true,
     });
     liveActiveAfter = readLiveActiveFromLite(liteAfter);
+    if (liveActiveAfter === null) {
+      liveActiveAfter = Boolean((globalThis as any).__KRISTO_LIVE_ACTIVE__);
+    }
   } catch {
     liveActiveAfter = Boolean((globalThis as any).__KRISTO_LIVE_ACTIVE__);
   }

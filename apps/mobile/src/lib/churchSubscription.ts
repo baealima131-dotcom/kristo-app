@@ -8,12 +8,14 @@ import {
 } from "./churchSubscriptionGate";
 import { refreshChurchMediaIfNeeded } from "./churchResourceRefresh";
 import { refreshChurchMediaAccess } from "./refreshCoordinator";
+import { getPaymentsState } from "../store/paymentsStore";
 import {
   describeCustomerInfoSubscriptionDebug,
   getActivePremiumEntitlement,
   getCustomerSubscriptionInfo,
   getRevenueCatConfiguredAppUserId,
   hasPremiumEntitlement,
+  isPlanActive,
   logEntitlementAudit,
   logInRevenueCatForChurchSubscription,
   refreshCustomerInfoAfterStorePurchase,
@@ -175,6 +177,345 @@ export function isChurchSubscriptionActiveFromRecord(
   return status === "active" || status === "trialing";
 }
 
+export type ScheduleMediaRouteProbe = {
+  endpoint: string;
+  churchId: string;
+  appUserId: string;
+  endpointStatus: number | null;
+  responseBody: any | null;
+  routeFailed: boolean;
+  explicitServerActive: boolean | null;
+};
+
+function resolveScheduleAppUserId(headers?: Record<string, string>) {
+  const session = getSessionSync() as any;
+  return String(
+    headers?.["x-kristo-user-id"] ||
+      headers?.["X-Kristo-User-Id"] ||
+      session?.userId ||
+      ""
+  ).trim();
+}
+
+function resolveScheduleChurchId(churchId?: string, headers?: Record<string, string>) {
+  const session = getSessionSync() as any;
+  return String(
+    churchId ||
+      headers?.["x-kristo-church-id"] ||
+      headers?.["X-Kristo-Church-Id"] ||
+      session?.churchId ||
+      ""
+  ).trim();
+}
+
+export function isChurchMediaRouteFailure(res: any | null | undefined): boolean {
+  if (!res) return true;
+  if (res.ok === false) return true;
+  const status = Number(res.status || 0);
+  if (status === 404 || status >= 500) return true;
+  if (String(res.reason || "").trim() === "network_error") return true;
+  return false;
+}
+
+/** Parse subscription from a successful /api/church/media body only — never infer inactive from failures. */
+export function parseExplicitServerSubscriptionFromMediaRoute(
+  res: any | null | undefined
+): boolean | null {
+  if (isChurchMediaRouteFailure(res)) return null;
+
+  if (isChurchSubscriptionActiveFromRecord(res?.media) || res?.subscriptionActive === true) {
+    return true;
+  }
+
+  if (res?.subscriptionActive === false || res?.media?.subscriptionActive === false) {
+    const status = String(res?.media?.subscriptionStatus || res?.subscriptionStatus || "")
+      .trim()
+      .toLowerCase();
+    if (status === "active" || status === "trialing") return true;
+    return false;
+  }
+
+  return null;
+}
+
+export function readLocalScheduleEntitlementActive(
+  customerInfo?: CustomerInfo | null
+): boolean {
+  if (customerInfo && hasPremiumEntitlement(customerInfo)) return true;
+
+  const payments = getPaymentsState();
+  return isPlanActive(
+    payments.subscriptions.selectedPlan,
+    payments.subscriptions.planStatus
+  );
+}
+
+export function readSessionMediaProfileSubscriptionActive(): boolean | null {
+  const session = getSessionSync() as any;
+  const profile = session?.mediaProfile;
+  if (!profile || typeof profile !== "object") return null;
+  if (profile.subscriptionActive === true) return true;
+  if (profile.subscriptionActive === false) {
+    const status = String(profile.subscriptionStatus || "")
+      .trim()
+      .toLowerCase();
+    if (status === "active" || status === "trialing") return true;
+    return false;
+  }
+  const status = String(profile.subscriptionStatus || "")
+    .trim()
+    .toLowerCase();
+  if (status === "active" || status === "trialing") return true;
+  return null;
+}
+
+export type ScheduleSubscriptionResolution = {
+  churchSubscriptionActive: boolean | null;
+  hasSubscription: boolean | null;
+  canUseMediaTools: boolean | null;
+  entitlementActive: boolean;
+  source: string;
+  churchId: string;
+  appUserId: string;
+  endpointStatus: number | null;
+  routeFailed: boolean;
+  subscriptionPlan?: string | null;
+};
+
+export function mergeScheduleSubscriptionSignals(input: {
+  explicitServerActive: boolean | null;
+  routeFailed: boolean;
+  entitlementActive: boolean;
+  sessionProfileActive?: boolean | null;
+}): Pick<
+  ScheduleSubscriptionResolution,
+  "churchSubscriptionActive" | "hasSubscription" | "source"
+> {
+  const sessionProfileActive = input.sessionProfileActive ?? readSessionMediaProfileSubscriptionActive();
+
+  if (input.explicitServerActive === true) {
+    return {
+      churchSubscriptionActive: true,
+      hasSubscription: true,
+      source: "server_media_api",
+    };
+  }
+
+  if (input.explicitServerActive === false && !input.entitlementActive && sessionProfileActive !== true) {
+    return {
+      churchSubscriptionActive: false,
+      hasSubscription: false,
+      source: "server_media_api",
+    };
+  }
+
+  if (input.entitlementActive) {
+    return {
+      churchSubscriptionActive: true,
+      hasSubscription: true,
+      source: input.routeFailed ? "revenuecat_entitlement_route_failed" : "revenuecat_entitlement",
+    };
+  }
+
+  if (sessionProfileActive === true) {
+    return {
+      churchSubscriptionActive: true,
+      hasSubscription: true,
+      source: input.routeFailed ? "session_media_profile_route_failed" : "session_media_profile",
+    };
+  }
+
+  if (input.routeFailed || input.explicitServerActive === null) {
+    return {
+      churchSubscriptionActive: null,
+      hasSubscription: null,
+      source: input.routeFailed ? "route_failed_unknown" : "server_unknown",
+    };
+  }
+
+  return {
+    churchSubscriptionActive: false,
+    hasSubscription: false,
+    source: "server_media_api",
+  };
+}
+
+export async function probeChurchMediaScheduleRoute(args: {
+  churchId?: string;
+  headers?: Record<string, string>;
+  cache?: RequestCache;
+}): Promise<ScheduleMediaRouteProbe> {
+  const churchId = resolveScheduleChurchId(args.churchId, args.headers);
+  const appUserId = resolveScheduleAppUserId(args.headers);
+  const endpoint = "/api/church/media";
+
+  const res: any = await apiGet(endpoint, {
+    headers: args.headers,
+    cache: args.cache || "no-store",
+  });
+
+  const endpointStatus =
+    typeof res?.status === "number"
+      ? res.status
+      : res?.ok === false
+        ? Number(res?.status || 0) || null
+        : 200;
+  const routeFailed = isChurchMediaRouteFailure(res);
+  const explicitServerActive = parseExplicitServerSubscriptionFromMediaRoute(res);
+
+  console.log("KRISTO_SCHEDULE_ROUTE_RESPONSE", {
+    churchId,
+    appUserId,
+    entitlementActive: readLocalScheduleEntitlementActive(),
+    endpoint,
+    endpointStatus,
+    routeFailed,
+    explicitServerActive,
+    responseBody: res,
+  });
+
+  return {
+    endpoint,
+    churchId,
+    appUserId,
+    endpointStatus,
+    responseBody: res,
+    routeFailed,
+    explicitServerActive,
+  };
+}
+
+export async function resolveScheduleSubscriptionState(args: {
+  churchId?: string;
+  headers?: Record<string, string>;
+  customerInfo?: CustomerInfo | null;
+  fetchCustomerInfo?: boolean;
+}): Promise<ScheduleSubscriptionResolution> {
+  const churchId = resolveScheduleChurchId(args.churchId, args.headers);
+  const appUserId = resolveScheduleAppUserId(args.headers);
+
+  const route = await probeChurchMediaScheduleRoute({
+    churchId,
+    headers: args.headers,
+  });
+
+  let customerInfo = args.customerInfo ?? null;
+  if (args.fetchCustomerInfo !== false && !customerInfo) {
+    try {
+      customerInfo = await getCustomerSubscriptionInfo();
+    } catch {
+      customerInfo = null;
+    }
+  }
+
+  const entitlementActive = readLocalScheduleEntitlementActive(customerInfo);
+  const merged = mergeScheduleSubscriptionSignals({
+    explicitServerActive: route.explicitServerActive,
+    routeFailed: route.routeFailed,
+    entitlementActive,
+  });
+
+  const canUseMediaTools =
+    route.routeFailed || route.responseBody?.canUseMediaTools == null
+      ? merged.hasSubscription
+      : route.responseBody?.canUseMediaTools === true
+        ? true
+        : route.responseBody?.canUseMediaTools === false
+          ? false
+          : merged.hasSubscription;
+
+  console.log("KRISTO_SCHEDULE_SUBSCRIPTION_SOURCE", {
+    churchId,
+    appUserId,
+    entitlementActive,
+    endpointStatus: route.endpointStatus,
+    routeFailed: route.routeFailed,
+    explicitServerActive: route.explicitServerActive,
+    sessionProfileActive: readSessionMediaProfileSubscriptionActive(),
+    source: merged.source,
+  });
+
+  const result: ScheduleSubscriptionResolution = {
+    ...merged,
+    canUseMediaTools,
+    entitlementActive,
+    churchId,
+    appUserId,
+    endpointStatus: route.endpointStatus,
+    routeFailed: route.routeFailed,
+    subscriptionPlan:
+      route.routeFailed || !route.responseBody
+        ? null
+        : route.responseBody?.media?.subscriptionPlan ||
+          route.responseBody?.subscriptionPlan ||
+          null,
+  };
+
+  console.log("KRISTO_SCHEDULE_SUBSCRIPTION_RESULT", {
+    churchId: result.churchId,
+    appUserId: result.appUserId,
+    entitlementActive: result.entitlementActive,
+    endpointStatus: result.endpointStatus,
+    routeFailed: result.routeFailed,
+    churchSubscriptionActive: result.churchSubscriptionActive,
+    hasSubscription: result.hasSubscription,
+    canUseMediaTools: result.canUseMediaTools,
+    source: result.source,
+    responseBody: route.responseBody,
+  });
+
+  return result;
+}
+
+export function resolveScheduleGateSubscriptionInputs(input: {
+  serverSubscriptionActive: boolean | null;
+  entitlementActive?: boolean;
+}): {
+  hasSubscription: boolean | null;
+  subscriptionLocked: boolean;
+  churchSubscriptionActive: boolean | null;
+} {
+  const entitlementActive =
+    input.entitlementActive ?? readLocalScheduleEntitlementActive();
+  const merged = mergeScheduleSubscriptionSignals({
+    explicitServerActive: input.serverSubscriptionActive,
+    routeFailed: input.serverSubscriptionActive === null,
+    entitlementActive,
+  });
+
+  const subscriptionLocked = merged.hasSubscription === false;
+
+  console.log("KRISTO_SCHEDULE_SUBSCRIPTION_SOURCE", {
+    churchId: resolveScheduleChurchId(),
+    appUserId: resolveScheduleAppUserId(),
+    entitlementActive,
+    endpointStatus: null,
+    routeFailed: input.serverSubscriptionActive === null,
+    explicitServerActive: input.serverSubscriptionActive,
+    sessionProfileActive: readSessionMediaProfileSubscriptionActive(),
+    source: merged.source,
+    mode: "sync_gate",
+  });
+
+  console.log("KRISTO_SCHEDULE_SUBSCRIPTION_RESULT", {
+    churchId: resolveScheduleChurchId(),
+    appUserId: resolveScheduleAppUserId(),
+    entitlementActive,
+    endpointStatus: null,
+    hasSubscription: merged.hasSubscription,
+    subscriptionLocked,
+    churchSubscriptionActive: merged.churchSubscriptionActive,
+    source: merged.source,
+    mode: "sync_gate",
+  });
+
+  return {
+    hasSubscription: merged.hasSubscription,
+    subscriptionLocked,
+    churchSubscriptionActive: merged.churchSubscriptionActive,
+  };
+}
+
 export function alertChurchSubscriptionRequired(opts?: {
   isPastor?: boolean;
   isApprovedMediaHost?: boolean;
@@ -218,39 +559,36 @@ export async function fetchChurchSubscriptionActive(
   churchId: string,
   headers?: Record<string, string>,
   _opts?: { isPastor?: boolean; isApprovedMediaHost?: boolean }
-): Promise<boolean> {
-  const status = await fetchChurchSubscriptionStatus(headers);
+): Promise<boolean | null> {
+  const status = await fetchChurchSubscriptionStatus(headers, churchId);
   return status.subscriptionActive;
 }
 
 export type ChurchSubscriptionServerStatus = {
-  subscriptionActive: boolean;
-  canUseMediaTools: boolean;
+  subscriptionActive: boolean | null;
+  canUseMediaTools: boolean | null;
   subscriptionPlan?: string | null;
+  source?: string;
+  routeFailed?: boolean;
 };
 
 export async function fetchChurchSubscriptionStatus(
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  churchId?: string
 ): Promise<ChurchSubscriptionServerStatus> {
-  try {
-    const res: any = await apiGet("/api/church/media", {
-      headers,
-      cache: "no-store",
-    });
-    const subscriptionActive =
-      isChurchSubscriptionActiveFromRecord(res?.media) || Boolean(res?.subscriptionActive);
-    return {
-      subscriptionActive,
-      canUseMediaTools: res?.canUseMediaTools === true,
-      subscriptionPlan: res?.media?.subscriptionPlan || res?.subscriptionPlan || null,
-    };
-  } catch {
-    return {
-      subscriptionActive: false,
-      canUseMediaTools: false,
-      subscriptionPlan: null,
-    };
-  }
+  const resolved = await resolveScheduleSubscriptionState({
+    churchId,
+    headers,
+    fetchCustomerInfo: true,
+  });
+
+  return {
+    subscriptionActive: resolved.churchSubscriptionActive,
+    canUseMediaTools: resolved.canUseMediaTools,
+    subscriptionPlan: resolved.subscriptionPlan ?? null,
+    source: resolved.source,
+    routeFailed: resolved.routeFailed,
+  };
 }
 
 export function logChurchSubscriptionContext(args: {
@@ -286,21 +624,18 @@ export function logChurchSubscriptionContext(args: {
   });
 }
 
+/** @deprecated Prefer resolveScheduleSubscriptionState — never treats route failures as inactive. */
 export async function fetchChurchMediaTrialDebug(
   headers?: Record<string, string>
 ): Promise<{ response: any | null; error: string | null }> {
-  try {
-    const res: any = await apiGet("/api/church/media", {
-      headers,
-      cache: "no-store",
-    });
-    return { response: res, error: null };
-  } catch (error: any) {
+  const route = await probeChurchMediaScheduleRoute({ headers });
+  if (route.routeFailed) {
     return {
-      response: null,
-      error: String(error?.message || error || "fetch-church-media-failed"),
+      response: route.responseBody,
+      error: String(route.responseBody?.error || `route_failed_${route.endpointStatus || "unknown"}`),
     };
   }
+  return { response: route.responseBody, error: null };
 }
 
 export async function fetchChurchMonthlyTrialEligibility(
@@ -664,8 +999,13 @@ export async function requireActiveChurchSubscriptionForSchedule(
   const isPastor = resolveScheduleGateIsPastor(opts, headers);
   const isApprovedMediaHost = opts?.isApprovedMediaHost === true;
 
-  const active = await fetchChurchSubscriptionActive(churchId, headers);
-  const churchSubscriptionActive = active ? true : false;
+  const resolved = await resolveScheduleSubscriptionState({
+    churchId,
+    headers,
+    fetchCustomerInfo: true,
+  });
+  const churchSubscriptionActive = resolved.hasSubscription;
+
   const strict = evaluateStrictChurchMediaLiveSubscriptionGate({
     gate,
     screen,

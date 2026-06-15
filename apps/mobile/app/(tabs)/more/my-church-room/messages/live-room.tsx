@@ -55,6 +55,7 @@ import {
   paginateMessages,
   preloadLiveImages,
   resolveCachedLiveAvatar,
+  resolveChurchLiveStateUpdate,
   startAdaptiveLivePolling,
 } from "@/src/lib/liveRealtime";
 import { getKristoHeaders, type KristoRole } from "@/src/lib/kristoHeaders";
@@ -5239,6 +5240,19 @@ export default function LiveRoomScreen() {
 
   const applyBackendLivePatch = useCallback(
     (patch: Awaited<ReturnType<typeof fetchLightLiveState>>, source: string) => {
+      if (patch.routeFailed) {
+        console.log("KRISTO_CHURCH_LIVE_STATE_RESULT", {
+          screen: "LiveRoom",
+          source,
+          routeFailed: true,
+          preserved: true,
+          shouldUpdate: false,
+          updateSource: "route_failed_preserved_previous",
+          hasNextLive: Boolean(backendChurchLive?.isLive),
+        });
+        return;
+      }
+
       if (patch.removedFromLive) {
         backendLiveRequestsRef.current = {};
         setBackendLiveRequests({});
@@ -5261,7 +5275,17 @@ export default function LiveRoomScreen() {
       if (sig === livePatchSigRef.current) return;
       livePatchSigRef.current = sig;
 
-      if (patch.raw) setBackendChurchLive(patch.raw);
+      const resolved = resolveChurchLiveStateUpdate({
+        patch,
+        previousLive: backendChurchLive,
+        churchId: String(session?.churchId || ""),
+      });
+
+      if (resolved.shouldUpdate) {
+        setBackendChurchLive(resolved.nextLive);
+      } else if (patch.raw && patch.isLive === true) {
+        setBackendChurchLive(patch.raw);
+      }
       if (patch.requestPolicy) setRequestPolicy(patch.requestPolicy as LiveRequestPolicy);
 
       if (patch.requests && typeof patch.requests === "object") {
@@ -5297,7 +5321,7 @@ export default function LiveRoomScreen() {
 
       if (patch.viewerPresence) setLiveViewerPresence(patch.viewerPresence);
     },
-    [liveBridgeId, router]
+    [liveBridgeId, router, backendChurchLive, session?.churchId]
   );
 
   useEffect(() => {

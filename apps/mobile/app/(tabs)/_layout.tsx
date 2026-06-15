@@ -36,7 +36,7 @@ import {
 import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
 import { Animated, InteractionManager, Pressable, StyleSheet, Text, View } from "react-native";
 import { ensureChurchAccessOrSetup } from "@/src/lib/churchLockedRecovery";
-import { fetchLightLiveState, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
+import { fetchLightLiveState, resolveChurchLiveStateUpdate, startAdaptiveLivePolling } from "@/src/lib/liveRealtime";
 import {
   HOME_FEED_GOLD,
   HOME_FEED_INACTIVE,
@@ -604,6 +604,7 @@ export default function TabLayout() {
 
   const auth = getKristoAuth();
   const hasActiveChurch = !!String(auth?.churchId || "").trim();
+  const backendChurchLiveRef = useRef<any>(null);
   const [backendChurchLive, setBackendChurchLive] = useState<any>(null);
   const [mediaScheduleTabLive, setMediaScheduleTabLive] = useState<any>(null);
   const [personalScheduleTabAlert, setPersonalScheduleTabAlert] = useState<any>(null);
@@ -653,9 +654,26 @@ export default function TabLayout() {
 
       try {
         const patch = await fetchLightLiveState(headers as any, `TabLayout:${source}`);
-        const nextLive =
-          patch.isLive === true && patch.raw && !patch.raw?.endedAt ? patch.raw : null;
-        setBackendChurchLive(nextLive);
+        const resolved = resolveChurchLiveStateUpdate({
+          patch,
+          previousLive: backendChurchLiveRef.current,
+          churchId: String(session.churchId || ""),
+        });
+
+        console.log("KRISTO_CHURCH_LIVE_STATE_RESULT", {
+          source,
+          churchId: String(session.churchId || ""),
+          routeFailed: patch.routeFailed === true,
+          preserved: resolved.preserved,
+          shouldUpdate: resolved.shouldUpdate,
+          updateSource: resolved.source,
+          hasNextLive: Boolean(resolved.nextLive?.isLive),
+        });
+
+        if (resolved.shouldUpdate) {
+          backendChurchLiveRef.current = resolved.nextLive;
+          setBackendChurchLive(resolved.nextLive);
+        }
       } catch {}
 
       try {

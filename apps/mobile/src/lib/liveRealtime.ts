@@ -14,7 +14,12 @@ export type LightLivePayload = {
   viewerCount?: number;
   actualChurchPastorUserId?: string;
   raw?: any;
+  routeFailed?: boolean;
+  explicitlyEnded?: boolean;
+  endpointStatus?: number | null;
 };
+
+const preservedChurchLiveById = new Map<string, any>();
 
 const profileAvatarCache = new Map<string, { uri: string; at: number }>();
 const participantCache = new Map<string, { data: any; at: number }>();
@@ -35,16 +40,71 @@ export function shallowJsonEqual(a: unknown, b: unknown) {
   }
 }
 
+export function isChurchLiveRouteFailure(res: any | null | undefined): boolean {
+  if (!res) return true;
+  if (res.ok === false) return true;
+  const status = Number(res.status || 0);
+  if (status === 404 || status >= 500) return true;
+  if (String(res.reason || "").trim() === "network_error") return true;
+  return false;
+}
+
+export function rememberPreservedChurchLive(churchId: string, live: any | null | undefined) {
+  const cid = String(churchId || live?.churchId || "").trim();
+  if (!cid || !live || live.isLive !== true || live.endedAt) return;
+  preservedChurchLiveById.set(cid, live);
+}
+
+export function readPreservedChurchLive(churchId: string) {
+  const cid = String(churchId || "").trim();
+  if (!cid) return null;
+  return preservedChurchLiveById.get(cid) || null;
+}
+
+export function clearPreservedChurchLive(churchId: string) {
+  const cid = String(churchId || "").trim();
+  if (!cid) return;
+  preservedChurchLiveById.delete(cid);
+}
+
 export function extractLightLivePayload(res: any): LightLivePayload {
+  const endpointStatus =
+    typeof res?.status === "number"
+      ? res.status
+      : res?.ok === false
+        ? Number(res?.status || 0) || null
+        : 200;
+
+  if (isChurchLiveRouteFailure(res)) {
+    return {
+      routeFailed: true,
+      endpointStatus,
+      isLive: undefined,
+    };
+  }
+
   if (res?.removedFromLive === true) {
-    return { removedFromLive: true };
+    return {
+      removedFromLive: true,
+      explicitlyEnded: true,
+      isLive: false,
+      endpointStatus,
+    };
   }
 
   const live = res?.live || null;
-  if (!live) return { isLive: false };
+  if (!live) {
+    return {
+      isLive: false,
+      explicitlyEnded: true,
+      endpointStatus,
+    };
+  }
 
+  const isActive = live.isLive === true && !live.endedAt;
   return {
-    isLive: live.isLive === true && !live.endedAt,
+    isLive: isActive,
+    explicitlyEnded: !isActive,
     liveId: String(live.liveId || ""),
     requestPolicy: String(live.requestPolicy || ""),
     requests: live.requests && typeof live.requests === "object" ? live.requests : undefined,
@@ -53,6 +113,71 @@ export function extractLightLivePayload(res: any): LightLivePayload {
     viewerCount: Number(live.viewerCount || 0),
     actualChurchPastorUserId: String(live.actualChurchPastorUserId || ""),
     raw: live,
+    endpointStatus,
+  };
+}
+
+export type ChurchLiveStateUpdate = {
+  nextLive: any | null;
+  shouldUpdate: boolean;
+  preserved: boolean;
+  source: string;
+};
+
+export function resolveChurchLiveStateUpdate(input: {
+  patch: LightLivePayload;
+  previousLive: any | null;
+  churchId?: string;
+}): ChurchLiveStateUpdate {
+  const churchId = String(input.churchId || input.previousLive?.churchId || "").trim();
+
+  if (input.patch.routeFailed) {
+    const preserved =
+      input.previousLive ||
+      (churchId ? readPreservedChurchLive(churchId) : null);
+    return {
+      nextLive: preserved,
+      shouldUpdate: false,
+      preserved: true,
+      source: preserved ? "route_failed_preserved_previous" : "route_failed_no_previous",
+    };
+  }
+
+  if (input.patch.removedFromLive || input.patch.explicitlyEnded) {
+    if (churchId) clearPreservedChurchLive(churchId);
+    return {
+      nextLive: null,
+      shouldUpdate: true,
+      preserved: false,
+      source: input.patch.removedFromLive ? "backend_removed_from_live" : "backend_explicit_ended",
+    };
+  }
+
+  if (input.patch.isLive === true && input.patch.raw && !input.patch.raw?.endedAt) {
+    if (churchId) rememberPreservedChurchLive(churchId, input.patch.raw);
+    return {
+      nextLive: input.patch.raw,
+      shouldUpdate: true,
+      preserved: false,
+      source: "backend_live_active",
+    };
+  }
+
+  if (input.patch.isLive === false) {
+    if (churchId) clearPreservedChurchLive(churchId);
+    return {
+      nextLive: null,
+      shouldUpdate: true,
+      preserved: false,
+      source: "backend_no_live",
+    };
+  }
+
+  return {
+    nextLive: input.previousLive,
+    shouldUpdate: false,
+    preserved: Boolean(input.previousLive),
+    source: "unchanged",
   };
 }
 
@@ -170,7 +295,26 @@ export async function fetchLightLiveState(
   }
 
   const res: any = await apiGet(path, { headers: headers as any }, { screen, throttleMs: opts?.force ? 0 : 2500 });
-  return extractLightLivePayload(res);
+  const patch = extractLightLivePayload(res);
+  const churchId = String(headers["x-kristo-church-id"] || headers["X-Kristo-Church-Id"] || "").trim();
+
+  console.log("KRISTO_CHURCH_LIVE_ROUTE_RESPONSE", {
+    endpoint: path,
+    churchId,
+    appUserId: userId,
+    endpointStatus: patch.endpointStatus ?? null,
+    routeFailed: patch.routeFailed === true,
+    isLive: patch.isLive ?? null,
+    explicitlyEnded: patch.explicitlyEnded === true,
+    liveId: patch.liveId || patch.raw?.liveId || null,
+    responseBody: res,
+  });
+
+  if (patch.isLive === true && patch.raw) {
+    rememberPreservedChurchLive(churchId, patch.raw);
+  }
+
+  return patch;
 }
 
 type AdaptiveOpts = {
