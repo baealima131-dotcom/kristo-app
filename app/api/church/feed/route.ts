@@ -3183,15 +3183,22 @@ export async function POST(req: NextRequest) {
     return err("Invalid JSON body", 400);
   }
 
-  const earlyAction = String(body?.action || "").trim();
-  if (earlyAction === "clear_media_schedule_slots") {
+  const action = String(body?.action || "").trim();
+  if (action === "clear_media_schedule_slots") {
+    const ctxOrRes = await guard(req);
+    if ("ok" in (ctxOrRes as any) === false && ctxOrRes instanceof NextResponse) {
+      return ctxOrRes;
+    }
+    const a = ctxOrRes as any;
     console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_SERVER", {
-      action: earlyAction,
-      feedId: String(body?.feedId || body?.postId || ""),
-      churchId: String(body?.churchId || ""),
-      slotsLength: Array.isArray(body?.slots) ? body.slots.length : 0,
-      stage: "post-entry",
+      action,
+      feedId: body?.feedId || body?.postId || "",
+      churchId: body?.churchId || a?.churchId || "",
+      slotsLength: Array.isArray(body?.slots) ? body.slots.length : null,
+      serverBuild: "homefeed-clear-media-schedule-slots",
+      stage: "early-handler-hit",
     });
+    return await handleClearMediaScheduleSlots(body, a);
   }
 
   if (isIncomingMediaScheduleCreate(body)) {
@@ -3239,6 +3246,127 @@ export async function POST(req: NextRequest) {
   }
 }
 
+async function handleClearMediaScheduleSlots(body: any, ctx: any) {
+  const action = "clear_media_schedule_slots";
+  const churchId = String(ctx?.churchId || "").trim();
+  const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
+  const postId = cleanText(body?.postId || body?.feedId, 240);
+  const targetChurchId = String(body?.churchId || churchId || "").trim();
+  const slotsLength = Array.isArray(body?.slots) ? body.slots.length : 0;
+
+  console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_SERVER", {
+    action,
+    feedId: postId,
+    churchId: targetChurchId,
+    slotsLength,
+    serverBuild: "homefeed-clear-media-schedule-slots",
+    stage: "handle-clear-media-schedule-slots",
+  });
+
+  if (!postId) return err("postId/feedId is required", 400);
+  if (!targetChurchId) return err("churchId is required", 400);
+
+  const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
+  const subscriptionBlocked = await requireChurchSubscriptionActive(targetChurchId, {
+    endpoint: "/api/church/feed",
+    churchId: targetChurchId,
+    userId: viewerUserId,
+    role: viewerAppRole,
+    action: "clear_media_schedule_slots",
+  });
+  if (subscriptionBlocked) return subscriptionBlocked;
+
+  const item = await getFeedItemById(postId);
+  if (!item) return err("Feed item not found", 404);
+
+  const itemChurchId = String(item?.churchId || targetChurchId || "").trim();
+  if (itemChurchId && itemChurchId !== targetChurchId) {
+    return err("Feed item not in your church", 403);
+  }
+
+  const permissionErr = await assertScheduleEditPermission({
+    churchId: targetChurchId,
+    viewerUserId,
+    viewerAppRole,
+    item,
+    body,
+  });
+  if (permissionErr) return err(permissionErr, 403);
+
+  const nextSlots = Array.isArray(body?.slots)
+    ? body.slots.map(enrichMediaScheduleSlotTimes)
+    : [];
+
+  if (!nextSlots.length) {
+    const { endStaleMediaScheduleFeedItem } = await import("@/app/api/_lib/staleMediaScheduleFeed");
+    const ended = await endStaleMediaScheduleFeedItem({
+      postId: String(item.id || postId),
+      churchId: targetChurchId,
+      reason: String(body?.reason || "clear_media_schedule_slots"),
+      deletedBy: viewerUserId,
+    });
+
+    if (!ended.ok) {
+      return err(String(ended.error || "Could not clear media schedule slots"), 404);
+    }
+
+    bumpMediaScheduleSync(targetChurchId, "clear_media_schedule_slots");
+    return ok({
+      ok: true,
+      action: "clear_media_schedule_slots",
+      serverBuild: "homefeed-clear-media-schedule-slots",
+      stage: "early-handler-hit",
+      feedId: postId,
+      postId,
+      slots: [],
+      deleted: ended.deleted,
+      endedLiveKeys: ended.endedLiveKeys,
+    });
+  }
+
+  const updatedItem = {
+    ...item,
+    scheduleSlots: nextSlots,
+    status: String(item?.status || "active"),
+    scheduleStatus: String(item?.scheduleStatus || "active"),
+  };
+  await upsertFeedItem(updatedItem);
+  bumpMediaScheduleSyncForFeedItem(updatedItem, "clear_media_schedule_slots");
+
+  const activeSlotCount = getActiveScheduleSlots(updatedItem).length;
+  if (activeSlotCount === 0) {
+    const scheduleLiveId = String(
+      updatedItem.sourceScheduleId || updatedItem.liveId || updatedItem.id || postId
+    ).trim();
+    try {
+      const { endChurchLiveSessionsForSchedule } = await import("@/app/api/_lib/churchLiveControl");
+      await endChurchLiveSessionsForSchedule({
+        churchId: targetChurchId,
+        liveId: scheduleLiveId,
+        reason: "clear_media_schedule_slots-no-active-slots",
+      });
+    } catch (liveEndError: any) {
+      console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_LIVE_END_FAILED", {
+        churchId: targetChurchId,
+        postId,
+        message: String(liveEndError?.message || liveEndError),
+      });
+    }
+  }
+
+  return ok({
+    ok: true,
+    action: "clear_media_schedule_slots",
+    serverBuild: "homefeed-clear-media-schedule-slots",
+    stage: "early-handler-hit",
+    feedId: postId,
+    postId,
+    slots: nextSlots,
+    deleted: false,
+    remainingCount: nextSlots.length,
+  });
+}
+
 async function handleFeedPost(req: NextRequest, body: any) {
   const action = String(body?.action || "create_post").trim();
   const ctxOrRes =
@@ -3268,114 +3396,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
   }
 
   if (action === "clear_media_schedule_slots") {
-    const postId = cleanText(body?.postId || body?.feedId, 240);
-    const targetChurchId = String(body?.churchId || churchId || "").trim();
-    const slotsLength = Array.isArray(body?.slots) ? body.slots.length : 0;
-
-    console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_SERVER", {
-      action,
-      feedId: postId,
-      churchId: targetChurchId,
-      slotsLength,
-      stage: "handle-feed-post",
-    });
-
-    if (!postId) return err("postId/feedId is required", 400);
-    if (!targetChurchId) return err("churchId is required", 400);
-
-    const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
-    const subscriptionBlocked = await requireChurchSubscriptionActive(targetChurchId, {
-      endpoint: "/api/church/feed",
-      churchId: targetChurchId,
-      userId: viewerUserId,
-      role: viewerAppRole,
-      action: "clear_media_schedule_slots",
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
-
-    const item = await getFeedItemById(postId);
-    if (!item) return err("Feed item not found", 404);
-
-    const itemChurchId = String(item?.churchId || targetChurchId || "").trim();
-    if (itemChurchId && itemChurchId !== targetChurchId) {
-      return err("Feed item not in your church", 403);
-    }
-
-    const permissionErr = await assertScheduleEditPermission({
-      churchId: targetChurchId,
-      viewerUserId,
-      viewerAppRole,
-      item,
-      body,
-    });
-    if (permissionErr) return err(permissionErr, 403);
-
-    const nextSlots = Array.isArray(body?.slots)
-      ? body.slots.map(enrichMediaScheduleSlotTimes)
-      : [];
-
-    if (!nextSlots.length) {
-      const { endStaleMediaScheduleFeedItem } = await import("@/app/api/_lib/staleMediaScheduleFeed");
-      const ended = await endStaleMediaScheduleFeedItem({
-        postId: String(item.id || postId),
-        churchId: targetChurchId,
-        reason: String(body?.reason || "clear_media_schedule_slots"),
-        deletedBy: viewerUserId,
-      });
-
-      if (!ended.ok) {
-        return err(String(ended.error || "Could not clear media schedule slots"), 404);
-      }
-
-      bumpMediaScheduleSync(targetChurchId, "clear_media_schedule_slots");
-      return ok({
-        ok: true,
-        feedId: postId,
-        postId,
-        slots: [],
-        deleted: ended.deleted,
-        endedLiveKeys: ended.endedLiveKeys,
-      });
-    }
-
-    const updatedItem = {
-      ...item,
-      scheduleSlots: nextSlots,
-      status: String(item?.status || "active"),
-      scheduleStatus: String(item?.scheduleStatus || "active"),
-    };
-    await upsertFeedItem(updatedItem);
-    bumpMediaScheduleSyncForFeedItem(updatedItem, "clear_media_schedule_slots");
-
-    const activeSlotCount = getActiveScheduleSlots(updatedItem).length;
-    if (activeSlotCount === 0) {
-      const scheduleLiveId = String(
-        updatedItem.sourceScheduleId || updatedItem.liveId || updatedItem.id || postId
-      ).trim();
-      try {
-        const { endChurchLiveSessionsForSchedule } = await import("@/app/api/_lib/churchLiveControl");
-        await endChurchLiveSessionsForSchedule({
-          churchId: targetChurchId,
-          liveId: scheduleLiveId,
-          reason: "clear_media_schedule_slots-no-active-slots",
-        });
-      } catch (liveEndError: any) {
-        console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_LIVE_END_FAILED", {
-          churchId: targetChurchId,
-          postId,
-          message: String(liveEndError?.message || liveEndError),
-        });
-      }
-    }
-
-    return ok({
-      ok: true,
-      feedId: postId,
-      postId,
-      slots: nextSlots,
-      deleted: false,
-      remainingCount: nextSlots.length,
-    });
+    return await handleClearMediaScheduleSlots(body, ctx);
   }
 
   if (action === "end_stale_media_schedule") {
