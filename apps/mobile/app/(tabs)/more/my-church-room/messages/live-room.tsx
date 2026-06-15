@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Animated,
@@ -17,9 +17,10 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
-import { AudioSession, LiveKitRoom, useIOSAudioManagement, useRoomContext } from "@livekit/react-native";
+import { AndroidAudioTypePresets, AudioSession, LiveKitRoom, useIOSAudioManagement, useRoomContext } from "@livekit/react-native";
 import { createLocalAudioTrack, createLocalVideoTrack, RoomEvent, Track } from "livekit-client";
 import { MediaStream, RTCView, registerGlobals } from "@livekit/react-native-webrtc";
 import * as Haptics from "expo-haptics";
@@ -32,17 +33,145 @@ import {
   endLive,
 } from "@/src/lib/liveStore";
 import { projectStore } from "@/src/lib/projectStore";
-import { getSnapshot } from "@/src/lib/messagesStore";
-import { feedRemoveWhere } from "@/src/lib/homeFeedStore";
+import { getSnapshot, subscribe as subscribeMessages } from "@/src/lib/messagesStore";
+import { feedList, feedRemoveWhere, feedScheduleSlotsForLive, getRingClaimHints, syncUserClaimedSlotStore, writeRingClaimHint, subscribe as subscribeHomeFeed, clearScheduleClaimRuntimeState } from "@/src/lib/homeFeedStore";
+import { onClaimUpdated } from "@/src/lib/kristoProfileEvents";
+import {
+  getLiveJoinBridge,
+  publishLiveEnded,
+  publishLiveJoin,
+  publishLivePolicy,
+  subscribeLiveJoin,
+  syncClaimedMemberToLiveRoom,
+  type LiveJoinRequest,
+  type LiveRequestPolicy,
+} from "@/src/lib/liveBridge";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import { apiGet, apiPatch, apiPost } from "@/src/lib/kristoApi";
-import { loadProfileDraft } from "@/src/lib/profileStore";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { apiGet, apiPatch, apiPost, getApiBase } from "@/src/lib/kristoApi";
+import {
+  fetchLightLiveState,
+  messagesListSignature,
+  paginateMessages,
+  preloadLiveImages,
+  resolveCachedLiveAvatar,
+  resolveChurchLiveStateUpdate,
+  startAdaptiveLivePolling,
+} from "@/src/lib/liveRealtime";
+import { getKristoHeaders, type KristoRole } from "@/src/lib/kristoHeaders";
+import {
+  applyFastLiveStageAuthorityBoost,
+  evaluateFastLiveSessionAuthority,
+  evaluateLiveMediaAuthority,
+  evaluateLiveStageAuthority,
+  isScheduleSlotCameraWindowOpen,
+  logMediaLiveV1StageAuthority,
+  logLiveMediaAuthority,
+  resolveFastActiveSlotWindow,
+} from "@/src/lib/liveMediaAuthority";
+import {
+  fetchChurchPastorUserId,
+  logChurchPastorResolution,
+} from "@/src/lib/churchPastorResolver";
+import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
+import {
+  applyRingClaimHintsToScheduleSlots,
+  enrichScheduleSlotsFromLiveRequests,
+  mergeLiveRoomScheduleSlots,
+  normalizeLiveScheduleSlots,
+  repairLiveMainStageSlotTimes,
+  baseFeedId,
+  isBackendFeedScheduleId,
+  parseLiveAllScheduleSlotsJson,
+  resolveLiveScheduleFeedId,
+  resolvePersistedClaimAvatarUri,
+  resolveMediaSlotClaimedAvatar,
+  buildLiveRoomSlotDisplayQueue,
+  sanitizePersistedClaimAvatarUri,
+  utf8JsonByteLength,
+  cleanFeedLabel,
+} from "@/src/lib/scheduleSlotUtils";
+import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
+import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
+import {
+  endLiveBridgeForStaleScheduleFeedId,
+  shouldIgnoreRouteSlotsForBackendFeedId,
+} from "@/src/lib/staleBackendZeroSlotGuard";
+import { ensureProfileAvatarUploadedBeforeClaim } from "@/src/lib/ensureProfileAvatarForClaim";
+import { runMediaScheduleSilentReload } from "@/src/lib/mediaScheduleSilentReload";
+import {
+  pauseHomeFeedBackgroundWorkForLiveNavigation,
+  resumeHomeFeedAfterLiveExit,
+} from "@/src/lib/liveRoomStartup";
+import { markHomeFeedVideoNeedsRecovery } from "@/src/lib/homeFeedVideoController";
 import {
   getChurchProjectMcRuntime,
   getChurchProjectMcLiveSlotState,
 } from "@/src/store/churchProjectMcScheduleStore";
+
+function isKristoChurchIdLabel(value: unknown) {
+  return /^CH\d+-[A-Z0-9]+$/i.test(String(value || "").trim());
+}
+
+function cleanLiveRoomLabel(raw: unknown, fallback = "") {
+  const s = String(raw || "").trim();
+  if (!s || isKristoChurchIdLabel(s)) return fallback;
+  return cleanFeedLabel(s, fallback);
+}
+
+function resolveLiveRoomHeaderLabel(input: {
+  mediaName?: string;
+  churchName?: string;
+  churchLabel?: string;
+  title?: string;
+  rawTitle?: string;
+  actorLabel?: string;
+  sessionChurchName?: string;
+}) {
+  const ordered: Array<[string, unknown]> = [
+    ["mediaName", input.mediaName],
+    ["churchName", input.churchName],
+    ["churchLabel", input.churchLabel],
+    ["sessionChurchName", input.sessionChurchName],
+    ["actorLabel", input.actorLabel],
+    ["title", input.title],
+    ["rawTitle", input.rawTitle],
+  ];
+
+  for (const [source, raw] of ordered) {
+    const label = cleanLiveRoomLabel(raw);
+    if (label) {
+      console.log("KRISTO_LIVE_HEADER_LABEL_RESOLVED", { source, label });
+      return label;
+    }
+  }
+
+  const fallback = "Church Live";
+  console.log("KRISTO_LIVE_HEADER_LABEL_RESOLVED", { source: "fallback", label: fallback });
+  return fallback;
+}
+
+function collectClaimedAvatarCandidates(slot: any): string[] {
+  const claimedBy = slot?.claimedBy;
+  return [
+    slot?.claimedByAvatarUri,
+    slot?.claimedByAvatar,
+    slot?.claimedByAvatarUrl,
+    claimedBy?.avatarUri,
+    claimedBy?.avatarUrl,
+    claimedBy?.profileImage,
+    claimedBy?.photoURL,
+    claimedBy?.image,
+    slot?.avatarUri,
+    slot?.avatarUrl,
+    slot?.avatar,
+    slot?.profileImage,
+    slot?.photoURL,
+    slot?.image,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
 
 
 
@@ -55,6 +184,9 @@ registerGlobals();
 (globalThis as any).__KRISTO_DISABLE_LIVEKIT__ = false;
 (globalThis as any).__KRISTO_LIVEKIT_STAGE_LOCKS__ =
   (globalThis as any).__KRISTO_LIVEKIT_STAGE_LOCKS__ || new Set();
+
+(globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ =
+  (globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ || new Set();
 
 
 
@@ -138,6 +270,45 @@ function subscribeKristoActualMicEnabled(fn: (enabled: boolean) => void) {
   };
 }
 
+function logLivePerf(stage: string, extra?: Record<string, unknown>) {
+  const mountAt = Number((globalThis as any).__KRISTO_LIVE_ROOM_PERF_MOUNT_AT__ || 0);
+  console.log("KRISTO_LIVE_PERF", {
+    stage,
+    msSinceMount: mountAt > 0 ? Date.now() - mountAt : 0,
+    ...(extra || {}),
+  });
+}
+
+async function fetchLightLiveStateWithPerf(
+  headers: Record<string, string>,
+  screen: string,
+  liveId: string | undefined,
+  source: string
+) {
+  logLivePerf("fetchLightLiveState_start", { source, liveId: liveId || "" });
+  logLivePerf("api_church_live_start", { source, liveId: liveId || "" });
+  try {
+    const patch = await fetchLightLiveState(headers as any, screen, liveId);
+    logLivePerf("api_church_live_end", { source, liveId: liveId || "", ok: true });
+    logLivePerf("fetchLightLiveState_end", { source, liveId: liveId || "", ok: true });
+    return patch;
+  } catch (e: any) {
+    logLivePerf("api_church_live_end", {
+      source,
+      liveId: liveId || "",
+      ok: false,
+      message: String(e?.message || e),
+    });
+    logLivePerf("fetchLightLiveState_end", {
+      source,
+      liveId: liveId || "",
+      ok: false,
+      message: String(e?.message || e),
+    });
+    throw e;
+  }
+}
+
 // LiveKit browser detector calls navigator.userAgent.toLowerCase() during publishTrack.
 // React Native/Hermes can have navigator without userAgent, so force a safe string.
 // React Native browser polyfills needed by LiveKit audio internals.
@@ -187,9 +358,8 @@ gAny.document.head = gAny.document.head || { appendChild: () => {}, removeChild:
 
 
 if (!gAny.navigator) gAny.navigator = {};
-if (typeof gAny.navigator.userAgent !== "string") {
-  gAny.navigator.userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1";
-}
+gAny.navigator.product = "ReactNative";
+gAny.navigator.userAgent = "ReactNative";
 
 if (typeof gAny.Event === "undefined") {
   gAny.Event = class Event {
@@ -212,13 +382,148 @@ const GOLD = "#D9B35F";
 const BORDER = "rgba(255,255,255,0.10)";
 
 
-function forceKristoLiveCleanup(reason = "unknown") {
+function stopKristoLiveKitRoomTracks(room: any) {
+  if (!room) return;
+
   try {
-    console.log("KRISTO_FORCE_STOP_LIVE_MEDIA", { reason });
+    const lp = room.localParticipant;
+    const pubs = lp?.trackPublications;
+    if (pubs?.forEach) {
+      pubs.forEach((pub: any) => {
+        try {
+          pub?.track?.stop?.();
+        } catch {}
+      });
+    }
+  } catch {}
+
+  try {
+    const state = String(room?.state || "");
+    if (state === "connected" || state === "connecting" || state === "reconnecting") {
+      room.disconnect?.();
+    }
+  } catch {}
+}
+
+function clearKristoLiveKitGlobalsForSession(options?: {
+  userId?: string;
+  roomName?: string;
+  accountSwitch?: boolean;
+  forceReentry?: boolean;
+}) {
+  const g = globalThis as any;
+  const userId = String(options?.userId || "").trim();
+  const roomName = String(options?.roomName || "").trim();
+  const unlockReentry = !!options?.forceReentry || !!options?.accountSwitch;
+
+  if (roomName && String(g.__KRISTO_ACTIVE_PUBLISHER_ROOM__ || "") === roomName) {
+    g.__KRISTO_ACTIVE_PUBLISHER_ROOM__ = "";
+  }
+
+  if (unlockReentry) {
+    g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+  } else if (userId && roomName) {
+    const publisherKey = `${roomName}|${userId}`;
+    if (String(g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ || "") === publisherKey) {
+      g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+    }
+  } else if (options?.accountSwitch) {
+    g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+  }
+
+  const locks = g.__KRISTO_LIVEKIT_STAGE_LOCKS__;
+  if (locks instanceof Set) {
+    if (options?.accountSwitch || unlockReentry) {
+      for (const key of Array.from(locks)) {
+        const keyText = String(key || "");
+        if (
+          (userId && keyText.endsWith(`|${userId}`)) ||
+          (roomName && keyText.startsWith(`${roomName}|`))
+        ) {
+          locks.delete(key);
+        }
+      }
+    } else if (userId && roomName) {
+      locks.delete(`${roomName}|${userId}`);
+    }
+  }
+
+  const retryKeys = g.__KRISTO_VIEWER_JOIN_RETRY_KEYS__;
+  if (retryKeys instanceof Set) {
+    if ((options?.accountSwitch || unlockReentry) && userId && roomName) {
+      retryKeys.delete(`${roomName}|${userId}`);
+    }
+  }
+
+  try {
+    if (g.__KRISTO_SET_LOCAL_MIC_MUTED__) {
+      delete g.__KRISTO_SET_LOCAL_MIC_MUTED__;
+    }
+  } catch {}
+
+  if (unlockReentry) {
+    g.__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = 0;
+    g.__KRISTO_DISABLE_LIVEKIT__ = false;
+    g.__KRISTO_LIVEKIT_ERROR_LOCK__ = false;
+  } else if (options?.accountSwitch) {
+    g.__KRISTO_LIVEKIT_ERROR_LOCK__ = false;
+  }
+}
+
+function forceKristoLiveCleanup(
+  reason = "unknown",
+  options?: {
+    userId?: string;
+    roomName?: string;
+    accountSwitch?: boolean;
+    forceReentry?: boolean;
+  }
+) {
+  const shouldUnlockReentry =
+    !!options?.forceReentry ||
+    !!options?.accountSwitch ||
+    reason === "leave-live-room" ||
+    reason === "quit-live-room";
+
+  try {
+    console.log("KRISTO_FORCE_STOP_LIVE_MEDIA", {
+      reason,
+      userId: options?.userId || "",
+      roomName: options?.roomName || "",
+      accountSwitch: !!options?.accountSwitch,
+      forceReentry: shouldUnlockReentry,
+    });
 
     (globalThis as any).__KRISTO_LIVE_ACTIVE__ = false;
     (globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ = 0;
   } catch {}
+
+  try {
+    stopKristoLiveKitRoomTracks((globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__);
+    (globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__ = undefined;
+  } catch {}
+
+  try {
+    clearKristoLiveKitGlobalsForSession({
+      ...options,
+      forceReentry: shouldUnlockReentry,
+    });
+  } catch {}
+
+  if (shouldUnlockReentry) {
+    try {
+      const g = globalThis as any;
+      g.__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = 0;
+      g.__KRISTO_DISABLE_LIVEKIT__ = false;
+      g.__KRISTO_LIVEKIT_ERROR_LOCK__ = false;
+      g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+      console.log("KRISTO_LIVE_REENTRY_UNLOCKED", {
+        reason,
+        roomName: String(options?.roomName || ""),
+        userId: String(options?.userId || ""),
+      });
+    } catch {}
+  }
 
   try {
     AudioSession.stopAudioSession().catch(() => {});
@@ -243,27 +548,6 @@ type LiveGuest = {
   avatar?: string;
 };
 
-type LiveRequestPolicy = "auto" | "approval" | "invite" | "members" | "locked";
-
-
-type LiveJoinRequest = {
-  name: string;
-  avatar: string;
-  approved: boolean;
-  onStage?: boolean;
-  joinedAt?: string;
-
-  claimNumber?: number;
-  seatType?: "viewer" | "moderator" | "mic-only" | "camera-mic" | "big-screen";
-};
-
-type LiveSeatType =
-  | "viewer"
-  | "moderator"
-  | "mic-only"
-  | "camera-mic"
-  | "big-screen";
-
 function resolveSeatType(slot: number, forceCamera = false): LiveSeatType {
   if (forceCamera && slot >= 1) return slot === 1 ? "big-screen" : "camera-mic";
 
@@ -280,63 +564,35 @@ function resolveSeatType(slot: number, forceCamera = false): LiveSeatType {
   return "viewer";
 }
 
+type LiveSeatType =
+  | "viewer"
+  | "moderator"
+  | "mic-only"
+  | "camera-mic"
+  | "big-screen";
 
-function getLiveJoinBridge() {
-  const g = globalThis as any;
-  if (!g.__kristoLiveJoinBridge) {
-    g.__kristoLiveJoinBridge = {
-      requestsByLiveId: {} as Record<string, Record<number, LiveJoinRequest>>,
-      listeners: new Set<() => void>(),
+function KristoLiveKitPerfConnected() {
+  const room = useRoomContext();
+
+  useEffect(() => {
+    if (!room) return;
+
+    const onConnected = () => {
+      logLivePerf("livekit_publisher_mount_end", { event: "connected" });
     };
-  }
-  return g.__kristoLiveJoinBridge as {
-    requestsByLiveId: Record<string, Record<number, LiveJoinRequest>>;
-    listeners: Set<() => void>;
-  };
+
+    if (String((room as any)?.state || "").toLowerCase() === "connected") {
+      onConnected();
+    }
+
+    room.on(RoomEvent.Connected, onConnected);
+    return () => {
+      room.off(RoomEvent.Connected, onConnected);
+    };
+  }, [room]);
+
+  return null;
 }
-
-function publishLiveEnded(liveId: string) {
-  const bridge = getLiveJoinBridge() as any;
-  bridge.endedByLiveId = bridge.endedByLiveId || {};
-  bridge.endedByLiveId[liveId] = true;
-  bridge.lastEndedLiveAt = Date.now();
-  bridge.requestsByLiveId[liveId] = {};
-  bridge.listeners.forEach((fn: () => void) => fn());
-}
-
-function publishLivePolicy(liveId: string, policy: LiveRequestPolicy) {
-  const bridge = getLiveJoinBridge() as any;
-  bridge.policiesByLiveId = bridge.policiesByLiveId || {};
-  bridge.policiesByLiveId[liveId] = policy;
-  bridge.listeners.forEach((fn: () => void) => fn());
-}
-
-function publishLiveJoin(liveId: string, slot: number, req: LiveJoinRequest) {
-  const bridge = getLiveJoinBridge();
-
-  const seatType = resolveSeatType(slot);
-
-  bridge.requestsByLiveId[liveId] = {
-    ...(bridge.requestsByLiveId[liveId] || {}),
-    [slot]: {
-      ...req,
-      claimNumber: slot,
-      seatType,
-    },
-  };
-  bridge.listeners.forEach((fn) => {
-    try { fn(); } catch {}
-  });
-}
-
-function subscribeLiveJoin(fn: () => void) {
-  const bridge = getLiveJoinBridge();
-  bridge.listeners.add(fn);
-  return () => {
-    bridge.listeners.delete(fn);
-  };
-}
-
 
 function KristoLiveKitStage({
   roomName,
@@ -373,6 +629,35 @@ function KristoLiveKitStage({
   
   const [livekitDisabled, setLivekitDisabled] = useState(false);
   const [stageMountAllowed, setStageMountAllowed] = useState(false);
+  const [liveKitRemountNonce, setLiveKitRemountNonce] = useState(0);
+  const liveKitPerfMountLoggedRef = useRef(false);
+
+  useEffect(() => {
+    if (liveKitPerfMountLoggedRef.current) return;
+    liveKitPerfMountLoggedRef.current = true;
+    logLivePerf("livekit_publisher_mount_start", { roomName, identity });
+  }, [roomName, identity]);
+
+  useEffect(() => {
+    AudioSession.configureAudio({
+      android: {
+        audioTypeOptions: AndroidAudioTypePresets.communication,
+      },
+    }).catch((e: any) => {
+      console.log("KRISTO_STAGE_AUDIO_CONFIGURE_ERROR", String(e?.message || e));
+    });
+
+    AudioSession.setDefaultRemoteAudioTrackVolume(1).catch((e: any) => {
+      console.log("KRISTO_STAGE_AUDIO_VOLUME_ERROR", String(e?.message || e));
+    });
+
+    AudioSession.startAudioSession().catch((e: any) => {
+      console.log("KRISTO_STAGE_AUDIO_START_ERROR", String(e?.message || e));
+    });
+
+    console.log("KRISTO_STAGE_AUDIO_SESSION_READY");
+  }, []);
+
 const headersKey = JSON.stringify(headers || {});
   const stableHeaders = useMemo(() => headers || {}, [headersKey]);
 
@@ -382,6 +667,33 @@ const headersKey = JSON.stringify(headers || {});
     stopLocalTrackOnUnpublish: true,
     disconnectOnPageLeave: false,
   }), []);
+
+  const stableConnectOptions = useMemo(() => ({
+    autoSubscribe: true,
+    maxRetries: 0,
+    websocketTimeout: 15000,
+  }), []);
+
+  const handleLiveKitError = React.useCallback((e: any) => {
+    if ((globalThis as any).__KRISTO_LIVEKIT_ERROR_LOCK__) {
+      return;
+    }
+    (globalThis as any).__KRISTO_LIVEKIT_ERROR_LOCK__ = true;
+
+    const message = String(e?.message || e || "");
+    console.log("KRISTO_LIVEKIT_ROOM_ERROR", { message });
+    if (
+      message.includes("429") ||
+      message.toLowerCase().includes("bad response") ||
+      message.toLowerCase().includes("signal connection")
+    ) {
+      (globalThis as any).__KRISTO_DISABLE_LIVEKIT__ = true;
+      (globalThis as any).__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = Date.now() + 120000;
+
+      setLivekitDisabled(true);
+      console.log("KRISTO_LIVEKIT_DISABLED_AFTER_FATAL_ERROR");
+    }
+  }, []);
 
   // CRITICAL:
   // LiveKit identity MUST stay stable for the lifetime of the room.
@@ -401,6 +713,23 @@ const headersKey = JSON.stringify(headers || {});
     () => publishIdentity,
     [publishIdentity]
   );
+
+  // Account switch / identity change: drop stale JWT and remount LiveKitRoom cleanly.
+  useEffect(() => {
+    setTokenState(null);
+    if (!(globalThis as any).__KRISTO_DISABLE_LIVEKIT__) {
+      setLivekitDisabled(false);
+    }
+    setLiveKitRemountNonce(0);
+  }, [stableIdentity, roomName]);
+
+  useEffect(() => {
+    const g = globalThis as any;
+    if (!g.__KRISTO_DISABLE_LIVEKIT__ && Number(g.__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ || 0) <= Date.now()) {
+      setLivekitDisabled(false);
+    }
+  }, [roomName, stableIdentity]);
+
   const identityText = String(
     publishIdentity || stableIdentity || ""
   );
@@ -499,6 +828,16 @@ const headersKey = JSON.stringify(headers || {});
       const wantsPublish =
         String(stableHeaders?.["x-kristo-live-may-publish"] || "") === "1";
 
+      logLivePerf("livekit_token_fetch_start", { roomName, identity: stableIdentity, wantsPublish });
+
+      console.log("KRISTO_LIVEKIT_PRELOAD_START", {
+        roomName,
+        identity: stableIdentity,
+        wantsPublish,
+        canPublishCamera,
+        canPublishMic,
+      });
+
       try {
         if ((globalThis as any).__KRISTO_DISABLE_LIVEKIT__ || Date.now() < Number((globalThis as any).__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ || 0)) {
           setLivekitDisabled(true);
@@ -546,18 +885,43 @@ const headersKey = JSON.stringify(headers || {});
           canPublishProp: canPublish,
           identity: stableIdentity,
           roomName,
+          apiBase: getApiBase(),
+          error: res?.ok ? undefined : String(res?.error || ""),
         });
 
         if (res?.ok && res?.url && res?.token) {
-          setTokenState({ url: String(res.url), token: String(res.token) });
+          const nextUrl = String(res.url);
+          const nextToken = String(res.token);
+          logLivePerf("livekit_token_fetch_end", {
+            roomName,
+            identity: stableIdentity,
+            ok: true,
+          });
+          setTokenState((prev) => {
+            if (prev?.url === nextUrl && prev?.token === nextToken) return prev;
+            return { url: nextUrl, token: nextToken };
+          });
+        } else {
+          logLivePerf("livekit_token_fetch_end", {
+            roomName,
+            identity: stableIdentity,
+            ok: false,
+          });
         }
       } catch (e: any) {
+        logLivePerf("livekit_token_fetch_end", {
+          roomName,
+          identity: stableIdentity,
+          ok: false,
+          message: String(e?.message || e),
+        });
         console.log("KRISTO_LIVEKIT_TOKEN_ERROR", {
           message: String(e?.message || e),
           wantsPublish,
           canPublishProp: canPublish,
           identity: stableIdentity,
           roomName,
+          apiBase: getApiBase(),
         });
       }
     }
@@ -615,41 +979,28 @@ const headersKey = JSON.stringify(headers || {});
 
   return (
     <LiveKitRoom
+      key={`${livekitRoomKey}|r${liveKitRemountNonce}`}
       serverUrl={tokenState.url}
       token={tokenState.token}
       connect={true}
-      onError={(e: any) => {
-        if ((globalThis as any).__KRISTO_LIVEKIT_ERROR_LOCK__) {
-          return;
-        }
-        (globalThis as any).__KRISTO_LIVEKIT_ERROR_LOCK__ = true;
-
-        const message = String(e?.message || e || "");
-        console.log("KRISTO_LIVEKIT_ROOM_ERROR", { message });
-        if (
-          message.includes("429") ||
-          message.toLowerCase().includes("bad response") ||
-          message.toLowerCase().includes("signal connection")
-        ) {
-          (globalThis as any).__KRISTO_DISABLE_LIVEKIT__ = true;
-          (globalThis as any).__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = Date.now() + 120000;
-
-          setLivekitDisabled(true);
-console.log("KRISTO_LIVEKIT_DISABLED_AFTER_FATAL_ERROR");
-        }
-      }}
-      // Disable LiveKit browser audio engine on React Native.
-      // We handle playback manually through WebRTC streams.
-      audio={false}
+      onError={handleLiveKitError}
+      // Keep audio enabled because this is the only path currently producing remote sound.
+      // TODO: remove AudioContext error separately without disabling playback.
+      audio={true}
       video={false}
-      connectOptions={{
-        autoSubscribe: true,
-        maxRetries: 0,
-        websocketTimeout: 15000,
-      } as any}
+      connectOptions={stableConnectOptions as any}
       options={liveKitOptions as any}
     >
       <KristoLiveKitCleanupGuard />
+      <KristoLiveKitPerfConnected />
+      <KristoLiveKitNativeRemoteAudio />
+      <KristoViewerJoinRetryWatch
+        enabled={!canPublish}
+        roomName={roomName}
+        identity={stableIdentity}
+        remountNonce={liveKitRemountNonce}
+        onRetry={() => setLiveKitRemountNonce((n) => (n > 0 ? n : 1))}
+      />
       <KristoRemoteOrLocalVideo
         // Child mic sync must not re-open mic when UI state is muted.
         // Only current big-screen speaker can have active mic.
@@ -658,10 +1009,10 @@ console.log("KRISTO_LIVEKIT_DISABLED_AFTER_FATAL_ERROR");
         // Mic state controlled manually via mediaStreamTrack.enabled.
         // Keep engine stable after connect.
         // Authority changes should only affect track.enabled.
-        canPublishMic={true}
-        canPublishCamera={true}
+        canPublishMic={canPublishMic}
+        canPublishCamera={canPublishCamera}
         renderLocalPreview={renderLocalPreview}
-        cameraFacing={"front"}
+        cameraFacing={cameraFacing}
         micMuted={effectiveMicMuted}
         cameraPaused={cameraPaused}
         style={style}
@@ -674,19 +1025,218 @@ console.log("KRISTO_LIVEKIT_DISABLED_AFTER_FATAL_ERROR");
 
 
 
+
+function KristoViewerJoinRetryWatch({
+  enabled,
+  roomName,
+  identity,
+  remountNonce,
+  onRetry,
+}: {
+  enabled: boolean;
+  roomName: string;
+  identity: string;
+  remountNonce: number;
+  onRetry: () => void;
+}) {
+  const room = useRoomContext();
+
+  useEffect(() => {
+    if (!enabled || !room || remountNonce > 0) return;
+
+    const retryKey = `${roomName}|${identity || "viewer"}`;
+    const retryKeys =
+      ((globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ as Set<string>) ||
+      new Set<string>();
+
+    (globalThis as any).__KRISTO_VIEWER_JOIN_RETRY_KEYS__ = retryKeys;
+
+    if (retryKeys.has(retryKey)) {
+      console.log("KRISTO_VIEWER_JOIN_RETRY_SKIPPED", { retryKey, reason: "already_used" });
+      return;
+    }
+
+    let alive = true;
+    let connected = false;
+    let hasRemoteAudio = false;
+    let disconnectedBeforeReady = false;
+
+    const hasUsableRemoteAudio = () => {
+      try {
+        if (!room?.remoteParticipants) return false;
+        for (const participant of Array.from(room.remoteParticipants.values()) as any[]) {
+          const pubs = Array.from(participant?.trackPublications?.values?.() || []) as any[];
+          for (const pub of pubs) {
+            const track = pub?.track;
+            const kind = String(pub?.kind || track?.kind || "").toLowerCase();
+            if (kind === "audio" && (pub?.isSubscribed || track) && track?.mediaStreamTrack) {
+              return true;
+            }
+          }
+        }
+      } catch {}
+      return false;
+    };
+
+    const markReadyIfAudio = () => {
+      if (hasUsableRemoteAudio()) {
+        hasRemoteAudio = true;
+        console.log("KRISTO_VIEWER_JOIN_READY", {
+          retryKey,
+          remoteCount: room.remoteParticipants?.size || 0,
+          hasRemoteAudio: true,
+        });
+      }
+    };
+
+    const onConnected = () => {
+      connected = true;
+      markReadyIfAudio();
+    };
+
+    const onDisconnected = () => {
+      if (!hasRemoteAudio) disconnectedBeforeReady = true;
+    };
+
+    const onTrackSubscribed = (track: any) => {
+      if (String(track?.kind || "").toLowerCase() === "audio") {
+        hasRemoteAudio = true;
+        try {
+          track?.setVolume?.(1);
+          if (track?.mediaStreamTrack) track.mediaStreamTrack.enabled = true;
+        } catch {}
+        console.log("KRISTO_VIEWER_JOIN_READY", {
+          retryKey,
+          remoteCount: room.remoteParticipants?.size || 0,
+          hasRemoteAudio: true,
+        });
+      }
+    };
+
+    room.on(RoomEvent.Connected, onConnected);
+    room.on(RoomEvent.Disconnected, onDisconnected);
+    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+
+    console.log("KRISTO_VIEWER_JOIN_WATCH_START", { retryKey, roomName });
+
+    const t = setTimeout(() => {
+      if (!alive) return;
+
+      markReadyIfAudio();
+
+      const remoteCount = room.remoteParticipants?.size || 0;
+      const ready = hasRemoteAudio || hasUsableRemoteAudio();
+
+      if (ready) {
+        console.log("KRISTO_VIEWER_JOIN_RETRY_SKIPPED", { retryKey, reason: "ready", remoteCount });
+        return;
+      }
+
+      if ((globalThis as any).__KRISTO_DISABLE_LIVEKIT__) {
+        console.log("KRISTO_VIEWER_JOIN_RETRY_SKIPPED", { retryKey, reason: "disabled" });
+        return;
+      }
+
+      const reason = disconnectedBeforeReady
+        ? "disconnected_before_ready"
+        : connected
+          ? (remoteCount <= 0 ? "no_remote_participants" : "no_remote_audio")
+          : "not_connected";
+
+      retryKeys.add(retryKey);
+      console.log("KRISTO_VIEWER_JOIN_NOT_READY", { retryKey, reason, remoteCount, connected });
+      console.log("KRISTO_VIEWER_JOIN_RETRY_ONCE", { retryKey, remountNonce: 1 });
+      onRetry();
+    }, 8000);
+
+    return () => {
+      alive = false;
+      clearTimeout(t);
+      room.off(RoomEvent.Connected, onConnected);
+      room.off(RoomEvent.Disconnected, onDisconnected);
+      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    };
+  }, [enabled, room, roomName, identity, remountNonce, onRetry]);
+
+  return null;
+}
+
+
+function KristoLiveKitNativeRemoteAudio() {
+  const room = useRoomContext();
+
+  useIOSAudioManagement(room as any, true);
+
+  useEffect(() => {
+    if (!room) return;
+
+    AudioSession.configureAudio({
+      android: {
+        audioTypeOptions: AndroidAudioTypePresets.communication,
+      },
+    }).catch((e: any) => {
+      console.log("KRISTO_AUDIO_SESSION_CONFIGURE_ERROR", String(e?.message || e));
+    });
+
+    AudioSession.setDefaultRemoteAudioTrackVolume(1).catch((e: any) => {
+      console.log("KRISTO_AUDIO_DEFAULT_REMOTE_VOLUME_ERROR", String(e?.message || e));
+    });
+
+    AudioSession.startAudioSession().catch((e: any) => {
+      console.log("KRISTO_AUDIO_SESSION_START_ERROR", String(e?.message || e));
+    });
+
+    console.log("KRISTO_NATIVE_REMOTE_AUDIO_READY");
+  }, [room]);
+
+  useEffect(() => {
+    if (!room) return;
+
+    const primeRemoteAudio = (track: any) => {
+      if (String(track?.kind || "").toLowerCase() !== "audio") return;
+      try {
+        track?.setVolume?.(1);
+        if (track?.mediaStreamTrack) track.mediaStreamTrack.enabled = true;
+      } catch (e: any) {
+        console.log("KRISTO_NATIVE_REMOTE_AUDIO_PRIME_ERROR", String(e?.message || e));
+      }
+    };
+
+    const onTrackSubscribed = (track: any) => primeRemoteAudio(track);
+
+    const primeExistingRemoteAudio = () => {
+      room.remoteParticipants.forEach((participant: any) => {
+        participant.trackPublications.forEach((pub: any) => {
+          if (pub?.track) primeRemoteAudio(pub.track);
+        });
+      });
+    };
+
+    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    room.on(RoomEvent.Connected, primeExistingRemoteAudio);
+
+    return () => {
+      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+      room.off(RoomEvent.Connected, primeExistingRemoteAudio);
+    };
+  }, [room]);
+
+  return null;
+}
+
 function KristoLiveKitCleanupGuard() {
   const room = useRoomContext();
 
   useEffect(() => {
-    return () => {
-      try {
-        // Stable room cleanup only.
-        // Do not force disconnect during slot/authority updates.
-      } catch {}
+    if (!room) return;
 
-      // Disabled room-unmount force cleanup.
-      // Prevent destroying active publisher during slot move.
-      // forceKristoLiveCleanup("room-unmount");
+    (globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__ = room;
+
+    return () => {
+      const held = (globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__;
+      if (held === room) {
+        (globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__ = undefined;
+      }
     };
   }, [room]);
 
@@ -713,7 +1263,6 @@ function KristoRemoteRoomVideo({
   useEffect(() => {
     try {
       const videoTrack: any = remoteVideoTrack?.mediaStreamTrack;
-      const audioTrack: any = remoteAudioTrack?.mediaStreamTrack;
 
       if (!videoTrack) return;
 
@@ -721,20 +1270,14 @@ function KristoRemoteRoomVideo({
       videoTrack.enabled = true;
       stream.addTrack(videoTrack as any);
 
-      // LiveKit native audio is disabled, so RTCView stream must include audio.
-      if (audioTrack) {
-        audioTrack.enabled = true;
-        stream.addTrack(audioTrack as any);
-      }
-
       const url = stream.toURL();
 
       console.log("KRISTO_REMOTE_COMBINED_AV_STREAM_READY", {
         hasURL: !!url,
         hasVideo: !!videoTrack,
-        hasAudio: !!audioTrack,
+        hasAudio: !!remoteAudioTrack?.mediaStreamTrack,
         videoReadyState: videoTrack?.readyState,
-        audioReadyState: audioTrack?.readyState,
+        audioReadyState: remoteAudioTrack?.mediaStreamTrack?.readyState,
       });
 
       setRemoteAvStreamURL(url);
@@ -759,29 +1302,7 @@ function KristoRemoteRoomVideo({
 
       if (kind === "audio") {
         setRemoteAudioTrack(track);
-
-        try {
-          // React Native has no HTMLAudioElement.
-          // Do NOT call track.attach() here; native WebRTC plays subscribed audio.
-          track?.setVolume?.(1);
-        } catch {}
-
-        try {
-          if (track?.mediaStreamTrack) {
-            track.mediaStreamTrack.enabled = true;
-
-          }
-          // removed: do not call LiveKit unmute() on unpublished track
-          track.setVolume?.(1);
-
-          console.log("KRISTO_REMOTE_AUDIO_READY", {
-            enabled: track.mediaStreamTrack?.enabled,
-            muted: track.mediaStreamTrack?.muted,
-            readyState: track.mediaStreamTrack?.readyState,
-          });
-        } catch (e: any) {
-          console.log("KRISTO_REMOTE_AUDIO_ERROR", { message: String(e?.message || e) });
-        }
+        return;
       }
 
       if (kind === "video") {
@@ -861,10 +1382,6 @@ function KristoRemoteRoomVideo({
             }
 
             if (String(track.kind).toLowerCase() === "audio") {
-              track.mediaStreamTrack.enabled = true;
-          // removed: do not call LiveKit unmute() on unpublished track
-              track.setVolume?.(1);
-
               setRemoteAudioTrack(track);
             }
           } catch (e) {
@@ -901,10 +1418,7 @@ function KristoRemoteRoomVideo({
       .on(RoomEvent.Reconnected, repick)
       .on(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
 
-    const timer = setInterval(pick, 4000);
-
     return () => {
-      clearInterval(timer);
       room
         .off(RoomEvent.TrackSubscribed, onTrackSubscribed)
         .off(RoomEvent.TrackPublished, repick)
@@ -1034,23 +1548,6 @@ function KristoRemoteOrLocalVideo({
   // Disabled duplicate mic sync effect.
   // Manual audio publish + mic button setter are now the only mic authority.
 
-
-  // Disabled:
-  // LiveKit RN audio manager internally touches AudioContext/browser audio APIs.
-  // Hermes/React Native crashes with AudioContext missing.
-  // Audio session is handled manually below.
-  // useIOSAudioManagement(room as any, true);
-
-  useEffect(() => {
-    if (!room) return;
-
-    AudioSession.startAudioSession().catch((e: any) => {
-      console.log("KRISTO_AUDIO_SESSION_START_ERROR", String(e?.message || e));
-    });
-
-    console.log("KRISTO_AUDIO_SESSION_STARTED");
-  }, [room]);
-
   const [localVideoTrack, setLocalVideoTrack] = useState<any>(null);
 
   
@@ -1073,8 +1570,10 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
   }, []);
 
 
+  const wantsLocalStage = renderLocalPreview || canPublishCamera;
+
   useEffect(() => {
-    if (!room || !canPublishCamera) return;
+    if (!room || !wantsLocalStage) return;
 
     const syncLocalCamera = () => {
       try {
@@ -1116,7 +1615,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         clearInterval(t);
       }
     };
-  }, [room]);
+  }, [room, wantsLocalStage]);
 
   
   useEffect(() => {
@@ -1192,7 +1691,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       room.off(RoomEvent.Connected, enableMicWhenConnected);
       try { localAudioTrack?.stop?.(); } catch {}
     };
-  }, [room]);
+  }, [room, canPublishMic, micMuted]);
 
 
   useEffect(() => {
@@ -1201,6 +1700,20 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     // This prevents big-screen mic from opening and then being forced off again.
     return;
   }, [room, canPublishMic, micMuted]);
+
+  useEffect(() => {
+    try {
+      const existingCameraPub =
+        (room as any)?.localParticipant?.getTrackPublication?.(Track.Source.Camera) ||
+        Array.from((room as any)?.localParticipant?.trackPublications?.values?.() || []).find((pub: any) =>
+          String(pub?.source || "").toLowerCase().includes("camera")
+        );
+      (globalThis as any).__KRISTO_LIVE_CAMERA_FLIP_STATE__ = {
+        hasLocalTrack: !!localVideoTrackRef.current,
+        isPublishing: !!existingCameraPub?.track || !!existingCameraPub?.videoTrack,
+      };
+    } catch {}
+  }, [room, localVideoTrack, canPublishCamera]);
 
   useEffect(() => {
     if (!room || !canPublishCamera) return;
@@ -1219,6 +1732,10 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
 
       videoPublishBusyRef.current = true;
 
+      const fromFacing = videoFacingRef.current || "";
+      const isFlip = fromFacing === "front" || fromFacing === "back";
+      let isPublishing = false;
+
       try {
         const existingCameraPub =
           (room as any)?.localParticipant?.getTrackPublication?.(Track.Source.Camera) ||
@@ -1231,6 +1748,8 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
           existingCameraPub?.track ||
           existingCameraPub?.videoTrack ||
           null;
+
+        isPublishing = !!existingCameraPub?.track || !!existingCameraPub?.videoTrack;
 
         if (existingTrack && videoFacingRef.current === cameraFacing) {
           setLocalVideoTrack(existingTrack);
@@ -1266,11 +1785,30 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         setLocalVideoTrack(localTrack);
 
         console.log("KRISTO_MANUAL_PUBLISH_TRACK_DONE", { cameraFacing });
+
+        if (isFlip && fromFacing !== cameraFacing) {
+          console.log("KRISTO_LIVE_CAMERA_FLIP_SUCCESS", {
+            fromFacing,
+            toFacing: cameraFacing,
+            hasLocalTrack: !!localTrack,
+            isPublishing: true,
+          });
+        }
       } catch (e: any) {
+        const error = String(e?.message || e);
         console.log("KRISTO_MANUAL_CAMERA_ERROR", {
           cameraFacing,
-          message: String(e?.message || e),
+          message: error,
         });
+        if (isFlip && fromFacing !== cameraFacing) {
+          console.log("KRISTO_LIVE_CAMERA_FLIP_FAILED", {
+            fromFacing,
+            toFacing: cameraFacing,
+            hasLocalTrack: !!localVideoTrackRef.current,
+            isPublishing,
+            error,
+          });
+        }
       } finally {
         videoPublishBusyRef.current = false;
       }
@@ -1329,22 +1867,40 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     }
   }, [localVideoTrack, cameraPaused]);
 
-  if (canPublishCamera) {
-    if (localPreviewURL && !cameraPaused) {
-      return (
-        <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]}>
-          <RTCView
-            key={`local-preview-stable-${localPreviewURL}`}
-            streamURL={localPreviewURL}
-            style={({ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, width: "100%", height: "100%", backgroundColor: "#000" } as any)}
-            mirror={cameraFacing === "front"}
-            objectFit={"cover" as any}
-            zOrder={999}
-          />
-        </View>
-      );
-    }
+  const shouldShowLocalPreview =
+    wantsLocalStage && !!localPreviewURL && !cameraPaused;
 
+  if (shouldShowLocalPreview) {
+    console.log("KRISTO_BIG_STAGE_LOCAL_PREVIEW", {
+      renderLocalPreview,
+      canPublishCamera,
+      hasUrl: !!localPreviewURL,
+    });
+    console.log("KRISTO_LIVEKIT_PREVIEW_READY", {
+      hasUrl: !!localPreviewURL,
+      cameraFacing,
+    });
+    return (
+      <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]}>
+        <RTCView
+          key={`local-preview-${cameraFacing}-${localPreviewURL}`}
+          streamURL={localPreviewURL}
+          style={({ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, width: "100%", height: "100%", backgroundColor: "#000" } as any)}
+          mirror={cameraFacing === "front"}
+          objectFit={"cover" as any}
+          zOrder={999}
+        />
+      </View>
+    );
+  }
+
+  if (wantsLocalStage) {
+    console.log("KRISTO_LIVE_BLACKSCREEN_GUARD", {
+      hasUrl: !!localPreviewURL,
+      cameraPaused,
+      renderLocalPreview,
+      canPublishCamera,
+    });
     return <>{fallback}</>;
   }
 
@@ -1365,7 +1921,24 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
 export default function LiveRoomScreen() {
   const [cameraPaused, setCameraPaused] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [liveKitAccountEpoch, setLiveKitAccountEpoch] = useState(0);
+  const prevSessionUserIdRef = useRef("");
+  const liveRoomMountAtRef = useRef(0);
+  const liveRoomBootstrapAtRef = useRef(0);
+  const liveRoomReadyLoggedRef = useRef(false);
+  const livePerfFirstRenderLoggedRef = useRef(false);
+  const livePerfInteractLoggedRef = useRef(false);
+  const livePerfScheduleMergeLoggedRef = useRef(false);
+  const liveFastAuthInitialLoggedRef = useRef(false);
+  const liveFastAuthResolutionLoggedRef = useRef(false);
+
+  if (!liveRoomMountAtRef.current) {
+    liveRoomMountAtRef.current = Date.now();
+    (globalThis as any).__KRISTO_LIVE_ROOM_PERF_MOUNT_AT__ = liveRoomMountAtRef.current;
+  }
+  const [livePerfPermissionsDone, setLivePerfPermissionsDone] = useState(false);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   const { session } = useKristoSession();
 
@@ -1387,7 +1960,177 @@ export default function LiveRoomScreen() {
       ])
     ).start();
   }, []);
-  const params = useLocalSearchParams<{ title?: string; role?: string; layout?: string; pinnedGuestId?: string; membersCount?: string; leadersCount?: string; projectId?: string; assignmentId?: string; preview?: string; entryMode?: string; source?: string; liveMode?: string; liveId?: string; mediaName?: string; audienceRequests?: string; room?: string; pastorUserId?: string; churchName?: string; churchLabel?: string; churchId?: string; claimedByName?: string }>();
+  const params = useLocalSearchParams<{
+    title?: string;
+    role?: string;
+    layout?: string;
+    pinnedGuestId?: string;
+    membersCount?: string;
+    leadersCount?: string;
+    projectId?: string;
+    assignmentId?: string;
+    preview?: string;
+    entryMode?: string;
+    source?: string;
+    liveMode?: string;
+    liveId?: string;
+    mediaName?: string;
+    audienceRequests?: string;
+    room?: string;
+    pastorUserId?: string;
+    churchName?: string;
+    churchLabel?: string;
+    churchId?: string;
+    claimedByName?: string;
+    liveAllScheduleSlotsJson?: string;
+    feedId?: string;
+    sourceScheduleId?: string;
+    localScheduleId?: string;
+    canPublish?: string;
+  }>();
+
+  const liveRouteChurchId = String((params as any)?.churchId || session?.churchId || "").trim();
+  const routePublisherEligibleEarly =
+    String((params as any)?.canPublish || "") === "1" ||
+    String((params as any)?.canPublishCamera || "") === "1" ||
+    String((params as any)?.mediaSlotPublisher || "") === "1";
+  const routeClaimedByUserIdEarly = String((params as any)?.claimedByUserId || "").trim();
+  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(() => {
+    const uid = String(session?.userId || "").trim();
+    if (
+      routePublisherEligibleEarly &&
+      uid &&
+      routeClaimedByUserIdEarly &&
+      routeClaimedByUserIdEarly === uid
+    ) {
+      return true;
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    if (!liveRouteChurchId) {
+      setChurchSubscriptionActive(null);
+      return;
+    }
+
+    let alive = true;
+    void fetchChurchSubscriptionActive(
+      liveRouteChurchId,
+      getKristoHeaders({
+        ...(session || {}),
+        churchId: liveRouteChurchId,
+      } as any)
+    ).then((active) => {
+      if (alive) setChurchSubscriptionActive(active);
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [liveRouteChurchId, session?.userId, session?.role, (session as any)?.churchRole]);
+
+  const initialRouteScheduleSlots = useMemo(
+    () => parseLiveAllScheduleSlotsJson((params as any).liveAllScheduleSlotsJson),
+    [(params as any).liveAllScheduleSlotsJson]
+  );
+
+  useEffect(() => {
+    return () => {
+      resumeHomeFeedAfterLiveExit();
+      markHomeFeedVideoNeedsRecovery("live-room-exit");
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (livePerfFirstRenderLoggedRef.current) return;
+    livePerfFirstRenderLoggedRef.current = true;
+    logLivePerf("first_render");
+  }, []);
+
+  useEffect(() => {
+    liveRoomReadyLoggedRef.current = false;
+    const routeSlotCount = initialRouteScheduleSlots.length;
+    const routeSlotsRaw = String((params as any)?.liveAllScheduleSlotsJson || "");
+    const routeSlotsByteLen = utf8JsonByteLength(routeSlotsRaw);
+    const ringNavAt = Number((globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ || 0);
+    logLivePerf("router_navigation_received", {
+      sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
+      feedId: String((params as any)?.feedId || ""),
+      liveId: String((params as any)?.liveId || ""),
+    });
+    logLivePerf("component_mount", {
+      sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
+    });
+    pauseHomeFeedBackgroundWorkForLiveNavigation("live-room-mount");
+    console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_SIZE", {
+      byteLen: routeSlotsByteLen,
+      charLen: routeSlotsRaw.length,
+      slotCount: routeSlotCount,
+    });
+    console.log("KRISTO_LIVE_ROOM_MOUNT_START", {
+      at: liveRoomMountAtRef.current,
+      sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
+    });
+
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const paintAt = Date.now();
+        console.log("KRISTO_LIVE_ROOM_FIRST_PAINT", {
+          at: paintAt,
+          sinceMountMs: paintAt - liveRoomMountAtRef.current,
+          sinceRingNavMs: ringNavAt ? paintAt - ringNavAt : null,
+        });
+        logLivePerf("first_paint", {
+          sinceRingNavMs: ringNavAt ? paintAt - ringNavAt : null,
+        });
+      });
+    });
+
+    console.log("KRISTO_LIVE_ROOM_PARAMS_RECEIVED", {
+      feedId: String((params as any)?.feedId || ""),
+      liveId: String((params as any)?.liveId || ""),
+      localScheduleId: String((params as any)?.localScheduleId || ""),
+      sourceScheduleId: String((params as any)?.sourceScheduleId || ""),
+      churchId: String((params as any)?.churchId || ""),
+      liveMode: String((params as any)?.liveMode || ""),
+      entryMode: String((params as any)?.entryMode || ""),
+      hasRouteSlots: routeSlotCount > 0,
+      routeSlotCount,
+      isBackendFeedId: isBackendFeedScheduleId(
+        String((params as any)?.feedId || (params as any)?.liveId || "")
+      ),
+    });
+
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, []);
+
+  useEffect(() => {
+    AudioSession.configureAudio({
+      android: {
+        audioTypeOptions: AndroidAudioTypePresets.communication,
+      },
+    }).catch(() => {});
+    AudioSession.startAudioSession().catch(() => {});
+
+    const fastOpenSlotsRaw = String((params as any)?.liveAllScheduleSlotsJson || "");
+    console.log("KRISTO_LIVE_ROOM_FAST_OPEN", {
+      liveId: String((params as any)?.liveId || ""),
+      feedId: String((params as any)?.feedId || ""),
+      sourceScheduleId: String((params as any)?.sourceScheduleId || ""),
+      churchId: String((params as any)?.churchId || session?.churchId || ""),
+      routeSlotJsonLen: fastOpenSlotsRaw.length,
+      routeSlotByteLen: utf8JsonByteLength(fastOpenSlotsRaw),
+      currentSlotNumber: String((params as any)?.currentSlotNumber || ""),
+      claimedSlotNumber: String((params as any)?.claimedSlotNumber || ""),
+      canPublish: String((params as any)?.canPublish || ""),
+      layout: String(params.layout || ""),
+    });
+  }, []);
 
   const rawTitle = String(params.title || "Youth");
   const liveSource = String(params.source || "").trim().toLowerCase();
@@ -1397,68 +2140,162 @@ export default function LiveRoomScreen() {
   const isMinistryInstantLive = liveSource === "ministry" && String(params.liveMode || "").trim().toLowerCase() === "instant";
   const mediaName = String(params.mediaName || rawTitle || "Kristo").trim();
   const [backendChurchLive, setBackendChurchLive] = useState<any>(null);
+  const [resolvedActualChurchPastorUserId, setResolvedActualChurchPastorUserId] = useState("");
+  const [memberAvatarByUserId, setMemberAvatarByUserId] = useState<Record<string, string>>({});
+  const [resolvedAvatarByUserId, setResolvedAvatarByUserId] = useState<Record<string, string>>({});
+  const [liveProfileAvatarUri, setLiveProfileAvatarUri] = useState("");
+
+  const liveProfileName = useMemo(() => {
+    return (
+      String(
+        (session as any)?.displayName ||
+        (session as any)?.fullName ||
+        (session as any)?.name ||
+        (session as any)?.username ||
+        ""
+      ).trim() ||
+      String(mediaName || "").trim() ||
+      "Live Host"
+    );
+  }, [
+    session?.userId,
+    (session as any)?.displayName,
+    (session as any)?.fullName,
+    (session as any)?.name,
+    (session as any)?.username,
+    mediaName,
+  ]);
 
   useEffect(() => {
     let alive = true;
 
-    async function loadChurchLive() {
-      if (!session?.userId || !session?.churchId || !isMediaInstantLive) return;
-      try {
-        const res: any = await apiGet("/api/church/live", {
-          headers: getKristoHeaders({
-            userId: session.userId,
-            role: (session.role || "Member") as any,
-            churchId: session.churchId || "",
-          }),
-        });
-        if (alive && res?.removedFromLive === true) {
-          setBackendChurchLive(null);
-          setJoinRequestsBySlot({});
-          setHostRequestCard(null);
-          setVipGuestCardSlot(null);
-          setRequestListOpen(false);
-          router.replace("/(tabs)" as any);
-          return;
-        }
+    async function resolvePastor() {
+      const churchId = String(session?.churchId || (params as any).churchId || "").trim();
+      if (!churchId) return;
 
-        if (alive && res?.ok) {
-          setBackendChurchLive(res.live || null);
+      const scheduleCreator = String(
+        (params as any).scheduleCreatedByUserId ||
+        (params as any).createdByUserId ||
+        ""
+      ).trim();
+      const routePastor = String(
+        (params as any).actualChurchPastorUserId ||
+        (params as any).churchPastorUserId ||
+        ""
+      ).trim();
+      const backendPastor = String(backendChurchLive?.actualChurchPastorUserId || "").trim();
 
-          if (res?.live?.requests && typeof res.live.requests === "object") {
-            setJoinRequestsBySlot(res.live.requests);
-          }
-        }
-      } catch {}
+      let actual = "";
+      let sourceField = "";
+
+      if (backendPastor && (!scheduleCreator || backendPastor !== scheduleCreator)) {
+        actual = backendPastor;
+        sourceField = "backendChurchLive.actualChurchPastorUserId";
+      } else if (routePastor && scheduleCreator && routePastor !== scheduleCreator) {
+        actual = routePastor;
+        sourceField = "route.actualChurchPastorUserId";
+      } else {
+        const res = await fetchChurchPastorUserId(
+          churchId,
+          getKristoHeaders({
+            userId: session?.userId || "",
+            role: (session?.role || "Member") as any,
+            churchId,
+          }) as any
+        );
+        actual = res.actualChurchPastorUserId;
+        sourceField = res.sourceField;
+      }
+
+      logChurchPastorResolution({
+        churchId,
+        actualChurchPastorUserId: actual,
+        sourceField,
+        scheduleCreatedByUserId: scheduleCreator,
+        currentUserId: String(session?.userId || ""),
+      });
+
+      if (alive) setResolvedActualChurchPastorUserId(actual);
     }
 
-    loadChurchLive();
-    const t = setInterval(loadChurchLive, 3000);
+    void resolvePastor();
     return () => {
       alive = false;
-      clearInterval(t);
     };
-  }, [session?.userId, session?.churchId, session?.role, isMediaInstantLive]);
+  }, [
+    session?.churchId,
+    session?.userId,
+    session?.role,
+    (params as any).churchId,
+    (params as any).actualChurchPastorUserId,
+    (params as any).churchPastorUserId,
+    (params as any).scheduleCreatedByUserId,
+    (params as any).createdByUserId,
+    backendChurchLive?.actualChurchPastorUserId,
+  ]);
+
+  const routePastorCandidate = String(
+    (params as any).actualChurchPastorUserId ||
+    (params as any).churchPastorUserId ||
+    ""
+  ).trim();
+  const routeScheduleCreator = String(
+    (params as any).scheduleCreatedByUserId ||
+    (params as any).createdByUserId ||
+    ""
+  ).trim();
+  const routePastorLooksLikeCreator =
+    !!routePastorCandidate &&
+    !!routeScheduleCreator &&
+    routePastorCandidate === routeScheduleCreator;
+
   const projectId = String(params.projectId || "").trim();
   const assignmentId = String(params.assignmentId || "").trim();
   const membersCount = Math.max(0, Number(params.membersCount || "26") || 26);
   const leadersCount = Math.max(0, Number(params.leadersCount || "4") || 4);
   const roleParam = String(params.role || "").trim();
   const normalizedRoleParam = String(roleParam || "").toLowerCase();
-  const backendPastorUserId = String(
-    backendChurchLive?.pastorUserId ||
-    (params as any).mediaOwnerPastorUserId ||
-    params.pastorUserId ||
-    ""
-  ).trim();
-
   const currentUserId = String(session?.userId || "").trim();
   const sessionRoleText = String((session as any)?.role || "").toLowerCase();
   const routeRoleText = String(roleParam || "").toLowerCase();
 
-  const mediaHostIds = String((params as any).mediaHostIds || "")
-    .split(/[,\s]+/)
-    .map((x) => x.trim())
-    .filter(Boolean);
+  const fastLiveAuthEarly = useMemo(
+    () =>
+      evaluateFastLiveSessionAuthority({
+        currentUserId,
+        sessionRoleText,
+        sessionChurchRole: String((session as any)?.churchRole || ""),
+        routePastorUserId: routePastorCandidate,
+        routeScheduleCreatorUserId: routeScheduleCreator,
+        routeClaimedByUserId: String((params as any)?.claimedByUserId || ""),
+      }),
+    [
+      currentUserId,
+      sessionRoleText,
+      (session as any)?.churchRole,
+      routePastorCandidate,
+      routeScheduleCreator,
+      (params as any)?.claimedByUserId,
+    ]
+  );
+
+  const liveMediaAuthority = evaluateLiveMediaAuthority({
+    currentUserId,
+    actualChurchPastorUserId: String(
+      fastLiveAuthEarly.trustedActualChurchPastorUserId ||
+      resolvedActualChurchPastorUserId ||
+      backendChurchLive?.actualChurchPastorUserId ||
+      (!routePastorLooksLikeCreator ? routePastorCandidate : "") ||
+      ""
+    ).trim(),
+    scheduleCreatedByUserId: routeScheduleCreator,
+    mediaHostIds: (params as any).mediaHostIds,
+    backendLivePastorUserId: String(backendChurchLive?.actualChurchPastorUserId || "").trim(),
+  });
+
+  const actualChurchPastorUserId = liveMediaAuthority.actualChurchPastorUserId;
+  const scheduleCreatedByUserId = liveMediaAuthority.scheduleCreatedByUserId;
+  const mediaHostIds = liveMediaAuthority.mediaHostIds;
 
   const isChurchLiveControlRoute =
     String(assignmentId || "").trim() === "church-media-room" ||
@@ -1479,12 +2316,7 @@ export default function LiveRoomScreen() {
     );
 
   const isMediaOwnerHost =
-    !!currentUserId &&
-    (
-      backendPastorUserId === currentUserId ||
-      mediaHostIds.includes(currentUserId) ||
-      isChurchLiveControlHost
-    );
+    liveMediaAuthority.isMediaOwnerHost || isChurchLiveControlHost;
 
   const routeCanPublishEarly =
     String((params as any).canPublish || "") === "1" ||
@@ -1502,10 +2334,9 @@ export default function LiveRoomScreen() {
     isMinistryLiveRoute &&
     routeCanPublishEarly &&
     (
-      backendPastorUserId === currentUserId ||
-      routeRoleText.includes("pastor") ||
-      routeRoleText.includes("admin") ||
-      routeRoleText.includes("leader")
+      actualChurchPastorUserId === currentUserId ||
+      liveMediaAuthority.isMediaScheduleCreator ||
+      liveMediaAuthority.isMediaHost
     );
 
   const isPastorLiveOwner = isMediaOwnerHost || isMinistryLiveHost;
@@ -1549,16 +2380,57 @@ export default function LiveRoomScreen() {
   }, [assignmentId, activeAssignment]);
 
   const liveScheduleReady = isMediaInstantLive || !projectId || !!activeAssignment;
-  const title = isMediaInstantLive ? mediaName : String(selectedAssignment?.title || rawTitle || "Youth");
+
+  const liveHeaderDisplayTitle = useMemo(
+    () =>
+      resolveLiveRoomHeaderLabel({
+        mediaName: String(params.mediaName || "").trim(),
+        churchName: String((params as any).churchName || "").trim(),
+        churchLabel: String((params as any).churchLabel || "").trim(),
+        title: String(params.title || "").trim(),
+        rawTitle,
+        actorLabel: String((params as any).actorLabel || "").trim(),
+        sessionChurchName: String((session as any)?.churchName || (session as any)?.churchLabel || "").trim(),
+      }),
+    [params.mediaName, (params as any).churchName, (params as any).churchLabel, params.title, rawTitle, (params as any).actorLabel, session]
+  );
+
+  const liveHeaderSubLine = useMemo(() => {
+    const churchLine = cleanLiveRoomLabel(
+      (params as any).churchName ||
+        (params as any).churchLabel ||
+        (session as any)?.churchName ||
+        (session as any)?.churchLabel
+    );
+    const speaker = cleanLiveRoomLabel((params as any).claimedByName || (params as any).liveClaimName);
+    const parts = [churchLine, speaker ? `• ${speaker}` : ""].filter(Boolean);
+    return parts.join(" ").trim() || "LIVE";
+  }, [params, session]);
+
+  const title = isMediaInstantLive ? liveHeaderDisplayTitle : String(selectedAssignment?.title || liveHeaderDisplayTitle);
 
   const assignmentThreadId = String(selectedAssignment?.id || assignmentId || "").trim();
+
+  const [messageStoreTick, setMessageStoreTick] = useState(0);
+  const assignmentMessagesSigRef = useRef("");
+  useEffect(() => {
+    return subscribeMessages(() => {
+      if (!assignmentThreadId) return;
+      const snap = getSnapshot();
+      const arr = Array.isArray(snap.messages?.[assignmentThreadId]) ? snap.messages[assignmentThreadId] : [];
+      const sig = messagesListSignature(arr);
+      if (sig === assignmentMessagesSigRef.current) return;
+      assignmentMessagesSigRef.current = sig;
+      setMessageStoreTick((x) => x + 1);
+    });
+  }, [assignmentThreadId]);
 
   const assignmentThreadMessages = useMemo(() => {
     if (!assignmentThreadId) return [];
     const snap = getSnapshot();
     const arr = Array.isArray(snap.messages?.[assignmentThreadId]) ? snap.messages[assignmentThreadId] : [];
-    return arr;
-  }, [assignmentThreadId]);
+    return paginateMessages(arr, 80);
+  }, [assignmentThreadId, messageStoreTick]);
 
   const scheduleCards = useMemo(
     () =>
@@ -1900,45 +2772,300 @@ export default function LiveRoomScreen() {
     return { startMs, endMs };
   };
 
+  function isClaimedScheduleSlot(slot: any) {
+    const uid = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+    const name = String(slot?.claimedByName || slot?.claimedBy?.name || slot?.name || "").trim();
+    return !!uid || !!name;
+  }
 
-  const routeScheduleSlots = useMemo(() => {
-    try {
-      const rawParam = (params as any).liveAllScheduleSlotsJson;
-      const rawValue = Array.isArray(rawParam)
-        ? String(rawParam[rawParam.length - 1] || "")
-        : String(rawParam || "");
+  function isScheduleSlotExpired(slot: any, now: number) {
+    const endMs = Number(slot?.endMs || 0);
+    return Number.isFinite(endMs) && endMs > 0 && endMs <= now;
+  }
 
-      const raw = rawValue.trim();
-      if (!raw) return [];
+  function isScheduleSlotUpcoming(slot: any, now: number) {
+    if (isScheduleSlotExpired(slot, now)) return false;
+    const startMs = Number(slot?.startMs || 0);
+    return Number.isFinite(startMs) && startMs > 0 && now < startMs;
+  }
 
-      const jsonText = raw.startsWith("%") || raw.includes("%7B") || raw.includes("%5B")
-        ? decodeURIComponent(raw)
-        : raw;
+  function isScheduleSlotActiveNow(slot: any, now: number) {
+    const startMs = Number(slot?.startMs || 0);
+    const endMs = Number(slot?.endMs || 0);
+    return (
+      Number.isFinite(startMs) &&
+      Number.isFinite(endMs) &&
+      endMs > startMs &&
+      startMs > 0 &&
+      now >= startMs &&
+      now < endMs
+    );
+  }
 
-      const parsed = JSON.parse(jsonText);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-      console.log("KRISTO_ROUTE_SLOTS_PARSE_ERROR", e, {
-        rawType: typeof (params as any).liveAllScheduleSlotsJson,
-        rawPreview: String((params as any).liveAllScheduleSlotsJson || "").slice(0, 120),
-      });
-      return [];
-    }
-  }, [params]);
+  function liveStageSlotLogId(slot: any) {
+    return String(slot?.id || slot?.slotId || slot?.runtimeSlotKey || slot?.slot || slot?.slotNumber || "");
+  }
+
+  function liveRoomDisplaySlotKey(slot: any) {
+    const slotId = liveStageSlotLogId(slot);
+    if (slotId) return `id:${slotId}`;
+    const slotNumber = Number(slot?.slot || slot?.slotNumber || 0);
+    return slotNumber > 0 ? `num:${slotNumber}` : "";
+  }
+
 
   const [liveViewerPresence, setLiveViewerPresence] = useState<Record<string, any>>({});
-
+  const [feedScheduleTick, setFeedScheduleTick] = useState(0);
+  const claimRoomSyncRef = useRef("");
+  const backendLiveRequestsRef = useRef<Record<string, any>>({});
+  const [backendLiveRequests, setBackendLiveRequests] = useState<Record<string, any>>({});
   const [backendScheduleSlots, setBackendScheduleSlots] = useState<any[]>([]);
+  const [backendScheduleHydrated, setBackendScheduleHydrated] = useState(false);
   const [runtimeSlotOverrides, setRuntimeSlotOverrides] = useState<Record<string, any>>({});
-  const backendScheduleReady = backendScheduleSlots.length > 0 || routeScheduleSlots.length > 0;
+
+  const liveScheduleFeedId = useMemo(() => {
+    const paramFeedId = String((params as any)?.feedId || "").trim();
+    const paramSourceId = String((params as any)?.sourceScheduleId || "").trim();
+    const paramLiveId = String((params as any)?.liveId || "").trim();
+
+    for (const candidate of [paramFeedId, paramSourceId, paramLiveId]) {
+      if (!isBackendFeedScheduleId(candidate)) continue;
+      const canonical = baseFeedId(candidate) || candidate;
+      console.log("KRISTO_SCHEDULE_ID_NORMALIZED", {
+        context: "live-room",
+        seedIds: {
+          sourceScheduleId: paramSourceId,
+          feedId: paramFeedId,
+          liveId: paramLiveId,
+          localScheduleId: String((params as any)?.localScheduleId || ""),
+        },
+        canonicalId: canonical,
+        source: "route-feed-id",
+      });
+      return canonical;
+    }
+
+    const rows = feedList() as any[];
+    const resolved = resolveLiveScheduleFeedId(params as Record<string, unknown>, rows);
+    if (resolved) {
+      console.log("KRISTO_SCHEDULE_ID_NORMALIZED", {
+        context: "live-room",
+        seedIds: {
+          sourceScheduleId: paramSourceId,
+          feedId: paramFeedId,
+          liveId: paramLiveId,
+          localScheduleId: String((params as any)?.localScheduleId || ""),
+        },
+        canonicalId: resolved,
+        source: "feed-store-resolve",
+      });
+    }
+    return resolved;
+  }, [params, feedScheduleTick]);
+
+  const ignoreRouteSlotsForStaleBackend = useMemo(() => {
+    if (!liveScheduleFeedId || !isBackendFeedScheduleId(liveScheduleFeedId)) return false;
+    return shouldIgnoreRouteSlotsForBackendFeedId({
+      feedId: liveScheduleFeedId,
+      backendRows: backendScheduleHydrated ? [{ id: liveScheduleFeedId, scheduleSlots: backendScheduleSlots }] : [],
+      backendFeedLoaded: backendScheduleHydrated,
+      backendSlotCount: backendScheduleSlots.length,
+    });
+  }, [liveScheduleFeedId, backendScheduleHydrated, backendScheduleSlots]);
+
+  const routeScheduleSlots = useMemo(() => {
+    if (ignoreRouteSlotsForStaleBackend) {
+      return [];
+    }
+
+    if (initialRouteScheduleSlots.length) return initialRouteScheduleSlots;
+
+    const fromFeedStore = liveScheduleFeedId
+      ? feedScheduleSlotsForLive(liveScheduleFeedId)
+      : [];
+
+    return fromFeedStore;
+  }, [
+    ignoreRouteSlotsForStaleBackend,
+    initialRouteScheduleSlots,
+    liveScheduleFeedId,
+    feedScheduleTick,
+  ]);
+
+  // Preserve ring/nav slot before time-based stage resolution (fast lean route open).
+  const routeCurrentSlotNumber = useMemo(() => {
+    const fromCurrent = Number(String((params as any)?.currentSlotNumber || "").trim());
+    if (Number.isFinite(fromCurrent) && fromCurrent > 0) return fromCurrent;
+
+    const fromPreferred = Number(String((params as any)?.preferredSlotNumber || "").trim());
+    if (Number.isFinite(fromPreferred) && fromPreferred > 0) return fromPreferred;
+
+    const fromClaimed = Number(String((params as any)?.claimedSlotNumber || "").trim());
+    if (Number.isFinite(fromClaimed) && fromClaimed > 0) return fromClaimed;
+
+    return 0;
+  }, [
+    (params as any)?.currentSlotNumber,
+    (params as any)?.preferredSlotNumber,
+    (params as any)?.claimedSlotNumber,
+  ]);
+
+  const mergedScheduleSlots = useMemo(() => {
+    if (ignoreRouteSlotsForStaleBackend) {
+      return [];
+    }
+
+    const feedSlots = liveScheduleFeedId ? feedScheduleSlotsForLive(liveScheduleFeedId) : [];
+    const merged = mergeLiveRoomScheduleSlots(
+      backendScheduleSlots,
+      feedSlots,
+      routeScheduleSlots
+    );
+    const withHints = applyRingClaimHintsToScheduleSlots(
+      merged,
+      liveScheduleFeedId,
+      getRingClaimHints(),
+      feedList() as any[]
+    );
+    return enrichScheduleSlotsFromLiveRequests(
+      withHints,
+      backendLiveRequests,
+      liveScheduleFeedId || String((params as any)?.liveId || "")
+    );
+  }, [
+    ignoreRouteSlotsForStaleBackend,
+    backendScheduleSlots,
+    routeScheduleSlots,
+    liveScheduleFeedId,
+    feedScheduleTick,
+    backendLiveRequests,
+    (params as any)?.liveId,
+  ]);
+
+  useEffect(() => {
+    if (!ignoreRouteSlotsForStaleBackend || !liveScheduleFeedId) return;
+
+    console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_DROPPED_STALE", {
+      feedId: liveScheduleFeedId,
+      routeSlotCount: initialRouteScheduleSlots.length,
+      backendSlotCount: backendScheduleSlots.length,
+      localScheduleId: String((params as any)?.localScheduleId || ""),
+    });
+
+    clearScheduleClaimRuntimeState(liveScheduleFeedId);
+    endLiveBridgeForStaleScheduleFeedId(liveScheduleFeedId);
+    emitLiveRingRefresh("live-room-stale-backend-zero");
+  }, [
+    ignoreRouteSlotsForStaleBackend,
+    liveScheduleFeedId,
+    initialRouteScheduleSlots.length,
+    backendScheduleSlots.length,
+    (params as any)?.localScheduleId,
+  ]);
+
+  useEffect(() => {
+    if (livePerfScheduleMergeLoggedRef.current && mergedScheduleSlots.length === 0) return;
+    if (!livePerfScheduleMergeLoggedRef.current) {
+      livePerfScheduleMergeLoggedRef.current = true;
+      logLivePerf("schedule_merge_start");
+    }
+    logLivePerf("schedule_merge_done", {
+      mergedSlotCount: mergedScheduleSlots.length,
+      routeSlotCount: routeScheduleSlots.length,
+      backendSlotCount: backendScheduleSlots.length,
+    });
+  }, [
+    mergedScheduleSlots.length,
+    routeScheduleSlots.length,
+    backendScheduleSlots.length,
+  ]);
+
+  useEffect(() => {
+    const unsubFeed = subscribeHomeFeed(() => setFeedScheduleTick((v) => v + 1));
+    const unsubClaim = onClaimUpdated(() => setFeedScheduleTick((v) => v + 1));
+    return () => {
+      unsubFeed();
+      unsubClaim();
+    };
+  }, []);
+
+  const backendScheduleReady =
+    backendScheduleHydrated ||
+    mergedScheduleSlots.length > 0 ||
+    routeScheduleSlots.length > 0;
+
+  useEffect(() => {
+    if (isMediaInstantLive) return;
+    if (liveRoomBootstrapAtRef.current > 0) return;
+    liveRoomBootstrapAtRef.current = Date.now();
+    console.log("KRISTO_LIVE_ROOM_BOOTSTRAP_START", {
+      liveScheduleFeedId,
+      routeFeedId: String((params as any)?.feedId || (params as any)?.liveId || ""),
+      routeSlotCount: routeScheduleSlots.length,
+      mergedSlotCount: mergedScheduleSlots.length,
+    });
+  }, [
+    isMediaInstantLive,
+    liveScheduleFeedId,
+    routeScheduleSlots.length,
+    mergedScheduleSlots.length,
+    (params as any)?.feedId,
+    (params as any)?.liveId,
+  ]);
+
+  useEffect(() => {
+    if (!backendScheduleReady || liveRoomReadyLoggedRef.current) return;
+    liveRoomReadyLoggedRef.current = true;
+    const bootstrapAt = liveRoomBootstrapAtRef.current || liveRoomMountAtRef.current;
+    console.log("KRISTO_LIVE_ROOM_BOOTSTRAP_DONE", {
+      durationMs: Date.now() - bootstrapAt,
+      routeSlotCount: routeScheduleSlots.length,
+      mergedSlotCount: mergedScheduleSlots.length,
+      backendSlotCount: backendScheduleSlots.length,
+    });
+    const readySource =
+      ignoreRouteSlotsForStaleBackend
+        ? "backend-empty-ended"
+        : routeScheduleSlots.length > 0 && backendScheduleSlots.length === 0
+          ? "route-slots"
+          : backendScheduleSlots.length > 0
+            ? "backend"
+            : routeScheduleSlots.length > 0
+              ? "route-slots"
+              : backendScheduleHydrated
+                ? "backend"
+                : "route-slots";
+
+    console.log("KRISTO_LIVE_ROOM_READY", {
+      source: readySource,
+      liveScheduleFeedId,
+      liveBridgeId: String(
+        liveScheduleFeedId ||
+          (params as any)?.liveId ||
+          (params as any)?.feedId ||
+          (params as any)?.sourceScheduleId ||
+          ""
+      ),
+      slotCount: mergedScheduleSlots.length,
+      routeSlotCount: routeScheduleSlots.length,
+      backendSlotCount: backendScheduleSlots.length,
+    });
+  }, [
+    backendScheduleReady,
+    routeScheduleSlots.length,
+    mergedScheduleSlots.length,
+    backendScheduleSlots.length,
+    liveScheduleFeedId,
+    (params as any)?.feedId,
+    (params as any)?.liveId,
+    (params as any)?.sourceScheduleId,
+  ]);
 
   const getRuntimeSlotKey = (slot: any, index = 0) =>
     String(slot?.id || slot?.slot || slot?.slotNumber || slot?.order || index + 1);
 
   const runtimeScheduleSlots = useMemo(() => {
-    const sourceSlots = backendScheduleSlots.length ? backendScheduleSlots : routeScheduleSlots;
-
-    return sourceSlots.map((slot: any, index: number) => {
+    return normalizeLiveScheduleSlots(mergedScheduleSlots).map((slot: any, index: number) => {
       const key = getRuntimeSlotKey(slot, index);
       const patch = runtimeSlotOverrides[key] || {};
       return {
@@ -1948,12 +3075,19 @@ export default function LiveRoomScreen() {
         skipped: !!slot?.skipped || !!patch?.skipped,
       };
     });
-  }, [backendScheduleSlots, routeScheduleSlots, runtimeSlotOverrides]);
+  }, [mergedScheduleSlots, runtimeSlotOverrides]);
 
-  const currentMainStageSlot = useMemo(() => {
+  // AUTHORITY SOURCE OF TRUTH:
+  // When backend/runtime schedule exists, do NOT merge old activeStageSlots.
+  // This prevents login users from inheriting stale/ghost claimed slots.
+  const authorityStageSlots = runtimeScheduleSlots.length
+    ? runtimeScheduleSlots
+    : activeStageSlots;
+
+  const currentMainStageSlotRaw = useMemo(() => {
     const now = liveNowMs;
 
-    const allSlots = [...runtimeScheduleSlots, ...activeStageSlots]
+    const allSlots = authorityStageSlots
       .map((slot: any, index: number) => {
         const n = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
         const win = getScheduleSlotWindow(slot, index);
@@ -1964,7 +3098,7 @@ export default function LiveRoomScreen() {
           startMs: win.startMs,
           endMs: win.endMs,
           name: String(slot?.claimedByName || slot?.claimedBy?.name || slot?.name || `Guest ${n}`),
-          avatar: normalizeLiveImageUri(slot?.claimedByAvatar || slot?.claimedBy?.avatarUri || slot?.avatarUri || slot?.avatar || ""),
+          avatar: resolveParticipantAvatarUri(slot),
           claimedByUserId: String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim(),
           approved: true,
         };
@@ -1973,22 +3107,171 @@ export default function LiveRoomScreen() {
       .filter((slot: any) => !slot?.skipped)
       .sort((a: any, b: any) => Number(a.startMs || 0) - Number(b.startMs || 0));
 
-    const currentByTime = allSlots.find((slot: any) => {
-      return Number.isFinite(slot.startMs) && Number.isFinite(slot.endMs) && now >= slot.startMs && now <= slot.endMs;
-    });
+    const claimedSlots = allSlots.filter(isClaimedScheduleSlot);
 
-    if (currentByTime) return currentByTime;
+    const activeByTime = claimedSlots.find((slot: any) => isScheduleSlotActiveNow(slot, now));
+    if (activeByTime) return activeByTime;
 
-    // Auto-handoff:
-    // if current slot expired, immediately promote the next non-expired claimed slot.
-    const nextAfterExpired = allSlots.find((slot: any) => {
-      return Number.isFinite(slot.endMs) && Number(slot.endMs || 0) > now;
-    });
+    const hasTimedClaimedWindows = claimedSlots.some(
+      (slot: any) =>
+        Number(slot?.startMs || 0) > 0 &&
+        Number(slot?.endMs || 0) > Number(slot?.startMs || 0)
+    );
 
-    if (nextAfterExpired) return nextAfterExpired;
+    if (hasTimedClaimedWindows) {
+      return null;
+    }
+
+    // Bootstrap fallback when schedule slots lack usable time windows.
+    if (routeCurrentSlotNumber > 0 && (routeScheduleSlots.length > 0 || allSlots.length > 0)) {
+      const routeIndex = Math.max(0, routeCurrentSlotNumber - 1);
+      const routeSlotMatch =
+        routeScheduleSlots.find(
+          (slot: any) =>
+            Number(slot?.slot || slot?.slotNumber || slot?.order || 0) === routeCurrentSlotNumber
+        ) || routeScheduleSlots[routeIndex];
+
+      const byRouteNumber = allSlots.find(
+        (slot: any) => Number(slot?.slot || slot?.slotNumber || 0) === routeCurrentSlotNumber
+      );
+      if (byRouteNumber) {
+        if (routeSlotMatch) {
+          const routeWin = getScheduleSlotWindow(routeSlotMatch, routeIndex);
+          return {
+            ...routeSlotMatch,
+            ...byRouteNumber,
+            slot: routeCurrentSlotNumber,
+            slotNumber: routeCurrentSlotNumber,
+            order: Number(byRouteNumber?.order || routeSlotMatch?.order || routeCurrentSlotNumber),
+            startMs: Number(
+              byRouteNumber.startMs ||
+                routeSlotMatch.startMs ||
+                routeWin.startMs ||
+                0
+            ),
+            endMs: Number(
+              byRouteNumber.endMs ||
+                routeSlotMatch.endMs ||
+                routeWin.endMs ||
+                0
+            ),
+            claimedByUserId: String(
+              byRouteNumber.claimedByUserId ||
+                routeSlotMatch.claimedByUserId ||
+                routeSlotMatch?.claimedBy?.userId ||
+                ""
+            ).trim(),
+            name: String(
+              byRouteNumber.name ||
+                routeSlotMatch.claimedByName ||
+                routeSlotMatch.name ||
+                routeSlotMatch.title ||
+                `Guest ${routeCurrentSlotNumber}`
+            ),
+            avatar: resolveParticipantAvatarUri(byRouteNumber) || resolveParticipantAvatarUri(routeSlotMatch),
+            approved: true,
+          };
+        }
+        return byRouteNumber;
+      }
+
+      const routeSlot = routeSlotMatch;
+
+      if (routeSlot) {
+        const n = routeCurrentSlotNumber;
+        const win = getScheduleSlotWindow(routeSlot, routeIndex);
+        const routeOwnerId = String(
+          routeSlot?.claimedByUserId ||
+            routeSlot?.claimedBy?.userId ||
+            (params as any)?.claimedByUserId ||
+            ""
+        ).trim();
+        return {
+          ...routeSlot,
+          slot: n,
+          slotNumber: n,
+          order: Number(routeSlot?.order || n),
+          startMs: Number(routeSlot?.startMs || win.startMs || 0),
+          endMs: Number(routeSlot?.endMs || win.endMs || 0),
+          name: String(
+            routeSlot?.claimedByName ||
+              routeSlot?.name ||
+              routeSlot?.title ||
+              (params as any)?.claimedByName ||
+              `Guest ${n}`
+          ),
+          avatar: resolveParticipantAvatarUri(routeSlot),
+          claimedByUserId: routeOwnerId,
+          approved: true,
+        };
+      }
+
+      const routeOwnerId = String((params as any)?.claimedByUserId || "").trim();
+      if (routeOwnerId) {
+        const scheduleStartMs = Number((params as any)?.scheduleStartMs || 0);
+        const scheduleEndMs = Number((params as any)?.scheduleEndMs || 0);
+        return {
+          slot: routeCurrentSlotNumber,
+          slotNumber: routeCurrentSlotNumber,
+          order: routeCurrentSlotNumber,
+          startMs: scheduleStartMs > 0 ? scheduleStartMs : now,
+          endMs:
+            scheduleEndMs > scheduleStartMs
+              ? scheduleEndMs
+              : scheduleStartMs > 0
+                ? scheduleStartMs + 600000
+                : now + 600000,
+          name: String((params as any)?.claimedByName || (params as any)?.title || `Guest ${routeCurrentSlotNumber}`),
+          avatar: normalizeLiveImageUri((params as any)?.claimedByAvatar || ""),
+          claimedByUserId: routeOwnerId,
+          approved: true,
+        };
+      }
+    }
 
     return null;
-  }, [activeStageSlots, runtimeScheduleSlots, liveNowMs]);
+  }, [
+    authorityStageSlots,
+    liveNowMs,
+    memberAvatarByUserId,
+    resolvedAvatarByUserId,
+    liveProfileAvatarUri,
+    session?.userId,
+    params,
+    routeCurrentSlotNumber,
+    routeScheduleSlots,
+  ]);
+
+  const currentMainStageSlot = useMemo(() => {
+    const feedSlots = liveScheduleFeedId ? feedScheduleSlotsForLive(liveScheduleFeedId) : [];
+    return repairLiveMainStageSlotTimes({
+      slot: currentMainStageSlotRaw,
+      routeScheduleSlots,
+      runtimeScheduleSlots,
+      backendScheduleSlots,
+      mergedScheduleSlots,
+      feedScheduleSlots: feedSlots,
+      ringClaimHints: getRingClaimHints(),
+      routeParams: {
+        scheduleStartMs: Number((params as any)?.scheduleStartMs || 0),
+        scheduleEndMs: Number((params as any)?.scheduleEndMs || 0),
+        currentSlotNumber: routeCurrentSlotNumber,
+      },
+      liveScheduleFeedId,
+      context: "live-room",
+    });
+  }, [
+    currentMainStageSlotRaw,
+    routeScheduleSlots,
+    runtimeScheduleSlots,
+    backendScheduleSlots,
+    mergedScheduleSlots,
+    liveScheduleFeedId,
+    feedScheduleTick,
+    routeCurrentSlotNumber,
+    (params as any)?.scheduleStartMs,
+    (params as any)?.scheduleEndMs,
+  ]);
 
   const canAdvanceScheduleRuntime =
     roleLooksLikeHost;
@@ -2097,11 +3380,11 @@ export default function LiveRoomScreen() {
     /* debug log removed for live performance */
   }, [liveNowMs, currentMainStageSlot, activeStageSlots, claimedScheduleCards]);
 
-  const rawRouteCanPublish =
-    String((params as any).canPublish || "") === "1" ||
+  const rawRouteCanPublishMic =
+    String((params as any).canPublishMic || "") === "1" ||
     String((params as any).mediaSlotPublisher || "") === "1" ||
-    String((params as any).canPublishCamera || "") === "1" ||
-    String((params as any).canPublishMic || "") === "1";
+    String((params as any).canPublish || "") === "1";
+  const rawRouteCanPublishCamera = String((params as any).canPublishCamera || "") === "1";
 
   const routeMediaHostIds = String((params as any).mediaHostIds || "")
     .split(/[|,\s]+/g)
@@ -2111,22 +3394,33 @@ export default function LiveRoomScreen() {
   const isDeclaredMediaHostForThisLive =
     !!currentUserId && routeMediaHostIds.includes(String(currentUserId));
 
+  const routeClaimedByUserId = String((params as any)?.claimedByUserId || "").trim();
+  const routeClaimsOwnSlot =
+    !!currentUserId && routeClaimedByUserId === currentUserId;
+  const routeOwnsPublishedSlot =
+    routeClaimsOwnSlot &&
+    (rawRouteCanPublishMic || rawRouteCanPublishCamera || routePublisherEligibleEarly);
+
   // Never trust Pastor/Host role from another church/media.
   // For scheduled media live, route publish is valid only for this live owner/media hosts.
+  // V1 scheduled: route hints may prime mic session only — camera follows active-slot ownership.
   const routeCanPublish =
     isMediaInstantLive
-      ? rawRouteCanPublish
-      : rawRouteCanPublish &&
-        (isPastorLiveOwner || isMediaOwnerHost || isDeclaredMediaHostForThisLive);
+      ? rawRouteCanPublishMic || rawRouteCanPublishCamera
+      : routeOwnsPublishedSlot ||
+        (rawRouteCanPublishMic &&
+          (isPastorLiveOwner || isMediaOwnerHost || isDeclaredMediaHostForThisLive));
 
+  const runtimeCurrentSlotNumber = Number((currentMainStageSlot as any)?.slot || 0);
   const rawCurrentSlotOwnerId = String((currentMainStageSlot as any)?.claimedByUserId || "").trim();
-  const rawCurrentSlotNumber = Number((currentMainStageSlot as any)?.slot || 0);
+  const rawCurrentSlotNumber = runtimeCurrentSlotNumber;
 
   // Prevent backend refresh flicker from destroying live stage.
   // Keep last valid slot briefly while schedule refresh hydrates again.
   const stableCurrentSlotRef = useRef({
     slot: 0,
     ownerId: "",
+    endMs: 0,
     updatedAt: 0,
   });
 
@@ -2134,6 +3428,18 @@ export default function LiveRoomScreen() {
     stableCurrentSlotRef.current = {
       slot: rawCurrentSlotNumber,
       ownerId: rawCurrentSlotOwnerId,
+      endMs: Number(currentMainStageSlot?.endMs || 0),
+      updatedAt: Date.now(),
+    };
+  } else if (routeCurrentSlotNumber > 0 && routeScheduleSlots.length > 0) {
+    stableCurrentSlotRef.current = {
+      slot: routeCurrentSlotNumber,
+      ownerId: String(
+        rawCurrentSlotOwnerId ||
+          (params as any)?.claimedByUserId ||
+          ""
+      ).trim(),
+      endMs: Number(currentMainStageSlot?.endMs || 0),
       updatedAt: Date.now(),
     };
   }
@@ -2141,28 +3447,52 @@ export default function LiveRoomScreen() {
   const stableAgeMs =
     Date.now() - Number(stableCurrentSlotRef.current.updatedAt || 0);
 
+  const stableSlotStillLive =
+    Number(stableCurrentSlotRef.current.endMs || 0) <= 0 ||
+    liveNowMs <= Number(stableCurrentSlotRef.current.endMs || 0);
+
   const shouldHoldPreviousSlot =
     rawCurrentSlotNumber === 0 &&
     stableCurrentSlotRef.current.slot > 0 &&
-    stableAgeMs < 15000;
+    stableAgeMs < 15000 &&
+    stableSlotStillLive;
 
-  const currentSlotNumber = shouldHoldPreviousSlot
+  const resolvedSlotNumber = shouldHoldPreviousSlot
     ? stableCurrentSlotRef.current.slot
-    : rawCurrentSlotNumber;
+    : rawCurrentSlotNumber > 0
+      ? rawCurrentSlotNumber
+      : routeCurrentSlotNumber;
+
+  const currentSlotNumber = resolvedSlotNumber;
 
   const currentSlotOwnerId = shouldHoldPreviousSlot
     ? stableCurrentSlotRef.current.ownerId
-    : rawCurrentSlotOwnerId;
+    : rawCurrentSlotOwnerId ||
+      (resolvedSlotNumber === routeCurrentSlotNumber
+        ? String((params as any)?.claimedByUserId || "").trim()
+        : "");
+
+  const currentSlotStartMs = Number(currentMainStageSlot?.startMs || 0);
+  const currentSlotEndMs = Number(currentMainStageSlot?.endMs || 0);
 
   const isMyScheduledLiveTurn =
     !isMediaInstantLive &&
     !!currentSlotNumber &&
     !!currentSlotOwnerId &&
     !!currentUserId &&
-    currentSlotOwnerId === currentUserId;
+    currentSlotOwnerId === currentUserId &&
+    isScheduleSlotCameraWindowOpen(
+      {
+        claimedByUserId: currentSlotOwnerId,
+        startMs: currentSlotStartMs,
+        endMs: currentSlotEndMs,
+      },
+      currentUserId,
+      liveNowMs
+    );
 
   const myClaimedStageSlot = !isMediaInstantLive
-    ? [...activeStageSlots, ...runtimeScheduleSlots]
+    ? authorityStageSlots
         .map((slot: any, index: number) => {
           const win = getScheduleSlotWindow(slot, index);
 
@@ -2194,6 +3524,27 @@ export default function LiveRoomScreen() {
 
   const myClaimedSlotNumber = Number((myClaimedStageSlot as any)?.slot || 0);
 
+  // V1: every non-expired claimed slot grants mic (multiple claims per user allowed).
+  const myClaimedMicSlotNumbers = useMemo(() => {
+    if (isMediaInstantLive || !currentUserId) return [] as number[];
+
+    return authorityStageSlots
+      .map((slot: any, index: number) => {
+        const win = getScheduleSlotWindow(slot, index);
+        const slotNum = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+        return {
+          slot: slotNum,
+          startMs: win.startMs,
+          endMs: win.endMs,
+          claimedByUserId: String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim(),
+        };
+      })
+      .filter((slot: any) => slot.claimedByUserId === currentUserId)
+      .filter((slot: any) => slot.slot >= 1)
+      .filter((slot: any) => !Number(slot.endMs) || Number(slot.endMs) > liveNowMs)
+      .map((slot: any) => Number(slot.slot));
+  }, [authorityStageSlots, currentUserId, liveNowMs, isMediaInstantLive]);
+
   // Keep LiveKit publisher identity stable during slot reorder/move.
   // Prevent camera track destruction when slot temporarily changes.
   const stablePublisherSlotRef = useRef(0);
@@ -2219,289 +3570,740 @@ export default function LiveRoomScreen() {
     stablePublisherSlotRef.current || preferredStableSlot || 1
   );
 
+  // V1: request approval removed. Requests never grant mic/camera.
+  const approvedViewerStageSlot = null;
+  const approvedViewerSlotNumber = 0;
+  const approvedViewerSeatType = "viewer";
+  const approvedViewerCanMic = false;
+  const approvedViewerIsCurrentCameraTurn = false;
 
-  // Claimed user keeps mic/control before and after their slot,
-  // but camera is allowed only when their slot is the current live slot.
-  const myClaimedSeatType =
-    myClaimedSlotNumber > 0
-      ? resolveSeatType(
-          myClaimedSlotNumber,
-          isMyScheduledLiveTurn
-        )
-      : "viewer";
+  const liveStageAuthorityBase = evaluateLiveStageAuthority({
+    isMediaInstantLive,
+    currentUserId,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    currentSlotStartMs,
+    currentSlotEndMs,
+    nowMs: liveNowMs,
+    authority: liveMediaAuthority,
+    isDeclaredMediaHostForThisLive,
+    claimedMicSlotNumbers: myClaimedMicSlotNumbers,
+    approvedViewerCanMic,
+    approvedViewerIsCurrentCameraTurn,
+    isPastorLiveOwner,
+    roleLooksLikeHost,
+    approvedViewerSeatType,
+    churchSubscriptionActive,
+  });
 
-  // TikTok-style panel:
-  // all claimed stage people can publish mic;
-  // slots 2-5 can also publish camera;
-  // big screen still follows currentMainStageSlot.
-  const pastorPermanentMicNow =
-    !isMediaInstantLive &&
+  const fastLiveAuth = useMemo(
+    () =>
+      evaluateFastLiveSessionAuthority({
+        currentUserId,
+        sessionRoleText,
+        sessionChurchRole: String((session as any)?.churchRole || ""),
+        routePastorUserId: routePastorCandidate,
+        routeScheduleCreatorUserId: routeScheduleCreator,
+        routeClaimedByUserId,
+        currentSlotOwnerId,
+      }),
+    [
+      currentUserId,
+      sessionRoleText,
+      (session as any)?.churchRole,
+      routePastorCandidate,
+      routeScheduleCreator,
+      routeClaimedByUserId,
+      currentSlotOwnerId,
+    ]
+  );
+
+  const fastActiveSlotWindow = useMemo(
+    () =>
+      resolveFastActiveSlotWindow({
+        currentUserId,
+        currentSlotOwnerId,
+        currentSlotStartMs,
+        currentSlotEndMs,
+        routeClaimedByUserId,
+        routeScheduleStartMs: Number(String((params as any)?.scheduleStartMs || "").trim() || 0),
+        routeScheduleEndMs: Number(String((params as any)?.scheduleEndMs || "").trim() || 0),
+        nowMs: liveNowMs,
+      }),
+    [
+      currentUserId,
+      currentSlotOwnerId,
+      currentSlotStartMs,
+      currentSlotEndMs,
+      routeClaimedByUserId,
+      (params as any)?.scheduleStartMs,
+      (params as any)?.scheduleEndMs,
+      liveNowMs,
+    ]
+  );
+
+  const liveStageAuthority = applyFastLiveStageAuthorityBoost(liveStageAuthorityBase, {
+    isMediaInstantLive,
+    fastSession: fastLiveAuth,
+    fastSlotWindowOpen: fastActiveSlotWindow.windowOpen,
+    churchSubscriptionActive,
+    routePublisherEligible: routePublisherEligibleEarly,
+  });
+
+  const {
+    pastorPermanentMicNow,
+    mediaHostPermanentMicNow,
+    userOwnsCurrentActiveSlot,
+    userHasClaimedScheduleSlot,
+    userIsAmongFirstNineClaimedSlots,
+    canPublishClaimedMicNow,
+    canPublishClaimedCameraNow,
+    canPublishLiveVideoNow,
+  } = liveStageAuthority;
+
+  const isPastorForLiveRoom =
+    !!currentUserId &&
+    (liveMediaAuthority.isActualChurchPastor || actualChurchPastorUserId === currentUserId);
+
+  const isApprovedMediaHostForLiveRoom =
+    liveMediaAuthority.isMediaHost || isDeclaredMediaHostForThisLive;
+
+  const isChurchAdminForLiveRoom =
+    !!currentUserId &&
+    (sessionRoleText.includes("admin") || routeRoleText.includes("admin")) &&
     (
-      isPastorLiveOwner ||
       isMediaOwnerHost ||
-      isDeclaredMediaHostForThisLive
+      isPastorForLiveRoom ||
+      isApprovedMediaHostForLiveRoom ||
+      liveMediaAuthority.isMediaScheduleCreator
     );
 
-  const approvedViewerStageSlot = Object.entries(joinRequestsBySlot || {}).find(
-    ([, req]: any) =>
-      !!req?.approved &&
-      !!req?.onStage &&
-      String(req?.userId || "").trim() === String(session?.userId || "").trim()
-  );
+  const isSystemAdminForLiveRoom =
+    sessionRoleText.includes("system") ||
+    sessionRoleText.includes("superadmin") ||
+    routeRoleText.includes("system") ||
+    routeRoleText.includes("superadmin");
 
-  const approvedViewerSlotNumber = Number(approvedViewerStageSlot?.[0] || 0);
+  const isCurrentActiveSlotOwnerForLiveRoom =
+    !!currentUserId && !!userOwnsCurrentActiveSlot && !!isMyScheduledLiveTurn;
 
-  const approvedViewerSeatType =
-    approvedViewerSlotNumber > 0
-      ? resolveSeatType(approvedViewerSlotNumber)
-      : "viewer";
+  const canManageLiveHostActions =
+    churchSubscriptionActive === true &&
+    (isMediaInstantLive
+      ? !!(
+          isPastorForLiveRoom ||
+          isApprovedMediaHostForLiveRoom ||
+          isMediaOwnerHost ||
+          isChurchAdminForLiveRoom ||
+          isSystemAdminForLiveRoom
+        )
+      : !!(
+          isPastorForLiveRoom ||
+          isApprovedMediaHostForLiveRoom ||
+          isChurchAdminForLiveRoom ||
+          isSystemAdminForLiveRoom
+        ));
 
-  const approvedViewerCanMic =
-    isMediaInstantLive
-      ? approvedViewerSlotNumber > 0
-      : approvedViewerSeatType === "big-screen" ||
-        approvedViewerSeatType === "camera-mic" ||
-        approvedViewerSeatType === "mic-only";
+  const canSeeLiveHostControls =
+    isPastorForLiveRoom ||
+    isApprovedMediaHostForLiveRoom ||
+    isChurchAdminForLiveRoom ||
+    isSystemAdminForLiveRoom ||
+    isCurrentActiveSlotOwnerForLiveRoom;
 
-  // Claimed people visible on stage keep mic even when they are not the camera slot.
-  // V1 stage rule: up to 9 claimed slots can speak; only current camera slot publishes video.
-  const isMyVisibleClaimedMicSlot =
-    !!myClaimedSlotNumber &&
-    myClaimedSlotNumber >= 1 &&
-    myClaimedSlotNumber <= 9 &&
-    !!currentUserId &&
-    currentSlotOwnerId !== currentUserId
-      ? true
-      : !!myClaimedSlotNumber &&
-        myClaimedSlotNumber >= 1 &&
-        myClaimedSlotNumber <= 9 &&
-        !!currentUserId;
+  const canSeeActiveSlotOwnerPanel =
+    isCurrentActiveSlotOwnerForLiveRoom && !canManageLiveHostActions;
 
-  const canPublishClaimedMicNow =
-    isMediaInstantLive
-      ? (isPastorLiveOwner || roleLooksLikeHost || approvedViewerCanMic)
-      : pastorPermanentMicNow ||
-        approvedViewerCanMic ||
-        isMyVisibleClaimedMicSlot ||
-        (isMyScheduledLiveTurn &&
-          currentSlotOwnerId === currentUserId &&
-          (myClaimedSeatType === "big-screen" ||
-            myClaimedSeatType === "camera-mic" ||
-            myClaimedSeatType === "mic-only"));
+  const canManageLive = canManageLiveHostActions;
 
-  const approvedViewerIsCurrentCameraTurn =
-    !!currentSlotNumber &&
-    approvedViewerSlotNumber === currentSlotNumber &&
-    (approvedViewerSeatType === "big-screen" || approvedViewerSeatType === "camera-mic");
-
-  const myClaimedCanPublishCamera =
-    !!myClaimedSlotNumber &&
-    !!currentUserId &&
-    (
-      myClaimedSeatType === "big-screen" ||
-      myClaimedSeatType === "camera-mic"
-    );
-
-  const myClaimedIsCurrentCameraTurn =
-    isMyScheduledLiveTurn &&
-    currentSlotOwnerId === currentUserId &&
-    myClaimedCanPublishCamera;
-
-  const mediaOwnerCanOpenCameraWhenNoCurrentClaim =
-    !isMediaInstantLive &&
-    backendScheduleReady &&
-    isMediaOwnerHost &&
-    !currentSlotNumber;
-
-  const canPublishClaimedCameraNow =
-    isMediaInstantLive
-      ? (isPastorLiveOwner || roleLooksLikeHost || approvedViewerSeatType === "big-screen" || approvedViewerSeatType === "camera-mic")
-      : approvedViewerIsCurrentCameraTurn ||
-        myClaimedIsCurrentCameraTurn ||
-        mediaOwnerCanOpenCameraWhenNoCurrentClaim;
-
-  // Camera/video must NOT open just because pastor can keep mic authority.
-  // Video opens only for explicit route publish or claimed camera slot/time.
-  // Camera/video must open only for the user who owns the current camera slot.
-  // Pastor/host route authority may keep controls/mic, but must not force camera outside their scheduled slot.
-  const currentSlotIsMineForCamera =
-    !isMediaInstantLive &&
-    !!currentSlotNumber &&
-    !!currentSlotOwnerId &&
-    !!currentUserId &&
-    currentSlotOwnerId === currentUserId;
-
-  // Only the CURRENT active camera slot owner can publish video.
-  // Other claimed slots may keep mic, but must not publish camera.
-  const myPublisherSlotNumber = Number(
-    approvedViewerSlotNumber ||
-    myClaimedSlotNumber ||
-    myOwnClaimedSlotNumber ||
-    0
-  );
-
-  const activeCameraSeatIsMine =
-    Number(currentSlotNumber || 0) >= 1 &&
-    Number(currentSlotNumber || 0) <= 5 &&
-    myPublisherSlotNumber > 0 &&
-    Number(currentSlotNumber || 0) === myPublisherSlotNumber;
-
-  const canPublishLiveVideoNow =
-    canPublishClaimedCameraNow ||
-    currentSlotIsMineForCamera ||
-    activeCameraSeatIsMine;
-
-  // Scheduled media guest must not mount LiveKit publisher while slot is still hydrating as 0.
-  // This prevents mount -> unmount -> publish-after-disconnect race.
   const scheduledPublisherSlotReady =
     isMediaInstantLive ||
     !canPublishLiveVideoNow ||
-    !!currentSlotNumber;
+    (!!currentSlotNumber && userOwnsCurrentActiveSlot);
 
-  const ownsLiveMicSlot =
-    pastorPermanentMicNow ||
-    isMediaOwnerHost ||
-    !!myClaimedSlotNumber ||
-    !!myOwnClaimedSlotNumber ||
-    (
-      !!currentSlotNumber &&
-      !!currentSlotOwnerId &&
-      !!currentUserId &&
-      currentSlotOwnerId === currentUserId
+  const pastorCameraPolicyLogRef = useRef("");
+
+  useEffect(() => {
+    if (isMediaInstantLive || !liveMediaAuthority.isActualChurchPastor) return;
+
+    const hasClaimedSlot = userHasClaimedScheduleSlot || !!myClaimedStageSlot;
+    const mySlotStartMs = Number(
+      myClaimedStageSlot?.startMs || currentSlotStartMs || 0
     );
+    const mySlotEndMs = Number(myClaimedStageSlot?.endMs || currentSlotEndMs || 0);
+    const slotEnded = mySlotEndMs > 0 && liveNowMs >= mySlotEndMs;
+    const slotEarly = mySlotStartMs > liveNowMs;
 
-  // AUTHORITY: who is allowed to own a microphone.
-  // This is separate from mute/unmute UI state.
-  const canUseLiveMic =
-    pastorPermanentMicNow ||
-    isMediaOwnerHost ||
-    ownsLiveMicSlot;
+    let event = "";
+    let logKey = "";
+
+    if (!hasClaimedSlot) {
+      event = "KRISTO_LIVE_PASTOR_MIC_ONLY_NO_SLOT";
+      logKey = "mic-only-no-slot";
+    } else if (canPublishLiveVideoNow) {
+      event = "KRISTO_LIVE_SLOT_CAMERA_ALLOWED_NOW";
+      logKey = `camera-allowed-${currentSlotNumber}`;
+    } else if (slotEnded) {
+      event = "KRISTO_LIVE_SLOT_CAMERA_ENDED_DISABLED";
+      logKey = `camera-ended-${currentSlotNumber}`;
+    } else if (slotEarly || !userOwnsCurrentActiveSlot) {
+      event = "KRISTO_LIVE_SLOT_CAMERA_BLOCKED_EARLY";
+      logKey = `camera-blocked-${currentSlotNumber}-${mySlotStartMs}`;
+    }
+
+    if (!event || pastorCameraPolicyLogRef.current === logKey) return;
+    pastorCameraPolicyLogRef.current = logKey;
+
+    console.log(event, {
+      currentUserId,
+      currentSlotNumber,
+      currentSlotOwnerId,
+      hasClaimedSlot,
+      mySlotStartMs,
+      mySlotEndMs,
+      liveNowMs,
+      canPublishLiveVideoNow,
+      canPublishClaimedMicNow,
+      userOwnsCurrentActiveSlot,
+    });
+  }, [
+    isMediaInstantLive,
+    liveMediaAuthority.isActualChurchPastor,
+    userHasClaimedScheduleSlot,
+    myClaimedStageSlot,
+    canPublishLiveVideoNow,
+    canPublishClaimedMicNow,
+    userOwnsCurrentActiveSlot,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    currentSlotStartMs,
+    currentSlotEndMs,
+    liveNowMs,
+    currentUserId,
+  ]);
+
+  const canUseLiveMic = canPublishClaimedMicNow;
 
   // Sticky for the live session: token fetch must not follow per-tick camera/slot flags.
   const [liveKitSessionMayPublish, setLiveKitSessionMayPublish] = useState(
-    () =>
-      routeCanPublish ||
-      pastorPermanentMicNow ||
-      isMediaOwnerHost ||
-      isDeclaredMediaHostForThisLive
+    () => {
+      if (isMediaInstantLive) {
+        return routeCanPublishEarly;
+      }
+      if (routeOwnsPublishedSlot && routePublisherEligibleEarly) {
+        return true;
+      }
+      return (
+        fastLiveAuthEarly.trustedIsActualChurchPastor ||
+        fastLiveAuthEarly.trustedIsMediaScheduleCreator ||
+        fastLiveAuthEarly.trustedOwnsActiveSlot ||
+        isDeclaredMediaHostForThisLive ||
+        myClaimedMicSlotNumbers.length > 0
+      );
+    }
   );
 
   useEffect(() => {
     setLiveKitSessionMayPublish((prev) => {
       if (prev) return true;
+      if (isMediaInstantLive) {
+        return (
+          canPublishClaimedMicNow ||
+          canPublishLiveVideoNow ||
+          routeCanPublish ||
+          isPastorLiveOwner ||
+          roleLooksLikeHost
+        );
+      }
+      if (routeOwnsPublishedSlot && canPublishLiveVideoNow) return true;
       return (
-        canUseLiveMic ||
-        routeCanPublish ||
-        !!myClaimedSlotNumber ||
-        !!myOwnClaimedSlotNumber ||
-        approvedViewerCanMic ||
-        (isMediaInstantLive && (isPastorLiveOwner || roleLooksLikeHost))
+        canPublishClaimedMicNow ||
+        canPublishLiveVideoNow ||
+        fastLiveAuth.trustedIsActualChurchPastor ||
+        fastLiveAuth.trustedOwnsActiveSlot
       );
     });
   }, [
-    canUseLiveMic,
+    canPublishClaimedMicNow,
+    canPublishLiveVideoNow,
     routeCanPublish,
-    myClaimedSlotNumber,
-    myOwnClaimedSlotNumber,
-    approvedViewerCanMic,
+    routeOwnsPublishedSlot,
     isMediaInstantLive,
     isPastorLiveOwner,
     roleLooksLikeHost,
+    fastLiveAuth.trustedIsActualChurchPastor,
+    fastLiveAuth.trustedOwnsActiveSlot,
   ]);
 
-  // Mic publisher readiness must not wait on currentSlotNumber during schedule hydration.
-  const liveMicPublisherReady =
-    canUseLiveMic &&
-    (
-      isMediaInstantLive ||
-      !canPublishLiveVideoNow ||
-      !!currentSlotNumber ||
-      !!myClaimedSlotNumber ||
-      !!myOwnClaimedSlotNumber
+  const liveMicPublisherReady = canPublishClaimedMicNow;
+
+  // Mic override is mic-only; must not imply camera.
+  const liveKitMicOverrideReady = canPublishClaimedMicNow;
+
+  // Publisher LiveKit mount: mic-eligible OR current camera slot owner.
+  const mountLiveKitPublisherStage = canPublishClaimedMicNow || canPublishLiveVideoNow;
+
+  useEffect(() => {
+    if (liveFastAuthInitialLoggedRef.current) return;
+    liveFastAuthInitialLoggedRef.current = true;
+    console.log("KRISTO_LIVE_FAST_AUTH_INITIAL", {
+      currentUserId,
+      trustedIsActualChurchPastor: fastLiveAuth.trustedIsActualChurchPastor,
+      trustedIsMediaScheduleCreator: fastLiveAuth.trustedIsMediaScheduleCreator,
+      trustedOwnsActiveSlot: fastLiveAuth.trustedOwnsActiveSlot,
+      fastSlotWindowOpen: fastActiveSlotWindow.windowOpen,
+      canPublishLiveVideoNow,
+      canPublishClaimedCameraNow,
+      mountLiveKitPublisherStage,
+      liveKitSessionMayPublish,
+      reasons: fastLiveAuth.reasons,
+    });
+  }, [
+    currentUserId,
+    fastLiveAuth,
+    fastActiveSlotWindow.windowOpen,
+    canPublishLiveVideoNow,
+    canPublishClaimedCameraNow,
+    mountLiveKitPublisherStage,
+    liveKitSessionMayPublish,
+  ]);
+
+  useEffect(() => {
+    if (!resolvedActualChurchPastorUserId || liveFastAuthResolutionLoggedRef.current) return;
+
+    const resolvedIsPastor = resolvedActualChurchPastorUserId === currentUserId;
+    const fastWasPastor = fastLiveAuth.trustedIsActualChurchPastor;
+
+    if (resolvedIsPastor && fastWasPastor) {
+      liveFastAuthResolutionLoggedRef.current = true;
+      console.log("KRISTO_LIVE_FAST_AUTH_CONFIRMED", {
+        currentUserId,
+        resolvedActualChurchPastorUserId,
+        canPublishLiveVideoNow,
+        mountLiveKitPublisherStage,
+      });
+      return;
+    }
+
+    if (!resolvedIsPastor && fastWasPastor) {
+      liveFastAuthResolutionLoggedRef.current = true;
+      console.log("KRISTO_LIVE_FAST_AUTH_DOWNGRADED", {
+        currentUserId,
+        resolvedActualChurchPastorUserId,
+        canPublishLiveVideoNow,
+        mountLiveKitPublisherStage,
+      });
+      return;
+    }
+
+    if (resolvedIsPastor && !fastWasPastor) {
+      liveFastAuthResolutionLoggedRef.current = true;
+      console.log("KRISTO_LIVE_FAST_AUTH_CONFIRMED", {
+        currentUserId,
+        resolvedActualChurchPastorUserId,
+        lateConfirm: true,
+        canPublishLiveVideoNow,
+        mountLiveKitPublisherStage,
+      });
+    }
+  }, [
+    resolvedActualChurchPastorUserId,
+    currentUserId,
+    fastLiveAuth.trustedIsActualChurchPastor,
+    canPublishLiveVideoNow,
+    mountLiveKitPublisherStage,
+  ]);
+
+  useEffect(() => {
+    logMediaLiveV1StageAuthority("live-room", liveStageAuthority, {
+      isMediaInstantLive,
+      currentSlotNumber,
+      currentSlotOwnerId,
+      currentUserId,
+      claimedMicSlotNumbers: myClaimedMicSlotNumbers,
+      routeCurrentSlotNumber,
+      userHasClaimedScheduleSlot,
+    });
+    console.log("KRISTO_LIVE_CURRENT_SLOT_RESOLVED", {
+      routeCurrentSlotNumber,
+      runtimeCurrentSlotNumber,
+      resolvedSlotNumber: currentSlotNumber,
+      currentSlotOwnerId,
+      currentUserId,
+      userOwnsCurrentActiveSlot,
+      hasRouteSlots: routeScheduleSlots.length > 0,
+      currentMainStageSlot: currentMainStageSlot
+        ? {
+            slot: currentMainStageSlot.slot,
+            claimedByUserId: currentMainStageSlot.claimedByUserId,
+            startMs: currentMainStageSlot.startMs,
+            endMs: currentMainStageSlot.endMs,
+          }
+        : null,
+    });
+    console.log("KRISTO_LIVE_AUTH_RULES", {
+      isMediaInstantLive,
+      pastorPermanentMicNow,
+      mediaHostPermanentMicNow,
+      userOwnsCurrentActiveSlot,
+      userHasClaimedScheduleSlot,
+      userIsAmongFirstNineClaimedSlots,
+      canPublishClaimedMicNow,
+      canPublishClaimedCameraNow,
+      canPublishLiveVideoNow,
+      liveKitSessionMayPublish,
+      mountLiveKitPublisherStage,
+      liveKitMicOverrideReady,
+      scheduledPublisherSlotReady,
+    });
+    console.log("KRISTO_LIVE_CLAIMED_SLOTS_FOR_USER", {
+      currentUserId,
+      myClaimedMicSlotNumbers,
+      myClaimedSlotNumber,
+      myOwnClaimedSlotNumber,
+    });
+    console.log("KRISTO_LIVE_CURRENT_CAMERA_OWNER", {
+      currentSlotNumber,
+      currentSlotOwnerId,
+      userOwnsCurrentActiveSlot,
+      currentMainStageSlot: currentMainStageSlot
+        ? {
+            slot: currentMainStageSlot.slot,
+            claimedByUserId: currentMainStageSlot.claimedByUserId,
+            startMs: currentMainStageSlot.startMs,
+            endMs: currentMainStageSlot.endMs,
+          }
+        : null,
+    });
+    console.log("KRISTO_LIVE_MIC_AUTHORITY", {
+      canPublishClaimedMicNow,
+      liveKitMicOverrideReady,
+      liveMicPublisherReady,
+      canUseLiveMic,
+    });
+    console.log("KRISTO_LIVE_CAMERA_AUTHORITY", {
+      canPublishClaimedCameraNow,
+      canPublishLiveVideoNow,
+      scheduledPublisherSlotReady,
+      userOwnsCurrentActiveSlot,
+      currentSlotStartMs,
+      currentSlotEndMs,
+      liveNowMs,
+    });
+    if (
+      currentSlotStartMs > 0 &&
+      currentSlotEndMs > currentSlotStartMs &&
+      canPublishLiveVideoNow
+    ) {
+      console.log("KRISTO_LIVE_CAMERA_GATE_READY_WITH_TIME", {
+        currentSlotNumber,
+        currentSlotOwnerId,
+        currentSlotStartMs,
+        currentSlotEndMs,
+        liveNowMs,
+        canPublishLiveVideoNow,
+      });
+    }
+    console.log("KRISTO_ACTIVE_SLOT_OWNER", {
+      currentSlotNumber,
+      currentSlotOwnerId,
+      currentUserId,
+      userOwnsCurrentActiveSlot,
+      currentMainStageSlot: currentMainStageSlot
+        ? {
+            slot: currentMainStageSlot.slot,
+            claimedByUserId: currentMainStageSlot.claimedByUserId,
+            claimedByName: currentMainStageSlot.claimedByName || currentMainStageSlot.name,
+          }
+        : null,
+    });
+    console.log("KRISTO_CAMERA_AUTH_FINAL", {
+      canPublishLiveVideoNow,
+      canPublishClaimedCameraNow,
+      userOwnsCurrentActiveSlot,
+      liveKitSessionMayPublish,
+      mountLiveKitPublisherStage,
+      scheduledPublisherSlotReady,
+    });
+    console.log("KRISTO_STAGE_AUTHORITY", liveStageAuthority);
+  }, [
+    isMediaInstantLive,
+    pastorPermanentMicNow,
+    mediaHostPermanentMicNow,
+    userOwnsCurrentActiveSlot,
+    userHasClaimedScheduleSlot,
+    userIsAmongFirstNineClaimedSlots,
+    canPublishClaimedMicNow,
+    canPublishClaimedCameraNow,
+    canPublishLiveVideoNow,
+    liveKitSessionMayPublish,
+    liveStageAuthority,
+    myClaimedMicSlotNumbers,
+    mountLiveKitPublisherStage,
+    liveKitMicOverrideReady,
+    scheduledPublisherSlotReady,
+    currentUserId,
+    myClaimedSlotNumber,
+    myOwnClaimedSlotNumber,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    currentMainStageSlot,
+    routeCurrentSlotNumber,
+    runtimeCurrentSlotNumber,
+    liveMicPublisherReady,
+    canUseLiveMic,
+  ]);
+
+  function normalizeLiveImageUri(value: any) {
+    const v = String(value || "").trim();
+    if (!v) return "";
+    if (
+      v.startsWith("http://") ||
+      v.startsWith("https://") ||
+      v.startsWith("file://") ||
+      v.startsWith("data:image/")
+    ) {
+      return v;
+    }
+    const base = String(getApiBase() || process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+    if (v.startsWith("/")) return `${base}${v}`;
+    if (v.includes("uploads/")) return `${base}/${v.replace(/^\//, "")}`;
+    return v;
+  }
+
+  function isImageAvatar(value: any) {
+    const v = normalizeLiveImageUri(value);
+    return (
+      v.startsWith("http://") ||
+      v.startsWith("https://") ||
+      v.startsWith("file://") ||
+      v.startsWith("data:image/")
     );
+  }
+
+  function resolveParticipantAvatarUri(slot: any) {
+    const userId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+
+    for (const raw of collectClaimedAvatarCandidates(slot)) {
+      const uri = normalizeLiveImageUri(raw);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "slot-field",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    if (userId && memberAvatarByUserId[userId]) {
+      const uri = normalizeLiveImageUri(memberAvatarByUserId[userId]);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "member-directory",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    if (userId && resolvedAvatarByUserId[userId]) {
+      const uri = normalizeLiveImageUri(resolvedAvatarByUserId[userId]);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "profile-cache",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    if (userId && userId === String(session?.userId || "").trim()) {
+      const sessionAvatar = String(
+        liveProfileAvatarUri ||
+          (session as any)?.avatarUri ||
+          (session as any)?.avatarUrl ||
+          (session as any)?.profileImage ||
+          (session as any)?.photoURL ||
+          (session as any)?.image ||
+          (session as any)?.avatar ||
+          ""
+      ).trim();
+
+      const uri = normalizeLiveImageUri(sessionAvatar);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "session-profile-expanded",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    if (
+      userId &&
+      userId === String((params as any)?.claimedByUserId || "").trim() &&
+      (params as any)?.claimedByAvatar
+    ) {
+      const uri = normalizeLiveImageUri((params as any).claimedByAvatar);
+      if (isImageAvatar(uri)) {
+        console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+          userId,
+          source: "route-param",
+          hasUrl: true,
+        });
+        return uri;
+      }
+    }
+
+    console.log("KRISTO_CLAIMED_AVATAR_RESOLVED", {
+      userId,
+      source: "initials-fallback",
+      hasUrl: false,
+    });
+    return "";
+  }
 
   const scheduledLiveStageOwnerId = currentMainStageSlot
     ? `stage-${currentMainStageSlot.slot}`
     : null;
 
+  const displayScheduleSlots = useMemo(() => {
+    const sourceSlots = authorityStageSlots.length
+      ? authorityStageSlots
+      : runtimeScheduleSlots.length
+        ? runtimeScheduleSlots
+        : activeStageSlots;
 
+    return sourceSlots
+      .map((slot: any, index: number) => {
+        const win = getScheduleSlotWindow(slot, index);
+        const slotNumber = Number(slot?.slot || slot?.slotNumber || slot?.order || index + 1);
+        return {
+          ...slot,
+          slot: slotNumber,
+          slotNumber,
+          order: Number(slot?.order || slotNumber),
+          startMs: Number(win?.startMs || slot?.startMs || 0),
+          endMs: Number(win?.endMs || slot?.endMs || 0),
+        };
+      })
+      .filter((slot: any) => Number(slot?.slot || 0) > 0 && !slot?.skipped);
+  }, [authorityStageSlots, runtimeScheduleSlots, activeStageSlots]);
+
+  function enrichLiveRoomDisplaySlot(slot: any, queueState?: string) {
+    const slotNumber = Number(slot?.slot || slot?.slotNumber || 0);
+    const claimedByUserId = String(
+      slot?.claimedByUserId || slot?.claimedBy?.userId || ""
+    ).trim();
+    const claimedByName = String(
+      slot?.claimedByName || slot?.claimedBy?.name || slot?.name || ""
+    ).trim();
+
+    const avatarResolution = resolveMediaSlotClaimedAvatar({
+      slot,
+      slotId: String(slot?.id || slot?.slotId || slotNumber),
+      apiBase: getApiBase(),
+      profileAvatarByUserId: resolvedAvatarByUserId,
+      memberAvatarByUserId: memberAvatarByUserId,
+      sessionAvatarUri: liveProfileAvatarUri,
+      sessionUserId: String(session?.userId || ""),
+    });
+
+    const avatar = avatarResolution.uri || resolveParticipantAvatarUri(slot);
+    const roleRaw = String(
+      slot?.role || slot?.roleLabel || slot?.claimedByRole || ""
+    ).toLowerCase();
+    const isLeader =
+      roleRaw.includes("pastor") ||
+      roleRaw.includes("leader") ||
+      roleRaw.includes("admin");
+
+    return {
+      ...slot,
+      id: `stage-${slotNumber}`,
+      slot: slotNumber,
+      slotNumber,
+      order: Number(slot?.order || slotNumber),
+      claimedByUserId,
+      claimedByName: claimedByName || `Guest ${slotNumber}`,
+      name: claimedByName || `Guest ${slotNumber}`,
+      role: isLeader
+        ? "Leader"
+        : String(slot?.role || slot?.roleLabel || slot?.claimedByRole || "Speaker"),
+      avatar,
+      title: String(slot?.title || slot?.name || slot?.slotLabel || `Slot ${slotNumber}`),
+      subtitle: String(slot?.subtitle || slot?.task || slot?.roleLabel || "Open speaking slot"),
+      queueState,
+      approved: true,
+    };
+  }
+
+  const liveRoomSlotDisplayQueue = useMemo(
+    () =>
+      buildLiveRoomSlotDisplayQueue({
+        slots: displayScheduleSlots,
+        nowMs: liveNowMs,
+        sideRailLimit: 4,
+        bottomLimit: 4,
+        logContext: "live-room",
+      }),
+    [displayScheduleSlots, liveNowMs]
+  );
+
+  const sideRailDisplaySlots = useMemo(
+    () =>
+      liveRoomSlotDisplayQueue.sideRailSlots.map((item) =>
+        enrichLiveRoomDisplaySlot(item.slot, item.state)
+      ),
+    [
+      liveRoomSlotDisplayQueue.sideRailSlots,
+      memberAvatarByUserId,
+      resolvedAvatarByUserId,
+      liveProfileAvatarUri,
+      session?.userId,
+    ]
+  );
+
+  const bottomDisplaySlots = useMemo(
+    () =>
+      liveRoomSlotDisplayQueue.bottomSlots.map((item) =>
+        enrichLiveRoomDisplaySlot(item.slot, item.state)
+      ),
+    [
+      liveRoomSlotDisplayQueue.bottomSlots,
+      memberAvatarByUserId,
+      resolvedAvatarByUserId,
+      liveProfileAvatarUri,
+      session?.userId,
+    ]
+  );
 
   const scheduledStagePeople = useMemo(() => {
-    const mergedScheduleSlots = [...runtimeScheduleSlots];
-
-    const routeClaimedSlots = mergedScheduleSlots
-      .filter((slot: any, index: number) => {
-        const owner = String(
-          slot?.claimedByUserId ||
-          slot?.claimedBy?.userId ||
-          ""
-        ).trim();
-
-        if (!owner) return false;
-
-        const win = getScheduleSlotWindow(slot, index);
-        const endMs = Number(win?.endMs || 0);
-
-        // remove expired claimed speakers from side stage queue
-        if (Number.isFinite(endMs) && endMs > 0 && liveNowMs > endMs) {
-          return false;
-        }
-
-        return true;
-      })
-      .map((slot: any, index: number) => ({
-        ...slot,
-        slot: Number(slot?.slot || slot?.slotNumber || index + 1),
-        order: Number(slot?.order || slot?.slot || slot?.slotNumber || index + 1),
-        name: String(slot?.claimedByName || slot?.claimedBy?.name || slot?.name || `Guest ${index + 1}`),
-        avatar: normalizeLiveImageUri(slot?.claimedByAvatar || slot?.claimedBy?.avatarUri || slot?.avatarUri || ""),
-        claimedByUserId: String(slot?.claimedByUserId || slot?.claimedBy?.userId || ""),
-        approved: true,
-      }));
-
     const bySlot = new Map<number, any>();
-
-    [...routeClaimedSlots, ...activeStageSlots].forEach((slot: any) => {
-      const n = Number(slot?.slot || slot?.slotNumber || slot?.order || 0);
-      if (n > 0) bySlot.set(n, slot);
+    displayScheduleSlots.forEach((slot: any, index: number) => {
+      if (!isClaimedScheduleSlot(slot)) return;
+      if (isScheduleSlotExpired(slot, liveNowMs)) return;
+      const enriched = enrichLiveRoomDisplaySlot(slot);
+      const n = Number(enriched.slot || 0);
+      if (n > 0) bySlot.set(n, enriched);
     });
-
-    const sourceSlots = Array.from(bySlot.values())
-      .sort((a: any, b: any) => Number(a.order || a.slot || 0) - Number(b.order || b.slot || 0));
-
-    return sourceSlots.map((slot: any, index: number) => {
-      const roleRaw = String(
-        slot?.role ||
-        slot?.roleLabel ||
-        slot?.claimedByRole ||
-        ""
-      ).toLowerCase();
-
-      const isLeader =
-        roleRaw.includes("pastor") ||
-        roleRaw.includes("leader") ||
-        roleRaw.includes("admin");
-
-      return {
-        id: `stage-${slot.slot}`,
-        slot: Number(slot.slot || 0),
-        startMs: getScheduleSlotWindow(slot, index).startMs,
-        endMs: getScheduleSlotWindow(slot, index).endMs,
-        claimedByUserId: String(slot?.claimedByUserId || ""),
-        name: String(slot?.name || `Guest ${slot.slot}`),
-        role: isLeader ? "Leader" : "Speaker",
-        avatar: normalizeLiveImageUri(slot?.avatar || ""),
-        stageTone:
-          Number(slot?.slot || 0) === Number(currentSlotNumber || 0)
-            ? "current"
-            : isLeader
-              ? "leader"
-              : index <= 2
-                ? "next"
-                : "waiting",
-      };
-    });
-  }, [activeStageSlots, currentSlotNumber, runtimeScheduleSlots, liveNowMs]);
+    return Array.from(bySlot.values()).sort(
+      (a: any, b: any) =>
+        Number(a.startMs || 0) - Number(b.startMs || 0) ||
+        Number(a.slot || 0) - Number(b.slot || 0)
+    );
+  }, [
+    displayScheduleSlots,
+    liveNowMs,
+    memberAvatarByUserId,
+    resolvedAvatarByUserId,
+    liveProfileAvatarUri,
+    session?.userId,
+  ]);
 
   const scheduledWaitingPeople = useMemo(() => {
     return waitingStageSlots.map((slot: any) => ({
@@ -2514,23 +4316,362 @@ export default function LiveRoomScreen() {
 
   const scheduledHiddenCount = hiddenStageSlots.length;
 
-  // Dynamic rolling queue:
-  // - big screen = current live slot
-  // - remaining 8 visible rooms = next claimed upcoming slots
-  // - no empty gaps between slot numbers
-  const visibleQueueSlots = useMemo(() => {
-    const currentSlot = Number(currentMainStageSlot?.slot || 0);
+  const visibleQueueSlots = sideRailDisplaySlots;
 
-    return scheduledStagePeople
-      .filter((guest: any) => Number(guest?.slot || 0) !== currentSlot)
-      .filter((guest: any) => Number(guest?.endMs || 0) >= liveNowMs)
-      .sort((a: any, b: any) => {
-        const aStart = Number(a?.startMs || 0);
-        const bStart = Number(b?.startMs || 0);
-        return aStart - bStart;
+  const openClaimableSlots = useMemo(() => {
+    const now = liveNowMs;
+    return displayScheduleSlots
+      .filter((slot: any) => !isClaimedScheduleSlot(slot))
+      .filter((slot: any) => !isScheduleSlotExpired(slot, now))
+      .filter((slot: any) => Number(slot?.startMs || 0) > now)
+      .map((slot: any) => enrichLiveRoomDisplaySlot(slot, "open_claimable"))
+      .sort(
+        (a: any, b: any) =>
+          Number(a.startMs || 0) - Number(b.startMs || 0) ||
+          Number(a.slot || 0) - Number(b.slot || 0)
+      );
+  }, [
+    displayScheduleSlots,
+    liveNowMs,
+    memberAvatarByUserId,
+    resolvedAvatarByUserId,
+    liveProfileAvatarUri,
+    session?.userId,
+  ]);
+
+  const bottomStageDisplayBoxes = useMemo(() => {
+    const BOTTOM_COUNT = 4;
+    const usedKeys = new Set<string>();
+    const markUsed = (slot: any) => {
+      const key = liveRoomDisplaySlotKey(slot);
+      if (key) usedKeys.add(key);
+    };
+
+    if (liveRoomSlotDisplayQueue.activeSlot) {
+      markUsed(liveRoomSlotDisplayQueue.activeSlot.slot);
+    }
+    liveRoomSlotDisplayQueue.sideRailSlots.forEach((item) => markUsed(item.slot));
+
+    const bottomPool: any[] = [];
+    bottomDisplaySlots.forEach((slot: any) => {
+      bottomPool.push(slot);
+      markUsed(slot);
+    });
+
+    const supplementalOpen = openClaimableSlots
+      .filter((slot: any) => {
+        const key = liveRoomDisplaySlotKey(slot);
+        return key && !usedKeys.has(key);
       })
-      .slice(0, 8);
-  }, [scheduledStagePeople, currentMainStageSlot, liveNowMs]);
+      .sort(
+        (a: any, b: any) =>
+          Number(a.startMs || 0) - Number(b.startMs || 0) ||
+          Number(a.slot || 0) - Number(b.slot || 0)
+      );
+
+    supplementalOpen.forEach((slot: any) => {
+      if (bottomPool.length >= BOTTOM_COUNT) return;
+      const key = liveRoomDisplaySlotKey(slot);
+      if (!key || usedKeys.has(key)) return;
+      bottomPool.push(slot);
+      markUsed(slot);
+    });
+
+    return Array.from({ length: BOTTOM_COUNT }, (_, index) => {
+      const slot = bottomPool[index];
+      if (slot) {
+        const isOpen = String(slot?.queueState || "") === "open_claimable";
+        return {
+          kind: isOpen ? ("open" as const) : ("claimed" as const),
+          slot,
+          index,
+        };
+      }
+      return { kind: "locked_closed" as const, index };
+    });
+  }, [
+    bottomDisplaySlots,
+    openClaimableSlots,
+    liveRoomSlotDisplayQueue.activeSlot,
+    liveRoomSlotDisplayQueue.sideRailSlots,
+  ]);
+
+  useEffect(() => {
+    bottomStageDisplayBoxes.forEach((box) => {
+      const slot = (box as any).slot;
+      console.log("KRISTO_LIVE_ROOM_BOTTOM_SLOT_CARD_STATE", {
+        index: box.index,
+        state:
+          box.kind === "open"
+            ? "open_claimable"
+            : box.kind === "claimed"
+              ? "claimed"
+              : "locked_closed",
+        slotId: slot ? liveStageSlotLogId(slot) : "",
+        slotNumber: slot ? Number(slot?.slot || slot?.slotNumber || 0) : null,
+        claimedByName: slot ? String(slot?.claimedByName || slot?.name || "") : "",
+        startMs: slot ? Number(slot?.startMs || 0) : null,
+        endMs: slot ? Number(slot?.endMs || 0) : null,
+      });
+    });
+  }, [bottomStageDisplayBoxes]);
+
+  const hostDrawerQueueEntries = useMemo(
+    () => [...sideRailDisplaySlots, ...bottomDisplaySlots].slice(0, 8),
+    [sideRailDisplaySlots, bottomDisplaySlots]
+  );
+
+  const prevActiveStageSlotRef = useRef<any>(null);
+  const expiredStageSlotIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (isMediaInstantLive) return;
+
+    const now = liveNowMs;
+    const sourceSlots = authorityStageSlots.length
+      ? authorityStageSlots
+      : runtimeScheduleSlots.length
+        ? runtimeScheduleSlots
+        : activeStageSlots;
+
+    sourceSlots.forEach((slot: any, index: number) => {
+      if (!isClaimedScheduleSlot(slot)) return;
+      const win = getScheduleSlotWindow(slot, index);
+      const row = {
+        ...slot,
+        startMs: Number(win.startMs || slot?.startMs || 0),
+        endMs: Number(win.endMs || slot?.endMs || 0),
+      };
+      if (!isScheduleSlotExpired(row, now)) return;
+
+      const slotId = liveStageSlotLogId(row);
+      if (!slotId || expiredStageSlotIdsRef.current.has(slotId)) return;
+      expiredStageSlotIdsRef.current.add(slotId);
+
+      console.log("KRISTO_LIVE_ROOM_SLOT_EXPIRED", {
+        slotId,
+        slotNumber: Number(row?.slot || row?.slotNumber || 0),
+        claimedByName: String(row?.claimedByName || row?.name || ""),
+        startMs: Number(row?.startMs || 0),
+        endMs: Number(row?.endMs || 0),
+        reason: "slot-window-ended",
+      });
+    });
+
+    const prev = prevActiveStageSlotRef.current;
+    const next = currentMainStageSlot;
+    const prevSlot = Number(prev?.slot || 0);
+    const nextSlot = Number(next?.slot || 0);
+
+    if (prev && (!next || prevSlot !== nextSlot)) {
+      if (isScheduleSlotExpired(prev, now)) {
+        console.log("KRISTO_LIVE_ROOM_SLOT_EXPIRED", {
+          slotId: liveStageSlotLogId(prev),
+          slotNumber: prevSlot,
+          claimedByName: String(prev?.claimedByName || prev?.name || ""),
+          startMs: Number(prev?.startMs || 0),
+          endMs: Number(prev?.endMs || 0),
+          reason: "active-slot-window-ended",
+        });
+      }
+    }
+
+    if (next && prevSlot !== nextSlot) {
+      const changeReason = !prev
+        ? "initial-active-slot"
+        : isScheduleSlotExpired(prev, now)
+          ? "previous-slot-expired"
+          : "next-active-window";
+
+      console.log("KRISTO_LIVE_ROOM_ACTIVE_SLOT_CHANGED", {
+        slotId: liveStageSlotLogId(next),
+        slotNumber: nextSlot,
+        claimedByName: String(next?.claimedByName || next?.name || ""),
+        startMs: Number(next?.startMs || 0),
+        endMs: Number(next?.endMs || 0),
+        previousSlotNumber: prevSlot || null,
+        reason: changeReason,
+      });
+
+      if (prev && isScheduleSlotExpired(prev, now)) {
+        console.log("KRISTO_LIVE_ROOM_STAGE_PROMOTED", {
+          slotId: liveStageSlotLogId(next),
+          slotNumber: nextSlot,
+          claimedByName: String(next?.claimedByName || next?.name || ""),
+          startMs: Number(next?.startMs || 0),
+          endMs: Number(next?.endMs || 0),
+          previousSlotNumber: prevSlot,
+          reason: "automatic-time-handoff",
+        });
+      }
+    }
+
+    prevActiveStageSlotRef.current = next;
+  }, [currentMainStageSlot, liveNowMs, isMediaInstantLive, authorityStageSlots, runtimeScheduleSlots, activeStageSlots]);
+
+  async function claimOpenScheduleSlotFromLive(slot: any) {
+    const slotId = String(slot?.id || slot?.slotId || "").trim();
+
+    const paramSourceScheduleId = String((params as any)?.sourceScheduleId || "").trim();
+    const paramLiveId = String((params as any)?.liveId || "").trim();
+    const scheduleKey = String(liveScheduleFeedId || paramSourceScheduleId || paramLiveId || "").trim();
+    const feedSource: any[] = Array.isArray(feedList()) ? feedList() : [];
+
+    const matchingFeedItem = feedSource.find((item: any) => {
+      const id = String(item?.id || "").trim();
+      const sourceId = String(item?.sourceScheduleId || item?.liveId || item?.scheduleId || "").trim();
+      return (
+        id === scheduleKey ||
+        sourceId === scheduleKey ||
+        String(item?.id || "").startsWith("feed_") && String(item?.sourceScheduleId || "") === scheduleKey
+      );
+    });
+
+    const postId = String(
+      matchingFeedItem?.id ||
+        (String(scheduleKey).startsWith("feed_") ? scheduleKey : "")
+    ).trim();
+
+    const currentUserId = String(session?.userId || "").trim();
+
+    if (!slotId || !postId || !currentUserId) {
+      Alert.alert("Claim unavailable", "This slot cannot be claimed right now.");
+      return;
+    }
+
+    const name =
+      String((session as any)?.name || (session as any)?.displayName || (session as any)?.fullName || "").trim() ||
+      liveProfileName ||
+      "Church Member";
+
+    const beforeClaimAvatar = await ensureProfileAvatarUploadedBeforeClaim({
+      userId: currentUserId,
+      session: session as any,
+      profileAvatarUri: liveProfileAvatarUri,
+    });
+    const uploadedClaimAvatar = beforeClaimAvatar.uploadedUrl;
+
+    const claimAvatarUri = uploadedClaimAvatar
+      ? uploadedClaimAvatar
+      : sanitizePersistedClaimAvatarUri(liveProfileAvatarUri, "live-room-claim-profile") ||
+        sanitizePersistedClaimAvatarUri((session as any)?.avatarUrl, "live-room-claim-session-url") ||
+        "";
+
+    try {
+      const res: any = await apiPost(
+        "/api/church/feed",
+        {
+          action: "claim_schedule_slot",
+          postId,
+          slotId,
+          claim: {
+            slotId,
+            userId: currentUserId,
+            name,
+            role: String((session as any)?.role || "Member"),
+            avatarUri: claimAvatarUri,
+            avatarUrl: claimAvatarUri,
+            claimedByAvatarUri: claimAvatarUri,
+            claimedByAvatar: claimAvatarUri,
+            claimedByPhotoUrl: claimAvatarUri,
+          },
+        },
+        {
+          headers: getKristoHeaders({
+            userId: currentUserId,
+            role: String((session as any)?.role || "Member") as KristoRole,
+            churchId: String((session as any)?.churchId || (params as any)?.churchId || ""),
+          }),
+        }
+      );
+
+      if (res?.ok === false) {
+        Alert.alert("Slot not claimed", String(res?.error || "This slot may already be claimed."));
+        return;
+      }
+
+      const key = getRuntimeSlotKey(slot, Math.max(0, Number(slot.slot || 1) - 1));
+      const savedSlot = res?.data?.slot || res?.slot || null;
+      const persistedAvatarUri =
+        resolvePersistedClaimAvatarUri(savedSlot) ||
+        claimAvatarUri;
+
+      setRuntimeSlotOverrides((prev) => ({
+        ...(prev || {}),
+        [key]: {
+          ...((prev || {})[key] || {}),
+          ...(savedSlot || {}),
+          claimed: true,
+          isClaimed: true,
+          status: "claimed",
+          claimedByUserId: currentUserId,
+          claimedByName: name,
+          claimedByAvatarUri: persistedAvatarUri,
+          claimedByAvatar: persistedAvatarUri,
+          claimedByPhotoUrl: persistedAvatarUri,
+          claimedBy: {
+            ...(typeof savedSlot?.claimedBy === "object" ? savedSlot.claimedBy : {}),
+            slotId,
+            userId: currentUserId,
+            name,
+            role: String((session as any)?.role || "Member"),
+            avatarUri: persistedAvatarUri,
+          },
+        },
+      }));
+
+      const syncedSlot = {
+        ...slot,
+        ...(savedSlot || {}),
+        id: slotId,
+        slotId,
+        feedId: postId,
+        sourceScheduleId: postId,
+        claimed: true,
+        isClaimed: true,
+        status: "claimed",
+        claimedByUserId: currentUserId,
+        claimedByName: name,
+        claimedByAvatarUri: persistedAvatarUri,
+        claimedByAvatar: persistedAvatarUri,
+        claimedByPhotoUrl: persistedAvatarUri,
+        claimedBy: {
+          ...(typeof savedSlot?.claimedBy === "object" ? savedSlot.claimedBy : {}),
+          slotId,
+          userId: currentUserId,
+          name,
+          role: String((session as any)?.role || "Member"),
+          avatarUri: persistedAvatarUri,
+        },
+      } as any;
+
+      syncUserClaimedSlotStore(postId, slotId, syncedSlot);
+      writeRingClaimHint({
+        userId: currentUserId,
+        feedId: postId,
+        slotId,
+        slotNumber: Number(syncedSlot?.slot || syncedSlot?.slotNumber || 0),
+        title: String(syncedSlot?.title || syncedSlot?.task || syncedSlot?.slotLabel || syncedSlot?.name || ""),
+        claimedByUserId: currentUserId,
+        claimedByName: name,
+        claimedByAvatarUri: persistedAvatarUri,
+        startMs: Number(syncedSlot?.startMs || 0),
+        endMs: Number(syncedSlot?.endMs || 0),
+        createdAt: Date.now(),
+      } as any);
+
+      console.log("KRISTO_LIVE_CLAIM_SYNC_TO_PROFILE", {
+        feedId: postId,
+        slotId,
+        userId: currentUserId,
+        slotNumber: Number(syncedSlot?.slot || syncedSlot?.slotNumber || 0),
+      });
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } catch (e) {
+      Alert.alert("Slot not claimed", "Network error. Please try again.");
+    }
+  }
 
   // REALTIME HOST DRAWER DATA
   const hostDrawerCurrentLabel = currentMainStageSlot
@@ -2542,8 +4683,6 @@ export default function LiveRoomScreen() {
   const hostDrawerNextLabel = hostDrawerNextSlot
     ? String((hostDrawerNextSlot as any)?.name || (hostDrawerNextSlot as any)?.title || `Slot ${(hostDrawerNextSlot as any)?.slot || ""}`)
     : "No next speaker";
-
-  const hostDrawerQueueEntries = visibleQueueSlots.slice(0, 8);
 
   const liveCountdownLabel = (() => {
     const endMs = Number(currentMainStageSlot?.endMs || 0);
@@ -2569,6 +4708,7 @@ export default function LiveRoomScreen() {
     }
 
     if (!currentMainStageSlot) {
+      setBigStageGuestId((prev) => (String(prev || "").startsWith("stage-") ? "host" : prev));
       return;
     }
 
@@ -2579,7 +4719,7 @@ export default function LiveRoomScreen() {
     if (!pinnedGuestId || pinnedGuestId === "host") {
       setPinnedGuestId(guestId);
     }
-  }, [currentMainStageSlot?.slot, isMediaInstantLive]);
+  }, [currentMainStageSlot?.slot, currentMainStageSlot, isMediaInstantLive, liveNowMs]);
 
 
 
@@ -2589,7 +4729,10 @@ export default function LiveRoomScreen() {
   const liveBridgeId = isMediaInstantLive
     ? String(params.liveId || (params as any).room || params.title || "media-live-default")
     : String(
+        liveScheduleFeedId ||
         params.liveId ||
+        (params as any).feedId ||
+        (params as any).sourceScheduleId ||
         (params as any).room ||
         assignmentThreadId ||
         assignmentId ||
@@ -2597,43 +4740,85 @@ export default function LiveRoomScreen() {
         "scheduled-live-default"
       );
 
+  const liveKitStageSessionKey = `${liveBridgeId}|${currentUserId || "anon"}`;
+
   useEffect(() => {
-    console.log("KRISTO_LIVE_ROUTE_PARAMS", {
+    const nextUserId = String(session?.userId || "").trim();
+    const prevUserId = String(prevSessionUserIdRef.current || "").trim();
+
+    if (prevUserId && nextUserId && prevUserId !== nextUserId) {
+      forceKristoLiveCleanup("account-switch", {
+        userId: prevUserId,
+        roomName: liveBridgeId,
+        accountSwitch: true,
+      });
+      setLiveKitAccountEpoch((n) => n + 1);
+    } else if (prevUserId && !nextUserId) {
+      forceKristoLiveCleanup("account-logout", {
+        userId: prevUserId,
+        roomName: liveBridgeId,
+        accountSwitch: true,
+      });
+      setLiveKitAccountEpoch((n) => n + 1);
+    }
+
+    prevSessionUserIdRef.current = nextUserId;
+  }, [session?.userId, liveBridgeId]);
+
+  useEffect(() => {
+    logLiveMediaAuthority("live-room", liveMediaAuthority, {
       routeScheduleSlotsCount: routeScheduleSlots.length,
+      backendScheduleSlotsCount: backendScheduleSlots.length,
+      runtimeScheduleSlotsCount: runtimeScheduleSlots.length,
       scheduledStagePeopleCount: scheduledStagePeople.length,
       visibleQueueSlotsCount: visibleQueueSlots.length,
+      liveScheduleFeedId,
       isMediaInstantLive,
       liveBridgeId,
       liveId: params.liveId,
+      sourceScheduleId: (params as any).sourceScheduleId,
       room: (params as any).room,
       title: params.title,
       assignmentThreadId,
       assignmentId,
       projectId,
       currentSlotNumber,
-      mediaOwnerPastorUserId: (params as any).mediaOwnerPastorUserId,
-      mediaHostIds: (params as any).mediaHostIds,
-      backendPastorUserId,
-      currentUserId,
-      isMediaOwnerHost,
+      currentMainStageSlot: currentMainStageSlot
+        ? {
+            slot: currentMainStageSlot.slot,
+            claimedByUserId: currentMainStageSlot.claimedByUserId,
+            startMs: currentMainStageSlot.startMs,
+            endMs: currentMainStageSlot.endMs,
+          }
+        : null,
+      currentSlotOwnerId,
     });
-  }, [isMediaInstantLive, liveBridgeId, params.liveId, (params as any).room, params.title, assignmentThreadId, assignmentId, projectId, currentSlotNumber]);
-
-  function normalizeLiveImageUri(value: any) {
-    const v = String(value || "").trim();
-    if (!v) return "";
-    if (v.startsWith("http://") || v.startsWith("https://") || v.startsWith("file://")) return v;
-    if (v.startsWith("/")) return `${String(process.env.EXPO_PUBLIC_API_BASE || "http://192.168.12.141:3000").replace(/\/+$/, "")}${v}`;
-    return v;
-  }
-
-  function isImageAvatar(value: any) {
-    const v = normalizeLiveImageUri(value);
-    return v.startsWith("http://") || v.startsWith("https://") || v.startsWith("file://");
-  }
-
-
-  const liveRouteChurchId = String((params as any)?.churchId || session?.churchId || "").trim();
+  }, [
+    liveMediaAuthority.isMediaOwnerHost,
+    liveMediaAuthority.isActualChurchPastor,
+    liveMediaAuthority.isMediaScheduleCreator,
+    liveMediaAuthority.isMediaHost,
+    actualChurchPastorUserId,
+    scheduleCreatedByUserId,
+    isMediaInstantLive,
+    liveBridgeId,
+    liveScheduleFeedId,
+    params.liveId,
+    (params as any).sourceScheduleId,
+    (params as any).room,
+    params.title,
+    assignmentThreadId,
+    assignmentId,
+    projectId,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    currentMainStageSlot,
+    routeScheduleSlots.length,
+    backendScheduleSlots.length,
+    runtimeScheduleSlots.length,
+    scheduledStagePeople.length,
+    visibleQueueSlots.length,
+  ]);
 
   const liveApiHeaders = useMemo(
     () =>
@@ -2662,57 +4847,196 @@ export default function LiveRoomScreen() {
   );
 
   useEffect(() => {
-    let alive = true;
+    if (isMediaInstantLive) return;
 
-    async function loadBackendScheduleSlots() {
-      const id = String((params as any).liveId || liveBridgeId || "").trim();
-      if (!id) return;
+    const hydrateFeedId = String(liveScheduleFeedId || "").trim();
+    if (!hydrateFeedId || !isBackendFeedScheduleId(hydrateFeedId)) {
+      console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_SKIP", {
+        reason: "no_backend_feed_id",
+        liveScheduleFeedId: hydrateFeedId,
+        routeFeedId: String((params as any)?.feedId || ""),
+        localScheduleId: String((params as any)?.localScheduleId || ""),
+        hasRouteSlots: routeScheduleSlots.length > 0,
+      });
+      return;
+    }
+
+    const hasRouteSlots = routeScheduleSlots.length > 0;
+    let cancelled = false;
+    let slotsSig = hasRouteSlots ? JSON.stringify(routeScheduleSlots) : "";
+
+    async function hydrateScheduleFromFeed(source: "immediate" | "poll" | "background") {
+      if (hasRouteSlots && source === "poll") return;
 
       try {
-        const res: any = await apiGet(`/api/church/feed?id=${encodeURIComponent(id)}`, {
-          headers: liveApiHeaders as any,
-        });
-
-        const item = res?.data?.item || res?.item || res?.data || {};
-        const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-
-        if (!alive) return;
-
-        setBackendScheduleSlots(
-          slots.map((slot: any, index: number) => ({
-            ...slot,
-            slot: Number(slot?.slot || slot?.slotNumber || index + 1),
-            slotNumber: Number(slot?.slotNumber || slot?.slot || index + 1),
-            order: Number(slot?.order || slot?.slot || slot?.slotNumber || index + 1),
-          }))
+        const res: any = await apiGet(
+          `/api/church/feed?id=${encodeURIComponent(hydrateFeedId)}`,
+          { headers: liveApiHeaders as any },
+          {
+            screen: "LiveRoomSchedule",
+            throttleMs:
+              source === "background" ? 120000 : source === "immediate" ? 0 : hasRouteSlots ? 120000 : 45000,
+          }
         );
 
-        console.log("KRISTO_BACKEND_SCHEDULE_SLOTS_LOADED", { id, count: slots.length });
-      } catch (e) {
-        console.log("KRISTO_BACKEND_SCHEDULE_SLOTS_ERROR", e);
+        const item = res?.data?.item || res?.item || res?.data || {};
+        const slots = normalizeLiveScheduleSlots(
+          Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
+        );
+
+        if (cancelled) return;
+
+        setBackendScheduleHydrated(true);
+
+        if (!slots.length) {
+          setBackendScheduleSlots([]);
+          console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
+            feedId: hydrateFeedId,
+            source,
+            hadRouteSlots: routeScheduleSlots.length,
+          });
+          console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_DROPPED_STALE", {
+            feedId: hydrateFeedId,
+            routeSlotCount: routeScheduleSlots.length,
+            backendSlotCount: 0,
+            localScheduleId: String((params as any)?.localScheduleId || ""),
+            source,
+          });
+          console.log("KRISTO_STALE_ROUTE_SLOTS_IGNORED", {
+            canonicalFeedId: hydrateFeedId,
+            localScheduleId: String((params as any)?.localScheduleId || ""),
+            backendSlotCount: 0,
+            routeSlotCount: routeScheduleSlots.length,
+            reason: "live-room-hydrate-empty",
+          });
+          clearScheduleClaimRuntimeState(hydrateFeedId);
+          endLiveBridgeForStaleScheduleFeedId(hydrateFeedId);
+          emitLiveRingRefresh("live-room-hydrate-empty");
+          return;
+        }
+
+        const sig = JSON.stringify(slots);
+        if ((source === "poll" || source === "background") && sig === slotsSig) return;
+        slotsSig = sig;
+
+        setBackendScheduleSlots(slots);
+        console.log("KRISTO_LIVE_SCHEDULE_HYDRATED", {
+          feedId: hydrateFeedId,
+          source,
+          slotCount: slots.length,
+          claimedCount: slots.filter((slot: any) => String(slot?.claimedByUserId || "").trim()).length,
+          hadRouteSlots: hasRouteSlots,
+        });
+      } catch (e: any) {
+        const status = Number(e?.status || e?.response?.status || 0);
+        if (!cancelled && (status === 404 || status === 410)) {
+          setBackendScheduleHydrated(true);
+          setBackendScheduleSlots([]);
+          console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_EMPTY", {
+            feedId: hydrateFeedId,
+            source,
+            hadRouteSlots: routeScheduleSlots.length,
+            status,
+          });
+          console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_DROPPED_STALE", {
+            feedId: hydrateFeedId,
+            routeSlotCount: routeScheduleSlots.length,
+            backendSlotCount: 0,
+            localScheduleId: String((params as any)?.localScheduleId || ""),
+            source,
+            status,
+          });
+          clearScheduleClaimRuntimeState(hydrateFeedId);
+          endLiveBridgeForStaleScheduleFeedId(hydrateFeedId);
+          emitLiveRingRefresh("live-room-hydrate-missing");
+          return;
+        }
+        console.log("KRISTO_LIVE_SCHEDULE_HYDRATE_ERROR", {
+          feedId: hydrateFeedId,
+          source,
+          message: String(e?.message || e),
+          status: status || null,
+          hadRouteSlots: hasRouteSlots,
+        });
+        console.log("KRISTO_LIVE_ROOM_BACKEND_ERROR", {
+          endpoint: `/api/church/feed?id=${hydrateFeedId}`,
+          feedId: hydrateFeedId,
+          source,
+          status: status || null,
+          message: String(e?.message || e),
+          hadRouteSlots: hasRouteSlots,
+          continuesWithRouteSlots: hasRouteSlots,
+        });
       }
     }
 
-    loadBackendScheduleSlots();
-    const t = setInterval(loadBackendScheduleSlots, 15000);
+    void hydrateScheduleFromFeed("immediate");
+
+    if (hasRouteSlots) {
+      const timer = setTimeout(() => {
+        void hydrateScheduleFromFeed("background");
+      }, 0);
+      const stopPoll = startAdaptiveLivePolling({
+        screen: "LiveRoomSchedule",
+        enabled: isFocused,
+        activeMs: 90000,
+        idleMs: 120000,
+        onTick: async () => {
+          await hydrateScheduleFromFeed("poll");
+        },
+      });
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+        stopPoll?.();
+      };
+    }
+
+    const stopPoll = startAdaptiveLivePolling({
+      screen: "LiveRoomSchedule",
+      enabled: isFocused,
+      activeMs: 90000,
+      idleMs: 120000,
+      onTick: async () => {
+        await hydrateScheduleFromFeed("poll");
+      },
+    });
 
     return () => {
-      alive = false;
-      clearInterval(t);
+      cancelled = true;
+      stopPoll?.();
     };
-  }, [liveBridgeId, (params as any).liveId, liveApiHeaders]);
-  const [liveProfileAvatarUri, setLiveProfileAvatarUri] = useState("");
-
+  }, [
+    liveScheduleFeedId,
+    liveBridgeId,
+    (params as any).liveId,
+    liveApiHeaders,
+    isFocused,
+    isMediaInstantLive,
+    routeScheduleSlots.length,
+  ]);
   useEffect(() => {
     let alive = true;
 
     async function loadLiveProfileAvatar() {
       if (!session?.userId) return;
 
+      const cached = await resolveCachedLiveAvatar(
+        session.userId,
+        String((session as any)?.avatarUri || (session as any)?.avatarUrl || "")
+      );
+      if (cached && alive) {
+        setLiveProfileAvatarUri(cached);
+        return;
+      }
+
       try {
-        const res: any = await apiGet("/api/auth/profile", { headers: liveApiHeaders as any });
+        const res: any = await apiGet(
+          "/api/auth/profile",
+          { headers: liveApiHeaders as any },
+          { screen: "LiveRoom", throttleMs: 300000 }
+        );
         const p = res?.profile || res?.user || res?.data || res || {};
-        const localDraft = await loadProfileDraft(session?.userId);
         const raw = String(
           p.avatarUri ||
           p.avatarUrl ||
@@ -2720,7 +5044,6 @@ export default function LiveRoomScreen() {
           p.photoURL ||
           p.image ||
           p.avatar ||
-          localDraft?.avatarUri ||
           ""
         ).trim();
 
@@ -2730,19 +5053,72 @@ export default function LiveRoomScreen() {
           raw.startsWith("http://") || raw.startsWith("https://") || raw.startsWith("file://")
             ? raw
             : raw.startsWith("/")
-              ? `http://192.168.12.141:3000${raw}`
+              ? `${String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "")}${raw}`
               : raw;
 
         setLiveProfileAvatarUri(normalized);
       } catch {}
     }
 
-    loadLiveProfileAvatar();
+    void loadLiveProfileAvatar();
 
     return () => {
       alive = false;
     };
   }, [session?.userId, liveApiHeaders]);
+
+  useEffect(() => {
+    let alive = true;
+
+    fetchChurchMembers()
+      .then((rows) => {
+        if (!alive) return;
+        const map: Record<string, string> = {};
+        for (const row of rows || []) {
+          const uid = String(row?.userId || row?.id || "").trim();
+          const raw = String(
+            row?.avatarUrl ||
+              row?.avatarUri ||
+              row?.profileImage ||
+              row?.photoURL ||
+              row?.image ||
+              ""
+          ).trim();
+          if (uid && raw) map[uid] = raw;
+        }
+        setMemberAvatarByUserId(map);
+      })
+      .catch(() => {});
+
+    return () => {
+      alive = false;
+    };
+  }, [liveRouteChurchId, session?.userId]);
+
+  useEffect(() => {
+    let alive = true;
+    const userIds = new Set<string>();
+
+    for (const slot of runtimeScheduleSlots) {
+      const uid = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+      if (uid) userIds.add(uid);
+    }
+
+    userIds.forEach((uid) => {
+      void (async () => {
+        const cached = await resolveCachedLiveAvatar(uid);
+        if (!alive || !cached) return;
+        setResolvedAvatarByUserId((prev) => {
+          if (prev[uid]) return prev;
+          return { ...prev, [uid]: cached };
+        });
+      })();
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [runtimeScheduleSlots]);
 
   async function pushLiveAction(action: string, body: Record<string, any> = {}) {
     try {
@@ -2767,7 +5143,10 @@ export default function LiveRoomScreen() {
       }
 
       if (nextLive?.requests && typeof nextLive.requests === "object") {
-        setJoinRequestsBySlot(nextLive.requests);
+        backendLiveRequestsRef.current = nextLive.requests;
+        setBackendLiveRequests(nextLive.requests);
+        const bridgeIncoming = getLiveJoinBridge().requestsByLiveId[liveBridgeId] || {};
+        setJoinRequestsBySlot({ ...bridgeIncoming, ...nextLive.requests });
 
         const mine: any = Object.entries(nextLive.requests).find(([, req]: any) =>
           !!req?.approved &&
@@ -2795,40 +5174,88 @@ export default function LiveRoomScreen() {
   }
 
   useEffect(() => {
-    if (isMediaInstantLive === false && !liveBridgeId) return;
+    if (isMediaInstantLive || !liveBridgeId || !currentUserId || !myClaimedStageSlot) return;
 
-    let alive = true;
+    const slot = Number((myClaimedStageSlot as any)?.slot || 0);
+    if (!slot) return;
 
-    async function sendLiveHeartbeat() {
-      if (!alive) return;
-      await pushLiveAction("presence", {
-        viewerCount: 1,
-        role:
-          canManageLive
-            ? "host"
-            : isMyScheduledLiveTurn
-              ? "stage"
-              : "viewer",
-      });
-    }
+    const syncKey = `${liveBridgeId}|${currentUserId}|${slot}`;
+    if (claimRoomSyncRef.current === syncKey) return;
 
-    sendLiveHeartbeat();
-    const t = setInterval(sendLiveHeartbeat, 5000);
+    const name = String(
+      (myClaimedStageSlot as any)?.claimedByName ||
+      (myClaimedStageSlot as any)?.name ||
+      (session as any)?.displayName ||
+      (session as any)?.fullName ||
+      (session as any)?.name ||
+      "Member"
+    ).trim();
 
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [isMediaInstantLive, isHost, liveBridgeId, session?.userId, session?.churchId, session?.role]);
+    const avatar = String(
+      (myClaimedStageSlot as any)?.claimedByAvatar ||
+      (myClaimedStageSlot as any)?.avatar ||
+      liveProfileAvatarUri ||
+      (session as any)?.avatarUri ||
+      (session as any)?.avatarUrl ||
+      name.slice(0, 1).toUpperCase()
+    ).trim();
 
-  useEffect(() => {
-    let alive = true;
+    claimRoomSyncRef.current = syncKey;
 
-    async function pollLiveState() {
-      const res: any = await apiGet("/api/church/live", { headers: liveApiHeaders as any });
-      if (!alive) return;
+    void syncClaimedMemberToLiveRoom({
+      liveId: liveBridgeId,
+      slot,
+      slotId: String((myClaimedStageSlot as any)?.id || (myClaimedStageSlot as any)?.slotId || ""),
+      userId: currentUserId,
+      name,
+      avatar,
+      role: String((session as any)?.role || "Member"),
+      pushLiveAction,
+    }).then((res) => {
+      const nextRequests = res?.live?.requests;
+      if (nextRequests && typeof nextRequests === "object") {
+        backendLiveRequestsRef.current = nextRequests;
+        setBackendLiveRequests(nextRequests);
+        const bridge = getLiveJoinBridge().requestsByLiveId[liveBridgeId] || {};
+        setJoinRequestsBySlot({ ...bridge, ...nextRequests });
+      }
+    }).catch(() => {
+      claimRoomSyncRef.current = "";
+    });
+  }, [
+    isMediaInstantLive,
+    liveBridgeId,
+    currentUserId,
+    myClaimedStageSlot,
+    session,
+    liveProfileAvatarUri,
+    feedScheduleTick,
+  ]);
 
-      if (res?.removedFromLive === true) {
+  const livePatchSigRef = useRef("");
+  const liveHeartbeatSigRef = useRef("");
+  const canManageLiveRef = useRef(false);
+  const canSeeLiveHostControlsRef = useRef(false);
+  const isMyScheduledLiveTurnRef = useRef(false);
+
+  const applyBackendLivePatch = useCallback(
+    (patch: Awaited<ReturnType<typeof fetchLightLiveState>>, source: string) => {
+      if (patch.routeFailed) {
+        console.log("KRISTO_CHURCH_LIVE_STATE_RESULT", {
+          screen: "LiveRoom",
+          source,
+          routeFailed: true,
+          preserved: true,
+          shouldUpdate: false,
+          updateSource: "route_failed_preserved_previous",
+          hasNextLive: Boolean(backendChurchLive?.isLive),
+        });
+        return;
+      }
+
+      if (patch.removedFromLive) {
+        backendLiveRequestsRef.current = {};
+        setBackendLiveRequests({});
         setJoinRequestsBySlot({});
         setHostRequestCard(null);
         setVipGuestCardSlot(null);
@@ -2837,31 +5264,155 @@ export default function LiveRoomScreen() {
         return;
       }
 
-      const nextLive = res?.live;
-      if (nextLive?.requestPolicy) {
-        setRequestPolicy(nextLive.requestPolicy as LiveRequestPolicy);
+      const sig = JSON.stringify({
+        policy: patch.requestPolicy || "",
+        req: patch.requests || null,
+        presence: patch.viewerPresence || null,
+        liveId: patch.liveId || "",
+        isLive: patch.isLive || false,
+        source,
+      });
+      if (sig === livePatchSigRef.current) return;
+      livePatchSigRef.current = sig;
+
+      const resolved = resolveChurchLiveStateUpdate({
+        patch,
+        previousLive: backendChurchLive,
+        churchId: String(session?.churchId || ""),
+      });
+
+      if (resolved.shouldUpdate) {
+        setBackendChurchLive(resolved.nextLive);
+      } else if (patch.raw && patch.isLive === true) {
+        setBackendChurchLive(patch.raw);
+      }
+      if (patch.requestPolicy) setRequestPolicy(patch.requestPolicy as LiveRequestPolicy);
+
+      if (patch.requests && typeof patch.requests === "object") {
+        backendLiveRequestsRef.current = patch.requests;
+        setBackendLiveRequests(patch.requests);
+        const bridgeIncoming = getLiveJoinBridge().requestsByLiveId[liveBridgeId] || {};
+        setJoinRequestsBySlot({ ...bridgeIncoming, ...patch.requests });
+
+        console.log("KRISTO_ROOM_WAITING_LIST", {
+          liveBridgeId,
+          source,
+          requestCount: Object.keys(patch.requests).length,
+          requests: Object.entries(patch.requests).map(([slot, req]: any) => ({
+            slot: Number(slot),
+            userId: String(req?.userId || ""),
+            name: String(req?.name || ""),
+            status: String(req?.status || ""),
+            approved: !!req?.approved,
+            waiting: !!req?.waiting,
+            onStage: !!req?.onStage,
+          })),
+        });
+
+        if (canManageLiveRef.current) {
+          console.log("KRISTO_PASTOR_WAITING_HYDRATED", {
+            liveBridgeId,
+            source,
+            requestCount: Object.keys(patch.requests).length,
+            userIds: Object.values(patch.requests).map((req: any) => String(req?.userId || "")),
+          });
+        }
       }
 
-      if (nextLive?.requestPolicy) {
-        setRequestPolicy(nextLive.requestPolicy as LiveRequestPolicy);
-      }
+      if (patch.viewerPresence) setLiveViewerPresence(patch.viewerPresence);
+    },
+    [liveBridgeId, router, backendChurchLive, session?.churchId]
+  );
 
-      if (nextLive?.requests && typeof nextLive.requests === "object") {
-        setJoinRequestsBySlot(nextLive.requests);
-      }
+  useEffect(() => {
+    if (!liveBridgeId || isMediaInstantLive) return;
+    let cancelled = false;
 
-      if (nextLive?.viewerPresence && typeof nextLive.viewerPresence === "object") {
-        setLiveViewerPresence(nextLive.viewerPresence);
-      }
-    }
+    void fetchLightLiveStateWithPerf(liveApiHeaders as any, "LiveRoomImmediate", liveBridgeId, "immediate")
+      .then((patch) => {
+        if (!cancelled) applyBackendLivePatch(patch, "immediate");
+      })
+      .catch((e: any) => {
+        const status = Number(e?.status || e?.response?.status || 0);
+        console.log("KRISTO_LIVE_ROOM_BACKEND_ERROR", {
+          endpoint: `/api/church/live?lite=1&liveId=${liveBridgeId}`,
+          liveId: liveBridgeId,
+          source: "LiveRoomImmediate",
+          status: status || null,
+          message: String(e?.message || e),
+        });
+      });
 
-    pollLiveState();
-    const t = setInterval(pollLiveState, 1600);
     return () => {
-      alive = false;
-      clearInterval(t);
+      cancelled = true;
     };
-  }, [liveBridgeId, liveApiHeaders]);
+  }, [liveBridgeId, liveApiHeaders, isMediaInstantLive, applyBackendLivePatch]);
+
+  useEffect(() => {
+    const unsubClaim = onClaimUpdated(() => {
+      if (!liveBridgeId || isMediaInstantLive) return;
+      void fetchLightLiveStateWithPerf(
+        liveApiHeaders as any,
+        "LiveRoomClaimRefresh",
+        liveBridgeId,
+        "claim-refresh"
+      ).then((patch) => applyBackendLivePatch(patch, "claim-refresh"));
+    });
+    return unsubClaim;
+  }, [liveBridgeId, liveApiHeaders, isMediaInstantLive, applyBackendLivePatch]);
+
+  useEffect(() => {
+    if (!liveBridgeId && isMediaInstantLive === false) return;
+
+    const stopSync = startAdaptiveLivePolling({
+      screen: "LiveRoom",
+      enabled: isFocused,
+      activeMs: canManageLiveRef.current ? 3000 : 6000,
+      idleMs: 22000,
+      onTick: async () => {
+        const patch = await fetchLightLiveStateWithPerf(
+          liveApiHeaders as any,
+          "LiveRoom",
+          liveBridgeId,
+          "poll"
+        );
+        applyBackendLivePatch(patch, "poll");
+      },
+    });
+
+    const stopHeartbeat = startAdaptiveLivePolling({
+      screen: "LiveRoomHeartbeat",
+      enabled: isFocused,
+      activeMs: 15000,
+      idleMs: 30000,
+      onTick: async () => {
+        const body = {
+          viewerCount: 1,
+          role: canManageLiveRef.current
+            ? "host"
+            : isMyScheduledLiveTurnRef.current
+              ? "stage"
+              : "viewer",
+        };
+        const sig = JSON.stringify(body);
+        if (sig === liveHeartbeatSigRef.current) return;
+        liveHeartbeatSigRef.current = sig;
+        await pushLiveAction("presence", body);
+      },
+    });
+
+    return () => {
+      stopSync();
+      stopHeartbeat();
+    };
+  }, [liveBridgeId, isMediaInstantLive, liveApiHeaders, router, isFocused, applyBackendLivePatch]);
+
+  useEffect(() => {
+    const uris = assignmentThreadMessages
+      .map((m: any) => String(m?.avatarUri || m?.card?.claimedByAvatar || "").trim())
+      .filter(Boolean);
+    preloadLiveImages(uris, 20);
+  }, [assignmentThreadMessages]);
 
 
 
@@ -2901,7 +5452,8 @@ export default function LiveRoomScreen() {
         setRequestPolicy(nextPolicy);
       }
 
-      setJoinRequestsBySlot((prev) => ({ ...prev, ...incoming }));
+      const backend = backendLiveRequestsRef.current || {};
+      setJoinRequestsBySlot({ ...incoming, ...backend });
     };
 
     pullLiveJoinRequests();
@@ -2915,11 +5467,13 @@ export default function LiveRoomScreen() {
   const [lastStageTapAt, setLastStageTapAt] = useState<number>(0);
   const [moreOpen, setMoreOpen] = useState(false);
   const [hostDrawerOpen, setHostDrawerOpen] = useState(false);
+  const hostControlPulse = useRef(new Animated.Value(0)).current;
+  const hostControlViewerPulse = useRef(new Animated.Value(0)).current;
   const [layoutStudioOpen, setLayoutStudioOpen] = useState(false);
   const [selectedHostTool, setSelectedHostTool] = useState("Pin topic");
   const [viewerFlowOpen, setViewerFlowOpen] = useState(false);
   const hostDrawerX = useRef(new Animated.Value(360)).current;
-  const VIEWER_FLOW_PANEL_W = 300;
+  const VIEWER_FLOW_PANEL_W = 310;
   const viewerFlowX = useRef(new Animated.Value(VIEWER_FLOW_PANEL_W)).current;
   const mediaHeaderShimmerX = useRef(new Animated.Value(0)).current;
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
@@ -2931,6 +5485,16 @@ export default function LiveRoomScreen() {
   }, [isMediaInstantLive, mediaHeaderShimmerX]);
 
   const openHostDrawer = () => {
+    console.log("KRISTO_LIVE_HOST_PANEL_ACCESS", {
+      userId: currentUserId,
+      role: String((session as any)?.role || params.role || "viewer"),
+      isPastor: isPastorForLiveRoom,
+      isApprovedMediaHost: isApprovedMediaHostForLiveRoom,
+      isCurrentActiveSlotOwner: isCurrentActiveSlotOwnerForLiveRoom,
+      canSeeLiveHostControls,
+      canManageLiveHostActions,
+      source: "openHostDrawer",
+    });
     setHostDrawerOpen(true);
     Animated.spring(hostDrawerX, {
       toValue: 0,
@@ -2939,6 +5503,28 @@ export default function LiveRoomScreen() {
       speed: 18,
     }).start();
   };
+
+  useEffect(() => {
+    if (!hostDrawerOpen) return;
+    const liveLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(hostControlPulse, { toValue: 1, duration: 850, useNativeDriver: true }),
+        Animated.timing(hostControlPulse, { toValue: 0, duration: 850, useNativeDriver: true }),
+      ])
+    );
+    const viewerLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(hostControlViewerPulse, { toValue: 1, duration: 1100, useNativeDriver: true }),
+        Animated.timing(hostControlViewerPulse, { toValue: 0, duration: 1100, useNativeDriver: true }),
+      ])
+    );
+    liveLoop.start();
+    viewerLoop.start();
+    return () => {
+      liveLoop.stop();
+      viewerLoop.stop();
+    };
+  }, [hostDrawerOpen, hostControlPulse, hostControlViewerPulse]);
 
 
   useEffect(() => {
@@ -2957,15 +5543,445 @@ export default function LiveRoomScreen() {
     }).start();
   }, [requestPolicyOpen, requestPolicyAnim]);
 
+  function logLiveHostActionBlocked(action: string) {
+    console.log("KRISTO_LIVE_HOST_PANEL_BLOCKED_VIEWER", {
+      userId: currentUserId,
+      role: String((session as any)?.role || params.role || "viewer"),
+      action,
+    });
+  }
+
   function pressNextLiveSlot() {
-    if (!canManageLive) return;
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("next-slot");
+      return;
+    }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     advanceToNextClaimedSlot("host-next-button");
   }
 
   function pressHostTool(label: string) {
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked(`host-tool:${label}`);
+      return;
+    }
     setSelectedHostTool(label);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  }
+
+  function muteAllHostAudience() {
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("mute-all");
+      return;
+    }
+    const next: Record<string, boolean> = { ...(miniVideoMutedById || {}) };
+    [...scheduledStagePeople, ...guests].forEach((entry: any) => {
+      const id = String(entry?.id || "");
+      if (id) next[id] = true;
+    });
+    setMiniVideoMutedById(next);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  }
+
+  function renderHostControlAvatar(
+    name: string,
+    avatarUri: string,
+    size: number,
+    ringColor: string
+  ) {
+    return (
+      <View
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: 2.5,
+          borderColor: ringColor,
+          overflow: "hidden",
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "#07111F",
+          shadowColor: ringColor,
+          shadowOpacity: 0.45,
+          shadowRadius: 8,
+          shadowOffset: { width: 0, height: 0 },
+        }}
+      >
+        {avatarUri && isImageAvatar(avatarUri) ? (
+          <Image source={{ uri: avatarUri }} style={{ width: "100%", height: "100%" }} />
+        ) : (
+          <Text style={{ color: "#FFFFFF", fontWeight: "900", fontSize: size * 0.34 }}>
+            {initials(name)}
+          </Text>
+        )}
+      </View>
+    );
+  }
+
+  function renderLiveHostManageActions() {
+    return (
+      <View style={s.hcActionsWrap as any}>
+        <Text style={s.hcActionsGroupTitle as any}>LIVE CONTROL</Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable onPress={() => endLiveNow()} style={({ pressed }) => [s.hcActionBtnDanger, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="stop-circle-outline" size={20} color="#FCA5A5" />
+            <Text style={s.hcActionBtnDangerText as any}>End Live</Text>
+          </Pressable>
+          <Pressable onPress={togglePaused} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="pause-circle-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Pause</Text>
+          </Pressable>
+          <Pressable onPress={openLayoutStudio} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="grid-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Switch Layout</Text>
+          </Pressable>
+        </View>
+
+        <Text style={s.hcActionsGroupTitle as any}>AUDIENCE CONTROL</Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable onPress={handleHostRequestsPress} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="hand-left-outline" size={20} color="#38BDF8" />
+            <Text style={s.hcActionBtnText as any}>View Requests</Text>
+          </Pressable>
+          <Pressable onPress={muteAllHostAudience} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="mic-off-outline" size={20} color="#38BDF8" />
+            <Text style={s.hcActionBtnText as any}>Mute All</Text>
+          </Pressable>
+          <Pressable onPress={() => applyLiveRequestPolicy("locked")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="lock-closed-outline" size={20} color="#EF4444" />
+            <Text style={s.hcActionBtnText as any}>Lock Room</Text>
+          </Pressable>
+        </View>
+
+        <Text style={s.hcActionsGroupTitle as any}>CONTENT CONTROL</Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable onPress={() => pressHostTool("Pin topic")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="bookmark-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Pin Topic</Text>
+          </Pressable>
+          <Pressable onPress={() => pressHostTool("Pin name")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="person-circle-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Pin Name</Text>
+          </Pressable>
+          <Pressable onPress={() => pressHostTool("Comment")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="chatbubble-ellipses-outline" size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>Comment</Text>
+          </Pressable>
+        </View>
+
+        <Text style={s.hcActionsGroupTitle as any}>MEDIA CONTROL</Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable onPress={() => pressHostTool("Video")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="videocam-outline" size={20} color="#A78BFA" />
+            <Text style={s.hcActionBtnText as any}>Camera</Text>
+          </Pressable>
+          <Pressable onPress={() => pressHostTool("Photo")} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="image-outline" size={20} color="#A78BFA" />
+            <Text style={s.hcActionBtnText as any}>Photo</Text>
+          </Pressable>
+          <Pressable onPress={pressNextLiveSlot} style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}>
+            <Ionicons name="sparkles-outline" size={20} color="#A78BFA" />
+            <Text style={s.hcActionBtnText as any}>Next Slot</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  function renderLiveHostSlotOwnerControls() {
+    return (
+      <View style={s.hcActionsWrap as any}>
+        <Text style={s.hcActionsGroupTitle as any}>YOUR SPEAKING SLOT</Text>
+        <Text style={[s.hcEmptyText as any, { marginBottom: 10 }]}>
+          Mic and camera controls are available during your active slot window only.
+        </Text>
+        <View style={s.hcActionsRow as any}>
+          <Pressable
+            onPress={() => {
+              toggleMicMuted();
+              Haptics.selectionAsync().catch(() => {});
+            }}
+            style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
+          >
+            <Ionicons name={live.micMuted ? "mic-off-outline" : "mic-outline"} size={20} color="#D9B35F" />
+            <Text style={s.hcActionBtnText as any}>{live.micMuted ? "Unmute" : "Mic"}</Text>
+          </Pressable>
+          {canPublishLiveVideoNow ? (
+            <>
+              <Pressable
+                onPress={() => {
+                  setCameraPaused((v) => !v);
+                  Haptics.selectionAsync().catch(() => {});
+                }}
+                style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
+              >
+                <Ionicons
+                  name={cameraPaused ? "videocam-off-outline" : "videocam-outline"}
+                  size={20}
+                  color="#A78BFA"
+                />
+                <Text style={s.hcActionBtnText as any}>{cameraPaused ? "Camera On" : "Camera Off"}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  toggleCameraFacing();
+                  Haptics.selectionAsync().catch(() => {});
+                }}
+                style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
+              >
+                <Ionicons name="camera-reverse-outline" size={20} color="#63D1FF" />
+                <Text style={s.hcActionBtnText as any}>Flip</Text>
+              </Pressable>
+            </>
+          ) : null}
+        </View>
+      </View>
+    );
+  }
+
+  function renderLiveHostViewerSafePanel() {
+    return (
+      <View style={s.hcActionsWrap as any}>
+        <Text style={s.hcActionsGroupTitle as any}>YOUR ACTIONS</Text>
+        <Pressable
+          onPress={() => quitLiveRoom()}
+          style={({ pressed }) => [s.hcActionBtn, pressed ? s.hcActionBtnPressed : null] as any}
+        >
+          <Ionicons name="exit-outline" size={20} color="#DCE9FF" />
+          <Text style={s.hcActionBtnText as any}>Leave Live</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderAudienceSpeakerBlock(label: string, speaker: any, accent: string) {
+    return (
+      <View style={s.audiencePanelBlock as any}>
+        <Text style={s.audiencePanelBlockLabel as any}>{label}</Text>
+        {speaker?.name ? (
+          <View style={s.audiencePanelSpeakerRow as any}>
+            {renderHostControlAvatar(String(speaker.name), String(speaker.avatar || ""), 44, accent)}
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+              <Text style={s.audiencePanelSpeakerTopic as any} numberOfLines={1}>
+                {speaker.topic || speaker.startTime || "—"}
+              </Text>
+              {speaker.slot ? (
+                <Text style={s.audiencePanelSpeakerMeta as any}>Slot {speaker.slot}</Text>
+              ) : null}
+            </View>
+          </View>
+        ) : (
+          <Text style={s.audiencePanelEmpty as any}>Not scheduled yet</Text>
+        )}
+      </View>
+    );
+  }
+
+  function renderAudienceCurrentLiveBlock() {
+    const speaker = hostControlLiveSpeaker;
+    return (
+      <View style={s.audiencePanelBlock as any}>
+        <Text style={[s.hcSectionTitlePurple as any, { marginBottom: 8 }]}>CURRENT LIVE SPEAKER</Text>
+        {speaker?.name ? (
+          <View style={s.audiencePanelSpeakerRow as any}>
+            {renderHostControlAvatar(String(speaker.name), String(speaker.avatar || ""), 52, "#22C55E")}
+            <View style={{ flex: 1, gap: 3 }}>
+              <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+              <Text style={s.audiencePanelSpeakerTopic as any} numberOfLines={2}>{speaker.topic}</Text>
+              <Text style={s.audiencePanelSpeakerMeta as any}>
+                Slot {speaker.slot || "—"} • {speaker.countdown || "Waiting"}
+              </Text>
+            </View>
+          </View>
+        ) : (
+          <Text style={s.audiencePanelEmpty as any}>Waiting for current speaker</Text>
+        )}
+      </View>
+    );
+  }
+
+  function renderAudienceNextSpeakerBlock() {
+    const speaker = hostControlNextSpeaker;
+    return (
+      <View style={s.audiencePanelBlock as any}>
+        <Text style={[s.hcSectionTitlePurple as any, { marginBottom: 8 }]}>NEXT SPEAKER</Text>
+        {speaker?.name ? (
+          <View style={s.audiencePanelSpeakerRow as any}>
+            {renderHostControlAvatar(String(speaker.name), String(speaker.avatar || ""), 48, "#A78BFA")}
+            <View style={{ flex: 1, gap: 3 }}>
+              <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+              <Text style={s.audiencePanelSpeakerTopic as any} numberOfLines={1}>{speaker.topic}</Text>
+              <Text style={s.audiencePanelSpeakerMeta as any}>
+                {speaker.startTime} • Slot {speaker.slot || "—"}
+              </Text>
+            </View>
+            <View style={s.hcReadyPill as any}>
+              <Text style={s.hcReadyPillText as any}>{speaker.status || "WAITING"}</Text>
+            </View>
+          </View>
+        ) : (
+          <Text style={s.audiencePanelEmpty as any}>No next speaker scheduled</Text>
+        )}
+      </View>
+    );
+  }
+
+  function renderAudienceClaimedSpeakersSection(compact = false) {
+    const speakers = compact ? hostControlClaimedSpeakers.slice(0, 6) : hostControlClaimedSpeakers;
+    return (
+      <View style={s.audiencePanelSectionWrap as any}>
+        <Text style={s.hcSectionTitlePurple as any}>
+          CLAIMED SPEAKERS ({claimedUserCount} USERS • {claimedSlotCount} SLOTS)
+        </Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.hcSpeakerScroll as any}>
+          {speakers.length ? speakers.map((speaker: any) => (
+            <View key={speaker.id} style={s.hcSpeakerCard as any}>
+              {renderHostControlAvatar(speaker.name, speaker.avatar, 46, speaker.statusColor)}
+              <Text style={s.hcSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+              <Text style={s.hcSpeakerSlot as any}>
+                {claimedSpeakerSlotLabelById[speaker.id] || `Slot ${speaker.slot}`}
+              </Text>
+              <Text style={s.hcSpeakerTopic as any} numberOfLines={1}>{speaker.topic}</Text>
+              <Text style={[s.hcSpeakerStatus as any, { color: speaker.statusColor }]}>{speaker.status}</Text>
+            </View>
+          )) : (
+            <Text style={s.hcEmptyText as any}>No claimed speakers yet</Text>
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  function renderAudienceViewerStatsSection(compact = false) {
+    const stats = hostControlViewerStats;
+    return (
+      <View style={s.hcViewerSection as any}>
+        <View style={s.hcViewerHeader as any}>
+          <Text style={s.hcSectionTitleBlue as any}>VIEWERS</Text>
+          <View style={s.hcViewerLiveDot as any} />
+        </View>
+        <View style={s.hcViewerStatsGrid as any}>
+          <View style={s.hcViewerStatRow as any}>
+            <Text style={s.hcViewerStatLabel as any}>Total viewers</Text>
+            <Text style={s.hcViewerStatValue as any}>{stats.totalViewers}</Text>
+          </View>
+          <View style={s.hcViewerStatRow as any}>
+            <Text style={s.hcViewerStatLabel as any}>Active viewers</Text>
+            <Text style={s.hcViewerStatValue as any}>{stats.activeViewers}</Text>
+          </View>
+          <View style={s.hcViewerStatRow as any}>
+            <Text style={s.hcViewerStatLabel as any}>Members in live</Text>
+            <Text style={s.hcViewerStatValue as any}>{stats.members}</Text>
+          </View>
+          <View style={s.hcViewerStatRow as any}>
+            <Text style={s.hcViewerStatLabel as any}>Leaders in live</Text>
+            <Text style={s.hcViewerStatValue as any}>{stats.leaders}</Text>
+          </View>
+        </View>
+        {!compact ? (
+          <View style={[s.hcViewerBreakdownRow as any, { flexWrap: "wrap" }]}>
+            {[
+              { label: "TOTAL", value: stats.totalViewers },
+              { label: "ACTIVE", value: stats.activeViewers },
+              { label: "MEMBERS", value: stats.members },
+              { label: "LEADERS", value: stats.leaders },
+              { label: "GUESTS", value: stats.guests },
+            ].map((chip) => (
+              <View key={chip.label} style={[s.hcViewerChip as any, { minWidth: 52 }]}>
+                <Text style={s.hcViewerChipValue as any}>{chip.value}</Text>
+                <Text style={s.hcViewerChipLabel as any}>{chip.label}</Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <View style={s.audiencePanelStatCard as any}>
+            <Text style={s.audiencePanelBlockLabel as any}>GUESTS IN LIVE</Text>
+            <Text style={s.audiencePanelStatValue as any}>{stats.guests}</Text>
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  function renderAudienceUpcomingQueueSection() {
+    return (
+      <View style={s.hcQueueSection as any}>
+        <Text style={s.hcSectionTitleGold as any}>UPCOMING QUEUE</Text>
+        {hostControlUpcomingQueue.length ? hostControlUpcomingQueue.map((item: any, index: number) => (
+          <View key={`audience-queue-${item.slot}-${index}`} style={s.hcQueueTimelineRow as any}>
+            <View style={s.hcQueueTimelineRail as any}>
+              <View style={[s.hcQueueTimelineDot as any, item.claimed ? s.hcQueueTimelineDotClaimed : null]} />
+              {index < hostControlUpcomingQueue.length - 1 ? <View style={s.hcQueueTimelineLine as any} /> : null}
+            </View>
+            <View style={s.hcQueueTimelineBody as any}>
+              <Text style={s.hcQueueTimelineSlot as any}>Slot {item.slot}</Text>
+              <Text style={s.hcQueueTimelineTime as any}>{item.timeLabel}</Text>
+              <Text style={s.hcQueueTimelineName as any} numberOfLines={1}>
+                {item.name} • {String(item.status || "").toUpperCase()}
+              </Text>
+            </View>
+          </View>
+        )) : (
+          <Text style={s.hcEmptyText as any}>No upcoming scheduled slots</Text>
+        )}
+      </View>
+    );
+  }
+
+  function renderAudienceMicStatusSection() {
+    return (
+      <View style={s.audiencePanelMicSection as any}>
+        <Text style={s.hcSectionTitleGold as any}>MY MIC STATUS</Text>
+        <View style={s.audiencePanelMicRow as any}>
+          <Ionicons name="mic-outline" size={18} color="#38BDF8" />
+          <Text style={s.audiencePanelMicText as any}>{audienceMicStatus.micLabel}</Text>
+        </View>
+        <View style={s.audiencePanelMicRow as any}>
+          <Ionicons name="videocam-outline" size={18} color="#A78BFA" />
+          <Text style={s.audiencePanelMicText as any}>{audienceMicStatus.cameraLabel}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  function renderAudienceSafeActions() {
+    return (
+      <View style={s.audiencePanelActionsWrap as any}>
+        <Text style={s.audiencePanelBlockLabel as any}>SAFE ACTIONS</Text>
+        {openClaimableSlots.length ? (
+          <Pressable
+            onPress={() => router.push("/" as any)}
+            style={({ pressed }) => ([s.audiencePanelClaimBtn, s.audiencePanelActionBtnWide, pressed ? s.audiencePanelClaimBtnPressed : null] as any)}
+          >
+            <Ionicons name="add-circle-outline" size={16} color="#F4D06F" />
+            <Text style={s.audiencePanelClaimBtnText as any}>Go Claim Open Slot</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={() => router.push("/" as any)}
+            style={({ pressed }) => ([s.audiencePanelSecondaryBtn, pressed ? s.audiencePanelClaimBtnPressed : null] as any)}
+          >
+            <Ionicons name="home-outline" size={16} color="#DCE9FF" />
+            <Text style={s.audiencePanelSecondaryBtnText as any}>Go to Home Feed</Text>
+          </Pressable>
+        )}
+        <Pressable
+          onPress={handleSharePress}
+          style={({ pressed }) => ([s.audiencePanelSecondaryBtn, pressed ? s.audiencePanelClaimBtnPressed : null] as any)}
+        >
+          <Ionicons name="share-social-outline" size={16} color="#DCE9FF" />
+          <Text style={s.audiencePanelSecondaryBtnText as any}>Share Live</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => quitLiveRoom()}
+          style={({ pressed }) => ([s.audiencePanelCloseBtn, pressed ? s.audiencePanelCloseBtnPressed : null] as any)}
+        >
+          <Ionicons name="close-circle-outline" size={18} color="#FFFFFF" />
+          <Text style={s.audiencePanelCloseBtnText as any}>Close Live</Text>
+        </Pressable>
+      </View>
+    );
   }
 
   function canSelectedProfileModerate(id?: string | null) {
@@ -2974,12 +5990,20 @@ export default function LiveRoomScreen() {
   }
 
   function openLayoutStudio() {
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("layout-studio");
+      return;
+    }
     pressHostTool("Layout");
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     return;
   }
 
   function chooseStudioLayout(next: LayoutMode) {
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("choose-layout");
+      return;
+    }
     if (next === "focus") {
       setLayoutDraftMode("focus");
       setLayoutMode("focus");
@@ -3285,13 +6309,14 @@ export default function LiveRoomScreen() {
             id,
             name: claimedBy === "You" ? "You" : claimedBy,
             role,
+            avatar: resolveParticipantAvatarUri(slot),
           };
         })
         .filter(Boolean) as LiveGuest[];
 
       return source;
     },
-    [approvedRequestGuests, activeStageSlots, isMediaInstantLive]
+    [approvedRequestGuests, activeStageSlots, isMediaInstantLive, memberAvatarByUserId, resolvedAvatarByUserId, liveProfileAvatarUri, session?.userId]
   );
 
   const pinnedGuest = useMemo(
@@ -3477,23 +6502,22 @@ export default function LiveRoomScreen() {
     (approvedAccessRequest && accessApproveCountdown === 0);
 
   useEffect(() => {
-    if (!approvedAccessRequest || audienceGateAllowed || isMediaInstantLive) return;
-    if (accessApproveCountdown !== null) return;
-    setAccessApproveCountdown(5);
-
+    if (accessApproveCountdown === null || accessApproveCountdown <= 0) return;
     const t = setInterval(() => {
       setAccessApproveCountdown((prev) => {
         if (prev === null) return null;
-        if (prev <= 1) {
-          clearInterval(t);
-          return 0;
-        }
+        if (prev <= 1) return 0;
         return prev - 1;
       });
     }, 1000);
-
     return () => clearInterval(t);
-  }, [approvedAccessRequest, finalAudienceGateAllowed, isMediaInstantLive]);
+  }, [accessApproveCountdown]);
+
+  useEffect(() => {
+    if (!approvedAccessRequest || audienceGateAllowed || isMediaInstantLive) return;
+    if (accessApproveCountdown !== null) return;
+    setAccessApproveCountdown(5);
+  }, [approvedAccessRequest, audienceGateAllowed, isMediaInstantLive, accessApproveCountdown]);
 
   const liveMeta = useMemo(() => {
     if (isMediaInstantLive) return `${live.viewerCount} • Creator controls`;
@@ -3573,21 +6597,106 @@ export default function LiveRoomScreen() {
   );
   const routeRoleLower = String(params.role || "").trim().toLowerCase();
 
-  // SECURITY: do not trust cached role/route role for live authority.
-  // Removed hosts must fall back to viewer until backend confirms them again.
-  // Only the church/media owner can manage the whole live.
-  // A claimed slot user can publish only their own mic/camera, but must NOT get host control.
-  // IMPORTANT:
-  // Only MY CHURCH scheduled lives get pastor/admin management authority.
-  // Media instant live keeps original behavior untouched.
-  // FINAL SECURITY RULE:
-  // Only the owner/media host of THIS live can manage the live.
-  // Pastor/admin role from another church must remain viewer.
-  // SECURITY:
-  // Only the REAL owner/media host of THIS live can manage authority controls.
-  // Generic pastors/admins from another church/media must remain viewers.
-  const canManageLive =
-    roleLooksLikeHost;
+  // SECURITY: host management authority is computed above (canManageLiveHostActions).
+  // Claimed slot users may open a limited speaker panel only during their active slot window.
+
+  useEffect(() => {
+    canManageLiveRef.current = canManageLive;
+    canSeeLiveHostControlsRef.current = canSeeLiveHostControls;
+    isMyScheduledLiveTurnRef.current = !!isMyScheduledLiveTurn;
+  }, [canManageLive, canSeeLiveHostControls, isMyScheduledLiveTurn]);
+
+  useEffect(() => {
+    console.log("KRISTO_LIVE_HOST_PANEL_ACCESS", {
+      userId: currentUserId,
+      role: String((session as any)?.role || params.role || "viewer"),
+      isPastor: isPastorForLiveRoom,
+      isApprovedMediaHost: isApprovedMediaHostForLiveRoom,
+      isCurrentActiveSlotOwner: isCurrentActiveSlotOwnerForLiveRoom,
+      canSeeLiveHostControls,
+      canManageLiveHostActions,
+      source: "live-room",
+    });
+  }, [
+    currentUserId,
+    (session as any)?.role,
+    params.role,
+    isPastorForLiveRoom,
+    isApprovedMediaHostForLiveRoom,
+    isCurrentActiveSlotOwnerForLiveRoom,
+    canSeeLiveHostControls,
+    canManageLiveHostActions,
+  ]);
+
+  useEffect(() => {
+    if (isMediaInstantLive) return;
+
+    if (canManageLive) {
+      console.log("KRISTO_PASTOR_ROOM_STATE", {
+        liveBridgeId,
+        liveScheduleFeedId,
+        claimedSlotCount: runtimeScheduleSlots.filter((slot: any) =>
+          String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()
+        ).length,
+        runtimeSlotCount: runtimeScheduleSlots.length,
+        joinRequestCount: 0,
+        presenceCount: Object.keys(liveViewerPresence || {}).length,
+        currentSlotOwnerId,
+        currentSlotNumber,
+      });
+
+      console.log("KRISTO_HOST_VISIBLE_PARTICIPANTS", {
+        liveBridgeId,
+        stagePeople: scheduledStagePeople.map((guest: any) => ({
+          slot: guest.slot,
+          userId: guest.claimedByUserId,
+          name: guest.name,
+        })),
+        queueSlots: visibleQueueSlots.map((guest: any) => ({
+          slot: guest.slot,
+          userId: guest.claimedByUserId,
+          name: guest.name,
+        })),
+      });
+    } else if (myClaimedStageSlot) {
+      console.log("KRISTO_CLAIMED_MEMBER_VISIBLE", {
+        liveBridgeId,
+        userId: currentUserId,
+        slot: Number((myClaimedStageSlot as any)?.slot || 0),
+        isMyScheduledLiveTurn,
+        claimedByUserId: String((myClaimedStageSlot as any)?.claimedByUserId || ""),
+      });
+    }
+  }, [
+    isMediaInstantLive,
+    canManageLive,
+    liveBridgeId,
+    liveScheduleFeedId,
+    runtimeScheduleSlots,
+    joinRequestsBySlot,
+    liveViewerPresence,
+    scheduledStagePeople,
+    visibleQueueSlots,
+    myClaimedStageSlot,
+    currentUserId,
+    currentSlotOwnerId,
+    currentSlotNumber,
+    isMyScheduledLiveTurn,
+    feedScheduleTick,
+  ]);
+
+  useEffect(() => {
+    if (!canManageLive || !isFocused || isMediaInstantLive || !liveBridgeId) return;
+    void fetchLightLiveStateWithPerf(
+      liveApiHeaders as any,
+      "LiveRoomPastorFast",
+      liveBridgeId,
+      "pastor-fast"
+    ).then((patch) => {
+      applyBackendLivePatch(patch, "pastor-fast");
+    });
+  }, [canManageLive, isFocused, feedScheduleTick, liveApiHeaders, isMediaInstantLive, liveBridgeId, applyBackendLivePatch]);
+
   const canUseAuthorityControls = isMediaInstantLive || (canManageLive && (canEnterBackstage || liveStillActive));
   const canSeeAuthorityBar =
     !isMediaInstantLive &&
@@ -3596,6 +6705,25 @@ export default function LiveRoomScreen() {
       (!!canEnterBackstage && (isLeaderRole || isClaimedViewer)));
   const isCoHostRole = normalizedRole.includes("co-host") || normalizedRole.includes("cohost");
   const isViewerRole = !canManageLive && !isCoHostRole;
+  const canSeeHostCommandCenter = canManageLiveHostActions;
+  const canSeeAudiencePanel = !canSeeLiveHostControls && !isMediaInstantLive;
+  const isClaimedMemberAudience = canSeeAudiencePanel && !!myClaimedStageSlot;
+
+  useEffect(() => {
+    console.log("KRISTO_AUDIENCE_PANEL_GATE", {
+      canSeeAudiencePanel,
+      viewerFlowOpen,
+      layoutMode,
+      isClaimedMember: !!myClaimedStageSlot,
+      canSeeHostCommandCenter,
+    });
+  }, [
+    canSeeAudiencePanel,
+    viewerFlowOpen,
+    layoutMode,
+    myClaimedStageSlot,
+    canSeeHostCommandCenter,
+  ]);
 
   const viewerApprovedGuestOnStage =
     isViewerRole &&
@@ -3772,6 +6900,350 @@ export default function LiveRoomScreen() {
     );
   }, [nextScheduleEntry, guests]);
 
+  const hostControlLiveSpeaker = useMemo(() => {
+    const slot = currentMainStageSlot;
+    if (!slot) return null;
+    return {
+      name: String(slot?.claimedByName || slot?.name || ""),
+      avatar: String(resolveParticipantAvatarUri(slot) || slot?.avatar || ""),
+      topic: String(slot?.title || slot?.task || slot?.slotLabel || slot?.name || ""),
+      slot: Number(slot?.slot || 0),
+      countdown: String(liveCountdownLabel || "Waiting"),
+    };
+  }, [currentMainStageSlot, liveCountdownLabel]);
+
+  const hostControlNextSpeaker = useMemo(() => {
+    const next = hostDrawerNextSlot;
+    if (!next) return null;
+    const startMs = Number((next as any)?.startMs || 0);
+    return {
+      name: String((next as any)?.name || ""),
+      avatar: String((next as any)?.avatar || resolveParticipantAvatarUri(next) || ""),
+      topic: String((next as any)?.title || (next as any)?.task || (next as any)?.slotLabel || (next as any)?.name || ""),
+      slot: Number((next as any)?.slot || 0),
+      startTime: startMs
+        ? new Date(startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        : "—",
+      status: startMs > liveNowMs ? "WAITING" : "READY",
+    };
+  }, [hostDrawerNextSlot, liveNowMs]);
+
+  const claimedMemberPanelInfo = useMemo(() => {
+    if (!myClaimedStageSlot) return null;
+    const slot = myClaimedStageSlot as any;
+    const slotNum = Number(slot?.slot || 0);
+    const startMs = Number(slot?.startMs || 0);
+    const endMs = Number(slot?.endMs || 0);
+    const currentSlotNum = Number(currentMainStageSlot?.slot || 0);
+    const isLiveNow =
+      slotNum > 0 &&
+      slotNum === currentSlotNum &&
+      !!currentMainStageSlot &&
+      isScheduleSlotCameraWindowOpen(
+        { claimedByUserId: currentUserId, startMs, endMs },
+        currentUserId,
+        liveNowMs
+      );
+    const isWaiting = startMs > liveNowMs;
+    const isReady =
+      !isLiveNow && startMs <= liveNowMs && (!endMs || endMs > liveNowMs);
+
+    let status = "WAITING";
+    if (isLiveNow) status = "LIVE NOW";
+    else if (isReady) status = "READY";
+
+    let countdown = "—";
+    if (isLiveNow) {
+      countdown = String(liveCountdownLabel || "Waiting");
+    } else if (isWaiting && startMs) {
+      const left = Math.max(0, startMs - liveNowMs);
+      const mins = Math.floor(left / 60000);
+      const secs = Math.floor((left % 60000) / 1000);
+      countdown = `STARTS IN ${mins}:${String(secs).padStart(2, "0")}`;
+    } else if (isReady) {
+      countdown = "You're up next";
+    }
+
+    return {
+      slot: slotNum,
+      name: String(slot?.claimedByName || slot?.name || liveProfileName || "Member"),
+      avatar: String(resolveParticipantAvatarUri(slot) || slot?.avatar || slot?.claimedByAvatar || liveProfileAvatarUri || ""),
+      topic: String(slot?.title || slot?.task || slot?.slotLabel || slot?.name || `Slot ${slotNum}`),
+      timeLabel: startMs
+        ? new Date(startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        : "—",
+      status,
+      statusColor: isLiveNow ? "#22C55E" : isWaiting ? "#FACC15" : "#38BDF8",
+      countdown,
+      isLiveNow,
+    };
+  }, [myClaimedStageSlot, currentMainStageSlot, liveCountdownLabel, liveNowMs, liveProfileName, liveProfileAvatarUri]);
+
+  const audienceMicStatus = useMemo(() => {
+    const isLiveNow = claimedMemberPanelInfo?.status === "LIVE NOW";
+    const micReady = !!(canPublishClaimedMicNow || liveMicPublisherReady);
+    const cameraAllowed = canPublishLiveVideoNow;
+    const slotStartsLater =
+      !!myClaimedStageSlot && Number((myClaimedStageSlot as any)?.startMs || 0) > liveNowMs;
+
+    if (isLiveNow) {
+      return {
+        micLabel: micReady ? "You are live now — mic ready" : "You are live now",
+        cameraLabel: cameraAllowed ? "Camera open for your slot" : "Camera opens when your slot is live",
+      };
+    }
+
+    return {
+      micLabel: micReady ? "Mic ready" : "Mic unlocks when your slot is live",
+      cameraLabel: cameraAllowed
+        ? "Camera allowed for your active slot"
+        : slotStartsLater
+          ? "Your camera opens when your slot starts"
+          : "Camera opens when your slot is live",
+    };
+  }, [
+    claimedMemberPanelInfo?.status,
+    canPublishClaimedMicNow,
+    liveMicPublisherReady,
+    canPublishLiveVideoNow,
+    myClaimedStageSlot,
+    liveNowMs,
+  ]);
+
+  const hostControlClaimedSpeakers = useMemo(() => {
+    return scheduledStagePeople.map((person: any) => {
+      const slotNum = Number(person?.slot || 0);
+      const startMs = Number(person?.startMs || 0);
+      const endMs = Number(person?.endMs || 0);
+      const isLiveNow = isScheduleSlotActiveNow(person, liveNowMs);
+      const isWaiting = isScheduleSlotUpcoming(person, liveNowMs);
+      const isReady = !isLiveNow && !isWaiting && !isScheduleSlotExpired(person, liveNowMs);
+      return {
+        id: String(person?.id || `claimed-${slotNum}`),
+        slot: slotNum,
+        claimedByUserId: String(person?.claimedByUserId || person?.userId || "").trim(),
+        name: String(person?.name || person?.claimedByName || `Speaker ${slotNum}`),
+        avatar: String(person?.avatar || resolveParticipantAvatarUri(person) || ""),
+        topic: String(person?.title || person?.task || person?.slotLabel || person?.name || "Speaking slot"),
+        status: isLiveNow ? "LIVE NOW" : isWaiting ? "WAITING" : isReady ? "READY" : "WAITING",
+        statusColor: isLiveNow ? "#22C55E" : isWaiting ? "#FACC15" : "#38BDF8",
+      };
+    });
+  }, [scheduledStagePeople, currentMainStageSlot?.slot, liveNowMs]);
+
+  const {
+    claimedSlotCount,
+    claimedUserCount,
+    claimedUsers,
+    claimedSpeakerSlotLabelById,
+  } = useMemo(() => {
+    const speakers = hostControlClaimedSpeakers;
+    const slotCount = speakers.length;
+    const slotsByUserKey = new Map<string, number[]>();
+
+    const userKeyFor = (speaker: any) => {
+      const userId = String(speaker?.claimedByUserId || speaker?.userId || "").trim();
+      if (userId) return `uid:${userId}`;
+      const name = String(speaker?.name || "").trim().toLowerCase();
+      if (name) return `name:${name}`;
+      return `id:${String(speaker?.id || speaker?.slot || "")}`;
+    };
+
+    speakers.forEach((speaker: any) => {
+      const key = userKeyFor(speaker);
+      const slots = slotsByUserKey.get(key) || [];
+      const slotNum = Number(speaker?.slot || 0);
+      if (slotNum > 0) slots.push(slotNum);
+      slotsByUserKey.set(key, slots);
+    });
+
+    const slotLabelById: Record<string, string> = {};
+    speakers.forEach((speaker: any) => {
+      const key = userKeyFor(speaker);
+      const slots = (slotsByUserKey.get(key) || []).filter(Boolean).sort((a, b) => a - b);
+      slotLabelById[speaker.id] =
+        slots.length > 1 ? `Slots ${slots.join(", ")}` : `Slot ${slots[0] || speaker.slot || "—"}`;
+    });
+
+    const seenUserKeys = new Set<string>();
+    const users = speakers.filter((speaker: any) => {
+      const key = userKeyFor(speaker);
+      if (seenUserKeys.has(key)) return false;
+      seenUserKeys.add(key);
+      return true;
+    }).map((speaker: any) => ({
+      ...speaker,
+      slotLabel: slotLabelById[speaker.id] || `Slot ${speaker.slot || "—"}`,
+    }));
+
+    return {
+      claimedSlotCount: slotCount,
+      claimedUserCount: users.length,
+      claimedUsers: users,
+      claimedSpeakerSlotLabelById: slotLabelById,
+    };
+  }, [hostControlClaimedSpeakers]);
+
+  useEffect(() => {
+    console.log("KRISTO_CLAIMED_SPEAKER_COUNTS", {
+      claimedUserCount,
+      claimedSlotCount,
+    });
+  }, [claimedUserCount, claimedSlotCount]);
+
+  const hostControlHosts = useMemo(() => {
+    const rows: Array<{ id: string; name: string; role: string; avatar: string }> = [];
+    const seen = new Set<string>();
+    const pastorId = String(actualChurchPastorUserId || "").trim();
+    const hostIds = Array.isArray(mediaHostIds) ? mediaHostIds : [];
+
+    const pushHost = (id: string, name: string, role: string, avatar = "") => {
+      const uid = String(id || "").trim();
+      if (!uid || seen.has(uid)) return;
+      seen.add(uid);
+      rows.push({ id: uid, name: String(name || role), role, avatar: String(avatar || "") });
+    };
+
+    if (pastorId) {
+      const pastorPerson = scheduledStagePeople.find(
+        (p: any) => String(p?.claimedByUserId || "").trim() === pastorId
+      );
+      pushHost(
+        pastorId,
+        String(pastorPerson?.name || (params as any)?.claimedByName || "Pastor"),
+        "Pastor",
+        String(pastorPerson?.avatar || resolveParticipantAvatarUri(pastorPerson) || liveProfileAvatarUri || "")
+      );
+    }
+
+    hostIds.forEach((hostId: string) => {
+      const id = String(hostId || "").trim();
+      if (!id) return;
+      const person = scheduledStagePeople.find((p: any) => String(p?.claimedByUserId || "").trim() === id);
+      pushHost(id, String(person?.name || "Host"), "Host", String(person?.avatar || resolveParticipantAvatarUri(person) || ""));
+    });
+
+    scheduledStagePeople.forEach((p: any) => {
+      const roleRaw = String(p?.role || p?.roleLabel || "").toLowerCase();
+      const uid = String(p?.claimedByUserId || "").trim();
+      if (!uid) return;
+      if (roleRaw.includes("pastor")) {
+        pushHost(uid, String(p?.name || "Pastor"), "Pastor", String(p?.avatar || resolveParticipantAvatarUri(p) || ""));
+      } else if (roleRaw.includes("admin")) {
+        pushHost(uid, String(p?.name || "Admin"), "Admin", String(p?.avatar || resolveParticipantAvatarUri(p) || ""));
+      } else if (roleRaw.includes("host")) {
+        pushHost(uid, String(p?.name || "Host"), "Host", String(p?.avatar || resolveParticipantAvatarUri(p) || ""));
+      }
+    });
+
+    if (canManageLive && session?.userId) {
+      pushHost(
+        String(session.userId),
+        String(liveProfileName || "Live Host"),
+        isCoHostRole ? "Co-host" : "Host",
+        String(liveProfileAvatarUri || "")
+      );
+    }
+
+    return rows;
+  }, [
+    actualChurchPastorUserId,
+    mediaHostIds,
+    scheduledStagePeople,
+    canManageLive,
+    session?.userId,
+    liveProfileName,
+    liveProfileAvatarUri,
+    isCoHostRole,
+    params,
+  ]);
+
+  const hostControlViewerStats = useMemo(() => {
+    const presenceRows = Object.values(liveViewerPresence || {}) as any[];
+    const presenceCount = presenceRows.length;
+    const totalViewers = Math.max(Number(live.viewerCount || 0), presenceCount);
+    const activeViewers = presenceCount;
+
+    const isLeaderRole = (role: string) => {
+      const r = String(role || "").toLowerCase();
+      return r.includes("pastor") || r.includes("admin") || r.includes("leader") || r.includes("host");
+    };
+
+    const leaders = presenceRows.filter((viewer: any) => {
+      const roleText = `${String(viewer?.role || "")} ${String(viewer?.churchRole || "")}`.toLowerCase();
+      return isLeaderRole(roleText);
+    }).length;
+
+    const members = presenceRows.filter((viewer: any) => {
+      const roleText = `${String(viewer?.role || "")} ${String(viewer?.churchRole || "")}`.toLowerCase();
+      if (isLeaderRole(roleText)) return false;
+      return roleText.includes("member") || !!viewer?.churchId;
+    }).length;
+
+    const knownPresence = members + leaders;
+    const guestsFromPresence = Math.max(0, presenceCount - knownPresence);
+    const unknownTotalExtra = Math.max(0, totalViewers - presenceCount);
+    const guests = guestsFromPresence + unknownTotalExtra;
+
+    return {
+      totalViewers,
+      activeViewers,
+      members,
+      leaders,
+      guests,
+    };
+  }, [liveViewerPresence, live.viewerCount]);
+
+  const hostControlUpcomingQueue = useMemo(() => {
+    return runtimeScheduleSlots
+      .map((slot: any, index: number) => {
+        const win = getScheduleSlotWindow(slot, index);
+        const slotNum = Number(slot?.slot || slot?.slotNumber || index + 1);
+        const startMs = Number(win.startMs || 0);
+        if (slot?.skipped) return null;
+        if (!startMs || startMs <= liveNowMs) return null;
+        const claimed = !!String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+        return {
+          slot: slotNum,
+          startMs,
+          timeLabel: new Date(startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+          claimed,
+          status: claimed ? "claimed" : "open",
+          name: String(
+            slot?.claimedByName ||
+              slot?.title ||
+              slot?.task ||
+              slot?.slotLabel ||
+              slot?.name ||
+              `Slot ${slotNum}`
+          ),
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => Number(a.startMs || 0) - Number(b.startMs || 0))
+      .slice(0, 8);
+  }, [runtimeScheduleSlots, liveNowMs]);
+
+  useEffect(() => {
+    if (!canSeeAudiencePanel) return;
+    console.log("KRISTO_AUDIENCE_PANEL_DATA", {
+      isClaimedMember: !!myClaimedStageSlot,
+      myClaimedSlot: Number((myClaimedStageSlot as any)?.slot || 0),
+      claimedSpeakersCount: claimedSlotCount,
+      claimedUsersCount: claimedUserCount,
+      viewersTotal: hostControlViewerStats.totalViewers,
+      queueCount: hostControlUpcomingQueue.length,
+    });
+  }, [
+    canSeeAudiencePanel,
+    myClaimedStageSlot,
+    hostControlClaimedSpeakers.length,
+    claimedSlotCount,
+    claimedUserCount,
+    hostControlViewerStats.totalViewers,
+    hostControlUpcomingQueue.length,
+  ]);
+
   const pinnedGuestOnStage = !!pinnedGuest?.id && stageGuestIds.includes(pinnedGuest.id);
   const pinnedGuestAuthorityMuted =
     !!pinnedGuest?.id && !!authorityMutedIds[pinnedGuest.id];
@@ -3910,7 +7382,17 @@ export default function LiveRoomScreen() {
   }
 
   function toggleCameraFacing() {
-    setCameraFacing((v) => (v === "front" ? "back" : "front"));
+    setCameraFacing((fromFacing) => {
+      const toFacing = fromFacing === "front" ? "back" : "front";
+      const flipState = (globalThis as any).__KRISTO_LIVE_CAMERA_FLIP_STATE__ || {};
+      console.log("KRISTO_LIVE_CAMERA_FLIP_REQUEST", {
+        fromFacing,
+        toFacing,
+        hasLocalTrack: !!flipState.hasLocalTrack,
+        isPublishing: !!flipState.isPublishing || !!canPublishLiveVideoNow,
+      });
+      return toFacing;
+    });
   }
 
   const [actualMicEnabledForUi, setActualMicEnabledForUi] = useState<boolean | null>(null);
@@ -3952,22 +7434,29 @@ export default function LiveRoomScreen() {
   }
 
   useEffect(() => {
-
-
     let alive = true;
 
     (async () => {
       try {
+        logLivePerf("camera_permission_start", {
+          alreadyGranted: !!cameraPermission?.granted,
+        });
         const camOk = cameraPermission?.granted
           ? true
           : !!(await requestCameraPermission())?.granted;
+        logLivePerf("camera_permission_end", { granted: camOk });
 
+        logLivePerf("mic_permission_start", {
+          alreadyGranted: !!micPermission?.granted,
+        });
         const micOk = micPermission?.granted
           ? true
           : !!(await requestMicPermission())?.granted;
+        logLivePerf("mic_permission_end", { granted: micOk });
 
         if (alive) {
           setCameraPaused(false);
+          setLivePerfPermissionsDone(true);
           if (!camOk) {
             console.log("live-room camera permission not granted");
           }
@@ -3976,6 +7465,7 @@ export default function LiveRoomScreen() {
           }
         }
       } catch (e) {
+        setLivePerfPermissionsDone(true);
         console.log("live-room permission error", e);
       }
     })();
@@ -3984,6 +7474,30 @@ export default function LiveRoomScreen() {
       alive = false;
     };
   }, [cameraPermission?.granted, micPermission?.granted]);
+
+  useEffect(() => {
+    if (livePerfInteractLoggedRef.current) return;
+    if (!livePerfPermissionsDone) return;
+    if (!liveEnabled && !isMediaInstantLive) return;
+
+    livePerfInteractLoggedRef.current = true;
+    logLivePerf("user_can_interact", {
+      liveEnabled,
+      canEnterRoom,
+      liveScheduleReady,
+      isMediaInstantLive,
+      cameraGranted: !!cameraPermission?.granted,
+      micGranted: !!micPermission?.granted,
+    });
+  }, [
+    livePerfPermissionsDone,
+    liveEnabled,
+    canEnterRoom,
+    liveScheduleReady,
+    isMediaInstantLive,
+    cameraPermission?.granted,
+    micPermission?.granted,
+  ]);
 
   useEffect(() => {
     if (!liveEnabled) return;
@@ -3997,6 +7511,10 @@ export default function LiveRoomScreen() {
   }, [canManageLive, livePresenceKey, liveEnabled]);
 
   function togglePaused() {
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("pause");
+      return;
+    }
     if (!liveEnabled) {
       Alert.alert("Ready room", "This ready room opens before official live starts.");
       return;
@@ -4005,12 +7523,80 @@ export default function LiveRoomScreen() {
   }
 
 
+  function refreshLiveStateAfterLeave() {
+    const userId = String(session?.userId || "").trim();
+    const roomName = String(liveBridgeId || "").trim();
+
+    forceKristoLiveCleanup("leave-live-room", {
+      userId,
+      roomName,
+      forceReentry: true,
+    });
+
+    resumeHomeFeedAfterLiveExit();
+    markHomeFeedVideoNeedsRecovery("live-room-exit");
+
+    emitLiveRingRefresh("leave-live-room");
+    void runMediaScheduleSilentReload("leave-live-room", true, {
+      churchId: String((session as any)?.churchId || (params as any)?.churchId || ""),
+      userId,
+      role: String((session as any)?.role || "Member"),
+    });
+  }
+
   function quitLiveRoom() {
     setCameraPaused(true);
+    refreshLiveStateAfterLeave();
     router.replace("/(tabs)/more" as any);
   }
 
+  function navigateToHomeFeedForClaim(slot?: any) {
+    setCameraPaused(true);
+    refreshLiveStateAfterLeave();
+    resumeHomeFeedAfterLiveExit();
+
+    const churchId = String(
+      (session as any)?.churchId ||
+        (params as any)?.churchId ||
+        (params as any)?.churchLabel ||
+        ""
+    ).trim();
+    const focusPostId = String(
+      liveScheduleFeedId ||
+        slot?.feedId ||
+        slot?.sourceScheduleId ||
+        (params as any)?.feedId ||
+        (params as any)?.sourceScheduleId ||
+        ""
+    ).trim();
+
+    console.log("KRISTO_LIVE_ROOM_GO_CLAIM_NAV", {
+      focusPostId: focusPostId || null,
+      churchId: churchId || null,
+      slotNumber: Number(slot?.slot || slot?.slotNumber || 0) || null,
+      source: "live-room-bottom-claim",
+    });
+
+    if (focusPostId) {
+      router.replace({
+        pathname: "/(tabs)/",
+        params: {
+          focusPostId,
+          ...(churchId ? { churchId } : {}),
+          source: "live-room-bottom-claim",
+        },
+      } as any);
+      return;
+    }
+
+    router.replace("/more/live-slots" as any);
+  }
+
   async function endLiveNow() {
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("end-live");
+      return;
+    }
     await pushLiveAction("end-live");
     endLive();
     publishLiveEnded(liveBridgeId);
@@ -4074,6 +7660,10 @@ export default function LiveRoomScreen() {
   }
 
   function handleHostRequestsPress() {
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("view-requests");
+      return;
+    }
     closeMoreMenu();
 
     const pending = Object.entries(joinRequestsBySlot || {}).find(([, req]: any) => !!req && !req.approved);
@@ -4096,6 +7686,7 @@ ${scheduleAudienceAccessText}`,
         {
           text: "Approve",
           onPress: () => {
+            if (!canManageLive) return;
             const approvedReq = {
               ...req,
               name: requestName,
@@ -4130,6 +7721,8 @@ ${scheduleAudienceAccessText}`,
 
   function handleLeaveLive() {
     closeMoreMenu();
+    setCameraPaused(true);
+    refreshLiveStateAfterLeave();
     router.replace("/(tabs)/more" as any);
   }
 
@@ -4190,20 +7783,18 @@ ${scheduleAudienceAccessText}`,
           : ({ backgroundColor: "#FF4B6E", shadowColor: "#FF4B6E" } as ViewStyle);
 
   function applyLiveRequestPolicy(nextPolicy: LiveRequestPolicy) {
+    if (!canManageLiveHostActions) {
+      logLiveHostActionBlocked("lock-room");
+      return;
+    }
+    if (!canManageLive) return;
     setRequestPolicy(nextPolicy);
     publishLivePolicy(liveBridgeId, nextPolicy);
     pushLiveAction("set-policy", { requestPolicy: nextPolicy, policy: nextPolicy });
   }
 
-  const pendingAccessRequests = Object.entries(joinRequestsBySlot || {})
-    .map(([slot, req]: any) => ({ slot: Number(slot), req }))
-    .filter((x: any) => !!x.req && !x.req.approved)
-    .filter((item: any, index: number, arr: any[]) => {
-      const name = String(item?.req?.name || "").trim().toLowerCase();
-      return arr.findIndex((x: any) =>
-        String(x?.req?.name || "").trim().toLowerCase() === name
-      ) === index;
-    });
+  // V1: no pending access requests.
+  const pendingAccessRequests: any[] = [];
 
   const latestPendingAccessRequest = pendingAccessRequests[0] || null;
 
@@ -4220,62 +7811,20 @@ ${scheduleAudienceAccessText}`,
           : "person-outline";
 
   function handleRequestWaitingApproval(slot: number) {
-    const existing = joinRequestsBySlot[slot];
-    const req = {
-      name: existing?.name || "You",
-      avatar: existing?.avatar || "Y",
-      approved: false,
-      onStage: false,
-      joinedAt: new Date().toISOString(),
-    };
-
-    publishLiveJoin(liveBridgeId, slot, req);
-
-    setJoinRequestsBySlot((prev) => {
-      const next = { ...prev };
-      delete next[slot];
-      return next;
-    });
-
-    Haptics.selectionAsync().catch(() => {});
+    return;
   }
 
   function handleAutoJoinToStage(slot: number) {
-    const existing = joinRequestsBySlot[slot];
-    const req = {
-      name: existing?.name || "You",
-      avatar: existing?.avatar || "Y",
-      approved: true,
-      onStage: false,
-      waiting: false,
-      joinedAt: existing?.joinedAt || new Date().toISOString(),
-    } as any;
-
-    pushLiveAction("approve-request", { slot, onStage: true, approved: true });
-
-    setJoinRequestsBySlot((prev) => ({
-      ...prev,
-      [slot]: req,
-    }));
-
-    setRequestListOpen(false);
-    setVipGuestCardSlot(null);
-
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    return;
   }
 
   const bottomSpacer = <View style={{ height: 96 }} />;
-  const rootPanHandlers =
-    canManageLive || isCoHostRole
-      ? hostDrawerPanResponder.panHandlers
-      : viewerFlowPanResponder.panHandlers;
+  const rootPanHandlers = hostDrawerPanResponder.panHandlers;
 
   const realFeelViewerCount = Number(live.viewerCount || 0);
 
-  const orderedJoinRequests = Object.entries(joinRequestsBySlot || {})
-    .map(([slot, req]) => ({ slot: Number(slot), ...(req as any) }))
-    .filter((req: any) => !!req?.name)
-    .sort((a: any, b: any) => String(a.joinedAt || "").localeCompare(String(b.joinedAt || "")));
+  // V1: request-to-join flow removed. Only claimed slot users appear.
+  const orderedJoinRequests: any[] = [];
 
   const activeJoinToast =
     orderedJoinRequests.find((req: any) => req.slot === activeJoinToastSlot) ||
@@ -4326,18 +7875,22 @@ return (
 
             <View style={[s.vipSoloHero as any, requestListOpen ? s.vipSoloHeroCompact as any : s.vipSoloHeroExpanded as any]}>
               <View style={s.vipSoloHeroGlow as any} />
-              {(roleLooksLikeHost || canPublishLiveVideoNow || canPublishClaimedMicNow) && canShowCamera ? (
+              {((isMediaInstantLive && roleLooksLikeHost) ||
+                canPublishLiveVideoNow ||
+                canPublishClaimedMicNow) &&
+              canShowCamera ? (
                 <>
                   <KristoLiveKitStage
+                    key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
                     roomName={liveBridgeId}
                     headers={liveKitApiHeaders}
-                    canPublish={liveMicPublisherReady || canPublishLiveVideoNow}
-                    canPublishMicOverride={liveMicPublisherReady || canPublishLiveVideoNow}
+                    canPublish={mountLiveKitPublisherStage}
+                    canPublishMicOverride={liveKitMicOverrideReady}
                     canPublishCameraOverride={scheduledPublisherSlotReady && canPublishLiveVideoNow}
                     renderLocalPreview={canPublishLiveVideoNow}
                     preferredIdentityPrefix={`${String(session?.userId || "")}-slot-${myOwnClaimedSlotNumber || currentSlotNumber || 1}`}
                     identity={`${String(session?.userId || "host")}-slot-${myOwnClaimedSlotNumber || currentSlotNumber || 1}`}
-                    cameraFacing={"front"}
+                    cameraFacing={cameraFacing}
                     micMuted={canPublishLiveVideoNow ? false : live.micMuted}
                     cameraPaused={cameraPaused}
                     style={s.vipSoloCamera as any}
@@ -4357,11 +7910,12 @@ return (
               ) : isMediaInstantLive ? (
                 <>
                   <KristoLiveKitStage
+                    key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
                     roomName={liveBridgeId}
                     headers={liveKitViewerApiHeaders}
                     canPublish={false}
                     renderLocalPreview={false}
-                    preferredIdentityPrefix={`${String((params.pastorUserId || "") || "u_3cba06da2dc7c19df3cc074a")}-slot-1`}
+                    preferredIdentityPrefix={`${String(actualChurchPastorUserId || params.pastorUserId || "")}-slot-1`}
                     identity={`${String(session?.userId || "viewer")}-viewer`}
                     cameraFacing={"front"}
                     micMuted={false}
@@ -4409,48 +7963,52 @@ return (
                   <Text style={[s.vipSoloControlText as any, cameraPaused ? null : s.vipSoloControlTextOn as any]}>{cameraPaused ? "Off" : "Camera"}</Text>
                 </Pressable>
 
-                <Pressable style={s.vipSoloControl as any} onPress={() => setCameraFacing((v) => (v === "front" ? "back" : "front"))}>
+                <Pressable style={s.vipSoloControl as any} onPress={() => toggleCameraFacing()}>
                   <Ionicons name="camera-reverse-outline" size={23} color="#FFFFFF" />
                   <Text style={s.vipSoloControlText as any}>Flip</Text>
                 </Pressable>
 
                 <Pressable
-                  style={[s.vipSoloControl as any, viewerFlowOpen ? s.vipSoloControlOn as any : null]}
+                  style={[s.vipSoloControl as any, hostDrawerOpen ? s.vipSoloControlOn as any : null]}
                   onPress={() => {
                     Haptics.selectionAsync().catch(() => {});
-                    if (viewerFlowOpen) closeViewerFlow();
-                    else openViewerFlow();
+                    if (hostDrawerOpen) closeHostDrawer();
+                    else openHostDrawer();
                   }}
                 >
                   <Ionicons
                     name="sparkles-outline"
                     size={23}
-                    color={viewerFlowOpen ? "#F4D06F" : "#FFFFFF"}
+                    color={hostDrawerOpen ? "#F4D06F" : "#FFFFFF"}
                   />
                   <Text
                     style={[
                       s.vipSoloControlText as any,
-                      viewerFlowOpen ? s.vipSoloControlTextOn as any : null
+                      hostDrawerOpen ? s.vipSoloControlTextOn as any : null
                     ]}
                   >
-                    Studio
+                    {canManageLiveHostActions ? "Controls" : "Live Info"}
                   </Text>
                 </Pressable>
 
-                <Pressable style={s.vipSoloControl as any} onPress={() => setLayoutStudioOpen(true)}>
-                  <Ionicons name="albums-outline" size={23} color="#FFFFFF" />
-                  <Text style={s.vipSoloControlText as any}>Layout</Text>
-                </Pressable>
+                {canManageLiveHostActions ? (
+                  <Pressable style={s.vipSoloControl as any} onPress={() => setLayoutStudioOpen(true)}>
+                    <Ionicons name="albums-outline" size={23} color="#FFFFFF" />
+                    <Text style={s.vipSoloControlText as any}>Layout</Text>
+                  </Pressable>
+                ) : null}
 
                 <Pressable style={s.vipSoloControl as any} onPress={() => Haptics.selectionAsync().catch(() => {})}>
                   <Ionicons name="share-social-outline" size={23} color="#FFFFFF" />
                   <Text style={s.vipSoloControlText as any}>Share</Text>
                 </Pressable>
 
-                <Pressable style={[s.vipSoloControl as any, s.vipSoloEndControl as any]} onPress={endLiveNow}>
-                  <Ionicons name="stop-circle-outline" size={22} color="#FFFFFF" />
-                  <Text style={s.vipSoloControlText as any}>End</Text>
-                </Pressable>
+                {canManageLiveHostActions ? (
+                  <Pressable style={[s.vipSoloControl as any, s.vipSoloEndControl as any]} onPress={endLiveNow}>
+                    <Ionicons name="stop-circle-outline" size={22} color="#FFFFFF" />
+                    <Text style={s.vipSoloControlText as any}>End</Text>
+                  </Pressable>
+                ) : null}
               </ScrollView>
             </View>
           </View>
@@ -4478,12 +8036,13 @@ return (
             }}
           >
 {(isMediaInstantLive || !!currentMainStageSlot || (pastorPermanentMicNow && backendScheduleReady && !!currentSlotNumber)) ? (
-              canPublishLiveVideoNow || bigStageGuestId === scheduledLiveStageOwnerId ? (
+              mountLiveKitPublisherStage ? (
                 <KristoLiveKitStage
+                  key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
                   roomName={liveBridgeId}
                   headers={liveKitApiHeaders}
-                  canPublish={liveMicPublisherReady || canPublishLiveVideoNow}
-                  canPublishMicOverride={liveMicPublisherReady || canPublishLiveVideoNow}
+                  canPublish={mountLiveKitPublisherStage}
+                  canPublishMicOverride={liveKitMicOverrideReady}
                   canPublishCameraOverride={scheduledPublisherSlotReady && canPublishLiveVideoNow}
                   renderLocalPreview={canPublishLiveVideoNow}
                   preferredIdentityPrefix={
@@ -4492,10 +8051,7 @@ return (
                       : `slot:${Number((currentMainStageSlot as any)?.slot || currentSlotNumber || (params as any).preferredSlotNumber || 0)}`
                   }
                   identity={
-                    (
-                      liveMicPublisherReady ||
-                      canPublishLiveVideoNow
-                    )
+                    mountLiveKitPublisherStage
                       ? `${String(
                           (session as any)?.coreId ||
                           (session as any)?.kristoId ||
@@ -4509,7 +8065,7 @@ return (
                         )}`
                       : `${String(session?.userId || "viewer")}-viewer-${currentSlotNumber || "live"}`
                   }
-                  cameraFacing={"front"}
+                  cameraFacing={cameraFacing}
                   micMuted={canPublishLiveVideoNow ? false : live.micMuted}
                   cameraPaused={cameraPaused}
                   style={s.teamGridLiveCamera as any}
@@ -4525,6 +8081,7 @@ return (
                 />
               ) : (
                 <KristoLiveKitStage
+                  key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
                   roomName={liveBridgeId}
                   headers={liveKitViewerApiHeaders}
                   canPublish={false}
@@ -4618,24 +8175,12 @@ return (
 
             <View style={s.mediaIdentityCenter as any}>
               <Text style={s.mediaIdentityName as any} numberOfLines={1}>
-                {String(
-                  (params as any).churchName ||
-                  (params as any).churchLabel ||
-                  (session as any)?.churchName ||
-                  (session as any)?.churchLabel ||
-                  (session as any)?.church ||
-                  "MY CHURCH"
-                ).toUpperCase()}
+                {liveHeaderDisplayTitle.toUpperCase()}
               </Text>
               <View style={s.mediaIdentitySubRow as any}>
                 <View style={s.mediaLiveDot as any} />
                 <Text style={s.mediaIdentitySub as any} numberOfLines={1}>
-                  {String(
-                    [
-                      ((params as any).mediaName || (params as any).channelName || (params as any).creatorName || "MEDIA"),
-                      ((params as any).claimedByName || "") ? `• ${(params as any).claimedByName}` : ""
-                    ].filter(Boolean).join(" ")
-                  ).toUpperCase()}
+                  {liveHeaderSubLine.toUpperCase()}
                 </Text>
               </View>
             </View>
@@ -4700,7 +8245,7 @@ return (
             <View style={s.joinRequestCopy as any}>
               <View style={s.joinRequestTopLine as any}>
                 <Ionicons name="person-add-outline" size={14} color="#F4C95D" />
-                <Text style={s.joinRequestKicker as any}>JOIN REQUEST</Text>
+                <Text style={s.joinRequestKicker as any}></Text>
               </View>
               <Text style={s.joinRequestTitle as any} numberOfLines={1}>
                 {`${String(latestJoinRequest.name || "Guest").trim()}${otherJoinRequestCount > 0 ? ` + ${otherJoinRequestCount} other${otherJoinRequestCount === 1 ? "" : "s"}` : ""}`}
@@ -4718,6 +8263,7 @@ return (
               <View pointerEvents="auto" style={s.joinRequestActions as any}>
                 <Pressable
                   onPress={async () => {
+                    if (!canManageLive) return;
                     const slot = Number(latestJoinRequest.slot || 6);
                     const approvedReq = {
                       ...(joinRequestsBySlot[slot] || latestJoinRequest),
@@ -4733,7 +8279,7 @@ return (
 
                     publishLiveJoin(liveBridgeId, slot, approvedReq);
 
-                    await pushLiveAction("approve-request", {
+                    await false && pushLiveAction("v1-disabled-approve", {
                       slot,
                       userId: String(approvedReq.userId || latestJoinRequest.userId || ""),
                       onStage: true,
@@ -4773,16 +8319,25 @@ return (
 
         {layoutMode === "grid6" ? (
           <View pointerEvents="box-none" style={s.upperBookRequestLayer as any}>
-            {visibleQueueSlots.slice(0,4).map((guest, index) => (
+            {[0, 1, 2, 3].map((seatIndex) => {
+              const guest = visibleQueueSlots[seatIndex] as any;
+              const index = seatIndex;
+              if (!guest) return null;
+
+              const isMiniMuted = !!guest && !!miniVideoMutedById[String(guest.id)];
+
+              return (
               <Pressable
-                key={`upper-book-request-${guest.id}-${index}`}
+                key={`upper-claimed-seat-${guest?.id || "empty"}-${index}`}
                 onPress={() => {
+                  if (!guest) return;
                   const id = String(guest.id);
                   setStageSwapArmed(false);
                   setProfileActionGuestId((prev) => (prev === id ? null : id));
                   Haptics.selectionAsync().catch(() => {});
                 }}
                 onLongPress={() => {
+                  if (!guest) return;
                   const id = String(guest.id);
                   setMiniVideoMutedById((prev) => ({ ...prev, [id]: !prev[id] }));
                   Haptics.selectionAsync().catch(() => {});
@@ -4795,12 +8350,12 @@ return (
                 ] as any)}
               >
                 <View style={s.upperBookRequestVideoPreview as any}>
-                  {miniVideoMutedById[String(guest.id)] ? (
+                  {isMiniMuted ? (
                     <>
                       <Ionicons name="videocam-off-outline" size={23} color="#F4C95D" />
                       <Text style={s.upperBookRequestMutedText as any}>MUTED</Text>
                     </>
-                  ) : String(guest.id) === "host" && canManageLive && canShowCamera ? (
+                  ) : guest && String(guest.id) === "host" && canManageLive && canShowCamera ? (
                     <>
                       <CameraView
                         key={`mini-host-camera-${cameraFacing}`}
@@ -4812,17 +8367,16 @@ return (
                     </>
                   ) : (
                     <>
-                      {isImageAvatar((guest as any).avatar) ? (
+                      {guest && isImageAvatar((guest as any).avatar) ? (
                         <Image
                           source={{ uri: String((guest as any).avatar) }}
                           style={s.upperBookRequestProfileImage as any}
                         />
                       ) : (
                         <Text style={s.upperBookRequestInitial as any}>
-                          {initials(guest.name)}
+                          {guest ? initials(guest.name) : ""}
                         </Text>
                       )}
-
                     </>
                   )}
 
@@ -4835,12 +8389,13 @@ return (
                   />
                 </View>
               </Pressable>
-            ))}
+              );
+            })}
           </View>
         ) : null}
 
 
-        {layoutMode === "grid6" ? (
+        {layoutMode === "grid6" && canManageLive ? (
           <Animated.View
             pointerEvents={profileActionGuestId ? "auto" : "none"}
             style={[
@@ -4874,6 +8429,7 @@ return (
               <Pressable
                 key={`profile-action-${item.key}`}
                 onPress={() => {
+                  if (!canManageLive) return;
                   const selectedId = profileActionGuestId;
 
                   if (item.key === "down") {
@@ -5005,6 +8561,7 @@ return (
                 <Pressable
                   key={item.key}
                   onPress={() => {
+                    if (!canManageLive) return;
                     const nextPolicy = item.key as typeof requestPolicy;
                     applyLiveRequestPolicy(nextPolicy);
                     Haptics.selectionAsync().catch(() => {});
@@ -5043,7 +8600,7 @@ return (
           </Animated.View>
         ) : null}
 
-        {layoutMode === "grid6" && canManageLive && requestListOpen ? (
+        {false && layoutMode === "grid6" && canManageLive && requestListOpen ? (
           <View pointerEvents="box-none" style={s.joinRequestListLayer as any}>
             <View style={s.joinRequestListCard as any}>
               <View style={s.joinRequestListHeader as any}>
@@ -5116,26 +8673,26 @@ return (
 
         {layoutMode === "grid6" && (canUseLiveControlsNow || canPublishClaimedMicNow) ? (
           <View pointerEvents="box-none" style={s.teamGridTableControlsLayer as any}>
-            {(canPublishClaimedMicNow && !canPublishLiveVideoNow && !canManageLive
+            {(canManageLive
               ? [
                   { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
-                  { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
+                  { icon: canPublishLiveVideoNow ? "camera-reverse-outline" : "repeat-outline", color: "#63D1FF", label: canPublishLiveVideoNow ? "Flip" : "Switch", action: canPublishLiveVideoNow ? "flip" : "switch" },
+                  { icon: canPublishLiveVideoNow ? (cameraPaused ? "videocam-off-outline" : "videocam-outline") : "sparkles-outline", color: "#4FC3FF", label: canPublishLiveVideoNow ? "Video" : "Guests", action: canPublishLiveVideoNow ? "video" : "guests" },
+                  { icon: "repeat-outline", color: "#67F5B5", label: "Switch", action: "switch" },
+                  { icon: "sparkles-outline", color: "#FFB36A", label: "Guests", action: "guests" },
+                  { icon: "power-outline", color: "#FF6B6B", label: "End", action: "end-live" },
                 ]
-              : isMyScheduledLiveTurn && !canManageLive
+              : canPublishClaimedMicNow && !canPublishLiveVideoNow
                 ? [
+                    { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
+                    { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
+                  ]
+                : [
                     { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
                     { icon: "camera-reverse-outline", color: "#63D1FF", label: "Flip", action: "flip" },
                     { icon: cameraPaused ? "videocam-off-outline" : "videocam-outline", color: "#4FC3FF", label: "Video", action: "video" },
                     { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
-                  ]
-                : [
-                  { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
-                  { icon: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "camera-reverse-outline" : "repeat-outline", color: "#63D1FF", label: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "Flip" : "Switch", action: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "flip" : "switch" },
-                  { icon: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? (cameraPaused ? "videocam-off-outline" : "videocam-outline") : "sparkles-outline", color: "#4FC3FF", label: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "Video" : "Guests", action: (!!myClaimedStageSlot || isMyScheduledLiveTurn) ? "video" : "guests" },
-                  { icon: "repeat-outline", color: "#67F5B5", label: "Switch", action: "switch" },
-                  { icon: "sparkles-outline", color: "#FFB36A", label: "Guests", action: "guests" },
-                  { icon: "power-outline", color: "#FF6B6B", label: "End", action: "end-live" },
-                ]).map((control, i) => (
+                  ]).map((control, i) => (
               <Pressable
                 key={`main-screen-host-control-${control.label}-${i}`}
                 onPress={() => {
@@ -5146,7 +8703,7 @@ return (
                   }
 
                   if (control.action === "flip") {
-                    setCameraFacing((v: any) => (v === "front" ? "back" : "front"));
+                    toggleCameraFacing();
                     Haptics.selectionAsync().catch(() => {});
                     return;
                   }
@@ -5164,6 +8721,7 @@ return (
                   }
 
                   if (control.action === "guests") {
+                    if (!canManageLive) return;
                     setRequestListOpen(false);
                     setHostRequestCard(null);
                     setVipGuestCardSlot(null);
@@ -5220,7 +8778,7 @@ return (
                   }
 
                   if (control.action === "flip") {
-                    setCameraFacing((v: any) => (v === "front" ? "back" : "front"));
+                    toggleCameraFacing();
                     Haptics.selectionAsync().catch(() => {});
                     return;
                   }
@@ -5253,7 +8811,7 @@ return (
           </View>
         ) : null}
 
-        {layoutMode === "grid6" && canManageLive && hostRequestCard ? (
+        {false && layoutMode === "grid6" && canManageLive && hostRequestCard ? (
           <View pointerEvents="box-none" style={s.hostRequestVipLayer as any}>
             <View style={s.hostRequestVipCard as any}>
               <View style={s.hostRequestVipTop as any}>
@@ -5280,7 +8838,7 @@ return (
                     const slot = Number(hostRequestCard.slot || 0);
                     const req = hostRequestCard.req || {};
 
-                    pushLiveAction("request-join", {
+                    false && false && pushLiveAction("v1-disabled-request", {
                       slot,
                       name: req.name,
                       avatar: req.avatar,
@@ -5309,9 +8867,10 @@ return (
 
                 <Pressable
                   onPress={() => {
+                    if (!canManageLive) return;
                     const slot = Number(hostRequestCard.slot || 0);
                     const req = hostRequestCard.req || {};
-                    pushLiveAction("approve-request", { slot, onStage: true, approved: true });
+                    false && pushLiveAction("v1-disabled-approve", { slot, onStage: true, approved: true });
                               setJoinRequestsBySlot((prev) => {
                                 const next = { ...prev };
                                 delete next[slot];
@@ -5326,7 +8885,7 @@ return (
                       waiting: false,
                       joinedAt: req.joinedAt || new Date().toISOString(),
                     };
-                    pushLiveAction("approve-request", { slot, onStage: true, approved: true });
+                    false && pushLiveAction("v1-disabled-approve", { slot, onStage: true, approved: true });
                     setJoinRequestsBySlot((prev) => ({ ...prev, [slot]: approvedReq }));
 
                     // scheduled live should stay on active slot owner
@@ -5372,7 +8931,7 @@ return (
                         setBigStageGuestId("host");
                       }
                       setStageGuestIds((prev) => prev.filter((id) => id !== guestId));
-                      pushLiveAction("request-join", {
+                      false && false && pushLiveAction("v1-disabled-request", {
                         slot: vipGuestCardSlot,
                         name: req.name,
                         avatar: req.avatar,
@@ -5401,6 +8960,7 @@ return (
                   <Pressable
                     style={s.vipGuestSmartBtn as any}
                     onPress={() => {
+                      if (!canManageLive) return;
                       // Up = move guest to upper small cards only, NOT big screen
                       setStageGuestIds((prev) => prev.includes(guestId) ? prev : [guestId, ...prev].slice(0, 4));
 
@@ -5435,201 +8995,135 @@ return (
 
         {layoutMode === "grid6" ? (
           <View pointerEvents="box-none" style={s.teamGridOverlayLayer as any}>
-            {[0, 1, 2, 3].map((slot, index) => {
-              const claimedGuest = visibleQueueSlots.slice(4, 8)[index] as any;
-              const rawReq = claimedGuest ? null : joinRequestsBySlot[slot];
-              const req = (rawReq as any)?.waiting || (rawReq as any)?.upper ? null : rawReq;
-              const approved = !!req?.approved || !!claimedGuest;
+            {[0, 1, 2, 3].map((index) => {
+              const box = bottomStageDisplayBoxes[index] || { kind: "locked_closed" as const, index };
+              const positionStyle = [
+                index % 2 === 0 ? s.teamGridMiniCardLeft : s.teamGridMiniCardRight,
+                index < 2 ? s.teamGridMiniCardRowOne : s.teamGridMiniCardRowTwo,
+              ];
 
-              return (
-                <Pressable
-                  key={`join-request-slot-${slot}`}
-                  onPress={() => {
-                    if (claimedGuest) {
-                      const id = String(claimedGuest.id);
-                      setStageSwapArmed(false);
-                      setProfileActionGuestId((prev) => (prev === id ? null : id));
-                      Haptics.selectionAsync().catch(() => {});
-                      return;
-                    }
-
-                    const guest = guests[slot] || guests[0];
-                    const guestId = `request-slot-${slot}`;
-
-                    if (req?.approved || req?.onStage) {
-                      if (!canManageLive) return;
-
-                      setStageSwapArmed(false);
-
-                      // Opening controls should NOT put guest on big screen
-                      if (isMediaInstantLive) {
-                        setBigStageGuestId("host");
-                        setPinnedGuestId("host");
-                      }
-
-                      setVipGuestCardSlot(slot);
-                      setRequestListOpen(false);
-                      Haptics.selectionAsync().catch(() => {});
-                      return;
-                    }
-
-                    if (requestPolicy === "locked") {
-                      const roleNow = String((session as any)?.role || "").toLowerCase();
-
-                      if (!roleNow.includes("pastor")) {
-                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-                        Alert.alert(
-                          "Live locked",
-                          "Only pastor can join this live right now."
-                        );
-                        return;
-                      }
-                    }
-
-                    if (requestPolicy === "invite") {
-                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-                      Alert.alert("Invite only", "Only invited guests can join this live.");
-                      return;
-                    }
-
-                    if (req && !req.approved && canManageLive) {
-                      setHostRequestCard({ slot, req });
-                      Haptics.selectionAsync().catch(() => {});
-                      return;
-                    }
-
-                    const currentViewerName =
-                      String((session as any)?.name || (session as any)?.displayName || (session as any)?.fullName || "").trim() ||
-                      "Member";
-                    const currentViewerAvatar = (() => {
-                      const raw =
-                        liveProfileAvatarUri ||
-                        (session as any)?.avatarUri ||
-                        (session as any)?.avatarUrl ||
-                        (session as any)?.profileImage ||
-                        (session as any)?.photoURL ||
-                        (session as any)?.image ||
-                        (session as any)?.avatar ||
-                        "";
-
-                      const value = String(raw || "").trim();
-                      if (!value) return currentViewerName.slice(0, 1).toUpperCase() || "M";
-                      if (value.startsWith("http://") || value.startsWith("https://")) return value;
-                      if (value.startsWith("/")) return `http://192.168.12.141:3000${value}`;
-                      return value;
-                    })();
-
-                    setJoinRequestsBySlot((prev) => {
-                      const existing = prev[slot];
-                      const requestGuestId = `request-slot-${slot}`;
-
-                      // AUTO approves at bottom only. Host moves guest up/big manually.
-
-                      if (false && existing && !existing.approved && requestPolicy === "approval" && canManageLive) {
-                        const approvedReq = {
-                          ...existing,
-                          approved: true,
-                          onStage: false,
-                          joinedAt: existing?.joinedAt || new Date().toISOString(),
-                        };
-                        pushLiveAction("approve-request", { slot, onStage: true, approved: true });
-                        publishLiveJoin(liveBridgeId, slot, approvedReq);
-                        return { ...prev, [slot]: approvedReq };
-                      }
-
-                      const viewerChurchId =
-                        String((session as any)?.churchId || "").trim();
-
-                      const liveChurchId =
-                        String((params as any)?.churchId || (session as any)?.churchId || "").trim();
-
-                      const isChurchMember =
-                        !!viewerChurchId &&
-                        !!liveChurchId &&
-                        viewerChurchId === liveChurchId;
-
-                      if (requestPolicy === "members" && !isChurchMember) {
-                        Alert.alert(
-                          "Members only",
-                          "Only church members can join this live."
-                        );
-                        return prev;
-                      }
-
-                      const nextReq = {
-                        name: existing?.name || currentViewerName,
-                        avatar: existing?.avatar || currentViewerAvatar,
-                        approved: requestPolicy === "auto" || requestPolicy === "members",
-                        onStage: false,
-                        joinedAt: existing?.joinedAt || new Date().toISOString(),
-                      };
-
-                      if (!canManageLive) {
-                        pushLiveAction("request-join", {
-                          slot,
-                          userId: String(session?.userId || ""),
-                          name: nextReq.name,
-                          avatar: nextReq.avatar,
-                          joinedAt: nextReq.joinedAt,
-                        });
-                      }
-
-                      return { ...prev, [slot]: nextReq };
-                    });
-
-                    Haptics.selectionAsync().catch(() => {});
-
-                  }}
-                  style={({ pressed }) => ([
-                    s.teamGridMiniCard,
-                    index % 2 === 0 ? s.teamGridMiniCardLeft : s.teamGridMiniCardRight,
-                    index < 2 ? s.teamGridMiniCardRowOne : s.teamGridMiniCardRowTwo,
-                    pressed ? s.upperBookRequestPressed : null,
-                  ] as any)}
-                >
-                  <View style={s.teamGridRequestAvatar as any}>
-                    {(claimedGuest?.avatar && isImageAvatar(claimedGuest.avatar)) || (req?.avatar && String(req.avatar).includes("/")) ? (
-                      <Image source={{ uri: String(claimedGuest?.avatar || req?.avatar) }} style={s.teamGridRequestAvatarImage as any} />
-                    ) : (
-                      <Text style={s.teamGridRequestAvatarText as any}>
-                        {claimedGuest ? initials(String(claimedGuest.name || "Guest")).slice(0, 2) : req ? initials(String(req.name || "Guest")).slice(0, 2) : "+"}
-                      </Text>
-                    )}
-
-                    {claimedGuest ? (
+              if (box.kind === "open") {
+                const slot = box.slot as any;
+                return (
+                  <Pressable
+                    key={`open-claim-slot-${slot?.id || slot?.slot || index}`}
+                    onPress={() => navigateToHomeFeedForClaim(slot)}
+                    style={({ pressed }) => ([
+                      s.teamGridMiniCard,
+                      ...positionStyle,
+                      pressed ? s.upperBookRequestPressed : null,
+                    ] as any)}
+                  >
+                    <View style={s.teamGridRequestAvatar as any}>
+                      <Text style={s.teamGridRequestAvatarText as any}>+</Text>
                       <View
                         pointerEvents="none"
                         style={[
                           s.slotOrbitAvatarRing as any,
-                          { borderColor: slotRingColor((claimedGuest as any)?.slot || (index + 6)) },
+                          { borderColor: slotRingColor((slot as any)?.slot || (index + 1)) },
                         ]}
                       />
-                    ) : null}
-                  </View>
+                    </View>
 
+                    <View style={s.teamGridRequestTextArea as any}>
+                      <Text style={s.teamGridRequestName as any} numberOfLines={1}>
+                        Go Claim
+                      </Text>
+                      <Text style={[s.teamGridRequestStatus as any, s.teamGridRequestStatusApproved]} numberOfLines={1}>
+                        Open slot available
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              }
+
+              if (box.kind === "claimed") {
+                const slot = box.slot as any;
+                const slotNum = Number(slot?.slot || index + 1);
+                const displayName = String(slot?.claimedByName || slot?.name || `Guest ${slotNum}`);
+                const displayRole = String(slot?.role || slot?.roleLabel || "Speaker");
+                const avatarUri = String(slot?.avatar || "");
+
+                return (
+                  <View
+                    key={`claimed-stage-slot-${slot?.id || slotNum}-${index}`}
+                    pointerEvents="none"
+                    style={[s.teamGridMiniCard, ...positionStyle] as any}
+                  >
+                    <View style={s.teamGridRequestAvatar as any}>
+                      {isImageAvatar(avatarUri) ? (
+                        <Image
+                          source={{ uri: avatarUri }}
+                          style={s.teamGridRequestAvatarImage as any}
+                        />
+                      ) : (
+                        <Text style={s.teamGridRequestAvatarText as any}>
+                          {initials(displayName)}
+                        </Text>
+                      )}
+                      <View
+                        pointerEvents="none"
+                        style={[
+                          s.slotOrbitAvatarRing as any,
+                          { borderColor: slotRingColor(slotNum) },
+                        ]}
+                      />
+                    </View>
+                    <View style={s.teamGridRequestTextArea as any}>
+                      <Text style={s.teamGridRequestName as any} numberOfLines={1}>
+                        {displayName}
+                      </Text>
+                      <Text style={[s.teamGridRequestStatus as any, s.teamGridRequestStatusApproved]} numberOfLines={1}>
+                        {displayRole}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              }
+
+              return (
+                <View
+                  key={`locked-stage-slot-${index}`}
+                  pointerEvents="none"
+                  style={[
+                    s.teamGridMiniCard,
+                    ...positionStyle,
+                    {
+                      borderColor: "rgba(244,208,111,0.55)",
+                      backgroundColor: "rgba(72,8,12,0.94)",
+                      shadowColor: "#8B0000",
+                      shadowOpacity: 0.45,
+                      shadowRadius: 10,
+                      shadowOffset: { width: 0, height: 4 },
+                    },
+                  ] as any}
+                >
+                  <View
+                    style={[
+                      s.teamGridRequestAvatar as any,
+                      {
+                        backgroundColor: "rgba(139,0,0,0.35)",
+                        borderColor: "rgba(244,208,111,0.72)",
+                      },
+                    ]}
+                  >
+                    <Ionicons name="lock-closed" size={22} color="#F4D06F" />
+                  </View>
                   <View style={s.teamGridRequestTextArea as any}>
-                    <Text style={s.teamGridRequestName as any}>
-                      {claimedGuest ? `${claimedGuest.name}  S${claimedGuest.slot}` : req ? req.name : "Send Request"}
+                    <Text style={[s.teamGridRequestName as any, { color: "#FFD6D6" }]} numberOfLines={1}>
+                      All slots closed
                     </Text>
-                    <Text style={[s.teamGridRequestStatus as any, approved ? s.teamGridRequestStatusApproved : null]}>
-                      {claimedGuest
-  ? ""
-  : requestPolicy === "locked"
-  ? "LOCKED"
-  : requestPolicy === "invite"
-    ? "INVITE ONLY"
-    : approved
-      ? "APPROVED"
-      : req
-        ? "REQUESTED"
-        : requestPolicy === "approval"
-          ? "WAIT APPROVAL"
-          : requestPolicy === "members"
-            ? "MEMBERS"
-            : "AUTO JOIN"}
+                    <Text
+                      style={[
+                        s.teamGridRequestStatus as any,
+                        { color: "rgba(255,214,214,0.78)", fontWeight: "700" },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      No slots available
                     </Text>
                   </View>
-                </Pressable>
+                </View>
               );
             })}
           </View>
@@ -5911,7 +9405,14 @@ return (
                         <View style={s.splitGuestAvatarWrap as any}>
                           <View style={s.splitGuestAvatarRing as any}>
                             <View style={s.splitGuestAvatarCore as any}>
-                              <Text style={s.splitGuestAvatarText as any}>{initials(guest.name)}</Text>
+                              {(guest as any)?.avatar && guest && isImageAvatar((guest as any).avatar) ? (
+                                <Image
+                                  source={{ uri: String((guest as any).avatar) }}
+                                  style={s.teamGridRequestAvatarImage as any}
+                                />
+                              ) : (
+                                <Text style={s.splitGuestAvatarText as any}>{guest ? initials(guest.name) : ""}</Text>
+                              )}
                             </View>
                           </View>
                         </View>
@@ -6026,7 +9527,14 @@ return (
                       <View style={s.gridGuestAvatarWrap as any}>
                         <View style={s.gridGuestAvatarRing as any}>
                           <View style={s.gridGuestAvatarCore as any}>
-                            <Text style={s.gridGuestAvatarText as any}>{initials(guest.name)}</Text>
+                            {(guest as any)?.avatar && guest && isImageAvatar((guest as any).avatar) ? (
+                              <Image
+                                source={{ uri: String((guest as any).avatar) }}
+                                style={s.teamGridRequestAvatarImage as any}
+                              />
+                            ) : (
+                              <Text style={s.gridGuestAvatarText as any}>{guest ? initials(guest.name) : ""}</Text>
+                            )}
                           </View>
                         </View>
                       </View>
@@ -6209,7 +9717,7 @@ return (
                 </Pressable>
 
                 <Pressable
-                  onPress={openViewerFlow}
+                  onPress={openHostDrawer}
                   style={({ pressed }) => ([
                     s.viewerActionBtn,
                     pressed ? ({ opacity: 0.92, transform: [{ scale: 0.98 }] } as ViewStyle) : null,
@@ -6223,102 +9731,147 @@ return (
           </View>
         )}
 
-        {true ? (
+        {canSeeAudiencePanel ? (
           <>
-            {(layoutMode === "focus" || layoutMode === "grid6") ? null : !viewerFlowOpen ? (
+            {!hostDrawerOpen ? (
               <Pressable
-                onPress={openViewerFlow}
+                onPress={openHostDrawer}
                 pointerEvents="box-only"
-                {...viewerFlowPanResponder.panHandlers}
+                {...hostDrawerPanResponder.panHandlers}
                 style={s.viewerFlowEdgeHandle as any}
               />
             ) : null}
 
-            {viewerFlowOpen && layoutMode !== "grid6" && layoutMode !== "focus" ? <Pressable style={s.viewerFlowScrim as any} onPress={closeViewerFlow} /> : null}
+            {viewerFlowOpen ? (
+              <Pressable style={s.viewerFlowScrim as any} onPress={closeViewerFlow} />
+            ) : null}
 
+            {viewerFlowOpen ? (
             <Animated.View
-              pointerEvents={(layoutMode === "grid6" || layoutMode === "focus") ? "none" : "auto"}
+              pointerEvents="auto"
               {...viewerFlowPanResponder.panHandlers}
               style={[
                 s.viewerFlowPanel,
-                (layoutMode === "grid6" || layoutMode === "focus") ? { opacity: 0, display: "none" } : null,
                 { transform: [{ translateX: viewerFlowX }] },
               ]}
             >
               <View style={s.viewerFlowHandle as any} />
-              <Text style={s.viewerFlowTitle as any}>Flow</Text>
-              <Text style={s.viewerFlowSub as any}>Swipe right to close</Text>
-
-              <View style={s.viewerFlowSummaryRow as any}>
-                <View style={s.viewerFlowSummaryCard as any}>
-                  <Text style={s.viewerFlowSummaryLabel as any}>ENDS IN</Text>
-                  <Text style={s.viewerFlowSummaryValue as any} numberOfLines={1}>
-                    {String(liveCountdownLabel || "").replace(/^ENDS IN\s*/i, "")}
-                  </Text>
-                </View>
-
-                <View style={s.viewerFlowSummaryCard as any}>
-                  <Text style={s.viewerFlowSummaryLabel as any}>NEXT</Text>
-                  <Text style={s.viewerFlowSummaryValue as any} numberOfLines={1}>
-                    {viewerUpcomingFlowRow?.title || nextSpeakerLabel || mcRuntime.next.name || "TBD"}
-                  </Text>
-                </View>
-              </View>
-
               <ScrollView
                 showsVerticalScrollIndicator={false}
+                bounces={false}
                 contentContainerStyle={[
-                  s.viewerFlowScrollContent,
-                  { paddingBottom: Math.max(insets.bottom, 16) + 96 },
+                  s.audiencePanelScroll,
+                  { paddingBottom: Math.max(insets.bottom, 12) + 16 },
                 ]}
               >
-                {flowRows.map((row: any, index: number) => {
-                  const isCurrent = index === viewerCurrentFlowIndex;
-                  const isNext = index === viewerNextFlowIndex;
-
-                  return (
-                    <View
-                      key={row.id}
-                      style={[
-                        s.viewerFlowItem,
-                        isCurrent ? s.viewerFlowItemCurrent : null,
-                        isNext ? s.viewerFlowItemNext : null,
-                      ]}
-                    >
-                      <View style={s.viewerFlowItemTop as any}>
-                        <Text style={s.viewerFlowSlot as any}>{row.slotLabel}</Text>
-
-                        {isCurrent ? (
-                          <View style={[s.viewerFlowMiniBadge as any, s.viewerFlowMiniBadgeLive]}>
-                            <Text style={s.viewerFlowMiniBadgeText as any}>LIVE</Text>
-                          </View>
-                        ) : isNext ? (
-                          <View style={[s.viewerFlowMiniBadge as any, s.viewerFlowMiniBadgeNext]}>
-                            <Text style={s.viewerFlowMiniBadgeText as any}>NEXT</Text>
-                          </View>
-                        ) : null}
+                {isClaimedMemberAudience && claimedMemberPanelInfo ? (
+                  <>
+                    <Text style={s.audiencePanelEyebrow as any}>MY SPEAKING SLOT</Text>
+                    <View style={[s.audiencePanelHero as any, s.audiencePanelHeroLive as any]}>
+                      <View style={s.audiencePanelHeroTop as any}>
+                        <Text style={s.audiencePanelHeroSlot as any}>Slot {claimedMemberPanelInfo.slot}</Text>
+                        <View
+                          style={[
+                            s.audiencePanelStatusPill as any,
+                            { borderColor: claimedMemberPanelInfo.statusColor },
+                          ]}
+                        >
+                          <Text style={[s.audiencePanelStatusText as any, { color: claimedMemberPanelInfo.statusColor }]}>
+                            {claimedMemberPanelInfo.status}
+                          </Text>
+                        </View>
                       </View>
-
-                      <Text style={s.viewerFlowItemTitle as any} numberOfLines={1}>
-                        {row.title}
-                      </Text>
-
-                      <Text style={s.viewerFlowItemMeta as any} numberOfLines={1}>
-                        {row.timeLabel || "Scheduled"}
-                      </Text>
-
-                      {row.roleLabel ? (
-                        <Text style={s.viewerFlowItemSub as any} numberOfLines={1}>
-                          {row.roleLabel}
-                        </Text>
-                      ) : null}
+                      <View style={s.audiencePanelHeroBody as any}>
+                        {renderHostControlAvatar(
+                          claimedMemberPanelInfo.name,
+                          claimedMemberPanelInfo.avatar,
+                          56,
+                          claimedMemberPanelInfo.statusColor
+                        )}
+                        <View style={{ flex: 1, gap: 4 }}>
+                          <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>
+                            {claimedMemberPanelInfo.name}
+                          </Text>
+                          <Text style={s.audiencePanelHeroTopic as any} numberOfLines={2}>
+                            {claimedMemberPanelInfo.topic}
+                          </Text>
+                          <Text style={s.audiencePanelHeroMeta as any}>
+                            {claimedMemberPanelInfo.timeLabel} • {claimedMemberPanelInfo.countdown}
+                          </Text>
+                        </View>
+                      </View>
                     </View>
-                  );
-                })}
 
-                {bottomSpacer}
+                    {renderAudienceCurrentLiveBlock()}
+                    {renderAudienceNextSpeakerBlock()}
+                    {renderAudienceClaimedSpeakersSection(false)}
+                    {renderAudienceViewerStatsSection(false)}
+                    {renderAudienceUpcomingQueueSection()}
+                    {renderAudienceMicStatusSection()}
+                    {renderAudienceSafeActions()}
+                  </>
+                ) : (
+                  <>
+                    <Text style={s.audiencePanelEyebrow as any}>VIEWER PANEL</Text>
+                    <Text style={s.audiencePanelTitle as any} numberOfLines={2}>{rawTitle}</Text>
+
+                    {hostControlLiveSpeaker ? (
+                      <View style={[s.audiencePanelHero as any, { borderColor: "rgba(34,197,94,0.42)" }]}>
+                        <Text style={s.audiencePanelBlockLabel as any}>LIVE NOW</Text>
+                        <View style={s.audiencePanelHeroBody as any}>
+                          {renderHostControlAvatar(
+                            hostControlLiveSpeaker.name,
+                            hostControlLiveSpeaker.avatar,
+                            52,
+                            "#22C55E"
+                          )}
+                          <View style={{ flex: 1, gap: 3 }}>
+                            <Text style={s.audiencePanelSpeakerName as any} numberOfLines={1}>
+                              {hostControlLiveSpeaker.name}
+                            </Text>
+                            <Text style={s.audiencePanelSpeakerTopic as any} numberOfLines={2}>
+                              {hostControlLiveSpeaker.topic}
+                            </Text>
+                            <Text style={s.audiencePanelSpeakerMeta as any}>
+                              Slot {hostControlLiveSpeaker.slot || "—"} • {hostControlLiveSpeaker.countdown}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                    ) : null}
+
+                    {renderAudienceNextSpeakerBlock()}
+                    {renderAudienceClaimedSpeakersSection(true)}
+                    {renderAudienceViewerStatsSection(true)}
+
+                    {openClaimableSlots.length ? (
+                      <View style={s.audiencePanelBlock as any}>
+                        <Text style={s.audiencePanelBlockLabel as any}>OPEN SLOTS</Text>
+                        <View style={s.audiencePanelClaimRow as any}>
+                          {openClaimableSlots.map((slot: any) => (
+                            <Pressable
+                              key={`viewer-claim-${slot?.id || slot?.slot}`}
+                              onPress={() => router.push("/" as any)}
+                              style={({ pressed }) => ([
+                                s.audiencePanelClaimBtn,
+                                pressed ? s.audiencePanelClaimBtnPressed : null,
+                              ] as any)}
+                            >
+                              <Text style={s.audiencePanelClaimBtnText as any}>
+                                Go Claim S{slot.slot}
+                              </Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+                    ) : null}
+
+                    {renderAudienceSafeActions()}
+                  </>
+                )}
               </ScrollView>
             </Animated.View>
+            ) : null}
           </>
         ) : null}
 
@@ -6457,262 +10010,180 @@ return (
           ]}
         >
           <View style={s.hostDrawerHandle as any} />
-          <Text style={s.hostDrawerEyebrow as any}>{isMediaInstantLive ? "MEDIA LIVE CONTROL" : "HOST CONTROL"}</Text>
-          {!isMediaInstantLive ? <Text style={s.hostDrawerTitle as any}>{hostDrawerStateLabel}</Text> : null}
+          <Text style={s.hostDrawerEyebrow as any}>
+            {canManageLiveHostActions
+              ? isMediaInstantLive
+                ? "MEDIA COMMAND CENTER"
+                : "HOST COMMAND CENTER"
+              : "LIVE ROOM"}
+          </Text>
 
-          {isMediaInstantLive ? (
-            <>
-              <View style={s.hostDrawerQueueCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>PINNED TOPIC</Text>
-                <Text style={s.hostDrawerQueueEmpty as any}>
-                  Add the main topic for this live.
-                </Text>
+          {!isMediaInstantLive && hostControlLiveSpeaker ? (
+            <View style={s.hcLiveHero as any}>
+              <View style={s.hcLiveHeroTop as any}>
+                <Text style={s.hcLiveHeroKicker as any}>LIVE NOW</Text>
+                <Animated.View
+                  style={[
+                    s.hcLivePulseDotWrap as any,
+                    {
+                      transform: [{
+                        scale: hostControlPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.35] }),
+                      }],
+                      opacity: hostControlPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.45] }),
+                    },
+                  ]}
+                >
+                  <View style={s.hcLivePulseDot as any} />
+                </Animated.View>
               </View>
-            </>
-          ) : (
-            <>
-              <View style={s.hostDrawerCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>NOW LIVE</Text>
-                <Text style={s.hostDrawerCardValue as any}>{hostDrawerCurrentLabel}</Text>
+              <View style={s.hcLiveHeroBody as any}>
+                {renderHostControlAvatar(hostControlLiveSpeaker.name, hostControlLiveSpeaker.avatar, 62, "#22C55E")}
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text style={s.hcLiveHeroName as any} numberOfLines={1}>{hostControlLiveSpeaker.name}</Text>
+                  <Text style={s.hcLiveHeroTopic as any} numberOfLines={2}>{hostControlLiveSpeaker.topic}</Text>
+                  <Text style={s.hcLiveHeroMeta as any}>
+                    Slot {hostControlLiveSpeaker.slot || "—"} • {hostControlLiveSpeaker.countdown}
+                  </Text>
+                </View>
               </View>
+            </View>
+          ) : !isMediaInstantLive ? (
+            <View style={[s.hcLiveHero as any, { borderColor: "rgba(239,68,68,0.45)" }]}>
+              <Text style={s.hcLiveHeroKicker as any}>LIVE STATUS</Text>
+              <Text style={s.hcLiveHeroName as any}>{hostDrawerStateLabel}</Text>
+            </View>
+          ) : null}
 
-              <View style={s.hostDrawerCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>NEXT</Text>
-                <Text style={[s.hostDrawerCardValue as any, s.hostDrawerCardValueSecondary]}>
-                  {hostDrawerNextLabel}
-                </Text>
+          {!isMediaInstantLive && hostControlNextSpeaker ? (
+            <View style={s.hcNextCard as any}>
+              <Text style={s.hcSectionTitlePurple as any}>NEXT SPEAKER</Text>
+              <View style={s.hcNextBody as any}>
+                {renderHostControlAvatar(hostControlNextSpeaker.name, hostControlNextSpeaker.avatar, 52, "#A78BFA")}
+                <View style={{ flex: 1, gap: 3 }}>
+                  <Text style={s.hcNextName as any} numberOfLines={1}>{hostControlNextSpeaker.name}</Text>
+                  <Text style={s.hcNextTopic as any} numberOfLines={1}>{hostControlNextSpeaker.topic}</Text>
+                  <Text style={s.hcNextMeta as any}>
+                    {hostControlNextSpeaker.startTime} • Slot {hostControlNextSpeaker.slot || "—"}
+                  </Text>
+                </View>
+                <View style={s.hcReadyPill as any}>
+                  <Text style={s.hcReadyPillText as any}>{hostControlNextSpeaker.status}</Text>
+                </View>
               </View>
+            </View>
+          ) : null}
 
-              <View style={s.hostDrawerQueueCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>UP NEXT QUEUE</Text>
-
-                {hostDrawerQueueEntries.length ? (
-                  hostDrawerQueueEntries.map((item: any, index: number) => (
-                    <View
-                      key={String(item?.id || `queue_${index}`)}
-                      style={[
-                        s.hostDrawerQueueRow,
-                        index === 0 ? s.hostDrawerQueueRowActive : null,
-                      ]}
-                    >
-                      <View style={s.hostDrawerQueueIndex as any}>
-                        <Text style={s.hostDrawerQueueIndexText as any}>{index + 1}</Text>
-                      </View>
-
-                      <View style={s.hostDrawerQueueBody as any}>
-                        <Text numberOfLines={1} style={s.hostDrawerQueueTitle as any}>
-                          {String(item?.title || item?.task || `Slot ${index + 1}`)}
-                        </Text>
-                        <Text numberOfLines={1} style={s.hostDrawerQueueMeta as any}>
-                          {String(
-                            new Date(item?.startMs || Date.now()).toLocaleTimeString([], {
-                              hour: "numeric",
-                              minute: "2-digit",
-                            })
-                          )}{" "}
-                          • {String(item?.roleLabel || "Scheduled")}
-                        </Text>
-                      </View>
-                    </View>
-                  ))
-                ) : (
-                  <Text style={s.hostDrawerQueueEmpty as any}>No queued slots yet</Text>
+          {!isMediaInstantLive ? (
+            <View style={s.hcSectionWrap as any}>
+              <Text style={s.hcSectionTitlePurple as any}>
+                CLAIMED SPEAKERS ({claimedUserCount} USERS • {claimedSlotCount} SLOTS)
+              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.hcSpeakerScroll as any}>
+                {hostControlClaimedSpeakers.length ? hostControlClaimedSpeakers.map((speaker: any) => (
+                  <View key={speaker.id} style={s.hcSpeakerCard as any}>
+                    {renderHostControlAvatar(speaker.name, speaker.avatar, 46, speaker.statusColor)}
+                    <Text style={s.hcSpeakerName as any} numberOfLines={1}>{speaker.name}</Text>
+                    <Text style={s.hcSpeakerSlot as any}>
+                      {claimedSpeakerSlotLabelById[speaker.id] || `Slot ${speaker.slot}`}
+                    </Text>
+                    <Text style={s.hcSpeakerTopic as any} numberOfLines={1}>{speaker.topic}</Text>
+                    <Text style={[s.hcSpeakerStatus as any, { color: speaker.statusColor }]}>{speaker.status}</Text>
+                  </View>
+                )) : (
+                  <Text style={s.hcEmptyText as any}>No claimed speakers yet</Text>
                 )}
+              </ScrollView>
+            </View>
+          ) : null}
+
+          <View style={s.hcHostSection as any}>
+            <Text style={s.hcSectionTitleGold as any}>HOSTS ({hostControlHosts.length})</Text>
+            {hostControlHosts.length ? hostControlHosts.map((host: any) => (
+              <View key={host.id} style={s.hcHostRow as any}>
+                {renderHostControlAvatar(host.name, host.avatar, 44, "#D9B35F")}
+                <View style={{ flex: 1 }}>
+                  <Text style={s.hcHostName as any} numberOfLines={1}>{host.name}</Text>
+                  <Text style={s.hcHostRole as any}>{host.role}</Text>
+                </View>
               </View>
+            )) : (
+              <Text style={s.hcEmptyText as any}>No hosts detected</Text>
+            )}
+          </View>
 
-              <View style={s.hostDrawerCard as any}>
-                <Text style={s.hostDrawerCardLabel as any}>COUNTDOWN</Text>
-                <Text style={s.hostDrawerCardValue as any}>{liveCountdownLabel}</Text>
+          <View style={s.hcViewerSection as any}>
+            <View style={s.hcViewerHeader as any}>
+              <Text style={s.hcSectionTitleBlue as any}>VIEWERS</Text>
+              <Animated.View
+                style={{
+                  opacity: hostControlViewerPulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] }),
+                }}
+              >
+                <View style={s.hcViewerLiveDot as any} />
+              </Animated.View>
+            </View>
+            <View style={s.hcViewerStatsGrid as any}>
+              <View style={s.hcViewerStatRow as any}>
+                <Text style={s.hcViewerStatLabel as any}>Total viewers</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.totalViewers}</Text>
               </View>
-            </>
-          )}
+              <View style={s.hcViewerStatRow as any}>
+                <Text style={s.hcViewerStatLabel as any}>Active viewers</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.activeViewers}</Text>
+              </View>
+              <View style={s.hcViewerStatRow as any}>
+                <Text style={s.hcViewerStatLabel as any}>Members</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.members}</Text>
+              </View>
+              <View style={s.hcViewerStatRow as any}>
+                <Text style={s.hcViewerStatLabel as any}>Leaders</Text>
+                <Text style={s.hcViewerStatValue as any}>{hostControlViewerStats.leaders}</Text>
+              </View>
+            </View>
+            <View style={s.hcViewerBreakdownRow as any}>
+              {[
+                { label: "TOTAL", value: hostControlViewerStats.totalViewers },
+                { label: "ACTIVE", value: hostControlViewerStats.activeViewers },
+                { label: "MEMBERS", value: hostControlViewerStats.members },
+                { label: "LEADERS", value: hostControlViewerStats.leaders },
+                { label: "GUESTS", value: hostControlViewerStats.guests },
+              ].map((chip) => (
+                <View key={chip.label} style={s.hcViewerChip as any}>
+                  <Text style={s.hcViewerChipValue as any}>{chip.value}</Text>
+                  <Text style={s.hcViewerChipLabel as any}>{chip.label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
 
-
-          
-<ScrollView
-          style={s.hostDrawerActionsScroll as any}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={s.hostDrawerActionScroller}
-        >
-          <View style={s.hostDrawerActionGrid as any}>
-              <Pressable
-                onPress={() => pressHostTool("Pin topic")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Pin topic" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="bookmark-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Pin topic</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Comment")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Comment" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="chatbubble-ellipses-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Comment</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Pin name")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Pin name" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="person-circle-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Pin name</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Layout")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Layout" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="grid-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Layout</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Photo")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Photo" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="image-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Photo</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={handleHostRequestsPress}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Requests" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="hand-left-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                {latestPendingAccessRequest ? (
-                  <View style={{ alignItems: "center", gap: 4 }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-                      <View
-                        style={{
-                          width: 24,
-                          height: 24,
-                          borderRadius: 12,
-                          alignItems: "center",
-                          justifyContent: "center",
-                          backgroundColor: "rgba(244,208,111,0.18)",
-                          borderWidth: 1,
-                          borderColor: "rgba(244,208,111,0.35)",
-                        }}
-                      >
-                        <Text style={{ color: GOLD, fontWeight: "900", fontSize: 11 }}>
-                          {pendingRequestFirstName.slice(0, 1).toUpperCase()}
-                        </Text>
-                      </View>
-
-                      <Text style={s.hostDrawerActionText as any} numberOfLines={1}>
-                        {pendingRequestFirstName}
-                      </Text>
-
-                      <Ionicons name={pendingRequestRoleIcon as any} size={15} color={GOLD} />
-                    </View>
-
-                    <Text style={{ color: "rgba(255,255,255,0.58)", fontSize: 10, fontWeight: "800" }}>
-                      sent request
+          {!isMediaInstantLive ? (
+            <View style={s.hcQueueSection as any}>
+              <Text style={s.hcSectionTitleGold as any}>UPCOMING QUEUE</Text>
+              {hostControlUpcomingQueue.length ? hostControlUpcomingQueue.map((item: any, index: number) => (
+                <View key={`${item.slot}-${index}`} style={s.hcQueueTimelineRow as any}>
+                  <View style={s.hcQueueTimelineRail as any}>
+                    <View style={[s.hcQueueTimelineDot as any, item.claimed ? s.hcQueueTimelineDotClaimed : null]} />
+                    {index < hostControlUpcomingQueue.length - 1 ? <View style={s.hcQueueTimelineLine as any} /> : null}
+                  </View>
+                  <View style={s.hcQueueTimelineBody as any}>
+                    <Text style={s.hcQueueTimelineSlot as any}>Slot {item.slot}</Text>
+                    <Text style={s.hcQueueTimelineTime as any}>{item.timeLabel}</Text>
+                    <Text style={s.hcQueueTimelineName as any} numberOfLines={1}>
+                      {item.name} • {String(item.status || "").toUpperCase()}
                     </Text>
                   </View>
-                ) : (
-                  <Text style={s.hostDrawerActionText as any}>Requests</Text>
-                )}
-              </Pressable>
+                </View>
+              )) : (
+                <Text style={s.hcEmptyText as any}>No upcoming scheduled slots</Text>
+              )}
+            </View>
+          ) : null}
 
-              <Pressable
-                onPress={() => pressHostTool("Record")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Record" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="radio-button-on-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Record</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Screen")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Screen" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="phone-portrait-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Screen</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Game")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Game" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="game-controller-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Game</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Promote")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Promote" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="megaphone-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Promote</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Translate")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Translate" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="language-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Translate</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => pressHostTool("Video")}
-                style={({ pressed }) => ([
-                  s.hostDrawerOpenBtn,
-                  selectedHostTool === "Video" ? s.hostDrawerOpenBtnActive : null,
-                  pressed ? s.hostDrawerOpenBtnPressed : null,
-                ] as any)}
-              >
-                <Ionicons name="videocam-outline" size={23} color="#E7C46F" style={s.hostDrawerOpenIcon as any} />
-                <Text style={s.hostDrawerActionText as any}>Video</Text>
-              </Pressable>
-          </View>
-        </ScrollView>
+          {canManageLiveHostActions ? renderLiveHostManageActions() : null}
+          {canSeeActiveSlotOwnerPanel ? renderLiveHostSlotOwnerControls() : null}
+          {!canManageLiveHostActions && !canSeeActiveSlotOwnerPanel
+            ? renderLiveHostViewerSafePanel()
+            : null}
         </ScrollView>
       </Animated.View>
 
@@ -7875,10 +11346,10 @@ const s: any = StyleSheet.create({
   },
   viewerFlowPanel: {
   position: "absolute",
-  right: 18,
-  bottom: 106,
-  width: 300,
-  maxHeight: 390,
+  right: 14,
+  top: 92,
+  bottom: 92,
+  width: 310,
   paddingTop: 10,
   paddingHorizontal: 14,
   paddingBottom: 12,
@@ -8017,6 +11488,222 @@ const s: any = StyleSheet.create({
   fontWeight: "900",
   letterSpacing: 0.9,
 },
+
+  audiencePanelScroll: {
+    gap: 12,
+  },
+  audiencePanelEyebrow: {
+    color: "rgba(125,211,252,0.82)",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.6,
+    marginBottom: 2,
+  },
+  audiencePanelTitle: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: -0.3,
+    lineHeight: 26,
+    marginBottom: 4,
+  },
+  audiencePanelHero: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(14,36,64,0.88)",
+    borderWidth: 1,
+    borderColor: "rgba(167,139,250,0.35)",
+    gap: 6,
+  },
+  audiencePanelHeroLive: {
+    borderColor: "rgba(167,139,250,0.45)",
+    backgroundColor: "rgba(14,36,64,0.94)",
+  },
+  audiencePanelHeroBody: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 4,
+  },
+  audiencePanelHeroTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  audiencePanelHeroSlot: {
+    color: "#A78BFA",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+  audiencePanelHeroTopic: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+    lineHeight: 21,
+  },
+  audiencePanelHeroMeta: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  audiencePanelStatusPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  audiencePanelStatusText: {
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+  audiencePanelBlock: {
+    borderRadius: 18,
+    padding: 12,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    gap: 8,
+  },
+  audiencePanelBlockLabel: {
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+  },
+  audiencePanelSpeakerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  audiencePanelSpeakerName: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  audiencePanelSpeakerTopic: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  audiencePanelSpeakerMeta: {
+    color: "rgba(125,211,252,0.72)",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  audiencePanelEmpty: {
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  audiencePanelStatCard: {
+    borderRadius: 18,
+    padding: 12,
+    backgroundColor: "rgba(14,36,64,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(56,189,248,0.28)",
+    gap: 4,
+  },
+  audiencePanelStatValue: {
+    color: "#FFFFFF",
+    fontSize: 28,
+    fontWeight: "900",
+  },
+  audiencePanelClaimRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  audiencePanelClaimBtn: {
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "rgba(244,208,111,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(244,208,111,0.55)",
+  },
+  audiencePanelClaimBtnPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.98 }],
+  },
+  audiencePanelClaimBtnText: {
+    color: "#F4D06F",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  audiencePanelCloseBtn: {
+    marginTop: 4,
+    height: 48,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "rgba(170,14,28,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(255,72,88,0.72)",
+  },
+  audiencePanelCloseBtnPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.98 }],
+  },
+  audiencePanelCloseBtnText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  audiencePanelSectionWrap: {
+    gap: 8,
+  },
+  audiencePanelMicSection: {
+    borderRadius: 18,
+    padding: 12,
+    backgroundColor: "rgba(14,36,64,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.32)",
+    gap: 8,
+  },
+  audiencePanelMicRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  audiencePanelMicText: {
+    flex: 1,
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 17,
+  },
+  audiencePanelActionsWrap: {
+    gap: 10,
+    marginTop: 4,
+  },
+  audiencePanelActionBtnWide: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    width: "100%",
+  },
+  audiencePanelSecondaryBtn: {
+    height: 44,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  audiencePanelSecondaryBtnText: {
+    color: "#DCE9FF",
+    fontSize: 13,
+    fontWeight: "800",
+  },
 
   controlsWrap: {
     position: "absolute",
@@ -9356,28 +13043,32 @@ const s: any = StyleSheet.create({
     right: 0,
     top: 0,
     bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.18)",
+    backgroundColor: "rgba(2,6,18,0.62)",
     zIndex: 70,
   },
   hostDrawer: {
     position: "absolute",
-    right: 10,
-    top: "24%",
-    bottom: 94,
-    width: "77%",
-    borderRadius: 40,
-    backgroundColor: "rgba(3,9,24,0.88)",
-    borderWidth: 1.55,
-    borderColor: "rgba(244,201,93,0.16)",
+    right: 8,
+    top: "12%",
+    bottom: 88,
+    width: "88%",
+    borderRadius: 34,
+    backgroundColor: "#060B1A",
+    borderWidth: 1.8,
+    borderColor: "rgba(217,179,95,0.42)",
     overflow: "hidden",
     zIndex: 140,
-    shadowOffset: { width: 0, height: 14 },
-    elevation: 18,
+    shadowColor: "#D9B35F",
+    shadowOpacity: 0.28,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 22,
   },
   hostDrawerScrollContent: {
-    paddingHorizontal: 22,
-    paddingTop: 18,
-    paddingBottom: 150,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 28,
+    gap: 12,
   },
   hostDrawerFooter: {
     position: "absolute",
@@ -9390,21 +13081,384 @@ const s: any = StyleSheet.create({
   },
   hostDrawerHandle: {
     alignSelf: "center",
-    width: 58,
-    height: 7,
+    width: 64,
+    height: 6,
     borderRadius: 999,
-    marginBottom: 22,
-    backgroundColor: "rgba(255,255,255,0.34)",
-    shadowOffset: { width: 0, height: 0 },
+    marginBottom: 12,
+    backgroundColor: "rgba(217,179,95,0.55)",
   },
   hostDrawerEyebrow: {
-    color: "#E7C46F",
+    color: "#D9B35F",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 4.5,
+    marginBottom: 10,
+    textAlign: "center",
+  },
+  hcLiveHero: {
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 4,
+    backgroundColor: "rgba(8,32,22,0.96)",
+    borderWidth: 1.5,
+    borderColor: "rgba(34,197,94,0.55)",
+    shadowColor: "#22C55E",
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  hcLiveHeroTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  hcLiveHeroKicker: {
+    color: "#86EFAC",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 3,
+  },
+  hcLivePulseDotWrap: {
+    width: 16,
+    height: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  hcLivePulseDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: "#22C55E",
+  },
+  hcLiveHeroBody: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  hcLiveHeroName: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "900",
+    letterSpacing: -0.5,
+  },
+  hcLiveHeroTopic: {
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  hcLiveHeroMeta: {
+    color: "rgba(134,239,172,0.88)",
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 2,
+  },
+  hcNextCard: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(28,16,48,0.96)",
+    borderWidth: 1.4,
+    borderColor: "rgba(167,139,250,0.48)",
+  },
+  hcSectionTitlePurple: {
+    color: "#C4B5FD",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 3.2,
+    marginBottom: 10,
+  },
+  hcNextBody: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  hcNextName: {
+    color: "#FFFFFF",
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  hcNextTopic: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  hcNextMeta: {
+    color: "rgba(196,181,253,0.88)",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  hcReadyPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(167,139,250,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(167,139,250,0.45)",
+  },
+  hcReadyPillText: {
+    color: "#DDD6FE",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+  hcSectionWrap: {
+    marginTop: 2,
+  },
+  hcSpeakerScroll: {
+    gap: 10,
+    paddingRight: 8,
+  },
+  hcSpeakerCard: {
+    width: 132,
+    borderRadius: 18,
+    padding: 10,
+    backgroundColor: "rgba(24,14,42,0.96)",
+    borderWidth: 1.2,
+    borderColor: "rgba(167,139,250,0.35)",
+    gap: 4,
+  },
+  hcSpeakerName: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+    marginTop: 6,
+  },
+  hcSpeakerSlot: {
+    color: "#C4B5FD",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  hcSpeakerTopic: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  hcSpeakerStatus: {
+    fontSize: 10,
+    fontWeight: "900",
+    marginTop: 2,
+  },
+  hcHostSection: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(18,14,8,0.96)",
+    borderWidth: 1.4,
+    borderColor: "rgba(217,179,95,0.42)",
+    gap: 10,
+  },
+  hcSectionTitleGold: {
+    color: "#D9B35F",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 3.2,
+  },
+  hcHostRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 4,
+  },
+  hcHostName: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  hcHostRole: {
+    color: "rgba(217,179,95,0.88)",
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 1,
+  },
+  hcViewerSection: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(8,18,38,0.96)",
+    borderWidth: 1.4,
+    borderColor: "rgba(56,189,248,0.42)",
+    gap: 10,
+  },
+  hcViewerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  hcSectionTitleBlue: {
+    color: "#7DD3FC",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 3.2,
+  },
+  hcViewerLiveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "#38BDF8",
+  },
+  hcViewerStatsGrid: {
+    gap: 8,
+  },
+  hcViewerStatRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  hcViewerStatLabel: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  hcViewerStatValue: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  hcViewerBreakdownRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  hcViewerChip: {
+    flex: 1,
+    borderRadius: 14,
+    paddingVertical: 10,
+    alignItems: "center",
+    backgroundColor: "rgba(14,36,64,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(56,189,248,0.28)",
+  },
+  hcViewerChipValue: {
+    color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "900",
-    letterSpacing: 5,
-    marginBottom: 18,
-    textShadowColor: "rgba(217,179,95,0.30)",
-    textShadowRadius: 12,
+  },
+  hcViewerChipLabel: {
+    color: "rgba(125,211,252,0.82)",
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 1,
+    marginTop: 2,
+  },
+  hcQueueSection: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(10,12,24,0.96)",
+    borderWidth: 1.2,
+    borderColor: "rgba(217,179,95,0.28)",
+    gap: 8,
+  },
+  hcQueueTimelineRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  hcQueueTimelineRail: {
+    width: 18,
+    alignItems: "center",
+  },
+  hcQueueTimelineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.35)",
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.65)",
+  },
+  hcQueueTimelineDotClaimed: {
+    backgroundColor: "#A78BFA",
+    borderColor: "#DDD6FE",
+  },
+  hcQueueTimelineLine: {
+    flex: 1,
+    width: 2,
+    marginTop: 4,
+    backgroundColor: "rgba(217,179,95,0.25)",
+  },
+  hcQueueTimelineBody: {
+    flex: 1,
+    paddingBottom: 10,
+  },
+  hcQueueTimelineSlot: {
+    color: "#D9B35F",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  hcQueueTimelineTime: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+    marginTop: 1,
+  },
+  hcQueueTimelineName: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  hcEmptyText: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  hcActionsWrap: {
+    marginTop: 6,
+    gap: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(217,179,95,0.18)",
+  },
+  hcActionsGroupTitle: {
+    color: "rgba(217,179,95,0.88)",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 2.8,
+    marginTop: 4,
+  },
+  hcActionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  hcActionBtn: {
+    flexGrow: 1,
+    flexBasis: "30%",
+    minWidth: 96,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "rgba(12,20,36,0.96)",
+    borderWidth: 1.2,
+    borderColor: "rgba(217,179,95,0.28)",
+  },
+  hcActionBtnDanger: {
+    flexGrow: 1,
+    flexBasis: "30%",
+    minWidth: 96,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "rgba(48,10,14,0.96)",
+    borderWidth: 1.2,
+    borderColor: "rgba(239,68,68,0.45)",
+  },
+  hcActionBtnPressed: {
+    opacity: 0.72,
+    transform: [{ scale: 0.98 }],
+  },
+  hcActionBtnText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  hcActionBtnDangerText: {
+    color: "#FCA5A5",
+    fontSize: 10,
+    fontWeight: "900",
+    textAlign: "center",
   },
   hostDrawerTitle: {
     color: "#FFFFFF",
