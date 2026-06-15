@@ -662,3 +662,169 @@ export function logLiveRoomShowEndedOverlay(input: {
 }) {
   console.log("KRISTO_LIVE_ROOM_SHOW_ENDED_OVERLAY", input);
 }
+
+export type ClaimEnterSessionLock = {
+  liveBridgeId: string;
+  lockedUserId: string;
+  routeClaimedByUserId: string;
+  routeSlotNumber: number;
+  canPublishCamera: boolean;
+  canPublishMic: boolean;
+  pinnedAt: number;
+  source?: string;
+  liveKitConnected?: boolean;
+  cameraPublished?: boolean;
+};
+
+export function readClaimEnterSessionLock(liveBridgeId?: string): ClaimEnterSessionLock | null {
+  const lock = pinStore().__KRISTO_CLAIM_ENTER_SESSION_LOCK__;
+  if (!lock || typeof lock !== "object") return null;
+  const id = String(liveBridgeId || "").trim();
+  if (id && String(lock.liveBridgeId || "") !== id) return null;
+  return lock as ClaimEnterSessionLock;
+}
+
+export function pinClaimEnterSessionLock(input: {
+  liveBridgeId: string;
+  lockedUserId: string;
+  routeClaimedByUserId: string;
+  routeSlotNumber?: number;
+  canPublishCamera?: boolean;
+  canPublishMic?: boolean;
+  source?: string;
+}) {
+  const liveBridgeId = String(input.liveBridgeId || "").trim();
+  const lockedUserId = String(input.lockedUserId || "").trim();
+  const routeClaimedByUserId = String(input.routeClaimedByUserId || "").trim();
+  if (!liveBridgeId || !lockedUserId || !routeClaimedByUserId) return false;
+
+  const prev = readClaimEnterSessionLock(liveBridgeId);
+  if (
+    prev &&
+    prev.lockedUserId === lockedUserId &&
+    prev.routeClaimedByUserId === routeClaimedByUserId
+  ) {
+    return true;
+  }
+
+  pinStore().__KRISTO_CLAIM_ENTER_SESSION_LOCK__ = {
+    liveBridgeId,
+    lockedUserId,
+    routeClaimedByUserId,
+    routeSlotNumber: Math.max(1, Number(input.routeSlotNumber || prev?.routeSlotNumber || 1)),
+    canPublishCamera: input.canPublishCamera === true,
+    canPublishMic: input.canPublishMic === true,
+    pinnedAt: Date.now(),
+    source: input.source || "unknown",
+    liveKitConnected: false,
+    cameraPublished: false,
+  } satisfies ClaimEnterSessionLock;
+
+  console.log("KRISTO_CLAIM_ENTER_SESSION_LOCK_PINNED", {
+    liveBridgeId,
+    lockedUserId,
+    routeClaimedByUserId,
+    routeSlotNumber: pinStore().__KRISTO_CLAIM_ENTER_SESSION_LOCK__.routeSlotNumber,
+    canPublishCamera: input.canPublishCamera === true,
+    canPublishMic: input.canPublishMic === true,
+    source: input.source || "unknown",
+  });
+  notifyLiveKitHostLock("claim-enter-lock-pinned");
+  return true;
+}
+
+export function pinClaimEnterSessionLockFromRoute(input: {
+  liveBridgeId: string;
+  routeParams: Record<string, unknown>;
+  source: string;
+}): boolean {
+  const liveBridgeId = String(input.liveBridgeId || "").trim();
+  const routeClaimedByUserId = String(input.routeParams?.claimedByUserId || "").trim();
+  const canPublishCamera = String(input.routeParams?.canPublishCamera || "") === "1";
+  const canPublishMic = String(input.routeParams?.canPublishMic || "") === "1";
+  const mediaSlotPublisher = String(input.routeParams?.mediaSlotPublisher || "") === "1";
+  const wantsPublish = canPublishCamera || canPublishMic || mediaSlotPublisher;
+
+  if (!liveBridgeId || !routeClaimedByUserId || !wantsPublish) return false;
+
+  return pinClaimEnterSessionLock({
+    liveBridgeId,
+    lockedUserId: routeClaimedByUserId,
+    routeClaimedByUserId,
+    routeSlotNumber: Number(
+      input.routeParams?.currentSlotNumber ||
+        input.routeParams?.claimedSlotNumber ||
+        input.routeParams?.preferredSlotNumber ||
+        1
+    ),
+    canPublishCamera,
+    canPublishMic,
+    source: input.source,
+  });
+}
+
+export function shouldHoldClaimEnterSessionLock(liveBridgeId?: string): boolean {
+  const lock = readClaimEnterSessionLock(liveBridgeId);
+  if (!lock) return false;
+  if (lock.liveKitConnected && lock.cameraPublished) return false;
+  return true;
+}
+
+export function markClaimEnterLiveKitConnected(liveBridgeId: string) {
+  const lock = readClaimEnterSessionLock(liveBridgeId);
+  if (!lock) return;
+  lock.liveKitConnected = true;
+  console.log("KRISTO_CLAIM_ENTER_SESSION_LOCK_LIVEKIT_CONNECTED", {
+    liveBridgeId,
+    lockedUserId: lock.lockedUserId,
+    cameraPublished: lock.cameraPublished === true,
+  });
+  tryReleaseClaimEnterSessionLock(liveBridgeId, "livekit-connected");
+}
+
+export function markClaimEnterCameraPublished(liveBridgeId: string) {
+  const lock = readClaimEnterSessionLock(liveBridgeId);
+  if (!lock) return;
+  lock.cameraPublished = true;
+  console.log("KRISTO_CLAIM_ENTER_SESSION_LOCK_CAMERA_PUBLISHED", {
+    liveBridgeId,
+    lockedUserId: lock.lockedUserId,
+    liveKitConnected: lock.liveKitConnected === true,
+  });
+  tryReleaseClaimEnterSessionLock(liveBridgeId, "camera-published");
+}
+
+export function tryReleaseClaimEnterSessionLock(liveBridgeId: string, reason: string) {
+  const lock = readClaimEnterSessionLock(liveBridgeId);
+  if (!lock) return;
+  if (!lock.liveKitConnected || !lock.cameraPublished) return;
+  clearClaimEnterSessionLock(reason);
+}
+
+export function clearClaimEnterSessionLock(reason?: string) {
+  const lock = readClaimEnterSessionLock();
+  if (lock) {
+    console.log("KRISTO_CLAIM_ENTER_SESSION_LOCK_RELEASED", {
+      reason: reason || "unknown",
+      liveBridgeId: lock.liveBridgeId,
+      lockedUserId: lock.lockedUserId,
+      liveKitConnected: lock.liveKitConnected === true,
+      cameraPublished: lock.cameraPublished === true,
+    });
+  }
+  delete pinStore().__KRISTO_CLAIM_ENTER_SESSION_LOCK__;
+  notifyLiveKitHostLock(reason || "claim-enter-lock-released");
+}
+
+export function readClaimEnterSessionLockSnapshot(): string {
+  const lock = readClaimEnterSessionLock();
+  if (!lock) return "";
+  return JSON.stringify({
+    liveBridgeId: lock.liveBridgeId,
+    lockedUserId: lock.lockedUserId,
+    routeClaimedByUserId: lock.routeClaimedByUserId,
+    liveKitConnected: lock.liveKitConnected === true,
+    cameraPublished: lock.cameraPublished === true,
+    pinnedAt: lock.pinnedAt,
+  });
+}

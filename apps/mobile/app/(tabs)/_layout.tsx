@@ -40,6 +40,7 @@ import { pauseHomeFeedBackgroundWorkForLiveNavigation } from "@/src/lib/liveRoom
 import {
   pinLiveKitPublisherHostBeforeToken,
   pinLiveRoomSession,
+  pinClaimEnterSessionLockFromRoute,
 } from "@/src/lib/liveRoomSessionGuard";
 import {
   RING_RECOMPUTE_INTERVAL_MS,
@@ -427,8 +428,16 @@ export default function TabLayout() {
         source: "live-ring-profile-nav",
       });
       if (claimedByMe && isLiveNow) {
+        pinClaimEnterSessionLockFromRoute({
+          liveBridgeId,
+          routeParams: navigateParams as Record<string, unknown>,
+          source: "live-ring-profile-nav",
+        });
         pinLiveKitPublisherHostBeforeToken(liveBridgeId, "live-ring-profile-nav", {
-          stableIdentity: viewerUserId.replace(/[^a-zA-Z0-9_]/g, ""),
+          stableIdentity: String(navigateParams.claimedByUserId || viewerUserId).replace(
+            /[^a-zA-Z0-9_]/g,
+            ""
+          ),
         });
       }
     }

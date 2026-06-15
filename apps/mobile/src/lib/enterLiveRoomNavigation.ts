@@ -2,7 +2,7 @@ import type { Router } from "expo-router";
 import { feedList } from "@/src/lib/homeFeedStore";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
 import { markLiveEnterTap } from "@/src/lib/liveKitPerf";
-import { pinLiveRoomSession, clearStaleLiveEndedFlag, pinLiveKitPublisherHostBeforeToken } from "@/src/lib/liveRoomSessionGuard";
+import { pinLiveRoomSession, clearStaleLiveEndedFlag, pinLiveKitPublisherHostBeforeToken, pinClaimEnterSessionLockFromRoute } from "@/src/lib/liveRoomSessionGuard";
 import { prefetchLiveKitToken } from "@/src/lib/liveKitTokenPrefetch";
 import {
   pauseHomeFeedBackgroundWorkForLiveNavigation,
@@ -202,17 +202,26 @@ export function enterLiveRoomFromScheduleCard(input: {
     routeParams.canPublishCamera === "1" ||
     routeParams.mediaSlotPublisher === "1";
   if (liveBridgeId && viewerUserId && wantsPublish) {
+    pinClaimEnterSessionLockFromRoute({
+      liveBridgeId,
+      routeParams: routeParams as Record<string, unknown>,
+      source: `enter-live-${input.source}`,
+    });
     pinLiveKitPublisherHostBeforeToken(liveBridgeId, `enter-live-${input.source}`, {
-      stableIdentity: viewerUserId.replace(/[^a-zA-Z0-9_]/g, ""),
+      stableIdentity: String(routeParams.claimedByUserId || viewerUserId).replace(/[^a-zA-Z0-9_]/g, ""),
     });
     const viewerChurchId = String(input.viewerChurchId || routeParams.churchId || "").trim();
+    const tokenIdentity = String(routeParams.claimedByUserId || viewerUserId).replace(
+      /[^a-zA-Z0-9_]/g,
+      ""
+    );
     prefetchLiveKitToken({
       roomName: liveBridgeId,
-      identity: viewerUserId.replace(/[^a-zA-Z0-9_]/g, ""),
+      identity: tokenIdentity,
       canPublish: true,
       source: `enter-live-${input.source}`,
       headers: getKristoHeaders({
-        userId: viewerUserId,
+        userId: String(routeParams.claimedByUserId || viewerUserId),
         role: "Member",
         churchId: viewerChurchId,
       }) as Record<string, string>,

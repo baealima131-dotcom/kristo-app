@@ -160,6 +160,13 @@ import {
   shouldBlockLiveRoomAutoNavigation,
   subscribeLiveKitHostLock,
   tryEndLiveBridgeForSchedule,
+  pinClaimEnterSessionLockFromRoute,
+  readClaimEnterSessionLock,
+  shouldHoldClaimEnterSessionLock,
+  markClaimEnterLiveKitConnected,
+  markClaimEnterCameraPublished,
+  clearClaimEnterSessionLock,
+  readClaimEnterSessionLockSnapshot,
 } from "@/src/lib/liveRoomSessionGuard";
 import { markHomeFeedVideoNeedsRecovery } from "@/src/lib/homeFeedVideoController";
 import {
@@ -710,6 +717,7 @@ function KristoLiveKitConnectionLifecycle({
       connectedLoggedRef.current = true;
       logLivePerf("livekit_publisher_mount_end", { event: "connected", source });
       markLiveRoomLiveKitConnected(bridgeId);
+      markClaimEnterLiveKitConnected(bridgeId);
       console.log("KRISTO_LIVEKIT_ROOM_EVENT_CONNECTED", {
         roomName: bridgeId,
         connectionState: roomState(),
@@ -2342,6 +2350,9 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
           ok: true,
           cameraFacing,
         });
+        markClaimEnterCameraPublished(
+          String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "")
+        );
 
         localVideoTrackRef.current = localTrack;
         videoFacingRef.current = cameraFacing;
@@ -2578,7 +2589,24 @@ export default function LiveRoomScreen() {
     String((params as any)?.canPublishCamera || "") === "1" ||
     String((params as any)?.mediaSlotPublisher || "") === "1";
   const routeClaimedByUserIdEarly = String((params as any)?.claimedByUserId || "").trim();
-  const [liveKitHostLocked, setLiveKitHostLocked] = useState(() => routePublisherEligibleEarly);
+  const liveBridgeIdFromRoute = String(
+    params.liveId ||
+      (params as any)?.feedId ||
+      (params as any)?.sourceScheduleId ||
+      ""
+  ).trim();
+
+  useLayoutEffect(() => {
+    if (!liveBridgeIdFromRoute) return;
+    pinClaimEnterSessionLockFromRoute({
+      liveBridgeId: liveBridgeIdFromRoute,
+      routeParams: params as Record<string, unknown>,
+      source: "live-room-mount",
+    });
+  }, [liveBridgeIdFromRoute, (params as any)?.claimedByUserId, (params as any)?.canPublishCamera, (params as any)?.canPublishMic, (params as any)?.mediaSlotPublisher]);
+  const [liveKitHostLocked, setLiveKitHostLocked] = useState(
+    () => routePublisherEligibleEarly && !!routeClaimedByUserIdEarly
+  );
   const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(() => {
     const uid = String(session?.userId || "").trim();
     if (
@@ -2897,9 +2925,32 @@ export default function LiveRoomScreen() {
   const leadersCount = Math.max(0, Number(params.leadersCount || "4") || 4);
   const roleParam = String(params.role || "").trim();
   const normalizedRoleParam = String(roleParam || "").toLowerCase();
-  const currentUserId = String(session?.userId || "").trim();
+  const sessionUserId = String(session?.userId || "").trim();
+  const claimEnterLock = readClaimEnterSessionLock(liveBridgeIdFromRoute);
+  const claimEnterLockHeld = shouldHoldClaimEnterSessionLock(liveBridgeIdFromRoute);
+  const currentUserId =
+    claimEnterLockHeld && claimEnterLock?.lockedUserId
+      ? claimEnterLock.lockedUserId
+      : sessionUserId;
   const sessionRoleText = String((session as any)?.role || "").toLowerCase();
   const routeRoleText = String(roleParam || "").toLowerCase();
+
+  useEffect(() => {
+    if (!claimEnterLockHeld || !sessionUserId || sessionUserId === currentUserId) return;
+    console.log("KRISTO_CLAIM_ENTER_SESSION_LOCK_HELD", {
+      liveBridgeId: liveBridgeIdFromRoute,
+      sessionUserId,
+      lockedUserId: currentUserId,
+      routeClaimedByUserId: claimEnterLock?.routeClaimedByUserId || "",
+      claimEnterLockSnapshot: readClaimEnterSessionLockSnapshot(),
+    });
+  }, [
+    claimEnterLockHeld,
+    sessionUserId,
+    currentUserId,
+    liveBridgeIdFromRoute,
+    claimEnterLock?.routeClaimedByUserId,
+  ]);
 
   const fastLiveAuthEarly = useMemo(
     () =>
@@ -4126,12 +4177,20 @@ export default function LiveRoomScreen() {
 
   const currentSlotNumber = resolvedSlotNumber;
 
-  const currentSlotOwnerId = shouldHoldPreviousSlot
-    ? stableCurrentSlotRef.current.ownerId
-    : rawCurrentSlotOwnerId ||
+  const currentSlotOwnerId = (() => {
+    if (claimEnterLockHeld && claimEnterLock?.routeClaimedByUserId) {
+      return claimEnterLock.routeClaimedByUserId;
+    }
+    if (shouldHoldPreviousSlot) {
+      return stableCurrentSlotRef.current.ownerId;
+    }
+    return (
+      rawCurrentSlotOwnerId ||
       (resolvedSlotNumber === routeCurrentSlotNumber
         ? String((params as any)?.claimedByUserId || "").trim()
-        : "");
+        : "")
+    );
+  })();
 
   const currentSlotStartMs = Number(currentMainStageSlot?.startMs || 0);
   const currentSlotEndMs = Number(currentMainStageSlot?.endMs || 0);
@@ -4232,16 +4291,12 @@ export default function LiveRoomScreen() {
   );
 
   const liveKitPublisherIdentity = useMemo(() => {
-    const uid = String(
-      (session as any)?.coreId ||
-        (session as any)?.kristoId ||
-        session?.userId ||
-        "slot"
-    ).trim();
+    const uid = String(currentUserId || "slot").trim();
     const slotNum = Math.max(
       1,
       Number(
-        stablePublisherSlotNumber ||
+        claimEnterLock?.routeSlotNumber ||
+          stablePublisherSlotNumber ||
           routeCurrentSlotNumber ||
           (params as any)?.claimedSlotNumber ||
           (params as any)?.preferredSlotNumber ||
@@ -4250,9 +4305,8 @@ export default function LiveRoomScreen() {
     );
     return `${uid.replace(/[^a-zA-Z0-9_]/g, "")}-slot-${slotNum}`;
   }, [
-    session?.userId,
-    (session as any)?.coreId,
-    (session as any)?.kristoId,
+    currentUserId,
+    claimEnterLock?.routeSlotNumber,
     stablePublisherSlotNumber,
     routeCurrentSlotNumber,
     (params as any)?.claimedSlotNumber,
@@ -4339,7 +4393,7 @@ export default function LiveRoomScreen() {
     routePublisherEligible: routePublisherEligibleEarly,
   });
 
-  const {
+  let {
     pastorPermanentMicNow,
     mediaHostPermanentMicNow,
     userOwnsCurrentActiveSlot,
@@ -4349,6 +4403,18 @@ export default function LiveRoomScreen() {
     canPublishClaimedCameraNow,
     canPublishLiveVideoNow,
   } = liveStageAuthority;
+
+  if (claimEnterLockHeld && claimEnterLock) {
+    userOwnsCurrentActiveSlot = true;
+    userHasClaimedScheduleSlot = true;
+    if (claimEnterLock.canPublishCamera) {
+      canPublishClaimedCameraNow = true;
+      canPublishLiveVideoNow = true;
+    }
+    if (claimEnterLock.canPublishMic) {
+      canPublishClaimedMicNow = true;
+    }
+  }
 
   const isPastorForLiveRoom =
     !!currentUserId &&
@@ -5547,7 +5613,8 @@ export default function LiveRoomScreen() {
   const keepPublisherLiveKitStage =
     publisherHostActive ||
     isLiveRoomLiveKitConnecting(liveBridgeId) ||
-    isLiveRoomLiveKitSessionActive(liveBridgeId);
+    isLiveRoomLiveKitSessionActive(liveBridgeId) ||
+    shouldHoldClaimEnterSessionLock(liveBridgeId);
 
   useEffect(() => {
     if (
@@ -5683,6 +5750,7 @@ export default function LiveRoomScreen() {
       });
       clearLiveRoomSessionPin(reason);
       clearLiveKitPublisherStagePin(reason);
+      clearClaimEnterSessionLock(reason);
       fn();
       return true;
     },
@@ -5690,7 +5758,7 @@ export default function LiveRoomScreen() {
   );
 
   useEffect(() => {
-    const uid = String(session?.userId || "").trim();
+    const uid = currentUserId;
     const routeSlotCount = initialRouteScheduleSlots.length;
     if (!liveBridgeId) return;
 
@@ -5712,7 +5780,7 @@ export default function LiveRoomScreen() {
     };
   }, [
     liveBridgeId,
-    session?.userId,
+    currentUserId,
     initialRouteScheduleSlots.length,
     pathname,
   ]);
@@ -5720,6 +5788,22 @@ export default function LiveRoomScreen() {
   useEffect(() => {
     const nextUserId = String(session?.userId || "").trim();
     const prevUserId = String(prevSessionUserIdRef.current || "").trim();
+
+    if (
+      shouldHoldClaimEnterSessionLock(liveBridgeId) &&
+      prevUserId &&
+      nextUserId &&
+      prevUserId !== nextUserId
+    ) {
+      console.log("KRISTO_CLAIM_ENTER_SESSION_LOCK_BLOCK_ACCOUNT_SWITCH", {
+        liveBridgeId,
+        prevUserId,
+        nextUserId,
+        lockedUserId: readClaimEnterSessionLock(liveBridgeId)?.lockedUserId || "",
+      });
+      prevSessionUserIdRef.current = nextUserId;
+      return;
+    }
 
     if (prevUserId && nextUserId && prevUserId !== nextUserId) {
       forceKristoLiveCleanup("account-switch", {
@@ -5795,14 +5879,17 @@ export default function LiveRoomScreen() {
     visibleQueueSlots.length,
   ]);
 
-  const liveApiHeaders = useMemo(
-    () =>
-      getKristoHeaders({
-        ...(session || {}),
-        churchId: liveRouteChurchId,
-      } as any),
-    [session, liveRouteChurchId]
-  );
+  const liveApiHeaders = useMemo(() => {
+    const headerUserId =
+      claimEnterLockHeld && claimEnterLock?.lockedUserId
+        ? claimEnterLock.lockedUserId
+        : sessionUserId;
+    return getKristoHeaders({
+      ...(session || {}),
+      userId: headerUserId,
+      churchId: liveRouteChurchId,
+    } as any);
+  }, [session, liveRouteChurchId, claimEnterLockHeld, claimEnterLock?.lockedUserId, sessionUserId]);
 
   // Bumps headersKey once when session publish eligibility latches true (token refetch at most once).
   const liveKitApiHeaders = useMemo(
@@ -8783,6 +8870,7 @@ export default function LiveRoomScreen() {
 
     clearLiveRoomSessionPin("leave-live-room");
     clearLiveKitPublisherStagePin("leave-live-room");
+    clearClaimEnterSessionLock("leave-live-room");
     liveKitPublisherStageStickyRef.current = false;
     prevShouldMountLiveKitRef.current = null;
     setLiveKitHostLocked(false);
@@ -9160,8 +9248,8 @@ return (
                     canPublishMicOverride={liveKitMicOverrideReady}
                     canPublishCameraOverride={liveKitCameraOverrideReady}
                     renderLocalPreview={canPublishLiveVideoNow}
-                    preferredIdentityPrefix={`${String(session?.userId || "")}-slot-${myOwnClaimedSlotNumber || currentSlotNumber || 1}`}
-                    identity={`${String(session?.userId || "host")}-slot-${myOwnClaimedSlotNumber || currentSlotNumber || 1}`}
+                    preferredIdentityPrefix={liveKitPublisherIdentity}
+                    identity={liveKitPublisherIdentity}
                     cameraFacing={cameraFacing}
                     micMuted={canPublishLiveVideoNow ? false : live.micMuted}
                     cameraPaused={cameraPaused}
