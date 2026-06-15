@@ -47,29 +47,39 @@ export type ChurchSlotClaimFeedResult = MediaScheduleFeedSync & {
 
 export async function fetchChurchSlotClaimFeed(
   churchId: string,
-  opts?: { clearCaches?: boolean }
+  opts?: { clearCaches?: boolean; viewerChurchId?: string }
 ): Promise<ChurchSlotClaimFeedResult | null> {
-  const cid = String(churchId || "").trim();
-  if (!cid) return null;
+  const scheduleChurchId = String(churchId || "").trim();
+  if (!scheduleChurchId) return null;
 
   const session = getSessionSync() as any;
   const userId = String(session?.userId || "").trim();
+  const viewerChurchId = String(opts?.viewerChurchId || session?.churchId || "").trim();
 
   if (opts?.clearCaches !== false) {
-    clearSlotClaimCaches(cid, userId);
+    clearSlotClaimCaches(viewerChurchId || scheduleChurchId, userId);
   }
 
   try {
     const headers = getKristoHeaders({
       userId,
       role: (session?.role || "Member") as any,
-      churchId: cid,
+      churchId: viewerChurchId || scheduleChurchId,
     }) as Record<string, string>;
 
-    const sync = await fetchMediaScheduleFeedSync(cid, headers);
-    const scheduleFeed = findMediaScheduleFeedForChurch(sync.rows, cid, {
-      strictChurch: true,
+    const sync = await fetchMediaScheduleFeedSync(viewerChurchId || scheduleChurchId, headers, {
+      targetChurchId: scheduleChurchId,
     });
+    const scheduleFeed = findMediaScheduleFeedForChurch(sync.rows, scheduleChurchId, {
+      strictChurch: true,
+    }) ||
+      sync.rows.find((row: any) => {
+        const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+        return slots.some((slot: any) =>
+          Boolean(String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim())
+        );
+      }) ||
+      null;
 
     return {
       ...sync,
@@ -77,7 +87,8 @@ export async function fetchChurchSlotClaimFeed(
     };
   } catch (error) {
     console.log("KRISTO_SLOT_CLAIM_FAST_SYNC_ERROR", {
-      churchId: cid,
+      churchId: scheduleChurchId,
+      viewerChurchId: viewerChurchId || null,
       error: String((error as any)?.message || error),
     });
     return null;

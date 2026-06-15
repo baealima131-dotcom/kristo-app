@@ -45,6 +45,11 @@ import {
   notifySlotClaimChanged,
   refreshSlotAfterClaimConflict,
 } from "@/src/lib/slotClaimApply";
+import {
+  buildScheduleSlotClaimBody,
+  refetchTargetScheduleAfterClaim,
+  resolveScheduleChurchId,
+} from "@/src/lib/scheduleSlotClaimRequest";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -1211,6 +1216,8 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     const claimAvatarUri = uploadedClaimAvatar
       ? uploadedClaimAvatar
       : sanitizePersistedClaimAvatarUri(memberAvatarByUserId[currentUserId], "claim-member-cache") || "";
+    const viewerChurchId = String(session?.churchId || "").trim();
+    const scheduleChurchId = resolveScheduleChurchId(item, viewerChurchId);
     const claim = {
       slotId,
       userId: currentUserId,
@@ -1226,7 +1233,8 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       startMs: Number(slot.startMs || 0),
       endMs: Number(slot.endMs || 0),
       slotNumber: slotNumber || Number((slot as any).slot || (slot as any).slotNumber || 0),
-      churchId: String(item?.churchId || session?.churchId || ""),
+      churchId: scheduleChurchId,
+      claimantHomeChurchId: viewerChurchId,
       slot,
       item,
     };
@@ -1235,10 +1243,19 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     feedClaimSchedule(seedId, claim);
     onOptimisticClaim?.({ postId: claimTarget.apiFeedId, slotId, claim });
 
+    const claimBody = buildScheduleSlotClaimBody({
+      postId: claimTarget.apiFeedId,
+      scheduleFeedId: claimTarget.apiFeedId,
+      slotId,
+      claim,
+      scheduleItem: item,
+      viewerChurchId,
+    });
+
     const claimHeaders = getKristoHeaders({
       userId: session?.userId || "",
       role: (session?.role || "Member") as any,
-      churchId: session?.churchId || "",
+      churchId: viewerChurchId,
     }) as Record<string, string>;
 
     if (!isPastorClaim) {
@@ -1253,15 +1270,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       }).catch(() => {});
     }
 
-    void apiPost(
-      "/api/church/feed",
-      { action: "claim_schedule_slot", postId: claimTarget.apiFeedId, slotId, claim },
-      {
-        headers: claimHeaders,
-      }
-    )
+    void apiPost("/api/church/feed", claimBody, {
+      headers: claimHeaders,
+    })
       .then(async (res: any) => {
-        const churchId = String(item?.churchId || session?.churchId || "").trim();
         const isConflict =
           Number(res?.status || 0) === 409 ||
           String(res?.error || "")
@@ -1279,9 +1291,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             "Slot already claimed",
             "Slot already claimed by another member"
           );
-          if (churchId) {
+          if (scheduleChurchId) {
             await refreshSlotAfterClaimConflict({
-              churchId,
+              churchId: scheduleChurchId,
               postId: claimTarget.apiFeedId,
               slotId,
             });
@@ -1292,6 +1304,15 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         if (res?.ok === false || res?.error) {
           throw new Error(String(res?.error || "claim failed"));
         }
+
+        await refetchTargetScheduleAfterClaim({
+          postId: claimTarget.apiFeedId,
+          scheduleChurchId,
+          slotId,
+          viewerChurchId,
+          viewerUserId: currentUserId,
+          viewerRole: String(session?.role || "Member"),
+        });
 
         if (isPastorClaim) {
           console.log("KRISTO_PASTOR_CLAIM_PERSISTED", {
@@ -1313,10 +1334,12 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
         console.log("KRISTO_SLOT_CLAIM_SUCCESS", {
           stage: "backend-persisted",
-          churchId,
+          churchId: scheduleChurchId,
+          viewerChurchId,
           postId: claimTarget.apiFeedId,
           slotId,
           userId: currentUserId,
+          crossChurch: scheduleChurchId !== viewerChurchId,
           canEnterLiveRoom:
             Number(slot.startMs || 0) > 0 &&
             Number(slot.startMs || 0) <= Date.now() &&
@@ -1343,10 +1366,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           });
         }
 
-        if (churchId) {
+        if (scheduleChurchId) {
           notifySlotClaimChanged(
             {
-              churchId,
+              churchId: scheduleChurchId,
               postId: claimTarget.apiFeedId,
               slotId,
               action: "claim",

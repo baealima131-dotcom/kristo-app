@@ -2764,6 +2764,7 @@ async function handleFeedGet(
     const storageMode = String(url.searchParams.get("storage") || "").trim().toLowerCase();
     const feedScope = String(url.searchParams.get("scope") || "church").trim().toLowerCase();
     const isGlobalFeedScope = feedScope === "global" || feedScope === "home";
+    const requestedListChurchId = String(url.searchParams.get("churchId") || "").trim();
 
     // Endless-feed paging. When `limit` is provided we return a page sliced at
     // `cursor`/`offset`; without it the full list is returned (legacy behavior).
@@ -2920,8 +2921,26 @@ async function handleFeedGet(
 
     let rawRows = isGlobalFeedScope
       ? await listFeedItems()
-      : await listFeedItemsForChurch(churchId);
-    if (!isGlobalFeedScope && rawRows.length === 0) {
+      : await listFeedItemsForChurch(
+          requestedListChurchId && requestedListChurchId !== churchId
+            ? requestedListChurchId
+            : churchId
+        );
+
+    if (
+      !isGlobalFeedScope &&
+      requestedListChurchId &&
+      requestedListChurchId !== churchId
+    ) {
+      console.log("KRISTO_CROSS_CHURCH_FEED_READ", {
+        viewerChurchId: churchId,
+        requestedChurchId: requestedListChurchId,
+        scope: feedScope,
+        rowCount: rawRows.length,
+      });
+    }
+
+    if (!isGlobalFeedScope && rawRows.length === 0 && !requestedListChurchId) {
       const fallbackRows = await listFeedItems();
       rawRows = fallbackRows.filter((x: any) => {
         const cid = String(x?.churchId || "").trim();
@@ -3872,16 +3891,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
       return err("Join a church to claim schedule slots", 403);
     }
 
-    const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
-      endpoint: "/api/church/feed",
-      churchId,
-      userId: viewerUserId,
-      role: String(ctx?.viewer?.role || ""),
-      action: "claim_schedule_slot",
-    });
-    if (subscriptionBlocked) return subscriptionBlocked;
-
-    const postId = cleanText(body?.postId, 240);
+    const postId = cleanText(body?.postId || body?.scheduleFeedId || body?.feedId, 240);
     const slotId = cleanText(body?.slotId, 240);
     const claim = body?.claim || {};
 
@@ -3892,10 +3902,47 @@ async function handleFeedPost(req: NextRequest, body: any) {
     if (!item) return err("Feed item not found", 404);
 
     const ownerChurchId = String(item?.churchId || "").trim();
+    const scheduleChurchId = String(
+      body?.scheduleChurchId || body?.targetChurchId || ownerChurchId || churchId || ""
+    ).trim();
+    const claimantHomeChurchId = String(
+      claim?.claimantHomeChurchId || churchId || ""
+    ).trim();
+    const scheduleFeedId = String(body?.scheduleFeedId || postId || item?.id || "").trim();
+    const crossChurch =
+      Boolean(scheduleChurchId && claimantHomeChurchId) &&
+      scheduleChurchId !== claimantHomeChurchId;
+
+    console.log("KRISTO_CROSS_CHURCH_CLAIM_REQUEST", {
+      viewerChurchId: churchId,
+      targetChurchId: scheduleChurchId,
+      scheduleChurchId,
+      feedId: scheduleFeedId,
+      slotId,
+      claimantUserId: viewerUserId,
+      claimantHomeChurchId,
+      crossChurch,
+    });
+
+    if (ownerChurchId && scheduleChurchId && ownerChurchId !== scheduleChurchId) {
+      return err("Schedule feed does not belong to target church", 403);
+    }
+
+    const subscriptionChurchId = crossChurch ? claimantHomeChurchId : scheduleChurchId || churchId;
+    const subscriptionBlocked = await requireChurchSubscriptionActive(subscriptionChurchId, {
+      endpoint: "/api/church/feed",
+      churchId: subscriptionChurchId,
+      userId: viewerUserId,
+      role: String(ctx?.viewer?.role || ""),
+      action: "claim_schedule_slot",
+    });
+    if (subscriptionBlocked) return subscriptionBlocked;
+
     if (ownerChurchId && churchId && ownerChurchId !== churchId) {
       console.log("KRISTO_CROSS_CHURCH_SLOT_CLAIM", {
         viewerChurchId: churchId,
         ownerChurchId,
+        scheduleChurchId,
         postId,
         slotId,
         viewerUserId,
@@ -3921,6 +3968,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
         viewerUserId,
         churchId,
         ownerChurchId: ownerChurchId || null,
+        scheduleChurchId,
       });
       return err("Slot already claimed by another member", 409);
     }
@@ -3929,6 +3977,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
     const role = cleanText(claim?.role || ctx?.viewer?.role || "Member", 120) || "Member";
     const avatarUri =
       cleanText(await resolveClaimerAvatarUri(viewerUserId, claim), 2000) || "";
+    const claimedAt = new Date().toISOString();
 
     console.log("KRISTO_CLAIM_FINAL_AVATAR_URI", {
       postId,
@@ -3965,21 +4014,44 @@ async function handleFeedPost(req: NextRequest, body: any) {
       claimedByAvatarUri: avatarUri,
       claimedByAvatar: avatarUri,
       claimedByPhotoUrl: avatarUri,
+      claimedByChurchId: scheduleChurchId || ownerChurchId || undefined,
+      claimantHomeChurchId: claimantHomeChurchId || undefined,
+      claimedAt,
       claimedBy: {
         slotId,
         userId: viewerUserId,
         name,
         role,
         avatarUri,
+        claimedAt,
+        claimantHomeChurchId: claimantHomeChurchId || undefined,
+        claimedByChurchId: scheduleChurchId || ownerChurchId || undefined,
       },
     };
 
-    const updatedItem = { ...item, scheduleSlots: slots };
+    const updatedItem = {
+      ...item,
+      churchId: scheduleChurchId || ownerChurchId || item.churchId,
+      scheduleSlots: slots,
+    };
     await upsertFeedItem(updatedItem);
     bumpMediaScheduleSyncForFeedItem(updatedItem, "claim_schedule_slot");
 
+    console.log("KRISTO_CROSS_CHURCH_CLAIM_PERSIST_RESULT", {
+      viewerChurchId: churchId,
+      targetChurchId: scheduleChurchId,
+      scheduleChurchId,
+      feedId: scheduleFeedId,
+      slotId,
+      backendClaimedByUserId: viewerUserId,
+      crossChurch,
+      ok: true,
+    });
+
     return ok({
       postId: String(item.id || postId),
+      scheduleFeedId,
+      scheduleChurchId,
       slotId,
       slot: slots[slotIndex],
     });

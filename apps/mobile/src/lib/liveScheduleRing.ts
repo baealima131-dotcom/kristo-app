@@ -1,12 +1,22 @@
 import { DeviceEventEmitter } from "react-native";
 import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
-import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
-import { isMediaSlotEndedOrStale } from "@/src/lib/mediaScheduleSlotTimes";
+import {
+  isActiveScheduleSlot,
+  isMediaScheduleFeedItem,
+} from "@/src/lib/mediaScheduleLock";
+import { isMediaSlotEndedOrStale, resolveCanonicalMediaScheduleForGuests, resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import {
   filterLocalRowsWhenBackendZeroSlots,
   purgeStaleLocalScheduleRowsWhenBackendZero,
 } from "@/src/lib/staleBackendZeroSlotGuard";
-import { baseFeedId, collectScheduleAliasIds, enrichScheduleSlot, resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
+import {
+  baseFeedId,
+  collectScheduleAliasIds,
+  enrichScheduleSlot,
+  normalizeLiveScheduleSlots,
+  resolveCanonicalScheduleFeedId,
+  scheduleSlotClaimUserId,
+} from "@/src/lib/scheduleSlotUtils";
 
 export const NEAR_LIVE_WINDOW_MS = 30 * 60 * 1000;
 export const RING_RECOMPUTE_INTERVAL_MS = 20_000;
@@ -27,14 +37,29 @@ export type ScheduleRingAlert = {
 };
 
 function isMediaScheduleRow(item: any): boolean {
-  if (!item || typeof item !== "object") return false;
-  const source = String(item?.source || "").toLowerCase();
-  const scheduleType = String(item?.scheduleType || "").toLowerCase();
-  return (
-    isMediaScheduleFeedItem(item) ||
-    source.includes("media-schedule") ||
-    scheduleType.includes("media-live-slots")
-  );
+  return isMediaScheduleFeedItem(item);
+}
+
+function isSlotClaimedByViewer(slot: any, viewerUserId: string, feedId?: string): boolean {
+  const uid = String(viewerUserId || "").trim();
+  if (!uid) return false;
+  if (scheduleSlotClaimUserId(slot) === uid) return true;
+  return slotClaimedByUser(slot, uid, feedId);
+}
+
+/** Active or upcoming claimed slot — same window rules as Guests Claim Center / Live Slots. */
+function isCountableProfileClaimedSlot(slot: any, index: number, nowMs: number): boolean {
+  if (!slot || typeof slot !== "object") return false;
+  if (slot.deleted === true || slot.deletedAt) return false;
+
+  const status = String(slot?.status || "").toLowerCase();
+  if (status === "deleted" || status === "removed" || status === "cancelled" || status === "canceled") {
+    return false;
+  }
+
+  const normalized = normalizeLiveScheduleSlots([slot])[0] || slot;
+  if (isMediaSlotEndedOrStale(normalized, nowMs)) return false;
+  return isActiveScheduleSlot(normalized, nowMs);
 }
 
 function localStoreClaimsSlot(
@@ -589,10 +614,45 @@ function mergeProfileFeedRows(...sources: any[][]): any[] {
   return Array.from(byKey.values());
 }
 
-function isActiveProfileClaimedSlot(slot: any, index: number, nowMs: number): boolean {
-  if (isMediaSlotEndedOrStale(slot, nowMs)) return false;
-  const { endMs } = getSlotRingWindow(slot, index, nowMs);
-  return endMs > nowMs;
+function collectProfileScheduleFeedItems(options: {
+  explicitFeedRows: any[];
+  homeFeedRows: any[];
+  churchId: string;
+  nowMs: number;
+}): { items: any[]; canonicalFeedId: string | null } {
+  const churchId = String(options.churchId || "").trim();
+  const homeFeedRows = Array.isArray(options.homeFeedRows) ? options.homeFeedRows : [];
+  const explicitFeedRows = Array.isArray(options.explicitFeedRows) ? options.explicitFeedRows : [];
+  const mergedRows = mergeProfileFeedRows(explicitFeedRows, homeFeedRows);
+
+  const canonical = resolveCanonicalMediaScheduleForGuests(
+    homeFeedRows,
+    explicitFeedRows,
+    churchId,
+    options.nowMs
+  );
+
+  const items: any[] = [];
+  const seen = new Set<string>();
+
+  const pushItem = (item: any) => {
+    if (!item || !isMediaScheduleRow(item)) return;
+    if (!scheduleRowMatchesChurch(item, churchId)) return;
+    const key = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
+    if (key && seen.has(key)) return;
+    if (key) seen.add(key);
+    items.push(item);
+  };
+
+  if (canonical) pushItem(canonical);
+  for (const row of mergedRows) pushItem(row);
+
+  return {
+    items,
+    canonicalFeedId: canonical
+      ? baseFeedId(String(canonical?.sourceScheduleId || canonical?.id || "")) || null
+      : null,
+  };
 }
 
 function profileClaimedSlotKey(slot: any, index = 0): string {
@@ -637,22 +697,35 @@ export function buildProfileClaimedSchedules(options: {
   const viewerUserId = String(options.viewerUserId || "").trim();
   const churchId = String(options.churchId || "").trim();
   const nowMs = options.nowMs ?? Date.now();
-  const feedRows = mergeProfileFeedRows(
-    Array.isArray(options.feedRows) ? options.feedRows : [],
-    feedList() as any[]
-  );
+  const homeFeedRows = feedList() as any[];
+  const explicitFeedRows = Array.isArray(options.feedRows) ? options.feedRows : [];
+  const { items: scheduleItems, canonicalFeedId } = collectProfileScheduleFeedItems({
+    explicitFeedRows,
+    homeFeedRows,
+    churchId,
+    nowMs,
+  });
+
+  let totalScheduleSlots = 0;
+  for (const item of scheduleItems) {
+    totalScheduleSlots += Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0;
+  }
 
   console.log("KRISTO_PROFILE_CLAIMED_COUNT_BUILD", {
     viewerUserId,
     churchId,
-    feedRowCount: feedRows.length,
+    feedRowCount: scheduleItems.length,
+    totalScheduleSlots,
+    canonicalFeedId,
   });
 
   if (!viewerUserId || !churchId) {
-    console.log("KRISTO_PROFILE_CLAIMED_COUNT_UPDATED", {
-      viewerUserId,
-      churchId,
-      count: 0,
+    console.log("KRISTO_PROFILE_CLAIMED_COUNT_SOURCE", {
+      currentUserId: viewerUserId,
+      totalScheduleSlots,
+      claimedByMeCount: 0,
+      feedIds: [],
+      slotIds: [],
       reason: "missing-viewer-or-church",
     });
     return [];
@@ -660,22 +733,21 @@ export function buildProfileClaimedSchedules(options: {
 
   const merged: ProfileClaimedScheduleSlot[] = [];
 
-  for (const item of feedRows) {
-    if (!isMediaScheduleRow(item)) continue;
-    if (!scheduleRowMatchesChurch(item, churchId)) continue;
-
+  for (const item of scheduleItems) {
     const feedId = resolveCanonicalScheduleFeedId(
       String(item?.sourceScheduleId || item?.id || ""),
-      feedRows
+      mergeProfileFeedRows(explicitFeedRows, homeFeedRows)
     );
-    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    const slots = normalizeLiveScheduleSlots(
+      Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
+    );
     const feedTitle = String(item?.title || item?.mediaName || "Live Schedule").trim();
 
     slots.forEach((slot: any, index: number) => {
-      if (!slotClaimedByUser(slot, viewerUserId, feedId || baseFeedId(item?.id))) return;
-      if (!isActiveProfileClaimedSlot(slot, index, nowMs)) return;
+      if (!isSlotClaimedByViewer(slot, viewerUserId, feedId || baseFeedId(item?.id))) return;
+      if (!isCountableProfileClaimedSlot(slot, index, nowMs)) return;
 
-      const window = getSlotRingWindow(slot, index, nowMs);
+      const window = resolveMediaSlotTimeWindow(slot, nowMs);
       console.log("KRISTO_PROFILE_CLAIMED_SLOT_COUNTED", {
         source: "feed",
         feedId: feedId || baseFeedId(item?.id),
@@ -683,6 +755,7 @@ export function buildProfileClaimedSchedules(options: {
         slotNumber: Number(slot?.slot || slot?.slotNumber || index + 1),
         startMs: window.startMs,
         endMs: window.endMs,
+        claimedByUserId: scheduleSlotClaimUserId(slot),
       });
 
       merged.push({
@@ -698,6 +771,7 @@ export function buildProfileClaimedSchedules(options: {
   }
 
   for (const entry of getUserClaimedSlotEntries(viewerUserId)) {
+    const feedRows = mergeProfileFeedRows(explicitFeedRows, homeFeedRows);
     const feedItem = resolveFeedItemForClaimEntry(entry, feedRows, churchId);
     const feedId = feedItem
       ? resolveCanonicalScheduleFeedId(
@@ -706,7 +780,9 @@ export function buildProfileClaimedSchedules(options: {
         )
       : baseFeedId(String(entry?.postId || ""));
 
-    const slots = Array.isArray(feedItem?.scheduleSlots) ? feedItem.scheduleSlots : [];
+    const slots = normalizeLiveScheduleSlots(
+      Array.isArray(feedItem?.scheduleSlots) ? feedItem.scheduleSlots : []
+    );
     const slotId = String(entry?.slotId || "").trim();
     const matchedSlot = slots.find(
       (slot: any) => String(slot?.id || slot?.slotId || "").trim() === slotId
@@ -716,18 +792,20 @@ export function buildProfileClaimedSchedules(options: {
       : Math.max(0, Number(entry?.slotNumber || 1) - 1);
     const slot =
       matchedSlot ||
-      ({
-        id: slotId,
-        slotId,
-        claimedByUserId: entry.userId,
-        claimedByName: entry.name,
-        slot: Number(entry?.slotNumber || slotIndex + 1),
-      } as any);
+      normalizeLiveScheduleSlots([
+        {
+          id: slotId,
+          slotId,
+          claimedByUserId: entry.userId,
+          claimedByName: entry.name,
+          slot: Number(entry?.slotNumber || slotIndex + 1),
+        },
+      ])[0];
 
-    if (!slotClaimedByUser(slot, viewerUserId, feedId)) continue;
-    if (!isActiveProfileClaimedSlot(slot, slotIndex, nowMs)) continue;
+    if (!isSlotClaimedByViewer(slot, viewerUserId, feedId)) continue;
+    if (!isCountableProfileClaimedSlot(slot, slotIndex, nowMs)) continue;
 
-    const window = getSlotRingWindow(slot, slotIndex, nowMs);
+    const window = resolveMediaSlotTimeWindow(slot, nowMs);
     console.log("KRISTO_PROFILE_CLAIMED_SLOT_COUNTED", {
       source: "claim-store",
       feedId,
@@ -735,6 +813,7 @@ export function buildProfileClaimedSchedules(options: {
       slotNumber: Number(slot?.slot || slot?.slotNumber || slotIndex + 1),
       startMs: window.startMs,
       endMs: window.endMs,
+      claimedByUserId: scheduleSlotClaimUserId(slot),
     });
 
     merged.push({
@@ -752,29 +831,25 @@ export function buildProfileClaimedSchedules(options: {
     const hintChurchId = String(hint?.churchId || hint?.item?.churchId || "").trim();
     if (hintChurchId && hintChurchId !== churchId) continue;
 
-    const endMs = Number(hint?.endMs || 0);
-    if (endMs > 0 && endMs <= nowMs) continue;
-
     const slotIndex = Math.max(0, Number(hint.slotNumber || 1) - 1);
-    const slot =
+    const slot = normalizeLiveScheduleSlots([
       hint.slot ||
-      ({
-        id: hint.slotId,
-        slotId: hint.slotId,
-        slot: hint.slotNumber,
-        slotNumber: hint.slotNumber,
-        claimedByUserId: hint.userId,
-        claimedByName: hint.name,
-        startMs: hint.startMs,
-        endMs: hint.endMs,
-      } as any);
+        ({
+          id: hint.slotId,
+          slotId: hint.slotId,
+          slot: hint.slotNumber,
+          slotNumber: hint.slotNumber,
+          claimedByUserId: hint.userId,
+          claimedByName: hint.name,
+          startMs: hint.startMs,
+          endMs: hint.endMs,
+        } as any),
+    ])[0];
 
-    if (isMediaSlotEndedOrStale(slot, nowMs)) continue;
-    if (!slotClaimedByUser(slot, viewerUserId, hint.baseFeedId)) continue;
+    if (!isSlotClaimedByViewer(slot, viewerUserId, hint.baseFeedId)) continue;
+    if (!isCountableProfileClaimedSlot(slot, slotIndex, nowMs)) continue;
 
-    const window = getSlotRingWindow(slot, slotIndex, nowMs);
-    if (!(window.endMs > nowMs)) continue;
-
+    const window = resolveMediaSlotTimeWindow(slot, nowMs);
     console.log("KRISTO_PROFILE_CLAIMED_SLOT_COUNTED", {
       source: "ring-hint",
       feedId: hint.baseFeedId,
@@ -782,15 +857,14 @@ export function buildProfileClaimedSchedules(options: {
       slotNumber: Number(hint.slotNumber || slotIndex + 1),
       startMs: window.startMs,
       endMs: window.endMs,
+      claimedByUserId: scheduleSlotClaimUserId(slot),
     });
 
     merged.push({
       ...slot,
       startMs: window.startMs,
       endMs: window.endMs,
-      feedTitle: String(
-        hint.item?.title || hint.item?.mediaName || "Live Schedule"
-      ).trim(),
+      feedTitle: String(hint.item?.title || hint.item?.mediaName || "Live Schedule").trim(),
       __feedItem: hint.item,
       __slotIndex: slotIndex,
       __source: "ring-hint",
@@ -807,13 +881,25 @@ export function buildProfileClaimedSchedules(options: {
     })
     .sort((a, b) => {
       const aStart = Number(
-        a.startMs || getSlotRingWindow(a, Number(a.__slotIndex || 0), nowMs).startMs
+        a.startMs || resolveMediaSlotTimeWindow(a, nowMs).startMs
       );
       const bStart = Number(
-        b.startMs || getSlotRingWindow(b, Number(b.__slotIndex || 0), nowMs).startMs
+        b.startMs || resolveMediaSlotTimeWindow(b, nowMs).startMs
       );
       return aStart - bStart;
     });
+
+  console.log("KRISTO_PROFILE_CLAIMED_COUNT_SOURCE", {
+    currentUserId: viewerUserId,
+    totalScheduleSlots,
+    claimedByMeCount: result.length,
+    feedIds: [...new Set(result.map((row) => baseFeedId(String(row?.__feedItem?.sourceScheduleId || row?.__feedItem?.id || ""))).filter(Boolean))],
+    slotIds: result.map((row) => String(row?.id || row?.slotId || "")).filter(Boolean),
+    canonicalFeedId,
+    fromFeed: result.filter((row) => row.__source === "feed").length,
+    fromClaimStore: result.filter((row) => row.__source === "claim-store").length,
+    fromRingHint: result.filter((row) => row.__source === "ring-hint").length,
+  });
 
   console.log("KRISTO_PROFILE_CLAIMED_COUNT_UPDATED", {
     viewerUserId,

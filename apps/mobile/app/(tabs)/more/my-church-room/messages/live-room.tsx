@@ -104,6 +104,11 @@ import {
 import { ensureProfileAvatarUploadedBeforeClaim } from "@/src/lib/ensureProfileAvatarForClaim";
 import { runMediaScheduleSilentReload } from "@/src/lib/mediaScheduleSilentReload";
 import {
+  buildScheduleSlotClaimBody,
+  refetchTargetScheduleAfterClaim,
+  resolveScheduleChurchId,
+} from "@/src/lib/scheduleSlotClaimRequest";
+import {
   pauseHomeFeedBackgroundWorkForLiveNavigation,
   resumeHomeFeedAfterLiveExit,
 } from "@/src/lib/liveRoomStartup";
@@ -4599,30 +4604,40 @@ export default function LiveRoomScreen() {
         sanitizePersistedClaimAvatarUri((session as any)?.avatarUrl, "live-room-claim-session-url") ||
         "";
 
+    const viewerChurchId = String((session as any)?.churchId || "").trim();
+    const scheduleChurchId = resolveScheduleChurchId(
+      matchingFeedItem || { churchId: (params as any)?.churchId },
+      viewerChurchId
+    );
+    const claimPayload = {
+      slotId,
+      userId: currentUserId,
+      name,
+      role: String((session as any)?.role || "Member"),
+      avatarUri: claimAvatarUri,
+      avatarUrl: claimAvatarUri,
+      claimedByAvatarUri: claimAvatarUri,
+      claimedByAvatar: claimAvatarUri,
+      claimedByPhotoUrl: claimAvatarUri,
+      claimantHomeChurchId: viewerChurchId,
+    };
+
     try {
       const res: any = await apiPost(
         "/api/church/feed",
-        {
-          action: "claim_schedule_slot",
+        buildScheduleSlotClaimBody({
           postId,
+          scheduleFeedId: postId,
           slotId,
-          claim: {
-            slotId,
-            userId: currentUserId,
-            name,
-            role: String((session as any)?.role || "Member"),
-            avatarUri: claimAvatarUri,
-            avatarUrl: claimAvatarUri,
-            claimedByAvatarUri: claimAvatarUri,
-            claimedByAvatar: claimAvatarUri,
-            claimedByPhotoUrl: claimAvatarUri,
-          },
-        },
+          claim: claimPayload,
+          scheduleItem: matchingFeedItem,
+          viewerChurchId,
+        }),
         {
           headers: getKristoHeaders({
             userId: currentUserId,
             role: String((session as any)?.role || "Member") as KristoRole,
-            churchId: String((session as any)?.churchId || (params as any)?.churchId || ""),
+            churchId: viewerChurchId,
           }),
         }
       );
@@ -4631,6 +4646,15 @@ export default function LiveRoomScreen() {
         Alert.alert("Slot not claimed", String(res?.error || "This slot may already be claimed."));
         return;
       }
+
+      await refetchTargetScheduleAfterClaim({
+        postId,
+        scheduleChurchId,
+        slotId,
+        viewerChurchId,
+        viewerUserId: currentUserId,
+        viewerRole: String((session as any)?.role || "Member"),
+      });
 
       const key = getRuntimeSlotKey(slot, Math.max(0, Number(slot.slot || 1) - 1));
       const savedSlot = res?.data?.slot || res?.slot || null;

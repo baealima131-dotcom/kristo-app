@@ -25,7 +25,7 @@ import {
   onChurchInviteAccepted,
   onChurchMembershipChanged,
 } from "@/src/lib/kristoChurchInviteEvents";
-import { buildProfileClaimedSchedules } from "@/src/lib/liveScheduleRing";
+import { buildProfileClaimedSchedules, onLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
 import {
   isSaveCooldown,
@@ -516,11 +516,15 @@ export default function MeScreen() {
     const slotClaimUnsub = onSlotClaimChanged(() => {
       setClaimedFeedTick((v) => v + 1);
     });
+    const liveRingUnsub = onLiveRingRefresh(() => {
+      setClaimedFeedTick((v) => v + 1);
+    });
 
     return () => {
       claimedFeedUnsub();
       claimEventUnsub();
       slotClaimUnsub();
+      liveRingUnsub();
     };
   }, []);
   useEffect(() => {
@@ -1105,7 +1109,13 @@ export default function MeScreen() {
         .sort((a: ChurchFeedItemLite, b: ChurchFeedItemLite) => toTime(b?.createdAt) - toTime(a?.createdAt));
       setLatestAnnouncement(myAnnouncements[0] || null);
 
-      const feedItems = Array.isArray(feedRes?.data) ? feedRes!.data! : [];
+      const feedItems = Array.isArray((feedRes as any)?.data?.items)
+        ? (feedRes as any).data.items
+        : Array.isArray(feedRes?.data)
+          ? feedRes!.data!
+          : Array.isArray((feedRes as any)?.items)
+            ? (feedRes as any).items
+            : [];
       setProfileFeedItems(
         feedItems.map((item: any) => {
           const scopedChurchId = String(
@@ -1118,6 +1128,7 @@ export default function MeScreen() {
           };
         }) as any[]
       );
+      setClaimedFeedTick((v) => v + 1);
       const myFeed = feedItems
         .filter(isChurchActivityPost)
         .filter((x: ChurchFeedItemLite) => String(x?.createdBy || "").trim() === userId)
