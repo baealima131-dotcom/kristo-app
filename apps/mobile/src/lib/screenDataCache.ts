@@ -73,7 +73,7 @@ export type MinistriesCachePayload = {
 
 const CHURCH_OVERVIEW_PREFIX = "kristo_screen_church_overview_v2:";
 const PROFILE_SCREEN_PREFIX = "kristo_screen_profile_v1:";
-const MINISTRIES_PREFIX = "kristo_screen_ministries_v1:";
+const MINISTRIES_PREFIX = "kristo_screen_ministries_v2:";
 
 const churchOverviewMemory = new Map<string, ChurchOverviewCachePayload>();
 const profileScreenMemory = new Map<string, ProfileScreenCachePayload>();

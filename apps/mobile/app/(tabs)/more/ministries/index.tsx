@@ -71,6 +71,57 @@ type Ministry = {
   updatedAt?: string;
 };
 
+function resolveMinistryDisplayName(raw: Record<string, unknown>): string {
+  for (const key of ["name", "title", "ministryName", "assignmentTitle"]) {
+    const value = String(raw?.[key] || "").trim();
+    if (value) return value;
+  }
+  return "Untitled Ministry";
+}
+
+function coerceMinistryMediaAccess(raw: Record<string, unknown>): boolean {
+  if (raw?.mediaAccess === true) return true;
+  if (raw?.mediaAccess === 1) return true;
+  const token = String(raw?.mediaAccess ?? "").trim().toLowerCase();
+  return token === "1" || token === "true";
+}
+
+function normalizeMyMinistryRow(raw: Record<string, unknown>): Ministry {
+  const id = String(raw?.id || "").trim();
+  const name = resolveMinistryDisplayName(raw);
+  const mediaAccess = coerceMinistryMediaAccess(raw);
+
+  return {
+    id,
+    name,
+    mediaAccess,
+    description: String(raw?.description || "").trim() || undefined,
+    avatarUri: String(raw?.avatarUri || raw?.avatarUrl || "").trim() || undefined,
+    status: (String(raw?.status || "Active") === "Paused" ? "Paused" : "Active") as MinistryStatus,
+    churchId: String(raw?.churchId || "").trim(),
+    createdAt: String(raw?.createdAt || ""),
+    updatedAt: String(raw?.updatedAt || "").trim() || undefined,
+    memberRole: String(raw?.memberRole || "").trim() || undefined,
+    memberStatus: String(raw?.memberStatus || "").trim() || undefined,
+  };
+}
+
+function logMyMinistriesCardRender(args: {
+  ministryId: string;
+  name: string;
+  mediaAccess: boolean;
+  roomKind: "assignment" | "ministry";
+  badgeLabel: string;
+}) {
+  console.log("KRISTO_MY_MINISTRIES_CARD_RENDER", {
+    ministryId: String(args.ministryId || "").trim() || null,
+    name: String(args.name || "").trim() || "Untitled Ministry",
+    mediaAccess: args.mediaAccess === true,
+    roomKind: args.roomKind,
+    badgeLabel: args.badgeLabel,
+  });
+}
+
 type MinistryMember = {
   id?: string;
   userId?: string;
@@ -203,18 +254,14 @@ function MinistryCardAvatar({
 }) {
   const ringStyle = suspendedRing
     ? s.avatarRingRedSuspended
-    : cardType === "church"
+    : cardType === "church" || cardType === "media"
       ? s.avatarRingGold
-      : cardType === "media"
-        ? s.avatarRingGreen
-        : s.avatarRingBlue;
+      : s.avatarRingBlue;
 
   const fallbackBg =
-    cardType === "church"
+    cardType === "church" || cardType === "media"
       ? s.avatarFallbackGold
-      : cardType === "media"
-        ? s.avatarFallbackGreen
-        : s.avatarFallbackBlue;
+      : s.avatarFallbackBlue;
 
   return (
     <View style={[s.avatarRingOuter, ringStyle]}>
@@ -237,6 +284,21 @@ async function apiListMinistries() {
   const res = await apiGet<any>("/api/church/ministries", {
     headers: h,
   });
+  const rawRows = Array.isArray(res?.data) ? res.data : [];
+  const rows = rawRows.map((row: Record<string, unknown>) => normalizeMyMinistryRow(row));
+
+  console.log("KRISTO_MY_MINISTRIES_API_MAP", {
+    churchId: String((h as any)["x-kristo-church-id"] || ""),
+    userId: String((h as any)["x-kristo-user-id"] || ""),
+    count: rows.length,
+    mediaAccessCount: rows.filter((row: Ministry) => row.mediaAccess === true).length,
+    rows: rows.map((row: Ministry) => ({
+      id: row.id,
+      name: row.name,
+      mediaAccess: row.mediaAccess === true,
+    })),
+  });
+
   if (__DEV__) {
     console.log("KRISTO_MINISTRIES_API_FETCH", {
       elapsedMs: Date.now() - startedAt,
@@ -244,12 +306,12 @@ async function apiListMinistries() {
       error: res?.error || null,
       churchId: String((h as any)["x-kristo-church-id"] || ""),
       userId: String((h as any)["x-kristo-user-id"] || ""),
-      count: Array.isArray(res?.data) ? res.data.length : 0,
+      count: rows.length,
     });
   }
   if (!res) throw new Error("Network error");
   if (!res.ok) throw new Error(res.error || "Fetch failed");
-  return (res.data || []) as Ministry[];
+  return rows;
 }
 
 async function apiListMinistryMembers(ministryId: string) {
@@ -319,7 +381,7 @@ export default function MoreMinistriesList() {
   const loadSeqRef = useRef(0);
 
   const [items, setItems] = useState<Ministry[]>(
-    (ministriesPeek?.items as Ministry[]) || []
+    ((ministriesPeek?.items as Ministry[]) || []).map((row) => normalizeMyMinistryRow(row as any))
   );
   const hasChurch = Boolean(String(auth?.churchId || "").trim());
   const [loading, setLoading] = useState(
@@ -363,7 +425,7 @@ export default function MoreMinistriesList() {
     if (mem?.items?.length) {
       cacheHydratedRef.current = true;
       hasRenderableCacheRef.current = true;
-      setItems(mem.items as Ministry[]);
+      setItems(mem.items.map((row) => normalizeMyMinistryRow(row as any)));
       if (
         mem.churchLiveControlStatus === "Suspended" ||
         mem.churchLiveControlStatus === "Active"
@@ -387,7 +449,7 @@ export default function MoreMinistriesList() {
     if (disk?.items?.length) {
       cacheHydratedRef.current = true;
       hasRenderableCacheRef.current = true;
-      setItems(disk.items as Ministry[]);
+      setItems(disk.items.map((row) => normalizeMyMinistryRow(row as any)));
       if (
         disk.churchLiveControlStatus === "Suspended" ||
         disk.churchLiveControlStatus === "Active"
@@ -447,15 +509,15 @@ export default function MoreMinistriesList() {
             : Promise.resolve(false),
         ]);
         const checked = await Promise.all(
-          data.map(async (m) => {
+          data.map(async (m: Ministry) => {
             try {
               // Pastor/Admin sees all ministries in the church without per-ministry membership checks.
               if (loadIsChurchAuthority) {
-                return {
+                return normalizeMyMinistryRow({
                   ...m,
                   memberRole: "Pastor",
                   memberStatus: "Active",
-                };
+                });
               }
 
               // Normal member sees only ministries where they are a real member.
@@ -468,11 +530,11 @@ export default function MoreMinistriesList() {
 
               if (!mine) return null;
 
-              return {
+              return normalizeMyMinistryRow({
                 ...m,
                 memberRole: String(mine?.role || "Member"),
                 memberStatus: String(mine?.status || "Active"),
-              };
+              });
             } catch {
               return null;
             }
@@ -907,16 +969,28 @@ export default function MoreMinistriesList() {
             ) : null}
 
             {items.map((m) => {
-              const cardType: CardAvatarKind = m.mediaAccess ? "media" : "community";
-              const ministryAvatar = resolveMinistryCardAvatar(m as any);
-              logMinistriesCardAvatarResolved(cardType, String(m.name || "Ministry"), ministryAvatar);
+              const mediaEnabled = m.mediaAccess === true;
+              const displayName = resolveMinistryDisplayName(m as any);
+              const badgeLabel = mediaEnabled ? "Media Access" : "Group";
+              const footerBadge = mediaEnabled ? "Assignment" : String((m as any).memberRole || "Member");
+              const roomKind = mediaEnabled ? "assignment" : "ministry";
+              const cardType: CardAvatarKind = mediaEnabled ? "media" : "community";
+              const ministryAvatar = resolveMinistryCardAvatar({ ...m, name: displayName });
+              logMyMinistriesCardRender({
+                ministryId: String(m.id || ""),
+                name: displayName,
+                mediaAccess: mediaEnabled,
+                roomKind,
+                badgeLabel,
+              });
+              logMinistriesCardAvatarResolved(cardType, displayName, ministryAvatar);
 
               return (
               <Pressable
                 key={m.id}
                 onPress={() => {
                   const ministryId = String(m.id || "");
-                  const ministryName = String(m.name || "Ministry");
+                  const ministryName = displayName;
                   const ministrySub = String(m.description?.trim() || "Church ministry");
                   const avatar = ministryAvatar.uri;
                   const memberStatus = String((m as any).memberStatus || "").toLowerCase();
@@ -929,7 +1003,7 @@ export default function MoreMinistriesList() {
                     return;
                   }
 
-                  if (m.mediaAccess) {
+                  if (mediaEnabled) {
                     router.push({
                       pathname: "/(tabs)/more/my-church-room/messages/[id]",
                       params: {
@@ -968,7 +1042,7 @@ export default function MoreMinistriesList() {
                 }}
                 style={({ pressed }) => [
                   s.cardItem,
-                  m.mediaAccess ? s.cardItemMediaAccess : s.cardItemCommunity,
+                  mediaEnabled ? s.cardItemMediaAccess : s.cardItemCommunity,
                   { width: cardWidth, height: CARD_HEIGHT },
                   pressed && s.cardItemPressed,
                 ]}
@@ -976,8 +1050,8 @@ export default function MoreMinistriesList() {
                 <LinearGradient
                   pointerEvents="none"
                   colors={
-                    m.mediaAccess
-                      ? ["rgba(6,34,20,0.98)", "rgba(4,24,15,0.96)", "rgba(3,16,11,0.94)"]
+                    mediaEnabled
+                      ? ["rgba(36,28,10,0.98)", "rgba(22,16,6,0.96)", "rgba(12,10,6,0.94)"]
                       : ["rgba(8,18,38,0.98)", "rgba(6,14,30,0.96)", "rgba(4,10,22,0.94)"]
                   }
                   start={{ x: 0, y: 0 }}
@@ -986,13 +1060,13 @@ export default function MoreMinistriesList() {
                 />
                 <View
                   pointerEvents="none"
-                  style={m.mediaAccess ? s.cardGlowGreen : s.cardGlowBlue}
+                  style={mediaEnabled ? s.cardGlowGold : s.cardGlowBlue}
                 />
                 <LinearGradient
                   pointerEvents="none"
                   colors={
-                    m.mediaAccess
-                      ? ["rgba(255,255,255,0.14)", "rgba(34,197,94,0.08)", "transparent"]
+                    mediaEnabled
+                      ? ["rgba(255,255,255,0.16)", "rgba(217,179,95,0.10)", "transparent"]
                       : ["rgba(255,255,255,0.14)", "rgba(59,130,246,0.08)", "transparent"]
                   }
                   start={{ x: 0.5, y: 0 }}
@@ -1003,40 +1077,42 @@ export default function MoreMinistriesList() {
                 <View style={s.cardTop}>
                   <MinistryCardAvatar
                     cardType={cardType}
-                    title={String(m.name || "Ministry")}
+                    title={displayName}
                     resolved={ministryAvatar}
-                    fallbackIcon={getIcon(String(m.name || "")) as keyof typeof Ionicons.glyphMap}
+                    fallbackIcon={
+                      (mediaEnabled ? "videocam" : getIcon(displayName)) as keyof typeof Ionicons.glyphMap
+                    }
                   />
 
                   <View style={s.cardTopRight}>
                     <View
                       style={[
                         s.statusTopPill,
-                        m.mediaAccess ? s.statusTopPillMedia : s.statusTopPillCommunity,
+                        mediaEnabled ? s.statusTopPillMedia : s.statusTopPillCommunity,
                       ]}
                     >
                       <Text style={s.statusTopPillText} numberOfLines={1}>
-                        {m.mediaAccess ? "MEDIA" : "GROUP"}
+                        {badgeLabel.toUpperCase()}
                       </Text>
                     </View>
                   </View>
                 </View>
 
-                <Text style={s.cardTitle} numberOfLines={2}>
-                  {m.name}
+                <Text style={[s.cardTitle, mediaEnabled && s.cardTitleMedia]} numberOfLines={2}>
+                  {displayName}
                 </Text>
 
-                <Text style={s.cardSub} numberOfLines={2}>
-                  {m.description?.trim() || "Church ministry"}
+                <Text style={[s.cardSub, mediaEnabled && s.cardSubMedia]} numberOfLines={2}>
+                  {mediaEnabled ? "Media assignment ministry" : m.description?.trim() || "Church ministry"}
                 </Text>
 
                 <View style={s.cardFooter}>
-                  <View style={[s.rolePill, m.mediaAccess ? s.rolePillMediaTeam : null]}>
+                  <View style={[s.rolePill, mediaEnabled ? s.rolePillMediaAssignment : null]}>
                     <Text
-                      style={[s.rolePillText, m.mediaAccess ? s.rolePillTextMediaTeam : null]}
+                      style={[s.rolePillText, mediaEnabled ? s.rolePillTextMediaAssignment : null]}
                       numberOfLines={1}
                     >
-                      {m.mediaAccess ? "MEDIA TEAM" : String((m as any).memberRole || "Member")}
+                      {footerBadge}
                     </Text>
                   </View>
                 </View>
@@ -1364,9 +1440,9 @@ const s = StyleSheet.create<any>({
     borderColor: "rgba(255,190,190,0.28)",
   },
   cardItemMediaAccess: {
-    borderColor: "rgba(34,197,94,0.78)",
-    shadowColor: GREEN,
-    shadowOpacity: 0.34,
+    borderColor: "rgba(217,179,95,0.78)",
+    shadowColor: GOLD,
+    shadowOpacity: 0.36,
     shadowRadius: 26,
     shadowOffset: { width: 0, height: 16 },
     elevation: 14,
@@ -1414,9 +1490,9 @@ const s = StyleSheet.create<any>({
     height: 58,
   },
   statusTopPillMedia: {
-    backgroundColor: "rgba(22,163,74,0.96)",
-    borderColor: "rgba(134,239,172,0.92)",
-    shadowColor: GREEN,
+    backgroundColor: "rgba(217,179,95,0.96)",
+    borderColor: "rgba(255,232,180,0.88)",
+    shadowColor: GOLD,
     shadowOpacity: 0.42,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
@@ -1443,17 +1519,17 @@ const s = StyleSheet.create<any>({
   rolePillTextChurch: {
     color: "#F3D28F",
   },
-  rolePillMediaTeam: {
-    borderColor: "rgba(74,222,128,0.58)",
-    backgroundColor: "rgba(34,197,94,0.14)",
-    shadowColor: GREEN,
+  rolePillMediaAssignment: {
+    borderColor: "rgba(217,179,95,0.56)",
+    backgroundColor: "rgba(217,179,95,0.14)",
+    shadowColor: GOLD,
     shadowOpacity: 0.22,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
   },
-  rolePillTextMediaTeam: {
-    color: "#BBF7D0",
-    letterSpacing: 0.6,
+  rolePillTextMediaAssignment: {
+    color: "#F3D28F",
+    letterSpacing: 0.4,
   },
 
   cardItemPressed: {
@@ -1569,6 +1645,9 @@ const s = StyleSheet.create<any>({
     minHeight: 44,
     maxWidth: "100%",
   },
+  cardTitleMedia: {
+    color: "#FFF6E0",
+  },
   cardSub: {
     marginTop: 6,
     color: "rgba(255,255,255,0.62)",
@@ -1577,6 +1656,9 @@ const s = StyleSheet.create<any>({
     lineHeight: 17,
     minHeight: 34,
     maxWidth: "100%",
+  },
+  cardSubMedia: {
+    color: "rgba(243,210,143,0.78)",
   },
 
   cardFooter: {
