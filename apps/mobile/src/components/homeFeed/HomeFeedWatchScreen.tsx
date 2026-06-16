@@ -35,12 +35,11 @@ import {
   formatFeedTimestamp,
   isChurchRoomMemberFeedPost,
   resolveChurchName,
-  resolveFeedChurchVerified,
   resolveFeedPostTypeTitle,
-  resolveHomeFeedDisplayAvatar,
   resolveHomeFeedVideoTitle,
   resolveVideoUri,
 } from "./homeFeedUtils";
+import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
 import { FeedYouTubeCard } from "./FeedYouTubeCard";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
 import { FeedReportSheet } from "./FeedReportSheet";
@@ -409,45 +408,17 @@ function WatchVideoMeta({ item, fallbackTitle = "" }: { item: any; fallbackTitle
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const postTitle = resolveHomeFeedVideoTitle(item);
   const titleLine = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle || fallbackTitle;
-  const churchName = resolveChurchName(item);
-  const churchVerified = resolveFeedChurchVerified(item);
   const whenLabel = formatFeedTimestamp(item?.createdAt);
-
-  const { uri: avatarUri, backupUri, initial } = useMemo(
-    () => resolveHomeFeedDisplayAvatar(item),
-    [item]
-  );
-  const avatarSrc = String(avatarUri || backupUri || "").trim();
-
-  const avatarNode = avatarSrc ? (
-    <Image source={{ uri: avatarSrc }} style={styles.avatar} />
-  ) : (
-    <View style={styles.avatarFallback}>
-      <Text style={styles.avatarInitial}>{initial || "K"}</Text>
-    </View>
-  );
 
   return (
     <View style={styles.metaRow}>
       <View style={styles.avatarRing}>
-        <View style={styles.avatarGlow}>{avatarNode}</View>
+        <View style={styles.avatarGlow}>
+          <FeedChurchBrandRow item={item} variant="watch" part="avatar" source="watch-screen" />
+        </View>
       </View>
       <View style={styles.metaTextCol}>
-        {churchName ? (
-          <View style={styles.churchNameRow}>
-            <Text style={styles.churchName} numberOfLines={1}>
-              {churchName}
-            </Text>
-            {churchVerified ? (
-              <Ionicons
-                name="checkmark-circle"
-                size={15}
-                color={HOME_FEED_GOLD}
-                style={styles.verifiedBadge}
-              />
-            ) : null}
-          </View>
-        ) : null}
+        <FeedChurchBrandRow item={item} variant="watch" part="name" source="watch-screen" />
         {titleLine ? (
           <Text style={styles.videoTitle} numberOfLines={3}>
             {titleLine}

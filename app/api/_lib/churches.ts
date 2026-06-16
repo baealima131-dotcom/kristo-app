@@ -98,7 +98,8 @@ export async function getChurchById(churchId: string): Promise<ChurchProfile | u
     return row || undefined;
   }
   const all = await readAll();
-  return all.find((c) => c.id === churchId);
+  const normalized = String(churchId || "").trim().toUpperCase();
+  return all.find((c) => String(c.id || "").trim().toUpperCase() === normalized);
 }
 
 export type ChurchSearchHit = ChurchProfile & {

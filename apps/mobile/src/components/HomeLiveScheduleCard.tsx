@@ -25,6 +25,8 @@ import { persistClaimToLiveRequest } from "@/src/lib/liveBridge";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { resolveHomeFeedScheduleSlotLabels } from "@/src/lib/slotTopicUtils";
+import { homeFeedRowChurchId } from "@/src/components/homeFeed/homeFeedUtils";
+import { openChurchProfile } from "@/src/lib/churchProfileNavigation";
 import {
   baseFeedId,
   cleanFeedLabel,
@@ -1034,6 +1036,14 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   );
   const churchHeaderInitial =
     churchShort.slice(0, 1).toUpperCase() || churchName.slice(0, 1).toUpperCase() || "C";
+  const profileChurchId = useMemo(
+    () => homeFeedRowChurchId(item) || String(item?.churchId || "").trim(),
+    [item]
+  );
+  const handleOpenChurchProfile = useCallback(() => {
+    if (!profileChurchId) return;
+    openChurchProfile(profileChurchId, { churchName: churchShort, source: "live-schedule-card" });
+  }, [profileChurchId, churchShort]);
 
   useEffect(() => {
     console.log("KRISTO_MEDIA_CARD_AVATAR_RENDER", {
@@ -1623,27 +1633,41 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             ]}
           >
             <View style={styles.headerTopRow}>
-              <AvatarRing
-                uri={churchHeaderAvatar.uri}
-                initial={churchHeaderInitial}
-                size={headerAvatarSize}
-                accent={visualTheme.accent}
-                live={phase === "live"}
-                goldFallback={!isUnclaimedLiveOpen}
-                premiumEmblem={compactUnclaimedLayout}
-                allowDataUrl
-                forceShowImage={churchHeaderAvatar.hasAvatar}
-                imageLogMeta={{ kind: "church-header" }}
-              />
+              <Pressable
+                onPress={handleOpenChurchProfile}
+                disabled={!profileChurchId}
+                accessibilityRole="button"
+                accessibilityLabel={churchShort ? `Open ${churchShort} profile` : "Open church profile"}
+              >
+                <AvatarRing
+                  uri={churchHeaderAvatar.uri}
+                  initial={churchHeaderInitial}
+                  size={headerAvatarSize}
+                  accent={visualTheme.accent}
+                  live={phase === "live"}
+                  goldFallback={!isUnclaimedLiveOpen}
+                  premiumEmblem={compactUnclaimedLayout}
+                  allowDataUrl
+                  forceShowImage={churchHeaderAvatar.hasAvatar}
+                  imageLogMeta={{ kind: "church-header" }}
+                />
+              </Pressable>
               <View style={styles.headerTextBlock}>
-                <Text
-                  style={[styles.mediaName, compactUnclaimedLayout && styles.mediaNameVip]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.8}
+                <Pressable
+                  onPress={handleOpenChurchProfile}
+                  disabled={!profileChurchId}
+                  accessibilityRole="button"
+                  accessibilityLabel={churchShort ? `Open ${churchShort} profile` : "Open church profile"}
                 >
-                  {churchShort}
-                </Text>
+                  <Text
+                    style={[styles.mediaName, compactUnclaimedLayout && styles.mediaNameVip]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.8}
+                  >
+                    {churchShort}
+                  </Text>
+                </Pressable>
                 <Text
                   style={[styles.churchSubline, compactUnclaimedLayout && styles.churchSublineVip]}
                   numberOfLines={1}

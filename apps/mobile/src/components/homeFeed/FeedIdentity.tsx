@@ -1,7 +1,8 @@
-import React, { memo, useEffect, useMemo, useState } from "react";
-import { Image, StyleSheet, Text, View } from "react-native";
+import React, { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   isChurchRoomMemberFeedPost,
+  homeFeedRowChurchId,
   resolveFeedIdentityHeadline,
   resolveFeedIdentitySubline,
   resolveFeedPostAccent,
@@ -9,6 +10,7 @@ import {
   resolveHomeFeedDisplayAvatar,
 } from "./homeFeedUtils";
 import { HOME_FEED_GOLD, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
+import { openChurchProfileFromFeedItem } from "@/src/lib/churchProfileNavigation";
 
 const AVATAR_SIZE = 58;
 const AVATAR_RING = AVATAR_SIZE + 10;
@@ -57,30 +59,44 @@ export const FeedIdentity = memo(function FeedIdentity({ item, whenLabel }: Prop
   }, [avatarCandidates]);
 
   const memberLine = [headline, subline].filter(Boolean).join(" • ");
+  const churchId = useMemo(() => homeFeedRowChurchId(item), [item]);
+  const openChurchProfile = useCallback(() => {
+    openChurchProfileFromFeedItem(item, { source: "home-feed-identity" });
+  }, [item]);
+
+  const avatarShell = (
+    <View style={styles.avatarShell}>
+      <View
+        style={[styles.avatarGlow, { backgroundColor: accentGlowBg, shadowColor: accentColor }]}
+        pointerEvents="none"
+      />
+      <View style={[styles.avatarRing, { borderColor: accentColor }]}>
+        {showPhoto ? (
+          <Image
+            source={{ uri: displayUri }}
+            style={styles.avatarImage}
+            onError={() => {
+              setFailedCount((count) => Math.min(count + 1, avatarCandidates.length));
+            }}
+          />
+        ) : (
+          <View style={[styles.avatarImage, styles.avatarFallback, { backgroundColor: accentFallbackBg }]}>
+            <Text style={[styles.avatarInitial, { color: accentSoft }]}>{initial || "K"}</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  );
 
   return (
     <View style={styles.row}>
-      <View style={styles.avatarShell}>
-        <View
-          style={[styles.avatarGlow, { backgroundColor: accentGlowBg, shadowColor: accentColor }]}
-          pointerEvents="none"
-        />
-        <View style={[styles.avatarRing, { borderColor: accentColor }]}>
-          {showPhoto ? (
-            <Image
-              source={{ uri: displayUri }}
-              style={styles.avatarImage}
-              onError={() => {
-                setFailedCount((count) => Math.min(count + 1, avatarCandidates.length));
-              }}
-            />
-          ) : (
-            <View style={[styles.avatarImage, styles.avatarFallback, { backgroundColor: accentFallbackBg }]}>
-              <Text style={[styles.avatarInitial, { color: accentSoft }]}>{initial || "K"}</Text>
-            </View>
-          )}
-        </View>
-      </View>
+      {churchId && !churchRoomPost ? (
+        <Pressable onPress={openChurchProfile} accessibilityRole="button" accessibilityLabel="Open church profile">
+          {avatarShell}
+        </Pressable>
+      ) : (
+        avatarShell
+      )}
 
       <View style={styles.textCol}>
         {churchRoomPost ? (
@@ -94,9 +110,21 @@ export const FeedIdentity = memo(function FeedIdentity({ item, whenLabel }: Prop
           </>
         ) : (
           <>
-            <Text style={styles.churchName} numberOfLines={1}>
-              {headline}
-            </Text>
+            {churchId ? (
+              <Pressable
+                onPress={openChurchProfile}
+                accessibilityRole="button"
+                accessibilityLabel="Open church profile"
+              >
+                <Text style={styles.churchName} numberOfLines={1}>
+                  {headline}
+                </Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.churchName} numberOfLines={1}>
+                {headline}
+              </Text>
+            )}
             {subline ? (
               <Text style={styles.subline} numberOfLines={1}>
                 {subline}

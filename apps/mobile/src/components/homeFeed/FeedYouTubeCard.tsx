@@ -10,12 +10,9 @@ import {
   formatFeedTimestamp,
   isChurchRoomMemberFeedPost,
   isVideoPost,
-  resolveChurchName,
   resolveChurchRoomFeedCaption,
-  resolveFeedChurchVerified,
   resolveFeedPostAccent,
   resolveFeedPostTypeTitle,
-  resolveHomeFeedDisplayAvatar,
   resolveHomeFeedVideoTitle,
   resolvePostBody,
   resolvePostImageUris,
@@ -34,6 +31,7 @@ import {
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { HOME_FEED_GOLD, HOME_FEED_THUMB_RADIUS } from "./theme";
 import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
+import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
 import {
   itemNeedsVisiblePosterGeneration,
@@ -74,10 +72,7 @@ export const FeedYouTubeCard = memo(
   const postBody = resolvePostBody(item);
   const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle;
   const caption = churchRoomPost ? resolveChurchRoomFeedCaption(item) : postBody;
-  const churchName = resolveChurchName(item);
-  const churchVerified = resolveFeedChurchVerified(item);
   const statsLine = formatFeedMetaLine(item, whenLabel);
-
   const video = isVideoPost(item);
   const videoUri = useMemo(
     () => resolveVideoUri(item),
@@ -105,20 +100,6 @@ export const FeedYouTubeCard = memo(
   );
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
   const postAccent = resolveFeedPostAccent(item);
-
-  const { uri: avatarUri, backupUri, initial } = useMemo(
-    () => resolveHomeFeedDisplayAvatar(item),
-    [
-      postId,
-      item?.authorAvatarUri,
-      item?.authorAvatarUrl,
-      item?.avatarUri,
-      item?.avatarUrl,
-      item?.churchAvatarUri,
-      item?.churchLogoUri,
-    ]
-  );
-  const avatarSrc = String(avatarUri || backupUri || "").trim();
 
   const handleVideoPress = () => {
     const payload = buildHomeFeedVideoOpenPayload(item);
@@ -194,40 +175,20 @@ export const FeedYouTubeCard = memo(
 
       <View style={premium.metaSection}>
         <View style={premium.metaRow}>
-        {avatarSrc ? (
-          <Image source={{ uri: avatarSrc }} style={premium.avatar} />
-        ) : (
-          <View style={premium.avatarFallback}>
-            <Text style={premium.avatarInitial}>{initial || "K"}</Text>
-          </View>
-        )}
-        <View style={premium.metaTextCol}>
-          {churchName ? (
-            <View style={premium.churchNameRow}>
-              <Text style={premium.churchName} numberOfLines={1}>
-                {churchName}
+          <FeedChurchBrandRow item={item} variant="premium" part="avatar" source="home-feed-card" />
+          <View style={premium.metaTextCol}>
+            <FeedChurchBrandRow item={item} variant="premium" part="name" source="home-feed-card" />
+            {title ? (
+              <Text style={premium.videoTitle} numberOfLines={2}>
+                {title}
               </Text>
-              {churchVerified ? (
-                <Ionicons
-                  name="checkmark-circle"
-                  size={14}
-                  color={HOME_FEED_GOLD}
-                  style={styles.verifiedBadge}
-                />
-              ) : null}
-            </View>
-          ) : null}
-          {title ? (
-            <Text style={premium.videoTitle} numberOfLines={2}>
-              {title}
-            </Text>
-          ) : null}
-          {statsLine ? (
-            <Text style={premium.statsLine} numberOfLines={1}>
-              {statsLine}
-            </Text>
-          ) : null}
-        </View>
+            ) : null}
+            {statsLine ? (
+              <Text style={premium.statsLine} numberOfLines={1}>
+                {statsLine}
+              </Text>
+            ) : null}
+          </View>
         </View>
       </View>
 
