@@ -64,11 +64,15 @@ import {
 } from "@/src/components/homeFeed/homeFeedApi";
 import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
 import {
+  emitScheduleFeedDeleted,
   filterOutDeletedScheduleRows,
   markScheduleFeedDeleted,
   scheduleFeedRowIsDeleted,
 } from "@/src/lib/deletedScheduleRegistry";
-import { buildLiveSlotsCatalogFromFeedRows } from "@/src/lib/liveSlotsCatalog";
+import {
+  buildLiveSlotsCatalogFromFeedRows,
+  resolveLiveSlotsBackendFeedRows,
+} from "@/src/lib/liveSlotsCatalog";
 import { emitSlotClaimChanged } from "@/src/lib/slotClaimEvents";
 import { emitClaimUpdated } from "@/src/lib/kristoProfileEvents";
 import {
@@ -933,6 +937,12 @@ export async function purgeDeletedScheduleFromAllSources(input: {
     action: "unclaim",
   });
   emitLiveRingRefresh("schedule-delete-global-purge");
+  emitScheduleFeedDeleted({
+    feedId,
+    churchId,
+    aliases,
+    reason: input.reason,
+  });
 
   const ringRows = resolveRingMergedScheduleRows({
     churchBackendRows: filteredBackendRows,
@@ -947,8 +957,16 @@ export async function purgeDeletedScheduleFromAllSources(input: {
     targetChurchId: churchId,
     viewerUserId: userId,
   });
+  const liveSlotsResolved = resolveLiveSlotsBackendFeedRows({
+    churchBackendRows: filteredBackendRows,
+    globalBackendRows: filterOutDeletedScheduleRows(getCachedHomeFeedBackendRows()),
+    viewerChurchId: churchId,
+    viewerUserId: userId,
+    localRows: filterOutDeletedScheduleRows([...(feedList() as any[])]),
+    churchFeedLoaded: filteredBackendRows.length > 0,
+  });
   const liveSlots = buildLiveSlotsCatalogFromFeedRows(
-    filteredBackendRows,
+    liveSlotsResolved.rows,
     churchId,
     userId,
     Date.now()

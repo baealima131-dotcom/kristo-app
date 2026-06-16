@@ -147,6 +147,19 @@ export async function refetchTargetScheduleAfterClaim(input: {
     crossChurch: scheduleChurchId !== viewerChurchId,
   });
 
+  if (backendClaimedByUserId) {
+    console.log("KRISTO_SLOT_CLAIM_BACKEND_PERSISTED", {
+      viewerChurchId,
+      scheduleChurchId,
+      feedId: postId,
+      slotId,
+      claimedByUserId: backendClaimedByUserId,
+      claimedByName: String(matchedSlot?.claimedByName || matchedSlot?.claimedBy?.name || "").trim(),
+      claimedAt: String(matchedSlot?.claimedAt || matchedSlot?.claimedBy?.claimedAt || "").trim(),
+      crossChurch: scheduleChurchId !== viewerChurchId,
+    });
+  }
+
   if (scheduleItem) {
     feedSyncMediaScheduleFromBackend(scheduleItem);
   }

@@ -4108,6 +4108,17 @@ async function handleFeedPost(req: NextRequest, body: any) {
     await upsertFeedItem(updatedItem);
     bumpMediaScheduleSyncForFeedItem(updatedItem, "claim_schedule_slot");
 
+    console.log("KRISTO_SLOT_CLAIM_BACKEND_PERSISTED", {
+      viewerChurchId: churchId,
+      scheduleChurchId: scheduleChurchId || ownerChurchId,
+      feedId: scheduleFeedId,
+      slotId,
+      claimedByUserId: viewerUserId,
+      claimedByName: name,
+      claimedAt,
+      crossChurch,
+    });
+
     console.log("KRISTO_CROSS_CHURCH_CLAIM_PERSIST_RESULT", {
       viewerChurchId: churchId,
       targetChurchId: scheduleChurchId,

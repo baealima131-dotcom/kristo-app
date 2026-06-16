@@ -8,6 +8,7 @@ import {
   type ClaimButtonStateSourceLog,
 } from "@/src/lib/claimHydrationState";
 import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
+import { filterOutDeletedScheduleRows, isScheduleFeedIdDeleted } from "@/src/lib/deletedScheduleRegistry";
 import {
   feedList,
   getRingClaimHints,
@@ -125,6 +126,11 @@ export function mergeScheduleFeedClaimRows(
   const mergedSlots = backendSlots.map((slot: any, index: number) => {
     const localSlot = localSlotsByKey.get(resolveLiveSlotMatchKey(slot, index));
     if (!localSlot) return slot;
+    const backendOwner = scheduleSlotClaimUserId(slot);
+    const preserveUid = String(preserveUserId || "").trim();
+    if (backendOwner && backendOwner !== preserveUid) {
+      return slot;
+    }
     return mergeScheduleSlotClaimPreservingLocal(localSlot, slot, preserveUserId);
   });
 
@@ -274,6 +280,7 @@ export function injectClaimStoreScheduleRows(
     const feedId = baseFeedId(String(entry?.postId || ""));
     const slotId = String(entry?.slotId || "").trim();
     if (!feedId || !slotId) continue;
+    if (isScheduleFeedIdDeleted(feedId)) continue;
     if (existingKeys.has(feedId)) continue;
 
     const sourceItem =
@@ -307,20 +314,25 @@ export function collectScheduleRowsForRingScan(
   churchBackendRows: any[] = [],
   viewerUserId?: string
 ): any[] {
-  const localRows = (() => {
-    try {
-      return feedList() as any[];
-    } catch {
-      return [];
-    }
-  })();
-  const cachedRows = getCachedHomeFeedBackendRows();
-  const backendRows = Array.isArray(churchBackendRows) ? churchBackendRows : [];
+  const localRows = filterOutDeletedScheduleRows(
+    (() => {
+      try {
+        return feedList() as any[];
+      } catch {
+        return [];
+      }
+    })()
+  );
+  const cachedRows = filterOutDeletedScheduleRows(getCachedHomeFeedBackendRows());
+  const backendRows = filterOutDeletedScheduleRows(
+    Array.isArray(churchBackendRows) ? churchBackendRows : []
+  );
   const mergedInput = [...localRows, ...cachedRows, ...backendRows];
   const byKey = new Map<string, any>();
 
   for (const row of mergedInput) {
     if (!row || !isMediaScheduleFeedItem(row)) continue;
+    if (isScheduleFeedIdDeleted(String(row?.sourceScheduleId || row?.id || ""))) continue;
     const key = resolveScheduleRowKey(row, mergedInput);
     if (!key) continue;
     const existing = byKey.get(key);
@@ -330,12 +342,12 @@ export function collectScheduleRowsForRingScan(
     );
   }
 
-  let rows = Array.from(byKey.values());
+  let rows = filterOutDeletedScheduleRows(Array.from(byKey.values()));
   rows = overlayStableClaimsOnFeedRows(rows, viewerUserId, { allSources: mergedInput });
   rows = injectClaimStoreScheduleRows(rows, String(viewerUserId || ""), {
     allSources: mergedInput,
   });
-  return rows;
+  return filterOutDeletedScheduleRows(rows);
 }
 
 export function rehydrateClaimStoresFromFeedRows(items: any[], viewerUserId: string) {
@@ -348,6 +360,7 @@ export function rehydrateClaimStoresFromFeedRows(items: any[], viewerUserId: str
     const feedId =
       resolveCanonicalScheduleFeedId(String(item?.sourceScheduleId || item?.id || ""), items) ||
       baseFeedId(String(item?.id || ""));
+    if (isScheduleFeedIdDeleted(feedId)) continue;
     const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
 
     slots.forEach((slot: any, index: number) => {

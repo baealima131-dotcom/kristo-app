@@ -255,16 +255,21 @@ export function mergeFeedRowsForScheduleScan(
     });
   }
 
-  const localRows = (() => {
-    try {
-      const rows = feedList() as any[];
-      return filterLocalRowsWhenBackendZeroSlots(rows, backendRows, backendFeedLoaded);
-    } catch {
-      return [];
-    }
-  })();
+  const localRows = filterOutDeletedScheduleRows(
+    (() => {
+      try {
+        const rows = feedList() as any[];
+        return filterLocalRowsWhenBackendZeroSlots(rows, backendRows, backendFeedLoaded);
+      } catch {
+        return [];
+      }
+    })()
+  );
+  const filteredBackendRows = filterOutDeletedScheduleRows(
+    Array.isArray(backendRows) ? backendRows : []
+  );
 
-  const mergedRows = [...localRows, ...backendRows];
+  const mergedRows = [...localRows, ...filteredBackendRows];
   const byBase = new Map<string, any>();
 
   for (const row of localRows) {
@@ -277,7 +282,7 @@ export function mergeFeedRowsForScheduleScan(
     byBase.set(key, row);
   }
 
-  for (const row of backendRows) {
+  for (const row of filteredBackendRows) {
     const seed = String(row?.sourceScheduleId || row?.id || "");
     const key =
       resolveCanonicalScheduleFeedId(seed, mergedRows) ||
@@ -291,10 +296,10 @@ export function mergeFeedRowsForScheduleScan(
     );
   }
 
-  let result = Array.from(byBase.values());
+  let result = filterOutDeletedScheduleRows(Array.from(byBase.values()));
   result = overlayStableClaimsOnFeedRows(result, viewerUserId, { allSources: mergedRows });
   result = injectClaimStoreScheduleRows(result, viewerUserId, { allSources: mergedRows });
-  return result;
+  return filterOutDeletedScheduleRows(result);
 }
 
 /** Same merged row source as KRISTO_LIVE_RING_FAST_SYNC / recomputeScheduleRingsFromRows. */

@@ -1,4 +1,15 @@
+import { DeviceEventEmitter } from "react-native";
 import { baseFeedId, collectScheduleAliasIds } from "@/src/lib/scheduleSlotUtils";
+
+export const KRISTO_SCHEDULE_FEED_DELETED = "kristo:schedule-feed-deleted";
+
+export type ScheduleFeedDeletedPayload = {
+  feedId: string;
+  churchId?: string;
+  aliases: string[];
+  reason?: string;
+  updatedAt?: number;
+};
 
 const deletedScheduleAliasSet = new Set<string>();
 
@@ -23,11 +34,36 @@ export function markScheduleFeedDeleted(feedId: string, rows: any[] = []) {
   }
 }
 
+export function resolveScheduleFeedIdFromAnyId(value: unknown): string {
+  const id = String(value || "").trim();
+  if (!id) return "";
+  const slotIdx = id.indexOf(":slot:");
+  const seed = slotIdx >= 0 ? id.slice(0, slotIdx) : id;
+  return baseFeedId(seed) || seed;
+}
+
 export function isScheduleFeedIdDeleted(feedId: unknown): boolean {
   const id = String(feedId || "").trim();
   if (!id) return false;
-  const canon = baseFeedId(id);
-  return deletedScheduleAliasSet.has(id) || (canon ? deletedScheduleAliasSet.has(canon) : false);
+  const canon = resolveScheduleFeedIdFromAnyId(id);
+  return (
+    deletedScheduleAliasSet.has(id) ||
+    (canon ? deletedScheduleAliasSet.has(canon) : false)
+  );
+}
+
+export function emitScheduleFeedDeleted(payload: ScheduleFeedDeletedPayload) {
+  const event: ScheduleFeedDeletedPayload = {
+    ...payload,
+    aliases: Array.isArray(payload.aliases) ? payload.aliases : [],
+    updatedAt: payload.updatedAt ?? Date.now(),
+  };
+  DeviceEventEmitter.emit(KRISTO_SCHEDULE_FEED_DELETED, event);
+}
+
+export function onScheduleFeedDeleted(listener: (payload: ScheduleFeedDeletedPayload) => void) {
+  const sub = DeviceEventEmitter.addListener(KRISTO_SCHEDULE_FEED_DELETED, listener);
+  return () => sub.remove();
 }
 
 export function scheduleFeedRowIsDeleted(row: any): boolean {

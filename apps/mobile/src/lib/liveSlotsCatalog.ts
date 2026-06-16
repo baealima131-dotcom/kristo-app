@@ -9,6 +9,7 @@ import {
 } from "@/src/components/homeFeed/homeFeedUtils";
 import {
   injectClaimStoreScheduleRows,
+  mergeScheduleSlotClaimPreservingLocal,
   overlayStableClaimsOnFeedRows,
 } from "@/src/lib/claimStateMerge";
 import { getRingClaimHints } from "@/src/lib/homeFeedStore";
@@ -17,11 +18,10 @@ import {
   resolveRingMergedScheduleRows,
 } from "@/src/lib/liveScheduleRing";
 import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
-import { filterOutDeletedScheduleRows } from "@/src/lib/deletedScheduleRegistry";
+import { filterOutDeletedScheduleRows, getDeletedScheduleFeedIds } from "@/src/lib/deletedScheduleRegistry";
 import {
   applyRingClaimHintsToScheduleSlots,
   baseFeedId,
-  mergeScheduleSlotClaimState,
   scheduleSlotClaimUserId,
 } from "@/src/lib/scheduleSlotUtils";
 
@@ -100,7 +100,12 @@ export function overlayLocalScheduleClaimsOnFeedRows(
       slots = slots.map((slot: any, index: number) => {
         const localSlot = localSlotsByKey.get(resolveLiveSlotMatchKey(slot, index));
         if (!localSlot) return slot;
-        const merged = mergeScheduleSlotClaimState(slot, localSlot);
+        const backendOwner = scheduleSlotClaimUserId(slot);
+        const viewerUid = String(viewerUserId || "").trim();
+        if (backendOwner && backendOwner !== viewerUid) {
+          return slot;
+        }
+        const merged = mergeScheduleSlotClaimPreservingLocal(localSlot, slot, viewerUserId);
         if (merged !== slot) changed = true;
         return merged;
       });
@@ -118,10 +123,12 @@ export function overlayLocalScheduleClaimsOnFeedRows(
     return { ...row, scheduleSlots: slots };
   });
 
-  return injectClaimStoreScheduleRows(
-    overlayStableClaimsOnFeedRows(mergedRows, viewerUserId, { allSources: allRows }),
-    String(viewerUserId || ""),
-    { allSources: allRows }
+  return filterOutDeletedScheduleRows(
+    injectClaimStoreScheduleRows(
+      overlayStableClaimsOnFeedRows(mergedRows, viewerUserId, { allSources: allRows }),
+      String(viewerUserId || ""),
+      { allSources: allRows }
+    )
   );
 }
 
@@ -156,9 +163,30 @@ export function resolveLiveSlotsBackendFeedRows(input: {
     backendFeedLoaded: hasBackendSignal,
   });
 
+  const beforeDeletedFilterCount = rows.length;
   rows = filterOutDeletedScheduleRows(rows).filter(
     (row) => isLiveSlotsScheduleSourceRow(row) && scheduleRowHasBackendSlots(row)
   );
+  const afterDeletedFilterCount = rows.length;
+
+  console.log("KRISTO_LIVE_SLOTS_DELETED_FILTER", {
+    deletedFeedIds: getDeletedScheduleFeedIds(),
+    beforeRowCount: beforeDeletedFilterCount,
+    afterRowCount: afterDeletedFilterCount,
+    removedByDeletedFilter: Math.max(0, beforeDeletedFilterCount - afterDeletedFilterCount),
+    churchBackendInputCount: churchRows.length,
+    globalBackendInputCount: globalRows.length,
+    cachedInputCount: cachedRows.length,
+    churchFeedLoaded,
+  });
+
+  console.log("KRISTO_LIVE_SLOTS_CLAIM_STATE_SYNC", {
+    viewerChurchId: viewerCid,
+    viewerUserId: String(input.viewerUserId || ""),
+    sourceUsed: rows.length ? "backend" : localRows.length ? "local" : "empty",
+    scheduleRowCount: rows.length,
+    slotClaimStates: summarizeScheduleRowClaimStates(rows),
+  });
 
   const backendSlotCount = countBackendSlotsInRows(rows);
   const localSlotCount = localRows.reduce((sum, row) => {
@@ -228,12 +256,16 @@ export function buildLiveSlotsCatalogFromFeedRows(
     return { myChurch: [], otherChurches: [] };
   }
 
-  const scheduleSource = rows.filter(
-    (row) => isLiveSlotsScheduleSourceRow(row) && scheduleRowHasBackendSlots(row)
+  const scheduleSource = filterOutDeletedScheduleRows(
+    rows.filter(
+      (row) => isLiveSlotsScheduleSourceRow(row) && scheduleRowHasBackendSlots(row)
+    )
   );
   const expanded = scheduleSource.flatMap((row) => expandHomeFeedScheduleIntoSlotRows(row, nowMs));
   const visible = renumberLiveSlotsCatalogRows(
-    expanded.filter((row) => isHomeFeedScheduleSlotRowVisible(row, nowMs))
+    filterOutDeletedScheduleRows(
+      expanded.filter((row) => isHomeFeedScheduleSlotRowVisible(row, nowMs))
+    )
   );
 
   const viewerCid = String(viewerChurchId || "").trim();
@@ -276,6 +308,26 @@ export function mergeLiveSlotsFeedSources(backendRows: any[], localRows: any[]):
     byId.set(id, row);
   }
   return Array.from(byId.values());
+}
+
+export function summarizeScheduleRowClaimStates(rows: any[]) {
+  return (Array.isArray(rows) ? rows : []).flatMap((row) => {
+    const scheduleId = String(row?.sourceScheduleId || row?.id || "").trim();
+    const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+    return slots.map((slot: any, index: number) => ({
+      scheduleId,
+      slotId: String(slot?.id || slot?.slotId || "").trim(),
+      slotNumber: Math.max(1, Number(slot?.slot || slot?.slotNumber || index + 1)),
+      claimedByUserId: scheduleSlotClaimUserId(slot),
+      claimedByName: String(slot?.claimedByName || slot?.claimedBy?.name || "").trim(),
+      claimedAt: String(slot?.claimedAt || slot?.claimedBy?.claimedAt || "").trim(),
+      status: String(slot?.status || "").trim(),
+    }));
+  });
+}
+
+export function filterLiveSlotsRenderRows(rows: any[]): any[] {
+  return filterOutDeletedScheduleRows(Array.isArray(rows) ? rows : []);
 }
 
 export function summarizeLiveSlotsRenderRows(rows: any[]) {

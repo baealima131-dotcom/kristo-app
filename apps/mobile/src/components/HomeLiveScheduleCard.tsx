@@ -976,6 +976,8 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const claimedPreLiveLayout = claimed && phase !== "live" && phase !== "ended";
   const claimedCompactLayout = claimedLiveLayout || claimedPreLiveLayout;
   const canEnterLiveRoom = claimedByMe && isLiveWindow && phase !== "ended";
+  const canEnterLiveRoomAsAudience =
+    claimedByOther && isLiveWindow && phase !== "ended" && claimed;
   const visualTheme = isUnclaimedLiveOpen ? { ...theme, label: "LIVE NOW • OPEN" } : theme;
 
   useEffect(() => {
@@ -1086,14 +1088,15 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               ? "1m left"
               : "Starting now";
 
-  const claimCtaText = canEnterLiveRoom
+  const claimCtaText = canEnterLiveRoom || canEnterLiveRoomAsAudience
     ? "Enter Live Room"
     : isUnclaimedLiveOpen
       ? "Claim & Go Live"
       : "Claim This Live Slot";
 
   const showPrimaryClaim = !claimed && phase !== "ended" && !isClaimInFlight;
-  const showEnterLivePrimary = canEnterLiveRoom && !isClaimInFlight;
+  const showEnterLivePrimary =
+    (canEnterLiveRoom || canEnterLiveRoomAsAudience) && !isClaimInFlight;
   const showSecondaryClaim = claimed && phase !== "ended";
   const compactOpenCard = !claimed && phase !== "ended";
   const edgeTint = phaseEdgeTint(phase, claimed, isUnclaimedLiveOpen);
@@ -1142,6 +1145,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       isLiveWindow,
       isUnclaimedLiveOpen,
       canEnterLiveRoom,
+      canEnterLiveRoomAsAudience,
       showPrimaryClaim,
       showEnterLivePrimary,
       showSecondaryClaim,
@@ -1150,6 +1154,24 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       hasOptimisticClaim: !!optimisticClaim,
       activeSlotClaimedByUserId: String(activeSlot?.claimedByUserId || activeSlot?.claimedBy?.userId || ""),
     });
+
+    if (claimedByOther) {
+      console.log("KRISTO_HOME_SLOT_CTA_STATE_FOR_OTHER_VIEWER", {
+        slotId: String(slot?.id || activeSlot?.id || ""),
+        currentUserId,
+        claimedByUserId: claimUserId,
+        claimedByName: String(
+          claimedBy?.name || slot?.claimedByName || activeSlot?.claimedByName || ""
+        ),
+        phase,
+        isLiveWindow,
+        canEnterLiveRoomAsAudience,
+        showPrimaryClaim,
+        showEnterLivePrimary,
+        showSecondaryClaim,
+        ctaText,
+      });
+    }
   }, [
     slot?.id,
     activeSlot?.id,
@@ -1162,6 +1184,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     isLiveWindow,
     isUnclaimedLiveOpen,
     canEnterLiveRoom,
+    canEnterLiveRoomAsAudience,
     showPrimaryClaim,
     showEnterLivePrimary,
     showSecondaryClaim,
@@ -1421,9 +1444,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       hasOnOpenLiveRoom: typeof onOpenLiveRoom === "function",
     });
 
-    if (canEnterLiveRoom) {
+    if (canEnterLiveRoom || canEnterLiveRoomAsAudience) {
       console.log("KRISTO_HOME_SLOT_CTA_NAV", {
-        action: "enter-live",
+        action: canEnterLiveRoom ? "enter-live-host" : "enter-live-audience",
         slotId: String(slot?.id || activeSlot?.id || ""),
         currentUserId,
         claimedByUserId: claimUserId,
@@ -1461,6 +1484,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     claimThisSlot();
   }, [
     canEnterLiveRoom,
+    canEnterLiveRoomAsAudience,
     claimedByMe,
     claimedByOther,
     onOpenLiveRoom,
@@ -1998,6 +2022,11 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                         <>
                           <Ionicons name="checkmark-circle" size={22} color="#FFF" />
                           <Text style={styles.hostEnterButtonText}>Claimed • Tap to Release</Text>
+                        </>
+                      ) : claimedByOther && isLiveWindow ? (
+                        <>
+                          <Ionicons name="radio" size={22} color="#FFF" />
+                          <Text style={styles.hostEnterButtonText}>On Air • Watch Live</Text>
                         </>
                       ) : (
                         <>

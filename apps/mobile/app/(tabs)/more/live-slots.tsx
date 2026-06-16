@@ -15,22 +15,32 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
 import { fetchHomeFeedFromApi, getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
-import { resolveChurchName } from "@/src/components/homeFeed/homeFeedUtils";
+import { resolveChurchName, homeFeedRowChurchId } from "@/src/components/homeFeed/homeFeedUtils";
 import { HOME_FEED_BG, HOME_FEED_GOLD, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "@/src/components/homeFeed/theme";
 import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
-import { fetchMediaScheduleFeedSync } from "@/src/lib/mediaScheduleSilentReload";
 import { autoDeleteExpiredOpenGuestSlots } from "@/src/lib/guestClaimPersistence";
 import { enterLiveRoomFromScheduleCard } from "@/src/lib/enterLiveRoomNavigation";
 import {
   buildLiveSlotsCatalogFromFeedRows,
+  filterLiveSlotsRenderRows,
   resolveLiveSlotsBackendFeedRows,
   summarizeLiveSlotsRenderRows,
 } from "@/src/lib/liveSlotsCatalog";
-import { onLiveRingRefresh } from "@/src/lib/liveScheduleRing";
+import { onLiveRingRefresh, resolveRingChurchScheduleSnapshot } from "@/src/lib/liveScheduleRing";
 import { onSlotClaimChanged } from "@/src/lib/slotClaimEvents";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import {
+  filterOutDeletedScheduleRows,
+  onScheduleFeedDeleted,
+} from "@/src/lib/deletedScheduleRegistry";
+import { pollRemoteSlotClaimUpdates } from "@/src/lib/slotClaimApply";
+import {
+  fetchChurchSlotClaimFeed,
+  SLOT_CLAIM_POLL_FALLBACK_MS,
+  SLOT_CLAIM_POLL_LIVE_MS,
+} from "@/src/lib/slotClaimSync";
+import { baseFeedId, scheduleSlotClaimUserId } from "@/src/lib/scheduleSlotUtils";
 
 type TabKey = "my-church" | "other-churches";
 
@@ -50,6 +60,11 @@ export default function LiveSlotsScreen() {
   const cardHeight = Math.min(SLOT_CARD_HEIGHT, Math.round(windowHeight * 0.62));
   const scrollRef = useRef<ScrollView>(null);
   const focusAppliedRef = useRef(false);
+  const catalogRef = useRef<{ myChurch: any[]; otherChurches: any[] }>({
+    myChurch: [],
+    otherChurches: [],
+  });
+  const hasLiveWindowRef = useRef(false);
 
   const session = getSessionSync() as any;
   const viewerUserId = String(session?.userId || "").trim();
@@ -84,8 +99,11 @@ export default function LiveSlotsScreen() {
         churchId: viewerChurchId,
       }) as Record<string, string>;
 
-      const churchSync = await fetchMediaScheduleFeedSync(viewerChurchId, headers);
-      let churchRows = Array.isArray(churchSync.rows) ? churchSync.rows : [];
+      const churchResult = await fetchChurchSlotClaimFeed(viewerChurchId, {
+        clearCaches: false,
+        viewerChurchId,
+      });
+      let churchRows = Array.isArray(churchResult?.rows) ? churchResult.rows : [];
 
       const autoResult = await autoDeleteExpiredOpenGuestSlots({
         reason: "live-slots-load",
@@ -98,15 +116,19 @@ export default function LiveSlotsScreen() {
       });
 
       if (Number(autoResult?.removedCount || 0) > 0) {
-        const resync = await fetchMediaScheduleFeedSync(viewerChurchId, headers);
-        churchRows = Array.isArray(resync.rows) ? resync.rows : [];
+        const resync = await fetchChurchSlotClaimFeed(viewerChurchId, {
+          clearCaches: true,
+          viewerChurchId,
+        });
+        churchRows = Array.isArray(resync?.rows) ? resync.rows : [];
       }
 
+      churchRows = filterOutDeletedScheduleRows(churchRows);
       setChurchBackendRows(churchRows);
       setChurchFeedLoaded(true);
 
       await fetchHomeFeedFromApi("live-slots-screen", { force: true, reconcile: true });
-      setGlobalBackendRows(getCachedHomeFeedBackendRows());
+      setGlobalBackendRows(filterOutDeletedScheduleRows(getCachedHomeFeedBackendRows()));
       setTick((n) => n + 1);
     } catch {
     } finally {
@@ -117,20 +139,85 @@ export default function LiveSlotsScreen() {
   useFocusEffect(
     useCallback(() => {
       void reloadFeed();
-    }, [reloadFeed])
+
+      let cancelled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const runPoll = async () => {
+        if (cancelled) return;
+
+        const churchIds = new Set<string>();
+        if (viewerChurchId) churchIds.add(viewerChurchId);
+        for (const row of catalogRef.current.myChurch) {
+          const cid = homeFeedRowChurchId(row);
+          if (cid) churchIds.add(cid);
+        }
+        for (const row of catalogRef.current.otherChurches) {
+          const cid = homeFeedRowChurchId(row);
+          if (cid) churchIds.add(cid);
+        }
+
+        let changed = false;
+        for (const cid of churchIds) {
+          const updated = await pollRemoteSlotClaimUpdates(cid, "live-slots-remote-poll");
+          if (updated) changed = true;
+        }
+
+        if (changed && !cancelled) {
+          setTick((n) => n + 1);
+          await reloadFeed();
+        }
+
+        const pollMs = hasLiveWindowRef.current
+          ? SLOT_CLAIM_POLL_LIVE_MS
+          : SLOT_CLAIM_POLL_FALLBACK_MS;
+        timer = setTimeout(runPoll, pollMs);
+      };
+
+      void runPoll();
+
+      return () => {
+        cancelled = true;
+        if (timer) clearTimeout(timer);
+      };
+    }, [reloadFeed, viewerChurchId])
   );
 
   useEffect(() => subscribeHomeFeed(() => setTick((n) => n + 1)), []);
-  useEffect(() => onSlotClaimChanged(() => void reloadFeed()), [reloadFeed]);
+  useEffect(
+    () =>
+      onSlotClaimChanged((payload) => {
+        const cid = String(payload.churchId || viewerChurchId).trim();
+        if (cid) {
+          void pollRemoteSlotClaimUpdates(cid, "live-slots-slot-claim-event").then((changed) => {
+            if (changed) setTick((n) => n + 1);
+          });
+        }
+        void reloadFeed();
+      }),
+    [reloadFeed, viewerChurchId]
+  );
   useEffect(
     () =>
       onLiveRingRefresh(() => {
+        setChurchBackendRows((rows) => filterOutDeletedScheduleRows(rows));
+        setGlobalBackendRows((rows) => filterOutDeletedScheduleRows(rows));
+        setTick((n) => n + 1);
         void reloadFeed();
       }),
     [reloadFeed]
   );
+  useEffect(
+    () =>
+      onScheduleFeedDeleted(() => {
+        setChurchBackendRows((rows) => filterOutDeletedScheduleRows(rows));
+        setGlobalBackendRows((rows) => filterOutDeletedScheduleRows(rows));
+        setTick((n) => n + 1);
+      }),
+    []
+  );
 
-  const { catalog, sourceSnapshot } = useMemo(() => {
+  const { catalog, sourceSnapshot, ringCanonical } = useMemo(() => {
     void tick;
     const localRows = feedList() as any[];
     const globalRows = globalBackendRows.length ? globalBackendRows : getCachedHomeFeedBackendRows();
@@ -153,6 +240,29 @@ export default function LiveSlotsScreen() {
       sourceUsed: resolved.snapshot.sourceUsed,
     });
 
+    const ringCanonical = resolveRingChurchScheduleSnapshot({
+      mergedRows: resolved.rows,
+      viewerChurchId,
+      nowMs,
+    });
+
+    console.log("KRISTO_LIVE_SLOTS_RENDER_SOURCE", {
+      tab: "pending",
+      sourceUsed: resolved.snapshot.sourceUsed,
+      resolvedScheduleRowCount: resolved.rows.length,
+      churchBackendRowCount: churchBackendRows.length,
+      globalBackendRowCount: globalRows.length,
+      localRowCount: localRows.length,
+      churchFeedLoaded,
+    });
+
+    console.log("KRISTO_LIVE_SLOTS_CANONICAL_SCHEDULE", {
+      feedId: ringCanonical.feedId || null,
+      slotCount: ringCanonical.slotCount,
+      hasSchedule: Boolean(ringCanonical.schedule),
+      scheduleId: String(ringCanonical.schedule?.id || ringCanonical.schedule?.sourceScheduleId || ""),
+    });
+
     const nextCatalog = buildLiveSlotsCatalogFromFeedRows(
       resolved.rows,
       viewerChurchId,
@@ -160,10 +270,39 @@ export default function LiveSlotsScreen() {
       nowMs
     );
 
-    return { catalog: nextCatalog, sourceSnapshot: resolved.snapshot };
+    catalogRef.current = nextCatalog;
+    hasLiveWindowRef.current = [...nextCatalog.myChurch, ...nextCatalog.otherChurches].some((row) => {
+      const slot = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots[0] : null;
+      const startMs = Number(slot?.startMs || 0);
+      const endMs = Number(slot?.endMs || 0);
+      return startMs > 0 && startMs <= nowMs && endMs > nowMs;
+    });
+
+    return { catalog: nextCatalog, sourceSnapshot: resolved.snapshot, ringCanonical };
   }, [churchBackendRows, globalBackendRows, churchFeedLoaded, tick, viewerChurchId, viewerUserId, nowMs]);
 
-  const activeRows = tab === "my-church" ? catalog.myChurch : catalog.otherChurches;
+  const activeRows = filterLiveSlotsRenderRows(
+    tab === "my-church" ? catalog.myChurch : catalog.otherChurches
+  );
+
+  useEffect(() => {
+    for (const row of activeRows) {
+      const slot = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots[0] : null;
+      const claimedByUserId = scheduleSlotClaimUserId(slot);
+      if (!claimedByUserId || claimedByUserId === viewerUserId) continue;
+
+      console.log("KRISTO_LIVE_SLOTS_VIEWER_SEES_CLAIMED", {
+        viewerUserId,
+        slotId: String(slot?.id || slot?.slotId || row?.id || ""),
+        scheduleFeedId: String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || ""),
+        claimedByUserId,
+        claimedByName: String(slot?.claimedByName || slot?.claimedBy?.name || "").trim(),
+        claimedAt: String(slot?.claimedAt || slot?.claimedBy?.claimedAt || "").trim(),
+        tab,
+        churchId: homeFeedRowChurchId(row),
+      });
+    }
+  }, [activeRows, tab, viewerUserId]);
 
   const focusScheduleFeedId = String(routeParams.focusScheduleFeedId || "").trim();
   const focusSlotId = String(routeParams.focusSlotId || "").trim();
@@ -281,8 +420,10 @@ export default function LiveSlotsScreen() {
       viewerUserId,
       sourceUsed: sourceSnapshot.sourceUsed,
       tab,
+      canonicalFeedId: ringCanonical.feedId || null,
+      canonicalSlotCount: ringCanonical.slotCount,
     });
-  }, [activeRows, sourceSnapshot, tab, viewerUserId]);
+  }, [activeRows, ringCanonical.feedId, ringCanonical.slotCount, sourceSnapshot, tab, viewerUserId]);
 
   const profileName = String(
     session?.displayName || session?.name || session?.fullName || "You"
