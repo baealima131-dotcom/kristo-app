@@ -34,6 +34,7 @@ export const MEMBERSHIPS_STORE_KEY = "memberships.json";
 export const MEMBERS_STORE_KEY = "members.json";
 export const CHURCH_BANKED_STORE_KEY = "church_banked.json";
 export const FOLLOWS_STORE_KEY = "follows.json";
+export const CHURCH_FOLLOWS_STORE_KEY = "church-follows.json";
 export const MY_WAY_SETTINGS_STORE_KEY = "my_way_settings.json";
 
 type CoreStoreKey =
@@ -43,6 +44,7 @@ type CoreStoreKey =
   | typeof MEMBERS_STORE_KEY
   | typeof CHURCH_BANKED_STORE_KEY
   | typeof FOLLOWS_STORE_KEY
+  | typeof CHURCH_FOLLOWS_STORE_KEY
   | typeof MY_WAY_SETTINGS_STORE_KEY;
 
 let sqlClient: ReturnType<typeof neon> | null = null;
@@ -88,6 +90,10 @@ function normalizeStoreKey(fileName: string): CoreStoreKey {
 
   if (f === "follows.json" || f === "followers.json" || f === "social.json") {
     return FOLLOWS_STORE_KEY;
+  }
+
+  if (f === "church-follows.json" || f === "church_follows.json") {
+    return CHURCH_FOLLOWS_STORE_KEY;
   }
 
   if (f === "my_way_settings.json" || f === "my-way-settings.json") {
