@@ -1,4 +1,7 @@
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  readCoreJsonFile as readJsonFile,
+  updateCoreJsonFile as updateJsonFile,
+} from "@/app/api/_lib/store/coreDb";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
 import {
   dbGetChurchById,
@@ -95,7 +98,8 @@ export async function getChurchById(churchId: string): Promise<ChurchProfile | u
     return row || undefined;
   }
   const all = await readAll();
-  return all.find((c) => c.id === churchId);
+  const normalized = String(churchId || "").trim().toUpperCase();
+  return all.find((c) => String(c.id || "").trim().toUpperCase() === normalized);
 }
 
 export type ChurchSearchHit = ChurchProfile & {
