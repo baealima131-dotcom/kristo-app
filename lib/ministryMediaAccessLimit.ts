@@ -8,6 +8,17 @@ export type MinistryMediaAccessRow = {
   mediaAccess?: boolean;
 };
 
+export function churchIdsMatchForMinistry(stored: unknown, requested: string): boolean {
+  return (
+    String(stored || "")
+      .trim()
+      .toLowerCase() ===
+    String(requested || "")
+      .trim()
+      .toLowerCase()
+  );
+}
+
 export function countChurchMinistriesWithMediaAccess(
   ministries: MinistryMediaAccessRow[],
   churchId: string,
@@ -18,7 +29,7 @@ export function countChurchMinistriesWithMediaAccess(
   if (!cid) return 0;
 
   return (Array.isArray(ministries) ? ministries : []).filter((row) => {
-    if (String(row?.churchId || "").trim() !== cid) return false;
+    if (!churchIdsMatchForMinistry(row?.churchId, cid)) return false;
     if (excludeId && String(row?.id || "").trim() === excludeId) return false;
     return row?.mediaAccess === true;
   }).length;

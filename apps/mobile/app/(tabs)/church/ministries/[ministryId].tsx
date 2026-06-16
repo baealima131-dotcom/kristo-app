@@ -15,6 +15,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fetchMinistryById, fetchMinistryMembers, type MinistryItem } from "@/src/lib/ministriesApi";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet, apiPost, apiDelete } from "@/src/lib/kristoApi";
+import {
+  evaluateMinistryMediaAccessPermission,
+  logMinistryMediaAccessLoad,
+} from "@/src/lib/ministryMediaAccessTrace";
 
 const VIP_BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -102,6 +106,20 @@ export default function ChurchMinistryDetailsScreen() {
         ),
         createdAt: String((one as any)?.createdAt || ""),
         updatedAt: String((one as any)?.updatedAt || ""),
+      });
+
+      logMinistryMediaAccessLoad({
+        ministryId: String((one as any)?.id || ""),
+        churchId: String((one as any)?.churchId || ""),
+        mediaAccess: (one as any)?.mediaAccess === true,
+        payloadStored: one,
+        source: "church/ministries/[ministryId]",
+      });
+      evaluateMinistryMediaAccessPermission({
+        ministryId: String((one as any)?.id || ""),
+        churchId: String((one as any)?.churchId || ""),
+        mediaAccess: (one as any)?.mediaAccess === true,
+        source: "church/ministries/[ministryId]",
       });
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Failed to load ministry");

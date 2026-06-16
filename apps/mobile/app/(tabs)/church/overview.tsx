@@ -66,6 +66,10 @@ const CHURCH_OVERVIEW_SCREEN = "ChurchOverview";
 import { ChurchPremiumSubscriptionModal, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import {
+  evaluateMinistryMediaAccessPermission,
+  logMinistryMediaAccessLoad,
+} from "@/src/lib/ministryMediaAccessTrace";
+import {
   isMinistryMediaAccessLimitReachedError,
   MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE,
 } from "@/src/lib/ministryMediaAccessLimit";
@@ -1122,19 +1126,36 @@ export default function ChurchOverviewScreen() {
       });
 
       const list = Array.isArray(j?.data) ? j.data : [];
-      let used = 0;
+
+      logMinistryMediaAccessLoad({
+        churchId,
+        count: list.length,
+        source: "church/overview media picker",
+        payloadStored: list.map((m: any) => ({
+          id: m?.id,
+          name: m?.name,
+          mediaAccess: m?.mediaAccess === true,
+        })),
+      });
 
       setMediaTargets(
         list
           .map((m: any) => {
-            const wantsAccess = m?.mediaAccess === true;
-            const allowed = wantsAccess && used < 3;
-            if (allowed) used += 1;
+            const persistedMediaAccess = m?.mediaAccess === true;
+            if (persistedMediaAccess) {
+              evaluateMinistryMediaAccessPermission({
+                ministryId: String(m?.id || ""),
+                churchId,
+                mediaAccess: true,
+                churchSubscriptionActive,
+                source: "church/overview media picker",
+              });
+            }
 
             return {
               id: String(m?.id || ""),
               name: String(m?.name || "Ministry"),
-              mediaAccess: allowed,
+              mediaAccess: persistedMediaAccess,
             };
           })
           .filter((m: MediaMinistryTarget) => Boolean(m.id))

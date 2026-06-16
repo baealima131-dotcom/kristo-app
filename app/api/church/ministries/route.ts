@@ -20,6 +20,10 @@ import {
   logMinistryMediaAccessLimit,
   ministryMediaAccessLimitPayload,
 } from "@/lib/ministryMediaAccessLimit";
+import {
+  logMinistryMediaAccessLoad,
+  logMinistryMediaAccessSave,
+} from "@/lib/ministryMediaAccessTrace";
 
 /* =========================
    TYPES
@@ -245,10 +249,30 @@ export async function GET(req: NextRequest) {
     if (!one) {
       return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
     }
+
+    logMinistryMediaAccessLoad({
+      ministryId: one.id,
+      churchId,
+      mediaAccess: one.mediaAccess === true,
+      payloadStored: one,
+      source: "api/church/ministries?id",
+    });
+
     return json<Ministry>({ ok: true, data: one });
   }
 
-  const churchMinistries = all.filter((m) => m.churchId === churchId);
+  const churchMinistries = all.filter((m) => churchIdsMatch(m.churchId, churchId));
+
+  logMinistryMediaAccessLoad({
+    churchId,
+    count: churchMinistries.length,
+    source: "api/church/ministries",
+    payloadStored: churchMinistries.map((m) => ({
+      id: m.id,
+      name: m.name,
+      mediaAccess: m.mediaAccess === true,
+    })),
+  });
 
   if (mineMode) {
     const data = await getUserJoinedMinistries(churchId, viewer.userId);
@@ -318,6 +342,14 @@ export async function POST(req: NextRequest) {
     status,
     mediaAccess,
     ...fieldTypes,
+  });
+
+  logMinistryMediaAccessSave({
+    churchId,
+    mediaAccess,
+    payloadSent: { name, status, description, mediaAccess },
+    phase: "request",
+    source: "api/church/ministries POST",
   });
 
   const created: Ministry = {
@@ -406,6 +438,16 @@ export async function POST(req: NextRequest) {
       ...fieldTypes,
     });
 
+    logMinistryMediaAccessSave({
+      ministryId: created.id,
+      churchId,
+      mediaAccess: created.mediaAccess === true,
+      payloadSent: { name, status, description, mediaAccess },
+      payloadStored: created,
+      phase: "persist",
+      source: "api/church/ministries POST",
+    });
+
     return json<Ministry>({ ok: true, data: created }, { status: 201 });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error || "ministry_save_failed");
@@ -480,7 +522,9 @@ export async function PATCH(req: NextRequest) {
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
-        const idx = list.findIndex((m) => m.id === mid && m.churchId === churchId);
+        const idx = list.findIndex(
+          (m) => normalizeMinistryId(m.id) === normalizeMinistryId(mid) && churchIdsMatch(m.churchId, churchId)
+        );
 
         if (idx < 0) {
           notFound = true;
@@ -553,6 +597,16 @@ export async function PATCH(req: NextRequest) {
   if (notFound || !updated) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
 
   const u = updated as any as Ministry;
+
+  logMinistryMediaAccessSave({
+    ministryId: u.id,
+    churchId,
+    mediaAccess: u.mediaAccess === true,
+    payloadSent: body,
+    payloadStored: u,
+    phase: "persist",
+    source: "api/church/ministries PATCH",
+  });
 
   const statusToggled = !!(prevStatus && nextStatusForAudit && prevStatus !== nextStatusForAudit);
 

@@ -22,12 +22,19 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
+import { getSessionSync } from "@/src/lib/kristoSession";
 import {
   countMinistriesWithMediaAccess,
   isMinistryMediaAccessLimitReachedError,
   MINISTRY_MEDIA_ACCESS_LIMIT,
   MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE,
 } from "@/src/lib/ministryMediaAccessLimit";
+import {
+  evaluateMinistryMediaAccessPermission,
+  logMinistryMediaAccessLoad,
+  logMinistryMediaAccessSave,
+} from "@/src/lib/ministryMediaAccessTrace";
 import { vipAvatarBg, vipInitials } from "@/src/ui/vipUtil";
 
 type MinistryStatus = "Active" | "Paused";
@@ -247,11 +254,16 @@ export default function ChurchMinistryCreateScreen() {
   const [status, setStatus] = useState<MinistryStatus>("Active");
   const [mediaAccess, setMediaAccess] = useState(false);
   const [mediaAccessCount, setMediaAccessCount] = useState(0);
+  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
+    isSubscriptionBypassEnabled() ? true : null
+  );
 
-  // TEMP premium gate for ministry media access
-  const hasSubscription = isSubscriptionBypassEnabled();
+  const canEnableMinistryMediaAccess =
+    churchSubscriptionActive === true || isSubscriptionBypassEnabled();
   const mediaAccessLimitReached = mediaAccessCount >= MINISTRY_MEDIA_ACCESS_LIMIT;
-  const mediaAccessToggleDisabled = !hasSubscription || mediaAccessLimitReached;
+  const mediaAccessToggleDisabled = !canEnableMinistryMediaAccess || mediaAccessLimitReached;
+
+  const churchId = String(getSessionSync()?.churchId || (getSessionSync() as any)?.activeChurchId || "").trim();
 
   const [members, setMembers] = useState<PickerMember[]>([]);
   const [pastorHints, setPastorHints] = useState<{ pastorUserId?: string; currentPastorId?: string }>({});
@@ -313,6 +325,17 @@ export default function ChurchMinistryCreateScreen() {
     }
   }, [autoPastorUserId]);
 
+  useEffect(() => {
+    if (!churchId) return;
+    let alive = true;
+    fetchChurchSubscriptionActive(churchId, getKristoHeaders()).then((active) => {
+      if (alive) setChurchSubscriptionActive(active);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [churchId]);
+
   // Load church members for pickers and media access count
   useEffect(() => {
     let alive = true;
@@ -325,6 +348,16 @@ export default function ChurchMinistryCreateScreen() {
         if (!alive) return;
         if (ministriesRes?.ok && Array.isArray(ministriesRes.data)) {
           setMediaAccessCount(countMinistriesWithMediaAccess(ministriesRes.data));
+          logMinistryMediaAccessLoad({
+            churchId,
+            count: ministriesRes.data.length,
+            source: "church/ministries/create",
+            payloadStored: ministriesRes.data.map((m: any) => ({
+              id: m?.id,
+              name: m?.name,
+              mediaAccess: m?.mediaAccess === true,
+            })),
+          });
         }
         if (membersRes?.ok && Array.isArray(membersRes.data)) {
           const list: PickerMember[] = membersRes.data
@@ -372,11 +405,39 @@ export default function ChurchMinistryCreateScreen() {
     setErr(null);
     setSaving(true);
     try {
-      const data = await apiCreateMinistry({
+      const payloadSent = {
         name: name.trim(),
         description: description.trim() ? description.trim() : undefined,
         status,
-        mediaAccess: hasSubscription ? mediaAccess : false,
+        mediaAccess: canEnableMinistryMediaAccess ? mediaAccess : false,
+      };
+
+      logMinistryMediaAccessSave({
+        churchId,
+        mediaAccess: payloadSent.mediaAccess === true,
+        payloadSent,
+        phase: "request",
+        source: "church/ministries/create",
+      });
+
+      const data = await apiCreateMinistry(payloadSent);
+
+      logMinistryMediaAccessSave({
+        ministryId: data.id,
+        churchId,
+        mediaAccess: data.mediaAccess === true,
+        payloadSent,
+        payloadStored: data,
+        phase: "response",
+        source: "church/ministries/create",
+      });
+
+      evaluateMinistryMediaAccessPermission({
+        ministryId: data.id,
+        churchId,
+        mediaAccess: data.mediaAccess === true,
+        churchSubscriptionActive,
+        source: "church/ministries/create",
       });
       const uniqueLeaders = Array.from(new Set(withPastor(pickedLeaderIds, autoPastorUserId)));
       const uniqueMembers = Array.from(new Set(pickedMemberIds.filter((x) => !uniqueLeaders.includes(x))));
@@ -701,7 +762,7 @@ export default function ChurchMinistryCreateScreen() {
                   <Pressable
                     disabled={mediaAccessToggleDisabled}
                     onPress={() => {
-                      if (!hasSubscription) {
+                      if (!canEnableMinistryMediaAccess) {
                         Alert.alert(
                           "Subscription required",
                           "Subscribe first before enabling ministry media access."
@@ -751,7 +812,7 @@ export default function ChurchMinistryCreateScreen() {
                       </View>
                     </View>
                   </Pressable>
-                  {hasSubscription && mediaAccessLimitReached ? (
+                  {canEnableMinistryMediaAccess && mediaAccessLimitReached ? (
                     <Text style={s.mediaAccessLimitHint}>{MINISTRY_MEDIA_ACCESS_LIMIT_MESSAGE}</Text>
                   ) : null}
 

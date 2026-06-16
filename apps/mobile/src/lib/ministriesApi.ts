@@ -7,6 +7,7 @@ export type MinistryItem = {
   churchId?: string;
   memberCount?: number;
   avatarUri?: string;
+  mediaAccess?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -71,6 +72,7 @@ export async function fetchMinistries(): Promise<MinistryItem[]> {
     ),
     churchId: String(x?.churchId || ""),
     memberCount: Number(x?.memberCount ?? x?.membersCount ?? x?.ministryMembersCount ?? 0),
+    mediaAccess: x?.mediaAccess === true,
     createdAt: String(x?.createdAt || ""),
     updatedAt: String(x?.updatedAt || ""),
   }));
@@ -84,6 +86,7 @@ export async function fetchMinistryById(ministryId: string): Promise<MinistryIte
 export async function createMinistry(payload: {
   name: string;
   description?: string;
+  mediaAccess?: boolean;
 }) {
   const base = getBase();
   const { userId } = getAuthBits();
@@ -96,6 +99,7 @@ export async function createMinistry(payload: {
     body: JSON.stringify({
       name: String(payload.name || "").trim(),
       description: String(payload.description || "").trim(),
+      mediaAccess: payload.mediaAccess === true,
     }),
   });
 
