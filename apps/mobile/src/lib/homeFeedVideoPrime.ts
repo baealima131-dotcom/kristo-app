@@ -1,4 +1,5 @@
 import { createVideoPlayer, type VideoPlayer } from "expo-video";
+import { safePauseVideoPlayer } from "@/src/lib/expoVideoPlayerSafe";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 
 /**
@@ -62,9 +63,7 @@ function isNetworkUrl(url: string): boolean {
 
 function safeRelease(player: VideoPlayer | null | undefined) {
   if (!player) return;
-  try {
-    player.pause();
-  } catch {}
+  safePauseVideoPlayer(player, { source: "home-feed-video-prime" });
   try {
     player.release();
   } catch {}

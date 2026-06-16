@@ -18,6 +18,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as ImagePicker from "expo-image-picker";
 import { VideoView, useVideoPlayer } from "expo-video";
+import {
+  safePauseVideoPlayer,
+  safePlayVideoPlayer,
+} from "../../../src/lib/expoVideoPlayerSafe";
 import { usePathname, useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -340,11 +344,11 @@ function MediaPostVideoPreview({ uri, onChange }: { uri: string; onChange?: () =
   });
 
   useEffect(() => {
-    player.play();
+    safePlayVideoPlayer(player, { source: "media-post-preview", uri });
     return () => {
-      try { player.pause(); } catch {}
+      safePauseVideoPlayer(player, { source: "media-post-preview", uri });
     };
-  }, [player]);
+  }, [player, uri]);
 
   return (
     <View style={s.videoPreviewBox}>

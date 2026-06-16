@@ -1,6 +1,10 @@
 import React, { memo } from "react";
 import { ActivityIndicator, AppState, Image, StyleSheet, Text, View } from "react-native";
 import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
+import {
+  safePauseVideoPlayer,
+  safePlayVideoPlayer,
+} from "@/src/lib/expoVideoPlayerSafe";
 import { useEvent } from "expo";
 import {
   claimStartupVideoPlayer,
@@ -355,16 +359,12 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
 
   const safePlay = React.useCallback(() => {
     if (playerDisposedRef.current) return;
-    try {
-      player.play();
-    } catch {}
+    safePlayVideoPlayer(player, { source: "home-feed-video-player" });
   }, [player]);
 
   const safePause = React.useCallback(() => {
     if (playerDisposedRef.current) return;
-    try {
-      player.pause();
-    } catch {}
+    safePauseVideoPlayer(player, { source: "home-feed-video-player" });
   }, [player]);
 
   const safeSetMuted = React.useCallback(
@@ -665,9 +665,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     return () => {
       playerDisposedRef.current = true;
       saveProgress("unmount");
-      try {
-        player.pause();
-      } catch {}
+      safePauseVideoPlayer(player, { source: "home-feed-video-player" });
       unregisterHomeFeedPlayer(key);
       if (adoptedPlayer) {
         if (startupTarget) {

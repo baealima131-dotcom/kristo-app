@@ -1,6 +1,10 @@
 import React, { memo, useEffect } from "react";
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
+import {
+  safePauseVideoPlayer,
+  safePlayVideoPlayer,
+} from "@/src/lib/expoVideoPlayerSafe";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
@@ -21,9 +25,10 @@ function StickyVideoSurface({ uri }: { uri: string }) {
 
   useEffect(() => {
     if (!playbackUri) return;
-    try {
-      player.play();
-    } catch {}
+    safePlayVideoPlayer(player, { source: "home-feed-sticky-player", uri: playbackUri });
+    return () => {
+      safePauseVideoPlayer(player, { source: "home-feed-sticky-player", uri: playbackUri });
+    };
   }, [player, playbackUri]);
 
   if (!playbackUri) return null;

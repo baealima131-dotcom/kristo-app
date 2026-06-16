@@ -8,6 +8,10 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
+import {
+  safePauseVideoPlayer,
+  safePlayVideoPlayer,
+} from "@/src/lib/expoVideoPlayerSafe";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
@@ -28,13 +32,9 @@ function ModalVideoPlayer({ uri }: { uri: string }) {
 
   useEffect(() => {
     if (!playbackUri) return;
-    try {
-      player.play();
-    } catch {}
+    safePlayVideoPlayer(player, { source: "home-feed-video-modal", uri: playbackUri });
     return () => {
-      try {
-        player.pause();
-      } catch {}
+      safePauseVideoPlayer(player, { source: "home-feed-video-modal", uri: playbackUri });
     };
   }, [player, playbackUri]);
 

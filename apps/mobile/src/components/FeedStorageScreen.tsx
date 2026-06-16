@@ -15,6 +15,11 @@ import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { VideoView, useVideoPlayer } from "expo-video";
+import {
+  logStorageVideoPreviewUnmount,
+  safePauseVideoPlayer,
+  safePlayVideoPlayer,
+} from "@/src/lib/expoVideoPlayerSafe";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -108,9 +113,10 @@ function StorageVideoPreview({ uri }: { uri: string }) {
   });
 
   useEffect(() => {
-    player.play();
+    safePlayVideoPlayer(player, { source: "feed-storage-preview", uri });
     return () => {
-      player.pause();
+      logStorageVideoPreviewUnmount(uri);
+      safePauseVideoPlayer(player, { source: "feed-storage-preview", uri });
     };
   }, [player, uri]);
 

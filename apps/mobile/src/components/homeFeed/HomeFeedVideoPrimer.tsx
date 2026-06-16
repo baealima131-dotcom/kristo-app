@@ -2,6 +2,11 @@ import React from "react";
 import { StyleSheet, View } from "react-native";
 import { VideoView } from "expo-video";
 import {
+  safePauseVideoPlayer,
+  safePlayVideoPlayer,
+  safeVideoPlayerCurrentTime,
+} from "@/src/lib/expoVideoPlayerSafe";
+import {
   getHomeFeedVideoPrimeSnapshot,
   markHomeFeedVideoPrimeFailed,
   markHomeFeedVideoPrimed,
@@ -55,16 +60,14 @@ export function HomeFeedVideoPrimer() {
       settled = true;
       clearInterval(poll);
       clearTimeout(timeout);
-      try {
-        player.pause();
-      } catch {}
+      safePauseVideoPlayer(player, { source: "home-feed-video-primer", uri: url });
       if (painted) markHomeFeedVideoPrimed(rawUrl || url);
       else markHomeFeedVideoPrimeFailed(rawUrl || url, "no-first-frame");
     };
 
     try {
       player.muted = true;
-      player.play();
+      safePlayVideoPlayer(player, { source: "home-feed-video-primer", uri: url });
     } catch {
       finish(false);
       return;
@@ -73,10 +76,7 @@ export function HomeFeedVideoPrimer() {
 
     const poll = setInterval(() => {
       if (settled) return;
-      let t = 0;
-      try {
-        t = Number((player as any).currentTime) || 0;
-      } catch {}
+      const t = safeVideoPlayerCurrentTime(player);
       if (t > FIRST_FRAME_TIME) {
         finish(true);
       } else {
@@ -86,9 +86,7 @@ export function HomeFeedVideoPrimer() {
           playing = Boolean((player as any).playing);
         } catch {}
         if (!playing) {
-          try {
-            player.play();
-          } catch {}
+          safePlayVideoPlayer(player, { source: "home-feed-video-primer", uri: url });
         }
       }
     }, POLL_MS);

@@ -10,6 +10,11 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
+import {
+  safePauseVideoPlayer,
+  safePlayVideoPlayer,
+  safeSeekVideoPlayer,
+} from "@/src/lib/expoVideoPlayerSafe";
 import { useEventListener } from "expo";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
@@ -305,16 +310,18 @@ function WatchVideoSurface({
           }
           backdropPlayer.muted = true;
           backdropPlayer.loop = true;
-          backdropPlayer.play();
+          safePlayVideoPlayer(backdropPlayer, { source: "home-feed-watch-backdrop", uri: playbackUri });
         }
 
-        player.play();
+        safePlayVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
         notifyWatchPlaybackActive(postId);
       } catch {}
     })();
 
     return () => {
       cancelled = true;
+      safePauseVideoPlayer(backdropPlayer, { source: "home-feed-watch-backdrop", uri: playbackUri });
+      safePauseVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
     };
   }, [player, backdropPlayer, playbackUri, postId, isTikTokLayout]);
 
@@ -333,12 +340,10 @@ function WatchVideoSurface({
 
   const handleReplay = useCallback(() => {
     setEnded(false);
-    try {
-      player.currentTime = 0;
-      player.play();
-      notifyWatchPlaybackActive(postId);
-    } catch {}
-  }, [player, postId]);
+    safeSeekVideoPlayer(player, 0, { source: "home-feed-watch", uri: playbackUri });
+    safePlayVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
+    notifyWatchPlaybackActive(postId);
+  }, [player, postId, playbackUri]);
 
   const churchName = item ? resolveChurchName(item) : "";
   const churchRoomPost = Boolean(item && isChurchRoomMemberFeedPost(item));

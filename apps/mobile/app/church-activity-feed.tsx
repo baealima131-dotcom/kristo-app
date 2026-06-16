@@ -19,6 +19,10 @@ import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { VideoView, useVideoPlayer } from "expo-video";
+import {
+  safePauseVideoPlayer,
+  safePlayVideoPlayer,
+} from "@/src/lib/expoVideoPlayerSafe";
 import { useIsFocused } from "@react-navigation/native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -367,11 +371,14 @@ const ActivityFeedVideo = memo(function ActivityFeedVideo({
 
   useEffect(() => {
     if (shouldPlay) {
-      player.play();
+      safePlayVideoPlayer(player, { source: "church-activity-feed", uri });
     } else {
-      player.pause();
+      safePauseVideoPlayer(player, { source: "church-activity-feed", uri });
     }
-  }, [player, shouldPlay]);
+    return () => {
+      safePauseVideoPlayer(player, { source: "church-activity-feed", uri });
+    };
+  }, [player, shouldPlay, uri]);
 
   const poster = String(posterUri || "").trim();
   const showPoster = !!poster && !shouldPlay && !isBrandedPosterUri(poster);
