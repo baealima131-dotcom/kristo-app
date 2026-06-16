@@ -23,6 +23,7 @@ export default function ChurchLayout() {
     >
       <Stack.Screen name="index" />
       <Stack.Screen name="ministries" />
+      <Stack.Screen name="followers" />
     </Stack>
   );
 }

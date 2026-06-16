@@ -17,6 +17,7 @@ import {
   logMinistryScope,
   resolveMinistryStatsScope,
 } from "@/app/api/_lib/ministryMembership";
+import { getChurchFollowerCount } from "@/app/api/_lib/churchFollows";
 
 function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
@@ -86,6 +87,8 @@ export async function GET(req: NextRequest) {
         ).size
       : 0;
 
+    const followerCount = await getChurchFollowerCount(churchId);
+
     return json({
       ok: true,
       data: {
@@ -98,6 +101,8 @@ export async function GET(req: NextRequest) {
         profile: buildOverviewProfile(churchId, churchProfile, pastorName),
         stats: {
           activeMembers: activeMembers.length,
+          followers: followerCount,
+          followerCount,
           ministries: ministriesCount,
           ministryMembers: ministryMembersCount,
           unreadNotifications: 0,
@@ -177,6 +182,8 @@ export async function GET(req: NextRequest) {
     includeAllTargets: false,
   });
 
+  const followerCount = await getChurchFollowerCount(churchId);
+
   return json({
     ok: true,
     data: {
@@ -185,6 +192,8 @@ export async function GET(req: NextRequest) {
       profile: buildOverviewProfile(churchId, churchProfile, pastorName),
       stats: {
         activeMembers: activeMembers.length,
+        followers: followerCount,
+        followerCount,
         ministries: ministriesCount,
         ministryMembers: ministryMembersCount,
         unreadNotifications,

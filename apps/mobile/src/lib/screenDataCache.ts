@@ -40,6 +40,7 @@ export type ChurchOverviewCachePayload = {
   };
   stats: {
     activeMembers: number;
+    followers: number;
     ministries: number;
     ministryMembers: number;
     unreadNotifications: number;
@@ -312,6 +313,7 @@ function parseChurchOverviewResponse(
     profile,
     stats: {
       activeMembers: Number(s?.activeMembers || 0),
+      followers: Number(s?.followers ?? s?.followerCount ?? 0),
       ministries: Number(s?.ministries || 0),
       ministryMembers: Number(s?.ministryMembers || 0),
       unreadNotifications: Number(s?.unreadNotifications || 0),

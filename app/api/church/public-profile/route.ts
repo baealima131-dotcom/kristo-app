@@ -4,6 +4,7 @@ import type { NextRequest } from "next/server";
 import { getChurchById, searchChurches, type ChurchProfile } from "@/app/api/_lib/churches";
 import { resolveChurchAvatarFields } from "@/app/api/_lib/churchAvatar";
 import { getMembershipsForChurch, getMembershipsForUser } from "@/app/api/_lib/memberships";
+import { getChurchFollowerCount, getViewerFollowingChurch } from "@/app/api/_lib/churchFollows";
 import { readMinistryJsonFile } from "@/app/api/_lib/store/ministryDb";
 import { listFeedItems, listFeedItemsForChurch } from "@/app/api/_lib/store/feedDb";
 import { isChurchDatabaseError } from "@/app/api/_lib/store/churchDb";
@@ -174,9 +175,14 @@ export async function GET(req: NextRequest) {
 
     let memberCount = 0;
     let ministryCount = 0;
+    let followerCount = 0;
     try {
       const activeMembers = await getMembershipsForChurch(id, "Active");
       memberCount = activeMembers.length;
+    } catch {}
+
+    try {
+      followerCount = await getChurchFollowerCount(id);
     } catch {}
 
     try {
@@ -189,6 +195,10 @@ export async function GET(req: NextRequest) {
 
     const recentPosts = await loadRecentPosts(id, String(profile.name || id)).catch(() => []);
     const viewerMembershipStatus = await resolveViewerMembershipStatus(req, id);
+    const viewerUserId = resolveOptionalViewerUserId(req);
+    const viewerFollowing = viewerUserId
+      ? await getViewerFollowingChurch(viewerUserId, id).catch(() => false)
+      : false;
 
     return json({
       ok: true,
@@ -207,6 +217,9 @@ export async function GET(req: NextRequest) {
         memberCount,
         ministryCount,
         ministriesCount: ministryCount,
+        followerCount,
+        followersCount: followerCount,
+        viewerFollowing,
         viewerMembershipStatus,
         recentPosts,
       },

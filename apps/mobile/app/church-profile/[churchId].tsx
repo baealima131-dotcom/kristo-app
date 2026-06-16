@@ -15,11 +15,14 @@ import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
+  fetchChurchFollowStatus,
   fetchChurchPublicProfile,
   fetchViewerChurchMemberships,
-  resolveChurchJoinStatus,
+  resolveChurchProfileViewerState,
   sendChurchJoinRequest,
-  type ChurchJoinStatus,
+  setChurchFollow,
+  V1_OTHER_CHURCH_JOIN_MESSAGE,
+  type ChurchProfileViewerState,
   type ChurchPublicProfile,
 } from "@/src/lib/churchProfileApi";
 import { getApiBase } from "@/src/lib/kristoApi";
@@ -56,7 +59,14 @@ export default function ChurchProfileScreen() {
 
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<ChurchPublicProfile | null>(null);
-  const [joinStatus, setJoinStatus] = useState<ChurchJoinStatus>("none");
+  const [viewerState, setViewerState] = useState<ChurchProfileViewerState>({
+    joinStatus: "none",
+    memberOfOtherChurch: false,
+    activeChurchId: null,
+    canJoin: false,
+  });
+  const [following, setFollowing] = useState(false);
+  const [followBusy, setFollowBusy] = useState(false);
   const [requesting, setRequesting] = useState(false);
   const [joinNotice, setJoinNotice] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -80,10 +90,19 @@ export default function ChurchProfileScreen() {
       }
 
       const memberships = await fetchViewerChurchMemberships().catch(() => []);
-      setProfile(nextProfile);
-      setJoinStatus(
-        resolveChurchJoinStatus(nextProfile.id, memberships, nextProfile.viewerMembershipStatus)
+      const nextViewerState = resolveChurchProfileViewerState(
+        nextProfile.id,
+        memberships,
+        nextProfile.viewerMembershipStatus
       );
+      const nextFollowing =
+        typeof nextProfile.viewerFollowing === "boolean"
+          ? nextProfile.viewerFollowing
+          : await fetchChurchFollowStatus(nextProfile.id).catch(() => false);
+
+      setProfile(nextProfile);
+      setViewerState(nextViewerState);
+      setFollowing(nextFollowing);
     } catch (e: any) {
       setProfile(null);
       setError(String(e?.message || e || "Could not load church profile."));
@@ -101,13 +120,22 @@ export default function ChurchProfileScreen() {
   const initial = displayName.charAt(0).toUpperCase() || "C";
   const locationLine = profile ? buildLocationLine(profile) : "";
 
+  const handleBlockedJoinPress = useCallback(() => {
+    Alert.alert("Join unavailable", V1_OTHER_CHURCH_JOIN_MESSAGE);
+  }, []);
+
   const handleJoin = useCallback(async () => {
     const userId = String(session?.userId || "").trim();
     if (!userId) {
       Alert.alert("Sign in required", "Please sign in before requesting to join a church.");
       return;
     }
-    if (!profile?.id || joinStatus !== "none" || requesting) return;
+    if (!profile?.id || !viewerState.canJoin || viewerState.joinStatus !== "none" || requesting) {
+      if (viewerState.memberOfOtherChurch) {
+        handleBlockedJoinPress();
+      }
+      return;
+    }
 
     setRequesting(true);
     setJoinNotice("");
@@ -116,45 +144,173 @@ export default function ChurchProfileScreen() {
         profile.id,
         String(session?.displayName || session?.name || "").trim() || undefined
       );
-      setJoinStatus("pending");
+      setViewerState((prev) => ({ ...prev, joinStatus: "pending", canJoin: false }));
       setJoinNotice("Request sent to church.");
     } catch (e: any) {
       Alert.alert("Request failed", String(e?.message || e || "Could not send join request."));
     } finally {
       setRequesting(false);
     }
-  }, [joinStatus, profile?.id, requesting, session?.displayName, session?.name, session?.userId]);
+  }, [
+    handleBlockedJoinPress,
+    profile?.id,
+    requesting,
+    session?.displayName,
+    session?.name,
+    session?.userId,
+    viewerState.canJoin,
+    viewerState.joinStatus,
+    viewerState.memberOfOtherChurch,
+  ]);
 
-  const joinAction = useMemo(() => {
-    if (joinStatus === "member") {
+  const handleFollowToggle = useCallback(async () => {
+    const userId = String(session?.userId || "").trim();
+    if (!userId) {
+      Alert.alert("Sign in required", "Please sign in before following a church.");
+      return;
+    }
+    if (!profile?.id || followBusy) return;
+
+    const nextFollowing = !following;
+    setFollowBusy(true);
+    try {
+      const result = await setChurchFollow(profile.id, nextFollowing);
+      if (!result.ok) {
+        throw new Error(result.error || "Could not update follow status.");
+      }
+
+      setFollowing(Boolean(result.following ?? nextFollowing));
+      if (typeof result.followerCount === "number") {
+        setProfile((prev) =>
+          prev ? { ...prev, followerCount: result.followerCount } : prev
+        );
+      } else {
+        setProfile((prev) => {
+          if (!prev) return prev;
+          const current = Number(prev.followerCount ?? 0);
+          return {
+            ...prev,
+            followerCount: Math.max(0, current + (nextFollowing ? 1 : -1)),
+          };
+        });
+      }
+    } catch (e: any) {
+      Alert.alert("Follow failed", String(e?.message || e || "Could not update follow status."));
+    } finally {
+      setFollowBusy(false);
+    }
+  }, [followBusy, following, profile?.id, session?.userId]);
+
+  const joinSlot = useMemo(() => {
+    if (viewerState.joinStatus === "member") {
       return (
-        <View style={styles.memberBadge}>
+        <View style={[styles.actionSlot, styles.joinSlotMember]}>
           <Ionicons name="checkmark-circle" size={16} color="#07101A" />
           <Text style={styles.memberBadgeText}>Member</Text>
         </View>
       );
     }
 
-    if (joinStatus === "pending") {
+    if (viewerState.joinStatus === "pending") {
       return (
-        <View style={styles.pendingBadge}>
-          <Ionicons name="hourglass-outline" size={16} color={GOLD} />
+        <View style={[styles.actionSlot, styles.joinSlotPending]}>
+          <Ionicons name="hourglass-outline" size={15} color={GOLD} />
           <Text style={styles.pendingBadgeText}>Request Pending</Text>
         </View>
+      );
+    }
+
+    if (viewerState.memberOfOtherChurch) {
+      return (
+        <Pressable
+          onPress={handleBlockedJoinPress}
+          style={({ pressed }) => [
+            styles.actionSlot,
+            styles.joinSlotDisabled,
+            pressed && { opacity: 0.88 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Join Church unavailable"
+        >
+          <Text style={styles.joinDisabledText}>Join Church</Text>
+        </Pressable>
       );
     }
 
     return (
       <Pressable
         onPress={() => void handleJoin()}
-        disabled={requesting}
-        style={({ pressed }) => [styles.joinBtn, requesting && styles.joinBtnDisabled, pressed && !requesting && { opacity: 0.92 }]}
+        disabled={requesting || !viewerState.canJoin}
+        style={({ pressed }) => [
+          styles.actionSlot,
+          styles.joinSlotActive,
+          (requesting || !viewerState.canJoin) && styles.joinBtnDisabled,
+          pressed && !requesting && viewerState.canJoin && { opacity: 0.92 },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Join Church"
       >
-        <Text style={styles.joinBtnText}>{requesting ? "Sending…" : "Join Church"}</Text>
-        <Ionicons name={requesting ? "hourglass-outline" : "add-circle-outline"} size={18} color="#07101A" />
+        <Text style={styles.joinActiveText}>{requesting ? "Sending…" : "Join Church"}</Text>
+        <Ionicons
+          name={requesting ? "hourglass-outline" : "add-circle-outline"}
+          size={16}
+          color="#07101A"
+        />
       </Pressable>
     );
-  }, [handleJoin, joinStatus, requesting]);
+  }, [
+    handleBlockedJoinPress,
+    handleJoin,
+    requesting,
+    viewerState.canJoin,
+    viewerState.joinStatus,
+    viewerState.memberOfOtherChurch,
+  ]);
+
+  const followButton = useMemo(() => {
+    const followPrimary = viewerState.memberOfOtherChurch;
+    const label = following ? "Following" : "Follow";
+
+    return (
+      <Pressable
+        onPress={() => void handleFollowToggle()}
+        disabled={followBusy}
+        style={({ pressed }) => [
+          styles.actionSlot,
+          followPrimary ? styles.followSlotPrimary : styles.followSlotSecondary,
+          following && !followPrimary && styles.followSlotFollowing,
+          followBusy && styles.joinBtnDisabled,
+          pressed && !followBusy && { opacity: 0.92 },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+      >
+        <Ionicons
+          name={following ? "heart" : "heart-outline"}
+          size={16}
+          color={followPrimary || following ? "#07101A" : GOLD}
+        />
+        <Text
+          style={[
+            followPrimary ? styles.followPrimaryText : styles.followSecondaryText,
+            following && !followPrimary && styles.followFollowingText,
+          ]}
+        >
+          {followBusy ? "Updating…" : label}
+        </Text>
+      </Pressable>
+    );
+  }, [followBusy, following, handleFollowToggle, viewerState.memberOfOtherChurch]);
+
+  const connectActions = useMemo(
+    () => (
+      <View style={styles.actionRow}>
+        {followButton}
+        {joinSlot}
+      </View>
+    ),
+    [followButton, joinSlot]
+  );
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -218,14 +374,21 @@ export default function ChurchProfileScreen() {
               <Text style={styles.statLabel}>Members</Text>
             </View>
             <View style={styles.statCard}>
+              <Text style={styles.statValue}>{profile.followerCount ?? 0}</Text>
+              <Text style={styles.statLabel}>Followers</Text>
+            </View>
+            <View style={styles.statCard}>
               <Text style={styles.statValue}>{profile.ministriesCount}</Text>
               <Text style={styles.statLabel}>Ministries</Text>
             </View>
           </View>
 
           <View style={styles.section}>
-            <Text style={styles.sectionLabel}>JOIN STATUS</Text>
-            {joinAction}
+            <Text style={styles.sectionLabel}>CONNECT</Text>
+            {connectActions}
+            {viewerState.memberOfOtherChurch && viewerState.joinStatus === "none" ? (
+              <Text style={styles.v1Hint}>{V1_OTHER_CHURCH_JOIN_MESSAGE}</Text>
+            ) : null}
             {joinNotice ? <Text style={styles.joinNotice}>{joinNotice}</Text> : null}
           </View>
 
@@ -421,52 +584,92 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: 10,
   },
-  joinBtn: {
+  actionRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  actionSlot: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    borderRadius: 14,
-    paddingVertical: 14,
+    gap: 6,
+  },
+  followSlotPrimary: {
     backgroundColor: GOLD,
   },
-  joinBtnDisabled: {
-    opacity: 0.65,
-  },
-  joinBtnText: {
-    color: "#07101A",
-    fontSize: 16,
-    fontWeight: "900",
-  },
-  memberBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    borderRadius: 14,
-    paddingVertical: 12,
-    backgroundColor: GOLD,
-  },
-  memberBadgeText: {
-    color: "#07101A",
-    fontSize: 15,
-    fontWeight: "900",
-  },
-  pendingBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    borderRadius: 14,
-    paddingVertical: 12,
+  followSlotSecondary: {
     backgroundColor: "rgba(244,201,93,0.10)",
     borderWidth: 1,
     borderColor: GOLD_SOFT,
   },
-  pendingBadgeText: {
+  followSlotFollowing: {
+    backgroundColor: "rgba(244,201,93,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.34)",
+  },
+  followPrimaryText: {
+    color: "#07101A",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  followSecondaryText: {
     color: GOLD,
     fontSize: 15,
     fontWeight: "800",
+  },
+  followFollowingText: {
+    color: "#FFFFFF",
+  },
+  joinSlotActive: {
+    backgroundColor: GOLD,
+  },
+  joinSlotMember: {
+    backgroundColor: GOLD,
+  },
+  joinSlotPending: {
+    backgroundColor: "rgba(244,201,93,0.10)",
+    borderWidth: 1,
+    borderColor: GOLD_SOFT,
+  },
+  joinSlotDisabled: {
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    opacity: 0.72,
+  },
+  joinActiveText: {
+    color: "#07101A",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  joinDisabledText: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  joinBtnDisabled: {
+    opacity: 0.65,
+  },
+  memberBadgeText: {
+    color: "#07101A",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  pendingBadgeText: {
+    color: GOLD,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  v1Hint: {
+    color: MUTED,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
   },
   joinNotice: {
     color: GOLD,

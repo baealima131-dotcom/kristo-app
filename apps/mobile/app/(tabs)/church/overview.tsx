@@ -156,6 +156,7 @@ function LuxuryPressable({
 
 type OverviewStats = {
   activeMembers: number;
+  followers: number;
   ministries: number;
   ministryMembers: number;
   unreadNotifications: number;
@@ -196,7 +197,7 @@ function profileFromCache(churchId: string, cached: Awaited<ReturnType<typeof lo
 }
 
 function overviewStatsSignature(stats: OverviewStats) {
-  return `${stats.activeMembers}|${stats.ministries}|${stats.ministryMembers}|${stats.unreadNotifications}|${stats.offeringBalance}`;
+  return `${stats.activeMembers}|${stats.followers}|${stats.ministries}|${stats.ministryMembers}|${stats.unreadNotifications}|${stats.offeringBalance}`;
 }
 
 function overviewProfileSignature(profile: ChurchProfile) {
@@ -324,6 +325,7 @@ export default function ChurchOverviewScreen() {
 
   const [stats, setStats] = useState<OverviewStats>({
     activeMembers: initialOverview?.stats.activeMembers ?? 0,
+    followers: initialOverview?.stats.followers ?? 0,
     ministries: 0,
     ministryMembers: 0,
     unreadNotifications: initialOverview?.stats.unreadNotifications ?? 0,
@@ -658,6 +660,7 @@ export default function ChurchOverviewScreen() {
       const nextStats = refreshStats
         ? {
             activeMembers: Number(s?.activeMembers || 0),
+            followers: Number(s?.followers ?? s?.followerCount ?? 0),
             ministries: Number(s?.ministries || 0),
             ministryMembers: Number(s?.ministryMembers || 0),
             unreadNotifications: Number(s?.unreadNotifications || 0),
@@ -665,6 +668,7 @@ export default function ChurchOverviewScreen() {
           }
         : {
             activeMembers: cached?.stats?.activeMembers ?? stats.activeMembers,
+            followers: cached?.stats?.followers ?? stats.followers,
             ministries: cached?.stats?.ministries ?? stats.ministries,
             ministryMembers: cached?.stats?.ministryMembers ?? stats.ministryMembers,
             unreadNotifications: cached?.stats?.unreadNotifications ?? stats.unreadNotifications,
@@ -760,6 +764,7 @@ export default function ChurchOverviewScreen() {
         });
         setStats({
           activeMembers: 0,
+          followers: 0,
           ministries: 0,
           ministryMembers: 0,
           unreadNotifications: 0,
@@ -1198,7 +1203,14 @@ export default function ChurchOverviewScreen() {
         variant: "blue" as StatVariant,
         onPress: () => router.push("/church/members"),
       },
-
+      {
+        key: "followers",
+        label: "Followers",
+        value: stats.followers,
+        icon: "heart-outline" as const,
+        variant: "blue" as StatVariant,
+        onPress: () => router.push("/church/followers" as any),
+      },
     ];
 
     const leaderOnlyCards = [
