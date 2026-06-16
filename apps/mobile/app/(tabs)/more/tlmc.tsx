@@ -14,7 +14,9 @@ import { View, Vibration,
   ImageBackground,
   Animated,
   Easing,
+  Modal,
 } from "react-native";
+import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -284,6 +286,7 @@ export default function TLMCScreen() {
   const [unlockStep, setUnlockStep] = useState(0);
   const [keyVisibility, setKeyVisibility] = useState<KeyVisibility>(makeDefaultVisibility());
   const [officeTab, setOfficeTab] = useState<OfficeTab>("overview");
+  const [showComingSoonModal, setShowComingSoonModal] = useState(false);
 
   const currentUserId = useMemo(() => {
     return String(session?.userId || "guest-user").trim() || "guest-user";
@@ -318,6 +321,20 @@ export default function TLMCScreen() {
   }, [activeUnlockCommands, keyVisibility]);
 
   const masked = cmd ? cmd.replace(/./g, "•") : "";
+
+  const requiredCommandLength = useMemo(() => {
+    if (padMode === "changeOld" || padMode === "changeNew") {
+      return Math.max(1, String(security.secretCode || DEFAULT_SECRET).trim().length);
+    }
+    const commands =
+      activeUnlockCommands.length > 0
+        ? activeUnlockCommands
+        : [agentCommand || DEFAULT_AGENT_COMMAND];
+    const current = String(commands[unlockStep] || commands[0] || DEFAULT_AGENT_COMMAND).trim();
+    return Math.max(1, current.length);
+  }, [padMode, security.secretCode, activeUnlockCommands, unlockStep, agentCommand]);
+
+  const isRunReady = cmd.trim().length >= requiredCommandLength;
 
   const crossGlow = useRef(new Animated.Value(0.82)).current;
   const crossScale = useRef(new Animated.Value(1)).current;
@@ -724,6 +741,11 @@ Vibration.vibrate(120);
     resetPadState("changeOld");
   }
 
+  function handleRunComingSoon() {
+    if (!isRunReady) return;
+    setShowComingSoonModal(true);
+  }
+
   if (!ready) {
     return (
       <View style={s.screen}>
@@ -772,7 +794,7 @@ Vibration.vibrate(120);
           flexGrow: 1,
           padding: showPad ? 10 : PAD,
           paddingTop: showPad ? Math.max(insets.top, 4) : PAD,
-          paddingBottom: insets.bottom + (showPad ? 10 : 28),
+          paddingBottom: insets.bottom + (showPad ? 24 : 28),
           justifyContent: showPad ? "flex-start" : "center",
         }}
       >
@@ -889,6 +911,25 @@ Vibration.vibrate(120);
                     })}
                   </View>
                 ))}
+              </View>
+
+              <View style={[s.padRunFooter, { marginBottom: Math.max(6, insets.bottom > 0 ? 4 : 8) }]}>
+                <Pressable
+                  onPress={handleRunComingSoon}
+                  disabled={!isRunReady}
+                  style={({ pressed }) => [
+                    s.padRunCenterBtn,
+                    !isRunReady ? s.padRunCenterBtnDisabled : null,
+                    isRunReady && pressed ? { opacity: 0.92, transform: [{ scale: 0.985 }] } : null,
+                  ]}
+                  hitSlop={8}
+                >
+                  <View pointerEvents="none" style={s.padRunCenterGlow} />
+                  <View pointerEvents="none" style={s.padRunCenterShine} />
+                  <Text style={[t.padRunCenterText, !isRunReady ? t.padRunCenterTextDisabled : null]}>
+                    ⚡ Run
+                  </Text>
+                </Pressable>
               </View>
 
               {SHOW_TLMC_COMMAND_PAD_ACTIONS ? (
@@ -1214,6 +1255,48 @@ Vibration.vibrate(120);
           </View>
         ) : null}
       </ScrollView>
+
+      <Modal
+        visible={showComingSoonModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowComingSoonModal(false)}
+      >
+        <Pressable style={s.comingSoonBackdrop} onPress={() => setShowComingSoonModal(false)}>
+          <BlurView intensity={32} tint="dark" style={StyleSheet.absoluteFillObject} />
+          <View pointerEvents="none" style={s.comingSoonBackdropTint} />
+
+          <Pressable style={s.comingSoonCard} onPress={() => {}}>
+            <View pointerEvents="none" style={s.comingSoonCardGlow} />
+            <BlurView intensity={48} tint="dark" style={StyleSheet.absoluteFillObject} />
+            <View pointerEvents="none" style={s.comingSoonCardGlass} />
+
+            <View style={s.comingSoonContent}>
+              <View style={s.comingSoonIconWrap}>
+                <Ionicons name="sparkles" size={22} color="rgba(217,179,95,0.96)" />
+              </View>
+
+              <Text style={t.comingSoonTitle}>✨ Coming Soon</Text>
+              <Text style={t.comingSoonBrand}>Kristo</Text>
+              <Text style={t.comingSoonMessage}>
+                MY WAY is currently under development and will be available in a future Kristo App
+                update.
+              </Text>
+
+              <Pressable
+                onPress={() => setShowComingSoonModal(false)}
+                style={({ pressed }) => [
+                  s.comingSoonOkBtn,
+                  pressed ? { opacity: 0.9, transform: [{ scale: 0.985 }] } : null,
+                ]}
+              >
+                <View pointerEvents="none" style={s.comingSoonOkGlow} />
+                <Text style={t.comingSoonOkText}>OK</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -1691,6 +1774,150 @@ const s = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
   } as any,
 
+  padRunFooter: {
+    marginTop: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    width: "100%",
+  } as any,
+
+  padRunCenterBtn: {
+    width: 160,
+    height: 46,
+    borderRadius: 23,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.52)",
+    backgroundColor: "rgba(217,179,95,0.16)",
+    shadowColor: "rgba(217,179,95,0.85)",
+    shadowOpacity: 0.42,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 12,
+  } as any,
+
+  padRunCenterBtnDisabled: {
+    opacity: 0.5,
+    borderColor: "rgba(217,179,95,0.22)",
+    backgroundColor: "rgba(217,179,95,0.07)",
+    shadowOpacity: 0.12,
+  } as any,
+
+  padRunCenterGlow: {
+    position: "absolute",
+    top: -8,
+    left: 12,
+    right: 12,
+    height: 22,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,232,170,0.18)",
+  } as any,
+
+  padRunCenterShine: {
+    position: "absolute",
+    top: 1,
+    left: 10,
+    right: 10,
+    height: 1,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,248,220,0.28)",
+  } as any,
+
+  comingSoonBackdrop: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 28,
+  } as any,
+
+  comingSoonBackdropTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(6,8,14,0.42)",
+  } as any,
+
+  comingSoonCard: {
+    width: "100%",
+    maxWidth: 320,
+    borderRadius: 28,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.34)",
+    shadowColor: "rgba(217,179,95,0.55)",
+    shadowOpacity: 0.35,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 16,
+  } as any,
+
+  comingSoonCardGlow: {
+    position: "absolute",
+    top: -40,
+    left: "18%",
+    right: "18%",
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "rgba(217,179,95,0.14)",
+  } as any,
+
+  comingSoonCardGlass: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(12,16,26,0.58)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  } as any,
+
+  comingSoonContent: {
+    paddingHorizontal: 24,
+    paddingTop: 26,
+    paddingBottom: 22,
+    alignItems: "center",
+  } as any,
+
+  comingSoonIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.28)",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    shadowColor: "rgba(217,179,95,0.65)",
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+  } as any,
+
+  comingSoonOkBtn: {
+    marginTop: 22,
+    minWidth: 132,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.42)",
+    backgroundColor: "rgba(217,179,95,0.18)",
+    shadowColor: "rgba(217,179,95,0.55)",
+    shadowOpacity: 0.24,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+  } as any,
+
+  comingSoonOkGlow: {
+    position: "absolute",
+    top: 0,
+    left: 16,
+    right: 16,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,240,200,0.12)",
+  } as any,
+
   alertActions: {
     flexDirection: "row",
     gap: 10,
@@ -1902,6 +2129,62 @@ const t = StyleSheet.create({
     fontSize: 15,
     fontWeight: "900",
     letterSpacing: 0.2,
+  } as any,
+
+  padRunSmallText: {
+    color: "rgba(217,179,95,0.96)",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  } as any,
+
+  padRunCenterText: {
+    color: "rgba(255,248,230,0.98)",
+    fontSize: 15,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    textShadowColor: "rgba(217,179,95,0.45)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
+  } as any,
+
+  padRunCenterTextDisabled: {
+    color: "rgba(255,248,230,0.72)",
+    textShadowRadius: 0,
+  } as any,
+
+  comingSoonTitle: {
+    color: "rgba(255,255,255,0.98)",
+    fontSize: 22,
+    fontWeight: "900",
+    letterSpacing: 0.3,
+    textAlign: "center",
+  } as any,
+
+  comingSoonBrand: {
+    marginTop: 4,
+    color: "rgba(217,179,95,0.88)",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 2.4,
+    textTransform: "uppercase",
+    textAlign: "center",
+  } as any,
+
+  comingSoonMessage: {
+    marginTop: 14,
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 21,
+    textAlign: "center",
+  } as any,
+
+  comingSoonOkText: {
+    color: "rgba(255,248,230,0.98)",
+    fontSize: 15,
+    fontWeight: "900",
+    letterSpacing: 0.4,
   } as any,
 
   sectionTitle: {
