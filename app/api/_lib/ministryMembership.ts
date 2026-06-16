@@ -1,5 +1,6 @@
-import { readJsonFile } from "@/app/api/_lib/store/fs";
+import { readMinistryJsonFile as readJsonFile } from "@/app/api/_lib/store/ministryDb";
 import { getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
+import { churchIdsMatchForMinistry } from "@/lib/ministryMediaAccessLimit";
 
 type MinistryMemberRow = {
   churchId?: string;
@@ -130,7 +131,7 @@ export async function readChurchMinistries(churchId: string): Promise<MinistryRo
   if (!cid) return [];
 
   const all = await readJsonFile<MinistryRow[]>(MINISTRIES_FILE, []);
-  return (Array.isArray(all) ? all : []).filter((m) => String(m?.churchId || "") === cid);
+  return (Array.isArray(all) ? all : []).filter((m) => churchIdsMatchForMinistry(m?.churchId, cid));
 }
 
 export async function getUserMinistryMembershipRows(
