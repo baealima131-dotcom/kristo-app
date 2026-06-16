@@ -36,6 +36,7 @@ import {
 } from "@/src/lib/homeFeedVideoWindow";
 import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
 import { enforceHomeFeedVideoAudioOwnership } from "@/src/lib/homeFeedVideoOwner";
+import { markHomeFeedPostViewed } from "@/src/lib/homeFeedPostViews";
 import {
   isHomeFeedYouTubeStyleVideo,
   isHomeFeedInlineVideoAutoplayEnabled,
@@ -58,6 +59,12 @@ export type FeedListHandle = {
 const VIEWABILITY_CONFIG = {
   itemVisiblePercentThreshold: 80,
   minimumViewTime: 0,
+  waitForInteraction: false,
+} as const;
+
+const YOUTUBE_VIEWABILITY_CONFIG = {
+  itemVisiblePercentThreshold: 55,
+  minimumViewTime: 200,
   waitForInteraction: false,
 } as const;
 
@@ -144,6 +151,15 @@ export const FeedList = memo(
   );
 
   const viewabilityConfig = useRef(VIEWABILITY_CONFIG).current;
+  const youtubeViewabilityConfig = useRef(YOUTUBE_VIEWABILITY_CONFIG).current;
+
+  const markViewablePosts = useCallback((viewableItems: ViewToken[]) => {
+    for (const token of viewableItems) {
+      if (!token.isViewable) continue;
+      const id = String((token.item as any)?.id || "").trim();
+      if (id) markHomeFeedPostViewed(id);
+    }
+  }, []);
 
   const publishActiveIndex = useCallback(
     (nextIndex: number, source: "viewability" | "momentum-fallback") => {
@@ -160,6 +176,8 @@ export const FeedList = memo(
 
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: ViewToken[]; changed: ViewToken[] }) => {
+      markViewablePosts(viewableItems);
+
       const viewable = viewableItems.filter(
         (token) => token.isViewable && token.index != null && token.index >= 0
       );
@@ -181,6 +199,12 @@ export const FeedList = memo(
         source: "viewability",
       });
       onActiveIndexChangeRef.current(nextIndex);
+    }
+  ).current;
+
+  const onYouTubeViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ViewToken[]; changed: ViewToken[] }) => {
+      markViewablePosts(viewableItems);
     }
   ).current;
 
@@ -372,6 +396,8 @@ export const FeedList = memo(
         windowSize={8}
         maxToRenderPerBatch={6}
         removeClippedSubviews
+        onViewableItemsChanged={onYouTubeViewableItemsChanged}
+        viewabilityConfig={youtubeViewabilityConfig}
         style={[styles.list, viewportStyle]}
         contentContainerStyle={styles.youtubeContent}
       />

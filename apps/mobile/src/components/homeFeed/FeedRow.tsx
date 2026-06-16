@@ -30,6 +30,7 @@ import {
   type HomeFeedPostAccent,
 } from "./homeFeedUtils";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
+import { markHomeFeedPostViewed } from "@/src/lib/homeFeedPostViews";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
 import { Ionicons } from "@expo/vector-icons";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
@@ -202,6 +203,11 @@ export const FeedRow = memo(
   const saveCount = Number(item?.saveCount || 0);
   const animateCopy = isActive && screenFocused;
   const lastImageDiagKeyRef = useRef("");
+
+  useEffect(() => {
+    if (!postId || !isActive || !screenFocused) return;
+    markHomeFeedPostViewed(postId);
+  }, [postId, isActive, screenFocused]);
 
   useEffect(() => {
     if (!postId || !willRenderImage || !isActive) return;

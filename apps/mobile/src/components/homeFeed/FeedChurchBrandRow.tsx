@@ -17,6 +17,7 @@ import {
 } from "./homeFeedUtils";
 import { HOME_FEED_GOLD } from "./theme";
 import { openChurchProfileFromFeedItem } from "@/src/lib/churchProfileNavigation";
+import { FeedChurchAvatar } from "./FeedChurchAvatar";
 
 type Variant = "premium" | "watch";
 type Part = "all" | "avatar" | "name";
@@ -55,18 +56,32 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   }, [canOpen, item, source]);
 
   const isWatch = variant === "watch";
+  const postId = String(item?.id || "").trim();
+  const avatarSize = isWatch ? 44 : 40;
+  const avatarShellSize = isWatch ? avatarSize : avatarSize + 8;
   const avatarStyle = isWatch ? watchStyles.avatar : premiumStyles.avatar;
   const avatarFallbackStyle = isWatch ? watchStyles.avatarFallback : premiumStyles.avatarFallback;
   const avatarInitialStyle = isWatch ? watchStyles.avatarInitial : premiumStyles.avatarInitial;
   const churchNameStyle = isWatch ? watchStyles.churchName : premiumStyles.churchName;
   const verifiedSize = isWatch ? 15 : 14;
 
-  const avatarNode = avatarSrc ? (
-    <Image source={{ uri: avatarSrc }} style={avatarStyle} />
+  const avatarNode = isWatch ? (
+    avatarSrc ? (
+      <Image source={{ uri: avatarSrc }} style={avatarStyle} />
+    ) : (
+      <View style={avatarFallbackStyle}>
+        <Text style={avatarInitialStyle}>{initial || "K"}</Text>
+      </View>
+    )
   ) : (
-    <View style={avatarFallbackStyle}>
-      <Text style={avatarInitialStyle}>{initial || "K"}</Text>
-    </View>
+    <FeedChurchAvatar
+      postId={postId}
+      size={avatarSize}
+      shellSize={avatarShellSize}
+      uri={avatarUri}
+      backupUri={backupUri}
+      initial={initial}
+    />
   );
 
   const nameNode = churchName ? (
