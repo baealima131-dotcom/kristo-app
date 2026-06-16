@@ -1,4 +1,4 @@
-import { deleteFeedItemById, getFeedItemById } from "@/app/api/_lib/store/feedDb";
+import { deleteFeedItemById, resolveFeedItemByScheduleFeedId } from "@/app/api/_lib/store/feedDb";
 import { endChurchLiveSessionsForSchedule } from "@/app/api/_lib/churchLiveControl";
 import {
   getActiveScheduleSlots,
@@ -96,7 +96,11 @@ export async function endStaleMediaScheduleFeedItem(input: {
     return result;
   }
 
-  const item = await getFeedItemById(postId);
+  const lookup = await resolveFeedItemByScheduleFeedId({
+    feedId: postId,
+    targetChurchId: churchId,
+  });
+  const item = lookup.item;
   if (!item) {
     const result = {
       ok: false as const,
@@ -107,6 +111,8 @@ export async function endStaleMediaScheduleFeedItem(input: {
     console.log("KRISTO_STALE_SCHEDULE_CLEANUP_RESULT", result);
     return result;
   }
+
+  const resolvedPostId = String(item.id || postId).trim();
 
   const itemChurchId = String(item.churchId || churchId || "").trim();
   if (churchId && itemChurchId && itemChurchId !== churchId) {
@@ -132,7 +138,7 @@ export async function endStaleMediaScheduleFeedItem(input: {
   }
 
   const scheduleLiveId = String(
-    item.sourceScheduleId || item.liveId || item.id || postId
+    item.sourceScheduleId || item.liveId || resolvedPostId || postId
   ).trim();
 
   const ended = await endChurchLiveSessionsForSchedule({
@@ -141,11 +147,12 @@ export async function endStaleMediaScheduleFeedItem(input: {
     reason,
   });
 
-  const deleted = await deleteFeedItemById(postId);
+  const deleted = await deleteFeedItemById(resolvedPostId);
 
   const result = {
     ok: true as const,
-    feedId: postId,
+    feedId: resolvedPostId,
+    requestedFeedId: postId,
     churchId: itemChurchId || churchId,
     deleted,
     endedLiveKeys: ended.endedKeys,

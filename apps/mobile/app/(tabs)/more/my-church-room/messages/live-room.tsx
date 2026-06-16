@@ -7213,7 +7213,7 @@ export default function LiveRoomScreen() {
         <Text style={s.audiencePanelBlockLabel as any}>SAFE ACTIONS</Text>
         {openClaimableSlots.length ? (
           <Pressable
-            onPress={() => router.push("/" as any)}
+            onPress={() => navigateToLiveSlotsForClaim(openClaimableSlots[0])}
             style={({ pressed }) => ([s.audiencePanelClaimBtn, s.audiencePanelActionBtnWide, pressed ? s.audiencePanelClaimBtnPressed : null] as any)}
           >
             <Ionicons name="add-circle-outline" size={16} color="#F4D06F" />
@@ -8904,46 +8904,49 @@ export default function LiveRoomScreen() {
     router.replace("/(tabs)/more" as any);
   }
 
-  function navigateToHomeFeedForClaim(slot?: any) {
+  function navigateToLiveSlotsForClaim(slot?: any) {
     setCameraPaused(true);
     refreshLiveStateAfterLeave();
     resumeHomeFeedAfterLiveExit();
 
     const churchId = String(
-      (session as any)?.churchId ||
-        (params as any)?.churchId ||
-        (params as any)?.churchLabel ||
+      (params as any)?.churchId ||
+        liveRouteChurchId ||
+        (session as any)?.churchId ||
         ""
     ).trim();
-    const focusPostId = String(
+    const scheduleFeedId = String(
       liveScheduleFeedId ||
         slot?.feedId ||
         slot?.sourceScheduleId ||
+        slot?.parentScheduleId ||
         (params as any)?.feedId ||
         (params as any)?.sourceScheduleId ||
+        (params as any)?.liveId ||
         ""
     ).trim();
+    const slotId = String(slot?.id || slot?.slotId || "").trim();
+    const slotNumber = Math.max(0, Number(slot?.slot || slot?.slotNumber || 0));
 
     console.log("KRISTO_LIVE_ROOM_GO_CLAIM_NAV", {
-      focusPostId: focusPostId || null,
+      target: "/more/live-slots",
+      focusScheduleFeedId: scheduleFeedId || null,
       churchId: churchId || null,
-      slotNumber: Number(slot?.slot || slot?.slotNumber || 0) || null,
-      source: "live-room-bottom-claim",
+      focusSlotId: slotId || null,
+      focusSlotNumber: slotNumber || null,
+      source: "live-room-go-claim",
     });
 
-    if (focusPostId) {
-      router.replace({
-        pathname: "/(tabs)/",
-        params: {
-          focusPostId,
-          ...(churchId ? { churchId } : {}),
-          source: "live-room-bottom-claim",
-        },
-      } as any);
-      return;
-    }
-
-    router.replace("/more/live-slots" as any);
+    router.replace({
+      pathname: "/more/live-slots",
+      params: {
+        source: "live-room-go-claim",
+        ...(scheduleFeedId ? { focusScheduleFeedId: scheduleFeedId } : {}),
+        ...(churchId ? { churchId } : {}),
+        ...(slotId ? { focusSlotId: slotId } : {}),
+        ...(slotNumber > 0 ? { focusSlotNumber: String(slotNumber) } : {}),
+      },
+    } as any);
   }
 
   async function endLiveNow() {
@@ -10353,7 +10356,7 @@ return (
                 return (
                   <Pressable
                     key={`open-claim-slot-${slot?.id || slot?.slot || index}`}
-                    onPress={() => navigateToHomeFeedForClaim(slot)}
+                    onPress={() => navigateToLiveSlotsForClaim(slot)}
                     style={({ pressed }) => ([
                       s.teamGridMiniCard,
                       ...positionStyle,
@@ -11197,7 +11200,7 @@ return (
                           {openClaimableSlots.map((slot: any) => (
                             <Pressable
                               key={`viewer-claim-${slot?.id || slot?.slot}`}
-                              onPress={() => router.push("/" as any)}
+                              onPress={() => navigateToLiveSlotsForClaim(slot)}
                               style={({ pressed }) => ([
                                 s.audiencePanelClaimBtn,
                                 pressed ? s.audiencePanelClaimBtnPressed : null,

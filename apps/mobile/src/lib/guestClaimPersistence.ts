@@ -2,6 +2,10 @@ import { apiPost } from "@/src/lib/kristoApi";
 import {
   clearScheduleClaimRuntimeState,
   feedList,
+  feedPurgeMediaScheduleCards,
+  feedPurgeMediaScheduleCardsForChurch,
+  feedRemoveScheduleMirrors,
+  feedRemoveWhere,
   feedScheduleSlotsForLive,
   slotIdsMatch,
 } from "@/src/lib/homeFeedStore";
@@ -56,7 +60,14 @@ import {
   fetchHomeFeedFromApi,
   getCachedHomeFeedBackendRows,
   mergeCachedHomeFeedBackendRows,
+  purgeHomeFeedPostFromBackendCache,
 } from "@/src/components/homeFeed/homeFeedApi";
+import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
+import {
+  filterOutDeletedScheduleRows,
+  markScheduleFeedDeleted,
+  scheduleFeedRowIsDeleted,
+} from "@/src/lib/deletedScheduleRegistry";
 import { buildLiveSlotsCatalogFromFeedRows } from "@/src/lib/liveSlotsCatalog";
 import { emitSlotClaimChanged } from "@/src/lib/slotClaimEvents";
 import { emitClaimUpdated } from "@/src/lib/kristoProfileEvents";
@@ -223,20 +234,29 @@ export function resolveGuestCenterCanonicalSchedule(input: {
   const targetChurchId = String(input.targetChurchId || input.churchId || "").trim();
   const churchIds = Array.from(new Set([targetChurchId, viewerChurchId].filter(Boolean)));
   const nowMs = Number(input.nowMs || Date.now());
-  const backendFeedItems = Array.isArray(input.backendFeedItems) ? input.backendFeedItems : [];
-  const homeFeedItems = Array.isArray(input.homeFeedItems) ? input.homeFeedItems : [];
+  const backendFeedItems = filterOutDeletedScheduleRows(
+    Array.isArray(input.backendFeedItems) ? input.backendFeedItems : []
+  );
+  const homeFeedItems = filterOutDeletedScheduleRows(
+    Array.isArray(input.homeFeedItems) ? input.homeFeedItems : []
+  );
   const viewerUserId = String(input.viewerUserId || "").trim();
-  const cachedGlobalRows = getCachedHomeFeedBackendRows();
+  const cachedGlobalRows = filterOutDeletedScheduleRows(getCachedHomeFeedBackendRows());
   const hasBackendSignal = backendFeedItems.length > 0 || cachedGlobalRows.length > 0;
 
-  const ringMergedRows = resolveRingMergedScheduleRows({
-    churchBackendRows: backendFeedItems,
-    viewerUserId,
-    viewerChurchId: targetChurchId || viewerChurchId,
-    backendFeedLoaded: hasBackendSignal,
-  });
+  const ringMergedRows = filterOutDeletedScheduleRows(
+    resolveRingMergedScheduleRows({
+      churchBackendRows: backendFeedItems,
+      viewerUserId,
+      viewerChurchId: targetChurchId || viewerChurchId,
+      backendFeedLoaded: hasBackendSignal,
+    })
+  );
 
-  const localOverlaySource = [...homeFeedItems, ...(feedList() as any[])];
+  const localOverlaySource = filterOutDeletedScheduleRows([
+    ...homeFeedItems,
+    ...(feedList() as any[]),
+  ]);
   const overlayRows = overlayLocalScheduleClaimsOnFeedRows(
     ringMergedRows,
     localOverlaySource,
@@ -800,6 +820,178 @@ function endLiveBridgeForSchedule(scheduleId: string, rows: any[]) {
   for (const liveId of liveIds) {
     publishLiveEnded(liveId);
   }
+}
+
+function filterBackendRowsWithoutDeletedSchedule(rows: any[], feedId: string) {
+  const merged = [...(Array.isArray(rows) ? rows : []), ...(feedList() as any[])];
+  const aliases = new Set(
+    collectScheduleAliasIds(feedId, merged).flatMap((id) => [id, baseFeedId(id)].filter(Boolean))
+  );
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    if (!isMediaScheduleFeedItem(row)) return true;
+    if (scheduleFeedRowIsDeleted(row)) return false;
+    const rowId = String(row?.id || "").trim();
+    const sourceId = String(row?.sourceScheduleId || "").trim();
+    return !aliases.has(rowId) && !aliases.has(sourceId) && !aliases.has(baseFeedId(rowId));
+  });
+}
+
+export async function purgeDeletedScheduleFromAllSources(input: {
+  feedId: string;
+  churchId: string;
+  userId?: string;
+  reason: string;
+  backendRows?: any[];
+  setBackendFeedItems?: (items: any[]) => void;
+  setHomeFeedItems?: (items: any[]) => void;
+  setGuestClaimSlots?: (slots: any[]) => void;
+}) {
+  const feedId = String(input.feedId || "").trim();
+  const churchId = String(input.churchId || "").trim();
+  const userId = String(input.userId || "").trim();
+  const merged = [...(input.backendRows || []), ...(feedList() as any[])];
+  const aliases = collectScheduleAliasIds(feedId, merged);
+
+  console.log("KRISTO_SCHEDULE_DELETE_GLOBAL_PURGE_START", {
+    feedId,
+    churchId,
+    reason: input.reason,
+    aliases,
+  });
+
+  markScheduleFeedDeleted(feedId, merged);
+
+  feedRemoveScheduleMirrors(feedId);
+  feedRemoveWhere((row) => {
+    if (scheduleFeedRowIsDeleted(row)) return true;
+    if (!isMediaScheduleFeedItem(row)) return false;
+    const rowId = String(row?.id || "").trim();
+    const sourceId = String(row?.sourceScheduleId || "").trim();
+    const aliasSet = new Set(aliases.flatMap((id) => [id, baseFeedId(id)].filter(Boolean)));
+    return (
+      aliasSet.has(rowId) ||
+      aliasSet.has(sourceId) ||
+      aliasSet.has(baseFeedId(rowId)) ||
+      aliasSet.has(baseFeedId(sourceId))
+    );
+  });
+
+  clearScheduleClaimRuntimeState(feedId, input.backendRows);
+  endLiveBridgeForSchedule(feedId, merged);
+  feedPurgeMediaScheduleCards();
+  if (churchId) feedPurgeMediaScheduleCardsForChurch(churchId);
+
+  for (const alias of aliases) {
+    await purgeHomeFeedPostFromBackendCache(alias);
+    publishLiveEnded(alias);
+  }
+
+  resetMediaScheduleSilentReloadCache();
+  if (churchId) clearMediaScheduleCachesForChurch(churchId, input.reason);
+  clearHomeFeedApiCache(userId);
+
+  purgeAllLocalMediaScheduleSources({
+    churchId,
+    reason: input.reason,
+    removePending: true,
+    ui: {
+      setGuestClaimSlots: input.setGuestClaimSlots,
+      setBackendFeedItems: input.setBackendFeedItems,
+      setHomeFeedItems: input.setHomeFeedItems,
+    },
+  });
+
+  const filteredBackendRows = filterBackendRowsWithoutDeletedSchedule(
+    filterOutDeletedScheduleRows(input.backendRows || []),
+    feedId
+  );
+
+  input.setGuestClaimSlots?.([]);
+  input.setBackendFeedItems?.(filteredBackendRows);
+  input.setHomeFeedItems?.([...feedList()]);
+
+  try {
+    await mergeCachedHomeFeedBackendRows(filteredBackendRows);
+  } catch {
+    // ignore cache reconcile errors
+  }
+
+  emitSlotClaimChanged({
+    churchId,
+    postId: feedId,
+    slotId: "",
+    action: "unclaim",
+    userId,
+    source: "schedule-delete-global-purge",
+  });
+  emitClaimUpdated({
+    postId: feedId,
+    feedId,
+    baseFeedId: baseFeedId(feedId),
+    slotId: "",
+    userId,
+    action: "unclaim",
+  });
+  emitLiveRingRefresh("schedule-delete-global-purge");
+
+  const ringRows = resolveRingMergedScheduleRows({
+    churchBackendRows: filteredBackendRows,
+    viewerUserId: userId,
+    viewerChurchId: churchId,
+    backendFeedLoaded: filteredBackendRows.length > 0,
+  });
+  const guestCanonical = resolveGuestCenterCanonicalSchedule({
+    homeFeedItems: [...feedList()],
+    backendFeedItems: filteredBackendRows,
+    churchId,
+    targetChurchId: churchId,
+    viewerUserId: userId,
+  });
+  const liveSlots = buildLiveSlotsCatalogFromFeedRows(
+    filteredBackendRows,
+    churchId,
+    userId,
+    Date.now()
+  );
+
+  console.log("KRISTO_SCHEDULE_DELETE_REMOVED_FROM_RING", {
+    feedId,
+    churchId,
+    ringMergedRowCount: ringRows.length,
+    aliases,
+  });
+  console.log("KRISTO_SCHEDULE_DELETE_REMOVED_FROM_GUEST_CENTER", {
+    feedId,
+    churchId,
+    mergedSlotCount: guestCanonical.mergedSlotCount,
+    hasSchedule: Boolean(guestCanonical.schedule),
+  });
+  console.log("KRISTO_SCHEDULE_DELETE_REMOVED_FROM_LIVE_SLOTS", {
+    feedId,
+    churchId,
+    myChurchCount: liveSlots.myChurch.length,
+    otherChurchesCount: liveSlots.otherChurches.length,
+  });
+  console.log("KRISTO_SCHEDULE_DELETE_GLOBAL_PURGE_RESULT", {
+    feedId,
+    churchId,
+    ok: true,
+    aliasCount: aliases.length,
+    backendRowsRemaining: filteredBackendRows.length,
+    ringMergedRowCount: ringRows.length,
+    guestMergedSlotCount: guestCanonical.mergedSlotCount,
+    liveSlotsMyChurchCount: liveSlots.myChurch.length,
+  });
+
+  return {
+    ok: true,
+    feedId,
+    aliases,
+    filteredBackendRows,
+    ringMergedRowCount: ringRows.length,
+    guestMergedSlotCount: guestCanonical.mergedSlotCount,
+    liveSlotsMyChurchCount: liveSlots.myChurch.length,
+  };
 }
 
 function scheduleHasActiveOrUpcomingSlots(slots: any[], nowMs = Date.now()) {
@@ -1507,47 +1699,91 @@ function resolveGuestScheduleActionContext(input: {
   homeFeedItems: any[];
   churchId: string;
   nowMs?: number;
+  viewerUserId?: string;
 }) {
   const churchId = String(input.churchId || "").trim();
   const nowMs = Number(input.nowMs || Date.now());
-  const seed = String(input.sourceFeedId || "").trim();
+  const requestedFeedId = String(input.sourceFeedId || "").trim();
+  const viewerUserId = String(input.viewerUserId || "").trim();
 
-  if (seed) {
-    const read = readGuestActionScheduleSlots({
-      sourceFeedId: seed,
-      backendFeedItems: input.backendFeedItems,
-      homeFeedItems: input.homeFeedItems,
-    });
-    return {
-      feedId: read.feedId,
-      slots: read.slots,
-      sourceUsed: read.sourceUsed,
-      churchId,
-      nowMs,
-    };
-  }
-
-  const activeSchedule = churchId
-    ? resolveCanonicalMediaScheduleForGuests(
-        input.homeFeedItems,
-        input.backendFeedItems,
+  const canonical = churchId
+    ? resolveGuestCenterCanonicalSchedule({
+        homeFeedItems: input.homeFeedItems,
+        backendFeedItems: input.backendFeedItems,
         churchId,
-        nowMs
-      )
+        targetChurchId: churchId,
+        viewerUserId,
+        nowMs,
+      })
     : null;
-  const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "").trim();
-  if (!sourceFeedId) return null;
 
-  const read = readGuestActionScheduleSlots({
-    sourceFeedId,
-    backendFeedItems: input.backendFeedItems,
-    homeFeedItems: input.homeFeedItems,
+  const canonicalFeedId = String(canonical?.feedId || "").trim();
+  const canonicalRawSlots = Array.isArray(canonical?.schedule?.scheduleSlots)
+    ? canonical.schedule.scheduleSlots
+    : [];
+  const canonicalDisplaySlots = filterGuestCenterDisplaySlots(canonicalRawSlots);
+
+  const mergedRows = [...(feedList() as any[]), ...input.homeFeedItems, ...input.backendFeedItems];
+  const resolvedFeedId =
+    (canonicalFeedId ? resolveCanonicalScheduleFeedId(canonicalFeedId, mergedRows) : "") ||
+    canonicalFeedId;
+
+  const legacySeed = requestedFeedId || canonicalFeedId;
+  const legacyRead = legacySeed
+    ? readGuestActionScheduleSlots({
+        sourceFeedId: legacySeed,
+        backendFeedItems: input.backendFeedItems,
+        homeFeedItems: input.homeFeedItems,
+      })
+    : { feedId: "", slots: [] as any[], sourceUsed: "none" as const };
+
+  console.log("KRISTO_DELETE_TARGET_FEED", {
+    scheduleFeedIdPassed: requestedFeedId || null,
+    activeScheduleId: requestedFeedId || canonicalFeedId || null,
+    requestedFeedId: requestedFeedId || null,
+    churchId,
   });
 
+  console.log("KRISTO_DELETE_CANONICAL_FEED", {
+    feedId: resolvedFeedId || canonicalFeedId || null,
+    canonicalFeedId: canonicalFeedId || null,
+    canonicalSource: canonical?.source || "none",
+    mergedSlotCount: canonical?.mergedSlotCount ?? 0,
+    displaySlotCount: canonicalDisplaySlots.length,
+    rawCanonicalSlotCount: canonicalRawSlots.length,
+    churchId,
+  });
+
+  console.log("KRISTO_DELETE_SLOT_SOURCE_COMPARE", {
+    requestedFeedId: requestedFeedId || null,
+    canonicalFeedId: canonicalFeedId || null,
+    resolvedFeedId: resolvedFeedId || null,
+    legacyFeedId: legacyRead.feedId || null,
+    legacySourceUsed: legacyRead.sourceUsed,
+    legacySlotCount: legacyRead.slots.length,
+    canonicalRawSlotCount: canonicalRawSlots.length,
+    canonicalDisplaySlotCount: canonicalDisplaySlots.length,
+    canonicalMergedSlotCount: canonical?.mergedSlotCount ?? 0,
+    backendSlotCount: canonical?.backendSlotCount ?? 0,
+    feedIdMatch:
+      !requestedFeedId ||
+      requestedFeedId === canonicalFeedId ||
+      requestedFeedId === resolvedFeedId,
+    slotCountDelta: canonicalDisplaySlots.length - legacyRead.slots.length,
+    usingCanonical: Boolean(canonicalFeedId && canonicalDisplaySlots.length),
+  });
+
+  if (!resolvedFeedId && !canonicalFeedId) {
+    return null;
+  }
+
+  const feedId = resolvedFeedId || canonicalFeedId;
+  const slots = canonicalDisplaySlots.length ? canonicalDisplaySlots : canonicalRawSlots;
+
   return {
-    feedId: read.feedId,
-    slots: read.slots,
-    sourceUsed: read.sourceUsed,
+    feedId,
+    slots,
+    sourceUsed: "guest-center-canonical" as const,
     churchId,
     nowMs,
   };
@@ -1567,7 +1803,14 @@ async function persistGuestScheduleSlotRemoval(input: {
   setHomeFeedItems: (items: any[]) => void;
   setGuestClaimSlots?: (slots: any[]) => void;
 }) {
-  const context = resolveGuestScheduleActionContext(input);
+  const context = resolveGuestScheduleActionContext({
+    sourceFeedId: input.sourceFeedId,
+    backendFeedItems: input.backendFeedItems,
+    homeFeedItems: input.homeFeedItems,
+    churchId: input.churchId,
+    nowMs: input.nowMs,
+    viewerUserId: input.userId,
+  });
   if (!context?.feedId || !context.slots.length) {
     const emptyBuckets = summarizeGuestScheduleSlotBuckets([], Number(input.nowMs || Date.now()));
     const emptyResult = {
@@ -1760,6 +2003,68 @@ async function persistGuestScheduleSlotRemoval(input: {
     };
   }
 
+  if (input.mode === "delete-all") {
+    await purgeDeletedScheduleFromAllSources({
+      feedId,
+      churchId: input.churchId,
+      userId: String(input.userId || input.headers?.["x-kristo-user-id"] || ""),
+      reason: input.reason,
+      backendRows: input.backendFeedItems,
+      setBackendFeedItems: input.setBackendFeedItems,
+      setHomeFeedItems: input.setHomeFeedItems,
+      setGuestClaimSlots: input.setGuestClaimSlots,
+    });
+
+    const sync = await fetchMediaScheduleFeedSync(input.churchId, input.headers);
+    const reloadedRows = filterBackendRowsWithoutDeletedSchedule(
+      filterOutDeletedScheduleRows(Array.isArray(sync.rows) ? sync.rows : []),
+      feedId
+    );
+
+    input.setBackendFeedItems(reloadedRows);
+    input.setHomeFeedItems([...feedList()]);
+    input.setGuestClaimSlots?.([]);
+
+    const purgeAfterReload = await purgeDeletedScheduleFromAllSources({
+      feedId,
+      churchId: input.churchId,
+      userId: String(input.userId || input.headers?.["x-kristo-user-id"] || ""),
+      reason: `${input.reason}-after-reload`,
+      backendRows: reloadedRows,
+      setBackendFeedItems: input.setBackendFeedItems,
+      setHomeFeedItems: input.setHomeFeedItems,
+      setGuestClaimSlots: input.setGuestClaimSlots,
+    });
+
+    try {
+      await fetchHomeFeedFromApi("delete-all-guest-slots", { force: true, reconcile: true });
+    } catch {
+      // ignore home feed refresh errors
+    }
+
+    const verify = logGuestAfterReloadVerify({
+      selectedSlotId: "",
+      feedId,
+      backendFeedItems: reloadedRows,
+      runtimeSlots: [],
+      nowMs,
+      sourceUsed: "backend",
+    });
+
+    return {
+      ...resultPayload,
+      skipped: false,
+      verify,
+      reload: {
+        rows: reloadedRows,
+        feedId,
+        backendSlots: [],
+        sourceUsed: "backend" as const,
+      },
+      invalidate: purgeAfterReload,
+    };
+  }
+
   const reload = await forceReloadGuestScheduleFromBackend({
     churchId: input.churchId,
     headers: input.headers,
@@ -1892,6 +2197,31 @@ export async function persistDeleteExpiredGuestSlots(input: {
   return persistDeleteOpenGuestSlots(input);
 }
 
+function isAutoDeleteScreenLoadReason(reason: string) {
+  const value = String(reason || "");
+  return (
+    value.includes("guest-claim-center-load") ||
+    value.includes("live-slots-load") ||
+    value.startsWith("media-reload:")
+  );
+}
+
+function backendFeedHasScheduleFeedId(rows: any[], feedId: string) {
+  const seed = String(feedId || "").trim();
+  if (!seed) return false;
+  return rows.some((item) => {
+    const aliases = [
+      item?.id,
+      item?.sourceScheduleId,
+      item?.liveScheduleFeedId,
+      item?.scheduleFeedId,
+      item?.parentScheduleId,
+      item?.liveId,
+    ].map((value) => String(value || "").trim());
+    return aliases.includes(seed);
+  });
+}
+
 export async function autoDeleteExpiredOpenGuestSlots(input: {
   reason: string;
   churchId: string;
@@ -1923,6 +2253,7 @@ export async function autoDeleteExpiredOpenGuestSlots(input: {
     homeFeedItems,
     churchId,
     nowMs: input.nowMs,
+    viewerUserId: input.userId,
   });
 
   if (!context?.feedId || !context.slots.length) {
@@ -1937,6 +2268,26 @@ export async function autoDeleteExpiredOpenGuestSlots(input: {
 
   const buckets = summarizeGuestScheduleSlotBuckets(context.slots, context.nowMs);
   if (buckets.expiredOpenSlots <= 0) {
+    return {
+      ok: true,
+      skipped: true,
+      feedId: context.feedId,
+      ...buckets,
+      removedCount: 0,
+      remainingCount: context.slots.length,
+    };
+  }
+
+  if (
+    isAutoDeleteScreenLoadReason(input.reason) &&
+    !backendFeedHasScheduleFeedId(backendFeedItems, context.feedId)
+  ) {
+    console.log("KRISTO_AUTO_DELETE_EXPIRED_SLOTS_SKIPPED", {
+      reason: input.reason,
+      feedId: context.feedId,
+      cause: "no-backend-feed-row-for-screen-load",
+      expiredOpenSlots: buckets.expiredOpenSlots,
+    });
     return {
       ok: true,
       skipped: true,

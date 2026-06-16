@@ -1700,8 +1700,15 @@ export default function MediaStudioScreen() {
 
     const churchId = guestCenterChurchId;
     const activeSchedule = guestCenterCanonical.schedule;
-    const sourceFeedId = String(activeSchedule?.sourceScheduleId || activeSchedule?.id || "").trim();
-    const slots = Array.isArray(activeSchedule?.scheduleSlots) ? activeSchedule.scheduleSlots : [];
+    const sourceFeedId = String(
+      guestCenterCanonical.feedId ||
+        activeSchedule?.sourceScheduleId ||
+        activeSchedule?.id ||
+        ""
+    ).trim();
+    const slots = Array.isArray(activeSchedule?.scheduleSlots)
+      ? filterGuestCenterDisplaySlots(activeSchedule.scheduleSlots)
+      : [];
 
     if (!sourceFeedId || !slots.length) {
       Alert.alert("Delete", "No guest slots to delete.");
@@ -1736,6 +1743,7 @@ export default function MediaStudioScreen() {
                 return;
               }
 
+              setGuestClaimSlots([]);
               setGuestClockNow(Date.now());
             })();
           },

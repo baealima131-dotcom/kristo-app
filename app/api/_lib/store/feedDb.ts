@@ -1,7 +1,7 @@
 import { neon, neonConfig } from "@neondatabase/serverless";
 import { readJsonFile, writeJsonFile } from "@/app/api/_lib/store/fs";
 import { getDatabaseUrl, hasDurableStore, isVercelRuntime } from "@/app/api/_lib/store/authDb";
-import { isMediaScheduleFeedItem } from "@/lib/mediaScheduleLock";
+import { isMediaScheduleFeedItem, findActiveMediaScheduleForChurch, findMediaScheduleFeedForChurch } from "@/lib/mediaScheduleLock";
 
 neonConfig.fetchConnectionCache = true;
 
@@ -273,52 +273,359 @@ export async function listFeedItemsForChurch(churchId: string): Promise<ChurchFe
   return items;
 }
 
-export async function getFeedItemById(id: string): Promise<ChurchFeedItem | null> {
-  const feedId = String(id || "").trim();
-  if (!feedId) return null;
-  await ensureFeedStoreReady();
+const SCHEDULE_FEED_ID_PAYLOAD_KEYS = [
+  "sourceScheduleId",
+  "liveId",
+  "liveScheduleFeedId",
+  "scheduleFeedId",
+  "parentScheduleId",
+  "postId",
+  "feedId",
+] as const;
+
+export function normalizeScheduleFeedIdBase(input: unknown): string {
+  const id = String(input || "")
+    .replace(/__fy_\d+$/g, "")
+    .trim();
+  if (!id) return "";
+  return id.split("__slot_")[0];
+}
+
+export function collectFeedItemScheduleFeedIds(item: ChurchFeedItem): string[] {
+  const ids = new Set<string>();
+  const primaryId = String(item?.id || "").trim();
+  if (primaryId) {
+    ids.add(primaryId);
+    const base = normalizeScheduleFeedIdBase(primaryId);
+    if (base) ids.add(base);
+  }
+  for (const key of SCHEDULE_FEED_ID_PAYLOAD_KEYS) {
+    const value = String((item as any)[key] || "").trim();
+    if (!value) continue;
+    ids.add(value);
+    const base = normalizeScheduleFeedIdBase(value);
+    if (base) ids.add(base);
+  }
+  return Array.from(ids);
+}
+
+export function feedItemMatchesScheduleFeedId(item: ChurchFeedItem, feedId: string): boolean {
+  const needle = String(feedId || "").trim();
+  if (!needle) return false;
+  const needleBase = normalizeScheduleFeedIdBase(needle);
+  const haystack = collectFeedItemScheduleFeedIds(item);
+  return haystack.some(
+    (candidate) =>
+      candidate === needle || (needleBase && normalizeScheduleFeedIdBase(candidate) === needleBase)
+  );
+}
+
+export function feedItemMatchesTargetChurch(item: ChurchFeedItem, targetChurchId: string): boolean {
+  const cid = String(targetChurchId || "").trim();
+  if (!cid) return true;
+  const churchIds = [item?.churchId, (item as any)?.ownerChurchId, (item as any)?.sourceChurchId]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return churchIds.includes(cid);
+}
+
+function scheduleFeedSlotCount(item: ChurchFeedItem): number {
+  return Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0;
+}
+
+/** Same row source as GET /api/church/feed?scope=church for a target church. */
+export async function listFeedRowsLikeGetChurchScope(targetChurchId: string): Promise<ChurchFeedItem[]> {
+  const cid = String(targetChurchId || "").trim();
+  if (!cid) return listFeedItems();
+
+  let rawRows = await listFeedItemsForChurch(cid);
+  if (!rawRows.length) {
+    const fallbackRows = await listFeedItems();
+    rawRows = fallbackRows.filter((item) => feedItemMatchesTargetChurch(item, cid));
+  }
+
+  return rawRows;
+}
+
+function findActiveChurchScheduleForFeedAlias(
+  rows: ChurchFeedItem[],
+  feedId: string,
+  targetChurchId: string
+): ChurchFeedItem | null {
+  const cid = String(targetChurchId || "").trim();
+  if (!cid) return null;
+
+  const candidates = [
+    findMediaScheduleFeedForChurch(rows, cid, { strictChurch: false }),
+    findActiveMediaScheduleForChurch(rows, cid, { strictChurch: false }),
+  ].filter(Boolean) as ChurchFeedItem[];
+
+  for (const item of candidates) {
+    if (feedItemMatchesScheduleFeedId(item, feedId)) return item;
+  }
+
+  let best: ChurchFeedItem | null = null;
+  let bestCount = 0;
+  for (const item of rows) {
+    if (!isMediaScheduleFeedItem(item)) continue;
+    if (!feedItemMatchesTargetChurch(item, cid)) continue;
+    if (!feedItemMatchesScheduleFeedId(item, feedId)) continue;
+    const count = scheduleFeedSlotCount(item);
+    if (count >= bestCount) {
+      best = item;
+      bestCount = count;
+    }
+  }
+
+  return best;
+}
+
+function pickBestScheduleFeedMatch(
+  candidates: ChurchFeedItem[],
+  feedId: string,
+  targetChurchId?: string
+): { item: ChurchFeedItem; matchedField: string } | null {
+  if (!candidates.length) return null;
+
+  const cid = String(targetChurchId || "").trim();
+  let pool = candidates;
+  if (cid) {
+    const churchMatches = candidates.filter((item) => feedItemMatchesTargetChurch(item, cid));
+    if (churchMatches.length) pool = churchMatches;
+  }
+
+  for (const item of pool) {
+    if (String(item.id || "") === feedId) {
+      return { item, matchedField: "id" };
+    }
+  }
+
+  for (const field of SCHEDULE_FEED_ID_PAYLOAD_KEYS) {
+    for (const item of pool) {
+      if (String((item as any)[field] || "").trim() === feedId) {
+        return { item, matchedField: field };
+      }
+    }
+  }
+
+  const sorted = pool
+    .slice()
+    .sort((a, b) => scheduleFeedSlotCount(b) - scheduleFeedSlotCount(a));
+  if (!sorted.length) return null;
+  return { item: sorted[0], matchedField: "best-match" };
+}
+
+async function findFeedItemByScheduleFeedIdDirect(
+  feedId: string,
+  targetChurchId?: string
+): Promise<ChurchFeedItem | null> {
+  const cid = String(targetChurchId || "").trim();
+  const baseId = normalizeScheduleFeedIdBase(feedId);
+
+  const aliasWhereSql = (sql: any) =>
+    cid
+      ? sql`
+          SELECT id, church_id, type, source, schedule_type, created_by, visibility, payload, created_at, updated_at
+          FROM kristo_church_feed
+          WHERE (
+            church_id = ${cid}
+            OR payload->>'ownerChurchId' = ${cid}
+            OR payload->>'sourceChurchId' = ${cid}
+          )
+          AND (
+            id = ${feedId}
+            OR id = ${baseId}
+            OR payload->>'sourceScheduleId' = ${feedId}
+            OR payload->>'sourceScheduleId' = ${baseId}
+            OR payload->>'liveId' = ${feedId}
+            OR payload->>'liveId' = ${baseId}
+            OR payload->>'liveScheduleFeedId' = ${feedId}
+            OR payload->>'liveScheduleFeedId' = ${baseId}
+            OR payload->>'scheduleFeedId' = ${feedId}
+            OR payload->>'scheduleFeedId' = ${baseId}
+            OR payload->>'parentScheduleId' = ${feedId}
+            OR payload->>'parentScheduleId' = ${baseId}
+            OR payload->>'postId' = ${feedId}
+            OR payload->>'postId' = ${baseId}
+            OR payload->>'feedId' = ${feedId}
+            OR payload->>'feedId' = ${baseId}
+          )
+          ORDER BY
+            CASE WHEN id = ${feedId} OR id = ${baseId} THEN 0 ELSE 1 END,
+            created_at DESC
+          LIMIT 12
+        `
+      : sql`
+          SELECT id, church_id, type, source, schedule_type, created_by, visibility, payload, created_at, updated_at
+          FROM kristo_church_feed
+          WHERE id = ${feedId}
+             OR id = ${baseId}
+             OR payload->>'sourceScheduleId' = ${feedId}
+             OR payload->>'sourceScheduleId' = ${baseId}
+             OR payload->>'liveId' = ${feedId}
+             OR payload->>'liveId' = ${baseId}
+             OR payload->>'liveScheduleFeedId' = ${feedId}
+             OR payload->>'liveScheduleFeedId' = ${baseId}
+             OR payload->>'scheduleFeedId' = ${feedId}
+             OR payload->>'scheduleFeedId' = ${baseId}
+             OR payload->>'parentScheduleId' = ${feedId}
+             OR payload->>'parentScheduleId' = ${baseId}
+             OR payload->>'postId' = ${feedId}
+             OR payload->>'postId' = ${baseId}
+             OR payload->>'feedId' = ${feedId}
+             OR payload->>'feedId' = ${baseId}
+          ORDER BY
+            CASE WHEN id = ${feedId} OR id = ${baseId} THEN 0 ELSE 1 END,
+            created_at DESC
+          LIMIT 12
+        `;
 
   if (usePostgres()) {
     const sql = getSql();
-    const rows = await sql`
-      SELECT id, church_id, type, source, schedule_type, created_by, visibility, payload, created_at, updated_at
-      FROM kristo_church_feed
-      WHERE id = ${feedId}
-      LIMIT 1
-    `;
-    const row = (rows as FeedRow[])[0];
-    if (row) return rowToFeedItem(row);
-
-    if (feedId.startsWith("media-schedule-")) {
-      const aliasRows = await sql`
+    let rows = await aliasWhereSql(sql);
+    if (!(rows as FeedRow[]).length && cid) {
+      rows = await sql`
         SELECT id, church_id, type, source, schedule_type, created_by, visibility, payload, created_at, updated_at
         FROM kristo_church_feed
-        WHERE payload->>'sourceScheduleId' = ${feedId}
+        WHERE id = ${feedId}
+           OR id = ${baseId}
+           OR payload->>'sourceScheduleId' = ${feedId}
+           OR payload->>'sourceScheduleId' = ${baseId}
            OR payload->>'liveId' = ${feedId}
-        LIMIT 1
+           OR payload->>'liveId' = ${baseId}
+           OR payload->>'liveScheduleFeedId' = ${feedId}
+           OR payload->>'liveScheduleFeedId' = ${baseId}
+           OR payload->>'scheduleFeedId' = ${feedId}
+           OR payload->>'scheduleFeedId' = ${baseId}
+           OR payload->>'parentScheduleId' = ${feedId}
+           OR payload->>'parentScheduleId' = ${baseId}
+           OR payload->>'postId' = ${feedId}
+           OR payload->>'postId' = ${baseId}
+           OR payload->>'feedId' = ${feedId}
+           OR payload->>'feedId' = ${baseId}
+        ORDER BY
+          CASE WHEN id = ${feedId} OR id = ${baseId} THEN 0 ELSE 1 END,
+          created_at DESC
+        LIMIT 12
       `;
-      const aliasRow = (aliasRows as FeedRow[])[0];
-      return aliasRow ? rowToFeedItem(aliasRow) : null;
     }
-
-    return null;
+    const items = (rows as FeedRow[]).map((row) => rowToFeedItem(row));
+    return pickBestScheduleFeedMatch(items, feedId, targetChurchId)?.item || null;
   }
+
+  const scopeRows = cid ? await listFeedRowsLikeGetChurchScope(cid) : await readLocalFeedItems();
+  const matches = scopeRows.filter((item) => feedItemMatchesScheduleFeedId(item, feedId));
+  const picked = pickBestScheduleFeedMatch(matches, feedId, targetChurchId);
+  if (picked) return picked.item;
 
   const all = await readLocalFeedItems();
-  const direct = all.find((x) => String(x.id || "") === feedId);
-  if (direct) return direct;
+  const globalMatches = all.filter((item) => feedItemMatchesScheduleFeedId(item, feedId));
+  return pickBestScheduleFeedMatch(globalMatches, feedId, targetChurchId)?.item || null;
+}
 
-  if (feedId.startsWith("media-schedule-")) {
-    return (
-      all.find((item) => {
-        const sourceScheduleId = String((item as any).sourceScheduleId || "").trim();
-        const liveId = String((item as any).liveId || "").trim();
-        return sourceScheduleId === feedId || liveId === feedId;
-      }) || null
-    );
+export async function resolveFeedItemByScheduleFeedId(input: {
+  feedId: string;
+  targetChurchId?: string;
+}): Promise<{
+  item: ChurchFeedItem | null;
+  matchedBy: "direct" | "church-scope" | "global-scan" | "active-schedule" | null;
+  matchedField: string | null;
+  scannedCount: number;
+}> {
+  const feedId = String(input.feedId || "").trim();
+  const targetChurchId = String(input.targetChurchId || "").trim();
+  if (!feedId) {
+    return { item: null, matchedBy: null, matchedField: null, scannedCount: 0 };
   }
 
-  return null;
+  await ensureFeedStoreReady();
+
+  const direct = await findFeedItemByScheduleFeedIdDirect(feedId, targetChurchId);
+  if (direct && (!targetChurchId || feedItemMatchesTargetChurch(direct, targetChurchId))) {
+    const matchedField =
+      String(direct.id || "") === feedId
+        ? "id"
+        : SCHEDULE_FEED_ID_PAYLOAD_KEYS.find((key) =>
+            feedItemMatchesScheduleFeedId({ ...direct, [key]: (direct as any)[key] }, feedId)
+          ) || "alias";
+    return {
+      item: direct,
+      matchedBy: "direct",
+      matchedField,
+      scannedCount: 1,
+    };
+  }
+
+  const churchRows = targetChurchId ? await listFeedRowsLikeGetChurchScope(targetChurchId) : [];
+  const churchMatches = churchRows.filter((item) => feedItemMatchesScheduleFeedId(item, feedId));
+  const churchPicked = pickBestScheduleFeedMatch(churchMatches, feedId, targetChurchId);
+  if (churchPicked) {
+    return {
+      item: churchPicked.item,
+      matchedBy: "church-scope",
+      matchedField: churchPicked.matchedField,
+      scannedCount: churchRows.length,
+    };
+  }
+
+  const activeMatch = targetChurchId
+    ? findActiveChurchScheduleForFeedAlias(churchRows, feedId, targetChurchId)
+    : null;
+  if (activeMatch) {
+    return {
+      item: activeMatch,
+      matchedBy: "active-schedule",
+      matchedField: "active-schedule",
+      scannedCount: churchRows.length,
+    };
+  }
+
+  const all = await listFeedItems();
+  const matches = all.filter((item) => feedItemMatchesScheduleFeedId(item, feedId));
+  const picked = pickBestScheduleFeedMatch(matches, feedId, targetChurchId);
+  if (picked) {
+    return {
+      item: picked.item,
+      matchedBy: "global-scan",
+      matchedField: picked.matchedField,
+      scannedCount: all.length,
+    };
+  }
+
+  const globalActive = targetChurchId
+    ? findActiveChurchScheduleForFeedAlias(all, feedId, targetChurchId)
+    : null;
+  if (globalActive) {
+    return {
+      item: globalActive,
+      matchedBy: "active-schedule",
+      matchedField: "active-schedule-global",
+      scannedCount: all.length,
+    };
+  }
+
+  if (targetChurchId && feedId.startsWith("feed_")) {
+    const scopedRows = churchRows.length ? churchRows : await listFeedRowsLikeGetChurchScope(targetChurchId);
+    const mediaRows = scopedRows.filter(
+      (item) => isMediaScheduleFeedItem(item) && scheduleFeedSlotCount(item) > 0
+    );
+    if (mediaRows.length === 1) {
+      return {
+        item: mediaRows[0],
+        matchedBy: "church-scope",
+        matchedField: "single-church-schedule",
+        scannedCount: scopedRows.length,
+      };
+    }
+  }
+
+  return { item: null, matchedBy: null, matchedField: null, scannedCount: all.length };
+}
+
+export async function getFeedItemById(id: string): Promise<ChurchFeedItem | null> {
+  const feedId = String(id || "").trim();
+  if (!feedId) return null;
+  return findFeedItemByScheduleFeedIdDirect(feedId);
 }
 
 export type FeedItemDebugSnapshot = {

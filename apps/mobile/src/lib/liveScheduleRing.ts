@@ -1,5 +1,6 @@
 import { DeviceEventEmitter } from "react-native";
 import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
+import { filterOutDeletedScheduleRows } from "@/src/lib/deletedScheduleRegistry";
 import {
   collectScheduleRowsForRingScan,
   injectClaimStoreScheduleRows,
@@ -305,14 +306,18 @@ export function resolveRingMergedScheduleRows(options: {
 }): any[] {
   const viewerUserId = String(options.viewerUserId || "").trim();
   const scanRows = collectScheduleRowsForRingScan(
-    Array.isArray(options.churchBackendRows) ? options.churchBackendRows : [],
+    filterOutDeletedScheduleRows(
+      Array.isArray(options.churchBackendRows) ? options.churchBackendRows : []
+    ),
     viewerUserId
   );
-  return mergeFeedRowsForScheduleScan(scanRows, {
-    backendFeedLoaded: options.backendFeedLoaded === true,
-    churchId: String(options.viewerChurchId || "").trim(),
-    viewerUserId,
-  });
+  return filterOutDeletedScheduleRows(
+    mergeFeedRowsForScheduleScan(scanRows, {
+      backendFeedLoaded: options.backendFeedLoaded === true,
+      churchId: String(options.viewerChurchId || "").trim(),
+      viewerUserId,
+    })
+  );
 }
 
 export function resolveRingChurchScheduleSnapshot(options: {

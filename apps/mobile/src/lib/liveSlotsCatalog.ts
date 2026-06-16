@@ -17,6 +17,7 @@ import {
   resolveRingMergedScheduleRows,
 } from "@/src/lib/liveScheduleRing";
 import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
+import { filterOutDeletedScheduleRows } from "@/src/lib/deletedScheduleRegistry";
 import {
   applyRingClaimHintsToScheduleSlots,
   baseFeedId,
@@ -134,10 +135,10 @@ export function resolveLiveSlotsBackendFeedRows(input: {
   churchFeedLoaded?: boolean;
 }): { rows: any[]; snapshot: LiveSlotsBackendSourceSnapshot } {
   const viewerCid = String(input.viewerChurchId || "").trim();
-  const churchRows = (input.churchBackendRows || []).filter(Boolean);
-  const globalRows = (input.globalBackendRows || []).filter(Boolean);
-  const cachedRows = getCachedHomeFeedBackendRows();
-  const localRows = Array.isArray(input.localRows) ? input.localRows : [];
+  const churchRows = filterOutDeletedScheduleRows((input.churchBackendRows || []).filter(Boolean));
+  const globalRows = filterOutDeletedScheduleRows((input.globalBackendRows || []).filter(Boolean));
+  const cachedRows = filterOutDeletedScheduleRows(getCachedHomeFeedBackendRows());
+  const localRows = filterOutDeletedScheduleRows(Array.isArray(input.localRows) ? input.localRows : []);
   const churchFeedLoaded = input.churchFeedLoaded === true;
 
   const churchBackendForRing = churchRows.length
@@ -155,7 +156,7 @@ export function resolveLiveSlotsBackendFeedRows(input: {
     backendFeedLoaded: hasBackendSignal,
   });
 
-  rows = rows.filter(
+  rows = filterOutDeletedScheduleRows(rows).filter(
     (row) => isLiveSlotsScheduleSourceRow(row) && scheduleRowHasBackendSlots(row)
   );
 

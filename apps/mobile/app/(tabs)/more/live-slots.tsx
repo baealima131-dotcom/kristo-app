@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -9,7 +9,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Stack, useRouter } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -30,6 +30,7 @@ import {
 } from "@/src/lib/liveSlotsCatalog";
 import { onLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { onSlotClaimChanged } from "@/src/lib/slotClaimEvents";
+import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 
 type TabKey = "my-church" | "other-churches";
 
@@ -37,15 +38,30 @@ const SLOT_CARD_HEIGHT = 520;
 
 export default function LiveSlotsScreen() {
   const router = useRouter();
+  const routeParams = useLocalSearchParams<{
+    focusScheduleFeedId?: string;
+    focusSlotId?: string;
+    focusSlotNumber?: string;
+    churchId?: string;
+    source?: string;
+  }>();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const cardHeight = Math.min(SLOT_CARD_HEIGHT, Math.round(windowHeight * 0.62));
+  const scrollRef = useRef<ScrollView>(null);
+  const focusAppliedRef = useRef(false);
 
   const session = getSessionSync() as any;
   const viewerUserId = String(session?.userId || "").trim();
   const viewerChurchId = String(session?.churchId || "").trim();
+  const targetChurchId = String(routeParams.churchId || "").trim();
 
-  const [tab, setTab] = useState<TabKey>("my-church");
+  const [tab, setTab] = useState<TabKey>(() => {
+    if (targetChurchId && viewerChurchId && targetChurchId !== viewerChurchId) {
+      return "other-churches";
+    }
+    return "my-church";
+  });
   const [loading, setLoading] = useState(false);
   const [tick, setTick] = useState(0);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -149,6 +165,109 @@ export default function LiveSlotsScreen() {
 
   const activeRows = tab === "my-church" ? catalog.myChurch : catalog.otherChurches;
 
+  const focusScheduleFeedId = String(routeParams.focusScheduleFeedId || "").trim();
+  const focusSlotId = String(routeParams.focusSlotId || "").trim();
+  const focusSlotNumber = Math.max(0, Number(routeParams.focusSlotNumber || 0));
+
+  const rowMatchesFocus = useCallback(
+    (item: any) => {
+      if (!focusScheduleFeedId) return false;
+      const focusCanon = baseFeedId(focusScheduleFeedId) || focusScheduleFeedId;
+      const rowFeedId = baseFeedId(
+        String(item?.parentScheduleId || item?.sourceScheduleId || item?.id || "")
+      );
+      const rowId = String(item?.id || "");
+      const feedMatches =
+        rowFeedId === focusCanon ||
+        rowId.startsWith(`${focusCanon}:slot:`) ||
+        rowId.includes(focusCanon);
+      if (!feedMatches) return false;
+
+      const slot = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots[0] : null;
+      if (focusSlotId) {
+        const rowSlotId = String(slot?.id || slot?.slotId || "").trim();
+        if (rowSlotId && rowSlotId !== focusSlotId) return false;
+      }
+      if (focusSlotNumber > 0) {
+        const rowSlotNumber = Math.max(1, Number(item?.slotNumber || slot?.slot || 0));
+        if (rowSlotNumber !== focusSlotNumber) return false;
+      }
+      return true;
+    },
+    [focusScheduleFeedId, focusSlotId, focusSlotNumber]
+  );
+
+  useEffect(() => {
+    if (!targetChurchId || !viewerChurchId) return;
+    setTab(targetChurchId === viewerChurchId ? "my-church" : "other-churches");
+  }, [targetChurchId, viewerChurchId]);
+
+  useEffect(() => {
+    if (focusAppliedRef.current || !focusScheduleFeedId || loading) return;
+    if (!churchFeedLoaded && !catalog.myChurch.length && !catalog.otherChurches.length) return;
+
+    let rows = activeRows;
+    let index = rows.findIndex(rowMatchesFocus);
+
+    if (index < 0 && tab === "my-church" && catalog.otherChurches.length) {
+      rows = catalog.otherChurches;
+      index = rows.findIndex(rowMatchesFocus);
+      if (index >= 0) {
+        setTab("other-churches");
+        return;
+      }
+    } else if (index < 0 && tab === "other-churches" && catalog.myChurch.length) {
+      rows = catalog.myChurch;
+      index = rows.findIndex(rowMatchesFocus);
+      if (index >= 0) {
+        setTab("my-church");
+        return;
+      }
+    }
+
+    if (index < 0) {
+      focusAppliedRef.current = true;
+      console.log("KRISTO_LIVE_SLOTS_FOCUS_MISS", {
+        focusScheduleFeedId,
+        focusSlotId: focusSlotId || null,
+        focusSlotNumber: focusSlotNumber || null,
+        churchId: targetChurchId || null,
+        source: String(routeParams.source || ""),
+        tab,
+      });
+      return;
+    }
+
+    focusAppliedRef.current = true;
+    const cardStride = cardHeight + 22;
+    const y = Math.max(0, index * cardStride - 8);
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ y, animated: true });
+    });
+    console.log("KRISTO_LIVE_SLOTS_FOCUS_APPLIED", {
+      focusScheduleFeedId,
+      focusSlotId: focusSlotId || null,
+      focusSlotNumber: focusSlotNumber || null,
+      index,
+      tab,
+      source: String(routeParams.source || ""),
+    });
+  }, [
+    activeRows,
+    churchFeedLoaded,
+    catalog.myChurch,
+    catalog.otherChurches,
+    cardHeight,
+    focusScheduleFeedId,
+    focusSlotId,
+    focusSlotNumber,
+    loading,
+    rowMatchesFocus,
+    routeParams.source,
+    tab,
+    targetChurchId,
+  ]);
+
   useEffect(() => {
     const renderSummary = summarizeLiveSlotsRenderRows(activeRows);
     console.log("KRISTO_LIVE_SLOTS_RENDER_ROWS", {
@@ -223,6 +342,7 @@ export default function LiveSlotsScreen() {
         </View>
       ) : (
         <ScrollView
+          ref={scrollRef}
           style={styles.scroll}
           contentContainerStyle={{
             paddingHorizontal: 12,

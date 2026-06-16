@@ -75,6 +75,9 @@ import {
   isFeedDatabaseError,
   listFeedItems,
   listFeedItemsForChurch,
+  feedItemMatchesTargetChurch,
+  listFeedRowsLikeGetChurchScope,
+  resolveFeedItemByScheduleFeedId,
   upsertFeedItem,
 } from "@/app/api/_lib/store/feedDb";
 import {
@@ -3269,7 +3272,7 @@ async function handleClearMediaScheduleSlots(body: any, ctx: any) {
   const action = "clear_media_schedule_slots";
   const churchId = String(ctx?.churchId || "").trim();
   const viewerUserId = String(ctx?.viewer?.userId || ctx?.viewer?.id || "u-unknown");
-  const postId = cleanText(body?.postId || body?.feedId, 240);
+  const postId = cleanText(body?.postId || body?.feedId || body?.scheduleFeedId, 240);
   const targetChurchId = String(body?.churchId || churchId || "").trim();
   const slotsLength = Array.isArray(body?.slots) ? body.slots.length : 0;
 
@@ -3295,11 +3298,57 @@ async function handleClearMediaScheduleSlots(body: any, ctx: any) {
   });
   if (subscriptionBlocked) return subscriptionBlocked;
 
-  const item = await getFeedItemById(postId);
-  if (!item) return err("Feed item not found", 404);
+  console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_LOOKUP_START", {
+    feedId: postId,
+    postId,
+    churchId: targetChurchId,
+    slotsLength,
+  });
+
+  const lookup = await resolveFeedItemByScheduleFeedId({
+    feedId: postId,
+    targetChurchId,
+  });
+
+  if (!lookup.item) {
+    const churchRows = targetChurchId ? await listFeedRowsLikeGetChurchScope(targetChurchId) : [];
+    const scheduleCandidates = churchRows
+      .filter((row) => isMediaScheduleFeedItem(row))
+      .slice(0, 8)
+      .map((row) => ({
+        id: String(row?.id || ""),
+        sourceScheduleId: String(row?.sourceScheduleId || ""),
+        scheduleFeedId: String((row as any)?.scheduleFeedId || ""),
+        liveScheduleFeedId: String((row as any)?.liveScheduleFeedId || ""),
+        slotCount: Array.isArray(row?.scheduleSlots) ? row.scheduleSlots.length : 0,
+      }));
+    console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_LOOKUP_MISS", {
+      feedId: postId,
+      postId,
+      churchId: targetChurchId,
+      scannedCount: lookup.scannedCount,
+      churchRowCount: churchRows.length,
+      scheduleCandidates,
+    });
+    return err("Feed item not found", 404);
+  }
+
+  const item = lookup.item;
+  const resolvedPostId = String(item.id || postId).trim();
+
+  console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_LOOKUP_HIT", {
+    requestedFeedId: postId,
+    resolvedFeedId: resolvedPostId,
+    matchedBy: lookup.matchedBy,
+    matchedField: lookup.matchedField,
+    churchId: targetChurchId,
+    itemChurchId: String(item.churchId || ""),
+    slotCount: Array.isArray(item.scheduleSlots) ? item.scheduleSlots.length : 0,
+    scannedCount: lookup.scannedCount,
+  });
 
   const itemChurchId = String(item?.churchId || targetChurchId || "").trim();
-  if (itemChurchId && itemChurchId !== targetChurchId) {
+  if (targetChurchId && !feedItemMatchesTargetChurch(item, targetChurchId)) {
     return err("Feed item not in your church", 403);
   }
 
@@ -3319,7 +3368,7 @@ async function handleClearMediaScheduleSlots(body: any, ctx: any) {
   if (!nextSlots.length) {
     const { endStaleMediaScheduleFeedItem } = await import("@/app/api/_lib/staleMediaScheduleFeed");
     const ended = await endStaleMediaScheduleFeedItem({
-      postId: String(item.id || postId),
+      postId: resolvedPostId,
       churchId: targetChurchId,
       reason: String(body?.reason || "clear_media_schedule_slots"),
       deletedBy: viewerUserId,
@@ -3330,13 +3379,23 @@ async function handleClearMediaScheduleSlots(body: any, ctx: any) {
     }
 
     bumpMediaScheduleSync(targetChurchId, "clear_media_schedule_slots");
+    console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_UPDATED", {
+      requestedFeedId: postId,
+      resolvedFeedId: resolvedPostId,
+      churchId: targetChurchId,
+      itemChurchId,
+      slotsLength: 0,
+      deleted: ended.deleted,
+      endedLiveKeys: ended.endedLiveKeys,
+    });
     return ok({
       ok: true,
       action: "clear_media_schedule_slots",
       serverBuild: "homefeed-clear-media-schedule-slots",
       stage: "early-handler-hit",
-      feedId: postId,
-      postId,
+      feedId: resolvedPostId,
+      postId: resolvedPostId,
+      requestedFeedId: postId,
       slots: [],
       deleted: ended.deleted,
       endedLiveKeys: ended.endedLiveKeys,
@@ -3345,6 +3404,7 @@ async function handleClearMediaScheduleSlots(body: any, ctx: any) {
 
   const updatedItem = {
     ...item,
+    id: resolvedPostId,
     scheduleSlots: nextSlots,
     status: String(item?.status || "active"),
     scheduleStatus: String(item?.scheduleStatus || "active"),
@@ -3355,7 +3415,7 @@ async function handleClearMediaScheduleSlots(body: any, ctx: any) {
   const activeSlotCount = getActiveScheduleSlots(updatedItem).length;
   if (activeSlotCount === 0) {
     const scheduleLiveId = String(
-      updatedItem.sourceScheduleId || updatedItem.liveId || updatedItem.id || postId
+      updatedItem.sourceScheduleId || updatedItem.liveId || updatedItem.id || resolvedPostId
     ).trim();
     try {
       const { endChurchLiveSessionsForSchedule } = await import("@/app/api/_lib/churchLiveControl");
@@ -3367,19 +3427,30 @@ async function handleClearMediaScheduleSlots(body: any, ctx: any) {
     } catch (liveEndError: any) {
       console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_LIVE_END_FAILED", {
         churchId: targetChurchId,
-        postId,
+        postId: resolvedPostId,
         message: String(liveEndError?.message || liveEndError),
       });
     }
   }
+
+  console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_UPDATED", {
+    requestedFeedId: postId,
+    resolvedFeedId: resolvedPostId,
+    churchId: targetChurchId,
+    itemChurchId,
+    slotsLength: nextSlots.length,
+    deleted: false,
+    remainingCount: nextSlots.length,
+  });
 
   return ok({
     ok: true,
     action: "clear_media_schedule_slots",
     serverBuild: "homefeed-clear-media-schedule-slots",
     stage: "early-handler-hit",
-    feedId: postId,
-    postId,
+    feedId: resolvedPostId,
+    postId: resolvedPostId,
+    requestedFeedId: postId,
     slots: nextSlots,
     deleted: false,
     remainingCount: nextSlots.length,
