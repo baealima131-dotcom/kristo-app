@@ -8,6 +8,38 @@ export type MinistryMediaAccessRow = {
   mediaAccess?: boolean;
 };
 
+export function parseMinistryMediaAccessInput(input: unknown): boolean {
+  if (input === true || input === 1) return true;
+  if (typeof input === "string") {
+    const token = input.trim().toLowerCase();
+    return token === "true" || token === "1";
+  }
+  return false;
+}
+
+export function extractMinistryMediaAccessFromBody(
+  body: Record<string, unknown> | null | undefined
+): unknown {
+  if (!body || typeof body !== "object") return undefined;
+  if (body.mediaAccess !== undefined) return body.mediaAccess;
+
+  const nested = body.metadata ?? body.settings;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return (nested as Record<string, unknown>).mediaAccess;
+  }
+
+  return undefined;
+}
+
+export function materializeMinistryMediaAccessRecord<
+  T extends MinistryMediaAccessRow & Record<string, unknown>,
+>(row: T): T & { mediaAccess: boolean } {
+  return {
+    ...row,
+    mediaAccess: parseMinistryMediaAccessInput(row.mediaAccess),
+  };
+}
+
 export function churchIdsMatchForMinistry(stored: unknown, requested: string): boolean {
   return (
     String(stored || "")

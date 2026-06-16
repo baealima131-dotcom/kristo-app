@@ -17,8 +17,11 @@ import {
   MINISTRY_MEDIA_ACCESS_LIMIT,
   MINISTRY_MEDIA_ACCESS_LIMIT_CODE,
   countChurchMinistriesWithMediaAccess,
+  extractMinistryMediaAccessFromBody,
   logMinistryMediaAccessLimit,
+  materializeMinistryMediaAccessRecord,
   ministryMediaAccessLimitPayload,
+  parseMinistryMediaAccessInput,
 } from "@/lib/ministryMediaAccessLimit";
 import {
   logMinistryMediaAccessLoad,
@@ -258,7 +261,10 @@ export async function GET(req: NextRequest) {
       source: "api/church/ministries?id",
     });
 
-    return json<Ministry>({ ok: true, data: one });
+    return json<Ministry>({
+      ok: true,
+      data: materializeMinistryMediaAccessRecord(one as Ministry & Record<string, unknown>),
+    });
   }
 
   const churchMinistries = all.filter((m) => churchIdsMatch(m.churchId, churchId));
@@ -290,10 +296,20 @@ export async function GET(req: NextRequest) {
       count: data.length,
     });
 
-    return json<Ministry[]>({ ok: true, data });
+    return json<Ministry[]>({
+      ok: true,
+      data: data.map((m) =>
+        materializeMinistryMediaAccessRecord(m as Ministry & Record<string, unknown>)
+      ),
+    });
   }
 
-  return json<Ministry[]>({ ok: true, data: churchMinistries });
+  return json<Ministry[]>({
+    ok: true,
+    data: churchMinistries.map((m) =>
+      materializeMinistryMediaAccessRecord(m as Ministry & Record<string, unknown>)
+    ),
+  });
 }
 
 /* =========================
@@ -332,7 +348,8 @@ export async function POST(req: NextRequest) {
 
   const description = parseDescription(body.description);
   const avatarUri = parseAvatarUri(body.avatarUri);
-  const mediaAccess = body.mediaAccess === true;
+  const rawMediaAccessInput = extractMinistryMediaAccessFromBody(body);
+  const mediaAccess = parseMinistryMediaAccessInput(rawMediaAccessInput);
   const fieldTypes = payloadFieldTypes(body);
 
   console.log("KRISTO_MINISTRY_SAVE_START", {
@@ -347,12 +364,23 @@ export async function POST(req: NextRequest) {
   logMinistryMediaAccessSave({
     churchId,
     mediaAccess,
-    payloadSent: { name, status, description, mediaAccess },
+    payloadSent: { name, status, description, mediaAccess, rawMediaAccessInput },
     phase: "request",
     source: "api/church/ministries POST",
   });
 
-  const created: Ministry = {
+  if (mediaAccess) {
+    const mediaSubscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
+      endpoint: "/api/church/ministries",
+      churchId,
+      userId: viewerUserId,
+      role: viewerRole,
+      action: "grant_ministry_media_access",
+    });
+    if (mediaSubscriptionBlocked) return mediaSubscriptionBlocked;
+  }
+
+  const created = materializeMinistryMediaAccessRecord({
     id: id(),
     name,
     description,
@@ -362,7 +390,7 @@ export async function POST(req: NextRequest) {
     churchId,
     createdByUserId: viewer.userId,
     createdAt: nowIso(),
-  };
+  });
 
   try {
     await updateJsonFile<Ministry[]>(
@@ -427,28 +455,61 @@ export async function POST(req: NextRequest) {
       targetType: "ministry",
       targetId: created.id,
       message: `${viewer.name || viewer.userId} created ministry ${name}.`,
-      meta: { name, status, description, avatarUri },
+      meta: { name, status, description, avatarUri, mediaAccess: created.mediaAccess },
     } as any);
+
+    const allAfterPersist = await readAll();
+    const stored = findMinistryInChurch(allAfterPersist, churchId, created.id);
+    const responseMinistry = materializeMinistryMediaAccessRecord(
+      (stored || created) as Ministry & Record<string, unknown>
+    );
+
+    if (mediaAccess && responseMinistry.mediaAccess !== true) {
+      console.log("KRISTO_MINISTRY_MEDIA_ACCESS_PERSIST_FAILED", {
+        churchId,
+        ministryId: created.id,
+        requestedMediaAccess: true,
+        storedMediaAccess: responseMinistry.mediaAccess,
+        storedRecord: stored,
+      });
+      return json(
+        {
+          ok: false,
+          error: "Failed to persist ministry media access",
+        } satisfies ApiErr,
+        { status: 500 }
+      );
+    }
 
     console.log("KRISTO_MINISTRY_SAVE_DONE", {
       churchId,
       userId: viewer.userId,
-      ministryId: created.id,
-      mediaAccess,
+      ministryId: responseMinistry.id,
+      mediaAccess: responseMinistry.mediaAccess,
       ...fieldTypes,
     });
 
     logMinistryMediaAccessSave({
-      ministryId: created.id,
+      ministryId: responseMinistry.id,
       churchId,
-      mediaAccess: created.mediaAccess === true,
-      payloadSent: { name, status, description, mediaAccess },
-      payloadStored: created,
+      mediaAccess: responseMinistry.mediaAccess === true,
+      payloadSent: { name, status, description, mediaAccess, rawMediaAccessInput },
+      payloadStored: responseMinistry,
       phase: "persist",
       source: "api/church/ministries POST",
     });
 
-    return json<Ministry>({ ok: true, data: created }, { status: 201 });
+    logMinistryMediaAccessSave({
+      ministryId: responseMinistry.id,
+      churchId,
+      mediaAccess: responseMinistry.mediaAccess === true,
+      payloadSent: { name, status, description, mediaAccess, rawMediaAccessInput },
+      payloadStored: responseMinistry,
+      phase: "response",
+      source: "api/church/ministries POST",
+    });
+
+    return json<Ministry>({ ok: true, data: responseMinistry }, { status: 201 });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error || "ministry_save_failed");
 
@@ -498,7 +559,7 @@ export async function PATCH(req: NextRequest) {
   const body = await asBody(req);
   if (!body) return json({ ok: false, error: "Invalid JSON body" } satisfies ApiErr, { status: 400 });
 
-  if (body.mediaAccess === true) {
+  if (body.mediaAccess !== undefined && parseMinistryMediaAccessInput(extractMinistryMediaAccessFromBody(body))) {
     const viewerRole = String(viewer?.role || "").trim();
     const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
       endpoint: "/api/church/ministries",
@@ -545,7 +606,9 @@ export async function PATCH(req: NextRequest) {
           body.description !== undefined ? parseDescription(body.description) : cur.description;
 
         const nextMediaAccess =
-          body.mediaAccess !== undefined ? body.mediaAccess === true : !!(cur as any).mediaAccess;
+          body.mediaAccess !== undefined
+            ? parseMinistryMediaAccessInput(extractMinistryMediaAccessFromBody(body))
+            : parseMinistryMediaAccessInput((cur as any).mediaAccess);
 
         const curHadMediaAccess = !!(cur as any).mediaAccess;
         const enablingMediaAccess = nextMediaAccess && !curHadMediaAccess;
@@ -568,7 +631,7 @@ export async function PATCH(req: NextRequest) {
         prevStatus = cur.status;
         nextStatusForAudit = nextStatus;
 
-        updated = {
+        updated = materializeMinistryMediaAccessRecord({
           ...cur,
           name: nextName,
           status: nextStatus,
@@ -576,7 +639,7 @@ export async function PATCH(req: NextRequest) {
           avatarUri: nextAvatarUri,
           mediaAccess: nextMediaAccess,
           updatedAt: nowIso(),
-        };
+        } as Ministry & Record<string, unknown>);
 
         list[idx] = updated;
         return list;
