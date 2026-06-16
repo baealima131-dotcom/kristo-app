@@ -23,9 +23,27 @@ export type ChurchPublicPost = {
   body: string;
   type: string;
   createdAt: string | null;
+  mediaType?: string;
   videoUrl?: string;
   imageUrl?: string;
+  mediaUri?: string;
+  imageUri?: string;
+  photoUrl?: string;
+  posterUri?: string;
+  videoPosterUri?: string;
+  thumbnailUri?: string;
+  thumbnailUrl?: string;
+  posterUrl?: string;
+  coverUrl?: string;
+  coverImageUrl?: string;
+  coverUri?: string;
+  images?: string[];
+  attachments?: unknown[];
+  mediaUrls?: string[];
   churchName: string;
+  likeCount?: number;
+  commentCount?: number;
+  shareCount?: number;
 };
 
 export type ChurchPublicProfile = {
@@ -119,9 +137,31 @@ function mapPublicProfilePayload(profile: any): ChurchPublicProfile {
           body: String(post?.body || "").trim(),
           type: String(post?.type || "").trim(),
           createdAt: post?.createdAt ? String(post.createdAt) : null,
+          mediaType: String(post?.mediaType || "").trim() || undefined,
           videoUrl: post?.videoUrl ? String(post.videoUrl) : undefined,
           imageUrl: post?.imageUrl ? String(post.imageUrl) : undefined,
+          mediaUri: post?.mediaUri ? String(post.mediaUri) : undefined,
+          imageUri: post?.imageUri ? String(post.imageUri) : undefined,
+          photoUrl: post?.photoUrl ? String(post.photoUrl) : undefined,
+          posterUri: post?.posterUri ? String(post.posterUri) : undefined,
+          videoPosterUri: post?.videoPosterUri ? String(post.videoPosterUri) : undefined,
+          thumbnailUri: post?.thumbnailUri ? String(post.thumbnailUri) : undefined,
+          thumbnailUrl: post?.thumbnailUrl ? String(post.thumbnailUrl) : undefined,
+          posterUrl: post?.posterUrl ? String(post.posterUrl) : undefined,
+          coverUrl: post?.coverUrl ? String(post.coverUrl) : undefined,
+          coverImageUrl: post?.coverImageUrl ? String(post.coverImageUrl) : undefined,
+          coverUri: post?.coverUri ? String(post.coverUri) : undefined,
+          images: Array.isArray(post?.images)
+            ? post.images.map((row: unknown) => String(row || "").trim()).filter(Boolean)
+            : undefined,
+          attachments: Array.isArray(post?.attachments) ? post.attachments : undefined,
+          mediaUrls: Array.isArray(post?.mediaUrls)
+            ? post.mediaUrls.map((row: unknown) => String(row || "").trim()).filter(Boolean)
+            : undefined,
           churchName: String(post?.churchName || profile.name || profile.id).trim(),
+          likeCount: Number(post?.likeCount || 0) || undefined,
+          commentCount: Number(post?.commentCount || post?.totalDiscussionCount || 0) || undefined,
+          shareCount: Number(post?.shareCount || 0) || undefined,
         }))
       : [],
   };

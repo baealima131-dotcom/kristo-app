@@ -8,6 +8,7 @@ import { getChurchFollowerCount, getViewerFollowingChurch } from "@/app/api/_lib
 import { readMinistryJsonFile } from "@/app/api/_lib/store/ministryDb";
 import { listFeedItems, listFeedItemsForChurch } from "@/app/api/_lib/store/feedDb";
 import { isChurchDatabaseError } from "@/app/api/_lib/store/churchDb";
+import { isUsableVideoPosterUri } from "@/app/api/_lib/media/videoPoster";
 import { verifySessionToken } from "@/app/api/auth/_lib/sessionToken";
 
 export const runtime = "nodejs";
@@ -131,6 +132,141 @@ async function resolveChurchRecord(churchId: string): Promise<(ChurchProfile & R
   };
 }
 
+function inferPosterUriFromVideoUrl(videoUrl: string) {
+  const raw = String(videoUrl || "").trim();
+  if (!raw) return "";
+
+  const uploadsMatch = raw.match(/\/uploads\/media\/(?:[^/]+\/)*([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
+  if (uploadsMatch?.[1]) {
+    return `/uploads/media/posters/${uploadsMatch[1]}.jpg`;
+  }
+
+  const r2Marker = "/church-videos/";
+  const r2Idx = raw.indexOf(r2Marker);
+  if (r2Idx >= 0) {
+    const tail = raw.slice(r2Idx + r2Marker.length);
+    const match = tail.match(/^([^/]+)\/([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
+    if (match?.[1] && match?.[2]) {
+      const base = raw.slice(0, r2Idx);
+      return `${base}/church-video-posters/${match[1]}/${match[2]}.jpg`;
+    }
+  }
+
+  return "";
+}
+
+function firstImageCandidate(item: any): string {
+  const mediaType = String(item?.mediaType || "").trim().toLowerCase();
+  if (mediaType === "video") return "";
+
+  const candidates: unknown[] = [
+    item?.imageUrl,
+    item?.mediaUri,
+    item?.imageUri,
+    item?.photoUrl,
+    ...(Array.isArray(item?.images) ? item.images : []),
+    ...(Array.isArray(item?.attachments) ? item.attachments : []),
+    ...(Array.isArray(item?.mediaUrls) ? item.mediaUrls : []),
+  ];
+
+  for (const raw of candidates) {
+    const value =
+      typeof raw === "string"
+        ? raw
+        : raw && typeof raw === "object"
+          ? String((raw as any)?.uri || (raw as any)?.url || (raw as any)?.imageUrl || "")
+          : "";
+    const trimmed = String(value || "").trim();
+    if (!trimmed) continue;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(trimmed)) continue;
+    return trimmed;
+  }
+
+  return "";
+}
+
+function resolvePublicPostCover(item: any): string {
+  const mediaType = String(item?.mediaType || "").trim().toLowerCase();
+  const videoUrl = String(item?.videoUrl || item?.videoUri || item?.mediaUrl || "").trim();
+  const isVideo =
+    Boolean(videoUrl) ||
+    mediaType === "video" ||
+    String(item?.type || item?.kind || "").trim().toLowerCase() === "video";
+
+  if (isVideo && videoUrl) {
+    for (const raw of [
+      item?.posterUri,
+      item?.videoPosterUri,
+      item?.thumbnailUri,
+      item?.thumbnailUrl,
+      item?.posterUrl,
+      item?.coverUrl,
+      item?.coverImageUrl,
+    ]) {
+      const candidate = String(raw || "").trim();
+      if (candidate && isUsableVideoPosterUri(candidate, videoUrl)) {
+        return candidate;
+      }
+    }
+
+    const inferred = inferPosterUriFromVideoUrl(videoUrl);
+    if (inferred && isUsableVideoPosterUri(inferred, videoUrl)) {
+      return inferred;
+    }
+  }
+
+  const image = firstImageCandidate(item);
+  if (image) return image;
+
+  for (const raw of [item?.coverUrl, item?.coverImageUrl, item?.coverImage, item?.thumbnailUrl]) {
+    const candidate = String(raw || "").trim();
+    if (candidate && !/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function mapPublicRecentPost(item: any, churchName: string) {
+  const coverUri = resolvePublicPostCover(item);
+  const videoUrl = String(item?.videoUrl || item?.videoUri || item?.mediaUrl || "").trim() || undefined;
+  const imageUrl = firstImageCandidate(item) || undefined;
+
+  return {
+    id: String(item?.id || ""),
+    title: String(item?.title || item?.postTitle || "").trim(),
+    body: String(item?.body || item?.text || item?.caption || "").trim(),
+    type: String(item?.type || item?.kind || "").trim(),
+    createdAt: item?.createdAt || item?.updatedAt || null,
+    mediaType: String(item?.mediaType || "").trim() || undefined,
+    videoUrl,
+    imageUrl,
+    mediaUri: String(item?.mediaUri || "").trim() || undefined,
+    imageUri: String(item?.imageUri || "").trim() || undefined,
+    photoUrl: String(item?.photoUrl || "").trim() || undefined,
+    posterUri: String(item?.posterUri || "").trim() || undefined,
+    videoPosterUri: String(item?.videoPosterUri || "").trim() || undefined,
+    thumbnailUri: String(item?.thumbnailUri || "").trim() || undefined,
+    thumbnailUrl: String(item?.thumbnailUrl || "").trim() || undefined,
+    posterUrl: String(item?.posterUrl || "").trim() || undefined,
+    coverUrl: String(item?.coverUrl || "").trim() || undefined,
+    coverImageUrl: String(item?.coverImageUrl || "").trim() || undefined,
+    coverUri: coverUri || undefined,
+    images: Array.isArray(item?.images)
+      ? item.images.map((row: unknown) => String(row || "").trim()).filter(Boolean)
+      : undefined,
+    attachments: Array.isArray(item?.attachments) ? item.attachments : undefined,
+    mediaUrls: Array.isArray(item?.mediaUrls)
+      ? item.mediaUrls.map((row: unknown) => String(row || "").trim()).filter(Boolean)
+      : undefined,
+    churchName: String(item?.churchName || item?.churchLabel || churchName).trim(),
+    likeCount: Number(item?.likeCount || 0) || undefined,
+    commentCount: Number(item?.commentCount || item?.totalDiscussionCount || 0) || undefined,
+    shareCount: Number(item?.shareCount || 0) || undefined,
+  };
+}
+
 async function loadRecentPosts(churchId: string, churchName: string) {
   let feedRows = await listFeedItemsForChurch(churchId);
   if (!feedRows.length) {
@@ -148,16 +284,7 @@ async function loadRecentPosts(churchId: string, churchName: string) {
       return bMs - aMs;
     })
     .slice(0, 8)
-    .map((item: any) => ({
-      id: String(item?.id || ""),
-      title: String(item?.title || item?.postTitle || "").trim(),
-      body: String(item?.body || item?.text || item?.caption || "").trim(),
-      type: String(item?.type || item?.kind || "").trim(),
-      createdAt: item?.createdAt || item?.updatedAt || null,
-      videoUrl: String(item?.videoUrl || item?.videoUri || item?.mediaUrl || "").trim() || undefined,
-      imageUrl: String(item?.imageUrl || item?.mediaUri || "").trim() || undefined,
-      churchName: String(item?.churchName || item?.churchLabel || churchName).trim(),
-    }))
+    .map((item: any) => mapPublicRecentPost(item, churchName))
     .filter((item) => item.id);
 }
 

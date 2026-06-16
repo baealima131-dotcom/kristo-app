@@ -21,17 +21,24 @@ import {
   resolveChurchProfileViewerState,
   sendChurchJoinRequest,
   setChurchFollow,
-  V1_OTHER_CHURCH_JOIN_MESSAGE,
   type ChurchProfileViewerState,
+  type ChurchPublicPost,
   type ChurchPublicProfile,
 } from "@/src/lib/churchProfileApi";
 import { getApiBase } from "@/src/lib/kristoApi";
 import { formatFeedTimestamp } from "@/src/components/homeFeed/homeFeedUtils";
+import { queueOpenSharedHomeFeedPost } from "@/src/lib/homeFeedOpenSharedPost";
+import {
+  churchPublicPostIsVideo,
+  resolveChurchPublicPostCover,
+} from "@/src/lib/churchProfilePostCover";
 
 const BG = "#05070D";
-const GOLD = "rgba(244,201,93,0.98)";
+const GOLD = "#F4C95D";
 const GOLD_SOFT = "rgba(244,201,93,0.22)";
+const GOLD_BORDER = "rgba(244,201,93,0.28)";
 const MUTED = "rgba(255,255,255,0.58)";
+const GLASS = "rgba(255,255,255,0.05)";
 
 function resolveImageUrl(raw?: string) {
   const v = String(raw || "").trim();
@@ -45,6 +52,109 @@ function buildLocationLine(profile: ChurchPublicProfile) {
   return (
     profile.location ||
     [profile.city, profile.province, profile.country].filter(Boolean).join(" • ")
+  );
+}
+
+function postTitle(post: ChurchPublicPost) {
+  return String(post.title || post.body || "Church post").trim();
+}
+
+const COVER_WIDTH = 120;
+const COVER_HEIGHT = 68;
+
+function ChurchProfilePostCard({
+  post,
+  churchName,
+  churchAvatarUri,
+  onPress,
+}: {
+  post: ChurchPublicPost;
+  churchName: string;
+  churchAvatarUri: string;
+  onPress: () => void;
+}) {
+  const title = postTitle(post);
+  const when = post.createdAt ? formatFeedTimestamp(post.createdAt) : "";
+  const coverUri = resolveChurchPublicPostCover(post);
+  const isVideo = churchPublicPostIsVideo(post);
+  const likeCount = Number(post.likeCount || 0);
+  const commentCount = Number(post.commentCount || 0);
+  const showEngagement = likeCount > 0 || commentCount > 0;
+  const churchInitial = churchName.charAt(0).toUpperCase() || "C";
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.postCard, pressed && { opacity: 0.92 }]}
+      accessibilityRole="button"
+      accessibilityLabel={`Open post ${title}`}
+    >
+      <View pointerEvents="none" style={styles.postCardGlow} />
+      <View style={styles.postCardInner}>
+        <View style={styles.postThumbWrap}>
+          {coverUri ? (
+            <Image source={{ uri: coverUri }} style={styles.postThumbImage} resizeMode="cover" />
+          ) : (
+            <LinearGradient
+              colors={["rgba(244,201,93,0.18)", "rgba(8,12,20,0.96)", "rgba(167,139,250,0.08)"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.postThumbFallback}
+            >
+              <Ionicons
+                name={isVideo ? "play-circle-outline" : "sparkles-outline"}
+                size={28}
+                color={GOLD}
+              />
+            </LinearGradient>
+          )}
+          {isVideo ? (
+            <View style={styles.postPlayBadge}>
+              <Ionicons name="play" size={12} color="#07101A" />
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.postContent}>
+          <View style={styles.postTopRow}>
+            <View style={styles.postBrandRow}>
+              <View style={styles.postMiniAvatar}>
+                {churchAvatarUri ? (
+                  <Image source={{ uri: churchAvatarUri }} style={styles.postMiniAvatarImage} />
+                ) : (
+                  <Text style={styles.postMiniAvatarInitial}>{churchInitial}</Text>
+                )}
+              </View>
+              <Text style={styles.postChurchName} numberOfLines={1}>
+                {post.churchName || churchName}
+              </Text>
+            </View>
+            {when ? <Text style={styles.postTime}>{when}</Text> : null}
+          </View>
+
+          <Text style={styles.postTitle} numberOfLines={2}>
+            {title}
+          </Text>
+
+          {showEngagement ? (
+            <View style={styles.postEngagementRow}>
+              {likeCount > 0 ? (
+                <View style={styles.postEngagementItem}>
+                  <Ionicons name="heart-outline" size={13} color={GOLD} />
+                  <Text style={styles.postEngagementText}>{likeCount}</Text>
+                </View>
+              ) : null}
+              {commentCount > 0 ? (
+                <View style={styles.postEngagementItem}>
+                  <Ionicons name="chatbubble-outline" size={13} color={GOLD} />
+                  <Text style={styles.postEngagementText}>{commentCount}</Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+      </View>
+    </Pressable>
   );
 }
 
@@ -68,7 +178,6 @@ export default function ChurchProfileScreen() {
   const [following, setFollowing] = useState(false);
   const [followBusy, setFollowBusy] = useState(false);
   const [requesting, setRequesting] = useState(false);
-  const [joinNotice, setJoinNotice] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const loadProfile = useCallback(async () => {
@@ -120,10 +229,6 @@ export default function ChurchProfileScreen() {
   const initial = displayName.charAt(0).toUpperCase() || "C";
   const locationLine = profile ? buildLocationLine(profile) : "";
 
-  const handleBlockedJoinPress = useCallback(() => {
-    Alert.alert("Join unavailable", V1_OTHER_CHURCH_JOIN_MESSAGE);
-  }, []);
-
   const handleJoin = useCallback(async () => {
     const userId = String(session?.userId || "").trim();
     if (!userId) {
@@ -131,28 +236,22 @@ export default function ChurchProfileScreen() {
       return;
     }
     if (!profile?.id || !viewerState.canJoin || viewerState.joinStatus !== "none" || requesting) {
-      if (viewerState.memberOfOtherChurch) {
-        handleBlockedJoinPress();
-      }
       return;
     }
 
     setRequesting(true);
-    setJoinNotice("");
     try {
       await sendChurchJoinRequest(
         profile.id,
         String(session?.displayName || session?.name || "").trim() || undefined
       );
       setViewerState((prev) => ({ ...prev, joinStatus: "pending", canJoin: false }));
-      setJoinNotice("Request sent to church.");
     } catch (e: any) {
       Alert.alert("Request failed", String(e?.message || e || "Could not send join request."));
     } finally {
       setRequesting(false);
     }
   }, [
-    handleBlockedJoinPress,
     profile?.id,
     requesting,
     session?.displayName,
@@ -160,7 +259,6 @@ export default function ChurchProfileScreen() {
     session?.userId,
     viewerState.canJoin,
     viewerState.joinStatus,
-    viewerState.memberOfOtherChurch,
   ]);
 
   const handleFollowToggle = useCallback(async () => {
@@ -201,39 +299,48 @@ export default function ChurchProfileScreen() {
     }
   }, [followBusy, following, profile?.id, session?.userId]);
 
+  const handlePostPress = useCallback(
+    (post: ChurchPublicPost) => {
+      if (!post.id) return;
+      const coverUri = resolveChurchPublicPostCover(post);
+      queueOpenSharedHomeFeedPost({
+        type: post.videoUrl ? "video" : "post",
+        postId: post.id,
+        videoUri: resolveImageUrl(post.videoUrl),
+        posterUri: coverUri || resolveImageUrl(post.posterUri || post.imageUrl),
+        title: postTitle(post),
+        caption: post.body,
+        churchName: post.churchName || profile?.name || displayName,
+      });
+      router.push("/(tabs)/" as any);
+    },
+    [displayName, profile?.name, router]
+  );
+
   const joinSlot = useMemo(() => {
     if (viewerState.joinStatus === "member") {
       return (
         <View style={[styles.actionSlot, styles.joinSlotMember]}>
-          <Ionicons name="checkmark-circle" size={16} color="#07101A" />
-          <Text style={styles.memberBadgeText}>Member</Text>
+          <Ionicons name="checkmark-circle" size={16} color={GOLD} />
+          <Text style={styles.joinMemberText}>Member</Text>
         </View>
       );
     }
 
     if (viewerState.joinStatus === "pending") {
       return (
-        <View style={[styles.actionSlot, styles.joinSlotPending]}>
+        <View style={[styles.actionSlot, styles.joinSlotGlass]}>
           <Ionicons name="hourglass-outline" size={15} color={GOLD} />
-          <Text style={styles.pendingBadgeText}>Request Pending</Text>
+          <Text style={styles.joinGlassText}>Request Pending</Text>
         </View>
       );
     }
 
     if (viewerState.memberOfOtherChurch) {
       return (
-        <Pressable
-          onPress={handleBlockedJoinPress}
-          style={({ pressed }) => [
-            styles.actionSlot,
-            styles.joinSlotDisabled,
-            pressed && { opacity: 0.88 },
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel="Join Church unavailable"
-        >
+        <View style={[styles.actionSlot, styles.joinSlotGlass, styles.joinSlotDisabled]}>
           <Text style={styles.joinDisabledText}>Join Church</Text>
-        </Pressable>
+        </View>
       );
     }
 
@@ -243,23 +350,22 @@ export default function ChurchProfileScreen() {
         disabled={requesting || !viewerState.canJoin}
         style={({ pressed }) => [
           styles.actionSlot,
-          styles.joinSlotActive,
-          (requesting || !viewerState.canJoin) && styles.joinBtnDisabled,
+          styles.joinSlotGlass,
+          (requesting || !viewerState.canJoin) && styles.joinSlotDisabled,
           pressed && !requesting && viewerState.canJoin && { opacity: 0.92 },
         ]}
         accessibilityRole="button"
         accessibilityLabel="Join Church"
       >
-        <Text style={styles.joinActiveText}>{requesting ? "Sending…" : "Join Church"}</Text>
+        <Text style={styles.joinGlassText}>{requesting ? "Sending…" : "Join Church"}</Text>
         <Ionicons
           name={requesting ? "hourglass-outline" : "add-circle-outline"}
           size={16}
-          color="#07101A"
+          color={GOLD}
         />
       </Pressable>
     );
   }, [
-    handleBlockedJoinPress,
     handleJoin,
     requesting,
     viewerState.canJoin,
@@ -268,7 +374,6 @@ export default function ChurchProfileScreen() {
   ]);
 
   const followButton = useMemo(() => {
-    const followPrimary = viewerState.memberOfOtherChurch;
     const label = following ? "Following" : "Follow";
 
     return (
@@ -277,44 +382,48 @@ export default function ChurchProfileScreen() {
         disabled={followBusy}
         style={({ pressed }) => [
           styles.actionSlot,
-          followPrimary ? styles.followSlotPrimary : styles.followSlotSecondary,
-          following && !followPrimary && styles.followSlotFollowing,
-          followBusy && styles.joinBtnDisabled,
+          following ? styles.followSlotGold : styles.followSlotOutline,
+          followBusy && styles.actionBusy,
           pressed && !followBusy && { opacity: 0.92 },
         ]}
         accessibilityRole="button"
         accessibilityLabel={label}
       >
+        <LinearGradient
+          pointerEvents="none"
+          colors={
+            following
+              ? ["#F7DF9A", GOLD, "#B8892E"]
+              : ["rgba(255,255,255,0.08)", "rgba(255,255,255,0.02)"]
+          }
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFillObject}
+        />
         <Ionicons
           name={following ? "heart" : "heart-outline"}
           size={16}
-          color={followPrimary || following ? "#07101A" : GOLD}
+          color={following ? "#07101A" : GOLD}
         />
-        <Text
-          style={[
-            followPrimary ? styles.followPrimaryText : styles.followSecondaryText,
-            following && !followPrimary && styles.followFollowingText,
-          ]}
-        >
+        <Text style={[styles.followText, following && styles.followTextFilled]}>
           {followBusy ? "Updating…" : label}
         </Text>
       </Pressable>
     );
-  }, [followBusy, following, handleFollowToggle, viewerState.memberOfOtherChurch]);
-
-  const connectActions = useMemo(
-    () => (
-      <View style={styles.actionRow}>
-        {followButton}
-        {joinSlot}
-      </View>
-    ),
-    [followButton, joinSlot]
-  );
+  }, [followBusy, following, handleFollowToggle]);
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <Stack.Screen options={{ headerShown: false }} />
+
+      <LinearGradient
+        pointerEvents="none"
+        colors={["#03050A", BG, "#0A101C"]}
+        locations={[0, 0.45, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View pointerEvents="none" style={styles.ambientGoldOrb} />
+      <View pointerEvents="none" style={styles.ambientBlueOrb} />
 
       <View style={styles.topBar}>
         <Pressable
@@ -385,26 +494,31 @@ export default function ChurchProfileScreen() {
 
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>CONNECT</Text>
-            {connectActions}
-            {viewerState.memberOfOtherChurch && viewerState.joinStatus === "none" ? (
-              <Text style={styles.v1Hint}>{V1_OTHER_CHURCH_JOIN_MESSAGE}</Text>
-            ) : null}
-            {joinNotice ? <Text style={styles.joinNotice}>{joinNotice}</Text> : null}
+            <View style={styles.connectPanel}>
+              <View style={styles.actionRow}>
+                {followButton}
+                {joinSlot}
+              </View>
+            </View>
           </View>
 
           {profile.description ? (
             <View style={styles.section}>
               <Text style={styles.sectionLabel}>ABOUT</Text>
-              <Text style={styles.bodyText}>{profile.description}</Text>
+              <View style={styles.glassPanel}>
+                <Text style={styles.bodyText}>{profile.description}</Text>
+              </View>
             </View>
           ) : null}
 
           {locationLine ? (
             <View style={styles.section}>
               <Text style={styles.sectionLabel}>LOCATION</Text>
-              <View style={styles.infoRow}>
-                <Ionicons name="location-outline" size={17} color={GOLD} />
-                <Text style={styles.bodyText}>{locationLine}</Text>
+              <View style={styles.glassPanel}>
+                <View style={styles.infoRow}>
+                  <Ionicons name="location-outline" size={17} color={GOLD} />
+                  <Text style={styles.bodyText}>{locationLine}</Text>
+                </View>
               </View>
             </View>
           ) : null}
@@ -412,20 +526,20 @@ export default function ChurchProfileScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>RECENT POSTS</Text>
             {profile.recentPosts.length ? (
-              profile.recentPosts.map((post) => {
-                const when = post.createdAt ? formatFeedTimestamp(post.createdAt) : "";
-                const title = post.title || post.body || "Church post";
-                return (
-                  <View key={post.id} style={styles.postCard}>
-                    <Text style={styles.postTitle} numberOfLines={2}>
-                      {title}
-                    </Text>
-                    {when ? <Text style={styles.postMeta}>{when}</Text> : null}
-                  </View>
-                );
-              })
+              profile.recentPosts.map((post) => (
+                <ChurchProfilePostCard
+                  key={post.id}
+                  post={post}
+                  churchName={displayName}
+                  churchAvatarUri={avatarUri}
+                  onPress={() => handlePostPress(post)}
+                />
+              ))
             ) : (
-              <Text style={styles.emptyPosts}>No public posts yet.</Text>
+              <View style={styles.emptyPostsCard}>
+                <Ionicons name="albums-outline" size={24} color={GOLD} />
+                <Text style={styles.emptyPosts}>No public posts yet.</Text>
+              </View>
             )}
           </View>
         </ScrollView>
@@ -438,6 +552,24 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: BG,
+  },
+  ambientGoldOrb: {
+    position: "absolute",
+    top: 80,
+    right: -40,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "rgba(244,201,93,0.08)",
+  },
+  ambientBlueOrb: {
+    position: "absolute",
+    top: 260,
+    left: -60,
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    backgroundColor: "rgba(126,180,255,0.06)",
   },
   topBar: {
     flexDirection: "row",
@@ -506,9 +638,9 @@ const styles = StyleSheet.create({
     height: 104,
     borderRadius: 52,
     borderWidth: 2,
-    borderColor: GOLD_SOFT,
+    borderColor: GOLD_BORDER,
     overflow: "hidden",
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: GLASS,
   },
   avatarImage: {
     width: "100%",
@@ -546,9 +678,9 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingVertical: 14,
     paddingHorizontal: 12,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: GLASS,
     borderWidth: 1,
-    borderColor: "rgba(244,201,93,0.12)",
+    borderColor: GOLD_BORDER,
     alignItems: "center",
     gap: 4,
   },
@@ -573,11 +705,26 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.8,
   },
+  glassPanel: {
+    borderRadius: 16,
+    padding: 14,
+    backgroundColor: GLASS,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  connectPanel: {
+    borderRadius: 18,
+    padding: 10,
+    backgroundColor: GLASS,
+    borderWidth: 1,
+    borderColor: GOLD_BORDER,
+  },
   bodyText: {
     color: "#FFFFFF",
     fontSize: 15,
     lineHeight: 22,
     fontWeight: "600",
+    flex: 1,
   },
   infoRow: {
     flexDirection: "row",
@@ -598,52 +745,46 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
+    overflow: "hidden",
   },
-  followSlotPrimary: {
-    backgroundColor: GOLD,
-  },
-  followSlotSecondary: {
-    backgroundColor: "rgba(244,201,93,0.10)",
+  followSlotGold: {
     borderWidth: 1,
-    borderColor: GOLD_SOFT,
+    borderColor: "rgba(244,201,93,0.55)",
   },
-  followSlotFollowing: {
-    backgroundColor: "rgba(244,201,93,0.18)",
+  followSlotOutline: {
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
-    borderColor: "rgba(244,201,93,0.34)",
+    borderColor: GOLD_BORDER,
   },
-  followPrimaryText: {
-    color: "#07101A",
-    fontSize: 15,
-    fontWeight: "900",
-  },
-  followSecondaryText: {
+  followText: {
     color: GOLD,
     fontSize: 15,
     fontWeight: "800",
   },
-  followFollowingText: {
-    color: "#FFFFFF",
+  followTextFilled: {
+    color: "#07101A",
+    fontWeight: "900",
   },
-  joinSlotActive: {
-    backgroundColor: GOLD,
-  },
-  joinSlotMember: {
-    backgroundColor: GOLD,
-  },
-  joinSlotPending: {
-    backgroundColor: "rgba(244,201,93,0.10)",
-    borderWidth: 1,
-    borderColor: GOLD_SOFT,
-  },
-  joinSlotDisabled: {
+  joinSlotGlass: {
     backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    opacity: 0.72,
+    borderColor: "rgba(255,255,255,0.10)",
   },
-  joinActiveText: {
-    color: "#07101A",
+  joinSlotMember: {
+    backgroundColor: "rgba(244,201,93,0.10)",
+    borderWidth: 1,
+    borderColor: GOLD_BORDER,
+  },
+  joinSlotDisabled: {
+    opacity: 0.58,
+  },
+  joinGlassText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  joinMemberText: {
+    color: GOLD,
     fontSize: 14,
     fontWeight: "900",
   },
@@ -652,48 +793,136 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
   },
-  joinBtnDisabled: {
-    opacity: 0.65,
-  },
-  memberBadgeText: {
-    color: "#07101A",
-    fontSize: 14,
-    fontWeight: "900",
-  },
-  pendingBadgeText: {
-    color: GOLD,
-    fontSize: 13,
-    fontWeight: "800",
-  },
-  v1Hint: {
-    color: MUTED,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "600",
-  },
-  joinNotice: {
-    color: GOLD,
-    fontSize: 14,
-    fontWeight: "700",
-    textAlign: "center",
+  actionBusy: {
+    opacity: 0.72,
   },
   postCard: {
-    borderRadius: 14,
-    padding: 14,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    borderRadius: 18,
+    backgroundColor: GLASS,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
-    gap: 4,
+    borderColor: GOLD_BORDER,
+    overflow: "hidden",
   },
-  postTitle: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "800",
+  postCardGlow: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: "rgba(244,201,93,0.35)",
   },
-  postMeta: {
+  postCardInner: {
+    flexDirection: "row",
+    padding: 12,
+    gap: 12,
+  },
+  postThumbWrap: {
+    width: COVER_WIDTH,
+    height: COVER_HEIGHT,
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(244,201,93,0.24)",
+    backgroundColor: "rgba(8,12,20,0.92)",
+  },
+  postThumbImage: {
+    width: "100%",
+    height: "100%",
+  },
+  postThumbFallback: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  postPlayBadge: {
+    position: "absolute",
+    right: 6,
+    bottom: 6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GOLD,
+  },
+  postContent: {
+    flex: 1,
+    minWidth: 0,
+    gap: 8,
+  },
+  postTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  postBrandRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 0,
+  },
+  postMiniAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: GOLD_BORDER,
+    backgroundColor: "rgba(244,201,93,0.10)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  postMiniAvatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+  postMiniAvatarInitial: {
+    color: GOLD,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  postChurchName: {
+    flex: 1,
     color: MUTED,
     fontSize: 12,
     fontWeight: "700",
+  },
+  postTime: {
+    color: MUTED,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  postTitle: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+    lineHeight: 21,
+  },
+  postEngagementRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  postEngagementItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  postEngagementText: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  emptyPostsCard: {
+    borderRadius: 16,
+    padding: 22,
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: GLASS,
+    borderWidth: 1,
+    borderColor: GOLD_BORDER,
   },
   emptyPosts: {
     color: MUTED,

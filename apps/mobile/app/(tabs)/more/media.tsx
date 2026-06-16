@@ -181,12 +181,6 @@ function runAfterFirstFrame(task: () => void) {
 const VIDEO_POST_TITLE_MIN = 5;
 const VIDEO_POST_TITLE_MAX = 30;
 const VIDEO_POST_COVER_COUNT = 10;
-const VIDEO_POST_TITLE_EXAMPLES = [
-  "The Power of Prayer",
-  "Sunday Worship Service",
-  "Jesus Still Saves",
-  "Testimony of Healing",
-] as const;
 
 function formatVideoPostDurationLabel(durationMs?: number) {
   const ms = Number(durationMs || 0);
@@ -3873,7 +3867,7 @@ export default function MediaStudioScreen() {
                         value={videoPostTitle}
                         onChangeText={setVideoPostTitle}
                         maxLength={VIDEO_POST_TITLE_MAX}
-                        placeholder="Enter a title (up to 30 characters)"
+                        placeholder="Enter title"
                         placeholderTextColor="rgba(255,255,255,0.42)"
                         style={[s.inputPremium as any, videoPostTitleOk ? s.videoTitleInputValid : null]}
                       />
@@ -3884,27 +3878,8 @@ export default function MediaStudioScreen() {
                         {cleanVideoPostTitle.length}/{VIDEO_POST_TITLE_MAX}
                       </Text>
                     </View>
-                    <Text style={s.videoTitleHelper}>
-                      Choose a clear title that members can recognize quickly.
-                    </Text>
-                    <Text style={[s.videoTitleHint, videoPostTitleOk ? s.videoTitleHintValid : null]}>
-                      {videoPostTitleOk
-                        ? "Title looks good."
-                        : `Use ${VIDEO_POST_TITLE_MIN}-${VIDEO_POST_TITLE_MAX} characters.`}
-                    </Text>
-                    <View style={s.videoTitleExamplesRow}>
-                      {VIDEO_POST_TITLE_EXAMPLES.map((example) => (
-                        <Pressable
-                          key={example}
-                          onPress={() => setVideoPostTitle(example.slice(0, VIDEO_POST_TITLE_MAX))}
-                          style={({ pressed }) => [s.videoTitleExampleChip, pressed ? s.pressed : null]}
-                        >
-                          <Text style={s.videoTitleExampleText}>{example}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
 
-                    <Text style={[s.videoStudioSectionLabel, { marginTop: 18 }]}>COVER SELECTION</Text>
+                    <Text style={[s.videoStudioSectionLabel, { marginTop: 14 }]}>COVER SELECTION</Text>
                     <Text style={s.videoCoverHint}>
                       Kristo generated cover options from your video. Pick one or upload your own.
                     </Text>
@@ -7171,41 +7146,6 @@ showcaseBadgeText: {
   },
   videoTitleValidIcon: {
     marginLeft: 6,
-  },
-  videoTitleHelper: {
-    marginTop: 6,
-    color: "rgba(255,255,255,0.48)",
-    fontSize: 11,
-    fontWeight: "600",
-    lineHeight: 15,
-  },
-  videoTitleHint: {
-    marginTop: 4,
-    color: "rgba(255,255,255,0.52)",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  videoTitleHintValid: {
-    color: "rgba(52,199,89,0.92)",
-  },
-  videoTitleExamplesRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginTop: 10,
-  },
-  videoTitleExampleChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(255,255,255,0.04)",
-  },
-  videoTitleExampleText: {
-    color: "rgba(255,255,255,0.72)",
-    fontSize: 11,
-    fontWeight: "700",
   },
   videoCoverSubLabel: {
     marginTop: 10,
