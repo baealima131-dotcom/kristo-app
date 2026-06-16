@@ -146,11 +146,53 @@ async function readDocument<T>(key: CoreStoreKey, fallback: T): Promise<T> {
   return row && row.data != null ? (row.data as T) : fallback;
 }
 
+function normalizeJsonValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Map || value instanceof Set) {
+    throw new Error("Map/Set values are not JSON-serializable");
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeJsonValue(entry));
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
+      if (entryValue === undefined) continue;
+      out[entryKey] = normalizeJsonValue(entryValue);
+    }
+    return out;
+  }
+  return value;
+}
+
+function serializeJsonbPayload(data: unknown): string {
+  const normalized = normalizeJsonValue(data);
+  try {
+    return JSON.stringify(normalized ?? null);
+  } catch (error) {
+    throw new Error(
+      `Failed to serialize core store payload: ${String((error as Error)?.message || error)}`
+    );
+  }
+}
+
 async function writeDocument<T>(key: CoreStoreKey, data: T): Promise<void> {
   const sql = getSql();
+  const payload = serializeJsonbPayload(data);
+  if (key === CHURCH_FOLLOWS_STORE_KEY) {
+    console.log("KRISTO_CHURCH_FOLLOW_WRITE_PAYLOAD", {
+      storeKey: key,
+      typeofPayload: typeof data,
+      serializedTypeof: typeof payload,
+      preview: payload.slice(0, 240),
+    });
+  }
   await sql`
     INSERT INTO kristo_core_store (key, data, updated_at)
-    VALUES (${key}, ${data as any}, NOW())
+    VALUES (${key}, ${payload}::jsonb, NOW())
     ON CONFLICT (key)
     DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
   `;
@@ -204,6 +246,7 @@ export function isCoreDatabaseError(error: unknown) {
   const message = String((error as any)?.message || error || "").toLowerCase();
   return (
     message.includes("core database not configured") ||
-    message.includes("database_url not configured")
+    message.includes("database_url not configured") ||
+    message.includes("invalid input syntax for type json")
   );
 }
