@@ -38,6 +38,7 @@ import {
   resolveHomeFeedPersonalOrderContext,
   sortRowsByPersonalSeed,
   arrangeHomeFeedVideoBlockFirst,
+  homeFeedFreshnessSortMs,
   type HomeFeedPersonalOrderContext,
 } from "@/src/lib/homeFeedPersonalOrder";
 import { resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
@@ -992,9 +993,17 @@ function classifyHomeFeedPostRowBucket(row: any, viewerChurchId: string): HomeFe
 
 function sortBucketByPersonalSeed(
   rows: any[],
-  ctx: HomeFeedPersonalOrderContext
+  ctx: HomeFeedPersonalOrderContext,
+  nowMs: number
 ) {
-  return arrangeHomeFeedVideoBlockFirst(rows, ctx, (row) => feedRenderKey(row), homeFeedPostSortMs, 10, 4);
+  return arrangeHomeFeedVideoBlockFirst(
+    rows,
+    ctx,
+    (row) => feedRenderKey(row),
+    (row) => homeFeedFreshnessSortMs(row, nowMs, isVideoPost(row)),
+    10,
+    4
+  );
 }
 
 function pickInterleaveRow(
@@ -1018,9 +1027,10 @@ function pickInterleaveRow(
 function interleaveHomeFeedPostRows(
   postRows: any[],
   viewerChurchId: string,
-  personalCtx: HomeFeedPersonalOrderContext
+  personalCtx: HomeFeedPersonalOrderContext,
+  nowMs: number
 ) {
-  const sorted = sortBucketByPersonalSeed(postRows, personalCtx);
+  const sorted = sortBucketByPersonalSeed(postRows, personalCtx, nowMs);
 
   const videos = sorted.filter((row) => isVideoPost(row));
   const posts = sorted.filter((row) => !isVideoPost(row));
@@ -1454,7 +1464,8 @@ export function buildHomeFeedDisplayRows(
   const personalizedPosts = interleaveHomeFeedPostRows(
     sortedContentRows,
     viewerChurchId,
-    personalCtx
+    personalCtx,
+    nowMs
   );
   let display = personalizedPosts.filter(
     (row) =>
