@@ -1,4 +1,6 @@
 import { InteractionManager } from "react-native";
+import { Camera } from "expo-camera";
+import { pauseHomeFeedPosterWorkForLiveNavigation } from "@/src/lib/homeFeedPosterPrewarm";
 
 export const LIVE_ROOM_DEFER_MS = 300;
 
@@ -7,9 +9,86 @@ export function setHomeFeedRenderPaused(paused: boolean) {
   (globalThis as any).__KRISTO_HOME_FEED_RENDER_PAUSED__ = paused;
 }
 
+export function isHomeFeedLiveNavBackgroundPaused(): boolean {
+  return Boolean((globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__);
+}
+
+/** Pause poster generation and startup prewarm as soon as live navigation begins. */
+export function pauseHomeFeedBackgroundWorkForLiveNavigation(reason = "live-ring-nav") {
+  setHomeFeedRenderPaused(true);
+  (globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__ = true;
+  pauseHomeFeedPosterWorkForLiveNavigation(reason);
+  console.log("KRISTO_LIVE_BACKGROUND_WORK_PAUSED", { reason });
+}
+
+/** Request camera/mic permissions as soon as Enter Live is tapped — before room mount. */
+export function prewarmLiveRoomMediaPermissions(source = "enter-live") {
+  void (async () => {
+    try {
+      const [camera, mic] = await Promise.all([
+        Camera.getCameraPermissionsAsync().catch(() => null),
+        Camera.getMicrophonePermissionsAsync().catch(() => null),
+      ]);
+
+      const tasks: Promise<unknown>[] = [];
+      if (!camera?.granted) {
+        tasks.push(Camera.requestCameraPermissionsAsync());
+      }
+      if (!mic?.granted) {
+        tasks.push(Camera.requestMicrophonePermissionsAsync());
+      }
+      if (tasks.length) {
+        await Promise.all(tasks);
+      }
+
+      console.log("KRISTO_LIVE_MEDIA_PERMISSIONS_PREWARM", {
+        source,
+        cameraGranted: camera?.granted === true,
+        micGranted: mic?.granted === true,
+        requested: tasks.length,
+      });
+    } catch (e: any) {
+      console.log("KRISTO_LIVE_MEDIA_PERMISSIONS_PREWARM_ERROR", {
+        source,
+        message: String(e?.message || e),
+      });
+    }
+  })();
+}
+
+/** Clear live-room render pause and global active-live flags (e.g. after schedule slots deleted). */
+export function forceKristoLiveCleanup(
+  reason = "unknown",
+  options?: { forceReentry?: boolean }
+) {
+  try {
+    console.log("KRISTO_FORCE_STOP_LIVE_MEDIA", {
+      reason,
+      forceReentry: !!options?.forceReentry,
+    });
+
+    const g = globalThis as any;
+    g.__KRISTO_LIVE_ACTIVE__ = false;
+    g.__KRISTO_LIVE_ACTIVE_COUNT__ = 0;
+    g.__KRISTO_HOME_FEED_RENDER_PAUSED__ = false;
+    g.__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__ = false;
+
+    if (options?.forceReentry) {
+      g.__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ = 0;
+      g.__KRISTO_DISABLE_LIVEKIT__ = false;
+      g.__KRISTO_LIVEKIT_ERROR_LOCK__ = false;
+      g.__KRISTO_ACTIVE_CAMERA_PUBLISHER_KEY__ = "";
+      console.log("KRISTO_LIVE_REENTRY_UNLOCKED", { reason });
+    }
+  } catch {
+    // ignore cleanup errors
+  }
+}
+
 /** Clear live-room render pause flags after exiting Live Room. */
 export function resumeHomeFeedAfterLiveExit() {
   setHomeFeedRenderPaused(false);
+  (globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__ = false;
   const g = globalThis as any;
   const liveCount = Number(g.__KRISTO_LIVE_ACTIVE_COUNT__ || 0);
   if (liveCount <= 0) {

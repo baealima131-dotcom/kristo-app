@@ -50,6 +50,18 @@ export function isChurchMembersCacheFresh(updatedAt?: number) {
   return isScreenCacheFresh(updatedAt, CHURCH_TAB_REFRESH_MS);
 }
 
+export function logMoreTabChurchCacheSkip(
+  scope: string,
+  reason: string,
+  extra?: Record<string, unknown>
+) {
+  console.log("KRISTO_MORE_DEFERRED_REFRESH_SKIP", {
+    scope,
+    reason,
+    ...(extra || {}),
+  });
+}
+
 export async function clearChurchMembersCachesForUser(userId: string) {
   const uid = String(userId || "").trim();
   if (!uid) return;

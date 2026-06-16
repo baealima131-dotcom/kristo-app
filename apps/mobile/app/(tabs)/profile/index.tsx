@@ -15,21 +15,54 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import { loadProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
+import { isSessionExitInProgress } from "@/src/lib/kristoSessionExitFlags";
+import { loadProfileDraft, saveProfileDraft, type ProfileDraft } from "@/src/lib/profileStore";
+import { onUserProfileUpdated, onClaimUpdated } from "@/src/lib/kristoProfileEvents";
+import { onSlotClaimChanged } from "@/src/lib/slotClaimEvents";
+import {
+  inviteEventTargetsCurrentUser,
+  onChurchInviteSent,
+  onChurchInviteAccepted,
+  onChurchMembershipChanged,
+} from "@/src/lib/kristoChurchInviteEvents";
+import { buildProfileClaimedSchedules, onLiveRingRefresh } from "@/src/lib/liveScheduleRing";
+import { avatarCacheBust, pickFresherAvatar } from "@/src/lib/avatarFreshness";
+import {
+  isSaveCooldown,
+  logTrafficCache,
+  shouldAllowScreenRefresh,
+  clearResponseCacheForRequest,
+} from "@/src/lib/kristoTraffic";
+import { shouldPauseBackgroundProfileRefresh } from "@/src/lib/mediaScheduleFlowFlags";
+import { useFocusedPolling } from "@/src/lib/useFocusedPolling";
 import { apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getPaymentsState, subscribePayments } from "../../../src/store/paymentsStore";
 import { isPlanActive } from "../../../src/lib/payments/mobileSubscriptions";
 import { handleInviteAction } from "@/src/lib/churchMembersApi";
 import { resolveChurchDisplayName } from "@/src/lib/churchStore";
+import { countsAsRealActiveChurchId, resolveActiveChurchFromProfileResponse, isActiveMembershipStatus } from "@/src/lib/churchMembershipSync";
+import {
+  getProfileScreenCache,
+  peekProfileScreenCache,
+  saveProfileScreenCache,
+  type ProfileScreenCachePayload,
+} from "@/src/lib/screenDataCache";
+import { hydrateMediaPosterCache } from "@/src/lib/mediaPosterCache";
+import { ProfileHeroSkeleton } from "@/src/components/PremiumTabSkeletons";
 import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
 import ChurchActivityGrid from "@/src/components/ChurchActivityGrid";
+import ChurchActivityMemberChips from "@/src/components/ChurchActivityMemberChips";
+import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import {
+  activityIsVideo,
+  getChurchActivityPosts,
   isChurchActivityPost,
   isMediaActivityPost,
-  normalizeActivityItem,
-  sortActivityPostsNewestFirst,
+  type ActivityGridItem,
+  type ChurchActivityMemberFilter,
 } from "@/src/lib/churchActivityPosts";
+import { homeFeedMediaUrl } from "@/src/components/homeFeed/homeFeedUtils";
 
 type AuthProfile = {
   userId: string;
@@ -468,39 +501,80 @@ export default function MeScreen() {
   const [claimedModalOpen, setClaimedModalOpen] = useState(false);
   const [claimedFeedTick, setClaimedFeedTick] = useState(0);
   const insets = useSafeAreaInsets();
-  const { session, setSession, logout } = useKristoSession();
+  const { session, setSession } = useKristoSession();
+  const userId = String(session?.userId || "").trim();
+  const churchId = String(session?.churchId || "").trim();
 
   useEffect(() => {
     const claimedFeedUnsub = subscribeHomeFeed(() => {
       setClaimedFeedTick((v) => v + 1);
+      setHomeFeedTick((v) => v + 1);
+    });
+    const claimEventUnsub = onClaimUpdated(() => {
+      setClaimedFeedTick((v) => v + 1);
+    });
+    const slotClaimUnsub = onSlotClaimChanged(() => {
+      setClaimedFeedTick((v) => v + 1);
+    });
+    const liveRingUnsub = onLiveRingRefresh(() => {
+      setClaimedFeedTick((v) => v + 1);
     });
 
-    return claimedFeedUnsub;
+    return () => {
+      claimedFeedUnsub();
+      claimEventUnsub();
+      slotClaimUnsub();
+      liveRingUnsub();
+    };
   }, []);
   useEffect(() => {
+    if (!churchId || !userId) {
+      setChurchMembers([]);
+      return;
+    }
+
     let alive = true;
-
-    async function loadBackendMedia() {
-      if (!session?.userId || !session?.churchId) return;
-
-      const res: any = await apiGet("/api/church/media", {
-        headers: getKristoHeaders({
-          userId: session.userId,
-          role: session.role,
-          churchId: session.churchId || "",
-        }),
+    void fetchChurchMembers()
+      .then((rows) => {
+        if (!alive) return;
+        setChurchMembers(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (alive) setChurchMembers([]);
       });
+
+    return () => {
+      alive = false;
+    };
+  }, [churchId, userId]);
+  useEffect(() => {
+    let alive = true;
+    let fetched = false;
+
+    async function loadBackendMediaOnce() {
+      if (!session?.userId || !session?.churchId || fetched) return;
+      fetched = true;
+
+      const res: any = await apiGet(
+        "/api/church/media",
+        {
+          headers: getKristoHeaders({
+            userId: session.userId,
+            role: session.role,
+            churchId: session.churchId || "",
+          }),
+        },
+        { screen: "Profile", throttleMs: 120000 }
+      );
 
       if (!alive || !res?.ok) return;
       setBackendMedia(res.media || null);
     }
 
-    loadBackendMedia();
-    const t = setInterval(loadBackendMedia, 3000);
+    void loadBackendMediaOnce();
 
     return () => {
       alive = false;
-      clearInterval(t);
     };
   }, [session?.userId, session?.churchId]);
 
@@ -514,6 +588,14 @@ export default function MeScreen() {
       String(h?.userId || "").trim() === String(session?.userId || "").trim()
   );
 
+  const viewerRoleRaw = String(session?.role || "Member").trim();
+  const isMediaPrivilegedRole =
+    viewerRoleRaw === "Pastor" ||
+    viewerRoleRaw === "Church_Admin" ||
+    viewerRoleRaw === "System_Admin" ||
+    viewerRoleRaw === "Admin";
+  const canShowMediaTab = isMediaPrivilegedRole || amIMediaHost;
+
   const mediaProfile =
     backendMedia && amIMediaHost
       ? backendMedia
@@ -525,17 +607,22 @@ export default function MeScreen() {
   const planStatus = paymentsState.subscriptions.planStatus;
   const hasSubscription = isPlanActive(currentPlan, planStatus);
   const [contentMode, setContentMode] = useState<"church" | "media">("church");
-  const canUseMediaMode = hasSubscription || hasMediaProfile;
-  const showMediaContent = hasMediaProfile && contentMode === "media";
+  const showMediaContent = canShowMediaTab && hasMediaProfile && contentMode === "media";
+  const showMediaActivityTab = contentMode === "media";
+  const showMediaCreatorTools = showMediaContent;
 
   React.useEffect(() => {
-    if (!hasMediaProfile && contentMode === "media") {
+    if (!canShowMediaTab && contentMode === "media") {
       setContentMode("church");
     }
-  }, [hasMediaProfile, contentMode]);
+  }, [canShowMediaTab, contentMode]);
 
 
-  const userId = String(session?.userId || "").trim();
+  const profileCachePeek = userId ? peekProfileScreenCache(userId) : null;
+
+  React.useEffect(() => {
+    void hydrateMediaPosterCache();
+  }, []);
   const [profileDraft, setProfileDraft] = React.useState<ProfileDraft | null>(null);
   const publicKristoId = String(
     (session as any)?.kristoId ||
@@ -553,7 +640,6 @@ export default function MeScreen() {
   React.useEffect(() => {
     refreshProfileDraft();
   }, [refreshProfileDraft]);
-  const churchId = String(session?.churchId || "").trim();
   const role = prettyRole(session?.role);
   const [churchDisplayName, setChurchDisplayName] = useState(
     String((session as any)?.churchName || "").trim()
@@ -594,13 +680,6 @@ export default function MeScreen() {
     }
   }, [session, setSession]);
 
-  useFocusEffect(
-    useCallback(() => {
-      refreshProfileDraft();
-      void refreshActiveChurch();
-    }, [refreshProfileDraft, refreshActiveChurch])
-  );
-
   const church = useMemo(() => {
     const fromSession = String((session as any)?.churchName || churchDisplayName || "").trim();
     if (fromSession) return fromSession;
@@ -621,16 +700,27 @@ export default function MeScreen() {
     toBackendImageUrl(String(profileDraft?.avatarUri || "").trim()) ||
     avatarForProfile(userId, session?.role, church);
 
-  const [loading, setLoading] = useState(true);
-  const [profile, setProfile] = useState<AuthProfile | null>(null);
-  const [postsCount, setPostsCount] = useState(0);
-  const [followersCount, setFollowersCount] = useState(0);
-  const [followingCount, setFollowingCount] = useState(0);
-  const [latestAnnouncement, setLatestAnnouncement] = useState<ChurchFeedItemLite | null>(null);
-  const [latestTestimony, setLatestTestimony] = useState<ChurchFeedItemLite | null>(null);
-  const [latestPrayer, setLatestPrayer] = useState<ChurchFeedItemLite | null>(null);
-  const [latestSaved, setLatestSaved] = useState<{ title: string; body: string } | null>(null);
+  const [bootLoading, setBootLoading] = useState(!profileCachePeek);
+  const [profile, setProfile] = useState<AuthProfile | null>((profileCachePeek?.profile as AuthProfile | null) || null);
+  const [postsCount, setPostsCount] = useState(profileCachePeek?.postsCount || 0);
+  const [followersCount, setFollowersCount] = useState(profileCachePeek?.followersCount || 0);
+  const [followingCount, setFollowingCount] = useState(profileCachePeek?.followingCount || 0);
+  const [latestAnnouncement, setLatestAnnouncement] = useState<ChurchFeedItemLite | null>(
+    (profileCachePeek?.latestAnnouncement as ChurchFeedItemLite | null) || null
+  );
+  const [latestTestimony, setLatestTestimony] = useState<ChurchFeedItemLite | null>(
+    (profileCachePeek?.latestTestimony as ChurchFeedItemLite | null) || null
+  );
+  const [latestPrayer, setLatestPrayer] = useState<ChurchFeedItemLite | null>(
+    (profileCachePeek?.latestPrayer as ChurchFeedItemLite | null) || null
+  );
+  const [latestSaved, setLatestSaved] = useState<{ title: string; body: string } | null>(profileCachePeek?.latestSaved || null);
   const [profileFeedItems, setProfileFeedItems] = useState<any[]>([]);
+  const [homeFeedTick, setHomeFeedTick] = useState(0);
+  const [churchMembers, setChurchMembers] = useState<any[]>([]);
+  const [activityMemberFilter, setActivityMemberFilter] =
+    useState<ChurchActivityMemberFilter>("all");
+  const [activityMemberId, setActivityMemberId] = useState("");
 
   const creatorScoreValue = useMemo(() => {
     const posts = Number(postsCount || 0);
@@ -701,14 +791,22 @@ export default function MeScreen() {
     });
   }
 
-  async function refreshInvitations() {
+  const refreshInvitations = useCallback(async () => {
+    if (isSessionExitInProgress()) return;
+    if (shouldPauseBackgroundProfileRefresh()) return;
+
+    const uid = String(session?.userId || "").trim();
+    if (!uid) return;
+
     try {
       const savedClosed = await AsyncStorage.getItem(CLOSED_INVITES_STORAGE_KEY);
       if (savedClosed) {
         JSON.parse(savedClosed).forEach((id: string) => CLOSED_INVITE_IDS.add(String(id)));
       }
       const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
-      const r = await fetch(`${base}/api/church/invites/action`, { headers: getKristoHeaders() });
+      const r = await fetch(`${base}/api/church/invites/action`, {
+        headers: getKristoHeaders({ userId: uid, role: session?.role as any, churchId: session?.churchId || "" }),
+      });
       const j = await r.json().catch(() => ({} as any));
       const raw = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
 
@@ -718,11 +816,14 @@ export default function MeScreen() {
         return cId && (status === "active" || status === "accepted" || status === "member");
       });
 
-      if (!String(session?.churchId || "").trim() && joined?.churchId && session?.userId) {
+      const joinedChurchId = String(joined?.churchId || "").trim();
+
+      if (!String(session?.churchId || "").trim() && joinedChurchId && countsAsRealActiveChurchId(joinedChurchId)) {
         await setSession({
-          ...session,
-          churchId: String(joined.churchId),
-          role: (session.role || "Member") as any,
+          ...(session as any),
+          userId: uid,
+          churchId: joinedChurchId,
+          role: (session?.role || "Member") as any,
         });
       }
 
@@ -739,38 +840,15 @@ export default function MeScreen() {
         return true;
       });
 
-      if (!String(session?.churchId || "").trim() && session?.userId) {
-        const demoChurchId = "c-demo-1";
-        const mr = await fetch(`${base}/api/church/members`, {
-          headers: {
-            accept: "application/json",
-            "x-kristo-user-id": String(session.userId),
-            "x-kristo-role": "Church_Admin",
-            "x-kristo-church-id": demoChurchId,
-          },
-        });
-        const mj = await mr.json().catch(() => ({} as any));
-        const memberRows = Array.isArray(mj?.data) ? mj.data : [];
-        const meIsMember = memberRows.some((m: any) =>
-          String(m?.userId || m?.id || m?.privateKristoId || "").toUpperCase() === String(session.userId).toUpperCase()
-        );
-
-        if (meIsMember) {
-          await setSession({
-            ...session,
-            churchId: demoChurchId,
-            role: (session.role || "Member") as any,
-          });
-        }
-      }
-
       setInviteItems(invites);
       setInviteCount(invites.length);
+      console.log("[ProfileInvites] silent refresh", { userId: uid, count: invites.length });
     } catch {}
-  }
+  }, [session, setSession]);
 
   useEffect(() => {
-    refreshInvitations();
+    if (!session?.userId) return;
+    void refreshInvitations();
 
     const unsubPayments = subscribePayments(() => {
       setPaymentsState(getPaymentsState());
@@ -779,62 +857,237 @@ export default function MeScreen() {
     return () => {
       unsubPayments();
     };
+  }, [session?.userId, refreshInvitations]);
+
+  const hasProfileCacheRef = React.useRef(Boolean(profileCachePeek));
+
+  const applyProfileCachePayload = useCallback((payload: ProfileScreenCachePayload) => {
+    hasProfileCacheRef.current = true;
+    setProfile((payload.profile as AuthProfile | null) || null);
+    setPostsCount(payload.postsCount);
+    setFollowersCount(payload.followersCount);
+    setFollowingCount(payload.followingCount);
+    setLatestAnnouncement((payload.latestAnnouncement as ChurchFeedItemLite | null) || null);
+    setLatestTestimony((payload.latestTestimony as ChurchFeedItemLite | null) || null);
+    setLatestPrayer((payload.latestPrayer as ChurchFeedItemLite | null) || null);
+    setLatestSaved(payload.latestSaved || null);
+    setBootLoading(false);
   }, []);
 
-  const load = useCallback(async () => {
-    if (
-      (globalThis as any).__KRISTO_LIVE_ACTIVE__ ||
-      Number((globalThis as any).__KRISTO_LIVE_ACTIVE_COUNT__ || 0) > 0
-    ) {
+  React.useEffect(() => {
+    if (!userId) return;
+    let alive = true;
+    void (async () => {
+      const cached = (await getProfileScreenCache(userId)) || profileCachePeek;
+      if (!alive || !cached) return;
+      applyProfileCachePayload(cached);
+      if (__DEV__) {
+        console.log("KRISTO_PROFILE_CACHE_HIT", { userId, updatedAt: cached.updatedAt });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [userId, applyProfileCachePayload, profileCachePeek]);
+
+  const applyProfileResponse = useCallback(
+    async (profileRes: AuthProfileRes | null | undefined, opts?: { silent?: boolean }) => {
+      const silent = !!opts?.silent;
+      if (!profileRes?.ok || !profileRes.profile) {
+        setProfile(null);
+        return;
+      }
+
+      setProfile((prev) => {
+        const next = profileRes.profile!;
+        if (
+          prev &&
+          String(prev.profileStatus || "") === String(next.profileStatus || "") &&
+          String(prev.fullName || "") === String(next.fullName || "") &&
+          String(prev.avatarUrl || "") === String(next.avatarUrl || "")
+        ) {
+          return prev;
+        }
+        return next;
+      });
+
+      const backendName = String(profileRes.profile.fullName || "").trim();
+      const backendAvatarRaw = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
+      const draftBefore = session?.userId ? await loadProfileDraft(session.userId) : null;
+      const mergedAvatar = pickFresherAvatar({
+        localUri: String(draftBefore?.avatarUri || (session as any)?.avatarUri || (session as any)?.avatarUrl || "").trim(),
+        localUpdatedAt: draftBefore?.avatarUpdatedAt,
+        serverUri: backendAvatarRaw,
+        serverUpdatedAt: Number((profileRes.profile as any)?.updatedAt || (profileRes.profile as any)?.avatarUpdatedAt || 0),
+      });
+
+      if (mergedAvatar.skippedStale && silent) {
+        console.log("[Profile] skipped stale server avatar", {
+          userId,
+          localUpdatedAt: draftBefore?.avatarUpdatedAt || null,
+        });
+      }
+
+      const backendAvatar = mergedAvatar.uri ? toBackendImageUrl(mergedAvatar.uri) : "";
+      const resolved = resolveActiveChurchFromProfileResponse(profileRes as any);
+      const membershipStatus = String((profileRes as any)?.activeMembership?.status || "").trim();
+      const syncedChurchId =
+        membershipStatus && !isActiveMembershipStatus(membershipStatus) ? "" : resolved.churchId;
+      const syncedRole = syncedChurchId ? resolved.role : "Member";
+      const prevChurchId = String(session?.churchId || "").trim();
+
+      if (session?.userId) {
+        let nextChurchName = String((session as any)?.churchName || "").trim();
+        if (syncedChurchId && syncedChurchId !== prevChurchId) {
+          nextChurchName =
+            String((profileRes as any)?.churchName || "").trim() ||
+            (await resolveChurchDisplayName(syncedChurchId, session.userId));
+        } else if (!syncedChurchId) {
+          nextChurchName = "";
+        }
+
+        const sessionPatch: any = {
+          ...session,
+          ...(backendName ? { name: backendName, displayName: backendName } : {}),
+          avatarUrl: backendAvatar || (session as any)?.avatarUrl || "",
+          avatarUri: backendAvatar || (session as any)?.avatarUri || "",
+        };
+
+        if (syncedChurchId !== prevChurchId || syncedRole !== String(session?.role || "Member")) {
+          sessionPatch.churchId = syncedChurchId;
+          sessionPatch.activeChurchId = syncedChurchId;
+          sessionPatch.churchName = nextChurchName;
+          sessionPatch.role = syncedRole;
+          sessionPatch.churchRole = syncedRole;
+        }
+
+        await setSession(sessionPatch);
+
+        if (syncedChurchId !== prevChurchId) {
+          setChurchDisplayName(nextChurchName);
+        }
+
+        if (backendAvatar || backendName) {
+          const draft = draftBefore || { displayName: backendName || "" };
+          const nextAvatarUpdatedAt =
+            mergedAvatar.source === "local"
+              ? draftBefore?.avatarUpdatedAt
+              : backendAvatar
+                ? Date.now()
+                : draft.avatarUpdatedAt;
+          await saveProfileDraft(
+            {
+              ...draft,
+              displayName: backendName || draft.displayName,
+              avatarUri: backendAvatar || draft.avatarUri,
+              avatarUpdatedAt: nextAvatarUpdatedAt,
+            },
+            session.userId
+          );
+          setProfileDraft({
+            ...draft,
+            displayName: backendName || draft.displayName,
+            avatarUri: backendAvatar || draft.avatarUri,
+            avatarUpdatedAt: nextAvatarUpdatedAt,
+          });
+        }
+      }
+
+      if (silent) {
+        console.log("[Profile] silent refresh applied", {
+          userId,
+          hasAvatar: Boolean(backendAvatar),
+        });
+      }
+    },
+    [session, setSession, userId, setChurchDisplayName]
+  );
+
+  const loadProfileLight = useCallback(
+    async (opts?: { silent?: boolean; bypassThrottle?: boolean }) => {
+      if (isSessionExitInProgress()) return;
+
+      if (shouldPauseBackgroundProfileRefresh()) {
+        return;
+      }
+
+      if (opts?.bypassThrottle && session?.userId) {
+        clearResponseCacheForRequest("GET", "/api/auth/profile", session.userId);
+      }
+
+      const profileRes = await apiGet<AuthProfileRes>(
+        "/api/auth/profile",
+        {
+          headers: getKristoHeaders({
+            userId: session?.userId,
+            role: opts?.bypassThrottle ? "Member" : (session?.role as any),
+            churchId: opts?.bypassThrottle ? "" : session?.churchId || "",
+            sessionToken: session?.sessionToken,
+          }),
+        },
+        { screen: "Profile", throttleMs: opts?.bypassThrottle ? 2500 : 45000 }
+      );
+      await applyProfileResponse(profileRes, opts);
+    },
+    [applyProfileResponse, session?.userId, session?.role, session?.churchId]
+  );
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (isSessionExitInProgress()) return;
+
+    const silent = !!opts?.silent;
+    if (shouldPauseBackgroundProfileRefresh()) {
       return;
     }
 
-    setLoading(true);
+    if (!silent && !hasProfileCacheRef.current) setBootLoading(true);
     try {
 
+      const cached = userId ? await getProfileScreenCache(userId) : null;
+      if (cached) {
+        applyProfileCachePayload(cached);
+        if (__DEV__) {
+          console.log("KRISTO_PROFILE_CACHE_HIT", { userId, updatedAt: cached.updatedAt });
+        }
+      }
+
       const [profileRes, postsRes, announcementsRes, feedRes, overviewRes] = await Promise.all([
-        apiGet<AuthProfileRes>("/api/auth/profile", {
-            headers: getKristoHeaders(),
-          }),
+        apiGet<AuthProfileRes>(
+          "/api/auth/profile",
+          { headers: getKristoHeaders() },
+          { screen: "Profile", throttleMs: 30000 }
+        ),
         userId
-          ? apiGet<UserPostsRes>(`/api/users/${encodeURIComponent(userId)}/posts?limit=60`, {
-              headers: getKristoHeaders(),
-           })
+          ? apiGet<UserPostsRes>(
+              `/api/users/${encodeURIComponent(userId)}/posts?limit=60`,
+              { headers: getKristoHeaders() },
+              { screen: "Profile", throttleMs: 120000 }
+            )
           : Promise.resolve(null as any),
         churchId
-          ? apiGet<ChurchFeedRes>("/api/church/feed?type=announcement", {
-              headers: getKristoHeaders(),
-           })
+          ? apiGet<ChurchFeedRes>(
+              "/api/church/feed?type=announcement",
+              { headers: getKristoHeaders() },
+              { screen: "Profile", throttleMs: 120000 }
+            )
           : Promise.resolve(null as any),
         churchId
-          ? apiGet<ChurchFeedRes>("/api/church/feed", {
-              headers: getKristoHeaders(),
-           })
+          ? apiGet<ChurchFeedRes>(
+              "/api/church/feed",
+              { headers: getKristoHeaders() },
+              { screen: "Profile", throttleMs: 120000 }
+            )
           : Promise.resolve(null as any),
         userId
-          ? apiGet<UserOverviewRes>(`/api/users/${encodeURIComponent(userId)}/overview`, {
-              headers: getKristoHeaders(),
-           })
+          ? apiGet<UserOverviewRes>(
+              `/api/users/${encodeURIComponent(userId)}/overview`,
+              { headers: getKristoHeaders() },
+              { screen: "Profile", throttleMs: 120000 }
+            )
           : Promise.resolve(null as any),
       ]);
 
-            if (profileRes?.ok && profileRes.profile) {
-        setProfile(profileRes.profile);
-
-        const backendName = String(profileRes.profile.fullName || "").trim();
-        const backendAvatar = toBackendImageUrl(String(profileRes.profile.avatarUrl || "").trim());
-
-        if (backendName && session?.userId) {
-          await setSession({
-            ...session,
-            name: backendName,
-            displayName: backendName,
-            avatarUrl: backendAvatar || (session as any)?.avatarUrl || "",
-          } as any);
-        }
-     } else {
-        setProfile(null);
-     }
+      await applyProfileResponse(profileRes, { silent });
 
       const overview = overviewRes?.ok ? overviewRes.data : undefined;
 
@@ -856,8 +1109,26 @@ export default function MeScreen() {
         .sort((a: ChurchFeedItemLite, b: ChurchFeedItemLite) => toTime(b?.createdAt) - toTime(a?.createdAt));
       setLatestAnnouncement(myAnnouncements[0] || null);
 
-      const feedItems = Array.isArray(feedRes?.data) ? feedRes!.data! : [];
-      setProfileFeedItems(feedItems as any[]);
+      const feedItems = Array.isArray((feedRes as any)?.data?.items)
+        ? (feedRes as any).data.items
+        : Array.isArray(feedRes?.data)
+          ? feedRes!.data!
+          : Array.isArray((feedRes as any)?.items)
+            ? (feedRes as any).items
+            : [];
+      setProfileFeedItems(
+        feedItems.map((item: any) => {
+          const scopedChurchId = String(
+            item?.churchId || item?.sourceChurchId || item?.church?.id || churchId || ""
+          ).trim();
+          return {
+            ...item,
+            churchId: scopedChurchId,
+            sourceChurchId: String(item?.sourceChurchId || scopedChurchId).trim(),
+          };
+        }) as any[]
+      );
+      setClaimedFeedTick((v) => v + 1);
       const myFeed = feedItems
         .filter(isChurchActivityPost)
         .filter((x: ChurchFeedItemLite) => String(x?.createdBy || "").trim() === userId)
@@ -884,6 +1155,30 @@ export default function MeScreen() {
      } else {
         setLatestSaved(null);
      }
+
+      if (userId) {
+        hasProfileCacheRef.current = true;
+        await saveProfileScreenCache({
+          userId,
+          profile: profileRes?.ok ? profileRes.profile || null : null,
+          postsCount:
+            typeof overview?.postsCount === "number" ? overview.postsCount : userPosts.length,
+          followersCount:
+            typeof overview?.followersCount === "number" ? overview.followersCount : 0,
+          followingCount:
+            typeof overview?.followingCount === "number" ? overview.followingCount : 0,
+          latestAnnouncement: myAnnouncements[0] || null,
+          latestTestimony: testimony || null,
+          latestPrayer: prayer || null,
+          latestSaved: savedSource
+            ? {
+                title: firstWords(savedSource.caption, "Latest post", 5),
+                body: String(savedSource.caption || "").trim() || "Your newest user post is ready here.",
+              }
+            : null,
+          updatedAt: Date.now(),
+        });
+      }
    } catch {
       setProfile(null);
       setPostsCount(0);
@@ -894,15 +1189,114 @@ export default function MeScreen() {
       setLatestPrayer(null);
       setLatestSaved(null);
    } finally {
-      setLoading(false);
+      setBootLoading(false);
+      if (__DEV__ && silent) {
+        console.log("KRISTO_PROFILE_SILENT_REFRESH", { userId, churchId });
+      }
    }
- }, [churchId, userId]);
+ }, [churchId, userId, session, setSession, applyProfileResponse, applyProfileCachePayload]);
+
+  const profileBootedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!userId || profileBootedRef.current) return;
+    profileBootedRef.current = true;
+    void load({ silent: true });
+  }, [userId, load]);
 
   useFocusEffect(
     useCallback(() => {
-      load();
-   }, [load])
+      void refreshInvitations();
+
+      void (async () => {
+        const draft = userId ? await loadProfileDraft(userId) : null;
+        if (draft) {
+          logTrafficCache("Profile", "profile-draft", true);
+          setProfileDraft(draft);
+        } else {
+          logTrafficCache("Profile", "profile-draft", false);
+        }
+      })();
+
+      if (isSaveCooldown(`user-profile:${userId}`)) return;
+      if (!shouldAllowScreenRefresh("Profile", { minMs: 45000 })) return;
+
+      void refreshActiveChurch();
+      void loadProfileLight({ silent: true });
+    }, [userId, refreshActiveChurch, loadProfileLight, refreshInvitations])
   );
+
+  useEffect(() => {
+    if (!session?.userId) return;
+
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active" && !isSessionExitInProgress()) {
+        void refreshInvitations();
+      }
+    });
+
+    return () => sub.remove();
+  }, [session?.userId, refreshInvitations]);
+
+  useEffect(() => {
+    if (!session?.userId) return;
+
+    const maybeRefreshFromEvent = (
+      source: string,
+      payload: { targetUserId?: string; targetKristoId?: string; userId?: string; kristoId?: string }
+    ) => {
+      if (isSessionExitInProgress()) return;
+      if (!inviteEventTargetsCurrentUser(payload, { userId: session.userId, kristoId: publicKristoId })) return;
+      console.log("[ProfileInvites] event refresh", { source, userId: session.userId });
+      void refreshInvitations();
+    };
+
+    const unsubs = [
+      onChurchInviteSent((payload) => maybeRefreshFromEvent("church-invite-sent", payload)),
+      onChurchInviteAccepted((payload) => maybeRefreshFromEvent("church-invite-accepted", payload)),
+      onChurchMembershipChanged((payload) => maybeRefreshFromEvent("church-membership-changed", payload)),
+    ];
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, [session?.userId, publicKristoId, refreshInvitations]);
+
+  const applyUserProfileEvent = useCallback(
+    async (payload: { avatarUri?: string; avatarUrl?: string; avatarUpdatedAt?: number }) => {
+      const avatarRaw = String(payload.avatarUri || payload.avatarUrl || "").trim();
+      if (avatarRaw) {
+        const nextAvatar = toBackendImageUrl(avatarRaw) || avatarRaw;
+        setProfileDraft((prev) => ({
+          ...(prev || { displayName: "" }),
+          avatarUri: nextAvatar,
+          avatarUpdatedAt: payload.avatarUpdatedAt || prev?.avatarUpdatedAt,
+        }));
+        if (session?.userId) {
+          await setSession({
+            ...session,
+            avatarUri: nextAvatar,
+            avatarUrl: nextAvatar,
+          } as any);
+        }
+      } else if (userId) {
+        const draft = await loadProfileDraft(userId);
+        if (draft) setProfileDraft(draft);
+      }
+      console.log("[Profile] event applied immediately", {
+        userId,
+        hasAvatar: Boolean(avatarRaw),
+        avatarUpdatedAt: payload.avatarUpdatedAt || null,
+      });
+    },
+    [session, setSession, userId]
+  );
+
+  useEffect(() => {
+    return onUserProfileUpdated((payload) => {
+      if (String(payload.userId || "").trim() !== userId) return;
+      void applyUserProfileEvent(payload);
+    });
+  }, [userId, applyUserProfileEvent]);
 
   
   const currentUserId = String(session?.userId || "").trim();
@@ -943,83 +1337,176 @@ export default function MeScreen() {
   }
 
   const claimedSchedules = useMemo(() => {
-    const now = Date.now();
+    return buildProfileClaimedSchedules({
+      viewerUserId: currentUserId,
+      churchId,
+      feedRows: profileFeedItems,
+    });
+  }, [currentUserId, churchId, claimedFeedTick, profileFeedItems]);
 
-    return [...feedList(), ...profileFeedItems]
-      .filter((item: any) => !isMediaActivityPost(item))
-      .flatMap((item: any) => {
-        const slots = Array.isArray(item?.scheduleSlots)
-          ? item.scheduleSlots
-          : [];
+  const allActivitySourcePosts = useMemo(() => {
+    void homeFeedTick;
+    return [...profileFeedItems, ...feedList()];
+  }, [profileFeedItems, homeFeedTick]);
 
-        return slots.map((slot: any) => ({
-          ...slot,
-          feedTitle:
-            item?.title ||
-            item?.mediaName ||
-            "Live Schedule",
-        }));
-      })
-      .filter((slot: any) => {
-        const claimedBy = slot?.claimedBy || {};
+  const activityMemberChipRows = useMemo(() => {
+    const seen = new Set<string>();
+    const rows: { userId: string; name: string; avatarUri?: string }[] = [];
 
-        const uid = String(
-          claimedBy?.userId ||
-          slot?.claimedByUserId ||
-          ""
-        ).trim();
-
-        const claimedName = String(
-          claimedBy?.name ||
-          slot?.claimedByName ||
-          slot?.name ||
-          ""
-        ).trim().toLowerCase();
-
-        const myName = String(
-          session?.displayName ||
-          session?.name ||
-          (session as any)?.fullName ||
-          ""
-        ).trim().toLowerCase();
-
-        const matchedById = !!uid && uid === currentUserId;
-        const matchedByName = !!claimedName && !!myName && claimedName === myName;
-
-        if (!matchedById && !matchedByName) {
-          return false;
-        }
-
-        const startMs = parseSlotTime(slot);
-
-        return startMs > now;
-      })
-      .sort((a: any, b: any) => {
-        return parseSlotTime(a) - parseSlotTime(b);
+    for (const member of churchMembers) {
+      const userIdValue = String(member?.userId || member?.id || "").trim();
+      if (!userIdValue || seen.has(userIdValue)) continue;
+      seen.add(userIdValue);
+      rows.push({
+        userId: userIdValue,
+        name: String(
+          member?.fullName ||
+            member?.name ||
+            member?.displayName ||
+            member?.username ||
+            "Member"
+        ).trim(),
+        avatarUri: toBackendImageUrl(
+          String(
+            member?.avatarUrl ||
+              member?.avatarUri ||
+              member?.profileImage ||
+              ""
+          ).trim()
+        ),
       });
-  }, [currentUserId, claimedFeedTick, profileFeedItems, session?.displayName, session?.name, (session as any)?.fullName]);
+    }
+
+    return rows.sort((a, b) => a.name.localeCompare(b.name));
+  }, [churchMembers]);
+
+  const activityMemberChipKey = useMemo(() => {
+    if (activityMemberFilter === "member" && activityMemberId) {
+      return activityMemberId;
+    }
+    return activityMemberFilter;
+  }, [activityMemberFilter, activityMemberId]);
 
   const churchActivityPosts = useMemo(() => {
-    return sortActivityPostsNewestFirst(
-      profileFeedItems
-        .filter((item: any) => {
-          if (!isChurchActivityPost(item)) return false;
-          return String(item?.createdBy || "").trim() === currentUserId;
-        })
-        .map((item: any) => normalizeActivityItem(item, toBackendImageUrl))
-    );
-  }, [profileFeedItems, currentUserId]);
+    return getChurchActivityPosts({
+      allPosts: allActivitySourcePosts,
+      selectedTab: "church",
+      memberFilter: activityMemberFilter,
+      selectedMemberId: activityMemberId,
+      currentUserId,
+      churchId,
+      mediaUrlFn: homeFeedMediaUrl,
+    });
+  }, [
+    allActivitySourcePosts,
+    activityMemberFilter,
+    activityMemberId,
+    currentUserId,
+    churchId,
+  ]);
 
   const mediaActivityPosts = useMemo(() => {
-    return sortActivityPostsNewestFirst(
-      profileFeedItems
-        .filter((item: any) => {
-          if (!isMediaActivityPost(item)) return false;
-          return String(item?.createdBy || "").trim() === currentUserId;
-        })
-        .map((item: any) => normalizeActivityItem(item, toBackendImageUrl))
-    );
-  }, [profileFeedItems, currentUserId]);
+    return getChurchActivityPosts({
+      allPosts: allActivitySourcePosts,
+      selectedTab: "media",
+      memberFilter: activityMemberFilter,
+      selectedMemberId: activityMemberId,
+      currentUserId,
+      churchId,
+      mediaUrlFn: homeFeedMediaUrl,
+    });
+  }, [
+    allActivitySourcePosts,
+    activityMemberFilter,
+    activityMemberId,
+    currentUserId,
+    churchId,
+  ]);
+
+  const openActivityPostInChurchFeed = useCallback(
+    (post: ActivityGridItem) => {
+      const focusPostId = String(post?.id || "").trim();
+      if (!focusPostId || !churchId) return;
+
+      if (showMediaActivityTab && activityIsVideo(post)) {
+        console.log("CHURCH_ACTIVITY_OPEN_WATCH", {
+          postId: focusPostId,
+          pathname: "/(tabs)",
+          videoDisplayType:
+            String((post as any)?.videoDisplayType || (post as any)?.displayType || "")
+              .trim()
+              .toLowerCase() === "tiktok"
+              ? "tiktok"
+              : "youtube",
+        });
+
+        router.push({
+          pathname: "/(tabs)",
+          params: { openPostId: focusPostId },
+        });
+        return;
+      }
+
+      const activityMode: "church" | "member" | "media" = showMediaActivityTab
+        ? "media"
+        : activityMemberFilter === "all"
+          ? "church"
+          : "member";
+
+      const activityMemberIdParam =
+        activityMemberFilter === "mine"
+          ? currentUserId
+          : activityMemberFilter === "member"
+            ? activityMemberId
+            : "";
+
+      console.log("CHURCH_ACTIVITY_OPEN_POST", {
+        postId: focusPostId,
+        pathname: "/church-activity-feed",
+        activityChurchId: churchId,
+        activityMemberId: activityMemberIdParam,
+        activityMode,
+      });
+
+      router.push({
+        pathname: "/church-activity-feed",
+        params: {
+          focusPostId,
+          activityChurchId: churchId,
+          activityMode,
+          ...(activityMemberIdParam ? { activityMemberId: activityMemberIdParam } : {}),
+        },
+      });
+    },
+    [
+      router,
+      churchId,
+      currentUserId,
+      showMediaActivityTab,
+      activityMemberFilter,
+      activityMemberId,
+    ]
+  );
+
+  const handleActivityMemberChipSelect = useCallback(
+    (key: "all" | "mine" | string, memberId?: string) => {
+      if (key === "all") {
+        setActivityMemberFilter("all");
+        setActivityMemberId("");
+        return;
+      }
+      if (key === "mine") {
+        setActivityMemberFilter("mine");
+        setActivityMemberId("");
+        return;
+      }
+      setActivityMemberFilter("member");
+      setActivityMemberId(String(memberId || key || "").trim());
+    },
+    []
+  );
+
+  const showActivityTabs = Boolean(churchId);
 
 
 const resolvedName = useMemo(() => {
@@ -1034,8 +1521,9 @@ const resolvedName = useMemo(() => {
       toBackendImageUrl(String((session as any)?.avatarUri || "").trim());
     const fromDraft = toBackendImageUrl(String(profileDraft?.avatarUri || "").trim());
 
-    return fromApi || fromSession || fromDraft || "";
- }, [profile?.avatarUrl, session, profileDraft?.avatarUri]);
+    const raw = fromApi || fromSession || fromDraft || "";
+    return avatarCacheBust(raw, profileDraft?.avatarUpdatedAt);
+ }, [profile?.avatarUrl, session, profileDraft?.avatarUri, profileDraft?.avatarUpdatedAt]);
 
   const user = {
     userId: publicKristoId || String((profile as any)?.kristoId || (profile as any)?.publicKristoId || ""),
@@ -1067,76 +1555,20 @@ const resolvedName = useMemo(() => {
     country: String(profile?.country || profileDraft?.country || session?.country || "").trim(),
  };
 
-  React.useEffect(() => {
-    if (!session?.userId) return;
+  useFocusedPolling(
+    "ProfileTab",
+    async () => {
+      if (isSessionExitInProgress()) return;
+      if (shouldPauseBackgroundProfileRefresh()) return;
 
-    let alive = true;
-
-    const silentRefreshProfileAndInvites = async () => {
-      if (!alive) return;
-
-      try {
-        await refreshInvitations();
-      } catch {}
-
-      try {
-        const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
-        if (!base || !session?.userId) return;
-
-        const r = await fetch(`${base}/api/auth/profile`, {
-          headers: getKristoHeaders(),
-        });
-        const j = await r.json().catch(() => ({} as any));
-
-        const nextChurchId = String(
-          j?.churchId || j?.activeMembership?.churchId || session?.churchId || ""
-        ).trim();
-
-        if (j?.ok && alive) {
-          const churchName = nextChurchId
-            ? String(j?.churchName || "").trim() || (await resolveChurchDisplayName(nextChurchId, session.userId))
-            : "";
-
-          if (churchName) setChurchDisplayName(churchName);
-
-          if (nextChurchId || churchName) {
-            await setSession({
-              ...(session as any),
-              churchId: nextChurchId || session.churchId,
-              activeChurchId: nextChurchId || (session as any).activeChurchId,
-              churchName: churchName || (session as any).churchName || "",
-              role: String(
-                nextChurchId
-                  ? j?.role || j?.churchRole || j?.activeMembership?.churchRole || session.role || "Member"
-                  : session.role
-              ) as any,
-            });
-          }
-
-          if (__DEV__) {
-            console.log("[Profile] active church refresh result", {
-              churchId: nextChurchId || null,
-              churchName: churchName || null,
-              membershipFound: Boolean(j?.activeMembership || nextChurchId),
-            });
-          }
-        }
-      } catch {}
-    };
-
-    silentRefreshProfileAndInvites();
-
-    const timer = setInterval(silentRefreshProfileAndInvites, 12000);
-    const sub = AppState.addEventListener("change", (state: string) => {
-      if (state === "active") silentRefreshProfileAndInvites();
-    });
-
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      sub.remove();
-    };
-  }, [session?.userId, session?.churchId]);
+      console.log("[ProfileTab] silent refresh");
+      await refreshInvitations();
+      await loadProfileLight({ silent: true, bypassThrottle: true });
+      setClaimedFeedTick((v) => v + 1);
+    },
+    2500,
+    Boolean(session?.userId)
+  );
 
   return (
     <View style={s.screen}>
@@ -1152,26 +1584,11 @@ const resolvedName = useMemo(() => {
             <Text style={s.title}>My Profile</Text>
 
             <Pressable
-              style={s.iconBtn}
-              onPress={() =>
-                Alert.alert(
-                  "Logout",
-                  "Are you sure you want to logout?",
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Logout",
-                      style: "destructive",
-                      onPress: async () => {
-                        await logout();
-                        router.replace("/(auth)/login" as any);
-                     },
-                   },
-                  ]
-                )
-             }
+              style={s.settingsIconBtn}
+              onPress={() => router.push("/(tabs)/profile/settings" as any)}
+              accessibilityLabel="Settings"
             >
-              <Ionicons name="log-out-outline" size={20} color="#FF5A5F" />
+              <Ionicons name="settings-outline" size={20} color="#F4D06F" />
             </Pressable>
           </View>
                       <View style={s.heroCard}>
@@ -1254,7 +1671,7 @@ const resolvedName = useMemo(() => {
                   {[
                     ["Kristo ID", user.userId || "No ID found", true],
                     ["Phone", user.phone || "Private / not added", Boolean((profileDraft as any)?.phonePublic ?? (session as any)?.phonePublic ?? false)],
-                    ["Church", user.church || "No Church Yet", Boolean((profileDraft as any)?.churchPublic ?? (session as any)?.churchPublic ?? true)],
+                    ["Church", user.churchId || "No Church ID yet", Boolean((profileDraft as any)?.churchPublic ?? (session as any)?.churchPublic ?? true)],
                     ["Address", user.address || [user.city, user.country].filter(Boolean).join(", ") || "Private / not added", Boolean((profileDraft as any)?.addressPublic ?? (session as any)?.addressPublic ?? false)],
                   ].map(([label, value, canOpen]) => (
                     <Pressable
@@ -1381,7 +1798,7 @@ const resolvedName = useMemo(() => {
               </Pressable>
             </View>
 
-            {canUseMediaMode && showMediaContent ? (
+            {canShowMediaTab && showMediaCreatorTools ? (
               <View style={s.mediaSwitchRow}>
                 <Pressable
                   style={[s.mediaActionBtn, s.mediaActionBtnPrimary]}
@@ -1417,45 +1834,41 @@ const resolvedName = useMemo(() => {
               </View>
             ) : null}
 
-            {loading ? (
-
-              <View style={s.loadingBox}>
-                <ActivityIndicator color={GOLD} />
-                <Text style={s.loadingText}>Loading profile and counts…</Text>
-              </View>
+            {bootLoading ? (
+              <ProfileHeroSkeleton />
             ) : null}
           </View>
 
-          <View style={s.section}>
+          <View style={[s.section, s.churchActivitySection]}>
             <View style={s.sectionHead}>
               <View>
-                <Text style={s.sectionTitle}>{showMediaContent ? "Media Library" : "Church Activity"}</Text>
-                <Text style={s.sectionSub}>{showMediaContent ? "Saved media and creator tools" : "Member life inside church"}</Text>
+                <Text style={s.sectionTitle}>
+                  {showMediaCreatorTools ? "Media Library" : "Church Activity"}
+                </Text>
+                <Text style={s.sectionSub}>
+                  {showMediaCreatorTools
+                    ? "Saved media and creator tools"
+                    : "Member life inside church"}
+                </Text>
               </View>
-              {canUseMediaMode ? (
+              {showActivityTabs ? (
                 <View style={s.contentModeTabs}>
                   <Pressable
                     onPress={() => setContentMode("church")}
-                    style={[s.contentModeTab, !showMediaContent ? s.contentModeTabActive : null]}
+                    style={[s.contentModeTab, !showMediaActivityTab ? s.contentModeTabActive : null]}
                   >
-                    <Ionicons name="home-outline" size={13} color={!showMediaContent ? "#07111F" : "#F4D06F"} />
-                    <Text style={[s.contentModeTabText, !showMediaContent ? s.contentModeTabTextActive : null]}>
+                    <Ionicons name="home-outline" size={13} color={!showMediaActivityTab ? "#07111F" : "#F4D06F"} />
+                    <Text style={[s.contentModeTabText, !showMediaActivityTab ? s.contentModeTabTextActive : null]}>
                       Church
                     </Text>
                   </Pressable>
 
                   <Pressable
-                    onPress={() => {
-                      if (hasMediaProfile) {
-                        setContentMode("media");
-                        return;
-                      }
-                      router.push("/more/media" as any);
-                    }}
-                    style={[s.contentModeTab, showMediaContent ? s.contentModeTabActive : null]}
+                    onPress={() => setContentMode("media")}
+                    style={[s.contentModeTab, showMediaActivityTab ? s.contentModeTabActive : null]}
                   >
-                    <Ionicons name="images-outline" size={13} color={showMediaContent ? "#07111F" : "#F4D06F"} />
-                    <Text style={[s.contentModeTabText, showMediaContent ? s.contentModeTabTextActive : null]}>
+                    <Ionicons name="images-outline" size={13} color={showMediaActivityTab ? "#07111F" : "#F4D06F"} />
+                    <Text style={[s.contentModeTabText, showMediaActivityTab ? s.contentModeTabTextActive : null]}>
                       Media
                     </Text>
                   </Pressable>
@@ -1465,18 +1878,31 @@ const resolvedName = useMemo(() => {
               )}
             </View>
 
-            {showMediaContent ? (
+            {showActivityTabs ? (
+              <View style={s.activityMemberChipsWrap}>
+                <ChurchActivityMemberChips
+                  members={activityMemberChipRows}
+                  selectedKey={activityMemberChipKey}
+                  onSelect={handleActivityMemberChipSelect}
+                  currentUserName={user.name}
+                />
+              </View>
+            ) : null}
+
+            {showMediaActivityTab ? (
               <ChurchActivityGrid
                 variant="media"
                 items={mediaActivityPosts}
                 emptyTitle="No media posts yet"
-                emptyBody="Your media uploads and creator posts will appear here."
+                emptyBody="Church media uploads and creator posts will appear here."
+                onItemPress={openActivityPostInChurchFeed}
               />
             ) : (
               <ChurchActivityGrid
                 items={churchActivityPosts}
                 emptyTitle="No church activity yet"
-                emptyBody="Your testimonies, announcements, prayer requests, and counsel posts will appear here."
+                emptyBody="Posts from church members will appear here."
+                onItemPress={openActivityPostInChurchFeed}
               />
             )}
           </View>
@@ -1943,6 +2369,22 @@ const s = StyleSheet.create({
     elevation: 6,
  },
 
+  settingsIconBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(244,208,111,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(244,208,111,0.34)",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+ },
+
   quickInfoRow: {
     flexDirection: "row",
     gap: 6,
@@ -2184,11 +2626,13 @@ const s = StyleSheet.create({
     alignItems: "center",
     gap: 5,
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 4,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.07)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
+    borderColor: "rgba(255,255,255,0.12)",
+    alignSelf: "flex-start",
+    marginTop: 5,
   },
 
   heroMiniPillText: {
@@ -2200,23 +2644,23 @@ const s = StyleSheet.create({
   heroIdentityRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 16,
   },
 
   avatarShell: {
-    width: 82,
-    height: 82,
-    borderRadius: 41,
+    width: 90,
+    height: 90,
+    borderRadius: 45,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.055)",
     borderWidth: 1,
-    borderColor: "rgba(244,208,111,0.25)",
+    borderColor: "rgba(244,208,111,0.26)",
     shadowColor: "#F4D06F",
-    shadowOpacity: 0.5,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
   },
 
   avatarRingGlow: {
@@ -2233,10 +2677,10 @@ const s = StyleSheet.create({
   },
 
   avatar: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    borderWidth: 2.2,
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    borderWidth: 1.5,
     borderColor: GOLD,
     backgroundColor: SOFT,
   },
@@ -2249,18 +2693,18 @@ const s = StyleSheet.create({
 
   name: {
     color: TEXT,
-    fontSize: 16,
-    lineHeight: 17,
+    fontSize: 23,
+    lineHeight: 27,
     fontWeight: "900",
-    letterSpacing: 0.02,
+    letterSpacing: -0.25,
   },
 
   heroSummary: {
     color: "rgba(255,255,255,0.72)",
-    fontSize: 10.4,
-    lineHeight: 13,
+    fontSize: 13.5,
+    lineHeight: 17,
     fontWeight: "800",
-    marginTop: 1,
+    marginTop: 2,
   },
 
   bio: {
@@ -2278,21 +2722,16 @@ const s = StyleSheet.create({
     gap: 8,
   },
   identityDetailRow: {
-    minHeight: 64,
-    borderRadius: 22,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    minHeight: 56,
+    borderRadius: 18,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: "rgba(15,32,50,0.66)",
+    backgroundColor: "rgba(15,32,50,0.58)",
     borderWidth: 1,
-    borderColor: "rgba(244,208,111,0.20)",
-    shadowColor: "#F4D06F",
-    shadowOpacity: 0.10,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
+    borderColor: "rgba(244,208,111,0.12)",
   },
   identityDetailText: {
     flex: 1,
@@ -2319,19 +2758,15 @@ const s = StyleSheet.create({
     marginTop: 10,
   },
   identityCommandBtn: {
-    flex: 1,
-    minHeight: 36,
-    borderRadius: 999,
+    width: "23.5%",
+    minHeight: 44,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(10,22,35,0.74)",
+    backgroundColor: "rgba(15,32,50,0.58)",
     borderWidth: 1,
-    borderColor: "rgba(244,208,111,0.26)",
-    shadowColor: "#F4D06F",
-    shadowOpacity: 0.18,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
+    borderColor: "rgba(244,208,111,0.18)",
+    overflow: "hidden",
   },
   identityCommandText: {
     color: "#F4D06F",
@@ -3144,6 +3579,14 @@ const s = StyleSheet.create({
 
   contentModeTabTextActive: {
     color: "#07111F",
+  },
+  activityMemberChipsWrap: {
+    marginTop: 12,
+    marginBottom: 10,
+  },
+  churchActivitySection: {
+    paddingBottom: 28,
+    marginBottom: 8,
   },
   grid: {
     flexDirection: "row",

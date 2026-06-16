@@ -3,6 +3,7 @@ import {
   brandedVideoPosterPayload,
   isBrandedVideoPosterUri,
 } from "@/src/lib/brandedVideoPoster";
+import type { HomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import type { MediaStatus } from "@/src/lib/mediaStatus";
 
 type HeadersRec = Record<string, string>;
@@ -431,9 +432,26 @@ export function parsePublishedFeedResponse(res: any): PublishedFeedPost | null {
   };
 }
 
+export function resolveChurchVideoPublishPosterUri(params: {
+  userPosterUrl?: string;
+  serverPosterUrl?: string;
+}): { posterUri: string; usingBrandedPoster: boolean } {
+  const userPoster = String(params.userPosterUrl || "").trim();
+  if (userPoster && !isBrandedVideoPosterUri(userPoster)) {
+    return { posterUri: userPoster, usingBrandedPoster: false };
+  }
+
+  const serverPoster = String(params.serverPosterUrl || "").trim();
+  if (serverPoster && !isBrandedVideoPosterUri(serverPoster)) {
+    return { posterUri: serverPoster, usingBrandedPoster: false };
+  }
+
+  return { posterUri: "", usingBrandedPoster: true };
+}
+
 export async function publishChurchVideoFeedPost(params: {
   title: string;
-  caption: string;
+  caption?: string;
   videoUrl: string;
   posterUri?: string;
   videoPosterUri?: string;
@@ -445,6 +463,7 @@ export async function publishChurchVideoFeedPost(params: {
   faststart?: boolean;
   faststartPending?: boolean;
   faststartReason?: string | null;
+  videoDisplayType?: HomeFeedVideoDisplayType;
 }) {
   const poster = String(params.posterUri || params.videoPosterUri || params.thumbnailUri || "").trim();
   const branded = !poster || isBrandedVideoPosterUri(poster);
@@ -474,8 +493,9 @@ export async function publishChurchVideoFeedPost(params: {
     isMediaPost: true,
     mediaStatus: "ready" satisfies MediaStatus,
     title: params.title,
-    text: params.caption,
+    ...(String(params.caption || "").trim() ? { text: String(params.caption).trim() } : {}),
     videoUrl: params.videoUrl,
+    videoDisplayType: params.videoDisplayType === "tiktok" ? "tiktok" : "youtube",
     ...(metadata.durationMs ? { durationMs: metadata.durationMs } : {}),
     ...(metadata.sizeBytes > 0 ? { sizeBytes: metadata.sizeBytes } : {}),
     ...(publishBitrateEstimate ? { bitrateEstimate: publishBitrateEstimate } : {}),
@@ -486,6 +506,12 @@ export async function publishChurchVideoFeedPost(params: {
       : {}),
     ...posterFields,
   };
+
+  console.log("KRISTO_VIDEO_PUBLISH_POSTER", {
+    posterUri: poster || null,
+    branded,
+    fields: branded ? "branded-fallback" : "saved-cover",
+  });
 
   console.log("KRISTO_VIDEO_METADATA_PUBLISHED", {
     title: params.title,

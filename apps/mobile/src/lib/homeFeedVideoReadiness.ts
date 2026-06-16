@@ -6,9 +6,13 @@ type ReadyEntry = {
 
 const readyByKey = new Map<string, ReadyEntry>();
 
+function normalizeReadinessUrl(videoUrl: string) {
+  return String(videoUrl || "").trim().split("?")[0];
+}
+
 export function homeFeedVideoCacheKey(postId: string, videoUrl: string) {
   const id = String(postId || "").trim();
-  const url = String(videoUrl || "").trim();
+  const url = normalizeReadinessUrl(videoUrl);
   return `${id}::${url}`;
 }
 
@@ -17,7 +21,7 @@ export function markHomeFeedVideoPreloadReady(postId: string, videoUrl: string) 
   if (!key || key === "::") return false;
   readyByKey.set(key, {
     postId: String(postId || "").trim(),
-    videoUrl: String(videoUrl || "").trim(),
+    videoUrl: normalizeReadinessUrl(videoUrl),
     readyAt: Date.now(),
   });
   return true;

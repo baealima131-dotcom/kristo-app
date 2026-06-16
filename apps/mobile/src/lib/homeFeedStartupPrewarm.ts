@@ -5,14 +5,25 @@ import {
   persistHomeFeedBackendRowsSnapshot,
 } from "@/src/components/homeFeed/homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
-import { warmHomeFeedStartupMedia } from "@/src/lib/homeFeedVideoBufferAhead";
+import { prepareFirstHomeFeedVideo } from "@/src/lib/homeFeedVideoStartup";
+import { deferStartupWorkAfterHomeFirstFrame } from "./firstPaint";
+import {
+  buildHomeFeedDisplayRows,
+} from "@/src/components/homeFeed/homeFeedUtils";
+import { feedList } from "@/src/lib/homeFeedStore";
 import type { KristoSession } from "@/src/lib/kristoSession";
 import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
+import {
+  warmHomeFeedStartupMedia,
+} from "@/src/lib/homeFeedVideoBufferAhead";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
+import { startInitialHomeFeedPosterPrewarm } from "@/src/lib/homeFeedPosterPrewarm";
+import { isHomeFeedLiveNavBackgroundPaused } from "@/src/lib/liveRoomStartup";
 
 const COOLDOWN_MS = 60_000;
 const STARTUP_POSTER_MAX = 10;
-const STARTUP_VIDEO_MAX = 2;
+const STARTUP_VIDEO_MAX = 3;
 const STARTUP_CONCURRENCY = 2;
 
 let inflight: Promise<void> | null = null;
@@ -39,6 +50,14 @@ function isSessionReadyForPrewarm(session: KristoSession | null): session is Kri
 }
 
 async function runHomeFeedStartupPrewarm(session: KristoSession) {
+  if (isHomeFeedLiveNavBackgroundPaused()) {
+    logSkip("live-navigation");
+    return;
+  }
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) {
+    logSkip("youtube-style-feed");
+    return;
+  }
   if (await isLoggedOutFlagSet()) {
     logSkip("logged-out");
     return;
@@ -63,7 +82,7 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
 
   const now = Date.now();
   if (inflight) {
-    logSkip("inflight");
+    await inflight;
     return;
   }
   if (lastStartedAt > 0 && now - lastStartedAt < COOLDOWN_MS && completedIdentityKey) {
@@ -80,53 +99,118 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
   });
 
   inflight = (async () => {
+    const failures: string[] = [];
+    let snapshotCount = 0;
+    let warmRows: any[] = [];
+
     try {
       setSessionSync(session);
-      await hydrateHomeFeedRowsCacheFromStorage(session.userId);
+    } catch {
+      failures.push("session-sync");
+    }
 
+    try {
+      await hydrateHomeFeedRowsCacheFromStorage(session.userId);
+    } catch {
+      failures.push("hydrate-cache");
+    }
+
+    try {
+      await prepareFirstHomeFeedVideo(session);
+    } catch {
+      failures.push("prepare-first-video-before-open");
+    }
+
+    let rowCount = 0;
+    try {
       const rows = await fetchHomeFeedFromApi("startup-prewarm");
       const merged = getCachedHomeFeedBackendRows();
-      const rowCount = merged.length || rows.length;
+      rowCount = merged.length || rows.length;
+    } catch {
+      failures.push("fetch-feed");
+      rowCount = getCachedHomeFeedBackendRows().length;
+    }
 
-      console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_ROWS", {
-        count: Math.min(rowCount, HOME_FEED_INITIAL_LIMIT),
-      });
+    console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_ROWS", {
+      count: Math.min(rowCount, HOME_FEED_INITIAL_LIMIT),
+    });
 
-      const snapshotCount = await persistHomeFeedBackendRowsSnapshot(
+    try {
+      snapshotCount = await persistHomeFeedBackendRowsSnapshot(
         HOME_FEED_INITIAL_LIMIT,
         session.userId
       );
-
-      const warmRows = getCachedHomeFeedBackendRows().slice(0, HOME_FEED_INITIAL_LIMIT);
-      const media = await warmHomeFeedStartupMedia(warmRows, {
-        maxPosters: STARTUP_POSTER_MAX,
-        maxVideos: STARTUP_VIDEO_MAX,
-        concurrency: STARTUP_CONCURRENCY,
-      });
-
-      console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_MEDIA", {
-        posterCount: media.posterCount,
-        videoCount: media.videoCount,
-      });
-
-      completedIdentityKey = key;
-      console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_DONE", {
-        ms: Date.now() - startedAt,
-        rows: snapshotCount || warmRows.length,
-      });
     } catch {
-      logSkip("failed");
-    } finally {
-      inflight = null;
+      failures.push("persist-snapshot");
     }
-  })();
+
+    const displayRows = buildHomeFeedDisplayRows(
+      getCachedHomeFeedBackendRows(),
+      feedList()
+    );
+    startInitialHomeFeedPosterPrewarm(displayRows);
+
+    warmRows = displayRows.slice(0, HOME_FEED_INITIAL_LIMIT);
+
+    // Poster/byte warm for remaining rows — only after first video frame paints.
+    deferStartupWorkAfterHomeFirstFrame(
+      async () => {
+        if (isHomeFeedLiveNavBackgroundPaused()) return;
+        try {
+          const warmed = await warmHomeFeedStartupMedia(warmRows, {
+            maxPosters: STARTUP_POSTER_MAX,
+            maxVideos: STARTUP_VIDEO_MAX,
+            concurrency: STARTUP_CONCURRENCY,
+          });
+          console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_MEDIA", {
+            posterCount: warmed.posterCount,
+            videoCount: warmed.videoCount,
+            posterFailed: warmed.posterFailed,
+            videoFailed: warmed.videoFailed,
+          });
+        } catch {
+          failures.push("warm-media");
+        }
+      },
+      { reason: "startup-prewarm-media", delayMs: 400 }
+    );
+
+    // Now that the feed exists and the first video's startup bytes are warmed,
+    // publish readiness on the EXACT URL the player will mount. On cold start the
+    // first prepare pass (above) ran against an empty cache and was intentionally
+    // not locked, so this re-run warms the real first URL and marks the readiness
+    // store — satisfying "prepared before open" + restore.
+    try {
+      await prepareFirstHomeFeedVideo(session);
+    } catch {
+      failures.push("prepare-first-video-after-fetch");
+    }
+
+    completedIdentityKey = key;
+    console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_DONE", {
+      ms: Date.now() - startedAt,
+      rows: snapshotCount || warmRows.length,
+      mediaWarm: "deferred-after-first-frame",
+      failures: failures.length ? failures : undefined,
+    });
+  })().finally(() => {
+    inflight = null;
+  });
 
   await inflight;
 }
 
 /** Fire-and-forget Home Feed startup prewarm (rows + posters + video byte warm). */
 export function startHomeFeedStartupPrewarm(session: KristoSession | null | undefined) {
-  if (!isSessionReadyForPrewarm(session)) {
+  if (isHomeFeedLiveNavBackgroundPaused()) {
+    logSkip("live-navigation");
+    return;
+  }
+  if (!isHomeFeedInlineVideoAutoplayEnabled()) {
+    logSkip("youtube-style-feed");
+    return;
+  }
+  if (!session || !isSessionReadyForPrewarm(session)) {
     logSkip("missing-session");
     return;
   }

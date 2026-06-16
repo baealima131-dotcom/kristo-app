@@ -14,9 +14,20 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { vipAvatarBg, vipInitials } from "@/src/ui/vipUtil";
 type User = {
   userId: string;
+  kristoId?: string;
+  publicKristoId?: string;
+  privateKristoId?: string;
   displayName?: string;
   email?: string;
 };
+
+function cleanId(v?: string) {
+  return String(v || "").trim().toUpperCase();
+}
+
+function visibleKristoId(u: User) {
+  return cleanId(u.kristoId || u.publicKristoId || u.privateKristoId || u.userId);
+}
 const VIP_BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,1)";
 export function AddMemberPanel({
@@ -54,11 +65,20 @@ export function AddMemberPanel({
     if (visible) loadPeople();
   }, [visible]);
   const results = useMemo(() => {
-    const s = q.trim().toLowerCase();
+    const raw = q.trim();
+    const s = raw.toLowerCase();
+    const exactKristoId = cleanId(raw);
+
     if (!s) return all.slice(0, 50);
+
+    // Kristo ID search must be exact — no guessing names.
+    if (/^KR7-[A-Z0-9]{6,10}$/i.test(raw)) {
+      return all.filter((u) => visibleKristoId(u) === exactKristoId || cleanId(u.userId) === exactKristoId);
+    }
+
     return all.filter((u) => {
       return (
-        (u.userId || "").toLowerCase().includes(s) ||
+        visibleKristoId(u).toLowerCase().includes(s) ||
         (u.displayName || "").toLowerCase().includes(s) ||
         (u.email || "").toLowerCase().includes(s)
       );
@@ -91,7 +111,7 @@ export function AddMemberPanel({
           <Ionicons name="close" size={18} color="rgba(255,255,255,0.9)" />
         </Pressable>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={s.panelTitle} numberOfLines={1}>Add Member</Text>
+          <Text style={s.panelTitle} numberOfLines={1}>Add by Kristo ID</Text>
           <Text style={s.panelSub} numberOfLines={1}>{`${results?.length ?? 0} results`}</Text>
         </View>
         <Pressable onPress={loadPeople} style={({ pressed }) => [s.iconBtn, pressed && { opacity: 0.85 }]}>
@@ -103,7 +123,7 @@ export function AddMemberPanel({
         <TextInput
           value={q}
           onChangeText={setQ}
-          placeholder="Search name / email / id"
+          placeholder="Paste Kristo ID e.g. KR7-10161XL"
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={s.searchInput}
           autoCapitalize="none"
@@ -128,7 +148,7 @@ export function AddMemberPanel({
             <View style={s.empty}>
               <Ionicons name="person-add" size={22} color="rgba(255,255,255,0.55)" />
               <Text style={s.emptyTitle}>No matches</Text>
-              <Text style={s.emptySub}>Try a different search.</Text>
+              <Text style={s.emptySub}>Paste the exact Kristo ID from their profile.</Text>
             </View>
           }
           renderItem={({ item }) => (
@@ -139,7 +159,7 @@ export function AddMemberPanel({
                 </View>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={s.title} numberOfLines={1}>{item.displayName || "Member"}</Text>
-                  <Text style={s.sub} numberOfLines={1}>{item.email ? item.email : `User: ${item.userId}`}</Text>
+                  <Text style={s.sub} numberOfLines={1}>{`Kristo ID: ${visibleKristoId(item)}`}</Text>
                 </View>
                 <Pressable
                   onPress={() => add(item.userId)}

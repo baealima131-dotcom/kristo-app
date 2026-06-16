@@ -25,6 +25,8 @@ import { persistClaimToLiveRequest } from "@/src/lib/liveBridge";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { resolveHomeFeedScheduleSlotLabels } from "@/src/lib/slotTopicUtils";
+import { homeFeedRowChurchId } from "@/src/components/homeFeed/homeFeedUtils";
+import { openChurchProfile } from "@/src/lib/churchProfileNavigation";
 import {
   baseFeedId,
   cleanFeedLabel,
@@ -45,6 +47,11 @@ import {
   notifySlotClaimChanged,
   refreshSlotAfterClaimConflict,
 } from "@/src/lib/slotClaimApply";
+import {
+  buildScheduleSlotClaimBody,
+  refetchTargetScheduleAfterClaim,
+  resolveScheduleChurchId,
+} from "@/src/lib/scheduleSlotClaimRequest";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -192,11 +199,12 @@ function userHasActiveChurchMembership(session?: { churchId?: string; activeChur
 
 function resolveTitleFontSize(title: string) {
   const len = title.length;
-  if (len > 52) return 22;
-  if (len > 38) return 25;
-  if (len > 28) return 28;
-  if (len > 18) return 31;
-  return 34;
+  let base = 34;
+  if (len > 52) base = 22;
+  else if (len > 38) base = 25;
+  else if (len > 28) base = 28;
+  else if (len > 18) base = 31;
+  return Math.max(16, Math.round(base * 0.7));
 }
 
 function AvatarRing({
@@ -969,27 +977,44 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const claimedLiveLayout = claimed && phase === "live";
   const claimedPreLiveLayout = claimed && phase !== "live" && phase !== "ended";
   const claimedCompactLayout = claimedLiveLayout || claimedPreLiveLayout;
+  const canEnterLiveRoom = claimedByMe && isLiveWindow && phase !== "ended";
+  const canEnterLiveRoomAsAudience =
+    claimedByOther && isLiveWindow && phase !== "ended" && claimed;
   const visualTheme = isUnclaimedLiveOpen ? { ...theme, label: "LIVE NOW • OPEN" } : theme;
 
   useEffect(() => {
-    if (!__DEV__) return;
     console.log("KRISTO_HOME_SLOT_VISUAL_STATE", {
       slotId: slot?.id,
       slotNumber: Number((slot as any)?.slot || (slot as any)?.slotNumber || slotFeedIndex + 1),
       startMs: slotVisual?.startMs ?? slot?.startMs,
       endMs: slotVisual?.endMs ?? slot?.endMs,
+      currentUserId,
+      claimedByUserId: claimUserId,
       claimed,
+      claimedByMe,
+      claimedByOther,
       phase,
       isLiveWindow,
       isUnclaimedLiveOpen,
+      canEnterLiveRoom,
+      hasOptimisticClaim: !!optimisticClaim,
+      activeSlotClaimedByUserId: String(activeSlot?.claimedByUserId || activeSlot?.claimedBy?.userId || ""),
     });
   }, [
     slot?.id,
     slotFeedIndex,
     claimed,
+    claimedByMe,
+    claimedByOther,
+    claimUserId,
+    currentUserId,
     phase,
     isLiveWindow,
     isUnclaimedLiveOpen,
+    canEnterLiveRoom,
+    optimisticClaim,
+    activeSlot?.claimedByUserId,
+    activeSlot?.claimedBy?.userId,
     slot,
     slotVisual?.startMs,
     slotVisual?.endMs,
@@ -1011,6 +1036,14 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   );
   const churchHeaderInitial =
     churchShort.slice(0, 1).toUpperCase() || churchName.slice(0, 1).toUpperCase() || "C";
+  const profileChurchId = useMemo(
+    () => homeFeedRowChurchId(item) || String(item?.churchId || "").trim(),
+    [item]
+  );
+  const handleOpenChurchProfile = useCallback(() => {
+    if (!profileChurchId) return;
+    openChurchProfile(profileChurchId, { churchName: churchShort, source: "live-schedule-card" });
+  }, [profileChurchId, churchShort]);
 
   useEffect(() => {
     console.log("KRISTO_MEDIA_CARD_AVATAR_RENDER", {
@@ -1065,7 +1098,112 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               ? "1m left"
               : "Starting now";
 
-  const claimCtaText = isUnclaimedLiveOpen ? "Claim & Go Live" : "Claim This Live Slot";
+  const claimCtaText = canEnterLiveRoom || canEnterLiveRoomAsAudience
+    ? "Enter Live Room"
+    : isUnclaimedLiveOpen
+      ? "Claim & Go Live"
+      : "Claim This Live Slot";
+
+  const showPrimaryClaim = !claimed && phase !== "ended" && !isClaimInFlight;
+  const showEnterLivePrimary =
+    (canEnterLiveRoom || canEnterLiveRoomAsAudience) && !isClaimInFlight;
+  const showSecondaryClaim = claimed && phase !== "ended";
+  const compactOpenCard = !claimed && phase !== "ended";
+  const edgeTint = phaseEdgeTint(phase, claimed, isUnclaimedLiveOpen);
+
+  const liveRoomNavigationTarget = useMemo(() => {
+    const seedId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
+    return {
+      pathname: "/(tabs)/more/my-church-room/messages/live-room",
+      feedId: seedId,
+      sourceScheduleId: seedId,
+      scheduleType: String(item?.scheduleType || "media-live-slots"),
+    };
+  }, [item?.sourceScheduleId, item?.id, item?.scheduleType]);
+
+  useEffect(() => {
+    const ctaText = showEnterLivePrimary
+      ? "Enter Live Room"
+      : showPrimaryClaim
+        ? claimCtaText
+        : showSecondaryClaim
+          ? canEnterLiveRoom
+            ? "Enter Live Room"
+            : claimedByMe
+              ? "Claimed • Tap to Release"
+              : "Taken • Join Queue"
+          : "(hidden)";
+
+    const navigationTarget = canEnterLiveRoom
+      ? liveRoomNavigationTarget
+      : showPrimaryClaim
+        ? "claim-action"
+        : claimedByMe
+          ? "unclaim-or-hold"
+          : claimedByOther
+            ? "join-queue"
+            : "none";
+
+    console.log("KRISTO_HOME_SLOT_CTA_STATE", {
+      slotId: String(slot?.id || activeSlot?.id || ""),
+      currentUserId,
+      claimedByUserId: claimUserId,
+      claimed,
+      claimedByMe,
+      claimedByOther,
+      phase,
+      isLiveWindow,
+      isUnclaimedLiveOpen,
+      canEnterLiveRoom,
+      canEnterLiveRoomAsAudience,
+      showPrimaryClaim,
+      showEnterLivePrimary,
+      showSecondaryClaim,
+      ctaText,
+      navigationTarget,
+      hasOptimisticClaim: !!optimisticClaim,
+      activeSlotClaimedByUserId: String(activeSlot?.claimedByUserId || activeSlot?.claimedBy?.userId || ""),
+    });
+
+    if (claimedByOther) {
+      console.log("KRISTO_HOME_SLOT_CTA_STATE_FOR_OTHER_VIEWER", {
+        slotId: String(slot?.id || activeSlot?.id || ""),
+        currentUserId,
+        claimedByUserId: claimUserId,
+        claimedByName: String(
+          claimedBy?.name || slot?.claimedByName || activeSlot?.claimedByName || ""
+        ),
+        phase,
+        isLiveWindow,
+        canEnterLiveRoomAsAudience,
+        showPrimaryClaim,
+        showEnterLivePrimary,
+        showSecondaryClaim,
+        ctaText,
+      });
+    }
+  }, [
+    slot?.id,
+    activeSlot?.id,
+    currentUserId,
+    claimUserId,
+    claimed,
+    claimedByMe,
+    claimedByOther,
+    phase,
+    isLiveWindow,
+    isUnclaimedLiveOpen,
+    canEnterLiveRoom,
+    canEnterLiveRoomAsAudience,
+    showPrimaryClaim,
+    showEnterLivePrimary,
+    showSecondaryClaim,
+    claimCtaText,
+    liveRoomNavigationTarget,
+    optimisticClaim,
+    activeSlot?.claimedByUserId,
+    activeSlot?.claimedBy?.userId,
+  ]);
 
   const titleFontSize = useMemo(() => resolveTitleFontSize(slotTitle), [slotTitle]);
   const titleLineHeight = compactUnclaimedLayout ? titleFontSize + 4 : titleFontSize + 6;
@@ -1111,6 +1249,8 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     const claimAvatarUri = uploadedClaimAvatar
       ? uploadedClaimAvatar
       : sanitizePersistedClaimAvatarUri(memberAvatarByUserId[currentUserId], "claim-member-cache") || "";
+    const viewerChurchId = String(session?.churchId || "").trim();
+    const scheduleChurchId = resolveScheduleChurchId(item, viewerChurchId);
     const claim = {
       slotId,
       userId: currentUserId,
@@ -1126,7 +1266,8 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       startMs: Number(slot.startMs || 0),
       endMs: Number(slot.endMs || 0),
       slotNumber: slotNumber || Number((slot as any).slot || (slot as any).slotNumber || 0),
-      churchId: String(item?.churchId || session?.churchId || ""),
+      churchId: scheduleChurchId,
+      claimantHomeChurchId: viewerChurchId,
       slot,
       item,
     };
@@ -1135,10 +1276,19 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     feedClaimSchedule(seedId, claim);
     onOptimisticClaim?.({ postId: claimTarget.apiFeedId, slotId, claim });
 
+    const claimBody = buildScheduleSlotClaimBody({
+      postId: claimTarget.apiFeedId,
+      scheduleFeedId: claimTarget.apiFeedId,
+      slotId,
+      claim,
+      scheduleItem: item,
+      viewerChurchId,
+    });
+
     const claimHeaders = getKristoHeaders({
       userId: session?.userId || "",
       role: (session?.role || "Member") as any,
-      churchId: session?.churchId || "",
+      churchId: viewerChurchId,
     }) as Record<string, string>;
 
     if (!isPastorClaim) {
@@ -1153,15 +1303,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       }).catch(() => {});
     }
 
-    void apiPost(
-      "/api/church/feed",
-      { action: "claim_schedule_slot", postId: claimTarget.apiFeedId, slotId, claim },
-      {
-        headers: claimHeaders,
-      }
-    )
+    void apiPost("/api/church/feed", claimBody, {
+      headers: claimHeaders,
+    })
       .then(async (res: any) => {
-        const churchId = String(item?.churchId || session?.churchId || "").trim();
         const isConflict =
           Number(res?.status || 0) === 409 ||
           String(res?.error || "")
@@ -1179,9 +1324,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             "Slot already claimed",
             "Slot already claimed by another member"
           );
-          if (churchId) {
+          if (scheduleChurchId) {
             await refreshSlotAfterClaimConflict({
-              churchId,
+              churchId: scheduleChurchId,
               postId: claimTarget.apiFeedId,
               slotId,
             });
@@ -1192,6 +1337,15 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
         if (res?.ok === false || res?.error) {
           throw new Error(String(res?.error || "claim failed"));
         }
+
+        await refetchTargetScheduleAfterClaim({
+          postId: claimTarget.apiFeedId,
+          scheduleChurchId,
+          slotId,
+          viewerChurchId,
+          viewerUserId: currentUserId,
+          viewerRole: String(session?.role || "Member"),
+        });
 
         if (isPastorClaim) {
           console.log("KRISTO_PASTOR_CLAIM_PERSISTED", {
@@ -1213,10 +1367,16 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
         console.log("KRISTO_SLOT_CLAIM_SUCCESS", {
           stage: "backend-persisted",
-          churchId,
+          churchId: scheduleChurchId,
+          viewerChurchId,
           postId: claimTarget.apiFeedId,
           slotId,
           userId: currentUserId,
+          crossChurch: scheduleChurchId !== viewerChurchId,
+          canEnterLiveRoom:
+            Number(slot.startMs || 0) > 0 &&
+            Number(slot.startMs || 0) <= Date.now() &&
+            Number(slot.endMs || 0) > Date.now(),
         });
 
         const backendSlot = res?.slot;
@@ -1239,10 +1399,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           });
         }
 
-        if (churchId) {
+        if (scheduleChurchId) {
           notifySlotClaimChanged(
             {
-              churchId,
+              churchId: scheduleChurchId,
               postId: claimTarget.apiFeedId,
               slotId,
               action: "claim",
@@ -1284,8 +1444,33 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   ]);
 
   const handleClaimPress = useCallback(() => {
-    if (phase === "live" && claimedByMe) {
-      onOpenLiveRoom?.();
+    console.log("KRISTO_HOME_SLOT_CTA_PRESS", {
+      slotId: String(slot?.id || activeSlot?.id || ""),
+      currentUserId,
+      claimedByUserId: claimUserId,
+      claimed,
+      claimedByMe,
+      canEnterLiveRoom,
+      hasOnOpenLiveRoom: typeof onOpenLiveRoom === "function",
+    });
+
+    if (canEnterLiveRoom || canEnterLiveRoomAsAudience) {
+      console.log("KRISTO_HOME_SLOT_CTA_NAV", {
+        action: canEnterLiveRoom ? "enter-live-host" : "enter-live-audience",
+        slotId: String(slot?.id || activeSlot?.id || ""),
+        currentUserId,
+        claimedByUserId: claimUserId,
+        navigationTarget: liveRoomNavigationTarget,
+        hasOnOpenLiveRoom: typeof onOpenLiveRoom === "function",
+      });
+      if (!onOpenLiveRoom) {
+        console.log("KRISTO_HOME_SLOT_CTA_NAV_BLOCKED", {
+          reason: "missing-onOpenLiveRoom",
+          slotId: String(slot?.id || activeSlot?.id || ""),
+        });
+        return;
+      }
+      onOpenLiveRoom();
       return;
     }
     if (claimedByOther) {
@@ -1308,23 +1493,23 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     }
     claimThisSlot();
   }, [
-    phase,
+    canEnterLiveRoom,
+    canEnterLiveRoomAsAudience,
     claimedByMe,
     claimedByOther,
     onOpenLiveRoom,
     item,
+    slot?.id,
+    activeSlot?.id,
     slot.id,
     currentUserId,
+    claimUserId,
+    liveRoomNavigationTarget,
     profileName,
     profileAvatarUri,
     session?.role,
     claimThisSlot,
   ]);
-
-  const showPrimaryClaim = !claimed && phase !== "ended" && !isClaimInFlight;
-  const showSecondaryClaim = claimed && phase !== "ended";
-  const compactOpenCard = !claimed && phase !== "ended";
-  const edgeTint = phaseEdgeTint(phase, claimed, isUnclaimedLiveOpen);
 
   if (!slotVisual || slotVisual.expired) {
     return null;
@@ -1448,27 +1633,41 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             ]}
           >
             <View style={styles.headerTopRow}>
-              <AvatarRing
-                uri={churchHeaderAvatar.uri}
-                initial={churchHeaderInitial}
-                size={headerAvatarSize}
-                accent={visualTheme.accent}
-                live={phase === "live"}
-                goldFallback={!isUnclaimedLiveOpen}
-                premiumEmblem={compactUnclaimedLayout}
-                allowDataUrl
-                forceShowImage={churchHeaderAvatar.hasAvatar}
-                imageLogMeta={{ kind: "church-header" }}
-              />
+              <Pressable
+                onPress={handleOpenChurchProfile}
+                disabled={!profileChurchId}
+                accessibilityRole="button"
+                accessibilityLabel={churchShort ? `Open ${churchShort} profile` : "Open church profile"}
+              >
+                <AvatarRing
+                  uri={churchHeaderAvatar.uri}
+                  initial={churchHeaderInitial}
+                  size={headerAvatarSize}
+                  accent={visualTheme.accent}
+                  live={phase === "live"}
+                  goldFallback={!isUnclaimedLiveOpen}
+                  premiumEmblem={compactUnclaimedLayout}
+                  allowDataUrl
+                  forceShowImage={churchHeaderAvatar.hasAvatar}
+                  imageLogMeta={{ kind: "church-header" }}
+                />
+              </Pressable>
               <View style={styles.headerTextBlock}>
-                <Text
-                  style={[styles.mediaName, compactUnclaimedLayout && styles.mediaNameVip]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.8}
+                <Pressable
+                  onPress={handleOpenChurchProfile}
+                  disabled={!profileChurchId}
+                  accessibilityRole="button"
+                  accessibilityLabel={churchShort ? `Open ${churchShort} profile` : "Open church profile"}
                 >
-                  {churchShort}
-                </Text>
+                  <Text
+                    style={[styles.mediaName, compactUnclaimedLayout && styles.mediaNameVip]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.8}
+                  >
+                    {churchShort}
+                  </Text>
+                </Pressable>
                 <Text
                   style={[styles.churchSubline, compactUnclaimedLayout && styles.churchSublineVip]}
                   numberOfLines={1}
@@ -1634,7 +1833,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   compactUnclaimedLayout && styles.slotTitleVip,
                   { fontSize: titleFontSize, lineHeight: titleLineHeight },
                 ]}
-                numberOfLines={2}
+                numberOfLines={1}
                 ellipsizeMode="tail"
               >
                 {slotTitle}
@@ -1837,7 +2036,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                       ]}
                     >
                       <EnterLiveButtonGloss />
-                      {claimedByMe && phase === "live" ? (
+                      {claimedByMe && canEnterLiveRoom ? (
                         <>
                           <Ionicons name="radio" size={24} color="#FFF" />
                           <Text style={styles.hostEnterButtonText}>Enter Live Room</Text>
@@ -1847,6 +2046,11 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                         <>
                           <Ionicons name="checkmark-circle" size={22} color="#FFF" />
                           <Text style={styles.hostEnterButtonText}>Claimed • Tap to Release</Text>
+                        </>
+                      ) : claimedByOther && isLiveWindow ? (
+                        <>
+                          <Ionicons name="radio" size={22} color="#FFF" />
+                          <Text style={styles.hostEnterButtonText}>On Air • Watch Live</Text>
                         </>
                       ) : (
                         <>
@@ -1870,6 +2074,27 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               claimedCompactLayout && styles.footerSectionClaimedLive,
             ]}
           >
+            {showEnterLivePrimary ? (
+              <AnimatedPressable
+                onPress={handleClaimPress}
+                style={[
+                  styles.claimBtnPrimary,
+                  styles.claimBtnPrimaryLiveOpen,
+                  claimBtnStyle,
+                ]}
+              >
+                <LinearGradient
+                  colors={["#FF3B63", "#D81B60", "#9C1748"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.claimBtnPrimaryGradient}
+                >
+                  <Ionicons name="radio" size={24} color="#FFF" />
+                  <Text style={[styles.claimBtnPrimaryText, { color: "#FFF" }]}>Enter Live Room</Text>
+                </LinearGradient>
+              </AnimatedPressable>
+            ) : null}
+
             {showPrimaryClaim ? (
               <View style={[compactUnclaimedLayout ? styles.claimBtnPrimaryWrapUnclaimed : undefined]}>
                 {compactUnclaimedLayout ? (

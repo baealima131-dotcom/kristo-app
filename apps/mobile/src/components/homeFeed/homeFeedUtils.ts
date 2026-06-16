@@ -15,6 +15,7 @@ import {
   resolveScheduleSlotVisualState,
 } from "@/src/lib/scheduleSlotUtils";
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
+import { resolveCachedMediaPoster } from "@/src/lib/mediaPosterCache";
 import { isKristoVerboseFeedDebug, isKristoVerboseFeedIdentityDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
 import {
   logScheduleTopicTrace,
@@ -25,17 +26,29 @@ import {
   markHiddenInvalidHomeFeedSchedule,
 } from "@/src/lib/homeFeedInvalidSchedules";
 import {
+  logHomeFeedScheduleExpired,
+  logHomeFeedScheduleRemoved,
+} from "@/src/lib/homeFeedScheduleLifecycle";
+import { areAllScheduleSlotsExpired } from "@/src/lib/mediaScheduleLock";
+import {
   logHomeFeedFirstRows,
   logHomeFeedPersonalOrder,
   logHomeFeedPersonalSeed,
   resetHomeFeedPersonalOrderIfNeeded,
   resolveHomeFeedPersonalOrderContext,
   sortRowsByPersonalSeed,
+  arrangeHomeFeedVideoBlockFirst,
+  homeFeedFreshnessSortMs,
   type HomeFeedPersonalOrderContext,
 } from "@/src/lib/homeFeedPersonalOrder";
 import { resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { peekProfileScreenCache } from "@/src/lib/screenDataCache";
+import { tryRegisterStartupFirstVideoTarget } from "@/src/lib/homeFeedVideoPrime";
+import { isHomeFeedInlineVideoAutoplayEnabled, type HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
+import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
+import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
+import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
 
@@ -64,6 +77,39 @@ export function resolveFeedPostAccent(item: any): HomeFeedPostAccent {
   if (kind === "testimony") return "testimony";
   if (kind === "announcement") return "announcement";
   return "default";
+}
+
+export type HomeFeedPostKindFilter = "testimony" | "announcement";
+
+export function filterHomeFeedRowsByPostKind(
+  rows: any[],
+  kind: HomeFeedPostKindFilter | null
+): any[] {
+  if (!kind || !Array.isArray(rows)) return rows;
+  return rows.filter((row) => resolveFeedPostKind(row) === kind);
+}
+
+export function buildHomeFeedSearchHaystack(item: any): string {
+  const parts = [
+    resolvePostTitle(item),
+    resolvePostBody(item),
+    resolveChurchName(item),
+    resolveMediaName(item),
+    resolveFeedIdentityHeadline(item),
+    resolveFeedPostTypeTitle(item),
+    String(item?.authorName || item?.author?.name || ""),
+  ];
+  return parts
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+export function filterHomeFeedRowsBySearchQuery(rows: any[], query: string): any[] {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle || !Array.isArray(rows)) return rows;
+  return rows.filter((row) => buildHomeFeedSearchHaystack(row).includes(needle));
 }
 
 function looksLikeFeedAuthorId(value: unknown) {
@@ -450,7 +496,7 @@ export function commentAvatarUrl(raw: unknown) {
 }
 
 /** Active church media schedule row (media-live-slots) for Home Feed / Guest Claim / Live ring.
- *  V1: visible to church members for claim; ranking pipeline unchanged. */
+ *  Visible cross-church; claim eligibility uses the viewer's own church subscription. */
 export function isMediaLiveSlotsHomeFeedRow(item: any): boolean {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
   if (!isMediaScheduleFeedItem(item)) return false;
@@ -615,6 +661,10 @@ export function homeFeedCommentPostId(item: any) {
 
 /** FlatList row key — unique per expanded slot card. */
 export function feedRenderKey(item: any) {
+  // Endless-feed recycled rows reuse a real post id (for likes/comments) but need
+  // a unique render key per cycle so React/FlatList don't collapse duplicates.
+  const recycleKey = String(item?.homeFeedRecycleKey || "").trim();
+  if (recycleKey) return recycleKey;
   const id = String(item?.id || item?.feedOriginId || "").trim();
   if (item?.homeFeedSlotExpanded || /:slot:\d+/i.test(id)) return id;
   return baseFeedId(id);
@@ -760,7 +810,7 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
     String(scheduleRow?.id || scheduleRow?.sourceScheduleId || "")
   );
   const slots = Array.isArray(scheduleRow?.scheduleSlots) ? scheduleRow.scheduleSlots : [];
-  if (!scheduleId || !slots.length) return [scheduleRow];
+  if (!scheduleId || !slots.length) return [];
 
   let expiryDebugLogged = 0;
   const activeSlots = slots
@@ -788,7 +838,7 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
   }
   if (!activeSlots.length) return [];
 
-  activeSlots.sort((a, b) => {
+  activeSlots.sort((a: any, b: any) => {
     const aNum = resolveHomeFeedSlotNumber(a.slot, a.index + 1);
     const bNum = resolveHomeFeedSlotNumber(b.slot, b.index + 1);
     if (aNum !== bNum) return aNum - bNum;
@@ -797,18 +847,21 @@ export function expandHomeFeedScheduleIntoSlotRows(scheduleRow: any, nowMs = Dat
     return aStart - bStart;
   });
 
-  const expanded = activeSlots.map(({ slot, index }: { slot: any; index: number }) => {
-    const slotNumber = resolveHomeFeedSlotNumber(slot, index + 1);
+  const expanded = activeSlots.map(
+    ({ slot, index }: { slot: any; index: number }, displayIndex: number) => {
+    const displayNumber = displayIndex + 1;
+    const slotFeedIndex = displayIndex;
     return {
       ...scheduleRow,
-      id: `${scheduleId}:slot:${slotNumber}`,
-      feedOriginId: `${scheduleId}:slot:${slotNumber}`,
+      id: `${scheduleId}:slot:${String(slot?.id || displayNumber)}`,
+      feedOriginId: `${scheduleId}:slot:${String(slot?.id || displayNumber)}`,
       parentScheduleId: scheduleId,
       sourceScheduleId: scheduleId,
       scheduleSlots: [slot],
-      slotNumber,
+      slotNumber: displayNumber,
       homeFeedSlotExpanded: true,
-      parentScheduleSlotCount: slots.length,
+      parentScheduleSlotCount: activeSlots.length,
+      slotFeedIndex,
       source: String(scheduleRow?.source || "media-schedule"),
       scheduleType: String(scheduleRow?.scheduleType || "media-live-slots"),
     };
@@ -919,7 +972,7 @@ export function homeFeedRowChurchId(row: any) {
   return String(row?.churchId || row?.ownerChurchId || "").trim();
 }
 
-function isHomeFeedLivestreamRow(row: any) {
+export function isHomeFeedLivestreamRow(row: any) {
   if (!row) return false;
   const id = String(row?.id || "").toLowerCase();
   if (id.startsWith("church-live-now-") || id.startsWith("media-live-now-")) return true;
@@ -940,9 +993,17 @@ function classifyHomeFeedPostRowBucket(row: any, viewerChurchId: string): HomeFe
 
 function sortBucketByPersonalSeed(
   rows: any[],
-  ctx: HomeFeedPersonalOrderContext
+  ctx: HomeFeedPersonalOrderContext,
+  nowMs: number
 ) {
-  return sortRowsByPersonalSeed(rows, ctx, (row) => feedRenderKey(row), homeFeedPostSortMs);
+  return arrangeHomeFeedVideoBlockFirst(
+    rows,
+    ctx,
+    (row) => feedRenderKey(row),
+    (row) => homeFeedFreshnessSortMs(row, nowMs, isVideoPost(row)),
+    10,
+    4
+  );
 }
 
 function pickInterleaveRow(
@@ -966,65 +1027,29 @@ function pickInterleaveRow(
 function interleaveHomeFeedPostRows(
   postRows: any[],
   viewerChurchId: string,
-  personalCtx: HomeFeedPersonalOrderContext
+  personalCtx: HomeFeedPersonalOrderContext,
+  nowMs: number
 ) {
-  const buckets: Record<Exclude<HomeFeedRowBucket, "schedule" | "live">, any[]> = {
-    global_media: [],
-    church_media: [],
-    church_post: [],
-  };
+  const sorted = sortBucketByPersonalSeed(postRows, personalCtx, nowMs);
 
-  for (const row of postRows) {
-    const bucket = classifyHomeFeedPostRowBucket(row, viewerChurchId);
-    if (bucket === "live") continue;
-    buckets[bucket as Exclude<HomeFeedRowBucket, "schedule" | "live">].push(row);
-  }
+  const videos = sorted.filter((row) => isVideoPost(row));
+  const posts = sorted.filter((row) => !isVideoPost(row));
 
-  for (const bucket of Object.keys(buckets) as Array<Exclude<HomeFeedRowBucket, "schedule" | "live">>) {
-    buckets[bucket] = sortBucketByPersonalSeed(buckets[bucket], personalCtx);
-  }
+  const output = [...videos, ...posts];
 
-  const interleaved: any[] = [];
-  let lastChurchId = "";
-  let idleRounds = 0;
-  const maxIdle = HOME_FEED_POST_INTERLEAVE_PATTERN.length * 3;
+  console.log("KRISTO_HOME_FEED_POST_ROWS_VIDEO_FIRST", {
+    inputCount: postRows.length,
+    outputCount: output.length,
+    videos: videos.length,
+    posts: posts.length,
+    viewerChurchId: viewerChurchId || null,
+    firstKinds: output.slice(0, 12).map((row) => isVideoPost(row) ? "video" : "post"),
+    firstIds: output.slice(0, 12).map((row) => feedRenderKey(row) || String(row?.id || "")),
+  });
 
-  while (idleRounds < maxIdle) {
-    let pickedAny = false;
-    for (const bucket of HOME_FEED_POST_INTERLEAVE_PATTERN) {
-      const row = pickInterleaveRow(bucket, buckets, lastChurchId);
-      if (!row) continue;
-      interleaved.push(row);
-      const cid = homeFeedRowChurchId(row);
-      if (cid) lastChurchId = cid;
-      pickedAny = true;
-      idleRounds = 0;
-    }
-    if (!pickedAny) idleRounds += 1;
-  }
-
-  for (const bucket of Object.keys(buckets) as Array<Exclude<HomeFeedRowBucket, "schedule" | "live">>) {
-    interleaved.push(...buckets[bucket]);
-  }
-
-  if (isKristoVerboseFeedDebug()) {
-    console.log("KRISTO_HOME_FEED_INTERLEAVE", {
-      viewerChurchId,
-      seedKey: personalCtx.seedKey,
-      inputCount: postRows.length,
-      outputCount: interleaved.length,
-      bucketCounts: Object.fromEntries(
-        (Object.keys(buckets) as Array<Exclude<HomeFeedRowBucket, "schedule" | "live">>).map(
-          (k) => [k, buckets[k].length]
-        )
-      ),
-      firstIds: interleaved.slice(0, 8).map((row) => feedRenderKey(row) || String(row?.id || "")),
-      firstChurches: interleaved.slice(0, 8).map((row) => homeFeedRowChurchId(row) || null),
-    });
-  }
-
-  return interleaved;
+  return output;
 }
+
 
 function sortHomeFeedLivePriorityRows(rows: any[]) {
   return [...rows].sort(
@@ -1061,7 +1086,10 @@ function mergePostsWithStableScheduleRows(
   nowMs: number
 ) {
   const stableSchedules = sortHomeFeedScheduleSlotRows(
-    stableRows.filter(isHomeFeedExpandedOrScheduleSlotRow)
+    filterVisibleHomeFeedScheduleRows(
+      stableRows.filter(isHomeFeedExpandedOrScheduleSlotRow),
+      nowMs
+    )
   );
   if (!stableSchedules.length) {
     return buildHomeFeedPriorityLayout(liveRows, [], personalizedPosts, nowMs);
@@ -1115,16 +1143,65 @@ export function isHomeFeedScheduleSlotRowVisible(row: any, nowMs = Date.now()): 
   });
 }
 
+function resolveHomeFeedScheduleEndedAt(row: any): string | null {
+  const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
+  let lastEndMs = 0;
+  for (const slot of slots) {
+    const endMs = parseSlotEndMs(slot) || 0;
+    if (endMs > lastEndMs) lastEndMs = endMs;
+  }
+  return lastEndMs > 0 ? new Date(lastEndMs).toISOString() : null;
+}
+
+function logHomeFeedScheduleRowExpired(row: any, nowMs: number, reason: string) {
+  const scheduleId = String(
+    row?.parentScheduleId || row?.sourceScheduleId || row?.id || ""
+  ).trim();
+  const churchId = homeFeedRowChurchId(row);
+  if (!scheduleId) return;
+
+  logHomeFeedScheduleExpired({
+    scheduleId,
+    churchId,
+    reason,
+    endedAt: resolveHomeFeedScheduleEndedAt(row),
+  });
+  logHomeFeedScheduleRemoved({
+    scheduleId,
+    churchId,
+    source: "display_builder",
+  });
+}
+
 export function filterVisibleHomeFeedScheduleRows(rows: any[], nowMs = Date.now()) {
-  const filtered = rows.filter((row) => isHomeFeedScheduleSlotRowVisible(row, nowMs));
-  const removedCount = rows.length - filtered.length;
-  if (removedCount > 0 && isKristoVerboseSlotTimeDebug()) {
+  const filtered: any[] = [];
+
+  for (const row of rows) {
+    if (!isHomeFeedScheduleCardRow(row)) {
+      filtered.push(row);
+      continue;
+    }
+
+    if (isHomeFeedScheduleSlotRowVisible(row, nowMs)) {
+      filtered.push(row);
+      continue;
+    }
+
+    logHomeFeedScheduleRowExpired(
+      row,
+      nowMs,
+      areAllScheduleSlotsExpired(row, nowMs) ? "all_slots_expired" : "no_visible_slots"
+    );
+  }
+
+  if (rows.length !== filtered.length && isKristoVerboseSlotTimeDebug()) {
     console.log("KRISTO_HOME_EXPIRED_SLOTS_FILTERED", {
-      removedCount,
+      removedCount: rows.length - filtered.length,
       keptCount: filtered.length,
       stage: "display_builder",
     });
   }
+
   return filtered;
 }
 
@@ -1141,7 +1218,6 @@ export function isHomeFeedActiveOrNearLiveChurchScheduleVisible(
 
   return rows.some((row) => {
     if (!isHomeFeedScheduleCardRow(row)) return false;
-    if (homeFeedRowChurchId(row) !== cid) return false;
 
     const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
     const slot = slots[0];
@@ -1191,17 +1267,16 @@ function isHomeFeedClaimableScheduleSlot(
   return true;
 }
 
-/** Open media schedule slot rows a member can claim for their church. */
+/** Open media schedule slot rows a subscribed church member can claim (cross-church allowed). */
 export function isHomeFeedClaimableSlotRow(
   row: any,
-  targetChurchId: string,
+  viewerChurchId: string,
   _viewerUserId: string,
   nowMs = Date.now()
 ): boolean {
   if (!row || !isHomeFeedScheduleCardRow(row)) return false;
 
-  const rowChurchId = homeFeedRowChurchId(row);
-  if (!targetChurchId || !rowChurchId || rowChurchId !== targetChurchId) return false;
+  if (!String(viewerChurchId || "").trim()) return false;
   if (!isHomeFeedScheduleSlotRowVisible(row, nowMs)) return false;
 
   const slots = Array.isArray(row?.scheduleSlots) ? row.scheduleSlots : [];
@@ -1244,6 +1319,34 @@ export function findFirstClaimableHomeFeedSlotIndex(
 let lastHomeFeedBuildDigest = "";
 let lastHomeFeedBuildResult: any[] = [];
 
+let homeFeedViewerCanSeeMediaSlots: { churchId: string; value: boolean } | null = null;
+
+/** Home Feed media slot visibility: viewer church member + active subscription. */
+export function setHomeFeedViewerCanSeeMediaSlots(churchId: string, canSee: boolean) {
+  homeFeedViewerCanSeeMediaSlots = {
+    churchId: String(churchId || "").trim(),
+    value: canSee,
+  };
+}
+
+function resolveHomeFeedCanSeeMediaSlots(viewerChurchId: string): boolean {
+  const cid = String(viewerChurchId || "").trim();
+  if (!cid) return false;
+  if (homeFeedViewerCanSeeMediaSlots?.churchId === cid) {
+    return homeFeedViewerCanSeeMediaSlots.value;
+  }
+  return false;
+}
+
+function isHomeFeedMediaScheduleSlotDisplayRow(row: any): boolean {
+  return (
+    isHomeFeedScheduleCardRow(row) ||
+    isHomeFeedExpandedScheduleSlotRow(row) ||
+    isExplicitHomeFeedMediaScheduleRow(row) ||
+    isMediaLiveSlotsHomeFeedRow(row)
+  );
+}
+
 function homeFeedBuildDigest(
   backendRows: any[],
   localRows: any[],
@@ -1267,6 +1370,30 @@ function homeFeedBuildDigest(
   return `${personalSeedKey}::${summarize(backendRows)}::${summarize(localRows)}::${scheduleTick}`;
 }
 
+export function filterSameChurchHomeFeedScheduleRows(
+  rows: any[],
+  viewerChurchId: string
+): any[] {
+  const viewerCid = String(viewerChurchId || "").trim();
+  if (!viewerCid) return rows;
+
+  for (const row of rows) {
+    if (!isHomeFeedScheduleCardRow(row) && !isHomeFeedExpandedScheduleSlotRow(row)) continue;
+
+    const rowCid = homeFeedRowChurchId(row);
+    if (rowCid && rowCid !== viewerCid) {
+      console.log("KRISTO_HOME_FEED_CROSS_CHURCH_SLOT_VISIBLE", {
+        viewerChurchId: viewerCid,
+        scheduleChurchId: rowCid,
+        scheduleId: String(row?.parentScheduleId || row?.sourceScheduleId || row?.id || ""),
+        reason: "cross_church_claim_slot_v2",
+      });
+    }
+  }
+
+  return rows;
+}
+
 /** Merged Home Feed list: video/posts first, then active schedule slot cards. */
 export function buildHomeFeedDisplayRows(
   backendRows: any[],
@@ -1279,12 +1406,15 @@ export function buildHomeFeedDisplayRows(
   resetHomeFeedPersonalOrderIfNeeded(personalCtx.seedKey);
   logHomeFeedPersonalSeed(personalCtx);
 
-  const digest = homeFeedBuildDigest(
+  const viewerChurchId = String((getSessionSync() as any)?.churchId || "").trim();
+  const canSeeMediaSlots = resolveHomeFeedCanSeeMediaSlots(viewerChurchId);
+
+  const digest = `${canSeeMediaSlots ? 1 : 0}::${homeFeedBuildDigest(
     sanitizedBackendRows,
     sanitizedLocalRows,
     nowMs,
     personalCtx.seedKey
-  );
+  )}`;
   if (digest === lastHomeFeedBuildDigest && lastHomeFeedBuildResult.length) {
     return lastHomeFeedBuildResult;
   }
@@ -1300,66 +1430,65 @@ export function buildHomeFeedDisplayRows(
   }
 
   const filtered = filterPhase1FeedRows(Array.from(byId.values()));
-  const scheduleRows = filtered.filter(
-    (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
+
+  // Stable schedule rows power More > Live Slots — never mixed into Home Feed display.
+  if (canSeeMediaSlots) {
+    const scheduleRows = filtered.filter(
+      (row) => isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row)
+    );
+    const expandedScheduleRows = scheduleRows.flatMap((row) =>
+      expandHomeFeedScheduleIntoSlotRows(row, nowMs)
+    );
+    const orderedScheduleRows = filterSameChurchHomeFeedScheduleRows(
+      sortHomeFeedScheduleSlotRows(expandedScheduleRows),
+      viewerChurchId
+    );
+    lastStableHomeFeedDisplayRows = orderedScheduleRows.filter((row) =>
+      isHomeFeedScheduleSlotRowVisible(row, nowMs)
+    );
+  } else {
+    lastStableHomeFeedDisplayRows = [];
+  }
+
+  const contentRows = filtered.filter(
+    (row) =>
+      !isExplicitHomeFeedMediaScheduleRow(row) &&
+      !isMediaLiveSlotsHomeFeedRow(row) &&
+      !isLegacyScheduleFeedRow(row) &&
+      !isHomeFeedExpandedScheduleSlotRow(row) &&
+      !isHomeFeedLivestreamRow(row)
   );
-  const postRows = filtered.filter(
-    (row) => !isExplicitHomeFeedMediaScheduleRow(row) && !isMediaLiveSlotsHomeFeedRow(row)
-  );
-  const expandedScheduleRows = scheduleRows.flatMap((row) =>
-    expandHomeFeedScheduleIntoSlotRows(row, nowMs)
-  );
-  const sortedPostRows = [...postRows].sort(
+  const sortedContentRows = [...contentRows].sort(
     (a, b) => homeFeedPostSortMs(b) - homeFeedPostSortMs(a)
   );
-  const viewerChurchId = String((getSessionSync() as any)?.churchId || "").trim();
-  const orderedScheduleRows = sortHomeFeedScheduleSlotRows(expandedScheduleRows);
-  const liveRows = sortHomeFeedLivePriorityRows(
-    sortedPostRows.filter((row) => isHomeFeedLivestreamRow(row))
-  );
-  const nonLivePosts = sortedPostRows.filter((row) => !isHomeFeedLivestreamRow(row));
   const personalizedPosts = interleaveHomeFeedPostRows(
-    nonLivePosts,
+    sortedContentRows,
     viewerChurchId,
-    personalCtx
-  );
-  let display = buildHomeFeedPriorityLayout(
-    liveRows,
-    orderedScheduleRows,
-    personalizedPosts,
+    personalCtx,
     nowMs
   );
+  let display = personalizedPosts.filter(
+    (row) =>
+      !isHomeFeedMediaScheduleSlotDisplayRow(row) && !isHomeFeedLivestreamRow(row)
+  );
 
-  const scheduleSlotCount = display.filter(
-    (row) => isHomeFeedScheduleCardRow(row) || isHomeFeedExpandedScheduleSlotRow(row)
-  ).length;
-  const hadDeferredLocalSchedule = localRows.some((row) => {
-    if (!isHomeFeedMediaScheduleSourceRow(row)) return false;
-    const id = String(row?.id || "").trim();
-    if (id && isHiddenInvalidHomeFeedSchedule(id)) return false;
-    return !scheduleRowHasValidSlotTimes(row);
-  });
-
-  if (scheduleSlotCount === 0 && hadDeferredLocalSchedule && lastStableHomeFeedDisplayRows.length) {
-    display = mergePostsWithStableScheduleRows(
-      liveRows,
-      personalizedPosts,
-      lastStableHomeFeedDisplayRows,
-      nowMs
-    );
-    if (isKristoVerboseFeedDebug()) {
-      console.log("KRISTO_HOME_FEED_SCHEDULE_STABLE_FALLBACK", {
-        keptScheduleCount: display.filter(isHomeFeedExpandedOrScheduleSlotRow).length,
-        postCount: personalizedPosts.length,
-      });
-    }
-  }
+  const scheduleSlotCount = 0;
 
   logHomeFeedPersonalOrder(display, personalCtx, feedRenderKey);
   logHomeFeedFirstRows(display, feedRenderKey);
 
-  if (display.length) {
-    lastStableHomeFeedDisplayRows = display;
+  const firstVideoRow = display.find((row) => isVideoPost(row));
+  if (firstVideoRow && isHomeFeedInlineVideoAutoplayEnabled()) {
+    const rowId = feedRenderKey(firstVideoRow) || String(firstVideoRow?.id || "").trim();
+    const original = resolveVideoUri(firstVideoRow);
+    const url = homeFeedMediaUrl(original) || original;
+    if (rowId && url) tryRegisterStartupFirstVideoTarget(rowId, url);
+  }
+
+  if (canSeeMediaSlots) {
+    display = display.filter((row) => !isHomeFeedMediaScheduleSlotDisplayRow(row));
+  } else {
+    display = display.filter((row) => !isHomeFeedMediaScheduleSlotDisplayRow(row));
   }
 
   lastHomeFeedBuildDigest = digest;
@@ -1371,7 +1500,7 @@ export function buildHomeFeedDisplayRows(
       videoCount,
       scheduleSlotCount,
       firstIds: display.slice(0, 8).map((row) => String(row?.id || "")),
-      scheduleOrder: orderedScheduleRows
+      scheduleOrder: lastStableHomeFeedDisplayRows
         .slice(0, 12)
         .map((row) => Number(row?.slotNumber || 0) || null),
     });
@@ -1382,14 +1511,16 @@ export function buildHomeFeedDisplayRows(
       sanitizedLocalCount: sanitizedLocalRows.length,
       mergedCount: byId.size,
       filteredCount: filtered.length,
-      scheduleSourceCount: scheduleRows.length,
-      scheduleCount: orderedScheduleRows.length,
+      scheduleSourceCount: lastStableHomeFeedDisplayRows.length,
+      scheduleCount: lastStableHomeFeedDisplayRows.length,
       displayCount: display.length,
       videoCount,
       scheduleSlotCount,
-      scheduleIds: scheduleRows.map((row) => String(row?.id || "")),
-      scheduleSlotCounts: scheduleRows.map((row) => homeFeedScheduleSlotCount(row)),
-      expandedScheduleIds: orderedScheduleRows.map((row) => String(row?.id || "")),
+      scheduleIds: lastStableHomeFeedDisplayRows.map((row) => String(row?.id || "")),
+      scheduleSlotCounts: lastStableHomeFeedDisplayRows.map((row) =>
+        homeFeedScheduleSlotCount(row)
+      ),
+      expandedScheduleIds: lastStableHomeFeedDisplayRows.map((row) => String(row?.id || "")),
     });
   }
 
@@ -1415,18 +1546,57 @@ export function formatActionCount(value?: number) {
   return String(n);
 }
 
+export function resolveFeedViewCount(item: any): number {
+  const n = Number(
+    item?.viewCount ?? item?.views ?? item?.stats?.views ?? item?.playCount ?? 0
+  );
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+export function formatFeedViewLabel(item: any): string {
+  const count = resolveFeedViewCount(item);
+  if (count <= 0) return "";
+  return `${formatActionCount(count)} views`;
+}
+
+export function formatFeedMetaLine(item: any, whenLabel: string): string {
+  const views = formatFeedViewLabel(item);
+  return [whenLabel, views].filter(Boolean).join(" • ");
+}
+
+export function resolveFeedChurchVerified(item: any): boolean {
+  if (item?.churchVerified === true || item?.church?.verified === true) return true;
+  if (item?.verified === true) return true;
+
+  const ownership = String(item?.ownershipType || "").trim().toLowerCase();
+  if (ownership === "church" || ownership === "media") return true;
+
+  const source = String(item?.source || "").toLowerCase();
+  return source.includes("media") || source === "media-upload";
+}
+
 export function formatFeedTimestamp(createdAt?: string) {
   const ms = Date.parse(String(createdAt || ""));
   if (!Number.isFinite(ms)) return "";
+
+  const then = new Date(ms);
+  const now = new Date();
+  const sameCalendarDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+
+  if (sameCalendarDay(then, now)) return "Today";
+
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (sameCalendarDay(then, yesterday)) return "Yesterday";
+
   const diff = Date.now() - ms;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const days = Math.floor(diff / 86_400_000);
+  if (days < 7) return `${days}d ago`;
+
+  return then.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 export function resolveChurchName(item: any) {
@@ -1452,6 +1622,14 @@ export function resolveMediaName(item: any) {
 
 export function resolvePostTitle(item: any) {
   return String(item?.title || item?.postTitle || "").trim();
+}
+
+/** Video posts use title only — never fall back to caption/body text. */
+export function resolveHomeFeedVideoTitle(item: any): string {
+  const title = resolvePostTitle(item);
+  if (title) return title;
+  if (isVideoPost(item)) return "";
+  return resolvePostBody(item);
 }
 
 export function resolvePostBody(item: any) {
@@ -1691,6 +1869,9 @@ function postImageUriMatchesAvatar(item: any, candidate: string) {
 }
 
 export function resolvePostImageUri(item: any) {
+  const uris = resolvePostImageUris(item, 1);
+  if (uris.length) return uris[0];
+
   const row = normalizeHomeFeedApiRow(item);
 
   const explicit = resolveExplicitPostImageUri(row);
@@ -1705,6 +1886,73 @@ export function resolvePostImageUri(item: any) {
     return uri;
   }
   return "";
+}
+
+export function resolvePostImageUris(item: any, maxImages = 5): string[] {
+  const row = normalizeHomeFeedApiRow(item);
+  const mediaType = String(row?.mediaType || "").trim().toLowerCase();
+  if (mediaType === "video") return [];
+
+  const seen = new Set<string>();
+  const uris: string[] = [];
+  const churchRoomPost = isChurchRoomMemberFeedPost(row);
+
+  const tryPush = (raw: unknown) => {
+    if (uris.length >= maxImages) return;
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) return;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(trimmed)) return;
+    if (/\/profile-avatars\//i.test(trimmed)) return;
+    if (
+      !isFeedPostImageUri(trimmed) &&
+      !isExplicitPostImageCandidate(row, trimmed) &&
+      !churchRoomPost &&
+      mediaType !== "image"
+    ) {
+      return;
+    }
+    if (postImageUriMatchesAvatar(row, trimmed)) return;
+    const uri = homeFeedMediaUrl(trimmed);
+    if (!uri || seen.has(uri)) return;
+    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(uri)) return;
+    seen.add(uri);
+    uris.push(uri);
+  };
+
+  const roots = [row, row?.payload].filter((entry) => entry && typeof entry === "object");
+
+  for (const root of roots) {
+    if (!Array.isArray(root?.images)) continue;
+    for (const value of root.images) tryPush(value);
+  }
+  for (const root of roots) {
+    if (!Array.isArray(root?.attachments)) continue;
+    for (const entry of root.attachments) {
+      if (typeof entry === "string") {
+        tryPush(entry);
+        continue;
+      }
+      if (!entry || typeof entry !== "object") continue;
+      const att = entry as Record<string, unknown>;
+      for (const key of ["url", "uri", "imageUrl", "mediaUrl", "publicUrl"]) {
+        tryPush(att[key]);
+      }
+    }
+  }
+  for (const root of roots) {
+    if (!Array.isArray(root?.mediaUrls)) continue;
+    for (const value of root.mediaUrls) tryPush(value);
+  }
+  for (const raw of collectPostImageUriValues(row)) {
+    tryPush(raw);
+  }
+
+  if (!uris.length) {
+    const explicit = resolveExplicitPostImageUri(row);
+    if (explicit) uris.push(explicit);
+  }
+
+  return uris;
 }
 
 export function resolveImageUri(item: any) {
@@ -1750,9 +1998,29 @@ export function inferPosterUriFromVideoUrl(videoUrl: string): string {
   return "";
 }
 
-export function resolvePosterUri(item: any) {
+/** Ordered poster candidates for Home Feed — cache + metadata + inferred, never branded. */
+export function collectFeedVideoPosterCandidates(item: any, postId = ""): string[] {
   const video = resolveVideoUri(item);
-  const posterFields = [
+  if (!video) return [];
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const pid = String(postId || item?.id || "").trim();
+
+  const push = (raw: unknown) => {
+    const resolved = homeFeedMediaUrl(raw);
+    if (!resolved || isBrandedPosterUri(resolved)) return;
+    if (!isValidVideoPosterUri(resolved, video)) return;
+    const key = resolved.split("?")[0];
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(resolved);
+  };
+
+  const cached = resolveCachedMediaPoster(pid, video);
+  if (cached) push(cached);
+
+  for (const raw of [
     item?.posterUri,
     item?.videoPosterUri,
     item?.thumbnailUri,
@@ -1766,43 +2034,182 @@ export function resolvePosterUri(item: any) {
     item?.previewUrl,
     item?.thumbnail,
     item?.poster,
-  ];
-
-  for (const raw of posterFields) {
-    const resolved = homeFeedMediaUrl(raw);
-    if (resolved && isValidVideoPosterUri(resolved, video)) return resolved;
+  ]) {
+    push(raw);
   }
 
-  const seeded = resolvePosterSeedForVideo(video);
-  if (seeded && isValidVideoPosterUri(seeded, video)) return seeded;
+  push(resolvePosterSeedForVideo(video));
+  push(inferPosterUriFromVideoUrl(video));
 
-  const inferred = inferPosterUriFromVideoUrl(video);
-  if (inferred && isValidVideoPosterUri(inferred, video)) return inferred;
-
-  return inferred || "";
+  return out;
 }
 
-/** Low-res preview MP4 convention — only valid when preview file exists in storage. */
-export function inferPreviewVideoUriFromVideoUrl(videoUrl: string): string {
-  const raw = String(videoUrl || "").trim().split("?")[0];
-  if (!raw) return "";
+export function resolveBestFeedPosterUri(item: any, postId = ""): string {
+  return collectFeedVideoPosterCandidates(item, postId)[0] || "";
+}
 
-  const r2Marker = "/church-videos/";
-  const r2Idx = raw.indexOf(r2Marker);
-  if (r2Idx >= 0) {
-    const tail = raw.slice(r2Idx + r2Marker.length);
-    const match = tail.match(/^([^/]+)\/([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
-    if (match?.[1] && match?.[2]) {
-      const base = raw.slice(0, r2Idx);
-      return `${base}/church-video-previews/${match[1]}/${match[2]}.mp4`;
+/** Saved backend poster from upload metadata — excludes inferred/branded guesses. */
+export function resolveSavedFeedVideoPosterUri(item: any, videoUrl?: string): string {
+  const video = String(videoUrl || resolveVideoUri(item) || "").trim();
+  if (!item || !video) return "";
+
+  for (const raw of [
+    item?.posterUri,
+    item?.videoPosterUri,
+    item?.thumbnailUri,
+    item?.thumbnailUrl,
+    item?.posterUrl,
+  ]) {
+    const uri = homeFeedMediaUrl(raw);
+    if (!uri || isBrandedPosterUri(uri)) continue;
+    if (!isValidVideoPosterUri(uri, video)) continue;
+    if (isInferredPosterUriForVideo(uri, video)) continue;
+    return uri;
+  }
+
+  return "";
+}
+
+export type HomeFeedPosterSourceKind =
+  | "cache"
+  | "metadata"
+  | "inferred"
+  | "generated-frame"
+  | "branded-fallback"
+  | "video-preview";
+
+export function classifyHomeFeedPosterUriSource(
+  item: any,
+  posterUri: string,
+  postId: string,
+  videoUrl: string
+): "cache" | "metadata" | "inferred" {
+  const normalized = String(posterUri || "").trim().split("?")[0];
+  if (!normalized) return "inferred";
+
+  const cached = resolveCachedMediaPoster(postId, videoUrl);
+  if (cached && cached.split("?")[0] === normalized) return "cache";
+
+  const resolution = describePosterResolution(item, posterUri);
+  if (String(resolution.source).startsWith("metadata:")) return "metadata";
+  if (resolution.source === "inferred-from-video-url" || resolution.source === "seed") {
+    return "inferred";
+  }
+
+  return "metadata";
+}
+
+export function resolvePosterUri(item: any) {
+  return resolveBestFeedPosterUri(item, String(item?.id || "").trim());
+}
+
+export type PosterMetadataSnapshot = {
+  posterUri: string | null;
+  videoPosterUri: string | null;
+  thumbnailUri: string | null;
+  thumbnailUrl: string | null;
+  posterUrl: string | null;
+  brandedPoster: boolean;
+};
+
+export function snapshotPosterMetadata(item: any): PosterMetadataSnapshot {
+  return {
+    posterUri: String(item?.posterUri || "").trim() || null,
+    videoPosterUri: String(item?.videoPosterUri || "").trim() || null,
+    thumbnailUri: String(item?.thumbnailUri || "").trim() || null,
+    thumbnailUrl: String(item?.thumbnailUrl || "").trim() || null,
+    posterUrl: String(item?.posterUrl || "").trim() || null,
+    brandedPoster: hasBrandedVideoPoster(item),
+  };
+}
+
+/** Stable fingerprint for poster-related useMemo deps (immune to feed poll object churn). */
+export function posterMetadataFingerprint(item: any): string {
+  const metadata = snapshotPosterMetadata(item);
+  const video = resolveVideoUri(item);
+  return [
+    metadata.posterUri,
+    metadata.videoPosterUri,
+    metadata.thumbnailUri,
+    metadata.thumbnailUrl,
+    metadata.posterUrl,
+    metadata.brandedPoster ? "1" : "0",
+    video.split("?")[0],
+  ].join("|");
+}
+
+export function describePosterResolution(item: any, resolvedPoster: string) {
+  const video = resolveVideoUri(item);
+  const normalized = String(resolvedPoster || "").trim().split("?")[0];
+  const metadata = snapshotPosterMetadata(item);
+  const metaFields: Array<[string, string | null]> = [
+    ["posterUri", metadata.posterUri],
+    ["videoPosterUri", metadata.videoPosterUri],
+    ["thumbnailUri", metadata.thumbnailUri],
+    ["thumbnailUrl", metadata.thumbnailUrl],
+    ["posterUrl", metadata.posterUrl],
+  ];
+
+  for (const [field, raw] of metaFields) {
+    const resolved = homeFeedMediaUrl(raw);
+    if (resolved && resolved.split("?")[0] === normalized) {
+      return {
+        source: `metadata:${field}`,
+        metadata,
+        generatedPosterUrl: resolvedPoster,
+        videoUrl: video,
+        posterExistsInMetadata: true,
+      };
     }
   }
 
-  const uploadsMatch = raw.match(/\/uploads\/media\/(?:[^/]+\/)*([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
-  if (uploadsMatch?.[1]) {
-    return homeFeedMediaUrl(`/uploads/media/previews/${uploadsMatch[1]}.mp4`);
+  const seeded = resolvePosterSeedForVideo(video);
+  if (seeded && seeded.split("?")[0] === normalized) {
+    return {
+      source: "seed",
+      metadata,
+      generatedPosterUrl: resolvedPoster,
+      videoUrl: video,
+      posterExistsInMetadata: false,
+    };
   }
 
+  const inferred = inferPosterUriFromVideoUrl(video);
+  if (inferred && inferred.split("?")[0] === normalized) {
+    return {
+      source: "inferred-from-video-url",
+      metadata,
+      generatedPosterUrl: resolvedPoster,
+      videoUrl: video,
+      posterExistsInMetadata: false,
+    };
+  }
+
+  return {
+    source: normalized ? "unknown" : "empty",
+    metadata,
+    generatedPosterUrl: resolvedPoster,
+    videoUrl: video,
+    posterExistsInMetadata: Boolean(
+      metadata.posterUri ||
+        metadata.videoPosterUri ||
+        metadata.thumbnailUri ||
+        metadata.thumbnailUrl ||
+        metadata.posterUrl
+    ),
+  };
+}
+
+/**
+ * Inferred low-res preview URLs were guessed from the full video URL (e.g.
+ * /church-video-previews/* or /uploads/media/previews/*). Many of those objects
+ * do not exist in storage, so the player hit 404s → player errors → failed
+ * prewarm → unnecessary fallback retries. We no longer invent preview URLs:
+ * only an explicit backend-provided previewUrl is used as the low-res startup
+ * source, otherwise playback falls back to the full video URL. Backend preview
+ * generation is unchanged.
+ */
+export function inferPreviewVideoUriFromVideoUrl(_videoUrl: string): string {
   return "";
 }
 
@@ -1839,13 +2246,39 @@ export function hasBrandedVideoPoster(item: any) {
 
 export function hasHomeFeedVideoPoster(item: any, videoUri?: string) {
   const video = String(videoUri || resolveVideoUri(item) || "").trim();
-  const poster = resolvePosterUri(item);
-  return isValidVideoPosterUri(poster, video) || hasBrandedVideoPoster(item);
+  if (!video) return false;
+  const poster = resolveBestFeedPosterUri(item, String(item?.id || "").trim());
+  if (isValidVideoPosterUri(poster, video)) return true;
+  if (resolveCachedMediaPoster(String(item?.id || "").trim(), video)) return true;
+  return hasBrandedVideoPoster(item);
 }
 
 export function isVideoPost(item: any) {
   const uri = resolveVideoUri(item);
   return Boolean(uri) && (item?.mediaType === "video" || isFeedVideoItem(item));
+}
+
+export function buildHomeFeedVideoOpenPayload(item: any): HomeFeedVideoOpenPayload | null {
+  if (!item || !isVideoPost(item)) return null;
+  const postId = String(item?.id || "").trim();
+  const videoUri = resolveVideoUri(item);
+  if (!postId || !videoUri) return null;
+
+  const churchRoomPost = isChurchRoomMemberFeedPost(item);
+  const postTitle = resolveHomeFeedVideoTitle(item);
+  const title = churchRoomPost ? resolveFeedPostTypeTitle(item) : postTitle;
+  const playbackUri = resolveHomeFeedVideoUri(item) || videoUri;
+  const videoDisplayType = resolveHomeFeedVideoDisplayType(item);
+
+  return {
+    postId,
+    title,
+    videoUri: playbackUri,
+    posterUri: resolveBestFeedPosterUri(item, postId),
+    videoDurationMs: resolveVideoDurationMs(item),
+    videoDisplayType,
+    item,
+  };
 }
 
 export function isImagePost(item: any) {

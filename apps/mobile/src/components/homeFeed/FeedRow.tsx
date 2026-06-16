@@ -1,9 +1,9 @@
 import React, { memo, useEffect, useMemo, useRef } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { SimpleFeedVideo } from "./SimpleFeedVideo";
-import { ImagePostCard } from "./ImagePostCard";
+import { HomeFeedVideoPlayer, type HomeFeedVideoRole } from "./HomeFeedVideoPlayer";
+import { ImagePostCarousel } from "./ImagePostCarousel";
 import { PostActions } from "./PostActions";
 import { FeedIdentity } from "./FeedIdentity";
 import { FeedTitleCaption } from "./FeedTitleCaption";
@@ -15,20 +15,40 @@ import {
   resolveChurchRoomFeedCaption,
   resolveFeedPostAccent,
   resolveFeedPostTypeTitle,
-  resolvePostImageUri,
+  resolvePostImageUris,
   resolvePostBody,
   resolvePostTitle,
   resolvePosterUri,
   resolveVideoUri,
+  snapshotPosterMetadata,
+  buildHomeFeedVideoOpenPayload,
   logImagePostRenderDiag,
   isValidVideoPosterUri,
   hasBrandedVideoPoster,
   hasHomeFeedVideoPoster,
+  posterMetadataFingerprint,
   type HomeFeedPostAccent,
 } from "./homeFeedUtils";
+import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
+import { markHomeFeedPostViewed } from "@/src/lib/homeFeedPostViews";
 import { VideoPostFallbackPoster, FeedVideoPosterImage } from "./VideoPostFallbackPoster";
+import { Ionicons } from "@expo/vector-icons";
 import type { HomeFeedVideoWarmMode } from "@/src/lib/homeFeedVideoWindow";
-import { resolveHomeFeedVideoPlaybackPlan } from "@/src/lib/homeFeedVideoQuality";
+import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
+import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
+import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
+
+/**
+ * Map the mount-window warm mode to the player's 3-state role. Active row plays;
+ * forward preload rows decode-prime under poster; previous warm/cache rows stay
+ * mounted buffer-only until they fall out of the rolling window.
+ */
+function warmModeToRole(mode: HomeFeedVideoWarmMode): HomeFeedVideoRole {
+  if (mode === "active") return "active";
+  if (mode === "off") return "inactive";
+  return "preload";
+}
 
 const IMAGE_CANDIDATE_KEYS = [
   "mediaUri",
@@ -92,42 +112,39 @@ type Props = {
   videoWarmMode: HomeFeedVideoWarmMode;
   screenFocused: boolean;
   feedIndex?: number;
-  likedByMe: boolean;
-  liked: boolean;
-  likeCount: number;
-  visibleDiscussionCount: number;
-  saved: boolean;
-  reported: boolean;
+  isFirstFeedVideo?: boolean;
+  decodePrime?: boolean;
   onLike: () => void;
   onComment: () => void;
   onShare: () => void;
   onSave: () => void;
   onReport: () => void;
+  onVideoPress?: (payload: HomeFeedVideoOpenPayload) => void;
 };
 
-export const FeedRow = memo(function FeedRow({
+export const FeedRow = memo(
+  function FeedRow({
   item,
   height,
   isActive,
   videoWarmMode,
   screenFocused,
   feedIndex = -1,
-  likedByMe,
-  liked,
-  likeCount,
-  visibleDiscussionCount,
-  saved,
-  reported,
+  isFirstFeedVideo = false,
+  decodePrime = false,
   onLike,
   onComment,
   onShare,
   onSave,
   onReport,
+  onVideoPress,
 }: Props) {
+  const engagement = useHomeFeedRowEngagement(item);
   const insets = useSafeAreaInsets();
   const chrome = useMemo(() => homeFeedChromeOffsets(insets.bottom), [insets.bottom]);
 
   const postId = String(item?.id || "").trim();
+  const posterFieldsKey = posterMetadataFingerprint(item);
   const whenLabel = formatFeedTimestamp(item?.createdAt);
   const churchRoomPost = isChurchRoomMemberFeedPost(item);
   const postTitle = resolvePostTitle(item);
@@ -137,16 +154,50 @@ export const FeedRow = memo(function FeedRow({
   const postAccent = resolveFeedPostAccent(item);
 
   const video = isVideoPost(item);
-  const videoUri = useMemo(() => resolveVideoUri(item), [item]);
-  const playbackPlan = useMemo(() => resolveHomeFeedVideoPlaybackPlan(item), [item]);
-  const resolvedImageUri = useMemo(() => resolvePostImageUri(item), [item]);
+  const videoUri = useMemo(
+    () => resolveVideoUri(item),
+    [
+      postId,
+      item?.localVideoUri,
+      item?.videoUrl,
+      item?.videoUri,
+      item?.mediaUrl,
+      item?.url,
+      item?.mediaUri,
+      item?.mediaType,
+      item?.type,
+      item?.kind,
+    ]
+  );
+  const playbackUri = useMemo(
+    () => resolveHomeFeedVideoUri(item),
+    [postId, videoUri, item?.localVideoUri]
+  );
+  const postImageUris = useMemo(
+    () => resolvePostImageUris(item),
+    [postId, item?.imageUrls, item?.images, item?.mediaUri, item?.mediaUrl]
+  );
+  const resolvedImageUri = postImageUris[0] || "";
   const showVideoMedia = Boolean(video && videoUri);
-  const willRenderImage = Boolean(resolvedImageUri) && !showVideoMedia;
+  const willRenderImage = postImageUris.length > 0 && !showVideoMedia;
   const churchRoomTextCard = churchRoomPost && !showVideoMedia && !willRenderImage;
-  const posterUri = resolvePosterUri(item);
+  const posterUri = useMemo(
+    () => resolvePosterUri(item),
+    [postId, posterFieldsKey]
+  );
+  const posterMetadata = useMemo(
+    () => snapshotPosterMetadata(item),
+    [posterFieldsKey]
+  );
+  const videoDurationMs = useMemo(
+    () => resolveVideoDurationMs(item),
+    [postId, item?.durationMs, item?.videoDurationMs, item?.duration]
+  );
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
+  const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
+  // YouTube-style: poster only in feed. TikTok-style: mount players in warm window.
   const mountVideoPlayer = Boolean(
-    video && videoUri && videoWarmMode !== "off" && screenFocused
+    inlineVideoAutoplay && video && videoUri && videoWarmMode !== "off"
   );
   const shareCount = Number(item?.shareCount || 0);
   const saveCount = Number(item?.saveCount || 0);
@@ -154,9 +205,24 @@ export const FeedRow = memo(function FeedRow({
   const lastImageDiagKeyRef = useRef("");
 
   useEffect(() => {
+    if (!postId || !isActive || !screenFocused) return;
+    markHomeFeedPostViewed(postId);
+  }, [postId, isActive, screenFocused]);
+
+  useEffect(() => {
+    if (!postId || !willRenderImage || !isActive) return;
+    console.log("KRISTO_IMAGE_CAROUSEL_RESOLVE", {
+      postId,
+      imageCount: postImageUris.length,
+      uris: postImageUris,
+    });
+  }, [postId, postImageUris, willRenderImage, isActive]);
+
+  useEffect(() => {
     const diagKey = [
       postId,
       resolvedImageUri,
+      postImageUris.length,
       willRenderImage ? 1 : 0,
       showVideoMedia ? 1 : 0,
     ].join(":");
@@ -164,43 +230,62 @@ export const FeedRow = memo(function FeedRow({
     lastImageDiagKeyRef.current = diagKey;
 
     logImagePostRenderDiag(item, resolvedImageUri, showVideoMedia);
-  }, [item, postId, resolvedImageUri, willRenderImage, showVideoMedia]);
+  }, [item, postId, postImageUris.length, resolvedImageUri, willRenderImage, showVideoMedia]);
+
+  const handleVideoPress = () => {
+    const payload = buildHomeFeedVideoOpenPayload(item);
+    if (!payload) return;
+    onVideoPress?.(payload);
+  };
 
   return (
     <View style={[styles.slide, { height }]}>
-      <View style={styles.media}>
+      <View style={styles.media} pointerEvents="box-none">
         {showVideoMedia ? (
           mountVideoPlayer ? (
-            <SimpleFeedVideo
-              key={`feed-video-${postId}`}
+            <HomeFeedVideoPlayer
+              key={`feed-video-${String(item?.homeFeedRecycleKey || postId)}`}
               postId={postId}
+              recycleKey={String(item?.homeFeedRecycleKey || "")}
+              uri={playbackUri}
               title={title}
               mediaStatus={mediaStatus}
-              uri={playbackPlan.fullQualityUri}
-              startupUri={playbackPlan.startupUri}
-              fullQualityUri={playbackPlan.fullQualityUri}
-              hasLowRes={playbackPlan.hasLowRes}
-              prewarmHit={playbackPlan.prewarmHit}
               posterUri={posterUri}
+              posterMetadata={posterMetadata}
+              videoDurationMs={videoDurationMs}
               brandedPoster={hasBrandedVideoPoster(item)}
-              warmMode={videoWarmMode}
+              role={warmModeToRole(videoWarmMode)}
               screenFocused={screenFocused}
               feedIndex={feedIndex}
-              contentLength={Number(item?.sizeBytes || item?.fileSizeBytes || 0) || undefined}
+              isFirstFeedVideo={isFirstFeedVideo}
+              decodePrime={decodePrime}
+              feedFaststart={
+                item?.faststart === true || item?.hasFaststart === true
+                  ? true
+                  : item?.faststart === false
+                    ? false
+                    : null
+              }
+              onDoubleTap={onLike}
             />
           ) : (
-            <InactiveVideoPoster
+            <HomeFeedVideoPosterCard
               item={item}
               postId={postId}
               title={title}
               mediaStatus={mediaStatus}
               posterUri={posterUri}
+              posterMetadata={posterMetadata}
+              videoDurationMs={videoDurationMs}
               videoUri={videoUri}
+              onPress={handleVideoPress}
             />
           )
         ) : willRenderImage ? (
-          <ImagePostCard
-            imageUri={resolvedImageUri}
+          <ImagePostCarousel
+            postId={postId}
+            imageUris={postImageUris}
+            accent={postAccent}
             fallback={
               churchRoomPost ? (
                 <ChurchRoomTextCard
@@ -259,14 +344,13 @@ export const FeedRow = memo(function FeedRow({
       </View>
 
       <PostActions
-        likedByMe={likedByMe}
-        liked={liked}
-        likeCount={likeCount}
-        commentCount={visibleDiscussionCount}
+        liked={engagement.likedByMe || engagement.liked}
+        likeCount={engagement.likeCount}
+        commentCount={engagement.commentCount}
         shareCount={shareCount}
         saveCount={saveCount}
-        saved={saved}
-        reported={reported}
+        saved={engagement.saved}
+        reported={engagement.reported}
         bottomOffset={chrome.actionBottom}
         onLike={onLike}
         onComment={onComment}
@@ -276,7 +360,85 @@ export const FeedRow = memo(function FeedRow({
       />
     </View>
   );
-});
+},
+(prev, next) =>
+  prev.item === next.item &&
+  prev.height === next.height &&
+  prev.isActive === next.isActive &&
+  prev.videoWarmMode === next.videoWarmMode &&
+  prev.screenFocused === next.screenFocused &&
+  prev.feedIndex === next.feedIndex &&
+  prev.isFirstFeedVideo === next.isFirstFeedVideo &&
+  prev.decodePrime === next.decodePrime &&
+  prev.onLike === next.onLike &&
+  prev.onComment === next.onComment &&
+  prev.onShare === next.onShare &&
+  prev.onSave === next.onSave &&
+  prev.onReport === next.onReport &&
+  prev.onVideoPress === next.onVideoPress
+);
+
+function HomeFeedVideoPosterCard({
+  item,
+  postId,
+  title,
+  mediaStatus,
+  posterUri,
+  posterMetadata,
+  videoDurationMs,
+  videoUri,
+  onPress,
+}: {
+  item: any;
+  postId: string;
+  title: string;
+  mediaStatus: string;
+  posterUri: string;
+  posterMetadata: ReturnType<typeof snapshotPosterMetadata>;
+  videoDurationMs?: number;
+  videoUri: string;
+  onPress?: () => void;
+}) {
+  const durationSec = videoDurationMs && videoDurationMs > 0 ? Math.round(videoDurationMs / 1000) : 0;
+  const durationLabel =
+    durationSec >= 3600
+      ? `${Math.floor(durationSec / 3600)}:${String(Math.floor((durationSec % 3600) / 60)).padStart(2, "0")}:${String(durationSec % 60).padStart(2, "0")}`
+      : durationSec >= 60
+        ? `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, "0")}`
+        : durationSec > 0
+          ? `0:${String(durationSec).padStart(2, "0")}`
+          : "";
+
+  return (
+    <Pressable
+      style={styles.posterCard}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Play video"
+    >
+      <InactiveVideoPoster
+        item={item}
+        postId={postId}
+        title={title}
+        mediaStatus={mediaStatus}
+        posterUri={posterUri}
+        posterMetadata={posterMetadata}
+        videoDurationMs={videoDurationMs}
+        videoUri={videoUri}
+      />
+      <View style={styles.playOverlay} pointerEvents="none">
+        <View style={styles.playBadge}>
+          <Ionicons name="play" size={28} color="#FFFFFF" style={styles.playIcon} />
+        </View>
+      </View>
+      {durationLabel ? (
+        <View style={styles.durationBadge} pointerEvents="none">
+          <Text style={styles.durationText}>{durationLabel}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
 
 function InactiveVideoPoster({
   item,
@@ -284,6 +446,8 @@ function InactiveVideoPoster({
   title,
   mediaStatus,
   posterUri,
+  posterMetadata,
+  videoDurationMs,
   videoUri,
 }: {
   item: any;
@@ -291,6 +455,8 @@ function InactiveVideoPoster({
   title: string;
   mediaStatus: string;
   posterUri: string;
+  posterMetadata: ReturnType<typeof snapshotPosterMetadata>;
+  videoDurationMs?: number;
   videoUri: string;
 }) {
   if (hasHomeFeedVideoPoster(item, videoUri)) {
@@ -304,6 +470,9 @@ function InactiveVideoPoster({
           title={title}
           videoUrl={videoUri}
           mediaStatus={mediaStatus}
+          posterMetadata={posterMetadata}
+          videoDurationMs={videoDurationMs}
+          enableVideoFrameFallback
         />
       );
     }
@@ -388,6 +557,43 @@ const styles = StyleSheet.create({
   media: {
     flex: 1,
     backgroundColor: "#03050C",
+    zIndex: 1,
+  },
+  posterCard: {
+    flex: 1,
+    backgroundColor: "#03050C",
+  },
+  playOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  playBadge: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.85)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  playIcon: {
+    marginLeft: 4,
+  },
+  durationBadge: {
+    position: "absolute",
+    right: 12,
+    bottom: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: "rgba(0,0,0,0.72)",
+  },
+  durationText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
   },
   mediaFallback: {
     flex: 1,

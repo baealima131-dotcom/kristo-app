@@ -1,7 +1,19 @@
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 
 /** Per app launch — rotates order on cold start. */
 const HOME_FEED_SESSION_SEED = (Math.floor(Math.random() * 0xffffffff) >>> 0) as number;
+
+/** ~7% personal-rank bias for viewer church — subtle, not church-only ordering. */
+const HOME_FEED_OWN_CHURCH_RANK_BIAS = 0.93;
+
+/** Non-video posts older than this (without recent update) sink in tie-break. */
+const HOME_FEED_STALE_POST_DAYS = 30;
+
+/** Cap freshness penalty so very old posts still appear, just lower. */
+const HOME_FEED_MAX_FRESHNESS_PENALTY_MS = 14 * 24 * 60 * 60 * 1000;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 let activePersonalSeedKey = "";
 const personalRankByRowKey = new Map<string, number>();
@@ -72,17 +84,145 @@ export function homeFeedPersonalRowRank(
   return rank;
 }
 
-export function sortRowsByPersonalSeed<T extends { id?: string; feedOriginId?: string }>(
+function homeFeedRowChurchId(row: any) {
+  return String(row?.churchId || row?.ownerChurchId || "").trim();
+}
+
+function homeFeedRowIsOwnChurch(row: any, viewerChurchId: string) {
+  const viewerCid = String(viewerChurchId || "").trim();
+  if (!viewerCid) return false;
+  return homeFeedRowChurchId(row) === viewerCid;
+}
+
+/** Slight rank boost for viewer church rows — global posts still interleave. */
+export function homeFeedPersonalRankWithChurchBoost(
+  rowKey: string,
+  ctx: HomeFeedPersonalOrderContext,
+  row: any
+): number {
+  const rank = homeFeedPersonalRowRank(rowKey, ctx);
+  if (!homeFeedRowIsOwnChurch(row, ctx.churchId)) return rank;
+  return Math.floor(rank * HOME_FEED_OWN_CHURCH_RANK_BIAS);
+}
+
+/**
+ * Tie-break timestamp for V1 ranking.
+ * Videos and recently updated posts keep natural recency; stale non-video posts sink.
+ */
+export function homeFeedFreshnessSortMs(
+  row: any,
+  nowMs = Date.now(),
+  isVideo = false
+): number {
+  const created = Date.parse(String(row?.createdAt || "")) || 0;
+  const updated = Date.parse(String(row?.updatedAt || "")) || 0;
+  const base = Math.max(created, updated);
+  if (!base) return 0;
+
+  if (isVideo) return base;
+
+  const recentlyUpdated =
+    updated > 0 && nowMs - updated <= HOME_FEED_STALE_POST_DAYS * DAY_MS;
+  if (recentlyUpdated) return Math.max(base, updated);
+
+  const ageMs = Math.max(0, nowMs - base);
+  const staleMs = ageMs - HOME_FEED_STALE_POST_DAYS * DAY_MS;
+  if (staleMs <= 0) return base;
+
+  return base - Math.min(staleMs, HOME_FEED_MAX_FRESHNESS_PENALTY_MS);
+}
+
+export function sortRowsByPersonalSeed<
+  T extends { id?: string; feedOriginId?: string; churchId?: string; ownerChurchId?: string },
+>(
   rows: T[],
   ctx: HomeFeedPersonalOrderContext,
   rowKeyFn: (row: T) => string,
   tieBreakMs: (row: T) => number
 ) {
   return [...rows].sort((a, b) => {
-    const aRank = homeFeedPersonalRowRank(rowKeyFn(a), ctx);
-    const bRank = homeFeedPersonalRowRank(rowKeyFn(b), ctx);
+    const aRank = homeFeedPersonalRankWithChurchBoost(rowKeyFn(a), ctx, a);
+    const bRank = homeFeedPersonalRankWithChurchBoost(rowKeyFn(b), ctx, b);
     if (aRank !== bRank) return aRank - bRank;
     return tieBreakMs(b) - tieBreakMs(a);
+  });
+}
+
+
+function isHomeFeedVideoRow(row: any): boolean {
+  return row?.mediaType === "video" || row?.type === "video" || Boolean(row?.videoUrl || row?.mediaUri);
+}
+
+/**
+ * V1 Home Feed UX: avoid boring video/post/video/post alternation.
+ * Put a strong video block first so 8–10 videos can be preloaded and played quickly.
+ */
+export function arrangeHomeFeedVideoBlockFirst<T extends { id?: string; feedOriginId?: string }>(
+  rows: T[],
+  ctx: HomeFeedPersonalOrderContext,
+  rowKeyFn: (row: T) => string,
+  tieBreakMs: (row: T) => number,
+  videoBlockSize = 10,
+  postBreakSize = 4
+): T[] {
+  const personallySorted = sortRowsByPersonalSeed(rows, ctx, rowKeyFn, tieBreakMs);
+  const videos = personallySorted.filter((row) => isHomeFeedVideoRow(row));
+  const posts = personallySorted.filter((row) => !isHomeFeedVideoRow(row));
+
+  const arranged = [
+    ...videos.slice(0, videoBlockSize),
+    ...posts.slice(0, postBreakSize),
+    ...videos.slice(videoBlockSize),
+    ...posts.slice(postBreakSize),
+  ];
+
+  logHomeFeedRankV1(arranged, ctx, rowKeyFn, tieBreakMs);
+
+  console.log("KRISTO_HOME_FEED_VIDEO_BLOCK_ORDER", {
+    total: arranged.length,
+    videos: videos.length,
+    posts: posts.length,
+    videoBlockSize,
+    firstKinds: arranged.slice(0, 12).map((row: any) => (isHomeFeedVideoRow(row) ? "video" : "post")),
+    firstIds: arranged.slice(0, 12).map((row: any) => rowKeyFn(row) || String(row?.id || "")),
+  });
+
+  return arranged;
+}
+
+export function logHomeFeedRankV1(
+  rows: any[],
+  ctx: HomeFeedPersonalOrderContext,
+  rowKeyFn: (row: any) => string,
+  tieBreakMs: (row: any) => number
+) {
+  if (!isKristoVerboseFeedDebug()) return;
+  const sample = rows.slice(0, 12);
+  const viewerCid = String(ctx.churchId || "").trim();
+  let stalePenalized = 0;
+
+  for (const row of rows) {
+    if (isHomeFeedVideoRow(row)) continue;
+    const created = Date.parse(String(row?.createdAt || "")) || 0;
+    const updated = Date.parse(String(row?.updatedAt || "")) || 0;
+    const base = Math.max(created, updated);
+    if (!base) continue;
+    const recentlyUpdated =
+      updated > 0 && Date.now() - updated <= HOME_FEED_STALE_POST_DAYS * DAY_MS;
+    if (recentlyUpdated) continue;
+    if (Date.now() - base > HOME_FEED_STALE_POST_DAYS * DAY_MS) stalePenalized += 1;
+  }
+
+  console.log("KRISTO_HOME_FEED_RANK_V1", {
+    viewerChurchId: viewerCid || null,
+    total: rows.length,
+    ownChurchInFirst12: sample.filter((row) => homeFeedRowIsOwnChurch(row, viewerCid)).length,
+    videosInFirst12: sample.filter((row) => isHomeFeedVideoRow(row)).length,
+    stalePenalizedCount: stalePenalized,
+    churchBoostBias: HOME_FEED_OWN_CHURCH_RANK_BIAS,
+    stalePostDays: HOME_FEED_STALE_POST_DAYS,
+    firstIds: sample.map((row) => rowKeyFn(row) || String(row?.id || "")),
+    firstTieBreakMs: sample.map((row) => tieBreakMs(row)),
   });
 }
 

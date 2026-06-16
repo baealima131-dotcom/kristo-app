@@ -36,13 +36,18 @@ export function useLiveRoomBackendSync(opts: {
     if (!opts.enabled) return;
 
     const applyPatch = (patch: LightLivePayload) => {
+      if (patch.routeFailed) {
+        logLiveTraffic("live patch preserved route failure");
+        return;
+      }
+
       const sig = JSON.stringify({
         removed: patch.removedFromLive || false,
         policy: patch.requestPolicy || "",
         reqKeys: patch.requests ? Object.keys(patch.requests).sort() : [],
         presenceKeys: patch.viewerPresence ? Object.keys(patch.viewerPresence).sort() : [],
         liveId: patch.liveId || "",
-        isLive: patch.isLive || false,
+        isLive: patch.isLive ?? null,
       });
       if (sig === lastPatchRef.current) {
         logLiveTraffic("live patch skipped unchanged");

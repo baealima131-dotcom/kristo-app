@@ -1,22 +1,34 @@
+import {
+  dedupeInflight,
+  headerUserId,
+  requestKey,
+  type TrafficOptions,
+} from "@/src/lib/kristoTraffic";
+import { resolveApiBase } from "@/src/lib/kristoEnv";
+import { describeKristoSessionToken, getKristoHeaders, logKristoAuthHeadersDiag } from "@/src/lib/kristoHeaders";
+
 type Json = any;
+
+export type { TrafficOptions };
 
 export type ApiErrorResult = {
   ok: false;
   error: string;
+  code?: string;
   reason?: string;
   status?: number;
   debug?: unknown;
+  activeSchedule?: unknown;
 };
 
-const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "https://kristo-app.vercel.app").replace(/\/$/, "");
-
 export function getApiBase() {
-  return API_BASE;
+  return resolveApiBase();
 }
 
 function kristoUrl(path: string) {
   if (/^https?:\/\//i.test(path)) return path;
-  return `${API_BASE}${path.startsWith("/") ? "" : "/"}${path}`;
+  const base = getApiBase();
+  return `${base}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
 async function safeJson(res: Response) {
@@ -32,11 +44,11 @@ async function safeJson(res: Response) {
 function networkError(path: string, error: unknown): ApiErrorResult {
   const message = String((error as any)?.message || error || "Network request failed");
   if (__DEV__) {
-    console.warn("[KRISTO API] request failed", { path, base: API_BASE, error: message });
+    console.warn("[KRISTO API] request failed", { path, base: getApiBase(), error: message });
   }
   return {
     ok: false,
-    error: `Could not reach ${API_BASE}. ${message}`,
+    error: `Could not reach ${getApiBase()}. ${message}`,
     reason: "network_error",
   };
 }
@@ -49,17 +61,20 @@ function httpError(path: string, res: Response, body: any): ApiErrorResult {
   if (__DEV__) {
     console.warn("[KRISTO API] non-OK response", {
       path,
-      base: API_BASE,
+      base: getApiBase(),
       status: res.status,
       body,
     });
   }
+  const code = String(body?.code || "").trim() || undefined;
   return {
     ok: false,
     error,
+    code,
     reason: String(body?.reason || "http_error"),
     status: res.status,
     debug: body?.details ?? body?.debug,
+    activeSchedule: body?.activeSchedule,
   };
 }
 
@@ -71,16 +86,56 @@ function mergeHeaders(h?: HeadersRec) {
   return out;
 }
 
-// apiGet(path, { headers }) style
-export async function apiGet<T = Json>(path: string, init?: RequestInit) {
-  try {
-    const res = await fetch(kristoUrl(path), { ...(init || {}), method: "GET" });
-    const body = await safeJson(res);
-    if (!res.ok) return httpError(path, res, body) as T;
-    return (body ?? { ok: false, error: "Empty server response", status: res.status }) as T;
-  } catch (error) {
-    return networkError(path, error) as T;
+/** Merge signed session token + identity headers into every authenticated request. */
+function withAuthHeaders(init: RequestInit | undefined, path: string): RequestInit {
+  const caller = mergeHeaders(init?.headers as any);
+  const authInput = {
+    userId: String(caller["x-kristo-user-id"] || "").trim() || undefined,
+    role: (String(caller["x-kristo-role"] || "").trim() || undefined) as any,
+    churchId: String(caller["x-kristo-church-id"] || "").trim() || undefined,
+    sessionToken: String(caller["x-kristo-session-token"] || "").trim() || undefined,
+  };
+  const tokenMeta = describeKristoSessionToken(authInput);
+  const auth = getKristoHeaders(authInput);
+  const headers = { ...auth, ...caller };
+  if (auth["x-kristo-session-token"] && !headers["x-kristo-session-token"]) {
+    headers["x-kristo-session-token"] = auth["x-kristo-session-token"];
   }
+  logKristoAuthHeadersDiag(path, headers, "kristoApi", tokenMeta);
+  return { ...(init || {}), headers };
+}
+
+function stripFormDataContentType(headers: HeadersRec) {
+  delete headers["content-type"];
+  delete headers["Content-Type"];
+}
+
+// apiGet(path, { headers }, { screen, throttleMs })
+export async function apiGet<T = Json>(path: string, init?: RequestInit, traffic?: TrafficOptions) {
+  const userId = headerUserId(init?.headers);
+  const key = requestKey("GET", path, userId);
+  const screen = traffic?.screen || "api";
+  const dedupe = traffic?.dedupe !== false;
+
+  const run = async () => {
+    try {
+      const reqInit = withAuthHeaders(init, path);
+      const res = await fetch(kristoUrl(path), { ...reqInit, method: "GET" });
+      const body = await safeJson(res);
+      if (!res.ok) return httpError(path, res, body) as T;
+      return (body ?? { ok: false, error: "Empty server response", status: res.status }) as T;
+    } catch (error) {
+      return networkError(path, error) as T;
+    }
+  };
+
+  if (!dedupe && !traffic?.throttleMs) return run();
+
+  return dedupeInflight(key, run, {
+    screen,
+    endpoint: path,
+    throttleMs: traffic?.throttleMs,
+  });
 }
 
 // Backward compatible:
@@ -90,7 +145,8 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
   const init: RequestInit =
     arg && typeof arg === "object" && "headers" in arg ? (arg as RequestInit) : ({ headers: arg as any } as RequestInit);
 
-  const headers = mergeHeaders(init.headers as any);
+  const prepared = withAuthHeaders(init, path);
+  const headers = mergeHeaders(prepared.headers as any);
 
   const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
 
@@ -98,6 +154,7 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
   if (body != null) {
     if (isFormData) {
       payload = body;
+      stripFormDataContentType(headers);
     } else if (typeof body === "string") {
       payload = body;
       headers["content-type"] = headers["content-type"] || "application/json";
@@ -109,15 +166,35 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
 
   try {
     const res = await fetch(kristoUrl(path), {
-      ...(init || {}),
+      ...prepared,
       method: "POST",
       headers,
       body: payload,
     });
     const parsed = await safeJson(res);
+    if (path.includes("/api/auth/delete-account")) {
+      console.log("KRISTO_DELETE_ACCOUNT_HTTP", {
+        path,
+        status: res.status,
+        ok: res.ok,
+        body: parsed,
+      });
+    }
     if (!res.ok) return httpError(path, res, parsed) as T;
-    return (parsed ?? { ok: false, error: "Empty server response", status: res.status }) as T;
+    const body = parsed ?? { ok: false, error: "Empty server response" };
+    return (typeof body === "object" && body !== null
+      ? { ...body, status: res.status }
+      : { ok: false, error: "Empty server response", status: res.status }) as T;
   } catch (error) {
+    if (path.includes("/api/auth/delete-account")) {
+      console.log("KRISTO_DELETE_ACCOUNT_HTTP", {
+        path,
+        status: null,
+        ok: false,
+        body: null,
+        error: String((error as any)?.message || error || "network_error"),
+      });
+    }
     return networkError(path, error) as T;
   }
 }
@@ -126,7 +203,8 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
   const init: RequestInit =
     arg && typeof arg === "object" && "headers" in arg ? (arg as RequestInit) : ({ headers: arg as any } as RequestInit);
 
-  const headers = mergeHeaders(init.headers as any);
+  const prepared = withAuthHeaders(init, path);
+  const headers = mergeHeaders(prepared.headers as any);
 
   const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
 
@@ -134,6 +212,7 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
   if (body != null) {
     if (isFormData) {
       payload = body;
+      stripFormDataContentType(headers);
     } else if (typeof body === "string") {
       payload = body;
       headers["content-type"] = headers["content-type"] || "application/json";
@@ -145,7 +224,7 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
 
   try {
     const res = await fetch(kristoUrl(path), {
-      ...(init || {}),
+      ...prepared,
       method: "PATCH",
       headers,
       body: payload,
@@ -160,7 +239,8 @@ export async function apiPatch<T = Json>(path: string, body?: any, arg?: Headers
 
 export async function apiDelete<T = Json>(path: string, init?: RequestInit) {
   try {
-    const res = await fetch(kristoUrl(path), { ...(init || {}), method: "DELETE" });
+    const reqInit = withAuthHeaders(init, path);
+    const res = await fetch(kristoUrl(path), { ...reqInit, method: "DELETE" });
     const parsed = await safeJson(res);
     if (!res.ok) return httpError(path, res, parsed) as T;
     return (parsed ?? { ok: false, error: "Empty server response", status: res.status }) as T;

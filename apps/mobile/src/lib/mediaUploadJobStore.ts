@@ -16,7 +16,7 @@ export type MediaUploadResumableMode = "chunk" | "v1-restart";
 export type PersistedMediaUploadJob = {
   jobId: string;
   title: string;
-  caption: string;
+  caption?: string;
   fileUri: string;
   localPosterUri?: string;
   fileName: string;
@@ -35,6 +35,7 @@ export type PersistedMediaUploadJob = {
   durationMs?: number;
   resumableMode: MediaUploadResumableMode;
   chunkSessionId?: string;
+  videoDisplayType?: "youtube" | "tiktok";
   uploadedChunkIndexes?: number[];
   totalChunks?: number;
   createdAt: string;
@@ -170,6 +171,7 @@ export async function createMediaUploadJob(
     userId: input.userId,
     role: input.role,
     durationMs: input.durationMs,
+    videoDisplayType: input.videoDisplayType,
     phase: "preparing",
     uploadProgress: 1,
     resumableMode: input.resumableMode || "chunk",
@@ -215,11 +217,11 @@ function normalizeMediaUrl(value: unknown) {
 }
 
 function mediaUploadJobSignature(job: Pick<PersistedMediaUploadJob, "title" | "caption">) {
-  return `${normalizeJobText(job.title)}|${normalizeJobText(job.caption)}`;
+  return `${normalizeJobText(job.title)}|${normalizeJobText(job.caption || "")}`;
 }
 
 function jobMediaTexts(job: Pick<PersistedMediaUploadJob, "title" | "caption">) {
-  return [job.title, job.caption].map(normalizeJobText).filter(Boolean);
+  return [job.title, job.caption || ""].map(normalizeJobText).filter(Boolean);
 }
 
 function rowMediaTexts(row: FeedRowForMediaJobCleanup) {

@@ -42,6 +42,7 @@ export type ScheduleSlotDraft = {
   chat?: string[];
   sourceSlotName?: string;
   isDurationLocked?: boolean;
+  scheduleBatchId?: string;
 };
 
 export type ChurchProjectMcScheduleState = {

@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from "react";
 import { useRouter, useLocalSearchParams } from "expo-router";
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, ImageBackground, Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { makeChurchId } from "@/src/lib/kristoSession";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import { clearChurchDraft, saveChurchDraft } from "@/src/lib/churchStore";
+import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
 const VIP_BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.95)";
@@ -29,6 +31,13 @@ function cleanPhone(s: string) {
   return s.replace(/[^\d+]/g, "");
 }
 
+function tapFeel() {
+  try {
+    const Haptics = require("expo-haptics");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  } catch {}
+}
+
 export default function MoreChurch() {
   const router = useRouter();
   const params = useLocalSearchParams() as any;
@@ -46,6 +55,7 @@ export default function MoreChurch() {
 
   // JOIN
   const [joinId, setJoinId] = useState("");
+  const [requestSent, setRequestSent] = useState(false);
 
   React.useEffect(() => {
     const jid = params?.joinId;
@@ -63,11 +73,13 @@ export default function MoreChurch() {
     return { cid, role };
   }, [session]);
 
+  const showVovotoLanding = !current.cid && String(current.role || "Member").toLowerCase() !== "pastor";
+
   const canCreate = useMemo(() => {
     const n = createName.trim();
     const p = cleanPhone(phone).trim();
-    return n.length >= 2 && p.length >= 7 && !saving;
-  }, [createName, phone, saving]);
+    return !current.cid && n.length >= 2 && p.length >= 7 && !saving;
+  }, [createName, phone, saving, current.cid]);
 
   async function onPickLocation() {
     setLocErr(null);
@@ -87,6 +99,11 @@ export default function MoreChurch() {
   }
 
   async function onCreate() {
+    if (current.cid) {
+      setErr("You already have a church. One pastor account can create only one church in V1.");
+      return;
+    }
+
     if (!canCreate) {
       setErr("Tafadhali jaza Church name na Phone number (sahihi).");
       return;
@@ -106,12 +123,25 @@ export default function MoreChurch() {
         createdAt: new Date().toISOString(),
       };
 
-      await setSession({
-        userId: session?.userId || "u-demo-1",
-        role: "Pastor",
+      const churchDraft = {
         churchId: cid,
+        role: "Pastor",
         churchProfile,
+        churchName: churchProfile.name,
+        churchPhone: churchProfile.phone,
+        churchCountry: churchProfile.country,
+        churchCity: churchProfile.city || "",
+      };
+
+      await saveChurchDraft(churchDraft, session?.userId);
+
+      await setSession({
+        ...(session as any),
+        userId: String(session?.userId || ""),
+        ...churchDraft,
       } as any);
+
+      router.replace("/(tabs)/church/overview" as any);
     } finally {
       setSaving(false);
     }
@@ -119,166 +149,323 @@ export default function MoreChurch() {
 
   async function onJoin() {
     setErr(null);
+    setRequestSent(false);
+
     const cid = joinId.trim();
     if (!cid) {
-      setErr("Ingiza churchId ili u-join.");
+      setErr("Enter Church ID to send request.");
       return;
     }
+
+    // V1: do not join automatically.
+    // User sends request; pastor/admin will approve later.
+    setRequestSent(true);
+    setErr("Request sent. Wait for pastor approval.");
+  }
+
+  async function onCopyChurchId() {
+    const cid = String(current.cid || "").trim();
+    if (!cid) {
+      Alert.alert("No Church ID", "Church ID is not available yet.");
+      return;
+    }
+
+    tapFeel();
+
+    try {
+      const Clipboard = require("expo-clipboard");
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(cid);
+        Alert.alert("Copied", `${cid} copied.`);
+        return;
+      }
+    } catch {}
+
+    await Share.share({ message: cid });
+  }
+
+  async function leaveChurchBackend() {
+    const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+    const churchId = String(session?.churchId || "").trim();
+    const role = String(session?.role || "Member");
+    const url = `${base}/api/church/membership/leave`;
+    const method = "POST";
+
+    if (!base || !session?.userId) {
+      console.log("[church-delete] skip leave — missing api base or userId", {
+        url,
+        method,
+        churchId,
+        role,
+        hasBase: Boolean(base),
+        userId: String(session?.userId || ""),
+      });
+      return;
+    }
+
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          ...getKristoHeaders({ userId: session.userId, role: role as any, churchId }),
+        },
+      });
+      const rawText = await res.text();
+      let body: any = null;
+      try {
+        body = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        body = rawText;
+      }
+      console.log("[church-delete] leave response", {
+        url,
+        method,
+        churchId,
+        role,
+        status: res.status,
+        ok: res.ok,
+        body,
+      });
+    } catch (error: any) {
+      console.log("[church-delete] leave request failed", {
+        url,
+        method,
+        churchId,
+        role,
+        error: String(error?.message || error || "unknown"),
+      });
+    }
+  }
+
+  async function clearChurchLocal() {
+    await leaveChurchBackend();
+    await clearChurchDraft(session?.userId);
     await setSession({
-      userId: session?.userId || "u-demo-1",
+      ...(session as any),
       role: "Member",
-      churchId: cid,
+      churchRole: "Member",
+      churchId: "",
+      activeChurchId: "",
+      churchProfile: undefined,
+      churchName: "",
+      churchPhone: "",
+      churchCountry: "",
+      churchCity: "",
     } as any);
+
+    tapFeel();
+    router.replace("/more/church" as any);
+  }
+
+  function onQuitChurch() {
+    Alert.alert(
+      "Quit church",
+      "You will leave this church and return to church setup.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Quit", style: "destructive", onPress: clearChurchLocal },
+      ]
+    );
+  }
+
+  function onDeleteChurch() {
+    Alert.alert(
+      "Delete your church",
+      "This will remove this church from your local V1 account.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: clearChurchLocal },
+      ]
+    );
   }
 
   return (
-    <View style={[s.screen, { paddingTop: insets.top }]}>
-      <View style={s.nav}>
+    <View style={[s.screen, { paddingTop: showVovotoLanding ? 0 : insets.top }]}>
+      {!showVovotoLanding && (<View style={s.nav}>
         <View style={s.iconPill}>
           <MaterialCommunityIcons name="church" size={18} color={GOLD} />
         </View>
         <View style={{ flex: 1 }}>
           <Text style={s.navTitle}>Church</Text>
-          <Text style={s.navSub}>Join kwanza, au create church mpya.</Text>
+          <Text style={s.navSub}>
+  {current.cid
+    ? "Manage your church account."
+    : "Find church, enter Church ID, or create church mpya."}
+</Text>
         </View>
-      </View>
+      </View>)}
 
-      {!!err && (
+      {!!err && !showVovotoLanding && (
         <View style={s.errCard}>
           <Ionicons name="alert-circle-outline" size={16} color="rgba(255,255,255,0.85)" />
           <Text style={s.errText}>{err}</Text>
         </View>
       )}
 
-      {/* ✅ TOP: JOIN */}
-      <View style={s.card}>
-        <View style={s.cardEdge} />
-        <View style={s.cardGlow} />
-        <View style={s.cardHead}>
-          <View style={s.cardHeadLeft}>
-            <View style={s.cardHeadIcon}>
-              <Ionicons name="log-in-outline" size={18} color={GOLD} />
+      {showVovotoLanding ? (
+        <View style={s.vovotoStatic}>
+        {!current.cid ? (
+          showVovotoLanding ? (
+            <View style={s.vovotoWrap}>
+              <ImageBackground
+                source={require("@/assets/images/vovoto.png")}
+                resizeMode="contain"
+                style={s.vovotoImage}
+              >
+                <Pressable
+                  onPress={() => {
+                    router.push("/more/church/create" as any);
+                  }}
+                  onPressIn={tapFeel}
+                  style={({ pressed }) => [s.hotspot, s.hotCreate, pressed && s.hotspotPressed]}
+                />
+                <Pressable
+                  onPress={() => {
+                    router.push("/more/church/find" as any);
+                  }}
+                  onPressIn={tapFeel}
+                  style={({ pressed }) => [s.hotspot, s.hotFind, pressed && s.hotspotPressed]}
+                />
+                <Pressable
+                  onPress={() => {
+                    router.push("/more/church/add-id" as any);
+                  }}
+                  onPressIn={tapFeel}
+                  style={({ pressed }) => [s.hotspot, s.hotId, pressed && s.hotspotPressed]}
+                />
+                <Pressable
+                  onPress={() => {
+                    Alert.alert("QR Code", "QR scan will open here in V2.");
+                  }}
+                  onPressIn={tapFeel}
+                  style={({ pressed }) => [s.hotspot, s.hotQr, pressed && s.hotspotPressed]}
+                />
+              </ImageBackground>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.joinTitle}>Join Church</Text>
-              <Text style={s.joinSub}>Ingiza churchId, utaingia kama Member.</Text>
+          ) : (
+            <View style={s.grid2}>
+              <Pressable onPress={onCreate} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>
+                <View style={s.tileIcon}>
+                  <MaterialCommunityIcons name="church" size={24} color={GOLD} />
+                </View>
+                <Text style={s.tileTitle}>Create Church</Text>
+                <Text style={s.tileSub}>For pastors. Create new church ID.</Text>
+              </Pressable>
+
+              <Pressable onPress={() => router.push("/more/church/find" as any)} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>
+                <View style={s.tileIcon}>
+                  <Ionicons name="search-outline" size={24} color={GOLD} />
+                </View>
+                <Text style={s.tileTitle}>Find a Church</Text>
+                <Text style={s.tileSub}>See nearby churches and request.</Text>
+              </Pressable>
+
+              <Pressable onPress={onJoin} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>
+                <View style={s.tileIcon}>
+                  <Ionicons name="keypad-outline" size={24} color={GOLD} />
+                </View>
+                <Text style={s.tileTitle}>Add Church ID</Text>
+                <Text style={s.tileSub}>Enter ID, view profile, request.</Text>
+              </Pressable>
+
+              <Pressable onPress={() => Alert.alert("QR Code", "QR scan will open here in V2.")} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>
+                <View style={s.tileIcon}>
+                  <Ionicons name="qr-code-outline" size={24} color={GOLD} />
+                </View>
+                <Text style={s.tileTitle}>Scan QR Code</Text>
+                <Text style={s.tileSub}>Scan church QR to request fast.</Text>
+              </Pressable>
             </View>
+          )
+        ) : (
+          <View style={s.statusCard}>
+            <Text style={s.statusTitle}>{current.role === "Pastor" ? "Pastor Church Control" : "Church Membership"}</Text>
+            <View style={s.statusChurchRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.statusRow}>Church ID</Text>
+                <Text style={s.statusStrong}>{current.cid}</Text>
+              </View>
+              <Pressable onPress={async () => {
+                Alert.alert("Church ID", current.cid);
+                Alert.alert("Copied", current.cid);
+              }} style={s.copyChurchBtn}>
+                <Ionicons name="copy-outline" size={15} color="#0B0F17" />
+                <Text style={s.copyChurchText}>Copy</Text>
+              </Pressable>
+            </View>
+
+            <Pressable onPress={current.role === "Pastor" ? onDeleteChurch : onQuitChurch} style={s.dangerBtn}>
+              <Ionicons name={current.role === "Pastor" ? "trash-outline" : "exit-outline"} size={18} color="#FFD6D6" />
+              <Text style={s.dangerText}>{current.role === "Pastor" ? "Delete your church" : "Quit Church"}</Text>
+            </Pressable>
           </View>
-          <View style={s.badgePill}>
-            <Text style={s.badgeText}>CHURCH ID</Text>
-          </View>
-        <View style={s.cardDivider} />
-        </View>
-
-        <TextInput
-          value={joinId}
-          onChangeText={setJoinId}
-          autoCapitalize="none"
-          placeholder="c-demo-1"
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={s.input}
-        />
-
-        <View style={s.joinActions}>
-          <Pressable onPress={onJoin} style={({ pressed }) => [s.halfBtn, s.joinBtn, s.joinBtnPrimary, pressed && { opacity: 0.92 }]}>
-            <Ionicons name="log-in-outline" size={18} color={GOLD} />
-            <Text style={s.joinPrimaryText}>Join</Text>
-          </Pressable>
-
-          <Pressable onPress={() => router.push("/more/church/find" as any)} style={({ pressed }) => [s.halfBtn, s.joinBtn, s.joinBtnGhost, pressed && { opacity: 0.92 }]}>
-            <Ionicons name="search-outline" size={18} color="rgba(255,255,255,0.85)" />
-            <Text style={s.joinGhostText}>Find a church</Text>
-          </Pressable>
-        </View>
-      </View>
-
-      {/* ✅ MIDDLE: CREATE */}
-      <View style={s.card}>
-        <View style={s.cardEdge} />
-        <View style={s.cardGlow} />
-        <Text style={s.cardTitle}>Create Church</Text>
-        <Text style={s.cardSub}>Kristo App itatengeneza Church ID automatically.</Text>
-
-        <TextInput
-          value={createName}
-          onChangeText={setCreateName}
-          placeholder="Church name"
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={s.input}
-        />
-
-        <TextInput
-          value={phone}
-          onChangeText={setPhone}
-          keyboardType="phone-pad"
-          placeholder="Phone number"
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={s.input}
-        />
-
-        {/* Country select */}
-        <Pressable onPress={() => setCountryOpen(true)} style={({ pressed }) => [s.select, pressed && { opacity: 0.92 }]}>
-          <Text style={s.selectLabel}>Country</Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <Text style={s.selectValue}>{country}</Text>
-            <Ionicons name="chevron-down" size={18} color="rgba(255,255,255,0.80)" />
-          </View>
-        </Pressable>
-
-        <View style={{ flexDirection: "row", gap: 10 }}>
-          <TextInput
-            value={province}
-            onChangeText={setProvince}
-            placeholder="Province / State (optional)"
-            placeholderTextColor="rgba(255,255,255,0.35)"
-            style={[s.input, { flex: 1 }]}
-          />
-          <TextInput
-            value={city}
-            onChangeText={setCity}
-            placeholder="City (optional)"
-            placeholderTextColor="rgba(255,255,255,0.35)"
-            style={[s.input, { flex: 1 }]}
-          />
-        </View>
-
-        {/* Location */}
-        <Pressable onPress={onPickLocation} style={({ pressed }) => [s.secondaryBtn, pressed && { opacity: 0.92 }]}>
-          <Ionicons name="location-outline" size={18} color={GOLD} />
-          <Text style={s.secondaryText}>{loc ? "Location saved ✓" : "Share location (optional)"}</Text>
-        </Pressable>
-        {!!locErr && <Text style={s.smallErr}>{locErr}</Text>}
-        {!!loc && (
-          <Text style={s.smallMuted}>
-            Lat: {loc.lat.toFixed(5)}  •  Lng: {loc.lng.toFixed(5)}
-          </Text>
         )}
+        </View>
+      ) : (
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 34 }}>
+          {!current.cid ? (
+            showVovotoLanding ? null : (
+              <View style={s.grid2}>
+                <Pressable onPress={onCreate} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>
+                  <View style={s.tileIcon}>
+                    <MaterialCommunityIcons name="church" size={24} color={GOLD} />
+                  </View>
+                  <Text style={s.tileTitle}>Create Church</Text>
+                  <Text style={s.tileSub}>For pastors. Create new church ID.</Text>
+                </Pressable>
 
-        <Pressable
-          onPress={onCreate}
-          disabled={!canCreate}
-          style={({ pressed }) => [s.primaryBtn, (!canCreate || saving) && { opacity: 0.5 }, pressed && { opacity: 0.92 }]}
-        >
-          <Ionicons name="add" size={18} color="#0B0F17" />
-          <Text style={s.primaryText}>{saving ? "Creating…" : "Create"}</Text>
-        </Pressable>
-      </View>
+                <Pressable onPress={() => router.push("/more/church/find" as any)} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>
+                  <View style={s.tileIcon}>
+                    <Ionicons name="search-outline" size={24} color={GOLD} />
+                  </View>
+                  <Text style={s.tileTitle}>Find a Church</Text>
+                  <Text style={s.tileSub}>See nearby churches and request.</Text>
+                </Pressable>
 
-      {/* ✅ BOTTOM: CURRENT + LOGOUT */}
-      <View style={s.statusCard}>
-        <Text style={s.statusTitle}>Current</Text>
-        <Text style={s.statusRow}>
-          Role: <Text style={s.statusStrong}>{current.role}</Text>
-        </Text>
-        <Text style={s.statusRow}>
-          ChurchId: <Text style={s.statusStrong}>{current.cid || "— (not joined)"}</Text>
-        </Text>
+                <Pressable onPress={onJoin} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>
+                  <View style={s.tileIcon}>
+                    <Ionicons name="keypad-outline" size={24} color={GOLD} />
+                  </View>
+                  <Text style={s.tileTitle}>Add Church ID</Text>
+                  <Text style={s.tileSub}>Enter ID, view profile, request.</Text>
+                </Pressable>
 
-        <Pressable onPress={() => logout()} style={({ pressed }) => [s.ghostBtn, pressed && { opacity: 0.9 }]}>
-          <Ionicons name="log-out-outline" size={16} color="rgba(255,255,255,0.75)" />
-          <Text style={s.ghostBtnText}>Clear / Logout</Text>
-        </Pressable>
-      </View>
+                <Pressable onPress={() => Alert.alert("QR Code", "QR scan will open here in V2.")} style={({ pressed }) => [s.vipTile, pressed && { opacity: 0.9 }]}>
+                  <View style={s.tileIcon}>
+                    <Ionicons name="qr-code-outline" size={24} color={GOLD} />
+                  </View>
+                  <Text style={s.tileTitle}>Scan QR Code</Text>
+                  <Text style={s.tileSub}>Scan church QR to request fast.</Text>
+                </Pressable>
+              </View>
+            )
+          ) : (
+            <View style={s.statusCard}>
+              <Text style={s.statusTitle}>{current.role === "Pastor" ? "Pastor Church Control" : "Church Membership"}</Text>
+              <View style={s.statusChurchRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.statusRow}>Church ID</Text>
+                  <Text style={s.statusStrong}>{current.cid}</Text>
+                </View>
+                <Pressable onPress={async () => {
+                  Alert.alert("Church ID", current.cid);
+                  Alert.alert("Copied", current.cid);
+                }} style={s.copyChurchBtn}>
+                  <Ionicons name="copy-outline" size={15} color="#0B0F17" />
+                  <Text style={s.copyChurchText}>Copy</Text>
+                </Pressable>
+              </View>
+
+              <Pressable onPress={current.role === "Pastor" ? onDeleteChurch : onQuitChurch} style={s.dangerBtn}>
+                <Ionicons name={current.role === "Pastor" ? "trash-outline" : "exit-outline"} size={18} color="#FFD6D6" />
+                <Text style={s.dangerText}>{current.role === "Pastor" ? "Delete your church" : "Quit Church"}</Text>
+              </Pressable>
+            </View>
+          )}
+        </ScrollView>
+      )}
 
       {/* Country modal */}
       <Modal visible={countryOpen} animationType="fade" transparent onRequestClose={() => setCountryOpen(false)}>
@@ -323,11 +510,16 @@ const s = StyleSheet.create<any>({
 
   errCard: { marginHorizontal: PAD, marginTop: 6, borderRadius: 16, padding: 12, flexDirection: "row", gap: 10, alignItems: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)", backgroundColor: "rgba(255,255,255,0.04)" },
   errText: { color: "rgba(255,255,255,0.85)", fontWeight: "800" },
+  requestOk: { marginTop: 12, borderRadius: 14, padding: 11, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(80,220,140,0.08)", borderWidth: 1, borderColor: "rgba(80,220,140,0.22)" },
+  requestOkText: { color: "rgba(210,255,225,0.92)", fontWeight: "850" },
 
   statusCard: { margin: PAD, marginTop: 12, borderRadius: 22, padding: 14, borderWidth: 1, borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.04)" },
   statusTitle: { color: "white", fontWeight: "950", fontSize: 14, opacity: 0.95 },
   statusRow: { marginTop: 6, color: "rgba(255,255,255,0.70)", fontWeight: "800" },
   statusStrong: { color: "rgba(255,255,255,0.92)", fontWeight: "950" },
+  statusChurchRow: { marginTop: 8, borderRadius: 16, padding: 12, flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "rgba(217,179,95,0.07)", borderWidth: 1, borderColor: "rgba(217,179,95,0.18)" },
+  copyChurchBtn: { borderRadius: 14, paddingVertical: 10, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: GOLD },
+  copyChurchText: { color: "#0B0F17", fontWeight: "950", fontSize: 12 },
 
   ghostBtn: { marginTop: 12, borderRadius: 16, paddingVertical: 12, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)", backgroundColor: "rgba(255,255,255,0.03)" },
   ghostBtnText: { color: "rgba(255,255,255,0.85)", fontWeight: "950" },
@@ -371,4 +563,38 @@ const s = StyleSheet.create<any>({
   joinPrimaryText: { color: "#0B0F17", fontWeight: "950" },
   joinBtnGhost: { backgroundColor: "rgba(255,255,255,0.03)", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
   joinGhostText: { color: "rgba(255,255,255,0.92)", fontWeight: "950" },
+  vovotoStatic: { flex: 1 },
+  vovotoWrap: {
+    flex: 1,
+    paddingBottom: 18,
+  },
+  vovotoImage: {
+    width: "100%",
+    height: "100%",
+  },
+  hotspot: {
+    position: "absolute",
+    borderRadius: 28,
+    zIndex: 50,
+    elevation: 50,
+  },
+  hotspotPressed: {
+    opacity: 0.72,
+    transform: [{ scale: 0.992 }],
+  },
+  hotCreate: { left: "5.8%", top: "28.0%", width: "43.7%", height: "28.2%" },
+  hotFind: { right: "5.8%", top: "28.0%", width: "43.7%", height: "28.2%" },
+  hotId: { left: "5.8%", top: "58.5%", width: "43.7%", height: "28.2%" },
+  hotQr: { right: "5.8%", top: "58.5%", width: "43.7%", height: "28.2%" },
+  grid2: { marginHorizontal: PAD, marginTop: 16, flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  vipTile: { width: "48%", minHeight: 156, borderRadius: 24, padding: 14, borderWidth: 1, borderColor: "rgba(217,179,95,0.20)", backgroundColor: "rgba(255,255,255,0.035)", overflow: "hidden" },
+  tileIcon: { width: 50, height: 50, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(217,179,95,0.12)", borderWidth: 1, borderColor: "rgba(217,179,95,0.26)", marginBottom: 14 },
+  tileTitle: { color: "white", fontWeight: "950", fontSize: 17 },
+  tileSub: { marginTop: 7, color: "rgba(255,255,255,0.62)", fontWeight: "750", lineHeight: 18 },
+  cleanOption: { flexDirection: "row", alignItems: "center", gap: 14 },
+  optionIcon: { width: 52, height: 52, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(217,179,95,0.12)", borderWidth: 1, borderColor: "rgba(217,179,95,0.25)" },
+  optionTitle: { color: "white", fontWeight: "950", fontSize: 18 },
+  optionSub: { marginTop: 4, color: "rgba(255,255,255,0.62)", fontWeight: "750", lineHeight: 19 },
+  dangerBtn: { marginTop: 14, borderRadius: 18, paddingVertical: 14, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8, backgroundColor: "rgba(255,80,80,0.10)", borderWidth: 1, borderColor: "rgba(255,120,120,0.24)" },
+  dangerText: { color: "#FFD6D6", fontWeight: "950" },
 });

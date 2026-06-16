@@ -1,0 +1,39 @@
+{
+  "cli": {
+    "version": ">= 16.32.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "https://kristo-app.vercel.app",
+        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "https://kristo-app.vercel.app",
+        "EXPO_PUBLIC_WEB_BASE": "https://kristo-app.vercel.app",
+        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com"
+      }
+    },
+    "app-store-review": {
+      "extends": "production",
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "https://kristo-app.vercel.app",
+        "EXPO_PUBLIC_WEB_BASE": "https://kristo-app.vercel.app",
+        "EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE": "1",
+        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

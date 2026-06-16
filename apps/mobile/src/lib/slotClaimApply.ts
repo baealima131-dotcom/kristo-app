@@ -13,6 +13,8 @@ import {
   clearSlotClaimCaches,
   fetchChurchSlotClaimFeed,
 } from "@/src/lib/slotClaimSync";
+import { refetchTargetScheduleAfterClaim } from "@/src/lib/scheduleSlotClaimRequest";
+import { getSessionSync } from "@/src/lib/kristoSession";
 
 function buildChurchScheduleClaimDigest(churchId: string) {
   const cid = String(churchId || "").trim();
@@ -50,16 +52,34 @@ function applyScheduleFeedToStore(scheduleFeed: any, churchId: string) {
 export async function runFastSlotClaimSync(
   payload: SlotClaimChangedPayload
 ): Promise<{ scheduleFeedId: string | null; rowCount: number } | null> {
-  const cid = String(payload.churchId || "").trim();
-  if (!cid) return null;
+  const scheduleChurchId = String(payload.churchId || "").trim();
+  if (!scheduleChurchId) return null;
 
-  const result = await fetchChurchSlotClaimFeed(cid, { clearCaches: true });
+  const session = getSessionSync() as any;
+  const viewerChurchId = String(session?.churchId || "").trim();
+
+  if (payload.postId && payload.action === "claim") {
+    await refetchTargetScheduleAfterClaim({
+      postId: String(payload.postId),
+      scheduleChurchId,
+      slotId: payload.slotId,
+      viewerChurchId,
+      viewerUserId: String(payload.userId || session?.userId || "").trim(),
+      viewerRole: String(session?.role || "Member"),
+    });
+  }
+
+  const result = await fetchChurchSlotClaimFeed(scheduleChurchId, {
+    clearCaches: true,
+    viewerChurchId,
+  });
   if (!result) return null;
 
-  const scheduleFeedId = applyScheduleFeedToStore(result.scheduleFeed, cid);
+  const scheduleFeedId = applyScheduleFeedToStore(result.scheduleFeed, scheduleChurchId);
 
   console.log("KRISTO_SLOT_CLAIM_FAST_SYNC", {
-    churchId: cid,
+    churchId: scheduleChurchId,
+    viewerChurchId: viewerChurchId || null,
     postId: payload.postId || null,
     slotId: payload.slotId,
     action: payload.action,

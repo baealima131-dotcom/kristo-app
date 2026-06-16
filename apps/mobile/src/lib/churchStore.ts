@@ -23,6 +23,7 @@ export type ChurchProfileCache = {
   avatarUri?: string;
   avatarUrl?: string;
   updatedAt?: number;
+  avatarUpdatedAt?: number;
 };
 
 const KEY = "kristo_church_v1";
@@ -31,6 +32,11 @@ const PROFILE_CACHE_PREFIX = "kristo_church_profile_v1:";
 function keyForUser(userId?: string | null) {
   const id = String(userId || "").trim();
   return id ? `${KEY}:${id}` : KEY;
+}
+
+
+export function resolveSessionChurchId(value?: string | null): string {
+  return String(value || "").trim().toUpperCase();
 }
 
 function profileCacheKey(churchId: string) {
@@ -70,12 +76,23 @@ export async function loadChurchProfileCache(churchId?: string | null): Promise<
 export async function saveChurchProfileCache(profile: ChurchProfileCache): Promise<void> {
   const churchId = String(profile.churchId || "").trim();
   if (!churchId) return;
+  const now = Date.now();
+  const hasAvatar = Boolean(String(profile.avatarUri || profile.avatarUrl || "").trim());
   const next: ChurchProfileCache = {
     ...profile,
     churchId,
-    updatedAt: Date.now(),
+    updatedAt: now,
+    avatarUpdatedAt: hasAvatar ? profile.avatarUpdatedAt || now : profile.avatarUpdatedAt,
   };
   await AsyncStorage.setItem(profileCacheKey(churchId), JSON.stringify(next));
+}
+
+export async function clearChurchProfileCache(churchId?: string | null): Promise<void> {
+  const id = String(churchId || "").trim();
+  if (!id) return;
+  try {
+    await AsyncStorage.removeItem(profileCacheKey(id));
+  } catch {}
 }
 
 export async function resolveChurchDisplayName(

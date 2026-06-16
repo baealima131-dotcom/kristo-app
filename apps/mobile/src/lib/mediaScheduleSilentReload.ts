@@ -5,11 +5,18 @@ import {
   feedPurgeMediaScheduleCards,
   feedPurgeMediaScheduleCardsForChurch,
   feedRemoveWhere,
+  feedSyncMediaScheduleFromBackend,
 } from "@/src/lib/homeFeedStore";
 import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
-import { findActiveMediaScheduleForChurch, findMediaScheduleFeedForChurch } from "@/src/lib/mediaScheduleLock";
+import { hydrateActiveMediaScheduleFromBackend } from "@/src/lib/mediaScheduleActiveHydration";
+import {
+  findActiveMediaScheduleForChurch,
+  findMediaScheduleFeedForChurch,
+  resolveChurchMediaScheduleFromFeedRows,
+} from "@/src/lib/mediaScheduleLock";
 import { findProtectedNearLiveSchedule, emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
+import { materializeMediaSlotTimeFields } from "@/src/lib/mediaScheduleSlotTimes";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import {
@@ -213,9 +220,17 @@ export function parseChurchFeedListResponse(res: any): MediaScheduleFeedSync {
 
 export async function fetchMediaScheduleFeedSync(
   churchId: string,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  opts?: { targetChurchId?: string }
 ): Promise<MediaScheduleFeedSync> {
-  const res: any = await apiGet(`/api/church/feed?scope=church&_=${Date.now()}`, {
+  const viewerChurchId = String(churchId || "").trim();
+  const targetChurchId = String(opts?.targetChurchId || viewerChurchId).trim();
+  const query =
+    targetChurchId && targetChurchId !== viewerChurchId
+      ? `/api/church/feed?scope=church&churchId=${encodeURIComponent(targetChurchId)}&_=${Date.now()}`
+      : `/api/church/feed?scope=church&_=${Date.now()}`;
+
+  const res: any = await apiGet(query, {
     headers,
     cache: "no-store" as RequestCache,
   });
@@ -252,13 +267,14 @@ export function applySilentMediaScheduleReload(params: {
     mediaScheduleVersion !== previousVersion ||
     (!!mediaScheduleUpdatedAt && mediaScheduleUpdatedAt !== previousUpdatedAt);
 
-  const backendScheduleFeed = cid
-    ? findMediaScheduleFeedForChurch(rows, cid, { strictChurch: true })
+  const backendScheduleRow = cid
+    ? resolveChurchMediaScheduleFromFeedRows(rows, cid, { strictChurch: true })
     : null;
+  const backendScheduleFeed = backendScheduleRow;
   const backendActive = cid
     ? findActiveMediaScheduleForChurch(rows, cid, { strictChurch: true })
     : null;
-  const backendHasActiveSchedule = Boolean(backendScheduleFeed || backendActive);
+  const backendHasActiveSchedule = Boolean(backendScheduleRow);
 
   if (cid && !backendHasActiveSchedule) {
     clearStaleMediaScheduleSpeakerSlotsForChurch({
@@ -267,15 +283,23 @@ export function applySilentMediaScheduleReload(params: {
       reason: `${params.reason}:backend-empty`,
       ui: params.ui,
     });
+  } else if (backendScheduleRow && params.assignmentId) {
+    void hydrateActiveMediaScheduleFromBackend({
+      activeSchedule: backendScheduleRow,
+      churchId: cid,
+      assignmentId: params.assignmentId,
+      reason: `${params.reason}:silent-reload-hydrate`,
+    });
+    applyBackendMediaScheduleToLocalFeed(rows, cid);
   }
 
-  if (backendScheduleFeed || backendActive) {
+  if (backendScheduleRow) {
     console.log("[MediaSilentReload] active schedule source found", {
       churchId: cid,
-      feedId: String((backendScheduleFeed || backendActive)?.id || ""),
-      source: backendScheduleFeed ? "schedule-feed-row" : "time-active-schedule",
-      slotCount: Array.isArray((backendScheduleFeed || backendActive)?.scheduleSlots)
-        ? (backendScheduleFeed || backendActive)?.scheduleSlots.length
+      feedId: String(backendScheduleRow?.id || ""),
+      source: backendActive ? "time-active-schedule" : "schedule-feed-row",
+      slotCount: Array.isArray(backendScheduleRow?.scheduleSlots)
+        ? backendScheduleRow.scheduleSlots.length
         : 0,
     });
   }
@@ -286,7 +310,7 @@ export function applySilentMediaScheduleReload(params: {
   );
 
   const shouldForceLocalPurge = Boolean(
-    versionChanged && cid && !backendScheduleFeed && !backendActive && !hasPendingLocalSchedule
+    versionChanged && cid && !backendHasActiveSchedule && !hasPendingLocalSchedule
   );
 
   let purgedLocal = false;
@@ -304,7 +328,7 @@ export function applySilentMediaScheduleReload(params: {
     ? findProtectedNearLiveSchedule(localRows, cid, Date.now())
     : null;
 
-  if (versionChanged && cid && !backendScheduleFeed && !backendActive && hasPendingLocalSchedule) {
+  if (versionChanged && cid && !backendHasActiveSchedule && hasPendingLocalSchedule) {
     console.log("KRISTO_SCHEDULE_LOCAL_KEEP_PENDING_BACKEND", {
       churchId: cid,
       reason: params.reason,
@@ -402,6 +426,17 @@ export function applySilentMediaScheduleReload(params: {
   };
 }
 
+function normalizeScheduleSlotsForBackend(slots: any[]) {
+  return slots.map((slot, index) =>
+    materializeMediaSlotTimeFields({
+      ...slot,
+      order: index + 1,
+      slot: index + 1,
+      slotNumber: index + 1,
+    })
+  );
+}
+
 export async function syncMediaScheduleSlotsToBackend(
   sourceFeedId: string,
   slots: any[],
@@ -411,6 +446,7 @@ export async function syncMediaScheduleSlotsToBackend(
   if (!seed) return null;
 
   const feedId = resolveCanonicalScheduleFeedId(seed, feedList() as any[]) || seed;
+  const normalizedSlots = normalizeScheduleSlotsForBackend(slots);
 
   return apiPost(
     "/api/church/feed",
@@ -418,10 +454,26 @@ export async function syncMediaScheduleSlotsToBackend(
       action: "update-schedule-slots",
       feedId,
       postId: feedId,
-      slots,
+      slots: normalizedSlots,
     },
     { headers }
   );
+}
+
+/** After backend fetch, replace local schedule row slots with authoritative backend data. */
+export function applyBackendMediaScheduleToLocalFeed(rows: any[], churchId: string) {
+  const cid = String(churchId || "").trim();
+  if (!cid || !rows.length) return null;
+
+  const backendSchedule =
+    resolveChurchMediaScheduleFromFeedRows(rows, cid, { strictChurch: true }) ||
+    findMediaScheduleFeedForChurch(rows, cid, { strictChurch: true }) ||
+    findActiveMediaScheduleForChurch(rows, cid, { strictChurch: true });
+
+  if (!backendSchedule) return null;
+
+  feedSyncMediaScheduleFromBackend(backendSchedule);
+  return backendSchedule;
 }
 
 export function readFeedItemScheduleSlots(sourceFeedId: string, fallbackRows: any[] = []) {

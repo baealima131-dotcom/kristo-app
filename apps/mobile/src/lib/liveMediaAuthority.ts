@@ -75,6 +75,132 @@ export function evaluateLiveMediaAuthority(
   };
 }
 
+export type FastLiveSessionAuthority = {
+  trustedActualChurchPastorUserId: string;
+  trustedIsActualChurchPastor: boolean;
+  trustedIsMediaScheduleCreator: boolean;
+  trustedOwnsActiveSlot: boolean;
+  reasons: string[];
+};
+
+/** Trusted session/route authority — does not wait for /api/church/members. */
+export function evaluateFastLiveSessionAuthority(input: {
+  currentUserId?: string;
+  sessionRoleText?: string;
+  sessionChurchRole?: string;
+  routePastorUserId?: string;
+  routeScheduleCreatorUserId?: string;
+  routeClaimedByUserId?: string;
+  currentSlotOwnerId?: string;
+}): FastLiveSessionAuthority {
+  const uid = String(input.currentUserId || "").trim();
+  const sessionPastor =
+    String(input.sessionRoleText || "").includes("pastor") ||
+    String(input.sessionChurchRole || "").toLowerCase().includes("pastor");
+  const routePastor = String(input.routePastorUserId || "").trim();
+  const scheduleCreator = String(input.routeScheduleCreatorUserId || "").trim();
+  const routeClaimed = String(input.routeClaimedByUserId || "").trim();
+  const slotOwner = String(input.currentSlotOwnerId || routeClaimed || "").trim();
+  const reasons: string[] = [];
+
+  let trustedActualChurchPastorUserId = "";
+  if (uid && sessionPastor) {
+    trustedActualChurchPastorUserId = uid;
+    reasons.push("session-pastor-role");
+  } else if (uid && routePastor && routePastor === uid) {
+    trustedActualChurchPastorUserId = uid;
+    reasons.push("route-pastor-user-id");
+  }
+
+  const trustedIsMediaScheduleCreator = !!uid && scheduleCreator === uid;
+  if (trustedIsMediaScheduleCreator) reasons.push("schedule-creator");
+
+  const trustedOwnsActiveSlot = !!uid && slotOwner === uid;
+  if (trustedOwnsActiveSlot) reasons.push("active-slot-owner");
+
+  return {
+    trustedActualChurchPastorUserId,
+    trustedIsActualChurchPastor:
+      !!uid && trustedActualChurchPastorUserId === uid,
+    trustedIsMediaScheduleCreator,
+    trustedOwnsActiveSlot,
+    reasons,
+  };
+}
+
+export function resolveFastActiveSlotWindow(input: {
+  currentUserId?: string;
+  currentSlotOwnerId?: string;
+  currentSlotStartMs?: number;
+  currentSlotEndMs?: number;
+  routeClaimedByUserId?: string;
+  routeScheduleStartMs?: number;
+  routeScheduleEndMs?: number;
+  nowMs?: number;
+}) {
+  const uid = String(input.currentUserId || "").trim();
+  let ownerId = String(input.currentSlotOwnerId || "").trim();
+  let startMs = Number(input.currentSlotStartMs || 0);
+  let endMs = Number(input.currentSlotEndMs || 0);
+  const routeClaimed = String(input.routeClaimedByUserId || "").trim();
+
+  if (!ownerId && routeClaimed) ownerId = routeClaimed;
+  if (uid && routeClaimed === uid) {
+    if (!startMs) startMs = Number(input.routeScheduleStartMs || 0);
+    if (!endMs) endMs = Number(input.routeScheduleEndMs || 0);
+  }
+
+  const nowMs = Number(input.nowMs || Date.now());
+  const ownsActiveSlot = !!uid && ownerId === uid;
+  const windowOpen =
+    ownsActiveSlot &&
+    isScheduleSlotCameraWindowOpen(
+      { claimedByUserId: ownerId, startMs, endMs },
+      uid,
+      nowMs
+    );
+
+  return { ownerId, startMs, endMs, windowOpen, ownsActiveSlot };
+}
+
+export function applyFastLiveStageAuthorityBoost(
+  stage: LiveStageAuthority,
+  input: {
+    isMediaInstantLive: boolean;
+    fastSession: FastLiveSessionAuthority;
+    fastSlotWindowOpen: boolean;
+    churchSubscriptionActive: boolean | null;
+    routePublisherEligible: boolean;
+  }
+): LiveStageAuthority {
+  if (input.isMediaInstantLive || stage.canPublishLiveVideoNow) return stage;
+
+  const subscriptionOk =
+    input.churchSubscriptionActive !== false ||
+    input.routePublisherEligible;
+
+  if (!subscriptionOk || !input.fastSlotWindowOpen || !input.fastSession.trustedOwnsActiveSlot) {
+    return stage;
+  }
+
+  return {
+    ...stage,
+    userOwnsCurrentActiveSlot: true,
+    canPublishClaimedCameraNow: true,
+    canPublishLiveVideoNow: true,
+    canPublishClaimedMicNow:
+      stage.canPublishClaimedMicNow ||
+      input.fastSession.trustedIsActualChurchPastor ||
+      input.fastSession.trustedIsMediaScheduleCreator ||
+      stage.userHasClaimedScheduleSlot,
+    pastorPermanentMicNow:
+      stage.pastorPermanentMicNow || input.fastSession.trustedIsActualChurchPastor,
+    mediaHostPermanentMicNow:
+      stage.mediaHostPermanentMicNow ||
+      input.fastSession.trustedIsMediaScheduleCreator,
+  };
+}
+
 export function logLiveMediaAuthority(
   context: string,
   authority: LiveMediaAuthority,
@@ -191,6 +317,8 @@ export type LiveStageAuthorityInput = {
   isPastorLiveOwner: boolean;
   roleLooksLikeHost: boolean;
   approvedViewerSeatType: string;
+  /** When false, all publish/management media ops are blocked (view-only). */
+  churchSubscriptionActive?: boolean | null;
 };
 
 export type LiveStageAuthority = {
@@ -261,7 +389,7 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
     ? canPublishClaimedCameraNow
     : canPublishClaimedCameraNow;
 
-  return {
+  const result: LiveStageAuthority = {
     pastorPermanentMicNow,
     mediaHostPermanentMicNow,
     userOwnsCurrentActiveSlot,
@@ -271,6 +399,23 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
     canPublishClaimedCameraNow,
     canPublishLiveVideoNow,
   };
+
+  // Church subscription gates Media Studio tools (pastor/host). Claimed schedule slot
+  // speakers may publish their slot without target-church media-tool entitlement.
+  if (input.churchSubscriptionActive === false) {
+    const claimedSlotMic = userHasClaimedScheduleSlot;
+    const claimedSlotCamera = userOwnsCurrentActiveSlot && activeSlotCameraWindowOpen;
+    return {
+      ...result,
+      pastorPermanentMicNow: false,
+      mediaHostPermanentMicNow: false,
+      canPublishClaimedMicNow: claimedSlotMic,
+      canPublishClaimedCameraNow: claimedSlotCamera,
+      canPublishLiveVideoNow: input.isMediaInstantLive ? false : claimedSlotCamera,
+    };
+  }
+
+  return result;
 }
 
 export function logMediaLiveV1StageAuthority(

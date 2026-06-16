@@ -400,13 +400,15 @@ export async function uploadVideoWithChunkSession(params: {
     });
   }
 
+  const sessionTotalParts = session.totalParts;
+
   const emitChunkProgress = (
     completedParts: number,
     partUploading: boolean
   ) => {
-    params.onProgress?.(chunkProgress(completedParts, session.totalParts), {
+    params.onProgress?.(chunkProgress(completedParts, sessionTotalParts), {
       completedParts,
-      totalParts: session.totalParts,
+      totalParts: sessionTotalParts,
       partUploading,
     });
   };

@@ -107,6 +107,7 @@ export async function rejectJoinRequest(requestId: string) {
   );
 }
 
+
 export async function deactivateChurchMember(target: string) {
   const members = await readArr(MEMBERS_KEY);
   const needle = String(target || "").trim();

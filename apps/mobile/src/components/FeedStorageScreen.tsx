@@ -15,6 +15,11 @@ import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { VideoView, useVideoPlayer } from "expo-video";
+import {
+  logStorageVideoPreviewUnmount,
+  safePauseVideoPlayer,
+  safePlayVideoPlayer,
+} from "@/src/lib/expoVideoPlayerSafe";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -29,6 +34,8 @@ import {
 } from "@/src/lib/churchActivityPosts";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { FeedVideoPosterImage } from "@/src/components/homeFeed/VideoPostFallbackPoster";
+import { snapshotPosterMetadata } from "@/src/components/homeFeed/homeFeedUtils";
+import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 import { useSmoothedJobUploadProgress } from "@/src/hooks/useSmoothedJobUploadProgress";
 import {
   canDeleteChurchActivityPostFromSession,
@@ -106,9 +113,10 @@ function StorageVideoPreview({ uri }: { uri: string }) {
   });
 
   useEffect(() => {
-    player.play();
+    safePlayVideoPlayer(player, { source: "feed-storage-preview", uri });
     return () => {
-      player.pause();
+      logStorageVideoPreviewUnmount(uri);
+      safePauseVideoPlayer(player, { source: "feed-storage-preview", uri });
     };
   }, [player, uri]);
 
@@ -185,6 +193,9 @@ function StoragePostCard({
 }) {
   const author = getStoragePostAuthor(item);
   const thumbnailUri = getStoragePostThumbnail(item);
+  const posterMetadata = useMemo(() => snapshotPosterMetadata(item), [item]);
+  const videoDurationMs = useMemo(() => resolveVideoDurationMs(item), [item]);
+  const postId = String(item?.id || (item as any)?.postId || "").trim();
   const title = getStoragePostTitle(item, mode);
   const typeBadge = getStoragePostTypeBadge(item, mode);
   const whenLabel = formatActivityWhen(item.createdAt);
@@ -236,9 +247,13 @@ function StoragePostCard({
                 uri={thumbnailUri}
                 style={s.thumbImage}
                 resizeMode="cover"
+                postId={postId}
                 title={title}
                 videoUrl={isVideo ? getStoragePreviewVideoUri(item) : ""}
                 mediaStatus={mediaStatus}
+                posterMetadata={posterMetadata}
+                videoDurationMs={videoDurationMs}
+                enableVideoFrameFallback
               />
               {isVideo ? (
                 <View style={s.videoOverlay}>

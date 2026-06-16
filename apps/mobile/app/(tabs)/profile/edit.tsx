@@ -9,6 +9,9 @@ import { loadProfileDraft, saveProfileDraft, ProfileDraft } from "@/src/lib/prof
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { apiPost, apiGet } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { buildAvatarDataUrl, compressAvatarFile } from "@/src/lib/avatarCompress";
+import { emitUserProfileUpdated } from "@/src/lib/kristoProfileEvents";
+import { pickFresherAvatar } from "@/src/lib/avatarFreshness";
 
 const BG = "#050914";
 const GOLD = "#F4D06F";
@@ -39,6 +42,7 @@ export default function EditProfileScreen() {
   const [displayName, setDisplayName] = useState("");
   const [bio, setBio] = useState("");
   const [avatarUri, setAvatarUri] = useState<string | undefined>(undefined);
+  const [avatarDirty, setAvatarDirty] = useState(false);
   const [focused, setFocused] = useState(false);
   const [bioOpen, setBioOpen] = useState(false);
   const [bioDraft, setBioDraft] = useState("");
@@ -78,6 +82,7 @@ export default function EditProfileScreen() {
       setDisplayName(apiName || savedName || signupName || sessionName || "");
       setBio(String((apiProfile as any)?.bio || saved?.bio || ""));
       setAvatarUri(apiProfile?.avatarUrl ? String(apiProfile.avatarUrl) : saved?.avatarUri);
+      setAvatarDirty(false);
 
       setPhoneValue(String(apiProfile?.phone || (saved as any)?.phone || (session as any)?.phone || ""));
       setAddressValue(String((saved as any)?.address || (session as any)?.address || ""));
@@ -111,13 +116,14 @@ export default function EditProfileScreen() {
     try {
       const dir = `${FileSystem.documentDirectory}profile-avatar/`;
       await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-      const ext = pickedUri.split("?")[0].split(".").pop() || "jpg";
-      const nextUri = `${dir}${String(session?.userId || "me")}-${Date.now()}.${ext}`;
+      const nextUri = `${dir}${String(session?.userId || "me")}-${Date.now()}.jpg`;
 
-      await FileSystem.copyAsync({ from: pickedUri, to: nextUri });
-      setAvatarUri(nextUri);
+      const compressedUri = await compressAvatarFile(pickedUri, nextUri);
+      setAvatarUri(compressedUri);
+      setAvatarDirty(true);
     } catch {
       setAvatarUri(pickedUri);
+      setAvatarDirty(true);
     }
   };
 
@@ -153,6 +159,21 @@ export default function EditProfileScreen() {
 
     await saveProfileDraft(nextProfile, session.userId);
 
+    const now = Date.now();
+    const optimisticAvatarAt =
+      avatarDirty && String(nextProfile.avatarUri || "").trim() ? now : (nextProfile as any).avatarUpdatedAt;
+
+    if (optimisticAvatarAt) {
+      await saveProfileDraft(
+        { ...nextProfile, avatarUpdatedAt: optimisticAvatarAt } as any,
+        session.userId
+      );
+      console.log("[ProfileEdit] optimistic avatar saved", {
+        userId: session.userId,
+        avatarUpdatedAt: optimisticAvatarAt,
+      });
+    }
+
     await setSession({
       ...session,
       name: nextProfile.displayName,
@@ -175,20 +196,31 @@ export default function EditProfileScreen() {
       });
     }
 
+    emitUserProfileUpdated({
+      userId: session.userId,
+      avatarUri: nextProfile.avatarUri,
+      avatarUrl: nextProfile.avatarUri,
+      updatedAt: now,
+      avatarUpdatedAt: optimisticAvatarAt,
+    });
+
     router.back();
 
     void (async () => {
       const cleanAvatar = String(avatarUri || "").trim();
       const backendAvatar =
-        cleanAvatar && !cleanAvatar.startsWith("file:") ? cleanAvatar : "";
+        !avatarDirty
+          ? cleanAvatar && !cleanAvatar.startsWith("file:")
+            ? cleanAvatar
+            : ""
+          : cleanAvatar && !cleanAvatar.startsWith("file:")
+            ? cleanAvatar
+            : "";
 
       let avatarData = "";
-      if (cleanAvatar && cleanAvatar.startsWith("file:")) {
+      if (avatarDirty && cleanAvatar.startsWith("file:")) {
         try {
-          const b64 = await FileSystem.readAsStringAsync(cleanAvatar, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          avatarData = `data:image/jpeg;base64,${b64}`;
+          avatarData = await buildAvatarDataUrl(cleanAvatar);
         } catch {}
       }
 
@@ -220,7 +252,20 @@ export default function EditProfileScreen() {
         }
 
         const serverProfile = savedRes?.profile || {};
-        const serverAvatar = String(serverProfile?.avatarUrl || backendAvatar || "").trim();
+        const serverAvatarRaw = String(serverProfile?.avatarUrl || backendAvatar || "").trim();
+        const mergedAvatar = pickFresherAvatar({
+          localUri: String(nextProfile.avatarUri || "").trim(),
+          localUpdatedAt: optimisticAvatarAt,
+          serverUri: serverAvatarRaw,
+          serverUpdatedAt: Number(serverProfile?.updatedAt || serverProfile?.avatarUpdatedAt || Date.now()),
+        });
+        const serverAvatar = mergedAvatar.uri;
+        const avatarUpdatedAt =
+          mergedAvatar.source === "local"
+            ? optimisticAvatarAt || Date.now()
+            : avatarDirty || serverAvatar
+              ? Date.now()
+              : undefined;
         const syncedChurchId = String(
           savedRes?.churchId || savedRes?.activeMembership?.churchId || session.churchId || ""
         ).trim();
@@ -234,9 +279,11 @@ export default function EditProfileScreen() {
           phone: String(serverProfile?.phone || nextProfile.phone || ""),
           city: String(serverProfile?.city || nextProfile.city || ""),
           country: String(serverProfile?.country || nextProfile.country || ""),
+          avatarUpdatedAt,
         } as any;
 
         await saveProfileDraft(syncedProfile, session.userId);
+        setAvatarDirty(false);
 
         await setSession({
           ...session,
@@ -262,12 +309,18 @@ export default function EditProfileScreen() {
           churchPublic,
         } as any);
 
-        if (__DEV__) {
-          console.log("[ProfileEdit] patch success", {
-            userId: session.userId,
-            churchId: syncedChurchId || null,
-          });
-        }
+        emitUserProfileUpdated({
+          userId: session.userId,
+          avatarUri: syncedProfile.avatarUri,
+          avatarUrl: syncedProfile.avatarUri,
+          updatedAt: Date.now(),
+          avatarUpdatedAt,
+        });
+
+        console.log("[ProfileEdit] patch success updated cache", {
+          userId: session.userId,
+          avatarUpdatedAt: avatarUpdatedAt || null,
+        });
       } catch (e: any) {
         const msg = String(e?.message || e || "Profile save failed");
         if (__DEV__) {

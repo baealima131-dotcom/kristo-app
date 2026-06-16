@@ -10,11 +10,29 @@ import {
   getCachedMediaPoster,
   peekCachedMediaPoster,
   rememberMediaPoster,
+  resolveCachedMediaPoster,
 } from "@/src/lib/mediaPosterCache";
 import { withPreviewTimeout } from "@/src/lib/videoGridThumbnail";
+import {
+  computeHomeFeedPosterCandidateTimesMs,
+  computeHomeFeedPosterCaptureTimeMs,
+  selectBestPosterFrameCandidate,
+  selectDiverseUploadStudioCovers,
+  type PosterFrameCandidate,
+  type UploadStudioCoverBatchResult,
+} from "@/src/lib/homeFeedPosterFrameQuality";
+import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 const GENERATE_TIMEOUT_MS = 45000;
+const HOME_FEED_GENERATE_TIMEOUT_MS = 70000;
 const MIN_CAPTURE_MS = 500;
+/** Home Feed default frame grab — 7.5 seconds into the video. */
+export const HOME_FEED_POSTER_CAPTURE_MS = 7500;
+
+export {
+  computeHomeFeedPosterCandidateTimesMs,
+  computeHomeFeedPosterCaptureTimeMs,
+} from "@/src/lib/homeFeedPosterFrameQuality";
 
 const inflight = new Map<string, Promise<string>>();
 
@@ -37,6 +55,160 @@ export function computePosterCaptureTimeMs(durationMs?: number): number {
   return Math.min(Math.max(targetMs, MIN_CAPTURE_MS), maxMs);
 }
 
+function uniqueSortedCaptureTimes(times: number[]) {
+  return [...new Set(times.map((ms) => Math.max(MIN_CAPTURE_MS, Math.round(ms))))].sort(
+    (a, b) => a - b
+  );
+}
+
+/** Evenly spaced capture points for upload-studio cover grids (default 10). */
+export function computeUploadStudioCoverTimesMs(
+  durationMs?: number,
+  count = 10,
+  batchOffset = 0
+): number[] {
+  const totalMs =
+    Number(durationMs || 0) > 0 ? Math.round(Number(durationMs)) : 45_000;
+  const maxMs = Math.max(MIN_CAPTURE_MS, totalMs - 250);
+  const phase = ((batchOffset % 7) + 1) * 0.028;
+  const times: number[] = [];
+
+  for (let i = 0; i < count; i += 1) {
+    let ratio = (i + 0.5) / count + phase;
+    ratio = ratio % 1;
+    if (ratio < 0.05) ratio += 0.05;
+    if (ratio > 0.95) ratio -= 0.05;
+    times.push(Math.min(Math.max(Math.round(totalMs * ratio), MIN_CAPTURE_MS), maxMs));
+  }
+
+  return uniqueSortedCaptureTimes(times);
+}
+
+/** Extra probe timestamps — merges home-feed anchors with a phased grid for diversity. */
+export function computeUploadStudioProbeTimesMs(
+  durationMs?: number,
+  probeCount = 24,
+  batchOffset = 0
+): number[] {
+  const homeTimes = computeHomeFeedPosterCandidateTimesMs(durationMs);
+  const gridTimes = computeUploadStudioCoverTimesMs(durationMs, probeCount, batchOffset);
+  return uniqueSortedCaptureTimes([...homeTimes, ...gridTimes]);
+}
+
+export type UploadStudioCoverOptionsResult = UploadStudioCoverBatchResult;
+
+export async function generateUploadStudioCoverOptions(params: {
+  videoUrl: string;
+  durationMs?: number;
+  count?: number;
+  batchOffset?: number;
+}): Promise<UploadStudioCoverOptionsResult> {
+  if (shouldDeferBackgroundMediaJobs()) return { covers: [], bestIndex: 0 };
+
+  const videoUrl = String(params.videoUrl || "").trim();
+  if (!videoUrl) return { covers: [], bestIndex: 0 };
+
+  const count = Math.max(1, Math.min(12, Number(params.count || 10)));
+  const probeCount = Math.max(22, count * 2 + 4);
+  const times = computeUploadStudioProbeTimesMs(
+    params.durationMs,
+    probeCount,
+    params.batchOffset ?? 0
+  );
+  const candidates = await capturePosterFrameCandidates(videoUrl, times);
+  if (!candidates.length) return { covers: [], bestIndex: 0 };
+
+  return selectDiverseUploadStudioCovers(candidates, params.durationMs, count);
+}
+
+/** Best-effort cleanup of temp thumbnail files from upload-studio cover batches. */
+export async function releaseUploadStudioCoverUris(uris: string[]): Promise<void> {
+  const unique = [...new Set(uris.map((uri) => String(uri || "").trim()).filter(Boolean))];
+  if (!unique.length) return;
+
+  try {
+    const FileSystem = await import("expo-file-system/legacy");
+    await Promise.all(
+      unique.map((uri) => {
+        if (!uri.startsWith("file://")) return Promise.resolve();
+        return FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+      })
+    );
+  } catch {
+    // Non-fatal — OS will reclaim temp files eventually.
+  }
+}
+
+async function capturePosterFrameCandidates(
+  videoUrl: string,
+  captureTimesMs: number[]
+): Promise<PosterFrameCandidate[]> {
+  const VideoThumbnails = await import("expo-video-thumbnails");
+  const captured: PosterFrameCandidate[] = [];
+
+  await Promise.all(
+    captureTimesMs.map(async (captureTimeMs) => {
+      try {
+        const result = await VideoThumbnails.getThumbnailAsync(videoUrl, {
+          time: captureTimeMs,
+          quality: 0.82,
+        });
+        const uri = String(result?.uri || "").trim();
+        if (!uri) return;
+        captured.push({
+          captureTimeMs,
+          uri,
+          width: Number(result?.width || 0),
+          height: Number(result?.height || 0),
+        });
+      } catch (attemptError) {
+        console.log("KRISTO_MEDIA_VIDEO_POSTER_CAPTURE_RETRY", {
+          videoUrl: normalizeVideoKey(videoUrl),
+          captureTimeMs,
+          error:
+            attemptError instanceof Error ? attemptError.message : String(attemptError),
+        });
+      }
+    })
+  );
+
+  return captured.sort((a, b) => a.captureTimeMs - b.captureTimeMs);
+}
+
+async function generateHomeFeedPosterFrame(params: {
+  postId: string;
+  videoUrl: string;
+  durationMs?: number;
+}): Promise<string> {
+  const candidateTimes = computeHomeFeedPosterCandidateTimesMs(params.durationMs);
+  const candidates = await capturePosterFrameCandidates(params.videoUrl, candidateTimes);
+  if (!candidates.length) return "";
+
+  const best = await selectBestPosterFrameCandidate(candidates);
+  if (!best) return "";
+
+  const persisted = await rememberMediaPoster({
+    postId: params.postId,
+    videoUrl: params.videoUrl,
+    posterUri: best.candidate.uri,
+    source: "generated",
+    persistFile: Boolean(params.postId),
+    captureTimeMs: best.breakdown.captureTimeMs,
+  });
+
+  console.log("KRISTO_MEDIA_VIDEO_POSTER_GENERATED", {
+    postId: params.postId || null,
+    videoUrl: normalizeVideoKey(params.videoUrl),
+    captureTimeMs: best.breakdown.captureTimeMs,
+    durationMs: params.durationMs ?? null,
+    qualityScore: Number(best.breakdown.total.toFixed(3)),
+    posterUri: persisted,
+    candidateCount: candidates.length,
+  });
+
+  return persisted;
+}
+
 function normalizeVideoKey(videoUrl: string) {
   return String(videoUrl || "").trim().split("?")[0];
 }
@@ -49,13 +221,16 @@ export async function generateVideoPosterFrame(params: {
   postId?: string;
   videoUrl: string;
   durationMs?: number;
+  mode?: "home-feed" | "default";
 }): Promise<string> {
+  if (shouldDeferBackgroundMediaJobs()) return "";
+
   const videoUrl = String(params.videoUrl || "").trim();
   const postId = String(params.postId || "").trim();
   if (!videoUrl) return "";
 
-  if (postId) {
-    const cached = peekCachedMediaPoster(postId, videoUrl);
+  if (postId || videoUrl) {
+    const cached = resolveCachedMediaPoster(postId, videoUrl);
     if (cached) return cached;
   }
 
@@ -63,16 +238,25 @@ export async function generateVideoPosterFrame(params: {
   const pending = inflight.get(pendingKey);
   if (pending) return pending;
 
-  const captureTimes = [
-    computePosterCaptureTimeMs(params.durationMs),
-    1000,
-    500,
-  ];
-  const uniqueCaptureTimes = [...new Set(captureTimes.map((ms) => Math.max(MIN_CAPTURE_MS, ms)))];
+  const isHomeFeed = params.mode === "home-feed";
+  const timeoutMs = isHomeFeed ? HOME_FEED_GENERATE_TIMEOUT_MS : GENERATE_TIMEOUT_MS;
 
   const promise = withPreviewTimeout(
     (async () => {
       try {
+        if (isHomeFeed) {
+          return generateHomeFeedPosterFrame({
+            postId,
+            videoUrl,
+            durationMs: params.durationMs,
+          });
+        }
+
+        const primaryCapture = computePosterCaptureTimeMs(params.durationMs);
+        const captureTimes = [primaryCapture, 1000, 500];
+        const uniqueCaptureTimes = [
+          ...new Set(captureTimes.map((ms) => Math.max(MIN_CAPTURE_MS, ms))),
+        ];
         const VideoThumbnails = await import("expo-video-thumbnails");
 
         for (const captureTimeMs of uniqueCaptureTimes) {
@@ -84,25 +268,22 @@ export async function generateVideoPosterFrame(params: {
             const uri = String(result?.uri || "").trim();
             if (!uri) continue;
 
-            if (postId) {
-              const persisted = await rememberMediaPoster({
-                postId,
-                videoUrl,
-                posterUri: uri,
-                source: "generated",
-                persistFile: true,
-              });
-              console.log("KRISTO_MEDIA_VIDEO_POSTER_GENERATED", {
-                postId,
-                videoUrl: normalizeVideoKey(videoUrl),
-                captureTimeMs,
-                durationMs: params.durationMs ?? null,
-                posterUri: persisted,
-              });
-              return persisted;
-            }
-
-            return uri;
+            const persisted = await rememberMediaPoster({
+              postId,
+              videoUrl,
+              posterUri: uri,
+              source: "generated",
+              persistFile: Boolean(postId),
+              captureTimeMs,
+            });
+            console.log("KRISTO_MEDIA_VIDEO_POSTER_GENERATED", {
+              postId: postId || null,
+              videoUrl: normalizeVideoKey(videoUrl),
+              captureTimeMs,
+              durationMs: params.durationMs ?? null,
+              posterUri: persisted,
+            });
+            return persisted;
           } catch (attemptError) {
             console.log("KRISTO_MEDIA_VIDEO_POSTER_CAPTURE_RETRY", {
               postId: postId || null,
@@ -126,7 +307,7 @@ export async function generateVideoPosterFrame(params: {
         inflight.delete(pendingKey);
       }
     })(),
-    GENERATE_TIMEOUT_MS,
+    timeoutMs,
     ""
   );
 
@@ -217,6 +398,8 @@ export async function ensureMediaVideoPosterFrame(params: {
   durationMs?: number;
   persistToFeed?: boolean;
 }): Promise<string> {
+  if (shouldDeferBackgroundMediaJobs()) return "";
+
   const videoUrl = String(params.videoUrl || "").trim();
   const postId = String(params.postId || "").trim();
   if (!videoUrl) return "";

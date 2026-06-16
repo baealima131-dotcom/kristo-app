@@ -1,11 +1,16 @@
 export type FeedKind = "announcement" | "post" | "testimony" | "counsel";
 
+export type FeedMediaType = "video" | "image" | "none";
+
 export type FeedItem = {
   id: string;
   kind: FeedKind;
   title?: string;
   body: string;
+  mediaType?: FeedMediaType;
   mediaUri?: string;
+  videoUrl?: string;
+  posterUri?: string;
   createdAt: string; // ISO
   actorLabel?: string; // e.g. "ADMIN"
   churchLabel?: string; // e.g. "TLMC"

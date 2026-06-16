@@ -1,39 +1,83 @@
 {
   "expo": {
-    "name": "mobile",
+    "name": "Kristo App",
     "slug": "mobile",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/icon.png",
     "scheme": "mobile",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/images/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor":"#0B0F17"
+      "image": "./assets/images/jujuju-splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#0B0F17"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.princefariji.kristoapp",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Kristo App needs camera access for live streaming and video rooms.",
+        "NSMicrophoneUsageDescription": "Kristo App needs microphone access for live streaming and audio in live rooms.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor":"#0B0F17"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.princefariji.kristoapp",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/motowaMUNGU-favicon.png"
     },
     "plugins": [
-      "expo-router"
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/jujuju-splash.png",
+          "resizeMode": "cover",
+          "backgroundColor": "#0B0F17",
+          "enableFullScreenImage_legacy": true
+        }
+      ],
+      "expo-router",
+      "expo-camera",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.princefariji.kristoapp",
+          "enableGooglePay": false
+        }
+      ],
+      "expo-video",
+      "@livekit/react-native-expo-plugin",
+      "react-native-compressor",
+      "./plugins/withStoreKitConfiguration"
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "stripePublishableKey": "pk_test_xxxxxxxxxxxxxxxxx",
+      "stripeMerchantIdentifier": "merchant.com.princefariji.kristoapp",
+      "revenuecatIosApiKey": "appl_RsWwZtALpIYilmRQNPlnDCkBcqG",
+      "revenuecatAndroidApiKey": "WEKA_ANDROID_GOOG_KEY_HAPA",
+      "router": {},
+      "eas": {
+        "projectId": "1dc15ae7-821f-479e-b1fd-feb0450be12f"
+      }
     }
   }
 }

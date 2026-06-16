@@ -14,6 +14,13 @@ import {
   saveChurchDraft,
   saveChurchProfileCache,
 } from "@/src/lib/churchStore";
+import { invalidateChurchProfileCaches } from "@/src/lib/screenDataCache";
+import { buildAvatarDataUrl, compressAvatarFile } from "@/src/lib/avatarCompress";
+import {
+  mergeChurchAvatarForDisplay,
+  normalizeAvatarUpdatedAt,
+} from "@/src/lib/avatarFreshness";
+import { emitChurchProfileUpdated } from "@/src/lib/kristoProfileEvents";
 
 const GOLD = "rgba(217,179,95,0.96)";
 const BG = "#070B14";
@@ -37,6 +44,7 @@ export default function EditChurchProfile() {
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [avatarUri, setAvatarUri] = useState("");
+  const [avatarDirty, setAvatarDirty] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -52,6 +60,7 @@ export default function EditChurchProfile() {
         setPhone(String(cached.phone || ""));
         setAddress(String(cached.address || ""));
         setAvatarUri(mediaUrl(cached.avatarUri || cached.avatarUrl || ""));
+        setAvatarDirty(false);
       }
 
       const j = await apiGet<any>("/api/church/profile", { headers: getKristoHeaders() }).catch(() => null);
@@ -62,7 +71,17 @@ export default function EditChurchProfile() {
       setPastorName(String(p.pastorName || cached?.pastorName || ""));
       setPhone(String(p.phone || cached?.phone || ""));
       setAddress(String(p.address || cached?.address || ""));
-      setAvatarUri(mediaUrl(p.avatarUri || p.avatarUrl || cached?.avatarUri || cached?.avatarUrl || ""));
+
+      const serverAvatar = mediaUrl(p.avatarUri || p.avatarUrl || "");
+      const mergedAvatar = mergeChurchAvatarForDisplay({
+        churchId: churchId || "",
+        localUri: mediaUrl(cached?.avatarUri || cached?.avatarUrl || ""),
+        localUpdatedAt: cached?.avatarUpdatedAt,
+        serverUri: serverAvatar,
+        serverUpdatedAt: normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt),
+      });
+      setAvatarUri(mergedAvatar.uri);
+      setAvatarDirty(false);
 
       if (churchId && p?.name) {
         await saveChurchProfileCache({
@@ -71,8 +90,9 @@ export default function EditChurchProfile() {
           pastorName: String(p.pastorName || ""),
           phone: String(p.phone || ""),
           address: String(p.address || ""),
-          avatarUri: mediaUrl(p.avatarUri || p.avatarUrl || ""),
-          avatarUrl: mediaUrl(p.avatarUrl || p.avatarUri || ""),
+          avatarUri: mergedAvatar.uri,
+          avatarUrl: mergedAvatar.uri,
+          avatarUpdatedAt: mergedAvatar.skippedStale ? cached?.avatarUpdatedAt : cached?.avatarUpdatedAt,
         });
       }
     })();
@@ -92,7 +112,20 @@ export default function EditChurchProfile() {
 
     if (res.canceled) return;
     const picked = String(res.assets?.[0]?.uri || "").trim();
-    if (picked) setAvatarUri(picked);
+    if (!picked) return;
+
+    try {
+      const auth = getKristoAuth();
+      const churchId = String(session?.churchId || auth.churchId || "").trim();
+      const dir = `${FileSystem.documentDirectory}church-avatar/`;
+      await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+      const nextUri = `${dir}${churchId || "church"}-${Date.now()}.jpg`;
+      const compressedUri = await compressAvatarFile(picked, nextUri);
+      setAvatarUri(compressedUri);
+    } catch {
+      setAvatarUri(picked);
+    }
+    setAvatarDirty(true);
   }
 
   async function save() {
@@ -112,6 +145,8 @@ export default function EditChurchProfile() {
     const trimmedPhone = phone.trim();
     const trimmedAddress = address.trim();
     const displayAvatar = avatarUri.startsWith("file:") ? avatarUri : mediaUrl(avatarUri);
+    const now = Date.now();
+    const optimisticAvatarAt = avatarDirty && displayAvatar ? now : undefined;
 
     const localProfile = {
       churchId,
@@ -121,9 +156,17 @@ export default function EditChurchProfile() {
       address: trimmedAddress,
       avatarUri: displayAvatar,
       avatarUrl: displayAvatar,
+      avatarUpdatedAt: optimisticAvatarAt,
     };
 
     await saveChurchProfileCache(localProfile);
+
+    if (optimisticAvatarAt) {
+      console.log("[EditChurch] optimistic avatar saved", {
+        churchId,
+        avatarUpdatedAt: optimisticAvatarAt,
+      });
+    }
 
     if (session?.userId && churchId) {
       const draft = (await loadChurchDraft(session.userId)) || { churchId };
@@ -165,6 +208,15 @@ export default function EditChurchProfile() {
       });
     }
 
+    emitChurchProfileUpdated({
+      churchId,
+      name: trimmedName,
+      avatarUri: displayAvatar,
+      avatarUrl: displayAvatar,
+      updatedAt: now,
+      avatarUpdatedAt: optimisticAvatarAt,
+    });
+
     router.replace({
       pathname: "/(tabs)/church/overview",
       params: {
@@ -177,11 +229,36 @@ export default function EditChurchProfile() {
     void (async () => {
       try {
         let avatarData = "";
-        if (avatarUri.startsWith("file:")) {
-          const b64 = await FileSystem.readAsStringAsync(avatarUri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          avatarData = `data:image/jpeg;base64,${b64}`;
+        let patchAvatarUri = "";
+        let patchAvatarUrl = "";
+        let targetField = "none";
+
+        if (avatarDirty) {
+          if (avatarUri.startsWith("file:")) {
+            targetField = "avatarData";
+            console.log("KRISTO_CHURCH_AVATAR_SAVE_START", {
+              churchId,
+              hasLocalUri: true,
+              targetField,
+            });
+            avatarData = await buildAvatarDataUrl(avatarUri);
+          } else {
+            targetField = "avatarUri";
+            console.log("KRISTO_CHURCH_AVATAR_SAVE_START", {
+              churchId,
+              hasLocalUri: false,
+              targetField,
+            });
+            patchAvatarUri = displayAvatar;
+            patchAvatarUrl = displayAvatar;
+          }
+        } else if (
+          avatarUri &&
+          !avatarUri.startsWith("file:") &&
+          (/^data:image\//i.test(avatarUri) || /^https?:\/\//i.test(avatarUri) || avatarUri.startsWith("/"))
+        ) {
+          patchAvatarUri = displayAvatar;
+          patchAvatarUrl = displayAvatar;
         }
 
         const res = await apiPatch<any>(
@@ -191,8 +268,8 @@ export default function EditChurchProfile() {
             pastorName: trimmedPastor,
             phone: trimmedPhone,
             address: trimmedAddress,
-            avatarUri: avatarUri.startsWith("file:") ? "" : displayAvatar,
-            avatarUrl: avatarUri.startsWith("file:") ? "" : displayAvatar,
+            avatarUri: patchAvatarUri,
+            avatarUrl: patchAvatarUrl,
             avatarData,
           },
           { headers: getKristoHeaders() }
@@ -203,16 +280,44 @@ export default function EditChurchProfile() {
         }
 
         const p = res?.data || {};
+        const serverAvatar = mediaUrl(p.avatarUri || p.avatarUrl || "");
+        const serverUpdatedAt = normalizeAvatarUpdatedAt(p?.avatarUpdatedAt || p?.updatedAt);
+        console.log("KRISTO_CHURCH_AVATAR_SAVE_DONE", {
+          churchId,
+          avatarUri: serverAvatar,
+          logoUri: "",
+          persisted: Boolean(serverAvatar),
+        });
+        const existingCache = await loadChurchProfileCache(churchId);
+        await invalidateChurchProfileCaches(churchId, {
+          userId: session?.userId,
+          source: "church-profile-patch",
+        });
+
+        const mergedAvatar = mergeChurchAvatarForDisplay({
+          churchId,
+          localUri: displayAvatar,
+          localUpdatedAt: optimisticAvatarAt || existingCache?.avatarUpdatedAt,
+          serverUri: serverAvatar,
+          serverUpdatedAt: serverUpdatedAt || Date.now(),
+          preferServer: true,
+        });
+        const avatarUpdatedAt =
+          mergedAvatar.source === "server"
+            ? serverUpdatedAt || Date.now()
+            : optimisticAvatarAt || existingCache?.avatarUpdatedAt || Date.now();
         const synced = {
           churchId,
           name: String(p.name || trimmedName),
           pastorName: String(p.pastorName || trimmedPastor),
           phone: String(p.phone || trimmedPhone),
           address: String(p.address || trimmedAddress),
-          avatarUri: mediaUrl(p.avatarUri || p.avatarUrl || displayAvatar),
-          avatarUrl: mediaUrl(p.avatarUrl || p.avatarUri || displayAvatar),
+          avatarUri: mergedAvatar.uri || displayAvatar,
+          avatarUrl: mergedAvatar.uri || displayAvatar,
+          avatarUpdatedAt,
         };
         await saveChurchProfileCache(synced);
+        setAvatarDirty(false);
 
         if (session) {
           await setSession({
@@ -220,12 +325,25 @@ export default function EditChurchProfile() {
             churchId: churchId || session.churchId,
             activeChurchId: churchId || session.activeChurchId,
             churchName: synced.name,
+            churchAvatarUri: synced.avatarUri,
+            churchAvatarUrl: synced.avatarUri,
           } as any);
         }
 
-        if (__DEV__) {
-          console.log("[EditChurch] patch success", { churchId, name: synced.name });
-        }
+        emitChurchProfileUpdated({
+          churchId,
+          name: synced.name,
+          avatarUri: synced.avatarUri,
+          avatarUrl: synced.avatarUrl,
+          updatedAt: Date.now(),
+          avatarUpdatedAt,
+        });
+
+        console.log("[EditChurch] patch success updated cache", {
+          churchId,
+          name: synced.name,
+          avatarUpdatedAt: avatarUpdatedAt || null,
+        });
       } catch (e: any) {
         const msg = String(e?.message || e || "Save failed");
         if (__DEV__) {

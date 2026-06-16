@@ -741,6 +741,15 @@ function pickFresherScheduleSlot(prev: any, next: any) {
   return prev;
 }
 
+export function scheduleSlotClaimUserId(slot: any): string {
+  return String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+}
+
+/** Prefer whichever slot row carries a fresher claim (backend vs local optimistic). */
+export function mergeScheduleSlotClaimState(prev: any, next: any) {
+  return pickFresherScheduleSlot(prev, next);
+}
+
 function resolveLiveRoomSlotTimeWindow(slot: any) {
   const explicitStart = Number(slot?.startMs || 0);
   const explicitEnd = Number(slot?.endMs || 0);

@@ -1,4 +1,4 @@
-import { getApiBase } from "@/src/lib/kristoEnv";
+import { resolveApiBase } from "@/src/lib/kristoEnv";
 
 type MemberDirectoryEntry = {
   name: string;
@@ -18,7 +18,7 @@ function toMediaStorageUrl(raw: unknown) {
     const v = String(raw || "").trim();
     if (!v) return "";
     if (/^(https?:|file:|data:image\/)/i.test(v)) return v;
-    const base = String(getApiBase() || "")
+    const base = String(resolveApiBase() || "")
       .trim()
       .replace(/\/+$/, "");
     if (!base) return v;
