@@ -9,10 +9,10 @@ import {
   resolvePostImageUri,
   resolvePostImageUris,
   resolveVideoUri,
-} from "@/src/components/homeFeed/homeFeedUtils";
-import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
-import { isFeedVideoItem } from "@/src/lib/homeFeedStore";
-import { peekCachedMediaPoster } from "@/src/lib/mediaPosterCache";
+} from "@/components/homeFeed/homeFeedUtils";
+import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/lib/brandedVideoPoster";
+import { isFeedVideoItem } from "@/lib/homeFeedStore";
+import { peekCachedMediaPoster } from "@/lib/mediaPosterCache";
 
 export type ChurchActivityLabel =
   | "TESTIMONY"

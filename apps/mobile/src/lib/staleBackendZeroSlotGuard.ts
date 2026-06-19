@@ -3,10 +3,10 @@ import {
   feedList,
   feedRemoveScheduleMirrors,
   getUserClaimedSlotEntries,
-} from "@/src/lib/homeFeedStore";
-import { isMediaScheduleFeedItem, isMediaScheduleFeedItemClosed } from "@/src/lib/mediaScheduleLock";
-import { normalizeLiveScheduleSlots } from "@/src/lib/scheduleSlotUtils";
-import { publishLiveEnded } from "@/src/lib/liveBridge";
+} from "@/lib/homeFeedStore";
+import { isMediaScheduleFeedItem, isMediaScheduleFeedItemClosed } from "@/lib/mediaScheduleFeedIdentify";
+import { normalizeLiveScheduleSlots } from "@/lib/scheduleSlotUtils";
+import { publishLiveEnded } from "@/lib/liveBridge";
 import {
   baseFeedId,
   collectScheduleAliasIds,
@@ -14,7 +14,7 @@ import {
   isLocalMediaScheduleId,
   resolveCanonicalScheduleFeedId,
   resolveLiveRingCanonicalFeedId,
-} from "@/src/lib/scheduleSlotUtils";
+} from "@/lib/scheduleSlotUtils";
 
 function isMediaScheduleRow(item: any): boolean {
   if (!item || typeof item !== "object") return false;
@@ -266,7 +266,7 @@ export async function cleanupStaleMediaSchedulePair(input: {
   const churchId = String(input.churchId || "").trim();
   const reason = String(input.reason || "stale-schedule-pair-cleanup").trim();
 
-  const { cleanupStaleMediaScheduleFeedRow } = await import("@/src/lib/staleMediaScheduleCleanup");
+  const { cleanupStaleMediaScheduleFeedRow } = await import("@/lib/staleMediaScheduleCleanup");
   const backendResult = await cleanupStaleMediaScheduleFeedRow({
     feedId,
     churchId,

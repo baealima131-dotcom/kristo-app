@@ -1,5 +1,5 @@
-import { feedRenderKey } from "./homeFeedUtils";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { feedRenderKey } from "@/components/homeFeed/homeFeedRowKeys";
+import { baseFeedId } from "@/lib/scheduleSlotUtils";
 
 export function homeFeedBackendRowsDigest(rows: any[]): string {
   return rows.map((row) => homeFeedRowCardFingerprint(row)).join("\n");

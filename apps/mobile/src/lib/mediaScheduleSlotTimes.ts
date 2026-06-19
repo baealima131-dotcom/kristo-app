@@ -1,16 +1,16 @@
-import { isPendingLocalMediaScheduleRow } from "@/src/lib/mediaSchedulePendingSync";
-import { feedList } from "@/src/lib/homeFeedStore";
+import { isPendingLocalMediaScheduleRow } from "@/lib/mediaSchedulePendingSync";
+import { feedList } from "@/lib/homeFeedStore";
+import { isMediaScheduleFeedItemClosed } from "@/lib/mediaScheduleFeedIdentify";
 import {
   findActiveMediaScheduleForChurch,
   findMediaScheduleFeedForChurch,
-  isMediaScheduleFeedItemClosed,
-} from "@/src/lib/mediaScheduleLock";
+} from "@/lib/mediaScheduleChurchFinders";
 import {
   baseFeedId,
   parseSlotEndMs,
   parseSlotStartMs,
   resolveCanonicalScheduleFeedId,
-} from "@/src/lib/scheduleSlotUtils";
+} from "@/lib/scheduleSlotUtils";
 
 export type MediaSlotTimeWindow = {
   startMs: number;

@@ -2,15 +2,19 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "
 import {
   Image,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   View,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import PagerView from "@/src/components/PagerView";
+import { Ionicons } from "@expo/vector-icons";
+import PagerView from "@/components/PagerView";
 import { ImagePostCard } from "./ImagePostCard";
+import { HomeFeedImagePreviewRoot, isHomeFeedImagePreviewOpen, openHomeFeedImagePreview, useHomeFeedImagePreviewHost } from "./HomeFeedImagePreviewModal";
 import type { HomeFeedPostAccent } from "./homeFeedUtils";
+import { HOME_FEED_GOLD_SOFT } from "./theme";
 
 type Props = {
   postId?: string;
@@ -21,6 +25,10 @@ type Props = {
 };
 
 const MAX_CAROUSEL_IMAGES = 5;
+
+function isChurchRoomImagePreviewAccent(accent?: HomeFeedPostAccent | null) {
+  return accent === "testimony" || accent === "announcement";
+}
 
 function logCarouselPageChange(postId: string, index: number, imageCount: number) {
   console.log("KRISTO_IMAGE_CAROUSEL_PAGE_CHANGE", {
@@ -45,6 +53,7 @@ export const ImagePostCarousel = memo(function ImagePostCarousel({
   accent,
 }: Props) {
   const [activeIndex, setActiveIndex] = useState(0);
+  const isPreviewHost = useHomeFeedImagePreviewHost();
   const pagerRef = useRef<any>(null);
   const touchLoggedRef = useRef(false);
   const blockedLoggedRef = useRef(false);
@@ -61,8 +70,39 @@ export const ImagePostCarousel = memo(function ImagePostCarousel({
 
   const imageCount = uris.length;
   const carouselEnabled = imageCount > 1;
+  const previewEnabled = isChurchRoomImagePreviewAccent(accent) && imageCount > 0;
+
+  const urisKey = useMemo(() => uris.join("|"), [uris]);
+
+  const openPreview = useCallback(() => {
+    openHomeFeedImagePreview(uris, activeIndex);
+  }, [activeIndex, uris]);
+
+  const previewHost = isPreviewHost ? <HomeFeedImagePreviewRoot /> : null;
+
+  const renderPreviewButton = useCallback(
+    (placement: "single" | "multi") => {
+      if (!previewEnabled) return null;
+      return (
+        <Pressable
+          onPress={openPreview}
+          style={[
+            styles.previewButton,
+            placement === "multi" ? styles.previewButtonMulti : styles.previewButtonSingle,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Preview image"
+          hitSlop={8}
+        >
+          <Ionicons name="expand-outline" size={16} color={HOME_FEED_GOLD_SOFT} />
+        </Pressable>
+      );
+    },
+    [openPreview, previewEnabled]
+  );
 
   useEffect(() => {
+    if (isHomeFeedImagePreviewOpen()) return;
     setActiveIndex(0);
     touchLoggedRef.current = false;
     blockedLoggedRef.current = false;
@@ -72,7 +112,7 @@ export const ImagePostCarousel = memo(function ImagePostCarousel({
         pagerRef.current?.setPageWithoutAnimation?.(0);
       } catch {}
     });
-  }, [carouselEnabled, uris.join("|")]);
+  }, [carouselEnabled, urisKey]);
 
   useEffect(() => {
     if (!carouselEnabled) return;
@@ -128,16 +168,23 @@ export const ImagePostCarousel = memo(function ImagePostCarousel({
 
   if (imageCount <= 1) {
     return (
-      <ImagePostCard
-        imageUri={uris[0] || ""}
-        fallback={fallback}
-        style={style}
-        accent={accent}
-      />
+      <>
+        <View style={[styles.wrap, style]}>
+          <ImagePostCard
+            imageUri={uris[0] || ""}
+            fallback={fallback}
+            style={styles.pageImage}
+            accent={accent}
+          />
+        {previewEnabled ? renderPreviewButton("single") : null}
+        </View>
+        {previewHost}
+      </>
     );
   }
 
   return (
+    <>
     <View
       style={[styles.wrap, style]}
       pointerEvents="auto"
@@ -172,6 +219,8 @@ export const ImagePostCarousel = memo(function ImagePostCarousel({
         </Text>
       </View>
 
+      {previewEnabled ? renderPreviewButton("multi") : null}
+
       <View pointerEvents="none" style={styles.dotsRow}>
         {uris.map((uri, index) => (
           <View
@@ -181,6 +230,8 @@ export const ImagePostCarousel = memo(function ImagePostCarousel({
         ))}
       </View>
     </View>
+    {previewHost}
+    </>
   );
 });
 
@@ -219,6 +270,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
     letterSpacing: 0.2,
+  },
+  previewButton: {
+    position: "absolute",
+    right: 14,
+    zIndex: 4,
+    width: 36,
+    height: 36,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(3,5,12,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(201,169,98,0.45)",
+    shadowColor: "#000",
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
+  previewButtonSingle: {
+    top: 14,
+  },
+  previewButtonMulti: {
+    top: "46%",
+    marginTop: -18,
   },
   dotsRow: {
     position: "absolute",

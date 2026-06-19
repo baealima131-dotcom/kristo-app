@@ -6,24 +6,23 @@ import {
   isHomeFeedScheduleSlotRowVisible,
   isMediaLiveSlotsHomeFeedRow,
   sortHomeFeedScheduleSlotRows,
-} from "@/src/components/homeFeed/homeFeedUtils";
+} from "@/components/homeFeed/homeFeedUtils";
 import {
   injectClaimStoreScheduleRows,
   mergeScheduleSlotClaimPreservingLocal,
   overlayStableClaimsOnFeedRows,
-} from "@/src/lib/claimStateMerge";
-import { getRingClaimHints } from "@/src/lib/homeFeedStore";
-import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
-import {
-  resolveRingMergedScheduleRows,
-} from "@/src/lib/liveScheduleRing";
-import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
-import { filterOutDeletedScheduleRows, getDeletedScheduleFeedIds } from "@/src/lib/deletedScheduleRegistry";
+} from "@/lib/claimStateMerge";
+import { getRingClaimHints } from "@/lib/homeFeedStore";
+import { isMediaScheduleFeedItem } from "@/lib/mediaScheduleFeedIdentify";
+import { peekHomeFeedBackendRowsMemory } from "@/lib/homeFeedBackendRowsMemory";
+import { peekHomeFeedRowsCacheSync } from "@/components/homeFeed/homeFeedRowsCache";
+import { filterOutDeletedScheduleRows, getDeletedScheduleFeedIds } from "@/lib/deletedScheduleRegistry";
+import { resolveRingMergedScheduleRows } from "@/lib/liveScheduleRing";
 import {
   applyRingClaimHintsToScheduleSlots,
   baseFeedId,
   scheduleSlotClaimUserId,
-} from "@/src/lib/scheduleSlotUtils";
+} from "@/lib/scheduleSlotUtils";
 
 export type LiveSlotsCatalog = {
   myChurch: any[];
@@ -37,6 +36,12 @@ export type LiveSlotsBackendSourceSnapshot = {
   routeSlotCount: number;
   sourceUsed: "backend" | "local" | "empty";
 };
+
+function peekCachedHomeFeedBackendRows(): any[] {
+  const memory = peekHomeFeedBackendRowsMemory();
+  if (memory.length) return memory;
+  return peekHomeFeedRowsCacheSync();
+}
 
 function isLiveSlotsScheduleSourceRow(row: any) {
   return isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row) || isMediaScheduleFeedItem(row);
@@ -144,7 +149,7 @@ export function resolveLiveSlotsBackendFeedRows(input: {
   const viewerCid = String(input.viewerChurchId || "").trim();
   const churchRows = filterOutDeletedScheduleRows((input.churchBackendRows || []).filter(Boolean));
   const globalRows = filterOutDeletedScheduleRows((input.globalBackendRows || []).filter(Boolean));
-  const cachedRows = filterOutDeletedScheduleRows(getCachedHomeFeedBackendRows());
+  const cachedRows = filterOutDeletedScheduleRows(peekCachedHomeFeedBackendRows());
   const localRows = filterOutDeletedScheduleRows(Array.isArray(input.localRows) ? input.localRows : []);
   const churchFeedLoaded = input.churchFeedLoaded === true;
 

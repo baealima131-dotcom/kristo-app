@@ -1,10 +1,10 @@
 import { Image } from "react-native";
-import { getHomeFeedPosterLoadTimeoutMs, withPreviewTimeout } from "@/src/lib/videoGridThumbnail";
+import { getHomeFeedPosterLoadTimeoutMs, withPreviewTimeout } from "@/lib/videoGridThumbnail";
 import {
   isVideoPost,
   resolvePosterUri,
   resolveVideoUri,
-} from "@/src/components/homeFeed/homeFeedUtils";
+} from "@/components/homeFeed/homeFeedUtils";
 
 import {
   HOME_FEED_PLAYER_WARM_AHEAD,
@@ -14,17 +14,22 @@ import {
   getFirstHomeFeedVideoPlaybackPlans,
   logHomeFeedVideoQualityTrace,
   resolveHomeFeedVideoPlaybackPlan,
-} from "@/src/lib/homeFeedVideoQuality";
+} from "@/lib/homeFeedVideoPlaybackPlan";
+import {
+  markHomeFeedVideoUrlBufferedAhead,
+  unmarkHomeFeedVideoUrlBufferedAhead,
+  wasHomeFeedVideoUrlBufferedAhead,
+} from "@/lib/homeFeedVideoWarmRegistry";
 import {
   logHomeFeedNetworkTrace,
   markVideoHeadWarmed,
   wasVideoHeadRecentlyWarmed,
-} from "@/src/lib/homeFeedNetwork";
+} from "@/lib/homeFeedNetwork";
 import {
   isHomeFeedActiveFirstFrameReady,
   subscribeHomeFeedActiveFirstFrame,
-} from "@/src/lib/homeFeedVideoReadiness";
-import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
+} from "@/lib/homeFeedVideoReadiness";
+import { shouldDeferBackgroundMediaJobs } from "@/lib/homeFeedWatchPlaybackPriority";
 
 const MAX_VIDEO_CONCURRENCY = 2;
 const MAX_POSTER_CONCURRENCY = 2;
@@ -50,7 +55,8 @@ const ACTIVE_INDEX_VIDEO_WARM_MAX = 2;
 const WINDOW_EXPAND_VIDEO_WARM_MAX = 3;
 const POSTER_WARM_AHEAD_COUNT = 3;
 
-const warmedVideoUrls = new Set<string>();
+export { wasHomeFeedVideoUrlBufferedAhead } from "@/lib/homeFeedVideoWarmRegistry";
+
 const warmedPosterUrls = new Set<string>();
 const inflightVideoUrls = new Set<string>();
 const inflightPosterUrls = new Set<string>();
@@ -285,12 +291,6 @@ async function warmVideoUrlNetwork(
   throw new Error("video-warm-failed");
 }
 
-export function wasHomeFeedVideoUrlBufferedAhead(videoUrl: string): boolean {
-  const url = normalizeUrl(videoUrl);
-  if (!url) return false;
-  return warmedVideoUrls.has(url);
-}
-
 export function wasHomeFeedPosterWarmed(posterUrl: string): boolean {
   const url = normalizeUrl(posterUrl);
   if (!url) return false;
@@ -467,7 +467,7 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
   const targets = dedupeTargets(rawTargets).filter((t) => {
     const key = normalizeUrl(t.videoUrl);
     if (!key) return false;
-    if (wasVideoHeadRecentlyWarmed(key) || warmedVideoUrls.has(key) || inflightVideoUrls.has(key)) {
+    if (wasVideoHeadRecentlyWarmed(key) || wasHomeFeedVideoUrlBufferedAhead(key) || inflightVideoUrls.has(key)) {
       return false;
     }
     return true;
@@ -502,7 +502,7 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
       if (!isPrefetchAllowed(sessionId)) return;
 
       const videoUrl = normalizeUrl(target.videoUrl);
-      if (!videoUrl || warmedVideoUrls.has(videoUrl) || inflightVideoUrls.has(videoUrl)) {
+      if (!videoUrl || wasHomeFeedVideoUrlBufferedAhead(videoUrl) || inflightVideoUrls.has(videoUrl)) {
         continue;
       }
 
@@ -517,7 +517,7 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
         try {
           const result = await warmVideoUrlNetwork(videoUrl);
           if (!isPrefetchAllowed(sessionId)) return;
-          warmedVideoUrls.add(videoUrl);
+          markHomeFeedVideoUrlBufferedAhead(videoUrl);
           console.log("KRISTO_VIDEO_BUFFER_AHEAD_DONE", {
             urlHost: host,
             status: result.status,
@@ -627,7 +627,7 @@ async function warmStartupVideoPlan(
 ): Promise<"ok" | "failed" | "skip"> {
   const target = normalizeUrl(plan.startupUri);
   if (!isNetworkVideoUrl(target)) return "skip";
-  if (warmedVideoUrls.has(target)) return "ok";
+  if (wasHomeFeedVideoUrlBufferedAhead(target)) return "ok";
   if (inflightVideoUrls.has(target)) return "skip";
 
   inflightVideoUrls.add(target);
@@ -646,7 +646,7 @@ async function warmStartupVideoPlan(
       rangeHeader: isFirst ? FIRST_VIDEO_RANGE_BYTES : RANGE_BYTES,
       timeoutMs,
     });
-    warmedVideoUrls.add(target);
+    markHomeFeedVideoUrlBufferedAhead(target);
     logHomeFeedVideoQualityTrace({
       event: "prewarm-done",
       postId: plan.postId,
@@ -656,7 +656,7 @@ async function warmStartupVideoPlan(
     });
     return "ok";
   } catch {
-    warmedVideoUrls.delete(target);
+    unmarkHomeFeedVideoUrlBufferedAhead(target);
     logHomeFeedVideoQualityTrace({
       event: "prewarm-failed",
       postId: plan.postId,
@@ -705,7 +705,7 @@ export async function earlyWarmHomeFeedFirstVideo(
 
   if (!url) return null;
 
-  if (warmedVideoUrls.has(url)) {
+  if (wasHomeFeedVideoUrlBufferedAhead(url)) {
     const cached = { rowId, url, status: 200, ms: 0, prewarmHit: true };
     console.log("KRISTO_FIRST_VIDEO_EARLY_WARM_DONE", { ...cached, reason: "already-warmed" });
     return cached;
@@ -725,7 +725,7 @@ export async function earlyWarmHomeFeedFirstVideo(
       timeoutMs: FIRST_VIDEO_WARM_TIMEOUT_MS,
     });
     const ok = result.status === 206 || result.status === 200;
-    if (ok) warmedVideoUrls.add(url);
+    if (ok) markHomeFeedVideoUrlBufferedAhead(url);
     const done = {
       rowId,
       url,
@@ -819,7 +819,7 @@ export async function warmHomeFeedStartupMedia(
       for (const plan of remainingPlans) {
         const target = normalizeUrl(plan.startupUri);
         if (!isNetworkVideoUrl(target)) continue;
-        if (warmedVideoUrls.has(target) || inflightVideoUrls.has(target)) continue;
+        if (wasHomeFeedVideoUrlBufferedAhead(target) || inflightVideoUrls.has(target)) continue;
         enqueueVideoTask(() =>
           warmStartupVideoPlan(plan, false, VIDEO_WARM_FETCH_TIMEOUT_MS).then(() => {})
         );

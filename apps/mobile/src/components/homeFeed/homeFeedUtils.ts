@@ -4,32 +4,32 @@ import {
   isStandaloneAvatarFeedPost,
   isMediaScheduleFeedItem,
   resolveFeedItemAvatar,
-} from "@/src/lib/homeFeedStore";
-import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
-import { avatarCacheBust, normalizeAvatarUpdatedAt } from "@/src/lib/avatarFreshness";
+} from "@/lib/homeFeedStore";
+import { isHomeFeedReadyMediaItem } from "@/lib/mediaStatus";
+import { avatarCacheBust, normalizeAvatarUpdatedAt } from "@/lib/avatarFreshness";
 import {
   baseFeedId,
   parseSlotClockMs,
   parseSlotEndMs,
   parseSlotStartMs,
   resolveScheduleSlotVisualState,
-} from "@/src/lib/scheduleSlotUtils";
-import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
-import { resolveCachedMediaPoster } from "@/src/lib/mediaPosterCache";
-import { isKristoVerboseFeedDebug, isKristoVerboseFeedIdentityDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
+} from "@/lib/scheduleSlotUtils";
+import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/lib/brandedVideoPoster";
+import { resolveCachedMediaPoster } from "@/lib/mediaPosterCache";
+import { isKristoVerboseFeedDebug, isKristoVerboseFeedIdentityDebug, isKristoVerboseSlotTimeDebug } from "@/lib/kristoDebugFlags";
 import {
   logScheduleTopicTrace,
   resolveHomeFeedScheduleSlotLabels,
-} from "@/src/lib/slotTopicUtils";
+} from "@/lib/slotTopicUtils";
 import {
   isHiddenInvalidHomeFeedSchedule,
   markHiddenInvalidHomeFeedSchedule,
-} from "@/src/lib/homeFeedInvalidSchedules";
+} from "@/lib/homeFeedInvalidSchedules";
 import {
   logHomeFeedScheduleExpired,
   logHomeFeedScheduleRemoved,
-} from "@/src/lib/homeFeedScheduleLifecycle";
-import { areAllScheduleSlotsExpired } from "@/src/lib/mediaScheduleLock";
+} from "@/lib/homeFeedScheduleLifecycle";
+import { areAllScheduleSlotsExpired } from "@/lib/mediaScheduleSlotExpired";
 import {
   logHomeFeedFirstRows,
   logHomeFeedPersonalOrder,
@@ -37,20 +37,50 @@ import {
   resetHomeFeedPersonalOrderIfNeeded,
   resolveHomeFeedPersonalOrderContext,
   sortRowsByPersonalSeed,
-  arrangeHomeFeedVideoBlockFirst,
   homeFeedFreshnessSortMs,
   type HomeFeedPersonalOrderContext,
-} from "@/src/lib/homeFeedPersonalOrder";
-import { resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
-import { getSessionSync } from "@/src/lib/kristoSession";
-import { peekProfileScreenCache } from "@/src/lib/screenDataCache";
-import { tryRegisterStartupFirstVideoTarget } from "@/src/lib/homeFeedVideoPrime";
-import { isHomeFeedInlineVideoAutoplayEnabled, type HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
-import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
-import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
-import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
+} from "@/lib/homeFeedPersonalOrder";
+import { resolveMediaSlotTimeWindow } from "@/lib/mediaScheduleSlotTimeCore";
+import { getSessionSync } from "@/lib/kristoSession";
+import { peekProfileScreenCache } from "@/lib/screenDataCache";
+import { tryRegisterStartupFirstVideoTarget } from "@/lib/homeFeedVideoPrime";
+import { isHomeFeedInlineVideoAutoplayEnabled, type HomeFeedVideoOpenPayload } from "@/lib/homeFeedVideoMode";
+import { resolveHomeFeedVideoUri, homeFeedMediaUrl, isVideoPost, resolveVideoUri } from "@/components/homeFeed/homeFeedMediaUrl";
+import { feedRenderKey } from "@/components/homeFeed/homeFeedRowKeys";
+import {
+  collectFeedVideoPosterCandidates,
+  inferPosterUriFromVideoUrl,
+  isInferredPosterUriForVideo,
+  isValidVideoPosterUri,
+  resolveBestFeedPosterUri,
+  resolvePosterUri,
+  resolvePosterSeedForVideo,
+  resolveSavedFeedVideoPosterUri,
+} from "@/components/homeFeed/homeFeedPosterCandidates";
+import { resolveHomeFeedVideoDisplayType } from "@/lib/homeFeedVideoDisplayType";
+import { resolveVideoDurationMs } from "@/lib/mediaVideoPoster";
 
-const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+export {
+  feedRenderKey,
+} from "@/components/homeFeed/homeFeedRowKeys";
+export {
+  homeFeedMediaUrl,
+  isVideoPost,
+  resolveHomeFeedRowPlaybackUrl,
+  resolveHomeFeedVideoUri,
+  resolveStablePosterVideoUrl,
+  resolveVideoUri,
+} from "@/components/homeFeed/homeFeedMediaUrl";
+export {
+  collectFeedVideoPosterCandidates,
+  inferPosterUriFromVideoUrl,
+  isInferredPosterUriForVideo,
+  isLikelySyntheticPosterPath,
+  isValidVideoPosterUri,
+  resolveBestFeedPosterUri,
+  resolvePosterUri,
+  resolveSavedFeedVideoPosterUri,
+} from "@/components/homeFeed/homeFeedPosterCandidates";
 
 const CHURCH_ROOM_MEMBER_SOURCES = new Set(["testimony", "post", "announcement", "counsel"]);
 
@@ -404,16 +434,6 @@ export function resolveFeedIdentitySubline(item: any, whenLabel: string) {
   return [mediaName, whenLabel].filter(Boolean).join(" • ");
 }
 
-export function homeFeedMediaUrl(raw: unknown) {
-  const v = String(raw || "").trim();
-  if (!v) return "";
-  if (isBrandedPosterUri(v)) return "";
-  if (v.startsWith("data:image/")) return v;
-  if (/^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
-  if (v.startsWith("//")) return `https:${v}`;
-  return `${API_BASE}${v.startsWith("/") ? "" : "/"}${v}`;
-}
-
 export type HomeFeedDisplayAvatar = {
   uri: string;
   backupUri: string;
@@ -660,15 +680,6 @@ export function homeFeedCommentPostId(item: any) {
 }
 
 /** FlatList row key — unique per expanded slot card. */
-export function feedRenderKey(item: any) {
-  // Endless-feed recycled rows reuse a real post id (for likes/comments) but need
-  // a unique render key per cycle so React/FlatList don't collapse duplicates.
-  const recycleKey = String(item?.homeFeedRecycleKey || "").trim();
-  if (recycleKey) return recycleKey;
-  const id = String(item?.id || item?.feedOriginId || "").trim();
-  if (item?.homeFeedSlotExpanded || /:slot:\d+/i.test(id)) return id;
-  return baseFeedId(id);
-}
 
 function resolveHomeFeedSlotNumber(slot: any, fallback: number) {
   const n = Number(slot?.slot || slot?.slotNumber || slot?.order || 0);
@@ -996,13 +1007,11 @@ function sortBucketByPersonalSeed(
   ctx: HomeFeedPersonalOrderContext,
   nowMs: number
 ) {
-  return arrangeHomeFeedVideoBlockFirst(
+  return sortRowsByPersonalSeed(
     rows,
     ctx,
     (row) => feedRenderKey(row),
-    (row) => homeFeedFreshnessSortMs(row, nowMs, isVideoPost(row)),
-    10,
-    4
+    (row) => homeFeedFreshnessSortMs(row, nowMs, isVideoPost(row))
   );
 }
 
@@ -1030,20 +1039,58 @@ function interleaveHomeFeedPostRows(
   personalCtx: HomeFeedPersonalOrderContext,
   nowMs: number
 ) {
-  const sorted = sortBucketByPersonalSeed(postRows, personalCtx, nowMs);
+  type PostBucket = Exclude<HomeFeedRowBucket, "schedule" | "live">;
+  const buckets: Record<PostBucket, any[]> = {
+    global_media: [],
+    church_media: [],
+    church_post: [],
+  };
 
-  const videos = sorted.filter((row) => isVideoPost(row));
-  const posts = sorted.filter((row) => !isVideoPost(row));
+  for (const row of postRows) {
+    const bucket = classifyHomeFeedPostRowBucket(row, viewerChurchId);
+    if (bucket === "live" || bucket === "schedule") continue;
+    buckets[bucket].push(row);
+  }
 
-  const output = [...videos, ...posts];
+  for (const bucket of HOME_FEED_POST_INTERLEAVE_PATTERN) {
+    buckets[bucket] = sortBucketByPersonalSeed(buckets[bucket], personalCtx, nowMs);
+  }
 
-  console.log("KRISTO_HOME_FEED_POST_ROWS_VIDEO_FIRST", {
+  const output: any[] = [];
+  let lastChurchId = "";
+  let patternStart = 0;
+
+  const hasRemaining = () =>
+    HOME_FEED_POST_INTERLEAVE_PATTERN.some((bucket) => buckets[bucket].length > 0);
+
+  while (hasRemaining()) {
+    let picked: any = null;
+    for (let offset = 0; offset < HOME_FEED_POST_INTERLEAVE_PATTERN.length; offset += 1) {
+      const bucket =
+        HOME_FEED_POST_INTERLEAVE_PATTERN[
+          (patternStart + offset) % HOME_FEED_POST_INTERLEAVE_PATTERN.length
+        ];
+      picked = pickInterleaveRow(bucket, buckets, lastChurchId);
+      if (picked) {
+        patternStart = (patternStart + offset + 1) % HOME_FEED_POST_INTERLEAVE_PATTERN.length;
+        break;
+      }
+    }
+    if (!picked) break;
+    output.push(picked);
+    lastChurchId = homeFeedRowChurchId(picked);
+  }
+
+  const videos = output.filter((row) => isVideoPost(row));
+  const posts = output.filter((row) => !isVideoPost(row));
+
+  console.log("KRISTO_HOME_FEED_POST_ROWS_INTERLEAVED", {
     inputCount: postRows.length,
     outputCount: output.length,
     videos: videos.length,
     posts: posts.length,
     viewerChurchId: viewerChurchId || null,
-    firstKinds: output.slice(0, 12).map((row) => isVideoPost(row) ? "video" : "post"),
+    firstKinds: output.slice(0, 12).map((row) => (isVideoPost(row) ? "video" : "post")),
     firstIds: output.slice(0, 12).map((row) => feedRenderKey(row) || String(row?.id || "")),
   });
 
@@ -1723,29 +1770,6 @@ export function resolvePostAvatar(item: any) {
   return resolveHomeFeedDisplayAvatar(item).uri;
 }
 
-export function resolveVideoUri(item: any) {
-  const local = String(item?.localVideoUri || "").trim();
-  if (local.startsWith("file://")) return local;
-
-  const isVideoTyped =
-    String(item?.mediaType || "").trim().toLowerCase() === "video" ||
-    String(item?.type || "").trim().toLowerCase() === "video" ||
-    String(item?.kind || "").trim().toLowerCase() === "media";
-
-  for (const key of ["videoUrl", "videoUri", "mediaUrl", "url"]) {
-    const raw = String(item?.[key] || "").trim();
-    if (!raw) continue;
-    const resolved = homeFeedMediaUrl(raw);
-    if (!resolved) continue;
-    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(resolved) || isVideoTyped) return resolved;
-  }
-
-  const mediaUri = homeFeedMediaUrl(item?.mediaUri || "");
-  if (mediaUri && /\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(mediaUri)) return mediaUri;
-
-  return homeFeedMediaUrl(item?.videoUrl || "");
-}
-
 function homeFeedAvatarUriCandidates(item: any): string[] {
   return [
     item?.authorAvatarUri,
@@ -1960,115 +1984,6 @@ export function resolveImageUri(item: any) {
 }
 
 /** Infer upload/R2 poster path from video URL (matches server poster conventions). */
-function resolvePosterSeedForVideo(videoUrl: string): string {
-  try {
-    const seed = (globalThis as any).__KRISTO_FEED_VIDEO_POSTER_SEED__;
-    if (!seed || typeof seed !== "object") return "";
-    const seedVideo = String(seed.videoUrl || "").trim().split("?")[0];
-    const seedPoster = String(seed.posterUri || "").trim();
-    const normalized = String(videoUrl || "").trim().split("?")[0];
-    if (!seedVideo || !seedPoster || !normalized || seedVideo !== normalized) return "";
-    if (isBrandedPosterUri(seedPoster)) return "";
-    return homeFeedMediaUrl(seedPoster);
-  } catch {
-    return "";
-  }
-}
-
-export function inferPosterUriFromVideoUrl(videoUrl: string): string {
-  const raw = String(videoUrl || "").trim().split("?")[0];
-  if (!raw) return "";
-
-  const uploadsMatch = raw.match(/\/uploads\/media\/(?:[^/]+\/)*([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
-  if (uploadsMatch?.[1]) {
-    return homeFeedMediaUrl(`/uploads/media/posters/${uploadsMatch[1]}.jpg`);
-  }
-
-  const r2Marker = "/church-videos/";
-  const r2Idx = raw.indexOf(r2Marker);
-  if (r2Idx >= 0) {
-    const tail = raw.slice(r2Idx + r2Marker.length);
-    const match = tail.match(/^([^/]+)\/([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
-    if (match?.[1] && match?.[2]) {
-      const base = raw.slice(0, r2Idx);
-      return `${base}/church-video-posters/${match[1]}/${match[2]}.jpg`;
-    }
-  }
-
-  return "";
-}
-
-/** Ordered poster candidates for Home Feed — cache + metadata + inferred, never branded. */
-export function collectFeedVideoPosterCandidates(item: any, postId = ""): string[] {
-  const video = resolveVideoUri(item);
-  if (!video) return [];
-
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const pid = String(postId || item?.id || "").trim();
-
-  const push = (raw: unknown) => {
-    const resolved = homeFeedMediaUrl(raw);
-    if (!resolved || isBrandedPosterUri(resolved)) return;
-    if (!isValidVideoPosterUri(resolved, video)) return;
-    const key = resolved.split("?")[0];
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(resolved);
-  };
-
-  const cached = resolveCachedMediaPoster(pid, video);
-  if (cached) push(cached);
-
-  for (const raw of [
-    item?.posterUri,
-    item?.videoPosterUri,
-    item?.thumbnailUri,
-    item?.thumbnailUrl,
-    item?.mediaPosterUri,
-    item?.posterUrl,
-    item?.coverUrl,
-    item?.firstFrameUrl,
-    item?.coverImage,
-    item?.coverImageUrl,
-    item?.previewUrl,
-    item?.thumbnail,
-    item?.poster,
-  ]) {
-    push(raw);
-  }
-
-  push(resolvePosterSeedForVideo(video));
-  push(inferPosterUriFromVideoUrl(video));
-
-  return out;
-}
-
-export function resolveBestFeedPosterUri(item: any, postId = ""): string {
-  return collectFeedVideoPosterCandidates(item, postId)[0] || "";
-}
-
-/** Saved backend poster from upload metadata — excludes inferred/branded guesses. */
-export function resolveSavedFeedVideoPosterUri(item: any, videoUrl?: string): string {
-  const video = String(videoUrl || resolveVideoUri(item) || "").trim();
-  if (!item || !video) return "";
-
-  for (const raw of [
-    item?.posterUri,
-    item?.videoPosterUri,
-    item?.thumbnailUri,
-    item?.thumbnailUrl,
-    item?.posterUrl,
-  ]) {
-    const uri = homeFeedMediaUrl(raw);
-    if (!uri || isBrandedPosterUri(uri)) continue;
-    if (!isValidVideoPosterUri(uri, video)) continue;
-    if (isInferredPosterUriForVideo(uri, video)) continue;
-    return uri;
-  }
-
-  return "";
-}
 
 export type HomeFeedPosterSourceKind =
   | "cache"
@@ -2099,9 +2014,6 @@ export function classifyHomeFeedPosterUriSource(
   return "metadata";
 }
 
-export function resolvePosterUri(item: any) {
-  return resolveBestFeedPosterUri(item, String(item?.id || "").trim());
-}
 
 export type PosterMetadataSnapshot = {
   posterUri: string | null;
@@ -2213,33 +2125,6 @@ export function inferPreviewVideoUriFromVideoUrl(_videoUrl: string): string {
   return "";
 }
 
-export function isLikelySyntheticPosterPath(posterUri: string): boolean {
-  const value = String(posterUri || "").trim().toLowerCase().split("?")[0];
-  if (!value) return false;
-  return (
-    value.includes("/church-video-posters/") || value.includes("/uploads/media/posters/")
-  );
-}
-
-export function isInferredPosterUriForVideo(posterUri: string, videoUri: string): boolean {
-  const poster = String(posterUri || "").trim().split("?")[0];
-  const video = String(videoUri || "").trim();
-  if (!poster || !video) return false;
-  const inferred = inferPosterUriFromVideoUrl(video);
-  if (!inferred) return isLikelySyntheticPosterPath(poster);
-  return poster === inferred.split("?")[0];
-}
-
-export function isValidVideoPosterUri(posterUri: string, videoUri: string) {
-  const poster = String(posterUri || "").trim();
-  const video = String(videoUri || "").trim();
-  if (!poster) return false;
-  if (isBrandedPosterUri(poster)) return false;
-  if (video && poster === video) return false;
-  if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(poster)) return false;
-  return true;
-}
-
 export function hasBrandedVideoPoster(item: any) {
   return itemUsesBrandedVideoPoster(item);
 }
@@ -2253,10 +2138,6 @@ export function hasHomeFeedVideoPoster(item: any, videoUri?: string) {
   return hasBrandedVideoPoster(item);
 }
 
-export function isVideoPost(item: any) {
-  const uri = resolveVideoUri(item);
-  return Boolean(uri) && (item?.mediaType === "video" || isFeedVideoItem(item));
-}
 
 export function buildHomeFeedVideoOpenPayload(item: any): HomeFeedVideoOpenPayload | null {
   if (!item || !isVideoPost(item)) return null;

@@ -13,7 +13,7 @@ import {
   logMoreDeferredRefreshSkip,
   logMoreDeferredRefreshStart,
   isMoreTabTransitionBlocking,
-} from "./refreshCoordinator";
+} from "./moreTabTransition";
 import { shouldPauseBackgroundProfileRefresh } from "./mediaScheduleFlowFlags";
 import { isSessionExitInProgress } from "./kristoSessionExitFlags";
 import {
@@ -22,7 +22,8 @@ import {
   importMediaPosterCacheSnapshot,
 } from "./mediaPosterCache";
 
-export const SCREEN_CACHE_TTL_MS = 45000;
+import { SCREEN_CACHE_TTL_MS, isScreenCacheFresh } from "./screenDataCacheFresh";
+export { SCREEN_CACHE_TTL_MS, isScreenCacheFresh } from "./screenDataCacheFresh";
 /** Fast re-check for church profile block on Church Overview focus. */
 export const CHURCH_OVERVIEW_PROFILE_REFRESH_MS = 4000;
 
@@ -93,10 +94,6 @@ function profileScreenKey(userId: string) {
 
 function ministriesKey(churchId: string, userId: string) {
   return `${String(churchId || "").trim().toUpperCase()}:${String(userId || "").trim()}`;
-}
-
-export function isScreenCacheFresh(updatedAt?: number, ttlMs = SCREEN_CACHE_TTL_MS) {
-  return Boolean(updatedAt) && Date.now() - Number(updatedAt) < ttlMs;
 }
 
 export function peekChurchOverviewCache(churchId: string, userId: string) {
@@ -291,6 +288,46 @@ export async function saveMinistriesCache(payload: MinistriesCachePayload) {
   };
   ministriesMemory.set(key, next);
   await AsyncStorage.setItem(`${MINISTRIES_PREFIX}${key}`, JSON.stringify(next));
+}
+
+export async function upsertMinistryInMinistriesCache(args: {
+  churchId: string;
+  userId: string;
+  ministry: Record<string, unknown>;
+  churchLiveControlStatus?: string;
+}): Promise<MinistriesCachePayload | null> {
+  const churchId = String(args.churchId || "").trim();
+  const userId = String(args.userId || "").trim();
+  const ministryId = String(args.ministry?.id || "").trim();
+  if (!churchId || !userId || !ministryId) return null;
+
+  const existing =
+    (await getMinistriesCache(churchId, userId)) ||
+    ({
+      churchId,
+      userId,
+      items: [],
+      updatedAt: 0,
+    } as MinistriesCachePayload);
+
+  const items = Array.isArray(existing.items) ? [...existing.items] : [];
+  const idx = items.findIndex((row) => String((row as any)?.id || "").trim() === ministryId);
+  if (idx >= 0) {
+    items[idx] = { ...(items[idx] as Record<string, unknown>), ...args.ministry };
+  } else {
+    items.unshift(args.ministry);
+  }
+
+  const payload: MinistriesCachePayload = {
+    churchId,
+    userId,
+    items,
+    churchLiveControlStatus: args.churchLiveControlStatus ?? existing.churchLiveControlStatus,
+    updatedAt: Date.now(),
+  };
+
+  await saveMinistriesCache(payload);
+  return payload;
 }
 
 function parseChurchOverviewResponse(

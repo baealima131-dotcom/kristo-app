@@ -1,19 +1,19 @@
-import { apiGet } from "@/src/lib/kristoApi";
-import { feedSyncMediaScheduleFromBackend } from "@/src/lib/homeFeedStore";
+import { apiGet } from "@/lib/kristoApi";
+import { feedSyncMediaScheduleFromBackend } from "@/lib/homeFeedStore";
 import {
   prepareMediaScheduleFeedItemForClient,
   resolveChurchMediaScheduleFromFeedRows,
   summarizeActiveMediaSchedule,
-} from "@/src/lib/mediaScheduleLock";
+} from "@/lib/mediaScheduleLock";
 import {
   deriveMediaSlotDurationMin,
   materializeMediaSlotTimeFields,
-} from "@/src/lib/mediaScheduleSlotTimes";
+} from "@/lib/mediaScheduleSlotTimes";
 import {
   normalizeMediaScheduleBackendItem,
   replaceLocalScheduleWithBackend,
-} from "@/src/lib/mediaSchedulePendingSync";
-import { saveChurchProjectMeetingPlan, saveChurchProjectScheduleSlots } from "@/src/store/churchProjectMcScheduleStore";
+} from "@/lib/mediaSchedulePendingSync";
+import { saveChurchProjectMeetingPlan, saveChurchProjectScheduleSlots } from "@/store/churchProjectMcScheduleStore";
 
 export function mapBackendScheduleSlotsToSpeakerSlots(
   feedItem: any,

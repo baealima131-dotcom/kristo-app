@@ -5,8 +5,8 @@ import {
   resolveBestFeedPosterUri,
   resolvePostImageUri,
   resolveVideoUri,
-} from "@/src/components/homeFeed/homeFeedUtils";
-import type { ChurchPublicPost } from "@/src/lib/churchProfileApi";
+} from "@/components/homeFeed/homeFeedUtils";
+import type { ChurchPublicPost } from "@/lib/churchProfileApi";
 
 export function churchPublicPostToFeedItem(post: ChurchPublicPost): Record<string, unknown> {
   return {

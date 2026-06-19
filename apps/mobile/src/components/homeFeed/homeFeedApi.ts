@@ -1,20 +1,22 @@
-import { apiGet, apiPost } from "@/src/lib/kristoApi";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
-import { getSessionSync } from "@/src/lib/kristoSession";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { apiGet, apiPost } from "@/lib/kristoApi";
+import { getKristoHeaders } from "@/lib/kristoHeaders";
+import { getSessionSync } from "@/lib/kristoSession";
+import { baseFeedId } from "@/lib/scheduleSlotUtils";
 import { homeFeedRowKey, stableMergeHomeFeedRows } from "./homeFeedPagination";
 import { filterPhase1FeedRows, isHomeFeedExpandedScheduleSlotRow, normalizeHomeFeedApiRow } from "./homeFeedUtils";
-import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
-import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
-import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
+import { isHomeFeedReadyMediaItem } from "@/lib/mediaStatus";
+import { isMediaScheduleFeedItem } from "@/lib/homeFeedStore";
+import { parseChurchFeedListResponse } from "@/lib/mediaScheduleSilentReload";
+import { isMediaScheduleFeedItemClosed } from "@/lib/mediaScheduleFeedIdentify";
+import { areAllScheduleSlotsExpired } from "@/lib/mediaScheduleSlotExpired";
 import {
-  areAllScheduleSlotsExpired,
-  isMediaScheduleFeedItemClosed,
-} from "@/src/lib/mediaScheduleLock";
+  setHomeFeedBackendRowsMemory,
+  peekHomeFeedBackendRowsMemory,
+} from "@/lib/homeFeedBackendRowsMemory";
 import {
   logHomeFeedScheduleExpired,
   logHomeFeedScheduleRemoved,
-} from "@/src/lib/homeFeedScheduleLifecycle";
+} from "@/lib/homeFeedScheduleLifecycle";
 import {
   peekHomeFeedRowsCacheSync,
   saveHomeFeedRowsCache,
@@ -33,9 +35,14 @@ import {
   resolveHomeFeedRefreshMode,
   setHomeFeedFetchInflight,
   shouldHardRefreshHomeFeed,
-} from "@/src/lib/homeFeedNetwork";
+} from "@/lib/homeFeedNetwork";
 
 let lastFetchedHomeFeedRows: any[] = [];
+
+function syncHomeFeedBackendRowsMemory(rows: any[]) {
+  lastFetchedHomeFeedRows = rows;
+  setHomeFeedBackendRowsMemory(rows);
+}
 
 function isHomeFeedMediaScheduleBackendRow(row: any): boolean {
   if (!row || typeof row !== "object") return false;
@@ -215,7 +222,7 @@ async function commitHomeFeedBackendRows(rows: any[], snapshotRowIds?: string[])
   if (snapshotIds.length) {
     setBackendSnapshotRowIds(snapshotIds);
   }
-  lastFetchedHomeFeedRows = active;
+  syncHomeFeedBackendRowsMemory(active);
   await saveHomeFeedRowsCache(active, undefined, snapshotIds);
   return active;
 }
@@ -249,12 +256,16 @@ async function reconcileHomeFeedBackendCacheWithSnapshot(snapshot: any[]) {
 
 /** Last successful feed snapshot — memory first, then persisted AsyncStorage cache. */
 export function getCachedHomeFeedBackendRows(): any[] {
+  const memory = peekHomeFeedBackendRowsMemory();
+  if (memory.length) {
+    return filterActiveHomeFeedRows(memory);
+  }
   if (lastFetchedHomeFeedRows.length) {
     return filterActiveHomeFeedRows(lastFetchedHomeFeedRows);
   }
   const persisted = filterActiveHomeFeedRows(peekHomeFeedRowsCacheSync());
   if (persisted.length) {
-    lastFetchedHomeFeedRows = persisted;
+    syncHomeFeedBackendRowsMemory(persisted);
   }
   return lastFetchedHomeFeedRows;
 }
@@ -274,7 +285,7 @@ export async function persistHomeFeedBackendRowsSnapshot(minRows: number, userId
   const merged = getCachedHomeFeedBackendRows();
   if (!merged.length) return 0;
   const snapshot = merged.length >= minRows ? merged : merged.slice(0, minRows);
-  lastFetchedHomeFeedRows = snapshot;
+  syncHomeFeedBackendRowsMemory(snapshot);
   await saveHomeFeedRowsCache(
     snapshot,
     userId,
@@ -294,8 +305,8 @@ export async function purgeHomeFeedPostFromBackendCache(postId: string): Promise
   if (!target) return false;
 
   const before = lastFetchedHomeFeedRows.length;
-  lastFetchedHomeFeedRows = lastFetchedHomeFeedRows.filter(
-    (row) => !homeFeedRowMatchesPostId(row, target)
+  syncHomeFeedBackendRowsMemory(
+    lastFetchedHomeFeedRows.filter((row) => !homeFeedRowMatchesPostId(row, target))
   );
   const memoryPurged = before > lastFetchedHomeFeedRows.length;
 
@@ -478,7 +489,7 @@ async function appendHomeFeedBackendRows(pageRows: any[]) {
     ])
   );
 
-  lastFetchedHomeFeedRows = merged;
+  syncHomeFeedBackendRowsMemory(merged);
   setBackendSnapshotRowIds(snapshotIds);
   await saveHomeFeedRowsCache(merged, undefined, snapshotIds);
   return { merged, appended };

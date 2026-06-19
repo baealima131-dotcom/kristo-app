@@ -1,10 +1,10 @@
-import { apiGet } from "@/src/lib/kristoApi";
+import { apiGet } from "@/lib/kristoApi";
 import {
   isChurchMediaRouteFailure,
   mergeScheduleSubscriptionSignals,
   parseExplicitServerSubscriptionFromMediaRoute,
   readLocalScheduleEntitlementActive,
-} from "@/src/lib/churchSubscription";
+} from "@/lib/churchMediaRouteSubscription";
 
 export const CHURCH_RESOURCE_REFRESH_MS = 75000;
 

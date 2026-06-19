@@ -1,21 +1,22 @@
-import { DeviceEventEmitter } from "react-native";
-import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
-import { filterOutDeletedScheduleRows } from "@/src/lib/deletedScheduleRegistry";
+import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/lib/homeFeedStore";
+import { filterOutDeletedScheduleRows } from "@/lib/deletedScheduleRegistry";
 import {
   collectScheduleRowsForRingScan,
   injectClaimStoreScheduleRows,
   mergeScheduleFeedClaimRows,
   overlayStableClaimsOnFeedRows,
-} from "@/src/lib/claimStateMerge";
+} from "@/lib/claimStateMerge";
+import { isMediaScheduleFeedItem } from "@/lib/mediaScheduleFeedIdentify";
+import { isActiveScheduleSlot } from "@/lib/mediaScheduleSlotActive";
 import {
-  isActiveScheduleSlot,
-  isMediaScheduleFeedItem,
-} from "@/src/lib/mediaScheduleLock";
-import { isMediaSlotEndedOrStale, resolveCanonicalMediaScheduleForGuests, resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
+  isMediaSlotEndedOrStale,
+  resolveMediaSlotTimeWindow,
+} from "@/lib/mediaScheduleSlotTimeCore";
+import { resolveCanonicalMediaScheduleForGuests } from "@/lib/mediaScheduleSlotTimes";
 import {
   filterLocalRowsWhenBackendZeroSlots,
   purgeStaleLocalScheduleRowsWhenBackendZero,
-} from "@/src/lib/staleBackendZeroSlotGuard";
+} from "@/lib/staleBackendZeroSlotGuard";
 import {
   baseFeedId,
   collectScheduleAliasIds,
@@ -23,9 +24,24 @@ import {
   normalizeLiveScheduleSlots,
   resolveCanonicalScheduleFeedId,
   scheduleSlotClaimUserId,
-} from "@/src/lib/scheduleSlotUtils";
+} from "@/lib/scheduleSlotUtils";
 
-export const NEAR_LIVE_WINDOW_MS = 30 * 60 * 1000;
+import {
+  getSlotRingWindow,
+  isNearLiveOrActiveSlot,
+  isPersonalRingWindow,
+  NEAR_LIVE_WINDOW_MS,
+} from "@/lib/liveScheduleProtection";
+
+export {
+  findProtectedClaimableSchedule,
+  findProtectedNearLiveSchedule,
+  getSlotRingWindow,
+  isNearLiveOrActiveSlot,
+  isPersonalRingWindow,
+  NEAR_LIVE_WINDOW_MS,
+} from "@/lib/liveScheduleProtection";
+
 export const RING_RECOMPUTE_INTERVAL_MS = 20_000;
 
 export type ScheduleRingAlert = {
@@ -109,33 +125,6 @@ export function slotClaimedByUser(
   return localStoreClaimsSlot(slot, uid, feedId);
 }
 
-export function getSlotRingWindow(slot: any, index = 0, nowMs = Date.now()) {
-  const enriched = enrichScheduleSlot(slot, index, nowMs);
-  const startMs = Number(slot?.startMs) > 0 ? Number(slot.startMs) : enriched.startMs;
-  const endMs = Number(slot?.endMs) > 0 ? Number(slot.endMs) : enriched.endMs;
-  const isLiveNow = startMs > 0 && endMs > 0 && nowMs >= startMs && nowMs <= endMs;
-  const msUntilStart = startMs > nowMs ? startMs - nowMs : 0;
-
-  return {
-    startMs,
-    endMs,
-    isLiveNow,
-    msUntilStart,
-  };
-}
-
-export function isPersonalRingWindow(startMs: number, endMs: number, nowMs: number): boolean {
-  if (!startMs || endMs <= nowMs) return false;
-  if (nowMs >= startMs && nowMs <= endMs) return true;
-  const msUntilStart = startMs - nowMs;
-  return msUntilStart >= 0 && msUntilStart <= NEAR_LIVE_WINDOW_MS;
-}
-
-export function isNearLiveOrActiveSlot(slot: any, index = 0, nowMs = Date.now()): boolean {
-  const { startMs, endMs } = getSlotRingWindow(slot, index, nowMs);
-  return isPersonalRingWindow(startMs, endMs, nowMs);
-}
-
 export function ringColorForSlot(startMs: number, endMs: number, nowMs: number): string {
   const startsInMin = Math.ceil((startMs - nowMs) / 60000);
   const isLiveNow = nowMs >= startMs && nowMs <= endMs;
@@ -144,67 +133,6 @@ export function ringColorForSlot(startMs: number, endMs: number, nowMs: number):
   if (startsInMin <= 5) return "#F59E0B";
   if (startsInMin <= 15) return "#A78BFA";
   return "#38BDF8";
-}
-
-function isOpenClaimableScheduleSlot(slot: any, index = 0, nowMs = Date.now()): boolean {
-  if (!slot || typeof slot !== "object") return false;
-
-  const status = String(slot?.status || "").toLowerCase();
-  if (
-    status === "claimed" ||
-    status === "live" ||
-    status === "taken" ||
-    status === "closed" ||
-    status === "ended"
-  ) {
-    return false;
-  }
-  if (slot?.claimed === true || slot?.isClaimed === true) return false;
-
-  const claimedByUserId = String(
-    slot?.claimedByUserId || slot?.claimedBy?.userId || ""
-  ).trim();
-  if (claimedByUserId) return false;
-
-  const claimedBy = slot?.claimedBy;
-  if (
-    typeof claimedBy === "string" &&
-    claimedBy.trim() &&
-    claimedBy.trim().toLowerCase() !== "open"
-  ) {
-    return false;
-  }
-
-  const { startMs, endMs } = getSlotRingWindow(slot, index, nowMs);
-  if (endMs > 0 && nowMs > endMs) return false;
-  if (startMs > nowMs) return true;
-  if (endMs > nowMs) return true;
-  return false;
-}
-
-/** Protect open media schedule slots that members can still claim (not only near-live). */
-export function findProtectedClaimableSchedule(
-  items: any[],
-  churchId: string,
-  nowMs = Date.now()
-): { item: any; slot: any; index: number } | null {
-  const cid = String(churchId || "").trim();
-  if (!cid) return null;
-
-  for (const item of items) {
-    if (!isMediaScheduleRow(item)) continue;
-    if (String(item?.churchId || "").trim() !== cid) continue;
-
-    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-    for (let index = 0; index < slots.length; index += 1) {
-      const slot = slots[index];
-      if (isOpenClaimableScheduleSlot(slot, index, nowMs)) {
-        return { item, slot, index };
-      }
-    }
-  }
-
-  return null;
 }
 
 function buildClaimedPersonalAlert(
@@ -381,30 +309,6 @@ export function logRingToGuestCenterBridge(input: {
   guestSlotCount: number;
 }) {
   console.log("KRISTO_RING_TO_GUEST_CENTER_BRIDGE", input);
-}
-
-export function findProtectedNearLiveSchedule(
-  items: any[],
-  churchId: string,
-  nowMs = Date.now()
-): { item: any; slot: any; index: number } | null {
-  const cid = String(churchId || "").trim();
-  if (!cid) return null;
-
-  for (const item of items) {
-    if (!isMediaScheduleRow(item)) continue;
-    if (String(item?.churchId || "").trim() !== cid) continue;
-
-    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-    for (let index = 0; index < slots.length; index += 1) {
-      const slot = slots[index];
-      if (isNearLiveOrActiveSlot(slot, index, nowMs)) {
-        return { item, slot, index };
-      }
-    }
-  }
-
-  return null;
 }
 
 export function computeChurchScheduleTabLive(options: {
@@ -1089,21 +993,9 @@ export function buildProfileClaimedSchedules(options: {
   return result;
 }
 
-export const KRISTO_LIVE_RING_REFRESH = "kristo:live-ring-refresh";
-
-export type LiveRingRefreshPayload = {
-  reason: string;
-  at: number;
-};
-
-export function emitLiveRingRefresh(reason: string) {
-  DeviceEventEmitter.emit(KRISTO_LIVE_RING_REFRESH, {
-    reason: String(reason || "manual"),
-    at: Date.now(),
-  } satisfies LiveRingRefreshPayload);
-}
-
-export function onLiveRingRefresh(listener: (payload: LiveRingRefreshPayload) => void) {
-  const sub = DeviceEventEmitter.addListener(KRISTO_LIVE_RING_REFRESH, listener);
-  return () => sub.remove();
-}
+export {
+  KRISTO_LIVE_RING_REFRESH,
+  emitLiveRingRefresh,
+  onLiveRingRefresh,
+  type LiveRingRefreshPayload,
+} from "@/lib/liveRingRefreshEvents";

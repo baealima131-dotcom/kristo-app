@@ -1,8 +1,8 @@
-import { apiPost } from "@/src/lib/kristoApi";
-import { feedRemoveScheduleMirrors, clearScheduleClaimRuntimeState } from "@/src/lib/homeFeedStore";
+import { apiPost } from "@/lib/kristoApi";
+import { feedRemoveScheduleMirrors, clearScheduleClaimRuntimeState } from "@/lib/homeFeedStore";
 import {
   endLiveBridgeForStaleScheduleFeedId,
-} from "@/src/lib/staleBackendZeroSlotGuard";
+} from "@/lib/staleBackendZeroSlotGuard";
 
 export async function clearMediaScheduleSlotsOnBackend(input: {
   feedId: string;
@@ -128,4 +128,4 @@ export function shouldEndStaleMediaScheduleFeedRow(input: {
   return Number(input.remainingSlotCount || 0) === 0;
 }
 
-export { cleanupStaleMediaSchedulePair } from "@/src/lib/staleBackendZeroSlotGuard";
+export { cleanupStaleMediaSchedulePair } from "@/lib/staleBackendZeroSlotGuard";

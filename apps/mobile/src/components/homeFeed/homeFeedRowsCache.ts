@@ -1,10 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { getSessionSync } from "@/src/lib/kristoSession";
-import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { getSessionSync } from "@/lib/kristoSession";
+import { baseFeedId } from "@/lib/scheduleSlotUtils";
+import { feedRenderKey } from "@/components/homeFeed/homeFeedRowKeys";
 import {
-  feedRenderKey,
   normalizeHomeFeedApiRow,
-} from "@/src/components/homeFeed/homeFeedUtils";
+} from "@/components/homeFeed/homeFeedUtils";
 
 const STORAGE_PREFIX = "kristo_home_feed_rows_v1:";
 const SESSION_KEY = "kristo.session.v1";
@@ -266,6 +266,16 @@ export async function saveHomeFeedRowsCache(
 
   console.log("KRISTO_HOME_FEED_CACHE_SAVE", {
     count: normalized.length,
+    savedAt: payload.savedAt,
+    firstRowIds: normalized
+      .slice(0, 8)
+      .map((row) => String(row?.id || "").trim())
+      .filter(Boolean),
+    firstRenderKeys: normalized
+      .slice(0, 8)
+      .map((row) => feedRenderKey(row) || String(row?.id || "").trim())
+      .filter(Boolean),
+    snapshotRowIds: persistedSnapshotIds.slice(0, 12),
   });
 }
 

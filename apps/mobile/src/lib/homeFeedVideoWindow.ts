@@ -1,10 +1,7 @@
-import { wasHomeFeedVideoWatched } from "@/src/lib/homeFeedVideoRetention";
-import { homeFeedMediaUrl, resolveVideoUri } from "@/src/components/homeFeed/homeFeedUtils";
+import { wasHomeFeedVideoWatched } from "@/lib/homeFeedVideoRetention";
+import { resolveHomeFeedRowPlaybackUrl } from "@/components/homeFeed/homeFeedMediaUrl";
 
-export function resolveHomeFeedRowPlaybackUrl(row: any): string {
-  const original = resolveVideoUri(row);
-  return homeFeedMediaUrl(original) || original;
-}
+export { resolveHomeFeedRowPlaybackUrl };
 
 export type HomeFeedVideoWarmMode = "active" | "preload" | "warm" | "cache" | "off";
 

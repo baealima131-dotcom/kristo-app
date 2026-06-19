@@ -1,26 +1,24 @@
 import { Image } from "react-native";
+import { buildHomeFeedDisplayRows } from "@/components/homeFeed/homeFeedUtils";
 import {
-  buildHomeFeedDisplayRows,
-  homeFeedMediaUrl,
   isVideoPost,
-  resolvePosterUri,
-  resolveVideoUri,
-} from "@/src/components/homeFeed/homeFeedUtils";
-import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
-import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
-import { feedList } from "@/src/lib/homeFeedStore";
-import { markHomeFeedVideoPreloadReady } from "@/src/lib/homeFeedVideoReadiness";
-import { cacheVideoUrl, hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
+} from "@/components/homeFeed/homeFeedMediaUrl";
+import { resolvePosterUri } from "@/components/homeFeed/homeFeedPosterCandidates";
+import { getCachedHomeFeedBackendRows } from "@/components/homeFeed/homeFeedApi";
+import { hydrateHomeFeedRowsCacheFromStorage } from "@/components/homeFeed/homeFeedRowsCache";
+import { feedList } from "@/lib/homeFeedStore";
+import { markHomeFeedVideoPreloadReady } from "@/lib/homeFeedVideoReadiness";
+import { cacheVideoUrl, hydrateHomeFeedVideoDiskCache } from "@/lib/homeFeedVideoDiskCache";
 import {
   requestHomeFeedVideoPrime,
   markStartupFirstVideoPrepared,
   __resetHomeFeedVideoPrimeForTest,
-} from "@/src/lib/homeFeedVideoPrime";
-import type { KristoSession } from "@/src/lib/kristoSession";
-import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
-import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
-import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
-import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
+} from "@/lib/homeFeedVideoPrime";
+import type { KristoSession } from "@/lib/kristoSession";
+import { isLoggedOutFlagSet, setSessionSync } from "@/lib/kristoSession";
+import { isSessionExitInProgress } from "@/lib/kristoSessionExit";
+import { isHomeFeedInlineVideoAutoplayEnabled } from "@/lib/homeFeedVideoMode";
+import { shouldDeferBackgroundMediaJobs } from "@/lib/homeFeedWatchPlaybackPriority";
 
 /**
  * Consolidated Home Feed video startup/preload (TikTok-style, v1).
@@ -38,10 +36,7 @@ import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackP
  */
 
 /** The single, stable playback URL for an item. */
-export function resolveHomeFeedVideoUri(item: any): string {
-  const original = resolveVideoUri(item);
-  return homeFeedMediaUrl(original) || original;
-}
+export { resolveHomeFeedVideoUri } from "@/components/homeFeed/homeFeedMediaUrl";
 
 // ~384KB: typically enough to land the moov atom + first GOP so AVPlayer can
 // paint quickly once it issues its own range requests against the warmed edge.

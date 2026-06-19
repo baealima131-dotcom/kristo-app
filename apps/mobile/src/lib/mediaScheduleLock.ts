@@ -1,278 +1,61 @@
-import { apiGet } from "@/src/lib/kristoApi";
+import { apiGet } from "@/lib/kristoApi";
 import {
   feedList,
   feedPurgeMediaScheduleCards,
   feedPurgeMediaScheduleCardsForChurch,
-} from "@/src/lib/homeFeedStore";
-import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
-import { findProtectedClaimableSchedule, findProtectedNearLiveSchedule } from "@/src/lib/liveScheduleRing";
-import { buildLiveSlotsCatalogFromFeedRows } from "@/src/lib/liveSlotsCatalog";
+} from "@/lib/homeFeedStore";
+import { parseChurchFeedListResponse } from "@/lib/mediaScheduleFeedParse";
+import {
+  isMediaScheduleFeedItem,
+  isMediaScheduleFeedItemClosed,
+} from "@/lib/mediaScheduleFeedIdentify";
+import { prepareMediaScheduleFeedItemForClient } from "@/lib/mediaScheduleFeedPrepare";
+import {
+  feedItemBelongsToChurch,
+  feedItemBelongsToChurchStrict,
+  findActiveMediaScheduleForChurch,
+  findMediaScheduleFeedForChurch,
+  findPersistedMediaScheduleFeedForChurch,
+  isActiveMediaSchedule,
+  resolveChurchMediaScheduleFromFeedRows,
+} from "@/lib/mediaScheduleChurchFinders";
+import { findProtectedClaimableSchedule, findProtectedNearLiveSchedule } from "@/lib/liveScheduleProtection";
+import {
+  areAllScheduleSlotsExpired,
+  getActiveScheduleSlots,
+} from "@/lib/mediaScheduleSlotExpired";
 import {
   isMediaSlotEndedOrStale,
-  materializeMediaSlotTimeFields,
   resolveMediaSlotTimeWindow,
-} from "@/src/lib/mediaScheduleSlotTimes";
-import { parseSlotEndMs, parseSlotStartMs } from "@/src/lib/scheduleSlotUtils";
+} from "@/lib/mediaScheduleSlotTimeCore";
+
+export { isMediaScheduleFeedItem, isMediaScheduleFeedItemClosed } from "@/lib/mediaScheduleFeedIdentify";
+export { isActiveScheduleSlot } from "@/lib/mediaScheduleSlotActive";
+export { prepareMediaScheduleFeedItemForClient } from "@/lib/mediaScheduleFeedPrepare";
+export {
+  feedItemBelongsToChurch,
+  feedItemBelongsToChurchStrict,
+  findActiveMediaScheduleForChurch,
+  findMediaScheduleFeedForChurch,
+  findPersistedMediaScheduleFeedForChurch,
+  isActiveMediaSchedule,
+  resolveChurchMediaScheduleFromFeedRows,
+} from "@/lib/mediaScheduleChurchFinders";
 import {
   backendConfirmsZeroSlotsForFeedId,
   purgeStaleLocalScheduleRowsWhenBackendZero,
-} from "@/src/lib/staleBackendZeroSlotGuard";
+} from "@/lib/staleBackendZeroSlotGuard";
 
 export const ACTIVE_MEDIA_SCHEDULE_ERROR =
   "A media schedule is already active. Please end or delete it before creating another one.";
 
 type AnyFeedItem = Record<string, any>;
 
-export function prepareMediaScheduleFeedItemForClient(item: AnyFeedItem | null | undefined) {
-  if (!item || typeof item !== "object") return item;
-  const slots = Array.isArray(item.scheduleSlots) ? item.scheduleSlots : [];
-  if (!slots.length) return item;
-
-  return {
-    ...item,
-    scheduleSlots: slots.map((slot: any, index: number) =>
-      materializeMediaSlotTimeFields({
-        ...slot,
-        order: Number(slot?.order || slot?.slot || index + 1),
-        slot: Number(slot?.slot || slot?.slotNumber || index + 1),
-        slotNumber: Number(slot?.slotNumber || slot?.slot || index + 1),
-      })
-    ),
-  };
-}
-
-function isSlotStatusClosed(slot: AnyFeedItem): boolean {
-  const status = String(slot?.status || "").toLowerCase();
-  const scheduleStatus = String(slot?.scheduleStatus || "").toLowerCase();
-  return (
-    slot?.deleted === true ||
-    slot?.deletedAt ||
-    status === "deleted" ||
-    status === "cancelled" ||
-    status === "canceled" ||
-    status === "completed" ||
-    status === "complete" ||
-    status === "removed" ||
-    status === "ended" ||
-    status === "closed" ||
-    status === "cleared" ||
-    scheduleStatus === "deleted" ||
-    scheduleStatus === "ended" ||
-    scheduleStatus === "closed" ||
-    scheduleStatus === "cleared"
-  );
-}
-
-function isSlotClaimedOrLive(slot: AnyFeedItem): boolean {
-  const status = String(slot?.status || "").toLowerCase();
-  if (status === "claimed" || status === "live") return true;
-  if (slot?.claimed === true || slot?.isClaimed === true || slot?.isLiveNow === true) return true;
-
-  const uid = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
-  if (uid) return true;
-
-  const claimedBy = slot?.claimedBy;
-  if (typeof claimedBy === "object" && claimedBy && String(claimedBy.userId || "").trim()) return true;
-  if (typeof claimedBy === "string" && claimedBy.trim() && claimedBy.toLowerCase() !== "open") return true;
-
-  return false;
-}
-
-export function isMediaScheduleFeedItem(item: AnyFeedItem | null | undefined): boolean {
-  if (!item || typeof item !== "object") return false;
-
-  const source = String(item.source || "").toLowerCase();
-  const scheduleType = String(item.scheduleType || "").toLowerCase();
-
-  return source.includes("media-schedule") || scheduleType === "media-live-slots";
-}
-
-export function isMediaScheduleFeedItemClosed(item: AnyFeedItem): boolean {
-  if (item?.deletedAt) return true;
-  if (item?.pendingBackendFailed === true) return true;
-
-  const status = String(item?.status || "").toLowerCase();
-  const scheduleStatus = String(item?.scheduleStatus || "").toLowerCase();
-  const deleted = item?.deleted === true || status === "deleted" || scheduleStatus === "deleted";
-  const cancelled = status === "cancelled" || status === "canceled";
-  const completed =
-    status === "completed" ||
-    status === "closed" ||
-    status === "ended" ||
-    status === "complete" ||
-    status === "cleared" ||
-    scheduleStatus === "ended" ||
-    scheduleStatus === "closed" ||
-    scheduleStatus === "cleared";
-
-  return deleted || cancelled || completed;
-}
-
-export function isActiveScheduleSlot(
-  slot: AnyFeedItem | null | undefined,
-  nowMs = Date.now()
-): boolean {
-  if (!slot || typeof slot !== "object") return false;
-  if (isSlotStatusClosed(slot) || isMediaSlotEndedOrStale(slot, nowMs)) return false;
-
-  const { startMs, endMs } = resolveMediaSlotTimeWindow(slot, nowMs);
-  if (startMs > nowMs) return true;
-  if (startMs > 0 && endMs > startMs && nowMs <= endMs) return true;
-
-  if (isSlotClaimedOrLive(slot)) {
-    if (endMs <= 0) return true;
-    return nowMs <= endMs;
-  }
-
-  return false;
-}
-
-export function getActiveScheduleSlots(
-  item: AnyFeedItem | null | undefined,
-  nowMs = Date.now()
-): AnyFeedItem[] {
-  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-  return slots.filter((slot) => isActiveScheduleSlot(slot, nowMs));
-}
-
-export function areAllScheduleSlotsExpired(item: AnyFeedItem, nowMs = Date.now()): boolean {
-  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-  if (!slots.length) return true;
-  return getActiveScheduleSlots(item, nowMs).length === 0;
-}
-
-export function isActiveMediaSchedule(item: AnyFeedItem | null | undefined, nowMs = Date.now()): boolean {
-  if (!isMediaScheduleFeedItem(item)) return false;
-  if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) return false;
-
-  const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-  if (!slots.length) return false;
-
-  return getActiveScheduleSlots(item, nowMs).length > 0;
-}
-
-export function feedItemBelongsToChurch(item: AnyFeedItem, churchId: string): boolean {
-  const cid = String(churchId || "").trim();
-  if (!cid) return true;
-
-  const itemCid = String(item?.churchId || "").trim();
-  if (itemCid) return itemCid === cid;
-
-  return true;
-}
-
-export function feedItemBelongsToChurchStrict(item: AnyFeedItem, churchId: string): boolean {
-  const cid = String(churchId || "").trim();
-  const itemCid = String(item?.churchId || "").trim();
-  if (!cid || !itemCid) return false;
-  return itemCid === cid;
-}
-
-export function findActiveMediaScheduleForChurch(
-  items: AnyFeedItem[],
-  churchId: string,
-  options?: { excludeId?: string; nowMs?: number; strictChurch?: boolean }
-): AnyFeedItem | null {
-  const cid = String(churchId || "").trim();
-  if (!cid) return null;
-
-  const excludeId = String(options?.excludeId || "").trim();
-  const nowMs = options?.nowMs ?? Date.now();
-  const belongsToChurch = options?.strictChurch
-    ? (item: AnyFeedItem) => feedItemBelongsToChurchStrict(item, cid)
-    : (item: AnyFeedItem) => feedItemBelongsToChurch(item, cid);
-
-  for (const item of items) {
-    if (excludeId && String(item?.id || "") === excludeId) continue;
-    if (!belongsToChurch(item)) continue;
-    if (isActiveMediaSchedule(item, nowMs)) return item;
-  }
-
-  return null;
-}
-
-/** Any persisted media schedule row for a church with at least one active slot. */
-export function findMediaScheduleFeedForChurch(
-  items: AnyFeedItem[],
-  churchId: string,
-  options?: { strictChurch?: boolean; nowMs?: number }
-): AnyFeedItem | null {
-  const cid = String(churchId || "").trim();
-  if (!cid) return null;
-  const nowMs = options?.nowMs ?? Date.now();
-
-  const belongsToChurch = options?.strictChurch
-    ? (item: AnyFeedItem) => feedItemBelongsToChurchStrict(item, cid)
-    : (item: AnyFeedItem) => feedItemBelongsToChurch(item, cid);
-
-  for (const item of items) {
-    if (!isMediaScheduleFeedItem(item)) continue;
-    if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) continue;
-    if (!belongsToChurch(item)) continue;
-    const prepared = prepareMediaScheduleFeedItemForClient(item);
-    if (prepared && getActiveScheduleSlots(prepared, nowMs).length > 0) return prepared;
-  }
-
-  return findPersistedMediaScheduleFeedForChurch(items, churchId, options);
-}
-
-/** Non-closed backend schedule row with slots — matches backend create lock even when time parsing is partial. */
-export function findPersistedMediaScheduleFeedForChurch(
-  items: AnyFeedItem[],
-  churchId: string,
-  options?: { strictChurch?: boolean; nowMs?: number }
-): AnyFeedItem | null {
-  const cid = String(churchId || "").trim();
-  if (!cid) return null;
-  void options?.nowMs;
-
-  const belongsToChurch = options?.strictChurch
-    ? (item: AnyFeedItem) => feedItemBelongsToChurchStrict(item, cid)
-    : (item: AnyFeedItem) => feedItemBelongsToChurch(item, cid);
-
-  for (const item of items) {
-    if (!isMediaScheduleFeedItem(item)) continue;
-    if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) continue;
-    if (!belongsToChurch(item)) continue;
-    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
-    if (slots.length > 0) {
-      const prepared = prepareMediaScheduleFeedItemForClient(item);
-      return prepared || item;
-    }
-  }
-
-  return null;
-}
-
-export function resolveChurchMediaScheduleFromFeedRows(
-  items: AnyFeedItem[],
-  churchId: string,
-  options?: { strictChurch?: boolean; nowMs?: number; excludeId?: string }
-): AnyFeedItem | null {
-  const nowMs = options?.nowMs ?? Date.now();
-  const strictFindOpts = {
-    excludeId: options?.excludeId,
-    nowMs,
-    strictChurch: options?.strictChurch !== false,
-  };
-
-  const active = findActiveMediaScheduleForChurch(items, churchId, strictFindOpts);
-  if (active) {
-    const prepared = prepareMediaScheduleFeedItemForClient(active);
-    return prepared || active;
-  }
-
-  const feed = findMediaScheduleFeedForChurch(items, churchId, {
-    strictChurch: options?.strictChurch !== false,
-    nowMs,
-  });
-  if (feed) return feed;
-
-  return findPersistedMediaScheduleFeedForChurch(items, churchId, {
-    strictChurch: options?.strictChurch !== false,
-    nowMs,
-  });
-}
+export { areAllScheduleSlotsExpired, getActiveScheduleSlots } from "@/lib/mediaScheduleSlotExpired";
+export {
+  findProtectedClaimableSchedule,
+  findProtectedNearLiveSchedule,
+} from "@/lib/liveScheduleProtection";
 
 export function isIncomingMediaScheduleCreate(body: AnyFeedItem | null | undefined): boolean {
   const source = String(body?.source || "").trim().toLowerCase();
@@ -330,11 +113,14 @@ function purgeStaleLocalMediaSchedules(churchId: string, localActive: AnyFeedIte
   }
 }
 
-function countRenderedLiveSlotsForSchedule(item: AnyFeedItem, churchId: string, nowMs: number) {
-  const cid = String(churchId || "").trim();
-  if (!cid) return 0;
-  const catalog = buildLiveSlotsCatalogFromFeedRows([item], cid, "", nowMs);
-  return catalog.myChurch.length + catalog.otherChurches.length;
+function countRenderedLiveSlotsForSchedule(item: AnyFeedItem, _churchId: string, nowMs: number) {
+  const activeSlots = getActiveScheduleSlots(item, nowMs);
+  if (!activeSlots.length) return 0;
+  return activeSlots.filter((slot) => {
+    if (isMediaSlotEndedOrStale(slot, nowMs)) return false;
+    const { startMs, endMs } = resolveMediaSlotTimeWindow(slot, nowMs);
+    return startMs > 0 && endMs > startMs;
+  }).length;
 }
 
 export function scanMediaScheduleRowForLock(

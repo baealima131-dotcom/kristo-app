@@ -6,9 +6,10 @@ import {
   markClaimHydrationPending,
   resolveClaimHydration,
   type ClaimButtonStateSourceLog,
-} from "@/src/lib/claimHydrationState";
-import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
-import { filterOutDeletedScheduleRows, isScheduleFeedIdDeleted } from "@/src/lib/deletedScheduleRegistry";
+} from "@/lib/claimHydrationState";
+import { peekHomeFeedBackendRowsMemory } from "@/lib/homeFeedBackendRowsMemory";
+import { peekHomeFeedRowsCacheSync } from "@/components/homeFeed/homeFeedRowsCache";
+import { filterOutDeletedScheduleRows, isScheduleFeedIdDeleted } from "@/lib/deletedScheduleRegistry";
 import {
   feedList,
   getRingClaimHints,
@@ -16,11 +17,11 @@ import {
   syncUserClaimedSlotStore,
   writeRingClaimHint,
   type RingClaimHint,
-} from "@/src/lib/homeFeedStore";
-import { fetchMediaScheduleFeedSync } from "@/src/lib/mediaScheduleSilentReload";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
-import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
-import { isMediaSlotEndedOrStale, resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
+} from "@/lib/homeFeedStore";
+import { fetchMediaScheduleFeedSync } from "@/lib/mediaScheduleFeedFetch";
+import { getKristoHeaders } from "@/lib/kristoHeaders";
+import { isMediaScheduleFeedItem } from "@/lib/mediaScheduleFeedIdentify";
+import { isMediaSlotEndedOrStale, resolveMediaSlotTimeWindow } from "@/lib/mediaScheduleSlotTimes";
 import {
   baseFeedId,
   collectScheduleAliasIds,
@@ -28,7 +29,7 @@ import {
   normalizeLiveScheduleSlots,
   resolveCanonicalScheduleFeedId,
   scheduleSlotClaimUserId,
-} from "@/src/lib/scheduleSlotUtils";
+} from "@/lib/scheduleSlotUtils";
 
 export {
   beginClaimHydrationStartup,
@@ -323,7 +324,9 @@ export function collectScheduleRowsForRingScan(
       }
     })()
   );
-  const cachedRows = filterOutDeletedScheduleRows(getCachedHomeFeedBackendRows());
+  const memoryRows = filterOutDeletedScheduleRows(peekHomeFeedBackendRowsMemory());
+  const persistedRows = filterOutDeletedScheduleRows(peekHomeFeedRowsCacheSync());
+  const cachedRows = memoryRows.length ? memoryRows : persistedRows;
   const backendRows = filterOutDeletedScheduleRows(
     Array.isArray(churchBackendRows) ? churchBackendRows : []
   );

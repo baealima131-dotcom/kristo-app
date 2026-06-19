@@ -11,18 +11,18 @@ import { LinearGradient } from "expo-linear-gradient";
 import {
   ensureMediaVideoPosterFrame,
   resolveVideoDurationMs,
-} from "@/src/lib/mediaVideoPoster";
+} from "@/lib/mediaVideoPoster";
 import {
   getCachedMediaPoster,
   peekCachedMediaPoster,
   rememberMediaPoster,
-} from "@/src/lib/mediaPosterCache";
-import { resolveMediaVideoPreviewCandidates } from "@/src/lib/churchActivityPosts";
+} from "@/lib/mediaPosterCache";
+import { resolveMediaVideoPreviewCandidates } from "@/lib/churchActivityPosts";
 import {
   homeFeedMediaUrl,
   isLikelySyntheticPosterPath,
   resolveVideoUri,
-} from "@/src/components/homeFeed/homeFeedUtils";
+} from "@/components/homeFeed/homeFeedUtils";
 
 type PosterPhase = "ready" | "static" | "generating" | "failed";
 

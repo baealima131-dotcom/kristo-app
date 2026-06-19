@@ -1,6 +1,6 @@
-import { feedList, feedRemoveWhere, feedSyncMediaScheduleFromBackend } from "@/src/lib/homeFeedStore";
-import { markHomeFeedScheduleDirty } from "@/src/lib/homeFeedScheduleDirty";
-import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
+import { feedList, feedRemoveWhere, feedSyncMediaScheduleFromBackend } from "@/lib/homeFeedStore";
+import { markHomeFeedScheduleDirty } from "@/lib/homeFeedScheduleDirty";
+import { emitLiveRingRefresh } from "@/lib/liveRingRefreshEvents";
 
 type PendingLocalSchedule = {
   localScheduleId: string;

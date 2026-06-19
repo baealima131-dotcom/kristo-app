@@ -5,8 +5,6 @@ module.exports = function (api) {
       [
         "babel-preset-expo",
         {
-          // RN 0.81 ships Flow sources with #private fields; Hermes bytecode still rejects them.
-          // hermes-v0 runs private-field transforms after TS/Flow stripping (unlike hermes-v1).
           unstable_transformProfile: "hermes-v0",
         },
       ],
@@ -15,15 +13,14 @@ module.exports = function (api) {
       [
         "module-resolver",
         {
-          root: ["."],
+          root: ["./"],
           alias: {
-            "@": ".",
-            "@/src": "./src",
-            "@src": "./src"
+            "@": "./src",
           },
-          extensions: [".js", ".jsx", ".ts", ".tsx", ".json"]
-        }
-      ]
+          extensions: [".js", ".jsx", ".ts", ".tsx", ".json"],
+        },
+      ],
+      "react-native-reanimated/plugin",
     ],
   };
 };

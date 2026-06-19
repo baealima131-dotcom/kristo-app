@@ -1,30 +1,30 @@
-import type { KristoSession } from "@/src/lib/kristoSession";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import type { KristoSession } from "@/lib/kristoSession";
+import { getKristoHeaders } from "@/lib/kristoHeaders";
 import {
   getChurchOverviewCache,
   getMinistriesCache,
-  isScreenCacheFresh,
   peekChurchOverviewCache,
   peekMinistriesCache,
   silentRefreshChurchOverview,
-} from "@/src/lib/screenDataCache";
+} from "@/lib/screenDataCache";
+import { isScreenCacheFresh } from "@/lib/screenDataCacheFresh";
 import {
   refreshMinistriesBundleIfNeeded,
   seedMinistriesRefreshFromCache,
-} from "@/src/lib/churchResourceRefresh";
+} from "@/lib/churchResourceRefresh";
 import {
   refreshChurchMediaAccess,
   seedChurchMediaAccessFromSession,
-} from "@/src/lib/refreshCoordinator";
-import { fetchChurchMembers, fetchJoinRequests } from "@/src/lib/churchMembersApi";
+} from "@/lib/refreshCoordinator";
+import { fetchChurchMembers, fetchJoinRequests } from "@/lib/churchMembersApi";
 import {
   CHURCH_TAB_REFRESH_MS,
   getChurchMembersCache,
   isChurchMembersCacheFresh,
   peekChurchMembersCache,
   saveChurchMembersCache,
-} from "@/src/lib/churchTabCache";
-import { preloadChurchMediaRoom } from "@/src/lib/churchMediaRoomRefresh";
+} from "@/lib/churchTabCache";
+import { preloadChurchMediaRoom } from "@/lib/churchMediaRoomRefresh";
 
 export { CHURCH_TAB_REFRESH_MS };
 

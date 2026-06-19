@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from "@/src/lib/kristoApi";
+import { apiGet, apiPost } from "@/lib/kristoApi";
 import {
   feedCloseMediaScheduleCards,
   feedList,
@@ -6,30 +6,36 @@ import {
   feedPurgeMediaScheduleCardsForChurch,
   feedRemoveWhere,
   feedSyncMediaScheduleFromBackend,
-} from "@/src/lib/homeFeedStore";
-import { clearHomeFeedApiCache } from "@/src/lib/homeFeedScheduleDirty";
-import { hydrateActiveMediaScheduleFromBackend } from "@/src/lib/mediaScheduleActiveHydration";
+} from "@/lib/homeFeedStore";
+import { clearHomeFeedApiCache } from "@/lib/homeFeedScheduleDirty";
+import { hydrateActiveMediaScheduleFromBackend } from "@/lib/mediaScheduleActiveHydration";
 import {
   findActiveMediaScheduleForChurch,
   findMediaScheduleFeedForChurch,
   resolveChurchMediaScheduleFromFeedRows,
-} from "@/src/lib/mediaScheduleLock";
-import { findProtectedNearLiveSchedule, emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
-import { resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
-import { materializeMediaSlotTimeFields } from "@/src/lib/mediaScheduleSlotTimes";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
-import { getSessionSync } from "@/src/lib/kristoSession";
+} from "@/lib/mediaScheduleChurchFinders";
+import { findProtectedNearLiveSchedule } from "@/lib/liveScheduleProtection";
+import { emitLiveRingRefresh } from "@/lib/liveRingRefreshEvents";
+import { fetchMediaScheduleFeedSync } from "@/lib/mediaScheduleFeedFetch";
+import { resolveCanonicalScheduleFeedId } from "@/lib/scheduleSlotUtils";
+import { materializeMediaSlotTimeFields } from "@/lib/mediaScheduleSlotTimes";
+import {
+  parseChurchFeedListResponse,
+  type MediaScheduleFeedSync,
+} from "@/lib/mediaScheduleFeedParse";
+import { getKristoHeaders } from "@/lib/kristoHeaders";
+import { getSessionSync } from "@/lib/kristoSession";
 import {
   clearMediaScheduleSpeakerSlots,
   getChurchProjectMcRuntime,
   shouldClearMediaScheduleSpeakerSlots,
-} from "@/src/store/churchProjectMcScheduleStore";
+} from "@/store/churchProjectMcScheduleStore";
 import {
   clearLocalSchedulePendingBackend,
   hasPendingLocalScheduleForChurch,
   isPendingLocalMediaScheduleRow,
   listPendingLocalScheduleIds,
-} from "@/src/lib/mediaSchedulePendingSync";
+} from "@/lib/mediaSchedulePendingSync";
 
 export type LocalMediaScheduleUiReset = {
   setGuestClaimSlots?: (slots: any[]) => void;
@@ -195,48 +201,9 @@ export function purgeAllLocalMediaScheduleSources(options: {
   });
 }
 
-export type MediaScheduleFeedSync = {
-  rows: any[];
-  mediaScheduleVersion: number;
-  mediaScheduleUpdatedAt: string;
-};
-
-export function parseChurchFeedListResponse(res: any): MediaScheduleFeedSync {
-  const mediaScheduleVersion = Number(res?.mediaScheduleVersion ?? 0);
-  const mediaScheduleUpdatedAt = String(res?.mediaScheduleUpdatedAt ?? "");
-
-  const rows = Array.isArray(res?.data?.items)
-    ? res.data.items
-    : Array.isArray(res?.items)
-      ? res.items
-      : Array.isArray(res?.data)
-        ? res.data
-        : Array.isArray(res)
-          ? res
-          : [];
-
-  return { rows, mediaScheduleVersion, mediaScheduleUpdatedAt };
-}
-
-export async function fetchMediaScheduleFeedSync(
-  churchId: string,
-  headers?: Record<string, string>,
-  opts?: { targetChurchId?: string }
-): Promise<MediaScheduleFeedSync> {
-  const viewerChurchId = String(churchId || "").trim();
-  const targetChurchId = String(opts?.targetChurchId || viewerChurchId).trim();
-  const query =
-    targetChurchId && targetChurchId !== viewerChurchId
-      ? `/api/church/feed?scope=church&churchId=${encodeURIComponent(targetChurchId)}&_=${Date.now()}`
-      : `/api/church/feed?scope=church&_=${Date.now()}`;
-
-  const res: any = await apiGet(query, {
-    headers,
-    cache: "no-store" as RequestCache,
-  });
-
-  return parseChurchFeedListResponse(res);
-}
+export type { MediaScheduleFeedSync } from "@/lib/mediaScheduleFeedParse";
+export { parseChurchFeedListResponse } from "@/lib/mediaScheduleFeedParse";
+export { fetchMediaScheduleFeedSync } from "@/lib/mediaScheduleFeedFetch";
 
 export type SilentMediaScheduleReloadResult = MediaScheduleFeedSync & {
   versionChanged: boolean;
