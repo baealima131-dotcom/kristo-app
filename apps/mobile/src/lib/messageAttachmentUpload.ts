@@ -18,7 +18,12 @@ export type PendingMessageAttachment = {
  */
 export function extractApiErrorMessage(err: any, fallback = "Something went wrong. Please try again."): string {
   if (err == null) return fallback;
-  if (typeof err === "string") return err.trim() || fallback;
+  if (typeof err === "string") {
+    const trimmed = err.trim();
+    if (!trimmed) return fallback;
+    if (/^<!doctype html/i.test(trimmed) || /^<html/i.test(trimmed)) return fallback;
+    return trimmed;
+  }
 
   const candidates = [
     err?.message,
@@ -31,7 +36,11 @@ export function extractApiErrorMessage(err: any, fallback = "Something went wron
   ];
 
   for (const c of candidates) {
-    if (typeof c === "string" && c.trim()) return c.trim();
+    if (typeof c === "string" && c.trim()) {
+      const trimmed = c.trim();
+      if (/^<!doctype html/i.test(trimmed) || /^<html/i.test(trimmed)) return fallback;
+      return trimmed;
+    }
   }
 
   return fallback;
