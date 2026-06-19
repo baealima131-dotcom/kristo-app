@@ -192,13 +192,26 @@ export default function LoginScreen() {
         return;
       }
 
+      console.log("KRISTO_LOGIN_SIGNIN_RESPONSE_KEYS", {
+        keys: data && typeof data === "object" ? Object.keys(data).sort() : [],
+        ok: Boolean(data?.ok),
+        hasUserId: Boolean(data?.userId),
+        hasSessionTokenKey: Boolean(data && typeof data === "object" && "sessionToken" in data),
+        hasRole: Boolean(data?.role),
+        hasChurchId: Boolean(data?.churchId),
+      });
+
       const finalUserId = String(data.userId || "").trim();
       if (!finalUserId) {
         setErr("Login failed. Missing user id.");
         return;
       }
 
-      const sessionToken = String(data.sessionToken || "").trim();
+      const sessionToken = String(data.sessionToken || data.token || "").trim();
+      const signinRole = String(data.role || data.churchRole || "Member").trim();
+      const signinChurchId = String(data.churchId || "").trim();
+      const signinChurchRole = String(data.churchRole || data.role || "Member").trim();
+
       console.log("KRISTO_LOGIN_SAVE_SESSION_TOKEN", {
         hasSessionToken: Boolean(sessionToken),
       });
@@ -212,12 +225,18 @@ export default function LoginScreen() {
       setSessionSync({
         userId: finalUserId,
         sessionToken,
-        role: "Member",
-        churchId: "",
+        role: signinRole,
+        churchId: signinChurchId,
+        churchRole: signinChurchRole,
       } as any);
 
       const profileRes: any = await apiGet("/api/auth/profile", {
-        headers: getKristoHeaders({ userId: finalUserId, role: "Member", churchId: "", sessionToken }),
+        headers: getKristoHeaders({
+          userId: finalUserId,
+          role: signinRole as any,
+          churchId: signinChurchId,
+          sessionToken,
+        }),
       });
 
       const p = profileRes?.profile;
