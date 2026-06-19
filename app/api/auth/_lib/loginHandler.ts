@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
+import { getActiveMembership } from "@/app/api/_lib/memberships";
 import {
   createSession,
   ensureUserKristoId,
@@ -8,6 +9,7 @@ import {
   setSessionCookie,
 } from "@/app/api/auth/_lib/session";
 import { authDatabaseErrorResponse } from "@/app/api/auth/_lib/authErrors";
+import { issueSessionToken } from "@/app/api/auth/_lib/sessionToken";
 
 export const runtime = "nodejs";
 
@@ -108,6 +110,23 @@ export async function handleLogin(req: Request) {
 
     const sess = createSession(user.id);
     const kristoId = await ensureUserKristoId(user);
+    const activeMembership = await getActiveMembership(user.id);
+    const churchId = String(activeMembership?.churchId || "").trim();
+    const churchRole = String(activeMembership?.churchRole || "").trim();
+    const role = churchRole || "Member";
+    const sessionToken = issueSessionToken(user.id);
+
+    if (!sessionToken) {
+      console.error("KRISTO_SIGNIN_TOKEN_ISSUE_FAILED", { userId: user.id });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Sign-in session could not be created. Please try again.",
+          reason: "session_token_unavailable",
+        },
+        { status: 503 }
+      );
+    }
 
     let res = NextResponse.json({
       ok: true,
@@ -116,6 +135,10 @@ export async function handleLogin(req: Request) {
       publicKristoId: kristoId,
       email: user.email || "",
       phone: user.phone || "",
+      sessionToken,
+      role,
+      churchId,
+      churchRole: churchRole || role,
     });
     res = setSessionCookie(res, sess.id);
     return res;

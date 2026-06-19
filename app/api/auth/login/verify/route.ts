@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { getActiveMembership } from "@/app/api/_lib/memberships";
 import {
   createSession,
   ensureUserKristoId,
@@ -8,6 +9,7 @@ import {
   updateUserPersist,
   verifyChallenge,
 } from "@/app/api/auth/_lib/session";
+import { issueSessionToken } from "@/app/api/auth/_lib/sessionToken";
 
 export const runtime = "nodejs";
 
@@ -50,11 +52,29 @@ export async function POST(req: NextRequest) {
     if (user) await ensureUserKristoId(user);
 
     const sess = createSession(v.userId);
+    const activeMembership = await getActiveMembership(v.userId);
+    const churchId = String(activeMembership?.churchId || "").trim();
+    const churchRole = String(activeMembership?.churchRole || "").trim();
+    const role = churchRole || "Member";
+    const sessionToken = issueSessionToken(v.userId);
+
+    if (!sessionToken) {
+      console.error("KRISTO_VERIFY_TOKEN_ISSUE_FAILED", { userId: v.userId });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Verification session could not be created. Please try again.",
+          reason: "session_token_unavailable",
+        },
+        { status: 503 }
+      );
+    }
 
     console.log("[KRISTO VERIFY] success", {
       userId: v.userId,
       sessionId: sess.id,
       kristoId: user?.kristoId,
+      hasSessionToken: true,
     });
 
     const res = NextResponse.json({
@@ -72,6 +92,11 @@ export async function POST(req: NextRequest) {
             phone: user.phone,
           }
         : { id: v.userId },
+      userId: v.userId,
+      sessionToken,
+      role,
+      churchId,
+      churchRole: churchRole || role,
       next: "/",
     });
     setSessionCookie(res, sess.id);
