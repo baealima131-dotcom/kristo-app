@@ -4,7 +4,7 @@ import {
   mergeScheduleSubscriptionSignals,
   parseExplicitServerSubscriptionFromMediaRoute,
   readLocalScheduleEntitlementActive,
-} from "@/src/lib/churchSubscription";
+} from "@/src/lib/churchSubscriptionMediaSignals";
 
 export const CHURCH_RESOURCE_REFRESH_MS = 75000;
 

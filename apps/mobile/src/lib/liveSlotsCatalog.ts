@@ -13,7 +13,7 @@ import {
   overlayStableClaimsOnFeedRows,
 } from "@/src/lib/claimStateMerge";
 import { getRingClaimHints } from "@/src/lib/homeFeedStore";
-import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
+import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleFeedPredicates";
 import {
   resolveRingMergedScheduleRows,
 } from "@/src/lib/liveScheduleRing";

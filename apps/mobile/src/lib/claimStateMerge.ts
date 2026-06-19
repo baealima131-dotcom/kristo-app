@@ -19,7 +19,7 @@ import {
 } from "@/src/lib/homeFeedStore";
 import { fetchMediaScheduleFeedSync } from "@/src/lib/mediaScheduleSilentReload";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
-import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleLock";
+import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleFeedPredicates";
 import { isMediaSlotEndedOrStale, resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
 import {
   baseFeedId,

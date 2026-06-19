@@ -1,9 +1,7 @@
 import { apiPatch } from "@/src/lib/kristoApi";
 import { feedList, feedPurgeMediaScheduleCardsForChurch } from "@/src/lib/homeFeedStore";
-import {
-  getActiveScheduleSlots,
-  hasActiveMediaScheduleForChurch,
-} from "@/src/lib/mediaScheduleLock";
+import { getActiveScheduleSlots } from "@/src/lib/mediaScheduleSlotActive";
+import { hasActiveMediaScheduleForChurch } from "@/src/lib/mediaScheduleLock";
 import { publishLiveEnded } from "@/src/lib/liveBridge";
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import { fetchLightLiveState } from "@/src/lib/liveRealtime";

@@ -23,11 +23,13 @@ import {
   findActiveMediaScheduleForChurch,
   findMediaScheduleFeedForChurch,
   findPersistedMediaScheduleFeedForChurch,
-  getActiveScheduleSlots,
+  resolveChurchMediaScheduleFromFeedRows,
+} from "@/src/lib/mediaScheduleChurchQueries";
+import {
   isMediaScheduleFeedItem,
   isMediaScheduleFeedItemClosed,
-  resolveChurchMediaScheduleFromFeedRows,
-} from "@/src/lib/mediaScheduleLock";
+} from "@/src/lib/mediaScheduleFeedPredicates";
+import { getActiveScheduleSlots } from "@/src/lib/mediaScheduleSlotActive";
 import { overlayLocalScheduleClaimsOnFeedRows } from "@/src/lib/liveSlotsCatalog";
 import {
   clearActiveLiveAfterGuestSlotDelete,
@@ -53,9 +55,9 @@ import {
 } from "@/src/lib/scheduleSlotUtils";
 import {
   resolveMediaSlotTimeWindow,
-  resolveCanonicalMediaScheduleForGuests,
   summarizeGuestClaimSlotForLog,
 } from "@/src/lib/mediaScheduleSlotTimes";
+import { resolveCanonicalMediaScheduleForGuests } from "@/src/lib/mediaScheduleGuestResolve";
 import {
   fetchHomeFeedFromApi,
   getCachedHomeFeedBackendRows,

@@ -1,5 +1,5 @@
 import { wasHomeFeedVideoWatched } from "@/src/lib/homeFeedVideoRetention";
-import { homeFeedMediaUrl, resolveVideoUri } from "@/src/components/homeFeed/homeFeedUtils";
+import { homeFeedMediaUrl, resolveVideoUri } from "@/src/lib/homeFeedVideoUri";
 
 export function resolveHomeFeedRowPlaybackUrl(row: any): string {
   const original = resolveVideoUri(row);

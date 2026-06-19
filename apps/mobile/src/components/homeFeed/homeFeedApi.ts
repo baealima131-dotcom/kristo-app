@@ -6,11 +6,9 @@ import { homeFeedRowKey, stableMergeHomeFeedRows } from "./homeFeedPagination";
 import { filterPhase1FeedRows, isHomeFeedExpandedScheduleSlotRow, normalizeHomeFeedApiRow } from "./homeFeedUtils";
 import { isHomeFeedReadyMediaItem } from "@/src/lib/mediaStatus";
 import { isMediaScheduleFeedItem } from "@/src/lib/homeFeedStore";
-import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleSilentReload";
-import {
-  areAllScheduleSlotsExpired,
-  isMediaScheduleFeedItemClosed,
-} from "@/src/lib/mediaScheduleLock";
+import { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleFeedParse";
+import { isMediaScheduleFeedItemClosed } from "@/src/lib/mediaScheduleFeedPredicates";
+import { areAllScheduleSlotsExpired } from "@/src/lib/mediaScheduleSlotActive";
 import {
   logHomeFeedScheduleExpired,
   logHomeFeedScheduleRemoved,

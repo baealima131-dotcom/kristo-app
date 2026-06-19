@@ -13,8 +13,10 @@ import {
   findActiveMediaScheduleForChurch,
   findMediaScheduleFeedForChurch,
   resolveChurchMediaScheduleFromFeedRows,
-} from "@/src/lib/mediaScheduleLock";
-import { findProtectedNearLiveSchedule, emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
+} from "@/src/lib/mediaScheduleChurchQueries";
+import { parseChurchFeedListResponse, type MediaScheduleFeedSync } from "@/src/lib/mediaScheduleFeedParse";
+import { findProtectedNearLiveSchedule } from "@/src/lib/liveScheduleRingSlotWindow";
+import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRingEvents";
 import { resolveCanonicalScheduleFeedId } from "@/src/lib/scheduleSlotUtils";
 import { materializeMediaSlotTimeFields } from "@/src/lib/mediaScheduleSlotTimes";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -29,7 +31,8 @@ import {
   hasPendingLocalScheduleForChurch,
   isPendingLocalMediaScheduleRow,
   listPendingLocalScheduleIds,
-} from "@/src/lib/mediaSchedulePendingSync";
+  markLocalSchedulePendingBackend,
+} from "@/src/lib/mediaSchedulePendingRegistry";
 
 export type LocalMediaScheduleUiReset = {
   setGuestClaimSlots?: (slots: any[]) => void;
@@ -195,28 +198,8 @@ export function purgeAllLocalMediaScheduleSources(options: {
   });
 }
 
-export type MediaScheduleFeedSync = {
-  rows: any[];
-  mediaScheduleVersion: number;
-  mediaScheduleUpdatedAt: string;
-};
-
-export function parseChurchFeedListResponse(res: any): MediaScheduleFeedSync {
-  const mediaScheduleVersion = Number(res?.mediaScheduleVersion ?? 0);
-  const mediaScheduleUpdatedAt = String(res?.mediaScheduleUpdatedAt ?? "");
-
-  const rows = Array.isArray(res?.data?.items)
-    ? res.data.items
-    : Array.isArray(res?.items)
-      ? res.items
-      : Array.isArray(res?.data)
-        ? res.data
-        : Array.isArray(res)
-          ? res
-          : [];
-
-  return { rows, mediaScheduleVersion, mediaScheduleUpdatedAt };
-}
+export type { MediaScheduleFeedSync } from "@/src/lib/mediaScheduleFeedParse";
+export { parseChurchFeedListResponse } from "@/src/lib/mediaScheduleFeedParse";
 
 export async function fetchMediaScheduleFeedSync(
   churchId: string,
