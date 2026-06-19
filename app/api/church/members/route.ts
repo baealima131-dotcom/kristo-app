@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 import { guard } from "@/app/api/_lib/rbac";
 import { deactivateMemberInChurch, getMembershipsForChurch, setMemberRole, type ChurchRole } from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
-import { ensureProfileDraft, getProfile } from "@/app/api/auth/_lib/profile";
+import { getProfile } from "@/app/api/auth/_lib/profile";
 
 type ChurchMember = {
   // ✅ keep both for compatibility across UIs
@@ -34,55 +34,96 @@ function normalizeChurchRole(x: any): ChurchRole {
   return "Member";
 }
 
-export async function GET(req: NextRequest) {
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin", "Member"]);
-  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
-
-  const list = await getMembershipsForChurch(ctxOrRes.churchId, "Active");
-
-  const items = await Promise.all(list.map(async (m) => {
-    const membershipId = m.id;
-    const role = (m.churchRole ?? "Member") as ChurchRole;
-    let profile = await getProfile(String(m.userId || ""));
-
-// AUTO FIX: kama profile haipo, create basic one
-if (!profile) {
-  await ensureProfileDraft({
-    userId: String(m.userId),
-    fullName: m.name || "Member",
+function logMembersRouteError(
+  phase: string,
+  error: unknown,
+  context: { churchId?: string; userId?: string; memberUserId?: string }
+) {
+  const err = error as { name?: string; message?: string };
+  console.error("KRISTO_CHURCH_MEMBERS_ROUTE_ERROR", {
+    route: "/api/church/members",
+    phase,
+    churchId: String(context.churchId || ""),
+    userId: String(context.userId || ""),
+    memberUserId: String(context.memberUserId || ""),
+    errorName: String(err?.name || "Error"),
+    errorMessage: String(err?.message || error || "unknown"),
   });
-  profile = await getProfile(String(m.userId));
 }
-    const name = String(
-      (profile as any)?.fullName ||
-      (profile as any)?.displayName ||
+
+function membershipToMemberRow(m: {
+  id: string;
+  churchId: string;
+  userId: string;
+  churchRole?: ChurchRole;
+  name?: string;
+  decidedAt?: string;
+  createdAt: string;
+  updatedAt?: string;
+}, profile: any | null): ChurchMember {
+  const membershipId = m.id;
+  const role = (m.churchRole ?? "Member") as ChurchRole;
+  const name = String(
+    profile?.fullName ||
+      profile?.displayName ||
       m.name ||
-      (profile as any)?.email ||
+      profile?.email ||
       "Church member"
-    ).trim();
+  ).trim();
 
-    const out: ChurchMember = {
-      id: membershipId,
-      membershipId,
+  return {
+    id: membershipId,
+    membershipId,
+    churchId: m.churchId,
+    userId: m.userId,
+    name,
+    userCode: profile?.userCode || "",
+    kristoId: profile?.userCode || "",
+    avatarUrl: profile?.avatarUrl || "",
+    roleLabel: role,
+    role,
+    joinedAt: m.decidedAt || m.createdAt,
+    updatedAt: m.updatedAt,
+  };
+}
 
-      churchId: m.churchId,
-      userId: m.userId,
+export async function GET(req: NextRequest) {
+  let churchId = "";
+  let userId = "";
 
-      name,
-      userCode: (profile as any)?.userCode || "",
-      kristoId: (profile as any)?.userCode || "",
-      avatarUrl: (profile as any)?.avatarUrl || "",
-      roleLabel: role,
+  try {
+    const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin", "Member"]);
+    if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
-      role,
-      joinedAt: m.decidedAt || m.createdAt,
-      updatedAt: m.updatedAt,
-    };
+    churchId = String(ctxOrRes.churchId || "").trim();
+    userId = String(ctxOrRes.viewer?.userId || "").trim();
 
-    return out;
-  }));
+    const list = await getMembershipsForChurch(churchId, "Active");
+    if (!Array.isArray(list) || list.length === 0) {
+      return json({ ok: true, data: [] });
+    }
 
-  return json({ ok: true, data: items });
+    const items = await Promise.all(
+      list.map(async (m) => {
+        try {
+          const profile = await getProfile(String(m.userId || "")).catch(() => null);
+          return membershipToMemberRow(m, profile);
+        } catch (memberError) {
+          logMembersRouteError("member-enrich", memberError, {
+            churchId,
+            userId,
+            memberUserId: String(m.userId || ""),
+          });
+          return membershipToMemberRow(m, null);
+        }
+      })
+    );
+
+    return json({ ok: true, data: items });
+  } catch (error) {
+    logMembersRouteError("get", error, { churchId, userId });
+    return json({ ok: false, error: "Failed to load church members" }, { status: 500 });
+  }
 }
 
 export async function PATCH(req: NextRequest) {
