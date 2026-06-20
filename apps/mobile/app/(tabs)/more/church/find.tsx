@@ -645,14 +645,17 @@ export default function ChurchFindScreen() {
       );
 
       if (!data?.ok) {
-        Alert.alert("Request failed", String(data?.error || "Could not send join request."));
+        Alert.alert(
+          "Request failed",
+          friendlyFindChurchError(data?.error || "Could not send join request.")
+        );
         return;
       }
 
       Alert.alert("Request sent", `Your request to join ${ch.name} was sent for pastor approval.`);
       setProfileChurch(null);
     } catch (e: any) {
-      Alert.alert("Request failed", String(e?.message || e || "Network error."));
+      Alert.alert("Request failed", friendlyFindChurchError(e?.message || e || "Network error."));
     } finally {
       setRequestingId(null);
     }
