@@ -34,6 +34,7 @@ import {
   peekMinistriesCache,
   saveMinistriesCache,
 } from "@/src/lib/screenDataCache";
+import { onMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
 
 // Show cached ministries instantly, then silently refresh if older than this.
 const MINISTRIES_CACHE_TTL_MS = 90000;
@@ -104,6 +105,62 @@ function normalizeMyMinistryRow(raw: Record<string, unknown>): Ministry {
     memberRole: String(raw?.memberRole || "").trim() || undefined,
     memberStatus: String(raw?.memberStatus || "").trim() || undefined,
   };
+}
+
+const CHURCH_LIVE_CONTROL_ROOM_ID = "church-media-room";
+
+function dedupeMyMinistriesById(items: Ministry[]): Ministry[] {
+  const byId = new Map<string, Ministry>();
+  for (const row of items) {
+    const id = String(row?.id || "").trim();
+    if (!id) continue;
+    const existing = byId.get(id);
+    if (!existing) {
+      byId.set(id, row);
+      continue;
+    }
+    byId.set(id, {
+      ...existing,
+      ...row,
+      mediaAccess: existing.mediaAccess === true || row.mediaAccess === true,
+    });
+  }
+  return Array.from(byId.values());
+}
+
+function excludeChurchLiveControlRoom(items: Ministry[]): Ministry[] {
+  return items.filter((row) => String(row?.id || "").trim() !== CHURCH_LIVE_CONTROL_ROOM_ID);
+}
+
+function myMinistryGridSortRank(m: Ministry): number {
+  // Church Live Control renders as its own pinned card before this list.
+  // Media assignment ministries stay second; community ministries follow.
+  return m.mediaAccess === true ? 1 : 2;
+}
+
+function sortMyMinistries(items: Ministry[]): Ministry[] {
+  return dedupeMyMinistriesById(excludeChurchLiveControlRoom(items)).sort((a, b) => {
+    const rankDiff = myMinistryGridSortRank(a) - myMinistryGridSortRank(b);
+    if (rankDiff !== 0) return rankDiff;
+    const nameDiff = String(a.name || "").localeCompare(String(b.name || ""), undefined, {
+      sensitivity: "base",
+      numeric: true,
+    });
+    if (nameDiff !== 0) return nameDiff;
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
+}
+
+function applyCachedMinistriesToState(
+  cachedItems: Record<string, unknown>[],
+  setItems: React.Dispatch<React.SetStateAction<Ministry[]>>,
+  setHasRenderable: (value: boolean) => void
+) {
+  const normalized = sortMyMinistries(
+    cachedItems.map((row) => normalizeMyMinistryRow(row))
+  );
+  setItems(normalized);
+  setHasRenderable(normalized.length > 0);
 }
 
 function logMyMinistriesCardRender(args: {
@@ -254,14 +311,18 @@ function MinistryCardAvatar({
 }) {
   const ringStyle = suspendedRing
     ? s.avatarRingRedSuspended
-    : cardType === "church" || cardType === "media"
+    : cardType === "church"
       ? s.avatarRingGold
-      : s.avatarRingBlue;
+      : cardType === "media"
+        ? s.avatarRingGreen
+        : s.avatarRingBlue;
 
   const fallbackBg =
-    cardType === "church" || cardType === "media"
+    cardType === "church"
       ? s.avatarFallbackGold
-      : s.avatarFallbackBlue;
+      : cardType === "media"
+        ? s.avatarFallbackGreen
+        : s.avatarFallbackBlue;
 
   return (
     <View style={[s.avatarRingOuter, ringStyle]}>
@@ -380,8 +441,12 @@ export default function MoreMinistriesList() {
   const hasRenderableCacheRef = useRef(Boolean(ministriesPeek?.items?.length));
   const loadSeqRef = useRef(0);
 
-  const [items, setItems] = useState<Ministry[]>(
-    ((ministriesPeek?.items as Ministry[]) || []).map((row) => normalizeMyMinistryRow(row as any))
+  const [items, setItems] = useState<Ministry[]>(() =>
+    sortMyMinistries(
+      ((ministriesPeek?.items as Ministry[]) || []).map((row) =>
+        normalizeMyMinistryRow(row as any)
+      )
+    )
   );
   const hasChurch = Boolean(String(auth?.churchId || "").trim());
   const [loading, setLoading] = useState(
@@ -425,7 +490,9 @@ export default function MoreMinistriesList() {
     if (mem?.items?.length) {
       cacheHydratedRef.current = true;
       hasRenderableCacheRef.current = true;
-      setItems(mem.items.map((row) => normalizeMyMinistryRow(row as any)));
+      setItems(
+        sortMyMinistries(mem.items.map((row) => normalizeMyMinistryRow(row as any)))
+      );
       if (
         mem.churchLiveControlStatus === "Suspended" ||
         mem.churchLiveControlStatus === "Active"
@@ -449,7 +516,9 @@ export default function MoreMinistriesList() {
     if (disk?.items?.length) {
       cacheHydratedRef.current = true;
       hasRenderableCacheRef.current = true;
-      setItems(disk.items.map((row) => normalizeMyMinistryRow(row as any)));
+      setItems(
+        sortMyMinistries(disk.items.map((row) => normalizeMyMinistryRow(row as any)))
+      );
       if (
         disk.churchLiveControlStatus === "Suspended" ||
         disk.churchLiveControlStatus === "Active"
@@ -561,11 +630,7 @@ export default function MoreMinistriesList() {
         return;
       }
 
-      const sortedItems = (checked.filter(Boolean) as Ministry[]).sort(
-        (a, b) =>
-          Number(!!b.mediaAccess) - Number(!!a.mediaAccess) ||
-          String(a.name || "").localeCompare(String(b.name || ""))
-      );
+      const sortedItems = sortMyMinistries(checked.filter(Boolean) as Ministry[]);
 
       setItems(sortedItems);
       setChurchLiveControlStatus(liveControlStatus);
@@ -622,6 +687,29 @@ export default function MoreMinistriesList() {
   useEffect(() => {
     void hydrateFromCache();
   }, [hydrateFromCache]);
+
+  useEffect(() => {
+    const unsub = onMinistriesUpdated((payload) => {
+      if (payload.churchId !== churchId || payload.userId !== viewerId) return;
+
+      cacheFreshRef.current = false;
+      cacheHydratedRef.current = true;
+
+      const mem = peekMinistriesCache(churchId, viewerId);
+      if (mem?.items?.length) {
+        applyCachedMinistriesToState(mem.items, setItems, (value) => {
+          hasRenderableCacheRef.current = value;
+        });
+        setLoading(false);
+      }
+
+      if (payload.action === "created" || payload.action === "refresh") {
+        void load({ silent: true, force: true });
+      }
+    });
+
+    return unsub;
+  }, [churchId, viewerId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -695,7 +783,9 @@ export default function MoreMinistriesList() {
   const showSpinner = loading && !hasItems && !hasChurch;
   const shouldShowChurchControl = hasChurch;
   const isChurchLiveControlSuspended = churchLiveControlStatus === "Suspended";
-  const churchLiveControlSubscriptionLocked = isMinistryCreationBlocked(churchSubscriptionActive);
+  const churchLiveControlSubscriptionLocked =
+    churchSubscriptionActive !== null &&
+    isMinistryCreationBlocked(churchSubscriptionActive);
   const showGrid = hasItems || shouldShowChurchControl;
 
   return (
@@ -812,7 +902,7 @@ export default function MoreMinistriesList() {
           contentContainerStyle={[s.gridContent, { paddingBottom: Math.max(insets.bottom, 16) + 28 }]}
         >
           <View style={[s.grid, { columnGap: GRID_GAP, rowGap: GRID_GAP }]}>
-            {shouldShowChurchControl && !churchLiveControlSubscriptionLocked ? (
+            {shouldShowChurchControl ? (
             <Pressable
               onPress={() => {
                 if (isChurchLiveControlSuspended) {
@@ -971,7 +1061,7 @@ export default function MoreMinistriesList() {
             {items.map((m) => {
               const mediaEnabled = m.mediaAccess === true;
               const displayName = resolveMinistryDisplayName(m as any);
-              const badgeLabel = mediaEnabled ? "Media Access" : "Group";
+              const badgeLabel = mediaEnabled ? "MEDIA" : "GROUP";
               const footerBadge = mediaEnabled ? "Assignment" : String((m as any).memberRole || "Member");
               const roomKind = mediaEnabled ? "assignment" : "ministry";
               const cardType: CardAvatarKind = mediaEnabled ? "media" : "community";
@@ -1051,7 +1141,7 @@ export default function MoreMinistriesList() {
                   pointerEvents="none"
                   colors={
                     mediaEnabled
-                      ? ["rgba(36,28,10,0.98)", "rgba(22,16,6,0.96)", "rgba(12,10,6,0.94)"]
+                      ? ["rgba(8,28,16,0.98)", "rgba(6,20,12,0.96)", "rgba(4,12,8,0.94)"]
                       : ["rgba(8,18,38,0.98)", "rgba(6,14,30,0.96)", "rgba(4,10,22,0.94)"]
                   }
                   start={{ x: 0, y: 0 }}
@@ -1060,13 +1150,13 @@ export default function MoreMinistriesList() {
                 />
                 <View
                   pointerEvents="none"
-                  style={mediaEnabled ? s.cardGlowGold : s.cardGlowBlue}
+                  style={mediaEnabled ? s.cardGlowGreen : s.cardGlowBlue}
                 />
                 <LinearGradient
                   pointerEvents="none"
                   colors={
                     mediaEnabled
-                      ? ["rgba(255,255,255,0.16)", "rgba(217,179,95,0.10)", "transparent"]
+                      ? ["rgba(255,255,255,0.16)", "rgba(34,197,94,0.10)", "transparent"]
                       : ["rgba(255,255,255,0.14)", "rgba(59,130,246,0.08)", "transparent"]
                   }
                   start={{ x: 0.5, y: 0 }}
@@ -1091,8 +1181,16 @@ export default function MoreMinistriesList() {
                         mediaEnabled ? s.statusTopPillMedia : s.statusTopPillCommunity,
                       ]}
                     >
-                      <Text style={s.statusTopPillText} numberOfLines={1}>
-                        {badgeLabel.toUpperCase()}
+                      <Text
+                        style={[
+                          s.statusTopPillText,
+                          mediaEnabled ? s.statusTopPillTextMedia : null,
+                        ]}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.85}
+                      >
+                        {badgeLabel}
                       </Text>
                     </View>
                   </View>
@@ -1440,8 +1538,8 @@ const s = StyleSheet.create<any>({
     borderColor: "rgba(255,190,190,0.28)",
   },
   cardItemMediaAccess: {
-    borderColor: "rgba(217,179,95,0.78)",
-    shadowColor: GOLD,
+    borderColor: "rgba(34,197,94,0.78)",
+    shadowColor: GREEN,
     shadowOpacity: 0.36,
     shadowRadius: 26,
     shadowOffset: { width: 0, height: 16 },
@@ -1490,12 +1588,14 @@ const s = StyleSheet.create<any>({
     height: 58,
   },
   statusTopPillMedia: {
-    backgroundColor: "rgba(217,179,95,0.96)",
-    borderColor: "rgba(255,232,180,0.88)",
-    shadowColor: GOLD,
+    backgroundColor: "rgba(34,197,94,0.96)",
+    borderColor: "rgba(187,247,208,0.88)",
+    shadowColor: GREEN,
     shadowOpacity: 0.42,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
+    maxWidth: 72,
+    paddingHorizontal: 8,
   },
   statusTopPillCommunity: {
     backgroundColor: "rgba(37,99,235,0.95)",
@@ -1520,15 +1620,15 @@ const s = StyleSheet.create<any>({
     color: "#F3D28F",
   },
   rolePillMediaAssignment: {
-    borderColor: "rgba(217,179,95,0.56)",
-    backgroundColor: "rgba(217,179,95,0.14)",
-    shadowColor: GOLD,
+    borderColor: "rgba(34,197,94,0.56)",
+    backgroundColor: "rgba(34,197,94,0.14)",
+    shadowColor: GREEN,
     shadowOpacity: 0.22,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
   },
   rolePillTextMediaAssignment: {
-    color: "#F3D28F",
+    color: "#86EFAC",
     letterSpacing: 0.4,
   },
 
@@ -1635,6 +1735,10 @@ const s = StyleSheet.create<any>({
     fontSize: 9,
     letterSpacing: 1.3,
   },
+  statusTopPillTextMedia: {
+    fontSize: 8.5,
+    letterSpacing: 0.8,
+  },
 
   cardTitle: {
     color: "rgba(255,255,255,0.98)",
@@ -1646,7 +1750,7 @@ const s = StyleSheet.create<any>({
     maxWidth: "100%",
   },
   cardTitleMedia: {
-    color: "#FFF6E0",
+    color: "#ECFDF5",
   },
   cardSub: {
     marginTop: 6,
@@ -1658,7 +1762,7 @@ const s = StyleSheet.create<any>({
     maxWidth: "100%",
   },
   cardSubMedia: {
-    color: "rgba(243,210,143,0.78)",
+    color: "rgba(134,239,172,0.78)",
   },
 
   cardFooter: {
