@@ -16,6 +16,13 @@ import {
   resolveHomeFeedVideoPlaybackPlan,
 } from "@/src/lib/homeFeedVideoQuality";
 import {
+  hasHomeFeedVideoWarmKey,
+  markHomeFeedVideoWarmKey,
+  unmarkHomeFeedVideoWarmKey,
+} from "@/src/lib/homeFeedVideoWarmRegistry";
+
+export { wasHomeFeedVideoUrlBufferedAhead } from "@/src/lib/homeFeedVideoWarmRegistry";
+import {
   logHomeFeedNetworkTrace,
   markVideoHeadWarmed,
   wasVideoHeadRecentlyWarmed,
@@ -50,7 +57,6 @@ const ACTIVE_INDEX_VIDEO_WARM_MAX = 2;
 const WINDOW_EXPAND_VIDEO_WARM_MAX = 3;
 const POSTER_WARM_AHEAD_COUNT = 3;
 
-const warmedVideoUrls = new Set<string>();
 const warmedPosterUrls = new Set<string>();
 const inflightVideoUrls = new Set<string>();
 const inflightPosterUrls = new Set<string>();
@@ -285,12 +291,6 @@ async function warmVideoUrlNetwork(
   throw new Error("video-warm-failed");
 }
 
-export function wasHomeFeedVideoUrlBufferedAhead(videoUrl: string): boolean {
-  const url = normalizeUrl(videoUrl);
-  if (!url) return false;
-  return warmedVideoUrls.has(url);
-}
-
 export function wasHomeFeedPosterWarmed(posterUrl: string): boolean {
   const url = normalizeUrl(posterUrl);
   if (!url) return false;
@@ -467,7 +467,7 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
   const targets = dedupeTargets(rawTargets).filter((t) => {
     const key = normalizeUrl(t.videoUrl);
     if (!key) return false;
-    if (wasVideoHeadRecentlyWarmed(key) || warmedVideoUrls.has(key) || inflightVideoUrls.has(key)) {
+    if (wasVideoHeadRecentlyWarmed(key) || hasHomeFeedVideoWarmKey(key) || inflightVideoUrls.has(key)) {
       return false;
     }
     return true;
@@ -502,7 +502,7 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
       if (!isPrefetchAllowed(sessionId)) return;
 
       const videoUrl = normalizeUrl(target.videoUrl);
-      if (!videoUrl || warmedVideoUrls.has(videoUrl) || inflightVideoUrls.has(videoUrl)) {
+      if (!videoUrl || hasHomeFeedVideoWarmKey(videoUrl) || inflightVideoUrls.has(videoUrl)) {
         continue;
       }
 
@@ -517,7 +517,7 @@ export function scheduleHomeFeedVideoBufferAhead(params: {
         try {
           const result = await warmVideoUrlNetwork(videoUrl);
           if (!isPrefetchAllowed(sessionId)) return;
-          warmedVideoUrls.add(videoUrl);
+          markHomeFeedVideoWarmKey(videoUrl);
           console.log("KRISTO_VIDEO_BUFFER_AHEAD_DONE", {
             urlHost: host,
             status: result.status,
@@ -627,7 +627,7 @@ async function warmStartupVideoPlan(
 ): Promise<"ok" | "failed" | "skip"> {
   const target = normalizeUrl(plan.startupUri);
   if (!isNetworkVideoUrl(target)) return "skip";
-  if (warmedVideoUrls.has(target)) return "ok";
+  if (hasHomeFeedVideoWarmKey(target)) return "ok";
   if (inflightVideoUrls.has(target)) return "skip";
 
   inflightVideoUrls.add(target);
@@ -646,7 +646,7 @@ async function warmStartupVideoPlan(
       rangeHeader: isFirst ? FIRST_VIDEO_RANGE_BYTES : RANGE_BYTES,
       timeoutMs,
     });
-    warmedVideoUrls.add(target);
+    markHomeFeedVideoWarmKey(target);
     logHomeFeedVideoQualityTrace({
       event: "prewarm-done",
       postId: plan.postId,
@@ -656,7 +656,7 @@ async function warmStartupVideoPlan(
     });
     return "ok";
   } catch {
-    warmedVideoUrls.delete(target);
+    unmarkHomeFeedVideoWarmKey(target);
     logHomeFeedVideoQualityTrace({
       event: "prewarm-failed",
       postId: plan.postId,
@@ -680,7 +680,7 @@ export type HomeFeedEarlyWarmResult = {
 /**
  * Cold-start critical path: prime the EXACT first playable video that
  * HomeFeedScreen will mount (display-ordered rows, not raw backend order) by
- * fetching startup URI bytes with Range. Marks warmedVideoUrls so diagnostics
+ * fetching startup URI bytes with Range. Marks warm registry so diagnostics
  * report prewarmHit=true; AVPlayer still opens its own progressive download —
  * this does not guarantee a fast first frame by itself. Runs before API
  * refresh / posters / next videos.
@@ -705,7 +705,7 @@ export async function earlyWarmHomeFeedFirstVideo(
 
   if (!url) return null;
 
-  if (warmedVideoUrls.has(url)) {
+  if (hasHomeFeedVideoWarmKey(url)) {
     const cached = { rowId, url, status: 200, ms: 0, prewarmHit: true };
     console.log("KRISTO_FIRST_VIDEO_EARLY_WARM_DONE", { ...cached, reason: "already-warmed" });
     return cached;
@@ -725,7 +725,7 @@ export async function earlyWarmHomeFeedFirstVideo(
       timeoutMs: FIRST_VIDEO_WARM_TIMEOUT_MS,
     });
     const ok = result.status === 206 || result.status === 200;
-    if (ok) warmedVideoUrls.add(url);
+    if (ok) markHomeFeedVideoWarmKey(url);
     const done = {
       rowId,
       url,
@@ -819,7 +819,7 @@ export async function warmHomeFeedStartupMedia(
       for (const plan of remainingPlans) {
         const target = normalizeUrl(plan.startupUri);
         if (!isNetworkVideoUrl(target)) continue;
-        if (warmedVideoUrls.has(target) || inflightVideoUrls.has(target)) continue;
+        if (hasHomeFeedVideoWarmKey(target) || inflightVideoUrls.has(target)) continue;
         enqueueVideoTask(() =>
           warmStartupVideoPlan(plan, false, VIDEO_WARM_FETCH_TIMEOUT_MS).then(() => {})
         );

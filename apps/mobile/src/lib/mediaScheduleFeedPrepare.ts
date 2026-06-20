@@ -1,4 +1,4 @@
-import { materializeMediaSlotTimeFields } from "@/src/lib/mediaScheduleSlotTimes";
+import { materializeMediaSlotTimeFields } from "@/src/lib/mediaScheduleSlotTimeCore";
 
 type AnyFeedItem = Record<string, any>;
 

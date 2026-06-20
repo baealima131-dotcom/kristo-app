@@ -5,7 +5,7 @@ import {
 import {
   isMediaSlotEndedOrStale,
   resolveMediaSlotTimeWindow,
-} from "@/src/lib/mediaScheduleSlotTimes";
+} from "@/src/lib/mediaScheduleSlotTimeCore";
 
 type AnyFeedItem = Record<string, any>;
 
