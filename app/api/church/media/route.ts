@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
+import { guard } from "@/app/api/_lib/rbac";
 import {
   getChurchMediaByChurchId,
   isMediaDatabaseError,
@@ -35,17 +37,42 @@ function auth(req: Request) {
   };
 }
 
-export async function GET(req: Request) {
-  const a = auth(req);
-  if (!a.userId || !a.churchId) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
+function logMediaCenterGate(payload: {
+  userId: string;
+  churchId: string;
+  hasMedia: boolean;
+  mediaId: string;
+  isActualChurchPastor: boolean;
+  viewerIsHost: boolean;
+  canAccessChurchMedia: boolean;
+  canOpenMediaScreen: boolean;
+  canUseMediaTools: boolean;
+  viewerCanManage: boolean;
+  showNotSetup: boolean;
+  mode: "pastor" | "host" | "blocked";
+}) {
+  console.log("KRISTO_MEDIA_CENTER_GATE", payload);
+}
+
+export async function GET(req: NextRequest) {
+  const ctxOrRes = await guard(req, [
+    "Pastor",
+    "Church_Admin",
+    "Leader",
+    "Ministry_Leader",
+    "System_Admin",
+    "Member",
+  ]);
+  if (ctxOrRes instanceof NextResponse) return ctxOrRes;
+
+  const churchId = ctxOrRes.churchId;
+  const userId = ctxOrRes.viewer.userId;
 
   try {
-    const media = await getChurchMediaByChurchId(a.churchId);
+    const media = await getChurchMediaByChurchId(churchId);
     const access = await evaluateChurchMediaAccess({
-      churchId: a.churchId,
-      userId: a.userId,
+      churchId,
+      userId,
     });
     let mediaForResponse = media;
     const hasProfile = Boolean(String(media?.mediaName || "").trim());
@@ -54,32 +81,54 @@ export async function GET(req: Request) {
     let subscriptionActive = access.subscriptionActive;
 
     if (hasProfile) {
-      await confirmChurchMediaPersisted(a.churchId, media?.mediaName);
+      await confirmChurchMediaPersisted(churchId, media?.mediaName);
     }
 
     if (access.canManageMediaHosts && access.actualPastorUserId && hasProfile && media) {
       try {
         const reconcileResult = await reconcileChurchSubscriptionExpiryNotifications({
-          churchId: a.churchId,
+          churchId,
           pastorUserId: access.actualPastorUserId,
           media,
         });
         if (reconcileResult.expired) {
-          mediaForResponse = await getChurchMediaByChurchId(a.churchId);
+          mediaForResponse = await getChurchMediaByChurchId(churchId);
           subscriptionActive = isChurchSubscriptionActiveFromRecord(mediaForResponse);
         }
       } catch (notifyError: any) {
         console.log("KRISTO_SUBSCRIPTION_RECONCILE_FAILED", {
-          churchId: a.churchId,
+          churchId,
           message: String(notifyError?.message || notifyError),
         });
       }
     }
 
+    const mode: "pastor" | "host" | "blocked" = access.isActualChurchPastor
+      ? "pastor"
+      : access.isMediaHost
+        ? "host"
+        : "blocked";
+    const showNotSetup = !hasProfile && access.isMediaHost;
+
+    logMediaCenterGate({
+      userId,
+      churchId,
+      hasMedia: hasProfile,
+      mediaId: String(media?.id || "").trim(),
+      isActualChurchPastor: access.isActualChurchPastor,
+      viewerIsHost: access.isMediaHost,
+      canAccessChurchMedia: access.canAccessChurchMedia,
+      canOpenMediaScreen: access.canOpenMediaScreen,
+      canUseMediaTools: access.canUseMediaTools,
+      viewerCanManage: access.canManageMediaHosts,
+      showNotSetup,
+      mode,
+    });
+
     if (process.env.KRISTO_DEBUG_AUTH === "1" || process.env.NODE_ENV !== "production") {
       console.log("[MediaProfile] backend result", {
-        churchId: a.churchId,
-        userId: a.userId,
+        churchId,
+        userId,
         found: hasProfile,
         subscriptionActive,
         canOpenMediaScreen,

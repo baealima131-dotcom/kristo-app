@@ -124,6 +124,7 @@ import {
   isChurchMediaHostsApiSuccess,
   stabilizeChurchMediaAccess,
   logMediaScreenAccessDiag,
+  logMediaCenterGate,
   logPastorRoleAudit,
   MAX_CHURCH_MEDIA_HOSTS,
 } from "../../../src/lib/churchMediaAccess";
@@ -642,6 +643,7 @@ export default function MediaStudioScreen() {
   const [mediaProfileReady, setMediaProfileReady] = useState(true);
   const [viewerCanManage, setViewerCanManage] = useState(false);
   const [viewerIsHost, setViewerIsHost] = useState(false);
+  const [apiProfileMissing, setApiProfileMissing] = useState<boolean | null>(null);
   const [churchMediaAccess, setChurchMediaAccess] = useState(() =>
     mediaSessionPeek?.churchMediaAccess ||
     evaluateChurchMediaAccessFromSession({
@@ -744,6 +746,7 @@ export default function MediaStudioScreen() {
           headers,
           screen: MEDIA_SCREEN,
           includeHosts: true,
+          force: !isReopen,
         });
 
         if (!alive) return;
@@ -797,10 +800,12 @@ export default function MediaStudioScreen() {
         const nextViewerCanManage = Boolean(nextAccess.canManageMediaHosts);
         const nextViewerIsHost = Boolean(nextAccess.isMediaHost);
         const profileMissing = Boolean(res?.ok && res?.profileMissing);
+        const hostCanEnterMedia = nextViewerIsHost && Boolean(nextAccess.canOpenMediaScreen);
         const mediaApiFailed = res?.ok === false || Number(res?.status || 0) >= 400;
 
         setViewerCanManage(nextViewerCanManage);
         setViewerIsHost(nextViewerIsHost);
+        setApiProfileMissing(res?.ok ? profileMissing : null);
 
         console.log("[MediaScreen] church media access", {
           canAccessChurchMedia: nextAccess.canAccessChurchMedia,
@@ -828,6 +833,7 @@ export default function MediaStudioScreen() {
         if (res?.ok && res.media?.mediaName) {
           setBackendMedia(res.media);
           setBackendMediaConfirmed(true);
+          setApiProfileMissing(false);
           await saveChurchMediaProfileCache({
             ...res.media,
             churchId: String(res.media.churchId || churchId),
@@ -851,6 +857,16 @@ export default function MediaStudioScreen() {
             mediaName: res.media.mediaName,
             hostCount: Array.isArray(hostsRes?.hosts) ? hostsRes.hosts.length : 0,
           });
+        } else if (hostCanEnterMedia && cached?.mediaName) {
+          setBackendMedia(cached);
+          setBackendMediaConfirmed(true);
+          setApiProfileMissing(false);
+          console.log("[MediaScreen] trusted host using cached church media profile", {
+            churchId,
+            mediaName: cached.mediaName,
+            profileMissing,
+            hadBackendMedia: Boolean(res?.media?.mediaName),
+          });
         } else if (mediaApiFailed) {
           console.warn("[MediaScreen] media profile fetch failed; keeping cache if present", {
             churchId,
@@ -867,7 +883,7 @@ export default function MediaStudioScreen() {
             setBackendMediaConfirmed(false);
           }
 
-          if (profileMissing) {
+          if (profileMissing && !hostCanEnterMedia) {
             console.warn("[MediaScreen] stale media cache invalidated", {
               churchId,
               hadCache: Boolean(cached?.mediaName),
@@ -880,6 +896,11 @@ export default function MediaStudioScreen() {
               mediaProfile: null,
               churchMediaProfile: null,
             } as any);
+          } else if (profileMissing && hostCanEnterMedia) {
+            console.warn("[MediaScreen] profileMissing ignored for trusted host", {
+              churchId,
+              hadCache: Boolean(cached?.mediaName),
+            });
           }
         }
       } catch (error) {
@@ -1092,7 +1113,11 @@ export default function MediaStudioScreen() {
   const canManageChurchStorage = canUseMediaTools;
   const canManageMediaStorage = canUseMediaTools;
   const showHostSetupPending =
-    mediaProfileReady && !hasChurchMediaProfile && viewerIsHostEffective && !viewerCanManageEffective;
+    mediaProfileReady &&
+    apiProfileMissing === true &&
+    !hasChurchMediaProfile &&
+    viewerIsHostEffective &&
+    !viewerCanManageEffective;
   const showAccessLocked =
     mediaProfileReady && hasChurchMembership && !canOpenMediaScreen && !subscriptionLocked;
   const showCreateWizard =
@@ -1488,11 +1513,54 @@ export default function MediaStudioScreen() {
     session?.role,
     (session as any)?.churchRole,
     session?.churchId,
+    session?.userId,
     isActualChurchPastor,
     churchSubActiveFromApi,
     canOpenMediaScreen,
     canUseMediaTools,
     subscriptionLocked,
+  ]);
+
+  useEffect(() => {
+    if (!mediaProfileReady) return;
+    const churchId = String(session?.churchId || "").trim();
+    const userId = String(session?.userId || "").trim();
+    if (!churchId || !userId) return;
+
+    const mode: "pastor" | "host" | "blocked" = isActualChurchPastor
+      ? "pastor"
+      : viewerIsHostEffective
+        ? "host"
+        : "blocked";
+
+    logMediaCenterGate({
+      userId,
+      churchId,
+      hasMedia: hasChurchMediaProfile,
+      mediaId: String(churchMediaProfile?.id || backendMedia?.id || "").trim() || null,
+      isActualChurchPastor,
+      viewerIsHost: viewerIsHostEffective,
+      canAccessChurchMedia,
+      canOpenMediaScreen,
+      canUseMediaTools,
+      viewerCanManage: viewerCanManageEffective,
+      showNotSetup: showHostSetupPending,
+      mode,
+    });
+  }, [
+    mediaProfileReady,
+    session?.churchId,
+    session?.userId,
+    hasChurchMediaProfile,
+    churchMediaProfile?.id,
+    backendMedia?.id,
+    isActualChurchPastor,
+    viewerIsHostEffective,
+    canAccessChurchMedia,
+    canOpenMediaScreen,
+    canUseMediaTools,
+    viewerCanManageEffective,
+    showHostSetupPending,
   ]);
 
   useEffect(() => {

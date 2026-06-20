@@ -388,6 +388,78 @@ export function stabilizeChurchMediaAccess(
   return stabilized;
 }
 
+export function shouldShowMoreMediaCard(args: {
+  hasChurch: boolean;
+  isPastor?: boolean;
+  access?: Pick<
+    ChurchMediaAccessState,
+    "canOpenMediaScreen" | "canAccessChurchMedia" | "isMediaHost"
+  > | null;
+}): boolean {
+  if (!args.hasChurch) return false;
+  if (args.isPastor) return true;
+  const access = args.access;
+  return Boolean(
+    access?.canOpenMediaScreen ||
+      access?.canAccessChurchMedia ||
+      access?.isMediaHost
+  );
+}
+
+const loggedMoreMediaCardGate = new Set<string>();
+
+export function logMoreMediaCardGate(args: {
+  userId: string;
+  churchId: string;
+  isPastor: boolean;
+  viewerIsHost: boolean;
+  canAccessChurchMedia: boolean;
+  canOpenMediaScreen: boolean;
+  canUseMediaTools: boolean;
+  showMediaCard: boolean;
+}) {
+  const key = [
+    args.userId,
+    args.churchId,
+    String(args.isPastor),
+    String(args.viewerIsHost),
+    String(args.canAccessChurchMedia),
+    String(args.canOpenMediaScreen),
+    String(args.showMediaCard),
+  ].join(":");
+  if (loggedMoreMediaCardGate.has(key)) return;
+  loggedMoreMediaCardGate.add(key);
+  console.log("KRISTO_MORE_MEDIA_CARD_GATE", args);
+}
+
+const loggedMediaCenterGate = new Set<string>();
+
+export function logMediaCenterGate(args: {
+  userId: string;
+  churchId: string;
+  hasMedia: boolean;
+  mediaId?: string | null;
+  isActualChurchPastor: boolean;
+  viewerIsHost: boolean;
+  canAccessChurchMedia: boolean;
+  canOpenMediaScreen: boolean;
+  canUseMediaTools: boolean;
+  viewerCanManage: boolean;
+  showNotSetup: boolean;
+  mode: "pastor" | "host" | "blocked";
+}) {
+  const key = [
+    args.userId,
+    args.churchId,
+    String(args.hasMedia),
+    String(args.showNotSetup),
+    args.mode,
+  ].join(":");
+  if (loggedMediaCenterGate.has(key)) return;
+  loggedMediaCenterGate.add(key);
+  console.log("KRISTO_MEDIA_CENTER_GATE", args);
+}
+
 const loggedMediaScreenAccessDiag = new Set<string>();
 
 export function logMediaScreenAccessDiag(args: {
