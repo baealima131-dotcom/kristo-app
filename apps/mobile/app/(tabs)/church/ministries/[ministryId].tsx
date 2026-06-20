@@ -19,6 +19,11 @@ import {
   evaluateMinistryMediaAccessPermission,
   logMinistryMediaAccessLoad,
 } from "@/src/lib/ministryMediaAccessTrace";
+import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
+import {
+  applyPastorAuthorityToMinistryBoard,
+  isProtectedMinistryMember,
+} from "@/src/lib/ministryAuthority";
 
 const VIP_BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -136,6 +141,7 @@ export default function ChurchMinistryDetailsScreen() {
 
   const [ministryLive, setMinistryLive] = useState<MinistryItem | null>(null);
   const [membersLive, setMembersLive] = useState<any[]>([]);
+  const [actualPastorUserId, setActualPastorUserId] = useState("");
   const [churchMembers, setChurchMembers] = useState<any[]>([]);
   const [membersOpen, setMembersOpen] = useState(false);
   const [loadingLive, setLoadingLive] = useState(false);
@@ -266,6 +272,37 @@ export default function ChurchMinistryDetailsScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      if (!churchId) {
+        if (alive) setActualPastorUserId("");
+        return;
+      }
+
+      try {
+        const res = await fetchChurchPastorUserId(churchId, getKristoHeaders() as any);
+        if (alive) setActualPastorUserId(String(res.actualChurchPastorUserId || "").trim());
+      } catch {
+        if (alive) setActualPastorUserId("");
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [churchId]);
+
+  const displayMembersLive = useMemo(
+    () =>
+      applyPastorAuthorityToMinistryBoard(membersLive, {
+        actualPastorUserId,
+        ministryId,
+      }),
+    [membersLive, actualPastorUserId, ministryId]
+  );
+
   async function addPersonToMinistry(role: "Leader" | "Member") {
     if (!canEditMinistry) {
       Alert.alert("Access denied", "Only church leadership can manage ministry members.");
@@ -347,6 +384,19 @@ export default function ChurchMinistryDetailsScreen() {
       return;
     }
 
+    const targetUserId = String(mm?.userId || "").trim();
+    if (
+      isProtectedMinistryMember({
+        userId: targetUserId,
+        actualPastorUserId,
+        isProtected: mm?.isProtected,
+        isChurchPastor: mm?.isChurchPastor,
+      })
+    ) {
+      Alert.alert("Pastor protected", "Pastor cannot be removed from a ministry.");
+      return;
+    }
+
     Alert.alert(
       "Remove Member",
       `Remove ${displayName} from this ministry?`,
@@ -425,16 +475,17 @@ export default function ChurchMinistryDetailsScreen() {
     );
   }
 
-  const leadersCount = membersLive.filter((x: any) => {
+  const leadersCount = displayMembersLive.filter((x: any) => {
   const role = String(x?.role || x?.ministryRole || "").toLowerCase().trim();
 
   return (
     role === "leader" ||
     role === "ministry_leader" ||
-    role === "pastor"
+    role === "pastor" ||
+    x?.isChurchPastor === true
   );
 }).length;
-  const membersCount = membersLive.length;
+  const membersCount = displayMembersLive.length;
   function openEditMinistryScreen() {
     if (!canEditMinistry) {
       Alert.alert("Admin access", "Only pastor, church admin, or ministry leader can edit this ministry.");
@@ -546,7 +597,7 @@ return (
             <View style={s.sectionHeaderRow}>
               <View style={{ flex: 1 }}>
                 <Text style={s.sectionTitle}>Members</Text>
-                <Text style={s.sectionHint}>{membersLive.length} members • leaders and roles</Text>
+                <Text style={s.sectionHint}>{displayMembersLive.length} members • leaders and roles</Text>
               </View>
 
               <View style={s.openPill}>
@@ -557,15 +608,23 @@ return (
 
             {membersOpen && (
               <View>
-                {membersLive.length === 0 ? (
+                {displayMembersLive.length === 0 ? (
                   <Text style={s.p}>No members added yet.</Text>
                 ) : (
-                  membersLive.slice(0, 12).map((m: any, i: number) => {
+                  displayMembersLive.slice(0, 12).map((m: any, i: number) => {
                     const displayName = String(
                       m?.name || m?.fullName || m?.displayName || m?.email || m?.userId || m?.id || "User"
                     );
                     const role = String(m?.role || m?.ministryRole || "Member");
-                    const isLeader = role.toLowerCase().includes("leader");
+                    const isProtected = isProtectedMinistryMember({
+                      userId: m?.userId,
+                      actualPastorUserId,
+                      isProtected: m?.isProtected,
+                      isChurchPastor: m?.isChurchPastor,
+                    });
+                    const isPastorRow = isProtected || role.toLowerCase().includes("pastor");
+                    const isLeader = isPastorRow || role.toLowerCase().includes("leader");
+                    const roleLabel = isPastorRow ? "Pastor" : role;
 
                     return (
                       <View key={`${m?.userId || m?.id || i}`} style={s.memberPreviewRow}>
@@ -577,15 +636,19 @@ return (
 
                         <View style={{ flex: 1, minWidth: 0 }}>
                           <Text style={s.memberPreviewName} numberOfLines={1}>{displayName}</Text>
-                          <Text style={s.memberPreviewRole} numberOfLines={1}>{role}</Text>
+                          <Text style={s.memberPreviewRole} numberOfLines={1}>
+                            {isPastorRow ? "Church pastor • protected" : roleLabel}
+                          </Text>
                         </View>
 
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                           <View style={isLeader ? s.rolePillLeader : s.rolePill}>
-                            <Text style={isLeader ? s.rolePillLeaderText : s.rolePillText}>{role}</Text>
+                            <Text style={isLeader ? s.rolePillLeaderText : s.rolePillText}>
+                              {isPastorRow ? "Protected" : roleLabel}
+                            </Text>
                           </View>
 
-                          {canEditMinistry ? (
+                          {canEditMinistry && !isProtected ? (
                             <Pressable
                               onPress={() => removeMemberFromMinistry(m)}
                               style={s.memberRemoveBtn}
@@ -596,6 +659,10 @@ return (
                                 color="#FF8A8A"
                               />
                             </Pressable>
+                          ) : isProtected ? (
+                            <View style={[s.rolePill, { paddingHorizontal: 8, paddingVertical: 4 }]}>
+                              <Text style={[s.rolePillText, { color: GOLD, fontSize: 10 }]}>Pastor</Text>
+                            </View>
                           ) : null}
                         </View>
                       </View>

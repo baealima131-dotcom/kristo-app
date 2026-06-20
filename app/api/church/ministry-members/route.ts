@@ -10,6 +10,11 @@ import {
 import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
+import {
+  applyPastorAuthorityToMinistryMembers,
+  evaluateMinistryMemberRemoveGuard,
+  evaluateMinistryMemberRoleChangeGuard,
+} from "@/app/api/_lib/ministryMemberGuard";
 import { addNotification } from "@/app/api/_lib/notifications";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
@@ -258,8 +263,12 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const data = await Promise.all(
-    all.filter((mm) => ministryMemberMatchesMinistry(mm, churchId, ministryId)).map(enrichMember)
+  const scoped = all.filter((mm) => ministryMemberMatchesMinistry(mm, churchId, ministryId));
+  const data = await applyPastorAuthorityToMinistryMembers(
+    churchId,
+    normalizeMinistryId(ministryId),
+    scoped,
+    enrichMember
   );
 
   return json<MinistryMember[]>({ ok: true, data });
@@ -269,7 +278,7 @@ export async function POST(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "Ministry_Leader", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
@@ -289,7 +298,7 @@ export async function POST(req: NextRequest) {
   const ministry = await requireMinistryInChurch(ministryId, churchId);
   if (!ministry) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
 
-  if (viewer.role === "Leader") {
+  if (viewer.role === "Leader" || viewer.role === "Ministry_Leader") {
     const ok = await isMinistryLeader({ churchId, ministryId, userId: viewer.userId });
     if (!ok) return json({ ok: false, error: "Forbidden (role)" } satisfies ApiErr, { status: 403 });
   }
@@ -388,7 +397,7 @@ export async function PATCH(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "Ministry_Leader", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
@@ -414,9 +423,24 @@ export async function PATCH(req: NextRequest) {
   const ministry = await requireMinistryInChurch(existing.ministryId, churchId);
   if (!ministry) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
 
-  if (viewer.role === "Leader") {
+  if (viewer.role === "Leader" || viewer.role === "Ministry_Leader") {
     const ok = await isMinistryLeader({ churchId, ministryId: existing.ministryId, userId: viewer.userId });
     if (!ok) return json({ ok: false, error: "Forbidden (role)" } satisfies ApiErr, { status: 403 });
+  }
+
+  const roleGuard = await evaluateMinistryMemberRoleChangeGuard({
+    churchId,
+    ministryId: existing.ministryId,
+    viewerUserId: viewer.userId,
+    viewerRole: viewer.role,
+    targetUserId: existing.userId,
+    nextRole,
+  });
+  if (!roleGuard.allowed) {
+    return json(
+      { ok: false, error: roleGuard.error || "Pastor cannot be removed from a ministry." } satisfies ApiErr,
+      { status: 403 }
+    );
   }
 
   if (existing.role === "Leader" && nextRole !== "Leader") {
@@ -523,7 +547,7 @@ export async function DELETE(req: NextRequest) {
   const limited = await applyRateLimit(req);
   if (limited) return limited;
 
-  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "System_Admin"]);
+  const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "Leader", "Ministry_Leader", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
@@ -543,7 +567,21 @@ export async function DELETE(req: NextRequest) {
   const ministry = await requireMinistryInChurch(existing.ministryId, churchId);
   if (!ministry) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
 
-  if (existing.role === "Leader") {
+  const removeGuard = await evaluateMinistryMemberRemoveGuard({
+    churchId,
+    ministryId: existing.ministryId,
+    viewerUserId: viewer.userId,
+    viewerRole: viewer.role,
+    targetUserId: existing.userId,
+  });
+  if (!removeGuard.allowed) {
+    return json(
+      { ok: false, error: removeGuard.error || "Pastor cannot be removed from a ministry." } satisfies ApiErr,
+      { status: 403 }
+    );
+  }
+
+  if (existing.role === "Leader" && !removeGuard.isTargetPastor) {
     const leaders = allBefore.filter(
       (mm) => mm.churchId === churchId && mm.ministryId === existing.ministryId && mm.role === "Leader"
     );
@@ -552,7 +590,7 @@ export async function DELETE(req: NextRequest) {
     }
   }
 
-  if (viewer.role === "Leader") {
+  if (viewer.role === "Leader" || viewer.role === "Ministry_Leader") {
     const ok = await isMinistryLeader({ churchId, ministryId: existing.ministryId, userId: viewer.userId });
     if (!ok) return json({ ok: false, error: "Forbidden (role)" } satisfies ApiErr, { status: 403 });
   }

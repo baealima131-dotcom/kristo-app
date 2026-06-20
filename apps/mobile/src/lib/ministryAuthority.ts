@@ -68,6 +68,73 @@ export function resolveMinistryAuthority(input: {
   };
 }
 
+export function isProtectedMinistryMember(args: {
+  userId?: string;
+  actualPastorUserId?: string;
+  churchRole?: string;
+  isProtected?: boolean;
+  isChurchPastor?: boolean;
+}): boolean {
+  if (args.isProtected === true || args.isChurchPastor === true) return true;
+  const uid = String(args.userId || "").trim();
+  const pastorId = String(args.actualPastorUserId || "").trim();
+  if (pastorId && uid === pastorId) return true;
+  return isPastorAppRole(args.churchRole || "");
+}
+
+export function applyPastorAuthorityToMinistryBoard<T extends Record<string, any>>(
+  people: T[],
+  args: { actualPastorUserId?: string; ministryId?: string; fallbackName?: string }
+): T[] {
+  const pastorUserId = String(args.actualPastorUserId || "").trim();
+  if (!pastorUserId) return people;
+
+  const ministryId = String(args.ministryId || "").trim();
+  let found = false;
+
+  const next = people.map((row) => {
+    const uid = String(row.userId || row.id || "").trim();
+    if (uid !== pastorUserId) return row;
+    found = true;
+    return {
+      ...row,
+      role: "Pastor",
+      ministryRole: "Leader",
+      isChurchPastor: true,
+      isProtected: true,
+      note: "Church pastor • protected",
+    };
+  });
+
+  if (!found) {
+    next.unshift({
+      id: `pastor_authority_${pastorUserId}`,
+      ministryMemberId: "",
+      userId: pastorUserId,
+      ministryId,
+      name: args.fallbackName || "Pastor",
+      displayName: args.fallbackName || "Pastor",
+      role: "Pastor",
+      ministryRole: "Leader",
+      status: "Active",
+      note: "Church pastor • protected",
+      isChurchPastor: true,
+      isProtected: true,
+      isSynthetic: true,
+    } as T);
+  }
+
+  const pastorIdx = next.findIndex(
+    (row) => String(row.userId || row.id || "").trim() === pastorUserId
+  );
+  if (pastorIdx > 0) {
+    const [pastorRow] = next.splice(pastorIdx, 1);
+    next.unshift(pastorRow);
+  }
+
+  return next;
+}
+
 export function logMinistryAuthority(
   userId: string,
   appRole: string,
