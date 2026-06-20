@@ -108,6 +108,12 @@ import {
   type MinistryToolKey,
 } from "@/src/lib/ministryAuthority";
 import { requireActiveChurchSubscriptionForSchedule } from "@/src/lib/churchSubscription";
+import {
+  buildMinistryLiveRoomRouteParams,
+  logMinistryLiveActivationCheck,
+  logMinistryLiveStartAttempt,
+  resolveMinistryLiveActivationState,
+} from "@/src/lib/ministryLiveActivation";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
 import ImageViewing from "react-native-image-viewing";
@@ -1544,10 +1550,11 @@ const DEMO_MINISTRY_VIDEOS = [
 ];
 
 function getAssignmentLiveCountdownMeta(card?: any) {
-  const meetingDateValue = String(card?.meetingDate || "").trim();
+  const startMs = parseSlotStartMs(card);
+  const endMs = parseSlotEndMs(card, startMs);
   const durationMin = Math.max(0, Number(card?.durationMin || 0));
 
-  if (!meetingDateValue) {
+  if (startMs <= 0 || endMs <= startMs) {
     return {
       valid: false,
       active: false,
@@ -1560,21 +1567,6 @@ function getAssignmentLiveCountdownMeta(card?: any) {
     };
   }
 
-  const startMs = new Date(meetingDateValue).getTime();
-  if (Number.isNaN(startMs)) {
-    return {
-      valid: false,
-      active: false,
-      ended: false,
-      canOpenLive: false,
-      label: "",
-      startMs: 0,
-      endMs: 0,
-      remainingMs: 0,
-    };
-  }
-
-  const endMs = startMs + durationMin * 60 * 1000;
   const now = Date.now();
 
   const fmt = (ms: number) => {
@@ -2688,17 +2680,7 @@ export default function MessageThreadScreen() {
     String(assignmentRoleParam || "").toLowerCase() === "pastor" ||
     String(assignmentRole || "").toLowerCase() === "pastor";
 
-  // STRICT LIVE AUTHORITY
-  const isChurchMediaRoom =
-    String(threadId || "").trim() === "church-media-room";
-
-  const resolvedLiveRole =
-    isPastorAuthority
-      ? "Pastor"
-      : String(effectiveAuthRole || assignmentRole || "Member");
-
-  const resolvedCanPublish =
-    isPastorAuthority || isChurchMediaRoom;
+  // STRICT LIVE AUTHORITY — resolvedLiveRole / resolvedCanPublish defined after ministryAuthority.
 
   const rawAssignmentStatusParam = String((params as any)?.status || (params as any)?.assignmentStatus || "").trim();
   const assignmentStatusParam = rawAssignmentStatusParam.toLowerCase() === "active member" ? "" : rawAssignmentStatusParam;
@@ -3052,6 +3034,29 @@ export default function MessageThreadScreen() {
     (ministryAuthority.tier === "pastor" || ministryAuthority.tier === "leader");
 
   const isAssignmentTlmc = isAssignmentThread && ministryAuthority.canOpenTlmcTools;
+
+  const isChurchMediaRoom =
+    String(threadId || "").trim() === "church-media-room";
+
+  const resolvedLiveRole =
+    isPastorAuthority || ministryAuthority.tier === "pastor"
+      ? "Pastor"
+      : ministryAuthority.tier === "leader"
+        ? "Leader"
+        : ministryAuthority.tier === "host"
+          ? "Host"
+          : String(effectiveAuthRole || assignmentRole || "Member");
+
+  const resolvedCanPublish =
+    isPastorAuthority ||
+    isChurchMediaRoom ||
+    (isAssignmentThread &&
+      !isChurchLiveControlAssignment &&
+      (ministryAuthority.canCreateMeeting ||
+        ministryAuthority.tier === "pastor" ||
+        ministryAuthority.tier === "leader" ||
+        ministryAuthority.tier === "host" ||
+        isSelectedMcHost === true));
 
   const canManageAssignmentMembers = ministryAuthority.canManageMembers;
   const canScheduleStructuredMeeting = ministryAuthority.canCreateMeeting;
@@ -3938,6 +3943,94 @@ const displayHeaderTitle = assignmentDisplayTitle;
     );
     const hasRealSchedule = !!hasSchedule && hasAssignmentCards;
 
+    if (isAssignmentThread && !isChurchLiveControlAssignment) {
+      const ministryActivation = resolveMinistryLiveActivationState({
+        messages,
+        nowMs: now,
+        viewerUserId: effectiveAuthUserId,
+        viewerIsLeader: !!isAssignmentLeader || !!isAssignmentTlmc,
+        viewerIsHost: ministryAuthority.tier === "host" || isSelectedMcHost === true,
+        viewerIsPastor:
+          currentRole === "pastor" ||
+          currentRole === "admin" ||
+          ministryAuthority.tier === "pastor",
+        preliveTeamOpenMs: PRELIVE_TEAM_OPEN_MS,
+      });
+
+      logMinistryLiveActivationCheck({
+        roomId: String(threadId || ""),
+        ministryId: String(resolvedMinistryId || threadId || ""),
+        currentTime: now,
+        viewerUserId: effectiveAuthUserId,
+        ministryRole: resolvedMinistryRoleLabel,
+        viewerIsHost: ministryAuthority.tier === "host" || isSelectedMcHost === true,
+        viewerIsLeader: !!isAssignmentLeader || !!isAssignmentTlmc,
+        viewerIsPastor:
+          currentRole === "pastor" ||
+          currentRole === "admin" ||
+          ministryAuthority.tier === "pastor",
+        state: ministryActivation,
+      });
+
+      if (!ministryActivation.scheduleReady || !hasRealSchedule) {
+        return {
+          label: "LIVE",
+          tone: "idle" as const,
+          sublabel: "No schedule",
+          canOpenLive: false,
+          entryMode: "none" as const,
+        };
+      }
+
+      if (ministryActivation.liveStillActive && ministryActivation.canStartLive) {
+        return {
+          label: "LIVE",
+          tone: "live" as const,
+          sublabel: "Live now",
+          canOpenLive: true,
+          entryMode: "live" as const,
+        };
+      }
+
+      if (ministryActivation.liveStillActive && ministryActivation.requiresClaim) {
+        return {
+          label: "LIVE",
+          tone: "scheduled" as const,
+          sublabel: "Claim this slot first",
+          canOpenLive: false,
+          entryMode: "none" as const,
+        };
+      }
+
+      if (ministryActivation.canEnterBackstage) {
+        return {
+          label: "LIVE",
+          tone: "preview" as const,
+          sublabel: "Ready room open",
+          canOpenLive: true,
+          entryMode: "backstage" as const,
+        };
+      }
+
+      if (ministryActivation.liveEnded) {
+        return {
+          label: "LIVE",
+          tone: "idle" as const,
+          sublabel: "Live window ended",
+          canOpenLive: false,
+          entryMode: "none" as const,
+        };
+      }
+
+      return {
+        label: "LIVE",
+        tone: "scheduled" as const,
+        sublabel: "Schedule is ready",
+        canOpenLive: false,
+        entryMode: "none" as const,
+      };
+    }
+
     const canEnterEarlyReadyRoom =
       !!hasRealSchedule &&
       !!startMs &&
@@ -4046,6 +4139,13 @@ const displayHeaderTitle = assignmentDisplayTitle;
     currentRole,
     isChurchLiveControlAssignment,
     canPastorStartChurchLive,
+    isAssignmentThread,
+    resolvedMinistryId,
+    threadId,
+    effectiveAuthUserId,
+    resolvedMinistryRoleLabel,
+    ministryAuthority.tier,
+    isSelectedMcHost,
   ]);
 
   const sheetLift = useRef(new Animated.Value(0)).current;
@@ -4541,6 +4641,39 @@ const displayHeaderTitle = assignmentDisplayTitle;
     }
   }
 
+  function buildMinistryLiveNavigationParams(
+    ministryActivation: ReturnType<typeof resolveMinistryLiveActivationState>,
+    entryMode: string,
+    preview = entryMode !== "live"
+  ) {
+    const roomId = String(threadId || resolvedMinistryId || "");
+    const ministryId = String(resolvedMinistryId || threadId || "");
+    const scheduleStateAny = (meetingScheduleState || {}) as any;
+    const meetingTopic = String(
+      scheduleStateAny?.meetingPlan?.topic ||
+        scheduleStateAny?.eventTitle ||
+        headerTitle ||
+        ""
+    ).trim();
+
+    return buildMinistryLiveRoomRouteParams({
+      messages,
+      roomId,
+      ministryId,
+      threadId: String(threadId || ""),
+      headerTitle,
+      subtitle: sub,
+      viewerUserId: effectiveAuthUserId,
+      resolvedLiveRole,
+      resolvedCanPublish,
+      entryMode,
+      preview,
+      ministryActivation,
+      meetingTopic,
+      churchId: String(auth?.churchId || churchId || ""),
+    });
+  }
+
   function openScheduledLiveFromCard(m: MsgItem) {
     const card: any = m.card || {};
     const meta = getAssignmentLiveCountdownMeta(card);
@@ -4578,6 +4711,26 @@ const displayHeaderTitle = assignmentDisplayTitle;
         Alert.alert("Pastor only", "Only the pastor can start Church Live.");
         return;
       }
+    }
+
+    if (!isChurchLiveControlAssignment) {
+      const ministryActivation = resolveMinistryLiveActivationState({
+        messages,
+        nowMs: Date.now(),
+        viewerUserId: effectiveAuthUserId,
+        viewerIsLeader: !!isAssignmentLeader || !!isAssignmentTlmc,
+        viewerIsHost: ministryAuthority.tier === "host" || isSelectedMcHost === true,
+        viewerIsPastor:
+          currentRole === "pastor" ||
+          currentRole === "admin" ||
+          ministryAuthority.tier === "pastor",
+      });
+
+      router.push({
+        pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
+        params: buildMinistryLiveNavigationParams(ministryActivation, mode, mode !== "live") as any,
+      });
+      return;
     }
 
     router.push({
@@ -4624,12 +4777,22 @@ const displayHeaderTitle = assignmentDisplayTitle;
         role: effectiveAuthRole as any,
         churchId: cid,
       }) as Record<string, string>;
+      const toolKey = tool === "schedule" ? "schedule" : "meeting";
+      const ministryToolAllowed = ministryToolAccess[toolKey] === true;
+      const isPastorGate =
+        ministryAuthority.tier === "pastor" ||
+        String(effectiveAuthRole || "").toLowerCase().includes("pastor");
+      const viewerIsHost =
+        ministryAuthority.tier === "host" || isSelectedMcHost === true;
 
       if (
         !(await requireActiveChurchSubscriptionForSchedule(cid, headers, {
-          isPastor:
-            ministryAuthority.tier === "pastor" ||
-            String(effectiveAuthRole || "").toLowerCase().includes("pastor"),
+          isPastor: isPastorGate,
+          isApprovedMediaHost: viewerIsHost,
+          viewerIsHost,
+          ministryRole: resolvedMinistryRoleLabel,
+          ministryToolAllowed,
+          toolKey,
           screen: "my-church-room.openAssignmentToolScreen",
           gate: `assignment-tool.${tool}`,
           onUpgrade: () => router.push("/more/payments/subscriptions" as any),
@@ -6081,6 +6244,60 @@ function saveAssignmentVideoTrim() {
       return;
     }
 
+    if (isAssignmentThread && !isChurchLiveControlAssignment) {
+      const ministryActivation = resolveMinistryLiveActivationState({
+        messages,
+        nowMs: liveCountdownNow,
+        viewerUserId: effectiveAuthUserId,
+        viewerIsLeader: !!isAssignmentLeader || !!isAssignmentTlmc,
+        viewerIsHost: ministryAuthority.tier === "host" || isSelectedMcHost === true,
+        viewerIsPastor:
+          currentRole === "pastor" ||
+          currentRole === "admin" ||
+          ministryAuthority.tier === "pastor",
+      });
+      const roomId = String(threadId || resolvedMinistryId || "");
+      const ministryId = String(resolvedMinistryId || threadId || "");
+
+      if (ministryActivation.requiresClaim && ministryActivation.liveStillActive) {
+        logMinistryLiveStartAttempt({
+          roomId,
+          ministryId,
+          activeSlotId: ministryActivation.activeSlotId,
+          viewerUserId: effectiveAuthUserId,
+          allowed: false,
+          reason: "claim_required",
+        });
+        Alert.alert("Claim required", "Claim this slot first before opening live.");
+        return;
+      }
+
+      if (ministryActivation.canStartLive) {
+        const entryMode = ministryActivation.liveStillActive
+          ? "live"
+          : ministryActivation.canEnterBackstage
+            ? "backstage"
+            : "waiting";
+        logMinistryLiveStartAttempt({
+          roomId,
+          ministryId,
+          activeSlotId: ministryActivation.activeSlotId,
+          viewerUserId: effectiveAuthUserId,
+          allowed: true,
+          reason: ministryActivation.reason,
+        });
+        router.push({
+          pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
+          params: buildMinistryLiveNavigationParams(
+            ministryActivation,
+            entryMode,
+            entryMode !== "live"
+          ) as any,
+        });
+        return;
+      }
+    }
+
     // If scheduled time is open, allow the scheduled/claimed member to enter.
     // If there is no scheduled live flow, only pastor can start Church Live.
     if (liveAssignmentCtaMeta.tone === "scheduled") {
@@ -6129,12 +6346,35 @@ function saveAssignmentVideoTrim() {
             ? "backstage"
             : "waiting";
 
+      if (isAssignmentThread && !isChurchLiveControlAssignment) {
+        const ministryActivation = resolveMinistryLiveActivationState({
+          messages,
+          nowMs: liveCountdownNow,
+          viewerUserId: effectiveAuthUserId,
+          viewerIsLeader: !!isAssignmentLeader || !!isAssignmentTlmc,
+          viewerIsHost: ministryAuthority.tier === "host" || isSelectedMcHost === true,
+          viewerIsPastor:
+            currentRole === "pastor" ||
+            currentRole === "admin" ||
+            ministryAuthority.tier === "pastor",
+        });
+        router.push({
+          pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
+          params: buildMinistryLiveNavigationParams(
+            ministryActivation,
+            entryMode,
+            liveAssignmentCtaMeta.tone === "preview"
+          ) as any,
+        });
+        return;
+      }
+
       router.push({
         pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
         params: {
           title: headerTitle,
           role: isAssignmentThread ? assignmentRoleParam : currentRole,
-          layout: "focus",
+          layout: "grid6",
           membersCount: "26",
           leadersCount: "4",
           assignmentId: threadId,

@@ -42,9 +42,50 @@ function parseIsoMs(value: unknown) {
 
 function preferSlotCalendarDate(slot: any) {
   const meetingDate = String(slot?.meetingDate || "").trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(meetingDate)) return meetingDate;
+  if (/^\d{4}-\d{2}-\d{2}/.test(meetingDate)) return meetingDate.split("T")[0];
   const meetingDay = String(slot?.meetingDay || "").trim();
   return meetingDate || meetingDay;
+}
+
+function formatLocalIsoDate(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Resolve Today/Tomorrow/day labels or ISO dates for assignment/ministry slot cards. */
+export function resolveAssignmentSlotCalendarDate(slot: any, nowMs = Date.now()): string {
+  const meetingDate = String(slot?.meetingDate || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(meetingDate)) return meetingDate.split("T")[0];
+
+  const dayLabel = String(slot?.meetingDay || meetingDate || "").trim().toLowerCase();
+  const base = new Date(nowMs);
+  if (dayLabel === "tomorrow") {
+    base.setDate(base.getDate() + 1);
+    return formatLocalIsoDate(base);
+  }
+  if (dayLabel === "today" || !dayLabel) {
+    return formatLocalIsoDate(base);
+  }
+
+  const parsed = Date.parse(meetingDate || dayLabel);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return formatLocalIsoDate(new Date(parsed));
+  }
+
+  return formatLocalIsoDate(base);
+}
+
+function parseTimeLabelStartMs(timeLabel: string, calendarDate: string) {
+  const label = String(timeLabel || "").trim();
+  const match = label.match(/^(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
+  if (!match) return 0;
+  return parseSlotClockMs(calendarDate, match[1].trim());
+}
+
+function parseTimeLabelEndMs(timeLabel: string, calendarDate: string, startMs = 0) {
+  const label = String(timeLabel || "").trim();
+  const match = label.match(/-\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
+  if (!match) return 0;
+  return parseSlotClockMs(calendarDate, match[1].trim(), { startMsHint: startMs, preferEndDate: calendarDate });
 }
 
 export function parseSlotClockMs(
@@ -92,15 +133,20 @@ export function parseSlotStartMs(slot: any) {
   const startsAtMs = parseIsoMs(slot?.startsAt);
   if (startsAtMs > 0) return startsAtMs;
 
-  const rawDate = preferSlotCalendarDate(slot);
+  const calendarDate = resolveAssignmentSlotCalendarDate(slot);
   const rawTime = String(slot?.startTime || slot?.time || "").trim();
-  if (!rawDate) return 0;
+  if (rawTime) {
+    const fromClock = parseSlotClockMs(calendarDate, rawTime);
+    if (fromClock > 0) return fromClock;
+  }
 
-  const base = new Date(rawDate);
+  const fromLabel = parseTimeLabelStartMs(String(slot?.timeLabel || ""), calendarDate);
+  if (fromLabel > 0) return fromLabel;
+
+  if (!calendarDate) return 0;
+  const base = new Date(calendarDate);
   if (!Number.isFinite(base.getTime())) return 0;
-  if (!rawTime) return base.getTime();
-
-  return parseSlotClockMs(rawDate, rawTime);
+  return base.getTime();
 }
 
 export function parseSlotEndMs(slot: any, startMs = 0) {
@@ -110,15 +156,26 @@ export function parseSlotEndMs(slot: any, startMs = 0) {
   const endsAtMs = parseIsoMs(slot?.endsAt);
   if (endsAtMs > startMs) return endsAtMs;
 
+  const calendarDate = resolveAssignmentSlotCalendarDate(slot, startMs > 0 ? startMs : Date.now());
   const endDate = String(
     slot?.meetingEndDate || slot?.meetingDate || slot?.meetingDay || ""
   ).trim();
+  const resolvedEndDate = /^\d{4}-\d{2}-\d{2}/.test(endDate)
+    ? endDate.split("T")[0]
+    : calendarDate;
   const endTime = String(slot?.endTime || "").trim();
-  const endFromClock = endDate && endTime
-    ? parseSlotClockMs(endDate, endTime, { startMsHint: startMs, preferEndDate: endDate })
+  const endFromClock = endTime
+    ? parseSlotClockMs(resolvedEndDate, endTime, { startMsHint: startMs, preferEndDate: resolvedEndDate })
     : 0;
 
   if (endFromClock > startMs) return endFromClock;
+
+  const endFromLabel = parseTimeLabelEndMs(
+    String(slot?.timeLabel || ""),
+    resolvedEndDate,
+    startMs
+  );
+  if (endFromLabel > startMs) return endFromLabel;
 
   const durationMs = Math.max(
     1,

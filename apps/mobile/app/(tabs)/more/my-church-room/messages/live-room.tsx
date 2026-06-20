@@ -85,6 +85,8 @@ import {
   baseFeedId,
   isBackendFeedScheduleId,
   parseLiveAllScheduleSlotsJson,
+  parseSlotStartMs,
+  parseSlotEndMs,
   resolveLiveScheduleFeedId,
   resolvePersistedClaimAvatarUri,
   resolveMediaSlotClaimedAvatar,
@@ -93,6 +95,10 @@ import {
   utf8JsonByteLength,
   cleanFeedLabel,
 } from "@/src/lib/scheduleSlotUtils";
+import {
+  assignmentCardsToLiveScheduleSlots,
+  extractAssignmentScheduleCards,
+} from "@/src/lib/ministryLiveActivation";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
 import {
@@ -2668,10 +2674,73 @@ export default function LiveRoomScreen() {
     };
   }, [liveRouteChurchId, session?.userId, session?.role, (session as any)?.churchRole]);
 
-  const initialRouteScheduleSlots = useMemo(
-    () => parseLiveAllScheduleSlotsJson((params as any).liveAllScheduleSlotsJson),
-    [(params as any).liveAllScheduleSlotsJson]
+  const routeIsMinistryLive = useMemo(
+    () =>
+      String((params as any).room || "").toLowerCase() === "ministry" ||
+      String((params as any).mediaScope || "").toLowerCase() === "ministry" ||
+      String((params as any).roomKind || "").toLowerCase().includes("ministry") ||
+      String((params as any).source || "").toLowerCase().includes("ministry-live"),
+    [params]
   );
+
+  const ministryAssignmentThreadId = useMemo(
+    () =>
+      String(
+        (params as any).assignmentId ||
+          (params as any).roomId ||
+          (params as any).sourceRoomId ||
+          ""
+      ).trim(),
+    [params]
+  );
+
+  const [ministrySlotHydrationTick, setMinistrySlotHydrationTick] = useState(0);
+  const ministryMessagesSigRef = useRef("");
+
+  useEffect(() => {
+    if (!routeIsMinistryLive || !ministryAssignmentThreadId) return;
+
+    return subscribeMessages(() => {
+      const snap = getSnapshot();
+      const arr = Array.isArray(snap.messages?.[ministryAssignmentThreadId])
+        ? snap.messages[ministryAssignmentThreadId]
+        : [];
+      const sig = messagesListSignature(arr);
+      if (sig === ministryMessagesSigRef.current) return;
+      ministryMessagesSigRef.current = sig;
+      setMinistrySlotHydrationTick((v) => v + 1);
+    });
+  }, [routeIsMinistryLive, ministryAssignmentThreadId]);
+
+  const initialRouteScheduleSlots = useMemo(() => {
+    const fromRoute = parseLiveAllScheduleSlotsJson((params as any).liveAllScheduleSlotsJson);
+    if (fromRoute.length) return fromRoute;
+
+    if (!routeIsMinistryLive || !ministryAssignmentThreadId) return [];
+
+    const snap = getSnapshot();
+    const arr = Array.isArray(snap.messages?.[ministryAssignmentThreadId])
+      ? snap.messages[ministryAssignmentThreadId]
+      : [];
+    const cards = extractAssignmentScheduleCards(arr);
+    const slots = assignmentCardsToLiveScheduleSlots(cards);
+    const normalized = normalizeLiveScheduleSlots(slots);
+
+    if (normalized.length) {
+      console.log("KRISTO_MINISTRY_LIVE_ROUTE_HYDRATE", {
+        threadId: ministryAssignmentThreadId,
+        slotCount: normalized.length,
+        source: "message-store",
+      });
+    }
+
+    return normalized;
+  }, [
+    (params as any).liveAllScheduleSlotsJson,
+    routeIsMinistryLive,
+    ministryAssignmentThreadId,
+    ministrySlotHydrationTick,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -3019,17 +3088,36 @@ export default function LiveRoomScreen() {
   const isMinistryLiveRoute =
     String((params as any).room || "").toLowerCase() === "ministry" ||
     String((params as any).mediaScope || "").toLowerCase() === "ministry" ||
-    String((params as any).roomKind || "").toLowerCase().includes("ministry");
+    String((params as any).roomKind || "").toLowerCase().includes("ministry") ||
+    String((params as any).source || "").toLowerCase().includes("ministry-live");
+
+  const routeMinistryPublishAuthority =
+    isMinistryLiveRoute &&
+    routeCanPublishEarly &&
+    (
+      routeRoleText.includes("leader") ||
+      routeRoleText.includes("host") ||
+      routeRoleText.includes("pastor") ||
+      routeRoleText.includes("admin") ||
+      sessionRoleText.includes("leader") ||
+      sessionRoleText.includes("host") ||
+      sessionRoleText.includes("pastor")
+    );
 
   // Ministry pastor authority comes only from the ministry live route params,
   // not from generic pastor role alone.
   const isMinistryLiveHost =
     isMinistryLiveRoute &&
-    routeCanPublishEarly &&
     (
-      actualChurchPastorUserId === currentUserId ||
-      liveMediaAuthority.isMediaScheduleCreator ||
-      liveMediaAuthority.isMediaHost
+      routeMinistryPublishAuthority ||
+      (
+        routeCanPublishEarly &&
+        (
+          actualChurchPastorUserId === currentUserId ||
+          liveMediaAuthority.isMediaScheduleCreator ||
+          liveMediaAuthority.isMediaHost
+        )
+      )
     );
 
   const isPastorLiveOwner = isMediaOwnerHost || isMinistryLiveHost;
@@ -3129,7 +3217,7 @@ export default function LiveRoomScreen() {
     () =>
       assignmentThreadMessages.filter((m: any) => {
         const card = m?.card;
-        return m?.kind === "assignment_card" && !!card?.meetingDate;
+        return m?.kind === "assignment_card" && parseSlotStartMs(card) > 0;
       }),
     [assignmentThreadMessages]
   );
@@ -3146,10 +3234,10 @@ export default function LiveRoomScreen() {
   const meetingWindow = useMemo(() => {
     const rows = scheduleCards
       .map((m: any) => {
-        const startMs = new Date(String(m?.card?.meetingDate || "")).getTime();
-        const durationMin = Math.max(0, Number(m?.card?.durationMin || 0));
-        const endMs = startMs + durationMin * 60 * 1000;
-        return Number.isFinite(startMs) ? { startMs, endMs } : null;
+        const card = m?.card || {};
+        const startMs = parseSlotStartMs(card);
+        const endMs = parseSlotEndMs(card, startMs);
+        return startMs > 0 && endMs > startMs ? { startMs, endMs } : null;
       })
       .filter(Boolean) as Array<{ startMs: number; endMs: number }>;
 
@@ -3210,7 +3298,9 @@ export default function LiveRoomScreen() {
     String(
       isMediaInstantLive
         ? "focus"
-        : (params.layout || (hasStructuredLive ? "grid6" : "focus"))
+        : initialRouteScheduleSlots.length > 0
+          ? "grid6"
+          : (params.layout || (hasStructuredLive ? "grid6" : "focus"))
     ) as LayoutMode
   );
 
@@ -3325,6 +3415,9 @@ export default function LiveRoomScreen() {
           meetingDate: card.meetingDate,
           startTime: card.startTime,
           time: card.time,
+          timeLabel: card.timeLabel,
+          startMs: Number(card.startMs || parseSlotStartMs(card) || 0),
+          endMs: Number(card.endMs || parseSlotEndMs(card, parseSlotStartMs(card)) || 0),
           durationMin: card.durationMin,
           order: Number(card.order || card.slot || card.slotNumber || index + 1),
         };
@@ -3337,6 +3430,9 @@ export default function LiveRoomScreen() {
     const now = liveNowMs;
 
     const parseSlotTimeMs = (slot: any) => {
+      const directStartMs = Number(slot?.startMs || 0);
+      if (directStartMs > 0) return directStartMs;
+
       const rawDate = String(slot?.meetingDate || "");
       const baseDate = rawDate
         ? new Date(rawDate)
@@ -3673,6 +3769,30 @@ export default function LiveRoomScreen() {
     initialRouteScheduleSlots.length,
     backendScheduleSlots.length,
     (params as any)?.localScheduleId,
+  ]);
+
+  useEffect(() => {
+    const slotCount = Math.max(initialRouteScheduleSlots.length, mergedScheduleSlots.length);
+    if (
+      slotCount > 0 &&
+      layoutMode === "focus" &&
+      routeIsMinistryLive &&
+      !isMediaInstantLive
+    ) {
+      setLayoutMode("grid6");
+      setLayoutDraftMode("grid6");
+      console.log("KRISTO_LIVE_ROOM_LAYOUT_UPGRADE", {
+        from: "focus",
+        to: "grid6",
+        slotCount,
+      });
+    }
+  }, [
+    initialRouteScheduleSlots.length,
+    mergedScheduleSlots.length,
+    layoutMode,
+    routeIsMinistryLive,
+    isMediaInstantLive,
   ]);
 
   useEffect(() => {
