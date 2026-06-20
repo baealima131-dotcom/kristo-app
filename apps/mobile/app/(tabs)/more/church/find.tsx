@@ -227,6 +227,18 @@ function buildSearchPath(params: {
   return `/api/church/search${query ? `?${query}` : ""}`;
 }
 
+function friendlyFindChurchError(raw: unknown): string {
+  const message = String(raw || "").trim();
+  if (!message) return "Couldn't load churches. Please try again.";
+  if (/^\s*<!DOCTYPE/i.test(message) || /^\s*<html/i.test(message)) {
+    return "Couldn't load churches. Please try again.";
+  }
+  if (message.includes("<html") || message.includes("<!DOCTYPE")) {
+    return "Couldn't load churches. Please try again.";
+  }
+  return message;
+}
+
 function ScalePress({
   style,
   pressedScale = 0.985,
@@ -562,7 +574,7 @@ export default function ChurchFindScreen() {
 
         if (!data?.ok) {
           setResults([]);
-          setError(String(data?.error || "Could not load churches."));
+          setError(friendlyFindChurchError(data?.error || "Couldn't load churches. Please try again."));
           return;
         }
 
@@ -589,7 +601,7 @@ export default function ChurchFindScreen() {
         );
       } catch (e: any) {
         setResults([]);
-        setError(String(e?.message || e || `Could not reach ${getApiBase()}.`));
+        setError(friendlyFindChurchError(e?.message || e || "Couldn't load churches. Please try again."));
       } finally {
         setLoading(false);
         setRefreshing(false);
