@@ -1,4 +1,4 @@
-import { getSessionSync } from "./kristoSession";
+import { getSessionSync } from "./kristoSessionSync";
 
 export type KristoRole =
   | "System_Admin"

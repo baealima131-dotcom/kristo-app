@@ -4,7 +4,7 @@ import {
   feedRemoveScheduleMirrors,
   getUserClaimedSlotEntries,
 } from "@/src/lib/homeFeedStore";
-import { isMediaScheduleFeedItem, isMediaScheduleFeedItemClosed } from "@/src/lib/mediaScheduleLock";
+import { isMediaScheduleFeedItem, isMediaScheduleFeedItemClosed } from "@/src/lib/mediaScheduleFeedPredicates";
 import { normalizeLiveScheduleSlots } from "@/src/lib/scheduleSlotUtils";
 import { publishLiveEnded } from "@/src/lib/liveBridge";
 import {

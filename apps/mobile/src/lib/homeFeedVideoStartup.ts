@@ -1,11 +1,10 @@
 import { Image } from "react-native";
 import {
   buildHomeFeedDisplayRows,
-  homeFeedMediaUrl,
   isVideoPost,
   resolvePosterUri,
-  resolveVideoUri,
 } from "@/src/components/homeFeed/homeFeedUtils";
+import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoUri";
 import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
 import { feedList } from "@/src/lib/homeFeedStore";
@@ -38,10 +37,7 @@ import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackP
  */
 
 /** The single, stable playback URL for an item. */
-export function resolveHomeFeedVideoUri(item: any): string {
-  const original = resolveVideoUri(item);
-  return homeFeedMediaUrl(original) || original;
-}
+export { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoUri";
 
 // ~384KB: typically enough to land the moov atom + first GOP so AVPlayer can
 // paint quickly once it issues its own range requests against the warmed edge.

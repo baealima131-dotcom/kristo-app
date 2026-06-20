@@ -3,7 +3,7 @@ import {
   inferPreviewVideoUriFromVideoUrl,
   resolveVideoUri,
 } from "@/src/components/homeFeed/homeFeedUtils";
-import { wasHomeFeedVideoUrlBufferedAhead } from "@/src/lib/homeFeedVideoBufferAhead";
+import { wasHomeFeedVideoUrlBufferedAhead } from "@/src/lib/homeFeedVideoWarmRegistry";
 
 export type HomeFeedVideoPlaybackPlan = {
   postId: string;

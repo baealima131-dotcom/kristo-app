@@ -1,8 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import type { KristoSession } from "./kristoSession";
+import type { KristoSession } from "./kristoSessionTypes";
 import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
-import { getSessionSync } from "./kristoSession";
+import { getSessionSync } from "./kristoSessionSync";
 import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import { clearChurchProfileCache, saveChurchProfileCache } from "./churchStore";
@@ -13,7 +13,12 @@ import {
   logMoreDeferredRefreshSkip,
   logMoreDeferredRefreshStart,
   isMoreTabTransitionBlocking,
-} from "./refreshCoordinator";
+} from "./moreTabTransition";
+import {
+  CHURCH_OVERVIEW_PROFILE_REFRESH_MS,
+  isScreenCacheFresh,
+  SCREEN_CACHE_TTL_MS,
+} from "./screenDataCacheFresh";
 import { shouldPauseBackgroundProfileRefresh } from "./mediaScheduleFlowFlags";
 import { isSessionExitInProgress } from "./kristoSessionExitFlags";
 import {
@@ -22,9 +27,11 @@ import {
   importMediaPosterCacheSnapshot,
 } from "./mediaPosterCache";
 
-export const SCREEN_CACHE_TTL_MS = 45000;
-/** Fast re-check for church profile block on Church Overview focus. */
-export const CHURCH_OVERVIEW_PROFILE_REFRESH_MS = 4000;
+export {
+  CHURCH_OVERVIEW_PROFILE_REFRESH_MS,
+  isScreenCacheFresh,
+  SCREEN_CACHE_TTL_MS,
+} from "./screenDataCacheFresh";
 
 export type ChurchOverviewCachePayload = {
   churchId: string;
@@ -93,10 +100,6 @@ function profileScreenKey(userId: string) {
 
 function ministriesKey(churchId: string, userId: string) {
   return `${String(churchId || "").trim().toUpperCase()}:${String(userId || "").trim()}`;
-}
-
-export function isScreenCacheFresh(updatedAt?: number, ttlMs = SCREEN_CACHE_TTL_MS) {
-  return Boolean(updatedAt) && Date.now() - Number(updatedAt) < ttlMs;
 }
 
 export function peekChurchOverviewCache(churchId: string, userId: string) {

@@ -29,7 +29,21 @@ import {
   logHomeFeedScheduleExpired,
   logHomeFeedScheduleRemoved,
 } from "@/src/lib/homeFeedScheduleLifecycle";
-import { areAllScheduleSlotsExpired } from "@/src/lib/mediaScheduleLock";
+import { areAllScheduleSlotsExpired } from "@/src/lib/mediaScheduleSlotActive";
+import {
+  inferPosterUriFromVideoUrl,
+  isInferredPosterUriForVideo,
+  isLikelySyntheticPosterPath,
+  isValidVideoPosterUri,
+  resolveSavedFeedVideoPosterUri,
+} from "@/src/lib/homeFeedPosterSavedUri";
+import {
+  homeFeedMediaUrl,
+  resolveHomeFeedVideoUri,
+  resolveStablePosterVideoUrl,
+  resolveVideoUri,
+} from "@/src/lib/homeFeedVideoUri";
+import { resolveVideoDurationMs } from "@/src/lib/homeFeedVideoDuration";
 import {
   logHomeFeedFirstRows,
   logHomeFeedPersonalOrder,
@@ -46,11 +60,22 @@ import { getSessionSync } from "@/src/lib/kristoSession";
 import { peekProfileScreenCache } from "@/src/lib/screenDataCache";
 import { tryRegisterStartupFirstVideoTarget } from "@/src/lib/homeFeedVideoPrime";
 import { isHomeFeedInlineVideoAutoplayEnabled, type HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
-import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
-import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
 
-const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+export {
+  homeFeedMediaUrl,
+  resolveHomeFeedVideoUri,
+  resolveStablePosterVideoUrl,
+  resolveVideoUri,
+} from "@/src/lib/homeFeedVideoUri";
+export { resolveVideoDurationMs } from "@/src/lib/homeFeedVideoDuration";
+export {
+  inferPosterUriFromVideoUrl,
+  isInferredPosterUriForVideo,
+  isLikelySyntheticPosterPath,
+  isValidVideoPosterUri,
+  resolveSavedFeedVideoPosterUri,
+} from "@/src/lib/homeFeedPosterSavedUri";
 
 const CHURCH_ROOM_MEMBER_SOURCES = new Set(["testimony", "post", "announcement", "counsel"]);
 
@@ -402,16 +427,6 @@ export function resolveFeedIdentitySubline(item: any, whenLabel: string) {
 
   const mediaName = resolveMediaName(item);
   return [mediaName, whenLabel].filter(Boolean).join(" • ");
-}
-
-export function homeFeedMediaUrl(raw: unknown) {
-  const v = String(raw || "").trim();
-  if (!v) return "";
-  if (isBrandedPosterUri(v)) return "";
-  if (v.startsWith("data:image/")) return v;
-  if (/^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
-  if (v.startsWith("//")) return `https:${v}`;
-  return `${API_BASE}${v.startsWith("/") ? "" : "/"}${v}`;
 }
 
 export type HomeFeedDisplayAvatar = {
@@ -1723,29 +1738,6 @@ export function resolvePostAvatar(item: any) {
   return resolveHomeFeedDisplayAvatar(item).uri;
 }
 
-export function resolveVideoUri(item: any) {
-  const local = String(item?.localVideoUri || "").trim();
-  if (local.startsWith("file://")) return local;
-
-  const isVideoTyped =
-    String(item?.mediaType || "").trim().toLowerCase() === "video" ||
-    String(item?.type || "").trim().toLowerCase() === "video" ||
-    String(item?.kind || "").trim().toLowerCase() === "media";
-
-  for (const key of ["videoUrl", "videoUri", "mediaUrl", "url"]) {
-    const raw = String(item?.[key] || "").trim();
-    if (!raw) continue;
-    const resolved = homeFeedMediaUrl(raw);
-    if (!resolved) continue;
-    if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(resolved) || isVideoTyped) return resolved;
-  }
-
-  const mediaUri = homeFeedMediaUrl(item?.mediaUri || "");
-  if (mediaUri && /\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(mediaUri)) return mediaUri;
-
-  return homeFeedMediaUrl(item?.videoUrl || "");
-}
-
 function homeFeedAvatarUriCandidates(item: any): string[] {
   return [
     item?.authorAvatarUri,
@@ -1975,29 +1967,6 @@ function resolvePosterSeedForVideo(videoUrl: string): string {
   }
 }
 
-export function inferPosterUriFromVideoUrl(videoUrl: string): string {
-  const raw = String(videoUrl || "").trim().split("?")[0];
-  if (!raw) return "";
-
-  const uploadsMatch = raw.match(/\/uploads\/media\/(?:[^/]+\/)*([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
-  if (uploadsMatch?.[1]) {
-    return homeFeedMediaUrl(`/uploads/media/posters/${uploadsMatch[1]}.jpg`);
-  }
-
-  const r2Marker = "/church-videos/";
-  const r2Idx = raw.indexOf(r2Marker);
-  if (r2Idx >= 0) {
-    const tail = raw.slice(r2Idx + r2Marker.length);
-    const match = tail.match(/^([^/]+)\/([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
-    if (match?.[1] && match?.[2]) {
-      const base = raw.slice(0, r2Idx);
-      return `${base}/church-video-posters/${match[1]}/${match[2]}.jpg`;
-    }
-  }
-
-  return "";
-}
-
 /** Ordered poster candidates for Home Feed — cache + metadata + inferred, never branded. */
 export function collectFeedVideoPosterCandidates(item: any, postId = ""): string[] {
   const video = resolveVideoUri(item);
@@ -2046,28 +2015,6 @@ export function collectFeedVideoPosterCandidates(item: any, postId = ""): string
 
 export function resolveBestFeedPosterUri(item: any, postId = ""): string {
   return collectFeedVideoPosterCandidates(item, postId)[0] || "";
-}
-
-/** Saved backend poster from upload metadata — excludes inferred/branded guesses. */
-export function resolveSavedFeedVideoPosterUri(item: any, videoUrl?: string): string {
-  const video = String(videoUrl || resolveVideoUri(item) || "").trim();
-  if (!item || !video) return "";
-
-  for (const raw of [
-    item?.posterUri,
-    item?.videoPosterUri,
-    item?.thumbnailUri,
-    item?.thumbnailUrl,
-    item?.posterUrl,
-  ]) {
-    const uri = homeFeedMediaUrl(raw);
-    if (!uri || isBrandedPosterUri(uri)) continue;
-    if (!isValidVideoPosterUri(uri, video)) continue;
-    if (isInferredPosterUriForVideo(uri, video)) continue;
-    return uri;
-  }
-
-  return "";
 }
 
 export type HomeFeedPosterSourceKind =
@@ -2211,33 +2158,6 @@ export function describePosterResolution(item: any, resolvedPoster: string) {
  */
 export function inferPreviewVideoUriFromVideoUrl(_videoUrl: string): string {
   return "";
-}
-
-export function isLikelySyntheticPosterPath(posterUri: string): boolean {
-  const value = String(posterUri || "").trim().toLowerCase().split("?")[0];
-  if (!value) return false;
-  return (
-    value.includes("/church-video-posters/") || value.includes("/uploads/media/posters/")
-  );
-}
-
-export function isInferredPosterUriForVideo(posterUri: string, videoUri: string): boolean {
-  const poster = String(posterUri || "").trim().split("?")[0];
-  const video = String(videoUri || "").trim();
-  if (!poster || !video) return false;
-  const inferred = inferPosterUriFromVideoUrl(video);
-  if (!inferred) return isLikelySyntheticPosterPath(poster);
-  return poster === inferred.split("?")[0];
-}
-
-export function isValidVideoPosterUri(posterUri: string, videoUri: string) {
-  const poster = String(posterUri || "").trim();
-  const video = String(videoUri || "").trim();
-  if (!poster) return false;
-  if (isBrandedPosterUri(poster)) return false;
-  if (video && poster === video) return false;
-  if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(poster)) return false;
-  return true;
 }
 
 export function hasBrandedVideoPoster(item: any) {

@@ -2,9 +2,11 @@ import { apiGet } from "@/src/lib/kristoApi";
 import { feedSyncMediaScheduleFromBackend } from "@/src/lib/homeFeedStore";
 import {
   prepareMediaScheduleFeedItemForClient,
+} from "@/src/lib/mediaScheduleFeedPrepare";
+import {
   resolveChurchMediaScheduleFromFeedRows,
   summarizeActiveMediaSchedule,
-} from "@/src/lib/mediaScheduleLock";
+} from "@/src/lib/mediaScheduleChurchQueries";
 import {
   deriveMediaSlotDurationMin,
   materializeMediaSlotTimeFields,

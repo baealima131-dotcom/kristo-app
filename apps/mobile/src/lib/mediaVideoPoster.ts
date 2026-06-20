@@ -21,7 +21,11 @@ import {
   type PosterFrameCandidate,
   type UploadStudioCoverBatchResult,
 } from "@/src/lib/homeFeedPosterFrameQuality";
+import { markPosterPostIdSessionGenerated } from "@/src/lib/homeFeedPosterSession";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
+import { resolveVideoDurationMs } from "@/src/lib/homeFeedVideoDuration";
+
+export { resolveVideoDurationMs } from "@/src/lib/homeFeedVideoDuration";
 
 const GENERATE_TIMEOUT_MS = 45000;
 const HOME_FEED_GENERATE_TIMEOUT_MS = 70000;
@@ -35,16 +39,6 @@ export {
 } from "@/src/lib/homeFeedPosterFrameQuality";
 
 const inflight = new Map<string, Promise<string>>();
-
-export function resolveVideoDurationMs(item: any): number | undefined {
-  const durationMs = Number(item?.durationMs || 0);
-  if (Number.isFinite(durationMs) && durationMs > 0) return Math.round(durationMs);
-
-  const durationSec = Number(item?.durationSec || item?.duration || 0);
-  if (Number.isFinite(durationSec) && durationSec > 0) return Math.round(durationSec * 1000);
-
-  return undefined;
-}
 
 /** Capture at ~10% of duration (30s → 3s, 60s → 6s, 10m → 1m). */
 export function computePosterCaptureTimeMs(durationMs?: number): number {
@@ -206,6 +200,13 @@ async function generateHomeFeedPosterFrame(params: {
     candidateCount: candidates.length,
   });
 
+  if (params.postId) {
+    markPosterPostIdSessionGenerated(params.postId, {
+      posterUri: persisted,
+      source: "home-feed-generated",
+    });
+  }
+
   return persisted;
 }
 
@@ -229,16 +230,27 @@ export async function generateVideoPosterFrame(params: {
   const postId = String(params.postId || "").trim();
   if (!videoUrl) return "";
 
+  const isHomeFeed = params.mode === "home-feed";
+
   if (postId || videoUrl) {
+    const byExact = postId ? peekCachedMediaPoster(postId, videoUrl) : null;
     const cached = resolveCachedMediaPoster(postId, videoUrl);
-    if (cached) return cached;
+    if (cached) {
+      if (isHomeFeed && postId && !byExact) {
+        console.log("KRISTO_MEDIA_VIDEO_POSTER_CACHE_ALIAS_HIT", {
+          postId: postId || null,
+          videoUrl: normalizeVideoKey(videoUrl),
+          posterUri: cached,
+        });
+      }
+      return cached;
+    }
   }
 
   const pendingKey = inflightKey(postId, videoUrl);
   const pending = inflight.get(pendingKey);
   if (pending) return pending;
 
-  const isHomeFeed = params.mode === "home-feed";
   const timeoutMs = isHomeFeed ? HOME_FEED_GENERATE_TIMEOUT_MS : GENERATE_TIMEOUT_MS;
 
   const promise = withPreviewTimeout(
@@ -283,6 +295,12 @@ export async function generateVideoPosterFrame(params: {
               durationMs: params.durationMs ?? null,
               posterUri: persisted,
             });
+            if (postId) {
+              markPosterPostIdSessionGenerated(postId, {
+                posterUri: persisted,
+                source: "default-generated",
+              });
+            }
             return persisted;
           } catch (attemptError) {
             console.log("KRISTO_MEDIA_VIDEO_POSTER_CAPTURE_RETRY", {
