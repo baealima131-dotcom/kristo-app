@@ -239,6 +239,99 @@ function friendlyFindChurchError(raw: unknown): string {
   return message;
 }
 
+type PendingJoinRequest = {
+  churchId: string;
+  churchName?: string;
+};
+
+const PENDING_JOIN_REQUEST_MESSAGE =
+  "You already have a pending church request. Please wait for approval or cancel that request first.";
+
+function extractChurchIdFromApiError(raw: string): string {
+  const match = String(raw || "").match(/churchId=([A-Z0-9-]+)/i);
+  return match?.[1]?.trim().toUpperCase() || "";
+}
+
+function isPendingJoinRequestError(raw: unknown): boolean {
+  return /already has a pending request/i.test(String(raw || ""));
+}
+
+function resolvePendingJoinRequestName(
+  churchId: string,
+  results: ChurchRow[],
+  fallbackName?: string
+): PendingJoinRequest {
+  const normalizedId = String(churchId || "").trim().toUpperCase();
+  const fromResults = results.find((row) => row.id === normalizedId)?.name;
+  const churchName = String(fromResults || fallbackName || "").trim() || undefined;
+  return { churchId: normalizedId, churchName };
+}
+
+function parsePendingJoinRequest(
+  memberships: unknown,
+  results: ChurchRow[]
+): PendingJoinRequest | null {
+  const rows = Array.isArray(memberships) ? memberships : [];
+  const pending = rows.find(
+    (row: any) =>
+      String(row?.status || "").trim() === "Requested" &&
+      String(row?.requestSource || "JoinRequest") !== "ChurchInvite"
+  );
+  if (!pending) return null;
+
+  const churchId = String(pending?.churchId || "").trim().toUpperCase();
+  if (!churchId) return null;
+
+  return resolvePendingJoinRequestName(
+    churchId,
+    results,
+    String(pending?.name || pending?.churchName || "").trim() || undefined
+  );
+}
+
+function friendlyJoinRequestError(
+  raw: unknown,
+  pendingRequest?: PendingJoinRequest | null
+): string {
+  const message = String(raw || "").trim();
+  if (isPendingJoinRequestError(message)) {
+    const pendingName = String(pendingRequest?.churchName || "").trim();
+    if (pendingName) {
+      return `You already have a pending request for ${pendingName}. Please wait for approval or cancel that request first.`;
+    }
+    return PENDING_JOIN_REQUEST_MESSAGE;
+  }
+
+  const cleaned = friendlyFindChurchError(message);
+  const withoutTechnicalIds = cleaned
+    .replace(/\s*churchId=[A-Z0-9-]+/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return withoutTechnicalIds || "Could not send join request.";
+}
+
+function resolveJoinButtonState(args: {
+  churchId: string;
+  requesting: boolean;
+  pendingRequest: PendingJoinRequest | null;
+}) {
+  const pendingId = String(args.pendingRequest?.churchId || "").trim().toUpperCase();
+  const hasPending = Boolean(pendingId);
+  const isPendingTarget = hasPending && args.churchId === pendingId;
+
+  if (args.requesting) {
+    return { disabled: true, label: "Sending…" };
+  }
+  if (isPendingTarget) {
+    return { disabled: true, label: "Pending request" };
+  }
+  if (hasPending) {
+    return { disabled: true, label: "Request pending" };
+  }
+  return { disabled: false, label: "Send Request" };
+}
+
 function ScalePress({
   style,
   pressedScale = 0.985,
@@ -343,6 +436,7 @@ function ChurchProfileModal({
   onRequest,
   onUseId,
   requesting,
+  pendingRequest,
 }: {
   church: ChurchRow | null;
   visible: boolean;
@@ -350,11 +444,17 @@ function ChurchProfileModal({
   onRequest: (ch: ChurchRow) => void;
   onUseId: (ch: ChurchRow) => void;
   requesting: boolean;
+  pendingRequest: PendingJoinRequest | null;
 }) {
   const insets = useSafeAreaInsets();
   if (!church) return null;
 
   const location = buildLocationLine(church);
+  const joinButton = resolveJoinButtonState({
+    churchId: church.id,
+    requesting,
+    pendingRequest,
+  });
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -418,12 +518,24 @@ function ChurchProfileModal({
             <View style={s.modalActions}>
               <ScalePress
                 onPress={() => onRequest(church)}
-                disabled={requesting}
-                style={[s.primaryBtn, requesting && s.btnDisabled]}
+                disabled={joinButton.disabled}
+                style={[s.primaryBtn, joinButton.disabled && s.btnDisabled]}
                 pressedScale={0.98}
               >
-                <Text style={s.primaryBtnText}>{requesting ? "Sending request…" : "Send Request"}</Text>
-                <Ionicons name={requesting ? "hourglass-outline" : "paper-plane"} size={18} color="#07101A" />
+                <Text style={s.primaryBtnText}>
+                  {joinButton.label === "Sending…" ? "Sending request…" : joinButton.label}
+                </Text>
+                <Ionicons
+                  name={
+                    joinButton.label === "Pending request" || joinButton.label === "Request pending"
+                      ? "hourglass-outline"
+                      : requesting
+                        ? "hourglass-outline"
+                        : "paper-plane"
+                  }
+                  size={18}
+                  color="#07101A"
+                />
               </ScalePress>
 
               <View style={s.modalSecondaryRow}>
@@ -450,14 +562,21 @@ function ChurchCard({
   onRequest,
   onUseId,
   requesting,
+  pendingRequest,
 }: {
   church: ChurchRow;
   onViewProfile: (ch: ChurchRow) => void;
   onRequest: (ch: ChurchRow) => void;
   onUseId: (ch: ChurchRow) => void;
   requesting: boolean;
+  pendingRequest: PendingJoinRequest | null;
 }) {
   const location = buildLocationLine(church);
+  const joinButton = resolveJoinButtonState({
+    churchId: church.id,
+    requesting,
+    pendingRequest,
+  });
 
   return (
     <View style={s.churchCard}>
@@ -503,12 +622,12 @@ function ChurchCard({
       <View style={s.cardActions}>
         <ScalePress
           onPress={() => onRequest(church)}
-          disabled={requesting}
-          style={[s.primaryBtnCompact, requesting && s.btnDisabled]}
+          disabled={joinButton.disabled}
+          style={[s.primaryBtnCompact, joinButton.disabled && s.btnDisabled]}
           pressedScale={0.985}
         >
           <Text style={s.primaryBtnText} numberOfLines={1}>
-            {requesting ? "Sending…" : "Send Request"}
+            {joinButton.label}
           </Text>
         </ScalePress>
 
@@ -544,8 +663,38 @@ export default function ChurchFindScreen() {
   const [error, setError] = useState<string | null>(null);
   const [requestingId, setRequestingId] = useState<string | null>(null);
   const [profileChurch, setProfileChurch] = useState<ChurchRow | null>(null);
+  const [pendingRequest, setPendingRequest] = useState<PendingJoinRequest | null>(null);
+  const resultsRef = useRef<ChurchRow[]>([]);
+  resultsRef.current = results;
 
   const scrollBottomPad = insets.bottom + TAB_BAR_HEIGHT + TAB_BAR_EXTRA;
+
+  const loadPendingRequest = useCallback(async () => {
+    const userId = String(session?.userId || "").trim();
+    if (!userId) {
+      setPendingRequest(null);
+      return;
+    }
+
+    try {
+      const data = await apiGet<any>("/api/me/church", {
+        headers: getKristoHeaders({
+          userId,
+          role: (session?.role as any) || "Member",
+          churchId: "",
+        }),
+      });
+
+      if (!data?.ok) {
+        setPendingRequest(null);
+        return;
+      }
+
+      setPendingRequest(parsePendingJoinRequest(data.memberships, resultsRef.current));
+    } catch {
+      setPendingRequest(null);
+    }
+  }, [session?.userId, session?.role]);
 
   const profileHints = useMemo(
     () => ({
@@ -611,6 +760,17 @@ export default function ChurchFindScreen() {
   );
 
   useEffect(() => {
+    void loadPendingRequest();
+  }, [loadPendingRequest]);
+
+  useEffect(() => {
+    if (!pendingRequest?.churchId || pendingRequest.churchName) return;
+    const name = results.find((row) => row.id === pendingRequest.churchId)?.name;
+    if (!name) return;
+    setPendingRequest((prev) => (prev ? { ...prev, churchName: name } : prev));
+  }, [results, pendingRequest?.churchId, pendingRequest?.churchName]);
+
+  useEffect(() => {
     const timer = setTimeout(() => {
       loadChurches("initial");
     }, q.trim() ? 260 : 0);
@@ -626,6 +786,11 @@ export default function ChurchFindScreen() {
     const userId = String(session?.userId || "").trim();
     if (!userId) {
       Alert.alert("Sign in required", "Please sign in before requesting to join a church.");
+      return;
+    }
+
+    if (pendingRequest?.churchId) {
+      Alert.alert("Request pending", friendlyJoinRequestError(PENDING_JOIN_REQUEST_MESSAGE, pendingRequest));
       return;
     }
 
@@ -645,17 +810,26 @@ export default function ChurchFindScreen() {
       );
 
       if (!data?.ok) {
+        const errText = String(data?.error || "");
+        let nextPending = pendingRequest;
+        if (isPendingJoinRequestError(errText)) {
+          const churchId = extractChurchIdFromApiError(errText) || ch.id;
+          nextPending = resolvePendingJoinRequestName(churchId, results, ch.name);
+          setPendingRequest(nextPending);
+        }
         Alert.alert(
-          "Request failed",
-          friendlyFindChurchError(data?.error || "Could not send join request.")
+          isPendingJoinRequestError(errText) ? "Request pending" : "Request failed",
+          friendlyJoinRequestError(errText, nextPending)
         );
         return;
       }
 
+      setPendingRequest(resolvePendingJoinRequestName(ch.id, results, ch.name));
       Alert.alert("Request sent", `Your request to join ${ch.name} was sent for pastor approval.`);
       setProfileChurch(null);
+      void loadPendingRequest();
     } catch (e: any) {
-      Alert.alert("Request failed", friendlyFindChurchError(e?.message || e || "Network error."));
+      Alert.alert("Request failed", friendlyJoinRequestError(e?.message || e || "Network error.", pendingRequest));
     } finally {
       setRequestingId(null);
     }
@@ -728,6 +902,17 @@ export default function ChurchFindScreen() {
           )}
         </View>
 
+        {pendingRequest ? (
+          <View style={s.notice}>
+            <Ionicons name="hourglass-outline" size={20} color={GOLD} />
+            <Text style={s.noticeText}>
+              {pendingRequest.churchName
+                ? `Your request to join ${pendingRequest.churchName} is pending pastor approval.`
+                : PENDING_JOIN_REQUEST_MESSAGE}
+            </Text>
+          </View>
+        ) : null}
+
         {loading ? (
           <View style={s.centerBox}>
             <ActivityIndicator color={GOLD} size="large" />
@@ -763,6 +948,7 @@ export default function ChurchFindScreen() {
                 onRequest={requestJoin}
                 onUseId={useId}
                 requesting={requestingId === c.id}
+                pendingRequest={pendingRequest}
               />
             ))}
           </View>
@@ -778,6 +964,7 @@ export default function ChurchFindScreen() {
         onRequest={requestJoin}
         onUseId={useId}
         requesting={!!profileChurch && requestingId === profileChurch.id}
+        pendingRequest={pendingRequest}
       />
     </View>
   );
