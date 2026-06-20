@@ -418,6 +418,78 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
   return result;
 }
 
+export type LiveCameraPermissionSource =
+  | "instant-live-camera"
+  | "claim-enter-lock"
+  | "active-slot-owner-window"
+  | "active-slot-owner-outside-window"
+  | "claimed-camera-window"
+  | "route-hint-blocked"
+  | "pastor-mic-only"
+  | "host-mic-only"
+  | "no-camera-authority";
+
+/** Scheduled live camera: active slot owner only. Instant live uses stage camera flag. */
+export function resolveLiveCameraPublishAllowed(input: {
+  isMediaInstantLive: boolean;
+  userOwnsCurrentActiveSlot: boolean;
+  canPublishClaimedCameraNow: boolean;
+}): boolean {
+  if (input.isMediaInstantLive) {
+    return input.canPublishClaimedCameraNow;
+  }
+
+  return (
+    input.userOwnsCurrentActiveSlot === true ||
+    input.canPublishClaimedCameraNow === true
+  );
+}
+
+export function resolveLiveCameraPermissionSource(input: {
+  isMediaInstantLive: boolean;
+  userOwnsCurrentActiveSlot: boolean;
+  canPublishClaimedCameraNow: boolean;
+  cameraPublishAllowed: boolean;
+  rawRouteCanPublishCamera?: boolean;
+  claimEnterLockCamera?: boolean;
+  isActualChurchPastor?: boolean;
+  isMediaHost?: boolean;
+}): { enabled: boolean; source: LiveCameraPermissionSource } {
+  if (input.claimEnterLockCamera && input.cameraPublishAllowed) {
+    return { enabled: true, source: "claim-enter-lock" };
+  }
+
+  if (input.isMediaInstantLive && input.canPublishClaimedCameraNow) {
+    return { enabled: true, source: "instant-live-camera" };
+  }
+
+  if (input.userOwnsCurrentActiveSlot && input.canPublishClaimedCameraNow) {
+    return { enabled: true, source: "active-slot-owner-window" };
+  }
+
+  if (input.userOwnsCurrentActiveSlot && !input.canPublishClaimedCameraNow) {
+    return { enabled: false, source: "active-slot-owner-outside-window" };
+  }
+
+  if (input.canPublishClaimedCameraNow) {
+    return { enabled: true, source: "claimed-camera-window" };
+  }
+
+  if (input.rawRouteCanPublishCamera) {
+    return { enabled: false, source: "route-hint-blocked" };
+  }
+
+  if (input.isActualChurchPastor) {
+    return { enabled: false, source: "pastor-mic-only" };
+  }
+
+  if (input.isMediaHost) {
+    return { enabled: false, source: "host-mic-only" };
+  }
+
+  return { enabled: false, source: "no-camera-authority" };
+}
+
 export function logMediaLiveV1StageAuthority(
   context: string,
   stage: LiveStageAuthority,

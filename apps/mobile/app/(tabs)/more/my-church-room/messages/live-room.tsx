@@ -70,6 +70,8 @@ import {
   logMediaLiveV1StageAuthority,
   logLiveMediaAuthority,
   resolveFastActiveSlotWindow,
+  resolveLiveCameraPermissionSource,
+  resolveLiveCameraPublishAllowed,
 } from "@/src/lib/liveMediaAuthority";
 import {
   fetchChurchPastorUserId,
@@ -2254,7 +2256,16 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
   }, [room, localVideoTrack, canPublishCamera]);
 
   useEffect(() => {
-    if (!room || !canPublishCamera) return;
+    if (!room || !canPublishCamera) {
+      if (room && !canPublishCamera) {
+        console.log("KRISTO_CAMERA_PUBLISH_BLOCKED", {
+          source: "livekit-local-video-effect",
+          canPublishCamera,
+          renderLocalPreview,
+        });
+      }
+      return;
+    }
 
     let cancelled = false;
     let localTrack: any = null;
@@ -2264,6 +2275,12 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       const identity = String((room as any)?.localParticipant?.identity || "");
 
       console.log("KRISTO_MANUAL_PUBLISH_WAIT", { state, identity, cameraFacing, cameraPaused });
+      console.log("KRISTO_CAMERA_PERMISSION_SOURCE", {
+        enabled: true,
+        source: "livekit-publish-track",
+        renderLocalPreview,
+        canPublishCamera,
+      });
 
       if (state !== "connected" || !identity) return;
       if (videoPublishBusyRef.current) return;
@@ -4536,6 +4553,14 @@ export default function LiveRoomScreen() {
     }
   }
 
+  const cameraPublishAllowedNow = resolveLiveCameraPublishAllowed({
+    isMediaInstantLive,
+    userOwnsCurrentActiveSlot,
+    canPublishClaimedCameraNow,
+  });
+
+  const cameraPermissionSourceRef = useRef("");
+
   const isPastorForLiveRoom =
     !!currentUserId &&
     (liveMediaAuthority.isActualChurchPastor || actualChurchPastorUserId === currentUserId);
@@ -4591,14 +4616,59 @@ export default function LiveRoomScreen() {
 
   const canManageLive = canManageLiveHostActions;
 
+  useEffect(() => {
+    const resolved = resolveLiveCameraPermissionSource({
+      isMediaInstantLive,
+      userOwnsCurrentActiveSlot,
+      canPublishClaimedCameraNow,
+      cameraPublishAllowed: cameraPublishAllowedNow,
+      rawRouteCanPublishCamera,
+      claimEnterLockCamera: !!(claimEnterLockHeld && claimEnterLock?.canPublishCamera),
+      isActualChurchPastor: liveMediaAuthority.isActualChurchPastor,
+      isMediaHost: liveMediaAuthority.isMediaHost,
+    });
+
+    const logKey = `${resolved.enabled}|${resolved.source}|${currentUserId}|${currentSlotOwnerId}`;
+    if (cameraPermissionSourceRef.current === logKey) return;
+    cameraPermissionSourceRef.current = logKey;
+
+    console.log("KRISTO_CAMERA_PERMISSION_SOURCE", {
+      enabled: resolved.enabled,
+      source: resolved.source,
+      userOwnsCurrentActiveSlot,
+      canPublishClaimedCameraNow,
+      canPublishLiveVideoNow,
+      cameraPublishAllowedNow,
+      rawRouteCanPublishCamera,
+      currentSlotOwnerId,
+      currentUserId,
+      isActualChurchPastor: liveMediaAuthority.isActualChurchPastor,
+      isMediaHost: liveMediaAuthority.isMediaHost,
+      canManageLive,
+    });
+  }, [
+    isMediaInstantLive,
+    userOwnsCurrentActiveSlot,
+    canPublishClaimedCameraNow,
+    canPublishLiveVideoNow,
+    cameraPublishAllowedNow,
+    rawRouteCanPublishCamera,
+    claimEnterLockHeld,
+    claimEnterLock?.canPublishCamera,
+    liveMediaAuthority.isActualChurchPastor,
+    liveMediaAuthority.isMediaHost,
+    currentUserId,
+    currentSlotOwnerId,
+    canManageLive,
+  ]);
+
   const scheduledPublisherSlotReady =
     isMediaInstantLive ||
-    !canPublishLiveVideoNow ||
-    rawRouteCanPublishCamera ||
+    cameraPublishAllowedNow ||
     (!!currentSlotNumber && userOwnsCurrentActiveSlot);
 
-  const liveKitCameraOverrideReady =
-    rawRouteCanPublishCamera || (scheduledPublisherSlotReady && canPublishLiveVideoNow);
+  // Camera publish is slot-owned only — route pastor/host hints must not unlock camera.
+  const liveKitCameraOverrideReady = cameraPublishAllowedNow;
 
   const pastorCameraPolicyLogRef = useRef("");
 
@@ -4619,7 +4689,7 @@ export default function LiveRoomScreen() {
     if (!hasClaimedSlot) {
       event = "KRISTO_LIVE_PASTOR_MIC_ONLY_NO_SLOT";
       logKey = "mic-only-no-slot";
-    } else if (canPublishLiveVideoNow) {
+    } else if (cameraPublishAllowedNow) {
       event = "KRISTO_LIVE_SLOT_CAMERA_ALLOWED_NOW";
       logKey = `camera-allowed-${currentSlotNumber}`;
     } else if (slotEnded) {
@@ -4720,7 +4790,7 @@ export default function LiveRoomScreen() {
   const liveKitMicOverrideReady = canPublishClaimedMicNow;
 
   // Publisher LiveKit mount: mic-eligible OR current camera slot owner.
-  const mountLiveKitPublisherStage = canPublishClaimedMicNow || canPublishLiveVideoNow;
+  const mountLiveKitPublisherStage = canPublishClaimedMicNow || cameraPublishAllowedNow;
 
   const routeFastPublisherMount =
     !!currentUserId &&
@@ -4906,10 +4976,12 @@ export default function LiveRoomScreen() {
     console.log("KRISTO_CAMERA_AUTH_FINAL", {
       canPublishLiveVideoNow,
       canPublishClaimedCameraNow,
+      cameraPublishAllowedNow,
       userOwnsCurrentActiveSlot,
       liveKitSessionMayPublish,
       mountLiveKitPublisherStage,
       scheduledPublisherSlotReady,
+      liveKitCameraOverrideReady,
     });
     console.log("KRISTO_STAGE_AUTHORITY", liveStageAuthority);
   }, [
@@ -4922,6 +4994,7 @@ export default function LiveRoomScreen() {
     canPublishClaimedMicNow,
     canPublishClaimedCameraNow,
     canPublishLiveVideoNow,
+    cameraPublishAllowedNow,
     liveKitSessionMayPublish,
     liveStageAuthority,
     myClaimedMicSlotNumbers,
@@ -5649,7 +5722,7 @@ export default function LiveRoomScreen() {
 
   const routeActiveSlotSpeakerMount =
     !!currentUserId &&
-    rawRouteCanPublishCamera &&
+    cameraPublishAllowedNow &&
     (userOwnsCurrentActiveSlot || routeClaimedByUserIdEarly === currentUserId);
 
   const liveKitPublisherStagePinned = isLiveKitPublisherStagePinned(liveBridgeId);
@@ -5698,11 +5771,9 @@ export default function LiveRoomScreen() {
   const publisherHostPinnedBeforeToken = isLiveKitPublisherHostPinnedBeforeToken(liveBridgeId);
 
   const publisherEligibleForHostPin =
-    canPublishLiveVideoNow ||
-    routeActiveSlotSpeakerMount ||
-    (!!rawRouteCanPublishCamera &&
-      !!currentUserId &&
-      (userOwnsCurrentActiveSlot || routeClaimedByUserIdEarly === currentUserId));
+    canPublishClaimedMicNow ||
+    cameraPublishAllowedNow ||
+    routeActiveSlotSpeakerMount;
 
   useLayoutEffect(() => {
     if (!liveBridgeId || !publisherEligibleForHostPin) return;
@@ -5718,8 +5789,7 @@ export default function LiveRoomScreen() {
     currentUserId,
     userOwnsCurrentActiveSlot,
     routeClaimedByUserIdEarly,
-    rawRouteCanPublishCamera,
-    canPublishLiveVideoNow,
+    cameraPublishAllowedNow,
     routeActiveSlotSpeakerMount,
   ]);
 
@@ -5788,6 +5858,7 @@ export default function LiveRoomScreen() {
       churchSubscriptionActive,
       userOwnsCurrentActiveSlot,
       canPublishLiveVideoNow,
+      cameraPublishAllowedNow,
       canPublishClaimedMicNow,
       effectiveMountLiveKitPublisherStage,
       shouldMountLiveKitPublisherStage,
@@ -5801,7 +5872,8 @@ export default function LiveRoomScreen() {
       backendScheduleExplicitlyEnded,
       accessAllowed:
         isMediaInstantLive ||
-        canPublishLiveVideoNow ||
+        canPublishClaimedMicNow ||
+        cameraPublishAllowedNow ||
         routeActiveSlotSpeakerMount ||
         userOwnsCurrentActiveSlot,
     };
@@ -5810,6 +5882,7 @@ export default function LiveRoomScreen() {
     churchSubscriptionActive,
     userOwnsCurrentActiveSlot,
     canPublishLiveVideoNow,
+    cameraPublishAllowedNow,
     canPublishClaimedMicNow,
     effectiveMountLiveKitPublisherStage,
     shouldMountLiveKitPublisherStage,
@@ -7088,7 +7161,7 @@ export default function LiveRoomScreen() {
             <Ionicons name={live.micMuted ? "mic-off-outline" : "mic-outline"} size={20} color="#D9B35F" />
             <Text style={s.hcActionBtnText as any}>{live.micMuted ? "Unmute" : "Mic"}</Text>
           </Pressable>
-          {canPublishLiveVideoNow ? (
+          {cameraPublishAllowedNow ? (
             <>
               <Pressable
                 onPress={() => {
@@ -8443,7 +8516,7 @@ export default function LiveRoomScreen() {
   const audienceMicStatus = useMemo(() => {
     const isLiveNow = claimedMemberPanelInfo?.status === "LIVE NOW";
     const micReady = !!(canPublishClaimedMicNow || liveMicPublisherReady);
-    const cameraAllowed = canPublishLiveVideoNow;
+    const cameraAllowed = cameraPublishAllowedNow;
     const slotStartsLater =
       !!myClaimedStageSlot && Number((myClaimedStageSlot as any)?.startMs || 0) > liveNowMs;
 
@@ -8466,7 +8539,7 @@ export default function LiveRoomScreen() {
     claimedMemberPanelInfo?.status,
     canPublishClaimedMicNow,
     liveMicPublisherReady,
-    canPublishLiveVideoNow,
+    cameraPublishAllowedNow,
     myClaimedStageSlot,
     liveNowMs,
   ]);
@@ -8850,7 +8923,7 @@ export default function LiveRoomScreen() {
         fromFacing,
         toFacing,
         hasLocalTrack: !!flipState.hasLocalTrack,
-        isPublishing: !!flipState.isPublishing || !!canPublishLiveVideoNow,
+        isPublishing: !!flipState.isPublishing || !!cameraPublishAllowedNow,
       });
       return toFacing;
     });
@@ -9211,12 +9284,13 @@ ${scheduleAudienceAccessText}`,
 
   // Do not block the entire live room shell while expo-camera permission hook initializes.
   const canUseLiveControlsNow = canManageLive || isMyScheduledLiveTurn;
-  const hasCameraAccess = (canUseLiveControlsNow || isCoHostRole || viewerApprovedGuestOnStage) && (!!cameraPermission?.granted || isMediaInstantLive || layoutMode === "grid6");
+  const hasCameraAccess =
+    cameraPublishAllowedNow &&
+    (!!cameraPermission?.granted || isMediaInstantLive);
   // ONLY real approved stage users can open publish camera.
   // viewers entering through ?entryMode=live must stay subscriber-only.
   const canShowCamera =
-    canPublishLiveVideoNow ||
-    rawRouteCanPublishCamera ||
+    cameraPublishAllowedNow ||
     (isMediaInstantLive && normalizedRole.includes("media-slot"));
 
   const liveTone =
@@ -9357,7 +9431,7 @@ return (
             <View style={[s.vipSoloHero as any, requestListOpen ? s.vipSoloHeroCompact as any : s.vipSoloHeroExpanded as any]}>
               <View style={s.vipSoloHeroGlow as any} />
               {((isMediaInstantLive && roleLooksLikeHost) ||
-                canPublishLiveVideoNow ||
+                cameraPublishAllowedNow ||
                 canPublishClaimedMicNow ||
                 routeActiveSlotSpeakerMount ||
                 keepPublisherLiveKitStage) &&
@@ -9370,11 +9444,11 @@ return (
                     canPublish={keepPublisherLiveKitStage}
                     canPublishMicOverride={liveKitMicOverrideReady}
                     canPublishCameraOverride={liveKitCameraOverrideReady}
-                    renderLocalPreview={canPublishLiveVideoNow}
+                    renderLocalPreview={cameraPublishAllowedNow}
                     preferredIdentityPrefix={liveKitPublisherIdentity}
                     identity={liveKitPublisherIdentity}
                     cameraFacing={cameraFacing}
-                    micMuted={canPublishLiveVideoNow ? false : live.micMuted}
+                    micMuted={cameraPublishAllowedNow ? false : live.micMuted}
                     cameraPaused={cameraPaused}
                     style={s.vipSoloCamera as any}
                     fallback={
@@ -9441,15 +9515,19 @@ return (
                   <Text style={[s.vipSoloControlText as any, micUiMuted ? null : s.vipSoloControlTextOn as any]}>{micUiMuted ? "Muted" : "Mic"}</Text>
                 </Pressable>
 
-                <Pressable style={[s.vipSoloControl as any, cameraPaused ? s.vipSoloControlOff as any : s.vipSoloControlOn as any]} onPress={() => setCameraPaused((v) => !v)}>
-                  <Ionicons name={cameraPaused ? "videocam-off-outline" : "videocam-outline"} size={23} color={cameraPaused ? "#AEB6C8" : "#F4D06F"} />
-                  <Text style={[s.vipSoloControlText as any, cameraPaused ? null : s.vipSoloControlTextOn as any]}>{cameraPaused ? "Off" : "Camera"}</Text>
-                </Pressable>
+                {cameraPublishAllowedNow ? (
+                  <>
+                    <Pressable style={[s.vipSoloControl as any, cameraPaused ? s.vipSoloControlOff as any : s.vipSoloControlOn as any]} onPress={() => setCameraPaused((v) => !v)}>
+                      <Ionicons name={cameraPaused ? "videocam-off-outline" : "videocam-outline"} size={23} color={cameraPaused ? "#AEB6C8" : "#F4D06F"} />
+                      <Text style={[s.vipSoloControlText as any, cameraPaused ? null : s.vipSoloControlTextOn as any]}>{cameraPaused ? "Off" : "Camera"}</Text>
+                    </Pressable>
 
-                <Pressable style={s.vipSoloControl as any} onPress={() => toggleCameraFacing()}>
-                  <Ionicons name="camera-reverse-outline" size={23} color="#FFFFFF" />
-                  <Text style={s.vipSoloControlText as any}>Flip</Text>
-                </Pressable>
+                    <Pressable style={s.vipSoloControl as any} onPress={() => toggleCameraFacing()}>
+                      <Ionicons name="camera-reverse-outline" size={23} color="#FFFFFF" />
+                      <Text style={s.vipSoloControlText as any}>Flip</Text>
+                    </Pressable>
+                  </>
+                ) : null}
 
                 <Pressable
                   style={[s.vipSoloControl as any, hostDrawerOpen ? s.vipSoloControlOn as any : null]}
@@ -9527,7 +9605,7 @@ return (
                   canPublish={keepPublisherLiveKitStage}
                   canPublishMicOverride={liveKitMicOverrideReady}
                   canPublishCameraOverride={liveKitCameraOverrideReady}
-                  renderLocalPreview={canPublishLiveVideoNow}
+                  renderLocalPreview={cameraPublishAllowedNow}
                   preferredIdentityPrefix={
                     isMediaInstantLive
                       ? ""
@@ -9535,7 +9613,7 @@ return (
                   }
                   identity={liveKitPublisherIdentity}
                   cameraFacing={cameraFacing}
-                  micMuted={canPublishLiveVideoNow ? false : live.micMuted}
+                  micMuted={cameraPublishAllowedNow ? false : live.micMuted}
                   cameraPaused={cameraPaused}
                   style={s.teamGridLiveCamera as any}
                   fallback={
@@ -10145,23 +10223,28 @@ return (
             {(canManageLive
               ? [
                   { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
-                  { icon: canPublishLiveVideoNow ? "camera-reverse-outline" : "repeat-outline", color: "#63D1FF", label: canPublishLiveVideoNow ? "Flip" : "Switch", action: canPublishLiveVideoNow ? "flip" : "switch" },
-                  { icon: canPublishLiveVideoNow ? (cameraPaused ? "videocam-off-outline" : "videocam-outline") : "sparkles-outline", color: "#4FC3FF", label: canPublishLiveVideoNow ? "Video" : "Guests", action: canPublishLiveVideoNow ? "video" : "guests" },
+                  { icon: cameraPublishAllowedNow ? "camera-reverse-outline" : "repeat-outline", color: "#63D1FF", label: cameraPublishAllowedNow ? "Flip" : "Switch", action: cameraPublishAllowedNow ? "flip" : "switch" },
+                  { icon: cameraPublishAllowedNow ? (cameraPaused ? "videocam-off-outline" : "videocam-outline") : "sparkles-outline", color: "#4FC3FF", label: cameraPublishAllowedNow ? "Video" : "Guests", action: cameraPublishAllowedNow ? "video" : "guests" },
                   { icon: "repeat-outline", color: "#67F5B5", label: "Switch", action: "switch" },
                   { icon: "sparkles-outline", color: "#FFB36A", label: "Guests", action: "guests" },
                   { icon: "power-outline", color: "#FF6B6B", label: "End", action: "end-live" },
                 ]
-              : canPublishClaimedMicNow && !canPublishLiveVideoNow
+              : canPublishClaimedMicNow && !cameraPublishAllowedNow
                 ? [
                     { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
                     { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
                   ]
-                : [
-                    { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
-                    { icon: "camera-reverse-outline", color: "#63D1FF", label: "Flip", action: "flip" },
-                    { icon: cameraPaused ? "videocam-off-outline" : "videocam-outline", color: "#4FC3FF", label: "Video", action: "video" },
-                    { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
-                  ]).map((control, i) => (
+                : cameraPublishAllowedNow
+                  ? [
+                      { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
+                      { icon: "camera-reverse-outline", color: "#63D1FF", label: "Flip", action: "flip" },
+                      { icon: cameraPaused ? "videocam-off-outline" : "videocam-outline", color: "#4FC3FF", label: "Video", action: "video" },
+                      { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
+                    ]
+                  : [
+                      { icon: live.micMuted ? "mic-off-outline" : "mic-outline", color: "#F8D978", label: "Mic", action: "mic" },
+                      { icon: "close-circle-outline", color: "#FF6B6B", label: "End", action: "end-self" },
+                    ]).map((control, i) => (
               <Pressable
                 key={`main-screen-host-control-${control.label}-${i}`}
                 onPress={() => {
@@ -11060,6 +11143,7 @@ return (
         {layoutMode === "audience20" ? null : (canManageLive || isCoHostRole) && layoutMode !== "grid6" ? (
           <View style={s.controlsWrap as any}>
             <View style={s.controlsRow as any}>
+              {cameraPublishAllowedNow ? (
               <Pressable
                 onPress={toggleCameraFacing}
                 style={({ pressed }) => ([
@@ -11072,7 +11156,9 @@ return (
                 <Ionicons name="camera-reverse-outline" size={17} color="#DCE9FF" />
                 <Text style={s.ctrlBtnLabel as any}>Flip</Text>
               </Pressable>
+              ) : null}
 
+              {cameraPublishAllowedNow ? (
               <Pressable
                 onPress={async () => {
                 if (!cameraPermission?.granted) {
@@ -11100,6 +11186,7 @@ return (
                   {cameraPaused ? "Off" : "On"}
                 </Text>
               </Pressable>
+              ) : null}
 
               <Pressable
                 onPress={openMoreMenu}
