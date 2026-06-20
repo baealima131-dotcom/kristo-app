@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  readMinistryJsonFile,
+  resolveMinistryStoreMode,
+  updateMinistryJsonFile,
+} from "@/app/api/_lib/store/ministryDb";
 import { logAudit } from "@/app/api/_lib/audit";
 import { rateLimit } from "@/app/api/_lib/rateLimit";
 import { getMembershipsForChurch } from "@/app/api/_lib/memberships";
@@ -83,27 +87,75 @@ function asBody(req: NextRequest): Promise<Record<string, unknown> | null> {
   return req.json().catch(() => null) as Promise<Record<string, unknown> | null>;
 }
 
+function normalizeMinistryId(raw: unknown): string {
+  try {
+    return decodeURIComponent(String(raw || "").trim());
+  } catch {
+    return String(raw || "").trim();
+  }
+}
+
+function normalizeChurchId(raw: unknown): string {
+  return String(raw || "").trim();
+}
+
+function churchIdsMatch(stored: unknown, requested: string): boolean {
+  return (
+    normalizeChurchId(stored).toLowerCase() === normalizeChurchId(requested).toLowerCase()
+  );
+}
+
 async function readAllMembers(): Promise<MinistryMember[]> {
-  const data = await readJsonFile<MinistryMember[]>(STORE_FILE, []);
+  const data = await readMinistryJsonFile<MinistryMember[]>(STORE_FILE, []);
   return Array.isArray(data) ? data : [];
 }
 
 async function readAllMinistries(): Promise<Ministry[]> {
-  const data = await readJsonFile<Ministry[]>(MINISTRIES_FILE, []);
+  const data = await readMinistryJsonFile<Ministry[]>(MINISTRIES_FILE, []);
   return Array.isArray(data) ? data : [];
 }
 
 async function requireMinistryInChurch(ministryId: string, churchId: string): Promise<Ministry | null> {
   const all = await readAllMinistries();
-  const m = all.find((x) => x.id === ministryId && x.churchId === churchId);
+  const normalizedId = normalizeMinistryId(ministryId);
+  const m = all.find(
+    (x) =>
+      churchIdsMatch(x.churchId, churchId) &&
+      normalizeMinistryId(x.id) === normalizedId
+  );
   return m || null;
+}
+
+function ministryMemberMatchesMinistry(
+  row: { churchId?: unknown; ministryId?: unknown },
+  churchId: string,
+  ministryId: string
+): boolean {
+  return (
+    churchIdsMatch(row.churchId, churchId) &&
+    normalizeMinistryId(row.ministryId) === normalizeMinistryId(ministryId)
+  );
+}
+
+function logMinistryMembersLookup(payload: {
+  ministryId: string;
+  churchIdFromHeader: string;
+  churchIdResolved: string;
+  found: boolean;
+  storeMode: ReturnType<typeof resolveMinistryStoreMode>;
+  availableMinistryIds?: string[];
+}) {
+  console.log("KRISTO_MINISTRY_MEMBERS_LOOKUP", payload);
 }
 
 async function isMinistryLeader(args: { churchId: string; ministryId: string; userId: string }): Promise<boolean> {
   const { churchId, ministryId, userId } = args;
   const all = await readAllMembers();
   return all.some(
-    (mm) => mm.churchId === churchId && mm.ministryId === ministryId && mm.userId === userId && mm.role === "Leader"
+    (mm) =>
+      ministryMemberMatchesMinistry(mm, churchId, ministryId) &&
+      mm.userId === userId &&
+      mm.role === "Leader"
   );
 }
 
@@ -152,6 +204,7 @@ export async function GET(req: NextRequest) {
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const { churchId, viewer } = ctxOrRes;
+  const headerChurchId = normalizeChurchId(req.headers.get("x-kristo-church-id"));
 
   const url = new URL(req.url);
   const allMode = url.searchParams.get("all") === "1" || url.searchParams.get("all") === "true";
@@ -163,14 +216,27 @@ export async function GET(req: NextRequest) {
     if (adminOrRes instanceof NextResponse) return adminOrRes;
 
     const all = await readAllMembers();
-    const data = await Promise.all(all.filter((mm) => mm.churchId === adminOrRes.churchId).map(enrichMember));
+    const data = await Promise.all(
+      all.filter((mm) => churchIdsMatch(mm.churchId, adminOrRes.churchId)).map(enrichMember)
+    );
 
     return json<MinistryMember[]>({ ok: true, data });
   }
 
   if (!ministryId) return json({ ok: false, error: "Missing ministryId" } satisfies ApiErr, { status: 400 });
 
+  const allMinistries = await readAllMinistries();
   const ministry = await requireMinistryInChurch(ministryId, churchId);
+  logMinistryMembersLookup({
+    ministryId: normalizeMinistryId(ministryId),
+    churchIdFromHeader: headerChurchId,
+    churchIdResolved: churchId,
+    found: Boolean(ministry),
+    storeMode: resolveMinistryStoreMode(),
+    availableMinistryIds: allMinistries
+      .filter((m) => churchIdsMatch(m.churchId, churchId))
+      .map((m) => normalizeMinistryId(m.id)),
+  });
   if (!ministry) return json({ ok: false, error: "Ministry not found" } satisfies ApiErr, { status: 404 });
 
   if (viewer.role === "Leader") {
@@ -183,8 +249,7 @@ export async function GET(req: NextRequest) {
   if (viewer.role === "Member") {
     const ok = all.some(
       (mm) =>
-        mm.churchId === churchId &&
-        mm.ministryId === ministryId &&
+        ministryMemberMatchesMinistry(mm, churchId, ministryId) &&
         mm.userId === viewer.userId
     );
 
@@ -193,7 +258,9 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const data = await Promise.all(all.filter((mm) => mm.churchId === churchId && mm.ministryId === ministryId).map(enrichMember));
+  const data = await Promise.all(
+    all.filter((mm) => ministryMemberMatchesMinistry(mm, churchId, ministryId)).map(enrichMember)
+  );
 
   return json<MinistryMember[]>({ ok: true, data });
 }
@@ -235,7 +302,7 @@ export async function POST(req: NextRequest) {
 
   if (role === "Leader") {
     try {
-      await updateJsonFile<MinistryMember[]>(
+      await updateMinistryJsonFile<MinistryMember[]>(
         STORE_FILE,
         (current) => {
           const list = Array.isArray(current) ? current : [];
@@ -270,7 +337,7 @@ export async function POST(req: NextRequest) {
   let conflict = false;
 
   try {
-    await updateJsonFile<MinistryMember[]>(
+    await updateMinistryJsonFile<MinistryMember[]>(
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
@@ -372,7 +439,7 @@ export async function PATCH(req: NextRequest) {
 
     if (hasOtherLeader) {
       try {
-        await updateJsonFile<MinistryMember[]>(
+        await updateMinistryJsonFile<MinistryMember[]>(
           STORE_FILE,
           (current) => {
             const list = Array.isArray(current) ? current : [];
@@ -406,7 +473,7 @@ export async function PATCH(req: NextRequest) {
   let updated: MinistryMember | null = null;
 
   try {
-    await updateJsonFile<MinistryMember[]>(
+    await updateMinistryJsonFile<MinistryMember[]>(
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
@@ -491,7 +558,7 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    await updateJsonFile<MinistryMember[]>(
+    await updateMinistryJsonFile<MinistryMember[]>(
       STORE_FILE,
       (current) => {
         const list = Array.isArray(current) ? current : [];
