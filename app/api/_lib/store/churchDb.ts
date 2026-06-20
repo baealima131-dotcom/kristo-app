@@ -97,6 +97,18 @@ function normUserId(x: unknown) {
   return s.startsWith("U_") || s.startsWith("u_") ? s.toLowerCase() : s.toLowerCase();
 }
 
+function normMembershipChurchId(value: unknown): string {
+  const id = String(value || "").trim();
+  if (!id) return "";
+  if (/^CH7-/i.test(id)) return id.toUpperCase();
+  return id;
+}
+
+function isJoinRequestMembershipStatus(status: unknown): boolean {
+  const token = String(status || "").trim().toLowerCase();
+  return token === "requested" || token === "pending" || token === "request";
+}
+
 function rowToMembership(row: MembershipRow): ChurchMembership {
   return {
     id: row.id,
@@ -275,7 +287,7 @@ export async function dbCleanupStaleDemoActiveMemberships(userId: string): Promi
     m.status = "Left";
     m.updatedAt = nowIso();
     m.note = STALE_DEMO_MEMBERSHIP_NOTE;
-    await dbUpdateMembership(m);
+    await dbSaveMembership(m);
     cleaned.push(m);
   }
   return cleaned;
@@ -293,24 +305,68 @@ export async function dbGetMembershipsForUser(userId: string): Promise<ChurchMem
   return (rows as MembershipRow[]).map(rowToMembership);
 }
 
+export async function dbGetChurchInvitesForViewer(
+  viewerUserId: string,
+  viewerKristoId?: string
+): Promise<ChurchMembership[]> {
+  await ensureChurchSchema();
+  const sql = getSql();
+  const userKey = normUserId(viewerUserId);
+  const kristoId = String(viewerKristoId || "").trim().toUpperCase();
+  const kristoNoteNeedle = kristoId ? `%targetKristoId:${kristoId}%` : null;
+
+  const rows = kristoNoteNeedle
+    ? await sql`
+        SELECT * FROM kristo_memberships
+        WHERE request_source = 'ChurchInvite'
+          AND LOWER(status) IN ('requested', 'pending', 'request', 'invited', 'invite')
+          AND (
+            LOWER(user_id) = ${userKey}
+            OR UPPER(note) LIKE ${kristoNoteNeedle}
+          )
+        ORDER BY created_at DESC
+      `
+    : await sql`
+        SELECT * FROM kristo_memberships
+        WHERE request_source = 'ChurchInvite'
+          AND LOWER(status) IN ('requested', 'pending', 'request', 'invited', 'invite')
+          AND LOWER(user_id) = ${userKey}
+        ORDER BY created_at DESC
+      `;
+
+  const mapped = (rows as MembershipRow[]).map(rowToMembership);
+  const seen = new Set<string>();
+  return mapped.filter((m) => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+}
+
 export async function dbGetMembershipsForChurch(
   churchId: string,
   status?: MembershipStatus
 ): Promise<ChurchMembership[]> {
   await ensureChurchSchema();
   const sql = getSql();
-  const rows = status
-    ? await sql`
-        SELECT * FROM kristo_memberships
-        WHERE church_id = ${churchId} AND status = ${status}
-        ORDER BY created_at DESC
-      `
-    : await sql`
-        SELECT * FROM kristo_memberships
-        WHERE church_id = ${churchId}
-        ORDER BY created_at DESC
-      `;
-  return (rows as MembershipRow[]).map(rowToMembership);
+  const cid = normMembershipChurchId(churchId);
+  if (!cid) return [];
+
+  const rows = await sql`
+    SELECT * FROM kristo_memberships
+    WHERE UPPER(church_id) = ${cid.toUpperCase()}
+    ORDER BY created_at DESC
+  `;
+  const mapped = (rows as MembershipRow[]).map(rowToMembership);
+  if (!status) return mapped;
+  if (status === "Requested") {
+    return mapped.filter(
+      (m) =>
+        isJoinRequestMembershipStatus(m.status) &&
+        String(m.requestSource || "JoinRequest") !== "ChurchInvite"
+    );
+  }
+  return mapped.filter((m) => String(m.status || "") === status);
 }
 
 export async function dbGetMembershipById(id: string): Promise<ChurchMembership | null> {
@@ -346,7 +402,7 @@ async function dbInsertMembership(m: ChurchMembership): Promise<ChurchMembership
   return m;
 }
 
-async function dbUpdateMembership(m: ChurchMembership): Promise<ChurchMembership> {
+export async function dbSaveMembership(m: ChurchMembership): Promise<ChurchMembership> {
   await ensureChurchSchema();
   const sql = getSql();
   const updatedAt = m.updatedAt || nowIso();
@@ -372,6 +428,9 @@ export async function dbRequestMembership(
   name?: string,
   requestSource: "JoinRequest" | "ChurchInvite" = "JoinRequest"
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  const targetChurchId = normMembershipChurchId(churchId);
+  if (!targetChurchId) return { ok: false, error: "churchId missing" };
+
   await dbCleanupStaleDemoActiveMemberships(userId);
   const active = await dbGetRealActiveMembership(userId);
   if (active) {
@@ -379,20 +438,20 @@ export async function dbRequestMembership(
   }
 
   const existing = await dbGetMembershipsForUser(userId);
-  const pending = existing.find((m) => m.status === "Requested");
-  if (pending && pending.churchId !== churchId) {
+  const pending = existing.find((m) => isJoinRequestMembershipStatus(m.status));
+  if (pending && normMembershipChurchId(pending.churchId) !== targetChurchId) {
     return { ok: false, error: `User already has a pending request in churchId=${pending.churchId}` };
   }
-  if (pending && pending.churchId === churchId) {
+  if (pending && normMembershipChurchId(pending.churchId) === targetChurchId) {
     pending.requestSource = pending.requestSource || requestSource;
-    await dbUpdateMembership(pending);
+    await dbSaveMembership(pending);
     return { ok: true, membership: pending };
   }
 
   const m: ChurchMembership = {
     id: memId(),
     userId,
-    churchId,
+    churchId: targetChurchId,
     status: "Requested",
     churchRole: "Member",
     name: name?.trim() ? name.trim() : undefined,
@@ -427,7 +486,7 @@ export async function dbAddActiveMember(
     pendingSameChurch.updatedAt = nowIso();
     pendingSameChurch.decidedBy = "system";
     pendingSameChurch.decidedAt = nowIso();
-    await dbUpdateMembership(pendingSameChurch);
+    await dbSaveMembership(pendingSameChurch);
     return { ok: true, membership: pendingSameChurch };
   }
 
@@ -467,7 +526,7 @@ export async function dbLeaveActiveMembership(
 
   active.status = "Left";
   active.updatedAt = nowIso();
-  await dbUpdateMembership(active);
+  await dbSaveMembership(active);
   return { ok: true, membership: active };
 }
 
@@ -477,7 +536,9 @@ export async function dbApproveMembership(
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
   const m = await dbGetMembershipById(membershipId);
   if (!m) return { ok: false, error: "Membership not found" };
-  if (m.status !== "Requested") return { ok: false, error: `Cannot approve membership in status=${m.status}` };
+  if (!isJoinRequestMembershipStatus(m.status)) {
+    return { ok: false, error: `Cannot approve membership in status=${m.status}` };
+  }
 
   await dbCleanupStaleDemoActiveMemberships(m.userId);
   const active = await dbGetRealActiveMembership(m.userId);
@@ -490,7 +551,7 @@ export async function dbApproveMembership(
   m.decidedBy = decidedBy;
   m.decidedAt = nowIso();
   if (!m.churchRole) m.churchRole = "Member";
-  await dbUpdateMembership(m);
+  await dbSaveMembership(m);
   return { ok: true, membership: m };
 }
 
@@ -501,14 +562,16 @@ export async function dbRejectMembership(
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
   const m = await dbGetMembershipById(membershipId);
   if (!m) return { ok: false, error: "Membership not found" };
-  if (m.status !== "Requested") return { ok: false, error: `Cannot reject membership in status=${m.status}` };
+  if (!isJoinRequestMembershipStatus(m.status)) {
+    return { ok: false, error: `Cannot reject membership in status=${m.status}` };
+  }
 
   m.status = "Rejected";
   m.updatedAt = nowIso();
   m.decidedBy = decidedBy;
   m.decidedAt = nowIso();
   m.note = note;
-  await dbUpdateMembership(m);
+  await dbSaveMembership(m);
   return { ok: true, membership: m };
 }
 
@@ -524,7 +587,7 @@ export async function dbDeactivateMemberInChurch(
   m.status = "Left";
   m.updatedAt = nowIso();
   m.note = "Removed by church admin";
-  await dbUpdateMembership(m);
+  await dbSaveMembership(m);
   return { ok: true, membership: m };
 }
 
@@ -539,7 +602,7 @@ export async function dbSetMemberRole(
 
   m.churchRole = role;
   m.updatedAt = nowIso();
-  await dbUpdateMembership(m);
+  await dbSaveMembership(m);
   return { ok: true, membership: m };
 }
 
@@ -566,7 +629,7 @@ export async function dbDevPromoteToRoleIfActive(
 
   m.churchRole = role;
   m.updatedAt = nowIso();
-  await dbUpdateMembership(m);
+  await dbSaveMembership(m);
 }
 
 export async function getChurchStoreDiagnostics(opts?: { userId?: string; churchId?: string }) {

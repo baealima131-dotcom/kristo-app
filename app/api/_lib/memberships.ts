@@ -18,12 +18,15 @@ import {
   dbGetMembershipById,
   dbGetMembershipsForChurch,
   dbGetMembershipsForUser,
+  dbGetChurchInvitesForViewer,
   dbLeaveActiveMembership,
   dbRejectMembership,
   dbRequestMembership,
+  dbSaveMembership,
   dbSetMemberRole,
   dbCleanupStaleDemoActiveMemberships,
   ensureChurchStoreReady,
+  resolveChurchStoreMode,
 } from "@/app/api/_lib/store/churchDb";
 import { countsAsRealActiveMembership, isBlockedDemoChurchId, STALE_DEMO_MEMBERSHIP_NOTE } from "@/app/api/_lib/demoMemberships";
 
@@ -54,6 +57,136 @@ export type ChurchMembership = {
 };
 
 const STORE_FILE = "memberships.json";
+
+export function normalizeMembershipChurchId(value: unknown): string {
+  const id = String(value || "").trim();
+  if (!id) return "";
+  if (/^CH7-/i.test(id)) return id.toUpperCase();
+  return id;
+}
+
+export function isJoinRequestMembershipStatus(status: unknown): boolean {
+  const token = String(status || "").trim().toLowerCase();
+  return token === "requested" || token === "pending" || token === "request";
+}
+
+export function isJoinRequestMembership(row: {
+  status?: unknown;
+  requestSource?: unknown;
+}): boolean {
+  if (!isJoinRequestMembershipStatus(row?.status)) return false;
+  const source = String(row?.requestSource || "JoinRequest").trim();
+  return source !== "ChurchInvite";
+}
+
+export function isPendingChurchInviteStatus(status: unknown): boolean {
+  const token = String(status || "").trim().toLowerCase();
+  return (
+    token === "requested" ||
+    token === "pending" ||
+    token === "request" ||
+    token === "invited" ||
+    token === "invite"
+  );
+}
+
+export function isChurchInviteMembership(row: {
+  status?: unknown;
+  requestSource?: unknown;
+}): boolean {
+  if (!isPendingChurchInviteStatus(row?.status)) return false;
+  return String(row?.requestSource || "").trim() === "ChurchInvite";
+}
+
+const TARGET_KRISTO_NOTE_PREFIX = "targetKristoId:";
+
+export function parseTargetKristoIdFromMembership(m: {
+  note?: unknown;
+  targetKristoId?: unknown;
+}): string {
+  const direct = String(m?.targetKristoId || "").trim().toUpperCase();
+  if (/^KR7-[A-Z0-9]{6,10}$/.test(direct)) return direct;
+  const note = String(m?.note || "");
+  const match = note.match(/targetKristoId:([A-Z0-9-]+)/i);
+  return match?.[1] ? String(match[1]).trim().toUpperCase() : "";
+}
+
+export function withTargetKristoIdNote(
+  membership: ChurchMembership,
+  targetKristoId: string
+): ChurchMembership {
+  const code = String(targetKristoId || "").trim().toUpperCase();
+  if (!code) return membership;
+  const note = String(membership.note || "");
+  if (note.includes(`${TARGET_KRISTO_NOTE_PREFIX}${code}`)) {
+    return { ...membership, targetKristoId: code } as ChurchMembership;
+  }
+  const nextNote = note
+    ? `${note};${TARGET_KRISTO_NOTE_PREFIX}${code}`
+    : `${TARGET_KRISTO_NOTE_PREFIX}${code}`;
+  return { ...membership, note: nextNote, targetKristoId: code } as ChurchMembership;
+}
+
+export function membershipBelongsToViewer(
+  membership: ChurchMembership,
+  viewerUserId: string,
+  viewerKristoId?: string
+): boolean {
+  if (normUserId(membership.userId) === normUserId(viewerUserId)) return true;
+  const targetKristoId = parseTargetKristoIdFromMembership(membership);
+  const viewerCode = String(viewerKristoId || "").trim().toUpperCase();
+  return Boolean(viewerCode && targetKristoId && targetKristoId === viewerCode);
+}
+
+export async function saveMembership(membership: ChurchMembership): Promise<ChurchMembership> {
+  const next = { ...membership, updatedAt: nowIso() };
+  if (usePostgres()) {
+    await ensureStore();
+    return dbSaveMembership(next);
+  }
+
+  let saved = next;
+  await updateJsonFile<ChurchMembership[]>(
+    STORE_FILE,
+    (current) => {
+      const s = Array.isArray(current) ? current : [];
+      const idx = s.findIndex((row) => row.id === next.id);
+      if (idx < 0) return s;
+      s[idx] = next;
+      saved = next;
+      return s;
+    },
+    []
+  );
+  return saved;
+}
+
+export async function getChurchInvitesForViewer(
+  viewerUserId: string,
+  viewerKristoId?: string
+): Promise<ChurchMembership[]> {
+  const viewerCode = String(viewerKristoId || "").trim().toUpperCase();
+
+  if (usePostgres()) {
+    await ensureStore();
+    const rows = await dbGetChurchInvitesForViewer(viewerUserId, viewerCode);
+    return sortNewestFirst(
+      rows.filter((m) => membershipBelongsToViewer(m, viewerUserId, viewerCode))
+    );
+  }
+
+  const rows = await readAll();
+  return sortNewestFirst(
+    rows.filter((m) => {
+      if (!isChurchInviteMembership(m)) return false;
+      return membershipBelongsToViewer(m, viewerUserId, viewerCode);
+    })
+  );
+}
+
+export function resolveMembershipStoreMode() {
+  return resolveChurchStoreMode();
+}
 
 function usePostgres() {
   return hasDurableStore();
@@ -215,12 +348,29 @@ export async function getMembershipsForChurch(
   churchId: string,
   status?: MembershipStatus
 ): Promise<ChurchMembership[]> {
+  const cid = normalizeMembershipChurchId(churchId);
+  if (!cid) return [];
+
   if (usePostgres()) {
     await ensureStore();
-    return dbGetMembershipsForChurch(churchId, status);
+    const rows = await dbGetMembershipsForChurch(cid);
+    return sortNewestFirst(
+      rows.filter((m) => {
+        if (!status) return true;
+        if (status === "Requested") return isJoinRequestMembership(m);
+        return String(m.status || "") === status;
+      })
+    );
   }
   const all = await readAll();
-  return sortNewestFirst(all.filter((m) => m.churchId === churchId && (!status || m.status === status)));
+  return sortNewestFirst(
+    all.filter((m) => {
+      if (normalizeMembershipChurchId(m.churchId) !== cid) return false;
+      if (!status) return true;
+      if (status === "Requested") return isJoinRequestMembership(m);
+      return m.status === status;
+    })
+  );
 }
 
 
@@ -235,7 +385,9 @@ export async function getMembershipById(id: string): Promise<ChurchMembership | 
 }
 
 export async function isApproverForChurch(userId: string, churchId: string): Promise<boolean> {
-  const active = await getMembershipsForChurch(churchId, "Active");
+  const cid = normalizeMembershipChurchId(churchId);
+  if (!cid) return false;
+  const active = await getMembershipsForChurch(cid, "Active");
   const mine = active.find((m) => normUserId(m.userId) === normUserId(userId));
   if (!mine) return false;
   return mine.churchRole === "Pastor" || mine.churchRole === "Church_Admin";
@@ -259,9 +411,12 @@ export async function requestMembership(
 ): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
   await cleanupStaleDemoActiveMemberships(userId);
 
+  const targetChurchId = normalizeMembershipChurchId(churchId);
+  if (!targetChurchId) return { ok: false, error: "churchId missing" };
+
   if (usePostgres()) {
     await ensureStore();
-    return dbRequestMembership(userId, churchId, name, requestSource);
+    return dbRequestMembership(userId, targetChurchId, name, requestSource);
   }
   let result: { ok: true; membership: ChurchMembership } | { ok: false; error: string } = {
     ok: false,
@@ -279,13 +434,13 @@ export async function requestMembership(
         return s;
       }
 
-      const pending = s.find((m) => normUserId(m.userId) === normUserId(userId) && m.status === "Requested");
-      if (pending && pending.churchId !== churchId) {
+      const pending = s.find((m) => normUserId(m.userId) === normUserId(userId) && isJoinRequestMembershipStatus(m.status));
+      if (pending && normalizeMembershipChurchId(pending.churchId) !== targetChurchId) {
         result = { ok: false, error: `User already has a pending request in churchId=${pending.churchId}` };
         return s;
       }
 
-      if (pending && pending.churchId === churchId) {
+      if (pending && normalizeMembershipChurchId(pending.churchId) === targetChurchId) {
         pending.requestSource = pending.requestSource || requestSource;
         result = { ok: true, membership: pending };
         return s;
@@ -294,7 +449,7 @@ export async function requestMembership(
       const m: ChurchMembership = {
         id: id(),
         userId,
-        churchId,
+        churchId: targetChurchId,
         status: "Requested",
         churchRole: "Member",
         name: name?.trim() ? name.trim() : undefined,
@@ -389,7 +544,7 @@ export async function approveMembership(
         return s;
       }
 
-      if (m.status !== "Requested") {
+      if (!isJoinRequestMembershipStatus(m.status)) {
         result = { ok: false, error: `Cannot approve membership in status=${m.status}` };
         return s;
       }
@@ -453,7 +608,7 @@ export async function rejectMembership(
         return s;
       }
 
-      if (m.status !== "Requested") {
+      if (!isJoinRequestMembershipStatus(m.status)) {
         result = { ok: false, error: `Cannot reject membership in status=${m.status}` };
         return s;
       }
@@ -471,6 +626,35 @@ export async function rejectMembership(
   );
 
   return result;
+}
+
+export async function cancelPendingJoinRequest(
+  userId: string,
+  opts?: { membershipId?: string; churchId?: string }
+): Promise<{ ok: true; membership: ChurchMembership } | { ok: false; error: string }> {
+  let target: ChurchMembership | undefined;
+
+  if (opts?.membershipId) {
+    const row = await getMembershipById(opts.membershipId);
+    if (!row || normUserId(row.userId) !== normUserId(userId)) {
+      return { ok: false, error: "Join request not found" };
+    }
+    if (!isJoinRequestMembership(row)) {
+      return { ok: false, error: "No pending join request to cancel" };
+    }
+    target = row;
+  } else {
+    const rows = await getMembershipsForUser(userId);
+    const pending = rows.find((m) => isJoinRequestMembership(m));
+    if (!pending) return { ok: false, error: "No pending join request to cancel" };
+    const targetChurchId = normalizeMembershipChurchId(opts?.churchId);
+    if (targetChurchId && normalizeMembershipChurchId(pending.churchId) !== targetChurchId) {
+      return { ok: false, error: "No pending join request for this church" };
+    }
+    target = pending;
+  }
+
+  return rejectMembership(target.id, userId, "Cancelled by requester");
 }
 
 /**

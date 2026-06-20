@@ -2,7 +2,14 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { guard } from "@/app/api/_lib/rbac";
-import { getActiveMembership, requestMembership, type ChurchRole } from "@/app/api/_lib/memberships";
+import {
+  getActiveMembership,
+  requestMembership,
+  saveMembership,
+  withTargetKristoIdNote,
+  resolveMembershipStoreMode,
+  type ChurchRole,
+} from "@/app/api/_lib/memberships";
 import { createNotification } from "@/app/api/_lib/notifications";
 import { getProfile, getProfileByUserCode } from "@/app/api/auth/_lib/profile";
 import { sendChurchInviteEmail } from "@/app/api/_lib/email";
@@ -32,10 +39,10 @@ export async function POST(req: NextRequest) {
 
   // ❌ block self invite: compare header KR7 + guard userId
   const actorHeaderId = String(req.headers.get("x-kristo-user-id") || "").trim().toUpperCase();
-  const actorProfile = await getProfile(ctx.userId);
+  const actorProfile = await getProfile(ctx.viewer.userId);
   const actorCodes = [
     actorHeaderId,
-    String(ctx.userId || ""),
+    String(ctx.viewer.userId || ""),
     String((actorProfile as any)?.userCode || ""),
     String((actorProfile as any)?.coreId || ""),
     String((actorProfile as any)?.coreIdBirth || ""),
@@ -68,14 +75,28 @@ export async function POST(req: NextRequest) {
   const r = await requestMembership(realTargetUserId, ctx.churchId, undefined, "ChurchInvite");
   if (!r.ok) return json({ ok: false, error: r.error }, { status: 400 });
 
-  r.membership.churchRole = role;
+  let membership = withTargetKristoIdNote(r.membership, targetUserId);
+  membership.churchRole = role;
+  membership = await saveMembership(membership);
+
+  console.log(
+    JSON.stringify({
+      tag: "KRISTO_CHURCH_INVITE_CREATE",
+      churchId: ctx.churchId,
+      senderUserId: ctx.viewer.userId,
+      targetKristoId: targetUserId,
+      resolvedTargetUserId: realTargetUserId,
+      status: membership.status,
+      storeMode: resolveMembershipStoreMode(),
+    })
+  );
 
   createNotification({
     churchId: ctx.churchId,
     type: "Generic",
     title: "Church invite received",
     message: `You have been invited to join this church as ${role}.`,
-    ministryMemberId: r.membership.id,
+    ministryMemberId: membership.id,
     targetUserId: realTargetUserId,
   });
 
@@ -88,5 +109,5 @@ export async function POST(req: NextRequest) {
     churchName: String((ctx as any)?.churchName || "your church"),
   }).catch((error) => ({ error: String(error?.message || error) }));
 
-  return json({ ok: true, invite: r.membership, email: emailResult });
+  return json({ ok: true, invite: membership, email: emailResult });
 }

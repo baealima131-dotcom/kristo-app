@@ -832,7 +832,7 @@ export default function MeScreen() {
         const status = String(x?.status || x?.membershipStatus || x?.inviteStatus || "").toLowerCase();
         const inviteKey = String(x?.id || x?.membershipId || "").trim();
 
-        if (status !== "requested" || !inviteKey) return false;
+        if (!["requested", "pending", "request", "invited", "invite"].includes(status) || !inviteKey) return false;
         if (CLOSED_INVITE_IDS.has(inviteKey)) return false;
         if (seenInvites.has(inviteKey)) return false;
 
