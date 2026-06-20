@@ -180,7 +180,17 @@ export async function apiPost<T = Json>(path: string, body?: any, arg?: HeadersR
         body: parsed,
       });
     }
-    if (!res.ok) return httpError(path, res, parsed) as T;
+    if (!res.ok) {
+      if (path.includes("/api/auth/delete-account")) {
+        return {
+          ok: false,
+          error: "Couldn't delete account. Please try again.",
+          reason: "http_error",
+          status: res.status,
+        } as T;
+      }
+      return httpError(path, res, parsed) as T;
+    }
     const body = parsed ?? { ok: false, error: "Empty server response" };
     return (typeof body === "object" && body !== null
       ? { ...body, status: res.status }
