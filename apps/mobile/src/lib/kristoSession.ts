@@ -2,81 +2,23 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { clearChurchDraft, clearChurchProfileCache } from "./churchStore";
 import { clearChurchMembersCachesForUser } from "./churchTabCache";
 import { clearProfileDraft } from "./profileStore";
-import { resetAuthRefreshStateForLogout } from "./refreshCoordinator";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
+import { getSessionSync, setSessionSync } from "./kristoSessionSync";
 
-export type KristoRole = "Pastor" | "Member" | "Church_Admin" | "System_Admin" | "Leader" | "Ministry_Leader";
+export type {
+  KristoMediaCategory,
+  KristoMediaProfile,
+  KristoRole,
+  KristoSession,
+} from "./kristoSessionTypes";
+export { getSessionSync, setSessionSync } from "./kristoSessionSync";
 
-export type KristoMediaCategory =
-  | "Teacher"
-  | "Singer"
-  | "Counselor"
-  | "Preacher"
-  | "Motivational Speaker"
-  | "Testimony Creator"
-  | "Bible Educator"
-  | "Church Media";
-
-export type KristoMediaProfile = {
-  mediaName: string;
-  category: KristoMediaCategory;
-  subCategory: string;
-  language: string;
-  country: string;
-  targetAudience: string;
-  contentStyle: string;
-  bio: string;
-  tags: string[];
-};
-
-export type KristoSession = {
-  userId: string; // backend/internal id
-  sessionToken?: string; // signed token proving server-verified identity
-  kristoId?: string; // public Kristo ID shown to user
-  role: KristoRole;
-  churchId: string; // empty => not joined
-  activeChurchId?: string; // synced active membership church id
-  name?: string;
-  displayName?: string;
-  gender?: string;
-  phone?: string;
-  email?: string;
-  avatarUri?: string;
-  avatarUrl?: string;
-  profileImage?: string;
-  address?: string;
-  city?: string;
-  country?: string;
-
-  churchPhone?: string;
-  churchCountry?: string;
-  churchProvince?: string;
-  churchCity?: string;
-  churchPrimaryLanguage?: string;
-  churchName?: string;
-  churchRole?: KristoRole;
-
-  mediaProfile?: KristoMediaProfile | null;
-  createdAt?: number;
-  lastSeenAt?: number;
-  expiresAt?: number;
-};
+import type { KristoMediaCategory, KristoRole, KristoSession } from "./kristoSessionTypes";
 
 const KEY = "kristo.session.v1";
 export const LOGGED_OUT_KEY = "KRISTO_LOGGED_OUT";
 export const MOBILE_SESSION_IDLE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days inactivity
 export const MOBILE_SESSION_MAX_MS = 30 * 24 * 60 * 60 * 1000; // 30 days hard expiry
-
-// in-memory sync snapshot (for headers)
-let _session: KristoSession | null = null;
-
-export function getSessionSync(): KristoSession | null {
-  return _session;
-}
-
-export function setSessionSync(s: KristoSession | null) {
-  _session = s;
-}
 
 export async function isLoggedOutFlagSet(): Promise<boolean> {
   try {
@@ -237,7 +179,7 @@ export async function saveSession(s: KristoSession): Promise<void> {
 
 export async function touchMobileSession(): Promise<KristoSession | null> {
   if (await isLoggedOutFlagSet()) return null;
-  const current = _session || (await loadSession());
+  const current = getSessionSync() || (await loadSession());
   if (!current) return null;
 
   const next: KristoSession = {
@@ -288,6 +230,7 @@ export async function performLogoutCleanup(params: LogoutCleanupParams = {}): Pr
       await clearChurchProfileCache(churchId);
     }
 
+    const { resetAuthRefreshStateForLogout } = await import("./refreshCoordinator");
     resetAuthRefreshStateForLogout();
   } catch (error: any) {
     console.log("KRISTO_LOGOUT_CLEAR_PARTIAL", {

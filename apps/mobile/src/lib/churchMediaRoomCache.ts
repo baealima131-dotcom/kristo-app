@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { isScreenCacheFresh } from "@/src/lib/screenDataCache";
+import { isScreenCacheFresh } from "@/src/lib/screenDataCacheFresh";
 
 export const CHURCH_MEDIA_ROOM_REFRESH_MS = 75000;
 
