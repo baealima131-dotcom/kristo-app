@@ -20,35 +20,20 @@ import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { resolveSessionChurchId } from "@/src/lib/churchStore";
 import { isPastorSessionRole } from "@/src/lib/churchSubscription";
 import {
-  logMoreDeferredRefreshSkip,
+  logMoreMediaCardGate,
+  shouldShowMoreMediaCard,
+  type ChurchMediaAccessState,
+} from "@/src/lib/churchMediaAccess";
+import {
+  getCachedChurchMediaAccess,
+  refreshChurchMediaAccess,
   runAfterMoreTabPressTransition,
+  subscribeChurchMediaAccess,
 } from "@/src/lib/refreshCoordinator";
 import { peekChurchOverviewCache, silentRefreshChurchOverview } from "@/src/lib/screenDataCache";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
-const MEDIA_ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
-
-type MediaAccessCacheEntry = {
-  canAccessChurchMedia: boolean;
-  fetchedAt: number;
-};
-
-const mediaAccessCache = new Map<string, MediaAccessCacheEntry>();
-
-function mediaAccessCacheKey(churchId: string, userId: string) {
-  return `${churchId}:${userId}`;
-}
-
-function readCachedMediaAccess(churchId: string, userId: string): boolean | null {
-  const entry = mediaAccessCache.get(mediaAccessCacheKey(churchId, userId));
-  if (!entry) return null;
-  if (Date.now() - entry.fetchedAt > MEDIA_ACCESS_CACHE_TTL_MS) {
-    mediaAccessCache.delete(mediaAccessCacheKey(churchId, userId));
-    return null;
-  }
-  return entry.canAccessChurchMedia;
-}
 
 type Item = {
   key: string;
@@ -361,24 +346,28 @@ export default function MoreScreen() {
     [session]
   );
 
-  const [canAccessChurchMedia, setCanAccessChurchMedia] = React.useState<boolean | null>(null);
+  const [mediaAccess, setMediaAccess] = React.useState<ChurchMediaAccessState | null>(() =>
+    getCachedChurchMediaAccess()
+  );
   const [mediaAccessLoading, setMediaAccessLoading] = React.useState(false);
 
-  const canShowMediaCard = React.useMemo(() => {
-    if (!hasChurch) return false;
-    if (isPastor) return true;
-    if (canAccessChurchMedia === true) return true;
-    if (canAccessChurchMedia === null && mediaAccessLoading) return false;
-    return false;
-  }, [hasChurch, canAccessChurchMedia, isPastor, mediaAccessLoading]);
+  const canShowMediaCard = React.useMemo(
+    () =>
+      shouldShowMoreMediaCard({
+        hasChurch,
+        isPastor,
+        access: mediaAccess,
+      }),
+    [hasChurch, isPastor, mediaAccess]
+  );
 
   const showMediaAccessSkeleton = React.useMemo(
     () =>
       hasChurch &&
       !isPastor &&
       mediaAccessLoading &&
-      canAccessChurchMedia === null,
-    [hasChurch, isPastor, mediaAccessLoading, canAccessChurchMedia]
+      !canShowMediaCard,
+    [hasChurch, isPastor, mediaAccessLoading, canShowMediaCard]
   );
 
   const visibleItems = React.useMemo(() => {
@@ -448,42 +437,73 @@ export default function MoreScreen() {
 
   React.useEffect(() => {
     if (!hasChurch) {
-      setCanAccessChurchMedia(null);
+      setMediaAccess(null);
       setMediaAccessLoading(false);
-      return;
     }
+  }, [hasChurch]);
+
+  React.useEffect(() => {
+    return subscribeChurchMediaAccess((access) => {
+      setMediaAccess(access);
+    });
+  }, []);
+
+  React.useEffect(() => {
+    if (!hasChurch || mediaAccessLoading) return;
 
     const { churchId, userId } = resolveMediaAccessIdentity();
-    if (!churchId || !userId) {
-      setCanAccessChurchMedia(isPastor ? true : null);
-      setMediaAccessLoading(false);
-      return;
-    }
+    if (!churchId || !userId) return;
 
-    const cached = readCachedMediaAccess(churchId, userId);
-    if (cached !== null) {
-      setCanAccessChurchMedia(cached);
-      setMediaAccessLoading(false);
-      return;
-    }
-
-    if (isPastor) {
-      setCanAccessChurchMedia(true);
-    }
-  }, [hasChurch, isPastor, resolveMediaAccessIdentity]);
+    logMoreMediaCardGate({
+      userId,
+      churchId,
+      isPastor,
+      viewerIsHost: mediaAccess?.isMediaHost === true,
+      canAccessChurchMedia: mediaAccess?.canAccessChurchMedia === true,
+      canOpenMediaScreen: mediaAccess?.canOpenMediaScreen === true,
+      canUseMediaTools: mediaAccess?.canUseMediaTools === true,
+      showMediaCard: canShowMediaCard,
+    });
+  }, [
+    hasChurch,
+    isPastor,
+    mediaAccess,
+    mediaAccessLoading,
+    canShowMediaCard,
+    resolveMediaAccessIdentity,
+  ]);
 
   useFocusEffect(
     React.useCallback(() => {
       mediaOpenRef.current = false;
-      if (hasChurch) {
-        logMoreDeferredRefreshSkip("more-media-access", "disabled-on-more-focus");
+
+      const { churchId, userId } = resolveMediaAccessIdentity();
+      if (!hasChurch || !churchId || !userId) {
+        return () => {};
       }
+
+      setMediaAccessLoading(true);
+
       runAfterMoreTabPressTransition(() => {
+        void refreshChurchMediaAccess({
+          userId,
+          churchId,
+          role: session?.role,
+          churchRole: (session as any)?.churchRole,
+          force: true,
+        })
+          .then((access) => {
+            setMediaAccess(access);
+          })
+          .finally(() => {
+            setMediaAccessLoading(false);
+          });
+
         runMoreDeferredAssetWarmup();
       });
 
       return () => {};
-    }, [hasChurch, runMoreDeferredAssetWarmup])
+    }, [hasChurch, resolveMediaAccessIdentity, session?.role, session, runMoreDeferredAssetWarmup])
   );
 
   React.useEffect(() => {
