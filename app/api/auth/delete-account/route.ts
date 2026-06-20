@@ -5,7 +5,6 @@ import crypto from "crypto";
 
 import {
   getMembershipsForUser,
-  isJoinRequestMembershipStatus,
   leaveActiveMembership,
   rejectMembership,
 } from "@/app/api/_lib/memberships";
@@ -27,6 +26,11 @@ export const runtime = "nodejs";
 
 function json(data: unknown, init?: ResponseInit) {
   return NextResponse.json(data, init);
+}
+
+function isPendingJoinRequestStatus(status: unknown): boolean {
+  const token = String(status || "").trim().toLowerCase();
+  return token === "requested" || token === "pending" || token === "request";
 }
 
 async function resolveRealUserId(headerUserId: string): Promise<string> {
@@ -82,7 +86,8 @@ async function detachMemberships(userId: string) {
 
   const rows = await getMembershipsForUser(userId);
   for (const membership of rows) {
-    if (!isJoinRequestMembershipStatus(membership.status)) continue;
+    if (!isPendingJoinRequestStatus(membership.status)) continue;
+    if (String(membership.requestSource || "JoinRequest") === "ChurchInvite") continue;
     const rejected = await rejectMembership(membership.id, userId, "Account deleted");
     if (!rejected.ok) {
       throw new Error(rejected.error);
