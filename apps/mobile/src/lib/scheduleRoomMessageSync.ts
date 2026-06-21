@@ -7,7 +7,7 @@ import {
   resetRoomMessagesRefreshState,
 } from "@/src/lib/churchMediaRoomRefresh";
 import { removeAssignmentCardsFromThreads } from "@/src/lib/messagesStore";
-import { markRoomMessagesForcePollAfterDelete } from "@/src/lib/roomMessagesDeletePoll";
+import { markRoomMessagesForcePoll } from "@/src/lib/roomMessagesDeletePoll";
 
 export type ScheduleRoomDeletePayload = {
   roomIds?: string[];
@@ -23,7 +23,10 @@ export type ScheduleRoomDeletePayload = {
 
 const deleteListeners = new Set<(payload: ScheduleRoomDeletePayload) => void>();
 
-export { consumeRoomMessagesForcePollAfterDelete } from "@/src/lib/roomMessagesDeletePoll";
+export {
+  consumeRoomMessagesForcePoll,
+  consumeRoomMessagesForcePollAfterDelete,
+} from "@/src/lib/roomMessagesDeletePoll";
 
 export function subscribeScheduleRoomDeleteInvalidation(
   listener: (payload: ScheduleRoomDeletePayload) => void
@@ -121,7 +124,7 @@ export function applyScheduleDeleteToLocalRoom(
     for (const roomId of roomIds) {
       invalidateRoomMessagesCache(churchId, userId, roomId);
       resetRoomMessagesRefreshState(churchId, userId, roomId);
-      markRoomMessagesForcePollAfterDelete(roomId);
+      markRoomMessagesForcePoll(roomId);
       void clearRoomMessagesCacheAfterDelete(churchId, userId, roomId);
     }
 

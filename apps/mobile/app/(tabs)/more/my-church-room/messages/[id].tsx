@@ -91,9 +91,11 @@ import {
   resetRoomMessagesRefreshState,
 } from "@/src/lib/churchMediaRoomRefresh";
 import {
+  consumeRoomMessagesForcePoll,
   consumeRoomMessagesForcePollAfterDelete,
   subscribeScheduleRoomDeleteInvalidation,
 } from "@/src/lib/scheduleRoomMessageSync";
+import { broadcastChurchLiveControlRoomSync, subscribeChurchLiveControlRoomSync } from "@/src/lib/churchLiveControlRoomSync";
 import { resolveRealSlotTopic } from "@/src/lib/slotTopicUtils";
 import {
   isScheduleSlotExpired,
@@ -3425,7 +3427,9 @@ export default function MessageThreadScreen() {
 
         const isScheduleCard =
           String(m?.kind || "") === "assignment_card" &&
-          String((m as any)?.card?.source || "") === "media-schedule";
+          (String((m as any)?.card?.source || "") === "media-schedule" ||
+            String((m as any)?.card?.source || "") === "church-live-control" ||
+            String((m as any)?.card?.roomKind || "").includes("church-live-control"));
 
         return isScheduleCard || isRecentOwnLocalMessage(m);
       });
@@ -3630,16 +3634,18 @@ export default function MessageThreadScreen() {
 
     async function loadBackendRoomMessages(opts?: { force?: boolean }): Promise<boolean> {
       const roomId = backendRoomId;
-      const forceAfterDelete =
+      const forceAfterMutation =
+        consumeRoomMessagesForcePoll(CHURCH_MEDIA_ROOM_ID) ||
         consumeRoomMessagesForcePollAfterDelete(CHURCH_MEDIA_ROOM_ID) ||
+        consumeRoomMessagesForcePoll(String(roomId || "")) ||
         consumeRoomMessagesForcePollAfterDelete(String(roomId || ""));
-      const force = !!opts?.force || forceAfterDelete;
+      const force = !!opts?.force || forceAfterMutation;
 
-      if (forceAfterDelete) {
+      if (forceAfterMutation) {
         mediaRoomCacheFreshRef.current = false;
         roomMessagesSigRef.current = "";
         allowEmptyRoomOverwriteRef.current = true;
-        console.log("KRISTO_ROOM_MESSAGES_POLL_FORCE_AFTER_DELETE", {
+        console.log("KRISTO_ROOM_MESSAGES_POLL_FORCE_AFTER_MUTATION", {
           roomId: roomId || CHURCH_MEDIA_ROOM_ID,
         });
       }
@@ -3707,7 +3713,7 @@ export default function MessageThreadScreen() {
             roomId: CHURCH_MEDIA_ROOM_ID,
             headers,
             force: false,
-            cacheFresh: mediaRoomCacheFreshRef.current,
+            cacheFresh: false,
             source: composerFocused ? "poll-active" : "poll",
           });
 
@@ -3789,6 +3795,19 @@ export default function MessageThreadScreen() {
     roomMessagesSigRef.current = "";
     void reloadRoomMessagesRef.current?.({ force: true });
   }, [churchId, effectiveAuthUserId, backendRoomId]);
+
+  useEffect(() => {
+    if (!isChurchLiveControlRoom) return;
+    return subscribeChurchLiveControlRoomSync((payload) => {
+      console.log("KRISTO_CHURCH_LIVE_CONTROL_ROOM_SYNC_RECEIVED", {
+        threadId,
+        backendRoomId,
+        action: payload.action,
+        reason: payload.reason || null,
+      });
+      forceReloadRoomMessages();
+    });
+  }, [isChurchLiveControlRoom, threadId, backendRoomId, forceReloadRoomMessages]);
 
   useEffect(() => {
     return subscribeScheduleRoomDeleteInvalidation((payload) => {
@@ -6735,6 +6754,15 @@ function saveAssignmentVideoTrim() {
         );
         return;
       }
+
+      broadcastChurchLiveControlRoomSync({
+        action: "claim",
+        churchId: String(churchId || getKristoHeaders()["x-kristo-church-id"] || "").trim(),
+        userId: effectiveAuthUserId,
+        messageId: slotId,
+        cardId: String((targetMsg?.card as any)?.cardId || slotId),
+        reason: "room-slot-claim",
+      });
 
       forceReloadRoomMessages();
     } catch (e: any) {

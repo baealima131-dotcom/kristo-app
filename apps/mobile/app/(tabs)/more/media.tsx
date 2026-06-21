@@ -52,6 +52,16 @@ import {
   findActiveChurchLiveControlScheduleFromRoom,
   loadChurchLiveControlGuestCenterScheduleRow,
 } from "../../../src/lib/churchLiveControlSchedule";
+import {
+  isGuestCenterChurchLiveControlRoomSource,
+  mutateChurchLiveControlGuestCenterRoomSchedule,
+  type GuestClaimCenterRoomMutationAction,
+} from "../../../src/lib/churchLiveControlGuestCenterMutations";
+import {
+  broadcastChurchLiveControlRoomSync,
+  subscribeChurchLiveControlRoomSync,
+} from "../../../src/lib/churchLiveControlRoomSync";
+import { CHURCH_LIVE_CONTROL_ROOM_REFRESH_MS } from "../../../src/lib/churchMediaRoomCache";
 import { GuestClaimAssignModal } from "../../../src/components/media/GuestClaimAssignModal";
 import { MIN_GUEST_SLOT_DURATION_MIN, normalizeGuestClaimSlot } from "../../../src/lib/guestClaimCenterUtils";
 import {
@@ -1751,6 +1761,7 @@ export default function MediaStudioScreen() {
         return {
           id: String(slot?.id || slot?.slotId || slot?.slot || slot?.order || `slot-${index + 1}`),
           sourceFeedId: sourceItemId,
+          roomMessageId: String(slot?.roomMessageId || "").trim(),
           title: String(slot?.name || slot?.slotLabel || `Slot ${index + 1}`),
           meetingDate: String(slot?.meetingDate || "").trim(),
           meetingDay: String(slot?.meetingDay || "").trim(),
@@ -1777,6 +1788,103 @@ export default function MediaStudioScreen() {
 
     return sortSlotsForGuestClaimCenter(rows, now);
     }, [guestCenterCanonical, guestClockNow]);
+
+  const isChurchLiveControlGuestCenter = isGuestCenterChurchLiveControlRoomSource(
+    guestCenterCanonical.source
+  );
+
+  const guestCenterRoomMutationInput = useMemo(
+    () => ({
+      churchLiveControlRoomSchedule,
+      setChurchLiveControlRoomSchedule,
+      guestCenterSource: guestCenterCanonical.source,
+      reloadChurchLiveControlOpts: {
+        churchName: String(
+          (session as any)?.churchName || (session as any)?.churchLabel || "My Church"
+        ).trim(),
+        mediaName: String(churchMediaProfile?.mediaName || "Church Media").trim(),
+        nowMs: guestClockNow,
+      },
+    }),
+    [
+      churchLiveControlRoomSchedule,
+      guestCenterCanonical.source,
+      guestClockNow,
+      session,
+      churchMediaProfile?.mediaName,
+    ]
+  );
+
+  const readChurchLiveControlGuestCenterScheduleSlots = useCallback(() => {
+    return filterGuestCenterDisplaySlots(
+      Array.isArray(guestCenterCanonical.schedule?.scheduleSlots)
+        ? guestCenterCanonical.schedule.scheduleSlots
+        : []
+    );
+  }, [guestCenterCanonical.schedule]);
+
+  const collectChangedGuestCenterScheduleSlots = useCallback((before: any[], after: any[]) => {
+    const beforeById = new Map(before.map((slot) => [String(slot?.id || ""), slot]));
+    return after.filter((slot) => {
+      const prev = beforeById.get(String(slot?.id || ""));
+      if (!prev) return true;
+      return (
+        Number(prev?.startMs || 0) !== Number(slot?.startMs || 0) ||
+        Number(prev?.endMs || 0) !== Number(slot?.endMs || 0) ||
+        Number(prev?.durationMin || 0) !== Number(slot?.durationMin || 0) ||
+        String(prev?.startTime || "") !== String(slot?.startTime || "") ||
+        String(prev?.endTime || "") !== String(slot?.endTime || "") ||
+        String(prev?.timeLabel || "") !== String(slot?.timeLabel || "")
+      );
+    });
+  }, []);
+
+  const patchChurchLiveControlGuestCenterSlots = useCallback(
+    async (action: GuestClaimCenterRoomMutationAction, slotsToPatch: any[]) => {
+      const result = await mutateChurchLiveControlGuestCenterRoomSchedule({
+        action,
+        headers: guestClaimHeaders,
+        churchId: guestCenterChurchId,
+        userId: String(session?.userId || "").trim(),
+        slotsToPatch,
+        reloadOpts: guestCenterRoomMutationInput.reloadChurchLiveControlOpts,
+      });
+
+      if (result.ok) {
+        setChurchLiveControlRoomSchedule(result.schedule);
+        setGuestClockNow(Date.now());
+      }
+
+      return result;
+    },
+    [
+      guestClaimHeaders,
+      guestCenterChurchId,
+      guestCenterRoomMutationInput.reloadChurchLiveControlOpts,
+      session?.userId,
+    ]
+  );
+
+  useEffect(() => {
+    if (!isFocused || !guestCenterChurchId || !isChurchLiveControlGuestCenter) return;
+    return subscribeChurchLiveControlRoomSync(() => {
+      void reloadChurchLiveControlRoomSchedule();
+      setGuestClockNow(Date.now());
+    });
+  }, [
+    isFocused,
+    guestCenterChurchId,
+    isChurchLiveControlGuestCenter,
+    reloadChurchLiveControlRoomSchedule,
+  ]);
+
+  useEffect(() => {
+    if (!isFocused || !guestCenterChurchId || !isChurchLiveControlGuestCenter) return;
+    const timer = setInterval(() => {
+      void reloadChurchLiveControlRoomSchedule();
+    }, CHURCH_LIVE_CONTROL_ROOM_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [isFocused, guestCenterChurchId, isChurchLiveControlGuestCenter, reloadChurchLiveControlRoomSchedule]);
 
   useEffect(() => {
     const activeSchedule = guestCenterCanonical.schedule;
@@ -1858,6 +1966,7 @@ export default function MediaStudioScreen() {
                 setBackendFeedItems,
                 setHomeFeedItems,
                 setGuestClaimSlots,
+                ...guestCenterRoomMutationInput,
               });
 
               if (!result.ok) {
@@ -1865,6 +1974,9 @@ export default function MediaStudioScreen() {
                 return;
               }
 
+              if (isChurchLiveControlGuestCenter) {
+                setChurchLiveControlRoomSchedule(null);
+              }
               setGuestClaimSlots([]);
               setGuestClockNow(Date.now());
             })();
@@ -1928,6 +2040,7 @@ export default function MediaStudioScreen() {
     guestClaimOpenCount,
     guestCenterCanonical,
     guestClockNow,
+    guestCenterRoomMutationInput,
   ]);
 
   const guestAutoDeleteExpiredRef = useRef("");
@@ -1972,6 +2085,7 @@ export default function MediaStudioScreen() {
       setBackendFeedItems,
       setHomeFeedItems,
       setGuestClaimSlots,
+      ...guestCenterRoomMutationInput,
     }).then((result) => {
       if (Number(result?.removedCount || 0) > 0) {
         setGuestClockNow(Date.now());
@@ -2950,6 +3064,14 @@ export default function MediaStudioScreen() {
       (globalThis as any).__KRISTO_SCHEDULE_CREATE_COOLDOWN_UNTIL__ = scheduleCreateCooldownUntilRef.current;
       finishCreate();
 
+      broadcastChurchLiveControlRoomSync({
+        action: "create",
+        churchId,
+        userId: String(session?.userId || "").trim(),
+        scheduleId,
+        reason: "schedule-create",
+      });
+
       void reloadChurchLiveControlRoomSchedule();
 
       sendAssignmentCards(
@@ -3106,6 +3228,66 @@ export default function MediaStudioScreen() {
   function addGuestClaimTime(slotId: string, minutes: number, sourceFeedId?: string) {
     if (!ensureGuestClaimManagePermission("add-time")) return;
 
+    const action = minutes >= 0 ? "add-time" : "subtract-time";
+    const mutationAction: GuestClaimCenterRoomMutationAction = "adjust_time";
+
+    if (isChurchLiveControlGuestCenter) {
+      const sourceRows = readChurchLiveControlGuestCenterScheduleSlots();
+      const targetSlot = sourceRows.find((slot: any) => String(slot?.id || "") === String(slotId));
+      const currentDuration = Math.max(
+        MIN_GUEST_SLOT_DURATION_MIN,
+        deriveMediaSlotDurationMin(targetSlot) || MIN_GUEST_SLOT_DURATION_MIN
+      );
+
+      if (minutes < 0 && currentDuration + minutes < MIN_GUEST_SLOT_DURATION_MIN) {
+        Alert.alert(
+          "Duration limit",
+          `Slots must stay at least ${MIN_GUEST_SLOT_DURATION_MIN} minutes.`
+        );
+        return;
+      }
+
+      logGuestClaimActionStart(action, slotId, sourceRows, {
+        sourceFeedId: sourceFeedId || null,
+        minutes,
+        selectedSlotId: slotId,
+        canonicalSource: guestCenterCanonical.source,
+      });
+
+      const { slots: updatedSlots, changed } = applyGuestClaimDurationDelta(
+        sourceRows,
+        slotId,
+        minutes,
+        MIN_GUEST_SLOT_DURATION_MIN
+      );
+
+      if (!changed) {
+        logGuestClaimActionResult(action, slotId, sourceRows, sourceRows, "no-op", {
+          sourceFeedId: sourceFeedId || null,
+          minutes,
+          selectedSlotId: slotId,
+        });
+        return;
+      }
+
+      const slotsToPatch = collectChangedGuestCenterScheduleSlots(sourceRows, updatedSlots);
+      void patchChurchLiveControlGuestCenterSlots(mutationAction, slotsToPatch).then((result) => {
+        logGuestClaimActionResult(action, slotId, sourceRows, updatedSlots, {
+          ok: result.ok,
+          error: result.error || null,
+          affectedMessageIds: result.affectedMessageIds,
+        }, {
+          sourceFeedId: sourceFeedId || null,
+          minutes,
+          selectedSlotId: slotId,
+        });
+        if (!result.ok) {
+          Alert.alert("Update failed", result.error || "Could not update slot duration.");
+        }
+      });
+      return;
+    }
+
     const sourceRows = sourceFeedId
       ? readFeedItemScheduleSlots(sourceFeedId, [...feedList(), ...backendFeedItems])
       : guestClaimSlots;
@@ -3123,7 +3305,6 @@ export default function MediaStudioScreen() {
       return;
     }
 
-    const action = minutes >= 0 ? "add-time" : "subtract-time";
     logGuestClaimActionStart(action, slotId, sourceRows, {
       sourceFeedId: sourceFeedId || null,
       minutes,
@@ -3227,6 +3408,7 @@ export default function MediaStudioScreen() {
         setBackendFeedItems,
         setHomeFeedItems,
         setGuestClaimSlots,
+        ...guestCenterRoomMutationInput,
       });
 
       if (!result.ok) {
@@ -3295,6 +3477,7 @@ export default function MediaStudioScreen() {
         setBackendFeedItems,
         setHomeFeedItems,
         setGuestClaimSlots,
+        ...guestCenterRoomMutationInput,
       });
 
       if (!result.ok) {
@@ -3464,12 +3647,62 @@ export default function MediaStudioScreen() {
   function moveGuestSlot(slotId: string, direction: "up" | "down", sourceFeedId?: string) {
     if (!ensureGuestClaimManagePermission("move-slot")) return;
 
+    const action = direction === "up" ? "move-up" : "move-down";
+    const mutationAction: GuestClaimCenterRoomMutationAction =
+      direction === "up" ? "move_up" : "move_down";
+
+    if (isChurchLiveControlGuestCenter) {
+      const sourceRows = readChurchLiveControlGuestCenterScheduleSlots();
+
+      logGuestClaimActionStart(action, slotId, sourceRows, {
+        sourceFeedId: sourceFeedId || null,
+        direction,
+        selectedSlotId: slotId,
+        canonicalSource: guestCenterCanonical.source,
+      });
+
+      const { slots: movedSlots, changed, fromIdx, toIdx, neighborSlotId } =
+        swapGuestClaimSlotTimesWithNeighbor(sourceRows, slotId, direction, guestClockNow);
+
+      if (!changed) {
+        logGuestClaimActionResult(action, slotId, sourceRows, sourceRows, "no-op", {
+          sourceFeedId: sourceFeedId || null,
+          direction,
+          selectedSlotId: slotId,
+          fromIdx,
+          toIdx,
+          neighborSlotId,
+        });
+        return;
+      }
+
+      const slotsToPatch = collectChangedGuestCenterScheduleSlots(sourceRows, movedSlots);
+      void patchChurchLiveControlGuestCenterSlots(mutationAction, slotsToPatch).then((result) => {
+        logGuestClaimActionResult(action, slotId, sourceRows, movedSlots, {
+          ok: result.ok,
+          error: result.error || null,
+          affectedMessageIds: result.affectedMessageIds,
+        }, {
+          sourceFeedId: sourceFeedId || null,
+          direction,
+          selectedSlotId: slotId,
+          fromIdx,
+          toIdx,
+          neighborSlotId,
+        });
+        if (!result.ok) {
+          Alert.alert("Move failed", result.error || "Could not move slot.");
+        }
+      });
+      return;
+    }
+
     const sourceRows = sourceFeedId
       ? readFeedItemScheduleSlots(sourceFeedId, [...feedList(), ...backendFeedItems])
       : guestClaimSlots;
 
-    const action = direction === "up" ? "move-up" : "move-down";
-    logGuestClaimActionStart(action, slotId, sourceRows, {
+    const moveAction = direction === "up" ? "move-up" : "move-down";
+    logGuestClaimActionStart(moveAction, slotId, sourceRows, {
       sourceFeedId: sourceFeedId || null,
       direction,
       selectedSlotId: slotId,
@@ -3479,7 +3712,7 @@ export default function MediaStudioScreen() {
       swapGuestClaimSlotTimesWithNeighbor(sourceRows, slotId, direction, guestClockNow);
 
     if (!changed) {
-      logGuestClaimActionResult(action, slotId, sourceRows, sourceRows, "no-op", {
+      logGuestClaimActionResult(moveAction, slotId, sourceRows, sourceRows, "no-op", {
         sourceFeedId: sourceFeedId || null,
         direction,
         selectedSlotId: slotId,
@@ -3511,7 +3744,7 @@ export default function MediaStudioScreen() {
         }
       )
         .then((res: any) => {
-          logGuestClaimActionResult(action, slotId, sourceRows, movedSlots, {
+          logGuestClaimActionResult(moveAction, slotId, sourceRows, movedSlots, {
             ok: res?.ok !== false,
             status: Number(res?.status || 200),
             error: res?.error || null,
@@ -3526,7 +3759,7 @@ export default function MediaStudioScreen() {
           return runMediaScheduleSilentReload("move-slot", true);
         })
         .catch((e) => {
-          logGuestClaimActionResult(action, slotId, sourceRows, movedSlots, {
+          logGuestClaimActionResult(moveAction, slotId, sourceRows, movedSlots, {
             ok: false,
             error: String(e?.message || e),
           }, {
@@ -3544,7 +3777,7 @@ export default function MediaStudioScreen() {
     }
 
     setGuestClaimSlots(movedSlots);
-    logGuestClaimActionResult(action, slotId, sourceRows, movedSlots, "local-only", {
+    logGuestClaimActionResult(moveAction, slotId, sourceRows, movedSlots, "local-only", {
       direction,
       selectedSlotId: slotId,
       fromIdx,
@@ -4599,8 +4832,18 @@ export default function MediaStudioScreen() {
                   churchId: session?.churchId,
                   role: session?.role,
                 })}
+                guestCenterSource={guestCenterCanonical.source}
+                guestCenterReloadOpts={guestCenterRoomMutationInput.reloadChurchLiveControlOpts}
+                onSetChurchLiveControlRoomSchedule={setChurchLiveControlRoomSchedule}
                 onClose={() => setGuestAssignSlot(null)}
-                onAssigned={() => void runMediaScheduleSilentReload("assign-slot", true)}
+                onAssigned={() => {
+                  if (isChurchLiveControlGuestCenter) {
+                    void reloadChurchLiveControlRoomSchedule();
+                    setGuestClockNow(Date.now());
+                    return;
+                  }
+                  void runMediaScheduleSilentReload("assign-slot", true);
+                }}
               />
             </>
           ) : !isEditingMedia && hasMediaAccount ? (

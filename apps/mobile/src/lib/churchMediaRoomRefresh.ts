@@ -10,6 +10,7 @@ import {
   peekLiveControlMembersCache,
   peekMcHostsCache,
   peekRoomMessagesCache,
+  resolveRoomMessagesRefreshMs,
   roomMessagesRawSignature,
   saveLiveControlMembersCache,
   saveMcHostsCache,
@@ -113,15 +114,17 @@ export async function refreshRoomMessagesIfNeeded(args: {
     return { skipped: true, reason: "cache-hit", rawRows: [] };
   }
 
-  const { hasRoomMessagesForcePollAfterDelete, consumeRoomMessagesForcePollAfterDelete } =
+  const { hasRoomMessagesForcePoll, consumeRoomMessagesForcePoll } =
     await import("@/src/lib/roomMessagesDeletePoll");
-  const forceAfterDelete = hasRoomMessagesForcePollAfterDelete(roomId);
-  const force = !!args.force || forceAfterDelete;
+  const forceAfterMutation = hasRoomMessagesForcePoll(roomId);
+  const force = !!args.force || forceAfterMutation;
 
-  if (forceAfterDelete) {
-    consumeRoomMessagesForcePollAfterDelete(roomId);
-    console.log("KRISTO_ROOM_MESSAGES_POLL_FORCE_AFTER_DELETE", { roomId });
+  if (forceAfterMutation) {
+    consumeRoomMessagesForcePoll(roomId);
+    console.log("KRISTO_ROOM_MESSAGES_POLL_FORCE_AFTER_MUTATION", { roomId, source: args.source });
   }
+
+  const refreshMs = resolveRoomMessagesRefreshMs(roomId);
 
   if (!force && args.cacheFresh) {
     const peek = peekRoomMessagesCache(churchId, userId, roomId);
@@ -143,7 +146,7 @@ export async function refreshRoomMessagesIfNeeded(args: {
 
   const cached = peekRoomMessagesCache(churchId, userId, roomId);
   const since = Date.now() - Number(roomMessagesLastAt.get(key) || cached?.updatedAt || 0);
-  if (!force && cached && (since < CHURCH_MEDIA_ROOM_REFRESH_MS || args.cacheFresh)) {
+  if (!force && cached && (since < refreshMs || args.cacheFresh)) {
     logMediaRoomCacheHit("/api/church/room-messages", { roomId, sinceLastMs: since, source: args.source });
     logMediaRoomRefreshSkipped("/api/church/room-messages", "recent", { roomId, sinceLastMs: since, source: args.source });
     return { skipped: true, reason: "recent", rawRows: cached.rawRows as any[] };
@@ -155,7 +158,7 @@ export async function refreshRoomMessagesIfNeeded(args: {
       { headers: args.headers },
       {
         screen: "ChurchMediaRoomRefresh",
-        throttleMs: force ? 0 : CHURCH_MEDIA_ROOM_REFRESH_MS,
+        throttleMs: force ? 0 : refreshMs,
       }
     );
 

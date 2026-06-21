@@ -2,6 +2,15 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { isScreenCacheFresh } from "@/src/lib/screenDataCacheFresh";
 
 export const CHURCH_MEDIA_ROOM_REFRESH_MS = 75000;
+/** Church Live Control schedule cards — poll often enough to feel realtime. */
+export const CHURCH_LIVE_CONTROL_ROOM_REFRESH_MS = 4000;
+
+export function resolveRoomMessagesRefreshMs(roomId: string) {
+  const rid = String(roomId || "").trim();
+  return rid === "church-media-room"
+    ? CHURCH_LIVE_CONTROL_ROOM_REFRESH_MS
+    : CHURCH_MEDIA_ROOM_REFRESH_MS;
+}
 
 const ROOM_MESSAGES_PREFIX = "kristo_media_room_messages_v1:";
 const LIVE_CONTROL_PREFIX = "kristo_media_room_live_control_v1:";
@@ -57,10 +66,13 @@ export function isChurchMediaRoomCacheFresh(updatedAt?: number) {
 
 export function roomMessagesRawSignature(rows: any[]) {
   return (Array.isArray(rows) ? rows : [])
-    .map(
-      (r) =>
-        `${String(r?.id || "")}|${String(r?.createdAt || "")}|${String(r?.kind || "")}|${String(r?.text || "").slice(0, 40)}`
-    )
+    .map((r) => {
+      const card = r?.card && typeof r.card === "object" ? r.card : null;
+      const cardMeta = card
+        ? `${String(card?.cardId || card?.id || "")}|${String(card?.claimedByUserId || "")}|${String(card?.status || "")}|${Number(card?.slotNumber || card?.order || 0)}|${String(card?.startTime || "")}|${String(card?.endTime || "")}`
+        : "";
+      return `${String(r?.id || "")}|${String(r?.createdAt || "")}|${String(r?.kind || "")}|${String(r?.text || "").slice(0, 40)}|${cardMeta}`;
+    })
     .sort()
     .join("\n");
 }
