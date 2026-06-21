@@ -20,7 +20,8 @@ import { useLocalSearchParams, usePathname, useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
-import { AndroidAudioTypePresets, AudioSession, LiveKitRoom, useIOSAudioManagement, useRoomContext } from "@livekit/react-native";
+import { AndroidAudioTypePresets, AudioSession, LiveKitRoom, useRoomContext } from "@livekit/react-native";
+import { RoomAudioRenderer } from "@/src/lib/liveRoomAudioRenderer";
 import { createLocalAudioTrack, createLocalVideoTrack, RoomEvent, Track } from "livekit-client";
 import { MediaStream, RTCView, registerGlobals } from "@livekit/react-native-webrtc";
 import * as Haptics from "expo-haptics";
@@ -1532,7 +1533,16 @@ const headersKey = JSON.stringify(headers || {});
     >
       <KristoLiveKitCleanupGuard />
       <KristoLiveKitConnectionLifecycle roomName={roomName} expectedIdentity={stableIdentity} />
-      <KristoLiveKitNativeRemoteAudio />
+      <RoomAudioRenderer
+        roomName={roomName}
+        currentUserId={String(
+          stableHeaders?.["x-kristo-user-id"] ||
+            stableHeaders?.["X-Kristo-User-Id"] ||
+            ""
+        ).trim()}
+        isPublisherStage={!!canPublish || canPublishMic}
+        canUseLiveMic={canPublishMic}
+      />
       <KristoViewerJoinRetryWatch
         enabled={!canPublish}
         roomName={roomName}
@@ -1701,68 +1711,6 @@ function KristoViewerJoinRetryWatch({
 }
 
 
-function KristoLiveKitNativeRemoteAudio() {
-  const room = useRoomContext();
-
-  useIOSAudioManagement(room as any, true);
-
-  useEffect(() => {
-    if (!room) return;
-
-    AudioSession.configureAudio({
-      android: {
-        audioTypeOptions: AndroidAudioTypePresets.communication,
-      },
-    }).catch((e: any) => {
-      console.log("KRISTO_AUDIO_SESSION_CONFIGURE_ERROR", String(e?.message || e));
-    });
-
-    AudioSession.setDefaultRemoteAudioTrackVolume(1).catch((e: any) => {
-      console.log("KRISTO_AUDIO_DEFAULT_REMOTE_VOLUME_ERROR", String(e?.message || e));
-    });
-
-    AudioSession.startAudioSession().catch((e: any) => {
-      console.log("KRISTO_AUDIO_SESSION_START_ERROR", String(e?.message || e));
-    });
-
-    console.log("KRISTO_NATIVE_REMOTE_AUDIO_READY");
-  }, [room]);
-
-  useEffect(() => {
-    if (!room) return;
-
-    const primeRemoteAudio = (track: any) => {
-      if (String(track?.kind || "").toLowerCase() !== "audio") return;
-      try {
-        track?.setVolume?.(1);
-        if (track?.mediaStreamTrack) track.mediaStreamTrack.enabled = true;
-      } catch (e: any) {
-        console.log("KRISTO_NATIVE_REMOTE_AUDIO_PRIME_ERROR", String(e?.message || e));
-      }
-    };
-
-    const onTrackSubscribed = (track: any) => primeRemoteAudio(track);
-
-    const primeExistingRemoteAudio = () => {
-      room.remoteParticipants.forEach((participant: any) => {
-        participant.trackPublications.forEach((pub: any) => {
-          if (pub?.track) primeRemoteAudio(pub.track);
-        });
-      });
-    };
-
-    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
-    room.on(RoomEvent.Connected, primeExistingRemoteAudio);
-
-    return () => {
-      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
-      room.off(RoomEvent.Connected, primeExistingRemoteAudio);
-    };
-  }, [room]);
-
-  return null;
-}
-
 function KristoLiveKitCleanupGuard() {
   const room = useRoomContext();
 
@@ -1808,6 +1756,12 @@ function KristoRemoteRoomVideo({
       const stream = new MediaStream();
       videoTrack.enabled = true;
       stream.addTrack(videoTrack as any);
+
+      const audioTrack: any = remoteAudioTrack?.mediaStreamTrack;
+      if (audioTrack) {
+        audioTrack.enabled = true;
+        stream.addTrack(audioTrack as any);
+      }
 
       const url = stream.toURL();
 
