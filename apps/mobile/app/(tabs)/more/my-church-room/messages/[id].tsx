@@ -99,6 +99,7 @@ import {
   isScheduleSlotExpired,
   parseSlotEndMs,
   parseSlotStartMs,
+  resolveScheduleSlotVisualState,
 } from "@/src/lib/scheduleSlotUtils";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
@@ -2263,7 +2264,27 @@ function Bubble({
 
     if (isChurchLiveControlRoom && churchLiveControlScheduleModel) {
       const { item, activeSlot, slotFeedIndex, slotFeedTotal } = churchLiveControlScheduleModel;
-      const cardHeight = Math.min(520, Math.round(Dimensions.get("window").height * 0.62));
+      const cardNowMs = Number(liveScheduleNowMs || Date.now());
+
+      console.log("KRISTO_CHURCH_LIVE_CONTROL_CARD_RENDER", {
+        roomMessageId: String(m.id || ""),
+        slotId: String(activeSlot?.id || ""),
+        mappedSlotCount: slotFeedTotal,
+        slotFeedIndex,
+        slotVisualExpired: resolveScheduleSlotVisualState(activeSlot, slotFeedIndex, cardNowMs, {
+          slotId: String(activeSlot?.id || ""),
+        })?.expired,
+        renderPayload: {
+          itemId: String(item?.id || ""),
+          slotTitle: String(activeSlot?.name || activeSlot?.title || ""),
+          startMs: Number(activeSlot?.startMs || 0) || null,
+          endMs: Number(activeSlot?.endMs || 0) || null,
+          startTime: String(activeSlot?.startTime || ""),
+          endTime: String(activeSlot?.endTime || ""),
+          meetingDate: String(activeSlot?.meetingDate || ""),
+          durationMin: Number(activeSlot?.durationMin || 0),
+        },
+      });
 
       return (
         <Pressable
@@ -2272,19 +2293,16 @@ function Bubble({
           delayLongPress={280}
           style={[s.churchLiveScheduleCardWrap, highlightStyle]}
         >
-          <View style={[s.churchLiveScheduleCardShell, { height: cardHeight }]}>
-            <LinearGradient
-              colors={["#030508", "#0A0F18", "#050810"]}
-              style={StyleSheet.absoluteFillObject}
-            />
+          <View style={s.churchLiveScheduleCardShell}>
             <HomeLiveScheduleCard
               item={item}
               activeSlot={activeSlot}
               slotFeedIndex={slotFeedIndex}
               slotFeedTotal={slotFeedTotal}
-              nowMs={Number(liveScheduleNowMs || Date.now())}
+              nowMs={cardNowMs}
               isActive
               fullBleed
+              embeddedInRoom
               disableSlotCarousel
               profileName={profileName}
               profileAvatarUri={profileAvatarUri}
@@ -3312,9 +3330,22 @@ export default function MessageThreadScreen() {
             churchName: String(
               auth?.churchName || auth?.churchLabel || title || "My Church"
             ).trim(),
+            mediaName: String(sub || assignmentTitleParam || "Church Media").trim(),
+            nowMs: liveCountdownNow,
           })
         : {},
-    [isChurchLiveControlRoom, visibleMessages, backendRoomId, churchId, auth?.churchName, auth?.churchLabel, title]
+    [
+      isChurchLiveControlRoom,
+      visibleMessages,
+      backendRoomId,
+      churchId,
+      auth?.churchName,
+      auth?.churchLabel,
+      title,
+      sub,
+      assignmentTitleParam,
+      liveCountdownNow,
+    ]
   );
 
   const liveScheduleProfileName = String(
@@ -12739,15 +12770,15 @@ videoEditorSplitTimelineBadgeText: {
   churchLiveScheduleCardWrap: {
     alignSelf: "stretch",
     width: "100%",
-    marginBottom: 18,
+    marginTop: 4,
+    marginBottom: 10,
+    overflow: "visible",
   } as ViewStyle,
 
   churchLiveScheduleCardShell: {
     width: "100%",
-    overflow: "hidden",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    alignSelf: "stretch",
+    overflow: "visible",
   } as ViewStyle,
 
   assignmentTimelineWrap: {

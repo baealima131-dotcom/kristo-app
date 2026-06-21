@@ -659,6 +659,8 @@ export type HomeLiveScheduleCardProps = {
   onSkipSlots?: () => void;
   /** Home Feed expanded slot cards — scroll feed instead of in-card carousel. */
   disableSlotCarousel?: boolean;
+  /** Church Live Control room embedding — tighter layout, single live CTA. */
+  embeddedInRoom?: boolean;
   onOpenLiveRoom?: () => void;
   /** Room-message schedules (e.g. Church Live Control) claim via room PATCH instead of feed POST. */
   onClaimPress?: () => void;
@@ -687,6 +689,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   profileAvatarUri,
   onSkipSlots,
   disableSlotCarousel = false,
+  embeddedInRoom = false,
   onOpenLiveRoom,
   onClaimPress,
   onOptimisticClaim,
@@ -1111,6 +1114,18 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const showEnterLivePrimary =
     (canEnterLiveRoom || canEnterLiveRoomAsAudience) && !isClaimInFlight;
   const showSecondaryClaim = claimed && phase !== "ended";
+  const hostSectionHasEnterLiveCta =
+    showSecondaryClaim &&
+    ((claimedByMe && canEnterLiveRoom) ||
+      (claimedByOther && isLiveWindow && canEnterLiveRoomAsAudience));
+  const showFooterEnterLivePrimary =
+    showEnterLivePrimary && !(embeddedInRoom && hostSectionHasEnterLiveCta);
+  const showFooterSocialRail = Boolean(onLike || onComment || onShare || onToggleSave);
+  const showFooterSection =
+    showFooterEnterLivePrimary ||
+    showPrimaryClaim ||
+    phase === "ended" ||
+    showFooterSocialRail;
   const compactOpenCard = !claimed && phase !== "ended";
   const edgeTint = phaseEdgeTint(phase, claimed, isUnclaimedLiveOpen);
 
@@ -1529,15 +1544,19 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       style={[
         styles.frame,
         fullBleed && styles.frameFullBleed,
-        fullBleed && compactOpenCard && styles.frameFullBleedCompact,
-        fullBleed && compactUnclaimedLayout && styles.frameFullBleedUnclaimed,
-        fullBleed && claimedCompactLayout && styles.frameFullBleedClaimedLive,
+        !embeddedInRoom && fullBleed && compactOpenCard && styles.frameFullBleedCompact,
+        !embeddedInRoom && fullBleed && compactUnclaimedLayout && styles.frameFullBleedUnclaimed,
+        !embeddedInRoom && fullBleed && claimedCompactLayout && styles.frameFullBleedClaimedLive,
+        embeddedInRoom && fullBleed && styles.frameFullBleedEmbedded,
+        embeddedInRoom && fullBleed && compactUnclaimedLayout && styles.frameFullBleedEmbeddedUnclaimed,
+        embeddedInRoom && fullBleed && claimedCompactLayout && styles.frameFullBleedEmbeddedClaimed,
       ]}
     >
       <View
         style={[
           styles.card,
-          fullBleed && (compactOpenCard ? styles.cardCompact : styles.cardTall),
+          fullBleed &&
+            (embeddedInRoom || compactOpenCard ? styles.cardCompact : styles.cardTall),
           claimedCompactLayout && styles.cardClaimedLive,
           compactUnclaimedLayout && styles.cardVipUnclaimed,
           { borderColor: visualTheme.border, shadowColor: visualTheme.glow },
@@ -1629,6 +1648,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             styles.cardInner,
             compactOpenCard && styles.cardInnerCompact,
             claimedCompactLayout && styles.cardInnerClaimedLive,
+            embeddedInRoom && styles.cardInnerEmbedded,
+            embeddedInRoom && compactUnclaimedLayout && styles.cardInnerEmbeddedUnclaimed,
+            embeddedInRoom && claimedCompactLayout && styles.cardInnerEmbeddedClaimed,
           ]}
         >
           <View style={[compactOpenCard && styles.cardUpperBlockCompact]}>
@@ -1734,6 +1756,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               styles.bodySection,
               compactUnclaimedLayout && styles.bodySectionUnclaimed,
               claimedCompactLayout && styles.bodySectionClaimedLive,
+              embeddedInRoom && claimedCompactLayout && styles.bodySectionEmbeddedClaimed,
             ]}
           >
             <View
@@ -1888,6 +1911,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                 styles.progressSection,
                 compactUnclaimedLayout && styles.progressSectionUnclaimed,
                 claimedCompactLayout && styles.progressSectionClaimedLive,
+                embeddedInRoom && claimedCompactLayout && styles.progressSectionEmbeddedClaimed,
               ]}
             >
               {compactUnclaimedLayout ? (
@@ -1953,11 +1977,21 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             </View>
 
             {claimed ? (
-              <View style={[styles.hostSectionWrap, claimedCompactLayout && styles.hostSectionWrapClaimedLive]}>
+              <View
+                style={[
+                  styles.hostSectionWrap,
+                  claimedCompactLayout && styles.hostSectionWrapClaimedLive,
+                  embeddedInRoom && claimedCompactLayout && styles.hostSectionWrapEmbeddedClaimed,
+                ]}
+              >
                 <View pointerEvents="none" style={[styles.hostSectionGlow, { backgroundColor: theme.glow }]} />
                 <Animated.View
                   entering={FadeInDown.duration(240)}
-                  style={[styles.hostSection, claimedCompactLayout && styles.hostSectionClaimedLive]}
+                  style={[
+                    styles.hostSection,
+                    claimedCompactLayout && styles.hostSectionClaimedLive,
+                    embeddedInRoom && claimedCompactLayout && styles.hostSectionEmbeddedClaimed,
+                  ]}
                 >
                 <LinearGradient
                   pointerEvents="none"
@@ -2030,6 +2064,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     style={[
                       styles.hostEnterButton,
                       claimedCompactLayout && styles.hostEnterButtonClaimedLive,
+                      embeddedInRoom && claimedCompactLayout && styles.hostEnterButtonEmbeddedClaimed,
                       claimBtnStyle,
                       { borderColor: theme.border, shadowColor: theme.glow },
                     ]}
@@ -2041,6 +2076,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                       style={[
                         styles.hostEnterButtonGradient,
                         claimedCompactLayout && styles.hostEnterButtonGradientClaimedLive,
+                        embeddedInRoom && claimedCompactLayout && styles.hostEnterButtonGradientEmbeddedClaimed,
                       ]}
                     >
                       <EnterLiveButtonGloss />
@@ -2075,14 +2111,17 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           </View>
           </View>
 
+          {showFooterSection ? (
           <View
             style={[
               styles.footerSection,
               compactUnclaimedLayout && styles.footerSectionUnclaimed,
               claimedCompactLayout && styles.footerSectionClaimedLive,
+              embeddedInRoom && styles.footerSectionEmbedded,
+              embeddedInRoom && claimedCompactLayout && styles.footerSectionEmbeddedClaimed,
             ]}
           >
-            {showEnterLivePrimary ? (
+            {showFooterEnterLivePrimary ? (
               <AnimatedPressable
                 onPress={handleClaimPress}
                 style={[
@@ -2181,6 +2220,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
               blendUnclaimed={compactUnclaimedLayout}
             />
           </View>
+          ) : null}
         </View>
       </View>
     </Animated.View>
@@ -2214,6 +2254,19 @@ const styles = StyleSheet.create({
   frameFullBleedClaimedLive: {
     paddingTop: 34,
     paddingBottom: 14,
+  },
+  frameFullBleedEmbedded: {
+    marginHorizontal: 0,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  frameFullBleedEmbeddedUnclaimed: {
+    paddingTop: 12,
+    paddingBottom: 10,
+  },
+  frameFullBleedEmbeddedClaimed: {
+    paddingTop: 6,
+    paddingBottom: 4,
   },
   card: {
     borderRadius: 30,
@@ -2328,6 +2381,17 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
     paddingTop: 18,
     paddingBottom: 12,
+  },
+  cardInnerEmbedded: {
+    paddingHorizontal: 16,
+  },
+  cardInnerEmbeddedUnclaimed: {
+    paddingTop: 16,
+    paddingBottom: 12,
+  },
+  cardInnerEmbeddedClaimed: {
+    paddingTop: 12,
+    paddingBottom: 8,
   },
   cardUpperBlockCompact: {
     flexShrink: 0,
@@ -2658,6 +2722,9 @@ const styles = StyleSheet.create({
     flex: 0,
     paddingTop: 0,
   },
+  bodySectionEmbeddedClaimed: {
+    paddingTop: 0,
+  },
   stateRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2857,6 +2924,9 @@ const styles = StyleSheet.create({
   progressSectionClaimedLive: {
     marginBottom: 8,
   },
+  progressSectionEmbeddedClaimed: {
+    marginBottom: 4,
+  },
   progressCluster: {
     width: "100%",
   },
@@ -2962,6 +3032,9 @@ const styles = StyleSheet.create({
   hostSectionWrapClaimedLive: {
     marginTop: 2,
   },
+  hostSectionWrapEmbeddedClaimed: {
+    marginTop: 0,
+  },
   hostSectionGlow: {
     position: "absolute",
     top: 8,
@@ -2995,6 +3068,15 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     elevation: 8,
+  },
+  hostSectionEmbeddedClaimed: {
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
   hostSectionTopSheen: {
     position: "absolute",
@@ -3097,6 +3179,16 @@ const styles = StyleSheet.create({
     marginTop: 8,
     gap: 8,
     paddingBottom: 2,
+  },
+  footerSectionEmbedded: {
+    marginTop: 4,
+    gap: 6,
+    paddingBottom: 0,
+  },
+  footerSectionEmbeddedClaimed: {
+    marginTop: 0,
+    gap: 0,
+    paddingBottom: 0,
   },
   claimBtnPrimaryWrap: {
     position: "relative",
@@ -3250,6 +3342,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 14,
   },
+  hostEnterButtonEmbeddedClaimed: {
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 10,
+  },
   hostEnterButtonGradient: {
     minHeight: 58,
     flexDirection: "row",
@@ -3263,6 +3360,11 @@ const styles = StyleSheet.create({
     minHeight: 52,
     gap: 8,
     paddingHorizontal: 16,
+  },
+  hostEnterButtonGradientEmbeddedClaimed: {
+    minHeight: 46,
+    gap: 6,
+    paddingHorizontal: 14,
   },
   hostEnterButtonTopSheen: {
     position: "absolute",

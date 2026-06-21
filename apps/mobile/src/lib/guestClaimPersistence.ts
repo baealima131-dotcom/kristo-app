@@ -133,6 +133,7 @@ export function isGuestScheduleSlotExpired(slot: any, nowMs = Date.now()) {
 export type GuestCenterCanonicalResult = {
   schedule: any | null;
   source:
+    | "church-live-control-room"
     | "ring-live"
     | "ring-merged"
     | "backend-merged"
@@ -159,10 +160,14 @@ export function isGuestCenterScheduleRow(item: any): boolean {
   if (!slots.length) return false;
 
   const id = String(item?.id || item?.sourceScheduleId || "").trim();
-  if (id.startsWith("feed_") || id.startsWith("media-schedule-")) return true;
+  if (id.startsWith("feed_") || id.startsWith("media-schedule-") || id.startsWith("media-live-")) {
+    return true;
+  }
 
   const source = String(item?.source || "").toLowerCase();
   const scheduleType = String(item?.scheduleType || "").toLowerCase();
+  const roomKind = String(item?.roomKind || "").toLowerCase();
+  if (source === "church-live-control" || roomKind.includes("church-live-control")) return true;
   return source.includes("media-schedule") || scheduleType.includes("media-live-slots");
 }
 
@@ -236,11 +241,42 @@ export function resolveGuestCenterCanonicalSchedule(input: {
   targetChurchId?: string;
   viewerUserId?: string;
   nowMs?: number;
+  churchLiveControlRoomSchedule?: any | null;
 }): GuestCenterCanonicalResult {
   const viewerChurchId = String(input.churchId || "").trim();
   const targetChurchId = String(input.targetChurchId || input.churchId || "").trim();
   const churchIds = Array.from(new Set([targetChurchId, viewerChurchId].filter(Boolean)));
   const nowMs = Number(input.nowMs || Date.now());
+
+  const roomSchedule = input.churchLiveControlRoomSchedule;
+  if (roomSchedule && isGuestCenterScheduleRow(roomSchedule)) {
+    const displaySlots = filterGuestCenterDisplaySlots(
+      Array.isArray(roomSchedule?.scheduleSlots) ? roomSchedule.scheduleSlots : []
+    );
+    if (displaySlots.length) {
+      const schedule = { ...roomSchedule, scheduleSlots: displaySlots };
+      const feedId = String(schedule?.sourceScheduleId || schedule?.id || "").trim();
+      console.log("KRISTO_GUEST_CLAIM_CENTER_ROOM_SCHEDULE", {
+        source: "church-live-control-room",
+        feedId,
+        guestClaimCenterSlotCount: displaySlots.length,
+        slotIds: displaySlots.map((slot: any) => String(slot?.id || "")),
+      });
+      return {
+        schedule,
+        source: "church-live-control-room",
+        mergedRowCount: 0,
+        backendSlotCount: 0,
+        mergedSlotCount: displaySlots.length,
+        scheduleChurchId: String(schedule?.churchId || schedule?.sourceChurchId || viewerChurchId),
+        viewerChurchId,
+        targetChurchId,
+        feedId,
+        ringMergedRowCount: 0,
+      };
+    }
+  }
+
   const backendFeedItems = filterOutDeletedScheduleRows(
     Array.isArray(input.backendFeedItems) ? input.backendFeedItems : []
   );

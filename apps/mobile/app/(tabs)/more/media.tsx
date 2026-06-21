@@ -50,6 +50,7 @@ import {
   CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
   CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
   findActiveChurchLiveControlScheduleFromRoom,
+  loadChurchLiveControlGuestCenterScheduleRow,
 } from "../../../src/lib/churchLiveControlSchedule";
 import { GuestClaimAssignModal } from "../../../src/components/media/GuestClaimAssignModal";
 import { MIN_GUEST_SLOT_DURATION_MIN, normalizeGuestClaimSlot } from "../../../src/lib/guestClaimCenterUtils";
@@ -638,6 +639,9 @@ export default function MediaStudioScreen() {
 
   const mediaBootstrapKeyRef = useRef("");
   const [guestClockNow, setGuestClockNow] = useState(() => Date.now());
+  const [churchLiveControlRoomSchedule, setChurchLiveControlRoomSchedule] = useState<any | null>(
+    null
+  );
   const [guestAssignSlot, setGuestAssignSlot] = useState<any>(null);
   const [backendMedia, setBackendMedia] = useState<any>(mediaSessionPeek?.backendMedia ?? null);
   const [backendMediaConfirmed, setBackendMediaConfirmed] = useState(
@@ -1148,6 +1152,46 @@ export default function MediaStudioScreen() {
     [churchMediaProfile, backendMedia?.churchId, session?.churchId]
   );
 
+  const reloadChurchLiveControlRoomSchedule = useCallback(async () => {
+    if (!guestCenterChurchId) {
+      setChurchLiveControlRoomSchedule(null);
+      return null;
+    }
+
+    const schedule = await loadChurchLiveControlGuestCenterScheduleRow(
+      getKristoHeaders({
+        userId: session?.userId || "",
+        role: (session?.role || "Member") as any,
+        churchId: guestCenterChurchId,
+      }) as Record<string, string>,
+      {
+        churchId: guestCenterChurchId,
+        churchName: String(
+          (session as any)?.churchName ||
+            (session as any)?.churchLabel ||
+            "My Church"
+        ).trim(),
+        mediaName: String(churchMediaProfile?.mediaName || "Church Media").trim(),
+        nowMs: guestClockNow,
+      }
+    );
+
+    setChurchLiveControlRoomSchedule(schedule);
+    return schedule;
+  }, [
+    guestCenterChurchId,
+    guestClockNow,
+    session?.userId,
+    session?.role,
+    session,
+    churchMediaProfile?.mediaName,
+  ]);
+
+  useEffect(() => {
+    if (!isFocused || !guestCenterChurchId) return;
+    void reloadChurchLiveControlRoomSchedule();
+  }, [isFocused, guestCenterChurchId, guestClockNow, reloadChurchLiveControlRoomSchedule]);
+
   const guestCenterCanonical = useMemo(() => {
     if (!guestCenterChurchId) {
       return {
@@ -1165,6 +1209,7 @@ export default function MediaStudioScreen() {
       targetChurchId: guestCenterChurchId,
       viewerUserId: String(session?.userId || "").trim(),
       nowMs: guestClockNow,
+      churchLiveControlRoomSchedule,
     });
   }, [
     homeFeedItems,
@@ -1173,6 +1218,7 @@ export default function MediaStudioScreen() {
     session?.churchId,
     session?.userId,
     guestClockNow,
+    churchLiveControlRoomSchedule,
   ]);
 
   function showSubscriptionRequired() {
@@ -1746,6 +1792,9 @@ export default function MediaStudioScreen() {
         ? activeSchedule.scheduleSlots.length
         : 0,
       guestClaimSlotCount: syncedGuestClaimSlots.length,
+      churchLiveControlRoomSlotCount: Array.isArray(churchLiveControlRoomSchedule?.scheduleSlots)
+        ? churchLiveControlRoomSchedule.scheduleSlots.length
+        : 0,
       canonicalSource: guestCenterCanonical.source,
       mergedSlotCount: guestCenterCanonical.mergedSlotCount,
     });
@@ -1756,6 +1805,7 @@ export default function MediaStudioScreen() {
     session?.churchId,
     guestCenterCanonical,
     syncedGuestClaimSlots.length,
+    churchLiveControlRoomSchedule,
   ]);
 
   const guestClaimTotalMinutes = syncedGuestClaimSlots.reduce((sum, slot) => sum + slot.durationMin, 0);
@@ -2899,6 +2949,8 @@ export default function MediaStudioScreen() {
       scheduleCreateCooldownUntilRef.current = Date.now() + 12000;
       (globalThis as any).__KRISTO_SCHEDULE_CREATE_COOLDOWN_UNTIL__ = scheduleCreateCooldownUntilRef.current;
       finishCreate();
+
+      void reloadChurchLiveControlRoomSchedule();
 
       sendAssignmentCards(
         CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,

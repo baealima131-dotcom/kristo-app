@@ -4,7 +4,11 @@
  */
 
 import { apiGet } from "@/src/lib/kristoApi";
-import { isScheduleSlotExpired } from "@/src/lib/scheduleSlotUtils";
+import { materializeMediaSlotTimeFields } from "@/src/lib/mediaScheduleSlotTimes";
+import {
+  isScheduleSlotExpired,
+  resolveScheduleSlotVisualState,
+} from "@/src/lib/scheduleSlotUtils";
 
 export const CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID = "church-media-room";
 
@@ -220,14 +224,72 @@ export type ChurchLiveControlHomeFeedScheduleModel = {
   slotFeedTotal: number;
 };
 
+function normalizeChurchLiveControlRoomScheduleSlot(
+  card: any,
+  message: { id?: string },
+  slotNumber: number
+) {
+  const scheduleId = String(
+    card?.sourceScheduleId || card?.sourceFeedId || message.id || ""
+  ).trim();
+  const slotId = String(
+    card?.cardId || card?.id || message.id || `slot-${slotNumber}`
+  ).trim();
+  const durationMin = Math.max(1, Number(card?.durationMin || card?.minutes || 10));
+
+  const rawSlot = {
+    id: slotId,
+    cardId: slotId,
+    name: String(card?.title || card?.task || `Slot ${slotNumber}`),
+    title: String(card?.title || ""),
+    slotLabel: String(card?.slotLabel || `Slot ${slotNumber}`),
+    slotNumber,
+    slot: slotNumber,
+    order: slotNumber,
+    role: String(card?.roleLabel || card?.roleKey || card?.subtitle || ""),
+    task: String(card?.task || card?.title || ""),
+    parentTopic: String(card?.parentTopic || card?.topic || card?.subtitle || ""),
+    slotTopic: String(card?.slotTopic || card?.topic || ""),
+    scheduleTopic: String(card?.scheduleTopic || card?.topic || ""),
+    meetingDate: String(card?.meetingDate || ""),
+    meetingDay: String(card?.meetingDay || card?.meetingDate || ""),
+    meetingEndDate: String(card?.meetingEndDate || ""),
+    startTime: String(card?.startTime || ""),
+    endTime: String(card?.endTime || ""),
+    timeLabel: String(card?.timeLabel || ""),
+    durationMin,
+    durationMinutes: durationMin,
+    startMs: Number(card?.startMs || 0) || undefined,
+    endMs: Number(card?.endMs || 0) || undefined,
+    startsAt: String(card?.startsAt || ""),
+    endsAt: String(card?.endsAt || ""),
+    claimedByUserId: String(card?.claimedByUserId || ""),
+    claimedByName: String(card?.claimedByName || ""),
+    claimedByAvatar: String(card?.claimedByAvatar || ""),
+    claimedByRole: String(card?.claimedByRole || ""),
+    claimedAt: String(card?.claimedAt || ""),
+    status: String(card?.status || "open"),
+    source: "church-live-control",
+    roomKind: "church-live-control",
+    sourceFeedId: scheduleId,
+    sourceScheduleId: scheduleId,
+    liveLayout: String(card?.liveLayout || "grid6"),
+    roomMessageId: String(message.id || ""),
+  };
+
+  return materializeMediaSlotTimeFields(rawSlot);
+}
+
 /** Maps a Church Live Control room assignment_card to Live Slots feed-row shape. */
 export function buildHomeFeedRowFromChurchLiveControlRoomMessage(
   message: { id?: string; card?: any },
   opts: {
     churchId?: string;
     churchName?: string;
+    mediaName?: string;
     slotFeedTotal: number;
     slotFeedIndex: number;
+    nowMs?: number;
   }
 ): ChurchLiveControlHomeFeedScheduleModel | null {
   const card = message?.card;
@@ -236,7 +298,7 @@ export function buildHomeFeedRowFromChurchLiveControlRoomMessage(
   const scheduleId = String(
     card.sourceScheduleId || card.sourceFeedId || message.id || ""
   ).trim();
-  const slotId = String(card.cardId || card.id || "").trim();
+  const slotId = String(card.cardId || card.id || message.id || "").trim();
   if (!slotId) return null;
 
   const slotNumber = Math.max(
@@ -244,40 +306,10 @@ export function buildHomeFeedRowFromChurchLiveControlRoomMessage(
     Number(card.slotNumber || card.order || opts.slotFeedIndex + 1)
   );
 
-  const activeSlot = {
-    id: slotId,
-    cardId: slotId,
-    name: String(card.title || card.task || `Slot ${slotNumber}`),
-    title: String(card.title || ""),
-    slotLabel: String(card.slotLabel || `Slot ${slotNumber}`),
-    slotNumber,
-    slot: slotNumber,
-    order: slotNumber,
-    role: String(card.roleLabel || card.roleKey || card.subtitle || ""),
-    task: String(card.task || card.title || ""),
-    parentTopic: String(card.parentTopic || card.topic || card.subtitle || ""),
-    slotTopic: String(card.slotTopic || card.topic || ""),
-    scheduleTopic: String(card.scheduleTopic || card.topic || ""),
-    meetingDate: String(card.meetingDate || ""),
-    meetingDay: String(card.meetingDay || card.meetingDate || ""),
-    startTime: String(card.startTime || ""),
-    endTime: String(card.endTime || ""),
-    timeLabel: String(card.timeLabel || ""),
-    durationMin: Number(card.durationMin || 0),
-    claimedByUserId: String(card.claimedByUserId || ""),
-    claimedByName: String(card.claimedByName || ""),
-    claimedByAvatar: String(card.claimedByAvatar || ""),
-    claimedByRole: String(card.claimedByRole || ""),
-    claimedAt: String(card.claimedAt || ""),
-    status: String(card.status || "open"),
-    source: "church-live-control",
-    roomKind: "church-live-control",
-    sourceFeedId: scheduleId,
-    sourceScheduleId: scheduleId,
-    liveLayout: String(card.liveLayout || "grid6"),
-  };
+  const activeSlot = normalizeChurchLiveControlRoomScheduleSlot(card, message, slotNumber);
 
   const rowId = scheduleId ? `${scheduleId}:slot:${slotId}` : `church-live-control:slot:${slotId}`;
+  const mediaName = String(opts.mediaName || card?.mediaName || "Church Media").trim();
 
   const item = {
     id: rowId,
@@ -296,10 +328,43 @@ export function buildHomeFeedRowFromChurchLiveControlRoomMessage(
     assignmentId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
     churchId: String(opts.churchId || "").trim(),
     churchName: String(opts.churchName || "").trim(),
+    mediaName,
+    actorLabel: mediaName,
+    authorName: mediaName,
     topic: String(card.parentTopic || card.topic || card.subtitle || ""),
     scheduleTopic: String(card.scheduleTopic || card.parentTopic || ""),
     roomMessageId: String(message.id || ""),
   };
+
+  const nowMs = Number(opts.nowMs || Date.now());
+  const slotVisual = resolveScheduleSlotVisualState(activeSlot, opts.slotFeedIndex, nowMs, {
+    slotId,
+  });
+
+  logChurchLiveControlScheduleCardDiagnostics({
+    roomMessageId: String(message.id || ""),
+    slotId,
+    scheduleId,
+    slotNumber,
+    slotFeedIndex: opts.slotFeedIndex,
+    slotFeedTotal: opts.slotFeedTotal,
+    cardStartMs: Number(card?.startMs || 0) || null,
+    cardEndMs: Number(card?.endMs || 0) || null,
+    mappedStartMs: Number(activeSlot?.startMs || 0) || null,
+    mappedEndMs: Number(activeSlot?.endMs || 0) || null,
+    slotVisualPhase: slotVisual?.phase || null,
+    slotVisualExpired: slotVisual?.expired ?? null,
+    renderPayload: {
+      itemId: item.id,
+      slotTitle: String(activeSlot?.name || activeSlot?.title || ""),
+      churchName: item.churchName,
+      mediaName: item.mediaName,
+      startTime: String(activeSlot?.startTime || ""),
+      endTime: String(activeSlot?.endTime || ""),
+      meetingDate: String(activeSlot?.meetingDate || ""),
+      durationMin: Number(activeSlot?.durationMin || 0),
+    },
+  });
 
   return {
     item,
@@ -309,9 +374,150 @@ export function buildHomeFeedRowFromChurchLiveControlRoomMessage(
   };
 }
 
+export function logChurchLiveControlScheduleCardDiagnostics(input: {
+  roomMessageId?: string;
+  slotId?: string;
+  scheduleId?: string;
+  slotNumber?: number;
+  slotFeedIndex?: number;
+  slotFeedTotal?: number;
+  mappedSlotCount?: number;
+  cardStartMs?: number | null;
+  cardEndMs?: number | null;
+  mappedStartMs?: number | null;
+  mappedEndMs?: number | null;
+  slotVisualPhase?: string | null;
+  slotVisualExpired?: boolean | null;
+  renderPayload?: Record<string, unknown>;
+  guestClaimCenterSlotCount?: number;
+}) {
+  console.log("KRISTO_CHURCH_LIVE_CONTROL_SCHEDULE_DIAG", input);
+}
+
+/** Build a feed-shaped schedule row from Church Live Control room messages (Guest Claim Center). */
+export function buildChurchLiveControlGuestCenterScheduleRow(
+  roomMessages: Array<{ id?: string; kind?: string; card?: any; createdAt?: number }>,
+  opts: {
+    churchId?: string;
+    churchName?: string;
+    mediaName?: string;
+    nowMs?: number;
+  } = {}
+): any | null {
+  const scheduleMessages = (Array.isArray(roomMessages) ? roomMessages : []).filter((message) =>
+    isChurchLiveControlScheduleRoomMessage(message, CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID)
+  );
+  if (!scheduleMessages.length) return null;
+
+  const groups = new Map<string, typeof scheduleMessages>();
+  for (const message of scheduleMessages) {
+    const scheduleId = String(
+      message.card?.sourceScheduleId ||
+        message.card?.sourceFeedId ||
+        message.card?.scheduleBatchId ||
+        message.id ||
+        "default"
+    ).trim();
+    if (!groups.has(scheduleId)) groups.set(scheduleId, []);
+    groups.get(scheduleId)!.push(message);
+  }
+
+  let bestScheduleId = "";
+  let bestGroup: typeof scheduleMessages = [];
+  for (const [scheduleId, group] of groups.entries()) {
+    if (group.length > bestGroup.length) {
+      bestGroup = group;
+      bestScheduleId = scheduleId;
+    }
+  }
+  if (!bestGroup.length) return null;
+
+  const sorted = [...bestGroup].sort(
+    (a, b) =>
+      Number(a.card?.slotNumber || a.card?.order || 0) -
+      Number(b.card?.slotNumber || b.card?.order || 0)
+  );
+  const slotFeedTotal = sorted.length;
+  const scheduleSlots = sorted
+    .map((message, slotFeedIndex) =>
+      buildHomeFeedRowFromChurchLiveControlRoomMessage(message, {
+        churchId: opts.churchId,
+        churchName: opts.churchName,
+        mediaName: opts.mediaName,
+        slotFeedTotal,
+        slotFeedIndex,
+        nowMs: opts.nowMs,
+      })?.activeSlot
+    )
+    .filter(Boolean);
+
+  if (!scheduleSlots.length) return null;
+
+  const scheduleId =
+    bestScheduleId ||
+    String(sorted[0]?.card?.sourceScheduleId || sorted[0]?.card?.sourceFeedId || "").trim();
+  const mediaName = String(opts.mediaName || "Church Media").trim();
+
+  const row = {
+    id: scheduleId || `church-live-control-${Date.now()}`,
+    sourceScheduleId: scheduleId,
+    scheduleSlots,
+    source: "church-live-control",
+    scheduleType: "media-live-slots",
+    roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+    roomKind: "church-live-control",
+    assignmentId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+    churchId: String(opts.churchId || "").trim(),
+    churchName: String(opts.churchName || "").trim(),
+    mediaName,
+    actorLabel: mediaName,
+    authorName: mediaName,
+  };
+
+  logChurchLiveControlScheduleCardDiagnostics({
+    scheduleId: row.sourceScheduleId,
+    mappedSlotCount: scheduleSlots.length,
+    guestClaimCenterSlotCount: scheduleSlots.length,
+    renderPayload: {
+      scheduleId: row.sourceScheduleId,
+      slotIds: scheduleSlots.map((slot: any) => String(slot?.id || "")),
+      slotNumbers: scheduleSlots.map((slot: any) => Number(slot?.slotNumber || 0)),
+    },
+  });
+
+  return row;
+}
+
+export async function loadChurchLiveControlGuestCenterScheduleRow(
+  headers?: Record<string, string>,
+  opts: {
+    churchId?: string;
+    churchName?: string;
+    mediaName?: string;
+    nowMs?: number;
+  } = {}
+): Promise<any | null> {
+  try {
+    const res: any = await apiGet(
+      `/api/church/room-messages?roomId=${encodeURIComponent(CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID)}`,
+      { headers: headers as any }
+    );
+    const rows = Array.isArray(res?.data) ? res.data : [];
+    return buildChurchLiveControlGuestCenterScheduleRow(rows, opts);
+  } catch {
+    return null;
+  }
+}
+
 export function buildChurchLiveControlScheduleRenderMap(
   messages: Array<{ id?: string; kind?: string; card?: any }>,
-  opts: { roomId?: string; churchId?: string; churchName?: string } = {}
+  opts: {
+    roomId?: string;
+    churchId?: string;
+    churchName?: string;
+    mediaName?: string;
+    nowMs?: number;
+  } = {}
 ): Record<string, ChurchLiveControlHomeFeedScheduleModel> {
   const roomId = String(opts.roomId || CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID).trim();
   const scheduleMessages = (Array.isArray(messages) ? messages : []).filter((m) =>
@@ -321,7 +527,11 @@ export function buildChurchLiveControlScheduleRenderMap(
   const groups = new Map<string, typeof scheduleMessages>();
   for (const message of scheduleMessages) {
     const scheduleId = String(
-      message.card?.sourceScheduleId || message.card?.sourceFeedId || message.id || "default"
+      message.card?.sourceScheduleId ||
+        message.card?.sourceFeedId ||
+        message.card?.scheduleBatchId ||
+        message.id ||
+        "default"
     ).trim();
     if (!groups.has(scheduleId)) groups.set(scheduleId, []);
     groups.get(scheduleId)!.push(message);
@@ -339,12 +549,23 @@ export function buildChurchLiveControlScheduleRenderMap(
       const built = buildHomeFeedRowFromChurchLiveControlRoomMessage(message, {
         churchId: opts.churchId,
         churchName: opts.churchName,
+        mediaName: opts.mediaName,
         slotFeedTotal,
         slotFeedIndex,
+        nowMs: opts.nowMs,
       });
       if (built && message.id) map[String(message.id)] = built;
     });
   }
+
+  logChurchLiveControlScheduleCardDiagnostics({
+    mappedSlotCount: Object.keys(map).length,
+    slotFeedTotal: scheduleMessages.length,
+    renderPayload: {
+      roomMessageIds: Object.keys(map),
+      slotIds: Object.values(map).map((entry) => String(entry.activeSlot?.id || "")),
+    },
+  });
 
   return map;
 }
