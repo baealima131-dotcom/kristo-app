@@ -20,7 +20,8 @@ import {
 export type EnterLiveRoomSource =
   | "live-slots-card"
   | "home-feed-live-section"
-  | "home-live-schedule-card";
+  | "home-live-schedule-card"
+  | "church-live-control-room-card";
 
 export type ScheduleLiveRoomRouteParams = Record<string, string>;
 

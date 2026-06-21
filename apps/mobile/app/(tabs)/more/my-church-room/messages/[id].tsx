@@ -48,6 +48,12 @@ import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
 import { ensureThread, sendMessage, setThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import { SharedContentCard } from "@/src/components/messages/SharedContentCard";
+import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
+import { enterLiveRoomFromScheduleCard } from "@/src/lib/enterLiveRoomNavigation";
+import {
+  buildChurchLiveControlScheduleRenderMap,
+  type ChurchLiveControlHomeFeedScheduleModel,
+} from "@/src/lib/churchLiveControlSchedule";
 import { queueOpenSharedHomeFeedPost } from "@/src/lib/homeFeedOpenSharedPost";
 import type { SharedContentPayload } from "@/src/lib/messagesStore";
 import {
@@ -2186,6 +2192,12 @@ function Bubble({
   onPreviewImage,
   onOpenSharedPost,
   claimingAssignmentMessageIds,
+  isChurchLiveControlRoom,
+  churchLiveControlScheduleModel,
+  liveScheduleNowMs,
+  profileName,
+  profileAvatarUri,
+  onEnterLiveFromScheduleCard,
 }: {
   m: MsgItem;
   showAvatar?: boolean;
@@ -2204,6 +2216,12 @@ function Bubble({
   onOpenScheduledLive?: (m: MsgItem) => void;
   onPreviewImage?: (uri: string) => void;
   onOpenSharedPost?: (shared: SharedContentPayload) => void;
+  isChurchLiveControlRoom?: boolean;
+  churchLiveControlScheduleModel?: ChurchLiveControlHomeFeedScheduleModel | null;
+  liveScheduleNowMs?: number;
+  profileName?: string;
+  profileAvatarUri?: string;
+  onEnterLiveFromScheduleCard?: (item: any, activeSlot: any) => void;
 }) {
   const mine = m.sender === "me";
   const pastorMessage = isPastorMessage(m, { churchPastorUserId });
@@ -2241,6 +2259,49 @@ function Bubble({
   }
 
   if (m.kind === "assignment_card") {
+    const highlightStyle = selected || actionHighlighted ? s.bubbleSelectedGlow : null;
+
+    if (isChurchLiveControlRoom && churchLiveControlScheduleModel) {
+      const { item, activeSlot, slotFeedIndex, slotFeedTotal } = churchLiveControlScheduleModel;
+      const cardHeight = Math.min(520, Math.round(Dimensions.get("window").height * 0.62));
+
+      return (
+        <Pressable
+          onPress={onPress}
+          onLongPress={onLongPress}
+          delayLongPress={280}
+          style={[s.churchLiveScheduleCardWrap, highlightStyle]}
+        >
+          <View style={[s.churchLiveScheduleCardShell, { height: cardHeight }]}>
+            <LinearGradient
+              colors={["#030508", "#0A0F18", "#050810"]}
+              style={StyleSheet.absoluteFillObject}
+            />
+            <HomeLiveScheduleCard
+              item={item}
+              activeSlot={activeSlot}
+              slotFeedIndex={slotFeedIndex}
+              slotFeedTotal={slotFeedTotal}
+              nowMs={Number(liveScheduleNowMs || Date.now())}
+              isActive
+              fullBleed
+              disableSlotCarousel
+              profileName={profileName}
+              profileAvatarUri={profileAvatarUri}
+              onOpenLiveRoom={() => onEnterLiveFromScheduleCard?.(item, activeSlot)}
+              onClaimPress={
+                canClaimAssignmentCard &&
+                String(m.card?.status || "open").toLowerCase() === "open"
+                  ? () => onClaimAssignmentCard?.(m.id)
+                  : undefined
+              }
+            />
+          </View>
+          <Text style={[t.msgTime, s.assignmentTime]}>{formatTime(m.createdAt)}</Text>
+        </Pressable>
+      );
+    }
+
     const cardIndexMatch = String(m.card?.slotLabel || m.card?.cardId || m.id || "").match(/(\d+)/);
     const cardIndex =
       cardIndexMatch?.[1] ||
@@ -2250,8 +2311,6 @@ function Bubble({
     const isDoneCard = cardStatus === "done";
     const liveMeta = getAssignmentLiveCountdownMeta(m.card);
     const canOpenThisScheduledLive = !!liveMeta.valid && !!liveMeta.canOpenLive;
-
-    const highlightStyle = selected || actionHighlighted ? s.bubbleSelectedGlow : null;
 
     return (
       <Pressable
@@ -3243,6 +3302,42 @@ export default function MessageThreadScreen() {
     if (!isStructuredRoom) return paginated;
     return paginated.filter((m) => !shouldHideExpiredAssignmentCardInRoom(m, liveCountdownNow));
   }, [messages, isStructuredRoom, liveCountdownNow]);
+
+  const churchLiveControlScheduleRenderById = useMemo(
+    () =>
+      isChurchLiveControlRoom
+        ? buildChurchLiveControlScheduleRenderMap(visibleMessages, {
+            roomId: backendRoomId,
+            churchId,
+            churchName: String(
+              auth?.churchName || auth?.churchLabel || title || "My Church"
+            ).trim(),
+          })
+        : {},
+    [isChurchLiveControlRoom, visibleMessages, backendRoomId, churchId, auth?.churchName, auth?.churchLabel, title]
+  );
+
+  const liveScheduleProfileName = String(
+    auth?.displayName || auth?.name || auth?.fullName || "You"
+  ).trim();
+  const liveScheduleProfileAvatarUri = String(
+    auth?.avatarUri || auth?.avatarUrl || auth?.profileImage || ""
+  ).trim();
+
+  const handleEnterLiveFromChurchScheduleCard = useCallback(
+    (item: any, activeSlot: any) => {
+      enterLiveRoomFromScheduleCard({
+        router,
+        item,
+        activeSlot,
+        viewerUserId: effectiveAuthUserId,
+        viewerChurchId: churchId,
+        nowMs: liveCountdownNow,
+        source: "church-live-control-room-card",
+      });
+    },
+    [router, effectiveAuthUserId, churchId, liveCountdownNow]
+  );
   const roomImageGallery = useMemo(() => collectRoomImageGalleryUris(messages), [messages]);
   const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
   const roomMessagesSigRef = useRef("");
@@ -7971,6 +8066,14 @@ const assignmentMembers = useMemo<MinistryPerson[]>(() => {
                 onOpenScheduledLive={openScheduledLiveFromCard}
                 onPreviewImage={openImagePreview}
                 onOpenSharedPost={handleOpenSharedPost}
+                isChurchLiveControlRoom={isChurchLiveControlRoom}
+                churchLiveControlScheduleModel={
+                  churchLiveControlScheduleRenderById[item.id] || null
+                }
+                liveScheduleNowMs={liveCountdownNow}
+                profileName={liveScheduleProfileName}
+                profileAvatarUri={liveScheduleProfileAvatarUri}
+                onEnterLiveFromScheduleCard={handleEnterLiveFromChurchScheduleCard}
               />
             );
           }}
@@ -12631,6 +12734,20 @@ videoEditorSplitTimelineBadgeText: {
   } as ViewStyle,
   messageSelectionDeleteBtnDisabled: {
     opacity: 0.45,
+  } as ViewStyle,
+
+  churchLiveScheduleCardWrap: {
+    alignSelf: "stretch",
+    width: "100%",
+    marginBottom: 18,
+  } as ViewStyle,
+
+  churchLiveScheduleCardShell: {
+    width: "100%",
+    overflow: "hidden",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
   } as ViewStyle,
 
   assignmentTimelineWrap: {

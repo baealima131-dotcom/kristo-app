@@ -196,6 +196,159 @@ export type ChurchLiveControlRoomScheduleSnapshot = {
 };
 
 /** Returns open (non-expired) assignment cards in Church Live Control room. */
+export function isChurchLiveControlScheduleRoomMessage(
+  message: { kind?: string; card?: any },
+  roomId?: string
+): boolean {
+  if (String(message?.kind || "") !== "assignment_card") return false;
+  if (!message?.card || typeof message.card !== "object") return false;
+
+  const rid = String(roomId || "").trim();
+  if (rid && rid !== CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID) return false;
+
+  if (rid === CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID) return true;
+
+  const source = String(message.card?.source || "").toLowerCase();
+  const roomKind = String(message.card?.roomKind || "").toLowerCase();
+  return source === "church-live-control" || roomKind === "church-live-control";
+}
+
+export type ChurchLiveControlHomeFeedScheduleModel = {
+  item: any;
+  activeSlot: any;
+  slotFeedIndex: number;
+  slotFeedTotal: number;
+};
+
+/** Maps a Church Live Control room assignment_card to Live Slots feed-row shape. */
+export function buildHomeFeedRowFromChurchLiveControlRoomMessage(
+  message: { id?: string; card?: any },
+  opts: {
+    churchId?: string;
+    churchName?: string;
+    slotFeedTotal: number;
+    slotFeedIndex: number;
+  }
+): ChurchLiveControlHomeFeedScheduleModel | null {
+  const card = message?.card;
+  if (!card || typeof card !== "object") return null;
+
+  const scheduleId = String(
+    card.sourceScheduleId || card.sourceFeedId || message.id || ""
+  ).trim();
+  const slotId = String(card.cardId || card.id || "").trim();
+  if (!slotId) return null;
+
+  const slotNumber = Math.max(
+    1,
+    Number(card.slotNumber || card.order || opts.slotFeedIndex + 1)
+  );
+
+  const activeSlot = {
+    id: slotId,
+    cardId: slotId,
+    name: String(card.title || card.task || `Slot ${slotNumber}`),
+    title: String(card.title || ""),
+    slotLabel: String(card.slotLabel || `Slot ${slotNumber}`),
+    slotNumber,
+    slot: slotNumber,
+    order: slotNumber,
+    role: String(card.roleLabel || card.roleKey || card.subtitle || ""),
+    task: String(card.task || card.title || ""),
+    parentTopic: String(card.parentTopic || card.topic || card.subtitle || ""),
+    slotTopic: String(card.slotTopic || card.topic || ""),
+    scheduleTopic: String(card.scheduleTopic || card.topic || ""),
+    meetingDate: String(card.meetingDate || ""),
+    meetingDay: String(card.meetingDay || card.meetingDate || ""),
+    startTime: String(card.startTime || ""),
+    endTime: String(card.endTime || ""),
+    timeLabel: String(card.timeLabel || ""),
+    durationMin: Number(card.durationMin || 0),
+    claimedByUserId: String(card.claimedByUserId || ""),
+    claimedByName: String(card.claimedByName || ""),
+    claimedByAvatar: String(card.claimedByAvatar || ""),
+    claimedByRole: String(card.claimedByRole || ""),
+    claimedAt: String(card.claimedAt || ""),
+    status: String(card.status || "open"),
+    source: "church-live-control",
+    roomKind: "church-live-control",
+    sourceFeedId: scheduleId,
+    sourceScheduleId: scheduleId,
+    liveLayout: String(card.liveLayout || "grid6"),
+  };
+
+  const rowId = scheduleId ? `${scheduleId}:slot:${slotId}` : `church-live-control:slot:${slotId}`;
+
+  const item = {
+    id: rowId,
+    feedOriginId: rowId,
+    parentScheduleId: scheduleId,
+    sourceScheduleId: scheduleId,
+    scheduleSlots: [activeSlot],
+    slotNumber,
+    homeFeedSlotExpanded: true,
+    parentScheduleSlotCount: Math.max(1, opts.slotFeedTotal),
+    slotFeedIndex: opts.slotFeedIndex,
+    source: "church-live-control",
+    scheduleType: "media-live-slots",
+    roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+    roomKind: "church-live-control",
+    assignmentId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+    churchId: String(opts.churchId || "").trim(),
+    churchName: String(opts.churchName || "").trim(),
+    topic: String(card.parentTopic || card.topic || card.subtitle || ""),
+    scheduleTopic: String(card.scheduleTopic || card.parentTopic || ""),
+    roomMessageId: String(message.id || ""),
+  };
+
+  return {
+    item,
+    activeSlot,
+    slotFeedIndex: opts.slotFeedIndex,
+    slotFeedTotal: Math.max(1, opts.slotFeedTotal),
+  };
+}
+
+export function buildChurchLiveControlScheduleRenderMap(
+  messages: Array<{ id?: string; kind?: string; card?: any }>,
+  opts: { roomId?: string; churchId?: string; churchName?: string } = {}
+): Record<string, ChurchLiveControlHomeFeedScheduleModel> {
+  const roomId = String(opts.roomId || CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID).trim();
+  const scheduleMessages = (Array.isArray(messages) ? messages : []).filter((m) =>
+    isChurchLiveControlScheduleRoomMessage(m, roomId)
+  );
+
+  const groups = new Map<string, typeof scheduleMessages>();
+  for (const message of scheduleMessages) {
+    const scheduleId = String(
+      message.card?.sourceScheduleId || message.card?.sourceFeedId || message.id || "default"
+    ).trim();
+    if (!groups.has(scheduleId)) groups.set(scheduleId, []);
+    groups.get(scheduleId)!.push(message);
+  }
+
+  const map: Record<string, ChurchLiveControlHomeFeedScheduleModel> = {};
+  for (const group of groups.values()) {
+    const sorted = [...group].sort(
+      (a, b) =>
+        Number(a.card?.slotNumber || a.card?.order || 0) -
+        Number(b.card?.slotNumber || b.card?.order || 0)
+    );
+    const slotFeedTotal = sorted.length;
+    sorted.forEach((message, slotFeedIndex) => {
+      const built = buildHomeFeedRowFromChurchLiveControlRoomMessage(message, {
+        churchId: opts.churchId,
+        churchName: opts.churchName,
+        slotFeedTotal,
+        slotFeedIndex,
+      });
+      if (built && message.id) map[String(message.id)] = built;
+    });
+  }
+
+  return map;
+}
+
 export async function findActiveChurchLiveControlScheduleFromRoom(
   headers?: Record<string, string>,
   nowMs = Date.now()

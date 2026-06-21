@@ -660,6 +660,8 @@ export type HomeLiveScheduleCardProps = {
   /** Home Feed expanded slot cards — scroll feed instead of in-card carousel. */
   disableSlotCarousel?: boolean;
   onOpenLiveRoom?: () => void;
+  /** Room-message schedules (e.g. Church Live Control) claim via room PATCH instead of feed POST. */
+  onClaimPress?: () => void;
   onOptimisticClaim?: (params: {
     postId: string;
     slotId: string;
@@ -686,6 +688,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   onSkipSlots,
   disableSlotCarousel = false,
   onOpenLiveRoom,
+  onClaimPress,
   onOptimisticClaim,
   displayLiked,
   likeCount = 0,
@@ -1491,6 +1494,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       setOptimisticClaim(null);
       return;
     }
+    if (onClaimPress) {
+      onClaimPress();
+      return;
+    }
     claimThisSlot();
   }, [
     canEnterLiveRoom,
@@ -1509,6 +1516,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     profileAvatarUri,
     session?.role,
     claimThisSlot,
+    onClaimPress,
   ]);
 
   if (!slotVisual || slotVisual.expired) {
