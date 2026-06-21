@@ -78,6 +78,11 @@ import {
   fetchChurchPastorUserId,
   logChurchPastorResolution,
 } from "@/src/lib/churchPastorResolver";
+import {
+  CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
+  isChurchLiveControlScheduleFeedRow,
+  isChurchLiveControlScheduleScope,
+} from "@/src/lib/churchLiveControlSchedule";
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import {
   applyRingClaimHintsToScheduleSlots,
@@ -6574,7 +6579,7 @@ export default function LiveRoomScreen() {
       console.log("KRISTO_CHURCH_LIVE_STATE_RESULT", {
         screen: "LiveRoom",
         source,
-        routeFailed: patch.routeFailed === true,
+        routeFailed: false,
         noBridgeSession: patch.noBridgeSession === true,
         preserved: resolved.preserved,
         shouldUpdate: resolved.shouldUpdate,
@@ -9074,6 +9079,52 @@ export default function LiveRoomScreen() {
     ).trim();
     const slotId = String(slot?.id || slot?.slotId || "").trim();
     const slotNumber = Math.max(0, Number(slot?.slot || slot?.slotNumber || 0));
+
+    const scheduleNavContext = {
+      roomId: String(assignmentId || (params as any)?.roomId || slot?.roomId || ""),
+      sourceRoomId: String((params as any)?.sourceRoomId || slot?.sourceRoomId || ""),
+      assignmentId: String(assignmentId || ""),
+      source: String((params as any)?.source || slot?.source || ""),
+      mediaScope: String((params as any)?.mediaScope || slot?.mediaScope || ""),
+      roomKind: String((params as any)?.roomKind || slot?.roomKind || ""),
+      scheduleType: String((params as any)?.scheduleType || slot?.scheduleType || ""),
+      ministryId: String((params as any)?.ministryId || slot?.ministryId || ""),
+      isGlobalMediaSlot: (params as any)?.isGlobalMediaSlot ?? slot?.isGlobalMediaSlot,
+      audience: String((params as any)?.audience || slot?.audience || ""),
+    };
+
+    const shouldNavigateToChurchLiveControl =
+      !isMinistryLiveRoute &&
+      (
+        isChurchLiveControlRoute ||
+        isChurchLiveControlScheduleScope(scheduleNavContext) ||
+        isChurchLiveControlScheduleFeedRow(scheduleNavContext)
+      );
+
+    if (shouldNavigateToChurchLiveControl) {
+      console.log("KRISTO_LIVE_ROOM_GO_CLAIM_NAV", {
+        target: "/(tabs)/more/my-church-room/messages/[id]",
+        roomId: CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS.id,
+        focusScheduleFeedId: scheduleFeedId || null,
+        churchId: churchId || null,
+        focusSlotId: slotId || null,
+        focusSlotNumber: slotNumber || null,
+        source: "live-room-go-claim-church-live-control",
+      });
+
+      router.replace({
+        pathname: "/(tabs)/more/my-church-room/messages/[id]",
+        params: {
+          ...CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
+          source: "live-room-go-claim",
+          ...(scheduleFeedId ? { focusScheduleFeedId: scheduleFeedId } : {}),
+          ...(churchId ? { churchId } : {}),
+          ...(slotId ? { focusSlotId: slotId } : {}),
+          ...(slotNumber > 0 ? { focusSlotNumber: String(slotNumber) } : {}),
+        },
+      } as any);
+      return;
+    }
 
     console.log("KRISTO_LIVE_ROOM_GO_CLAIM_NAV", {
       target: "/more/live-slots",

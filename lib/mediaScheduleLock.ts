@@ -1,3 +1,5 @@
+import { isChurchLiveControlScheduleFeedRow } from "@/lib/churchLiveControlSchedule";
+
 export const ACTIVE_MEDIA_SCHEDULE_ERROR =
   "A media schedule is already active. Please end or delete it before creating another one.";
 
@@ -222,6 +224,7 @@ export function findActiveMediaScheduleForChurch(
 
   for (const item of items) {
     if (excludeId && String(item?.id || "") === excludeId) continue;
+    if (isChurchLiveControlScheduleFeedRow(item)) continue;
     if (!belongsToChurch(item)) continue;
     if (isActiveMediaSchedule(item, nowMs)) return item;
   }
@@ -244,6 +247,7 @@ export function findMediaScheduleFeedForChurch(
     : (item: AnyFeedItem) => feedItemBelongsToChurch(item, cid);
 
   for (const item of items) {
+    if (isChurchLiveControlScheduleFeedRow(item)) continue;
     if (!isMediaScheduleFeedItem(item)) continue;
     if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) continue;
     if (!belongsToChurch(item)) continue;
@@ -269,6 +273,7 @@ export function findAllActiveMediaSchedulesForChurch(
 
   return items.filter((item) => {
     if (excludeId && String(item?.id || "") === excludeId) return false;
+    if (isChurchLiveControlScheduleFeedRow(item)) return false;
     if (!belongsToChurch(item)) return false;
     return isActiveMediaSchedule(item, nowMs);
   });

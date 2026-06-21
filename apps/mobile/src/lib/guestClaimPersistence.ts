@@ -25,6 +25,7 @@ import {
   findPersistedMediaScheduleFeedForChurch,
   resolveChurchMediaScheduleFromFeedRows,
 } from "@/src/lib/mediaScheduleChurchQueries";
+import { isChurchLiveControlScheduleFeedRow } from "@/src/lib/churchLiveControlSchedule";
 import {
   isMediaScheduleFeedItem,
   isMediaScheduleFeedItemClosed,
@@ -771,7 +772,9 @@ export async function forceReloadGuestScheduleFromBackend(input: {
 }) {
   const churchId = String(input.churchId || "").trim();
   const sync = await fetchMediaScheduleFeedSync(churchId, input.headers);
-  const rows = Array.isArray(sync.rows) ? sync.rows : [];
+  const rows = (Array.isArray(sync.rows) ? sync.rows : []).filter(
+    (row) => !isChurchLiveControlScheduleFeedRow(row)
+  );
 
   applyBackendMediaScheduleToLocalFeed(rows, churchId);
   input.setBackendFeedItems(rows);
@@ -872,7 +875,7 @@ export async function purgeDeletedScheduleFromAllSources(input: {
     if (scheduleFeedRowIsDeleted(row)) return true;
     if (!isMediaScheduleFeedItem(row)) return false;
     const rowId = String(row?.id || "").trim();
-    const sourceId = String(row?.sourceScheduleId || "").trim();
+    const sourceId = String((row as any)?.sourceScheduleId || "").trim();
     const aliasSet = new Set(aliases.flatMap((id) => [id, baseFeedId(id)].filter(Boolean)));
     return (
       aliasSet.has(rowId) ||

@@ -45,6 +45,12 @@ import { startMediaVideoUpload } from "../../../src/lib/optimisticVideoUpload";
 import { useSmoothedVideoUploadProgress } from "../../../src/hooks/useSmoothedVideoUploadProgress";
 import { getKristoHeaders } from "../../../src/lib/kristoHeaders";
 import { sendAssignmentCards } from "../../../src/lib/messagesStore";
+import {
+  buildChurchLiveControlScheduleRoomCard,
+  CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
+  CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+  findActiveChurchLiveControlScheduleFromRoom,
+} from "../../../src/lib/churchLiveControlSchedule";
 import { GuestClaimAssignModal } from "../../../src/components/media/GuestClaimAssignModal";
 import { MIN_GUEST_SLOT_DURATION_MIN, normalizeGuestClaimSlot } from "../../../src/lib/guestClaimCenterUtils";
 import {
@@ -1998,7 +2004,7 @@ export default function MediaStudioScreen() {
                   }),
                 },
                 body: JSON.stringify({
-                  roomId: "media-schedule",
+                  roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
                   clearAllAssignmentCards: true,
                 }),
               });
@@ -2732,8 +2738,11 @@ export default function MediaStudioScreen() {
         const activeSchedule = await findActiveMediaScheduleForChurchFromSources(churchId, {
           headers: apiHeaders as Record<string, string>,
         });
+        const activeRoomSchedule = await findActiveChurchLiveControlScheduleFromRoom(
+          apiHeaders as Record<string, string>
+        );
 
-        if (activeSchedule) {
+        if (activeSchedule || activeRoomSchedule) {
           Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
           return;
         }
@@ -2810,202 +2819,118 @@ export default function MediaStudioScreen() {
         currentUserId: String(session?.userId || ""),
       });
 
-      const postPayload = {
-        type: "post",
-        title: cards[0],
-        text: caption,
-        churchId,
-        createdBy: String(session?.userId || ""),
-        source: "media-schedule",
-        scheduleType: "media-live-slots",
-        sourceScheduleId: scheduleId,
-        liveId: scheduleId,
-        visibility: "church",
-        audience: "church",
-        isGlobalMediaSlot: false,
-        publishedAt,
-        mediaOwnerId: scheduleAuthority.scheduleCreatedByUserId,
-        createdByUserId: scheduleAuthority.scheduleCreatedByUserId,
-        ...scheduleAuthority,
-        actorLabel: scheduleMediaName,
-        mediaName: scheduleMediaName,
-        churchLabel: scheduleChurchName,
-        churchName: scheduleChurchName,
-        actorAvatarUri: String(
-          (session as any)?.churchAvatarUri ||
-          (session as any)?.churchAvatarUrl ||
-          (session as any)?.avatarUri ||
-          (session as any)?.avatarUrl ||
-          (session as any)?.profileImage ||
-          ""
-        ),
-        churchAvatarUri: String(
-          (session as any)?.churchAvatarUri ||
-          (session as any)?.churchAvatarUrl ||
-          (session as any)?.avatarUri ||
-          (session as any)?.avatarUrl ||
-          (session as any)?.profileImage ||
-          ""
-        ),
-        scheduleSlots: scheduleSlotsPayload,
-      };
-
-      feedPublishMediaScheduleLocal({
-        ...postPayload,
-        id: scheduleId,
-        sourceScheduleId: scheduleId,
-        source: "media-schedule",
-        scheduleType: "media-live-slots",
-        pendingBackendSync: true,
-        updatedAt: Date.now(),
-      });
-      markLocalSchedulePendingBackend(scheduleId, churchId);
-      setHomeFeedItems([...feedList()]);
-
       console.log("KRISTO_SCHEDULE_CREATE_REQUEST", {
         screen: "media.handleSendLiveScheduleToFeed",
         churchId,
         localScheduleId: scheduleId,
         slotCount: scheduleSlotsPayload.length,
-        source: postPayload.source,
-        scheduleType: postPayload.scheduleType,
+        source: "church-live-control",
+        roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
       });
 
-      console.log("[ScheduleCreate] backend post start", {
+      console.log("[ScheduleCreate] room publish start", {
         churchId,
         sourceScheduleId: scheduleId,
         slotCount: scheduleSlotsPayload.length,
+        roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
       });
 
-      const r: any = await apiPost("/api/church/feed", postPayload, {
-        headers: apiHeaders,
-      });
+      let publishedCount = 0;
+      let failedCount = 0;
 
-      const backendFeedId = String(r?.data?.id || r?.item?.id || r?.id || "").trim();
+      for (let index = 0; index < scheduleSlotsPayload.length; index++) {
+        const slot = scheduleSlotsPayload[index];
+        const card = buildChurchLiveControlScheduleRoomCard(slot, {
+          slotNumber: index + 1,
+          parentTopic: caption,
+          assignmentId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+          publishedAt: Date.now(),
+        });
+
+        const roomRes: any = await apiPost(
+          "/api/church/room-messages",
+          {
+            roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+            roomKind: "church-live-control",
+            senderName: scheduleMediaName || "Church Media",
+            text: "",
+            kind: "assignment_card",
+            card: {
+              ...card,
+              sourceFeedId: scheduleId,
+              sourceScheduleId: scheduleId,
+            },
+          },
+          { headers: apiHeaders }
+        );
+
+        if (roomRes?.ok) {
+          publishedCount += 1;
+        } else {
+          failedCount += 1;
+          console.log("[ScheduleCreate] room publish slot failed", {
+            slotIndex: index,
+            error: String(roomRes?.error || roomRes?.message || ""),
+          });
+        }
+      }
 
       console.log("KRISTO_SCHEDULE_CREATE_SUCCESS", {
         screen: "media.handleSendLiveScheduleToFeed",
-        ok: Boolean(r?.ok),
+        ok: failedCount === 0,
         churchId,
         localScheduleId: scheduleId,
-        backendFeedId: backendFeedId || null,
-        scheduleId: String(r?.data?.sourceScheduleId || r?.item?.sourceScheduleId || backendFeedId || scheduleId),
+        roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
         slotCount: scheduleSlotsPayload.length,
-        error: r?.ok ? null : String(r?.error || r?.message || ""),
-        status: Number(r?.status || 0) || null,
+        publishedCount,
+        failedCount,
       });
 
-      console.log("[ScheduleCreatePerf] postDone ms", Date.now() - perfStart);
-      console.log("[ScheduleCreate] backend post result", {
-        ok: r?.ok,
-        feedId: backendFeedId,
-        churchId,
-        sourceScheduleId: scheduleId,
-      });
+      console.log("[ScheduleCreatePerf] roomPublishDone ms", Date.now() - perfStart);
 
-      if (!r?.ok) {
-        if (
-          isChurchSubscriptionRequiredError(r, {
-            screen: "media.handleSendLiveScheduleToFeed",
-            gate: "media.schedule-create.api",
-            isPastor: isActualChurchPastor,
-            isApprovedMediaHost,
-          })
-        ) {
-          alertChurchSubscriptionRequired({
-            screen: "media.handleSendLiveScheduleToFeed",
-            gate: "media.schedule-create.api",
-            isPastor: isActualChurchPastor,
-            isApprovedMediaHost,
-            onUpgrade: () => mediaRouterPush("/more/payments/subscriptions", "subscription-required"),
-          });
-          return;
-        }
-        Alert.alert("Backend schedule failed", String(r?.error || JSON.stringify(r)));
+      if (failedCount > 0) {
+        Alert.alert(
+          "Schedule publish incomplete",
+          `${failedCount} slot(s) failed to publish to Church Live Control.`
+        );
         return;
       }
-
-      const backendItem = r?.item || r?.data || r;
-      const backendScheduleFeedId = replaceLocalScheduleWithBackend(backendItem, scheduleId, {
-        churchId,
-        scheduleSlots: scheduleSlotsPayload,
-      });
-
-      if (backendScheduleFeedId) {
-        setHomeFeedItems([...feedList()]);
-        setBackendFeedItems((prev) => {
-          const next = prev.filter((row) => String(row?.id || "") !== backendScheduleFeedId);
-          return [
-            {
-              ...backendItem,
-              churchId,
-              source: "media-schedule",
-              scheduleType: "media-live-slots",
-              scheduleSlots: Array.isArray(backendItem?.scheduleSlots)
-                ? backendItem.scheduleSlots
-                : scheduleSlotsPayload,
-            },
-            ...next,
-          ];
-        });
-        console.log("[ScheduleFeed] persisted churchId/sourceScheduleId", {
-          churchId,
-          sourceScheduleId: backendScheduleFeedId,
-        });
-      }
-
-      console.log("[ScheduleCreatePerf] localCacheUpdated ms", Date.now() - perfStart);
 
       scheduleCreateCooldownUntilRef.current = Date.now() + 12000;
       (globalThis as any).__KRISTO_SCHEDULE_CREATE_COOLDOWN_UNTIL__ = scheduleCreateCooldownUntilRef.current;
       finishCreate();
 
-      console.log("[ScheduleCreatePerf] stay-on-media-after-create", {
-        ms: Date.now() - perfStart,
-      });
+      sendAssignmentCards(
+        CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+        scheduleSlotsPayload.map((slot: any, index: number) => ({
+          cardId: String(slot.id || `${scheduleId}-room-${index}`),
+          id: String(slot.id || `${scheduleId}-room-${index}`),
+          title: String(slot.name || `Slot ${index + 1}`),
+          subtitle: caption,
+          role: caption,
+          status: "open",
+          meetingDate: String(slot.meetingDay || ""),
+          meetingDay: String(slot.meetingDay || ""),
+          startTime: String(slot.startTime || ""),
+          endTime: String(slot.endTime || ""),
+          durationMin: Number(slot.durationMin || 0),
+          sourceFeedId: scheduleId,
+          source: "church-live-control",
+          roomKind: "church-live-control",
+          liveLayout: "grid6",
+        })),
+        { senderName: scheduleMediaName || "Church Media" }
+      );
 
-      void (async () => {
-        try {
-          sendAssignmentCards(
-            "church-media-room",
-            scheduleSlotsPayload.map((slot: any, index: number) => ({
-              cardId: `${backendScheduleFeedId || backendFeedId || scheduleId}-room-${index}`,
-              id: `${backendScheduleFeedId || backendFeedId || scheduleId}-room-${index}`,
-              title: String(slot.name || `Slot ${index + 1}`),
-              subtitle: caption,
-              role: caption,
-              status: "open",
-              meetingDate: String(slot.meetingDay || ""),
-              meetingDay: String(slot.meetingDay || ""),
-              startTime: String(slot.startTime || ""),
-              endTime: String(slot.endTime || ""),
-              durationMin: Number(slot.durationMin || 0),
-              sourceFeedId: backendScheduleFeedId || backendFeedId || scheduleId,
-              source: "media-schedule",
-              roomKind: "assignment",
-              liveLayout: "grid6",
-            })),
-            { senderName: scheduleMediaName || "Church Media" }
-          );
+      void loadActiveBackendLive();
 
-          await runMediaScheduleSilentReload("create-media-schedule-bg", true);
-          void loadActiveBackendLive();
-
-          void fetchChurchPastorUserId(churchId, apiHeaders).then((pastorResolution) => {
-            logChurchPastorResolution({
-              churchId,
-              actualChurchPastorUserId: pastorResolution.actualChurchPastorUserId,
-              sourceField: pastorResolution.sourceField,
-              scheduleCreatedByUserId: String(session?.userId || ""),
-              currentUserId: String(session?.userId || ""),
-            });
-          });
-        } catch (e) {
-          console.log("[ScheduleCreatePerf] background error", e);
-        } finally {
-          console.log("[ScheduleCreatePerf] backgroundRefreshDone ms", Date.now() - perfStart);
-        }
-      })();
+      router.replace({
+        pathname: "/(tabs)/more/my-church-room/messages/[id]",
+        params: {
+          ...CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
+          role: String(session?.role || "Member"),
+        },
+      } as any);
     } catch (e: any) {
       console.log("[ScheduleCreate] backend post error", e);
       if (

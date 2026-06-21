@@ -14,7 +14,13 @@ import {
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { publishScheduleBatchToHomeFeed } from "@/src/lib/homeFeedSchedulePublish";
+import {
+  CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
+  CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+  findActiveChurchLiveControlScheduleFromRoom,
+  resolveChurchLiveControlSchedulePublishRoomId,
+  resolveChurchLiveControlScheduleRoomKind,
+} from "@/src/lib/churchLiveControlSchedule";
 import { apiGet, apiPatch, apiPost, apiDelete } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -413,34 +419,37 @@ export default function ChurchProjectToolScreen() {
   const assignmentId = String(params.assignmentId || "");
   const tool = String(params.tool || "members").trim().toLowerCase();
   const sourceParam = String(params.source || "").trim().toLowerCase();
-  const targetRoomId =
-    sourceParam === "media"
-      ? "media-schedule"
-      : String((params as any)?.roomId || assignmentId || "").trim();
-  const sourceBackRoomId = String((params as any)?.sourceRoomId || (params as any)?.roomId || targetRoomId || assignmentId || "").trim();
-  const mediaScope = String((params as any)?.mediaScope || "").trim().toLowerCase();
-  const isChurchLiveControlScope =
-    mediaScope === "church" ||
-    sourceParam === "church-live-control" ||
-    targetRoomId === "church-media-room" ||
-    sourceBackRoomId === "church-media-room" ||
-    assignmentId === "church-media-room";
   const modeParam = String(params.mode || "").trim().toLowerCase();
-
+  const isMinistryLiveSchedule = sourceParam === "ministry-live";
   const isMediaGuests =
     assignmentId === "media-guests" ||
     tool === "guests" ||
     modeParam === "guests";
-
-  const isMinistryLiveSchedule = sourceParam === "ministry-live";
-
   const isMediaSchedule =
     !isMinistryLiveSchedule &&
     !isMediaGuests &&
-    (
-      assignmentId === "media-schedule" ||
-      sourceParam === "media"
-    );
+    (assignmentId === "media-schedule" || sourceParam === "media");
+  const legacyAssignmentRoomId =
+    sourceParam === "media"
+      ? "media-schedule"
+      : String((params as any)?.roomId || assignmentId || "").trim();
+  const sourceBackRoomId = String(
+    (params as any)?.sourceRoomId || (params as any)?.roomId || legacyAssignmentRoomId || assignmentId || ""
+  ).trim();
+  const mediaScope = String((params as any)?.mediaScope || "").trim().toLowerCase();
+  const isChurchLiveControlScope =
+    mediaScope === "church" ||
+    sourceParam === "church-live-control" ||
+    legacyAssignmentRoomId === "church-media-room" ||
+    sourceBackRoomId === "church-media-room" ||
+    assignmentId === "church-media-room" ||
+    (isMediaSchedule && !isMinistryLiveSchedule);
+  const targetRoomId = resolveChurchLiveControlSchedulePublishRoomId({
+    isMinistryLiveSchedule,
+    targetRoomId: legacyAssignmentRoomId,
+    isChurchLiveControlScope,
+    isMediaSchedule,
+  });
 
   const effectiveTool = isMediaGuests ? "guests" : isMediaSchedule ? "meeting" : tool;
   const assignmentTitle = String(params.title || "Assignment Room");
@@ -457,11 +466,26 @@ export default function ChurchProjectToolScreen() {
   function toolMediaSubscriptionGateOpts() {
     const session = getSessionSync() as any;
     const sessionRole = String(session?.role || role || "").trim().toLowerCase();
+    const routeRole = String(role || "").trim().toLowerCase();
     const isPastor =
       isPastorSessionRole(sessionRole) ||
-      String(session?.churchRole || "").trim().toLowerCase() === "pastor";
-    const isApprovedMediaHost = routeMediaAccess === "1";
-    return { isPastor, isApprovedMediaHost };
+      String(session?.churchRole || "").trim().toLowerCase() === "pastor" ||
+      routeRole.includes("pastor");
+    const viewerIsHost = routeRole.includes("host") || routeMediaAccess === "1";
+    const ministryToolAllowed =
+      String((params as any)?.mcAccess || "") === "1" ||
+      routeRole.includes("leader") ||
+      routeRole.includes("admin") ||
+      isPastor ||
+      routeRole.includes("host");
+    return {
+      isPastor,
+      isApprovedMediaHost: viewerIsHost,
+      viewerIsHost,
+      ministryRole: routeRole,
+      ministryToolAllowed,
+      toolKey: effectiveTool,
+    };
   }
 
   const meta = useMemo(
@@ -1608,7 +1632,17 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         return;
       }
 
-      const needsMediaFeedSync = isMediaSchedule && !isMinistryLiveSchedule;
+      const useRoomOnlyChurchSchedule = isMediaSchedule && !isMinistryLiveSchedule;
+
+      if (useRoomOnlyChurchSchedule) {
+        await refreshBackendScheduleCardsFromRoom({
+          alive: () => alive,
+          skipFeedById: true,
+        });
+        return;
+      }
+
+      const needsMediaFeedSync = isMediaGuests;
       let reloadResult: Awaited<ReturnType<typeof runToolMediaScheduleSilentReload>> | null = null;
 
       if (needsMediaFeedSync || isMediaGuests) {
@@ -2504,7 +2538,12 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       durationMin: Number(slot?.minutes || slot?.durationMin || 0),
       startTime: String(slot?.startTime || ""),
       endTime: String(slot?.endTime || ""),
-      meetingDate: String(slot?.meetingDate || ""),
+      meetingDate: String(slot?.meetingDate || slot?.meetingDay || ""),
+      meetingDay: String(slot?.meetingDay || slot?.meetingDate || ""),
+      startMs: Number(slot?.startMs || 0) || undefined,
+      endMs: Number(slot?.endMs || 0) || undefined,
+      startsAt: String(slot?.startsAt || (Number(slot?.startMs || 0) > 0 ? new Date(Number(slot.startMs)).toISOString() : "")),
+      endsAt: String(slot?.endsAt || (Number(slot?.endMs || 0) > 0 ? new Date(Number(slot.endMs)).toISOString() : "")),
       timeLabel: String(slot?.timeLabel || ""),
       task: String(slot?.task || slot?.name || ""),
       slotTopic,
@@ -2570,7 +2609,11 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         "/api/church/room-messages",
         {
           roomId: targetRoomId,
-          roomKind: isMinistryLiveSchedule ? "ministry-live" : sourceParam || "my_ministries",
+          roomKind: resolveChurchLiveControlScheduleRoomKind({
+            isMinistryLiveSchedule,
+            schedulePublishRoomId: targetRoomId,
+            sourceParam,
+          }),
           senderName: "Schedule System",
           text: "",
           kind: "assignment_card",
@@ -2601,7 +2644,11 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           "/api/church/room-messages",
           {
             roomId: targetRoomId,
-            roomKind: isMinistryLiveSchedule ? "ministry-live" : sourceParam || "my_ministries",
+            roomKind: resolveChurchLiveControlScheduleRoomKind({
+              isMinistryLiveSchedule,
+              schedulePublishRoomId: targetRoomId,
+              sourceParam,
+            }),
             senderName: "Schedule System",
             text: "",
             kind: "assignment_card",
@@ -2674,7 +2721,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           })
         : null;
 
-    if (hasFeedSyncRows && !backendFeedRow) {
+    if (hasFeedSyncRows && !backendFeedRow && !isChurchLiveControlScope) {
       if (opts?.alive && !opts.alive()) return;
       setBackendScheduleCards([]);
       return;
@@ -2682,7 +2729,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
 
     let finalCards = cards.filter((card: any) => isMediaScheduleConflictCandidate(card));
 
-    if (!opts?.skipFeedById) {
+    if (!opts?.skipFeedById && !isChurchLiveControlScope) {
       try {
         const feedId = String(backendFeedRow?.id || "").trim();
 
@@ -3529,7 +3576,10 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       role: string;
       startTime: string;
       endTime: string;
+      startMs?: number;
+      endMs?: number;
       durationMin: number;
+      meetingDay?: string;
       task: string;
       script: string;
       slotTopic?: string;
@@ -3694,7 +3744,10 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
           role: row.detail,
           startTime: formatTime(start),
           endTime: formatTime(end),
+          startMs: start.getTime(),
+          endMs: end.getTime(),
           durationMin: segmentMin,
+          meetingDay: scheduleDay,
           task: slotTask,
           script: scheduleTopic,
           chat: [
@@ -3811,147 +3864,96 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     if (isMediaSchedule && !isMinistryLiveSchedule) {
       schedulePollPausedRef.current = true;
       try {
-      const churchId = String(getSessionSync()?.churchId || "").trim();
-      const apiHeaders = getKristoHeaders() as any;
+        const churchId = String(getSessionSync()?.churchId || "").trim();
+        const apiHeaders = getKristoHeaders() as any;
 
-      const creatorUserId = String(getSessionSync()?.userId || "").trim();
-      let scheduleAuthority = buildMediaScheduleAuthorityFields({
-        churchPastorUserId: "",
-        creatorUserId,
-        mediaHosts: [],
-      });
-
-      try {
-        const mediaRes: any = await apiGet("/api/church/media", { headers: apiHeaders });
-        const pastorResolution = await fetchChurchPastorUserId(churchId, apiHeaders);
-        scheduleAuthority = buildMediaScheduleAuthorityFields({
-          churchPastorUserId: pastorResolution.actualChurchPastorUserId,
-          creatorUserId,
-          mediaHosts: Array.isArray(mediaRes?.media?.hosts) ? mediaRes.media.hosts : [],
-          sourceField: pastorResolution.sourceField,
-        });
-
-        logChurchPastorResolution({
-          churchId,
-          actualChurchPastorUserId: pastorResolution.actualChurchPastorUserId,
-          sourceField: pastorResolution.sourceField,
-          scheduleCreatedByUserId: creatorUserId,
-          currentUserId: creatorUserId,
-        });
-      } catch {}
-
-      console.log("KRISTO_SCHEDULE_CREATE_REQUEST", {
-        screen: "church-project-tool.media-schedule",
-        churchId,
-        slotCount: items.length,
-        source: "media-schedule",
-        scheduleType: "media-live-slots",
-      });
-
-      logScheduleTopicTrace("create_payload", {
-        scheduleTopic,
-        liveCardType: String(meetingTitleChoice || "").trim(),
-        itemTopic: scheduleTopic,
-        slotCount: sequencedItems.length,
-        firstSlot: sequencedItems[0]
-          ? {
-              name: sequencedItems[0].name,
-              slotTopic: (sequencedItems[0] as any).slotTopic,
-              script: sequencedItems[0].script,
-              parentTopic: (sequencedItems[0] as any).parentTopic,
-              scheduleTopic: (sequencedItems[0] as any).scheduleTopic,
-              meetingTopic: (sequencedItems[0] as any).meetingTopic,
-              task: sequencedItems[0].task,
-            }
-          : null,
-      });
-
-      const feedResult = await publishScheduleBatchToHomeFeed({
-        churchId,
-        scheduleSlots: sequencedItems,
-        scheduleTopic,
-        scheduleType,
-        scheduleDay,
-        scheduleTarget,
-        source: "media-schedule",
-        headers: apiHeaders,
-        ministryId: String((params as any)?.ministryId || (params as any)?.roomId || assignmentId || ""),
-        roomId: String((params as any)?.roomId || (params as any)?.sourceRoomId || assignmentId || ""),
-        scheduleAuthority,
-        actorLabel: routeMediaName || assignmentTitle || "MEDIA",
-        mediaName: routeMediaName || assignmentTitle || "MEDIA",
-        churchName: routeChurchName || assignmentTitle || "Media Schedule",
-        churchLabel: routeChurchName || assignmentTitle || "Media Schedule",
-        avatarUri: routeAvatar,
-        title: "Media Live Cards",
-        visibility: "public",
-        audience: "global",
-        isGlobalMediaSlot: true,
-        screen: "church-project-tool.media-schedule",
-        assignmentId,
-      });
-
-      console.log("KRISTO_SCHEDULE_CREATE_SUCCESS", {
-        screen: "church-project-tool.media-schedule",
-        ok: feedResult.ok,
-        churchId,
-        localScheduleId: feedResult.localScheduleId || null,
-        backendFeedId: feedResult.backendFeedId || null,
-        slotCount: sequencedItems.length,
-        error: feedResult.ok ? null : String(feedResult.error || ""),
-      });
-
-      if (!feedResult.ok) {
         if (
-          String(feedResult.error || "").includes("already active") ||
-          feedResult.error === ACTIVE_MEDIA_SCHEDULE_ERROR
+          !(await requireActiveChurchSubscriptionForSchedule(churchId, apiHeaders, {
+            ...toolMediaSubscriptionGateOpts(),
+            screen: "church-project-tool.media-schedule",
+            gate: "publishScheduleSlotsBatch",
+          }))
         ) {
-          const churchIdForHydrate = String(getSessionSync()?.churchId || "").trim();
-          if (churchIdForHydrate) {
-            const sync = await fetchMediaScheduleFeedSync(churchIdForHydrate, apiHeaders);
-            const backendRow = resolveChurchMediaScheduleFromFeedRows(sync.rows, churchIdForHydrate, {
-              strictChurch: true,
-            });
-            if (backendRow) {
-              setBackendActiveScheduleMeta(summarizeActiveMediaSchedule(backendRow));
-            }
-          }
-        } else {
           saveChurchProjectMeetingPlan(assignmentId, { sentToSchedule: false });
+          return;
         }
-        return;
-      }
 
-      console.log("KRISTO_SCHEDULE_LOCAL_REPLACED_IMMEDIATE", {
-        localScheduleId: feedResult.localScheduleId || null,
-        backendFeedId: feedResult.backendFeedId || null,
-        slotCount: sequencedItems.length,
-      });
+        if (churchId) {
+          const activeSchedule = await findActiveMediaScheduleForChurchFromSources(churchId, {
+            headers: apiHeaders as Record<string, string>,
+          });
+          const activeRoomSchedule = await findActiveChurchLiveControlScheduleFromRoom(
+            apiHeaders as Record<string, string>
+          );
+          if (activeSchedule || activeRoomSchedule) {
+            Alert.alert("Schedule already active", ACTIVE_MEDIA_SCHEDULE_ERROR);
+            saveChurchProjectMeetingPlan(assignmentId, { sentToSchedule: false });
+            return;
+          }
+        }
 
-      if (churchId) {
-        console.log("KRISTO_SCHEDULE_RELOAD_ONCE_AFTER_BATCH", {
+        console.log("KRISTO_SCHEDULE_CREATE_REQUEST", {
+          screen: "church-project-tool.media-schedule",
           churchId,
           slotCount: items.length,
-          source: "media-feed-create",
+          source: "church-live-control",
+          roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
         });
-        void fetchMediaScheduleFeedSync(churchId, apiHeaders).then((sync) => {
-          applySilentMediaScheduleReload({
-            churchId,
-            sync,
-            reason: "tool-create-schedule",
-            force: true,
-            ui: {
-              setBackendScheduleCards,
-              setScheduleConflictInfo,
-              setActiveScheduleBatchIndex,
-            },
-          });
-        });
-      }
 
-      Alert.alert("Sent to Home Feed", `${items.length} media tools were sent as claimable live cards.`);
-      router.push("/" as any);
-      return;
+        logScheduleTopicTrace("create_payload", {
+          scheduleTopic,
+          liveCardType: String(meetingTitleChoice || "").trim(),
+          itemTopic: scheduleTopic,
+          slotCount: sequencedItems.length,
+          firstSlot: sequencedItems[0]
+            ? {
+                name: sequencedItems[0].name,
+                slotTopic: (sequencedItems[0] as any).slotTopic,
+                script: sequencedItems[0].script,
+                parentTopic: (sequencedItems[0] as any).parentTopic,
+                scheduleTopic: (sequencedItems[0] as any).scheduleTopic,
+                meetingTopic: (sequencedItems[0] as any).meetingTopic,
+                task: sequencedItems[0].task,
+              }
+            : null,
+        });
+
+        const batchResult = await publishScheduleSlotsBatch(newBatchSlots, {
+          reason: "handleSendMeetingToSchedule-church-live-control",
+          parentTopic: scheduleTopic,
+        });
+
+        console.log("KRISTO_SCHEDULE_CREATE_SUCCESS", {
+          screen: "church-project-tool.media-schedule",
+          ok: batchResult.failed === 0,
+          churchId,
+          roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+          slotCount: sequencedItems.length,
+          published: batchResult.ok,
+          failed: batchResult.failed,
+        });
+
+        if (batchResult.failed > 0) {
+          saveChurchProjectMeetingPlan(assignmentId, { sentToSchedule: false });
+          Alert.alert(
+            "Schedule publish incomplete",
+            `${batchResult.failed} slot(s) failed to publish to Church Live Control.`
+          );
+          return;
+        }
+
+        Alert.alert(
+          "Sent to Church Live Control",
+          `${items.length} live cards were sent to Church Live Control.`
+        );
+        router.replace({
+          pathname: "/(tabs)/more/my-church-room/messages/[id]",
+          params: {
+            ...CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
+            role: role || "leader",
+          },
+        } as any);
+        return;
       } finally {
         schedulePollPausedRef.current = false;
       }
@@ -4556,7 +4558,15 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
                   ) : null}
 
                   <Pressable
-                    onPress={() => router.push("/more/live-slots" as any)}
+                    onPress={() =>
+                      router.replace({
+                        pathname: "/(tabs)/more/my-church-room/messages/[id]",
+                        params: {
+                          ...CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS,
+                          role: role || "leader",
+                        },
+                      } as any)
+                    }
                     style={({ pressed }) => [
                       {
                         marginTop: 4,

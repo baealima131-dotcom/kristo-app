@@ -24,6 +24,7 @@ import {
   baseFeedId,
   scheduleSlotClaimUserId,
 } from "@/src/lib/scheduleSlotUtils";
+import { shouldShowScheduleRowInLiveSlots } from "@/src/lib/churchLiveControlSchedule";
 
 export type LiveSlotsCatalog = {
   myChurch: any[];
@@ -39,6 +40,7 @@ export type LiveSlotsBackendSourceSnapshot = {
 };
 
 function isLiveSlotsScheduleSourceRow(row: any) {
+  if (!shouldShowScheduleRowInLiveSlots(row)) return false;
   return isExplicitHomeFeedMediaScheduleRow(row) || isMediaLiveSlotsHomeFeedRow(row) || isMediaScheduleFeedItem(row);
 }
 

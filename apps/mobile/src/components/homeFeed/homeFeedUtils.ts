@@ -17,6 +17,7 @@ import {
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
 import { resolveCachedMediaPoster } from "@/src/lib/mediaPosterCache";
 import { isKristoVerboseFeedDebug, isKristoVerboseFeedIdentityDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
+import { isChurchLiveControlScheduleFeedRow } from "@/src/lib/churchLiveControlSchedule";
 import {
   logScheduleTopicTrace,
   resolveHomeFeedScheduleSlotLabels,
@@ -514,6 +515,7 @@ export function commentAvatarUrl(raw: unknown) {
  *  Visible cross-church; claim eligibility uses the viewer's own church subscription. */
 export function isMediaLiveSlotsHomeFeedRow(item: any): boolean {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
+  if (isChurchLiveControlScheduleFeedRow(item)) return false;
   if (!isMediaScheduleFeedItem(item)) return false;
 
   const scheduleType = String(item?.scheduleType || "").toLowerCase();
@@ -595,6 +597,7 @@ function isLegacyScheduleFeedRow(item: any) {
 /** Church media schedule rows — bypass video upload / mediaStatus gates in Phase 1. */
 export function isExplicitHomeFeedMediaScheduleRow(item: any): boolean {
   if (!item || isStandaloneAvatarFeedPost(item)) return false;
+  if (isChurchLiveControlScheduleFeedRow(item)) return false;
 
   const scheduleType = String(item?.scheduleType || "").toLowerCase();
   const source = String(item?.source || "").toLowerCase();

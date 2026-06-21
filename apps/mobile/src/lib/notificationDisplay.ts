@@ -1,3 +1,19 @@
+import { CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS } from "@/src/lib/churchLiveControlSchedule";
+
+function churchLiveControlRoomHref(): string {
+  const params = CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS;
+  return `/more/my-church-room/messages/${encodeURIComponent(params.id)}`;
+}
+
+function isLegacyGlobalLiveSlotsNotification(notification: NotificationLike): boolean {
+  const extra = notification as NotificationLike & {
+    isGlobalMediaSlot?: boolean;
+    audience?: string;
+  };
+  if (extra.isGlobalMediaSlot === true) return true;
+  return String(extra.audience || "").toLowerCase().includes("global");
+}
+
 export type NotificationLike = {
   title?: string;
   body?: string;
@@ -216,7 +232,13 @@ export function resolveNotificationRoute(notification: NotificationLike): string
     type === "LiveSlotAssigned" ||
     type === "LiveSlotCancelled"
   ) {
-    return "/more/live-slots";
+    if (notification.ministryId) {
+      return `/more/my-church-room/messages/${encodeURIComponent(String(notification.ministryId))}`;
+    }
+    if (isLegacyGlobalLiveSlotsNotification(notification)) {
+      return "/more/live-slots";
+    }
+    return churchLiveControlRoomHref();
   }
 
   if (type === "ChurchProfileUpdated") {

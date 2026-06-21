@@ -18,6 +18,7 @@ import {
   feedToggleSave,
   subscribe as subscribeHomeFeed,
 } from "@/src/lib/homeFeedStore";
+import { CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS } from "@/src/lib/churchLiveControlSchedule";
 import { FeedList, type FeedListHandle } from "./FeedList";
 import { FeedReportSheet } from "./FeedReportSheet";
 import { FeedCommentsSheet } from "./FeedCommentsSheet";
@@ -293,7 +294,10 @@ export default function HomeFeedScreen() {
 
   useEffect(() => {
     if (String(focus || "").trim() !== "claim-media-slot") return;
-    router.replace("/more/live-slots" as any);
+    router.replace({
+      pathname: "/(tabs)/more/my-church-room/messages/[id]",
+      params: { ...CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS },
+    } as any);
   }, [focus, router]);
 
   useLayoutEffect(() => {

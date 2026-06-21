@@ -7,6 +7,7 @@ import {
   overlayStableClaimsOnFeedRows,
 } from "@/src/lib/claimStateMerge";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleFeedPredicates";
+import { isChurchLiveControlScheduleFeedRow } from "@/src/lib/churchLiveControlSchedule";
 import { isActiveScheduleSlot } from "@/src/lib/mediaScheduleSlotActive";
 import { resolveCanonicalMediaScheduleForGuests } from "@/src/lib/mediaScheduleGuestResolve";
 import { isMediaSlotEndedOrStale, resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
@@ -243,7 +244,9 @@ export function resolveRingMergedScheduleRows(options: {
   const viewerUserId = String(options.viewerUserId || "").trim();
   const scanRows = collectScheduleRowsForRingScan(
     filterOutDeletedScheduleRows(
-      Array.isArray(options.churchBackendRows) ? options.churchBackendRows : []
+      (Array.isArray(options.churchBackendRows) ? options.churchBackendRows : []).filter(
+        (row) => !isChurchLiveControlScheduleFeedRow(row)
+      )
     ),
     viewerUserId
   );
@@ -324,6 +327,7 @@ export function computeChurchScheduleTabLive(options: {
   const upcoming: ScheduleRingAlert[] = [];
 
   for (const item of options.rows) {
+    if (isChurchLiveControlScheduleFeedRow(item)) continue;
     if (!isMediaScheduleRow(item)) continue;
     if (String(item?.churchId || "").trim() !== viewerChurchId) continue;
 

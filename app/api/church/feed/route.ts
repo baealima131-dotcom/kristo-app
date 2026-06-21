@@ -4635,6 +4635,16 @@ async function handleFeedPost(req: NextRequest, body: any) {
   if ((type === "post" || type === "announcement") && !text) return err("text is required", 400);
 
   if (isIncomingMediaScheduleCreate(body)) {
+    const { isIncomingChurchLiveControlScheduleFeedCreate } = await import(
+      "@/lib/churchLiveControlSchedule"
+    );
+    if (isIncomingChurchLiveControlScheduleFeedCreate(body)) {
+      return err(
+        "Church live schedules must be published to Church Live Control room, not Live Slots feed",
+        400
+      );
+    }
+
     const viewerAppRole = String(ctx?.viewer?.role || ctx?.role || "");
     const subscriptionBlocked = await requireChurchSubscriptionActive(churchId, {
       endpoint: "/api/church/feed",

@@ -33,6 +33,7 @@ import {
   listPendingLocalScheduleIds,
   markLocalSchedulePendingBackend,
 } from "@/src/lib/mediaSchedulePendingRegistry";
+import { isChurchLiveControlScheduleFeedRow } from "@/src/lib/churchLiveControlSchedule";
 
 export type LocalMediaScheduleUiReset = {
   setGuestClaimSlots?: (slots: any[]) => void;
@@ -241,7 +242,10 @@ export function applySilentMediaScheduleReload(params: {
   ui?: LocalMediaScheduleUiReset;
 }): SilentMediaScheduleReloadResult {
   const cid = String(params.churchId || "").trim();
-  const { rows, mediaScheduleVersion, mediaScheduleUpdatedAt } = params.sync;
+  const { rows: rawRows, mediaScheduleVersion, mediaScheduleUpdatedAt } = params.sync;
+  const rows = Array.isArray(rawRows)
+    ? rawRows.filter((row) => !isChurchLiveControlScheduleFeedRow(row))
+    : [];
   const previousVersion = Number(params.previousVersion ?? 0);
   const previousUpdatedAt = String(params.previousUpdatedAt ?? "");
 
@@ -454,6 +458,7 @@ export function applyBackendMediaScheduleToLocalFeed(rows: any[], churchId: stri
     findActiveMediaScheduleForChurch(rows, cid, { strictChurch: true });
 
   if (!backendSchedule) return null;
+  if (isChurchLiveControlScheduleFeedRow(backendSchedule)) return null;
 
   feedSyncMediaScheduleFromBackend(backendSchedule);
   return backendSchedule;

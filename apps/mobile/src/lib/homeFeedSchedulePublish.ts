@@ -12,6 +12,7 @@ import {
   ACTIVE_MEDIA_SCHEDULE_ERROR,
   findActiveMediaScheduleForChurchFromSources,
 } from "@/src/lib/mediaScheduleLock";
+import { isIncomingChurchLiveControlScheduleFeedCreate } from "@/src/lib/churchLiveControlSchedule";
 import {
   clearLocalSchedulePendingBackend,
   markLocalSchedulePendingBackend,
@@ -74,6 +75,13 @@ export async function publishScheduleBatchToHomeFeed(
 
   if (!churchId || !scheduleSlotsPayload.length) {
     return { ok: false, error: "missing-church-or-slots" };
+  }
+
+  if (isIncomingChurchLiveControlScheduleFeedCreate(args)) {
+    return {
+      ok: false,
+      error: "Church live schedules must be published to Church Live Control room",
+    };
   }
 
   if (!args.skipActiveCheck) {

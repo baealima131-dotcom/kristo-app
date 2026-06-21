@@ -1,5 +1,10 @@
 import { apiGet } from "@/src/lib/kristoApi";
 import {
+  CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+  findActiveChurchLiveControlScheduleFromRoom,
+  isChurchLiveControlScheduleFeedRow,
+} from "@/src/lib/churchLiveControlSchedule";
+import {
   feedList,
   feedPurgeMediaScheduleCards,
   feedPurgeMediaScheduleCardsForChurch,
@@ -100,6 +105,19 @@ export function scanMediaScheduleRowForLock(
   churchId: string,
   nowMs = Date.now()
 ) {
+  if (item && isChurchLiveControlScheduleFeedRow(item)) {
+    return {
+      feedId: String(item?.id || item?.sourceScheduleId || "").trim(),
+      slotCount: Array.isArray(item?.scheduleSlots) ? item.scheduleSlots.length : 0,
+      activeSlotCount: 0,
+      rawActiveSlotCount: 0,
+      materializedActiveSlotCount: 0,
+      renderedInLiveSlots: 0,
+      protected: false,
+      reason: "church-live-control-room-only",
+    };
+  }
+
   const feedId = String(item?.id || item?.sourceScheduleId || "").trim();
   const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
   const prepared = prepareMediaScheduleFeedItemForClient(item);
@@ -151,6 +169,28 @@ export async function findActiveMediaScheduleForChurchFromSources(
   const strictFindOpts = { excludeId, nowMs, strictChurch: true as const };
   const looseFindOpts = { excludeId, nowMs, strictChurch: false as const };
 
+  const roomSchedule = await findActiveChurchLiveControlScheduleFromRoom(
+    options?.headers,
+    nowMs
+  );
+  if (roomSchedule) {
+    console.log("KRISTO_MEDIA_LOCK_ROOM_ACTIVE", {
+      churchId: cid,
+      roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+      slotCount: roomSchedule.slotCount,
+      openSlotCount: roomSchedule.openSlotCount,
+    });
+    return {
+      id: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+      sourceScheduleId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+      source: "church-live-control",
+      roomId: CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
+      roomKind: "church-live-control",
+      churchId: cid,
+      scheduleSlots: roomSchedule.cards.map((row: any) => row?.card).filter(Boolean),
+    } as AnyFeedItem;
+  }
+
   let backendRows: AnyFeedItem[] = [];
   let backendFetchOk = false;
 
@@ -165,6 +205,8 @@ export async function findActiveMediaScheduleForChurchFromSources(
     console.log("KRISTO_MEDIA_LOCK_BACKEND_FETCH_ERROR", e);
   }
 
+  backendRows = backendRows.filter((row) => !isChurchLiveControlScheduleFeedRow(row));
+
   if (backendFetchOk) {
     purgeStaleLocalScheduleRowsWhenBackendZero({
       backendRows,
@@ -176,6 +218,7 @@ export async function findActiveMediaScheduleForChurchFromSources(
 
   for (const row of backendRows) {
     if (!isMediaScheduleFeedItem(row)) continue;
+    if (isChurchLiveControlScheduleFeedRow(row)) continue;
     if (!feedItemBelongsToChurchStrict(row, cid)) continue;
     console.log("KRISTO_ACTIVE_SCHEDULE_SCAN", scanMediaScheduleRowForLock(row, cid, nowMs));
   }

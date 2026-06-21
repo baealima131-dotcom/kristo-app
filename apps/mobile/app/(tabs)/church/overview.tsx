@@ -1536,7 +1536,21 @@ export default function ChurchOverviewScreen() {
                       source: "church-overview",
                     });
 
-                    router.replace("/more/live-slots" as any);
+                    router.replace({
+                      pathname: "/(tabs)/more/my-church-room/messages/[id]",
+                      params: {
+                        id: "church-media-room",
+                        title: "Church Live Control",
+                        sub: "Whole church assignment room",
+                        tab: "ministries",
+                        source: "church-live-control",
+                        roomKind: "assignment",
+                        assignmentId: "church-media-room",
+                        assignmentTitle: "Church Live Control",
+                        assignmentSubtitle: "Whole church assignment room",
+                        assignmentInitials: "C",
+                      },
+                    } as any);
                   }}
                   style={s.powerBtnGoldWrap}
                 >

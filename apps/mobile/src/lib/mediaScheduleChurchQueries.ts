@@ -1,3 +1,4 @@
+import { isChurchLiveControlScheduleFeedRow } from "@/src/lib/churchLiveControlSchedule";
 import { prepareMediaScheduleFeedItemForClient } from "@/src/lib/mediaScheduleFeedPrepare";
 import {
   feedItemBelongsToChurch,
@@ -28,6 +29,7 @@ export function findActiveMediaScheduleForChurch(
 
   for (const item of items) {
     if (excludeId && String(item?.id || "") === excludeId) continue;
+    if (isChurchLiveControlScheduleFeedRow(item)) continue;
     if (!belongsToChurch(item)) continue;
     if (isActiveMediaSchedule(item, nowMs)) return item;
   }
@@ -49,6 +51,7 @@ export function findMediaScheduleFeedForChurch(
     : (item: AnyFeedItem) => feedItemBelongsToChurch(item, cid);
 
   for (const item of items) {
+    if (isChurchLiveControlScheduleFeedRow(item)) continue;
     if (!isMediaScheduleFeedItem(item)) continue;
     if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) continue;
     if (!belongsToChurch(item)) continue;
@@ -73,6 +76,7 @@ export function findPersistedMediaScheduleFeedForChurch(
     : (item: AnyFeedItem) => feedItemBelongsToChurch(item, cid);
 
   for (const item of items) {
+    if (isChurchLiveControlScheduleFeedRow(item)) continue;
     if (!isMediaScheduleFeedItem(item)) continue;
     if (isMediaScheduleFeedItemClosed(item as AnyFeedItem)) continue;
     if (!belongsToChurch(item)) continue;
