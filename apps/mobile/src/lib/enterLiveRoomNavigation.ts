@@ -41,12 +41,23 @@ export function buildScheduleLiveRoomRouteParams(
     scheduleStartMs?: number;
     scheduleEndMs?: number;
     churchId?: string;
+    viewerUserId?: string;
   }
 ): ScheduleLiveRoomRouteParams {
   const { canonicalFeedId, localScheduleId } = resolveScheduleLiveRoomFeedIds(item);
   const { slot, allSlots, isLiveNow, claimedByMe, routeSlotNumber } = options;
   const authority = buildLiveRoomAuthorityParams(item);
   const leanSlotsJson = buildLeanLiveScheduleSlotsJson(allSlots);
+  const viewerUserId = String(options.viewerUserId || "").trim();
+  const mediaHostIds = String(item?.mediaHostIds || item?.hostIds || authority.mediaHostIds || "")
+    .split(/[,\s]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const isPastor = !!viewerUserId && String(authority.actualChurchPastorUserId || "") === viewerUserId;
+  const isScheduleCreator = !!viewerUserId && String(authority.scheduleCreatedByUserId || "") === viewerUserId;
+  const isHost = !!viewerUserId && mediaHostIds.includes(viewerUserId);
+  const canPublishMicNow = isPastor || isScheduleCreator || isHost || claimedByMe;
+  const canPublishCameraNow = claimedByMe && isLiveNow;
 
   console.log("KRISTO_ENTER_LIVE_ROOM_ROUTE_BUILD", {
     feedId: canonicalFeedId,
@@ -90,9 +101,9 @@ export function buildScheduleLiveRoomRouteParams(
       slot?.claimedByAvatar || slot?.claimedByAvatarUri || slot?.avatarUri
     ),
     mediaSlotPublisher: claimedByMe ? "1" : "0",
-    canPublish: claimedByMe && isLiveNow ? "1" : "0",
-    canPublishCamera: claimedByMe && isLiveNow ? "1" : "0",
-    canPublishMic: claimedByMe && isLiveNow ? "1" : "0",
+    canPublish: canPublishMicNow || canPublishCameraNow ? "1" : "0",
+    canPublishCamera: canPublishCameraNow ? "1" : "0",
+    canPublishMic: canPublishMicNow ? "1" : "0",
     watchScheduledPublisher: claimedByMe ? "1" : "0",
     isGlobalMediaSlot: "1",
     ...authority,
@@ -163,6 +174,7 @@ export function enterLiveRoomFromScheduleCard(input: {
     scheduleStartMs: startMs,
     scheduleEndMs: endMs,
     churchId: input.viewerChurchId,
+    viewerUserId,
   });
 
   const pathname = "/(tabs)/more/my-church-room/messages/live-room";

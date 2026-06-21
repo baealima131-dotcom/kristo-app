@@ -983,7 +983,17 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const claimedLiveLayout = claimed && phase === "live";
   const claimedPreLiveLayout = claimed && phase !== "live" && phase !== "ended";
   const claimedCompactLayout = claimedLiveLayout || claimedPreLiveLayout;
-  const canEnterLiveRoom = claimedByMe && isLiveWindow && phase !== "ended";
+  const mediaHostIds = String((item as any)?.mediaHostIds || (item as any)?.hostIds || "")
+    .split(/[,\s]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const canEnterLiveRoomAsOwner =
+    currentUserId &&
+    (String((item as any)?.actualChurchPastorUserId || (item as any)?.churchPastorUserId || "") === currentUserId ||
+      String((item as any)?.scheduleCreatedByUserId || (item as any)?.createdByUserId || "") === currentUserId ||
+      mediaHostIds.includes(currentUserId));
+  const canEnterLiveRoom =
+    (claimedByMe || canEnterLiveRoomAsOwner) && isLiveWindow && phase !== "ended";
   const canEnterLiveRoomAsAudience =
     claimedByOther && isLiveWindow && phase !== "ended" && claimed;
   const visualTheme = isUnclaimedLiveOpen ? { ...theme, label: "LIVE NOW • OPEN" } : theme;
