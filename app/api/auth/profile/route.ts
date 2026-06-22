@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
 import { getChurchById } from "@/app/api/_lib/churches";
 import {
@@ -18,6 +16,12 @@ import {
   normalizePrivacy,
   type Gender,
 } from "@/app/api/auth/_lib/profile";
+import {
+  isPersistedProfileAvatarUrl,
+  pickPersistedProfileAvatarUrl,
+  uploadProfileAvatarFromDataUrl,
+  withPersistedProfileAvatarFields,
+} from "@/app/api/_lib/profileAvatarUpload";
 
 export const runtime = "nodejs";
 
@@ -62,17 +66,39 @@ function norm(s: any) {
   return String(s ?? "").trim();
 }
 
+function resolveIncomingAvatarUrl(body: Body, current: any, uploadedAvatarUrl: string) {
+  if (uploadedAvatarUrl && isPersistedProfileAvatarUrl(uploadedAvatarUrl)) {
+    return uploadedAvatarUrl;
+  }
+
+  const bodyAvatarUrl = typeof body.avatarUrl === "string" ? body.avatarUrl.trim() : "";
+  if (bodyAvatarUrl && isPersistedProfileAvatarUrl(bodyAvatarUrl)) {
+    return bodyAvatarUrl;
+  }
+
+  const persisted = pickPersistedProfileAvatarUrl(current);
+  if (persisted) return persisted;
+
+  return "";
+}
+
 async function saveAvatarData(userId: string, avatarData: string) {
-  const raw = String(avatarData || "");
-  const m = raw.match(/^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/);
-  if (!m) return "";
-  const ext = m[1] === "jpeg" ? "jpg" : m[1];
-  const dir = path.join(process.cwd(), "public", "uploads", "profile-avatars");
-  await fs.mkdir(dir, { recursive: true });
-  const safeUserId = String(userId || "user").replace(/[^a-zA-Z0-9_-]/g, "_");
-  const filename = `${safeUserId}-${Date.now()}.${ext}`;
-  await fs.writeFile(path.join(dir, filename), Buffer.from(m[2], "base64"));
-  return `/uploads/profile-avatars/${filename}`;
+  const uploaded = await uploadProfileAvatarFromDataUrl(userId, avatarData);
+  if (uploaded) {
+    console.log("[KRISTO PROFILE AVATAR UPLOADED]", {
+      userId,
+      avatarUrl: uploaded.slice(0, 160),
+      hasPublicUrl: /^https?:\/\//i.test(uploaded),
+    });
+    return uploaded;
+  }
+
+  console.error("[KRISTO PROFILE AVATAR UPLOAD FAILED]", {
+    userId,
+    reason: "no-durable-storage-url",
+    byteLen: String(avatarData || "").length,
+  });
+  return "";
 }
 
 function isKristoUserCode(x: any) {
@@ -209,9 +235,37 @@ export async function POST(req: Request) {
     ...(typeof body.privateMode === "boolean" ? { privateMode: body.privateMode } : {}),
   };
 
-  const uploadedAvatarUrl = body.avatarData ? await saveAvatarData(u.id, body.avatarData) : "";
+  let uploadedAvatarUrl = "";
+  if (body.avatarData) {
+    try {
+      uploadedAvatarUrl = await saveAvatarData(u.id, body.avatarData);
+    } catch (error: any) {
+      const message = String(error?.message || error || "Avatar upload failed.");
+      console.error("[KRISTO PROFILE AVATAR UPLOAD ERROR]", {
+        userId: u.id,
+        error: message,
+      });
+      return NextResponse.json(
+        { ok: false, error: message, reason: "avatar_upload_failed" },
+        { status: 500 }
+      );
+    }
 
-  const next = {
+    if (!uploadedAvatarUrl) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Avatar upload failed. Photo storage is not available.",
+          reason: "avatar_upload_failed",
+        },
+        { status: 503 }
+      );
+    }
+  }
+
+  const resolvedAvatarUrl = resolveIncomingAvatarUrl(body, current, uploadedAvatarUrl);
+
+  const nextBase = {
     ...current,
     fullName: norm(body.fullName) || current.fullName,
     phone: norm(body.phone) || current.phone,
@@ -224,7 +278,6 @@ export async function POST(req: Request) {
       (current as any).userCode ||
       (isKristoUserCode(u.id) ? String(u.id).toUpperCase() : undefined),
 
-    avatarUrl: uploadedAvatarUrl || (typeof body.avatarUrl === "string" ? body.avatarUrl : (current as any).avatarUrl),
     bio: typeof body.bio === "string" ? body.bio : (current as any).bio,
 
     dobVisibility: body.dobVisibility || current.dobVisibility,
@@ -245,6 +298,10 @@ export async function POST(req: Request) {
     updatedAt: Date.now(),
   };
 
+  const next = resolvedAvatarUrl
+    ? withPersistedProfileAvatarFields(nextBase, resolvedAvatarUrl)
+    : nextBase;
+
   await upsertProfilePersist(next);
 
     const churchProfile = activeMembership?.churchId
@@ -255,6 +312,7 @@ export async function POST(req: Request) {
       userId: u.id,
       fullName: next.fullName,
       userCode: (next as any).userCode,
+      hasAvatar: Boolean(pickPersistedProfileAvatarUrl(next)),
     });
 
     return NextResponse.json({

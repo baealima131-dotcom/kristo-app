@@ -32,6 +32,21 @@ export function isPersistedProfileAvatarUrl(raw: unknown): boolean {
   return false;
 }
 
+/** Mirror persisted avatar URL into profile fields consumed by claim hydration/resolvers. */
+export function withPersistedProfileAvatarFields<T extends Record<string, unknown>>(
+  profile: T,
+  avatarUrl: string
+): T & { avatarUrl: string; avatarUri: string; profilePhotoUrl: string } {
+  const url = String(avatarUrl || "").trim();
+  if (!url || !isPersistedProfileAvatarUrl(url)) return profile as any;
+  return {
+    ...profile,
+    avatarUrl: url,
+    avatarUri: url,
+    profilePhotoUrl: url,
+  };
+}
+
 function parseDataImageUrl(raw: string): { ext: string; contentType: string; buffer: Buffer } | null {
   const match = raw.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
   if (!match) return null;
@@ -94,7 +109,7 @@ export async function uploadProfileAvatarFromDataUrl(
   return `/uploads/profile-avatars/${filename}`;
 }
 
-/** Profile POST: upload when possible; fall back to inline data URL only for legacy profile display. */
+/** Profile POST: upload to durable storage; never persist data URLs on serverless. */
 export async function saveProfileAvatarForProfilePost(
   userId: string,
   avatarData: string
@@ -102,11 +117,10 @@ export async function saveProfileAvatarForProfilePost(
   const uploaded = await uploadProfileAvatarFromDataUrl(userId, avatarData);
   if (uploaded) return uploaded;
 
+  if (isServerlessRuntime()) return "";
+
   const raw = String(avatarData || "").trim();
   if (!raw.startsWith("data:image/")) return "";
-  if (isServerlessRuntime() && raw.length <= MAX_AVATAR_DATA_URL_LEN) {
-    return raw;
-  }
   return "";
 }
 
@@ -202,11 +216,13 @@ export async function ensureProfileAvatarUrlForClaim(userId: string): Promise<st
       return "";
     }
 
-    const next = {
-      ...profile,
-      avatarUrl: uploaded,
-      updatedAt: Date.now(),
-    };
+    const next = withPersistedProfileAvatarFields(
+      {
+        ...profile,
+        updatedAt: Date.now(),
+      },
+      uploaded
+    );
     await upsertProfilePersist(next);
 
     console.log("KRISTO_PROFILE_AVATAR_URL_RESOLVED_FOR_CLAIM", {
