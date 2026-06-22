@@ -2905,9 +2905,14 @@ async function handleFeedGet(
         ids: comments.map((c) => c.id),
       });
 
+      const enrichedSlots = await enrichScheduleSlotsClaimAvatars(
+        Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
+      );
+
       const detail: FeedPostDetail = {
         item: {
           ...item,
+          scheduleSlots: enrichedSlots,
           commentCount,
           replyCount,
           totalDiscussionCount: commentCount + replyCount,

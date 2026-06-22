@@ -89,6 +89,7 @@ import { subscribeChurchLiveControlRoomSync } from "@/src/lib/churchLiveControlR
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import {
   applyRingClaimHintsToScheduleSlots,
+  enrichClaimedSlotsFromMemberAvatars,
   enrichScheduleSlotsFromLiveRequests,
   mergeLiveRoomScheduleSlots,
   normalizeLiveScheduleSlots,
@@ -4020,6 +4021,7 @@ export default function LiveRoomScreen() {
   const [backendScheduleHydrated, setBackendScheduleHydrated] = useState(false);
   const [backendScheduleExplicitlyEnded, setBackendScheduleExplicitlyEnded] = useState(false);
   const [churchLiveControlScheduleId, setChurchLiveControlScheduleId] = useState("");
+  const [feedAvatarEnrichedSlots, setFeedAvatarEnrichedSlots] = useState<any[]>([]);
   const [runtimeSlotOverrides, setRuntimeSlotOverrides] = useState<Record<string, any>>({});
   const liveRoomSlotSourceLoggedRef = useRef("");
 
@@ -4148,34 +4150,45 @@ export default function LiveRoomScreen() {
       return [];
     }
 
-    const feedSlots =
-      routeIsChurchLiveControl || !liveScheduleFeedId
-        ? []
-        : feedScheduleSlotsForLive(liveScheduleFeedId);
+    const scheduleFeedIdForMerge = routeIsChurchLiveControl
+      ? String(churchLiveControlScheduleId || liveScheduleFeedId || "").trim()
+      : String(liveScheduleFeedId || "").trim();
+
+    const feedSlots = scheduleFeedIdForMerge
+      ? feedScheduleSlotsForLive(scheduleFeedIdForMerge)
+      : [];
+
     const merged = mergeLiveRoomScheduleSlots(
       backendScheduleSlots,
+      feedAvatarEnrichedSlots,
       feedSlots,
       routeScheduleSlots
     );
     const withHints = applyRingClaimHintsToScheduleSlots(
       merged,
-      liveScheduleFeedId,
+      scheduleFeedIdForMerge || liveScheduleFeedId,
       getRingClaimHints(),
       feedList() as any[]
     );
-    return enrichScheduleSlotsFromLiveRequests(
-      withHints,
-      backendLiveRequests,
-      liveScheduleFeedId || String((params as any)?.liveId || "")
+    return enrichClaimedSlotsFromMemberAvatars(
+      enrichScheduleSlotsFromLiveRequests(
+        withHints,
+        backendLiveRequests,
+        liveScheduleFeedId || String((params as any)?.liveId || "")
+      ),
+      memberAvatarByUserId
     );
   }, [
     ignoreRouteSlotsForStaleBackend,
     routeIsChurchLiveControl,
+    churchLiveControlScheduleId,
     backendScheduleSlots,
+    feedAvatarEnrichedSlots,
     routeScheduleSlots,
     liveScheduleFeedId,
     feedScheduleTick,
     backendLiveRequests,
+    memberAvatarByUserId,
     (params as any)?.liveId,
   ]);
 
@@ -5426,6 +5439,12 @@ export default function LiveRoomScreen() {
             slot: currentMainStageSlot.slot,
             claimedByUserId: currentMainStageSlot.claimedByUserId,
             claimedByName: currentMainStageSlot.claimedByName || currentMainStageSlot.name,
+            claimedByAvatarUri: String(currentMainStageSlot.claimedByAvatarUri || ""),
+            claimedByAvatar: String(currentMainStageSlot.claimedByAvatar || ""),
+            claimedByAvatarUrl: String(currentMainStageSlot.claimedByAvatarUrl || ""),
+            claimedByPhotoUrl: String(currentMainStageSlot.claimedByPhotoUrl || ""),
+            avatarUrl: String((currentMainStageSlot as any).avatarUrl || ""),
+            profilePhotoUrl: String((currentMainStageSlot as any).profilePhotoUrl || ""),
           }
         : null,
     });
@@ -6868,6 +6887,72 @@ export default function LiveRoomScreen() {
     isMediaInstantLive,
     routeScheduleSlots.length,
     initialRouteScheduleSlots.length,
+  ]);
+
+  useEffect(() => {
+    if (isMediaInstantLive || !routeIsChurchLiveControl) {
+      setFeedAvatarEnrichedSlots([]);
+      return;
+    }
+
+    const hydrateFeedId = String(
+      churchLiveControlScheduleId || liveScheduleFeedId || ""
+    ).trim();
+    if (!hydrateFeedId || !isBackendFeedScheduleId(hydrateFeedId)) {
+      setFeedAvatarEnrichedSlots([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function hydrateFeedClaimAvatars(source: "immediate" | "poll") {
+      try {
+        const res: any = await apiGet(
+          `/api/church/feed?id=${encodeURIComponent(hydrateFeedId)}`,
+          { headers: liveApiHeaders as any },
+          {
+            screen: "LiveRoomClaimAvatars",
+            throttleMs: source === "poll" ? 45000 : 0,
+          }
+        );
+        const item = res?.data?.item || res?.item || res?.data || {};
+        const slots = normalizeLiveScheduleSlots(
+          Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
+        );
+        if (cancelled) return;
+        setFeedAvatarEnrichedSlots(slots);
+        console.log("KRISTO_LIVE_FEED_AVATAR_HYDRATE", {
+          feedId: hydrateFeedId,
+          source,
+          slotCount: slots.length,
+          claimedWithAvatar: slots.filter((slot: any) =>
+            Boolean(resolvePersistedClaimAvatarUri(slot))
+          ).length,
+        });
+      } catch (error) {
+        if (!cancelled) {
+          console.log("KRISTO_LIVE_FEED_AVATAR_HYDRATE_FAIL", {
+            feedId: hydrateFeedId,
+            source,
+            error: String((error as any)?.message || error || "unknown"),
+          });
+        }
+      }
+    }
+
+    void hydrateFeedClaimAvatars("immediate");
+    const timer = setInterval(() => void hydrateFeedClaimAvatars("poll"), 45000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [
+    isMediaInstantLive,
+    routeIsChurchLiveControl,
+    churchLiveControlScheduleId,
+    liveScheduleFeedId,
+    liveApiHeaders,
   ]);
 
   useEffect(() => {
@@ -8850,11 +8935,23 @@ export default function LiveRoomScreen() {
           slot: guest.slot,
           userId: guest.claimedByUserId,
           name: guest.name,
+          avatar: String(guest.avatar || ""),
+          hasAvatar: isImageAvatar(guest.avatar),
+          claimedByAvatarUri: String(guest.claimedByAvatarUri || ""),
+          claimedByAvatar: String(guest.claimedByAvatar || ""),
+          claimedByAvatarUrl: String(guest.claimedByAvatarUrl || ""),
+          claimedByPhotoUrl: String(guest.claimedByPhotoUrl || ""),
         })),
         queueSlots: visibleQueueSlots.map((guest: any) => ({
           slot: guest.slot,
           userId: guest.claimedByUserId,
           name: guest.name,
+          avatar: String(guest.avatar || ""),
+          hasAvatar: isImageAvatar(guest.avatar),
+          claimedByAvatarUri: String(guest.claimedByAvatarUri || ""),
+          claimedByAvatar: String(guest.claimedByAvatar || ""),
+          claimedByAvatarUrl: String(guest.claimedByAvatarUrl || ""),
+          claimedByPhotoUrl: String(guest.claimedByPhotoUrl || ""),
         })),
       });
     } else if (myClaimedStageSlot) {

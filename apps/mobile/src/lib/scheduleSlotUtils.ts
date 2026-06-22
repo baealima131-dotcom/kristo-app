@@ -390,12 +390,45 @@ function pickClaimedUserAvatarRaw(slot: any, claimedBy: any): Array<[string, unk
     ["slot.claimedByAvatarUrl", slot?.claimedByAvatarUrl],
     ["slot.claimedByPhotoUrl", slot?.claimedByPhotoUrl],
     ["slot.claimedByPhotoURL", slot?.claimedByPhotoURL],
+    ["slot.avatarUri", slot?.avatarUri],
+    ["slot.avatarUrl", slot?.avatarUrl],
+    ["slot.profilePhotoUrl", slot?.profilePhotoUrl],
+    ["slot.profileImage", slot?.profileImage],
     ["claimedBy.avatarUri", claimedBy?.avatarUri],
     ["claimedBy.avatarUrl", claimedBy?.avatarUrl],
     ["claimedBy.profileImage", claimedBy?.profileImage],
     ["claimedBy.photoURL", claimedBy?.photoURL],
     ["claimedBy.image", claimedBy?.image],
   ];
+}
+
+/** Keep the best non-empty claim avatar when merging schedule slot rows. */
+export function coalesceScheduleSlotClaimAvatar(...slots: any[]): string {
+  for (const slot of slots) {
+    const uri = resolvePersistedClaimAvatarUri(slot);
+    if (uri) return uri;
+  }
+  return "";
+}
+
+/** Backfill claimed-slot avatar fields from church member directory when slot rows lack URIs. */
+export function enrichClaimedSlotsFromMemberAvatars(
+  slots: any[],
+  memberAvatarByUserId: Record<string, string> = {}
+): any[] {
+  if (!Array.isArray(slots) || !slots.length) return [];
+  if (!memberAvatarByUserId || !Object.keys(memberAvatarByUserId).length) return slots;
+
+  return slots.map((slot) => {
+    const uid = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+    if (!uid) return slot;
+    if (coalesceScheduleSlotClaimAvatar(slot)) return slot;
+
+    const raw = String(memberAvatarByUserId[uid] || "").trim();
+    if (!raw) return slot;
+
+    return patchMediaSlotClaimAvatarFields(slot, raw);
+  });
 }
 
 function pickMediaSlotAvatarRaw(slot: any, claimedBy: any): Array<[string, unknown]> {
@@ -569,6 +602,10 @@ export function resolvePersistedClaimAvatarUri(slot: any): string {
     slot?.claimedByAvatarUrl,
     slot?.claimedByPhotoUrl,
     slot?.claimedByPhotoURL,
+    slot?.avatarUri,
+    slot?.avatarUrl,
+    slot?.profilePhotoUrl,
+    slot?.profileImage,
     claimedByObj?.avatarUri,
     claimedByObj?.avatarUrl,
     claimedByObj?.profileImage,
@@ -1027,19 +1064,22 @@ function mergeLiveRoomScheduleSlotRow(prev: any, next: any) {
         ? otherWin.endMs
         : Number(picked.endMs || other.endMs || 0);
 
-  return {
-    ...other,
-    ...picked,
-    startMs,
-    endMs,
-    startsAt: String(picked.startsAt || other.startsAt || "").trim(),
-    endsAt: String(picked.endsAt || other.endsAt || "").trim(),
-    startTime: String(picked.startTime || other.startTime || "").trim(),
-    endTime: String(picked.endTime || other.endTime || "").trim(),
-    meetingDate: String(picked.meetingDate || other.meetingDate || "").trim(),
-    meetingEndDate: String(picked.meetingEndDate || other.meetingEndDate || "").trim(),
-    durationMin: Math.max(Number(picked.durationMin || 0), Number(other.durationMin || 0), 1),
-  };
+  return patchMediaSlotClaimAvatarFields(
+    {
+      ...other,
+      ...picked,
+      startMs,
+      endMs,
+      startsAt: String(picked.startsAt || other.startsAt || "").trim(),
+      endsAt: String(picked.endsAt || other.endsAt || "").trim(),
+      startTime: String(picked.startTime || other.startTime || "").trim(),
+      endTime: String(picked.endTime || other.endTime || "").trim(),
+      meetingDate: String(picked.meetingDate || other.meetingDate || "").trim(),
+      meetingEndDate: String(picked.meetingEndDate || other.meetingEndDate || "").trim(),
+      durationMin: Math.max(Number(picked.durationMin || 0), Number(other.durationMin || 0), 1),
+    },
+    coalesceScheduleSlotClaimAvatar(picked, other)
+  );
 }
 
 /** Merge schedule slot arrays for live room — prefers claimed / fresher rows. */
@@ -1096,25 +1136,37 @@ export function applyRingClaimHintsToScheduleSlots(
     });
 
     if (!hint) return slot;
-    if (String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim()) return slot;
 
-    const avatar = sanitizePersistedClaimAvatarUri(
+    const slotOwnerId = String(slot?.claimedByUserId || slot?.claimedBy?.userId || "").trim();
+    const hintUserId = String(hint.userId || "").trim();
+    const slotAvatar = coalesceScheduleSlotClaimAvatar(slot);
+    const hintAvatar = sanitizePersistedClaimAvatarUri(
       hint.avatarUri || slot?.claimedByAvatar,
       "ring-hint-enrich"
     );
+
+    // Already claimed by someone else — do not overwrite.
+    if (slotOwnerId && hintUserId && slotOwnerId !== hintUserId) return slot;
+
+    // Same claimant with avatar already on the row — keep slot as-is.
+    if (slotOwnerId && slotAvatar) return slot;
+
+    const avatar = hintAvatar || slotAvatar;
+    if (!hintUserId) return slot;
+
     return normalizeLiveScheduleSlot(
       {
         ...slot,
         claimed: true,
         isClaimed: true,
-        claimedByUserId: hint.userId,
-        claimedByName: hint.name || "Member",
+        claimedByUserId: slotOwnerId || hintUserId,
+        claimedByName: slot?.claimedByName || hint.name || "Member",
         claimedByAvatarUri: avatar,
         claimedByAvatar: avatar,
         claimedBy: {
-          userId: hint.userId,
-          name: hint.name || "Member",
-          role: hint.role || "Member",
+          userId: slotOwnerId || hintUserId,
+          name: slot?.claimedByName || hint.name || "Member",
+          role: hint.role || slot?.claimedByRole || "Member",
           avatarUri: avatar,
         },
       },
