@@ -192,7 +192,7 @@ export function applyFastLiveStageAuthorityBoost(
       stage.canPublishClaimedMicNow ||
       input.fastSession.trustedIsActualChurchPastor ||
       input.fastSession.trustedIsMediaScheduleCreator ||
-      stage.userHasClaimedScheduleSlot,
+      (input.fastSession.trustedOwnsActiveSlot && input.fastSlotWindowOpen),
     pastorPermanentMicNow:
       stage.pastorPermanentMicNow || input.fastSession.trustedIsActualChurchPastor,
     mediaHostPermanentMicNow:
@@ -336,7 +336,7 @@ export type LiveStageAuthority = {
 
 /**
  * V1 Media Live (scheduled) authority:
- * - Mic: every claimed slot owner + pastor/trusted media host (even without a claim).
+ * - Mic: active slot owner during [startMs, endMs) + pastor/trusted media host (permanent).
  * - Camera: current active slot owner only, and only while startMs <= now < endMs.
  * - Pastor/host without a claim: mic-only (never camera-by-role).
  * - Viewers without a claim: watch only.
@@ -372,11 +372,14 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
       input.authority.isMediaScheduleCreator ||
       input.isDeclaredMediaHostForThisLive);
 
+  const activeSlotOwnerMicNow =
+    userOwnsCurrentActiveSlot && activeSlotCameraWindowOpen;
+
   const canPublishClaimedMicNow = input.isMediaInstantLive
     ? input.isPastorLiveOwner || input.roleLooksLikeHost || input.approvedViewerCanMic
     : pastorPermanentMicNow ||
       mediaHostPermanentMicNow ||
-      userHasClaimedScheduleSlot;
+      activeSlotOwnerMicNow;
 
   const canPublishClaimedCameraNow = input.isMediaInstantLive
     ? input.isPastorLiveOwner ||
@@ -403,8 +406,8 @@ export function evaluateLiveStageAuthority(input: LiveStageAuthorityInput): Live
   // Church subscription gates Media Studio tools (pastor/host). Claimed schedule slot
   // speakers may publish their slot without target-church media-tool entitlement.
   if (input.churchSubscriptionActive === false) {
-    const claimedSlotMic = userHasClaimedScheduleSlot;
-    const claimedSlotCamera = userOwnsCurrentActiveSlot && activeSlotCameraWindowOpen;
+    const claimedSlotMic = activeSlotOwnerMicNow;
+    const claimedSlotCamera = activeSlotOwnerMicNow;
     return {
       ...result,
       pastorPermanentMicNow: false,
@@ -504,7 +507,7 @@ export function logMediaLiveV1StageAuthority(
     canPublishClaimedMicNow: stage.canPublishClaimedMicNow,
     canPublishClaimedCameraNow: stage.canPublishClaimedCameraNow,
     canPublishLiveVideoNow: stage.canPublishLiveVideoNow,
-    rules: "mic=claimed+pastor/host; camera=active-slot-owner+time-window",
+    rules: "mic=active-slot-owner+time-window+pastor/host; camera=active-slot-owner+time-window",
     ...extra,
   });
 }
