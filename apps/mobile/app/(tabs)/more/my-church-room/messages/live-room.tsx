@@ -133,10 +133,18 @@ import {
 import { fetchLiveKitToken } from "@/src/lib/liveKitTokenPrefetch";
 import { logLiveKitTokenClaims } from "@/src/lib/liveKitTokenDecode";
 import {
+  logCameraPublishError,
   logCameraPublishResult,
   logCameraPublishStart,
+  logCameraPublishSuccess,
+  logCameraTrackCreateDone,
   logCameraTrackCreateResult,
   logCameraTrackCreateStart,
+  logLocalCameraPublicationState,
+  logLocalMicPublicationState,
+  logLiveMicSuppressAttempt,
+  logLiveMicSuppressResult,
+  logStalePublisherStageMount,
   logLiveFirstFrameRendered,
   logLiveKitConnectResult,
   logLiveKitConnectStart,
@@ -362,6 +370,47 @@ function logLivePerf(stage: string, extra?: Record<string, unknown>) {
   });
 }
 
+function logMainStageRingStyleProbe(
+  component: string,
+  input: {
+    mounting: boolean;
+    style?: ViewStyle | ViewStyle[] | null | false;
+    returnNull?: boolean;
+    nullReason?: string;
+    extra?: Record<string, unknown>;
+  }
+) {
+  const flat = input.style ? StyleSheet.flatten(input.style as any) : {};
+  const transformEntries = Array.isArray(flat.transform) ? flat.transform : [];
+  const scaleEntry = transformEntries.find(
+    (entry: any) => entry && typeof entry === "object" && "scale" in entry
+  ) as { scale?: number } | undefined;
+
+  console.log("KRISTO_MAIN_STAGE_RING_RENDER", {
+    component,
+    mounting: input.mounting,
+    returnNull: !!input.returnNull,
+    nullReason: input.nullReason || null,
+    zIndex: flat.zIndex ?? null,
+    opacity: flat.opacity ?? null,
+    display: (flat as any).display ?? null,
+    scale: scaleEntry?.scale ?? null,
+    width: flat.width ?? null,
+    height: flat.height ?? null,
+    position: flat.position ?? null,
+    top: flat.top ?? null,
+    left: flat.left ?? null,
+    right: flat.right ?? null,
+    bottom: flat.bottom ?? null,
+    borderWidth: flat.borderWidth ?? null,
+    borderColor: flat.borderColor ?? null,
+    overflow: flat.overflow ?? null,
+    backgroundColor: flat.backgroundColor ?? null,
+    flattenedStyleKeys: Object.keys(flat),
+    ...(input.extra || {}),
+  });
+}
+
 async function fetchLightLiveStateWithPerf(
   headers: Record<string, string>,
   screen: string,
@@ -463,22 +512,6 @@ if (typeof gAny.WebSocket !== "undefined") {
 const BG = "#020817";
 const GOLD = "#D9B35F";
 const BORDER = "rgba(255,255,255,0.10)";
-
-function logLocalMicPublicationState(extra?: Record<string, unknown>) {
-  console.log("KRISTO_LOCAL_MIC_PUBLICATION_STATE", extra);
-}
-
-function logLiveMicSuppressAttempt(extra?: Record<string, unknown>) {
-  console.log("KRISTO_LIVE_MIC_SUPPRESS_ATTEMPT", extra);
-}
-
-function logLiveMicSuppressResult(extra?: Record<string, unknown>) {
-  console.log("KRISTO_LIVE_MIC_SUPPRESS_RESULT", extra);
-}
-
-function logStalePublisherStageMount(extra?: Record<string, unknown>) {
-  console.log("KRISTO_LIVEKIT_STALE_PUBLISHER_STAGE", extra);
-}
 
 
 function stopKristoLiveKitRoomTracks(room: any) {
@@ -774,6 +807,12 @@ function KristoLiveKitConnectionLifecycle({
         identity: identity(),
         source,
       });
+      try {
+        const ensureBridge = (globalThis as any).__KRISTO_ENSURE_LIVE_BRIDGE_SESSION__;
+        if (typeof ensureBridge === "function") {
+          ensureBridge(bridgeId, "livekit-connected");
+        }
+      } catch {}
     };
 
     const onConnected = () => {
@@ -2219,6 +2258,63 @@ async function suppressLocalMicPublication(
   return !after.hasPublication;
 }
 
+async function suppressLocalCameraPublication(
+  room: any,
+  reason: string,
+  extra?: Record<string, unknown>
+) {
+  const before = readLocalCameraPublicationState(room);
+  console.log("KRISTO_LIVEKIT_CAMERA_AUTH_LOST_SUPPRESS", {
+    reason,
+    before,
+    ...(extra || {}),
+  });
+
+  const lp: any = room?.localParticipant;
+  if (!lp) return false;
+
+  const unpublished: string[] = [];
+  try {
+    const pubs = Array.from(lp?.trackPublications?.values?.() || []).filter((pub: any) => {
+      const source = String(pub?.source || "").toLowerCase();
+      const kind = String(pub?.kind || pub?.track?.kind || "").toLowerCase();
+      return kind === "video" || source.includes("camera");
+    });
+
+    for (const pub of pubs as any[]) {
+      const track: any = pub?.track || pub?.videoTrack || null;
+      if (!track) continue;
+      try {
+        if (track?.mediaStreamTrack) track.mediaStreamTrack.enabled = false;
+        await lp.unpublishTrack(track).catch(() => {});
+        try {
+          track.stop?.();
+        } catch {}
+        unpublished.push(String(pub?.trackSid || pub?.sid || pub?.source || "video"));
+      } catch {}
+    }
+  } catch {}
+
+  const after = readLocalCameraPublicationState(room);
+  console.log("KRISTO_LIVEKIT_CAMERA_AUTH_LOST_SUPPRESS_RESULT", {
+    reason,
+    ok: !after.hasPublication,
+    unpublished,
+    before,
+    after,
+  });
+  console.log("KRISTO_LIVEKIT_VIDEO_SUPPRESS_RESULT", {
+    reason,
+    ok: !after.hasPublication,
+    unpublished,
+    before,
+    after,
+    ...(extra || {}),
+  });
+
+  return !after.hasPublication;
+}
+
 function readLocalCameraPublicationState(room: any) {
   try {
     const lp = room?.localParticipant;
@@ -2372,6 +2468,32 @@ function KristoRemoteOrLocalVideo({
       room.off(RoomEvent.Reconnected, onConnected);
     };
   }, [room, canPublishMic]);
+
+  useEffect(() => {
+    if (!room || canPublishCamera) return;
+
+    let cancelled = false;
+
+    const enforceCameraOff = async (trigger: string) => {
+      if (cancelled) return;
+      await suppressLocalCameraPublication(room, trigger, { canPublishCamera });
+      localVideoTrackRef.current = null;
+      setLocalVideoTrack(null);
+      setLocalPreviewURL("");
+    };
+
+    void enforceCameraOff("authority-canPublishCamera-false");
+
+    const onConnected = () => void enforceCameraOff("room-connected-camera-suppress");
+    room.on(RoomEvent.Connected, onConnected);
+    room.on(RoomEvent.Reconnected, onConnected);
+
+    return () => {
+      cancelled = true;
+      room.off(RoomEvent.Connected, onConnected);
+      room.off(RoomEvent.Reconnected, onConnected);
+    };
+  }, [room, canPublishCamera]);
 
   useEffect(() => {
     (globalThis as any).__KRISTO_SET_LOCAL_MIC_MUTED__ = async (muted: boolean) => {
@@ -2605,19 +2727,64 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     let cancelled = false;
     let localTrack: any = null;
 
-    const enableCameraWhenConnected = async () => {
+    const enableCameraWhenConnected = async (triggerSource = "initial") => {
       const state = String((room as any)?.state || "");
       const identity = String((room as any)?.localParticipant?.identity || "");
+      const publicationState = readLocalCameraPublicationState(room);
 
-      console.log("KRISTO_MANUAL_PUBLISH_WAIT", { state, identity, cameraFacing, cameraPaused });
+      logLocalCameraPublicationState({
+        triggerSource,
+        state,
+        identity,
+        hasPublication: publicationState.hasPublication,
+        publicationCount: publicationState.publicationCount,
+        cameraFacing,
+        cameraPaused,
+        canPublishCamera,
+      });
+
+      console.log("KRISTO_MANUAL_PUBLISH_WAIT", {
+        triggerSource,
+        state,
+        identity,
+        cameraFacing,
+        cameraPaused,
+        hasPublication: publicationState.hasPublication,
+      });
       console.log("KRISTO_CAMERA_PERMISSION_SOURCE", {
         enabled: true,
         source: "livekit-publish-track",
         renderLocalPreview,
         canPublishCamera,
+        triggerSource,
       });
 
       if (state !== "connected" || !identity) return;
+      if (publicationState.hasPublication) {
+        const publishedTrack: any = publicationState.track;
+        if (publishedTrack && localVideoTrackRef.current !== publishedTrack) {
+          localVideoTrackRef.current = publishedTrack;
+          setLocalVideoTrack(publishedTrack);
+        }
+        if (!videoFacingRef.current) {
+          videoFacingRef.current = cameraFacing;
+        }
+        markClaimEnterCameraPublished(
+          String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "")
+        );
+        logCameraPublishSuccess({
+          triggerSource,
+          cameraFacing,
+          reusedExistingPublication: true,
+        });
+        console.log("KRISTO_LIVEKIT_CAMERA_AUTH_GAINED_PUBLISH", {
+          triggerSource,
+          cameraFacing,
+          reusedExistingPublication: true,
+        });
+        return;
+      }
+
       if (videoPublishBusyRef.current) return;
 
       videoPublishBusyRef.current = true;
@@ -2731,6 +2898,11 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
           triggerSource,
           hasPublication: afterPublish.hasPublication,
         });
+        console.log("KRISTO_LIVEKIT_CAMERA_AUTH_GAINED_PUBLISH", {
+          triggerSource,
+          cameraFacing,
+          hasPublication: afterPublish.hasPublication,
+        });
         markClaimEnterCameraPublished(
           String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "")
         );
@@ -2782,13 +2954,49 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       }
     };
 
-    enableCameraWhenConnected();
-    room.on(RoomEvent.Connected, enableCameraWhenConnected);
+    const connectedRetryTimers: Array<ReturnType<typeof setTimeout>> = [];
+
+    const scheduleCameraPublishRetries = (triggerSource: string) => {
+      const timers: Array<ReturnType<typeof setTimeout>> = [];
+      for (const delayMs of [0, 400, 1200, 2500]) {
+        timers.push(
+          setTimeout(() => {
+            if (cancelled) return;
+            const publicationState = readLocalCameraPublicationState(room);
+            logLocalCameraPublicationState({
+              triggerSource: `${triggerSource}-retry-${delayMs}`,
+              hasPublication: publicationState.hasPublication,
+              publicationCount: publicationState.publicationCount,
+              roomState: publicationState.roomState,
+              identity: publicationState.identity,
+            });
+            if (publicationState.hasPublication) return;
+            videoPublishBusyRef.current = false;
+            void enableCameraWhenConnected(`${triggerSource}-retry-${delayMs}`);
+          }, delayMs)
+        );
+      }
+      return timers;
+    };
+
+    const onConnectedPublishCamera = () => {
+      const timers = scheduleCameraPublishRetries("RoomEvent.Connected");
+      connectedRetryTimers.push(...timers);
+    };
+
+    onConnectedPublishCamera();
+    room.on(RoomEvent.Connected, onConnectedPublishCamera);
+    room.on(RoomEvent.Reconnected, onConnectedPublishCamera);
 
     return () => {
       cancelled = true;
-      room.off(RoomEvent.Connected, enableCameraWhenConnected);
+      room.off(RoomEvent.Connected, onConnectedPublishCamera);
+      room.off(RoomEvent.Reconnected, onConnectedPublishCamera);
+      connectedRetryTimers.forEach((timer) => clearTimeout(timer));
       videoPublishBusyRef.current = false;
+      try {
+        localTrack?.stop?.();
+      } catch {}
     };
   }, [room, canPublishCamera, cameraFacing]);
 
@@ -3551,11 +3759,6 @@ export default function LiveRoomScreen() {
   const [liveNowMs, setLiveNowMs] = useState(Date.now());
   const [accessRequestSent, setAccessRequestSent] = useState(false);
   const [accessApproveCountdown, setAccessApproveCountdown] = useState<number | null>(null);
-
-  useEffect(() => {
-    const t = setInterval(() => setLiveNowMs(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
 
   const activeAssignment = useMemo(
     () => (projectId ? projectStore.getActiveAssignment(projectId) : null),
@@ -4427,8 +4630,12 @@ export default function LiveRoomScreen() {
 
     const claimedSlots = allSlots.filter(isClaimedScheduleSlot);
 
-    const activeByTime = claimedSlots.find((slot: any) => isScheduleSlotActiveNow(slot, now));
-    if (activeByTime) return activeByTime;
+    const activeSlots = claimedSlots.filter((slot: any) => isScheduleSlotActiveNow(slot, now));
+    if (activeSlots.length) {
+      return activeSlots.sort(
+        (a: any, b: any) => Number(b.startMs || 0) - Number(a.startMs || 0)
+      )[0];
+    }
 
     const hasTimedClaimedWindows = claimedSlots.some(
       (slot: any) =>
@@ -4742,6 +4949,18 @@ export default function LiveRoomScreen() {
     updatedAt: 0,
   });
 
+  if (
+    stableCurrentSlotRef.current.endMs > 0 &&
+    liveNowMs >= stableCurrentSlotRef.current.endMs
+  ) {
+    stableCurrentSlotRef.current = {
+      slot: 0,
+      ownerId: "",
+      endMs: 0,
+      updatedAt: 0,
+    };
+  }
+
   if (rawCurrentSlotNumber > 0) {
     stableCurrentSlotRef.current = {
       slot: rawCurrentSlotNumber,
@@ -4765,9 +4984,16 @@ export default function LiveRoomScreen() {
   const stableAgeMs =
     Date.now() - Number(stableCurrentSlotRef.current.updatedAt || 0);
 
+  const hasTimedClaimedSchedule = authorityStageSlots.some((slot: any, index: number) => {
+    if (!isClaimedScheduleSlot(slot)) return false;
+    const win = getScheduleSlotWindow(slot, index);
+    return win.startMs > 0 && win.endMs > win.startMs;
+  });
+
   const stableSlotStillLive =
-    Number(stableCurrentSlotRef.current.endMs || 0) <= 0 ||
-    liveNowMs <= Number(stableCurrentSlotRef.current.endMs || 0);
+    Number(stableCurrentSlotRef.current.endMs || 0) > 0
+      ? liveNowMs < Number(stableCurrentSlotRef.current.endMs || 0)
+      : !hasTimedClaimedSchedule;
 
   const shouldHoldPreviousSlot =
     rawCurrentSlotNumber === 0 &&
@@ -4779,7 +5005,9 @@ export default function LiveRoomScreen() {
     ? stableCurrentSlotRef.current.slot
     : rawCurrentSlotNumber > 0
       ? rawCurrentSlotNumber
-      : routeCurrentSlotNumber;
+      : hasTimedClaimedSchedule
+        ? 0
+        : routeCurrentSlotNumber;
 
   const currentSlotNumber = resolvedSlotNumber;
 
@@ -4790,9 +5018,13 @@ export default function LiveRoomScreen() {
     if (shouldHoldPreviousSlot) {
       return stableCurrentSlotRef.current.ownerId;
     }
+    if (hasTimedClaimedSchedule && !rawCurrentSlotOwnerId) {
+      return "";
+    }
     return (
       rawCurrentSlotOwnerId ||
-      (resolvedSlotNumber === routeCurrentSlotNumber
+      (!hasTimedClaimedSchedule &&
+      resolvedSlotNumber === routeCurrentSlotNumber
         ? String((params as any)?.claimedByUserId || "").trim()
         : "")
     );
@@ -5028,6 +5260,150 @@ export default function LiveRoomScreen() {
     canPublishClaimedCameraNow,
   });
 
+  const liveStageAuthoritySnapshotRef = useRef({
+    currentSlotNumber: 0,
+    currentSlotOwnerId: "",
+    canPublishClaimedMicNow: false,
+    canPublishClaimedCameraNow: false,
+    userOwnsCurrentActiveSlot: false,
+    userHasClaimedScheduleSlot: false,
+  });
+
+  useEffect(() => {
+    if (isMediaInstantLive || !hasTimedClaimedSchedule) return;
+
+    let cancelled = false;
+    let boundaryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const armBoundaryTimer = () => {
+      if (cancelled) return;
+
+      const now = Date.now();
+      const boundaries: number[] = [];
+
+      authorityStageSlots.forEach((slot: any, index: number) => {
+        if (!isClaimedScheduleSlot(slot)) return;
+        const win = getScheduleSlotWindow(slot, index);
+        if (win.startMs > now) boundaries.push(win.startMs);
+        if (win.endMs > now) boundaries.push(win.endMs);
+      });
+
+      const currentEndMs = Number(currentMainStageSlot?.endMs || currentSlotEndMs || 0);
+      if (currentEndMs > now) boundaries.push(currentEndMs);
+
+      const nextBoundaryMs = boundaries.length ? Math.min(...boundaries) : null;
+      const delayMs = nextBoundaryMs ? Math.max(16, nextBoundaryMs - now + 16) : 1000;
+
+      console.log("KRISTO_LIVE_SLOT_BOUNDARY_TIMER", {
+        nextBoundaryMs,
+        delayMs,
+        currentSlotNumber,
+        currentSlotOwnerId,
+        currentEndMs,
+        liveNowMs: now,
+        focused: isFocused,
+      });
+
+      if (boundaryTimer) clearTimeout(boundaryTimer);
+      boundaryTimer = setTimeout(() => {
+        if (cancelled) return;
+
+        const at = Date.now();
+        const prev = liveStageAuthoritySnapshotRef.current;
+        setLiveNowMs(at);
+
+        console.log("KRISTO_LIVE_SLOT_AUTO_ADVANCE", {
+          at,
+          prevSlotNumber: prev.currentSlotNumber,
+          prevSlotOwnerId: prev.currentSlotOwnerId,
+          boundaryMs: nextBoundaryMs,
+        });
+
+        armBoundaryTimer();
+      }, delayMs);
+    };
+
+    armBoundaryTimer();
+
+    const safetyTick =
+      isFocused
+        ? setInterval(() => {
+            setLiveNowMs(Date.now());
+          }, 1000)
+        : null;
+
+    return () => {
+      cancelled = true;
+      if (boundaryTimer) clearTimeout(boundaryTimer);
+      if (safetyTick) clearInterval(safetyTick);
+    };
+  }, [
+    isMediaInstantLive,
+    hasTimedClaimedSchedule,
+    isFocused,
+    authorityStageSlots,
+    currentMainStageSlot?.endMs,
+    currentMainStageSlot?.slot,
+    currentMainStageSlot?.claimedByUserId,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    currentSlotEndMs,
+  ]);
+
+  useEffect(() => {
+    if (isMediaInstantLive || !hasTimedClaimedSchedule) return;
+
+    const prev = liveStageAuthoritySnapshotRef.current;
+    const changed =
+      prev.currentSlotNumber !== currentSlotNumber ||
+      prev.currentSlotOwnerId !== currentSlotOwnerId ||
+      prev.canPublishClaimedMicNow !== canPublishClaimedMicNow ||
+      prev.canPublishClaimedCameraNow !== canPublishClaimedCameraNow ||
+      prev.userOwnsCurrentActiveSlot !== userOwnsCurrentActiveSlot;
+
+    if (changed) {
+      console.log("KRISTO_LIVE_AUTHORITY_RECOMPUTE_AFTER_BOUNDARY", {
+        liveNowMs,
+        prevSlotNumber: prev.currentSlotNumber,
+        nextSlotNumber: currentSlotNumber,
+        prevSlotOwnerId: prev.currentSlotOwnerId,
+        nextSlotOwnerId: currentSlotOwnerId,
+        prevCanPublishMic: prev.canPublishClaimedMicNow,
+        nextCanPublishMic: canPublishClaimedMicNow,
+        prevCanPublishCamera: prev.canPublishClaimedCameraNow,
+        nextCanPublishCamera: canPublishClaimedCameraNow,
+        prevOwnsActiveSlot: prev.userOwnsCurrentActiveSlot,
+        nextOwnsActiveSlot: userOwnsCurrentActiveSlot,
+        userHasClaimedScheduleSlot,
+      });
+    }
+
+    liveStageAuthoritySnapshotRef.current = {
+      currentSlotNumber,
+      currentSlotOwnerId,
+      canPublishClaimedMicNow,
+      canPublishClaimedCameraNow,
+      userOwnsCurrentActiveSlot,
+      userHasClaimedScheduleSlot,
+    };
+  }, [
+    isMediaInstantLive,
+    hasTimedClaimedSchedule,
+    liveNowMs,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    canPublishClaimedMicNow,
+    canPublishClaimedCameraNow,
+    userOwnsCurrentActiveSlot,
+    userHasClaimedScheduleSlot,
+  ]);
+
+  useEffect(() => {
+    if (!isFocused || isMediaInstantLive || hasTimedClaimedSchedule) return;
+    const t = setInterval(() => setLiveNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [isFocused, isMediaInstantLive, hasTimedClaimedSchedule]);
+
   const cameraPermissionSourceRef = useRef("");
 
   const isPastorForLiveRoom =
@@ -5133,11 +5509,101 @@ export default function LiveRoomScreen() {
 
   const scheduledPublisherSlotReady =
     isMediaInstantLive ||
-    cameraPublishAllowedNow ||
-    (!!currentSlotNumber && userOwnsCurrentActiveSlot);
+    cameraPublishAllowedNow;
 
   // Camera publish is slot-owned only — route pastor/host hints must not unlock camera.
   const liveKitCameraOverrideReady = cameraPublishAllowedNow;
+
+  const pastorCameraReleaseLogRef = useRef("");
+  const prevCameraPublishAllowedRef = useRef(cameraPublishAllowedNow);
+  const prevLiveVideoHandoffOwnerRef = useRef(currentSlotOwnerId);
+
+  useEffect(() => {
+    if (isMediaInstantLive) return;
+
+    const prevOwner = prevLiveVideoHandoffOwnerRef.current;
+    const nextOwner = currentSlotOwnerId;
+    if (prevOwner !== nextOwner) {
+      console.log("KRISTO_LIVE_VIDEO_HANDOFF", {
+        prevSlotOwnerId: prevOwner || null,
+        nextSlotOwnerId: nextOwner || null,
+        currentUserId,
+        currentSlotNumber,
+        liveNowMs,
+        cameraPublishAllowedNow,
+        canPublishClaimedCameraNow,
+        canPublishClaimedMicNow,
+        pastorPermanentMicNow,
+        userOwnsCurrentActiveSlot,
+      });
+      prevLiveVideoHandoffOwnerRef.current = nextOwner;
+    }
+  }, [
+    isMediaInstantLive,
+    currentSlotOwnerId,
+    currentUserId,
+    currentSlotNumber,
+    liveNowMs,
+    cameraPublishAllowedNow,
+    canPublishClaimedCameraNow,
+    canPublishClaimedMicNow,
+    pastorPermanentMicNow,
+    userOwnsCurrentActiveSlot,
+  ]);
+
+  useEffect(() => {
+    if (isMediaInstantLive || !liveMediaAuthority.isActualChurchPastor) return;
+
+    const wasAllowed = prevCameraPublishAllowedRef.current;
+    prevCameraPublishAllowedRef.current = cameraPublishAllowedNow;
+
+    if (wasAllowed && !cameraPublishAllowedNow) {
+      const logKey = `${currentSlotNumber}|${currentSlotEndMs}|${liveNowMs}`;
+      if (pastorCameraReleaseLogRef.current !== logKey) {
+        pastorCameraReleaseLogRef.current = logKey;
+        console.log("KRISTO_PASTOR_CAMERA_RELEASE_ON_SLOT_END", {
+          currentUserId,
+          currentSlotNumber,
+          currentSlotOwnerId,
+          liveNowMs,
+          currentSlotEndMs,
+          pastorPermanentMicNow,
+          mediaHostPermanentMicNow,
+          canPublishClaimedMicNow,
+          userOwnsCurrentActiveSlot,
+          canPublishClaimedCameraNow,
+          canPublishLiveVideoNow,
+          cameraPublishAllowedNow,
+          liveKitCameraOverrideReady: cameraPublishAllowedNow,
+        });
+      }
+
+      const heldRoom = (globalThis as any).__KRISTO_HELD_LIVEKIT_ROOM__;
+      if (heldRoom) {
+        void suppressLocalCameraPublication(heldRoom, "pastor-slot-ended", {
+          canPublishCamera: false,
+          cameraPublishAllowedNow,
+          userOwnsCurrentActiveSlot,
+          canPublishClaimedCameraNow,
+        });
+      }
+    }
+  }, [
+    isMediaInstantLive,
+    liveMediaAuthority.isActualChurchPastor,
+    cameraPublishAllowedNow,
+    currentUserId,
+    currentSlotNumber,
+    currentSlotOwnerId,
+    currentSlotEndMs,
+    liveNowMs,
+    pastorPermanentMicNow,
+    mediaHostPermanentMicNow,
+    canPublishClaimedMicNow,
+    userOwnsCurrentActiveSlot,
+    canPublishClaimedCameraNow,
+    canPublishLiveVideoNow,
+  ]);
 
   const pastorCameraPolicyLogRef = useRef("");
 
@@ -7412,33 +7878,34 @@ export default function LiveRoomScreen() {
 
       if (patch.viewerPresence) setLiveViewerPresence(patch.viewerPresence);
     },
-    [liveBridgeId, router, backendChurchLive, session?.churchId, routeSlotsStillLive, currentMainStageSlot, backendScheduleExplicitlyEnded, tryNavigateAwayFromLiveRoom]
+    [liveBridgeId, router, backendChurchLive, session?.churchId, scheduleWindowStillLive, currentMainStageSlot, backendScheduleExplicitlyEnded, tryNavigateAwayFromLiveRoom]
   );
 
   const bridgeCreateInflightRef = useRef(false);
 
-  useEffect(() => {
-    if (isMediaInstantLive || !liveBridgeId || !currentUserId) return;
-    if (!routeSlotsStillLive && !myClaimedStageSlot && !currentMainStageSlot) return;
-    if (bridgeCreateInflightRef.current) return;
+  const ensureLiveBridgeSession = useCallback(
+    async (source: string, options?: { force?: boolean }) => {
+      if (isMediaInstantLive || !liveBridgeId || !currentUserId) return;
+      if (!scheduleWindowStillLive && !myClaimedStageSlot && !currentMainStageSlot) return;
+      if (bridgeCreateInflightRef.current && !options?.force) return;
 
-    let cancelled = false;
-    bridgeCreateInflightRef.current = true;
+      bridgeCreateInflightRef.current = true;
 
-    void (async () => {
       try {
         const patch = await fetchLightLiveStateWithPerf(
           liveApiHeaders as any,
           "LiveRoomBridgeEnsure",
           liveBridgeId,
-          "bridge-ensure"
+          source
         );
-        if (cancelled) return;
         if (patch.isLive === true || patch.removedFromLive || patch.explicitlyEnded) {
-          applyBackendLivePatch(patch, "bridge-ensure-prefetch");
+          applyBackendLivePatch(patch, `${source}-prefetch`);
           return;
         }
-        if (!patch.noBridgeSession && !patch.routeFailed) return;
+        if (!patch.noBridgeSession && !patch.routeFailed) {
+          applyBackendLivePatch(patch, `${source}-sync`);
+          return;
+        }
 
         const stageSlot = myClaimedStageSlot || currentMainStageSlot;
         const routeSlot =
@@ -7501,31 +7968,50 @@ export default function LiveRoomScreen() {
           liveApiHeaders as any,
           "LiveRoomBridgeEnsureRefetch",
           liveBridgeId,
-          "bridge-ensure-refetch"
+          `${source}-bridge-refetch`
         );
-        if (!cancelled) applyBackendLivePatch(refetch, "bridge-create-refetch");
-      } catch {
+        applyBackendLivePatch(refetch, `${source}-bridge-create-refetch`);
+      } catch (e: any) {
+        console.log("KRISTO_LIVE_BRIDGE_ENSURE_ERROR", {
+          source,
+          liveBridgeId,
+          message: String(e?.message || e),
+        });
+      } finally {
         bridgeCreateInflightRef.current = false;
       }
-    })();
+    },
+    [
+      isMediaInstantLive,
+      liveBridgeId,
+      currentUserId,
+      scheduleWindowStillLive,
+      myClaimedStageSlot,
+      currentMainStageSlot,
+      initialRouteScheduleSlots,
+      liveNowMs,
+      liveApiHeaders,
+      liveProfileAvatarUri,
+      session,
+      applyBackendLivePatch,
+    ]
+  );
 
-    return () => {
-      cancelled = true;
+  useEffect(() => {
+    void ensureLiveBridgeSession("bridge-ensure-mount");
+  }, [ensureLiveBridgeSession]);
+
+  useEffect(() => {
+    (globalThis as any).__KRISTO_ENSURE_LIVE_BRIDGE_SESSION__ = (bridgeId: string, source?: string) => {
+      if (String(bridgeId || "") !== String(liveBridgeId || "")) return;
+      void ensureLiveBridgeSession(source || "livekit-connected", { force: true });
     };
-  }, [
-    isMediaInstantLive,
-    liveBridgeId,
-    currentUserId,
-    routeSlotsStillLive,
-    myClaimedStageSlot,
-    currentMainStageSlot,
-    initialRouteScheduleSlots,
-    liveNowMs,
-    liveApiHeaders,
-    liveProfileAvatarUri,
-    session,
-    applyBackendLivePatch,
-  ]);
+    return () => {
+      try {
+        delete (globalThis as any).__KRISTO_ENSURE_LIVE_BRIDGE_SESSION__;
+      } catch {}
+    };
+  }, [ensureLiveBridgeSession, liveBridgeId]);
 
   useEffect(() => {
     if (!liveBridgeId || isMediaInstantLive) return;
@@ -10778,10 +11264,94 @@ return (
           />
         ) : null}
 
-        {layoutMode === "grid6" ? (
+        {layoutMode === "grid6" ? (() => {
+          const showMainStageRing = showActiveRing;
+          const stageRenderBranch = !showLiveKitStageShell
+            ? "fallback-avatar"
+            : keepPublisherLiveKitStage
+              ? "livekit-publisher"
+              : "livekit-viewer";
+          const teamGridLiveStageContainerStyle = s.teamGridLiveStage as ViewStyle;
+          const teamGridLiveStageRingOverlayStyle = s.teamGridLiveStageRingOverlay as ViewStyle;
+          const bigStageSlotNumber = Number((currentMainStageSlot as any)?.slot || 0);
+          const bigStageProfileStyles = [
+            s.bigStageProfileWrap as any,
+            { borderColor: slotRingColor(bigStageSlotNumber) },
+          ];
+          const ringOverlayFlat = StyleSheet.flatten(teamGridLiveStageRingOverlayStyle) || {};
+
+          console.log("KRISTO_MAIN_STAGE_RENDER_PATH", {
+            layoutMode,
+            showActiveRing,
+            showMainStageRing,
+            showLiveKitStageShell,
+            keepPublisherLiveKitStage,
+            renderLiveKitPublisherStage,
+            cameraPublishAllowedNow,
+            stageRenderBranch,
+            mainStageAvatarComponent:
+              stageRenderBranch === "fallback-avatar"
+                ? "bigStageProfileWrap"
+                : "KristoLiveKitStage",
+            mainStageRingOverlayEligible: showMainStageRing,
+            bigStageGuestId,
+            currentMainStageSlotNumber: bigStageSlotNumber,
+          });
+
+          logMainStageRingStyleProbe("teamGridLiveStageContainer", {
+            mounting: true,
+            style: teamGridLiveStageContainerStyle,
+            extra: {
+              stageRenderBranch,
+              showMainStageRing,
+              childAvatarComponent:
+                stageRenderBranch === "fallback-avatar"
+                  ? "bigStageProfileWrap"
+                  : "KristoLiveKitStage",
+            },
+          });
+
+          if (showMainStageRing) {
+            console.log("KRISTO_MAIN_STAGE_RING_OVERLAY_RENDERED", {
+              showMainStageRing,
+              stageRenderBranch,
+              overlayMounted: true,
+              zIndex: ringOverlayFlat.zIndex ?? null,
+              borderWidth: ringOverlayFlat.borderWidth ?? null,
+              borderColor: ringOverlayFlat.borderColor ?? null,
+              pointerEvents: "none",
+            });
+            logMainStageRingStyleProbe("teamGridLiveStageRingOverlay", {
+              mounting: true,
+              style: teamGridLiveStageRingOverlayStyle,
+              extra: {
+                stageRenderBranch,
+                siblingAboveLiveKit: true,
+                note: "Absolute overlay sibling above KristoLiveKitStage video layer",
+              },
+            });
+          } else {
+            console.log("KRISTO_MAIN_STAGE_RING_OVERLAY_RENDERED", {
+              showMainStageRing,
+              stageRenderBranch,
+              overlayMounted: false,
+              zIndex: null,
+              borderWidth: null,
+              borderColor: null,
+              pointerEvents: "none",
+            });
+            logMainStageRingStyleProbe("teamGridLiveStageRingOverlay", {
+              mounting: false,
+              returnNull: true,
+              nullReason: "showMainStageRing false",
+              extra: { stageRenderBranch },
+            });
+          }
+
+          return (
           <Pressable
             pointerEvents="box-none"
-            style={s.teamGridLiveStage as ViewStyle}
+            style={teamGridLiveStageContainerStyle}
             onPress={() => {
               const now = Date.now();
               if (now - lastStageTapAt < 320) {

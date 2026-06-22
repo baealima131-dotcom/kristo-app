@@ -100,7 +100,8 @@ export function evaluateFastLiveSessionAuthority(input: {
   const routePastor = String(input.routePastorUserId || "").trim();
   const scheduleCreator = String(input.routeScheduleCreatorUserId || "").trim();
   const routeClaimed = String(input.routeClaimedByUserId || "").trim();
-  const slotOwner = String(input.currentSlotOwnerId || routeClaimed || "").trim();
+  // Runtime slot owner only — route claim must not keep camera after slot handoff.
+  const slotOwner = String(input.currentSlotOwnerId || "").trim();
   const reasons: string[] = [];
 
   let trustedActualChurchPastorUserId = "";
@@ -139,13 +140,13 @@ export function resolveFastActiveSlotWindow(input: {
   nowMs?: number;
 }) {
   const uid = String(input.currentUserId || "").trim();
-  let ownerId = String(input.currentSlotOwnerId || "").trim();
+  const ownerId = String(input.currentSlotOwnerId || "").trim();
   let startMs = Number(input.currentSlotStartMs || 0);
   let endMs = Number(input.currentSlotEndMs || 0);
   const routeClaimed = String(input.routeClaimedByUserId || "").trim();
 
-  if (!ownerId && routeClaimed) ownerId = routeClaimed;
-  if (uid && routeClaimed === uid) {
+  // Route schedule hints apply only while runtime still names this user as active owner.
+  if (uid && ownerId && ownerId === uid && ownerId === routeClaimed) {
     if (!startMs) startMs = Number(input.routeScheduleStartMs || 0);
     if (!endMs) endMs = Number(input.routeScheduleEndMs || 0);
   }
@@ -439,10 +440,8 @@ export function resolveLiveCameraPublishAllowed(input: {
     return input.canPublishClaimedCameraNow;
   }
 
-  return (
-    input.userOwnsCurrentActiveSlot === true ||
-    input.canPublishClaimedCameraNow === true
-  );
+  // Scheduled live: camera requires active slot ownership inside [startMs, endMs).
+  return input.canPublishClaimedCameraNow === true;
 }
 
 export function resolveLiveCameraPermissionSource(input: {
