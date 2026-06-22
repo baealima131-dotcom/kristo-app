@@ -9808,6 +9808,11 @@ export default function LiveRoomScreen() {
       ringMode = "taken";
     }
 
+    // Side-rail waiting tiles: avatar only — no owner/taken ring overlays.
+    if (source === "side-rail") {
+      ringMode = "hidden";
+    }
+
     return {
       guestId,
       slotId,
