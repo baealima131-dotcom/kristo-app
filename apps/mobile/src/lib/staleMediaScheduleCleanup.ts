@@ -4,6 +4,18 @@ import {
   endLiveBridgeForStaleScheduleFeedId,
 } from "@/src/lib/staleBackendZeroSlotGuard";
 
+function isScheduleFeedNotFoundResponse(res: any): boolean {
+  const status = Number(res?.status || 0);
+  const error = String(res?.error || res?.message || "").trim().toLowerCase();
+  return status === 404 && error.includes("feed item not found");
+}
+
+function purgeLocalScheduleCachesForFeedId(feedId: string) {
+  feedRemoveScheduleMirrors(feedId);
+  clearScheduleClaimRuntimeState(feedId);
+  endLiveBridgeForStaleScheduleFeedId(feedId);
+}
+
 export async function clearMediaScheduleSlotsOnBackend(input: {
   feedId: string;
   churchId: string;
@@ -52,24 +64,43 @@ export async function clearMediaScheduleSlotsOnBackend(input: {
 
     const payload =
       res?.data && typeof res.data === "object" && !Array.isArray(res.data) ? res.data : res;
-    const ok = res?.ok !== false && !res?.error && payload?.ok !== false;
+    const alreadyDeleted = isScheduleFeedNotFoundResponse(res) || isScheduleFeedNotFoundResponse(payload);
+    const ok =
+      alreadyDeleted ||
+      (res?.ok !== false && !res?.error && payload?.ok !== false);
+
+    if (alreadyDeleted) {
+      console.log("KRISTO_CLEAR_MEDIA_SCHEDULE_SLOTS_ALREADY_DELETED", {
+        feedId,
+        churchId,
+        reason,
+      });
+    }
+
     if (ok) {
-      feedRemoveScheduleMirrors(feedId);
-      clearScheduleClaimRuntimeState(feedId);
-      endLiveBridgeForStaleScheduleFeedId(feedId);
+      purgeLocalScheduleCachesForFeedId(feedId);
     }
 
     return {
       ok,
       feedId,
       churchId,
-      deleted: Boolean(payload?.deleted),
-      slots: Array.isArray(payload?.slots) ? payload.slots : slots,
-      remainingCount: Array.isArray(payload?.slots)
-        ? payload.slots.length
-        : payload?.remainingCount ?? slots.length,
+      deleted: alreadyDeleted || Boolean(payload?.deleted),
+      alreadyDeleted,
+      slots: alreadyDeleted ? [] : Array.isArray(payload?.slots) ? payload.slots : slots,
+      remainingCount: alreadyDeleted
+        ? 0
+        : Array.isArray(payload?.slots)
+          ? payload.slots.length
+          : payload?.remainingCount ?? slots.length,
       endedLiveKeys: Array.isArray(payload?.endedLiveKeys) ? payload.endedLiveKeys : [],
-      error: res?.error ? String(res.error) : payload?.error ? String(payload.error) : null,
+      error: ok
+        ? null
+        : res?.error
+          ? String(res.error)
+          : payload?.error
+            ? String(payload.error)
+            : null,
     };
   } catch (e: any) {
     return {
