@@ -1,5 +1,5 @@
 import { Tabs, useGlobalSearchParams, useSegments, useRouter } from "expo-router";
-import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
@@ -17,7 +17,7 @@ import {
 } from "@/src/lib/refreshCoordinator";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet } from "@/src/lib/kristoApi";
-import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import { feedList, subscribe as subscribeHomeFeed, ensurePersonalTabRingClaimFromEvent } from "@/src/lib/homeFeedStore";
 import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
 import {
   beginClaimHydrationStartup,
@@ -46,6 +46,7 @@ import {
   RING_RECOMPUTE_INTERVAL_MS,
   recomputeScheduleRingsFromRows,
   onLiveRingRefresh,
+  logMeTabRingDecision,
 } from "@/src/lib/liveScheduleRing";
 import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
 import { Animated, InteractionManager, Pressable, StyleSheet, Text, View } from "react-native";
@@ -171,12 +172,33 @@ function ProfileAvatarIcon({
   focused,
   alertColor,
   alertIcon,
+  alertKind,
+  hasPersonal,
+  ringVisible,
+  userId,
 }: {
   focused: boolean;
   alertColor?: string;
   alertIcon?: keyof typeof Ionicons.glyphMap;
+  alertKind?: string;
+  hasPersonal?: boolean;
+  ringVisible?: boolean;
+  userId?: string;
 }) {
   const hasAlert = !!alertColor;
+
+  useLayoutEffect(() => {
+    console.log("KRISTO_ME_TAB_ICON_RENDER", {
+      focused,
+      alertColor: alertColor || null,
+      alertKind: alertKind || null,
+      hasPersonal: hasPersonal === true,
+      ringVisible: ringVisible === true,
+      ringColor: alertColor || null,
+      userId: userId || null,
+    });
+  }, [focused, alertColor, alertKind, hasPersonal, ringVisible, userId]);
+
   return (
     <View
       style={{
@@ -677,6 +699,11 @@ export default function TabLayout() {
       personalAlertRef.current = stablePersonal;
       setMediaScheduleTabLive(church);
       setPersonalScheduleTabAlert(stablePersonal);
+      logMeTabRingDecision({
+        currentUserId: String(session.userId || ""),
+        personal: stablePersonal,
+        source,
+      });
     },
     [session?.userId, session?.churchId]
   );
@@ -774,6 +801,10 @@ export default function TabLayout() {
         startMs: payload?.startMs ?? null,
         endMs: payload?.endMs ?? null,
       });
+
+      if (payload?.action === "claim") {
+        ensurePersonalTabRingClaimFromEvent(payload);
+      }
 
       claimRingTimersRef.current.forEach((timer) => clearTimeout(timer));
       claimRingTimersRef.current = [];
@@ -905,6 +936,69 @@ export default function TabLayout() {
   const churchLiveColor = String(mediaScheduleTabLive?.color || "#EF4444");
   const churchTabTitle = churchIsLive ? "LIVE" : churchTitle;
   const showMoreTabShell = isMoreTabShellVisible();
+  const hasPersonalScheduleTabRing = !!personalScheduleTabAlert;
+  const showProfileAvatarIcon = !isMessagesMode || hasPersonalScheduleTabRing;
+
+  const profileTabScreenOptions = useMemo(
+    () => ({
+      title: hasPersonalScheduleTabRing ? "" : profileTitle,
+      tabBarLabel: hasPersonalScheduleTabRing ? "" : profileTitle,
+      tabBarButton: isMessagesMode
+        ? undefined
+        : ({ children }: any) => (
+            <Pressable
+              onPress={() => router.replace("/(tabs)/profile" as any)}
+              onLongPress={() => {
+                if (!personalScheduleTabAlert) {
+                  console.log("KRISTO_LIVE_RING_LONG_PRESS_BLOCKED", {
+                    tab: "profile",
+                    reason: "no_personal_ring_alert",
+                  });
+                  return;
+                }
+                openPersonalScheduleAlert();
+              }}
+              delayLongPress={LIVE_RING_LONG_PRESS_MS}
+              style={{
+                flex: 1,
+                height: 70,
+                alignItems: "center",
+                justifyContent: "center",
+                paddingTop: 6,
+                paddingBottom: 12,
+              }}
+            >
+              {children}
+            </Pressable>
+          ),
+      tabBarIcon: ({ focused, color, size }: { focused: boolean; color: string; size: number }) =>
+        showProfileAvatarIcon ? (
+          <ProfileAvatarIcon
+            focused={focused}
+            alertColor={personalScheduleTabAlert?.color}
+            alertIcon={personalScheduleTabAlert?.icon}
+            alertKind={personalScheduleTabAlert?.match}
+            hasPersonal={hasPersonalScheduleTabRing}
+            ringVisible={
+              personalScheduleTabAlert?.match === "claimed" &&
+              !!personalScheduleTabAlert?.color
+            }
+            userId={String(session?.userId || "")}
+          />
+        ) : (
+          <Ionicons name="call" color={color} size={size ?? 22} />
+        ),
+    }),
+    [
+      hasPersonalScheduleTabRing,
+      profileTitle,
+      isMessagesMode,
+      showProfileAvatarIcon,
+      personalScheduleTabAlert,
+      session?.userId,
+      router,
+    ]
+  );
 
   return (
     <>
@@ -1060,51 +1154,7 @@ export default function TabLayout() {
         }}
       />
 
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: personalScheduleTabAlert ? "" : profileTitle,
-          tabBarLabel: personalScheduleTabAlert ? "" : profileTitle,
-          tabBarButton: isMessagesMode
-            ? undefined
-            : ({ children }: any) => (
-                <Pressable
-                  onPress={() => router.replace("/(tabs)/profile" as any)}
-                  onLongPress={() => {
-                    if (!personalScheduleTabAlert) {
-                      console.log("KRISTO_LIVE_RING_LONG_PRESS_BLOCKED", {
-                        tab: "profile",
-                        reason: "no_personal_ring_alert",
-                      });
-                      return;
-                    }
-                    openPersonalScheduleAlert();
-                  }}
-                  delayLongPress={LIVE_RING_LONG_PRESS_MS}
-                  style={{
-                    flex: 1,
-                    height: 70,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    paddingTop: 6,
-                    paddingBottom: 12,
-                  }}
-                >
-                  {children}
-                </Pressable>
-              ),
-          tabBarIcon: ({ focused, color, size }) =>
-            isMessagesMode ? (
-              <Ionicons
-                name="call"
-                color={color}
-                size={size ?? 22}
-              />
-            ) : (
-              <ProfileAvatarIcon focused={focused} alertColor={personalScheduleTabAlert?.color} alertIcon={personalScheduleTabAlert?.icon} />
-            ),
-        }}
-      />
+      <Tabs.Screen name="profile" options={profileTabScreenOptions} />
 
       <Tabs.Screen name="_ministry_hidden/index" options={{ href: null }} />
     </Tabs>

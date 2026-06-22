@@ -48,7 +48,7 @@ import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
 import * as DocumentPicker from "expo-document-picker";
 import { ensureThread, sendMessage, setThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import { SharedContentCard } from "@/src/components/messages/SharedContentCard";
-import { HomeLiveScheduleCard } from "@/src/components/HomeLiveScheduleCard";
+import { HomeLiveScheduleCard, ScheduleClaimAvatarRing } from "@/src/components/HomeLiveScheduleCard";
 import { enterLiveRoomFromScheduleCard } from "@/src/lib/enterLiveRoomNavigation";
 import {
   buildChurchLiveControlScheduleRenderMap,
@@ -96,13 +96,17 @@ import {
   subscribeScheduleRoomDeleteInvalidation,
 } from "@/src/lib/scheduleRoomMessageSync";
 import { broadcastChurchLiveControlRoomSync, subscribeChurchLiveControlRoomSync } from "@/src/lib/churchLiveControlRoomSync";
+import { persistPersonalTabRingClaimState } from "@/src/lib/homeFeedStore";
 import { resolveRealSlotTopic } from "@/src/lib/slotTopicUtils";
 import {
   isScheduleSlotExpired,
   parseSlotEndMs,
   parseSlotStartMs,
+  resolveAssignmentCardAvatarRingDecision,
   resolveScheduleSlotVisualState,
+  toMediaSlotAbsoluteAvatarUri,
 } from "@/src/lib/scheduleSlotUtils";
+import { getApiBase } from "@/src/lib/kristoApi";
 import { hasRoomAccess } from "@/src/lib/roomAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { fetchChurchPastorUserId } from "@/src/lib/churchPastorResolver";
@@ -1011,37 +1015,40 @@ function renderAssignmentCardBody(
             borderColor: "rgba(56,189,248,0.20)",
           }}
         >
-          <View
-            style={{
-              width: 58,
-              height: 58,
-              borderRadius: 29,
-              overflow: "hidden",
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: "rgba(255,255,255,0.06)",
-              borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.12)",
-              flexShrink: 0,
-            }}
-          >
-            {claimedAvatar ? (
-              <Image
-                source={{ uri: claimedAvatar }}
-                style={{ width: "100%", height: "100%", borderRadius: 999 }}
-              />
-            ) : (
-              <Text
-                style={{
-                  color: "rgba(125,211,252,0.98)",
-                  fontSize: 22,
-                  fontWeight: "800",
-                }}
-              >
-                {initials(claimedBy)}
-              </Text>
-            )}
-          </View>
+          {(() => {
+            const assignmentAvatarRingDecision = resolveAssignmentCardAvatarRingDecision({
+              surface: "assignment-card-body",
+              cardId: String(m.id || card.cardId || ""),
+              slotId: String(card.cardId || card.id || slotNumber || ""),
+              claimedByUserId,
+              currentUserId,
+              claimed: isTaken,
+            });
+            console.log(
+              "KRISTO_ASSIGNMENT_CARD_AVATAR_RING_DECISION",
+              assignmentAvatarRingDecision
+            );
+            const resolvedAvatarUri = claimedAvatar
+              ? toMediaSlotAbsoluteAvatarUri(claimedAvatar, getApiBase())
+              : "";
+            return (
+              <View style={{ flexShrink: 0, overflow: "visible" }}>
+                <ScheduleClaimAvatarRing
+                  uri={resolvedAvatarUri}
+                  initial={initials(claimedBy)}
+                  size={50}
+                  accent="#38BDF8"
+                  ownershipRing={assignmentAvatarRingDecision.ringMode}
+                  forceShowImage={!!resolvedAvatarUri}
+                  imageLogMeta={{
+                    slotId: String(card.cardId || card.id || slotNumber || ""),
+                    claimedByUserId,
+                    kind: "claimed",
+                  }}
+                />
+              </View>
+            );
+          })()}
 
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text
@@ -6662,6 +6669,137 @@ function saveAssignmentVideoTrim() {
     });
   }
 
+  function persistMeTabRingFromRoomMessageClaim(args: {
+    messageId: string;
+    targetMsg?: MsgItem;
+    userId: string;
+    actor: { name?: string; role?: string; avatar?: string };
+    churchId: string;
+    scheduleModel?: ChurchLiveControlHomeFeedScheduleModel | null;
+  }) {
+    const card = args.targetMsg?.card as any;
+    if (!card || typeof card !== "object") {
+      console.log("KRISTO_ME_TAB_RING_CLAIM_SKIP", {
+        reason: "no_assignment_card",
+        source: "messages.handleClaimAssignmentMessage",
+        messageId: args.messageId,
+        userId: args.userId,
+      });
+      return false;
+    }
+
+    const scheduleModel = args.scheduleModel;
+    const activeSlot = scheduleModel?.activeSlot || card;
+    const item = scheduleModel?.item;
+
+    const postId = String(
+      item?.sourceScheduleId ||
+        item?.parentScheduleId ||
+        card?.sourceScheduleId ||
+        card?.sourceFeedId ||
+        card?.scheduleBatchId ||
+        args.messageId
+    ).trim();
+
+    const ringSlotId = String(
+      activeSlot?.id ||
+        activeSlot?.slotId ||
+        activeSlot?.cardId ||
+        card?.cardId ||
+        card?.id ||
+        args.messageId
+    ).trim();
+
+    const startMs = Number(activeSlot?.startMs || parseSlotStartMs(card) || 0);
+    const endMs = Number(activeSlot?.endMs || parseSlotEndMs(card, startMs) || 0);
+    const slotNumber = Math.max(
+      1,
+      Number(
+        activeSlot?.slotNumber ||
+          activeSlot?.slot ||
+          card?.slotNumber ||
+          card?.order ||
+          (typeof scheduleModel?.slotFeedIndex === "number"
+            ? scheduleModel.slotFeedIndex + 1
+            : 0) ||
+          1
+      )
+    );
+
+    console.log("KRISTO_ME_TAB_RING_CLAIM_ATTEMPT", {
+      postId,
+      slotId: ringSlotId,
+      userId: args.userId,
+      claimStartMs: startMs,
+      claimEndMs: endMs,
+      hasClaimSlot: true,
+      source: "messages.handleClaimAssignmentMessage",
+      roomMessageId: args.messageId,
+      slotNumber,
+    });
+
+    if (!postId || !ringSlotId || !args.userId || !startMs || endMs <= 0) {
+      console.log("KRISTO_ME_TAB_RING_CLAIM_SKIP", {
+        reason: !startMs || endMs <= 0 ? "missing_time_window" : "invalid_args",
+        source: "messages.handleClaimAssignmentMessage",
+        postId,
+        slotId: ringSlotId,
+        messageId: args.messageId,
+        userId: args.userId,
+        startMs,
+        endMs,
+        slotNumber,
+      });
+      return false;
+    }
+
+    return persistPersonalTabRingClaimState({
+      postId,
+      slotId: ringSlotId,
+      userId: args.userId,
+      claim: {
+        name: args.actor.name,
+        role: args.actor.role,
+        avatarUri: args.actor.avatar,
+        churchId: args.churchId,
+        slot: {
+          ...activeSlot,
+          id: ringSlotId,
+          slotId: ringSlotId,
+          startMs,
+          endMs,
+          slotNumber,
+          slot: slotNumber,
+          claimedByUserId: args.userId,
+          claimedByName: args.actor.name,
+          roomMessageId: args.messageId,
+        },
+        item:
+          item ||
+          ({
+            id: postId,
+            sourceScheduleId: postId,
+            churchId: args.churchId,
+            scheduleSlots: [
+              {
+                ...activeSlot,
+                id: ringSlotId,
+                slotId: ringSlotId,
+                startMs,
+                endMs,
+                claimedByUserId: args.userId,
+                roomMessageId: args.messageId,
+              },
+            ],
+          } as any),
+      },
+      startMs,
+      endMs,
+      slotNumber,
+      source: "messages.handleClaimAssignmentMessage",
+    });
+  }
+
   async function handleClaimAssignmentMessage(messageId: string) {
     const tapAt = Date.now();
     const slotId = String(messageId || "").trim();
@@ -6783,6 +6921,15 @@ function saveAssignmentVideoTrim() {
         messageId: slotId,
         cardId: String((targetMsg?.card as any)?.cardId || slotId),
         reason: "room-slot-claim",
+      });
+
+      persistMeTabRingFromRoomMessageClaim({
+        messageId: slotId,
+        targetMsg,
+        userId: effectiveAuthUserId,
+        actor,
+        churchId: String(churchId || getKristoHeaders()["x-kristo-church-id"] || "").trim(),
+        scheduleModel: churchLiveControlScheduleRenderById[slotId] || null,
       });
 
       forceReloadRoomMessages();
