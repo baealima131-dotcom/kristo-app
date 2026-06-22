@@ -3914,15 +3914,20 @@ async function handleFeedPost(req: NextRequest, body: any) {
     ).trim();
 
     if (existingOwner && existingOwner !== viewerUserId) {
-      console.log("KRISTO_SLOT_CLAIM_CONFLICT", {
-        postId,
+      console.log("KRISTO_CLAIM_OVERWRITE_BLOCKED", {
         slotId,
-        existingOwner,
-        viewerUserId,
-        churchId,
-        ownerChurchId: ownerChurchId || null,
+        existingClaimedByUserId: existingOwner,
+        incomingUserId: viewerUserId,
+        source: "api.church.feed.claim_schedule_slot",
       });
-      return err("Slot already claimed by another member", 409);
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "slot_already_claimed",
+          claimedByUserId: existingOwner,
+        },
+        { status: 409 }
+      );
     }
 
     const name = cleanText(claim?.name || actorLabel || "Church Member", 240) || "Church Member";
@@ -4038,7 +4043,20 @@ async function handleFeedPost(req: NextRequest, body: any) {
     }
 
     if (existingOwner && existingOwner !== targetUserId) {
-      return err("Slot already claimed by another member", 409);
+      console.log("KRISTO_CLAIM_OVERWRITE_BLOCKED", {
+        slotId,
+        existingClaimedByUserId: existingOwner,
+        incomingUserId: targetUserId,
+        source: "api.church.feed.assign_schedule_slot",
+      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "slot_already_claimed",
+          claimedByUserId: existingOwner,
+        },
+        { status: 409 }
+      );
     }
 
     const duplicateSlot = slots.find(

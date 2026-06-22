@@ -792,6 +792,10 @@ function pickFresherScheduleSlot(prev: any, next: any) {
   const prevUpdated = Number(prev?.updatedAt || prev?.claimedAt || 0);
   const nextUpdated = Number(next?.updatedAt || next?.claimedAt || 0);
 
+  if (prevOwner && nextOwner && prevOwner !== nextOwner) {
+    return next;
+  }
+
   if (nextOwner && !prevOwner) return next;
   if (prevOwner && !nextOwner) return prev;
   if (nextUpdated >= prevUpdated) return next;

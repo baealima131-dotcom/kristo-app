@@ -6680,6 +6680,23 @@ function saveAssignmentVideoTrim() {
       return;
     }
 
+    const targetMsg = messages.find((x) => String(x.id) === String(slotId));
+    const existingOwner = String((targetMsg?.card as any)?.claimedByUserId || "").trim();
+    const cardStatus = String((targetMsg?.card as any)?.status || "open").toLowerCase();
+    if (
+      (existingOwner && existingOwner !== effectiveAuthUserId) ||
+      (cardStatus === "taken" && existingOwner && existingOwner !== effectiveAuthUserId)
+    ) {
+      console.log("KRISTO_CLAIM_OVERWRITE_BLOCKED", {
+        slotId,
+        existingClaimedByUserId: existingOwner,
+        incomingUserId: effectiveAuthUserId,
+        source: "messages.handleClaimAssignmentMessage",
+      });
+      Alert.alert("Slot already claimed", "This live slot is already taken.");
+      return;
+    }
+
     markClaimInFlight(slotId);
 
     const optimisticActor = resolveClaimActorFromSession();
@@ -6694,11 +6711,10 @@ function saveAssignmentVideoTrim() {
 
     if (!ok) {
       clearClaimInFlight(slotId);
-      Alert.alert("Already taken", "This assignment is no longer open.");
+      Alert.alert("Slot already claimed", "This live slot is already taken.");
       return;
     }
 
-    const targetMsg = messages.find((x) => String(x.id) === String(slotId));
     const claimRoomId = String(
       (params as any)?.ministryId ||
       (params as any)?.assignmentId ||
@@ -6748,10 +6764,15 @@ function saveAssignmentVideoTrim() {
 
       if (!patchRes?.ok) {
         revertAssignmentCardClaim(threadId, slotId, effectiveAuthUserId);
-        Alert.alert(
-          "Claim failed",
-          String(patchRes?.error || "Could not save your claim. Please try again.")
-        );
+        const patchError = String(patchRes?.error || "");
+        if (patchError === "slot_already_claimed" || Number(patchRes?.status || 0) === 409) {
+          Alert.alert("Slot already claimed", "This live slot is already taken.");
+        } else {
+          Alert.alert(
+            "Claim failed",
+            patchError || "Could not save your claim. Please try again."
+          );
+        }
         return;
       }
 

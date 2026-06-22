@@ -5,6 +5,7 @@ import {
 } from "@/src/lib/churchLiveControlSchedule";
 import { broadcastChurchLiveControlRoomSync } from "@/src/lib/churchLiveControlRoomSync";
 import { materializeMediaSlotTimeFields } from "@/src/lib/mediaScheduleSlotTimes";
+import { logClaimOverwriteBlocked } from "@/src/lib/scheduleSlotClaimRequest";
 import { applyScheduleDeleteToLocalRoom } from "@/src/lib/scheduleRoomMessageSync";
 
 export type GuestClaimCenterRoomMutationAction =
@@ -45,6 +46,26 @@ export function resolveChurchLiveControlGuestCenterSlotCardId(slot: any): string
 
 export function resolveChurchLiveControlGuestCenterSlotMessageId(slot: any): string {
   return String(slot?.roomMessageId || "").trim();
+}
+
+function assertGuestCenterSlotClaimable(input: {
+  slot: any;
+  incomingUserId: string;
+  slotId?: string;
+  source: string;
+}): { ok: true } | { ok: false; error: string } {
+  const existing = String(input.slot?.claimedByUserId || input.slot?.claimedBy?.userId || "").trim();
+  const incoming = String(input.incomingUserId || "").trim();
+  if (existing && incoming && existing !== incoming) {
+    logClaimOverwriteBlocked({
+      slotId: input.slotId || resolveChurchLiveControlGuestCenterSlotCardId(input.slot),
+      existingClaimedByUserId: existing,
+      incomingUserId: incoming,
+      source: input.source,
+    });
+    return { ok: false, error: "slot_already_claimed" };
+  }
+  return { ok: true };
 }
 
 function clearClaimFieldsForRoomPatch(slot: any) {
@@ -324,6 +345,28 @@ export async function mutateChurchLiveControlGuestCenterRoomSchedule(input: {
     }
 
     const patchSource = action === "reject" ? clearClaimFieldsForRoomPatch(slot) : slot;
+    if (action !== "reject" && action !== "delete_slot" && action !== "remove") {
+      const incomingUserId = String(patchSource?.claimedByUserId || "").trim();
+      if (incomingUserId) {
+        const claimable = assertGuestCenterSlotClaimable({
+          slot,
+          incomingUserId,
+          slotId: cardId,
+          source: `churchLiveControlGuestCenterMutations.${action}`,
+        });
+        if (!claimable.ok) {
+          logGuestClaimCenterRoomMutation({
+            action,
+            source: "church-live-control-room",
+            affectedMessageIds,
+            ok: false,
+            error: claimable.error,
+            extra: { cardId, messageId: messageId || null },
+          });
+          return { ok: false, error: claimable.error, affectedMessageIds, schedule: null };
+        }
+      }
+    }
     const patch = buildChurchLiveControlRoomCardPatchFromSlot(patchSource);
     const patchRes = await patchRoomAssignmentCard(input.headers, {
       messageId: messageId || undefined,
@@ -389,9 +432,24 @@ export async function assignChurchLiveControlRoomScheduleSlot(input: {
     nowMs?: number;
   };
 }) {
+  const assigneeId = String(input.assignee.userId || "").trim();
+  const claimable = assertGuestCenterSlotClaimable({
+    slot: input.slot,
+    incomingUserId: assigneeId,
+    source: "assignChurchLiveControlRoomScheduleSlot",
+  });
+  if (!claimable.ok) {
+    return {
+      ok: false,
+      error: claimable.error,
+      affectedMessageIds: [],
+      schedule: null,
+    };
+  }
+
   const slot = {
     ...input.slot,
-    claimedByUserId: String(input.assignee.userId || "").trim(),
+    claimedByUserId: assigneeId,
     claimedByName: String(input.assignee.name || "").trim(),
     claimedByAvatar: String(input.assignee.avatarUri || "").trim(),
     claimedByRole: String(input.assignee.role || "").trim(),

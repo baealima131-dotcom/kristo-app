@@ -468,10 +468,24 @@ export function claimAssignmentCard(
 ) {
   const arr = state.messages[threadId] || [];
   let changed = false;
+  const actorUserId = String(actor.userId || "").trim();
 
   state.messages[threadId] = arr.map((m) => {
     if (m.id !== messageId || m.kind !== "assignment_card" || !m.card) return m;
-    if (m.card.status !== "open") return m;
+
+    const existingOwner = String(m.card.claimedByUserId || "").trim();
+    const cardStatus = String(m.card.status || "open").toLowerCase();
+    if (existingOwner && existingOwner !== actorUserId) {
+      console.log("KRISTO_CLAIM_OVERWRITE_BLOCKED", {
+        slotId: messageId,
+        existingClaimedByUserId: existingOwner,
+        incomingUserId: actorUserId,
+        source: "messagesStore.claimAssignmentCard",
+      });
+      return m;
+    }
+    if (cardStatus !== "open" && cardStatus !== "claimed") return m;
+    if (cardStatus === "taken" && existingOwner && existingOwner !== actorUserId) return m;
 
     changed = true;
     return {

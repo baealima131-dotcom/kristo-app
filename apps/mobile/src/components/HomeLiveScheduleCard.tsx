@@ -13,7 +13,7 @@ import Animated, {
   withSpring,
   withTiming,
 } from "react-native-reanimated";
-import { apiPost, getApiBase } from "@/src/lib/kristoApi";
+import { getApiBase } from "@/src/lib/kristoApi";
 import {
   feedClaimSchedule,
   feedJoinSlotQueue,
@@ -48,9 +48,12 @@ import {
   refreshSlotAfterClaimConflict,
 } from "@/src/lib/slotClaimApply";
 import {
-  buildScheduleSlotClaimBody,
+  assertScheduleSlotClaimable,
+  logClaimOverwriteBlocked,
+  persistScheduleSlotClaim,
   refetchTargetScheduleAfterClaim,
   resolveScheduleChurchId,
+  resolveScheduleClaimPersistPath,
 } from "@/src/lib/scheduleSlotClaimRequest";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -301,7 +304,7 @@ function AvatarRing({
       ? "KRISTO_LIVE_HOST_AVATAR_ERROR"
       : "KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_ERROR";
   const shouldRenderImage = Boolean(safeUri) && (!forceShowImage || !imageError);
-  const showInitialFallback = Boolean(forceShowImage && imageError);
+  const showInitialFallback = Boolean(forceShowImage && (imageError || !safeUri));
   const showInitialOnly = !safeUri && !forceShowImage;
 
   return (
@@ -1244,7 +1247,38 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
   const claimThisSlot = useCallback(async () => {
     if (!userHasActiveChurchMembership(session)) return;
-    if (claimed || !slot?.id) return;
+    if (!slot?.id) return;
+
+    const slotId = String(slot.id);
+    const existingOwner = String(
+      activeSlot?.claimedByUserId ||
+        slot?.claimedByUserId ||
+        activeSlot?.claimedBy?.userId ||
+        slot?.claimedBy?.userId ||
+        claimUserId ||
+        ""
+    ).trim();
+    if (existingOwner && existingOwner !== currentUserId) {
+      logClaimOverwriteBlocked({
+        slotId,
+        existingClaimedByUserId: existingOwner,
+        incomingUserId: currentUserId,
+        source: "HomeLiveScheduleCard.claimThisSlot",
+      });
+      Alert.alert("Slot already claimed", "This live slot is already taken.");
+      return;
+    }
+
+    const claimable = assertScheduleSlotClaimable(slot || activeSlot, currentUserId, {
+      slotId,
+      source: "HomeLiveScheduleCard.claimThisSlot",
+    });
+    if (!claimable.ok) {
+      Alert.alert("Slot already claimed", "This live slot is already taken.");
+      return;
+    }
+
+    if (claimed || (claimUserId && claimUserId === currentUserId)) return;
     if (claimingSlotRef.current === slot.id || isClaimInFlight) return;
 
     claimingSlotRef.current = String(slot.id);
@@ -1261,7 +1295,6 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
 
     const seedId = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
     const claimTarget = resolveClaimFeedTarget(seedId);
-    const slotId = String(slot.id);
     const slotNumber = Number((slot as any)?.slot || (slot as any)?.slotNumber || (slot as any)?.order || 0);
     const isPastorClaim = isPastorClaimActor(currentUserId, item);
 
@@ -1304,20 +1337,26 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     feedClaimSchedule(seedId, claim);
     onOptimisticClaim?.({ postId: claimTarget.apiFeedId, slotId, claim });
 
-    const claimBody = buildScheduleSlotClaimBody({
-      postId: claimTarget.apiFeedId,
-      scheduleFeedId: claimTarget.apiFeedId,
-      slotId,
-      claim,
-      scheduleItem: item,
-      viewerChurchId,
-    });
-
     const claimHeaders = getKristoHeaders({
       userId: session?.userId || "",
       role: (session?.role || "Member") as any,
       churchId: viewerChurchId,
     }) as Record<string, string>;
+
+    const persistPath = resolveScheduleClaimPersistPath({
+      item,
+      feedId: claimTarget.apiFeedId,
+      slot,
+    });
+
+    console.log("KRISTO_CLAIM_THIS_SLOT_PERSIST_ROUTE", {
+      slotId,
+      seedId,
+      apiFeedId: claimTarget.apiFeedId,
+      persistPath,
+      roomMessageId: String(slot?.roomMessageId || item?.roomMessageId || ""),
+      scheduleSource: String(item?.source || ""),
+    });
 
     if (!isPastorClaim) {
       void persistClaimToLiveRequest({
@@ -1331,7 +1370,13 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
       }).catch(() => {});
     }
 
-    void apiPost("/api/church/feed", claimBody, {
+    void persistScheduleSlotClaim({
+      postId: claimTarget.apiFeedId,
+      slotId,
+      claim,
+      scheduleItem: item,
+      slot,
+      viewerChurchId,
       headers: claimHeaders,
     })
       .then(async (res: any) => {
@@ -1339,7 +1384,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           Number(res?.status || 0) === 409 ||
           String(res?.error || "")
             .toLowerCase()
-            .includes("already claimed");
+            .includes("already claimed") ||
+          String(res?.error || "")
+            .toLowerCase()
+            .includes("slot_already_claimed");
 
         if (isConflict) {
           setOptimisticClaim(null);
@@ -1348,10 +1396,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
             userId: currentUserId,
             skipBackendSync: true,
           });
-          Alert.alert(
-            "Slot already claimed",
-            "Slot already claimed by another member"
-          );
+          Alert.alert("Slot already claimed", "This live slot is already taken.");
           if (scheduleChurchId) {
             await refreshSlotAfterClaimConflict({
               churchId: scheduleChurchId,
@@ -1373,6 +1418,9 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           viewerChurchId,
           viewerUserId: currentUserId,
           viewerRole: String(session?.role || "Member"),
+          scheduleItem: item,
+          slot,
+          localSeedId: seedId,
         });
 
         if (isPastorClaim) {
@@ -1449,9 +1497,22 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           slotId,
           userId: currentUserId,
           isPastorClaim,
-          keepLocalClaim: true,
+          persistPath,
+          keepLocalClaim: false,
           error: String((error as any)?.message || error),
         });
+        setOptimisticClaim(null);
+        feedUnclaimSchedule(seedId, {
+          slotId,
+          userId: currentUserId,
+          skipBackendSync: true,
+        });
+        Alert.alert(
+          "Claim failed",
+          persistPath === "room-messages"
+            ? "Could not save your claim to the live schedule. Please try again."
+            : "Could not save your claim. Please try again."
+        );
       })
       .finally(() => {
         claimingSlotRef.current = null;
@@ -1469,18 +1530,47 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     memberAvatarByUserId,
     onOptimisticClaim,
     claimPress,
+    claimUserId,
+    activeSlot?.claimedByUserId,
+    activeSlot?.claimedBy,
   ]);
 
   const handleClaimPress = useCallback(() => {
+    const slotId = String(slot?.id || activeSlot?.id || "");
+    const existingOwner = String(
+      activeSlot?.claimedByUserId ||
+        slot?.claimedByUserId ||
+        activeSlot?.claimedBy?.userId ||
+        slot?.claimedBy?.userId ||
+        claimUserId ||
+        ""
+    ).trim();
+
     console.log("KRISTO_HOME_SLOT_CTA_PRESS", {
-      slotId: String(slot?.id || activeSlot?.id || ""),
+      slotId,
       currentUserId,
       claimedByUserId: claimUserId,
+      existingOwner,
       claimed,
       claimedByMe,
       canEnterLiveRoom,
       hasOnOpenLiveRoom: typeof onOpenLiveRoom === "function",
     });
+
+    if (existingOwner && existingOwner !== currentUserId) {
+      if (canEnterLiveRoomAsAudience || (claimedByOther && isLiveWindow)) {
+        // Audience/watch path only — never claim over an existing owner.
+      } else {
+        logClaimOverwriteBlocked({
+          slotId,
+          existingClaimedByUserId: existingOwner,
+          incomingUserId: currentUserId,
+          source: "HomeLiveScheduleCard.handleClaimPress",
+        });
+        Alert.alert("Slot already claimed", "This live slot is already taken.");
+        return;
+      }
+    }
 
     if (canEnterLiveRoom || canEnterLiveRoomAsAudience) {
       console.log("KRISTO_HOME_SLOT_CTA_NAV", {
@@ -1542,6 +1632,11 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
     session?.role,
     claimThisSlot,
     onClaimPress,
+    claimUserId,
+    activeSlot?.claimedByUserId,
+    activeSlot?.claimedBy,
+    isLiveWindow,
+    claimed,
   ]);
 
   if (!slotVisual || slotVisual.expired) {
@@ -2046,7 +2141,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     size={hostAvatarSize}
                     accent={theme.accent}
                     live={phase === "live"}
-                    forceShowImage={liveHostHasAvatar}
+                    forceShowImage={liveHostHasAvatar || claimedCompactLayout}
                     imageLogMeta={{
                       slotId: String(slot?.id || activeSlot?.id || ""),
                       claimedByUserId: claimUserId,

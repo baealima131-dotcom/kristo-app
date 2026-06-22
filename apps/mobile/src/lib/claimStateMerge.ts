@@ -21,6 +21,7 @@ import { fetchMediaScheduleFeedSync } from "@/src/lib/mediaScheduleSilentReload"
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { isMediaScheduleFeedItem } from "@/src/lib/mediaScheduleFeedPredicates";
 import { isMediaSlotEndedOrStale, resolveMediaSlotTimeWindow } from "@/src/lib/mediaScheduleSlotTimes";
+import { logClaimOverwriteBlocked } from "@/src/lib/scheduleSlotClaimRequest";
 import {
   baseFeedId,
   collectScheduleAliasIds,
@@ -82,6 +83,16 @@ export function mergeScheduleSlotClaimPreservingLocal(
     return prev;
   }
 
+  if (prevOwner && nextOwner && prevOwner !== nextOwner) {
+    logClaimOverwriteBlocked({
+      slotId: String(prev?.id || prev?.slotId || next?.id || next?.slotId || ""),
+      existingClaimedByUserId: nextOwner,
+      incomingUserId: prevOwner,
+      source: "mergeScheduleSlotClaimPreservingLocal",
+    });
+    return next;
+  }
+
   if (prevOwner === uid && nextOwner && nextOwner !== uid) {
     return next;
   }
@@ -128,8 +139,20 @@ export function mergeScheduleFeedClaimRows(
     if (!localSlot) return slot;
     const backendOwner = scheduleSlotClaimUserId(slot);
     const preserveUid = String(preserveUserId || "").trim();
-    if (backendOwner && backendOwner !== preserveUid) {
-      return slot;
+    if (backendOwner) {
+      if (backendOwner !== preserveUid) {
+        return slot;
+      }
+      const localOwner = scheduleSlotClaimUserId(localSlot);
+      if (localOwner && localOwner !== backendOwner) {
+        logClaimOverwriteBlocked({
+          slotId: String(slot?.id || slot?.slotId || localSlot?.id || localSlot?.slotId || ""),
+          existingClaimedByUserId: backendOwner,
+          incomingUserId: localOwner,
+          source: "mergeScheduleFeedClaimRows",
+        });
+        return slot;
+      }
     }
     return mergeScheduleSlotClaimPreservingLocal(localSlot, slot, preserveUserId);
   });
@@ -196,6 +219,18 @@ export function overlayStableClaimsOnFeedRows(
 
       let merged = slot;
       const backendClaimedByUserId = scheduleSlotClaimUserId(slot);
+
+      if (backendClaimedByUserId && uid && backendClaimedByUserId !== uid) {
+        if (entry || hint) {
+          logClaimOverwriteBlocked({
+            slotId: slotKey,
+            existingClaimedByUserId: backendClaimedByUserId,
+            incomingUserId: uid,
+            source: "overlayStableClaimsOnFeedRows",
+          });
+        }
+        return slot;
+      }
 
       if (entry && uid && String(entry?.userId || "") === uid) {
         const overlay = {

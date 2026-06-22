@@ -597,6 +597,43 @@ export async function PATCH(req: Request) {
   }
 
   const oldMsg: any = rows[index];
+  const oldCard = oldMsg?.card && typeof oldMsg.card === "object" ? oldMsg.card : {};
+  const existingOwner = String(oldCard?.claimedByUserId || "").trim();
+  const patchTouchesClaim =
+    Object.prototype.hasOwnProperty.call(patch, "claimedByUserId") ||
+    Object.prototype.hasOwnProperty.call(patch, "status");
+  const incomingOwner = Object.prototype.hasOwnProperty.call(patch, "claimedByUserId")
+    ? String(patch.claimedByUserId || "").trim()
+    : existingOwner;
+  const nextStatus = String(patch?.status ?? oldCard?.status ?? "open").toLowerCase();
+  const isReleasePatch =
+    nextStatus === "open" ||
+    (Object.prototype.hasOwnProperty.call(patch, "claimedByUserId") && !incomingOwner);
+
+  if (
+    patchTouchesClaim &&
+    existingOwner &&
+    incomingOwner &&
+    incomingOwner !== existingOwner &&
+    !isReleasePatch
+  ) {
+    const slotId = String(messageId || cardId || oldMsg?.id || "").trim();
+    console.log("KRISTO_CLAIM_OVERWRITE_BLOCKED", {
+      slotId: slotId || null,
+      existingClaimedByUserId: existingOwner,
+      incomingUserId: incomingOwner,
+      source: "api.church.room-messages.PATCH",
+    });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "slot_already_claimed",
+        claimedByUserId: existingOwner,
+      },
+      { status: 409 }
+    );
+  }
+
   const nextMsg = {
     ...oldMsg,
     card: {

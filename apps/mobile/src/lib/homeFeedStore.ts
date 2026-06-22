@@ -708,6 +708,26 @@ export function feedClaimSchedule(
   const userId = String(claim?.userId || "").trim();
   if (!baseId || !slotId || !userId || !claim) return;
 
+  for (const it of rows) {
+    if (!feedItemMatchesClaimTarget(it, baseId, slotId)) continue;
+    const slots = Array.isArray((it as any).scheduleSlots) ? (it as any).scheduleSlots : [];
+    const targetSlot = slots.find((candidate: any) => slotIdsMatch(candidate, slotId));
+    if (!targetSlot) continue;
+    const existingOwner = String(
+      targetSlot?.claimedByUserId || targetSlot?.claimedBy?.userId || ""
+    ).trim();
+    if (existingOwner && existingOwner !== userId) {
+      console.log("KRISTO_CLAIM_OVERWRITE_BLOCKED", {
+        slotId,
+        existingClaimedByUserId: existingOwner,
+        incomingUserId: userId,
+        source: "homeFeedStore.feedClaimSchedule",
+      });
+      return;
+    }
+    break;
+  }
+
   console.log("KRISTO_SCHEDULE_ID_NORMALIZED", {
     context: "claim",
     seedId,
@@ -809,6 +829,11 @@ export function feedClaimSchedule(
       updatedAt: Date.now(),
     } as any;
   });
+
+  if (!anyChanged) {
+    emit();
+    return;
+  }
 
   const claimedAt = new Date().toISOString();
   syncUserClaimedSlotStore(baseId, slotId, {
@@ -918,8 +943,7 @@ export function feedClaimSchedule(
     });
   }
 
-  if (anyChanged) persistAndEmit();
-  else emit();
+  persistAndEmit();
 }
 
 export function feedRemoveWhere(predicate: (item: FeedItem) => boolean) {
