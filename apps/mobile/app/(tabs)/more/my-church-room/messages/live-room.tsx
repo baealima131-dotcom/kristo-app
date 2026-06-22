@@ -113,6 +113,8 @@ import {
 } from "@/src/lib/ministryLiveActivation";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
+import { refreshRoomMessagesIfNeeded } from "@/src/lib/churchMediaRoomRefresh";
+import { fetchHomeFeedFromApi } from "@/src/components/homeFeed/homeFeedApi";
 import {
   isMediaScheduleFeedExplicitlyEnded,
   liveRoomRouteSlotsHaveActiveWindow,
@@ -8095,6 +8097,269 @@ export default function LiveRoomScreen() {
       stopHeartbeat();
     };
   }, [liveBridgeId, isMediaInstantLive, liveApiHeaders, router, isFocused, applyBackendLivePatch]);
+
+  const SILENT_LIVE_ROOM_REFRESH_MS = 45000;
+  const NEAR_LIVE_SCHEDULE_MS = 30 * 60 * 1000;
+
+  const scheduleLiveActive = useMemo(
+    () => scheduleWindowStillLive || !!currentMainStageSlot,
+    [scheduleWindowStillLive, currentMainStageSlot]
+  );
+
+  const silentLiveRoomRefreshEligible = useMemo(() => {
+    if (isMediaInstantLive) return true;
+    if (scheduleLiveActive) return true;
+    if (backendChurchLive?.isLive) return true;
+
+    const now = liveNowMs;
+    const slots = runtimeScheduleSlots.length
+      ? runtimeScheduleSlots
+      : routeScheduleSlots.length
+        ? routeScheduleSlots
+        : initialRouteScheduleSlots;
+
+    return slots.some((slot: any, index: number) => {
+      const win = getScheduleSlotWindow(slot, index);
+      const endMs = Number(win.endMs || 0);
+      const startMs = Number(win.startMs || 0);
+      if (endMs > now) return true;
+      return startMs > now && startMs - now <= NEAR_LIVE_SCHEDULE_MS;
+    });
+  }, [
+    isMediaInstantLive,
+    scheduleLiveActive,
+    backendChurchLive?.isLive,
+    liveNowMs,
+    runtimeScheduleSlots,
+    routeScheduleSlots,
+    initialRouteScheduleSlots,
+  ]);
+
+  const silentLiveRoomRefreshInFlightRef = useRef(false);
+
+  const runSilentLiveRoomRefresh = useCallback(
+    async (trigger: string) => {
+      const logSkip = (reason: string, extra?: Record<string, unknown>) => {
+        console.log("KRISTO_LIVE_ROOM_SILENT_REFRESH_SKIP", {
+          trigger,
+          reason,
+          liveBridgeId,
+          scheduleLiveActive,
+          focused: isFocused,
+          ...extra,
+        });
+      };
+
+      if (!isFocused) {
+        logSkip("not-focused");
+        return;
+      }
+      if (!silentLiveRoomRefreshEligible) {
+        logSkip("no-active-schedule-live");
+        return;
+      }
+      if (silentLiveRoomRefreshInFlightRef.current) {
+        logSkip("already-refreshing");
+        return;
+      }
+      if (isLiveRoomLiveKitConnecting(liveBridgeId)) {
+        logSkip("livekit-connecting-critical-path");
+        return;
+      }
+
+      silentLiveRoomRefreshInFlightRef.current = true;
+      const startedAt = Date.now();
+
+      console.log("KRISTO_LIVE_ROOM_SILENT_REFRESH_START", {
+        trigger,
+        liveBridgeId,
+        scheduleLiveActive,
+        silentLiveRoomRefreshEligible,
+        routeIsChurchLiveControl,
+        liveScheduleFeedId,
+        assignmentThreadId: assignmentThreadId || null,
+      });
+
+      const refreshAt = Date.now();
+      setLiveNowMs(refreshAt);
+      setFeedScheduleTick((v) => v + 1);
+
+      const refreshTasks: Promise<unknown>[] = [];
+
+      try {
+        if (liveBridgeId && !isMediaInstantLive) {
+          refreshTasks.push(
+            fetchLightLiveStateWithPerf(
+              liveApiHeaders as any,
+              "LiveRoomSilentRefresh",
+              liveBridgeId,
+              "silent-refresh"
+            )
+              .then((patch) => applyBackendLivePatch(patch, "silent-refresh"))
+              .catch((e: any) => {
+                console.log("KRISTO_LIVE_ROOM_SILENT_REFRESH_PARTIAL_ERROR", {
+                  stage: "live-state",
+                  message: String(e?.message || e),
+                });
+              })
+          );
+        }
+
+        const hydrateFeedId = String(liveScheduleFeedId || "").trim();
+        if (!routeIsChurchLiveControl && hydrateFeedId && isBackendFeedScheduleId(hydrateFeedId)) {
+          refreshTasks.push(
+            (async () => {
+              try {
+                const res: any = await apiGet(
+                  `/api/church/feed?id=${encodeURIComponent(hydrateFeedId)}`,
+                  { headers: liveApiHeaders as any },
+                  { screen: "LiveRoomSilentRefreshFeed", throttleMs: 44000 }
+                );
+                const item = res?.data?.item || res?.item || res?.data || {};
+                const slots = normalizeLiveScheduleSlots(
+                  Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : []
+                );
+
+                setBackendScheduleHydrated(true);
+
+                if (!slots.length) {
+                  if (isMediaScheduleFeedExplicitlyEnded(item)) {
+                    setBackendScheduleExplicitlyEnded(true);
+                    setBackendScheduleSlots([]);
+                  }
+                  return;
+                }
+
+                setBackendScheduleExplicitlyEnded(false);
+                setBackendScheduleSlots(slots);
+              } catch (e: any) {
+                console.log("KRISTO_LIVE_ROOM_SILENT_REFRESH_PARTIAL_ERROR", {
+                  stage: "feed-schedule",
+                  feedId: hydrateFeedId,
+                  message: String(e?.message || e),
+                });
+              }
+            })()
+          );
+        }
+
+        if (routeIsChurchLiveControl) {
+          refreshTasks.push(
+            (async () => {
+              try {
+                const res: any = await apiGet(
+                  `/api/church/room-messages?roomId=${encodeURIComponent(CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID)}`,
+                  { headers: liveApiHeaders as any },
+                  { screen: "LiveRoomSilentRefreshChurchLiveControl", throttleMs: 44000 }
+                );
+                const rows = Array.isArray(res?.data) ? res.data : [];
+                const built = buildChurchLiveControlLiveRoomScheduleSlots(rows, {
+                  churchId: liveRouteChurchId,
+                  churchName: String(
+                    (params as any)?.churchName || (params as any)?.churchLabel || ""
+                  ).trim(),
+                  mediaName: String((params as any)?.mediaName || params.title || "Church Media").trim(),
+                  nowMs: Date.now(),
+                });
+                const slots = normalizeLiveScheduleSlots(built?.slots || []);
+                const scheduleId = String(
+                  built?.scheduleId ||
+                    (params as any)?.sourceScheduleId ||
+                    (params as any)?.liveId ||
+                    ""
+                ).trim();
+
+                if (scheduleId) {
+                  setChurchLiveControlScheduleId(scheduleId);
+                }
+
+                setBackendScheduleHydrated(true);
+                setBackendScheduleExplicitlyEnded(false);
+                setBackendScheduleSlots(slots);
+              } catch (e: any) {
+                console.log("KRISTO_LIVE_ROOM_SILENT_REFRESH_PARTIAL_ERROR", {
+                  stage: "church-live-control-schedule",
+                  message: String(e?.message || e),
+                });
+              }
+            })()
+          );
+        }
+
+        if (assignmentThreadId && liveRouteChurchId && session?.userId) {
+          refreshTasks.push(
+            refreshRoomMessagesIfNeeded({
+              churchId: liveRouteChurchId,
+              userId: String(session.userId),
+              roomId: assignmentThreadId,
+              headers: liveApiHeaders as Record<string, string>,
+              force: true,
+              source: "live-room-silent-refresh",
+            })
+              .then(() => {
+                setMessageStoreTick((v) => v + 1);
+              })
+              .catch((e: any) => {
+                console.log("KRISTO_LIVE_ROOM_SILENT_REFRESH_PARTIAL_ERROR", {
+                  stage: "assignment-thread-messages",
+                  roomId: assignmentThreadId,
+                  message: String(e?.message || e),
+                });
+              })
+          );
+        }
+
+        refreshTasks.push(
+          fetchHomeFeedFromApi("live-room-silent-refresh", { force: true, reconcile: true }).catch(
+            (e: any) => {
+              console.log("KRISTO_LIVE_ROOM_SILENT_REFRESH_PARTIAL_ERROR", {
+                stage: "home-feed-reconcile",
+                message: String(e?.message || e),
+              });
+            }
+          )
+        );
+
+        await Promise.all(refreshTasks);
+        emitLiveRingRefresh("live-room-silent-refresh");
+
+        console.log("KRISTO_LIVE_ROOM_SILENT_REFRESH_DONE", {
+          trigger,
+          liveBridgeId,
+          durationMs: Date.now() - startedAt,
+          scheduleLiveActive,
+          taskCount: refreshTasks.length,
+        });
+      } finally {
+        silentLiveRoomRefreshInFlightRef.current = false;
+      }
+    },
+    [
+      isFocused,
+      silentLiveRoomRefreshEligible,
+      liveBridgeId,
+      scheduleLiveActive,
+      routeIsChurchLiveControl,
+      liveScheduleFeedId,
+      assignmentThreadId,
+      liveApiHeaders,
+      isMediaInstantLive,
+      applyBackendLivePatch,
+      liveRouteChurchId,
+      session?.userId,
+      params,
+    ]
+  );
+
+  useEffect(() => {
+    if (!isFocused) return;
+
+    const timer = setInterval(() => {
+      void runSilentLiveRoomRefresh("interval-45s");
+    }, SILENT_LIVE_ROOM_REFRESH_MS);
+
+    return () => clearInterval(timer);
+  }, [isFocused, runSilentLiveRoomRefresh]);
 
   useEffect(() => {
     const uris = assignmentThreadMessages
