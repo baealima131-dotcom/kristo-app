@@ -28,14 +28,14 @@ import {
   resolveStablePersonalScheduleAlert,
 } from "@/src/lib/claimStateMerge";
 import {
-  buildLeanLiveScheduleSlotsJson,
   isBackendFeedScheduleId,
   isLocalMediaScheduleId,
   resolveLiveRingCanonicalFeedId,
-  sanitizeLeanRouteAvatarUri,
-  utf8JsonByteLength,
 } from "@/src/lib/scheduleSlotUtils";
-import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
+import {
+  buildScheduleLiveRoomRouteParams,
+  resolveLiveRingNavigationTarget,
+} from "@/src/lib/enterLiveRoomNavigation";
 import { pauseHomeFeedBackgroundWorkForLiveNavigation } from "@/src/lib/liveRoomStartup";
 import {
   pinLiveKitPublisherHostBeforeToken,
@@ -327,69 +327,6 @@ export default function TabLayout() {
     });
   }
 
-  function buildScheduleLiveRoomRouteParams(
-    item: any,
-    options: {
-      slot: any;
-      allSlots: any[];
-      isLiveNow: boolean;
-      claimedByMe: boolean;
-      routeSlotNumber: number;
-      scheduleStartMs?: number;
-      scheduleEndMs?: number;
-    }
-  ) {
-    const { canonicalFeedId, localScheduleId } = resolveRingScheduleIds(item);
-    const { slot, allSlots, isLiveNow, claimedByMe, routeSlotNumber } = options;
-    const authority = buildLiveRoomAuthorityParams(item);
-    const leanSlotsJson = buildLeanLiveScheduleSlotsJson(allSlots);
-
-    console.log("KRISTO_LIVE_RING_ROUTE_SLOTS_SIZE", {
-      byteLen: utf8JsonByteLength(leanSlotsJson),
-      slotCount: allSlots.length,
-    });
-
-    return {
-      source: "media",
-      liveMode: "schedule",
-      layout: "grid6",
-      entryMode: isLiveNow ? "live" : "waiting",
-      role: claimedByMe ? "Host" : "Viewer",
-      mode: claimedByMe ? "host" : "viewer",
-      room: "media",
-      mediaName: String(item?.mediaName || item?.actorLabel || "Church Media"),
-      churchName: String(item?.churchName || item?.churchLabel || "Church"),
-      churchLabel: String(item?.churchName || item?.churchLabel || "Church"),
-      churchId: String(item?.churchId || session?.churchId || ""),
-      liveId: canonicalFeedId,
-      feedId: canonicalFeedId,
-      sourceScheduleId: canonicalFeedId,
-      ...(localScheduleId ? { localScheduleId } : {}),
-      liveAllScheduleSlotsJson: leanSlotsJson,
-      title: String(slot?.name || slot?.slotLabel || item?.title || "Church Live").slice(0, 120),
-      preferredSlotNumber: String(routeSlotNumber),
-      currentSlotNumber: String(routeSlotNumber),
-      scheduleStartMs: String(options.scheduleStartMs || ""),
-      scheduleEndMs: String(options.scheduleEndMs || ""),
-      claimedByUserId: String(slot?.claimedByUserId || "").slice(0, 64),
-      claimedByName: String(slot?.claimedByName || "").slice(0, 80),
-      claimedByAvatar: sanitizeLeanRouteAvatarUri(
-        slot?.claimedByAvatar || slot?.claimedByAvatarUri || slot?.avatarUri
-      ),
-      mediaSlotPublisher: claimedByMe ? "1" : "0",
-      canPublish: claimedByMe && isLiveNow ? "1" : "0",
-      canPublishCamera: claimedByMe && isLiveNow ? "1" : "0",
-      canPublishMic: claimedByMe && isLiveNow ? "1" : "0",
-      watchScheduledPublisher: claimedByMe ? "1" : "0",
-      isGlobalMediaSlot: "1",
-      ...authority,
-      mediaOwnerPastorUserId: authority.actualChurchPastorUserId,
-      mediaHostIds: String(
-        item?.mediaHostIds || item?.hostIds || authority.mediaHostIds || ""
-      ),
-    };
-  }
-
   function openPersonalScheduleAlert() {
     const pressStartedAt = Date.now();
     console.log("KRISTO_LIVE_RING_LONG_PRESS_START", {
@@ -411,18 +348,33 @@ export default function TabLayout() {
     const slot = alert.slot || {};
     const claimedByMe = String(alert?.match || "") === "claimed";
     const isLiveNow = alert?.isLiveNow === true;
-    const allSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    const initialSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
 
     logLiveRingActiveSchedule("profile-ring", item, alert);
 
-    const navigateParams = buildScheduleLiveRoomRouteParams(item, {
+    const navTarget = resolveLiveRingNavigationTarget({
+      item,
       slot,
-      allSlots,
+      allSlots: initialSlots,
+      routeSlotNumber: (alert?.index ?? 0) + 1,
+      viewerUserId: String(session?.userId || "").trim(),
+      viewerChurchId: String(session?.churchId || item?.churchId || "").trim(),
+      mergedRows: backendFeedRowsRef.current,
+      source: "profile-ring-long-press",
+    });
+
+    const navigateParams = buildScheduleLiveRoomRouteParams(navTarget.item, {
+      slot: navTarget.slot,
+      allSlots: navTarget.allSlots,
       isLiveNow,
       claimedByMe,
-      routeSlotNumber: (alert?.index ?? 0) + 1,
+      routeSlotNumber: navTarget.routeSlotNumber,
       scheduleStartMs: alert?.startMs,
       scheduleEndMs: alert?.endMs,
+      churchId: String(session?.churchId || ""),
+      viewerUserId: String(session?.userId || "").trim(),
+      liveBridgeId: navTarget.liveBridgeId,
+      sourceScheduleId: navTarget.sourceScheduleId,
     });
 
     console.log("KRISTO_LIVE_RING_NAVIGATE_REQUEST", {
@@ -433,7 +385,8 @@ export default function TabLayout() {
       localScheduleId: String((navigateParams as any).localScheduleId || ""),
       entryMode: navigateParams.entryMode,
       currentSlotNumber: navigateParams.currentSlotNumber,
-      routeSlotCount: allSlots.length,
+      routeSlotCount: navTarget.allSlots.length,
+      remappedFromRm: navTarget.remappedFromRm,
       durationMs: Date.now() - pressStartedAt,
     });
 
@@ -446,7 +399,7 @@ export default function TabLayout() {
       pinLiveRoomSession({
         liveBridgeId,
         userId: viewerUserId,
-        routeSlotCount: allSlots.length,
+        routeSlotCount: navTarget.allSlots.length,
         source: "live-ring-profile-nav",
       });
       if (claimedByMe && isLiveNow) {
@@ -504,16 +457,16 @@ export default function TabLayout() {
       const item = scheduleAlert.item || {};
       const slot = scheduleAlert.slot || {};
       const isLiveNow = scheduleAlert?.isLiveNow === true;
-      const allSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+      const initialSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
       const viewerUserId = String(session?.userId || "").trim();
-      const claimedIndex = allSlots.findIndex((s: any) => {
+      const claimedIndex = initialSlots.findIndex((s: any) => {
         const raw = s?.claimedBy;
         return (
           String(s?.claimedByUserId || "").trim() === viewerUserId ||
           String(raw && typeof raw === "object" ? raw.userId || "" : "").trim() === viewerUserId
         );
       });
-      const userClaimedSlot = claimedIndex >= 0 ? allSlots[claimedIndex] : null;
+      const userClaimedSlot = claimedIndex >= 0 ? initialSlots[claimedIndex] : null;
 
       const paramsBuildStart = Date.now();
       logLiveRingActiveSchedule("church-ring-schedule", item, scheduleAlert);
@@ -530,16 +483,33 @@ export default function TabLayout() {
 
       const claimedByMe = userClaimIsCurrentLiveSlot;
       const routeSlot = userClaimIsCurrentLiveSlot ? userClaimedSlot : slot;
-      const routeSlotNumber = userClaimIsCurrentLiveSlot ? claimedIndex + 1 : (scheduleAlert?.index ?? 0) + 1;
+      const routeSlotNumber = userClaimIsCurrentLiveSlot
+        ? claimedIndex + 1
+        : (scheduleAlert?.index ?? 0) + 1;
 
-      const navigateParams = buildScheduleLiveRoomRouteParams(item, {
+      const navTarget = resolveLiveRingNavigationTarget({
+        item,
         slot: routeSlot,
-        allSlots,
+        allSlots: initialSlots,
+        routeSlotNumber,
+        viewerUserId,
+        viewerChurchId: String(session?.churchId || item?.churchId || "").trim(),
+        mergedRows: backendFeedRowsRef.current,
+        source: "church-ring-long-press",
+      });
+
+      const navigateParams = buildScheduleLiveRoomRouteParams(navTarget.item, {
+        slot: navTarget.slot,
+        allSlots: navTarget.allSlots,
         isLiveNow,
         claimedByMe,
-        routeSlotNumber,
+        routeSlotNumber: navTarget.routeSlotNumber,
         scheduleStartMs: scheduleAlert?.startMs,
         scheduleEndMs: scheduleAlert?.endMs,
+        churchId: String(session?.churchId || ""),
+        viewerUserId,
+        liveBridgeId: navTarget.liveBridgeId,
+        sourceScheduleId: navTarget.sourceScheduleId,
       });
 
       const paramsBuildMs = Date.now() - paramsBuildStart;
