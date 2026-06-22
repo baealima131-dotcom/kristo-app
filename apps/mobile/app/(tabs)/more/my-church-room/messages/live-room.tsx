@@ -463,6 +463,22 @@ const BG = "#020817";
 const GOLD = "#D9B35F";
 const BORDER = "rgba(255,255,255,0.10)";
 
+function logLocalMicPublicationState(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LOCAL_MIC_PUBLICATION_STATE", extra);
+}
+
+function logLiveMicSuppressAttempt(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_MIC_SUPPRESS_ATTEMPT", extra);
+}
+
+function logLiveMicSuppressResult(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_MIC_SUPPRESS_RESULT", extra);
+}
+
+function logStalePublisherStageMount(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVEKIT_STALE_PUBLISHER_STAGE", extra);
+}
+
 
 function stopKristoLiveKitRoomTracks(room: any) {
   if (!room) return;
@@ -696,6 +712,12 @@ function KristoLiveKitConnectionLifecycle({
     const logLocalParticipant = (source: string) => {
       const claims = tokenClaims();
       const localIdentity = identity();
+      const micState = readLocalMicPublicationState(room);
+      logLocalMicPublicationState({
+        source,
+        roomName: bridgeId,
+        ...micState,
+      });
       console.log("KRISTO_LIVEKIT_LOCAL_PARTICIPANT", {
         source,
         roomName: bridgeId,
@@ -710,6 +732,8 @@ function KristoLiveKitConnectionLifecycle({
           !!localIdentity &&
           !!claims?.identity &&
           localIdentity === String(claims.identity),
+        isMicrophoneEnabled: micState.isMicrophoneEnabled,
+        publishedAudioTrackCount: micState.publishedAudioTrackCount,
       });
     };
 
@@ -1562,6 +1586,17 @@ const headersKey = JSON.stringify(headers || {});
       isViewerOnly,
       stageMountAllowed: stageMountAllowedRef.current,
       effectiveStageMountAllowed,
+      liveKitRoomAudioCapture: false,
+    });
+  } else {
+    console.log("KRISTO_LIVEKIT_PUBLISHER_MOUNT", {
+      roomName,
+      stableIdentity,
+      identity,
+      canPublishMic,
+      canPublishCamera,
+      isPublisherStage,
+      liveKitRoomAudioCapture: !!canPublishMic,
     });
   }
 
@@ -1574,9 +1609,8 @@ const headersKey = JSON.stringify(headers || {});
       onError={handleLiveKitError}
       onConnected={handleLiveKitRoomConnected}
       onDisconnected={handleLiveKitRoomDisconnected}
-      // Keep audio enabled because this is the only path currently producing remote sound.
-      // TODO: remove AudioContext error separately without disabling playback.
-      audio={true}
+      // Remote playback uses RoomAudioRenderer + AudioSession; audio prop is mic capture only.
+      audio={!!canPublishMic}
       video={false}
       connectOptions={stableConnectOptions as any}
       options={liveKitOptions as any}
@@ -2054,6 +2088,136 @@ function KristoRemoteRoomVideo({
   );
 }
 
+function readLocalMicPublicationState(room: any) {
+  try {
+    const lp = room?.localParticipant;
+    const audioPublications = Array.from(lp?.audioTrackPublications?.values?.() || []);
+    const micPub =
+      lp?.getTrackPublication?.(Track.Source.Microphone) ||
+      audioPublications[0] ||
+      Array.from(lp?.trackPublications?.values?.() || []).find((pub: any) => {
+        const source = String(pub?.source || "").toLowerCase();
+        const kind = String(pub?.kind || pub?.track?.kind || "").toLowerCase();
+        return kind === "audio" || source.includes("microphone");
+      });
+
+    const track: any = micPub?.track || micPub?.audioTrack || null;
+    const allAudioPubs = Array.from(lp?.trackPublications?.values?.() || []).filter((pub: any) => {
+      const source = String(pub?.source || "").toLowerCase();
+      const kind = String(pub?.kind || pub?.track?.kind || "").toLowerCase();
+      return kind === "audio" || source.includes("microphone");
+    });
+
+    return {
+      identity: String(lp?.identity || ""),
+      roomState: String(room?.state || ""),
+      isMicrophoneEnabled:
+        typeof lp?.isMicrophoneEnabled === "boolean" ? lp.isMicrophoneEnabled : null,
+      hasPublication: !!track,
+      micPub,
+      track,
+      publishedAudioTrackCount: allAudioPubs.length,
+      publications: allAudioPubs.map((pub: any) => ({
+        sid: String(pub?.trackSid || pub?.sid || ""),
+        source: String(pub?.source || ""),
+        muted: !!pub?.isMuted,
+        trackEnabled: pub?.track?.mediaStreamTrack?.enabled ?? null,
+      })),
+    };
+  } catch {
+    return {
+      identity: "",
+      roomState: "",
+      isMicrophoneEnabled: null,
+      hasPublication: false,
+      micPub: null,
+      track: null,
+      publishedAudioTrackCount: 0,
+      publications: [],
+    };
+  }
+}
+
+async function suppressLocalMicPublication(
+  room: any,
+  reason: string,
+  extra?: Record<string, unknown>
+) {
+  const before = readLocalMicPublicationState(room);
+  logLiveMicSuppressAttempt({
+    reason,
+    before,
+    ...(extra || {}),
+  });
+
+  const lp: any = room?.localParticipant;
+  if (!lp) {
+    logLiveMicSuppressResult({ reason, ok: false, error: "no-local-participant", before });
+    return false;
+  }
+
+  let setMicDisabledOk: boolean | null = null;
+  let setMicDisabledError = "";
+
+  if (typeof lp.setMicrophoneEnabled === "function") {
+    try {
+      await lp.setMicrophoneEnabled(false);
+      setMicDisabledOk = true;
+      console.log("KRISTO_LIVE_MIC_SET_MICROPHONE_ENABLED", {
+        reason,
+        enabled: false,
+        isMicrophoneEnabled:
+          typeof lp?.isMicrophoneEnabled === "boolean" ? lp.isMicrophoneEnabled : null,
+      });
+    } catch (e: any) {
+      setMicDisabledOk = false;
+      setMicDisabledError = String(e?.message || e);
+      console.log("KRISTO_LIVE_MIC_SET_MICROPHONE_ENABLED_ERROR", {
+        reason,
+        message: setMicDisabledError,
+      });
+    }
+  } else {
+    setMicDisabledError = "setMicrophoneEnabled-unavailable";
+  }
+
+  const unpublished: string[] = [];
+  try {
+    const pubs = Array.from(lp?.trackPublications?.values?.() || []).filter((pub: any) => {
+      const source = String(pub?.source || "").toLowerCase();
+      const kind = String(pub?.kind || pub?.track?.kind || "").toLowerCase();
+      return kind === "audio" || source.includes("microphone");
+    });
+
+    for (const pub of pubs as any[]) {
+      const track: any = pub?.track || pub?.audioTrack || null;
+      if (!track) continue;
+      try {
+        if (track?.mediaStreamTrack) track.mediaStreamTrack.enabled = false;
+        await lp.unpublishTrack(track).catch(() => {});
+        try {
+          track.stop?.();
+        } catch {}
+        unpublished.push(String(pub?.trackSid || pub?.sid || pub?.source || "audio"));
+      } catch {}
+    }
+  } catch {}
+
+  const after = readLocalMicPublicationState(room);
+  logLiveMicSuppressResult({
+    reason,
+    ok: !after.hasPublication,
+    setMicDisabledOk,
+    setMicDisabledError: setMicDisabledError || undefined,
+    unpublished,
+    before,
+    after,
+    ...(extra || {}),
+  });
+
+  return !after.hasPublication;
+}
+
 function readLocalCameraPublicationState(room: any) {
   try {
     const lp = room?.localParticipant;
@@ -2113,6 +2277,100 @@ function KristoRemoteOrLocalVideo({
   fallback: React.ReactNode;
 }) {
   const room = useRoomContext();
+
+  useEffect(() => {
+    if (!room) return;
+
+    const logMicState = (source: string) => {
+      const micState = readLocalMicPublicationState(room);
+      logLocalMicPublicationState({
+        source,
+        canPublishMic,
+        canPublishCamera,
+        authorityAllowsMic: canPublishMic,
+        ...micState,
+      });
+    };
+
+    logMicState("kristo-remote-or-local-video-effect");
+
+    const onConnected = () => logMicState("room-connected");
+    const onLocalTrackPublished = (pub: any) => {
+      const source = String(pub?.source || "").toLowerCase();
+      const kind = String(pub?.kind || pub?.track?.kind || "").toLowerCase();
+      if (kind !== "audio" && !source.includes("microphone")) return;
+
+      logLocalMicPublicationState({
+        source: "local-audio-track-published",
+        canPublishMic,
+        authorityAllowsMic: canPublishMic,
+        publicationSource: source,
+        ...readLocalMicPublicationState(room),
+      });
+
+      if (!canPublishMic) {
+        void suppressLocalMicPublication(room, "unexpected-local-audio-publish", {
+          canPublishMic,
+          publicationSource: source,
+        });
+      }
+    };
+
+    room.on(RoomEvent.Connected, onConnected);
+    room.on(RoomEvent.Reconnected, onConnected);
+    room.on(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
+
+    if (String((room as any)?.state || "") === "connected") {
+      onConnected();
+    }
+
+    return () => {
+      room.off(RoomEvent.Connected, onConnected);
+      room.off(RoomEvent.Reconnected, onConnected);
+      room.off(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
+    };
+  }, [room, canPublishMic, canPublishCamera]);
+
+  useEffect(() => {
+    if (!room || canPublishMic) return;
+
+    let cancelled = false;
+
+    const enforceViewerMicOff = async (trigger: string) => {
+      const before = readLocalMicPublicationState(room);
+      if (!before.hasPublication && before.isMicrophoneEnabled === false) {
+        logLocalMicPublicationState({
+          source: "viewer-mic-already-suppressed",
+          trigger,
+          canPublishMic,
+          ...before,
+        });
+        return;
+      }
+
+      if (cancelled) return;
+      await suppressLocalMicPublication(room, trigger, { canPublishMic });
+    };
+
+    void enforceViewerMicOff("authority-canPublishMic-false");
+
+    const onConnected = () => {
+      void enforceViewerMicOff("authority-false-on-connected");
+    };
+
+    room.on(RoomEvent.Connected, onConnected);
+    room.on(RoomEvent.Reconnected, onConnected);
+
+    if (String((room as any)?.state || "") === "connected") {
+      void enforceViewerMicOff("authority-false-already-connected");
+    }
+
+    return () => {
+      cancelled = true;
+      room.off(RoomEvent.Connected, onConnected);
+      room.off(RoomEvent.Reconnected, onConnected);
+    };
+  }, [room, canPublishMic]);
 
   useEffect(() => {
     (globalThis as any).__KRISTO_SET_LOCAL_MIC_MUTED__ = async (muted: boolean) => {
@@ -6014,6 +6272,50 @@ export default function LiveRoomScreen() {
     isLiveRoomLiveKitConnecting(liveBridgeId) ||
     isLiveRoomLiveKitSessionActive(liveBridgeId) ||
     shouldHoldClaimEnterSessionLock(liveBridgeId);
+
+  useEffect(() => {
+    const authorityWantsPublisher =
+      mountLiveKitPublisherStage || canPublishClaimedMicNow || cameraPublishAllowedNow;
+    const stalePublisherShell =
+      keepPublisherLiveKitStage && !authorityWantsPublisher && !canPublishClaimedMicNow;
+
+    if (!stalePublisherShell) return;
+
+    logStalePublisherStageMount({
+      currentUserId,
+      liveBridgeId,
+      keepPublisherLiveKitStage,
+      mountLiveKitPublisherStage,
+      canPublishClaimedMicNow,
+      canPublishLiveVideoNow,
+      cameraPublishAllowedNow,
+      publisherHostActive,
+      liveKitHostLocked,
+      publisherHostPinnedBeforeToken,
+      shouldMountLiveKitPublisherStage,
+      renderLiveKitPublisherStage,
+      liveKitPublisherStagePinned: isLiveKitPublisherStagePinned(liveBridgeId),
+      stageMountSticky: isLiveKitStageMountSticky(liveBridgeId, liveKitPublisherIdentity),
+      liveKitSessionActive: isLiveRoomLiveKitSessionActive(liveBridgeId),
+      liveKitConnecting: isLiveRoomLiveKitConnecting(liveBridgeId),
+      activePublisherRoom: String((globalThis as any).__KRISTO_ACTIVE_PUBLISHER_ROOM__ || ""),
+      publisherIdentity: liveKitPublisherIdentity,
+    });
+  }, [
+    keepPublisherLiveKitStage,
+    mountLiveKitPublisherStage,
+    canPublishClaimedMicNow,
+    canPublishLiveVideoNow,
+    cameraPublishAllowedNow,
+    publisherHostActive,
+    liveKitHostLocked,
+    publisherHostPinnedBeforeToken,
+    shouldMountLiveKitPublisherStage,
+    renderLiveKitPublisherStage,
+    liveBridgeId,
+    liveKitPublisherIdentity,
+    currentUserId,
+  ]);
 
   useEffect(() => {
     if (
