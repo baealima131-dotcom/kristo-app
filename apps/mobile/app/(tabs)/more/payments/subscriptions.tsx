@@ -8,8 +8,10 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
+  Platform,
   type ScrollView as RNScrollView,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -24,27 +26,34 @@ import {
   PREMIUM_MONTHLY_PRODUCT_ID,
   configureChurchMobileSubscriptions,
   formatSubscriptionSetupError,
+  formatPremiumRenewalDate,
   getSubscriptionOfferings,
   getCustomerSubscriptionInfo,
   hasPremiumEntitlement,
   logEntitlementAudit,
   logInRevenueCatForChurchSubscription,
   logRevenueCatSubscriptionOwnershipDebug,
+  openSubscriptionManagement,
   purchaseSubscriptionPackage,
   refreshCustomerInfoUntilYearlyActive,
   resolveActiveSubscriptionPlan,
   resolveMonthlyPackage,
   resolveYearlyPackage,
+  resolvePremiumSubscriptionBillingDetails,
   describeCurrentOfferingPackages,
   setRevenueCatDebugRouteEnabled,
   resolveYearlySavingsDisplay,
-  resolveMediaPremiumPlanUiState,
+  monthlyPackageHasIntroOffer,
+  resolveIntroTrialDays,
+  resolveMonthlyProductIntro,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
   fetchChurchSubscriptionStatus,
   isPastorSessionRole,
   logChurchSubscriptionContext,
+  resolveChurchSubscriptionScreenState,
   syncChurchSubscriptionAfterPurchase,
+  type ChurchSubscriptionServerStatus,
 } from "../../../../src/lib/churchSubscription";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
@@ -55,6 +64,21 @@ const YEARLY_NOT_CONFIRMED_ALERT =
   "Apple may defer this plan change until your next renewal. Your monthly plan is still active. Manage the subscription in Apple Subscriptions if you need to complete the yearly upgrade.";
 
 const LEGACY_PENDING_PLAN_SWITCH_PREFIX = "kristo_pending_plan_switch_v1";
+
+const YEARLY_FEATURES = [
+  "Best value for churches",
+  "Priority support",
+  "Full Media Premium access",
+  "Annual billing",
+] as const;
+
+const YEARLY_UPSELL_PILLS = [
+  "Priority support",
+  "Full Media Premium access",
+  "Annual billing",
+] as const;
+
+type SubscriptionScreenState = "none" | "monthly" | "yearly" | "sync";
 
 async function clearLegacyPendingPlanSwitchStorage(churchId: string) {
   const cid = String(churchId || "").trim();
@@ -70,67 +94,372 @@ function formatPrice(pkg?: PurchasesPackage, fallback?: string) {
   return pkg?.product.priceString || fallback || "";
 }
 
-type PlanCardProps = {
-  planLabel: string;
-  priceLine: string;
-  statusLine?: string;
-  statusTone?: "success" | "muted" | "accent";
-  actionLabel?: string;
-  onAction?: () => void;
-  actionLoading?: boolean;
-  dimmed?: boolean;
-};
+function formatBillingMetaRow(
+  billing: ReturnType<typeof resolvePremiumSubscriptionBillingDetails>
+): string {
+  const parts = [
+    `Status: ${billing.status}`,
+    billing.renewalDate
+      ? `Renews ${formatPremiumRenewalDate(billing.renewalDate)}`
+      : null,
+    billing.autoRenew !== "—" ? `Auto-renew ${billing.autoRenew}` : null,
+  ].filter(Boolean);
 
-function PlanCard({
-  planLabel,
-  priceLine,
-  statusLine,
-  statusTone = "success",
-  actionLabel,
-  onAction,
-  actionLoading,
-  dimmed,
-}: PlanCardProps) {
-  const statusStyle =
-    statusTone === "muted"
-      ? s.statusMuted
-      : statusTone === "accent"
-        ? s.statusAccent
-        : s.statusSuccess;
+  return parts.join("  •  ");
+}
 
+function StatusChip({ label, tone = "gold" }: { label: string; tone?: "gold" | "green" }) {
   return (
-    <View style={[s.planCard, dimmed ? s.planCardDimmed : null]}>
-      <Text style={s.planLabel}>{planLabel}</Text>
-      <Text style={s.planPrice}>{priceLine}</Text>
+    <View style={[s.statusChip, tone === "green" ? s.statusChipGreen : s.statusChipGold]}>
+      <Text style={[s.statusChipText, tone === "green" ? s.statusChipTextGreen : null]}>
+        {label}
+      </Text>
+    </View>
+  );
+}
 
-      {statusLine ? (
-        <View style={s.statusRow}>
-          {statusTone === "success" ? (
-            <Ionicons name="checkmark" size={16} color="rgba(120,220,160,0.95)" />
-          ) : null}
-          <Text style={statusStyle}>{statusLine}</Text>
+function GlassCard({
+  children,
+  highlighted,
+  goldGlow,
+  dimmed,
+  compact,
+}: {
+  children: React.ReactNode;
+  highlighted?: boolean;
+  goldGlow?: boolean;
+  dimmed?: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <View
+      style={[
+        s.glassCardOuter,
+        goldGlow ? s.glassCardOuterGold : null,
+        dimmed ? s.glassCardDimmed : null,
+      ]}
+    >
+      <LinearGradient
+        colors={
+          goldGlow
+            ? ["rgba(196,171,114,0.10)", "rgba(255,255,255,0.04)", "rgba(10,14,24,0.96)"]
+            : highlighted
+              ? ["rgba(196,171,114,0.08)", "rgba(255,255,255,0.03)", "rgba(10,14,24,0.96)"]
+              : ["rgba(255,255,255,0.05)", "rgba(255,255,255,0.02)", "rgba(10,14,24,0.98)"]
+        }
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[
+          s.glassCard,
+          compact ? s.glassCardCompact : null,
+          highlighted ? s.glassCardHighlighted : null,
+          goldGlow ? s.glassCardGold : null,
+        ]}
+      >
+        <View pointerEvents="none" style={s.glassSheen} />
+        {children}
+      </LinearGradient>
+    </View>
+  );
+}
+
+function PlanHeader({
+  icon,
+  planName,
+  description,
+  price,
+  period,
+  subPrice,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  planName: string;
+  description?: string;
+  price: string;
+  period: string;
+  subPrice?: string;
+}) {
+  return (
+    <View style={s.planHeaderRow}>
+      <View style={s.planHeaderLeft}>
+        <View style={s.planIconWrap}>
+          <Ionicons name={icon} size={18} color="rgba(196,171,114,0.95)" />
+        </View>
+        <View style={s.planHeaderCopy}>
+          <Text style={s.planTitle}>{planName}</Text>
+          {description ? <Text style={s.planDescription}>{description}</Text> : null}
+        </View>
+      </View>
+      <View style={s.planHeaderRight}>
+        {subPrice ? (
+          <View style={s.planPriceStack}>
+            <Text style={s.planPrice}>{price}</Text>
+            <Text style={s.planSubPrice}>{subPrice}</Text>
+          </View>
+        ) : (
+          <>
+            <Text style={s.planPrice}>{price}</Text>
+            {period ? <Text style={s.planPeriod}>{period}</Text> : null}
+          </>
+        )}
+      </View>
+    </View>
+  );
+}
+
+function CompactMetaRow({ text }: { text: string }) {
+  return (
+    <View style={s.metaRow}>
+      <Ionicons name="information-circle-outline" size={14} color="rgba(255,255,255,0.38)" />
+      <Text style={s.metaRowText}>{text}</Text>
+    </View>
+  );
+}
+
+function FeaturePills({ items }: { items: readonly string[] }) {
+  return (
+    <View style={s.pillRow}>
+      {items.map((item) => (
+        <View key={item} style={s.featurePill}>
+          <Text style={s.featurePillText}>{item}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function PrimaryCta({
+  label,
+  onPress,
+  loading,
+}: {
+  label: string;
+  onPress: () => void;
+  loading?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={loading}
+      style={({ pressed }) => [s.ctaOuter, pressed ? s.pressed : null, loading ? s.ctaDisabled : null]}
+    >
+      <LinearGradient
+        colors={["#E8D4A8", "#C4AB72", "#A89258"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={s.ctaGradient}
+      >
+        {loading ? (
+          <ActivityIndicator color="#1A1610" size="small" />
+        ) : (
+          <Text style={s.ctaText}>{label}</Text>
+        )}
+      </LinearGradient>
+    </Pressable>
+  );
+}
+
+function CompactSecondaryCta({
+  label,
+  onPress,
+  loading,
+}: {
+  label: string;
+  onPress: () => void;
+  loading?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={loading}
+      style={({ pressed }) => [
+        s.compactSecondaryCta,
+        pressed ? s.pressed : null,
+        loading ? s.ctaDisabled : null,
+      ]}
+    >
+      {loading ? (
+        <ActivityIndicator color="#fff" size="small" />
+      ) : (
+        <Text style={s.compactSecondaryCtaText}>{label}</Text>
+      )}
+    </Pressable>
+  );
+}
+
+function CurrentPlanCard({
+  icon,
+  planName,
+  description,
+  price,
+  period,
+  billing,
+  successMessage,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  planName: string;
+  description: string;
+  price: string;
+  period: string;
+  billing: ReturnType<typeof resolvePremiumSubscriptionBillingDetails>;
+  successMessage: string;
+}) {
+  return (
+    <GlassCard highlighted>
+      <StatusChip label="CURRENT PLAN" />
+      <PlanHeader
+        icon={icon}
+        planName={planName}
+        description={description}
+        price={price}
+        period={period}
+      />
+      <CompactMetaRow text={formatBillingMetaRow(billing)} />
+      <View style={s.successNote}>
+        <Ionicons name="shield-checkmark" size={14} color="rgba(120,220,160,0.95)" />
+        <Text style={s.successNoteText}>{successMessage}</Text>
+      </View>
+    </GlassCard>
+  );
+}
+
+function YearlyUpsellCard({
+  price,
+  period,
+  savingsLabel,
+  onSwitch,
+  loading,
+}: {
+  price: string;
+  period: string;
+  savingsLabel: string;
+  onSwitch: () => void;
+  loading?: boolean;
+}) {
+  return (
+    <GlassCard goldGlow>
+      <View style={s.yearlyTopRow}>
+        <StatusChip label={savingsLabel} tone="green" />
+        <Text style={s.bestValueText}>Best value for churches</Text>
+      </View>
+      <PlanHeader
+        icon="diamond-outline"
+        planName="Yearly Plan"
+        description="Full Media Premium access"
+        price={price}
+        period={period}
+      />
+      <FeaturePills items={YEARLY_UPSELL_PILLS} />
+      <PrimaryCta label="Switch to Yearly" onPress={onSwitch} loading={loading} />
+    </GlassCard>
+  );
+}
+
+function PlanOfferCard({
+  icon,
+  planName,
+  description,
+  price,
+  period,
+  subPrice,
+  trialBadge,
+  savingsLabel,
+  featurePills,
+  ctaLabel,
+  onPress,
+  loading,
+  goldGlow,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  planName: string;
+  description: string;
+  price: string;
+  period: string;
+  subPrice?: string;
+  trialBadge?: string;
+  savingsLabel?: string;
+  featurePills?: readonly string[];
+  ctaLabel: string;
+  onPress: () => void;
+  loading?: boolean;
+  goldGlow?: boolean;
+}) {
+  return (
+    <GlassCard goldGlow={goldGlow} highlighted={!goldGlow}>
+      {trialBadge ? (
+        <View style={s.yearlyTopRow}>
+          <StatusChip label={trialBadge} tone="green" />
+        </View>
+      ) : savingsLabel ? (
+        <View style={s.yearlyTopRow}>
+          <StatusChip label={savingsLabel} tone="green" />
         </View>
       ) : null}
+      <PlanHeader
+        icon={icon}
+        planName={planName}
+        description={description}
+        price={price}
+        period={period}
+        subPrice={subPrice}
+      />
+      {featurePills?.length ? <FeaturePills items={featurePills} /> : null}
+      <PrimaryCta label={ctaLabel} onPress={onPress} loading={loading} />
+    </GlassCard>
+  );
+}
 
-      {actionLabel && onAction ? (
-        <Pressable
-          onPress={onAction}
-          disabled={actionLoading}
-          style={({ pressed }) => [
-            s.planActionBtn,
-            s.planActionBtnPrimary,
-            pressed ? s.pressed : null,
-            actionLoading ? s.planActionBtnDisabled : null,
-          ]}
-        >
-          {actionLoading ? (
-            <ActivityIndicator color="#1A1610" size="small" />
-          ) : (
-            <Text style={s.planActionBtnText}>{actionLabel}</Text>
-          )}
-        </Pressable>
-      ) : null}
-    </View>
+function AvailablePlanCard({
+  planName,
+  price,
+  period,
+}: {
+  planName: string;
+  price: string;
+  period: string;
+}) {
+  return (
+    <GlassCard dimmed compact>
+      <View style={s.availableRow}>
+        <View style={s.planHeaderLeft}>
+          <View style={[s.planIconWrap, s.planIconWrapMuted]}>
+            <Ionicons name="calendar-outline" size={16} color="rgba(255,255,255,0.42)" />
+          </View>
+          <View style={s.planHeaderCopy}>
+            <Text style={s.planTitleMuted}>{planName}</Text>
+            <Text style={s.planDescriptionMuted}>Available</Text>
+          </View>
+        </View>
+        <View style={s.planHeaderRight}>
+          <Text style={s.planPriceMuted}>{price}</Text>
+          <Text style={s.planPeriodMuted}>{period}</Text>
+        </View>
+      </View>
+    </GlassCard>
+  );
+}
+
+function ManageSubscriptionCard({
+  onPress,
+  loading,
+}: {
+  onPress: () => void;
+  loading?: boolean;
+}) {
+  return (
+    <GlassCard compact>
+      <View style={s.manageRow}>
+        <View style={s.manageIconWrap}>
+          <Ionicons name="card-outline" size={18} color="rgba(196,171,114,0.95)" />
+        </View>
+        <View style={s.manageCopy}>
+          <Text style={s.manageTitle}>Manage Subscription</Text>
+          <Text style={s.manageDescription} numberOfLines={2}>
+            Billing, payment methods, renewals, and cancellation.
+          </Text>
+        </View>
+      </View>
+      <CompactSecondaryCta label="Manage Subscription" onPress={onPress} loading={loading} />
+    </GlassCard>
   );
 }
 
@@ -143,10 +472,13 @@ export default function PaymentsSubscriptionsScreen() {
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
+  const [serverStatus, setServerStatus] = useState<ChurchSubscriptionServerStatus | null>(null);
   const [offersLoading, setOffersLoading] = useState(true);
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-  const [submittingPlan, setSubmittingPlan] = useState<SubscriptionPlanKey | null>(null);
+  const [submittingPlan, setSubmittingPlan] = useState<SubscriptionPlanKey | "manage" | null>(
+    null
+  );
   const scrollRef = useRef<RNScrollView | null>(null);
 
   const sessionUserId = String((session as any)?.userId || "").trim();
@@ -216,6 +548,16 @@ export default function PaymentsSubscriptionsScreen() {
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
         setCustomerInfo(infoResult);
+        setServerStatus(server);
+
+        console.log("KRISTO_SUBSCRIPTIONS_SERVER_STATUS", {
+          churchId: resolvedChurchId,
+          backendSubscriptionActive: server.backendSubscriptionActive,
+          subscriptionActive: server.subscriptionActive,
+          subscriptionPlan: server.subscriptionPlan,
+          canUseMediaTools: server.canUseMediaTools,
+          source: server.source,
+        });
 
         const hasPremium = hasPremiumEntitlement(infoResult);
         if (infoResult) {
@@ -230,7 +572,7 @@ export default function PaymentsSubscriptionsScreen() {
           screen: "subscriptions",
           churchId: resolvedChurchId,
           customerInfo: infoResult,
-          churchSubscriptionActive: server.subscriptionActive ?? undefined,
+          churchSubscriptionActive: server.backendSubscriptionActive ?? undefined,
           canUseMediaTools: server.canUseMediaTools ?? undefined,
         });
         logEntitlementAudit({
@@ -290,11 +632,12 @@ export default function PaymentsSubscriptionsScreen() {
       churchId,
     }) as Record<string, string>;
     const server = await fetchChurchSubscriptionStatus(headers);
+    setServerStatus(server);
     logChurchSubscriptionContext({
       screen: "subscriptions",
       churchId,
       customerInfo: info,
-      churchSubscriptionActive: server.subscriptionActive ?? undefined,
+      churchSubscriptionActive: server.backendSubscriptionActive ?? undefined,
       canUseMediaTools: server.canUseMediaTools ?? undefined,
     });
     logRevenueCatSubscriptionOwnershipDebug(info, "subscriptions-refresh", { churchId });
@@ -354,6 +697,39 @@ export default function PaymentsSubscriptionsScreen() {
     });
   }
 
+  async function handleManageSubscription() {
+    if (submittingPlan) return;
+
+    try {
+      setSubmittingPlan("manage");
+      const opened = await openSubscriptionManagement(customerInfo);
+      if (!opened) {
+        Alert.alert(
+          "Manage subscription",
+          Platform.OS === "android"
+            ? "Open Google Play → Payments & subscriptions → Subscriptions to manage or cancel your plan."
+            : "Open Settings → Apple ID → Subscriptions to manage or cancel your plan."
+        );
+        return;
+      }
+
+      const info = await getCustomerSubscriptionInfo();
+      await refreshAfterCustomerInfoChange(info);
+    } catch (error: any) {
+      console.log("KRISTO_SUBSCRIPTION_MANAGE_FAILED", {
+        message: String(error?.message || error || ""),
+      });
+      Alert.alert(
+        "Could not open subscriptions",
+        Platform.OS === "android"
+          ? "Try Google Play → Payments & subscriptions → Subscriptions."
+          : "Try Settings → Apple ID → Subscriptions."
+      );
+    } finally {
+      setSubmittingPlan(null);
+    }
+  }
+
   async function handlePurchasePlan(plan: SubscriptionPlanKey) {
     if (submittingPlan) return;
 
@@ -368,8 +744,9 @@ export default function PaymentsSubscriptionsScreen() {
       return;
     }
 
+    const subscriptionUi = resolveChurchSubscriptionScreenState(serverStatus, customerInfo);
     const switchingFromMonthly =
-      plan === "yearly" && customerInfo && resolveActiveSubscriptionPlan(customerInfo) === "monthly";
+      plan === "yearly" && subscriptionUi.screenState === "monthly";
 
     try {
       setSubmittingPlan(plan);
@@ -405,6 +782,7 @@ export default function PaymentsSubscriptionsScreen() {
           setSubscriptionSelectedPlan("yearly");
           setSubscriptionPlanStatus("active");
           await maybeActivateChurchSubscription("yearly", info);
+          await refreshAfterCustomerInfoChange(info);
           Alert.alert("Yearly plan active", "Your church yearly subscription is now active.");
         } else {
           setSubscriptionSelectedPlan("monthly");
@@ -422,8 +800,11 @@ export default function PaymentsSubscriptionsScreen() {
         setSubscriptionSelectedPlan(activeBackendPlan);
         setSubscriptionPlanStatus("active");
         await maybeActivateChurchSubscription(activeBackendPlan, info);
+        await refreshAfterCustomerInfoChange(info);
       } else if (plan === "monthly") {
         setSubscriptionPlanStatus("active");
+        await maybeActivateChurchSubscription("monthly", info);
+        await refreshAfterCustomerInfoChange(info);
       }
 
       if (plan === "monthly") {
@@ -447,48 +828,35 @@ export default function PaymentsSubscriptionsScreen() {
     }
   }
 
-  const planUi = resolveMediaPremiumPlanUiState(customerInfo);
-  const hasPremium = planUi.hasPremium;
+  const subscriptionUi = resolveChurchSubscriptionScreenState(serverStatus, customerInfo);
+  const screenState: SubscriptionScreenState = subscriptionUi.screenState;
+  const billing = resolvePremiumSubscriptionBillingDetails(customerInfo);
 
   const monthlyDisplayPrice = formatPrice(monthlyPackage || undefined, "$49.99");
   const yearlyDisplayPrice = formatPrice(yearlyPackage || undefined, "$499.99");
   const yearlySavings = resolveYearlySavingsDisplay(monthlyPackage, yearlyPackage);
+  const tabBarClearance = 96;
 
-  const monthlyPriceLine = `${monthlyDisplayPrice}/month`;
-  const yearlyPriceLine = `${yearlyDisplayPrice}/year`;
-
-  let monthlyStatusLine: string | undefined;
-  let monthlyStatusTone: PlanCardProps["statusTone"] = "success";
-  let monthlyActionLabel: string | undefined;
-  let monthlyOnAction: (() => void) | undefined;
-  let monthlyDimmed = false;
-
-  let yearlyStatusLine: string | undefined;
-  let yearlyStatusTone: PlanCardProps["statusTone"] = "accent";
-  let yearlyActionLabel: string | undefined;
-  let yearlyOnAction: (() => void) | undefined;
-
-  if (!hasPremium) {
-    monthlyActionLabel = "Subscribe";
-    monthlyOnAction = () => handlePurchasePlan("monthly");
-    yearlyStatusLine = yearlySavings.percentLabel;
-    yearlyActionLabel = "Subscribe";
-    yearlyOnAction = () => handlePurchasePlan("yearly");
-  } else if (planUi.activeMonthly) {
-    monthlyStatusLine = "Current Plan";
-    yearlyStatusLine = yearlySavings.percentLabel;
-    yearlyActionLabel = "Switch to Yearly";
-    yearlyOnAction = () => handlePurchasePlan("yearly");
-  } else if (planUi.activeYearly) {
-    monthlyStatusLine = "Available";
-    monthlyStatusTone = "muted";
-    monthlyDimmed = true;
-    yearlyStatusLine = "Current Plan";
-    yearlyStatusTone = "success";
-  }
+  const churchSubscriptionActive = serverStatus?.backendSubscriptionActive === true;
+  const monthlyHasIntroOffer = monthlyPackageHasIntroOffer(monthlyPackage);
+  const showMonthlyFreeTrial = !churchSubscriptionActive && monthlyHasIntroOffer;
+  const monthlyIntro = resolveMonthlyProductIntro(monthlyPackage);
+  const monthlyTrialDays = resolveIntroTrialDays(monthlyIntro) ?? 14;
+  const monthlyTrialBadge = showMonthlyFreeTrial ? "14-DAY FREE TRIAL" : undefined;
+  const monthlyPriceText = showMonthlyFreeTrial ? "$0 today" : `${monthlyDisplayPrice}/month`;
+  const monthlySubPriceText = showMonthlyFreeTrial
+    ? `Then ${monthlyDisplayPrice}/month`
+    : "";
+  const monthlyCtaLabel = showMonthlyFreeTrial
+    ? `Start ${monthlyTrialDays}-day Free Trial`
+    : "Subscribe Monthly";
 
   return (
     <View style={s.screen}>
+      <LinearGradient
+        colors={["#050814", "#0A1020", "#070B14"]}
+        style={StyleSheet.absoluteFillObject}
+      />
       <View pointerEvents="none" style={s.glowTopLeft} />
       <View pointerEvents="none" style={s.glowBottomRight} />
 
@@ -496,8 +864,8 @@ export default function PaymentsSubscriptionsScreen() {
         ref={scrollRef}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
-          paddingTop: insets.top + 18,
-          paddingBottom: insets.bottom + 40,
+          paddingTop: insets.top + 14,
+          paddingBottom: insets.bottom + tabBarClearance,
         }}
       >
         <View style={s.headerRow}>
@@ -517,7 +885,7 @@ export default function PaymentsSubscriptionsScreen() {
         {offersLoading ? (
           <View style={s.fallbackCard}>
             <ActivityIndicator color="rgba(196,171,114,0.72)" />
-            <Text style={s.fallbackText}>Loading...</Text>
+            <Text style={s.fallbackText}>Loading your subscription...</Text>
           </View>
         ) : subscriptionError ? (
           <View style={s.fallbackCard}>
@@ -532,26 +900,87 @@ export default function PaymentsSubscriptionsScreen() {
           </View>
         ) : (
           <View style={s.content}>
-            <PlanCard
-              planLabel="MONTHLY PLAN"
-              priceLine={monthlyPriceLine}
-              statusLine={monthlyStatusLine}
-              statusTone={monthlyStatusTone}
-              actionLabel={monthlyActionLabel}
-              onAction={monthlyOnAction}
-              actionLoading={submittingPlan === "monthly"}
-              dimmed={monthlyDimmed}
-            />
+            {screenState === "monthly" ? (
+              <>
+                <CurrentPlanCard
+                  icon="calendar-outline"
+                  planName="Monthly Plan"
+                  description="Media Premium for your church"
+                  price={monthlyDisplayPrice}
+                  period="/month"
+                  billing={billing}
+                  successMessage="You have full access to Media Premium features."
+                />
+                <YearlyUpsellCard
+                  price={yearlyDisplayPrice}
+                  period="/year"
+                  savingsLabel={yearlySavings.percentLabel}
+                  onSwitch={() => handlePurchasePlan("yearly")}
+                  loading={submittingPlan === "yearly"}
+                />
+                <ManageSubscriptionCard
+                  onPress={handleManageSubscription}
+                  loading={submittingPlan === "manage"}
+                />
+              </>
+            ) : null}
 
-            <PlanCard
-              planLabel="YEARLY PLAN"
-              priceLine={yearlyPriceLine}
-              statusLine={yearlyStatusLine}
-              statusTone={yearlyStatusTone}
-              actionLabel={yearlyActionLabel}
-              onAction={yearlyOnAction}
-              actionLoading={submittingPlan === "yearly"}
-            />
+            {screenState === "yearly" ? (
+              <>
+                <AvailablePlanCard
+                  planName="Monthly Plan"
+                  price={monthlyDisplayPrice}
+                  period="/month"
+                />
+                <CurrentPlanCard
+                  icon="diamond-outline"
+                  planName="Yearly Plan"
+                  description="Best value for churches"
+                  price={yearlyDisplayPrice}
+                  period="/year"
+                  billing={billing}
+                  successMessage="You have full access to Media Premium features."
+                />
+                <ManageSubscriptionCard
+                  onPress={handleManageSubscription}
+                  loading={submittingPlan === "manage"}
+                />
+              </>
+            ) : null}
+
+            {screenState === "none" || screenState === "sync" ? (
+              <>
+                <Text style={s.sectionHeading}>Choose a plan</Text>
+                <Text style={s.sectionSub}>
+                  Premium ministries live access
+                </Text>
+                <PlanOfferCard
+                  icon="calendar-outline"
+                  planName="Monthly Plan"
+                  description="Flexible monthly billing"
+                  price={monthlyPriceText}
+                  period=""
+                  subPrice={showMonthlyFreeTrial ? monthlySubPriceText : undefined}
+                  trialBadge={monthlyTrialBadge}
+                  ctaLabel={monthlyCtaLabel}
+                  onPress={() => handlePurchasePlan("monthly")}
+                  loading={submittingPlan === "monthly"}
+                />
+                <PlanOfferCard
+                  icon="diamond-outline"
+                  planName="Yearly Plan"
+                  description="Best value for churches"
+                  price={yearlyDisplayPrice}
+                  period="/year"
+                  savingsLabel={yearlySavings.percentLabel}
+                  featurePills={YEARLY_FEATURES}
+                  ctaLabel="Subscribe Yearly"
+                  onPress={() => handlePurchasePlan("yearly")}
+                  loading={submittingPlan === "yearly"}
+                  goldGlow
+                />
+              </>
+            ) : null}
 
             <Text style={s.footer}>Billing is managed by your app store.</Text>
           </View>
@@ -569,20 +998,20 @@ const s = StyleSheet.create({
 
   glowTopLeft: {
     position: "absolute",
-    top: -110,
-    left: -110,
-    width: 220,
-    height: 220,
+    top: -90,
+    left: -80,
+    width: 200,
+    height: 200,
     borderRadius: 999,
     backgroundColor: "rgba(196, 171, 114, 0.05)",
   },
 
   glowBottomRight: {
     position: "absolute",
-    right: -110,
-    bottom: 120,
-    width: 200,
-    height: 200,
+    right: -90,
+    bottom: 60,
+    width: 180,
+    height: 180,
     borderRadius: 999,
     backgroundColor: "rgba(72, 96, 140, 0.04)",
   },
@@ -590,18 +1019,18 @@ const s = StyleSheet.create({
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    gap: 12,
     paddingHorizontal: 20,
-    marginBottom: 28,
+    marginBottom: 20,
   },
 
   backBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 16,
+    width: 42,
+    height: 42,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.045)",
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.10)",
   },
@@ -613,143 +1042,428 @@ const s = StyleSheet.create({
 
   title: {
     color: "#fff",
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: "900",
     letterSpacing: -0.6,
-    lineHeight: 32,
+    lineHeight: 30,
   },
 
   sub: {
-    marginTop: 6,
-    color: "rgba(255,255,255,0.42)",
+    marginTop: 4,
+    color: "rgba(255,255,255,0.46)",
     fontSize: 13,
     fontWeight: "600",
+    lineHeight: 18,
   },
 
   content: {
     paddingHorizontal: 20,
-    gap: 20,
+    gap: 14,
   },
 
-  planCard: {
-    borderRadius: 24,
-    paddingVertical: 28,
-    paddingHorizontal: 24,
-    backgroundColor: "rgba(255,255,255,0.05)",
+  sectionHeading: {
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: -0.3,
+  },
+
+  sectionSub: {
+    marginTop: -8,
+    marginBottom: 2,
+    color: "rgba(255,255,255,0.46)",
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 18,
+  },
+
+  glassCardOuter: {
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+
+  glassCardOuterGold: {
+    shadowColor: "rgba(196,171,114,0.45)",
+    shadowOpacity: 0.22,
+    shadowRadius: 18,
+  },
+
+  glassCardDimmed: {
+    opacity: 0.76,
+  },
+
+  glassCard: {
+    borderRadius: 20,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.12)",
+    borderColor: "rgba(255,255,255,0.10)",
+    overflow: "hidden",
     gap: 10,
   },
 
-  planCardDimmed: {
-    opacity: 0.72,
+  glassCardCompact: {
+    paddingVertical: 14,
+    gap: 8,
   },
 
-  planLabel: {
-    color: "rgba(255,255,255,0.52)",
+  glassCardHighlighted: {
+    borderColor: "rgba(196,171,114,0.22)",
+  },
+
+  glassCardGold: {
+    borderColor: "rgba(196,171,114,0.34)",
+  },
+
+  glassSheen: {
+    position: "absolute",
+    top: 0,
+    left: 16,
+    right: 16,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+
+  statusChip: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+
+  statusChipGold: {
+    backgroundColor: "rgba(196,171,114,0.12)",
+    borderColor: "rgba(196,171,114,0.28)",
+  },
+
+  statusChipGreen: {
+    backgroundColor: "rgba(120,220,160,0.08)",
+    borderColor: "rgba(120,220,160,0.22)",
+  },
+
+  statusChipText: {
+    color: "rgba(196,171,114,0.98)",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.9,
+  },
+
+  statusChipTextGreen: {
+    color: "rgba(120,220,160,0.98)",
+  },
+
+  yearlyTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+
+  bestValueText: {
+    color: "rgba(196,171,114,0.88)",
     fontSize: 12,
+    fontWeight: "700",
+  },
+
+  planHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  planHeaderLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    minWidth: 0,
+  },
+
+  planHeaderRight: {
+    alignItems: "flex-end",
+    flexShrink: 0,
+    maxWidth: "46%",
+  },
+
+  planPriceStack: {
+    alignItems: "flex-end",
+    gap: 4,
+  },
+
+  planSubPrice: {
+    color: "rgba(232, 212, 168, 0.96)",
+    fontSize: 14,
     fontWeight: "800",
-    letterSpacing: 1.2,
+    lineHeight: 18,
+    textAlign: "right",
+  },
+
+  planHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+
+  planIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(196,171,114,0.10)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(196,171,114,0.18)",
+  },
+
+  planIconWrapMuted: {
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+
+  planTitle: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: -0.3,
+    lineHeight: 22,
+  },
+
+  planTitleMuted: {
+    color: "rgba(255,255,255,0.68)",
+    fontSize: 16,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+  },
+
+  planDescription: {
+    color: "rgba(255,255,255,0.46)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 16,
+  },
+
+  planDescriptionMuted: {
+    color: "rgba(255,255,255,0.38)",
+    fontSize: 12,
+    fontWeight: "600",
   },
 
   planPrice: {
     color: "#fff",
-    fontSize: 30,
+    fontSize: 22,
     fontWeight: "900",
-    letterSpacing: -0.8,
-    lineHeight: 34,
+    letterSpacing: -0.5,
+    lineHeight: 24,
   },
 
-  statusRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginTop: 4,
-  },
-
-  statusSuccess: {
-    color: "rgba(120,220,160,0.95)",
-    fontSize: 15,
+  planPriceMuted: {
+    color: "rgba(255,255,255,0.52)",
+    fontSize: 18,
     fontWeight: "800",
+    letterSpacing: -0.3,
   },
 
-  statusMuted: {
-    color: "rgba(255,255,255,0.48)",
-    fontSize: 15,
+  planPeriod: {
+    marginTop: 2,
+    color: "rgba(255,255,255,0.42)",
+    fontSize: 12,
     fontWeight: "700",
   },
 
-  statusAccent: {
-    color: "rgba(196,171,114,0.95)",
-    fontSize: 15,
-    fontWeight: "800",
+  planPeriodMuted: {
+    marginTop: 2,
+    color: "rgba(255,255,255,0.34)",
+    fontSize: 11,
+    fontWeight: "700",
   },
 
-  planActionBtn: {
-    marginTop: 14,
-    minHeight: 52,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+    paddingTop: 2,
   },
 
-  planActionBtnPrimary: {
-    backgroundColor: "rgba(196, 171, 114, 0.92)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(210, 188, 138, 0.30)",
-  },
-
-  planActionBtnDisabled: {
-    opacity: 0.7,
-  },
-
-  planActionBtnText: {
-    color: "#1A1610",
-    fontSize: 16,
-    fontWeight: "900",
-  },
-
-  footer: {
-    marginTop: 8,
-    color: "rgba(255,255,255,0.36)",
+  metaRowText: {
+    flex: 1,
+    color: "rgba(255,255,255,0.56)",
     fontSize: 12,
     fontWeight: "600",
     lineHeight: 17,
+  },
+
+  successNote: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "rgba(120,220,160,0.06)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(120,220,160,0.14)",
+  },
+
+  successNoteText: {
+    flex: 1,
+    color: "rgba(210,240,220,0.92)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 16,
+  },
+
+  pillRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+
+  featurePill: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: "rgba(196,171,114,0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(196,171,114,0.16)",
+  },
+
+  featurePillText: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  ctaOuter: {
+    marginTop: 2,
+    borderRadius: 14,
+    overflow: "hidden",
+  },
+
+  ctaGradient: {
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+
+  ctaDisabled: {
+    opacity: 0.72,
+  },
+
+  ctaText: {
+    color: "#1A1610",
+    fontSize: 15,
+    fontWeight: "900",
+    letterSpacing: -0.1,
+  },
+
+  compactSecondaryCta: {
+    minHeight: 42,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+
+  compactSecondaryCtaText: {
+    color: "rgba(255,255,255,0.90)",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  availableRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  manageRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+
+  manageIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(196,171,114,0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(196,171,114,0.16)",
+  },
+
+  manageCopy: {
+    flex: 1,
+    gap: 3,
+    minWidth: 0,
+  },
+
+  manageTitle: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+  },
+
+  manageDescription: {
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 16,
+  },
+
+  footer: {
+    marginTop: 2,
+    color: "rgba(255,255,255,0.32)",
+    fontSize: 11,
+    fontWeight: "600",
+    lineHeight: 16,
     textAlign: "center",
   },
 
   fallbackCard: {
     marginHorizontal: 20,
     marginBottom: 14,
-    borderRadius: 22,
-    padding: 18,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    borderRadius: 18,
+    padding: 16,
+    backgroundColor: "rgba(255,255,255,0.03)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: "rgba(255,255,255,0.08)",
     gap: 10,
   },
 
   fallbackText: {
     color: "rgba(255,255,255,0.58)",
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "600",
-    lineHeight: 20,
+    lineHeight: 18,
   },
 
   fallbackBtn: {
-    marginTop: 4,
-    minHeight: 46,
-    borderRadius: 16,
+    marginTop: 2,
+    minHeight: 42,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(196,171,114,0.10)",
+    backgroundColor: "rgba(196,171,114,0.08)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(196,171,114,0.22)",
+    borderColor: "rgba(196,171,114,0.18)",
   },
 
   fallbackBtnText: {
     color: "#fff",
     fontWeight: "800",
-    fontSize: 14,
+    fontSize: 13,
   },
 });

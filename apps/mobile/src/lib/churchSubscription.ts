@@ -8,7 +8,7 @@ import {
 } from "./churchSubscriptionGate";
 import { refreshChurchMediaIfNeeded } from "./churchResourceRefresh";
 import { refreshChurchMediaAccess } from "./refreshCoordinator";
-import { getPaymentsState } from "../store/paymentsStore";
+import { getPaymentsState, type SubscriptionPlanKey } from "../store/paymentsStore";
 import {
   isChurchMediaRouteFailure,
   isChurchSubscriptionActiveFromRecord,
@@ -28,6 +28,7 @@ import {
   logEntitlementAudit,
   logInRevenueCatForChurchSubscription,
   refreshCustomerInfoAfterStorePurchase,
+  resolveActiveSubscriptionPlan,
 } from "./payments/mobileSubscriptions";
 
 export const CHURCH_SUBSCRIPTION_REQUIRED_CODE = "CHURCH_SUBSCRIPTION_REQUIRED";
@@ -275,6 +276,8 @@ export type ScheduleSubscriptionResolution = {
   appUserId: string;
   endpointStatus: number | null;
   routeFailed: boolean;
+  /** Explicit /api/church/media subscription flag — not inferred from RevenueCat. */
+  backendSubscriptionActive: boolean | null;
   subscriptionPlan?: string | null;
 };
 
@@ -381,6 +384,7 @@ export async function resolveScheduleSubscriptionState(args: {
     appUserId,
     endpointStatus: route.endpointStatus,
     routeFailed: route.routeFailed,
+    backendSubscriptionActive: route.explicitServerActive,
     subscriptionPlan:
       route.routeFailed || !route.responseBody
         ? null
@@ -504,6 +508,8 @@ export async function fetchChurchSubscriptionActive(
 
 export type ChurchSubscriptionServerStatus = {
   subscriptionActive: boolean | null;
+  /** True only when /api/church/media explicitly reports an active church subscription. */
+  backendSubscriptionActive: boolean | null;
   canUseMediaTools: boolean | null;
   subscriptionPlan?: string | null;
   source?: string;
@@ -522,10 +528,54 @@ export async function fetchChurchSubscriptionStatus(
 
   return {
     subscriptionActive: resolved.churchSubscriptionActive,
+    backendSubscriptionActive: resolved.backendSubscriptionActive,
     canUseMediaTools: resolved.canUseMediaTools,
     subscriptionPlan: resolved.subscriptionPlan ?? null,
     source: resolved.source,
     routeFailed: resolved.routeFailed,
+  };
+}
+
+export type ChurchSubscriptionScreenState = "none" | "monthly" | "yearly" | "sync";
+
+/** Kristo V1 subscriptions screen: backend media route is source of truth for active UI. */
+export function resolveChurchSubscriptionScreenState(
+  serverStatus: ChurchSubscriptionServerStatus | null | undefined,
+  customerInfo: CustomerInfo | null | undefined
+): {
+  screenState: ChurchSubscriptionScreenState;
+  backendActive: boolean;
+  backendPlan: SubscriptionPlanKey | null;
+  rcHasPremium: boolean;
+} {
+  const backendActive = serverStatus?.backendSubscriptionActive === true;
+  const rcHasPremium = hasPremiumEntitlement(customerInfo);
+
+  if (!backendActive) {
+    return {
+      screenState: rcHasPremium ? "sync" : "none",
+      backendActive: false,
+      backendPlan: null,
+      rcHasPremium,
+    };
+  }
+
+  const planRaw = String(serverStatus?.subscriptionPlan || "").trim().toLowerCase();
+  let backendPlan: SubscriptionPlanKey | null =
+    planRaw === "yearly" ? "yearly" : planRaw === "monthly" ? "monthly" : null;
+
+  if (!backendPlan) {
+    backendPlan = resolveActiveSubscriptionPlan(customerInfo);
+  }
+  if (!backendPlan) {
+    backendPlan = "monthly";
+  }
+
+  return {
+    screenState: backendPlan === "yearly" ? "yearly" : "monthly",
+    backendActive: true,
+    backendPlan,
+    rcHasPremium,
   };
 }
 

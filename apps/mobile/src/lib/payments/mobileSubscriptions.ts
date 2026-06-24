@@ -694,6 +694,50 @@ export function hasActivePremiumProduct(
   return false;
 }
 
+/** True when this church has a verified RC purchase that still needs backend activation. */
+export function canShowChurchSubscriptionRestore(args: {
+  churchId: string;
+  customerInfo: CustomerInfo | null | undefined;
+  backendSubscriptionActive?: boolean | null;
+}): boolean {
+  const churchId = String(args.churchId || "").trim();
+  if (!churchId) return false;
+  if (args.backendSubscriptionActive === true) return false;
+
+  const info = args.customerInfo;
+  if (!info) return false;
+
+  const originalAppUserId = String(info.originalAppUserId || "").trim();
+  if (!originalAppUserId || originalAppUserId !== churchId) return false;
+  if (!hasPremiumEntitlement(info)) return false;
+
+  const activeSubscriptions = info.activeSubscriptions || [];
+  return (
+    activeSubscriptions.includes(PREMIUM_MONTHLY_PRODUCT_ID) ||
+    activeSubscriptions.includes(PREMIUM_YEARLY_PRODUCT_ID)
+  );
+}
+
+/** Re-check RC App User ID ownership before allowing restore/sync for the current church. */
+export function verifyChurchSubscriptionRestoreOwnership(
+  churchId: string,
+  customerInfo: CustomerInfo | null | undefined
+): boolean {
+  const resolvedChurchId = String(churchId || "").trim();
+  if (!resolvedChurchId) return false;
+
+  const configuredAppUserId = String(getRevenueCatConfiguredAppUserId() || "").trim();
+  if (configuredAppUserId && configuredAppUserId !== resolvedChurchId) {
+    return false;
+  }
+
+  return canShowChurchSubscriptionRestore({
+    churchId: resolvedChurchId,
+    customerInfo,
+    backendSubscriptionActive: false,
+  });
+}
+
 export function describeCustomerInfoSubscriptionDebug(
   customerInfo: CustomerInfo | null | undefined
 ) {
@@ -775,6 +819,48 @@ export function resolveChurchPremiumRenewalDate(
   const ms = Date.parse(String(raw));
   if (Number.isNaN(ms)) return null;
   return new Date(ms);
+}
+
+export function formatPremiumRenewalDate(date: Date | null | undefined): string {
+  if (!date) return "—";
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+export type PremiumSubscriptionBillingDetails = {
+  status: "Active" | "Inactive";
+  autoRenew: "On" | "Off" | "—";
+  renewalDate: Date | null;
+  billingCycle: "Monthly" | "Yearly" | null;
+};
+
+export function resolvePremiumSubscriptionBillingDetails(
+  customerInfo: CustomerInfo | null | undefined
+): PremiumSubscriptionBillingDetails {
+  const inactive: PremiumSubscriptionBillingDetails = {
+    status: "Inactive",
+    autoRenew: "—",
+    renewalDate: null,
+    billingCycle: null,
+  };
+
+  if (!customerInfo || !hasPremiumEntitlement(customerInfo)) {
+    return inactive;
+  }
+
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  const plan = resolveActiveSubscriptionPlan(customerInfo);
+  const willRenew = entitlement?.willRenew;
+
+  return {
+    status: "Active",
+    autoRenew: willRenew === true ? "On" : willRenew === false ? "Off" : "—",
+    renewalDate: resolveChurchPremiumRenewalDate(customerInfo),
+    billingCycle: plan === "yearly" ? "Yearly" : plan === "monthly" ? "Monthly" : null,
+  };
 }
 
 export function formatYearlyUpgradeSavingsLabel(
@@ -1145,13 +1231,43 @@ export function isEligibleForMonthlyIntroTrial(
 export function packageHasIntroductoryOffer(
   pkg: PurchasesPackage | null | undefined
 ): boolean {
-  return Boolean(pkg?.product?.introPrice);
+  return monthlyPackageHasIntroOffer(pkg);
+}
+
+export function resolveMonthlyProductIntro(
+  pkg: PurchasesPackage | null | undefined
+): PurchasesIntroPrice | null {
+  const product = pkg?.product as Record<string, unknown> | undefined;
+  if (!product) return null;
+
+  return (
+    (product.introPrice as PurchasesIntroPrice | undefined) ??
+    (product.introductoryPrice as PurchasesIntroPrice | undefined) ??
+    null
+  );
+}
+
+/** True when StoreKit / RevenueCat monthly product exposes any intro offer (e.g. P2W free trial). */
+export function monthlyPackageHasIntroOffer(
+  monthlyPackage: PurchasesPackage | null | undefined
+): boolean {
+  const product = monthlyPackage?.product as Record<string, unknown> | undefined;
+  if (!product) return false;
+
+  if (product.introPrice) return true;
+  if (product.introductoryPrice) return true;
+
+  const intro = resolveMonthlyProductIntro(monthlyPackage);
+  if (intro) return true;
+
+  const period = String(intro?.period || "").trim().toUpperCase();
+  return period === "P2W";
 }
 
 export function getMonthlyIntroOffer(
   pkg: PurchasesPackage | null | undefined
 ): PurchasesIntroPrice | null {
-  return pkg?.product?.introPrice ?? null;
+  return resolveMonthlyProductIntro(pkg);
 }
 
 export function isIntroOfferFreeTrial(
