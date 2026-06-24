@@ -52,6 +52,7 @@ import {
   silentRefreshChurchOverview,
   silentRefreshProfileScreen,
 } from "./screenDataCache";
+import { refreshMinistriesBundleIfNeeded } from "./churchResourceRefresh";
 
 export type RefreshLane = "session" | "overview" | "mediaAccess" | "ministries" | "homeFeed";
 
@@ -124,6 +125,84 @@ function shouldRunLane(lane: RefreshLane, scope: string, force?: boolean) {
 
 function markLaneDone(lane: RefreshLane, scope: string) {
   laneLastDone.set(laneKey(lane, scope), Date.now());
+}
+
+export function clearCoordinatedRefreshLanesForChurch(churchId: string, userId: string) {
+  const scope = `${userId}:${churchId}`;
+  laneLastDone.delete(laneKey("overview", scope));
+  laneLastDone.delete(laneKey("mediaAccess", `${churchId}:${userId}`));
+  laneLastDone.delete(laneKey("ministries", scope));
+  laneInflight.delete(laneKey("mediaAccess", `${churchId}:${userId}`));
+  lastCoordinatedRefreshAt = 0;
+}
+
+export function applyImmediateChurchPremiumMediaAccessUnlock(args: {
+  churchId: string;
+  userId: string;
+  role?: string;
+  churchRole?: string;
+  subscriptionActive?: boolean;
+  canUseMediaTools?: boolean;
+}) {
+  const session: ChurchMediaAccessSession = {
+    userId: args.userId,
+    role: args.role,
+    churchRole: args.churchRole,
+  };
+  const baseline = evaluateChurchMediaAccessFromSession(session);
+  const subscriptionActive = args.subscriptionActive !== false;
+  const canUseMediaTools = args.canUseMediaTools !== false;
+  const next: ChurchMediaAccessState = {
+    ...(cachedMediaAccess || baseline),
+    ...baseline,
+    subscriptionActive,
+    canUseMediaTools,
+    canOpenMediaScreen: baseline.canOpenMediaScreen || subscriptionActive,
+    canAccessChurchMedia: baseline.canOpenMediaScreen || subscriptionActive,
+    canManageMediaHosts: baseline.canManageMediaHosts,
+  };
+  cachedMediaAccessKey = `${args.userId}:${String(args.churchRole || args.role || "")}`;
+  return publishMediaAccess(cachedMediaAccess, next, session);
+}
+
+export async function refreshChurchFeatureBundle(args: {
+  churchId: string;
+  userId: string;
+  role?: string;
+  churchRole?: string;
+  headers?: Record<string, string>;
+  force?: boolean;
+  lanes?: RefreshLane[];
+  source?: string;
+}) {
+  const churchId = String(args.churchId || "").trim();
+  const userId = String(args.userId || "").trim();
+  if (!churchId || !userId) return;
+
+  if (args.force) {
+    clearCoordinatedRefreshLanesForChurch(churchId, userId);
+  }
+
+  console.log("KRISTO_CHURCH_FEATURE_BUNDLE_REFRESH", {
+    churchId,
+    userId,
+    force: Boolean(args.force),
+    lanes: args.lanes,
+    source: args.source || "unknown",
+  });
+
+  await runCoordinatedAppRefresh(
+    {
+      userId,
+      churchId,
+      role: (args.role || "Member") as KristoSession["role"],
+      churchRole: args.churchRole as KristoSession["churchRole"],
+    },
+    {
+      force: args.force,
+      lanes: args.lanes ?? ["overview", "mediaAccess", "ministries"],
+    }
+  );
 }
 
 export function seedChurchMediaAccessFromSession(session?: ChurchMediaAccessSession | null) {
@@ -391,7 +470,16 @@ export async function runCoordinatedAppRefresh(
         continue;
       }
 
-      if (lane === "ministries") {
+      if (lane === "ministries" && churchId) {
+        if (!shouldRunLane("ministries", scope, force)) continue;
+        await refreshMinistriesBundleIfNeeded({
+          churchId,
+          userId,
+          headers,
+          isChurchAuthority: true,
+          force,
+          source: "coordinated-refresh-ministries",
+        });
         markLaneDone("ministries", scope);
         continue;
       }

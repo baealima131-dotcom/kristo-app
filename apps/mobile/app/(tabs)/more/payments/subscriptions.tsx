@@ -56,6 +56,8 @@ import {
   type ChurchSubscriptionServerStatus,
 } from "../../../../src/lib/churchSubscription";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
+import { churchIdsMatch } from "../../../../src/lib/churchPremiumAccess";
+import { onChurchPremiumAccessChanged } from "../../../../src/lib/kristoProfileEvents";
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
 import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
@@ -498,6 +500,19 @@ export default function PaymentsSubscriptionsScreen() {
   );
 
   useEffect(() => {
+    if (!churchId) return;
+    return onChurchPremiumAccessChanged((payload) => {
+      if (!churchIdsMatch(payload.churchId, churchId)) return;
+      setServerStatus({
+        subscriptionActive: true,
+        backendSubscriptionActive: true,
+        canUseMediaTools: payload.canUseMediaTools,
+        subscriptionPlan: payload.subscriptionPlan ?? null,
+      });
+    });
+  }, [churchId]);
+
+  useEffect(() => {
     let alive = true;
 
     async function boot() {
@@ -681,6 +696,15 @@ export default function PaymentsSubscriptionsScreen() {
       initialCustomerInfo: initialCustomerInfo ?? null,
     });
 
+    if (sync.churchSubscriptionActive || sync.canUseMediaTools) {
+      setServerStatus({
+        subscriptionActive: true,
+        backendSubscriptionActive: true,
+        canUseMediaTools: sync.canUseMediaTools,
+        subscriptionPlan: sync.subscriptionPlan ?? resolvedPlan,
+      });
+    }
+
     return {
       activated: sync.churchActivated,
       skipped: false as const,
@@ -761,8 +785,6 @@ export default function PaymentsSubscriptionsScreen() {
         const polled = await refreshCustomerInfoUntilYearlyActive(info);
         info = polled.info;
       }
-
-      await refreshAfterCustomerInfoChange(info);
 
       const activeBackendPlan = resolveActiveSubscriptionPlan(info);
 

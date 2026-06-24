@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { isMinistryCreationAllowed } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { fetchChurchSubscriptionStatus } from "@/src/lib/churchSubscription";
+import {
+  churchIdsMatch,
+  getSeededChurchPremiumAccess,
+} from "@/src/lib/churchPremiumAccess";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { onChurchPremiumAccessChanged } from "@/src/lib/kristoProfileEvents";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 
 export function useChurchPremiumManagementAccess(churchId: string) {
@@ -29,6 +34,13 @@ export function useChurchPremiumManagementAccess(churchId: string) {
       return;
     }
 
+    const seed = getSeededChurchPremiumAccess(resolvedChurchId);
+    if (seed) {
+      setSubscriptionActive(seed.backendSubscriptionActive ?? seed.subscriptionActive);
+      setCanUseMediaTools(seed.canUseMediaTools);
+      setReady(true);
+    }
+
     let alive = true;
     fetchChurchSubscriptionStatus(getKristoHeaders(), resolvedChurchId).then((status) => {
       if (!alive) return;
@@ -40,6 +52,18 @@ export function useChurchPremiumManagementAccess(churchId: string) {
     return () => {
       alive = false;
     };
+  }, [churchId]);
+
+  useEffect(() => {
+    const resolvedChurchId = String(churchId || "").trim();
+    if (!resolvedChurchId || isSubscriptionBypassEnabled()) return;
+
+    return onChurchPremiumAccessChanged((payload) => {
+      if (!churchIdsMatch(payload.churchId, resolvedChurchId)) return;
+      setSubscriptionActive(payload.backendSubscriptionActive ?? payload.subscriptionActive);
+      setCanUseMediaTools(payload.canUseMediaTools);
+      setReady(true);
+    });
   }, [churchId]);
 
   const managementAllowed = isMinistryCreationAllowed(subscriptionActive, canUseMediaTools);

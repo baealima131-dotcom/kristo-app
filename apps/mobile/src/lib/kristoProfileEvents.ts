@@ -6,6 +6,7 @@ export const KRISTO_CHURCH_PROFILE_UPDATED = "kristo:church-profile-updated";
 export const KRISTO_USER_PROFILE_UPDATED = "kristo:user-profile-updated";
 export const KRISTO_CLAIM_UPDATED = "kristo:claim-updated";
 export const KRISTO_MINISTRIES_UPDATED = "kristo:ministries-updated";
+export const KRISTO_CHURCH_PREMIUM_ACCESS_CHANGED = "kristo:church-premium-access-changed";
 
 export type ClaimUpdatedPayload = {
   postId: string;
@@ -93,5 +94,29 @@ export function emitMinistriesUpdated(payload: MinistriesUpdatedPayload) {
 
 export function onMinistriesUpdated(listener: (payload: MinistriesUpdatedPayload) => void) {
   const sub = DeviceEventEmitter.addListener(KRISTO_MINISTRIES_UPDATED, listener);
+  return () => sub.remove();
+}
+
+export type ChurchPremiumAccessChangedPayload = {
+  churchId: string;
+  userId?: string;
+  subscriptionActive: boolean;
+  backendSubscriptionActive: boolean;
+  canUseMediaTools: boolean;
+  subscriptionPlan?: "monthly" | "yearly" | null;
+  updatedAt?: number;
+};
+
+export function emitChurchPremiumAccessChanged(payload: ChurchPremiumAccessChangedPayload) {
+  DeviceEventEmitter.emit(KRISTO_CHURCH_PREMIUM_ACCESS_CHANGED, {
+    ...payload,
+    updatedAt: payload.updatedAt ?? Date.now(),
+  });
+}
+
+export function onChurchPremiumAccessChanged(
+  listener: (payload: ChurchPremiumAccessChangedPayload) => void
+) {
+  const sub = DeviceEventEmitter.addListener(KRISTO_CHURCH_PREMIUM_ACCESS_CHANGED, listener);
   return () => sub.remove();
 }

@@ -65,6 +65,8 @@ import {
 const CHURCH_OVERVIEW_SCREEN = "ChurchOverview";
 import { ChurchMinistryPremiumLockCard, ChurchSubscriptionExpiredBadge, isMinistryCreationAllowed } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { fetchChurchSubscriptionStatus } from "@/src/lib/churchSubscription";
+import { churchIdsMatch } from "@/src/lib/churchPremiumAccess";
+import { onChurchPremiumAccessChanged } from "@/src/lib/kristoProfileEvents";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 import {
   evaluateMinistryMediaAccessPermission,
@@ -424,6 +426,16 @@ export default function ChurchOverviewScreen() {
       alive = false;
     };
   }, [churchId, invitePreview, refreshAt]);
+
+  useEffect(() => {
+    if (!churchId || invitePreview) return;
+
+    return onChurchPremiumAccessChanged((payload) => {
+      if (!churchIdsMatch(payload.churchId, churchId)) return;
+      setChurchSubscriptionActive(true);
+      setCanUseMediaTools(payload.canUseMediaTools);
+    });
+  }, [churchId, invitePreview]);
 
   useEffect(() => {
     let alive = true;

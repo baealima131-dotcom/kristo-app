@@ -47,6 +47,21 @@ function scopeKey(churchId: string, userId: string) {
   return ministriesScopeKey(churchId, userId);
 }
 
+/** Clears in-memory throttle/snapshot caches so premium unlock refreshes are not skipped. */
+export function clearChurchPremiumResourceRefreshCaches(churchId: string, userId: string) {
+  const key = scopeKey(churchId, userId);
+  mediaInflight.delete(key);
+  mediaLastAt.delete(key);
+  mediaLastSnapshot.delete(key);
+  ministriesInflight.delete(key);
+  ministriesLastAt.delete(key);
+  ministriesLastSnapshot.delete(key);
+  ministryMembersInflight.delete(key);
+  ministryMembersLastAt.delete(key);
+  ministryMembersCache.delete(key);
+  ministriesMembersBundleLastAt.delete(key);
+}
+
 function ministriesListSignature(rows: any[]) {
   return rows
     .map((m) =>

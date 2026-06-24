@@ -14,7 +14,8 @@ import {
   saveMinistriesCache,
 } from "@/src/lib/screenDataCache";
 import { refreshMinistriesBundleIfNeeded, seedMinistriesRefreshFromCache } from "@/src/lib/churchResourceRefresh";
-import { onMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
+import { onMinistriesUpdated, onChurchPremiumAccessChanged } from "@/src/lib/kristoProfileEvents";
+import { churchIdsMatch } from "@/src/lib/churchPremiumAccess";
 import {
   CHURCH_TAB_REFRESH_MS,
   logChurchFeatureBackgroundRefresh,
@@ -284,6 +285,15 @@ export default function MoreMinistriesList() {
 
     return unsub;
   }, [churchId, userId, applyMinistriesCache, load]);
+
+  useEffect(() => {
+    if (!churchId) return;
+    return onChurchPremiumAccessChanged((payload) => {
+      if (!churchIdsMatch(payload.churchId, churchId)) return;
+      cacheFreshRef.current = false;
+      void load({ force: true });
+    });
+  }, [churchId, load]);
 
   async function handleCreateMinistryPress() {
     if (!canCreateMinistry || createMinistryLocked) return;

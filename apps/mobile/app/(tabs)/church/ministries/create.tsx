@@ -23,9 +23,13 @@ import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 import { fetchChurchSubscriptionStatus } from "@/src/lib/churchSubscription";
-import { ChurchMinistryPremiumLockCard, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { churchIdsMatch } from "@/src/lib/churchPremiumAccess";
+import {
+  ChurchMinistryPremiumLockCard,
+  isMinistryCreationBlocked,
+} from "@/src/components/ChurchPremiumSubscriptionModal";
 import { getSessionSync } from "@/src/lib/kristoSession";
-import { emitMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
+import { emitMinistriesUpdated, onChurchPremiumAccessChanged } from "@/src/lib/kristoProfileEvents";
 import {
   saveMinistriesCache,
 } from "@/src/lib/screenDataCache";
@@ -364,6 +368,16 @@ export default function ChurchMinistryCreateScreen() {
     return () => {
       alive = false;
     };
+  }, [churchId]);
+
+  useEffect(() => {
+    if (!churchId) return;
+    return onChurchPremiumAccessChanged((payload) => {
+      if (!churchIdsMatch(payload.churchId, churchId)) return;
+      setChurchSubscriptionActive(true);
+      setCanUseMediaTools(payload.canUseMediaTools);
+      setSubscriptionGateReady(true);
+    });
   }, [churchId]);
 
   // Load church members for pickers and media access count

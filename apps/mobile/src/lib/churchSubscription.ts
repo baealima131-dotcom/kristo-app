@@ -8,6 +8,7 @@ import {
 } from "./churchSubscriptionGate";
 import { refreshChurchMediaIfNeeded } from "./churchResourceRefresh";
 import { refreshChurchMediaAccess } from "./refreshCoordinator";
+import { announceChurchPremiumAccessUnlocked } from "./churchPremiumAccess";
 import { getPaymentsState, type SubscriptionPlanKey } from "../store/paymentsStore";
 import {
   isChurchMediaRouteFailure,
@@ -707,6 +708,7 @@ export type SyncChurchSubscriptionAfterPurchaseResult = {
   churchActivated: boolean;
   churchSubscriptionActive: boolean;
   canUseMediaTools: boolean;
+  subscriptionPlan?: "monthly" | "yearly";
 };
 
 export async function syncChurchSubscriptionAfterPurchase(args: {
@@ -963,11 +965,26 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
     entitlementActive,
   });
 
+  if (churchSubscriptionActive || canUseMediaTools || churchActivated) {
+    announceChurchPremiumAccessUnlocked({
+      churchId,
+      userId,
+      role: args.role,
+      churchRole: args.churchRole,
+      headers: args.headers,
+      subscriptionPlan: args.subscriptionPlan,
+      subscriptionActive: churchSubscriptionActive,
+      canUseMediaTools,
+      source: "subscription-purchase-activated",
+    });
+  }
+
   return {
     entitlementActive,
     churchActivated,
     churchSubscriptionActive,
     canUseMediaTools,
+    subscriptionPlan: args.subscriptionPlan,
   };
 }
 
