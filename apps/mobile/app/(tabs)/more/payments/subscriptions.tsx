@@ -629,6 +629,38 @@ export default function PaymentsSubscriptionsScreen() {
     setReloadToken((token) => token + 1);
   }
 
+  useEffect(() => {
+    if (offersLoading || sessionLoading || !churchId || !isPastorSessionRole(sessionRole)) {
+      return;
+    }
+
+    const ui = resolveChurchSubscriptionScreenState(serverStatus, customerInfo);
+    if (ui.screenState !== "sync") return;
+
+    let alive = true;
+    const plan = (customerInfo ? resolveActiveSubscriptionPlan(customerInfo) : null) || "monthly";
+
+    (async () => {
+      console.log("KRISTO_CHURCH_SUBSCRIPTION_AUTO_SYNC_START", { churchId, plan });
+      await maybeActivateChurchSubscription(plan, customerInfo ?? undefined);
+      if (!alive) return;
+      const info = customerInfo || (await getCustomerSubscriptionInfo().catch(() => null));
+      await refreshAfterCustomerInfoChange(info);
+      console.log("KRISTO_CHURCH_SUBSCRIPTION_AUTO_SYNC_DONE", { churchId, plan });
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    offersLoading,
+    sessionLoading,
+    churchId,
+    sessionRole,
+    serverStatus,
+    customerInfo,
+  ]);
+
   async function refreshAfterCustomerInfoChange(info: CustomerInfo | null) {
     setCustomerInfo(info);
     const hasPremium = hasPremiumEntitlement(info);

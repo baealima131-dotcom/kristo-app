@@ -5,23 +5,14 @@ import { guard } from "@/app/api/_lib/rbac";
 import {
   getChurchMediaByChurchId,
   isMediaDatabaseError,
-  patchChurchMediaSubscription,
   resolveMediaStoreMode,
   upsertChurchMedia,
   confirmChurchMediaPersisted,
 } from "@/app/api/_lib/store/mediaDb";
-import {
-  ChurchMediaAutoCreateForbiddenError,
-  ensureChurchMediaProfileForPastor,
-  evaluateChurchMediaAccess,
-} from "@/app/api/_lib/churchMediaAccess";
-import {
-  notifyChurchSubscriptionActivated,
-  parseSubscriptionExpiresAtMs,
-  reconcileChurchSubscriptionExpiryNotifications,
-} from "@/app/api/_lib/churchMediaNotifications";
+import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
+import { reconcileChurchSubscriptionExpiryNotifications } from "@/app/api/_lib/churchMediaNotifications";
 import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
-import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
+import { syncChurchSubscriptionFromRevenueCat } from "@/app/api/_lib/churchSubscriptionSync";
 import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 
 export const runtime = "nodejs";
@@ -70,30 +61,48 @@ export async function GET(req: NextRequest) {
 
   try {
     const media = await getChurchMediaByChurchId(churchId);
-    const access = await evaluateChurchMediaAccess({
+    let access = await evaluateChurchMediaAccess({
       churchId,
       userId,
     });
     let mediaForResponse = media;
-    const hasProfile = Boolean(String(media?.mediaName || "").trim());
-    const canOpenMediaScreen = access.canOpenMediaScreen;
-    const canViewProfile = hasProfile && canOpenMediaScreen;
+    let hasProfile = Boolean(String(media?.mediaName || "").trim());
     let subscriptionActive = access.subscriptionActive;
 
-    if (hasProfile) {
-      await confirmChurchMediaPersisted(churchId, media?.mediaName);
+    if (access.canManageMediaHosts && (!hasProfile || !subscriptionActive)) {
+      const sync = await syncChurchSubscriptionFromRevenueCat({
+        churchId,
+        requesterUserId: userId,
+      });
+      if (sync.media) {
+        mediaForResponse = sync.media;
+        hasProfile = Boolean(String(sync.media.mediaName || "").trim());
+        subscriptionActive = isChurchSubscriptionActiveFromRecord(sync.media);
+        if (sync.synced) {
+          access = await evaluateChurchMediaAccess({ churchId, userId });
+        }
+      }
     }
 
-    if (access.canManageMediaHosts && access.actualPastorUserId && hasProfile && media) {
+    const canOpenMediaScreen = access.canOpenMediaScreen;
+    const canViewProfile = hasProfile && canOpenMediaScreen;
+
+    if (hasProfile) {
+      await confirmChurchMediaPersisted(churchId, mediaForResponse?.mediaName);
+    }
+
+    if (access.canManageMediaHosts && access.actualPastorUserId && hasProfile && mediaForResponse) {
       try {
         const reconcileResult = await reconcileChurchSubscriptionExpiryNotifications({
           churchId,
           pastorUserId: access.actualPastorUserId,
-          media,
+          media: mediaForResponse,
         });
         if (reconcileResult.expired) {
           mediaForResponse = await getChurchMediaByChurchId(churchId);
+          hasProfile = Boolean(String(mediaForResponse?.mediaName || "").trim());
           subscriptionActive = isChurchSubscriptionActiveFromRecord(mediaForResponse);
+          access = await evaluateChurchMediaAccess({ churchId, userId });
         }
       } catch (notifyError: any) {
         console.log("KRISTO_SUBSCRIPTION_RECONCILE_FAILED", {
@@ -114,7 +123,7 @@ export async function GET(req: NextRequest) {
       userId,
       churchId,
       hasMedia: hasProfile,
-      mediaId: String(media?.id || "").trim(),
+      mediaId: String(mediaForResponse?.id || "").trim(),
       isActualChurchPastor: access.isActualChurchPastor,
       viewerIsHost: access.isMediaHost,
       canAccessChurchMedia: access.canAccessChurchMedia,
@@ -255,120 +264,67 @@ export async function PATCH(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const action = String(body?.action || "").trim();
+    const isSyncAction =
+      action === "activate_church_subscription" ||
+      action === "sync_church_subscription_from_revenuecat";
 
-    if (action !== "activate_church_subscription") {
+    if (!isSyncAction) {
       return NextResponse.json({ ok: false, error: "Unsupported action" }, { status: 400 });
     }
 
-    const existing = await getChurchMediaByChurchId(a.churchId);
-    if (!existing?.mediaName) {
-      try {
-        await ensureChurchMediaProfileForPastor({
-          churchId: a.churchId,
-          actualPastorUserId: access.actualPastorUserId,
-          requesterUserId: a.userId,
-        });
-      } catch (error: any) {
-        if (error instanceof ChurchMediaAutoCreateForbiddenError) {
-          return NextResponse.json(
-            {
-              ok: false,
-              error: "Only the church Pastor can activate a church subscription",
-            },
-            { status: 403 }
-          );
-        }
+    const sync = await syncChurchSubscriptionFromRevenueCat({
+      churchId: a.churchId,
+      requesterUserId: a.userId,
+      requestedPlan: body?.subscriptionPlan,
+    });
+
+    if (!sync.synced) {
+      if (sync.reason === "not-pastor" || sync.reason === "profile-create-forbidden") {
         return NextResponse.json(
           {
             ok: false,
-            error: "Church media profile required before activating subscription",
-            reason: String(error?.message || error || "profile-create-failed"),
+            error: "Only the church Pastor can activate a church subscription",
+            reason: sync.reason,
           },
-          { status: 400 }
+          { status: 403 }
         );
       }
-    }
 
-    // Never trust the client's `subscriptionActive: true`. Verify the church's
-    // RevenueCat `church_premium` entitlement server-side before activating.
-    console.log("KRISTO_CHURCH_SUBSCRIPTION_VERIFY_APP_USER_ID", {
-      appUserId: a.churchId,
-    });
-    const verification = await verifyChurchPremiumEntitlement(a.churchId);
-    if (!verification.active) {
-      console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_REJECTED", {
-        churchId: a.churchId,
-        userId: a.userId,
-        reason: verification.reason,
-      });
+      if (
+        sync.reason === "no-entitlement" ||
+        sync.reason === "expired" ||
+        sync.reason.startsWith("revenuecat-http-") ||
+        sync.reason === "no-secret" ||
+        sync.reason === "timeout" ||
+        sync.reason === "fetch-error"
+      ) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "Subscription could not be verified with the App Store.",
+            reason: sync.reason,
+          },
+          { status: 402 }
+        );
+      }
+
       return NextResponse.json(
         {
           ok: false,
-          error: "Subscription could not be verified with the App Store.",
-          reason: verification.reason,
+          error: "Church media profile required before activating subscription",
+          reason: sync.reason,
         },
-        { status: 402 }
+        { status: 400 }
       );
     }
 
-    // Prefer the plan from the verified RevenueCat product; fall back to the
-    // requested plan only when the product id was not resolvable.
-    const requestedPlan = String(body?.subscriptionPlan || "").trim();
-    const resolvedPlan = verification.plan || requestedPlan || "monthly";
-
-    console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_VERIFIED", {
-      churchId: a.churchId,
-      userId: a.userId,
-      plan: resolvedPlan,
-      productId: verification.productId,
-      bypassed: verification.bypassed,
-      reason: verification.reason,
+    return NextResponse.json({
+      ok: true,
+      media: sync.media,
+      storeMode: resolveMediaStoreMode(),
+      profileCreated: sync.profileCreated,
+      subscriptionActivated: sync.subscriptionActivated,
     });
-
-    const wasActive = existing?.subscriptionActive === true;
-    const expiresAtMs = verification.bypassed
-      ? null
-      : parseSubscriptionExpiresAtMs(verification.expiresAt);
-
-    const next = await patchChurchMediaSubscription(a.churchId, {
-      subscriptionActive: true,
-      subscriptionPlan: resolvedPlan,
-      subscriptionExpiresAt: expiresAtMs,
-    });
-
-    if (!wasActive && access.actualPastorUserId) {
-      try {
-        await notifyChurchSubscriptionActivated({
-          churchId: a.churchId,
-          pastorUserId: access.actualPastorUserId,
-          plan: resolvedPlan,
-        });
-      } catch (notifyError: any) {
-        console.log("KRISTO_SUBSCRIPTION_NOTIFY_FAILED", {
-          churchId: a.churchId,
-          action: "activated",
-          message: String(notifyError?.message || notifyError),
-        });
-      }
-    }
-
-    if (expiresAtMs && access.actualPastorUserId && !verification.bypassed && next) {
-      try {
-        await reconcileChurchSubscriptionExpiryNotifications({
-          churchId: a.churchId,
-          pastorUserId: access.actualPastorUserId,
-          media: next,
-        });
-      } catch (notifyError: any) {
-        console.log("KRISTO_SUBSCRIPTION_NOTIFY_FAILED", {
-          churchId: a.churchId,
-          action: "reconcile-after-activate",
-          message: String(notifyError?.message || notifyError),
-        });
-      }
-    }
-
-    return NextResponse.json({ ok: true, media: next, storeMode: resolveMediaStoreMode() });
   } catch (error: any) {
     if (isMediaDatabaseError(error)) {
       return NextResponse.json(
