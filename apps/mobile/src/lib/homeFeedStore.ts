@@ -312,6 +312,8 @@ export function syncUserClaimedSlotStore(
     churchId?: string;
     targetChurchId?: string;
     slotNumber?: number;
+    startMs?: number;
+    endMs?: number;
   } | null
 ) {
   const g = globalThis as any;
@@ -337,8 +339,171 @@ export function syncUserClaimedSlotStore(
     churchId: String(claim.churchId || claim.targetChurchId || "").trim() || undefined,
     targetChurchId: String(claim.targetChurchId || claim.churchId || "").trim() || undefined,
     slotNumber: Number(claim.slotNumber || 0) || undefined,
+    startMs: Number(claim.startMs || 0) || undefined,
+    endMs: Number(claim.endMs || 0) || undefined,
     claimedAt: new Date().toISOString(),
   };
+}
+
+export function ensurePersonalTabRingClaimFromEvent(payload: {
+  action?: string;
+  postId?: string;
+  feedId?: string;
+  baseFeedId?: string;
+  slotId?: string;
+  userId?: string;
+  startMs?: number;
+  endMs?: number;
+  slotNumber?: number;
+  claim?: {
+    name?: string;
+    role?: string;
+    avatarUri?: string;
+    avatarUrl?: string;
+    churchId?: string;
+    slot?: any;
+    item?: any;
+  };
+}) {
+  if (payload?.action !== "claim") return false;
+
+  const userId = String(payload.userId || "").trim();
+  const postId =
+    baseFeedId(String(payload.postId || payload.feedId || payload.baseFeedId || "")) ||
+    String(payload.postId || payload.feedId || payload.baseFeedId || "").trim();
+  const slotId = String(payload.slotId || "").trim();
+  const startMs = Number(payload.startMs || 0);
+  const endMs = Number(payload.endMs || 0);
+  if (!userId || !postId || !slotId || !startMs || endMs <= 0) return false;
+
+  const existing = getRingClaimHints(userId).some(
+    (hint) =>
+      String(hint.slotId || "").trim() === slotId &&
+      baseFeedId(String(hint.baseFeedId || hint.feedId || "")) === postId &&
+      Number(hint.startMs || 0) > 0 &&
+      Number(hint.endMs || 0) > 0
+  );
+  if (existing) return false;
+
+  return persistPersonalTabRingClaimState({
+    postId,
+    slotId,
+    userId,
+    claim: payload.claim || {},
+    startMs,
+    endMs,
+    slotNumber: payload.slotNumber,
+    source: "claim-updated-event",
+  });
+}
+
+export function persistPersonalTabRingClaimState(args: {
+  postId: string;
+  slotId: string;
+  userId: string;
+  claim: {
+    name?: string;
+    role?: string;
+    avatarUri?: string;
+    avatarUrl?: string;
+    churchId?: string;
+    slot?: any;
+    item?: any;
+  };
+  startMs: number;
+  endMs: number;
+  slotNumber?: number;
+  source?: string;
+}) {
+  const postId = baseFeedId(String(args.postId || "")) || String(args.postId || "").trim();
+  const slotId = String(args.slotId || "").trim();
+  const userId = String(args.userId || "").trim();
+  const startMs = Number(args.startMs || 0);
+  const endMs = Number(args.endMs || 0);
+  if (!postId || !slotId || !userId || !startMs || endMs <= 0) return false;
+
+  const slotNumber = Number(args.slotNumber || args.claim?.slot?.slot || args.claim?.slot?.slotNumber || 0);
+  const churchId = String(
+    args.claim.churchId || args.claim.item?.churchId || ""
+  ).trim();
+  const hintAvatarUri =
+    sanitizePersistedClaimAvatarUri(args.claim.avatarUrl, "ring-claim-hint") ||
+    sanitizePersistedClaimAvatarUri(args.claim.avatarUri, "ring-claim-hint") ||
+    "";
+  const claimedAt = new Date().toISOString();
+
+  syncUserClaimedSlotStore(postId, slotId, {
+    userId,
+    name: args.claim.name,
+    role: args.claim.role,
+    avatarUri: hintAvatarUri,
+    churchId,
+    targetChurchId: churchId,
+    slotNumber: slotNumber || undefined,
+    startMs,
+    endMs,
+  });
+
+  const hint: RingClaimHint = {
+    feedId: postId,
+    baseFeedId: postId,
+    slotId,
+    slotNumber: slotNumber || 0,
+    userId,
+    startMs,
+    endMs,
+    name: args.claim.name,
+    role: args.claim.role,
+    avatarUri: hintAvatarUri,
+    claimedAt,
+    churchId,
+    item: args.claim.item || null,
+    slot: args.claim.slot
+      ? {
+          ...args.claim.slot,
+          id: slotId,
+          slotId,
+          startMs,
+          endMs,
+          claimedByUserId: userId,
+        }
+      : null,
+    updatedAt: Date.now(),
+  };
+
+  writeRingClaimHint(hint);
+
+  console.log("KRISTO_ME_TAB_RING_CLAIM_PERSIST", {
+    source: args.source || "persistPersonalTabRingClaimState",
+    postId,
+    slotId,
+    userId,
+    startMs,
+    endMs,
+    slotNumber: slotNumber || null,
+    isLiveNow: Date.now() >= startMs && Date.now() <= endMs,
+  });
+
+  emitClaimUpdated({
+    postId,
+    feedId: postId,
+    baseFeedId: postId,
+    slotId,
+    slotNumber: slotNumber || undefined,
+    userId,
+    action: "claim",
+    startMs,
+    endMs,
+    claim: {
+      userId,
+      name: args.claim.name,
+      role: args.claim.role,
+      avatarUri: hintAvatarUri,
+      claimedAt,
+    },
+  });
+
+  return true;
 }
 
 export function getUserClaimedSlotEntries(userId?: string) {
@@ -706,7 +871,27 @@ export function feedClaimSchedule(
   const baseId = resolveCanonicalScheduleFeedId(seedId, rows) || seedId;
   const slotId = String(claim?.slotId || "").trim();
   const userId = String(claim?.userId || "").trim();
-  if (!baseId || !slotId || !userId || !claim) return;
+  if (!baseId || !slotId || !userId || !claim) {
+    console.log("KRISTO_ME_TAB_RING_CLAIM_SKIP", {
+      reason: "invalid_args",
+      seedId,
+      baseId,
+      slotId,
+      userId,
+      hasClaim: !!claim,
+    });
+    return;
+  }
+
+  console.log("KRISTO_ME_TAB_RING_CLAIM_ATTEMPT", {
+    postId: baseId,
+    slotId,
+    userId,
+    claimStartMs: claim.startMs ?? null,
+    claimEndMs: claim.endMs ?? null,
+    hasClaimSlot: !!claim.slot,
+    source: "feedClaimSchedule",
+  });
 
   for (const it of rows) {
     if (!feedItemMatchesClaimTarget(it, baseId, slotId)) continue;
@@ -830,57 +1015,140 @@ export function feedClaimSchedule(
     } as any;
   });
 
+  if (!claimMeta && Number(claim.startMs || 0) > 0 && Number(claim.endMs || 0) > 0) {
+    claimMeta = {
+      startMs: Number(claim.startMs),
+      endMs: Number(claim.endMs),
+      slotNumber: Number(claim.slotNumber || 0),
+      item: claim.item || null,
+      slot:
+        claim.slot ||
+        ({
+          id: slotId,
+          slotId,
+          startMs: Number(claim.startMs),
+          endMs: Number(claim.endMs),
+          claimedByUserId: userId,
+        } as any),
+      index: Math.max(0, Number(claim.slotNumber || 1) - 1),
+    };
+  }
+
+  const ringPersisted =
+    !!claimMeta &&
+    claimMeta.startMs > 0 &&
+    claimMeta.endMs > 0 &&
+    persistPersonalTabRingClaimState({
+      postId: baseId,
+      slotId,
+      userId,
+      claim: {
+        name: claim.name,
+        role: claim.role,
+        avatarUri: claim.avatarUri,
+        avatarUrl: claim.avatarUrl,
+        churchId: String(claim.churchId || claimMeta.item?.churchId || "").trim(),
+        slot: claimMeta.slot,
+        item: claimMeta.item,
+      },
+      startMs: claimMeta.startMs,
+      endMs: claimMeta.endMs,
+      slotNumber: claimMeta.slotNumber,
+      source: "feedClaimSchedule",
+    });
+
+  if (!ringPersisted) {
+    console.log("KRISTO_ME_TAB_RING_CLAIM_SKIP", {
+      reason: !claimMeta ? "no_claim_meta" : "missing_time_window",
+      postId: baseId,
+      slotId,
+      userId,
+      anyChanged,
+      claimMeta: claimMeta
+        ? {
+            startMs: claimMeta.startMs,
+            endMs: claimMeta.endMs,
+            slotNumber: claimMeta.slotNumber,
+          }
+        : null,
+      claimStartMs: claim.startMs ?? null,
+      claimEndMs: claim.endMs ?? null,
+      hasClaimSlot: !!claim.slot,
+    });
+  }
+
   if (!anyChanged) {
     emit();
     return;
   }
 
-  const claimedAt = new Date().toISOString();
-  syncUserClaimedSlotStore(baseId, slotId, {
-    userId,
-    name: claim.name,
-    role: claim.role,
-    avatarUri: claim.avatarUri || claim.avatarUrl,
-    churchId: String(claim.churchId || claimMeta?.item?.churchId || "").trim(),
-    targetChurchId: String(claim.churchId || claimMeta?.item?.churchId || "").trim(),
-    slotNumber: claimMeta?.slotNumber,
-  });
+  if (!ringPersisted) {
+    const claimedAt = new Date().toISOString();
+    syncUserClaimedSlotStore(baseId, slotId, {
+      userId,
+      name: claim.name,
+      role: claim.role,
+      avatarUri: claim.avatarUri || claim.avatarUrl,
+      churchId: String(claim.churchId || claimMeta?.item?.churchId || "").trim(),
+      targetChurchId: String(claim.churchId || claimMeta?.item?.churchId || "").trim(),
+      slotNumber: claimMeta?.slotNumber,
+      startMs: claimMeta?.startMs,
+      endMs: claimMeta?.endMs,
+    });
 
-  const hintAvatarUri =
-    sanitizePersistedClaimAvatarUri(claim.avatarUrl, "ring-claim-hint") ||
-    sanitizePersistedClaimAvatarUri(claim.avatarUri, "ring-claim-hint") ||
-    "";
-  const hint: RingClaimHint = {
-    feedId: baseId,
-    baseFeedId: baseId,
-    slotId,
-    slotNumber: claimMeta?.slotNumber || 0,
-    userId,
-    startMs: Number(claimMeta?.startMs || 0),
-    endMs: Number(claimMeta?.endMs || 0),
-    name: claim.name,
-    role: claim.role,
-    avatarUri: hintAvatarUri,
-    claimedAt,
-    churchId: String(claimMeta?.item?.churchId || ""),
-    item: claimMeta?.item || null,
-    slot: claimMeta?.slot || null,
-    updatedAt: Date.now(),
-  };
+    const hintAvatarUri =
+      sanitizePersistedClaimAvatarUri(claim.avatarUrl, "ring-claim-hint") ||
+      sanitizePersistedClaimAvatarUri(claim.avatarUri, "ring-claim-hint") ||
+      "";
+    const hint: RingClaimHint = {
+      feedId: baseId,
+      baseFeedId: baseId,
+      slotId,
+      slotNumber: claimMeta?.slotNumber || 0,
+      userId,
+      startMs: Number(claimMeta?.startMs || 0),
+      endMs: Number(claimMeta?.endMs || 0),
+      name: claim.name,
+      role: claim.role,
+      avatarUri: hintAvatarUri,
+      claimedAt,
+      churchId: String(claimMeta?.item?.churchId || ""),
+      item: claimMeta?.item || null,
+      slot: claimMeta?.slot || null,
+      updatedAt: Date.now(),
+    };
 
-  writeRingClaimHint(hint);
+    writeRingClaimHint(hint);
+
+    emitClaimUpdated({
+      postId: baseId,
+      feedId: baseId,
+      baseFeedId: baseId,
+      slotId,
+      slotNumber: hint.slotNumber,
+      userId,
+      action: "claim",
+      startMs: hint.startMs,
+      endMs: hint.endMs,
+      claim: {
+        ...claim,
+        claimedAt,
+      },
+    });
+  }
 
   console.log("KRISTO_MEDIA_CLAIM_LOCAL_SYNC", {
     postId: baseId,
     slotId,
     userId,
     anyChanged,
+    ringPersisted,
     claimedCount: claimMeta?.item
       ? countClaimedScheduleSlots(claimMeta.item.scheduleSlots)
       : null,
-    startMs: hint.startMs,
-    endMs: hint.endMs,
-    slotNumber: hint.slotNumber,
+    startMs: claimMeta?.startMs ?? null,
+    endMs: claimMeta?.endMs ?? null,
+    slotNumber: claimMeta?.slotNumber ?? null,
   });
 
   console.log("KRISTO_CLAIM_LOCAL_SYNC", {
@@ -888,41 +1156,25 @@ export function feedClaimSchedule(
     slotId,
     userId,
     anyChanged,
-    startMs: hint.startMs,
-    endMs: hint.endMs,
-    slotNumber: hint.slotNumber,
+    ringPersisted,
+    startMs: claimMeta?.startMs ?? null,
+    endMs: claimMeta?.endMs ?? null,
+    slotNumber: claimMeta?.slotNumber ?? null,
   });
 
-  console.log("KRISTO_CLAIM_RING_FAST_SYNC", {
-    feedId: baseId,
-    baseFeedId: baseId,
-    slotId,
-    slotNumber: hint.slotNumber,
-    userId,
-    startMs: hint.startMs,
-    endMs: hint.endMs,
-    isLiveNow:
-      hint.startMs > 0 &&
-      hint.endMs > 0 &&
-      Date.now() >= hint.startMs &&
-      Date.now() <= hint.endMs,
-  });
-
-  emitClaimUpdated({
-    postId: baseId,
-    feedId: baseId,
-    baseFeedId: baseId,
-    slotId,
-    slotNumber: hint.slotNumber,
-    userId,
-    action: "claim",
-    startMs: hint.startMs,
-    endMs: hint.endMs,
-    claim: {
-      ...claim,
-      claimedAt,
-    },
-  });
+  if (claimMeta && claimMeta.startMs > 0 && claimMeta.endMs > 0) {
+    console.log("KRISTO_CLAIM_RING_FAST_SYNC", {
+      feedId: baseId,
+      baseFeedId: baseId,
+      slotId,
+      slotNumber: claimMeta.slotNumber,
+      userId,
+      startMs: claimMeta.startMs,
+      endMs: claimMeta.endMs,
+      isLiveNow:
+        Date.now() >= claimMeta.startMs && Date.now() <= claimMeta.endMs,
+    });
+  }
 
   const churchId = String(claim.churchId || claimMeta?.item?.churchId || "").trim();
   if (anyChanged && churchId) {

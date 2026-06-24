@@ -14,6 +14,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type ViewToken,
@@ -35,6 +36,7 @@ import {
   resolveHomeFeedVideoWarmMode,
 } from "@/src/lib/homeFeedVideoWindow";
 import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
+import { buildYouTubeFeedItemLayout } from "@/src/lib/homeFeedYouTubeLayout";
 import { enforceHomeFeedVideoAudioOwnership } from "@/src/lib/homeFeedVideoOwner";
 import { markHomeFeedPostViewed } from "@/src/lib/homeFeedPostViews";
 import {
@@ -46,6 +48,10 @@ import {
 
 // Dedupe for the first-3-video-rows index diagnostic (keyed by row id).
 const lastFeedVideoIndexDiag = new Map<string, string>();
+
+function estimateFallbackYouTubeItemLength(windowWidth: number) {
+  return Math.max(320, Math.round(windowWidth * 1.05));
+}
 
 /** Imperative scroll API for programmatic focus (deep links, claim-slot, clamp). */
 export type FeedListHandle = {
@@ -106,10 +112,47 @@ export const FeedList = memo(
     ref
   ) {
   const youtubeLayout = isHomeFeedYouTubeStyleVideo();
+  const { width: windowWidth } = useWindowDimensions();
   const inlineVideoAutoplay = isHomeFeedInlineVideoAutoplayEnabled();
   const renderPaused = isHomeFeedRenderPaused();
   const effectiveScreenFocused = screenFocused && !renderPaused;
   const listRef = useRef<FlatList>(null);
+  const youtubeLayoutMetrics = useMemo(
+    () => buildYouTubeFeedItemLayout(rows, windowWidth),
+    [rows, windowWidth]
+  );
+
+  const scrollYouTubeToIndex = useCallback(
+    (index: number, animated = true) => {
+      const clamped = Math.max(0, Math.min(index, Math.max(0, rows.length - 1)));
+      const offset = youtubeLayoutMetrics.offsets[clamped];
+      if (offset != null) {
+        listRef.current?.scrollToOffset({ offset, animated });
+        return;
+      }
+      listRef.current?.scrollToIndex({ index: clamped, animated });
+    },
+    [rows.length, youtubeLayoutMetrics.offsets]
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToIndex(index: number, animated = true) {
+        if (youtubeLayout) {
+          scrollYouTubeToIndex(index, animated);
+          return;
+        }
+        const clamped = Math.max(0, index);
+        listRef.current?.scrollToOffset({
+          offset: clamped * Math.max(1, contentHeight),
+          animated,
+        });
+      },
+    }),
+    [contentHeight, youtubeLayout, scrollYouTubeToIndex]
+  );
+
   const activeIndexRef = useRef(activeIndex);
   const onActiveIndexChangeRef = useRef(onActiveIndexChange);
   const handlersRef = useRef({
@@ -132,24 +175,29 @@ export const FeedList = memo(
     onVideoPress,
   };
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      scrollToIndex(index: number, animated = true) {
-        const clamped = Math.max(0, index);
-        if (youtubeLayout) {
-          listRef.current?.scrollToIndex({ index: clamped, animated });
-          return;
-        }
-        listRef.current?.scrollToOffset({
-          offset: clamped * Math.max(1, contentHeight),
-          animated,
-        });
-      },
+  const youtubeGetItemLayout = useCallback(
+    (_: any, index: number) => ({
+      length: youtubeLayoutMetrics.heights[index] ?? estimateFallbackYouTubeItemLength(windowWidth),
+      offset:
+        youtubeLayoutMetrics.offsets[index] ??
+        index * estimateFallbackYouTubeItemLength(windowWidth),
+      index,
     }),
-    [contentHeight, youtubeLayout]
+    [youtubeLayoutMetrics, windowWidth]
   );
 
+  const handleYouTubeScrollToIndexFailed = useCallback(
+    (info: { index: number; averageItemLength: number; highestMeasuredFrameIndex: number }) => {
+      const offset =
+        youtubeLayoutMetrics.offsets[info.index] ??
+        info.index * Math.max(1, info.averageItemLength);
+      listRef.current?.scrollToOffset({ offset, animated: false });
+      requestAnimationFrame(() => {
+        scrollYouTubeToIndex(info.index, false);
+      });
+    },
+    [scrollYouTubeToIndex, youtubeLayoutMetrics.offsets]
+  );
   const viewabilityConfig = useRef(VIEWABILITY_CONFIG).current;
   const youtubeViewabilityConfig = useRef(YOUTUBE_VIEWABILITY_CONFIG).current;
 
@@ -398,6 +446,8 @@ export const FeedList = memo(
         removeClippedSubviews
         onViewableItemsChanged={onYouTubeViewableItemsChanged}
         viewabilityConfig={youtubeViewabilityConfig}
+        getItemLayout={youtubeGetItemLayout}
+        onScrollToIndexFailed={handleYouTubeScrollToIndexFailed}
         style={[styles.list, viewportStyle]}
         contentContainerStyle={styles.youtubeContent}
       />

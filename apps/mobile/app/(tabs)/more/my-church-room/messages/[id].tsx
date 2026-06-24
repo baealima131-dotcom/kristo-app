@@ -1019,7 +1019,7 @@ function renderAssignmentCardBody(
             const assignmentAvatarRingDecision = resolveAssignmentCardAvatarRingDecision({
               surface: "assignment-card-body",
               cardId: String(m.id || card.cardId || ""),
-              slotId: String(card.cardId || card.id || slotNumber || ""),
+              slotId: String(card.cardId || slotNumber || ""),
               claimedByUserId,
               currentUserId,
               claimed: isTaken,
@@ -1041,7 +1041,7 @@ function renderAssignmentCardBody(
                   ownershipRing={assignmentAvatarRingDecision.ringMode}
                   forceShowImage={!!resolvedAvatarUri}
                   imageLogMeta={{
-                    slotId: String(card.cardId || card.id || slotNumber || ""),
+                    slotId: String(card.cardId || slotNumber || ""),
                     claimedByUserId,
                     kind: "claimed",
                   }}

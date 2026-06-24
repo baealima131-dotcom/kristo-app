@@ -172,6 +172,16 @@ function appendRemountQuery(uri: string, epoch: number): string {
   return `${uri}${sep}_kristoRm=${epoch}`;
 }
 
+function resolveVideoPlayerContentType(uri: string): "auto" | "progressive" {
+  return String(uri || "").trim().startsWith("file://") ? "auto" : "progressive";
+}
+
+function buildVideoPlayerSource(uri: string) {
+  const trimmed = String(uri || "").trim();
+  if (!trimmed) return null;
+  return { uri: trimmed, contentType: resolveVideoPlayerContentType(trimmed) };
+}
+
 /**
  * Thin Home Feed video. All "who plays" decisions live in homeFeedVideoOwner.
  * This component only:
@@ -333,7 +343,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       : !startupSourceAllowed
         ? null
         : sourceAttached && effectivePlaybackUri
-          ? { uri: effectivePlaybackUri, contentType: "progressive" as const }
+          ? buildVideoPlayerSource(effectivePlaybackUri)
           : null,
     (p) => {
       p.loop = true;
@@ -351,6 +361,11 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   hookPlayerRef.current = hookPlayer;
 
   const player = adoptedPlayer ?? hookPlayer;
+  const mountedPlaybackUriRef = React.useRef("");
+
+  React.useEffect(() => {
+    mountedPlaybackUriRef.current = "";
+  }, [playerRemountEpoch, key]);
 
   // expo-video's StatusChangeEventPayload typing is loose; read defensively and
   // normalize to a lowercased string we control.
@@ -376,6 +391,74 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     },
     [player]
   );
+
+  React.useEffect(() => {
+    if (playerDisposedRef.current || !player || adoptedPlayer) return;
+    if (!sourceAttached || !effectivePlaybackUri) return;
+
+    const prevUri = mountedPlaybackUriRef.current;
+    if (!prevUri) {
+      mountedPlaybackUriRef.current = effectivePlaybackUri;
+      return;
+    }
+    if (prevUri === effectivePlaybackUri) return;
+
+    mountedPlaybackUriRef.current = effectivePlaybackUri;
+    const source = buildVideoPlayerSource(effectivePlaybackUri);
+    if (!source) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const currentUri = String((player as any)?.source?.uri || "").trim();
+        if (currentUri === effectivePlaybackUri) return;
+
+        if (typeof (player as any).replaceAsync === "function") {
+          await (player as any).replaceAsync(source);
+        } else if (typeof (player as any).replace === "function") {
+          (player as any).replace(source);
+        }
+        if (cancelled || playerDisposedRef.current) return;
+
+        console.log("KRISTO_VIDEO_PLAYBACK_SOURCE_SWAP", {
+          key,
+          postId,
+          index: feedIndex,
+          from: prevUri,
+          to: effectivePlaybackUri,
+        });
+
+        if (role === "active" && isActiveIntent && !userPausedRef.current) {
+          safeSetMuted(true);
+          safePlay();
+        }
+      } catch (error) {
+        console.log("KRISTO_VIDEO_PLAYBACK_SOURCE_SWAP_FAILED", {
+          key,
+          postId,
+          index: feedIndex,
+          uri: effectivePlaybackUri,
+          message: String((error as any)?.message || error),
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    effectivePlaybackUri,
+    player,
+    adoptedPlayer,
+    sourceAttached,
+    role,
+    isActiveIntent,
+    key,
+    postId,
+    feedIndex,
+    safePlay,
+    safeSetMuted,
+  ]);
 
   const resumeActivePlayback = React.useCallback(
     (reason: string) => {

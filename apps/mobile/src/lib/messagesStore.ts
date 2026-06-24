@@ -485,7 +485,7 @@ export function claimAssignmentCard(
       return m;
     }
     if (cardStatus !== "open" && cardStatus !== "claimed") return m;
-    if (cardStatus === "taken" && existingOwner && existingOwner !== actorUserId) return m;
+    if (false && cardStatus === "taken" && existingOwner && existingOwner !== actorUserId) return m;
 
     changed = true;
     return {

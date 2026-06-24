@@ -15,6 +15,7 @@ import {
   saveMinistriesCache,
 } from "@/src/lib/screenDataCache";
 import { refreshMinistriesBundleIfNeeded, seedMinistriesRefreshFromCache } from "@/src/lib/churchResourceRefresh";
+import { onMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
 import {
   CHURCH_TAB_REFRESH_MS,
   logChurchFeatureBackgroundRefresh,
@@ -287,6 +288,22 @@ export default function MoreMinistriesList() {
       alive = false;
     };
   }, [churchId]);
+
+  useEffect(() => {
+    const unsub = onMinistriesUpdated((payload) => {
+      if (payload.churchId !== churchId || payload.userId !== userId) return;
+
+      cacheFreshRef.current = false;
+      const mem = peekMinistriesCache(churchId, userId);
+      if (mem?.items?.length) {
+        applyMinistriesCache((mem.items || []) as Ministry[]);
+      }
+
+      void load({ force: true });
+    });
+
+    return unsub;
+  }, [churchId, userId, applyMinistriesCache, load]);
 
   async function handleCreateMinistryPress() {
     if (!canCreateMinistry) return;

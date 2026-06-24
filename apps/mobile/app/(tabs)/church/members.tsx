@@ -184,11 +184,26 @@ export default function ChurchMembersDirectory() {
 
         const [m, r] = await Promise.all([
           fetchChurchMembers().catch(() => []),
-          fetchJoinRequests().catch(() => []),
+          fetchJoinRequests().catch((e) => {
+            console.log("KRISTO_CHURCH_MEMBERS_REQUESTS_FETCH_EMPTY", {
+              membersScreenChurchId: churchId,
+              viewerUserId: userId,
+              viewerRole: String(session?.role || ""),
+              error: String((e as any)?.message || e || ""),
+            });
+            return [];
+          }),
         ]);
 
         const nextMembers = Array.isArray(m) ? m : [];
         const nextRequests = Array.isArray(r) ? r : [];
+        console.log("KRISTO_CHURCH_MEMBERS_REQUESTS_SYNC", {
+          membersScreenChurchId: churchId,
+          viewerUserId: userId,
+          viewerRole: String(session?.role || ""),
+          requestCount: nextRequests.length,
+          memberCount: nextMembers.length,
+        });
         const sig = `${churchMembersRowsSignature(nextMembers)}|${churchMembersRowsSignature(nextRequests)}`;
         if (sig !== membersSigRef.current) {
           membersSigRef.current = sig;
@@ -213,7 +228,7 @@ export default function ChurchMembersDirectory() {
         setRefreshing(false);
       }
     },
-    [churchId, userId, members.length, requests.length]
+    [churchId, userId, members.length, requests.length, session?.role]
   );
 
   useFocusEffect(

@@ -57,12 +57,44 @@ export function logCameraTrackCreateResult(extra?: Record<string, unknown>) {
   console.log("KRISTO_CAMERA_TRACK_CREATE_RESULT", perfPayload(extra));
 }
 
+export function logCameraTrackCreateDone(extra?: Record<string, unknown>) {
+  console.log("KRISTO_CAMERA_TRACK_CREATE_DONE", perfPayload(extra));
+}
+
 export function logCameraPublishStart(extra?: Record<string, unknown>) {
   console.log("KRISTO_CAMERA_PUBLISH_START", perfPayload(extra));
 }
 
 export function logCameraPublishResult(extra?: Record<string, unknown>) {
   console.log("KRISTO_CAMERA_PUBLISH_RESULT", perfPayload(extra));
+}
+
+export function logCameraPublishSuccess(extra?: Record<string, unknown>) {
+  console.log("KRISTO_CAMERA_PUBLISH_SUCCESS", perfPayload(extra));
+}
+
+export function logCameraPublishError(extra?: Record<string, unknown>) {
+  console.log("KRISTO_CAMERA_PUBLISH_ERROR", perfPayload(extra));
+}
+
+export function logLocalCameraPublicationState(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LOCAL_CAMERA_PUBLICATION_STATE", perfPayload(extra));
+}
+
+export function logLocalMicPublicationState(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LOCAL_MIC_PUBLICATION_STATE", perfPayload(extra));
+}
+
+export function logLiveMicSuppressAttempt(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_MIC_SUPPRESS_ATTEMPT", perfPayload(extra));
+}
+
+export function logLiveMicSuppressResult(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_MIC_SUPPRESS_RESULT", perfPayload(extra));
+}
+
+export function logStalePublisherStageMount(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVEKIT_STALE_PUBLISHER_STAGE", perfPayload(extra));
 }
 
 export function logLiveFirstFrameRendered(extra?: Record<string, unknown>) {

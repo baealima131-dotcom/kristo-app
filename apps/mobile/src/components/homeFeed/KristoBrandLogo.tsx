@@ -15,7 +15,7 @@ const logoLetterStyle = {
   color: "#000",
   includeFontPadding: false,
   ...(Platform.OS === "ios"
-    ? { fontVariant: ["tabular-nums"] as const }
+    ? {}
     : { fontFamily: "sans-serif-black" as const }),
 };
 

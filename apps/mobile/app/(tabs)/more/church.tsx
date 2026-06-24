@@ -310,7 +310,7 @@ export default function MoreChurch() {
           showVovotoLanding ? (
             <View style={s.vovotoWrap}>
               <ImageBackground
-                source={require("@/assets/images/vovoto.png")}
+                source={require("../../../assets/images/vovoto.png")}
                 resizeMode="contain"
                 style={s.vovotoImage}
               >

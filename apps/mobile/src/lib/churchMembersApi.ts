@@ -10,6 +10,13 @@ import {
 } from "./kristoChurchInviteEvents";
 import { approveJoinRequest, deactivateChurchMember, getChurchJoinRequests, getChurchMembers, rejectJoinRequest } from "@/src/lib/churchRequestsStore";
 
+export function isPendingJoinRequestRow(row: any): boolean {
+  const status = String(row?.status || "").trim().toLowerCase();
+  const isRequestStatus = status === "requested" || status === "pending" || status === "request";
+  if (!isRequestStatus) return false;
+  return String(row?.requestSource || "JoinRequest") !== "ChurchInvite";
+}
+
 function getBase() {
   return getApiBase();
 }
@@ -71,21 +78,34 @@ export async function fetchChurchMembers() {
 // =====================
 export async function fetchJoinRequests() {
   const base = getBase();
-  const { userId } = getAuthBits();
+  const { churchId, userId, role } = getAuthBits();
 
   if (!userId) throw new Error("userId missing");
-  if (!base) return getChurchJoinRequests(getAuthBits().churchId);
+  if (!base) return getChurchJoinRequests(churchId);
 
   const r = await fetch(`${base}/api/church/join-requests`, {
-    headers: headers(),
+    headers: headers("/api/church/join-requests"),
   });
 
   const j = await r.json().catch(() => ({} as any));
   if (!r.ok || !j?.ok) {
+    console.log("KRISTO_JOIN_REQUESTS_FETCH_FAIL", {
+      membersScreenChurchId: churchId,
+      userId,
+      role,
+      status: r.status,
+      error: j?.error || null,
+    });
     throw new Error(String(j?.error || "Failed to fetch requests"));
   }
 
-  return Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
+  const raw = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
+  console.log("KRISTO_JOIN_REQUESTS_FETCH_OK", {
+    membersScreenChurchId: churchId,
+    responseChurchId: String(j?.churchId || churchId || ""),
+    count: raw.length,
+  });
+  return raw;
 }
 
 // =====================
@@ -97,7 +117,7 @@ export async function approveRequest(requestId: string) {
 
   const r = await fetch(`${base}/api/church/join-requests`, {
     method: "PATCH",
-    headers: headers(),
+    headers: headers("/api/church/join-requests"),
     body: JSON.stringify({
       requestId,
       action: "approve",
@@ -118,7 +138,7 @@ export async function rejectRequest(requestId: string) {
 
   const r = await fetch(`${base}/api/church/join-requests`, {
     method: "PATCH",
-    headers: headers(),
+    headers: headers("/api/church/join-requests"),
     body: JSON.stringify({
       requestId,
       action: "reject",
@@ -225,13 +245,38 @@ export async function requestJoinChurch(churchId: string, name?: string) {
 
   const r = await fetch(`${base}/api/church/join-requests`, {
     method: "POST",
-    headers: headers(),
+    headers: headers("/api/church/join-requests"),
     body: JSON.stringify({ churchId, name }),
   });
 
   const j = await r.json().catch(() => ({} as any));
   if (!r.ok || !j?.ok) {
     throw new Error(String(j?.error || "Request failed"));
+  }
+
+  return j?.data || j?.membership || j;
+}
+
+export async function cancelJoinRequest(opts?: { requestId?: string; churchId?: string }) {
+  const base = getBase();
+  const { userId } = getAuthBits();
+
+  if (!userId) throw new Error("userId missing");
+  if (!base) throw new Error("API base missing");
+
+  const r = await fetch(`${base}/api/church/join-requests`, {
+    method: "PATCH",
+    headers: headers("/api/church/join-requests"),
+    body: JSON.stringify({
+      action: "cancel",
+      requestId: String(opts?.requestId || "").trim() || undefined,
+      churchId: String(opts?.churchId || "").trim() || undefined,
+    }),
+  });
+
+  const j = await r.json().catch(() => ({} as any));
+  if (!r.ok || !j?.ok) {
+    throw new Error(String(j?.error || "Could not cancel request"));
   }
 
   return j?.data || j?.membership || j;

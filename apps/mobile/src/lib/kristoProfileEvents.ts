@@ -5,6 +5,7 @@ import { markSaveCooldown } from "@/src/lib/kristoTraffic";
 export const KRISTO_CHURCH_PROFILE_UPDATED = "kristo:church-profile-updated";
 export const KRISTO_USER_PROFILE_UPDATED = "kristo:user-profile-updated";
 export const KRISTO_CLAIM_UPDATED = "kristo:claim-updated";
+export const KRISTO_MINISTRIES_UPDATED = "kristo:ministries-updated";
 
 export type ClaimUpdatedPayload = {
   postId: string;
@@ -72,5 +73,25 @@ export function emitClaimUpdated(payload: ClaimUpdatedPayload) {
 
 export function onClaimUpdated(listener: (payload: ClaimUpdatedPayload) => void) {
   const sub = DeviceEventEmitter.addListener(KRISTO_CLAIM_UPDATED, listener);
+  return () => sub.remove();
+}
+
+export type MinistriesUpdatedPayload = {
+  churchId: string;
+  userId: string;
+  ministryId?: string;
+  action: "created" | "updated" | "refresh";
+  updatedAt?: number;
+};
+
+export function emitMinistriesUpdated(payload: MinistriesUpdatedPayload) {
+  DeviceEventEmitter.emit(KRISTO_MINISTRIES_UPDATED, {
+    ...payload,
+    updatedAt: payload.updatedAt ?? Date.now(),
+  });
+}
+
+export function onMinistriesUpdated(listener: (payload: MinistriesUpdatedPayload) => void) {
+  const sub = DeviceEventEmitter.addListener(KRISTO_MINISTRIES_UPDATED, listener);
   return () => sub.remove();
 }

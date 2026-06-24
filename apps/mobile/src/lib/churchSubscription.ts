@@ -57,10 +57,49 @@ export type ScheduleGateLogContext = {
   gate: string;
   isPastor?: boolean;
   isApprovedMediaHost?: boolean;
+  viewerIsHost?: boolean;
+  canUseMediaTools?: boolean;
+  canOpenMediaScreen?: boolean;
+  ministryRole?: string;
+  ministryToolAllowed?: boolean;
+  toolKey?: string;
   hasSubscription?: boolean | null;
   subscriptionLocked?: boolean | null;
   headers?: Record<string, string>;
 };
+
+export type ScheduleSubscriptionGateOptions = ScheduleGateLogContext & {
+  onUpgrade?: () => void;
+};
+
+function logAssignmentToolAccessDecision(meta: {
+  toolKey?: string;
+  gate: string;
+  hasSubscription: boolean | null;
+  isPastor: boolean;
+  ministryRole?: string;
+  viewerIsHost?: boolean;
+  canUseMediaTools?: boolean | null;
+  canOpenMediaScreen?: boolean;
+  ministryToolAllowed?: boolean;
+  allowed: boolean;
+}) {
+  console.log(
+    "KRISTO_ASSIGNMENT_TOOL_ACCESS_DECISION",
+    {
+      toolKey: meta.toolKey || null,
+      gate: meta.gate,
+      hasSubscription: meta.hasSubscription,
+      isPastor: meta.isPastor,
+      ministryRole: meta.ministryRole || null,
+      viewerIsHost: meta.viewerIsHost === true,
+      canUseMediaTools: meta.canUseMediaTools ?? null,
+      canOpenMediaScreen: meta.canOpenMediaScreen === true,
+      ministryToolAllowed: meta.ministryToolAllowed === true,
+      allowed: meta.allowed,
+    }
+  );
+}
 
 export function isPastorSessionRole(role?: string) {
   return String(role || "").toLowerCase().includes("pastor");
@@ -134,6 +173,7 @@ function logScheduleGate(meta: {
 export function evaluateScheduleSubscriptionGate(ctx: ScheduleGateLogContext) {
   const isPastor = resolveScheduleGateIsPastor({ isPastor: ctx.isPastor }, ctx.headers);
   const isApprovedMediaHost = ctx.isApprovedMediaHost === true;
+  const viewerIsHost = ctx.viewerIsHost === true || isApprovedMediaHost;
   const churchSubscriptionActive =
     ctx.hasSubscription === true ? true : ctx.hasSubscription === false ? false : null;
 
@@ -143,8 +183,29 @@ export function evaluateScheduleSubscriptionGate(ctx: ScheduleGateLogContext) {
     churchSubscriptionActive,
     isPastor,
     isApprovedMediaHost,
+    viewerIsHost,
+    canUseMediaTools: ctx.canUseMediaTools,
+    canOpenMediaScreen: ctx.canOpenMediaScreen,
+    ministryRole: ctx.ministryRole,
+    ministryToolAllowed: ctx.ministryToolAllowed,
+    toolKey: ctx.toolKey,
   });
   const allowed = strict.allowed;
+
+  if (String(ctx.gate || "").startsWith("assignment-tool.")) {
+    logAssignmentToolAccessDecision({
+      toolKey: ctx.toolKey,
+      gate: ctx.gate,
+      hasSubscription: ctx.hasSubscription ?? null,
+      isPastor,
+      ministryRole: ctx.ministryRole,
+      viewerIsHost,
+      canUseMediaTools: ctx.canUseMediaTools ?? null,
+      canOpenMediaScreen: ctx.canOpenMediaScreen,
+      ministryToolAllowed: ctx.ministryToolAllowed,
+      allowed,
+    });
+  }
 
   logScheduleGate({
     kind: "check",
@@ -863,18 +924,13 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
 export async function requireActiveChurchSubscriptionForSchedule(
   churchId: string,
   headers?: Record<string, string>,
-  opts?: {
-    isPastor?: boolean;
-    isApprovedMediaHost?: boolean;
-    screen?: string;
-    gate?: string;
-    onUpgrade?: () => void;
-  }
+  opts?: ScheduleSubscriptionGateOptions
 ) {
   const screen = String(opts?.screen || "requireActiveChurchSubscriptionForSchedule");
   const gate = String(opts?.gate || "requireActiveChurchSubscriptionForSchedule");
   const isPastor = resolveScheduleGateIsPastor(opts, headers);
   const isApprovedMediaHost = opts?.isApprovedMediaHost === true;
+  const viewerIsHost = opts?.viewerIsHost === true || isApprovedMediaHost;
 
   const resolved = await resolveScheduleSubscriptionState({
     churchId,
@@ -882,6 +938,11 @@ export async function requireActiveChurchSubscriptionForSchedule(
     fetchCustomerInfo: true,
   });
   const churchSubscriptionActive = resolved.hasSubscription;
+  const canUseMediaTools =
+    resolved.canUseMediaTools == null ? undefined : resolved.canUseMediaTools === true;
+  const canOpenMediaScreen =
+    opts?.canOpenMediaScreen === true ||
+    resolved.routeFailed === false && resolved.canUseMediaTools === true;
 
   const strict = evaluateStrictChurchMediaLiveSubscriptionGate({
     gate,
@@ -890,6 +951,12 @@ export async function requireActiveChurchSubscriptionForSchedule(
     churchSubscriptionActive,
     isPastor,
     isApprovedMediaHost,
+    viewerIsHost,
+    canUseMediaTools: opts?.canUseMediaTools ?? canUseMediaTools,
+    canOpenMediaScreen: opts?.canOpenMediaScreen ?? canOpenMediaScreen,
+    ministryRole: opts?.ministryRole,
+    ministryToolAllowed: opts?.ministryToolAllowed,
+    toolKey: opts?.toolKey,
   });
 
   logScheduleGate({
@@ -901,6 +968,21 @@ export async function requireActiveChurchSubscriptionForSchedule(
     hasSubscription: churchSubscriptionActive,
     allowed: strict.allowed,
   });
+
+  if (String(gate).startsWith("assignment-tool.")) {
+    logAssignmentToolAccessDecision({
+      toolKey: opts?.toolKey,
+      gate,
+      hasSubscription: churchSubscriptionActive,
+      isPastor,
+      ministryRole: opts?.ministryRole,
+      viewerIsHost,
+      canUseMediaTools: opts?.canUseMediaTools ?? resolved.canUseMediaTools,
+      canOpenMediaScreen: opts?.canOpenMediaScreen ?? canOpenMediaScreen,
+      ministryToolAllowed: opts?.ministryToolAllowed,
+      allowed: strict.allowed,
+    });
+  }
 
   if (!strict.allowed) {
     logScheduleGate({

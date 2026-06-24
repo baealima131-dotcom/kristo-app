@@ -155,6 +155,11 @@ import {
   startInitialHomeFeedPosterPrewarm,
   VISIBLE_PRIORITY_COUNT,
 } from "@/src/lib/homeFeedPosterPrewarm";
+import {
+  describePosterFeedIdentity,
+  describePosterVisibleIdentity,
+  posterFeedIdentitySetsEqual,
+} from "@/src/lib/homeFeedPosterIdentity";
 import { fetchChurchSubscriptionActiveThrottled } from "@/src/lib/churchResourceRefresh";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 
@@ -244,6 +249,9 @@ export default function HomeFeedScreen() {
   const prefetchSessionIdRef = useRef(0);
   const lastPosterWarmKeyRef = useRef("");
   const feedListRef = useRef<FeedListHandle>(null);
+  const lastPosterRefreshFeedKeyRef = useRef("");
+  const lastPosterVisibleSignatureRef = useRef("");
+  const lastPosterInitialSignatureRef = useRef("");
 
   const [stableDisplayRows, setStableDisplayRows] = useState<any[]>([]);
   const [visibleWindowSize, setVisibleWindowSize] = useState(HOME_FEED_INITIAL_LIMIT);
@@ -416,13 +424,42 @@ export default function HomeFeedScreen() {
         return;
       }
       if (rows.length) {
-        const refreshFeedKey = rows
-          .slice(0, 8)
-          .map((row) => String(row?.id || "").trim())
-          .filter(Boolean)
-          .join("|");
-        if (refreshFeedKey) {
-          resetHomeFeedPosterPrewarmForFeedRefresh(refreshFeedKey);
+        const feedIdentity = describePosterFeedIdentity(rows);
+        if (feedIdentity.normalizedFeedKey) {
+          const previousNormalizedFeedKey = lastPosterRefreshFeedKeyRef.current;
+          const previousNormalizedInitialSignature = lastPosterInitialSignatureRef.current;
+          if (
+            !posterFeedIdentitySetsEqual(
+              previousNormalizedFeedKey,
+              feedIdentity.normalizedFeedKey
+            ) ||
+            !posterFeedIdentitySetsEqual(
+              previousNormalizedInitialSignature,
+              feedIdentity.normalizedInitialSignature || ""
+            )
+          ) {
+            console.log("KRISTO_HOME_FEED_POSTER_REFRESH_KEY_CHANGE", {
+              reason,
+              rawFeedKey: feedIdentity.rawFeedKey,
+              normalizedFeedKey: feedIdentity.normalizedFeedKey,
+              rawInitialSignature: feedIdentity.rawInitialSignature,
+              normalizedInitialSignature: feedIdentity.normalizedInitialSignature,
+              previousNormalizedFeedKey: previousNormalizedFeedKey || null,
+              nextNormalizedFeedKey: feedIdentity.normalizedFeedKey,
+              previousNormalizedInitialSignature: previousNormalizedInitialSignature || null,
+              nextNormalizedInitialSignature: feedIdentity.normalizedInitialSignature,
+              rowIds: feedIdentity.rawRowIds,
+              normalizedRowIds: feedIdentity.normalizedRowIds,
+              renderKeys: rows
+                .slice(0, 8)
+                .map((row) => feedRenderKey(row) || String(row?.id || "").trim())
+                .filter(Boolean),
+            });
+          }
+          lastPosterRefreshFeedKeyRef.current = feedIdentity.normalizedFeedKey;
+          lastPosterInitialSignatureRef.current =
+            feedIdentity.normalizedInitialSignature || "";
+          resetHomeFeedPosterPrewarmForFeedRefresh(rows);
         }
         applyBackendRowsIfChanged(rows);
         setStableDisplayRows((prev) => {
@@ -857,6 +894,24 @@ export default function HomeFeedScreen() {
     if (backgroundMediaPaused || videoModalPayload) return;
     const rows = stableDisplayRows.length ? stableDisplayRows : displayFeedRows;
     if (!rows.length) return;
+    const feedIdentity = describePosterFeedIdentity(rows);
+    const initialSignature = feedIdentity.normalizedInitialSignature || "";
+    if (
+      !posterFeedIdentitySetsEqual(
+        lastPosterInitialSignatureRef.current,
+        initialSignature
+      )
+    ) {
+      console.log("KRISTO_HOME_FEED_POSTER_INITIAL_SOURCE_CHANGE", {
+        rawInitialSignature: feedIdentity.rawInitialSignature,
+        normalizedInitialSignature: initialSignature || null,
+        previousNormalizedInitialSignature: lastPosterInitialSignatureRef.current || null,
+        nextNormalizedInitialSignature: initialSignature || null,
+        rowIds: feedIdentity.rawRowIds,
+        normalizedRowIds: feedIdentity.normalizedRowIds,
+      });
+      lastPosterInitialSignatureRef.current = initialSignature;
+    }
     startInitialHomeFeedPosterPrewarm(rows);
   }, [stableDisplayRows, displayFeedRows, backgroundMediaPaused, videoModalPayload]);
 
@@ -964,6 +1019,35 @@ export default function HomeFeedScreen() {
       VISIBLE_PRIORITY_COUNT,
       Math.max(1, visibleData.length - Math.max(0, activeIndex))
     );
+    const visibleItems = visibleData.slice(
+      Math.max(0, activeIndex),
+      Math.max(0, activeIndex) + windowCount
+    );
+    const visibleIdentity = describePosterVisibleIdentity(
+      visibleItems.filter((row) => isVideoPost(row))
+    );
+    const nextVisibleSignature = visibleIdentity.normalizedVisibleSignature || "";
+    if (
+      !posterFeedIdentitySetsEqual(
+        lastPosterVisibleSignatureRef.current,
+        nextVisibleSignature
+      )
+    ) {
+      console.log("KRISTO_HOME_FEED_POSTER_VISIBLE_WINDOW_CHANGE", {
+        rawVisibleSignature: visibleIdentity.rawVisibleSignature,
+        normalizedVisibleSignature: nextVisibleSignature || null,
+        previousNormalizedVisibleSignature: lastPosterVisibleSignatureRef.current || null,
+        nextNormalizedVisibleSignature: nextVisibleSignature || null,
+        activeIndex,
+        windowCount,
+        rowIds: visibleIdentity.rawRowIds,
+        normalizedRowIds: visibleIdentity.normalizedRowIds,
+        renderKeys: visibleItems
+          .map((row) => feedRenderKey(row) || String(row?.id || "").trim())
+          .filter(Boolean),
+      });
+      lastPosterVisibleSignatureRef.current = nextVisibleSignature;
+    }
     prewarmVisibleHomeFeedVideoPosters(visibleData, activeIndex, windowCount);
   }, [
     visibleData,

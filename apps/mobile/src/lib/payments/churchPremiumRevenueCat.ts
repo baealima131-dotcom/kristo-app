@@ -2,10 +2,10 @@
  * Mobile-local RevenueCat church premium identifiers.
  * Values must match lib/churchPremiumRevenueCat.ts (server) and RevenueCat Dashboard.
  */
-export const CHURCH_PREMIUM_ENTITLEMENT = "church_premium";
+export const CHURCH_PREMIUM_ENTITLEMENT = "Premium";
 
 /** Legacy RevenueCat dashboard entitlement identifier. */
-export const LEGACY_PREMIUM_ENTITLEMENT = "Premium";
+export const LEGACY_PREMIUM_ENTITLEMENT = "church_premium";
 
 /** All RevenueCat entitlement keys that grant church media premium. */
 export const CHURCH_PREMIUM_ENTITLEMENT_IDS = [

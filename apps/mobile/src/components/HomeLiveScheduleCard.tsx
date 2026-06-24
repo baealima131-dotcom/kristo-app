@@ -36,6 +36,7 @@ import {
   resolveChurchHeaderAvatarUri,
   resolveClaimedUserAvatarUri,
   resolvePersistedClaimAvatarUri,
+  resolveAssignmentCardAvatarRingDecision,
   resolveScheduleSlotVisualState,
   sanitizePersistedClaimAvatarUri,
   SLOT_STATE_THEMES,
@@ -210,7 +211,7 @@ function resolveTitleFontSize(title: string) {
   return Math.max(16, Math.round(base * 0.7));
 }
 
-function AvatarRing({
+export function ScheduleClaimAvatarRing({
   uri,
   initial,
   size,
@@ -220,6 +221,7 @@ function AvatarRing({
   premiumEmblem,
   forceShowImage,
   allowDataUrl,
+  ownershipRing = "hidden",
   imageLogMeta,
 }: {
   uri?: string;
@@ -231,6 +233,7 @@ function AvatarRing({
   premiumEmblem?: boolean;
   forceShowImage?: boolean;
   allowDataUrl?: boolean;
+  ownershipRing?: "owner" | "taken" | "hidden";
   imageLogMeta?: {
     slotId?: string;
     claimedByUserId?: string;
@@ -254,17 +257,24 @@ function AvatarRing({
     setImageError(false);
   }, [safeUri]);
 
+  const ownershipActive = ownershipRing === "owner";
+
   useEffect(() => {
-    if (!live && !premiumEmblem) return;
+    if (!live && !premiumEmblem && !ownershipActive) return;
     pulse.value = withRepeat(
       withSequence(
-        withTiming(1, { duration: live ? 1400 : 2200, easing: Easing.inOut(Easing.quad) }),
-        withTiming(0, { duration: live ? 1400 : 2200 })
+        withTiming(1, {
+          duration: live ? 1400 : ownershipActive ? 1800 : 2200,
+          easing: Easing.inOut(Easing.quad),
+        }),
+        withTiming(0, {
+          duration: live ? 1400 : ownershipActive ? 1800 : 2200,
+        })
       ),
       -1,
       false
     );
-  }, [live, premiumEmblem, pulse]);
+  }, [live, premiumEmblem, ownershipActive, pulse]);
 
   useEffect(() => {
     if (!premiumEmblem) return;
@@ -278,9 +288,37 @@ function AvatarRing({
     );
   }, [premiumEmblem, emblemPulse]);
 
+  const ownershipBorderColor =
+    ownershipRing === "owner"
+      ? "#28E070"
+      : ownershipRing === "taken"
+        ? "rgba(167,139,250,0.58)"
+        : null;
+  const ownershipShadowColor =
+    ownershipRing === "owner" ? "#28E070" : ownershipRing === "taken" ? "#A78BFA" : null;
+  const ownershipBorderWidth =
+    ownershipRing === "owner" ? 2.8 : ownershipRing === "taken" ? 1.8 : premiumEmblem ? 2.5 : 2;
+  const ownershipShadowOpacity =
+    ownershipRing === "owner" ? 0.72 : ownershipRing === "taken" ? 0.28 : premiumEmblem ? 0.72 : 0.55;
+
   const ringStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: live || premiumEmblem ? 1 + pulse.value * (live ? 0.06 : 0.04) : 1 }],
-    opacity: live ? 0.45 + pulse.value * 0.4 : premiumEmblem ? 0.72 + pulse.value * 0.22 : 0.85,
+    transform: [
+      {
+        scale:
+          live || premiumEmblem || ownershipActive
+            ? 1 + pulse.value * (live ? 0.06 : ownershipActive ? 0.05 : 0.04)
+            : 1,
+      },
+    ],
+    opacity: live
+      ? 0.45 + pulse.value * 0.4
+      : ownershipActive
+        ? 0.78 + pulse.value * 0.18
+        : premiumEmblem
+          ? 0.72 + pulse.value * 0.22
+          : ownershipRing === "taken"
+            ? 0.62
+            : 0.85,
   }));
 
   const outerRingStyle = useAnimatedStyle(() => ({
@@ -289,8 +327,19 @@ function AvatarRing({
   }));
 
   const liveHaloStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: live || premiumEmblem ? 1.04 + pulse.value * 0.1 : 1 }],
-    opacity: live ? 0.12 + pulse.value * 0.22 : premiumEmblem ? 0.08 + pulse.value * 0.16 : 0,
+    transform: [
+      {
+        scale:
+          live || premiumEmblem || ownershipActive ? 1.04 + pulse.value * 0.1 : 1,
+      },
+    ],
+    opacity: live
+      ? 0.12 + pulse.value * 0.22
+      : ownershipActive
+        ? 0.1 + pulse.value * 0.14
+        : premiumEmblem
+          ? 0.08 + pulse.value * 0.16
+          : 0,
   }));
 
   const outer = size + (premiumEmblem ? 20 : 14);
@@ -303,12 +352,82 @@ function AvatarRing({
     imageLogMeta?.kind === "live-host"
       ? "KRISTO_LIVE_HOST_AVATAR_ERROR"
       : "KRISTO_CLAIMED_SLOT_AVATAR_IMAGE_ERROR";
+  const resolvedBorderColor =
+    ownershipBorderColor ||
+    (goldFallback || premiumEmblem ? VIP_GOLD_LIGHT : accent);
+  const resolvedBorderWidth = ownershipBorderColor
+    ? ownershipBorderWidth
+    : premiumEmblem
+      ? 2.5
+      : 2;
+  const ownershipRingVisible = ownershipRing !== "hidden";
+
+  useEffect(() => {
+    if (imageLogMeta?.kind !== "live-host") return;
+    console.log("KRISTO_ASSIGNMENT_RING_RENDER", {
+      ownershipRing,
+      borderColor: resolvedBorderColor,
+      borderWidth: resolvedBorderWidth,
+      visible: ownershipRingVisible,
+      slotId: String(imageLogMeta?.slotId || ""),
+      claimedByUserId: String(imageLogMeta?.claimedByUserId || ""),
+    });
+  }, [
+    ownershipRing,
+    ownershipRingVisible,
+    resolvedBorderColor,
+    resolvedBorderWidth,
+    imageLogMeta?.kind,
+    imageLogMeta?.slotId,
+    imageLogMeta?.claimedByUserId,
+  ]);
+
   const shouldRenderImage = Boolean(safeUri) && (!forceShowImage || !imageError);
   const showInitialFallback = Boolean(forceShowImage && (imageError || !safeUri));
   const showInitialOnly = !safeUri && !forceShowImage;
 
+  const ownershipRingLayerStyle = {
+    position: "absolute" as const,
+    width: outer,
+    height: outer,
+    borderRadius: outer / 2,
+    borderWidth: ownershipBorderColor ? ownershipBorderWidth : premiumEmblem ? 2.5 : 2,
+    borderColor:
+      ownershipBorderColor ||
+      (goldFallback || premiumEmblem ? VIP_GOLD_LIGHT : accent),
+    shadowColor:
+      ownershipShadowColor ||
+      (goldFallback || premiumEmblem ? VIP_GOLD_MID : accent),
+    shadowOpacity: ownershipBorderColor ? ownershipShadowOpacity : premiumEmblem ? 0.72 : 0.55,
+    shadowRadius: ownershipRing === "owner" ? 18 : premiumEmblem ? 20 : 16,
+    shadowOffset: { width: 0, height: 0 },
+    zIndex: 3,
+    elevation: 3,
+  };
+
+  const defaultRingLayerStyle = {
+    position: "absolute" as const,
+    width: outer,
+    height: outer,
+    borderRadius: outer / 2,
+    borderWidth: premiumEmblem ? 2.5 : 2,
+    borderColor: goldFallback || premiumEmblem ? VIP_GOLD_LIGHT : accent,
+    shadowColor: goldFallback || premiumEmblem ? VIP_GOLD_MID : accent,
+    shadowOpacity: premiumEmblem ? 0.72 : 0.55,
+    shadowRadius: premiumEmblem ? 20 : 16,
+    shadowOffset: { width: 0, height: 0 },
+  };
+
   return (
-    <View style={{ width: outer + (live ? 8 : 0), height: outer + (live ? 8 : 0), alignItems: "center", justifyContent: "center" }}>
+    <View
+      style={{
+        width: outer + (live ? 8 : 0),
+        height: outer + (live ? 8 : 0),
+        alignItems: "center",
+        justifyContent: "center",
+        overflow: "visible",
+      }}
+    >
       {premiumEmblem ? (
         <Animated.View
           pointerEvents="none"
@@ -329,7 +448,7 @@ function AvatarRing({
           ]}
         />
       ) : null}
-      {live || premiumEmblem ? (
+      {live || premiumEmblem || ownershipActive ? (
         <Animated.View
           pointerEvents="none"
           style={[
@@ -338,30 +457,22 @@ function AvatarRing({
               width: outer + (premiumEmblem ? 8 : 10),
               height: outer + (premiumEmblem ? 8 : 10),
               borderRadius: (outer + (premiumEmblem ? 8 : 10)) / 2,
-              backgroundColor: premiumEmblem ? VIP_GOLD_GLOW : accent,
+              backgroundColor: premiumEmblem
+                ? VIP_GOLD_GLOW
+                : ownershipActive
+                  ? "rgba(40,224,112,0.22)"
+                  : accent,
             },
             liveHaloStyle,
           ]}
         />
       ) : null}
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          {
-            position: "absolute",
-            width: outer,
-            height: outer,
-            borderRadius: outer / 2,
-            borderWidth: premiumEmblem ? 2.5 : 2,
-            borderColor: goldFallback || premiumEmblem ? VIP_GOLD_LIGHT : accent,
-            shadowColor: goldFallback || premiumEmblem ? VIP_GOLD_MID : accent,
-            shadowOpacity: premiumEmblem ? 0.72 : 0.55,
-            shadowRadius: premiumEmblem ? 20 : 16,
-            shadowOffset: { width: 0, height: 0 },
-          },
-          ringStyle,
-        ]}
-      />
+      {!ownershipRingVisible ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[defaultRingLayerStyle, ringStyle]}
+        />
+      ) : null}
       {premiumEmblem ? (
         <Animated.View
           pointerEvents="none"
@@ -391,6 +502,7 @@ function AvatarRing({
           height: size,
           borderRadius: size / 2,
           padding: premiumEmblem ? 3 : 2.5,
+          zIndex: 1,
         }}
       >
         {shouldRenderImage ? (
@@ -470,6 +582,12 @@ function AvatarRing({
           </LinearGradient>
         )}
       </LinearGradient>
+      {ownershipRingVisible ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[ownershipRingLayerStyle, ringStyle]}
+        />
+      ) : null}
     </View>
   );
 }
@@ -977,6 +1095,32 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const claimedByMe = !!claimUserId && claimUserId === currentUserId;
   const claimedByOther = !!claimUserId && claimUserId !== currentUserId;
 
+  const assignmentCardSurface = embeddedInRoom
+    ? "church-live-control-room-card"
+    : "home-live-schedule-card";
+
+  const assignmentAvatarRingDecision = useMemo(
+    () =>
+      resolveAssignmentCardAvatarRingDecision({
+        surface: assignmentCardSurface,
+        cardId: String(item?.id || activeSlot?.roomMessageId || ""),
+        slotId: String(slot?.id || activeSlot?.id || ""),
+        claimedByUserId: claimUserId,
+        currentUserId,
+        claimed,
+      }),
+    [
+      assignmentCardSurface,
+      item?.id,
+      activeSlot?.roomMessageId,
+      activeSlot?.id,
+      slot?.id,
+      claimUserId,
+      currentUserId,
+      claimed,
+    ]
+  );
+
   const theme = SLOT_STATE_THEMES[phase];
 
   const isLiveWindow = slot.startMs > 0 && slot.startMs <= nowMs && slot.endMs > nowMs;
@@ -1000,6 +1144,10 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
   const canEnterLiveRoomAsAudience =
     claimedByOther && isLiveWindow && phase !== "ended" && claimed;
   const visualTheme = isUnclaimedLiveOpen ? { ...theme, label: "LIVE NOW • OPEN" } : theme;
+
+  useEffect(() => {
+    console.log("KRISTO_ASSIGNMENT_CARD_AVATAR_RING_DECISION", assignmentAvatarRingDecision);
+  }, [assignmentAvatarRingDecision]);
 
   useEffect(() => {
     console.log("KRISTO_HOME_SLOT_VISUAL_STATE", {
@@ -1663,6 +1811,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
           fullBleed &&
             (embeddedInRoom || compactOpenCard ? styles.cardCompact : styles.cardTall),
           claimedCompactLayout && styles.cardClaimedLive,
+          embeddedInRoom && claimedCompactLayout && styles.cardEmbeddedClaimedOverflowVisible,
           compactUnclaimedLayout && styles.cardVipUnclaimed,
           { borderColor: visualTheme.border, shadowColor: visualTheme.glow },
         ]}
@@ -1774,7 +1923,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                 accessibilityRole="button"
                 accessibilityLabel={churchShort ? `Open ${churchShort} profile` : "Open church profile"}
               >
-                <AvatarRing
+                <ScheduleClaimAvatarRing
                   uri={churchHeaderAvatar.uri}
                   initial={churchHeaderInitial}
                   size={headerAvatarSize}
@@ -2096,6 +2245,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     styles.hostSection,
                     claimedCompactLayout && styles.hostSectionClaimedLive,
                     embeddedInRoom && claimedCompactLayout && styles.hostSectionEmbeddedClaimed,
+                    styles.hostSectionClaimedOverflowVisible,
                   ]}
                 >
                 <LinearGradient
@@ -2131,7 +2281,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                   )}
                 </View>
                 <View style={[styles.hostRow, claimedCompactLayout && styles.hostRowClaimedLive]}>
-                  <AvatarRing
+                  <ScheduleClaimAvatarRing
                     uri={resolvedClaimedAvatarUri}
                     initial={String(
                       claimedBy?.name || slot?.claimedByName || activeSlot?.claimedByName || "H"
@@ -2141,6 +2291,7 @@ export const HomeLiveScheduleCard = memo(function HomeLiveScheduleCard({
                     size={hostAvatarSize}
                     accent={theme.accent}
                     live={phase === "live"}
+                    ownershipRing={assignmentAvatarRingDecision.ringMode}
                     forceShowImage={liveHostHasAvatar || claimedCompactLayout}
                     imageLogMeta={{
                       slotId: String(slot?.id || activeSlot?.id || ""),
@@ -2464,6 +2615,9 @@ const styles = StyleSheet.create({
   },
   cardCompact: {
     alignSelf: "stretch",
+  },
+  cardEmbeddedClaimedOverflowVisible: {
+    overflow: "visible",
   },
   cardInner: {
     flex: 1,
@@ -3183,6 +3337,9 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
   },
+  hostSectionClaimedOverflowVisible: {
+    overflow: "visible",
+  },
   hostSectionTopSheen: {
     position: "absolute",
     top: 0,
@@ -3209,6 +3366,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 14,
     marginBottom: 14,
+    overflow: "visible",
   },
   hostRowClaimedLive: {
     gap: 12,

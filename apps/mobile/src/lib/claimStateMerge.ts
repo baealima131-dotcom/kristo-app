@@ -311,6 +311,7 @@ export function injectClaimStoreScheduleRows(
   );
 
   const injected: any[] = [];
+  const hints = getRingClaimHints(uid);
   for (const entry of getUserClaimedSlotEntries(uid)) {
     const feedId = baseFeedId(String(entry?.postId || ""));
     const slotId = String(entry?.slotId || "").trim();
@@ -318,8 +319,17 @@ export function injectClaimStoreScheduleRows(
     if (isScheduleFeedIdDeleted(feedId)) continue;
     if (existingKeys.has(feedId)) continue;
 
+    const hint = hints.find(
+      (candidate) =>
+        String(candidate.slotId || "").trim() === slotId &&
+        baseFeedId(String(candidate.baseFeedId || candidate.feedId || "")) === feedId
+    );
+
     const sourceItem =
       allSources.find((row) => resolveScheduleRowKey(row, allSources) === feedId) || null;
+
+    const startMs = Number(hint?.startMs || entry?.startMs || 0);
+    const endMs = Number(hint?.endMs || entry?.endMs || 0);
 
     const slot = normalizeLiveScheduleSlots([
       {
@@ -327,7 +337,10 @@ export function injectClaimStoreScheduleRows(
         slotId,
         claimedByUserId: entry.userId,
         claimedByName: entry.name,
-        slot: Number(entry?.slotNumber || 1),
+        slot: Number(entry?.slotNumber || hint?.slotNumber || 1),
+        startMs: startMs || undefined,
+        endMs: endMs || undefined,
+        ...(hint?.slot && typeof hint.slot === "object" ? hint.slot : {}),
       },
     ])[0];
 
@@ -419,6 +432,8 @@ export function rehydrateClaimStoresFromFeedRows(items: any[], viewerUserId: str
         churchId: String(item?.churchId || "").trim(),
         targetChurchId: String(item?.churchId || "").trim(),
         slotNumber: Number(slot?.slot || slot?.slotNumber || index + 1),
+        startMs: window.startMs,
+        endMs: window.endMs,
       });
 
       const hint: RingClaimHint = {

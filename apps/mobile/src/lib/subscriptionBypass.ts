@@ -12,7 +12,6 @@ let loggedAppleReviewBypassCheck = false;
  */
 export function isAppleReviewBypassEnabled() {
   const enabled =
-    __DEV__ ||
     process.env.EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE === "1" ||
     BYPASS_SUBSCRIPTION_FOR_TESTING;
 

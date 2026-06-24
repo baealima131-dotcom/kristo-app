@@ -1,14 +1,18 @@
 import {
   collectFeedVideoPosterCandidates,
+  feedRenderKey,
   isInferredPosterUriForVideo,
   isLikelySyntheticPosterPath,
   isVideoPost,
   resolveSavedFeedVideoPosterUri,
+  resolveStablePosterVideoUrl,
   resolveVideoUri,
 } from "@/src/components/homeFeed/homeFeedUtils";
 import { isHomeFeedNearEnd } from "@/src/components/homeFeed/homeFeedPagination";
 import {
   hydrateMediaPosterCache,
+  mediaPosterCacheKey,
+  peekCachedMediaPosterByPostId,
   prefetchMediaPosterImages,
   rememberMediaPoster,
   resolveCachedMediaPoster,
@@ -18,6 +22,25 @@ import {
   resolveVideoDurationMs,
 } from "@/src/lib/mediaVideoPoster";
 import { probePosterUrlReachability } from "@/src/lib/videoGridThumbnail";
+import {
+  assertPosterVisibleMissingAllowed,
+  markPosterPostIdSessionGenerated,
+  markPosterPostIdSessionSatisfied,
+  notePosterFeedKeyChanged,
+  notePosterVisibleSignatureChanged,
+  recordPosterVisibleGenerationAttempt,
+  shouldBlockPosterFrameGeneration,
+  isPosterPostIdSessionSatisfied,
+  consumePosterVisibleWindowChanged,
+} from "@/src/lib/homeFeedPosterSession";
+import {
+  buildRawPosterInitialSignature,
+  describePosterFeedIdentity,
+  describePosterVisibleIdentity,
+  diffNormalizedPosterIds,
+  normalizePosterFeedPostId,
+  posterFeedIdentitySetsEqual,
+} from "@/src/lib/homeFeedPosterIdentity";
 
 function isLiveNavBackgroundPaused() {
   return Boolean((globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__);
@@ -30,15 +53,22 @@ export const VISIBLE_PRIORITY_COUNT = 8;
 const VISIBLE_FRAME_GEN_CONCURRENCY = 2;
 const BACKGROUND_FRAME_GEN_CONCURRENCY = 1;
 const VISIBLE_MISSING_RECHECK_MS = 500;
+const VISIBLE_POSTER_FAILED_RETRY_MS = 30_000;
+const VISIBLE_POSTER_MISSING_LOG_MS = 10_000;
 
 const attemptedKeys = new Set<string>();
 const failedKeys = new Set<string>();
+/** Posters that resolved successfully this session — blocks visible re-queue. */
+const satisfiedPosterKeys = new Set<string>();
+const visibleGenQueuedKeys = new Set<string>();
 const inflight = new Map<string, Promise<boolean>>();
 
 let nextScrollPrewarmOrdinal = 0;
 let lastInitialFeedKey = "";
+let lastInitialFeedSignature = "";
 let lastScrollPrewarmAt = 0;
 let initialPrewarmCompletedFeedKey = "";
+let lastVisibleWarmSignature = "";
 
 const SCROLL_PREWARM_COOLDOWN_MS = 4000;
 
@@ -65,6 +95,8 @@ const backgroundGenPending: Array<{
 }> = [];
 
 let visibleRecheckTimer: ReturnType<typeof setInterval> | null = null;
+const visiblePosterFailedAt = new Map<string, number>();
+const visiblePosterMissingLoggedAt = new Map<string, number>();
 let visibleRecheckContext: {
   rows: any[];
   startIndex: number;
@@ -84,10 +116,159 @@ function logPosterPrewarmSkipped(reason: string, extra: Record<string, unknown> 
   console.log("KRISTO_POSTER_PREWARM_SKIPPED_ALREADY_RUNNING", { reason, ...extra });
 }
 
+function posterVideoUrl(item: any) {
+  return resolveStablePosterVideoUrl(item);
+}
+
+function isVisiblePosterGenerationPending(postId: string, videoUrl: string): boolean {
+  const key = prewarmKey(postId, videoUrl);
+  if (!key) return false;
+  if (visibleGenQueuedKeys.has(key) || inflight.has(key)) return true;
+  return visibleGenPending.some((job) => {
+    const jobKey = prewarmKey(String(job.item?.id || "").trim(), posterVideoUrl(job.item));
+    return jobKey === key;
+  });
+}
+
+function isVisiblePosterInFailedCooldown(postId: string, videoUrl: string): boolean {
+  const key = prewarmKey(postId, videoUrl);
+  if (!key || !failedKeys.has(key)) return false;
+  const failedAt = visiblePosterFailedAt.get(key) || 0;
+  return failedAt > 0 && Date.now() - failedAt < VISIBLE_POSTER_FAILED_RETRY_MS;
+}
+
+function noteVisiblePosterFailed(postId: string, videoUrl: string) {
+  const key = prewarmKey(postId, videoUrl);
+  if (!key) return;
+  failedKeys.add(key);
+  visiblePosterFailedAt.set(key, Date.now());
+}
+
+function clearVisiblePosterFailure(postId: string, videoUrl: string) {
+  const key = prewarmKey(postId, videoUrl);
+  if (!key) return;
+  failedKeys.delete(key);
+  visiblePosterFailedAt.delete(key);
+  visiblePosterMissingLoggedAt.delete(key);
+}
+
 function prewarmKey(postId: string, videoUrl: string) {
   const id = String(postId || "").trim();
   const url = String(videoUrl || "").trim().split("?")[0];
   return id && url ? `${id}:${url}` : "";
+}
+
+function describeRowIds(rows: any[], startIndex = 0, count = 8) {
+  return rows
+    .slice(Math.max(0, startIndex), Math.max(0, startIndex) + Math.max(0, count))
+    .map((row) => ({
+      id: String(row?.id || "").trim() || null,
+      normalizedId: normalizePosterFeedPostId(row) || null,
+      renderKey: feedRenderKey(row) || String(row?.id || "").trim() || null,
+    }));
+}
+
+function logPosterSessionSignatureChange(args: {
+  kind: "feed" | "visible" | "initial";
+  reason: string;
+  previousKey?: string;
+  nextKey?: string;
+  previousSignature?: string;
+  nextSignature?: string;
+  previousRowIds?: string[];
+  nextRowIds?: string[];
+  resetSkipped?: boolean;
+  extra?: Record<string, unknown>;
+}) {
+  const previousRowIds = args.previousRowIds || [];
+  const nextRowIds = args.nextRowIds || [];
+  const diff = diffNormalizedPosterIds(previousRowIds.join("|"), nextRowIds.join("|"));
+  console.log("POSTER_SESSION_SIGNATURE_CHANGE", {
+    kind: args.kind,
+    reason: args.reason,
+    previousFeedKey: args.previousKey || null,
+    nextFeedKey: args.nextKey || null,
+    normalizedPreviousFeedKey: args.kind === "feed" ? args.previousKey || null : null,
+    normalizedNextFeedKey: args.kind === "feed" ? args.nextKey || null : null,
+    previousVisibleSignature: args.kind === "visible" ? args.previousSignature || null : null,
+    nextVisibleSignature: args.kind === "visible" ? args.nextSignature || null : null,
+    normalizedPreviousVisibleSignature:
+      args.kind === "visible" ? args.previousSignature || null : null,
+    normalizedNextVisibleSignature:
+      args.kind === "visible" ? args.nextSignature || null : null,
+    previousInitialFeedSignature:
+      args.kind === "initial" ? args.previousSignature || null : null,
+    nextInitialFeedSignature:
+      args.kind === "initial" ? args.nextSignature || null : null,
+    normalizedPreviousInitialSignature:
+      args.kind === "initial" ? args.previousSignature || null : null,
+    normalizedNextInitialSignature:
+      args.kind === "initial" ? args.nextSignature || null : null,
+    previousRowIds,
+    nextRowIds,
+    removedRowIds: diff.removed,
+    addedRowIds: diff.added,
+    resetSkipped: args.resetSkipped === true,
+    ...args.extra,
+  });
+}
+
+function markPosterSatisfied(
+  postId: string,
+  videoUrl: string,
+  reason: string,
+  extra: Record<string, unknown> = {}
+) {
+  const key = prewarmKey(postId, videoUrl);
+  if (!key) return;
+  const already = satisfiedPosterKeys.has(key);
+  satisfiedPosterKeys.add(key);
+  attemptedKeys.add(key);
+  failedKeys.delete(key);
+  visibleGenQueuedKeys.delete(key);
+  markPosterPostIdSessionSatisfied(postId, reason, {
+    posterUri: typeof extra.cached === "string" ? extra.cached : typeof extra.posterUri === "string" ? extra.posterUri : undefined,
+  });
+  if (!already) {
+    console.log("POSTER_VISIBLE_SATISFIED", {
+      postId: postId || null,
+      videoUrl: String(videoUrl || "").trim().split("?")[0] || null,
+      reason,
+      ...extra,
+    });
+  }
+}
+
+function diagnosePosterRequeue(
+  item: any,
+  context: string,
+  extra: Record<string, unknown> = {}
+) {
+  const postId = String(item?.id || "").trim();
+  const stableVideoUrl = posterVideoUrl(item);
+  const playbackVideoUrl = resolveVideoUri(item);
+  const key = prewarmKey(postId, stableVideoUrl);
+  const cachedStable = resolveCachedMediaPoster(postId, stableVideoUrl);
+  const cachedPlayback = resolveCachedMediaPoster(postId, playbackVideoUrl);
+  const cachedByPostId = peekCachedMediaPosterByPostId(postId);
+
+  console.log("POSTER_VISIBLE_REQUEUE_DIAG", {
+    context,
+    postId: postId || null,
+    stableVideoUrl: stableVideoUrl || null,
+    playbackVideoUrl: playbackVideoUrl || null,
+    cacheKeyStable: mediaPosterCacheKey(postId, stableVideoUrl) || null,
+    cacheKeyPlayback: mediaPosterCacheKey(postId, playbackVideoUrl) || null,
+    cachedStable: cachedStable || null,
+    cachedPlayback: cachedPlayback || null,
+    cachedByPostId: cachedByPostId || null,
+    satisfied: key ? satisfiedPosterKeys.has(key) : false,
+    attempted: key ? attemptedKeys.has(key) : false,
+    failed: key ? failedKeys.has(key) : false,
+    visibleQueued: key ? visibleGenQueuedKeys.has(key) : false,
+    visibleRunId,
+    ...extra,
+  });
 }
 
 function isVideoProcessing(item: any) {
@@ -97,27 +278,48 @@ function isVideoProcessing(item: any) {
 
 export function itemHasHomeFeedPoster(item: any): boolean {
   const postId = String(item?.id || "").trim();
-  const videoUrl = resolveVideoUri(item);
+  const videoUrl = posterVideoUrl(item);
   if (!postId || !videoUrl) return false;
-  if (resolveCachedMediaPoster(postId, videoUrl)) return true;
-  return Boolean(resolveSavedFeedVideoPosterUri(item, videoUrl));
+  const cached = resolveCachedMediaPoster(postId, videoUrl);
+  if (cached) {
+    markPosterSatisfied(postId, videoUrl, "cache-hit", { cached });
+    return true;
+  }
+  const savedMetadataPoster = resolveSavedFeedVideoPosterUri(item, videoUrl);
+  if (savedMetadataPoster) {
+    markPosterSatisfied(postId, videoUrl, "metadata-hit", { posterUri: savedMetadataPoster });
+    return true;
+  }
+  return false;
 }
 
 export function itemNeedsVisiblePosterGeneration(item: any): boolean {
   const postId = String(item?.id || "").trim();
-  const videoUrl = resolveVideoUri(item);
+  const videoUrl = posterVideoUrl(item);
   if (!postId || !videoUrl || isVideoProcessing(item)) return false;
+  if (isPosterPostIdSessionSatisfied(postId)) return false;
+  const key = prewarmKey(postId, videoUrl);
+  if (key && satisfiedPosterKeys.has(key)) return false;
   return !itemHasHomeFeedPoster(item);
 }
 
-function logVisibleMissing(item: any, extra: Record<string, unknown> = {}) {
+function logVisibleMissing(item: any, extra: Record<string, unknown> = {}): boolean {
+  const context = String(
+    extra.source || (extra.recheck ? "visible-recheck" : "visible-missing")
+  );
+  if (!assertPosterVisibleMissingAllowed(item, context)) {
+    return false;
+  }
+
   const postId = String(item?.id || "").trim();
-  const videoUrl = resolveVideoUri(item);
+  const videoUrl = posterVideoUrl(item);
   console.log("POSTER_VISIBLE_MISSING", {
     postId: postId || null,
     videoUrl: videoUrl || null,
     ...extra,
   });
+  diagnosePosterRequeue(item, "visible-missing", extra);
+  return true;
 }
 
 async function runWithConcurrency<T>(
@@ -149,6 +351,10 @@ function pumpVisibleGenQueue() {
       .then((ok) => job.resolve(ok))
       .catch(() => job.resolve(false))
       .finally(() => {
+        const postId = String(job.item?.id || "").trim();
+        const videoUrl = posterVideoUrl(job.item);
+        const key = prewarmKey(postId, videoUrl);
+        if (key) visibleGenQueuedKeys.delete(key);
         visibleGenActive = Math.max(0, visibleGenActive - 1);
         pumpVisibleGenQueue();
         maybeStartBackgroundDrain();
@@ -158,11 +364,29 @@ function pumpVisibleGenQueue() {
 
 function enqueueVisibleFrameGen(item: any, runId: number, urgent = false): Promise<boolean> {
   const postId = String(item?.id || "").trim();
-  const videoUrl = resolveVideoUri(item);
+  const videoUrl = posterVideoUrl(item);
   const key = prewarmKey(postId, videoUrl);
   if (!key) return Promise.resolve(false);
 
+  if (itemHasHomeFeedPoster(item)) {
+    return Promise.resolve(true);
+  }
+
+  if (satisfiedPosterKeys.has(key)) {
+    return Promise.resolve(true);
+  }
+
+  if (visibleGenQueuedKeys.has(key)) {
+    return Promise.resolve(false);
+  }
+
+  if (isVisiblePosterInFailedCooldown(postId, videoUrl)) {
+    return Promise.resolve(false);
+  }
+
   failedKeys.delete(key);
+  visiblePosterFailedAt.delete(key);
+  visibleGenQueuedKeys.add(key);
 
   return new Promise<boolean>((resolve) => {
     const job = { item, runId, resolve };
@@ -218,10 +442,18 @@ function cancelBackgroundPosterGeneration(reason: string) {
     return;
   }
   backgroundRunId += 1;
+  const queuedPostIds = backgroundQueue
+    .map((item) => String(item?.id || "").trim())
+    .filter(Boolean);
   backgroundQueue.length = 0;
   backgroundKeySet.clear();
   backgroundGenPending.length = 0;
-  console.log("POSTER_GEN_BACKGROUND_CANCELLED", { reason, runId: backgroundRunId });
+  console.log("POSTER_GEN_BACKGROUND_CANCELLED", {
+    reason,
+    runId: backgroundRunId,
+    queuedPostIds,
+    queuedCount: queuedPostIds.length,
+  });
 }
 
 function stopVisiblePosterRecheck() {
@@ -250,10 +482,49 @@ function startVisiblePosterRecheck(rows: any[], startIndex: number, count: numbe
       return;
     }
 
+    let queuedAny = false;
     for (const item of missing) {
-      logVisibleMissing(item, { recheck: true, runId: ctx.runId });
+      const postId = String(item?.id || "").trim();
+      const videoUrl = posterVideoUrl(item);
+      const key = prewarmKey(postId, videoUrl);
+
+      if (itemHasHomeFeedPoster(item)) {
+        clearVisiblePosterFailure(postId, videoUrl);
+        continue;
+      }
+
+      if (!key || isVisiblePosterGenerationPending(postId, videoUrl)) {
+        continue;
+      }
+
+      if (isVisiblePosterInFailedCooldown(postId, videoUrl)) {
+        continue;
+      }
+
+      const now = Date.now();
+      const lastLog = visiblePosterMissingLoggedAt.get(key) || 0;
+      if (now - lastLog >= VISIBLE_POSTER_MISSING_LOG_MS) {
+        visiblePosterMissingLoggedAt.set(key, now);
+        if (!logVisibleMissing(item, { recheck: true, runId: ctx.runId })) {
+          continue;
+        }
+      }
+
       pauseBackgroundFrameGenForVisible("visible-recheck");
+      queuedAny = true;
       void queueHomeFeedPosterPrewarm(item, { priority: "visible" });
+    }
+
+    if (!queuedAny && missing.every((item) => {
+      const postId = String(item?.id || "").trim();
+      const videoUrl = posterVideoUrl(item);
+      return (
+        itemHasHomeFeedPoster(item) ||
+        isVisiblePosterGenerationPending(postId, videoUrl) ||
+        isVisiblePosterInFailedCooldown(postId, videoUrl)
+      );
+    })) {
+      stopVisiblePosterRecheck();
     }
   }, VISIBLE_MISSING_RECHECK_MS);
 }
@@ -262,14 +533,11 @@ function enqueueBackgroundItems(items: any[]): number {
   let added = 0;
   for (const item of items) {
     const postId = String(item?.id || "").trim();
-    const videoUrl = resolveVideoUri(item);
+    const videoUrl = posterVideoUrl(item);
     const key = prewarmKey(postId, videoUrl);
     if (!key || isVideoProcessing(item)) continue;
     if (backgroundKeySet.has(key)) continue;
-    if (itemHasHomeFeedPoster(item)) {
-      attemptedKeys.add(key);
-      continue;
-    }
+    if (itemHasHomeFeedPoster(item)) continue;
     backgroundQueue.push(item);
     backgroundKeySet.add(key);
     added += 1;
@@ -325,7 +593,7 @@ function partitionPosterCandidates(candidates: string[], videoUrl: string) {
 /** Fire-and-forget Image.prefetch for metadata/cache candidates (skip inferred guesses). */
 export function prefetchHomeFeedPosterMetadata(item: any): void {
   const postId = String(item?.id || "").trim();
-  const videoUrl = resolveVideoUri(item);
+  const videoUrl = posterVideoUrl(item);
   if (!videoUrl) return;
 
   const cached = resolveCachedMediaPoster(postId, videoUrl);
@@ -377,7 +645,7 @@ async function resolveReachablePosterUri(
 
 async function prewarmOneHomeFeedVideoPosterFastPath(item: any): Promise<boolean> {
   const postId = String(item?.id || "").trim();
-  const videoUrl = resolveVideoUri(item);
+  const videoUrl = posterVideoUrl(item);
   const key = prewarmKey(postId, videoUrl);
   if (!key) return false;
 
@@ -389,8 +657,7 @@ async function prewarmOneHomeFeedVideoPosterFastPath(item: any): Promise<boolean
   const cached = resolveCachedMediaPoster(postId, videoUrl);
   if (cached) {
     prefetchMediaPosterImages([cached]);
-    attemptedKeys.add(key);
-    failedKeys.delete(key);
+    markPosterSatisfied(postId, videoUrl, "fast-path-cache", { posterUri: cached });
     return true;
   }
 
@@ -406,8 +673,7 @@ async function prewarmOneHomeFeedVideoPosterFastPath(item: any): Promise<boolean
       persistFile: false,
     });
     prefetchMediaPosterImages([savedMetadataPoster]);
-    attemptedKeys.add(key);
-    failedKeys.delete(key);
+    markPosterSatisfied(postId, videoUrl, "fast-path-metadata", { posterUri: savedMetadataPoster });
     return true;
   }
 
@@ -420,8 +686,7 @@ async function prewarmOneHomeFeedVideoPosterFastPath(item: any): Promise<boolean
       source: reachablePoster.startsWith("file://") ? "generated" : "remote",
       persistFile: false,
     });
-    attemptedKeys.add(key);
-    failedKeys.delete(key);
+    markPosterSatisfied(postId, videoUrl, "fast-path-reachable", { posterUri: reachablePoster });
     return true;
   }
 
@@ -430,20 +695,33 @@ async function prewarmOneHomeFeedVideoPosterFastPath(item: any): Promise<boolean
 
 async function executeVisibleFrameGen(item: any, runId: number): Promise<boolean> {
   const postId = String(item?.id || "").trim();
-  const videoUrl = resolveVideoUri(item);
+  const videoUrl = posterVideoUrl(item);
   const key = prewarmKey(postId, videoUrl);
   if (!key || runId !== visibleRunId) return false;
 
   if (itemHasHomeFeedPoster(item)) {
-    attemptedKeys.add(key);
-    failedKeys.delete(key);
     return true;
   }
+
+  if (satisfiedPosterKeys.has(key) || shouldBlockPosterFrameGeneration(item, "visible-frame-gen")) {
+    return true;
+  }
+
+  const genAttempt = recordPosterVisibleGenerationAttempt(item, "visible-generate-start", {
+    keySatisfied: satisfiedPosterKeys.has(key),
+    visibleWindowChanged: consumePosterVisibleWindowChanged(),
+  });
+  if (genAttempt.blocked) {
+    return itemHasHomeFeedPoster(item);
+  }
+
+  diagnosePosterRequeue(item, "visible-generate-start", { runId, attempt: genAttempt.attempt });
 
   console.log("POSTER_VISIBLE_GENERATE_START", {
     postId: postId || null,
     videoUrl: videoUrl || null,
     runId,
+    attempt: genAttempt.attempt,
     active: visibleGenActive,
     pending: visibleGenPending.length,
   });
@@ -461,10 +739,19 @@ async function executeVisibleFrameGen(item: any, runId: number): Promise<boolean
     generated = "";
   }
 
+  if (runId !== visibleRunId) {
+    if (generated) {
+      markPosterSatisfied(postId, videoUrl, "stale-run-generated", { runId, posterUri: generated });
+    }
+    return Boolean(generated);
+  }
+
   attemptedKeys.add(key);
 
   if (generated) {
-    failedKeys.delete(key);
+    clearVisiblePosterFailure(postId, videoUrl);
+    markPosterSatisfied(postId, videoUrl, "visible-generated", { runId, posterUri: generated });
+    markPosterPostIdSessionGenerated(postId, { posterUri: generated, source: "visible-generated" });
     console.log("POSTER_VISIBLE_GENERATE_DONE", {
       postId: postId || null,
       videoUrl: videoUrl || null,
@@ -474,7 +761,7 @@ async function executeVisibleFrameGen(item: any, runId: number): Promise<boolean
     return true;
   }
 
-  failedKeys.add(key);
+  noteVisiblePosterFailed(postId, videoUrl);
   console.log("POSTER_VISIBLE_GENERATE_FAILED", {
     postId: postId || null,
     videoUrl: videoUrl || null,
@@ -485,13 +772,11 @@ async function executeVisibleFrameGen(item: any, runId: number): Promise<boolean
 
 async function executeBackgroundFrameGen(item: any, runId: number): Promise<boolean> {
   const postId = String(item?.id || "").trim();
-  const videoUrl = resolveVideoUri(item);
+  const videoUrl = posterVideoUrl(item);
   const key = prewarmKey(postId, videoUrl);
   if (!key || runId !== backgroundRunId) return false;
 
   if (itemHasHomeFeedPoster(item)) {
-    attemptedKeys.add(key);
-    failedKeys.delete(key);
     return true;
   }
 
@@ -510,7 +795,7 @@ async function executeBackgroundFrameGen(item: any, runId: number): Promise<bool
 
   attemptedKeys.add(key);
   if (generated) {
-    failedKeys.delete(key);
+    markPosterSatisfied(postId, videoUrl, "background-generated", { posterUri: generated });
     return true;
   }
   failedKeys.add(key);
@@ -626,7 +911,7 @@ async function drainBackgroundPosterGeneration(afterVisibleRunId: number) {
 
       const item = backgroundQueue.shift()!;
       const postId = String(item?.id || "").trim();
-      const videoUrl = resolveVideoUri(item);
+      const videoUrl = posterVideoUrl(item);
       const key = prewarmKey(postId, videoUrl);
       if (key) backgroundKeySet.delete(key);
 
@@ -661,13 +946,19 @@ export function queueHomeFeedPosterPrewarm(
 
   const priority = opts?.priority || "background";
   const postId = String(item?.id || "").trim();
-  const videoUrl = resolveVideoUri(item);
+  const videoUrl = posterVideoUrl(item);
   const key = prewarmKey(postId, videoUrl);
   if (!key || isVideoProcessing(item)) return Promise.resolve(false);
 
   if (itemHasHomeFeedPoster(item)) {
-    attemptedKeys.add(key);
-    failedKeys.delete(key);
+    return Promise.resolve(true);
+  }
+
+  if (isPosterPostIdSessionSatisfied(postId)) {
+    return Promise.resolve(true);
+  }
+
+  if (priority === "visible" && shouldBlockPosterFrameGeneration(item, "queue-visible")) {
     return Promise.resolve(true);
   }
 
@@ -677,10 +968,22 @@ export function queueHomeFeedPosterPrewarm(
   const promise = (async () => {
     try {
       await hydrateMediaPosterCache();
+      if (itemHasHomeFeedPoster(item)) return true;
       const fast = await prewarmOneHomeFeedVideoPosterFastPath(item);
       if (fast) return true;
       if (priority === "visible") {
-        logVisibleMissing(item, { source: "queue-visible" });
+        if (isVisiblePosterGenerationPending(postId, videoUrl)) {
+          return false;
+        }
+        if (isVisiblePosterInFailedCooldown(postId, videoUrl)) {
+          return false;
+        }
+        const now = Date.now();
+        const lastLog = visiblePosterMissingLoggedAt.get(key) || 0;
+        if (now - lastLog >= VISIBLE_POSTER_MISSING_LOG_MS) {
+          visiblePosterMissingLoggedAt.set(key, now);
+          if (!logVisibleMissing(item, { source: "queue-visible" })) return true;
+        }
         pauseBackgroundFrameGenForVisible("visible-queue");
         return enqueueVisibleFrameGen(item, visibleRunId, true);
       }
@@ -691,7 +994,7 @@ export function queueHomeFeedPosterPrewarm(
       });
     } catch {
       attemptedKeys.add(key);
-      failedKeys.add(key);
+      noteVisiblePosterFailed(postId, videoUrl);
       return false;
     }
   })();
@@ -745,9 +1048,53 @@ export function prewarmVisibleHomeFeedVideoPosters(
   const items = collectVisibleVideoPosts(rows, startIndex, windowCount);
   if (!items.length) return;
 
+  const visibleIdentity = describePosterVisibleIdentity(items);
+  const signature = visibleIdentity.normalizedVisibleSignature || "";
+  const previousVisibleSignature = lastVisibleWarmSignature;
+  const visibleRowIds = visibleIdentity.normalizedRowIds;
+  notePosterVisibleSignatureChanged(signature);
+  if (signature && posterFeedIdentitySetsEqual(signature, lastVisibleWarmSignature)) {
+    const allSatisfied = items.every((item) => !itemNeedsVisiblePosterGeneration(item));
+    if (allSatisfied) {
+      logPosterPrewarmSkipped("visible-window-satisfied", {
+        signature,
+        count: items.length,
+      });
+      return;
+    }
+    if (visibleDrainPromise || visibleGenActive > 0 || visibleGenPending.length > 0) {
+      logPosterPrewarmSkipped("visible-window-inflight", {
+        signature,
+        active: visibleGenActive,
+        pending: visibleGenPending.length,
+      });
+      return;
+    }
+  }
+
+  if (previousVisibleSignature && !posterFeedIdentitySetsEqual(previousVisibleSignature, signature)) {
+    logPosterSessionSignatureChange({
+      kind: "visible",
+      reason: "visible-priority-scroll",
+      previousSignature: previousVisibleSignature,
+      nextSignature: signature,
+      previousRowIds: previousVisibleSignature.split("|").filter(Boolean),
+      nextRowIds: visibleRowIds,
+      extra: {
+        rawNextVisibleSignature: visibleIdentity.rawVisibleSignature,
+        normalizedNextVisibleSignature: signature || null,
+        startIndex,
+        windowCount,
+        visibleRows: describeRowIds(rows, startIndex, windowCount),
+      },
+    });
+  }
+
+  lastVisibleWarmSignature = signature;
   cancelBackgroundPosterGeneration("visible-priority-scroll");
   visibleRunId += 1;
   const runId = visibleRunId;
+  visibleGenQueuedKeys.clear();
 
   startVisiblePosterRecheck(rows, startIndex, windowCount, runId);
 
@@ -764,22 +1111,83 @@ export function startInitialHomeFeedPosterPrewarm(rows: any[]) {
 
   if (!rows.length) return;
 
-  const feedKey = rows
-    .slice(0, 8)
-    .map((row) => String(row?.id || "").trim())
-    .filter(Boolean)
-    .join("|");
+  const feedIdentity = describePosterFeedIdentity(rows);
+  const feedKey = feedIdentity.normalizedFeedKey || "";
+  const rawFeedKey = feedIdentity.rawFeedKey || "";
+  const rawInitialSignature = feedIdentity.rawInitialSignature || "";
+  const nextInitialSignature = feedIdentity.normalizedInitialSignature || "";
+  const nextInitialRowIds = feedIdentity.normalizedRowIds;
 
-  if (feedKey && feedKey === initialPrewarmCompletedFeedKey) {
-    logPosterPrewarmSkipped("initial-already-completed", { feedKey });
+  if (feedKey && posterFeedIdentitySetsEqual(feedKey, initialPrewarmCompletedFeedKey)) {
+    logPosterPrewarmSkipped("initial-already-completed", {
+      feedKey,
+      rawFeedKey,
+      normalizedFeedKey: feedKey,
+    });
     return;
   }
 
-  if (feedKey && feedKey !== lastInitialFeedKey) {
+  if (feedKey && !posterFeedIdentitySetsEqual(feedKey, lastInitialFeedKey)) {
+    const previousFeedKey = lastInitialFeedKey;
+    const previousInitialSignature = lastInitialFeedSignature;
+    logPosterSessionSignatureChange({
+      kind: "feed",
+      reason: "initial-feed-changed",
+      previousKey: previousFeedKey,
+      nextKey: feedKey,
+      previousRowIds: previousFeedKey.split("|").filter(Boolean),
+      nextRowIds: nextInitialRowIds,
+      extra: {
+        rawFeedKey,
+        normalizedFeedKey: feedKey,
+        rawInitialSignature,
+        normalizedInitialSignature: nextInitialSignature,
+        previousInitialFeedSignature: previousInitialSignature || null,
+        nextInitialFeedSignature: nextInitialSignature || null,
+        topRows: describeRowIds(rows, 0, 8),
+      },
+    });
+    if (
+      previousInitialSignature &&
+      !posterFeedIdentitySetsEqual(previousInitialSignature, nextInitialSignature)
+    ) {
+      logPosterSessionSignatureChange({
+        kind: "initial",
+        reason: "initial-feed-signature-changed",
+        previousSignature: previousInitialSignature,
+        nextSignature: nextInitialSignature,
+        previousRowIds: previousInitialSignature.split("|").filter(Boolean),
+        nextRowIds: nextInitialRowIds,
+        extra: {
+          rawInitialSignature,
+          normalizedInitialSignature: nextInitialSignature,
+          topRows: describeRowIds(rows, 0, 8),
+        },
+      });
+    }
+    const feedReloaded = notePosterFeedKeyChanged(feedKey);
     lastInitialFeedKey = feedKey;
+    lastInitialFeedSignature = nextInitialSignature;
     nextScrollPrewarmOrdinal = 0;
     initialPrewarmCompletedFeedKey = "";
     cancelBackgroundPosterGeneration("initial-feed-changed");
+    if (feedReloaded) {
+      console.log("POSTER_SESSION_FEED_RELOAD_NOTED", {
+        previousFeedKey: previousFeedKey || null,
+        nextFeedKey: feedKey,
+        rawFeedKey,
+        normalizedFeedKey: feedKey,
+        previousInitialFeedSignature: previousInitialSignature || null,
+        nextInitialFeedSignature: nextInitialSignature || null,
+        rawInitialSignature,
+        normalizedInitialSignature: nextInitialSignature,
+        rowIds: nextInitialRowIds,
+        resetSkipped: false,
+      });
+    }
+  } else if (feedKey) {
+    notePosterFeedKeyChanged(feedKey);
+    lastInitialFeedSignature = nextInitialSignature;
   }
 
   const batch = sliceHomeFeedVideoPosts(rows, 0, INITIAL_VIDEO_COUNT);
@@ -792,6 +1200,8 @@ export function startInitialHomeFeedPosterPrewarm(rows: any[]) {
     batchCount: batch.length,
     nextScrollPrewarmOrdinal,
     feedKey: feedKey || null,
+    rawFeedKey: rawFeedKey || null,
+    normalizedFeedKey: feedKey || null,
   });
 
   prewarmVisibleHomeFeedVideoPosters(rows, 0, VISIBLE_PRIORITY_COUNT);
@@ -799,13 +1209,13 @@ export function startInitialHomeFeedPosterPrewarm(rows: any[]) {
   const visibleItems = collectVisibleVideoPosts(rows, 0, VISIBLE_PRIORITY_COUNT);
   const visibleKeys = new Set(
     visibleItems
-      .map((item) => prewarmKey(String(item?.id || "").trim(), resolveVideoUri(item)))
+      .map((item) => prewarmKey(String(item?.id || "").trim(), posterVideoUrl(item)))
       .filter(Boolean)
   );
 
   const backgroundQueued = enqueueBackgroundItems(
     batch.filter((item) => {
-      const key = prewarmKey(String(item?.id || "").trim(), resolveVideoUri(item));
+      const key = prewarmKey(String(item?.id || "").trim(), posterVideoUrl(item));
       return Boolean(key && !visibleKeys.has(key));
     })
   );
@@ -858,14 +1268,70 @@ export function isHomeFeedPosterPrewarmFailed(postId: string, videoUrl: string):
 }
 
 /** Reset initial prewarm guard when feed content materially changes (refresh / pagination). */
-export function resetHomeFeedPosterPrewarmForFeedRefresh(feedKey: string) {
-  const key = String(feedKey || "").trim();
-  if (!key || key === lastInitialFeedKey) return;
+export function resetHomeFeedPosterPrewarmForFeedRefresh(rows: any[]) {
+  const feedIdentity = describePosterFeedIdentity(rows);
+  const key = feedIdentity.normalizedFeedKey || "";
+  const rawFeedKey = feedIdentity.rawFeedKey || "";
+  const rawInitialSignature = feedIdentity.rawInitialSignature || "";
+  const normalizedInitialSignature = feedIdentity.normalizedInitialSignature || "";
+
+  if (!key) return;
+
+  if (posterFeedIdentitySetsEqual(key, lastInitialFeedKey)) {
+    console.log("POSTER_SESSION_FEED_REFRESH_SKIPPED", {
+      rawFeedKey: rawFeedKey || null,
+      normalizedFeedKey: key,
+      rawInitialSignature: rawInitialSignature || null,
+      normalizedInitialSignature: normalizedInitialSignature || null,
+      resetSkipped: true,
+      reason: "normalized-identity-unchanged",
+      previousNormalizedFeedKey: lastInitialFeedKey || null,
+    });
+    return;
+  }
+
+  const previousFeedKey = lastInitialFeedKey;
+  const previousInitialSignature = lastInitialFeedSignature;
+  logPosterSessionSignatureChange({
+    kind: "feed",
+    reason: "feed-refresh",
+    previousKey: previousFeedKey,
+    nextKey: key,
+    previousRowIds: previousFeedKey.split("|").filter(Boolean),
+    nextRowIds: feedIdentity.normalizedRowIds,
+    extra: {
+      rawFeedKey: rawFeedKey || null,
+      normalizedFeedKey: key,
+      rawInitialSignature: rawInitialSignature || null,
+      normalizedInitialSignature: normalizedInitialSignature || null,
+      previousInitialFeedSignature: previousInitialSignature || null,
+      nextInitialFeedSignature: normalizedInitialSignature || null,
+      resetSkipped: false,
+    },
+  });
+  const feedReloaded = notePosterFeedKeyChanged(key);
   lastInitialFeedKey = key;
+  lastInitialFeedSignature = normalizedInitialSignature;
   initialPrewarmCompletedFeedKey = "";
   nextScrollPrewarmOrdinal = 0;
+  lastVisibleWarmSignature = "";
   cancelBackgroundPosterGeneration("feed-refresh");
   stopVisiblePosterRecheck();
+  if (feedReloaded) {
+    console.log("POSTER_SESSION_FEED_RELOAD_NOTED", {
+      source: "feed-refresh",
+      previousFeedKey: previousFeedKey || null,
+      nextFeedKey: key,
+      rawFeedKey: rawFeedKey || null,
+      normalizedFeedKey: key,
+      previousInitialFeedSignature: previousInitialSignature || null,
+      nextInitialFeedSignature: normalizedInitialSignature || null,
+      rawInitialSignature: rawInitialSignature || null,
+      normalizedInitialSignature: normalizedInitialSignature || null,
+      rowIds: feedIdentity.normalizedRowIds,
+      resetSkipped: false,
+    });
+  }
 }
 
 export function isHomeFeedPosterPrewarmPending(postId: string, videoUrl: string): boolean {
@@ -886,10 +1352,12 @@ export function pauseHomeFeedPosterWorkForLiveNavigation(reason = "live-navigati
   visibleRunId += 1;
   backgroundRunId += 1;
   visibleGenPending.length = 0;
+  visibleGenQueuedKeys.clear();
   backgroundGenPending.length = 0;
   backgroundQueue.length = 0;
   backgroundKeySet.clear();
   visibleGenerationComplete = true;
+  lastVisibleWarmSignature = "";
   stopVisiblePosterRecheck();
   cancelBackgroundPosterGeneration(reason);
 }

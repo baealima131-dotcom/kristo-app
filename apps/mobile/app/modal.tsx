@@ -1,35 +1,21 @@
-import { StatusBar } from 'expo-status-bar';
-import { Platform, StyleSheet } from 'react-native';
-
-import EditScreenInfo from '@/components/EditScreenInfo';
-import { Text, View } from '@/components/Themed';
+import React from "react";
+import { Stack } from "expo-router";
+import { StyleSheet, Text, View } from "react-native";
 
 export default function ModalScreen() {
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Modal</Text>
-      <View style={styles.separator} lightColor="#eee" darkColor="rgba(255,255,255,0.1)" />
-      <EditScreenInfo path="app/modal.tsx" />
-
-      {/* Use a light status bar on iOS to account for the black space above the modal */}
-      <StatusBar style={Platform.OS === 'ios' ? 'light' : 'auto'} />
-    </View>
+    <>
+      <Stack.Screen options={{ title: "Kristo App" }} />
+      <View style={styles.container}>
+        <Text style={styles.title}>Kristo App</Text>
+        <Text style={styles.message}>Welcome.</Text>
+      </View>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  separator: {
-    marginVertical: 30,
-    height: 1,
-    width: '80%',
-  },
+  container: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, backgroundColor: "#0B0618" },
+  title: { color: "#FFFFFF", fontSize: 24, fontWeight: "900", marginBottom: 8 },
+  message: { color: "#C9BDF5", fontSize: 15 },
 });

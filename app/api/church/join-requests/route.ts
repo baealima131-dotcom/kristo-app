@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { guard } from "@/app/api/_lib/rbac";
+import { guard, guardAuth } from "@/app/api/_lib/rbac";
 import {
   approveMembership,
+  cancelPendingJoinRequest,
   getMembershipsForChurch,
+  isApproverForChurch,
+  isJoinRequestMembership,
+  normalizeMembershipChurchId,
   rejectMembership,
   requestMembership,
 } from "@/app/api/_lib/memberships";
@@ -24,9 +28,29 @@ export async function GET(req: NextRequest) {
   const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
-  const all = await getMembershipsForChurch(ctxOrRes.churchId, "Requested");
-  const items = all.filter((m: any) => String(m?.requestSource || "JoinRequest") !== "ChurchInvite");
-  return json({ ok: true, data: items, items });
+  const headerChurchId = normalizeMembershipChurchId(h(req, "x-kristo-church-id"));
+  let targetChurchId = normalizeMembershipChurchId(ctxOrRes.churchId);
+
+  if (
+    headerChurchId &&
+    headerChurchId !== targetChurchId &&
+    (await isApproverForChurch(ctxOrRes.viewer.userId, headerChurchId))
+  ) {
+    targetChurchId = headerChurchId;
+  }
+
+  const all = await getMembershipsForChurch(targetChurchId, "Requested");
+  const items = all.filter((m) => isJoinRequestMembership(m));
+
+  console.log("KRISTO_JOIN_REQUESTS_LIST", {
+    viewerUserId: ctxOrRes.viewer.userId,
+    activeChurchId: normalizeMembershipChurchId(ctxOrRes.churchId),
+    headerChurchId,
+    targetChurchId,
+    count: items.length,
+  });
+
+  return json({ ok: true, data: items, items, churchId: targetChurchId });
 }
 
 export async function POST(req: NextRequest) {
@@ -56,12 +80,30 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
+  const action = String(body?.action || "").trim().toLowerCase();
+
+  if (action === "cancel") {
+    const authOrRes = await guardAuth(req);
+    if (authOrRes instanceof NextResponse) return authOrRes;
+
+    const requestId = String(body?.requestId || body?.id || body?.membershipId || "").trim();
+    const churchId = normalizeMembershipChurchId(body?.churchId || h(req, "x-kristo-church-id"));
+
+    const result = await cancelPendingJoinRequest(authOrRes.viewer.userId, {
+      membershipId: requestId || undefined,
+      churchId: churchId || undefined,
+    });
+
+    if (!result.ok) return json({ ok: false, error: result.error }, { status: 400 });
+
+    return json({ ok: true, data: result.membership, membership: result.membership });
+  }
+
   const ctxOrRes = await guard(req, ["Pastor", "Church_Admin", "System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
-  const body = await req.json().catch(() => ({}));
   const requestId = String(body?.requestId || body?.id || "").trim();
-  const action = String(body?.action || "").trim().toLowerCase();
 
   if (!requestId) return json({ ok: false, error: "requestId missing" }, { status: 400 });
 

@@ -121,7 +121,7 @@ export function applyPastorAuthorityToMinistryBoard<T extends Record<string, any
       isChurchPastor: true,
       isProtected: true,
       isSynthetic: true,
-    } as T);
+    } as unknown as T);
   }
 
   const pastorIdx = next.findIndex(

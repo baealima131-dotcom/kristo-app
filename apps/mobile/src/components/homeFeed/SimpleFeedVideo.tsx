@@ -229,9 +229,10 @@ export const SimpleFeedVideo = memo(function SimpleFeedVideo({
   const lastKnownPlayingRef = useRef(false);
   const playerDisposedRef = useRef(false);
 
-  const { status } = useEvent(player, "statusChange", {
-    status: safeGetPlayerStatus(player),
-  });
+  const statusEvent = useEvent(player, "statusChange", {
+    status: safeGetPlayerStatus(player) as any,
+  } as any);
+  const status = (statusEvent as any)?.status;
 
   useEffect(() => {
     playerDisposedRef.current = false;

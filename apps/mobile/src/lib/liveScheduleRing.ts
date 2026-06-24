@@ -434,11 +434,20 @@ function computePersonalAlertFromClaimStore(
   if (!uid) return null;
 
   const alerts: ScheduleRingAlert[] = [];
+  const hints = getRingClaimHints(uid);
 
   for (const entry of getUserClaimedSlotEntries(uid)) {
     const feedId = baseFeedId(String(entry?.postId || ""));
     const slotId = String(entry?.slotId || "").trim();
     if (!feedId || !slotId) continue;
+
+    const hint = hints.find(
+      (candidate) =>
+        String(candidate.slotId || "").trim() === slotId &&
+        baseFeedId(String(candidate.baseFeedId || candidate.feedId || "")) === feedId
+    );
+    const startMs = Number(hint?.startMs || entry?.startMs || 0);
+    const endMs = Number(hint?.endMs || entry?.endMs || 0);
 
     const item =
       rows.find((row) => {
@@ -463,7 +472,10 @@ function computePersonalAlertFromClaimStore(
           slotId,
           claimedByUserId: entry.userId,
           claimedByName: entry.name,
-          slot: Number(entry?.slotNumber || 1),
+          slot: Number(entry?.slotNumber || hint?.slotNumber || 1),
+          startMs: startMs || undefined,
+          endMs: endMs || undefined,
+          ...(hint?.slot && typeof hint.slot === "object" ? hint.slot : {}),
         },
       ])[0];
 
@@ -658,6 +670,53 @@ export function recomputeScheduleRingsFromRows(options: {
   }
 
   return { personal, church, rows };
+}
+
+export function logMeTabRingDecision(args: {
+  currentUserId: string;
+  personal: ScheduleRingAlert | null;
+  source: string;
+}) {
+  const personal = args.personal;
+  const nowMs = Date.now();
+
+  if (!personal || personal.match !== "claimed") {
+    console.log("KRISTO_ME_TAB_RING_DECISION", {
+      currentUserId: args.currentUserId,
+      claimedSlotUserId: personal ? scheduleSlotClaimUserId(personal.slot) || null : null,
+      slotId: String(personal?.slot?.id || personal?.slot?.slotId || ""),
+      slotNumber: personal?.slotNumber ?? null,
+      startMs: personal?.startMs ?? 0,
+      endMs: personal?.endMs ?? 0,
+      isLiveNow: personal?.isLiveNow ?? false,
+      startsInMin: personal?.startsInMin ?? null,
+      source: args.source,
+      ringVisible: false,
+      ringMode: "hidden",
+    });
+    return;
+  }
+
+  const ringVisible = isPersonalRingWindow(personal.startMs, personal.endMs, nowMs);
+  const ringMode = personal.isLiveNow
+    ? "live"
+    : personal.startsInMin <= 30
+      ? "upcoming"
+      : "hidden";
+
+  console.log("KRISTO_ME_TAB_RING_DECISION", {
+    currentUserId: args.currentUserId,
+    claimedSlotUserId: scheduleSlotClaimUserId(personal.slot) || args.currentUserId,
+    slotId: String(personal.slot?.id || personal.slot?.slotId || ""),
+    slotNumber: personal.slotNumber ?? null,
+    startMs: personal.startMs,
+    endMs: personal.endMs,
+    isLiveNow: personal.isLiveNow,
+    startsInMin: personal.startsInMin,
+    source: args.source,
+    ringVisible: ringVisible && personal.match === "claimed",
+    ringMode: ringVisible ? ringMode : "hidden",
+  });
 }
 
 export type ProfileClaimedScheduleSlot = {

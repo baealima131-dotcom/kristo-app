@@ -94,9 +94,9 @@ function resolveBatchIdFromRoomMessage(
   if (!card || typeof card !== "object") return "";
 
   return pickLiveBridgeScheduleId(
-    card.scheduleBatchId,
-    card.sourceScheduleId,
-    card.sourceFeedId
+    (card as any).scheduleBatchId,
+    (card as any).sourceScheduleId,
+    (card as any).sourceFeedId
   );
 }
 

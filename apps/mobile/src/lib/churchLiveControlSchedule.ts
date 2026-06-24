@@ -509,6 +509,28 @@ export async function loadChurchLiveControlGuestCenterScheduleRow(
   }
 }
 
+/** Live Room runtime slots from Church Live Control room assignment_card messages. */
+export function buildChurchLiveControlLiveRoomScheduleSlots(
+  roomMessages: Array<{ id?: string; kind?: string; card?: any; createdAt?: number }>,
+  opts: {
+    churchId?: string;
+    churchName?: string;
+    mediaName?: string;
+    nowMs?: number;
+  } = {}
+): { slots: any[]; scheduleId: string } | null {
+  const row = buildChurchLiveControlGuestCenterScheduleRow(roomMessages, opts);
+  if (!row) return null;
+
+  const slots = Array.isArray(row.scheduleSlots) ? row.scheduleSlots : [];
+  if (!slots.length) return null;
+
+  return {
+    slots,
+    scheduleId: String(row.sourceScheduleId || row.id || "").trim(),
+  };
+}
+
 export function buildChurchLiveControlScheduleRenderMap(
   messages: Array<{ id?: string; kind?: string; card?: any }>,
   opts: {

@@ -222,7 +222,7 @@ export default function PaymentsCheckoutScreen() {
 
         if (!alive) return;
         setCheckoutChurchId(churchId);
-        setServerSubscriptionActive(server.subscriptionActive);
+        setServerSubscriptionActive(!!server.subscriptionActive);
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
         setCustomerInfo(info);
@@ -233,8 +233,8 @@ export default function PaymentsCheckoutScreen() {
           screen: "checkout",
           churchId,
           customerInfo: info,
-          churchSubscriptionActive: server.subscriptionActive,
-          canUseMediaTools: server.canUseMediaTools,
+          churchSubscriptionActive: server.subscriptionActive ?? undefined,
+          canUseMediaTools: server.canUseMediaTools ?? undefined,
         });
         logEntitlementAudit({
           customerInfo: info,

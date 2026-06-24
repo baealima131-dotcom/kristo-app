@@ -222,6 +222,15 @@ function resolveWatchScreenPlaybackUri(payload: HomeFeedVideoOpenPayload): strin
   return resolveHomeFeedPlaybackUri(remoteUri) || remoteUri;
 }
 
+function buildWatchVideoPlayerSource(uri: string) {
+  const trimmed = String(uri || "").trim();
+  if (!trimmed) return null;
+  return {
+    uri: trimmed,
+    contentType: trimmed.startsWith("file://") ? ("auto" as const) : ("progressive" as const),
+  };
+}
+
 function WatchVideoSurface({
   payload,
   isTikTokLayout = false,
@@ -233,7 +242,6 @@ function WatchVideoSurface({
   const postId = String(payload.postId || "").trim();
   const playbackUri = resolveWatchScreenPlaybackUri(payload);
   const [ended, setEnded] = useState(false);
-  const initialUriRef = useRef(playbackUri);
 
   useEffect(() => {
     console.log("KRISTO_WATCH_BACKDROP_DIAG", {
@@ -245,15 +253,21 @@ function WatchVideoSurface({
     });
   }, [postId, isTikTokLayout, playbackUri, item]);
 
-  const player = useVideoPlayer(initialUriRef.current || playbackUri, (p) => {
-    p.loop = false;
-    p.muted = false;
-  });
+  const player = useVideoPlayer(
+    playbackUri ? buildWatchVideoPlayerSource(playbackUri) : null,
+    (p) => {
+      p.loop = false;
+      p.muted = false;
+    }
+  );
 
-  const backdropPlayer = useVideoPlayer(initialUriRef.current || playbackUri, (p) => {
-    p.loop = true;
-    p.muted = true;
-  });
+  const backdropPlayer = useVideoPlayer(
+    playbackUri ? buildWatchVideoPlayerSource(playbackUri) : null,
+    (p) => {
+      p.loop = true;
+      p.muted = true;
+    }
+  );
 
   useEventListener(player, "playToEnd", () => {
     setEnded(true);
@@ -265,7 +279,8 @@ function WatchVideoSurface({
     setEnded(false);
 
     let cancelled = false;
-    const source = { uri: playbackUri, contentType: "progressive" as const };
+    const source = buildWatchVideoPlayerSource(playbackUri);
+    if (!source) return;
 
     void (async () => {
       try {

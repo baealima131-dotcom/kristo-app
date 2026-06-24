@@ -14,6 +14,10 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import { assignScheduleSlotOnServer } from "@/src/lib/guestClaimSlotAssign";
+import {
+  assignChurchLiveControlRoomScheduleSlot,
+  isGuestCenterChurchLiveControlRoomSource,
+} from "@/src/lib/churchLiveControlGuestCenterMutations";
 import { isValidKristoAssignId, slotHasClaimant } from "@/src/lib/guestClaimCenterUtils";
 
 type GuestClaimAssignModalProps = {
@@ -22,12 +26,30 @@ type GuestClaimAssignModalProps = {
   churchId: string;
   sessionUserId: string;
   apiHeaders: Record<string, string>;
+  guestCenterSource?: string;
+  guestCenterReloadOpts?: {
+    churchName?: string;
+    mediaName?: string;
+    nowMs?: number;
+  };
+  onSetChurchLiveControlRoomSchedule?: (schedule: any | null) => void;
   onClose: () => void;
   onAssigned: () => void;
 };
 
 export function GuestClaimAssignModal(props: GuestClaimAssignModalProps) {
-  const { visible, slot, churchId, sessionUserId, apiHeaders, onClose, onAssigned } = props;
+  const {
+    visible,
+    slot,
+    churchId,
+    sessionUserId,
+    apiHeaders,
+    guestCenterSource,
+    guestCenterReloadOpts,
+    onSetChurchLiveControlRoomSchedule,
+    onClose,
+    onAssigned,
+  } = props;
 
   const [assignTab, setAssignTab] = useState<"members" | "kristo">("members");
   const [members, setMembers] = useState<any[]>([]);
@@ -37,6 +59,7 @@ export function GuestClaimAssignModal(props: GuestClaimAssignModalProps) {
   const [memberQuery, setMemberQuery] = useState("");
 
   const selectedFeedId = String(slot?.sourceFeedId || "").trim();
+  const useRoomMutation = isGuestCenterChurchLiveControlRoomSource(String(guestCenterSource || ""));
 
   useEffect(() => {
     if (!visible) {
@@ -94,16 +117,40 @@ export function GuestClaimAssignModal(props: GuestClaimAssignModalProps) {
 
       setAssignBusy(true);
       try {
-        await assignScheduleSlotOnServer({
-          postId: selectedFeedId,
-          slotId: String(slot.id),
-          userId: member.userId,
-          kristoId: member.kristoId,
-          name: member.name,
-          role: member.role,
-          avatarUri: member.avatarUri,
-          headers: apiHeaders,
-        });
+        if (useRoomMutation) {
+          const result = await assignChurchLiveControlRoomScheduleSlot({
+            slot: {
+              ...slot,
+              id: String(slot?.id || "").trim(),
+              roomMessageId: String(slot?.roomMessageId || "").trim(),
+            },
+            headers: apiHeaders,
+            churchId,
+            userId: sessionUserId,
+            assignee: {
+              userId: member.userId,
+              name: member.name,
+              role: member.role,
+              avatarUri: member.avatarUri,
+            },
+            reloadOpts: guestCenterReloadOpts,
+          });
+          if (!result.ok) {
+            throw new Error(String(result.error || "Could not assign member to this slot."));
+          }
+          onSetChurchLiveControlRoomSchedule?.(result.schedule);
+        } else {
+          await assignScheduleSlotOnServer({
+            postId: selectedFeedId,
+            slotId: String(slot.id),
+            userId: member.userId,
+            kristoId: member.kristoId,
+            name: member.name,
+            role: member.role,
+            avatarUri: member.avatarUri,
+            headers: apiHeaders,
+          });
+        }
         onClose();
         onAssigned();
         Alert.alert("Assigned", `${member.name || "Member"} was assigned to this slot.`);
@@ -113,7 +160,18 @@ export function GuestClaimAssignModal(props: GuestClaimAssignModalProps) {
         setAssignBusy(false);
       }
     },
-    [apiHeaders, onAssigned, onClose, selectedFeedId, sessionUserId, slot]
+    [
+      apiHeaders,
+      churchId,
+      guestCenterReloadOpts,
+      onAssigned,
+      onClose,
+      onSetChurchLiveControlRoomSchedule,
+      selectedFeedId,
+      sessionUserId,
+      slot,
+      useRoomMutation,
+    ]
   );
 
   const assignByKristoId = useCallback(async () => {

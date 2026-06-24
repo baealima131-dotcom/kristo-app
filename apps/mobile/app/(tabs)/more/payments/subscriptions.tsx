@@ -153,8 +153,8 @@ export default function PaymentsSubscriptionsScreen() {
           screen: "subscriptions",
           churchId: resolvedChurchId,
           customerInfo: infoResult,
-          churchSubscriptionActive: server.subscriptionActive,
-          canUseMediaTools: server.canUseMediaTools,
+          churchSubscriptionActive: server.subscriptionActive ?? undefined,
+          canUseMediaTools: server.canUseMediaTools ?? undefined,
         });
         logEntitlementAudit({
           customerInfo: infoResult,
@@ -213,8 +213,8 @@ export default function PaymentsSubscriptionsScreen() {
       screen: "subscriptions",
       churchId,
       customerInfo: info,
-      churchSubscriptionActive: server.subscriptionActive,
-      canUseMediaTools: server.canUseMediaTools,
+      churchSubscriptionActive: server.subscriptionActive ?? undefined,
+      canUseMediaTools: server.canUseMediaTools ?? undefined,
     });
   }
 
@@ -253,12 +253,35 @@ export default function PaymentsSubscriptionsScreen() {
   const showActivePrimaryScreen = churchSubscriptionActive;
 
   const activePlanKey: SubscriptionPlanKey = (() => {
+    const activeProducts = [
+      ...(customerInfo?.activeSubscriptions || []),
+      ...(customerInfo?.allPurchasedProductIdentifiers || []),
+    ].map((id) => String(id || "").toLowerCase());
+
+    if (activeProducts.some((id) => /premium_yearly|yearly|annual|\\$rc_annual/.test(id))) {
+      return "yearly";
+    }
+
+    if (activeProducts.some((id) => /premium_monthly|monthly|\\$rc_monthly/.test(id))) {
+      return "monthly";
+    }
+
     const fromRc = resolvePremiumPlanFromCustomerInfo(customerInfo);
     if (fromRc) return fromRc;
+
     const fromServer = String(serverStatus.subscriptionPlan || "").trim().toLowerCase();
     if (fromServer === "yearly" || fromServer === "monthly") return fromServer;
+
     return currentPlan;
   })();
+
+  console.log("KRISTO_SUBSCRIPTION_UI_PLAN_RESOLVED", {
+    revenueCatPlan: resolvePremiumPlanFromCustomerInfo(customerInfo),
+    activeSubscriptions: customerInfo?.activeSubscriptions || [],
+    allPurchasedProductIdentifiers: customerInfo?.allPurchasedProductIdentifiers || [],
+    backendPlan: serverStatus.subscriptionPlan,
+    displayedPlan: activePlanKey,
+  });
   const isYearlyPlan = activePlanKey === "yearly";
   const isMonthlyPlan = activePlanKey === "monthly";
   const monthlyDisplayPrice = formatPrice(monthlyPackage || undefined, "$49.99");

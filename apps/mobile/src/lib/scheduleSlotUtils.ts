@@ -219,6 +219,59 @@ export function resolveScheduleSlotClaimed(slot: any, optimisticClaim?: any): bo
   return Boolean(claimUserId || optimisticClaim);
 }
 
+export type AssignmentCardAvatarRingMode = "owner" | "taken" | "hidden";
+
+export type AssignmentCardAvatarRingDecision = {
+  surface: string;
+  cardId: string;
+  slotId: string;
+  claimedByUserId: string;
+  currentUserId: string;
+  claimed: boolean;
+  claimedByMe: boolean;
+  claimedByOther: boolean;
+  ringVisible: boolean;
+  ringMode: AssignmentCardAvatarRingMode;
+};
+
+/** Ownership ring for assignment / church-live-control schedule cards. */
+export function resolveAssignmentCardAvatarRingDecision(args: {
+  surface: string;
+  cardId?: string;
+  slotId?: string;
+  claimedByUserId?: string;
+  currentUserId?: string;
+  claimed?: boolean;
+}): AssignmentCardAvatarRingDecision {
+  const cardId = String(args.cardId || "").trim();
+  const slotId = String(args.slotId || "").trim();
+  const claimedByUserId = String(args.claimedByUserId || "").trim();
+  const currentUserId = String(args.currentUserId || "").trim();
+  const claimed = Boolean(args.claimed) || !!claimedByUserId;
+  const claimedByMe =
+    !!claimedByUserId && !!currentUserId && claimedByUserId === currentUserId;
+  const claimedByOther =
+    !!claimedByUserId && !!currentUserId && claimedByUserId !== currentUserId;
+
+  let ringMode: AssignmentCardAvatarRingMode = "hidden";
+  if (claimed && claimedByUserId) {
+    ringMode = claimedByMe ? "owner" : "taken";
+  }
+
+  return {
+    surface: String(args.surface || "").trim(),
+    cardId,
+    slotId,
+    claimedByUserId,
+    currentUserId,
+    claimed,
+    claimedByMe,
+    claimedByOther,
+    ringVisible: ringMode !== "hidden",
+    ringMode,
+  };
+}
+
 export type ScheduleSlotVisualState = {
   enriched: EnrichedScheduleSlot;
   startMs: number;

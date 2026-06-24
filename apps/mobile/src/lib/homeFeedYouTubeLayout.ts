@@ -2,8 +2,11 @@ import {
   isHomeFeedLivestreamRow,
   isHomeFeedScheduleCardRow,
   isMediaLiveSlotsHomeFeedRow,
+  isVideoPost,
+  resolvePostBody,
 } from "@/src/components/homeFeed/homeFeedUtils";
 import type { HomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
+import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 
 export const YOUTUBE_CARD_H_PADDING = 12;
 export const YOUTUBE_THUMB_ASPECT = 16 / 9;
@@ -45,6 +48,41 @@ export function estimateYouTubeFeedCardHeight(
   const thumb = youtubeThumbnailHeight(windowWidth);
   const meta = options.hasCaption ? YOUTUBE_META_BLOCK_HEIGHT + 20 : YOUTUBE_META_BLOCK_HEIGHT;
   return thumb + meta + YOUTUBE_ACTIONS_HEIGHT + 20;
+}
+
+/** Card shell marginBottom from homeFeedPremiumStyles.feedCard. */
+export const YOUTUBE_FEED_CARD_MARGIN_BOTTOM = 22;
+
+export function estimateYouTubeFeedCardHeightForItem(
+  windowWidth: number,
+  item: any
+): number {
+  const displayType = resolveHomeFeedVideoDisplayType(item);
+  const thumb = isVideoPost(item)
+    ? homeFeedVideoThumbnailHeight(windowWidth, displayType)
+    : youtubeThumbnailHeight(windowWidth);
+  const caption = String(resolvePostBody(item) || "").trim();
+  const meta = caption ? YOUTUBE_META_BLOCK_HEIGHT + 20 : YOUTUBE_META_BLOCK_HEIGHT;
+  return thumb + meta + YOUTUBE_ACTIONS_HEIGHT + 20 + YOUTUBE_FEED_CARD_MARGIN_BOTTOM;
+}
+
+export function buildYouTubeFeedItemLayout(
+  rows: any[],
+  windowWidth: number,
+  contentPaddingTop = 6
+): { heights: number[]; offsets: number[] } {
+  const heights: number[] = [];
+  const offsets: number[] = [];
+  let offset = contentPaddingTop;
+
+  for (const row of rows) {
+    offsets.push(offset);
+    const height = estimateYouTubeFeedCardHeightForItem(windowWidth, row);
+    heights.push(height);
+    offset += height;
+  }
+
+  return { heights, offsets };
 }
 
 /** Home Feed is content-only — no live header partition. */

@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as FileSystem from "expo-file-system";
 import { Paths } from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import { Image } from "react-native";
 import {
   onBackgroundMediaJobsResumed,
@@ -156,6 +156,10 @@ async function readPersistedIndex(): Promise<MediaPosterCacheIndex | null> {
   }
 }
 
+export function isMediaPosterCacheHydrated(): boolean {
+  return hydrateSessionReady;
+}
+
 export async function hydrateMediaPosterCache(): Promise<void> {
   if (hydrateSessionReady) {
     console.log("KRISTO_MEDIA_POSTER_CACHE_HYDRATE_SKIPPED_ALREADY_READY", {
@@ -229,11 +233,31 @@ export function peekCachedMediaPosterByVideoUrl(videoUrl: string): string | null
   return null;
 }
 
-/** Prefer postId+videoUrl cache, then fall back to videoUrl-only. */
+/** Session lookup by post id when video URL changed (e.g. remote → local disk cache). */
+export function peekCachedMediaPosterByPostId(postId: string): string | null {
+  const id = String(postId || "").trim();
+  if (!id) return null;
+
+  let newest: MediaPosterCacheEntry | null = null;
+  for (const entry of memoryEntries.values()) {
+    if (String(entry.postId || "").trim() !== id) continue;
+    const posterUri = String(entry.posterUri || "").trim();
+    if (!posterUri) continue;
+    if (!newest || Number(entry.savedAt || 0) >= Number(newest.savedAt || 0)) {
+      newest = entry;
+    }
+  }
+
+  return newest ? String(newest.posterUri || "").trim() || null : null;
+}
+
+/** Prefer postId+videoUrl cache, then videoUrl-only, then postId-only. */
 export function resolveCachedMediaPoster(postId: string, videoUrl: string): string | null {
   const byPost = peekCachedMediaPoster(postId, videoUrl);
   if (byPost) return byPost;
-  return peekCachedMediaPosterByVideoUrl(videoUrl);
+  const byVideo = peekCachedMediaPosterByVideoUrl(videoUrl);
+  if (byVideo) return byVideo;
+  return peekCachedMediaPosterByPostId(postId);
 }
 
 export function logMediaPosterCacheHit(params: {

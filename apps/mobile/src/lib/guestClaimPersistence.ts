@@ -27,6 +27,10 @@ import {
 } from "@/src/lib/mediaScheduleChurchQueries";
 import { isChurchLiveControlScheduleFeedRow } from "@/src/lib/churchLiveControlSchedule";
 import {
+  isGuestCenterChurchLiveControlRoomSource,
+  mutateChurchLiveControlGuestCenterRoomSchedule,
+} from "@/src/lib/churchLiveControlGuestCenterMutations";
+import {
   isMediaScheduleFeedItem,
   isMediaScheduleFeedItemClosed,
 } from "@/src/lib/mediaScheduleFeedPredicates";
@@ -1336,11 +1340,170 @@ export async function persistGuestSlotClaimClear(input: {
   setBackendFeedItems: (items: any[]) => void;
   setHomeFeedItems: (items: any[]) => void;
   setGuestClaimSlots?: (slots: any[]) => void;
-}) {
+  guestCenterSource?: GuestCenterCanonicalResult["source"];
+} & GuestCenterRoomMutationUi) {
   const action = input.action;
   const startLog = action === "reject" ? "KRISTO_GUEST_REJECT_START" : "KRISTO_GUEST_DELETE_START";
   const payloadLog = action === "reject" ? "KRISTO_GUEST_REJECT_PAYLOAD" : "KRISTO_GUEST_DELETE_PAYLOAD";
   const resultLog = action === "reject" ? "KRISTO_GUEST_REJECT_RESULT" : "KRISTO_GUEST_DELETE_RESULT";
+
+  const roomCanonical = input.churchLiveControlRoomSchedule
+    ? resolveGuestCenterCanonicalSchedule({
+        homeFeedItems: input.homeFeedItems,
+        backendFeedItems: input.backendFeedItems,
+        churchId: input.churchId,
+        targetChurchId: input.churchId,
+        viewerUserId: input.userId,
+        nowMs: input.nowMs,
+        churchLiveControlRoomSchedule: input.churchLiveControlRoomSchedule,
+      })
+    : null;
+  const roomSource =
+    isGuestCenterChurchLiveControlRoomSource(String(input.guestCenterSource || "")) ||
+    isGuestCenterChurchLiveControlRoomSource(String(roomCanonical?.source || ""));
+
+  if (roomSource && input.churchLiveControlRoomSchedule) {
+    const beforeSlots = filterGuestCenterDisplaySlots(
+      Array.isArray(input.churchLiveControlRoomSchedule?.scheduleSlots)
+        ? input.churchLiveControlRoomSchedule.scheduleSlots
+        : []
+    );
+    const feedId = String(
+      input.churchLiveControlRoomSchedule?.sourceScheduleId ||
+        input.churchLiveControlRoomSchedule?.id ||
+        input.sourceFeedId ||
+        ""
+    ).trim();
+    const resolvedSlotId = resolveGuestActionSlotId(beforeSlots, input.slotId);
+    const targetSlot = beforeSlots.find(
+      (slot: any, index: number) =>
+        slotIdsMatch(slot, resolvedSlotId) ||
+        slotIdsMatch(slot, input.slotId) ||
+        String(slot?.id || "") === String(input.slotId) ||
+        (String(input.slotId).match(/^synced-slot-(\d+)$/i) &&
+          Number(String(input.slotId).match(/^synced-slot-(\d+)$/i)?.[1]) === index)
+    );
+
+    console.log(startLog, {
+      action,
+      sourceFeedId: input.sourceFeedId,
+      feedId,
+      slotId: input.slotId,
+      resolvedSlotId,
+      slotCount: beforeSlots.length,
+      sourceUsed: "church-live-control-room",
+    });
+
+    if (!targetSlot) {
+      return {
+        feedId,
+        resolvedSlotId,
+        ok: false,
+        error: "slot-not-found",
+      };
+    }
+
+    if (action === "remove") {
+      const mutation = await mutateChurchLiveControlGuestCenterRoomSchedule({
+        action: "remove",
+        headers: input.headers,
+        churchId: input.churchId,
+        userId: input.userId,
+        slotsToDelete: [targetSlot],
+        reloadOpts: input.reloadChurchLiveControlOpts,
+      });
+
+      console.log(resultLog, {
+        action,
+        feedId,
+        slotId: input.slotId,
+        resolvedSlotId,
+        ok: mutation.ok,
+        error: mutation.error,
+        affectedMessageIds: mutation.affectedMessageIds,
+      });
+
+      if (!mutation.ok) {
+        return {
+          feedId,
+          resolvedSlotId,
+          ok: false,
+          error: mutation.error || "room-remove-failed",
+          removedCount: 0,
+        };
+      }
+
+      input.setChurchLiveControlRoomSchedule?.(mutation.schedule);
+      input.setGuestClaimSlots?.(
+        Array.isArray(mutation.schedule?.scheduleSlots) ? mutation.schedule.scheduleSlots : []
+      );
+
+      return {
+        feedId,
+        resolvedSlotId,
+        ok: true,
+        error: null,
+        removedCount: 1,
+        schedule: mutation.schedule,
+      };
+    }
+
+    const clearedSlot = clearGuestSlotClaimFields(targetSlot);
+    console.log(payloadLog, {
+      action,
+      feedId,
+      slotId: input.slotId,
+      resolvedSlotId,
+      sourceUsed: "church-live-control-room",
+      before: beforeSlots.map((slot: any, index: number) => summarizeGuestClaimSlotForLog(slot, index)),
+      after: beforeSlots.map((slot: any, index: number) =>
+        slotIdsMatch(slot, resolvedSlotId) || slotIdsMatch(slot, input.slotId)
+          ? summarizeGuestClaimSlotForLog(clearedSlot, index)
+          : summarizeGuestClaimSlotForLog(slot, index)
+      ),
+    });
+
+    const mutation = await mutateChurchLiveControlGuestCenterRoomSchedule({
+      action: "reject",
+      headers: input.headers,
+      churchId: input.churchId,
+      userId: input.userId,
+      slotsToPatch: [clearedSlot],
+      reloadOpts: input.reloadChurchLiveControlOpts,
+    });
+
+    console.log(resultLog, {
+      action,
+      feedId,
+      slotId: input.slotId,
+      resolvedSlotId,
+      ok: mutation.ok,
+      error: mutation.error,
+      affectedMessageIds: mutation.affectedMessageIds,
+    });
+
+    if (!mutation.ok) {
+      return {
+        feedId,
+        resolvedSlotId,
+        ok: false,
+        error: mutation.error || "room-reject-failed",
+      };
+    }
+
+    input.setChurchLiveControlRoomSchedule?.(mutation.schedule);
+    input.setGuestClaimSlots?.(
+      Array.isArray(mutation.schedule?.scheduleSlots) ? mutation.schedule.scheduleSlots : []
+    );
+
+    return {
+      feedId,
+      resolvedSlotId,
+      ok: true,
+      error: null,
+      schedule: mutation.schedule,
+    };
+  }
 
   const { feedId, slots: beforeSlots, sourceUsed } = readGuestActionScheduleSlots({
     sourceFeedId: input.sourceFeedId,
@@ -1759,6 +1922,7 @@ function resolveGuestScheduleActionContext(input: {
   churchId: string;
   nowMs?: number;
   viewerUserId?: string;
+  churchLiveControlRoomSchedule?: any | null;
 }) {
   const churchId = String(input.churchId || "").trim();
   const nowMs = Number(input.nowMs || Date.now());
@@ -1773,6 +1937,7 @@ function resolveGuestScheduleActionContext(input: {
         targetChurchId: churchId,
         viewerUserId,
         nowMs,
+        churchLiveControlRoomSchedule: input.churchLiveControlRoomSchedule,
       })
     : null;
 
@@ -1845,6 +2010,108 @@ function resolveGuestScheduleActionContext(input: {
     sourceUsed: "guest-center-canonical" as const,
     churchId,
     nowMs,
+    canonicalSource: canonical?.source || "none",
+  };
+}
+
+type GuestCenterRoomMutationUi = {
+  churchLiveControlRoomSchedule?: any | null;
+  setChurchLiveControlRoomSchedule?: (schedule: any | null) => void;
+  reloadChurchLiveControlOpts?: {
+    churchName?: string;
+    mediaName?: string;
+    nowMs?: number;
+  };
+};
+
+async function persistChurchLiveControlGuestCenterSlotRemoval(input: {
+  context: NonNullable<ReturnType<typeof resolveGuestScheduleActionContext>>;
+  headers: Record<string, string>;
+  churchId: string;
+  userId?: string;
+  reason: string;
+  mode: "delete-open" | "delete-claimed" | "delete-ended" | "delete-all" | "auto-delete-expired-open";
+  setGuestClaimSlots?: (slots: any[]) => void;
+  setChurchLiveControlRoomSchedule?: (schedule: any | null) => void;
+  reloadChurchLiveControlOpts?: GuestCenterRoomMutationUi["reloadChurchLiveControlOpts"];
+}) {
+  const { context } = input;
+  const { feedId, slots: sourceSlots, nowMs } = context;
+  const beforeBuckets = summarizeGuestScheduleSlotBuckets(sourceSlots, nowMs);
+  const partition =
+    input.mode === "delete-all"
+      ? { remaining: [] as any[], removed: sourceSlots, removedCount: sourceSlots.length }
+      : input.mode === "delete-open"
+        ? removeOpenGuestScheduleSlots(sourceSlots)
+        : input.mode === "delete-claimed"
+          ? removeClaimedGuestScheduleSlots(sourceSlots)
+          : input.mode === "delete-ended"
+            ? removeEndedGuestScheduleSlots(sourceSlots, nowMs)
+            : removeExpiredOpenGuestScheduleSlots(sourceSlots, nowMs);
+  const { remaining, removed, removedCount } = partition;
+
+  if (removedCount <= 0) {
+    return {
+      ok: true,
+      skipped: true,
+      feedId,
+      ...beforeBuckets,
+      removedCount: 0,
+      remainingCount: sourceSlots.length,
+      syncOk: true,
+      error: null,
+    };
+  }
+
+  const mutation =
+    input.mode === "delete-all"
+      ? await mutateChurchLiveControlGuestCenterRoomSchedule({
+          action: "delete_all",
+          clearAll: true,
+          headers: input.headers,
+          churchId: input.churchId,
+          userId: input.userId,
+          reloadOpts: input.reloadChurchLiveControlOpts,
+        })
+      : await mutateChurchLiveControlGuestCenterRoomSchedule({
+          action: "delete_slot",
+          headers: input.headers,
+          churchId: input.churchId,
+          userId: input.userId,
+          slotsToDelete: removed,
+          reloadOpts: input.reloadChurchLiveControlOpts,
+        });
+
+  if (!mutation.ok) {
+    return {
+      ok: false,
+      skipped: false,
+      feedId,
+      ...beforeBuckets,
+      removedCount: 0,
+      remainingCount: sourceSlots.length,
+      syncOk: false,
+      error: mutation.error || "room-delete-failed",
+    };
+  }
+
+  input.setChurchLiveControlRoomSchedule?.(mutation.schedule);
+  input.setGuestClaimSlots?.(
+    Array.isArray(mutation.schedule?.scheduleSlots) ? mutation.schedule.scheduleSlots : remaining
+  );
+
+  return {
+    ok: true,
+    skipped: false,
+    feedId,
+    reason: input.reason,
+    ...beforeBuckets,
+    removedCount,
+    remainingCount: remaining.length,
+    syncOk: true,
+    error: null,
+    affectedMessageIds: mutation.affectedMessageIds,
+    schedule: mutation.schedule,
   };
 }
 
@@ -1861,7 +2128,7 @@ async function persistGuestScheduleSlotRemoval(input: {
   setBackendFeedItems: (items: any[]) => void;
   setHomeFeedItems: (items: any[]) => void;
   setGuestClaimSlots?: (slots: any[]) => void;
-}) {
+} & GuestCenterRoomMutationUi) {
   const context = resolveGuestScheduleActionContext({
     sourceFeedId: input.sourceFeedId,
     backendFeedItems: input.backendFeedItems,
@@ -1869,7 +2136,22 @@ async function persistGuestScheduleSlotRemoval(input: {
     churchId: input.churchId,
     nowMs: input.nowMs,
     viewerUserId: input.userId,
+    churchLiveControlRoomSchedule: input.churchLiveControlRoomSchedule,
   });
+
+  if (context && isGuestCenterChurchLiveControlRoomSource(context.canonicalSource)) {
+    return persistChurchLiveControlGuestCenterSlotRemoval({
+      context,
+      headers: input.headers,
+      churchId: input.churchId,
+      userId: input.userId,
+      reason: input.reason,
+      mode: input.mode,
+      setGuestClaimSlots: input.setGuestClaimSlots,
+      setChurchLiveControlRoomSchedule: input.setChurchLiveControlRoomSchedule,
+      reloadChurchLiveControlOpts: input.reloadChurchLiveControlOpts,
+    });
+  }
   if (!context?.feedId || !context.slots.length) {
     const emptyBuckets = summarizeGuestScheduleSlotBuckets([], Number(input.nowMs || Date.now()));
     const emptyResult = {
@@ -2293,7 +2575,7 @@ export async function autoDeleteExpiredOpenGuestSlots(input: {
   setBackendFeedItems?: (items: any[]) => void;
   setHomeFeedItems?: (items: any[]) => void;
   setGuestClaimSlots?: (slots: any[]) => void;
-}) {
+} & GuestCenterRoomMutationUi) {
   const churchId = String(input.churchId || "").trim();
   if (!churchId) {
     return {
@@ -2313,6 +2595,7 @@ export async function autoDeleteExpiredOpenGuestSlots(input: {
     churchId,
     nowMs: input.nowMs,
     viewerUserId: input.userId,
+    churchLiveControlRoomSchedule: input.churchLiveControlRoomSchedule,
   });
 
   if (!context?.feedId || !context.slots.length) {
@@ -2338,6 +2621,7 @@ export async function autoDeleteExpiredOpenGuestSlots(input: {
   }
 
   if (
+    !isGuestCenterChurchLiveControlRoomSource(context.canonicalSource) &&
     isAutoDeleteScreenLoadReason(input.reason) &&
     !backendFeedHasScheduleFeedId(backendFeedItems, context.feedId)
   ) {
@@ -2432,5 +2716,8 @@ export async function autoDeleteExpiredOpenGuestSlots(input: {
     setBackendFeedItems: input.setBackendFeedItems,
     setHomeFeedItems: input.setHomeFeedItems,
     setGuestClaimSlots: input.setGuestClaimSlots,
+    churchLiveControlRoomSchedule: input.churchLiveControlRoomSchedule,
+    setChurchLiveControlRoomSchedule: input.setChurchLiveControlRoomSchedule,
+    reloadChurchLiveControlOpts: input.reloadChurchLiveControlOpts,
   });
 }

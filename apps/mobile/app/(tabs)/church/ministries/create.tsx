@@ -24,6 +24,14 @@ import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { emitMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
+import {
+  saveMinistriesCache,
+} from "@/src/lib/screenDataCache";
+import {
+  refreshMinistriesBundleIfNeeded,
+  seedMinistriesRefreshFromCache,
+} from "@/src/lib/churchResourceRefresh";
 import {
   countMinistriesWithMediaAccess,
   isMinistryMediaAccessLimitReachedError,
@@ -476,6 +484,78 @@ export default function ChurchMinistryCreateScreen() {
         } catch {
           failed.push(uid);
         }
+      }
+
+      const session = getSessionSync();
+      const creatorUserId = String(session?.userId || "").trim();
+      const ministryRow = {
+        ...data,
+        mediaAccess: data.mediaAccess === true,
+        memberRole: "Pastor",
+        memberStatus: "Active",
+        leaderCount: uniqueLeaders.length,
+        membersCount: uniqueLeaders.length + uniqueMembers.length,
+        memberCount: uniqueLeaders.length + uniqueMembers.length,
+      };
+
+      if (churchId && creatorUserId) {
+        seedMinistriesRefreshFromCache({
+          churchId,
+          userId: creatorUserId,
+          items: [ministryRow],
+          updatedAt: Date.now(),
+        });
+
+        emitMinistriesUpdated({
+          churchId,
+          userId: creatorUserId,
+          ministryId: data.id,
+          action: "created",
+        });
+
+        void refreshMinistriesBundleIfNeeded({
+          churchId,
+          userId: creatorUserId,
+          headers: getKristoHeaders() as Record<string, string>,
+          isChurchAuthority: true,
+          force: true,
+          source: "church-ministries-create",
+        })
+          .then(async (bundle) => {
+            if (bundle.skipped) return;
+
+            const ministries = Array.isArray(bundle.ministries) ? bundle.ministries : [];
+            const withCounts = ministries.map((m: any) => {
+              const rows = bundle.membersByMinistryId[String(m?.id || "")] || [];
+              const leaders = rows.filter((x: any) =>
+                String(x?.role || x?.ministryRole || "").toLowerCase().includes("leader")
+              ).length;
+              return { ...m, leaderCount: leaders, memberCount: rows.length };
+            });
+
+            await saveMinistriesCache({
+              churchId,
+              userId: creatorUserId,
+              items: withCounts as Record<string, unknown>[],
+              churchLiveControlStatus: bundle.liveControlStatus,
+              updatedAt: Date.now(),
+            });
+            seedMinistriesRefreshFromCache({
+              churchId,
+              userId: creatorUserId,
+              items: withCounts,
+              churchLiveControlStatus: bundle.liveControlStatus,
+              updatedAt: Date.now(),
+              membersByMinistryId: bundle.membersByMinistryId,
+            });
+            emitMinistriesUpdated({
+              churchId,
+              userId: creatorUserId,
+              ministryId: data.id,
+              action: "refresh",
+            });
+          })
+          .catch(() => {});
       }
 
       setCreated(data);

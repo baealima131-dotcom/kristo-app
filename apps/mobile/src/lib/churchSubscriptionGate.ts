@@ -28,9 +28,48 @@ export type StrictChurchMediaLiveGateContext = {
   churchSubscriptionActive: boolean | null;
   isPastor?: boolean;
   isApprovedMediaHost?: boolean;
+  viewerIsHost?: boolean;
+  canUseMediaTools?: boolean;
+  canOpenMediaScreen?: boolean;
+  ministryRole?: string;
+  ministryToolAllowed?: boolean;
+  toolKey?: string;
   /** When true, only pastors pass the role check (e.g. subscription activation). */
   pastorOnly?: boolean;
 };
+
+function isMinistryLeaderRole(ministryRole?: string) {
+  const role = String(ministryRole || "").trim().toLowerCase();
+  return (
+    role.includes("leader") ||
+    role.includes("ministry_leader") ||
+    role.includes("admin") ||
+    role.includes("assistant")
+  );
+}
+
+function isAssignmentToolGate(gate: string) {
+  return String(gate || "").trim().startsWith("assignment-tool.");
+}
+
+function resolveStrictGateRoleAllowed(ctx: StrictChurchMediaLiveGateContext, gate: string) {
+  if (ctx.isPastor) return true;
+  if (ctx.isApprovedMediaHost || ctx.viewerIsHost === true) return true;
+  if (ctx.canUseMediaTools === true) return true;
+  if (ctx.canOpenMediaScreen === true) return true;
+
+  const toolKey = String(ctx.toolKey || "").trim().toLowerCase();
+  const isMinistryScheduleTool =
+    toolKey === "meeting" || toolKey === "schedule" || isAssignmentToolGate(gate);
+
+  if (isMinistryScheduleTool) {
+    if (ctx.ministryToolAllowed === true) return true;
+    if (isMinistryLeaderRole(ctx.ministryRole)) return true;
+    return false;
+  }
+
+  return false;
+}
 
 /**
  * V1 media/live gates: always require real churchSubscriptionActive === true.
@@ -43,6 +82,7 @@ export function evaluateStrictChurchMediaLiveSubscriptionGate(
   const churchSubscriptionActive = ctx.churchSubscriptionActive ?? null;
   const isPastor = ctx.isPastor === true;
   const isApprovedMediaHost = ctx.isApprovedMediaHost === true;
+  const viewerIsHost = ctx.viewerIsHost === true;
 
   if (ctx.pastorOnly && !isPastor) {
     logSubscriptionGateBlocked(gate, churchSubscriptionActive, {
@@ -58,14 +98,25 @@ export function evaluateStrictChurchMediaLiveSubscriptionGate(
       churchId: ctx.churchId || null,
       isPastor,
       isApprovedMediaHost,
+      viewerIsHost,
+      ministryRole: ctx.ministryRole || null,
+      ministryToolAllowed: ctx.ministryToolAllowed ?? null,
     });
     return { allowed: false, reason: "subscription_inactive" };
   }
 
-  if (!isPastor && !isApprovedMediaHost) {
+  if (!resolveStrictGateRoleAllowed(ctx, gate)) {
     logSubscriptionGateBlocked(gate, churchSubscriptionActive, {
       screen: ctx.screen || null,
       reason: "not_media_role",
+      isPastor,
+      isApprovedMediaHost,
+      viewerIsHost,
+      canUseMediaTools: ctx.canUseMediaTools ?? null,
+      canOpenMediaScreen: ctx.canOpenMediaScreen ?? null,
+      ministryRole: ctx.ministryRole || null,
+      ministryToolAllowed: ctx.ministryToolAllowed ?? null,
+      toolKey: ctx.toolKey || null,
     });
     return { allowed: false, reason: "not_media_role" };
   }

@@ -345,7 +345,7 @@ export async function mutateChurchLiveControlGuestCenterRoomSchedule(input: {
     }
 
     const patchSource = action === "reject" ? clearClaimFieldsForRoomPatch(slot) : slot;
-    if (action !== "reject" && action !== "delete_slot" && action !== "remove") {
+    if (action !== "reject") {
       const incomingUserId = String(patchSource?.claimedByUserId || "").trim();
       if (incomingUserId) {
         const claimable = assertGuestCenterSlotClaimable({
