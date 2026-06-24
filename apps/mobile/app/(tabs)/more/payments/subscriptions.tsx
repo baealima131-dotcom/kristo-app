@@ -40,6 +40,7 @@ import {
   resolveMonthlyPackage,
   resolveYearlyPackage,
   resolvePremiumSubscriptionBillingDetails,
+  formatPremiumIntroTrialBillingLine,
   describeCurrentOfferingPackages,
   setRevenueCatDebugRouteEnabled,
   resolveYearlySavingsDisplay,
@@ -99,6 +100,19 @@ function formatPrice(pkg?: PurchasesPackage, fallback?: string) {
 function formatBillingMetaRow(
   billing: ReturnType<typeof resolvePremiumSubscriptionBillingDetails>
 ): string {
+  if (billing.introTrial.isActive) {
+    const endsLabel = billing.introTrial.trialEndsAt
+      ? formatPremiumRenewalDate(billing.introTrial.trialEndsAt)
+      : null;
+    const firstPaymentLine = formatPremiumIntroTrialBillingLine(billing.introTrial);
+    const parts = [
+      endsLabel ? `Trial ends ${endsLabel}` : null,
+      firstPaymentLine,
+      billing.autoRenew !== "—" ? `Auto-renew ${billing.autoRenew}` : null,
+    ].filter(Boolean);
+    return parts.join("  •  ");
+  }
+
   const parts = [
     `Status: ${billing.status}`,
     billing.renewalDate
@@ -294,26 +308,34 @@ function CurrentPlanCard({
   description,
   price,
   period,
+  subPrice,
   billing,
   successMessage,
+  trialBadge,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   planName: string;
   description: string;
   price: string;
   period: string;
+  subPrice?: string;
   billing: ReturnType<typeof resolvePremiumSubscriptionBillingDetails>;
   successMessage: string;
+  trialBadge?: string | null;
 }) {
   return (
     <GlassCard highlighted>
-      <StatusChip label="CURRENT PLAN" />
+      <View style={s.currentPlanChipRow}>
+        <StatusChip label="CURRENT PLAN" />
+        {trialBadge ? <StatusChip label={trialBadge} tone="green" /> : null}
+      </View>
       <PlanHeader
         icon={icon}
         planName={planName}
         description={description}
         price={price}
         period={period}
+        subPrice={subPrice}
       />
       <CompactMetaRow text={formatBillingMetaRow(billing)} />
       <View style={s.successNote}>
@@ -629,6 +651,38 @@ export default function PaymentsSubscriptionsScreen() {
     setReloadToken((token) => token + 1);
   }
 
+  useEffect(() => {
+    if (offersLoading || sessionLoading || !churchId || !isPastorSessionRole(sessionRole)) {
+      return;
+    }
+
+    const ui = resolveChurchSubscriptionScreenState(serverStatus, customerInfo);
+    if (ui.screenState !== "sync") return;
+
+    let alive = true;
+    const plan = (customerInfo ? resolveActiveSubscriptionPlan(customerInfo) : null) || "monthly";
+
+    (async () => {
+      console.log("KRISTO_CHURCH_SUBSCRIPTION_AUTO_SYNC_START", { churchId, plan });
+      await maybeActivateChurchSubscription(plan, customerInfo ?? undefined);
+      if (!alive) return;
+      const info = customerInfo || (await getCustomerSubscriptionInfo().catch(() => null));
+      await refreshAfterCustomerInfoChange(info);
+      console.log("KRISTO_CHURCH_SUBSCRIPTION_AUTO_SYNC_DONE", { churchId, plan });
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    offersLoading,
+    sessionLoading,
+    churchId,
+    sessionRole,
+    serverStatus,
+    customerInfo,
+  ]);
+
   async function refreshAfterCustomerInfoChange(info: CustomerInfo | null) {
     setCustomerInfo(info);
     const hasPremium = hasPremiumEntitlement(info);
@@ -852,7 +906,9 @@ export default function PaymentsSubscriptionsScreen() {
 
   const subscriptionUi = resolveChurchSubscriptionScreenState(serverStatus, customerInfo);
   const screenState: SubscriptionScreenState = subscriptionUi.screenState;
-  const billing = resolvePremiumSubscriptionBillingDetails(customerInfo);
+  const billing = resolvePremiumSubscriptionBillingDetails(customerInfo, { monthlyPackage });
+  const introTrialActive = billing.introTrial.isActive;
+  const introTrialBadge = billing.introTrial.badgeLabel;
 
   const monthlyDisplayPrice = formatPrice(monthlyPackage || undefined, "$49.99");
   const yearlyDisplayPrice = formatPrice(yearlyPackage || undefined, "$499.99");
@@ -927,11 +983,23 @@ export default function PaymentsSubscriptionsScreen() {
                 <CurrentPlanCard
                   icon="calendar-outline"
                   planName="Monthly Plan"
-                  description="Media Premium for your church"
-                  price={monthlyDisplayPrice}
-                  period="/month"
+                  description={
+                    introTrialActive
+                      ? "Media Premium — free trial in progress"
+                      : "Media Premium for your church"
+                  }
+                  price={introTrialActive ? "$0" : monthlyDisplayPrice}
+                  period={introTrialActive ? "during trial" : "/month"}
+                  subPrice={
+                    introTrialActive ? `Then ${monthlyDisplayPrice}/month` : undefined
+                  }
                   billing={billing}
-                  successMessage="You have full access to Media Premium features."
+                  trialBadge={introTrialBadge}
+                  successMessage={
+                    introTrialActive
+                      ? "Full Media Premium access is active during your free trial. You won't be charged until the trial ends."
+                      : "You have full access to Media Premium features."
+                  }
                 />
                 <YearlyUpsellCard
                   price={yearlyDisplayPrice}
@@ -1184,6 +1252,14 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
+  },
+
+  currentPlanChipRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 12,
   },
 
   bestValueText: {

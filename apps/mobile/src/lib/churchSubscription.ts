@@ -649,6 +649,15 @@ export async function activateChurchSubscriptionForPastor(
   subscriptionPlan: "monthly" | "yearly",
   headers?: Record<string, string>
 ): Promise<boolean> {
+  return syncChurchSubscriptionFromRevenueCat(churchId, subscriptionPlan, headers);
+}
+
+/** Reconcile backend church media profile + subscription from RevenueCat entitlement. */
+export async function syncChurchSubscriptionFromRevenueCat(
+  churchId: string,
+  subscriptionPlan: "monthly" | "yearly" = "monthly",
+  headers?: Record<string, string>
+): Promise<boolean> {
   const cid = String(churchId || "").trim();
   if (!cid) return false;
 

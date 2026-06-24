@@ -830,21 +830,161 @@ export function formatPremiumRenewalDate(date: Date | null | undefined): string 
   });
 }
 
+export type PremiumIntroTrialBilling = {
+  isActive: boolean;
+  badgeLabel: string | null;
+  trialDays: number | null;
+  trialEndsAt: Date | null;
+  firstPaymentAmount: string | null;
+  periodType: "TRIAL" | "INTRO" | null;
+};
+
+function parseRevenueCatDate(value: unknown): Date | null {
+  if (value === null || value === undefined) return null;
+  const ms = Date.parse(String(value));
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms);
+}
+
+function normalizeRevenueCatPeriodType(value: unknown): string {
+  return String(value || "").trim().toUpperCase();
+}
+
+function isActiveIntroOrTrialPeriodType(value: unknown): boolean {
+  const periodType = normalizeRevenueCatPeriodType(value);
+  return periodType === "TRIAL" || periodType === "INTRO";
+}
+
+function findActiveMonthlySubscriptionInfo(
+  customerInfo: CustomerInfo | null | undefined
+) {
+  if (!customerInfo) return null;
+
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  const preferredProductId = String(entitlement?.productIdentifier || "").trim();
+
+  if (preferredProductId) {
+    const preferred = customerInfo.subscriptionsByProductIdentifier?.[preferredProductId];
+    if (preferred?.isActive && isActiveIntroOrTrialPeriodType(preferred.periodType)) {
+      return preferred;
+    }
+  }
+
+  for (const [productId, subscription] of Object.entries(
+    customerInfo.subscriptionsByProductIdentifier || {}
+  )) {
+    if (!isMonthlyPremiumProductId(productId)) continue;
+    if (subscription?.isActive && isActiveIntroOrTrialPeriodType(subscription.periodType)) {
+      return subscription;
+    }
+  }
+
+  return null;
+}
+
+/** Detect an active StoreKit / RevenueCat introductory free-trial period on the church premium plan. */
+export function resolveActivePremiumIntroTrialState(
+  customerInfo: CustomerInfo | null | undefined,
+  monthlyPackage?: PurchasesPackage | null
+): PremiumIntroTrialBilling {
+  const inactive: PremiumIntroTrialBilling = {
+    isActive: false,
+    badgeLabel: null,
+    trialDays: null,
+    trialEndsAt: null,
+    firstPaymentAmount: null,
+    periodType: null,
+  };
+
+  if (!customerInfo || !hasPremiumEntitlement(customerInfo)) {
+    return inactive;
+  }
+
+  if (resolveActiveSubscriptionPlan(customerInfo) !== "monthly") {
+    return inactive;
+  }
+
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  const subscription = findActiveMonthlySubscriptionInfo(customerInfo);
+  const periodTypeRaw =
+    subscription?.periodType || entitlement?.periodType || null;
+
+  if (!isActiveIntroOrTrialPeriodType(periodTypeRaw)) {
+    return inactive;
+  }
+
+  const periodType = normalizeRevenueCatPeriodType(periodTypeRaw) as "TRIAL" | "INTRO";
+  const trialEndsAt = parseRevenueCatDate(
+    subscription?.expiresDate || entitlement?.expirationDate || null
+  );
+
+  const intro = resolveMonthlyProductIntro(monthlyPackage || null);
+  const trialDays = resolveIntroTrialDays(intro) ?? MONTHLY_INTRO_TRIAL_DAYS;
+  const badgeLabel = `${trialDays}-Day Free Trial Active`;
+  const firstPaymentAmount =
+    String(monthlyPackage?.product?.priceString || "").trim() || "$49.99";
+
+  console.log("KRISTO_RC_ACTIVE_INTRO_TRIAL", {
+    periodType,
+    trialDays,
+    trialEndsAt: trialEndsAt?.toISOString() || null,
+    firstPaymentAmount,
+    productIdentifier:
+      subscription?.productIdentifier || entitlement?.productIdentifier || null,
+  });
+
+  return {
+    isActive: true,
+    badgeLabel,
+    trialDays,
+    trialEndsAt,
+    firstPaymentAmount,
+    periodType,
+  };
+}
+
+export function formatPremiumIntroTrialBillingLine(
+  introTrial: PremiumIntroTrialBilling
+): string | null {
+  if (!introTrial.isActive) return null;
+
+  const endsLabel = introTrial.trialEndsAt
+    ? formatPremiumRenewalDate(introTrial.trialEndsAt)
+    : null;
+
+  if (endsLabel && introTrial.firstPaymentAmount) {
+    return `First payment: ${introTrial.firstPaymentAmount} on ${endsLabel}`;
+  }
+
+  if (endsLabel) {
+    return `Trial ends ${endsLabel}`;
+  }
+
+  return introTrial.badgeLabel;
+}
+
 export type PremiumSubscriptionBillingDetails = {
   status: "Active" | "Inactive";
   autoRenew: "On" | "Off" | "—";
   renewalDate: Date | null;
   billingCycle: "Monthly" | "Yearly" | null;
+  introTrial: PremiumIntroTrialBilling;
 };
 
 export function resolvePremiumSubscriptionBillingDetails(
-  customerInfo: CustomerInfo | null | undefined
+  customerInfo: CustomerInfo | null | undefined,
+  opts?: { monthlyPackage?: PurchasesPackage | null }
 ): PremiumSubscriptionBillingDetails {
+  const introTrial = resolveActivePremiumIntroTrialState(
+    customerInfo,
+    opts?.monthlyPackage
+  );
   const inactive: PremiumSubscriptionBillingDetails = {
     status: "Inactive",
     autoRenew: "—",
     renewalDate: null,
     billingCycle: null,
+    introTrial,
   };
 
   if (!customerInfo || !hasPremiumEntitlement(customerInfo)) {
@@ -854,12 +994,16 @@ export function resolvePremiumSubscriptionBillingDetails(
   const entitlement = getActivePremiumEntitlement(customerInfo);
   const plan = resolveActiveSubscriptionPlan(customerInfo);
   const willRenew = entitlement?.willRenew;
+  const renewalDate = introTrial.isActive
+    ? introTrial.trialEndsAt
+    : resolveChurchPremiumRenewalDate(customerInfo);
 
   return {
     status: "Active",
     autoRenew: willRenew === true ? "On" : willRenew === false ? "Off" : "—",
-    renewalDate: resolveChurchPremiumRenewalDate(customerInfo),
+    renewalDate,
     billingCycle: plan === "yearly" ? "Yearly" : plan === "monthly" ? "Monthly" : null,
+    introTrial,
   };
 }
 

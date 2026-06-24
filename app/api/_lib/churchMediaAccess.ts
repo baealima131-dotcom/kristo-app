@@ -30,13 +30,25 @@ export function parseMediaHostUserIds(hosts: unknown): string[] {
     .filter(Boolean);
 }
 
+function normalizeMemberUserId(value: unknown): string {
+  return String(value || "").trim();
+}
+
 export async function resolveActualChurchPastorUserId(churchId: string): Promise<string> {
   const cid = String(churchId || "").trim();
   if (!cid) return "";
 
   const members = await getMembershipsForChurch(cid, "Active");
   const pastor = members.find((row) => isPastorChurchRole(row.churchRole));
-  return String(pastor?.userId || "").trim();
+  return normalizeMemberUserId(pastor?.userId);
+}
+
+async function resolveRequesterMembership(churchId: string, userId: string) {
+  const members = await getMembershipsForChurch(churchId, "Active");
+  const uid = normalizeMemberUserId(userId).toLowerCase();
+  return (
+    members.find((row) => normalizeMemberUserId(row.userId).toLowerCase() === uid) || null
+  );
 }
 
 export async function getStoredMediaHosts(churchId: string): Promise<MediaHostRecord[]> {
@@ -62,10 +74,20 @@ export async function evaluateChurchMediaAccess(args: {
   const churchId = String(args.churchId || "").trim();
   const userId = String(args.userId || "").trim();
   const actualPastorUserId = await resolveActualChurchPastorUserId(churchId);
+  const requesterMembership = userId
+    ? await resolveRequesterMembership(churchId, userId)
+    : null;
+  const requesterIsPastorMember = isPastorChurchRole(requesterMembership?.churchRole);
+  const resolvedPastorUserId =
+    actualPastorUserId || (requesterIsPastorMember ? userId : "");
   const hosts = await getStoredMediaHosts(churchId);
   const mediaHostUserIds = hosts.map((host) => host.userId);
 
-  const isActualChurchPastor = !!userId && userId === actualPastorUserId;
+  const isActualChurchPastor =
+    !!userId &&
+    (userId === actualPastorUserId ||
+      requesterIsPastorMember ||
+      (!!resolvedPastorUserId && userId === resolvedPastorUserId));
   const isMediaHost = !!userId && mediaHostUserIds.includes(userId);
   const media = await getChurchMediaByChurchId(churchId);
   const subscriptionActive = isChurchSubscriptionActiveFromRecord(media);
@@ -73,7 +95,7 @@ export async function evaluateChurchMediaAccess(args: {
   const canUseMediaTools = subscriptionActive && canOpenMediaScreen;
 
   return {
-    actualPastorUserId,
+    actualPastorUserId: resolvedPastorUserId || actualPastorUserId,
     hosts,
     mediaHostUserIds,
     isActualChurchPastor,
@@ -149,19 +171,26 @@ export async function ensureChurchMediaProfileForPastor(args: {
   requesterUserId: string;
 }): Promise<ChurchMediaProfile> {
   const churchId = String(args.churchId || "").trim();
-  const actualPastorUserId = String(args.actualPastorUserId || "").trim();
   const requesterUserId = String(args.requesterUserId || "").trim();
 
   const existing = await getChurchMediaByChurchId(churchId);
   if (existing?.mediaName) return existing;
 
-  if (!actualPastorUserId || requesterUserId !== actualPastorUserId) {
+  let pastorUserId = String(args.actualPastorUserId || "").trim();
+  if (!pastorUserId) {
+    const membership = await resolveRequesterMembership(churchId, requesterUserId);
+    if (isPastorChurchRole(membership?.churchRole)) {
+      pastorUserId = requesterUserId;
+    }
+  }
+
+  if (!pastorUserId || requesterUserId !== pastorUserId) {
     throw new ChurchMediaAutoCreateForbiddenError();
   }
 
   console.log("KRISTO_MEDIA_AUTO_CREATE_START", {
     churchId,
-    actualPastorUserId,
+    actualPastorUserId: pastorUserId,
     requesterUserId,
   });
 
@@ -172,19 +201,19 @@ export async function ensureChurchMediaProfileForPastor(args: {
 
     const created = await upsertChurchMedia({
       churchId,
-      ownerUserId: actualPastorUserId,
+      ownerUserId: pastorUserId,
       patch: {
         mediaName,
         category: "Church Media",
         visibility: "church",
         churchId,
-        createdBy: actualPastorUserId,
+        createdBy: pastorUserId,
       } as Partial<ChurchMediaProfile> & { mediaName: string },
     });
 
     console.log("KRISTO_MEDIA_AUTO_CREATE_SUCCESS", {
       churchId,
-      actualPastorUserId,
+      actualPastorUserId: pastorUserId,
       mediaId: created.id,
       mediaName: created.mediaName,
     });
@@ -193,7 +222,7 @@ export async function ensureChurchMediaProfileForPastor(args: {
   } catch (error: any) {
     console.error("KRISTO_MEDIA_AUTO_CREATE_FAILED", {
       churchId,
-      actualPastorUserId,
+      actualPastorUserId: pastorUserId,
       requesterUserId,
       error: String(error?.message || error || "unknown"),
     });
