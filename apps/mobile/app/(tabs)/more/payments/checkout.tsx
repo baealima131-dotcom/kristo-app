@@ -281,15 +281,21 @@ export default function PaymentsCheckoutScreen() {
     setReloadToken((token) => token + 1);
   }
 
+ 
+  const hasPremium = hasPremiumEntitlement(customerInfo);
+  const isSubscribedForCurrentChurch = hasPremium || serverSubscriptionActive;
+  const activePlan =
+    resolvePremiumPlanFromCustomerInfo(customerInfo) || safePlan;
+  const displayPlan = isSubscribedForCurrentChurch ? activePlan : safePlan;
   const targetPackage = safePlan === "monthly" ? monthlyPackage : yearlyPackage;
-  const planMeta = PLAN_META[safePlan];
+  const displayPackage = displayPlan === "monthly" ? monthlyPackage : yearlyPackage;
+  const planMeta = PLAN_META[displayPlan];
   const livePrice =
-    targetPackage?.product.priceString || planMeta.fallbackPrice;
+    displayPackage?.product.priceString || planMeta.fallbackPrice;
   const monthlyTrialEligible =
     safePlan === "monthly" &&
     resolveMonthlyIntroTrialEligible(customerInfo, monthlyPackage, monthlyIntroEligibility);
-  const hasPremium = hasPremiumEntitlement(customerInfo);
-  const isSubscribedForCurrentChurch = hasPremium || serverSubscriptionActive;
+ 
   const isPastor = isPastorSessionRole(sessionRole);
 
   useEffect(() => {
@@ -309,11 +315,11 @@ export default function PaymentsCheckoutScreen() {
   ]);
 
   const priceLine = useMemo(() => {
-    if (safePlan === "monthly") {
+    if (displayPlan === "monthly") {
       return formatMonthlySubscriptionPrice(livePrice, monthlyPackage, monthlyTrialEligible);
     }
-    return formatYearlySubscriptionPrice(livePrice, targetPackage);
-  }, [safePlan, livePrice, monthlyTrialEligible, monthlyPackage, targetPackage]);
+    return formatYearlySubscriptionPrice(livePrice, displayPackage);
+  }, [displayPlan, livePrice, monthlyTrialEligible, monthlyPackage, displayPackage]);
 
   const confirmLabel =
     safePlan === "monthly" ? "Subscribe Monthly" : "Subscribe Yearly";
@@ -528,6 +534,11 @@ export default function PaymentsCheckoutScreen() {
 
           <Text style={s.planTitle}>{planMeta.title}</Text>
           <Text style={s.priceLine}>{priceLine}</Text>
+          {isSubscribedForCurrentChurch ? (
+            <Text style={s.activePlanNote}>
+              {displayPlan === "monthly" ? "Current active plan" : "Yearly plan active"}
+            </Text>
+          ) : null}
 
           {monthlyTrialEligible ? (
             <Text style={s.trialNote}>Free trial for new subscribers. Cancel anytime.</Text>
@@ -565,27 +576,6 @@ export default function PaymentsCheckoutScreen() {
           <View style={s.ctaBlock}>
             {isSubscribedForCurrentChurch ? (
               <>
-                {isPastor ? (
-                  <Pressable
-                    onPress={handleSyncMediaTools}
-                    disabled={submitting}
-                    style={({ pressed }) => [
-                      s.primaryBtn,
-                      submitting ? s.disabledBtn : null,
-                      pressed ? s.pressed : null,
-                    ]}
-                  >
-                    {submitting ? (
-                      <ActivityIndicator color="#111" />
-                    ) : (
-                      <>
-                        <Ionicons name="lock-open-outline" size={18} color="#111" />
-                        <Text style={s.primaryBtnText}>Sync / Unlock Media Tools</Text>
-                      </>
-                    )}
-                  </Pressable>
-                ) : null}
-
                 <Pressable
                   onPress={handleManageSubscription}
                   disabled={submitting}
@@ -633,9 +623,7 @@ export default function PaymentsCheckoutScreen() {
 
             <Text style={s.footText}>
               {isSubscribedForCurrentChurch
-                ? isPastor
-                  ? "Tap Sync if Media tools are still locked after an active trial or subscription."
-                  : "Subscriptions are managed through Apple. Changes apply on your next billing date."
+                ? "Billing is managed by your app store. Changes apply on your next billing date."
                 : monthlyTrialEligible
                 ? "No charge during the free trial. Cancel anytime in Apple Subscriptions."
                 : "Secure checkout through Apple. Cancel anytime."}
@@ -806,6 +794,12 @@ const s = StyleSheet.create({
     lineHeight: 17,
   },
 
+  activePlanNote: {
+    marginTop: 8,
+    color: "#7BE495",
+    fontSize: 16,
+    fontWeight: "900",
+  },
   priceLine: {
     marginTop: 8,
     color: "#F8E6B0",

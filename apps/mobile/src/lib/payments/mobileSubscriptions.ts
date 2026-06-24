@@ -6,6 +6,7 @@ import Purchases, {
   PurchasesOfferings,
   PurchasesPackage,
   PACKAGE_TYPE,
+  STORE_REPLACEMENT_MODE,
 } from "react-native-purchases";
 import Constants from "expo-constants";
 import { Linking, Platform } from "react-native";
@@ -445,9 +446,40 @@ export async function prefetchSubscriptionOfferings(): Promise<boolean> {
   }
 }
 
-export async function purchaseSubscriptionPackage(pkg: PurchasesPackage) {
+export type PurchaseSubscriptionPackageOptions = {
+  /** Replace an existing in-group subscription (monthly → yearly). */
+  upgradeFromProductId?: string | null;
+};
+
+export async function purchaseSubscriptionPackage(
+  pkg: PurchasesPackage,
+  opts?: PurchaseSubscriptionPackageOptions
+) {
   await requireConfiguredPurchases("purchase");
-  const result = await Purchases.purchasePackage(pkg);
+
+  const fromProductId = String(opts?.upgradeFromProductId || "").trim();
+  let result;
+
+  if (fromProductId && Platform.OS === "android") {
+    console.log("KRISTO_RC_PURCHASE_UPGRADE", {
+      fromProductId,
+      toProductId: String(pkg.product.identifier || ""),
+      replacementMode: STORE_REPLACEMENT_MODE.WITH_TIME_PRORATION,
+    });
+    result = await Purchases.purchasePackage(pkg, null, {
+      oldProductIdentifier: fromProductId,
+      replacementMode: STORE_REPLACEMENT_MODE.WITH_TIME_PRORATION,
+    });
+  } else {
+    if (fromProductId) {
+      console.log("KRISTO_RC_PURCHASE_IOS_SUBSCRIPTION_GROUP", {
+        fromProductId,
+        toProductId: String(pkg.product.identifier || ""),
+      });
+    }
+    result = await Purchases.purchasePackage(pkg);
+  }
+
   try {
     await Purchases.syncPurchases();
   } catch (error) {
@@ -483,6 +515,36 @@ export async function refreshCustomerInfoAfterStorePurchase(
   }
 
   return { info, entitlementActive };
+}
+
+/** Poll RevenueCat until the active entitlement product is premium_yearly. */
+export async function refreshCustomerInfoUntilYearlyActive(
+  initialInfo?: CustomerInfo | null,
+  opts?: { maxAttempts?: number; delayMs?: number }
+): Promise<{ info: CustomerInfo; activeYearly: boolean }> {
+  const maxAttempts = Math.max(1, opts?.maxAttempts ?? 10);
+  const delayMs = Math.max(0, opts?.delayMs ?? 1200);
+
+  let info = initialInfo ?? (await getCustomerSubscriptionInfo());
+  let activeYearly = resolveActiveSubscriptionPlan(info) === "yearly";
+
+  for (let i = 0; i < maxAttempts && !activeYearly; i++) {
+    try {
+      await Purchases.syncPurchases();
+    } catch (error) {
+      console.log("KRISTO_RC_SYNC_PURCHASES_FAILED", getRevenueCatErrorDetail(error));
+    }
+    await sleepMs(delayMs);
+    info = await getCustomerSubscriptionInfo();
+    activeYearly = resolveActiveSubscriptionPlan(info) === "yearly";
+  }
+
+  console.log("KRISTO_RC_YEARLY_ACTIVE_POLL_RESULT", {
+    activeYearly,
+    activeProductId: String(getActivePremiumEntitlement(info)?.productIdentifier || ""),
+  });
+
+  return { info, activeYearly };
 }
 
 export async function restoreSubscriptionPurchases() {
@@ -782,21 +844,156 @@ export function resolveActiveSubscriptionPlan(
     return null;
   }
 
-  if (
-    productId === PREMIUM_YEARLY_PRODUCT_ID ||
-    /premium_yearly|yearly|annual|\$rc_annual/i.test(productId)
-  ) {
+  if (isYearlyPremiumProductId(productId)) {
     return "yearly";
   }
 
-  if (
-    productId === PREMIUM_MONTHLY_PRODUCT_ID ||
-    /premium_monthly|monthly|\$rc_monthly/i.test(productId)
-  ) {
+  if (isMonthlyPremiumProductId(productId)) {
     return "monthly";
   }
 
   return null;
+}
+
+function isYearlyPremiumProductId(productId: string): boolean {
+  return (
+    productId === PREMIUM_YEARLY_PRODUCT_ID ||
+    /premium_yearly|yearly|annual|\$rc_annual/i.test(productId)
+  );
+}
+
+function isMonthlyPremiumProductId(productId: string): boolean {
+  return (
+    productId === PREMIUM_MONTHLY_PRODUCT_ID ||
+    /premium_monthly|monthly|\$rc_monthly/i.test(productId)
+  );
+}
+
+export type MediaPremiumPlanUiState = {
+  hasPremium: boolean;
+  activeMonthly: boolean;
+  activeYearly: boolean;
+};
+
+function summarizeSubscriptionOwnership(
+  customerInfo: CustomerInfo | null | undefined,
+  matchesProductId: (productId: string) => boolean
+) {
+  if (!customerInfo) return null;
+
+  const subscriptions = customerInfo.subscriptionsByProductIdentifier || {};
+  for (const [productId, subscription] of Object.entries(subscriptions)) {
+    if (!matchesProductId(productId)) continue;
+    return {
+      productIdentifier: productId,
+      isActive: subscription?.isActive ?? null,
+      willRenew: subscription?.willRenew ?? null,
+      expiresDate: subscription?.expiresDate ?? null,
+      ownershipType: subscription?.ownershipType ?? null,
+      store: subscription?.store ?? null,
+    };
+  }
+
+  return null;
+}
+
+function collectAllRevenueCatProductIdentifiers(
+  customerInfo: CustomerInfo | null | undefined
+): string[] {
+  if (!customerInfo) return [];
+
+  const ids = new Set<string>();
+  for (const id of customerInfo.activeSubscriptions || []) {
+    if (id) ids.add(String(id));
+  }
+  for (const id of customerInfo.allPurchasedProductIdentifiers || []) {
+    if (id) ids.add(String(id));
+  }
+  for (const id of Object.keys(customerInfo.subscriptionsByProductIdentifier || {})) {
+    if (id) ids.add(String(id));
+  }
+  for (const entitlement of Object.values(customerInfo.entitlements?.active || {})) {
+    const productId = String(entitlement?.productIdentifier || "").trim();
+    if (productId) ids.add(productId);
+  }
+  for (const entitlement of Object.values(customerInfo.entitlements?.all || {})) {
+    const productId = String(entitlement?.productIdentifier || "").trim();
+    if (productId) ids.add(productId);
+  }
+
+  return [...ids].sort();
+}
+
+/** Debug snapshot to distinguish Apple defer vs missing RevenueCat yearly entitlement. */
+export function logRevenueCatSubscriptionOwnershipDebug(
+  customerInfo: CustomerInfo | null | undefined,
+  source: string,
+  meta: Record<string, unknown> = {}
+) {
+  const activeEntitlements = customerInfo?.entitlements?.active || {};
+  const activeEntitlementSummary = Object.fromEntries(
+    Object.entries(activeEntitlements).map(([key, entitlement]) => [
+      key,
+      {
+        productIdentifier: entitlement?.productIdentifier ?? null,
+        isActive: entitlement?.isActive ?? null,
+        willRenew: entitlement?.willRenew ?? null,
+        expirationDate: entitlement?.expirationDate ?? null,
+        store: entitlement?.store ?? null,
+      },
+    ])
+  );
+
+  console.log("KRISTO_RC_SUBSCRIPTION_OWNERSHIP_DEBUG", {
+    source,
+    ...meta,
+    originalAppUserId: customerInfo?.originalAppUserId ?? null,
+    activeSubscriptions: customerInfo?.activeSubscriptions || [],
+    activeEntitlementKeys: Object.keys(activeEntitlements),
+    activeEntitlements: activeEntitlementSummary,
+    premiumMonthlyOwnership: summarizeSubscriptionOwnership(
+      customerInfo,
+      isMonthlyPremiumProductId
+    ),
+    premiumYearlyOwnership: summarizeSubscriptionOwnership(
+      customerInfo,
+      isYearlyPremiumProductId
+    ),
+    allProductIdentifiers: collectAllRevenueCatProductIdentifiers(customerInfo),
+    resolvedActivePlan: customerInfo ? resolveActiveSubscriptionPlan(customerInfo) : null,
+  });
+}
+
+/** Kristo V1: only active monthly vs active yearly (entitlement product only). */
+export function resolveMediaPremiumPlanUiState(
+  customerInfo: CustomerInfo | null | undefined
+): MediaPremiumPlanUiState {
+  const empty: MediaPremiumPlanUiState = {
+    hasPremium: false,
+    activeMonthly: false,
+    activeYearly: false,
+  };
+
+  if (!customerInfo || !hasPremiumEntitlement(customerInfo)) {
+    return empty;
+  }
+
+  const activePlan = resolveActiveSubscriptionPlan(customerInfo);
+  const activeMonthly = activePlan === "monthly";
+  const activeYearly = activePlan === "yearly";
+
+  console.log("KRISTO_MEDIA_PREMIUM_PLAN_UI_STATE", {
+    activeMonthly,
+    activeYearly,
+    activePlan,
+    activeProductId: String(getActivePremiumEntitlement(customerInfo)?.productIdentifier || ""),
+  });
+
+  return {
+    hasPremium: true,
+    activeMonthly,
+    activeYearly,
+  };
 }
 
 export function resolveSubscriptionStatusFromCustomerInfo(
