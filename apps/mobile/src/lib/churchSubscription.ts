@@ -565,7 +565,7 @@ export function resolveChurchSubscriptionScreenState(
     planRaw === "yearly" ? "yearly" : planRaw === "monthly" ? "monthly" : null;
 
   if (!backendPlan) {
-    backendPlan = resolveActiveSubscriptionPlan(customerInfo);
+    backendPlan = customerInfo ? resolveActiveSubscriptionPlan(customerInfo) : null;
   }
   if (!backendPlan) {
     backendPlan = "monthly";

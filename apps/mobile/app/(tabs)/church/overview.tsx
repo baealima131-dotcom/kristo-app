@@ -63,8 +63,9 @@ import {
 } from "@/src/lib/screenOpenState";
 
 const CHURCH_OVERVIEW_SCREEN = "ChurchOverview";
-import { ChurchPremiumSubscriptionModal, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
-import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
+import { ChurchMinistryPremiumLockCard, ChurchSubscriptionExpiredBadge, isMinistryCreationAllowed } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { fetchChurchSubscriptionStatus } from "@/src/lib/churchSubscription";
+import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 import {
   evaluateMinistryMediaAccessPermission,
   logMinistryMediaAccessLoad,
@@ -389,7 +390,7 @@ export default function ChurchOverviewScreen() {
   const [previewCount, setPreviewCount] = useState(0);
   const [previewLimitReached, setPreviewLimitReached] = useState(false);
   const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(null);
-  const [premiumModalOpen, setPremiumModalOpen] = useState(false);
+  const [canUseMediaTools, setCanUseMediaTools] = useState<boolean | null>(null);
   const contentOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -406,12 +407,17 @@ export default function ChurchOverviewScreen() {
   useEffect(() => {
     if (!churchId || invitePreview) {
       setChurchSubscriptionActive(null);
+      setCanUseMediaTools(null);
       return;
     }
 
     let alive = true;
-    fetchChurchSubscriptionActive(churchId, getHeaders()).then((active) => {
-      if (alive) setChurchSubscriptionActive(active);
+    fetchChurchSubscriptionStatus(getHeaders(), churchId).then((status) => {
+      if (!alive) return;
+      setChurchSubscriptionActive(
+        status.backendSubscriptionActive ?? status.subscriptionActive
+      );
+      setCanUseMediaTools(status.canUseMediaTools ?? null);
     });
 
     return () => {
@@ -975,8 +981,22 @@ export default function ChurchOverviewScreen() {
   const canSeeOfferings = isPastor || isChurchAdmin || isSystemAdmin;
   const canOpenMembers = !invitePreview;
   const canOpenMinistries = !invitePreview && canSeeLeadershipOverview;
-  const createMinistryLocked =
-    !invitePreview && canOpenMinistries && isMinistryCreationBlocked(churchSubscriptionActive);
+  const canCreateMinistryRole =
+    !invitePreview &&
+    (isPastor || isChurchAdmin || isSystemAdmin || isActualChurchPastor);
+  const subscriptionGateReady =
+    isSubscriptionBypassEnabled() ||
+    churchSubscriptionActive !== null ||
+    canUseMediaTools !== null;
+  const ministryCreationAllowed = isMinistryCreationAllowed(
+    churchSubscriptionActive,
+    canUseMediaTools
+  );
+  const showCreateMinistryCard =
+    canCreateMinistryRole && subscriptionGateReady && ministryCreationAllowed;
+  const showMinistryPremiumLockCard =
+    canCreateMinistryRole && subscriptionGateReady && !ministryCreationAllowed;
+  const hasExistingMinistries = stats.ministries > 0;
   const canOpenOfferings = !invitePreview && canSeeOfferings;
   const canEditProfile = !invitePreview && (isPastor || isChurchAdmin || isSystemAdmin);
   const sessionRoleText = [
@@ -1042,7 +1062,7 @@ export default function ChurchOverviewScreen() {
   }
 
   async function handleCreateMinistryPress() {
-    if (!canOpenMinistries) {
+    if (!canCreateMinistryRole) {
       Alert.alert(
         "Admin access",
         "Only pastor or church admin can create ministries. Ukipewa admin access utaweza kutumia sehemu hii."
@@ -1050,28 +1070,34 @@ export default function ChurchOverviewScreen() {
       return;
     }
 
-    let active = churchSubscriptionActive;
-    if (active === null) {
-      active = await fetchChurchSubscriptionActive(churchId, getHeaders());
-      setChurchSubscriptionActive(active);
-    }
-    if (isMinistryCreationBlocked(active)) {
-      setPremiumModalOpen(true);
+    if (!ministryCreationAllowed) {
+      router.push("/more/payments/subscriptions" as any);
       return;
     }
 
     router.push("/church/ministries/create" as any);
   }
 
-  function handlePremiumModalPrimary() {
-    setPremiumModalOpen(false);
-    if (isPastor || isPastorSession || isChurchAdmin || isSystemAdmin) {
-      router.push("/more/payments/subscriptions" as any);
-    }
+  function openSubscriptionsScreen() {
+    router.push("/more/payments/subscriptions" as any);
+  }
+
+  function guardPremiumManagementAction(actionLabel: string): boolean {
+    if (ministryCreationAllowed) return true;
+    Alert.alert(
+      "Subscription expired",
+      `${actionLabel} requires an active Media Premium subscription.`,
+      [
+        { text: "Not now", style: "cancel" },
+        { text: "Subscribe", onPress: openSubscriptionsScreen },
+      ]
+    );
+    return false;
   }
 
   async function saveMediaAccessChanges() {
     if (!canManageMinistryMediaAccess) return;
+    if (!guardPremiumManagementAction("Managing ministry media access")) return;
 
     const selectedIds = new Set(
       mediaTargets.filter((m) => m.mediaAccess).slice(0, 3).map((m) => m.id)
@@ -1115,6 +1141,7 @@ export default function ChurchOverviewScreen() {
 
   async function openPastorMediaPicker(mode: "manage" | "studio" = "studio") {
     if (!canManageMinistryMediaAccess) return;
+    if (!guardPremiumManagementAction("Ministry media tools")) return;
     setMediaPickerMode(mode);
     setMediaPickerOpen(true);
     setMediaTargetsLoading(true);
@@ -1611,6 +1638,13 @@ export default function ChurchOverviewScreen() {
                 </View>
               </View>
 
+              {!ministryCreationAllowed && subscriptionGateReady ? (
+                <ChurchSubscriptionExpiredBadge
+                  onSubscribe={openSubscriptionsScreen}
+                  style={{ marginBottom: 10 }}
+                />
+              ) : null}
+
               <View style={s.powerActions}>
                 <LuxuryPressable
                   onPress={() => {
@@ -1618,6 +1652,7 @@ export default function ChurchOverviewScreen() {
                       Alert.alert("Pastor access required", "Only the church Pastor can manage ministry media access.");
                       return;
                     }
+                    if (!guardPremiumManagementAction("Managing ministry live access")) return;
                     openPastorMediaPicker("manage");
                   }}
                   style={s.powerBtn}
@@ -1638,6 +1673,7 @@ export default function ChurchOverviewScreen() {
                 <LuxuryPressable
                   onPress={() => {
                     if (isActualChurchPastor || isPastor || isPastorSession) {
+                      if (!guardPremiumManagementAction("Media Studio")) return;
                       openMediaStudio();
                       return;
                     }
@@ -1709,14 +1745,10 @@ export default function ChurchOverviewScreen() {
                 </LuxuryPressable>
               );
             })}
-            {!invitePreview ? (
+            {!invitePreview && showCreateMinistryCard ? (
             <LuxuryPressable
               onPress={handleCreateMinistryPress}
-              style={[
-                s.statCardBase,
-                createMinistryLocked ? s.statCardPremiumLocked : s.statCardAction,
-                !canOpenMinistries && { opacity: 0.92 },
-              ]}
+              style={[s.statCardBase, s.statCardAction]}
             >
               <View style={s.statGlowAction} pointerEvents="none" />
               <LinearGradient
@@ -1726,25 +1758,30 @@ export default function ChurchOverviewScreen() {
                 end={{ x: 0.5, y: 1 }}
                 style={s.statCardSheen}
               />
-              <View style={[s.statIconAction, createMinistryLocked && s.statIconPremiumLocked]}>
-                <Ionicons
-                  name={createMinistryLocked ? "lock-closed" : "add-circle-outline"}
-                  size={createMinistryLocked ? 18 : 22}
-                  color={GOLD}
-                />
+              <View style={s.statIconAction}>
+                <Ionicons name="add-circle-outline" size={22} color={GOLD} />
               </View>
-              <Text style={[s.statValue, s.statValueGold, createMinistryLocked && s.statValueLocked]}>
-                {createMinistryLocked ? "◆" : "+"}
-              </Text>
+              <Text style={[s.statValue, s.statValueGold]}>+</Text>
               <Text style={s.statLabel} numberOfLines={2}>
                 Create Ministry
               </Text>
-              {createMinistryLocked ? (
-                <Text style={s.statPremiumTag}>Premium</Text>
-              ) : null}
             </LuxuryPressable>
           ) : null}
         </View>
+
+        {showMinistryPremiumLockCard ? (
+          hasExistingMinistries ? (
+            <ChurchSubscriptionExpiredBadge
+              onSubscribe={openSubscriptionsScreen}
+              style={s.ministryPremiumLockCard}
+            />
+          ) : (
+            <ChurchMinistryPremiumLockCard
+              onSubscribe={openSubscriptionsScreen}
+              style={s.ministryPremiumLockCard}
+            />
+          )
+        ) : null}
 
           
         </Animated.ScrollView>
@@ -1859,12 +1896,6 @@ export default function ChurchOverviewScreen() {
           )}
         </View>
       </Modal>
-
-      <ChurchPremiumSubscriptionModal
-        visible={premiumModalOpen}
-        onClose={() => setPremiumModalOpen(false)}
-        onViewSubscription={handlePremiumModalPrimary}
-      />
       </View>
     </View>
   );
@@ -2208,6 +2239,12 @@ const s = StyleSheet.create<any>({
     columnGap: STAT_GAP,
     rowGap: 14,
     marginTop: 12,
+    marginBottom: 10,
+  },
+
+  ministryPremiumLockCard: {
+    width: STAT_GRID_WIDTH,
+    alignSelf: "flex-start",
     marginBottom: 26,
   },
 

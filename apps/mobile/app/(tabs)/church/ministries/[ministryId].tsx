@@ -24,6 +24,8 @@ import {
   applyPastorAuthorityToMinistryBoard,
   isProtectedMinistryMember,
 } from "@/src/lib/ministryAuthority";
+import { ChurchSubscriptionExpiredBadge } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { useChurchPremiumManagementAccess } from "@/src/lib/useChurchPremiumManagementAccess";
 
 const VIP_BG = "#0B0F17";
 const GOLD = "#D9B35F";
@@ -174,6 +176,27 @@ export default function ChurchMinistryDetailsScreen() {
     effectiveAuthRole === "Pastor" ||
     effectiveAuthRole === "Ministry_Leader";
 
+  const { managementAllowed, managementBlocked, ready: subscriptionGateReady } =
+    useChurchPremiumManagementAccess(churchId);
+  const canManageMinistryPremium = canEditMinistry && managementAllowed;
+
+  function openSubscriptionsScreen() {
+    router.push("/more/payments/subscriptions" as any);
+  }
+
+  function guardPremiumManagement(actionLabel: string): boolean {
+    if (managementAllowed) return true;
+    Alert.alert(
+      "Subscription expired",
+      `${actionLabel} requires an active Media Premium subscription.`,
+      [
+        { text: "Not now", style: "cancel" },
+        { text: "Subscribe", onPress: openSubscriptionsScreen },
+      ]
+    );
+    return false;
+  }
+
   const getHeaders = () => ({
     accept: "application/json",
     "x-kristo-user-id": effectiveAuthUserId,
@@ -308,6 +331,7 @@ export default function ChurchMinistryDetailsScreen() {
       Alert.alert("Access denied", "Only church leadership can manage ministry members.");
       return;
     }
+    if (!guardPremiumManagement(`Adding a ministry ${role.toLowerCase()}`)) return;
 
     const existingIds = new Set(
       membersLive.map((m: any) => String(m?.userId || m?.id || ""))
@@ -370,6 +394,7 @@ export default function ChurchMinistryDetailsScreen() {
       Alert.alert("Access denied");
       return;
     }
+    if (!guardPremiumManagement("Removing ministry members")) return;
 
     const mmid = String(mm?.id || "").trim();
     const displayName = String(
@@ -438,6 +463,7 @@ export default function ChurchMinistryDetailsScreen() {
       Alert.alert("Access denied");
       return;
     }
+    if (!guardPremiumManagement("Deleting ministries")) return;
 
     Alert.alert(
       "Delete Ministry",
@@ -491,6 +517,7 @@ export default function ChurchMinistryDetailsScreen() {
       Alert.alert("Admin access", "Only pastor, church admin, or ministry leader can edit this ministry.");
       return;
     }
+    if (!guardPremiumManagement("Editing ministries")) return;
     router.push(({
       pathname: "/church/ministries/[ministryId]/edit",
       params: { ministryId },
@@ -554,6 +581,13 @@ return (
               </Text>
             </View>
           </View>
+
+          {canEditMinistry && managementBlocked && subscriptionGateReady ? (
+            <ChurchSubscriptionExpiredBadge
+              onSubscribe={openSubscriptionsScreen}
+              style={{ marginBottom: 14 }}
+            />
+          ) : null}
 
           <View style={s.grid}>
             <View style={s.statCard}>
@@ -648,7 +682,7 @@ return (
                             </Text>
                           </View>
 
-                          {canEditMinistry && !isProtected ? (
+                          {canManageMinistryPremium && !isProtected ? (
                             <Pressable
                               onPress={() => removeMemberFromMinistry(m)}
                               style={s.memberRemoveBtn}
@@ -673,7 +707,7 @@ return (
             )}
           </Pressable>
 
-          {canEditMinistry ? (
+          {canManageMinistryPremium ? (
             <View style={s.manageRow}>
               <Pressable
                 onPress={() => addPersonToMinistry("Leader")}
@@ -693,7 +727,7 @@ return (
             </View>
           ) : null}
 
-          {canEditMinistry ? (
+          {canManageMinistryPremium ? (
             <Pressable
               onPress={deleteMinistryNow}
               style={s.deleteBtn}
@@ -718,7 +752,7 @@ return (
           </View>
 
           <View style={s.actionsWrap}>
-            {canEditMinistry ? (
+            {canManageMinistryPremium ? (
               <Pressable onPress={openEditMinistryScreen} style={[s.btn, s.btnBlue]}>
                 <Text style={[s.btnText, s.btnTextBlue]}>Edit Ministry</Text>
               </Pressable>

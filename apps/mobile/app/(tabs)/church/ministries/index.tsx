@@ -5,9 +5,8 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
-import { ChurchPremiumSubscriptionModal, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
-import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
-import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
+import { ChurchMinistryPremiumLockCard, ChurchSubscriptionExpiredBadge } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { useChurchPremiumManagementAccess } from "@/src/lib/useChurchPremiumManagementAccess";
 import {
   getMinistriesCache,
   isScreenCacheFresh,
@@ -103,13 +102,10 @@ export default function MoreMinistriesList() {
     role === "Leader" ||
     role === "Ministry_Leader" ||
     role === "System_Admin";
-  const canManageSubscriptions =
-    /\bPastor\b/i.test(role) || role === "Church_Admin" || role === "System_Admin";
-  const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
-    isSubscriptionBypassEnabled() ? true : null
-  );
-  const [premiumModalOpen, setPremiumModalOpen] = useState(false);
-  const createMinistryLocked = canCreateMinistry && isMinistryCreationBlocked(churchSubscriptionActive);
+  const { managementBlocked, ready: subscriptionGateReady } =
+    useChurchPremiumManagementAccess(churchId);
+  const createMinistryLocked = canCreateMinistry && managementBlocked;
+  const showCreateMinistryActions = canCreateMinistry && !createMinistryLocked;
 
   const applyMinistriesCache = useCallback((cachedItems: Ministry[]) => {
     const sig = ministriesSignature(cachedItems);
@@ -274,22 +270,6 @@ export default function MoreMinistriesList() {
   );
 
   useEffect(() => {
-    if (!churchId || isSubscriptionBypassEnabled()) {
-      setChurchSubscriptionActive(isSubscriptionBypassEnabled() ? true : null);
-      return;
-    }
-
-    let alive = true;
-    fetchChurchSubscriptionActive(churchId, getKristoHeaders()).then((active) => {
-      if (alive) setChurchSubscriptionActive(active);
-    });
-
-    return () => {
-      alive = false;
-    };
-  }, [churchId]);
-
-  useEffect(() => {
     const unsub = onMinistriesUpdated((payload) => {
       if (payload.churchId !== churchId || payload.userId !== userId) return;
 
@@ -306,26 +286,12 @@ export default function MoreMinistriesList() {
   }, [churchId, userId, applyMinistriesCache, load]);
 
   async function handleCreateMinistryPress() {
-    if (!canCreateMinistry) return;
-
-    let active = churchSubscriptionActive;
-    if (active === null && !isSubscriptionBypassEnabled()) {
-      active = await fetchChurchSubscriptionActive(churchId, getKristoHeaders());
-      setChurchSubscriptionActive(active);
-    }
-    if (isMinistryCreationBlocked(active)) {
-      setPremiumModalOpen(true);
-      return;
-    }
-
+    if (!canCreateMinistry || createMinistryLocked) return;
     router.push("/church/ministries/create" as any);
   }
 
-  function handlePremiumModalPrimary() {
-    setPremiumModalOpen(false);
-    if (canManageSubscriptions) {
-      router.push("/more/payments/subscriptions" as any);
-    }
+  function openSubscriptionsScreen() {
+    router.push("/more/payments/subscriptions" as any);
   }
 
   const hasItems = useMemo(() => items.length > 0, [items]);
@@ -361,20 +327,12 @@ export default function MoreMinistriesList() {
         <Pressable onPress={() => load({ force: true })} style={({ pressed }) => [s.refreshBtn, pressed && { opacity: 0.85 }]}>
           <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.85)" />
         </Pressable>
-        {canCreateMinistry ? (
+        {showCreateMinistryActions ? (
           <Pressable
             onPress={handleCreateMinistryPress}
-            style={({ pressed }) => [
-              s.createNavBtn,
-              createMinistryLocked && s.createNavBtnLocked,
-              pressed && { opacity: 0.85 },
-            ]}
+            style={({ pressed }) => [s.createNavBtn, pressed && { opacity: 0.85 }]}
           >
-            <Ionicons
-              name={createMinistryLocked ? "lock-closed" : "add"}
-              size={18}
-              color={createMinistryLocked ? GOLD : "rgba(255,255,255,0.92)"}
-            />
+            <Ionicons name="add" size={18} color="rgba(255,255,255,0.92)" />
           </Pressable>
         ) : null}
       </View>
@@ -402,28 +360,26 @@ export default function MoreMinistriesList() {
             Create your first ministry room for leaders, members, and media access.
           </Text>
 
-          {canCreateMinistry ? (
+          {showCreateMinistryActions ? (
             <Pressable
               onPress={handleCreateMinistryPress}
-              style={({ pressed }) => [
-                s.createBtn,
-                createMinistryLocked && s.createBtnLocked,
-                pressed && { transform: [{ scale: 0.99 }] },
-              ]}
+              style={({ pressed }) => [s.createBtn, pressed && { transform: [{ scale: 0.99 }] }]}
             >
-              <Ionicons
-                name={createMinistryLocked ? "lock-closed" : "add"}
-                size={18}
-                color="#0B0F17"
-              />
-              <Text style={s.createBtnText}>
-                {createMinistryLocked ? "Create Ministry (Premium)" : "Create Ministry"}
-              </Text>
+              <Ionicons name="add" size={18} color="#0B0F17" />
+              <Text style={s.createBtnText}>Create Ministry</Text>
             </Pressable>
+          ) : createMinistryLocked ? (
+            <ChurchMinistryPremiumLockCard onSubscribe={openSubscriptionsScreen} />
           ) : null}
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: PAD, paddingBottom: 26 }}>
+          {createMinistryLocked && subscriptionGateReady ? (
+            <ChurchSubscriptionExpiredBadge
+              onSubscribe={openSubscriptionsScreen}
+              style={{ marginBottom: 12 }}
+            />
+          ) : null}
           {items.map((m) => {
             const leaders = Number(m.leaderCount ?? m.leadersCount ?? 0);
             const members = Number(m.memberCount ?? m.membersCount ?? 0);
@@ -465,12 +421,6 @@ export default function MoreMinistriesList() {
           })}
         </ScrollView>
       )}
-
-      <ChurchPremiumSubscriptionModal
-        visible={premiumModalOpen}
-        onClose={() => setPremiumModalOpen(false)}
-        onViewSubscription={handlePremiumModalPrimary}
-      />
 
       {/* LIST_ONLY_MARKER */}
     </View>

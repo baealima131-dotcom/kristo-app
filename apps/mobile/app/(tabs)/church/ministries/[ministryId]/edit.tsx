@@ -24,6 +24,8 @@ import { apiPatch, apiPost } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { fetchMinistryById } from "@/src/lib/ministriesApi";
 import * as ImagePicker from "expo-image-picker";
+import { ChurchSubscriptionExpiredBadge } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { useChurchPremiumManagementAccess } from "@/src/lib/useChurchPremiumManagementAccess";
 
 type MinistryStatus = "Active" | "Paused";
 type Ministry = {
@@ -79,6 +81,13 @@ export default function ChurchMinistryEditScreen() {
     effectiveAuthRole === "Church_Admin" ||
     effectiveAuthRole === "Pastor" ||
     effectiveAuthRole === "Ministry_Leader";
+
+  const { managementBlocked, ready: subscriptionGateReady } =
+    useChurchPremiumManagementAccess(churchId);
+
+  function openSubscriptionsScreen() {
+    router.push("/more/payments/subscriptions" as any);
+  }
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -342,6 +351,31 @@ const [name, setName] = useState("");
     }
   }
 
+  if (!canEdit) {
+    return (
+      <View style={[s.screen, { paddingTop: insets.top + 12, paddingHorizontal: PAD }]}>
+        <Pressable onPress={goBackTarget} style={s.backBtn}>
+          <Ionicons name="chevron-back" size={18} color="rgba(255,255,255,0.88)" />
+        </Pressable>
+        <Text style={s.lockedTitle}>Access denied</Text>
+        <Text style={s.lockedBody}>Only church leadership can edit this ministry.</Text>
+      </View>
+    );
+  }
+
+  if (subscriptionGateReady && managementBlocked) {
+    return (
+      <View style={[s.screen, { paddingTop: insets.top + 12, paddingHorizontal: PAD }]}>
+        <Pressable onPress={goBackTarget} style={s.backBtn}>
+          <Ionicons name="chevron-back" size={18} color="rgba(255,255,255,0.88)" />
+        </Pressable>
+        <View style={{ marginTop: 18 }}>
+          <ChurchSubscriptionExpiredBadge onSubscribe={openSubscriptionsScreen} />
+        </View>
+      </View>
+    );
+  }
+
   return (
     <Pressable style={s.screen} onPress={Keyboard.dismiss} accessible={false}>
       <KeyboardAvoidingView
@@ -534,6 +568,21 @@ const [name, setName] = useState("");
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: VIP_BG },
+  lockedTitle: {
+    marginTop: 18,
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  lockedBody: {
+    marginTop: 8,
+    color: MUTED,
+    fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 20,
+    textAlign: "center",
+  },
 
   simpleProfileCard: {
     borderRadius: 26,

@@ -22,7 +22,8 @@ import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
-import { fetchChurchSubscriptionActive } from "@/src/lib/churchSubscription";
+import { fetchChurchSubscriptionStatus } from "@/src/lib/churchSubscription";
+import { ChurchMinistryPremiumLockCard, isMinistryCreationBlocked } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { emitMinistriesUpdated } from "@/src/lib/kristoProfileEvents";
 import {
@@ -265,7 +266,23 @@ export default function ChurchMinistryCreateScreen() {
   const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(
     isSubscriptionBypassEnabled() ? true : null
   );
+  const [canUseMediaTools, setCanUseMediaTools] = useState<boolean | null>(
+    isSubscriptionBypassEnabled() ? true : null
+  );
+  const [subscriptionGateReady, setSubscriptionGateReady] = useState(
+    isSubscriptionBypassEnabled()
+  );
 
+  const session = getSessionSync() as any;
+  const sessionRole = String(session?.role || session?.churchRole || "").trim();
+  const canCreateMinistryRole =
+    /\bPastor\b/i.test(sessionRole) ||
+    sessionRole === "Church_Admin" ||
+    sessionRole === "System_Admin";
+  const ministryCreationBlocked = isMinistryCreationBlocked(
+    churchSubscriptionActive,
+    canUseMediaTools
+  );
   const canEnableMinistryMediaAccess =
     churchSubscriptionActive === true || isSubscriptionBypassEnabled();
   const mediaAccessLimitReached = mediaAccessCount >= MINISTRY_MEDIA_ACCESS_LIMIT;
@@ -336,8 +353,13 @@ export default function ChurchMinistryCreateScreen() {
   useEffect(() => {
     if (!churchId) return;
     let alive = true;
-    fetchChurchSubscriptionActive(churchId, getKristoHeaders()).then((active) => {
-      if (alive) setChurchSubscriptionActive(active);
+    fetchChurchSubscriptionStatus(getKristoHeaders(), churchId).then((status) => {
+      if (!alive) return;
+      setChurchSubscriptionActive(
+        status.backendSubscriptionActive ?? status.subscriptionActive
+      );
+      setCanUseMediaTools(status.canUseMediaTools ?? null);
+      setSubscriptionGateReady(true);
     });
     return () => {
       alive = false;
@@ -597,6 +619,45 @@ export default function ChurchMinistryCreateScreen() {
       // If removed from members, also remove from leaders
       setPickedLeaderIds((prev) => (prev.includes(userId) ? prev.filter((x) => x !== userId) : prev));
     }
+  }
+
+  function openSubscriptionsScreen() {
+    router.push("/more/payments/subscriptions" as any);
+  }
+
+  if (!subscriptionGateReady) {
+    return (
+      <View style={[s.screen, s.gateScreen, { paddingTop: insets.top + 24 }]}>
+        <ActivityIndicator color={GOLD} />
+      </View>
+    );
+  }
+
+  if (!canCreateMinistryRole) {
+    return (
+      <View style={[s.screen, { paddingTop: insets.top + 12, paddingHorizontal: 16 }]}>
+        <LuxuryPressable onPress={() => router.back()} style={s.backBtn}>
+          <Ionicons name="chevron-back" size={20} color={TEXT_PRIMARY} />
+        </LuxuryPressable>
+        <View style={s.gateContent}>
+          <Text style={s.gateTitle}>Pastor access required</Text>
+          <Text style={s.gateBody}>Only pastor or church admin can create ministries.</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (ministryCreationBlocked) {
+    return (
+      <View style={[s.screen, { paddingTop: insets.top + 12, paddingHorizontal: 16 }]}>
+        <LuxuryPressable onPress={() => router.back()} style={s.backBtn}>
+          <Ionicons name="chevron-back" size={20} color={TEXT_PRIMARY} />
+        </LuxuryPressable>
+        <View style={{ marginTop: 18 }}>
+          <ChurchMinistryPremiumLockCard onSubscribe={openSubscriptionsScreen} />
+        </View>
+      </View>
+    );
   }
 
   return (
@@ -1034,6 +1095,31 @@ export default function ChurchMinistryCreateScreen() {
 }
 
 const s = StyleSheet.create<any>({
+  gateScreen: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gateContent: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  gateTitle: {
+    marginTop: 18,
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  gateBody: {
+    marginTop: 8,
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 20,
+    textAlign: "center",
+  },
   screen: { flex: 1, backgroundColor: VIP_BG },
   screenPress: { flex: 1 },
   ambientGoldOrb: {

@@ -1260,7 +1260,7 @@ export function monthlyPackageHasIntroOffer(
   const intro = resolveMonthlyProductIntro(monthlyPackage);
   if (intro) return true;
 
-  const period = String(intro?.period || "").trim().toUpperCase();
+  const period = String((intro as any)?.period || "").trim().toUpperCase();
   return period === "P2W";
 }
 

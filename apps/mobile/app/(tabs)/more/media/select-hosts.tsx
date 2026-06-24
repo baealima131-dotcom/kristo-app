@@ -26,6 +26,8 @@ import {
   clearChurchMediaProfileCache,
 } from "@/src/lib/churchMediaProfileStore";
 import { MAX_CHURCH_MEDIA_HOSTS } from "@/src/lib/churchMediaAccess";
+import { ChurchSubscriptionExpiredBadge } from "@/src/components/ChurchPremiumSubscriptionModal";
+import { useChurchPremiumManagementAccess } from "@/src/lib/useChurchPremiumManagementAccess";
 
 type HostDraft = {
   userId: string;
@@ -151,6 +153,15 @@ export default function SelectHosts() {
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
 
+  const churchId = String(session?.churchId || "").trim();
+  const { managementAllowed, managementBlocked, ready: subscriptionGateReady } =
+    useChurchPremiumManagementAccess(churchId);
+  const canEditHosts = canManageHosts && managementAllowed;
+
+  function openSubscriptionsScreen() {
+    router.push("/more/payments/subscriptions" as any);
+  }
+
   const selectedCount = useMemo(
     () => hosts.filter(Boolean).length,
     [hosts]
@@ -259,7 +270,7 @@ export default function SelectHosts() {
   }, [loadAll]);
 
   function addHost(member: Member) {
-    if (!canManageHosts || activeSlot === null) return;
+    if (!canEditHosts || activeSlot === null) return;
 
     const userId = String(member.userId || "").trim();
     if (!userId) return;
@@ -292,7 +303,7 @@ export default function SelectHosts() {
   }
 
   function removeHost(index: number) {
-    if (!canManageHosts) return;
+    if (!canEditHosts) return;
     setHosts((prev) => {
       const next = [...prev];
       next[index] = null;
@@ -307,6 +318,17 @@ export default function SelectHosts() {
       Alert.alert(
         "Pastor access required",
         "Only the actual church Pastor can add or remove trusted media hosts."
+      );
+      return;
+    }
+    if (!managementAllowed) {
+      Alert.alert(
+        "Subscription expired",
+        "Trusted media hosts require an active Media Premium subscription.",
+        [
+          { text: "Not now", style: "cancel" },
+          { text: "Subscribe", onPress: openSubscriptionsScreen },
+        ]
       );
       return;
     }
@@ -485,6 +507,12 @@ export default function SelectHosts() {
           contentContainerStyle={[s.scrollContent, { paddingBottom: bottomContentClearance }]}
           scrollIndicatorInsets={{ bottom: bottomContentClearance * 0.35 }}
         >
+          {managementBlocked && subscriptionGateReady ? (
+            <ChurchSubscriptionExpiredBadge
+              onSubscribe={openSubscriptionsScreen}
+              style={{ marginBottom: 14 }}
+            />
+          ) : null}
           <Text style={s.sectionEyebrow}>Broadcast control</Text>
 
           {hosts.map((host, index) => {
@@ -528,7 +556,7 @@ export default function SelectHosts() {
                   </Text>
                   {filled ? (
                     <Pressable
-                      disabled={!canManageHosts || saving}
+                      disabled={!canEditHosts || saving}
                       onPress={() => removeHost(index)}
                       hitSlop={8}
                       style={({ pressed }) => [s.removeBtn, pressed && s.removeBtnPressed]}
@@ -578,7 +606,7 @@ export default function SelectHosts() {
                   </View>
                 ) : (
                   <LuxuryPressable
-                    disabled={!canManageHosts || saving || selectedCount >= MAX_CHURCH_MEDIA_HOSTS}
+                    disabled={!canEditHosts || saving || selectedCount >= MAX_CHURCH_MEDIA_HOSTS}
                     onPress={() => setActiveSlot(index)}
                     style={s.emptySlotPressable}
                   >
@@ -592,7 +620,11 @@ export default function SelectHosts() {
                     <View style={s.emptyTextCol}>
                       <Text style={s.emptyTitle}>Available slot</Text>
                       <Text style={s.emptyMicro}>
-                        {canManageHosts ? "Tap to assign" : "Pastor access required"}
+                        {!canManageHosts
+                          ? "Pastor access required"
+                          : managementBlocked
+                            ? "Subscription expired"
+                            : "Tap to assign"}
                       </Text>
                     </View>
 
@@ -640,7 +672,7 @@ export default function SelectHosts() {
         ) : null}
 
         <View style={s.saveBtnWrap}>
-          {!saving && canManageHosts ? (
+          {!saving && canEditHosts ? (
             <Animated.View
               pointerEvents="none"
               style={[s.saveBtnGlow, { opacity: saveGlowPulse }]}
@@ -648,18 +680,18 @@ export default function SelectHosts() {
           ) : null}
 
           <Pressable
-            disabled={!canManageHosts || saving || loading}
+            disabled={!canEditHosts || saving || loading}
             onPress={saveHosts}
             style={({ pressed }) => [
               s.saveBtn,
-              !canManageHosts ? s.saveBtnDisabled : null,
+              !canEditHosts ? s.saveBtnDisabled : null,
               saving ? s.saveBtnSaving : null,
-              pressed && canManageHosts && !saving ? s.saveBtnPressed : null,
+              pressed && canEditHosts && !saving ? s.saveBtnPressed : null,
             ]}
           >
             <LinearGradient
               colors={
-                !canManageHosts
+                !canEditHosts
                   ? ["rgba(217,179,95,0.14)", "rgba(217,179,95,0.08)"]
                   : saving
                     ? ["rgba(217,179,95,0.62)", "rgba(167,124,46,0.78)"]
@@ -684,12 +716,16 @@ export default function SelectHosts() {
               ) : (
                 <>
                   <Ionicons
-                    name={canManageHosts ? "shield-checkmark-outline" : "lock-closed-outline"}
+                    name={canEditHosts ? "shield-checkmark-outline" : "lock-closed-outline"}
                     size={15}
-                    color={canManageHosts ? "#0B0F17" : GOLD}
+                    color={canEditHosts ? "#0B0F17" : GOLD}
                   />
-                  <Text style={[s.saveBtnTextDark, !canManageHosts && s.saveBtnTextMuted]}>
-                    {canManageHosts ? "Save Trusted Hosts" : "Pastor access required"}
+                  <Text style={[s.saveBtnTextDark, !canEditHosts && s.saveBtnTextMuted]}>
+                    {!canManageHosts
+                      ? "Pastor access required"
+                      : managementBlocked
+                        ? "Subscription expired"
+                        : "Save Trusted Hosts"}
                   </Text>
                 </>
               )}

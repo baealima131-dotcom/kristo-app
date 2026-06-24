@@ -15,10 +15,164 @@ import {
 } from "@/src/lib/churchSubscription";
 import { isSubscriptionBypassEnabled } from "@/src/lib/subscriptionBypass";
 
-export function isMinistryCreationBlocked(subscriptionActive: boolean | null): boolean {
-  if (isSubscriptionBypassEnabled()) return false;
-  return subscriptionActive !== true;
+export function isMinistryCreationAllowed(
+  subscriptionActive: boolean | null,
+  canUseMediaTools?: boolean | null
+): boolean {
+  if (isSubscriptionBypassEnabled()) return true;
+  if (canUseMediaTools === true) return true;
+  return subscriptionActive === true;
 }
+
+export function isMinistryCreationBlocked(
+  subscriptionActive: boolean | null,
+  canUseMediaTools?: boolean | null
+): boolean {
+  return !isMinistryCreationAllowed(subscriptionActive, canUseMediaTools);
+}
+
+/** V1: lock premium ministry management when subscription is inactive or media tools are locked. */
+export const isChurchPremiumManagementBlocked = isMinistryCreationBlocked;
+export const isChurchPremiumManagementAllowed = isMinistryCreationAllowed;
+
+type MinistryPremiumLockCardProps = {
+  onSubscribe: () => void;
+  style?: object;
+};
+
+export function ChurchMinistryPremiumLockCard({
+  onSubscribe,
+  style,
+}: MinistryPremiumLockCardProps) {
+  return (
+    <View style={[lockCardStyles.card, style]}>
+      <View style={lockCardStyles.headerRow}>
+        <Ionicons name="lock-closed" size={14} color="#E8C872" />
+        <Text style={lockCardStyles.title}>Media Premium required</Text>
+      </View>
+      <Text style={lockCardStyles.message}>
+        Subscribe to create ministries and manage ministry live access.
+      </Text>
+      <Pressable
+        onPress={onSubscribe}
+        style={({ pressed }) => [lockCardStyles.btn, pressed && lockCardStyles.pressed]}
+      >
+        <Text style={lockCardStyles.btnText}>Subscribe</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const lockCardStyles = StyleSheet.create({
+  card: {
+    borderRadius: 18,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(217,179,95,0.28)",
+    gap: 8,
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  title: {
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 14,
+    fontWeight: "800",
+    letterSpacing: -0.1,
+  },
+  message: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
+  btn: {
+    alignSelf: "flex-start",
+    marginTop: 2,
+    minHeight: 36,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.14)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(217,179,95,0.34)",
+  },
+  btnText: {
+    color: "#F0D693",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  pressed: {
+    opacity: 0.9,
+  },
+});
+
+type ChurchSubscriptionExpiredBadgeProps = {
+  onSubscribe: () => void;
+  style?: object;
+};
+
+/** Compact banner when subscription expired but existing ministry data stays visible. */
+export function ChurchSubscriptionExpiredBadge({
+  onSubscribe,
+  style,
+}: ChurchSubscriptionExpiredBadgeProps) {
+  return (
+    <View style={[expiredBadgeStyles.row, style]}>
+      <Ionicons name="lock-closed" size={13} color="#E8C872" />
+      <Text style={expiredBadgeStyles.label}>Subscription expired</Text>
+      <Pressable
+        onPress={onSubscribe}
+        style={({ pressed }) => [expiredBadgeStyles.btn, pressed && expiredBadgeStyles.pressed]}
+      >
+        <Text style={expiredBadgeStyles.btnText}>Subscribe</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const expiredBadgeStyles = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(217,179,95,0.28)",
+  },
+  label: {
+    flex: 1,
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: -0.1,
+  },
+  btn: {
+    minHeight: 32,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.16)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(217,179,95,0.34)",
+  },
+  btnText: {
+    color: "#F0D693",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  pressed: {
+    opacity: 0.9,
+  },
+});
 
 type Props = {
   visible: boolean;
