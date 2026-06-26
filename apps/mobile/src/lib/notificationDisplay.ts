@@ -1,5 +1,55 @@
 import { CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS } from "@/src/lib/churchLiveControlSchedule";
 
+function parseFeedEngagementNotificationDeepLink(notification: NotificationLike): {
+  postId?: string;
+  commentId?: string;
+  actorUserId?: string;
+} {
+  const directPostId = String(notification?.postId || "").trim();
+  const directCommentId = String(notification?.commentId || "").trim();
+  const directActorUserId = String(notification?.actorUserId || "").trim();
+  if (directPostId) {
+    return {
+      postId: directPostId,
+      commentId: directCommentId || undefined,
+      actorUserId: directActorUserId || undefined,
+    };
+  }
+
+  const raw = String(notification?.id || "").trim();
+  if (raw.startsWith("ntf_feed_eng::")) {
+    const [, , postId, commentId, actorUserId] = raw.split("::");
+    return {
+      postId: String(postId || "").trim() || undefined,
+      commentId:
+        String(commentId || "").trim() && String(commentId || "").trim() !== "-"
+          ? String(commentId || "").trim()
+          : undefined,
+      actorUserId: String(actorUserId || "").trim() || undefined,
+    };
+  }
+
+  if (raw.startsWith("ntf_feed_comment::") || raw.startsWith("ntf_feed_reply::")) {
+    const [, postId, commentId] = raw.split("::");
+    return {
+      postId: String(postId || "").trim() || undefined,
+      commentId: String(commentId || "").trim() || undefined,
+    };
+  }
+
+  return {};
+}
+
+function isFeedEngagementNotificationType(type: string) {
+  return (
+    type === "FeedCommentOnPost" ||
+    type === "FeedReplyToComment" ||
+    type === "FeedPostLiked" ||
+    type === "FeedCommentLiked" ||
+    type === "FeedMention"
+  );
+}
+
 function churchLiveControlRoomHref(): string {
   const params = CHURCH_LIVE_CONTROL_ROOM_NAV_PARAMS;
   return `/more/my-church-room/messages/${encodeURIComponent(params.id)}`;
@@ -28,6 +78,9 @@ export type NotificationLike = {
   profileImage?: string;
   type?: string;
   ministryId?: string;
+  postId?: string;
+  commentId?: string;
+  id?: string;
 };
 
 export type NotificationListScope = "forMe" | "churchAdmin";
@@ -187,8 +240,7 @@ export function resolveNotificationCategory(notification: NotificationLike): Not
     type === "ChurchAnnouncementPosted" ||
     type === "ChurchTestimonyPosted" ||
     type === "ChurchMediaPosted" ||
-    type === "FeedCommentOnPost" ||
-    type === "FeedReplyToComment" ||
+    isFeedEngagementNotificationType(type) ||
     type === "ChurchProfileUpdated"
   ) {
     return "Feed";
@@ -247,6 +299,13 @@ export function resolveNotificationRoute(notification: NotificationLike): string
 
   if (type === "Generic" && title.includes("membership request")) {
     return "/church/members?tab=requests";
+  }
+
+  if (isFeedEngagementNotificationType(type)) {
+    const deepLink = parseFeedEngagementNotificationDeepLink(notification);
+    if (deepLink.postId) {
+      return `/post/${encodeURIComponent(deepLink.postId)}`;
+    }
   }
 
   if (notification.ministryId && type === "MinistryChatMessageCreated") {

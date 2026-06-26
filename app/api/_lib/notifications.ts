@@ -17,6 +17,7 @@ import {
   resolveNotificationStoreMode,
 } from "@/app/api/_lib/store/notificationDb";
 import type { NotificationStoreScope } from "@/app/api/_lib/notificationScope";
+import { parseFeedEngagementNotificationDeepLink } from "@/app/api/_lib/feedEngagementNotifications";
 
 export type NotificationType =
   | "MinistryMemberAdded"
@@ -35,6 +36,9 @@ export type NotificationType =
   | "ChurchMediaPosted"
   | "FeedCommentOnPost"
   | "FeedReplyToComment"
+  | "FeedPostLiked"
+  | "FeedCommentLiked"
+  | "FeedMention"
   | "PrayerRequestPrayedFor"
   | "TrustedMediaHostAdded"
   | "TrustedMediaHostRemoved"
@@ -86,6 +90,8 @@ export type ClientNotification = {
   ministryId?: string;
   ministryMemberId?: string;
   targetUserId?: string;
+  postId?: string;
+  commentId?: string;
 };
 
 export { resolveNotificationStoreMode };
@@ -125,6 +131,7 @@ export async function toClientNotification(n: AppNotification): Promise<ClientNo
   }
 
   const body = sanitizeActorInText(rawMessage, actorUserId, actorName);
+  const deepLink = parseFeedEngagementNotificationDeepLink(n.id);
 
   return {
     id: n.id,
@@ -144,6 +151,8 @@ export async function toClientNotification(n: AppNotification): Promise<ClientNo
     ministryId: n.ministryId,
     ministryMemberId: n.ministryMemberId,
     targetUserId: n.targetUserId,
+    postId: deepLink.postId,
+    commentId: deepLink.commentId,
   };
 }
 

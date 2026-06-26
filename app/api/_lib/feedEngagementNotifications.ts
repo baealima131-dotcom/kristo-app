@@ -1,16 +1,15 @@
-import { createNotification } from "@/app/api/_lib/notifications";
+import { createNotification, getNotificationById } from "@/app/api/_lib/notifications";
 
-function commentOnPostNotificationId(commentId: string, targetUserId: string) {
-  return `ntf_feed_comment_${commentId}_${targetUserId}`;
-}
+export type FeedEngagementNotificationType =
+  | "FeedCommentOnPost"
+  | "FeedReplyToComment"
+  | "FeedPostLiked"
+  | "FeedCommentLiked"
+  | "FeedMention";
 
-function replyToCommentNotificationId(replyCommentId: string, targetUserId: string) {
-  return `ntf_feed_reply_${replyCommentId}_${targetUserId}`;
-}
-
-function prayerRequestPrayedNotificationId(postId: string, actorUserId: string, targetUserId: string) {
-  return `ntf_prayer_pray_${postId}_${actorUserId}_${targetUserId}`;
-}
+const FEED_ENGAGEMENT_ID_PREFIX = "ntf_feed_eng::";
+const LEGACY_FEED_COMMENT_ID_PREFIX = "ntf_feed_comment::";
+const LEGACY_FEED_REPLY_ID_PREFIX = "ntf_feed_reply::";
 
 function previewText(raw: unknown, max = 120): string {
   return String(raw || "")
@@ -18,14 +17,93 @@ function previewText(raw: unknown, max = 120): string {
     .slice(0, max);
 }
 
+function normalizeCommentId(commentId?: string | null) {
+  const value = String(commentId || "").trim();
+  return value || "-";
+}
+
+export function buildFeedEngagementNotificationId(args: {
+  type: FeedEngagementNotificationType;
+  postId: string;
+  commentId?: string | null;
+  actorUserId: string;
+  targetUserId: string;
+}): string {
+  const type = String(args.type || "").trim();
+  const postId = String(args.postId || "").trim();
+  const commentId = normalizeCommentId(args.commentId);
+  const actorUserId = String(args.actorUserId || "").trim();
+  const targetUserId = String(args.targetUserId || "").trim();
+  return `${FEED_ENGAGEMENT_ID_PREFIX}${type}::${postId}::${commentId}::${actorUserId}::${targetUserId}`;
+}
+
+export function parseFeedEngagementNotificationDeepLink(id: string): {
+  type?: string;
+  postId?: string;
+  commentId?: string;
+  actorUserId?: string;
+  targetUserId?: string;
+} {
+  const raw = String(id || "").trim();
+  if (!raw) return {};
+
+  if (raw.startsWith(FEED_ENGAGEMENT_ID_PREFIX)) {
+    const [, type, postId, commentId, actorUserId, targetUserId] = raw.split("::");
+    return {
+      type: String(type || "").trim() || undefined,
+      postId: String(postId || "").trim() || undefined,
+      commentId:
+        String(commentId || "").trim() && String(commentId || "").trim() !== "-"
+          ? String(commentId || "").trim()
+          : undefined,
+      actorUserId: String(actorUserId || "").trim() || undefined,
+      targetUserId: String(targetUserId || "").trim() || undefined,
+    };
+  }
+
+  if (raw.startsWith(LEGACY_FEED_COMMENT_ID_PREFIX)) {
+    const [, postId, commentId, targetUserId] = raw.split("::");
+    return {
+      type: "FeedCommentOnPost",
+      postId: String(postId || "").trim() || undefined,
+      commentId: String(commentId || "").trim() || undefined,
+      targetUserId: String(targetUserId || "").trim() || undefined,
+    };
+  }
+
+  if (raw.startsWith(LEGACY_FEED_REPLY_ID_PREFIX)) {
+    const [, postId, commentId, targetUserId] = raw.split("::");
+    return {
+      type: "FeedReplyToComment",
+      postId: String(postId || "").trim() || undefined,
+      commentId: String(commentId || "").trim() || undefined,
+      targetUserId: String(targetUserId || "").trim() || undefined,
+    };
+  }
+
+  return {};
+}
+
 export function resolveFeedPostAuthorUserId(item: unknown): string {
-  return String(
-    (item as any)?.createdBy ||
-      (item as any)?.authorId ||
-      (item as any)?.actorUserId ||
-      (item as any)?.postedByUserId ||
-      ""
-  ).trim();
+  const row = item as Record<string, unknown> | null | undefined;
+  if (!row) return "";
+
+  const candidates = [
+    row.createdBy,
+    row.authorUserId,
+    row.authorId,
+    row.actorUserId,
+    row.postedByUserId,
+    row.userId,
+    row.scheduleCreatedByUserId,
+  ];
+
+  for (const candidate of candidates) {
+    const userId = String(candidate || "").trim();
+    if (userId && userId.startsWith("u_")) return userId;
+  }
+
+  return "";
 }
 
 export function isPrayerRequestFeedItem(item: unknown): boolean {
@@ -43,6 +121,109 @@ export function isPrayerRequestFeedItem(item: unknown): boolean {
   );
 }
 
+function prayerRequestPrayedNotificationId(postId: string, actorUserId: string, targetUserId: string) {
+  return `ntf_prayer_pray_${postId}_${actorUserId}_${targetUserId}`;
+}
+
+type CreateFeedEngagementNotificationArgs = {
+  type: FeedEngagementNotificationType;
+  churchId: string;
+  postId: string;
+  commentId?: string;
+  actorUserId: string;
+  targetUserId: string;
+  actorName?: string;
+  title: string;
+  message: string;
+  skipSelf?: boolean;
+  logStartEvent?: string;
+  logCreatedEvent?: string;
+  logSkippedSelfEvent?: string;
+};
+
+export async function createFeedEngagementNotification(
+  args: CreateFeedEngagementNotificationArgs
+): Promise<"created" | "duplicate_skipped" | "skipped_self" | "error"> {
+  const churchId = String(args.churchId || "").trim();
+  const postId = String(args.postId || "").trim();
+  const commentId = String(args.commentId || "").trim() || undefined;
+  const actorUserId = String(args.actorUserId || "").trim();
+  const targetUserId = String(args.targetUserId || "").trim();
+
+  const baseLog = {
+    type: args.type,
+    churchId,
+    postId,
+    commentId: commentId || null,
+    actorUserId,
+    targetUserId,
+  };
+
+  if (args.logStartEvent) {
+    console.log(args.logStartEvent, baseLog);
+  }
+
+  try {
+    if (!churchId || !postId || !actorUserId || !targetUserId) {
+      console.log("KRISTO_FEED_COMMENT_NOTIFICATION_ERROR", {
+        ...baseLog,
+        reason: "missing_required_fields",
+      });
+      return "error";
+    }
+
+    if (args.skipSelf !== false && actorUserId === targetUserId) {
+      if (args.logSkippedSelfEvent) {
+        console.log(args.logSkippedSelfEvent, baseLog);
+      }
+      return "skipped_self";
+    }
+
+    const notificationId = buildFeedEngagementNotificationId({
+      type: args.type,
+      postId,
+      commentId,
+      actorUserId,
+      targetUserId,
+    });
+
+    const existing = await getNotificationById(notificationId);
+    if (existing && !existing.isRead) {
+      console.log("KRISTO_FEED_NOTIFICATION_DUPLICATE_SKIPPED", {
+        ...baseLog,
+        notificationId,
+      });
+      return "duplicate_skipped";
+    }
+
+    const notification = await createNotification({
+      id: notificationId,
+      churchId,
+      type: args.type,
+      title: args.title,
+      message: args.message,
+      targetUserId,
+      actorName: args.actorName,
+      actorUserId,
+    });
+
+    if (args.logCreatedEvent) {
+      console.log(args.logCreatedEvent, {
+        ...baseLog,
+        notificationId: notification.id,
+      });
+    }
+
+    return "created";
+  } catch (error) {
+    console.log("KRISTO_FEED_COMMENT_NOTIFICATION_ERROR", {
+      ...baseLog,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return "error";
+  }
+}
+
 export async function notifyFeedCommentOnPost(args: {
   churchId: string;
   postId: string;
@@ -52,13 +233,18 @@ export async function notifyFeedCommentOnPost(args: {
   feedItem: unknown;
   actorName?: string;
 }): Promise<boolean> {
-  const churchId = String(args.churchId || "").trim();
-  const commentId = String(args.commentId || "").trim();
-  const commenterUserId = String(args.commenterUserId || "").trim();
   const postAuthorUserId = resolveFeedPostAuthorUserId(args.feedItem);
-
-  if (!churchId || !commentId || !postAuthorUserId) return false;
-  if (!commenterUserId || commenterUserId === postAuthorUserId) return false;
+  if (!postAuthorUserId) {
+    console.log("KRISTO_FEED_COMMENT_NOTIFICATION_ERROR", {
+      type: "FeedCommentOnPost",
+      churchId: args.churchId,
+      postId: args.postId,
+      commentId: args.commentId,
+      commenterUserId: args.commenterUserId,
+      reason: "missing_post_author",
+    });
+    return false;
+  }
 
   const snippet = previewText(args.commentText);
   const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
@@ -66,18 +252,22 @@ export async function notifyFeedCommentOnPost(args: {
     ? `${actorLabel}: ${snippet}`
     : `${actorLabel} commented on your post.`;
 
-  await createNotification({
-    id: commentOnPostNotificationId(commentId, postAuthorUserId),
-    churchId,
+  const result = await createFeedEngagementNotification({
     type: "FeedCommentOnPost",
-    title: "New comment on your post",
-    message,
+    churchId: args.churchId,
+    postId: args.postId,
+    commentId: args.commentId,
+    actorUserId: args.commenterUserId,
     targetUserId: postAuthorUserId,
     actorName: args.actorName,
-    actorUserId: commenterUserId,
+    title: "New comment on your post",
+    message,
+    logStartEvent: "KRISTO_FEED_COMMENT_NOTIFICATION_CREATE_START",
+    logCreatedEvent: "KRISTO_FEED_COMMENT_NOTIFICATION_CREATED",
+    logSkippedSelfEvent: "KRISTO_FEED_COMMENT_NOTIFICATION_SKIPPED_SELF_COMMENT",
   });
 
-  return true;
+  return result === "created" || result === "duplicate_skipped";
 }
 
 export async function notifyFeedReplyToComment(args: {
@@ -89,32 +279,108 @@ export async function notifyFeedReplyToComment(args: {
   parentCommentAuthorUserId: string;
   actorName?: string;
 }): Promise<boolean> {
-  const churchId = String(args.churchId || "").trim();
-  const replyCommentId = String(args.replyCommentId || "").trim();
-  const replierUserId = String(args.replierUserId || "").trim();
-  const parentAuthorUserId = String(args.parentCommentAuthorUserId || "").trim();
-
-  if (!churchId || !replyCommentId || !parentAuthorUserId) return false;
-  if (!replierUserId || replierUserId === parentAuthorUserId) return false;
-
   const snippet = previewText(args.replyText);
   const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
   const message = snippet
     ? `${actorLabel}: ${snippet}`
     : `${actorLabel} replied to your comment.`;
 
-  await createNotification({
-    id: replyToCommentNotificationId(replyCommentId, parentAuthorUserId),
-    churchId,
+  const result = await createFeedEngagementNotification({
     type: "FeedReplyToComment",
+    churchId: args.churchId,
+    postId: args.postId,
+    commentId: args.replyCommentId,
+    actorUserId: args.replierUserId,
+    targetUserId: args.parentCommentAuthorUserId,
+    actorName: args.actorName,
     title: "New reply to your comment",
     message,
-    targetUserId: parentAuthorUserId,
-    actorName: args.actorName,
-    actorUserId: replierUserId,
   });
 
-  return true;
+  return result === "created" || result === "duplicate_skipped";
+}
+
+export async function notifyFeedPostLiked(args: {
+  churchId: string;
+  postId: string;
+  actorUserId: string;
+  feedItem: unknown;
+  actorName?: string;
+}): Promise<boolean> {
+  const postAuthorUserId = resolveFeedPostAuthorUserId(args.feedItem);
+  if (!postAuthorUserId) return false;
+
+  const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
+  const message = `${actorLabel} liked your post.`;
+
+  const result = await createFeedEngagementNotification({
+    type: "FeedPostLiked",
+    churchId: args.churchId,
+    postId: args.postId,
+    actorUserId: args.actorUserId,
+    targetUserId: postAuthorUserId,
+    actorName: args.actorName,
+    title: "New like on your post",
+    message,
+  });
+
+  return result === "created" || result === "duplicate_skipped";
+}
+
+export async function notifyFeedCommentLiked(args: {
+  churchId: string;
+  postId: string;
+  commentId: string;
+  actorUserId: string;
+  commentAuthorUserId: string;
+  actorName?: string;
+}): Promise<boolean> {
+  const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
+  const message = `${actorLabel} liked your comment.`;
+
+  const result = await createFeedEngagementNotification({
+    type: "FeedCommentLiked",
+    churchId: args.churchId,
+    postId: args.postId,
+    commentId: args.commentId,
+    actorUserId: args.actorUserId,
+    targetUserId: args.commentAuthorUserId,
+    actorName: args.actorName,
+    title: "New like on your comment",
+    message,
+  });
+
+  return result === "created" || result === "duplicate_skipped";
+}
+
+export async function notifyFeedMention(args: {
+  churchId: string;
+  postId: string;
+  commentId?: string;
+  actorUserId: string;
+  targetUserId: string;
+  actorName?: string;
+  previewText?: string;
+}): Promise<boolean> {
+  const actorLabel = String(args.actorName || "Someone").trim() || "Someone";
+  const snippet = previewText(args.previewText);
+  const message = snippet
+    ? `${actorLabel} mentioned you: ${snippet}`
+    : `${actorLabel} mentioned you in a post.`;
+
+  const result = await createFeedEngagementNotification({
+    type: "FeedMention",
+    churchId: args.churchId,
+    postId: args.postId,
+    commentId: args.commentId,
+    actorUserId: args.actorUserId,
+    targetUserId: args.targetUserId,
+    actorName: args.actorName,
+    title: "You were mentioned",
+    message,
+  });
+
+  return result === "created" || result === "duplicate_skipped";
 }
 
 export async function notifyPrayerRequestPrayedFor(args: {

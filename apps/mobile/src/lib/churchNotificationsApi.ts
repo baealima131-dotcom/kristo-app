@@ -34,6 +34,8 @@ export function peekNotificationCardUnreadCount(scope?: NotificationListScope): 
 export type ChurchNotificationItem = NotificationLike & {
   membershipId?: string;
   ministryId?: string;
+  postId?: string;
+  commentId?: string;
   id: string;
   title: string;
   body: string;
@@ -71,7 +73,36 @@ export function filterInviteSafeNotices(raw: any[]): any[] {
   return raw.filter((x) => !isInviteLikeNotice(x));
 }
 
+function isFeedEngagementNotificationType(type: string) {
+  return (
+    type === "FeedCommentOnPost" ||
+    type === "FeedReplyToComment" ||
+    type === "FeedPostLiked" ||
+    type === "FeedCommentLiked" ||
+    type === "FeedMention"
+  );
+}
+
 function mapApiNotice(x: any, i: number): ChurchNotificationItem {
+  const noticeId = String(x?.id || `n-${i}`);
+  const deepLink = {
+    postId: String(x?.postId || "").trim() || undefined,
+    commentId: String(x?.commentId || "").trim() || undefined,
+  };
+  if (!deepLink.postId && isFeedEngagementNotificationType(String(x?.type || ""))) {
+    const parsed = String(noticeId || "").split("::");
+    if (parsed[0] === "ntf_feed_eng" && parsed.length >= 6) {
+      deepLink.postId = String(parsed[2] || "").trim() || undefined;
+      deepLink.commentId =
+        String(parsed[3] || "").trim() && String(parsed[3] || "").trim() !== "-"
+          ? String(parsed[3] || "").trim()
+          : undefined;
+    } else if (parsed.length >= 3) {
+      deepLink.postId = String(parsed[1] || "").trim() || undefined;
+      deepLink.commentId = String(parsed[2] || "").trim() || undefined;
+    }
+  }
+
   const raw: NotificationLike = {
     title: String(x?.title || x?.subject || "Notification"),
     body: String(x?.body || x?.message || x?.text || ""),
@@ -85,12 +116,17 @@ function mapApiNotice(x: any, i: number): ChurchNotificationItem {
     profileImage: x?.profileImage,
     type: String(x?.type || ""),
     ministryId: x?.ministryId,
+    postId: deepLink.postId,
+    commentId: deepLink.commentId,
+    id: noticeId,
   };
 
   return {
     membershipId: x?.membershipId || x?.meta?.membershipId,
     ministryId: x?.ministryId,
-    id: String(x?.id || `n-${i}`),
+    postId: deepLink.postId,
+    commentId: deepLink.commentId,
+    id: noticeId,
     title: String(raw.title || "Notification"),
     body: safeBody(raw),
     createdAt: String(x?.createdAt || x?.date || ""),

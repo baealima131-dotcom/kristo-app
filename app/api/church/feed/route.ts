@@ -24,9 +24,13 @@ import {
 import { resolveCanDeleteChurchActivityPost } from "@/app/api/_lib/churchActivityDelete";
 import { notifyChurchFeedPostPublished } from "@/app/api/_lib/churchContentNotifications";
 import {
+  isPrayerRequestFeedItem,
+  notifyFeedCommentLiked,
   notifyFeedCommentOnPost,
+  notifyFeedPostLiked,
   notifyFeedReplyToComment,
   notifyPrayerRequestPrayedFor,
+  resolveFeedPostAuthorUserId,
 } from "@/app/api/_lib/feedEngagementNotifications";
 import {
   notifyLiveEventScheduled,
@@ -3526,22 +3530,33 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     if (likeResult.likedByMe && !beforeLikeMeta.likedByMe) {
       try {
-        const notified = await notifyPrayerRequestPrayedFor({
-          churchId: itemChurchId,
-          postId: canonicalPostId,
-          actorUserId: viewerUserId,
-          feedItem: item,
-          actorName: viewerName || actorLabel,
-        });
-        if (notified) {
-          console.log("KRISTO_PRAYER_NOTIFY", {
+        if (isPrayerRequestFeedItem(item)) {
+          const notified = await notifyPrayerRequestPrayedFor({
+            churchId: itemChurchId,
             postId: canonicalPostId,
             actorUserId: viewerUserId,
+            feedItem: item,
+            actorName: viewerName || actorLabel,
+          });
+          if (notified) {
+            console.log("KRISTO_PRAYER_NOTIFY", {
+              postId: canonicalPostId,
+              actorUserId: viewerUserId,
+            });
+          }
+        } else {
+          await notifyFeedPostLiked({
+            churchId: itemChurchId,
+            postId: canonicalPostId,
+            actorUserId: viewerUserId,
+            feedItem: item,
+            actorName: viewerName || actorLabel,
           });
         }
       } catch (notifyError: any) {
-        console.log("KRISTO_PRAYER_NOTIFY_FAILED", {
+        console.log("KRISTO_FEED_COMMENT_NOTIFICATION_ERROR", {
           postId: canonicalPostId,
+          action: "toggle_like",
           message: String(notifyError?.message || notifyError),
         });
       }
@@ -3610,7 +3625,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     try {
       if (action === "add_comment") {
-        await notifyFeedCommentOnPost({
+        const notified = await notifyFeedCommentOnPost({
           churchId: itemChurchId,
           postId: canonicalPostId,
           commentId: comment.id,
@@ -3619,6 +3634,14 @@ async function handleFeedPost(req: NextRequest, body: any) {
           feedItem: item,
           actorName: author.authorName,
         });
+        if (!notified) {
+          console.log("KRISTO_COMMENT_NOTIFY_NOOP", {
+            postId: canonicalPostId,
+            commentId: comment.id,
+            commenterUserId: viewerUserId,
+            postAuthorUserId: resolveFeedPostAuthorUserId(item),
+          });
+        }
       } else if (comment.parentCommentId) {
         const parentComment = await findFeedCommentById(comment.parentCommentId);
         const parentAuthorUserId = String(parentComment?.createdBy || "").trim();
@@ -3635,7 +3658,7 @@ async function handleFeedPost(req: NextRequest, body: any) {
         }
       }
     } catch (notifyError: any) {
-      console.log("KRISTO_COMMENT_NOTIFY_FAILED", {
+      console.log("KRISTO_FEED_COMMENT_NOTIFICATION_ERROR", {
         postId: canonicalPostId,
         commentId: comment.id,
         action,
@@ -3661,11 +3684,38 @@ async function handleFeedPost(req: NextRequest, body: any) {
 
     if (!comment) return err("Comment not found", 404);
 
+    const beforeLikeMeta =
+      (await getCommentLikeMetaForIds([commentId], viewerUserId)).get(commentId) ||
+      { likeCount: 0, likedByMe: false };
+
     const likeResult = await toggleCommentLike({
       churchId: comment.churchId,
       commentId,
       viewerUserId,
     });
+
+    if (likeResult.likedByMe && !beforeLikeMeta.likedByMe) {
+      try {
+        const commentAuthorUserId = String(comment.createdBy || "").trim();
+        const postId = String(comment.postId || "").trim();
+        if (commentAuthorUserId && postId) {
+          await notifyFeedCommentLiked({
+            churchId: String(comment.churchId || churchId),
+            postId,
+            commentId,
+            actorUserId: viewerUserId,
+            commentAuthorUserId,
+            actorName: viewerName || actorLabel,
+          });
+        }
+      } catch (notifyError: any) {
+        console.log("KRISTO_FEED_COMMENT_NOTIFICATION_ERROR", {
+          commentId,
+          action: "toggle_comment_like",
+          message: String(notifyError?.message || notifyError),
+        });
+      }
+    }
 
     return ok({
       commentId,
