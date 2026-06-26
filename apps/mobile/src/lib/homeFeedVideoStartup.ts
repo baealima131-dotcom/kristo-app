@@ -9,7 +9,7 @@ import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeed
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
 import { feedList } from "@/src/lib/homeFeedStore";
 import { markHomeFeedVideoPreloadReady } from "@/src/lib/homeFeedVideoReadiness";
-import { cacheVideoUrl, hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
+import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
 import {
   requestHomeFeedVideoPrime,
   markStartupFirstVideoPrepared,
@@ -20,6 +20,7 @@ import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
 import { isSessionExitInProgress } from "@/src/lib/kristoSessionExit";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
+import { syncHomeFeedVideoPreloadQueue } from "@/src/lib/homeFeedVideoPreload";
 
 /**
  * Consolidated Home Feed video startup/preload (TikTok-style, v1).
@@ -44,7 +45,6 @@ export { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoUri";
 const FIRST_VIDEO_RANGE = "bytes=0-393215";
 const UPCOMING_RANGE = "bytes=0-65535";
 const WARM_TIMEOUT_MS = 8000;
-const UPCOMING_MAX = 3;
 /** Max wait before opening Home Feed when first-video prepare is still in flight. */
 export const FIRST_VIDEO_PREPARE_GATE_MAX_MS = 3500;
 
@@ -238,11 +238,7 @@ export async function prepareFirstHomeFeedVideo(
     const posterUri = String(resolvePosterUri(firstVideoRow) || "").trim();
     if (posterUri) Image.prefetch(posterUri).catch(() => {});
 
-    try {
-      await cacheVideoUrl(url);
-    } catch {}
-
-    // Decode-prime the REAL player through the hidden attached VideoView
+    // Network-first: warm startup bytes only — no full-file disk download here.
     // (parses moov + decodes the first frame and parks it for adoption) in
     // parallel with a plain byte warm. The byte warm is just a backstop;
     // readiness is gated on an actual painted first frame.
@@ -302,38 +298,17 @@ export function startFirstHomeFeedVideoPrepare(
 // Upcoming videos — network backstop for rows not yet in the mounted window.
 // ---------------------------------------------------------------------------
 
-/** Warm the next up-to-3 video URLs after `fromIndex` (fire-and-forget). */
+/** Warm the next near-viewport videos (~30% buffer) via the shared preload queue. */
 export function warmHomeFeedUpcoming(
   rows: any[],
   fromIndex: number,
-  count = 1
+  visibleCount?: number
 ): void {
-  if (shouldDeferBackgroundMediaJobs()) return;
-  if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
-  if (!Array.isArray(rows) || !rows.length) return;
-  const start = Math.max(0, fromIndex) + 1;
-  const targets: string[] = [];
-  for (let i = start; i < rows.length && targets.length < count; i += 1) {
-    const row = rows[i];
-    if (!row || !isVideoPost(row)) continue;
-    const url = resolveHomeFeedVideoUri(row);
-    const normalized = normalizeUrl(url);
-    if (!isNetworkUrl(url) || warmedUrls.has(normalized) || inflightUrls.has(normalized)) {
-      continue;
-    }
-    targets.push(url);
-  }
-  if (!targets.length) return;
-  console.log("KRISTO_VIDEO_NETWORK_WARM_STARTED", { scope: "network-upcoming", count: targets.length });
-  for (const url of targets) {
-    void warmVideoBytes(url, UPCOMING_RANGE).then((ok) => {
-      if (ok) {
-        // Network bytes only — NOT a painted/decoded frame. Decode-readiness is
-        // owned by the mounted preload rows (KRISTO_VIDEO_PRELOAD_READY).
-        console.log("KRISTO_VIDEO_NETWORK_WARMED", { scope: "network-upcoming", url: normalizeUrl(url) });
-      }
-    });
-  }
+  syncHomeFeedVideoPreloadQueue({
+    rows,
+    activeIndex: fromIndex,
+    visibleCount: visibleCount ?? rows.length,
+  });
 }
 
 /** Test/diagnostic reset. */

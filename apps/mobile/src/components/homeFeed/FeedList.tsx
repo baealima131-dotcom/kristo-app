@@ -334,12 +334,12 @@ export const FeedList = memo(
       const activeVideoRank = resolveActiveVideoRank(videoIndexes, activeIndex);
       const videoRankDelta = indexRank >= 0 ? indexRank - activeVideoRank : index - activeIndex;
 
-      // Decode-prime the next 2–3 forward neighbors before the user scrolls there.
+      // Decode-prime the next 1–2 forward neighbors before the user scrolls there.
       const decodePrime =
         inlineVideoAutoplay &&
         videoWarmMode === "preload" &&
         videoRankDelta >= 1 &&
-        videoRankDelta <= 3;
+        videoRankDelta <= 2;
 
       // Diagnostic for the first 3 video rows: shows whether the first visible
       // video is the active row and whether it mounts a player in the rolling window.

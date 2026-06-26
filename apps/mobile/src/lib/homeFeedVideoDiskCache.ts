@@ -1,13 +1,13 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
 import {
-  collectAllFeedVideoDiskCacheUrls,
   collectForwardVideoDiskCacheUrls,
   collectPrioritizedDiskCacheUrls,
   collectVideoFeedIndexes,
   resolveActiveVideoRank,
   resolveHomeFeedRowPlaybackUrl,
 } from "@/src/lib/homeFeedVideoWindow";
+import { computeHomeFeedPreloadAheadCount } from "@/src/lib/homeFeedVideoPreload";
 import {
   isHomeFeedActiveFirstFrameReady,
   subscribeHomeFeedActiveFirstFrame,
@@ -184,11 +184,31 @@ export function getCachedVideoUri(url: string): string | null {
   return entry?.localUri ? String(entry.localUri).trim() : null;
 }
 
-/** Prefer local disk cache, otherwise the original remote URL. */
+/** Network-first playback URI for inline Home Feed video. */
+export function resolveHomeFeedNetworkPlaybackUri(remoteUrl: string): string {
+  const remote = String(remoteUrl || "").trim();
+  return remote;
+}
+
+/** Legacy helper — cache-first. Watch/modal surfaces may still use this. */
 export function resolveHomeFeedPlaybackUri(remoteUrl: string): string {
   const remote = String(remoteUrl || "").trim();
   if (!remote) return "";
   return getCachedVideoUri(remote) || remote;
+}
+
+/** Returns a verified local file URI when the cache entry exists on disk. */
+export async function getVerifiedCachedVideoUri(url: string): Promise<string | null> {
+  const cached = getCachedVideoUri(url);
+  if (!cached) return null;
+  try {
+    const info = await FileSystem.getInfoAsync(cached);
+    if (!info.exists) return null;
+    if (typeof info.size === "number" && info.size <= 0) return null;
+    return cached;
+  } catch {
+    return null;
+  }
 }
 
 export function isHomeFeedVideoDiskCached(url: string): boolean {
@@ -373,19 +393,14 @@ function buildDiskCacheQueue(rows: any[], activeIndex: number): {
     bucket.push(url);
   };
 
-  const videoIndexes = collectVideoFeedIndexes(rows);
-  if (videoIndexes.length) {
-    const firstRow = rows[videoIndexes[0]];
-    if (firstRow) {
-      addUnique(resolveHomeFeedRowPlaybackUrl(firstRow), priorityUrls);
-    }
-  }
+  const visibleCount = Math.max(1, rows.length);
+  const maxAhead = computeHomeFeedPreloadAheadCount(visibleCount);
 
   for (const url of collectPrioritizedDiskCacheUrls(rows, activeIndex)) {
     addUnique(url, priorityUrls);
   }
 
-  for (const url of collectAllFeedVideoDiskCacheUrls(rows)) {
+  for (const url of collectForwardVideoDiskCacheUrls(rows, activeIndex).slice(0, maxAhead)) {
     addUnique(url, backgroundUrls);
   }
 
@@ -423,7 +438,7 @@ async function runDiskCacheQueue(rows: any[], activeIndex: number, generation: n
     activeIndex,
     priorityCount: priorityUrls.length,
     backgroundCount: backgroundUrls.length,
-    mode: "priority-then-background-all",
+    mode: "near-window-only",
   });
 
   await runLimited(
@@ -480,8 +495,7 @@ async function runDiskCacheQueue(rows: any[], activeIndex: number, generation: n
 }
 
 /**
- * Schedule full-feed disk cache: first video + active window immediately,
- * then every remaining feed video after first-frame (non-blocking).
+ * Schedule optional near-window disk cache (active + ~30% ahead only).
  */
 export function scheduleHomeFeedVideoDiskCacheBackground(rows: any[], activeIndex: number): void {
   if (shouldDeferBackgroundMediaJobs()) return;

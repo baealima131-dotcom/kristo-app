@@ -37,7 +37,7 @@ const MAX_VIDEO_CONCURRENCY = 2;
 const MAX_POSTER_CONCURRENCY = 2;
 const RANGE_BYTES = "bytes=0-65535";
 const FIRST_VIDEO_RANGE_BYTES = "bytes=0-393215";
-const STARTUP_PREWARM_VIDEO_MAX = 3;
+const STARTUP_PREWARM_VIDEO_MAX = 1;
 
 // Startup critical path: the first playable video's startup bytes are warmed
 // with a realistic budget so the warm actually LANDS (priming the CDN edge for
@@ -51,11 +51,11 @@ const FIRST_VIDEO_WARM_TIMEOUT_MS = 8000;
 const BACKGROUND_WARM_AFTER_FIRST_FRAME_MS = 5000;
 
 const STARTUP_COOLDOWN_MS = 3000;
-// Staged buffering: active video + next 2 only (never the whole feed at once).
-const INITIAL_VIDEO_WARM_MAX = 3;
+// Staged buffering: active video + next 1–2 only (never the whole feed at once).
+const INITIAL_VIDEO_WARM_MAX = 2;
 const ACTIVE_INDEX_VIDEO_WARM_MAX = 2;
-const WINDOW_EXPAND_VIDEO_WARM_MAX = 3;
-const POSTER_WARM_AHEAD_COUNT = 3;
+const WINDOW_EXPAND_VIDEO_WARM_MAX = 2;
+const POSTER_WARM_AHEAD_COUNT = 2;
 
 const warmedPosterUrls = new Set<string>();
 const inflightVideoUrls = new Set<string>();
@@ -354,9 +354,9 @@ export function selectHomeFeedVideoBufferAheadTargets(
     return collectVideoPostsInRange(rows, start, visibleEnd, ACTIVE_INDEX_VIDEO_WARM_MAX, skip);
   }
 
-  const tailStart = Math.max(0, visibleCount - 15);
   const skip = playerWarmSkipIndices(activeIndex);
-  return collectVideoPostsInRange(rows, tailStart, visibleEnd, WINDOW_EXPAND_VIDEO_WARM_MAX, skip);
+  const start = activeIndex + 1;
+  return collectVideoPostsInRange(rows, start, visibleEnd, WINDOW_EXPAND_VIDEO_WARM_MAX, skip);
 }
 
 function dedupeTargets(targets: BufferAheadTarget[]): BufferAheadTarget[] {

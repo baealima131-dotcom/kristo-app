@@ -46,8 +46,8 @@ function isLiveNavBackgroundPaused() {
   return Boolean((globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__);
 }
 
-const INITIAL_VIDEO_COUNT = 20;
-const SCROLL_VIDEO_COUNT = 10;
+const INITIAL_VIDEO_COUNT = 8;
+const SCROLL_VIDEO_COUNT = 2;
 /** Approximate on-screen feed window — all items in this range get visible priority. */
 export const VISIBLE_PRIORITY_COUNT = 8;
 const VISIBLE_FRAME_GEN_CONCURRENCY = 2;

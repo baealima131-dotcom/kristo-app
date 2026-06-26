@@ -39,7 +39,8 @@ import { getHomeFeedPosterLoadTimeoutMs } from "@/src/lib/videoGridThumbnail";
 import { logFirstMountedHomeFeedVideoFileDiag } from "@/src/lib/homeFeedVideoFileDiag";
 import {
   getCachedVideoUri,
-  resolveHomeFeedPlaybackUri,
+  getVerifiedCachedVideoUri,
+  resolveHomeFeedNetworkPlaybackUri,
   subscribeHomeFeedVideoDiskCache,
 } from "@/src/lib/homeFeedVideoDiskCache";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
@@ -214,14 +215,50 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   const remotePlaybackUri = String(uri || "").trim();
   const [diskCacheRevision, setDiskCacheRevision] = React.useState(0);
   const [, setPrimeRevision] = React.useState(0);
+  const [playbackSource, setPlaybackSource] = React.useState<"network" | "cache">("network");
+  const [verifiedCacheUri, setVerifiedCacheUri] = React.useState<string | null>(null);
+  const playbackSourceLoggedRef = React.useRef(false);
 
   React.useEffect(() => subscribeHomeFeedVideoDiskCache(() => setDiskCacheRevision((n) => n + 1)), []);
   React.useEffect(() => subscribeHomeFeedVideoPrime(() => setPrimeRevision((n) => n + 1)), []);
 
-  const playbackUri = React.useMemo(
-    () => resolveHomeFeedPlaybackUri(remotePlaybackUri),
-    [remotePlaybackUri, diskCacheRevision]
-  );
+  React.useEffect(() => {
+    let cancelled = false;
+    setPlaybackSource("network");
+    playbackSourceLoggedRef.current = false;
+    void getVerifiedCachedVideoUri(remotePlaybackUri).then((cached) => {
+      if (!cancelled) setVerifiedCacheUri(cached);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [remotePlaybackUri, diskCacheRevision]);
+
+  const playbackUri = React.useMemo(() => {
+    if (playbackSource === "cache" && verifiedCacheUri) {
+      return verifiedCacheUri;
+    }
+    return resolveHomeFeedNetworkPlaybackUri(remotePlaybackUri);
+  }, [playbackSource, verifiedCacheUri, remotePlaybackUri]);
+
+  React.useEffect(() => {
+    if (!remotePlaybackUri || playbackSourceLoggedRef.current) return;
+    playbackSourceLoggedRef.current = true;
+    if (playbackSource === "cache" && verifiedCacheUri) {
+      console.log("HOME_FEED_CACHE_PLAY", {
+        postId,
+        uri: verifiedCacheUri,
+        remoteUri: remotePlaybackUri,
+      });
+      return;
+    }
+    console.log("HOME_FEED_NETWORK_PLAY", {
+      postId,
+      uri: remotePlaybackUri,
+      hasVerifiedCache: Boolean(verifiedCacheUri),
+    });
+  }, [remotePlaybackUri, playbackSource, verifiedCacheUri, postId]);
+
   const diskCacheReady = Boolean(getCachedVideoUri(remotePlaybackUri));
 
   const sourceAttached = role !== "inactive";
@@ -371,6 +408,35 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   // normalize to a lowercased string we control.
   const statusEvent = useEvent(player, "statusChange") as { status?: unknown } | null;
   const status = statusLower(statusEvent?.status ?? (player as any)?.status);
+
+  React.useEffect(() => {
+    if (!remotePlaybackUri || role === "inactive") return;
+    const lower = statusLower(status);
+    if (lower !== "failed" && lower !== "error") return;
+
+    if (playbackSource === "cache") {
+      console.log("HOME_FEED_CACHE_FALLBACK", {
+        postId,
+        from: playbackUri,
+        to: remotePlaybackUri,
+      });
+      setPlaybackSource("network");
+      playbackSourceLoggedRef.current = false;
+      setPlayerRemountEpoch((epoch) => epoch + 1);
+      return;
+    }
+
+    if (verifiedCacheUri) {
+      console.log("HOME_FEED_CACHE_PLAY", {
+        postId,
+        uri: verifiedCacheUri,
+        reason: "network-failed",
+      });
+      setPlaybackSource("cache");
+      playbackSourceLoggedRef.current = false;
+      setPlayerRemountEpoch((epoch) => epoch + 1);
+    }
+  }, [status, playbackSource, verifiedCacheUri, remotePlaybackUri, playbackUri, postId, role]);
 
   const safePlay = React.useCallback(() => {
     if (playerDisposedRef.current) return;

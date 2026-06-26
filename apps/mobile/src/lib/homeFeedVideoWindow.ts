@@ -14,13 +14,13 @@ function isVideoFeedRow(item: any) {
   return item?.mediaType === "video" || item?.type === "video";
 }
 
-/** Active + next 3 + previous 4 video rows (by video rank, not raw feed index). */
-export const HOME_FEED_PLAYER_WARM_BEHIND = 4;
-export const HOME_FEED_PLAYER_WARM_AHEAD = 3;
+/** Active + next 2 + previous 2 video rows (by video rank, not raw feed index). */
+export const HOME_FEED_PLAYER_WARM_BEHIND = 2;
+export const HOME_FEED_PLAYER_WARM_AHEAD = 2;
 /** Drop mount/disk retention once a watched row is farther than this many video ranks. */
-export const HOME_FEED_VIDEO_EVICTION_DISTANCE = 6;
+export const HOME_FEED_VIDEO_EVICTION_DISTANCE = 4;
 
-export const HOME_FEED_MAX_MOUNTED_PLAYERS = 12;
+export const HOME_FEED_MAX_MOUNTED_PLAYERS = 8;
 
 export function collectVideoFeedIndexes(rows: any[]): number[] {
   if (!Array.isArray(rows) || !rows.length) return [];

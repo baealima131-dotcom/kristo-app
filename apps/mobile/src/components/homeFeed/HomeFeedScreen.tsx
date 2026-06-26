@@ -135,6 +135,10 @@ import {
   subscribeHomeFeedVideoDiskCache,
 } from "@/src/lib/homeFeedVideoDiskCache";
 import {
+  beginHomeFeedVideoPreloadSession,
+  endHomeFeedVideoPreloadSession,
+} from "@/src/lib/homeFeedVideoPreload";
+import {
   beginHomeFeedPrefetchSession,
   endHomeFeedPrefetchSession,
   warmHomeFeedVideoPostersNearActive,
@@ -993,12 +997,15 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     if (!feedFocused) {
       endHomeFeedPrefetchSession();
+      endHomeFeedVideoPreloadSession();
       return;
     }
 
     prefetchSessionIdRef.current = beginHomeFeedPrefetchSession();
+    beginHomeFeedVideoPreloadSession();
     return () => {
       endHomeFeedPrefetchSession();
+      endHomeFeedVideoPreloadSession();
     };
   }, [feedFocused]);
 
@@ -1102,7 +1109,7 @@ export default function HomeFeedScreen() {
     const runInitialWarm = () => {
       const rows = lastVisibleRowsRef.current;
       if (!rows.length) return;
-      warmHomeFeedUpcoming(rows, 0);
+      warmHomeFeedUpcoming(rows, 0, visibleWindowSize);
     };
 
     if (isHomeFeedActiveFirstFrameReady()) {
@@ -1150,12 +1157,13 @@ export default function HomeFeedScreen() {
     if (!feedFocused || !visibleData.length || backgroundMediaPaused || videoModalPayload) return;
     if (lastVideoBufferActiveRef.current === activeIndex) return;
     lastVideoBufferActiveRef.current = activeIndex;
-    warmHomeFeedUpcoming(visibleData, activeIndex);
+    warmHomeFeedUpcoming(visibleData, activeIndex, visibleWindowSize);
   }, [
     inlineVideoAutoplay,
     activeIndex,
     feedFocused,
-    visibleData.length,
+    visibleData,
+    visibleWindowSize,
     backgroundMediaPaused,
     videoModalPayload,
   ]);
@@ -1169,13 +1177,13 @@ export default function HomeFeedScreen() {
       return;
     }
     lastVideoBufferWindowRef.current = visibleWindowSize;
-    warmHomeFeedUpcoming(visibleData, activeIndex);
+    warmHomeFeedUpcoming(visibleData, activeIndex, visibleWindowSize);
   }, [
     inlineVideoAutoplay,
     visibleWindowSize,
     activeIndex,
     feedFocused,
-    visibleData.length,
+    visibleData,
     backgroundMediaPaused,
     videoModalPayload,
   ]);
