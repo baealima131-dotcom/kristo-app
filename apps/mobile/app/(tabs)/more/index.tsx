@@ -30,7 +30,11 @@ import {
   runAfterMoreTabPressTransition,
   subscribeChurchMediaAccess,
 } from "@/src/lib/refreshCoordinator";
-import { peekChurchOverviewCache, silentRefreshChurchOverview } from "@/src/lib/screenDataCache";
+import { canUseChurchAdminNotificationScope } from "@/src/lib/notificationDisplay";
+import {
+  fetchNotificationCardUnreadCount,
+  setCardUnreadFromFetchResult,
+} from "@/src/lib/churchNotificationsApi";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
@@ -419,20 +423,31 @@ export default function MoreScreen() {
         session?.churchId || (session as any)?.activeChurchId || ""
       );
       const userId = String(session?.userId || "").trim();
-      if (!churchId || !userId) {
+      const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+      const role = String(session?.role || "Member");
+      if (!churchId || !userId || !base) {
         setNotificationUnread(0);
         return;
       }
 
-      const cached = peekChurchOverviewCache(churchId, userId);
-      setNotificationUnread(Number(cached?.stats?.unreadNotifications || 0));
+      const controller = new AbortController();
+      void fetchNotificationCardUnreadCount({
+        base,
+        canUseChurchAdmin: canUseChurchAdminNotificationScope(role),
+        signal: controller.signal,
+      })
+        .then((result) => {
+          setCardUnreadFromFetchResult(result);
+          setNotificationUnread(result.totalUnread);
+        })
+        .catch(() => {
+          // Keep the last known badge count on transient failures.
+        });
 
-      void silentRefreshChurchOverview(churchId, userId).then((next) => {
-        if (next) {
-          setNotificationUnread(Number(next.stats?.unreadNotifications || 0));
-        }
-      });
-    }, [session?.churchId, session?.userId, session])
+      return () => {
+        controller.abort();
+      };
+    }, [session?.churchId, session?.userId, session?.role, session])
   );
 
   React.useEffect(() => {

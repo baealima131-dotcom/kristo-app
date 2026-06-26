@@ -9,12 +9,14 @@ import {
 import {
   dbCountNotifications,
   dbCreateNotification,
+  dbGetNotificationById,
   dbListNotifications,
   dbMarkAllRead,
   dbRemoveNotification,
   dbSetRead,
   resolveNotificationStoreMode,
 } from "@/app/api/_lib/store/notificationDb";
+import type { NotificationStoreScope } from "@/app/api/_lib/notificationScope";
 
 export type NotificationType =
   | "MinistryMemberAdded"
@@ -154,7 +156,7 @@ export async function listNotifications(args: {
   userId: string;
   unreadOnly?: boolean;
   limit?: number;
-  includeAllTargets?: boolean;
+  storeScope?: NotificationStoreScope;
 }): Promise<AppNotification[]> {
   return dbListNotifications(args);
 }
@@ -163,9 +165,13 @@ export async function countNotifications(args: {
   churchId: string;
   userId: string;
   unreadOnly?: boolean;
-  includeAllTargets?: boolean;
+  storeScope?: NotificationStoreScope;
 }): Promise<number> {
   return dbCountNotifications(args);
+}
+
+export async function getNotificationById(id: string): Promise<AppNotification | null> {
+  return dbGetNotificationById(id);
 }
 
 export async function setRead(id: string, isRead: boolean): Promise<AppNotification | null> {
@@ -181,7 +187,7 @@ export const addNotification = createNotification;
 export async function markAllRead(args: {
   churchId: string;
   userId: string;
-  includeAllTargets?: boolean;
+  storeScope?: NotificationStoreScope;
 }): Promise<{ updated: number }> {
   return dbMarkAllRead(args);
 }

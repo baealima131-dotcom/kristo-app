@@ -3,6 +3,10 @@ import { neon, neonConfig } from "@neondatabase/serverless";
 import type { AppNotification } from "@/app/api/_lib/notifications";
 import { getDatabaseUrl, hasDurableStore, isVercelRuntime } from "@/app/api/_lib/store/authDb";
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  matchesNotificationStoreScope,
+  type NotificationStoreScope,
+} from "@/app/api/_lib/notificationScope";
 
 neonConfig.fetchConnectionCache = true;
 
@@ -68,15 +72,6 @@ function rowToNotification(row: NotificationRow): AppNotification {
     createdAt: new Date(row.created_at).toISOString(),
     readAt: row.read_at ? new Date(row.read_at).toISOString() : undefined,
   };
-}
-
-function matchesViewerFilter(
-  n: AppNotification,
-  userId: string,
-  includeAllTargets: boolean
-): boolean {
-  if (includeAllTargets) return true;
-  return !n.targetUserId || n.targetUserId === userId;
 }
 
 function sortAndLimit(items: AppNotification[], limit: number): AppNotification[] {
@@ -233,15 +228,15 @@ export async function dbListNotifications(args: {
   userId: string;
   unreadOnly?: boolean;
   limit?: number;
-  includeAllTargets?: boolean;
+  storeScope?: NotificationStoreScope;
 }): Promise<AppNotification[]> {
-  const { churchId, userId, unreadOnly, limit = 50, includeAllTargets = false } = args;
+  const { churchId, userId, unreadOnly, limit = 50, storeScope = "inbox" } = args;
   await ensureNotificationStoreReady();
 
   if (usePostgres()) {
     const sql = getSql();
     const rows = unreadOnly
-      ? includeAllTargets
+      ? storeScope === "forMe"
         ? await sql`
             SELECT id, church_id, type, title, message,
                    actor_name, actor_user_id, actor_avatar_uri, actor_role,
@@ -250,22 +245,36 @@ export async function dbListNotifications(args: {
             FROM kristo_notifications
             WHERE church_id = ${churchId}
               AND is_read = FALSE
+              AND target_user_id = ${userId}
             ORDER BY created_at DESC
             LIMIT ${Math.max(1, limit)}
           `
-        : await sql`
-            SELECT id, church_id, type, title, message,
-                   actor_name, actor_user_id, actor_avatar_uri, actor_role,
-                   ministry_id, ministry_member_id, target_user_id,
-                   is_read, created_at, read_at
-            FROM kristo_notifications
-            WHERE church_id = ${churchId}
-              AND is_read = FALSE
-              AND (target_user_id IS NULL OR target_user_id = ${userId})
-            ORDER BY created_at DESC
-            LIMIT ${Math.max(1, limit)}
-          `
-      : includeAllTargets
+        : storeScope === "churchAdmin"
+          ? await sql`
+              SELECT id, church_id, type, title, message,
+                     actor_name, actor_user_id, actor_avatar_uri, actor_role,
+                     ministry_id, ministry_member_id, target_user_id,
+                     is_read, created_at, read_at
+              FROM kristo_notifications
+              WHERE church_id = ${churchId}
+                AND is_read = FALSE
+                AND target_user_id IS NULL
+              ORDER BY created_at DESC
+              LIMIT ${Math.max(1, limit)}
+            `
+          : await sql`
+              SELECT id, church_id, type, title, message,
+                     actor_name, actor_user_id, actor_avatar_uri, actor_role,
+                     ministry_id, ministry_member_id, target_user_id,
+                     is_read, created_at, read_at
+              FROM kristo_notifications
+              WHERE church_id = ${churchId}
+                AND is_read = FALSE
+                AND (target_user_id IS NULL OR target_user_id = ${userId})
+              ORDER BY created_at DESC
+              LIMIT ${Math.max(1, limit)}
+            `
+      : storeScope === "forMe"
         ? await sql`
             SELECT id, church_id, type, title, message,
                    actor_name, actor_user_id, actor_avatar_uri, actor_role,
@@ -273,20 +282,33 @@ export async function dbListNotifications(args: {
                    is_read, created_at, read_at
             FROM kristo_notifications
             WHERE church_id = ${churchId}
+              AND target_user_id = ${userId}
             ORDER BY created_at DESC
             LIMIT ${Math.max(1, limit)}
           `
-        : await sql`
-            SELECT id, church_id, type, title, message,
-                   actor_name, actor_user_id, actor_avatar_uri, actor_role,
-                   ministry_id, ministry_member_id, target_user_id,
-                   is_read, created_at, read_at
-            FROM kristo_notifications
-            WHERE church_id = ${churchId}
-              AND (target_user_id IS NULL OR target_user_id = ${userId})
-            ORDER BY created_at DESC
-            LIMIT ${Math.max(1, limit)}
-          `;
+        : storeScope === "churchAdmin"
+          ? await sql`
+              SELECT id, church_id, type, title, message,
+                     actor_name, actor_user_id, actor_avatar_uri, actor_role,
+                     ministry_id, ministry_member_id, target_user_id,
+                     is_read, created_at, read_at
+              FROM kristo_notifications
+              WHERE church_id = ${churchId}
+                AND target_user_id IS NULL
+              ORDER BY created_at DESC
+              LIMIT ${Math.max(1, limit)}
+            `
+          : await sql`
+              SELECT id, church_id, type, title, message,
+                     actor_name, actor_user_id, actor_avatar_uri, actor_role,
+                     ministry_id, ministry_member_id, target_user_id,
+                     is_read, created_at, read_at
+              FROM kristo_notifications
+              WHERE church_id = ${churchId}
+                AND (target_user_id IS NULL OR target_user_id = ${userId})
+              ORDER BY created_at DESC
+              LIMIT ${Math.max(1, limit)}
+            `;
 
     return (rows as NotificationRow[]).map(rowToNotification);
   }
@@ -295,7 +317,7 @@ export async function dbListNotifications(args: {
   return sortAndLimit(
     all
       .filter((n) => n.churchId === churchId)
-      .filter((n) => matchesViewerFilter(n, userId, includeAllTargets))
+      .filter((n) => matchesNotificationStoreScope(n, userId, storeScope))
       .filter((n) => (unreadOnly ? !n.isRead : true)),
     limit
   );
@@ -305,47 +327,65 @@ export async function dbCountNotifications(args: {
   churchId: string;
   userId: string;
   unreadOnly?: boolean;
-  includeAllTargets?: boolean;
+  storeScope?: NotificationStoreScope;
 }): Promise<number> {
-  const { churchId, userId, unreadOnly = true, includeAllTargets = false } = args;
+  const { churchId, userId, unreadOnly = true, storeScope = "inbox" } = args;
   await ensureNotificationStoreReady();
 
   if (usePostgres()) {
     const sql = getSql();
-    const rows = includeAllTargets
-      ? unreadOnly
-        ? await sql`
-            SELECT COUNT(*)::int AS count
-            FROM kristo_notifications
-            WHERE church_id = ${churchId}
-              AND is_read = FALSE
-          `
-        : await sql`
-            SELECT COUNT(*)::int AS count
-            FROM kristo_notifications
-            WHERE church_id = ${churchId}
-          `
-      : unreadOnly
-        ? await sql`
-            SELECT COUNT(*)::int AS count
-            FROM kristo_notifications
-            WHERE church_id = ${churchId}
-              AND is_read = FALSE
-              AND (target_user_id IS NULL OR target_user_id = ${userId})
-          `
-        : await sql`
-            SELECT COUNT(*)::int AS count
-            FROM kristo_notifications
-            WHERE church_id = ${churchId}
-              AND (target_user_id IS NULL OR target_user_id = ${userId})
-          `;
+    const rows =
+      storeScope === "forMe"
+        ? unreadOnly
+          ? await sql`
+              SELECT COUNT(*)::int AS count
+              FROM kristo_notifications
+              WHERE church_id = ${churchId}
+                AND is_read = FALSE
+                AND target_user_id = ${userId}
+            `
+          : await sql`
+              SELECT COUNT(*)::int AS count
+              FROM kristo_notifications
+              WHERE church_id = ${churchId}
+                AND target_user_id = ${userId}
+            `
+        : storeScope === "churchAdmin"
+          ? unreadOnly
+            ? await sql`
+                SELECT COUNT(*)::int AS count
+                FROM kristo_notifications
+                WHERE church_id = ${churchId}
+                  AND is_read = FALSE
+                  AND target_user_id IS NULL
+              `
+            : await sql`
+                SELECT COUNT(*)::int AS count
+                FROM kristo_notifications
+                WHERE church_id = ${churchId}
+                  AND target_user_id IS NULL
+              `
+          : unreadOnly
+            ? await sql`
+                SELECT COUNT(*)::int AS count
+                FROM kristo_notifications
+                WHERE church_id = ${churchId}
+                  AND is_read = FALSE
+                  AND (target_user_id IS NULL OR target_user_id = ${userId})
+              `
+            : await sql`
+                SELECT COUNT(*)::int AS count
+                FROM kristo_notifications
+                WHERE church_id = ${churchId}
+                  AND (target_user_id IS NULL OR target_user_id = ${userId})
+              `;
     return Number((rows as { count: number }[])[0]?.count || 0);
   }
 
   const all = await readLocalNotifications();
   return all
     .filter((n) => n.churchId === churchId)
-    .filter((n) => matchesViewerFilter(n, userId, includeAllTargets))
+    .filter((n) => matchesNotificationStoreScope(n, userId, storeScope))
     .filter((n) => (unreadOnly ? !n.isRead : true)).length;
 }
 
@@ -431,32 +471,44 @@ export async function dbRemoveNotification(id: string): Promise<AppNotification 
 export async function dbMarkAllRead(args: {
   churchId: string;
   userId: string;
-  includeAllTargets?: boolean;
+  storeScope?: NotificationStoreScope;
 }): Promise<{ updated: number }> {
-  const { churchId, userId, includeAllTargets = false } = args;
+  const { churchId, userId, storeScope = "inbox" } = args;
   await ensureNotificationStoreReady();
   const readAt = nowIso();
 
   if (usePostgres()) {
     const sql = getSql();
-    const rows = includeAllTargets
-      ? await sql`
-          UPDATE kristo_notifications
-          SET is_read = TRUE,
-              read_at = ${readAt}
-          WHERE church_id = ${churchId}
-            AND is_read = FALSE
-          RETURNING id
-        `
-      : await sql`
-          UPDATE kristo_notifications
-          SET is_read = TRUE,
-              read_at = ${readAt}
-          WHERE church_id = ${churchId}
-            AND is_read = FALSE
-            AND (target_user_id IS NULL OR target_user_id = ${userId})
-          RETURNING id
-        `;
+    const rows =
+      storeScope === "forMe"
+        ? await sql`
+            UPDATE kristo_notifications
+            SET is_read = TRUE,
+                read_at = ${readAt}
+            WHERE church_id = ${churchId}
+              AND is_read = FALSE
+              AND target_user_id = ${userId}
+            RETURNING id
+          `
+        : storeScope === "churchAdmin"
+          ? await sql`
+              UPDATE kristo_notifications
+              SET is_read = TRUE,
+                  read_at = ${readAt}
+              WHERE church_id = ${churchId}
+                AND is_read = FALSE
+                AND target_user_id IS NULL
+              RETURNING id
+            `
+          : await sql`
+              UPDATE kristo_notifications
+              SET is_read = TRUE,
+                  read_at = ${readAt}
+              WHERE church_id = ${churchId}
+                AND is_read = FALSE
+                AND (target_user_id IS NULL OR target_user_id = ${userId})
+              RETURNING id
+            `;
     return { updated: (rows as { id: string }[]).length };
   }
 
@@ -467,7 +519,7 @@ export async function dbMarkAllRead(args: {
       const items = Array.isArray(current) ? current : [];
       return items.map((n) => {
         if (n.churchId !== churchId) return n;
-        if (!matchesViewerFilter(n, userId, includeAllTargets)) return n;
+        if (!matchesNotificationStoreScope(n, userId, storeScope)) return n;
         if (n.isRead) return n;
         updated += 1;
         return { ...n, isRead: true, readAt };

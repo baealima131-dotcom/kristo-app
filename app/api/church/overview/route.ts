@@ -179,7 +179,7 @@ export async function GET(req: NextRequest) {
     churchId,
     userId: ctxOrRes.viewer.userId,
     unreadOnly: true,
-    includeAllTargets: false,
+    storeScope: "inbox",
   });
 
   const followerCount = await getChurchFollowerCount(churchId);

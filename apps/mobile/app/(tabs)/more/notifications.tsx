@@ -23,43 +23,21 @@ import {
   safeAvatarUri,
   safeBody,
   safeDisplayName,
-  type NotificationLike,
   type NotificationListScope,
 } from "@/src/lib/notificationDisplay";
+import {
+  fetchChurchNotifications,
+  logNotificationCountMismatch,
+  peekNotificationCardUnreadCount,
+  type ChurchNotificationItem,
+} from "@/src/lib/churchNotificationsApi";
 
 const FETCH_TIMEOUT_MS = 12000;
 
-const notificationsScreenCache = new Map<string, Notice[]>();
+const notificationsScreenCache = new Map<string, ChurchNotificationItem[]>();
 
 function notificationsCacheKey(userId: string, churchId: string, scope: NotificationListScope) {
   return `${userId}:${churchId}:${scope}`;
-}
-function filterInviteSafeNotices(raw: any[]): any[] {
-  return raw.filter((x: any) => {
-    const title = String(x?.title || x?.subject || "").toLowerCase();
-    const body = String(x?.body || x?.message || x?.text || "").toLowerCase();
-    const type = String(x?.type || x?.kind || x?.category || "").toLowerCase();
-    return !(
-      title.includes("invite") ||
-      title.includes("invitation") ||
-      body.includes("invited") ||
-      body.includes("invite") ||
-      body.includes("invitation") ||
-      type.includes("invite") ||
-      type.includes("invitation") ||
-      Boolean(x?.membershipId || x?.meta?.membershipId || x?.ministryMemberId)
-    );
-  });
-}
-
-function mapNoticesFromApi(raw: any[]): Notice[] {
-  return filterInviteSafeNotices(raw)
-    .map((x: any, i: number) => mapApiNotice(x, i))
-    .sort((a: Notice, b: Notice) => {
-      const aa = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return bb - aa;
-    });
 }
 
 function fetchErrorMessage(error: unknown, aborted: boolean) {
@@ -77,16 +55,7 @@ const GREEN = "#63D18C";
 const RED = "#FF8A8A";
 const BLUE = "#7DB7FF";
 
-type Notice = NotificationLike & {
-  membershipId?: string;
-  ministryId?: string;
-  id: string;
-  title: string;
-  body: string;
-  createdAt?: string;
-  read?: boolean;
-  type?: string;
-};
+type Notice = ChurchNotificationItem;
 
 type NoticeGroup = {
   key: "today" | "yesterday" | "earlier";
@@ -140,41 +109,6 @@ function formatWhen(input?: string) {
   if (day < 7) return `${day}d ago`;
 
   return d.toLocaleString();
-}
-
-function mapApiNotice(x: any, i: number): Notice {
-  const raw: NotificationLike = {
-    title: String(x?.title || x?.subject || "Notification"),
-    body: String(x?.body || x?.message || x?.text || ""),
-    message: String(x?.message || x?.body || x?.text || ""),
-    actorName: x?.actorName,
-    actorUserId: x?.actorUserId,
-    actorAvatarUri: x?.actorAvatarUri,
-    actorRole: x?.actorRole,
-    avatarUri: x?.avatarUri,
-    avatarUrl: x?.avatarUrl,
-    profileImage: x?.profileImage,
-    type: String(x?.type || ""),
-    ministryId: x?.ministryId,
-  };
-
-  return {
-    membershipId: x?.membershipId || x?.meta?.membershipId,
-    ministryId: x?.ministryId,
-    id: String(x?.id || `n-${i}`),
-    title: String(raw.title || "Notification"),
-    body: safeBody(raw),
-    createdAt: String(x?.createdAt || x?.date || ""),
-    read: !!(x?.readAt || x?.isRead || x?.read),
-    type: String(x?.type || ""),
-    actorName: safeDisplayName(raw),
-    actorUserId: raw.actorUserId,
-    actorAvatarUri: raw.actorAvatarUri,
-    actorRole: raw.actorRole,
-    avatarUri: raw.avatarUri,
-    avatarUrl: raw.avatarUrl,
-    profileImage: raw.profileImage,
-  };
 }
 
 export default function MoreNotificationsScreen() {
@@ -231,29 +165,28 @@ export default function MoreNotificationsScreen() {
         if (!base) throw new Error("EXPO_PUBLIC_API_BASE missing");
         if (!effectiveAuthUserId) throw new Error("userId missing");
 
-        const headers = notificationRequestHeaders();
-        const url = `${base}/api/church/notifications?scope=${encodeURIComponent(scope)}&limit=200`;
-
-        const r = await fetch(url, {
-          headers,
+        const result = await fetchChurchNotifications({
+          base,
+          scope,
+          limit: 200,
           signal: controller.signal,
+          logPrefix: "screen",
         });
-
-        const j = await r.json().catch(() => ({} as any));
-        if (r.status === 401) {
-          throw new Error(String(j?.error || "Unauthorized"));
-        }
-        if (!r.ok || !j?.ok) {
-          throw new Error(String(j?.error || `Request failed (${r.status})`));
-        }
 
         if (seq !== loadSeqRef.current) return;
 
-        const raw = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
-        const mapped = mapNoticesFromApi(raw);
+        const mapped = result.items;
+        const nextUnreadCount = result.filteredUnreadCount;
         notificationsScreenCache.set(cacheKey, mapped);
         setItems(mapped);
-        setUnreadCount(Number(j?.meta?.unreadCount ?? mapped.filter((x) => !x.read).length));
+        setUnreadCount(nextUnreadCount);
+        logNotificationCountMismatch({
+          scope,
+          cardUnread: peekNotificationCardUnreadCount(scope) ?? undefined,
+          screenUnread: nextUnreadCount,
+          itemCount: mapped.length,
+          apiUnreadCount: result.apiUnreadCount,
+        });
         setErr(null);
       } catch (e: unknown) {
         if (seq !== loadSeqRef.current) return;
@@ -274,7 +207,7 @@ export default function MoreNotificationsScreen() {
         setRefreshing(false);
       }
     },
-    [base, cacheKey, effectiveAuthUserId, notificationRequestHeaders, scope]
+    [base, cacheKey, effectiveAuthUserId, scope]
   );
 
   async function markOneRead(id: string) {
@@ -319,6 +252,10 @@ export default function MoreNotificationsScreen() {
       );
 
       const j = await r.json().catch(() => ({} as any));
+      if (r.status === 404 || r.status === 405 || r.status === 501) {
+        Alert.alert("Delete unavailable", "Removing notifications is not supported yet.");
+        return;
+      }
       if (!r.ok || !j?.ok) {
         throw new Error(String(j?.error || `Request failed (${r.status})`));
       }
@@ -632,11 +569,27 @@ export default function MoreNotificationsScreen() {
       ) : (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 18 }}>
           {!items.length ? (
-            <View style={s.emptyCard}>
-              <Ionicons name="notifications-off-outline" size={28} color={GOLD} />
-              <Text style={s.emptyTitle}>No notifications yet</Text>
-              <Text style={s.emptyText}>Church activity will appear here.</Text>
-            </View>
+            unreadCount > 0 ? (
+              <View style={s.emptyCard}>
+                <Ionicons name="notifications-outline" size={28} color={GOLD} />
+                <Text style={s.emptyTitle}>
+                  {canUseChurchAdmin && scope === "forMe"
+                    ? "Unread alerts in Church Admin"
+                    : "Unread notifications available"}
+                </Text>
+                <Text style={s.emptyText}>
+                  {canUseChurchAdmin && scope === "forMe"
+                    ? "Switch to the Church Admin tab to review church-wide alerts."
+                    : "Pull to refresh or try again shortly."}
+                </Text>
+              </View>
+            ) : (
+              <View style={s.emptyCard}>
+                <Ionicons name="notifications-off-outline" size={28} color={GOLD} />
+                <Text style={s.emptyTitle}>No notifications yet</Text>
+                <Text style={s.emptyText}>Church activity will appear here.</Text>
+              </View>
+            )
           ) : (
             groupedItems.map((group) => (
               <View key={group.key} style={s.groupSection}>
