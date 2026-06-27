@@ -48,7 +48,17 @@ function devDefaultChurchId() {
   return "church_dev_default";
 }
 
-function mapChurchRoleToRole(r: ChurchRole | undefined): Role {
+export function isSystemAdminRole(role: unknown): boolean {
+  return String(role || "").trim() === "System_Admin";
+}
+
+/** Platform offline activation admin workspace (System_Admin only). */
+export function canAccessOfflineActivationAdmin(role: unknown): boolean {
+  return isSystemAdminRole(role);
+}
+
+export function mapChurchRoleToRole(r: ChurchRole | undefined): Role {
+  if (r === "System_Admin") return "System_Admin";
   if (r === "Pastor") return "Pastor";
   if (r === "Church_Admin") return "Church_Admin";
   if (r === "Ministry_Leader") return "Ministry_Leader";
