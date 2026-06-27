@@ -173,7 +173,9 @@ export type SupervisorSummary = {
   churchId?: string;
   email?: string;
   fullName?: string;
-  platformRole: "Supervisor";
+  platformRole?: "Supervisor";
+  invitationStatus: "pending" | "accepted";
+  invitationId?: string;
   assignedCodes: number;
   redeemedCodes: number;
   remainingCodes: number;
@@ -218,54 +220,68 @@ export async function fetchSupervisors(): Promise<SupervisorSummary[]> {
 export async function addSupervisor(input: {
   kristoId: string;
   churchId: string;
-}): Promise<SupervisorSummary> {
+}): Promise<{
+  outcome: "invited" | "alreadyPending" | "alreadySupervisor";
+  supervisor: SupervisorSummary;
+}> {
   const path = "/api/offline-activation/supervisors/add";
   const kristoId = String(input.kristoId || "").trim();
   const churchId = String(input.churchId || "").trim();
 
-  console.log("KRISTO_SUPERVISOR_ADD_START", { kristoId, churchId });
+  console.log("KRISTO_SUPERVISOR_INVITE_CREATE_START", { kristoId, churchId });
 
   try {
     const res = await apiPost<
       | {
           ok: true;
+          outcome: "invited" | "alreadyPending" | "alreadySupervisor";
           supervisor: {
             userId: string;
             kristoId?: string;
             churchId?: string;
             fullName?: string;
-            platformRole: string;
+            invitationStatus: "pending" | "accepted";
+            invitationId?: string | null;
           };
         }
       | { ok: false; error: string }
     >(path, { kristoId, churchId }, { headers: buildActivationRequestHeaders(path) });
 
     if (!res || (res as any).ok === false) {
-      throw new Error(String((res as any)?.error || "Failed to add supervisor"));
+      throw new Error(String((res as any)?.error || "Failed to invite supervisor"));
     }
 
     const supervisor = (res as any).supervisor;
-    console.log("KRISTO_SUPERVISOR_ADD_SUCCESS", {
+    const outcome = (res as any).outcome as "invited" | "alreadyPending" | "alreadySupervisor";
+    console.log("KRISTO_SUPERVISOR_INVITE_CREATE_SUCCESS", {
+      outcome,
       userId: supervisor?.userId || null,
       kristoId: supervisor?.kristoId || null,
       churchId: supervisor?.churchId || null,
     });
 
+    const invitationStatus = supervisor?.invitationStatus === "accepted" ? "accepted" : "pending";
+
     return {
-      userId: supervisor.userId,
-      kristoId: supervisor.kristoId,
-      churchId: supervisor.churchId,
-      fullName: supervisor.fullName,
-      platformRole: "Supervisor",
-      assignedCodes: 0,
-      redeemedCodes: 0,
-      remainingCodes: 0,
+      outcome,
+      supervisor: {
+        userId: supervisor.userId,
+        kristoId: supervisor.kristoId,
+        churchId: supervisor.churchId,
+        fullName: supervisor.fullName,
+        platformRole: invitationStatus === "accepted" ? "Supervisor" : undefined,
+        invitationStatus,
+        invitationId: supervisor.invitationId || undefined,
+        assignedCodes: 0,
+        redeemedCodes: 0,
+        remainingCodes: 0,
+      },
     };
   } catch (error: any) {
-    console.log("KRISTO_SUPERVISOR_ADD_FAILED", {
+    console.warn("KRISTO_SUPERVISOR_INVITE_CREATE_FAILED", {
       kristoId,
       churchId,
-      error: String(error?.message || error || "failed"),
+      error: String(error?.message || error),
     });
     throw error;
   }

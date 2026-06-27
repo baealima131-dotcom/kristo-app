@@ -94,14 +94,22 @@ export default function SupervisorsScreen() {
     }
     setAdding(true);
     try {
-      await addSupervisor({ kristoId, churchId });
+      const result = await addSupervisor({ kristoId, churchId });
       setShowAddModal(false);
       setAddKristoId("");
       setAddChurchId("");
       await loadData();
-      Alert.alert("Supervisor added", "Platform role set to Supervisor.");
+      if (result.outcome === "alreadySupervisor") {
+        Alert.alert("Already supervisor", "This user is already an active Supervisor.");
+        return;
+      }
+      if (result.outcome === "alreadyPending") {
+        Alert.alert("Invitation pending", "A pending invitation already exists for this user.");
+        return;
+      }
+      Alert.alert("Invitation sent", "The user must accept before Supervisor access is granted.");
     } catch (e: any) {
-      Alert.alert("Could not add supervisor", String(e?.message || "Failed"));
+      Alert.alert("Could not invite supervisor", String(e?.message || "Failed"));
     } finally {
       setAdding(false);
     }
@@ -109,6 +117,10 @@ export default function SupervisorsScreen() {
 
   const onAssignCodes = async () => {
     if (!assignTarget) return;
+    if (assignTarget.invitationStatus === "pending") {
+      Alert.alert("Invitation pending", "Codes can only be assigned to accepted supervisors.");
+      return;
+    }
     const qty = Math.floor(Number(assignQuantity));
     if (!Number.isFinite(qty) || qty < 1) {
       Alert.alert("Invalid quantity", "Enter at least 1.");
@@ -180,12 +192,27 @@ export default function SupervisorsScreen() {
                 <Text style={styles.emptyText}>No supervisors yet. Add one to start assigning codes.</Text>
               </View>
             ) : (
-              supervisors.map((row) => (
-                <View key={row.userId} style={styles.rowCard}>
+              supervisors.map((row) => {
+                const isPending = row.invitationStatus === "pending";
+                const rowKey = row.invitationId || row.userId;
+                return (
+                <View key={rowKey} style={styles.rowCard}>
                   <View style={{ flex: 1, gap: 4 }}>
-                    <Text style={styles.rowTitle}>
-                      {row.fullName || row.kristoId || row.userId}
-                    </Text>
+                    <View style={styles.rowTitleRow}>
+                      <Text style={styles.rowTitle}>
+                        {row.fullName || row.kristoId || row.userId}
+                      </Text>
+                      <View
+                        style={[
+                          styles.statusBadge,
+                          isPending ? styles.statusBadgePending : styles.statusBadgeAccepted,
+                        ]}
+                      >
+                        <Text style={styles.statusBadgeText}>
+                          {isPending ? "Pending" : "Accepted"}
+                        </Text>
+                      </View>
+                    </View>
                     <Text style={styles.rowMeta}>
                       {row.kristoId ? `KRISTO ${row.kristoId}` : row.userId}
                       {row.churchId ? ` • ${row.churchId}` : ""}
@@ -196,20 +223,27 @@ export default function SupervisorsScreen() {
                     </Text>
                   </View>
                   <View style={styles.rowActions}>
-                    <Pressable
-                      style={styles.secondaryBtn}
-                      onPress={() =>
-                        router.push(`/more/system-admin/supervisors/${encodeURIComponent(row.userId)}` as any)
-                      }
-                    >
-                      <Text style={styles.secondaryBtnText}>View</Text>
-                    </Pressable>
-                    <Pressable style={styles.secondaryBtn} onPress={() => setAssignTarget(row)}>
-                      <Text style={styles.secondaryBtnText}>Assign</Text>
-                    </Pressable>
+                    {!isPending ? (
+                      <>
+                        <Pressable
+                          style={styles.secondaryBtn}
+                          onPress={() =>
+                            router.push(`/more/system-admin/supervisors/${encodeURIComponent(row.userId)}` as any)
+                          }
+                        >
+                          <Text style={styles.secondaryBtnText}>View</Text>
+                        </Pressable>
+                        <Pressable style={styles.secondaryBtn} onPress={() => setAssignTarget(row)}>
+                          <Text style={styles.secondaryBtnText}>Assign</Text>
+                        </Pressable>
+                      </>
+                    ) : (
+                      <Text style={styles.pendingHint}>Awaiting acceptance</Text>
+                    )}
                   </View>
                 </View>
-              ))
+              );
+              })
             )}
           </>
         )}
@@ -219,7 +253,9 @@ export default function SupervisorsScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Add Supervisor</Text>
-            <Text style={styles.modalSub}>Assign by KRISTO ID and Church membership.</Text>
+            <Text style={styles.modalSub}>
+              Sends a pending invitation. The user must accept before Supervisor access is granted.
+            </Text>
             <Text style={styles.fieldLabel}>KRISTO ID</Text>
             <TextInput
               value={addKristoId}
@@ -334,7 +370,29 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     gap: 10,
   },
-  rowTitle: { color: TEXT, fontSize: 15, fontWeight: "800" },
+  rowTitle: { color: TEXT, fontSize: 15, fontWeight: "800", flexShrink: 1 },
+  rowTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  statusBadgePending: {
+    borderColor: "rgba(255,196,90,0.45)",
+    backgroundColor: "rgba(255,196,90,0.12)",
+  },
+  statusBadgeAccepted: {
+    borderColor: "rgba(90,255,170,0.35)",
+    backgroundColor: "rgba(90,255,170,0.10)",
+  },
+  statusBadgeText: { color: TEXT, fontSize: 10, fontWeight: "800" },
+  pendingHint: { color: MUTED, fontSize: 11, fontStyle: "italic" },
   rowMeta: { color: MUTED, fontSize: 12 },
   rowStats: { color: MUTED, fontSize: 11, marginTop: 2 },
   rowActions: { flexDirection: "row", gap: 8 },

@@ -3,6 +3,7 @@ import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
 import { normalizeMembershipChurchId } from "@/app/api/_lib/memberships";
 import { getPlatformRole, listPlatformRoleUsers } from "@/app/api/_lib/platformRoles";
+import { listPendingSupervisorInvitations } from "@/app/api/_lib/offlineActivationInvitations";
 
 export type ActivationCodeStatus =
   | "available"
@@ -71,7 +72,9 @@ export type SupervisorSummary = {
   kristoId?: string;
   churchId?: string;
   fullName?: string;
-  platformRole: "Supervisor";
+  platformRole?: "Supervisor";
+  invitationStatus: "pending" | "accepted";
+  invitationId?: string;
   assignedCodes: number;
   redeemedCodes: number;
   remainingCodes: number;
@@ -437,7 +440,7 @@ export async function listSupervisorSummaries(): Promise<SupervisorSummary[]> {
   const codes = flattenCodes(store);
   const supervisors = await listPlatformRoleUsers("Supervisor");
 
-  const rows = await Promise.all(
+  const rows: SupervisorSummary[] = await Promise.all(
     supervisors.map(async (row) => {
       const stats = computeSupervisorCodeStats(codes, row.userId);
       const display = await resolveSupervisorDisplay(row.userId, row.note);
@@ -447,6 +450,7 @@ export async function listSupervisorSummaries(): Promise<SupervisorSummary[]> {
         churchId: display.churchId,
         fullName: display.fullName,
         platformRole: "Supervisor" as const,
+        invitationStatus: "accepted" as const,
         assignedCodes: stats.assignedCodes,
         redeemedCodes: stats.redeemedCodes,
         remainingCodes: stats.remainingCodes,
@@ -455,6 +459,34 @@ export async function listSupervisorSummaries(): Promise<SupervisorSummary[]> {
       };
     })
   );
+
+  const acceptedUserIds = new Set(rows.map((row) => row.userId));
+  const pendingInvites = await listPendingSupervisorInvitations();
+
+  for (const invite of pendingInvites) {
+    if (acceptedUserIds.has(invite.inviteeUserId)) continue;
+
+    let fullName: string | undefined;
+    try {
+      const profile = await getProfile(invite.inviteeUserId);
+      fullName = String(profile?.fullName || "").trim() || undefined;
+    } catch {
+      fullName = undefined;
+    }
+
+    rows.push({
+      userId: invite.inviteeUserId,
+      kristoId: invite.inviteeKristoId,
+      churchId: invite.churchId,
+      fullName,
+      invitationStatus: "pending",
+      invitationId: invite.id,
+      assignedCodes: 0,
+      redeemedCodes: 0,
+      remainingCodes: 0,
+      updatedAt: invite.createdAt,
+    });
+  }
 
   return rows.sort((a, b) => Date.parse(String(b.updatedAt || "")) - Date.parse(String(a.updatedAt || "")));
 }
@@ -482,6 +514,7 @@ export async function getSupervisorDetail(supervisorUserId: string): Promise<{
       churchId: display.churchId,
       fullName: display.fullName,
       platformRole: "Supervisor",
+      invitationStatus: "accepted",
       assignedCodes: stats.assignedCodes,
       redeemedCodes: stats.redeemedCodes,
       remainingCodes: stats.remainingCodes,

@@ -5,7 +5,12 @@ import {
   getMembershipsForUser,
   normalizeMembershipChurchId,
 } from "@/app/api/_lib/memberships";
-import { getPlatformRole, upsertPlatformRole, type PlatformRole } from "@/app/api/_lib/platformRoles";
+import { getPlatformRole } from "@/app/api/_lib/platformRoles";
+import {
+  createSupervisorInvitation,
+  findPendingSupervisorInvitation,
+  type OfflineActivationInvitation,
+} from "@/app/api/_lib/offlineActivationInvitations";
 
 export type ActivationUserRef = {
   userId: string;
@@ -55,11 +60,19 @@ export async function resolveUserByKristoId(kristoId: string): Promise<{
   };
 }
 
-export async function addSupervisorByKristoAndChurch(
+export type InviteSupervisorOutcome = "invited" | "alreadyPending" | "alreadySupervisor";
+
+export type InviteSupervisorResult = {
+  outcome: InviteSupervisorOutcome;
+  user: ActivationUserRef;
+  invitation?: OfflineActivationInvitation;
+};
+
+export async function inviteSupervisorByKristoAndChurch(
   kristoId: string,
   churchId: string,
   addedByUserId: string
-): Promise<{ user: ActivationUserRef; platformRole: PlatformRole }> {
+): Promise<InviteSupervisorResult> {
   const normalizedChurchId = normalizeMembershipChurchId(churchId);
   if (!normalizedChurchId) {
     throw new Error("Church ID is required");
@@ -87,25 +100,52 @@ export async function addSupervisorByKristoAndChurch(
     throw new Error("User is already System_Admin");
   }
   if (existing === "Supervisor") {
-    throw new Error("User is already a Supervisor");
+    return {
+      outcome: "alreadySupervisor",
+      user: {
+        userId: resolved.userId,
+        kristoId: resolved.kristoId,
+        churchId: normalizedChurchId,
+        fullName: resolved.fullName,
+      },
+    };
   }
   if (existing === "Agent") {
     throw new Error("User is already an Agent");
   }
 
-  const saved = await upsertPlatformRole(
-    resolved.userId,
-    "Supervisor",
-    `Supervisor for ${normalizedChurchId} • KRISTO ${resolved.kristoId} • added by ${String(addedByUserId || "").trim() || "unknown"}`
-  );
+  const pending = await findPendingSupervisorInvitation({
+    inviteeUserId: resolved.userId,
+    churchId: normalizedChurchId,
+  });
+  if (pending) {
+    return {
+      outcome: "alreadyPending",
+      user: {
+        userId: resolved.userId,
+        kristoId: resolved.kristoId,
+        churchId: normalizedChurchId,
+        fullName: resolved.fullName,
+      },
+      invitation: pending,
+    };
+  }
+
+  const invitation = await createSupervisorInvitation({
+    inviteeUserId: resolved.userId,
+    inviteeKristoId: resolved.kristoId,
+    churchId: normalizedChurchId,
+    invitedByUserId: String(addedByUserId || "").trim() || "unknown",
+  });
 
   return {
+    outcome: "invited",
     user: {
       userId: resolved.userId,
       kristoId: resolved.kristoId,
       churchId: normalizedChurchId,
       fullName: resolved.fullName,
     },
-    platformRole: saved.platformRole,
+    invitation,
   };
 }

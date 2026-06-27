@@ -63,6 +63,7 @@ import {
   type ChurchActivityMemberFilter,
 } from "@/src/lib/churchActivityPosts";
 import { homeFeedMediaUrl } from "@/src/components/homeFeed/homeFeedUtils";
+import { SupervisorInvitationCard } from "@/src/components/offlineActivation/SupervisorInvitationCard";
 
 type AuthProfile = {
   userId: string;
@@ -1696,6 +1697,8 @@ const resolvedName = useMemo(() => {
             )}
 
             <View style={s.heroDivider} />
+
+            <SupervisorInvitationCard variant="profile" />
 
             {showMediaContent ? (
               <View style={s.heroMetricsGrid}>

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { addSupervisorByKristoAndChurch } from "@/app/api/_lib/offlineActivationAdmin";
+import { inviteSupervisorByKristoAndChurch } from "@/app/api/_lib/offlineActivationAdmin";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
@@ -25,39 +25,47 @@ export async function POST(req: NextRequest) {
     return json({ ok: false, error: "Church ID is required." }, { status: 400 });
   }
 
-  console.log("[KRISTO] supervisor add start", {
+  console.log("KRISTO_SUPERVISOR_INVITE_CREATE_START", {
     byUserId: ctxOrRes.viewer.userId,
     kristoId: kristoId.toUpperCase(),
     churchId,
   });
 
   try {
-    const result = await addSupervisorByKristoAndChurch(
+    const result = await inviteSupervisorByKristoAndChurch(
       kristoId,
       churchId,
       ctxOrRes.viewer.userId
     );
 
-    console.log("[KRISTO] supervisor add success", {
+    console.log("KRISTO_SUPERVISOR_INVITE_CREATE_SUCCESS", {
       byUserId: ctxOrRes.viewer.userId,
-      supervisorUserId: result.user.userId,
+      outcome: result.outcome,
+      inviteeUserId: result.user.userId,
       kristoId: result.user.kristoId,
       churchId: result.user.churchId,
+      invitationId: result.invitation?.id || null,
     });
+
+    const invitationStatus =
+      result.outcome === "alreadySupervisor" ? "accepted" : "pending";
 
     return json({
       ok: true,
+      outcome: result.outcome,
+      invitation: result.invitation || null,
       supervisor: {
         userId: result.user.userId,
         kristoId: result.user.kristoId,
         churchId: result.user.churchId,
         fullName: result.user.fullName,
-        platformRole: result.platformRole,
+        invitationStatus,
+        invitationId: result.invitation?.id || null,
       },
     });
   } catch (error: any) {
-    const message = String(error?.message || "Failed to add supervisor");
-    console.warn("[KRISTO] supervisor add failed", {
+    const message = String(error?.message || "Failed to invite supervisor");
+    console.warn("KRISTO_SUPERVISOR_INVITE_CREATE_FAILED", {
       byUserId: ctxOrRes.viewer.userId,
       kristoId: kristoId.toUpperCase(),
       churchId,
