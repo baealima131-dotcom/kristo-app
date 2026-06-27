@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getUserById, readSession, seedUserIfMissing } from "@/app/api/auth/_lib/session";
+import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 
 /**
  * Roles used across API RBAC.
@@ -60,7 +61,20 @@ export async function getViewer(req: NextRequest): Promise<Viewer> {
   const dev = await devAutoViewer();
   if (dev) return dev;
 
-  // Mobile sends x-kristo-user-id; readSession(req) resolves it (see session.ts).
+  const resolved = resolveRequestUserId(req);
+  if (resolved.userId) {
+    const u = await getUserById(resolved.userId);
+    const headerRole = String(req.headers.get("x-kristo-role") || "Member").trim();
+    const headerChurchId = String(req.headers.get("x-kristo-church-id") || "").trim();
+    return {
+      userId: resolved.userId,
+      name: u?.email || u?.id || resolved.userId,
+      role: (headerRole as AppRole) || "Member",
+      churchId: headerChurchId,
+    };
+  }
+
+  // Cookie session fallback (web).
   const sess = await readSession(req);
   if (!sess) {
     return { userId: "", name: undefined, role: "Member", churchId: "" };

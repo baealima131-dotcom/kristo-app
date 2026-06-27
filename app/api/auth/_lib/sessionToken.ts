@@ -248,43 +248,61 @@ type HeaderBag = { headers?: { get?: (key: string) => string | null } };
  */
 export function resolveRequestUserId(req: HeaderBag | undefined): {
   userId: string;
-  via: "dev-header" | "token" | "none";
+  via: "dev-header" | "token" | "token-only" | "none";
   reason?: string;
 } {
   const headerUserId = String(req?.headers?.get?.("x-kristo-user-id") || "").trim();
-  if (!headerUserId) return { userId: "", via: "none", reason: "no-header" };
-
   const token = String(req?.headers?.get?.("x-kristo-session-token") || "").trim();
 
-  if (shouldTrustRawHeaderIdentity()) {
-    // Dev path: prefer a valid token if present, otherwise trust the raw header.
-    if (token) {
-      const v = verifySessionToken(token, headerUserId);
-      if (v.ok) return { userId: headerUserId, via: "token" };
+  if (headerUserId) {
+    if (shouldTrustRawHeaderIdentity()) {
+      // Dev path: prefer a valid token if present, otherwise trust the raw header.
+      if (token) {
+        const v = verifySessionToken(token, headerUserId);
+        if (v.ok) return { userId: headerUserId, via: "token" };
+      }
+      return { userId: headerUserId, via: "dev-header" };
     }
-    return { userId: headerUserId, via: "dev-header" };
+
+    // Production: require a valid signed token bound to the header user id.
+    const v = verifySessionToken(token, headerUserId);
+    if (v.ok) {
+      if (v.verifiedVia === "legacy") {
+        console.log("KRISTO_AUTH_LEGACY_TOKEN_ACCEPTED", {
+          userId: headerUserId,
+          legacySecretLabel: v.legacySecretLabel || null,
+        });
+      }
+      return { userId: headerUserId, via: "token" };
+    }
+
+    console.warn("KRISTO_AUTH_HEADER_REJECTED", {
+      headerUserId,
+      hasToken: Boolean(token),
+      reason: v.reason || "invalid",
+      verifiedVia: v.verifiedVia || null,
+      legacySecretLabel: v.legacySecretLabel || null,
+    });
+    return { userId: "", via: "none", reason: v.reason || "invalid-token" };
   }
 
-  // Production: require a valid signed token bound to the header user id.
-  const v = verifySessionToken(token, headerUserId);
-  if (v.ok) {
-    if (v.verifiedVia === "legacy") {
-      console.log("KRISTO_AUTH_LEGACY_TOKEN_ACCEPTED", {
-        userId: headerUserId,
-        legacySecretLabel: v.legacySecretLabel || null,
-      });
+  // Production-safe fallback: resolve uid from signed session token when header is missing.
+  if (token) {
+    const v = verifySessionToken(token);
+    if (v.ok && v.userId) {
+      if (v.verifiedVia === "legacy") {
+        console.log("KRISTO_AUTH_LEGACY_TOKEN_ACCEPTED", {
+          userId: v.userId,
+          legacySecretLabel: v.legacySecretLabel || null,
+          via: "token-only",
+        });
+      }
+      return { userId: v.userId, via: "token-only" };
     }
-    return { userId: headerUserId, via: "token" };
+    return { userId: "", via: "none", reason: v.reason || "invalid-token" };
   }
 
-  console.warn("KRISTO_AUTH_HEADER_REJECTED", {
-    headerUserId,
-    hasToken: Boolean(token),
-    reason: v.reason || "invalid",
-    verifiedVia: v.verifiedVia || null,
-    legacySecretLabel: v.legacySecretLabel || null,
-  });
-  return { userId: "", via: "none", reason: v.reason || "invalid-token" };
+  return { userId: "", via: "none", reason: "no-header" };
 }
 
 /** Structured auth diagnostics for mobile/server mismatch tracing. */

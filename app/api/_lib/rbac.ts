@@ -212,12 +212,24 @@ export async function guardPlatformOfflineActivation(
   req: NextRequest,
   roles: PlatformRole[]
 ): Promise<PlatformGuardContext | NextResponse> {
+  const headerUserId = String(req.headers.get("x-kristo-user-id") || "").trim();
+  const hasSessionToken = Boolean(String(req.headers.get("x-kristo-session-token") || "").trim());
+
   const auth = await guardAuth(req);
   if (auth instanceof NextResponse) return auth;
 
   const userId = String(auth.viewer.userId || "").trim();
   const active = await getActiveMembership(userId);
   const platformRole = await resolvePlatformRoleForUser(userId, active?.churchRole);
+
+  console.log("KRISTO_PLATFORM_GUARD_CONTEXT", {
+    userId: userId || null,
+    platformRole: platformRole || null,
+    requiredRoles: roles,
+    hasHeaderUserId: Boolean(headerUserId),
+    hasSessionToken,
+    allowed: Boolean(platformRole && roles.includes(platformRole)),
+  });
 
   if (!platformRole || !roles.includes(platformRole)) {
     return json(
