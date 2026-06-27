@@ -8,6 +8,15 @@ import type { KristoSession } from "@/src/lib/kristoSessionTypes";
 
 export const OFFLINE_SUPERVISOR_INVITE_KIND = "offline_supervisor" as const;
 
+export const OFFLINE_SUPERVISOR_INVITE_TITLE = "Supervisor invitation";
+
+export const OFFLINE_SUPERVISOR_INVITE_BODY =
+  "You have been invited to serve as a Kristo App Activation Supervisor. You will help distribute subscription activation codes safely through approved agents.";
+
+export function buildOfflineSupervisorReferenceChurchLabel(churchId: string): string {
+  return `Reference church: ${String(churchId || "").trim()}`;
+}
+
 export type OfflineSupervisorProfileInvite = {
   kind: typeof OFFLINE_SUPERVISOR_INVITE_KIND;
   id: string;
@@ -16,6 +25,7 @@ export type OfflineSupervisorProfileInvite = {
   role: "Supervisor";
   title: string;
   message: string;
+  referenceChurchLabel: string;
   status: "pending";
 };
 
@@ -32,8 +42,9 @@ export function mapOfflineSupervisorInviteForProfile(
     invitationId: inv.id,
     churchId: inv.churchId,
     role: "Supervisor",
-    title: "Supervisor invitation",
-    message: `You were invited to manage activation codes for ${inv.churchId}`,
+    title: OFFLINE_SUPERVISOR_INVITE_TITLE,
+    message: OFFLINE_SUPERVISOR_INVITE_BODY,
+    referenceChurchLabel: buildOfflineSupervisorReferenceChurchLabel(inv.churchId),
     status: "pending",
   };
 }

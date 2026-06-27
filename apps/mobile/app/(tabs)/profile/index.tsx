@@ -2163,12 +2163,11 @@ const resolvedName = useMemo(() => {
                         </View>
 
                         <View style={s.inviteCompactInfo}>
-                          <Text style={s.inviteCompactTitle} numberOfLines={1}>
-                            Supervisor invitation
-                          </Text>
-                          <Text style={s.inviteCompactRole}>
-                            You were invited to manage activation codes for {inv.churchId}
-                          </Text>
+                          <Text style={s.inviteCompactTitle}>{inv.title}</Text>
+                          <Text style={s.inviteCompactRole}>{inv.message}</Text>
+                          {inv.referenceChurchLabel ? (
+                            <Text style={s.inviteCompactMeta}>{inv.referenceChurchLabel}</Text>
+                          ) : null}
 
                           <View style={s.invitePendingMini}>
                             <View style={s.invitePendingDot} />
@@ -3324,6 +3323,12 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
     marginTop: 3,
+  },
+  inviteCompactMeta: {
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 6,
   },
   invitePendingMini: {
     marginTop: 8,
