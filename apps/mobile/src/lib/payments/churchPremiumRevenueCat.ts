@@ -1,6 +1,7 @@
 /**
  * Mobile-local RevenueCat church premium identifiers.
  * Values must match lib/churchPremiumRevenueCat.ts (server) and RevenueCat Dashboard.
+ * Google Play + App Store product IDs: premium_monthly, premium_yearly.
  */
 export const CHURCH_PREMIUM_ENTITLEMENT = "Premium";
 

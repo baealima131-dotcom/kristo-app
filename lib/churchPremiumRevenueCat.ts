@@ -3,7 +3,7 @@
  * Must match RevenueCat Dashboard → Entitlements → Identifier.
  *
  * Products must be attached to this entitlement in RevenueCat.
- * StoreKit / App Store Connect product IDs: premium_monthly, premium_yearly.
+ * StoreKit / App Store Connect and Google Play product IDs: premium_monthly, premium_yearly.
  */
 export const CHURCH_PREMIUM_ENTITLEMENT = "church_premium";
 

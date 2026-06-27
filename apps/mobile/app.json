@@ -33,6 +33,7 @@
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
+        "com.android.vending.BILLING",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ]
@@ -73,7 +74,7 @@
       "stripePublishableKey": "pk_test_xxxxxxxxxxxxxxxxx",
       "stripeMerchantIdentifier": "merchant.com.princefariji.kristoapp",
       "revenuecatIosApiKey": "appl_RsWwZtALpIYilmRQNPlnDCkBcqG",
-      "revenuecatAndroidApiKey": "WEKA_ANDROID_GOOG_KEY_HAPA",
+      "revenuecatAndroidApiKey": "",
       "router": {},
       "eas": {
         "projectId": "1dc15ae7-821f-479e-b1fd-feb0450be12f"

@@ -38,10 +38,18 @@ export {
 const extra =
   (Constants.expoConfig?.extra as Record<string, string | undefined> | undefined) || {};
 
-const IOS_REVENUECAT_API_KEY = extra.revenuecatIosApiKey || "";
-const ANDROID_REVENUECAT_API_KEY = extra.revenuecatAndroidApiKey || "";
+const IOS_REVENUECAT_API_KEY =
+  String(process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY || extra.revenuecatIosApiKey || "").trim();
+const ANDROID_REVENUECAT_API_KEY =
+  String(
+    process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY || extra.revenuecatAndroidApiKey || ""
+  ).trim();
 
 export const MONTHLY_INTRO_TRIAL_DAYS = PREMIUM_MONTHLY_INTRO_TRIAL_DAYS;
+
+function isAndroidPlatform() {
+  return Platform.OS === "android";
+}
 
 function getRevenueCatApiKey() {
   if (Platform.OS === "ios") return IOS_REVENUECAT_API_KEY;
@@ -49,9 +57,39 @@ function getRevenueCatApiKey() {
   return "";
 }
 
+function androidRevenueCatProductConfig() {
+  return {
+    monthlyProductId: PREMIUM_MONTHLY_PRODUCT_ID,
+    yearlyProductId: PREMIUM_YEARLY_PRODUCT_ID,
+    entitlementIds: [...CHURCH_PREMIUM_ENTITLEMENT_IDS],
+  };
+}
+
 function isPlaceholderKey(value: string) {
   const v = String(value || "").trim();
   return !v || /REPLACE_ME|WEKA_|HAPA|placeholder/i.test(v);
+}
+
+/** Public RevenueCat Android SDK key source for launch diagnostics (masked). */
+export function describeAndroidRevenueCatApiKeySource(): {
+  configured: boolean;
+  source: "env" | "app-json" | "missing";
+  masked: string;
+} {
+  const fromEnv = String(process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY || "").trim();
+  const fromExtra = String(extra.revenuecatAndroidApiKey || "").trim();
+  const resolved = fromEnv || fromExtra;
+  if (!resolved) {
+    return { configured: false, source: "missing", masked: "" };
+  }
+  if (isPlaceholderKey(resolved)) {
+    return { configured: false, source: fromEnv ? "env" : "app-json", masked: `${resolved.slice(0, 6)}...` };
+  }
+  return {
+    configured: true,
+    source: fromEnv ? "env" : "app-json",
+    masked: `${resolved.slice(0, 8)}...(len ${resolved.length})`,
+  };
 }
 
 function isLiveRoomActive() {
@@ -176,6 +214,14 @@ async function purchasesIsConfigured(): Promise<boolean> {
 }
 
 export async function ensurePurchasesConfigured(): Promise<boolean> {
+  if (isAndroidPlatform()) {
+    console.log("KRISTO_RC_ANDROID_CONFIG_START", {
+      ...revenueCatRuntimeInfo(),
+      androidApiKey: describeAndroidRevenueCatApiKeySource(),
+      ...androidRevenueCatProductConfig(),
+    });
+  }
+
   console.log("KRISTO_RC_CONFIG_START", revenueCatRuntimeInfo());
 
   if (!isRevenueCatNativePlatform()) {
@@ -355,6 +401,9 @@ export async function configureChurchMobileSubscriptions(churchId: string): Prom
   if (!ready) return false;
 
   const info = await logInRevenueCatForChurchSubscription(cid);
+  if (isAndroidPlatform() && info) {
+    logRevenueCatAndroidEntitlementDebug(info, "configure-church-subscriptions", { churchId: cid });
+  }
   return Boolean(info) || (await purchasesIsConfigured());
 }
 
@@ -383,9 +432,24 @@ export function isOfferingsConfigurationError(error: unknown): boolean {
   return (
     message.includes("offerings") ||
     message.includes("app store connect") ||
+    message.includes("google play") ||
+    message.includes("play console") ||
     message.includes("storekit") ||
     message.includes("couldn't be fetched") ||
     message.includes("configuration")
+  );
+}
+
+function subscriptionStoreSetupHint(): string {
+  if (Platform.OS === "android") {
+    return (
+      "Google Play products are not available yet. Create premium_monthly and premium_yearly " +
+      "in Google Play Console, link them in RevenueCat (entitlement Premium), and publish a test track build."
+    );
+  }
+  return (
+    "App Store products are not available yet. Submit premium_monthly and premium_yearly " +
+    "in App Store Connect (or attach a StoreKit config in Xcode)."
   );
 }
 
@@ -400,11 +464,7 @@ export function formatSubscriptionSetupError(error: unknown): string {
   }
 
   if (isOfferingsConfigurationError(error)) {
-    return (
-      "App Store products are not available yet. Submit premium_monthly and " +
-      "premium_yearly in App Store Connect (or attach a StoreKit config in Xcode). " +
-      `Details: ${message}${codeSuffix}`
-    );
+    return `${subscriptionStoreSetupHint()} Details: ${message}${codeSuffix}`;
   }
 
   return message ? `${message}${codeSuffix}` : "Subscription setup could not be completed. Try again later.";
@@ -427,6 +487,20 @@ export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
       currentPackageCount: current?.availablePackages?.length || 0,
       currentProductIds: (current?.availablePackages || []).map((p) => p.product.identifier),
     });
+    if (isAndroidPlatform()) {
+      const monthly = resolveMonthlyPackage(offerings);
+      const yearly = resolveYearlyPackage(offerings);
+      console.log("KRISTO_RC_ANDROID_OFFERINGS_SUCCESS", {
+        currentOfferingId: current?.identifier || null,
+        monthlyProductId: monthly?.product.identifier || null,
+        yearlyProductId: yearly?.product.identifier || null,
+        monthlyResolved: monthly?.product.identifier === PREMIUM_MONTHLY_PRODUCT_ID,
+        yearlyResolved: yearly?.product.identifier === PREMIUM_YEARLY_PRODUCT_ID,
+        monthlyIntroOffer: describeIntroOffer(resolveMonthlyProductIntro(monthly)),
+        monthlyHasIntroOffer: monthlyPackageHasIntroOffer(monthly),
+        packageSummary: describeCurrentOfferingPackages(offerings),
+      });
+    }
     return offerings;
   } catch (error) {
     const detail = getRevenueCatErrorDetail(error);
@@ -464,11 +538,11 @@ export async function purchaseSubscriptionPackage(
     console.log("KRISTO_RC_PURCHASE_UPGRADE", {
       fromProductId,
       toProductId: String(pkg.product.identifier || ""),
-      replacementMode: STORE_REPLACEMENT_MODE.WITH_TIME_PRORATION,
+      replacementMode: STORE_REPLACEMENT_MODE.CHARGE_PRORATED_PRICE,
     });
     result = await Purchases.purchasePackage(pkg, null, {
       oldProductIdentifier: fromProductId,
-      replacementMode: STORE_REPLACEMENT_MODE.WITH_TIME_PRORATION,
+      replacementMode: STORE_REPLACEMENT_MODE.CHARGE_PRORATED_PRICE,
     });
   } else {
     if (fromProductId) {
@@ -485,6 +559,20 @@ export async function purchaseSubscriptionPackage(
   } catch (error) {
     console.log("KRISTO_RC_SYNC_PURCHASES_FAILED", getRevenueCatErrorDetail(error));
   }
+
+  if (isAndroidPlatform()) {
+    console.log("KRISTO_RC_ANDROID_PURCHASE_SUCCESS", {
+      productId: String(pkg.product.identifier || ""),
+      upgradeFromProductId: fromProductId || null,
+      entitlementActive: hasPremiumEntitlement(result.customerInfo),
+      activePlan: resolveActiveSubscriptionPlan(result.customerInfo),
+    });
+    logRevenueCatAndroidEntitlementDebug(result.customerInfo, "purchase-success", {
+      productId: String(pkg.product.identifier || ""),
+      upgradeFromProductId: fromProductId || null,
+    });
+  }
+
   return result;
 }
 
@@ -1169,6 +1257,7 @@ export function logRevenueCatSubscriptionOwnershipDebug(
         isActive: entitlement?.isActive ?? null,
         willRenew: entitlement?.willRenew ?? null,
         expirationDate: entitlement?.expirationDate ?? null,
+        periodType: entitlement?.periodType ?? null,
         store: entitlement?.store ?? null,
       },
     ])
@@ -1191,6 +1280,54 @@ export function logRevenueCatSubscriptionOwnershipDebug(
     ),
     allProductIdentifiers: collectAllRevenueCatProductIdentifiers(customerInfo),
     resolvedActivePlan: customerInfo ? resolveActiveSubscriptionPlan(customerInfo) : null,
+    introTrial: resolveActivePremiumIntroTrialState(customerInfo),
+  });
+
+  if (isAndroidPlatform()) {
+    logRevenueCatAndroidEntitlementDebug(customerInfo, source, meta);
+  }
+}
+
+/** Android-only entitlement snapshot for Google Play / RevenueCat launch diagnostics. */
+export function logRevenueCatAndroidEntitlementDebug(
+  customerInfo: CustomerInfo | null | undefined,
+  source: string,
+  meta: Record<string, unknown> = {}
+) {
+  if (!isAndroidPlatform()) return;
+
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  const monthlySubscription = summarizeSubscriptionOwnership(
+    customerInfo,
+    isMonthlyPremiumProductId
+  );
+  const yearlySubscription = summarizeSubscriptionOwnership(
+    customerInfo,
+    isYearlyPremiumProductId
+  );
+
+  console.log("KRISTO_RC_ANDROID_ENTITLEMENT_DEBUG", {
+    source,
+    ...meta,
+    churchAppUserId: configuredAppUserId,
+    originalAppUserId: customerInfo?.originalAppUserId ?? null,
+    activeSubscriptions: customerInfo?.activeSubscriptions || [],
+    resolvedActivePlan: customerInfo ? resolveActiveSubscriptionPlan(customerInfo) : null,
+    detectedEntitlement: detectPremiumEntitlementKey(
+      Object.keys(customerInfo?.entitlements?.active || {})
+    ),
+    entitlement: entitlement
+      ? {
+          productIdentifier: entitlement.productIdentifier ?? null,
+          periodType: entitlement.periodType ?? null,
+          expirationDate: entitlement.expirationDate ?? null,
+          willRenew: entitlement.willRenew ?? null,
+          store: entitlement.store ?? null,
+        }
+      : null,
+    premiumMonthlySubscription: monthlySubscription,
+    premiumYearlySubscription: yearlySubscription,
+    introTrial: resolveActivePremiumIntroTrialState(customerInfo),
   });
 }
 
@@ -1418,7 +1555,7 @@ export function isIntroOfferFreeTrial(
   intro: PurchasesIntroPrice | null | undefined
 ): boolean {
   if (!intro) return false;
-  return intro.price === 0;
+  return Number(intro.price) === 0;
 }
 
 function parseIso8601PeriodDays(period: string): number | null {
