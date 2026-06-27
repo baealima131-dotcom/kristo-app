@@ -22,6 +22,10 @@ import {
   uploadProfileAvatarFromDataUrl,
   withPersistedProfileAvatarFields,
 } from "@/app/api/_lib/profileAvatarUpload";
+import {
+  resolveChurchRoleForGuard,
+  resolvePlatformRoleForUser,
+} from "@/app/api/_lib/platformRoles";
 
 export const runtime = "nodejs";
 
@@ -64,6 +68,20 @@ type Body = {
 
 function norm(s: any) {
   return String(s ?? "").trim();
+}
+
+async function buildMembershipAuthFields(
+  userId: string,
+  activeMembership: Awaited<ReturnType<typeof getActiveMembership>>
+) {
+  const platformRole = await resolvePlatformRoleForUser(userId, activeMembership?.churchRole);
+  const churchRole = resolveChurchRoleForGuard(activeMembership?.churchRole);
+  return {
+    churchRole,
+    role: churchRole,
+    platformRole,
+    offlineActivationRole: platformRole,
+  };
 }
 
 function resolveIncomingAvatarUrl(body: Body, current: any, uploadedAvatarUrl: string) {
@@ -183,14 +201,15 @@ export async function GET(req: Request) {
 
     await upsertProfilePersist(next);
 
+    const authFields = await buildMembershipAuthFields(u.id, activeMembership);
+
     return NextResponse.json({
       ok: true,
       profile: next,
       activeMembership,
       churchId: activeMembership?.churchId || "",
       churchName: churchProfile?.name || "",
-      churchRole: activeMembership?.churchRole || "",
-      role: activeMembership?.churchRole || "",
+      ...authFields,
     });
   } catch (error: any) {
     const message = String(error?.message || error || "Failed to load profile.");
@@ -315,14 +334,15 @@ export async function POST(req: Request) {
       hasAvatar: Boolean(pickPersistedProfileAvatarUrl(next)),
     });
 
+    const authFields = await buildMembershipAuthFields(u.id, activeMembership);
+
     return NextResponse.json({
       ok: true,
       profile: next,
       activeMembership,
       churchId: activeMembership?.churchId || "",
       churchName: churchProfile?.name || "",
-      churchRole: activeMembership?.churchRole || "",
-      role: activeMembership?.churchRole || "",
+      ...authFields,
     });
   } catch (error: any) {
     const message = String(error?.message || error || "Failed to save profile.");

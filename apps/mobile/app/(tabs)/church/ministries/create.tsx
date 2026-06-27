@@ -281,8 +281,7 @@ export default function ChurchMinistryCreateScreen() {
   const sessionRole = String(session?.role || session?.churchRole || "").trim();
   const canCreateMinistryRole =
     /\bPastor\b/i.test(sessionRole) ||
-    sessionRole === "Church_Admin" ||
-    sessionRole === "System_Admin";
+    sessionRole === "Church_Admin";
   const ministryCreationBlocked = isMinistryCreationBlocked(
     churchSubscriptionActive,
     canUseMediaTools

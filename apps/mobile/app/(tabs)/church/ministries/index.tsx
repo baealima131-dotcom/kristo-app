@@ -101,8 +101,7 @@ export default function MoreMinistriesList() {
     /\bPastor\b/i.test(role) ||
     role === "Church_Admin" ||
     role === "Leader" ||
-    role === "Ministry_Leader" ||
-    role === "System_Admin";
+    role === "Ministry_Leader";
   const { managementBlocked, ready: subscriptionGateReady } =
     useChurchPremiumManagementAccess(churchId);
   const createMinistryLocked = canCreateMinistry && managementBlocked;

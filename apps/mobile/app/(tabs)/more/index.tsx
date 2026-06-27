@@ -387,9 +387,11 @@ export default function MoreScreen() {
   );
 
   const offlineActivationItems = React.useMemo((): Item[] => {
-    const role = String(session?.role || "Member");
-    return getOfflineActivationMoreItems(role).map(({ requiredRole: _ignored, ...item }) => item);
-  }, [session?.role]);
+    const platformRole = String(
+      (session as any)?.platformRole || (session as any)?.offlineActivationRole || ""
+    );
+    return getOfflineActivationMoreItems(platformRole).map(({ requiredRole: _ignored, ...item }) => item);
+  }, [session?.platformRole, (session as any)?.offlineActivationRole]);
 
   const visibleItems = React.useMemo(() => {
     let base = hasChurch ? ITEMS : buildNoChurchOnboardingItems();
@@ -469,10 +471,12 @@ export default function MoreScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      const role = String(session?.role || "Member");
+      const platformRole = String(
+        (session as any)?.platformRole || (session as any)?.offlineActivationRole || ""
+      );
       const userId = String(session?.userId || "").trim();
-      logOfflineActivationMoreCardVisibility(role, userId);
-    }, [session?.role, session?.userId])
+      logOfflineActivationMoreCardVisibility(platformRole, userId);
+    }, [session?.platformRole, (session as any)?.offlineActivationRole, session?.userId])
   );
 
   React.useEffect(() => {

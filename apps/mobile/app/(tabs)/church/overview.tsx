@@ -987,15 +987,14 @@ export default function ChurchOverviewScreen() {
   const isLeader = role === "Leader" || role === "Ministry_Leader";
   const isPastor = role === "Pastor";
   const isChurchAdmin = role === "Church_Admin";
-  const isSystemAdmin = role === "System_Admin";
 
-  const canSeeLeadershipOverview = isLeader || isPastor || isChurchAdmin || isSystemAdmin;
-  const canSeeOfferings = isPastor || isChurchAdmin || isSystemAdmin;
+  const canSeeLeadershipOverview = isLeader || isPastor || isChurchAdmin;
+  const canSeeOfferings = isPastor || isChurchAdmin;
   const canOpenMembers = !invitePreview;
   const canOpenMinistries = !invitePreview && canSeeLeadershipOverview;
   const canCreateMinistryRole =
     !invitePreview &&
-    (isPastor || isChurchAdmin || isSystemAdmin || isActualChurchPastor);
+    (isPastor || isChurchAdmin || isActualChurchPastor);
   const subscriptionGateReady =
     isSubscriptionBypassEnabled() ||
     churchSubscriptionActive !== null ||
@@ -1010,7 +1009,7 @@ export default function ChurchOverviewScreen() {
     canCreateMinistryRole && subscriptionGateReady && !ministryCreationAllowed;
   const hasExistingMinistries = stats.ministries > 0;
   const canOpenOfferings = !invitePreview && canSeeOfferings;
-  const canEditProfile = !invitePreview && (isPastor || isChurchAdmin || isSystemAdmin);
+  const canEditProfile = !invitePreview && (isPastor || isChurchAdmin);
   const sessionRoleText = [
     role,
     String((session as any)?.role || ""),

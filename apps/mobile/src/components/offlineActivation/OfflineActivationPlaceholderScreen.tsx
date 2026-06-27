@@ -17,6 +17,7 @@ import {
   type OfflineActivationRole,
   type OfflineActivationRoute,
 } from "@/src/lib/offlineActivationCodes";
+import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
 
 const GOLD = "#D9B35F";
 const BG = "#070C14";
@@ -45,15 +46,15 @@ export function OfflineActivationPlaceholderScreen({
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const session = getSessionSync() as any;
-  const role = String(session?.role || "Member");
+  const platformRole = resolveSessionPlatformRole(session);
   const userId = String(session?.userId || "").trim();
-  const allowed = hasOfflineActivationRole(role, requiredRole);
+  const allowed = hasOfflineActivationRole(platformRole || "", requiredRole);
 
   React.useEffect(() => {
     if (allowed) {
-      logOfflineCodesRouteOpened(route, role, userId);
+      logOfflineCodesRouteOpened(route, platformRole || "", userId);
     }
-  }, [allowed, route, role, userId]);
+  }, [allowed, route, platformRole, userId]);
 
   return (
     <View style={styles.screen}>

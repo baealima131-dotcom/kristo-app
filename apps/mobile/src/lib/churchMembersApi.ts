@@ -2,6 +2,7 @@ import { getSessionSync } from "./kristoSession";
 import { getApiBase } from "./kristoApi";
 import { buildKristoRequestHeaders } from "./kristoHeaders";
 import { resolveActiveChurchFromProfileResponse } from "./churchMembershipSync";
+import { resolvePlatformRoleFromAuthPayload } from "./platformRole";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import {
   emitChurchInviteAccepted,
@@ -318,6 +319,7 @@ export async function fetchMyActiveChurchMembership() {
     membership: resolved.churchId ? j.activeMembership || resolved.membership : null,
     churchId: resolved.churchId,
     role: resolved.churchId ? resolved.role : "Member",
+    platformRole: resolvePlatformRoleFromAuthPayload(j),
   };
 }
 

@@ -1,7 +1,6 @@
 import { getSessionSync } from "./kristoSessionSync";
 
 export type KristoRole =
-  | "System_Admin"
   | "Church_Admin"
   | "Pastor"
   | "Ministry_Leader"

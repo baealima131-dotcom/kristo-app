@@ -8,6 +8,7 @@ import { loadChurchDraft } from "@/src/lib/churchStore";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { resolveActiveChurchFromProfileResponse } from "@/src/lib/churchMembershipSync";
+import { resolvePlatformRoleFromAuthPayload } from "@/src/lib/platformRole";
 import { recoverChurchIdFromMembership } from "@/src/lib/churchLockedRecovery";
 
 const BG = "#0B0F17";
@@ -258,6 +259,7 @@ export default function LoginScreen() {
       let sessionRole = sessionChurchId
         ? serverRole
         : String(churchDraft?.role || serverRole || "Member");
+      const platformRole = resolvePlatformRoleFromAuthPayload(profileRes);
 
       const fullName = String(p?.fullName || draft?.displayName || data.name || data.fullName || "");
 
@@ -296,6 +298,8 @@ export default function LoginScreen() {
         role: sessionRole,
         churchId: sessionChurchId,
         churchRole: sessionRole,
+        platformRole,
+        offlineActivationRole: platformRole,
       } as any);
 
       const hasProfile = Boolean(fullName.trim());

@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
 import {
+  resolveChurchRoleForGuard,
+  resolvePlatformRoleForUser,
+} from "@/app/api/_lib/platformRoles";
+import {
   createSession,
   ensureUserKristoId,
   getUserById,
@@ -54,7 +58,8 @@ export async function POST(req: NextRequest) {
     const sess = createSession(v.userId);
     const activeMembership = await getActiveMembership(v.userId);
     const churchId = String(activeMembership?.churchId || "").trim();
-    const churchRole = String(activeMembership?.churchRole || "").trim();
+    const platformRole = await resolvePlatformRoleForUser(v.userId, activeMembership?.churchRole);
+    const churchRole = resolveChurchRoleForGuard(activeMembership?.churchRole);
     const role = churchRole || "Member";
     const sessionToken = issueSessionToken(v.userId);
 
@@ -97,6 +102,8 @@ export async function POST(req: NextRequest) {
       role,
       churchId,
       churchRole: churchRole || role,
+      platformRole,
+      offlineActivationRole: platformRole,
       next: "/",
     });
     setSessionCookie(res, sess.id);

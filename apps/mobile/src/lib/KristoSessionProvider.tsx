@@ -15,6 +15,7 @@ import { apiGet } from "./kristoApi";
 import { getKristoHeaders } from "./kristoHeaders";
 import { resolveChurchDisplayName } from "./churchStore";
 import { resolveActiveChurchFromProfileResponse, isActiveMembershipStatus } from "./churchMembershipSync";
+import { resolvePlatformRoleFromAuthPayload } from "./platformRole";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import {
   hydrateSessionOnce,
@@ -180,6 +181,17 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
           ? "Pastor"
           : syncedRole;
 
+      const platformRole = resolvePlatformRoleFromAuthPayload(res);
+      console.log("KRISTO_SESSION_CHURCH_ROLE", {
+        userId: baseSession.userId,
+        churchRole: safeSyncedRole,
+        churchId: syncedChurchId,
+      });
+      console.log("KRISTO_SESSION_PLATFORM_ROLE", {
+        userId: baseSession.userId,
+        platformRole,
+      });
+
       if (safeSyncedRole !== syncedRole) {
         console.log("KRISTO_SESSION_ROLE_DOWNGRADE_BLOCKED", {
           userId: baseSession.userId,
@@ -198,6 +210,8 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
         churchName: churchName || (syncedChurchId ? (baseSession as any).churchName || "" : ""),
         role: safeSyncedRole as any,
         churchRole: safeSyncedRole as any,
+        platformRole,
+        offlineActivationRole: platformRole,
         name: String(p.fullName || baseSession.name || ""),
         displayName: String(p.fullName || baseSession.displayName || baseSession.name || ""),
         phone: String(p.phone || baseSession.phone || ""),
@@ -247,6 +261,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
           if (mine?.churchId) {
             const syncedChurchId = String(mine.churchId);
             const syncedRole = String(mine.role || "Member");
+            const platformRole = mine.platformRole || null;
             const churchName = await resolveChurchDisplayName(syncedChurchId, loaded.userId);
             const next = {
               ...loaded,
@@ -255,6 +270,8 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
               churchName: churchName || (loaded as any).churchName || "",
               role: syncedRole as any,
               churchRole: syncedRole as any,
+              platformRole,
+              offlineActivationRole: platformRole,
             };
             await saveSession(next);
             setSessionSync(next);
@@ -308,6 +325,7 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
               if (mine?.churchId) {
                 const syncedChurchId = String(mine.churchId);
                 const syncedRole = String(mine.role || "Member");
+                const platformRole = mine.platformRole || null;
                 const churchName = await resolveChurchDisplayName(syncedChurchId, touched.userId);
                 const next = {
                   ...touched,
@@ -316,6 +334,8 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
                   churchName: churchName || (touched as any).churchName || "",
                   role: syncedRole as any,
                   churchRole: syncedRole as any,
+                  platformRole,
+                  offlineActivationRole: platformRole,
                 };
                 await saveSession(next);
                 setSessionSync(next);

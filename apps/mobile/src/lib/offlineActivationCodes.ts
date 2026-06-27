@@ -57,14 +57,19 @@ export function hasOfflineActivationRole(
   return normalizeOfflineActivationRole(role) === requiredRole;
 }
 
-export function getOfflineActivationMoreItems(role: string): OfflineActivationMoreItem[] {
-  const normalized = normalizeOfflineActivationRole(role);
+export function getOfflineActivationMoreItems(platformRole: string): OfflineActivationMoreItem[] {
+  const normalized = normalizeOfflineActivationRole(platformRole);
   if (!normalized) return [];
   return OFFLINE_ACTIVATION_MORE_ITEMS.filter((item) => item.requiredRole === normalized);
 }
 
-export function logOfflineActivationMoreCardVisibility(role: string, userId: string) {
-  const normalized = normalizeOfflineActivationRole(role);
+export function logOfflineActivationMoreCardVisibility(platformRole: string, userId: string) {
+  const normalized = normalizeOfflineActivationRole(platformRole);
+  console.log("KRISTO_MORE_OFFLINE_ROLE", {
+    platformRole: normalized,
+    userId: String(userId || "").trim() || null,
+  });
+
   const base = { role: normalized, userId: String(userId || "").trim() || null };
 
   if (normalized === "System_Admin") {

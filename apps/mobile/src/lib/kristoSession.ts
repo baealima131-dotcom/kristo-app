@@ -14,6 +14,7 @@ export type {
 export { getSessionSync, setSessionSync } from "./kristoSessionSync";
 
 import type { KristoMediaCategory, KristoRole, KristoSession } from "./kristoSessionTypes";
+import { normalizePlatformRole } from "./platformRole";
 
 const KEY = "kristo.session.v1";
 export const LOGGED_OUT_KEY = "KRISTO_LOGGED_OUT";
@@ -123,6 +124,9 @@ export async function loadSession(): Promise<KristoSession | null> {
       churchPrimaryLanguage: String(parsed.churchPrimaryLanguage || parsed.primaryLanguage || ""),
       churchName: String(parsed.churchName || ""),
       churchRole: String(parsed.churchRole || parsed.role || "Member") as KristoRole,
+      platformRole: normalizePlatformRole(parsed.platformRole || parsed.offlineActivationRole) || null,
+      offlineActivationRole:
+        normalizePlatformRole(parsed.offlineActivationRole || parsed.platformRole) || null,
 
       mediaProfile,
       createdAt: Number(parsed.createdAt || now),

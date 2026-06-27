@@ -1,13 +1,25 @@
+import { resolveChurchRoleOnly } from "./platformRole";
+
 export type ProfileMembershipPayload = {
   churchId?: string;
   churchRole?: string;
   role?: string;
+  platformRole?: string | null;
+  offlineActivationRole?: string | null;
   activeMembership?: {
     churchId?: string;
     churchRole?: string;
     status?: string;
   } | null;
 };
+
+function resolveChurchRoleFromProfilePayload(
+  res: ProfileMembershipPayload,
+  membershipChurchRole?: string
+): string {
+  const raw = String(res.churchRole || res.role || membershipChurchRole || "Member").trim();
+  return resolveChurchRoleOnly(raw);
+}
 
 export function isActiveMembershipStatus(status?: string | null) {
   const s = String(status || "").trim();
@@ -55,7 +67,7 @@ export function resolveActiveChurchFromProfileResponse(
     }
     return {
       churchId,
-      role: String(membership.churchRole || res.churchRole || res.role || "Member").trim() || "Member",
+      role: resolveChurchRoleFromProfilePayload(res, membership.churchRole),
       membership,
     };
   }
@@ -67,7 +79,7 @@ export function resolveActiveChurchFromProfileResponse(
 
   return {
     churchId: topChurchId,
-    role: String(res.churchRole || res.role || "Member").trim() || "Member",
+    role: resolveChurchRoleFromProfilePayload(res),
     membership: null,
   };
 }

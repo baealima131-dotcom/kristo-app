@@ -9,6 +9,13 @@ import {
   type ChurchRole,
   devPromoteToRoleIfActive,
 } from "@/app/api/_lib/memberships";
+import {
+  canAccessOfflineActivationAdmin,
+  isSystemAdminPlatformRole,
+  resolveChurchRoleForGuard,
+  resolvePlatformRoleForUser,
+  type PlatformRole,
+} from "@/app/api/_lib/platformRoles";
 
 export type Role = "System_Admin" | "Pastor" | "Church_Admin" | "Ministry_Leader" | "Leader" | "Member";
 
@@ -49,20 +56,22 @@ function devDefaultChurchId() {
 }
 
 export function isSystemAdminRole(role: unknown): boolean {
-  return String(role || "").trim() === "System_Admin";
+  return isSystemAdminPlatformRole(role);
 }
 
-/** Platform offline activation admin workspace (System_Admin only). */
-export function canAccessOfflineActivationAdmin(role: unknown): boolean {
-  return isSystemAdminRole(role);
+/** @deprecated Use canAccessOfflineActivationAdmin(platformRole) with platform role, not churchRole. */
+export function canAccessOfflineActivationAdminRole(role: unknown): boolean {
+  return canAccessOfflineActivationAdmin(role);
 }
+
+export { canAccessOfflineActivationAdmin };
 
 export function mapChurchRoleToRole(r: ChurchRole | undefined): Role {
-  if (r === "System_Admin") return "System_Admin";
-  if (r === "Pastor") return "Pastor";
-  if (r === "Church_Admin") return "Church_Admin";
-  if (r === "Ministry_Leader") return "Ministry_Leader";
-  if (r === "Leader") return "Leader";
+  const churchRole = resolveChurchRoleForGuard(r);
+  if (churchRole === "Pastor") return "Pastor";
+  if (churchRole === "Church_Admin") return "Church_Admin";
+  if (churchRole === "Ministry_Leader") return "Ministry_Leader";
+  if (churchRole === "Leader") return "Leader";
   return "Member";
 }
 
@@ -188,4 +197,38 @@ export async function guard(req: NextRequest, roles?: Role[]): Promise<GuardCont
   }
 
   return ctxOrRes;
+}
+
+export type PlatformGuardContext = {
+  viewer: {
+    userId: string;
+    name?: string;
+  };
+  platformRole: PlatformRole;
+};
+
+/** Platform offline-activation routes — uses platformRole, not churchRole. */
+export async function guardPlatformOfflineActivation(
+  req: NextRequest,
+  roles: PlatformRole[]
+): Promise<PlatformGuardContext | NextResponse> {
+  const auth = await guardAuth(req);
+  if (auth instanceof NextResponse) return auth;
+
+  const userId = String(auth.viewer.userId || "").trim();
+  const active = await getActiveMembership(userId);
+  const platformRole = await resolvePlatformRoleForUser(userId, active?.churchRole);
+
+  if (!platformRole || !roles.includes(platformRole)) {
+    return json(
+      {
+        ok: false,
+        error: "Forbidden (platform role)",
+        details: { required: roles, youAre: platformRole || null },
+      } satisfies ApiErr,
+      { status: 403 }
+    );
+  }
+
+  return { viewer: { userId, name: auth.viewer.name }, platformRole };
 }

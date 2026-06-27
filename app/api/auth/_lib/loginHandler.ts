@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { getActiveMembership } from "@/app/api/_lib/memberships";
 import {
+  resolveChurchRoleForGuard,
+  resolvePlatformRoleForUser,
+} from "@/app/api/_lib/platformRoles";
+import {
   createSession,
   ensureUserKristoId,
   findUserByIdentifier,
@@ -112,7 +116,8 @@ export async function handleLogin(req: Request) {
     const kristoId = await ensureUserKristoId(user);
     const activeMembership = await getActiveMembership(user.id);
     const churchId = String(activeMembership?.churchId || "").trim();
-    const churchRole = String(activeMembership?.churchRole || "").trim();
+    const platformRole = await resolvePlatformRoleForUser(user.id, activeMembership?.churchRole);
+    const churchRole = resolveChurchRoleForGuard(activeMembership?.churchRole);
     const role = churchRole || "Member";
     const sessionToken = issueSessionToken(user.id);
 
@@ -139,6 +144,8 @@ export async function handleLogin(req: Request) {
       role,
       churchId,
       churchRole: churchRole || role,
+      platformRole,
+      offlineActivationRole: platformRole,
     });
     res = setSessionCookie(res, sess.id);
     return res;

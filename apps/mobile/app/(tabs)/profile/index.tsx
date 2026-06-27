@@ -592,7 +592,6 @@ export default function MeScreen() {
   const isMediaPrivilegedRole =
     viewerRoleRaw === "Pastor" ||
     viewerRoleRaw === "Church_Admin" ||
-    viewerRoleRaw === "System_Admin" ||
     viewerRoleRaw === "Admin";
   const canShowMediaTab = isMediaPrivilegedRole || amIMediaHost;
 

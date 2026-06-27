@@ -2,9 +2,10 @@ export type KristoRole =
   | "Pastor"
   | "Member"
   | "Church_Admin"
-  | "System_Admin"
   | "Leader"
   | "Ministry_Leader";
+
+export type PlatformRole = "System_Admin" | "Supervisor" | "Agent";
 
 export type KristoMediaCategory =
   | "Teacher"
@@ -53,6 +54,10 @@ export type KristoSession = {
   churchPrimaryLanguage?: string;
   churchName?: string;
   churchRole?: KristoRole;
+  /** Platform offline-activation role (independent from church membership). */
+  platformRole?: PlatformRole | null;
+  /** Alias for platformRole in offline activation flows. */
+  offlineActivationRole?: PlatformRole | null;
   mediaProfile?: KristoMediaProfile | null;
   createdAt?: number;
   lastSeenAt?: number;

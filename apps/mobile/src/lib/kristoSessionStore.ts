@@ -1,6 +1,6 @@
 export type SessionSnapshot = {
   userId: string;
-  role: "Pastor" | "Member" | "Church_Admin" | "System_Admin" | "Leader" | "Ministry_Leader";
+  role: "Pastor" | "Member" | "Church_Admin" | "Leader" | "Ministry_Leader";
   churchId: string;
   name?: string;
   displayName?: string;

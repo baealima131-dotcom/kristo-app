@@ -62,7 +62,7 @@ export default function ChurchMembersDirectory() {
   const params = useLocalSearchParams<{ tab?: string }>();
   const insets = useSafeAreaInsets();
   const { session } = useKristoSession();
-  const canManageMembers = ["Pastor", "Church_Admin", "System_Admin"].includes(String(session?.role || ""));
+  const canManageMembers = ["Pastor", "Church_Admin"].includes(String(session?.role || ""));
 
   const churchId = String(session?.churchId || "").trim();
   const userId = String(session?.userId || "").trim();
