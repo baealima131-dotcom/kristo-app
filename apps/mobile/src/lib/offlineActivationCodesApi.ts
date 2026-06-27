@@ -169,6 +169,8 @@ export type ActivationDashboardStats = {
 
 export type SupervisorSummary = {
   userId: string;
+  kristoId?: string;
+  churchId?: string;
   email?: string;
   fullName?: string;
   platformRole: "Supervisor";
@@ -213,26 +215,46 @@ export async function fetchSupervisors(): Promise<SupervisorSummary[]> {
   return Array.isArray((res as any).supervisors) ? (res as any).supervisors : [];
 }
 
-export async function addSupervisor(identifier: string): Promise<SupervisorSummary> {
+export async function addSupervisor(input: {
+  kristoId: string;
+  churchId: string;
+}): Promise<SupervisorSummary> {
   const path = "/api/offline-activation/supervisors/add";
-  console.log("KRISTO_SUPERVISOR_ADD_START", { identifier: String(identifier || "").trim() });
+  const kristoId = String(input.kristoId || "").trim();
+  const churchId = String(input.churchId || "").trim();
+
+  console.log("KRISTO_SUPERVISOR_ADD_START", { kristoId, churchId });
 
   try {
     const res = await apiPost<
-      | { ok: true; supervisor: { userId: string; email?: string; fullName?: string; platformRole: string } }
+      | {
+          ok: true;
+          supervisor: {
+            userId: string;
+            kristoId?: string;
+            churchId?: string;
+            fullName?: string;
+            platformRole: string;
+          };
+        }
       | { ok: false; error: string }
-    >(path, { identifier }, { headers: buildActivationRequestHeaders(path) });
+    >(path, { kristoId, churchId }, { headers: buildActivationRequestHeaders(path) });
 
     if (!res || (res as any).ok === false) {
       throw new Error(String((res as any)?.error || "Failed to add supervisor"));
     }
 
     const supervisor = (res as any).supervisor;
-    console.log("KRISTO_SUPERVISOR_ADD_SUCCESS", { userId: supervisor?.userId || null });
+    console.log("KRISTO_SUPERVISOR_ADD_SUCCESS", {
+      userId: supervisor?.userId || null,
+      kristoId: supervisor?.kristoId || null,
+      churchId: supervisor?.churchId || null,
+    });
 
     return {
       userId: supervisor.userId,
-      email: supervisor.email,
+      kristoId: supervisor.kristoId,
+      churchId: supervisor.churchId,
       fullName: supervisor.fullName,
       platformRole: "Supervisor",
       assignedCodes: 0,
@@ -241,7 +263,8 @@ export async function addSupervisor(identifier: string): Promise<SupervisorSumma
     };
   } catch (error: any) {
     console.log("KRISTO_SUPERVISOR_ADD_FAILED", {
-      identifier: String(identifier || "").trim(),
+      kristoId,
+      churchId,
       error: String(error?.message || error || "failed"),
     });
     throw error;

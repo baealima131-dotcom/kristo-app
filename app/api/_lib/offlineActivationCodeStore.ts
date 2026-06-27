@@ -1,6 +1,7 @@
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
+import { normalizeMembershipChurchId } from "@/app/api/_lib/memberships";
 import { getPlatformRole, listPlatformRoleUsers } from "@/app/api/_lib/platformRoles";
 
 export type ActivationCodeStatus =
@@ -67,7 +68,8 @@ export type SupervisorCodeStats = {
 
 export type SupervisorSummary = {
   userId: string;
-  email?: string;
+  kristoId?: string;
+  churchId?: string;
   fullName?: string;
   platformRole: "Supervisor";
   assignedCodes: number;
@@ -272,12 +274,17 @@ function generateUniqueCodes(
   return out;
 }
 
-async function resolveSupervisorDisplay(userId: string) {
+function parseSupervisorChurchIdFromNote(note?: string): string | undefined {
+  const match = String(note || "").match(/Supervisor for ([^\s•]+)/i);
+  return match?.[1] ? normalizeMembershipChurchId(match[1]) : undefined;
+}
+
+async function resolveSupervisorDisplay(userId: string, note?: string) {
   const uid = String(userId || "").trim();
-  const user = await getUserById(uid).catch(() => null);
   const profile = await getProfile(uid).catch(() => null);
   return {
-    email: String(user?.email || profile?.email || "").trim() || undefined,
+    kristoId: String(profile?.userCode || "").trim().toUpperCase() || undefined,
+    churchId: parseSupervisorChurchIdFromNote(note),
     fullName: String(profile?.fullName || "").trim() || undefined,
   };
 }
@@ -433,10 +440,11 @@ export async function listSupervisorSummaries(): Promise<SupervisorSummary[]> {
   const rows = await Promise.all(
     supervisors.map(async (row) => {
       const stats = computeSupervisorCodeStats(codes, row.userId);
-      const display = await resolveSupervisorDisplay(row.userId);
+      const display = await resolveSupervisorDisplay(row.userId, row.note);
       return {
         userId: row.userId,
-        email: display.email,
+        kristoId: display.kristoId,
+        churchId: display.churchId,
         fullName: display.fullName,
         platformRole: "Supervisor" as const,
         assignedCodes: stats.assignedCodes,
@@ -466,11 +474,12 @@ export async function getSupervisorDetail(supervisorUserId: string): Promise<{
   const summaries = await listSupervisorSummaries();
   let supervisor = summaries.find((row) => row.userId === uid);
   if (!supervisor) {
-    const display = await resolveSupervisorDisplay(uid);
+    const display = await resolveSupervisorDisplay(uid, undefined);
     const stats = computeSupervisorCodeStats(flattenCodes(await readStore()), uid);
     supervisor = {
       userId: uid,
-      email: display.email,
+      kristoId: display.kristoId,
+      churchId: display.churchId,
       fullName: display.fullName,
       platformRole: "Supervisor",
       assignedCodes: stats.assignedCodes,

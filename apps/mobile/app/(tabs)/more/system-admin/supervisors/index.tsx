@@ -47,7 +47,8 @@ export default function SupervisorsScreen() {
   const [availableUnassigned, setAvailableUnassigned] = React.useState(0);
 
   const [showAddModal, setShowAddModal] = React.useState(false);
-  const [addIdentifier, setAddIdentifier] = React.useState("");
+  const [addKristoId, setAddKristoId] = React.useState("");
+  const [addChurchId, setAddChurchId] = React.useState("");
   const [adding, setAdding] = React.useState(false);
 
   const [assignTarget, setAssignTarget] = React.useState<SupervisorSummary | null>(null);
@@ -85,16 +86,18 @@ export default function SupervisorsScreen() {
   }, [params.add, allowed]);
 
   const onAddSupervisor = async () => {
-    const identifier = String(addIdentifier || "").trim();
-    if (!identifier) {
-      Alert.alert("Missing info", "Enter an email or userId.");
+    const kristoId = String(addKristoId || "").trim();
+    const churchId = String(addChurchId || "").trim();
+    if (!kristoId || !churchId) {
+      Alert.alert("Missing info", "Enter both KRISTO ID and Church ID.");
       return;
     }
     setAdding(true);
     try {
-      await addSupervisor(identifier);
+      await addSupervisor({ kristoId, churchId });
       setShowAddModal(false);
-      setAddIdentifier("");
+      setAddKristoId("");
+      setAddChurchId("");
       await loadData();
       Alert.alert("Supervisor added", "Platform role set to Supervisor.");
     } catch (e: any) {
@@ -181,9 +184,12 @@ export default function SupervisorsScreen() {
                 <View key={row.userId} style={styles.rowCard}>
                   <View style={{ flex: 1, gap: 4 }}>
                     <Text style={styles.rowTitle}>
-                      {row.fullName || row.email || row.userId}
+                      {row.fullName || row.kristoId || row.userId}
                     </Text>
-                    <Text style={styles.rowMeta}>{row.email || row.userId}</Text>
+                    <Text style={styles.rowMeta}>
+                      {row.kristoId ? `KRISTO ${row.kristoId}` : row.userId}
+                      {row.churchId ? ` • ${row.churchId}` : ""}
+                    </Text>
                     <Text style={styles.rowStats}>
                       Assigned {row.assignedCodes} • Remaining {row.remainingCodes} • Redeemed{" "}
                       {row.redeemedCodes}
@@ -213,13 +219,23 @@ export default function SupervisorsScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Add Supervisor</Text>
-            <Text style={styles.modalSub}>Search by email or userId (u_...)</Text>
+            <Text style={styles.modalSub}>Assign by KRISTO ID and Church membership.</Text>
+            <Text style={styles.fieldLabel}>KRISTO ID</Text>
             <TextInput
-              value={addIdentifier}
-              onChangeText={setAddIdentifier}
-              placeholder="email@example.com or u_..."
+              value={addKristoId}
+              onChangeText={setAddKristoId}
+              placeholder="KR7-000123"
               placeholderTextColor="rgba(255,255,255,0.35)"
-              autoCapitalize="none"
+              autoCapitalize="characters"
+              style={styles.input}
+            />
+            <Text style={styles.fieldLabel}>Church ID</Text>
+            <TextInput
+              value={addChurchId}
+              onChangeText={setAddChurchId}
+              placeholder="CH7-08PQW9"
+              placeholderTextColor="rgba(255,255,255,0.35)"
+              autoCapitalize="characters"
               style={styles.input}
             />
             <View style={styles.modalActions}>
@@ -248,7 +264,7 @@ export default function SupervisorsScreen() {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Assign codes</Text>
             <Text style={styles.modalSub}>
-              {assignTarget?.fullName || assignTarget?.email || assignTarget?.userId}
+              {assignTarget?.fullName || assignTarget?.kristoId || assignTarget?.userId}
             </Text>
             <Text style={styles.modalHint}>{availableUnassigned} unassigned codes available</Text>
             <TextInput
@@ -372,6 +388,7 @@ const styles = StyleSheet.create({
   },
   modalTitle: { color: TEXT, fontSize: 18, fontWeight: "800" },
   modalSub: { color: MUTED, fontSize: 13 },
+  fieldLabel: { color: MUTED, fontSize: 12, fontWeight: "700", marginTop: 4 },
   modalHint: { color: MUTED, fontSize: 12 },
   input: {
     borderWidth: 1,

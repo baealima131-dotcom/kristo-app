@@ -110,9 +110,12 @@ export default function SupervisorDetailScreen() {
           <>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryTitle}>
-                {supervisor.fullName || supervisor.email || supervisor.userId}
+                {supervisor.fullName || supervisor.kristoId || supervisor.userId}
               </Text>
-              <Text style={styles.summaryMeta}>{supervisor.email || supervisor.userId}</Text>
+              <Text style={styles.summaryMeta}>
+                {supervisor.kristoId ? `KRISTO ${supervisor.kristoId}` : supervisor.userId}
+                {supervisor.churchId ? ` • ${supervisor.churchId}` : ""}
+              </Text>
               <View style={styles.statsRow}>
                 <MiniStat label="Assigned" value={supervisor.assignedCodes} />
                 <MiniStat label="Remaining" value={supervisor.remainingCodes} />
