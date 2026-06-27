@@ -19,6 +19,12 @@ export async function GET(req: NextRequest) {
 
   const invitations = await listPendingInvitationsForUser(userId);
 
+  console.log("KRISTO_OFFLINE_INVITES_LIST_RESULT", {
+    userId,
+    count: invitations.length,
+    invitationIds: invitations.map((row) => row.id),
+  });
+
   return json({
     ok: true,
     invitations,
