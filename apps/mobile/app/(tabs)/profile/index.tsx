@@ -63,7 +63,11 @@ import {
   type ChurchActivityMemberFilter,
 } from "@/src/lib/churchActivityPosts";
 import { homeFeedMediaUrl } from "@/src/components/homeFeed/homeFeedUtils";
-import { SupervisorInvitationCard } from "@/src/components/offlineActivation/SupervisorInvitationCard";
+import {
+  isOfflineSupervisorProfileInvite,
+  loadOfflineSupervisorProfileInvites,
+  respondOfflineSupervisorProfileInvite,
+} from "@/src/lib/profileOfflineSupervisorInvites";
 
 type AuthProfile = {
   userId: string;
@@ -840,9 +844,24 @@ export default function MeScreen() {
         return true;
       });
 
-      setInviteItems(invites);
-      setInviteCount(invites.length);
-      console.log("[ProfileInvites] silent refresh", { userId: uid, count: invites.length });
+      const churchInvites = invites.map((x: any) => ({ ...x, kind: "church" }));
+
+      let offlineSupervisorInvites: Awaited<ReturnType<typeof loadOfflineSupervisorProfileInvites>> = [];
+      try {
+        offlineSupervisorInvites = await loadOfflineSupervisorProfileInvites();
+        if (offlineSupervisorInvites.length) {
+          console.log("KRISTO_INVITATIONS_OFFLINE_SUPERVISOR_INCLUDED", {
+            userId: uid,
+            count: offlineSupervisorInvites.length,
+          });
+        }
+      } catch {}
+
+      const mergedInvites = [...offlineSupervisorInvites, ...churchInvites];
+
+      setInviteItems(mergedInvites);
+      setInviteCount(mergedInvites.length);
+      console.log("[ProfileInvites] silent refresh", { userId: uid, count: mergedInvites.length });
     } catch {}
   }, [session, setSession]);
 
@@ -1698,8 +1717,6 @@ const resolvedName = useMemo(() => {
 
             <View style={s.heroDivider} />
 
-            <SupervisorInvitationCard variant="profile" />
-
             {showMediaContent ? (
               <View style={s.heroMetricsGrid}>
                 <View style={s.heroMetricsTopRow}>
@@ -2134,6 +2151,92 @@ const resolvedName = useMemo(() => {
               </View>
             ) : (
               inviteItems.map((inv: any, i: number) => {
+                if (isOfflineSupervisorProfileInvite(inv)) {
+                  const invitationId = String(inv.invitationId || inv.id || "").trim();
+                  return (
+                    <View key={`offline-supervisor-${invitationId}-${i}`} style={s.inviteCompactWrap}>
+                      <Text style={s.inviteSectionLabel}>PENDING INVITATION</Text>
+
+                      <View style={s.inviteCompactCard}>
+                        <View style={s.inviteCompactIcon}>
+                          <Ionicons name="people-circle-outline" size={22} color={GOLD} />
+                        </View>
+
+                        <View style={s.inviteCompactInfo}>
+                          <Text style={s.inviteCompactTitle} numberOfLines={1}>
+                            Supervisor invitation
+                          </Text>
+                          <Text style={s.inviteCompactRole}>
+                            You were invited to manage activation codes for {inv.churchId}
+                          </Text>
+
+                          <View style={s.invitePendingMini}>
+                            <View style={s.invitePendingDot} />
+                            <Text style={s.invitePendingText}>Pending</Text>
+                          </View>
+                        </View>
+                      </View>
+
+                      <View style={s.inviteCompactActions}>
+                        <Pressable
+                          disabled={!!inviteBusy}
+                          onPress={async () => {
+                            if (!invitationId) {
+                              return Alert.alert("Missing invite ID", "Please try again later.");
+                            }
+                            if (!session) return;
+                            try {
+                              setInviteBusy("reject");
+                              await respondOfflineSupervisorProfileInvite({
+                                session,
+                                invitationId,
+                                action: "decline",
+                                setSession,
+                              });
+                              setTimeout(() => refreshInvitations(), 250);
+                            } catch (e: any) {
+                              Alert.alert("Error", String(e?.message || e));
+                            } finally {
+                              setInviteBusy("");
+                            }
+                          }}
+                          style={[s.inviteCompactRejectBtn, !!inviteBusy && { opacity: 0.55 }]}
+                        >
+                          <Text style={s.inviteCompactRejectText}>Decline</Text>
+                        </Pressable>
+
+                        <Pressable
+                          disabled={!!inviteBusy}
+                          onPress={async () => {
+                            if (!invitationId) {
+                              return Alert.alert("Missing invite ID", "Please try again later.");
+                            }
+                            if (!session) return;
+                            try {
+                              setInviteBusy("accept");
+                              await respondOfflineSupervisorProfileInvite({
+                                session,
+                                invitationId,
+                                action: "accept",
+                                setSession,
+                              });
+                              setInviteModalOpen(false);
+                              setTimeout(() => refreshInvitations(), 250);
+                            } catch (e: any) {
+                              Alert.alert("Error", String(e?.message || e));
+                            } finally {
+                              setInviteBusy("");
+                            }
+                          }}
+                          style={[s.inviteCompactAcceptBtn, !!inviteBusy && { opacity: 0.55 }]}
+                        >
+                          <Text style={s.inviteCompactAcceptText}>Accept</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                }
+
                 const id = String(inv?.membershipId || inv?.id || inv?.inviteId || inv?.ministryMemberId || "").trim();
                 const title = String(inv?.title || inv?.churchName || "Grace Church");
                 const role = String(inv?.role || "Member");

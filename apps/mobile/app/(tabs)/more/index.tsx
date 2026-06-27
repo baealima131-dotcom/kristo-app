@@ -39,7 +39,6 @@ import {
   getOfflineActivationMoreItems,
   logOfflineActivationMoreCardVisibility,
 } from "@/src/lib/offlineActivationCodes";
-import { SupervisorInvitationCard } from "@/src/components/offlineActivation/SupervisorInvitationCard";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
@@ -1099,8 +1098,6 @@ export default function MoreScreen() {
           <Text style={s.titleSub}>{hasChurch ? "Kristo ecosystem" : "Account & church setup"}</Text>
         </View>
       </View>
-
-      <SupervisorInvitationCard variant="more" />
 
       <View style={s.columnsWrap}>
         <ScrollView
