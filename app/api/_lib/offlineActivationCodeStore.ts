@@ -721,6 +721,308 @@ export async function removeSupervisor(input: RemoveSupervisorInput): Promise<Re
   };
 }
 
+export type SupervisorWorkspaceStats = {
+  totalReceived: number;
+  availableCodes: number;
+  assignedToAgents: number;
+  redeemedCodes: number;
+  codesAssigned: number;
+  codesRemaining: number;
+};
+
+export type AgentCodeStats = {
+  assignedCodes: number;
+  remainingCodes: number;
+  redeemedCodes: number;
+};
+
+export type SupervisorInventoryBatch = {
+  batchId: string;
+  countryCode: string;
+  durationMonths: number;
+  total: number;
+  remaining: number;
+  assigned: number;
+  redeemed: number;
+  createdAt: string;
+};
+
+export type SupervisorCodeActivityItem = {
+  id: string;
+  type:
+    | "assigned_to_agent"
+    | "redeemed"
+    | "returned"
+    | "expired"
+    | "received";
+  title: string;
+  subtitle?: string;
+  code: string;
+  occurredAt: string;
+  agentId?: string | null;
+  agentName?: string;
+};
+
+function filterSupervisorCodes(codes: ActivationCode[], supervisorUserId: string): ActivationCode[] {
+  const uid = String(supervisorUserId || "").trim();
+  return codes.filter((code) => String(code.assignedSupervisorUserId || "").trim() === uid);
+}
+
+export function computeSupervisorWorkspaceStats(
+  codes: ActivationCode[],
+  supervisorUserId: string
+): SupervisorWorkspaceStats {
+  const mine = filterSupervisorCodes(codes, supervisorUserId);
+  const availableCodes = mine.filter((code) => code.status === "assigned_to_supervisor").length;
+  const assignedToAgents = mine.filter((code) => code.status === "assigned_to_agent").length;
+  const redeemedCodes = mine.filter((code) => code.status === "redeemed").length;
+  const codesRemaining = mine.filter(
+    (code) => code.status === "assigned_to_supervisor" || code.status === "assigned_to_agent"
+  ).length;
+
+  return {
+    totalReceived: mine.length,
+    availableCodes,
+    assignedToAgents,
+    redeemedCodes,
+    codesAssigned: assignedToAgents,
+    codesRemaining,
+  };
+}
+
+export function computeAgentCodeStats(codes: ActivationCode[], agentId: string): AgentCodeStats {
+  const id = String(agentId || "").trim();
+  const mine = codes.filter((code) => String(code.assignedAgentUserId || "").trim() === id);
+  const redeemedCodes = mine.filter((code) => code.status === "redeemed").length;
+  const remainingCodes = mine.filter((code) => code.status === "assigned_to_agent").length;
+  return {
+    assignedCodes: mine.length,
+    remainingCodes,
+    redeemedCodes,
+  };
+}
+
+export function buildSupervisorInventoryBatches(
+  codes: ActivationCode[],
+  supervisorUserId: string
+): SupervisorInventoryBatch[] {
+  const mine = filterSupervisorCodes(codes, supervisorUserId);
+  const byBatch = new Map<string, SupervisorInventoryBatch>();
+
+  for (const code of mine) {
+    const batchId = String(code.batchId || "unknown");
+    const existing =
+      byBatch.get(batchId) ||
+      ({
+        batchId,
+        countryCode: code.countryCode,
+        durationMonths: code.durationMonths,
+        total: 0,
+        remaining: 0,
+        assigned: 0,
+        redeemed: 0,
+        createdAt: code.createdAt,
+      } satisfies SupervisorInventoryBatch);
+
+    existing.total += 1;
+    if (code.status === "assigned_to_supervisor") existing.remaining += 1;
+    if (code.status === "assigned_to_agent") existing.assigned += 1;
+    if (code.status === "redeemed") existing.redeemed += 1;
+    if (Date.parse(String(code.createdAt || "")) < Date.parse(String(existing.createdAt || ""))) {
+      existing.createdAt = code.createdAt;
+    }
+    byBatch.set(batchId, existing);
+  }
+
+  return [...byBatch.values()].sort(
+    (a, b) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || ""))
+  );
+}
+
+export async function buildSupervisorCodeActivity(
+  codes: ActivationCode[],
+  supervisorUserId: string,
+  agentNameById: Record<string, string>
+): Promise<SupervisorCodeActivityItem[]> {
+  const mine = filterSupervisorCodes(codes, supervisorUserId);
+  const events: SupervisorCodeActivityItem[] = [];
+
+  for (const code of mine) {
+    if (code.assignedSupervisorAt) {
+      events.push({
+        id: `${code.id}-received`,
+        type: "received",
+        title: "Codes received from System Admin",
+        subtitle: code.code,
+        code: code.code,
+        occurredAt: String(code.assignedSupervisorAt),
+      });
+    }
+    if (code.assignedAgentAt && code.assignedAgentUserId) {
+      const agentName = agentNameById[code.assignedAgentUserId] || code.assignedAgentUserId;
+      events.push({
+        id: `${code.id}-agent`,
+        type: "assigned_to_agent",
+        title: `Assigned to Agent ${agentName}`,
+        subtitle: code.code,
+        code: code.code,
+        occurredAt: String(code.assignedAgentAt),
+        agentId: code.assignedAgentUserId,
+        agentName,
+      });
+    }
+    if (code.redeemedAt) {
+      events.push({
+        id: `${code.id}-redeemed`,
+        type: "redeemed",
+        title: `Redeemed by Church ${code.redeemedByChurchId || "—"}`,
+        subtitle: code.code,
+        code: code.code,
+        occurredAt: String(code.redeemedAt),
+      });
+    }
+    if (code.status === "disabled") {
+      events.push({
+        id: `${code.id}-expired`,
+        type: "expired",
+        title: "Code expired",
+        subtitle: code.code,
+        code: code.code,
+        occurredAt: String(code.redeemedAt || code.assignedAgentAt || code.createdAt),
+      });
+    }
+    if (
+      code.status === "available" &&
+      code.assignedSupervisorUserId &&
+      !code.assignedAgentUserId &&
+      !code.redeemedAt
+    ) {
+      events.push({
+        id: `${code.id}-returned`,
+        type: "returned",
+        title: "Returned to pool",
+        subtitle: code.code,
+        code: code.code,
+        occurredAt: String(code.assignedAgentAt || code.assignedSupervisorAt || code.createdAt),
+      });
+    }
+  }
+
+  return events.sort((a, b) => Date.parse(String(b.occurredAt || "")) - Date.parse(String(a.occurredAt || "")));
+}
+
+export type AssignCodesToAgentInput = {
+  supervisorUserId: string;
+  agentId: string;
+  quantity: number;
+};
+
+export type AssignCodesToAgentResult = {
+  supervisorUserId: string;
+  agentId: string;
+  assignedCount: number;
+  codes: ActivationCode[];
+};
+
+export async function assignCodesToAgent(input: AssignCodesToAgentInput): Promise<AssignCodesToAgentResult> {
+  const supervisorUserId = String(input.supervisorUserId || "").trim();
+  const agentId = String(input.agentId || "").trim();
+  const quantity = Math.floor(Number(input.quantity));
+
+  if (!supervisorUserId) throw new Error("supervisorUserId required");
+  if (!agentId) throw new Error("agentId required");
+  if (!Number.isFinite(quantity) || quantity < 1) throw new Error("Quantity must be at least 1");
+  if (quantity > MAX_ASSIGN_QUANTITY) throw new Error(`Quantity must be at most ${MAX_ASSIGN_QUANTITY}`);
+
+  const assignedAt = new Date().toISOString();
+  let assignedCodes: ActivationCode[] = [];
+
+  await updateJsonFile<OfflineActivationCodeStore>(
+    STORE_FILE,
+    (current) => {
+      const store: OfflineActivationCodeStore = {
+        batches: Array.isArray(current?.batches)
+          ? current.batches.map((batch) => ({
+              ...batch,
+              codes: Array.isArray(batch.codes) ? batch.codes.map((code) => normalizeActivationCode(code)) : [],
+            }))
+          : [],
+      };
+
+      const pool: Array<{ batchIndex: number; codeIndex: number; code: ActivationCode }> = [];
+      store.batches.forEach((batch, batchIndex) => {
+        (batch.codes || []).forEach((code, codeIndex) => {
+          if (
+            String(code.assignedSupervisorUserId || "").trim() === supervisorUserId &&
+            code.status === "assigned_to_supervisor" &&
+            !String(code.assignedAgentUserId || "").trim()
+          ) {
+            pool.push({ batchIndex, codeIndex, code });
+          }
+        });
+      });
+
+      if (pool.length < quantity) {
+        throw new Error(`Only ${pool.length} available codes can be assigned to agents`);
+      }
+
+      const picked = pool.slice(0, quantity);
+      assignedCodes = picked.map(({ code }) =>
+        normalizeActivationCode({
+          ...code,
+          status: "assigned_to_agent",
+          assignedAgentUserId: agentId,
+          assignedAgentAt: assignedAt,
+          assignedBySupervisorUserId: supervisorUserId,
+        })
+      );
+
+      picked.forEach(({ batchIndex, codeIndex }, idx) => {
+        store.batches[batchIndex].codes[codeIndex] = assignedCodes[idx];
+      });
+
+      return store;
+    },
+    { batches: [] }
+  );
+
+  return { supervisorUserId, agentId, assignedCount: assignedCodes.length, codes: assignedCodes };
+}
+
+export async function getSupervisorWorkspace(supervisorUserId: string) {
+  const uid = String(supervisorUserId || "").trim();
+  if (!uid) throw new Error("supervisorUserId required");
+
+  const role = await getPlatformRole(uid);
+  if (role !== "Supervisor") throw new Error("Supervisor access required");
+
+  const store = await readStore();
+  const codes = flattenCodes(store);
+  const stats = computeSupervisorWorkspaceStats(codes, uid);
+  const batches = buildSupervisorInventoryBatches(codes, uid);
+  const supervisorCodes = filterSupervisorCodes(codes, uid).sort(
+    (a, b) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || ""))
+  );
+
+  const profile = await getProfile(uid).catch(() => null);
+  const platformRows = await listPlatformRoleUsers("Supervisor");
+  const note = platformRows.find((row) => row.userId === uid)?.note;
+  const churchId = parseSupervisorChurchIdFromNote(note);
+
+  return {
+    profile: {
+      userId: uid,
+      fullName: String(profile?.fullName || "").trim() || undefined,
+      kristoId: String(profile?.userCode || "").trim().toUpperCase() || undefined,
+      avatarUrl: String(profile?.avatarUrl || "").trim() || undefined,
+      churchId,
+    },
+    stats,
+    batches,
+    codes: supervisorCodes,
+  };
+}
+
 export type ActivationChurchActivityItem = {
   redeemedAt: string;
   code: string;
