@@ -1,6 +1,7 @@
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
 import {
+  dbDeletePlatformRole,
   dbGetPlatformRole,
   dbListPlatformRolesByRole,
   dbUpsertPlatformRole,
@@ -131,6 +132,30 @@ export async function listPlatformRoleUsers(platformRole: PlatformRole): Promise
 
   const rows = await readPlatformRoleJsonStore();
   return rows.filter((entry) => normalizePlatformRole(entry.platformRole) === platformRole);
+}
+
+export async function deletePlatformRole(userId: string): Promise<boolean> {
+  const uid = String(userId || "").trim();
+  if (!uid) return false;
+
+  if (hasDurableStore()) {
+    await ensurePlatformRoleStoreReady();
+    return dbDeletePlatformRole(uid);
+  }
+
+  let removed = false;
+  await updateJsonFile<PlatformRoleRecord[]>(
+    STORE_FILE,
+    (current) => {
+      const rows = Array.isArray(current) ? current : [];
+      const next = rows.filter((entry) => String(entry.userId || "").trim() !== uid);
+      removed = next.length !== rows.length;
+      return next;
+    },
+    []
+  );
+
+  return removed;
 }
 
 export function isSystemAdminPlatformRole(role: unknown): boolean {

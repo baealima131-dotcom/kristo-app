@@ -324,4 +324,46 @@ export async function respondToInvitation(input: {
   return { invitation: accepted, platformRole: savedRole.platformRole };
 }
 
+export async function cancelSupervisorInvitation(input: {
+  invitationId?: string;
+  inviteeUserId?: string;
+  cancelledByUserId?: string;
+}): Promise<OfflineActivationInvitation | null> {
+  await ensureStoreReady();
+
+  const invitationId = String(input.invitationId || "").trim();
+  const inviteeUserId = String(input.inviteeUserId || "").trim();
+
+  let target: OfflineActivationInvitation | null = null;
+
+  if (invitationId) {
+    target = await getInvitationById(invitationId);
+  } else if (inviteeUserId) {
+    const pending = await listPendingSupervisorInvitations();
+    target = pending.find((row) => row.inviteeUserId === inviteeUserId) || null;
+  }
+
+  if (!target) return null;
+  if (target.role !== "Supervisor") {
+    throw new Error("Invitation is not a Supervisor invitation");
+  }
+  if (target.status !== "pending") {
+    throw new Error(`Invitation is already ${target.status}`);
+  }
+
+  const cancelled = await persistInvitationResponse({
+    invitationId: target.id,
+    status: "cancelled",
+    respondedAt: new Date().toISOString(),
+  });
+
+  console.log("KRISTO_SUPERVISOR_INVITE_CANCELLED", {
+    cancelledByUserId: String(input.cancelledByUserId || "").trim() || null,
+    invitationId: cancelled.id,
+    inviteeUserId: cancelled.inviteeUserId,
+  });
+
+  return cancelled;
+}
+
 export { resolveOfflineActivationInvitationStoreMode };

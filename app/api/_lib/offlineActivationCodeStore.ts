@@ -3,8 +3,8 @@ import { getChurchById } from "@/app/api/_lib/churches";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
 import { normalizeMembershipChurchId } from "@/app/api/_lib/memberships";
-import { getPlatformRole, listPlatformRoleUsers } from "@/app/api/_lib/platformRoles";
-import { listPendingSupervisorInvitations } from "@/app/api/_lib/offlineActivationInvitations";
+import { getPlatformRole, listPlatformRoleUsers, deletePlatformRole } from "@/app/api/_lib/platformRoles";
+import { listPendingSupervisorInvitations, cancelSupervisorInvitation } from "@/app/api/_lib/offlineActivationInvitations";
 
 export type ActivationCodeStatus =
   | "available"
@@ -73,6 +73,7 @@ export type SupervisorSummary = {
   kristoId?: string;
   churchId?: string;
   fullName?: string;
+  avatarUrl?: string;
   platformRole?: "Supervisor";
   invitationStatus: "pending" | "accepted";
   invitationId?: string;
@@ -290,6 +291,7 @@ async function resolveSupervisorDisplay(userId: string, note?: string) {
     kristoId: String(profile?.userCode || "").trim().toUpperCase() || undefined,
     churchId: parseSupervisorChurchIdFromNote(note),
     fullName: String(profile?.fullName || "").trim() || undefined,
+    avatarUrl: String(profile?.avatarUrl || "").trim() || undefined,
   };
 }
 
@@ -450,6 +452,7 @@ export async function listSupervisorSummaries(): Promise<SupervisorSummary[]> {
         kristoId: display.kristoId,
         churchId: display.churchId,
         fullName: display.fullName,
+        avatarUrl: display.avatarUrl,
         platformRole: "Supervisor" as const,
         invitationStatus: "accepted" as const,
         assignedCodes: stats.assignedCodes,
@@ -468,11 +471,14 @@ export async function listSupervisorSummaries(): Promise<SupervisorSummary[]> {
     if (acceptedUserIds.has(invite.inviteeUserId)) continue;
 
     let fullName: string | undefined;
+    let avatarUrl: string | undefined;
     try {
       const profile = await getProfile(invite.inviteeUserId);
       fullName = String(profile?.fullName || "").trim() || undefined;
+      avatarUrl = String(profile?.avatarUrl || "").trim() || undefined;
     } catch {
       fullName = undefined;
+      avatarUrl = undefined;
     }
 
     rows.push({
@@ -480,6 +486,7 @@ export async function listSupervisorSummaries(): Promise<SupervisorSummary[]> {
       kristoId: invite.inviteeKristoId,
       churchId: invite.churchId,
       fullName,
+      avatarUrl,
       invitationStatus: "pending",
       invitationId: invite.id,
       assignedCodes: 0,
@@ -613,6 +620,104 @@ export async function assignCodesToSupervisor(
     supervisorUserId,
     assignedCount: assignedCodes.length,
     codes: assignedCodes,
+  };
+}
+
+export type RemoveSupervisorInput = {
+  userId: string;
+  invitationId?: string;
+  removedByUserId: string;
+};
+
+export type RemoveSupervisorResult = {
+  outcome: "removed" | "invitation_cancelled";
+  releasedCodes: number;
+  userId: string;
+};
+
+async function releaseSupervisorAssignedCodes(supervisorUserId: string): Promise<number> {
+  const uid = String(supervisorUserId || "").trim();
+  if (!uid) return 0;
+
+  let released = 0;
+
+  await updateJsonFile<OfflineActivationCodeStore>(
+    STORE_FILE,
+    (current) => {
+      const store: OfflineActivationCodeStore = {
+        batches: Array.isArray(current?.batches)
+          ? current.batches.map((batch) => ({
+              ...batch,
+              codes: Array.isArray(batch.codes)
+                ? batch.codes.map((code) => normalizeActivationCode(code))
+                : [],
+            }))
+          : [],
+      };
+
+      store.batches.forEach((batch, batchIndex) => {
+        (batch.codes || []).forEach((code, codeIndex) => {
+          if (String(code.assignedSupervisorUserId || "").trim() !== uid) return;
+          if (code.status === "redeemed") return;
+
+          released += 1;
+          store.batches[batchIndex].codes[codeIndex] = normalizeActivationCode({
+            ...code,
+            status: "available",
+            ...emptyAssignmentFields(),
+            createdAt: code.createdAt,
+            createdByUserId: code.createdByUserId,
+          });
+        });
+      });
+
+      return store;
+    },
+    { batches: [] }
+  );
+
+  return released;
+}
+
+export async function removeSupervisor(input: RemoveSupervisorInput): Promise<RemoveSupervisorResult> {
+  const userId = String(input.userId || "").trim();
+  const invitationId = String(input.invitationId || "").trim() || undefined;
+  const removedByUserId = String(input.removedByUserId || "").trim();
+
+  if (!userId) throw new Error("userId required");
+
+  const role = await getPlatformRole(userId);
+  let releasedCodes = 0;
+  let invitationCancelled = false;
+
+  if (role === "Supervisor") {
+    releasedCodes = await releaseSupervisorAssignedCodes(userId);
+    await deletePlatformRole(userId);
+  }
+
+  const cancelled = await cancelSupervisorInvitation({
+    invitationId,
+    inviteeUserId: userId,
+    cancelledByUserId: removedByUserId,
+  });
+  if (cancelled) invitationCancelled = true;
+
+  if (role !== "Supervisor" && !invitationCancelled) {
+    throw new Error("Supervisor not found");
+  }
+
+  console.log("KRISTO_SUPERVISOR_REMOVED", {
+    removedByUserId,
+    userId,
+    outcome: role === "Supervisor" ? "removed" : "invitation_cancelled",
+    releasedCodes,
+    invitationCancelled,
+  });
+
+  return {
+    outcome: role === "Supervisor" ? "removed" : "invitation_cancelled",
+    releasedCodes,
+    userId,
   };
 }
 

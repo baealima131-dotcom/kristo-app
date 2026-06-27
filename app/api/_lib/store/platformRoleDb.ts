@@ -171,3 +171,18 @@ export async function dbListPlatformRolesByRole(
 
   return rows.map(rowToRecord);
 }
+
+export async function dbDeletePlatformRole(userId: string): Promise<boolean> {
+  const uid = String(userId || "").trim();
+  if (!uid) return false;
+
+  await ensurePlatformRoleSchema();
+  const sql = getSql();
+  const rows = (await sql`
+    DELETE FROM kristo_platform_roles
+    WHERE user_id = ${uid}
+    RETURNING user_id
+  `) as Array<{ user_id: string }>;
+
+  return rows.length > 0;
+}

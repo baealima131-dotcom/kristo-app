@@ -173,6 +173,7 @@ export type SupervisorSummary = {
   churchId?: string;
   email?: string;
   fullName?: string;
+  avatarUrl?: string;
   platformRole?: "Supervisor";
   invitationStatus: "pending" | "accepted";
   invitationId?: string;
@@ -321,6 +322,49 @@ export async function assignCodesToSupervisor(
     console.log("KRISTO_SUPERVISOR_ASSIGN_CODES_FAILED", {
       supervisorUserId,
       quantity,
+      error: String(error?.message || error || "failed"),
+    });
+    throw error;
+  }
+}
+
+export async function deleteSupervisor(input: {
+  userId: string;
+  invitationId?: string;
+}): Promise<{ outcome: "removed" | "invitation_cancelled"; releasedCodes: number }> {
+  const path = "/api/offline-activation/supervisors/delete";
+  const userId = String(input.userId || "").trim();
+  const invitationId = String(input.invitationId || "").trim() || undefined;
+
+  console.log("KRISTO_SUPERVISOR_DELETE_START", { userId, invitationId: invitationId || null });
+
+  try {
+    const res = await apiPost<
+      | { ok: true; outcome: "removed" | "invitation_cancelled"; releasedCodes: number }
+      | { ok: false; error: string }
+    >(
+      path,
+      { userId, invitationId },
+      { headers: buildActivationRequestHeaders(path) }
+    );
+
+    if (!res || (res as any).ok === false) {
+      throw new Error(String((res as any)?.error || "Failed to delete supervisor"));
+    }
+
+    console.log("KRISTO_SUPERVISOR_DELETE_SUCCESS", {
+      userId,
+      outcome: (res as any).outcome,
+      releasedCodes: (res as any).releasedCodes,
+    });
+
+    return {
+      outcome: (res as any).outcome,
+      releasedCodes: Number((res as any).releasedCodes || 0),
+    };
+  } catch (error: any) {
+    console.log("KRISTO_SUPERVISOR_DELETE_FAILED", {
+      userId,
       error: String(error?.message || error || "failed"),
     });
     throw error;
