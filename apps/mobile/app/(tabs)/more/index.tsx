@@ -35,6 +35,10 @@ import {
   fetchNotificationCardUnreadCount,
   setCardUnreadFromFetchResult,
 } from "@/src/lib/churchNotificationsApi";
+import {
+  getOfflineActivationMoreItems,
+  logOfflineActivationMoreCardVisibility,
+} from "@/src/lib/offlineActivationCodes";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
@@ -243,8 +247,16 @@ type CardSurface = {
   shadowColor: string;
 };
 
+function getMoreCardToneKey(key: string): string {
+  if (key === "system_admin") return "church";
+  if (key === "supervisor") return "notifications";
+  if (key === "agent") return "kristo_guide";
+  return key;
+}
+
 function getCardSurface(key: string): CardSurface {
-  if (key === "tlmc") {
+  const toneKey = getMoreCardToneKey(key);
+  if (toneKey === "tlmc") {
     return {
       base: ["rgba(22,16,52,0.98)", "rgba(12,9,28,0.99)", "rgba(7,6,18,0.99)"],
       tint: ["rgba(108,78,255,0.24)", "rgba(217,179,95,0.10)", "transparent"],
@@ -253,7 +265,7 @@ function getCardSurface(key: string): CardSurface {
       shadowColor: "#6C4EFF",
     };
   }
-  if (key === "ministries" || key === "my_church_room") {
+  if (toneKey === "ministries" || toneKey === "my_church_room") {
     return {
       base: ["rgba(28,22,12,0.98)", "rgba(14,11,7,0.96)", "rgba(8,7,5,0.94)"],
       tint: ["rgba(236,202,112,0.16)", "rgba(217,179,95,0.06)", "transparent"],
@@ -262,7 +274,7 @@ function getCardSurface(key: string): CardSurface {
       shadowColor: "#D9B35F",
     };
   }
-  if (key === "notifications" || key === "messages") {
+  if (toneKey === "notifications" || toneKey === "messages") {
     return {
       base: ["rgba(10,18,36,0.98)", "rgba(8,14,28,0.97)", "rgba(5,9,18,0.96)"],
       tint: ["rgba(96,152,255,0.16)", "rgba(0,145,255,0.06)", "transparent"],
@@ -271,7 +283,7 @@ function getCardSurface(key: string): CardSurface {
       shadowColor: "#5A9CFF",
     };
   }
-  if (key === "church") {
+  if (toneKey === "church") {
     return {
       base: ["rgba(18,12,38,0.98)", "rgba(12,8,26,0.97)", "rgba(7,5,16,0.96)"],
       tint: ["rgba(156,118,255,0.18)", "rgba(217,179,95,0.08)", "transparent"],
@@ -280,7 +292,7 @@ function getCardSurface(key: string): CardSurface {
       shadowColor: "#9C76FF",
     };
   }
-  if (key === "bible") {
+  if (toneKey === "bible") {
     return {
       base: ["rgba(8,22,18,0.98)", "rgba(6,16,13,0.97)", "rgba(4,10,8,0.96)"],
       tint: ["rgba(84,196,146,0.16)", "rgba(64,150,126,0.06)", "transparent"],
@@ -289,7 +301,7 @@ function getCardSurface(key: string): CardSurface {
       shadowColor: "#54C492",
     };
   }
-  if (key === "kristo_guide") {
+  if (toneKey === "kristo_guide") {
     return {
       base: ["rgba(6,22,24,0.98)", "rgba(5,18,20,0.97)", "rgba(3,12,14,0.96)"],
       tint: ["rgba(45,212,191,0.18)", "rgba(20,184,166,0.08)", "transparent"],
@@ -298,7 +310,7 @@ function getCardSurface(key: string): CardSurface {
       shadowColor: "#2DD4BF",
     };
   }
-  if (key === "courtship") {
+  if (toneKey === "courtship") {
     return {
       base: ["rgba(28,10,22,0.98)", "rgba(18,8,14,0.97)", "rgba(10,5,8,0.96)"],
       tint: ["rgba(248,132,182,0.16)", "rgba(176,92,132,0.06)", "transparent"],
@@ -307,7 +319,7 @@ function getCardSurface(key: string): CardSurface {
       shadowColor: "#F884B6",
     };
   }
-  if (key === "live_slots") {
+  if (toneKey === "live_slots") {
     return {
       base: ["rgba(28,10,18,0.98)", "rgba(16,8,12,0.97)", "rgba(9,5,7,0.96)"],
       tint: ["rgba(255,90,122,0.16)", "rgba(176,92,118,0.06)", "transparent"],
@@ -316,7 +328,7 @@ function getCardSurface(key: string): CardSurface {
       shadowColor: "#FF5A7A",
     };
   }
-  if (key === "testimony" || key === "payments" || key === "media") {
+  if (toneKey === "testimony" || toneKey === "payments" || toneKey === "media") {
     return {
       base: ["rgba(26,10,18,0.98)", "rgba(16,8,12,0.97)", "rgba(9,5,7,0.96)"],
       tint: ["rgba(228,120,176,0.16)", "rgba(156,86,118,0.06)", "transparent"],
@@ -374,6 +386,11 @@ export default function MoreScreen() {
     [hasChurch, isPastor, mediaAccessLoading, canShowMediaCard]
   );
 
+  const offlineActivationItems = React.useMemo((): Item[] => {
+    const role = String(session?.role || "Member");
+    return getOfflineActivationMoreItems(role).map(({ requiredRole: _ignored, ...item }) => item);
+  }, [session?.role]);
+
   const visibleItems = React.useMemo(() => {
     let base = hasChurch ? ITEMS : buildNoChurchOnboardingItems();
     if (!isPastor) {
@@ -382,8 +399,8 @@ export default function MoreScreen() {
     if (!canShowMediaCard) {
       base = base.filter((item) => item.key !== "media");
     }
-    return base;
-  }, [hasChurch, isPastor, canShowMediaCard]);
+    return [...base, ...offlineActivationItems];
+  }, [hasChurch, isPastor, canShowMediaCard, offlineActivationItems]);
 
   const { left: leftItems, right: rightItems } = React.useMemo(
     () => splitColumns(visibleItems),
@@ -448,6 +465,14 @@ export default function MoreScreen() {
         controller.abort();
       };
     }, [session?.churchId, session?.userId, session?.role, session])
+  );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const role = String(session?.role || "Member");
+      const userId = String(session?.userId || "").trim();
+      logOfflineActivationMoreCardVisibility(role, userId);
+    }, [session?.role, session?.userId])
   );
 
   React.useEffect(() => {
@@ -570,181 +595,183 @@ export default function MoreScreen() {
         ? `${notificationUnread} unread`
         : item.sub;
 
+    const toneKey = getMoreCardToneKey(item.key);
+
     const wrapTone =
-      item.key === "ministries"
+      toneKey === "ministries"
         ? [s.tileGold, s.tileMinistriesWrap]
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? [s.tileBlue, s.tileNotificationsWrap]
-        : item.key === "church"
+        : toneKey === "church"
         ? [s.tilePurple, s.tileChurchWrap]
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? [s.tileGoldStrong, s.tileRoomWrap]
-        : item.key === "bible" || item.key === "kristo_guide"
-        ? item.key === "kristo_guide"
+        : toneKey === "bible" || toneKey === "kristo_guide"
+        ? toneKey === "kristo_guide"
           ? [s.tileTeal, s.tileTariffWrap]
           : [s.tileEmerald, s.tileBibleWrap]
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? [s.tileRose, s.tileGivingWrap]
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? [s.tilePink, s.tileCourtshipWrap]
         : null;
 
     const innerTone =
-      item.key === "ministries"
+      toneKey === "ministries"
         ? [s.tileInnerGold, s.tileInnerMinistries]
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? [s.tileInnerBlue, s.tileInnerNotifications]
-        : item.key === "church"
+        : toneKey === "church"
         ? [s.tileInnerPurple, s.tileInnerChurch]
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? [s.tileInnerAmber, s.tileInnerRoom]
-        : item.key === "bible" || item.key === "kristo_guide"
-        ? item.key === "kristo_guide"
+        : toneKey === "bible" || toneKey === "kristo_guide"
+        ? toneKey === "kristo_guide"
           ? [s.tileInnerTeal, s.tileInnerTariff]
           : [s.tileInnerEmerald, s.tileInnerBible]
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? [s.tileInnerRose, s.tileInnerGiving]
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? [s.tileInnerPink, s.tileInnerCourtship]
         : null;
 
     const iconTone =
-      item.key === "ministries"
+      toneKey === "ministries"
         ? s.iconPillGold
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? s.iconPillBlue
-        : item.key === "church"
+        : toneKey === "church"
         ? s.iconPillPurple
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.iconPillAmber
-        : item.key === "bible" || item.key === "kristo_guide"
-        ? item.key === "kristo_guide"
+        : toneKey === "bible" || toneKey === "kristo_guide"
+        ? toneKey === "kristo_guide"
           ? s.iconPillTeal
           : s.iconPillEmerald
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? s.iconPillRose
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.iconPillPink
         : null;
 
     const arrowTone =
-      item.key === "ministries"
+      toneKey === "ministries"
         ? s.arrowPillGold
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? s.arrowPillBlue
-        : item.key === "church"
+        : toneKey === "church"
         ? s.arrowPillPurple
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.arrowPillAmber
-        : item.key === "bible" || item.key === "kristo_guide"
+        : toneKey === "bible" || toneKey === "kristo_guide"
         ? null
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? s.arrowPillRose
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.arrowPillPink
         : null;
 
     const titleTone =
-      item.key === "ministries"
+      toneKey === "ministries"
         ? s.tileTitleGold
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? s.tileTitleBlue
-        : item.key === "church"
+        : toneKey === "church"
         ? s.tileTitlePurple
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.tileTitleAmber
-        : item.key === "bible"
+        : toneKey === "bible"
         ? s.tileTitleEmerald
-        : item.key === "kristo_guide"
+        : toneKey === "kristo_guide"
         ? s.tileTitleTeal
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? s.tileTitleRose
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.tileTitlePink
         : null;
 
     const subTone =
-      item.key === "ministries"
+      toneKey === "ministries"
         ? s.tileSubGold
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? s.tileSubBlue
-        : item.key === "church"
+        : toneKey === "church"
         ? s.tileSubPurple
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.tileSubAmber
-        : item.key === "bible"
+        : toneKey === "bible"
         ? s.tileSubEmerald
-        : item.key === "kristo_guide"
+        : toneKey === "kristo_guide"
         ? s.tileSubTeal
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? s.tileSubRose
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.tileSubPink
         : null;
 
     const hintTone =
-      item.key === "ministries"
+      toneKey === "ministries"
         ? s.tapHintGold
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? s.tapHintBlue
-        : item.key === "church"
+        : toneKey === "church"
         ? s.tapHintPurple
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.tapHintAmber
-        : item.key === "bible"
+        : toneKey === "bible"
         ? s.tapHintEmerald
-        : item.key === "kristo_guide"
+        : toneKey === "kristo_guide"
         ? s.tapHintTeal
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? s.tapHintRose
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.tapHintPink
         : null;
 
     const premiumWrapTone =
-      item.key === "ministries"
+      toneKey === "ministries"
         ? s.tileMinistriesWrap
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? s.tileNotificationsWrap
-        : item.key === "church"
+        : toneKey === "church"
         ? s.tileChurchWrap
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.tileRoomWrap
-        : item.key === "bible"
+        : toneKey === "bible"
         ? s.tileBibleWrap
-        : item.key === "kristo_guide"
+        : toneKey === "kristo_guide"
         ? s.tileTariffWrap
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? s.tileGivingWrap
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.tileCourtshipWrap
         : null;
 
     const premiumInnerTone =
-      item.key === "ministries"
+      toneKey === "ministries"
         ? s.tileInnerMinistries
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? s.tileInnerNotifications
-        : item.key === "church"
+        : toneKey === "church"
         ? s.tileInnerChurch
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.tileInnerRoom
-        : item.key === "bible"
+        : toneKey === "bible"
         ? s.tileInnerBible
-        : item.key === "kristo_guide"
+        : toneKey === "kristo_guide"
         ? s.tileInnerTariff
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? s.tileInnerGiving
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.tileInnerCourtship
         : null;
 
     const iconSize =
       item.key === "tlmc"
         ? 24
-        : item.key === "church"
+        : toneKey === "church"
         ? 22
-        : item.key === "bible" || item.key === "kristo_guide"
+        : toneKey === "bible" || toneKey === "kristo_guide"
         ? 22
         : 21;
 
@@ -755,32 +782,38 @@ export default function MoreScreen() {
     const titleStyleExtra =
       item.key === "tlmc"
         ? s.tileTitleHero
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? s.tileTitleCompact
-        : item.key === "bible"
+        : toneKey === "bible"
         ? s.tileTitleSoft
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.tileTitleSoft
         : null;
 
     const subStyleExtra =
-      item.key === "notifications" || item.key === "messages"
+      toneKey === "notifications" || toneKey === "messages"
         ? s.tileSubCompact
-        : item.key === "church"
+        : toneKey === "church"
         ? s.tileSubStrong
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.tileSubStrong
         : null;
 
     const footStyleExtra =
       item.key === "tlmc"
         ? s.tileFootHero
-        : item.key === "notifications" || item.key === "messages"
+        : toneKey === "notifications" || toneKey === "messages"
         ? s.tileFootCompact
         : null;
 
     const miniTag =
-      item.key === "tlmc"
+      item.key === "system_admin"
+        ? "Admin"
+        : item.key === "supervisor"
+        ? "Teams"
+        : item.key === "agent"
+        ? "Codes"
+        : item.key === "tlmc"
         ? "Mission"
         : item.key === "ministries"
         ? "Teams"
@@ -805,70 +838,70 @@ export default function MoreScreen() {
         : "Love";
 
     const miniTagTone =
-      item.key === "tlmc"
+      toneKey === "tlmc"
         ? s.miniTagTlmc
-        : item.key === "notifications"
+        : toneKey === "notifications"
         ? s.miniTagBlue
-        : item.key === "church"
+        : toneKey === "church"
         ? s.miniTagPurple
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.miniTagAmber
-        : item.key === "bible"
+        : toneKey === "bible"
         ? s.miniTagEmerald
-        : item.key === "kristo_guide"
+        : toneKey === "kristo_guide"
         ? s.miniTagTeal
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? s.miniTagRose
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.miniTagPink
         : s.miniTagGold;
 
     const ctaPillTone =
       item.key === "tlmc"
         ? s.ctaPillGold
-        : item.key === "notifications"
+        : toneKey === "notifications"
         ? s.ctaPillBlue
-        : item.key === "church"
+        : toneKey === "church"
         ? s.ctaPillPurple
-        : item.key === "my_church_room"
+        : toneKey === "my_church_room"
         ? s.ctaPillAmber
-        : item.key === "bible"
+        : toneKey === "bible"
         ? s.ctaPillEmerald
-        : item.key === "kristo_guide"
+        : toneKey === "kristo_guide"
         ? s.ctaPillTeal
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? s.ctaPillRose
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? s.ctaPillPink
         : s.ctaPillGold;
 
     const iconColor =
-      item.key === "notifications"
+      toneKey === "notifications"
         ? "rgba(132,198,255,0.98)"
-        : item.key === "church"
+        : toneKey === "church"
         ? "rgba(198,166,255,0.98)"
-        : item.key === "bible"
+        : toneKey === "bible"
         ? "rgba(120,224,178,0.98)"
-        : item.key === "kristo_guide"
+        : toneKey === "kristo_guide"
         ? "rgba(94,234,212,0.98)"
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? "rgba(255,158,210,0.98)"
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? "rgba(255,150,196,0.98)"
         : "rgba(236,202,112,0.98)";
 
     const arrowColor =
-      item.key === "notifications"
+      toneKey === "notifications"
         ? "rgba(188,228,255,0.96)"
-        : item.key === "church"
+        : toneKey === "church"
         ? "rgba(228,212,255,0.96)"
-        : item.key === "bible"
+        : toneKey === "bible"
         ? "rgba(210,255,236,0.96)"
-        : item.key === "kristo_guide"
+        : toneKey === "kristo_guide"
         ? "rgba(204,251,241,0.96)"
-        : item.key === "testimony" || item.key === "payments" || item.key === "media"
+        : toneKey === "testimony" || toneKey === "payments" || toneKey === "media"
         ? "rgba(255,214,234,0.96)"
-        : item.key === "courtship"
+        : toneKey === "courtship"
         ? "rgba(255,214,230,0.96)"
         : "rgba(255,230,170,0.96)";
 
