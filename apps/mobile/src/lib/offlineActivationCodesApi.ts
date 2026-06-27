@@ -346,3 +346,54 @@ export async function fetchSupervisorDetail(supervisorUserId: string): Promise<{
     codes: Array.isArray((res as any).codes) ? (res as any).codes : [],
   };
 }
+
+export type ActivationChurchActivityItem = {
+  redeemedAt: string;
+  code: string;
+  supervisorName?: string;
+  supervisorUserId?: string | null;
+  agentName?: string;
+  agentUserId?: string | null;
+  durationMonths: number;
+  durationLabel: string;
+  status: "Redeemed";
+};
+
+export type ActivationChurchActivityRow = {
+  churchId: string;
+  churchName: string;
+  month: string;
+  trendPercent: number | null;
+  usedCount: number;
+  activations: ActivationChurchActivityItem[];
+};
+
+export type ActivationChurchActivityResponse = {
+  month: string;
+  churches: ActivationChurchActivityRow[];
+};
+
+export function currentActivationMonthKey(date = new Date()): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+export async function fetchActivationChurchActivity(
+  month?: string
+): Promise<ActivationChurchActivityResponse> {
+  const monthKey = String(month || currentActivationMonthKey()).trim();
+  const path = `/api/offline-activation/church-activity?month=${encodeURIComponent(monthKey)}`;
+  console.log("KRISTO_ACTIVATION_CHURCH_ACTIVITY_LOAD", { month: monthKey });
+
+  const res = await apiGet<
+    { ok: true; month: string; churches: ActivationChurchActivityRow[] } | { ok: false; error: string }
+  >(path, { headers: buildActivationRequestHeaders(path) }, { screen: "system-admin-church-activity" });
+
+  if (!res || (res as any).ok === false) {
+    throw new Error(String((res as any)?.error || "Failed to load church activation activity"));
+  }
+
+  return {
+    month: String((res as any).month || monthKey),
+    churches: Array.isArray((res as any).churches) ? (res as any).churches : [],
+  };
+}

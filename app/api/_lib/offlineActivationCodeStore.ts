@@ -1,4 +1,5 @@
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import { getChurchById } from "@/app/api/_lib/churches";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
 import { normalizeMembershipChurchId } from "@/app/api/_lib/memberships";
@@ -613,4 +614,167 @@ export async function assignCodesToSupervisor(
     assignedCount: assignedCodes.length,
     codes: assignedCodes,
   };
+}
+
+export type ActivationChurchActivityItem = {
+  redeemedAt: string;
+  code: string;
+  supervisorName?: string;
+  supervisorUserId?: string | null;
+  agentName?: string;
+  agentUserId?: string | null;
+  durationMonths: number;
+  durationLabel: string;
+  status: "Redeemed";
+};
+
+export type ActivationChurchActivityRow = {
+  churchId: string;
+  churchName: string;
+  month: string;
+  trendPercent: number | null;
+  usedCount: number;
+  activations: ActivationChurchActivityItem[];
+};
+
+function normalizeMonthKey(value: unknown): string | null {
+  const raw = String(value || "").trim();
+  if (!/^\d{4}-\d{2}$/.test(raw)) return null;
+  const [yearRaw, monthRaw] = raw.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    return null;
+  }
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function currentMonthKey(): string {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function previousMonthKey(monthKey: string): string {
+  const [yearRaw, monthRaw] = monthKey.split("-");
+  const date = new Date(Date.UTC(Number(yearRaw), Number(monthRaw) - 1, 1));
+  date.setUTCMonth(date.getUTCMonth() - 1);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function redeemedAtMonthKey(redeemedAt: string): string | null {
+  const parsed = Date.parse(String(redeemedAt || ""));
+  if (!Number.isFinite(parsed)) return null;
+  const date = new Date(parsed);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatDurationLabel(months: number): string {
+  const value = Math.floor(Number(months));
+  if (value === 1) return "Monthly";
+  if (value === 12) return "Yearly";
+  if (value === 3) return "3 months";
+  if (value === 6) return "6 months";
+  return `${value} months`;
+}
+
+async function resolveActivationUserName(userId: string | null | undefined): Promise<string | undefined> {
+  const uid = String(userId || "").trim();
+  if (!uid) return undefined;
+  try {
+    const profile = await getProfile(uid);
+    const name = String(profile?.fullName || "").trim();
+    return name || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function getOfflineActivationChurchActivity(monthInput?: string): Promise<{
+  month: string;
+  churches: ActivationChurchActivityRow[];
+}> {
+  const month = normalizeMonthKey(monthInput) || currentMonthKey();
+  const prevMonth = previousMonthKey(month);
+  const store = await readStore();
+  const redeemedCodes = flattenCodes(store).filter(
+    (code) => code.status === "redeemed" && String(code.redeemedAt || "").trim()
+  );
+
+  const currentByChurch = new Map<string, ActivationCode[]>();
+  const prevCountByChurch = new Map<string, number>();
+
+  for (const code of redeemedCodes) {
+    const churchId = normalizeMembershipChurchId(
+      code.redeemedByChurchId || code.deliveredToChurchId || ""
+    );
+    if (!churchId) continue;
+
+    const monthKey = redeemedAtMonthKey(String(code.redeemedAt || ""));
+    if (!monthKey) continue;
+
+    if (monthKey === month) {
+      const existing = currentByChurch.get(churchId) || [];
+      existing.push(code);
+      currentByChurch.set(churchId, existing);
+      continue;
+    }
+
+    if (monthKey === prevMonth) {
+      prevCountByChurch.set(churchId, (prevCountByChurch.get(churchId) || 0) + 1);
+    }
+  }
+
+  const churches: ActivationChurchActivityRow[] = [];
+
+  for (const [churchId, monthCodes] of currentByChurch.entries()) {
+    const church = await getChurchById(churchId);
+    const churchName = String(church?.name || churchId).trim() || churchId;
+    const usedCount = monthCodes.length;
+    const prevCount = prevCountByChurch.get(churchId) || 0;
+    let trendPercent: number | null = null;
+    if (prevCount > 0) {
+      trendPercent = Math.round(((usedCount - prevCount) / prevCount) * 100);
+    }
+
+    const sortedCodes = [...monthCodes].sort(
+      (a, b) => Date.parse(String(b.redeemedAt || "")) - Date.parse(String(a.redeemedAt || ""))
+    );
+
+    const activations: ActivationChurchActivityItem[] = [];
+    for (const code of sortedCodes) {
+      const supervisorUserId = String(code.assignedSupervisorUserId || "").trim() || null;
+      const agentUserId = String(code.assignedAgentUserId || "").trim() || null;
+      const [supervisorName, agentName] = await Promise.all([
+        resolveActivationUserName(supervisorUserId),
+        resolveActivationUserName(agentUserId),
+      ]);
+
+      activations.push({
+        redeemedAt: String(code.redeemedAt || ""),
+        code: String(code.code || ""),
+        supervisorName,
+        supervisorUserId,
+        agentName,
+        agentUserId,
+        durationMonths: Number(code.durationMonths || 0),
+        durationLabel: formatDurationLabel(code.durationMonths),
+        status: "Redeemed",
+      });
+    }
+
+    churches.push({
+      churchId,
+      churchName,
+      month,
+      trendPercent,
+      usedCount,
+      activations,
+    });
+  }
+
+  churches.sort(
+    (a, b) => b.usedCount - a.usedCount || a.churchName.localeCompare(b.churchName)
+  );
+
+  return { month, churches };
 }
