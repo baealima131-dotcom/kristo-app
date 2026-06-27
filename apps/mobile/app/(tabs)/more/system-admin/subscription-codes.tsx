@@ -41,7 +41,9 @@ function formatWhen(iso: string) {
 
 function statusColor(status: string) {
   if (status === "available") return "#6EE7A8";
-  if (status === "redeemed") return "#93C5FD";
+  if (status === "assigned_to_supervisor") return "#93C5FD";
+  if (status === "assigned_to_agent") return "#C4B5FD";
+  if (status === "redeemed") return "#FCA5A5";
   return "#FCA5A5";
 }
 

@@ -1,12 +1,13 @@
 import React from "react";
 import {
+  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -16,13 +17,18 @@ import {
   logOfflineCodesRouteOpened,
 } from "@/src/lib/offlineActivationCodes";
 import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
-
-const ACCENT = "#9C76FF";
-const BG = "#070C14";
-const CARD = "rgba(16,20,29,0.92)";
-const BORDER = "rgba(255,255,255,0.10)";
-const TEXT = "rgba(255,255,255,0.94)";
-const MUTED = "rgba(255,255,255,0.72)";
+import {
+  fetchActivationDashboard,
+  type ActivationDashboardStats,
+} from "@/src/lib/offlineActivationCodesApi";
+import {
+  OFFLINE_ADMIN_ACCENT as ACCENT,
+  OFFLINE_ADMIN_BG as BG,
+  OFFLINE_ADMIN_BORDER as BORDER,
+  OFFLINE_ADMIN_CARD as CARD,
+  OFFLINE_ADMIN_MUTED as MUTED,
+  OFFLINE_ADMIN_TEXT as TEXT,
+} from "@/src/lib/offlineActivationAdminTheme";
 
 type SectionLink = {
   key: string;
@@ -32,33 +38,6 @@ type SectionLink = {
   disabled?: boolean;
 };
 
-const SECTIONS: SectionLink[] = [
-  {
-    key: "subscription_codes",
-    title: "Subscription Activation Codes",
-    subtitle: "Generate batches and view platform codes.",
-    href: "/more/system-admin/subscription-codes",
-  },
-  {
-    key: "supervisors",
-    title: "Supervisors",
-    subtitle: "Coming soon in this workspace.",
-    disabled: true,
-  },
-  {
-    key: "agents",
-    title: "Agents",
-    subtitle: "Coming soon in this workspace.",
-    disabled: true,
-  },
-  {
-    key: "activity",
-    title: "Code Activity",
-    subtitle: "Coming soon in this workspace.",
-    disabled: true,
-  },
-];
-
 export default function SystemAdminScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -67,11 +46,60 @@ export default function SystemAdminScreen() {
   const userId = String(session?.userId || "").trim();
   const allowed = hasOfflineActivationRole(platformRole || "", "System_Admin");
 
-  React.useEffect(() => {
-    if (allowed) {
-      logOfflineCodesRouteOpened("system-admin", platformRole || "", userId);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+  const [stats, setStats] = React.useState<ActivationDashboardStats | null>(null);
+
+  const loadDashboard = React.useCallback(async () => {
+    if (!allowed) {
+      setLoading(false);
+      return;
     }
-  }, [allowed, platformRole, userId]);
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetchActivationDashboard();
+      setStats(res.stats);
+    } catch (e: any) {
+      setError(String(e?.message || "Failed to load dashboard"));
+    } finally {
+      setLoading(false);
+    }
+  }, [allowed]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (allowed) logOfflineCodesRouteOpened("system-admin", platformRole || "", userId);
+      loadDashboard();
+    }, [allowed, loadDashboard, platformRole, userId])
+  );
+
+  const sections: SectionLink[] = [
+    {
+      key: "subscription_codes",
+      title: "Subscription Activation Codes",
+      subtitle: "Generate batches and view platform codes.",
+      href: "/more/system-admin/subscription-codes",
+    },
+    {
+      key: "supervisors",
+      title: "Supervisors",
+      subtitle: `${stats?.supervisorCount ?? 0} supervisors • assign codes securely`,
+      href: "/more/system-admin/supervisors",
+    },
+    {
+      key: "agents",
+      title: "Agents",
+      subtitle: `${stats?.agentCount ?? 0} agents • managed by supervisors (read-only)`,
+      disabled: true,
+    },
+    {
+      key: "activity",
+      title: "Code Activity",
+      subtitle: "Coming soon in this workspace.",
+      disabled: true,
+    },
+  ];
 
   return (
     <View style={styles.screen}>
@@ -86,7 +114,7 @@ export default function SystemAdminScreen() {
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>System Admin</Text>
-          <Text style={styles.subtitle}>Full platform control • activation codes</Text>
+          <Text style={styles.subtitle}>Offline activation control center</Text>
         </View>
       </View>
 
@@ -104,19 +132,36 @@ export default function SystemAdminScreen() {
           </View>
         ) : (
           <>
-            <View style={styles.heroCard}>
-              <View style={[styles.heroIconWrap, { borderColor: `${ACCENT}55` }]}>
-                <Ionicons name="shield-checkmark" size={22} color={ACCENT} />
+            {loading ? (
+              <View style={styles.loadingWrap}>
+                <ActivityIndicator color={ACCENT} />
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.heroTitle}>Platform admin workspace</Text>
-                <Text style={styles.heroText}>
-                  Manage offline subscription activation codes and platform distribution roles.
-                </Text>
-              </View>
-            </View>
+            ) : null}
 
-            {SECTIONS.map((section) => (
+            {error ? (
+              <View style={styles.errorCard}>
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            ) : null}
+
+            {stats ? (
+              <View style={styles.statsGrid}>
+                <StatCard label="Total codes" value={stats.totalCodes} />
+                <StatCard label="Available" value={stats.availableUnassigned} accent="#6EE7A8" />
+                <StatCard label="With supervisors" value={stats.assignedToSupervisors} accent="#93C5FD" />
+                <StatCard label="Redeemed" value={stats.redeemed} accent="#FCA5A5" />
+              </View>
+            ) : null}
+
+            <Pressable
+              style={styles.primaryBtn}
+              onPress={() => router.push("/more/system-admin/supervisors?add=1" as any)}
+            >
+              <Ionicons name="person-add-outline" size={18} color="#fff" />
+              <Text style={styles.primaryBtnText}>Add Supervisor</Text>
+            </Pressable>
+
+            {sections.map((section) => (
               <Pressable
                 key={section.key}
                 style={[styles.sectionCard, section.disabled && styles.sectionCardDisabled]}
@@ -145,6 +190,23 @@ export default function SystemAdminScreen() {
   );
 }
 
+function StatCard({
+  label,
+  value,
+  accent = TEXT,
+}: {
+  label: string;
+  value: number;
+  accent?: string;
+}) {
+  return (
+    <View style={styles.statCard}>
+      <Text style={[styles.statValue, { color: accent }]}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG },
   header: {
@@ -167,26 +229,29 @@ const styles = StyleSheet.create({
   title: { color: TEXT, fontSize: 22, fontWeight: "800" },
   subtitle: { color: MUTED, fontSize: 13, marginTop: 2 },
   content: { paddingHorizontal: 16, paddingTop: 8, gap: 12 },
-  heroCard: {
-    flexDirection: "row",
-    gap: 12,
-    padding: 16,
-    borderRadius: 18,
+  statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  statCard: {
+    width: "48%",
+    flexGrow: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 14,
     backgroundColor: CARD,
     borderWidth: 1,
     borderColor: BORDER,
   },
-  heroIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
+  statValue: { fontSize: 22, fontWeight: "800" },
+  statLabel: { color: MUTED, fontSize: 11, marginTop: 4, fontWeight: "600" },
+  primaryBtn: {
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: ACCENT,
   },
-  heroTitle: { color: TEXT, fontSize: 16, fontWeight: "800" },
-  heroText: { color: MUTED, fontSize: 13, lineHeight: 19, marginTop: 4 },
+  primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 15 },
   sectionCard: {
     padding: 16,
     borderRadius: 16,
@@ -198,6 +263,15 @@ const styles = StyleSheet.create({
   sectionRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   sectionTitle: { color: TEXT, fontSize: 15, fontWeight: "700" },
   sectionSub: { color: MUTED, fontSize: 12, marginTop: 3 },
+  loadingWrap: { paddingVertical: 12, alignItems: "center" },
+  errorCard: {
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(239,68,68,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.35)",
+  },
+  errorText: { color: "#FCA5A5", fontSize: 13 },
   noticeCard: {
     padding: 18,
     borderRadius: 16,

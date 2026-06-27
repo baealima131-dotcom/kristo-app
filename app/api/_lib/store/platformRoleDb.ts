@@ -153,3 +153,21 @@ export async function dbListPlatformRoles(limit = 500): Promise<PlatformRoleReco
 
   return rows.map(rowToRecord);
 }
+
+export async function dbListPlatformRolesByRole(
+  platformRole: PlatformRole,
+  limit = 500
+): Promise<PlatformRoleRecord[]> {
+  await ensurePlatformRoleSchema();
+  const sql = getSql();
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 5000));
+  const rows = (await sql`
+    SELECT user_id, platform_role, note, created_at, updated_at
+    FROM kristo_platform_roles
+    WHERE platform_role = ${platformRole}
+    ORDER BY updated_at DESC
+    LIMIT ${safeLimit}
+  `) as PlatformRoleRow[];
+
+  return rows.map(rowToRecord);
+}

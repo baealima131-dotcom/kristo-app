@@ -2,6 +2,7 @@ import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
 import {
   dbGetPlatformRole,
+  dbListPlatformRolesByRole,
   dbUpsertPlatformRole,
   ensurePlatformRoleStoreReady,
   resolvePlatformRoleStoreMode,
@@ -120,6 +121,16 @@ export async function upsertPlatformRole(
   const saved = nextRows.find((entry) => String(entry.userId || "").trim() === uid);
   if (!saved) throw new Error("Failed to save platform role");
   return saved;
+}
+
+export async function listPlatformRoleUsers(platformRole: PlatformRole): Promise<PlatformRoleRecord[]> {
+  if (hasDurableStore()) {
+    await ensurePlatformRoleStoreReady();
+    return dbListPlatformRolesByRole(platformRole);
+  }
+
+  const rows = await readPlatformRoleJsonStore();
+  return rows.filter((entry) => normalizePlatformRole(entry.platformRole) === platformRole);
 }
 
 export function isSystemAdminPlatformRole(role: unknown): boolean {
