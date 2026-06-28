@@ -390,7 +390,7 @@ export default function SupervisorScreen() {
 
   const [agentKristoId, setAgentKristoId] = React.useState("");
   const [agentChurchId, setAgentChurchId] = React.useState("");
-  const [agentStatus, setAgentStatus] = React.useState<"active" | "inactive">("active");
+  const [agentStatus, setAgentStatus] = React.useState<"accepted" | "inactive">("accepted");
   const [savingAgent, setSavingAgent] = React.useState(false);
   const [lastTakenAtMs, setLastTakenAtMs] = React.useState(0);
   const [takingCodes, setTakingCodes] = React.useState(false);
@@ -527,7 +527,7 @@ export default function SupervisorScreen() {
   const resetAgentForm = () => {
     setAgentKristoId("");
     setAgentChurchId("");
-    setAgentStatus("active");
+    setAgentStatus("accepted");
   };
 
   const openAddAgent = () => {
@@ -538,7 +538,7 @@ export default function SupervisorScreen() {
   const openEditAgent = (agent: SupervisorAgent) => {
     setViewAgent(null);
     setEditAgent(agent);
-    setAgentStatus(agent.status);
+    setAgentStatus(agent.status === "inactive" ? "inactive" : "accepted");
   };
 
   const onSaveAgent = async () => {
@@ -554,15 +554,28 @@ export default function SupervisorScreen() {
     setSavingAgent(true);
     try {
       if (editAgent) {
+        if (editAgent.status !== "accepted" && editAgent.status !== "inactive") {
+          Alert.alert("Cannot edit", "Status can only be changed after the agent accepts.");
+          return;
+        }
         await updateSupervisorAgent({ agentId: editAgent.id, status: agentStatus });
         setEditAgent(null);
       } else {
-        await addSupervisorAgent({
+        const result = await addSupervisorAgent({
           kristoId: agentKristoId.trim().toUpperCase(),
           churchId: agentChurchId.trim(),
-          status: agentStatus,
         });
         setShowAddAgent(false);
+        if (result.outcome === "alreadyPending") {
+          Alert.alert("Invitation pending", "This user already has a pending agent invitation.");
+        } else if (result.outcome === "alreadyAgent" || result.outcome === "alreadyAccepted") {
+          Alert.alert("Already registered", "This user is already an active agent for this church.");
+        } else {
+          Alert.alert(
+            "Invitation sent",
+            "The user must accept before they can access the Agent workspace or receive codes."
+          );
+        }
       }
       resetAgentForm();
       await loadDashboard(true);
@@ -757,21 +770,26 @@ export default function SupervisorScreen() {
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   style={styles.input}
                 />
+                <Text style={styles.helperCopy}>
+                  An invitation will be sent. The Agent card appears only after they accept.
+                </Text>
               </>
             )}
+            {editAgent && (editAgent.status === "accepted" || editAgent.status === "inactive") ? (
             <View style={styles.statusRow}>
-              {(["active", "inactive"] as const).map((s) => (
+              {(["accepted", "inactive"] as const).map((s) => (
                 <Pressable
                   key={s}
                   onPress={() => setAgentStatus(s)}
                   style={[styles.statusChip, agentStatus === s && styles.statusChipActive]}
                 >
                   <Text style={[styles.statusChipText, agentStatus === s && styles.statusChipTextActive]}>
-                    {s}
+                    {s === "accepted" ? "Active" : "Inactive"}
                   </Text>
                 </Pressable>
               ))}
             </View>
+            ) : null}
             <View style={styles.modalActions}>
               <Pressable
                 onPress={() => {
@@ -944,6 +962,7 @@ const styles = StyleSheet.create({
   modalTitle: { color: TEXT, fontSize: 16, fontWeight: "800" },
   modalSub: { color: MUTED, fontSize: 12 },
   modalHint: { color: MUTED, fontSize: 11 },
+  helperCopy: { color: MUTED, fontSize: 11, lineHeight: 15, marginTop: 8, fontWeight: "600" },
   fieldLabel: { color: MUTED, fontSize: 11, fontWeight: "700", marginTop: 8 },
   input: {
     borderWidth: StyleSheet.hairlineWidth,

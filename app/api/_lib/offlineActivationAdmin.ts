@@ -8,9 +8,16 @@ import {
 import { getPlatformRole } from "@/app/api/_lib/platformRoles";
 import {
   createSupervisorInvitation,
+  createAgentInvitation,
   findPendingSupervisorInvitation,
+  findPendingAgentInvitation,
   type OfflineActivationInvitation,
 } from "@/app/api/_lib/offlineActivationInvitations";
+import {
+  createSupervisorAgent,
+  findSupervisorAgentByLinkedUser,
+  isAcceptedAgentStatus,
+} from "@/app/api/_lib/offlineActivationAgentStore";
 
 export type ActivationUserRef = {
   userId: string;
@@ -61,6 +68,19 @@ export async function resolveUserByKristoId(kristoId: string): Promise<{
 }
 
 export type InviteSupervisorOutcome = "invited" | "alreadyPending" | "alreadySupervisor";
+
+export type InviteAgentOutcome =
+  | "invited"
+  | "alreadyPending"
+  | "alreadyAgent"
+  | "alreadyAccepted";
+
+export type InviteAgentResult = {
+  outcome: InviteAgentOutcome;
+  user: ActivationUserRef;
+  invitation?: OfflineActivationInvitation;
+  agent?: Awaited<ReturnType<typeof createSupervisorAgent>>;
+};
 
 export type InviteSupervisorResult = {
   outcome: InviteSupervisorOutcome;
@@ -185,5 +205,123 @@ export async function inviteSupervisorByKristoAndChurch(
       fullName: resolved.fullName,
     },
     invitation,
+  };
+}
+
+export async function inviteAgentByKristoAndChurch(
+  kristoId: string,
+  churchId: string,
+  supervisorUserId: string
+): Promise<InviteAgentResult> {
+  const resolved = await resolveAgentRegistrationByKristoAndChurch(kristoId, churchId);
+  const normalizedChurchId = resolved.churchId;
+
+  const existingRole = await getPlatformRole(resolved.userId);
+  if (existingRole === "System_Admin") {
+    throw new Error("User is already System_Admin");
+  }
+  if (existingRole === "Supervisor") {
+    throw new Error("User is already a Supervisor");
+  }
+
+  const existingAgent = await findSupervisorAgentByLinkedUser(
+    supervisorUserId,
+    resolved.userId,
+    normalizedChurchId
+  );
+  if (existingAgent) {
+    if (existingAgent.status === "pending") {
+      const pendingInvite = await findPendingAgentInvitation({
+        inviteeUserId: resolved.userId,
+        churchId: normalizedChurchId,
+        invitedByUserId: supervisorUserId,
+      });
+      return {
+        outcome: "alreadyPending",
+        user: {
+          userId: resolved.userId,
+          kristoId: resolved.kristoId,
+          churchId: normalizedChurchId,
+          fullName: resolved.fullName,
+        },
+        invitation: pendingInvite || undefined,
+        agent: existingAgent,
+      };
+    }
+    if (isAcceptedAgentStatus(existingAgent.status)) {
+      return {
+        outcome: existingRole === "Agent" ? "alreadyAgent" : "alreadyAccepted",
+        user: {
+          userId: resolved.userId,
+          kristoId: resolved.kristoId,
+          churchId: normalizedChurchId,
+          fullName: resolved.fullName,
+        },
+        agent: existingAgent,
+      };
+    }
+    if (existingAgent.status === "declined") {
+      throw new Error("User previously declined this agent invitation");
+    }
+    if (existingAgent.status === "inactive") {
+      return {
+        outcome: "alreadyAccepted",
+        user: {
+          userId: resolved.userId,
+          kristoId: resolved.kristoId,
+          churchId: normalizedChurchId,
+          fullName: resolved.fullName,
+        },
+        agent: existingAgent,
+      };
+    }
+  }
+
+  const pending = await findPendingAgentInvitation({
+    inviteeUserId: resolved.userId,
+    churchId: normalizedChurchId,
+    invitedByUserId: supervisorUserId,
+  });
+  if (pending) {
+    return {
+      outcome: "alreadyPending",
+      user: {
+        userId: resolved.userId,
+        kristoId: resolved.kristoId,
+        churchId: normalizedChurchId,
+        fullName: resolved.fullName,
+      },
+      invitation: pending,
+    };
+  }
+
+  const invitation = await createAgentInvitation({
+    inviteeUserId: resolved.userId,
+    inviteeKristoId: resolved.kristoId,
+    churchId: normalizedChurchId,
+    invitedByUserId: String(supervisorUserId || "").trim() || "unknown",
+  });
+
+  const agent = await createSupervisorAgent({
+    supervisorUserId,
+    kristoId: resolved.kristoId,
+    churchId: normalizedChurchId,
+    fullName: resolved.fullName || resolved.kristoId,
+    phone: resolved.phone,
+    avatarUrl: resolved.avatarUrl,
+    linkedUserId: resolved.userId,
+    status: "pending",
+  });
+
+  return {
+    outcome: "invited",
+    user: {
+      userId: resolved.userId,
+      kristoId: resolved.kristoId,
+      churchId: normalizedChurchId,
+      fullName: resolved.fullName,
+    },
+    invitation,
+    agent,
   };
 }

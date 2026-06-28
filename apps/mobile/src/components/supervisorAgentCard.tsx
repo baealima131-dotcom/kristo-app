@@ -17,13 +17,38 @@ import {
   OFFLINE_ADMIN_TEXT as TEXT,
 } from "@/src/lib/offlineActivationAdminTheme";
 
-export function AgentStatusBadge({ status }: { status: "active" | "inactive" }) {
-  const active = status === "active";
+function agentStatusLabel(status: SupervisorAgent["status"]): string {
+  if (status === "accepted" || (status as string) === "active") return "Accepted";
+  if (status === "pending") return "Pending";
+  if (status === "declined") return "Declined";
+  if (status === "inactive") return "Inactive";
+  return String(status || "—");
+}
+
+function agentStatusTone(status: SupervisorAgent["status"]) {
+  if (status === "accepted" || (status as string) === "active") {
+    return { badge: styles.statusAccepted, text: styles.statusAcceptedText };
+  }
+  if (status === "pending") {
+    return { badge: styles.statusPending, text: styles.statusPendingText };
+  }
+  if (status === "declined") {
+    return { badge: styles.statusDeclined, text: styles.statusDeclinedText };
+  }
+  return { badge: styles.statusInactive, text: styles.statusInactiveText };
+}
+
+export function AgentStatusBadge({ status }: { status: SupervisorAgent["status"] }) {
+  const tone = agentStatusTone(status);
   return (
-    <View style={[styles.statusBadge, active ? styles.statusActive : styles.statusInactive]}>
-      <Text style={styles.statusBadgeText}>{active ? "Active" : "Inactive"}</Text>
+    <View style={[styles.statusBadge, tone.badge]}>
+      <Text style={[styles.statusBadgeText, tone.text]}>{agentStatusLabel(status)}</Text>
     </View>
   );
+}
+
+export function isAssignableSupervisorAgent(status: SupervisorAgent["status"]): boolean {
+  return status === "accepted" || (status as string) === "active";
 }
 
 export function SupervisorAgentCard({
@@ -39,6 +64,8 @@ export function SupervisorAgentCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const assignable = isAssignableSupervisorAgent(agent.status);
+
   return (
     <GlassCard pad={0} style={styles.agentCard}>
       <View style={styles.agentCardInner}>
@@ -48,7 +75,7 @@ export function SupervisorAgentCard({
             name={agent.fullName}
             fallbackId={agent.kristoId || agent.phone}
             size={52}
-            online={agent.status === "active"}
+            online={assignable && agent.status !== "inactive"}
           />
           <View style={styles.agentHead}>
             <View style={styles.agentNameRow}>
@@ -74,9 +101,11 @@ export function SupervisorAgentCard({
         </View>
       </View>
       <View style={styles.agentActions}>
-        {agent.status === "active" ? <GoldButton label="Assign Codes" onPress={onAssign} compact /> : null}
+        {assignable ? <GoldButton label="Assign Codes" onPress={onAssign} compact /> : null}
         <GlassButton label="View" onPress={onView} compact />
-        <GlassButton label="Edit" onPress={onEdit} compact />
+        {agent.status === "accepted" || agent.status === "inactive" ? (
+          <GlassButton label="Edit" onPress={onEdit} compact />
+        ) : null}
         <DangerIconButton onPress={onDelete} size={32} />
       </View>
     </GlassCard>
@@ -110,13 +139,25 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  statusActive: {
+  statusAccepted: {
     backgroundColor: "rgba(110,231,168,0.12)",
     borderColor: "rgba(110,231,168,0.28)",
   },
+  statusAcceptedText: { color: "#86EFAC" },
+  statusPending: {
+    backgroundColor: "rgba(96,165,250,0.12)",
+    borderColor: "rgba(96,165,250,0.28)",
+  },
+  statusPendingText: { color: "#93C5FD" },
+  statusDeclined: {
+    backgroundColor: "rgba(248,113,113,0.10)",
+    borderColor: "rgba(248,113,113,0.24)",
+  },
+  statusDeclinedText: { color: "#FCA5A5" },
   statusInactive: {
     backgroundColor: "rgba(251,191,36,0.10)",
     borderColor: "rgba(251,191,36,0.25)",
   },
-  statusBadgeText: { color: MUTED, fontSize: 9, fontWeight: "800" },
+  statusInactiveText: { color: MUTED },
+  statusBadgeText: { fontSize: 9, fontWeight: "800" },
 });

@@ -42,7 +42,7 @@ export type SupervisorAgent = {
   churchId: string;
   fullName: string;
   phone: string;
-  status: "active" | "inactive";
+  status: "pending" | "accepted" | "declined" | "inactive" | "active";
   avatarUrl?: string;
   linkedUserId?: string;
   createdAt: string;
@@ -111,26 +111,31 @@ export async function fetchSupervisorDashboard(): Promise<SupervisorDashboardRes
   return res as SupervisorDashboardResponse;
 }
 
-export async function addSupervisorAgent(input: {
-  kristoId: string;
-  churchId: string;
-  status?: "active" | "inactive";
-}) {
+export async function addSupervisorAgent(input: { kristoId: string; churchId: string }) {
   const path = "/api/offline-activation/supervisor/agents";
-  const res = await apiPost<{ ok: true; agent: SupervisorAgent } | { ok: false; error: string }>(
-    path,
-    input,
-    { headers: buildHeaders(path) }
-  );
+  const res = await apiPost<
+    | {
+        ok: true;
+        outcome: "invited" | "alreadyPending" | "alreadyAgent" | "alreadyAccepted";
+        agent?: SupervisorAgent;
+        invitation?: { id: string };
+      }
+    | { ok: false; error: string }
+  >(path, input, { headers: buildHeaders(path) });
   if (!res || (res as any).ok === false) {
-    throw new Error(String((res as any)?.error || "Failed to add agent"));
+    throw new Error(String((res as any)?.error || "Failed to invite agent"));
   }
-  return (res as any).agent;
+  return res as {
+    ok: true;
+    outcome: "invited" | "alreadyPending" | "alreadyAgent" | "alreadyAccepted";
+    agent?: SupervisorAgent;
+    invitation?: { id: string };
+  };
 }
 
 export async function updateSupervisorAgent(input: {
   agentId: string;
-  status?: "active" | "inactive";
+  status?: "accepted" | "inactive";
 }) {
   const path = "/api/offline-activation/supervisor/agents/update";
   const res = await apiPost<{ ok: true; agent: SupervisorAgent } | { ok: false; error: string }>(

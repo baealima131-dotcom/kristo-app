@@ -1,13 +1,29 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { updateSupervisorAgent } from "@/app/api/_lib/offlineActivationAgentStore";
+import {
+  getSupervisorAgent,
+  isAcceptedAgentStatus,
+  updateSupervisorAgent,
+  type OfflineActivationAgentStatus,
+} from "@/app/api/_lib/offlineActivationAgentStore";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
 
 function json(data: unknown, init?: ResponseInit) {
   return NextResponse.json(data, init);
+}
+
+function normalizeSupervisorAgentStatusUpdate(
+  raw: unknown,
+  current: OfflineActivationAgentStatus
+): OfflineActivationAgentStatus | null {
+  const statusRaw = String(raw || "").trim();
+  if (statusRaw === "inactive") return "inactive";
+  if (statusRaw === "accepted" || statusRaw === "active") return "accepted";
+  if (statusRaw === current) return current;
+  return null;
 }
 
 export async function POST(req: NextRequest) {
@@ -21,11 +37,33 @@ export async function POST(req: NextRequest) {
   const statusRaw = body?.status !== undefined ? String(body.status).trim() : undefined;
 
   try {
+    const existing = await getSupervisorAgent(ctxOrRes.viewer.userId, agentId);
+    if (!existing) return json({ ok: false, error: "Agent not found." }, { status: 404 });
+
+    if (statusRaw !== undefined) {
+      const nextStatus = normalizeSupervisorAgentStatusUpdate(statusRaw, existing.status);
+      if (!nextStatus) {
+        return json(
+          { ok: false, error: "Only accepted agents can be set inactive, or inactive agents reactivated." },
+          { status: 400 }
+        );
+      }
+      if (existing.status === "pending" || existing.status === "declined") {
+        return json(
+          { ok: false, error: "Cannot change status until the agent accepts or declines the invitation." },
+          { status: 400 }
+        );
+      }
+      if (nextStatus === "inactive" && !isAcceptedAgentStatus(existing.status)) {
+        return json({ ok: false, error: "Only accepted agents can be deactivated." }, { status: 400 });
+      }
+    }
+
     const agent = await updateSupervisorAgent({
       supervisorUserId: ctxOrRes.viewer.userId,
       agentId,
       ...(statusRaw !== undefined
-        ? { status: statusRaw === "inactive" ? "inactive" : "active" }
+        ? { status: normalizeSupervisorAgentStatusUpdate(statusRaw, existing.status) || existing.status }
         : {}),
     });
 

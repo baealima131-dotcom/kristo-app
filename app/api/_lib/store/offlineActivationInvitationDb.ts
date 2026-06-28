@@ -10,7 +10,7 @@ export type OfflineActivationInvitationStatus =
   | "declined"
   | "cancelled";
 
-export type OfflineActivationInvitationRole = "Supervisor";
+export type OfflineActivationInvitationRole = "Supervisor" | "Agent";
 
 export type OfflineActivationInvitationRecord = {
   id: string;
@@ -78,6 +78,11 @@ function normalizeStatus(value: unknown): OfflineActivationInvitationStatus {
   return "pending";
 }
 
+function normalizeRole(value: unknown): OfflineActivationInvitationRole {
+  const role = String(value || "Supervisor").trim();
+  return role === "Agent" ? "Agent" : "Supervisor";
+}
+
 function rowToRecord(row: InvitationRow): OfflineActivationInvitationRecord {
   return {
     id: String(row.id || "").trim(),
@@ -85,7 +90,7 @@ function rowToRecord(row: InvitationRow): OfflineActivationInvitationRecord {
     inviteeKristoId: String(row.invitee_kristo_id || "").trim().toUpperCase(),
     churchId: String(row.church_id || "").trim(),
     invitedByUserId: String(row.invited_by_user_id || "").trim(),
-    role: "Supervisor",
+    role: normalizeRole(row.role),
     status: normalizeStatus(row.status),
     createdAt: new Date(row.created_at).toISOString(),
     respondedAt: row.responded_at ? new Date(row.responded_at).toISOString() : null,
@@ -124,8 +129,17 @@ export async function ensureOfflineActivationInvitationSchema() {
           CONSTRAINT kristo_offline_activation_invitations_status_check
             CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled')),
           CONSTRAINT kristo_offline_activation_invitations_role_check
-            CHECK (role IN ('Supervisor'))
+            CHECK (role IN ('Supervisor', 'Agent'))
         )
+      `;
+      await sql`
+        ALTER TABLE kristo_offline_activation_invitations
+        DROP CONSTRAINT IF EXISTS kristo_offline_activation_invitations_role_check
+      `;
+      await sql`
+        ALTER TABLE kristo_offline_activation_invitations
+        ADD CONSTRAINT kristo_offline_activation_invitations_role_check
+        CHECK (role IN ('Supervisor', 'Agent'))
       `;
       await sql`
         CREATE UNIQUE INDEX IF NOT EXISTS kristo_offline_activation_invitations_pending_unique_idx
@@ -308,4 +322,120 @@ export async function dbUpdateInvitationStatus(input: {
   const row = rows[0];
   if (!row) throw new Error("Invitation not found");
   return rowToRecord(row);
+}
+
+export async function dbFindPendingAgentInvitation(input: {
+  inviteeUserId: string;
+  churchId: string;
+  invitedByUserId?: string;
+}): Promise<OfflineActivationInvitationRecord | null> {
+  const inviteeUserId = String(input.inviteeUserId || "").trim();
+  const churchId = String(input.churchId || "").trim();
+  const invitedByUserId = String(input.invitedByUserId || "").trim();
+  if (!inviteeUserId || !churchId) return null;
+
+  await ensureOfflineActivationInvitationSchema();
+  const sql = getSql();
+  const rows = invitedByUserId
+    ? ((await sql`
+        SELECT id, invitee_user_id, invitee_kristo_id, church_id, invited_by_user_id, role, status, created_at, responded_at
+        FROM kristo_offline_activation_invitations
+        WHERE invitee_user_id = ${inviteeUserId}
+          AND church_id = ${churchId}
+          AND invited_by_user_id = ${invitedByUserId}
+          AND role = 'Agent'
+          AND status = 'pending'
+        LIMIT 1
+      `) as InvitationRow[])
+    : ((await sql`
+        SELECT id, invitee_user_id, invitee_kristo_id, church_id, invited_by_user_id, role, status, created_at, responded_at
+        FROM kristo_offline_activation_invitations
+        WHERE invitee_user_id = ${inviteeUserId}
+          AND church_id = ${churchId}
+          AND role = 'Agent'
+          AND status = 'pending'
+        LIMIT 1
+      `) as InvitationRow[]);
+
+  const row = rows[0];
+  return row ? rowToRecord(row) : null;
+}
+
+export async function dbCreateAgentInvitation(input: {
+  inviteeUserId: string;
+  inviteeKristoId: string;
+  churchId: string;
+  invitedByUserId: string;
+}): Promise<OfflineActivationInvitationRecord> {
+  const inviteeUserId = String(input.inviteeUserId || "").trim();
+  const inviteeKristoId = String(input.inviteeKristoId || "").trim().toUpperCase();
+  const churchId = String(input.churchId || "").trim();
+  const invitedByUserId = String(input.invitedByUserId || "").trim();
+
+  if (!inviteeUserId) throw new Error("inviteeUserId required");
+  if (!inviteeKristoId) throw new Error("inviteeKristoId required");
+  if (!churchId) throw new Error("churchId required");
+  if (!invitedByUserId) throw new Error("invitedByUserId required");
+
+  const existing = await dbFindPendingAgentInvitation({
+    inviteeUserId,
+    churchId,
+    invitedByUserId,
+  });
+  if (existing) return existing;
+
+  await ensureOfflineActivationInvitationSchema();
+  const sql = getSql();
+  const id = newInvitationId();
+  const createdAt = nowIso();
+
+  try {
+    const rows = (await sql`
+      INSERT INTO kristo_offline_activation_invitations (
+        id,
+        invitee_user_id,
+        invitee_kristo_id,
+        church_id,
+        invited_by_user_id,
+        role,
+        status,
+        created_at,
+        responded_at
+      ) VALUES (
+        ${id},
+        ${inviteeUserId},
+        ${inviteeKristoId},
+        ${churchId},
+        ${invitedByUserId},
+        'Agent',
+        'pending',
+        ${createdAt},
+        NULL
+      )
+      RETURNING id, invitee_user_id, invitee_kristo_id, church_id, invited_by_user_id, role, status, created_at, responded_at
+    `) as InvitationRow[];
+
+    const row = rows[0];
+    if (row) return rowToRecord(row);
+  } catch (error: any) {
+    const message = String(error?.message || error || "").toLowerCase();
+    if (message.includes("duplicate") || message.includes("unique")) {
+      const deduped = await dbFindPendingAgentInvitation({
+        inviteeUserId,
+        churchId,
+        invitedByUserId,
+      });
+      if (deduped) return deduped;
+    }
+    throw error;
+  }
+
+  const deduped = await dbFindPendingAgentInvitation({
+    inviteeUserId,
+    churchId,
+    invitedByUserId,
+  });
+  if (deduped) return deduped;
+
+  throw new Error("Failed to create agent invitation");
 }

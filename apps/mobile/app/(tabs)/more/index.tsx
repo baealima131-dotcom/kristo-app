@@ -37,8 +37,15 @@ import {
 } from "@/src/lib/churchNotificationsApi";
 import {
   getOfflineActivationMoreItems,
+  hasOfflineActivationRole,
   logOfflineActivationMoreCardVisibility,
 } from "@/src/lib/offlineActivationCodes";
+import {
+  fetchAgentAccess,
+  fetchAgentInvitations,
+  type AgentAccessResponse,
+  type AgentInvitationRecord,
+} from "@/src/lib/offlineActivationAgentApi";
 
 const MEDIA_HREF = "/more/media";
 const CHURCH_GATE_HREF = "/more/church";
@@ -51,6 +58,20 @@ type Item = {
   icon: any;
   href: string;
 };
+
+const AGENT_MORE_ITEM: Item = {
+  key: "agent",
+  title: "Agent",
+  sub: "Activate churches • manage codes",
+  iconLib: "ion",
+  icon: "key-outline",
+  href: "/more/agent",
+};
+
+function shouldShowAgentMoreCard(platformRole: string, access: AgentAccessResponse | null): boolean {
+  if (hasOfflineActivationRole(platformRole, "Agent")) return true;
+  return Boolean(access?.canOpenWorkspace);
+}
 
 const ITEMS: Item[] = [
   {
@@ -250,7 +271,7 @@ type CardSurface = {
 function getMoreCardToneKey(key: string): string {
   if (key === "system_admin") return "church";
   if (key === "supervisor") return "notifications";
-  if (key === "agent") return "kristo_guide";
+  if (key === "agent" || key === "agent_invitation") return "notifications";
   return key;
 }
 
@@ -386,12 +407,37 @@ export default function MoreScreen() {
     [hasChurch, isPastor, mediaAccessLoading, canShowMediaCard]
   );
 
+  const [agentAccess, setAgentAccess] = React.useState<AgentAccessResponse | null>(null);
+  const [agentInvitations, setAgentInvitations] = React.useState<AgentInvitationRecord[]>([]);
+
   const offlineActivationItems = React.useMemo((): Item[] => {
     const platformRole = String(
       (session as any)?.platformRole || (session as any)?.offlineActivationRole || ""
     );
-    return getOfflineActivationMoreItems(platformRole).map(({ requiredRole: _ignored, ...item }) => item);
-  }, [session?.platformRole, (session as any)?.offlineActivationRole]);
+    let items = getOfflineActivationMoreItems(platformRole).map(({ requiredRole: _ignored, ...item }) => item);
+
+    if (shouldShowAgentMoreCard(platformRole, agentAccess)) {
+      if (!items.some((item) => item.key === "agent")) {
+        items = [...items, AGENT_MORE_ITEM];
+      }
+    } else {
+      items = items.filter((item) => item.key !== "agent");
+    }
+
+    return items;
+  }, [session?.platformRole, (session as any)?.offlineActivationRole, agentAccess]);
+
+  const agentInvitationItem = React.useMemo((): Item | null => {
+    if (!agentInvitations.length) return null;
+    return {
+      key: "agent_invitation",
+      title: "Agent Invitation",
+      sub: "You were invited to become an activation agent",
+      iconLib: "ion",
+      icon: "mail-unread-outline",
+      href: "/more/agent-invitation",
+    };
+  }, [agentInvitations.length]);
 
   const visibleItems = React.useMemo(() => {
     let base = hasChurch ? ITEMS : buildNoChurchOnboardingItems();
@@ -401,8 +447,8 @@ export default function MoreScreen() {
     if (!canShowMediaCard) {
       base = base.filter((item) => item.key !== "media");
     }
-    return [...base, ...offlineActivationItems];
-  }, [hasChurch, isPastor, canShowMediaCard, offlineActivationItems]);
+    return [...base, ...offlineActivationItems, ...(agentInvitationItem ? [agentInvitationItem] : [])];
+  }, [hasChurch, isPastor, canShowMediaCard, offlineActivationItems, agentInvitationItem]);
 
   const { left: leftItems, right: rightItems } = React.useMemo(
     () => splitColumns(visibleItems),
@@ -467,6 +513,23 @@ export default function MoreScreen() {
         controller.abort();
       };
     }, [session?.churchId, session?.userId, session?.role, session])
+  );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const userId = String(session?.userId || "").trim();
+      if (!userId) {
+        setAgentAccess(null);
+        setAgentInvitations([]);
+        return;
+      }
+      void fetchAgentAccess()
+        .then((res) => setAgentAccess(res))
+        .catch(() => setAgentAccess(null));
+      void fetchAgentInvitations()
+        .then((rows) => setAgentInvitations(rows))
+        .catch(() => setAgentInvitations([]));
+    }, [session?.userId])
   );
 
   useFocusEffect(
@@ -816,7 +879,9 @@ export default function MoreScreen() {
         : item.key === "supervisor"
         ? "Teams"
         : item.key === "agent"
-        ? "Codes"
+        ? "Service"
+        : item.key === "agent_invitation"
+        ? "Invite"
         : item.key === "tlmc"
         ? "Mission"
         : item.key === "ministries"
@@ -1069,9 +1134,11 @@ export default function MoreScreen() {
                 <Text style={[s.ctaText, hintTone, isTlmc ? s.tapHintTlmc : null]}>
                   {isChurchGate
                     ? "Get Started"
-                    : item.title === "Giving"
-                      ? "Give"
-                      : "Open"}
+                    : item.key === "agent_invitation"
+                      ? "Review"
+                      : item.title === "Giving"
+                        ? "Give"
+                        : "Open"}
                 </Text>
               </View>
             </View>

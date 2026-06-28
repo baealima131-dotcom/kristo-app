@@ -68,6 +68,11 @@ import {
   loadOfflineSupervisorProfileInvites,
   respondOfflineSupervisorProfileInvite,
 } from "@/src/lib/profileOfflineSupervisorInvites";
+import {
+  isOfflineAgentProfileInvite,
+  loadOfflineAgentProfileInvites,
+  respondOfflineAgentProfileInvite,
+} from "@/src/lib/profileOfflineAgentInvites";
 
 type AuthProfile = {
   userId: string;
@@ -857,7 +862,18 @@ export default function MeScreen() {
         }
       } catch {}
 
-      const mergedInvites = [...offlineSupervisorInvites, ...churchInvites];
+      let offlineAgentInvites: Awaited<ReturnType<typeof loadOfflineAgentProfileInvites>> = [];
+      try {
+        offlineAgentInvites = await loadOfflineAgentProfileInvites();
+        if (offlineAgentInvites.length) {
+          console.log("KRISTO_INVITATIONS_OFFLINE_AGENT_INCLUDED", {
+            userId: uid,
+            count: offlineAgentInvites.length,
+          });
+        }
+      } catch {}
+
+      const mergedInvites = [...offlineAgentInvites, ...offlineSupervisorInvites, ...churchInvites];
 
       setInviteItems(mergedInvites);
       setInviteCount(mergedInvites.length);
@@ -2214,6 +2230,85 @@ const resolvedName = useMemo(() => {
                             try {
                               setInviteBusy("accept");
                               await respondOfflineSupervisorProfileInvite({
+                                session,
+                                invitationId,
+                                action: "accept",
+                                setSession,
+                              });
+                              setInviteModalOpen(false);
+                              setTimeout(() => refreshInvitations(), 250);
+                            } catch (e: any) {
+                              Alert.alert("Error", String(e?.message || e));
+                            } finally {
+                              setInviteBusy("");
+                            }
+                          }}
+                          style={[s.inviteCompactAcceptBtn, !!inviteBusy && { opacity: 0.55 }]}
+                        >
+                          <Text style={s.inviteCompactAcceptText}>Accept</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                }
+
+                if (isOfflineAgentProfileInvite(inv)) {
+                  const invitationId = String(inv.invitationId || inv.id || "").trim();
+                  return (
+                    <View key={`offline-agent-${invitationId}-${i}`} style={s.inviteCompactWrap}>
+                      <Text style={s.inviteSectionLabel}>PENDING INVITATION</Text>
+
+                      <View style={s.inviteCompactCard}>
+                        <View style={s.inviteCompactIcon}>
+                          <Ionicons name="key-outline" size={22} color={GOLD} />
+                        </View>
+
+                        <View style={s.inviteCompactInfo}>
+                          <Text style={s.inviteCompactTitle}>{inv.title}</Text>
+                          <Text style={s.inviteCompactRole}>{inv.message}</Text>
+                          {inv.referenceChurchLabel ? (
+                            <Text style={s.inviteCompactMeta}>{inv.referenceChurchLabel}</Text>
+                          ) : null}
+
+                          <View style={s.invitePendingMini}>
+                            <View style={s.invitePendingDot} />
+                            <Text style={s.invitePendingText}>Pending</Text>
+                          </View>
+                        </View>
+                      </View>
+
+                      <View style={s.inviteCompactActions}>
+                        <Pressable
+                          disabled={!!inviteBusy}
+                          onPress={async () => {
+                            if (!invitationId || !session) return;
+                            try {
+                              setInviteBusy("reject");
+                              await respondOfflineAgentProfileInvite({
+                                session,
+                                invitationId,
+                                action: "decline",
+                                setSession,
+                              });
+                              setTimeout(() => refreshInvitations(), 250);
+                            } catch (e: any) {
+                              Alert.alert("Error", String(e?.message || e));
+                            } finally {
+                              setInviteBusy("");
+                            }
+                          }}
+                          style={[s.inviteCompactRejectBtn, !!inviteBusy && { opacity: 0.55 }]}
+                        >
+                          <Text style={s.inviteCompactRejectText}>Decline</Text>
+                        </Pressable>
+
+                        <Pressable
+                          disabled={!!inviteBusy}
+                          onPress={async () => {
+                            if (!invitationId || !session) return;
+                            try {
+                              setInviteBusy("accept");
+                              await respondOfflineAgentProfileInvite({
                                 session,
                                 invitationId,
                                 action: "accept",

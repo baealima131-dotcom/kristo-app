@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { getSupervisorAgent } from "@/app/api/_lib/offlineActivationAgentStore";
+import { getSupervisorAgent, isAcceptedAgentStatus } from "@/app/api/_lib/offlineActivationAgentStore";
 import { assignCodesToAgent } from "@/app/api/_lib/offlineActivationCodeStore";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
@@ -26,8 +26,8 @@ export async function POST(req: NextRequest) {
 
   const agent = await getSupervisorAgent(ctxOrRes.viewer.userId, agentId);
   if (!agent) return json({ ok: false, error: "Agent not found." }, { status: 404 });
-  if (agent.status !== "active") {
-    return json({ ok: false, error: "Cannot assign codes to an inactive agent." }, { status: 400 });
+  if (!isAcceptedAgentStatus(agent.status)) {
+    return json({ ok: false, error: "Cannot assign codes until the agent accepts the invitation." }, { status: 400 });
   }
 
   try {

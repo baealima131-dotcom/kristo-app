@@ -66,7 +66,7 @@ export default function SupervisorAgentsScreen() {
   const [assignQty, setAssignQty] = React.useState("5");
   const [assigning, setAssigning] = React.useState(false);
 
-  const [agentStatus, setAgentStatus] = React.useState<"active" | "inactive">("active");
+  const [agentStatus, setAgentStatus] = React.useState<"accepted" | "inactive">("accepted");
   const [savingAgent, setSavingAgent] = React.useState(false);
 
   const loadAgents = React.useCallback(async () => {
@@ -96,11 +96,15 @@ export default function SupervisorAgentsScreen() {
   const openEditAgent = (agent: SupervisorAgent) => {
     setViewAgent(null);
     setEditAgent(agent);
-    setAgentStatus(agent.status);
+    setAgentStatus(agent.status === "inactive" ? "inactive" : "accepted");
   };
 
   const onSaveAgent = async () => {
     if (!editAgent) return;
+    if (editAgent.status !== "accepted" && editAgent.status !== "inactive") {
+      Alert.alert("Cannot edit", "Status can only be changed after the agent accepts.");
+      return;
+    }
     setSavingAgent(true);
     try {
       await updateSupervisorAgent({ agentId: editAgent.id, status: agentStatus });
@@ -228,18 +232,26 @@ export default function SupervisorAgentsScreen() {
                 ) : null}
               </>
             ) : null}
-            <Text style={styles.fieldLabel}>Status</Text>
-            <View style={styles.statusRow}>
-              {(["active", "inactive"] as const).map((s) => (
-                <Pressable
-                  key={s}
-                  onPress={() => setAgentStatus(s)}
-                  style={[styles.statusChip, agentStatus === s && styles.statusChipActive]}
-                >
-                  <Text style={[styles.statusChipText, agentStatus === s && styles.statusChipTextActive]}>{s}</Text>
-                </Pressable>
-              ))}
-            </View>
+            {editAgent && (editAgent.status === "accepted" || editAgent.status === "inactive") ? (
+              <>
+                <Text style={styles.fieldLabel}>Status</Text>
+                <View style={styles.statusRow}>
+                  {(["accepted", "inactive"] as const).map((s) => (
+                    <Pressable
+                      key={s}
+                      onPress={() => setAgentStatus(s)}
+                      style={[styles.statusChip, agentStatus === s && styles.statusChipActive]}
+                    >
+                      <Text style={[styles.statusChipText, agentStatus === s && styles.statusChipTextActive]}>
+                        {s === "accepted" ? "Active" : "Inactive"}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </>
+            ) : editAgent ? (
+              <Text style={styles.modalHint}>Waiting for the user to accept the invitation.</Text>
+            ) : null}
             <View style={styles.modalActions}>
               <Pressable onPress={() => setEditAgent(null)}>
                 <Text style={styles.modalCancel}>Cancel</Text>
@@ -262,7 +274,7 @@ export default function SupervisorAgentsScreen() {
                     name={viewAgent.fullName}
                     fallbackId={viewAgent.kristoId || viewAgent.phone}
                     size={48}
-                    online={viewAgent.status === "active"}
+                    online={viewAgent.status === "accepted"}
                   />
                   <View style={{ flex: 1, gap: 3 }}>
                     <Text style={styles.modalTitle}>{viewAgent.fullName || viewAgent.kristoId}</Text>

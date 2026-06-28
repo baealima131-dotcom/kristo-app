@@ -1,4 +1,4 @@
-import { listAgentsByLinkedUserId } from "@/app/api/_lib/offlineActivationAgentStore";
+import { listAgentsByLinkedUserId, isAcceptedAgentStatus } from "@/app/api/_lib/offlineActivationAgentStore";
 import {
   getOfflineActivationStoreDebugInfo,
   OFFLINE_ACTIVATION_CODES_STORE_KEY,
@@ -1124,7 +1124,7 @@ export type AgentChurchAssignment = {
   churchName: string;
   agentId: string;
   kristoId: string;
-  status: "active" | "inactive";
+  status: "pending" | "accepted" | "declined" | "inactive";
   assignedCodes: number;
   remainingCodes: number;
   redeemedCodes: number;
@@ -1240,7 +1240,9 @@ export async function getAgentWorkspace(agentUserId: string) {
   const role = await getPlatformRole(uid);
   if (role !== "Agent") throw new Error("Agent access required");
 
-  const registrations = await listAgentsByLinkedUserId(uid);
+  const registrations = (await listAgentsByLinkedUserId(uid)).filter((agent) =>
+    isAcceptedAgentStatus(agent.status)
+  );
   const agentIds = registrations.map((agent) => agent.id);
 
   const store = await readStore();

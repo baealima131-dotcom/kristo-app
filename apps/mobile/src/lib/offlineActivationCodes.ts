@@ -34,9 +34,9 @@ const OFFLINE_ACTIVATION_MORE_ITEMS: OfflineActivationMoreItem[] = [
   {
     key: "agent",
     title: "Agent",
-    sub: "Deliver codes • church activation",
+    sub: "Activate churches • manage codes",
     iconLib: "ion",
-    icon: "ticket-outline",
+    icon: "key-outline",
     href: "/more/agent",
     requiredRole: "Agent",
   },

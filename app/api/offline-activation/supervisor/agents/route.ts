@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import {
-  createSupervisorAgent,
-  listSupervisorAgents,
-} from "@/app/api/_lib/offlineActivationAgentStore";
-import { resolveAgentRegistrationByKristoAndChurch } from "@/app/api/_lib/offlineActivationAdmin";
+import { inviteAgentByKristoAndChurch } from "@/app/api/_lib/offlineActivationAdmin";
+import { listSupervisorAgents } from "@/app/api/_lib/offlineActivationAgentStore";
 import { computeAgentCodeStats, getSupervisorWorkspace } from "@/app/api/_lib/offlineActivationCodeStore";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
@@ -38,35 +35,34 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const kristoId = String(body?.kristoId || body?.kristoID || "").trim();
   const churchId = String(body?.churchId || body?.churchID || "").trim();
-  const statusRaw = String(body?.status || "active").trim();
-  const status = statusRaw === "inactive" ? "inactive" : "active";
 
   if (!kristoId) return json({ ok: false, error: "KRISTO ID is required." }, { status: 400 });
   if (!churchId) return json({ ok: false, error: "Church ID is required." }, { status: 400 });
 
   try {
-    const resolved = await resolveAgentRegistrationByKristoAndChurch(kristoId, churchId);
+    const result = await inviteAgentByKristoAndChurch(
+      kristoId,
+      churchId,
+      ctxOrRes.viewer.userId
+    );
 
-    const agent = await createSupervisorAgent({
+    console.log("KRISTO_SUPERVISOR_AGENT_INVITED", {
       supervisorUserId: ctxOrRes.viewer.userId,
-      kristoId: resolved.kristoId,
-      churchId: resolved.churchId,
-      fullName: resolved.fullName || resolved.kristoId,
-      phone: resolved.phone,
-      avatarUrl: resolved.avatarUrl,
-      linkedUserId: resolved.userId,
-      status,
+      outcome: result.outcome,
+      kristoId: result.user.kristoId,
+      churchId: result.user.churchId,
+      agentId: result.agent?.id || null,
+      invitationId: result.invitation?.id || null,
     });
 
-    console.log("KRISTO_SUPERVISOR_AGENT_CREATED", {
-      supervisorUserId: ctxOrRes.viewer.userId,
-      agentId: agent.id,
-      kristoId: agent.kristoId,
-      churchId: agent.churchId,
+    return json({
+      ok: true,
+      outcome: result.outcome,
+      user: result.user,
+      agent: result.agent,
+      invitation: result.invitation,
     });
-
-    return json({ ok: true, agent });
   } catch (error: any) {
-    return json({ ok: false, error: String(error?.message || "Failed to add agent") }, { status: 400 });
+    return json({ ok: false, error: String(error?.message || "Failed to invite agent") }, { status: 400 });
   }
 }

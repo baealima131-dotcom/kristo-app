@@ -1,7 +1,9 @@
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
 import { hasDurableStore } from "@/app/api/_lib/store/authDb";
 import {
+  dbCreateAgentInvitation,
   dbCreateSupervisorInvitation,
+  dbFindPendingAgentInvitation,
   dbFindPendingSupervisorInvitation,
   dbGetInvitationById,
   dbListPendingInvitationsForUser,
@@ -13,6 +15,9 @@ import {
   type OfflineActivationInvitationRole,
   type OfflineActivationInvitationStatus,
 } from "@/app/api/_lib/store/offlineActivationInvitationDb";
+import {
+  updateAgentRegistrationStatusByInvite,
+} from "@/app/api/_lib/offlineActivationAgentStore";
 import { upsertPlatformRole, type PlatformRole } from "@/app/api/_lib/platformRoles";
 
 export type {
@@ -42,6 +47,11 @@ function newInvitationId(): string {
   return `oactinv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function normalizeInvitationRole(raw: unknown): OfflineActivationInvitationRole {
+  const role = String(raw || "Supervisor").trim();
+  return role === "Agent" ? "Agent" : "Supervisor";
+}
+
 function normalizeInvitation(raw: Partial<OfflineActivationInvitation>): OfflineActivationInvitation {
   const statusRaw = String(raw.status || "pending").trim();
   let status: OfflineActivationInvitationStatus = "pending";
@@ -60,7 +70,7 @@ function normalizeInvitation(raw: Partial<OfflineActivationInvitation>): Offline
     inviteeKristoId: String(raw.inviteeKristoId || "").trim().toUpperCase(),
     churchId: String(raw.churchId || "").trim(),
     invitedByUserId: String(raw.invitedByUserId || "").trim(),
-    role: "Supervisor",
+    role: normalizeInvitationRole(raw.role),
     status,
     createdAt: String(raw.createdAt || new Date().toISOString()),
     respondedAt: raw.respondedAt ? String(raw.respondedAt) : null,
@@ -177,6 +187,104 @@ export async function createSupervisorInvitation(input: {
   return invitation;
 }
 
+export async function findPendingAgentInvitation(input: {
+  inviteeUserId: string;
+  churchId: string;
+  invitedByUserId?: string;
+}): Promise<OfflineActivationInvitation | null> {
+  await ensureStoreReady();
+
+  if (hasDurableStore()) {
+    return dbFindPendingAgentInvitation(input);
+  }
+
+  const inviteeUserId = String(input.inviteeUserId || "").trim();
+  const churchId = String(input.churchId || "").trim();
+  const invitedByUserId = String(input.invitedByUserId || "").trim();
+  if (!inviteeUserId || !churchId) return null;
+
+  const store = await readJsonStore();
+  return (
+    store.invitations.find(
+      (row) =>
+        row.inviteeUserId === inviteeUserId &&
+        row.churchId === churchId &&
+        row.role === "Agent" &&
+        row.status === "pending" &&
+        (!invitedByUserId || row.invitedByUserId === invitedByUserId)
+    ) || null
+  );
+}
+
+export async function createAgentInvitation(input: {
+  inviteeUserId: string;
+  inviteeKristoId: string;
+  churchId: string;
+  invitedByUserId: string;
+}): Promise<OfflineActivationInvitation> {
+  await ensureStoreReady();
+
+  if (hasDurableStore()) {
+    const invitation = await dbCreateAgentInvitation(input);
+    console.log("KRISTO_OFFLINE_AGENT_INVITES_CREATE_PERSISTED", {
+      mode: "postgres",
+      invitationId: invitation.id,
+      inviteeUserId: invitation.inviteeUserId,
+      churchId: invitation.churchId,
+      status: invitation.status,
+    });
+    return invitation;
+  }
+
+  const inviteeUserId = String(input.inviteeUserId || "").trim();
+  const inviteeKristoId = String(input.inviteeKristoId || "").trim().toUpperCase();
+  const churchId = String(input.churchId || "").trim();
+  const invitedByUserId = String(input.invitedByUserId || "").trim();
+
+  if (!inviteeUserId) throw new Error("inviteeUserId required");
+  if (!inviteeKristoId) throw new Error("inviteeKristoId required");
+  if (!churchId) throw new Error("churchId required");
+  if (!invitedByUserId) throw new Error("invitedByUserId required");
+
+  const existing = await findPendingAgentInvitation({ inviteeUserId, churchId, invitedByUserId });
+  if (existing) return existing;
+
+  const createdAt = new Date().toISOString();
+  const invitation = normalizeInvitation({
+    id: newInvitationId(),
+    inviteeUserId,
+    inviteeKristoId,
+    churchId,
+    invitedByUserId,
+    role: "Agent",
+    status: "pending",
+    createdAt,
+    respondedAt: null,
+  });
+
+  await updateJsonFile<InvitationStore>(
+    STORE_FILE,
+    (current) => {
+      const invitations = Array.isArray(current?.invitations)
+        ? current.invitations.map((row) => normalizeInvitation(row))
+        : [];
+      invitations.push(invitation);
+      return { invitations };
+    },
+    { invitations: [] }
+  );
+
+  console.log("KRISTO_OFFLINE_AGENT_INVITES_CREATE_PERSISTED", {
+    mode: "local-json",
+    invitationId: invitation.id,
+    inviteeUserId: invitation.inviteeUserId,
+    churchId: invitation.churchId,
+    status: invitation.status,
+  });
+
+  return invitation;
+}
+
 export async function listPendingInvitationsForUser(
   userId: string
 ): Promise<OfflineActivationInvitation[]> {
@@ -193,6 +301,13 @@ export async function listPendingInvitationsForUser(
   return store.invitations
     .filter((row) => row.inviteeUserId === uid && row.status === "pending")
     .sort((a, b) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || "")));
+}
+
+export async function listPendingAgentInvitationsForUser(
+  userId: string
+): Promise<OfflineActivationInvitation[]> {
+  const invitations = await listPendingInvitationsForUser(userId);
+  return invitations.filter((row) => row.role === "Agent");
 }
 
 export async function listPendingSupervisorInvitations(): Promise<OfflineActivationInvitation[]> {
@@ -306,14 +421,32 @@ export async function respondToInvitation(input: {
       status: "declined",
       respondedAt,
     });
+    if (existing.role === "Agent") {
+      await updateAgentRegistrationStatusByInvite({
+        supervisorUserId: existing.invitedByUserId,
+        linkedUserId: inviteeUserId,
+        churchId: existing.churchId,
+        status: "declined",
+      });
+    }
     return { invitation: declined, platformRole: null };
   }
 
+  const targetRole: PlatformRole = existing.role === "Agent" ? "Agent" : "Supervisor";
   const savedRole = await upsertPlatformRole(
     inviteeUserId,
-    "Supervisor",
-    `Supervisor for ${existing.churchId} • KRISTO ${existing.inviteeKristoId} • accepted invitation ${existing.id}`
+    targetRole,
+    `${targetRole} for ${existing.churchId} • KRISTO ${existing.inviteeKristoId} • accepted invitation ${existing.id}`
   );
+
+  if (existing.role === "Agent") {
+    await updateAgentRegistrationStatusByInvite({
+      supervisorUserId: existing.invitedByUserId,
+      linkedUserId: inviteeUserId,
+      churchId: existing.churchId,
+      status: "accepted",
+    });
+  }
 
   const accepted = await persistInvitationResponse({
     invitationId,
@@ -322,6 +455,32 @@ export async function respondToInvitation(input: {
   });
 
   return { invitation: accepted, platformRole: savedRole.platformRole };
+}
+
+export async function respondToAgentInvitation(input: {
+  invitationId: string;
+  inviteeUserId: string;
+  action: "accept" | "decline";
+}): Promise<{ invitation: OfflineActivationInvitation; platformRole: PlatformRole | null }> {
+  const invitationId = String(input.invitationId || "").trim();
+  const inviteeUserId = String(input.inviteeUserId || "").trim();
+  if (!invitationId) throw new Error("invitationId required");
+  if (!inviteeUserId) throw new Error("Not authorized");
+
+  const existing = await getInvitationById(invitationId);
+  if (!existing) throw new Error("Invitation not found");
+  if (existing.role !== "Agent") {
+    throw new Error("Invitation is not an Agent invitation");
+  }
+  if (existing.inviteeUserId !== inviteeUserId) {
+    throw new Error("Not authorized to respond to this invitation");
+  }
+
+  return respondToInvitation({
+    invitationId,
+    inviteeUserId,
+    action: input.action,
+  });
 }
 
 export async function cancelSupervisorInvitation(input: {
@@ -358,6 +517,51 @@ export async function cancelSupervisorInvitation(input: {
   });
 
   console.log("KRISTO_SUPERVISOR_INVITE_CANCELLED", {
+    cancelledByUserId: String(input.cancelledByUserId || "").trim() || null,
+    invitationId: cancelled.id,
+    inviteeUserId: cancelled.inviteeUserId,
+  });
+
+  return cancelled;
+}
+
+export async function cancelAgentInvitation(input: {
+  invitationId?: string;
+  inviteeUserId?: string;
+  churchId?: string;
+  invitedByUserId?: string;
+  cancelledByUserId?: string;
+}): Promise<OfflineActivationInvitation | null> {
+  await ensureStoreReady();
+
+  const invitationId = String(input.invitationId || "").trim();
+  const inviteeUserId = String(input.inviteeUserId || "").trim();
+  const churchId = String(input.churchId || "").trim();
+  const invitedByUserId = String(input.invitedByUserId || "").trim();
+
+  let target: OfflineActivationInvitation | null = null;
+
+  if (invitationId) {
+    target = await getInvitationById(invitationId);
+  } else if (inviteeUserId && churchId && invitedByUserId) {
+    target = await findPendingAgentInvitation({ inviteeUserId, churchId, invitedByUserId });
+  }
+
+  if (!target) return null;
+  if (target.role !== "Agent") {
+    throw new Error("Invitation is not an Agent invitation");
+  }
+  if (target.status !== "pending") {
+    throw new Error(`Invitation is already ${target.status}`);
+  }
+
+  const cancelled = await persistInvitationResponse({
+    invitationId: target.id,
+    status: "cancelled",
+    respondedAt: new Date().toISOString(),
+  });
+
+  console.log("KRISTO_AGENT_INVITE_CANCELLED", {
     cancelledByUserId: String(input.cancelledByUserId || "").trim() || null,
     invitationId: cancelled.id,
     inviteeUserId: cancelled.inviteeUserId,

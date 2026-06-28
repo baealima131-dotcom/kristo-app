@@ -8,7 +8,7 @@ export type OfflineActivationInvitation = {
   inviteeKristoId: string;
   churchId: string;
   invitedByUserId: string;
-  role: "Supervisor";
+  role: "Supervisor" | "Agent";
   status: "pending" | "accepted" | "declined" | "cancelled";
   createdAt: string;
   respondedAt?: string | null;

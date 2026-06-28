@@ -4,7 +4,16 @@ import {
   updateOfflineActivationJsonFile,
 } from "@/app/api/_lib/store/offlineActivationDb";
 
-export type OfflineActivationAgentStatus = "active" | "inactive";
+export type OfflineActivationAgentStatus =
+  | "pending"
+  | "accepted"
+  | "declined"
+  | "inactive";
+
+export function isAcceptedAgentStatus(status: string): boolean {
+  const raw = String(status || "").trim();
+  return raw === "accepted" || raw === "active";
+}
 
 export type OfflineActivationAgent = {
   id: string;
@@ -30,9 +39,22 @@ function newAgentId(): string {
   return `oactagent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function normalizeAgentStatus(raw: unknown): OfflineActivationAgentStatus {
+  const statusRaw = String(raw || "accepted").trim();
+  if (statusRaw === "active") return "accepted";
+  if (
+    statusRaw === "pending" ||
+    statusRaw === "accepted" ||
+    statusRaw === "declined" ||
+    statusRaw === "inactive"
+  ) {
+    return statusRaw;
+  }
+  return "accepted";
+}
+
 function normalizeAgent(raw: Partial<OfflineActivationAgent>): OfflineActivationAgent {
-  const statusRaw = String(raw.status || "active").trim();
-  const status: OfflineActivationAgentStatus = statusRaw === "inactive" ? "inactive" : "active";
+  const status = normalizeAgentStatus(raw.status);
   return {
     id: String(raw.id || "").trim(),
     supervisorUserId: String(raw.supervisorUserId || "").trim(),
@@ -137,7 +159,7 @@ export async function createSupervisorAgent(input: {
     churchId,
     fullName,
     phone: String(input.phone || "").trim(),
-    status: input.status || "active",
+    status: input.status || "pending",
     avatarUrl: input.avatarUrl,
     linkedUserId,
     createdAt: now,
@@ -219,4 +241,41 @@ export async function resolveAgentDisplayName(agentId: string): Promise<string |
   const store = await readStore();
   const agent = store.agents.find((row) => row.id === id);
   return agent?.fullName || undefined;
+}
+
+export async function updateAgentRegistrationStatusByInvite(input: {
+  supervisorUserId: string;
+  linkedUserId: string;
+  churchId: string;
+  status: OfflineActivationAgentStatus;
+}): Promise<OfflineActivationAgent | null> {
+  const supervisorUserId = String(input.supervisorUserId || "").trim();
+  const linkedUserId = String(input.linkedUserId || "").trim();
+  const churchId = String(input.churchId || "").trim();
+  if (!supervisorUserId || !linkedUserId || !churchId) return null;
+
+  let updated: OfflineActivationAgent | null = null;
+  await updateOfflineActivationJsonFile<AgentStore>(
+    STORE_FILE,
+    (current) => {
+      const agents = Array.isArray(current?.agents) ? current.agents.map((row) => normalizeAgent(row)) : [];
+      const idx = agents.findIndex(
+        (row) =>
+          row.supervisorUserId === supervisorUserId &&
+          String(row.linkedUserId || "").trim() === linkedUserId &&
+          String(row.churchId || "").trim() === churchId
+      );
+      if (idx < 0) return { agents };
+      updated = normalizeAgent({
+        ...agents[idx],
+        status: input.status,
+        updatedAt: new Date().toISOString(),
+      });
+      agents[idx] = updated;
+      return { agents };
+    },
+    { agents: [] }
+  );
+
+  return updated;
 }
