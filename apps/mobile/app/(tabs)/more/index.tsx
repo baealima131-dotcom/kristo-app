@@ -124,14 +124,6 @@ const ITEMS: Item[] = [
     href: "/more/media",
   },
   {
-    key: "live_slots",
-    title: "Live Slots",
-    sub: "Claim • schedule • go live",
-    iconLib: "ion",
-    icon: "radio",
-    href: "/more/live-slots",
-  },
-  {
     key: "kristo_guide",
     title: "Kr. Guide",
     sub: "Rules • Safety • Help",
