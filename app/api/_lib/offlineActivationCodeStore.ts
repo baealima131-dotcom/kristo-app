@@ -1,3 +1,4 @@
+import { listAgentsByLinkedUserId } from "@/app/api/_lib/offlineActivationAgentStore";
 import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
 import { getChurchById } from "@/app/api/_lib/churches";
 import { getProfile } from "@/app/api/auth/_lib/profile";
@@ -1020,6 +1021,301 @@ export async function getSupervisorWorkspace(supervisorUserId: string) {
     stats,
     batches,
     codes: supervisorCodes,
+  };
+}
+
+export type AgentWorkspaceStats = {
+  assignedCodes: number;
+  availableCodes: number;
+  redeemedCodes: number;
+  remainingCodes: number;
+};
+
+export type AgentChurchAssignment = {
+  churchId: string;
+  churchName: string;
+  agentId: string;
+  kristoId: string;
+  status: "active" | "inactive";
+  assignedCodes: number;
+  remainingCodes: number;
+  redeemedCodes: number;
+};
+
+function filterCodesForAgentIds(codes: ActivationCode[], agentIds: string[]): ActivationCode[] {
+  const ids = new Set(agentIds.map((id) => String(id || "").trim()).filter(Boolean));
+  if (ids.size === 0) return [];
+  return codes.filter((code) => ids.has(String(code.assignedAgentUserId || "").trim()));
+}
+
+export function computeAgentWorkspaceStats(
+  codes: ActivationCode[],
+  agentIds: string[]
+): AgentWorkspaceStats {
+  const mine = filterCodesForAgentIds(codes, agentIds);
+  const availableCodes = mine.filter((code) => code.status === "assigned_to_agent").length;
+  const redeemedCodes = mine.filter((code) => code.status === "redeemed").length;
+  return {
+    assignedCodes: mine.length,
+    availableCodes,
+    redeemedCodes,
+    remainingCodes: availableCodes,
+  };
+}
+
+export function buildAgentInventoryBatches(
+  codes: ActivationCode[],
+  agentIds: string[]
+): SupervisorInventoryBatch[] {
+  const mine = filterCodesForAgentIds(codes, agentIds);
+  const byBatch = new Map<string, SupervisorInventoryBatch>();
+
+  for (const code of mine) {
+    const batchId = String(code.batchId || "unknown");
+    const existing =
+      byBatch.get(batchId) ||
+      ({
+        batchId,
+        countryCode: code.countryCode,
+        durationMonths: code.durationMonths,
+        total: 0,
+        remaining: 0,
+        assigned: 0,
+        redeemed: 0,
+        createdAt: code.createdAt,
+      } satisfies SupervisorInventoryBatch);
+
+    existing.total += 1;
+    if (code.status === "assigned_to_agent") existing.remaining += 1;
+    if (code.status === "redeemed") existing.redeemed += 1;
+    if (Date.parse(String(code.createdAt || "")) < Date.parse(String(existing.createdAt || ""))) {
+      existing.createdAt = code.createdAt;
+    }
+    byBatch.set(batchId, existing);
+  }
+
+  return [...byBatch.values()].sort(
+    (a, b) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || ""))
+  );
+}
+
+export function buildAgentCodeActivity(
+  codes: ActivationCode[],
+  agentIds: string[],
+  churchNameById: Record<string, string>
+): SupervisorCodeActivityItem[] {
+  const mine = filterCodesForAgentIds(codes, agentIds);
+  const events: SupervisorCodeActivityItem[] = [];
+
+  for (const code of mine) {
+    if (code.assignedAgentAt) {
+      events.push({
+        id: `${code.id}-received`,
+        type: "received",
+        title: "Codes received from Supervisor",
+        subtitle: code.code,
+        code: code.code,
+        occurredAt: String(code.assignedAgentAt),
+      });
+    }
+    if (code.redeemedAt) {
+      const churchId = String(code.redeemedByChurchId || code.deliveredToChurchId || "").trim();
+      const churchName = churchNameById[churchId] || churchId || "—";
+      events.push({
+        id: `${code.id}-redeemed`,
+        type: "redeemed",
+        title: `Redeemed by ${churchName}`,
+        subtitle: code.code,
+        code: code.code,
+        occurredAt: String(code.redeemedAt),
+      });
+    }
+    if (code.status === "disabled") {
+      events.push({
+        id: `${code.id}-expired`,
+        type: "expired",
+        title: "Code expired",
+        subtitle: code.code,
+        code: code.code,
+        occurredAt: String(code.redeemedAt || code.assignedAgentAt || code.createdAt),
+      });
+    }
+  }
+
+  return events.sort((a, b) => Date.parse(String(b.occurredAt || "")) - Date.parse(String(a.occurredAt || "")));
+}
+
+export async function getAgentWorkspace(agentUserId: string) {
+  const uid = String(agentUserId || "").trim();
+  if (!uid) throw new Error("agentUserId required");
+
+  const role = await getPlatformRole(uid);
+  if (role !== "Agent") throw new Error("Agent access required");
+
+  const registrations = await listAgentsByLinkedUserId(uid);
+  const agentIds = registrations.map((agent) => agent.id);
+
+  const store = await readStore();
+  const codes = flattenCodes(store);
+  const stats = computeAgentWorkspaceStats(codes, agentIds);
+  const batches = buildAgentInventoryBatches(codes, agentIds);
+  const agentCodes = filterCodesForAgentIds(codes, agentIds).sort(
+    (a, b) => Date.parse(String(b.assignedAgentAt || b.createdAt || "")) - Date.parse(String(a.assignedAgentAt || a.createdAt || ""))
+  );
+
+  const churches: AgentChurchAssignment[] = [];
+  const churchNameById: Record<string, string> = {};
+
+  for (const agent of registrations) {
+    const churchId = String(agent.churchId || "").trim();
+    const church = churchId ? await getChurchById(churchId).catch(() => null) : null;
+    const churchName = String(church?.name || churchId || "Church").trim();
+    if (churchId) churchNameById[churchId] = churchName;
+    const agentStats = computeAgentCodeStats(codes, agent.id);
+    churches.push({
+      churchId,
+      churchName,
+      agentId: agent.id,
+      kristoId: agent.kristoId,
+      status: agent.status,
+      assignedCodes: agentStats.assignedCodes,
+      remainingCodes: agentStats.remainingCodes,
+      redeemedCodes: agentStats.redeemedCodes,
+    });
+  }
+
+  const activity = buildAgentCodeActivity(codes, agentIds, churchNameById);
+
+  const profile = await getProfile(uid).catch(() => null);
+  const primaryChurchId = churches[0]?.churchId;
+
+  return {
+    profile: {
+      userId: uid,
+      fullName: String(profile?.fullName || "").trim() || undefined,
+      kristoId: String(profile?.userCode || "").trim().toUpperCase() || undefined,
+      avatarUrl: String(profile?.avatarUrl || "").trim() || undefined,
+      churchId: primaryChurchId,
+    },
+    stats,
+    churches,
+    batches,
+    codes: agentCodes,
+    activity,
+    registrations,
+  };
+}
+
+function normalizeActivationCodeInput(value: unknown): string {
+  return String(value || "").trim().toUpperCase();
+}
+
+export type ActivateChurchWithAgentCodeInput = {
+  agentUserId: string;
+  churchId: string;
+  activationCode: string;
+};
+
+export type ActivateChurchWithAgentCodeResult = {
+  code: ActivationCode;
+  church: { churchId: string; churchName: string };
+  redeemedByAgentId: string;
+  redeemedByUserId: string;
+};
+
+export async function activateChurchWithAgentCode(
+  input: ActivateChurchWithAgentCodeInput
+): Promise<ActivateChurchWithAgentCodeResult> {
+  const agentUserId = String(input.agentUserId || "").trim();
+  const churchId = normalizeMembershipChurchId(input.churchId);
+  const codeToken = normalizeActivationCodeInput(input.activationCode);
+
+  if (!agentUserId) throw new Error("agentUserId required");
+  if (!churchId) throw new Error("churchId required");
+  if (!codeToken) throw new Error("activationCode required");
+
+  const role = await getPlatformRole(agentUserId);
+  if (role !== "Agent") throw new Error("Agent access required");
+
+  const registrations = await listAgentsByLinkedUserId(agentUserId);
+  const agentIds = new Set(registrations.map((agent) => agent.id));
+  if (agentIds.size === 0) throw new Error("No agent registration found for this user");
+
+  const church = await getChurchById(churchId);
+  if (!church) throw new Error("Church not found");
+
+  const redeemedAt = new Date().toISOString();
+  let updatedCode: ActivationCode | null = null;
+  let redeemedByAgentId = "";
+
+  await updateJsonFile<OfflineActivationCodeStore>(
+    STORE_FILE,
+    (current) => {
+      const store: OfflineActivationCodeStore = {
+        batches: Array.isArray(current?.batches)
+          ? current.batches.map((batch) => ({
+              ...batch,
+              codes: Array.isArray(batch.codes) ? batch.codes.map((code) => normalizeActivationCode(code)) : [],
+            }))
+          : [],
+      };
+
+      let match: { batchIndex: number; codeIndex: number; code: ActivationCode } | null = null;
+
+      store.batches.forEach((batch, batchIndex) => {
+        (batch.codes || []).forEach((code, codeIndex) => {
+          if (match) return;
+          if (normalizeActivationCodeInput(code.code) !== codeToken) return;
+          match = { batchIndex, codeIndex, code };
+        });
+      });
+
+      if (!match) throw new Error("Activation code not found");
+
+      const { batchIndex, codeIndex, code } = match;
+      const assignedAgentId = String(code.assignedAgentUserId || "").trim();
+
+      if (!assignedAgentId || !agentIds.has(assignedAgentId)) {
+        throw new Error("Activation code is not assigned to you");
+      }
+      if (code.status === "redeemed") throw new Error("Activation code has already been redeemed");
+      if (code.status === "disabled") throw new Error("Activation code is expired or disabled");
+      if (code.status !== "assigned_to_agent") {
+        throw new Error("Activation code is not available for redemption");
+      }
+
+      redeemedByAgentId = assignedAgentId;
+      updatedCode = normalizeActivationCode({
+        ...code,
+        status: "redeemed",
+        redeemedAt,
+        redeemedByChurchId: churchId,
+        redeemedByUserId: agentUserId,
+        deliveredToChurchId: churchId,
+      });
+
+      store.batches[batchIndex].codes[codeIndex] = updatedCode;
+      return store;
+    },
+    { batches: [] }
+  );
+
+  if (!updatedCode) throw new Error("Failed to redeem activation code");
+
+  const churchName = String(church.name || churchId).trim() || churchId;
+
+  console.log("KRISTO_AGENT_ACTIVATE_CHURCH", {
+    agentUserId,
+    redeemedByAgentId,
+    churchId,
+    codeId: updatedCode.id,
+  });
+
+  return {
+    code: updatedCode,
+    church: { churchId, churchName },
+    redeemedByAgentId,
+    redeemedByUserId: agentUserId,
   };
 }
 

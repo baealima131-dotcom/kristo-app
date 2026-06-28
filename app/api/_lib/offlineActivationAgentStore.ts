@@ -50,6 +50,15 @@ async function readStore(): Promise<AgentStore> {
   return { agents };
 }
 
+export async function listAgentsByLinkedUserId(linkedUserId: string): Promise<OfflineActivationAgent[]> {
+  const uid = String(linkedUserId || "").trim();
+  if (!uid) return [];
+  const store = await readStore();
+  return store.agents
+    .filter((row) => String(row.linkedUserId || "").trim() === uid)
+    .sort((a, b) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || "")));
+}
+
 export async function listSupervisorAgents(supervisorUserId: string): Promise<OfflineActivationAgent[]> {
   const uid = String(supervisorUserId || "").trim();
   if (!uid) return [];
