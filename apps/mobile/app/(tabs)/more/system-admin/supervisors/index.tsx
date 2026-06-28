@@ -196,7 +196,7 @@ export default function SupervisorsScreen() {
     [supervisors]
   );
 
-  const loadData = React.useCallback(async () => {
+  const loadData = React.useCallback(async (fresh = true) => {
     if (!allowed) {
       setLoading(false);
       return;
@@ -204,9 +204,16 @@ export default function SupervisorsScreen() {
     setError("");
     setLoading(true);
     try {
-      const [list, dashboard] = await Promise.all([fetchSupervisors(), fetchActivationDashboard()]);
-      setSupervisors(list);
-      setAvailableUnassigned(dashboard.stats.availableUnassigned);
+      const [supervisorRes, dashboard] = await Promise.all([
+        fetchSupervisors({ fresh }),
+        fetchActivationDashboard({ fresh }),
+      ]);
+      setSupervisors(supervisorRes.supervisors);
+      setAvailableUnassigned(
+        supervisorRes.availableUnassigned ??
+          dashboard.stats.availableUnassigned ??
+          0
+      );
     } catch (e: any) {
       setError(String(e?.message || "Failed to load supervisors"));
     } finally {
@@ -216,7 +223,7 @@ export default function SupervisorsScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      loadData();
+      loadData(true);
     }, [loadData])
   );
 
@@ -237,7 +244,7 @@ export default function SupervisorsScreen() {
       setShowAddModal(false);
       setAddKristoId("");
       setAddChurchId("");
-      await loadData();
+      await loadData(true);
       if (result.outcome === "alreadySupervisor") {
         Alert.alert("Already supervisor", "This user is already an active Supervisor.");
         return;
@@ -274,7 +281,7 @@ export default function SupervisorsScreen() {
       const result = await assignCodesToSupervisor(assignTarget.userId, qty);
       setAssignTarget(null);
       setAssignQuantity("10");
-      await loadData();
+      await loadData(true);
       Alert.alert("Codes assigned", `${result.assignedCount} codes assigned to supervisor.`);
     } catch (e: any) {
       Alert.alert("Assign failed", String(e?.message || "Failed"));
@@ -302,7 +309,7 @@ export default function SupervisorsScreen() {
     setDeletingId(rowKey);
     try {
       const result = await deleteSupervisor({ userId: row.userId, invitationId: row.invitationId });
-      await loadData();
+      await loadData(true);
       if (result.outcome === "invitation_cancelled") {
         Alert.alert("Invitation cancelled", "The supervisor invitation has been removed.");
       } else {

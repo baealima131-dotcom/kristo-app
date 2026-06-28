@@ -85,6 +85,23 @@ function clearActivationAdminCache() {
   clearResponseCacheForRequest("GET", "/api/offline-activation/codes", userId);
 }
 
+export function invalidateActivationAdminCache() {
+  clearActivationAdminCache();
+}
+
+type ActivationFetchOptions = {
+  /** Bypass in-flight dedupe/cache and read latest backend values. */
+  fresh?: boolean;
+};
+
+function activationTraffic(screen: string, fresh?: boolean) {
+  if (fresh) {
+    clearActivationAdminCache();
+    return { screen, dedupe: false as const };
+  }
+  return { screen };
+}
+
 function buildActivationRequestHeaders(path: string) {
   const session = getSessionSync();
   const userId = String(session?.userId || "").trim();
@@ -121,16 +138,17 @@ function buildActivationRequestHeaders(path: string) {
   return headers;
 }
 
-export async function fetchActivationCodes(limit = 200): Promise<ActivationCodesListResponse> {
+export async function fetchActivationCodes(
+  limit = 200,
+  options?: ActivationFetchOptions
+): Promise<ActivationCodesListResponse> {
   const path = `/api/offline-activation/codes?limit=${encodeURIComponent(String(limit))}`;
-  console.log("KRISTO_ACTIVATION_CODES_LIST_LOAD", { limit });
+  console.log("KRISTO_ACTIVATION_CODES_LIST_LOAD", { limit, fresh: Boolean(options?.fresh) });
 
   const res = await apiGet<ActivationCodesListResponse | { ok: false; error: string }>(
     path,
     { headers: buildActivationRequestHeaders(path) },
-    {
-      screen: "system-admin-subscription-codes",
-    }
+    activationTraffic("system-admin-subscription-codes", options?.fresh)
   );
 
   if (!res || (res as any).ok === false) {
@@ -211,14 +229,16 @@ export type SupervisorSummary = {
   note?: string;
 };
 
-export async function fetchActivationDashboard(): Promise<{ stats: ActivationDashboardStats }> {
+export async function fetchActivationDashboard(
+  options?: ActivationFetchOptions
+): Promise<{ stats: ActivationDashboardStats }> {
   const path = "/api/offline-activation/dashboard";
-  console.log("KRISTO_ACTIVATION_DASHBOARD_LOAD");
+  console.log("KRISTO_ACTIVATION_DASHBOARD_LOAD", { fresh: Boolean(options?.fresh) });
 
   const res = await apiGet<{ ok: true; stats: ActivationDashboardStats } | { ok: false; error: string }>(
     path,
     { headers: buildActivationRequestHeaders(path) },
-    { screen: "system-admin-dashboard" }
+    activationTraffic("system-admin-dashboard", options?.fresh)
   );
 
   if (!res || (res as any).ok === false) {
@@ -234,19 +254,19 @@ export async function fetchActivationDashboard(): Promise<{ stats: ActivationDas
   return { stats: (res as any).stats };
 }
 
-export async function fetchSupervisors(): Promise<{
+export async function fetchSupervisors(options?: ActivationFetchOptions): Promise<{
   supervisors: SupervisorSummary[];
   availableUnassigned: number;
 }> {
   const path = "/api/offline-activation/supervisors";
-  console.log("KRISTO_SUPERVISORS_LIST_LOAD");
+  console.log("KRISTO_SUPERVISORS_LIST_LOAD", { fresh: Boolean(options?.fresh) });
 
   const res = await apiGet<
     { ok: true; supervisors: SupervisorSummary[]; availableUnassigned?: number } | { ok: false; error: string }
   >(
     path,
     { headers: buildActivationRequestHeaders(path) },
-    { screen: "system-admin-supervisors" }
+    activationTraffic("system-admin-supervisors", options?.fresh)
   );
 
   if (!res || (res as any).ok === false) {
@@ -307,6 +327,8 @@ export async function addSupervisor(input: {
       kristoId: supervisor?.kristoId || null,
       churchId: supervisor?.churchId || null,
     });
+
+    clearActivationAdminCache();
 
     const invitationStatus = supervisor?.invitationStatus === "accepted" ? "accepted" : "pending";
 
@@ -406,6 +428,8 @@ export async function deleteSupervisor(input: {
       outcome: (res as any).outcome,
       releasedCodes: (res as any).releasedCodes,
     });
+
+    clearActivationAdminCache();
 
     return {
       outcome: (res as any).outcome,

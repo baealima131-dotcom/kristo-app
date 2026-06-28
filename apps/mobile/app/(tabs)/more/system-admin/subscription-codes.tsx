@@ -31,6 +31,7 @@ import {
   ACTIVATION_DURATION_OPTIONS,
   fetchActivationCodes,
   generateActivationCodes,
+  isAssignableActivationCode,
   type ActivationCode,
   type ActivationCodeBatch,
 } from "@/src/lib/offlineActivationCodesApi";
@@ -130,7 +131,7 @@ function qrImageUri(code: string) {
 
 function matchesFilter(code: ActivationCode, filter: CodeFilter) {
   if (filter === "all") return true;
-  if (filter === "available") return code.status === "available";
+  if (filter === "available") return isAssignableActivationCode(code);
   if (filter === "assigned")
     return code.status === "assigned_to_supervisor" || code.status === "assigned_to_agent";
   if (filter === "redeemed") return code.status === "redeemed";
@@ -346,6 +347,8 @@ export default function SubscriptionActivationCodesScreen() {
     batches: 0,
     codes: 0,
     available: 0,
+    availableUnassigned: 0,
+    assignedToSupervisors: 0,
     disabled: 0,
     redeemed: 0,
   });
@@ -395,7 +398,7 @@ export default function SubscriptionActivationCodesScreen() {
     ]).start(() => setGenerateSuccess(false));
   }, [generateSuccess, successAnim]);
 
-  const loadCodes = React.useCallback(async () => {
+  const loadCodes = React.useCallback(async (fresh = true) => {
     if (!allowed) {
       setLoading(false);
       return;
@@ -403,10 +406,19 @@ export default function SubscriptionActivationCodesScreen() {
     setError("");
     setLoading(true);
     try {
-      const res = await fetchActivationCodes(200);
+      const res = await fetchActivationCodes(200, { fresh });
       setBatches(Array.isArray(res.batches) ? res.batches : []);
       setCodes(Array.isArray(res.codes) ? res.codes : []);
-      setTotals(res.totals || { batches: 0, codes: 0, available: 0, disabled: 0, redeemed: 0 });
+      const t = res.totals;
+      setTotals({
+        batches: t?.batches ?? 0,
+        codes: t?.codes ?? 0,
+        available: t?.available ?? 0,
+        availableUnassigned: t?.availableUnassigned ?? t?.available ?? 0,
+        assignedToSupervisors: t?.assignedToSupervisors ?? 0,
+        disabled: t?.disabled ?? 0,
+        redeemed: t?.redeemed ?? 0,
+      });
     } catch (e: any) {
       setError(String(e?.message || "Failed to load codes"));
     } finally {
@@ -416,19 +428,17 @@ export default function SubscriptionActivationCodesScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      loadCodes();
+      loadCodes(true);
     }, [loadCodes])
   );
 
   const codeAnalytics = React.useMemo(() => {
-    const available = codes.filter((c) => c.status === "available").length;
-    const assigned = codes.filter(
-      (c) => c.status === "assigned_to_supervisor" || c.status === "assigned_to_agent"
-    ).length;
-    const redeemed = codes.filter((c) => c.status === "redeemed").length;
-    const expired = codes.filter((c) => c.status === "disabled").length;
+    const available = Number(totals.availableUnassigned ?? totals.available ?? 0);
+    const assigned = Number(totals.assignedToSupervisors ?? 0);
+    const redeemed = Number(totals.redeemed ?? 0);
+    const expired = Number(totals.disabled ?? 0);
     return { available, assigned, redeemed, expired };
-  }, [codes]);
+  }, [totals]);
 
   const filteredCodes = React.useMemo(() => {
     const q = String(searchQuery || "")
@@ -468,7 +478,7 @@ export default function SubscriptionActivationCodesScreen() {
       await generateActivationCodes({ countryCode, durationMonths, quantity: qty });
       setGenerateSuccess(true);
       setShowForm(false);
-      await loadCodes();
+      await loadCodes(true);
     } catch (e: any) {
       setError(String(e?.message || "Failed to generate codes"));
     } finally {
