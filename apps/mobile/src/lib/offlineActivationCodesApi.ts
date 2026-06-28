@@ -1,7 +1,9 @@
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
+import { resolveApiBase } from "@/src/lib/kristoEnv";
 import { buildKristoRequestHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
+import { clearResponseCacheForRequest } from "@/src/lib/kristoTraffic";
 
 export type ActivationCodeStatus =
   | "available"
@@ -67,6 +69,22 @@ export type GenerateActivationCodesResponse = {
 export const ACTIVATION_COUNTRY_OPTIONS = ["BDI", "CD", "TZ", "US"] as const;
 export const ACTIVATION_DURATION_OPTIONS = [1, 3, 6, 12] as const;
 
+/** Matches backend assignable pool: not assigned, redeemed, or disabled. */
+export function isAssignableActivationCode(code: ActivationCode): boolean {
+  if (code.status === "redeemed" || code.status === "disabled") return false;
+  if (String(code.assignedSupervisorUserId || "").trim()) return false;
+  if (String(code.assignedAgentUserId || "").trim()) return false;
+  return true;
+}
+
+function clearActivationAdminCache() {
+  const session = getSessionSync();
+  const userId = String(session?.userId || "").trim();
+  clearResponseCacheForRequest("GET", "/api/offline-activation/dashboard", userId);
+  clearResponseCacheForRequest("GET", "/api/offline-activation/supervisors", userId);
+  clearResponseCacheForRequest("GET", "/api/offline-activation/codes", userId);
+}
+
 function buildActivationRequestHeaders(path: string) {
   const session = getSessionSync();
   const userId = String(session?.userId || "").trim();
@@ -77,6 +95,7 @@ function buildActivationRequestHeaders(path: string) {
 
   console.log("KRISTO_ACTIVATION_CODES_AUTH_CONTEXT", {
     path: String(path || "").split("?")[0],
+    apiBase: resolveApiBase(),
     userId: userId || null,
     role: role || null,
     churchId: churchId || null,
@@ -148,10 +167,18 @@ export async function generateActivationCodes(
     throw new Error(String((res as any)?.error || "Failed to generate activation codes"));
   }
 
+  const payload = res as GenerateActivationCodesResponse & { _storeDebug?: unknown };
+  console.log("KRISTO_ACTIVATION_CODES_GENERATE_STORE_DEBUG", {
+    apiBase: resolveApiBase(),
+    storeDebug: payload._storeDebug || null,
+  });
+
   console.log("KRISTO_ACTIVATION_CODES_GENERATE_SUCCESS", {
     batchId: (res as GenerateActivationCodesResponse).batch?.batchId,
     quantity: (res as GenerateActivationCodesResponse).codes?.length || 0,
   });
+
+  clearActivationAdminCache();
 
   return res as GenerateActivationCodesResponse;
 }
@@ -198,14 +225,25 @@ export async function fetchActivationDashboard(): Promise<{ stats: ActivationDas
     throw new Error(String((res as any)?.error || "Failed to load activation dashboard"));
   }
 
+  console.log("KRISTO_ACTIVATION_DASHBOARD_STORE_DEBUG", {
+    apiBase: resolveApiBase(),
+    storeDebug: (res as any)?._storeDebug || null,
+    stats: (res as any)?.stats || null,
+  });
+
   return { stats: (res as any).stats };
 }
 
-export async function fetchSupervisors(): Promise<SupervisorSummary[]> {
+export async function fetchSupervisors(): Promise<{
+  supervisors: SupervisorSummary[];
+  availableUnassigned: number;
+}> {
   const path = "/api/offline-activation/supervisors";
   console.log("KRISTO_SUPERVISORS_LIST_LOAD");
 
-  const res = await apiGet<{ ok: true; supervisors: SupervisorSummary[] } | { ok: false; error: string }>(
+  const res = await apiGet<
+    { ok: true; supervisors: SupervisorSummary[]; availableUnassigned?: number } | { ok: false; error: string }
+  >(
     path,
     { headers: buildActivationRequestHeaders(path) },
     { screen: "system-admin-supervisors" }
@@ -215,7 +253,16 @@ export async function fetchSupervisors(): Promise<SupervisorSummary[]> {
     throw new Error(String((res as any)?.error || "Failed to load supervisors"));
   }
 
-  return Array.isArray((res as any).supervisors) ? (res as any).supervisors : [];
+  console.log("KRISTO_SUPERVISORS_LIST_STORE_DEBUG", {
+    apiBase: resolveApiBase(),
+    storeDebug: (res as any)?._storeDebug || null,
+    availableUnassigned: (res as any)?.availableUnassigned ?? null,
+  });
+
+  return {
+    supervisors: Array.isArray((res as any).supervisors) ? (res as any).supervisors : [],
+    availableUnassigned: Number((res as any).availableUnassigned || 0),
+  };
 }
 
 export async function addSupervisor(input: {
@@ -316,6 +363,8 @@ export async function assignCodesToSupervisor(
       supervisorUserId,
       assignedCount: (res as any).assignedCount,
     });
+
+    clearActivationAdminCache();
 
     return { assignedCount: Number((res as any).assignedCount || 0) };
   } catch (error: any) {

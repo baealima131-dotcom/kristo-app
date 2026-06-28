@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { listActivationCodes } from "@/app/api/_lib/offlineActivationCodeStore";
+import {
+  listActivationCodes,
+  readActivationCodeStoreForDebug,
+} from "@/app/api/_lib/offlineActivationCodeStore";
+import {
+  buildActivationStoreRouteDebug,
+  logActivationRouteDiagnostics,
+} from "@/app/api/_lib/offlineActivationStoreDiagnostics";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
@@ -18,17 +25,18 @@ export async function GET(req: NextRequest) {
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(limitRaw, 1000)) : 200;
 
   const result = await listActivationCodes(limit);
-
-  console.log("[KRISTO] activation codes list", {
-    userId: ctxOrRes.viewer.userId,
-    batches: result.totals.batches,
-    codes: result.totals.codes,
+  const store = await readActivationCodeStoreForDebug();
+  const storeDebug = buildActivationStoreRouteDebug("codes-list", store, {
+    limit,
+    totals: result.totals,
   });
+  logActivationRouteDiagnostics(storeDebug);
 
   return json({
     ok: true,
     batches: result.batches,
     codes: result.codes,
     totals: result.totals,
+    _storeDebug: storeDebug,
   });
 }

@@ -1,5 +1,10 @@
 import { listAgentsByLinkedUserId } from "@/app/api/_lib/offlineActivationAgentStore";
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  getOfflineActivationStoreDebugInfo,
+  OFFLINE_ACTIVATION_CODES_STORE_KEY,
+  readOfflineActivationJsonFile,
+  updateOfflineActivationJsonFile,
+} from "@/app/api/_lib/store/offlineActivationDb";
 import { getChurchById } from "@/app/api/_lib/churches";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
@@ -85,7 +90,7 @@ export type SupervisorSummary = {
   note?: string;
 };
 
-const STORE_FILE = "offline_activation_codes.json";
+const STORE_FILE = OFFLINE_ACTIVATION_CODES_STORE_KEY;
 
 export const ACTIVATION_COUNTRY_CODES = ["BDI", "CD", "TZ", "US"] as const;
 export type ActivationCountryCode = (typeof ACTIVATION_COUNTRY_CODES)[number];
@@ -139,6 +144,19 @@ export function normalizeActivationCode(raw: Partial<ActivationCode>): Activatio
     status = "assigned_to_supervisor";
   }
 
+  const assignedSupervisorUserId = raw.assignedSupervisorUserId ?? null;
+  const assignedAgentUserId = raw.assignedAgentUserId ?? null;
+
+  if (status !== "redeemed" && status !== "disabled") {
+    if (String(assignedAgentUserId || "").trim()) {
+      status = "assigned_to_agent";
+    } else if (String(assignedSupervisorUserId || "").trim()) {
+      status = "assigned_to_supervisor";
+    } else {
+      status = "available";
+    }
+  }
+
   return {
     id: String(raw.id || ""),
     code: String(raw.code || ""),
@@ -149,10 +167,10 @@ export function normalizeActivationCode(raw: Partial<ActivationCode>): Activatio
     createdAt: String(raw.createdAt || new Date().toISOString()),
     createdByUserId: String(raw.createdByUserId || ""),
     ...emptyAssignmentFields(),
-    assignedSupervisorUserId: raw.assignedSupervisorUserId ?? null,
+    assignedSupervisorUserId,
     assignedSupervisorAt: raw.assignedSupervisorAt ?? null,
     assignedBySystemAdminUserId: raw.assignedBySystemAdminUserId ?? null,
-    assignedAgentUserId: raw.assignedAgentUserId ?? null,
+    assignedAgentUserId,
     assignedAgentAt: raw.assignedAgentAt ?? null,
     assignedBySupervisorUserId: raw.assignedBySupervisorUserId ?? null,
     deliveredToChurchId: raw.deliveredToChurchId ?? null,
@@ -162,8 +180,20 @@ export function normalizeActivationCode(raw: Partial<ActivationCode>): Activatio
   };
 }
 
+/** Assignable pool: generated codes not yet assigned, redeemed, or disabled. */
+export function isAssignableActivationCode(code: ActivationCode): boolean {
+  if (code.status === "redeemed" || code.status === "disabled") return false;
+  if (String(code.assignedSupervisorUserId || "").trim()) return false;
+  if (String(code.assignedAgentUserId || "").trim()) return false;
+  return true;
+}
+
 export function isUnassignedAvailableCode(code: ActivationCode): boolean {
-  return code.status === "available" && !String(code.assignedSupervisorUserId || "").trim();
+  return isAssignableActivationCode(code);
+}
+
+export function countAssignableActivationCodes(codes: ActivationCode[]): number {
+  return codes.filter(isAssignableActivationCode).length;
 }
 
 export function computeSupervisorCodeStats(
@@ -235,7 +265,7 @@ export function isAllowedDurationMonths(value: unknown): value is ActivationDura
 }
 
 async function readStore(): Promise<OfflineActivationCodeStore> {
-  const rows = await readJsonFile<OfflineActivationCodeStore>(STORE_FILE, { batches: [] });
+  const rows = await readOfflineActivationJsonFile<OfflineActivationCodeStore>(STORE_FILE, { batches: [] });
   const batches = Array.isArray(rows?.batches) ? rows.batches : [];
   return {
     batches: batches.map((batch) => ({
@@ -243,6 +273,31 @@ async function readStore(): Promise<OfflineActivationCodeStore> {
       codes: Array.isArray(batch.codes) ? batch.codes.map((code) => normalizeActivationCode(code)) : [],
     })),
   };
+}
+
+/** Used by activation API routes for store diagnostics. */
+export async function readActivationCodeStoreForDebug(): Promise<OfflineActivationCodeStore> {
+  return readStore();
+}
+
+function logActivationCodeStoreSnapshot(
+  label: string,
+  store: OfflineActivationCodeStore,
+  extra?: Record<string, unknown>
+) {
+  const codes = flattenCodes(store);
+  const assignableCount = countAssignableActivationCodes(codes);
+  const availableStatusCount = codes.filter((code) => code.status === "available").length;
+
+  console.log(`[KRISTO] activation store ${label}`, {
+    ...getOfflineActivationStoreDebugInfo(STORE_FILE),
+    batchCount: store.batches.length,
+    totalCodeCount: codes.length,
+    assignableCount,
+    availableCount: availableStatusCount,
+    availableUnassigned: assignableCount,
+    ...extra,
+  });
 }
 
 function flattenCodes(store: OfflineActivationCodeStore): ActivationCode[] {
@@ -334,7 +389,7 @@ export async function generateActivationCodeBatch(
 
   let createdBatch: ActivationCodeBatch | null = null;
 
-  await updateJsonFile<OfflineActivationCodeStore>(
+  await updateOfflineActivationJsonFile<OfflineActivationCodeStore>(
     STORE_FILE,
     (current) => {
       const store: OfflineActivationCodeStore = {
@@ -380,6 +435,14 @@ export async function generateActivationCodeBatch(
     throw new Error("Failed to create batch");
   }
 
+  const verified = await readStore();
+  logActivationCodeStoreSnapshot("after-generate", verified, {
+    generatedBatchId: createdBatch.batchId,
+    generatedCount: createdBatch.codes.length,
+    firstGeneratedCodeStatus: createdBatch.codes[0]?.status || null,
+    firstGeneratedCode: createdBatch.codes[0]?.code || null,
+  });
+
   return {
     batch: createdBatch,
     codes: createdBatch.codes,
@@ -402,6 +465,7 @@ export type ActivationCodesListResult = {
 
 export async function listActivationCodes(limit = 200): Promise<ActivationCodesListResult> {
   const store = await readStore();
+  logActivationCodeStoreSnapshot("codes-list", store, { limit });
   const batches = [...store.batches].sort(
     (a, b) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || ""))
   );
@@ -411,11 +475,12 @@ export async function listActivationCodes(limit = 200): Promise<ActivationCodesL
     .sort((a, b) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || "")))
     .slice(0, Math.max(1, Math.min(limit, 1000)));
 
+  const assignableCount = countAssignableActivationCodes(allCodes);
   const totals = {
     batches: batches.length,
     codes: allCodes.length,
-    available: allCodes.filter((c) => c.status === "available").length,
-    availableUnassigned: allCodes.filter(isUnassignedAvailableCode).length,
+    available: assignableCount,
+    availableUnassigned: assignableCount,
     assignedToSupervisors: allCodes.filter(
       (c) => Boolean(c.assignedSupervisorUserId) && c.status !== "redeemed"
     ).length,
@@ -431,6 +496,7 @@ export async function getActivationDashboard(): Promise<{
 }> {
   const store = await readStore();
   const codes = flattenCodes(store);
+  logActivationCodeStoreSnapshot("dashboard-load", store);
   const supervisors = await listPlatformRoleUsers("Supervisor");
   const agents = await listPlatformRoleUsers("Agent");
 
@@ -439,9 +505,14 @@ export async function getActivationDashboard(): Promise<{
   };
 }
 
-export async function listSupervisorSummaries(): Promise<SupervisorSummary[]> {
+export async function listSupervisorSummaries(): Promise<{
+  supervisors: SupervisorSummary[];
+  availableUnassigned: number;
+}> {
   const store = await readStore();
   const codes = flattenCodes(store);
+  const availableUnassigned = countAssignableActivationCodes(codes);
+  logActivationCodeStoreSnapshot("supervisors-load", store, { availableUnassigned });
   const supervisors = await listPlatformRoleUsers("Supervisor");
 
   const rows: SupervisorSummary[] = await Promise.all(
@@ -497,7 +568,10 @@ export async function listSupervisorSummaries(): Promise<SupervisorSummary[]> {
     });
   }
 
-  return rows.sort((a, b) => Date.parse(String(b.updatedAt || "")) - Date.parse(String(a.updatedAt || "")));
+  return {
+    supervisors: rows.sort((a, b) => Date.parse(String(b.updatedAt || "")) - Date.parse(String(a.updatedAt || ""))),
+    availableUnassigned,
+  };
 }
 
 export async function getSupervisorDetail(supervisorUserId: string): Promise<{
@@ -512,7 +586,7 @@ export async function getSupervisorDetail(supervisorUserId: string): Promise<{
     throw new Error("User is not a Supervisor");
   }
 
-  const summaries = await listSupervisorSummaries();
+  const { supervisors: summaries } = await listSupervisorSummaries();
   let supervisor = summaries.find((row) => row.userId === uid);
   if (!supervisor) {
     const display = await resolveSupervisorDisplay(uid, undefined);
@@ -574,7 +648,15 @@ export async function assignCodesToSupervisor(
   const assignedAt = new Date().toISOString();
   let assignedCodes: ActivationCode[] = [];
 
-  await updateJsonFile<OfflineActivationCodeStore>(
+  const beforeStore = await readStore();
+  const beforeCodes = flattenCodes(beforeStore);
+  logActivationCodeStoreSnapshot("before-assign", beforeStore, {
+    assignableCodes: countAssignableActivationCodes(beforeCodes),
+    requestedQuantity: quantity,
+    supervisorUserId,
+  });
+
+  await updateOfflineActivationJsonFile<OfflineActivationCodeStore>(
     STORE_FILE,
     (current) => {
       const store: OfflineActivationCodeStore = {
@@ -587,7 +669,7 @@ export async function assignCodesToSupervisor(
       const availablePool: Array<{ batchIndex: number; codeIndex: number; code: ActivationCode }> = [];
       store.batches.forEach((batch, batchIndex) => {
         (batch.codes || []).forEach((code, codeIndex) => {
-          if (isUnassignedAvailableCode(code)) {
+          if (isAssignableActivationCode(code)) {
             availablePool.push({ batchIndex, codeIndex, code });
           }
         });
@@ -617,6 +699,12 @@ export async function assignCodesToSupervisor(
     { batches: [] }
   );
 
+  const afterStore = await readStore();
+  logActivationCodeStoreSnapshot("after-assign", afterStore, {
+    assignedCount: assignedCodes.length,
+    supervisorUserId,
+  });
+
   return {
     supervisorUserId,
     assignedCount: assignedCodes.length,
@@ -642,7 +730,7 @@ async function releaseSupervisorAssignedCodes(supervisorUserId: string): Promise
 
   let released = 0;
 
-  await updateJsonFile<OfflineActivationCodeStore>(
+  await updateOfflineActivationJsonFile<OfflineActivationCodeStore>(
     STORE_FILE,
     (current) => {
       const store: OfflineActivationCodeStore = {
@@ -938,7 +1026,7 @@ export async function assignCodesToAgent(input: AssignCodesToAgentInput): Promis
   const assignedAt = new Date().toISOString();
   let assignedCodes: ActivationCode[] = [];
 
-  await updateJsonFile<OfflineActivationCodeStore>(
+  await updateOfflineActivationJsonFile<OfflineActivationCodeStore>(
     STORE_FILE,
     (current) => {
       const store: OfflineActivationCodeStore = {
@@ -1248,7 +1336,7 @@ export async function activateChurchWithAgentCode(
   let updatedCode: ActivationCode | null = null;
   let redeemedByAgentId = "";
 
-  await updateJsonFile<OfflineActivationCodeStore>(
+  await updateOfflineActivationJsonFile<OfflineActivationCodeStore>(
     STORE_FILE,
     (current) => {
       const store: OfflineActivationCodeStore = {

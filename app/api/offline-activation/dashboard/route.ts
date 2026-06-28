@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { getActivationDashboard } from "@/app/api/_lib/offlineActivationCodeStore";
+import {
+  getActivationDashboard,
+  readActivationCodeStoreForDebug,
+} from "@/app/api/_lib/offlineActivationCodeStore";
+import {
+  buildActivationStoreRouteDebug,
+  logActivationRouteDiagnostics,
+} from "@/app/api/_lib/offlineActivationStoreDiagnostics";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
@@ -15,14 +22,15 @@ export async function GET(req: NextRequest) {
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const result = await getActivationDashboard();
-
-  console.log("[KRISTO] activation dashboard", {
-    userId: ctxOrRes.viewer.userId,
+  const store = await readActivationCodeStoreForDebug();
+  const storeDebug = buildActivationStoreRouteDebug("dashboard-load", store, {
     stats: result.stats,
   });
+  logActivationRouteDiagnostics(storeDebug);
 
   return json({
     ok: true,
     stats: result.stats,
+    _storeDebug: storeDebug,
   });
 }

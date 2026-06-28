@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { listSupervisorSummaries } from "@/app/api/_lib/offlineActivationCodeStore";
+import {
+  listSupervisorSummaries,
+  readActivationCodeStoreForDebug,
+} from "@/app/api/_lib/offlineActivationCodeStore";
+import {
+  buildActivationStoreRouteDebug,
+  logActivationRouteDiagnostics,
+} from "@/app/api/_lib/offlineActivationStoreDiagnostics";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
@@ -14,16 +21,19 @@ export async function GET(req: NextRequest) {
   const ctxOrRes = await guardPlatformOfflineActivation(req, ["System_Admin"]);
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
-  const supervisors = await listSupervisorSummaries();
-
-  console.log("[KRISTO] supervisors list", {
-    userId: ctxOrRes.viewer.userId,
-    count: supervisors.length,
+  const { supervisors, availableUnassigned } = await listSupervisorSummaries();
+  const store = await readActivationCodeStoreForDebug();
+  const storeDebug = buildActivationStoreRouteDebug("supervisors-load", store, {
+    availableUnassigned,
+    supervisorCount: supervisors.length,
   });
+  logActivationRouteDiagnostics(storeDebug);
 
   return json({
     ok: true,
     supervisors,
     count: supervisors.length,
+    availableUnassigned,
+    _storeDebug: storeDebug,
   });
 }

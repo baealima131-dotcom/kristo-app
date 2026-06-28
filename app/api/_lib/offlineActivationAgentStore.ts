@@ -1,4 +1,8 @@
-import { readJsonFile, updateJsonFile } from "@/app/api/_lib/store/fs";
+import {
+  OFFLINE_ACTIVATION_AGENTS_STORE_KEY,
+  readOfflineActivationJsonFile,
+  updateOfflineActivationJsonFile,
+} from "@/app/api/_lib/store/offlineActivationDb";
 
 export type OfflineActivationAgentStatus = "active" | "inactive";
 
@@ -20,7 +24,7 @@ type AgentStore = {
   agents: OfflineActivationAgent[];
 };
 
-const STORE_FILE = "offline_activation_agents.json";
+const STORE_FILE = OFFLINE_ACTIVATION_AGENTS_STORE_KEY;
 
 function newAgentId(): string {
   return `oactagent_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -45,7 +49,7 @@ function normalizeAgent(raw: Partial<OfflineActivationAgent>): OfflineActivation
 }
 
 async function readStore(): Promise<AgentStore> {
-  const rows = await readJsonFile<AgentStore>(STORE_FILE, { agents: [] });
+  const rows = await readOfflineActivationJsonFile<AgentStore>(STORE_FILE, { agents: [] });
   const agents = Array.isArray(rows?.agents) ? rows.agents.map((row) => normalizeAgent(row)) : [];
   return { agents };
 }
@@ -140,7 +144,7 @@ export async function createSupervisorAgent(input: {
     updatedAt: now,
   });
 
-  await updateJsonFile<AgentStore>(
+  await updateOfflineActivationJsonFile<AgentStore>(
     STORE_FILE,
     (current) => {
       const agents = Array.isArray(current?.agents) ? current.agents.map((row) => normalizeAgent(row)) : [];
@@ -165,7 +169,7 @@ export async function updateSupervisorAgent(input: {
   if (!supervisorUserId || !agentId) throw new Error("supervisorUserId and agentId required");
 
   let updated: OfflineActivationAgent | null = null;
-  await updateJsonFile<AgentStore>(
+  await updateOfflineActivationJsonFile<AgentStore>(
     STORE_FILE,
     (current) => {
       const agents = Array.isArray(current?.agents) ? current.agents.map((row) => normalizeAgent(row)) : [];
@@ -195,7 +199,7 @@ export async function deleteSupervisorAgent(supervisorUserId: string, agentId: s
   if (!uid || !id) return false;
 
   let removed = false;
-  await updateJsonFile<AgentStore>(
+  await updateOfflineActivationJsonFile<AgentStore>(
     STORE_FILE,
     (current) => {
       const agents = Array.isArray(current?.agents) ? current.agents.map((row) => normalizeAgent(row)) : [];

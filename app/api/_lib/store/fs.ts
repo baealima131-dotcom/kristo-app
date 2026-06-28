@@ -4,10 +4,11 @@ import path from "path";
 
 /**
  * ✅ Simple, safe JSON file store
- * - stores files under /data
+ * - stores files under /data (local) or /tmp/kristo-data (serverless)
  * - prevents path traversal
  * - atomic writes (write temp -> rename)
  * - per-file in-process lock to avoid concurrent writes
+ * - runtime file is canonical; bundled data/ is seeded once when runtime is missing
  */
 
 const DATA_DIR =
@@ -21,6 +22,15 @@ export function getKristoDataDir() {
 
 export function isKristoServerlessRuntime() {
   return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+}
+
+export function getJsonStoreDebugInfo(fileName: string) {
+  const safe = sanitizeFileName(fileName);
+  return {
+    runtimePath: path.join(DATA_DIR, safe),
+    bundledPath: bundledDataPath(safe),
+    serverless: isKristoServerlessRuntime(),
+  };
 }
 
 // In-process lock per file (good enough for single Next dev server process)
@@ -79,50 +89,87 @@ function bundledDataPath(fileName: string) {
   return path.join(process.cwd(), "data", sanitizeFileName(fileName));
 }
 
-export async function readJsonFile<T>(fileName: string, fallback: T): Promise<T> {
+async function writeRuntimeFileUnlocked<T>(filePath: string, data: T): Promise<void> {
+  const tmp = `${filePath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const content = JSON.stringify(data, null, 2);
+
+  await fs.writeFile(tmp, content, "utf8");
+  await fs.rename(tmp, filePath).catch(async () => {
+    try {
+      await fs.unlink(filePath);
+    } catch {}
+    await fs.rename(tmp, filePath);
+  });
+}
+
+/**
+ * Load the canonical runtime JSON file. If runtime is missing, seed it once from
+ * bundled data/ (when present) or fallback, then persist to runtime path.
+ */
+async function loadRuntimeJsonFile<T>(fileName: string, fallback: T): Promise<T> {
   await ensureDataDir();
   const filePath = resolvePath(fileName);
 
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return safeParseJson<T>(raw, fallback);
-  } catch (e: any) {
-    if (e?.code === "ENOENT") {
-      try {
-        const raw = await fs.readFile(bundledDataPath(fileName), "utf8");
-        return safeParseJson<T>(raw, fallback);
-      } catch {
+  return await withLock(filePath, async () => {
+    try {
+      const raw = await fs.readFile(filePath, "utf8");
+      return safeParseJson<T>(raw, fallback);
+    } catch (e: any) {
+      if (e?.code !== "ENOENT") {
+        console.warn("[KRISTO] store read runtime failed", {
+          fileName,
+          filePath,
+          code: e?.code,
+          message: e?.message,
+        });
         return fallback;
       }
     }
-    return fallback;
-  }
+
+    let seed: T = fallback;
+    let seedSource: "bundled" | "fallback" = "fallback";
+
+    try {
+      const raw = await fs.readFile(bundledDataPath(fileName), "utf8");
+      seed = safeParseJson<T>(raw, fallback);
+      seedSource = "bundled";
+    } catch {
+      seed = fallback;
+    }
+
+    await writeRuntimeFileUnlocked(filePath, seed);
+    console.log("[KRISTO] store runtime initialized", {
+      fileName,
+      filePath,
+      dataDir: DATA_DIR,
+      seedSource,
+    });
+
+    return seed;
+  });
+}
+
+export async function readJsonFile<T>(fileName: string, fallback: T): Promise<T> {
+  return loadRuntimeJsonFile(fileName, fallback);
 }
 
 export async function writeJsonFile<T>(fileName: string, data: T): Promise<void> {
   await ensureDataDir();
   const filePath = resolvePath(fileName);
 
-  try {
-    await withLock(filePath, async () => {
-      const tmp = `${filePath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const content = JSON.stringify(data, null, 2);
-
-      await fs.writeFile(tmp, content, "utf8");
-      await fs.rename(tmp, filePath).catch(async () => {
-        try {
-          await fs.unlink(filePath);
-        } catch {}
-        await fs.rename(tmp, filePath);
+  await withLock(filePath, async () => {
+    try {
+      await writeRuntimeFileUnlocked(filePath, data);
+    } catch (error: any) {
+      console.error("[KRISTO] writeJsonFile failed", {
+        fileName,
+        filePath,
+        code: error?.code,
+        message: error?.message,
       });
-    });
-  } catch (error: any) {
-    console.error("[KRISTO] writeJsonFile failed", {
-      fileName,
-      code: error?.code,
-      message: error?.message,
-    });
-  }
+      throw error;
+    }
+  });
 }
 
 export async function updateJsonFile<T>(
@@ -140,31 +187,43 @@ export async function updateJsonFile<T>(
       const raw = await fs.readFile(filePath, "utf8");
       cur = safeParseJson<T>(raw, fallback);
     } catch (e: any) {
-      if (e?.code !== "ENOENT") {
-        // ignore and use fallback
+      if (e?.code === "ENOENT") {
+        try {
+          const raw = await fs.readFile(bundledDataPath(fileName), "utf8");
+          cur = safeParseJson<T>(raw, fallback);
+        } catch {
+          cur = fallback;
+        }
+        await writeRuntimeFileUnlocked(filePath, cur);
+        console.log("[KRISTO] store runtime initialized", {
+          fileName,
+          filePath,
+          dataDir: DATA_DIR,
+          seedSource: cur === fallback ? "fallback" : "bundled",
+        });
+      } else {
+        console.warn("[KRISTO] store read runtime failed", {
+          fileName,
+          filePath,
+          code: e?.code,
+          message: e?.message,
+        });
         cur = fallback;
       }
     }
 
     const next = mutator(cur);
 
-    const tmp = `${filePath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const content = JSON.stringify(next, null, 2);
-
     try {
-      await fs.writeFile(tmp, content, "utf8");
-      await fs.rename(tmp, filePath).catch(async () => {
-        try {
-          await fs.unlink(filePath);
-        } catch {}
-        await fs.rename(tmp, filePath);
-      });
+      await writeRuntimeFileUnlocked(filePath, next);
     } catch (error: any) {
       console.error("[KRISTO] updateJsonFile write failed", {
         fileName,
+        filePath,
         code: error?.code,
         message: error?.message,
       });
+      throw error;
     }
 
     return next;

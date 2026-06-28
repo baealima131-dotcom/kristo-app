@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { assignCodesToSupervisor } from "@/app/api/_lib/offlineActivationCodeStore";
+import {
+  assignCodesToSupervisor,
+  readActivationCodeStoreForDebug,
+} from "@/app/api/_lib/offlineActivationCodeStore";
+import {
+  buildActivationStoreRouteDebug,
+  logActivationRouteDiagnostics,
+} from "@/app/api/_lib/offlineActivationStoreDiagnostics";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
@@ -25,11 +32,12 @@ export async function POST(req: NextRequest) {
     return json({ ok: false, error: "Quantity must be at least 1." }, { status: 400 });
   }
 
-  console.log("[KRISTO] supervisor assign codes start", {
-    byUserId: ctxOrRes.viewer.userId,
+  const beforeStore = await readActivationCodeStoreForDebug();
+  const beforeDebug = buildActivationStoreRouteDebug("assign-codes-before", beforeStore, {
     supervisorUserId,
-    quantity: Math.floor(quantity),
+    requestedQuantity: Math.floor(quantity),
   });
+  logActivationRouteDiagnostics(beforeDebug);
 
   try {
     const result = await assignCodesToSupervisor({
@@ -38,25 +46,27 @@ export async function POST(req: NextRequest) {
       assignedBySystemAdminUserId: ctxOrRes.viewer.userId,
     });
 
-    console.log("[KRISTO] supervisor assign codes success", {
-      byUserId: ctxOrRes.viewer.userId,
+    const afterStore = await readActivationCodeStoreForDebug();
+    const afterDebug = buildActivationStoreRouteDebug("assign-codes-after", afterStore, {
       supervisorUserId,
       assignedCount: result.assignedCount,
     });
+    logActivationRouteDiagnostics(afterDebug);
 
     return json({
       ok: true,
       supervisorUserId: result.supervisorUserId,
       assignedCount: result.assignedCount,
       codes: result.codes,
+      _storeDebug: { before: beforeDebug, after: afterDebug },
     });
   } catch (error: any) {
     const message = String(error?.message || "Failed to assign codes");
-    console.warn("[KRISTO] supervisor assign codes failed", {
-      byUserId: ctxOrRes.viewer.userId,
-      supervisorUserId,
+    console.warn("[KRISTO] activation route assign-codes-after", {
+      ok: false,
       error: message,
+      before: beforeDebug,
     });
-    return json({ ok: false, error: message }, { status: 400 });
+    return json({ ok: false, error: message, _storeDebug: { before: beforeDebug } }, { status: 400 });
   }
 }

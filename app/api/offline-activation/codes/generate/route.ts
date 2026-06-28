@@ -5,9 +5,14 @@ import {
   generateActivationCodeBatch,
   isAllowedCountryCode,
   isAllowedDurationMonths,
+  readActivationCodeStoreForDebug,
   type ActivationCountryCode,
   type ActivationDurationMonths,
 } from "@/app/api/_lib/offlineActivationCodeStore";
+import {
+  buildActivationStoreRouteDebug,
+  logActivationRouteDiagnostics,
+} from "@/app/api/_lib/offlineActivationStoreDiagnostics";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
 export const runtime = "nodejs";
@@ -43,18 +48,19 @@ export async function POST(req: NextRequest) {
       createdByUserId: ctxOrRes.viewer.userId,
     });
 
-    console.log("[KRISTO] activation codes generated", {
-      userId: ctxOrRes.viewer.userId,
-      batchId: result.batch.batchId,
-      quantity: result.codes.length,
-      countryCode: result.batch.countryCode,
-      durationMonths: result.batch.durationMonths,
+    const store = await readActivationCodeStoreForDebug();
+    const storeDebug = buildActivationStoreRouteDebug("generate-after-save", store, {
+      generatedBatchId: result.batch.batchId,
+      generatedCount: result.codes.length,
+      firstGeneratedCodeStatus: result.codes[0]?.status || null,
     });
+    logActivationRouteDiagnostics(storeDebug);
 
     return json({
       ok: true,
       batch: result.batch,
       codes: result.codes,
+      _storeDebug: storeDebug,
     });
   } catch (error: any) {
     const message = String(error?.message || "Failed to generate codes");
