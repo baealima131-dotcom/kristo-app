@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  ActivityIndicator,
   Animated,
   Easing,
   Pressable,
@@ -430,11 +431,110 @@ export function ActivitySectionPanel({
   );
 }
 
-export function InlineEmptyState({ message }: { message: string }) {
+export function PremiumEmptyState({
+  icon,
+  iconColor = ADMIN_GOLD,
+  title,
+  description,
+  actionLabel,
+  onAction,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  iconColor?: string;
+  title: string;
+  description: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
   return (
     <GlassSurface style={adminStyles.activityEmptyCard} radius={ADMIN_RADIUS_SM} intensity={40}>
-      <Text style={adminStyles.activityEmptyTitle}>{message}</Text>
+      <Ionicons name={icon} size={28} color={iconColor} />
+      <Text style={adminStyles.activityEmptyTitle}>{title}</Text>
+      <Text style={adminStyles.activityEmptyText}>{description}</Text>
+      {actionLabel && onAction ? (
+        <GoldPrimaryButton label={actionLabel} onPress={onAction} style={adminStyles.emptyActionBtn} />
+      ) : null}
     </GlassSurface>
+  );
+}
+
+export function ActivityTimelinePlaceholder({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <GlassSurface style={adminStyles.activityEmptyCard} radius={ADMIN_RADIUS_SM} intensity={40}>
+      <View style={adminStyles.timelinePlaceholder}>
+        <View style={adminStyles.timelinePlaceholderRail}>
+          {[0, 1, 2].map((i) => (
+            <View key={i} style={adminStyles.timelinePlaceholderDotWrap}>
+              {i < 2 ? <View style={adminStyles.timelinePlaceholderLine} /> : null}
+              <View style={adminStyles.timelinePlaceholderDot} />
+            </View>
+          ))}
+        </View>
+        <View style={adminStyles.timelinePlaceholderBars}>
+          <View style={[adminStyles.timelinePlaceholderBar, { width: "72%" }]} />
+          <View style={[adminStyles.timelinePlaceholderBar, { width: "48%" }]} />
+          <View style={[adminStyles.timelinePlaceholderBar, { width: "62%" }]} />
+        </View>
+      </View>
+      <Ionicons name="pulse-outline" size={28} color={ADMIN_GOLD} />
+      <Text style={adminStyles.activityEmptyTitle}>{title}</Text>
+      <Text style={adminStyles.activityEmptyText}>{description}</Text>
+    </GlassSurface>
+  );
+}
+
+export function GoldPrimaryButton({
+  label,
+  onPress,
+  disabled,
+  loading,
+  style,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  loading?: boolean;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const inactive = Boolean(disabled || loading);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      disabled={inactive}
+      style={({ pressed }) => [
+        adminStyles.goldButtonWrap,
+        style,
+        inactive && adminStyles.goldButtonDisabled,
+        pressed && !inactive && adminStyles.pressedSoft,
+      ]}
+    >
+      <LinearGradient
+        colors={inactive ? ["#6B7280", "#4B5563", "#374151"] : ["#F8DC82", ADMIN_GOLD, "#D4A84A"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={adminStyles.goldButton}
+      >
+        {loading ? (
+          <ActivityIndicator color={inactive ? "rgba(255,255,255,0.72)" : "#07111F"} />
+        ) : (
+          <Text style={[adminStyles.goldButtonText, inactive && adminStyles.goldButtonTextDisabled]}>{label}</Text>
+        )}
+      </LinearGradient>
+    </Pressable>
+  );
+}
+
+export function InlineEmptyState({ message }: { message: string }) {
+  return (
+    <PremiumEmptyState icon="ellipse-outline" title={message} description="" />
   );
 }
 
@@ -551,7 +651,7 @@ export const adminStyles = StyleSheet.create({
   },
   shimmerCard: {
     width: "48.5%",
-    height: 128,
+    height: 132,
     borderRadius: ADMIN_RADIUS,
     backgroundColor: "rgba(255,255,255,0.08)",
     borderWidth: 1,
@@ -706,8 +806,94 @@ export const adminStyles = StyleSheet.create({
     backgroundColor: "rgba(244,208,111,0.08)",
   },
   monthFilterText: { color: ADMIN_GOLD, fontSize: 11, fontWeight: "800" },
-  activityEmptyCard: { padding: 18, alignItems: "center", overflow: "hidden" },
-  activityEmptyTitle: { color: MUTED, fontSize: 13, fontWeight: "600", textAlign: "center" },
+  activityEmptyCard: {
+    padding: 22,
+    alignItems: "center",
+    gap: 8,
+    overflow: "hidden",
+  },
+  activityEmptyTitle: { color: TEXT, fontSize: 15, fontWeight: "800", textAlign: "center" },
+  activityEmptyText: { color: MUTED, fontSize: 12, textAlign: "center", lineHeight: 18 },
+  emptyActionBtn: { marginTop: 4, alignSelf: "stretch" },
+  goldButtonWrap: { alignSelf: "stretch" },
+  goldButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    minHeight: 44,
+  },
+  goldButtonDisabled: { opacity: 0.72 },
+  goldButtonText: { color: "#07111F", fontSize: 13, fontWeight: "800" },
+  goldButtonTextDisabled: { color: "rgba(255,255,255,0.72)" },
+  takeCodesCard: {
+    padding: 18,
+    gap: 6,
+    overflow: "hidden",
+    alignItems: "stretch",
+  },
+  takeCountValue: {
+    color: TEXT,
+    fontSize: 36,
+    fontWeight: "900",
+    fontVariant: ["tabular-nums"],
+    letterSpacing: -1,
+    lineHeight: 40,
+  },
+  takeCountSubtitle: {
+    color: "rgba(244,208,111,0.88)",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  takeExplanation: {
+    color: MUTED,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 2,
+    marginBottom: 6,
+  },
+  timelinePlaceholder: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    width: "100%",
+    opacity: 0.42,
+    marginBottom: 4,
+  },
+  timelinePlaceholderRail: { width: 16, alignItems: "center" },
+  timelinePlaceholderDotWrap: { alignItems: "center", minHeight: 22 },
+  timelinePlaceholderLine: {
+    position: "absolute",
+    top: 12,
+    width: 1,
+    height: 14,
+    backgroundColor: "rgba(156,118,255,0.28)",
+  },
+  timelinePlaceholderDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "rgba(156,118,255,0.22)",
+    borderWidth: 1,
+    borderColor: "rgba(156,118,255,0.35)",
+  },
+  timelinePlaceholderBars: { flex: 1, gap: 8, paddingTop: 2 },
+  timelinePlaceholderBar: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  inventoryTableShell: {
+    borderRadius: ADMIN_RADIUS_SM,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: ADMIN_GLASS_BORDER_SOFT,
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
   pressedSoft: { opacity: 0.94, transform: [{ scale: 0.988 }] },
   errorCard: {
     padding: 12,

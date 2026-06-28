@@ -18,7 +18,6 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   AgentStatusBadge,
@@ -27,15 +26,18 @@ import {
 import {
   AccessNotice,
   ActivitySectionPanel,
+  ActivityTimelinePlaceholder,
   ADMIN_GOLD,
   ADMIN_PURPLE,
   adminStyles,
   BackgroundScene,
   ErrorCard,
+  GlassSurface,
+  GoldPrimaryButton,
   HeroActionCard,
-  InlineEmptyState,
   LoadingShimmer,
   OfflineActivationHeroHeader,
+  PremiumEmptyState,
   PremiumMetricCard,
   type AdminMetricConfig,
 } from "@/src/components/offlineActivationAdminDashboardUi";
@@ -157,6 +159,7 @@ function MyAgentsPanel({
   count,
   previewAgents,
   onViewAll,
+  onAddAgent,
   onAssign,
   onView,
   onEdit,
@@ -165,6 +168,7 @@ function MyAgentsPanel({
   count: number;
   previewAgents: SupervisorAgent[];
   onViewAll: () => void;
+  onAddAgent: () => void;
   onAssign: (agent: SupervisorAgent) => void;
   onView: (agent: SupervisorAgent) => void;
   onEdit: (agent: SupervisorAgent) => void;
@@ -174,11 +178,17 @@ function MyAgentsPanel({
     <ActivitySectionPanel
       title="My Agents"
       subtitle={`${count} registered agent${count === 1 ? "" : "s"}`}
-      actionLabel="View All"
-      onAction={onViewAll}
+      actionLabel={count > 0 ? "View All" : undefined}
+      onAction={count > 0 ? onViewAll : undefined}
     >
       {count === 0 ? (
-        <Text style={styles.sectionEmptyLine}>No agents yet.</Text>
+        <PremiumEmptyState
+          icon="people-outline"
+          title="No agents yet"
+          description="Register field agents to distribute activation codes in your region."
+          actionLabel="Add Agent"
+          onAction={onAddAgent}
+        />
       ) : (
         <View style={styles.agentListCompact}>
           {previewAgents.map((agent) => (
@@ -207,31 +217,20 @@ function TakeAvailableCodesPanel({
   onTake: () => void;
 }) {
   const disabled = availableCount < 1 || taking;
+  const subtitle = availableCount === 1 ? "Code Available" : "Codes Available";
+  const explanation =
+    availableCount > 0
+      ? "Acknowledge new codes from System Admin to add them to your inventory."
+      : "No new codes waiting. System Admin assignments will appear here.";
 
   return (
-    <ActivitySectionPanel title="Take Available Codes" subtitle="Acknowledge codes sent from System Admin">
-      <View style={styles.takePanelBody}>
-        <Text style={styles.takeLabel}>Available from System Admin</Text>
-        <Text style={styles.takeCodesLine}>
-          {availableCount > 0
-            ? `${availableCount} Code${availableCount === 1 ? "" : "s"}`
-            : "0 Codes Available"}
-        </Text>
-        <Pressable onPress={onTake} disabled={disabled} style={styles.takeBtnWrap}>
-          <LinearGradient
-            colors={disabled ? ["#6B7280", "#4B5563", "#374151"] : ["#F8DC82", ADMIN_GOLD, "#D4A84A"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={[styles.takeBtn, disabled && styles.takeBtnDisabled]}
-          >
-            {taking ? (
-              <ActivityIndicator color="#111" />
-            ) : (
-              <Text style={[styles.takeBtnText, disabled && styles.takeBtnTextDisabled]}>Take Codes</Text>
-            )}
-          </LinearGradient>
-        </Pressable>
-      </View>
+    <ActivitySectionPanel title="Take Available Codes" subtitle="From System Admin">
+      <GlassSurface style={adminStyles.takeCodesCard} radius={16} intensity={40}>
+        <Text style={adminStyles.takeCountValue}>{availableCount}</Text>
+        <Text style={adminStyles.takeCountSubtitle}>{subtitle}</Text>
+        <Text style={adminStyles.takeExplanation}>{explanation}</Text>
+        <GoldPrimaryButton label="Take Codes" onPress={onTake} disabled={disabled} loading={taking} />
+      </GlassSurface>
     </ActivitySectionPanel>
   );
 }
@@ -242,9 +241,13 @@ function CodeInventoryPanel({ batches }: { batches: SupervisorInventoryBatch[] }
   return (
     <ActivitySectionPanel title="Code Inventory" subtitle="Batches assigned to your workspace">
       {empty ? (
-        <Text style={styles.sectionEmptyLine}>No code batches assigned yet.</Text>
+        <PremiumEmptyState
+          icon="archive-outline"
+          title="No code batches assigned yet"
+          description="When System Admin assigns codes to you, batches will appear here with country and duration details."
+        />
       ) : (
-        <View style={styles.inventoryTable}>
+        <View style={adminStyles.inventoryTableShell}>
           <View style={styles.batchHeaderRow}>
             <Text style={[styles.batchHeaderCell, styles.batchHeaderWide]}>Country</Text>
             <Text style={styles.batchHeaderCell}>Duration</Text>
@@ -268,7 +271,10 @@ function RecentActivityPanel({ items }: { items: SupervisorCodeActivityItem[] })
   return (
     <ActivitySectionPanel title="Recent Activity" subtitle="Latest code movements in your workspace">
       {empty ? (
-        <InlineEmptyState message="No recent activity yet." />
+        <ActivityTimelinePlaceholder
+          title="No recent activity yet"
+          description="Code assignments, redemptions, and returns will appear here as they happen."
+        />
       ) : (
         <View style={styles.timelineList}>
           {items.map((item, i) => (
@@ -470,46 +476,53 @@ export default function SupervisorScreen() {
 
   const previewAgents = React.useMemo(() => allAgents.slice(0, AGENTS_PREVIEW_LIMIT), [allAgents]);
 
-  const metrics: AdminMetricConfig[] = dashboard
-    ? [
-        {
-          key: "agents",
-          label: "Total Agents",
-          helper: "All registered agents",
-          icon: "people-outline",
-          color: ADMIN_PURPLE,
-          glow: "rgba(156,118,255,0.22)",
-          value: dashboard.totalAgents,
-        },
-        {
-          key: "received",
-          label: "Codes Received",
-          helper: "From System Admin",
-          icon: "download-outline",
-          color: ADMIN_GOLD,
-          glow: "rgba(244,208,111,0.24)",
-          value: dashboard.receivedThisMonth,
-        },
-        {
-          key: "redeemed",
-          label: "Codes Redeemed",
-          helper: "Activated by churches",
-          icon: "checkmark-done-outline",
-          color: "#93C5FD",
-          glow: "rgba(147,197,253,0.22)",
-          value: dashboard.redeemedThisMonth,
-        },
-        {
-          key: "remaining",
-          label: "Codes Remaining",
-          helper: "Ready to assign",
-          icon: "cube-outline",
-          color: SA_GREEN,
-          glow: "rgba(110,231,168,0.22)",
-          value: dashboard.codesRemaining,
-        },
-      ]
-    : [];
+  const metrics: AdminMetricConfig[] = React.useMemo(() => {
+    const cards = dashboard ?? {
+      totalAgents: allAgents.length,
+      receivedThisMonth: 0,
+      redeemedThisMonth: 0,
+      codesRemaining: stats?.availableCodes ?? 0,
+    };
+
+    return [
+      {
+        key: "agents",
+        label: "Total Agents",
+        helper: "All registered agents",
+        icon: "people-outline",
+        color: ADMIN_PURPLE,
+        glow: "rgba(156,118,255,0.22)",
+        value: cards.totalAgents,
+      },
+      {
+        key: "received",
+        label: "Codes Received",
+        helper: "From System Admin",
+        icon: "download-outline",
+        color: ADMIN_GOLD,
+        glow: "rgba(244,208,111,0.24)",
+        value: cards.receivedThisMonth,
+      },
+      {
+        key: "redeemed",
+        label: "Codes Redeemed",
+        helper: "Activated by churches",
+        icon: "checkmark-done-outline",
+        color: "#93C5FD",
+        glow: "rgba(147,197,253,0.22)",
+        value: cards.redeemedThisMonth,
+      },
+      {
+        key: "remaining",
+        label: "Codes Remaining",
+        helper: "Ready to assign",
+        icon: "cube-outline",
+        color: SA_GREEN,
+        glow: "rgba(110,231,168,0.22)",
+        value: cards.codesRemaining,
+      },
+    ];
+  }, [allAgents.length, dashboard, stats?.availableCodes]);
 
   const resetAgentForm = () => {
     setAgentName("");
@@ -651,13 +664,11 @@ export default function SupervisorScreen() {
           >
             {error ? <ErrorCard message={error} onRetry={() => loadDashboard()} /> : null}
 
-            {dashboard ? (
-              <View style={adminStyles.statsGrid}>
-                {metrics.map((metric, index) => (
-                  <PremiumMetricCard key={metric.key} metric={metric} index={index} />
-                ))}
-              </View>
-            ) : null}
+            <View style={adminStyles.statsGrid}>
+              {metrics.map((metric, index) => (
+                <PremiumMetricCard key={metric.key} metric={metric} index={index} />
+              ))}
+            </View>
 
             {!error ? (
               <>
@@ -672,6 +683,7 @@ export default function SupervisorScreen() {
                   count={allAgents.length}
                   previewAgents={previewAgents}
                   onViewAll={() => router.push("/more/supervisor/agents" as any)}
+                  onAddAgent={openAddAgent}
                   onAssign={setAssignAgent}
                   onView={setViewAgent}
                   onEdit={openEditAgent}
@@ -829,37 +841,7 @@ export default function SupervisorScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG },
-  sectionEmptyLine: { color: MUTED, fontSize: 13, fontWeight: "600", lineHeight: 19 },
   agentListCompact: { gap: 10 },
-  takePanelBody: { gap: 4 },
-  takeLabel: { color: MUTED, fontSize: 12, fontWeight: "700" },
-  takeCodesLine: {
-    color: TEXT,
-    fontSize: 28,
-    fontWeight: "900",
-    fontVariant: ["tabular-nums"],
-    letterSpacing: -0.5,
-    lineHeight: 32,
-  },
-  takeBtnWrap: { marginTop: 10 },
-  takeBtn: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-  },
-  takeBtnDisabled: { opacity: 0.72 },
-  takeBtnText: { color: "#07111F", fontSize: 13, fontWeight: "800" },
-  takeBtnTextDisabled: { color: "rgba(255,255,255,0.72)" },
-  inventoryTable: {
-    borderRadius: 16,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)",
-  },
   timelineList: { gap: 2 },
   agentPhone: { color: MUTED, fontSize: 12, fontWeight: "600" },
   agentStats: { flexDirection: "row", gap: 6 },
