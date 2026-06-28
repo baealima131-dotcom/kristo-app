@@ -2,6 +2,7 @@
 const appJson = require("./app.json");
 
 const expo = appJson.expo;
+const isProductionEasBuild = process.env.EAS_BUILD_PROFILE === "production";
 
 module.exports = {
   expo: {
@@ -24,6 +25,7 @@ module.exports = {
         },
       ],
       "./plugins/withDevClientMetroPort",
+      ...(isProductionEasBuild ? ["./plugins/withAndroidProductionAbis"] : []),
     ],
   },
 };
