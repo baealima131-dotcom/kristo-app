@@ -46,7 +46,7 @@ export function SupervisorAgentCard({
           <ContactAvatar
             uri={agent.avatarUrl}
             name={agent.fullName}
-            fallbackId={agent.phone}
+            fallbackId={agent.kristoId || agent.phone}
             size={52}
             online={agent.status === "active"}
           />
@@ -58,8 +58,13 @@ export function SupervisorAgentCard({
               <AgentStatusBadge status={agent.status} />
             </View>
             <Text style={styles.agentPhone} numberOfLines={1}>
-              {agent.phone}
+              {agent.kristoId || agent.phone || "—"}
             </Text>
+            {agent.churchId ? (
+              <Text style={styles.agentChurch} numberOfLines={1}>
+                Church · {agent.churchId}
+              </Text>
+            ) : null}
           </View>
         </View>
         <View style={styles.agentStats}>
@@ -86,6 +91,7 @@ const styles = StyleSheet.create({
   agentNameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   agentName: { flex: 1, color: TEXT, fontSize: 16, fontWeight: "800" },
   agentPhone: { color: MUTED, fontSize: 12, fontWeight: "600" },
+  agentChurch: { color: MUTED, fontSize: 10, fontWeight: "600" },
   agentStats: { flexDirection: "row", gap: 6 },
   agentActions: {
     flexDirection: "row",

@@ -24,8 +24,6 @@ export async function POST(req: NextRequest) {
     const agent = await updateSupervisorAgent({
       supervisorUserId: ctxOrRes.viewer.userId,
       agentId,
-      ...(body?.fullName !== undefined ? { fullName: String(body.fullName || "").trim() } : {}),
-      ...(body?.phone !== undefined ? { phone: String(body.phone || "").trim() } : {}),
       ...(statusRaw !== undefined
         ? { status: statusRaw === "inactive" ? "inactive" : "active" }
         : {}),

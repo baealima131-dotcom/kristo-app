@@ -66,8 +66,6 @@ export default function SupervisorAgentsScreen() {
   const [assignQty, setAssignQty] = React.useState("5");
   const [assigning, setAssigning] = React.useState(false);
 
-  const [agentName, setAgentName] = React.useState("");
-  const [agentPhone, setAgentPhone] = React.useState("");
   const [agentStatus, setAgentStatus] = React.useState<"active" | "inactive">("active");
   const [savingAgent, setSavingAgent] = React.useState(false);
 
@@ -98,22 +96,14 @@ export default function SupervisorAgentsScreen() {
   const openEditAgent = (agent: SupervisorAgent) => {
     setViewAgent(null);
     setEditAgent(agent);
-    setAgentName(agent.fullName);
-    setAgentPhone(agent.phone);
     setAgentStatus(agent.status);
   };
 
   const onSaveAgent = async () => {
     if (!editAgent) return;
-    const fullName = agentName.trim();
-    const phone = agentPhone.trim();
-    if (!fullName || !phone) {
-      Alert.alert("Missing info", "Enter agent name and phone number.");
-      return;
-    }
     setSavingAgent(true);
     try {
-      await updateSupervisorAgent({ agentId: editAgent.id, fullName, phone, status: agentStatus });
+      await updateSupervisorAgent({ agentId: editAgent.id, status: agentStatus });
       setEditAgent(null);
       await loadAgents();
     } catch (e: any) {
@@ -201,8 +191,8 @@ export default function SupervisorAgentsScreen() {
           </GlassCard>
         ) : agents.length === 0 ? (
           <GlassCard pad={12} style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>No agents yet</Text>
-            <Text style={styles.emptyDesc}>Add agents from your Supervisor workspace.</Text>
+            <Text style={styles.emptyTitle}>No agents yet.</Text>
+            <Text style={styles.emptyDesc}>Agents you register will appear here.</Text>
           </GlassCard>
         ) : (
           <View style={styles.agentList}>
@@ -224,23 +214,21 @@ export default function SupervisorAgentsScreen() {
         <View style={styles.modalBackdrop}>
           <GlassCard pad={14}>
             <Text style={styles.modalTitle}>Edit Agent</Text>
-            <Text style={styles.fieldLabel}>Name</Text>
-            <TextInput
-              value={agentName}
-              onChangeText={setAgentName}
-              placeholder="Agent name"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              style={styles.input}
-            />
-            <Text style={styles.fieldLabel}>Phone</Text>
-            <TextInput
-              value={agentPhone}
-              onChangeText={setAgentPhone}
-              placeholder="+1 555 0100"
-              keyboardType="phone-pad"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              style={styles.input}
-            />
+            {editAgent ? (
+              <>
+                <Text style={styles.resolvedLabel}>KRISTO ID</Text>
+                <Text style={styles.resolvedValue}>{editAgent.kristoId || "—"}</Text>
+                <Text style={styles.resolvedLabel}>Church ID</Text>
+                <Text style={styles.resolvedValue}>{editAgent.churchId || "—"}</Text>
+                {editAgent.fullName ? (
+                  <>
+                    <Text style={styles.resolvedLabel}>Name</Text>
+                    <Text style={styles.resolvedValue}>{editAgent.fullName}</Text>
+                  </>
+                ) : null}
+              </>
+            ) : null}
+            <Text style={styles.fieldLabel}>Status</Text>
             <View style={styles.statusRow}>
               {(["active", "inactive"] as const).map((s) => (
                 <Pressable
@@ -272,13 +260,15 @@ export default function SupervisorAgentsScreen() {
                 <View style={styles.viewAgentTop}>
                   <ContactAvatar
                     name={viewAgent.fullName}
-                    fallbackId={viewAgent.phone}
+                    fallbackId={viewAgent.kristoId || viewAgent.phone}
                     size={48}
                     online={viewAgent.status === "active"}
                   />
                   <View style={{ flex: 1, gap: 3 }}>
-                    <Text style={styles.modalTitle}>{viewAgent.fullName}</Text>
-                    <Text style={styles.agentPhone}>{viewAgent.phone}</Text>
+                    <Text style={styles.modalTitle}>{viewAgent.fullName || viewAgent.kristoId}</Text>
+                    <Text style={styles.agentPhone}>{viewAgent.kristoId || "—"}</Text>
+                    <Text style={styles.agentMeta}>Church · {viewAgent.churchId || "—"}</Text>
+                    {viewAgent.phone ? <Text style={styles.agentMeta}>{viewAgent.phone}</Text> : null}
                     <AgentStatusBadge status={viewAgent.status} />
                   </View>
                 </View>
@@ -388,5 +378,8 @@ const styles = StyleSheet.create({
   viewAgentTop: { flexDirection: "row", gap: 10, alignItems: "center", marginBottom: 8 },
   viewAdded: { color: MUTED, fontSize: 10, marginBottom: 10 },
   agentPhone: { color: MUTED, fontSize: 12, fontWeight: "600" },
+  agentMeta: { color: MUTED, fontSize: 11, fontWeight: "600" },
+  resolvedLabel: { color: MUTED, fontSize: 11, fontWeight: "700", marginTop: 8 },
+  resolvedValue: { color: TEXT, fontSize: 14, fontWeight: "700", marginTop: 4 },
   agentStats: { flexDirection: "row", gap: 6 },
 });

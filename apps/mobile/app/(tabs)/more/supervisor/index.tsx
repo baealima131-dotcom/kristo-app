@@ -158,8 +158,7 @@ function computeDashboardCards(
 function MyAgentsPanel({
   count,
   previewAgents,
-  onViewAll,
-  onAddAgent,
+  onViewAgents,
   onAssign,
   onView,
   onEdit,
@@ -167,8 +166,7 @@ function MyAgentsPanel({
 }: {
   count: number;
   previewAgents: SupervisorAgent[];
-  onViewAll: () => void;
-  onAddAgent: () => void;
+  onViewAgents: () => void;
   onAssign: (agent: SupervisorAgent) => void;
   onView: (agent: SupervisorAgent) => void;
   onEdit: (agent: SupervisorAgent) => void;
@@ -179,16 +177,18 @@ function MyAgentsPanel({
       title="My Agents"
       subtitle={`${count} registered agent${count === 1 ? "" : "s"}`}
       actionLabel={count > 0 ? "View All" : undefined}
-      onAction={count > 0 ? onViewAll : undefined}
+      onAction={count > 0 ? onViewAgents : undefined}
     >
       {count === 0 ? (
-        <PremiumEmptyState
-          icon="people-outline"
-          title="No agents yet"
-          description="Register field agents to distribute activation codes in your region."
-          actionLabel="Add Agent"
-          onAction={onAddAgent}
-        />
+        <GlassSurface style={adminStyles.activityEmptyCard} radius={16} intensity={40}>
+          <Ionicons name="people-outline" size={28} color={ADMIN_GOLD} />
+          <Text style={adminStyles.activityEmptyTitle}>No agents yet.</Text>
+          <Text style={adminStyles.activityEmptyText}>Agents you register will appear here.</Text>
+          <Pressable onPress={onViewAgents} hitSlop={8} style={adminStyles.menuActionWrap}>
+            <Text style={adminStyles.menuActionText}>View Agents</Text>
+            <Ionicons name="chevron-forward" size={14} color={ADMIN_GOLD} />
+          </Pressable>
+        </GlassSurface>
       ) : (
         <View style={styles.agentListCompact}>
           {previewAgents.map((agent) => (
@@ -388,8 +388,8 @@ export default function SupervisorScreen() {
   const [assignQty, setAssignQty] = React.useState("5");
   const [assigning, setAssigning] = React.useState(false);
 
-  const [agentName, setAgentName] = React.useState("");
-  const [agentPhone, setAgentPhone] = React.useState("");
+  const [agentKristoId, setAgentKristoId] = React.useState("");
+  const [agentChurchId, setAgentChurchId] = React.useState("");
   const [agentStatus, setAgentStatus] = React.useState<"active" | "inactive">("active");
   const [savingAgent, setSavingAgent] = React.useState(false);
   const [lastTakenAtMs, setLastTakenAtMs] = React.useState(0);
@@ -525,8 +525,8 @@ export default function SupervisorScreen() {
   }, [allAgents.length, dashboard, stats?.availableCodes]);
 
   const resetAgentForm = () => {
-    setAgentName("");
-    setAgentPhone("");
+    setAgentKristoId("");
+    setAgentChurchId("");
     setAgentStatus("active");
   };
 
@@ -538,25 +538,30 @@ export default function SupervisorScreen() {
   const openEditAgent = (agent: SupervisorAgent) => {
     setViewAgent(null);
     setEditAgent(agent);
-    setAgentName(agent.fullName);
-    setAgentPhone(agent.phone);
     setAgentStatus(agent.status);
   };
 
   const onSaveAgent = async () => {
-    const fullName = agentName.trim();
-    const phone = agentPhone.trim();
-    if (!fullName || !phone) {
-      Alert.alert("Missing info", "Enter agent name and phone number.");
-      return;
+    if (!editAgent) {
+      const kristoId = agentKristoId.trim().toUpperCase();
+      const churchId = agentChurchId.trim();
+      if (!kristoId || !churchId) {
+        Alert.alert("Missing info", "Enter KRISTO ID and Church ID.");
+        return;
+      }
     }
+
     setSavingAgent(true);
     try {
       if (editAgent) {
-        await updateSupervisorAgent({ agentId: editAgent.id, fullName, phone, status: agentStatus });
+        await updateSupervisorAgent({ agentId: editAgent.id, status: agentStatus });
         setEditAgent(null);
       } else {
-        await addSupervisorAgent({ fullName, phone, status: agentStatus });
+        await addSupervisorAgent({
+          kristoId: agentKristoId.trim().toUpperCase(),
+          churchId: agentChurchId.trim(),
+          status: agentStatus,
+        });
         setShowAddAgent(false);
       }
       resetAgentForm();
@@ -674,7 +679,7 @@ export default function SupervisorScreen() {
               <>
                 <HeroActionCard
                   title="Add Agent"
-                  subtitle="Register a trusted field agent for code distribution"
+                  subtitle="Link a member by KRISTO ID and Church ID"
                   icon="person-add"
                   onPress={openAddAgent}
                 />
@@ -682,8 +687,7 @@ export default function SupervisorScreen() {
                 <MyAgentsPanel
                   count={allAgents.length}
                   previewAgents={previewAgents}
-                  onViewAll={() => router.push("/more/supervisor/agents" as any)}
-                  onAddAgent={openAddAgent}
+                  onViewAgents={() => router.push("/more/supervisor/agents" as any)}
                   onAssign={setAssignAgent}
                   onView={setViewAgent}
                   onEdit={openEditAgent}
@@ -718,23 +722,43 @@ export default function SupervisorScreen() {
         <View style={styles.modalBackdrop}>
           <GlassCard pad={14}>
             <Text style={styles.modalTitle}>{editAgent ? "Edit Agent" : "Add Agent"}</Text>
-            <Text style={styles.fieldLabel}>Name</Text>
-            <TextInput
-              value={agentName}
-              onChangeText={setAgentName}
-              placeholder="Agent name"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              style={styles.input}
-            />
-            <Text style={styles.fieldLabel}>Phone</Text>
-            <TextInput
-              value={agentPhone}
-              onChangeText={setAgentPhone}
-              placeholder="+1 555 0100"
-              keyboardType="phone-pad"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              style={styles.input}
-            />
+            {editAgent ? (
+              <>
+                <Text style={styles.resolvedLabel}>KRISTO ID</Text>
+                <Text style={styles.resolvedValue}>{editAgent.kristoId || "—"}</Text>
+                <Text style={styles.resolvedLabel}>Church ID</Text>
+                <Text style={styles.resolvedValue}>{editAgent.churchId || "—"}</Text>
+                {editAgent.fullName ? (
+                  <>
+                    <Text style={styles.resolvedLabel}>Name</Text>
+                    <Text style={styles.resolvedValue}>{editAgent.fullName}</Text>
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Text style={styles.fieldLabel}>KRISTO ID</Text>
+                <TextInput
+                  value={agentKristoId}
+                  onChangeText={(value) => setAgentKristoId(value.toUpperCase())}
+                  placeholder="KR7-XXXXXX"
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  placeholderTextColor="rgba(255,255,255,0.35)"
+                  style={styles.input}
+                />
+                <Text style={styles.fieldLabel}>Church ID</Text>
+                <TextInput
+                  value={agentChurchId}
+                  onChangeText={setAgentChurchId}
+                  placeholder="Church ID"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholderTextColor="rgba(255,255,255,0.35)"
+                  style={styles.input}
+                />
+              </>
+            )}
             <View style={styles.statusRow}>
               {(["active", "inactive"] as const).map((s) => (
                 <Pressable
@@ -778,13 +802,15 @@ export default function SupervisorScreen() {
                 <View style={styles.viewAgentTop}>
                   <ContactAvatar
                     name={viewAgent.fullName}
-                    fallbackId={viewAgent.phone}
+                    fallbackId={viewAgent.kristoId || viewAgent.phone}
                     size={48}
                     online={viewAgent.status === "active"}
                   />
                   <View style={{ flex: 1, gap: 3 }}>
-                    <Text style={styles.modalTitle}>{viewAgent.fullName}</Text>
-                    <Text style={styles.agentPhone}>{viewAgent.phone}</Text>
+                    <Text style={styles.modalTitle}>{viewAgent.fullName || viewAgent.kristoId}</Text>
+                    <Text style={styles.agentPhone}>{viewAgent.kristoId || "—"}</Text>
+                    <Text style={styles.agentMeta}>Church · {viewAgent.churchId || "—"}</Text>
+                    {viewAgent.phone ? <Text style={styles.agentMeta}>{viewAgent.phone}</Text> : null}
                     <AgentStatusBadge status={viewAgent.status} />
                   </View>
                 </View>
@@ -844,6 +870,9 @@ const styles = StyleSheet.create({
   agentListCompact: { gap: 10 },
   timelineList: { gap: 2 },
   agentPhone: { color: MUTED, fontSize: 12, fontWeight: "600" },
+  agentMeta: { color: MUTED, fontSize: 11, fontWeight: "600" },
+  resolvedLabel: { color: MUTED, fontSize: 11, fontWeight: "700", marginTop: 10 },
+  resolvedValue: { color: TEXT, fontSize: 14, fontWeight: "700", marginTop: 4 },
   agentStats: { flexDirection: "row", gap: 6 },
   batchHeaderRow: {
     flexDirection: "row",

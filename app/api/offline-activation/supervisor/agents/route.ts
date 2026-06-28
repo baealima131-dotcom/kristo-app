@@ -5,6 +5,7 @@ import {
   createSupervisorAgent,
   listSupervisorAgents,
 } from "@/app/api/_lib/offlineActivationAgentStore";
+import { resolveAgentRegistrationByKristoAndChurch } from "@/app/api/_lib/offlineActivationAdmin";
 import { computeAgentCodeStats, getSupervisorWorkspace } from "@/app/api/_lib/offlineActivationCodeStore";
 import { guardPlatformOfflineActivation } from "@/app/api/_lib/rbac";
 
@@ -35,25 +36,33 @@ export async function POST(req: NextRequest) {
   if (ctxOrRes instanceof NextResponse) return ctxOrRes;
 
   const body = await req.json().catch(() => ({}));
-  const fullName = String(body?.fullName || body?.name || "").trim();
-  const phone = String(body?.phone || body?.phoneNumber || "").trim();
+  const kristoId = String(body?.kristoId || body?.kristoID || "").trim();
+  const churchId = String(body?.churchId || body?.churchID || "").trim();
   const statusRaw = String(body?.status || "active").trim();
   const status = statusRaw === "inactive" ? "inactive" : "active";
 
-  if (!fullName) return json({ ok: false, error: "Agent name is required." }, { status: 400 });
-  if (!phone) return json({ ok: false, error: "Phone number is required." }, { status: 400 });
+  if (!kristoId) return json({ ok: false, error: "KRISTO ID is required." }, { status: 400 });
+  if (!churchId) return json({ ok: false, error: "Church ID is required." }, { status: 400 });
 
   try {
+    const resolved = await resolveAgentRegistrationByKristoAndChurch(kristoId, churchId);
+
     const agent = await createSupervisorAgent({
       supervisorUserId: ctxOrRes.viewer.userId,
-      fullName,
-      phone,
+      kristoId: resolved.kristoId,
+      churchId: resolved.churchId,
+      fullName: resolved.fullName || resolved.kristoId,
+      phone: resolved.phone,
+      avatarUrl: resolved.avatarUrl,
+      linkedUserId: resolved.userId,
       status,
     });
 
     console.log("KRISTO_SUPERVISOR_AGENT_CREATED", {
       supervisorUserId: ctxOrRes.viewer.userId,
       agentId: agent.id,
+      kristoId: agent.kristoId,
+      churchId: agent.churchId,
     });
 
     return json({ ok: true, agent });

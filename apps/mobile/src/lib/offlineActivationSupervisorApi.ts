@@ -38,10 +38,13 @@ export type SupervisorAgentStats = {
 export type SupervisorAgent = {
   id: string;
   supervisorUserId: string;
+  kristoId: string;
+  churchId: string;
   fullName: string;
   phone: string;
   status: "active" | "inactive";
   avatarUrl?: string;
+  linkedUserId?: string;
   createdAt: string;
   updatedAt: string;
   stats: SupervisorAgentStats;
@@ -109,8 +112,8 @@ export async function fetchSupervisorDashboard(): Promise<SupervisorDashboardRes
 }
 
 export async function addSupervisorAgent(input: {
-  fullName: string;
-  phone: string;
+  kristoId: string;
+  churchId: string;
   status?: "active" | "inactive";
 }) {
   const path = "/api/offline-activation/supervisor/agents";
@@ -127,8 +130,6 @@ export async function addSupervisorAgent(input: {
 
 export async function updateSupervisorAgent(input: {
   agentId: string;
-  fullName?: string;
-  phone?: string;
   status?: "active" | "inactive";
 }) {
   const path = "/api/offline-activation/supervisor/agents/update";

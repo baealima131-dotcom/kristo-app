@@ -68,6 +68,44 @@ export type InviteSupervisorResult = {
   invitation?: OfflineActivationInvitation;
 };
 
+export async function resolveAgentRegistrationByKristoAndChurch(
+  kristoId: string,
+  churchId: string
+): Promise<ActivationUserRef & { phone?: string; avatarUrl?: string }> {
+  const normalizedChurchId = normalizeMembershipChurchId(churchId);
+  if (!normalizedChurchId) {
+    throw new Error("Church ID is required");
+  }
+
+  const resolved = await resolveUserByKristoId(kristoId);
+
+  const church = await getChurchById(normalizedChurchId);
+  if (!church) {
+    throw new Error("Church ID not found");
+  }
+
+  const memberships = await getMembershipsForUser(resolved.userId);
+  const activeAtChurch = memberships.find(
+    (membership) =>
+      membership.status === "Active" &&
+      normalizeMembershipChurchId(membership.churchId) === normalizedChurchId
+  );
+  if (!activeAtChurch) {
+    throw new Error("User is not an Active member of this church");
+  }
+
+  const profile = await getProfile(resolved.userId);
+
+  return {
+    userId: resolved.userId,
+    kristoId: resolved.kristoId,
+    churchId: normalizedChurchId,
+    fullName: resolved.fullName || String(profile?.fullName || "").trim() || undefined,
+    phone: String(profile?.phone || "").trim() || undefined,
+    avatarUrl: String(profile?.avatarUrl || "").trim() || undefined,
+  };
+}
+
 export async function inviteSupervisorByKristoAndChurch(
   kristoId: string,
   churchId: string,

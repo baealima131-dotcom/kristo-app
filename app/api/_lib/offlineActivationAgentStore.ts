@@ -5,6 +5,8 @@ export type OfflineActivationAgentStatus = "active" | "inactive";
 export type OfflineActivationAgent = {
   id: string;
   supervisorUserId: string;
+  kristoId: string;
+  churchId: string;
   fullName: string;
   phone: string;
   status: OfflineActivationAgentStatus;
@@ -30,6 +32,8 @@ function normalizeAgent(raw: Partial<OfflineActivationAgent>): OfflineActivation
   return {
     id: String(raw.id || "").trim(),
     supervisorUserId: String(raw.supervisorUserId || "").trim(),
+    kristoId: String(raw.kristoId || "").trim().toUpperCase(),
+    churchId: String(raw.churchId || "").trim(),
     fullName: String(raw.fullName || "").trim(),
     phone: String(raw.phone || "").trim(),
     status,
@@ -66,30 +70,63 @@ export async function getSupervisorAgent(
   return store.agents.find((row) => row.supervisorUserId === uid && row.id === id) || null;
 }
 
+export async function findSupervisorAgentByLinkedUser(
+  supervisorUserId: string,
+  linkedUserId: string,
+  churchId: string
+): Promise<OfflineActivationAgent | null> {
+  const uid = String(supervisorUserId || "").trim();
+  const linked = String(linkedUserId || "").trim();
+  const church = String(churchId || "").trim();
+  if (!uid || !linked || !church) return null;
+  const store = await readStore();
+  return (
+    store.agents.find(
+      (row) =>
+        row.supervisorUserId === uid &&
+        String(row.linkedUserId || "").trim() === linked &&
+        String(row.churchId || "").trim() === church
+    ) || null
+  );
+}
+
 export async function createSupervisorAgent(input: {
   supervisorUserId: string;
+  kristoId: string;
+  churchId: string;
   fullName: string;
-  phone: string;
+  phone?: string;
   status?: OfflineActivationAgentStatus;
   avatarUrl?: string;
-  linkedUserId?: string;
+  linkedUserId: string;
 }): Promise<OfflineActivationAgent> {
   const supervisorUserId = String(input.supervisorUserId || "").trim();
+  const kristoId = String(input.kristoId || "").trim().toUpperCase();
+  const churchId = String(input.churchId || "").trim();
   const fullName = String(input.fullName || "").trim();
-  const phone = String(input.phone || "").trim();
+  const linkedUserId = String(input.linkedUserId || "").trim();
   if (!supervisorUserId) throw new Error("supervisorUserId required");
-  if (!fullName) throw new Error("Agent name is required");
-  if (!phone) throw new Error("Phone number is required");
+  if (!kristoId) throw new Error("KRISTO ID is required");
+  if (!churchId) throw new Error("Church ID is required");
+  if (!linkedUserId) throw new Error("linkedUserId required");
+  if (!fullName) throw new Error("Could not resolve agent name");
+
+  const existing = await findSupervisorAgentByLinkedUser(supervisorUserId, linkedUserId, churchId);
+  if (existing) {
+    throw new Error("This agent is already registered for this church");
+  }
 
   const now = new Date().toISOString();
   const agent = normalizeAgent({
     id: newAgentId(),
     supervisorUserId,
+    kristoId,
+    churchId,
     fullName,
-    phone,
+    phone: String(input.phone || "").trim(),
     status: input.status || "active",
     avatarUrl: input.avatarUrl,
-    linkedUserId: input.linkedUserId,
+    linkedUserId,
     createdAt: now,
     updatedAt: now,
   });
