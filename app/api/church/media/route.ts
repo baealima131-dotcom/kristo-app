@@ -113,32 +113,40 @@ export async function GET(req: NextRequest) {
         reason: sync.reason,
       });
     } else if (access.canManageMediaHosts && hasProfile && subscriptionActive) {
-      const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
-      if (!verification.active) {
-        console.log("KRISTO_CHURCH_MEDIA_DEACTIVATE_STALE_SUBSCRIPTION", {
-          churchId,
-          userId,
-          profileSubscriptionActive: mediaForResponse?.subscriptionActive ?? null,
-          profileSubscriptionPlan: mediaForResponse?.subscriptionPlan ?? null,
-          revenueCatActive: verification.active,
-          revenueCatReason: verification.reason,
-          reason: "profile-active-without-verified-entitlement",
-        });
-        const deactivated = await patchChurchMediaSubscription(churchId, {
-          subscriptionActive: false,
-          subscriptionPlan: null,
-        });
-        if (deactivated) {
-          mediaForResponse = deactivated;
-          subscriptionActive = false;
-          access = await evaluateChurchMediaAccess({ churchId, userId });
-          console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_DEACTIVATE", {
+      const offlineActivationActive =
+        mediaForResponse?.subscriptionSource === "offline_activation" &&
+        mediaForResponse?.subscriptionActive === true &&
+        (!mediaForResponse.subscriptionExpiresAt ||
+          Number(mediaForResponse.subscriptionExpiresAt) > Date.now());
+
+      if (!offlineActivationActive) {
+        const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
+        if (!verification.active) {
+          console.log("KRISTO_CHURCH_MEDIA_DEACTIVATE_STALE_SUBSCRIPTION", {
             churchId,
-            profileSubscriptionActive: deactivated.subscriptionActive ?? false,
-            profileSubscriptionPlan: deactivated.subscriptionPlan ?? null,
+            userId,
+            profileSubscriptionActive: mediaForResponse?.subscriptionActive ?? null,
+            profileSubscriptionPlan: mediaForResponse?.subscriptionPlan ?? null,
             revenueCatActive: verification.active,
-            reason: "stale-subscription-cleared",
+            revenueCatReason: verification.reason,
+            reason: "profile-active-without-verified-entitlement",
           });
+          const deactivated = await patchChurchMediaSubscription(churchId, {
+            subscriptionActive: false,
+            subscriptionPlan: null,
+          });
+          if (deactivated) {
+            mediaForResponse = deactivated;
+            subscriptionActive = false;
+            access = await evaluateChurchMediaAccess({ churchId, userId });
+            console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_DEACTIVATE", {
+              churchId,
+              profileSubscriptionActive: deactivated.subscriptionActive ?? false,
+              profileSubscriptionPlan: deactivated.subscriptionPlan ?? null,
+              revenueCatActive: verification.active,
+              reason: "stale-subscription-cleared",
+            });
+          }
         }
       }
     }

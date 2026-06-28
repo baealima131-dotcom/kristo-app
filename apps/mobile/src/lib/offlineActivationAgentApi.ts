@@ -97,6 +97,13 @@ export type ActivateChurchForAgentResponse = {
   church: { churchId: string; churchName: string };
   redeemedByAgentId: string;
   redeemedByUserId: string;
+  subscription?: {
+    subscriptionActive: boolean;
+    subscriptionPlan: string;
+    subscriptionExpiresAt: number;
+    subscriptionActivatedAt?: number;
+    source: "offline_activation";
+  };
 };
 
 export async function activateChurchForAgent(

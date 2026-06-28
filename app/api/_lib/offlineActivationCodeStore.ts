@@ -6,6 +6,7 @@ import {
   updateOfflineActivationJsonFile,
 } from "@/app/api/_lib/store/offlineActivationDb";
 import { getChurchById } from "@/app/api/_lib/churches";
+import { unlockChurchSubscriptionFromOfflineActivation } from "@/app/api/_lib/churchOfflineActivationSubscription";
 import { getProfile } from "@/app/api/auth/_lib/profile";
 import { getUserById } from "@/app/api/auth/_lib/session";
 import { normalizeMembershipChurchId } from "@/app/api/_lib/memberships";
@@ -1311,6 +1312,13 @@ export type ActivateChurchWithAgentCodeResult = {
   church: { churchId: string; churchName: string };
   redeemedByAgentId: string;
   redeemedByUserId: string;
+  subscription: {
+    subscriptionActive: true;
+    subscriptionPlan: string;
+    subscriptionExpiresAt: number;
+    subscriptionActivatedAt: number;
+    source: "offline_activation";
+  };
 };
 
 export async function activateChurchWithAgentCode(
@@ -1401,11 +1409,23 @@ export async function activateChurchWithAgentCode(
     codeId: updatedCode.id,
   });
 
+  const subscription = await unlockChurchSubscriptionFromOfflineActivation({
+    churchId,
+    code: updatedCode,
+  });
+
   return {
     code: updatedCode,
     church: { churchId, churchName },
     redeemedByAgentId,
     redeemedByUserId: agentUserId,
+    subscription: {
+      subscriptionActive: subscription.subscriptionActive,
+      subscriptionPlan: subscription.subscriptionPlan,
+      subscriptionExpiresAt: subscription.subscriptionExpiresAt,
+      subscriptionActivatedAt: subscription.subscriptionActivatedAt,
+      source: subscription.source,
+    },
   };
 }
 

@@ -43,6 +43,13 @@ import {
   configureExpandAnimation,
 } from "@/src/components/systemAdminSupervisorUi";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { churchIdsMatch, announceChurchPremiumAccessUnlocked } from "@/src/lib/churchPremiumAccess";
+import { clearResponseCacheForRequest } from "@/src/lib/kristoTraffic";
+import {
+  clearCoordinatedRefreshLanesForChurch,
+  resetChurchMediaAccessCacheOnSwitch,
+} from "@/src/lib/refreshCoordinator";
+import { formatPremiumRenewalDate } from "@/src/lib/payments/mobileSubscriptions";
 import { hasOfflineActivationRole, logOfflineCodesRouteOpened } from "@/src/lib/offlineActivationCodes";
 import { resolveSessionPlatformRole } from "@/src/lib/platformRole";
 import {
@@ -66,6 +73,55 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
 }
 
 const ACTIVITY_LIMIT = 20;
+
+function formatOfflineActivationExpiry(expiresAtMs?: number | null): string | null {
+  if (!expiresAtMs || !Number.isFinite(expiresAtMs)) return null;
+  return formatPremiumRenewalDate(new Date(expiresAtMs));
+}
+
+async function refreshSessionChurchSubscriptionCacheIfNeeded(args: {
+  activatedChurchId: string;
+  subscriptionActive?: boolean;
+  subscriptionPlan?: string | null;
+  subscriptionExpiresAt?: number | null;
+}) {
+  const session = getSessionSync();
+  const userId = String(session?.userId || "").trim();
+  const sessionChurchId = String(session?.churchId || session?.activeChurchId || "").trim();
+  const activatedChurchId = String(args.activatedChurchId || "").trim();
+  if (!userId || !sessionChurchId || !churchIdsMatch(sessionChurchId, activatedChurchId)) {
+    return;
+  }
+
+  resetChurchMediaAccessCacheOnSwitch({
+    userId,
+    previousChurchId: sessionChurchId,
+    nextChurchId: sessionChurchId,
+  });
+  clearCoordinatedRefreshLanesForChurch(sessionChurchId, userId);
+  clearResponseCacheForRequest("GET", "/api/church/media", userId, sessionChurchId);
+  clearResponseCacheForRequest("GET", "/api/church/media-hosts", userId, sessionChurchId);
+  clearResponseCacheForRequest("GET", "/api/church/overview", userId, sessionChurchId);
+
+  if (args.subscriptionActive === true) {
+    announceChurchPremiumAccessUnlocked({
+      churchId: sessionChurchId,
+      userId,
+      role: session?.role,
+      churchRole: session?.churchRole,
+      subscriptionActive: true,
+      backendSubscriptionActive: true,
+      canUseMediaTools: true,
+      subscriptionPlan:
+        args.subscriptionPlan === "yearly"
+          ? "yearly"
+          : args.subscriptionPlan === "monthly"
+            ? "monthly"
+            : null,
+      source: "offline-agent-activation",
+    });
+  }
+}
 
 const COUNTRY_LOOKUP: Record<string, { flag: string; name: string }> = {
   BDI: { flag: "🇧🇮", name: "Burundi" },
@@ -503,10 +559,20 @@ export default function AgentScreen() {
               const result = await activateChurchForAgent({ churchId, activationCode });
               setChurchIdInput("");
               setActivationCodeInput("");
+              await refreshSessionChurchSubscriptionCacheIfNeeded({
+                activatedChurchId: result.church.churchId,
+                subscriptionActive: result.subscription?.subscriptionActive,
+                subscriptionPlan: result.subscription?.subscriptionPlan ?? null,
+                subscriptionExpiresAt: result.subscription?.subscriptionExpiresAt ?? null,
+              });
               await loadDashboard();
+              const expiryLabel = formatOfflineActivationExpiry(
+                result.subscription?.subscriptionExpiresAt
+              );
+              const expiryLine = expiryLabel ? `\nPremium access until ${expiryLabel}.` : "";
               Alert.alert(
                 "Church activated",
-                `${result.church.churchName} was activated with code ${result.code.code}.`
+                `${result.church.churchName} was activated with code ${result.code.code}.${expiryLine}`
               );
             } catch (e: any) {
               Alert.alert("Activation failed", String(e?.message || "Failed"));
