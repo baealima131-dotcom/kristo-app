@@ -84,6 +84,18 @@ export type SupervisorDashboardResponse = {
   activity: SupervisorCodeActivityItem[];
 };
 
+export async function fetchSupervisorAgents(): Promise<SupervisorAgent[]> {
+  const path = "/api/offline-activation/supervisor/agents";
+  const res = await apiGet<{ ok: true; agents: SupervisorAgent[] } | { ok: false; error: string }>(
+    path,
+    { headers: buildHeaders(path) }
+  );
+  if (!res || (res as any).ok === false) {
+    throw new Error(String((res as any)?.error || "Failed to load agents"));
+  }
+  return Array.isArray((res as any).agents) ? (res as any).agents : [];
+}
+
 export async function fetchSupervisorDashboard(): Promise<SupervisorDashboardResponse> {
   const path = "/api/offline-activation/supervisor/dashboard";
   const res = await apiGet<{ ok: true } & SupervisorDashboardResponse | { ok: false; error: string }>(
