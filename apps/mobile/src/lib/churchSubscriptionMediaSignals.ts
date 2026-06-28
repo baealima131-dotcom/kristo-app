@@ -1,9 +1,8 @@
 import type { CustomerInfo } from "react-native-purchases";
 import { getSessionSync } from "./kristoSession";
-import { getPaymentsState } from "../store/paymentsStore";
 import {
+  getRevenueCatConfiguredAppUserId,
   hasPremiumEntitlement,
-  isPlanActive,
 } from "./payments/mobileSubscriptions";
 
 export type ChurchSubscriptionRecord = {
@@ -12,7 +11,7 @@ export type ChurchSubscriptionRecord = {
   subscriptionUpdatedAt?: number;
   subscriptionStatus?: string;
   premiumTrialUsedAt?: number;
-  subscriptionSource?: "app_store" | "stripe";
+  subscriptionSource?: "app_store" | "stripe" | "offline_activation";
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
 };
@@ -60,22 +59,54 @@ export function parseExplicitServerSubscriptionFromMediaRoute(
   return null;
 }
 
-export function readLocalScheduleEntitlementActive(
-  customerInfo?: CustomerInfo | null
-): boolean {
-  if (customerInfo && hasPremiumEntitlement(customerInfo)) return true;
+/**
+ * RevenueCat entitlement is church-scoped: only trust premium when RC is logged in for this churchId.
+ * Never use global payments-store plan state here — that leaks across churches.
+ */
+export function readChurchScopedEntitlementActive(args: {
+  churchId: string;
+  customerInfo?: CustomerInfo | null;
+  revenueCatAppUserId?: string | null;
+}): boolean {
+  const churchId = String(args.churchId || "").trim();
+  if (!churchId) return false;
 
-  const payments = getPaymentsState();
-  return isPlanActive(
-    payments.subscriptions.selectedPlan,
-    payments.subscriptions.planStatus
-  );
+  const rcUser = String(
+    args.revenueCatAppUserId ?? getRevenueCatConfiguredAppUserId() ?? ""
+  ).trim();
+  if (!rcUser || rcUser !== churchId) return false;
+
+  return Boolean(args.customerInfo && hasPremiumEntitlement(args.customerInfo));
 }
 
-export function readSessionMediaProfileSubscriptionActive(): boolean | null {
+/** @deprecated Prefer readChurchScopedEntitlementActive — global entitlement leaks across churches. */
+export function readLocalScheduleEntitlementActive(
+  customerInfo?: CustomerInfo | null,
+  churchId?: string
+): boolean {
+  const cid = String(churchId || "").trim();
+  if (cid) {
+    return readChurchScopedEntitlementActive({ churchId: cid, customerInfo });
+  }
+  return Boolean(customerInfo && hasPremiumEntitlement(customerInfo));
+}
+
+/**
+ * Session mediaProfile subscription — only when profile belongs to the same churchId.
+ * Missing churchId on profile → unknown (null), never active.
+ */
+export function readSessionMediaProfileSubscriptionActive(churchId?: string): boolean | null {
+  const cid = String(churchId || "").trim();
   const session = getSessionSync() as any;
   const profile = session?.mediaProfile;
   if (!profile || typeof profile !== "object") return null;
+
+  const profileChurchId = String(
+    profile.churchId || profile.churchID || session?.churchId || session?.activeChurchId || ""
+  ).trim();
+  if (!profileChurchId) return null;
+  if (cid && profileChurchId.toUpperCase() !== cid.toUpperCase()) return null;
+
   if (profile.subscriptionActive === true) return true;
   if (profile.subscriptionActive === false) {
     const status = String(profile.subscriptionStatus || "")
@@ -92,17 +123,22 @@ export function readSessionMediaProfileSubscriptionActive(): boolean | null {
 }
 
 export function mergeScheduleSubscriptionSignals(input: {
+  churchId?: string;
   explicitServerActive: boolean | null;
   routeFailed: boolean;
   entitlementActive: boolean;
+  revenueCatScopedToChurch?: boolean;
   sessionProfileActive?: boolean | null;
 }): {
   churchSubscriptionActive: boolean | null;
   hasSubscription: boolean | null;
   source: string;
 } {
-  const sessionProfileActive = input.sessionProfileActive ?? readSessionMediaProfileSubscriptionActive();
+  const sessionProfileActive =
+    input.sessionProfileActive ??
+    readSessionMediaProfileSubscriptionActive(input.churchId);
 
+  // Server truth wins when explicitly active.
   if (input.explicitServerActive === true) {
     return {
       churchSubscriptionActive: true,
@@ -111,7 +147,8 @@ export function mergeScheduleSubscriptionSignals(input: {
     };
   }
 
-  if (input.explicitServerActive === false && !input.entitlementActive && sessionProfileActive !== true) {
+  // Server explicitly inactive — never override with RevenueCat or session profile.
+  if (input.explicitServerActive === false) {
     return {
       churchSubscriptionActive: false,
       hasSubscription: false,
@@ -119,11 +156,15 @@ export function mergeScheduleSubscriptionSignals(input: {
     };
   }
 
-  if (input.entitlementActive) {
+  const rcTrusted = input.entitlementActive;
+
+  if (rcTrusted) {
     return {
       churchSubscriptionActive: true,
       hasSubscription: true,
-      source: input.routeFailed ? "revenuecat_entitlement_route_failed" : "revenuecat_entitlement",
+      source: input.routeFailed
+        ? "revenuecat_entitlement_route_failed"
+        : "revenuecat_entitlement_scoped",
     };
   }
 
@@ -131,7 +172,9 @@ export function mergeScheduleSubscriptionSignals(input: {
     return {
       churchSubscriptionActive: true,
       hasSubscription: true,
-      source: input.routeFailed ? "session_media_profile_route_failed" : "session_media_profile",
+      source: input.routeFailed
+        ? "session_media_profile_route_failed"
+        : "session_media_profile_scoped",
     };
   }
 

@@ -3,8 +3,14 @@ import {
   isChurchMediaRouteFailure,
   mergeScheduleSubscriptionSignals,
   parseExplicitServerSubscriptionFromMediaRoute,
-  readLocalScheduleEntitlementActive,
+  readChurchScopedEntitlementActive,
+  readSessionMediaProfileSubscriptionActive,
 } from "@/src/lib/churchSubscriptionMediaSignals";
+import { isOfflineActivationFromMediaRouteResponse } from "@/src/lib/churchSubscription";
+import {
+  getRevenueCatConfiguredAppUserId,
+  logInRevenueCatForChurchSubscription,
+} from "@/src/lib/payments/mobileSubscriptions";
 
 export const CHURCH_RESOURCE_REFRESH_MS = 75000;
 
@@ -466,10 +472,34 @@ export async function fetchChurchSubscriptionActiveThrottled(
   if (!res) return null;
 
   const explicitServerActive = parseExplicitServerSubscriptionFromMediaRoute(res);
+  const offlineActivationActive = isOfflineActivationFromMediaRouteResponse(res);
+  let customerInfo = null;
+  let revenueCatAppUserId: string | null = null;
+  if (!offlineActivationActive) {
+    try {
+      customerInfo = await logInRevenueCatForChurchSubscription(cid);
+      revenueCatAppUserId = getRevenueCatConfiguredAppUserId();
+    } catch {
+      customerInfo = null;
+    }
+  }
+
+  const revenueCatScopedToChurch = Boolean(
+    revenueCatAppUserId && revenueCatAppUserId === cid
+  );
+  const entitlementActive = readChurchScopedEntitlementActive({
+    churchId: cid,
+    customerInfo,
+    revenueCatAppUserId,
+  });
+
   const merged = mergeScheduleSubscriptionSignals({
+    churchId: cid,
     explicitServerActive,
     routeFailed: isChurchMediaRouteFailure(res),
-    entitlementActive: readLocalScheduleEntitlementActive(),
+    entitlementActive,
+    revenueCatScopedToChurch,
+    sessionProfileActive: readSessionMediaProfileSubscriptionActive(cid),
   });
   return merged.hasSubscription;
 }

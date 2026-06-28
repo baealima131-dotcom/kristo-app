@@ -49,17 +49,18 @@ import {
   resolveMonthlyProductIntro,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
-  fetchChurchSubscriptionStatus,
+  fetchChurchMediaPremiumServerStatus,
+  isOfflineActivationMediaPremiumStatus,
   isPastorSessionRole,
   logChurchSubscriptionContext,
-  resolveChurchSubscriptionScreenState,
   syncChurchSubscriptionAfterPurchase,
-  type ChurchSubscriptionServerStatus,
+  type ChurchMediaPremiumServerStatus,
 } from "../../../../src/lib/churchSubscription";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { churchIdsMatch } from "../../../../src/lib/churchPremiumAccess";
 import { onChurchPremiumAccessChanged } from "../../../../src/lib/kristoProfileEvents";
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
+import { getSessionSync } from "../../../../src/lib/kristoSession";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
 import { isAppleReviewBypassEnabled } from "../../../../src/lib/subscriptionBypass";
 
@@ -81,7 +82,66 @@ const YEARLY_UPSELL_PILLS = [
   "Annual billing",
 ] as const;
 
-type SubscriptionScreenState = "none" | "monthly" | "yearly" | "sync";
+type SubscriptionScreenState = "none" | "monthly" | "yearly" | "offline";
+
+const OFFLINE_ACTIVATION_MESSAGE =
+  "This church was activated using an offline activation code. When access expires, contact an authorized Agent to activate the church again.";
+
+const INACTIVE_INTRO_TRIAL = {
+  isActive: false,
+  badgeLabel: null,
+  trialDays: null,
+  trialEndsAt: null,
+  firstPaymentAmount: null,
+  periodType: null,
+} as const;
+
+function resolveMediaPremiumDisplayScreenState(
+  status: ChurchMediaPremiumServerStatus | null
+): SubscriptionScreenState {
+  if (!status?.serverSubscriptionActive) return "none";
+  if (isOfflineActivationMediaPremiumStatus(status)) return "offline";
+  if (status.subscriptionPlan === "yearly") return "yearly";
+  return "monthly";
+}
+
+function resolveMediaPremiumExpiryLabel(
+  status: ChurchMediaPremiumServerStatus | null
+): string | null {
+  if (!status?.serverSubscriptionActive || !status.subscriptionExpiresAt) return null;
+  return `Expires ${formatPremiumRenewalDate(new Date(status.subscriptionExpiresAt))}`;
+}
+
+function resolveServerPremiumBillingDetails(
+  status: ChurchMediaPremiumServerStatus | null
+): ReturnType<typeof resolvePremiumSubscriptionBillingDetails> {
+  if (!status?.serverSubscriptionActive) {
+    return {
+      status: "Inactive",
+      autoRenew: "—",
+      renewalDate: null,
+      billingCycle: null,
+      introTrial: { ...INACTIVE_INTRO_TRIAL },
+    };
+  }
+
+  const renewalDate = status.subscriptionExpiresAt
+    ? new Date(status.subscriptionExpiresAt)
+    : null;
+
+  return {
+    status: "Active",
+    autoRenew: "—",
+    renewalDate,
+    billingCycle:
+      status.subscriptionPlan === "yearly"
+        ? "Yearly"
+        : status.subscriptionPlan === "monthly"
+          ? "Monthly"
+          : null,
+    introTrial: { ...INACTIVE_INTRO_TRIAL },
+  };
+}
 
 async function clearLegacyPendingPlanSwitchStorage(churchId: string) {
   const cid = String(churchId || "").trim();
@@ -487,6 +547,40 @@ function ManageSubscriptionCard({
   );
 }
 
+function OfflineActivationSubscriptionCard({
+  expiryLabel,
+}: {
+  expiryLabel: string | null;
+}) {
+  return (
+    <GlassCard highlighted>
+      <View style={s.currentPlanChipRow}>
+        <StatusChip label="ACTIVE" />
+        <StatusChip label="OFFLINE ACTIVATION" tone="green" />
+      </View>
+      <View style={s.planHeaderRow}>
+        <View style={s.planHeaderLeft}>
+          <View style={s.planIconWrap}>
+            <Ionicons name="key-outline" size={18} color="rgba(196,171,114,0.95)" />
+          </View>
+          <View style={s.planHeaderCopy}>
+            <Text style={s.planTitle}>Media Premium Access</Text>
+            <Text style={s.planDescription}>Offline Activation / Activated by Agent</Text>
+          </View>
+        </View>
+      </View>
+      <CompactMetaRow
+        text={["Status: Active", expiryLabel].filter(Boolean).join("  •  ")}
+      />
+      <CompactMetaRow text="Source: Offline Activation / Activated by Agent" />
+      <View style={s.successNote}>
+        <Ionicons name="information-circle-outline" size={14} color="rgba(196,171,114,0.95)" />
+        <Text style={s.successNoteText}>{OFFLINE_ACTIVATION_MESSAGE}</Text>
+      </View>
+    </GlassCard>
+  );
+}
+
 export default function PaymentsSubscriptionsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -496,7 +590,8 @@ export default function PaymentsSubscriptionsScreen() {
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
-  const [serverStatus, setServerStatus] = useState<ChurchSubscriptionServerStatus | null>(null);
+  const [mediaPremiumStatus, setMediaPremiumStatus] =
+    useState<ChurchMediaPremiumServerStatus | null>(null);
   const [offersLoading, setOffersLoading] = useState(true);
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
@@ -516,23 +611,45 @@ export default function PaymentsSubscriptionsScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
+      if (isOfflineActivationMediaPremiumStatus(mediaPremiumStatus)) {
+        setRevenueCatDebugRouteEnabled(false);
+        return () => setRevenueCatDebugRouteEnabled(false);
+      }
       setRevenueCatDebugRouteEnabled(true);
       return () => setRevenueCatDebugRouteEnabled(false);
-    }, [])
+    }, [mediaPremiumStatus])
   );
+
+  async function refreshMediaPremiumServerStatus(resolvedChurchId?: string) {
+    const cid = String(resolvedChurchId || churchId || (session as any)?.churchId || "").trim();
+    if (!cid || !sessionUserId) return null;
+
+    const headers = getKristoHeaders({
+      userId: sessionUserId,
+      role: sessionRole as any,
+      churchId: cid,
+    }) as Record<string, string>;
+
+    const server = await fetchChurchMediaPremiumServerStatus(cid, headers);
+    setMediaPremiumStatus(server);
+    return server;
+  }
 
   useEffect(() => {
     if (!churchId) return;
     return onChurchPremiumAccessChanged((payload) => {
       if (!churchIdsMatch(payload.churchId, churchId)) return;
-      setServerStatus({
-        subscriptionActive: true,
-        backendSubscriptionActive: true,
-        canUseMediaTools: payload.canUseMediaTools,
-        subscriptionPlan: payload.subscriptionPlan ?? null,
-      });
+      if (payload.backendSubscriptionActive !== true) return;
+      void refreshMediaPremiumServerStatus(churchId);
     });
-  }, [churchId]);
+  }, [churchId, sessionUserId, sessionRole]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (sessionLoading || !churchId) return;
+      void refreshMediaPremiumServerStatus(churchId);
+    }, [sessionLoading, churchId, sessionUserId, sessionRole])
+  );
 
   useEffect(() => {
     let alive = true;
@@ -542,6 +659,7 @@ export default function PaymentsSubscriptionsScreen() {
 
       setOffersLoading(true);
       setSubscriptionError(null);
+      setMediaPremiumStatus(null);
 
       try {
         let resolvedChurchId = String((session as any)?.churchId || "").trim();
@@ -559,14 +677,41 @@ export default function PaymentsSubscriptionsScreen() {
           churchId: resolvedChurchId,
         }) as Record<string, string>;
 
+        const server = await fetchChurchMediaPremiumServerStatus(resolvedChurchId, headers);
+
+        if (!alive) return;
+
+        await clearLegacyPendingPlanSwitchStorage(resolvedChurchId);
+
+        setChurchId(resolvedChurchId);
+        setMediaPremiumStatus(server);
+
+        if (isOfflineActivationMediaPremiumStatus(server)) {
+          setMonthlyPackage(null);
+          setYearlyPackage(null);
+          setCustomerInfo(null);
+          setSubscriptionPlanStatus(server.serverSubscriptionActive ? "active" : "expired");
+          setSubscriptionError(null);
+
+          console.log("KRISTO_SUBSCRIPTIONS_SERVER_STATUS", {
+            churchId: resolvedChurchId,
+            serverSubscriptionActive: server.serverSubscriptionActive,
+            subscriptionPlan: server.subscriptionPlan,
+            subscriptionExpiresAt: server.subscriptionExpiresAt,
+            subscriptionSource: server.subscriptionSource,
+            source: server.source,
+            revenueCatBypass: true,
+          });
+          return;
+        }
+
         const configured = await configureChurchMobileSubscriptions(resolvedChurchId);
         if (!configured) {
           throw new Error("RevenueCat is not configured yet.");
         }
 
-        const [offerings, server, infoResult] = await Promise.all([
+        const [offerings, infoResult] = await Promise.all([
           getSubscriptionOfferings(),
-          fetchChurchSubscriptionStatus(headers),
           getCustomerSubscriptionInfo().catch(() => null),
         ]);
 
@@ -579,20 +724,16 @@ export default function PaymentsSubscriptionsScreen() {
 
         if (!alive) return;
 
-        await clearLegacyPendingPlanSwitchStorage(resolvedChurchId);
-
-        setChurchId(resolvedChurchId);
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
         setCustomerInfo(infoResult);
-        setServerStatus(server);
 
         console.log("KRISTO_SUBSCRIPTIONS_SERVER_STATUS", {
           churchId: resolvedChurchId,
-          backendSubscriptionActive: server.backendSubscriptionActive,
-          subscriptionActive: server.subscriptionActive,
+          serverSubscriptionActive: server.serverSubscriptionActive,
           subscriptionPlan: server.subscriptionPlan,
-          canUseMediaTools: server.canUseMediaTools,
+          subscriptionExpiresAt: server.subscriptionExpiresAt,
+          subscriptionSource: server.subscriptionSource,
           source: server.source,
         });
 
@@ -609,8 +750,7 @@ export default function PaymentsSubscriptionsScreen() {
           screen: "subscriptions",
           churchId: resolvedChurchId,
           customerInfo: infoResult,
-          churchSubscriptionActive: server.backendSubscriptionActive ?? undefined,
-          canUseMediaTools: server.canUseMediaTools ?? undefined,
+          churchSubscriptionActive: server.serverSubscriptionActive,
         });
         logEntitlementAudit({
           customerInfo: infoResult,
@@ -656,8 +796,10 @@ export default function PaymentsSubscriptionsScreen() {
       return;
     }
 
-    const ui = resolveChurchSubscriptionScreenState(serverStatus, customerInfo);
-    if (ui.screenState !== "sync") return;
+    const serverActive = mediaPremiumStatus?.serverSubscriptionActive === true;
+    if (isOfflineActivationMediaPremiumStatus(mediaPremiumStatus)) return;
+    const rcHasPremium = hasPremiumEntitlement(customerInfo);
+    if (serverActive || !rcHasPremium) return;
 
     let alive = true;
     const plan = (customerInfo ? resolveActiveSubscriptionPlan(customerInfo) : null) || "monthly";
@@ -679,7 +821,7 @@ export default function PaymentsSubscriptionsScreen() {
     sessionLoading,
     churchId,
     sessionRole,
-    serverStatus,
+    mediaPremiumStatus,
     customerInfo,
   ]);
 
@@ -695,19 +837,12 @@ export default function PaymentsSubscriptionsScreen() {
     setSubscriptionPlanStatus(hasPremium ? "active" : "expired");
 
     if (!churchId) return;
-    const headers = getKristoHeaders({
-      userId: sessionUserId,
-      role: sessionRole as any,
-      churchId,
-    }) as Record<string, string>;
-    const server = await fetchChurchSubscriptionStatus(headers);
-    setServerStatus(server);
+    const server = await refreshMediaPremiumServerStatus(churchId);
     logChurchSubscriptionContext({
       screen: "subscriptions",
       churchId,
       customerInfo: info,
-      churchSubscriptionActive: server.backendSubscriptionActive ?? undefined,
-      canUseMediaTools: server.canUseMediaTools ?? undefined,
+      churchSubscriptionActive: server?.serverSubscriptionActive,
     });
     logRevenueCatSubscriptionOwnershipDebug(info, "subscriptions-refresh", { churchId });
   }
@@ -751,12 +886,7 @@ export default function PaymentsSubscriptionsScreen() {
     });
 
     if (sync.churchSubscriptionActive || sync.canUseMediaTools) {
-      setServerStatus({
-        subscriptionActive: true,
-        backendSubscriptionActive: true,
-        canUseMediaTools: sync.canUseMediaTools,
-        subscriptionPlan: sync.subscriptionPlan ?? resolvedPlan,
-      });
+      await refreshMediaPremiumServerStatus(resolvedChurchId);
     }
 
     return {
@@ -822,9 +952,8 @@ export default function PaymentsSubscriptionsScreen() {
       return;
     }
 
-    const subscriptionUi = resolveChurchSubscriptionScreenState(serverStatus, customerInfo);
-    const switchingFromMonthly =
-      plan === "yearly" && subscriptionUi.screenState === "monthly";
+    const displayScreenState = resolveMediaPremiumDisplayScreenState(mediaPremiumStatus);
+    const switchingFromMonthly = plan === "yearly" && displayScreenState === "monthly";
 
     try {
       setSubmittingPlan(plan);
@@ -904,18 +1033,68 @@ export default function PaymentsSubscriptionsScreen() {
     }
   }
 
-  const subscriptionUi = resolveChurchSubscriptionScreenState(serverStatus, customerInfo);
-  const screenState: SubscriptionScreenState = subscriptionUi.screenState;
-  const billing = resolvePremiumSubscriptionBillingDetails(customerInfo, { monthlyPackage });
-  const introTrialActive = billing.introTrial.isActive;
-  const introTrialBadge = billing.introTrial.badgeLabel;
+  const serverSubscriptionActive = mediaPremiumStatus?.serverSubscriptionActive === true;
+  const displayedActive = serverSubscriptionActive;
+  const isOfflineActivation = isOfflineActivationMediaPremiumStatus(mediaPremiumStatus);
+  const showAppStoreBillingControls = displayedActive && !isOfflineActivation;
+  const screenState = resolveMediaPremiumDisplayScreenState(mediaPremiumStatus);
+  const billing = resolveServerPremiumBillingDetails(mediaPremiumStatus);
+  const expiryLabel = resolveMediaPremiumExpiryLabel(mediaPremiumStatus);
+  const renewalLabel =
+    showAppStoreBillingControls && billing.renewalDate
+      ? `Renews ${formatPremiumRenewalDate(billing.renewalDate)}`
+      : null;
+
+  useEffect(() => {
+    if (!churchId || offersLoading) return;
+
+    const sessionSnapshot = getSessionSync() as any;
+    const profile = sessionSnapshot?.mediaProfile;
+    const sessionMediaProfileChurchId =
+      String(profile?.churchId || profile?.churchID || "").trim() || null;
+    const revenueCatEntitlementActive = hasPremiumEntitlement(customerInfo);
+    const ignoredRevenueCatBecauseServerInactive =
+      revenueCatEntitlementActive && !serverSubscriptionActive;
+    const ignoredSessionMediaProfileBecauseWrongChurch = Boolean(
+      sessionMediaProfileChurchId &&
+        !churchIdsMatch(sessionMediaProfileChurchId, churchId) &&
+        profile?.subscriptionActive === true
+    );
+
+    console.log("KRISTO_MEDIA_PREMIUM_SCREEN_STATUS", {
+      churchId,
+      displayedActive,
+      subscriptionSource: mediaPremiumStatus?.subscriptionSource ?? null,
+      isOfflineActivation,
+      showAppStoreBillingControls,
+      renewalLabel,
+      expiryLabel,
+      serverSubscriptionActive,
+      source: mediaPremiumStatus?.source ?? "unknown",
+      revenueCatEntitlementActive,
+      ignoredRevenueCatBecauseServerInactive,
+      sessionMediaProfileChurchId,
+      ignoredSessionMediaProfileBecauseWrongChurch,
+    });
+  }, [
+    churchId,
+    mediaPremiumStatus,
+    customerInfo,
+    offersLoading,
+    serverSubscriptionActive,
+    displayedActive,
+    isOfflineActivation,
+    showAppStoreBillingControls,
+    renewalLabel,
+    expiryLabel,
+  ]);
 
   const monthlyDisplayPrice = formatPrice(monthlyPackage || undefined, "$49.99");
   const yearlyDisplayPrice = formatPrice(yearlyPackage || undefined, "$499.99");
   const yearlySavings = resolveYearlySavingsDisplay(monthlyPackage, yearlyPackage);
   const tabBarClearance = 96;
 
-  const churchSubscriptionActive = serverStatus?.backendSubscriptionActive === true;
+  const churchSubscriptionActive = serverSubscriptionActive;
   const monthlyHasIntroOffer = monthlyPackageHasIntroOffer(monthlyPackage);
   const showMonthlyFreeTrial = !churchSubscriptionActive && monthlyHasIntroOffer;
   const monthlyIntro = resolveMonthlyProductIntro(monthlyPackage);
@@ -956,7 +1135,11 @@ export default function PaymentsSubscriptionsScreen() {
 
           <View style={{ flex: 1 }}>
             <Text style={s.title}>Media Premium</Text>
-            <Text style={s.sub}>Manage your church subscription</Text>
+            <Text style={s.sub}>
+              {isOfflineActivation
+                ? "View your church subscription"
+                : "Manage your church subscription"}
+            </Text>
           </View>
         </View>
 
@@ -978,28 +1161,20 @@ export default function PaymentsSubscriptionsScreen() {
           </View>
         ) : (
           <View style={s.content}>
+            {screenState === "offline" ? (
+              <OfflineActivationSubscriptionCard expiryLabel={expiryLabel} />
+            ) : null}
+
             {screenState === "monthly" ? (
               <>
                 <CurrentPlanCard
                   icon="calendar-outline"
                   planName="Monthly Plan"
-                  description={
-                    introTrialActive
-                      ? "Media Premium — free trial in progress"
-                      : "Media Premium for your church"
-                  }
-                  price={introTrialActive ? "$0" : monthlyDisplayPrice}
-                  period={introTrialActive ? "during trial" : "/month"}
-                  subPrice={
-                    introTrialActive ? `Then ${monthlyDisplayPrice}/month` : undefined
-                  }
+                  description="Media Premium for your church"
+                  price={monthlyDisplayPrice}
+                  period="/month"
                   billing={billing}
-                  trialBadge={introTrialBadge}
-                  successMessage={
-                    introTrialActive
-                      ? "Full Media Premium access is active during your free trial. You won't be charged until the trial ends."
-                      : "You have full access to Media Premium features."
-                  }
+                  successMessage="You have full access to Media Premium features."
                 />
                 <YearlyUpsellCard
                   price={yearlyDisplayPrice}
@@ -1038,7 +1213,7 @@ export default function PaymentsSubscriptionsScreen() {
               </>
             ) : null}
 
-            {screenState === "none" || screenState === "sync" ? (
+            {screenState === "none" ? (
               <>
                 <Text style={s.sectionHeading}>Choose a plan</Text>
                 <Text style={s.sectionSub}>
@@ -1072,7 +1247,9 @@ export default function PaymentsSubscriptionsScreen() {
               </>
             ) : null}
 
-            <Text style={s.footer}>Billing is managed by your app store.</Text>
+            {showAppStoreBillingControls ? (
+              <Text style={s.footer}>Billing is managed by your app store.</Text>
+            ) : null}
           </View>
         )}
       </ScrollView>

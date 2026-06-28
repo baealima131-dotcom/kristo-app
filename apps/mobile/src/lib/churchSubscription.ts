@@ -1,6 +1,7 @@
 import { Alert } from "react-native";
 import type { CustomerInfo } from "react-native-purchases";
 import { apiGet, apiPatch } from "./kristoApi";
+import { clearResponseCacheForRequest } from "./kristoTraffic";
 import { getSessionSync } from "./kristoSession";
 import {
   evaluateStrictChurchMediaLiveSubscriptionGate,
@@ -15,10 +16,12 @@ import {
   isChurchSubscriptionActiveFromRecord,
   mergeScheduleSubscriptionSignals,
   parseExplicitServerSubscriptionFromMediaRoute,
+  readChurchScopedEntitlementActive,
   readLocalScheduleEntitlementActive,
   readSessionMediaProfileSubscriptionActive,
   type ChurchSubscriptionRecord,
 } from "./churchSubscriptionMediaSignals";
+import { logSubscriptionBypassIfEnabled } from "./subscriptionBypass";
 import {
   describeCustomerInfoSubscriptionDebug,
   getActivePremiumEntitlement,
@@ -49,6 +52,7 @@ export {
   mergeScheduleSubscriptionSignals,
   parseExplicitServerSubscriptionFromMediaRoute,
   readLocalScheduleEntitlementActive,
+  readChurchScopedEntitlementActive,
   readSessionMediaProfileSubscriptionActive,
 } from "./churchSubscriptionMediaSignals";
 
@@ -308,7 +312,6 @@ export async function probeChurchMediaScheduleRoute(args: {
   console.log("KRISTO_SCHEDULE_ROUTE_RESPONSE", {
     churchId,
     appUserId,
-    entitlementActive: readLocalScheduleEntitlementActive(),
     endpoint,
     endpointStatus,
     routeFailed,
@@ -333,6 +336,8 @@ export async function resolveScheduleSubscriptionState(args: {
   customerInfo?: CustomerInfo | null;
   fetchCustomerInfo?: boolean;
 }): Promise<ScheduleSubscriptionResolution> {
+  logSubscriptionBypassIfEnabled();
+
   const churchId = resolveScheduleChurchId(args.churchId, args.headers);
   const appUserId = resolveScheduleAppUserId(args.headers);
 
@@ -342,19 +347,34 @@ export async function resolveScheduleSubscriptionState(args: {
   });
 
   let customerInfo = args.customerInfo ?? null;
-  if (args.fetchCustomerInfo !== false && !customerInfo) {
+  let revenueCatAppUserId: string | null = null;
+  const offlineActivationActive = isOfflineActivationFromMediaRouteResponse(route.responseBody);
+  if (args.fetchCustomerInfo !== false && churchId && !offlineActivationActive) {
     try {
-      customerInfo = await getCustomerSubscriptionInfo();
+      customerInfo = await logInRevenueCatForChurchSubscription(churchId);
+      revenueCatAppUserId = getRevenueCatConfiguredAppUserId();
     } catch {
-      customerInfo = null;
+      customerInfo = args.customerInfo ?? null;
     }
   }
 
-  const entitlementActive = readLocalScheduleEntitlementActive(customerInfo);
+  const revenueCatScopedToChurch = Boolean(
+    churchId && revenueCatAppUserId && revenueCatAppUserId === churchId
+  );
+  const entitlementActive = readChurchScopedEntitlementActive({
+    churchId,
+    customerInfo,
+    revenueCatAppUserId,
+  });
+  const sessionProfileActive = readSessionMediaProfileSubscriptionActive(churchId);
+
   const merged = mergeScheduleSubscriptionSignals({
+    churchId,
     explicitServerActive: route.explicitServerActive,
     routeFailed: route.routeFailed,
     entitlementActive,
+    revenueCatScopedToChurch,
+    sessionProfileActive,
   });
 
   const canUseMediaTools =
@@ -366,14 +386,24 @@ export async function resolveScheduleSubscriptionState(args: {
           ? false
           : merged.hasSubscription;
 
+  console.log("KRISTO_CHURCH_SUBSCRIPTION_SCOPE", {
+    churchId,
+    revenueCatAppUserId,
+    revenueCatScopedToChurch,
+    entitlementActive,
+    serverSubscriptionActive: route.explicitServerActive,
+  });
+
   console.log("KRISTO_SCHEDULE_SUBSCRIPTION_SOURCE", {
     churchId,
     appUserId,
     entitlementActive,
+    revenueCatAppUserId,
+    revenueCatScopedToChurch,
     endpointStatus: route.endpointStatus,
     routeFailed: route.routeFailed,
     explicitServerActive: route.explicitServerActive,
-    sessionProfileActive: readSessionMediaProfileSubscriptionActive(),
+    sessionProfileActive,
     source: merged.source,
   });
 
@@ -411,31 +441,50 @@ export async function resolveScheduleSubscriptionState(args: {
 }
 
 export function resolveScheduleGateSubscriptionInputs(input: {
+  churchId?: string;
   serverSubscriptionActive: boolean | null;
   entitlementActive?: boolean;
+  customerInfo?: CustomerInfo | null;
 }): {
   hasSubscription: boolean | null;
   subscriptionLocked: boolean;
   churchSubscriptionActive: boolean | null;
 } {
+  const churchId = resolveScheduleChurchId(input.churchId);
+  const revenueCatAppUserId = getRevenueCatConfiguredAppUserId();
+  const revenueCatScopedToChurch = Boolean(
+    churchId && revenueCatAppUserId && revenueCatAppUserId === churchId
+  );
   const entitlementActive =
-    input.entitlementActive ?? readLocalScheduleEntitlementActive();
+    input.entitlementActive ??
+    readChurchScopedEntitlementActive({
+      churchId,
+      customerInfo: input.customerInfo,
+      revenueCatAppUserId,
+    });
+  const sessionProfileActive = readSessionMediaProfileSubscriptionActive(churchId);
+
   const merged = mergeScheduleSubscriptionSignals({
+    churchId,
     explicitServerActive: input.serverSubscriptionActive,
     routeFailed: input.serverSubscriptionActive === null,
     entitlementActive,
+    revenueCatScopedToChurch,
+    sessionProfileActive,
   });
 
   const subscriptionLocked = merged.hasSubscription === false;
 
   console.log("KRISTO_SCHEDULE_SUBSCRIPTION_SOURCE", {
-    churchId: resolveScheduleChurchId(),
+    churchId,
     appUserId: resolveScheduleAppUserId(),
+    revenueCatAppUserId,
+    revenueCatScopedToChurch,
     entitlementActive,
     endpointStatus: null,
     routeFailed: input.serverSubscriptionActive === null,
     explicitServerActive: input.serverSubscriptionActive,
-    sessionProfileActive: readSessionMediaProfileSubscriptionActive(),
+    sessionProfileActive,
     source: merged.source,
     mode: "sync_gate",
   });
@@ -516,6 +565,128 @@ export type ChurchSubscriptionServerStatus = {
   source?: string;
   routeFailed?: boolean;
 };
+
+export type ChurchMediaSubscriptionSource =
+  | "app_store"
+  | "stripe"
+  | "offline_activation";
+
+/** Media Premium screen: raw `/api/church/media` only — no RevenueCat or session merge. */
+export type ChurchMediaPremiumServerStatus = {
+  churchId: string;
+  serverSubscriptionActive: boolean;
+  subscriptionPlan: SubscriptionPlanKey | null;
+  subscriptionExpiresAt: number | null;
+  subscriptionSource: ChurchMediaSubscriptionSource | null;
+  routeFailed: boolean;
+  source: "server_media_api";
+};
+
+export function parseChurchMediaSubscriptionSource(
+  media: ChurchSubscriptionRecord | null | undefined,
+  res?: { subscriptionSource?: unknown } | null
+): ChurchMediaSubscriptionSource | null {
+  const raw = String(media?.subscriptionSource ?? res?.subscriptionSource ?? "")
+    .trim()
+    .toLowerCase();
+  if (raw === "offline_activation") return "offline_activation";
+  if (raw === "app_store") return "app_store";
+  if (raw === "stripe") return "stripe";
+  return null;
+}
+
+export function isOfflineActivationMediaPremiumStatus(
+  status: ChurchMediaPremiumServerStatus | null | undefined
+): boolean {
+  return (
+    status?.serverSubscriptionActive === true &&
+    status?.subscriptionSource === "offline_activation"
+  );
+}
+
+/** True when `/api/church/media` reports active access from an offline activation code. */
+export function isOfflineActivationFromMediaRouteResponse(res: any): boolean {
+  if (parseExplicitServerSubscriptionFromMediaRoute(res) !== true) return false;
+  return parseChurchMediaSubscriptionSource(res?.media, res) === "offline_activation";
+}
+
+function parseServerSubscriptionExpiresAt(media: any, res: any): number | null {
+  const raw =
+    media?.subscriptionExpiresAt ??
+    media?.subscription_expires_at ??
+    res?.subscriptionExpiresAt ??
+    null;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string") {
+    const ms = Date.parse(raw);
+    if (!Number.isNaN(ms)) return ms;
+  }
+  return null;
+}
+
+/** Church-scoped media profile expiry from `/api/church/media` (RevenueCat or offline activation). */
+export function parseChurchMediaSubscriptionExpiresAt(
+  media: ChurchSubscriptionRecord | null | undefined
+): number | null {
+  return parseServerSubscriptionExpiresAt(media, null);
+}
+
+export async function fetchChurchMediaPremiumServerStatus(
+  churchId: string,
+  headers?: Record<string, string>
+): Promise<ChurchMediaPremiumServerStatus> {
+  const cid = String(churchId || "").trim();
+  const userId = String(
+    headers?.["x-kristo-user-id"] || headers?.["X-Kristo-User-Id"] || ""
+  ).trim();
+
+  if (userId && cid) {
+    clearResponseCacheForRequest("GET", "/api/church/media", userId, cid);
+  }
+
+  const res: any = await apiGet(
+    "/api/church/media",
+    { headers },
+    { screen: "MediaPremiumScreen", dedupe: false, throttleMs: 0 }
+  );
+
+  const routeFailed = isChurchMediaRouteFailure(res);
+  const explicitActive = parseExplicitServerSubscriptionFromMediaRoute(res);
+  const serverSubscriptionActive = explicitActive === true;
+  const media = res?.media;
+  const planRaw = String(media?.subscriptionPlan || res?.subscriptionPlan || "")
+    .trim()
+    .toLowerCase();
+  const subscriptionPlan: SubscriptionPlanKey | null =
+    planRaw === "yearly" ? "yearly" : planRaw === "monthly" ? "monthly" : null;
+  const subscriptionExpiresAt = serverSubscriptionActive
+    ? parseServerSubscriptionExpiresAt(media, res)
+    : null;
+  const subscriptionSource = serverSubscriptionActive
+    ? parseChurchMediaSubscriptionSource(media, res)
+    : null;
+
+  console.log("KRISTO_CHURCH_MEDIA_SERVER_RESPONSE", {
+    churchId: cid,
+    subscriptionActive: serverSubscriptionActive,
+    subscriptionExpiresAt,
+    subscriptionPlan,
+    subscriptionSource,
+    source: "server_media_api",
+    routeFailed,
+    explicitServerActive: explicitActive,
+  });
+
+  return {
+    churchId: cid,
+    serverSubscriptionActive,
+    subscriptionPlan,
+    subscriptionExpiresAt,
+    subscriptionSource,
+    routeFailed,
+    source: "server_media_api",
+  };
+}
 
 export async function fetchChurchSubscriptionStatus(
   headers?: Record<string, string>,
@@ -983,6 +1154,11 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
       headers: args.headers,
       subscriptionPlan: args.subscriptionPlan,
       subscriptionActive: churchSubscriptionActive,
+      backendSubscriptionActive: Boolean(
+        mediaRefresh.mediaRes?.media?.subscriptionActive ||
+          mediaRefresh.mediaRes?.subscriptionActive ||
+          churchActivated
+      ),
       canUseMediaTools,
       source: "subscription-purchase-activated",
     });
