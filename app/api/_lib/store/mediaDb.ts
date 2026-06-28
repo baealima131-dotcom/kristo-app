@@ -251,6 +251,13 @@ export async function upsertChurchMedia(input: {
     updatedAt: now,
   };
 
+  if (!existing && input.patch.subscriptionActive !== true) {
+    next.subscriptionActive = false;
+    delete next.subscriptionPlan;
+    delete next.subscriptionUpdatedAt;
+    delete next.subscriptionExpiresAt;
+  }
+
   if (!next.mediaName) {
     throw new Error("mediaName required");
   }
@@ -283,6 +290,9 @@ export async function upsertChurchMedia(input: {
     mediaId: confirmed.id,
     mediaName: confirmed.mediaName,
     hostCount: Array.isArray(confirmed.hosts) ? confirmed.hosts.length : 0,
+    subscriptionActive: confirmed.subscriptionActive ?? false,
+    subscriptionPlan: confirmed.subscriptionPlan ?? null,
+    subscriptionUpdatedAt: confirmed.subscriptionUpdatedAt ?? null,
     storeMode: resolveMediaStoreMode(),
   });
 
@@ -293,7 +303,7 @@ export async function patchChurchMediaSubscription(
   churchId: string,
   patch: {
     subscriptionActive: boolean;
-    subscriptionPlan?: string;
+    subscriptionPlan?: string | null;
     subscriptionExpiresAt?: number | null;
   }
 ): Promise<ChurchMediaProfile | null> {
@@ -305,13 +315,31 @@ export async function patchChurchMediaSubscription(
     ...existing,
     mediaName: existing.mediaName,
     subscriptionActive: patch.subscriptionActive,
-    subscriptionPlan: patch.subscriptionPlan || existing.subscriptionPlan,
-    subscriptionUpdatedAt: now,
+    subscriptionUpdatedAt: patch.subscriptionActive ? now : undefined,
   };
 
+  if (patch.subscriptionPlan !== undefined) {
+    if (patch.subscriptionPlan) {
+      nextPatch.subscriptionPlan = patch.subscriptionPlan;
+    } else {
+      delete nextPatch.subscriptionPlan;
+    }
+  } else if (!patch.subscriptionActive) {
+    delete nextPatch.subscriptionPlan;
+  }
+
   if (patch.subscriptionExpiresAt !== undefined) {
-    nextPatch.subscriptionExpiresAt =
-      patch.subscriptionExpiresAt === null ? undefined : patch.subscriptionExpiresAt;
+    if (patch.subscriptionExpiresAt === null) {
+      delete nextPatch.subscriptionExpiresAt;
+    } else {
+      nextPatch.subscriptionExpiresAt = patch.subscriptionExpiresAt;
+    }
+  } else if (!patch.subscriptionActive) {
+    delete nextPatch.subscriptionExpiresAt;
+  }
+
+  if (!patch.subscriptionActive) {
+    delete nextPatch.subscriptionUpdatedAt;
   }
 
   return upsertChurchMedia({

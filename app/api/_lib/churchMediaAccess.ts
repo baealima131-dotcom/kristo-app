@@ -192,6 +192,8 @@ export async function ensureChurchMediaProfileForPastor(args: {
     churchId,
     actualPastorUserId: pastorUserId,
     requesterUserId,
+    profileSubscriptionActive: existing?.subscriptionActive ?? null,
+    profileSubscriptionPlan: existing?.subscriptionPlan ?? null,
   });
 
   try {
@@ -208,6 +210,7 @@ export async function ensureChurchMediaProfileForPastor(args: {
         visibility: "church",
         churchId,
         createdBy: pastorUserId,
+        subscriptionActive: false,
       } as Partial<ChurchMediaProfile> & { mediaName: string },
     });
 
@@ -216,6 +219,11 @@ export async function ensureChurchMediaProfileForPastor(args: {
       actualPastorUserId: pastorUserId,
       mediaId: created.id,
       mediaName: created.mediaName,
+      profileSubscriptionActive: created.subscriptionActive ?? false,
+      profileSubscriptionPlan: created.subscriptionPlan ?? null,
+      profileSubscriptionUpdatedAt: created.subscriptionUpdatedAt ?? null,
+      revenueCatActive: null,
+      reason: "profile-created-inactive-default",
     });
 
     return created;

@@ -5,6 +5,7 @@ import { guard } from "@/app/api/_lib/rbac";
 import {
   getChurchMediaByChurchId,
   isMediaDatabaseError,
+  patchChurchMediaSubscription,
   resolveMediaStoreMode,
   upsertChurchMedia,
   confirmChurchMediaPersisted,
@@ -13,6 +14,7 @@ import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
 import { reconcileChurchSubscriptionExpiryNotifications } from "@/app/api/_lib/churchMediaNotifications";
 import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
 import { syncChurchSubscriptionFromRevenueCat } from "@/app/api/_lib/churchSubscriptionSync";
+import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
 import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 
 export const runtime = "nodejs";
@@ -69,7 +71,24 @@ export async function GET(req: NextRequest) {
     let hasProfile = Boolean(String(media?.mediaName || "").trim());
     let subscriptionActive = access.subscriptionActive;
 
-    if (access.canManageMediaHosts && (!hasProfile || !subscriptionActive)) {
+    console.log("KRISTO_CHURCH_MEDIA_GET_BEFORE_SYNC", {
+      churchId,
+      userId,
+      hasProfile,
+      subscriptionActive,
+      canManageMediaHosts: access.canManageMediaHosts,
+      profileSubscriptionPlan: media?.subscriptionPlan ?? null,
+      profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
+    });
+
+    // Reconcile only when a profile already exists but is inactive — never auto-create
+    // or activate subscription on first GET (PATCH + verified RevenueCat handles activation).
+    if (access.canManageMediaHosts && hasProfile && !subscriptionActive) {
+      console.log("KRISTO_CHURCH_MEDIA_GET_SYNC_ATTEMPT", {
+        churchId,
+        userId,
+        reason: "existing-profile-inactive-reconcile",
+      });
       const sync = await syncChurchSubscriptionFromRevenueCat({
         churchId,
         requesterUserId: userId,
@@ -80,6 +99,46 @@ export async function GET(req: NextRequest) {
         subscriptionActive = isChurchSubscriptionActiveFromRecord(sync.media);
         if (sync.synced) {
           access = await evaluateChurchMediaAccess({ churchId, userId });
+        }
+      }
+      console.log("KRISTO_CHURCH_MEDIA_GET_AFTER_SYNC", {
+        churchId,
+        userId,
+        syncReason: sync.reason,
+        syncSynced: sync.synced,
+        subscriptionActivated: sync.subscriptionActivated,
+        profileSubscriptionActive: sync.media?.subscriptionActive ?? null,
+        profileSubscriptionPlan: sync.media?.subscriptionPlan ?? null,
+        revenueCatActive: sync.synced,
+        reason: sync.reason,
+      });
+    } else if (access.canManageMediaHosts && hasProfile && subscriptionActive) {
+      const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
+      if (!verification.active) {
+        console.log("KRISTO_CHURCH_MEDIA_DEACTIVATE_STALE_SUBSCRIPTION", {
+          churchId,
+          userId,
+          profileSubscriptionActive: mediaForResponse?.subscriptionActive ?? null,
+          profileSubscriptionPlan: mediaForResponse?.subscriptionPlan ?? null,
+          revenueCatActive: verification.active,
+          revenueCatReason: verification.reason,
+          reason: "profile-active-without-verified-entitlement",
+        });
+        const deactivated = await patchChurchMediaSubscription(churchId, {
+          subscriptionActive: false,
+          subscriptionPlan: null,
+        });
+        if (deactivated) {
+          mediaForResponse = deactivated;
+          subscriptionActive = false;
+          access = await evaluateChurchMediaAccess({ churchId, userId });
+          console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_DEACTIVATE", {
+            churchId,
+            profileSubscriptionActive: deactivated.subscriptionActive ?? false,
+            profileSubscriptionPlan: deactivated.subscriptionPlan ?? null,
+            revenueCatActive: verification.active,
+            reason: "stale-subscription-cleared",
+          });
         }
       }
     }
@@ -149,6 +208,16 @@ export async function GET(req: NextRequest) {
         storeMode: resolveMediaStoreMode(),
       });
     }
+
+    console.log("KRISTO_CHURCH_MEDIA_GET_RESPONSE", {
+      churchId,
+      userId,
+      subscriptionActive,
+      subscriptionPlan: mediaForResponse?.subscriptionPlan ?? null,
+      subscriptionUpdatedAt: mediaForResponse?.subscriptionUpdatedAt ?? null,
+      hasProfile,
+      profileMissing: !hasProfile,
+    });
 
     return NextResponse.json({
       ok: true,

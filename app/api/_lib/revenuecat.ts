@@ -53,7 +53,14 @@ function getSecretKey(): string {
  */
 export function isSubscriptionVerificationBypassed(): boolean {
   if (process.env.NODE_ENV !== "production") return true;
-  return process.env.KRISTO_SUBSCRIPTION_BYPASS === "1";
+  const bypass = process.env.KRISTO_SUBSCRIPTION_BYPASS === "1";
+  if (bypass) {
+    console.warn("KRISTO_SUBSCRIPTION_BYPASS_ENABLED", {
+      kristoSubscriptionBypass: process.env.KRISTO_SUBSCRIPTION_BYPASS ?? null,
+      nodeEnv: process.env.NODE_ENV,
+    });
+  }
+  return bypass;
 }
 
 export function planFromProductId(productId: string | null | undefined): SubscriptionPlan | null {
@@ -82,16 +89,36 @@ function entitlementIsActive(expiresDate: unknown): boolean {
  * calls `Purchases.logIn(churchId)`), so the server looks the subscriber up by church.
  */
 export async function verifyChurchPremiumEntitlement(
-  appUserId: string
+  appUserId: string,
+  opts?: { forActivation?: boolean }
 ): Promise<ChurchPremiumVerification> {
   const uid = String(appUserId || "").trim();
+  const forActivation = opts?.forActivation !== false;
 
   if (isSubscriptionVerificationBypassed()) {
+    console.warn("KRISTO_SUBSCRIPTION_BYPASS_ENABLED", {
+      kristoSubscriptionBypass: process.env.KRISTO_SUBSCRIPTION_BYPASS ?? null,
+      nodeEnv: process.env.NODE_ENV,
+      forActivation,
+      note: forActivation
+        ? "Bypass does not grant subscription activation — RevenueCat verification required."
+        : "Bypass flag detected.",
+    });
+    if (!forActivation) {
+      return {
+        active: true,
+        plan: null,
+        productId: null,
+        reason: "bypass",
+        bypassed: true,
+        expiresAt: null,
+      };
+    }
     return {
-      active: true,
+      active: false,
       plan: null,
       productId: null,
-      reason: "bypass",
+      reason: "bypass-not-allowed-for-activation",
       bypassed: true,
       expiresAt: null,
     };

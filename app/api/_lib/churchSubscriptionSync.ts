@@ -67,16 +67,39 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     subscriptionActive: access.subscriptionActive,
   });
 
-  const verification = await verifyChurchPremiumEntitlement(churchId);
-  if (!verification.active) {
+  const mediaBefore = await getChurchMediaByChurchId(churchId);
+  console.log("KRISTO_CHURCH_MEDIA_PROFILE_BEFORE_SYNC", {
+    churchId,
+    profileSubscriptionActive: mediaBefore?.subscriptionActive ?? null,
+    profileSubscriptionPlan: mediaBefore?.subscriptionPlan ?? null,
+    profileSubscriptionUpdatedAt: mediaBefore?.subscriptionUpdatedAt ?? null,
+    revenueCatActive: null,
+    reason: "before-revenuecat-verify",
+  });
+
+  const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
+
+  console.log("KRISTO_CHURCH_MEDIA_REVENUECAT_VERIFY", {
+    churchId,
+    revenueCatActive: verification.active,
+    revenueCatReason: verification.reason,
+    revenueCatBypassed: verification.bypassed,
+    revenueCatPlan: verification.plan,
+    productId: verification.productId,
+  });
+
+  if (!verification.active || verification.bypassed || verification.reason !== "verified") {
     console.log("KRISTO_CHURCH_SUBSCRIPTION_SYNC_SKIPPED", {
       churchId,
       requesterUserId,
       reason: verification.reason,
+      revenueCatActive: verification.active,
+      bypassed: verification.bypassed,
     });
     return {
       ...empty,
       reason: verification.reason,
+      media: mediaBefore,
     };
   }
 
@@ -86,6 +109,13 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
 
   if (!hadProfile) {
     const pastorUserId = access.actualPastorUserId || requesterUserId;
+    console.log("KRISTO_CHURCH_MEDIA_PROFILE_BEFORE_CREATE", {
+      churchId,
+      profileSubscriptionActive: media?.subscriptionActive ?? null,
+      profileSubscriptionPlan: media?.subscriptionPlan ?? null,
+      revenueCatActive: verification.active,
+      reason: "verified-entitlement-create-profile",
+    });
     try {
       media = await ensureChurchMediaProfileForPastor({
         churchId,
@@ -93,6 +123,14 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
         requesterUserId,
       });
       profileCreated = true;
+      console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_CREATE", {
+        churchId,
+        profileSubscriptionActive: media?.subscriptionActive ?? false,
+        profileSubscriptionPlan: media?.subscriptionPlan ?? null,
+        profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
+        revenueCatActive: verification.active,
+        reason: "profile-created-awaiting-activation",
+      });
     } catch (error: any) {
       const reason =
         error instanceof ChurchMediaAutoCreateForbiddenError
@@ -137,6 +175,17 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
 
     media = next;
     subscriptionActivated = true;
+
+    console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_SYNC", {
+      churchId,
+      profileSubscriptionActive: media?.subscriptionActive ?? false,
+      profileSubscriptionPlan: media?.subscriptionPlan ?? null,
+      profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
+      revenueCatActive: verification.active,
+      reason: "subscription-activated-from-verified-entitlement",
+      plan: resolvedPlan,
+      productId: verification.productId,
+    });
 
     console.log("KRISTO_CHURCH_SUBSCRIPTION_SYNC_ACTIVATED", {
       churchId,
