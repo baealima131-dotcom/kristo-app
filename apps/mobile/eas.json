@@ -12,15 +12,24 @@
       "distribution": "internal",
       "env": {
         "EXPO_PUBLIC_API_BASE": "https://kristo-app.vercel.app",
-        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com"
+        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com",
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_dwVeOzYwZipIhrUNGWlyMTdqCWi"
+      },
+      "android": {
+        "buildType": "apk"
       }
     },
     "production": {
       "autoIncrement": true,
+      "environment": "production",
       "env": {
         "EXPO_PUBLIC_API_BASE": "https://kristo-app.vercel.app",
         "EXPO_PUBLIC_WEB_BASE": "https://kristo-app.vercel.app",
-        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com"
+        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com",
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_dwVeOzYwZipIhrUNGWlyMTdqCWi"
+      },
+      "ios": {
+        "scheme": "KristoApp"
       }
     },
     "app-store-review": {
@@ -29,11 +38,17 @@
         "EXPO_PUBLIC_API_BASE": "https://kristo-app.vercel.app",
         "EXPO_PUBLIC_WEB_BASE": "https://kristo-app.vercel.app",
         "EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE": "1",
-        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com"
+        "EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL": "https://videos.kristoapp.com",
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_dwVeOzYwZipIhrUNGWlyMTdqCWi"
       }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "android": {
+        "track": "internal",
+        "releaseStatus": "completed"
+      }
+    }
   }
 }

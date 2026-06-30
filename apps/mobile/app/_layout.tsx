@@ -1,5 +1,9 @@
 import "react-native-gesture-handler";
 import "@/src/components/homeFeed/homeFeedRowsCache";
+import "@/src/components/homeFeed/homeFeedDisplayOrderCache";
+import { kickoffHomeFeedDisplayOrderCacheHydrate } from "@/src/components/homeFeed/homeFeedDisplayOrderCache";
+
+kickoffHomeFeedDisplayOrderCacheHydrate();
 
 import React, { useCallback, useLayoutEffect, useState } from "react";
 import { Slot } from "expo-router";
@@ -8,8 +12,12 @@ import * as SplashScreen from "expo-splash-screen";
 import { KristoSessionProvider, useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
   ensurePurchasesConfigured,
+  logAndroidBillingConfigDiagnostics,
+  logRevenueCatException,
 } from "@/src/lib/payments/mobileSubscriptions";
 import { isRevenueCatPurchasingDisabled } from "@/src/lib/subscriptionBypass";
+import { Platform } from "react-native";
+import { runAfterHomeDeferredStartup } from "@/src/lib/homeFeedDeferredStartup";
 import JujujuAnimatedSplash, { SPLASH_BG } from "@/src/components/JujujuAnimatedSplash";
 import { HomeFeedVideoPrimer } from "@/src/components/homeFeed/HomeFeedVideoPrimer";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
@@ -23,10 +31,14 @@ function RevenueCatBootstrap() {
   React.useEffect(() => {
     if (bypassRevenueCat || loading) return;
 
-    // SDK configure only — login/offerings wait until after first Home video frame.
-    ensurePurchasesConfigured().catch((error) => {
-      console.log("RevenueCat boot configure error", error);
-    });
+    runAfterHomeDeferredStartup(() => {
+      if (Platform.OS === "android") {
+        logAndroidBillingConfigDiagnostics("app-boot");
+      }
+      ensurePurchasesConfigured().catch((error) => {
+        logRevenueCatException("app-boot-configure", error);
+      });
+    }, { reason: "revenuecat-configure" });
   }, [bypassRevenueCat, loading]);
 
   return <Slot />;

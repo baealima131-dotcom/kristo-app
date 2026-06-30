@@ -4,9 +4,18 @@ const appJson = require("./app.json");
 const expo = appJson.expo;
 const isProductionEasBuild = process.env.EAS_BUILD_PROFILE === "production";
 
+const REVENUECAT_ANDROID_API_KEY =
+  process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY ||
+  expo.extra?.revenuecatAndroidApiKey ||
+  "goog_dwVeOzYwZipIhrUNGWlyMTdqCWi";
+
 module.exports = {
   expo: {
     ...expo,
+    extra: {
+      ...expo.extra,
+      revenuecatAndroidApiKey: REVENUECAT_ANDROID_API_KEY,
+    },
     ios: {
       ...expo.ios,
       infoPlist: {

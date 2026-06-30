@@ -47,6 +47,9 @@ import {
   monthlyPackageHasIntroOffer,
   resolveIntroTrialDays,
   resolveMonthlyProductIntro,
+  logAndroidBillingConfigDiagnostics,
+  logAndroidPurchaseError,
+  getRevenueCatPurchaseErrorDetail,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
   fetchChurchMediaPremiumServerStatus,
@@ -657,6 +660,10 @@ export default function PaymentsSubscriptionsScreen() {
     async function boot() {
       if (sessionLoading) return;
 
+      if (Platform.OS === "android") {
+        logAndroidBillingConfigDiagnostics("subscriptions-screen");
+      }
+
       setOffersLoading(true);
       setSubscriptionError(null);
       setMediaPremiumStatus(null);
@@ -1018,13 +1025,18 @@ export default function PaymentsSubscriptionsScreen() {
         Alert.alert("Yearly plan active", "Your church yearly subscription is now active.");
       }
     } catch (error: any) {
-      const msg = String(error?.message || "");
-      if (/cancel/i.test(msg)) {
+      const detail = getRevenueCatPurchaseErrorDetail(error);
+      const msg = String(detail.message || "");
+      if (/cancel/i.test(msg) || detail.userCancelled) {
         Alert.alert("Purchase cancelled", "No charge was made.");
       } else {
+        logAndroidPurchaseError(error, { plan, churchId });
         console.log("KRISTO_SUBSCRIPTION_PURCHASE_FAILED", {
           plan,
           message: msg,
+          code: detail.code,
+          readableErrorCode: detail.readableErrorCode,
+          underlyingErrorMessage: detail.underlyingErrorMessage,
         });
         Alert.alert("Purchase failed", msg || "Could not complete subscription purchase.");
       }

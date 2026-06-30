@@ -2,9 +2,12 @@ import Purchases, {
   LOG_LEVEL,
   CustomerInfo,
   INTRO_ELIGIBILITY_STATUS,
+  PRODUCT_CATEGORY,
+  PURCHASES_ERROR_CODE,
   PurchasesIntroPrice,
   PurchasesOfferings,
   PurchasesPackage,
+  PurchasesStoreProduct,
   PACKAGE_TYPE,
   STORE_REPLACEMENT_MODE,
 } from "react-native-purchases";
@@ -70,25 +73,267 @@ function isPlaceholderKey(value: string) {
   return !v || /REPLACE_ME|WEKA_|HAPA|placeholder/i.test(v);
 }
 
-/** Public RevenueCat Android SDK key source for launch diagnostics (masked). */
+function maskRevenueCatPublicKeyPrefix(value: string): string {
+  const key = String(value || "").trim();
+  if (!key) return "";
+  return `${key.slice(0, 7)}...`;
+}
+
+type RevenueCatPublicKeyPlatform = "google" | "apple" | "amazon" | "unknown";
+
+function classifyRevenueCatPublicKeyPlatform(value: string): RevenueCatPublicKeyPlatform {
+  const key = String(value || "").trim();
+  if (key.startsWith("goog_")) return "google";
+  if (key.startsWith("appl_")) return "apple";
+  if (key.startsWith("amzn_")) return "amazon";
+  return "unknown";
+}
+
+function describeRevenueCatKeyForPlatform(key: string) {
+  const trimmed = String(key || "").trim();
+  const keyPlatform = classifyRevenueCatPublicKeyPlatform(trimmed);
+  const expectedPlatform: RevenueCatPublicKeyPlatform =
+    Platform.OS === "android" ? "google" : Platform.OS === "ios" ? "apple" : "unknown";
+  const correctForCurrentPlatform =
+    expectedPlatform !== "unknown" && keyPlatform === expectedPlatform;
+
+  let wrongKeyWarning: string | null = null;
+  if (Platform.OS === "android" && keyPlatform === "apple") {
+    wrongKeyWarning =
+      "Android build is using an Apple (appl_) RevenueCat key — configure goog_ via EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY or app.json extra.revenuecatAndroidApiKey.";
+  } else if (Platform.OS === "ios" && keyPlatform === "google") {
+    wrongKeyWarning =
+      "iOS build is using a Google (goog_) RevenueCat key — configure appl_ via EXPO_PUBLIC_REVENUECAT_IOS_API_KEY or app.json extra.revenuecatIosApiKey.";
+  } else if (Platform.OS === "android" && keyPlatform === "amazon") {
+    wrongKeyWarning = "Amazon (amzn_) key detected on a standard Google Play build.";
+  }
+
+  return {
+    keyPrefix: maskRevenueCatPublicKeyPrefix(trimmed),
+    keyPlatform,
+    expectedPlatform,
+    expectedStore: Platform.OS === "android" ? "PLAY_STORE" : Platform.OS === "ios" ? "APP_STORE" : "UNKNOWN",
+    correctForCurrentPlatform,
+    wrongKeyWarning,
+  };
+}
+
+function parseGooglePlayBillingClientFields(message: string | null | undefined): {
+  billingResponseCode: string | null;
+  billingDebugMessage: string | null;
+  billingSubResponseCode: string | null;
+} {
+  const msg = String(message || "");
+  if (!msg) {
+    return {
+      billingResponseCode: null,
+      billingDebugMessage: null,
+      billingSubResponseCode: null,
+    };
+  }
+
+  const errorCodeMatch = msg.match(/ErrorCode:\s*([A-Z0-9_]+)/i);
+  const subCodeMatch = msg.match(/SubResponseCode:\s*([A-Z0-9_]+)/i);
+  const debugMatch = msg.match(/DebugMessage:\s*(.+?)(?:\.\s*ErrorCode:|$)/i);
+
+  return {
+    billingResponseCode: errorCodeMatch?.[1]?.toUpperCase() ?? null,
+    billingDebugMessage: debugMatch?.[1]?.trim() ?? null,
+    billingSubResponseCode: subCodeMatch?.[1]?.toUpperCase() ?? null,
+  };
+}
+
+function sanitizeRevenueCatErrorSnapshot(error: unknown): Record<string, unknown> {
+  const e = error as Record<string, unknown> | null | undefined;
+  if (!e || typeof e !== "object") {
+    return { value: String(error ?? "unknown") };
+  }
+
+  const preserveFull = new Set([
+    "underlyingErrorMessage",
+    "message",
+    "readableErrorCode",
+    "readable_error_code",
+  ]);
+
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(e)) {
+    if (typeof value === "function") continue;
+    if (key === "userInfo" && value && typeof value === "object") {
+      out.userInfo = sanitizeRevenueCatErrorSnapshot(value);
+      continue;
+    }
+    if (typeof value === "string" && value.length > 600 && !preserveFull.has(key)) {
+      out[key] = `${value.slice(0, 600)}…`;
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+function extractErrorStackTrace(error: unknown): string | null {
+  if (!error) return null;
+  if (error instanceof Error && error.stack) {
+    return error.stack;
+  }
+  const e = error as Record<string, unknown>;
+  const candidates = [
+    e?.stack,
+    e?.nativeStackAndroid,
+    e?.componentStack,
+    (e?.userInfo as Record<string, unknown> | undefined)?.stack,
+  ];
+  for (const candidate of candidates) {
+    const stack = String(candidate || "").trim();
+    if (stack) return stack;
+  }
+  return null;
+}
+
+function getAndroidPackageName(): string {
+  return String(
+    Constants.expoConfig?.android?.package ||
+      (Constants as { manifest?: { package?: string } }).manifest?.package ||
+      ""
+  ).trim();
+}
+
+/** Shared Android RevenueCat context attached to configure / offerings / products logs. */
+function getRevenueCatAndroidDiagnosticsContext() {
+  const runtimeKey = getRevenueCatApiKey();
+  const keyForPlatform = describeRevenueCatKeyForPlatform(runtimeKey);
+  const androidKey = describeAndroidRevenueCatApiKeySource();
+  const install = describeAndroidInstallContext();
+
+  return {
+    packageName: getAndroidPackageName(),
+    store: keyForPlatform.expectedStore,
+    storeLabel: "Google Play",
+    revenueCatApiKeyPrefix: keyForPlatform.keyPrefix,
+    revenueCatApiKeyPlatform: keyForPlatform.keyPlatform,
+    revenueCatApiKeySource: androidKey.source,
+    revenueCatApiKeyConfigured: androidKey.configured,
+    revenueCatKeyCorrectForAndroid: keyForPlatform.correctForCurrentPlatform,
+    nativeAppVersion: install.nativeAppVersion,
+    nativeBuildVersion: install.nativeBuildVersion,
+    expectedProductIds: [PREMIUM_MONTHLY_PRODUCT_ID, PREMIUM_YEARLY_PRODUCT_ID],
+    ...androidRevenueCatProductConfig(),
+  };
+}
+
+function getFullRevenueCatErrorDetail(error: unknown) {
+  const e = error as Record<string, unknown> & {
+    userInfo?: Record<string, unknown>;
+  };
+  const userInfo = (e?.userInfo || {}) as Record<string, unknown>;
+  const underlyingErrorMessage = String(
+    e?.underlyingErrorMessage ??
+      userInfo?.underlyingErrorMessage ??
+      userInfo?.NSLocalizedDescription ??
+      ""
+  ).trim();
+  const billingClient = parseGooglePlayBillingClientFields(underlyingErrorMessage || null);
+  const base = {
+    message: String(e?.message || e || "unknown"),
+    code: e?.code ?? userInfo?.code ?? null,
+    readableErrorCode:
+      e?.readableErrorCode ??
+      userInfo?.readableErrorCode ??
+      userInfo?.readable_error_code ??
+      null,
+    underlyingErrorMessage: underlyingErrorMessage || null,
+    billingResponseCode: billingClient.billingResponseCode,
+    billingDebugMessage: billingClient.billingDebugMessage,
+    billingSubResponseCode: billingClient.billingSubResponseCode,
+    userCancelled: Boolean(e?.userCancelled ?? userInfo?.userCancelled),
+    stackTrace: extractErrorStackTrace(error),
+    errorSnapshot: sanitizeRevenueCatErrorSnapshot(error),
+    rawUserInfo: userInfo && Object.keys(userInfo).length > 0 ? userInfo : null,
+  };
+
+  if (isInvalidCredentialsRevenueCatError(base) && Platform.OS === "android") {
+    return {
+      ...base,
+      invalidCredentialsHint:
+        "RevenueCat code 11 on Android usually means RevenueCat cannot authenticate with Google Play using the service account JSON in the RevenueCat dashboard (not the client goog_ SDK key). Verify Play Console package com.princefariji.kristoapp, subscription product IDs premium_monthly/premium_yearly, and that the tester installed from Play internal testing.",
+    };
+  }
+
+  return base;
+}
+
+export function logRevenueCatException(
+  phase: string,
+  error: unknown,
+  meta: Record<string, unknown> = {}
+) {
+  const detail = getFullRevenueCatErrorDetail(error);
+  const androidContext = isAndroidPlatform() ? getRevenueCatAndroidDiagnosticsContext() : null;
+
+  console.log("KRISTO_RC_EXCEPTION", {
+    phase,
+    ...meta,
+    ...(androidContext || {}),
+    ...detail,
+  });
+
+  if (isAndroidPlatform()) {
+    console.log("KRISTO_ANDROID_RC_EXCEPTION", {
+      phase,
+      ...meta,
+      ...(androidContext || {}),
+      code: detail.code,
+      readableErrorCode: detail.readableErrorCode,
+      message: detail.message,
+      underlyingErrorMessage: detail.underlyingErrorMessage,
+      billingResponseCode: detail.billingResponseCode,
+      billingDebugMessage: detail.billingDebugMessage,
+      billingSubResponseCode: detail.billingSubResponseCode,
+      stackTrace: detail.stackTrace,
+      errorSnapshot: detail.errorSnapshot,
+      invalidCredentialsHint:
+        "invalidCredentialsHint" in detail ? detail.invalidCredentialsHint : null,
+    });
+  }
+}
+
+function isInvalidCredentialsRevenueCatError(detail: {
+  code: unknown;
+  readableErrorCode: unknown;
+}) {
+  const code = String(detail.code ?? "");
+  const readable = String(detail.readableErrorCode ?? "").toUpperCase();
+  return (
+    code === PURCHASES_ERROR_CODE.INVALID_CREDENTIALS_ERROR ||
+    code === "11" ||
+    readable === "INVALID_CREDENTIALS_ERROR"
+  );
+}
+
+/** Public RevenueCat Android SDK key source for launch diagnostics (prefix only). */
 export function describeAndroidRevenueCatApiKeySource(): {
   configured: boolean;
   source: "env" | "app-json" | "missing";
-  masked: string;
+  keyPrefix: string;
 } {
   const fromEnv = String(process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY || "").trim();
   const fromExtra = String(extra.revenuecatAndroidApiKey || "").trim();
   const resolved = fromEnv || fromExtra;
   if (!resolved) {
-    return { configured: false, source: "missing", masked: "" };
+    return { configured: false, source: "missing", keyPrefix: "" };
   }
   if (isPlaceholderKey(resolved)) {
-    return { configured: false, source: fromEnv ? "env" : "app-json", masked: `${resolved.slice(0, 6)}...` };
+    return {
+      configured: false,
+      source: fromEnv ? "env" : "app-json",
+      keyPrefix: maskRevenueCatPublicKeyPrefix(resolved),
+    };
   }
   return {
     configured: true,
     source: fromEnv ? "env" : "app-json",
-    masked: `${resolved.slice(0, 8)}...(len ${resolved.length})`,
+    keyPrefix: maskRevenueCatPublicKeyPrefix(resolved),
   };
 }
 
@@ -101,11 +346,21 @@ function isLiveRoomActive() {
 
 // ---- RevenueCat diagnostics helpers --------------------------------------
 
-function describeApiKey(): { kind: "missing" | "placeholder" | "present"; masked: string } {
+function describeApiKey(): { kind: "missing" | "placeholder" | "present"; keyPrefix: string } {
   const v = String(getRevenueCatApiKey() || "").trim();
-  if (!v) return { kind: "missing", masked: "" };
-  if (isPlaceholderKey(v)) return { kind: "placeholder", masked: v.slice(0, 6) + "..." };
-  return { kind: "present", masked: `${v.slice(0, 8)}...(len ${v.length})` };
+  if (!v) return { kind: "missing", keyPrefix: "" };
+  if (isPlaceholderKey(v)) return { kind: "placeholder", keyPrefix: maskRevenueCatPublicKeyPrefix(v) };
+  return { kind: "present", keyPrefix: maskRevenueCatPublicKeyPrefix(v) };
+}
+
+function describeRevenueCatAndroidKeyUsedLog(source: string, configured: boolean) {
+  const androidKey = describeAndroidRevenueCatApiKeySource();
+  console.log("KRISTO_REVENUECAT_ANDROID_KEY_USED", {
+    source,
+    configured,
+    keySource: androidKey.source,
+    keyPrefix: androidKey.keyPrefix || null,
+  });
 }
 
 function revenueCatRuntimeInfo() {
@@ -116,7 +371,7 @@ function revenueCatRuntimeInfo() {
     hasExpoConfig: Boolean(Constants.expoConfig),
     hasExtra: Boolean(Constants.expoConfig?.extra),
     apiKeyKind: key.kind,
-    apiKeyMasked: key.masked,
+    apiKeyPrefix: key.keyPrefix,
     purchasingDisabled: isRevenueCatPurchasingDisabled(),
   };
 }
@@ -133,14 +388,316 @@ function revenueCatUnavailableReason(): string | null {
 }
 
 function getRevenueCatErrorDetail(error: unknown) {
-  const e = error as any;
+  return getFullRevenueCatErrorDetail(error);
+}
+
+export function getRevenueCatPurchaseErrorDetail(error: unknown) {
+  return getRevenueCatErrorDetail(error);
+}
+
+function describeAndroidInstallContext() {
+  const ownership = String(Constants.appOwnership || "unknown");
+  const executionEnvironment = String(
+    (Constants as { executionEnvironment?: string }).executionEnvironment || "unknown"
+  );
+  const isExpoGo = ownership === "expo";
+  const isDevClient = executionEnvironment === "storeClient" && !isExpoGo;
+  const packageName = String(
+    Constants.expoConfig?.android?.package ||
+      (Constants as { manifest?: { package?: string } }).manifest?.package ||
+      ""
+  ).trim();
+
   return {
-    message: String(e?.message || e || "unknown"),
-    code: e?.code ?? e?.userInfo?.code ?? null,
-    underlyingErrorMessage:
-      e?.underlyingErrorMessage ?? e?.userInfo?.readableErrorCode ?? null,
-    userCancelled: Boolean(e?.userCancelled),
+    platform: Platform.OS,
+    appOwnership: ownership,
+    executionEnvironment,
+    isExpoGo,
+    isDevClient,
+    isDev: __DEV__,
+    packageName,
+    nativeAppVersion: Constants.nativeAppVersion ?? null,
+    nativeBuildVersion: Constants.nativeBuildVersion ?? null,
+    playBillingLikelySupported:
+      !isExpoGo && ownership !== "expo" && Boolean(packageName),
+    playStoreInstallRequired:
+      "Google Play subscriptions require an internal/closed/production build installed from Play Store (not Expo Go or sideloaded APK unless Play Billing is wired).",
   };
+}
+
+/** Launch diagnostics for Google Play + RevenueCat on Android. */
+export function logAndroidBillingConfigDiagnostics(source = "boot") {
+  if (!isAndroidPlatform()) return;
+
+  const androidKey = describeAndroidRevenueCatApiKeySource();
+  const apiKey = describeApiKey();
+  const install = describeAndroidInstallContext();
+
+  const runtimeKey = getRevenueCatApiKey();
+  const keyForPlatform = describeRevenueCatKeyForPlatform(runtimeKey);
+
+  console.log("KRISTO_ANDROID_BILLING_CONFIG", {
+    source,
+    ...install,
+    ...androidRevenueCatProductConfig(),
+    revenueCatApiKeyKind: apiKey.kind,
+    revenueCatApiKeyPrefix: apiKey.keyPrefix,
+    revenueCatKeyPlatform: keyForPlatform.keyPlatform,
+    revenueCatExpectedStore: keyForPlatform.expectedStore,
+    revenueCatKeyCorrectForAndroid: keyForPlatform.correctForCurrentPlatform,
+    revenueCatWrongKeyWarning: keyForPlatform.wrongKeyWarning,
+    revenueCatAndroidKeySource: androidKey.source,
+    revenueCatAndroidKeyConfigured: androidKey.configured,
+    iosKeyWouldBeWrongOnAndroid:
+      classifyRevenueCatPublicKeyPlatform(IOS_REVENUECAT_API_KEY) === "apple" &&
+      classifyRevenueCatPublicKeyPlatform(runtimeKey) === "apple",
+    purchasingDisabled: isRevenueCatPurchasingDisabled(),
+    checklist: {
+      realPlayBuild: install.playBillingLikelySupported && !install.isExpoGo,
+      androidApiKeyPresent: apiKey.kind === "present",
+      androidApiKeyIsGoogPrefix: keyForPlatform.keyPlatform === "google",
+      packageNameMatchesPlayConsole:
+        install.packageName === "com.princefariji.kristoapp",
+      productsExpected: [PREMIUM_MONTHLY_PRODUCT_ID, PREMIUM_YEARLY_PRODUCT_ID],
+    },
+  });
+
+  describeRevenueCatAndroidKeyUsedLog(source, androidKey.configured);
+}
+
+function summarizeStoreProducts(products: PurchasesStoreProduct[]) {
+  return products.map((product) => ({
+    identifier: product.identifier,
+    title: product.title,
+    priceString: product.priceString,
+    productCategory: (product as { productCategory?: string }).productCategory ?? null,
+    subscriptionPeriod: (product as { subscriptionPeriod?: string }).subscriptionPeriod ?? null,
+    store: (product as { store?: string }).store ?? "PLAY_STORE",
+  }));
+}
+
+async function runRevenueCatGetProducts(
+  productIds: string[],
+  source: string
+): Promise<PurchasesStoreProduct[]> {
+  const androidContext = isAndroidPlatform() ? getRevenueCatAndroidDiagnosticsContext() : null;
+
+  console.log("KRISTO_RC_GET_PRODUCTS_BEFORE", {
+    source,
+    requestedProductIds: productIds,
+    productCategory: PRODUCT_CATEGORY.SUBSCRIPTION,
+    ...(androidContext || {}),
+  });
+
+  try {
+    const products = await Purchases.getProducts(productIds, PRODUCT_CATEGORY.SUBSCRIPTION);
+    const loadedProductIds = products.map((product) => product.identifier);
+
+    console.log("KRISTO_RC_GET_PRODUCTS_AFTER", {
+      source,
+      ok: true,
+      requestedProductIds: productIds,
+      googlePlayProductIds: loadedProductIds,
+      missingProductIds: productIds.filter((id) => !loadedProductIds.includes(id)),
+      productSummary: summarizeStoreProducts(products),
+      ...(androidContext || {}),
+    });
+
+    if (isAndroidPlatform()) {
+      console.log("KRISTO_ANDROID_GOOGLE_PLAY_PRODUCT_IDS", {
+        source,
+        store: androidContext?.store ?? "PLAY_STORE",
+        packageName: androidContext?.packageName ?? null,
+        revenueCatApiKeyPrefix: androidContext?.revenueCatApiKeyPrefix ?? null,
+        googlePlayProductIds: loadedProductIds,
+        productSummary: summarizeStoreProducts(products),
+      });
+    }
+
+    return products;
+  } catch (error) {
+    logRevenueCatException("getProducts", error, {
+      source,
+      requestedProductIds: productIds,
+    });
+    console.log("KRISTO_RC_GET_PRODUCTS_AFTER", {
+      source,
+      ok: false,
+      requestedProductIds: productIds,
+      ...(androidContext || {}),
+      ...getFullRevenueCatErrorDetail(error),
+    });
+    throw error;
+  }
+}
+
+async function runRevenueCatGetOfferings(source: string): Promise<PurchasesOfferings> {
+  const androidContext = isAndroidPlatform() ? getRevenueCatAndroidDiagnosticsContext() : null;
+
+  console.log("KRISTO_RC_GET_OFFERINGS_BEFORE", {
+    source,
+    ...(androidContext || {}),
+  });
+
+  try {
+    const offerings = await Purchases.getOfferings();
+    const current = offerings.current;
+    const offeringProductIds = (current?.availablePackages || []).map(
+      (pkg) => pkg.product.identifier
+    );
+
+    console.log("KRISTO_RC_GET_OFFERINGS_AFTER", {
+      source,
+      ok: true,
+      currentOfferingId: current?.identifier || null,
+      allOfferingIds: Object.keys(offerings.all || {}),
+      currentPackageCount: current?.availablePackages?.length || 0,
+      offeringProductIds,
+      ...(androidContext || {}),
+    });
+
+    return offerings;
+  } catch (error) {
+    logRevenueCatException("getOfferings", error, { source });
+    console.log("KRISTO_RC_GET_OFFERINGS_AFTER", {
+      source,
+      ok: false,
+      ...(androidContext || {}),
+      ...getFullRevenueCatErrorDetail(error),
+    });
+    throw error;
+  }
+}
+
+async function runRevenueCatPurchasesConfigure(apiKey: string): Promise<void> {
+  const keyDiagnostics = describeRevenueCatKeyForPlatform(apiKey);
+  const androidContext = isAndroidPlatform() ? getRevenueCatAndroidDiagnosticsContext() : null;
+
+  console.log("KRISTO_RC_PURCHASES_CONFIGURE_BEFORE", {
+    platform: Platform.OS,
+    apiKeyPrefix: keyDiagnostics.keyPrefix,
+    revenueCatKeyPlatform: keyDiagnostics.keyPlatform,
+    revenueCatExpectedStore: keyDiagnostics.expectedStore,
+    revenueCatKeyCorrectForPlatform: keyDiagnostics.correctForCurrentPlatform,
+    wrongKeyWarning: keyDiagnostics.wrongKeyWarning,
+    ...(androidContext || {}),
+  });
+
+  try {
+    await Purchases.configure({ apiKey });
+    console.log("KRISTO_RC_PURCHASES_CONFIGURE_AFTER", {
+      ok: true,
+      platform: Platform.OS,
+      apiKeyPrefix: keyDiagnostics.keyPrefix,
+      ...(androidContext || {}),
+    });
+  } catch (error) {
+    logRevenueCatException("Purchases.configure", error, {
+      apiKeyPrefix: keyDiagnostics.keyPrefix,
+      revenueCatKeyPlatform: keyDiagnostics.keyPlatform,
+    });
+    console.log("KRISTO_RC_PURCHASES_CONFIGURE_AFTER", {
+      ok: false,
+      platform: Platform.OS,
+      apiKeyPrefix: keyDiagnostics.keyPrefix,
+      ...(androidContext || {}),
+      ...getFullRevenueCatErrorDetail(error),
+    });
+    throw error;
+  }
+}
+
+async function probeAndroidGooglePlayBillingBeforeOfferings(
+  source = "pre-offerings"
+): Promise<void> {
+  if (!isAndroidPlatform()) return;
+
+  const expectedProductIds = [PREMIUM_MONTHLY_PRODUCT_ID, PREMIUM_YEARLY_PRODUCT_ID];
+  const keyForPlatform = describeRevenueCatKeyForPlatform(getRevenueCatApiKey());
+  let canMakePayments: boolean | null = null;
+  let storefrontCountryCode: string | null = null;
+
+  console.log("KRISTO_ANDROID_RC_STORE", {
+    source,
+    platform: Platform.OS,
+    expectedStore: keyForPlatform.expectedStore,
+    revenueCatKeyPlatform: keyForPlatform.keyPlatform,
+    revenueCatKeyPrefix: keyForPlatform.keyPrefix,
+    revenueCatKeyCorrectForAndroid: keyForPlatform.correctForCurrentPlatform,
+    wrongKeyWarning: keyForPlatform.wrongKeyWarning,
+    note: "Kristo uses Google Play (PLAY_STORE), not Amazon Appstore.",
+  });
+
+  try {
+    canMakePayments = await Purchases.canMakePayments();
+  } catch (error) {
+    logRevenueCatException("canMakePayments", error, { source });
+  }
+
+  try {
+    const storefront = await Purchases.getStorefront();
+    storefrontCountryCode = storefront?.countryCode ?? null;
+  } catch (error) {
+    logRevenueCatException("getStorefront", error, { source });
+  }
+
+  try {
+    const products = await runRevenueCatGetProducts(expectedProductIds, `${source}-probe`);
+    const loadedIds = products.map((product) => product.identifier);
+    const missingIds = expectedProductIds.filter((id) => !loadedIds.includes(id));
+    const androidContext = getRevenueCatAndroidDiagnosticsContext();
+
+    console.log("KRISTO_ANDROID_BILLING_CLIENT_PROBE", {
+      source,
+      billingClientConnected: true,
+      canMakePayments,
+      storefrontCountryCode,
+      googlePlayProductIds: loadedIds,
+      missingProductIds: missingIds,
+      productsMatchPlayConsole:
+        missingIds.length === 0 &&
+        loadedIds.includes(PREMIUM_MONTHLY_PRODUCT_ID) &&
+        loadedIds.includes(PREMIUM_YEARLY_PRODUCT_ID),
+      productSummary: summarizeStoreProducts(products),
+      ...androidContext,
+    });
+  } catch (error) {
+    const detail = getFullRevenueCatErrorDetail(error);
+    console.log("KRISTO_ANDROID_BILLING_CLIENT_PROBE", {
+      source,
+      billingClientConnected: false,
+      canMakePayments,
+      storefrontCountryCode,
+      googlePlayProductIds: [],
+      ...getRevenueCatAndroidDiagnosticsContext(),
+      ...detail,
+    });
+  }
+}
+
+function logAndroidGooglePlayProductsLoaded(offerings: PurchasesOfferings) {
+  const current = offerings.current;
+  const packages = current?.availablePackages || [];
+  const productIds = packages.map((pkg) => String(pkg.product.identifier || ""));
+  const monthly = resolveMonthlyPackage(offerings);
+  const yearly = resolveYearlyPackage(offerings);
+
+  console.log("KRISTO_GOOGLE_PLAY_PRODUCTS_LOADED", {
+    currentOfferingId: current?.identifier || null,
+    packageCount: packages.length,
+    productIds,
+    monthlyProductId: monthly?.product.identifier || null,
+    yearlyProductId: yearly?.product.identifier || null,
+    monthlyMatchesExpected:
+      String(monthly?.product.identifier || "") === PREMIUM_MONTHLY_PRODUCT_ID,
+    yearlyMatchesExpected:
+      String(yearly?.product.identifier || "") === PREMIUM_YEARLY_PRODUCT_ID,
+  });
+}
+
+export function logAndroidPurchaseError(error: unknown, meta: Record<string, unknown> = {}) {
+  if (!isAndroidPlatform()) return;
+  logRevenueCatException(meta.phase ? String(meta.phase) : "purchase", error, meta);
 }
 
 let configuredAppUserId: string | null = null;
@@ -169,7 +726,7 @@ function applyRevenueCatLogLevel() {
     const debug = shouldEnableRevenueCatDebug(revenueCatDebugRouteEnabled ? "payments" : null);
     Purchases.setLogLevel(debug ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN);
   } catch (error) {
-    console.log("KRISTO_RC_SET_LOG_LEVEL_FAILED", getRevenueCatErrorDetail(error));
+    logRevenueCatException("setLogLevel", error);
   }
 }
 
@@ -188,10 +745,11 @@ async function runRevenueCatNativeStep<T>(
     console.log(`KRISTO_RC_AFTER_${step}`, { ok: true, ...meta });
     return result;
   } catch (error) {
+    logRevenueCatException(step, error, meta);
     console.log(`KRISTO_RC_AFTER_${step}`, {
       ok: false,
       ...meta,
-      ...getRevenueCatErrorDetail(error),
+      ...getFullRevenueCatErrorDetail(error),
     });
     throw error;
   }
@@ -215,6 +773,7 @@ async function purchasesIsConfigured(): Promise<boolean> {
 
 export async function ensurePurchasesConfigured(): Promise<boolean> {
   if (isAndroidPlatform()) {
+    logAndroidBillingConfigDiagnostics("ensure-configured");
     console.log("KRISTO_RC_ANDROID_CONFIG_START", {
       ...revenueCatRuntimeInfo(),
       androidApiKey: describeAndroidRevenueCatApiKeySource(),
@@ -265,26 +824,26 @@ export async function ensurePurchasesConfigured(): Promise<boolean> {
 
   configurePromise = (async () => {
     try {
-      await runRevenueCatNativeStep(
-        "CONFIGURE",
-        () => Purchases.configure({ apiKey }),
-        {
-          platform: Platform.OS,
-          apiKeyMasked: describeApiKey().masked,
-        }
-      );
+      await runRevenueCatPurchasesConfigure(apiKey);
+      if (isAndroidPlatform()) {
+        describeRevenueCatAndroidKeyUsedLog("configure-success", true);
+      }
       applyRevenueCatLogLevel();
       const ok = await purchasesIsConfigured();
       console.log(ok ? "KRISTO_RC_CONFIG_SUCCESS" : "KRISTO_RC_CONFIG_FAILED", {
         reason: ok ? "configured" : "configure-returned-not-configured",
         platform: Platform.OS,
-        apiKeyMasked: describeApiKey().masked,
+        apiKeyPrefix: describeApiKey().keyPrefix,
+        ...(isAndroidPlatform() ? getRevenueCatAndroidDiagnosticsContext() : {}),
       });
       return ok;
     } catch (error) {
+      logRevenueCatException("ensurePurchasesConfigured", error, {
+        reason: "configure-threw",
+      });
       console.log("KRISTO_RC_CONFIG_FAILED", {
         reason: "configure-threw",
-        ...getRevenueCatErrorDetail(error),
+        ...getFullRevenueCatErrorDetail(error),
       });
       throw error;
     }
@@ -330,9 +889,10 @@ export async function syncPurchasesAppUser(appUserID?: string): Promise<void> {
       configuredAppUserId = safeAppUserId;
       console.log("KRISTO_RC_LOGIN_SUCCESS", { appUserId: safeAppUserId });
     } catch (error) {
+      logRevenueCatException("logIn", error, { appUserId: safeAppUserId });
       console.log("KRISTO_RC_LOGIN_FAILED", {
         appUserId: safeAppUserId,
-        ...getRevenueCatErrorDetail(error),
+        ...getFullRevenueCatErrorDetail(error),
       });
       throw error;
     }
@@ -385,9 +945,10 @@ export async function logInRevenueCatForChurchSubscription(
       churchId: cid,
     });
   } catch (error) {
+    logRevenueCatException("logInRevenueCatForChurchSubscription", error, { churchId: cid });
     console.log("KRISTO_RC_LOGIN_FOR_CHURCH_SUBSCRIPTION_FAILED", {
       churchId: cid,
-      ...getRevenueCatErrorDetail(error),
+      ...getFullRevenueCatErrorDetail(error),
     });
     return null;
   }
@@ -477,9 +1038,15 @@ export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
 
   await requireConfiguredPurchases("offerings");
 
-  console.log("KRISTO_RC_OFFERINGS_START", { platform: Platform.OS });
+  console.log("KRISTO_RC_OFFERINGS_START", {
+    platform: Platform.OS,
+    ...(isAndroidPlatform() ? getRevenueCatAndroidDiagnosticsContext() : {}),
+  });
+  if (isAndroidPlatform()) {
+    await probeAndroidGooglePlayBillingBeforeOfferings("get-offerings");
+  }
   try {
-    const offerings = await Purchases.getOfferings();
+    const offerings = await runRevenueCatGetOfferings("getSubscriptionOfferings");
     const current = offerings.current;
     console.log("KRISTO_RC_OFFERINGS_SUCCESS", {
       currentOfferingId: current?.identifier || null,
@@ -488,6 +1055,14 @@ export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
       currentProductIds: (current?.availablePackages || []).map((p) => p.product.identifier),
     });
     if (isAndroidPlatform()) {
+      console.log("KRISTO_REVENUECAT_OFFERINGS", {
+        currentOfferingId: current?.identifier || null,
+        allOfferingIds: Object.keys(offerings.all || {}),
+        packageCount: current?.availablePackages?.length || 0,
+        productIds: (current?.availablePackages || []).map((p) => p.product.identifier),
+        packageSummary: describeCurrentOfferingPackages(offerings),
+      });
+      logAndroidGooglePlayProductsLoaded(offerings);
       const monthly = resolveMonthlyPackage(offerings);
       const yearly = resolveYearlyPackage(offerings);
       console.log("KRISTO_RC_ANDROID_OFFERINGS_SUCCESS", {
@@ -503,8 +1078,15 @@ export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
     }
     return offerings;
   } catch (error) {
-    const detail = getRevenueCatErrorDetail(error);
+    logRevenueCatException("getSubscriptionOfferings", error, { phase: "offerings" });
+    const detail = getFullRevenueCatErrorDetail(error);
     console.log("KRISTO_RC_OFFERINGS_FAILED", detail);
+    if (isAndroidPlatform()) {
+      console.log("KRISTO_REVENUECAT_OFFERINGS_FAILED", {
+        ...detail,
+        ...getRevenueCatAndroidDiagnosticsContext(),
+      });
+    }
     // Preserve the real RevenueCat message/code so the UI shows the true cause.
     throw new Error(`${detail.message}${detail.code != null ? ` (code ${detail.code})` : ""}`);
   }
@@ -515,7 +1097,7 @@ export async function prefetchSubscriptionOfferings(): Promise<boolean> {
     await getSubscriptionOfferings();
     return true;
   } catch (error) {
-    console.log("RevenueCat offerings prefetch error", error);
+    logRevenueCatException("prefetchSubscriptionOfferings", error);
     return false;
   }
 }
@@ -534,30 +1116,48 @@ export async function purchaseSubscriptionPackage(
   const fromProductId = String(opts?.upgradeFromProductId || "").trim();
   let result;
 
-  if (fromProductId && Platform.OS === "android") {
-    console.log("KRISTO_RC_PURCHASE_UPGRADE", {
-      fromProductId,
-      toProductId: String(pkg.product.identifier || ""),
-      replacementMode: STORE_REPLACEMENT_MODE.CHARGE_PRORATED_PRICE,
+  if (isAndroidPlatform()) {
+    console.log("KRISTO_ANDROID_PURCHASE_START", {
+      productId: String(pkg.product.identifier || ""),
+      packageIdentifier: String(pkg.identifier || ""),
+      upgradeFromProductId: fromProductId || null,
+      priceString: String(pkg.product.priceString || ""),
     });
-    result = await Purchases.purchasePackage(pkg, null, {
-      oldProductIdentifier: fromProductId,
-      replacementMode: STORE_REPLACEMENT_MODE.CHARGE_PRORATED_PRICE,
-    });
-  } else {
-    if (fromProductId) {
-      console.log("KRISTO_RC_PURCHASE_IOS_SUBSCRIPTION_GROUP", {
+  }
+
+  try {
+    if (fromProductId && Platform.OS === "android") {
+      console.log("KRISTO_RC_PURCHASE_UPGRADE", {
         fromProductId,
         toProductId: String(pkg.product.identifier || ""),
+        replacementMode: STORE_REPLACEMENT_MODE.CHARGE_PRORATED_PRICE,
       });
+      result = await Purchases.purchasePackage(pkg, null, {
+        oldProductIdentifier: fromProductId,
+        replacementMode: STORE_REPLACEMENT_MODE.CHARGE_PRORATED_PRICE,
+      });
+    } else {
+      if (fromProductId) {
+        console.log("KRISTO_RC_PURCHASE_IOS_SUBSCRIPTION_GROUP", {
+          fromProductId,
+          toProductId: String(pkg.product.identifier || ""),
+        });
+      }
+      result = await Purchases.purchasePackage(pkg);
     }
-    result = await Purchases.purchasePackage(pkg);
+  } catch (error) {
+    logAndroidPurchaseError(error, {
+      phase: "purchasePackage",
+      productId: String(pkg.product.identifier || ""),
+      upgradeFromProductId: fromProductId || null,
+    });
+    throw error;
   }
 
   try {
     await Purchases.syncPurchases();
   } catch (error) {
-    console.log("KRISTO_RC_SYNC_PURCHASES_FAILED", getRevenueCatErrorDetail(error));
+    logRevenueCatException("syncPurchases", error, { phase: "after-purchase" });
   }
 
   if (isAndroidPlatform()) {
@@ -595,7 +1195,7 @@ export async function refreshCustomerInfoAfterStorePurchase(
     try {
       await Purchases.syncPurchases();
     } catch (error) {
-      console.log("KRISTO_RC_SYNC_PURCHASES_FAILED", getRevenueCatErrorDetail(error));
+      logRevenueCatException("syncPurchases", error, { phase: "refresh-after-store-purchase" });
     }
     await sleepMs(delayMs);
     info = await getCustomerSubscriptionInfo();
@@ -620,7 +1220,7 @@ export async function refreshCustomerInfoUntilYearlyActive(
     try {
       await Purchases.syncPurchases();
     } catch (error) {
-      console.log("KRISTO_RC_SYNC_PURCHASES_FAILED", getRevenueCatErrorDetail(error));
+      logRevenueCatException("syncPurchases", error, { phase: "refresh-after-store-purchase" });
     }
     await sleepMs(delayMs);
     info = await getCustomerSubscriptionInfo();
@@ -1637,7 +2237,7 @@ export async function fetchMonthlyIntroTrialEligibility(): Promise<INTRO_ELIGIBI
     ]);
     return result[PREMIUM_MONTHLY_PRODUCT_ID]?.status ?? null;
   } catch (error) {
-    console.log("KRISTO_RC_INTRO_ELIGIBILITY_FAILED", getRevenueCatErrorDetail(error));
+    logRevenueCatException("checkTrialOrIntroductoryPriceEligibility", error);
     return null;
   }
 }
@@ -1723,7 +2323,7 @@ export async function openSubscriptionManagement(
       return true;
     }
   } catch (error) {
-    console.log("KRISTO_RC_MANAGE_SUBSCRIPTIONS_FAILED", getRevenueCatErrorDetail(error));
+    logRevenueCatException("showManageSubscriptions", error);
   }
 
   let info = customerInfo ?? null;
