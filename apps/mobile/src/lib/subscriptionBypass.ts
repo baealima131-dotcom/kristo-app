@@ -4,36 +4,87 @@ import { logSubscriptionGateBlocked } from "./churchSubscriptionGate";
 export const BYPASS_SUBSCRIPTION_FOR_TESTING =
   process.env.EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS === "1";
 
-let loggedAppleReviewBypassCheck = false;
+const APP_STORE_REVIEW_EAS_PROFILE = "app-store-review";
+const PRODUCTION_EAS_PROFILE = "production";
 
-/**
- * App Review / testing: avoid subscription, schedule, media, and church-lock blockers.
- * Production reviewer builds: EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE=1
- */
-export function isAppleReviewBypassEnabled() {
-  const enabled =
-    process.env.EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE === "1" ||
-    BYPASS_SUBSCRIPTION_FOR_TESTING;
-
-  if (!loggedAppleReviewBypassCheck) {
-    loggedAppleReviewBypassCheck = true;
-    console.log("KRISTO_APP_REVIEW_BYPASS_CHECK", {
-      enabled,
-      dev: __DEV__,
-      appReviewMode: process.env.EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE === "1",
-      subscriptionBypassEnv: BYPASS_SUBSCRIPTION_FOR_TESTING,
-    });
-  }
-
-  return enabled;
+function getEasBuildProfile(): string {
+  return String(process.env.EAS_BUILD_PROFILE || "").trim();
 }
 
-/** Schedule-only dev bypass (Pastor): EXPO_PUBLIC_KRISTO_DEV_BYPASS_SUBSCRIPTION=true */
-function isDevScheduleBypassFlagEnabled() {
-  const value = String(process.env.EXPO_PUBLIC_KRISTO_DEV_BYPASS_SUBSCRIPTION || "")
-    .trim()
-    .toLowerCase();
-  return value === "true" || value === "1";
+function isProductionEasBuildProfile(): boolean {
+  return getEasBuildProfile() === PRODUCTION_EAS_PROFILE;
+}
+
+function isAppStoreReviewEasBuildProfile(): boolean {
+  return getEasBuildProfile() === APP_STORE_REVIEW_EAS_PROFILE;
+}
+
+function isAppReviewModeEnvEnabled(): boolean {
+  return process.env.EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE === "1";
+}
+
+/**
+ * True only for the dedicated App Store review EAS profile (never production/TestFlight).
+ * EXPO_PUBLIC_KRISTO_DEV_BYPASS_SUBSCRIPTION is intentionally unused — schedule gates stay strict.
+ */
+export function isAppleReviewBypassEnabled() {
+  logAppleReviewBypassCheckOnce();
+
+  if (BYPASS_SUBSCRIPTION_FOR_TESTING) {
+    if (isProductionEasBuildProfile()) {
+      return false;
+    }
+    return true;
+  }
+
+  if (!isAppReviewModeEnvEnabled()) {
+    return false;
+  }
+
+  return isAppStoreReviewEasBuildProfile();
+}
+
+let loggedSubscriptionBypassWarning = false;
+
+/** Loud warning when subscription bypass env vars are enabled — never silent in production. */
+export function logSubscriptionBypassIfEnabled() {
+  if (loggedSubscriptionBypassWarning) return;
+
+  const mobileBypass = BYPASS_SUBSCRIPTION_FOR_TESTING;
+  const appReviewMode = isAppReviewModeEnvEnabled();
+  const backendBypassNote =
+    "KRISTO_SUBSCRIPTION_BYPASS is server-only; mobile cannot read it — check server logs.";
+
+  if (mobileBypass || appReviewMode) {
+    loggedSubscriptionBypassWarning = true;
+    console.warn("KRISTO_SUBSCRIPTION_BYPASS_ENABLED", {
+      mobileBypass,
+      appReviewMode,
+      easBuildProfile: getEasBuildProfile() || null,
+      bypassActiveInThisBuild: isSubscriptionBypassEnabled(),
+      expoPublicKristoSubscriptionBypass: process.env.EXPO_PUBLIC_KRISTO_SUBSCRIPTION_BYPASS ?? null,
+      expoPublicKristoAppReviewMode: process.env.EXPO_PUBLIC_KRISTO_APP_REVIEW_MODE ?? null,
+      dev: __DEV__,
+      backendBypassNote,
+    });
+  }
+}
+
+let loggedAppleReviewBypassCheck = false;
+
+export function logAppleReviewBypassCheckOnce() {
+  if (loggedAppleReviewBypassCheck) return;
+  loggedAppleReviewBypassCheck = true;
+  logSubscriptionBypassIfEnabled();
+  console.log("KRISTO_APP_REVIEW_BYPASS_CHECK", {
+    enabled: isAppleReviewBypassEnabled(),
+    dev: __DEV__,
+    easBuildProfile: getEasBuildProfile() || null,
+    appReviewMode: isAppReviewModeEnvEnabled(),
+    subscriptionBypassEnv: BYPASS_SUBSCRIPTION_FOR_TESTING,
+    productionBuildProfile: isProductionEasBuildProfile(),
+    appStoreReviewBuildProfile: isAppStoreReviewEasBuildProfile(),
+  });
 }
 
 const loggedBypassScopes = new Set<string>();
@@ -52,19 +103,20 @@ export function logSubscriptionGateBypassedForTest(
 }
 
 export function isSubscriptionBypassEnabled() {
-  return BYPASS_SUBSCRIPTION_FOR_TESTING || isAppleReviewBypassEnabled();
+  return isAppleReviewBypassEnabled();
 }
 
 /**
  * Whether the live RevenueCat purchase path (configure / offerings / purchase /
  * customer info) should be DISABLED.
  *
- * Only the explicit full-testing bypass disables RevenueCat. Dev clients and
- * App Store review builds may still configure Purchases and load StoreKit
- * offerings; church/media subscription gates remain strict separately.
+ * Only the explicit full-testing bypass disables RevenueCat, and never on the
+ * production EAS profile (App Store / Play store releases).
  */
 export function isRevenueCatPurchasingDisabled() {
-  return BYPASS_SUBSCRIPTION_FOR_TESTING;
+  if (!BYPASS_SUBSCRIPTION_FOR_TESTING) return false;
+  if (isProductionEasBuildProfile()) return false;
+  return true;
 }
 
 export type ChurchMediaSubscriptionGateResult = {
@@ -158,11 +210,6 @@ export function shouldSuppressPremiumPrompts(
   isPastor = false,
   isApprovedMediaHost = false
 ) {
-  if (isAppleReviewBypassEnabled() && (isPastor || isApprovedMediaHost)) {
-    return true;
-  }
-  if (BYPASS_SUBSCRIPTION_FOR_TESTING) {
-    return isPastor || isApprovedMediaHost;
-  }
-  return false;
+  if (!isAppleReviewBypassEnabled()) return false;
+  return isPastor || isApprovedMediaHost;
 }
