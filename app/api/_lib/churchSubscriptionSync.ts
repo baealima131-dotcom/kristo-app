@@ -22,6 +22,8 @@ export type ChurchSubscriptionSyncResult = {
   media: ChurchMediaProfile | null;
   profileCreated: boolean;
   subscriptionActivated: boolean;
+  revenueCatLane?: "production" | "sandbox" | null;
+  sandboxPurchase?: boolean;
 };
 
 function resolveRequestedPlan(value?: string | null): "monthly" | "yearly" | null {
@@ -47,6 +49,8 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     media: null,
     profileCreated: false,
     subscriptionActivated: false,
+    revenueCatLane: null,
+    sandboxPurchase: false,
   };
 
   if (!churchId || !requesterUserId) return empty;
@@ -86,6 +90,8 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     revenueCatBypassed: verification.bypassed,
     revenueCatPlan: verification.plan,
     productId: verification.productId,
+    revenueCatLane: verification.revenueCatLane ?? null,
+    sandboxPurchase: verification.sandboxPurchase === true,
   });
 
   if (!verification.active || verification.bypassed || !isVerifiedChurchPremiumReason(verification.reason)) {
@@ -100,6 +106,8 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
       ...empty,
       reason: verification.reason,
       media: mediaBefore,
+      revenueCatLane: verification.revenueCatLane ?? null,
+      sandboxPurchase: verification.sandboxPurchase === true,
     };
   }
 
@@ -248,5 +256,7 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     media: media || null,
     profileCreated,
     subscriptionActivated,
+    revenueCatLane: verification.revenueCatLane ?? null,
+    sandboxPurchase: verification.sandboxPurchase === true,
   };
 }

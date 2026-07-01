@@ -45,6 +45,10 @@ export type ChurchPremiumVerification = {
   bypassed: boolean;
   /** ISO timestamp from RevenueCat entitlement, null for lifetime / unknown. */
   expiresAt: string | null;
+  /** True when verification came from RevenueCat sandbox / StoreKit test data. */
+  sandboxPurchase?: boolean;
+  /** RevenueCat REST lane that produced this result. */
+  revenueCatLane?: "production" | "sandbox";
 };
 
 function getSecretKey(): string {
@@ -159,44 +163,62 @@ function resolvePremiumFromSubscriptions(subscriptions: Record<string, any>): {
   return { productId: null, subscription: null, active: false };
 }
 
+type RevenueCatFetchLane = "production" | "sandbox";
+
 async function fetchRevenueCatSubscriber(
   uid: string,
-  secret: string
-): Promise<{ ok: true; data: any } | { ok: false; reason: string }> {
+  secret: string,
+  lane: RevenueCatFetchLane = "production"
+): Promise<{ ok: true; data: any; lane: RevenueCatFetchLane } | { ok: false; reason: string; lane: RevenueCatFetchLane }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${secret}`,
+      "Content-Type": "application/json",
+    };
+    // Xcode / StoreKit Configuration purchases are sandbox-only in the REST API
+    // unless X-Is-Sandbox is set. Without this header, activation always fails
+    // with no-entitlement while the mobile SDK still shows Premium active.
+    if (lane === "sandbox") {
+      headers["X-Is-Sandbox"] = "true";
+      headers["X-Platform"] = "ios";
+    }
+
     const res = await fetch(`${REVENUECAT_API_BASE}/subscribers/${encodeURIComponent(uid)}`, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${secret}`,
-        "Content-Type": "application/json",
-      },
+      headers,
       signal: controller.signal,
     });
 
     if (!res.ok) {
-      return { ok: false, reason: `revenuecat-http-${res.status}` };
+      return { ok: false, reason: `revenuecat-http-${res.status}`, lane };
     }
 
     const data: any = await res.json().catch(() => ({}));
-    return { ok: true, data };
+    return { ok: true, data, lane };
   } catch (error: any) {
     const reason = error?.name === "AbortError" ? "timeout" : "fetch-error";
     console.error("KRISTO_REVENUECAT_VERIFY_FAILED", {
       reason,
+      lane,
       error: String(error?.message || error || "unknown"),
     });
-    return { ok: false, reason };
+    return { ok: false, reason, lane };
   } finally {
     clearTimeout(timer);
   }
 }
 
+function subscriptionLooksSandbox(subscription: any): boolean {
+  return subscription?.is_sandbox === true;
+}
+
 function verifySubscriberSnapshot(
   uid: string,
-  snapshot: RevenueCatSubscriberSnapshot
+  snapshot: RevenueCatSubscriberSnapshot,
+  lane: RevenueCatFetchLane
 ): ChurchPremiumVerification {
   const activeEntitlementKeys = Object.keys(snapshot.entitlements);
   const activeSubscriptionKeys = Object.keys(snapshot.subscriptions);
@@ -204,6 +226,7 @@ function verifySubscriberSnapshot(
 
   console.log("KRISTO_ENTITLEMENT_AUDIT", {
     source: "server-verifyChurchPremiumEntitlement",
+    revenueCatLane: lane,
     activeEntitlementKeys,
     activeSubscriptionKeys,
     detectedEntitlement: entitlementMatch.detectedEntitlement,
@@ -218,6 +241,7 @@ function verifySubscriberSnapshot(
         ? null
         : String(expiresAtRaw).trim() || null;
     const productId = String(entitlementMatch.entitlement.product_identifier || "").trim() || null;
+    const sandboxPurchase = lane === "sandbox";
 
     if (!entitlementMatch.active) {
       return {
@@ -227,6 +251,8 @@ function verifySubscriberSnapshot(
         reason: "expired",
         bypassed: false,
         expiresAt,
+        sandboxPurchase,
+        revenueCatLane: lane,
       };
     }
 
@@ -237,6 +263,8 @@ function verifySubscriberSnapshot(
       reason: "verified",
       bypassed: false,
       expiresAt,
+      sandboxPurchase,
+      revenueCatLane: lane,
     };
   }
 
@@ -247,11 +275,15 @@ function verifySubscriberSnapshot(
       expiresAtRaw === null || expiresAtRaw === undefined
         ? null
         : String(expiresAtRaw).trim() || null;
+    const sandboxPurchase =
+      lane === "sandbox" || subscriptionLooksSandbox(subscriptionMatch.subscription);
 
     console.log("KRISTO_ENTITLEMENT_AUDIT", {
       source: "server-verifyChurchPremiumEntitlement:subscription-fallback",
+      revenueCatLane: lane,
       activeSubscriptionKeys,
       productId: subscriptionMatch.productId,
+      sandboxPurchase,
       currentChurchId: uid,
     });
 
@@ -262,6 +294,8 @@ function verifySubscriberSnapshot(
       reason: "verified-subscription",
       bypassed: false,
       expiresAt,
+      sandboxPurchase,
+      revenueCatLane: lane,
     };
   }
 
@@ -272,7 +306,21 @@ function verifySubscriberSnapshot(
     reason: "no-entitlement",
     bypassed: false,
     expiresAt: null,
+    revenueCatLane: lane,
   };
+}
+
+async function verifyRevenueCatLane(
+  uid: string,
+  secret: string,
+  lane: RevenueCatFetchLane
+): Promise<ChurchPremiumVerification | { fetchFailed: true; reason: string; lane: RevenueCatFetchLane }> {
+  const fetched = await fetchRevenueCatSubscriber(uid, secret, lane);
+  if (!fetched.ok) {
+    return { fetchFailed: true, reason: fetched.reason, lane };
+  }
+
+  return verifySubscriberSnapshot(uid, parseSubscriberSnapshot(fetched.data), lane);
 }
 
 /**
@@ -326,42 +374,8 @@ export async function verifyChurchPremiumEntitlement(
   }
 
   const maxAttempts = forActivation ? ACTIVATION_VERIFY_MAX_ATTEMPTS : 1;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const fetched = await fetchRevenueCatSubscriber(uid, secret);
-    if (!fetched.ok) {
-      return {
-        active: false,
-        plan: null,
-        productId: null,
-        reason: fetched.reason,
-        bypassed: false,
-        expiresAt: null,
-      };
-    }
-
-    const verification = verifySubscriberSnapshot(uid, parseSubscriberSnapshot(fetched.data));
-    if (verification.active || verification.reason !== "no-entitlement" || attempt === maxAttempts - 1) {
-      if (!verification.active && verification.reason === "no-entitlement" && forActivation) {
-        console.log("KRISTO_REVENUECAT_VERIFY_NO_ENTITLEMENT", {
-          churchId: uid,
-          attempt,
-          maxAttempts,
-        });
-      }
-      return verification;
-    }
-
-    console.log("KRISTO_REVENUECAT_VERIFY_RETRY", {
-      churchId: uid,
-      attempt,
-      reason: verification.reason,
-      delayMs: ACTIVATION_VERIFY_RETRY_MS,
-    });
-    await sleepMs(ACTIVATION_VERIFY_RETRY_MS);
-  }
-
-  return {
+  const lanes: RevenueCatFetchLane[] = forActivation ? ["production", "sandbox"] : ["production"];
+  let lastVerification: ChurchPremiumVerification = {
     active: false,
     plan: null,
     productId: null,
@@ -369,4 +383,63 @@ export async function verifyChurchPremiumEntitlement(
     bypassed: false,
     expiresAt: null,
   };
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    for (const lane of lanes) {
+      const result = await verifyRevenueCatLane(uid, secret, lane);
+      if ("fetchFailed" in result) {
+        if (lane === "production") {
+          return {
+            active: false,
+            plan: null,
+            productId: null,
+            reason: result.reason,
+            bypassed: false,
+            expiresAt: null,
+            revenueCatLane: lane,
+          };
+        }
+        continue;
+      }
+
+      lastVerification = result;
+      if (result.active) {
+        console.log("KRISTO_REVENUECAT_VERIFY_OK", {
+          churchId: uid,
+          lane,
+          attempt,
+          reason: result.reason,
+          productId: result.productId,
+          sandboxPurchase: result.sandboxPurchase === true,
+        });
+        return result;
+      }
+
+      if (result.reason !== "no-entitlement") {
+        return result;
+      }
+    }
+
+    if (attempt < maxAttempts - 1) {
+      console.log("KRISTO_REVENUECAT_VERIFY_RETRY", {
+        churchId: uid,
+        attempt,
+        lanes,
+        reason: lastVerification.reason,
+        delayMs: ACTIVATION_VERIFY_RETRY_MS,
+      });
+      await sleepMs(ACTIVATION_VERIFY_RETRY_MS);
+      continue;
+    }
+
+    console.log("KRISTO_REVENUECAT_VERIFY_NO_ENTITLEMENT", {
+      churchId: uid,
+      attempt,
+      maxAttempts,
+      lanes,
+      revenueCatLane: lastVerification.revenueCatLane ?? null,
+    });
+  }
+
+  return lastVerification;
 }

@@ -846,6 +846,8 @@ export async function syncChurchSubscriptionFromRevenueCat(
       reason: res?.reason,
       status: res?.status,
       code: res?.code,
+      revenueCatLane: res?.revenueCatLane ?? null,
+      sandboxPurchase: res?.sandboxPurchase === true,
     });
     return false;
   } catch (error: any) {

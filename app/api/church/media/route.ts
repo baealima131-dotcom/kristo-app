@@ -381,6 +381,8 @@ export async function PATCH(req: Request) {
             ok: false,
             error: "Subscription could not be verified with the App Store.",
             reason: sync.reason,
+            revenueCatLane: sync.revenueCatLane ?? null,
+            sandboxPurchase: sync.sandboxPurchase === true,
           },
           { status: 402 }
         );
