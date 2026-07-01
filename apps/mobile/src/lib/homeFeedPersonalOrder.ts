@@ -13,6 +13,12 @@ const HOME_FEED_STALE_POST_DAYS = 30;
 /** Cap freshness penalty so very old posts still appear, just lower. */
 const HOME_FEED_MAX_FRESHNESS_PENALTY_MS = 14 * 24 * 60 * 60 * 1000;
 
+/** YouTube cold-start rank pool: fetch this many candidates, show top pageSize after shuffle. */
+export const HOME_FEED_YOUTUBE_COLD_START_RANK_POOL_SIZE = 18;
+
+/** Recent videos get a composite-rank boost so new posts surface without abandoning quality mix. */
+const HOME_FEED_YOUTUBE_FRESH_BOOST_HOURS = 72;
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 let activePersonalSeedKey = "";
@@ -146,6 +152,55 @@ export function sortRowsByPersonalSeed<
     if (aRank !== bRank) return aRank - bRank;
     return tieBreakMs(b) - tieBreakMs(a);
   });
+}
+
+/** Lower composite rank = higher in feed. Fresh uploads get a bounded boost. */
+export function homeFeedYoutubeCompositeRank(
+  rowKey: string,
+  row: any,
+  ctx: HomeFeedPersonalOrderContext,
+  nowMs = Date.now()
+): number {
+  const personal = homeFeedPersonalRankWithChurchBoost(rowKey, ctx, row);
+  const created = Date.parse(String(row?.createdAt || row?.updatedAt || "")) || 0;
+  if (!created) return personal;
+
+  const ageHours = Math.max(0, (nowMs - created) / (60 * 60 * 1000));
+  if (ageHours > HOME_FEED_YOUTUBE_FRESH_BOOST_HOURS) return personal;
+
+  const freshnessWeight = 1 - ageHours / HOME_FEED_YOUTUBE_FRESH_BOOST_HOURS;
+  const boost = Math.floor(0.35 * 0xffffffff * freshnessWeight);
+  return Math.max(0, personal - boost);
+}
+
+/** Session-seeded YouTube stream order: personal rotation + recency boost, stable within a scroll session. */
+export function rankHomeFeedYoutubeStreamRows<T>(
+  rows: T[],
+  rowKeyFn: (row: T) => string,
+  nowMs = Date.now()
+): T[] {
+  if (!Array.isArray(rows) || rows.length <= 1) return rows;
+
+  const ctx = resolveHomeFeedPersonalOrderContext(nowMs);
+  resetHomeFeedPersonalOrderIfNeeded(ctx.seedKey);
+  logHomeFeedPersonalSeed(ctx);
+
+  const ranked = [...rows].sort((a, b) => {
+    const aRank = homeFeedYoutubeCompositeRank(rowKeyFn(a), a, ctx, nowMs);
+    const bRank = homeFeedYoutubeCompositeRank(rowKeyFn(b), b, ctx, nowMs);
+    if (aRank !== bRank) return aRank - bRank;
+    return (
+      homeFeedFreshnessSortMs(b, nowMs, true) - homeFeedFreshnessSortMs(a, nowMs, true)
+    );
+  });
+
+  console.log("KRISTO_HOME_FEED_YOUTUBE_ROTATE", {
+    sessionSeed: ctx.sessionSeed,
+    inputCount: rows.length,
+    firstIds: ranked.slice(0, 8).map((row) => rowKeyFn(row)).filter(Boolean),
+  });
+
+  return ranked;
 }
 
 
