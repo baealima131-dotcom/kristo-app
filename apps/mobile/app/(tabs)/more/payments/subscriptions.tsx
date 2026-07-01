@@ -50,6 +50,9 @@ import {
   logAndroidBillingConfigDiagnostics,
   logAndroidPurchaseError,
   getRevenueCatPurchaseErrorDetail,
+  restoreSubscriptionPurchases,
+  canShowChurchSubscriptionRestore,
+  verifyChurchSubscriptionRestoreOwnership,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
   fetchChurchMediaPremiumServerStatus,
@@ -58,6 +61,7 @@ import {
   logChurchSubscriptionContext,
   syncChurchSubscriptionAfterPurchase,
   type ChurchMediaPremiumServerStatus,
+  type ChurchSubscriptionActivationSource,
 } from "../../../../src/lib/churchSubscription";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { churchIdsMatch } from "../../../../src/lib/churchPremiumAccess";
@@ -598,9 +602,9 @@ export default function PaymentsSubscriptionsScreen() {
   const [offersLoading, setOffersLoading] = useState(true);
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-  const [submittingPlan, setSubmittingPlan] = useState<SubscriptionPlanKey | "manage" | null>(
-    null
-  );
+  const [submittingPlan, setSubmittingPlan] = useState<
+    SubscriptionPlanKey | "manage" | "restore" | "sync" | null
+  >(null);
   const scrollRef = useRef<RNScrollView | null>(null);
 
   const sessionUserId = String((session as any)?.userId || "").trim();
@@ -798,40 +802,6 @@ export default function PaymentsSubscriptionsScreen() {
     setReloadToken((token) => token + 1);
   }
 
-  useEffect(() => {
-    if (offersLoading || sessionLoading || !churchId || !isPastorSessionRole(sessionRole)) {
-      return;
-    }
-
-    const serverActive = mediaPremiumStatus?.serverSubscriptionActive === true;
-    if (isOfflineActivationMediaPremiumStatus(mediaPremiumStatus)) return;
-    const rcHasPremium = hasPremiumEntitlement(customerInfo);
-    if (serverActive || !rcHasPremium) return;
-
-    let alive = true;
-    const plan = (customerInfo ? resolveActiveSubscriptionPlan(customerInfo) : null) || "monthly";
-
-    (async () => {
-      console.log("KRISTO_CHURCH_SUBSCRIPTION_AUTO_SYNC_START", { churchId, plan });
-      await maybeActivateChurchSubscription(plan, customerInfo ?? undefined);
-      if (!alive) return;
-      const info = customerInfo || (await getCustomerSubscriptionInfo().catch(() => null));
-      await refreshAfterCustomerInfoChange(info);
-      console.log("KRISTO_CHURCH_SUBSCRIPTION_AUTO_SYNC_DONE", { churchId, plan });
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [
-    offersLoading,
-    sessionLoading,
-    churchId,
-    sessionRole,
-    mediaPremiumStatus,
-    customerInfo,
-  ]);
-
   async function refreshAfterCustomerInfoChange(info: CustomerInfo | null) {
     setCustomerInfo(info);
     const hasPremium = hasPremiumEntitlement(info);
@@ -856,18 +826,19 @@ export default function PaymentsSubscriptionsScreen() {
 
   async function maybeActivateChurchSubscription(
     resolvedPlan: SubscriptionPlanKey,
-    initialCustomerInfo?: CustomerInfo | null
+    opts: {
+      activationSource: ChurchSubscriptionActivationSource;
+      purchaseConfirmed?: boolean;
+      initialCustomerInfo?: CustomerInfo | null;
+    }
   ) {
     if (!isPastorSessionRole(sessionRole)) {
       return { activated: false, skipped: true as const, canUseMediaTools: false };
     }
 
-    let resolvedChurchId = churchId || String((session as any)?.churchId || "").trim();
-    if (!resolvedChurchId) {
-      const recovered = await recoverChurchIdFromMembership(session, setSession);
-      resolvedChurchId = recovered.churchId;
-    }
-
+    const resolvedChurchId = String(
+      churchId || (session as any)?.churchId || (session as any)?.activeChurchId || ""
+    ).trim();
     if (!resolvedChurchId) {
       if (isAppleReviewBypassEnabled()) {
         return { activated: false, skipped: true as const, canUseMediaTools: false };
@@ -888,8 +859,9 @@ export default function PaymentsSubscriptionsScreen() {
       churchRole: String((session as any)?.churchRole || "").trim() || undefined,
       subscriptionPlan: resolvedPlan,
       headers,
-      purchaseConfirmed: true,
-      initialCustomerInfo: initialCustomerInfo ?? null,
+      purchaseConfirmed: opts.purchaseConfirmed === true,
+      activationSource: opts.activationSource,
+      initialCustomerInfo: opts.initialCustomerInfo ?? null,
     });
 
     if (sync.churchSubscriptionActive || sync.canUseMediaTools) {
@@ -902,6 +874,86 @@ export default function PaymentsSubscriptionsScreen() {
       canUseMediaTools: sync.canUseMediaTools,
       churchSubscriptionActive: sync.churchSubscriptionActive,
     };
+  }
+
+  async function handleRestorePurchases() {
+    if (submittingPlan || !churchId || !isPastorSessionRole(sessionRole)) return;
+
+    try {
+      setSubmittingPlan("restore");
+      await logInRevenueCatForChurchSubscription(churchId);
+      const info = await restoreSubscriptionPurchases();
+      setCustomerInfo(info);
+
+      if (!verifyChurchSubscriptionRestoreOwnership(churchId, info)) {
+        Alert.alert(
+          "No subscription found",
+          "No App Store subscription was found for this church."
+        );
+        return;
+      }
+
+      const plan = resolveActiveSubscriptionPlan(info) || "monthly";
+      await maybeActivateChurchSubscription(plan, {
+        activationSource: "restore",
+        initialCustomerInfo: info,
+      });
+      await refreshAfterCustomerInfoChange(info);
+      Alert.alert("Restored", "Your church subscription has been restored.");
+    } catch (error: any) {
+      Alert.alert(
+        "Restore failed",
+        String(error?.message || "Could not restore purchases. Try again.")
+      );
+    } finally {
+      setSubmittingPlan(null);
+    }
+  }
+
+  async function handleSyncSubscription() {
+    if (submittingPlan || !churchId || !isPastorSessionRole(sessionRole)) return;
+
+    try {
+      setSubmittingPlan("sync");
+      await logInRevenueCatForChurchSubscription(churchId);
+
+      let info = customerInfo;
+      if (!info) {
+        info = await getCustomerSubscriptionInfo().catch(() => null);
+        setCustomerInfo(info);
+      }
+
+      if (!verifyChurchSubscriptionRestoreOwnership(churchId, info)) {
+        Alert.alert(
+          "Cannot sync",
+          "This church does not have a verified App Store subscription to sync."
+        );
+        return;
+      }
+
+      const plan = (info ? resolveActiveSubscriptionPlan(info) : null) || "monthly";
+      const sync = await maybeActivateChurchSubscription(plan, {
+        activationSource: "explicit_sync",
+        initialCustomerInfo: info,
+      });
+      await refreshAfterCustomerInfoChange(info);
+
+      if (sync.churchSubscriptionActive || sync.canUseMediaTools || sync.activated) {
+        Alert.alert("Subscription synced", "Your church subscription is now linked to Media Premium.");
+      } else {
+        Alert.alert(
+          "Sync in progress",
+          "Your subscription is active, but church sync is still completing. Try again in a moment."
+        );
+      }
+    } catch (error: any) {
+      Alert.alert(
+        "Sync failed",
+        String(error?.message || "Could not sync church subscription. Try again.")
+      );
+    } finally {
+      setSubmittingPlan(null);
+    }
   }
 
   function openCheckoutFallback(plan: SubscriptionPlanKey) {
@@ -993,7 +1045,11 @@ export default function PaymentsSubscriptionsScreen() {
         if (activeBackendPlan === "yearly") {
           setSubscriptionSelectedPlan("yearly");
           setSubscriptionPlanStatus("active");
-          await maybeActivateChurchSubscription("yearly", info);
+          await maybeActivateChurchSubscription("yearly", {
+            activationSource: "purchase",
+            purchaseConfirmed: true,
+            initialCustomerInfo: info,
+          });
           await refreshAfterCustomerInfoChange(info);
           Alert.alert("Yearly plan active", "Your church yearly subscription is now active.");
         } else {
@@ -1011,11 +1067,19 @@ export default function PaymentsSubscriptionsScreen() {
       if (activeBackendPlan) {
         setSubscriptionSelectedPlan(activeBackendPlan);
         setSubscriptionPlanStatus("active");
-        await maybeActivateChurchSubscription(activeBackendPlan, info);
+        await maybeActivateChurchSubscription(activeBackendPlan, {
+          activationSource: "purchase",
+          purchaseConfirmed: true,
+          initialCustomerInfo: info,
+        });
         await refreshAfterCustomerInfoChange(info);
       } else if (plan === "monthly") {
         setSubscriptionPlanStatus("active");
-        await maybeActivateChurchSubscription("monthly", info);
+        await maybeActivateChurchSubscription("monthly", {
+          activationSource: "purchase",
+          purchaseConfirmed: true,
+          initialCustomerInfo: info,
+        });
         await refreshAfterCustomerInfoChange(info);
       }
 
@@ -1107,6 +1171,15 @@ export default function PaymentsSubscriptionsScreen() {
   const tabBarClearance = 96;
 
   const churchSubscriptionActive = serverSubscriptionActive;
+  const showPendingChurchSync =
+    isPastorSessionRole(sessionRole) &&
+    !serverSubscriptionActive &&
+    !isOfflineActivation &&
+    canShowChurchSubscriptionRestore({
+      churchId,
+      customerInfo,
+      backendSubscriptionActive: false,
+    });
   const monthlyHasIntroOffer = monthlyPackageHasIntroOffer(monthlyPackage);
   const showMonthlyFreeTrial = !churchSubscriptionActive && monthlyHasIntroOffer;
   const monthlyIntro = resolveMonthlyProductIntro(monthlyPackage);
@@ -1231,6 +1304,45 @@ export default function PaymentsSubscriptionsScreen() {
                 <Text style={s.sectionSub}>
                   Premium ministries live access
                 </Text>
+                {showPendingChurchSync ? (
+                  <GlassCard highlighted>
+                    <Text style={s.syncTitle}>Subscription found for this church</Text>
+                    <Text style={s.syncSub}>
+                      Your App Store purchase is active but not linked to this church yet. Restore
+                      or sync to unlock Media Premium.
+                    </Text>
+                    <Pressable
+                      onPress={handleSyncSubscription}
+                      disabled={Boolean(submittingPlan)}
+                      style={({ pressed }) => [
+                        s.syncPrimaryBtn,
+                        submittingPlan ? s.disabledBtn : null,
+                        pressed ? s.pressed : null,
+                      ]}
+                    >
+                      {submittingPlan === "sync" ? (
+                        <ActivityIndicator color="#111" />
+                      ) : (
+                        <Text style={s.syncPrimaryBtnText}>Sync Subscription</Text>
+                      )}
+                    </Pressable>
+                    <Pressable
+                      onPress={handleRestorePurchases}
+                      disabled={Boolean(submittingPlan)}
+                      style={({ pressed }) => [
+                        s.syncSecondaryBtn,
+                        submittingPlan ? s.disabledBtn : null,
+                        pressed ? s.pressed : null,
+                      ]}
+                    >
+                      {submittingPlan === "restore" ? (
+                        <ActivityIndicator color="#F4D06F" />
+                      ) : (
+                        <Text style={s.syncSecondaryBtnText}>Restore Purchases</Text>
+                      )}
+                    </Pressable>
+                  </GlassCard>
+                ) : null}
                 <PlanOfferCard
                   icon="calendar-outline"
                   planName="Monthly Plan"
@@ -1354,6 +1466,56 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     lineHeight: 18,
+  },
+
+  syncTitle: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+  },
+
+  syncSub: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 18,
+  },
+
+  syncPrimaryBtn: {
+    marginTop: 4,
+    minHeight: 46,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F4D06F",
+    paddingHorizontal: 16,
+  },
+
+  syncPrimaryBtnText: {
+    color: "#111",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  syncSecondaryBtn: {
+    minHeight: 44,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(244,208,111,0.35)",
+    paddingHorizontal: 16,
+  },
+
+  syncSecondaryBtnText: {
+    color: "#F4D06F",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+
+  disabledBtn: {
+    opacity: 0.6,
   },
 
   glassCardOuter: {

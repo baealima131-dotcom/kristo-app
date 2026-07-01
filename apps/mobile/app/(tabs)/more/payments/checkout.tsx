@@ -47,6 +47,7 @@ import {
   syncChurchSubscriptionAfterPurchase,
   fetchChurchSubscriptionStatus,
   logChurchSubscriptionContext,
+  type ChurchSubscriptionActivationSource,
 } from "../../../../src/lib/churchSubscription";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
@@ -130,18 +131,19 @@ export default function PaymentsCheckoutScreen() {
 
   async function maybeActivateChurchSubscription(
     resolvedPlan: SubscriptionPlanKey,
-    initialCustomerInfo?: CustomerInfo | null
+    opts: {
+      activationSource: ChurchSubscriptionActivationSource;
+      purchaseConfirmed?: boolean;
+      initialCustomerInfo?: CustomerInfo | null;
+    }
   ) {
     if (!isPastorSessionRole(sessionRole)) {
       return { activated: false, skipped: true as const, canUseMediaTools: false };
     }
 
-    let churchId = sessionChurchId;
-    if (!churchId) {
-      const recovered = await recoverChurchIdFromMembership(session, setSession);
-      churchId = recovered.churchId;
-    }
-
+    const churchId = String(
+      checkoutChurchId || sessionChurchId || (session as any)?.activeChurchId || ""
+    ).trim();
     if (!churchId) {
       if (isAppleReviewBypassEnabled()) {
         return { activated: false, skipped: true as const, canUseMediaTools: false };
@@ -162,8 +164,9 @@ export default function PaymentsCheckoutScreen() {
       churchRole: String((session as any)?.churchRole || "").trim() || undefined,
       subscriptionPlan: resolvedPlan,
       headers,
-      purchaseConfirmed: true,
-      initialCustomerInfo: initialCustomerInfo ?? null,
+      purchaseConfirmed: opts.purchaseConfirmed === true,
+      activationSource: opts.activationSource,
+      initialCustomerInfo: opts.initialCustomerInfo ?? null,
     });
 
     return {
@@ -358,7 +361,10 @@ export default function PaymentsCheckoutScreen() {
       setSubscriptionSelectedPlan(resolvedPlan);
       setSubscriptionPlanStatus("active");
 
-      const activation = await maybeActivateChurchSubscription(resolvedPlan, info);
+      const activation = await maybeActivateChurchSubscription(resolvedPlan, {
+        activationSource: "explicit_sync",
+        initialCustomerInfo: info,
+      });
       const churchNote = churchActivationNote(activation);
 
       if (activation.canUseMediaTools) {
@@ -415,7 +421,11 @@ export default function PaymentsCheckoutScreen() {
       setSubscriptionSelectedPlan(resolvedPlan);
       setSubscriptionPlanStatus("active");
 
-      const activation = await maybeActivateChurchSubscription(resolvedPlan, initialInfo);
+      const activation = await maybeActivateChurchSubscription(resolvedPlan, {
+        activationSource: "purchase",
+        purchaseConfirmed: true,
+        initialCustomerInfo: initialInfo,
+      });
 
       if (hasPremiumEntitlement(initialInfo)) {
         setSubscriptionPlanStatus("active");
