@@ -7,9 +7,13 @@
  * `PATCH /api/church/media` accepted `subscriptionActive: true` from the client
  * verbatim, so anyone with pastor identity could unlock premium for free.
  *
- * This calls the RevenueCat REST API (v1 subscribers endpoint) with a SERVER
- * secret key (`REVENUECAT_SECRET_API_KEY`) and confirms the entitlement is
- * present and not expired. No webhooks (that is a V2 concern).
+ * This calls the RevenueCat REST API (v1 subscribers endpoint) and confirms the
+ * entitlement is present and not expired. No webhooks (that is a V2 concern).
+ *
+ * Auth per lane (RevenueCat v1 quirk):
+ * - production: `REVENUECAT_SECRET_API_KEY` (sk_)
+ * - sandbox (X-Is-Sandbox): iOS public SDK key — secret keys return 403
+ *   ("Secret API keys should not be used in your app.")
  */
 
 import {
@@ -53,9 +57,14 @@ export type ChurchPremiumVerification = {
 };
 
 type RevenueCatFetchLane = "production" | "sandbox";
+type RevenueCatAuthKeyKind = "secret" | "public-ios";
 
 function getSecretKey(): string {
   return String(process.env.REVENUECAT_SECRET_API_KEY || "").trim();
+}
+
+function getIosPublicKey(): string {
+  return String(process.env.REVENUECAT_IOS_PUBLIC_API_KEY || IOS_REVENUECAT_PUBLIC_API_KEY || "").trim();
 }
 
 type RevenueCatServerKeyKind = "secret" | "public-ios" | "public-android" | "public-amazon" | "unknown" | "missing";
@@ -76,28 +85,51 @@ function classifyRevenueCatServerKey(value: string): RevenueCatServerKeyKind {
   return "unknown";
 }
 
+function resolveRevenueCatAuth(
+  lane: RevenueCatFetchLane
+): { key: string; keyKind: RevenueCatAuthKeyKind } | { missing: true; reason: string } {
+  if (lane === "sandbox") {
+    const key = getIosPublicKey();
+    if (!key) return { missing: true, reason: "no-ios-public-key" };
+    if (!key.startsWith("appl_")) return { missing: true, reason: "invalid-ios-public-key" };
+    return { key, keyKind: "public-ios" };
+  }
+
+  const key = getSecretKey();
+  if (!key) return { missing: true, reason: "no-secret" };
+  if (!key.startsWith("sk_")) return { missing: true, reason: "invalid-secret-key" };
+  return { key, keyKind: "secret" };
+}
+
 function logRevenueCatServerKeyAudit() {
   const secret = getSecretKey();
+  const iosPublic = getIosPublicKey();
   const secretKeyKind = classifyRevenueCatServerKey(secret);
-  const iosPublicKeyPrefix = maskRevenueCatKeyPrefix(IOS_REVENUECAT_PUBLIC_API_KEY);
+  const iosPublicKeyKind = classifyRevenueCatServerKey(iosPublic);
   const serverKeyPrefix = maskRevenueCatKeyPrefix(secret);
-  const likelyWrongKeyType = secretKeyKind !== "secret" && secretKeyKind !== "missing";
+  const iosPublicKeyPrefix = maskRevenueCatKeyPrefix(iosPublic);
+  const likelyWrongProductionKey = secretKeyKind !== "secret" && secretKeyKind !== "missing";
+  const likelyWrongSandboxKey = iosPublicKeyKind !== "public-ios" && iosPublicKeyKind !== "missing";
 
   console.log("KRISTO_REVENUECAT_KEY_AUDIT", {
-    serverKeyKind: secretKeyKind,
-    serverKeyPrefix,
-    expectedIosPublicKeyPrefix: iosPublicKeyPrefix,
+    productionKeyKind: secretKeyKind,
+    productionKeyPrefix: serverKeyPrefix,
+    sandboxKeyKind: iosPublicKeyKind,
+    sandboxKeyPrefix: iosPublicKeyPrefix,
     sameProjectRequirement:
-      "REVENUECAT_SECRET_API_KEY must be an sk_ secret from the same RevenueCat project as the iOS appl_ SDK key.",
-    likelyMisconfigured: likelyWrongKeyType,
-    misconfigurationHint: likelyWrongKeyType
-      ? "Server is not using an sk_ secret key — REST verification may hit the wrong project or be rejected."
-      : null,
+      "Production uses sk_ secret; sandbox lane uses iOS appl_ public key with X-Is-Sandbox (both from the same RC project).",
+    likelyMisconfigured: likelyWrongProductionKey || likelyWrongSandboxKey,
+    misconfigurationHint: likelyWrongProductionKey
+      ? "REVENUECAT_SECRET_API_KEY must be sk_ for production subscriber GET."
+      : likelyWrongSandboxKey
+        ? "REVENUECAT_IOS_PUBLIC_API_KEY (or IOS_REVENUECAT_PUBLIC_API_KEY fallback) must be appl_ for sandbox GET."
+        : null,
   });
 }
 
 function logRevenueCatSubscriberResponse(args: {
   lane: RevenueCatFetchLane;
+  authKeyKind: RevenueCatAuthKeyKind;
   httpStatus: number;
   data: any;
   requestHeaders: Record<string, string>;
@@ -110,6 +142,7 @@ function logRevenueCatSubscriberResponse(args: {
 
   console.log("KRISTO_REVENUECAT_FETCH_RESPONSE", {
     lane: args.lane,
+    authKeyKind: args.authKeyKind,
     httpStatus: args.httpStatus,
     requestXIsSandbox: args.requestHeaders["X-Is-Sandbox"] ?? null,
     requestXPlatform: args.requestHeaders["X-Platform"] ?? null,
@@ -230,7 +263,7 @@ function resolvePremiumFromSubscriptions(subscriptions: Record<string, any>): {
 
 async function fetchRevenueCatSubscriber(
   uid: string,
-  secret: string,
+  auth: { key: string; keyKind: RevenueCatAuthKeyKind },
   lane: RevenueCatFetchLane = "production"
 ): Promise<{ ok: true; data: any; lane: RevenueCatFetchLane } | { ok: false; reason: string; lane: RevenueCatFetchLane }> {
   const controller = new AbortController();
@@ -238,7 +271,7 @@ async function fetchRevenueCatSubscriber(
 
   try {
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${secret}`,
+      Authorization: `Bearer ${auth.key}`,
       "Content-Type": "application/json",
     };
     // Xcode / StoreKit Configuration purchases are sandbox-only in the REST API
@@ -252,6 +285,7 @@ async function fetchRevenueCatSubscriber(
     const url = `${REVENUECAT_API_BASE}/subscribers/${encodeURIComponent(uid)}`;
     console.log("KRISTO_REVENUECAT_FETCH_START", {
       lane,
+      authKeyKind: auth.keyKind,
       churchId: uid,
       url,
       requestXIsSandbox: headers["X-Is-Sandbox"] ?? null,
@@ -270,6 +304,7 @@ async function fetchRevenueCatSubscriber(
     if (!res.ok) {
       console.log("KRISTO_REVENUECAT_FETCH_HTTP_ERROR", {
         lane,
+        authKeyKind: auth.keyKind,
         churchId: uid,
         httpStatus: res.status,
         requestXIsSandbox: headers["X-Is-Sandbox"] ?? null,
@@ -286,6 +321,7 @@ async function fetchRevenueCatSubscriber(
 
     logRevenueCatSubscriberResponse({
       lane,
+      authKeyKind: auth.keyKind,
       httpStatus: res.status,
       data,
       requestHeaders: headers,
@@ -296,6 +332,7 @@ async function fetchRevenueCatSubscriber(
     console.error("KRISTO_REVENUECAT_VERIFY_FAILED", {
       reason,
       lane,
+      authKeyKind: auth.keyKind,
       churchId: uid,
       requestXIsSandbox: lane === "sandbox" ? "true" : null,
       requestXPlatform: lane === "sandbox" ? "ios" : null,
@@ -408,13 +445,23 @@ function verifySubscriberSnapshot(
 
 async function verifyRevenueCatLane(
   uid: string,
-  secret: string,
   lane: RevenueCatFetchLane
 ): Promise<ChurchPremiumVerification | { fetchFailed: true; reason: string; lane: RevenueCatFetchLane }> {
-  const fetched = await fetchRevenueCatSubscriber(uid, secret, lane);
+  const auth = resolveRevenueCatAuth(lane);
+  if ("missing" in auth) {
+    console.log("KRISTO_REVENUECAT_LANE_AUTH_MISSING", {
+      lane,
+      churchId: uid,
+      reason: auth.reason,
+    });
+    return { fetchFailed: true, reason: auth.reason, lane };
+  }
+
+  const fetched = await fetchRevenueCatSubscriber(uid, auth, lane);
   if (!fetched.ok) {
     console.log("KRISTO_REVENUECAT_LANE_FETCH_FAILED", {
       lane,
+      authKeyKind: auth.keyKind,
       churchId: uid,
       reason: fetched.reason,
       requestXIsSandbox: lane === "sandbox" ? "true" : null,
@@ -468,8 +515,7 @@ export async function verifyChurchPremiumEntitlement(
     };
   }
 
-  const secret = getSecretKey();
-  if (!secret) {
+  if (!getSecretKey()) {
     console.error("KRISTO_REVENUECAT_SECRET_MISSING", {
       note: "Set REVENUECAT_SECRET_API_KEY in the production environment.",
     });
@@ -491,7 +537,7 @@ export async function verifyChurchPremiumEntitlement(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     for (const lane of lanes) {
-      const result = await verifyRevenueCatLane(uid, secret, lane);
+      const result = await verifyRevenueCatLane(uid, lane);
       if ("fetchFailed" in result) {
         if (lane === "production") {
           return {
