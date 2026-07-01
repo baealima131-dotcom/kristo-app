@@ -1842,34 +1842,15 @@ export default function HomeFeedScreen() {
     visibleRowCountRef.current = visibleData.length;
   }, [visibleData]);
 
-  // Poster prewarm: inline TikTok path only.
+  // Poster prewarm: YouTube uses metadata-only for visible page; inline TikTok uses full prewarm.
   useEffect(() => {
-    if (isHomeFeedPosterPrewarmDisabled()) return;
     if (backgroundMediaPaused || videoModalPayload) return;
     if (youtubeLayout) {
       if (!youtubeStreamRows.length) return;
-      if (hasHomeFeedYoutubeStreamSession() && youtubePageVisualReadyRef.current) return;
-      const feedIdentity = describePosterFeedIdentity(youtubeStreamRows);
-      const initialSignature = feedIdentity.normalizedInitialSignature || "";
-      if (
-        !posterFeedIdentitySetsEqual(
-          lastPosterInitialSignatureRef.current,
-          initialSignature
-        )
-      ) {
-        console.log("KRISTO_HOME_FEED_POSTER_INITIAL_SOURCE_CHANGE", {
-          rawInitialSignature: feedIdentity.rawInitialSignature,
-          normalizedInitialSignature: initialSignature || null,
-          previousNormalizedInitialSignature: lastPosterInitialSignatureRef.current || null,
-          nextNormalizedInitialSignature: initialSignature || null,
-          rowIds: feedIdentity.rawRowIds,
-          normalizedRowIds: feedIdentity.normalizedRowIds,
-        });
-        lastPosterInitialSignatureRef.current = initialSignature;
-      }
       startInitialHomeFeedPosterPrewarm(youtubeStreamRows);
       return;
     }
+    if (isHomeFeedPosterPrewarmDisabled()) return;
     const rows = stableDisplayRows.length ? stableDisplayRows : displayFeedRows;
     if (!rows.length) return;
     const feedIdentity = describePosterFeedIdentity(rows);

@@ -41,6 +41,20 @@ import {
   normalizePosterFeedPostId,
   posterFeedIdentitySetsEqual,
 } from "@/src/lib/homeFeedPosterIdentity";
+import {
+  isHomeFeedPosterPrewarmDisabled,
+  isHomeFeedYoutubePosterMetadataEnabled,
+} from "@/src/lib/homeFeedVideoMode";
+
+/** YouTube cold-start visible window — matches first page size, not full rank pool. */
+export const YOUTUBE_VISIBLE_POSTER_PREWARM_COUNT = 5;
+
+let lastYoutubeVisiblePosterPrewarmSignature = "";
+
+function canRunHomeFeedMetadataPosterPrewarm(): boolean {
+  if (!isHomeFeedPosterPrewarmDisabled()) return true;
+  return isHomeFeedYoutubePosterMetadataEnabled();
+}
 
 function isLiveNavBackgroundPaused() {
   return Boolean((globalThis as any).__KRISTO_HOME_FEED_LIVE_NAV_PAUSED__);
@@ -592,6 +606,7 @@ function partitionPosterCandidates(candidates: string[], videoUrl: string) {
 
 /** Fire-and-forget Image.prefetch for metadata/cache candidates (skip inferred guesses). */
 export function prefetchHomeFeedPosterMetadata(item: any): void {
+  if (!canRunHomeFeedMetadataPosterPrewarm()) return;
   const postId = String(item?.id || "").trim();
   const videoUrl = posterVideoUrl(item);
   if (!videoUrl) return;
@@ -943,6 +958,7 @@ export function queueHomeFeedPosterPrewarm(
   opts?: { priority?: PrewarmPriority }
 ): Promise<boolean> {
   if (isLiveNavBackgroundPaused()) return Promise.resolve(false);
+  if (!canRunHomeFeedMetadataPosterPrewarm()) return Promise.resolve(false);
 
   const priority = opts?.priority || "background";
   const postId = String(item?.id || "").trim();
@@ -958,7 +974,9 @@ export function queueHomeFeedPosterPrewarm(
     return Promise.resolve(true);
   }
 
-  if (priority === "visible" && shouldBlockPosterFrameGeneration(item, "queue-visible")) {
+  const youtubeMetadataOnly = isHomeFeedYoutubePosterMetadataEnabled();
+
+  if (!youtubeMetadataOnly && priority === "visible" && shouldBlockPosterFrameGeneration(item, "queue-visible")) {
     return Promise.resolve(true);
   }
 
@@ -971,6 +989,9 @@ export function queueHomeFeedPosterPrewarm(
       if (itemHasHomeFeedPoster(item)) return true;
       const fast = await prewarmOneHomeFeedVideoPosterFastPath(item);
       if (fast) return true;
+      if (youtubeMetadataOnly) {
+        return false;
+      }
       if (priority === "visible") {
         if (isVisiblePosterGenerationPending(postId, videoUrl)) {
           return false;
@@ -1043,6 +1064,7 @@ export function prewarmVisibleHomeFeedVideoPosters(
   count = VISIBLE_PRIORITY_COUNT
 ): void {
   if (isLiveNavBackgroundPaused()) return;
+  if (isHomeFeedPosterPrewarmDisabled()) return;
 
   const windowCount = Math.max(1, Math.min(count, rows.length - Math.max(0, startIndex)));
   const items = collectVisibleVideoPosts(rows, startIndex, windowCount);
@@ -1105,9 +1127,53 @@ export function prewarmVisibleHomeFeedVideoPosters(
   });
 }
 
+/** YouTube Home Feed: hydrate poster cache + metadata prefetch for visible page only (no frame gen). */
+export function startYoutubeHomeFeedVisiblePosterPrewarm(
+  rows: any[],
+  maxCount = YOUTUBE_VISIBLE_POSTER_PREWARM_COUNT
+) {
+  if (!isHomeFeedYoutubePosterMetadataEnabled()) return;
+  if (isLiveNavBackgroundPaused()) return;
+  if (!rows.length) return;
+
+  const batch = sliceHomeFeedVideoPosts(rows, 0, maxCount);
+  if (!batch.length) return;
+
+  const feedIdentity = describePosterFeedIdentity(batch);
+  const signature = feedIdentity.normalizedInitialSignature || "";
+  if (signature && signature === lastYoutubeVisiblePosterPrewarmSignature) {
+    return;
+  }
+  lastYoutubeVisiblePosterPrewarmSignature = signature;
+
+  void (async () => {
+    try {
+      await hydrateMediaPosterCache();
+    } catch {}
+
+    for (const item of batch) prefetchHomeFeedPosterMetadata(item);
+
+    console.log("KRISTO_HOME_FEED_YOUTUBE_POSTER_PREWARM_START", {
+      batchCount: batch.length,
+      maxCount,
+    });
+
+    await Promise.all(
+      batch.map((item) =>
+        queueHomeFeedPosterPrewarm(item, { priority: "visible" }).catch(() => false)
+      )
+    );
+  })();
+}
+
 /** Prewarm feed posters: all visible on screen first, then background batch. */
 export function startInitialHomeFeedPosterPrewarm(rows: any[]) {
   if (isLiveNavBackgroundPaused()) return;
+  if (isHomeFeedYoutubePosterMetadataEnabled()) {
+    startYoutubeHomeFeedVisiblePosterPrewarm(rows, YOUTUBE_VISIBLE_POSTER_PREWARM_COUNT);
+    return;
+  }
+  if (isHomeFeedPosterPrewarmDisabled()) return;
 
   if (!rows.length) return;
 
@@ -1238,6 +1304,7 @@ export function prewarmHomeFeedPostersOnNearEnd(
   activeIndex: number,
   visibleCount: number
 ) {
+  if (isHomeFeedPosterPrewarmDisabled()) return;
   if (!rows.length || !isHomeFeedNearEnd(activeIndex, visibleCount)) return;
 
   const now = Date.now();
@@ -1269,6 +1336,7 @@ export function isHomeFeedPosterPrewarmFailed(postId: string, videoUrl: string):
 
 /** Reset initial prewarm guard when feed content materially changes (refresh / pagination). */
 export function resetHomeFeedPosterPrewarmForFeedRefresh(rows: any[]) {
+  if (isHomeFeedPosterPrewarmDisabled()) return;
   const feedIdentity = describePosterFeedIdentity(rows);
   const key = feedIdentity.normalizedFeedKey || "";
   const rawFeedKey = feedIdentity.rawFeedKey || "";
@@ -1337,6 +1405,32 @@ export function resetHomeFeedPosterPrewarmForFeedRefresh(rows: any[]) {
 export function isHomeFeedPosterPrewarmPending(postId: string, videoUrl: string): boolean {
   const key = prewarmKey(postId, videoUrl);
   return Boolean(key && inflight.has(key));
+}
+
+export function isHomeFeedPosterPipelineBusy(): boolean {
+  return (
+    inflight.size > 0 ||
+    visibleGenActive > 0 ||
+    visibleGenPending.length > 0 ||
+    backgroundGenActive > 0 ||
+    backgroundGenPending.length > 0
+  );
+}
+
+export function isHomeFeedPosterPipelineBusyForRows(rows: any[]): boolean {
+  if (!rows.length) return false;
+  for (const item of rows) {
+    const postId = String(item?.id || "").trim();
+    const videoUrl = posterVideoUrl(item);
+    const key = prewarmKey(postId, videoUrl);
+    if (!key) continue;
+    if (inflight.has(key)) return true;
+    if (visibleGenQueuedKeys.has(key)) return true;
+    if (backgroundGenPending.some((job) => prewarmKey(String(job.item?.id || "").trim(), posterVideoUrl(job.item)) === key)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function notifyVisibleHomeFeedPosterFocus(

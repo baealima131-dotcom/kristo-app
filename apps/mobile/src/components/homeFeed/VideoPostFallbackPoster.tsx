@@ -1,11 +1,21 @@
 import React, { memo, useEffect } from "react";
-import { Image, ImageResizeMode, ImageStyle, StyleSheet, Text, View } from "react-native";
+import {
+  Animated,
+  Easing,
+  Image,
+  ImageResizeMode,
+  ImageStyle,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
 import {
   logMediaPosterCacheHit,
+  hydrateMediaPosterCache,
   resolveCachedMediaPoster,
   subscribeMediaPosterCache,
 } from "@/src/lib/mediaPosterCache";
@@ -13,6 +23,7 @@ import {
   prefetchHomeFeedPosterMetadata,
   queueHomeFeedPosterPrewarm,
 } from "@/src/lib/homeFeedPosterPrewarm";
+import { isHomeFeedYoutubePosterMetadataEnabled } from "@/src/lib/homeFeedVideoMode";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 import {
   getHomeFeedPosterLoadTimeoutMs,
@@ -24,22 +35,109 @@ import {
 import type { ActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
 import { logActivityGridPreviewTrace } from "@/src/lib/churchActivityPosts";
 import {
-  classifyHomeFeedPosterUriSource,
   collectFeedVideoPosterCandidates,
   describePosterResolution,
-  isInferredPosterUriForVideo,
-  posterMetadataFingerprint,
-  type HomeFeedPosterSourceKind,
   type PosterMetadataSnapshot,
   snapshotPosterMetadata,
+  resolveYouTubeFeedMetadataPosterUri,
 } from "./homeFeedUtils";
 import {
   logHomeFeedPosterSourceOnce,
-  promoteHomeFeedPosterCache,
   resolveHomeFeedPosterDisplay,
 } from "@/src/lib/homeFeedPosterSource";
 
 const GOLD = "#F4D06F";
+const HOME_FEED_POSTER_FADE_MS = 200;
+
+function logHomeFeedPosterLoadStart(postId: string, videoUrl: string, source: string) {
+  console.log("KRISTO_HOME_FEED_POSTER_LOAD_START", {
+    postId: postId || null,
+    videoUrl: videoUrl || null,
+    source,
+  });
+}
+
+function logHomeFeedPosterLoadSuccess(postId: string, videoUrl: string, uri: string, source: string) {
+  console.log("KRISTO_HOME_FEED_POSTER_LOAD_SUCCESS", {
+    postId: postId || null,
+    videoUrl: videoUrl || null,
+    uri: uri || null,
+    source,
+  });
+}
+
+function logHomeFeedPosterLoadFailed(
+  postId: string,
+  videoUrl: string,
+  reason: string,
+  extra?: Record<string, unknown>
+) {
+  console.log("KRISTO_HOME_FEED_POSTER_LOAD_FAILED", {
+    postId: postId || null,
+    videoUrl: videoUrl || null,
+    reason,
+    ...(extra || {}),
+  });
+}
+
+const placeholderLoggedSessionKeys = new Set<string>();
+
+type PosterCoverSessionState = {
+  uri: string;
+  source: string;
+};
+
+const posterCoverSessionByKey = new Map<string, PosterCoverSessionState>();
+const posterMetadataFailedSessionKeys = new Set<string>();
+
+function posterCoverSessionKey(postId: string, videoUrl: string) {
+  return `${String(postId || "").trim()}|${String(videoUrl || "").trim().split("?")[0]}`;
+}
+
+function markPosterMetadataFailed(postId: string, videoUrl: string) {
+  posterMetadataFailedSessionKeys.add(posterCoverSessionKey(postId, videoUrl));
+}
+
+function hasPosterMetadataFailed(postId: string, videoUrl: string) {
+  return posterMetadataFailedSessionKeys.has(posterCoverSessionKey(postId, videoUrl));
+}
+
+function readPosterCoverSession(postId: string, videoUrl: string): PosterCoverSessionState | null {
+  return posterCoverSessionByKey.get(posterCoverSessionKey(postId, videoUrl)) || null;
+}
+
+function writePosterCoverSession(postId: string, videoUrl: string, uri: string, source: string) {
+  const normalized = String(uri || "").trim();
+  if (!normalized) return;
+  posterCoverSessionByKey.set(posterCoverSessionKey(postId, videoUrl), {
+    uri: normalized,
+    source,
+  });
+}
+
+function logHomeFeedPosterPlaceholderShown(postId: string, videoUrl: string, reason: string) {
+  const key = `${String(postId || "").trim()}|${String(videoUrl || "").trim().split("?")[0]}|${reason}`;
+  if (placeholderLoggedSessionKeys.has(key)) return;
+  placeholderLoggedSessionKeys.add(key);
+  console.log("KRISTO_HOME_FEED_POSTER_PLACEHOLDER_SHOWN", {
+    postId: postId || null,
+    videoUrl: videoUrl || null,
+    reason,
+  });
+}
+
+/** Branded gradient cover — never a flat black rectangle. */
+function HomeFeedPosterGradientPlaceholder() {
+  return (
+    <LinearGradient
+      colors={["#1a1a1a", "#2a3344", "#1a1a1a"]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={StyleSheet.absoluteFillObject}
+      pointerEvents="none"
+    />
+  );
+}
 
 type Props = {
   postId?: string;
@@ -79,8 +177,7 @@ export const VideoPostFallbackPoster = memo(function VideoPostFallbackPoster({
   if (variant === "feed-thumb") {
     return (
       <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
-        <View style={styles.feedThumbBase} />
-        <View style={styles.feedThumbGlow} />
+        <HomeFeedPosterGradientPlaceholder />
         {isProcessing ? (
           <View style={styles.feedThumbProcessing} pointerEvents="none">
             <Text style={styles.feedThumbProcessingText}>Processing…</Text>
@@ -149,8 +246,12 @@ type FeedVideoPosterImageProps = {
   previewLoadTimeoutMs?: number;
   posterMetadata?: PosterMetadataSnapshot;
   videoDurationMs?: number;
-  /** YouTube Home Feed: black thumb placeholder + bg frame gen until poster ready. */
+  /** YouTube Home Feed: image-only covers with gradient placeholder (never black). */
   youtubeMode?: boolean;
+  /** When false, keep placeholder — no remote Image fetch (off-screen window). */
+  allowImageLoad?: boolean;
+  /** Fires when a cover is ready for play overlay (poster faded in or settled placeholder). */
+  onPosterCoverReady?: (ready: boolean) => void;
 };
 
 type PosterLoadState = "idle" | "probing" | "loading" | "loaded" | "failed" | "generating";
@@ -224,12 +325,6 @@ export function FeedVideoPosterImage(props: FeedVideoPosterImageProps) {
   return <LegacyFeedVideoPosterImage {...props} />;
 }
 
-function isConfirmedPosterUri(uri: string, videoUrl: string): boolean {
-  const normalized = String(uri || "").trim();
-  if (!normalized) return false;
-  return !isInferredPosterUriForVideo(normalized, videoUrl);
-}
-
 function YouTubeFeedVideoPoster({
   item,
   style,
@@ -238,158 +333,355 @@ function YouTubeFeedVideoPoster({
   videoUrl = "",
   mediaStatus = "",
   videoDurationMs,
+  allowImageLoad = true,
+  onPosterCoverReady,
 }: FeedVideoPosterImageProps) {
   const resolvedVideoUrl = String(videoUrl || "").trim();
   const status = String(mediaStatus || "").trim().toLowerCase();
   const isProcessing = status === "processing" || status === "uploading";
-  const posterFingerprint = posterMetadataFingerprint(item);
-  const posterCandidates = React.useMemo(() => {
-    if (item) return collectFeedVideoPosterCandidates(item, postId);
-    return [];
-  }, [item, postId, posterFingerprint]);
-  const posterDisplay = React.useMemo(
-    () => {
-      if (!resolvedVideoUrl) {
-        return { uri: "", source: "inferred" as const };
-      }
-      const base = resolveHomeFeedPosterDisplay(
-        postId,
-        resolvedVideoUrl,
-        item,
-        posterFingerprint
-      );
-      if (
-        base.uri &&
-        base.source !== "inferred" &&
-        !isInferredPosterUriForVideo(base.uri, resolvedVideoUrl)
-      ) {
-        return base;
-      }
 
-      const preferred = posterCandidates.find(
-        (candidate) =>
-          candidate &&
-          !isInferredPosterUriForVideo(candidate, resolvedVideoUrl)
-      );
-      if (preferred) {
-        return {
-          uri: preferred,
-          source: item
-            ? classifyHomeFeedPosterUriSource(
-                item,
-                preferred,
-                postId,
-                resolvedVideoUrl
-              )
-            : ("metadata" as const),
-        };
-      }
+  const [displayUri, setDisplayUri] = React.useState("");
+  const [loadSource, setLoadSource] = React.useState("metadata");
+  const [posterFadedIn, setPosterFadedIn] = React.useState(false);
+  const [settledPlaceholder, setSettledPlaceholder] = React.useState(false);
+  const fadeOpacity = React.useRef(new Animated.Value(0)).current;
+  const loadStartLoggedRef = React.useRef(false);
+  const frameGenAttemptedRef = React.useRef(false);
+  const cancelledRef = React.useRef(false);
+  const loadedUriRef = React.useRef("");
+  const loadedSourceRef = React.useRef("");
+  const coverReadyRef = React.useRef(false);
 
-      return { uri: "", source: base.source };
+  const notifyCoverReady = React.useCallback(
+    (ready: boolean) => {
+      coverReadyRef.current = ready;
+      onPosterCoverReady?.(ready);
     },
-    [postId, resolvedVideoUrl, posterFingerprint, item, posterCandidates]
+    [onPosterCoverReady]
   );
 
-  const resolveInitialPosterUri = React.useCallback(() => {
-    const uri = posterDisplay.uri;
-    if (!uri || posterDisplay.source === "inferred") return "";
-    return isConfirmedPosterUri(uri, resolvedVideoUrl) ? uri : "";
-  }, [posterDisplay, resolvedVideoUrl]);
+  const restoreLoadedPoster = React.useCallback(() => {
+    if (!loadedUriRef.current || !coverReadyRef.current) return false;
+    setDisplayUri(loadedUriRef.current);
+    setLoadSource(loadedSourceRef.current);
+    setPosterFadedIn(true);
+    setSettledPlaceholder(false);
+    fadeOpacity.setValue(1);
+    notifyCoverReady(true);
+    return true;
+  }, [fadeOpacity, notifyCoverReady]);
 
-  const [imageUri, setImageUri] = React.useState(resolveInitialPosterUri);
-  const imageUriRef = React.useRef(imageUri);
-  imageUriRef.current = imageUri;
+  const logPlaceholderOnce = React.useCallback(
+    (reason: string) => {
+      logHomeFeedPosterPlaceholderShown(postId, resolvedVideoUrl, reason);
+    },
+    [postId, resolvedVideoUrl]
+  );
 
-  const hasConfirmedPoster = isConfirmedPosterUri(imageUri, resolvedVideoUrl);
-  const showBlackPlaceholder = !hasConfirmedPoster;
+  const markPosterFadedIn = React.useCallback(
+    (uri: string, source: string) => {
+      setPosterFadedIn(true);
+      setSettledPlaceholder(false);
+      loadedUriRef.current = uri;
+      loadedSourceRef.current = source;
+      writePosterCoverSession(postId, resolvedVideoUrl, uri, source);
+      notifyCoverReady(true);
+    },
+    [notifyCoverReady, postId, resolvedVideoUrl]
+  );
 
-  React.useEffect(() => {
-    if (isProcessing) return;
-    const cached = resolveCachedMediaPoster(postId, resolvedVideoUrl);
-    let source: HomeFeedPosterSourceKind = "branded-fallback";
-    if (cached || hasConfirmedPoster) {
-      source = cached ? "cache" : posterDisplay.source;
+  const fadeInPoster = React.useCallback(
+    (uri: string, source: string) => {
+      Animated.timing(fadeOpacity, {
+        toValue: 1,
+        duration: HOME_FEED_POSTER_FADE_MS,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          markPosterFadedIn(uri, source);
+        }
+      });
+    },
+    [fadeOpacity, markPosterFadedIn]
+  );
+
+  const settleOnPlaceholder = React.useCallback(
+    (reason: string) => {
+      if (cancelledRef.current) return;
+      setDisplayUri("");
+      setPosterFadedIn(false);
+      fadeOpacity.setValue(0);
+      setSettledPlaceholder(true);
+      logHomeFeedPosterLoadFailed(postId, resolvedVideoUrl, reason);
+      logPlaceholderOnce("branded-settled");
+      logHomeFeedPosterSourceOnce(postId, resolvedVideoUrl, "branded-fallback", videoDurationMs);
+      notifyCoverReady(true);
+    },
+    [fadeOpacity, logPlaceholderOnce, notifyCoverReady, postId, resolvedVideoUrl, videoDurationMs]
+  );
+
+  const beginPosterLoad = React.useCallback(
+    (uri: string, source: string) => {
+      if (!uri || cancelledRef.current) return;
+      if (uri === loadedUriRef.current && coverReadyRef.current) {
+        restoreLoadedPoster();
+        return;
+      }
+      if (!loadStartLoggedRef.current) {
+        loadStartLoggedRef.current = true;
+        logHomeFeedPosterLoadStart(postId, resolvedVideoUrl, source);
+      }
+      setLoadSource(source);
+      setDisplayUri(uri);
+      setSettledPlaceholder(false);
+      setPosterFadedIn(false);
+      fadeOpacity.setValue(0);
+    },
+    [fadeOpacity, postId, resolvedVideoUrl, restoreLoadedPoster]
+  );
+
+  const tryGenerateFrame = React.useCallback(async () => {
+    if (!resolvedVideoUrl || isProcessing || frameGenAttemptedRef.current) return;
+    frameGenAttemptedRef.current = true;
+    if (!loadStartLoggedRef.current) {
+      loadStartLoggedRef.current = true;
+      logHomeFeedPosterLoadStart(postId, resolvedVideoUrl, "generated-frame");
     }
-    logHomeFeedPosterSourceOnce(postId, resolvedVideoUrl, source, videoDurationMs);
+    const generated = await resolveVideoThumbnailUri(resolvedVideoUrl, {
+      postId,
+      durationMs: videoDurationMs,
+      homeFeed: true,
+    });
+    if (cancelledRef.current) return;
+    if (generated) {
+      beginPosterLoad(generated, "generated-frame");
+      return;
+    }
+    settleOnPlaceholder("frame-generation-failed");
   }, [
+    beginPosterLoad,
+    isProcessing,
     postId,
     resolvedVideoUrl,
-    isProcessing,
-    hasConfirmedPoster,
-    posterDisplay.source,
+    settleOnPlaceholder,
     videoDurationMs,
   ]);
 
   React.useEffect(() => {
-    const uri = posterDisplay.uri;
-    if (
-      !uri ||
-      posterDisplay.source === "inferred" ||
-      !isConfirmedPosterUri(uri, resolvedVideoUrl)
-    ) {
+    cancelledRef.current = false;
+    frameGenAttemptedRef.current = false;
+
+    const sessionCover = readPosterCoverSession(postId, resolvedVideoUrl);
+    const cachedPoster = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+    const restoredUri = sessionCover?.uri || cachedPoster || "";
+
+    if (restoredUri) {
+      loadedUriRef.current = restoredUri;
+      loadedSourceRef.current = sessionCover?.source || "cache";
+      coverReadyRef.current = true;
+      loadStartLoggedRef.current = true;
+      setDisplayUri(restoredUri);
+      setLoadSource(loadedSourceRef.current);
+      setPosterFadedIn(true);
+      setSettledPlaceholder(false);
+      fadeOpacity.setValue(1);
+      notifyCoverReady(true);
       return;
     }
-    if (uri !== imageUriRef.current) {
-      setImageUri(uri);
-    }
-  }, [posterDisplay.uri, posterDisplay.source, resolvedVideoUrl]);
 
-  React.useEffect(() => {
-    if (!postId || !resolvedVideoUrl) return;
-    return subscribeMediaPosterCache(postId, resolvedVideoUrl, (uri) => {
-      if (!uri) return;
-      promoteHomeFeedPosterCache(postId, resolvedVideoUrl, uri);
-      setImageUri(uri);
-    });
-  }, [postId, resolvedVideoUrl]);
+    loadStartLoggedRef.current = false;
+    loadedUriRef.current = "";
+    loadedSourceRef.current = "";
+    coverReadyRef.current = false;
+    setDisplayUri("");
+    setPosterFadedIn(false);
+    setSettledPlaceholder(false);
+    fadeOpacity.setValue(0);
+    notifyCoverReady(false);
 
-  React.useEffect(() => {
-    if (!item || isProcessing || !resolvedVideoUrl) return;
-    if (shouldDeferBackgroundMediaJobs()) return;
+    if (!isHomeFeedYoutubePosterMetadataEnabled() || !item) return;
+
     prefetchHomeFeedPosterMetadata(item);
-  }, [item, isProcessing, resolvedVideoUrl, posterFingerprint]);
+    void hydrateMediaPosterCache().then(() => {
+      if (cancelledRef.current) return;
+      const hydrated = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+      if (hydrated) {
+        beginPosterLoad(hydrated, "cache");
+      }
+    });
+    void queueHomeFeedPosterPrewarm(item, { priority: "visible" }).then((ok) => {
+      if (cancelledRef.current || !ok) return;
+      const next = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+      if (next) beginPosterLoad(next, "cache");
+    });
+  }, [beginPosterLoad, fadeOpacity, item, notifyCoverReady, postId, resolvedVideoUrl]);
 
   React.useEffect(() => {
-    if (!item || isProcessing || !resolvedVideoUrl) return;
-    if (shouldDeferBackgroundMediaJobs()) return;
-    if (resolveCachedMediaPoster(postId, resolvedVideoUrl)) return;
-    void queueHomeFeedPosterPrewarm(item, { priority: "visible" });
-  }, [item, postId, resolvedVideoUrl, isProcessing, posterFingerprint]);
+    cancelledRef.current = false;
+
+    if (coverReadyRef.current && loadedUriRef.current) {
+      restoreLoadedPoster();
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    if (!allowImageLoad) {
+      if (restoreLoadedPoster()) return () => {
+        cancelledRef.current = true;
+      };
+      logPlaceholderOnce("deferred-offscreen");
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    if (restoreLoadedPoster()) {
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    logPlaceholderOnce("initial-gradient");
+
+    const cached = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+    if (cached) {
+      beginPosterLoad(cached, "cache");
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    const metadataUri = item
+      ? resolveYouTubeFeedMetadataPosterUri(item, postId, resolvedVideoUrl)
+      : "";
+    if (metadataUri && !hasPosterMetadataFailed(postId, resolvedVideoUrl)) {
+      beginPosterLoad(metadataUri, "metadata");
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    const display = item
+      ? resolveHomeFeedPosterDisplay(postId, resolvedVideoUrl, item)
+      : { uri: "", source: "inferred" as const };
+    if (display.uri) {
+      beginPosterLoad(display.uri, display.source);
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    const candidates = item ? collectFeedVideoPosterCandidates(item, postId) : [];
+    const candidate = candidates.find((uri) => !isBrandedPosterUri(uri));
+    if (candidate && !hasPosterMetadataFailed(postId, resolvedVideoUrl)) {
+      beginPosterLoad(candidate, "metadata");
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    if (!isHomeFeedYoutubePosterMetadataEnabled()) {
+      void tryGenerateFrame();
+    }
+
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, [
+    allowImageLoad,
+    beginPosterLoad,
+    item,
+    logPlaceholderOnce,
+    postId,
+    resolvedVideoUrl,
+    restoreLoadedPoster,
+    tryGenerateFrame,
+  ]);
+
+  React.useEffect(() => {
+    if (!allowImageLoad || !postId || !resolvedVideoUrl) return undefined;
+    return subscribeMediaPosterCache(postId, resolvedVideoUrl, (cached) => {
+      if (cancelledRef.current) return;
+      if (cached && cached !== displayUri) {
+        beginPosterLoad(cached, "cache");
+      }
+    });
+  }, [allowImageLoad, beginPosterLoad, displayUri, postId, resolvedVideoUrl]);
+
+  React.useEffect(() => {
+    if (posterFadedIn || settledPlaceholder || coverReadyRef.current) {
+      notifyCoverReady(true);
+      return;
+    }
+    if (!allowImageLoad) {
+      notifyCoverReady(false);
+      return;
+    }
+    notifyCoverReady(false);
+  }, [allowImageLoad, notifyCoverReady, posterFadedIn, settledPlaceholder]);
+
+  const handleImageLoad = React.useCallback(() => {
+    if (!displayUri) return;
+    loadedUriRef.current = displayUri;
+    loadedSourceRef.current = loadSource;
+    coverReadyRef.current = true;
+    writePosterCoverSession(postId, resolvedVideoUrl, displayUri, loadSource);
+    logHomeFeedPosterLoadSuccess(postId, resolvedVideoUrl, displayUri, loadSource);
+    logHomeFeedPosterSourceOnce(postId, resolvedVideoUrl, loadSource as any, videoDurationMs);
+    fadeInPoster(displayUri, loadSource);
+  }, [displayUri, fadeInPoster, loadSource, postId, resolvedVideoUrl, videoDurationMs]);
 
   const handleImageError = React.useCallback(() => {
-    const current = imageUriRef.current;
-    const nextCandidate = posterCandidates.find(
-      (candidate) =>
-        candidate &&
-        candidate.split("?")[0] !== current.split("?")[0] &&
-        !isInferredPosterUriForVideo(candidate, resolvedVideoUrl)
-    );
-    if (nextCandidate) {
-      setImageUri(nextCandidate);
+    if (loadSource === "metadata") {
+      markPosterMetadataFailed(postId, resolvedVideoUrl);
+    }
+    logHomeFeedPosterLoadFailed(postId, resolvedVideoUrl, "image-load-error", {
+      uri: displayUri || null,
+      source: loadSource,
+    });
+    setDisplayUri("");
+    setPosterFadedIn(false);
+    fadeOpacity.setValue(0);
+
+    const cached = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+    if (cached && cached !== displayUri) {
+      beginPosterLoad(cached, "cache");
       return;
     }
-    setImageUri("");
-    if (item && !isProcessing) {
-      void queueHomeFeedPosterPrewarm(item, { priority: "visible" });
+
+    if (frameGenAttemptedRef.current) {
+      settleOnPlaceholder("image-and-frame-failed");
+      return;
     }
-  }, [posterCandidates, item, isProcessing, resolvedVideoUrl]);
+    if (isHomeFeedYoutubePosterMetadataEnabled()) {
+      settleOnPlaceholder("youtube-metadata-failed");
+      return;
+    }
+    void tryGenerateFrame();
+  }, [
+    beginPosterLoad,
+    displayUri,
+    fadeOpacity,
+    loadSource,
+    postId,
+    resolvedVideoUrl,
+    settleOnPlaceholder,
+    tryGenerateFrame,
+  ]);
+
+  const showPosterImage = Boolean(displayUri);
 
   return (
     <View style={style}>
-      {showBlackPlaceholder ? (
-        <VideoPostFallbackPoster
-          variant="feed-thumb"
-          postId={postId}
-          videoUrl={videoUrl}
-          mediaStatus={mediaStatus}
-          suppressMissingPosterLog
-        />
-      ) : null}
-      {hasConfirmedPoster ? (
-        <Image
-          source={{ uri: imageUri }}
-          style={StyleSheet.absoluteFillObject}
+      {!posterFadedIn ? <HomeFeedPosterGradientPlaceholder /> : null}
+      {showPosterImage ? (
+        <Animated.Image
+          source={{ uri: displayUri }}
+          style={[StyleSheet.absoluteFillObject, { opacity: fadeOpacity }]}
           resizeMode={resizeMode}
+          onLoad={handleImageLoad}
           onError={handleImageError}
         />
       ) : null}
@@ -903,23 +1195,6 @@ const styles = StyleSheet.create({
     color: GOLD,
     fontSize: 13,
     fontWeight: "600",
-  },
-  feedThumbBase: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#000000",
-  },
-  feedThumbGlow: {
-    position: "absolute",
-    alignSelf: "center",
-    top: "30%",
-    width: "52%",
-    aspectRatio: 1,
-    borderRadius: 9999,
-    backgroundColor: "rgba(255,255,255,0.05)",
-    shadowColor: "#FFFFFF",
-    shadowOpacity: 0.12,
-    shadowRadius: 42,
-    shadowOffset: { width: 0, height: 0 },
   },
   feedThumbProcessing: {
     ...StyleSheet.absoluteFillObject,

@@ -6,6 +6,15 @@ import {
   onBackgroundMediaJobsResumed,
   shouldDeferBackgroundMediaJobs,
 } from "@/src/lib/homeFeedWatchPlaybackPriority";
+import {
+  isHomeFeedPosterPrewarmDisabled,
+  isHomeFeedYoutubePosterMetadataEnabled,
+} from "@/src/lib/homeFeedVideoMode";
+
+function isHomeFeedPosterCacheHydrateEnabled(): boolean {
+  if (!isHomeFeedPosterPrewarmDisabled()) return true;
+  return isHomeFeedYoutubePosterMetadataEnabled();
+}
 
 const STORAGE_KEY = "kristo_media_poster_cache_v1";
 const POSTER_DISK_DIR = `${String(Paths.cache.uri || "").replace(/\/$/, "")}/media-posters/`;
@@ -39,6 +48,21 @@ let deferredHydrateRequested = false;
 
 function normalizeVideoUrl(videoUrl: string) {
   return String(videoUrl || "").trim().split("?")[0];
+}
+
+const appContainerRoot = (() => {
+  const cacheUri = String(Paths.cache?.uri || "").trim();
+  if (!cacheUri) return "";
+  const match = cacheUri.match(/^(file:\/\/\/var\/mobile\/Containers\/Data\/Application\/[^/]+)/);
+  return match?.[1] || cacheUri.replace(/\/Library\/.*$/, "");
+})();
+
+function isResolvablePosterUri(posterUri: string): boolean {
+  const uri = String(posterUri || "").trim();
+  if (!uri) return false;
+  if (!uri.startsWith("file://")) return true;
+  if (!appContainerRoot) return true;
+  return uri.startsWith(appContainerRoot);
 }
 
 export function hashMediaUrl(videoUrl: string): string {
@@ -120,6 +144,7 @@ function schedulePersistIndex() {
 
 export function flushDeferredMediaPosterCacheWork() {
   if (shouldDeferBackgroundMediaJobs()) return;
+  if (!isHomeFeedPosterCacheHydrateEnabled()) return;
   if (deferredHydrateRequested) {
     deferredHydrateRequested = false;
     void hydrateMediaPosterCache();
@@ -161,6 +186,16 @@ export function isMediaPosterCacheHydrated(): boolean {
 }
 
 export async function hydrateMediaPosterCache(): Promise<void> {
+  if (!isHomeFeedPosterCacheHydrateEnabled()) return;
+  return hydrateMediaPosterCacheInternal();
+}
+
+/** Load poster index when opening Watch or after upload — not on Home Feed. */
+export async function hydrateMediaPosterCacheForPlayback(): Promise<void> {
+  return hydrateMediaPosterCacheInternal();
+}
+
+async function hydrateMediaPosterCacheInternal(): Promise<void> {
   if (hydrateSessionReady) {
     console.log("KRISTO_MEDIA_POSTER_CACHE_HYDRATE_SKIPPED_ALREADY_READY", {
       count: memoryEntries.size,
@@ -211,7 +246,7 @@ export async function hydrateMediaPosterCache(): Promise<void> {
 function rememberVideoUrlPoster(videoUrl: string, posterUri: string) {
   const normalizedVideoUrl = normalizeVideoUrl(videoUrl);
   const normalizedPosterUri = String(posterUri || "").trim();
-  if (!normalizedVideoUrl || !normalizedPosterUri) return;
+  if (!normalizedVideoUrl || !normalizedPosterUri || !isResolvablePosterUri(normalizedPosterUri)) return;
   videoUrlPosterEntries.set(normalizedVideoUrl, normalizedPosterUri);
 }
 
@@ -221,12 +256,12 @@ export function peekCachedMediaPosterByVideoUrl(videoUrl: string): string | null
   if (!normalizedVideoUrl) return null;
 
   const direct = videoUrlPosterEntries.get(normalizedVideoUrl);
-  if (direct) return direct;
+  if (direct && isResolvablePosterUri(direct)) return direct;
 
   for (const entry of memoryEntries.values()) {
     if (normalizeVideoUrl(entry.videoUrl) === normalizedVideoUrl) {
       const posterUri = String(entry.posterUri || "").trim();
-      if (posterUri) return posterUri;
+      if (posterUri && isResolvablePosterUri(posterUri)) return posterUri;
     }
   }
 
@@ -248,7 +283,9 @@ export function peekCachedMediaPosterByPostId(postId: string): string | null {
     }
   }
 
-  return newest ? String(newest.posterUri || "").trim() || null : null;
+  const posterUri = newest ? String(newest.posterUri || "").trim() || null : null;
+  if (posterUri && !isResolvablePosterUri(posterUri)) return null;
+  return posterUri;
 }
 
 /** Prefer postId+videoUrl cache, then videoUrl-only, then postId-only. */
@@ -278,7 +315,9 @@ export function peekCachedMediaPoster(postId: string, videoUrl: string): string 
   if (!key) return null;
   const entry = memoryEntries.get(key);
   if (!entryMatchesVideo(entry, videoUrl)) return null;
-  return String(entry?.posterUri || "").trim() || null;
+  const posterUri = String(entry?.posterUri || "").trim() || null;
+  if (posterUri && !isResolvablePosterUri(posterUri)) return null;
+  return posterUri;
 }
 
 export function peekCachedMediaPosterCaptureTimeMs(
@@ -296,6 +335,7 @@ export function peekCachedMediaPosterCaptureTimeMs(
 export async function getCachedMediaPoster(postId: string, videoUrl: string): Promise<string | null> {
   const sync = resolveCachedMediaPoster(postId, videoUrl);
   if (sync) return sync;
+  if (!isHomeFeedPosterCacheHydrateEnabled()) return null;
 
   await hydrateMediaPosterCache();
   return resolveCachedMediaPoster(postId, videoUrl);
@@ -462,5 +502,3 @@ export function importMediaPosterCacheSnapshot(entries: Record<string, MediaPost
   }
   schedulePersistIndex();
 }
-
-void hydrateMediaPosterCache();

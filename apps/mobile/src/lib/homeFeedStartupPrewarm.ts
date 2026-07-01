@@ -5,11 +5,15 @@ import {
   persistHomeFeedBackendRowsSnapshot,
 } from "@/src/components/homeFeed/homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
+import { hydrateHomeFeedPage0FromStorage } from "@/src/components/homeFeed/homeFeedPageCache";
+import { isHomeFeedYouTubeStyleVideo } from "@/src/lib/homeFeedVideoMode";
 import { prepareFirstHomeFeedVideo } from "@/src/lib/homeFeedVideoStartup";
 import { deferStartupWorkAfterHomeFirstFrame } from "./firstPaint";
 import {
   buildHomeFeedDisplayRows,
+  mergeCachedHomeFeedDisplayOrder,
 } from "@/src/components/homeFeed/homeFeedUtils";
+import { peekHomeFeedDisplayOrderSync } from "@/src/components/homeFeed/homeFeedDisplayOrderCache";
 import { feedList } from "@/src/lib/homeFeedStore";
 import type { KristoSession } from "@/src/lib/kristoSession";
 import { isLoggedOutFlagSet, setSessionSync } from "@/src/lib/kristoSession";
@@ -18,7 +22,8 @@ import {
   warmHomeFeedStartupMedia,
 } from "@/src/lib/homeFeedVideoBufferAhead";
 import { isHomeFeedInlineVideoAutoplayEnabled } from "@/src/lib/homeFeedVideoMode";
-import { startInitialHomeFeedPosterPrewarm } from "@/src/lib/homeFeedPosterPrewarm";
+import { startInitialHomeFeedPosterPrewarm, startYoutubeHomeFeedVisiblePosterPrewarm } from "@/src/lib/homeFeedPosterPrewarm";
+import { hydrateMediaPosterCache } from "@/src/lib/mediaPosterCache";
 import { isHomeFeedLiveNavBackgroundPaused } from "@/src/lib/liveRoomStartup";
 
 const COOLDOWN_MS = 60_000;
@@ -52,10 +57,6 @@ function isSessionReadyForPrewarm(session: KristoSession | null): session is Kri
 async function runHomeFeedStartupPrewarm(session: KristoSession) {
   if (isHomeFeedLiveNavBackgroundPaused()) {
     logSkip("live-navigation");
-    return;
-  }
-  if (!isHomeFeedInlineVideoAutoplayEnabled()) {
-    logSkip("youtube-style-feed");
     return;
   }
   if (await isLoggedOutFlagSet()) {
@@ -96,9 +97,42 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
   console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_START", {
     userId: session.userId,
     churchId: session.churchId || null,
+    youtubeStyle: isHomeFeedYouTubeStyleVideo(),
   });
 
   inflight = (async () => {
+    if (isHomeFeedYouTubeStyleVideo()) {
+      try {
+        setSessionSync(session);
+      } catch {}
+
+      let warmRows: any[] = [];
+      try {
+        warmRows = (await hydrateHomeFeedPage0FromStorage(session.userId)) || [];
+      } catch {}
+
+      try {
+        await hydrateMediaPosterCache();
+      } catch {}
+
+      if (warmRows.length) {
+        startYoutubeHomeFeedVisiblePosterPrewarm(warmRows);
+      }
+
+      completedIdentityKey = key;
+      console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_DONE", {
+        userId: session.userId,
+        elapsedMs: Date.now() - startedAt,
+        youtubeStyle: true,
+        posterBatch: warmRows.length,
+      });
+      return;
+    }
+
+    if (!isHomeFeedInlineVideoAutoplayEnabled()) {
+      logSkip("youtube-style-feed");
+      return;
+    }
     const failures: string[] = [];
     let snapshotCount = 0;
     let warmRows: any[] = [];
@@ -110,7 +144,11 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
     }
 
     try {
-      await hydrateHomeFeedRowsCacheFromStorage(session.userId);
+      if (isHomeFeedYouTubeStyleVideo()) {
+        await hydrateHomeFeedPage0FromStorage(session.userId);
+      } else {
+        await hydrateHomeFeedRowsCacheFromStorage(session.userId);
+      }
     } catch {
       failures.push("hydrate-cache");
     }
@@ -132,25 +170,36 @@ async function runHomeFeedStartupPrewarm(session: KristoSession) {
     }
 
     console.log("KRISTO_HOME_FEED_STARTUP_PREWARM_ROWS", {
-      count: Math.min(rowCount, HOME_FEED_INITIAL_LIMIT),
+      count: Math.min(
+        rowCount,
+        isHomeFeedYouTubeStyleVideo() ? 7 : HOME_FEED_INITIAL_LIMIT
+      ),
     });
 
-    try {
-      snapshotCount = await persistHomeFeedBackendRowsSnapshot(
-        HOME_FEED_INITIAL_LIMIT,
-        session.userId
-      );
-    } catch {
-      failures.push("persist-snapshot");
+    if (!isHomeFeedYouTubeStyleVideo()) {
+      try {
+        snapshotCount = await persistHomeFeedBackendRowsSnapshot(
+          HOME_FEED_INITIAL_LIMIT,
+          session.userId
+        );
+      } catch {
+        failures.push("persist-snapshot");
+      }
+
+      const cachedDisplay = peekHomeFeedDisplayOrderSync();
+      const displayRows = cachedDisplay.length
+        ? mergeCachedHomeFeedDisplayOrder(
+            cachedDisplay,
+            getCachedHomeFeedBackendRows(),
+            feedList()
+          )
+        : buildHomeFeedDisplayRows(getCachedHomeFeedBackendRows(), feedList(), Date.now(), {
+            rebuildPersonalOrder: false,
+          });
+      startInitialHomeFeedPosterPrewarm(displayRows);
+
+      warmRows = displayRows.slice(0, HOME_FEED_INITIAL_LIMIT);
     }
-
-    const displayRows = buildHomeFeedDisplayRows(
-      getCachedHomeFeedBackendRows(),
-      feedList()
-    );
-    startInitialHomeFeedPosterPrewarm(displayRows);
-
-    warmRows = displayRows.slice(0, HOME_FEED_INITIAL_LIMIT);
 
     // Poster/byte warm for remaining rows — only after first video frame paints.
     deferStartupWorkAfterHomeFirstFrame(
@@ -206,7 +255,10 @@ export function startHomeFeedStartupPrewarm(session: KristoSession | null | unde
     logSkip("live-navigation");
     return;
   }
-  if (!isHomeFeedInlineVideoAutoplayEnabled()) {
+  if (
+    !isHomeFeedInlineVideoAutoplayEnabled() &&
+    !isHomeFeedYouTubeStyleVideo()
+  ) {
     logSkip("youtube-style-feed");
     return;
   }

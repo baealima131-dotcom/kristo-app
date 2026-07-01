@@ -35,6 +35,9 @@ import {
   rankHomeFeedYoutubeStreamRows,
 } from "@/src/lib/homeFeedPersonalOrder";
 import {
+  startYoutubeHomeFeedVisiblePosterPrewarm,
+} from "@/src/lib/homeFeedPosterPrewarm";
+import {
   clearHomeFeedPageCache,
   getHomeFeedLoadedPageCount,
   getHomeFeedStreamRowsInMemory,
@@ -818,6 +821,7 @@ export async function fetchHomeFeedFromApi(
         setBackendSnapshotRowIds(snapshotIds);
       }
       lastFetchedHomeFeedRows = rows;
+      startYoutubeHomeFeedVisiblePosterPrewarm(rows);
       return rows;
     }
 

@@ -11,6 +11,25 @@ export function isHomeFeedYouTubeStyleVideo(): boolean {
   return HOME_FEED_YOUTUBE_STYLE_VIDEO;
 }
 
+/** Metadata-first feed: no eager multi-video prep before the list paints. */
+export function isHomeFeedLazyMediaPrewarmEnabled(): boolean {
+  return isHomeFeedYouTubeStyleVideo();
+}
+
+/** Heavy multi-video frame-gen prewarm — off for YouTube metadata-first cards. */
+export function isHomeFeedPosterPrewarmDisabled(): boolean {
+  return isHomeFeedYouTubeStyleVideo();
+}
+
+/** YouTube Home Feed: lightweight poster cache hydrate + metadata prefetch (not video preload). */
+export function isHomeFeedYoutubePosterMetadataEnabled(): boolean {
+  return isHomeFeedYouTubeStyleVideo();
+}
+
+/** Primary visible row only; +1 when the next row needs a poster while buffering. */
+export const HOME_FEED_LAZY_VISIBLE_POSTER_COUNT = 1;
+export const HOME_FEED_LAZY_VISIBLE_POSTER_BUFFER = 1;
+
 /** Inline feed players, startup prime, decode-preload, and stuck recovery. */
 export function isHomeFeedInlineVideoAutoplayEnabled(): boolean {
   return !HOME_FEED_YOUTUBE_STYLE_VIDEO;
