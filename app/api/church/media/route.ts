@@ -373,7 +373,8 @@ export async function PATCH(req: Request) {
         sync.reason.startsWith("revenuecat-http-") ||
         sync.reason === "no-secret" ||
         sync.reason === "timeout" ||
-        sync.reason === "fetch-error"
+        sync.reason === "fetch-error" ||
+        sync.reason === "missing-app-user-id"
       ) {
         return NextResponse.json(
           {
@@ -385,10 +386,26 @@ export async function PATCH(req: Request) {
         );
       }
 
+      if (
+        sync.reason === "profile-create-forbidden" ||
+        sync.reason === "profile-create-failed" ||
+        sync.reason === "subscription-patch-failed" ||
+        sync.reason === "partial"
+      ) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "Church media profile required before activating subscription",
+            reason: sync.reason,
+          },
+          { status: 400 }
+        );
+      }
+
       return NextResponse.json(
         {
           ok: false,
-          error: "Church media profile required before activating subscription",
+          error: "Subscription activation could not be completed.",
           reason: sync.reason,
         },
         { status: 400 }

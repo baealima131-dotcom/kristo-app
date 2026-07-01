@@ -47,9 +47,9 @@ function getSecretKey(): string {
 }
 
 /**
- * Server-controlled bypass ONLY. Never driven by a client header/flag.
- * - Non-production environments always bypass (local/dev/test).
- * - Production bypasses only when KRISTO_SUBSCRIPTION_BYPASS=1 is explicitly set.
+ * Server-controlled bypass ONLY for non-activation reads. Never driven by a client header/flag.
+ * - Non-production environments bypass entitlement reads (not activation).
+ * - Production bypasses reads only when KRISTO_SUBSCRIPTION_BYPASS=1 is explicitly set.
  */
 export function isSubscriptionVerificationBypassed(): boolean {
   if (process.env.NODE_ENV !== "production") return true;
@@ -95,30 +95,20 @@ export async function verifyChurchPremiumEntitlement(
   const uid = String(appUserId || "").trim();
   const forActivation = opts?.forActivation !== false;
 
-  if (isSubscriptionVerificationBypassed()) {
+  // Activation and entitlement checks used to activate/deactivate subscriptions always
+  // require a real RevenueCat lookup — server bypass must never block or fake activation.
+  if (!forActivation && isSubscriptionVerificationBypassed()) {
     console.warn("KRISTO_SUBSCRIPTION_BYPASS_ENABLED", {
       kristoSubscriptionBypass: process.env.KRISTO_SUBSCRIPTION_BYPASS ?? null,
       nodeEnv: process.env.NODE_ENV,
       forActivation,
-      note: forActivation
-        ? "Bypass does not grant subscription activation — RevenueCat verification required."
-        : "Bypass flag detected.",
+      note: "Read-only entitlement check bypassed; activation paths always verify RevenueCat.",
     });
-    if (!forActivation) {
-      return {
-        active: true,
-        plan: null,
-        productId: null,
-        reason: "bypass",
-        bypassed: true,
-        expiresAt: null,
-      };
-    }
     return {
-      active: false,
+      active: true,
       plan: null,
       productId: null,
-      reason: "bypass-not-allowed-for-activation",
+      reason: "bypass",
       bypassed: true,
       expiresAt: null,
     };
