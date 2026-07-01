@@ -44,3 +44,6 @@ export const CHURCH_PREMIUM_PRODUCT_IDS = [
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 ] as const;
+
+/** iOS SDK public key (apps/mobile/app.json extra.revenuecatIosApiKey). Server sk_ secret must be from the same RC project. */
+export const IOS_REVENUECAT_PUBLIC_API_KEY = "appl_RsWwZtALpIYilmRQNPlnDCkBcqG";

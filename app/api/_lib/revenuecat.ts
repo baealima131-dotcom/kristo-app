@@ -16,6 +16,7 @@ import {
   CHURCH_PREMIUM_ENTITLEMENT,
   CHURCH_PREMIUM_ENTITLEMENT_IDS,
   CHURCH_PREMIUM_PRODUCT_IDS,
+  IOS_REVENUECAT_PUBLIC_API_KEY,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "@/lib/churchPremiumRevenueCat";
@@ -51,8 +52,72 @@ export type ChurchPremiumVerification = {
   revenueCatLane?: "production" | "sandbox";
 };
 
+type RevenueCatFetchLane = "production" | "sandbox";
+
 function getSecretKey(): string {
   return String(process.env.REVENUECAT_SECRET_API_KEY || "").trim();
+}
+
+type RevenueCatServerKeyKind = "secret" | "public-ios" | "public-android" | "public-amazon" | "unknown" | "missing";
+
+function maskRevenueCatKeyPrefix(value: string): string {
+  const key = String(value || "").trim();
+  if (!key) return "";
+  return `${key.slice(0, 7)}...`;
+}
+
+function classifyRevenueCatServerKey(value: string): RevenueCatServerKeyKind {
+  const key = String(value || "").trim();
+  if (!key) return "missing";
+  if (key.startsWith("sk_")) return "secret";
+  if (key.startsWith("appl_")) return "public-ios";
+  if (key.startsWith("goog_")) return "public-android";
+  if (key.startsWith("amzn_")) return "public-amazon";
+  return "unknown";
+}
+
+function logRevenueCatServerKeyAudit() {
+  const secret = getSecretKey();
+  const secretKeyKind = classifyRevenueCatServerKey(secret);
+  const iosPublicKeyPrefix = maskRevenueCatKeyPrefix(IOS_REVENUECAT_PUBLIC_API_KEY);
+  const serverKeyPrefix = maskRevenueCatKeyPrefix(secret);
+  const likelyWrongKeyType = secretKeyKind !== "secret" && secretKeyKind !== "missing";
+
+  console.log("KRISTO_REVENUECAT_KEY_AUDIT", {
+    serverKeyKind: secretKeyKind,
+    serverKeyPrefix,
+    expectedIosPublicKeyPrefix: iosPublicKeyPrefix,
+    sameProjectRequirement:
+      "REVENUECAT_SECRET_API_KEY must be an sk_ secret from the same RevenueCat project as the iOS appl_ SDK key.",
+    likelyMisconfigured: likelyWrongKeyType,
+    misconfigurationHint: likelyWrongKeyType
+      ? "Server is not using an sk_ secret key — REST verification may hit the wrong project or be rejected."
+      : null,
+  });
+}
+
+function logRevenueCatSubscriberResponse(args: {
+  lane: RevenueCatFetchLane;
+  httpStatus: number;
+  data: any;
+  requestHeaders: Record<string, string>;
+}) {
+  const subscriber = args.data?.subscriber || {};
+  const entitlementKeys = Object.keys(subscriber.entitlements || {});
+  const subscriptionKeys = Object.keys(subscriber.subscriptions || {});
+  const subscriberId =
+    String(subscriber.original_app_user_id || subscriber.app_user_id || "").trim() || null;
+
+  console.log("KRISTO_REVENUECAT_FETCH_RESPONSE", {
+    lane: args.lane,
+    httpStatus: args.httpStatus,
+    requestXIsSandbox: args.requestHeaders["X-Is-Sandbox"] ?? null,
+    requestXPlatform: args.requestHeaders["X-Platform"] ?? null,
+    entitlementKeys,
+    subscriptionKeys,
+    subscriberId,
+    requestDate: args.data?.request_date ?? null,
+  });
 }
 
 /**
@@ -163,8 +228,6 @@ function resolvePremiumFromSubscriptions(subscriptions: Record<string, any>): {
   return { productId: null, subscription: null, active: false };
 }
 
-type RevenueCatFetchLane = "production" | "sandbox";
-
 async function fetchRevenueCatSubscriber(
   uid: string,
   secret: string,
@@ -186,23 +249,56 @@ async function fetchRevenueCatSubscriber(
       headers["X-Platform"] = "ios";
     }
 
-    const res = await fetch(`${REVENUECAT_API_BASE}/subscribers/${encodeURIComponent(uid)}`, {
+    const url = `${REVENUECAT_API_BASE}/subscribers/${encodeURIComponent(uid)}`;
+    console.log("KRISTO_REVENUECAT_FETCH_START", {
+      lane,
+      churchId: uid,
+      url,
+      requestXIsSandbox: headers["X-Is-Sandbox"] ?? null,
+      requestXPlatform: headers["X-Platform"] ?? null,
+      sandboxHeadersSent: lane === "sandbox",
+    });
+
+    const res = await fetch(url, {
       method: "GET",
       headers,
       signal: controller.signal,
     });
 
+    const data: any = await res.json().catch(() => ({}));
+
     if (!res.ok) {
+      console.log("KRISTO_REVENUECAT_FETCH_HTTP_ERROR", {
+        lane,
+        churchId: uid,
+        httpStatus: res.status,
+        requestXIsSandbox: headers["X-Is-Sandbox"] ?? null,
+        requestXPlatform: headers["X-Platform"] ?? null,
+        entitlementKeys: Object.keys(data?.subscriber?.entitlements || {}),
+        subscriptionKeys: Object.keys(data?.subscriber?.subscriptions || {}),
+        subscriberId:
+          String(data?.subscriber?.original_app_user_id || data?.subscriber?.app_user_id || "").trim() ||
+          null,
+        revenueCatMessage: typeof data?.message === "string" ? data.message : null,
+      });
       return { ok: false, reason: `revenuecat-http-${res.status}`, lane };
     }
 
-    const data: any = await res.json().catch(() => ({}));
+    logRevenueCatSubscriberResponse({
+      lane,
+      httpStatus: res.status,
+      data,
+      requestHeaders: headers,
+    });
     return { ok: true, data, lane };
   } catch (error: any) {
     const reason = error?.name === "AbortError" ? "timeout" : "fetch-error";
     console.error("KRISTO_REVENUECAT_VERIFY_FAILED", {
       reason,
       lane,
+      churchId: uid,
+      requestXIsSandbox: lane === "sandbox" ? "true" : null,
+      requestXPlatform: lane === "sandbox" ? "ios" : null,
       error: String(error?.message || error || "unknown"),
     });
     return { ok: false, reason, lane };
@@ -317,6 +413,13 @@ async function verifyRevenueCatLane(
 ): Promise<ChurchPremiumVerification | { fetchFailed: true; reason: string; lane: RevenueCatFetchLane }> {
   const fetched = await fetchRevenueCatSubscriber(uid, secret, lane);
   if (!fetched.ok) {
+    console.log("KRISTO_REVENUECAT_LANE_FETCH_FAILED", {
+      lane,
+      churchId: uid,
+      reason: fetched.reason,
+      requestXIsSandbox: lane === "sandbox" ? "true" : null,
+      requestXPlatform: lane === "sandbox" ? "ios" : null,
+    });
     return { fetchFailed: true, reason: fetched.reason, lane };
   }
 
@@ -373,6 +476,8 @@ export async function verifyChurchPremiumEntitlement(
     return { active: false, plan: null, productId: null, reason: "no-secret", bypassed: false, expiresAt: null };
   }
 
+  logRevenueCatServerKeyAudit();
+
   const maxAttempts = forActivation ? ACTIVATION_VERIFY_MAX_ATTEMPTS : 1;
   const lanes: RevenueCatFetchLane[] = forActivation ? ["production", "sandbox"] : ["production"];
   let lastVerification: ChurchPremiumVerification = {
@@ -399,6 +504,12 @@ export async function verifyChurchPremiumEntitlement(
             revenueCatLane: lane,
           };
         }
+        console.log("KRISTO_REVENUECAT_SANDBOX_LANE_SKIPPED", {
+          churchId: uid,
+          attempt,
+          reason: result.reason,
+          note: "Sandbox fetch failed; continuing with next retry attempt.",
+        });
         continue;
       }
 
@@ -438,6 +549,7 @@ export async function verifyChurchPremiumEntitlement(
       maxAttempts,
       lanes,
       revenueCatLane: lastVerification.revenueCatLane ?? null,
+      sandboxLaneAttempted: lanes.includes("sandbox"),
     });
   }
 
