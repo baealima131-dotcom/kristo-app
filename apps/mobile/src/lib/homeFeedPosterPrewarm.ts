@@ -7,6 +7,7 @@ import {
   resolveSavedFeedVideoPosterUri,
   resolveStablePosterVideoUrl,
   resolveVideoUri,
+  resolveYouTubeFeedMetadataPosterUri,
 } from "@/src/components/homeFeed/homeFeedUtils";
 import { isHomeFeedNearEnd } from "@/src/components/homeFeed/homeFeedPagination";
 import {
@@ -613,7 +614,7 @@ export function prefetchHomeFeedPosterMetadata(item: any): void {
 
   const cached = resolveCachedMediaPoster(postId, videoUrl);
   if (cached) {
-    prefetchMediaPosterImages([cached]);
+    prefetchMediaPosterImages([cached], { postId, videoUrl });
     return;
   }
 
@@ -621,7 +622,7 @@ export function prefetchHomeFeedPosterMetadata(item: any): void {
     collectFeedVideoPosterCandidates(item, postId),
     videoUrl
   );
-  if (real.length) prefetchMediaPosterImages(real);
+  if (real.length) prefetchMediaPosterImages(real, { postId, videoUrl });
 }
 
 async function resolveReachablePosterUri(
@@ -677,6 +678,24 @@ async function prewarmOneHomeFeedVideoPosterFastPath(item: any): Promise<boolean
   }
 
   prefetchHomeFeedPosterMetadata(item);
+
+  if (isHomeFeedYoutubePosterMetadataEnabled()) {
+    const metadataUri = resolveYouTubeFeedMetadataPosterUri(item, postId, videoUrl);
+    if (metadataUri) {
+      await rememberMediaPoster({
+        postId,
+        videoUrl,
+        posterUri: metadataUri,
+        source: "remote",
+        persistFile: false,
+      });
+      prefetchMediaPosterImages([metadataUri]);
+      markPosterSatisfied(postId, videoUrl, "fast-path-youtube-metadata", {
+        posterUri: metadataUri,
+      });
+      return true;
+    }
+  }
 
   const savedMetadataPoster = resolveSavedFeedVideoPosterUri(item, videoUrl);
   if (savedMetadataPoster) {
@@ -1146,17 +1165,19 @@ export function startYoutubeHomeFeedVisiblePosterPrewarm(
   }
   lastYoutubeVisiblePosterPrewarmSignature = signature;
 
+  for (const item of batch) {
+    prefetchHomeFeedPosterMetadata(item);
+  }
+
+  console.log("KRISTO_HOME_FEED_YOUTUBE_POSTER_PREWARM_START", {
+    batchCount: batch.length,
+    maxCount,
+  });
+
   void (async () => {
     try {
       await hydrateMediaPosterCache();
     } catch {}
-
-    for (const item of batch) prefetchHomeFeedPosterMetadata(item);
-
-    console.log("KRISTO_HOME_FEED_YOUTUBE_POSTER_PREWARM_START", {
-      batchCount: batch.length,
-      maxCount,
-    });
 
     await Promise.all(
       batch.map((item) =>

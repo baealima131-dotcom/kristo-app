@@ -821,6 +821,9 @@ export async function fetchHomeFeedFromApi(
         setBackendSnapshotRowIds(snapshotIds);
       }
       lastFetchedHomeFeedRows = rows;
+      const { markHomeFeedPosterApiRowsReceived } =
+        await import("@/src/lib/homeFeedPosterPipelineTrace");
+      markHomeFeedPosterApiRowsReceived(rows);
       startYoutubeHomeFeedVisiblePosterPrewarm(rows);
       return rows;
     }

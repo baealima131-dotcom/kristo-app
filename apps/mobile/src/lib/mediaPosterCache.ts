@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Paths } from "expo-file-system";
 import * as FileSystem from "expo-file-system/legacy";
 import { Image } from "react-native";
+import { markHomeFeedPosterPipelineStage } from "@/src/lib/homeFeedPosterPipelineTrace";
 import {
   onBackgroundMediaJobsResumed,
   shouldDeferBackgroundMediaJobs,
@@ -428,12 +429,19 @@ export async function rememberMediaPoster(params: {
   return posterUri;
 }
 
-export function prefetchMediaPosterImages(uris: string[]) {
+export function prefetchMediaPosterImages(uris: string[], trace?: { postId?: string; videoUrl?: string }) {
   if (shouldDeferBackgroundMediaJobs()) return;
   for (const raw of uris) {
     const uri = String(raw || "").trim();
     if (!uri || prefetchedUris.has(uri)) continue;
     prefetchedUris.add(uri);
+    if (trace?.postId) {
+      markHomeFeedPosterPipelineStage(trace.postId, "prefetch_started", {
+        posterUri: uri,
+        videoUrl: trace.videoUrl,
+        source: "Image.prefetch",
+      });
+    }
     Image.prefetch(uri).catch(() => {
       prefetchedUris.delete(uri);
     });

@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useMemo } from "react";
+import React, { memo, useEffect, useMemo, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -29,14 +29,11 @@ import {
   tiktokThumbnailWidth,
 } from "@/src/lib/homeFeedYouTubeLayout";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
+import { markHomeFeedPosterPipelineStage } from "@/src/lib/homeFeedPosterPipelineTrace";
 import { HOME_FEED_GOLD, HOME_FEED_THUMB_RADIUS } from "./theme";
 import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
 import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
 import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
-import {
-  itemNeedsVisiblePosterGeneration,
-  queueHomeFeedPosterPrewarm,
-} from "@/src/lib/homeFeedPosterPrewarm";
 
 type Props = {
   item: any;
@@ -46,6 +43,8 @@ type Props = {
   onSave: () => void;
   onReport: () => void;
   onVideoPress?: (payload: HomeFeedVideoOpenPayload) => void;
+  /** Only load poster/avatar bitmaps when within the visible window. */
+  shouldLoadImages?: boolean;
 };
 
 export const FeedYouTubeCard = memo(
@@ -57,6 +56,7 @@ export const FeedYouTubeCard = memo(
   onSave,
   onReport,
   onVideoPress,
+  shouldLoadImages = true,
 }: Props) {
   const engagement = useHomeFeedRowEngagement(item);
   const { width: windowWidth } = useWindowDimensions();
@@ -101,6 +101,14 @@ export const FeedYouTubeCard = memo(
   const mediaStatus = String(item?.mediaStatus || item?.status || "").trim();
   const postAccent = resolveFeedPostAccent(item);
 
+  useEffect(() => {
+    if (!postId) return;
+    markHomeFeedPosterPipelineStage(postId, "card_mounted", {
+      videoUrl: videoUri,
+      source: "FeedYouTubeCard",
+    });
+  }, [postId, videoUri]);
+
   const handleVideoPress = () => {
     const payload = buildHomeFeedVideoOpenPayload(item);
     if (!payload) return;
@@ -108,12 +116,6 @@ export const FeedYouTubeCard = memo(
   };
 
   const durationLabel = formatDurationLabel(videoDurationMs);
-
-  useEffect(() => {
-    if (!video || !videoUri || !postId) return;
-    if (!itemNeedsVisiblePosterGeneration(item)) return;
-    void queueHomeFeedPosterPrewarm(item, { priority: "visible" });
-  }, [item, postId, video, videoUri, posterFieldsKey]);
 
   return (
     <View style={premium.feedCard}>
@@ -141,22 +143,14 @@ export const FeedYouTubeCard = memo(
               videoDurationMs={videoDurationMs}
               videoUri={videoUri}
               posterFieldsKey={posterFieldsKey}
+              shouldLoadImages={shouldLoadImages}
+              durationLabel={durationLabel}
             />
-            <View style={styles.playOverlay} pointerEvents="none">
-              <View style={premium.playBadge}>
-                <Ionicons name="play" size={26} color="#FFFFFF" style={styles.playIcon} />
-              </View>
-            </View>
-            {durationLabel ? (
-              <View style={premium.durationBadge} pointerEvents="none">
-                <Text style={styles.durationText}>{durationLabel}</Text>
-              </View>
-            ) : null}
           </Pressable>
         ) : postImageUris.length > 0 ? (
           <ImagePostCarousel
             postId={postId}
-            imageUris={postImageUris}
+            imageUris={shouldLoadImages ? postImageUris : []}
             accent={postAccent}
             fallback={
               churchRoomPost ? (
@@ -175,7 +169,7 @@ export const FeedYouTubeCard = memo(
 
       <View style={premium.metaSection}>
         <View style={premium.metaRow}>
-          <FeedChurchBrandRow item={item} variant="premium" part="avatar" source="home-feed-card" />
+          <FeedChurchBrandRow item={item} variant="premium" part="avatar" source="home-feed-card" deferAvatarLoad={!shouldLoadImages} />
           <View style={premium.metaTextCol}>
             <FeedChurchBrandRow item={item} variant="premium" part="name" source="home-feed-card" />
             {title ? (
@@ -215,7 +209,8 @@ export const FeedYouTubeCard = memo(
   prev.onShare === next.onShare &&
   prev.onSave === next.onSave &&
   prev.onReport === next.onReport &&
-  prev.onVideoPress === next.onVideoPress
+  prev.onVideoPress === next.onVideoPress &&
+  prev.shouldLoadImages === next.shouldLoadImages
 );
 
 function formatDurationLabel(videoDurationMs?: number) {
@@ -239,6 +234,8 @@ function VideoThumbnail({
   videoDurationMs,
   videoUri,
   posterFieldsKey,
+  shouldLoadImages = true,
+  durationLabel = "",
 }: {
   item: any;
   postId: string;
@@ -247,21 +244,43 @@ function VideoThumbnail({
   videoDurationMs?: number;
   videoUri: string;
   posterFieldsKey: string;
+  shouldLoadImages?: boolean;
+  durationLabel?: string;
 }) {
+  const [coverReady, setCoverReady] = useState(false);
+
+  useEffect(() => {
+    setCoverReady(false);
+  }, [postId, videoUri, shouldLoadImages]);
+
   return (
-    <FeedVideoPosterImage
-      item={item}
-      style={StyleSheet.absoluteFillObject}
-      resizeMode="cover"
-      postId={postId}
-      videoUrl={videoUri}
-      mediaStatus={mediaStatus}
-      posterMetadata={posterMetadata}
-      videoDurationMs={videoDurationMs}
-      enableClientThumbnailFallback
-      enableVideoFrameFallback
-      youtubeMode
-    />
+    <>
+      <FeedVideoPosterImage
+        item={item}
+        style={StyleSheet.absoluteFillObject}
+        resizeMode="cover"
+        postId={postId}
+        videoUrl={videoUri}
+        mediaStatus={mediaStatus}
+        posterMetadata={posterMetadata}
+        videoDurationMs={videoDurationMs}
+        youtubeMode
+        allowImageLoad={shouldLoadImages}
+        onPosterCoverReady={setCoverReady}
+      />
+      {coverReady ? (
+        <View style={styles.playOverlay} pointerEvents="none">
+          <View style={premium.playBadge}>
+            <Ionicons name="play" size={26} color="#FFFFFF" style={styles.playIcon} />
+          </View>
+        </View>
+      ) : null}
+      {coverReady && durationLabel ? (
+        <View style={premium.durationBadge} pointerEvents="none">
+          <Text style={styles.durationText}>{durationLabel}</Text>
+        </View>
+      ) : null}
+    </>
   );
 }
 
@@ -272,7 +291,8 @@ const MemoVideoThumbnail = memo(
     prev.videoUri === next.videoUri &&
     prev.mediaStatus === next.mediaStatus &&
     prev.posterFieldsKey === next.posterFieldsKey &&
-    prev.videoDurationMs === next.videoDurationMs
+    prev.videoDurationMs === next.videoDurationMs &&
+    prev.shouldLoadImages === next.shouldLoadImages
 );
 
 function TextCardPreview({
@@ -307,13 +327,13 @@ const styles = StyleSheet.create({
   thumbWrapTikTok: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#000000",
+    backgroundColor: "#1a1a1a",
   },
   thumbPress: {
     flex: 1,
     borderRadius: HOME_FEED_THUMB_RADIUS,
     overflow: "hidden",
-    backgroundColor: "#000000",
+    backgroundColor: "#1a1a1a",
   },
   playOverlay: {
     ...StyleSheet.absoluteFillObject,

@@ -19,6 +19,7 @@ import {
   resolveCachedMediaPoster,
   subscribeMediaPosterCache,
 } from "@/src/lib/mediaPosterCache";
+import { markHomeFeedPosterPipelineStage } from "@/src/lib/homeFeedPosterPipelineTrace";
 import {
   prefetchHomeFeedPosterMetadata,
   queueHomeFeedPosterPrewarm,
@@ -47,7 +48,7 @@ import {
 } from "@/src/lib/homeFeedPosterSource";
 
 const GOLD = "#F4D06F";
-const HOME_FEED_POSTER_FADE_MS = 200;
+const HOME_FEED_POSTER_FADE_MS = 80;
 
 function logHomeFeedPosterLoadStart(postId: string, videoUrl: string, source: string) {
   console.log("KRISTO_HOME_FEED_POSTER_LOAD_START", {
@@ -386,6 +387,11 @@ function YouTubeFeedVideoPoster({
       loadedSourceRef.current = source;
       writePosterCoverSession(postId, resolvedVideoUrl, uri, source);
       notifyCoverReady(true);
+      markHomeFeedPosterPipelineStage(postId, "first_poster_painted", {
+        posterUri: uri,
+        videoUrl: resolvedVideoUrl,
+        source,
+      });
     },
     [notifyCoverReady, postId, resolvedVideoUrl]
   );
@@ -432,6 +438,16 @@ function YouTubeFeedVideoPoster({
         loadStartLoggedRef.current = true;
         logHomeFeedPosterLoadStart(postId, resolvedVideoUrl, source);
       }
+      markHomeFeedPosterPipelineStage(postId, "poster_url_resolved", {
+        posterUri: uri,
+        videoUrl: resolvedVideoUrl,
+        source,
+      });
+      markHomeFeedPosterPipelineStage(postId, "image_request_started", {
+        posterUri: uri,
+        videoUrl: resolvedVideoUrl,
+        source,
+      });
       setLoadSource(source);
       setDisplayUri(uri);
       setSettledPlaceholder(false);
@@ -469,6 +485,14 @@ function YouTubeFeedVideoPoster({
   ]);
 
   React.useEffect(() => {
+    if (!postId) return;
+    markHomeFeedPosterPipelineStage(postId, "image_component_mounted", {
+      videoUrl: resolvedVideoUrl,
+      source: "YouTubeFeedVideoPoster",
+    });
+  }, [postId, resolvedVideoUrl]);
+
+  React.useEffect(() => {
     cancelledRef.current = false;
     frameGenAttemptedRef.current = false;
 
@@ -487,6 +511,11 @@ function YouTubeFeedVideoPoster({
       setSettledPlaceholder(false);
       fadeOpacity.setValue(1);
       notifyCoverReady(true);
+      markHomeFeedPosterPipelineStage(postId, "poster_url_resolved", {
+        posterUri: restoredUri,
+        videoUrl: resolvedVideoUrl,
+        source: loadedSourceRef.current,
+      });
       return;
     }
 
@@ -499,6 +528,13 @@ function YouTubeFeedVideoPoster({
     setSettledPlaceholder(false);
     fadeOpacity.setValue(0);
     notifyCoverReady(false);
+
+    if (item) {
+      const metadataUri = resolveYouTubeFeedMetadataPosterUri(item, postId, resolvedVideoUrl);
+      if (metadataUri && !hasPosterMetadataFailed(postId, resolvedVideoUrl)) {
+        beginPosterLoad(metadataUri, "metadata");
+      }
+    }
 
     if (!isHomeFeedYoutubePosterMetadataEnabled() || !item) return;
 
@@ -531,6 +567,11 @@ function YouTubeFeedVideoPoster({
       if (restoreLoadedPoster()) return () => {
         cancelledRef.current = true;
       };
+      if (displayUri) {
+        return () => {
+          cancelledRef.current = true;
+        };
+      }
       logPlaceholderOnce("deferred-offscreen");
       return () => {
         cancelledRef.current = true;
@@ -592,6 +633,7 @@ function YouTubeFeedVideoPoster({
   }, [
     allowImageLoad,
     beginPosterLoad,
+    displayUri,
     item,
     logPlaceholderOnce,
     postId,
@@ -630,6 +672,11 @@ function YouTubeFeedVideoPoster({
     writePosterCoverSession(postId, resolvedVideoUrl, displayUri, loadSource);
     logHomeFeedPosterLoadSuccess(postId, resolvedVideoUrl, displayUri, loadSource);
     logHomeFeedPosterSourceOnce(postId, resolvedVideoUrl, loadSource as any, videoDurationMs);
+    markHomeFeedPosterPipelineStage(postId, "image_loaded", {
+      posterUri: displayUri,
+      videoUrl: resolvedVideoUrl,
+      source: loadSource,
+    });
     fadeInPoster(displayUri, loadSource);
   }, [displayUri, fadeInPoster, loadSource, postId, resolvedVideoUrl, videoDurationMs]);
 
@@ -681,6 +728,13 @@ function YouTubeFeedVideoPoster({
           source={{ uri: displayUri }}
           style={[StyleSheet.absoluteFillObject, { opacity: fadeOpacity }]}
           resizeMode={resizeMode}
+          onLoadStart={() => {
+            markHomeFeedPosterPipelineStage(postId, "image_request_started", {
+              posterUri: displayUri,
+              videoUrl: resolvedVideoUrl,
+              source: `${loadSource}:native`,
+            });
+          }}
           onLoad={handleImageLoad}
           onError={handleImageError}
         />
