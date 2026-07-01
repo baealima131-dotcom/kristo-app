@@ -8,7 +8,7 @@ import {
   parseSubscriptionExpiresAtMs,
   reconcileChurchSubscriptionExpiryNotifications,
 } from "@/app/api/_lib/churchMediaNotifications";
-import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
+import { verifyChurchPremiumEntitlement, isVerifiedChurchPremiumReason } from "@/app/api/_lib/revenuecat";
 import {
   getChurchMediaByChurchId,
   patchChurchMediaSubscription,
@@ -88,7 +88,7 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     productId: verification.productId,
   });
 
-  if (!verification.active || verification.bypassed || verification.reason !== "verified") {
+  if (!verification.active || verification.bypassed || !isVerifiedChurchPremiumReason(verification.reason)) {
     console.log("KRISTO_CHURCH_SUBSCRIPTION_SYNC_SKIPPED", {
       churchId,
       requesterUserId,

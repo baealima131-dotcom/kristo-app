@@ -15,6 +15,7 @@
 import {
   CHURCH_PREMIUM_ENTITLEMENT,
   CHURCH_PREMIUM_ENTITLEMENT_IDS,
+  CHURCH_PREMIUM_PRODUCT_IDS,
   PREMIUM_MONTHLY_PRODUCT_ID,
   PREMIUM_YEARLY_PRODUCT_ID,
 } from "@/lib/churchPremiumRevenueCat";
@@ -29,6 +30,10 @@ export {
 
 const REVENUECAT_API_BASE = "https://api.revenuecat.com/v1";
 const REQUEST_TIMEOUT_MS = 8000;
+const ACTIVATION_VERIFY_RETRY_MS = 1500;
+const ACTIVATION_VERIFY_MAX_ATTEMPTS = 3;
+
+const VERIFIED_REASONS = new Set(["verified", "verified-subscription"]);
 
 export type SubscriptionPlan = "monthly" | "yearly";
 
@@ -83,6 +88,193 @@ function entitlementIsActive(expiresDate: unknown): boolean {
   return ms > Date.now();
 }
 
+function sleepMs(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function isVerifiedChurchPremiumReason(reason: string): boolean {
+  return VERIFIED_REASONS.has(String(reason || "").trim());
+}
+
+type RevenueCatSubscriberSnapshot = {
+  entitlements: Record<string, any>;
+  subscriptions: Record<string, any>;
+};
+
+function parseSubscriberSnapshot(data: any): RevenueCatSubscriberSnapshot {
+  return {
+    entitlements: data?.subscriber?.entitlements || {},
+    subscriptions: data?.subscriber?.subscriptions || {},
+  };
+}
+
+function resolvePremiumFromEntitlements(entitlements: Record<string, any>): {
+  detectedEntitlement: string | null;
+  entitlement: any | null;
+  active: boolean;
+} {
+  let detectedEntitlement: string | null = null;
+  let entitlement: any = null;
+
+  for (const id of CHURCH_PREMIUM_ENTITLEMENT_IDS) {
+    const candidate = entitlements[id];
+    if (!candidate) continue;
+    if (entitlementIsActive(candidate.expires_date)) {
+      return {
+        detectedEntitlement: id,
+        entitlement: candidate,
+        active: true,
+      };
+    }
+    if (!entitlement) {
+      detectedEntitlement = id;
+      entitlement = candidate;
+    }
+  }
+
+  return {
+    detectedEntitlement,
+    entitlement,
+    active: Boolean(entitlement && entitlementIsActive(entitlement.expires_date)),
+  };
+}
+
+function resolvePremiumFromSubscriptions(subscriptions: Record<string, any>): {
+  productId: string | null;
+  subscription: any | null;
+  active: boolean;
+} {
+  for (const productId of CHURCH_PREMIUM_PRODUCT_IDS) {
+    const candidate = subscriptions[productId];
+    if (!candidate) continue;
+    if (entitlementIsActive(candidate.expires_date)) {
+      return {
+        productId,
+        subscription: candidate,
+        active: true,
+      };
+    }
+  }
+
+  return { productId: null, subscription: null, active: false };
+}
+
+async function fetchRevenueCatSubscriber(
+  uid: string,
+  secret: string
+): Promise<{ ok: true; data: any } | { ok: false; reason: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`${REVENUECAT_API_BASE}/subscribers/${encodeURIComponent(uid)}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      return { ok: false, reason: `revenuecat-http-${res.status}` };
+    }
+
+    const data: any = await res.json().catch(() => ({}));
+    return { ok: true, data };
+  } catch (error: any) {
+    const reason = error?.name === "AbortError" ? "timeout" : "fetch-error";
+    console.error("KRISTO_REVENUECAT_VERIFY_FAILED", {
+      reason,
+      error: String(error?.message || error || "unknown"),
+    });
+    return { ok: false, reason };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function verifySubscriberSnapshot(
+  uid: string,
+  snapshot: RevenueCatSubscriberSnapshot
+): ChurchPremiumVerification {
+  const activeEntitlementKeys = Object.keys(snapshot.entitlements);
+  const activeSubscriptionKeys = Object.keys(snapshot.subscriptions);
+  const entitlementMatch = resolvePremiumFromEntitlements(snapshot.entitlements);
+
+  console.log("KRISTO_ENTITLEMENT_AUDIT", {
+    source: "server-verifyChurchPremiumEntitlement",
+    activeEntitlementKeys,
+    activeSubscriptionKeys,
+    detectedEntitlement: entitlementMatch.detectedEntitlement,
+    hasPremiumEntitlement: entitlementMatch.active,
+    currentChurchId: uid,
+  });
+
+  if (entitlementMatch.entitlement) {
+    const expiresAtRaw = entitlementMatch.entitlement.expires_date;
+    const expiresAt =
+      expiresAtRaw === null || expiresAtRaw === undefined
+        ? null
+        : String(expiresAtRaw).trim() || null;
+    const productId = String(entitlementMatch.entitlement.product_identifier || "").trim() || null;
+
+    if (!entitlementMatch.active) {
+      return {
+        active: false,
+        plan: planFromProductId(productId),
+        productId,
+        reason: "expired",
+        bypassed: false,
+        expiresAt,
+      };
+    }
+
+    return {
+      active: true,
+      plan: planFromProductId(productId),
+      productId,
+      reason: "verified",
+      bypassed: false,
+      expiresAt,
+    };
+  }
+
+  const subscriptionMatch = resolvePremiumFromSubscriptions(snapshot.subscriptions);
+  if (subscriptionMatch.active && subscriptionMatch.productId) {
+    const expiresAtRaw = subscriptionMatch.subscription?.expires_date;
+    const expiresAt =
+      expiresAtRaw === null || expiresAtRaw === undefined
+        ? null
+        : String(expiresAtRaw).trim() || null;
+
+    console.log("KRISTO_ENTITLEMENT_AUDIT", {
+      source: "server-verifyChurchPremiumEntitlement:subscription-fallback",
+      activeSubscriptionKeys,
+      productId: subscriptionMatch.productId,
+      currentChurchId: uid,
+    });
+
+    return {
+      active: true,
+      plan: planFromProductId(subscriptionMatch.productId),
+      productId: subscriptionMatch.productId,
+      reason: "verified-subscription",
+      bypassed: false,
+      expiresAt,
+    };
+  }
+
+  return {
+    active: false,
+    plan: null,
+    productId: null,
+    reason: "no-entitlement",
+    bypassed: false,
+    expiresAt: null,
+  };
+}
+
 /**
  * Verify the given RevenueCat app user id has an active church premium
  * entitlement (`church_premium` or legacy `Premium`). For church premium, `appUserId` is the Kristo churchId (the app
@@ -133,106 +325,48 @@ export async function verifyChurchPremiumEntitlement(
     return { active: false, plan: null, productId: null, reason: "no-secret", bypassed: false, expiresAt: null };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const maxAttempts = forActivation ? ACTIVATION_VERIFY_MAX_ATTEMPTS : 1;
 
-  try {
-    const res = await fetch(`${REVENUECAT_API_BASE}/subscribers/${encodeURIComponent(uid)}`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${secret}`,
-        "Content-Type": "application/json",
-      },
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      // 404 => RevenueCat has no record of this subscriber (never purchased).
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const fetched = await fetchRevenueCatSubscriber(uid, secret);
+    if (!fetched.ok) {
       return {
         active: false,
         plan: null,
         productId: null,
-        reason: `revenuecat-http-${res.status}`,
+        reason: fetched.reason,
         bypassed: false,
         expiresAt: null,
       };
     }
 
-    const data: any = await res.json().catch(() => ({}));
-    const entitlements = data?.subscriber?.entitlements || {};
-    const activeEntitlementKeys = Object.keys(entitlements);
-
-    let detectedEntitlement: string | null = null;
-    let entitlement: any = null;
-    for (const id of CHURCH_PREMIUM_ENTITLEMENT_IDS) {
-      const candidate = entitlements[id];
-      if (!candidate) continue;
-      if (entitlementIsActive(candidate.expires_date)) {
-        detectedEntitlement = id;
-        entitlement = candidate;
-        break;
+    const verification = verifySubscriberSnapshot(uid, parseSubscriberSnapshot(fetched.data));
+    if (verification.active || verification.reason !== "no-entitlement" || attempt === maxAttempts - 1) {
+      if (!verification.active && verification.reason === "no-entitlement" && forActivation) {
+        console.log("KRISTO_REVENUECAT_VERIFY_NO_ENTITLEMENT", {
+          churchId: uid,
+          attempt,
+          maxAttempts,
+        });
       }
-      if (!entitlement) {
-        detectedEntitlement = id;
-        entitlement = candidate;
-      }
+      return verification;
     }
 
-    console.log("KRISTO_ENTITLEMENT_AUDIT", {
-      source: "server-verifyChurchPremiumEntitlement",
-      activeEntitlementKeys,
-      detectedEntitlement,
-      hasPremiumEntitlement: Boolean(detectedEntitlement && entitlementIsActive(entitlement?.expires_date)),
-      currentChurchId: uid,
+    console.log("KRISTO_REVENUECAT_VERIFY_RETRY", {
+      churchId: uid,
+      attempt,
+      reason: verification.reason,
+      delayMs: ACTIVATION_VERIFY_RETRY_MS,
     });
-
-    if (!entitlement) {
-      return {
-        active: false,
-        plan: null,
-        productId: null,
-        reason: "no-entitlement",
-        bypassed: false,
-        expiresAt: null,
-      };
-    }
-
-    const expiresAtRaw = entitlement.expires_date;
-    const expiresAt =
-      expiresAtRaw === null || expiresAtRaw === undefined
-        ? null
-        : String(expiresAtRaw).trim() || null;
-
-    const active = entitlementIsActive(expiresAtRaw);
-    const productId = String(entitlement.product_identifier || "").trim() || null;
-
-    if (!active) {
-      return {
-        active: false,
-        plan: planFromProductId(productId),
-        productId,
-        reason: "expired",
-        bypassed: false,
-        expiresAt,
-      };
-    }
-
-    return {
-      active: true,
-      plan: planFromProductId(productId),
-      productId,
-      reason: "verified",
-      bypassed: false,
-      expiresAt,
-    };
-  } catch (error: any) {
-    const reason = error?.name === "AbortError" ? "timeout" : "fetch-error";
-    console.error("KRISTO_REVENUECAT_VERIFY_FAILED", {
-      reason,
-      error: String(error?.message || error || "unknown"),
-    });
-    return { active: false, plan: null, productId: null, reason, bypassed: false, expiresAt: null };
-  } finally {
-    clearTimeout(timer);
+    await sleepMs(ACTIVATION_VERIFY_RETRY_MS);
   }
+
+  return {
+    active: false,
+    plan: null,
+    productId: null,
+    reason: "no-entitlement",
+    bypassed: false,
+    expiresAt: null,
+  };
 }

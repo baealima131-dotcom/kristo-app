@@ -19,8 +19,12 @@ import {
   readChurchScopedEntitlementActive,
   readLocalScheduleEntitlementActive,
   readSessionMediaProfileSubscriptionActive,
+  isOfflineActivationFromMediaRouteResponse,
+  parseChurchMediaSubscriptionSource,
   type ChurchSubscriptionRecord,
 } from "./churchSubscriptionMediaSignals";
+export type { ChurchMediaSubscriptionSource } from "./churchSubscriptionMediaSignals";
+import type { ChurchMediaSubscriptionSource } from "./churchSubscriptionMediaSignals";
 import { logSubscriptionBypassIfEnabled } from "./subscriptionBypass";
 import {
   describeCustomerInfoSubscriptionDebug,
@@ -566,10 +570,7 @@ export type ChurchSubscriptionServerStatus = {
   routeFailed?: boolean;
 };
 
-export type ChurchMediaSubscriptionSource =
-  | "app_store"
-  | "stripe"
-  | "offline_activation";
+export { isOfflineActivationFromMediaRouteResponse, parseChurchMediaSubscriptionSource };
 
 /** Media Premium screen: raw `/api/church/media` only — no RevenueCat or session merge. */
 export type ChurchMediaPremiumServerStatus = {
@@ -582,19 +583,6 @@ export type ChurchMediaPremiumServerStatus = {
   source: "server_media_api";
 };
 
-export function parseChurchMediaSubscriptionSource(
-  media: ChurchSubscriptionRecord | null | undefined,
-  res?: { subscriptionSource?: unknown } | null
-): ChurchMediaSubscriptionSource | null {
-  const raw = String(media?.subscriptionSource ?? res?.subscriptionSource ?? "")
-    .trim()
-    .toLowerCase();
-  if (raw === "offline_activation") return "offline_activation";
-  if (raw === "app_store") return "app_store";
-  if (raw === "stripe") return "stripe";
-  return null;
-}
-
 export function isOfflineActivationMediaPremiumStatus(
   status: ChurchMediaPremiumServerStatus | null | undefined
 ): boolean {
@@ -602,12 +590,6 @@ export function isOfflineActivationMediaPremiumStatus(
     status?.serverSubscriptionActive === true &&
     status?.subscriptionSource === "offline_activation"
   );
-}
-
-/** True when `/api/church/media` reports active access from an offline activation code. */
-export function isOfflineActivationFromMediaRouteResponse(res: any): boolean {
-  if (parseExplicitServerSubscriptionFromMediaRoute(res) !== true) return false;
-  return parseChurchMediaSubscriptionSource(res?.media, res) === "offline_activation";
 }
 
 function parseServerSubscriptionExpiresAt(media: any, res: any): number | null {
@@ -891,17 +873,85 @@ export type SyncChurchSubscriptionAfterPurchaseResult = {
   subscriptionPlan?: "monthly" | "yearly";
 };
 
-export async function syncChurchSubscriptionAfterPurchase(args: {
+const purchaseSyncInflight = new Map<string, Promise<SyncChurchSubscriptionAfterPurchaseResult>>();
+
+function sleepMs(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function attemptChurchSubscriptionActivationWithRetries(args: {
   churchId: string;
   userId: string;
-  role?: string;
-  churchRole?: string;
   subscriptionPlan: "monthly" | "yearly";
   headers: Record<string, string>;
-  /** StoreKit purchase completed; keep syncing even if RC entitlement is delayed. */
-  purchaseConfirmed?: boolean;
-  initialCustomerInfo?: CustomerInfo | null;
-}): Promise<SyncChurchSubscriptionAfterPurchaseResult> {
+  purchaseConfirmed: boolean;
+  mode: "after-receipt-sync" | "after-entitlement-poll";
+}): Promise<boolean> {
+  const maxAttempts = args.purchaseConfirmed ? (__DEV__ ? 8 : 6) : 8;
+  const baseDelayMs = args.purchaseConfirmed ? 1500 : 800;
+
+  console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_START", {
+    churchId: args.churchId,
+    userId: args.userId,
+    subscriptionPlan: args.subscriptionPlan,
+    purchaseConfirmed: args.purchaseConfirmed,
+    mode: args.mode,
+    maxAttempts,
+  });
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_ATTEMPT", {
+      churchId: args.churchId,
+      userId: args.userId,
+      attempt,
+      subscriptionPlan: args.subscriptionPlan,
+      mode: args.mode,
+    });
+
+    const activated = await activateChurchSubscriptionForPastor(
+      args.churchId,
+      args.subscriptionPlan,
+      args.headers
+    );
+    if (activated) {
+      console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATED_AFTER_PURCHASE", {
+        churchId: args.churchId,
+        userId: args.userId,
+        subscriptionPlan: args.subscriptionPlan,
+        mode: args.mode,
+        attempt,
+      });
+      return true;
+    }
+
+    if (attempt < maxAttempts - 1) {
+      const delayMs = baseDelayMs * (attempt < 2 ? 1 : 1.25);
+      await sleepMs(delayMs);
+    }
+  }
+
+  console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_PENDING", {
+    churchId: args.churchId,
+    userId: args.userId,
+    subscriptionPlan: args.subscriptionPlan,
+    purchaseConfirmed: args.purchaseConfirmed,
+    mode: args.mode,
+  });
+  return false;
+}
+
+async function syncChurchSubscriptionAfterPurchaseInner(
+  args: {
+    churchId: string;
+    userId: string;
+    role?: string;
+    churchRole?: string;
+    subscriptionPlan: "monthly" | "yearly";
+    headers: Record<string, string>;
+    purchaseConfirmed?: boolean;
+    initialCustomerInfo?: CustomerInfo | null;
+  }
+): Promise<SyncChurchSubscriptionAfterPurchaseResult> {
   const churchId = String(args.churchId || "").trim();
   const userId = String(args.userId || "").trim();
   const purchaseConfirmed = args.purchaseConfirmed !== false;
@@ -922,88 +972,30 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
   const shouldAttemptChurchActivation =
     isPastor && (entitlementActive || purchaseConfirmed);
 
-  if (shouldAttemptChurchActivation && purchaseConfirmed) {
-    console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_START", {
-      churchId,
-      userId,
-      subscriptionPlan: args.subscriptionPlan,
-      purchaseConfirmed,
-      entitlementActive,
-      mode: "immediate",
-    });
-
-    const maxAttempts = 5;
-    for (let attempt = 0; attempt < maxAttempts && !churchActivated; attempt++) {
-      console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_ATTEMPT", {
-        churchId,
-        userId,
-        attempt,
-        subscriptionPlan: args.subscriptionPlan,
-      });
-
-      churchActivated = await activateChurchSubscriptionForPastor(
-        churchId,
-        args.subscriptionPlan,
-        args.headers
-      );
-
-      if (!churchActivated && attempt < maxAttempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 800));
-      }
-    }
-
-    if (churchActivated) {
-      console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATED_AFTER_PURCHASE", {
-        churchId,
-        userId,
-        subscriptionPlan: args.subscriptionPlan,
-      });
-    } else {
-      console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_PENDING", {
-        churchId,
-        userId,
-        subscriptionPlan: args.subscriptionPlan,
-        entitlementActive,
-        purchaseConfirmed,
-      });
-    }
+  if (purchaseConfirmed && shouldAttemptChurchActivation) {
+    // Give RevenueCat time to finish posting the StoreKit receipt before the server verifies.
+    await sleepMs(__DEV__ ? 1200 : 800);
   }
 
-  const skipLongEntitlementPoll = purchaseConfirmed && (__DEV__ || isPastor);
+  const shouldPollEntitlement =
+    purchaseConfirmed || !entitlementActive || shouldAttemptChurchActivation;
 
-  if (skipLongEntitlementPoll) {
+  if (shouldPollEntitlement) {
     console.log("KRISTO_RC_CUSTOMER_INFO_REFRESH_START", {
-      mode: "quick",
+      mode: purchaseConfirmed ? "post-purchase" : "poll",
       purchaseConfirmed,
       isPastor,
       hasInitialInfo: Boolean(info),
       initialEntitlementActive: entitlementActive,
     });
-    if (!info) {
-      try {
-        info = await getCustomerSubscriptionInfo();
-        entitlementActive = hasPremiumEntitlement(info);
-      } catch (error: any) {
-        console.log("KRISTO_RC_CUSTOMER_INFO_REFRESH_FAILED", {
-          mode: "quick",
-          error: String(error?.message || error || "unknown"),
-        });
-      }
-    }
-    console.log("KRISTO_RC_CUSTOMER_INFO_REFRESH_DONE", {
-      mode: "quick",
-      entitlementActive,
-    });
-  } else {
-    console.log("KRISTO_RC_CUSTOMER_INFO_REFRESH_START", { mode: "poll" });
     const refreshed = await refreshCustomerInfoAfterStorePurchase(info, {
-      maxAttempts: __DEV__ ? 2 : 8,
-      delayMs: __DEV__ ? 500 : 1500,
+      maxAttempts: purchaseConfirmed ? (__DEV__ ? 5 : 8) : __DEV__ ? 2 : 8,
+      delayMs: purchaseConfirmed ? (__DEV__ ? 1200 : 1500) : __DEV__ ? 500 : 1500,
     });
     info = refreshed.info;
     entitlementActive = refreshed.entitlementActive;
     console.log("KRISTO_RC_CUSTOMER_INFO_REFRESH_DONE", {
-      mode: "poll",
+      mode: purchaseConfirmed ? "post-purchase" : "poll",
       entitlementActive,
     });
   }
@@ -1023,51 +1015,15 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
     });
   }
 
-  if (shouldAttemptChurchActivation && !purchaseConfirmed) {
-    console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_START", {
+  if (shouldAttemptChurchActivation) {
+    churchActivated = await attemptChurchSubscriptionActivationWithRetries({
       churchId,
       userId,
       subscriptionPlan: args.subscriptionPlan,
+      headers: args.headers,
       purchaseConfirmed,
-      entitlementActive,
-      mode: "after-entitlement-poll",
+      mode: purchaseConfirmed ? "after-receipt-sync" : "after-entitlement-poll",
     });
-
-    const maxAttempts = 8;
-    for (let attempt = 0; attempt < maxAttempts && !churchActivated; attempt++) {
-      console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_ATTEMPT", {
-        churchId,
-        userId,
-        attempt,
-        subscriptionPlan: args.subscriptionPlan,
-      });
-
-      churchActivated = await activateChurchSubscriptionForPastor(
-        churchId,
-        args.subscriptionPlan,
-        args.headers
-      );
-
-      if (!churchActivated && attempt < maxAttempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
-    }
-
-    if (churchActivated) {
-      console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATED_AFTER_PURCHASE", {
-        churchId,
-        userId,
-        subscriptionPlan: args.subscriptionPlan,
-      });
-    } else if (!churchActivated) {
-      console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_PENDING", {
-        churchId,
-        userId,
-        subscriptionPlan: args.subscriptionPlan,
-        entitlementActive,
-        purchaseConfirmed,
-      });
-    }
   } else if (purchaseConfirmed && !isPastor) {
     console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_SKIPPED", {
       churchId,
@@ -1076,25 +1032,26 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
     });
   }
 
-  if (!entitlementActive && purchaseConfirmed && info) {
+  if (!churchActivated && purchaseConfirmed && shouldAttemptChurchActivation) {
     console.log("KRISTO_RC_CUSTOMER_INFO_REFRESH_AFTER_ACTIVATION_START");
     try {
       const refreshed = await refreshCustomerInfoAfterStorePurchase(info, {
-        maxAttempts: __DEV__ ? 1 : 3,
-        delayMs: __DEV__ ? 0 : 1000,
+        maxAttempts: __DEV__ ? 3 : 4,
+        delayMs: __DEV__ ? 1200 : 1500,
       });
       info = refreshed.info;
       entitlementActive = refreshed.entitlementActive;
       console.log("KRISTO_RC_CUSTOMER_INFO_REFRESH_AFTER_ACTIVATION_DONE", {
         entitlementActive,
       });
-      if (entitlementActive) {
-        const churchPremium = getActivePremiumEntitlement(info);
-        console.log("KRISTO_SUBSCRIPTION_ENTITLEMENT_ACTIVE", {
+      if (!churchActivated && entitlementActive) {
+        churchActivated = await attemptChurchSubscriptionActivationWithRetries({
           churchId,
           userId,
-          productId: churchPremium?.productIdentifier || null,
-          afterActivation: true,
+          subscriptionPlan: args.subscriptionPlan,
+          headers: args.headers,
+          purchaseConfirmed: true,
+          mode: "after-entitlement-poll",
         });
       }
     } catch (error: any) {
@@ -1171,6 +1128,46 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
     canUseMediaTools,
     subscriptionPlan: args.subscriptionPlan,
   };
+}
+
+/** Reconcile backend church media profile + subscription from RevenueCat after purchase. */
+export async function syncChurchSubscriptionAfterPurchase(args: {
+  churchId: string;
+  userId: string;
+  role?: string;
+  churchRole?: string;
+  subscriptionPlan: "monthly" | "yearly";
+  headers: Record<string, string>;
+  /** StoreKit purchase completed; keep syncing even if RC entitlement is delayed. */
+  purchaseConfirmed?: boolean;
+  initialCustomerInfo?: CustomerInfo | null;
+}): Promise<SyncChurchSubscriptionAfterPurchaseResult> {
+  const churchId = String(args.churchId || "").trim();
+  if (!churchId) {
+    return {
+      entitlementActive: false,
+      churchActivated: false,
+      churchSubscriptionActive: false,
+      canUseMediaTools: false,
+      subscriptionPlan: args.subscriptionPlan,
+    };
+  }
+
+  const inflight = purchaseSyncInflight.get(churchId);
+  if (inflight) {
+    console.log("KRISTO_CHURCH_SUBSCRIPTION_SYNC_COALESCED", { churchId });
+    return inflight;
+  }
+
+  const promise = syncChurchSubscriptionAfterPurchaseInner(args);
+  purchaseSyncInflight.set(churchId, promise);
+  try {
+    return await promise;
+  } finally {
+    if (purchaseSyncInflight.get(churchId) === promise) {
+      purchaseSyncInflight.delete(churchId);
+    }
+  }
 }
 
 export async function requireActiveChurchSubscriptionForSchedule(
