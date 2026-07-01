@@ -198,7 +198,8 @@ export default function PaymentsCheckoutScreen() {
           churchId,
         }) as Record<string, string>;
 
-        const configured = await configureChurchMobileSubscriptions(churchId);
+        const { configured, customerInfo: configuredCustomerInfo } =
+          await configureChurchMobileSubscriptions(churchId);
         if (!configured) {
           throw new Error("RevenueCat is not configured yet.");
         }
@@ -214,11 +215,13 @@ export default function PaymentsCheckoutScreen() {
           didLogCheckoutPackagesRef.current = true;
         }
 
-        let info: CustomerInfo | null = null;
-        try {
-          info = await getCustomerSubscriptionInfo();
-        } catch {
-          info = null;
+        let info: CustomerInfo | null = configuredCustomerInfo;
+        if (!info) {
+          try {
+            info = await getCustomerSubscriptionInfo();
+          } catch {
+            info = null;
+          }
         }
 
         const server = await fetchChurchSubscriptionStatus(headers);

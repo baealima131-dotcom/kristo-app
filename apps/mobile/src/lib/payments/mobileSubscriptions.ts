@@ -906,9 +906,15 @@ export async function syncPurchasesAppUser(appUserID?: string): Promise<void> {
   }
 }
 
+export type RevenueCatChurchLoginOptions = {
+  /** Skip StoreKit receipt sync on screen open; purchase/restore paths still sync explicitly. */
+  syncPurchases?: boolean;
+};
+
 /** Church premium subscriptions use churchId as the RevenueCat App User ID. */
 export async function logInRevenueCatForChurchSubscription(
-  churchId: string
+  churchId: string,
+  opts?: RevenueCatChurchLoginOptions
 ): Promise<CustomerInfo | null> {
   const cid = String(churchId || "").trim();
   if (!cid) return null;
@@ -938,9 +944,11 @@ export async function logInRevenueCatForChurchSubscription(
       }
     }
 
-    await runRevenueCatNativeStep("SYNC_PURCHASES", () => Purchases.syncPurchases(), {
-      churchId: cid,
-    });
+    if (opts?.syncPurchases !== false) {
+      await runRevenueCatNativeStep("SYNC_PURCHASES", () => Purchases.syncPurchases(), {
+        churchId: cid,
+      });
+    }
     return await runRevenueCatNativeStep("CUSTOMER_INFO", () => Purchases.getCustomerInfo(), {
       churchId: cid,
     });
@@ -954,18 +962,29 @@ export async function logInRevenueCatForChurchSubscription(
   }
 }
 
-export async function configureChurchMobileSubscriptions(churchId: string): Promise<boolean> {
+export type ConfigureChurchMobileSubscriptionsOptions = RevenueCatChurchLoginOptions;
+
+export type ConfigureChurchMobileSubscriptionsResult = {
+  configured: boolean;
+  customerInfo: CustomerInfo | null;
+};
+
+export async function configureChurchMobileSubscriptions(
+  churchId: string,
+  opts?: ConfigureChurchMobileSubscriptionsOptions
+): Promise<ConfigureChurchMobileSubscriptionsResult> {
   const cid = String(churchId || "").trim();
-  if (!cid) return false;
+  if (!cid) return { configured: false, customerInfo: null };
 
   const ready = await ensurePurchasesConfigured();
-  if (!ready) return false;
+  if (!ready) return { configured: false, customerInfo: null };
 
-  const info = await logInRevenueCatForChurchSubscription(cid);
+  const info = await logInRevenueCatForChurchSubscription(cid, opts);
   if (isAndroidPlatform() && info) {
     logRevenueCatAndroidEntitlementDebug(info, "configure-church-subscriptions", { churchId: cid });
   }
-  return Boolean(info) || (await purchasesIsConfigured());
+  const configured = Boolean(info) || (await purchasesIsConfigured());
+  return { configured, customerInfo: info };
 }
 
 export async function configureMobileSubscriptions(appUserID?: string): Promise<boolean> {
@@ -1031,9 +1050,27 @@ export function formatSubscriptionSetupError(error: unknown): string {
   return message ? `${message}${codeSuffix}` : "Subscription setup could not be completed. Try again later.";
 }
 
-export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
+const SUBSCRIPTION_OFFERINGS_CACHE_TTL_MS = 5 * 60 * 1000;
+let subscriptionOfferingsCache: { value: PurchasesOfferings; at: number } | null = null;
+
+export function invalidateSubscriptionOfferingsCache() {
+  subscriptionOfferingsCache = null;
+}
+
+export async function getSubscriptionOfferings(opts?: {
+  force?: boolean;
+}): Promise<PurchasesOfferings> {
   if (isRevenueCatPurchasingDisabled()) {
     throw new Error("RevenueCat offerings skipped during subscription bypass testing");
+  }
+
+  if (
+    !opts?.force &&
+    subscriptionOfferingsCache &&
+    Date.now() - subscriptionOfferingsCache.at < SUBSCRIPTION_OFFERINGS_CACHE_TTL_MS
+  ) {
+    console.log("KRISTO_RC_GET_OFFERINGS_CACHE_HIT", { source: "getSubscriptionOfferings" });
+    return subscriptionOfferingsCache.value;
   }
 
   await requireConfiguredPurchases("offerings");
@@ -1076,6 +1113,7 @@ export async function getSubscriptionOfferings(): Promise<PurchasesOfferings> {
         packageSummary: describeCurrentOfferingPackages(offerings),
       });
     }
+    subscriptionOfferingsCache = { value: offerings, at: Date.now() };
     return offerings;
   } catch (error) {
     logRevenueCatException("getSubscriptionOfferings", error, { phase: "offerings" });

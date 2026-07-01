@@ -613,23 +613,32 @@ export function parseChurchMediaSubscriptionExpiresAt(
   return parseServerSubscriptionExpiresAt(media, null);
 }
 
+export type FetchChurchMediaPremiumServerStatusOptions = {
+  /** When true, bypass client cache and force a fresh server read (e.g. after purchase). */
+  bustCache?: boolean;
+};
+
 export async function fetchChurchMediaPremiumServerStatus(
   churchId: string,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  opts?: FetchChurchMediaPremiumServerStatusOptions
 ): Promise<ChurchMediaPremiumServerStatus> {
   const cid = String(churchId || "").trim();
   const userId = String(
     headers?.["x-kristo-user-id"] || headers?.["X-Kristo-User-Id"] || ""
   ).trim();
+  const bustCache = opts?.bustCache === true;
 
-  if (userId && cid) {
+  if (bustCache && userId && cid) {
     clearResponseCacheForRequest("GET", "/api/church/media", userId, cid);
   }
 
   const res: any = await apiGet(
     "/api/church/media",
     { headers },
-    { screen: "MediaPremiumScreen", dedupe: false, throttleMs: 0 }
+    bustCache
+      ? { screen: "MediaPremiumScreen", dedupe: false, throttleMs: 0 }
+      : { screen: "MediaPremiumScreen" }
   );
 
   const routeFailed = isChurchMediaRouteFailure(res);

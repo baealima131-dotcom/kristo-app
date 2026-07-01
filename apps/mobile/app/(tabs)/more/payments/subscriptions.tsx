@@ -27,6 +27,7 @@ import {
   configureChurchMobileSubscriptions,
   formatSubscriptionSetupError,
   formatPremiumRenewalDate,
+  invalidateSubscriptionOfferingsCache,
   getSubscriptionOfferings,
   getCustomerSubscriptionInfo,
   hasPremiumEntitlement,
@@ -596,13 +597,14 @@ export default function PaymentsSubscriptionsScreen() {
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
   const [mediaPremiumStatus, setMediaPremiumStatus] =
     useState<ChurchMediaPremiumServerStatus | null>(null);
-  const [offersLoading, setOffersLoading] = useState(true);
+  const [packagesLoading, setPackagesLoading] = useState(true);
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [submittingPlan, setSubmittingPlan] = useState<SubscriptionPlanKey | "manage" | null>(
     null
   );
   const scrollRef = useRef<RNScrollView | null>(null);
+  const suppressFocusServerRefreshRef = useRef(true);
 
   const sessionUserId = String((session as any)?.userId || "").trim();
   const sessionRole = String(
@@ -624,7 +626,18 @@ export default function PaymentsSubscriptionsScreen() {
     }, [mediaPremiumStatus])
   );
 
-  async function refreshMediaPremiumServerStatus(resolvedChurchId?: string) {
+  useEffect(() => {
+    if (sessionLoading) return;
+    const sessionChurchId = String((session as any)?.churchId || "").trim();
+    if (sessionChurchId) {
+      setChurchId((current) => current || sessionChurchId);
+    }
+  }, [sessionLoading, session]);
+
+  async function refreshMediaPremiumServerStatus(
+    resolvedChurchId?: string,
+    opts?: { bustCache?: boolean }
+  ) {
     const cid = String(resolvedChurchId || churchId || (session as any)?.churchId || "").trim();
     if (!cid || !sessionUserId) return null;
 
@@ -634,7 +647,9 @@ export default function PaymentsSubscriptionsScreen() {
       churchId: cid,
     }) as Record<string, string>;
 
-    const server = await fetchChurchMediaPremiumServerStatus(cid, headers);
+    const server = await fetchChurchMediaPremiumServerStatus(cid, headers, {
+      bustCache: opts?.bustCache === true,
+    });
     setMediaPremiumStatus(server);
     return server;
   }
@@ -644,16 +659,93 @@ export default function PaymentsSubscriptionsScreen() {
     return onChurchPremiumAccessChanged((payload) => {
       if (!churchIdsMatch(payload.churchId, churchId)) return;
       if (payload.backendSubscriptionActive !== true) return;
-      void refreshMediaPremiumServerStatus(churchId);
+      void refreshMediaPremiumServerStatus(churchId, { bustCache: true });
     });
   }, [churchId, sessionUserId, sessionRole]);
 
   useFocusEffect(
     React.useCallback(() => {
       if (sessionLoading || !churchId) return;
+      if (suppressFocusServerRefreshRef.current) return;
       void refreshMediaPremiumServerStatus(churchId);
     }, [sessionLoading, churchId, sessionUserId, sessionRole])
   );
+
+  async function loadSubscriptionPackages(
+    resolvedChurchId: string,
+    opts?: { forceOfferings?: boolean }
+  ) {
+    const { configured, customerInfo: configuredCustomerInfo } =
+      await configureChurchMobileSubscriptions(resolvedChurchId, { syncPurchases: false });
+    if (!configured) {
+      throw new Error("RevenueCat is not configured yet.");
+    }
+
+    const offerings = await getSubscriptionOfferings({ force: opts?.forceOfferings === true });
+    const monthly = resolveMonthlyPackage(offerings);
+    const yearly = resolveYearlyPackage(offerings);
+
+    console.log("RevenueCat offerings packages:\n" + describeCurrentOfferingPackages(offerings));
+
+    return {
+      monthly,
+      yearly,
+      customerInfo: configuredCustomerInfo,
+    };
+  }
+
+  function applySubscriptionBootState(args: {
+    resolvedChurchId: string;
+    server: ChurchMediaPremiumServerStatus;
+    monthly: PurchasesPackage | null;
+    yearly: PurchasesPackage | null;
+    customerInfo: CustomerInfo | null;
+  }) {
+    const { resolvedChurchId, server, monthly, yearly, customerInfo: infoResult } = args;
+
+    setMonthlyPackage(monthly);
+    setYearlyPackage(yearly);
+    setCustomerInfo(infoResult);
+
+    console.log("KRISTO_SUBSCRIPTIONS_SERVER_STATUS", {
+      churchId: resolvedChurchId,
+      serverSubscriptionActive: server.serverSubscriptionActive,
+      subscriptionPlan: server.subscriptionPlan,
+      subscriptionExpiresAt: server.subscriptionExpiresAt,
+      subscriptionSource: server.subscriptionSource,
+      source: server.source,
+    });
+
+    const hasPremium = hasPremiumEntitlement(infoResult);
+    if (server.serverSubscriptionActive && infoResult) {
+      const activePlan = resolveActiveSubscriptionPlan(infoResult);
+      if (activePlan) {
+        setSubscriptionSelectedPlan(activePlan);
+      }
+      setSubscriptionPlanStatus(hasPremium ? "active" : "expired");
+    } else {
+      setSubscriptionPlanStatus("expired");
+    }
+
+    logChurchSubscriptionContext({
+      screen: "subscriptions",
+      churchId: resolvedChurchId,
+      customerInfo: infoResult,
+      churchSubscriptionActive: server.serverSubscriptionActive,
+    });
+    logEntitlementAudit({
+      customerInfo: infoResult,
+      churchId: resolvedChurchId,
+      source: "subscriptions-boot",
+    });
+    logRevenueCatSubscriptionOwnershipDebug(infoResult, "subscriptions-boot", {
+      churchId: resolvedChurchId,
+    });
+
+    if (!monthly && !yearly) {
+      setSubscriptionError("App Store packages are still loading. Tap retry in a moment.");
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -665,12 +757,12 @@ export default function PaymentsSubscriptionsScreen() {
         logAndroidBillingConfigDiagnostics("subscriptions-screen");
       }
 
-      setOffersLoading(true);
+      suppressFocusServerRefreshRef.current = true;
+      setPackagesLoading(true);
       setSubscriptionError(null);
-      setMediaPremiumStatus(null);
 
       try {
-        let resolvedChurchId = String((session as any)?.churchId || "").trim();
+        let resolvedChurchId = String((session as any)?.churchId || churchId || "").trim();
         if (!resolvedChurchId) {
           const recovered = await recoverChurchIdFromMembership(session, setSession);
           resolvedChurchId = recovered.churchId;
@@ -685,13 +777,19 @@ export default function PaymentsSubscriptionsScreen() {
           churchId: resolvedChurchId,
         }) as Record<string, string>;
 
-        const server = await fetchChurchMediaPremiumServerStatus(resolvedChurchId, headers);
+        setChurchId(resolvedChurchId);
+        await clearLegacyPendingPlanSwitchStorage(resolvedChurchId);
+
+        const forceOfferingsReload = reloadToken > 0;
+        const [server, packagesResult] = await Promise.all([
+          fetchChurchMediaPremiumServerStatus(resolvedChurchId, headers),
+          loadSubscriptionPackages(resolvedChurchId, {
+            forceOfferings: forceOfferingsReload,
+          }).catch((error) => ({ error } as const)),
+        ]);
 
         if (!alive) return;
 
-        await clearLegacyPendingPlanSwitchStorage(resolvedChurchId);
-
-        setChurchId(resolvedChurchId);
         setMediaPremiumStatus(server);
 
         if (isOfflineActivationMediaPremiumStatus(server)) {
@@ -713,69 +811,17 @@ export default function PaymentsSubscriptionsScreen() {
           return;
         }
 
-        const configured = await configureChurchMobileSubscriptions(resolvedChurchId);
-        if (!configured) {
-          throw new Error("RevenueCat is not configured yet.");
+        if (packagesResult && "error" in packagesResult) {
+          throw packagesResult.error;
         }
 
-        const [offerings, infoResult] = await Promise.all([
-          getSubscriptionOfferings(),
-          getCustomerSubscriptionInfo().catch(() => null),
-        ]);
-
-        const monthly = resolveMonthlyPackage(offerings);
-        const yearly = resolveYearlyPackage(offerings);
-
-        console.log(
-          "RevenueCat offerings packages:\n" + describeCurrentOfferingPackages(offerings)
-        );
-
-        if (!alive) return;
-
-        setMonthlyPackage(monthly);
-        setYearlyPackage(yearly);
-        setCustomerInfo(infoResult);
-
-        console.log("KRISTO_SUBSCRIPTIONS_SERVER_STATUS", {
-          churchId: resolvedChurchId,
-          serverSubscriptionActive: server.serverSubscriptionActive,
-          subscriptionPlan: server.subscriptionPlan,
-          subscriptionExpiresAt: server.subscriptionExpiresAt,
-          subscriptionSource: server.subscriptionSource,
-          source: server.source,
+        applySubscriptionBootState({
+          resolvedChurchId,
+          server,
+          monthly: packagesResult.monthly,
+          yearly: packagesResult.yearly,
+          customerInfo: packagesResult.customerInfo,
         });
-
-        const hasPremium = hasPremiumEntitlement(infoResult);
-        if (server.serverSubscriptionActive && infoResult) {
-          const activePlan = resolveActiveSubscriptionPlan(infoResult);
-          if (activePlan) {
-            setSubscriptionSelectedPlan(activePlan);
-          }
-          setSubscriptionPlanStatus(hasPremium ? "active" : "expired");
-        } else {
-          setSubscriptionPlanStatus("expired");
-        }
-
-        logChurchSubscriptionContext({
-          screen: "subscriptions",
-          churchId: resolvedChurchId,
-          customerInfo: infoResult,
-          churchSubscriptionActive: server.serverSubscriptionActive,
-        });
-        logEntitlementAudit({
-          customerInfo: infoResult,
-          churchId: resolvedChurchId,
-          source: "subscriptions-boot",
-        });
-        logRevenueCatSubscriptionOwnershipDebug(infoResult, "subscriptions-boot", {
-          churchId: resolvedChurchId,
-        });
-
-        if (!monthly && !yearly) {
-          setSubscriptionError(
-            "App Store packages are still loading. Tap retry in a moment."
-          );
-        }
       } catch (error: any) {
         if (!alive) return;
         const errorMessage = formatSubscriptionSetupError(error);
@@ -787,7 +833,10 @@ export default function PaymentsSubscriptionsScreen() {
         setSubscriptionPlanStatus("expired");
         setSubscriptionError(errorMessage);
       } finally {
-        if (alive) setOffersLoading(false);
+        if (alive) {
+          setPackagesLoading(false);
+          suppressFocusServerRefreshRef.current = false;
+        }
       }
     }
 
@@ -798,6 +847,8 @@ export default function PaymentsSubscriptionsScreen() {
   }, [sessionLoading, session, reloadToken, sessionRole, sessionUserId, setSession]);
 
   function retryLoadOfferings() {
+    invalidateSubscriptionOfferingsCache();
+    setSubscriptionError(null);
     setReloadToken((token) => token + 1);
   }
 
@@ -805,7 +856,7 @@ export default function PaymentsSubscriptionsScreen() {
     setCustomerInfo(info);
 
     if (!churchId) return;
-    const server = await refreshMediaPremiumServerStatus(churchId);
+    const server = await refreshMediaPremiumServerStatus(churchId, { bustCache: true });
     const serverActive = server?.serverSubscriptionActive === true;
     const hasPremium = hasPremiumEntitlement(info);
     if (serverActive && info) {
@@ -868,7 +919,7 @@ export default function PaymentsSubscriptionsScreen() {
     });
 
     if (sync.churchSubscriptionActive || sync.canUseMediaTools) {
-      await refreshMediaPremiumServerStatus(resolvedChurchId);
+      await refreshMediaPremiumServerStatus(resolvedChurchId, { bustCache: true });
     }
 
     return {
@@ -1045,7 +1096,7 @@ export default function PaymentsSubscriptionsScreen() {
       : null;
 
   useEffect(() => {
-    if (!churchId || offersLoading) return;
+    if (!churchId || packagesLoading) return;
 
     const sessionSnapshot = getSessionSync() as any;
     const profile = sessionSnapshot?.mediaProfile;
@@ -1079,7 +1130,7 @@ export default function PaymentsSubscriptionsScreen() {
     churchId,
     mediaPremiumStatus,
     customerInfo,
-    offersLoading,
+    packagesLoading,
     serverSubscriptionActive,
     displayedActive,
     isOfflineActivation,
@@ -1106,6 +1157,10 @@ export default function PaymentsSubscriptionsScreen() {
   const monthlyCtaLabel = showMonthlyFreeTrial
     ? `Start ${monthlyTrialDays}-day Free Trial`
     : "Subscribe Monthly";
+  const monthlyPurchaseLoading =
+    submittingPlan === "monthly" || (packagesLoading && !monthlyPackage);
+  const yearlyPurchaseLoading =
+    submittingPlan === "yearly" || (packagesLoading && !yearlyPackage);
 
   return (
     <View style={s.screen}>
@@ -1142,24 +1197,25 @@ export default function PaymentsSubscriptionsScreen() {
           </View>
         </View>
 
-        {offersLoading ? (
+        {sessionLoading && !churchId ? (
           <View style={s.fallbackCard}>
             <ActivityIndicator color="rgba(196,171,114,0.72)" />
-            <Text style={s.fallbackText}>Loading your subscription...</Text>
-          </View>
-        ) : subscriptionError ? (
-          <View style={s.fallbackCard}>
-            <Ionicons name="alert-circle-outline" size={22} color="rgba(196,171,114,0.72)" />
-            <Text style={s.fallbackText}>{subscriptionError}</Text>
-            <Pressable
-              onPress={retryLoadOfferings}
-              style={({ pressed }) => [s.fallbackBtn, pressed ? s.pressed : null]}
-            >
-              <Text style={s.fallbackBtnText}>Retry</Text>
-            </Pressable>
           </View>
         ) : (
           <View style={s.content}>
+            {subscriptionError ? (
+              <View style={s.inlineErrorCard}>
+                <Ionicons name="alert-circle-outline" size={18} color="rgba(196,171,114,0.72)" />
+                <Text style={s.inlineErrorText}>{subscriptionError}</Text>
+                <Pressable
+                  onPress={retryLoadOfferings}
+                  style={({ pressed }) => [s.inlineErrorBtn, pressed ? s.pressed : null]}
+                >
+                  <Text style={s.inlineErrorBtnText}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
             {screenState === "offline" ? (
               <OfflineActivationSubscriptionCard expiryLabel={expiryLabel} />
             ) : null}
@@ -1228,7 +1284,7 @@ export default function PaymentsSubscriptionsScreen() {
                   trialBadge={monthlyTrialBadge}
                   ctaLabel={monthlyCtaLabel}
                   onPress={() => handlePurchasePlan("monthly")}
-                  loading={submittingPlan === "monthly"}
+                  loading={monthlyPurchaseLoading}
                 />
                 <PlanOfferCard
                   icon="diamond-outline"
@@ -1240,7 +1296,7 @@ export default function PaymentsSubscriptionsScreen() {
                   featurePills={YEARLY_FEATURES}
                   ctaLabel="Subscribe Yearly"
                   onPress={() => handlePurchasePlan("yearly")}
-                  loading={submittingPlan === "yearly"}
+                  loading={yearlyPurchaseLoading}
                   goldGlow
                 />
               </>
@@ -1715,6 +1771,42 @@ const s = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.08)",
     gap: 10,
+    alignItems: "center",
+  },
+
+  inlineErrorCard: {
+    marginBottom: 14,
+    borderRadius: 16,
+    padding: 12,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(196,171,114,0.14)",
+    gap: 8,
+  },
+
+  inlineErrorText: {
+    color: "rgba(255,255,255,0.58)",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
+
+  inlineErrorBtn: {
+    alignSelf: "flex-start",
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(196,171,114,0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(196,171,114,0.18)",
+  },
+
+  inlineErrorBtnText: {
+    color: "rgba(196,171,114,0.92)",
+    fontSize: 12,
+    fontWeight: "700",
   },
 
   fallbackText: {
