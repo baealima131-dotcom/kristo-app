@@ -21,7 +21,12 @@ import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
-import { resolveHomeFeedPlaybackUri } from "@/src/lib/homeFeedVideoDiskCache";
+import {
+  hydrateAndCacheWatchVideo,
+  resolveHomeFeedPlaybackUri,
+  scheduleWatchNextVideoDiskCache,
+} from "@/src/lib/homeFeedVideoDiskCache";
+import { hydrateMediaPosterCacheForPlayback } from "@/src/lib/mediaPosterCache";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoStartup";
 import {
   notifyWatchPlaybackActive,
@@ -234,9 +239,11 @@ function buildWatchVideoPlayerSource(uri: string) {
 function WatchVideoSurface({
   payload,
   isTikTokLayout = false,
+  onPlaybackStarted,
 }: {
   payload: HomeFeedVideoOpenPayload;
   isTikTokLayout?: boolean;
+  onPlaybackStarted?: () => void;
 }) {
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
@@ -330,6 +337,7 @@ function WatchVideoSurface({
 
         safePlayVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
         notifyWatchPlaybackActive(postId);
+        onPlaybackStarted?.();
       } catch {}
     })();
 
@@ -338,19 +346,45 @@ function WatchVideoSurface({
       safePauseVideoPlayer(backdropPlayer, { source: "home-feed-watch-backdrop", uri: playbackUri });
       safePauseVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
     };
-  }, [player, backdropPlayer, playbackUri, postId, isTikTokLayout]);
+  }, [player, backdropPlayer, playbackUri, postId, isTikTokLayout, onPlaybackStarted]);
 
   useEffect(() => {
     let lastPlaying: boolean | null = null;
+    let stopped = false;
+
     const poll = setInterval(() => {
-      if (ended) return;
-      const playing = Boolean((player as any)?.playing);
+      if (stopped || ended) return;
+
+      let playing = false;
+
+      try {
+        playing = Boolean((player as any)?.playing);
+      } catch {
+        console.log("KRISTO_HOME_FEED_WATCH_PLAYER_RELEASED", {
+          postId,
+          reason: "native-shared-object-missing",
+        });
+
+        stopped = true;
+        clearInterval(poll);
+        return;
+      }
+
       if (playing === lastPlaying) return;
+
       lastPlaying = playing;
-      if (playing) notifyWatchPlaybackActive(postId);
-      else notifyWatchPlaybackPaused(postId);
+
+      if (playing) {
+        notifyWatchPlaybackActive(postId);
+      } else {
+        notifyWatchPlaybackPaused(postId);
+      }
     }, 400);
-    return () => clearInterval(poll);
+
+    return () => {
+      stopped = true;
+      clearInterval(poll);
+    };
   }, [player, postId, ended]);
 
   const handleReplay = useCallback(() => {
@@ -496,6 +530,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
     ? Math.min(Math.round(width / TIKTOK_THUMB_ASPECT), Math.round(windowHeight * 0.72))
     : Math.round(width / YOUTUBE_THUMB_ASPECT);
   const scrollRef = useRef<ScrollView | null>(null);
+  const [playbackStarted, setPlaybackStarted] = useState(false);
 
   const item = payload?.item;
 
@@ -508,10 +543,35 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   );
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      setPlaybackStarted(false);
+      return;
+    }
     notifyWatchScreenOpened(String(payload?.postId || "").trim());
     return () => notifyWatchScreenClosed();
-  }, [visible]);
+  }, [visible, payload?.postId]);
+
+  useEffect(() => {
+    if (!visible || !payload) return;
+    setPlaybackStarted(false);
+    const remoteUri =
+      String(payload.videoUri || "").trim() ||
+      (payload.item ? resolveHomeFeedVideoUri(payload.item) : "");
+    const postId = String(payload.postId || "").trim();
+    if (!remoteUri || !postId) return;
+    void hydrateMediaPosterCacheForPlayback();
+    void hydrateAndCacheWatchVideo({ postId, remoteUrl: remoteUri });
+  }, [visible, payload?.postId, payload?.videoUri, payload?.item]);
+
+  useEffect(() => {
+    if (!visible || !playbackStarted || !relatedItems.length) return;
+    const next = relatedItems[0];
+    if (!next) return;
+    const nextPostId = String(next?.id || "").trim();
+    const nextUrl = resolveHomeFeedVideoUri(next);
+    if (!nextPostId || !nextUrl) return;
+    scheduleWatchNextVideoDiskCache({ postId: nextPostId, remoteUrl: nextUrl });
+  }, [visible, playbackStarted, relatedItems]);
 
   useEffect(() => {
     if (!payload?.postId) return;
@@ -540,7 +600,11 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
             isTikTokLayout ? styles.playerWrapTikTok : null,
           ]}
         >
-          <WatchVideoSurface payload={payload} isTikTokLayout={isTikTokLayout} />
+          <WatchVideoSurface
+            payload={payload}
+            isTikTokLayout={isTikTokLayout}
+            onPlaybackStarted={() => setPlaybackStarted(true)}
+          />
         </View>
 
         <View style={styles.currentVideoPanel}>
