@@ -695,6 +695,21 @@ export default function PaymentsSubscriptionsScreen() {
     };
   }
 
+  function refreshOfferingsSilently() {
+    void getSubscriptionOfferings({ force: true })
+      .then((offerings) => {
+        const monthly = resolveMonthlyPackage(offerings);
+        const yearly = resolveYearlyPackage(offerings);
+        setMonthlyPackage(monthly);
+        setYearlyPackage(yearly);
+      })
+      .catch((error: any) => {
+        console.log("KRISTO_SUBSCRIPTIONS_OFFERINGS_BACKGROUND_REFRESH_FAILED", {
+          message: formatSubscriptionSetupError(error),
+        });
+      });
+  }
+
   function applySubscriptionBootState(args: {
     resolvedChurchId: string;
     server: ChurchMediaPremiumServerStatus;
@@ -813,6 +828,28 @@ export default function PaymentsSubscriptionsScreen() {
         }
 
         if (packagesResult && "error" in packagesResult) {
+          let fallbackInfo: CustomerInfo | null = null;
+          try {
+            fallbackInfo = await getCustomerSubscriptionInfo();
+          } catch (infoError: any) {
+            console.log("KRISTO_SUBSCRIPTIONS_CUSTOMER_INFO_FALLBACK_FAILED", {
+              message: String(infoError?.message || infoError || ""),
+            });
+          }
+
+          const entitlementActive = hasPremiumEntitlement(fallbackInfo);
+          if (entitlementActive) {
+            setCustomerInfo(fallbackInfo);
+            setSubscriptionPlanStatus("active");
+            setSubscriptionError(null);
+            refreshOfferingsSilently();
+            console.log("KRISTO_SUBSCRIPTIONS_OFFERINGS_ERROR_SUPPRESSED_ACTIVE_ENTITLEMENT", {
+              churchId: resolvedChurchId,
+              error: formatSubscriptionSetupError(packagesResult.error),
+            });
+            return;
+          }
+
           throw packagesResult.error;
         }
 
