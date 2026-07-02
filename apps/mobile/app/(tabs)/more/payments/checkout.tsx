@@ -7,6 +7,7 @@ import {
   Pressable,
   Alert,
   ActivityIndicator,
+  Platform,
 } from "react-native";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -329,7 +330,65 @@ export default function PaymentsCheckoutScreen() {
   }, [displayPlan, livePrice, monthlyTrialEligible, monthlyPackage, displayPackage]);
 
   const confirmLabel =
-    safePlan === "monthly" ? "Subscribe Monthly" : "Subscribe Yearly";
+    safePlan === "monthly"
+      ? monthlyTrialEligible
+        ? "Start 14-Day Free Trial"
+        : "Subscribe Monthly"
+      : "Subscribe Yearly";
+
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    if (safePlan !== "monthly") return;
+    if (!monthlyPackage) return;
+    if (isSubscribedForCurrentChurch) return;
+
+    const hasIntroOffer = Boolean(
+      monthlyPackage.product.introPrice || monthlyPackage.product.introductoryPrice
+    );
+    if (!hasIntroOffer || !monthlyTrialEligible) return;
+
+    console.log("KRISTO_IOS_MONTHLY_TRIAL_ELIGIBLE", {
+      productId: monthlyPackage.product.identifier || null,
+      introEligibilityStatus: monthlyIntroEligibility ?? "unknown",
+      trialDays: 14,
+      postTrialPrice: "$49.99/month",
+      ctaText: "Start 14-Day Free Trial",
+    });
+  }, [
+    safePlan,
+    monthlyPackage,
+    isSubscribedForCurrentChurch,
+    monthlyTrialEligible,
+    monthlyIntroEligibility,
+  ]);
+
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    if (safePlan !== "monthly") return;
+    if (loadingPackages || isSubscribedForCurrentChurch) return;
+    if (monthlyTrialEligible) return;
+
+    const hasIntroOffer = Boolean(monthlyPackage?.product?.introPrice || monthlyPackage?.product?.introductoryPrice);
+    if (hasIntroOffer) return;
+
+    console.log("KRISTO_IOS_MONTHLY_TRIAL_NOT_CONFIGURED", {
+      checkoutChurchId: checkoutChurchId || null,
+      monthlyProductId: monthlyPackage?.product.identifier || null,
+      introEligibility: monthlyIntroEligibility ?? null,
+      expectedTrial: "14-day free trial",
+      expectedPostTrialPrice: "$49.99/month",
+      action:
+        "Configure an introductory free trial for premium_monthly in App Store Connect and attach it to the active RevenueCat offering.",
+    });
+  }, [
+    safePlan,
+    loadingPackages,
+    isSubscribedForCurrentChurch,
+    monthlyTrialEligible,
+    monthlyPackage,
+    monthlyIntroEligibility,
+    checkoutChurchId,
+  ]);
 
   function churchActivationNote(activation: {
     skipped?: boolean;
@@ -548,6 +607,9 @@ export default function PaymentsCheckoutScreen() {
 
           <Text style={s.planTitle}>{planMeta.title}</Text>
           <Text style={s.priceLine}>{priceLine}</Text>
+          {!isSubscribedForCurrentChurch && safePlan === "monthly" && monthlyTrialEligible ? (
+            <Text style={s.trialThenPrice}>Then $49.99/month</Text>
+          ) : null}
           {isSubscribedForCurrentChurch ? (
             <Text style={s.activePlanNote}>
               {displayPlan === "monthly" ? "Current active plan" : "Yearly plan active"}
@@ -829,6 +891,12 @@ const s = StyleSheet.create({
     color: "rgba(255,255,255,0.58)",
     fontSize: 12,
     fontWeight: "700",
+  },
+  trialThenPrice: {
+    marginTop: 6,
+    color: "#F8E6B0",
+    fontSize: 14,
+    fontWeight: "800",
   },
 
   benefitsBlock: {

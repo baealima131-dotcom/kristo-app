@@ -15,7 +15,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import type { CustomerInfo, PurchasesPackage } from "react-native-purchases";
+import type { CustomerInfo, INTRO_ELIGIBILITY_STATUS, PurchasesPackage } from "react-native-purchases";
 import {
   setPaymentsCurrentModule,
   setSubscriptionPlanStatus,
@@ -49,6 +49,8 @@ import {
   monthlyPackageHasIntroOffer,
   resolveIntroTrialDays,
   resolveMonthlyProductIntro,
+  fetchMonthlyIntroTrialEligibility,
+  resolveMonthlyIntroTrialEligible,
   logAndroidBillingConfigDiagnostics,
   logAndroidPurchaseError,
   getRevenueCatPurchaseErrorDetail,
@@ -596,6 +598,8 @@ export default function PaymentsSubscriptionsScreen() {
   const [monthlyPackage, setMonthlyPackage] = useState<PurchasesPackage | null>(null);
   const [yearlyPackage, setYearlyPackage] = useState<PurchasesPackage | null>(null);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
+  const [monthlyIntroEligibility, setMonthlyIntroEligibility] =
+    useState<INTRO_ELIGIBILITY_STATUS | null>(null);
   const [mediaPremiumStatus, setMediaPremiumStatus] =
     useState<ChurchMediaPremiumServerStatus | null>(null);
   const [packagesLoading, setPackagesLoading] = useState(true);
@@ -763,6 +767,25 @@ export default function PaymentsSubscriptionsScreen() {
     }
   }
 
+  function logMissingIosMonthlyTrialDiagnostics(args: {
+    churchId: string;
+    monthlyProductId: string | null;
+    hasIntroOffer: boolean;
+    introEligibility: unknown;
+  }) {
+    if (Platform.OS !== "ios") return;
+    if (args.hasIntroOffer) return;
+    console.log("KRISTO_IOS_MONTHLY_TRIAL_NOT_CONFIGURED", {
+      churchId: args.churchId,
+      monthlyProductId: args.monthlyProductId,
+      introEligibility: args.introEligibility ?? null,
+      expectedTrial: "14-day free trial",
+      expectedPostTrialPrice: "$49.99/month",
+      action:
+        "Configure an introductory free trial for premium_monthly in App Store Connect and attach it to the active RevenueCat offering.",
+    });
+  }
+
   useEffect(() => {
     let alive = true;
 
@@ -860,6 +883,27 @@ export default function PaymentsSubscriptionsScreen() {
           yearly: packagesResult.yearly,
           customerInfo: packagesResult.customerInfo,
         });
+
+        try {
+          const introEligibility = await fetchMonthlyIntroTrialEligibility();
+          if (!alive) return;
+          setMonthlyIntroEligibility(introEligibility);
+          logMissingIosMonthlyTrialDiagnostics({
+            churchId: resolvedChurchId,
+            monthlyProductId: packagesResult.monthly?.product.identifier || null,
+            hasIntroOffer: monthlyPackageHasIntroOffer(packagesResult.monthly),
+            introEligibility,
+          });
+        } catch {
+          if (!alive) return;
+          setMonthlyIntroEligibility(null);
+          logMissingIosMonthlyTrialDiagnostics({
+            churchId: resolvedChurchId,
+            monthlyProductId: packagesResult.monthly?.product.identifier || null,
+            hasIntroOffer: monthlyPackageHasIntroOffer(packagesResult.monthly),
+            introEligibility: null,
+          });
+        }
       } catch (error: any) {
         if (!alive) return;
         const errorMessage = formatSubscriptionSetupError(error);
@@ -1183,8 +1227,12 @@ export default function PaymentsSubscriptionsScreen() {
   const tabBarClearance = 96;
 
   const churchSubscriptionActive = serverSubscriptionActive;
-  const monthlyHasIntroOffer = monthlyPackageHasIntroOffer(monthlyPackage);
-  const showMonthlyFreeTrial = !churchSubscriptionActive && monthlyHasIntroOffer;
+  const monthlyTrialEligible = resolveMonthlyIntroTrialEligible(
+    customerInfo,
+    monthlyPackage,
+    monthlyIntroEligibility
+  );
+  const showMonthlyFreeTrial = !churchSubscriptionActive && monthlyTrialEligible;
   const monthlyIntro = resolveMonthlyProductIntro(monthlyPackage);
   const monthlyTrialDays = resolveIntroTrialDays(monthlyIntro) ?? 14;
   const monthlyTrialBadge = showMonthlyFreeTrial ? "14-DAY FREE TRIAL" : undefined;
@@ -1193,12 +1241,32 @@ export default function PaymentsSubscriptionsScreen() {
     ? `Then ${monthlyDisplayPrice}/month`
     : "";
   const monthlyCtaLabel = showMonthlyFreeTrial
-    ? `Start ${monthlyTrialDays}-day Free Trial`
+    ? `Start ${monthlyTrialDays}-Day Free Trial`
     : "Subscribe Monthly";
   const monthlyPurchaseLoading =
     submittingPlan === "monthly" || (packagesLoading && !monthlyPackage);
   const yearlyPurchaseLoading =
     submittingPlan === "yearly" || (packagesLoading && !yearlyPackage);
+
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    if (!monthlyPackage) return;
+    if (!monthlyPackageHasIntroOffer(monthlyPackage)) return;
+    if (!showMonthlyFreeTrial) return;
+
+    console.log("KRISTO_IOS_MONTHLY_TRIAL_ELIGIBLE", {
+      productId: monthlyPackage.product.identifier || null,
+      introEligibilityStatus: monthlyIntroEligibility ?? "unknown",
+      trialDays: 14,
+      postTrialPrice: `${monthlyDisplayPrice}/month`,
+      ctaText: "Start 14-Day Free Trial",
+    });
+  }, [
+    monthlyPackage,
+    monthlyIntroEligibility,
+    monthlyDisplayPrice,
+    showMonthlyFreeTrial,
+  ]);
 
   return (
     <View style={s.screen}>
