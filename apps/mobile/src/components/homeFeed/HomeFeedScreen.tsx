@@ -109,6 +109,7 @@ import {
   buildHomeFeedSkeletonRows,
   HOME_FEED_YOUTUBE_APPEND_COOLDOWN_MS,
   HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
+  isHomeFeedSkeletonRow,
   homeFeedYoutubeStreamLimitForPage,
   hydrateHomeFeedPage0FromStorage,
   hydrateHomeFeedStreamFromStorage,
@@ -266,6 +267,11 @@ export default function HomeFeedScreen() {
       : getCachedHomeFeedBackendRows().length > 0
   );
   const initialRenderSourceLoggedRef = useRef(false);
+  const homeFeedMountAtRef = useRef(Date.now());
+  const first20VisibleLoggedRef = useRef(false);
+  const first20PosterStartAtRef = useRef<number | null>(null);
+  const first20PosterDoneLoggedRef = useRef(false);
+  const lastDeferredVideoCountRef = useRef<number | null>(null);
   const [backendRows, setBackendRows] = useState<any[]>(() =>
     isHomeFeedYouTubeStyleVideo() ? [] : getCachedHomeFeedBackendRows()
   );
@@ -1827,6 +1833,14 @@ export default function HomeFeedScreen() {
   feedListRowsRef.current = feedListRows;
   displayFeedRowsRef.current = displayFeedRows;
 
+  const youtubeFirst20Rows = useMemo(
+    () =>
+      youtubeFeedRows
+        .filter((row) => !isHomeFeedSkeletonRow(row))
+        .slice(0, HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE),
+    [youtubeFeedRows]
+  );
+
   const feedEmptyCopy = useMemo(() => {
     if (feedPostFilter === "testimony") {
       return {
@@ -1903,6 +1917,7 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     if (isHomeFeedLazyMediaPrewarmEnabled()) return;
     if (!isHomeFeedVideoDiskCacheEnabled()) return;
+    if (youtubeLayout) return;
     if (!stableDisplayRows.length || backgroundMediaPaused || videoModalPayload) return;
     scheduleHomeFeedVideoDiskCacheBackground(stableDisplayRows, activeIndex);
   }, [
@@ -1910,6 +1925,7 @@ export default function HomeFeedScreen() {
     activeIndex,
     backgroundMediaPaused,
     videoModalPayload,
+    youtubeLayout,
   ]);
 
   // Cold start: rows may arrive after the prepare gate — re-run prime once feed data exists.
@@ -1941,6 +1957,82 @@ export default function HomeFeedScreen() {
         : "empty";
     console.log("KRISTO_HOME_FEED_INITIAL_RENDER_SOURCE", { source });
   }, [loading, visibleData.length]);
+
+  useEffect(() => {
+    if (!youtubeLayout) return;
+    if (first20VisibleLoggedRef.current) return;
+    if (youtubeFirst20Rows.length < HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE) return;
+
+    const first20VisibleMs = Date.now() - homeFeedMountAtRef.current;
+    first20VisibleLoggedRef.current = true;
+    console.log("KRISTO_HOME_FEED_FIRST_20_VISIBLE", {
+      posterCount: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
+      preloadDurationMs: null,
+      first20VisibleMs,
+      deferredVideoCount: null,
+    });
+  }, [youtubeLayout, youtubeFirst20Rows.length]);
+
+  useEffect(() => {
+    if (!youtubeLayout) return;
+    if (first20PosterDoneLoggedRef.current) return;
+    if (!youtubeFirst20Rows.length) return;
+
+    if (first20PosterStartAtRef.current == null) {
+      first20PosterStartAtRef.current = Date.now();
+      console.log("KRISTO_HOME_FEED_POSTER_PRELOAD_START", {
+        posterCount: youtubeFirst20Rows.length,
+        preloadDurationMs: 0,
+        first20VisibleMs: first20VisibleLoggedRef.current
+          ? Date.now() - homeFeedMountAtRef.current
+          : null,
+        deferredVideoCount: null,
+      });
+    }
+
+    if (isHomeFeedPosterPipelineBusyForRows(youtubeFirst20Rows)) return;
+
+    const startedAt = first20PosterStartAtRef.current ?? Date.now();
+    const preloadDurationMs = Math.max(0, Date.now() - startedAt);
+    first20PosterDoneLoggedRef.current = true;
+    console.log("KRISTO_HOME_FEED_POSTER_PRELOAD_DONE", {
+      posterCount: youtubeFirst20Rows.length,
+      preloadDurationMs,
+      first20VisibleMs: first20VisibleLoggedRef.current
+        ? Date.now() - homeFeedMountAtRef.current
+        : null,
+      deferredVideoCount: null,
+    });
+  }, [youtubeLayout, youtubeFirst20Rows]);
+
+  useEffect(() => {
+    if (!youtubeLayout) return;
+    if (!youtubeFirst20Rows.length) return;
+
+    const leadingDeferredWindow = new Set<number>([
+      Math.max(0, activeIndex),
+      Math.max(0, activeIndex + 1),
+      Math.max(0, activeIndex + 2),
+    ]);
+    const deferredVideoCount = youtubeFirst20Rows.reduce((count, row, index) => {
+      if (!isVideoPost(row)) return count;
+      return leadingDeferredWindow.has(index) ? count : count + 1;
+    }, 0);
+    if (lastDeferredVideoCountRef.current === deferredVideoCount) return;
+    lastDeferredVideoCountRef.current = deferredVideoCount;
+
+    console.log("KRISTO_HOME_FEED_VIDEO_DEFERRED", {
+      posterCount: youtubeFirst20Rows.length,
+      preloadDurationMs:
+        first20PosterStartAtRef.current == null
+          ? null
+          : Math.max(0, Date.now() - first20PosterStartAtRef.current),
+      first20VisibleMs: first20VisibleLoggedRef.current
+        ? Date.now() - homeFeedMountAtRef.current
+        : null,
+      deferredVideoCount,
+    });
+  }, [youtubeLayout, youtubeFirst20Rows, activeIndex]);
 
   useEffect(() => {
     if (!youtubeLayout || !youtubeStreamRows.length) return;
@@ -1993,23 +2085,22 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     if (isHomeFeedPosterPrewarmDisabled()) return;
     if (backgroundMediaPaused || videoModalPayload) return;
-    if (!visibleData.length) return;
+    const posterRows = youtubeLayout ? youtubeFirst20Rows : visibleData;
+    if (!posterRows.length) return;
     if (!feedFocused) return;
     if (youtubeLayout && hasHomeFeedYoutubeStreamSession() && youtubePageVisualReadyRef.current) {
       return;
     }
-    const lazyWarmCount =
-      HOME_FEED_LAZY_VISIBLE_POSTER_COUNT + HOME_FEED_LAZY_VISIBLE_POSTER_BUFFER;
-    const windowCount = isHomeFeedLazyMediaPrewarmEnabled()
-      ? Math.min(lazyWarmCount, Math.max(1, visibleData.length))
-      : Math.min(
-          VISIBLE_PRIORITY_COUNT,
-          Math.max(1, visibleData.length - Math.max(0, activeIndex))
-        );
+    const lazyWarmCount = HOME_FEED_LAZY_VISIBLE_POSTER_COUNT + HOME_FEED_LAZY_VISIBLE_POSTER_BUFFER;
+    const windowCount = youtubeLayout
+      ? Math.min(HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE, posterRows.length)
+      : isHomeFeedLazyMediaPrewarmEnabled()
+        ? Math.min(lazyWarmCount, Math.max(1, posterRows.length))
+        : Math.min(VISIBLE_PRIORITY_COUNT, Math.max(1, posterRows.length - Math.max(0, activeIndex)));
     const posterStartIndex = youtubeLayout ? 0 : activeIndex;
     const visibleItems = youtubeLayout
-      ? visibleData.slice(0, windowCount)
-      : visibleData.slice(
+      ? posterRows.slice(0, windowCount)
+      : posterRows.slice(
           Math.max(0, activeIndex),
           Math.max(0, activeIndex) + windowCount
         );
@@ -2038,9 +2129,10 @@ export default function HomeFeedScreen() {
       });
       lastPosterVisibleSignatureRef.current = nextVisibleSignature;
     }
-    prewarmVisibleHomeFeedVideoPosters(visibleData, posterStartIndex, windowCount);
+    prewarmVisibleHomeFeedVideoPosters(posterRows, posterStartIndex, windowCount);
   }, [
     visibleData,
+    youtubeFirst20Rows,
     activeIndex,
     posterWarmKey,
     backgroundMediaPaused,
@@ -2052,6 +2144,7 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     if (!inlineVideoAutoplay) return;
     if (!feedFocused || !visibleData.length || backgroundMediaPaused || videoModalPayload) return;
+    if (youtubeLayout) return;
 
     const tryPosterWarm = () => {
       if (backgroundMediaPaused || videoModalPayload) return;
@@ -2079,7 +2172,7 @@ export default function HomeFeedScreen() {
       unsubFrame();
       unsubCache();
     };
-  }, [posterWarmKey, activeIndex, feedFocused, visibleData, backgroundMediaPaused, videoModalPayload, inlineVideoAutoplay]);
+  }, [posterWarmKey, activeIndex, feedFocused, visibleData, backgroundMediaPaused, videoModalPayload, inlineVideoAutoplay, youtubeLayout]);
 
   // Initial buffer-ahead is deferred until the FIRST video's first frame paints
   // (or a short fallback). This guarantees the first video keeps full startup

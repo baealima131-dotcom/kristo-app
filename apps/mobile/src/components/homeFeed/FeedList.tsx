@@ -21,10 +21,13 @@ import {
 } from "react-native";
 import { FeedRow } from "./FeedRow";
 import { FeedYouTubeCard } from "./FeedYouTubeCard";
+import { FeedYouTubeSkeletonCard } from "./FeedYouTubeSkeletonCard";
 import {
   feedRenderKey,
   isVideoPost,
 } from "./homeFeedUtils";
+import { isHomeFeedSkeletonRow, HOME_FEED_YOUTUBE_BOTTOM_SKELETON_COUNT, HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE } from "./homeFeedPageCache";
+import type { HomeFeedYoutubeScrollMetrics } from "./homeFeedPageCache";
 import { HOME_FEED_BG, HOME_FEED_GOLD_SOFT, HOME_FEED_MUTED } from "./theme";
 import { isHomeFeedRenderPaused } from "@/src/lib/liveRoomStartup";
 import { isKristoVerboseFeedDebug } from "@/src/lib/kristoDebugFlags";
@@ -35,14 +38,12 @@ import {
   resolveActiveVideoRank,
   resolveHomeFeedVideoWarmMode,
 } from "@/src/lib/homeFeedVideoWindow";
-import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
-import { buildYouTubeFeedItemLayout } from "@/src/lib/homeFeedYouTubeLayout";
+import { resolveYouTubeFeedItemLayout, type YouTubeFeedItemLayoutCache } from "@/src/lib/homeFeedYouTubeLayout";
 import { enforceHomeFeedVideoAudioOwnership } from "@/src/lib/homeFeedVideoOwner";
 import { markHomeFeedPostViewed } from "@/src/lib/homeFeedPostViews";
 import {
   isHomeFeedYouTubeStyleVideo,
   isHomeFeedInlineVideoAutoplayEnabled,
-  isHomeFeedVideoDiskCacheEnabled,
   type HomeFeedVideoOpenPayload,
 } from "@/src/lib/homeFeedVideoMode";
 
@@ -69,10 +70,12 @@ const VIEWABILITY_CONFIG = {
 } as const;
 
 const YOUTUBE_VIEWABILITY_CONFIG = {
-  itemVisiblePercentThreshold: 55,
-  minimumViewTime: 200,
+  itemVisiblePercentThreshold: 70,
+  minimumViewTime: 500,
   waitForInteraction: false,
 } as const;
+
+const YOUTUBE_ACTIVE_INDEX_DEBOUNCE_MS = 500;
 
 type Props = {
   rows: any[];
@@ -80,7 +83,20 @@ type Props = {
   activeIndex: number;
   screenFocused: boolean;
   loading: boolean;
+  loadingMore?: boolean;
+  showCaughtUpFooter?: boolean;
+  /** When false, skip near-end prefetch checks (exhausted feed). */
+  youtubePrefetchEnabled?: boolean;
+  onEndReached?: () => void;
+  onYoutubeUserScroll?: (
+    metrics: import("./homeFeedPageCache").HomeFeedYoutubeScrollMetrics,
+    source: "drag" | "momentum" | "scroll"
+  ) => void;
+  onYoutubePrefetchCheck?: (
+    metrics: import("./homeFeedPageCache").HomeFeedYoutubeScrollMetrics
+  ) => void;
   onActiveIndexChange: (index: number) => void;
+  onUserScrollActivity?: () => void;
   onLike: (item: any) => void;
   onComment: (item: any) => void;
   onShare: (item: any) => void;
@@ -89,6 +105,7 @@ type Props = {
   onVideoPress?: (payload: HomeFeedVideoOpenPayload) => void;
   emptyTitle?: string;
   emptyBody?: string;
+  youtubeInitialScrollOffset?: number;
 };
 
 export const FeedList = memo(
@@ -99,7 +116,14 @@ export const FeedList = memo(
       activeIndex,
       screenFocused,
       loading,
+      loadingMore = false,
+      showCaughtUpFooter = false,
+      youtubePrefetchEnabled = true,
+      onEndReached,
+      onYoutubeUserScroll,
+      onYoutubePrefetchCheck,
       onActiveIndexChange,
+      onUserScrollActivity,
       onLike,
       onComment,
       onShare,
@@ -108,6 +132,7 @@ export const FeedList = memo(
       onVideoPress,
       emptyTitle,
       emptyBody,
+      youtubeInitialScrollOffset = 0,
     },
     ref
   ) {
@@ -117,10 +142,36 @@ export const FeedList = memo(
   const renderPaused = isHomeFeedRenderPaused();
   const effectiveScreenFocused = screenFocused && !renderPaused;
   const listRef = useRef<FlatList>(null);
-  const youtubeLayoutMetrics = useMemo(
-    () => buildYouTubeFeedItemLayout(rows, windowWidth),
-    [rows, windowWidth]
+  const youtubeLayoutCacheRef = useRef<YouTubeFeedItemLayoutCache>({
+    heights: [],
+    offsets: [],
+    rowKeys: [],
+    windowWidth: 0,
+  });
+  const youtubeImageLoadUnlockedRef = useRef(new Set<number>());
+
+  useEffect(() => {
+    if (!youtubeLayout) return;
+    const unlocked = youtubeImageLoadUnlockedRef.current;
+    for (const index of [...unlocked]) {
+      if (index >= rows.length) unlocked.delete(index);
+    }
+  }, [rows.length, youtubeLayout]);
+
+  const youtubeRowKey = useCallback(
+    (row: any, index: number) => feedRenderKey(row) || String(row?.id || `row-${index}`),
+    []
   );
+  const youtubeLayoutMetrics = useMemo(() => {
+    const resolved = resolveYouTubeFeedItemLayout(
+      rows,
+      windowWidth,
+      youtubeLayoutCacheRef.current,
+      youtubeRowKey
+    );
+    youtubeLayoutCacheRef.current = resolved.cache;
+    return resolved;
+  }, [rows, windowWidth, youtubeRowKey]);
 
   const scrollYouTubeToIndex = useCallback(
     (index: number, animated = true) => {
@@ -155,6 +206,22 @@ export const FeedList = memo(
 
   const activeIndexRef = useRef(activeIndex);
   const onActiveIndexChangeRef = useRef(onActiveIndexChange);
+  const onUserScrollActivityRef = useRef(onUserScrollActivity);
+  const pendingActiveIndexRef = useRef<number | null>(null);
+  const activeIndexDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onYoutubeUserScrollRef = useRef(onYoutubeUserScroll);
+  const onYoutubePrefetchCheckRef = useRef(onYoutubePrefetchCheck);
+  const youtubePrefetchEnabledRef = useRef(youtubePrefetchEnabled);
+  const lastReportedScrollYRef = useRef(
+    youtubeInitialScrollOffset > 0 ? youtubeInitialScrollOffset : 0
+  );
+  const youtubeScrollMetricsRef = useRef<HomeFeedYoutubeScrollMetrics>({
+    scrollY: youtubeInitialScrollOffset > 0 ? youtubeInitialScrollOffset : 0,
+    contentHeight: 0,
+    viewportHeight: 1,
+  });
+  const listScrollAnimatingRef = useRef(false);
+  const youtubeScrollRestoredRef = useRef(false);
   const handlersRef = useRef({
     onLike,
     onComment,
@@ -166,6 +233,10 @@ export const FeedList = memo(
 
   activeIndexRef.current = activeIndex;
   onActiveIndexChangeRef.current = onActiveIndexChange;
+  onUserScrollActivityRef.current = onUserScrollActivity;
+  onYoutubeUserScrollRef.current = onYoutubeUserScroll;
+  onYoutubePrefetchCheckRef.current = onYoutubePrefetchCheck;
+  youtubePrefetchEnabledRef.current = youtubePrefetchEnabled;
   handlersRef.current = {
     onLike,
     onComment,
@@ -210,7 +281,7 @@ export const FeedList = memo(
   }, []);
 
   const publishActiveIndex = useCallback(
-    (nextIndex: number, source: "viewability" | "momentum-fallback") => {
+    (nextIndex: number, source: "viewability" | "momentum-fallback" | "youtube-viewability") => {
       if (nextIndex < 0 || nextIndex === activeIndexRef.current) return;
       console.log("KRISTO_FEED_ACTIVE_INDEX", {
         from: activeIndexRef.current,
@@ -220,6 +291,129 @@ export const FeedList = memo(
       onActiveIndexChangeRef.current(nextIndex);
     },
     []
+  );
+
+  const scheduleDebouncedActiveIndex = useCallback(
+    (nextIndex: number, source: "youtube-viewability") => {
+      if (nextIndex < 0 || nextIndex === activeIndexRef.current) return;
+      pendingActiveIndexRef.current = nextIndex;
+      if (activeIndexDebounceRef.current) {
+        clearTimeout(activeIndexDebounceRef.current);
+      }
+      activeIndexDebounceRef.current = setTimeout(() => {
+        activeIndexDebounceRef.current = null;
+        const pending = pendingActiveIndexRef.current;
+        pendingActiveIndexRef.current = null;
+        if (pending == null || pending === activeIndexRef.current) return;
+        publishActiveIndex(pending, source);
+      }, YOUTUBE_ACTIVE_INDEX_DEBOUNCE_MS);
+    },
+    [publishActiveIndex]
+  );
+
+  useEffect(
+    () => () => {
+      if (activeIndexDebounceRef.current) {
+        clearTimeout(activeIndexDebounceRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!youtubeLayout) return;
+    if (!rows.length || youtubeInitialScrollOffset <= 0) return;
+    if (youtubeScrollRestoredRef.current) return;
+    youtubeScrollRestoredRef.current = true;
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({
+        offset: youtubeInitialScrollOffset,
+        animated: false,
+      });
+    });
+  }, [rows.length, youtubeInitialScrollOffset, youtubeLayout]);
+
+  const readYoutubeScrollMetrics = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>): HomeFeedYoutubeScrollMetrics => {
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      return {
+        scrollY: Number(contentOffset?.y || 0),
+        contentHeight: Number(contentSize?.height || 0),
+        viewportHeight: Number(layoutMeasurement?.height || 0),
+      };
+    },
+    []
+  );
+
+  const notifyYoutubeUserScroll = useCallback(
+    (metrics: HomeFeedYoutubeScrollMetrics, source: "drag" | "momentum" | "scroll") => {
+      youtubeScrollMetricsRef.current = metrics;
+      onYoutubeUserScrollRef.current?.(metrics, source);
+    },
+    []
+  );
+
+  const notifyYoutubePrefetchCheck = useCallback(() => {
+    if (!youtubePrefetchEnabledRef.current) return;
+    onYoutubePrefetchCheckRef.current?.(youtubeScrollMetricsRef.current);
+  }, []);
+
+  const handleUserScrollActivity = useCallback(() => {
+    onUserScrollActivityRef.current?.();
+  }, []);
+
+  const handleScrollBeginDrag = useCallback(() => {
+    listScrollAnimatingRef.current = true;
+    pendingActiveIndexRef.current = null;
+    handleUserScrollActivity();
+    notifyYoutubeUserScroll(youtubeScrollMetricsRef.current, "drag");
+  }, [handleUserScrollActivity, notifyYoutubeUserScroll]);
+
+  const handleMomentumScrollBegin = useCallback(() => {
+    listScrollAnimatingRef.current = true;
+    handleUserScrollActivity();
+    notifyYoutubeUserScroll(youtubeScrollMetricsRef.current, "momentum");
+  }, [handleUserScrollActivity, notifyYoutubeUserScroll]);
+
+  const handleListMomentumScrollEnd = useCallback(() => {
+    listScrollAnimatingRef.current = false;
+    handleUserScrollActivity();
+    if (youtubeLayout) {
+      notifyYoutubePrefetchCheck();
+    }
+  }, [handleUserScrollActivity, notifyYoutubePrefetchCheck, youtubeLayout]);
+
+  const handleScrollEndDrag = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      handleUserScrollActivity();
+      const metrics = readYoutubeScrollMetrics(event);
+      notifyYoutubeUserScroll(metrics, "scroll");
+      const velocityY = Number(event?.nativeEvent?.velocity?.y || 0);
+      if (Math.abs(velocityY) < 0.05) {
+        listScrollAnimatingRef.current = false;
+        if (youtubeLayout) {
+          notifyYoutubePrefetchCheck();
+        }
+      }
+    },
+    [
+      handleUserScrollActivity,
+      notifyYoutubeUserScroll,
+      notifyYoutubePrefetchCheck,
+      readYoutubeScrollMetrics,
+      youtubeLayout,
+    ]
+  );
+
+  const handleYoutubeScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const metrics = readYoutubeScrollMetrics(event);
+      youtubeScrollMetricsRef.current = metrics;
+      if (Math.abs(metrics.scrollY - lastReportedScrollYRef.current) < 12) return;
+      lastReportedScrollYRef.current = metrics.scrollY;
+      notifyYoutubeUserScroll(metrics, "scroll");
+    },
+    [notifyYoutubeUserScroll, readYoutubeScrollMetrics, youtubeLayout]
   );
 
   const onViewableItemsChanged = useRef(
@@ -253,6 +447,22 @@ export const FeedList = memo(
   const onYouTubeViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: ViewToken[]; changed: ViewToken[] }) => {
       markViewablePosts(viewableItems);
+
+      const viewable = viewableItems.filter(
+        (token) => token.isViewable && token.index != null && token.index >= 0
+      );
+      if (!viewable.length) return;
+
+      const nextIndex = viewable.reduce((best, token) => {
+        const idx = token.index as number;
+        const bestIdx = best.index as number;
+        return idx < bestIdx ? token : best;
+      }).index as number;
+
+      if (nextIndex < 0 || nextIndex === activeIndexRef.current) return;
+      pendingActiveIndexRef.current = nextIndex;
+      if (listScrollAnimatingRef.current) return;
+      scheduleDebouncedActiveIndex(nextIndex, "youtube-viewability");
     }
   ).current;
 
@@ -297,11 +507,6 @@ export const FeedList = memo(
     if (!inlineVideoAutoplay) return;
     enforceHomeFeedVideoAudioOwnership(activeIndex);
   }, [activeIndex, inlineVideoAutoplay]);
-
-  useEffect(() => {
-    if (!isHomeFeedVideoDiskCacheEnabled()) return;
-    void hydrateHomeFeedVideoDiskCache();
-  }, []);
 
   // Fallback only: if viewability did not fire after snap (fast fling, edge case).
   const handleMomentumScrollEnd = useCallback(
@@ -397,21 +602,70 @@ export const FeedList = memo(
   );
 
   const renderYouTubeItem = useCallback(
-    ({ item }: { item: any; index: number }) => (
-      <FeedYouTubeCard
-        item={item}
-        onLike={() => handlersRef.current.onLike(item)}
-        onComment={() => handlersRef.current.onComment(item)}
-        onShare={() => handlersRef.current.onShare(item)}
-        onSave={() => handlersRef.current.onSave(item)}
-        onReport={() => handlersRef.current.onReport(item)}
-        onVideoPress={handlersRef.current.onVideoPress}
-      />
-    ),
-    []
+    ({ item, index }: { item: any; index: number }) => {
+      if (isHomeFeedSkeletonRow(item)) {
+        return <FeedYouTubeSkeletonCard />;
+      }
+      const nearActive = Math.abs(index - activeIndexRef.current) <= 2;
+      const shouldLoadImages =
+        rows.length <= HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE
+          ? index < HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE
+          : youtubeImageLoadUnlockedRef.current.has(index) || nearActive;
+      if (shouldLoadImages) {
+        youtubeImageLoadUnlockedRef.current.add(index);
+      }
+      return (
+        <FeedYouTubeCard
+          item={item}
+          shouldLoadImages={shouldLoadImages}
+          onLike={() => handlersRef.current.onLike(item)}
+          onComment={() => handlersRef.current.onComment(item)}
+          onShare={() => handlersRef.current.onShare(item)}
+          onSave={() => handlersRef.current.onSave(item)}
+          onReport={() => handlersRef.current.onReport(item)}
+          onVideoPress={handlersRef.current.onVideoPress}
+        />
+      );
+    },
+    [rows.length]
   );
 
   const viewportStyle = youtubeLayout ? styles.youtubeList : { height: contentHeight };
+
+  const listFooter = useMemo(() => {
+    if (youtubeLayout) {
+      if (showCaughtUpFooter) {
+        return (
+          <View style={styles.footer}>
+            <Text style={styles.caughtUpText}>You&apos;re all caught up</Text>
+          </View>
+        );
+      }
+      return null;
+    }
+    if (showCaughtUpFooter) {
+      return (
+        <View style={styles.footer}>
+          <Text style={styles.caughtUpText}>You&apos;re all caught up</Text>
+        </View>
+      );
+    }
+    if (loadingMore) {
+      return (
+        <View style={styles.footerLoading}>
+          {Array.from({ length: HOME_FEED_YOUTUBE_BOTTOM_SKELETON_COUNT }, (_, index) => (
+            <FeedYouTubeSkeletonCard key={`bottom-skeleton-${index}`} />
+          ))}
+          <ActivityIndicator color={HOME_FEED_GOLD_SOFT} size="small" style={styles.footerSpinner} />
+        </View>
+      );
+    }
+    return null;
+  }, [loadingMore, showCaughtUpFooter, youtubeLayout]);
+
+  const handleEndReached = useCallback(() => {
+    onEndReached?.();
+  }, [onEndReached]);
 
   if (loading && !rows.length) {
     return (
@@ -435,19 +689,29 @@ export const FeedList = memo(
   if (youtubeLayout) {
     return (
       <FlatList
+        key="home-youtube-feed-list"
         ref={listRef}
         data={rows}
         keyExtractor={keyExtractor}
         renderItem={renderYouTubeItem}
         showsVerticalScrollIndicator={false}
-        initialNumToRender={4}
-        windowSize={8}
-        maxToRenderPerBatch={6}
-        removeClippedSubviews
+        initialNumToRender={HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE}
+        windowSize={7}
+        maxToRenderPerBatch={HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE}
+        updateCellsBatchingPeriod={16}
+        removeClippedSubviews={Platform.OS === "android"}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
         onViewableItemsChanged={onYouTubeViewableItemsChanged}
         viewabilityConfig={youtubeViewabilityConfig}
+        onScrollBeginDrag={handleScrollBeginDrag}
+        onMomentumScrollBegin={handleMomentumScrollBegin}
+        onScroll={handleYoutubeScroll}
+        scrollEventThrottle={32}
+        onScrollEndDrag={handleScrollEndDrag}
+        onMomentumScrollEnd={handleListMomentumScrollEnd}
         getItemLayout={youtubeGetItemLayout}
         onScrollToIndexFailed={handleYouTubeScrollToIndexFailed}
+        ListFooterComponent={listFooter}
         style={[styles.list, viewportStyle]}
         contentContainerStyle={styles.youtubeContent}
       />
@@ -481,6 +745,9 @@ export const FeedList = memo(
       windowSize={7}
       maxToRenderPerBatch={4}
       removeClippedSubviews={false}
+      onEndReached={handleEndReached}
+      onEndReachedThreshold={0.7}
+      ListFooterComponent={listFooter}
       style={[styles.list, viewportStyle]}
     />
   );
@@ -517,6 +784,28 @@ const styles = StyleSheet.create({
     color: HOME_FEED_MUTED,
     fontSize: 14,
     lineHeight: 20,
+    textAlign: "center",
+  },
+  footer: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 24,
+    paddingHorizontal: 28,
+  },
+  footerLoading: {
+    paddingTop: 8,
+    paddingBottom: 28,
+    paddingHorizontal: 12,
+    gap: 12,
+    alignItems: "center",
+  },
+  footerSpinner: {
+    marginTop: 4,
+  },
+  caughtUpText: {
+    color: HOME_FEED_MUTED,
+    fontSize: 14,
+    fontWeight: "600",
     textAlign: "center",
   },
 });
