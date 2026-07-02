@@ -89,6 +89,7 @@ export function saveHomeFeedYoutubeStreamSession(
   patch: Partial<HomeFeedYoutubeStreamSession>
 ): void {
   if (!isHomeFeedYouTubeStyleVideo()) return;
+  const prevRowCount = session.rows.length;
   const nextRefreshAvailable =
     patch.refreshAvailable !== undefined ? patch.refreshAvailable : session.refreshAvailable;
   const nextScrollY = normalizeHomeFeedSessionScrollY(patch.scrollY);
@@ -101,6 +102,18 @@ export function saveHomeFeedYoutubeStreamSession(
     pendingPage0Rows:
       patch.pendingPage0Rows !== undefined ? patch.pendingPage0Rows : session.pendingPage0Rows,
   };
+  if (
+    patch.rows !== undefined &&
+    session.rows.length > 0 &&
+    prevRowCount === 0
+  ) {
+    console.log("KRISTO_HOME_FEED_SESSION_ORDER_CREATED", {
+      rowCount: session.rows.length,
+      loadedPageCount: session.loadedPageCount,
+      nextCursor: session.nextCursor,
+      hasMore: session.hasMore,
+    });
+  }
   if (patch.refreshAvailable !== undefined) {
     notifyRefreshListeners();
   }
@@ -116,9 +129,19 @@ export function replaceHomeFeedYoutubeStreamRows(rows: any[]): void {
 
 export function appendHomeFeedYoutubeStreamRows(incoming: any[]): number {
   if (!incoming.length) return 0;
+  const before = session.rows.length;
   const result = stableMergeHomeFeedRows(session.rows, incoming);
   if (result.appended <= 0) return 0;
   saveHomeFeedYoutubeStreamSession({ rows: result.merged });
+  console.log("KRISTO_HOME_FEED_PAGE_APPEND", {
+    before,
+    incoming: incoming.length,
+    appended: result.appended,
+    after: result.merged.length,
+    nextCursor: session.nextCursor,
+    hasMore: session.hasMore,
+    loadedPageCount: session.loadedPageCount,
+  });
   return result.appended;
 }
 
@@ -196,6 +219,21 @@ export function shouldBlockHomeFeedYoutubeBackgroundUiMutation(
 
 export function logHomeFeedSessionRestored(source: "mount" | "focus"): void {
   if (!session.rows.length) return;
+  console.log("KRISTO_HOME_FEED_SESSION_ORDER_HYDRATED", {
+    rowCount: session.rows.length,
+    loadedPages: session.loadedPageCount,
+    nextCursor: session.nextCursor,
+    hasMore: session.hasMore,
+    source,
+  });
+  if (source === "mount") {
+    console.log("KRISTO_HOME_FEED_BACK_NAVIGATION_PRESERVED", {
+      rowCount: session.rows.length,
+      activeIndex: session.activeIndex,
+      scrollY: session.scrollY,
+      nextCursor: session.nextCursor,
+    });
+  }
   console.log("KRISTO_HOME_FEED_SESSION_RESTORED", {
     rowCount: session.rows.length,
     loadedPages: session.loadedPageCount,

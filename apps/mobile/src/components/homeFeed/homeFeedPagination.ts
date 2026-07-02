@@ -1,5 +1,6 @@
 import { feedRenderKey } from "./homeFeedUtils";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
+import { isHomeFeedYouTubeStyleVideo } from "@/src/lib/homeFeedVideoMode";
 
 export function homeFeedBackendRowsDigest(rows: any[]): string {
   return rows.map((row) => homeFeedRowCardFingerprint(row)).join("\n");
@@ -12,8 +13,12 @@ export function homeFeedLocalRowsDigest(rows: any[]): string {
 /** First paint window — TikTok-style fast initial load. */
 export const HOME_FEED_INITIAL_LIMIT = 20;
 
+/** YouTube feed: small media/prewarm window only (FlatList uses full row list). */
+export const HOME_FEED_YOUTUBE_INITIAL_VISIBLE = 5;
+export const HOME_FEED_YOUTUBE_PAGE_SIZE = 20;
+
 /** Grow visible window by this many rows per prefetch. */
-export const HOME_FEED_PAGE_SIZE = 15;
+export const HOME_FEED_PAGE_SIZE = 20;
 
 /** Prefetch when activeIndex reaches this row (near end of first page). */
 export const HOME_FEED_NEXT_PAGE_THRESHOLD = 15;
@@ -38,6 +43,32 @@ export function isHomeFeedNearEnd(activeIndex: number, visibleCount: number): bo
 
 export function homeFeedRowKey(row: any): string {
   return feedRenderKey(row) || String(row?.id || "").trim();
+}
+
+/** Keep first occurrence of each render key — prevents FlatList duplicate-key crashes. */
+export function dedupeHomeFeedRowsByKey(rows: any[]): any[] {
+  if (!Array.isArray(rows) || rows.length <= 1) return rows || [];
+  const seen = new Set<string>();
+  const deduped: any[] = [];
+  let skipped = 0;
+  for (const row of rows) {
+    const id = homeFeedRowKey(row);
+    if (!id) continue;
+    if (seen.has(id)) {
+      skipped += 1;
+      continue;
+    }
+    seen.add(id);
+    deduped.push(row);
+  }
+  if (skipped > 0) {
+    console.log("KRISTO_HOME_FEED_DUPLICATE_ROWS_SKIPPED", {
+      skipped,
+      before: rows.length,
+      after: deduped.length,
+    });
+  }
+  return deduped;
 }
 
 /** Stable fingerprint for card render props — ignores object identity churn. */
@@ -99,7 +130,7 @@ export function stableMergeHomeFeedRows(
 
   for (const row of existing) {
     const id = homeFeedRowKey(row);
-    if (!id) continue;
+    if (!id || seen.has(id)) continue;
     seen.add(id);
     const fresh = incomingById.get(id);
     merged.push(fresh ? mergeHomeFeedRowPreservingReference(row, fresh) : row);
@@ -149,17 +180,23 @@ export function shouldPrefetchHomeFeedPage(
   return activeIndex >= visibleCount - lead;
 }
 
+export function initialHomeFeedVisibleWindowSize(totalAvailable: number): number {
+  if (isHomeFeedYouTubeStyleVideo()) {
+    return Math.min(HOME_FEED_YOUTUBE_INITIAL_VISIBLE, Math.max(0, totalAvailable));
+  }
+  return Math.min(HOME_FEED_INITIAL_LIMIT, Math.max(0, totalAvailable));
+}
+
 export function nextHomeFeedVisibleWindowSize(
   current: number,
   totalAvailable: number,
   pageSize = HOME_FEED_PAGE_SIZE
 ): number {
+  if (isHomeFeedYouTubeStyleVideo()) {
+    return Math.min(totalAvailable, current + HOME_FEED_YOUTUBE_PAGE_SIZE);
+  }
   if (totalAvailable <= 0) return current;
   return Math.min(totalAvailable, current + pageSize);
-}
-
-export function initialHomeFeedVisibleWindowSize(totalAvailable: number): number {
-  return Math.min(HOME_FEED_INITIAL_LIMIT, Math.max(0, totalAvailable));
 }
 
 /**

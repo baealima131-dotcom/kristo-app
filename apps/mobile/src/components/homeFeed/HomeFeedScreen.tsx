@@ -458,6 +458,14 @@ export default function HomeFeedScreen() {
   const youtubeLayout = !inlineVideoAutoplay;
 
   useEffect(() => {
+    console.log("KRISTO_HOME_FEED_PAGE_SIZE", {
+      pageSize: HOME_FEED_PAGE_SIZE,
+      youtubeFirstPageSize: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
+      youtubePageSize: homeFeedYoutubeStreamLimitForPage(1),
+    });
+  }, []);
+
+  useEffect(() => {
     if (String(focus || "").trim() !== "claim-media-slot") return;
     router.replace({
       pathname: "/(tabs)/more/my-church-room/messages/[id]",
