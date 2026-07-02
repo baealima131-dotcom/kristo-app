@@ -18,6 +18,7 @@ module.exports = {
     },
     ios: {
       ...expo.ios,
+      supportsTablet: false,
       infoPlist: {
         ...expo.ios.infoPlist,
         NSLocalNetworkUsageDescription:
