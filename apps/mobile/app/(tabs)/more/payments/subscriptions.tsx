@@ -165,6 +165,14 @@ function formatPrice(pkg?: PurchasesPackage, fallback?: string) {
   return pkg?.product.priceString || fallback || "";
 }
 
+function extractRevenueCatErrorCode(message: string | null): number | null {
+  const raw = String(message || "");
+  const match = raw.match(/\(code\s+(\d+)\)/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function formatBillingMetaRow(
   billing: ReturnType<typeof resolvePremiumSubscriptionBillingDetails>
 ): string {
@@ -1247,6 +1255,58 @@ export default function PaymentsSubscriptionsScreen() {
     submittingPlan === "monthly" || (packagesLoading && !monthlyPackage);
   const yearlyPurchaseLoading =
     submittingPlan === "yearly" || (packagesLoading && !yearlyPackage);
+  const revenueCatErrorCode = extractRevenueCatErrorCode(subscriptionError);
+  const hasMonthlyPackage = Boolean(monthlyPackage);
+  const hasOfferings = Boolean(monthlyPackage || yearlyPackage);
+  const hasIntroOffer = monthlyPackageHasIntroOffer(monthlyPackage);
+
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    if (screenState !== "none") return;
+
+    let reasonTrialHidden: string | null = null;
+    if (!showMonthlyFreeTrial) {
+      if (!hasMonthlyPackage) {
+        reasonTrialHidden =
+          revenueCatErrorCode != null
+            ? `missing-package-offerings-error-${revenueCatErrorCode}`
+            : "missing-package";
+      } else if (!hasIntroOffer) {
+        reasonTrialHidden = "missing-intro-offer";
+      } else if (
+        monthlyIntroEligibility ===
+        INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_INELIGIBLE
+      ) {
+        reasonTrialHidden = "intro-eligibility-ineligible";
+      } else if (
+        monthlyIntroEligibility ===
+        INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_NO_INTRO_OFFER_EXISTS
+      ) {
+        reasonTrialHidden = "intro-eligibility-no-offer";
+      } else {
+        reasonTrialHidden = "trial-not-eligible";
+      }
+    }
+
+    console.log("KRISTO_IOS_TRIAL_UI_DECISION", {
+      hasMonthlyPackage,
+      hasOfferings,
+      revenueCatErrorCode,
+      introEligibilityStatus: monthlyIntroEligibility ?? "unknown",
+      hasIntroOffer,
+      ctaText: monthlyCtaLabel,
+      reasonTrialHidden,
+    });
+  }, [
+    screenState,
+    hasMonthlyPackage,
+    hasOfferings,
+    revenueCatErrorCode,
+    monthlyIntroEligibility,
+    hasIntroOffer,
+    monthlyCtaLabel,
+    showMonthlyFreeTrial,
+  ]);
 
   useEffect(() => {
     if (Platform.OS !== "ios") return;

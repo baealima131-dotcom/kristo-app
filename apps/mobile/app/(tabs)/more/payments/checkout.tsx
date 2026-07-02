@@ -76,6 +76,14 @@ const PLAN_META: Record<
   },
 };
 
+function extractRevenueCatErrorCode(message: string | null): number | null {
+  const raw = String(message || "");
+  const match = raw.match(/\(code\s+(\d+)\)/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export default function PaymentsCheckoutScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -335,6 +343,62 @@ export default function PaymentsCheckoutScreen() {
         ? "Start 14-Day Free Trial"
         : "Subscribe Monthly"
       : "Subscribe Yearly";
+  const revenueCatErrorCode = extractRevenueCatErrorCode(packagesError);
+  const hasMonthlyPackage = Boolean(monthlyPackage);
+  const hasOfferings = Boolean(monthlyPackage || yearlyPackage);
+  const hasIntroOffer = Boolean(
+    monthlyPackage?.product?.introPrice || monthlyPackage?.product?.introductoryPrice
+  );
+
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    if (safePlan !== "monthly") return;
+    if (isSubscribedForCurrentChurch) return;
+
+    let reasonTrialHidden: string | null = null;
+    if (!monthlyTrialEligible) {
+      if (!hasMonthlyPackage) {
+        reasonTrialHidden =
+          revenueCatErrorCode != null
+            ? `missing-package-offerings-error-${revenueCatErrorCode}`
+            : "missing-package";
+      } else if (!hasIntroOffer) {
+        reasonTrialHidden = "missing-intro-offer";
+      } else if (
+        monthlyIntroEligibility ===
+        INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_INELIGIBLE
+      ) {
+        reasonTrialHidden = "intro-eligibility-ineligible";
+      } else if (
+        monthlyIntroEligibility ===
+        INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_NO_INTRO_OFFER_EXISTS
+      ) {
+        reasonTrialHidden = "intro-eligibility-no-offer";
+      } else {
+        reasonTrialHidden = "trial-not-eligible";
+      }
+    }
+
+    console.log("KRISTO_IOS_TRIAL_UI_DECISION", {
+      hasMonthlyPackage,
+      hasOfferings,
+      revenueCatErrorCode,
+      introEligibilityStatus: monthlyIntroEligibility ?? "unknown",
+      hasIntroOffer,
+      ctaText: confirmLabel,
+      reasonTrialHidden,
+    });
+  }, [
+    safePlan,
+    isSubscribedForCurrentChurch,
+    monthlyTrialEligible,
+    hasMonthlyPackage,
+    hasOfferings,
+    revenueCatErrorCode,
+    monthlyIntroEligibility,
+    hasIntroOffer,
+    confirmLabel,
+  ]);
 
   useEffect(() => {
     if (Platform.OS !== "ios") return;
@@ -342,10 +406,10 @@ export default function PaymentsCheckoutScreen() {
     if (!monthlyPackage) return;
     if (isSubscribedForCurrentChurch) return;
 
-    const hasIntroOffer = Boolean(
+    const hasIntroOfferConfigured = Boolean(
       monthlyPackage.product.introPrice || monthlyPackage.product.introductoryPrice
     );
-    if (!hasIntroOffer || !monthlyTrialEligible) return;
+    if (!hasIntroOfferConfigured || !monthlyTrialEligible) return;
 
     console.log("KRISTO_IOS_MONTHLY_TRIAL_ELIGIBLE", {
       productId: monthlyPackage.product.identifier || null,
