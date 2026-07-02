@@ -13,14 +13,18 @@ import {
   subscribeHomeFeedActiveFirstFrame,
 } from "@/src/lib/homeFeedVideoReadiness";
 import { hashMediaUrl } from "@/src/lib/mediaPosterCache";
-import { isHomeFeedVideoDiskCacheEnabled } from "@/src/lib/homeFeedVideoMode";
+import {
+  isHomeFeedLazyMediaPrewarmEnabled,
+  isHomeFeedVideoDiskCacheEnabled,
+} from "@/src/lib/homeFeedVideoMode";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
 
 const STORAGE_KEY = "kristo_home_feed_video_disk_cache_v1";
 const VIDEO_DISK_DIR = `${FileSystem.cacheDirectory || ""}home-feed-videos/`;
 
-const WINDOW_CONCURRENCY = 2;
+const WINDOW_CONCURRENCY = 1;
 const BACKGROUND_CONCURRENCY = 1;
+const WATCH_NEXT_CACHE_IDLE_MS = 15000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const BACKGROUND_START_FALLBACK_MS = 2500;
 
@@ -49,6 +53,9 @@ let queueRunning = false;
 let backgroundUnblocked = false;
 let backgroundUnblockWait: Promise<void> | null = null;
 let pendingQueue: { rows: any[]; activeIndex: number } | null = null;
+let watchNextCacheTimer: ReturnType<typeof setTimeout> | null = null;
+let watchCurrentPostId: string | null = null;
+let watchNextPostId: string | null = null;
 
 function normalizeUrl(url: string) {
   return String(url || "").trim().split("?")[0];
@@ -131,7 +138,74 @@ async function ensureVideoDiskDir() {
   await FileSystem.makeDirectoryAsync(VIDEO_DISK_DIR, { intermediates: true }).catch(() => {});
 }
 
+/** Load persisted cache index — Home Feed background path only (not Watch). */
 export async function hydrateHomeFeedVideoDiskCache(): Promise<void> {
+  if (isHomeFeedLazyMediaPrewarmEnabled()) return;
+  return hydrateHomeFeedVideoDiskCacheInternal();
+}
+
+/**
+ * Watch open: verify/download ONLY the tapped video — never hydrate the full disk index.
+ */
+export async function hydrateAndCacheWatchVideo(args: {
+  postId: string;
+  remoteUrl: string;
+}): Promise<string | null> {
+  const postId = String(args.postId || "").trim();
+  const remote = String(args.remoteUrl || "").trim();
+  console.log("KRISTO_VIDEO_DISK_CACHE_WATCH_HYDRATE_START", { postId });
+
+  watchCurrentPostId = postId || null;
+  watchNextPostId = null;
+  if (watchNextCacheTimer) {
+    clearTimeout(watchNextCacheTimer);
+    watchNextCacheTimer = null;
+  }
+
+  if (!remote || !isNetworkUrl(remote)) {
+    console.log("KRISTO_VIDEO_DISK_CACHE_HYDRATED", { postId, added: 0 });
+    return null;
+  }
+
+  const normalized = normalizeUrl(remote);
+  const hadEntry = memory.has(normalized);
+  const localUri = await cacheVideoUrl(remote, { allowDuringWatch: true });
+  const added = localUri && !hadEntry ? 1 : localUri ? 0 : 0;
+
+  console.log("KRISTO_VIDEO_DISK_CACHE_HYDRATED", { postId, added });
+  return localUri;
+}
+
+/**
+ * After current Watch video starts: cache at most one Up Next video when idle.
+ */
+export function scheduleWatchNextVideoDiskCache(args: { postId: string; remoteUrl: string }) {
+  const postId = String(args.postId || "").trim();
+  const remote = String(args.remoteUrl || "").trim();
+  if (!postId || !remote || !isNetworkUrl(remote)) return;
+  if (postId === watchCurrentPostId) return;
+
+  watchNextPostId = postId;
+  if (watchNextCacheTimer) clearTimeout(watchNextCacheTimer);
+
+  watchNextCacheTimer = setTimeout(() => {
+    watchNextCacheTimer = null;
+    void (async () => {
+      const normalized = normalizeUrl(remote);
+      if (memory.has(normalized)) return;
+      console.log("KRISTO_VIDEO_DISK_CACHE_WATCH_NEXT_SKIP_V1_LIGHT_CACHE", { postId });
+      return;
+    })();
+  }, WATCH_NEXT_CACHE_IDLE_MS);
+}
+
+/** @deprecated Use hydrateAndCacheWatchVideo */
+export async function hydrateHomeFeedVideoDiskCacheForWatch(): Promise<void> {
+  console.log("KRISTO_VIDEO_DISK_CACHE_WATCH_HYDRATE_START", { postId: null });
+  console.log("KRISTO_VIDEO_DISK_CACHE_HYDRATED", { added: 0 });
+}
+
+async function hydrateHomeFeedVideoDiskCacheInternal(): Promise<void> {
   if (hydratePromise) return hydratePromise;
 
   hydratePromise = (async () => {
@@ -233,8 +307,11 @@ async function deleteCachedEntry(key: string, entry: DiskCacheEntry) {
   });
 }
 
-export async function cacheVideoUrl(url: string): Promise<string | null> {
-  if (shouldDeferBackgroundMediaJobs()) return null;
+export async function cacheVideoUrl(
+  url: string,
+  opts?: { allowDuringWatch?: boolean }
+): Promise<string | null> {
+  if (!opts?.allowDuringWatch && shouldDeferBackgroundMediaJobs()) return null;
 
   const remote = String(url || "").trim();
   const normalized = normalizeUrl(remote);
@@ -247,7 +324,6 @@ export async function cacheVideoUrl(url: string): Promise<string | null> {
   if (pending) return pending;
 
   const job = (async () => {
-    await hydrateHomeFeedVideoDiskCache();
     await ensureVideoDiskDir();
 
     const dest = localFilePath(remote);
@@ -494,10 +570,23 @@ async function runDiskCacheQueue(rows: any[], activeIndex: number, generation: n
   });
 }
 
+/** On-demand disk cache for a single video — Watch current video only. */
+export function prefetchHomeFeedVideoDiskCacheUrl(
+  remoteUrl: string,
+  opts?: { postId?: string }
+) {
+  if (!isHomeFeedVideoDiskCacheEnabled()) return;
+  const url = String(remoteUrl || "").trim();
+  const postId = String(opts?.postId || "").trim();
+  if (!url || !isNetworkUrl(url)) return;
+  void hydrateAndCacheWatchVideo({ postId, remoteUrl: url });
+}
+
 /**
  * Schedule optional near-window disk cache (active + ~30% ahead only).
  */
 export function scheduleHomeFeedVideoDiskCacheBackground(rows: any[], activeIndex: number): void {
+  if (isHomeFeedLazyMediaPrewarmEnabled()) return;
   if (shouldDeferBackgroundMediaJobs()) return;
   if (!isHomeFeedVideoDiskCacheEnabled()) return;
   if (!Array.isArray(rows) || !rows.length) return;
@@ -578,6 +667,12 @@ export function __resetHomeFeedVideoDiskCacheForTest() {
   backgroundUnblocked = false;
   backgroundUnblockWait = null;
   pendingQueue = null;
+  watchCurrentPostId = null;
+  watchNextPostId = null;
+  if (watchNextCacheTimer) {
+    clearTimeout(watchNextCacheTimer);
+    watchNextCacheTimer = null;
+  }
   if (persistTimer) {
     clearTimeout(persistTimer);
     persistTimer = null;
