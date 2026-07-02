@@ -296,13 +296,14 @@ function WatchVideoSurface({
     void (async () => {
       try {
         const currentUri = String((player as any)?.source?.uri || "").trim();
-        const needsReplace = !currentUri || currentUri !== playbackUri;
+        const needsReplace = Boolean(currentUri && currentUri !== playbackUri);
 
         if (needsReplace) {
           if (typeof player.replaceAsync === "function") {
             console.log("KRISTO_WATCH_VIDEO_REPLACE_ASYNC_START", {
               postId,
               playbackUri,
+              currentUri,
               at: Date.now(),
             });
             await player.replaceAsync(source);
@@ -315,6 +316,7 @@ function WatchVideoSurface({
             console.log("KRISTO_WATCH_VIDEO_REPLACE_FALLBACK_SYNC", {
               postId,
               playbackUri,
+              currentUri,
               at: Date.now(),
             });
             player.replace(source);
