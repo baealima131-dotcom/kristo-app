@@ -22,6 +22,7 @@ import {
   setSubscriptionSelectedPlan,
   type SubscriptionPlanKey,
 } from "../../../../src/store/paymentsStore";
+import { SubscriptionLegalDisclosure } from "./SubscriptionLegalDisclosure";
 import {
   PREMIUM_MONTHLY_PRODUCT_ID,
   configureChurchMobileSubscriptions,
@@ -1305,6 +1306,10 @@ export default function PaymentsSubscriptionsScreen() {
             {showAppStoreBillingControls ? (
               <Text style={s.footer}>Billing is managed by your app store.</Text>
             ) : null}
+
+            <SubscriptionLegalDisclosure
+              showAgreement={screenState === "none" || screenState === "monthly"}
+            />
           </View>
         )}
       </ScrollView>

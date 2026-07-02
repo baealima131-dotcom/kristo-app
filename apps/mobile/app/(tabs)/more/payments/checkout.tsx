@@ -20,6 +20,7 @@ import {
   subscribePayments,
   type SubscriptionPlanKey,
 } from "../../../../src/store/paymentsStore";
+import { SubscriptionLegalDisclosure } from "./SubscriptionLegalDisclosure";
 import {
   configureChurchMobileSubscriptions,
   formatMonthlySubscriptionPrice,
@@ -641,6 +642,8 @@ export default function PaymentsCheckoutScreen() {
                 ? "No charge during the free trial. Cancel anytime in Apple Subscriptions."
                 : "Secure checkout through Apple. Cancel anytime."}
             </Text>
+
+            <SubscriptionLegalDisclosure showAgreement={!isSubscribedForCurrentChurch} />
           </View>
         </View>
       </ScrollView>
