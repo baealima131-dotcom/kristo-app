@@ -37,7 +37,9 @@ export function isHomeFeedInlineVideoAutoplayEnabled(): boolean {
 
 /** Disk-cache feed videos for fast Watch open (YouTube tap-to-play) or inline playback. */
 export function isHomeFeedVideoDiskCacheEnabled(): boolean {
-  return true;
+  // V1 YouTube-style feed: do NOT warm/download videos when Home Feed opens.
+  // Video bytes should start only when the user opens/plays a video.
+  return !isHomeFeedYouTubeStyleVideo();
 }
 
 export type HomeFeedVideoOpenPayload = {

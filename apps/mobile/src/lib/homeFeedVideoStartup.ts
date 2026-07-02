@@ -2,11 +2,15 @@ import { Image } from "react-native";
 import {
   buildHomeFeedDisplayRows,
   isVideoPost,
+  mergeCachedHomeFeedDisplayOrder,
   resolvePosterUri,
 } from "@/src/components/homeFeed/homeFeedUtils";
+import { peekHomeFeedDisplayOrderSync } from "@/src/components/homeFeed/homeFeedDisplayOrderCache";
 import { resolveHomeFeedVideoUri } from "@/src/lib/homeFeedVideoUri";
 import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
 import { hydrateHomeFeedRowsCacheFromStorage } from "@/src/components/homeFeed/homeFeedRowsCache";
+import { hydrateHomeFeedPage0FromStorage } from "@/src/components/homeFeed/homeFeedPageCache";
+import { isHomeFeedYouTubeStyleVideo } from "@/src/lib/homeFeedVideoMode";
 import { feedList } from "@/src/lib/homeFeedStore";
 import { markHomeFeedVideoPreloadReady } from "@/src/lib/homeFeedVideoReadiness";
 import { hydrateHomeFeedVideoDiskCache } from "@/src/lib/homeFeedVideoDiskCache";
@@ -170,7 +174,17 @@ export async function waitForFirstHomeFeedVideoPrepare(
 }
 
 function buildCachedDisplayRows(): any[] {
-  return buildHomeFeedDisplayRows(getCachedHomeFeedBackendRows(), feedList());
+  const cachedDisplay = peekHomeFeedDisplayOrderSync();
+  if (cachedDisplay.length) {
+    return mergeCachedHomeFeedDisplayOrder(
+      cachedDisplay,
+      getCachedHomeFeedBackendRows(),
+      feedList()
+    );
+  }
+  return buildHomeFeedDisplayRows(getCachedHomeFeedBackendRows(), feedList(), Date.now(), {
+    rebuildPersonalOrder: false,
+  });
 }
 
 /**
@@ -202,7 +216,11 @@ export async function prepareFirstHomeFeedVideo(
       setSessionSync(session);
     } catch {}
     try {
-      await hydrateHomeFeedRowsCacheFromStorage(session.userId);
+      if (isHomeFeedYouTubeStyleVideo()) {
+        await hydrateHomeFeedPage0FromStorage(session.userId);
+      } else {
+        await hydrateHomeFeedRowsCacheFromStorage(session.userId);
+      }
     } catch {}
 
     const rows = buildCachedDisplayRows();
@@ -304,6 +322,7 @@ export function warmHomeFeedUpcoming(
   fromIndex: number,
   visibleCount?: number
 ): void {
+  if (isHomeFeedYouTubeStyleVideo()) return;
   syncHomeFeedVideoPreloadQueue({
     rows,
     activeIndex: fromIndex,

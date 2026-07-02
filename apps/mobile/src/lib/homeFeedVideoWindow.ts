@@ -1,3 +1,4 @@
+import { isHomeFeedYouTubeStyleVideo } from "@/src/lib/homeFeedVideoMode";
 import { wasHomeFeedVideoWatched } from "@/src/lib/homeFeedVideoRetention";
 import { homeFeedMediaUrl, resolveVideoUri } from "@/src/lib/homeFeedVideoUri";
 
@@ -14,13 +15,14 @@ function isVideoFeedRow(item: any) {
   return item?.mediaType === "video" || item?.type === "video";
 }
 
-/** Active + next 2 + previous 2 video rows (by video rank, not raw feed index). */
-export const HOME_FEED_PLAYER_WARM_BEHIND = 2;
-export const HOME_FEED_PLAYER_WARM_AHEAD = 2;
+/** Active + next 1 video row (by video rank, not raw feed index). */
+export const HOME_FEED_PLAYER_WARM_BEHIND = 0;
+export const HOME_FEED_PLAYER_WARM_AHEAD = 0;
 /** Drop mount/disk retention once a watched row is farther than this many video ranks. */
-export const HOME_FEED_VIDEO_EVICTION_DISTANCE = 4;
+export const HOME_FEED_VIDEO_EVICTION_DISTANCE = 2;
 
-export const HOME_FEED_MAX_MOUNTED_PLAYERS = 8;
+/** Playback window = 1 active (+1 preload when buffering). */
+export const HOME_FEED_MAX_MOUNTED_PLAYERS = 1;
 
 export function collectVideoFeedIndexes(rows: any[]): number[] {
   if (!Array.isArray(rows) || !rows.length) return [];
@@ -89,6 +91,7 @@ export function computeHomeFeedMountedVideoIndexes(
   activeIndex: number,
   maxPlayers = HOME_FEED_MAX_MOUNTED_PLAYERS
 ): number[] {
+  if (isHomeFeedYouTubeStyleVideo()) return [];
   const videoIndexes = collectVideoFeedIndexes(rows);
   if (!videoIndexes.length) return [];
 
@@ -126,6 +129,7 @@ export function resolveHomeFeedVideoWarmMode(
   mountedIndexes?: number[],
   rows?: any[]
 ): HomeFeedVideoWarmMode {
+  if (isHomeFeedYouTubeStyleVideo()) return "off";
   if (mountedIndexes && !mountedIndexes.includes(index)) return "off";
   if (index === activeIndex) return "active";
 
@@ -168,6 +172,7 @@ export function collectHomeFeedVideoDiskCacheRanks(
   rows: any[],
   activeIndex: number
 ): number[] {
+  if (isHomeFeedYouTubeStyleVideo()) return [];
   const videoIndexes = collectVideoFeedIndexes(rows);
   if (!videoIndexes.length) return [];
 
@@ -196,6 +201,7 @@ export function collectHomeFeedVideoDiskCacheUrls(rows: any[], activeIndex: numb
 
 /** Active video first, then +1/+2/+3, then behind — for download priority. */
 export function collectPrioritizedDiskCacheUrls(rows: any[], activeIndex: number): string[] {
+  if (isHomeFeedYouTubeStyleVideo()) return [];
   const videoIndexes = collectVideoFeedIndexes(rows);
   if (!videoIndexes.length) return [];
 
@@ -238,6 +244,7 @@ export function collectPrioritizedDiskCacheUrls(rows: any[], activeIndex: number
 }
 
 export function collectForwardVideoDiskCacheUrls(rows: any[], activeIndex: number): string[] {
+  if (isHomeFeedYouTubeStyleVideo()) return [];
   const videoIndexes = collectVideoFeedIndexes(rows);
   if (!videoIndexes.length) return [];
 
