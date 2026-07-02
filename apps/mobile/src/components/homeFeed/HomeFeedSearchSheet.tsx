@@ -39,10 +39,11 @@ export const HomeFeedSearchSheet = memo(function HomeFeedSearchSheet({
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState("");
 
-  const results = useMemo(
-    () => filterHomeFeedRowsBySearchQuery(rows, query).slice(0, 40),
-    [rows, query]
-  );
+  const results = useMemo(() => {
+    const q = query.trim();
+    if (!q) return [];
+    return filterHomeFeedRowsBySearchQuery(rows, q).slice(0, 40);
+  }, [rows, query]);
 
   const handleClose = useCallback(() => {
     setQuery("");
