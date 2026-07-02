@@ -608,15 +608,16 @@ export const FeedList = memo(
       }
       const nearActive = Math.abs(index - activeIndexRef.current) <= 2;
       const shouldLoadImages =
-        rows.length <= HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE
-          ? index < HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE
-          : youtubeImageLoadUnlockedRef.current.has(index) || nearActive;
+        index < HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE ||
+        youtubeImageLoadUnlockedRef.current.has(index) ||
+        nearActive;
       if (shouldLoadImages) {
         youtubeImageLoadUnlockedRef.current.add(index);
       }
       return (
         <FeedYouTubeCard
           item={item}
+          rowIndex={index}
           shouldLoadImages={shouldLoadImages}
           onLike={() => handlersRef.current.onLike(item)}
           onComment={() => handlersRef.current.onComment(item)}

@@ -1,6 +1,5 @@
 import React, { memo, useCallback, useMemo } from "react";
 import {
-  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -13,11 +12,12 @@ import {
   homeFeedRowChurchId,
   resolveChurchName,
   resolveFeedChurchVerified,
-  resolveHomeFeedDisplayAvatar,
+  resolveHomeFeedAvatarCacheContext,
 } from "./homeFeedUtils";
 import { HOME_FEED_GOLD } from "./theme";
 import { openChurchProfileFromFeedItem } from "@/src/lib/churchProfileNavigation";
 import { FeedChurchAvatar } from "./FeedChurchAvatar";
+import { HomeFeedCachedAvatarImage } from "./HomeFeedCachedAvatarImage";
 
 type Variant = "premium" | "watch";
 type Part = "all" | "avatar" | "name";
@@ -30,6 +30,11 @@ type Props = {
   source?: string;
   /** When false, only the avatar opens the profile (e.g. member-authored church room posts). */
   nameOpensProfile?: boolean;
+  deferAvatarLoad?: boolean;
+  avatarDiagnostics?: {
+    rowIndex?: number;
+    mediaId?: string;
+  };
 };
 
 export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
@@ -39,15 +44,16 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   style,
   source,
   nameOpensProfile = true,
+  deferAvatarLoad = false,
+  avatarDiagnostics,
 }: Props) {
   const churchId = useMemo(() => homeFeedRowChurchId(item), [item]);
   const churchName = useMemo(() => resolveChurchName(item), [item]);
   const churchVerified = useMemo(() => resolveFeedChurchVerified(item), [item]);
-  const { uri: avatarUri, backupUri, initial } = useMemo(
-    () => resolveHomeFeedDisplayAvatar(item),
+  const { cacheKey, remoteUris, initial, avatarUpdatedAt } = useMemo(
+    () => resolveHomeFeedAvatarCacheContext(item),
     [item]
   );
-  const avatarSrc = String(avatarUri || backupUri || "").trim();
   const canOpen = Boolean(churchId);
 
   const openProfile = useCallback(() => {
@@ -66,21 +72,37 @@ export const FeedChurchBrandRow = memo(function FeedChurchBrandRow({
   const verifiedSize = isWatch ? 15 : 14;
 
   const avatarNode = isWatch ? (
-    avatarSrc ? (
-      <Image source={{ uri: avatarSrc }} style={avatarStyle} />
-    ) : (
-      <View style={avatarFallbackStyle}>
-        <Text style={avatarInitialStyle}>{initial || "K"}</Text>
-      </View>
-    )
+    <HomeFeedCachedAvatarImage
+      cacheKey={cacheKey}
+      remoteUris={remoteUris}
+      sourceUpdatedAt={avatarUpdatedAt}
+      size={avatarSize}
+      initial={initial}
+      deferLoad={deferAvatarLoad}
+      imageStyle={avatarStyle}
+      fallbackStyle={avatarFallbackStyle}
+      initialStyle={avatarInitialStyle}
+      diagnostics={{
+        churchId,
+        mediaId: avatarDiagnostics?.mediaId,
+        rowIndex: avatarDiagnostics?.rowIndex,
+      }}
+    />
   ) : (
     <FeedChurchAvatar
       postId={postId}
       size={avatarSize}
       shellSize={avatarShellSize}
-      uri={avatarUri}
-      backupUri={backupUri}
+      cacheKey={cacheKey}
+      remoteUris={remoteUris}
+      avatarUpdatedAt={avatarUpdatedAt}
       initial={initial}
+      deferLoad={deferAvatarLoad}
+      diagnostics={{
+        churchId,
+        mediaId: avatarDiagnostics?.mediaId,
+        rowIndex: avatarDiagnostics?.rowIndex,
+      }}
     />
   );
 

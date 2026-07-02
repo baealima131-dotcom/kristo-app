@@ -37,6 +37,7 @@ import { useHomeFeedRowEngagement } from "@/src/lib/homeFeedEngagement";
 
 type Props = {
   item: any;
+  rowIndex?: number;
   onLike: () => void;
   onComment: () => void;
   onShare: () => void;
@@ -50,6 +51,7 @@ type Props = {
 export const FeedYouTubeCard = memo(
   function FeedYouTubeCard({
   item,
+  rowIndex = -1,
   onLike,
   onComment,
   onShare,
@@ -169,9 +171,28 @@ export const FeedYouTubeCard = memo(
 
       <View style={premium.metaSection}>
         <View style={premium.metaRow}>
-          <FeedChurchBrandRow item={item} variant="premium" part="avatar" source="home-feed-card" deferAvatarLoad={!shouldLoadImages} />
+          <FeedChurchBrandRow
+            item={item}
+            variant="premium"
+            part="avatar"
+            source="home-feed-card"
+            deferAvatarLoad={!shouldLoadImages}
+            avatarDiagnostics={{
+              rowIndex,
+              mediaId: String(item?.mediaId || item?.id || "").trim(),
+            }}
+          />
           <View style={premium.metaTextCol}>
-            <FeedChurchBrandRow item={item} variant="premium" part="name" source="home-feed-card" />
+            <FeedChurchBrandRow
+              item={item}
+              variant="premium"
+              part="name"
+              source="home-feed-card"
+              avatarDiagnostics={{
+                rowIndex,
+                mediaId: String(item?.mediaId || item?.id || "").trim(),
+              }}
+            />
             {title ? (
               <Text style={premium.videoTitle} numberOfLines={2}>
                 {title}

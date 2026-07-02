@@ -1,11 +1,11 @@
 import React, { memo, useEffect, useMemo, useState } from "react";
-import { Image, Platform, StyleSheet, Text, View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import {
   isHomeFeedPostViewedSync,
   subscribeHomeFeedPostViews,
 } from "@/src/lib/homeFeedPostViews";
-import { HOME_FEED_GOLD_SOFT } from "./theme";
+import { HomeFeedCachedAvatarImage } from "./HomeFeedCachedAvatarImage";
 
 const UNVIEWED_RING = ["#FFF4D4", "#F5D76E", "#C9A04A", "#F5D76E"] as const;
 const RING_PAD = 2;
@@ -14,9 +14,16 @@ type Props = {
   postId: string;
   size: number;
   shellSize: number;
-  uri?: string;
-  backupUri?: string;
+  cacheKey: string;
+  remoteUris: string[];
+  avatarUpdatedAt?: number;
   initial?: string;
+  deferLoad?: boolean;
+  diagnostics?: {
+    churchId?: string;
+    mediaId?: string;
+    rowIndex?: number;
+  };
 };
 
 function usePostViewed(postId: string): boolean {
@@ -36,50 +43,34 @@ export const FeedChurchAvatar = memo(function FeedChurchAvatar({
   postId,
   size,
   shellSize,
-  uri,
-  backupUri,
+  cacheKey,
+  remoteUris,
+  avatarUpdatedAt,
   initial = "K",
+  deferLoad = false,
+  diagnostics,
 }: Props) {
   const viewed = usePostViewed(postId);
-
-  const avatarCandidates = useMemo(() => {
-    const next: string[] = [];
-    for (const raw of [uri, backupUri]) {
-      const candidate = String(raw || "").trim();
-      if (candidate && !next.includes(candidate)) next.push(candidate);
-    }
-    return next;
-  }, [uri, backupUri]);
-
-  const [failedCount, setFailedCount] = useState(0);
-  const displayUri = avatarCandidates[failedCount] || "";
-  const showPhoto = Boolean(displayUri) && failedCount < avatarCandidates.length;
-
-  useEffect(() => {
-    setFailedCount(0);
-  }, [avatarCandidates]);
+  const stableRemoteUris = useMemo(
+    () =>
+      remoteUris
+        .map((uri) => String(uri || "").trim())
+        .filter((uri, index, list) => uri && list.indexOf(uri) === index),
+    [remoteUris]
+  );
 
   const ringSize = size + 4;
-  const initialSize = size >= 54 ? 24 : size >= 42 ? 18 : 16;
 
-  const avatarImage = showPhoto ? (
-    <Image
-      source={{ uri: displayUri }}
-      style={[styles.avatarImage, { width: size, height: size, borderRadius: size / 2 }]}
-      onError={() => {
-        setFailedCount((count) => Math.min(count + 1, avatarCandidates.length));
-      }}
+  const avatarImage = (
+    <HomeFeedCachedAvatarImage
+      cacheKey={cacheKey}
+      remoteUris={stableRemoteUris}
+      sourceUpdatedAt={avatarUpdatedAt}
+      size={size}
+      initial={initial}
+      deferLoad={deferLoad}
+      diagnostics={diagnostics}
     />
-  ) : (
-    <View
-      style={[
-        styles.avatarImage,
-        styles.avatarFallback,
-        { width: size, height: size, borderRadius: size / 2 },
-      ]}
-    >
-      <Text style={[styles.avatarInitial, { fontSize: initialSize }]}>{initial || "K"}</Text>
-    </View>
   );
 
   return (
@@ -180,17 +171,5 @@ const styles = StyleSheet.create({
   ringInner: {
     overflow: "hidden",
     backgroundColor: "rgba(8,10,16,0.65)",
-  },
-  avatarImage: {
-    overflow: "hidden",
-  },
-  avatarFallback: {
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.14)",
-  },
-  avatarInitial: {
-    color: HOME_FEED_GOLD_SOFT,
-    fontWeight: "900",
   },
 });

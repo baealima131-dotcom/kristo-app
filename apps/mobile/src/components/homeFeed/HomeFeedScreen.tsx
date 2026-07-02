@@ -158,8 +158,15 @@ import {
   setHomeFeedViewerCanSeeMediaSlots,
   filterHomeFeedRowsByPostKind,
   filterHomeFeedYoutubeStreamRows,
+  homeFeedRowChurchId,
+  resolveHomeFeedAvatarCacheContext,
   type HomeFeedPostKindFilter,
 } from "./homeFeedUtils";
+import {
+  ensureHomeFeedAvatar,
+  peekHomeFeedAvatar,
+  registerHomeFeedAvatarDiagnosticContext,
+} from "@/src/lib/homeFeedAvatarCache";
 import {
   hydrateHomeFeedReportedPostIds,
   resolveHomeFeedDiscussionCount,
@@ -272,6 +279,8 @@ export default function HomeFeedScreen() {
   const first20PosterStartAtRef = useRef<number | null>(null);
   const first20PosterDoneLoggedRef = useRef(false);
   const lastDeferredVideoCountRef = useRef<number | null>(null);
+  const first20AvatarPreloadStartAtRef = useRef<number | null>(null);
+  const first20AvatarPreloadDoneLoggedRef = useRef(false);
   const [backendRows, setBackendRows] = useState<any[]>(() =>
     isHomeFeedYouTubeStyleVideo() ? [] : getCachedHomeFeedBackendRows()
   );
@@ -2033,6 +2042,98 @@ export default function HomeFeedScreen() {
       deferredVideoCount,
     });
   }, [youtubeLayout, youtubeFirst20Rows, activeIndex]);
+
+  useEffect(() => {
+    if (!youtubeLayout) return;
+    if (!youtubeFirst20Rows.length) return;
+    if (first20AvatarPreloadDoneLoggedRef.current) return;
+
+    const startedAt = Date.now();
+    if (first20AvatarPreloadStartAtRef.current == null) {
+      first20AvatarPreloadStartAtRef.current = startedAt;
+    }
+
+    console.log("KRISTO_HOME_FEED_AVATAR_PRELOAD_START", {
+      posterCount: youtubeFirst20Rows.length,
+      preloadDurationMs: 0,
+      first20VisibleMs: first20VisibleLoggedRef.current
+        ? startedAt - homeFeedMountAtRef.current
+        : null,
+      deferredVideoCount: null,
+    });
+
+    void Promise.all(
+      youtubeFirst20Rows.map(async (row, rowIndex) => {
+        const churchId = homeFeedRowChurchId(row) || null;
+        const mediaId = String(row?.mediaId || row?.id || "").trim() || null;
+        const avatar = resolveHomeFeedAvatarCacheContext(row);
+        const cacheKey = String(avatar.cacheKey || "").trim();
+        const primaryUri = String(avatar.uri || avatar.backupUri || "").trim();
+        const hasAvatarUri = Boolean(primaryUri);
+        const payloadBase = {
+          churchId,
+          mediaId,
+          avatarUri: hasAvatarUri ? "present" : "missing",
+          rowIndex,
+        };
+
+        if (!cacheKey || !hasAvatarUri) {
+          console.log("KRISTO_HOME_FEED_AVATAR_MISSING", {
+            ...payloadBase,
+            source: "fallback",
+            statusCode: null,
+          });
+          return;
+        }
+
+        registerHomeFeedAvatarDiagnosticContext(cacheKey, { churchId: churchId || "", mediaId: mediaId || "", rowIndex });
+        const cached = peekHomeFeedAvatar(cacheKey, avatar.avatarUpdatedAt);
+        if (cached) {
+          console.log("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", {
+            ...payloadBase,
+            source: "cache",
+            statusCode: null,
+          });
+          return;
+        }
+
+        const resolved = await ensureHomeFeedAvatar({
+          cacheKey,
+          remoteUrls: avatar.remoteUris,
+          sourceUpdatedAt: avatar.avatarUpdatedAt,
+        });
+
+        if (resolved) {
+          console.log("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", {
+            ...payloadBase,
+            source: "network",
+            statusCode: null,
+          });
+          return;
+        }
+
+        console.log("KRISTO_HOME_FEED_AVATAR_MISSING", {
+          ...payloadBase,
+          source: "fallback",
+          statusCode: null,
+        });
+      })
+    ).finally(() => {
+      const preloadDurationMs = Math.max(
+        0,
+        Date.now() - (first20AvatarPreloadStartAtRef.current ?? startedAt)
+      );
+      first20AvatarPreloadDoneLoggedRef.current = true;
+      console.log("KRISTO_HOME_FEED_AVATAR_PRELOAD_DONE", {
+        posterCount: youtubeFirst20Rows.length,
+        preloadDurationMs,
+        first20VisibleMs: first20VisibleLoggedRef.current
+          ? Date.now() - homeFeedMountAtRef.current
+          : null,
+        deferredVideoCount: null,
+      });
+    });
+  }, [youtubeLayout, youtubeFirst20Rows]);
 
   useEffect(() => {
     if (!youtubeLayout || !youtubeStreamRows.length) return;
