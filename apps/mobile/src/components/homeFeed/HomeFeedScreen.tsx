@@ -2462,14 +2462,16 @@ export default function HomeFeedScreen() {
   useEffect(() => {
     const rowKey = pendingScrollRowKeyRef.current;
     if (!rowKey) return;
-    const index = feedListRows.findIndex(
+    const index = visibleData.findIndex(
       (row) => (feedRenderKey(row) || String(row?.id || "").trim()) === rowKey
     );
     if (index < 0) return;
     pendingScrollRowKeyRef.current = "";
     setActiveIndex(index);
-    feedListRef.current?.scrollToIndex(index, true);
-  }, [feedListRows, feedPostFilter]);
+    requestAnimationFrame(() => {
+      feedListRef.current?.scrollToIndex(index, true);
+    });
+  }, [visibleData, feedPostFilter]);
 
   const handleTestimoniesPress = useCallback(() => {
     setFeedPostFilter((prev) => (prev === "testimony" ? null : "testimony"));
