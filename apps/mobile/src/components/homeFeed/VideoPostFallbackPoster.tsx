@@ -692,6 +692,25 @@ function YouTubeFeedVideoPoster({
     setPosterFadedIn(false);
     fadeOpacity.setValue(0);
 
+    const display = item
+      ? resolveHomeFeedPosterDisplay(postId, resolvedVideoUrl, item)
+      : { uri: "", source: "inferred" as const };
+
+    if (display.uri && display.uri !== displayUri && !isBrandedPosterUri(display.uri)) {
+      beginPosterLoad(display.uri, display.source);
+      return;
+    }
+
+    const candidates = item ? collectFeedVideoPosterCandidates(item, postId) : [];
+    const nextCandidate = candidates.find(
+      (uri) => uri && uri !== displayUri && !isBrandedPosterUri(uri)
+    );
+
+    if (nextCandidate) {
+      beginPosterLoad(nextCandidate, "metadata");
+      return;
+    }
+
     const cached = resolveCachedMediaPoster(postId, resolvedVideoUrl);
     if (cached && cached !== displayUri) {
       beginPosterLoad(cached, "cache");
@@ -702,10 +721,7 @@ function YouTubeFeedVideoPoster({
       settleOnPlaceholder("image-and-frame-failed");
       return;
     }
-    if (isHomeFeedYoutubePosterMetadataEnabled()) {
-      settleOnPlaceholder("youtube-metadata-failed");
-      return;
-    }
+
     void tryGenerateFrame();
   }, [
     beginPosterLoad,
