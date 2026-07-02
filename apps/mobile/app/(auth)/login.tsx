@@ -15,6 +15,31 @@ const BG = "#0B0F17";
 const GOLD = "#D9B35F";
 const MUTED = "rgba(255,255,255,0.65)";
 const BORDER = "rgba(255,255,255,0.10)";
+const INCOMPLETE_EMAIL_MESSAGE =
+  "Please enter the full email address, including @gmail.com.";
+
+function looksLikePhoneInput(value: string) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return false;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length < 7) return false;
+  const compact = trimmed.replace(/\s/g, "");
+  return digits.length / Math.max(compact.length, 1) >= 0.7;
+}
+
+function getLoginIdentifierValidationError(value: string): string | null {
+  const trimmed = String(value || "").trim();
+  if (!trimmed || trimmed.includes("@") || looksLikePhoneInput(trimmed)) {
+    return null;
+  }
+
+  // Values like "baealima131.com" are treated as phone server-side and fail lookup.
+  if (trimmed.includes(".") || /[a-zA-Z]/.test(trimmed)) {
+    return INCOMPLETE_EMAIL_MESSAGE;
+  }
+
+  return null;
+}
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -49,9 +74,20 @@ export default function LoginScreen() {
   const locked = retryAfter > 0;
   const retryLabel = `${Math.floor(retryAfter / 60)}:${String(retryAfter % 60).padStart(2, "0")}`;
 
+  const identifierValidationError = useMemo(
+    () => getLoginIdentifierValidationError(userId),
+    [userId]
+  );
+
   const can = useMemo(() => {
-    return userId.trim().length >= 3 && password.length >= 8 && !saving && !locked;
-  }, [userId, password, saving, locked]);
+    return (
+      userId.trim().length >= 3 &&
+      password.length >= 8 &&
+      !saving &&
+      !locked &&
+      !identifierValidationError
+    );
+  }, [userId, password, saving, locked, identifierValidationError]);
 
   function onForgotPasswordPress() {
     console.log("KRISTO_FORGOT_PASSWORD_OPENED");
@@ -171,6 +207,13 @@ export default function LoginScreen() {
 
   async function onLogin() {
     if (!can) return;
+
+    const identifierError = getLoginIdentifierValidationError(userId);
+    if (identifierError) {
+      setErr(identifierError);
+      return;
+    }
+
     setErr(null);
     setRetryAfter(0);
     Keyboard.dismiss();
@@ -357,10 +400,19 @@ export default function LoginScreen() {
             setRetryAfter(0);
           }}
           autoCapitalize="none"
-          placeholder="Email or phone number"
+          autoCorrect={false}
+          keyboardType="email-address"
+          textContentType="username"
+          autoComplete="username"
+          placeholder="name@gmail.com or phone number"
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={s.input}
         />
+        {identifierValidationError ? (
+          <Text style={s.hint}>{identifierValidationError}</Text>
+        ) : (
+          <Text style={s.hintMuted}>Use your full email address (with @) or phone number.</Text>
+        )}
 
         <Text style={[s.label, { marginTop: 12 }]}>Password</Text>
         <View style={s.passwordWrap}>
@@ -500,6 +552,8 @@ const s = StyleSheet.create({
 
   card: { marginTop: 22, borderWidth: 1.2, borderColor: "rgba(217,179,95,0.18)", borderRadius: 24, padding: 16, backgroundColor: "rgba(255,255,255,0.035)" },
   label: { color: MUTED, fontWeight: "800", fontSize: 12, letterSpacing: 0.4 },
+  hint: { color: "#ff9b7b", marginTop: 8, fontWeight: "800", fontSize: 12, lineHeight: 17 },
+  hintMuted: { color: "rgba(255,255,255,0.42)", marginTop: 8, fontWeight: "700", fontSize: 11, lineHeight: 16 },
   input: { marginTop: 8, minHeight: 52, borderWidth: 1, borderColor: BORDER, borderRadius: 18, paddingHorizontal: 14, color: "white", fontWeight: "900", backgroundColor: "rgba(255,255,255,0.025)" },
   passwordWrap: {
     marginTop: 8,
