@@ -35,6 +35,10 @@ import {
   notifyWatchScreenOpened,
 } from "@/src/lib/homeFeedWatchPlaybackPriority";
 import {
+  peekHomeFeedVideoRestoreSeek,
+  saveHomeFeedVideoProgress,
+} from "@/src/lib/homeFeedVideoProgressStore";
+import {
   YOUTUBE_CARD_H_PADDING,
   YOUTUBE_THUMB_ASPECT,
   TIKTOK_THUMB_ASPECT,
