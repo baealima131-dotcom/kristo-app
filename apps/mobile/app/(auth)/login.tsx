@@ -74,20 +74,16 @@ export default function LoginScreen() {
   const locked = retryAfter > 0;
   const retryLabel = `${Math.floor(retryAfter / 60)}:${String(retryAfter % 60).padStart(2, "0")}`;
 
-  const identifierValidationError = useMemo(
-    () => getLoginIdentifierValidationError(userId),
-    [userId]
-  );
+  const identifierValidationError = null;
 
   const can = useMemo(() => {
     return (
       userId.trim().length >= 3 &&
       password.length >= 8 &&
       !saving &&
-      !locked &&
-      !identifierValidationError
+      !locked
     );
-  }, [userId, password, saving, locked, identifierValidationError]);
+  }, [userId, password, saving, locked]);
 
   function onForgotPasswordPress() {
     console.log("KRISTO_FORGOT_PASSWORD_OPENED");
