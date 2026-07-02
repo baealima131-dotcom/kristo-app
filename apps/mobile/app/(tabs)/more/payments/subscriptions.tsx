@@ -1244,17 +1244,11 @@ export default function PaymentsSubscriptionsScreen() {
   const monthlyIntro = resolveMonthlyProductIntro(monthlyPackage);
   const monthlyTrialDays = resolveIntroTrialDays(monthlyIntro) ?? 14;
   const monthlyTrialBadge = showMonthlyFreeTrial ? "14-DAY FREE TRIAL" : undefined;
-  const monthlyPriceText = showMonthlyFreeTrial ? "$0 today" : `${monthlyDisplayPrice}/month`;
-  const monthlySubPriceText = showMonthlyFreeTrial
-    ? `Then ${monthlyDisplayPrice}/month`
-    : "";
-  const monthlyCtaLabel = showMonthlyFreeTrial
-    ? `Start ${monthlyTrialDays}-Day Free Trial`
-    : "Subscribe Monthly";
-  const monthlyPurchaseLoading =
-    submittingPlan === "monthly" || (packagesLoading && !monthlyPackage);
-  const yearlyPurchaseLoading =
-    submittingPlan === "yearly" || (packagesLoading && !yearlyPackage);
+  const monthlyPriceText = "$0 today";
+  const monthlySubPriceText = `Then ${monthlyDisplayPrice}/month`;
+  const monthlyCtaLabel = `Start ${monthlyTrialDays}-Day Free Trial`;
+  const monthlyPurchaseLoading = submittingPlan === "monthly";
+  const yearlyPurchaseLoading = submittingPlan === "yearly";
   const revenueCatErrorCode = extractRevenueCatErrorCode(subscriptionError);
   const hasMonthlyPackage = Boolean(monthlyPackage);
   const hasOfferings = Boolean(monthlyPackage || yearlyPackage);
@@ -1369,7 +1363,7 @@ export default function PaymentsSubscriptionsScreen() {
           </View>
         ) : (
           <View style={s.content}>
-            {subscriptionError ? (
+            {subscriptionError && hasOfferings ? (
               <View style={s.inlineErrorCard}>
                 <Ionicons name="alert-circle-outline" size={18} color="rgba(196,171,114,0.72)" />
                 <Text style={s.inlineErrorText}>{subscriptionError}</Text>
