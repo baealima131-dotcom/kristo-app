@@ -387,6 +387,50 @@ function WatchVideoSurface({
     };
   }, [player, postId, ended]);
 
+  useEffect(() => {
+    if (!player || !postId) return;
+
+    let stopped = false;
+    let restored = false;
+
+    const restoreSeek = () => {
+      if (stopped || restored || ended) return;
+      const seekTo = peekHomeFeedVideoRestoreSeek(postId);
+      if (seekTo == null || seekTo <= 0.1) return;
+
+      try {
+        (player as any).currentTime = seekTo;
+        restored = true;
+        console.log("KRISTO_WATCH_VIDEO_PROGRESS_RESTORE", { postId, seekTo });
+      } catch (error: any) {
+        console.log("KRISTO_WATCH_VIDEO_PROGRESS_RESTORE_FAILED", {
+          postId,
+          error: String(error?.message || error || "unknown"),
+        });
+      }
+    };
+
+    const saveProgress = () => {
+      if (stopped || ended) return;
+      try {
+        const t = Number((player as any)?.currentTime || 0);
+        if (Number.isFinite(t) && t > 0.5) {
+          saveHomeFeedVideoProgress(postId, t);
+        }
+      } catch {}
+    };
+
+    const restoreTimer = setTimeout(restoreSeek, 250);
+    const progressTimer = setInterval(saveProgress, 1000);
+
+    return () => {
+      stopped = true;
+      clearTimeout(restoreTimer);
+      clearInterval(progressTimer);
+      saveProgress();
+    };
+  }, [player, postId, ended]);
+
   const handleReplay = useCallback(() => {
     setEnded(false);
     safeSeekVideoPlayer(player, 0, { source: "home-feed-watch", uri: playbackUri });
