@@ -22,7 +22,7 @@ import {
   setSubscriptionSelectedPlan,
   type SubscriptionPlanKey,
 } from "../../../../src/store/paymentsStore";
-import { SubscriptionLegalDisclosure } from "./SubscriptionLegalDisclosure";
+import { SubscriptionLegalDisclosure } from "../../../../src/components/payments/SubscriptionLegalDisclosure";
 import {
   PREMIUM_MONTHLY_PRODUCT_ID,
   configureChurchMobileSubscriptions,

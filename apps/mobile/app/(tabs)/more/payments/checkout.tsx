@@ -20,7 +20,7 @@ import {
   subscribePayments,
   type SubscriptionPlanKey,
 } from "../../../../src/store/paymentsStore";
-import { SubscriptionLegalDisclosure } from "./SubscriptionLegalDisclosure";
+import { SubscriptionLegalDisclosure } from "../../../../src/components/payments/SubscriptionLegalDisclosure";
 import {
   configureChurchMobileSubscriptions,
   formatMonthlySubscriptionPrice,
