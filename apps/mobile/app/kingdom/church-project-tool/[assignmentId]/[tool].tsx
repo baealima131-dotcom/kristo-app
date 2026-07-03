@@ -60,7 +60,7 @@ import {
   requireActiveChurchSubscriptionForSchedule,
 } from "@/src/lib/churchSubscription";
 import { clearThreadMessages } from "@/src/lib/messagesStore";
-import { applyScheduleDeleteToLocalRoom } from "@/src/lib/scheduleRoomMessageSync";
+import { applyScheduleDeleteToLocalRoom, purgeFeedSchedulesAfterBatchDelete } from "@/src/lib/scheduleRoomMessageSync";
 import { resolveRealSlotTopic, resolveScheduleSlotScriptForSave, logScheduleTopicTrace } from "@/src/lib/slotTopicUtils";
 import {
   configureChurchProjectElection,
@@ -2021,6 +2021,16 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
                 ].filter(Boolean)
               )
             );
+            const deletedBatchSlots = [
+              ...scheduleSpeakerSlots.filter(
+                (slot: any) => String(slot.scheduleBatchId || "batch_1") === batchId
+              ),
+              ...backendScheduleCards.filter(
+                (slot: any) => String(slot.scheduleBatchId || "batch_1") === batchId
+              ),
+            ];
+            const churchId = String(getSessionSync()?.churchId || "").trim();
+            const userId = String(getSessionSync()?.userId || "").trim();
 
             try {
               const base = String(process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/+$/, "");
@@ -2054,6 +2064,15 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
             syncScheduleDeleteToChatRoom({
               cardIds: deleteIds,
               scheduleBatchId: batchId,
+              reason: "tool-delete-schedule-batch",
+            });
+
+            void purgeFeedSchedulesAfterBatchDelete({
+              churchId,
+              userId,
+              scheduleBatchId: batchId,
+              slots: deletedBatchSlots,
+              cardIds: deleteIds,
               reason: "tool-delete-schedule-batch",
             });
 

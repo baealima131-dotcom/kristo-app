@@ -117,6 +117,7 @@ import {
   headStorageObject,
   storageKeyFromPublicUrl,
 } from "@/app/api/_lib/media/objectStorage";
+import { reconcileMediaScheduleFeedRowsForChurch } from "@/app/api/_lib/reconcileMediaScheduleFeed";
 
 export const runtime = "nodejs";
 
@@ -3065,9 +3066,18 @@ async function handleFeedGet(
       return sameChurch && isMediaUpload && isReady && hasVideo;
     });
 
-    const mergedHomeRows = [...forcedMediaHomeRows, ...homeReadyRows].filter(
+    let mergedHomeRows = [...forcedMediaHomeRows, ...homeReadyRows].filter(
       (x: any, idx, arr) => arr.findIndex((y: any) => String(y?.id || "") === String(x?.id || "")) === idx
     );
+
+    if (churchId) {
+      mergedHomeRows = await reconcileMediaScheduleFeedRowsForChurch({
+        churchId,
+        rows: mergedHomeRows,
+        persistStaleDeletes: true,
+        reason: isGlobalFeedScope ? "feed-get-global-reconcile" : "feed-get-church-reconcile",
+      });
+    }
 
     const listRows = mergedHomeRows
       .filter((x: any) => {

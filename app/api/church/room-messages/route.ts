@@ -10,6 +10,7 @@ import {
   readRoomMessagesJsonFile,
   writeRoomMessagesJsonFile,
 } from "@/app/api/_lib/store/roomMessageDb";
+import { purgeFeedSchedulesForDeletedRoomCards } from "@/app/api/_lib/reconcileMediaScheduleFeed";
 
 export const runtime = "nodejs";
 
@@ -671,6 +672,11 @@ export async function DELETE(req: Request) {
   const key = keyOf(churchId, roomId);
   const rows = store[key] || [];
 
+  const deletedMessages = rows.filter((m: any) => {
+    if (clearAllAssignmentCards) return String(m?.kind || "") === "assignment_card";
+    return cardIds.includes(String(m?.card?.cardId || m?.id || ""));
+  });
+
   const next = rows.filter((m: any) => {
     if (clearAllAssignmentCards) return String(m?.kind || "") !== "assignment_card";
     return !cardIds.includes(String(m?.card?.cardId || m?.id || ""));
@@ -678,6 +684,16 @@ export async function DELETE(req: Request) {
 
   store[key] = next;
   await writeStore(store);
+
+  if (deletedMessages.length) {
+    void purgeFeedSchedulesForDeletedRoomCards({
+      churchId,
+      deletedMessages,
+      reason: clearAllAssignmentCards
+        ? "room-messages-delete-all-assignment-cards"
+        : "room-messages-delete-assignment-cards",
+    });
+  }
 
   return NextResponse.json({ ok: true, deleted: rows.length - next.length });
 }

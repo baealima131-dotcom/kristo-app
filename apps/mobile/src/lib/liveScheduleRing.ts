@@ -1,5 +1,5 @@
 import { feedList, getRingClaimHints, getUserClaimedSlotEntries } from "@/src/lib/homeFeedStore";
-import { filterOutDeletedScheduleRows } from "@/src/lib/deletedScheduleRegistry";
+import { filterOutDeletedScheduleRows, isScheduleFeedIdDeleted } from "@/src/lib/deletedScheduleRegistry";
 import {
   collectScheduleRowsForRingScan,
   findAuthoritativeScheduleSlot,
@@ -786,6 +786,18 @@ function collectProfileScheduleFeedItems(options: {
     if (!item || !isMediaScheduleRow(item)) return;
     if (!scheduleRowMatchesChurch(item, churchId)) return;
     const key = baseFeedId(String(item?.sourceScheduleId || item?.id || ""));
+    if (key && isScheduleFeedIdDeleted(key)) return;
+    if (
+      explicitFeedRows.length > 0 &&
+      key &&
+      isChurchLiveControlScheduleFeedRow(item)
+    ) {
+      const inExplicit = explicitFeedRows.some(
+        (row) =>
+          baseFeedId(String(row?.sourceScheduleId || row?.id || "")) === key
+      );
+      if (!inExplicit) return;
+    }
     if (key && seen.has(key)) return;
     if (key) seen.add(key);
     items.push(item);
@@ -879,6 +891,11 @@ export function buildProfileClaimedSchedules(options: {
   }
 
   const merged: ProfileClaimedScheduleSlot[] = [];
+  const authoritativeRows = filterOutDeletedScheduleRows(
+    explicitFeedRows.length
+      ? explicitFeedRows
+      : mergeProfileFeedRows(explicitFeedRows, homeFeedRows)
+  );
 
   for (const item of scheduleItems) {
     const feedId = resolveCanonicalScheduleFeedId(
@@ -891,14 +908,36 @@ export function buildProfileClaimedSchedules(options: {
     const feedTitle = String(item?.title || item?.mediaName || "Live Schedule").trim();
 
     slots.forEach((slot: any, index: number) => {
-      if (!isSlotClaimedByViewer(slot, viewerUserId, feedId || baseFeedId(item?.id))) return;
+      const resolvedFeedId = feedId || baseFeedId(item?.id);
+      const slotId = String(slot?.id || slot?.slotId || "").trim();
+      if (resolvedFeedId && isScheduleFeedIdDeleted(resolvedFeedId)) {
+        console.log("KRISTO_PROFILE_STALE_FEED_CLAIM_IGNORED", {
+          feedId: resolvedFeedId,
+          slotId,
+          reason: "deleted-schedule-registry",
+        });
+        return;
+      }
+      if (
+        resolvedFeedId &&
+        slotId &&
+        !findAuthoritativeScheduleSlot(authoritativeRows, resolvedFeedId, slotId)
+      ) {
+        console.log("KRISTO_PROFILE_STALE_FEED_CLAIM_IGNORED", {
+          feedId: resolvedFeedId,
+          slotId,
+          reason: "missing-authoritative-schedule-slot",
+        });
+        return;
+      }
+      if (!isSlotClaimedByViewer(slot, viewerUserId, resolvedFeedId)) return;
       if (!isCountableProfileClaimedSlot(slot, index, nowMs)) return;
 
       const window = resolveMediaSlotTimeWindow(slot, nowMs);
       console.log("KRISTO_PROFILE_CLAIMED_SLOT_COUNTED", {
         source: "feed",
-        feedId: feedId || baseFeedId(item?.id),
-        slotId: String(slot?.id || slot?.slotId || ""),
+        feedId: resolvedFeedId,
+        slotId,
         slotNumber: Number(slot?.slot || slot?.slotNumber || index + 1),
         startMs: window.startMs,
         endMs: window.endMs,
