@@ -4,10 +4,9 @@ import { normalizeCommentPostId } from "@/src/lib/homeFeedComments";
 import { ENV, resolveApiBase } from "@/src/lib/kristoEnv";
 import type { SharedContentPayload } from "@/src/lib/messagesStore";
 
-const WEB_SHARE_BASE = String(process.env.EXPO_PUBLIC_WEB_SHARE_BASE || "https://kristo.app").replace(
-  /\/+$/,
-  ""
-);
+const WEB_SHARE_BASE = String(
+  process.env.EXPO_PUBLIC_WEB_SHARE_BASE || "https://kristo-app.vercel.app"
+).replace(/\/+$/, "");
 const DEEP_LINK_SCHEME = String(process.env.EXPO_PUBLIC_DEEP_LINK_SCHEME || "mobile").trim() || "mobile";
 
 export type HomeFeedSharePayload = {

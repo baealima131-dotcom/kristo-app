@@ -16,6 +16,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.princefariji.kristoapp",
+      "associatedDomains": ["applinks:kristo-app.vercel.app"],
       "infoPlist": {
         "NSCameraUsageDescription": "Kristo App needs camera access for live streaming and video rooms.",
         "NSMicrophoneUsageDescription": "Kristo App needs microphone access for live streaming and audio in live rooms.",
