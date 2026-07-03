@@ -2982,6 +2982,8 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     };
 
     const connectedRetryTimers: Array<ReturnType<typeof setTimeout>> = [];
+    let cameraPublishScheduledForConnected = false;
+    let cameraPublishScheduledAt = 0;
 
     const scheduleCameraPublishRetries = (triggerSource: string) => {
       const timers: Array<ReturnType<typeof setTimeout>> = [];
@@ -3016,6 +3018,17 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         });
         return;
       }
+      if (cameraPublishScheduledForConnected) {
+        console.log("KRISTO_LIVEKIT_CAMERA_PUBLISH_DEDUPED_AFTER_CONNECTED", {
+          triggerSource,
+          connectionState,
+          identity: String((room as any)?.localParticipant?.identity || ""),
+          sinceFirstScheduledMs: Date.now() - cameraPublishScheduledAt,
+        });
+        return;
+      }
+      cameraPublishScheduledForConnected = true;
+      cameraPublishScheduledAt = Date.now();
       const timers = scheduleCameraPublishRetries(triggerSource);
       connectedRetryTimers.push(...timers);
     };
@@ -3029,6 +3042,8 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     };
 
     const onReconnectedPublishCamera = () => {
+      cameraPublishScheduledForConnected = false;
+      cameraPublishScheduledAt = 0;
       tryScheduleCameraPublish("RoomEvent.Reconnected");
     };
 
