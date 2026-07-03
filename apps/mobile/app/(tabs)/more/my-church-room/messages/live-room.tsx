@@ -2317,6 +2317,14 @@ async function suppressLocalCameraPublication(
   return !after.hasPublication;
 }
 
+function readLiveKitRoomConnectionState(room: any): string {
+  return String(room?.state || room?.connectionState || "").toLowerCase();
+}
+
+function isLiveKitRoomConnected(room: any): boolean {
+  return readLiveKitRoomConnectionState(room) === "connected";
+}
+
 function readLocalCameraPublicationState(room: any) {
   try {
     const lp = room?.localParticipant;
@@ -2730,13 +2738,24 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     let localTrack: any = null;
 
     const enableCameraWhenConnected = async (triggerSource = "initial") => {
-      const state = String((room as any)?.state || "");
+      const connectionState = readLiveKitRoomConnectionState(room);
       const identity = String((room as any)?.localParticipant?.identity || "");
       const publicationState = readLocalCameraPublicationState(room);
 
+      if (!isLiveKitRoomConnected(room) || !identity) {
+        console.log("KRISTO_LIVEKIT_CAMERA_PUBLISH_DEFERRED_UNTIL_CONNECTED", {
+          triggerSource,
+          connectionState,
+          identity,
+          cameraFacing,
+          hasPublication: publicationState.hasPublication,
+        });
+        return;
+      }
+
       logLocalCameraPublicationState({
         triggerSource,
-        state,
+        state: connectionState,
         identity,
         hasPublication: publicationState.hasPublication,
         publicationCount: publicationState.publicationCount,
@@ -2745,9 +2764,17 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         canPublishCamera,
       });
 
+      console.log("KRISTO_LIVEKIT_CAMERA_PUBLISH_AFTER_CONNECTED", {
+        triggerSource,
+        connectionState,
+        identity,
+        cameraFacing,
+        cameraPaused,
+        hasPublication: publicationState.hasPublication,
+      });
       console.log("KRISTO_MANUAL_PUBLISH_WAIT", {
         triggerSource,
-        state,
+        state: connectionState,
         identity,
         cameraFacing,
         cameraPaused,
@@ -2760,8 +2787,6 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         canPublishCamera,
         triggerSource,
       });
-
-      if (state !== "connected" || !identity) return;
       if (publicationState.hasPublication) {
         const publishedTrack: any = publicationState.track;
         if (publishedTrack && localVideoTrackRef.current !== publishedTrack) {
@@ -2981,19 +3006,50 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       return timers;
     };
 
-    const onConnectedPublishCamera = () => {
-      const timers = scheduleCameraPublishRetries("RoomEvent.Connected");
+    const tryScheduleCameraPublish = (triggerSource: string) => {
+      const connectionState = readLiveKitRoomConnectionState(room);
+      if (!isLiveKitRoomConnected(room)) {
+        console.log("KRISTO_LIVEKIT_CAMERA_PUBLISH_DEFERRED_UNTIL_CONNECTED", {
+          triggerSource,
+          connectionState,
+          identity: String((room as any)?.localParticipant?.identity || ""),
+        });
+        return;
+      }
+      const timers = scheduleCameraPublishRetries(triggerSource);
       connectedRetryTimers.push(...timers);
     };
 
-    onConnectedPublishCamera();
+    if (isLiveKitRoomConnected(room)) {
+      tryScheduleCameraPublish("initial-connected");
+    }
+
+    const onConnectedPublishCamera = () => {
+      tryScheduleCameraPublish("RoomEvent.Connected");
+    };
+
+    const onReconnectedPublishCamera = () => {
+      tryScheduleCameraPublish("RoomEvent.Reconnected");
+    };
+
+    const connectionStateChangedEvent =
+      (RoomEvent as any).ConnectionStateChanged || "connectionStateChanged";
+    const onConnectionStateChangedForCamera = (state: unknown) => {
+      const nextState = String(state || readLiveKitRoomConnectionState(room)).toLowerCase();
+      if (nextState === "connected") {
+        tryScheduleCameraPublish("RoomEvent.ConnectionStateChanged");
+      }
+    };
+
     room.on(RoomEvent.Connected, onConnectedPublishCamera);
-    room.on(RoomEvent.Reconnected, onConnectedPublishCamera);
+    room.on(RoomEvent.Reconnected, onReconnectedPublishCamera);
+    room.on(connectionStateChangedEvent, onConnectionStateChangedForCamera);
 
     return () => {
       cancelled = true;
       room.off(RoomEvent.Connected, onConnectedPublishCamera);
-      room.off(RoomEvent.Reconnected, onConnectedPublishCamera);
+      room.off(RoomEvent.Reconnected, onReconnectedPublishCamera);
+      room.off(connectionStateChangedEvent, onConnectionStateChangedForCamera);
       connectedRetryTimers.forEach((timer) => clearTimeout(timer));
       videoPublishBusyRef.current = false;
       try {
@@ -7933,6 +7989,68 @@ export default function LiveRoomScreen() {
     [liveBridgeId, router, backendChurchLive, session?.churchId, scheduleWindowStillLive, currentMainStageSlot, backendScheduleExplicitlyEnded, tryNavigateAwayFromLiveRoom]
   );
 
+  const liveStateMountFetchStartedAtRef = useRef(0);
+  const liveStateMountFetchInflightRef = useRef<Promise<
+    Awaited<ReturnType<typeof fetchLightLiveStateWithPerf>>
+  > | null>(null);
+  const LIVE_STATE_MOUNT_COALESCE_MS = 4500;
+
+  const isLiveStateMountBurstSource = (source: string) =>
+    source === "immediate" ||
+    source === "pastor-fast" ||
+    source === "poll" ||
+    source === "bridge-ensure-mount";
+
+  const fetchLightLiveStateCoalesced = useCallback(
+    async (
+      headers: Record<string, string>,
+      screen: string,
+      liveId: string | undefined,
+      source: string
+    ) => {
+      if (!isLiveStateMountBurstSource(source)) {
+        return fetchLightLiveStateWithPerf(headers, screen, liveId, source);
+      }
+
+      const now = Date.now();
+      if (!liveStateMountFetchStartedAtRef.current) {
+        liveStateMountFetchStartedAtRef.current = now;
+      }
+      const withinMountWindow =
+        now - liveStateMountFetchStartedAtRef.current < LIVE_STATE_MOUNT_COALESCE_MS;
+
+      if (withinMountWindow && liveStateMountFetchInflightRef.current) {
+        console.log("KRISTO_LIVE_STATE_FETCH_DEDUPED_ON_MOUNT", {
+          source,
+          liveId: liveId || "",
+          screen,
+          sinceFirstMountFetchMs: now - liveStateMountFetchStartedAtRef.current,
+        });
+        return liveStateMountFetchInflightRef.current;
+      }
+
+      const inflight = fetchLightLiveStateWithPerf(headers, screen, liveId, source);
+      if (withinMountWindow) {
+        liveStateMountFetchInflightRef.current = inflight;
+      }
+      try {
+        return await inflight;
+      } finally {
+        if (liveStateMountFetchInflightRef.current === inflight) {
+          liveStateMountFetchInflightRef.current = null;
+        }
+      }
+    },
+    []
+  );
+
+  const applyBackendLivePatchRef = useRef(applyBackendLivePatch);
+  applyBackendLivePatchRef.current = applyBackendLivePatch;
+  const liveApiHeadersPollRef = useRef(liveApiHeaders);
+  liveApiHeadersPollRef.current = liveApiHeaders;
+  const liveBridgeIdPollRef = useRef(liveBridgeId);
+  liveBridgeIdPollRef.current = liveBridgeId;
+
   const bridgeCreateInflightRef = useRef(false);
 
   const ensureLiveBridgeSession = useCallback(
@@ -7944,7 +8062,7 @@ export default function LiveRoomScreen() {
       bridgeCreateInflightRef.current = true;
 
       try {
-        const patch = await fetchLightLiveStateWithPerf(
+        const patch = await fetchLightLiveStateCoalesced(
           liveApiHeaders as any,
           "LiveRoomBridgeEnsure",
           liveBridgeId,
@@ -8046,6 +8164,7 @@ export default function LiveRoomScreen() {
       liveProfileAvatarUri,
       session,
       applyBackendLivePatch,
+      fetchLightLiveStateCoalesced,
     ]
   );
 
@@ -8069,7 +8188,7 @@ export default function LiveRoomScreen() {
     if (!liveBridgeId || isMediaInstantLive) return;
     let cancelled = false;
 
-    void fetchLightLiveStateWithPerf(liveApiHeaders as any, "LiveRoomImmediate", liveBridgeId, "immediate")
+    void fetchLightLiveStateCoalesced(liveApiHeaders as any, "LiveRoomImmediate", liveBridgeId, "immediate")
       .then((patch) => {
         if (!cancelled) applyBackendLivePatch(patch, "immediate");
       })
@@ -8087,7 +8206,7 @@ export default function LiveRoomScreen() {
     return () => {
       cancelled = true;
     };
-  }, [liveBridgeId, liveApiHeaders, isMediaInstantLive, applyBackendLivePatch]);
+  }, [liveBridgeId, liveApiHeaders, isMediaInstantLive, applyBackendLivePatch, fetchLightLiveStateCoalesced]);
 
   useEffect(() => {
     const unsubClaim = onClaimUpdated(() => {
@@ -8103,7 +8222,7 @@ export default function LiveRoomScreen() {
   }, [liveBridgeId, liveApiHeaders, isMediaInstantLive, applyBackendLivePatch]);
 
   useEffect(() => {
-    if (!liveBridgeId && isMediaInstantLive === false) return;
+    if (isMediaInstantLive) return;
 
     const stopSync = startAdaptiveLivePolling({
       screen: "LiveRoom",
@@ -8111,13 +8230,15 @@ export default function LiveRoomScreen() {
       activeMs: canManageLiveRef.current ? 3000 : 6000,
       idleMs: 22000,
       onTick: async () => {
-        const patch = await fetchLightLiveStateWithPerf(
-          liveApiHeaders as any,
+        const bridgeId = liveBridgeIdPollRef.current;
+        if (!bridgeId) return;
+        const patch = await fetchLightLiveStateCoalesced(
+          liveApiHeadersPollRef.current as any,
           "LiveRoom",
-          liveBridgeId,
+          bridgeId,
           "poll"
         );
-        applyBackendLivePatch(patch, "poll");
+        applyBackendLivePatchRef.current(patch, "poll");
       },
     });
 
@@ -8146,7 +8267,7 @@ export default function LiveRoomScreen() {
       stopSync();
       stopHeartbeat();
     };
-  }, [liveBridgeId, isMediaInstantLive, liveApiHeaders, router, isFocused, applyBackendLivePatch]);
+  }, [isMediaInstantLive, isFocused, fetchLightLiveStateCoalesced]);
 
   const SILENT_LIVE_ROOM_REFRESH_MS = 45000;
   const NEAR_LIVE_SCHEDULE_MS = 30 * 60 * 1000;
@@ -9784,7 +9905,7 @@ export default function LiveRoomScreen() {
 
   useEffect(() => {
     if (!canManageLive || !isFocused || isMediaInstantLive || !liveBridgeId) return;
-    void fetchLightLiveStateWithPerf(
+    void fetchLightLiveStateCoalesced(
       liveApiHeaders as any,
       "LiveRoomPastorFast",
       liveBridgeId,
@@ -9792,7 +9913,7 @@ export default function LiveRoomScreen() {
     ).then((patch) => {
       applyBackendLivePatch(patch, "pastor-fast");
     });
-  }, [canManageLive, isFocused, feedScheduleTick, liveApiHeaders, isMediaInstantLive, liveBridgeId, applyBackendLivePatch]);
+  }, [canManageLive, isFocused, feedScheduleTick, liveApiHeaders, isMediaInstantLive, liveBridgeId, applyBackendLivePatch, fetchLightLiveStateCoalesced]);
 
   const canUseAuthorityControls = isMediaInstantLive || (canManageLive && (canEnterBackstage || liveStillActive));
   const canSeeAuthorityBar =
