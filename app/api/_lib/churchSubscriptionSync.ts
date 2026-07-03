@@ -185,6 +185,7 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
       subscriptionActive: true,
       subscriptionPlan: resolvedPlan,
       subscriptionExpiresAt: expiresAtMs,
+      subscriptionSource: "app_store",
     });
 
     if (!next) {

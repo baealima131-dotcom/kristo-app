@@ -309,6 +309,7 @@ export async function patchChurchMediaSubscription(
     subscriptionActive: boolean;
     subscriptionPlan?: string | null;
     subscriptionExpiresAt?: number | null;
+    subscriptionSource?: ChurchMediaProfile["subscriptionSource"] | null;
   }
 ): Promise<ChurchMediaProfile | null> {
   const existing = await getChurchMediaByChurchId(churchId);
@@ -340,6 +341,14 @@ export async function patchChurchMediaSubscription(
     }
   } else if (!patch.subscriptionActive) {
     delete nextPatch.subscriptionExpiresAt;
+  }
+
+  if (patch.subscriptionSource !== undefined) {
+    if (patch.subscriptionSource) {
+      nextPatch.subscriptionSource = patch.subscriptionSource;
+    } else {
+      delete nextPatch.subscriptionSource;
+    }
   }
 
   if (!patch.subscriptionActive) {
