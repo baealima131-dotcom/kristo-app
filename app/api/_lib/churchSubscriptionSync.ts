@@ -32,6 +32,10 @@ function resolveRequestedPlan(value?: string | null): "monthly" | "yearly" | nul
   return null;
 }
 
+function isOfflineActivationSubscription(media: ChurchMediaProfile | null | undefined): boolean {
+  return media?.subscriptionSource === "offline_activation";
+}
+
 /**
  * Server-side reconcile: RevenueCat church_premium entitlement → media profile row
  * with subscriptionActive=true. Safe to call when profile is missing or inactive.
@@ -157,14 +161,26 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
   }
 
   let subscriptionActivated = false;
-  if (!isChurchSubscriptionActiveFromRecord(media)) {
+
+  if (isOfflineActivationSubscription(media) && isChurchSubscriptionActiveFromRecord(media)) {
+    console.log("KRISTO_CHURCH_SUBSCRIPTION_SYNC_SKIPPED", {
+      churchId,
+      requesterUserId,
+      reason: "offline_activation-preserved",
+      profileSubscriptionPlan: media?.subscriptionPlan ?? null,
+      profileSubscriptionExpiresAt: media?.subscriptionExpiresAt ?? null,
+    });
+  } else {
     const resolvedPlan =
-      verification.plan || resolveRequestedPlan(args.requestedPlan) || "monthly";
+      verification.plan ||
+      resolveRequestedPlan(args.requestedPlan) ||
+      String(media?.subscriptionPlan || "").trim().toLowerCase() ||
+      "monthly";
     const expiresAtMs = verification.bypassed
       ? null
       : parseSubscriptionExpiresAtMs(verification.expiresAt);
+    const wasActive = isChurchSubscriptionActiveFromRecord(media);
 
-    const wasActive = media?.subscriptionActive === true;
     const next = await patchChurchMediaSubscription(churchId, {
       subscriptionActive: true,
       subscriptionPlan: resolvedPlan,
@@ -182,44 +198,67 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     }
 
     media = next;
-    subscriptionActivated = true;
 
-    console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_SYNC", {
-      churchId,
-      profileSubscriptionActive: media?.subscriptionActive ?? false,
-      profileSubscriptionPlan: media?.subscriptionPlan ?? null,
-      profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
-      revenueCatActive: verification.active,
-      reason: "subscription-activated-from-verified-entitlement",
-      plan: resolvedPlan,
-      productId: verification.productId,
-    });
+    if (!wasActive) {
+      subscriptionActivated = true;
 
-    console.log("KRISTO_CHURCH_SUBSCRIPTION_SYNC_ACTIVATED", {
-      churchId,
-      requesterUserId,
-      plan: resolvedPlan,
-      productId: verification.productId,
-      profileCreated,
-    });
+      console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_SYNC", {
+        churchId,
+        profileSubscriptionActive: media?.subscriptionActive ?? false,
+        profileSubscriptionPlan: media?.subscriptionPlan ?? null,
+        profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
+        revenueCatActive: verification.active,
+        reason: "subscription-activated-from-verified-entitlement",
+        plan: resolvedPlan,
+        productId: verification.productId,
+      });
 
-    const notifyPastorId = access.actualPastorUserId || requesterUserId;
-    if (!wasActive && notifyPastorId) {
-      try {
-        await notifyChurchSubscriptionActivated({
-          churchId,
-          pastorUserId: notifyPastorId,
-          plan: resolvedPlan,
-        });
-      } catch (notifyError: any) {
-        console.log("KRISTO_SUBSCRIPTION_NOTIFY_FAILED", {
-          churchId,
-          action: "sync-activated",
-          message: String(notifyError?.message || notifyError),
-        });
+      console.log("KRISTO_CHURCH_SUBSCRIPTION_SYNC_ACTIVATED", {
+        churchId,
+        requesterUserId,
+        plan: resolvedPlan,
+        productId: verification.productId,
+        profileCreated,
+      });
+
+      const notifyPastorId = access.actualPastorUserId || requesterUserId;
+      if (notifyPastorId) {
+        try {
+          await notifyChurchSubscriptionActivated({
+            churchId,
+            pastorUserId: notifyPastorId,
+            plan: resolvedPlan,
+          });
+        } catch (notifyError: any) {
+          console.log("KRISTO_SUBSCRIPTION_NOTIFY_FAILED", {
+            churchId,
+            action: "sync-activated",
+            message: String(notifyError?.message || notifyError),
+          });
+        }
       }
+    } else {
+      console.log("KRISTO_CHURCH_SUBSCRIPTION_SYNC_REFRESHED_EXPIRY", {
+        churchId,
+        plan: resolvedPlan,
+        expiresAtMs,
+        productId: verification.productId,
+      });
+
+      console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_SYNC", {
+        churchId,
+        profileSubscriptionActive: media?.subscriptionActive ?? false,
+        profileSubscriptionPlan: media?.subscriptionPlan ?? null,
+        profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
+        profileSubscriptionExpiresAt: media?.subscriptionExpiresAt ?? null,
+        revenueCatActive: verification.active,
+        reason: "subscription-expiry-refreshed-from-verified-entitlement",
+        plan: resolvedPlan,
+        productId: verification.productId,
+      });
     }
 
+    const notifyPastorId = access.actualPastorUserId || requesterUserId;
     if (expiresAtMs && notifyPastorId && !verification.bypassed && media) {
       try {
         await reconcileChurchSubscriptionExpiryNotifications({
