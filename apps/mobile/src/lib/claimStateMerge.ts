@@ -13,6 +13,7 @@ import {
   feedList,
   getRingClaimHints,
   getUserClaimedSlotEntries,
+  purgeClaimedSlotLocalState,
   syncUserClaimedSlotStore,
   writeRingClaimHint,
   type RingClaimHint,
@@ -38,6 +39,196 @@ export {
   markClaimHydrationPending,
   resolveClaimHydration,
 };
+
+function resolveSlotIdFromSlot(slot: any): string {
+  return String(slot?.id || slot?.slotId || "").trim();
+}
+
+function isSlotMarkedDeleted(slot: any): boolean {
+  if (!slot || typeof slot !== "object") return true;
+  if (slot.deleted === true || slot.deletedAt) return true;
+  const status = String(slot?.status || "").toLowerCase();
+  return (
+    status === "deleted" ||
+    status === "removed" ||
+    status === "cancelled" ||
+    status === "canceled"
+  );
+}
+
+function resolveScheduleRowFeedId(row: any, allRows: any[]): string {
+  const seed = String(row?.sourceScheduleId || row?.id || "").trim();
+  return (
+    resolveCanonicalScheduleFeedId(seed, allRows) ||
+    baseFeedId(seed) ||
+    seed
+  );
+}
+
+export function isScheduleFeedPresentInRows(rows: any[], feedId: string): boolean {
+  const target = baseFeedId(String(feedId || ""));
+  if (!target) return false;
+  const merged = Array.isArray(rows) ? rows : [];
+  return merged.some((row) => {
+    if (!isMediaScheduleFeedItem(row)) return false;
+    const rowFeedId = resolveScheduleRowFeedId(row, merged);
+    if (rowFeedId === target) return true;
+    const aliases = new Set(collectScheduleAliasIds(target, merged));
+    return (
+      aliases.has(rowFeedId) ||
+      aliases.has(String(row?.id || "")) ||
+      aliases.has(String(row?.sourceScheduleId || ""))
+    );
+  });
+}
+
+/** Slot must exist on an authoritative schedule feed row — not claim-store/hint alone. */
+export function findAuthoritativeScheduleSlot(
+  rows: any[],
+  feedId: string,
+  slotId: string
+): { item: any; slot: any; index: number } | null {
+  const targetFeed = baseFeedId(String(feedId || ""));
+  const targetSlot = String(slotId || "").trim();
+  if (!targetFeed || !targetSlot) return null;
+
+  const merged = Array.isArray(rows) ? rows : [];
+  for (const item of merged) {
+    if (!isMediaScheduleFeedItem(item)) continue;
+    const itemFeedId = resolveScheduleRowFeedId(item, merged);
+    if (itemFeedId !== targetFeed) {
+      const aliases = new Set(collectScheduleAliasIds(targetFeed, merged));
+      if (
+        !aliases.has(itemFeedId) &&
+        !aliases.has(String(item?.id || "")) &&
+        !aliases.has(String(item?.sourceScheduleId || ""))
+      ) {
+        continue;
+      }
+    }
+
+    const slots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    for (let index = 0; index < slots.length; index++) {
+      const slot = slots[index];
+      if (resolveSlotIdFromSlot(slot) !== targetSlot) continue;
+      if (isSlotMarkedDeleted(slot)) return null;
+      return { item, slot, index };
+    }
+  }
+
+  return null;
+}
+
+export function isSlotAuthoritativelyClaimedByViewer(
+  rows: any[],
+  feedId: string,
+  slotId: string,
+  viewerUserId: string
+): boolean {
+  const uid = String(viewerUserId || "").trim();
+  const found = findAuthoritativeScheduleSlot(rows, feedId, slotId);
+  if (!found || !uid) return false;
+  return scheduleSlotClaimUserId(found.slot) === uid;
+}
+
+export function reconcileUserClaimedSlotStoreAgainstScheduleRows(
+  rows: any[],
+  viewerUserId: string,
+  options?: { authoritative?: boolean; reason?: string }
+): number {
+  const uid = String(viewerUserId || "").trim();
+  if (!uid || options?.authoritative !== true) return 0;
+
+  const merged = Array.isArray(rows) ? rows : [];
+  const reason = String(options?.reason || "reconcile");
+  let purged = 0;
+
+  for (const entry of getUserClaimedSlotEntries(uid)) {
+    const feedId = baseFeedId(String(entry?.postId || ""));
+    const slotId = String(entry?.slotId || "").trim();
+    if (!feedId || !slotId) continue;
+
+    if (isScheduleFeedIdDeleted(feedId)) {
+      purgeClaimedSlotLocalState({
+        scheduleId: feedId,
+        slotId,
+        userId: uid,
+        reason: `${reason}-schedule-deleted`,
+        rows: merged,
+      });
+      purged += 1;
+      continue;
+    }
+
+    if (!isScheduleFeedPresentInRows(merged, feedId)) continue;
+
+    const found = findAuthoritativeScheduleSlot(merged, feedId, slotId);
+    if (!found) {
+      purgeClaimedSlotLocalState({
+        scheduleId: feedId,
+        slotId,
+        userId: uid,
+        reason: `${reason}-slot-missing`,
+        rows: merged,
+      });
+      purged += 1;
+      continue;
+    }
+
+    if (scheduleSlotClaimUserId(found.slot) !== uid) {
+      purgeClaimedSlotLocalState({
+        scheduleId: feedId,
+        slotId,
+        userId: uid,
+        reason: `${reason}-backend-unclaimed`,
+        rows: merged,
+      });
+      purged += 1;
+    }
+  }
+
+  for (const hint of getRingClaimHints(uid)) {
+    const feedId = baseFeedId(String(hint?.baseFeedId || hint?.feedId || ""));
+    const slotId = String(hint?.slotId || "").trim();
+    if (!feedId || !slotId) continue;
+
+    if (isScheduleFeedIdDeleted(feedId)) {
+      purgeClaimedSlotLocalState({
+        scheduleId: feedId,
+        slotId,
+        userId: uid,
+        reason: `${reason}-hint-schedule-deleted`,
+        rows: merged,
+      });
+      purged += 1;
+      continue;
+    }
+
+    if (!isScheduleFeedPresentInRows(merged, feedId)) continue;
+
+    if (!findAuthoritativeScheduleSlot(merged, feedId, slotId)) {
+      purgeClaimedSlotLocalState({
+        scheduleId: feedId,
+        slotId,
+        userId: uid,
+        reason: `${reason}-hint-slot-missing`,
+        rows: merged,
+      });
+      purged += 1;
+    }
+  }
+
+  if (purged > 0) {
+    console.log("KRISTO_CLAIM_STORE_RECONCILE", {
+      viewerUserId: uid,
+      purged,
+      reason,
+      rowCount: merged.length,
+    });
+  }
+
+  return purged;
+}
 
 export function backendExplicitlyRevokedUserClaim(slot: any, userId: string): boolean {
   if (!slot || typeof slot !== "object") return false;
@@ -299,63 +490,11 @@ export function overlayStableClaimsOnFeedRows(
 
 export function injectClaimStoreScheduleRows(
   rows: any[],
-  viewerUserId: string,
-  options?: { allSources?: any[] }
+  _viewerUserId: string,
+  _options?: { allSources?: any[] }
 ): any[] {
-  const uid = String(viewerUserId || "").trim();
-  if (!uid) return rows;
-
-  const allSources = options?.allSources || rows;
-  const existingKeys = new Set(
-    rows.map((row) => resolveScheduleRowKey(row, allSources)).filter(Boolean)
-  );
-
-  const injected: any[] = [];
-  const hints = getRingClaimHints(uid);
-  for (const entry of getUserClaimedSlotEntries(uid)) {
-    const feedId = baseFeedId(String(entry?.postId || ""));
-    const slotId = String(entry?.slotId || "").trim();
-    if (!feedId || !slotId) continue;
-    if (isScheduleFeedIdDeleted(feedId)) continue;
-    if (existingKeys.has(feedId)) continue;
-
-    const hint = hints.find(
-      (candidate) =>
-        String(candidate.slotId || "").trim() === slotId &&
-        baseFeedId(String(candidate.baseFeedId || candidate.feedId || "")) === feedId
-    );
-
-    const sourceItem =
-      allSources.find((row) => resolveScheduleRowKey(row, allSources) === feedId) || null;
-
-    const startMs = Number(hint?.startMs || entry?.startMs || 0);
-    const endMs = Number(hint?.endMs || entry?.endMs || 0);
-
-    const slot = normalizeLiveScheduleSlots([
-      {
-        id: slotId,
-        slotId,
-        claimedByUserId: entry.userId,
-        claimedByName: entry.name,
-        slot: Number(entry?.slotNumber || hint?.slotNumber || 1),
-        startMs: startMs || undefined,
-        endMs: endMs || undefined,
-        ...(hint?.slot && typeof hint.slot === "object" ? hint.slot : {}),
-      },
-    ])[0];
-
-    injected.push({
-      id: feedId,
-      sourceScheduleId: feedId,
-      churchId: String(sourceItem?.churchId || entry?.churchId || "").trim(),
-      title: String(sourceItem?.title || sourceItem?.mediaName || "Live Schedule").trim(),
-      scheduleSlots: [slot],
-      __claimStoreInjected: true,
-    });
-    existingKeys.add(feedId);
-  }
-
-  return injected.length ? [...rows, ...injected] : rows;
+  // Claims must come from authoritative schedule feed rows — never synthesize rows from local store.
+  return rows;
 }
 
 export function collectScheduleRowsForRingScan(
@@ -401,6 +540,11 @@ export function collectScheduleRowsForRingScan(
 export function rehydrateClaimStoresFromFeedRows(items: any[], viewerUserId: string) {
   const uid = String(viewerUserId || "").trim();
   if (!uid || !Array.isArray(items) || !items.length) return 0;
+
+  reconcileUserClaimedSlotStoreAgainstScheduleRows(items, uid, {
+    authoritative: true,
+    reason: "rehydrate",
+  });
 
   let count = 0;
   for (const item of items) {
@@ -567,13 +711,6 @@ export function resolveStablePersonalScheduleAlert(options: {
     result = previous;
     preservedByLocalClaim = true;
     sourceUsed = "preserved";
-  } else if (!computedClaimed && uid) {
-    const storeEntries = getUserClaimedSlotEntries(uid);
-    const hints = getRingClaimHints(uid);
-    if (storeEntries.length || hints.length) {
-      result = computed || previous;
-      sourceUsed = storeEntries.length ? "claim-store" : "ring-hint";
-    }
   }
 
   if (computedClaimed && (hydrating || preservedByLocalClaim)) {

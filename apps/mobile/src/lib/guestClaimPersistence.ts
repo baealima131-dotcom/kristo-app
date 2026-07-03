@@ -7,6 +7,7 @@ import {
   feedRemoveScheduleMirrors,
   feedRemoveWhere,
   feedScheduleSlotsForLive,
+  purgeClaimedSlotLocalState,
   slotIdsMatch,
 } from "@/src/lib/homeFeedStore";
 import {
@@ -57,7 +58,9 @@ import {
   isLocalMediaScheduleId,
   mergeLiveRoomScheduleSlots,
   resolveCanonicalScheduleFeedId,
+  scheduleSlotClaimUserId,
 } from "@/src/lib/scheduleSlotUtils";
+import { reconcileUserClaimedSlotStoreAgainstScheduleRows } from "@/src/lib/claimStateMerge";
 import {
   resolveMediaSlotTimeWindow,
   summarizeGuestClaimSlotForLog,
@@ -1073,6 +1076,7 @@ export async function invalidateGuestClaimGlobalLiveState(input: {
   backendSlotCount: number;
   reason: string;
   slotId?: string;
+  removedSlotIds?: string[];
   nowMs?: number;
   setBackendFeedItems?: (items: any[]) => void;
   setHomeFeedItems?: (items: any[]) => void;
@@ -1110,7 +1114,27 @@ export async function invalidateGuestClaimGlobalLiveState(input: {
     clearMediaScheduleCachesForChurch(churchId, input.reason);
   }
 
-  clearScheduleClaimRuntimeState(scheduleId, reloadRows);
+  const removedSlotIds = (input.removedSlotIds || [])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  if (removedSlotIds.length) {
+    for (const removedSlotId of removedSlotIds) {
+      purgeClaimedSlotLocalState({
+        scheduleId,
+        slotId: removedSlotId,
+        userId,
+        reason: input.reason,
+        rows: reloadRows,
+      });
+    }
+  } else if (input.backendSlotCount <= 0) {
+    clearScheduleClaimRuntimeState(scheduleId, reloadRows);
+  } else {
+    reconcileUserClaimedSlotStoreAgainstScheduleRows(reloadRows, userId, {
+      authoritative: true,
+      reason: input.reason,
+    });
+  }
 
   let backendSchedule =
     findMediaScheduleFeedForChurch(reloadRows, churchId, { strictChurch: true }) ||
@@ -2100,6 +2124,20 @@ async function persistChurchLiveControlGuestCenterSlotRemoval(input: {
     Array.isArray(mutation.schedule?.scheduleSlots) ? mutation.schedule.scheduleSlots : remaining
   );
 
+  for (const slot of removed) {
+    const slotId = String(slot?.id || slot?.slotId || "").trim();
+    if (!slotId) continue;
+    purgeClaimedSlotLocalState({
+      scheduleId: feedId,
+      slotId,
+      userId: String(scheduleSlotClaimUserId(slot) || input.userId || ""),
+      reason: `church-live-control-${input.mode}-deleted`,
+    });
+  }
+  if (removedCount > 0) {
+    emitLiveRingRefresh(input.reason);
+  }
+
   return {
     ok: true,
     skipped: false,
@@ -2344,6 +2382,24 @@ async function persistGuestScheduleSlotRemoval(input: {
     };
   }
 
+  const removedSlotIds = removed
+    .map((slot: any) => String(slot?.id || slot?.slotId || "").trim())
+    .filter(Boolean);
+  for (const slot of removed as any[]) {
+    const slotId = String(slot?.id || slot?.slotId || "").trim();
+    if (!slotId) continue;
+    purgeClaimedSlotLocalState({
+      scheduleId: feedId,
+      slotId,
+      userId: String(scheduleSlotClaimUserId(slot) || input.userId || ""),
+      reason: `schedule-${input.mode}-deleted`,
+      rows: input.backendFeedItems,
+    });
+  }
+  if (removedSlotIds.length) {
+    emitLiveRingRefresh(input.reason);
+  }
+
   if (input.mode === "delete-all") {
     await purgeDeletedScheduleFromAllSources({
       feedId,
@@ -2431,6 +2487,7 @@ async function persistGuestScheduleSlotRemoval(input: {
     reloadRows: reload.rows,
     backendSlotCount: reload.backendSlots.length,
     reason: input.reason,
+    removedSlotIds,
     nowMs,
     setBackendFeedItems: input.setBackendFeedItems,
     setHomeFeedItems: input.setHomeFeedItems,

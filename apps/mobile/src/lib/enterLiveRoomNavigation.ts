@@ -1,5 +1,7 @@
 import type { Router } from "expo-router";
-import { feedList } from "@/src/lib/homeFeedStore";
+import { feedList, purgeClaimedSlotLocalState } from "@/src/lib/homeFeedStore";
+import { findAuthoritativeScheduleSlot, isScheduleFeedPresentInRows } from "@/src/lib/claimStateMerge";
+import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRingEvents";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
 import { markLiveEnterTap } from "@/src/lib/liveKitPerf";
 import {
@@ -491,6 +493,39 @@ export function enterLiveRoomFromScheduleCard(input: {
       : [];
   const slot = activeSlot || allSlots[0] || null;
   const viewerUserId = String(input.viewerUserId || "").trim();
+  const feedSeed = baseFeedId(
+    String(item?.sourceScheduleId || item?.parentScheduleId || item?.id || "")
+  );
+  const slotId = String(slot?.id || slot?.slotId || "").trim();
+
+  if (feedSeed && slotId && viewerUserId) {
+    const authoritativeRows = [
+      ...(feedList() as any[]),
+      ...getCachedHomeFeedBackendRows(),
+    ];
+    if (isScheduleFeedPresentInRows(authoritativeRows, feedSeed)) {
+      const authoritative = findAuthoritativeScheduleSlot(authoritativeRows, feedSeed, slotId);
+      if (!authoritative) {
+        purgeClaimedSlotLocalState({
+          scheduleId: feedSeed,
+          slotId,
+          userId: viewerUserId,
+          reason: "enter-live-room-slot-missing",
+          rows: authoritativeRows,
+        });
+        emitLiveRingRefresh("enter-live-room-stale-slot");
+        console.log("KRISTO_ENTER_LIVE_ROOM_BLOCKED", {
+          source: input.source,
+          reason: "slot_not_in_authoritative_schedule",
+          feedId: feedSeed,
+          slotId,
+          viewerUserId,
+        });
+        return false;
+      }
+    }
+  }
+
   const claimUserId = scheduleSlotClaimUserId(slot);
   const claimedByMe = !!viewerUserId && !!claimUserId && claimUserId === viewerUserId;
   const startMs = Number(slot?.startMs || 0);

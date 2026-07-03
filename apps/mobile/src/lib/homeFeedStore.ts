@@ -634,6 +634,41 @@ export function feedRemoveScheduleMirrors(scheduleId: string) {
   });
 }
 
+/** Remove one slot's persisted claim store + ring hints (not whole-schedule wipe). */
+export function purgeClaimedSlotLocalState(input: {
+  scheduleId: string;
+  slotId: string;
+  userId?: string;
+  reason: string;
+  rows?: any[];
+}) {
+  const seed = String(input.scheduleId || "").trim();
+  const slotId = String(input.slotId || "").trim();
+  if (!seed || !slotId) return;
+
+  const merged = [...(input.rows || []), ...(feedList() as any[])];
+  const canonicalId =
+    resolveCanonicalScheduleFeedId(seed, merged) || baseFeedId(seed) || seed;
+  const aliases = collectScheduleAliasIds(canonicalId, merged);
+  const uid = String(input.userId || "").trim();
+
+  clearRingClaimHintsForAliases(aliases, slotId, uid || undefined);
+  clearUserClaimedSlotsForAliases(aliases, slotId, uid || undefined);
+
+  for (const alias of aliases) {
+    syncUserClaimedSlotStore(alias, slotId, null);
+    syncUserClaimedSlotStore(baseFeedId(alias), slotId, null);
+  }
+  syncUserClaimedSlotStore(canonicalId, slotId, null);
+
+  console.log("KRISTO_STALE_CLAIM_PURGED", {
+    feedId: canonicalId,
+    slotId,
+    userId: uid || null,
+    reason: String(input.reason || "unknown"),
+  });
+}
+
 /** Drop ring hints, claimed-slot memory, and stale local mirrors for one schedule. */
 export function clearScheduleClaimRuntimeState(scheduleId: string, rows?: any[]) {
   const seed = String(scheduleId || "").trim();

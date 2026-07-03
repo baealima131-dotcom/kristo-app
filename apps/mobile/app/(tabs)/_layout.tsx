@@ -4,7 +4,8 @@ import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { silentPreloadTabScreens } from "@/src/lib/screenDataCache";
-import { deferStartupWorkAfterHomeFirstFrame, setHomeTabFocused } from "@/src/lib/firstPaint";
+import { setHomeTabFocused } from "@/src/lib/firstPaint";
+import { notifyUserLeftHomeTab, runAfterHomeDeferredStartup } from "@/src/lib/homeFeedDeferredStartup";
 import { startMoreTabPremount } from "@/src/lib/moreTabPremount";
 import {
   beginMoreTabPressTransition,
@@ -17,12 +18,14 @@ import {
 } from "@/src/lib/refreshCoordinator";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { apiGet } from "@/src/lib/kristoApi";
-import { feedList, subscribe as subscribeHomeFeed, ensurePersonalTabRingClaimFromEvent } from "@/src/lib/homeFeedStore";
+import { feedList, subscribe as subscribeHomeFeed, ensurePersonalTabRingClaimFromEvent, purgeClaimedSlotLocalState } from "@/src/lib/homeFeedStore";
 import { getCachedHomeFeedBackendRows } from "@/src/components/homeFeed/homeFeedApi";
 import {
   beginClaimHydrationStartup,
   collectScheduleRowsForRingScan,
+  findAuthoritativeScheduleSlot,
   finishClaimHydrationStartup,
+  isScheduleFeedPresentInRows,
   prefetchCrossChurchClaimSchedules,
   rehydrateClaimStoresFromFeedRows,
   resolveStablePersonalScheduleAlert,
@@ -30,6 +33,7 @@ import {
 import {
   isBackendFeedScheduleId,
   isLocalMediaScheduleId,
+  baseFeedId,
   resolveLiveRingCanonicalFeedId,
 } from "@/src/lib/scheduleSlotUtils";
 import {
@@ -47,6 +51,7 @@ import {
   recomputeScheduleRingsFromRows,
   onLiveRingRefresh,
   logMeTabRingDecision,
+  emitLiveRingRefresh,
 } from "@/src/lib/liveScheduleRing";
 import { onClaimUpdated, type ClaimUpdatedPayload } from "@/src/lib/kristoProfileEvents";
 import { Animated, InteractionManager, Pressable, StyleSheet, Text, View } from "react-native";
@@ -263,12 +268,18 @@ export default function TabLayout() {
 
   useEffect(() => {
     if (loading || !session?.userId) return;
-    startMoreTabPremount(session);
+    runAfterHomeDeferredStartup(() => startMoreTabPremount(session), {
+      reason: "tabs-more-tab-premount",
+    });
   }, [loading, session?.userId, session?.churchId, session?.role]);
 
   useLayoutEffect(() => {
     const tab = String(segments[1] || "index");
+    const wasHome = prevTabRef.current === "index" || prevTabRef.current === "";
     setHomeTabFocused(tab === "index");
+    if (wasHome && tab !== "index") {
+      notifyUserLeftHomeTab();
+    }
     const prevTab = prevTabRef.current;
     if (tab === "more") {
       hideMoreTabShell();
@@ -280,12 +291,9 @@ export default function TabLayout() {
 
   useEffect(() => {
     if (loading || !session?.userId) return;
-    deferStartupWorkAfterHomeFirstFrame(
-      () => {
-        void silentPreloadTabScreens(session);
-      },
-      { reason: "screen-cache-preload" }
-    );
+    runAfterHomeDeferredStartup(() => {
+      void silentPreloadTabScreens(session);
+    }, { reason: "screen-cache-preload" });
   }, [loading, session?.userId, session?.churchId, session?.role]);
 
   useEffect(() => {
@@ -293,12 +301,9 @@ export default function TabLayout() {
     const tab = String(segments[1] || "index");
     if (tab !== "index") return;
     if (isMoreTabTransitionBlocking()) return;
-    deferStartupWorkAfterHomeFirstFrame(
-      () => {
-        void silentPreloadTabScreens(session);
-      },
-      { reason: "screen-cache-preload-home-focus" }
-    );
+    runAfterHomeDeferredStartup(() => {
+      void silentPreloadTabScreens(session);
+    }, { reason: "screen-cache-preload-home-focus" });
   }, [loading, session, segments.join("/")]);
 
   function resolveRingScheduleIds(item: any) {
@@ -349,6 +354,39 @@ export default function TabLayout() {
     const claimedByMe = String(alert?.match || "") === "claimed";
     const isLiveNow = alert?.isLiveNow === true;
     const initialSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+    const viewerUserId = String(session?.userId || "").trim();
+    const feedSeed = baseFeedId(String(item?.sourceScheduleId || item?.id || alert?.feedId || ""));
+    const slotId = String(slot?.id || slot?.slotId || "").trim();
+
+    if (feedSeed && slotId && viewerUserId) {
+      const authoritativeRows = [
+        ...backendFeedRowsRef.current,
+        ...(feedList() as any[]),
+        ...getCachedHomeFeedBackendRows(),
+      ];
+      if (isScheduleFeedPresentInRows(authoritativeRows, feedSeed)) {
+        const authoritative = findAuthoritativeScheduleSlot(authoritativeRows, feedSeed, slotId);
+        if (!authoritative) {
+          purgeClaimedSlotLocalState({
+            scheduleId: feedSeed,
+            slotId,
+            userId: viewerUserId,
+            reason: "profile-ring-stale-slot",
+            rows: authoritativeRows,
+          });
+          emitLiveRingRefresh("profile-ring-stale-slot");
+          console.log("KRISTO_LIVE_RING_LONG_PRESS_BLOCKED", {
+            tab: "profile",
+            reason: "stale_claim_slot_missing",
+            feedId: feedSeed,
+            slotId,
+            durationMs: Date.now() - pressStartedAt,
+          });
+          applyScheduleRings("stale-claim-purged");
+          return false;
+        }
+      }
+    }
 
     logLiveRingActiveSchedule("profile-ring", item, alert);
 
@@ -394,7 +432,6 @@ export default function TabLayout() {
     (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = Date.now();
 
     const liveBridgeId = String(navigateParams.liveId || navigateParams.feedId || "").trim();
-    const viewerUserId = String(session?.userId || "").trim();
     if (liveBridgeId && viewerUserId) {
       pinLiveRoomSession({
         liveBridgeId,
@@ -838,7 +875,7 @@ export default function TabLayout() {
       void refreshChurchLiveAndRings(reason);
     });
 
-    deferStartupWorkAfterHomeFirstFrame(() => startLiveRingPolling(), {
+    runAfterHomeDeferredStartup(() => startLiveRingPolling(), {
       reason: "live-ring-polling",
     });
 
@@ -988,6 +1025,7 @@ export default function TabLayout() {
         name="index"
         options={{
           title: homeTitle,
+          lazy: false,
           tabBarButton: isMessagesMode
             ? () => (
                 <MessagesModeTabButton
