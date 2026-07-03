@@ -120,3 +120,27 @@ export function logStalePublisherStageMount(extra?: Record<string, unknown>) {
 export function logLiveFirstFrameRendered(extra?: Record<string, unknown>) {
   console.log("KRISTO_LIVE_FIRST_FRAME_RENDERED", perfPayload(extra));
 }
+
+export function logLivePreflightStart(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_START", perfPayload(extra));
+}
+
+export function logLivePreflightStep(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_STEP", perfPayload(extra));
+}
+
+export function logLivePreflightReady(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_READY", perfPayload(extra));
+}
+
+export function logLivePreflightRetry(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_RETRY", perfPayload(extra));
+}
+
+export function logLivePreflightBack(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_BACK", perfPayload(extra));
+}
+
+export function logLivePreflightTimeout(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_TIMEOUT", perfPayload(extra));
+}

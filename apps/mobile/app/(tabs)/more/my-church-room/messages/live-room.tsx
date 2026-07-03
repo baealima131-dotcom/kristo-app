@@ -156,9 +156,16 @@ import {
   logLiveKitConnectResult,
   logLiveKitConnectStart,
   logLiveKitRoomEvent,
+  logLivePreflightBack,
+  logLivePreflightReady,
+  logLivePreflightRetry,
+  logLivePreflightStart,
+  logLivePreflightStep,
+  logLivePreflightTimeout,
   msSinceLiveEnterTap,
   msSinceLiveRoomMount,
 } from "@/src/lib/liveKitPerf";
+import { isScheduleBatchLiveBridgeId } from "@/src/lib/enterLiveRoomNavigation";
 import {
   buildLiveKitRoomOptions,
   resolveLiveKitVideoCaptureOptions,
@@ -200,6 +207,7 @@ import {
   markClaimEnterCameraPublished,
   clearClaimEnterSessionLock,
   readClaimEnterSessionLockSnapshot,
+  readLiveRoomSessionPin,
 } from "@/src/lib/liveRoomSessionGuard";
 import { markHomeFeedVideoNeedsRecovery } from "@/src/lib/homeFeedVideoController";
 import {
@@ -3453,6 +3461,250 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
 
 
 
+const LIVE_PREFLIGHT_TIMEOUT_MS = 45000;
+const LIVE_PREFLIGHT_POLL_MS = 250;
+
+type LivePreflightStepId =
+  | "schedule"
+  | "token"
+  | "connect"
+  | "mic"
+  | "camera"
+  | "video";
+
+type LivePreflightStepStatus = "pending" | "active" | "done" | "skipped";
+
+type LivePreflightStep = {
+  id: LivePreflightStepId;
+  label: string;
+  status: LivePreflightStepStatus;
+};
+
+const LIVE_PREFLIGHT_STEP_DEFS: Array<{ id: LivePreflightStepId; label: string }> = [
+  { id: "schedule", label: "Loading schedule" },
+  { id: "token", label: "Getting token" },
+  { id: "connect", label: "Connecting room" },
+  { id: "mic", label: "Preparing mic" },
+  { id: "camera", label: "Preparing camera" },
+  { id: "video", label: "Publishing video" },
+];
+
+function isLiveKitTokenReadyForBridge(liveBridgeId: string): boolean {
+  const bridge = String(liveBridgeId || "").trim();
+  if (!bridge) return false;
+  const activeRoom = String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "").trim();
+  const claims = (globalThis as any).__KRISTO_LIVEKIT_ACTIVE_TOKEN_CLAIMS__;
+  return activeRoom === bridge && !!claims?.identity;
+}
+
+function isLiveKitConnectedForBridge(liveBridgeId: string): boolean {
+  const bridge = String(liveBridgeId || "").trim();
+  if (!bridge) return false;
+  const pin = readLiveRoomSessionPin();
+  return pin?.liveBridgeId === bridge && pin.liveKitConnected === true;
+}
+
+function isLiveKitSafelyMountedForViewer(liveBridgeId: string): boolean {
+  const bridge = String(liveBridgeId || "").trim();
+  if (!bridge) return false;
+  if (isLiveKitConnectedForBridge(bridge)) return true;
+  return isLiveKitTokenReadyForBridge(bridge) && isLiveRoomLiveKitSessionActive(bridge);
+}
+
+function evaluateLivePreflight(input: {
+  isMediaInstantLive: boolean;
+  backendScheduleReady: boolean;
+  churchLiveControlBridgeBlocked: boolean;
+  liveBridgeId: string;
+  needsPublisherMic: boolean;
+  needsPublisherCamera: boolean;
+  livePerfPermissionsDone: boolean;
+  cameraPermissionGranted: boolean;
+  micPermissionGranted: boolean;
+  mainStageLocalVideoReady: boolean;
+  claimEnterCameraPublished: boolean;
+}): { steps: LivePreflightStep[]; ready: boolean; doneCount: number } {
+  const bridge = String(input.liveBridgeId || "").trim();
+  const bridgeReady = input.isMediaInstantLive
+    ? !!bridge
+    : isScheduleBatchLiveBridgeId(bridge);
+
+  const scheduleReady =
+    input.isMediaInstantLive ||
+    (input.backendScheduleReady && !input.churchLiveControlBridgeBlocked && bridgeReady);
+
+  const tokenReady = scheduleReady && isLiveKitTokenReadyForBridge(bridge);
+
+  const connectReady =
+    tokenReady &&
+    (input.needsPublisherMic || input.needsPublisherCamera
+      ? isLiveKitConnectedForBridge(bridge)
+      : isLiveKitSafelyMountedForViewer(bridge));
+
+  const micReady =
+    connectReady && (!input.needsPublisherMic || input.livePerfPermissionsDone);
+
+  const cameraReady =
+    micReady && (!input.needsPublisherCamera || input.livePerfPermissionsDone);
+
+  const videoReady =
+    cameraReady &&
+    (!input.needsPublisherCamera ||
+      input.mainStageLocalVideoReady ||
+      input.claimEnterCameraPublished ||
+      (connectReady && input.livePerfPermissionsDone));
+
+  const flags: Record<LivePreflightStepId, boolean> = {
+    schedule: scheduleReady,
+    token: tokenReady,
+    connect: connectReady,
+    mic: micReady,
+    camera: cameraReady,
+    video: videoReady,
+  };
+
+  let activeAssigned = false;
+  const steps: LivePreflightStep[] = LIVE_PREFLIGHT_STEP_DEFS.map((def) => {
+    const done = flags[def.id];
+    const skipped =
+      (def.id === "mic" && !input.needsPublisherMic) ||
+      ((def.id === "camera" || def.id === "video") && !input.needsPublisherCamera);
+
+    let status: LivePreflightStepStatus = "pending";
+    if (skipped) {
+      status = "skipped";
+    } else if (done) {
+      status = "done";
+    } else if (!activeAssigned) {
+      status = "active";
+      activeAssigned = true;
+    }
+
+    return { ...def, status };
+  });
+
+  const applicable = steps.filter((step) => step.status !== "skipped");
+  const doneCount = applicable.filter((step) => step.status === "done").length;
+  const ready = applicable.length > 0 && doneCount === applicable.length;
+
+  return { steps, ready, doneCount };
+}
+
+function LiveRoomPreflight({
+  steps,
+  doneCount,
+  elapsedSec,
+  timedOut,
+  onRetry,
+  onBack,
+  waveAnim,
+}: {
+  steps: LivePreflightStep[];
+  doneCount: number;
+  elapsedSec: number;
+  timedOut: boolean;
+  onRetry: () => void;
+  onBack: () => void;
+  waveAnim: Animated.Value;
+}) {
+  const applicable = steps.filter((step) => step.status !== "skipped");
+  const progress = applicable.length ? doneCount / applicable.length : 0;
+  const ringScale = waveAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.06],
+  });
+  const ringOpacity = waveAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.35, 0.85],
+  });
+
+  return (
+    <View style={s.livePreflightRoot as any} pointerEvents="auto">
+      <View style={s.livePreflightAuraOne as any} />
+      <View style={s.livePreflightAuraTwo as any} />
+
+      <View style={s.livePreflightCard as any}>
+        <Text style={s.livePreflightEyebrow as any}>KRISTO LIVE</Text>
+        <Text style={s.livePreflightTitle as any}>Preparing your live room…</Text>
+        <Text style={s.livePreflightSubtitle as any}>
+          {timedOut
+            ? "This is taking longer than expected."
+            : "Hang tight while we get everything ready."}
+        </Text>
+
+        <View style={s.livePreflightRingWrap as any}>
+          <Animated.View
+            style={[
+              s.livePreflightRingPulse as any,
+              { opacity: ringOpacity, transform: [{ scale: ringScale }] },
+            ]}
+          />
+          <View style={s.livePreflightRingCore as any}>
+            <Text style={s.livePreflightRingPct as any}>{Math.round(progress * 100)}%</Text>
+            <Text style={s.livePreflightRingElapsed as any}>{elapsedSec}s</Text>
+          </View>
+        </View>
+
+        <View style={s.livePreflightProgressTrack as any}>
+          <View style={[s.livePreflightProgressFill as any, { width: `${Math.round(progress * 100)}%` }]} />
+        </View>
+
+        <View style={s.livePreflightSteps as any}>
+          {steps
+            .filter((step) => step.status !== "skipped")
+            .map((step) => {
+              const iconName =
+                step.status === "done"
+                  ? "checkmark-circle"
+                  : step.status === "active"
+                    ? "ellipse"
+                    : "ellipse-outline";
+              const iconColor =
+                step.status === "done"
+                  ? "#34D399"
+                  : step.status === "active"
+                    ? "#F4D06F"
+                    : "rgba(220,233,255,0.35)";
+              return (
+                <View key={step.id} style={s.livePreflightStepRow as any}>
+                  <Ionicons name={iconName as any} size={18} color={iconColor} />
+                  <Text
+                    style={[
+                      s.livePreflightStepLabel as any,
+                      step.status === "active" ? s.livePreflightStepLabelActive : null,
+                      step.status === "done" ? s.livePreflightStepLabelDone : null,
+                    ]}
+                  >
+                    {step.label}
+                  </Text>
+                </View>
+              );
+            })}
+        </View>
+
+        <View style={s.livePreflightActions as any}>
+          <Pressable
+            onPress={onBack}
+            style={({ pressed }) => [s.livePreflightBtn, s.livePreflightBackBtn, pressed ? s.pressed : null] as any}
+          >
+            <Ionicons name="chevron-back" size={18} color="#DCE9FF" />
+            <Text style={s.livePreflightBackBtnText as any}>Back</Text>
+          </Pressable>
+          <Pressable
+            onPress={onRetry}
+            style={({ pressed }) => [s.livePreflightBtn, s.livePreflightRetryBtn, pressed ? s.pressed : null] as any}
+          >
+            <Ionicons name="refresh" size={18} color="#1B1408" />
+            <Text style={s.livePreflightRetryBtnText as any}>Retry</Text>
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+
+
 export default function LiveRoomScreen() {
   const [cameraPaused, setCameraPaused] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
@@ -3480,9 +3732,22 @@ export default function LiveRoomScreen() {
     (globalThis as any).__KRISTO_LIVE_ROOM_PERF_MOUNT_AT__ = liveRoomMountAtRef.current;
   }
   const [livePerfPermissionsDone, setLivePerfPermissionsDone] = useState(false);
+  const [livePreflightComplete, setLivePreflightComplete] = useState(false);
+  const [livePreflightTimedOut, setLivePreflightTimedOut] = useState(false);
+  const [livePreflightSteps, setLivePreflightSteps] = useState<LivePreflightStep[]>(() =>
+    LIVE_PREFLIGHT_STEP_DEFS.map((def) => ({ ...def, status: "pending" as const }))
+  );
+  const [livePreflightElapsedSec, setLivePreflightElapsedSec] = useState(0);
+  const [livePreflightRetryEpoch, setLivePreflightRetryEpoch] = useState(0);
+  const livePreflightStartedRef = useRef(false);
+  const livePreflightReadyLoggedRef = useRef(false);
+  const livePreflightStepLoggedRef = useRef<Record<string, boolean>>({});
+  const livePreflightTimeoutLoggedRef = useRef(false);
+  const livePreflightStartedAtRef = useRef(0);
   const router = useRouter();
   const pathname = usePathname();
   const isFocused = useIsFocused();
+  const liveRoomHeavyPollEnabled = isFocused && livePreflightComplete;
   const insets = useSafeAreaInsets();
   const { session } = useKristoSession();
 
@@ -7735,7 +8000,7 @@ export default function LiveRoomScreen() {
       }, 0);
       const stopPoll = startAdaptiveLivePolling({
         screen: "LiveRoomSchedule",
-        enabled: isFocused,
+        enabled: liveRoomHeavyPollEnabled,
         activeMs: 90000,
         idleMs: 120000,
         onTick: async () => {
@@ -7751,7 +8016,7 @@ export default function LiveRoomScreen() {
 
     const stopPoll = startAdaptiveLivePolling({
       screen: "LiveRoomSchedule",
-      enabled: isFocused,
+      enabled: liveRoomHeavyPollEnabled,
       activeMs: 90000,
       idleMs: 120000,
       onTick: async () => {
@@ -7769,7 +8034,7 @@ export default function LiveRoomScreen() {
     liveBridgeId,
     (params as any).liveId,
     liveApiHeaders,
-    isFocused,
+    liveRoomHeavyPollEnabled,
     isMediaInstantLive,
     routeScheduleSlots.length,
     initialRouteScheduleSlots.length,
@@ -7827,11 +8092,14 @@ export default function LiveRoomScreen() {
     }
 
     void hydrateFeedClaimAvatars("immediate");
-    const timer = setInterval(() => void hydrateFeedClaimAvatars("poll"), 45000);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    if (liveRoomHeavyPollEnabled) {
+      timer = setInterval(() => void hydrateFeedClaimAvatars("poll"), 45000);
+    }
 
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
     };
   }, [
     isMediaInstantLive,
@@ -7839,6 +8107,7 @@ export default function LiveRoomScreen() {
     churchLiveControlScheduleId,
     liveScheduleFeedId,
     liveApiHeaders,
+    liveRoomHeavyPollEnabled,
   ]);
 
   useEffect(() => {
@@ -7948,7 +8217,7 @@ export default function LiveRoomScreen() {
 
     const stopPoll = startAdaptiveLivePolling({
       screen: "LiveRoomChurchLiveControl",
-      enabled: isFocused,
+      enabled: liveRoomHeavyPollEnabled,
       activeMs: 90000,
       idleMs: 120000,
       onTick: async () => {
@@ -7966,7 +8235,7 @@ export default function LiveRoomScreen() {
     routeIsChurchLiveControl,
     liveApiHeaders,
     liveRouteChurchId,
-    isFocused,
+    liveRoomHeavyPollEnabled,
     (params as any)?.sourceScheduleId,
     (params as any)?.liveId,
     (params as any)?.churchName,
@@ -8538,7 +8807,7 @@ export default function LiveRoomScreen() {
 
     const stopSync = startAdaptiveLivePolling({
       screen: "LiveRoom",
-      enabled: isFocused,
+      enabled: liveRoomHeavyPollEnabled,
       activeMs: canManageLiveRef.current ? 3000 : 6000,
       idleMs: 22000,
       onTick: async () => {
@@ -8556,7 +8825,7 @@ export default function LiveRoomScreen() {
 
     const stopHeartbeat = startAdaptiveLivePolling({
       screen: "LiveRoomHeartbeat",
-      enabled: isFocused,
+      enabled: liveRoomHeavyPollEnabled,
       activeMs: 15000,
       idleMs: 30000,
       onTick: async () => {
@@ -8579,7 +8848,7 @@ export default function LiveRoomScreen() {
       stopSync();
       stopHeartbeat();
     };
-  }, [isMediaInstantLive, isFocused, fetchLightLiveStateCoalesced]);
+  }, [isMediaInstantLive, liveRoomHeavyPollEnabled, fetchLightLiveStateCoalesced]);
 
   const SILENT_LIVE_ROOM_REFRESH_MS = 45000;
   const NEAR_LIVE_SCHEDULE_MS = 30 * 60 * 1000;
@@ -11416,6 +11685,229 @@ export default function LiveRoomScreen() {
     micPermission?.granted,
   ]);
 
+  const livePreflightPublisherMic = canPublishClaimedMicNow;
+  const livePreflightPublisherCamera = cameraPublishAllowedNow;
+  const livePreflightSkip = String((params as any)?.preview || "") === "1";
+  const livePreflightActive = !livePreflightSkip && !livePreflightComplete;
+  const liveKitPreflightStageKey = `lk-preflight-${liveBridgeId}|${currentUserId || "anon"}|r${livePreflightRetryEpoch}`;
+
+  useEffect(() => {
+    (globalThis as any).__KRISTO_LIVE_PREFLIGHT_ACTIVE__ = livePreflightActive;
+    return () => {
+      (globalThis as any).__KRISTO_LIVE_PREFLIGHT_ACTIVE__ = false;
+    };
+  }, [livePreflightActive]);
+
+  useEffect(() => {
+    if (livePreflightSkip) {
+      if (!livePreflightComplete) setLivePreflightComplete(true);
+      return;
+    }
+    if (livePreflightComplete) return;
+
+    if (!livePreflightStartedRef.current) {
+      livePreflightStartedRef.current = true;
+      livePreflightStartedAtRef.current = Date.now();
+      logLivePreflightStart({
+        liveBridgeId,
+        isMediaInstantLive,
+        needsPublisherMic: livePreflightPublisherMic,
+        needsPublisherCamera: livePreflightPublisherCamera,
+        routeSlotCount: routeScheduleSlots.length,
+      });
+    }
+
+    const claimLock = readClaimEnterSessionLock(liveBridgeId);
+    const evaluation = evaluateLivePreflight({
+      isMediaInstantLive,
+      backendScheduleReady,
+      churchLiveControlBridgeBlocked,
+      liveBridgeId,
+      needsPublisherMic: livePreflightPublisherMic,
+      needsPublisherCamera: livePreflightPublisherCamera,
+      livePerfPermissionsDone,
+      cameraPermissionGranted: !!cameraPermission?.granted,
+      micPermissionGranted: !!micPermission?.granted,
+      mainStageLocalVideoReady,
+      claimEnterCameraPublished: claimLock?.cameraPublished === true,
+    });
+
+    setLivePreflightSteps(evaluation.steps);
+
+    for (const step of evaluation.steps) {
+      if (step.status !== "done" || livePreflightStepLoggedRef.current[step.id]) continue;
+      livePreflightStepLoggedRef.current[step.id] = true;
+      logLivePreflightStep({
+        stepId: step.id,
+        label: step.label,
+        liveBridgeId,
+        doneCount: evaluation.doneCount,
+      });
+    }
+
+    if (evaluation.ready && !livePreflightReadyLoggedRef.current) {
+      livePreflightReadyLoggedRef.current = true;
+      logLivePreflightReady({
+        liveBridgeId,
+        durationMs: Date.now() - livePreflightStartedAtRef.current,
+        needsPublisherMic: livePreflightPublisherMic,
+        needsPublisherCamera: livePreflightPublisherCamera,
+      });
+      setLivePreflightComplete(true);
+      setLivePreflightTimedOut(false);
+    }
+  }, [
+    livePreflightSkip,
+    livePreflightComplete,
+    isMediaInstantLive,
+    backendScheduleReady,
+    churchLiveControlBridgeBlocked,
+    liveBridgeId,
+    livePreflightPublisherMic,
+    livePreflightPublisherCamera,
+    livePerfPermissionsDone,
+    cameraPermission?.granted,
+    micPermission?.granted,
+    mainStageLocalVideoReady,
+    routeScheduleSlots.length,
+    livePreflightRetryEpoch,
+  ]);
+
+  useEffect(() => {
+    if (livePreflightSkip || livePreflightComplete) return;
+
+    const tick = () => {
+      const elapsedMs = Date.now() - (livePreflightStartedAtRef.current || Date.now());
+      setLivePreflightElapsedSec(Math.max(0, Math.floor(elapsedMs / 1000)));
+
+      if (elapsedMs >= LIVE_PREFLIGHT_TIMEOUT_MS) {
+        if (!livePreflightTimeoutLoggedRef.current) {
+          livePreflightTimeoutLoggedRef.current = true;
+          logLivePreflightTimeout({
+            liveBridgeId,
+            elapsedMs,
+            needsPublisherMic: livePreflightPublisherMic,
+            needsPublisherCamera: livePreflightPublisherCamera,
+          });
+        }
+        setLivePreflightTimedOut(true);
+      }
+    };
+
+    tick();
+    const timer = setInterval(tick, LIVE_PREFLIGHT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [
+    livePreflightSkip,
+    livePreflightComplete,
+    liveBridgeId,
+    livePreflightPublisherMic,
+    livePreflightPublisherCamera,
+    livePreflightRetryEpoch,
+  ]);
+
+  useEffect(() => {
+    if (livePreflightSkip || livePreflightComplete) return;
+    const timer = setInterval(() => {
+      const claimLock = readClaimEnterSessionLock(liveBridgeId);
+      const evaluation = evaluateLivePreflight({
+        isMediaInstantLive,
+        backendScheduleReady,
+        churchLiveControlBridgeBlocked,
+        liveBridgeId,
+        needsPublisherMic: livePreflightPublisherMic,
+        needsPublisherCamera: livePreflightPublisherCamera,
+        livePerfPermissionsDone,
+        cameraPermissionGranted: !!cameraPermission?.granted,
+        micPermissionGranted: !!micPermission?.granted,
+        mainStageLocalVideoReady,
+        claimEnterCameraPublished: claimLock?.cameraPublished === true,
+      });
+      setLivePreflightSteps(evaluation.steps);
+      if (evaluation.ready) {
+        if (!livePreflightReadyLoggedRef.current) {
+          livePreflightReadyLoggedRef.current = true;
+          logLivePreflightReady({
+            liveBridgeId,
+            durationMs: Date.now() - livePreflightStartedAtRef.current,
+            needsPublisherMic: livePreflightPublisherMic,
+            needsPublisherCamera: livePreflightPublisherCamera,
+            source: "poll",
+          });
+        }
+        setLivePreflightComplete(true);
+        setLivePreflightTimedOut(false);
+      }
+    }, LIVE_PREFLIGHT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [
+    livePreflightSkip,
+    livePreflightComplete,
+    isMediaInstantLive,
+    backendScheduleReady,
+    churchLiveControlBridgeBlocked,
+    liveBridgeId,
+    livePreflightPublisherMic,
+    livePreflightPublisherCamera,
+    livePerfPermissionsDone,
+    cameraPermission?.granted,
+    micPermission?.granted,
+    mainStageLocalVideoReady,
+    livePreflightRetryEpoch,
+  ]);
+
+  function resetLivePreflightState() {
+    livePreflightStartedRef.current = false;
+    livePreflightReadyLoggedRef.current = false;
+    livePreflightStepLoggedRef.current = {};
+    livePreflightTimeoutLoggedRef.current = false;
+    livePreflightStartedAtRef.current = Date.now();
+    setLivePreflightElapsedSec(0);
+    setLivePreflightTimedOut(false);
+    setLivePreflightComplete(false);
+    setLivePreflightSteps(
+      LIVE_PREFLIGHT_STEP_DEFS.map((def) => ({ ...def, status: "pending" as const }))
+    );
+  }
+
+  function handleLivePreflightRetry() {
+    const userId = String(session?.userId || "").trim();
+    const roomName = String(liveBridgeId || "").trim();
+    logLivePreflightRetry({
+      liveBridgeId: roomName,
+      retryEpoch: livePreflightRetryEpoch + 1,
+      timedOut: livePreflightTimedOut,
+    });
+    resetLivePreflightState();
+    setLivePreflightRetryEpoch((epoch) => epoch + 1);
+    liveKitPublisherStageStickyRef.current = false;
+    prevShouldMountLiveKitRef.current = null;
+    try {
+      (globalThis as any).__KRISTO_LIVEKIT_ACTIVE_TOKEN_CLAIMS__ = null;
+      (globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ = "";
+    } catch {}
+    forceKristoLiveCleanup("preflight-retry", {
+      userId,
+      roomName,
+      forceReentry: true,
+    });
+    if (roomName && userId && (livePreflightPublisherMic || livePreflightPublisherCamera)) {
+      pinLiveKitPublisherHostBeforeToken(roomName, "preflight-retry", {
+        stableIdentity: String(currentUserId || userId).replace(/[^a-zA-Z0-9_]/g, ""),
+      });
+    }
+    prewarmLiveRoomMediaPermissions("preflight-retry");
+  }
+
+  function handleLivePreflightBack() {
+    logLivePreflightBack({
+      liveBridgeId,
+      elapsedSec: livePreflightElapsedSec,
+      timedOut: livePreflightTimedOut,
+    });
+    quitLiveRoom();
+  }
+
   useEffect(() => {
     if (!liveEnabled) return;
 
@@ -11831,6 +12323,22 @@ ${scheduleAudienceAccessText}`,
 
 return (
     <SafeAreaView style={s.safe as ViewStyle} edges={layoutMode === "focus" || layoutMode === "grid6" || layoutMode === "audience20" ? [] : ["top", "bottom"]} {...rootPanHandlers}>
+        {livePreflightActive ? (
+          <LiveRoomPreflight
+            steps={livePreflightSteps}
+            doneCount={livePreflightSteps.filter((step) => step.status === "done").length}
+            elapsedSec={livePreflightElapsedSec}
+            timedOut={livePreflightTimedOut}
+            onRetry={handleLivePreflightRetry}
+            onBack={handleLivePreflightBack}
+            waveAnim={waveAnim}
+          />
+        ) : null}
+
+        <View
+          style={[{ flex: 1 }, livePreflightActive ? { opacity: 0 } : null] as any}
+          pointerEvents={livePreflightActive ? "none" : "auto"}
+        >
 
         {layoutMode === "focus" ? (
           <View style={[s.vipSoloRoot as any, { paddingTop: Math.max(insets.top + 14, 28) }]}>
@@ -11870,7 +12378,7 @@ return (
               canShowCamera ? (
                 <>
                   <KristoLiveKitStage
-                    key={liveKitPublisherStageKey}
+                    key={liveKitPreflightStageKey}
                     roomName={liveBridgeId}
                     headers={liveKitApiHeaders}
                     canPublish={keepPublisherLiveKitStage}
@@ -11892,7 +12400,7 @@ return (
               ) : isMediaInstantLive ? (
                 <>
                   <KristoLiveKitStage
-                    key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
+                    key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}|pf${livePreflightRetryEpoch}`}
                     roomName={liveBridgeId}
                     headers={liveKitViewerApiHeaders}
                     canPublish={false}
@@ -12115,7 +12623,7 @@ return (
 {showLiveKitStageShell ? (
               keepPublisherLiveKitStage ? (
                 <KristoLiveKitStage
-                  key={liveKitPublisherStageKey}
+                  key={liveKitPreflightStageKey}
                   roomName={liveBridgeId}
                   headers={liveKitApiHeaders}
                   canPublish={keepPublisherLiveKitStage}
@@ -12137,7 +12645,7 @@ return (
                 />
               ) : (
                 <KristoLiveKitStage
-                  key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}`}
+                  key={`${liveKitStageSessionKey}|e${liveKitAccountEpoch}|pf${livePreflightRetryEpoch}`}
                   roomName={liveBridgeId}
                   headers={liveKitViewerApiHeaders}
                   canPublish={false}
@@ -14332,6 +14840,7 @@ return (
 </Modal>
 
 
+        </View>
     </SafeAreaView>
   );
 }
@@ -19552,6 +20061,168 @@ const s: any = StyleSheet.create({
     color: "#34D399",
     fontWeight: "900",
     fontSize: 12,
+  },
+
+  livePreflightRoot: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 12000,
+    backgroundColor: "#070816",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 20,
+  },
+  livePreflightAuraOne: {
+    position: "absolute",
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+    backgroundColor: "rgba(244, 208, 111, 0.10)",
+    top: -80,
+    right: -100,
+  },
+  livePreflightAuraTwo: {
+    position: "absolute",
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    backgroundColor: "rgba(82, 47, 12, 0.18)",
+    bottom: -120,
+    left: -130,
+  },
+  livePreflightCard: {
+    width: "100%",
+    maxWidth: 420,
+    borderRadius: 28,
+    paddingHorizontal: 22,
+    paddingVertical: 24,
+    borderWidth: 1,
+    borderColor: "rgba(244, 208, 111, 0.28)",
+    backgroundColor: "rgba(8, 12, 24, 0.92)",
+    shadowColor: "#F4D06F",
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+  },
+  livePreflightEyebrow: {
+    color: "rgba(244, 208, 111, 0.82)",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 2.4,
+    marginBottom: 8,
+  },
+  livePreflightTitle: {
+    color: "#F8FAFF",
+    fontSize: 28,
+    fontWeight: "800",
+    letterSpacing: -0.4,
+    marginBottom: 8,
+  },
+  livePreflightSubtitle: {
+    color: "rgba(220, 233, 255, 0.72)",
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 22,
+  },
+  livePreflightRingWrap: {
+    alignSelf: "center",
+    width: 132,
+    height: 132,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 18,
+  },
+  livePreflightRingPulse: {
+    position: "absolute",
+    width: 132,
+    height: 132,
+    borderRadius: 66,
+    borderWidth: 2,
+    borderColor: "rgba(244, 208, 111, 0.42)",
+  },
+  livePreflightRingCore: {
+    width: 108,
+    height: 108,
+    borderRadius: 54,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(244, 208, 111, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(244, 208, 111, 0.35)",
+  },
+  livePreflightRingPct: {
+    color: "#F4D06F",
+    fontSize: 28,
+    fontWeight: "900",
+  },
+  livePreflightRingElapsed: {
+    color: "rgba(220, 233, 255, 0.62)",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  livePreflightProgressTrack: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    overflow: "hidden",
+    marginBottom: 18,
+  },
+  livePreflightProgressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#F4D06F",
+  },
+  livePreflightSteps: {
+    gap: 10,
+    marginBottom: 22,
+  },
+  livePreflightStepRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  livePreflightStepLabel: {
+    color: "rgba(220, 233, 255, 0.55)",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  livePreflightStepLabelActive: {
+    color: "#F8FAFF",
+    fontWeight: "800",
+  },
+  livePreflightStepLabelDone: {
+    color: "rgba(52, 211, 153, 0.92)",
+  },
+  livePreflightActions: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  livePreflightBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  livePreflightBackBtn: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(220, 233, 255, 0.18)",
+  },
+  livePreflightBackBtnText: {
+    color: "#DCE9FF",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  livePreflightRetryBtn: {
+    backgroundColor: "#F4D06F",
+  },
+  livePreflightRetryBtnText: {
+    color: "#1B1408",
+    fontSize: 14,
+    fontWeight: "900",
   },
 
 });
