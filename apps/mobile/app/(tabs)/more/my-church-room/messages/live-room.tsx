@@ -3551,8 +3551,7 @@ function evaluateLivePreflight(input: {
     cameraReady &&
     (!input.needsPublisherCamera ||
       input.mainStageLocalVideoReady ||
-      input.claimEnterCameraPublished ||
-      (connectReady && input.livePerfPermissionsDone));
+      input.claimEnterCameraPublished);
 
   const flags: Record<LivePreflightStepId, boolean> = {
     schedule: scheduleReady,
@@ -11752,6 +11751,9 @@ export default function LiveRoomScreen() {
         durationMs: Date.now() - livePreflightStartedAtRef.current,
         needsPublisherMic: livePreflightPublisherMic,
         needsPublisherCamera: livePreflightPublisherCamera,
+        source: "deps",
+        mainStageLocalVideoReady,
+        claimEnterCameraPublished: claimLock?.cameraPublished === true,
       });
       setLivePreflightComplete(true);
       setLivePreflightTimedOut(false);
@@ -11824,6 +11826,19 @@ export default function LiveRoomScreen() {
         claimEnterCameraPublished: claimLock?.cameraPublished === true,
       });
       setLivePreflightSteps(evaluation.steps);
+
+      for (const step of evaluation.steps) {
+        if (step.status !== "done" || livePreflightStepLoggedRef.current[step.id]) continue;
+        livePreflightStepLoggedRef.current[step.id] = true;
+        logLivePreflightStep({
+          stepId: step.id,
+          label: step.label,
+          liveBridgeId,
+          doneCount: evaluation.doneCount,
+          source: "poll",
+        });
+      }
+
       if (evaluation.ready) {
         if (!livePreflightReadyLoggedRef.current) {
           livePreflightReadyLoggedRef.current = true;
@@ -11833,6 +11848,8 @@ export default function LiveRoomScreen() {
             needsPublisherMic: livePreflightPublisherMic,
             needsPublisherCamera: livePreflightPublisherCamera,
             source: "poll",
+            mainStageLocalVideoReady,
+            claimEnterCameraPublished: claimLock?.cameraPublished === true,
           });
         }
         setLivePreflightComplete(true);
