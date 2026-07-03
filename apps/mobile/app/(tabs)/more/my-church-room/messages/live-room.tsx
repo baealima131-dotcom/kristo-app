@@ -363,6 +363,89 @@ function subscribeKristoActualMicEnabled(fn: (enabled: boolean) => void) {
   };
 }
 
+type MainStageLocalVideoReadyDetail = {
+  source: string;
+  hasUrl?: boolean;
+  hasPublication?: boolean;
+  readyState?: string;
+  publicationSource?: string;
+};
+
+function resetMainStageLocalVideoReady() {
+  try {
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY__ = false;
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_AT__ = 0;
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_DETAIL__ = null;
+  } catch {}
+}
+
+function isMainStageLocalVideoReady() {
+  return Boolean(gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY__);
+}
+
+function publishMainStageLocalVideoReady(detail: MainStageLocalVideoReadyDetail) {
+  const wasReady = isMainStageLocalVideoReady();
+  try {
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY__ = true;
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_AT__ = Date.now();
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_DETAIL__ = detail;
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_LISTENERS__ =
+      gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_LISTENERS__ || new Set();
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_LISTENERS__.forEach((fn: any) => {
+      try {
+        fn(detail);
+      } catch {}
+    });
+  } catch {}
+  if (!wasReady) {
+    console.log("KRISTO_VIDEO_PLACEHOLDER_HIDDEN", detail);
+  }
+}
+
+function subscribeMainStageLocalVideoReady(fn: (detail: MainStageLocalVideoReadyDetail) => void) {
+  try {
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_LISTENERS__ =
+      gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_LISTENERS__ || new Set();
+    gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_LISTENERS__.add(fn);
+    if (isMainStageLocalVideoReady()) {
+      fn(gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_DETAIL__ || { source: "rehydrate" });
+    }
+  } catch {}
+
+  return () => {
+    try {
+      gAny.__KRISTO_MAIN_STAGE_LOCAL_VIDEO_READY_LISTENERS__.delete(fn);
+    } catch {}
+  };
+}
+
+function markLocalVideoUiReady(
+  source: string,
+  logEvent: "KRISTO_LOCAL_VIDEO_RENDER_READY" | "KRISTO_LOCAL_TRACK_PUBLISHED_UI_SYNC",
+  extra?: Record<string, unknown>
+) {
+  console.log(logEvent, { source, ...(extra || {}) });
+  publishMainStageLocalVideoReady({
+    source,
+    hasUrl: typeof extra?.hasUrl === "boolean" ? extra.hasUrl : undefined,
+    hasPublication:
+      typeof extra?.hasPublication === "boolean" ? extra.hasPublication : undefined,
+    readyState: typeof extra?.readyState === "string" ? extra.readyState : undefined,
+    publicationSource:
+      typeof extra?.publicationSource === "string" ? extra.publicationSource : undefined,
+  });
+}
+
+function renderLiveKitStageShellFallback(
+  fallback: React.ReactNode,
+  mainStageVideoReady: boolean
+) {
+  if (mainStageVideoReady) {
+    return <View style={{ flex: 1, backgroundColor: "#000" }} />;
+  }
+  return <>{fallback}</>;
+}
+
 function logLivePerf(stage: string, extra?: Record<string, unknown>) {
   const mountAt = Number((globalThis as any).__KRISTO_LIVE_ROOM_PERF_MOUNT_AT__ || 0);
   console.log("KRISTO_LIVE_PERF", {
@@ -955,6 +1038,7 @@ function KristoLiveKitStage({
   fallback,
   renderLocalPreview = false,
   preferredIdentityPrefix,
+  mainStageVideoReady = false,
 }: {
   roomName: string;
   headers: any;
@@ -969,6 +1053,7 @@ function KristoLiveKitStage({
   fallback: React.ReactNode;
   renderLocalPreview?: boolean;
   preferredIdentityPrefix?: string;
+  mainStageVideoReady?: boolean;
 }) {
 
   const [tokenState, setTokenState] = useState<{ url: string; token: string } | null>(null);
@@ -1538,7 +1623,7 @@ const headersKey = JSON.stringify(headers || {});
       shouldSkipViewerMount,
       activePublisherRoom,
     });
-    return <>{fallback}</>;
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
   }
 
   if (shouldSkipDuplicatePublisherMount(activePublisherRoom)) {
@@ -1546,7 +1631,7 @@ const headersKey = JSON.stringify(headers || {});
       activePublisherRoom,
       isPublisherStage,
     });
-    return <>{fallback}</>;
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
   }
 
   const livekitCooldownUntil = Number((globalThis as any).__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ || 0);
@@ -1555,7 +1640,7 @@ const headersKey = JSON.stringify(headers || {});
       livekitDisabled,
       livekitCooldownUntil,
     });
-    return <>{fallback}</>;
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
   }
 
   if (!liveKitCredentials?.url || !liveKitCredentials?.token) {
@@ -1570,7 +1655,7 @@ const headersKey = JSON.stringify(headers || {});
         hostPinnedBeforeToken: true,
       });
     }
-    return <>{fallback}</>;
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
   }
 
   const keepLiveKitRoomMountedWhileConnecting =
@@ -1583,7 +1668,7 @@ const headersKey = JSON.stringify(headers || {});
 
   if (!effectiveStageMountAllowed && !keepLiveKitRoomMountedWhileConnecting) {
     logStageEarlyReturn("stage-mount-not-allowed");
-    return <>{fallback}</>;
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
   }
 
   // IMPORTANT:
@@ -2596,13 +2681,28 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
           localVideoTrackRef.current = track;
           setLocalVideoTrack(track);
           console.log("KRISTO_LOCAL_PREVIEW_TRACK_READY");
+          markLocalVideoUiReady("sync-local-camera", "KRISTO_LOCAL_TRACK_PUBLISHED_UI_SYNC", {
+            hasPublication: true,
+          });
         }
       } catch {}
+    };
+
+    const onLocalCameraPublished = (pub: any) => {
+      const source = String(pub?.source || "").toLowerCase();
+      const kind = String(pub?.kind || pub?.track?.kind || "").toLowerCase();
+      if (kind !== "video" && !source.includes("camera")) return;
+      syncLocalCamera();
+      markLocalVideoUiReady("RoomEvent.LocalTrackPublished", "KRISTO_LOCAL_TRACK_PUBLISHED_UI_SYNC", {
+        hasPublication: true,
+        publicationSource: source,
+      });
     };
 
     syncLocalCamera();
 
     room.on(RoomEvent.LocalTrackPublished, syncLocalCamera);
+    room.on(RoomEvent.LocalTrackPublished, onLocalCameraPublished);
     room.on(RoomEvent.Connected, syncLocalCamera);
 
     let t: any = setInterval(() => {
@@ -2616,6 +2716,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
 
     return () => {
       room.off(RoomEvent.LocalTrackPublished, syncLocalCamera);
+      room.off(RoomEvent.LocalTrackPublished, onLocalCameraPublished);
       room.off(RoomEvent.Connected, syncLocalCamera);
 
       if (t) {
@@ -2937,6 +3038,9 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         localVideoTrackRef.current = localTrack;
         videoFacingRef.current = cameraFacing;
         setLocalVideoTrack(localTrack);
+        markLocalVideoUiReady("camera-publish-done", "KRISTO_LOCAL_TRACK_PUBLISHED_UI_SYNC", {
+          hasPublication: afterPublish.hasPublication,
+        });
         isPublishing = afterPublish.hasPublication;
 
         console.log("KRISTO_MANUAL_PUBLISH_TRACK_DONE", { cameraFacing, triggerSource });
@@ -3085,7 +3189,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     }
   }, [localVideoTrack, cameraPaused]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!localVideoTrack || cameraPaused) {
       setLocalPreviewURL("");
       return;
@@ -3110,6 +3214,10 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       });
 
       setLocalPreviewURL(url);
+      markLocalVideoUiReady("local-preview-url", "KRISTO_LOCAL_VIDEO_RENDER_READY", {
+        hasUrl: !!url,
+        readyState: String(mediaTrack.readyState || ""),
+      });
       if (!firstFrameLoggedRef.current) {
         firstFrameLoggedRef.current = true;
         const capture = resolveLiveKitVideoCaptureOptions();
@@ -3159,7 +3267,11 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       cameraPaused,
       renderLocalPreview,
       canPublishCamera,
+      mainStageVideoReady: isMainStageLocalVideoReady(),
     });
+    if (isMainStageLocalVideoReady()) {
+      return <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]} />;
+    }
     return <>{fallback}</>;
   }
 
@@ -3180,6 +3292,9 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
 export default function LiveRoomScreen() {
   const [cameraPaused, setCameraPaused] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [mainStageLocalVideoReady, setMainStageLocalVideoReady] = useState(() =>
+    isMainStageLocalVideoReady()
+  );
   const [liveKitAccountEpoch, setLiveKitAccountEpoch] = useState(0);
   const prevSessionUserIdRef = useRef("");
   const liveRoomMountAtRef = useRef(0);
@@ -3225,6 +3340,19 @@ export default function LiveRoomScreen() {
       ])
     ).start();
   }, []);
+
+  useEffect(() => {
+    return subscribeMainStageLocalVideoReady(() => {
+      setMainStageLocalVideoReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!cameraPaused) return;
+    resetMainStageLocalVideoReady();
+    setMainStageLocalVideoReady(false);
+  }, [cameraPaused]);
+
   const params = useLocalSearchParams<{
     title?: string;
     role?: string;
@@ -6743,6 +6871,11 @@ export default function LiveRoomScreen() {
             projectId ||
             "scheduled-live-default"
         );
+
+  useEffect(() => {
+    resetMainStageLocalVideoReady();
+    setMainStageLocalVideoReady(false);
+  }, [liveBridgeId]);
 
   const churchLiveControlBridgeBlocked =
     routeIsChurchLiveControl && !isMediaInstantLive && !String(liveBridgeId || "").trim();
@@ -11147,6 +11280,9 @@ export default function LiveRoomScreen() {
     const userId = String(session?.userId || "").trim();
     const roomName = String(liveBridgeId || "").trim();
 
+    resetMainStageLocalVideoReady();
+    setMainStageLocalVideoReady(false);
+
     clearLiveRoomSessionPin("leave-live-room");
     clearLiveKitPublisherStagePin("leave-live-room");
     clearClaimEnterSessionLock("leave-live-room");
@@ -11577,6 +11713,7 @@ return (
                     canPublishMicOverride={liveKitMicOverrideReady}
                     canPublishCameraOverride={liveKitCameraOverrideReady}
                     renderLocalPreview={cameraPublishAllowedNow}
+                    mainStageVideoReady={mainStageLocalVideoReady}
                     preferredIdentityPrefix={liveKitPublisherIdentity}
                     identity={liveKitPublisherIdentity}
                     cameraFacing={cameraFacing}
@@ -11584,13 +11721,17 @@ return (
                     cameraPaused={cameraPaused}
                     style={s.vipSoloCamera as any}
                     fallback={
-                      <View style={s.vipSoloFallback as any}>
-                        <View style={s.vipSoloAvatar as any}>
-                          <Text style={s.vipSoloAvatarText as any}>K</Text>
+                      mainStageLocalVideoReady ? (
+                        <View style={s.vipSoloFallback as any} />
+                      ) : (
+                        <View style={s.vipSoloFallback as any}>
+                          <View style={s.vipSoloAvatar as any}>
+                            <Text style={s.vipSoloAvatarText as any}>K</Text>
+                          </View>
+                          <Text style={s.vipSoloFallbackTitle as any}>Connecting camera...</Text>
+                          <Text style={s.vipSoloFallbackSub as any}>Preparing host video</Text>
                         </View>
-                        <Text style={s.vipSoloFallbackTitle as any}>Connecting camera...</Text>
-                        <Text style={s.vipSoloFallbackSub as any}>Preparing host video</Text>
-                      </View>
+                      )
                     }
                   />
                   <View pointerEvents="none" style={s.vipSoloCameraWarmOverlay as any} />
@@ -11604,6 +11745,7 @@ return (
                     headers={liveKitViewerApiHeaders}
                     canPublish={false}
                     renderLocalPreview={false}
+                    mainStageVideoReady={mainStageLocalVideoReady}
                     preferredIdentityPrefix={`${String(actualChurchPastorUserId || params.pastorUserId || "")}-slot-1`}
                     identity={`${String(session?.userId || "viewer")}-viewer`}
                     cameraFacing={"front"}
@@ -11611,13 +11753,17 @@ return (
                     cameraPaused={true}
                     style={s.vipSoloCamera as any}
                     fallback={
-                      <View style={s.vipSoloFallback as any}>
-                        <View style={s.vipSoloAvatar as any}>
-                          <Text style={s.vipSoloAvatarText as any}>K</Text>
+                      mainStageLocalVideoReady ? (
+                        <View style={s.vipSoloFallback as any} />
+                      ) : (
+                        <View style={s.vipSoloFallback as any}>
+                          <View style={s.vipSoloAvatar as any}>
+                            <Text style={s.vipSoloAvatarText as any}>K</Text>
+                          </View>
+                          <Text style={s.vipSoloFallbackTitle as any}>Pastor is LIVE</Text>
+                          <Text style={s.vipSoloFallbackSub as any}>Connecting video...</Text>
                         </View>
-                        <Text style={s.vipSoloFallbackTitle as any}>Pastor is LIVE</Text>
-                        <Text style={s.vipSoloFallbackSub as any}>Connecting video...</Text>
-                      </View>
+                      )
                     }
                   />
                   <View pointerEvents="none" style={s.vipSoloCameraWarmOverlay as any} />
@@ -11824,6 +11970,7 @@ return (
                   canPublishMicOverride={liveKitMicOverrideReady}
                   canPublishCameraOverride={liveKitCameraOverrideReady}
                   renderLocalPreview={cameraPublishAllowedNow}
+                  mainStageVideoReady={mainStageLocalVideoReady}
                   preferredIdentityPrefix={
                     isMediaInstantLive
                       ? ""
@@ -11835,13 +11982,17 @@ return (
                   cameraPaused={cameraPaused}
                   style={s.teamGridLiveCamera as any}
                   fallback={
-                    <View style={s.teamGridLiveFallback as any}>
-                      <View style={s.livePausedWrap as any}>
-                        <Ionicons name="radio-outline" size={64} color="#F4C95D" />
-                        <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : currentMainStageSlot ? `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE` : scheduleWindowStillLive ? "LIVE SLOT ACTIVE" : "LIVE WINDOW ENDED"}</Text>
-                        <Text style={s.livePausedSub as any}>{currentMainStageSlot || isMediaInstantLive || scheduleWindowStillLive ? "Connecting video..." : "No active speaker right now"}</Text>
+                    mainStageLocalVideoReady ? (
+                      <View style={s.teamGridLiveFallback as any} />
+                    ) : (
+                      <View style={s.teamGridLiveFallback as any}>
+                        <View style={s.livePausedWrap as any}>
+                          <Ionicons name="radio-outline" size={64} color="#F4C95D" />
+                          <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : currentMainStageSlot ? `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE` : scheduleWindowStillLive ? "LIVE SLOT ACTIVE" : "LIVE WINDOW ENDED"}</Text>
+                          <Text style={s.livePausedSub as any}>{currentMainStageSlot || isMediaInstantLive || scheduleWindowStillLive ? "Connecting video..." : "No active speaker right now"}</Text>
+                        </View>
                       </View>
-                    </View>
+                    )
                   }
                 />
               ) : (
@@ -11850,6 +12001,7 @@ return (
                   roomName={liveBridgeId}
                   headers={liveKitViewerApiHeaders}
                   canPublish={false}
+                  mainStageVideoReady={mainStageLocalVideoReady}
                   preferredIdentityPrefix={
                     !isMediaInstantLive && currentMainStageSlot
                       ? `slot:${Number((currentMainStageSlot as any)?.slot || currentSlotNumber || 0)}`
@@ -11861,13 +12013,17 @@ return (
                   cameraPaused={true}
                   style={s.teamGridLiveCamera as any}
                   fallback={
-                    <View style={s.teamGridLiveFallback as any}>
-                      <View style={s.livePausedWrap as any}>
-                        <Ionicons name="radio-outline" size={64} color="#F4C95D" />
-                        <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE`}</Text>
-                        <Text style={s.livePausedSub as any}>Waiting for pastor video...</Text>
+                    mainStageLocalVideoReady ? (
+                      <View style={s.teamGridLiveFallback as any} />
+                    ) : (
+                      <View style={s.teamGridLiveFallback as any}>
+                        <View style={s.livePausedWrap as any}>
+                          <Ionicons name="radio-outline" size={64} color="#F4C95D" />
+                          <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE`}</Text>
+                          <Text style={s.livePausedSub as any}>Waiting for pastor video...</Text>
+                        </View>
                       </View>
-                    </View>
+                    )
                   }
                 />
               )
