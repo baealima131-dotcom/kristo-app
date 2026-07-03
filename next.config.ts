@@ -24,8 +24,6 @@ const nextConfig: NextConfig = {
 
   async rewrites() {
     return {
-      // App Router does not register app/.well-known/* routes on Vercel (404).
-      // Rewrite the Apple-required path to a normal API route before filesystem routing.
       beforeFiles: [
         {
           source: "/.well-known/apple-app-site-association",

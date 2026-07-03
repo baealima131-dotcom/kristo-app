@@ -66,7 +66,7 @@ export default async function SharedPostPage({ params }: PageProps) {
 
   if (!post) {
     return (
-      <main className="vip-auth privacy-page">
+      <main className="vip-auth privacy-page share-post-page">
         <div className="vip-ambient" aria-hidden="true" />
         <div className="vip-grain" aria-hidden="true" />
 
@@ -156,135 +156,117 @@ export default async function SharedPostPage({ params }: PageProps) {
   );
 }
 
+const SHARE_POST_PAGE_STYLES = `
+.privacy-page.share-post-page {
+  align-items: flex-start;
+  padding-top: 48px;
+  padding-bottom: 48px;
+}
+.share-post-page .privacy-shell {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  position: relative;
+  z-index: 1;
+}
+.share-post-page .privacy-header {
+  margin-bottom: 18px;
+}
+.share-post-page .privacy-title {
+  margin: 8px 0 0;
+  font-size: clamp(1.75rem, 4vw, 2.35rem);
+  line-height: 1.15;
+  color: rgba(255, 255, 255, 0.96);
+}
+.share-post-page .privacy-meta {
+  margin: 10px 0 0;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.95rem;
+}
+.share-post-page .privacy-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(12px);
+  padding: 28px 24px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+}
+.share-post-page .privacy-lead {
+  margin: 0 0 18px;
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.82);
+  white-space: pre-wrap;
+}
+.share-post-media {
+  margin-bottom: 18px;
+}
+.share-post-poster {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  object-fit: cover;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.35);
+}
+.share-post-note {
+  margin: 0 0 20px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 0.98rem;
+}
+.share-post-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.share-post-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+.share-post-btn:hover {
+  transform: translateY(-1px);
+}
+.share-post-btn-primary {
+  color: #111;
+  background: linear-gradient(180deg, #f4d06f 0%, #d9b35f 100%);
+}
+.share-post-btn-secondary {
+  color: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+}
+.share-post-footnote {
+  margin: 18px 0 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.48);
+  word-break: break-all;
+}
+.share-post-link {
+  color: rgba(212, 175, 55, 0.95);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+@media (min-width: 640px) {
+  .share-post-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .share-post-btn {
+    flex: 1 1 180px;
+  }
+}
+`;
+
 function SharePostPageStyles() {
-  return (
-    <style jsx global>{`
-      .privacy-page {
-        align-items: flex-start;
-        padding-top: 48px;
-        padding-bottom: 48px;
-      }
-
-      .privacy-shell {
-        width: 100%;
-        max-width: 720px;
-        margin: 0 auto;
-        position: relative;
-        z-index: 1;
-      }
-
-      .privacy-header {
-        margin-bottom: 18px;
-      }
-
-      .privacy-title {
-        margin: 8px 0 0;
-        font-size: clamp(1.75rem, 4vw, 2.35rem);
-        line-height: 1.15;
-        color: rgba(255, 255, 255, 0.96);
-      }
-
-      .privacy-meta {
-        margin: 10px 0 0;
-        color: rgba(255, 255, 255, 0.62);
-        font-size: 0.95rem;
-      }
-
-      .privacy-card {
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 20px;
-        background: rgba(255, 255, 255, 0.04);
-        backdrop-filter: blur(12px);
-        padding: 28px 24px;
-        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
-      }
-
-      .privacy-lead {
-        margin: 0 0 18px;
-        font-size: 1.05rem;
-        line-height: 1.7;
-        color: rgba(255, 255, 255, 0.82);
-        white-space: pre-wrap;
-      }
-
-      .share-post-media {
-        margin-bottom: 18px;
-      }
-
-      .share-post-poster {
-        display: block;
-        width: 100%;
-        max-height: 420px;
-        object-fit: cover;
-        border-radius: 16px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(0, 0, 0, 0.35);
-      }
-
-      .share-post-note {
-        margin: 0 0 20px;
-        line-height: 1.6;
-        color: rgba(255, 255, 255, 0.68);
-        font-size: 0.98rem;
-      }
-
-      .share-post-actions {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-
-      .share-post-btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 48px;
-        padding: 0 18px;
-        border-radius: 14px;
-        font-weight: 700;
-        text-decoration: none;
-        transition: transform 0.15s ease, opacity 0.15s ease;
-      }
-
-      .share-post-btn:hover {
-        transform: translateY(-1px);
-      }
-
-      .share-post-btn-primary {
-        color: #111;
-        background: linear-gradient(180deg, #f4d06f 0%, #d9b35f 100%);
-      }
-
-      .share-post-btn-secondary {
-        color: rgba(255, 255, 255, 0.92);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        background: rgba(255, 255, 255, 0.05);
-      }
-
-      .share-post-footnote {
-        margin: 18px 0 0;
-        font-size: 0.86rem;
-        line-height: 1.5;
-        color: rgba(255, 255, 255, 0.48);
-        word-break: break-all;
-      }
-
-      .share-post-link {
-        color: rgba(212, 175, 55, 0.95);
-        text-decoration: underline;
-        text-underline-offset: 3px;
-      }
-
-      @media (min-width: 640px) {
-        .share-post-actions {
-          flex-direction: row;
-          flex-wrap: wrap;
-        }
-
-        .share-post-btn {
-          flex: 1 1 180px;
-        }
-      }
-    `}</style>
-  );
+  return <style dangerouslySetInnerHTML={{ __html: SHARE_POST_PAGE_STYLES }} />;
 }
