@@ -438,12 +438,17 @@ function markLocalVideoUiReady(
 
 function renderLiveKitStageShellFallback(
   fallback: React.ReactNode,
-  mainStageVideoReady: boolean
+  mainStageVideoReady: boolean,
+  preferBlackShell = false
 ) {
-  if (mainStageVideoReady) {
+  if (mainStageVideoReady || preferBlackShell) {
     return <View style={{ flex: 1, backgroundColor: "#000" }} />;
   }
   return <>{fallback}</>;
+}
+
+function mainStageBlackVideoShell(style?: any) {
+  return <View style={[style, { backgroundColor: "#000" }]} />;
 }
 
 function logLivePerf(stage: string, extra?: Record<string, unknown>) {
@@ -1623,7 +1628,7 @@ const headersKey = JSON.stringify(headers || {});
       shouldSkipViewerMount,
       activePublisherRoom,
     });
-    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady, isPublisherStage);
   }
 
   if (shouldSkipDuplicatePublisherMount(activePublisherRoom)) {
@@ -1631,7 +1636,7 @@ const headersKey = JSON.stringify(headers || {});
       activePublisherRoom,
       isPublisherStage,
     });
-    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady, isPublisherStage);
   }
 
   const livekitCooldownUntil = Number((globalThis as any).__KRISTO_LIVEKIT_COOLDOWN_UNTIL__ || 0);
@@ -1640,7 +1645,7 @@ const headersKey = JSON.stringify(headers || {});
       livekitDisabled,
       livekitCooldownUntil,
     });
-    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady, isPublisherStage);
   }
 
   if (!liveKitCredentials?.url || !liveKitCredentials?.token) {
@@ -1655,7 +1660,7 @@ const headersKey = JSON.stringify(headers || {});
         hostPinnedBeforeToken: true,
       });
     }
-    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady, isPublisherStage);
   }
 
   const keepLiveKitRoomMountedWhileConnecting =
@@ -1668,7 +1673,7 @@ const headersKey = JSON.stringify(headers || {});
 
   if (!effectiveStageMountAllowed && !keepLiveKitRoomMountedWhileConnecting) {
     logStageEarlyReturn("stage-mount-not-allowed");
-    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady);
+    return renderLiveKitStageShellFallback(fallback, mainStageVideoReady, isPublisherStage);
   }
 
   // IMPORTANT:
@@ -3269,10 +3274,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       canPublishCamera,
       mainStageVideoReady: isMainStageLocalVideoReady(),
     });
-    if (isMainStageLocalVideoReady()) {
-      return <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]} />;
-    }
-    return <>{fallback}</>;
+    return <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]} />;
   }
 
   return (
@@ -11720,19 +11722,7 @@ return (
                     micMuted={cameraPublishAllowedNow ? false : live.micMuted}
                     cameraPaused={cameraPaused}
                     style={s.vipSoloCamera as any}
-                    fallback={
-                      mainStageLocalVideoReady ? (
-                        <View style={s.vipSoloFallback as any} />
-                      ) : (
-                        <View style={s.vipSoloFallback as any}>
-                          <View style={s.vipSoloAvatar as any}>
-                            <Text style={s.vipSoloAvatarText as any}>K</Text>
-                          </View>
-                          <Text style={s.vipSoloFallbackTitle as any}>Connecting camera...</Text>
-                          <Text style={s.vipSoloFallbackSub as any}>Preparing host video</Text>
-                        </View>
-                      )
-                    }
+                    fallback={mainStageBlackVideoShell(s.vipSoloFallback)}
                   />
                   <View pointerEvents="none" style={s.vipSoloCameraWarmOverlay as any} />
                   <View pointerEvents="none" style={s.vipSoloCameraVignette as any} />
@@ -11981,19 +11971,7 @@ return (
                   micMuted={cameraPublishAllowedNow ? false : live.micMuted}
                   cameraPaused={cameraPaused}
                   style={s.teamGridLiveCamera as any}
-                  fallback={
-                    mainStageLocalVideoReady ? (
-                      <View style={s.teamGridLiveFallback as any} />
-                    ) : (
-                      <View style={s.teamGridLiveFallback as any}>
-                        <View style={s.livePausedWrap as any}>
-                          <Ionicons name="radio-outline" size={64} color="#F4C95D" />
-                          <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : currentMainStageSlot ? `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE` : scheduleWindowStillLive ? "LIVE SLOT ACTIVE" : "LIVE WINDOW ENDED"}</Text>
-                          <Text style={s.livePausedSub as any}>{currentMainStageSlot || isMediaInstantLive || scheduleWindowStillLive ? "Connecting video..." : "No active speaker right now"}</Text>
-                        </View>
-                      </View>
-                    )
-                  }
+                  fallback={mainStageBlackVideoShell(s.teamGridLiveFallback)}
                 />
               ) : (
                 <KristoLiveKitStage
