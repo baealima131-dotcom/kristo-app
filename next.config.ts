@@ -13,6 +13,28 @@ const nextConfig: NextConfig = {
   // Useful for Docker / server deployments later (optional, safe now)
   // output: "standalone",
 
+  async headers() {
+    return [
+      {
+        source: "/.well-known/apple-app-site-association",
+        headers: [{ key: "Content-Type", value: "application/json" }],
+      },
+    ];
+  },
+
+  async rewrites() {
+    return {
+      // App Router does not register app/.well-known/* routes on Vercel (404).
+      // Rewrite the Apple-required path to a normal API route before filesystem routing.
+      beforeFiles: [
+        {
+          source: "/.well-known/apple-app-site-association",
+          destination: "/api/aasa",
+        },
+      ],
+    };
+  },
+
   images: {
     // Allow common remote image hosts (edit later to your real hosts)
     remotePatterns: [
