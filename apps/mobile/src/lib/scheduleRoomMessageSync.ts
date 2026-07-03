@@ -262,9 +262,11 @@ export async function purgeFeedSchedulesAfterBatchDelete(input: {
         : Array.isArray(input.slots)
           ? input.slots
           : [];
+      const purgedSlotIds = new Set<string>();
       for (const slot of slotsToPurge) {
         const slotId = String(slot?.id || slot?.cardId || slot?.slotId || "").trim();
-        if (!slotId) continue;
+        if (!slotId || purgedSlotIds.has(slotId)) continue;
+        purgedSlotIds.add(slotId);
         purgeClaimedSlotLocalState({
           scheduleId: feedId,
           slotId,

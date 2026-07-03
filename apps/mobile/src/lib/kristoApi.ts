@@ -53,18 +53,33 @@ function networkError(path: string, error: unknown): ApiErrorResult {
   };
 }
 
+function isExpectedRoomOnlyScheduleFeedNotFound(
+  path: string,
+  res: Response,
+  body: any
+): boolean {
+  if (!path.includes("/api/church/feed") || res.status !== 404) return false;
+  const error = String(body?.error || body?.message || "").trim().toLowerCase();
+  return error.includes("feed item not found");
+}
+
 function httpError(path: string, res: Response, body: any): ApiErrorResult {
   const providerError = String(body?.error || body?.message || "").trim();
   const hint = String(body?.details?.hint || body?.details || "").trim();
   const fallback = `Request failed (${res.status})`;
   const error = providerError || hint || fallback;
   if (__DEV__) {
-    console.warn("[KRISTO API] non-OK response", {
+    const logPayload = {
       path,
       base: getApiBase(),
       status: res.status,
       body,
-    });
+    };
+    if (isExpectedRoomOnlyScheduleFeedNotFound(path, res, body)) {
+      console.log("[KRISTO API] expected feed-not-found (room-only schedule)", logPayload);
+    } else {
+      console.warn("[KRISTO API] non-OK response", logPayload);
+    }
   }
   const code = String(body?.code || "").trim() || undefined;
   return {

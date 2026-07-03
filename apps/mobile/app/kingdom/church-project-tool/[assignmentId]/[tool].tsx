@@ -2021,14 +2021,23 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
                 ].filter(Boolean)
               )
             );
-            const deletedBatchSlots = [
-              ...scheduleSpeakerSlots.filter(
-                (slot: any) => String(slot.scheduleBatchId || "batch_1") === batchId
-              ),
-              ...backendScheduleCards.filter(
-                (slot: any) => String(slot.scheduleBatchId || "batch_1") === batchId
-              ),
-            ];
+            const deletedBatchSlots = Array.from(
+              new Map(
+                [
+                  ...scheduleSpeakerSlots.filter(
+                    (slot: any) => String(slot.scheduleBatchId || "batch_1") === batchId
+                  ),
+                  ...backendScheduleCards.filter(
+                    (slot: any) => String(slot.scheduleBatchId || "batch_1") === batchId
+                  ),
+                ]
+                  .map((slot: any) => {
+                    const id = String(slot.id || slot.cardId || "").trim();
+                    return [id, slot] as const;
+                  })
+                  .filter(([id]) => Boolean(id))
+              ).values()
+            );
             const churchId = String(getSessionSync()?.churchId || "").trim();
             const userId = String(getSessionSync()?.userId || "").trim();
 
