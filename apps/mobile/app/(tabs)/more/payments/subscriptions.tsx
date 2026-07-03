@@ -1244,7 +1244,7 @@ export default function PaymentsSubscriptionsScreen() {
   const monthlyIntro = resolveMonthlyProductIntro(monthlyPackage);
   const monthlyTrialDays = resolveIntroTrialDays(monthlyIntro) ?? 14;
   const monthlyTrialBadge = showMonthlyFreeTrial ? "14-DAY FREE TRIAL" : undefined;
-  const monthlyPriceText = "$0 today";
+  const monthlyPriceText = `${monthlyTrialDays} Days Free`;
   const monthlySubPriceText = `Then ${monthlyDisplayPrice}/month`;
   const monthlyCtaLabel = `Start ${monthlyTrialDays}-Day Free Trial`;
   const monthlyPurchaseLoading = submittingPlan === "monthly";
