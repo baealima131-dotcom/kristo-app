@@ -81,6 +81,26 @@ export function logLocalCameraPublicationState(extra?: Record<string, unknown>) 
   console.log("KRISTO_LOCAL_CAMERA_PUBLICATION_STATE", perfPayload(extra));
 }
 
+export function logLocalVideoPublicationState(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LOCAL_VIDEO_PUBLICATION_STATE", perfPayload(extra));
+}
+
+export function logCameraEnableAttempt(extra?: Record<string, unknown>) {
+  console.log("KRISTO_CAMERA_ENABLE_ATTEMPT", perfPayload(extra));
+}
+
+export function logCameraEnableSuccess(extra?: Record<string, unknown>) {
+  console.log("KRISTO_CAMERA_ENABLE_SUCCESS", perfPayload(extra));
+}
+
+export function logCameraEnableError(extra?: Record<string, unknown>) {
+  console.log("KRISTO_CAMERA_ENABLE_ERROR", perfPayload(extra));
+}
+
+export function logLocalCameraTrackRender(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LOCAL_CAMERA_TRACK_RENDER", perfPayload(extra));
+}
+
 export function logLocalMicPublicationState(extra?: Record<string, unknown>) {
   console.log("KRISTO_LOCAL_MIC_PUBLICATION_STATE", perfPayload(extra));
 }
