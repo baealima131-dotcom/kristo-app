@@ -1440,7 +1440,7 @@ export default function PaymentsSubscriptionsScreen() {
                   description="Flexible monthly billing"
                   price={monthlyPriceText}
                   period=""
-                  subPrice={showMonthlyFreeTrial ? monthlySubPriceText : undefined}
+                  subPrice={monthlySubPriceText}
                   trialBadge={monthlyTrialBadge}
                   ctaLabel={monthlyCtaLabel}
                   onPress={() => handlePurchasePlan("monthly")}
