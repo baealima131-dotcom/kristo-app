@@ -907,7 +907,7 @@ export async function syncPurchasesAppUser(appUserID?: string): Promise<void> {
 }
 
 export type RevenueCatChurchLoginOptions = {
-  /** Skip StoreKit receipt sync on screen open; purchase/restore paths still sync explicitly. */
+  /** Run StoreKit receipt sync — only for purchase, restore, or explicit server activation. */
   syncPurchases?: boolean;
 };
 
@@ -944,7 +944,7 @@ export async function logInRevenueCatForChurchSubscription(
       }
     }
 
-    if (opts?.syncPurchases !== false) {
+    if (opts?.syncPurchases === true) {
       await runRevenueCatNativeStep("SYNC_PURCHASES", () => Purchases.syncPurchases(), {
         churchId: cid,
       });
@@ -1275,7 +1275,13 @@ export async function refreshCustomerInfoUntilYearlyActive(
 
 export async function restoreSubscriptionPurchases() {
   await requireConfiguredPurchases("restore");
-  return Purchases.restorePurchases();
+  const result = await Purchases.restorePurchases();
+  try {
+    await Purchases.syncPurchases();
+  } catch (error) {
+    logRevenueCatException("syncPurchases", error, { phase: "after-restore" });
+  }
+  return result;
 }
 
 export async function getCustomerSubscriptionInfo(): Promise<CustomerInfo> {

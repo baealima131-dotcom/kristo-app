@@ -81,16 +81,14 @@ export async function GET(req: NextRequest) {
       profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
     });
 
-    // Reconcile when pastor can manage media and profile is missing or subscription inactive.
-    // syncChurchSubscriptionFromRevenueCat verifies RevenueCat first — no profile is created
-    // without a verified entitlement. PATCH activate_church_subscription uses the same path.
-    if (access.canManageMediaHosts && (!hasProfile || !subscriptionActive)) {
+    // Reconcile only when a profile already exists but subscription is inactive.
+    // Missing profiles are created via PATCH activate_church_subscription after an
+    // explicit purchase or restore — never from passive GET + RevenueCat login.
+    if (access.canManageMediaHosts && hasProfile && !subscriptionActive) {
       console.log("KRISTO_CHURCH_MEDIA_GET_SYNC_ATTEMPT", {
         churchId,
         userId,
-        reason: !hasProfile
-          ? "missing-profile-reconcile"
-          : "existing-profile-inactive-reconcile",
+        reason: "existing-profile-inactive-reconcile",
       });
       const sync = await syncChurchSubscriptionFromRevenueCat({
         churchId,

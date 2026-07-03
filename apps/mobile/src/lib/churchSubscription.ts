@@ -1088,7 +1088,12 @@ async function syncChurchSubscriptionAfterPurchaseInner(
     isPastor,
   });
 
-  const churchCustomerInfo = await logInRevenueCatForChurchSubscription(churchId);
+  const churchCustomerInfo = await logInRevenueCatForChurchSubscription(churchId, {
+    syncPurchases:
+      purchaseConfirmed ||
+      activationSource === "restore" ||
+      activationSource === "explicit_sync",
+  });
   let info: CustomerInfo | null = churchCustomerInfo ?? args.initialCustomerInfo ?? null;
   let entitlementActive = readChurchScopedEntitlementActive({
     churchId,

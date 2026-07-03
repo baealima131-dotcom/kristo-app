@@ -12,7 +12,11 @@ import {
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import type { CustomerInfo, INTRO_ELIGIBILITY_STATUS, PurchasesPackage } from "react-native-purchases";
+import {
+  INTRO_ELIGIBILITY_STATUS,
+  type CustomerInfo,
+  type PurchasesPackage,
+} from "react-native-purchases";
 import {
   getPaymentsState,
   setPaymentsCurrentModule,
@@ -209,7 +213,7 @@ export default function PaymentsCheckoutScreen() {
         }) as Record<string, string>;
 
         const { configured, customerInfo: configuredCustomerInfo } =
-          await configureChurchMobileSubscriptions(churchId);
+          await configureChurchMobileSubscriptions(churchId, { syncPurchases: false });
         if (!configured) {
           throw new Error("RevenueCat is not configured yet.");
         }
