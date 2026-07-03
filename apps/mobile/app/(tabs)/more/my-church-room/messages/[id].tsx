@@ -49,7 +49,10 @@ import * as DocumentPicker from "expo-document-picker";
 import { ensureThread, sendMessage, setThreadMessages, deleteMessage, reconcileMessage, claimAssignmentCard, enrichAssignmentCardClaim, revertAssignmentCardClaim, addAssignmentCardMusic, addAssignmentCardVideo, useThread, getSnapshot, type MsgAttachment, type MsgItem } from "@/src/lib/messagesStore";
 import { SharedContentCard } from "@/src/components/messages/SharedContentCard";
 import { HomeLiveScheduleCard, ScheduleClaimAvatarRing } from "@/src/components/HomeLiveScheduleCard";
-import { enterLiveRoomFromScheduleCard } from "@/src/lib/enterLiveRoomNavigation";
+import {
+  enterLiveRoomFromScheduleCard,
+  navigateChurchLiveControlLiveRoomFromMessages,
+} from "@/src/lib/enterLiveRoomNavigation";
 import {
   buildChurchLiveControlScheduleRenderMap,
   type ChurchLiveControlHomeFeedScheduleModel,
@@ -6365,23 +6368,29 @@ function saveAssignmentVideoTrim() {
     // regardless of tone. Gating on tone before this caused LIVE NOW slots to be
     // rejected with "Schedule required".
     if (isChurchLiveControlAssignment && liveAssignmentCtaMeta.canOpenLive) {
-      router.push({
-        pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
-        params: {
-          title: headerTitle,
-          role: canPastorStartChurchLive ? "PASTOR" : (assignmentRoleParam || currentRole || "MEMBER"),
-          layout: "grid6",
-          membersCount: "26",
-          leadersCount: "4",
-          assignmentId: threadId,
-          source: liveAssignmentCtaMeta.tone === "scheduled" ? "scheduled-live" : "church-live-control",
-          liveMode: liveAssignmentCtaMeta.tone === "scheduled" ? "scheduled" : "instant",
-          preview: liveAssignmentCtaMeta.tone === "scheduled" ? "1" : "0",
-          entryMode: liveAssignmentCtaMeta.tone === "scheduled" ? "backstage" : liveAssignmentCtaMeta.entryMode,
-          roomKind: "church-live-control",
-          mediaScope: "church",
-        },
+      const navigated = navigateChurchLiveControlLiveRoomFromMessages({
+        router,
+        messages,
+        viewerUserId: effectiveAuthUserId,
+        viewerChurchId: churchId,
+        nowMs: liveCountdownNow,
+        assignmentId: threadId,
+        title: headerTitle,
+        role: canPastorStartChurchLive ? "PASTOR" : (assignmentRoleParam || currentRole || "MEMBER"),
+        entryMode:
+          liveAssignmentCtaMeta.tone === "scheduled"
+            ? "backstage"
+            : liveAssignmentCtaMeta.entryMode,
+        source:
+          liveAssignmentCtaMeta.tone === "scheduled" ? "scheduled-live" : "church-live-control",
+        liveMode: liveAssignmentCtaMeta.tone === "scheduled" ? "scheduled" : "instant",
+        preview: liveAssignmentCtaMeta.tone === "scheduled" ? "1" : "0",
       });
+      if (navigated) return;
+      Alert.alert(
+        "Live unavailable",
+        "Schedule slots could not be loaded. Pull to refresh and try again."
+      );
       return;
     }
 
@@ -6518,6 +6527,29 @@ function saveAssignmentVideoTrim() {
             liveAssignmentCtaMeta.tone === "preview"
           ) as any,
         });
+        return;
+      }
+
+      if (isChurchLiveControlAssignment) {
+        const navigated = navigateChurchLiveControlLiveRoomFromMessages({
+          router,
+          messages,
+          viewerUserId: effectiveAuthUserId,
+          viewerChurchId: churchId,
+          nowMs: liveCountdownNow,
+          assignmentId: threadId,
+          title: headerTitle,
+          role: canPastorStartChurchLive ? "PASTOR" : (assignmentRoleParam || currentRole || "MEMBER"),
+          entryMode,
+          source: "church-live-control",
+          liveMode: liveAssignmentCtaMeta.tone === "preview" ? "scheduled" : "instant",
+          preview: liveAssignmentCtaMeta.tone === "preview" ? "1" : "0",
+        });
+        if (navigated) return;
+        Alert.alert(
+          "Live unavailable",
+          "Schedule slots could not be loaded. Pull to refresh and try again."
+        );
         return;
       }
 

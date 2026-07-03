@@ -21,6 +21,7 @@ import {
   baseFeedId,
   isBackendFeedScheduleId,
   normalizeLiveScheduleSlots,
+  parseLiveAllScheduleSlotsJson,
   resolveLiveRingCanonicalFeedId,
   sanitizeLeanRouteAvatarUri,
   scheduleSlotClaimUserId,
@@ -28,6 +29,7 @@ import {
 } from "@/src/lib/scheduleSlotUtils";
 import {
   buildChurchLiveControlGuestCenterScheduleRow,
+  buildChurchLiveControlLiveRoomScheduleSlots,
   CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID,
   isChurchLiveControlScheduleFeedRow,
 } from "@/src/lib/churchLiveControlSchedule";
@@ -656,4 +658,217 @@ export function enterLiveRoomFromScheduleCard(input: {
   } else {
     input.router.push({ pathname, params: routeParams } as any);
   }
+}
+
+function pickChurchLiveControlActiveSlot(
+  slots: any[],
+  nowMs: number,
+  viewerUserId: string
+): any | null {
+  if (!Array.isArray(slots) || !slots.length) return null;
+
+  const activeByTime = slots.find((slot: any) => {
+    const startMs = Number(slot?.startMs || 0);
+    const endMs = Number(slot?.endMs || 0);
+    return startMs > 0 && endMs > startMs && nowMs >= startMs && nowMs <= endMs;
+  });
+  if (activeByTime) return activeByTime;
+
+  if (viewerUserId) {
+    const claimed = slots.find(
+      (slot: any) => scheduleSlotClaimUserId(slot) === viewerUserId
+    );
+    if (claimed) return claimed;
+  }
+
+  return slots[0] || null;
+}
+
+export function buildChurchLiveControlLiveRoomRouteParamsFromMessages(input: {
+  messages: any[];
+  viewerUserId: string;
+  viewerChurchId?: string;
+  churchName?: string;
+  mediaName?: string;
+  nowMs?: number;
+  assignmentId?: string;
+  title?: string;
+  role?: string;
+  entryMode?: string;
+  source?: string;
+  liveMode?: string;
+  preview?: string;
+}): ScheduleLiveRoomRouteParams | null {
+  const nowMs = Number(input.nowMs || Date.now());
+  const viewerUserId = String(input.viewerUserId || "").trim();
+  const built = buildChurchLiveControlLiveRoomScheduleSlots(input.messages, {
+    churchId: input.viewerChurchId,
+    churchName: input.churchName,
+    mediaName: input.mediaName,
+    nowMs,
+  });
+  if (!built?.scheduleId || !built.slots?.length) {
+    console.log("KRISTO_CHURCH_LIVE_CONTROL_LIVE_NAV_BLOCKED", {
+      reason: "no_schedule_slots",
+      slotCount: built?.slots?.length || 0,
+      scheduleId: String(built?.scheduleId || ""),
+    });
+    return null;
+  }
+
+  const row = buildChurchLiveControlGuestCenterScheduleRow(input.messages, {
+    churchId: input.viewerChurchId,
+    churchName: input.churchName,
+    mediaName: input.mediaName,
+    nowMs,
+  });
+  if (!row) return null;
+
+  const allSlots = built.slots;
+  const activeSlot = pickChurchLiveControlActiveSlot(allSlots, nowMs, viewerUserId);
+  if (!activeSlot) return null;
+
+  const navTarget = resolveLiveRingNavigationTarget({
+    item: row,
+    slot: activeSlot,
+    allSlots,
+    routeSlotNumber: Math.max(
+      1,
+      Number(activeSlot?.slot || activeSlot?.slotNumber || activeSlot?.order || 1)
+    ),
+    viewerUserId,
+    viewerChurchId: input.viewerChurchId,
+    source: "church-live-control-room-card",
+  });
+
+  const startMs = Number(navTarget.slot?.startMs || 0);
+  const endMs = Number(navTarget.slot?.endMs || 0);
+  const isLiveNow = startMs > 0 && endMs > startMs && nowMs >= startMs && nowMs <= endMs;
+  const claimUserId = scheduleSlotClaimUserId(navTarget.slot);
+  const claimedByMe = !!viewerUserId && !!claimUserId && claimUserId === viewerUserId;
+
+  const routeParams = buildScheduleLiveRoomRouteParams(navTarget.item, {
+    slot: navTarget.slot,
+    allSlots: navTarget.allSlots,
+    isLiveNow,
+    claimedByMe,
+    routeSlotNumber: navTarget.routeSlotNumber,
+    scheduleStartMs: startMs,
+    scheduleEndMs: endMs,
+    churchId: input.viewerChurchId,
+    viewerUserId,
+    liveBridgeId: navTarget.liveBridgeId,
+    sourceScheduleId: navTarget.sourceScheduleId,
+  });
+
+  return {
+    ...routeParams,
+    ...(input.title ? { title: String(input.title).slice(0, 120) } : {}),
+    ...(input.role ? { role: String(input.role) } : {}),
+    ...(input.assignmentId ? { assignmentId: String(input.assignmentId) } : {}),
+    ...(input.source ? { source: String(input.source) } : {}),
+    ...(input.liveMode ? { liveMode: String(input.liveMode) } : {}),
+    ...(input.preview ? { preview: String(input.preview) } : {}),
+    ...(input.entryMode ? { entryMode: String(input.entryMode) } : {}),
+    roomKind: "church-live-control",
+    mediaScope: "church",
+    layout: routeParams.layout || "grid6",
+    membersCount: "26",
+    leadersCount: "4",
+  };
+}
+
+export function navigateChurchLiveControlLiveRoomFromMessages(input: {
+  router: Router;
+  messages: any[];
+  viewerUserId: string;
+  viewerChurchId?: string;
+  churchName?: string;
+  mediaName?: string;
+  nowMs?: number;
+  assignmentId?: string;
+  title?: string;
+  role?: string;
+  entryMode?: string;
+  source?: string;
+  liveMode?: string;
+  preview?: string;
+}): boolean {
+  const viewerUserId = String(input.viewerUserId || "").trim();
+  const routeParams = buildChurchLiveControlLiveRoomRouteParamsFromMessages(input);
+  if (!routeParams) return false;
+
+  const pathname = "/(tabs)/more/my-church-room/messages/live-room";
+
+  console.log("KRISTO_ENTER_LIVE_ROOM_ROUTER_PUSH", {
+    source: "church-live-control-room-card",
+    pathname,
+    feedId: routeParams.feedId,
+    liveId: routeParams.liveId,
+    sourceScheduleId: routeParams.sourceScheduleId,
+    entryMode: routeParams.entryMode,
+    currentSlotNumber: routeParams.currentSlotNumber,
+    leanSlotsByteLen: utf8JsonByteLength(String(routeParams.liveAllScheduleSlotsJson || "")),
+  });
+
+  (globalThis as any).__KRISTO_LIVE_ACTIVE__ = true;
+  (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = Date.now();
+
+  const liveBridgeId = String(routeParams.liveId || routeParams.feedId || "").trim();
+  if (liveBridgeId) {
+    pinLiveRoomSession({
+      liveBridgeId,
+      userId: viewerUserId,
+      routeSlotCount: parseLiveAllScheduleSlotsJson(routeParams.liveAllScheduleSlotsJson).length,
+      source: "enter-live-church-live-control-room-card",
+    });
+    clearStaleLiveEndedFlag(liveBridgeId, "enter-live-nav");
+  }
+
+  const wantsPublish =
+    routeParams.canPublish === "1" ||
+    routeParams.canPublishCamera === "1" ||
+    routeParams.mediaSlotPublisher === "1";
+  if (liveBridgeId && viewerUserId && wantsPublish) {
+    pinClaimEnterSessionLockFromRoute({
+      liveBridgeId,
+      routeParams: routeParams as Record<string, unknown>,
+      source: "enter-live-church-live-control-room-card",
+    });
+    pinLiveKitPublisherHostBeforeToken(liveBridgeId, "enter-live-church-live-control-room-card", {
+      stableIdentity: String(routeParams.claimedByUserId || viewerUserId).replace(
+        /[^a-zA-Z0-9_]/g,
+        ""
+      ),
+    });
+    const viewerChurchId = String(input.viewerChurchId || routeParams.churchId || "").trim();
+    const tokenIdentity = String(routeParams.claimedByUserId || viewerUserId).replace(
+      /[^a-zA-Z0-9_]/g,
+      ""
+    );
+    prefetchLiveKitToken({
+      roomName: liveBridgeId,
+      identity: tokenIdentity,
+      canPublish: true,
+      source: "enter-live-church-live-control-room-card",
+      headers: getKristoHeaders({
+        userId: String(routeParams.claimedByUserId || viewerUserId),
+        role: "Member",
+        churchId: viewerChurchId,
+      }) as Record<string, string>,
+    });
+  }
+
+  markLiveEnterTap("church-live-control-room-card", {
+    viewerUserId,
+    feedId: liveBridgeId,
+    claimedByMe: routeParams.mediaSlotPublisher === "1",
+    isLiveNow: routeParams.entryMode === "live",
+    routeSlotNumber: Number(routeParams.currentSlotNumber || 1),
+  });
+  prewarmLiveRoomMediaPermissions("church-live-control-room-card");
+  pauseHomeFeedBackgroundWorkForLiveNavigation("enter-live-church-live-control-room-card");
+
+  input.router.push({ pathname, params: routeParams } as any);
+  return true;
 }

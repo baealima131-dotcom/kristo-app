@@ -3122,6 +3122,7 @@ export default function LiveRoomScreen() {
   const liveRoomGuardStateRef = useRef<Record<string, unknown>>({});
   const liveKitPublisherStageStickyRef = useRef(false);
   const prevShouldMountLiveKitRef = useRef<boolean | null>(null);
+  const prevLiveBridgeIdRef = useRef("");
   const prevPublisherHostActiveRef = useRef(false);
 
   if (!liveRoomMountAtRef.current) {
@@ -6657,7 +6658,7 @@ export default function LiveRoomScreen() {
             (params as any)?.feedId ||
             liveScheduleFeedId ||
             ""
-        ).trim() || "scheduled-live-default"
+        ).trim()
       : String(
           liveScheduleFeedId ||
             params.liveId ||
@@ -6671,6 +6672,54 @@ export default function LiveRoomScreen() {
             projectId ||
             "scheduled-live-default"
         );
+
+  const churchLiveControlBridgeBlocked =
+    routeIsChurchLiveControl && !isMediaInstantLive && !String(liveBridgeId || "").trim();
+
+  useEffect(() => {
+    if (!churchLiveControlBridgeBlocked) return;
+    console.log("KRISTO_LIVE_ROOM_BLOCK_EMPTY_ROUTE_PARAMS", {
+      routeIsChurchLiveControl,
+      churchLiveControlScheduleId,
+      feedId: String((params as any)?.feedId || ""),
+      liveId: String((params as any)?.liveId || ""),
+      sourceScheduleId: String((params as any)?.sourceScheduleId || ""),
+      routeSlotCount: initialRouteScheduleSlots.length,
+    });
+  }, [
+    churchLiveControlBridgeBlocked,
+    routeIsChurchLiveControl,
+    churchLiveControlScheduleId,
+    (params as any)?.feedId,
+    (params as any)?.liveId,
+    (params as any)?.sourceScheduleId,
+    initialRouteScheduleSlots.length,
+  ]);
+
+  useEffect(() => {
+    const prev = String(prevLiveBridgeIdRef.current || "").trim();
+    const next = String(liveBridgeId || "").trim();
+    if (
+      prev &&
+      next &&
+      prev !== next &&
+      isScheduledLiveDefaultRoom(prev) &&
+      !isScheduledLiveDefaultRoom(next)
+    ) {
+      const userId = String(session?.userId || "").trim();
+      console.log("KRISTO_LIVE_BRIDGE_ID_TRANSITION_CLEANUP", { from: prev, to: next });
+      clearLiveKitStageMountSticky("bridge-id-transition");
+      clearLiveKitPublisherStagePin("bridge-id-transition");
+      liveKitPublisherStageStickyRef.current = false;
+      prevShouldMountLiveKitRef.current = null;
+      forceKristoLiveCleanup("bridge-id-transition", {
+        userId,
+        roomName: prev,
+        forceReentry: true,
+      });
+    }
+    prevLiveBridgeIdRef.current = next;
+  }, [liveBridgeId, session?.userId]);
 
   const liveKitStageSessionKey = `${liveBridgeId}|${currentUserId || "anon"}`;
 
@@ -6688,9 +6737,10 @@ export default function LiveRoomScreen() {
   );
 
   const shouldMountLiveKitPublisherStage =
-    effectiveMountLiveKitPublisherStage ||
-    routeActiveSlotSpeakerMount ||
-    liveKitPublisherStagePinned;
+    !churchLiveControlBridgeBlocked &&
+    (effectiveMountLiveKitPublisherStage ||
+      routeActiveSlotSpeakerMount ||
+      liveKitPublisherStagePinned);
 
   useEffect(() => {
     const next = shouldMountLiveKitPublisherStage;
@@ -11754,8 +11804,15 @@ return (
             <Pressable
               pointerEvents="auto"
               onPress={() => {
-                if (router.canGoBack?.()) router.replace("/(tabs)/more" as any);
-                else router.replace("/(tabs)/more" as any);
+                console.log("KRISTO_LIVE_BACK_TAP", {
+                  layoutMode: "grid6",
+                  liveBridgeId,
+                });
+                clearLiveKitStageMountSticky("grid6-back");
+                console.log("KRISTO_LIVEKIT_STICKY_LOCK_CLEARED_ON_BACK", {
+                  liveBridgeId,
+                });
+                quitLiveRoom();
               }}
               style={({ pressed }) => ([s.mediaHeaderBackBtn, pressed ? s.mediaHeaderBackBtnPressed : null] as any)}
             >
