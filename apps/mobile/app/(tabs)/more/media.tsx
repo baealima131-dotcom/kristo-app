@@ -28,7 +28,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKristoSession } from "../../../src/lib/KristoSessionProvider";
 import type { KristoMediaCategory, KristoMediaProfile } from "../../../src/lib/kristoSession";
 import { getPaymentsState, subscribePayments } from "../../../src/store/paymentsStore";
-import { isPlanActive } from "../../../src/lib/payments/mobileSubscriptions";
+import {
+  formatPremiumRenewalDate,
+  formatPremiumSubscriptionExpiryLabel,
+  isPlanActive,
+} from "../../../src/lib/payments/mobileSubscriptions";
 import {
   feedList,
   feedPublishMediaScheduleLocal,
@@ -119,6 +123,7 @@ import {
   CHURCH_SUBSCRIPTION_SCHEDULE_MESSAGE,
   isChurchSubscriptionRequiredError,
   evaluateScheduleSubscriptionGate,
+  parseChurchMediaSubscriptionExpiresAt,
   parseExplicitServerSubscriptionFromMediaRoute,
   requireActiveChurchSubscriptionForSchedule,
   resolveScheduleGateSubscriptionInputs,
@@ -674,12 +679,16 @@ export default function MediaStudioScreen() {
   );
 
   useEffect(() => {
-    seedChurchMediaAccessFromSession({
-      userId: session?.userId,
-      role: session?.role,
-      churchRole: (session as any)?.churchRole,
-    });
-  }, [session?.userId, session?.role, (session as any)?.churchRole]);
+    const cid = String(session?.churchId || "").trim();
+    seedChurchMediaAccessFromSession(
+      {
+        userId: session?.userId,
+        role: session?.role,
+        churchRole: (session as any)?.churchRole,
+      },
+      cid
+    );
+  }, [session?.userId, session?.role, (session as any)?.churchRole, session?.churchId]);
 
   useEffect(() => {
     return subscribeChurchMediaAccess((access) => {
@@ -1109,10 +1118,12 @@ export default function MediaStudioScreen() {
   const scheduleGateSubscription = React.useMemo(
     () =>
       resolveScheduleGateSubscriptionInputs({
+        churchId: String(session?.churchId || "").trim(),
         serverSubscriptionActive: churchSubscriptionActiveFromApi,
       }),
     [
       churchSubscriptionActiveFromApi,
+      session?.churchId,
       paymentsState.subscriptions.planStatus,
       paymentsState.subscriptions.selectedPlan,
     ]
@@ -1123,6 +1134,16 @@ export default function MediaStudioScreen() {
 
   const churchMediaSubscriptionActive =
     churchSubActiveFromApi === true && (isActualChurchPastor || isApprovedMediaHostRole);
+  const churchMediaSubscriptionExpiresAt = React.useMemo(
+    () => parseChurchMediaSubscriptionExpiresAt(churchMediaProfile as any),
+    [churchMediaProfile]
+  );
+  const churchMediaSubscriptionExpiryLabel = React.useMemo(() => {
+    if (!churchMediaSubscriptionActive || !churchMediaSubscriptionExpiresAt) return null;
+    return formatPremiumSubscriptionExpiryLabel(
+      new Date(churchMediaSubscriptionExpiresAt)
+    );
+  }, [churchMediaSubscriptionActive, churchMediaSubscriptionExpiresAt]);
   const isApprovedMediaHost = isApprovedMediaHostRole && churchMediaSubscriptionActive;
 
   const subscriptionLocked =
@@ -4868,11 +4889,16 @@ export default function MediaStudioScreen() {
               <View style={s.statusStrip}>
                 <View style={s.statusMini}>
                   <Ionicons name={churchMediaSubscriptionActive ? "checkmark-circle" : "lock-closed-outline"} size={14} color="#F4C95D" />
-                  <Text style={s.statusMiniText}>
-                    {churchMediaSubscriptionActive
-                      ? "Church subscription active"
-                      : "Subscription required"}
-                  </Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.statusMiniText}>
+                      {churchMediaSubscriptionActive
+                        ? "Church subscription active"
+                        : "Subscription required"}
+                    </Text>
+                    {churchMediaSubscriptionExpiryLabel ? (
+                      <Text style={s.statusMiniExpiryText}>{churchMediaSubscriptionExpiryLabel}</Text>
+                    ) : null}
+                  </View>
                 </View>
               </View>
 
@@ -5748,6 +5774,15 @@ sub: {
     textShadowColor: "rgba(0,0,0,0.32)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 5,
+  },
+
+  statusMiniExpiryText: {
+    marginTop: 2,
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: "600",
+    letterSpacing: -0.1,
   },
 
   heroTitle: {

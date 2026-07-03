@@ -1562,6 +1562,50 @@ export function formatPremiumRenewalDate(date: Date | null | undefined): string 
   });
 }
 
+/** True in dev builds or when RevenueCat reports a sandbox / test store purchase. */
+export function isRevenueCatSandboxSubscriptionEnvironment(
+  customerInfo?: CustomerInfo | null
+): boolean {
+  if (__DEV__) return true;
+
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  const store = String(entitlement?.store || "").trim().toUpperCase();
+  if (store === "SANDBOX" || store === "TEST_STORE") return true;
+
+  for (const subscription of Object.values(
+    customerInfo?.subscriptionsByProductIdentifier || {}
+  )) {
+    const subStore = String((subscription as any)?.store || "").trim().toUpperCase();
+    if (subStore === "SANDBOX" || subStore === "TEST_STORE") return true;
+  }
+
+  return false;
+}
+
+export function formatPremiumSubscriptionExpiryLabel(
+  date: Date | null | undefined,
+  opts?: { customerInfo?: CustomerInfo | null; sandbox?: boolean }
+): string | null {
+  if (!date) return null;
+  const formatted = formatPremiumRenewalDate(date);
+  const sandbox =
+    opts?.sandbox === true ||
+    isRevenueCatSandboxSubscriptionEnvironment(opts?.customerInfo);
+  return sandbox ? `Sandbox expires ${formatted}` : `Expires ${formatted}`;
+}
+
+export function formatPremiumSubscriptionRenewalLabel(
+  date: Date | null | undefined,
+  opts?: { customerInfo?: CustomerInfo | null; sandbox?: boolean }
+): string | null {
+  if (!date) return null;
+  const formatted = formatPremiumRenewalDate(date);
+  const sandbox =
+    opts?.sandbox === true ||
+    isRevenueCatSandboxSubscriptionEnvironment(opts?.customerInfo);
+  return sandbox ? `Sandbox renews ${formatted}` : `Renews ${formatted}`;
+}
+
 export type PremiumIntroTrialBilling = {
   isActive: boolean;
   badgeLabel: string | null;

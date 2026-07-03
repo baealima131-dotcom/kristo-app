@@ -15,7 +15,11 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import type { CustomerInfo, INTRO_ELIGIBILITY_STATUS, PurchasesPackage } from "react-native-purchases";
+import {
+  INTRO_ELIGIBILITY_STATUS,
+  type CustomerInfo,
+  type PurchasesPackage,
+} from "react-native-purchases";
 import {
   setPaymentsCurrentModule,
   setSubscriptionPlanStatus,
@@ -28,10 +32,13 @@ import {
   configureChurchMobileSubscriptions,
   formatSubscriptionSetupError,
   formatPremiumRenewalDate,
+  formatPremiumSubscriptionExpiryLabel,
+  formatPremiumSubscriptionRenewalLabel,
   invalidateSubscriptionOfferingsCache,
   getSubscriptionOfferings,
   getCustomerSubscriptionInfo,
   hasPremiumEntitlement,
+  isRevenueCatSandboxSubscriptionEnvironment,
   logEntitlementAudit,
   logInRevenueCatForChurchSubscription,
   logRevenueCatSubscriptionOwnershipDebug,
@@ -114,10 +121,13 @@ function resolveMediaPremiumDisplayScreenState(
 }
 
 function resolveMediaPremiumExpiryLabel(
-  status: ChurchMediaPremiumServerStatus | null
+  status: ChurchMediaPremiumServerStatus | null,
+  customerInfo?: CustomerInfo | null
 ): string | null {
   if (!status?.serverSubscriptionActive || !status.subscriptionExpiresAt) return null;
-  return `Expires ${formatPremiumRenewalDate(new Date(status.subscriptionExpiresAt))}`;
+  return formatPremiumSubscriptionExpiryLabel(new Date(status.subscriptionExpiresAt), {
+    customerInfo,
+  });
 }
 
 function resolveServerPremiumBillingDetails(
@@ -174,15 +184,21 @@ function extractRevenueCatErrorCode(message: string | null): number | null {
 }
 
 function formatBillingMetaRow(
-  billing: ReturnType<typeof resolvePremiumSubscriptionBillingDetails>
+  billing: ReturnType<typeof resolvePremiumSubscriptionBillingDetails>,
+  customerInfo?: CustomerInfo | null
 ): string {
   if (billing.introTrial.isActive) {
     const endsLabel = billing.introTrial.trialEndsAt
       ? formatPremiumRenewalDate(billing.introTrial.trialEndsAt)
       : null;
     const firstPaymentLine = formatPremiumIntroTrialBillingLine(billing.introTrial);
+    const sandbox = isRevenueCatSandboxSubscriptionEnvironment(customerInfo);
     const parts = [
-      endsLabel ? `Trial ends ${endsLabel}` : null,
+      endsLabel
+        ? sandbox
+          ? `Sandbox trial ends ${endsLabel}`
+          : `Trial ends ${endsLabel}`
+        : null,
       firstPaymentLine,
       billing.autoRenew !== "—" ? `Auto-renew ${billing.autoRenew}` : null,
     ].filter(Boolean);
@@ -192,7 +208,7 @@ function formatBillingMetaRow(
   const parts = [
     `Status: ${billing.status}`,
     billing.renewalDate
-      ? `Renews ${formatPremiumRenewalDate(billing.renewalDate)}`
+      ? formatPremiumSubscriptionRenewalLabel(billing.renewalDate, { customerInfo })
       : null,
     billing.autoRenew !== "—" ? `Auto-renew ${billing.autoRenew}` : null,
   ].filter(Boolean);
@@ -388,6 +404,7 @@ function CurrentPlanCard({
   billing,
   successMessage,
   trialBadge,
+  customerInfo,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   planName: string;
@@ -398,6 +415,7 @@ function CurrentPlanCard({
   billing: ReturnType<typeof resolvePremiumSubscriptionBillingDetails>;
   successMessage: string;
   trialBadge?: string | null;
+  customerInfo?: CustomerInfo | null;
 }) {
   return (
     <GlassCard highlighted>
@@ -413,7 +431,7 @@ function CurrentPlanCard({
         period={period}
         subPrice={subPrice}
       />
-      <CompactMetaRow text={formatBillingMetaRow(billing)} />
+      <CompactMetaRow text={formatBillingMetaRow(billing, customerInfo)} />
       <View style={s.successNote}>
         <Ionicons name="shield-checkmark" size={14} color="rgba(120,220,160,0.95)" />
         <Text style={s.successNoteText}>{successMessage}</Text>
@@ -1179,10 +1197,10 @@ export default function PaymentsSubscriptionsScreen() {
   const showAppStoreBillingControls = displayedActive && !isOfflineActivation;
   const screenState = resolveMediaPremiumDisplayScreenState(mediaPremiumStatus);
   const billing = resolveServerPremiumBillingDetails(mediaPremiumStatus);
-  const expiryLabel = resolveMediaPremiumExpiryLabel(mediaPremiumStatus);
+  const expiryLabel = resolveMediaPremiumExpiryLabel(mediaPremiumStatus, customerInfo);
   const renewalLabel =
     showAppStoreBillingControls && billing.renewalDate
-      ? `Renews ${formatPremiumRenewalDate(billing.renewalDate)}`
+      ? formatPremiumSubscriptionRenewalLabel(billing.renewalDate, { customerInfo })
       : null;
 
   useEffect(() => {
@@ -1389,6 +1407,7 @@ export default function PaymentsSubscriptionsScreen() {
                   price={monthlyDisplayPrice}
                   period="/month"
                   billing={billing}
+                  customerInfo={customerInfo}
                   successMessage="You have full access to Media Premium features."
                 />
                 <YearlyUpsellCard
@@ -1419,6 +1438,7 @@ export default function PaymentsSubscriptionsScreen() {
                   price={yearlyDisplayPrice}
                   period="/year"
                   billing={billing}
+                  customerInfo={customerInfo}
                   successMessage="You have full access to Media Premium features."
                 />
                 <ManageSubscriptionCard
