@@ -1,14 +1,23 @@
 import { isBrandedPosterUri } from "@/src/lib/brandedVideoPoster";
+import { canonicalPublicVideoPlaybackUrl } from "@/src/lib/videoStorageUrl";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || "http://localhost:3000").replace(/\/$/, "");
+
+function canonicalizeHomeFeedPublicMediaUrl(resolved: string) {
+  if (!resolved || resolved.startsWith("file://") || resolved.startsWith("data:")) return resolved;
+  if (!/^https?:\/\//i.test(resolved)) return resolved;
+  return canonicalPublicVideoPlaybackUrl(resolved);
+}
 
 export function homeFeedMediaUrl(raw: unknown) {
   const v = String(raw || "").trim();
   if (!v) return "";
   if (isBrandedPosterUri(v)) return "";
   if (v.startsWith("data:image/")) return v;
-  if (/^https?:\/\//i.test(v) || v.startsWith("file://")) return v;
-  if (v.startsWith("//")) return `https:${v}`;
+  if (/^https?:\/\//i.test(v) || v.startsWith("file://")) {
+    return canonicalizeHomeFeedPublicMediaUrl(v);
+  }
+  if (v.startsWith("//")) return canonicalizeHomeFeedPublicMediaUrl(`https:${v}`);
   return `${API_BASE}${v.startsWith("/") ? "" : "/"}${v}`;
 }
 

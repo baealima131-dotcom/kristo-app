@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
@@ -591,6 +592,38 @@ export function mergeYoutubeColdStartRotation(current: any[], freshRankedPage0: 
   return [...page0, ...tail];
 }
 
+/** Android cold-start: reveal after pass 1 when at least this many playable rows exist. */
+export const HOME_FEED_ANDROID_PROGRESSIVE_REVEAL_MIN = 6;
+/** Android cold-start: first paint row count — matches FeedList initial render. */
+export const HOME_FEED_ANDROID_PROGRESSIVE_REVEAL_COUNT = 7;
+
+export type YoutubeProgressiveRevealMeta = {
+  collectedSoFar: number;
+  apiPass: number;
+  revealCount: number;
+};
+
+function finalizeYoutubeCollectedRows(
+  collected: any[],
+  targetCount: number,
+  rankPoolSize: number | undefined,
+  reason: string
+): any[] {
+  let rows = collected;
+  if (rankPoolSize && collected.length > targetCount) {
+    rows = rankHomeFeedYoutubeStreamRows(collected, homeFeedRowKey).slice(0, targetCount);
+    console.log("KRISTO_HOME_FEED_YOUTUBE_RANK_POOL", {
+      reason,
+      poolSize: collected.length,
+      targetCount,
+      rankedTopIds: rows.map((row) => homeFeedRowKey(row)).filter(Boolean),
+    });
+  } else if (rankPoolSize && collected.length > 1) {
+    rows = rankHomeFeedYoutubeStreamRows(collected, homeFeedRowKey).slice(0, targetCount);
+  }
+  return rows.slice(0, targetCount);
+}
+
 /** Keep fetching global media pages until `targetCount` playable rows or backend exhausted. */
 async function collectYoutubeHomeFeedMediaRows(args: {
   targetCount: number;
@@ -602,6 +635,14 @@ async function collectYoutubeHomeFeedMediaRows(args: {
   throttleMs: number;
   /** When set, fetch up to this many candidates then rank before slicing to targetCount. */
   rankPoolSize?: number;
+  /** Android progressive reveal: minimum playable rows before `onProgressiveReveal` fires. */
+  progressiveRevealMinCount?: number;
+  /** Android progressive reveal: ranked slice size passed to `onProgressiveReveal`. */
+  progressiveRevealCount?: number;
+  onProgressiveReveal?: (
+    rows: any[],
+    meta: YoutubeProgressiveRevealMeta
+  ) => void | Promise<void>;
 }): Promise<{
   rows: any[];
   paging: HomeFeedPagingState;
@@ -617,6 +658,9 @@ async function collectYoutubeHomeFeedMediaRows(args: {
     reason,
     throttleMs,
     rankPoolSize,
+    progressiveRevealMinCount,
+    progressiveRevealCount,
+    onProgressiveReveal,
   } = args;
 
   const collectLimit = Math.max(targetCount, rankPoolSize ?? targetCount);
@@ -628,6 +672,38 @@ async function collectYoutubeHomeFeedMediaRows(args: {
   let apiPasses = 0;
   let lastApiRowCount = 0;
   let lastRes: any = null;
+  let progressiveRevealFired = false;
+
+  const maybeFireProgressiveReveal = () => {
+    if (
+      progressiveRevealFired ||
+      !onProgressiveReveal ||
+      !progressiveRevealMinCount ||
+      !progressiveRevealCount ||
+      apiPasses < 1 ||
+      collected.length < progressiveRevealMinCount
+    ) {
+      return;
+    }
+    progressiveRevealFired = true;
+    const partial = finalizeYoutubeCollectedRows(
+      collected,
+      progressiveRevealCount,
+      rankPoolSize,
+      reason
+    );
+    if (!partial.length) {
+      progressiveRevealFired = false;
+      return;
+    }
+    void Promise.resolve(
+      onProgressiveReveal(partial, {
+        collectedSoFar: collected.length,
+        apiPass: apiPasses,
+        revealCount: partial.length,
+      })
+    );
+  };
 
   while (collected.length < collectLimit && hasMore) {
     const remaining = collectLimit - collected.length;
@@ -663,6 +739,8 @@ async function collectYoutubeHomeFeedMediaRows(args: {
       if (collected.length >= collectLimit) break;
     }
 
+    maybeFireProgressiveReveal();
+
     hasMore = res?.hasMore === true;
     nextCursor = res?.nextCursor != null ? String(res.nextCursor) : null;
     if (!rawRows.length) break;
@@ -684,21 +762,10 @@ async function collectYoutubeHomeFeedMediaRows(args: {
     ? pagingFromApiResponse(lastRes, collected.length)
     : { hasMore: false, nextCursor: null };
 
-  let rows = collected;
-  if (rankPoolSize && collected.length > targetCount) {
-    rows = rankHomeFeedYoutubeStreamRows(collected, homeFeedRowKey).slice(0, targetCount);
-    console.log("KRISTO_HOME_FEED_YOUTUBE_RANK_POOL", {
-      reason,
-      poolSize: collected.length,
-      targetCount,
-      rankedTopIds: rows.map((row) => homeFeedRowKey(row)).filter(Boolean),
-    });
-  } else if (rankPoolSize && collected.length > 1) {
-    rows = rankHomeFeedYoutubeStreamRows(collected, homeFeedRowKey).slice(0, targetCount);
-  }
+  const rows = finalizeYoutubeCollectedRows(collected, targetCount, rankPoolSize, reason);
 
   return {
-    rows: rows.slice(0, targetCount),
+    rows,
     paging,
     apiPasses,
     lastApiRowCount,
@@ -707,7 +774,14 @@ async function collectYoutubeHomeFeedMediaRows(args: {
 
 export async function fetchHomeFeedFromApi(
   reason = "load",
-  opts?: { force?: boolean; reconcile?: boolean }
+  opts?: {
+    force?: boolean;
+    reconcile?: boolean;
+    onAndroidProgressiveReveal?: (
+      rows: any[],
+      meta: YoutubeProgressiveRevealMeta
+    ) => void | Promise<void>;
+  }
 ) {
   const session = getSessionSync() as any;
   const viewerUserId = String(session?.userId || "").trim();
@@ -768,6 +842,11 @@ export async function fetchHomeFeedFromApi(
         reason === "load" ||
         reason === "cold-start-rotate" ||
         hardRefresh;
+      const androidProgressiveColdLoad =
+        Platform.OS === "android" &&
+        reason === "load" &&
+        !hardRefresh &&
+        Boolean(opts?.onAndroidProgressiveReveal);
       const collected = await collectYoutubeHomeFeedMediaRows({
         targetCount: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
         rankPoolSize: applyRotation ? HOME_FEED_YOUTUBE_COLD_START_RANK_POOL_SIZE : undefined,
@@ -777,6 +856,15 @@ export async function fetchHomeFeedFromApi(
         session,
         reason,
         throttleMs: hardRefresh ? 0 : 8000,
+        progressiveRevealMinCount: androidProgressiveColdLoad
+          ? HOME_FEED_ANDROID_PROGRESSIVE_REVEAL_MIN
+          : undefined,
+        progressiveRevealCount: androidProgressiveColdLoad
+          ? HOME_FEED_ANDROID_PROGRESSIVE_REVEAL_COUNT
+          : undefined,
+        onProgressiveReveal: androidProgressiveColdLoad
+          ? opts?.onAndroidProgressiveReveal
+          : undefined,
       });
 
       if (generationAtStart !== getHomeFeedFetchGeneration()) {

@@ -25,7 +25,7 @@ export function inferPosterUriFromVideoUrl(videoUrl: string): string {
     const match = tail.match(/^([^/]+)\/([^/]+)\.(mp4|mov|m4v|webm|mkv)$/i);
     if (match?.[1] && match?.[2]) {
       const base = raw.slice(0, r2Idx);
-      return `${base}/church-video-posters/${match[1]}/${match[2]}.jpg`;
+      return homeFeedMediaUrl(`${base}/church-video-posters/${match[1]}/${match[2]}.jpg`);
     }
   }
 

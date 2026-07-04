@@ -11,6 +11,7 @@ import {
   Alert,
   AppState,
   InteractionManager,
+  Platform,
   StyleSheet,
   Text,
   View,
@@ -125,6 +126,8 @@ import {
   resolveYoutubePageSettlingMs,
   awaitYoutubeBatchCoverGate,
   waitForYoutubePage0RevealGate,
+  kickoffYoutubePagePosterPrewarm,
+  kickoffYoutubePageAvatarPrewarm,
 } from "./homeFeedYoutubeStreamUi";
 import {
   hydrateHomeFeedDisplayOrderFromStorage,
@@ -237,6 +240,7 @@ import {
   prewarmVisibleHomeFeedVideoPosters,
   resetHomeFeedPosterPrewarmForFeedRefresh,
   startInitialHomeFeedPosterPrewarm,
+  startYoutubeHomeFeedVisiblePosterPrewarm,
   VISIBLE_PRIORITY_COUNT,
 } from "@/src/lib/homeFeedPosterPrewarm";
 import {
@@ -281,6 +285,7 @@ export default function HomeFeedScreen() {
   const lastDeferredVideoCountRef = useRef<number | null>(null);
   const first20AvatarPreloadStartAtRef = useRef<number | null>(null);
   const first20AvatarPreloadDoneLoggedRef = useRef(false);
+  const androidProgressiveRevealDoneRef = useRef(false);
   const [backendRows, setBackendRows] = useState<any[]>(() =>
     isHomeFeedYouTubeStyleVideo() ? [] : getCachedHomeFeedBackendRows()
   );
@@ -805,7 +810,10 @@ export default function HomeFeedScreen() {
     [resetYoutubeStreamPaginationState, runYoutubePageVisualReadyGate]
   );
 
-  const revealYoutubePage0 = useCallback(async (rows: any[]) => {
+  const revealYoutubePage0 = useCallback(async (
+    rows: any[],
+    opts?: { progressive?: boolean }
+  ) => {
     if (youtubeStreamRowsRef.current.length > 0 && youtubePageRevealCompleteRef.current) {
       return;
     }
@@ -818,8 +826,10 @@ export default function HomeFeedScreen() {
 
     const generation = youtubeRevealGenerationRef.current + 1;
     youtubeRevealGenerationRef.current = generation;
-    resetYoutubeStreamPaginationState();
-    setYoutubeShowSkeleton(true);
+    if (!opts?.progressive || !youtubePageRevealCompleteRef.current) {
+      resetYoutubeStreamPaginationState();
+      setYoutubeShowSkeleton(true);
+    }
 
     await waitForYoutubePage0RevealGate(visible);
     if (generation !== youtubeRevealGenerationRef.current) return;
@@ -834,6 +844,53 @@ export default function HomeFeedScreen() {
     bumpYoutubeRows();
     void runYoutubePageVisualReadyGate(visible);
   }, [resetYoutubeStreamPaginationState, runYoutubePageVisualReadyGate]);
+
+  const topUpAndroidYoutubePage0 = useCallback(async (fullRows: any[]) => {
+    let videoRows = filterHomeFeedYoutubeStreamRows(fullRows);
+    if (!videoRows.length) return;
+    if (videoRows.length > 1) {
+      videoRows = rankHomeFeedYoutubeStreamRows(videoRows, homeFeedRowKey);
+    }
+    const fullVisible = videoRows.slice(0, HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE);
+    const current = youtubeStreamRowsRef.current;
+    const currentIds = current.map((row) => homeFeedRowKey(row)).filter(Boolean);
+    const fullIds = fullVisible.map((row) => homeFeedRowKey(row)).filter(Boolean);
+    const prefixMatch =
+      currentIds.length > 0 &&
+      currentIds.length <= fullIds.length &&
+      currentIds.every((id, index) => id === fullIds[index]);
+
+    console.log("KRISTO_HOME_FEED_ANDROID_PROGRESSIVE_TOPUP_DONE", {
+      progressiveCount: current.length,
+      fullCount: fullVisible.length,
+      prefixMatch,
+      appended: Math.max(0, fullVisible.length - current.length),
+      firstIds: fullIds.slice(0, 8),
+    });
+
+    youtubeStreamRowsRef.current = fullVisible;
+    replaceHomeFeedYoutubeStreamRows(fullVisible);
+    setBackendRows(fullVisible);
+    bumpYoutubeRows();
+
+    if (fullVisible.length > current.length) {
+      const currentIdSet = new Set(currentIds);
+      const tail = fullVisible.filter((row) => {
+        const id = homeFeedRowKey(row);
+        return Boolean(id && !currentIdSet.has(id));
+      });
+      if (tail.length) {
+        kickoffYoutubePagePosterPrewarm(tail);
+        kickoffYoutubePageAvatarPrewarm(tail);
+      }
+    }
+
+    saveHomeFeedYoutubeStreamSession({
+      rows: fullVisible,
+      pageRevealComplete: true,
+      pageVisualReady: youtubePageVisualReadyRef.current,
+    });
+  }, [bumpYoutubeRows]);
 
   const loadFeedGenerationRef = useRef(0);
 
@@ -865,6 +922,7 @@ export default function HomeFeedScreen() {
       youtubeRevealGenerationRef.current += 1;
       resetYoutubeStreamPaginationState();
       pageReadyLoggedRef.current = false;
+      androidProgressiveRevealDoneRef.current = false;
       if (force) {
         clearHomeFeedYoutubeStreamSession();
       }
@@ -915,9 +973,31 @@ export default function HomeFeedScreen() {
     }
 
     try {
+      const enableAndroidProgressiveReveal =
+        youtubeLayout &&
+        Platform.OS === "android" &&
+        reason === "load" &&
+        refreshMode === "required" &&
+        !hasHomeFeedYoutubeStreamSession();
+
       const rows = await fetchHomeFeedFromApi(reason, {
         force: forceFetch,
         reconcile: true,
+        onAndroidProgressiveReveal: enableAndroidProgressiveReveal
+          ? (partial, meta) => {
+              if (loadGeneration !== loadFeedGenerationRef.current) return;
+              if (youtubePageRevealCompleteRef.current) return;
+              androidProgressiveRevealDoneRef.current = true;
+              console.log("KRISTO_HOME_FEED_ANDROID_PROGRESSIVE_REVEAL", {
+                revealCount: partial.length,
+                collectedSoFar: meta.collectedSoFar,
+                apiPass: meta.apiPass,
+                rowIds: partial.map((row) => homeFeedRowKey(row)).filter(Boolean),
+              });
+              startYoutubeHomeFeedVisiblePosterPrewarm(partial);
+              void revealYoutubePage0(partial, { progressive: true });
+            }
+          : undefined,
       });
       if (loadGeneration !== loadFeedGenerationRef.current) {
         logHomeFeedNetworkTrace({ event: "load-feed-stale", reason });
@@ -971,6 +1051,26 @@ export default function HomeFeedScreen() {
                 rows
               );
               void restoreYoutubeStreamRows(merged, { coldStart: true });
+            } else if (androidProgressiveRevealDoneRef.current) {
+              const waitStart = Date.now();
+              while (
+                !youtubePageRevealCompleteRef.current &&
+                Date.now() - waitStart < 2500 &&
+                loadGeneration === loadFeedGenerationRef.current
+              ) {
+                await new Promise((resolve) => setTimeout(resolve, 32));
+              }
+              if (
+                loadGeneration === loadFeedGenerationRef.current &&
+                androidProgressiveRevealDoneRef.current
+              ) {
+                if (youtubePageRevealCompleteRef.current) {
+                  await topUpAndroidYoutubePage0(rows);
+                } else {
+                  void revealYoutubePage0(rows);
+                }
+              }
+              androidProgressiveRevealDoneRef.current = false;
             } else if (!hasHomeFeedYoutubeStreamSession()) {
               if (rows.length > HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE) {
                 void restoreYoutubeStreamRows(rows, { coldStart: true });
