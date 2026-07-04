@@ -282,6 +282,15 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   const mountMsRef = React.useRef(Date.now());
   const lastTimeRef = React.useRef(0);
   const userPausedRef = React.useRef(false);
+  const backgroundPausedRef = React.useRef(false);
+  const [playbackPausedUi, setPlaybackPausedUi] = React.useState(false);
+  const bumpPauseUi = React.useCallback(() => {
+    setPlaybackPausedUi(userPausedRef.current || backgroundPausedRef.current);
+  }, []);
+  const isAutoPlaybackBlocked = React.useCallback(
+    () => userPausedRef.current || backgroundPausedRef.current,
+    []
+  );
   const progressRestoredRef = React.useRef(false);
   const preloadStartedLoggedRef = React.useRef(false);
   const preloadReadyLoggedRef = React.useRef(false);
@@ -443,6 +452,11 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     safePlayVideoPlayer(player, { source: "home-feed-video-player" });
   }, [player]);
 
+  const tryAutoPlay = React.useCallback(() => {
+    if (playerDisposedRef.current || isAutoPlaybackBlocked()) return;
+    safePlay();
+  }, [safePlay, isAutoPlaybackBlocked]);
+
   const safePause = React.useCallback(() => {
     if (playerDisposedRef.current) return;
     safePauseVideoPlayer(player, { source: "home-feed-video-player" });
@@ -494,9 +508,9 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
           to: effectivePlaybackUri,
         });
 
-        if (role === "active" && isActiveIntent && !userPausedRef.current) {
+        if (role === "active" && isActiveIntent && !isAutoPlaybackBlocked()) {
           safeSetMuted(true);
-          safePlay();
+          tryAutoPlay();
         }
       } catch (error) {
         console.log("KRISTO_VIDEO_PLAYBACK_SOURCE_SWAP_FAILED", {
@@ -523,12 +537,14 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     postId,
     feedIndex,
     safePlay,
+    tryAutoPlay,
     safeSetMuted,
+    isAutoPlaybackBlocked,
   ]);
 
   const resumeActivePlayback = React.useCallback(
     (reason: string) => {
-      if (playerDisposedRef.current || userPausedRef.current) return;
+      if (playerDisposedRef.current || isAutoPlaybackBlocked()) return;
       if (role !== "active" || !isActiveIntent) return;
 
       const t = safeNumber(() => (player as any).currentTime);
@@ -540,11 +556,11 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         hasPaintedFrame(t);
 
       if (retainedVisible) {
-        safePlay();
+        tryAutoPlay();
         const playing = safeNumber(() => (((player as any).playing ? 1 : 0) as number)) === 1;
         if (!playing) {
           safePause();
-          safePlay();
+          tryAutoPlay();
         }
         return;
       }
@@ -559,12 +575,12 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
           trigger: reason,
         });
         safeSetMuted(true);
-        safePlay();
+        tryAutoPlay();
         return;
       }
 
       safeSetMuted(true);
-      safePlay();
+      tryAutoPlay();
     },
     [
       role,
@@ -573,9 +589,10 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       player,
       key,
       feedIndex,
-      safePlay,
+      tryAutoPlay,
       safePause,
       safeSetMuted,
+      isAutoPlaybackBlocked,
     ]
   );
 
@@ -611,12 +628,12 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       setFirstFrameReady(true);
 
       const activeNow = role === "active" && screenFocused && appActive;
-      if (activeNow && !userPausedRef.current) {
+      if (activeNow && !isAutoPlaybackBlocked()) {
         safeSetMuted(false);
-        safePlay();
+        tryAutoPlay();
       }
     },
-    [key, postId, feedIndex, role, screenFocused, appActive, safePlay, safeSetMuted]
+    [key, postId, feedIndex, role, screenFocused, appActive, tryAutoPlay, safeSetMuted, isAutoPlaybackBlocked]
   );
 
   const applyStartupAdoption = React.useCallback(
@@ -651,14 +668,17 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       playbackStallRecoveringRef.current = false;
       playbackStallRecoveryStepRef.current = 0;
       userPausedRef.current = false;
+      backgroundPausedRef.current = false;
 
       const t = safeNumber(() => (primedPlayer as any).currentTime);
       try {
         (primedPlayer as any).muted = false;
       } catch {}
-      try {
-        primedPlayer.play();
-      } catch {}
+      if (!isAutoPlaybackBlocked()) {
+        try {
+          primedPlayer.play();
+        } catch {}
+      }
 
       if (hasPaintedFrame(t)) {
         confirmVisibleFrame("startup-late-adopted");
@@ -670,7 +690,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         currentTime: t,
       });
     },
-    [applyStartupAdoption, confirmVisibleFrame, postId, remotePlaybackUri]
+    [applyStartupAdoption, confirmVisibleFrame, postId, remotePlaybackUri, isAutoPlaybackBlocked]
   );
 
   // Claim startup-primed player; keep listening for late prime after remote fallback.
@@ -807,9 +827,10 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       key,
       postId,
       index: feedIndex,
-      play: () => safePlay(),
+      play: () => tryAutoPlay(),
       pause: () => safePause(),
       setMuted: (m: boolean) => safeSetMuted(m),
+      isAutoPlaybackBlocked,
     });
     return () => {
       playerDisposedRef.current = true;
@@ -830,9 +851,21 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   }, [key, player]);
 
   React.useEffect(() => {
-    const sub = AppState.addEventListener("change", (next) => setAppActive(next === "active"));
+    const sub = AppState.addEventListener("change", (next) => {
+      const active = next === "active";
+      if (!active) {
+        backgroundPausedRef.current = true;
+        if (role === "active") {
+          safePause();
+          safeSetMuted(true);
+          saveProgress("app-background");
+        }
+        bumpPauseUi();
+      }
+      setAppActive(active);
+    });
     return () => sub.remove();
-  }, []);
+  }, [role, safePause, safeSetMuted, saveProgress, bumpPauseUi]);
 
   // One-shot file diagnostic for the first/active video: HEAD content-length,
   // first-byte latency, and moov position. moovPositionHint==="end" proves the
@@ -1258,7 +1291,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
   // Automatic stuck recovery for the active row (no user scroll required).
   React.useEffect(() => {
     if (!isHomeFeedInlineVideoAutoplayEnabled()) return;
-    if (role !== "active" || !isActiveIntent || firstFrameReady || userPausedRef.current) {
+    if (role !== "active" || !isActiveIntent || firstFrameReady || isAutoPlaybackBlocked()) {
       stuckRecoveryStepRef.current = 0;
       stuckRecoveryStartedRef.current = false;
       return;
@@ -1286,7 +1319,14 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     let stepTimer: ReturnType<typeof setTimeout> | null = null;
 
     const runStep = (step: number) => {
-      if (cancelled || playerDisposedRef.current || firstFrameReadyRef.current) return;
+      if (
+        cancelled ||
+        playerDisposedRef.current ||
+        firstFrameReadyRef.current ||
+        isAutoPlaybackBlocked()
+      ) {
+        return;
+      }
 
       if (step === 0 && !stuckRecoveryStartedRef.current) {
         stuckRecoveryStartedRef.current = true;
@@ -1311,7 +1351,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
           safePause();
         }
         safeSetMuted(true);
-        safePlay();
+        tryAutoPlay();
         stuckRecoveryStepRef.current = step + 1;
         stepTimer = setTimeout(() => runStep(step + 1), STUCK_RECOVERY_STEP_MS);
         return;
@@ -1330,7 +1370,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
           action: "seek-nudge",
           currentTime: t,
         });
-        safePlay();
+        tryAutoPlay();
         stuckRecoveryStepRef.current = step + 1;
         stepTimer = setTimeout(() => runStep(step + 1), STUCK_RECOVERY_STEP_MS);
         return;
@@ -1373,9 +1413,10 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     remotePlaybackUri,
     playerRemountEpoch,
     resetPlaybackSurface,
-    safePlay,
+    tryAutoPlay,
     safePause,
     safeSetMuted,
+    isAutoPlaybackBlocked,
   ]);
 
   // Playback stall watchdog — frozen currentTime after visible playback already started.
@@ -1416,7 +1457,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     };
 
     const runRecoveryStep = (step: number) => {
-      if (cancelled || playerDisposedRef.current || userPausedRef.current) return;
+      if (cancelled || playerDisposedRef.current || isAutoPlaybackBlocked()) return;
       if (!firstFrameReadyRef.current) return;
 
       const t = safeNumber(() => (player as any).currentTime);
@@ -1449,7 +1490,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
         });
         if (step === 1) safePause();
         safeSetMuted(false);
-        safePlay();
+        tryAutoPlay();
         playbackStallRecoveryStepRef.current = step + 1;
         recoveryTimer = setTimeout(() => runRecoveryStep(step + 1), PLAYBACK_STALL_RECOVERY_STEP_MS);
         return;
@@ -1468,7 +1509,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
           from: t,
           to: seekTo,
         });
-        safePlay();
+        tryAutoPlay();
         playbackStallRecoveryStepRef.current = step + 1;
         recoveryTimer = setTimeout(() => runRecoveryStep(step + 1), PLAYBACK_STALL_RECOVERY_STEP_MS);
         return;
@@ -1489,7 +1530,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     };
 
     const poll = setInterval(() => {
-      if (cancelled || playerDisposedRef.current || userPausedRef.current) {
+      if (cancelled || playerDisposedRef.current || isAutoPlaybackBlocked()) {
         playbackStallSinceMsRef.current = null;
         return;
       }
@@ -1538,9 +1579,10 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     key,
     postId,
     feedIndex,
-    safePlay,
+    tryAutoPlay,
     safePause,
     safeSetMuted,
+    isAutoPlaybackBlocked,
   ]);
 
   const poster = String(posterUri || "").trim();
@@ -1570,7 +1612,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
     screenFocused &&
     Boolean(player) &&
     !firstFrameReady &&
-    !userPausedRef.current;
+    !playbackPausedUi;
   const showBufferPercentLabel =
     showAutoStartLoading && bufferPercent > 0 && bufferPercent < 100;
 
@@ -1582,10 +1624,12 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
       safePause();
     } else {
       userPausedRef.current = false;
+      backgroundPausedRef.current = false;
       safeSetMuted(false);
       safePlay();
     }
-  }, [showControls, player, safePause, safePlay, safeSetMuted]);
+    bumpPauseUi();
+  }, [showControls, player, safePause, safePlay, safeSetMuted, bumpPauseUi]);
 
   const gesture = React.useMemo(() => {
     const singleTap = Gesture.Tap()
@@ -1650,7 +1694,7 @@ export const HomeFeedVideoPlayer = memo(function HomeFeedVideoPlayer({
             ) : null}
           </View>
         ) : null}
-        {showControls && userPausedRef.current ? (
+        {showControls && playbackPausedUi ? (
           <View style={styles.centerPlayOverlay} pointerEvents="none">
             <View style={styles.centerPlayButton}>
               <Ionicons name="play" size={34} color="rgba(255,255,255,0.96)" />

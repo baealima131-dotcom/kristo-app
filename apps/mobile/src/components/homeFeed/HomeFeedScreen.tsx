@@ -184,6 +184,7 @@ import {
 import { HOME_FEED_BG, homeFeedSlideHeight, homeFeedTopBarTotalHeight } from "./theme";
 import {
   buildWatchUpNextVideos,
+  mergeWatchUpNextCandidateRows,
   recordWatchSessionVideo,
   reshuffleHomeFeedRowsAfterWatchSelection,
 } from "@/src/lib/homeFeedWatchUpNext";
@@ -625,6 +626,11 @@ export default function HomeFeedScreen() {
     });
     return () => sub.remove();
   }, []);
+
+  useEffect(() => {
+    if (appActive) return;
+    pauseAllHomeFeedVideos({ reason: "app-background" });
+  }, [appActive]);
 
   const applyFeedPagingState = useCallback(
     (
@@ -2513,12 +2519,12 @@ export default function HomeFeedScreen() {
       const timeout = setTimeout(() => {
         requestAnimationFrame(() => {
           if (cancelled) return;
-          const sourceRows =
-            feedListRowsRef.current.length > 0
-              ? feedListRowsRef.current
-              : stableDisplayRowsRef.current.length > 0
-                ? stableDisplayRowsRef.current
-                : displayFeedRowsRef.current;
+          const sourceRows = mergeWatchUpNextCandidateRows(
+            feedListRowsRef.current,
+            youtubeStreamRowsRef.current,
+            stableDisplayRowsRef.current,
+            displayFeedRowsRef.current
+          );
           const items = buildWatchUpNextVideos({
             currentItem: payload.item,
             candidates: sourceRows,

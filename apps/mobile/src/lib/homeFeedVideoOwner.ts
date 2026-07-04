@@ -31,6 +31,8 @@ export type HomeFeedPlayerHandle = {
   play: () => void;
   pause: () => void;
   setMuted: (muted: boolean) => void;
+  /** When true, owner sync must not unmute or call play() (manual/background pause). */
+  isAutoPlaybackBlocked?: () => boolean;
 };
 
 const registry = new Map<string, HomeFeedPlayerHandle>();
@@ -166,9 +168,12 @@ export function enforceHomeFeedVideoAudioOwnership(activeFeedIndex: number): voi
     silence(handle);
   });
 
+  const blocked = activeHandle.isAutoPlaybackBlocked?.() === true;
   try {
-    activeHandle.setMuted(false);
-    activeHandle.play();
+    if (!blocked) {
+      activeHandle.setMuted(false);
+      activeHandle.play();
+    }
   } catch {}
 
   lastEnforcedActiveIndex = activeFeedIndex;
@@ -177,7 +182,8 @@ export function enforceHomeFeedVideoAudioOwnership(activeFeedIndex: number): voi
     activeKey: activeHandle.key,
     activePostId: activeHandle.postId,
     registered: registry.size,
-    audible: true,
+    audible: !blocked,
+    autoPlaybackBlocked: blocked,
   });
 }
 
@@ -298,9 +304,12 @@ export function recoverHomeFeedPlaybackAfterLiveExit(
   }
 
   setActiveHomeFeedVideo(target.key, { postId: target.postId, index: target.index });
+  const blocked = target.isAutoPlaybackBlocked?.() === true;
   try {
-    target.setMuted(false);
-    target.play();
+    if (!blocked) {
+      target.setMuted(false);
+      target.play();
+    }
   } catch {}
 
   console.log("KRISTO_HOME_FEED_VIDEO_RECOVERY_ACTIVE", { postId: targetPostId, reason });

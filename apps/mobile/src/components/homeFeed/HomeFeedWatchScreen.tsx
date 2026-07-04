@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AppState,
   Image,
   Modal,
   Pressable,
@@ -40,8 +41,7 @@ import {
 } from "@/src/lib/homeFeedVideoProgressStore";
 import {
   YOUTUBE_CARD_H_PADDING,
-  YOUTUBE_THUMB_ASPECT,
-  TIKTOK_THUMB_ASPECT,
+  resolveWatchPlayerHeight,
 } from "@/src/lib/homeFeedYouTubeLayout";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { resolveVideoDurationMs } from "@/src/lib/mediaVideoPoster";
@@ -253,6 +253,26 @@ function WatchVideoSurface({
   const postId = String(payload.postId || "").trim();
   const playbackUri = resolveWatchScreenPlaybackUri(payload);
   const [ended, setEnded] = useState(false);
+  const userPausedRef = useRef(false);
+  const backgroundPausedRef = useRef(false);
+  const onPlaybackStartedRef = useRef(onPlaybackStarted);
+  onPlaybackStartedRef.current = onPlaybackStarted;
+
+  const isWatchAutoPlayBlocked = useCallback(
+    () => userPausedRef.current || backgroundPausedRef.current,
+    []
+  );
+
+  const tryWatchAutoPlay = useCallback(
+    (
+      target: ReturnType<typeof useVideoPlayer>,
+      meta: { source: string; uri: string }
+    ) => {
+      if (isWatchAutoPlayBlocked()) return;
+      safePlayVideoPlayer(target, meta);
+    },
+    [isWatchAutoPlayBlocked]
+  );
 
   useEffect(() => {
     console.log("KRISTO_WATCH_BACKDROP_DIAG", {
@@ -280,6 +300,26 @@ function WatchVideoSurface({
     }
   );
 
+  const playerRef = useRef(player);
+  const backdropPlayerRef = useRef(backdropPlayer);
+  playerRef.current = player;
+  backdropPlayerRef.current = backdropPlayer;
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") return;
+      backgroundPausedRef.current = true;
+      const uri = playbackUri;
+      safePauseVideoPlayer(backdropPlayerRef.current, {
+        source: "home-feed-watch-backdrop",
+        uri,
+      });
+      safePauseVideoPlayer(playerRef.current, { source: "home-feed-watch", uri });
+      notifyWatchPlaybackPaused(postId);
+    });
+    return () => sub.remove();
+  }, [playbackUri, postId]);
+
   useEventListener(player, "playToEnd", () => {
     setEnded(true);
     notifyWatchPlaybackPaused(postId);
@@ -288,6 +328,8 @@ function WatchVideoSurface({
   useEffect(() => {
     if (!playbackUri) return;
     setEnded(false);
+    userPausedRef.current = false;
+    backgroundPausedRef.current = false;
 
     let cancelled = false;
     const source = buildWatchVideoPlayerSource(playbackUri);
@@ -295,18 +337,22 @@ function WatchVideoSurface({
 
     void (async () => {
       try {
-        const currentUri = String((player as any)?.source?.uri || "").trim();
+        const activePlayer = playerRef.current;
+        const activeBackdrop = backdropPlayerRef.current;
+        if (!activePlayer) return;
+
+        const currentUri = String((activePlayer as any)?.source?.uri || "").trim();
         const needsReplace = Boolean(currentUri && currentUri !== playbackUri);
 
         if (needsReplace) {
-          if (typeof player.replaceAsync === "function") {
+          if (typeof activePlayer.replaceAsync === "function") {
             console.log("KRISTO_WATCH_VIDEO_REPLACE_ASYNC_START", {
               postId,
               playbackUri,
               currentUri,
               at: Date.now(),
             });
-            await player.replaceAsync(source);
+            await activePlayer.replaceAsync(source);
             if (cancelled) return;
             console.log("KRISTO_WATCH_VIDEO_REPLACE_ASYNC_END", {
               postId,
@@ -319,40 +365,55 @@ function WatchVideoSurface({
               currentUri,
               at: Date.now(),
             });
-            player.replace(source);
+            activePlayer.replace(source);
             if (cancelled) return;
           }
         }
 
-        if (cancelled) return;
-
-        if (isTikTokLayout) {
-          const backdropCurrentUri = String((backdropPlayer as any)?.source?.uri || "").trim();
-          const backdropNeedsReplace = !backdropCurrentUri || backdropCurrentUri !== playbackUri;
-          if (backdropNeedsReplace) {
-            if (typeof backdropPlayer.replaceAsync === "function") {
-              await backdropPlayer.replaceAsync(source);
-            } else {
-              backdropPlayer.replace(source);
-            }
-          }
-          backdropPlayer.muted = true;
-          backdropPlayer.loop = true;
-          safePlayVideoPlayer(backdropPlayer, { source: "home-feed-watch-backdrop", uri: playbackUri });
+        if (cancelled || isWatchAutoPlayBlocked()) {
+          safePauseVideoPlayer(activeBackdrop, {
+            source: "home-feed-watch-backdrop",
+            uri: playbackUri,
+          });
+          safePauseVideoPlayer(activePlayer, { source: "home-feed-watch", uri: playbackUri });
+          return;
         }
 
-        safePlayVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
+        if (isTikTokLayout && activeBackdrop) {
+          const backdropCurrentUri = String((activeBackdrop as any)?.source?.uri || "").trim();
+          const backdropNeedsReplace = !backdropCurrentUri || backdropCurrentUri !== playbackUri;
+          if (backdropNeedsReplace) {
+            if (typeof activeBackdrop.replaceAsync === "function") {
+              await activeBackdrop.replaceAsync(source);
+            } else {
+              activeBackdrop.replace(source);
+            }
+          }
+          activeBackdrop.muted = true;
+          activeBackdrop.loop = true;
+          tryWatchAutoPlay(activeBackdrop, {
+            source: "home-feed-watch-backdrop",
+            uri: playbackUri,
+          });
+        }
+
+        tryWatchAutoPlay(activePlayer, { source: "home-feed-watch", uri: playbackUri });
+        if (isWatchAutoPlayBlocked()) return;
+
         notifyWatchPlaybackActive(postId);
-        onPlaybackStarted?.();
+        onPlaybackStartedRef.current?.();
       } catch {}
     })();
 
     return () => {
       cancelled = true;
-      safePauseVideoPlayer(backdropPlayer, { source: "home-feed-watch-backdrop", uri: playbackUri });
-      safePauseVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
+      safePauseVideoPlayer(backdropPlayerRef.current, {
+        source: "home-feed-watch-backdrop",
+        uri: playbackUri,
+      });
+      safePauseVideoPlayer(playerRef.current, { source: "home-feed-watch", uri: playbackUri });
     };
-  }, [player, backdropPlayer, playbackUri, postId, isTikTokLayout, onPlaybackStarted]);
+  }, [playbackUri, postId, isTikTokLayout, tryWatchAutoPlay, isWatchAutoPlayBlocked]);
 
   useEffect(() => {
     let lastPlaying: boolean | null = null;
@@ -364,7 +425,7 @@ function WatchVideoSurface({
       let playing = false;
 
       try {
-        playing = Boolean((player as any)?.playing);
+        playing = Boolean((playerRef.current as any)?.playing);
       } catch {
         console.log("KRISTO_HOME_FEED_WATCH_PLAYER_RELEASED", {
           postId,
@@ -377,6 +438,17 @@ function WatchVideoSurface({
       }
 
       if (playing === lastPlaying) return;
+
+      if (!playing && lastPlaying === true) {
+        if (!backgroundPausedRef.current) {
+          userPausedRef.current = true;
+        }
+      } else if (playing && lastPlaying === false) {
+        if (userPausedRef.current || backgroundPausedRef.current) {
+          userPausedRef.current = false;
+          backgroundPausedRef.current = false;
+        }
+      }
 
       lastPlaying = playing;
 
@@ -391,7 +463,7 @@ function WatchVideoSurface({
       stopped = true;
       clearInterval(poll);
     };
-  }, [player, postId, ended]);
+  }, [postId, ended]);
 
   useEffect(() => {
     if (!player || !postId) return;
@@ -439,6 +511,8 @@ function WatchVideoSurface({
 
   const handleReplay = useCallback(() => {
     setEnded(false);
+    userPausedRef.current = false;
+    backgroundPausedRef.current = false;
     safeSeekVideoPlayer(player, 0, { source: "home-feed-watch", uri: playbackUri });
     safePlayVideoPlayer(player, { source: "home-feed-watch", uri: playbackUri });
     notifyWatchPlaybackActive(postId);
@@ -576,11 +650,19 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
   const { width, height: windowHeight } = useWindowDimensions();
   const displayType = resolveHomeFeedVideoDisplayType(payload?.item);
   const isTikTokLayout = displayType === "tiktok";
-  const playerHeight = isTikTokLayout
-    ? Math.min(Math.round(width / TIKTOK_THUMB_ASPECT), Math.round(windowHeight * 0.72))
-    : Math.round(width / YOUTUBE_THUMB_ASPECT);
+  const playerHeight = useMemo(
+    () =>
+      resolveWatchPlayerHeight({
+        windowWidth: width,
+        windowHeight,
+        topInset: insets.top,
+        isTikTokLayout,
+      }),
+    [width, windowHeight, insets.top, isTikTokLayout]
+  );
   const scrollRef = useRef<ScrollView | null>(null);
   const [playbackStarted, setPlaybackStarted] = useState(false);
+  const handlePlaybackStarted = useCallback(() => setPlaybackStarted(true), []);
 
   const item = payload?.item;
 
@@ -653,7 +735,7 @@ export const HomeFeedWatchScreen = memo(function HomeFeedWatchScreen({
           <WatchVideoSurface
             payload={payload}
             isTikTokLayout={isTikTokLayout}
-            onPlaybackStarted={() => setPlaybackStarted(true)}
+            onPlaybackStarted={handlePlaybackStarted}
           />
         </View>
 

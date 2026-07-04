@@ -155,22 +155,54 @@ export function getWatchSessionPostIds() {
   return [...watchSessionOrder];
 }
 
+function buildWatchExcludeIds(currentId: string, extraExcludeIds?: string[]): Set<string> {
+  const exclude = new Set<string>();
+  if (currentId) exclude.add(currentId);
+  const sessionIds = extraExcludeIds ?? watchSessionOrder;
+  for (const id of sessionIds) {
+    const normalized = String(id || "").trim();
+    if (normalized) exclude.add(normalized);
+  }
+  return exclude;
+}
+
+/** Merge video rows from multiple feed snapshots without duplicate post ids. */
+export function mergeWatchUpNextCandidateRows(...rowGroups: any[][]): any[] {
+  const seen = new Set<string>();
+  const merged: any[] = [];
+
+  for (const group of rowGroups) {
+    for (const row of group || []) {
+      if (!isVideoPost(row)) continue;
+      const id = normalizePostId(row);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      merged.push(row);
+    }
+  }
+
+  return merged;
+}
+
 export function buildWatchUpNextVideos(params: {
   currentItem: any;
   candidates: any[];
   viewerChurchId?: string;
   limit?: number;
   generationSeed?: number;
+  /** Defaults to this session's watched post ids (most recent first). */
+  excludePostIds?: string[];
 }): any[] {
   const currentId = normalizePostId(params.currentItem);
   const viewerChurchId = String(params.viewerChurchId || "").trim();
   const limit = Math.max(1, params.limit ?? DEFAULT_LIMIT);
   const generationSeed = params.generationSeed ?? upNextGeneration;
+  const excludeIds = buildWatchExcludeIds(currentId, params.excludePostIds);
 
   const pool = (params.candidates || []).filter((row) => {
     if (!isVideoPost(row)) return false;
     const id = normalizePostId(row);
-    return id && id !== currentId;
+    return id && !excludeIds.has(id);
   });
 
   if (!pool.length) return [];
@@ -203,6 +235,7 @@ export function buildWatchUpNextVideos(params: {
   console.log("KRISTO_WATCH_UP_NEXT_BUILT", {
     currentPostId: currentId,
     generation: generationSeed,
+    excludedCount: excludeIds.size,
     candidateCount: pool.length,
     resultCount: result.length,
     top: scored.slice(0, 5).map(({ candidate, breakdown }) => ({
