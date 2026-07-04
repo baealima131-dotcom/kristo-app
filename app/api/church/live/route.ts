@@ -175,6 +175,18 @@ function ensureLiveSession(
   return { ...resolved, live };
 }
 
+function isMinistryScheduledLiveId(liveId: string) {
+  return String(liveId || "").trim().startsWith("ministry_");
+}
+
+/** Ministry schedule claims must reopen a durable bridge session for GET lite hydration. */
+function reactivateMinistryScheduledLiveBridge(live: any, now: number) {
+  live.isLive = true;
+  delete live.endedAt;
+  delete live.endedReason;
+  live.lastPresenceAt = now;
+}
+
 function liteLivePayload(live: any) {
   if (!live) return null;
   return {
@@ -506,6 +518,10 @@ export async function PATCH(req: Request) {
       now,
     });
 
+    if (isMinistryScheduledLiveId(requestLiveId)) {
+      reactivateMinistryScheduledLiveBridge(live, now);
+    }
+
     console.log("KRISTO_LIVE_REQUEST_PERSISTED", {
       churchId: a.churchId,
       liveId: requestLiveId,
@@ -514,6 +530,7 @@ export async function PATCH(req: Request) {
       slotId,
       userId: requestUserId,
       status: request?.status || "waiting",
+      bridgeIsLive: live.isLive === true,
     });
   }
 
