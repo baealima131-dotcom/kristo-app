@@ -75,6 +75,9 @@ export const homeFeedPremiumStyles = StyleSheet.create({
     shadowOffset: { width: 0, height: 12 },
     elevation: 22,
     overflow: "visible",
+    ...(Platform.OS === "android"
+      ? { shadowOpacity: 0, shadowRadius: 0, elevation: 0 }
+      : {}),
   },
   thumbFrame: {
     margin: 2,
@@ -88,6 +91,9 @@ export const homeFeedPremiumStyles = StyleSheet.create({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 4 },
     elevation: 8,
+    ...(Platform.OS === "android"
+      ? { shadowOpacity: 0, shadowRadius: 0, elevation: 0 }
+      : {}),
   },
   metaSection: {
     paddingHorizontal: 16,

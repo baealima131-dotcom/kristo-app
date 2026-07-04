@@ -47,6 +47,22 @@ import {
   type HomeFeedVideoOpenPayload,
 } from "@/src/lib/homeFeedVideoMode";
 
+/** Android first paint — align with visible poster prewarm; iOS keeps full page size. */
+const HOME_FEED_YOUTUBE_ANDROID_INITIAL_RENDER = 7;
+const HOME_FEED_YOUTUBE_ANDROID_EAGER_IMAGE_COUNT = 6;
+
+function youtubeFlatListInitialRenderCount() {
+  return Platform.OS === "android"
+    ? HOME_FEED_YOUTUBE_ANDROID_INITIAL_RENDER
+    : HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE;
+}
+
+function youtubeEagerImageIndexLimit() {
+  return Platform.OS === "android"
+    ? HOME_FEED_YOUTUBE_ANDROID_EAGER_IMAGE_COUNT
+    : HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE;
+}
+
 // Dedupe for the first-3-video-rows index diagnostic (keyed by row id).
 const lastFeedVideoIndexDiag = new Map<string, string>();
 
@@ -608,7 +624,7 @@ export const FeedList = memo(
       }
       const nearActive = Math.abs(index - activeIndexRef.current) <= 2;
       const shouldLoadImages =
-        index < HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE ||
+        index < youtubeEagerImageIndexLimit() ||
         youtubeImageLoadUnlockedRef.current.has(index) ||
         nearActive;
       if (shouldLoadImages) {
@@ -696,9 +712,9 @@ export const FeedList = memo(
         keyExtractor={keyExtractor}
         renderItem={renderYouTubeItem}
         showsVerticalScrollIndicator={false}
-        initialNumToRender={HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE}
+        initialNumToRender={youtubeFlatListInitialRenderCount()}
         windowSize={7}
-        maxToRenderPerBatch={HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE}
+        maxToRenderPerBatch={youtubeFlatListInitialRenderCount()}
         updateCellsBatchingPeriod={16}
         removeClippedSubviews={Platform.OS === "android"}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
