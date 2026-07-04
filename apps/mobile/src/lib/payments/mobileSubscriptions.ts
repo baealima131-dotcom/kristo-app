@@ -2399,20 +2399,28 @@ export function formatYearlySubscriptionPrice(
   return `${introPrice} for ${trialLabel}, then ${price}/year`;
 }
 
+export type OpenSubscriptionManagementOptions = {
+  /** When false, skip account-wide App Store / Play subscription pages. Default true. */
+  allowGenericFallback?: boolean;
+};
+
+export type OpenSubscriptionManagementResult = {
+  opened: boolean;
+  fallbackUsed: boolean;
+  path: "management_url" | "show_manage_subscriptions" | "ios_generic" | "android_generic" | "none";
+};
+
 /** Opens native subscription management (StoreKit sheet or store URL). */
 export async function openSubscriptionManagement(
-  customerInfo?: CustomerInfo | null
-): Promise<boolean> {
-  try {
-    const showManage = (Purchases as { showManageSubscriptions?: () => Promise<void> })
-      .showManageSubscriptions;
-    if (typeof showManage === "function") {
-      await showManage.call(Purchases);
-      return true;
-    }
-  } catch (error) {
-    logRevenueCatException("showManageSubscriptions", error);
-  }
+  customerInfo?: CustomerInfo | null,
+  opts?: OpenSubscriptionManagementOptions
+): Promise<OpenSubscriptionManagementResult> {
+  const allowGenericFallback = opts?.allowGenericFallback !== false;
+  const none: OpenSubscriptionManagementResult = {
+    opened: false,
+    fallbackUsed: false,
+    path: "none",
+  };
 
   let info = customerInfo ?? null;
   if (!info) {
@@ -2426,18 +2434,31 @@ export async function openSubscriptionManagement(
   const managementUrl = String(info?.managementURL || "").trim();
   if (managementUrl) {
     await Linking.openURL(managementUrl);
-    return true;
+    return { opened: true, fallbackUsed: false, path: "management_url" };
+  }
+
+  try {
+    const showManage = (Purchases as { showManageSubscriptions?: () => Promise<void> })
+      .showManageSubscriptions;
+    if (typeof showManage === "function") {
+      await showManage.call(Purchases);
+      return { opened: true, fallbackUsed: false, path: "show_manage_subscriptions" };
+    }
+  } catch (error) {
+    logRevenueCatException("showManageSubscriptions", error);
   }
 
   if (Platform.OS === "ios") {
+    if (!allowGenericFallback) return none;
     await Linking.openURL("https://apps.apple.com/account/subscriptions");
-    return true;
+    return { opened: true, fallbackUsed: true, path: "ios_generic" };
   }
 
   if (Platform.OS === "android") {
+    if (!allowGenericFallback) return none;
     await Linking.openURL("https://play.google.com/store/account/subscriptions");
-    return true;
+    return { opened: true, fallbackUsed: true, path: "android_generic" };
   }
 
-  return false;
+  return none;
 }

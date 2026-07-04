@@ -42,6 +42,8 @@ import {
   logEntitlementAudit,
   logInRevenueCatForChurchSubscription,
   logRevenueCatSubscriptionOwnershipDebug,
+  getActiveEntitlementKeys,
+  hasActivePremiumProduct,
   openSubscriptionManagement,
   purchaseSubscriptionPackage,
   refreshCustomerInfoUntilYearlyActive,
@@ -101,6 +103,9 @@ type SubscriptionScreenState = "none" | "monthly" | "yearly" | "offline";
 
 const OFFLINE_ACTIVATION_MESSAGE =
   "This church was activated using an offline activation code. When access expires, contact an authorized Agent to activate the church again.";
+
+const SUBSCRIPTION_NO_PLAY_MANAGE_MESSAGE =
+  "This premium access is active, but there is no Google Play subscription to manage on this device. It may be managed through offline activation, backend activation, or a different Google Play account.";
 
 const INACTIVE_INTRO_TRIAL = {
   isActive: false,
@@ -1049,14 +1054,71 @@ export default function PaymentsSubscriptionsScreen() {
   async function handleManageSubscription() {
     if (submittingPlan) return;
 
+    const manageInfoRef = { current: customerInfo as CustomerInfo | null };
+
+    const logManageDiag = (extra: Record<string, unknown> = {}) => {
+      const info = manageInfoRef.current;
+      const managementURL = String(info?.managementURL || "").trim();
+      console.log("KRISTO_SUBSCRIPTION_MANAGE_DIAG", {
+        platform: Platform.OS,
+        hasCustomerInfo: !!info,
+        managementURL: managementURL || null,
+        activeEntitlementIds: getActiveEntitlementKeys(info),
+        activeSubscriptionIds: [...(info?.activeSubscriptions || [])],
+        resolvedPlan: info ? resolveActiveSubscriptionPlan(info) : null,
+        subscriptionStatusSource: mediaPremiumStatus?.subscriptionSource ?? null,
+        serverSubscriptionActive: mediaPremiumStatus?.serverSubscriptionActive === true,
+        hasPlayPremiumOnDevice: hasActivePremiumProduct(info),
+        ...extra,
+      });
+    };
+
     try {
       setSubmittingPlan("manage");
-      const opened = await openSubscriptionManagement(customerInfo);
-      if (!opened) {
+
+      if (!manageInfoRef.current) {
+        try {
+          manageInfoRef.current = await getCustomerSubscriptionInfo();
+        } catch {
+          manageInfoRef.current = null;
+        }
+      }
+
+      const subscriptionStatusSource = mediaPremiumStatus?.subscriptionSource ?? null;
+      const serverActive = mediaPremiumStatus?.serverSubscriptionActive === true;
+      const managementURL = String(manageInfoRef.current?.managementURL || "").trim();
+      const hasPlayPremiumOnDevice = hasActivePremiumProduct(manageInfoRef.current);
+
+      if (subscriptionStatusSource === "offline_activation") {
+        logManageDiag({ fallbackUsed: false, opened: false, gatedReason: "offline_activation" });
+        Alert.alert("Manage subscription", OFFLINE_ACTIVATION_MESSAGE);
+        return;
+      }
+
+      if (serverActive && !hasPlayPremiumOnDevice && !managementURL) {
+        logManageDiag({
+          fallbackUsed: false,
+          opened: false,
+          gatedReason: "no_play_subscription_on_device",
+        });
+        Alert.alert("Manage subscription", SUBSCRIPTION_NO_PLAY_MANAGE_MESSAGE);
+        return;
+      }
+
+      const manageResult = await openSubscriptionManagement(manageInfoRef.current, {
+        allowGenericFallback: false,
+      });
+      logManageDiag({
+        fallbackUsed: manageResult.fallbackUsed,
+        opened: manageResult.opened,
+        managePath: manageResult.path,
+      });
+
+      if (!manageResult.opened) {
         Alert.alert(
           "Manage subscription",
           Platform.OS === "android"
-            ? "Open Google Play → Payments & subscriptions → Subscriptions to manage or cancel your plan."
+            ? SUBSCRIPTION_NO_PLAY_MANAGE_MESSAGE
             : "Open Settings → Apple ID → Subscriptions to manage or cancel your plan."
         );
         return;
@@ -1068,10 +1130,11 @@ export default function PaymentsSubscriptionsScreen() {
       console.log("KRISTO_SUBSCRIPTION_MANAGE_FAILED", {
         message: String(error?.message || error || ""),
       });
+      logManageDiag({ fallbackUsed: false, opened: false, error: String(error?.message || error || "") });
       Alert.alert(
         "Could not open subscriptions",
         Platform.OS === "android"
-          ? "Try Google Play → Payments & subscriptions → Subscriptions."
+          ? SUBSCRIPTION_NO_PLAY_MANAGE_MESSAGE
           : "Try Settings → Apple ID → Subscriptions."
       );
     } finally {

@@ -596,8 +596,8 @@ export default function PaymentsCheckoutScreen() {
 
     try {
       setSubmitting(true);
-      const opened = await openSubscriptionManagement(customerInfo);
-      if (!opened) {
+      const manageResult = await openSubscriptionManagement(customerInfo);
+      if (!manageResult.opened) {
         Alert.alert(
           "Manage subscription",
           "Open Settings → Apple ID → Subscriptions to manage or cancel your plan."
