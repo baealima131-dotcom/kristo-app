@@ -1436,6 +1436,48 @@ export function isDeviceManageableAppStoreSubscription(
   return Platform.OS === "ios" && Boolean(managementURL);
 }
 
+/** Android Play manage gate: active Kristo product or RevenueCat management URL on this device. */
+export function canOpenAndroidPlaySubscriptionManagement(
+  customerInfo: CustomerInfo | null | undefined
+): boolean {
+  if (!customerInfo) return false;
+  if (hasActivePremiumProduct(customerInfo)) return true;
+  return Boolean(String(customerInfo.managementURL || "").trim());
+}
+
+export function resolveAppStoreBillingFooterText(opts?: { subscribed?: boolean }): string {
+  const subscribedSuffix =
+    opts?.subscribed === true ? " Changes apply on your next billing date." : "";
+  if (Platform.OS === "android") {
+    return `Billing is managed in Google Play. Cancel anytime from Play Store subscriptions.${subscribedSuffix}`;
+  }
+  return `Billing is managed in Apple Subscriptions. Cancel anytime from Settings → Apple ID → Subscriptions.${subscribedSuffix}`;
+}
+
+export function resolveAppStoreManageFallbackMessage(): string {
+  if (Platform.OS === "android") {
+    return "This premium access is active, but there is no Google Play subscription to manage on this device. It may be managed through offline activation, backend activation, or a different Google Play account.";
+  }
+  return "Open Settings → Apple ID → Subscriptions to manage or cancel your plan.";
+}
+
+export function resolveCheckoutFooterText(args: {
+  subscribed: boolean;
+  monthlyTrialEligible: boolean;
+}): string {
+  if (args.subscribed) {
+    return resolveAppStoreBillingFooterText({ subscribed: true });
+  }
+  if (Platform.OS === "android") {
+    return args.monthlyTrialEligible
+      ? "No charge during the free trial. Cancel anytime in Google Play subscriptions."
+      : "Secure checkout through Google Play. Cancel anytime.";
+  }
+  return args.monthlyTrialEligible
+    ? "No charge during the free trial. Cancel anytime in Apple Subscriptions."
+    : "Secure checkout through Apple. Cancel anytime.";
+}
+
 /** True when this church has a verified RC purchase that still needs backend activation. */
 export function canShowChurchSubscriptionRestore(args: {
   churchId: string;

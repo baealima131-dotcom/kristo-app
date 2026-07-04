@@ -43,9 +43,12 @@ import {
   logInRevenueCatForChurchSubscription,
   logRevenueCatSubscriptionOwnershipDebug,
   getActiveEntitlementKeys,
+  canOpenAndroidPlaySubscriptionManagement,
   hasActivePremiumProduct,
   isDeviceManageableAppStoreSubscription,
   logSubscriptionOwnershipChainDiag,
+  resolveAppStoreBillingFooterText,
+  resolveAppStoreManageFallbackMessage,
   openSubscriptionManagement,
   purchaseSubscriptionPackage,
   refreshCustomerInfoUntilYearlyActive,
@@ -108,10 +111,10 @@ const OFFLINE_ACTIVATION_MESSAGE =
   "This church was activated using an offline activation code. When access expires, contact an authorized Agent to activate the church again.";
 
 const BACKEND_MANAGED_PREMIUM_MESSAGE =
-  "Premium active — managed by church/backend activation. This access is not billed through Google Play on this device, so it cannot be managed from the app store.";
+  "Premium active — managed by church/backend activation. This access is not billed through the app store on this device and cannot be cancelled here. Contact your church or Kristo support if access should change.";
 
-const SUBSCRIPTION_NO_PLAY_MANAGE_MESSAGE =
-  "This premium access is active, but there is no Google Play subscription to manage on this device. It may be managed through offline activation, backend activation, or a different Google Play account.";
+const KRISTO_MANAGED_ACCESS_ALERT_TITLE = "Subscription access";
+const APP_STORE_MANAGE_ALERT_TITLE = "Manage / Cancel subscription";
 
 const INACTIVE_INTRO_TRIAL = {
   isActive: false,
@@ -581,13 +584,19 @@ function ManageSubscriptionCard({
           <Ionicons name="card-outline" size={18} color="rgba(196,171,114,0.95)" />
         </View>
         <View style={s.manageCopy}>
-          <Text style={s.manageTitle}>Manage Subscription</Text>
+          <Text style={s.manageTitle}>Manage / Cancel Subscription</Text>
           <Text style={s.manageDescription} numberOfLines={2}>
-            Billing, payment methods, renewals, and cancellation.
+            {Platform.OS === "android"
+              ? "Open Google Play subscriptions to update billing or cancel."
+              : "Open Apple Subscriptions to update billing or cancel."}
           </Text>
         </View>
       </View>
-      <CompactSecondaryCta label="Manage Subscription" onPress={onPress} loading={loading} />
+      <CompactSecondaryCta
+        label="Manage / Cancel Subscription"
+        onPress={onPress}
+        loading={loading}
+      />
     </GlassCard>
   );
 }
@@ -1124,13 +1133,10 @@ export default function PaymentsSubscriptionsScreen() {
       }
 
       const subscriptionStatusSource = mediaPremiumStatus?.subscriptionSource ?? null;
-      const serverActive = mediaPremiumStatus?.serverSubscriptionActive === true;
-      const managementURL = String(manageInfoRef.current?.managementURL || "").trim();
-      const hasPlayPremiumOnDevice = hasActivePremiumProduct(manageInfoRef.current);
 
       if (subscriptionStatusSource === "offline_activation") {
         logManageDiag({ fallbackUsed: false, opened: false, gatedReason: "offline_activation" });
-        Alert.alert("Manage subscription", OFFLINE_ACTIVATION_MESSAGE);
+        Alert.alert(KRISTO_MANAGED_ACCESS_ALERT_TITLE, OFFLINE_ACTIVATION_MESSAGE);
         return;
       }
 
@@ -1143,22 +1149,35 @@ export default function PaymentsSubscriptionsScreen() {
           opened: false,
           gatedReason: "backend_activation",
         });
-        Alert.alert("Manage subscription", BACKEND_MANAGED_PREMIUM_MESSAGE);
+        Alert.alert(KRISTO_MANAGED_ACCESS_ALERT_TITLE, BACKEND_MANAGED_PREMIUM_MESSAGE);
         return;
       }
 
-      if (serverActive && !hasPlayPremiumOnDevice && !managementURL) {
+      if (subscriptionStatusSource !== "app_store") {
+        logManageDiag({
+          fallbackUsed: false,
+          opened: false,
+          gatedReason: "non_app_store_source",
+        });
+        Alert.alert(KRISTO_MANAGED_ACCESS_ALERT_TITLE, BACKEND_MANAGED_PREMIUM_MESSAGE);
+        return;
+      }
+
+      if (
+        Platform.OS === "android" &&
+        !canOpenAndroidPlaySubscriptionManagement(manageInfoRef.current)
+      ) {
         logManageDiag({
           fallbackUsed: false,
           opened: false,
           gatedReason: "no_play_subscription_on_device",
         });
-        Alert.alert("Manage subscription", SUBSCRIPTION_NO_PLAY_MANAGE_MESSAGE);
+        Alert.alert(APP_STORE_MANAGE_ALERT_TITLE, resolveAppStoreManageFallbackMessage());
         return;
       }
 
       const manageResult = await openSubscriptionManagement(manageInfoRef.current, {
-        allowGenericFallback: false,
+        allowGenericFallback: Platform.OS === "ios",
       });
       logManageDiag({
         fallbackUsed: manageResult.fallbackUsed,
@@ -1167,12 +1186,7 @@ export default function PaymentsSubscriptionsScreen() {
       });
 
       if (!manageResult.opened) {
-        Alert.alert(
-          "Manage subscription",
-          Platform.OS === "android"
-            ? SUBSCRIPTION_NO_PLAY_MANAGE_MESSAGE
-            : "Open Settings → Apple ID → Subscriptions to manage or cancel your plan."
-        );
+        Alert.alert(APP_STORE_MANAGE_ALERT_TITLE, resolveAppStoreManageFallbackMessage());
         return;
       }
 
@@ -1183,12 +1197,7 @@ export default function PaymentsSubscriptionsScreen() {
         message: String(error?.message || error || ""),
       });
       logManageDiag({ fallbackUsed: false, opened: false, error: String(error?.message || error || "") });
-      Alert.alert(
-        "Could not open subscriptions",
-        Platform.OS === "android"
-          ? SUBSCRIPTION_NO_PLAY_MANAGE_MESSAGE
-          : "Try Settings → Apple ID → Subscriptions."
-      );
+      Alert.alert("Could not open subscriptions", resolveAppStoreManageFallbackMessage());
     } finally {
       setSubmittingPlan(null);
     }
@@ -1310,15 +1319,15 @@ export default function PaymentsSubscriptionsScreen() {
   const displayedActive = serverSubscriptionActive;
   const isOfflineActivation = isOfflineActivationMediaPremiumStatus(mediaPremiumStatus);
   const isBackendManaged = isBackendManagedMediaPremiumStatus(mediaPremiumStatus);
-  const showAppStoreBillingControls =
-    displayedActive &&
-    mediaPremiumStatus?.subscriptionSource === "app_store" &&
-    isDeviceManageableAppStoreSubscription(customerInfo);
+  const isAppStoreSubscription =
+    displayedActive && mediaPremiumStatus?.subscriptionSource === "app_store";
+  const showManageSubscriptionAction = isAppStoreSubscription;
+  const deviceCanOpenStoreManagement = isDeviceManageableAppStoreSubscription(customerInfo);
   const screenState = resolveMediaPremiumDisplayScreenState(mediaPremiumStatus);
   const billing = resolveServerPremiumBillingDetails(mediaPremiumStatus);
   const expiryLabel = resolveMediaPremiumExpiryLabel(mediaPremiumStatus, customerInfo);
   const renewalLabel =
-    showAppStoreBillingControls && billing.renewalDate
+    isAppStoreSubscription && billing.renewalDate
       ? formatPremiumSubscriptionRenewalLabel(billing.renewalDate, { customerInfo })
       : null;
 
@@ -1344,7 +1353,9 @@ export default function PaymentsSubscriptionsScreen() {
       subscriptionSource: mediaPremiumStatus?.subscriptionSource ?? null,
       isOfflineActivation,
       isBackendManaged,
-      showAppStoreBillingControls,
+      isAppStoreSubscription,
+      showManageSubscriptionAction,
+      deviceCanOpenStoreManagement,
       renewalLabel,
       expiryLabel,
       serverSubscriptionActive,
@@ -1374,7 +1385,9 @@ export default function PaymentsSubscriptionsScreen() {
     displayedActive,
     isOfflineActivation,
     isBackendManaged,
-    showAppStoreBillingControls,
+    isAppStoreSubscription,
+    showManageSubscriptionAction,
+    deviceCanOpenStoreManagement,
     renewalLabel,
     expiryLabel,
   ]);
@@ -1553,7 +1566,7 @@ export default function PaymentsSubscriptionsScreen() {
                   onSwitch={() => handlePurchasePlan("yearly")}
                   loading={submittingPlan === "yearly"}
                 />
-                {showAppStoreBillingControls ? (
+                {showManageSubscriptionAction ? (
                   <ManageSubscriptionCard
                     onPress={handleManageSubscription}
                     loading={submittingPlan === "manage"}
@@ -1583,7 +1596,7 @@ export default function PaymentsSubscriptionsScreen() {
                   customerInfo={customerInfo}
                   successMessage="You have full access to Media Premium features."
                 />
-                {showAppStoreBillingControls ? (
+                {showManageSubscriptionAction ? (
                   <ManageSubscriptionCard
                     onPress={handleManageSubscription}
                     loading={submittingPlan === "manage"}
@@ -1626,8 +1639,8 @@ export default function PaymentsSubscriptionsScreen() {
               </>
             ) : null}
 
-            {showAppStoreBillingControls ? (
-              <Text style={s.footer}>Billing is managed by your app store.</Text>
+            {showManageSubscriptionAction ? (
+              <Text style={s.footer}>{resolveAppStoreBillingFooterText()}</Text>
             ) : null}
 
             <SubscriptionLegalDisclosure

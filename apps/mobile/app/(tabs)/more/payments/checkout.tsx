@@ -41,6 +41,9 @@ import {
   fetchMonthlyIntroTrialEligibility,
   resolveMonthlyIntroTrialEligible,
   openSubscriptionManagement,
+  canOpenAndroidPlaySubscriptionManagement,
+  resolveAppStoreManageFallbackMessage,
+  resolveCheckoutFooterText,
   purchaseSubscriptionPackage,
   resolveMonthlyPackage,
   resolveYearlyPackage,
@@ -596,12 +599,19 @@ export default function PaymentsCheckoutScreen() {
 
     try {
       setSubmitting(true);
-      const manageResult = await openSubscriptionManagement(customerInfo);
+      if (
+        Platform.OS === "android" &&
+        !canOpenAndroidPlaySubscriptionManagement(customerInfo)
+      ) {
+        Alert.alert("Manage / Cancel subscription", resolveAppStoreManageFallbackMessage());
+        return;
+      }
+
+      const manageResult = await openSubscriptionManagement(customerInfo, {
+        allowGenericFallback: Platform.OS === "ios",
+      });
       if (!manageResult.opened) {
-        Alert.alert(
-          "Manage subscription",
-          "Open Settings → Apple ID → Subscriptions to manage or cancel your plan."
-        );
+        Alert.alert("Manage / Cancel subscription", resolveAppStoreManageFallbackMessage());
         return;
       }
 
@@ -611,10 +621,7 @@ export default function PaymentsCheckoutScreen() {
       setSubscriptionSelectedPlan(effective.selectedPlan);
       setSubscriptionPlanStatus(hasPremiumEntitlement(info) ? "active" : "expired");
     } catch (error: any) {
-      Alert.alert(
-        "Could not open subscriptions",
-        String(error?.message || "Try again from Settings → Subscriptions.")
-      );
+      Alert.alert("Could not open subscriptions", resolveAppStoreManageFallbackMessage());
     } finally {
       setSubmitting(false);
     }
@@ -766,11 +773,10 @@ export default function PaymentsCheckoutScreen() {
             )}
 
             <Text style={s.footText}>
-              {isSubscribedForCurrentChurch
-                ? "Billing is managed by your app store. Changes apply on your next billing date."
-                : monthlyTrialEligible
-                ? "No charge during the free trial. Cancel anytime in Apple Subscriptions."
-                : "Secure checkout through Apple. Cancel anytime."}
+              {resolveCheckoutFooterText({
+                subscribed: isSubscribedForCurrentChurch,
+                monthlyTrialEligible,
+              })}
             </Text>
 
             <SubscriptionLegalDisclosure showAgreement={!isSubscribedForCurrentChurch} />
