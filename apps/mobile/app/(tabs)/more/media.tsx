@@ -113,6 +113,8 @@ import {
   summarizeGuestClaimSlotForLog,
   swapGuestClaimSlotTimesWithNeighbor,
 } from "../../../src/lib/mediaScheduleSlotTimes";
+import { formatLocalMeetingDateFromMs } from "../../../src/lib/mediaScheduleSlotTimeCore";
+import { parseLocalIsoDateOnlyParts } from "../../../src/lib/scheduleSlotUtils";
 import { buildMediaScheduleAuthorityFields } from "../../../src/lib/liveMediaAuthority";
 import {
   fetchChurchPastorUserId,
@@ -2959,6 +2961,7 @@ export default function MediaStudioScreen() {
         const endDate = new Date(slotCursor.getTime() + durationMin * 60 * 1000);
         const endTime = formatClock(endDate);
         const meetingDay = formatMeetingDay(slotCursor);
+        const meetingDate = formatLocalMeetingDateFromMs(slotCursor.getTime());
         slotCursor = new Date(endDate.getTime() + 2 * 60 * 1000);
 
         return {
@@ -2967,7 +2970,7 @@ export default function MediaStudioScreen() {
           name,
           role: caption,
           task: caption,
-          meetingDate: meetingDay,
+          meetingDate,
           meetingDay,
           startTime,
           endTime,
@@ -3104,7 +3107,7 @@ export default function MediaStudioScreen() {
           subtitle: caption,
           role: caption,
           status: "open",
-          meetingDate: String(slot.meetingDay || ""),
+          meetingDate: String(slot.meetingDate || slot.meetingDay || ""),
           meetingDay: String(slot.meetingDay || ""),
           startTime: String(slot.startTime || ""),
           endTime: String(slot.endTime || ""),
@@ -3541,9 +3544,14 @@ export default function MediaStudioScreen() {
         .replace(/\s+/g, " ")
         .trim();
 
+      const isoParts = parseLocalIsoDateOnlyParts(cleaned.split("T")[0]);
+      if (isoParts) {
+        return new Date(isoParts.year, isoParts.monthIndex, isoParts.day);
+      }
+
       const parsed = new Date(cleaned);
       if (!Number.isNaN(parsed.getTime())) {
-        return parsed;
+        return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
       }
 
       return null;

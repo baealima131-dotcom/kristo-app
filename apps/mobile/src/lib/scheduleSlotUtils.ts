@@ -51,8 +51,121 @@ function formatLocalIsoDate(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+const ISO_DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** Parse YYYY-MM-DD as a local calendar day — never UTC midnight via `new Date("YYYY-MM-DD")`. */
+export function parseLocalIsoDateOnlyParts(raw: string) {
+  const text = String(raw || "").trim();
+  const dateOnly = text.split("T")[0];
+  const match = ISO_DATE_ONLY_RE.exec(dateOnly);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || monthIndex < 0 || monthIndex > 11 || day < 1 || day > 31) {
+    return null;
+  }
+
+  return { year, monthIndex, day };
+}
+
+/** Locale labels like "Jul 04, 2026" — never pass YYYY-MM-DD through `Date.parse` / `new Date(iso)`. */
+function parseLocaleDisplayDateLabel(raw: string) {
+  const text = String(raw || "").trim();
+  if (!text || parseLocalIsoDateOnlyParts(text)) return null;
+
+  const d = new Date(text);
+  if (!Number.isFinite(d.getTime())) return null;
+
+  return { year: d.getFullYear(), monthIndex: d.getMonth(), day: d.getDate() };
+}
+
+export function localMsFromCalendarParts(
+  parts: { year: number; monthIndex: number; day: number },
+  hour = 0,
+  minute = 0,
+  second = 0,
+  ms = 0
+) {
+  return new Date(parts.year, parts.monthIndex, parts.day, hour, minute, second, ms).getTime();
+}
+
+/** Resolve a calendar date string to local epoch ms; ISO date-only strings stay on that local day. */
+export function parseLocalCalendarDateMs(
+  rawDate: string,
+  opts?: { hour?: number; minute?: number; second?: number; ms?: number }
+) {
+  const isoParts = parseLocalIsoDateOnlyParts(rawDate);
+  if (isoParts) {
+    return localMsFromCalendarParts(
+      isoParts,
+      opts?.hour ?? 0,
+      opts?.minute ?? 0,
+      opts?.second ?? 0,
+      opts?.ms ?? 0
+    );
+  }
+
+  const localeParts = parseLocaleDisplayDateLabel(String(rawDate || "").trim());
+  if (localeParts) {
+    return localMsFromCalendarParts(
+      localeParts,
+      opts?.hour ?? 0,
+      opts?.minute ?? 0,
+      opts?.second ?? 0,
+      opts?.ms ?? 0
+    );
+  }
+
+  const base = new Date(String(rawDate || "").trim());
+  if (!Number.isFinite(base.getTime())) return 0;
+
+  return localMsFromCalendarParts(
+    { year: base.getFullYear(), monthIndex: base.getMonth(), day: base.getDate() },
+    opts?.hour ?? base.getHours(),
+    opts?.minute ?? base.getMinutes(),
+    opts?.second ?? base.getSeconds(),
+    opts?.ms ?? base.getMilliseconds()
+  );
+}
+
+export function getDeviceTimezoneDiag() {
+  const d = new Date();
+  return {
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown",
+    offsetMinutes: -d.getTimezoneOffset(),
+  };
+}
+
+export function logKristoScheduleDateDiag(stage: string, args: Record<string, unknown> = {}) {
+  console.log("KRISTO_SCHEDULE_DATE_DIAG", {
+    stage,
+    ...getDeviceTimezoneDiag(),
+    ...args,
+  });
+}
+
+/** Prefer startMs for display; fall back to local interpretation of meetingDate. */
+export function resolveScheduleDisplayCalendarDate(slot: any): string {
+  const startMs = Number(slot?.startMs || 0);
+  if (startMs > 0) return formatLocalIsoDate(new Date(startMs));
+
+  const meetingDate = String(slot?.meetingDate || "").trim();
+  const parts = parseLocalIsoDateOnlyParts(meetingDate);
+  if (parts) return formatLocalIsoDate(new Date(parts.year, parts.monthIndex, parts.day));
+
+  return meetingDate.split("T")[0] || String(slot?.meetingDay || "").trim();
+}
+
 /** Resolve Today/Tomorrow/day labels or ISO dates for assignment/ministry slot cards. */
 export function resolveAssignmentSlotCalendarDate(slot: any, nowMs = Date.now()): string {
+  const explicitStart = Number(slot?.startMs || 0);
+  if (explicitStart > 0) return formatLocalIsoDate(new Date(explicitStart));
+
+  const startsAtMs = parseIsoMs(slot?.startsAt);
+  if (startsAtMs > 0) return formatLocalIsoDate(new Date(startsAtMs));
+
   const meetingDate = String(slot?.meetingDate || "").trim();
   if (/^\d{4}-\d{2}-\d{2}/.test(meetingDate)) return meetingDate.split("T")[0];
 
@@ -66,9 +179,18 @@ export function resolveAssignmentSlotCalendarDate(slot: any, nowMs = Date.now())
     return formatLocalIsoDate(base);
   }
 
-  const parsed = Date.parse(meetingDate || dayLabel);
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return formatLocalIsoDate(new Date(parsed));
+  const isoInDay = parseLocalIsoDateOnlyParts(String(slot?.meetingDay || meetingDate || ""));
+  if (isoInDay) {
+    return formatLocalIsoDate(new Date(isoInDay.year, isoInDay.monthIndex, isoInDay.day));
+  }
+
+  const localeParts = parseLocaleDisplayDateLabel(
+    String(slot?.meetingDay || meetingDate || "")
+  );
+  if (localeParts) {
+    return formatLocalIsoDate(
+      new Date(localeParts.year, localeParts.monthIndex, localeParts.day)
+    );
   }
 
   return formatLocalIsoDate(base);
@@ -113,10 +235,20 @@ export function parseSlotClockMs(
   const startHint = Number(opts?.startMsHint || 0);
 
   for (const dateText of dateCandidates) {
-    const base = new Date(dateText);
-    if (!Number.isFinite(base.getTime())) continue;
-
-    let result = new Date(base.getFullYear(), base.getMonth(), base.getDate(), hh, mm, 0, 0).getTime();
+    const isoParts = parseLocalIsoDateOnlyParts(dateText);
+    let result = 0;
+    if (isoParts) {
+      result = localMsFromCalendarParts(isoParts, hh, mm, 0, 0);
+    } else {
+      const localeParts = parseLocaleDisplayDateLabel(dateText);
+      if (localeParts) {
+        result = localMsFromCalendarParts(localeParts, hh, mm, 0, 0);
+      } else {
+        const base = new Date(dateText);
+        if (!Number.isFinite(base.getTime())) continue;
+        result = new Date(base.getFullYear(), base.getMonth(), base.getDate(), hh, mm, 0, 0).getTime();
+      }
+    }
     if (startHint > 0 && result <= startHint) {
       result += 24 * 60 * 60 * 1000;
     }
@@ -144,9 +276,7 @@ export function parseSlotStartMs(slot: any) {
   if (fromLabel > 0) return fromLabel;
 
   if (!calendarDate) return 0;
-  const base = new Date(calendarDate);
-  if (!Number.isFinite(base.getTime())) return 0;
-  return base.getTime();
+  return parseLocalCalendarDateMs(calendarDate);
 }
 
 export function parseSlotEndMs(slot: any, startMs = 0) {
@@ -188,6 +318,30 @@ export function enrichScheduleSlot(slot: any, index: number, nowMs: number): Enr
   const startMs = parseSlotStartMs(slot);
   const endMs = parseSlotEndMs(slot, startMs);
   const persistedAvatar = resolvePersistedClaimAvatarUri(slot);
+
+  if (__DEV__) {
+    const meetingDateRaw = String(slot?.meetingDate || "").trim();
+    if (meetingDateRaw && /^\d{4}-\d{2}-\d{2}/.test(meetingDateRaw)) {
+      const utcParsedDay = (() => {
+        const d = new Date(meetingDateRaw.split("T")[0]);
+        return Number.isNaN(d.getTime())
+          ? null
+          : formatLocalIsoDate(d);
+      })();
+      const displayDay = resolveScheduleDisplayCalendarDate({ ...slot, startMs, endMs });
+      if (utcParsedDay && utcParsedDay !== displayDay) {
+        logKristoScheduleDateDiag("enrichScheduleSlot.hydrated", {
+          slotId: String(slot?.id || slot?.cardId || ""),
+          meetingDateRaw,
+          explicitStartMs: Number(slot?.startMs || 0) || null,
+          resolvedStartMs: startMs || null,
+          resolvedEndMs: endMs || null,
+          utcParsedCalendarDay: utcParsedDay,
+          displayCalendarDay: displayDay,
+        });
+      }
+    }
+  }
 
   return patchMediaSlotClaimAvatarFields(
     {
@@ -328,8 +482,14 @@ export function isScheduleSlotExpired(slot: any, nowMs = Date.now()): boolean {
 
 export function formatSlotDateLabel(iso?: string, fallback?: string) {
   if (!iso) return fallback || "Today";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return fallback || "Today";
+  const parts = parseLocalIsoDateOnlyParts(iso);
+  const localeParts = parts ? null : parseLocaleDisplayDateLabel(iso);
+  const d = parts
+    ? new Date(parts.year, parts.monthIndex, parts.day)
+    : localeParts
+      ? new Date(localeParts.year, localeParts.monthIndex, localeParts.day)
+      : null;
+  if (!d || Number.isNaN(d.getTime())) return fallback || "Today";
   return d.toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
