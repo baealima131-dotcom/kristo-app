@@ -36,6 +36,134 @@ function isOfflineActivationSubscription(media: ChurchMediaProfile | null | unde
   return media?.subscriptionSource === "offline_activation";
 }
 
+function isBackendActivationSubscription(media: ChurchMediaProfile | null | undefined): boolean {
+  return media?.subscriptionSource === "backend_activation";
+}
+
+function hasOfflineActivationMarkers(media: ChurchMediaProfile | null | undefined): boolean {
+  return Boolean(
+    String(media?.offlineActivationCode || "").trim() ||
+      String(media?.offlineActivationBatchId || "").trim()
+  );
+}
+
+export type ChurchMediaSubscriptionSourceClassification =
+  | "app_store"
+  | "offline_activation"
+  | "backend_activation";
+
+/**
+ * Backfill subscriptionSource on legacy profiles that were activated before the field
+ * existed, or via paths that set subscriptionActive without a source tag.
+ */
+export async function reconcileChurchMediaSubscriptionSource(args: {
+  churchId: string;
+  media: ChurchMediaProfile | null;
+}): Promise<{
+  media: ChurchMediaProfile | null;
+  classified: boolean;
+  classification: ChurchMediaSubscriptionSourceClassification | null;
+  reason: string;
+}> {
+  const churchId = String(args.churchId || "").trim();
+  const media = args.media;
+  const empty = {
+    media,
+    classified: false,
+    classification: null as ChurchMediaSubscriptionSourceClassification | null,
+    reason: "not-needed",
+  };
+
+  if (!churchId || !media?.subscriptionActive || media.subscriptionSource) {
+    return empty;
+  }
+
+  if (hasOfflineActivationMarkers(media) || isOfflineActivationSubscription(media)) {
+    const next = await patchChurchMediaSubscription(churchId, {
+      subscriptionActive: true,
+      subscriptionSource: "offline_activation",
+      subscriptionPlan: media.subscriptionPlan ?? null,
+      subscriptionExpiresAt: media.subscriptionExpiresAt ?? null,
+    });
+    console.log("KRISTO_CHURCH_MEDIA_SUBSCRIPTION_SOURCE_CLASSIFIED", {
+      churchId,
+      classification: "offline_activation",
+      reason: "offline-activation-markers",
+      profileSubscriptionPlan: next?.subscriptionPlan ?? null,
+    });
+    return {
+      media: next,
+      classified: true,
+      classification: "offline_activation",
+      reason: "offline-activation-markers",
+    };
+  }
+
+  const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
+  if (
+    verification.active &&
+    !verification.bypassed &&
+    isVerifiedChurchPremiumReason(verification.reason)
+  ) {
+    const resolvedPlan =
+      verification.plan ||
+      String(media.subscriptionPlan || "").trim().toLowerCase() ||
+      "monthly";
+    const expiresAtMs = parseSubscriptionExpiresAtMs(verification.expiresAt);
+    const next = await patchChurchMediaSubscription(churchId, {
+      subscriptionActive: true,
+      subscriptionSource: "app_store",
+      subscriptionPlan: resolvedPlan,
+      subscriptionExpiresAt: expiresAtMs,
+    });
+    console.log("KRISTO_CHURCH_MEDIA_SUBSCRIPTION_SOURCE_CLASSIFIED", {
+      churchId,
+      classification: "app_store",
+      reason: "revenuecat-verified-backfill",
+      profileSubscriptionPlan: next?.subscriptionPlan ?? null,
+      revenueCatLane: verification.revenueCatLane ?? null,
+      productId: verification.productId,
+    });
+    return {
+      media: next,
+      classified: true,
+      classification: "app_store",
+      reason: "revenuecat-verified-backfill",
+    };
+  }
+
+  const next = await patchChurchMediaSubscription(churchId, {
+    subscriptionActive: true,
+    subscriptionSource: "backend_activation",
+    subscriptionPlan: media.subscriptionPlan ?? null,
+    subscriptionExpiresAt: media.subscriptionExpiresAt ?? null,
+  });
+  console.log("KRISTO_CHURCH_MEDIA_SUBSCRIPTION_SOURCE_CLASSIFIED", {
+    churchId,
+    classification: "backend_activation",
+    reason: "legacy-active-without-verified-app-store",
+    profileSubscriptionPlan: next?.subscriptionPlan ?? null,
+    revenueCatActive: verification.active,
+    revenueCatReason: verification.reason,
+  });
+  return {
+    media: next,
+    classified: true,
+    classification: "backend_activation",
+    reason: "legacy-active-without-verified-app-store",
+  };
+}
+
+export function shouldPreserveActiveSubscriptionWithoutRevenueCat(
+  media: ChurchMediaProfile | null | undefined
+): boolean {
+  return (
+    isOfflineActivationSubscription(media) ||
+    isBackendActivationSubscription(media) ||
+    hasOfflineActivationMarkers(media)
+  );
+}
+
 /**
  * Server-side reconcile: RevenueCat church_premium entitlement → media profile row
  * with subscriptionActive=true. Safe to call when profile is missing or inactive.

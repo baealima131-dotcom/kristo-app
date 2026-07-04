@@ -11,7 +11,7 @@ export type ChurchSubscriptionRecord = {
   subscriptionUpdatedAt?: number;
   subscriptionStatus?: string;
   premiumTrialUsedAt?: number;
-  subscriptionSource?: "app_store" | "stripe" | "offline_activation";
+  subscriptionSource?: "app_store" | "stripe" | "offline_activation" | "backend_activation";
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
 };
@@ -191,4 +191,39 @@ export function mergeScheduleSubscriptionSignals(input: {
     hasSubscription: false,
     source: "server_media_api",
   };
+}
+
+export type ChurchMediaSubscriptionSource =
+  | "app_store"
+  | "stripe"
+  | "offline_activation"
+  | "backend_activation";
+
+export function parseChurchMediaSubscriptionSource(
+  media: ChurchSubscriptionRecord | null | undefined,
+  res?: { subscriptionSource?: unknown } | null
+): ChurchMediaSubscriptionSource | null {
+  const raw = String(media?.subscriptionSource ?? res?.subscriptionSource ?? "")
+    .trim()
+    .toLowerCase();
+  if (raw === "offline_activation") return "offline_activation";
+  if (raw === "backend_activation") return "backend_activation";
+  if (raw === "app_store") return "app_store";
+  if (raw === "stripe") return "stripe";
+  return null;
+}
+
+/** True when premium is active on the server but not billed through the device app store. */
+export function isBackendManagedMediaPremiumStatus(
+  status: { serverSubscriptionActive?: boolean; subscriptionSource?: ChurchMediaSubscriptionSource | null } | null | undefined
+): boolean {
+  if (status?.serverSubscriptionActive !== true) return false;
+  const source = status.subscriptionSource ?? null;
+  return source === "backend_activation" || source === null;
+}
+
+/** True when `/api/church/media` reports active access from an offline activation code. */
+export function isOfflineActivationFromMediaRouteResponse(res: any): boolean {
+  if (parseExplicitServerSubscriptionFromMediaRoute(res) !== true) return false;
+  return parseChurchMediaSubscriptionSource(res?.media, res) === "offline_activation";
 }

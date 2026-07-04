@@ -1426,6 +1426,16 @@ export function hasActivePremiumProduct(
   return false;
 }
 
+/** True when the signed-in store account on this device can open subscription management. */
+export function isDeviceManageableAppStoreSubscription(
+  customerInfo: CustomerInfo | null | undefined
+): boolean {
+  if (!customerInfo) return false;
+  if (hasActivePremiumProduct(customerInfo)) return true;
+  const managementURL = String(customerInfo.managementURL || "").trim();
+  return Platform.OS === "ios" && Boolean(managementURL);
+}
+
 /** True when this church has a verified RC purchase that still needs backend activation. */
 export function canShowChurchSubscriptionRestore(args: {
   churchId: string;
@@ -1928,6 +1938,178 @@ function collectAllRevenueCatProductIdentifiers(
   }
 
   return [...ids].sort();
+}
+
+export type SubscriptionOwnershipChainDiag = {
+  platform: string;
+  sessionUserId: string | null;
+  churchId: string | null;
+  revenueCatConfiguredAppUserId: string | null;
+  revenueCatLoggedInAsChurchId: boolean;
+  server: {
+    subscriptionActive: boolean;
+    subscriptionSource: string | null;
+    subscriptionPlan: string | null;
+    subscriptionExpiresAt: number | null;
+    subscriptionEnvironment: "sandbox" | "production" | "unknown" | "dev_build_label";
+    note: string;
+  };
+  deviceCustomerInfo: {
+    hasCustomerInfo: boolean;
+    originalAppUserId: string | null;
+    activeSubscriptions: string[];
+    allPurchasedProductIdentifiers: string[];
+    activeEntitlementIds: string[];
+    activeEntitlements: Record<
+      string,
+      {
+        productIdentifier: string | null;
+        store: string | null;
+        expirationDate: string | null;
+        isActive: boolean | null;
+        willRenew: boolean | null;
+      }
+    >;
+    managementURL: string | null;
+    hasPremiumEntitlement: boolean;
+    hasActivePremiumProduct: boolean;
+    identityMatchesChurchId: boolean;
+    originalAppUserIdMatchesChurchId: boolean;
+  };
+  manageability: {
+    wouldPassManageGate: boolean;
+    gateBlockReason: string | null;
+  };
+  identityChain: string[];
+};
+
+/** Read-only ownership snapshot for server vs device subscription mismatch diagnosis. */
+export function buildSubscriptionOwnershipChainDiag(args: {
+  churchId: string;
+  sessionUserId?: string | null;
+  mediaPremiumStatus: {
+    serverSubscriptionActive: boolean;
+    subscriptionSource: string | null;
+    subscriptionPlan: string | null;
+    subscriptionExpiresAt: number | null;
+  } | null;
+  customerInfo?: CustomerInfo | null;
+}): SubscriptionOwnershipChainDiag {
+  const churchId = String(args.churchId || "").trim() || null;
+  const sessionUserId = String(args.sessionUserId || "").trim() || null;
+  const configuredAppUserId = String(getRevenueCatConfiguredAppUserId() || "").trim() || null;
+  const info = args.customerInfo ?? null;
+  const status = args.mediaPremiumStatus;
+
+  const activeEntitlements = info?.entitlements?.active || {};
+  const activeEntitlementSummary = Object.fromEntries(
+    Object.entries(activeEntitlements).map(([key, entitlement]) => [
+      key,
+      {
+        productIdentifier: entitlement?.productIdentifier ?? null,
+        store: entitlement?.store ?? null,
+        expirationDate: entitlement?.expirationDate ?? null,
+        isActive: entitlement?.isActive ?? null,
+        willRenew: entitlement?.willRenew ?? null,
+      },
+    ])
+  );
+
+  const premiumEntitlement = getActivePremiumEntitlement(info);
+  const entitlementStore = String(premiumEntitlement?.store || "").trim().toUpperCase();
+  const sandboxFromEntitlement =
+    entitlementStore === "SANDBOX" || entitlementStore === "TEST_STORE";
+  const subscriptionEnvironment: SubscriptionOwnershipChainDiag["server"]["subscriptionEnvironment"] =
+    __DEV__
+      ? "dev_build_label"
+      : sandboxFromEntitlement
+        ? "sandbox"
+        : premiumEntitlement
+          ? "production"
+          : "unknown";
+
+  const originalAppUserId = String(info?.originalAppUserId || "").trim() || null;
+  const managementURL = String(info?.managementURL || "").trim() || null;
+  const hasPlayPremiumOnDevice = hasActivePremiumProduct(info);
+  const serverActive = status?.serverSubscriptionActive === true;
+  const subscriptionSource = status?.subscriptionSource ?? null;
+
+  let gateBlockReason: string | null = null;
+  if (subscriptionSource === "offline_activation") {
+    gateBlockReason = "offline_activation";
+  } else if (serverActive && !hasPlayPremiumOnDevice && !managementURL) {
+    gateBlockReason = "no_play_subscription_on_device";
+  }
+
+  const identityChain: string[] = [
+    "Google Play account (device-local, not readable by app) →",
+    `RevenueCat originalAppUserId=${originalAppUserId || "null"} →`,
+    `RevenueCat configuredAppUserId=${configuredAppUserId || "null"} →`,
+    `Kristo churchId=${churchId || "null"} →`,
+    `Kristo sessionUserId=${sessionUserId || "null"} →`,
+    `backend subscriptionSource=${subscriptionSource || "null"}`,
+  ];
+
+  if (churchId && configuredAppUserId && configuredAppUserId !== churchId) {
+    identityChain.push(
+      `MISMATCH: RC configured as ${configuredAppUserId} but screen churchId is ${churchId}`
+    );
+  }
+  if (churchId && originalAppUserId && originalAppUserId !== churchId) {
+    identityChain.push(
+      `MISMATCH: RC originalAppUserId ${originalAppUserId} !== churchId ${churchId} (aliased/restored customer)`
+    );
+  }
+  if (serverActive && !hasPlayPremiumOnDevice && !managementURL) {
+    identityChain.push(
+      "Server profile active but device has no manageable Play subscription (wrong Play account, sandbox/prod lane split, or backend-only activation)"
+    );
+  }
+
+  return {
+    platform: Platform.OS,
+    sessionUserId,
+    churchId,
+    revenueCatConfiguredAppUserId: configuredAppUserId,
+    revenueCatLoggedInAsChurchId: Boolean(churchId && configuredAppUserId === churchId),
+    server: {
+      subscriptionActive: serverActive,
+      subscriptionSource,
+      subscriptionPlan: status?.subscriptionPlan ?? null,
+      subscriptionExpiresAt: status?.subscriptionExpiresAt ?? null,
+      subscriptionEnvironment,
+      note: "subscriptionEnvironment is inferred on device; /api/church/media does not expose subscriptionEnvironment field",
+    },
+    deviceCustomerInfo: {
+      hasCustomerInfo: !!info,
+      originalAppUserId,
+      activeSubscriptions: [...(info?.activeSubscriptions || [])],
+      allPurchasedProductIdentifiers: [...(info?.allPurchasedProductIdentifiers || [])],
+      activeEntitlementIds: Object.keys(activeEntitlements),
+      activeEntitlements: activeEntitlementSummary,
+      managementURL: managementURL || null,
+      hasPremiumEntitlement: hasPremiumEntitlement(info),
+      hasActivePremiumProduct: hasPlayPremiumOnDevice,
+      identityMatchesChurchId: Boolean(churchId && configuredAppUserId === churchId),
+      originalAppUserIdMatchesChurchId: Boolean(churchId && originalAppUserId === churchId),
+    },
+    manageability: {
+      wouldPassManageGate: gateBlockReason === null,
+      gateBlockReason,
+    },
+    identityChain,
+  };
+}
+
+export function logSubscriptionOwnershipChainDiag(
+  args: Parameters<typeof buildSubscriptionOwnershipChainDiag>[0] & { source?: string }
+) {
+  const diag = buildSubscriptionOwnershipChainDiag(args);
+  console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHAIN", {
+    source: args.source || "subscriptions",
+    ...diag,
+  });
+  return diag;
 }
 
 /** Debug snapshot to distinguish Apple defer vs missing RevenueCat yearly entitlement. */

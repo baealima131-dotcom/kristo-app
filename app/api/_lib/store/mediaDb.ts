@@ -23,7 +23,7 @@ export type ChurchMediaProfile = {
   subscriptionPlan?: string;
   subscriptionUpdatedAt?: number;
   subscriptionExpiresAt?: number;
-  subscriptionSource?: "app_store" | "stripe" | "offline_activation";
+  subscriptionSource?: "app_store" | "stripe" | "offline_activation" | "backend_activation";
   subscriptionActivatedAt?: number;
   offlineActivationCode?: string;
   offlineActivationBatchId?: string;

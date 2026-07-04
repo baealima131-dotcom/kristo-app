@@ -44,6 +44,8 @@ import {
   logRevenueCatSubscriptionOwnershipDebug,
   getActiveEntitlementKeys,
   hasActivePremiumProduct,
+  isDeviceManageableAppStoreSubscription,
+  logSubscriptionOwnershipChainDiag,
   openSubscriptionManagement,
   purchaseSubscriptionPackage,
   refreshCustomerInfoUntilYearlyActive,
@@ -66,6 +68,7 @@ import {
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
   fetchChurchMediaPremiumServerStatus,
+  isBackendManagedMediaPremiumStatus,
   isOfflineActivationMediaPremiumStatus,
   isPastorSessionRole,
   logChurchSubscriptionContext,
@@ -103,6 +106,9 @@ type SubscriptionScreenState = "none" | "monthly" | "yearly" | "offline";
 
 const OFFLINE_ACTIVATION_MESSAGE =
   "This church was activated using an offline activation code. When access expires, contact an authorized Agent to activate the church again.";
+
+const BACKEND_MANAGED_PREMIUM_MESSAGE =
+  "Premium active — managed by church/backend activation. This access is not billed through Google Play on this device, so it cannot be managed from the app store.";
 
 const SUBSCRIPTION_NO_PLAY_MANAGE_MESSAGE =
   "This premium access is active, but there is no Google Play subscription to manage on this device. It may be managed through offline activation, backend activation, or a different Google Play account.";
@@ -620,6 +626,39 @@ function OfflineActivationSubscriptionCard({
   );
 }
 
+function BackendManagedPremiumNoteCard({
+  expiryLabel,
+}: {
+  expiryLabel: string | null;
+}) {
+  return (
+    <GlassCard highlighted>
+      <View style={s.currentPlanChipRow}>
+        <StatusChip label="ACTIVE" />
+        <StatusChip label="CHURCH MANAGED" tone="green" />
+      </View>
+      <View style={s.planHeaderRow}>
+        <View style={s.planHeaderLeft}>
+          <View style={s.planIconWrap}>
+            <Ionicons name="shield-checkmark-outline" size={18} color="rgba(196,171,114,0.95)" />
+          </View>
+          <View style={s.planHeaderCopy}>
+            <Text style={s.planTitle}>Media Premium Access</Text>
+            <Text style={s.planDescription}>Managed by church/backend activation</Text>
+          </View>
+        </View>
+      </View>
+      <CompactMetaRow
+        text={["Status: Active", expiryLabel].filter(Boolean).join("  •  ")}
+      />
+      <View style={s.successNote}>
+        <Ionicons name="information-circle-outline" size={14} color="rgba(196,171,114,0.95)" />
+        <Text style={s.successNoteText}>{BACKEND_MANAGED_PREMIUM_MESSAGE}</Text>
+      </View>
+    </GlassCard>
+  );
+}
+
 export default function PaymentsSubscriptionsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -1095,6 +1134,19 @@ export default function PaymentsSubscriptionsScreen() {
         return;
       }
 
+      if (
+        subscriptionStatusSource === "backend_activation" ||
+        subscriptionStatusSource === null
+      ) {
+        logManageDiag({
+          fallbackUsed: false,
+          opened: false,
+          gatedReason: "backend_activation",
+        });
+        Alert.alert("Manage subscription", BACKEND_MANAGED_PREMIUM_MESSAGE);
+        return;
+      }
+
       if (serverActive && !hasPlayPremiumOnDevice && !managementURL) {
         logManageDiag({
           fallbackUsed: false,
@@ -1257,7 +1309,11 @@ export default function PaymentsSubscriptionsScreen() {
   const serverSubscriptionActive = mediaPremiumStatus?.serverSubscriptionActive === true;
   const displayedActive = serverSubscriptionActive;
   const isOfflineActivation = isOfflineActivationMediaPremiumStatus(mediaPremiumStatus);
-  const showAppStoreBillingControls = displayedActive && !isOfflineActivation;
+  const isBackendManaged = isBackendManagedMediaPremiumStatus(mediaPremiumStatus);
+  const showAppStoreBillingControls =
+    displayedActive &&
+    mediaPremiumStatus?.subscriptionSource === "app_store" &&
+    isDeviceManageableAppStoreSubscription(customerInfo);
   const screenState = resolveMediaPremiumDisplayScreenState(mediaPremiumStatus);
   const billing = resolveServerPremiumBillingDetails(mediaPremiumStatus);
   const expiryLabel = resolveMediaPremiumExpiryLabel(mediaPremiumStatus, customerInfo);
@@ -1287,6 +1343,7 @@ export default function PaymentsSubscriptionsScreen() {
       displayedActive,
       subscriptionSource: mediaPremiumStatus?.subscriptionSource ?? null,
       isOfflineActivation,
+      isBackendManaged,
       showAppStoreBillingControls,
       renewalLabel,
       expiryLabel,
@@ -1297,14 +1354,26 @@ export default function PaymentsSubscriptionsScreen() {
       sessionMediaProfileChurchId,
       ignoredSessionMediaProfileBecauseWrongChurch,
     });
+
+    if (serverSubscriptionActive) {
+      logSubscriptionOwnershipChainDiag({
+        source: "subscriptions-screen-active",
+        churchId,
+        sessionUserId,
+        mediaPremiumStatus,
+        customerInfo,
+      });
+    }
   }, [
     churchId,
+    sessionUserId,
     mediaPremiumStatus,
     customerInfo,
     packagesLoading,
     serverSubscriptionActive,
     displayedActive,
     isOfflineActivation,
+    isBackendManaged,
     showAppStoreBillingControls,
     renewalLabel,
     expiryLabel,
@@ -1431,7 +1500,7 @@ export default function PaymentsSubscriptionsScreen() {
           <View style={{ flex: 1 }}>
             <Text style={s.title}>Media Premium</Text>
             <Text style={s.sub}>
-              {isOfflineActivation
+              {isOfflineActivation || isBackendManaged
                 ? "View your church subscription"
                 : "Manage your church subscription"}
             </Text>
@@ -1461,7 +1530,11 @@ export default function PaymentsSubscriptionsScreen() {
               <OfflineActivationSubscriptionCard expiryLabel={expiryLabel} />
             ) : null}
 
-            {screenState === "monthly" ? (
+            {screenState === "monthly" && isBackendManaged ? (
+              <BackendManagedPremiumNoteCard expiryLabel={expiryLabel} />
+            ) : null}
+
+            {screenState === "monthly" && !isBackendManaged ? (
               <>
                 <CurrentPlanCard
                   icon="calendar-outline"
@@ -1480,14 +1553,20 @@ export default function PaymentsSubscriptionsScreen() {
                   onSwitch={() => handlePurchasePlan("yearly")}
                   loading={submittingPlan === "yearly"}
                 />
-                <ManageSubscriptionCard
-                  onPress={handleManageSubscription}
-                  loading={submittingPlan === "manage"}
-                />
+                {showAppStoreBillingControls ? (
+                  <ManageSubscriptionCard
+                    onPress={handleManageSubscription}
+                    loading={submittingPlan === "manage"}
+                  />
+                ) : null}
               </>
             ) : null}
 
-            {screenState === "yearly" ? (
+            {screenState === "yearly" && isBackendManaged ? (
+              <BackendManagedPremiumNoteCard expiryLabel={expiryLabel} />
+            ) : null}
+
+            {screenState === "yearly" && !isBackendManaged ? (
               <>
                 <AvailablePlanCard
                   planName="Monthly Plan"
@@ -1504,10 +1583,12 @@ export default function PaymentsSubscriptionsScreen() {
                   customerInfo={customerInfo}
                   successMessage="You have full access to Media Premium features."
                 />
-                <ManageSubscriptionCard
-                  onPress={handleManageSubscription}
-                  loading={submittingPlan === "manage"}
-                />
+                {showAppStoreBillingControls ? (
+                  <ManageSubscriptionCard
+                    onPress={handleManageSubscription}
+                    loading={submittingPlan === "manage"}
+                  />
+                ) : null}
               </>
             ) : null}
 

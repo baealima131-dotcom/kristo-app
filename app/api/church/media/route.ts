@@ -13,7 +13,11 @@ import {
 import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
 import { reconcileChurchSubscriptionExpiryNotifications } from "@/app/api/_lib/churchMediaNotifications";
 import { resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
-import { syncChurchSubscriptionFromRevenueCat } from "@/app/api/_lib/churchSubscriptionSync";
+import {
+  reconcileChurchMediaSubscriptionSource,
+  shouldPreserveActiveSubscriptionWithoutRevenueCat,
+  syncChurchSubscriptionFromRevenueCat,
+} from "@/app/api/_lib/churchSubscriptionSync";
 import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
 import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 
@@ -78,8 +82,32 @@ export async function GET(req: NextRequest) {
       subscriptionActive,
       canManageMediaHosts: access.canManageMediaHosts,
       profileSubscriptionPlan: media?.subscriptionPlan ?? null,
+      profileSubscriptionSource: media?.subscriptionSource ?? null,
+      profileSubscriptionExpiresAt: media?.subscriptionExpiresAt ?? null,
       profileSubscriptionUpdatedAt: media?.subscriptionUpdatedAt ?? null,
     });
+
+    if (hasProfile && subscriptionActive && !mediaForResponse?.subscriptionSource) {
+      const classified = await reconcileChurchMediaSubscriptionSource({
+        churchId,
+        media: mediaForResponse,
+      });
+      if (classified.media) {
+        mediaForResponse = classified.media;
+        subscriptionActive = isChurchSubscriptionActiveFromRecord(classified.media);
+        if (classified.classified) {
+          access = await evaluateChurchMediaAccess({ churchId, userId });
+        }
+      }
+      console.log("KRISTO_CHURCH_MEDIA_SUBSCRIPTION_SOURCE_RECONCILE", {
+        churchId,
+        userId,
+        classified: classified.classified,
+        classification: classified.classification,
+        reason: classified.reason,
+        profileSubscriptionSource: mediaForResponse?.subscriptionSource ?? null,
+      });
+    }
 
     // Reconcile only when a profile already exists but subscription is inactive.
     // Missing profiles are created via PATCH activate_church_subscription after an
@@ -114,13 +142,10 @@ export async function GET(req: NextRequest) {
         reason: sync.reason,
       });
     } else if (access.canManageMediaHosts && hasProfile && subscriptionActive) {
-      const offlineActivationActive =
-        mediaForResponse?.subscriptionSource === "offline_activation" &&
-        mediaForResponse?.subscriptionActive === true &&
-        (!mediaForResponse.subscriptionExpiresAt ||
-          Number(mediaForResponse.subscriptionExpiresAt) > Date.now());
+      const preserveWithoutRevenueCat =
+        shouldPreserveActiveSubscriptionWithoutRevenueCat(mediaForResponse);
 
-      if (!offlineActivationActive) {
+      if (!preserveWithoutRevenueCat) {
         const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
         if (!verification.active) {
           console.log("KRISTO_CHURCH_MEDIA_DEACTIVATE_STALE_SUBSCRIPTION", {
@@ -223,6 +248,8 @@ export async function GET(req: NextRequest) {
       userId,
       subscriptionActive,
       subscriptionPlan: mediaForResponse?.subscriptionPlan ?? null,
+      subscriptionSource: mediaForResponse?.subscriptionSource ?? null,
+      subscriptionExpiresAt: mediaForResponse?.subscriptionExpiresAt ?? null,
       subscriptionUpdatedAt: mediaForResponse?.subscriptionUpdatedAt ?? null,
       hasProfile,
       profileMissing: !hasProfile,
