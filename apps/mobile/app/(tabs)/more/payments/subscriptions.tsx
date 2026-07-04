@@ -49,6 +49,7 @@ import {
   logSubscriptionOwnershipChainDiag,
   resolveAppStoreBillingFooterText,
   resolveAppStoreManageFallbackMessage,
+  resolveSubscriptionPackagesLoadingMessage,
   openSubscriptionManagement,
   purchaseSubscriptionPackage,
   refreshCustomerInfoUntilYearlyActive,
@@ -842,7 +843,7 @@ export default function PaymentsSubscriptionsScreen() {
     });
 
     if (!monthly && !yearly) {
-      setSubscriptionError("App Store packages are still loading. Tap retry in a moment.");
+      setSubscriptionError(resolveSubscriptionPackagesLoadingMessage());
     }
   }
 
@@ -1208,7 +1209,7 @@ export default function PaymentsSubscriptionsScreen() {
 
     const targetPackage = plan === "monthly" ? monthlyPackage : yearlyPackage;
     if (!targetPackage) {
-      setSubscriptionError("Plans are still loading. Tap retry, then try again.");
+      setSubscriptionError(resolveSubscriptionPackagesLoadingMessage());
       return;
     }
 

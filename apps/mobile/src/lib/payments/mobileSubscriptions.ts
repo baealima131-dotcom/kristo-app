@@ -1478,6 +1478,20 @@ export function resolveCheckoutFooterText(args: {
     : "Secure checkout through Apple. Cancel anytime.";
 }
 
+export function resolveSubscriptionPackagesLoadingMessage(): string {
+  if (Platform.OS === "android") {
+    return "Google Play plans are still loading. Tap retry in a moment.";
+  }
+  return "App Store packages are still loading. Tap retry in a moment.";
+}
+
+export function resolveSubscriptionPackagesUnavailableMessage(): string {
+  if (Platform.OS === "android") {
+    return "Google Play plans are not available yet. Tap retry, then try again.";
+  }
+  return "App Store packages are not available yet. Tap retry, then try again.";
+}
+
 /** True when this church has a verified RC purchase that still needs backend activation. */
 export function canShowChurchSubscriptionRestore(args: {
   churchId: string;

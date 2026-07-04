@@ -44,6 +44,9 @@ import {
   canOpenAndroidPlaySubscriptionManagement,
   resolveAppStoreManageFallbackMessage,
   resolveCheckoutFooterText,
+  resolveSubscriptionPackagesLoadingMessage,
+  resolveSubscriptionPackagesUnavailableMessage,
+  monthlyPackageHasIntroOffer,
   purchaseSubscriptionPackage,
   resolveMonthlyPackage,
   resolveYearlyPackage,
@@ -276,9 +279,7 @@ export default function PaymentsCheckoutScreen() {
 
         const planPackage = safePlan === "monthly" ? monthly : yearly;
         if (!planPackage && !hasPremiumEntitlement(info)) {
-          setPackagesError(
-            "App Store packages are still loading. Tap retry in a moment."
-          );
+          setPackagesError(resolveSubscriptionPackagesLoadingMessage());
         }
       } catch (error: any) {
         if (!alive) return;
@@ -353,9 +354,7 @@ export default function PaymentsCheckoutScreen() {
   const revenueCatErrorCode = extractRevenueCatErrorCode(packagesError);
   const hasMonthlyPackage = Boolean(monthlyPackage);
   const hasOfferings = Boolean(monthlyPackage || yearlyPackage);
-  const hasIntroOffer = Boolean(
-    monthlyPackage?.product?.introPrice || monthlyPackage?.product?.introductoryPrice
-  );
+  const hasIntroOffer = monthlyPackageHasIntroOffer(monthlyPackage);
 
   useEffect(() => {
     if (Platform.OS !== "ios") return;
@@ -413,9 +412,7 @@ export default function PaymentsCheckoutScreen() {
     if (!monthlyPackage) return;
     if (isSubscribedForCurrentChurch) return;
 
-    const hasIntroOfferConfigured = Boolean(
-      monthlyPackage.product.introPrice || monthlyPackage.product.introductoryPrice
-    );
+    const hasIntroOfferConfigured = monthlyPackageHasIntroOffer(monthlyPackage);
     if (!hasIntroOfferConfigured || !monthlyTrialEligible) return;
 
     console.log("KRISTO_IOS_MONTHLY_TRIAL_ELIGIBLE", {
@@ -439,7 +436,7 @@ export default function PaymentsCheckoutScreen() {
     if (loadingPackages || isSubscribedForCurrentChurch) return;
     if (monthlyTrialEligible) return;
 
-    const hasIntroOffer = Boolean(monthlyPackage?.product?.introPrice || monthlyPackage?.product?.introductoryPrice);
+    const hasIntroOffer = monthlyPackageHasIntroOffer(monthlyPackage);
     if (hasIntroOffer) return;
 
     console.log("KRISTO_IOS_MONTHLY_TRIAL_NOT_CONFIGURED", {
@@ -530,9 +527,7 @@ export default function PaymentsCheckoutScreen() {
     if (submitting || isSubscribedForCurrentChurch) return;
 
     if (!targetPackage) {
-      setPackagesError(
-        "App Store packages are not available yet. Tap retry, then try again."
-      );
+      setPackagesError(resolveSubscriptionPackagesUnavailableMessage());
       return;
     }
 
