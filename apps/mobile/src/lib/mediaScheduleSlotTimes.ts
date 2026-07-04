@@ -6,6 +6,11 @@ import {
   resolveMediaSlotTimeWindow,
   type MediaSlotTimeWindow,
 } from "@/src/lib/mediaScheduleSlotTimeCore";
+import {
+  parseSlotEndMs,
+  parseSlotStartMs,
+  resolveScheduleDisplayCalendarDate,
+} from "@/src/lib/scheduleSlotUtils";
 
 export { resolveCanonicalMediaScheduleForGuests } from "@/src/lib/mediaScheduleGuestResolve";
 
@@ -96,15 +101,34 @@ export function logMediaSlotReloadTime(slot: any, source: string, index = 0) {
 }
 
 export function buildPersistedMediaSlotTimeFields(slot: MediaSlotTimeDraft) {
-  const startMs = Number(slot?.startMs || 0);
-  const endMs = Number(slot?.endMs || 0);
-  const durationMin = Math.max(1, Number(slot?.durationMin || slot?.minutes || 1));
+  let startMs = Number(slot?.startMs || 0);
+  let endMs = Number(slot?.endMs || 0);
+
+  if (!(startMs > 0)) {
+    startMs = parseSlotStartMs(slot);
+  }
+  if (!(endMs > startMs)) {
+    endMs = parseSlotEndMs({ ...slot, startMs }, startMs);
+  }
+
+  const durationMin = Math.max(
+    1,
+    startMs > 0 && endMs > startMs
+      ? Math.round((endMs - startMs) / 60000)
+      : Number(slot?.durationMin || slot?.minutes || 1)
+  );
   const startsAt = startMs > 0 ? new Date(startMs).toISOString() : "";
   const endsAt = endMs > 0 ? new Date(endMs).toISOString() : "";
   const meetingDate =
     startMs > 0 ? formatLocalMeetingDateFromMs(startMs) : String(slot?.meetingDate || "").trim();
   const meetingEndDate =
     endMs > 0 ? formatLocalMeetingDateFromMs(endMs) : meetingDate;
+  const startTime =
+    String(slot?.startTime || "").trim() ||
+    (startMs > 0 ? formatClockFromMs(startMs) : "");
+  const endTime =
+    String(slot?.endTime || "").trim() ||
+    (endMs > startMs ? formatClockFromMs(endMs) : "");
 
   return {
     startMs,
@@ -114,11 +138,45 @@ export function buildPersistedMediaSlotTimeFields(slot: MediaSlotTimeDraft) {
     meetingDate,
     meetingEndDate,
     meetingDay: formatMeetingDayLabel(startMs) || String(slot?.meetingDay || "").trim(),
-    startTime: String(slot?.startTime || "").trim(),
-    endTime: String(slot?.endTime || "").trim(),
+    startTime,
+    endTime,
     durationMin,
     durationMinutes: durationMin,
   };
+}
+
+export function logPersistedScheduleSlotDateDiag(
+  stage: string,
+  args: {
+    selectedDateRaw?: string;
+    slot?: MediaSlotTimeDraft | null;
+    persisted?: ReturnType<typeof buildPersistedMediaSlotTimeFields>;
+    hydrated?: Record<string, unknown> | null;
+  }
+) {
+  const persisted =
+    args.persisted ||
+    (args.slot ? buildPersistedMediaSlotTimeFields(args.slot) : null);
+  const hydrated = args.hydrated || null;
+
+  console.log("KRISTO_SCHEDULE_DATE_DIAG", {
+    stage,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown",
+    offsetMinutes: -new Date().getTimezoneOffset(),
+    selectedDateRaw: args.selectedDateRaw || null,
+    computedLocalStartMs: persisted?.startMs || null,
+    computedLocalEndMs: persisted?.endMs || null,
+    serializedMeetingDate: persisted?.meetingDate || null,
+    serializedMeetingEndDate: persisted?.meetingEndDate || null,
+    serializedStartsAt: persisted?.startsAt || null,
+    serializedEndsAt: persisted?.endsAt || null,
+    hydratedMeetingDate: hydrated ? String(hydrated.meetingDate || "") || null : null,
+    hydratedStartMs: hydrated ? Number(hydrated.startMs || 0) || null : null,
+    hydratedEndMs: hydrated ? Number(hydrated.endMs || 0) || null : null,
+    displayedCalendarDate: hydrated
+      ? resolveScheduleDisplayCalendarDate(hydrated)
+      : persisted?.meetingDate || null,
+  });
 }
 
 export function logMediaSlotPayloadTime(

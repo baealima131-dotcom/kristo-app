@@ -5,6 +5,7 @@ import {
   resolveActiveVideoRank,
 } from "@/src/lib/homeFeedVideoWindow";
 import { shouldDeferBackgroundMediaJobs } from "@/src/lib/homeFeedWatchPlaybackPriority";
+import { isHomeFeedLazyMediaPrewarmEnabled } from "@/src/lib/homeFeedVideoMode";
 
 /** ~30% of the visible window, capped at 1–2 upcoming videos. */
 export const HOME_FEED_PRELOAD_BUFFER_FRACTION = 0.3;
@@ -208,6 +209,7 @@ export function syncHomeFeedVideoPreloadQueue(params: {
   activeIndex: number;
   visibleCount: number;
 }): void {
+  if (isHomeFeedLazyMediaPrewarmEnabled()) return;
   if (shouldDeferBackgroundMediaJobs()) return;
   if (!Array.isArray(params.rows) || !params.rows.length) return;
 

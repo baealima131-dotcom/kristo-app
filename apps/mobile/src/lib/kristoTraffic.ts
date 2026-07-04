@@ -22,14 +22,30 @@ export function normalizeEndpoint(path: string) {
     .replace(/\/+$/, "") || "/";
 }
 
-export function requestKey(method: string, path: string, userId?: string) {
-  return `${String(method || "GET").toUpperCase()}:${normalizeEndpoint(path)}:${String(userId || "").trim()}`;
+const CHURCH_SCOPED_API_PREFIX = "/api/church/";
+
+export function isChurchScopedApiPath(path: string): boolean {
+  const normalized = normalizeEndpoint(path);
+  return normalized === CHURCH_SCOPED_API_PREFIX.slice(0, -1) || normalized.startsWith(CHURCH_SCOPED_API_PREFIX);
+}
+
+export function requestKey(method: string, path: string, userId?: string, churchId?: string) {
+  const uid = String(userId || "").trim();
+  const cid = String(churchId || "").trim();
+  const churchScope = isChurchScopedApiPath(path) && cid ? `:${cid}` : "";
+  return `${String(method || "GET").toUpperCase()}:${normalizeEndpoint(path)}:${uid}${churchScope}`;
 }
 
 export function headerUserId(headers?: HeadersInit): string {
   if (!headers || typeof headers !== "object") return "";
   const h = headers as Record<string, string>;
   return String(h["x-kristo-user-id"] || h["X-Kristo-User-Id"] || "").trim();
+}
+
+export function headerChurchId(headers?: HeadersInit): string {
+  if (!headers || typeof headers !== "object") return "";
+  const h = headers as Record<string, string>;
+  return String(h["x-kristo-church-id"] || h["X-Kristo-Church-Id"] || "").trim();
 }
 
 export function logTrafficRequest(screen: string, endpoint: string) {
@@ -134,8 +150,31 @@ export async function dedupeInflight<T>(
   return promise;
 }
 
-export function clearResponseCacheForRequest(method: string, path: string, userId?: string) {
-  const key = requestKey(method, path, userId);
+function clearCachedKeysMatching(prefix: string) {
+  for (const k of [...responseCache.keys(), ...lastFetchAt.keys(), ...inflight.keys()]) {
+    if (k.startsWith(prefix)) {
+      responseCache.delete(k);
+      lastFetchAt.delete(k);
+      inflight.delete(k);
+    }
+  }
+}
+
+export function clearResponseCacheForRequest(
+  method: string,
+  path: string,
+  userId?: string,
+  churchId?: string
+) {
+  const uid = String(userId || "").trim();
+  const cid = String(churchId || "").trim();
+
+  if (isChurchScopedApiPath(path) && uid && !cid) {
+    const prefix = `${String(method || "GET").toUpperCase()}:${normalizeEndpoint(path)}:${uid}:`;
+    clearCachedKeysMatching(prefix);
+  }
+
+  const key = requestKey(method, path, userId, churchId);
   responseCache.delete(key);
   lastFetchAt.delete(key);
   inflight.delete(key);

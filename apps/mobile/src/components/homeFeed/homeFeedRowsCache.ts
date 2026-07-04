@@ -1,10 +1,14 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getSessionSync } from "@/src/lib/kristoSession";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
-import {
-  feedRenderKey,
-  normalizeHomeFeedApiRow,
-} from "@/src/components/homeFeed/homeFeedUtils";
+import { feedRenderKey } from "@/src/components/homeFeed/homeFeedRowKeys";
+
+function normalizeHomeFeedApiRowLazy(row: any) {
+  const { normalizeHomeFeedApiRow } = require("@/src/components/homeFeed/homeFeedUtils") as {
+    normalizeHomeFeedApiRow: (input: any) => any;
+  };
+  return normalizeHomeFeedApiRow(row);
+}
 
 const STORAGE_PREFIX = "kristo_home_feed_rows_v1:";
 const SESSION_KEY = "kristo.session.v1";
@@ -15,6 +19,13 @@ export type HomeFeedRowsCachePayload = {
   rows: any[];
   savedAt: number;
   snapshotRowIds?: string[];
+  nextCursor?: string | null;
+  hasMore?: boolean;
+};
+
+export type HomeFeedPagingState = {
+  nextCursor: string | null;
+  hasMore: boolean;
 };
 
 const memoryByUser = new Map<string, HomeFeedRowsCachePayload>();
@@ -106,7 +117,21 @@ function normalizeCachedRows(rows: unknown): any[] {
         .toLowerCase();
       return status !== "deleted";
     })
-    .map((row) => normalizeHomeFeedApiRow(row));
+    .map((row) => normalizeHomeFeedApiRowLazy(row));
+}
+
+export function peekHomeFeedPagingSync(userId?: string): HomeFeedPagingState {
+  const uid = String(userId || activeCacheUserId()).trim() || "guest";
+  const mem = memoryByUser.get(uid);
+  const rows = mem?.rows || [];
+  const nextCursor =
+    mem?.nextCursor != null
+      ? String(mem.nextCursor)
+      : rows.length
+        ? String(rows.length)
+        : "0";
+  const hasMore = mem?.hasMore !== false;
+  return { nextCursor, hasMore };
 }
 
 export function peekHomeFeedRowsCacheSync(userId?: string): any[] {
@@ -214,6 +239,8 @@ export async function hydrateHomeFeedRowsCacheFromStorage(
         rows,
         savedAt,
         ...(payloadSnapshotIds.length ? { snapshotRowIds: payloadSnapshotIds } : {}),
+        ...(parsed?.nextCursor != null ? { nextCursor: String(parsed.nextCursor) } : {}),
+        ...(typeof parsed?.hasMore === "boolean" ? { hasMore: parsed.hasMore } : {}),
       };
       memoryByUser.set(uid, payload);
 
@@ -236,7 +263,8 @@ export async function hydrateHomeFeedRowsCacheFromStorage(
 export async function saveHomeFeedRowsCache(
   rows: any[],
   userId?: string,
-  snapshotRowIds?: string[]
+  snapshotRowIds?: string[],
+  paging?: Partial<HomeFeedPagingState>
 ) {
   const uid = String(userId || activeCacheUserId()).trim() || "guest";
   const normalized = normalizeCachedRows(rows);
@@ -253,11 +281,22 @@ export async function saveHomeFeedRowsCache(
     return;
   }
 
+  const prev = memoryByUser.get(uid);
+  const nextCursor =
+    paging?.nextCursor !== undefined
+      ? paging.nextCursor
+      : prev?.nextCursor != null
+        ? String(prev.nextCursor)
+        : String(normalized.length);
+  const hasMore = paging?.hasMore !== undefined ? paging.hasMore : prev?.hasMore !== false;
+
   const payload: HomeFeedRowsCachePayload = {
     userId: uid,
     churchId: String(getSessionSync()?.churchId || "").trim(),
     rows: normalized,
     savedAt: Date.now(),
+    nextCursor,
+    hasMore,
     ...(persistedSnapshotIds.length ? { snapshotRowIds: persistedSnapshotIds } : {}),
   };
 
@@ -266,6 +305,8 @@ export async function saveHomeFeedRowsCache(
 
   console.log("KRISTO_HOME_FEED_CACHE_SAVE", {
     count: normalized.length,
+    nextCursor,
+    hasMore,
   });
 }
 
@@ -309,6 +350,16 @@ export async function removeHomeFeedPostFromRowsCache(
 
 /** Start AsyncStorage hydration as early as possible (safe to call multiple times). */
 export function kickoffHomeFeedRowsCacheHydrate() {
+  const { isHomeFeedYouTubeStyleVideo } = require("@/src/lib/homeFeedVideoMode") as {
+    isHomeFeedYouTubeStyleVideo: () => boolean;
+  };
+  if (isHomeFeedYouTubeStyleVideo()) {
+    const { kickoffHomeFeedPage0Hydrate } = require("@/src/components/homeFeed/homeFeedPageCache") as {
+      kickoffHomeFeedPage0Hydrate: () => void;
+    };
+    kickoffHomeFeedPage0Hydrate();
+    return;
+  }
   void hydrateHomeFeedRowsCacheFromStorage();
 }
 

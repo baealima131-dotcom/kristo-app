@@ -47,7 +47,14 @@ import {
   buildPersistedMediaSlotTimeFields,
   findMediaScheduleWindowConflict,
   isMediaScheduleConflictCandidate,
+  logPersistedScheduleSlotDateDiag,
+  materializeMediaSlotTimeFields,
 } from "@/src/lib/mediaScheduleSlotTimes";
+import {
+  formatSlotDateLabel,
+  logKristoScheduleDateDiag,
+  resolveScheduleDisplayCalendarDate,
+} from "@/src/lib/scheduleSlotUtils";
 import { buildMediaScheduleAuthorityFields } from "@/src/lib/liveMediaAuthority";
 import {
   fetchChurchPastorUserId,
@@ -835,6 +842,34 @@ export default function ChurchProjectToolScreen() {
       0,
       0
     );
+  }
+
+  function logMeetingDateSelectionDiag(
+    stage: string,
+    parts?: { day?: string; month?: string; year?: string; hour?: string }
+  ) {
+    const day = parts?.day ?? meetingStartDay;
+    const month = parts?.month ?? meetingStartMonth;
+    const year = parts?.year ?? meetingStartYear;
+    const hour = parts?.hour ?? meetingStartHour;
+    const selectedDateRaw = `${month} ${day}, ${year}`;
+    const start = parseMeetingPickerDate(day, month, year, hour);
+    const end = parseMeetingPickerDate(
+      meetingEndDay,
+      meetingEndMonth,
+      meetingEndYear,
+      meetingEndHour
+    );
+
+    logKristoScheduleDateDiag(stage, {
+      selectedDateRaw,
+      computedLocalStartMs: start.getTime(),
+      computedLocalEndMs: end.getTime(),
+      serializedMeetingDate: buildPersistedMediaSlotTimeFields({
+        startMs: start.getTime(),
+        endMs: end.getTime(),
+      }).meetingDate,
+    });
   }
 
   function formatMeetingPickerHour(date: Date) {
@@ -2544,6 +2579,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
   ) {
     const now = opts.publishedAt ?? Date.now();
     const parentTopic = String(opts.parentTopic || "").trim();
+    const persisted = buildPersistedMediaSlotTimeFields(slot);
     const { script: resolvedScript, slotTopic: resolvedSlotTopic, assignmentTopic: resolvedAssignmentTopic } =
       resolveScheduleSlotScriptForSave(slot, parentTopic, {
         slotNumber: opts.slotNumber,
@@ -2552,6 +2588,12 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       });
     const slotTopic = String(slot?.slotTopic || resolvedSlotTopic || "").trim();
     const assignmentTopic = String(slot?.assignmentTopic || resolvedAssignmentTopic || slotTopic || "").trim();
+
+    logPersistedScheduleSlotDateDiag("buildScheduleRoomCardPayload", {
+      selectedDateRaw: persisted.meetingDate,
+      slot,
+      persisted,
+    });
 
     return {
       cardId: String(slot?.id || ""),
@@ -2563,15 +2605,16 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       subtitle: String(slot?.subtitle || "Schedule"),
       roleKey: String(slot?.role || "").toLowerCase(),
       roleLabel: String(slot?.role || ""),
-      durationMin: Number(slot?.minutes || slot?.durationMin || 0),
-      startTime: String(slot?.startTime || ""),
-      endTime: String(slot?.endTime || ""),
-      meetingDate: String(slot?.meetingDate || slot?.meetingDay || ""),
-      meetingDay: String(slot?.meetingDay || slot?.meetingDate || ""),
-      startMs: Number(slot?.startMs || 0) || undefined,
-      endMs: Number(slot?.endMs || 0) || undefined,
-      startsAt: String(slot?.startsAt || (Number(slot?.startMs || 0) > 0 ? new Date(Number(slot.startMs)).toISOString() : "")),
-      endsAt: String(slot?.endsAt || (Number(slot?.endMs || 0) > 0 ? new Date(Number(slot.endMs)).toISOString() : "")),
+      durationMin: Number(slot?.minutes || slot?.durationMin || persisted.durationMin || 0),
+      startTime: persisted.startTime || String(slot?.startTime || ""),
+      endTime: persisted.endTime || String(slot?.endTime || ""),
+      meetingDate: persisted.meetingDate,
+      meetingEndDate: persisted.meetingEndDate,
+      meetingDay: persisted.meetingDay || String(slot?.meetingDay || ""),
+      startMs: persisted.startMs > 0 ? persisted.startMs : undefined,
+      endMs: persisted.endMs > persisted.startMs ? persisted.endMs : undefined,
+      startsAt: persisted.startsAt,
+      endsAt: persisted.endsAt,
       timeLabel: String(slot?.timeLabel || ""),
       task: String(slot?.task || slot?.name || ""),
       slotTopic,
@@ -2593,8 +2636,8 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       likeCount: Number(slot?.likeCount || 0),
       commentCount: Number(slot?.commentCount || 0),
       publishedAt: now,
-      liveId: `live_${assignmentId}_${new Date(String(slot?.meetingDate || now)).getTime()}`,
-      meetingId: `meeting_${assignmentId}_${new Date(String(slot?.meetingDate || now)).getTime()}`,
+      liveId: `live_${assignmentId}_${Number(slot?.startMs || 0) > 0 ? Number(slot.startMs) : now}`,
+      meetingId: `meeting_${assignmentId}_${Number(slot?.startMs || 0) > 0 ? Number(slot.startMs) : now}`,
     };
   }
 
@@ -2716,24 +2759,28 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     const rows = Array.isArray(res?.data) ? res.data : [];
     const cards = rows
       .filter((x: any) => String(x?.kind || "") === "assignment_card" && x?.card)
-      .map((x: any) => ({
-        ...x.card,
-        messageId: x.id,
-        id: String(x.card?.cardId || x.id),
-        name: String(x.card?.title || "Schedule slot"),
-        minutes: Number(x.card?.durationMin || 0),
-        startTime: String(x.card?.startTime || ""),
-        endTime: String(x.card?.endTime || ""),
-        timeLabel: String(x.card?.timeLabel || ""),
-        meetingDate: String(x.card?.meetingDate || ""),
-        role: String(x.card?.roleLabel || ""),
-        task: String(x.card?.task || ""),
-        script: String(x.card?.script || ""),
-        slotTopic: String(x.card?.slotTopic || ""),
-        assignmentTopic: String(x.card?.assignmentTopic || ""),
-        topic: String(x.card?.topic || ""),
-        chat: Array.isArray(x.card?.notes) ? x.card.notes : [],
-      }))
+      .map((x: any) => {
+        const materialized = materializeMediaSlotTimeFields({
+          ...x.card,
+          messageId: x.id,
+          id: String(x.card?.cardId || x.id),
+          name: String(x.card?.title || "Schedule slot"),
+          minutes: Number(x.card?.durationMin || 0),
+          startTime: String(x.card?.startTime || ""),
+          endTime: String(x.card?.endTime || ""),
+          timeLabel: String(x.card?.timeLabel || ""),
+          meetingDate: String(x.card?.meetingDate || x.card?.meetingDay || ""),
+          meetingDay: String(x.card?.meetingDay || x.card?.meetingDate || ""),
+          role: String(x.card?.roleLabel || ""),
+          task: String(x.card?.task || ""),
+          script: String(x.card?.script || ""),
+          slotTopic: String(x.card?.slotTopic || ""),
+          assignmentTopic: String(x.card?.assignmentTopic || ""),
+          topic: String(x.card?.topic || ""),
+          chat: Array.isArray(x.card?.notes) ? x.card.notes : [],
+        });
+        return materialized;
+      })
       .sort((a: any, b: any) => {
         const an = Number(String(a.slotLabel || "").replace(/\D/g, "")) || 0;
         const bn = Number(String(b.slotLabel || "").replace(/\D/g, "")) || 0;
@@ -2807,6 +2854,12 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
     }
 
     finalCards = finalCards.filter((card: any) => isMediaScheduleConflictCandidate(card));
+
+    if (__DEV__ && finalCards.length) {
+      logPersistedScheduleSlotDateDiag("refreshBackendScheduleCardsFromRoom.hydrated", {
+        hydrated: finalCards[0],
+      });
+    }
 
     if (opts?.alive && !opts.alive()) return;
     setBackendScheduleCards(finalCards);
@@ -2984,6 +3037,8 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
       meetingEndYear,
       meetingEndHour
     );
+
+    logMeetingDateSelectionDiag("handleSendMeetingToSchedule.selected");
 
     const startMs = scheduleStartDate.getTime();
     const endMs = scheduleEndDate.getTime();
@@ -3806,6 +3861,7 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
 
       if (lastStart.getTime() < meetingEndDate.getTime()) {
         last.endTime = formatTime(meetingEndDate);
+        last.endMs = meetingEndDate.getTime();
         last.durationMin = Math.max(
           1,
           Math.round((meetingEndDate.getTime() - lastStart.getTime()) / 60000)
@@ -3862,6 +3918,13 @@ const [meetingBuilderOpen, setMeetingBuilderOpen] = useState(true);
         ...persisted,
       };
     });
+
+    if (newBatchSlots.length) {
+      logPersistedScheduleSlotDateDiag("handleSendMeetingToSchedule.create", {
+        selectedDateRaw: `${meetingStartMonth} ${meetingStartDay}, ${meetingStartYear}`,
+        slot: newBatchSlots[0],
+      });
+    }
 
     saveChurchProjectScheduleSlots(
       assignmentId,
@@ -5289,12 +5352,21 @@ height: 24,
                                           if (disabledPast) return;
                                           if (card.setter === "year") {
                                             setMeetingStartYear(option);
+                                            logMeetingDateSelectionDiag("meetingPicker.year", {
+                                              year: option,
+                                            });
                                         }
                                           if (card.setter === "month") {
                                             setMeetingStartMonth(option);
+                                            logMeetingDateSelectionDiag("meetingPicker.month", {
+                                              month: option,
+                                            });
                                         }
                                           if (card.setter === "day") {
                                             setMeetingStartDay(option);
+                                            logMeetingDateSelectionDiag("meetingPicker.day", {
+                                              day: option,
+                                            });
                                         }
                                           if (card.setter === "hour") {
                                           const nextHour = meetingStartMinuteMode
@@ -5302,6 +5374,9 @@ height: 24,
                                             : option;
                                           setMeetingStartHour(nextHour);
                                           if (meetingStartMinuteMode) setMeetingStartMinuteMode(false);
+                                          logMeetingDateSelectionDiag("meetingPicker.hour", {
+                                            hour: nextHour,
+                                          });
 
                                         }
                                         }}
@@ -6630,12 +6705,27 @@ height: 24,
                     !!String((liveSlot as any)?.claimedByName || (liveSlot as any)?.claimedByUserId || "").trim();
                   const slotClaimedName = String((liveSlot as any)?.claimedByName || "").trim();
                   const slotClaimedAvatar = String((liveSlot as any)?.claimedByAvatar || "").trim();
+                  const slotDisplayDate = formatSlotDateLabel(
+                    resolveScheduleDisplayCalendarDate(liveSlot),
+                    meetingDay || "Today"
+                  );
                   const scheduleTopicPreview = String(
                     meetingTopicChoice?.trim() ||
                       (liveSlot as any)?.script ||
                       meetingTopic?.trim() ||
                       ""
                   ).trim();
+
+                  if (__DEV__) {
+                    logKristoScheduleDateDiag("scheduleSlotCard.display", {
+                      slotId: String(liveSlot?.id || slot.id || ""),
+                      selectedDateRaw: `${meetingStartMonth} ${meetingStartDay}, ${meetingStartYear}`,
+                      hydratedMeetingDate: String((liveSlot as any)?.meetingDate || ""),
+                      hydratedStartMs: Number((liveSlot as any)?.startMs || 0) || null,
+                      hydratedEndMs: Number((liveSlot as any)?.endMs || 0) || null,
+                      displayedCalendarDate: slotDisplayDate,
+                    });
+                  }
 
                   return (
                     <View key={slot.id} style={s.scheduleSlotRow}>
@@ -6718,7 +6808,7 @@ height: 24,
                         <View style={s.scheduleSlotMetaPanel}>
                           {[
                             ["Time", String((liveSlot as any).timeLabel || ((liveSlot as any).startTime && (liveSlot as any).endTime ? `${(liveSlot as any).startTime} - ${(liveSlot as any).endTime}` : "Set after meeting"))],
-                            ["Date", String((liveSlot as any).meetingDate || meetingDay || "Today").split("T")[0]],
+                            ["Date", slotDisplayDate],
                           ].map(([label, value]) => (
                             <View key={`${slot.id}-${label}`} style={s.scheduleSlotMetaRow}>
                               <Text style={s.scheduleSlotMetaLabel}>{label}</Text>

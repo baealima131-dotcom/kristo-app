@@ -101,12 +101,15 @@ import {
 import { broadcastChurchLiveControlRoomSync, subscribeChurchLiveControlRoomSync } from "@/src/lib/churchLiveControlRoomSync";
 import { persistPersonalTabRingClaimState } from "@/src/lib/homeFeedStore";
 import { resolveRealSlotTopic } from "@/src/lib/slotTopicUtils";
+import { logPersistedScheduleSlotDateDiag } from "@/src/lib/mediaScheduleSlotTimes";
 import {
   isScheduleSlotExpired,
   parseSlotEndMs,
   parseSlotStartMs,
   resolveAssignmentCardAvatarRingDecision,
+  resolveScheduleDisplayCalendarDate,
   resolveScheduleSlotVisualState,
+  formatSlotDateLabel,
   toMediaSlotAbsoluteAvatarUri,
 } from "@/src/lib/scheduleSlotUtils";
 import { getApiBase } from "@/src/lib/kristoApi";
@@ -334,14 +337,11 @@ type AssignmentVideoDraft = {
 
 function isAssignmentLive(card: any) {
   try {
-    if (!card?.meetingDate) return false;
-
-    const start = new Date(card.meetingDate).getTime();
-    const durationMin = Number(card.durationMin || 0);
-    const end = start + durationMin * 60 * 1000;
+    const startMs = parseSlotStartMs(card);
+    const endMs = parseSlotEndMs(card, startMs);
+    if (!(startMs > 0 && endMs > startMs)) return false;
     const now = Date.now();
-
-    return now >= start && now <= end;
+    return now >= startMs && now <= endMs;
   } catch {
     return false;
   }
@@ -779,13 +779,8 @@ function renderAssignmentCardBody(
 
   const meetingDateValue = String((card as any)?.meetingDate || "").trim();
   const liveDurationMin = Math.max(0, Number(card.durationMin || 0));
-  const liveStartDate = meetingDateValue ? new Date(meetingDateValue) : null;
-  const liveStartMs = liveStartDate && !Number.isNaN(liveStartDate.getTime())
-    ? liveStartDate.getTime()
-    : null;
-  const liveEndMs = liveStartMs != null
-    ? liveStartMs + (liveDurationMin * 60 * 1000)
-    : null;
+  const liveStartMs = parseSlotStartMs(card);
+  const liveEndMs = liveStartMs > 0 ? parseSlotEndMs(card, liveStartMs) : null;
   const nowMs = Date.now();
 
   const formatCountdownShort = (ms: number) => {
@@ -1210,14 +1205,10 @@ function renderAssignmentCardBody(
 
             let realMeetingDay = "";
             if (meetingDateValue) {
-              const parsed = new Date(meetingDateValue);
-              if (!Number.isNaN(parsed.getTime())) {
-                realMeetingDay = parsed.toLocaleDateString("en-US", {
-                  month: "short",
-                  day: "2-digit",
-                  year: "numeric",
-                });
-              }
+              realMeetingDay = formatSlotDateLabel(
+                resolveScheduleDisplayCalendarDate(card),
+                ""
+              );
             }
 
             const audienceNote =
@@ -1458,11 +1449,11 @@ function renderAssignmentCardBody(
           </View>
 
           {(() => {
-            const meetingDateValue = String((card as any)?.meetingDate || "").trim();
-            const durationMin = Math.max(0, Number(card.durationMin || 0));
-            const start = meetingDateValue ? new Date(meetingDateValue) : null;
-            const valid = !!start && !Number.isNaN(start.getTime());
-            const end = valid ? new Date(start.getTime() + durationMin * 60 * 1000) : null;
+            const startMs = parseSlotStartMs(card);
+            const endMs = parseSlotEndMs(card, startMs);
+            const valid = startMs > 0 && endMs > startMs;
+            const start = valid ? new Date(startMs) : null;
+            const end = valid ? new Date(endMs) : null;
 
             const fmtTime = (d: Date) =>
               d.toLocaleTimeString([], {
@@ -3460,6 +3451,16 @@ export default function MessageThreadScreen() {
           roomId: backendRoomId,
           count: merged.length,
         });
+        if (__DEV__) {
+          const firstScheduleCard = merged.find(
+            (m: any) => String(m?.kind || "") === "assignment_card" && m?.card
+          )?.card;
+          if (firstScheduleCard) {
+            logPersistedScheduleSlotDateDiag("roomMessagesBackgroundRefresh.hydrated", {
+              hydrated: firstScheduleCard,
+            });
+          }
+        }
       } else {
         console.log("[RoomMessagesPoll] skip-empty-overwrite", { threadId, backendRoomId });
       }

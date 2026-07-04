@@ -7,7 +7,7 @@ import {
   resolveFeedIdentitySubline,
   resolveFeedPostAccent,
   resolveFeedPostTypeTitle,
-  resolveHomeFeedDisplayAvatar,
+  resolveHomeFeedAvatarCacheContext,
 } from "./homeFeedUtils";
 import { HOME_FEED_GOLD, HOME_FEED_MUTED } from "./theme";
 import { openChurchProfileFromFeedItem } from "@/src/lib/churchProfileNavigation";
@@ -34,8 +34,8 @@ export const FeedIdentity = memo(function FeedIdentity({ item, whenLabel }: Prop
   const accentColor = accent === "testimony" ? TESTIMONY_BLUE : HOME_FEED_GOLD;
 
   const postId = String(item?.id || "").trim();
-  const { uri: avatarUri, backupUri, initial } = useMemo(
-    () => resolveHomeFeedDisplayAvatar(item),
+  const { cacheKey, remoteUris, initial, avatarUpdatedAt } = useMemo(
+    () => resolveHomeFeedAvatarCacheContext(item),
     [item]
   );
 
@@ -50,8 +50,9 @@ export const FeedIdentity = memo(function FeedIdentity({ item, whenLabel }: Prop
       postId={postId}
       size={AVATAR_SIZE}
       shellSize={AVATAR_RING}
-      uri={avatarUri}
-      backupUri={backupUri}
+      cacheKey={cacheKey}
+      remoteUris={remoteUris}
+      avatarUpdatedAt={avatarUpdatedAt}
       initial={initial}
     />
   );

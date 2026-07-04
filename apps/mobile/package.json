@@ -24,7 +24,7 @@
     "@livekit/react-native-expo-plugin": "^1.0.2",
     "@livekit/react-native-webrtc": "^144.0.0",
     "@react-native-async-storage/async-storage": "2.2.0",
-    "@react-native-community/slider": "^5.2.0",
+    "@react-native-community/slider": "5.0.1",
     "@react-native-masked-view/masked-view": "0.3.2",
     "@react-navigation/native": "^7.1.8",
     "@stripe/stripe-react-native": "0.50.3",
@@ -63,7 +63,7 @@
     "react-native-image-viewing": "^0.2.2",
     "react-native-incall-manager": "^4.2.1",
     "react-native-keyboard-aware-scroll-view": "^0.9.5",
-    "react-native-pager-view": "^8.0.0",
+    "react-native-pager-view": "6.9.1",
     "react-native-purchases": "^10.0.1",
     "react-native-reanimated": "^4.1.7",
     "react-native-safe-area-context": "~5.6.0",
@@ -75,7 +75,7 @@
   "devDependencies": {
     "@types/react": "~19.1.0",
     "babel-plugin-module-resolver": "^5.0.2",
-    "babel-preset-expo": "^56.0.15",
+    "babel-preset-expo": "~54.0.10",
     "react-test-renderer": "19.1.0",
     "typescript": "~5.9.2"
   },

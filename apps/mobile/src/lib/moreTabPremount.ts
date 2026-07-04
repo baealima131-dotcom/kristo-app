@@ -1,5 +1,5 @@
 import type { KristoSession } from "./kristoSession";
-import { deferStartupWorkAfterHomeFirstFrame } from "./firstPaint";
+import { runAfterHomeDeferredStartup } from "./homeFeedDeferredStartup";
 import { seedChurchMediaAccessFromSession } from "./refreshCoordinator";
 import { resolveSessionChurchId } from "./churchStore";
 import { isPastorSessionRole } from "./churchSubscription";
@@ -42,13 +42,16 @@ export async function runMoreTabPremount(session: KristoSession) {
 
   const startedAt = Date.now();
   premountInflight = (async () => {
-    seedChurchMediaAccessFromSession({
-      userId: session.userId,
-      role: session.role,
-      churchRole: session.churchRole,
-    });
-
     const churchId = resolveSessionChurchId(session.churchId || "");
+    seedChurchMediaAccessFromSession(
+      {
+        userId: session.userId,
+        role: session.role,
+        churchRole: session.churchRole,
+      },
+      churchId
+    );
+
     premountSnapshot = {
       hasChurch: Boolean(churchId),
       isPastor:
@@ -82,8 +85,7 @@ export function startMoreTabPremount(session: KristoSession | null | undefined) 
   const userId = String(session?.userId || "").trim();
   if (!userId || !session) return;
 
-  deferStartupWorkAfterHomeFirstFrame(
-    () => runMoreTabPremount(session),
-    { reason: "more-tab-premount", delayMs: 800 }
-  );
+  runAfterHomeDeferredStartup(() => {
+    void runMoreTabPremount(session);
+  }, { reason: "more-tab-premount" });
 }

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { KristoSession } from "./kristoSession";
 import {
@@ -19,11 +19,12 @@ import { resolvePlatformRoleFromAuthPayload } from "./platformRole";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import {
   hydrateSessionOnce,
+  resetChurchMediaAccessCacheOnSwitch,
   runCoordinatedAppRefresh,
   scheduleCoordinatedAppRefresh,
   seedChurchMediaAccessFromSession,
 } from "./refreshCoordinator";
-import { deferStartupWorkAfterHomeFirstFrame } from "./firstPaint";
+import { runAfterHomeDeferredStartup } from "./homeFeedDeferredStartup";
 import {
   inviteEventTargetsCurrentUser,
   onChurchInviteAccepted,
@@ -57,6 +58,7 @@ const C = createContext<Ctx | null>(null);
 export function KristoSessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSessionState] = useState<KristoSession | null>(null);
   const [loading, setLoading] = useState(true);
+  const prevChurchIdRef = useRef("");
 
   useEffect(() => {
     let alive = true;
@@ -72,10 +74,8 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
         startFirstHomeFeedVideoPrepare(s);
         startHomeFeedStartupPrewarm(s);
       }
-      startMoreTabPremount(s);
 
-      // Session opens immediately; profile sync + cache warm run after Home first frame.
-      deferStartupWorkAfterHomeFirstFrame(async () => {
+      runAfterHomeDeferredStartup(async () => {
         if (!alive || isSessionExitInProgress() || (await isLoggedOutFlagSet())) {
           if (alive) {
             setSessionSync(null);
@@ -89,11 +89,14 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
             silentSyncProfile(base, { returnOnly: true })
           )) as KristoSession | null) || s || null;
         if (!alive || !ready?.userId || isSessionExitInProgress() || (await isLoggedOutFlagSet())) return;
-        seedChurchMediaAccessFromSession({
-          userId: ready.userId,
-          role: ready.role,
-          churchRole: ready.churchRole,
-        });
+        seedChurchMediaAccessFromSession(
+          {
+            userId: ready.userId,
+            role: ready.role,
+            churchRole: ready.churchRole,
+          },
+          String(ready.churchId || "").trim()
+        );
         setSessionSync(ready);
         setSessionState(ready);
         if (isHomeFeedInlineVideoAutoplayEnabled()) {
@@ -239,6 +242,27 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
   }, [loading, session?.userId, session?.churchId]);
 
   useEffect(() => {
+    const userId = String(session?.userId || "").trim();
+    const churchId = String(session?.churchId || "").trim();
+    const prev = prevChurchIdRef.current;
+
+    if (userId && churchId && prev && prev !== churchId) {
+      resetChurchMediaAccessCacheOnSwitch({
+        userId,
+        previousChurchId: prev,
+        nextChurchId: churchId,
+      });
+      clearResponseCacheForRequest("GET", "/api/church/media", userId);
+      clearResponseCacheForRequest("GET", "/api/church/media-hosts", userId);
+      clearResponseCacheForRequest("GET", "/api/church/overview", userId);
+      clearResponseCacheForRequest("GET", "/api/church/ministries", userId);
+      clearResponseCacheForRequest("GET", "/api/church/feed", userId);
+    }
+
+    if (churchId) prevChurchIdRef.current = churchId;
+  }, [session?.userId, session?.churchId]);
+
+  useEffect(() => {
     if (!session?.userId) return;
 
     const checkExpiry = async () => {
@@ -286,11 +310,14 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
     silentSyncProfile(session).then((synced) => {
       if (isSessionExitInProgress()) return;
       const next = synced || session;
-      seedChurchMediaAccessFromSession({
-        userId: next.userId,
-        role: next.role,
-        churchRole: next.churchRole,
-      });
+      seedChurchMediaAccessFromSession(
+        {
+          userId: next.userId,
+          role: next.role,
+          churchRole: next.churchRole,
+        },
+        String(next.churchId || "").trim()
+      );
     });
     const t = setInterval(async () => {
       if (isSessionExitInProgress()) return;
@@ -347,11 +374,14 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
           setSessionState(touched);
           clearResponseCacheForRequest("GET", "/api/auth/profile", touched.userId);
           const synced = await silentSyncProfile(touched, { throttleMs: 0, omitChurchHeader: true });
-          seedChurchMediaAccessFromSession({
-            userId: (synced || touched).userId,
-            role: (synced || touched).role,
-            churchRole: (synced || touched).churchRole,
-          });
+          seedChurchMediaAccessFromSession(
+            {
+              userId: (synced || touched).userId,
+              role: (synced || touched).role,
+              churchRole: (synced || touched).churchRole,
+            },
+            String((synced || touched).churchId || "").trim()
+          );
           scheduleCoordinatedAppRefresh(synced || touched, { force: true, delayMs: 2500 });
         }
       }

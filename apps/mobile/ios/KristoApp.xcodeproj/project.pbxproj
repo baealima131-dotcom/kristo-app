@@ -8,30 +8,30 @@
 
 /* Begin PBXBuildFile section */
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		156D9AC2565A30FB9397A110 /* libPods-KristoApp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9DB06012CABC1D7576CFCC9C /* libPods-KristoApp.a */; };
+		3B5C4E76F215DCD429EB13A6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 683160AECC4EEAB29619E1EA /* PrivacyInfo.xcprivacy */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
-		59D917B6C1B694631AC4485E /* libPods-KristoApp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 292BCDDF07E422B7C45B6206 /* libPods-KristoApp.a */; };
+		8F5A18BEE1DD48DDBC5BF90A /* noop-file.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5D68395EE844DC699804E30 /* noop-file.swift */; };
+		9D146C91334EFABB93B04B4D /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E3B63AD253CC5D150AE3F6 /* ExpoModulesProvider.swift */; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
-		C0D1D336F43D3043A87F3FC0 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B731AB2ECD984CB6CED58E9 /* ExpoModulesProvider.swift */; };
-		CCBED486EBEB4B1C8C8853CE /* noop-file.swift in Sources */ = {isa = PBXBuildFile; fileRef = FADE7A1F504B4B62BAE1C8A9 /* noop-file.swift */; };
-		E9AFB32D9978E145C5491778 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 0BBD7037C541F390BF4ED15A /* PrivacyInfo.xcprivacy */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		0BBD7037C541F390BF4ED15A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = KristoApp/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* KristoApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KristoApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = KristoApp/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = KristoApp/Info.plist; sourceTree = "<group>"; };
-		292BCDDF07E422B7C45B6206 /* libPods-KristoApp.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-KristoApp.a"; sourceTree = BUILT_PRODUCTS_DIR; };
-		35B6C137D19A5D8DBA7D39A5 /* Pods-KristoApp.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-KristoApp.release.xcconfig"; path = "Target Support Files/Pods-KristoApp/Pods-KristoApp.release.xcconfig"; sourceTree = "<group>"; };
-		467A30B9F631784946232891 /* Pods-KristoApp.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-KristoApp.debug.xcconfig"; path = "Target Support Files/Pods-KristoApp/Pods-KristoApp.debug.xcconfig"; sourceTree = "<group>"; };
-		8B731AB2ECD984CB6CED58E9 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-KristoApp/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
+		683160AECC4EEAB29619E1EA /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; name = PrivacyInfo.xcprivacy; path = KristoApp/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		9DB06012CABC1D7576CFCC9C /* libPods-KristoApp.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-KristoApp.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = SplashScreen.storyboard; path = KristoApp/SplashScreen.storyboard; sourceTree = "<group>"; };
 		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
+		C5D68395EE844DC699804E30 /* noop-file.swift */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.swift; name = "noop-file.swift"; path = "KristoApp/noop-file.swift"; sourceTree = "<group>"; };
+		D663C8716481D68173B9BE9A /* Pods-KristoApp.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-KristoApp.release.xcconfig"; path = "Target Support Files/Pods-KristoApp/Pods-KristoApp.release.xcconfig"; sourceTree = "<group>"; };
+		D7DC0FF66AF96235A3A5873E /* Pods-KristoApp.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-KristoApp.debug.xcconfig"; path = "Target Support Files/Pods-KristoApp/Pods-KristoApp.debug.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = KristoApp/AppDelegate.swift; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* KristoApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "KristoApp-Bridging-Header.h"; path = "KristoApp/KristoApp-Bridging-Header.h"; sourceTree = "<group>"; };
-		FADE7A1F504B4B62BAE1C8A9 /* noop-file.swift */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.swift; name = "noop-file.swift"; path = "KristoApp/noop-file.swift"; sourceTree = "<group>"; };
+		F2E3B63AD253CC5D150AE3F6 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-KristoApp/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -39,21 +39,13 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				59D917B6C1B694631AC4485E /* libPods-KristoApp.a in Frameworks */,
+				156D9AC2565A30FB9397A110 /* libPods-KristoApp.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		0C9C2063C9C702F620394374 /* KristoApp */ = {
-			isa = PBXGroup;
-			children = (
-				8B731AB2ECD984CB6CED58E9 /* ExpoModulesProvider.swift */,
-			);
-			name = KristoApp;
-			sourceTree = "<group>";
-		};
 		13B07FAE1A68108700A75B9A /* KristoApp */ = {
 			isa = PBXGroup;
 			children = (
@@ -63,8 +55,8 @@
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */,
-				FADE7A1F504B4B62BAE1C8A9 /* noop-file.swift */,
-				0BBD7037C541F390BF4ED15A /* PrivacyInfo.xcprivacy */,
+				C5D68395EE844DC699804E30 /* noop-file.swift */,
+				683160AECC4EEAB29619E1EA /* PrivacyInfo.xcprivacy */,
 			);
 			name = KristoApp;
 			sourceTree = "<group>";
@@ -73,26 +65,9 @@
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				292BCDDF07E422B7C45B6206 /* libPods-KristoApp.a */,
+				9DB06012CABC1D7576CFCC9C /* libPods-KristoApp.a */,
 			);
 			name = Frameworks;
-			sourceTree = "<group>";
-		};
-		706B2E77C59761CCE7823006 /* ExpoModulesProviders */ = {
-			isa = PBXGroup;
-			children = (
-				0C9C2063C9C702F620394374 /* KristoApp */,
-			);
-			name = ExpoModulesProviders;
-			sourceTree = "<group>";
-		};
-		787E5434BA4741AA7223CEF2 /* Pods */ = {
-			isa = PBXGroup;
-			children = (
-				467A30B9F631784946232891 /* Pods-KristoApp.debug.xcconfig */,
-				35B6C137D19A5D8DBA7D39A5 /* Pods-KristoApp.release.xcconfig */,
-			);
-			path = Pods;
 			sourceTree = "<group>";
 		};
 		832341AE1AAA6A7D00B99B32 /* Libraries */ = {
@@ -109,8 +84,8 @@
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
-				787E5434BA4741AA7223CEF2 /* Pods */,
-				706B2E77C59761CCE7823006 /* ExpoModulesProviders */,
+				96619E4A8A4851CB7F2F0507 /* Pods */,
+				AC5242146C4CA1D6BB06CBC4 /* ExpoModulesProviders */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -125,6 +100,24 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		96619E4A8A4851CB7F2F0507 /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				D7DC0FF66AF96235A3A5873E /* Pods-KristoApp.debug.xcconfig */,
+				D663C8716481D68173B9BE9A /* Pods-KristoApp.release.xcconfig */,
+			);
+			name = Pods;
+			path = Pods;
+			sourceTree = "<group>";
+		};
+		AC5242146C4CA1D6BB06CBC4 /* ExpoModulesProviders */ = {
+			isa = PBXGroup;
+			children = (
+				E1C19131F56DBC358A18C751 /* KristoApp */,
+			);
+			name = ExpoModulesProviders;
+			sourceTree = "<group>";
+		};
 		BB2F792B24A3F905000567C9 /* Supporting */ = {
 			isa = PBXGroup;
 			children = (
@@ -132,6 +125,14 @@
 			);
 			name = Supporting;
 			path = KristoApp/Supporting;
+			sourceTree = "<group>";
+		};
+		E1C19131F56DBC358A18C751 /* KristoApp */ = {
+			isa = PBXGroup;
+			children = (
+				F2E3B63AD253CC5D150AE3F6 /* ExpoModulesProvider.swift */,
+			);
+			name = KristoApp;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -142,13 +143,13 @@
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "KristoApp" */;
 			buildPhases = (
 				08A4A3CD28434E44B6B9DE2E /* [CP] Check Pods Manifest.lock */,
-				6A03905F1749137D5933D93B /* [Expo] Configure project */,
+				14BB81DA85956BAB2C036016 /* [Expo] Configure project */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
-				88025036CD7B860602CE0A5F /* [CP] Embed Pods Frameworks */,
+				0501431EA7622AF15B13AF72 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -198,7 +199,7 @@
 				BB2F792D24A3F905000567C9 /* Expo.plist in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */,
-				E9AFB32D9978E145C5491778 /* PrivacyInfo.xcprivacy in Resources */,
+				3B5C4E76F215DCD429EB13A6 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -222,6 +223,30 @@
 			shellPath = /bin/sh;
 			shellScript = "if [[ -f \"$PODS_ROOT/../.xcode.env\" ]]; then\n  source \"$PODS_ROOT/../.xcode.env\"\nfi\nif [[ -f \"$PODS_ROOT/../.xcode.env.local\" ]]; then\n  source \"$PODS_ROOT/../.xcode.env.local\"\nfi\n\n# The project root by default is one level up from the ios directory\nexport PROJECT_ROOT=\"$PROJECT_DIR\"/..\n\nif [[ \"$CONFIGURATION\" = *Debug* ]]; then\n  export SKIP_BUNDLING=1\nfi\nif [[ -z \"$ENTRY_FILE\" ]]; then\n  # Set the entry JS file using the bundler's entry resolution.\n  export ENTRY_FILE=\"$(\"$NODE_BINARY\" -e \"require('expo/scripts/resolveAppEntry')\" \"$PROJECT_ROOT\" ios absolute | tail -n 1)\"\nfi\n\nif [[ -z \"$CLI_PATH\" ]]; then\n  # Use Expo CLI\n  export CLI_PATH=\"$(\"$NODE_BINARY\" --print \"require.resolve('@expo/cli', { paths: [require.resolve('expo/package.json')] })\")\"\nfi\nif [[ -z \"$BUNDLE_COMMAND\" ]]; then\n  # Default Expo CLI command for bundling\n  export BUNDLE_COMMAND=\"export:embed\"\nfi\n\n# Source .xcode.env.updates if it exists to allow\n# SKIP_BUNDLING to be unset if needed\nif [[ -f \"$PODS_ROOT/../.xcode.env.updates\" ]]; then\n  source \"$PODS_ROOT/../.xcode.env.updates\"\nfi\n# Source local changes to allow overrides\n# if needed\nif [[ -f \"$PODS_ROOT/../.xcode.env.local\" ]]; then\n  source \"$PODS_ROOT/../.xcode.env.local\"\nfi\n\n`\"$NODE_BINARY\" --print \"require('path').dirname(require.resolve('react-native/package.json')) + '/scripts/react-native-xcode.sh'\"`\n\n";
 		};
+		0501431EA7622AF15B13AF72 /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-KristoApp/Pods-KristoApp-frameworks.sh",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/React-Core-prebuilt/React.framework/React",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/ReactNativeDependencies/ReactNativeDependencies.framework/ReactNativeDependencies",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/WebRTC-SDK/WebRTC.framework/WebRTC",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built/hermes.framework/hermes",
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputPaths = (
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/React.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/ReactNativeDependencies.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/WebRTC.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-KristoApp/Pods-KristoApp-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 		08A4A3CD28434E44B6B9DE2E /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -244,7 +269,7 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		6A03905F1749137D5933D93B /* [Expo] Configure project */ = {
+		14BB81DA85956BAB2C036016 /* [Expo] Configure project */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -334,30 +359,6 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-KristoApp/Pods-KristoApp-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		88025036CD7B860602CE0A5F /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-KristoApp/Pods-KristoApp-frameworks.sh",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/React-Core-prebuilt/React.framework/React",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/ReactNativeDependencies/ReactNativeDependencies.framework/ReactNativeDependencies",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/WebRTC-SDK/WebRTC.framework/WebRTC",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built/hermes.framework/hermes",
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputPaths = (
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/React.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/ReactNativeDependencies.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/WebRTC.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-KristoApp/Pods-KristoApp-frameworks.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -366,8 +367,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */,
-				CCBED486EBEB4B1C8C8853CE /* noop-file.swift in Sources */,
-				C0D1D336F43D3043A87F3FC0 /* ExpoModulesProvider.swift in Sources */,
+				8F5A18BEE1DD48DDBC5BF90A /* noop-file.swift in Sources */,
+				9D146C91334EFABB93B04B4D /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -376,15 +377,12 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 467A30B9F631784946232891 /* Pods-KristoApp.debug.xcconfig */;
+			baseConfigurationReference = D7DC0FF66AF96235A3A5873E /* Pods-KristoApp.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = KristoApp/KristoApp.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = LSPAUB72W8;
 				ENABLE_BITCODE = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
@@ -405,7 +403,6 @@
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
 				PRODUCT_BUNDLE_IDENTIFIER = com.princefariji.kristoapp;
 				PRODUCT_NAME = KristoApp;
-				PROVISIONING_PROFILE_SPECIFIER = "";
 				RCT_METRO_PORT = 8084;
 				SWIFT_OBJC_BRIDGING_HEADER = "KristoApp/KristoApp-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -417,15 +414,12 @@
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 35B6C137D19A5D8DBA7D39A5 /* Pods-KristoApp.release.xcconfig */;
+			baseConfigurationReference = D663C8716481D68173B9BE9A /* Pods-KristoApp.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = KristoApp/KristoApp.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = LSPAUB72W8;
 				INFOPLIST_FILE = KristoApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -441,7 +435,6 @@
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
 				PRODUCT_BUNDLE_IDENTIFIER = com.princefariji.kristoapp;
 				PRODUCT_NAME = KristoApp;
-				PROVISIONING_PROFILE_SPECIFIER = "";
 				RCT_METRO_PORT = 8084;
 				SWIFT_OBJC_BRIDGING_HEADER = "KristoApp/KristoApp-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;

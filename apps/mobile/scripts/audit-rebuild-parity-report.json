@@ -1,0 +1,156 @@
+{
+  "summary": {
+    "rebuildSourceFiles": 357,
+    "presentOnWorkingTree": 357,
+    "missingFiles": 0,
+    "truncatedFiles": 0,
+    "tabGraphFiles": 158,
+    "unresolvedLocalImports": 0,
+    "missingValueExports": 20
+  },
+  "missingFiles": [],
+  "truncatedFiles": [],
+  "unresolvedImports": [],
+  "missingExports": [
+    {
+      "symbol": "ActivityGridPreviewTrace",
+      "exportedAs": "ActivityGridPreviewTrace",
+      "spec": "@/src/lib/churchActivityPosts",
+      "importer": "src/components/homeFeed/VideoPostFallbackPoster.tsx",
+      "target": "src/lib/churchActivityPosts.ts"
+    },
+    {
+      "symbol": "ChurchActivityGrid",
+      "exportedAs": "default",
+      "spec": "@/src/components/ChurchActivityGrid",
+      "importer": "app/(tabs)/profile/index.tsx",
+      "target": "src/components/ChurchActivityGrid.tsx"
+    },
+    {
+      "symbol": "ChurchActivityMemberChips",
+      "exportedAs": "default",
+      "spec": "@/src/components/ChurchActivityMemberChips",
+      "importer": "app/(tabs)/profile/index.tsx",
+      "target": "src/components/ChurchActivityMemberChips.tsx"
+    },
+    {
+      "symbol": "HomeFeedPostAccent",
+      "exportedAs": "HomeFeedPostAccent",
+      "spec": "./homeFeedUtils",
+      "importer": "src/components/homeFeed/ImagePostCard.tsx",
+      "target": "src/components/homeFeed/homeFeedUtils.ts"
+    },
+    {
+      "symbol": "HomeFeedPostKindFilter",
+      "exportedAs": "HomeFeedPostKindFilter",
+      "spec": "./homeFeedUtils",
+      "importer": "src/components/homeFeed/HomeFeedTopBar.tsx",
+      "target": "src/components/homeFeed/homeFeedUtils.ts"
+    },
+    {
+      "symbol": "HomeFeedSharePayload",
+      "exportedAs": "HomeFeedSharePayload",
+      "spec": "@/src/lib/homeFeedShare",
+      "importer": "src/components/homeFeed/HomeFeedWatchScreen.tsx",
+      "target": "src/lib/homeFeedShare.ts"
+    },
+    {
+      "symbol": "HomeFeedVideoDisplayType",
+      "exportedAs": "HomeFeedVideoDisplayType",
+      "spec": "@/src/lib/homeFeedVideoDisplayType",
+      "importer": "src/lib/churchVideoUpload.ts",
+      "target": "src/lib/homeFeedVideoDisplayType.ts"
+    },
+    {
+      "symbol": "HomeFeedVideoOpenPayload",
+      "exportedAs": "HomeFeedVideoOpenPayload",
+      "spec": "@/src/lib/homeFeedVideoMode",
+      "importer": "src/components/homeFeed/FeedYouTubeCard.tsx",
+      "target": "src/lib/homeFeedVideoMode.ts"
+    },
+    {
+      "symbol": "HomeFeedVideoWarmMode",
+      "exportedAs": "HomeFeedVideoWarmMode",
+      "spec": "@/src/lib/homeFeedVideoWindow",
+      "importer": "src/components/homeFeed/FeedRow.tsx",
+      "target": "src/lib/homeFeedVideoWindow.ts"
+    },
+    {
+      "symbol": "JujujuAnimatedSplash",
+      "exportedAs": "default",
+      "spec": "@/src/components/JujujuAnimatedSplash",
+      "importer": "app/_layout.tsx",
+      "target": "src/components/JujujuAnimatedSplash.tsx"
+    },
+    {
+      "symbol": "KristoSession",
+      "exportedAs": "KristoSession",
+      "spec": "./kristoSession",
+      "importer": "src/lib/moreTabPremount.ts",
+      "target": "src/lib/kristoSession.ts"
+    },
+    {
+      "symbol": "MediaStatus",
+      "exportedAs": "MediaStatus",
+      "spec": "@/src/lib/mediaStatus",
+      "importer": "src/lib/churchVideoUpload.ts",
+      "target": "src/lib/mediaStatus.ts"
+    },
+    {
+      "symbol": "MediaVideoGridPoster",
+      "exportedAs": "default",
+      "spec": "@/src/components/MediaVideoGridPoster",
+      "importer": "src/components/ChurchActivityGrid.tsx",
+      "target": "src/components/MediaVideoGridPoster.tsx"
+    },
+    {
+      "symbol": "MediaVideoUploadStatus",
+      "exportedAs": "MediaVideoUploadStatus",
+      "spec": "@/src/lib/optimisticVideoUpload",
+      "importer": "src/lib/videoUploadProgressSmoothing.ts",
+      "target": "src/lib/optimisticVideoUpload.ts"
+    },
+    {
+      "symbol": "PagerView",
+      "exportedAs": "default",
+      "spec": "@/src/components/PagerView",
+      "importer": "src/components/homeFeed/ImagePostCarousel.tsx",
+      "target": "src/components/PagerView.tsx"
+    },
+    {
+      "symbol": "PlanStatus",
+      "exportedAs": "PlanStatus",
+      "spec": "../../store/paymentsStore",
+      "importer": "src/lib/payments/mobileSubscriptions.ts",
+      "target": "src/store/paymentsStore.ts"
+    },
+    {
+      "symbol": "SharedContentPayload",
+      "exportedAs": "SharedContentPayload",
+      "spec": "@/src/lib/messagesStore",
+      "importer": "src/lib/homeFeedShare.ts",
+      "target": "src/lib/messagesStore.ts"
+    },
+    {
+      "symbol": "SignedMediaUploadSession",
+      "exportedAs": "SignedMediaUploadSession",
+      "spec": "@/src/lib/churchVideoUpload",
+      "importer": "src/lib/churchVideoChunkUpload.ts",
+      "target": "src/lib/churchVideoUpload.ts"
+    },
+    {
+      "symbol": "SubscriptionPlanKey",
+      "exportedAs": "SubscriptionPlanKey",
+      "spec": "../../store/paymentsStore",
+      "importer": "src/lib/payments/mobileSubscriptions.ts",
+      "target": "src/store/paymentsStore.ts"
+    },
+    {
+      "symbol": "UploadProgressSmoothingMeta",
+      "exportedAs": "UploadProgressSmoothingMeta",
+      "spec": "@/src/lib/videoUploadProgressSmoothing",
+      "importer": "src/lib/optimisticVideoUpload.ts",
+      "target": "src/lib/videoUploadProgressSmoothing.ts"
+    }
+  ]
+}

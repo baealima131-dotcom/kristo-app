@@ -64,6 +64,10 @@ import {
   summarizeActiveMediaSchedule,
 } from "@/lib/mediaScheduleLock";
 import {
+  formatLocalIsoDateFromMs,
+  localCalendarDateFromString,
+} from "@/lib/scheduleDateUtils";
+import {
   logHomeFeedScheduleCreated,
   logHomeFeedScheduleExpired,
   logHomeFeedScheduleRemoved,
@@ -1648,8 +1652,8 @@ function parseMediaScheduleSlotStartMs(slot: any): number {
   const startTime = String(slot?.startTime || slot?.time || slot?.timeLabel || "").trim();
   if (!meetingDate) return 0;
 
-  const base = new Date(meetingDate);
-  if (!Number.isFinite(base.getTime())) return 0;
+  const base = localCalendarDateFromString(meetingDate);
+  if (!base) return 0;
   if (!startTime) return base.getTime();
 
   const startMs = parseMeridiemTimeOnDate(base, startTime);
@@ -1669,8 +1673,8 @@ function parseMediaScheduleSlotEndMs(slot: any, startMs = 0): number {
   const endDate = String(slot?.meetingEndDate || slot?.meetingDate || slot?.meetingDay || "").trim();
   const endTime = String(slot?.endTime || "").trim();
   if (endDate && endTime) {
-    const base = new Date(endDate);
-    if (Number.isFinite(base.getTime())) {
+    const base = localCalendarDateFromString(endDate);
+    if (base) {
       let endMs = parseMeridiemTimeOnDate(base, endTime);
       if (Number.isFinite(endMs)) {
         if (startMs > 0 && endMs <= startMs) {
@@ -1693,14 +1697,6 @@ function enrichMediaScheduleSlotTimes(slot: any) {
   const endMs = parseMediaScheduleSlotEndMs(slot, startMs);
   if (!(startMs > 0 && endMs > startMs)) return slot;
 
-  const formatLocalDate = (ms: number) => {
-    const d = new Date(ms);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-
   const formatClock = (ms: number) => {
     const d = new Date(ms);
     let hour = d.getHours();
@@ -1711,14 +1707,17 @@ function enrichMediaScheduleSlotTimes(slot: any) {
     return `${hour}:${minute} ${meridiem}`;
   };
 
+  const meetingDate = formatLocalIsoDateFromMs(startMs);
+  const meetingEndDate = formatLocalIsoDateFromMs(endMs);
+
   return {
     ...slot,
     startMs,
     endMs,
     startsAt: String(slot?.startsAt || "").trim() || new Date(startMs).toISOString(),
     endsAt: String(slot?.endsAt || "").trim() || new Date(endMs).toISOString(),
-    meetingDate: String(slot?.meetingDate || slot?.meetingDay || "").trim() || formatLocalDate(startMs),
-    meetingEndDate: String(slot?.meetingEndDate || "").trim() || formatLocalDate(endMs),
+    meetingDate,
+    meetingEndDate,
     startTime: String(slot?.startTime || slot?.time || "").trim() || formatClock(startMs),
     endTime: String(slot?.endTime || "").trim() || formatClock(endMs),
     durationMin: Math.max(1, Number(slot?.durationMin || slot?.durationMinutes || 1)),
@@ -1781,6 +1780,29 @@ function mediaScheduleFeedItemHasValidSlotTimes(item: any) {
 }
 
 const hiddenInvalidScheduleIdsServer = new Set<string>();
+
+const HOME_FEED_NON_VIDEO_SOURCES = new Set([
+  "testimony",
+  "announcement",
+  "counsel",
+  "prayer",
+  "prayer_request",
+  "prayer-request",
+]);
+
+/** Global Home Feed: any post with playable video media (not kind=video only). */
+function isHomeFeedVideoMediaOnlyItem(item: any): boolean {
+  if (!item) return false;
+  if (isMediaScheduleFeedItem(item)) return true;
+
+  const source = String(item?.source || item?.kind || "").trim().toLowerCase();
+  const type = String(item?.type || "").trim().toLowerCase();
+  if (HOME_FEED_NON_VIDEO_SOURCES.has(source) || HOME_FEED_NON_VIDEO_SOURCES.has(type)) {
+    return false;
+  }
+
+  return Boolean(resolveFeedItemVideoUrl(item));
+}
 
 function filterHomeFeedRenderableRows(rows: any[], nowMs = Date.now()) {
   return rows.filter((item) => {
@@ -2129,9 +2151,17 @@ async function removePostAndRelated(postId: string) {
 function resolveFeedItemVideoUrl(item: any): string {
   const isVideoTyped =
     item?.type === "video" ||
-    String(item?.mediaType || "").trim().toLowerCase() === "video";
+    String(item?.mediaType || "").trim().toLowerCase() === "video" ||
+    String(item?.kind || "").trim().toLowerCase() === "media";
 
-  for (const key of ["videoUrl", "videoUri", "mediaUrl", "url"]) {
+  for (const key of [
+    "videoUrl",
+    "videoUri",
+    "mediaVideoUrl",
+    "playbackUrl",
+    "mediaUrl",
+    "url",
+  ]) {
     const raw = String(item?.[key] || "").trim();
     if (!raw) continue;
     const clean = raw.split("?")[0];
@@ -2140,6 +2170,30 @@ function resolveFeedItemVideoUrl(item: any): string {
 
   const mediaUri = String(item?.mediaUri || "").trim();
   if (/\.(mp4|mov|m4v|webm|mkv)(\?|#|$)/i.test(mediaUri.split("?")[0])) return mediaUri;
+
+  const media = item?.media;
+  if (media && typeof media === "object") {
+    const mediaType = String(media.type || media.mediaType || "").trim().toLowerCase();
+    if (mediaType === "video") {
+      for (const key of ["url", "uri", "videoUrl", "playbackUrl", "mediaUrl"]) {
+        const raw = String(media[key] || "").trim();
+        if (raw) return raw;
+      }
+    }
+  }
+
+  for (const attachments of [item?.attachments, item?.payload?.attachments]) {
+    if (!Array.isArray(attachments)) continue;
+    for (const entry of attachments) {
+      if (!entry || typeof entry !== "object") continue;
+      const attType = String(entry.type || entry.mediaType || "").trim().toLowerCase();
+      if (attType !== "video") continue;
+      for (const key of ["url", "uri", "videoUrl", "playbackUrl", "mediaUrl"]) {
+        const raw = String(entry[key] || "").trim();
+        if (raw) return raw;
+      }
+    }
+  }
 
   return String(item?.videoUrl || "").trim();
 }
@@ -2769,6 +2823,11 @@ async function handleFeedGet(
     const storageMode = String(url.searchParams.get("storage") || "").trim().toLowerCase();
     const feedScope = String(url.searchParams.get("scope") || "church").trim().toLowerCase();
     const isGlobalFeedScope = feedScope === "global" || feedScope === "home";
+    const mediaOnly =
+      isGlobalFeedScope &&
+      (url.searchParams.get("mediaOnly") === "1" ||
+        url.searchParams.get("mediaOnly") === "true" ||
+        url.searchParams.get("feedKind") === "video");
 
     // Endless-feed paging. When `limit` is provided we return a page sliced at
     // `cursor`/`offset`; without it the full list is returned (legacy behavior).
@@ -3098,6 +3157,7 @@ async function handleFeedGet(
         return true;
       })
       .filter((x) => (type ? x.type === type : true))
+      .filter((x) => (mediaOnly ? isHomeFeedVideoMediaOnlyItem(x) : true))
       .slice()
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
@@ -3150,6 +3210,7 @@ async function handleFeedGet(
       console.log("KRISTO_FEED_GET_PAGE", {
         churchId,
         scope: isGlobalFeedScope ? "GLOBAL" : "CHURCH",
+        mediaOnly,
         offset: pageOffset,
         limit: pageLimit,
         total: totalListRows,
@@ -3315,6 +3376,31 @@ async function handleClearMediaScheduleSlots(body: any, ctx: any) {
   const nextSlots = Array.isArray(body?.slots)
     ? body.slots.map(enrichMediaScheduleSlotTimes)
     : [];
+
+  const prevSlots = Array.isArray(item?.scheduleSlots) ? item.scheduleSlots : [];
+  const nextSlotIdSet = new Set(
+    nextSlots
+      .map((slot: any) => String(slot?.id || slot?.slotId || "").trim())
+      .filter(Boolean)
+  );
+  const clearedSlotClaims: Array<{ slotId: string; userId: string }> = [];
+  for (const slot of prevSlots) {
+    const slotId = String(slot?.id || slot?.slotId || "").trim();
+    if (!slotId || nextSlotIdSet.has(slotId)) continue;
+    const claimUserId = String(
+      slot?.claimedByUserId || slot?.claimedBy?.userId || ""
+    ).trim();
+    if (claimUserId) {
+      clearedSlotClaims.push({ slotId, userId: claimUserId });
+    }
+  }
+  if (clearedSlotClaims.length) {
+    console.log("KRISTO_BACKEND_SLOT_CLAIMS_CLEARED_ON_DELETE", {
+      feedId: postId,
+      churchId: targetChurchId,
+      clearedSlotClaims,
+    });
+  }
 
   if (!nextSlots.length) {
     const { endStaleMediaScheduleFeedItem } = await import("@/app/api/_lib/staleMediaScheduleFeed");

@@ -4,7 +4,10 @@
  */
 
 import { apiGet } from "@/src/lib/kristoApi";
-import { materializeMediaSlotTimeFields } from "@/src/lib/mediaScheduleSlotTimes";
+import {
+  buildPersistedMediaSlotTimeFields,
+  materializeMediaSlotTimeFields,
+} from "@/src/lib/mediaScheduleSlotTimes";
 import {
   isScheduleSlotExpired,
   resolveScheduleSlotVisualState,
@@ -132,6 +135,7 @@ export function buildChurchLiveControlScheduleRoomCard(
   const parentTopic = String(opts.parentTopic || slot?.role || slot?.task || "").trim();
   const assignmentId = String(opts.assignmentId || CHURCH_LIVE_CONTROL_SCHEDULE_ROOM_ID).trim();
   const slotId = String(slot?.id || slot?.cardId || `media-slot-${now}-${opts.slotNumber}`).trim();
+  const persisted = buildPersistedMediaSlotTimeFields(slot);
 
   return {
     cardId: slotId,
@@ -142,11 +146,16 @@ export function buildChurchLiveControlScheduleRoomCard(
     subtitle: parentTopic || "Schedule",
     roleKey: String(slot?.role || "").toLowerCase(),
     roleLabel: String(slot?.role || ""),
-    durationMin: Number(slot?.durationMin || slot?.minutes || 0),
-    startTime: String(slot?.startTime || ""),
-    endTime: String(slot?.endTime || ""),
-    meetingDate: String(slot?.meetingDate || slot?.meetingDay || ""),
-    meetingDay: String(slot?.meetingDay || slot?.meetingDate || ""),
+    durationMin: Number(slot?.durationMin || slot?.minutes || persisted.durationMin || 0),
+    startTime: persisted.startTime || String(slot?.startTime || ""),
+    endTime: persisted.endTime || String(slot?.endTime || ""),
+    meetingDate: persisted.meetingDate,
+    meetingEndDate: persisted.meetingEndDate,
+    meetingDay: persisted.meetingDay || String(slot?.meetingDay || ""),
+    startMs: persisted.startMs > 0 ? persisted.startMs : undefined,
+    endMs: persisted.endMs > persisted.startMs ? persisted.endMs : undefined,
+    startsAt: persisted.startsAt,
+    endsAt: persisted.endsAt,
     timeLabel: String(
       slot?.timeLabel ||
         `${String(slot?.startTime || "").trim()} - ${String(slot?.endTime || "").trim()}`.trim()
@@ -175,8 +184,8 @@ export function buildChurchLiveControlScheduleRoomCard(
     source: "church-live-control",
     roomKind: "church-live-control",
     liveLayout: "grid6",
-    liveId: `live_${assignmentId}_${now}`,
-    meetingId: `meeting_${assignmentId}_${now}`,
+    liveId: `live_${assignmentId}_${persisted.startMs > 0 ? persisted.startMs : now}`,
+    meetingId: `meeting_${assignmentId}_${persisted.startMs > 0 ? persisted.startMs : now}`,
   };
 }
 

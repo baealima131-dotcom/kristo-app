@@ -8,7 +8,8 @@ import {
   type ChurchMediaAccessSession,
   type ChurchMediaAccessState,
 } from "./churchMediaAccess";
-import { deferStartupWorkAfterHomeFirstFrame, waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
+import { waitForHomeFirstVideoReadyIfOnHome } from "./firstPaint";
+import { runAfterHomeDeferredStartup } from "./homeFeedDeferredStartup";
 import { shouldPauseBackgroundProfileRefresh } from "./mediaScheduleFlowFlags";
 import { shouldThrottleFetch } from "./kristoTraffic";
 import { SCREEN_CACHE_TTL_MS } from "./screenDataCacheFresh";
@@ -52,7 +53,6 @@ import {
   silentRefreshChurchOverview,
   silentRefreshProfileScreen,
 } from "./screenDataCache";
-import { refreshMinistriesBundleIfNeeded } from "./churchResourceRefresh";
 
 export type RefreshLane = "session" | "overview" | "mediaAccess" | "ministries" | "homeFeed";
 
@@ -79,6 +79,49 @@ const screenTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let cachedMediaAccess: ChurchMediaAccessState | null = null;
 let cachedMediaAccessKey = "";
 const mediaAccessListeners = new Set<(access: ChurchMediaAccessState) => void>();
+
+function mediaAccessCacheKey(
+  userId: string,
+  churchId: string,
+  role?: string,
+  churchRole?: string
+) {
+  return `${String(userId).trim()}:${String(churchId).trim()}:${String(churchRole || role || "")}`;
+}
+
+function getCachedMediaAccessForChurch(args: {
+  userId: string;
+  churchId: string;
+  role?: string;
+  churchRole?: string;
+}): ChurchMediaAccessState | null {
+  const key = mediaAccessCacheKey(args.userId, args.churchId, args.role, args.churchRole);
+  if (cachedMediaAccessKey === key && cachedMediaAccess) return cachedMediaAccess;
+  return null;
+}
+
+export function resetChurchMediaAccessCacheOnSwitch(args: {
+  userId: string;
+  previousChurchId?: string;
+  nextChurchId?: string;
+}) {
+  const userId = String(args.userId || "").trim();
+  if (!userId) return;
+
+  cachedMediaAccess = null;
+  cachedMediaAccessKey = "";
+
+  const prev = String(args.previousChurchId || "").trim();
+  const next = String(args.nextChurchId || "").trim();
+  if (prev) clearCoordinatedRefreshLanesForChurch(prev, userId);
+  if (next) clearCoordinatedRefreshLanesForChurch(next, userId);
+
+  console.log("KRISTO_CHURCH_MEDIA_ACCESS_CACHE_RESET", {
+    userId,
+    previousChurchId: prev || null,
+    nextChurchId: next || null,
+  });
+}
 
 let sessionHydrationInflight: Promise<KristoSession | null> | null = null;
 let lastHydratedSessionKey = "";
@@ -150,8 +193,8 @@ export function applyImmediateChurchPremiumMediaAccessUnlock(args: {
     churchRole: args.churchRole,
   };
   const baseline = evaluateChurchMediaAccessFromSession(session);
-  const subscriptionActive = args.subscriptionActive !== false;
-  const canUseMediaTools = args.canUseMediaTools !== false;
+  const subscriptionActive = args.subscriptionActive === true;
+  const canUseMediaTools = args.canUseMediaTools === true;
   const next: ChurchMediaAccessState = {
     ...(cachedMediaAccess || baseline),
     ...baseline,
@@ -161,8 +204,28 @@ export function applyImmediateChurchPremiumMediaAccessUnlock(args: {
     canAccessChurchMedia: baseline.canOpenMediaScreen || subscriptionActive,
     canManageMediaHosts: baseline.canManageMediaHosts,
   };
-  cachedMediaAccessKey = `${args.userId}:${String(args.churchRole || args.role || "")}`;
+  cachedMediaAccessKey = mediaAccessCacheKey(
+    args.userId,
+    args.churchId,
+    args.role,
+    args.churchRole
+  );
   return publishMediaAccess(cachedMediaAccess, next, session);
+}
+
+export function seedChurchMediaAccessFromSession(
+  session?: ChurchMediaAccessSession | null,
+  churchId?: string
+) {
+  const cid = String(churchId || "").trim();
+  if (!session?.userId || !cid) return null;
+  const key = mediaAccessCacheKey(session.userId, cid, session.role, session.churchRole);
+  const baseline = evaluateChurchMediaAccessFromSession(session);
+  if (cachedMediaAccessKey !== key || !cachedMediaAccess) {
+    cachedMediaAccessKey = key;
+    return publishMediaAccess(null, baseline, session);
+  }
+  return publishMediaAccess(cachedMediaAccess, baseline, session);
 }
 
 export async function refreshChurchFeatureBundle(args: {
@@ -205,17 +268,6 @@ export async function refreshChurchFeatureBundle(args: {
   );
 }
 
-export function seedChurchMediaAccessFromSession(session?: ChurchMediaAccessSession | null) {
-  if (!session?.userId) return null;
-  const key = `${String(session.userId)}:${String(session.churchRole || session.role || "")}`;
-  const baseline = evaluateChurchMediaAccessFromSession(session);
-  if (cachedMediaAccessKey !== key || !cachedMediaAccess) {
-    cachedMediaAccessKey = key;
-    return publishMediaAccess(null, baseline, session);
-  }
-  return publishMediaAccess(cachedMediaAccess, baseline, session);
-}
-
 export async function refreshChurchMediaAccess(args: {
   userId: string;
   churchId: string;
@@ -238,7 +290,7 @@ export async function refreshChurchMediaAccess(args: {
       churchRole: args.churchRole,
     };
     return (
-      cachedMediaAccess ||
+      getCachedMediaAccessForChurch(args) ||
       publishMediaAccess(
         null,
         evaluateChurchMediaAccessFromSession(blockedSession),
@@ -257,7 +309,7 @@ export async function refreshChurchMediaAccess(args: {
       churchRole: args.churchRole,
     };
     return (
-      cachedMediaAccess ||
+      getCachedMediaAccessForChurch(args) ||
       publishMediaAccess(null, evaluateChurchMediaAccessFromSession(session), session)
     );
   }
@@ -267,7 +319,7 @@ export async function refreshChurchMediaAccess(args: {
     role: args.role,
     churchRole: args.churchRole,
   };
-  seedChurchMediaAccessFromSession(session);
+  seedChurchMediaAccessFromSession(session, args.churchId);
 
   const job = (async () => {
     await waitForHomeFirstVideoReadyIfOnHome();
@@ -472,6 +524,7 @@ export async function runCoordinatedAppRefresh(
 
       if (lane === "ministries" && churchId) {
         if (!shouldRunLane("ministries", scope, force)) continue;
+        const { refreshMinistriesBundleIfNeeded } = await import("./churchResourceRefresh");
         await refreshMinistriesBundleIfNeeded({
           churchId,
           userId,
@@ -516,14 +569,14 @@ export function scheduleCoordinatedAppRefresh(
   session: KristoSession | null,
   opts?: { force?: boolean; lanes?: RefreshLane[]; delayMs?: number }
 ) {
-  deferStartupWorkAfterHomeFirstFrame(
+  runAfterHomeDeferredStartup(
     async () => {
       if (isSessionExitInProgress()) return;
       await runCoordinatedAppRefresh(session, { ...opts, deferMs: 0 });
     },
     {
       reason: "church-overview-coordinated-refresh",
-      delayMs: opts?.delayMs ?? 3000,
+      minDelayMs: opts?.delayMs ?? undefined,
     }
   );
 }

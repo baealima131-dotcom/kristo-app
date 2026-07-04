@@ -46,7 +46,10 @@ import {
   logTrafficCache,
   shouldAllowScreenRefresh,
 } from "@/src/lib/kristoTraffic";
-import { evaluateChurchMediaAccessClient } from "@/src/lib/churchMediaAccess";
+import {
+  evaluateChurchMediaAccessClient,
+  evaluateChurchMediaAccessFromSession,
+} from "@/src/lib/churchMediaAccess";
 import {
   getCachedChurchMediaAccess,
   seedChurchMediaAccessFromSession,
@@ -361,7 +364,7 @@ export default function ChurchOverviewScreen() {
   const [mediaPickerMode, setMediaPickerMode] = useState<"manage" | "studio">("studio");
   const initialMediaAccess =
     getCachedChurchMediaAccess() ||
-    seedChurchMediaAccessFromSession({
+    evaluateChurchMediaAccessFromSession({
       userId: effectiveAuthUserId,
       role: session?.role,
       churchRole: session?.churchRole,
@@ -394,6 +397,18 @@ export default function ChurchOverviewScreen() {
   const [churchSubscriptionActive, setChurchSubscriptionActive] = useState<boolean | null>(null);
   const [canUseMediaTools, setCanUseMediaTools] = useState<boolean | null>(null);
   const contentOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!effectiveAuthUserId || !churchId) return;
+    seedChurchMediaAccessFromSession(
+      {
+        userId: effectiveAuthUserId,
+        role: session?.role,
+        churchRole: session?.churchRole,
+      },
+      churchId
+    );
+  }, [effectiveAuthUserId, churchId, session?.role, session?.churchRole]);
 
   useEffect(() => {
     if (!bootLoading && !err && !(invitePreview && previewLimitReached)) {
@@ -616,7 +631,7 @@ export default function ChurchOverviewScreen() {
 
       if (!base) throw new Error("API base missing");
 
-      clearResponseCacheForRequest("GET", "/api/church/overview", effectiveAuthUserId);
+      clearResponseCacheForRequest("GET", "/api/church/overview", effectiveAuthUserId, churchId);
 
       const overviewUrl = invitePreview
         ? `${base}/api/church/overview?invitePreview=1&inviteId=${encodeURIComponent(inviteId)}`

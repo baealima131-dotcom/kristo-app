@@ -201,11 +201,14 @@ async function preloadMinistries(churchId: string, userId: string, session: Kris
 }
 
 async function preloadMedia(churchId: string, userId: string, session: KristoSession) {
-  seedChurchMediaAccessFromSession({
-    userId,
-    role: session?.role,
-    churchRole: session?.churchRole,
-  });
+  seedChurchMediaAccessFromSession(
+    {
+      userId,
+      role: session?.role,
+      churchRole: session?.churchRole,
+    },
+    churchId
+  );
 
   if (shouldSkipChurchFeatureRefresh("ChurchBroadcast", churchId, userId)) {
     logChurchFeaturePreloadSkipped("ChurchBroadcast", "recent");

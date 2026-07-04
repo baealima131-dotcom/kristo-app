@@ -20,6 +20,7 @@ import {
   markHomeFeedVideoWarmKey,
   unmarkHomeFeedVideoWarmKey,
 } from "@/src/lib/homeFeedVideoWarmRegistry";
+import { isHomeFeedPosterPrewarmDisabled } from "@/src/lib/homeFeedVideoMode";
 
 export { wasHomeFeedVideoUrlBufferedAhead } from "@/src/lib/homeFeedVideoWarmRegistry";
 import {
@@ -377,6 +378,7 @@ export function warmHomeFeedVideoPostersNearActive(
   activeIndex: number,
   sessionId = prefetchSessionId
 ): void {
+  if (isHomeFeedPosterPrewarmDisabled()) return;
   if (shouldDeferBackgroundMediaJobs()) return;
   if (!isPrefetchAllowed(sessionId)) {
     console.log("KRISTO_POSTER_PREFETCH_SKIP", { reason: "session-ended" });

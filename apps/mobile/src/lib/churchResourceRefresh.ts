@@ -5,8 +5,8 @@ import {
   parseExplicitServerSubscriptionFromMediaRoute,
   readChurchScopedEntitlementActive,
   readSessionMediaProfileSubscriptionActive,
+  isOfflineActivationFromMediaRouteResponse,
 } from "@/src/lib/churchSubscriptionMediaSignals";
-import { isOfflineActivationFromMediaRouteResponse } from "@/src/lib/churchSubscription";
 import {
   getRevenueCatConfiguredAppUserId,
   logInRevenueCatForChurchSubscription,

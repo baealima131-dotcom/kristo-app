@@ -1,3 +1,4 @@
+import { feedRenderKey } from "./homeFeedRowKeys";
 import {
   isFeedVideoItem,
   isOptimisticVideoUploadPost,
@@ -16,6 +17,7 @@ import {
 } from "@/src/lib/scheduleSlotUtils";
 import { isBrandedPosterUri, itemUsesBrandedVideoPoster } from "@/src/lib/brandedVideoPoster";
 import { resolveCachedMediaPoster } from "@/src/lib/mediaPosterCache";
+import { homeFeedAvatarUrlCacheKey } from "@/src/lib/homeFeedAvatarCache";
 import { isKristoVerboseFeedDebug, isKristoVerboseFeedIdentityDebug, isKristoVerboseSlotTimeDebug } from "@/src/lib/kristoDebugFlags";
 import { isChurchLiveControlScheduleFeedRow } from "@/src/lib/churchLiveControlSchedule";
 import {
@@ -61,6 +63,16 @@ import { getSessionSync } from "@/src/lib/kristoSession";
 import { peekProfileScreenCache } from "@/src/lib/screenDataCache";
 import { tryRegisterStartupFirstVideoTarget } from "@/src/lib/homeFeedVideoPrime";
 import { isHomeFeedInlineVideoAutoplayEnabled, type HomeFeedVideoOpenPayload } from "@/src/lib/homeFeedVideoMode";
+import {
+  getFrozenHomeFeedDisplayRows,
+  isHomeFeedDisplayOrderFrozen,
+} from "@/src/lib/homeFeedScrollStability";
+import {
+  peekHomeFeedDisplayOrderSync,
+  saveHomeFeedDisplayOrderCache,
+  isHomeFeedDisplayOrderCacheHydrateSettled,
+} from "@/src/components/homeFeed/homeFeedDisplayOrderCache";
+import { shouldRebuildHomeFeedDisplayOrder } from "@/src/lib/homeFeedRefreshReason";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 
 export {
@@ -113,6 +125,77 @@ export function filterHomeFeedRowsByPostKind(
 ): any[] {
   if (!kind || !Array.isArray(rows)) return rows;
   return rows.filter((row) => resolveFeedPostKind(row) === kind);
+}
+
+const HOME_FEED_NON_VIDEO_SOURCES = new Set([
+  "testimony",
+  "announcement",
+  "counsel",
+  "prayer",
+  "prayer_request",
+  "prayer-request",
+]);
+
+/** Resolved playable video URL for Home Feed media-only rows (any upload shape). */
+export function resolvePlayableHomeFeedMediaUrl(item: any): string {
+  if (!item) return "";
+  const fromVideoUri = resolveVideoUri(item);
+  if (fromVideoUri) return fromVideoUri;
+
+  for (const key of ["mediaVideoUrl", "playbackUrl"]) {
+    const resolved = homeFeedMediaUrl(item?.[key]);
+    if (resolved) return resolved;
+  }
+
+  const media = item?.media;
+  if (media && typeof media === "object") {
+    const mediaType = String(media.type || media.mediaType || "").trim().toLowerCase();
+    if (mediaType === "video") {
+      for (const key of ["url", "uri", "videoUrl", "playbackUrl", "mediaUrl"]) {
+        const resolved = homeFeedMediaUrl(media[key]);
+        if (resolved) return resolved;
+      }
+    }
+  }
+
+  for (const attachments of [item?.attachments, item?.payload?.attachments]) {
+    if (!Array.isArray(attachments)) continue;
+    for (const entry of attachments) {
+      if (!entry || typeof entry !== "object") continue;
+      const attType = String(entry.type || entry.mediaType || "").trim().toLowerCase();
+      if (attType !== "video") continue;
+      for (const key of ["url", "uri", "videoUrl", "playbackUrl", "mediaUrl"]) {
+        const resolved = homeFeedMediaUrl(entry[key]);
+        if (resolved) return resolved;
+      }
+    }
+  }
+
+  return "";
+}
+
+/** YouTube Home Feed: playable media only — excludes testimony, announcement, prayer, text-only posts. */
+export function isHomeFeedYoutubeVideoMediaRow(item: any): boolean {
+  if (!item) return false;
+  if (isExplicitHomeFeedMediaScheduleRow(item)) return true;
+  if (isMediaLiveSlotsHomeFeedRow(item)) return true;
+
+  const source = String(item?.source || item?.kind || "")
+    .trim()
+    .toLowerCase();
+  const type = String(item?.type || "")
+    .trim()
+    .toLowerCase();
+  if (HOME_FEED_NON_VIDEO_SOURCES.has(source) || HOME_FEED_NON_VIDEO_SOURCES.has(type)) {
+    return false;
+  }
+
+  return Boolean(resolvePlayableHomeFeedMediaUrl(item));
+}
+
+export function filterHomeFeedYoutubeStreamRows(rows: any[]): any[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter(isHomeFeedYoutubeVideoMediaRow);
 }
 
 export function buildHomeFeedSearchHaystack(item: any): string {
@@ -678,15 +761,7 @@ export function homeFeedCommentPostId(item: any) {
 }
 
 /** FlatList row key — unique per expanded slot card. */
-export function feedRenderKey(item: any) {
-  // Endless-feed recycled rows reuse a real post id (for likes/comments) but need
-  // a unique render key per cycle so React/FlatList don't collapse duplicates.
-  const recycleKey = String(item?.homeFeedRecycleKey || "").trim();
-  if (recycleKey) return recycleKey;
-  const id = String(item?.id || item?.feedOriginId || "").trim();
-  if (item?.homeFeedSlotExpanded || /:slot:\d+/i.test(id)) return id;
-  return baseFeedId(id);
-}
+export { feedRenderKey } from "./homeFeedRowKeys";
 
 function resolveHomeFeedSlotNumber(slot: any, fallback: number) {
   const n = Number(slot?.slot || slot?.slotNumber || slot?.order || 0);
@@ -1412,12 +1487,97 @@ export function filterSameChurchHomeFeedScheduleRows(
   return rows;
 }
 
-/** Merged Home Feed list: video/posts first, then active schedule slot cards. */
-export function buildHomeFeedDisplayRows(
+export function mergeCachedHomeFeedDisplayOrder(
+  cachedDisplay: any[],
   backendRows: any[],
   localRows: any[],
   nowMs = Date.now()
 ) {
+  const sanitizedBackendRows = filterRenderableHomeFeedScheduleRows(backendRows, "backend");
+  const sanitizedLocalRows = filterRenderableHomeFeedScheduleRows(localRows, "local");
+  return mergeCachedHomeFeedDisplayOrderInternal(
+    cachedDisplay,
+    sanitizedBackendRows,
+    sanitizedLocalRows,
+    nowMs
+  );
+}
+
+function mergeCachedHomeFeedDisplayOrderInternal(
+  cachedDisplay: any[],
+  backendRows: any[],
+  localRows: any[],
+  nowMs: number
+) {
+  const freshById = new Map<string, any>();
+  for (const row of [...backendRows, ...localRows]) {
+    if (!row) continue;
+    const id = feedRenderKey(row) || String(row?.id || "").trim();
+    if (!id) continue;
+    const prev = freshById.get(id);
+    freshById.set(id, prev ? pickRicherHomeFeedRow(prev, row) : row);
+  }
+
+  const merged = cachedDisplay
+    .map((row) => {
+      const id = feedRenderKey(row) || String(row?.id || "").trim();
+      if (!id) return row;
+      const fresh = freshById.get(id);
+      return fresh ? pickRicherHomeFeedRow(row, fresh) : row;
+    })
+    .filter((row) => {
+      const id = feedRenderKey(row) || String(row?.id || "").trim();
+      return Boolean(id && (freshById.has(id) || String(row?.localOnly || "").trim() === "1"));
+    });
+
+  return merged.length ? merged : cachedDisplay;
+}
+
+/** Merged Home Feed list: video/posts first, then active schedule slot cards. */
+export function buildHomeFeedDisplayRows(
+  backendRows: any[],
+  localRows: any[],
+  nowMs = Date.now(),
+  opts?: { rebuildPersonalOrder?: boolean; rebuildReason?: string; force?: boolean }
+) {
+  if (isHomeFeedDisplayOrderFrozen()) {
+    return getFrozenHomeFeedDisplayRows();
+  }
+
+  const rebuildPersonalOrder =
+    opts?.rebuildPersonalOrder === true ||
+    shouldRebuildHomeFeedDisplayOrder(String(opts?.rebuildReason || ""), opts?.force);
+
+  const cachedDisplay = peekHomeFeedDisplayOrderSync();
+  if (!rebuildPersonalOrder && cachedDisplay.length) {
+    const sanitizedBackendRows = filterRenderableHomeFeedScheduleRows(backendRows, "backend");
+    const sanitizedLocalRows = filterRenderableHomeFeedScheduleRows(localRows, "local");
+    return mergeCachedHomeFeedDisplayOrderInternal(
+      cachedDisplay,
+      sanitizedBackendRows,
+      sanitizedLocalRows,
+      nowMs
+    );
+  }
+
+  if (!isHomeFeedDisplayOrderCacheHydrateSettled()) {
+    if (cachedDisplay.length) {
+      const sanitizedBackendRows = filterRenderableHomeFeedScheduleRows(backendRows, "backend");
+      const sanitizedLocalRows = filterRenderableHomeFeedScheduleRows(localRows, "local");
+      return mergeCachedHomeFeedDisplayOrderInternal(
+        cachedDisplay,
+        sanitizedBackendRows,
+        sanitizedLocalRows,
+        nowMs
+      );
+    }
+    return [];
+  }
+
+  if (!rebuildPersonalOrder && !cachedDisplay.length) {
+    return [];
+  }
+
   const sanitizedBackendRows = filterRenderableHomeFeedScheduleRows(backendRows, "backend");
   const sanitizedLocalRows = filterRenderableHomeFeedScheduleRows(localRows, "local");
   const personalCtx = resolveHomeFeedPersonalOrderContext(nowMs);
@@ -1511,6 +1671,10 @@ export function buildHomeFeedDisplayRows(
 
   lastHomeFeedBuildDigest = digest;
   lastHomeFeedBuildResult = display;
+
+  if (display.length) {
+    void saveHomeFeedDisplayOrderCache(display);
+  }
 
   if (isKristoVerboseFeedDebug()) {
     const videoCount = display.filter((row) => isVideoPost(row)).length;
@@ -1698,6 +1862,46 @@ export function resolveHomeFeedDisplayAvatar(item: any): HomeFeedDisplayAvatar {
     uri: uris[0] || "",
     backupUri: uris[1] || "",
     initial,
+  };
+}
+
+export function resolveHomeFeedAvatarCacheKey(item: any): string {
+  const churchRoomPost = isChurchRoomMemberFeedPost(item);
+  const authorUserId = String(item?.createdBy || item?.authorUserId || "").trim();
+
+  if (churchRoomPost && authorUserId) {
+    return `user:${authorUserId}`;
+  }
+
+  const churchId = homeFeedRowChurchId(item);
+  if (churchId) return `church:${churchId.toUpperCase()}`;
+
+  if (authorUserId) return `user:${authorUserId}`;
+
+  const { uri, backupUri } = resolveHomeFeedDisplayAvatar(item);
+  const primary = String(uri || backupUri || "").trim();
+  return primary ? homeFeedAvatarUrlCacheKey(primary) : "";
+}
+
+export type HomeFeedAvatarCacheContext = HomeFeedDisplayAvatar & {
+  cacheKey: string;
+  remoteUris: string[];
+  avatarUpdatedAt: number;
+};
+
+export function resolveHomeFeedAvatarCacheContext(item: any): HomeFeedAvatarCacheContext {
+  const display = resolveHomeFeedDisplayAvatar(item);
+  const remoteUris = [display.uri, display.backupUri].filter(Boolean);
+  const cacheKey =
+    resolveHomeFeedAvatarCacheKey(item) ||
+    (display.uri ? homeFeedAvatarUrlCacheKey(display.uri) : "") ||
+    (display.backupUri ? homeFeedAvatarUrlCacheKey(display.backupUri) : "");
+
+  return {
+    ...display,
+    cacheKey,
+    remoteUris,
+    avatarUpdatedAt: homeFeedAvatarCacheBustAt(item),
   };
 }
 
@@ -2018,6 +2222,46 @@ export function collectFeedVideoPosterCandidates(item: any, postId = ""): string
 
 export function resolveBestFeedPosterUri(item: any, postId = ""): string {
   return collectFeedVideoPosterCandidates(item, postId)[0] || "";
+}
+
+/** YouTube Home Feed: backend metadata + in-memory cache only (no inferred/frame URLs). */
+export function resolveYouTubeFeedMetadataPosterUri(
+  item: any,
+  postId = "",
+  videoUrl = ""
+): string {
+  const pid = String(postId || item?.id || "").trim();
+  const video = String(videoUrl || resolveVideoUri(item) || "").trim();
+  if (!video) return "";
+
+  const cached = resolveCachedMediaPoster(pid, video);
+  if (cached && !isInferredPosterUriForVideo(cached, video)) {
+    return cached;
+  }
+
+  for (const raw of [
+    item?.posterUri,
+    item?.videoPosterUri,
+    item?.thumbnailUri,
+    item?.thumbnailUrl,
+    item?.mediaPosterUri,
+    item?.posterUrl,
+    item?.coverUrl,
+    item?.firstFrameUrl,
+    item?.coverImage,
+    item?.coverImageUrl,
+    item?.previewUrl,
+    item?.thumbnail,
+    item?.poster,
+  ]) {
+    const resolved = homeFeedMediaUrl(raw);
+    if (!resolved || isBrandedPosterUri(resolved)) continue;
+    if (!isValidVideoPosterUri(resolved, video)) continue;
+    if (isInferredPosterUriForVideo(resolved, video)) continue;
+    return resolved;
+  }
+
+  return "";
 }
 
 export type HomeFeedPosterSourceKind =

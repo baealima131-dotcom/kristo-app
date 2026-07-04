@@ -570,7 +570,11 @@ export type ChurchSubscriptionServerStatus = {
   routeFailed?: boolean;
 };
 
-export { isOfflineActivationFromMediaRouteResponse, parseChurchMediaSubscriptionSource };
+export {
+  isBackendManagedMediaPremiumStatus,
+  isOfflineActivationFromMediaRouteResponse,
+  parseChurchMediaSubscriptionSource,
+} from "./churchSubscriptionMediaSignals";
 
 /** Media Premium screen: raw `/api/church/media` only — no RevenueCat or session merge. */
 export type ChurchMediaPremiumServerStatus = {

@@ -183,7 +183,7 @@ export async function invalidateChurchProfileCaches(
 
   const uid = String(opts?.userId || "").trim();
   if (uid) {
-    clearResponseCacheForRequest("GET", "/api/church/overview", uid);
+    clearResponseCacheForRequest("GET", "/api/church/overview", uid, cid);
   }
 
   console.log("KRISTO_CHURCH_PROFILE_CACHE_INVALIDATED", {
@@ -357,7 +357,7 @@ export async function silentRefreshChurchOverview(
   }
 
   if (profileFresh) {
-    clearResponseCacheForRequest("GET", "/api/church/overview", uid);
+    clearResponseCacheForRequest("GET", "/api/church/overview", uid, cid);
   }
 
   if (isMoreTabTransitionBlocking()) {

@@ -1,4 +1,5 @@
 import { isChurchLiveControlScheduleFeedRow } from "@/lib/churchLiveControlSchedule";
+import { localCalendarDateFromString } from "@/lib/scheduleDateUtils";
 
 export const ACTIVE_MEDIA_SCHEDULE_ERROR =
   "A media schedule is already active. Please end or delete it before creating another one.";
@@ -26,13 +27,22 @@ function parseMeridiemTimeOnDate(base: Date, timeText: string): number {
 }
 
 function parseSlotStartMs(slot: AnyFeedItem): number {
+  const explicitStart = Number(slot?.startMs || 0);
+  if (explicitStart > 0) return explicitStart;
+
+  const startsAt = String(slot?.startsAt || "").trim();
+  if (startsAt) {
+    const parsed = Date.parse(startsAt);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
   const meetingDate = String(slot?.meetingDate || slot?.meetingDay || "").trim();
   const startTime = String(slot?.startTime || slot?.time || slot?.timeLabel || "").trim();
 
   if (!meetingDate) return 0;
 
-  const base = new Date(meetingDate);
-  if (!Number.isFinite(base.getTime())) return 0;
+  const base = localCalendarDateFromString(meetingDate);
+  if (!base) return 0;
 
   if (!startTime) return base.getTime();
 
@@ -41,18 +51,35 @@ function parseSlotStartMs(slot: AnyFeedItem): number {
 }
 
 function parseSlotEndMs(slot: AnyFeedItem): number {
+  const startMs = parseSlotStartMs(slot);
+
+  const explicitEnd = Number(slot?.endMs || 0);
+  if (explicitEnd > startMs) return explicitEnd;
+
+  const endsAt = String(slot?.endsAt || "").trim();
+  if (endsAt) {
+    const parsed = Date.parse(endsAt);
+    if (Number.isFinite(parsed) && parsed > startMs) return parsed;
+  }
+
   const meetingDate = String(slot?.meetingDate || slot?.meetingDay || "").trim();
   const endTime = String(slot?.endTime || "").trim();
 
   if (meetingDate && endTime) {
-    const base = new Date(meetingDate);
-    if (Number.isFinite(base.getTime())) {
-      const endMs = parseMeridiemTimeOnDate(base, endTime);
-      if (Number.isFinite(endMs)) return endMs;
+    const base = localCalendarDateFromString(
+      String(slot?.meetingEndDate || meetingDate).trim()
+    );
+    if (base) {
+      let endMs = parseMeridiemTimeOnDate(base, endTime);
+      if (Number.isFinite(endMs)) {
+        if (startMs > 0 && endMs <= startMs) {
+          endMs += 24 * 60 * 60 * 1000;
+        }
+        if (endMs > startMs) return endMs;
+      }
     }
   }
 
-  const startMs = parseSlotStartMs(slot);
   if (!startMs) return 0;
 
   const durationMs = Math.max(1, Number(slot?.durationMin || 1)) * 60000;

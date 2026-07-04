@@ -1,5 +1,8 @@
 import { peekHomeFeedRowsCacheSavedAt, peekHomeFeedRowsCacheSync } from "@/src/components/homeFeed/homeFeedRowsCache";
+import { shouldHardRefreshHomeFeed } from "./homeFeedRefreshReason";
 import { isMoreTabTransitionBlocking } from "./refreshCoordinator";
+
+export { shouldHardRefreshHomeFeed } from "./homeFeedRefreshReason";
 
 /** Minimum interval between global Home Feed API refreshes (unless forced). */
 export const HOME_FEED_REFRESH_TTL_MS = 45_000;
@@ -79,16 +82,6 @@ export function homeFeedNetworkAnchorMs() {
 export function isHomeFeedNetworkFresh(now = Date.now()) {
   const anchor = homeFeedNetworkAnchorMs();
   return anchor > 0 && now - anchor < HOME_FEED_REFRESH_TTL_MS;
-}
-
-export function shouldHardRefreshHomeFeed(reason: string, force?: boolean) {
-  if (force) return true;
-  return (
-    reason.includes("schedule-dirty") ||
-    reason.includes("post-delete") ||
-    reason.startsWith("slot-claim") ||
-    reason === "claim-slot-focus"
-  );
 }
 
 export function resolveHomeFeedRefreshMode(reason: string, force?: boolean): HomeFeedRefreshMode {

@@ -35,6 +35,7 @@ export function announceChurchPremiumAccessUnlocked(args: {
   headers?: Record<string, string>;
   subscriptionPlan?: "monthly" | "yearly" | null;
   subscriptionActive?: boolean;
+  backendSubscriptionActive?: boolean;
   canUseMediaTools?: boolean;
   source?: string;
 }) {
@@ -42,26 +43,31 @@ export function announceChurchPremiumAccessUnlocked(args: {
   const userId = String(args.userId || "").trim();
   if (!churchId || !userId) return;
 
-  const subscriptionActive = args.subscriptionActive !== false;
-  const canUseMediaTools = args.canUseMediaTools !== false;
+  const subscriptionActive = args.subscriptionActive === true;
+  const backendSubscriptionActive = args.backendSubscriptionActive === true;
+  const canUseMediaTools = args.canUseMediaTools === true;
+
+  if (!subscriptionActive && !canUseMediaTools) return;
 
   clearChurchPremiumResourceRefreshCaches(churchId, userId);
   clearCoordinatedRefreshLanesForChurch(churchId, userId);
 
-  applyImmediateChurchPremiumMediaAccessUnlock({
-    churchId,
-    userId,
-    role: args.role,
-    churchRole: args.churchRole,
-    subscriptionActive,
-    canUseMediaTools,
-  });
+  if (subscriptionActive || canUseMediaTools) {
+    applyImmediateChurchPremiumMediaAccessUnlock({
+      churchId,
+      userId,
+      role: args.role,
+      churchRole: args.churchRole,
+      subscriptionActive,
+      canUseMediaTools,
+    });
+  }
 
   const payload: ChurchPremiumAccessChangedPayload = {
     churchId,
     userId,
     subscriptionActive,
-    backendSubscriptionActive: true,
+    backendSubscriptionActive,
     canUseMediaTools,
     subscriptionPlan: args.subscriptionPlan ?? null,
     updatedAt: Date.now(),

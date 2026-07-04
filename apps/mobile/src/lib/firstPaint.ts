@@ -5,6 +5,8 @@ import {
   subscribeHomeFeedActiveFirstFrame,
 } from "@/src/lib/homeFeedVideoReadiness";
 import { isHomeFeedYouTubeStyleVideo } from "@/src/lib/homeFeedVideoMode";
+import { isHomeTabFocused, markHomeFeedFirstPaintReady, setHomeTabFocused } from "@/src/lib/homeStartupGate";
+export { isHomeTabFocused, setHomeTabFocused };
 
 const loggedScreens = new Set<string>();
 
@@ -20,6 +22,9 @@ export function logFirstPaintReady(screen: string, extra?: Record<string, unknow
     screen,
     ...(extra || {}),
   });
+  if (screen === "HomeFeed") {
+    markHomeFeedFirstPaintReady();
+  }
 }
 
 /** Run work after interactions settle — does not block screen mount. */
@@ -209,14 +214,6 @@ export function logHomeWarmupDelayTimeout() {
       homeMountAtMs != null ? Date.now() - homeMountAtMs : HOME_WARMUP_DELAY_MS,
   });
   notifyHomeWarmupGateListeners();
-}
-
-export function isHomeTabFocused() {
-  return Boolean((globalThis as any).__KRISTO_HOME_TAB_FOCUSED__);
-}
-
-export function setHomeTabFocused(focused: boolean) {
-  (globalThis as any).__KRISTO_HOME_TAB_FOCUSED__ = focused;
 }
 
 let homeFirstVideoTimeout: ReturnType<typeof setTimeout> | null = null;
