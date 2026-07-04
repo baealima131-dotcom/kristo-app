@@ -5,6 +5,7 @@ import {
   Image,
   ImageResizeMode,
   ImageStyle,
+  Platform,
   StyleSheet,
   Text,
   View,
@@ -114,6 +115,38 @@ function writePosterCoverSession(postId: string, videoUrl: string, uri: string, 
     uri: normalized,
     source,
   });
+}
+
+/** Android: prefer an on-disk poster over remote/session URLs when cache is ready. */
+function preferAndroidCachedPosterUri(
+  postId: string,
+  videoUrl: string,
+  uri: string,
+  source: string
+): { uri: string; source: string } {
+  if (Platform.OS !== "android") return { uri, source };
+  const cached = resolveCachedMediaPoster(postId, videoUrl);
+  if (!cached || !isLocalMediaUri(cached)) return { uri, source };
+  if (uri === cached && source === "cache") return { uri, source };
+  return { uri: cached, source: "cache" };
+}
+
+function resolveYoutubePosterRestore(
+  postId: string,
+  videoUrl: string
+): { uri: string; source: string } | null {
+  const cached = resolveCachedMediaPoster(postId, videoUrl);
+  if (Platform.OS === "android" && cached && isLocalMediaUri(cached)) {
+    return { uri: cached, source: "cache" };
+  }
+  const sessionCover = readPosterCoverSession(postId, videoUrl);
+  if (sessionCover?.uri) {
+    return { uri: sessionCover.uri, source: sessionCover.source || "cache" };
+  }
+  if (cached) {
+    return { uri: cached, source: "cache" };
+  }
+  return null;
 }
 
 function logHomeFeedPosterPlaceholderShown(postId: string, videoUrl: string, reason: string) {
@@ -430,26 +463,34 @@ function YouTubeFeedVideoPoster({
   const beginPosterLoad = React.useCallback(
     (uri: string, source: string) => {
       if (!uri || cancelledRef.current) return;
-      if (uri === loadedUriRef.current && coverReadyRef.current) {
+      const preferred = preferAndroidCachedPosterUri(
+        postId,
+        resolvedVideoUrl,
+        uri,
+        source
+      );
+      const nextUri = preferred.uri;
+      const nextSource = preferred.source;
+      if (nextUri === loadedUriRef.current && coverReadyRef.current) {
         restoreLoadedPoster();
         return;
       }
       if (!loadStartLoggedRef.current) {
         loadStartLoggedRef.current = true;
-        logHomeFeedPosterLoadStart(postId, resolvedVideoUrl, source);
+        logHomeFeedPosterLoadStart(postId, resolvedVideoUrl, nextSource);
       }
       markHomeFeedPosterPipelineStage(postId, "poster_url_resolved", {
-        posterUri: uri,
+        posterUri: nextUri,
         videoUrl: resolvedVideoUrl,
-        source,
+        source: nextSource,
       });
       markHomeFeedPosterPipelineStage(postId, "image_request_started", {
-        posterUri: uri,
+        posterUri: nextUri,
         videoUrl: resolvedVideoUrl,
-        source,
+        source: nextSource,
       });
-      setLoadSource(source);
-      setDisplayUri(uri);
+      setLoadSource(nextSource);
+      setDisplayUri(nextUri);
       setSettledPlaceholder(false);
       setPosterFadedIn(false);
       fadeOpacity.setValue(0);
@@ -496,13 +537,12 @@ function YouTubeFeedVideoPoster({
     cancelledRef.current = false;
     frameGenAttemptedRef.current = false;
 
-    const sessionCover = readPosterCoverSession(postId, resolvedVideoUrl);
-    const cachedPoster = resolveCachedMediaPoster(postId, resolvedVideoUrl);
-    const restoredUri = sessionCover?.uri || cachedPoster || "";
+    const restored = resolveYoutubePosterRestore(postId, resolvedVideoUrl);
+    const restoredUri = restored?.uri || "";
 
     if (restoredUri) {
       loadedUriRef.current = restoredUri;
-      loadedSourceRef.current = sessionCover?.source || "cache";
+      loadedSourceRef.current = restored?.source || "cache";
       coverReadyRef.current = true;
       loadStartLoggedRef.current = true;
       setDisplayUri(restoredUri);
@@ -529,7 +569,7 @@ function YouTubeFeedVideoPoster({
     fadeOpacity.setValue(0);
     notifyCoverReady(false);
 
-    if (item) {
+    if (Platform.OS !== "android" && item) {
       const metadataUri = resolveYouTubeFeedMetadataPosterUri(item, postId, resolvedVideoUrl);
       if (metadataUri && !hasPosterMetadataFailed(postId, resolvedVideoUrl)) {
         beginPosterLoad(metadataUri, "metadata");
@@ -691,6 +731,14 @@ function YouTubeFeedVideoPoster({
     setDisplayUri("");
     setPosterFadedIn(false);
     fadeOpacity.setValue(0);
+
+    if (Platform.OS === "android") {
+      const cached = resolveCachedMediaPoster(postId, resolvedVideoUrl);
+      if (cached && isLocalMediaUri(cached) && cached !== displayUri) {
+        beginPosterLoad(cached, "cache");
+        return;
+      }
+    }
 
     const display = item
       ? resolveHomeFeedPosterDisplay(postId, resolvedVideoUrl, item)
