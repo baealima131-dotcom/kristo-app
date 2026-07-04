@@ -1,5 +1,5 @@
 const VIDEO_PUBLIC_BASE = String(
-  process.env.EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL || "https://videos.kristoapp.com"
+  process.env.EXPO_PUBLIC_VIDEO_STORAGE_PUBLIC_BASE_URL || ""
 ).replace(/\/+$/, "");
 
 const PUBLIC_VIDEO_KEY_PREFIXES = [
