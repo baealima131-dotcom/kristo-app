@@ -53,6 +53,17 @@ export function isScheduleBatchLiveBridgeId(id: unknown): boolean {
   return value.startsWith("batch_") || isBackendFeedScheduleId(value);
 }
 
+export function isMinistryScheduledLiveBridgeId(id: unknown): boolean {
+  return String(id || "").trim().startsWith("ministry_");
+}
+
+/** Bridge ids that satisfy the preflight schedule step (batch, feed, or ministry live). */
+export function isScheduledLivePreflightBridgeId(id: unknown): boolean {
+  const value = String(id || "").trim();
+  if (!value || value === "scheduled-live-default") return false;
+  return isScheduleBatchLiveBridgeId(value) || isMinistryScheduledLiveBridgeId(value);
+}
+
 function pickLiveBridgeScheduleId(...candidates: unknown[]): string {
   for (const candidate of candidates) {
     const value = String(candidate || "").trim();
