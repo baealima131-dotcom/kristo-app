@@ -1,12 +1,23 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useLocalSearchParams } from "expo-router";
-import { Alert, ImageBackground, Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, AppState, ImageBackground, Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { makeChurchId } from "@/src/lib/kristoSession";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { clearChurchDraft, saveChurchDraft } from "@/src/lib/churchStore";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import { getAccountDeleteStoreManagementFallbackMessage } from "@/src/lib/accountDeleteSubscription";
+import {
+  checkChurchDeleteSubscriptionGuard,
+  getChurchDeleteSubscriptionResumeMessage,
+  openChurchDeleteSubscriptionManagement,
+  preserveChurchDeleteSubscriptionLockTombstone,
+  resolveChurchDeletePaidAccessExpiryLabel,
+  type ChurchDeleteSubscriptionGuard,
+} from "@/src/lib/churchDeleteSubscription";
+import { DeleteChurchSubscriptionModal } from "@/src/components/church/DeleteChurchSubscriptionModal";
+import { DeleteChurchCancellationModal } from "@/src/components/church/DeleteChurchCancellationModal";
 
 const VIP_BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.95)";
@@ -66,6 +77,16 @@ export default function MoreChurch() {
   const [err, setErr] = useState<string | null>(null);
   const [countryOpen, setCountryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [checkingDeleteGuard, setCheckingDeleteGuard] = useState(false);
+  const [deleteSubModalOpen, setDeleteSubModalOpen] = useState(false);
+  const [managingDeleteSubscription, setManagingDeleteSubscription] = useState(false);
+  const [deleteSubInlineMessage, setDeleteSubInlineMessage] = useState<string | null>(null);
+  const [deleteSubGuard, setDeleteSubGuard] = useState<ChurchDeleteSubscriptionGuard | null>(null);
+  const [deleteCancellationModalOpen, setDeleteCancellationModalOpen] = useState(false);
+  const [pendingCancellationGuard, setPendingCancellationGuard] =
+    useState<ChurchDeleteSubscriptionGuard | null>(null);
+  const [deletingChurchAfterCancellation, setDeletingChurchAfterCancellation] = useState(false);
+  const pendingDeleteManageRef = useRef(false);
 
   const current = useMemo(() => {
     const cid = session?.churchId || "";
@@ -259,6 +280,193 @@ export default function MoreChurch() {
     router.replace("/more/church" as any);
   }
 
+  function confirmDeleteChurch() {
+    Alert.alert(
+      "Delete your church",
+      "This will remove this church from your local V1 account.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: () => void clearChurchLocal() },
+      ]
+    );
+  }
+
+  function confirmDeleteChurchWithGuard(guard: ChurchDeleteSubscriptionGuard | null | undefined) {
+    if (guard?.requiresCancellationWarning) {
+      setPendingCancellationGuard(guard);
+      setDeleteCancellationModalOpen(true);
+      return;
+    }
+
+    confirmDeleteChurch();
+  }
+
+  function closeDeleteCancellationModal() {
+    if (deletingChurchAfterCancellation) return;
+    setDeleteCancellationModalOpen(false);
+    setPendingCancellationGuard(null);
+  }
+
+  async function onConfirmDeleteChurchAfterCancellation() {
+    const guard = pendingCancellationGuard;
+    if (!guard || deletingChurchAfterCancellation) return;
+
+    setDeletingChurchAfterCancellation(true);
+    try {
+      await clearChurchLocalWithTombstone(guard);
+      setDeleteCancellationModalOpen(false);
+      setPendingCancellationGuard(null);
+    } finally {
+      setDeletingChurchAfterCancellation(false);
+    }
+  }
+
+  async function clearChurchLocalWithTombstone(guard: ChurchDeleteSubscriptionGuard) {
+    const churchId = String(session?.churchId || "").trim();
+    const userId = String(session?.userId || "").trim();
+    const role = String(session?.role || "Pastor");
+
+    if (churchId && userId) {
+      try {
+        const result = await preserveChurchDeleteSubscriptionLockTombstone({
+          churchId,
+          headers: getKristoHeaders({ userId, role: role as any, churchId }) as Record<string, string>,
+        });
+        console.log("KRISTO_CHURCH_DELETE_LOCK_TOMBSTONE_PRESERVED", {
+          churchId,
+          userId,
+          preserved: result.preserved,
+          reason: result.reason ?? null,
+        });
+      } catch (error: any) {
+        console.log("KRISTO_CHURCH_DELETE_LOCK_TOMBSTONE_PRESERVE_FAILED", {
+          churchId,
+          userId,
+          message: String(error?.message || error || "unknown"),
+        });
+        Alert.alert(
+          "Delete failed",
+          "We could not finalize church deletion. Please try again."
+        );
+        return;
+      }
+    }
+
+    await clearChurchLocal();
+  }
+
+  const handleResumeAfterDeleteSubscriptionManagement = useCallback(async () => {
+    const churchId = String(session?.churchId || "").trim();
+    const userId = String(session?.userId || "").trim();
+    const role = String(session?.role || "Member");
+    if (!churchId || !userId || !pendingDeleteManageRef.current) return;
+
+    pendingDeleteManageRef.current = false;
+    setManagingDeleteSubscription(false);
+    setCheckingDeleteGuard(true);
+
+    try {
+      const guard = await checkChurchDeleteSubscriptionGuard({
+        churchId,
+        headers: getKristoHeaders({ userId, role: role as any, churchId }) as Record<string, string>,
+      });
+      setDeleteSubGuard(guard);
+
+      if (guard.blocked) {
+        setDeleteSubInlineMessage(getChurchDeleteSubscriptionResumeMessage(guard));
+        setDeleteSubModalOpen(true);
+        return;
+      }
+
+      setDeleteSubModalOpen(false);
+      setDeleteSubInlineMessage(null);
+      confirmDeleteChurchWithGuard(guard);
+    } catch (error: any) {
+      console.log("KRISTO_CHURCH_DELETE_SUBSCRIPTION_CHECK_FAILED", {
+        churchId,
+        userId,
+        message: String(error?.message || error || "unknown"),
+      });
+      setDeleteSubInlineMessage("We could not refresh your subscription status. Try again in a moment.");
+      setDeleteSubModalOpen(true);
+    } finally {
+      setCheckingDeleteGuard(false);
+    }
+  }, [session?.churchId, session?.role, session?.userId]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState !== "active" || !pendingDeleteManageRef.current) return;
+      void handleResumeAfterDeleteSubscriptionManagement();
+    });
+
+    return () => subscription.remove();
+  }, [handleResumeAfterDeleteSubscriptionManagement]);
+
+  async function onDeleteChurch() {
+    const churchId = String(session?.churchId || "").trim();
+    const userId = String(session?.userId || "").trim();
+    const role = String(session?.role || "Pastor");
+
+    if (!churchId || !userId) {
+      confirmDeleteChurch();
+      return;
+    }
+
+    setCheckingDeleteGuard(true);
+    setDeleteSubInlineMessage(null);
+
+    try {
+      const guard = await checkChurchDeleteSubscriptionGuard({
+        churchId,
+        headers: getKristoHeaders({ userId, role: role as any, churchId }) as Record<string, string>,
+      });
+      setDeleteSubGuard(guard);
+
+      if (guard.blocked) {
+        setDeleteSubModalOpen(true);
+        return;
+      }
+
+      confirmDeleteChurchWithGuard(guard);
+    } catch (error: any) {
+      console.log("KRISTO_CHURCH_DELETE_SUBSCRIPTION_CHECK_FAILED", {
+        churchId,
+        userId,
+        message: String(error?.message || error || "unknown"),
+      });
+      Alert.alert(
+        "Delete failed",
+        "We could not verify your church subscription status. Please try again."
+      );
+    } finally {
+      setCheckingDeleteGuard(false);
+    }
+  }
+
+  async function onManageDeleteSubscription() {
+    const guard = deleteSubGuard;
+    if (!guard || checkingDeleteGuard || managingDeleteSubscription) return;
+
+    setManagingDeleteSubscription(true);
+    setDeleteSubInlineMessage(null);
+    pendingDeleteManageRef.current = true;
+
+    const result = await openChurchDeleteSubscriptionManagement(guard);
+    if (!result.opened) {
+      pendingDeleteManageRef.current = false;
+      setManagingDeleteSubscription(false);
+      setDeleteSubInlineMessage(getAccountDeleteStoreManagementFallbackMessage());
+    }
+  }
+
+  function closeDeleteSubscriptionModal() {
+    if (checkingDeleteGuard || managingDeleteSubscription) return;
+    setDeleteSubModalOpen(false);
+    setDeleteSubInlineMessage(null);
+    pendingDeleteManageRef.current = false;
+  }
+
   function onQuitChurch() {
     Alert.alert(
       "Quit church",
@@ -270,16 +478,7 @@ export default function MoreChurch() {
     );
   }
 
-  function onDeleteChurch() {
-    Alert.alert(
-      "Delete your church",
-      "This will remove this church from your local V1 account.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: clearChurchLocal },
-      ]
-    );
-  }
+  const deleteGuardBusy = checkingDeleteGuard || managingDeleteSubscription;
 
   return (
     <View style={[s.screen, { paddingTop: showVovotoLanding ? 0 : insets.top }]}>
@@ -396,9 +595,19 @@ export default function MoreChurch() {
               </Pressable>
             </View>
 
-            <Pressable onPress={current.role === "Pastor" ? onDeleteChurch : onQuitChurch} style={s.dangerBtn}>
+            <Pressable
+              onPress={current.role === "Pastor" ? onDeleteChurch : onQuitChurch}
+              disabled={current.role === "Pastor" ? deleteGuardBusy : false}
+              style={[s.dangerBtn, current.role === "Pastor" && deleteGuardBusy && { opacity: 0.55 }]}
+            >
               <Ionicons name={current.role === "Pastor" ? "trash-outline" : "exit-outline"} size={18} color="#FFD6D6" />
-              <Text style={s.dangerText}>{current.role === "Pastor" ? "Delete your church" : "Quit Church"}</Text>
+              <Text style={s.dangerText}>
+                {current.role === "Pastor"
+                  ? deleteGuardBusy
+                    ? "Checking subscription..."
+                    : "Delete your church"
+                  : "Quit Church"}
+              </Text>
             </Pressable>
           </View>
         )}
@@ -458,9 +667,19 @@ export default function MoreChurch() {
                 </Pressable>
               </View>
 
-              <Pressable onPress={current.role === "Pastor" ? onDeleteChurch : onQuitChurch} style={s.dangerBtn}>
+              <Pressable
+                onPress={current.role === "Pastor" ? onDeleteChurch : onQuitChurch}
+                disabled={current.role === "Pastor" ? deleteGuardBusy : false}
+                style={[s.dangerBtn, current.role === "Pastor" && deleteGuardBusy && { opacity: 0.55 }]}
+              >
                 <Ionicons name={current.role === "Pastor" ? "trash-outline" : "exit-outline"} size={18} color="#FFD6D6" />
-                <Text style={s.dangerText}>{current.role === "Pastor" ? "Delete your church" : "Quit Church"}</Text>
+                <Text style={s.dangerText}>
+                  {current.role === "Pastor"
+                    ? deleteGuardBusy
+                      ? "Checking subscription..."
+                      : "Delete your church"
+                    : "Quit Church"}
+                </Text>
               </Pressable>
             </View>
           )}
@@ -488,6 +707,29 @@ export default function MoreChurch() {
           </View>
         </Pressable>
       </Modal>
+
+      <DeleteChurchSubscriptionModal
+        visible={deleteSubModalOpen}
+        managing={managingDeleteSubscription}
+        inlineStatusMessage={deleteSubInlineMessage}
+        paidAccessExpiresAtLabel={resolveChurchDeletePaidAccessExpiryLabel(deleteSubGuard)}
+        disabled={checkingDeleteGuard}
+        onManageSubscription={() => {
+          void onManageDeleteSubscription();
+        }}
+        onNotNow={closeDeleteSubscriptionModal}
+      />
+
+      <DeleteChurchCancellationModal
+        visible={deleteCancellationModalOpen}
+        paidAccessExpiresAtLabel={resolveChurchDeletePaidAccessExpiryLabel(pendingCancellationGuard)}
+        deleting={deletingChurchAfterCancellation}
+        disabled={checkingDeleteGuard}
+        onDeleteAnyway={() => {
+          void onConfirmDeleteChurchAfterCancellation();
+        }}
+        onNotNow={closeDeleteCancellationModal}
+      />
     </View>
   );
 }

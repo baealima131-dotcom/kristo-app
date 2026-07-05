@@ -798,6 +798,86 @@ export async function upsertSubscriptionOwnershipLockAfterAppStoreActivation(arg
   return acquireActiveSubscriptionOwnershipLock(record);
 }
 
+/** Keep the pastor's store subscription lock on the deleted church until expiry. */
+export async function preserveSubscriptionOwnershipLockTombstoneForChurchDelete(args: {
+  ownerUserId: string;
+  churchId: string;
+}): Promise<{
+  preserved: boolean;
+  reason?: string;
+  lock: SubscriptionOwnershipLockRecord | null;
+}> {
+  const ownerUserId = normalizeUserId(args.ownerUserId);
+  const churchId = normalizeChurchId(args.churchId);
+  if (!ownerUserId || !churchId) {
+    return { preserved: false, reason: "missing-ids", lock: null };
+  }
+
+  if (!(await pastorOwnsChurchMedia(ownerUserId, churchId))) {
+    return { preserved: false, reason: "not-pastor", lock: null };
+  }
+
+  const media = await getChurchMediaByChurchId(churchId);
+  let active = await ensureActiveSubscriptionOwnershipLockForPastor({
+    ownerUserId,
+    contextChurchId: churchId,
+    contextMedia: media,
+    backfillTrigger: "assert",
+  });
+
+  if (active && !churchIdsMatch(active.lockedChurchId, churchId)) {
+    return { preserved: false, reason: "lock-held-by-other-church", lock: active };
+  }
+
+  if (!active && media && isChurchSubscriptionActiveFromRecord(media)) {
+    active = await ensureSubscriptionOwnershipLockFromActiveMediaProfile({
+      ownerUserId,
+      media,
+    });
+  }
+
+  if (!active || !churchIdsMatch(active.lockedChurchId, churchId)) {
+    return {
+      preserved: false,
+      reason: active ? "lock-mismatch" : "no-active-lock",
+      lock: active,
+    };
+  }
+
+  const expiresAt =
+    active.expiresAt ??
+    media?.subscriptionExpiresAt ??
+    null;
+  const churchMeta = await resolveLockedChurchName(
+    churchId,
+    active.lockedChurchName || media?.mediaName
+  );
+
+  const preserved = await saveSubscriptionOwnershipLock({
+    ...active,
+    lockedChurchName: churchMeta.name,
+    lockedChurchDeleted: true,
+    expiresAt,
+    status: "active",
+    releasedAt: null,
+    releaseReason: null,
+    updatedAt: Date.now(),
+  });
+
+  console.log("KRISTO_CHURCH_DELETE_LOCK_TOMBSTONE_PRESERVED", {
+    ownerUserId,
+    churchId,
+    lockedChurchId: preserved.lockedChurchId,
+    lockedChurchName: preserved.lockedChurchName,
+    lockedChurchDeleted: preserved.lockedChurchDeleted === true,
+    expiresAt: preserved.expiresAt,
+    store: preserved.store,
+    status: preserved.status,
+  });
+
+  return { preserved: true, lock: preserved };
+}
+
 export async function releaseSubscriptionOwnershipLockForChurch(args: {
   ownerUserId: string;
   churchId: string;
