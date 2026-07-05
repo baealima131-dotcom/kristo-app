@@ -19,7 +19,6 @@ import {
   syncChurchSubscriptionFromRevenueCat,
 } from "@/app/api/_lib/churchSubscriptionSync";
 import {
-  releaseSubscriptionOwnershipLockForChurch,
   resolveSubscriptionOwnershipLockForChurch,
 } from "@/app/api/_lib/subscriptionOwnershipLock";
 import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
@@ -169,11 +168,6 @@ export async function GET(req: NextRequest) {
             mediaForResponse = deactivated;
             subscriptionActive = false;
             access = await evaluateChurchMediaAccess({ churchId, userId });
-            await releaseSubscriptionOwnershipLockForChurch({
-              ownerUserId: String(access.actualPastorUserId || userId || "").trim(),
-              churchId,
-              releaseReason: "cancelled",
-            });
             console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_DEACTIVATE", {
               churchId,
               profileSubscriptionActive: deactivated.subscriptionActive ?? false,

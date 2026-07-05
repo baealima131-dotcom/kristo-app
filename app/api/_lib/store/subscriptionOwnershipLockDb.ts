@@ -87,9 +87,20 @@ async function ensureLockSchema() {
         CREATE INDEX IF NOT EXISTS kristo_sub_lock_owner_idx
         ON kristo_subscription_ownership_locks (LOWER(owner_user_id))
       `;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS kristo_sub_lock_one_active_per_owner_idx
+        ON kristo_subscription_ownership_locks (LOWER(owner_user_id))
+        WHERE (data->>'status') = 'active'
+      `;
     })();
   }
   await schemaReady;
+}
+
+function churchIdsMatch(a: string, b: string) {
+  const left = normalizeChurchId(a).toUpperCase();
+  const right = normalizeChurchId(b).toUpperCase();
+  return Boolean(left && right && left === right);
 }
 
 function normalizeUserId(value: string) {
@@ -189,4 +200,77 @@ export async function saveSubscriptionOwnershipLock(
   }
   await writeLocalLocks(locks);
   return next;
+}
+
+/** Deactivate every other active lock for this pastor before acquiring a new holder church. */
+export async function deactivateOtherActiveLocksForOwner(
+  ownerUserId: string,
+  keepChurchId: string,
+  releaseReason: SubscriptionOwnershipLockRecord["releaseReason"] = "replaced"
+): Promise<number> {
+  const uid = normalizeUserId(ownerUserId);
+  const keepId = normalizeChurchId(keepChurchId);
+  if (!uid) return 0;
+
+  const locks = await listSubscriptionOwnershipLocksByOwnerUserId(uid);
+  let deactivated = 0;
+
+  for (const lock of locks) {
+    if (lock.status !== "active") continue;
+    if (keepId && churchIdsMatch(lock.lockedChurchId, keepId)) continue;
+
+    await saveSubscriptionOwnershipLock({
+      ...lock,
+      status: "released",
+      releaseReason: releaseReason ?? "replaced",
+      releasedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    deactivated += 1;
+  }
+
+  return deactivated;
+}
+
+/** Ensure a single active lock row for ownerUserId, then persist the holder church lock. */
+export async function acquireActiveSubscriptionOwnershipLock(
+  record: SubscriptionOwnershipLockRecord
+): Promise<SubscriptionOwnershipLockRecord> {
+  const ownerUserId = normalizeUserId(record.ownerUserId);
+  const churchId = normalizeChurchId(record.lockedChurchId);
+  if (!ownerUserId || !churchId) {
+    throw new Error("ownerUserId and lockedChurchId are required to acquire subscription lock");
+  }
+
+  await deactivateOtherActiveLocksForOwner(ownerUserId, churchId, "replaced");
+
+  try {
+    return await saveSubscriptionOwnershipLock({
+      ...record,
+      ownerUserId,
+      lockedChurchId: churchId,
+      status: "active",
+      releasedAt: null,
+      releaseReason: null,
+    });
+  } catch (error: any) {
+    const message = String(error?.message || error || "");
+    if (/kristo_sub_lock_one_active_per_owner_idx|duplicate key/i.test(message)) {
+      console.log("KRISTO_SUBSCRIPTION_LOCK_ACQUIRE_CONFLICT", {
+        ownerUserId,
+        lockedChurchId: churchId,
+        message,
+      });
+      await deactivateOtherActiveLocksForOwner(ownerUserId, churchId, "replaced");
+      return saveSubscriptionOwnershipLock({
+        ...record,
+        ownerUserId,
+        lockedChurchId: churchId,
+        status: "active",
+        releasedAt: null,
+        releaseReason: null,
+      });
+    }
+    throw error;
+  }
 }

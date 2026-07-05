@@ -30,6 +30,8 @@ export type { ChurchMediaSubscriptionSource } from "./churchSubscriptionMediaSig
 export {
   isBackendManagedMediaPremiumStatus,
   isSubscriptionOwnershipLockBlockingPurchase,
+  isChurchMediaPremiumLockStatusKnown,
+  shouldFailClosedSubscriptionPurchase,
 } from "./churchSubscriptionMediaSignals";
 import type { ChurchMediaSubscriptionSource } from "./churchSubscriptionMediaSignals";
 import { logSubscriptionBypassIfEnabled } from "./subscriptionBypass";
@@ -585,6 +587,7 @@ export type ChurchMediaPremiumServerStatus = {
   subscriptionExpiresAt: number | null;
   subscriptionSource: ChurchMediaSubscriptionSource | null;
   subscriptionOwnershipLock: ChurchMediaSubscriptionOwnershipLock | null;
+  lockStatusKnown: boolean;
   routeFailed: boolean;
   source: "server_media_api";
 };
@@ -663,6 +666,10 @@ export async function fetchChurchMediaPremiumServerStatus(
     ? parseChurchMediaSubscriptionSource(media, res)
     : null;
   const subscriptionOwnershipLock = parseChurchMediaSubscriptionOwnershipLock(res);
+  const lockStatusKnown =
+    !routeFailed &&
+    res?.subscriptionOwnershipLock != null &&
+    typeof res.subscriptionOwnershipLock === "object";
 
   console.log("KRISTO_CHURCH_MEDIA_SERVER_RESPONSE", {
     churchId: cid,
@@ -671,6 +678,7 @@ export async function fetchChurchMediaPremiumServerStatus(
     subscriptionPlan,
     subscriptionSource,
     subscriptionOwnershipLockBlocked: subscriptionOwnershipLock?.blocked === true,
+    lockStatusKnown,
     source: "server_media_api",
     routeFailed,
     explicitServerActive: explicitActive,
@@ -683,6 +691,7 @@ export async function fetchChurchMediaPremiumServerStatus(
     subscriptionExpiresAt,
     subscriptionSource,
     subscriptionOwnershipLock,
+    lockStatusKnown,
     routeFailed,
     source: "server_media_api",
   };
@@ -1097,7 +1106,9 @@ async function syncChurchSubscriptionAfterPurchaseInner(
     isPastor,
   });
 
-  const premiumStatus = await fetchChurchMediaPremiumServerStatus(churchId, args.headers);
+  const premiumStatus = await fetchChurchMediaPremiumServerStatus(churchId, args.headers, {
+    bustCache: true,
+  });
   if (isSubscriptionOwnershipLockBlockingActivation(premiumStatus.subscriptionOwnershipLock)) {
     const lock = premiumStatus.subscriptionOwnershipLock;
     console.log("KRISTO_SUBSCRIPTION_LOCK_BLOCKED_ACTIVATION", {

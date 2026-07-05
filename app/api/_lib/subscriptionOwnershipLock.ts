@@ -1,6 +1,12 @@
+import { parseSubscriptionExpiresAtMs } from "@/app/api/_lib/churchMediaNotifications";
 import { getChurchById } from "@/app/api/_lib/churches";
-import type { ChurchPremiumVerification } from "@/app/api/_lib/revenuecat";
 import {
+  isVerifiedChurchPremiumReason,
+  verifyChurchPremiumEntitlement,
+  type ChurchPremiumVerification,
+} from "@/app/api/_lib/revenuecat";
+import {
+  acquireActiveSubscriptionOwnershipLock,
   listSubscriptionOwnershipLocksByOwnerUserId,
   saveSubscriptionOwnershipLock,
   type SubscriptionOwnershipLockRecord,
@@ -104,15 +110,52 @@ function payloadFromLock(args: {
   };
 }
 
+export function listActiveSubscriptionOwnershipLocks(
+  locks: SubscriptionOwnershipLockRecord[]
+): SubscriptionOwnershipLockRecord[] {
+  return locks.filter((lock) => lock.status === "active");
+}
+
+/** @deprecated Prefer resolveCanonicalActiveSubscriptionOwnershipLock for RC-safe reconciliation. */
 export function getActiveSubscriptionOwnershipLock(
   locks: SubscriptionOwnershipLockRecord[]
 ): SubscriptionOwnershipLockRecord | null {
-  return locks.find((lock) => lock.status === "active") || null;
+  return listActiveSubscriptionOwnershipLocks(locks)[0] || null;
 }
 
-async function resolveLockedChurchName(churchId: string, fallback?: string | null) {
+function isTransientRevenueCatLockReason(reason: string): boolean {
+  const normalized = String(reason || "").trim().toLowerCase();
+  return (
+    normalized.startsWith("revenuecat-http-") ||
+    normalized === "no-secret" ||
+    normalized === "timeout" ||
+    normalized === "fetch-error" ||
+    normalized === "missing-app-user-id"
+  );
+}
+
+function lockEntitlementStillInGrace(args: {
+  lock: SubscriptionOwnershipLockRecord;
+  verification: ChurchPremiumVerification;
+}): boolean {
+  const now = Date.now();
+  const candidates = [
+    args.lock.expiresAt,
+    parseSubscriptionExpiresAtMs(args.verification.expiresAt),
+  ].filter((value): value is number => value != null && Number.isFinite(value));
+
+  return candidates.some((expiresAt) => expiresAt > now);
+}
+
+async function resolveLockedChurchName(
+  churchId: string,
+  fallback?: string | null
+): Promise<{ name: string; deleted: boolean }> {
   const cid = normalizeChurchId(churchId);
-  if (!cid) return String(fallback || "another church").trim() || "another church";
+  if (!cid) {
+    const name = String(fallback || "another church").trim() || "another church";
+    return { name, deleted: true };
+  }
   try {
     const church = await getChurchById(cid);
     const liveName = String(church?.name || "").trim();
@@ -154,14 +197,111 @@ async function markLockStatus(
   return next;
 }
 
-async function reconcileActiveLockExpiry(
+async function reconcileActiveLockWithRevenueCat(
   lock: SubscriptionOwnershipLockRecord
 ): Promise<SubscriptionOwnershipLockRecord> {
   if (lock.status !== "active") return lock;
-  if (lock.expiresAt != null && Number.isFinite(lock.expiresAt) && lock.expiresAt <= Date.now()) {
-    return markLockStatus(lock, "expired", "expired");
+
+  const lockedChurchId = normalizeChurchId(lock.lockedChurchId);
+  if (!lockedChurchId) return lock;
+
+  const verification = await verifyChurchPremiumEntitlement(lockedChurchId, {
+    forActivation: true,
+  });
+
+  if (verification.bypassed || isTransientRevenueCatLockReason(verification.reason)) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_RECONCILE_DEFERRED", {
+      ownerUserId: lock.ownerUserId,
+      lockedChurchId,
+      revenueCatReason: verification.reason,
+      revenueCatActive: verification.active,
+      bypassed: verification.bypassed === true,
+    });
+    return lock;
   }
-  return lock;
+
+  const verifiedActive =
+    verification.active && isVerifiedChurchPremiumReason(verification.reason);
+
+  if (verifiedActive) {
+    const expiresAtMs = parseSubscriptionExpiresAtMs(verification.expiresAt);
+    const nextExpiresAt = expiresAtMs ?? lock.expiresAt ?? null;
+    const nextPlan = verification.plan ?? lock.subscriptionPlan;
+    const nextProductId = verification.productId ?? lock.productId;
+
+    if (
+      nextExpiresAt !== lock.expiresAt ||
+      nextPlan !== lock.subscriptionPlan ||
+      nextProductId !== lock.productId
+    ) {
+      return saveSubscriptionOwnershipLock({
+        ...lock,
+        expiresAt: nextExpiresAt,
+        subscriptionPlan: nextPlan,
+        productId: nextProductId,
+        updatedAt: Date.now(),
+      });
+    }
+    return lock;
+  }
+
+  if (lockEntitlementStillInGrace({ lock, verification })) {
+    const rcExpiresAt = parseSubscriptionExpiresAtMs(verification.expiresAt);
+    if (rcExpiresAt != null && rcExpiresAt !== lock.expiresAt) {
+      return saveSubscriptionOwnershipLock({
+        ...lock,
+        expiresAt: rcExpiresAt,
+        updatedAt: Date.now(),
+      });
+    }
+
+    console.log("KRISTO_SUBSCRIPTION_LOCK_RECONCILE_KEEP_GRACE", {
+      ownerUserId: lock.ownerUserId,
+      lockedChurchId,
+      expiresAt: lock.expiresAt ?? rcExpiresAt ?? null,
+      revenueCatReason: verification.reason,
+    });
+    return lock;
+  }
+
+  return markLockStatus(lock, "expired", "expired");
+}
+
+export async function resolveCanonicalActiveSubscriptionOwnershipLock(
+  ownerUserId: string,
+  locks?: SubscriptionOwnershipLockRecord[]
+): Promise<SubscriptionOwnershipLockRecord | null> {
+  const uid = normalizeUserId(ownerUserId);
+  if (!uid) return null;
+
+  const allLocks = locks ?? (await listSubscriptionOwnershipLocksByOwnerUserId(uid));
+  const actives = listActiveSubscriptionOwnershipLocks(allLocks);
+  if (actives.length === 0) return null;
+
+  let winner = actives[0];
+  if (actives.length > 1) {
+    const sorted = [...actives].sort((a, b) => {
+      const lockedAtDelta = (b.lockedAt || 0) - (a.lockedAt || 0);
+      if (lockedAtDelta !== 0) return lockedAtDelta;
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
+    winner = sorted[0];
+    const losers = sorted.slice(1);
+
+    console.log("KRISTO_SUBSCRIPTION_LOCK_CONFLICT", {
+      ownerUserId: uid,
+      winnerChurchId: winner.lockedChurchId,
+      loserChurchIds: losers.map((lock) => lock.lockedChurchId),
+      activeCount: actives.length,
+    });
+
+    for (const loser of losers) {
+      await markLockStatus(loser, "released", "replaced");
+    }
+  }
+
+  const reconciled = await reconcileActiveLockWithRevenueCat(winner);
+  return reconciled.status === "active" ? reconciled : null;
 }
 
 export async function ensureSubscriptionOwnershipLockFromActiveMediaProfile(args: {
@@ -177,24 +317,22 @@ export async function ensureSubscriptionOwnershipLockFromActiveMediaProfile(args
   if (!churchId) return null;
 
   const locks = await listSubscriptionOwnershipLocksByOwnerUserId(ownerUserId);
-  const active = getActiveSubscriptionOwnershipLock(locks);
+  const active = await resolveCanonicalActiveSubscriptionOwnershipLock(ownerUserId, locks);
   if (active && churchIdsMatch(active.lockedChurchId, churchId)) {
-    const refreshed = await reconcileActiveLockExpiry(active);
-    if (refreshed.status !== "active") return null;
     return saveSubscriptionOwnershipLock({
-      ...refreshed,
-      expiresAt: media.subscriptionExpiresAt ?? refreshed.expiresAt ?? null,
+      ...active,
+      expiresAt: media.subscriptionExpiresAt ?? active.expiresAt ?? null,
       subscriptionPlan:
         media.subscriptionPlan === "yearly"
           ? "yearly"
           : media.subscriptionPlan === "monthly"
             ? "monthly"
-            : refreshed.subscriptionPlan,
+            : active.subscriptionPlan,
       updatedAt: Date.now(),
     });
   }
   if (active && !churchIdsMatch(active.lockedChurchId, churchId)) {
-    return reconcileActiveLockExpiry(active);
+    return active;
   }
 
   const churchMeta = await resolveLockedChurchName(churchId, media.mediaName);
@@ -223,7 +361,15 @@ export async function ensureSubscriptionOwnershipLockFromActiveMediaProfile(args
     releasedAt: null,
     releaseReason: null,
   };
-  return saveSubscriptionOwnershipLock(record);
+
+  console.log("KRISTO_SUBSCRIPTION_LOCK_CREATED", {
+    ownerUserId,
+    lockedChurchId: churchId,
+    lockedChurchName: churchMeta.name,
+    source: "media-profile-backfill",
+  });
+
+  return acquireActiveSubscriptionOwnershipLock(record);
 }
 
 export async function assertAppStoreSubscriptionActivationAllowed(args: {
@@ -240,14 +386,8 @@ export async function assertAppStoreSubscriptionActivationAllowed(args: {
     return { allowed: true, lock: null };
   }
 
-  const locks = await listSubscriptionOwnershipLocksByOwnerUserId(ownerUserId);
-  let active = getActiveSubscriptionOwnershipLock(locks);
+  const active = await resolveCanonicalActiveSubscriptionOwnershipLock(ownerUserId);
   if (!active) {
-    return { allowed: true, lock: null };
-  }
-
-  active = await reconcileActiveLockExpiry(active);
-  if (active.status !== "active") {
     return { allowed: true, lock: null };
   }
 
@@ -285,13 +425,6 @@ export async function upsertSubscriptionOwnershipLockAfterAppStoreActivation(arg
   const churchId = normalizeChurchId(args.churchId);
   const churchMeta = await resolveLockedChurchName(churchId);
   const now = Date.now();
-  const locks = await listSubscriptionOwnershipLocksByOwnerUserId(ownerUserId);
-
-  for (const lock of locks) {
-    if (lock.status !== "active") continue;
-    if (churchIdsMatch(lock.lockedChurchId, churchId)) continue;
-    await markLockStatus(lock, "released", "replaced");
-  }
 
   const record: SubscriptionOwnershipLockRecord = {
     id: `sub-lock-${ownerUserId.toLowerCase()}-${churchId.toLowerCase()}`,
@@ -313,7 +446,16 @@ export async function upsertSubscriptionOwnershipLockAfterAppStoreActivation(arg
     releaseReason: null,
   };
 
-  return saveSubscriptionOwnershipLock(record);
+  console.log("KRISTO_SUBSCRIPTION_LOCK_CREATED", {
+    ownerUserId,
+    lockedChurchId: churchId,
+    lockedChurchName: churchMeta.name,
+    productId: record.productId,
+    expiresAt: record.expiresAt,
+    source: "app-store-activation",
+  });
+
+  return acquireActiveSubscriptionOwnershipLock(record);
 }
 
 export async function releaseSubscriptionOwnershipLockForChurch(args: {
@@ -329,7 +471,21 @@ export async function releaseSubscriptionOwnershipLockForChurch(args: {
   for (const lock of locks) {
     if (lock.status !== "active") continue;
     if (!churchIdsMatch(lock.lockedChurchId, churchId)) continue;
-    await markLockStatus(lock, args.releaseReason === "admin" ? "released" : "expired", args.releaseReason);
+
+    const reconciled = await reconcileActiveLockWithRevenueCat(lock);
+    if (reconciled.status === "active") {
+      console.log("KRISTO_SUBSCRIPTION_LOCK_RELEASE_SKIPPED_RC_ACTIVE", {
+        ownerUserId,
+        lockedChurchId: churchId,
+        expiresAt: reconciled.expiresAt,
+        requestedReleaseReason: args.releaseReason ?? null,
+      });
+      return;
+    }
+
+    if (args.releaseReason === "admin") {
+      await markLockStatus(reconciled, "released", "admin");
+    }
   }
 }
 
@@ -354,40 +510,38 @@ export async function resolveSubscriptionOwnershipLockForChurch(args: {
     });
   }
 
-  const locks = await listSubscriptionOwnershipLocksByOwnerUserId(ownerUserId);
-  let active = getActiveSubscriptionOwnershipLock(locks);
+  const active = await resolveCanonicalActiveSubscriptionOwnershipLock(ownerUserId);
   if (!active) {
     return { lock: null, payload: emptyLockPayload() };
   }
 
-  active = await reconcileActiveLockExpiry(active);
-  if (active.status !== "active") {
-    return { lock: null, payload: emptyLockPayload() };
-  }
-
   const churchMeta = await resolveLockedChurchName(active.lockedChurchId, active.lockedChurchName);
-  if (active.lockedChurchName !== churchMeta.name || active.lockedChurchDeleted !== churchMeta.deleted) {
-    active = await saveSubscriptionOwnershipLock({
+  let resolvedActive = active;
+  if (
+    active.lockedChurchName !== churchMeta.name ||
+    active.lockedChurchDeleted !== churchMeta.deleted
+  ) {
+    resolvedActive = await saveSubscriptionOwnershipLock({
       ...active,
       lockedChurchName: churchMeta.name,
       lockedChurchDeleted: churchMeta.deleted,
     });
   }
 
-  const payload = payloadFromLock({ lock: active, churchId });
+  const payload = payloadFromLock({ lock: resolvedActive, churchId });
 
   console.log("KRISTO_SUBSCRIPTION_LOCK_DETECTED", {
     ownerUserId,
     churchId,
     blocked: payload.blocked,
     isLockHolder: payload.isLockHolder,
-    lockedChurchId: active.lockedChurchId,
-    lockedChurchName: active.lockedChurchName,
-    expiresAt: active.expiresAt,
-    status: active.status,
-    store: active.store,
-    platform: active.platform,
+    lockedChurchId: resolvedActive.lockedChurchId,
+    lockedChurchName: resolvedActive.lockedChurchName,
+    expiresAt: resolvedActive.expiresAt,
+    status: resolvedActive.status,
+    store: resolvedActive.store,
+    platform: resolvedActive.platform,
   });
 
-  return { lock: active, payload };
+  return { lock: resolvedActive, payload };
 }

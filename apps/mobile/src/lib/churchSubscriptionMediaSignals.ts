@@ -276,6 +276,23 @@ export function isSubscriptionOwnershipLockBlockingActivation(
   return lock?.blocked === true && lock?.canActivate === false;
 }
 
+export function isChurchMediaPremiumLockStatusKnown(
+  status: { routeFailed?: boolean; lockStatusKnown?: boolean } | null | undefined
+): boolean {
+  if (!status) return false;
+  if (status.routeFailed === true) return false;
+  return status.lockStatusKnown === true;
+}
+
+/** Fail-closed: block purchase CTAs until server lock/subscription status is known. */
+export function shouldFailClosedSubscriptionPurchase(args: {
+  status: { routeFailed?: boolean; lockStatusKnown?: boolean } | null | undefined;
+  packagesLoading?: boolean;
+}): boolean {
+  if (args.packagesLoading === true) return true;
+  return !isChurchMediaPremiumLockStatusKnown(args.status);
+}
+
 export function parseChurchMediaSubscriptionSource(
   media: ChurchSubscriptionRecord | null | undefined,
   res?: { subscriptionSource?: unknown } | null

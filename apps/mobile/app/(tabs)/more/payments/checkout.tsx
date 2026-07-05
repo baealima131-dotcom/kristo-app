@@ -64,6 +64,7 @@ import {
 import {
   isSubscriptionOwnershipLockBlockingActivation,
   isSubscriptionOwnershipLockBlockingPurchase,
+  shouldFailClosedSubscriptionPurchase,
   type ChurchMediaSubscriptionOwnershipLock,
 } from "../../../../src/lib/churchSubscriptionMediaSignals";
 import { SubscriptionOwnershipLockCard } from "../../../../src/components/payments/SubscriptionOwnershipLockCard";
@@ -121,6 +122,7 @@ export default function PaymentsCheckoutScreen() {
   const [serverSubscriptionActive, setServerSubscriptionActive] = useState(false);
   const [subscriptionOwnershipLock, setSubscriptionOwnershipLock] =
     useState<ChurchMediaSubscriptionOwnershipLock | null>(null);
+  const [lockStatusKnown, setLockStatusKnown] = useState(false);
 
   useEffect(() => {
     setPaymentsCurrentModule("subscriptions");
@@ -213,6 +215,7 @@ export default function PaymentsCheckoutScreen() {
 
       setLoadingPackages(true);
       setPackagesError(null);
+      setLockStatusKnown(false);
 
       try {
         const churchId = await resolveCheckoutChurchId();
@@ -258,6 +261,7 @@ export default function PaymentsCheckoutScreen() {
         setCheckoutChurchId(churchId);
         setServerSubscriptionActive(server.serverSubscriptionActive === true);
         setSubscriptionOwnershipLock(server.subscriptionOwnershipLock);
+        setLockStatusKnown(server.lockStatusKnown === true);
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
         setCustomerInfo(info);
@@ -330,6 +334,10 @@ export default function PaymentsCheckoutScreen() {
     resolveMonthlyIntroTrialEligible(customerInfo, monthlyPackage, monthlyIntroEligibility);
   const ownershipLockBlocksPurchase =
     isSubscriptionOwnershipLockBlockingPurchase(subscriptionOwnershipLock);
+  const failClosedSubscriptionPurchase = shouldFailClosedSubscriptionPurchase({
+    status: { lockStatusKnown, routeFailed: false },
+    packagesLoading: loadingPackages,
+  });
 
   const isPastor = isPastorSessionRole(sessionRole);
 
@@ -552,16 +560,41 @@ export default function PaymentsCheckoutScreen() {
   async function handleConfirmCheckout() {
     if (submitting || isSubscribedForCurrentChurch) return;
 
-    if (isSubscriptionOwnershipLockBlockingPurchase(subscriptionOwnershipLock)) {
+    const churchId = await resolveCheckoutChurchId();
+    if (!churchId) {
+      setPackagesError("Church id is required before purchasing church premium.");
+      return;
+    }
+
+    const headers = getKristoHeaders({
+      userId: sessionUserId,
+      role: sessionRole as any,
+      churchId,
+    }) as Record<string, string>;
+
+    const freshStatus = await fetchChurchMediaPremiumServerStatus(churchId, headers, {
+      bustCache: true,
+    });
+    setSubscriptionOwnershipLock(freshStatus.subscriptionOwnershipLock);
+    setLockStatusKnown(freshStatus.lockStatusKnown === true);
+    setServerSubscriptionActive(freshStatus.serverSubscriptionActive === true);
+
+    if (shouldFailClosedSubscriptionPurchase({ status: freshStatus })) {
+      setPackagesError("Subscription status is still loading. Try again in a moment.");
+      return;
+    }
+
+    const freshLock = freshStatus.subscriptionOwnershipLock;
+    if (isSubscriptionOwnershipLockBlockingPurchase(freshLock)) {
       console.log("KRISTO_SUBSCRIPTION_LOCK_BLOCKED_PURCHASE", {
         churchId: checkoutChurchId,
         plan: safePlan,
-        lockedChurchId: subscriptionOwnershipLock?.lockedChurchId ?? null,
-        lockedChurchName: subscriptionOwnershipLock?.lockedChurchName ?? null,
-        expiresAt: subscriptionOwnershipLock?.expiresAt ?? null,
+        lockedChurchId: freshLock?.lockedChurchId ?? null,
+        lockedChurchName: freshLock?.lockedChurchName ?? null,
+        expiresAt: freshLock?.expiresAt ?? null,
       });
       setPackagesError(
-        subscriptionOwnershipLock?.message ||
+        freshLock?.message ||
           "This Kristo ID already has an active subscription for another church."
       );
       return;
@@ -574,12 +607,6 @@ export default function PaymentsCheckoutScreen() {
 
     try {
       setSubmitting(true);
-
-      const churchId = await resolveCheckoutChurchId();
-      if (!churchId) {
-        setPackagesError("Church id is required before purchasing church premium.");
-        return;
-      }
 
       await logInRevenueCatForChurchSubscription(churchId);
       const purchaseResult = await purchaseSubscriptionPackage(targetPackage);
@@ -799,11 +826,16 @@ export default function PaymentsCheckoutScreen() {
                   submitting ||
                   loadingPackages ||
                   !targetPackage ||
-                  ownershipLockBlocksPurchase
+                  ownershipLockBlocksPurchase ||
+                  failClosedSubscriptionPurchase
                 }
                 style={({ pressed }) => [
                   s.primaryBtn,
-                  (submitting || loadingPackages || !targetPackage || ownershipLockBlocksPurchase)
+                  (submitting ||
+                    loadingPackages ||
+                    !targetPackage ||
+                    ownershipLockBlocksPurchase ||
+                    failClosedSubscriptionPurchase)
                     ? s.disabledBtn
                     : null,
                   pressed ? s.pressed : null,
@@ -815,9 +847,11 @@ export default function PaymentsCheckoutScreen() {
                   <Text style={s.primaryBtnText}>
                     {ownershipLockBlocksPurchase
                       ? "Subscription locked"
-                      : loadingPackages
-                        ? "Loading..."
-                        : confirmLabel}
+                      : failClosedSubscriptionPurchase
+                        ? "Checking status..."
+                        : loadingPackages
+                          ? "Loading..."
+                          : confirmLabel}
                   </Text>
                 )}
               </Pressable>

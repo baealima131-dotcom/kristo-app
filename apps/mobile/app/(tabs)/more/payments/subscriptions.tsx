@@ -83,6 +83,7 @@ import {
 import {
   isSubscriptionOwnershipLockBlockingActivation,
   isSubscriptionOwnershipLockBlockingPurchase,
+  shouldFailClosedSubscriptionPurchase,
 } from "../../../../src/lib/churchSubscriptionMediaSignals";
 import { SubscriptionOwnershipLockCard } from "../../../../src/components/payments/SubscriptionOwnershipLockCard";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
@@ -1229,7 +1230,28 @@ export default function PaymentsSubscriptionsScreen() {
   async function handlePurchasePlan(plan: SubscriptionPlanKey) {
     if (submittingPlan) return;
 
-    const ownershipLock = mediaPremiumStatus?.subscriptionOwnershipLock;
+    if (!churchId) {
+      openCheckoutFallback(plan);
+      return;
+    }
+
+    const headers = getKristoHeaders({
+      userId: sessionUserId,
+      role: sessionRole as any,
+      churchId,
+    }) as Record<string, string>;
+
+    const freshStatus = await fetchChurchMediaPremiumServerStatus(churchId, headers, {
+      bustCache: true,
+    });
+    setMediaPremiumStatus(freshStatus);
+
+    if (shouldFailClosedSubscriptionPurchase({ status: freshStatus })) {
+      setSubscriptionError("Subscription status is still loading. Try again in a moment.");
+      return;
+    }
+
+    const ownershipLock = freshStatus.subscriptionOwnershipLock;
     if (isSubscriptionOwnershipLockBlockingPurchase(ownershipLock)) {
       console.log("KRISTO_SUBSCRIPTION_LOCK_BLOCKED_PURCHASE", {
         churchId,
@@ -1364,6 +1386,10 @@ export default function PaymentsSubscriptionsScreen() {
   const screenState = resolveMediaPremiumDisplayScreenState(mediaPremiumStatus);
   const ownershipLock = mediaPremiumStatus?.subscriptionOwnershipLock;
   const ownershipLockBlocksPurchase = isSubscriptionOwnershipLockBlockingPurchase(ownershipLock);
+  const failClosedSubscriptionPurchase = shouldFailClosedSubscriptionPurchase({
+    status: mediaPremiumStatus,
+    packagesLoading,
+  });
   const billing = resolveServerPremiumBillingDetails(mediaPremiumStatus);
   const expiryLabel = resolveMediaPremiumExpiryLabel(mediaPremiumStatus, customerInfo);
   const renewalLabel =
@@ -1583,6 +1609,13 @@ export default function PaymentsSubscriptionsScreen() {
               <SubscriptionOwnershipLockCard lock={ownershipLock} />
             ) : null}
 
+            {failClosedSubscriptionPurchase && screenState === "none" ? (
+              <View style={s.fallbackCard}>
+                <ActivityIndicator color="rgba(196,171,114,0.72)" />
+                <Text style={s.sectionSub}>Checking subscription status...</Text>
+              </View>
+            ) : null}
+
             {screenState === "offline" ? (
               <OfflineActivationSubscriptionCard expiryLabel={expiryLabel} />
             ) : null}
@@ -1649,7 +1682,7 @@ export default function PaymentsSubscriptionsScreen() {
               </>
             ) : null}
 
-            {screenState === "none" && !ownershipLockBlocksPurchase ? (
+            {screenState === "none" && !failClosedSubscriptionPurchase && !ownershipLockBlocksPurchase ? (
               <>
                 <Text style={s.sectionHeading}>Choose a plan</Text>
                 <Text style={s.sectionSub}>
