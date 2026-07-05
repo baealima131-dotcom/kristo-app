@@ -16,13 +16,18 @@ import { Ionicons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
   checkAccountDeleteSubscription,
-  getAccountDeleteFinalConfirmMessage,
-  getAccountDeleteOpenStoreButtonLabel,
-  getAccountDeleteStoreCancellationMessage,
-  getAccountDeleteStoreCancellationTitle,
   getAccountDeleteStoreManagementFallbackMessage,
+  hasDeleteAccountStoreSubscriptionConcern,
+  isDeleteAccountStoreCancellationComplete,
   openAccountDeleteSubscriptionManagement,
+  type AccountDeleteSubscriptionCheck,
 } from "@/src/lib/accountDeleteSubscription";
+import {
+  DeleteAccountFinalConfirmModal,
+  DeleteAccountSubscriptionChoiceModal,
+  type DeleteAccountChoiceOption,
+  type DeleteAccountFinalConfirmVariant,
+} from "@/src/components/account/DeleteAccountSubscriptionModals";
 import { apiPost } from "@/src/lib/kristoApi";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 
@@ -38,15 +43,28 @@ export default function ProfileSettingsScreen() {
   const { session, exitSessionFast } = useKristoSession();
 
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [choiceModalOpen, setChoiceModalOpen] = useState(false);
+  const [finalConfirmOpen, setFinalConfirmOpen] = useState(false);
+  const [finalConfirmVariant, setFinalConfirmVariant] =
+    useState<DeleteAccountFinalConfirmVariant>("standard");
   const [deleting, setDeleting] = useState(false);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const pendingDeleteAfterManagementRef = useRef(false);
+  const [processingOption, setProcessingOption] = useState<DeleteAccountChoiceOption | null>(
+    null
+  );
+  const [inlineStatusMessage, setInlineStatusMessage] = useState<string | null>(null);
+  const [subscriptionCheck, setSubscriptionCheck] = useState<AccountDeleteSubscriptionCheck | null>(
+    null
+  );
+  const pendingCancelSubAfterManagementRef = useRef(false);
   const deleteContextRef = useRef({
     userId: "",
     role: "Member",
     churchId: "",
   });
+
+  const flowBusy = deleting || checkingSubscription || Boolean(processingOption);
 
   function onChangePassword() {
     Alert.alert(
@@ -123,6 +141,8 @@ export default function ProfileSettingsScreen() {
 
       console.log("KRISTO_DELETE_ACCOUNT_SUCCESS", { userId });
       setDeleteModalOpen(false);
+      setChoiceModalOpen(false);
+      setFinalConfirmOpen(false);
       exitSessionFast({ reason: "delete", userId, churchId });
       console.log("KRISTO_DELETE_ACCOUNT_NAVIGATE_LOGIN", { userId });
       router.replace("/(auth)/login" as any);
@@ -143,67 +163,143 @@ export default function ProfileSettingsScreen() {
     }
   }, [deleting, exitSessionFast, router]);
 
-  const showFinalDeleteConfirmation = useCallback(() => {
-    Alert.alert(
-      "Delete Account?",
-      `${getAccountDeleteFinalConfirmMessage()} Permanently delete your Kristo account?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete Account",
-          style: "destructive",
-          onPress: () => {
-            void performAccountDelete();
-          },
-        },
-      ]
-    );
-  }, [performAccountDelete]);
+  const openFinalConfirm = useCallback((variant: DeleteAccountFinalConfirmVariant) => {
+    setChoiceModalOpen(false);
+    setInlineStatusMessage(null);
+    setProcessingOption(null);
+    setFinalConfirmVariant(variant);
+    setFinalConfirmOpen(true);
+  }, []);
+
+  const runSubscriptionCheck = useCallback(async () => {
+    const { userId, role, churchId } = deleteContextRef.current;
+    if (!userId) {
+      throw new Error("missing_user_id");
+    }
+
+    return checkAccountDeleteSubscription({
+      churchId,
+      headers: getKristoHeaders({
+        userId,
+        role: role as any,
+        churchId,
+      }) as Record<string, string>,
+    });
+  }, []);
+
+  const handleSubscriptionCheckResult = useCallback(
+    (check: AccountDeleteSubscriptionCheck) => {
+      setSubscriptionCheck(check);
+
+      if (hasDeleteAccountStoreSubscriptionConcern(check)) {
+        setChoiceModalOpen(true);
+        return;
+      }
+
+      openFinalConfirm("standard");
+    },
+    [openFinalConfirm]
+  );
+
+  const handleResumeAfterSubscriptionManagement = useCallback(async () => {
+    const { userId, churchId } = deleteContextRef.current;
+    if (!userId || !pendingCancelSubAfterManagementRef.current) return;
+
+    pendingCancelSubAfterManagementRef.current = false;
+    setCheckingSubscription(true);
+    try {
+      const check = await runSubscriptionCheck();
+      setSubscriptionCheck(check);
+      setProcessingOption(null);
+
+      if (isDeleteAccountStoreCancellationComplete(check)) {
+        setInlineStatusMessage(null);
+        openFinalConfirm("after_cancel_subscription");
+        return;
+      }
+
+      setChoiceModalOpen(true);
+      setInlineStatusMessage(
+        "Auto-renew is still enabled on this device. Turn off renewal in the store subscription screen, then choose Delete Account + Cancel Subscription again."
+      );
+    } catch (error: any) {
+      console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_CHECK_FAILED", {
+        userId,
+        churchId: churchId || null,
+        message: String(error?.message || error || "unknown"),
+        phase: "app_resume_after_management",
+      });
+      setChoiceModalOpen(true);
+      setInlineStatusMessage(
+        "We could not refresh your subscription status. Try again in a moment."
+      );
+    } finally {
+      setCheckingSubscription(false);
+    }
+  }, [handleSubscriptionCheckResult, openFinalConfirm, runSubscriptionCheck]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState !== "active" || !pendingDeleteAfterManagementRef.current) return;
-      pendingDeleteAfterManagementRef.current = false;
-      showFinalDeleteConfirmation();
+      if (nextState !== "active" || !pendingCancelSubAfterManagementRef.current) return;
+      void handleResumeAfterSubscriptionManagement();
     });
 
     return () => subscription.remove();
-  }, [showFinalDeleteConfirmation]);
+  }, [handleResumeAfterSubscriptionManagement]);
 
-  const promptStoreSubscriptionCancellation = useCallback(
-    async (check: Awaited<ReturnType<typeof checkAccountDeleteSubscription>>) => {
-      Alert.alert(
-        getAccountDeleteStoreCancellationTitle(),
-        getAccountDeleteStoreCancellationMessage(),
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: getAccountDeleteOpenStoreButtonLabel(),
-            onPress: () => {
-              pendingDeleteAfterManagementRef.current = true;
-              void openAccountDeleteSubscriptionManagement(check).then((result) => {
-                if (!result.opened) {
-                  pendingDeleteAfterManagementRef.current = false;
-                  Alert.alert(
-                    "Could not open subscriptions",
-                    getAccountDeleteStoreManagementFallbackMessage()
-                  );
-                }
-              });
-            },
-          },
-          {
-            text: "Continue",
-            onPress: () => showFinalDeleteConfirmation(),
-          },
-        ]
-      );
+  const handleDeleteOnlyOption = useCallback(() => {
+    setProcessingOption("delete_only");
+    setInlineStatusMessage(null);
+    openFinalConfirm("delete_only");
+  }, [openFinalConfirm]);
+
+  const handleCancelSubscriptionOption = useCallback(async () => {
+    const check = subscriptionCheck;
+    if (!check) return;
+
+    setProcessingOption("cancel_subscription");
+    setInlineStatusMessage(null);
+
+    if (isDeleteAccountStoreCancellationComplete(check)) {
+      setProcessingOption(null);
+      openFinalConfirm("after_cancel_subscription");
+      return;
+    }
+
+    pendingCancelSubAfterManagementRef.current = true;
+    const result = await openAccountDeleteSubscriptionManagement(check);
+    if (!result.opened) {
+      pendingCancelSubAfterManagementRef.current = false;
+      setProcessingOption(null);
+      setChoiceModalOpen(true);
+      setInlineStatusMessage(getAccountDeleteStoreManagementFallbackMessage());
+    }
+  }, [openFinalConfirm, subscriptionCheck]);
+
+  const handleChoiceOption = useCallback(
+    (option: DeleteAccountChoiceOption) => {
+      if (flowBusy) return;
+      if (option === "delete_only") {
+        handleDeleteOnlyOption();
+        return;
+      }
+      void handleCancelSubscriptionOption();
     },
-    [showFinalDeleteConfirmation]
+    [flowBusy, handleCancelSubscriptionOption, handleDeleteOnlyOption]
   );
 
+  const closeDeleteFlow = useCallback(() => {
+    if (flowBusy) return;
+    setDeleteModalOpen(false);
+    setChoiceModalOpen(false);
+    setFinalConfirmOpen(false);
+    setInlineStatusMessage(null);
+    setProcessingOption(null);
+    pendingCancelSubAfterManagementRef.current = false;
+  }, [flowBusy]);
+
   async function onConfirmDeleteAccount() {
-    if (deleting || checkingSubscription) return;
+    if (flowBusy) return;
 
     const userId = String(session?.userId || getKristoAuth().userId || "").trim();
     const role = String(session?.role || session?.churchRole || getKristoAuth().role || "Member");
@@ -221,23 +317,9 @@ export default function ProfileSettingsScreen() {
 
     setCheckingSubscription(true);
     try {
-      const check = await checkAccountDeleteSubscription({
-        churchId,
-        headers: getKristoHeaders({
-          userId,
-          role: role as any,
-          churchId,
-        }) as Record<string, string>,
-      });
-
+      const check = await runSubscriptionCheck();
       setDeleteModalOpen(false);
-
-      if (check.requiresStoreCancellation) {
-        await promptStoreSubscriptionCancellation(check);
-        return;
-      }
-
-      showFinalDeleteConfirmation();
+      await handleSubscriptionCheckResult(check);
     } catch (error: any) {
       console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_CHECK_FAILED", {
         userId,
@@ -283,11 +365,11 @@ export default function ProfileSettingsScreen() {
 
           <Pressable
             onPress={() => setDeleteModalOpen(true)}
-            disabled={deleting || checkingSubscription}
+            disabled={flowBusy}
             style={({ pressed }) => [
               s.rowBtn,
               pressed && s.pressed,
-              (deleting || checkingSubscription) && { opacity: 0.5 },
+              flowBusy && { opacity: 0.5 },
             ]}
           >
             <Ionicons name="trash-outline" size={20} color={DANGER} />
@@ -319,14 +401,14 @@ export default function ProfileSettingsScreen() {
         transparent
         animationType="fade"
         onRequestClose={() => {
-          if (!deleting && !checkingSubscription) setDeleteModalOpen(false);
+          if (!flowBusy) setDeleteModalOpen(false);
         }}
       >
         <View style={s.modalWrap}>
           <Pressable
             style={s.modalBackdrop}
             onPress={() => {
-              if (!deleting && !checkingSubscription) setDeleteModalOpen(false);
+              if (!flowBusy) setDeleteModalOpen(false);
             }}
           />
           <View style={s.modalCard}>
@@ -339,40 +421,57 @@ export default function ProfileSettingsScreen() {
             <View style={s.modalActions}>
               <Pressable
                 onPress={() => setDeleteModalOpen(false)}
-                disabled={deleting || checkingSubscription}
+                disabled={flowBusy}
                 style={({ pressed }) => [
-                  s.modalCancelBtn,
-                  pressed && !deleting && !checkingSubscription && s.pressed,
-                  (deleting || checkingSubscription) && { opacity: 0.45 },
+                  s.modalNotNowBtn,
+                  pressed && !flowBusy && s.pressed,
+                  flowBusy && { opacity: 0.45 },
                 ]}
               >
-                <Text style={s.modalCancelText}>Cancel</Text>
+                <Text style={s.modalNotNowText}>Not Now</Text>
               </Pressable>
 
               <Pressable
                 onPress={onConfirmDeleteAccount}
-                disabled={deleting || checkingSubscription}
+                disabled={flowBusy}
                 style={({ pressed }) => [
                   s.modalDeleteBtn,
-                  pressed && !deleting && !checkingSubscription && s.pressed,
-                  (deleting || checkingSubscription) && { opacity: 0.55 },
+                  pressed && !flowBusy && s.pressed,
+                  flowBusy && { opacity: 0.55 },
                 ]}
               >
-                {deleting || checkingSubscription ? (
+                {checkingSubscription ? (
                   <View style={s.modalDeleteLoading}>
                     <ActivityIndicator color="#fff" size="small" />
-                    <Text style={s.modalDeleteText}>
-                      {checkingSubscription ? "Checking..." : "Deleting..."}
-                    </Text>
+                    <Text style={s.modalDeleteText}>Checking...</Text>
                   </View>
                 ) : (
-                  <Text style={s.modalDeleteText}>Delete Account</Text>
+                  <Text style={s.modalDeleteText}>Continue</Text>
                 )}
               </Pressable>
             </View>
           </View>
         </View>
       </Modal>
+
+      <DeleteAccountSubscriptionChoiceModal
+        visible={choiceModalOpen}
+        inlineStatusMessage={inlineStatusMessage}
+        processingOption={processingOption}
+        disabled={checkingSubscription || deleting}
+        onSelectOption={handleChoiceOption}
+        onNotNow={closeDeleteFlow}
+      />
+
+      <DeleteAccountFinalConfirmModal
+        visible={finalConfirmOpen}
+        variant={finalConfirmVariant}
+        deleting={deleting}
+        onConfirm={() => {
+          void performAccountDelete();
+        }}
+        onNotNow={closeDeleteFlow}
+      />
     </View>
   );
 }
@@ -449,7 +548,7 @@ const s = StyleSheet.create({
     marginTop: 10,
   },
   modalActions: { flexDirection: "row", gap: 10, marginTop: 18 },
-  modalCancelBtn: {
+  modalNotNowBtn: {
     flex: 1,
     minHeight: 46,
     borderRadius: 14,
@@ -459,7 +558,7 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
   },
-  modalCancelText: { color: "#fff", fontWeight: "900" },
+  modalNotNowText: { color: "#fff", fontWeight: "900" },
   modalDeleteBtn: {
     flex: 1.2,
     minHeight: 46,

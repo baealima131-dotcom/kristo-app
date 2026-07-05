@@ -7,20 +7,41 @@ import {
 } from "./churchSubscription";
 import {
   configureChurchMobileSubscriptions,
+  getActivePremiumEntitlement,
   getCustomerSubscriptionInfo,
+  hasActivePremiumProduct,
+  hasPremiumEntitlement,
   openSubscriptionManagement,
+  restoreSubscriptionPurchases,
 } from "./payments/mobileSubscriptions";
 
 export type AccountDeleteSubscriptionCheck = {
   status: ChurchMediaPremiumServerStatus;
+  /** True only when the store subscription is active and set to renew. */
   requiresStoreCancellation: boolean;
+  /** Active until expiry but auto-renew is off (user already cancelled in the store). */
+  cancelledUntilExpiry: boolean;
+  storeSubscriptionWillRenew: boolean | null;
   subscriptionChurchId: string | null;
   store: "app_store" | "play_store" | null;
   detection:
     | "current_church_app_store"
     | "ownership_lock_active"
     | "none";
+  customerInfo: CustomerInfo | null;
 };
+
+export function hasDeleteAccountStoreSubscriptionConcern(
+  check: AccountDeleteSubscriptionCheck
+): boolean {
+  return check.detection !== "none";
+}
+
+export function isDeleteAccountStoreCancellationComplete(
+  check: AccountDeleteSubscriptionCheck
+): boolean {
+  return check.cancelledUntilExpiry || check.storeSubscriptionWillRenew === false;
+}
 
 function isActiveDeviceStoreSubscription(
   status: ChurchMediaPremiumServerStatus
@@ -77,6 +98,37 @@ function resolveStoreForDeleteCheck(
   return Platform.OS === "android" ? "play_store" : "app_store";
 }
 
+function hasActiveStoreSubscriptionOnDevice(
+  customerInfo: CustomerInfo | null | undefined
+): boolean {
+  if (!customerInfo) return false;
+  return hasPremiumEntitlement(customerInfo) || hasActivePremiumProduct(customerInfo);
+}
+
+/** Read StoreKit / RevenueCat auto-renew for the active premium subscription. */
+export function resolveStoreSubscriptionWillRenew(
+  customerInfo: CustomerInfo | null | undefined
+): boolean | null {
+  if (!customerInfo) return null;
+
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  if (entitlement) {
+    if (entitlement.willRenew === true) return true;
+    if (entitlement.willRenew === false) return false;
+  }
+
+  for (const subscription of Object.values(
+    customerInfo.subscriptionsByProductIdentifier || {}
+  )) {
+    if (!subscription?.isActive) continue;
+    if (subscription.willRenew === true) return true;
+    if (subscription.willRenew === false) return false;
+  }
+
+  if (hasActiveStoreSubscriptionOnDevice(customerInfo)) return null;
+  return null;
+}
+
 export function getAccountDeleteStoreCancellationMessage(): string {
   if (Platform.OS === "android") {
     return "Your Google Play subscription must be cancelled before deleting your account to prevent future renewal charges.";
@@ -85,6 +137,10 @@ export function getAccountDeleteStoreCancellationMessage(): string {
     "We'll open your Apple Subscriptions screen. Select Kristo App there and cancel it.\n\n" +
     "For sandbox testing, open Settings → App Store → Sandbox Account → Manage."
   );
+}
+
+export function getAccountDeleteCancelledUntilExpiryMessage(): string {
+  return "Subscription is cancelled. You can continue deleting your account; access may remain until expiry.";
 }
 
 export function getAccountDeleteStoreManagementFallbackMessage(): string {
@@ -104,6 +160,13 @@ export function getAccountDeleteStoreCancellationTitle(): string {
   return "Cancel Apple Subscription";
 }
 
+export function getAccountDeleteCancelledUntilExpiryTitle(): string {
+  if (Platform.OS === "android") {
+    return "Google Play subscription cancelled";
+  }
+  return "Apple subscription cancelled";
+}
+
 export function getAccountDeleteOpenStoreButtonLabel(): string {
   if (Platform.OS === "android") {
     return "Open Google Play Subscriptions";
@@ -116,6 +179,36 @@ export function getAccountDeleteFinalConfirmMessage(): string {
     return "Deleting your Kristo account does not cancel your Google Play subscription. You may still be charged until you cancel billing in Google Play.";
   }
   return "Deleting your Kristo account does not cancel your Apple subscription. You may still be charged until you cancel billing in Apple Settings.";
+}
+
+async function refreshAccountDeleteCustomerInfo(
+  subscriptionChurchId: string
+): Promise<CustomerInfo | null> {
+  const cid = String(subscriptionChurchId || "").trim();
+  if (!cid) return null;
+
+  try {
+    await configureChurchMobileSubscriptions(cid, { syncPurchases: true });
+  } catch {
+    return null;
+  }
+
+  try {
+    await restoreSubscriptionPurchases();
+  } catch {
+    try {
+      const info = await getCustomerSubscriptionInfo();
+      return info;
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    return await getCustomerSubscriptionInfo();
+  } catch {
+    return null;
+  }
 }
 
 export async function checkAccountDeleteSubscription(args: {
@@ -141,6 +234,7 @@ export async function checkAccountDeleteSubscription(args: {
     console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_CHECK", {
       churchId: null,
       requiresStoreCancellation: false,
+      cancelledUntilExpiry: false,
       subscriptionChurchId: null,
       store: null,
       detection: "none",
@@ -150,24 +244,58 @@ export async function checkAccountDeleteSubscription(args: {
     return {
       status: emptyStatus,
       requiresStoreCancellation: false,
+      cancelledUntilExpiry: false,
+      storeSubscriptionWillRenew: null,
       subscriptionChurchId: null,
       store: null,
       detection: "none",
+      customerInfo: null,
     };
   }
 
-  const status = await fetchChurchMediaPremiumServerStatus(churchId, args.headers, {
+  console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_REFRESH_START", {
+    churchId,
+    platform: Platform.OS,
+  });
+
+  let status = await fetchChurchMediaPremiumServerStatus(churchId, args.headers, {
     bustCache: true,
   });
 
-  const requiresStoreCancellation = isActiveDeviceStoreSubscription(status);
-  const subscriptionChurchId = requiresStoreCancellation
+  const preliminaryDeviceStoreConcern = isActiveDeviceStoreSubscription(status);
+  const subscriptionChurchId = preliminaryDeviceStoreConcern
     ? resolveSubscriptionChurchId(status)
     : null;
-  const store = requiresStoreCancellation ? resolveStoreForDeleteCheck(status) : null;
+
+  let customerInfo: CustomerInfo | null = null;
+  if (subscriptionChurchId) {
+    customerInfo = await refreshAccountDeleteCustomerInfo(subscriptionChurchId);
+  }
+
+  status = await fetchChurchMediaPremiumServerStatus(churchId, args.headers, {
+    bustCache: true,
+  });
+
+  const deviceStoreConcern = isActiveDeviceStoreSubscription(status);
+  const storeSubscriptionWillRenew = resolveStoreSubscriptionWillRenew(customerInfo);
+  const hasActiveStoreSub = hasActiveStoreSubscriptionOnDevice(customerInfo);
+  const cancelledUntilExpiry =
+    deviceStoreConcern && storeSubscriptionWillRenew === false && hasActiveStoreSub;
+  const requiresStoreCancellation =
+    deviceStoreConcern &&
+    (storeSubscriptionWillRenew === true ||
+      (storeSubscriptionWillRenew === null && hasActiveStoreSub));
+
+  const resolvedSubscriptionChurchId = requiresStoreCancellation || cancelledUntilExpiry
+    ? resolveSubscriptionChurchId(status)
+    : null;
+  const store =
+    requiresStoreCancellation || cancelledUntilExpiry
+      ? resolveStoreForDeleteCheck(status)
+      : null;
 
   let detection: AccountDeleteSubscriptionCheck["detection"] = "none";
-  if (requiresStoreCancellation) {
+  if (requiresStoreCancellation || cancelledUntilExpiry) {
     if (
       status.serverSubscriptionActive &&
       status.subscriptionSource === "app_store"
@@ -178,10 +306,35 @@ export async function checkAccountDeleteSubscription(args: {
     }
   }
 
+  console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_REFRESH_DONE", {
+    churchId,
+    subscriptionChurchId: resolvedSubscriptionChurchId,
+    deviceStoreConcern,
+    storeSubscriptionWillRenew,
+    hasActiveStoreSub,
+    requiresStoreCancellation,
+    cancelledUntilExpiry,
+    serverSubscriptionActive: status.serverSubscriptionActive,
+    subscriptionSource: status.subscriptionSource,
+    hasCustomerInfo: Boolean(customerInfo),
+  });
+
+  if (cancelledUntilExpiry) {
+    console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_CANCELLED_UNTIL_EXPIRY", {
+      churchId,
+      subscriptionChurchId: resolvedSubscriptionChurchId,
+      storeSubscriptionWillRenew,
+      serverSubscriptionActive: status.serverSubscriptionActive,
+      subscriptionExpiresAt: status.subscriptionExpiresAt,
+    });
+  }
+
   console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_CHECK", {
     churchId,
     requiresStoreCancellation,
-    subscriptionChurchId,
+    cancelledUntilExpiry,
+    storeSubscriptionWillRenew,
+    subscriptionChurchId: resolvedSubscriptionChurchId,
     store,
     detection,
     serverSubscriptionActive: status.serverSubscriptionActive,
@@ -191,14 +344,18 @@ export async function checkAccountDeleteSubscription(args: {
     lockedChurchId: status.subscriptionOwnershipLock?.lockedChurchId ?? null,
     isLockHolder: status.subscriptionOwnershipLock?.isLockHolder ?? false,
     routeFailed: status.routeFailed,
+    hasCustomerInfo: Boolean(customerInfo),
   });
 
   return {
     status,
     requiresStoreCancellation,
-    subscriptionChurchId,
+    cancelledUntilExpiry,
+    storeSubscriptionWillRenew,
+    subscriptionChurchId: resolvedSubscriptionChurchId,
     store,
     detection,
+    customerInfo,
   };
 }
 
@@ -206,17 +363,10 @@ export async function openAccountDeleteSubscriptionManagement(
   check: AccountDeleteSubscriptionCheck
 ): Promise<{ opened: boolean; customerInfo: CustomerInfo | null }> {
   const subscriptionChurchId = String(check.subscriptionChurchId || "").trim();
-  let customerInfo: CustomerInfo | null = null;
+  let customerInfo = check.customerInfo;
 
-  if (subscriptionChurchId) {
-    try {
-      await configureChurchMobileSubscriptions(subscriptionChurchId, {
-        syncPurchases: false,
-      });
-      customerInfo = await getCustomerSubscriptionInfo();
-    } catch {
-      customerInfo = null;
-    }
+  if (subscriptionChurchId && !customerInfo) {
+    customerInfo = await refreshAccountDeleteCustomerInfo(subscriptionChurchId);
   }
 
   const manageResult = await openSubscriptionManagement(customerInfo, {
@@ -233,7 +383,8 @@ export async function openAccountDeleteSubscriptionManagement(
     managementURL: String(customerInfo?.managementURL || "").trim() || null,
     store: check.store,
     detection: check.detection,
+    storeSubscriptionWillRenew: check.storeSubscriptionWillRenew,
   });
 
-  return { opened: manageResult.opened, customerInfo };
+  return { opened: manageResult.opened, customerInfo: customerInfo ?? null };
 }

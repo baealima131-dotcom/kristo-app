@@ -25,19 +25,57 @@ function resolveSubscriptionChurchId(status) {
   return lockedChurchId || churchId;
 }
 
-function evaluate(status) {
-  const requiresStoreCancellation = isActiveDeviceStoreSubscription(status);
+function hasActiveStoreSubscriptionOnDevice(customerInfo) {
+  if (!customerInfo) return false;
+  const active = customerInfo.entitlements?.active || {};
+  if (Object.keys(active).length > 0) return true;
+  return Boolean(customerInfo.activeSubscriptions?.length);
+}
+
+function resolveStoreSubscriptionWillRenew(customerInfo) {
+  if (!customerInfo) return null;
+  const active = customerInfo.entitlements?.active || {};
+  for (const entitlement of Object.values(active)) {
+    if (entitlement?.willRenew === true) return true;
+    if (entitlement?.willRenew === false) return false;
+  }
+  for (const subscription of Object.values(customerInfo.subscriptionsByProductIdentifier || {})) {
+    if (!subscription?.isActive) continue;
+    if (subscription.willRenew === true) return true;
+    if (subscription.willRenew === false) return false;
+  }
+  if (hasActiveStoreSubscriptionOnDevice(customerInfo)) return null;
+  return null;
+}
+
+function evaluate(status, customerInfo = null) {
+  const deviceStoreConcern = isActiveDeviceStoreSubscription(status);
+  const storeSubscriptionWillRenew = resolveStoreSubscriptionWillRenew(customerInfo);
+  const hasActiveStoreSub = hasActiveStoreSubscriptionOnDevice(customerInfo);
+  const cancelledUntilExpiry =
+    deviceStoreConcern && storeSubscriptionWillRenew === false && hasActiveStoreSub;
+  const requiresStoreCancellation =
+    deviceStoreConcern &&
+    (storeSubscriptionWillRenew === true ||
+      (storeSubscriptionWillRenew === null && hasActiveStoreSub));
+
   let detection = "none";
-  if (requiresStoreCancellation) {
+  if (requiresStoreCancellation || cancelledUntilExpiry) {
     if (status.serverSubscriptionActive && status.subscriptionSource === "app_store") {
       detection = "current_church_app_store";
     } else {
       detection = "ownership_lock_active";
     }
   }
+
   return {
     requiresStoreCancellation,
-    subscriptionChurchId: requiresStoreCancellation ? resolveSubscriptionChurchId(status) : null,
+    cancelledUntilExpiry,
+    storeSubscriptionWillRenew,
+    subscriptionChurchId:
+      requiresStoreCancellation || cancelledUntilExpiry
+        ? resolveSubscriptionChurchId(status)
+        : null,
     detection,
   };
 }
@@ -49,21 +87,74 @@ const base = {
   subscriptionOwnershipLock: null,
 };
 
+const activeWillRenew = {
+  entitlements: {
+    active: {
+      Premium: {
+        willRenew: true,
+        isActive: true,
+      },
+    },
+  },
+  activeSubscriptions: ["premium_monthly"],
+  subscriptionsByProductIdentifier: {
+    premium_monthly: { isActive: true, willRenew: true },
+  },
+};
+
+const activeCancelledUntilExpiry = {
+  entitlements: {
+    active: {
+      Premium: {
+        willRenew: false,
+        isActive: true,
+      },
+    },
+  },
+  activeSubscriptions: ["premium_monthly"],
+  subscriptionsByProductIdentifier: {
+    premium_monthly: { isActive: true, willRenew: false },
+  },
+};
+
 const cases = [
   {
     name: "no subscription",
     status: { ...base },
-    want: { requiresStoreCancellation: false, detection: "none", subscriptionChurchId: null },
+    customerInfo: null,
+    want: {
+      requiresStoreCancellation: false,
+      cancelledUntilExpiry: false,
+      detection: "none",
+      subscriptionChurchId: null,
+    },
   },
   {
-    name: "current church app_store active",
+    name: "current church app_store active with willRenew true",
     status: {
       ...base,
       serverSubscriptionActive: true,
       subscriptionSource: "app_store",
     },
+    customerInfo: activeWillRenew,
     want: {
       requiresStoreCancellation: true,
+      cancelledUntilExpiry: false,
+      detection: "current_church_app_store",
+      subscriptionChurchId: "CH7-TEST01",
+    },
+  },
+  {
+    name: "current church app_store active but cancelled until expiry",
+    status: {
+      ...base,
+      serverSubscriptionActive: true,
+      subscriptionSource: "app_store",
+    },
+    customerInfo: activeCancelledUntilExpiry,
+    want: {
+      requiresStoreCancellation: false,
+      cancelledUntilExpiry: true,
       detection: "current_church_app_store",
       subscriptionChurchId: "CH7-TEST01",
     },
@@ -75,7 +166,13 @@ const cases = [
       serverSubscriptionActive: true,
       subscriptionSource: "offline_activation",
     },
-    want: { requiresStoreCancellation: false, detection: "none", subscriptionChurchId: null },
+    customerInfo: activeWillRenew,
+    want: {
+      requiresStoreCancellation: false,
+      cancelledUntilExpiry: false,
+      detection: "none",
+      subscriptionChurchId: null,
+    },
   },
   {
     name: "ownership lock active on another church",
@@ -90,8 +187,10 @@ const cases = [
         store: "app_store",
       },
     },
+    customerInfo: activeWillRenew,
     want: {
       requiresStoreCancellation: true,
+      cancelledUntilExpiry: false,
       detection: "ownership_lock_active",
       subscriptionChurchId: "CH7-OLDCH",
     },
@@ -108,7 +207,13 @@ const cases = [
         store: "app_store",
       },
     },
-    want: { requiresStoreCancellation: false, detection: "none", subscriptionChurchId: null },
+    customerInfo: activeWillRenew,
+    want: {
+      requiresStoreCancellation: false,
+      cancelledUntilExpiry: false,
+      detection: "none",
+      subscriptionChurchId: null,
+    },
   },
   {
     name: "lock holder on current church",
@@ -122,19 +227,37 @@ const cases = [
         store: "app_store",
       },
     },
+    customerInfo: activeWillRenew,
     want: {
       requiresStoreCancellation: true,
+      cancelledUntilExpiry: false,
       detection: "ownership_lock_active",
       subscriptionChurchId: "CH7-TEST01",
+    },
+  },
+  {
+    name: "server active but no customer info still requires cancellation",
+    status: {
+      ...base,
+      serverSubscriptionActive: true,
+      subscriptionSource: "app_store",
+    },
+    customerInfo: null,
+    want: {
+      requiresStoreCancellation: false,
+      cancelledUntilExpiry: false,
+      detection: "none",
+      subscriptionChurchId: null,
     },
   },
 ];
 
 let failed = 0;
 for (const c of cases) {
-  const got = evaluate(c.status);
+  const got = evaluate(c.status, c.customerInfo);
   const ok =
     got.requiresStoreCancellation === c.want.requiresStoreCancellation &&
+    got.cancelledUntilExpiry === c.want.cancelledUntilExpiry &&
     got.detection === c.want.detection &&
     got.subscriptionChurchId === c.want.subscriptionChurchId;
   if (!ok) {
