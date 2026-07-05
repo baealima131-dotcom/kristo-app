@@ -9,7 +9,7 @@ import {
   reconcileChurchSubscriptionExpiryNotifications,
 } from "@/app/api/_lib/churchMediaNotifications";
 import {
-  assertAppStoreSubscriptionActivationAllowed,
+  assertStoreSubscriptionOwnershipForActivation,
   ensureSubscriptionOwnershipLockFromActiveMediaProfile,
   upsertSubscriptionOwnershipLockAfterAppStoreActivation,
 } from "@/app/api/_lib/subscriptionOwnershipLock";
@@ -19,6 +19,7 @@ import {
   patchChurchMediaSubscription,
   type ChurchMediaProfile,
 } from "@/app/api/_lib/store/mediaDb";
+import { type SubscriptionOwnershipLockRecord } from "@/app/api/_lib/store/subscriptionOwnershipLockDb";
 import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 
 export type ChurchSubscriptionSyncResult = {
@@ -29,12 +30,23 @@ export type ChurchSubscriptionSyncResult = {
   subscriptionActivated: boolean;
   revenueCatLane?: "production" | "sandbox" | null;
   sandboxPurchase?: boolean;
+  ownershipLock?: SubscriptionOwnershipLockRecord | null;
 };
 
 function resolveRequestedPlan(value?: string | null): "monthly" | "yearly" | null {
   const plan = String(value || "").trim().toLowerCase();
   if (plan === "yearly" || plan === "monthly") return plan;
   return null;
+}
+
+function resolveSubscriptionPlan(
+  ...candidates: (string | null | undefined)[]
+): "monthly" | "yearly" {
+  for (const candidate of candidates) {
+    const resolved = resolveRequestedPlan(candidate);
+    if (resolved) return resolved;
+  }
+  return "monthly";
 }
 
 function isOfflineActivationSubscription(media: ChurchMediaProfile | null | undefined): boolean {
@@ -110,10 +122,10 @@ export async function reconcileChurchMediaSubscriptionSource(args: {
     !verification.bypassed &&
     isVerifiedChurchPremiumReason(verification.reason)
   ) {
-    const resolvedPlan =
-      verification.plan ||
-      String(media.subscriptionPlan || "").trim().toLowerCase() ||
-      "monthly";
+    const resolvedPlan = resolveSubscriptionPlan(
+      verification.plan,
+      media.subscriptionPlan
+    );
     const expiresAtMs = parseSubscriptionExpiresAtMs(verification.expiresAt);
     const next = await patchChurchMediaSubscription(churchId, {
       subscriptionActive: true,
@@ -262,9 +274,10 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     });
   }
 
-  const lockCheck = await assertAppStoreSubscriptionActivationAllowed({
+  const lockCheck = await assertStoreSubscriptionOwnershipForActivation({
     churchId,
     ownerUserId,
+    verification,
   });
   if (!lockCheck.allowed) {
     return {
@@ -273,6 +286,7 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
       media: mediaBefore,
       revenueCatLane: verification.revenueCatLane ?? null,
       sandboxPurchase: verification.sandboxPurchase === true,
+      ownershipLock: lockCheck.lock,
     };
   }
 
@@ -332,11 +346,11 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
       profileSubscriptionExpiresAt: media?.subscriptionExpiresAt ?? null,
     });
   } else {
-    const resolvedPlan =
-      verification.plan ||
-      resolveRequestedPlan(args.requestedPlan) ||
-      String(media?.subscriptionPlan || "").trim().toLowerCase() ||
-      "monthly";
+    const resolvedPlan = resolveSubscriptionPlan(
+      verification.plan,
+      resolveRequestedPlan(args.requestedPlan),
+      media?.subscriptionPlan
+    );
     const expiresAtMs = verification.bypassed
       ? null
       : parseSubscriptionExpiresAtMs(verification.expiresAt);

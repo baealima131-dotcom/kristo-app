@@ -1477,6 +1477,136 @@ export async function restoreSubscriptionPurchases() {
   return result;
 }
 
+export const EXISTING_STORE_SUBSCRIPTION_SYNC_TITLE = "Subscription found";
+export const EXISTING_STORE_SUBSCRIPTION_SYNC_MESSAGE =
+  "Syncing with your church…";
+
+/** True when StoreKit / Play reports the tester already owns this subscription product. */
+export function isExistingStoreSubscriptionError(error: unknown): boolean {
+  const detail = getFullRevenueCatErrorDetail(error);
+  const readable = String(detail.readableErrorCode || "").toUpperCase();
+  const blob = [
+    detail.message,
+    detail.underlyingErrorMessage,
+    JSON.stringify(detail.errorSnapshot || null),
+    JSON.stringify(detail.rawUserInfo || null),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (
+    readable.includes("PRODUCT_ALREADY_PURCHASED") ||
+    readable.includes("ALREADY_OWNED") ||
+    readable.includes("ITEM_ALREADY_OWNED") ||
+    readable.includes("PURCHASE_ALREADY_OWNED")
+  ) {
+    return true;
+  }
+
+  return (
+    /already subscribed/.test(blob) ||
+    /you.?re already subscribed/.test(blob) ||
+    /product.?already.?purchased/.test(blob) ||
+    /subscription is active/.test(blob) ||
+    /already own/.test(blob) ||
+    /unable to purchase.*already/.test(blob) ||
+    /has an active subscription/.test(blob)
+  );
+}
+
+function isChurchScopedPremiumEntitlementForRecovery(
+  churchId: string,
+  customerInfo: CustomerInfo | null | undefined
+): boolean {
+  const cid = String(churchId || "").trim();
+  if (!cid) return false;
+  const configured = String(getRevenueCatConfiguredAppUserId() || "").trim();
+  if (!configured || configured !== cid) return false;
+  return hasPremiumEntitlement(customerInfo);
+}
+
+export type RecoverStoreSubscriptionForChurchResult = {
+  customerInfo: CustomerInfo | null;
+  entitlementActive: boolean;
+  churchScopedEntitlementActive: boolean;
+  resolvedPlan: SubscriptionPlanKey | null;
+};
+
+/**
+ * Restore + sync an Apple/Google subscription already on the device onto the current church RC user.
+ */
+export async function recoverStoreSubscriptionForChurch(args: {
+  churchId: string;
+  source?: string;
+}): Promise<RecoverStoreSubscriptionForChurchResult> {
+  const churchId = String(args.churchId || "").trim();
+  const empty: RecoverStoreSubscriptionForChurchResult = {
+    customerInfo: null,
+    entitlementActive: false,
+    churchScopedEntitlementActive: false,
+    resolvedPlan: null,
+  };
+  if (!churchId) return empty;
+
+  console.log("KRISTO_RC_EXISTING_SUBSCRIPTION_RECOVER_START", {
+    churchId,
+    source: args.source || "recover",
+  });
+
+  await logInRevenueCatForChurchSubscription(churchId, { syncPurchases: true });
+
+  let info: CustomerInfo | null = null;
+  try {
+    const restored = await restoreSubscriptionPurchases();
+    info =
+      restored && typeof restored === "object" && "customerInfo" in restored
+        ? (restored as { customerInfo: CustomerInfo }).customerInfo
+        : (restored as CustomerInfo);
+  } catch (error) {
+    logRevenueCatException("restorePurchases", error, {
+      churchId,
+      phase: "existing-subscription-recover",
+    });
+    try {
+      await runRevenueCatNativeStep("SYNC_PURCHASES", () => Purchases.syncPurchases(), {
+        churchId,
+      });
+      info = await getCustomerSubscriptionInfo();
+    } catch (syncError) {
+      logRevenueCatException("syncPurchases", syncError, {
+        churchId,
+        phase: "existing-subscription-recover-fallback",
+      });
+    }
+  }
+
+  const refreshed = await refreshCustomerInfoAfterStorePurchase(info, {
+    maxAttempts: __DEV__ ? 6 : 8,
+    delayMs: __DEV__ ? 1000 : 1500,
+  });
+  info = refreshed.info;
+
+  const churchScoped = isChurchScopedPremiumEntitlementForRecovery(churchId, info);
+  const resolvedPlan =
+    resolveActiveSubscriptionPlan(info) || resolvePremiumPlanFromCustomerInfo(info);
+
+  console.log("KRISTO_RC_EXISTING_SUBSCRIPTION_RECOVER_DONE", {
+    churchId,
+    churchScopedEntitlementActive: churchScoped,
+    hasPremiumEntitlement: hasPremiumEntitlement(info),
+    resolvedPlan,
+    originalAppUserId: info?.originalAppUserId ?? null,
+    activeEntitlementIds: getActiveEntitlementKeys(info),
+  });
+
+  return {
+    customerInfo: info,
+    entitlementActive: hasPremiumEntitlement(info),
+    churchScopedEntitlementActive: churchScoped,
+    resolvedPlan,
+  };
+}
+
 export async function getCustomerSubscriptionInfo(): Promise<CustomerInfo> {
   if (isRevenueCatPurchasingDisabled()) {
     throw new Error("RevenueCat customer info skipped during subscription bypass testing");

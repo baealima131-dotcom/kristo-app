@@ -19,6 +19,7 @@ import {
   syncChurchSubscriptionFromRevenueCat,
 } from "@/app/api/_lib/churchSubscriptionSync";
 import {
+  payloadFromLockForChurch,
   resolveSubscriptionOwnershipLockForChurch,
 } from "@/app/api/_lib/subscriptionOwnershipLock";
 import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
@@ -427,13 +428,22 @@ export async function PATCH(req: Request) {
         );
       }
 
-      if (sync.reason === "subscription-ownership-lock") {
+      if (
+        sync.reason === "subscription-ownership-lock" ||
+        sync.reason === "store-subscription-ownership-conflict"
+      ) {
+        const subscriptionOwnershipLock = sync.ownershipLock
+          ? payloadFromLockForChurch({ lock: sync.ownershipLock, churchId: a.churchId })
+          : null;
         return NextResponse.json(
           {
             ok: false,
             error:
-              "This Kristo ID already has an active subscription for another church. Manage or cancel that subscription first.",
+              sync.reason === "store-subscription-ownership-conflict"
+                ? "An existing Media Premium subscription is still linked to a previous church and cannot be moved here."
+                : "This Kristo ID already has an active subscription for another church. Manage or cancel that subscription first.",
             reason: sync.reason,
+            subscriptionOwnershipLock,
           },
           { status: 409 }
         );

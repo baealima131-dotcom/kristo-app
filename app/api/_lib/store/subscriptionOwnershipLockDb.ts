@@ -17,6 +17,9 @@ export type SubscriptionOwnershipLockRecord = {
   revenueCatOriginalAppUserId: string | null;
   productId: string | null;
   store: "app_store" | "play_store" | null;
+  storeSubscriptionIdentity?: string | null;
+  storeTransactionId?: string | null;
+  willRenew?: boolean | null;
   platform: "ios" | "android" | null;
   subscriptionPlan: "monthly" | "yearly" | null;
   expiresAt: number | null;
@@ -159,6 +162,60 @@ export async function listSubscriptionOwnershipLocksByOwnerUserId(
   const target = uid.toUpperCase();
   const locks = await readLocalLocks();
   return locks.filter((lock) => normalizeUserId(lock.ownerUserId).toUpperCase() === target);
+}
+
+export async function listActiveSubscriptionOwnershipLocksByStoreIdentity(args: {
+  store: "app_store" | "play_store";
+  storeSubscriptionIdentity: string;
+}): Promise<SubscriptionOwnershipLockRecord[]> {
+  const store = args.store;
+  const identity = String(args.storeSubscriptionIdentity || "").trim();
+  if (!store || !identity) return [];
+
+  if (usePostgres()) {
+    await ensureLockSchema();
+    const sql = getSql();
+    const rows = (await sql`
+      SELECT id, owner_user_id, data, created_at, updated_at
+      FROM kristo_subscription_ownership_locks
+      WHERE (data->>'status') = 'active'
+        AND (data->>'store') = ${store}
+        AND LOWER(COALESCE(data->>'storeSubscriptionIdentity', '')) = LOWER(${identity})
+      ORDER BY updated_at DESC
+    `) as LockRow[];
+    return rows.map(rowToLock);
+  }
+
+  const locks = await readLocalLocks();
+  const target = identity.toLowerCase();
+  return locks.filter((lock) => {
+    if (lock.status !== "active") return false;
+    if (lock.store !== store) return false;
+    const lockIdentity = String(lock.storeSubscriptionIdentity || "").trim().toLowerCase();
+    return Boolean(lockIdentity && lockIdentity === target);
+  });
+}
+
+export async function listActiveDeletedChurchSubscriptionLocks(): Promise<
+  SubscriptionOwnershipLockRecord[]
+> {
+  if (usePostgres()) {
+    await ensureLockSchema();
+    const sql = getSql();
+    const rows = (await sql`
+      SELECT id, owner_user_id, data, created_at, updated_at
+      FROM kristo_subscription_ownership_locks
+      WHERE (data->>'status') = 'active'
+        AND (data->>'lockedChurchDeleted') = 'true'
+      ORDER BY updated_at DESC
+    `) as LockRow[];
+    return rows.map(rowToLock);
+  }
+
+  const locks = await readLocalLocks();
+  return locks.filter(
+    (lock) => lock.status === "active" && lock.lockedChurchDeleted === true
+  );
 }
 
 export async function saveSubscriptionOwnershipLock(

@@ -54,6 +54,12 @@ export type ChurchPremiumVerification = {
   sandboxPurchase?: boolean;
   /** RevenueCat REST lane that produced this result. */
   revenueCatLane?: "production" | "sandbox";
+  /** Stable store subscription identity (original transaction id). */
+  storeSubscriptionIdentity?: string | null;
+  /** Latest store transaction id for diagnostics. */
+  storeTransactionId?: string | null;
+  store?: "app_store" | "play_store" | null;
+  willRenew?: boolean | null;
 };
 
 type RevenueCatFetchLane = "production" | "sandbox";
@@ -188,6 +194,111 @@ function entitlementIsActive(expiresDate: unknown): boolean {
   const ms = Date.parse(String(expiresDate));
   if (Number.isNaN(ms)) return false;
   return ms > Date.now();
+}
+
+function resolveStoreOwnershipFromSubscription(subscription: any): {
+  store: "app_store" | "play_store" | null;
+  storeSubscriptionIdentity: string | null;
+  storeTransactionId: string | null;
+  willRenew: boolean | null;
+} {
+  if (!subscription || typeof subscription !== "object") {
+    return {
+      store: null,
+      storeSubscriptionIdentity: null,
+      storeTransactionId: null,
+      willRenew: null,
+    };
+  }
+
+  const storeSubscriptionIdentity =
+    String(
+      subscription.original_transaction_id ||
+        subscription.original_store_transaction_id ||
+        ""
+    ).trim() || null;
+  const storeTransactionId = String(subscription.store_transaction_id || "").trim() || null;
+
+  const storeRaw = String(subscription.store || "").toUpperCase();
+  let store: "app_store" | "play_store" | null = null;
+  if (storeRaw.includes("APP_STORE") || storeRaw === "MAC_APP_STORE") {
+    store = "app_store";
+  } else if (storeRaw.includes("PLAY_STORE") || storeRaw === "GOOGLE_PLAY") {
+    store = "play_store";
+  }
+
+  let willRenew: boolean | null = null;
+  if (subscription.unsubscribe_detected_at) {
+    willRenew = false;
+  } else if (entitlementIsActive(subscription.expires_date)) {
+    willRenew = true;
+  }
+
+  return { store, storeSubscriptionIdentity, storeTransactionId, willRenew };
+}
+
+function resolvePremiumSubscriptionRecord(
+  snapshot: RevenueCatSubscriberSnapshot,
+  productId: string | null | undefined
+): any | null {
+  const pid = String(productId || "").trim();
+  if (pid && snapshot.subscriptions[pid]) {
+    return snapshot.subscriptions[pid];
+  }
+
+  for (const candidateId of CHURCH_PREMIUM_PRODUCT_IDS) {
+    const candidate = snapshot.subscriptions[candidateId];
+    if (candidate && entitlementIsActive(candidate.expires_date)) {
+      return candidate;
+    }
+  }
+
+  for (const [candidateId, candidate] of Object.entries(snapshot.subscriptions)) {
+    if (!candidate || !entitlementIsActive(candidate.expires_date)) continue;
+    if (planFromProductId(candidateId) || planFromProductId(candidate.product_identifier)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function mergeVerificationStoreOwnership(
+  verification: ChurchPremiumVerification,
+  subscription: any | null | undefined,
+  snapshot?: RevenueCatSubscriberSnapshot
+): ChurchPremiumVerification {
+  const resolvedSubscription =
+    subscription ?? resolvePremiumSubscriptionRecord(snapshot ?? { entitlements: {}, subscriptions: {} }, verification.productId);
+  const ownership = resolveStoreOwnershipFromSubscription(resolvedSubscription);
+  const merged = {
+    ...verification,
+    store: ownership.store ?? verification.store ?? null,
+    storeSubscriptionIdentity:
+      ownership.storeSubscriptionIdentity ?? verification.storeSubscriptionIdentity ?? null,
+    storeTransactionId: ownership.storeTransactionId ?? verification.storeTransactionId ?? null,
+    willRenew: ownership.willRenew ?? verification.willRenew ?? null,
+  };
+
+  if (merged.active && !merged.storeSubscriptionIdentity) {
+    console.log("KRISTO_REVENUECAT_STORE_IDENTITY_MISSING", {
+      churchId: null,
+      productId: merged.productId,
+      store: merged.store,
+      hasSubscriptionRecord: Boolean(resolvedSubscription),
+      subscriptionKeys: snapshot ? Object.keys(snapshot.subscriptions) : [],
+    });
+  } else if (merged.storeSubscriptionIdentity) {
+    console.log("KRISTO_REVENUECAT_STORE_IDENTITY_RESOLVED", {
+      productId: merged.productId,
+      store: merged.store,
+      storeSubscriptionIdentity: merged.storeSubscriptionIdentity,
+      storeTransactionId: merged.storeTransactionId,
+      willRenew: merged.willRenew,
+    });
+  }
+
+  return merged;
 }
 
 function sleepMs(ms: number) {
@@ -377,28 +488,36 @@ function verifySubscriberSnapshot(
     const sandboxPurchase = lane === "sandbox";
 
     if (!entitlementMatch.active) {
-      return {
-        active: false,
+      return mergeVerificationStoreOwnership(
+        {
+          active: false,
+          plan: planFromProductId(productId),
+          productId,
+          reason: "expired",
+          bypassed: false,
+          expiresAt,
+          sandboxPurchase,
+          revenueCatLane: lane,
+        },
+        productId ? snapshot.subscriptions[productId] : null,
+        snapshot
+      );
+    }
+
+    return mergeVerificationStoreOwnership(
+      {
+        active: true,
         plan: planFromProductId(productId),
         productId,
-        reason: "expired",
+        reason: "verified",
         bypassed: false,
         expiresAt,
         sandboxPurchase,
         revenueCatLane: lane,
-      };
-    }
-
-    return {
-      active: true,
-      plan: planFromProductId(productId),
-      productId,
-      reason: "verified",
-      bypassed: false,
-      expiresAt,
-      sandboxPurchase,
-      revenueCatLane: lane,
-    };
+      },
+      productId ? snapshot.subscriptions[productId] : null,
+      snapshot
+    );
   }
 
   const subscriptionMatch = resolvePremiumFromSubscriptions(snapshot.subscriptions);
@@ -420,16 +539,20 @@ function verifySubscriberSnapshot(
       currentChurchId: uid,
     });
 
-    return {
-      active: true,
-      plan: planFromProductId(subscriptionMatch.productId),
-      productId: subscriptionMatch.productId,
-      reason: "verified-subscription",
-      bypassed: false,
-      expiresAt,
-      sandboxPurchase,
-      revenueCatLane: lane,
-    };
+    return mergeVerificationStoreOwnership(
+      {
+        active: true,
+        plan: planFromProductId(subscriptionMatch.productId),
+        productId: subscriptionMatch.productId,
+        reason: "verified-subscription",
+        bypassed: false,
+        expiresAt,
+        sandboxPurchase,
+        revenueCatLane: lane,
+      },
+      subscriptionMatch.subscription,
+      snapshot
+    );
   }
 
   return {
