@@ -81,7 +81,20 @@ export function getAccountDeleteStoreCancellationMessage(): string {
   if (Platform.OS === "android") {
     return "Your Google Play subscription must be cancelled before deleting your account to prevent future renewal charges.";
   }
-  return "Your Apple subscription must be cancelled before deleting your account to prevent future renewal charges.";
+  return (
+    "We'll open your Apple Subscriptions screen. Select Kristo App there and cancel it.\n\n" +
+    "For sandbox testing, open Settings → App Store → Sandbox Account → Manage."
+  );
+}
+
+export function getAccountDeleteStoreManagementFallbackMessage(): string {
+  if (Platform.OS === "android") {
+    return "Open Google Play → Payments & subscriptions → Subscriptions, cancel Kristo App, then return here to continue account deletion.";
+  }
+  return (
+    "Open Settings → App Store → Subscriptions, select Kristo App, and cancel it.\n\n" +
+    "For sandbox testing, open Settings → App Store → Sandbox Account → Manage."
+  );
 }
 
 export function getAccountDeleteStoreCancellationTitle(): string {

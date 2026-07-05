@@ -20,6 +20,7 @@ import {
   getAccountDeleteOpenStoreButtonLabel,
   getAccountDeleteStoreCancellationMessage,
   getAccountDeleteStoreCancellationTitle,
+  getAccountDeleteStoreManagementFallbackMessage,
   openAccountDeleteSubscriptionManagement,
 } from "@/src/lib/accountDeleteSubscription";
 import { apiPost } from "@/src/lib/kristoApi";
@@ -185,7 +186,7 @@ export default function ProfileSettingsScreen() {
                   pendingDeleteAfterManagementRef.current = false;
                   Alert.alert(
                     "Could not open subscriptions",
-                    "Open your device subscription settings manually, then return here to continue account deletion."
+                    getAccountDeleteStoreManagementFallbackMessage()
                   );
                 }
               });
