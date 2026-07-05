@@ -753,6 +753,7 @@ export default function PaymentsCheckoutScreen() {
 
       const manageResult = await openSubscriptionManagement(manageInfoRef.current, {
         allowGenericFallback: Platform.OS === "ios",
+        source: "checkout",
       });
       logManageDiag({
         fallbackUsed: manageResult.fallbackUsed,

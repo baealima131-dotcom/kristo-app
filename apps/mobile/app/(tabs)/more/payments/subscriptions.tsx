@@ -1204,6 +1204,7 @@ export default function PaymentsSubscriptionsScreen() {
 
       const manageResult = await openSubscriptionManagement(manageInfoRef.current, {
         allowGenericFallback: Platform.OS === "ios",
+        source: "subscriptions",
       });
       logManageDiag({
         fallbackUsed: manageResult.fallbackUsed,

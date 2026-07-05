@@ -12,7 +12,7 @@ import Purchases, {
   STORE_REPLACEMENT_MODE,
 } from "react-native-purchases";
 import Constants from "expo-constants";
-import { Linking, Platform } from "react-native";
+import { Alert, Linking, Platform } from "react-native";
 import type { PlanStatus, SubscriptionPlanKey } from "../../store/paymentsStore";
 import {
   isRevenueCatPurchasingDisabled,
@@ -1651,7 +1651,49 @@ export function resolveAppStoreManageFallbackMessage(): string {
   if (Platform.OS === "android") {
     return "This premium access is active, but there is no Google Play subscription to manage on this device. It may be managed through offline activation, backend activation, or a different Google Play account.";
   }
+  if (isRevenueCatSandboxSubscriptionEnvironment()) {
+    return "For sandbox subscriptions, open Settings → App Store → Sandbox Account → Manage.";
+  }
   return "Open Settings → Apple ID → Subscriptions to manage or cancel your plan.";
+}
+
+export const IOS_SANDBOX_MANAGE_SUBSCRIPTION_MESSAGE =
+  "For sandbox subscriptions, open Settings → App Store → Sandbox Account → Manage.";
+
+const IOS_APP_STORE_SETTINGS_URLS = ["App-Prefs:STORE", "prefs:root=STORE"] as const;
+
+/** Best-effort deep link to iOS App Store settings (undocumented; may fail on some OS versions). */
+export async function openIosAppStoreSettings(): Promise<{
+  opened: boolean;
+  path: string | null;
+}> {
+  if (Platform.OS !== "ios") return { opened: false, path: null };
+
+  for (const url of IOS_APP_STORE_SETTINGS_URLS) {
+    try {
+      await Linking.openURL(url);
+      return { opened: true, path: url };
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return { opened: false, path: null };
+}
+
+export function presentIosSandboxSubscriptionManageInstructions(args?: {
+  source?: string;
+  customerInfo?: CustomerInfo | null;
+}): void {
+  Alert.alert("Manage / Cancel subscription", IOS_SANDBOX_MANAGE_SUBSCRIPTION_MESSAGE, [
+    {
+      text: "Open App Store Settings",
+      onPress: () => {
+        void openIosAppStoreSettings();
+      },
+    },
+    { text: "OK", style: "cancel" },
+  ]);
 }
 
 export function resolveCheckoutFooterText(args: {
@@ -1839,6 +1881,13 @@ export function isRevenueCatSandboxSubscriptionEnvironment(
   }
 
   return false;
+}
+
+/** iOS dev/sandbox builds should not use RevenueCat managementURL (production Apple ID subscriptions UI). */
+export function shouldUseIosSandboxSubscriptionManageInstructions(
+  customerInfo?: CustomerInfo | null
+): boolean {
+  return Platform.OS === "ios" && isRevenueCatSandboxSubscriptionEnvironment(customerInfo);
 }
 
 export function formatPremiumSubscriptionExpiryLabel(
@@ -2849,6 +2898,8 @@ export function formatYearlySubscriptionPrice(
 export type OpenSubscriptionManagementOptions = {
   /** When false, skip account-wide App Store / Play subscription pages. Default true. */
   allowGenericFallback?: boolean;
+  /** Diagnostic source for sandbox manage instructions. */
+  source?: string;
 };
 
 export type OpenSubscriptionManagementResult = {
@@ -2858,6 +2909,7 @@ export type OpenSubscriptionManagementResult = {
     | "management_url"
     | "show_manage_subscriptions"
     | "ios_generic"
+    | "ios_sandbox_instructions"
     | "android_generic"
     | "android_play_product_deeplink"
     | "none";
@@ -2939,6 +2991,69 @@ function buildAndroidPlayProductSubscriptionManagementUrl(
   return `https://play.google.com/store/account/subscriptions?${params.toString()}`;
 }
 
+type NativeManageSubscriptionLogOpts = {
+  source?: string;
+  logAttempt?: boolean;
+  logOpened?: boolean;
+};
+
+/** iOS StoreKit manage sheet via RevenueCat / RNPurchases (sandbox + production). */
+async function tryOpenNativeIosManageSubscriptions(
+  opts?: NativeManageSubscriptionLogOpts
+): Promise<OpenSubscriptionManagementResult | null> {
+  if (Platform.OS !== "ios") return null;
+
+  const source = opts?.source || null;
+  const apis = ["Purchases.showManageSubscriptions", "RNPurchases.showManageSubscriptions"];
+
+  if (opts?.logAttempt) {
+    console.log("KRISTO_SUBSCRIPTION_MANAGE_NATIVE_ATTEMPT", {
+      platform: Platform.OS,
+      source,
+      apis,
+    });
+  }
+
+  try {
+    const showManage = (
+      Purchases as typeof Purchases & { showManageSubscriptions?: () => Promise<void> }
+    ).showManageSubscriptions;
+    if (typeof showManage === "function") {
+      await showManage.call(Purchases);
+      if (opts?.logOpened) {
+        console.log("KRISTO_SUBSCRIPTION_MANAGE_NATIVE_OPENED", {
+          platform: Platform.OS,
+          source,
+          api: "Purchases.showManageSubscriptions",
+        });
+      }
+      return { opened: true, fallbackUsed: false, path: "show_manage_subscriptions" };
+    }
+  } catch (error) {
+    logRevenueCatException("showManageSubscriptions", error, { source });
+  }
+
+  try {
+    const { NativeModules } = require("react-native") as typeof import("react-native");
+    const nativeShowManage = NativeModules.RNPurchases?.showManageSubscriptions;
+    if (typeof nativeShowManage === "function") {
+      await nativeShowManage();
+      if (opts?.logOpened) {
+        console.log("KRISTO_SUBSCRIPTION_MANAGE_NATIVE_OPENED", {
+          platform: Platform.OS,
+          source,
+          api: "RNPurchases.showManageSubscriptions",
+        });
+      }
+      return { opened: true, fallbackUsed: false, path: "show_manage_subscriptions" };
+    }
+  } catch (error) {
+    logRevenueCatException("RNPurchases.showManageSubscriptions", error, { source });
+  }
+
+  return null;
+}
+
 /** Opens native subscription management (StoreKit sheet or store URL). */
 export async function openSubscriptionManagement(
   customerInfo?: CustomerInfo | null,
@@ -2960,6 +3075,34 @@ export async function openSubscriptionManagement(
     }
   }
 
+  if (shouldUseIosSandboxSubscriptionManageInstructions(info)) {
+    const managementURL = String(info?.managementURL || "").trim() || null;
+    const nativeResult = await tryOpenNativeIosManageSubscriptions({
+      source: opts?.source,
+      logAttempt: true,
+      logOpened: true,
+    });
+    if (nativeResult) {
+      return nativeResult;
+    }
+
+    console.log("KRISTO_SUBSCRIPTION_MANAGE_NATIVE_FALLBACK", {
+      platform: Platform.OS,
+      source: opts?.source || null,
+      dev: __DEV__,
+      sandboxEnvironment: true,
+      managementURLSkipped: Boolean(managementURL),
+      managementURL,
+      reason: "native_manage_unavailable_or_failed",
+    });
+
+    presentIosSandboxSubscriptionManageInstructions({
+      source: opts?.source,
+      customerInfo: info,
+    });
+    return { opened: true, fallbackUsed: true, path: "ios_sandbox_instructions" };
+  }
+
   const managementUrl = String(info?.managementURL || "").trim();
   if (managementUrl) {
     if (Platform.OS === "android") {
@@ -2975,15 +3118,9 @@ export async function openSubscriptionManagement(
     return { opened: true, fallbackUsed: false, path: "management_url" };
   }
 
-  try {
-    const showManage = (Purchases as { showManageSubscriptions?: () => Promise<void> })
-      .showManageSubscriptions;
-    if (typeof showManage === "function") {
-      await showManage.call(Purchases);
-      return { opened: true, fallbackUsed: false, path: "show_manage_subscriptions" };
-    }
-  } catch (error) {
-    logRevenueCatException("showManageSubscriptions", error);
+  const nativeResult = await tryOpenNativeIosManageSubscriptions({ source: opts?.source });
+  if (nativeResult) {
+    return nativeResult;
   }
 
   if (Platform.OS === "ios") {

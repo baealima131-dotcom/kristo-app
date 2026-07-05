@@ -221,6 +221,7 @@ export async function openAccountDeleteSubscriptionManagement(
 
   const manageResult = await openSubscriptionManagement(customerInfo, {
     allowGenericFallback: Platform.OS === "ios" || Platform.OS === "android",
+    source: "account-delete",
   });
 
   console.log("KRISTO_ACCOUNT_DELETE_OPEN_MANAGEMENT", {
