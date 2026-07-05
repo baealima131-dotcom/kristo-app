@@ -2645,8 +2645,90 @@ export type OpenSubscriptionManagementOptions = {
 export type OpenSubscriptionManagementResult = {
   opened: boolean;
   fallbackUsed: boolean;
-  path: "management_url" | "show_manage_subscriptions" | "ios_generic" | "android_generic" | "none";
+  path:
+    | "management_url"
+    | "show_manage_subscriptions"
+    | "ios_generic"
+    | "android_generic"
+    | "android_play_product_deeplink"
+    | "none";
 };
+
+const KRISTO_ANDROID_PACKAGE_NAME = "com.princefariji.kristoapp";
+
+function isGenericGooglePlaySubscriptionsManagementUrl(url: string): boolean {
+  const raw = String(url || "").trim();
+  if (!raw) return false;
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:") return false;
+    if (parsed.hostname !== "play.google.com") return false;
+    const path = parsed.pathname.replace(/\/+$/, "") || "/";
+    if (path !== "/store/account/subscriptions") return false;
+    return !parsed.searchParams.has("sku");
+  } catch {
+    return /^https:\/\/play\.google\.com\/store\/account\/subscriptions(?:\/)?(?:\?.*)?$/i.test(
+      raw
+    ) && !/[?&]sku=/i.test(raw);
+  }
+}
+
+function normalizeKristoPlayProductSku(
+  productId: string
+): typeof PREMIUM_MONTHLY_PRODUCT_ID | typeof PREMIUM_YEARLY_PRODUCT_ID | null {
+  const id = String(productId || "").trim();
+  if (!id) return null;
+  if (id === PREMIUM_MONTHLY_PRODUCT_ID || id === `${PREMIUM_MONTHLY_PRODUCT_ID}:monthly`) {
+    return PREMIUM_MONTHLY_PRODUCT_ID;
+  }
+  if (id === PREMIUM_YEARLY_PRODUCT_ID || id === `${PREMIUM_YEARLY_PRODUCT_ID}:yearly`) {
+    return PREMIUM_YEARLY_PRODUCT_ID;
+  }
+  return null;
+}
+
+function resolveActiveKristoPlayProductSku(
+  customerInfo: CustomerInfo | null | undefined
+): typeof PREMIUM_MONTHLY_PRODUCT_ID | typeof PREMIUM_YEARLY_PRODUCT_ID | null {
+  if (!customerInfo) return null;
+
+  for (const productId of customerInfo.activeSubscriptions || []) {
+    const sku = normalizeKristoPlayProductSku(productId);
+    if (sku) return sku;
+  }
+
+  for (const [productId, subscription] of Object.entries(
+    customerInfo.subscriptionsByProductIdentifier || {}
+  )) {
+    const sku = normalizeKristoPlayProductSku(productId);
+    if (!sku) continue;
+    if (
+      subscription?.isActive === true ||
+      subscriptionExpirationIsActive(subscription?.expiresDate)
+    ) {
+      return sku;
+    }
+  }
+
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  const sku = normalizeKristoPlayProductSku(String(entitlement?.productIdentifier || ""));
+  if (sku && subscriptionExpirationIsActive(entitlement?.expirationDate)) {
+    return sku;
+  }
+
+  return null;
+}
+
+function buildAndroidPlayProductSubscriptionManagementUrl(
+  sku: typeof PREMIUM_MONTHLY_PRODUCT_ID | typeof PREMIUM_YEARLY_PRODUCT_ID
+): string {
+  const params = new URLSearchParams({
+    sku,
+    package: KRISTO_ANDROID_PACKAGE_NAME,
+  });
+  return `https://play.google.com/store/account/subscriptions?${params.toString()}`;
+}
 
 /** Opens native subscription management (StoreKit sheet or store URL). */
 export async function openSubscriptionManagement(
@@ -2671,6 +2753,15 @@ export async function openSubscriptionManagement(
 
   const managementUrl = String(info?.managementURL || "").trim();
   if (managementUrl) {
+    if (Platform.OS === "android") {
+      const activeSku = resolveActiveKristoPlayProductSku(info);
+      if (activeSku && isGenericGooglePlaySubscriptionsManagementUrl(managementUrl)) {
+        const productUrl = buildAndroidPlayProductSubscriptionManagementUrl(activeSku);
+        await Linking.openURL(productUrl);
+        return { opened: true, fallbackUsed: false, path: "android_play_product_deeplink" };
+      }
+    }
+
     await Linking.openURL(managementUrl);
     return { opened: true, fallbackUsed: false, path: "management_url" };
   }
