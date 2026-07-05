@@ -15,15 +15,22 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { ChurchMediaSubscriptionOwnershipLock } from "../../lib/churchSubscriptionMediaSignals";
+import { formatPremiumRenewalDate } from "../../lib/payments/mobileSubscriptions";
 
 const GOLD = "#D9B35F";
 const LABEL_GOLD = "rgba(217,179,95,0.82)";
 const TEXT_PRIMARY = "rgba(255,255,255,0.96)";
 const TEXT_MUTED = "rgba(255,255,255,0.62)";
 
+export type SubscriptionStoreConflictModalVariant =
+  | "ownership_lock"
+  | "existing_subscription"
+  | "existing_subscription_cancelled_until_expiry";
+
 type SubscriptionStoreConflictModalProps = {
   visible: boolean;
   currentChurchId?: string | null;
+  variant?: SubscriptionStoreConflictModalVariant;
   lock?: ChurchMediaSubscriptionOwnershipLock | null;
   managing?: boolean;
   disabled?: boolean;
@@ -91,7 +98,60 @@ function resolveManageSubscriptionLabel(lock?: ChurchMediaSubscriptionOwnershipL
     : "Manage Apple Subscription";
 }
 
-function buildConflictMessage(lock?: ChurchMediaSubscriptionOwnershipLock | null): string {
+function resolveExistingSubscriptionExpiryLabel(
+  lock?: ChurchMediaSubscriptionOwnershipLock | null
+): string | null {
+  const label = String(lock?.expiresAtLabel || "").trim();
+  if (label) {
+    return label.replace(/^(Sandbox )?expires /i, "").trim() || null;
+  }
+  if (typeof lock?.expiresAt === "number" && Number.isFinite(lock.expiresAt)) {
+    return formatPremiumRenewalDate(new Date(lock.expiresAt));
+  }
+  return null;
+}
+
+function buildExistingSubscriptionMessage(lock?: ChurchMediaSubscriptionOwnershipLock | null): string {
+  const lockedChurchName = String(lock?.lockedChurchName || "").trim();
+  const storeIsPlay = lock?.store === "play_store";
+  const storeLabel = storeIsPlay ? "Google Play subscription" : "Apple subscription";
+  const manageTarget = storeIsPlay ? "Google Play" : "Apple";
+
+  const linkedLine = lockedChurchName
+    ? `Your existing subscription is linked to ${lockedChurchName}.`
+    : `We found an existing ${storeLabel} linked to a previous Kristo church or account.`;
+
+  return `${linkedLine} To use Media Premium with this church, first manage and cancel the previous subscription in ${manageTarget}. After the previous paid period ends, you can subscribe for this church.`;
+}
+
+function buildCancelledUntilExpiryMessage(
+  lock?: ChurchMediaSubscriptionOwnershipLock | null
+): string {
+  const storeIsPlay = lock?.store === "play_store";
+  const storeLabel = storeIsPlay ? "Google Play" : "Apple";
+  const expiryDate = resolveExistingSubscriptionExpiryLabel(lock);
+  const expiryClause = expiryDate
+    ? `paid access remains active until ${expiryDate}`
+    : "paid access remains active for the rest of the current billing period";
+
+  return (
+    `Your previous ${storeLabel} subscription is cancelled, but ${expiryClause} on the previous church or account. ` +
+    "You can try subscribing this church if the store allows a new purchase. " +
+    "The previous subscription will not transfer to this church."
+  );
+}
+
+function buildConflictMessage(
+  lock?: ChurchMediaSubscriptionOwnershipLock | null,
+  variant: SubscriptionStoreConflictModalVariant = "ownership_lock"
+): string {
+  if (variant === "existing_subscription_cancelled_until_expiry") {
+    return buildCancelledUntilExpiryMessage(lock);
+  }
+  if (variant === "existing_subscription") {
+    return buildExistingSubscriptionMessage(lock);
+  }
+
   const churchLabel = String(lock?.lockedChurchName || "a previous church").trim();
   const expiryLabel = String(lock?.expiresAtLabel || "").trim();
   const storeLabel = resolveStoreSubscriptionLabel(lock);
@@ -121,6 +181,7 @@ function buildConflictMessage(lock?: ChurchMediaSubscriptionOwnershipLock | null
 export function SubscriptionStoreConflictModal({
   visible,
   currentChurchId,
+  variant = "ownership_lock",
   lock,
   managing,
   disabled,
@@ -129,12 +190,51 @@ export function SubscriptionStoreConflictModal({
 }: SubscriptionStoreConflictModalProps) {
   const insets = useSafeAreaInsets();
   const { scale, fade, lift } = useModalEntrance(visible);
-  const message = useMemo(() => buildConflictMessage(lock), [lock]);
+  const message = useMemo(() => buildConflictMessage(lock, variant), [lock, variant]);
   const manageLabel = useMemo(() => resolveManageSubscriptionLabel(lock), [lock]);
   const expiryLabel = String(lock?.expiresAtLabel || "").trim();
+  const showExpiryBadge =
+    variant === "ownership_lock" && Boolean(expiryLabel);
+  const modalTitle =
+    variant === "existing_subscription_cancelled_until_expiry"
+      ? "Subscription Already Cancelled"
+      : "Existing Subscription Found";
+  const modalEyebrow =
+    variant === "existing_subscription_cancelled_until_expiry"
+      ? "CANCELLED SUBSCRIPTION"
+      : variant === "existing_subscription"
+        ? "EXISTING SUBSCRIPTION"
+        : "SUBSCRIPTION LINKED";
 
   useEffect(() => {
-    if (!visible || !lock?.blocked) return;
+    if (!visible) return;
+
+    if (variant === "existing_subscription_cancelled_until_expiry") {
+      console.log("KRISTO_SUBSCRIPTION_EXISTING_CANCELLED_UNTIL_EXPIRY_MODAL_OPENED", {
+        currentChurchId: String(currentChurchId || "").trim() || null,
+        lockedChurchId: lock?.lockedChurchId ?? null,
+        lockedChurchName: lock?.lockedChurchName ?? null,
+        store: lock?.store ?? null,
+        willRenew: lock?.willRenew ?? null,
+        expiresAt: lock?.expiresAt ?? null,
+        expiresAtLabel: lock?.expiresAtLabel ?? null,
+      });
+      return;
+    }
+
+    if (variant === "existing_subscription") {
+      console.log("KRISTO_SUBSCRIPTION_EXISTING_SUBSCRIPTION_MODAL_OPENED", {
+        currentChurchId: String(currentChurchId || "").trim() || null,
+        lockedChurchId: lock?.lockedChurchId ?? null,
+        lockedChurchName: lock?.lockedChurchName ?? null,
+        store: lock?.store ?? null,
+        willRenew: lock?.willRenew ?? null,
+        expiresAt: lock?.expiresAt ?? null,
+      });
+      return;
+    }
+
+    if (!lock?.blocked) return;
 
     console.log("KRISTO_SUBSCRIPTION_CONFLICT_MODAL_OPENED", {
       currentChurchId: String(currentChurchId || "").trim() || null,
@@ -144,7 +244,7 @@ export function SubscriptionStoreConflictModal({
       willRenew: lock.willRenew ?? null,
       expiresAt: lock.expiresAt ?? null,
     });
-  }, [visible, lock, currentChurchId]);
+  }, [visible, variant, lock, currentChurchId]);
 
   return (
     <Modal
@@ -179,15 +279,15 @@ export function SubscriptionStoreConflictModal({
                 </LinearGradient>
               </View>
 
-              {expiryLabel ? (
+              {showExpiryBadge ? (
                 <View style={s.statusBadge}>
                   <View style={s.statusBadgeDot} />
                   <Text style={s.statusBadgeText}>Paid access until {expiryLabel}</Text>
                 </View>
               ) : null}
 
-              <Text style={s.powerEyebrow}>SUBSCRIPTION LINKED</Text>
-              <Text style={s.powerTitle}>Existing Subscription Found</Text>
+              <Text style={s.powerEyebrow}>{modalEyebrow}</Text>
+              <Text style={s.powerTitle}>{modalTitle}</Text>
               <Text style={s.powerMessage}>{message}</Text>
             </View>
 

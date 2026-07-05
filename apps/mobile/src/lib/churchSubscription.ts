@@ -1,4 +1,4 @@
-import { Alert } from "react-native";
+import { Alert, Platform } from "react-native";
 import type { CustomerInfo } from "react-native-purchases";
 import { apiGet, apiPatch } from "./kristoApi";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
@@ -37,6 +37,7 @@ import type { ChurchMediaSubscriptionSource } from "./churchSubscriptionMediaSig
 import { logSubscriptionBypassIfEnabled } from "./subscriptionBypass";
 import {
   describeCustomerInfoSubscriptionDebug,
+  formatPremiumSubscriptionExpiryLabel,
   getActivePremiumEntitlement,
   getCustomerSubscriptionInfo,
   getRevenueCatConfiguredAppUserId,
@@ -1058,9 +1059,114 @@ export type SubscriptionPrepurchaseOwnershipResult =
       reason?: string | null;
       ownershipLock: ChurchMediaSubscriptionOwnershipLock | null;
     }
+  | {
+      status: "existing_subscription";
+      reason?: string | null;
+      ownershipLock: ChurchMediaSubscriptionOwnershipLock | null;
+      modalVariant: "existing_subscription" | "existing_subscription_cancelled_until_expiry";
+    }
   | { status: "unavailable"; reason?: string | null; httpStatus?: number | null };
 
 const PREPURCHASE_OWNERSHIP_ENDPOINT = "/api/church/subscription/prepurchase-ownership-check";
+
+export const CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED =
+  "cancelled-subscription-new-purchase-permitted";
+
+function isCancelledSubscriptionNewPurchasePermittedReason(
+  reason: string | null | undefined
+): boolean {
+  return String(reason || "").trim() === CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED;
+}
+
+export function isCancelledSubscriptionOverlapPermitted(
+  customerInfo: CustomerInfo | null | undefined,
+  lock?: ChurchMediaSubscriptionOwnershipLock | null
+): boolean {
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  const willRenew =
+    typeof lock?.willRenew === "boolean" ? lock.willRenew : entitlement?.willRenew ?? null;
+  return willRenew === false;
+}
+
+export function shouldSkipExistingStoreRecoveryForCancelledOverlap(args: {
+  customerInfo?: CustomerInfo | null;
+  ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null;
+}): boolean {
+  if (!isCancelledSubscriptionOverlapPermitted(args.customerInfo, args.ownershipLock)) {
+    return false;
+  }
+  const lock = args.ownershipLock;
+  return lock?.blocked === true || isSubscriptionOwnershipLockBlockingActivation(lock);
+}
+
+export function resolveStoreNewPurchaseBlockedUntilExpiryMessage(args: {
+  customerInfo?: CustomerInfo | null;
+  ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null;
+}): string {
+  const lock = args.ownershipLock ?? null;
+  const enriched = enrichExistingSubscriptionOwnershipLock(
+    lock ??
+      buildDeviceExistingSubscriptionLock(
+        Platform.OS === "android" ? "play_store" : "app_store"
+      ),
+    args.customerInfo
+  );
+  const storeIsPlay = enriched.store === "play_store";
+  const storeLabel = storeIsPlay ? "Google Play" : "Apple";
+  const expiryLabel = String(enriched.expiresAtLabel || "").trim();
+  const expiryDate = expiryLabel.replace(/^(Sandbox )?expires /i, "").trim();
+  const expiryClause = expiryDate
+    ? `until ${expiryDate}`
+    : "for the rest of the current billing period";
+
+  return (
+    `${storeLabel} still reports an active subscription on this account ${expiryClause}. ` +
+    "The store may reactivate your existing subscription instead of creating a new one, so this church cannot be activated from that purchase yet. " +
+    "Your previous church keeps paid access until the period ends. Try again after that date, or manage your subscription in the store."
+  );
+}
+
+async function resolveConflictPendingVerificationResult(args: {
+  churchId: string;
+  reason?: string | null;
+  body: any;
+}): Promise<SubscriptionPrepurchaseOwnershipResult> {
+  const customerInfo = await getCustomerSubscriptionInfo().catch(() => null);
+  const ownershipLock = enrichExistingSubscriptionOwnershipLock(
+    resolvePrepurchaseConflictLock(args.body),
+    customerInfo
+  );
+
+  if (isCancelledSubscriptionOverlapPermitted(customerInfo, ownershipLock)) {
+    console.log("KRISTO_SUBSCRIPTION_CANCELLED_OVERLAP_PURCHASE_PERMITTED", {
+      churchId: args.churchId,
+      reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+      store: ownershipLock.store ?? args.body?.store ?? null,
+      willRenew: ownershipLock.willRenew ?? null,
+      expiresAt: ownershipLock.expiresAt ?? null,
+      endpoint: PREPURCHASE_OWNERSHIP_ENDPOINT,
+    });
+    return {
+      status: "allowed",
+      reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+    };
+  }
+
+  console.log("KRISTO_SUBSCRIPTION_EXISTING_SUBSCRIPTION_PENDING", {
+    churchId: args.churchId,
+    reason: args.reason ?? null,
+    store: ownershipLock.store ?? args.body?.store ?? null,
+    lockedChurchId: ownershipLock.lockedChurchId ?? null,
+    lockedChurchName: ownershipLock.lockedChurchName ?? null,
+    endpoint: PREPURCHASE_OWNERSHIP_ENDPOINT,
+  });
+  return finalizeExistingSubscriptionResult({
+    churchId: args.churchId,
+    reason: args.reason ?? null,
+    ownershipLock,
+    customerInfo,
+  });
+}
 
 function isStructuredOwnershipConflictBody(body: any): boolean {
   if (!body || typeof body !== "object") return false;
@@ -1076,17 +1182,146 @@ function isStructuredOwnershipConflictBody(body: any): boolean {
   return lock?.blocked === true;
 }
 
+function isConflictPendingVerificationReason(reason: string | null | undefined): boolean {
+  return String(reason || "").trim() === "conflict-pending-verification";
+}
+
+function isUnverifiedStoreIdentityReason(reason: string | null | undefined): boolean {
+  return String(reason || "").trim() === "unverified-store-identity";
+}
+
 function isUnverifiedOwnershipReason(reason: string | null | undefined): boolean {
-  const normalized = String(reason || "").trim();
-  return (
-    normalized === "unverified-store-identity" ||
-    normalized === "conflict-pending-verification"
+  return isConflictPendingVerificationReason(reason) || isUnverifiedStoreIdentityReason(reason);
+}
+
+function resolvePrepurchaseConflictLock(body: any): ChurchMediaSubscriptionOwnershipLock {
+  const parsed = parseChurchMediaSubscriptionOwnershipLock(body);
+  if (parsed) {
+    return parsed;
+  }
+
+  const storeRaw = body?.store;
+  const store =
+    storeRaw === "app_store" || storeRaw === "play_store" ? storeRaw : null;
+  const lockedChurchId = String(body?.lockedChurchId || "").trim() || null;
+  const lockedChurchName = String(body?.lockedChurchName || "").trim() || null;
+  const expiresAt =
+    typeof body?.expiresAt === "number" && Number.isFinite(body.expiresAt) ? body.expiresAt : null;
+  const willRenew = typeof body?.willRenew === "boolean" ? body.willRenew : null;
+
+  return {
+    blocked: true,
+    isLockHolder: false,
+    lockedChurchId,
+    lockedChurchName,
+    expiresAt,
+    expiresAtLabel: null,
+    platform: store === "play_store" ? "android" : store === "app_store" ? "ios" : null,
+    store,
+    willRenew,
+    status: "active",
+    canPurchase: false,
+    canActivate: false,
+    message: null,
+  };
+}
+
+function buildDeviceExistingSubscriptionLock(
+  store: "app_store" | "play_store" | null
+): ChurchMediaSubscriptionOwnershipLock {
+  return {
+    blocked: true,
+    isLockHolder: false,
+    lockedChurchId: null,
+    lockedChurchName: null,
+    expiresAt: null,
+    expiresAtLabel: null,
+    platform: store === "play_store" ? "android" : store === "app_store" ? "ios" : null,
+    store,
+    willRenew: null,
+    status: "active",
+    canPurchase: false,
+    canActivate: false,
+    message: null,
+  };
+}
+
+function enrichExistingSubscriptionOwnershipLock(
+  lock: ChurchMediaSubscriptionOwnershipLock,
+  customerInfo: CustomerInfo | null | undefined
+): ChurchMediaSubscriptionOwnershipLock {
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  if (!entitlement || !hasPremiumEntitlement(customerInfo)) {
+    return lock;
+  }
+
+  const willRenew =
+    typeof lock.willRenew === "boolean" ? lock.willRenew : entitlement.willRenew ?? null;
+  const expirationMs = entitlement.expirationDate
+    ? Date.parse(String(entitlement.expirationDate))
+    : Number.NaN;
+  const expiresAt =
+    lock.expiresAt ??
+    (Number.isFinite(expirationMs) ? expirationMs : null);
+  const expiresAtLabel =
+    lock.expiresAtLabel ??
+    (expiresAt
+      ? formatPremiumSubscriptionExpiryLabel(new Date(expiresAt), { customerInfo })
+      : null);
+
+  return {
+    ...lock,
+    willRenew,
+    expiresAt,
+    expiresAtLabel,
+  };
+}
+
+function resolveExistingSubscriptionModalVariant(
+  lock: ChurchMediaSubscriptionOwnershipLock,
+  customerInfo: CustomerInfo | null | undefined
+): "existing_subscription" | "existing_subscription_cancelled_until_expiry" {
+  if (!hasPremiumEntitlement(customerInfo)) {
+    return "existing_subscription";
+  }
+
+  const entitlement = getActivePremiumEntitlement(customerInfo);
+  const willRenew =
+    typeof lock.willRenew === "boolean" ? lock.willRenew : entitlement?.willRenew ?? null;
+  if (willRenew === false) {
+    return "existing_subscription_cancelled_until_expiry";
+  }
+
+  return "existing_subscription";
+}
+
+async function finalizeExistingSubscriptionResult(args: {
+  churchId: string;
+  reason?: string | null;
+  ownershipLock: ChurchMediaSubscriptionOwnershipLock;
+  customerInfo?: CustomerInfo | null;
+}): Promise<Extract<SubscriptionPrepurchaseOwnershipResult, { status: "existing_subscription" }>> {
+  const customerInfo =
+    args.customerInfo ?? (await getCustomerSubscriptionInfo().catch(() => null));
+  const ownershipLock = enrichExistingSubscriptionOwnershipLock(
+    args.ownershipLock,
+    customerInfo
   );
+  const modalVariant = resolveExistingSubscriptionModalVariant(ownershipLock, customerInfo);
+
+  return {
+    status: "existing_subscription",
+    reason: args.reason ?? null,
+    ownershipLock,
+    modalVariant,
+  };
 }
 
 async function assertDeviceStoreSubscriptionAllowsPurchase(churchId: string): Promise<{
   allowed: boolean;
   reason?: string;
+  ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null;
+  customerInfo?: CustomerInfo | null;
 }> {
   const info = await getCustomerSubscriptionInfo().catch(() => null);
   const revenueCatAppUserId = getRevenueCatConfiguredAppUserId();
@@ -1106,15 +1341,37 @@ async function assertDeviceStoreSubscriptionAllowsPurchase(churchId: string): Pr
     (originalAppUserId.startsWith("$RCAnonymousID:") || /^CH7-/i.test(originalAppUserId));
 
   if (aliased) {
-    console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+    const entitlement = getActivePremiumEntitlement(info);
+    const deviceLock = buildDeviceExistingSubscriptionLock(
+      Platform.OS === "android" ? "play_store" : "app_store"
+    );
+    if (isCancelledSubscriptionOverlapPermitted(info, { ...deviceLock, willRenew: entitlement?.willRenew ?? null })) {
+      console.log("KRISTO_SUBSCRIPTION_CANCELLED_OVERLAP_PURCHASE_PERMITTED", {
+        churchId,
+        reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        blockLayer: "device-alias",
+        revenueCatOriginalAppUserId: originalAppUserId,
+        willRenew: entitlement?.willRenew ?? null,
+      });
+      return { allowed: true, customerInfo: info };
+    }
+
+    console.log("KRISTO_SUBSCRIPTION_EXISTING_SUBSCRIPTION_PENDING", {
       churchId,
       reason: "device-subscription-alias-unverified",
       revenueCatOriginalAppUserId: originalAppUserId,
     });
-    return { allowed: false, reason: "conflict-pending-verification" };
+    return {
+      allowed: false,
+      reason: "conflict-pending-verification",
+      ownershipLock: buildDeviceExistingSubscriptionLock(
+        Platform.OS === "android" ? "play_store" : "app_store"
+      ),
+      customerInfo: info,
+    };
   }
 
-  return { allowed: true };
+  return { allowed: true, customerInfo: info };
 }
 
 export async function runSubscriptionPrepurchaseOwnershipGate(args: {
@@ -1176,34 +1433,79 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
       endpoint,
     });
 
-    if (res.status === 404 || res.status === 423 || res.status >= 500 || body == null) {
+    if (body && res.status === 423) {
+      const reason = String(body.reason || "").trim();
+      if (isConflictPendingVerificationReason(reason)) {
+        return resolveConflictPendingVerificationResult({
+          churchId,
+          reason,
+          body,
+        });
+      }
+      if (isUnverifiedStoreIdentityReason(reason)) {
+        console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+          churchId,
+          status: res.status,
+          reason,
+          endpoint,
+        });
+        return {
+          status: "unavailable",
+          reason,
+          httpStatus: res.status,
+        };
+      }
+    }
+
+    if (res.status === 404 || res.status >= 500 || body == null) {
       console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
         churchId,
         status: res.status,
         reason:
-          res.status === 404
-            ? "route-not-found"
-            : isUnverifiedOwnershipReason(body?.reason)
-              ? String(body.reason)
-              : res.status === 423
-                ? "ownership-check-unverified"
-                : "invalid-or-error-response",
+          res.status === 404 ? "route-not-found" : "invalid-or-error-response",
         endpoint,
       });
       return {
         status: "unavailable",
-        reason:
-          isUnverifiedOwnershipReason(body?.reason)
-            ? String(body.reason)
-            : res.status === 404
-              ? "route-not-found"
-              : "ownership-check-unavailable",
+        reason: res.status === 404 ? "route-not-found" : "ownership-check-unavailable",
+        httpStatus: res.status,
+      };
+    }
+
+    if (res.status === 423) {
+      console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+        churchId,
+        status: res.status,
+        reason: String(body?.reason || "ownership-check-unverified"),
+        endpoint,
+      });
+      return {
+        status: "unavailable",
+        reason: String(body?.reason || "ownership-check-unverified"),
         httpStatus: res.status,
       };
     }
 
     if (res.status === 409 && isStructuredOwnershipConflictBody(body)) {
       const ownershipLock = parseChurchMediaSubscriptionOwnershipLock(body);
+      const customerInfo = await getCustomerSubscriptionInfo().catch(() => null);
+      if (
+        ownershipLock &&
+        isCancelledSubscriptionOverlapPermitted(customerInfo, ownershipLock)
+      ) {
+        console.log("KRISTO_SUBSCRIPTION_CANCELLED_OVERLAP_PURCHASE_PERMITTED", {
+          churchId,
+          reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+          blockLayer: "structured-409-conflict",
+          lockedChurchId: ownershipLock.lockedChurchId ?? null,
+          willRenew: ownershipLock.willRenew ?? null,
+          endpoint,
+        });
+        return {
+          status: "allowed",
+          reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        };
+      }
       console.log("KRISTO_SUBSCRIPTION_EXISTING_STORE_CONFLICT", {
         churchId,
         reason: body?.reason ?? null,
@@ -1222,7 +1524,14 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
     }
 
     if (!res.ok) {
-      if (isUnverifiedOwnershipReason(body?.reason)) {
+      if (isConflictPendingVerificationReason(body?.reason)) {
+        return resolveConflictPendingVerificationResult({
+          churchId,
+          reason: body?.reason ?? null,
+          body,
+        });
+      }
+      if (isUnverifiedStoreIdentityReason(body?.reason)) {
         console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
           churchId,
           status: res.status,
@@ -1250,6 +1559,24 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
 
     if (body?.allowed === false && isStructuredOwnershipConflictBody(body)) {
       const ownershipLock = parseChurchMediaSubscriptionOwnershipLock(body);
+      const customerInfo = await getCustomerSubscriptionInfo().catch(() => null);
+      if (
+        ownershipLock &&
+        isCancelledSubscriptionOverlapPermitted(customerInfo, ownershipLock)
+      ) {
+        console.log("KRISTO_SUBSCRIPTION_CANCELLED_OVERLAP_PURCHASE_PERMITTED", {
+          churchId,
+          reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+          blockLayer: "allowed-false-conflict",
+          lockedChurchId: ownershipLock.lockedChurchId ?? null,
+          willRenew: ownershipLock.willRenew ?? null,
+          endpoint,
+        });
+        return {
+          status: "allowed",
+          reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        };
+      }
       console.log("KRISTO_SUBSCRIPTION_EXISTING_STORE_CONFLICT", {
         churchId,
         reason: body?.reason ?? null,
@@ -1275,7 +1602,25 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
       endpoint,
     });
 
-    if (body?.productId && !body?.storeSubscriptionIdentity) {
+    if (
+      isCancelledSubscriptionNewPurchasePermittedReason(body?.reason) ||
+      body?.cancelledOverlapPurchasePermitted === true
+    ) {
+      console.log("KRISTO_SUBSCRIPTION_CANCELLED_OVERLAP_PURCHASE_PERMITTED", {
+        churchId,
+        reason: body?.reason ?? CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        storeSubscriptionIdentity: body?.storeSubscriptionIdentity ?? null,
+        willRenew: body?.willRenew ?? null,
+        endpoint,
+      });
+    }
+
+    if (
+      body?.productId &&
+      !body?.storeSubscriptionIdentity &&
+      !isCancelledSubscriptionNewPurchasePermittedReason(body?.reason) &&
+      body?.cancelledOverlapPurchasePermitted !== true
+    ) {
       console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
         churchId,
         reason: "allowed-without-store-identity",
@@ -1288,6 +1633,33 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
 
     const deviceCheck = await assertDeviceStoreSubscriptionAllowsPurchase(churchId);
     if (!deviceCheck.allowed) {
+      if (isConflictPendingVerificationReason(deviceCheck.reason)) {
+        const customerInfo = deviceCheck.customerInfo ?? null;
+        const ownershipLock =
+          deviceCheck.ownershipLock ??
+          buildDeviceExistingSubscriptionLock(
+            Platform.OS === "android" ? "play_store" : "app_store"
+          );
+        if (isCancelledSubscriptionOverlapPermitted(customerInfo, ownershipLock)) {
+          console.log("KRISTO_SUBSCRIPTION_CANCELLED_OVERLAP_PURCHASE_PERMITTED", {
+            churchId,
+            reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+            blockLayer: "device-check",
+            willRenew: ownershipLock.willRenew ?? null,
+            endpoint,
+          });
+          return {
+            status: "allowed",
+            reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+          };
+        }
+        return finalizeExistingSubscriptionResult({
+          churchId,
+          reason: deviceCheck.reason ?? "conflict-pending-verification",
+          ownershipLock,
+          customerInfo,
+        });
+      }
       return {
         status: "unavailable",
         reason: deviceCheck.reason ?? "conflict-pending-verification",
@@ -1319,7 +1691,7 @@ export async function checkSubscriptionPrepurchaseOwnership(args: {
   if (result.status === "allowed") {
     return { allowed: true, reason: result.reason ?? null, ownershipLock: null };
   }
-  if (result.status === "conflict") {
+  if (result.status === "conflict" || result.status === "existing_subscription") {
     return {
       allowed: false,
       reason: result.reason ?? null,
@@ -1450,7 +1822,10 @@ async function syncChurchSubscriptionAfterPurchaseInner(
   const premiumStatus = await fetchChurchMediaPremiumServerStatus(churchId, args.headers, {
     bustCache: true,
   });
-  if (isSubscriptionOwnershipLockBlockingActivation(premiumStatus.subscriptionOwnershipLock)) {
+  if (
+    !purchaseConfirmed &&
+    isSubscriptionOwnershipLockBlockingActivation(premiumStatus.subscriptionOwnershipLock)
+  ) {
     const lock = premiumStatus.subscriptionOwnershipLock;
     console.log("KRISTO_SUBSCRIPTION_LOCK_BLOCKED_ACTIVATION", {
       churchId,

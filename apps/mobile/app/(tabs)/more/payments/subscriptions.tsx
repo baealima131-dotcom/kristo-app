@@ -69,6 +69,7 @@ import {
   logAndroidBillingConfigDiagnostics,
   logAndroidPurchaseError,
   getRevenueCatPurchaseErrorDetail,
+  getActivePremiumEntitlement,
   isExistingStoreSubscriptionError,
   EXISTING_STORE_SUBSCRIPTION_SYNC_TITLE,
   EXISTING_STORE_SUBSCRIPTION_SYNC_MESSAGE,
@@ -80,7 +81,9 @@ import {
   isPastorSessionRole,
   logChurchSubscriptionContext,
   recoverChurchSubscriptionFromExistingStore,
+  resolveStoreNewPurchaseBlockedUntilExpiryMessage,
   runSubscriptionPrepurchaseOwnershipGate,
+  shouldSkipExistingStoreRecoveryForCancelledOverlap,
   syncChurchSubscriptionAfterPurchase,
   type ChurchMediaPremiumServerStatus,
   type ChurchSubscriptionActivationSource,
@@ -91,7 +94,10 @@ import {
   shouldFailClosedSubscriptionPurchase,
 } from "../../../../src/lib/churchSubscriptionMediaSignals";
 import { SubscriptionOwnershipLockCard } from "../../../../src/components/payments/SubscriptionOwnershipLockCard";
-import { SubscriptionStoreConflictModal } from "../../../../src/components/payments/SubscriptionStoreConflictModal";
+import {
+  SubscriptionStoreConflictModal,
+  type SubscriptionStoreConflictModalVariant,
+} from "../../../../src/components/payments/SubscriptionStoreConflictModal";
 import type { ChurchMediaSubscriptionOwnershipLock } from "../../../../src/lib/churchSubscriptionMediaSignals";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { churchIdsMatch } from "../../../../src/lib/churchPremiumAccess";
@@ -702,6 +708,8 @@ export default function PaymentsSubscriptionsScreen() {
     null
   );
   const [storeConflictModalOpen, setStoreConflictModalOpen] = useState(false);
+  const [storeConflictVariant, setStoreConflictVariant] =
+    useState<SubscriptionStoreConflictModalVariant>("ownership_lock");
   const [storeConflictLock, setStoreConflictLock] = useState<ChurchMediaSubscriptionOwnershipLock | null>(
     null
   );
@@ -1119,6 +1127,7 @@ export default function PaymentsSubscriptionsScreen() {
 
     if (sync.storeOwnershipConflict) {
       setStoreConflictLock(sync.ownershipLock ?? null);
+      setStoreConflictVariant("ownership_lock");
       setStoreConflictModalOpen(true);
     }
 
@@ -1286,8 +1295,15 @@ export default function PaymentsSubscriptionsScreen() {
       setSubscriptionError("Unable to verify subscription ownership. Try again in a moment.");
       return;
     }
+    if (prepurchase.status === "existing_subscription") {
+      setStoreConflictLock(prepurchase.ownershipLock ?? null);
+      setStoreConflictVariant(prepurchase.modalVariant);
+      setStoreConflictModalOpen(true);
+      return;
+    }
     if (prepurchase.status === "conflict") {
       setStoreConflictLock(prepurchase.ownershipLock ?? null);
+      setStoreConflictVariant("ownership_lock");
       setStoreConflictModalOpen(true);
       return;
     }
@@ -1310,6 +1326,7 @@ export default function PaymentsSubscriptionsScreen() {
     const { sync } = recovery;
     if (sync.storeOwnershipConflict) {
       setStoreConflictLock(sync.ownershipLock ?? null);
+      setStoreConflictVariant("ownership_lock");
       setStoreConflictModalOpen(true);
       return;
     }
@@ -1400,8 +1417,15 @@ export default function PaymentsSubscriptionsScreen() {
         setSubscriptionError("Unable to verify subscription ownership. Try again in a moment.");
         return;
       }
+      if (prepurchase.status === "existing_subscription") {
+        setStoreConflictLock(prepurchase.ownershipLock ?? null);
+        setStoreConflictVariant(prepurchase.modalVariant);
+        setStoreConflictModalOpen(true);
+        return;
+      }
       if (prepurchase.status === "conflict") {
         setStoreConflictLock(prepurchase.ownershipLock ?? null);
+        setStoreConflictVariant("ownership_lock");
         setStoreConflictModalOpen(true);
         return;
       }
@@ -1492,6 +1516,29 @@ export default function PaymentsSubscriptionsScreen() {
         Alert.alert("Purchase cancelled", "No charge was made.");
       } else if (isExistingStoreSubscriptionError(error)) {
         console.log("KRISTO_SUBSCRIPTION_ALREADY_OWNED_RECOVER", { plan, churchId });
+        const freshStatus = await fetchChurchMediaPremiumServerStatus(churchId, headers, {
+          bustCache: true,
+        }).catch(() => null);
+        if (
+          shouldSkipExistingStoreRecoveryForCancelledOverlap({
+            customerInfo,
+            ownershipLock: freshStatus?.subscriptionOwnershipLock ?? ownershipLock,
+          })
+        ) {
+          console.log("KRISTO_SUBSCRIPTION_STORE_REFUSED_NEW_PURCHASE_UNTIL_EXPIRY", {
+            churchId,
+            plan,
+            willRenew: getActivePremiumEntitlement(customerInfo)?.willRenew ?? null,
+          });
+          Alert.alert(
+            "Store subscription still active",
+            resolveStoreNewPurchaseBlockedUntilExpiryMessage({
+              customerInfo,
+              ownershipLock: freshStatus?.subscriptionOwnershipLock ?? ownershipLock,
+            })
+          );
+          return;
+        }
         try {
           await attemptExistingStoreSubscriptionRecovery(plan);
         } catch (recoverError: any) {
@@ -1876,6 +1923,7 @@ export default function PaymentsSubscriptionsScreen() {
 
       <SubscriptionStoreConflictModal
         visible={storeConflictModalOpen}
+        variant={storeConflictVariant}
         currentChurchId={churchId}
         lock={storeConflictLock}
         managing={managingStoreConflict}

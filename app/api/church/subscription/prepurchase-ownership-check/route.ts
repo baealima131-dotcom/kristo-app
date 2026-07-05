@@ -83,5 +83,8 @@ export async function POST(req: NextRequest) {
     storeSubscriptionIdentity: result.verification?.storeSubscriptionIdentity ?? null,
     productId: result.verification?.productId ?? null,
     store: result.verification?.store ?? null,
+    willRenew: result.verification?.willRenew ?? result.lock?.willRenew ?? null,
+    cancelledOverlapPurchasePermitted:
+      result.reason === "cancelled-subscription-new-purchase-permitted",
   });
 }

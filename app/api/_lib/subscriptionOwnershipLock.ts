@@ -398,6 +398,7 @@ function buildLockMessage(args: {
   lockedChurchName: string;
   lockedChurchDeleted?: boolean;
   expiresAtLabel: string | null;
+  cancelledAllowsPurchaseAttempt?: boolean;
 }): string {
   const churchLabel = args.lockedChurchDeleted
     ? `a previous church (${args.lockedChurchName})`
@@ -405,6 +406,13 @@ function buildLockMessage(args: {
   const expirySuffix = args.expiresAtLabel
     ? ` Paid access remains reserved until ${args.expiresAtLabel}.`
     : " Paid access remains reserved until the original billing period ends.";
+  if (args.cancelledAllowsPurchaseAttempt) {
+    return (
+      `Your previous store subscription is cancelled but still active until the paid period ends.${expirySuffix} ` +
+      "You can try subscribing this church if Apple or Google allows a new purchase. " +
+      "The previous subscription will not transfer to this church."
+    );
+  }
   return (
     `This store subscription is already linked to ${churchLabel}. ` +
     `It cannot be moved to another church.${expirySuffix} ` +
@@ -430,12 +438,25 @@ function emptyLockPayload(): SubscriptionOwnershipLockApiPayload {
   };
 }
 
+export const CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED =
+  "cancelled-subscription-new-purchase-permitted";
+
+function cancelledSubscriptionAllowsNewPurchaseAttempt(args: {
+  lock?: SubscriptionOwnershipLockRecord | null;
+  verification?: ChurchPremiumVerification | null;
+}): boolean {
+  const willRenew = args.lock?.willRenew ?? args.verification?.willRenew ?? null;
+  return willRenew === false;
+}
+
 function payloadFromLock(args: {
   lock: SubscriptionOwnershipLockRecord;
   churchId: string;
 }): SubscriptionOwnershipLockApiPayload {
   const isLockHolder = churchIdsMatch(args.lock.lockedChurchId, args.churchId);
   const blocked = !isLockHolder;
+  const cancelledAllowsPurchaseAttempt =
+    blocked && cancelledSubscriptionAllowsNewPurchaseAttempt({ lock: args.lock });
   const expiresAtLabel = formatExpiresAtLabel(args.lock.expiresAt);
   return {
     blocked,
@@ -448,13 +469,14 @@ function payloadFromLock(args: {
     store: args.lock.store,
     willRenew: args.lock.willRenew ?? null,
     status: args.lock.status,
-    canPurchase: !blocked,
+    canPurchase: !blocked || cancelledAllowsPurchaseAttempt,
     canActivate: !blocked,
     message: blocked
       ? buildLockMessage({
           lockedChurchName: args.lock.lockedChurchName,
           lockedChurchDeleted: args.lock.lockedChurchDeleted === true,
           expiresAtLabel,
+          cancelledAllowsPurchaseAttempt,
         })
       : null,
   };
@@ -761,6 +783,7 @@ export async function ensureSubscriptionOwnershipLockFromActiveMediaProfile(args
 export async function assertAppStoreSubscriptionActivationAllowed(args: {
   churchId: string;
   ownerUserId: string;
+  verification?: ChurchPremiumVerification | null;
 }): Promise<{
   allowed: boolean;
   reason?: string;
@@ -782,6 +805,31 @@ export async function assertAppStoreSubscriptionActivationAllowed(args: {
   }
 
   if (churchIdsMatch(active.lockedChurchId, churchId)) {
+    return { allowed: true, lock: active };
+  }
+
+  const incomingIdentity = String(args.verification?.storeSubscriptionIdentity || "").trim();
+  const lockedIdentity = String(active.storeSubscriptionIdentity || "").trim();
+  if (incomingIdentity && lockedIdentity && incomingIdentity !== lockedIdentity) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_ALLOWED_NEW_STORE_IDENTITY", {
+      ownerUserId,
+      churchId,
+      lockedChurchId: active.lockedChurchId,
+      lockedChurchName: active.lockedChurchName,
+      lockedStoreSubscriptionIdentity: lockedIdentity,
+      incomingStoreSubscriptionIdentity: incomingIdentity,
+      willRenew: active.willRenew ?? null,
+    });
+    return { allowed: true, lock: active };
+  }
+  if (incomingIdentity && !lockedIdentity && active.willRenew === false) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_ALLOWED_CANCELLED_NEW_IDENTITY", {
+      ownerUserId,
+      churchId,
+      lockedChurchId: active.lockedChurchId,
+      incomingStoreSubscriptionIdentity: incomingIdentity,
+      willRenew: active.willRenew ?? null,
+    });
     return { allowed: true, lock: active };
   }
 
@@ -895,6 +943,7 @@ export async function assertStoreSubscriptionOwnershipForActivation(args: {
   const pastorCheck = await assertAppStoreSubscriptionActivationAllowed({
     churchId,
     ownerUserId,
+    verification: args.verification,
   });
   if (!pastorCheck.allowed) {
     console.log("KRISTO_SUBSCRIPTION_ACTIVATION_BLOCKED_OWNER_MISMATCH", {
@@ -1048,7 +1097,36 @@ export async function checkStoreSubscriptionPrepurchaseOwnership(args: {
     churchId,
     ownerUserId,
   });
+  const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
+
   if (!pastorCheck.allowed && pastorCheck.lock) {
+    if (
+      cancelledSubscriptionAllowsNewPurchaseAttempt({
+        lock: pastorCheck.lock,
+        verification,
+      })
+    ) {
+      const payload = payloadFromLock({ lock: pastorCheck.lock, churchId });
+      console.log("KRISTO_SUBSCRIPTION_CANCELLED_OVERLAP_PURCHASE_PERMITTED", {
+        churchId,
+        ownerUserId,
+        reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        blockLayer: "pastor-lock-prepurchase",
+        lockedChurchId: pastorCheck.lock.lockedChurchId,
+        lockedChurchName: pastorCheck.lock.lockedChurchName,
+        willRenew: pastorCheck.lock.willRenew ?? verification.willRenew ?? null,
+        expiresAt: pastorCheck.lock.expiresAt,
+        store: pastorCheck.lock.store,
+      });
+      return {
+        allowed: true,
+        reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        lock: pastorCheck.lock,
+        verification,
+        payload,
+      };
+    }
+
     const payload = payloadFromLock({ lock: pastorCheck.lock, churchId });
     console.log("KRISTO_SUBSCRIPTION_EXISTING_STORE_CONFLICT", {
       churchId,
@@ -1067,12 +1145,11 @@ export async function checkStoreSubscriptionPrepurchaseOwnership(args: {
       allowed: false,
       reason: pastorCheck.reason || "subscription-ownership-lock",
       lock: pastorCheck.lock,
-      verification: null,
+      verification,
       payload,
     };
   }
 
-  const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
   if (
     !verification.active ||
     verification.bypassed ||
@@ -1092,6 +1169,30 @@ export async function checkStoreSubscriptionPrepurchaseOwnership(args: {
     verification,
   });
   if (!identityCheck.verified) {
+    if (
+      identityCheck.reason === "conflict-pending-verification" &&
+      cancelledSubscriptionAllowsNewPurchaseAttempt({ verification })
+    ) {
+      console.log("KRISTO_SUBSCRIPTION_CANCELLED_OVERLAP_PURCHASE_PERMITTED", {
+        churchId,
+        ownerUserId,
+        reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        blockLayer: "conflict-pending-verification",
+        willRenew: verification.willRenew ?? null,
+        productId: verification.productId ?? null,
+        store: verification.store ?? null,
+      });
+      return {
+        allowed: true,
+        reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        lock: pastorCheck.lock,
+        verification,
+        payload: pastorCheck.lock
+          ? payloadFromLock({ lock: pastorCheck.lock, churchId })
+          : emptyPayload,
+      };
+    }
+
     return {
       allowed: false,
       reason: identityCheck.reason || "unverified-store-identity",
@@ -1141,6 +1242,33 @@ export async function checkStoreSubscriptionPrepurchaseOwnership(args: {
   }
 
   if (!ownership.allowed && ownership.lock) {
+    if (
+      cancelledSubscriptionAllowsNewPurchaseAttempt({
+        lock: ownership.lock,
+        verification,
+      })
+    ) {
+      const payload = payloadFromLock({ lock: ownership.lock, churchId });
+      console.log("KRISTO_SUBSCRIPTION_CANCELLED_OVERLAP_PURCHASE_PERMITTED", {
+        churchId,
+        ownerUserId,
+        reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        blockLayer: "store-identity-prepurchase",
+        lockedChurchId: ownership.lock.lockedChurchId,
+        lockedChurchName: ownership.lock.lockedChurchName,
+        willRenew: ownership.lock.willRenew ?? verification.willRenew ?? null,
+        storeSubscriptionIdentity: ownership.lock.storeSubscriptionIdentity ?? null,
+        expiresAt: ownership.lock.expiresAt,
+      });
+      return {
+        allowed: true,
+        reason: CANCELLED_SUBSCRIPTION_NEW_PURCHASE_PERMITTED,
+        lock: ownership.lock,
+        verification,
+        payload,
+      };
+    }
+
     const payload = payloadFromLock({ lock: ownership.lock, churchId });
     console.log("KRISTO_SUBSCRIPTION_EXISTING_STORE_CONFLICT", {
       churchId,
