@@ -42,6 +42,9 @@ import {
   resolveMonthlyIntroTrialEligible,
   openSubscriptionManagement,
   canOpenAndroidPlaySubscriptionManagement,
+  getActiveEntitlementKeys,
+  hasActivePremiumProduct,
+  resolveActiveSubscriptionPlan,
   resolveAppStoreManageFallbackMessage,
   resolveCheckoutFooterText,
   resolveSubscriptionPackagesLoadingMessage,
@@ -66,6 +69,7 @@ import {
   isSubscriptionOwnershipLockBlockingPurchase,
   shouldFailClosedSubscriptionPurchase,
   type ChurchMediaSubscriptionOwnershipLock,
+  type ChurchMediaSubscriptionSource,
 } from "../../../../src/lib/churchSubscriptionMediaSignals";
 import { SubscriptionOwnershipLockCard } from "../../../../src/components/payments/SubscriptionOwnershipLockCard";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
@@ -92,6 +96,15 @@ const PLAN_META: Record<
     benefits: ["Everything in Monthly", "Best yearly value", "Priority media upgrades"],
   },
 };
+
+const OFFLINE_ACTIVATION_MESSAGE =
+  "This church was activated using an offline activation code. When access expires, contact an authorized Agent to activate the church again.";
+
+const BACKEND_MANAGED_PREMIUM_MESSAGE =
+  "Premium active — managed by church/backend activation. This access is not billed through the app store on this device and cannot be cancelled here. Contact your church or Kristo support if access should change.";
+
+const KRISTO_MANAGED_ACCESS_ALERT_TITLE = "Subscription access";
+const APP_STORE_MANAGE_ALERT_TITLE = "Manage / Cancel subscription";
 
 function extractRevenueCatErrorCode(message: string | null): number | null {
   const raw = String(message || "");
@@ -120,6 +133,8 @@ export default function PaymentsCheckoutScreen() {
   const [reloadToken, setReloadToken] = useState(0);
   const [checkoutChurchId, setCheckoutChurchId] = useState("");
   const [serverSubscriptionActive, setServerSubscriptionActive] = useState(false);
+  const [subscriptionStatusSource, setSubscriptionStatusSource] =
+    useState<ChurchMediaSubscriptionSource | null>(null);
   const [subscriptionOwnershipLock, setSubscriptionOwnershipLock] =
     useState<ChurchMediaSubscriptionOwnershipLock | null>(null);
   const [lockStatusKnown, setLockStatusKnown] = useState(false);
@@ -260,6 +275,7 @@ export default function PaymentsCheckoutScreen() {
         if (!alive) return;
         setCheckoutChurchId(churchId);
         setServerSubscriptionActive(server.serverSubscriptionActive === true);
+        setSubscriptionStatusSource(server.subscriptionSource ?? null);
         setSubscriptionOwnershipLock(server.subscriptionOwnershipLock);
         setLockStatusKnown(server.lockStatusKnown === true);
         setMonthlyPackage(monthly);
@@ -660,21 +676,87 @@ export default function PaymentsCheckoutScreen() {
   async function handleManageSubscription() {
     if (submitting) return;
 
+    const manageInfoRef = { current: customerInfo as CustomerInfo | null };
+
+    const logManageDiag = (extra: Record<string, unknown> = {}) => {
+      const info = manageInfoRef.current;
+      const managementURL = String(info?.managementURL || "").trim();
+      console.log("KRISTO_SUBSCRIPTION_MANAGE_DIAG", {
+        screen: "checkout",
+        platform: Platform.OS,
+        hasCustomerInfo: !!info,
+        managementURL: managementURL || null,
+        activeEntitlementIds: getActiveEntitlementKeys(info),
+        activeSubscriptionIds: [...(info?.activeSubscriptions || [])],
+        resolvedPlan: info ? resolveActiveSubscriptionPlan(info) : null,
+        subscriptionStatusSource,
+        serverSubscriptionActive,
+        hasPlayPremiumOnDevice: hasActivePremiumProduct(info),
+        ...extra,
+      });
+    };
+
     try {
       setSubmitting(true);
-      if (
-        Platform.OS === "android" &&
-        !canOpenAndroidPlaySubscriptionManagement(customerInfo)
-      ) {
-        Alert.alert("Manage / Cancel subscription", resolveAppStoreManageFallbackMessage());
+
+      if (!manageInfoRef.current) {
+        try {
+          manageInfoRef.current = await getCustomerSubscriptionInfo();
+        } catch {
+          manageInfoRef.current = null;
+        }
+      }
+
+      if (subscriptionStatusSource === "offline_activation") {
+        logManageDiag({ fallbackUsed: false, opened: false, gatedReason: "offline_activation" });
+        Alert.alert(KRISTO_MANAGED_ACCESS_ALERT_TITLE, OFFLINE_ACTIVATION_MESSAGE);
         return;
       }
 
-      const manageResult = await openSubscriptionManagement(customerInfo, {
+      if (subscriptionStatusSource === "backend_activation" || subscriptionStatusSource === null) {
+        logManageDiag({
+          fallbackUsed: false,
+          opened: false,
+          gatedReason: "backend_activation",
+        });
+        Alert.alert(KRISTO_MANAGED_ACCESS_ALERT_TITLE, BACKEND_MANAGED_PREMIUM_MESSAGE);
+        return;
+      }
+
+      if (subscriptionStatusSource !== "app_store") {
+        logManageDiag({
+          fallbackUsed: false,
+          opened: false,
+          gatedReason: "non_app_store_source",
+        });
+        Alert.alert(KRISTO_MANAGED_ACCESS_ALERT_TITLE, BACKEND_MANAGED_PREMIUM_MESSAGE);
+        return;
+      }
+
+      if (
+        Platform.OS === "android" &&
+        !canOpenAndroidPlaySubscriptionManagement(manageInfoRef.current)
+      ) {
+        logManageDiag({
+          fallbackUsed: false,
+          opened: false,
+          gatedReason: "no_play_subscription_on_device",
+        });
+        Alert.alert(APP_STORE_MANAGE_ALERT_TITLE, resolveAppStoreManageFallbackMessage());
+        return;
+      }
+
+      const manageResult = await openSubscriptionManagement(manageInfoRef.current, {
         allowGenericFallback: Platform.OS === "ios",
       });
+      logManageDiag({
+        fallbackUsed: manageResult.fallbackUsed,
+        opened: manageResult.opened,
+        managePath: manageResult.path,
+      });
+
       if (!manageResult.opened) {
-        Alert.alert("Manage / Cancel subscription", resolveAppStoreManageFallbackMessage());
+        Alert.alert(APP_STORE_MANAGE_ALERT_TITLE, resolveAppStoreManageFallbackMessage());
         return;
       }
 
@@ -684,6 +766,11 @@ export default function PaymentsCheckoutScreen() {
       setSubscriptionSelectedPlan(effective.selectedPlan);
       setSubscriptionPlanStatus(hasPremiumEntitlement(info) ? "active" : "expired");
     } catch (error: any) {
+      console.log("KRISTO_SUBSCRIPTION_MANAGE_FAILED", {
+        screen: "checkout",
+        message: String(error?.message || error || ""),
+      });
+      logManageDiag({ fallbackUsed: false, opened: false, error: String(error?.message || error || "") });
       Alert.alert("Could not open subscriptions", resolveAppStoreManageFallbackMessage());
     } finally {
       setSubmitting(false);
