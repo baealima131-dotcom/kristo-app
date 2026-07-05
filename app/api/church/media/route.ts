@@ -18,6 +18,10 @@ import {
   shouldPreserveActiveSubscriptionWithoutRevenueCat,
   syncChurchSubscriptionFromRevenueCat,
 } from "@/app/api/_lib/churchSubscriptionSync";
+import {
+  releaseSubscriptionOwnershipLockForChurch,
+  resolveSubscriptionOwnershipLockForChurch,
+} from "@/app/api/_lib/subscriptionOwnershipLock";
 import { verifyChurchPremiumEntitlement } from "@/app/api/_lib/revenuecat";
 import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 
@@ -165,6 +169,11 @@ export async function GET(req: NextRequest) {
             mediaForResponse = deactivated;
             subscriptionActive = false;
             access = await evaluateChurchMediaAccess({ churchId, userId });
+            await releaseSubscriptionOwnershipLockForChurch({
+              ownerUserId: String(access.actualPastorUserId || userId || "").trim(),
+              churchId,
+              releaseReason: "cancelled",
+            });
             console.log("KRISTO_CHURCH_MEDIA_PROFILE_AFTER_DEACTIVATE", {
               churchId,
               profileSubscriptionActive: deactivated.subscriptionActive ?? false,
@@ -255,11 +264,19 @@ export async function GET(req: NextRequest) {
       profileMissing: !hasProfile,
     });
 
+    const lockOwnerUserId = String(access.actualPastorUserId || userId || "").trim();
+    const { payload: subscriptionOwnershipLock } = await resolveSubscriptionOwnershipLockForChurch({
+      churchId,
+      ownerUserId: lockOwnerUserId,
+      media: mediaForResponse,
+    });
+
     return NextResponse.json({
       ok: true,
       media: canViewProfile ? mediaForResponse : null,
       profileMissing: !hasProfile,
       subscriptionActive,
+      subscriptionOwnershipLock,
       viewerCanManage: access.canManageMediaHosts,
       viewerIsHost: access.isMediaHost,
       canOpenMediaScreen: access.canOpenMediaScreen,
@@ -413,6 +430,18 @@ export async function PATCH(req: Request) {
             sandboxPurchase: sync.sandboxPurchase === true,
           },
           { status: 402 }
+        );
+      }
+
+      if (sync.reason === "subscription-ownership-lock") {
+        return NextResponse.json(
+          {
+            ok: false,
+            error:
+              "This Kristo ID already has an active subscription for another church. Manage or cancel that subscription first.",
+            reason: sync.reason,
+          },
+          { status: 409 }
         );
       }
 

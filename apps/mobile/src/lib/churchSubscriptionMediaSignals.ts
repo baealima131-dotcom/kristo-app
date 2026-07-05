@@ -199,6 +199,83 @@ export type ChurchMediaSubscriptionSource =
   | "offline_activation"
   | "backend_activation";
 
+export type ChurchMediaSubscriptionOwnershipLock = {
+  blocked: boolean;
+  isLockHolder: boolean;
+  lockedChurchId: string | null;
+  lockedChurchName: string | null;
+  expiresAt: number | null;
+  expiresAtLabel: string | null;
+  platform: "ios" | "android" | null;
+  store: "app_store" | "play_store" | null;
+  status: "active" | "expired" | "released" | null;
+  canPurchase: boolean;
+  canActivate: boolean;
+  message: string | null;
+};
+
+export function parseChurchMediaSubscriptionOwnershipLock(
+  res: any | null | undefined
+): ChurchMediaSubscriptionOwnershipLock | null {
+  const raw = res?.subscriptionOwnershipLock;
+  if (!raw || typeof raw !== "object") return null;
+
+  const blocked = raw.blocked === true;
+  const isLockHolder = raw.isLockHolder === true;
+  const lockedChurchId = String(raw.lockedChurchId || "").trim() || null;
+  const lockedChurchName = String(raw.lockedChurchName || "").trim() || null;
+  const expiresAt =
+    typeof raw.expiresAt === "number" && Number.isFinite(raw.expiresAt) ? raw.expiresAt : null;
+  const expiresAtLabel = String(raw.expiresAtLabel || "").trim() || null;
+  const platform = raw.platform === "ios" || raw.platform === "android" ? raw.platform : null;
+  const store =
+    raw.store === "app_store" || raw.store === "play_store" ? raw.store : null;
+  const status =
+    raw.status === "active" || raw.status === "expired" || raw.status === "released"
+      ? raw.status
+      : null;
+  const canPurchase = raw.canPurchase !== false;
+  const canActivate = raw.canActivate !== false;
+  const message = String(raw.message || "").trim() || null;
+
+  if (
+    !blocked &&
+    !isLockHolder &&
+    !lockedChurchId &&
+    !lockedChurchName &&
+    !message
+  ) {
+    return null;
+  }
+
+  return {
+    blocked,
+    isLockHolder,
+    lockedChurchId,
+    lockedChurchName,
+    expiresAt,
+    expiresAtLabel,
+    platform,
+    store,
+    status,
+    canPurchase,
+    canActivate,
+    message,
+  };
+}
+
+export function isSubscriptionOwnershipLockBlockingPurchase(
+  lock: ChurchMediaSubscriptionOwnershipLock | null | undefined
+): boolean {
+  return lock?.blocked === true && lock?.canPurchase === false;
+}
+
+export function isSubscriptionOwnershipLockBlockingActivation(
+  lock: ChurchMediaSubscriptionOwnershipLock | null | undefined
+): boolean {
+  return lock?.blocked === true && lock?.canActivate === false;
+}
+
 export function parseChurchMediaSubscriptionSource(
   media: ChurchSubscriptionRecord | null | undefined,
   res?: { subscriptionSource?: unknown } | null

@@ -8,6 +8,11 @@ import {
   parseSubscriptionExpiresAtMs,
   reconcileChurchSubscriptionExpiryNotifications,
 } from "@/app/api/_lib/churchMediaNotifications";
+import {
+  assertAppStoreSubscriptionActivationAllowed,
+  ensureSubscriptionOwnershipLockFromActiveMediaProfile,
+  upsertSubscriptionOwnershipLockAfterAppStoreActivation,
+} from "@/app/api/_lib/subscriptionOwnershipLock";
 import { verifyChurchPremiumEntitlement, isVerifiedChurchPremiumReason } from "@/app/api/_lib/revenuecat";
 import {
   getChurchMediaByChurchId,
@@ -124,6 +129,12 @@ export async function reconcileChurchMediaSubscriptionSource(args: {
       revenueCatLane: verification.revenueCatLane ?? null,
       productId: verification.productId,
     });
+    if (next?.ownerUserId) {
+      await ensureSubscriptionOwnershipLockFromActiveMediaProfile({
+        ownerUserId: next.ownerUserId,
+        media: next,
+      });
+    }
     return {
       media: next,
       classified: true,
@@ -237,6 +248,28 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
     return {
       ...empty,
       reason: verification.reason,
+      media: mediaBefore,
+      revenueCatLane: verification.revenueCatLane ?? null,
+      sandboxPurchase: verification.sandboxPurchase === true,
+    };
+  }
+
+  const ownerUserId = String(access.actualPastorUserId || requesterUserId || "").trim();
+  if (mediaBefore?.subscriptionActive && mediaBefore.subscriptionSource === "app_store") {
+    await ensureSubscriptionOwnershipLockFromActiveMediaProfile({
+      ownerUserId,
+      media: mediaBefore,
+    });
+  }
+
+  const lockCheck = await assertAppStoreSubscriptionActivationAllowed({
+    churchId,
+    ownerUserId,
+  });
+  if (!lockCheck.allowed) {
+    return {
+      ...empty,
+      reason: lockCheck.reason || "subscription-ownership-lock",
       media: mediaBefore,
       revenueCatLane: verification.revenueCatLane ?? null,
       sandboxPurchase: verification.sandboxPurchase === true,
@@ -402,6 +435,16 @@ export async function syncChurchSubscriptionFromRevenueCat(args: {
           message: String(notifyError?.message || notifyError),
         });
       }
+    }
+
+    if (ownerUserId && isChurchSubscriptionActiveFromRecord(media)) {
+      await upsertSubscriptionOwnershipLockAfterAppStoreActivation({
+        ownerUserId,
+        churchId,
+        verification,
+        subscriptionPlan: resolvedPlan,
+        expiresAtMs,
+      });
     }
   }
 

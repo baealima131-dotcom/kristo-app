@@ -20,10 +20,17 @@ import {
   readLocalScheduleEntitlementActive,
   readSessionMediaProfileSubscriptionActive,
   isOfflineActivationFromMediaRouteResponse,
+  parseChurchMediaSubscriptionOwnershipLock,
   parseChurchMediaSubscriptionSource,
+  isSubscriptionOwnershipLockBlockingActivation,
+  type ChurchMediaSubscriptionOwnershipLock,
   type ChurchSubscriptionRecord,
 } from "./churchSubscriptionMediaSignals";
 export type { ChurchMediaSubscriptionSource } from "./churchSubscriptionMediaSignals";
+export {
+  isBackendManagedMediaPremiumStatus,
+  isSubscriptionOwnershipLockBlockingPurchase,
+} from "./churchSubscriptionMediaSignals";
 import type { ChurchMediaSubscriptionSource } from "./churchSubscriptionMediaSignals";
 import { logSubscriptionBypassIfEnabled } from "./subscriptionBypass";
 import {
@@ -570,12 +577,6 @@ export type ChurchSubscriptionServerStatus = {
   routeFailed?: boolean;
 };
 
-export {
-  isBackendManagedMediaPremiumStatus,
-  isOfflineActivationFromMediaRouteResponse,
-  parseChurchMediaSubscriptionSource,
-} from "./churchSubscriptionMediaSignals";
-
 /** Media Premium screen: raw `/api/church/media` only — no RevenueCat or session merge. */
 export type ChurchMediaPremiumServerStatus = {
   churchId: string;
@@ -583,6 +584,7 @@ export type ChurchMediaPremiumServerStatus = {
   subscriptionPlan: SubscriptionPlanKey | null;
   subscriptionExpiresAt: number | null;
   subscriptionSource: ChurchMediaSubscriptionSource | null;
+  subscriptionOwnershipLock: ChurchMediaSubscriptionOwnershipLock | null;
   routeFailed: boolean;
   source: "server_media_api";
 };
@@ -660,6 +662,7 @@ export async function fetchChurchMediaPremiumServerStatus(
   const subscriptionSource = serverSubscriptionActive
     ? parseChurchMediaSubscriptionSource(media, res)
     : null;
+  const subscriptionOwnershipLock = parseChurchMediaSubscriptionOwnershipLock(res);
 
   console.log("KRISTO_CHURCH_MEDIA_SERVER_RESPONSE", {
     churchId: cid,
@@ -667,6 +670,7 @@ export async function fetchChurchMediaPremiumServerStatus(
     subscriptionExpiresAt,
     subscriptionPlan,
     subscriptionSource,
+    subscriptionOwnershipLockBlocked: subscriptionOwnershipLock?.blocked === true,
     source: "server_media_api",
     routeFailed,
     explicitServerActive: explicitActive,
@@ -678,6 +682,7 @@ export async function fetchChurchMediaPremiumServerStatus(
     subscriptionPlan,
     subscriptionExpiresAt,
     subscriptionSource,
+    subscriptionOwnershipLock,
     routeFailed,
     source: "server_media_api",
   };
@@ -1091,6 +1096,25 @@ async function syncChurchSubscriptionAfterPurchaseInner(
     activationSource: activationSource || null,
     isPastor,
   });
+
+  const premiumStatus = await fetchChurchMediaPremiumServerStatus(churchId, args.headers);
+  if (isSubscriptionOwnershipLockBlockingActivation(premiumStatus.subscriptionOwnershipLock)) {
+    const lock = premiumStatus.subscriptionOwnershipLock;
+    console.log("KRISTO_SUBSCRIPTION_LOCK_BLOCKED_ACTIVATION", {
+      churchId,
+      userId,
+      activationSource: activationSource || null,
+      lockedChurchId: lock?.lockedChurchId ?? null,
+      lockedChurchName: lock?.lockedChurchName ?? null,
+      expiresAt: lock?.expiresAt ?? null,
+    });
+    return {
+      entitlementActive: false,
+      churchActivated: false,
+      churchSubscriptionActive: premiumStatus.serverSubscriptionActive === true,
+      canUseMediaTools: false,
+    };
+  }
 
   const churchCustomerInfo = await logInRevenueCatForChurchSubscription(churchId, {
     syncPurchases:

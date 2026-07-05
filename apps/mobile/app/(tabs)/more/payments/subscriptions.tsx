@@ -80,6 +80,11 @@ import {
   type ChurchMediaPremiumServerStatus,
   type ChurchSubscriptionActivationSource,
 } from "../../../../src/lib/churchSubscription";
+import {
+  isSubscriptionOwnershipLockBlockingActivation,
+  isSubscriptionOwnershipLockBlockingPurchase,
+} from "../../../../src/lib/churchSubscriptionMediaSignals";
+import { SubscriptionOwnershipLockCard } from "../../../../src/components/payments/SubscriptionOwnershipLockCard";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { churchIdsMatch } from "../../../../src/lib/churchPremiumAccess";
 import { onChurchPremiumAccessChanged } from "../../../../src/lib/kristoProfileEvents";
@@ -1062,6 +1067,23 @@ export default function PaymentsSubscriptionsScreen() {
       return { activated: false, skipped: false as const, canUseMediaTools: false };
     }
 
+    if (isSubscriptionOwnershipLockBlockingActivation(mediaPremiumStatus?.subscriptionOwnershipLock)) {
+      const lock = mediaPremiumStatus?.subscriptionOwnershipLock;
+      console.log("KRISTO_SUBSCRIPTION_LOCK_BLOCKED_ACTIVATION", {
+        churchId: resolvedChurchId,
+        activationSource: opts.activationSource,
+        lockedChurchId: lock?.lockedChurchId ?? null,
+        lockedChurchName: lock?.lockedChurchName ?? null,
+        expiresAt: lock?.expiresAt ?? null,
+      });
+      return {
+        entitlementActive: false,
+        churchActivated: false,
+        churchSubscriptionActive: false,
+        canUseMediaTools: false,
+      };
+    }
+
     const headers = getKristoHeaders({
       userId: sessionUserId,
       role: sessionRole as any,
@@ -1207,6 +1229,21 @@ export default function PaymentsSubscriptionsScreen() {
   async function handlePurchasePlan(plan: SubscriptionPlanKey) {
     if (submittingPlan) return;
 
+    const ownershipLock = mediaPremiumStatus?.subscriptionOwnershipLock;
+    if (isSubscriptionOwnershipLockBlockingPurchase(ownershipLock)) {
+      console.log("KRISTO_SUBSCRIPTION_LOCK_BLOCKED_PURCHASE", {
+        churchId,
+        plan,
+        lockedChurchId: ownershipLock?.lockedChurchId ?? null,
+        lockedChurchName: ownershipLock?.lockedChurchName ?? null,
+        expiresAt: ownershipLock?.expiresAt ?? null,
+      });
+      if (ownershipLock?.message) {
+        setSubscriptionError(ownershipLock.message);
+      }
+      return;
+    }
+
     const targetPackage = plan === "monthly" ? monthlyPackage : yearlyPackage;
     if (!targetPackage) {
       setSubscriptionError(resolveSubscriptionPackagesLoadingMessage());
@@ -1325,6 +1362,8 @@ export default function PaymentsSubscriptionsScreen() {
   const showManageSubscriptionAction = isAppStoreSubscription;
   const deviceCanOpenStoreManagement = isDeviceManageableAppStoreSubscription(customerInfo);
   const screenState = resolveMediaPremiumDisplayScreenState(mediaPremiumStatus);
+  const ownershipLock = mediaPremiumStatus?.subscriptionOwnershipLock;
+  const ownershipLockBlocksPurchase = isSubscriptionOwnershipLockBlockingPurchase(ownershipLock);
   const billing = resolveServerPremiumBillingDetails(mediaPremiumStatus);
   const expiryLabel = resolveMediaPremiumExpiryLabel(mediaPremiumStatus, customerInfo);
   const renewalLabel =
@@ -1540,6 +1579,10 @@ export default function PaymentsSubscriptionsScreen() {
               </View>
             ) : null}
 
+            {ownershipLockBlocksPurchase && ownershipLock ? (
+              <SubscriptionOwnershipLockCard lock={ownershipLock} />
+            ) : null}
+
             {screenState === "offline" ? (
               <OfflineActivationSubscriptionCard expiryLabel={expiryLabel} />
             ) : null}
@@ -1606,7 +1649,7 @@ export default function PaymentsSubscriptionsScreen() {
               </>
             ) : null}
 
-            {screenState === "none" ? (
+            {screenState === "none" && !ownershipLockBlocksPurchase ? (
               <>
                 <Text style={s.sectionHeading}>Choose a plan</Text>
                 <Text style={s.sectionSub}>

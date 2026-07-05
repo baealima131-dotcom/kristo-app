@@ -57,10 +57,16 @@ import {
 import {
   isPastorSessionRole,
   syncChurchSubscriptionAfterPurchase,
-  fetchChurchSubscriptionStatus,
+  fetchChurchMediaPremiumServerStatus,
   logChurchSubscriptionContext,
   type ChurchSubscriptionActivationSource,
 } from "../../../../src/lib/churchSubscription";
+import {
+  isSubscriptionOwnershipLockBlockingActivation,
+  isSubscriptionOwnershipLockBlockingPurchase,
+  type ChurchMediaSubscriptionOwnershipLock,
+} from "../../../../src/lib/churchSubscriptionMediaSignals";
+import { SubscriptionOwnershipLockCard } from "../../../../src/components/payments/SubscriptionOwnershipLockCard";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { getKristoHeaders } from "../../../../src/lib/kristoHeaders";
 import { useKristoSession } from "../../../../src/lib/KristoSessionProvider";
@@ -113,6 +119,8 @@ export default function PaymentsCheckoutScreen() {
   const [reloadToken, setReloadToken] = useState(0);
   const [checkoutChurchId, setCheckoutChurchId] = useState("");
   const [serverSubscriptionActive, setServerSubscriptionActive] = useState(false);
+  const [subscriptionOwnershipLock, setSubscriptionOwnershipLock] =
+    useState<ChurchMediaSubscriptionOwnershipLock | null>(null);
 
   useEffect(() => {
     setPaymentsCurrentModule("subscriptions");
@@ -244,11 +252,12 @@ export default function PaymentsCheckoutScreen() {
           }
         }
 
-        const server = await fetchChurchSubscriptionStatus(headers);
+        const server = await fetchChurchMediaPremiumServerStatus(churchId, headers);
 
         if (!alive) return;
         setCheckoutChurchId(churchId);
-        setServerSubscriptionActive(!!server.subscriptionActive);
+        setServerSubscriptionActive(server.serverSubscriptionActive === true);
+        setSubscriptionOwnershipLock(server.subscriptionOwnershipLock);
         setMonthlyPackage(monthly);
         setYearlyPackage(yearly);
         setCustomerInfo(info);
@@ -259,8 +268,8 @@ export default function PaymentsCheckoutScreen() {
           screen: "checkout",
           churchId,
           customerInfo: info,
-          churchSubscriptionActive: server.subscriptionActive ?? undefined,
-          canUseMediaTools: server.canUseMediaTools ?? undefined,
+          churchSubscriptionActive: server.serverSubscriptionActive ?? undefined,
+          canUseMediaTools: undefined,
         });
         logEntitlementAudit({
           customerInfo: info,
@@ -319,7 +328,9 @@ export default function PaymentsCheckoutScreen() {
   const monthlyTrialEligible =
     safePlan === "monthly" &&
     resolveMonthlyIntroTrialEligible(customerInfo, monthlyPackage, monthlyIntroEligibility);
- 
+  const ownershipLockBlocksPurchase =
+    isSubscriptionOwnershipLockBlockingPurchase(subscriptionOwnershipLock);
+
   const isPastor = isPastorSessionRole(sessionRole);
 
   useEffect(() => {
@@ -475,6 +486,21 @@ export default function PaymentsCheckoutScreen() {
   async function handleSyncMediaTools() {
     if (submitting || !isPastor) return;
     if (!isSubscribedForCurrentChurch) return;
+    if (isSubscriptionOwnershipLockBlockingActivation(subscriptionOwnershipLock)) {
+      console.log("KRISTO_SUBSCRIPTION_LOCK_BLOCKED_ACTIVATION", {
+        churchId: checkoutChurchId,
+        phase: "explicit_sync",
+        lockedChurchId: subscriptionOwnershipLock?.lockedChurchId ?? null,
+        lockedChurchName: subscriptionOwnershipLock?.lockedChurchName ?? null,
+        expiresAt: subscriptionOwnershipLock?.expiresAt ?? null,
+      });
+      Alert.alert(
+        "Subscription locked",
+        subscriptionOwnershipLock?.message ||
+          "This Kristo ID already has an active subscription for another church."
+      );
+      return;
+    }
 
     try {
       setSubmitting(true);
@@ -525,6 +551,21 @@ export default function PaymentsCheckoutScreen() {
 
   async function handleConfirmCheckout() {
     if (submitting || isSubscribedForCurrentChurch) return;
+
+    if (isSubscriptionOwnershipLockBlockingPurchase(subscriptionOwnershipLock)) {
+      console.log("KRISTO_SUBSCRIPTION_LOCK_BLOCKED_PURCHASE", {
+        churchId: checkoutChurchId,
+        plan: safePlan,
+        lockedChurchId: subscriptionOwnershipLock?.lockedChurchId ?? null,
+        lockedChurchName: subscriptionOwnershipLock?.lockedChurchName ?? null,
+        expiresAt: subscriptionOwnershipLock?.expiresAt ?? null,
+      });
+      setPackagesError(
+        subscriptionOwnershipLock?.message ||
+          "This Kristo ID already has an active subscription for another church."
+      );
+      return;
+    }
 
     if (!targetPackage) {
       setPackagesError(resolveSubscriptionPackagesUnavailableMessage());
@@ -719,6 +760,10 @@ export default function PaymentsCheckoutScreen() {
             </View>
           ) : null}
 
+          {ownershipLockBlocksPurchase && subscriptionOwnershipLock ? (
+            <SubscriptionOwnershipLockCard lock={subscriptionOwnershipLock} />
+          ) : null}
+
           <View style={s.ctaBlock}>
             {isSubscribedForCurrentChurch ? (
               <>
@@ -750,10 +795,17 @@ export default function PaymentsCheckoutScreen() {
             ) : (
               <Pressable
                 onPress={handleConfirmCheckout}
-                disabled={submitting || loadingPackages || !targetPackage}
+                disabled={
+                  submitting ||
+                  loadingPackages ||
+                  !targetPackage ||
+                  ownershipLockBlocksPurchase
+                }
                 style={({ pressed }) => [
                   s.primaryBtn,
-                  (submitting || loadingPackages || !targetPackage) ? s.disabledBtn : null,
+                  (submitting || loadingPackages || !targetPackage || ownershipLockBlocksPurchase)
+                    ? s.disabledBtn
+                    : null,
                   pressed ? s.pressed : null,
                 ]}
               >
@@ -761,7 +813,11 @@ export default function PaymentsCheckoutScreen() {
                   <ActivityIndicator color="#111" />
                 ) : (
                   <Text style={s.primaryBtnText}>
-                    {loadingPackages ? "Loading..." : confirmLabel}
+                    {ownershipLockBlocksPurchase
+                      ? "Subscription locked"
+                      : loadingPackages
+                        ? "Loading..."
+                        : confirmLabel}
                   </Text>
                 )}
               </Pressable>
