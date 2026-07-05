@@ -45,6 +45,7 @@ import {
   logEntitlementAudit,
   logInRevenueCatForChurchSubscription,
   refreshCustomerInfoAfterStorePurchase,
+  recoverStoreSubscriptionForChurch,
   resolveActiveSubscriptionPlan,
 } from "./payments/mobileSubscriptions";
 
@@ -842,8 +843,11 @@ export type ChurchSubscriptionActivationSource = "purchase" | "restore" | "expli
 export type ChurchSubscriptionActivationResult = {
   activated: boolean;
   stopRetry?: boolean;
+  ownershipConflict?: boolean;
+  ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null;
   error?: string | null;
   status?: number | null;
+  reason?: string | null;
 };
 
 const PASTOR_MEDIA_FORBIDDEN_ERROR = "Only the church Pastor can manage Church Media";
@@ -966,7 +970,24 @@ export async function syncChurchSubscriptionFromRevenueCat(
       return { activated: true };
     }
 
-    const stopRetry = isPastorMediaForbiddenResponse(res);
+    const ownershipLock = parseChurchMediaSubscriptionOwnershipLock(res);
+    const reason = String(res?.reason || "").trim();
+    const ownershipConflict =
+      Number(res?.status || 0) === 409 &&
+      (reason === "store-subscription-ownership-conflict" ||
+        reason === "subscription-ownership-lock");
+    if (ownershipConflict) {
+      console.log("KRISTO_SUBSCRIPTION_ACTIVATION_BLOCKED_OWNER_MISMATCH", {
+        churchId: cid,
+        subscriptionPlan,
+        reason,
+        lockedChurchId: ownershipLock?.lockedChurchId ?? null,
+        lockedChurchName: ownershipLock?.lockedChurchName ?? null,
+        expiresAt: ownershipLock?.expiresAt ?? null,
+      });
+    }
+
+    const stopRetry = isPastorMediaForbiddenResponse(res) || ownershipConflict;
     console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_FAILED", {
       churchId: cid,
       subscriptionPlan,
@@ -982,8 +1003,11 @@ export async function syncChurchSubscriptionFromRevenueCat(
     return {
       activated: false,
       stopRetry,
+      ownershipConflict,
+      ownershipLock,
       error: String(res?.error || res?.reason || "").trim() || null,
       status: Number(res?.status || 0) || null,
+      reason: reason || null,
     };
   } catch (error: any) {
     console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_FAILED", {
@@ -1011,7 +1035,202 @@ export type SyncChurchSubscriptionAfterPurchaseResult = {
   churchSubscriptionActive: boolean;
   canUseMediaTools: boolean;
   subscriptionPlan?: "monthly" | "yearly";
+  storeOwnershipConflict?: boolean;
+  ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null;
 };
+
+export type SubscriptionPrepurchaseOwnershipResult =
+  | { status: "allowed"; reason?: string | null }
+  | {
+      status: "conflict";
+      reason?: string | null;
+      ownershipLock: ChurchMediaSubscriptionOwnershipLock | null;
+    }
+  | { status: "unavailable"; reason?: string | null; httpStatus?: number | null };
+
+const PREPURCHASE_OWNERSHIP_ENDPOINT = "/api/church/subscription/prepurchase-ownership-check";
+
+function isStructuredOwnershipConflictBody(body: any): boolean {
+  if (!body || typeof body !== "object") return false;
+  if (body.allowed === true) return false;
+  const reason = String(body.reason || "").trim();
+  if (
+    reason === "store-subscription-ownership-conflict" ||
+    reason === "subscription-ownership-lock"
+  ) {
+    return true;
+  }
+  const lock = parseChurchMediaSubscriptionOwnershipLock(body);
+  return lock?.blocked === true;
+}
+
+export async function runSubscriptionPrepurchaseOwnershipGate(args: {
+  churchId: string;
+  headers: Record<string, string>;
+}): Promise<SubscriptionPrepurchaseOwnershipResult> {
+  const churchId = String(args.churchId || "").trim();
+  const endpoint = PREPURCHASE_OWNERSHIP_ENDPOINT;
+
+  console.log("KRISTO_SUBSCRIPTION_PREPURCHASE_OWNERSHIP_CHECK_START", {
+    churchId,
+    endpoint,
+  });
+
+  if (!churchId) {
+    console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+      churchId: null,
+      reason: "missing-church-id",
+      endpoint,
+    });
+    return { status: "unavailable", reason: "missing-church-id" };
+  }
+
+  const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+  if (!base) {
+    console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+      churchId,
+      reason: "missing-api-base",
+      endpoint,
+    });
+    return { status: "unavailable", reason: "missing-api-base" };
+  }
+
+  await logInRevenueCatForChurchSubscription(churchId, { syncPurchases: true });
+
+  const url = `${base}${endpoint}`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        ...args.headers,
+      },
+      body: JSON.stringify({ churchId }),
+    });
+    const rawText = await res.text();
+    let body: any = null;
+    try {
+      body = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      body = null;
+    }
+
+    console.log("KRISTO_SUBSCRIPTION_PREPURCHASE_ROUTE_RESPONSE", {
+      status: res.status,
+      body: body ?? (rawText ? rawText.slice(0, 500) : null),
+      churchId,
+      endpoint,
+    });
+
+    if (res.status === 404 || res.status >= 500 || body == null) {
+      console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+        churchId,
+        status: res.status,
+        reason: res.status === 404 ? "route-not-found" : "invalid-or-error-response",
+        endpoint,
+      });
+      return {
+        status: "unavailable",
+        reason: res.status === 404 ? "route-not-found" : "ownership-check-unavailable",
+        httpStatus: res.status,
+      };
+    }
+
+    if (res.status === 409 && isStructuredOwnershipConflictBody(body)) {
+      const ownershipLock = parseChurchMediaSubscriptionOwnershipLock(body);
+      console.log("KRISTO_SUBSCRIPTION_EXISTING_STORE_CONFLICT", {
+        churchId,
+        reason: body?.reason ?? null,
+        lockedChurchId: ownershipLock?.lockedChurchId ?? null,
+        lockedChurchName: ownershipLock?.lockedChurchName ?? null,
+        expiresAt: ownershipLock?.expiresAt ?? null,
+        storeSubscriptionIdentity:
+          body?.storeSubscriptionIdentity ?? body?.subscriptionOwnershipLock?.storeSubscriptionIdentity ?? null,
+        endpoint,
+      });
+      return {
+        status: "conflict",
+        reason: body?.reason ?? null,
+        ownershipLock,
+      };
+    }
+
+    if (!res.ok) {
+      console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+        churchId,
+        status: res.status,
+        reason: body?.reason ?? body?.error ?? "ownership-check-failed",
+        endpoint,
+      });
+      return {
+        status: "unavailable",
+        reason: String(body?.reason || body?.error || "ownership-check-failed"),
+        httpStatus: res.status,
+      };
+    }
+
+    if (body?.allowed === false && isStructuredOwnershipConflictBody(body)) {
+      const ownershipLock = parseChurchMediaSubscriptionOwnershipLock(body);
+      console.log("KRISTO_SUBSCRIPTION_EXISTING_STORE_CONFLICT", {
+        churchId,
+        reason: body?.reason ?? null,
+        lockedChurchId: ownershipLock?.lockedChurchId ?? null,
+        lockedChurchName: ownershipLock?.lockedChurchName ?? null,
+        expiresAt: ownershipLock?.expiresAt ?? null,
+        storeSubscriptionIdentity:
+          body?.storeSubscriptionIdentity ?? body?.subscriptionOwnershipLock?.storeSubscriptionIdentity ?? null,
+        endpoint,
+      });
+      return {
+        status: "conflict",
+        reason: body?.reason ?? null,
+        ownershipLock,
+      };
+    }
+
+    console.log("KRISTO_SUBSCRIPTION_PREPURCHASE_OWNERSHIP_CHECK", {
+      churchId,
+      allowed: true,
+      reason: body?.reason ?? "ok",
+      storeSubscriptionIdentity: body?.storeSubscriptionIdentity ?? null,
+      endpoint,
+    });
+
+    return { status: "allowed", reason: body?.reason ?? "ok" };
+  } catch (error: any) {
+    console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+      churchId,
+      reason: "network-error",
+      message: String(error?.message || error || "unknown"),
+      endpoint,
+    });
+    return { status: "unavailable", reason: "network-error" };
+  }
+}
+
+/** @deprecated Use runSubscriptionPrepurchaseOwnershipGate before purchase. */
+export async function checkSubscriptionPrepurchaseOwnership(args: {
+  churchId: string;
+  headers: Record<string, string>;
+}): Promise<{
+  allowed: boolean;
+  reason?: string | null;
+  ownershipLock: ChurchMediaSubscriptionOwnershipLock | null;
+}> {
+  const result = await runSubscriptionPrepurchaseOwnershipGate(args);
+  if (result.status === "allowed") {
+    return { allowed: true, reason: result.reason ?? null, ownershipLock: null };
+  }
+  if (result.status === "conflict") {
+    return {
+      allowed: false,
+      reason: result.reason ?? null,
+      ownershipLock: result.ownershipLock,
+    };
+  }
+  return { allowed: false, reason: result.reason ?? null, ownershipLock: null };
+}
 
 const purchaseSyncInflight = new Map<string, Promise<SyncChurchSubscriptionAfterPurchaseResult>>();
 
@@ -1026,7 +1245,11 @@ async function attemptChurchSubscriptionActivationWithRetries(args: {
   headers: Record<string, string>;
   purchaseConfirmed: boolean;
   activationSource: ChurchSubscriptionActivationSource;
-}): Promise<boolean> {
+}): Promise<{
+  activated: boolean;
+  ownershipConflict?: boolean;
+  ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null;
+}> {
   const maxAttempts = args.purchaseConfirmed ? (__DEV__ ? 8 : 6) : 3;
   const baseDelayMs = args.purchaseConfirmed ? 1500 : 800;
 
@@ -1061,7 +1284,15 @@ async function attemptChurchSubscriptionActivationWithRetries(args: {
         activationSource: args.activationSource,
         attempt,
       });
-      return true;
+      return { activated: true };
+    }
+
+    if (result.ownershipConflict) {
+      return {
+        activated: false,
+        ownershipConflict: true,
+        ownershipLock: result.ownershipLock ?? null,
+      };
     }
 
     if (result.stopRetry) {
@@ -1072,7 +1303,7 @@ async function attemptChurchSubscriptionActivationWithRetries(args: {
         error: result.error,
         status: result.status,
       });
-      return false;
+      return { activated: false };
     }
 
     if (attempt < maxAttempts - 1) {
@@ -1088,7 +1319,7 @@ async function attemptChurchSubscriptionActivationWithRetries(args: {
     purchaseConfirmed: args.purchaseConfirmed,
     activationSource: args.activationSource,
   });
-  return false;
+  return { activated: false };
 }
 
 async function syncChurchSubscriptionAfterPurchaseInner(
@@ -1231,8 +1462,11 @@ async function syncChurchSubscriptionAfterPurchaseInner(
     });
   }
 
+  let storeOwnershipConflict = false;
+  let ownershipConflictLock: ChurchMediaSubscriptionOwnershipLock | null = null;
+
   if (shouldAttemptChurchActivation && activationSource) {
-    churchActivated = await attemptChurchSubscriptionActivationWithRetries({
+    const activationResult = await attemptChurchSubscriptionActivationWithRetries({
       churchId,
       userId,
       subscriptionPlan: args.subscriptionPlan,
@@ -1240,6 +1474,11 @@ async function syncChurchSubscriptionAfterPurchaseInner(
       purchaseConfirmed,
       activationSource,
     });
+    churchActivated = activationResult.activated;
+    if (activationResult.ownershipConflict) {
+      storeOwnershipConflict = true;
+      ownershipConflictLock = activationResult.ownershipLock ?? ownershipConflictLock;
+    }
   } else if (purchaseConfirmed && !isPastor) {
     console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_SKIPPED", {
       churchId,
@@ -1250,6 +1489,7 @@ async function syncChurchSubscriptionAfterPurchaseInner(
 
   if (
     !churchActivated &&
+    !storeOwnershipConflict &&
     purchaseConfirmed &&
     shouldAttemptChurchActivation &&
     activationSource === "purchase"
@@ -1270,7 +1510,7 @@ async function syncChurchSubscriptionAfterPurchaseInner(
         entitlementActive,
       });
       if (!churchActivated && entitlementActive) {
-        churchActivated = await attemptChurchSubscriptionActivationWithRetries({
+        const activationResult = await attemptChurchSubscriptionActivationWithRetries({
           churchId,
           userId,
           subscriptionPlan: args.subscriptionPlan,
@@ -1278,6 +1518,11 @@ async function syncChurchSubscriptionAfterPurchaseInner(
           purchaseConfirmed: true,
           activationSource: "purchase",
         });
+        churchActivated = activationResult.activated;
+        if (activationResult.ownershipConflict) {
+          storeOwnershipConflict = true;
+          ownershipConflictLock = activationResult.ownershipLock ?? ownershipConflictLock;
+        }
       }
     } catch (error: any) {
       console.log("KRISTO_RC_CUSTOMER_INFO_REFRESH_AFTER_ACTIVATION_FAILED", {
@@ -1352,6 +1597,8 @@ async function syncChurchSubscriptionAfterPurchaseInner(
     churchSubscriptionActive,
     canUseMediaTools,
     subscriptionPlan: args.subscriptionPlan,
+    storeOwnershipConflict,
+    ownershipLock: ownershipConflictLock,
   };
 }
 
@@ -1395,6 +1642,81 @@ export async function syncChurchSubscriptionAfterPurchase(args: {
       purchaseSyncInflight.delete(churchId);
     }
   }
+}
+
+/** Link an existing device store subscription to the current church and activate on the backend. */
+export async function recoverChurchSubscriptionFromExistingStore(args: {
+  churchId: string;
+  userId: string;
+  role?: string;
+  churchRole?: string;
+  headers: Record<string, string>;
+  subscriptionPlan?: "monthly" | "yearly";
+}): Promise<{
+  sync: SyncChurchSubscriptionAfterPurchaseResult;
+  customerInfo: CustomerInfo | null;
+  churchScopedEntitlementActive: boolean;
+}> {
+  const churchId = String(args.churchId || "").trim();
+  const fallbackPlan = args.subscriptionPlan || "monthly";
+  const emptySync: SyncChurchSubscriptionAfterPurchaseResult = {
+    entitlementActive: false,
+    churchActivated: false,
+    churchSubscriptionActive: false,
+    canUseMediaTools: false,
+    subscriptionPlan: fallbackPlan,
+  };
+
+  if (!churchId) {
+    return {
+      sync: emptySync,
+      customerInfo: null,
+      churchScopedEntitlementActive: false,
+    };
+  }
+
+  console.log("KRISTO_CHURCH_SUBSCRIPTION_EXISTING_STORE_RECOVER", {
+    churchId,
+    userId: args.userId,
+    subscriptionPlan: args.subscriptionPlan || null,
+  });
+
+  const recovered = await recoverStoreSubscriptionForChurch({
+    churchId,
+    source: "existing-store-subscription",
+  });
+
+  if (!recovered.churchScopedEntitlementActive) {
+    console.log("KRISTO_CHURCH_SUBSCRIPTION_EXISTING_STORE_RECOVER_NO_ENTITLEMENT", {
+      churchId,
+      entitlementActive: recovered.entitlementActive,
+      resolvedPlan: recovered.resolvedPlan,
+    });
+    return {
+      sync: emptySync,
+      customerInfo: recovered.customerInfo,
+      churchScopedEntitlementActive: false,
+    };
+  }
+
+  const plan = recovered.resolvedPlan || args.subscriptionPlan || "monthly";
+  const sync = await syncChurchSubscriptionAfterPurchase({
+    churchId,
+    userId: args.userId,
+    role: args.role,
+    churchRole: args.churchRole,
+    subscriptionPlan: plan,
+    headers: args.headers,
+    activationSource: "restore",
+    purchaseConfirmed: false,
+    initialCustomerInfo: recovered.customerInfo,
+  });
+
+  return {
+    sync,
+    customerInfo: recovered.customerInfo,
+    churchScopedEntitlementActive: true,
+  };
 }
 
 export async function requireActiveChurchSubscriptionForSchedule(

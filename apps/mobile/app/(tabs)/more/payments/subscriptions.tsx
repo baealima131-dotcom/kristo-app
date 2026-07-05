@@ -69,6 +69,9 @@ import {
   logAndroidBillingConfigDiagnostics,
   logAndroidPurchaseError,
   getRevenueCatPurchaseErrorDetail,
+  isExistingStoreSubscriptionError,
+  EXISTING_STORE_SUBSCRIPTION_SYNC_TITLE,
+  EXISTING_STORE_SUBSCRIPTION_SYNC_MESSAGE,
 } from "../../../../src/lib/payments/mobileSubscriptions";
 import {
   fetchChurchMediaPremiumServerStatus,
@@ -76,6 +79,8 @@ import {
   isOfflineActivationMediaPremiumStatus,
   isPastorSessionRole,
   logChurchSubscriptionContext,
+  recoverChurchSubscriptionFromExistingStore,
+  runSubscriptionPrepurchaseOwnershipGate,
   syncChurchSubscriptionAfterPurchase,
   type ChurchMediaPremiumServerStatus,
   type ChurchSubscriptionActivationSource,
@@ -86,6 +91,8 @@ import {
   shouldFailClosedSubscriptionPurchase,
 } from "../../../../src/lib/churchSubscriptionMediaSignals";
 import { SubscriptionOwnershipLockCard } from "../../../../src/components/payments/SubscriptionOwnershipLockCard";
+import { SubscriptionStoreConflictModal } from "../../../../src/components/payments/SubscriptionStoreConflictModal";
+import type { ChurchMediaSubscriptionOwnershipLock } from "../../../../src/lib/churchSubscriptionMediaSignals";
 import { recoverChurchIdFromMembership } from "../../../../src/lib/churchLockedRecovery";
 import { churchIdsMatch } from "../../../../src/lib/churchPremiumAccess";
 import { onChurchPremiumAccessChanged } from "../../../../src/lib/kristoProfileEvents";
@@ -694,6 +701,11 @@ export default function PaymentsSubscriptionsScreen() {
   const [submittingPlan, setSubmittingPlan] = useState<SubscriptionPlanKey | "manage" | null>(
     null
   );
+  const [storeConflictModalOpen, setStoreConflictModalOpen] = useState(false);
+  const [storeConflictLock, setStoreConflictLock] = useState<ChurchMediaSubscriptionOwnershipLock | null>(
+    null
+  );
+  const [managingStoreConflict, setManagingStoreConflict] = useState(false);
   const scrollRef = useRef<RNScrollView | null>(null);
   const suppressFocusServerRefreshRef = useRef(true);
 
@@ -1105,6 +1117,11 @@ export default function PaymentsSubscriptionsScreen() {
       initialCustomerInfo: opts.initialCustomerInfo ?? null,
     });
 
+    if (sync.storeOwnershipConflict) {
+      setStoreConflictLock(sync.ownershipLock ?? null);
+      setStoreConflictModalOpen(true);
+    }
+
     if (sync.churchSubscriptionActive || sync.canUseMediaTools) {
       await refreshMediaPremiumServerStatus(resolvedChurchId, { bustCache: true });
     }
@@ -1114,7 +1131,29 @@ export default function PaymentsSubscriptionsScreen() {
       skipped: false as const,
       canUseMediaTools: sync.canUseMediaTools,
       churchSubscriptionActive: sync.churchSubscriptionActive,
+      storeOwnershipConflict: sync.storeOwnershipConflict === true,
     };
+  }
+
+  async function handleStoreConflictManageSubscription() {
+    if (managingStoreConflict) return;
+    setManagingStoreConflict(true);
+    try {
+      const manageResult = await openSubscriptionManagement(customerInfo, {
+        allowGenericFallback: Platform.OS === "ios" || Platform.OS === "android",
+        source: "subscription-store-conflict",
+      });
+      if (!manageResult.opened) {
+        Alert.alert("Could not open subscriptions", resolveAppStoreManageFallbackMessage());
+      }
+    } catch (error: any) {
+      Alert.alert(
+        "Could not open subscriptions",
+        String(error?.message || resolveAppStoreManageFallbackMessage())
+      );
+    } finally {
+      setManagingStoreConflict(false);
+    }
   }
 
   function openCheckoutFallback(plan: SubscriptionPlanKey) {
@@ -1230,6 +1269,75 @@ export default function PaymentsSubscriptionsScreen() {
     }
   }
 
+  async function attemptExistingStoreSubscriptionRecovery(plan: SubscriptionPlanKey) {
+    if (!churchId) return;
+
+    const headers = getKristoHeaders({
+      userId: sessionUserId,
+      role: sessionRole as any,
+      churchId,
+    }) as Record<string, string>;
+
+    const prepurchase = await runSubscriptionPrepurchaseOwnershipGate({
+      churchId,
+      headers,
+    });
+    if (prepurchase.status === "unavailable") {
+      setSubscriptionError("Unable to verify subscription ownership. Try again in a moment.");
+      return;
+    }
+    if (prepurchase.status === "conflict") {
+      setStoreConflictLock(prepurchase.ownershipLock ?? null);
+      setStoreConflictModalOpen(true);
+      return;
+    }
+
+    Alert.alert(EXISTING_STORE_SUBSCRIPTION_SYNC_TITLE, EXISTING_STORE_SUBSCRIPTION_SYNC_MESSAGE);
+
+    const recovery = await recoverChurchSubscriptionFromExistingStore({
+      churchId,
+      userId: sessionUserId,
+      role: sessionRole,
+      churchRole: String((session as any)?.churchRole || "").trim() || undefined,
+      headers,
+      subscriptionPlan: plan,
+    });
+
+    if (recovery.customerInfo) {
+      await refreshAfterCustomerInfoChange(recovery.customerInfo);
+    }
+
+    const { sync } = recovery;
+    if (sync.storeOwnershipConflict) {
+      setStoreConflictLock(sync.ownershipLock ?? null);
+      setStoreConflictModalOpen(true);
+      return;
+    }
+    if (sync.canUseMediaTools || sync.churchSubscriptionActive) {
+      const activePlan = sync.subscriptionPlan || plan;
+      setSubscriptionSelectedPlan(activePlan);
+      setSubscriptionPlanStatus("active");
+      Alert.alert(
+        "Subscription synced",
+        "Your church subscription is active and media tools are unlocked."
+      );
+      return;
+    }
+
+    if (recovery.churchScopedEntitlementActive || sync.entitlementActive) {
+      Alert.alert(
+        "Sync in progress",
+        "Subscription found on this device. Church sync is still completing — open Media again in a moment."
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Could not link subscription",
+      "Apple reports an existing subscription, but it could not be linked to this church yet. Try again or manage subscriptions in Settings."
+    );
+  }
+
   async function handlePurchasePlan(plan: SubscriptionPlanKey) {
     if (submittingPlan) return;
 
@@ -1284,6 +1392,20 @@ export default function PaymentsSubscriptionsScreen() {
     const switchingFromMonthly = plan === "yearly" && displayScreenState === "monthly";
 
     try {
+      const prepurchase = await runSubscriptionPrepurchaseOwnershipGate({
+        churchId,
+        headers,
+      });
+      if (prepurchase.status === "unavailable") {
+        setSubscriptionError("Unable to verify subscription ownership. Try again in a moment.");
+        return;
+      }
+      if (prepurchase.status === "conflict") {
+        setStoreConflictLock(prepurchase.ownershipLock ?? null);
+        setStoreConflictModalOpen(true);
+        return;
+      }
+
       setSubmittingPlan(plan);
       const purchaseResult = await purchaseSubscriptionPackage(targetPackage, {
         upgradeFromProductId: switchingFromMonthly ? PREMIUM_MONTHLY_PRODUCT_ID : null,
@@ -1317,11 +1439,12 @@ export default function PaymentsSubscriptionsScreen() {
         if (activeBackendPlan === "yearly") {
           setSubscriptionSelectedPlan("yearly");
           setSubscriptionPlanStatus("active");
-          await maybeActivateChurchSubscription("yearly", {
+          const activation = await maybeActivateChurchSubscription("yearly", {
             activationSource: "purchase",
             purchaseConfirmed: true,
             initialCustomerInfo: info,
           });
+          if (activation.storeOwnershipConflict) return;
           await refreshAfterCustomerInfoChange(info);
           Alert.alert("Yearly plan active", "Your church yearly subscription is now active.");
         } else {
@@ -1339,19 +1462,21 @@ export default function PaymentsSubscriptionsScreen() {
       if (activeBackendPlan) {
         setSubscriptionSelectedPlan(activeBackendPlan);
         setSubscriptionPlanStatus("active");
-        await maybeActivateChurchSubscription(activeBackendPlan, {
+        const activation = await maybeActivateChurchSubscription(activeBackendPlan, {
           activationSource: "purchase",
           purchaseConfirmed: true,
           initialCustomerInfo: info,
         });
+        if (activation.storeOwnershipConflict) return;
         await refreshAfterCustomerInfoChange(info);
       } else if (plan === "monthly") {
         setSubscriptionPlanStatus("active");
-        await maybeActivateChurchSubscription("monthly", {
+        const activation = await maybeActivateChurchSubscription("monthly", {
           activationSource: "purchase",
           purchaseConfirmed: true,
           initialCustomerInfo: info,
         });
+        if (activation.storeOwnershipConflict) return;
         await refreshAfterCustomerInfoChange(info);
       }
 
@@ -1365,6 +1490,22 @@ export default function PaymentsSubscriptionsScreen() {
       const msg = String(detail.message || "");
       if (/cancel/i.test(msg) || detail.userCancelled) {
         Alert.alert("Purchase cancelled", "No charge was made.");
+      } else if (isExistingStoreSubscriptionError(error)) {
+        console.log("KRISTO_SUBSCRIPTION_ALREADY_OWNED_RECOVER", { plan, churchId });
+        try {
+          await attemptExistingStoreSubscriptionRecovery(plan);
+        } catch (recoverError: any) {
+          logAndroidPurchaseError(recoverError, { plan, churchId, phase: "existing-store-recover" });
+          console.log("KRISTO_SUBSCRIPTION_ALREADY_OWNED_RECOVER_FAILED", {
+            plan,
+            churchId,
+            message: String(recoverError?.message || recoverError || ""),
+          });
+          Alert.alert(
+            "Sync failed",
+            String(recoverError?.message || "Could not sync your existing subscription with this church.")
+          );
+        }
       } else {
         logAndroidPurchaseError(error, { plan, churchId });
         console.log("KRISTO_SUBSCRIPTION_PURCHASE_FAILED", {
@@ -1732,6 +1873,20 @@ export default function PaymentsSubscriptionsScreen() {
           </View>
         )}
       </ScrollView>
+
+      <SubscriptionStoreConflictModal
+        visible={storeConflictModalOpen}
+        lock={storeConflictLock}
+        managing={managingStoreConflict}
+        disabled={Boolean(submittingPlan)}
+        onManageSubscription={() => {
+          void handleStoreConflictManageSubscription();
+        }}
+        onNotNow={() => {
+          if (managingStoreConflict) return;
+          setStoreConflictModalOpen(false);
+        }}
+      />
     </View>
   );
 }
