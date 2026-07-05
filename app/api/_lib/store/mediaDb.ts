@@ -206,6 +206,59 @@ export async function confirmChurchMediaPersisted(
   return ok ? media : null;
 }
 
+function normalizeOwnerUserId(ownerUserId: string) {
+  return String(ownerUserId || "").trim();
+}
+
+export async function listChurchMediaByOwnerUserId(
+  ownerUserId: string
+): Promise<ChurchMediaProfile[]> {
+  const uid = normalizeOwnerUserId(ownerUserId);
+  if (!uid) return [];
+
+  if (usePostgres()) {
+    await ensureMediaSchema();
+    const sql = getSql();
+    const rows = (await sql`
+      SELECT church_id, owner_user_id, data, created_at, updated_at
+      FROM kristo_church_media
+      WHERE LOWER(owner_user_id) = LOWER(${uid})
+      ORDER BY updated_at DESC
+    `) as MediaRow[];
+    return rows
+      .map(rowToMedia)
+      .filter((media) => Boolean(String(media.mediaName || "").trim()));
+  }
+
+  const store = await readLocalStore();
+  const target = uid.toUpperCase();
+  return Object.values(store).filter(
+    (media) =>
+      normalizeOwnerUserId(media.ownerUserId).toUpperCase() === target &&
+      Boolean(String(media.mediaName || "").trim())
+  );
+}
+
+export async function listAllChurchMediaProfiles(): Promise<ChurchMediaProfile[]> {
+  if (usePostgres()) {
+    await ensureMediaSchema();
+    const sql = getSql();
+    const rows = (await sql`
+      SELECT church_id, owner_user_id, data, created_at, updated_at
+      FROM kristo_church_media
+      ORDER BY updated_at DESC
+    `) as MediaRow[];
+    return rows
+      .map(rowToMedia)
+      .filter((media) => Boolean(String(media.mediaName || "").trim()));
+  }
+
+  const store = await readLocalStore();
+  return Object.values(store).filter((media) =>
+    Boolean(String(media.mediaName || "").trim())
+  );
+}
+
 export async function getChurchMediaByChurchId(churchId: string): Promise<ChurchMediaProfile | null> {
   const id = normalizeChurchId(churchId);
   if (!id) return null;

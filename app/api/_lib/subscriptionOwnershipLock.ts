@@ -1,5 +1,7 @@
 import { parseSubscriptionExpiresAtMs } from "@/app/api/_lib/churchMediaNotifications";
+import { resolveActualChurchPastorUserId } from "@/app/api/_lib/churchMediaAccess";
 import { getChurchById } from "@/app/api/_lib/churches";
+import { getMembershipsForUser } from "@/app/api/_lib/memberships";
 import {
   isVerifiedChurchPremiumReason,
   verifyChurchPremiumEntitlement,
@@ -8,11 +10,17 @@ import {
 import {
   acquireActiveSubscriptionOwnershipLock,
   listSubscriptionOwnershipLocksByOwnerUserId,
+  resolveSubscriptionOwnershipLockStoreMode,
   saveSubscriptionOwnershipLock,
   type SubscriptionOwnershipLockRecord,
   type SubscriptionOwnershipLockStatus,
 } from "@/app/api/_lib/store/subscriptionOwnershipLockDb";
-import type { ChurchMediaProfile } from "@/app/api/_lib/store/mediaDb";
+import {
+  getChurchMediaByChurchId,
+  listChurchMediaByOwnerUserId,
+  type ChurchMediaProfile,
+} from "@/app/api/_lib/store/mediaDb";
+import { isChurchSubscriptionActiveFromRecord } from "@/lib/churchSubscription";
 
 export type SubscriptionOwnershipLockApiPayload = {
   blocked: boolean;
@@ -28,6 +36,334 @@ export type SubscriptionOwnershipLockApiPayload = {
   canActivate: boolean;
   message: string | null;
 };
+
+function isPastorChurchRole(value: unknown): boolean {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "pastor" || normalized.includes("pastor");
+}
+
+function isOfflineActivationSubscription(media: ChurchMediaProfile | null | undefined): boolean {
+  return media?.subscriptionSource === "offline_activation";
+}
+
+function isBackendActivationSubscription(media: ChurchMediaProfile | null | undefined): boolean {
+  return media?.subscriptionSource === "backend_activation";
+}
+
+function hasOfflineActivationMarkers(media: ChurchMediaProfile | null | undefined): boolean {
+  return Boolean(
+    String(media?.offlineActivationCode || "").trim() ||
+      String(media?.offlineActivationBatchId || "").trim()
+  );
+}
+
+function resolveSubscriptionPlan(
+  media: ChurchMediaProfile,
+  verification?: ChurchPremiumVerification | null
+): "monthly" | "yearly" | null {
+  const fromVerification = String(verification?.plan || "").trim().toLowerCase();
+  if (fromVerification === "yearly" || fromVerification === "monthly") {
+    return fromVerification;
+  }
+  const fromMedia = String(media.subscriptionPlan || "").trim().toLowerCase();
+  if (fromMedia === "yearly" || fromMedia === "monthly") {
+    return fromMedia;
+  }
+  return null;
+}
+
+function mediaProfileForAppStoreLock(
+  media: ChurchMediaProfile,
+  verification?: ChurchPremiumVerification | null
+): ChurchMediaProfile {
+  const expiresAtMs =
+    parseSubscriptionExpiresAtMs(verification?.expiresAt) ?? media.subscriptionExpiresAt ?? null;
+  const plan = resolveSubscriptionPlan(media, verification);
+  return {
+    ...media,
+    subscriptionActive: true,
+    subscriptionSource: "app_store",
+    subscriptionExpiresAt: expiresAtMs ?? undefined,
+    subscriptionPlan: plan ?? media.subscriptionPlan,
+  };
+}
+
+async function pastorOwnsChurchMedia(ownerUserId: string, churchId: string): Promise<boolean> {
+  const uid = normalizeUserId(ownerUserId);
+  const cid = normalizeChurchId(churchId);
+  if (!uid || !cid) return false;
+
+  const actualPastorUserId = await resolveActualChurchPastorUserId(cid);
+  return (
+    normalizeUserId(actualPastorUserId).toLowerCase() === uid.toLowerCase()
+  );
+}
+
+/** Authoritative pastor-owned media profiles with active subscriptions. */
+export async function listAuthoritativePastorMediaProfiles(
+  ownerUserId: string
+): Promise<ChurchMediaProfile[]> {
+  const uid = normalizeUserId(ownerUserId);
+  if (!uid) return [];
+
+  const byChurchId = new Map<string, ChurchMediaProfile>();
+
+  const memberships = await getMembershipsForUser(uid);
+  for (const membership of memberships) {
+    if (String(membership.status || "").trim() !== "Active") continue;
+    if (!isPastorChurchRole(membership.churchRole)) continue;
+
+    const churchId = normalizeChurchId(membership.churchId);
+    if (!churchId) continue;
+
+    const actualPastorUserId = await resolveActualChurchPastorUserId(churchId);
+    if (normalizeUserId(actualPastorUserId).toLowerCase() !== uid.toLowerCase()) continue;
+
+    const media = await getChurchMediaByChurchId(churchId);
+    if (!media || !String(media.mediaName || "").trim()) continue;
+    if (!isChurchSubscriptionActiveFromRecord(media)) continue;
+
+    byChurchId.set(churchId.toUpperCase(), media);
+  }
+
+  const ownerIndexed = await listChurchMediaByOwnerUserId(uid);
+  for (const media of ownerIndexed) {
+    const churchId = normalizeChurchId(media.churchId);
+    if (!churchId || byChurchId.has(churchId.toUpperCase())) continue;
+    if (!isChurchSubscriptionActiveFromRecord(media)) continue;
+    if (!(await pastorOwnsChurchMedia(uid, churchId))) continue;
+    byChurchId.set(churchId.toUpperCase(), media);
+  }
+
+  return Array.from(byChurchId.values());
+}
+
+type AppStoreBackfillCandidate = {
+  media: ChurchMediaProfile;
+  verification: ChurchPremiumVerification | null;
+  revenueCatVerified: boolean;
+};
+
+async function evaluateAppStoreBackfillCandidate(
+  media: ChurchMediaProfile
+): Promise<{ eligible: boolean; reason: string; candidate: AppStoreBackfillCandidate | null }> {
+  const churchId = normalizeChurchId(media.churchId);
+  if (!churchId || !isChurchSubscriptionActiveFromRecord(media)) {
+    return { eligible: false, reason: "inactive-profile", candidate: null };
+  }
+
+  if (
+    isOfflineActivationSubscription(media) ||
+    isBackendActivationSubscription(media) ||
+    hasOfflineActivationMarkers(media)
+  ) {
+    return { eligible: false, reason: "offline-or-backend-activation", candidate: null };
+  }
+
+  if (media.subscriptionSource === "stripe") {
+    return { eligible: false, reason: "stripe-source", candidate: null };
+  }
+
+  const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
+  const candidate: AppStoreBackfillCandidate = {
+    media,
+    verification,
+    revenueCatVerified:
+      verification.active === true &&
+      !verification.bypassed &&
+      isVerifiedChurchPremiumReason(verification.reason),
+  };
+
+  if (media.subscriptionSource === "app_store") {
+    if (candidate.revenueCatVerified) {
+      return { eligible: true, reason: "app-store-rc-verified", candidate };
+    }
+    if (verification.bypassed || isTransientRevenueCatLockReason(verification.reason)) {
+      const expiresAt = media.subscriptionExpiresAt ?? null;
+      if (expiresAt != null && expiresAt > Date.now()) {
+        return { eligible: true, reason: "app-store-profile-expiry-rc-deferred", candidate };
+      }
+      return { eligible: false, reason: "app-store-rc-deferred-no-expiry", candidate };
+    }
+    const graceExpiresAt =
+      media.subscriptionExpiresAt ?? parseSubscriptionExpiresAtMs(verification.expiresAt);
+    if (graceExpiresAt != null && graceExpiresAt > Date.now()) {
+      return { eligible: true, reason: "app-store-grace-period", candidate };
+    }
+    return { eligible: false, reason: "app-store-rc-inactive-expired", candidate };
+  }
+
+  if (media.subscriptionSource) {
+    return { eligible: false, reason: "non-app-store-source", candidate };
+  }
+
+  if (candidate.revenueCatVerified) {
+    return { eligible: true, reason: "legacy-rc-verified", candidate };
+  }
+  if (verification.bypassed || isTransientRevenueCatLockReason(verification.reason)) {
+    return { eligible: false, reason: "legacy-rc-deferred", candidate };
+  }
+  return { eligible: false, reason: "legacy-rc-inactive", candidate };
+}
+
+function pickCanonicalAppStoreHolderCandidate(
+  candidates: AppStoreBackfillCandidate[]
+): AppStoreBackfillCandidate | null {
+  if (candidates.length === 0) return null;
+
+  const sorted = [...candidates].sort((a, b) => {
+    const rcDelta = Number(b.revenueCatVerified) - Number(a.revenueCatVerified);
+    if (rcDelta !== 0) return rcDelta;
+
+    const aUpdated = a.media.subscriptionUpdatedAt ?? a.media.updatedAt ?? 0;
+    const bUpdated = b.media.subscriptionUpdatedAt ?? b.media.updatedAt ?? 0;
+    if (bUpdated !== aUpdated) return bUpdated - aUpdated;
+
+    return normalizeChurchId(a.media.churchId).localeCompare(
+      normalizeChurchId(b.media.churchId)
+    );
+  });
+
+  return sorted[0] || null;
+}
+
+export type SubscriptionOwnershipLockBackfillTrigger = "resolve" | "assert" | "migration";
+
+export async function backfillSubscriptionOwnershipLockFromPastorChurches(args: {
+  ownerUserId: string;
+  contextChurchId?: string;
+  trigger: SubscriptionOwnershipLockBackfillTrigger;
+  dryRun?: boolean;
+}): Promise<SubscriptionOwnershipLockRecord | null> {
+  const ownerUserId = normalizeUserId(args.ownerUserId);
+  const contextChurchId = normalizeChurchId(args.contextChurchId || "");
+  if (!ownerUserId) return null;
+
+  const existing = await resolveCanonicalActiveSubscriptionOwnershipLock(ownerUserId);
+  if (existing) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_BACKFILL_SKIPPED", {
+      ownerUserId,
+      contextChurchId: contextChurchId || null,
+      trigger: args.trigger,
+      reason: "active-lock-exists",
+      lockedChurchId: existing.lockedChurchId,
+    });
+    return existing;
+  }
+
+  const profiles = await listAuthoritativePastorMediaProfiles(ownerUserId);
+  console.log("KRISTO_SUBSCRIPTION_LOCK_BACKFILL_ATTEMPT", {
+    ownerUserId,
+    contextChurchId: contextChurchId || null,
+    trigger: args.trigger,
+    candidateProfileCount: profiles.length,
+    candidateChurchIds: profiles.map((media) => normalizeChurchId(media.churchId)),
+  });
+
+  if (profiles.length === 0) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_BACKFILL_SKIPPED", {
+      ownerUserId,
+      contextChurchId: contextChurchId || null,
+      trigger: args.trigger,
+      reason: "no-active-pastor-media-profiles",
+    });
+    return null;
+  }
+
+  const eligible: AppStoreBackfillCandidate[] = [];
+  for (const media of profiles) {
+    const evaluated = await evaluateAppStoreBackfillCandidate(media);
+    if (!evaluated.eligible || !evaluated.candidate) {
+      console.log("KRISTO_SUBSCRIPTION_LOCK_BACKFILL_SKIPPED", {
+        ownerUserId,
+        contextChurchId: contextChurchId || null,
+        trigger: args.trigger,
+        reason: evaluated.reason,
+        churchId: normalizeChurchId(media.churchId),
+      });
+      continue;
+    }
+    eligible.push(evaluated.candidate);
+  }
+
+  const winner = pickCanonicalAppStoreHolderCandidate(eligible);
+  if (!winner) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_BACKFILL_SKIPPED", {
+      ownerUserId,
+      contextChurchId: contextChurchId || null,
+      trigger: args.trigger,
+      reason: "no-eligible-app-store-holder",
+      evaluatedProfileCount: profiles.length,
+    });
+    return null;
+  }
+
+  const holderChurchId = normalizeChurchId(winner.media.churchId);
+  const holderMedia = mediaProfileForAppStoreLock(winner.media, winner.verification);
+
+  if (args.dryRun) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_BACKFILL_CREATED", {
+      ownerUserId,
+      contextChurchId: contextChurchId || null,
+      trigger: args.trigger,
+      lockedChurchId: holderChurchId,
+      dryRun: true,
+      revenueCatVerified: winner.revenueCatVerified,
+      subscriptionPlan: holderMedia.subscriptionPlan ?? null,
+      expiresAt: holderMedia.subscriptionExpiresAt ?? null,
+    });
+    return null;
+  }
+
+  const created = await ensureSubscriptionOwnershipLockFromActiveMediaProfile({
+    ownerUserId,
+    media: holderMedia,
+  });
+
+  if (created) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_BACKFILL_CREATED", {
+      ownerUserId,
+      contextChurchId: contextChurchId || null,
+      trigger: args.trigger,
+      lockedChurchId: created.lockedChurchId,
+      lockedChurchName: created.lockedChurchName,
+      revenueCatVerified: winner.revenueCatVerified,
+      subscriptionPlan: created.subscriptionPlan,
+      expiresAt: created.expiresAt,
+      productId: created.productId,
+    });
+  }
+
+  return created;
+}
+
+async function ensureActiveSubscriptionOwnershipLockForPastor(args: {
+  ownerUserId: string;
+  contextChurchId?: string;
+  contextMedia?: ChurchMediaProfile | null;
+  backfillTrigger: SubscriptionOwnershipLockBackfillTrigger;
+}): Promise<SubscriptionOwnershipLockRecord | null> {
+  const ownerUserId = normalizeUserId(args.ownerUserId);
+  if (!ownerUserId) return null;
+
+  if (args.contextMedia?.subscriptionActive && args.contextMedia.subscriptionSource === "app_store") {
+    await ensureSubscriptionOwnershipLockFromActiveMediaProfile({
+      ownerUserId,
+      media: args.contextMedia,
+    });
+  }
+
+  let active = await resolveCanonicalActiveSubscriptionOwnershipLock(ownerUserId);
+  if (active) return active;
+
+  await backfillSubscriptionOwnershipLockFromPastorChurches({
+    ownerUserId,
+    contextChurchId: args.contextChurchId,
+    trigger: args.backfillTrigger,
+  });
+
+  return resolveCanonicalActiveSubscriptionOwnershipLock(ownerUserId);
+}
 
 function normalizeUserId(value: string) {
   return String(value || "").trim();
@@ -386,7 +722,11 @@ export async function assertAppStoreSubscriptionActivationAllowed(args: {
     return { allowed: true, lock: null };
   }
 
-  const active = await resolveCanonicalActiveSubscriptionOwnershipLock(ownerUserId);
+  const active = await ensureActiveSubscriptionOwnershipLockForPastor({
+    ownerUserId,
+    contextChurchId: churchId,
+    backfillTrigger: "assert",
+  });
   if (!active) {
     return { allowed: true, lock: null };
   }
@@ -503,15 +843,25 @@ export async function resolveSubscriptionOwnershipLockForChurch(args: {
     return { lock: null, payload: emptyLockPayload() };
   }
 
-  if (args.media?.subscriptionActive && args.media.subscriptionSource === "app_store") {
-    await ensureSubscriptionOwnershipLockFromActiveMediaProfile({
-      ownerUserId,
-      media: args.media,
-    });
-  }
+  console.log("KRISTO_SUBSCRIPTION_LOCK_STORE_MODE", {
+    ownerUserId,
+    churchId,
+    storeMode: resolveSubscriptionOwnershipLockStoreMode(),
+  });
 
-  const active = await resolveCanonicalActiveSubscriptionOwnershipLock(ownerUserId);
+  const active = await ensureActiveSubscriptionOwnershipLockForPastor({
+    ownerUserId,
+    contextChurchId: churchId,
+    contextMedia: args.media,
+    backfillTrigger: "resolve",
+  });
+
   if (!active) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_NOT_FOUND", {
+      ownerUserId,
+      churchId,
+      reason: "no-active-lock-after-backfill",
+    });
     return { lock: null, payload: emptyLockPayload() };
   }
 
