@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Modal,
   Pressable,
   ScrollView,
@@ -13,6 +14,14 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
+import {
+  checkAccountDeleteSubscription,
+  getAccountDeleteFinalConfirmMessage,
+  getAccountDeleteOpenStoreButtonLabel,
+  getAccountDeleteStoreCancellationMessage,
+  getAccountDeleteStoreCancellationTitle,
+  openAccountDeleteSubscriptionManagement,
+} from "@/src/lib/accountDeleteSubscription";
 import { apiPost } from "@/src/lib/kristoApi";
 import { getKristoAuth, getKristoHeaders } from "@/src/lib/kristoHeaders";
 
@@ -29,7 +38,14 @@ export default function ProfileSettingsScreen() {
 
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const pendingDeleteAfterManagementRef = useRef(false);
+  const deleteContextRef = useRef({
+    userId: "",
+    role: "Member",
+    churchId: "",
+  });
 
   function onChangePassword() {
     Alert.alert(
@@ -58,12 +74,12 @@ export default function ProfileSettingsScreen() {
     ]);
   }
 
-  async function onConfirmDeleteAccount() {
+  const performAccountDelete = useCallback(async () => {
     if (deleting) return;
 
-    const userId = String(session?.userId || getKristoAuth().userId || "").trim();
-    const role = String(session?.role || session?.churchRole || getKristoAuth().role || "Member");
-    const churchId = String(session?.churchId || getKristoAuth().churchId || "").trim();
+    const userId = deleteContextRef.current.userId;
+    const role = deleteContextRef.current.role;
+    const churchId = deleteContextRef.current.churchId;
 
     if (!userId) {
       Alert.alert(
@@ -124,6 +140,116 @@ export default function ProfileSettingsScreen() {
     } finally {
       setDeleting(false);
     }
+  }, [deleting, exitSessionFast, router]);
+
+  const showFinalDeleteConfirmation = useCallback(() => {
+    Alert.alert(
+      "Delete Account?",
+      `${getAccountDeleteFinalConfirmMessage()} Permanently delete your Kristo account?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete Account",
+          style: "destructive",
+          onPress: () => {
+            void performAccountDelete();
+          },
+        },
+      ]
+    );
+  }, [performAccountDelete]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState !== "active" || !pendingDeleteAfterManagementRef.current) return;
+      pendingDeleteAfterManagementRef.current = false;
+      showFinalDeleteConfirmation();
+    });
+
+    return () => subscription.remove();
+  }, [showFinalDeleteConfirmation]);
+
+  const promptStoreSubscriptionCancellation = useCallback(
+    async (check: Awaited<ReturnType<typeof checkAccountDeleteSubscription>>) => {
+      Alert.alert(
+        getAccountDeleteStoreCancellationTitle(),
+        getAccountDeleteStoreCancellationMessage(),
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: getAccountDeleteOpenStoreButtonLabel(),
+            onPress: () => {
+              pendingDeleteAfterManagementRef.current = true;
+              void openAccountDeleteSubscriptionManagement(check).then((result) => {
+                if (!result.opened) {
+                  pendingDeleteAfterManagementRef.current = false;
+                  Alert.alert(
+                    "Could not open subscriptions",
+                    "Open your device subscription settings manually, then return here to continue account deletion."
+                  );
+                }
+              });
+            },
+          },
+          {
+            text: "Continue",
+            onPress: () => showFinalDeleteConfirmation(),
+          },
+        ]
+      );
+    },
+    [showFinalDeleteConfirmation]
+  );
+
+  async function onConfirmDeleteAccount() {
+    if (deleting || checkingSubscription) return;
+
+    const userId = String(session?.userId || getKristoAuth().userId || "").trim();
+    const role = String(session?.role || session?.churchRole || getKristoAuth().role || "Member");
+    const churchId = String(session?.churchId || getKristoAuth().churchId || "").trim();
+
+    if (!userId) {
+      Alert.alert(
+        "Delete failed",
+        "We could not delete your account. Please try again."
+      );
+      return;
+    }
+
+    deleteContextRef.current = { userId, role, churchId };
+
+    setCheckingSubscription(true);
+    try {
+      const check = await checkAccountDeleteSubscription({
+        churchId,
+        headers: getKristoHeaders({
+          userId,
+          role: role as any,
+          churchId,
+        }) as Record<string, string>,
+      });
+
+      setDeleteModalOpen(false);
+
+      if (check.requiresStoreCancellation) {
+        await promptStoreSubscriptionCancellation(check);
+        return;
+      }
+
+      showFinalDeleteConfirmation();
+    } catch (error: any) {
+      console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_CHECK_FAILED", {
+        userId,
+        churchId: churchId || null,
+        message: String(error?.message || error || "unknown"),
+      });
+      Alert.alert(
+        "Delete failed",
+        "We could not verify your subscription status. Please try again."
+      );
+    } finally {
+      setCheckingSubscription(false);
+    }
   }
 
   return (
@@ -156,8 +282,12 @@ export default function ProfileSettingsScreen() {
 
           <Pressable
             onPress={() => setDeleteModalOpen(true)}
-            disabled={deleting}
-            style={({ pressed }) => [s.rowBtn, pressed && s.pressed, deleting && { opacity: 0.5 }]}
+            disabled={deleting || checkingSubscription}
+            style={({ pressed }) => [
+              s.rowBtn,
+              pressed && s.pressed,
+              (deleting || checkingSubscription) && { opacity: 0.5 },
+            ]}
           >
             <Ionicons name="trash-outline" size={20} color={DANGER} />
             <Text style={[s.rowText, s.rowTextDanger]}>Delete Account</Text>
@@ -188,30 +318,31 @@ export default function ProfileSettingsScreen() {
         transparent
         animationType="fade"
         onRequestClose={() => {
-          if (!deleting) setDeleteModalOpen(false);
+          if (!deleting && !checkingSubscription) setDeleteModalOpen(false);
         }}
       >
         <View style={s.modalWrap}>
           <Pressable
             style={s.modalBackdrop}
             onPress={() => {
-              if (!deleting) setDeleteModalOpen(false);
+              if (!deleting && !checkingSubscription) setDeleteModalOpen(false);
             }}
           />
           <View style={s.modalCard}>
             <Text style={s.modalTitle}>Delete Account?</Text>
             <Text style={s.modalMessage}>
-              This will permanently delete your Kristo account and sign you out.
+              This will permanently delete your Kristo account and sign you out. Active App Store or
+              Google Play subscriptions must be cancelled separately to stop renewal charges.
             </Text>
 
             <View style={s.modalActions}>
               <Pressable
                 onPress={() => setDeleteModalOpen(false)}
-                disabled={deleting}
+                disabled={deleting || checkingSubscription}
                 style={({ pressed }) => [
                   s.modalCancelBtn,
-                  pressed && !deleting && s.pressed,
-                  deleting && { opacity: 0.45 },
+                  pressed && !deleting && !checkingSubscription && s.pressed,
+                  (deleting || checkingSubscription) && { opacity: 0.45 },
                 ]}
               >
                 <Text style={s.modalCancelText}>Cancel</Text>
@@ -219,17 +350,19 @@ export default function ProfileSettingsScreen() {
 
               <Pressable
                 onPress={onConfirmDeleteAccount}
-                disabled={deleting}
+                disabled={deleting || checkingSubscription}
                 style={({ pressed }) => [
                   s.modalDeleteBtn,
-                  pressed && !deleting && s.pressed,
-                  deleting && { opacity: 0.55 },
+                  pressed && !deleting && !checkingSubscription && s.pressed,
+                  (deleting || checkingSubscription) && { opacity: 0.55 },
                 ]}
               >
-                {deleting ? (
+                {deleting || checkingSubscription ? (
                   <View style={s.modalDeleteLoading}>
                     <ActivityIndicator color="#fff" size="small" />
-                    <Text style={s.modalDeleteText}>Deleting...</Text>
+                    <Text style={s.modalDeleteText}>
+                      {checkingSubscription ? "Checking..." : "Deleting..."}
+                    </Text>
                   </View>
                 ) : (
                   <Text style={s.modalDeleteText}>Delete Account</Text>

@@ -40,7 +40,7 @@ export function completeSessionExitCleanup(
   params: LogoutCleanupParams,
   kind: "delete" | "logout"
 ): void {
-  void performLogoutCleanup(params).finally(() => {
+  void performLogoutCleanup({ ...params, reason: kind }).finally(() => {
     if (kind === "delete") markDeleteAccountExitFinished();
     else markLogoutExitFinished();
   });

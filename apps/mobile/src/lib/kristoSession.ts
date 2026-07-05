@@ -224,13 +224,19 @@ export async function clearSession(): Promise<void> {
 export type LogoutCleanupParams = {
   userId?: string;
   churchId?: string;
+  reason?: "logout" | "delete";
 };
 
 export async function performLogoutCleanup(params: LogoutCleanupParams = {}): Promise<void> {
   const userId = String(params.userId || "").trim();
   const churchId = String(params.churchId || "").trim();
+  const reason = params.reason === "delete" ? "delete" : "logout";
 
-  console.log("KRISTO_LOGOUT_CLEAR_START", { userId: userId || null, churchId: churchId || null });
+  console.log("KRISTO_LOGOUT_CLEAR_START", {
+    userId: userId || null,
+    churchId: churchId || null,
+    reason,
+  });
 
   await setLoggedOutFlag(true);
   setSessionSync(null);
@@ -255,17 +261,31 @@ export async function performLogoutCleanup(params: LogoutCleanupParams = {}): Pr
     }
 
     const { logOutRevenueCat } = await import("./payments/mobileSubscriptions");
+    if (reason === "delete") {
+      console.log("KRISTO_ACCOUNT_DELETE_RC_LOGOUT", {
+        userId: userId || null,
+        churchId: churchId || null,
+      });
+    }
     await logOutRevenueCat();
 
     const { resetAuthRefreshStateForLogout } = await import("./refreshCoordinator");
     resetAuthRefreshStateForLogout();
   } catch (error: any) {
     console.log("KRISTO_LOGOUT_CLEAR_PARTIAL", {
+      reason,
       error: String(error?.message || error || "unknown"),
     });
   }
 
-  console.log("KRISTO_LOGOUT_CLEAR_DONE", { userId: userId || null });
+  if (reason === "delete") {
+    console.log("KRISTO_ACCOUNT_DELETE_SESSION_CLEARED", {
+      userId: userId || null,
+      churchId: churchId || null,
+    });
+  }
+
+  console.log("KRISTO_LOGOUT_CLEAR_DONE", { userId: userId || null, reason });
 }
 
 // helper ids
