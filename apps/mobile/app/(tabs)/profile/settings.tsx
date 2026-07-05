@@ -17,13 +17,14 @@ import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
   checkAccountDeleteSubscription,
   getAccountDeleteStoreManagementFallbackMessage,
-  hasDeleteAccountStoreSubscriptionConcern,
   isDeleteAccountStoreCancellationComplete,
   openAccountDeleteSubscriptionManagement,
+  resolveAccountDeleteSubscriptionOwnerGate,
   type AccountDeleteSubscriptionCheck,
 } from "@/src/lib/accountDeleteSubscription";
 import {
   DeleteAccountFinalConfirmModal,
+  DeleteAccountLockHolderModal,
   DeleteAccountSubscriptionChoiceModal,
   type DeleteAccountChoiceOption,
   type DeleteAccountFinalConfirmVariant,
@@ -44,6 +45,7 @@ export default function ProfileSettingsScreen() {
 
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [choiceModalOpen, setChoiceModalOpen] = useState(false);
+  const [lockHolderModalOpen, setLockHolderModalOpen] = useState(false);
   const [finalConfirmOpen, setFinalConfirmOpen] = useState(false);
   const [finalConfirmVariant, setFinalConfirmVariant] =
     useState<DeleteAccountFinalConfirmVariant>("standard");
@@ -54,17 +56,23 @@ export default function ProfileSettingsScreen() {
     null
   );
   const [inlineStatusMessage, setInlineStatusMessage] = useState<string | null>(null);
+  const [managingLockHolderSubscription, setManagingLockHolderSubscription] = useState(false);
   const [subscriptionCheck, setSubscriptionCheck] = useState<AccountDeleteSubscriptionCheck | null>(
     null
   );
   const pendingCancelSubAfterManagementRef = useRef(false);
+  const pendingLockHolderManageRef = useRef(false);
   const deleteContextRef = useRef({
     userId: "",
     role: "Member",
     churchId: "",
   });
 
-  const flowBusy = deleting || checkingSubscription || Boolean(processingOption);
+  const flowBusy =
+    deleting ||
+    checkingSubscription ||
+    Boolean(processingOption) ||
+    managingLockHolderSubscription;
 
   function onChangePassword() {
     Alert.alert(
@@ -165,10 +173,22 @@ export default function ProfileSettingsScreen() {
 
   const openFinalConfirm = useCallback((variant: DeleteAccountFinalConfirmVariant) => {
     setChoiceModalOpen(false);
+    setLockHolderModalOpen(false);
     setInlineStatusMessage(null);
     setProcessingOption(null);
+    setManagingLockHolderSubscription(false);
     setFinalConfirmVariant(variant);
     setFinalConfirmOpen(true);
+  }, []);
+
+  const resolveDeleteGate = useCallback((check: AccountDeleteSubscriptionCheck) => {
+    const { userId, role, churchId } = deleteContextRef.current;
+    return resolveAccountDeleteSubscriptionOwnerGate({
+      check,
+      userId,
+      churchId,
+      role,
+    });
   }, []);
 
   const runSubscriptionCheck = useCallback(async () => {
@@ -187,23 +207,18 @@ export default function ProfileSettingsScreen() {
     });
   }, []);
 
-  const handleSubscriptionCheckResult = useCallback(
-    (check: AccountDeleteSubscriptionCheck) => {
-      setSubscriptionCheck(check);
-
-      if (hasDeleteAccountStoreSubscriptionConcern(check)) {
-        setChoiceModalOpen(true);
-        return;
-      }
-
-      openFinalConfirm("standard");
-    },
-    [openFinalConfirm]
-  );
-
   const handleResumeAfterSubscriptionManagement = useCallback(async () => {
-    const { userId, churchId } = deleteContextRef.current;
-    if (!userId || !pendingCancelSubAfterManagementRef.current) return;
+    const { userId, churchId, role } = deleteContextRef.current;
+    if (!userId) return;
+
+    if (pendingLockHolderManageRef.current) {
+      pendingLockHolderManageRef.current = false;
+      setManagingLockHolderSubscription(false);
+      setLockHolderModalOpen(true);
+      return;
+    }
+
+    if (!pendingCancelSubAfterManagementRef.current) return;
 
     pendingCancelSubAfterManagementRef.current = false;
     setCheckingSubscription(true);
@@ -211,6 +226,17 @@ export default function ProfileSettingsScreen() {
       const check = await runSubscriptionCheck();
       setSubscriptionCheck(check);
       setProcessingOption(null);
+
+      const gate = resolveDeleteGate(check);
+
+      if (!gate.canManageSubscription) {
+        if (gate.modalType === "lock_holder_non_pastor") {
+          setLockHolderModalOpen(true);
+          return;
+        }
+        openFinalConfirm(gate.modalType === "member_confirm" ? "member" : "standard");
+        return;
+      }
 
       if (isDeleteAccountStoreCancellationComplete(check)) {
         setInlineStatusMessage(null);
@@ -229,18 +255,22 @@ export default function ProfileSettingsScreen() {
         message: String(error?.message || error || "unknown"),
         phase: "app_resume_after_management",
       });
-      setChoiceModalOpen(true);
-      setInlineStatusMessage(
-        "We could not refresh your subscription status. Try again in a moment."
-      );
+      setProcessingOption(null);
+      openFinalConfirm("standard");
     } finally {
       setCheckingSubscription(false);
     }
-  }, [handleSubscriptionCheckResult, openFinalConfirm, runSubscriptionCheck]);
+  }, [openFinalConfirm, resolveDeleteGate, runSubscriptionCheck]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState !== "active" || !pendingCancelSubAfterManagementRef.current) return;
+      if (nextState !== "active") return;
+      if (
+        !pendingCancelSubAfterManagementRef.current &&
+        !pendingLockHolderManageRef.current
+      ) {
+        return;
+      }
       void handleResumeAfterSubscriptionManagement();
     });
 
@@ -256,6 +286,18 @@ export default function ProfileSettingsScreen() {
   const handleCancelSubscriptionOption = useCallback(async () => {
     const check = subscriptionCheck;
     if (!check) return;
+
+    const gate = resolveDeleteGate(check);
+
+    if (!gate.canManageSubscription) {
+      if (gate.modalType === "lock_holder_non_pastor") {
+        setChoiceModalOpen(false);
+        setLockHolderModalOpen(true);
+        return;
+      }
+      openFinalConfirm(gate.modalType === "member_confirm" ? "member" : "standard");
+      return;
+    }
 
     setProcessingOption("cancel_subscription");
     setInlineStatusMessage(null);
@@ -274,7 +316,28 @@ export default function ProfileSettingsScreen() {
       setChoiceModalOpen(true);
       setInlineStatusMessage(getAccountDeleteStoreManagementFallbackMessage());
     }
-  }, [openFinalConfirm, subscriptionCheck]);
+  }, [openFinalConfirm, resolveDeleteGate, subscriptionCheck]);
+
+  const handleLockHolderManageSubscription = useCallback(async () => {
+    const check = subscriptionCheck;
+    if (!check || flowBusy) return;
+
+    setManagingLockHolderSubscription(true);
+    setInlineStatusMessage(null);
+    pendingLockHolderManageRef.current = true;
+
+    const result = await openAccountDeleteSubscriptionManagement(check);
+    if (!result.opened) {
+      pendingLockHolderManageRef.current = false;
+      setManagingLockHolderSubscription(false);
+      setInlineStatusMessage(getAccountDeleteStoreManagementFallbackMessage());
+    }
+  }, [flowBusy, subscriptionCheck]);
+
+  const handleLockHolderDeleteAccount = useCallback(() => {
+    if (flowBusy) return;
+    openFinalConfirm("lock_holder");
+  }, [flowBusy, openFinalConfirm]);
 
   const handleChoiceOption = useCallback(
     (option: DeleteAccountChoiceOption) => {
@@ -292,10 +355,13 @@ export default function ProfileSettingsScreen() {
     if (flowBusy) return;
     setDeleteModalOpen(false);
     setChoiceModalOpen(false);
+    setLockHolderModalOpen(false);
     setFinalConfirmOpen(false);
     setInlineStatusMessage(null);
     setProcessingOption(null);
+    setManagingLockHolderSubscription(false);
     pendingCancelSubAfterManagementRef.current = false;
+    pendingLockHolderManageRef.current = false;
   }, [flowBusy]);
 
   async function onConfirmDeleteAccount() {
@@ -318,8 +384,29 @@ export default function ProfileSettingsScreen() {
     setCheckingSubscription(true);
     try {
       const check = await runSubscriptionCheck();
+      const gate = resolveDeleteGate(check);
+
       setDeleteModalOpen(false);
-      await handleSubscriptionCheckResult(check);
+
+      if (gate.modalType === "owner_choice") {
+        setSubscriptionCheck(check);
+        setChoiceModalOpen(true);
+        return;
+      }
+
+      setSubscriptionCheck(check);
+
+      if (gate.modalType === "lock_holder_non_pastor") {
+        setLockHolderModalOpen(true);
+        return;
+      }
+
+      if (gate.modalType === "member_confirm") {
+        openFinalConfirm("member");
+        return;
+      }
+
+      openFinalConfirm("standard");
     } catch (error: any) {
       console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_CHECK_FAILED", {
         userId,
@@ -460,6 +547,18 @@ export default function ProfileSettingsScreen() {
         processingOption={processingOption}
         disabled={checkingSubscription || deleting}
         onSelectOption={handleChoiceOption}
+        onNotNow={closeDeleteFlow}
+      />
+
+      <DeleteAccountLockHolderModal
+        visible={lockHolderModalOpen}
+        disabled={checkingSubscription || deleting}
+        managing={managingLockHolderSubscription}
+        inlineStatusMessage={inlineStatusMessage}
+        onManageSubscription={() => {
+          void handleLockHolderManageSubscription();
+        }}
+        onDeleteAccount={handleLockHolderDeleteAccount}
         onNotNow={closeDeleteFlow}
       />
 

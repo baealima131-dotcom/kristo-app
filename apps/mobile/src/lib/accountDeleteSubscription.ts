@@ -3,12 +3,14 @@ import type { CustomerInfo } from "react-native-purchases";
 
 import {
   fetchChurchMediaPremiumServerStatus,
+  isPastorSessionRole,
   type ChurchMediaPremiumServerStatus,
 } from "./churchSubscription";
 import {
   configureChurchMobileSubscriptions,
   getActivePremiumEntitlement,
   getCustomerSubscriptionInfo,
+  getRevenueCatConfiguredAppUserId,
   hasActivePremiumProduct,
   hasPremiumEntitlement,
   openSubscriptionManagement,
@@ -31,6 +33,30 @@ export type AccountDeleteSubscriptionCheck = {
   customerInfo: CustomerInfo | null;
 };
 
+export type AccountDeleteModalType =
+  | "owner_choice"
+  | "lock_holder_non_pastor"
+  | "member_confirm"
+  | "standard";
+
+export type AccountDeleteSubscriptionOwnerGate = {
+  isPastor: boolean;
+  isLockHolder: boolean;
+  deviceCanManageSubscription: boolean;
+  /** Church owner may choose how deletion affects church subscription. */
+  canManageSubscription: boolean;
+  modalType: AccountDeleteModalType;
+};
+
+export function isChurchOwnerRoleForAccountDelete(role?: string): boolean {
+  const normalized = String(role || "").trim().toLowerCase();
+  return (
+    isPastorSessionRole(role) ||
+    normalized.includes("admin") ||
+    normalized === "church_admin"
+  );
+}
+
 export function hasDeleteAccountStoreSubscriptionConcern(
   check: AccountDeleteSubscriptionCheck
 ): boolean {
@@ -41,6 +67,109 @@ export function isDeleteAccountStoreCancellationComplete(
   check: AccountDeleteSubscriptionCheck
 ): boolean {
   return check.cancelledUntilExpiry || check.storeSubscriptionWillRenew === false;
+}
+
+/** Church has a store-managed subscription — informational for members, not management authority. */
+export function churchHasManagedStoreSubscription(
+  status: ChurchMediaPremiumServerStatus
+): boolean {
+  if (
+    status.serverSubscriptionActive &&
+    status.subscriptionSource === "app_store"
+  ) {
+    return true;
+  }
+
+  const lock = status.subscriptionOwnershipLock;
+  if (!lock || lock.status !== "active") return false;
+
+  return lock.store === "app_store" || lock.store === "play_store";
+}
+
+function mayManageAccountDeleteStoreSubscription(
+  status: ChurchMediaPremiumServerStatus
+): boolean {
+  return (
+    status.isActualChurchPastor === true ||
+    status.subscriptionOwnershipLock?.isLockHolder === true
+  );
+}
+
+/**
+ * True only when backend authority exists AND this device has a verified church-scoped
+ * RevenueCat subscription identity. Never true for members inheriting a shared entitlement.
+ */
+export function resolveAccountDeleteDeviceCanManageSubscription(
+  check: AccountDeleteSubscriptionCheck,
+  churchId: string
+): boolean {
+  const status = check.status;
+  const isActualChurchPastor = status.isActualChurchPastor === true;
+  const isLockHolder = status.subscriptionOwnershipLock?.isLockHolder === true;
+
+  if (!isActualChurchPastor && !isLockHolder) return false;
+
+  const cid = String(churchId || status.churchId || "").trim();
+  if (!cid || !status.serverSubscriptionActive) return false;
+
+  const customerInfo = check.customerInfo;
+  if (!customerInfo || !hasActiveStoreSubscriptionOnDevice(customerInfo)) return false;
+
+  const configuredId = String(getRevenueCatConfiguredAppUserId() || "").trim();
+  const originalAppUserId = String(customerInfo.originalAppUserId || "").trim();
+
+  return configuredId === cid && originalAppUserId === cid;
+}
+
+export function resolveAccountDeleteSubscriptionOwnerGate(args: {
+  check: AccountDeleteSubscriptionCheck;
+  userId: string;
+  churchId: string;
+  role?: string;
+}): AccountDeleteSubscriptionOwnerGate {
+  const status = args.check.status;
+  const isActualPastor = status.isActualChurchPastor === true;
+  const isChurchOwnerRole = isChurchOwnerRoleForAccountDelete(args.role);
+  const isPastor = isActualPastor || isChurchOwnerRole;
+  const isLockHolder = status.subscriptionOwnershipLock?.isLockHolder === true;
+  const deviceCanManageSubscription = resolveAccountDeleteDeviceCanManageSubscription(
+    args.check,
+    args.churchId
+  );
+  const canManageSubscription = isPastor;
+
+  let modalType: AccountDeleteModalType = "standard";
+  if (isPastor && hasDeleteAccountStoreSubscriptionConcern(args.check)) {
+    modalType = "owner_choice";
+  } else if (isLockHolder && hasDeleteAccountStoreSubscriptionConcern(args.check)) {
+    modalType = "lock_holder_non_pastor";
+  } else if (!isPastor && !isLockHolder && churchHasManagedStoreSubscription(status)) {
+    modalType = "member_confirm";
+  }
+
+  const gate: AccountDeleteSubscriptionOwnerGate = {
+    isPastor,
+    isLockHolder,
+    deviceCanManageSubscription,
+    canManageSubscription,
+    modalType,
+  };
+
+  console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_OWNER_GATE", {
+    userId: String(args.userId || "").trim() || null,
+    churchId: String(args.churchId || "").trim() || null,
+    isPastor: gate.isPastor,
+    isLockHolder: gate.isLockHolder,
+    deviceCanManageSubscription: gate.deviceCanManageSubscription,
+    canManageSubscription: gate.canManageSubscription,
+    modalType: gate.modalType,
+    detection: args.check.detection,
+    churchHasManagedStoreSubscription: churchHasManagedStoreSubscription(status),
+    isActualChurchPastor: isActualPastor,
+    isChurchOwnerRole,
+  });
+
+  return gate;
 }
 
 function isActiveDeviceStoreSubscription(
@@ -222,6 +351,7 @@ export async function checkAccountDeleteSubscription(args: {
       churchId: "",
       serverSubscriptionActive: false,
       canUseMediaTools: null,
+      isActualChurchPastor: null,
       subscriptionPlan: null,
       subscriptionExpiresAt: null,
       subscriptionSource: null,
@@ -262,13 +392,15 @@ export async function checkAccountDeleteSubscription(args: {
     bustCache: true,
   });
 
-  const preliminaryDeviceStoreConcern = isActiveDeviceStoreSubscription(status);
+  const mayManageStoreSubscription = mayManageAccountDeleteStoreSubscription(status);
+  const preliminaryDeviceStoreConcern =
+    mayManageStoreSubscription && isActiveDeviceStoreSubscription(status);
   const subscriptionChurchId = preliminaryDeviceStoreConcern
     ? resolveSubscriptionChurchId(status)
     : null;
 
   let customerInfo: CustomerInfo | null = null;
-  if (subscriptionChurchId) {
+  if (mayManageStoreSubscription && subscriptionChurchId) {
     customerInfo = await refreshAccountDeleteCustomerInfo(subscriptionChurchId);
   }
 
@@ -276,38 +408,50 @@ export async function checkAccountDeleteSubscription(args: {
     bustCache: true,
   });
 
-  const deviceStoreConcern = isActiveDeviceStoreSubscription(status);
-  const storeSubscriptionWillRenew = resolveStoreSubscriptionWillRenew(customerInfo);
-  const hasActiveStoreSub = hasActiveStoreSubscriptionOnDevice(customerInfo);
-  const cancelledUntilExpiry =
-    deviceStoreConcern && storeSubscriptionWillRenew === false && hasActiveStoreSub;
-  const requiresStoreCancellation =
-    deviceStoreConcern &&
-    (storeSubscriptionWillRenew === true ||
-      (storeSubscriptionWillRenew === null && hasActiveStoreSub));
-
-  const resolvedSubscriptionChurchId = requiresStoreCancellation || cancelledUntilExpiry
-    ? resolveSubscriptionChurchId(status)
-    : null;
-  const store =
-    requiresStoreCancellation || cancelledUntilExpiry
-      ? resolveStoreForDeleteCheck(status)
-      : null;
-
+  let requiresStoreCancellation = false;
+  let cancelledUntilExpiry = false;
+  let storeSubscriptionWillRenew: boolean | null = null;
+  let resolvedSubscriptionChurchId: string | null = null;
+  let store: "app_store" | "play_store" | null = null;
   let detection: AccountDeleteSubscriptionCheck["detection"] = "none";
-  if (requiresStoreCancellation || cancelledUntilExpiry) {
-    if (
-      status.serverSubscriptionActive &&
-      status.subscriptionSource === "app_store"
-    ) {
-      detection = "current_church_app_store";
-    } else {
-      detection = "ownership_lock_active";
+  let hasActiveStoreSub = false;
+  let deviceStoreConcern = false;
+
+  if (mayManageAccountDeleteStoreSubscription(status)) {
+    deviceStoreConcern = isActiveDeviceStoreSubscription(status);
+    storeSubscriptionWillRenew = resolveStoreSubscriptionWillRenew(customerInfo);
+    hasActiveStoreSub = hasActiveStoreSubscriptionOnDevice(customerInfo);
+    cancelledUntilExpiry =
+      deviceStoreConcern && storeSubscriptionWillRenew === false && hasActiveStoreSub;
+    requiresStoreCancellation =
+      deviceStoreConcern &&
+      (storeSubscriptionWillRenew === true ||
+        (storeSubscriptionWillRenew === null && hasActiveStoreSub));
+
+    resolvedSubscriptionChurchId =
+      requiresStoreCancellation || cancelledUntilExpiry
+        ? resolveSubscriptionChurchId(status)
+        : null;
+    store =
+      requiresStoreCancellation || cancelledUntilExpiry
+        ? resolveStoreForDeleteCheck(status)
+        : null;
+
+    if (requiresStoreCancellation || cancelledUntilExpiry) {
+      if (
+        status.serverSubscriptionActive &&
+        status.subscriptionSource === "app_store"
+      ) {
+        detection = "current_church_app_store";
+      } else {
+        detection = "ownership_lock_active";
+      }
     }
   }
 
   console.log("KRISTO_ACCOUNT_DELETE_SUBSCRIPTION_REFRESH_DONE", {
     churchId,
+    mayManageStoreSubscription,
     subscriptionChurchId: resolvedSubscriptionChurchId,
     deviceStoreConcern,
     storeSubscriptionWillRenew,
@@ -317,6 +461,7 @@ export async function checkAccountDeleteSubscription(args: {
     serverSubscriptionActive: status.serverSubscriptionActive,
     subscriptionSource: status.subscriptionSource,
     hasCustomerInfo: Boolean(customerInfo),
+    skippedRevenueCatRefresh: !mayManageStoreSubscription,
   });
 
   if (cancelledUntilExpiry) {

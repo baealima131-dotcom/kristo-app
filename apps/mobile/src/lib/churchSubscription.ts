@@ -585,6 +585,8 @@ export type ChurchMediaPremiumServerStatus = {
   serverSubscriptionActive: boolean;
   /** From `/api/church/media` — pastor/media-host tools access for this viewer. */
   canUseMediaTools: boolean | null;
+  /** From `/api/church/media` — whether this viewer is the church's actual pastor. */
+  isActualChurchPastor: boolean | null;
   subscriptionPlan: SubscriptionPlanKey | null;
   subscriptionExpiresAt: number | null;
   subscriptionSource: ChurchMediaSubscriptionSource | null;
@@ -674,6 +676,10 @@ export async function fetchChurchMediaPremiumServerStatus(
     typeof res.subscriptionOwnershipLock === "object";
   const canUseMediaTools =
     routeFailed || typeof res?.canUseMediaTools !== "boolean" ? null : res.canUseMediaTools === true;
+  const isActualChurchPastor =
+    routeFailed || typeof res?.isActualChurchPastor !== "boolean"
+      ? null
+      : res.isActualChurchPastor === true;
 
   console.log("KRISTO_CHURCH_MEDIA_SERVER_RESPONSE", {
     churchId: cid,
@@ -693,6 +699,7 @@ export async function fetchChurchMediaPremiumServerStatus(
     churchId: cid,
     serverSubscriptionActive,
     canUseMediaTools,
+    isActualChurchPastor,
     subscriptionPlan,
     subscriptionExpiresAt,
     subscriptionSource,

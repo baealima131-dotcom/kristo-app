@@ -14,17 +14,21 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const GOLD = "#D9B56D";
-const GOLD_SOFT = "#F0D693";
-const MUTED = "rgba(255,255,255,0.66)";
-const DANGER = "#FF5A5F";
-const DANGER_SOFT = "#FFB4B8";
+const GOLD = "#D9B35F";
+const GOLD_BRIGHT = "#F0D48A";
+const LABEL_GOLD = "rgba(217,179,95,0.82)";
+const TEXT_PRIMARY = "rgba(255,255,255,0.96)";
+const TEXT_MUTED = "rgba(255,255,255,0.62)";
+const PINK_SOFT = "#FFC8CE";
+const WINE_ACCENT = "#FF8A96";
 
 export type DeleteAccountChoiceOption = "cancel_subscription" | "delete_only";
 
 export type DeleteAccountFinalConfirmVariant =
   | "after_cancel_subscription"
   | "delete_only"
+  | "lock_holder"
+  | "member"
   | "standard";
 
 type ChoiceModalProps = {
@@ -45,26 +49,64 @@ type FinalConfirmModalProps = {
 };
 
 function useModalEntrance(visible: boolean) {
-  const scale = useRef(new Animated.Value(0.92)).current;
+  const scale = useRef(new Animated.Value(0.96)).current;
   const fade = useRef(new Animated.Value(0)).current;
-  const lift = useRef(new Animated.Value(18)).current;
+  const lift = useRef(new Animated.Value(12)).current;
 
   useEffect(() => {
     if (!visible) {
-      scale.setValue(0.92);
+      scale.setValue(0.96);
       fade.setValue(0);
-      lift.setValue(18);
+      lift.setValue(12);
       return;
     }
 
     Animated.parallel([
-      Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 18, bounciness: 6 }),
+      Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 18, bounciness: 5 }),
       Animated.timing(fade, { toValue: 1, duration: 220, useNativeDriver: true }),
-      Animated.spring(lift, { toValue: 0, useNativeDriver: true, speed: 18, bounciness: 6 }),
+      Animated.spring(lift, { toValue: 0, useNativeDriver: true, speed: 18, bounciness: 5 }),
     ]).start();
   }, [visible, scale, fade, lift]);
 
   return { scale, fade, lift };
+}
+
+function PowerCardChrome({ children }: { children: React.ReactNode }) {
+  return (
+    <>
+      <LinearGradient
+        pointerEvents="none"
+        colors={["#0B1220", "#060A12", "#020408"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(217,179,95,0.07)", "transparent"]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 0.35 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View pointerEvents="none" style={s.ambientGlowTop} />
+      <View pointerEvents="none" style={s.ambientGlowBottom} />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(217,179,95,0.55)", "rgba(217,179,95,0.12)", "transparent"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+        style={s.topGoldLine}
+      />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(255,255,255,0.06)", "rgba(255,255,255,0.015)", "transparent"]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 0.5 }}
+        style={s.powerSheen}
+      />
+      {children}
+    </>
+  );
 }
 
 function PremiumBadge({
@@ -72,23 +114,21 @@ function PremiumBadge({
   tone = "gold",
 }: {
   label: string;
-  tone?: "gold" | "neutral" | "danger";
+  tone?: "gold" | "pink";
 }) {
   return (
     <View
       style={[
         s.badge,
         tone === "gold" ? s.badgeGold : null,
-        tone === "neutral" ? s.badgeNeutral : null,
-        tone === "danger" ? s.badgeDanger : null,
+        tone === "pink" ? s.badgePink : null,
       ]}
     >
       <Text
         style={[
           s.badgeText,
           tone === "gold" ? s.badgeTextGold : null,
-          tone === "neutral" ? s.badgeTextNeutral : null,
-          tone === "danger" ? s.badgeTextDanger : null,
+          tone === "pink" ? s.badgeTextPink : null,
         ]}
       >
         {label}
@@ -97,12 +137,39 @@ function PremiumBadge({
   );
 }
 
-function OptionCard({
+function ActionIconRing({
+  icon,
+  iconColor,
+  glowColor,
+  ringColor,
+  tileColors,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  iconColor: string;
+  glowColor: string;
+  ringColor: string;
+  tileColors: [string, string, ...string[]];
+}) {
+  return (
+    <View style={s.actionIconOuter}>
+      <View style={[s.actionIconGlow, { backgroundColor: glowColor }]} pointerEvents="none" />
+      <View style={[s.actionIconRing, { borderColor: ringColor }]} pointerEvents="none" />
+      <LinearGradient
+        colors={tileColors}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={s.actionIconTile}
+      >
+        <Ionicons name={icon} size={22} color={iconColor} />
+      </LinearGradient>
+    </View>
+  );
+}
+
+function WineGlassOptionCard({
   title,
   subtitle,
   badge,
-  icon,
-  tone = "gold",
   loading,
   disabled,
   onPress,
@@ -111,16 +178,11 @@ function OptionCard({
   title: string;
   subtitle: string;
   badge: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  tone?: "gold" | "danger";
   loading?: boolean;
   disabled?: boolean;
   onPress: () => void;
   accessibilityLabel: string;
 }) {
-  const borderColor = tone === "danger" ? "rgba(255,90,95,0.34)" : "rgba(217,179,95,0.30)";
-  const iconColor = tone === "danger" ? DANGER_SOFT : GOLD_SOFT;
-
   return (
     <Pressable
       onPress={onPress}
@@ -128,42 +190,148 @@ function OptionCard({
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       style={({ pressed }) => [
-        s.optionOuter,
+        s.wineOptionOuter,
         disabled || loading ? s.optionDisabled : null,
         pressed && !disabled && !loading ? s.pressed : null,
       ]}
     >
-      <LinearGradient
-        colors={
-          tone === "danger"
-            ? ["rgba(255,90,95,0.10)", "rgba(255,255,255,0.03)", "rgba(10,14,24,0.96)"]
-            : ["rgba(196,171,114,0.10)", "rgba(255,255,255,0.04)", "rgba(10,14,24,0.96)"]
-        }
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={[s.optionCard, { borderColor }]}
-      >
-        <View style={s.optionTopRow}>
-          <View
-            style={[
-              s.optionIconWrap,
-              tone === "danger" ? s.optionIconWrapDanger : s.optionIconWrapGold,
+      <View style={s.wineOptionCard}>
+        <LinearGradient
+          pointerEvents="none"
+          colors={[
+            "rgba(88,24,42,0.42)",
+            "rgba(36,12,22,0.88)",
+            "rgba(8,6,12,0.98)",
+          ]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFillObject}
+        />
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(255,140,155,0.10)", "transparent"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0.6, y: 1 }}
+          style={StyleSheet.absoluteFillObject}
+        />
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(255,255,255,0.07)", "transparent"]}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={s.optionHighlight}
+        />
+        <View style={s.optionRow}>
+          <ActionIconRing
+            icon="remove-circle-outline"
+            iconColor={PINK_SOFT}
+            glowColor="rgba(255,100,120,0.22)"
+            ringColor="rgba(255,140,155,0.42)"
+            tileColors={[
+              "rgba(120,28,48,0.95)",
+              "rgba(52,14,28,0.98)",
+              "rgba(12,6,10,0.99)",
             ]}
-          >
-            <Ionicons name={icon} size={18} color={iconColor} />
-          </View>
+          />
           <View style={s.optionCopy}>
             <Text style={s.optionTitle}>{title}</Text>
-            <PremiumBadge label={badge} tone={tone === "danger" ? "danger" : "gold"} />
+            <PremiumBadge label={badge} tone="pink" />
+            <Text style={s.optionSubtitle}>{subtitle}</Text>
           </View>
-          {loading ? (
-            <ActivityIndicator size="small" color={iconColor} />
-          ) : (
-            <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.28)" />
-          )}
+          <View style={s.optionTrailing}>
+            {loading ? (
+              <ActivityIndicator size="small" color={GOLD} />
+            ) : (
+              <Ionicons name="chevron-forward" size={16} color={GOLD} />
+            )}
+          </View>
         </View>
-        <Text style={s.optionSubtitle}>{subtitle}</Text>
-      </LinearGradient>
+      </View>
+    </Pressable>
+  );
+}
+
+function GoldGlassOptionCard({
+  title,
+  subtitle,
+  badge,
+  loading,
+  disabled,
+  onPress,
+  accessibilityLabel,
+}: {
+  title: string;
+  subtitle: string;
+  badge: string;
+  loading?: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+  accessibilityLabel: string;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled || loading}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      style={({ pressed }) => [
+        s.goldGlassOuter,
+        disabled || loading ? s.optionDisabled : null,
+        pressed && !disabled && !loading ? s.pressed : null,
+      ]}
+    >
+      <View style={s.goldGlassCard}>
+        <LinearGradient
+          pointerEvents="none"
+          colors={[
+            "rgba(217,179,95,0.16)",
+            "rgba(18,14,10,0.92)",
+            "rgba(4,7,12,0.98)",
+          ]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFillObject}
+        />
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(240,212,138,0.08)", "transparent"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0.7, y: 1 }}
+          style={StyleSheet.absoluteFillObject}
+        />
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(255,255,255,0.08)", "transparent"]}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={s.optionHighlight}
+        />
+        <View style={s.optionRow}>
+          <ActionIconRing
+            icon="person-remove-outline"
+            iconColor={GOLD_BRIGHT}
+            glowColor="rgba(217,179,95,0.28)"
+            ringColor="rgba(217,179,95,0.50)"
+            tileColors={[
+              "rgba(48,38,18,0.96)",
+              "rgba(22,18,10,0.98)",
+              "rgba(8,8,12,0.99)",
+            ]}
+          />
+          <View style={s.optionCopy}>
+            <Text style={s.optionTitle}>{title}</Text>
+            <PremiumBadge label={badge} tone="gold" />
+            <Text style={s.optionSubtitle}>{subtitle}</Text>
+          </View>
+          <View style={s.optionTrailing}>
+            {loading ? (
+              <ActivityIndicator size="small" color={GOLD} />
+            ) : (
+              <Ionicons name="chevron-forward" size={16} color={GOLD} />
+            )}
+          </View>
+        </View>
+      </View>
     </Pressable>
   );
 }
@@ -182,97 +350,234 @@ export function DeleteAccountSubscriptionChoiceModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onNotNow}>
-      <View style={[s.overlay, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}>
+      <View style={[s.overlay, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
         <Pressable
           style={s.backdrop}
           onPress={disabled ? undefined : onNotNow}
           accessibilityLabel="Dismiss delete account options"
         />
         <Animated.View
-          style={[s.shell, { opacity: fade, transform: [{ translateY: lift }, { scale }] }]}
+          style={[s.powerCard, { opacity: fade, transform: [{ translateY: lift }, { scale }] }]}
+        >
+          <PowerCardChrome>
+            <ScrollView
+              bounces={false}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={s.scrollContent}
+            >
+              <View style={s.powerTop}>
+                <View style={s.headerIconOuter}>
+                  <View style={s.headerIconGlow} pointerEvents="none" />
+                  <View style={s.headerIconRing} pointerEvents="none" />
+                  <LinearGradient
+                    colors={["#F2D792", GOLD, "#9A7428"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.headerIconTile}
+                  >
+                    <Ionicons name="shield-half-outline" size={22} color="#0A0E16" />
+                  </LinearGradient>
+                  <View style={s.headerBadgeDanger}>
+                    <Ionicons name="trash-outline" size={9} color="#fff" />
+                  </View>
+                </View>
+                <View style={s.headerCopy}>
+                  <Text style={s.powerEyebrow}>ACCOUNT PROTECTION</Text>
+                  <Text style={s.powerTitle}>Delete Account</Text>
+                  <Text style={s.powerMessage}>
+                    Choose what happens to your church subscription when deleting your personal
+                    account.
+                  </Text>
+                </View>
+              </View>
+
+              {inlineStatusMessage ? (
+                <View style={s.inlineStatus}>
+                  <Ionicons name="information-circle-outline" size={14} color={GOLD} />
+                  <Text style={s.inlineStatusText}>{inlineStatusMessage}</Text>
+                </View>
+              ) : null}
+
+              <View style={s.optionsStack}>
+                <WineGlassOptionCard
+                  title="Delete Account + Cancel Subscription"
+                  subtitle="Cancel future renewals, then delete your account. Church access continues until the paid period ends."
+                  badge={storeBadge}
+                  loading={processingOption === "cancel_subscription"}
+                  disabled={disabled || processingOption === "delete_only"}
+                  onPress={() => onSelectOption("cancel_subscription")}
+                  accessibilityLabel="Delete account and cancel subscription"
+                />
+                <GoldGlassOptionCard
+                  title="Delete Account Only"
+                  subtitle="Delete your personal account while the church keeps its paid Media Premium access until expiry."
+                  badge="Keep Access Until Expiry"
+                  loading={processingOption === "delete_only"}
+                  disabled={disabled || processingOption === "cancel_subscription"}
+                  onPress={() => onSelectOption("delete_only")}
+                  accessibilityLabel="Delete account only and keep church access until expiry"
+                />
+              </View>
+
+              <Pressable
+                onPress={onNotNow}
+                disabled={disabled || Boolean(processingOption)}
+                accessibilityRole="button"
+                accessibilityLabel="Not now"
+                style={({ pressed }) => [
+                  s.notNowOuter,
+                  pressed && !disabled && !processingOption ? s.pressed : null,
+                  (disabled || processingOption) && s.optionDisabled,
+                ]}
+              >
+                <View style={s.notNowPill}>
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={["rgba(217,179,95,0.06)", "rgba(8,12,20,0.92)", "rgba(4,7,12,0.98)"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={StyleSheet.absoluteFillObject}
+                  />
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={["rgba(255,255,255,0.07)", "transparent"]}
+                    start={{ x: 0.5, y: 0 }}
+                    end={{ x: 0.5, y: 1 }}
+                    style={s.optionHighlight}
+                  />
+                  <Text style={s.notNowText}>Not Now</Text>
+                </View>
+              </Pressable>
+            </ScrollView>
+          </PowerCardChrome>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+type LockHolderModalProps = {
+  visible: boolean;
+  disabled?: boolean;
+  managing?: boolean;
+  inlineStatusMessage?: string | null;
+  onManageSubscription: () => void;
+  onDeleteAccount: () => void;
+  onNotNow: () => void;
+};
+
+export function DeleteAccountLockHolderModal({
+  visible,
+  disabled,
+  managing,
+  inlineStatusMessage,
+  onManageSubscription,
+  onDeleteAccount,
+  onNotNow,
+}: LockHolderModalProps) {
+  const insets = useSafeAreaInsets();
+  const { scale, fade, lift } = useModalEntrance(visible);
+  const storeLabel = Platform.OS === "ios" ? "Apple" : "Google";
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onNotNow}>
+      <View style={[s.overlay, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
+        <Pressable
+          style={s.backdrop}
+          onPress={disabled ? undefined : onNotNow}
+          accessibilityLabel="Dismiss subscription linked delete account options"
+        />
+        <Animated.View
+          style={[s.lockHolderCard, { opacity: fade, transform: [{ translateY: lift }, { scale }] }]}
         >
           <LinearGradient
-            colors={["#0C1829", "#07111F", "#050B14"]}
-            locations={[0, 0.52, 1]}
-            start={{ x: 0.1, y: 0 }}
-            end={{ x: 0.9, y: 1 }}
+            pointerEvents="none"
+            colors={["#0B1220", "#060A12", "#020408"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
             style={StyleSheet.absoluteFillObject}
           />
-          <View style={s.goldGlow} />
-          <View style={s.goldGlowSoft} />
-          <View style={s.topShine} />
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(217,179,95,0.45)", "rgba(217,179,95,0.10)", "transparent"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={s.topGoldLine}
+          />
 
-          <ScrollView
-            bounces={false}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={s.scrollContent}
-          >
-            <View style={s.headerIconStack}>
-              <LinearGradient
-                colors={["rgba(240,214,147,0.22)", "rgba(217,181,109,0.10)", "rgba(196,154,69,0.06)"]}
-                start={{ x: 0.2, y: 0 }}
-                end={{ x: 0.8, y: 1 }}
-                style={s.headerIconRing}
-              >
-                <Ionicons name="shield-half-outline" size={26} color={GOLD_SOFT} />
-              </LinearGradient>
-              <View style={s.headerBadgeDanger}>
-                <Ionicons name="trash-outline" size={11} color="#fff" />
-              </View>
+          <View style={s.lockHolderContent}>
+            <View style={s.lockHolderIconWrap}>
+              <Ionicons name="card-outline" size={22} color={GOLD} />
             </View>
-
-            <Text style={s.kicker}>ACCOUNT PROTECTION</Text>
-            <Text style={s.title}>Delete Account</Text>
-            <Text style={s.message}>
-              Choose how to handle your church's Media Premium subscription before deleting your
-              personal account.
+            <Text style={s.lockHolderKicker}>SUBSCRIPTION LINKED</Text>
+            <Text style={s.lockHolderTitle}>Delete Account</Text>
+            <Text style={s.lockHolderMessage}>
+              This account is linked to a store subscription for this church. Deleting your account
+              will not automatically cancel {storeLabel} billing.
             </Text>
 
             {inlineStatusMessage ? (
               <View style={s.inlineStatus}>
-                <Ionicons name="information-circle-outline" size={16} color={GOLD_SOFT} />
+                <Ionicons name="information-circle-outline" size={14} color={GOLD} />
                 <Text style={s.inlineStatusText}>{inlineStatusMessage}</Text>
               </View>
             ) : null}
 
-            <View style={s.optionsStack}>
-              <OptionCard
-                title="Delete Account + Cancel Subscription"
-                subtitle="Stop future renewals, then delete your account. Paid church access remains available until the current billing period expires."
-                badge={storeBadge}
-                icon="card-outline"
-                tone="danger"
-                loading={processingOption === "cancel_subscription"}
-                disabled={disabled || processingOption === "delete_only"}
-                onPress={() => onSelectOption("cancel_subscription")}
-                accessibilityLabel="Delete account and cancel subscription"
-              />
-              <OptionCard
-                title="Delete Account Only"
-                subtitle="Delete your personal account while keeping the church's already-paid Media Premium access available until the current subscription period expires."
-                badge="Keep Access Until Expiry"
-                icon="person-remove-outline"
-                loading={processingOption === "delete_only"}
-                disabled={disabled || processingOption === "cancel_subscription"}
-                onPress={() => onSelectOption("delete_only")}
-                accessibilityLabel="Delete account only and keep church access until expiry"
-              />
-            </View>
+            <View style={s.lockHolderActions}>
+              <Pressable
+                onPress={onManageSubscription}
+                disabled={disabled || managing}
+                accessibilityRole="button"
+                accessibilityLabel="Manage subscription"
+                style={({ pressed }) => [
+                  s.lockHolderManageBtn,
+                  pressed && !disabled && !managing ? s.pressed : null,
+                  (disabled || managing) && s.optionDisabled,
+                ]}
+              >
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={["rgba(217,179,95,0.10)", "rgba(8,12,20,0.94)"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={StyleSheet.absoluteFillObject}
+                />
+                {managing ? (
+                  <ActivityIndicator size="small" color={GOLD} />
+                ) : (
+                  <Text style={s.lockHolderManageText}>Manage Subscription</Text>
+                )}
+              </Pressable>
 
-            <Pressable
-              onPress={onNotNow}
-              disabled={disabled || Boolean(processingOption)}
-              accessibilityRole="button"
-              accessibilityLabel="Not now"
-              style={({ pressed }) => [
-                s.notNowBtn,
-                pressed && !disabled && !processingOption ? s.pressed : null,
-                (disabled || processingOption) && s.optionDisabled,
-              ]}
-            >
-              <Text style={s.notNowText}>Not Now</Text>
-            </Pressable>
-          </ScrollView>
+              <Pressable
+                onPress={onDeleteAccount}
+                disabled={disabled || managing}
+                accessibilityRole="button"
+                accessibilityLabel="Delete account"
+                style={({ pressed }) => [
+                  s.lockHolderDeleteBtn,
+                  pressed && !disabled && !managing ? s.pressed : null,
+                  (disabled || managing) && s.optionDisabled,
+                ]}
+              >
+                <Text style={s.lockHolderDeleteText}>Delete Account</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={onNotNow}
+                disabled={disabled || managing}
+                accessibilityRole="button"
+                accessibilityLabel="Not now"
+                style={({ pressed }) => [
+                  s.lockHolderNotNowBtn,
+                  pressed && !disabled && !managing ? s.pressed : null,
+                  (disabled || managing) && s.optionDisabled,
+                ]}
+              >
+                <Text style={s.lockHolderNotNowText}>Not Now</Text>
+              </Pressable>
+            </View>
+          </View>
         </Animated.View>
       </View>
     </Modal>
@@ -300,6 +605,26 @@ function resolveFinalCopy(variant: DeleteAccountFinalConfirmVariant) {
     };
   }
 
+  if (variant === "member") {
+    return {
+      kicker: "FINAL CONFIRMATION",
+      title: "Delete your account?",
+      message:
+        "Your personal account will be deleted. Your church's subscription is managed by the church owner and will not be changed.",
+      confirmLabel: "Delete Account",
+    };
+  }
+
+  if (variant === "lock_holder") {
+    return {
+      kicker: "FINAL CONFIRMATION",
+      title: "Delete your account?",
+      message:
+        "This permanently deletes your Kristo account. Your store subscription may continue billing until you cancel it in Apple or Google settings.",
+      confirmLabel: "Delete Account",
+    };
+  }
+
   return {
     kicker: "FINAL CONFIRMATION",
     title: "Delete your account?",
@@ -322,7 +647,7 @@ export function DeleteAccountFinalConfirmModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onNotNow}>
-      <View style={[s.overlay, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}>
+      <View style={[s.overlay, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
         <Pressable
           style={s.backdrop}
           onPress={deleting ? undefined : onNotNow}
@@ -330,66 +655,109 @@ export function DeleteAccountFinalConfirmModal({
         />
         <Animated.View
           style={[
-            s.shell,
-            s.finalShell,
+            s.powerCard,
+            s.finalCard,
             { opacity: fade, transform: [{ translateY: lift }, { scale }] },
           ]}
         >
-          <LinearGradient
-            colors={["#1A1018", "#0B0F17", "#050B14"]}
-            locations={[0, 0.55, 1]}
-            start={{ x: 0.1, y: 0 }}
-            end={{ x: 0.9, y: 1 }}
-            style={StyleSheet.absoluteFillObject}
-          />
-          <View style={s.dangerGlow} />
-          <View style={s.topShine} />
+          <PowerCardChrome>
+            <View style={s.finalContent}>
+              <View style={s.powerTop}>
+                <View style={s.headerIconOuter}>
+                  <View style={[s.headerIconGlow, s.finalHeaderGlow]} pointerEvents="none" />
+                  <View style={[s.headerIconRing, s.finalHeaderRing]} pointerEvents="none" />
+                  <LinearGradient
+                    colors={[
+                      "rgba(120,28,48,0.95)",
+                      "rgba(52,14,28,0.98)",
+                      "rgba(12,6,10,0.99)",
+                    ]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.headerIconTile}
+                  >
+                    <Ionicons name="warning-outline" size={22} color={PINK_SOFT} />
+                  </LinearGradient>
+                </View>
+                <View style={s.headerCopy}>
+                  <Text style={[s.powerEyebrow, s.finalEyebrow]}>{copy.kicker}</Text>
+                  <Text style={s.powerTitle}>{copy.title}</Text>
+                  <Text style={s.powerMessage}>{copy.message}</Text>
+                </View>
+              </View>
 
-          <View style={s.finalContent}>
-            <View style={s.finalIconWrap}>
-              <Ionicons name="warning-outline" size={24} color={DANGER_SOFT} />
-            </View>
-            <Text style={s.finalKicker}>{copy.kicker}</Text>
-            <Text style={s.finalTitle}>{copy.title}</Text>
-            <Text style={s.finalMessage}>{copy.message}</Text>
-
-            <View style={s.finalActions}>
-              <Pressable
-                onPress={onNotNow}
-                disabled={deleting}
-                accessibilityRole="button"
-                accessibilityLabel="Not now"
-                style={({ pressed }) => [
-                  s.finalSecondaryBtn,
-                  pressed && !deleting ? s.pressed : null,
-                  deleting && s.optionDisabled,
-                ]}
-              >
-                <Text style={s.finalSecondaryText}>Not Now</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={onConfirm}
-                disabled={deleting}
-                accessibilityRole="button"
-                accessibilityLabel={copy.confirmLabel}
-                style={({ pressed }) => [
-                  s.finalDeleteBtn,
-                  pressed && !deleting ? s.pressed : null,
-                  deleting && s.optionDisabled,
-                ]}
-              >
-                {deleting ? (
-                  <View style={s.finalDeleteLoading}>
-                    <ActivityIndicator color="#fff" size="small" />
-                    <Text style={s.finalDeleteText}>Deleting...</Text>
+              <View style={s.finalActions}>
+                <Pressable
+                  onPress={onNotNow}
+                  disabled={deleting}
+                  accessibilityRole="button"
+                  accessibilityLabel="Not now"
+                  style={({ pressed }) => [
+                    s.finalSecondaryOuter,
+                    pressed && !deleting ? s.pressed : null,
+                    deleting && s.optionDisabled,
+                  ]}
+                >
+                  <View style={s.finalSecondaryBtn}>
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={["rgba(217,179,95,0.05)", "rgba(8,12,20,0.92)"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={StyleSheet.absoluteFillObject}
+                    />
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={["rgba(255,255,255,0.07)", "transparent"]}
+                      start={{ x: 0.5, y: 0 }}
+                      end={{ x: 0.5, y: 1 }}
+                      style={s.optionHighlight}
+                    />
+                    <Text style={s.finalSecondaryText}>Not Now</Text>
                   </View>
-                ) : (
-                  <Text style={s.finalDeleteText}>{copy.confirmLabel}</Text>
-                )}
-              </Pressable>
+                </Pressable>
+
+                <Pressable
+                  onPress={onConfirm}
+                  disabled={deleting}
+                  accessibilityRole="button"
+                  accessibilityLabel={copy.confirmLabel}
+                  style={({ pressed }) => [
+                    s.finalDeleteWrap,
+                    pressed && !deleting ? s.pressed : null,
+                    deleting && s.optionDisabled,
+                  ]}
+                >
+                  <LinearGradient
+                    colors={[
+                      "rgba(140,32,48,0.96)",
+                      "rgba(100,22,36,0.98)",
+                      "rgba(52,10,20,0.99)",
+                    ]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.finalDeleteBtn}
+                  >
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={["rgba(255,140,155,0.12)", "transparent"]}
+                      start={{ x: 0.5, y: 0 }}
+                      end={{ x: 0.5, y: 1 }}
+                      style={s.optionHighlight}
+                    />
+                    {deleting ? (
+                      <View style={s.finalDeleteLoading}>
+                        <ActivityIndicator color="#fff" size="small" />
+                        <Text style={s.finalDeleteText}>Deleting...</Text>
+                      </View>
+                    ) : (
+                      <Text style={s.finalDeleteText}>{copy.confirmLabel}</Text>
+                    )}
+                  </LinearGradient>
+                </Pressable>
+              </View>
             </View>
-          </View>
+          </PowerCardChrome>
         </Animated.View>
       </View>
     </Modal>
@@ -400,317 +768,480 @@ const s = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: "center",
-    paddingHorizontal: 18,
-    backgroundColor: "rgba(1,8,22,0.84)",
+    paddingHorizontal: 22,
+    backgroundColor: "rgba(1,6,18,0.88)",
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
   },
-  shell: {
-    maxHeight: "92%",
-    borderRadius: 28,
+  powerCard: {
+    alignSelf: "center",
+    width: "100%",
+    maxWidth: 360,
+    maxHeight: "90%",
+    borderRadius: 24,
     overflow: "hidden",
-    borderWidth: 1.2,
-    borderColor: "rgba(217,179,95,0.42)",
-    backgroundColor: "#07111F",
-    shadowColor: "#D9B56D",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.36)",
+    backgroundColor: "#060A12",
+    shadowColor: GOLD,
     shadowOpacity: 0.28,
-    shadowRadius: 22,
+    shadowRadius: 20,
     shadowOffset: { width: 0, height: 10 },
-    elevation: 20,
+    elevation: 12,
   },
-  finalShell: {
-    borderColor: "rgba(255,90,95,0.42)",
-    shadowColor: "#FF5A5F",
+  finalCard: {
+    borderColor: "rgba(217,179,95,0.32)",
+  },
+  ambientGlowTop: {
+    position: "absolute",
+    top: -28,
+    right: -18,
+    width: 110,
+    height: 110,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.08)",
+  },
+  ambientGlowBottom: {
+    position: "absolute",
+    bottom: -32,
+    left: -20,
+    width: 90,
+    height: 90,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.05)",
+  },
+  topGoldLine: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+  },
+  powerSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 36,
   },
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 22,
-    paddingBottom: 18,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 14,
+    gap: 12,
+  },
+  powerTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
     gap: 14,
   },
-  goldGlow: {
-    position: "absolute",
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    right: -70,
-    top: -100,
-    backgroundColor: "rgba(217,181,109,0.14)",
+  headerIconOuter: {
+    width: 58,
+    height: 58,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  goldGlowSoft: {
+  headerIconGlow: {
     position: "absolute",
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    left: -60,
-    bottom: -70,
-    backgroundColor: "rgba(240,214,147,0.07)",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(217,179,95,0.20)",
   },
-  dangerGlow: {
-    position: "absolute",
-    width: 200,
-    height: 200,
-    borderRadius: 100,
-    right: -60,
-    top: -80,
-    backgroundColor: "rgba(255,90,95,0.10)",
-  },
-  topShine: {
-    position: "absolute",
-    left: 18,
-    right: 18,
-    top: 0,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.10)",
-  },
-  headerIconStack: {
-    alignSelf: "center",
-    width: 72,
-    height: 72,
-    marginBottom: 4,
+  finalHeaderGlow: {
+    backgroundColor: "rgba(255,100,120,0.14)",
   },
   headerIconRing: {
-    width: 72,
-    height: 72,
+    position: "absolute",
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.55)",
+  },
+  finalHeaderRing: {
+    borderColor: "rgba(255,140,155,0.38)",
+  },
+  headerIconTile: {
+    width: 48,
+    height: 48,
     borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(217,179,95,0.34)",
   },
   headerBadgeDanger: {
     position: "absolute",
-    right: -2,
-    bottom: -2,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    right: 0,
+    bottom: 0,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: DANGER,
+    backgroundColor: "rgba(180,36,52,0.95)",
     borderWidth: 2,
-    borderColor: "#07111F",
+    borderColor: "#060A12",
   },
-  kicker: {
-    color: "rgba(217,179,95,0.88)",
-    fontSize: 11,
-    fontWeight: "900",
+  headerCopy: {
+    flex: 1,
+    gap: 4,
+    paddingTop: 4,
+  },
+  powerEyebrow: {
+    color: LABEL_GOLD,
+    fontSize: 10,
+    fontWeight: "800",
     letterSpacing: 1.1,
-    textAlign: "center",
+    textTransform: "uppercase",
   },
-  title: {
-    color: "#fff",
-    fontSize: 24,
+  finalEyebrow: {
+    color: "rgba(255,180,190,0.90)",
+  },
+  powerTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 17,
     fontWeight: "900",
-    letterSpacing: -0.5,
-    textAlign: "center",
-  },
-  message: {
-    color: MUTED,
-    fontSize: 14,
-    fontWeight: "600",
+    letterSpacing: 0.15,
     lineHeight: 21,
-    textAlign: "center",
-    paddingHorizontal: 4,
+  },
+  powerMessage: {
+    color: TEXT_MUTED,
+    fontSize: 12,
+    fontWeight: "500",
+    lineHeight: 17,
+    marginTop: 1,
   },
   inlineStatus: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 8,
     borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "rgba(217,179,95,0.08)",
-    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    backgroundColor: "rgba(217,179,95,0.07)",
+    borderWidth: 1,
     borderColor: "rgba(217,179,95,0.24)",
   },
   inlineStatusText: {
     flex: 1,
-    color: "rgba(255,255,255,0.88)",
-    fontSize: 13,
-    fontWeight: "600",
-    lineHeight: 18,
+    color: "rgba(255,255,255,0.90)",
+    fontSize: 12,
+    fontWeight: "500",
+    lineHeight: 16,
   },
   optionsStack: {
-    gap: 12,
-    marginTop: 4,
-  },
-  optionOuter: {
-    borderRadius: 20,
-    shadowColor: "#000",
-    shadowOpacity: 0.14,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 5,
-  },
-  optionCard: {
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: StyleSheet.hairlineWidth,
     gap: 10,
-    overflow: "hidden",
   },
-  optionTopRow: {
+  wineOptionOuter: {
+    borderRadius: 16,
+    shadowColor: WINE_ACCENT,
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  wineOptionCard: {
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,130,145,0.26)",
+    paddingHorizontal: 12,
+    paddingVertical: 13,
+  },
+  goldGlassOuter: {
+    borderRadius: 16,
+    shadowColor: GOLD,
+    shadowOpacity: 0.26,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  goldGlassCard: {
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.38)",
+    paddingHorizontal: 12,
+    paddingVertical: 13,
+  },
+  optionHighlight: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 20,
+  },
+  optionRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     gap: 12,
   },
-  optionIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
+  actionIconOuter: {
+    width: 52,
+    height: 52,
     alignItems: "center",
     justifyContent: "center",
   },
-  optionIconWrapGold: {
-    backgroundColor: "rgba(217,179,95,0.12)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(217,179,95,0.24)",
+  actionIconGlow: {
+    position: "absolute",
+    width: 56,
+    height: 56,
+    borderRadius: 28,
   },
-  optionIconWrapDanger: {
-    backgroundColor: "rgba(255,90,95,0.10)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,90,95,0.24)",
+  actionIconRing: {
+    position: "absolute",
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    borderWidth: 1.5,
+  },
+  actionIconTile: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
   },
   optionCopy: {
     flex: 1,
-    gap: 8,
+    gap: 5,
+  },
+  optionTrailing: {
+    width: 18,
+    alignItems: "center",
+    justifyContent: "center",
   },
   optionTitle: {
-    color: "#fff",
-    fontSize: 16,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
     fontWeight: "800",
-    letterSpacing: -0.2,
-    lineHeight: 21,
+    letterSpacing: 0.1,
+    lineHeight: 17,
   },
   optionSubtitle: {
-    color: "rgba(255,255,255,0.62)",
-    fontSize: 13,
-    fontWeight: "600",
-    lineHeight: 19,
+    color: TEXT_MUTED,
+    fontSize: 11,
+    fontWeight: "500",
+    lineHeight: 15,
   },
   badge: {
     alignSelf: "flex-start",
     borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
   },
   badgeGold: {
     backgroundColor: "rgba(217,179,95,0.10)",
     borderColor: "rgba(217,179,95,0.28)",
   },
-  badgeNeutral: {
-    backgroundColor: "rgba(255,255,255,0.05)",
-    borderColor: "rgba(255,255,255,0.12)",
-  },
-  badgeDanger: {
-    backgroundColor: "rgba(255,90,95,0.10)",
-    borderColor: "rgba(255,90,95,0.24)",
+  badgePink: {
+    backgroundColor: "rgba(255,130,145,0.10)",
+    borderColor: "rgba(255,150,165,0.24)",
   },
   badgeText: {
-    fontSize: 11,
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.25,
+  },
+  badgeTextGold: { color: "rgba(240,214,147,0.94)" },
+  badgeTextPink: { color: "rgba(255,200,208,0.94)" },
+  notNowOuter: {
+    alignSelf: "center",
+    marginTop: 2,
+    borderRadius: 16,
+    shadowColor: GOLD,
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  notNowPill: {
+    minHeight: 42,
+    minWidth: 140,
+    paddingHorizontal: 22,
+    borderRadius: 16,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.32)",
+  },
+  notNowText: {
+    color: LABEL_GOLD,
+    fontSize: 12,
     fontWeight: "800",
     letterSpacing: 0.2,
   },
-  badgeTextGold: { color: GOLD_SOFT },
-  badgeTextNeutral: { color: "rgba(255,255,255,0.72)" },
-  badgeTextDanger: { color: DANGER_SOFT },
-  notNowBtn: {
-    alignSelf: "center",
-    minHeight: 44,
-    paddingHorizontal: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 4,
-  },
-  notNowText: {
-    color: "rgba(255,255,255,0.58)",
-    fontSize: 14,
-    fontWeight: "800",
-  },
   pressed: {
-    opacity: 0.9,
+    opacity: 0.92,
     transform: [{ scale: 0.985 }],
   },
   optionDisabled: {
     opacity: 0.55,
   },
   finalContent: {
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 18,
-    gap: 12,
-  },
-  finalIconWrap: {
-    alignSelf: "center",
-    width: 56,
-    height: 56,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,90,95,0.10)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,90,95,0.28)",
-  },
-  finalKicker: {
-    color: "rgba(255,180,184,0.92)",
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 1.1,
-    textAlign: "center",
-  },
-  finalTitle: {
-    color: "#fff",
-    fontSize: 22,
-    fontWeight: "900",
-    letterSpacing: -0.4,
-    textAlign: "center",
-  },
-  finalMessage: {
-    color: MUTED,
-    fontSize: 14,
-    fontWeight: "600",
-    lineHeight: 21,
-    textAlign: "center",
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 14,
+    gap: 14,
   },
   finalActions: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 8,
+    gap: 8,
+  },
+  finalSecondaryOuter: {
+    flex: 1,
+    borderRadius: 16,
+    shadowColor: GOLD,
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
   },
   finalSecondaryBtn: {
-    flex: 1,
-    minHeight: 48,
-    borderRadius: 14,
+    minHeight: 46,
+    borderRadius: 16,
+    overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.28)",
   },
   finalSecondaryText: {
-    color: "#fff",
+    color: TEXT_PRIMARY,
     fontWeight: "800",
-    fontSize: 14,
+    fontSize: 12,
+  },
+  finalDeleteWrap: {
+    flex: 1.1,
+    borderRadius: 16,
+    overflow: "hidden",
+    shadowColor: WINE_ACCENT,
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
   finalDeleteBtn: {
-    flex: 1.15,
-    minHeight: 48,
-    borderRadius: 14,
+    minHeight: 46,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,90,95,0.92)",
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,130,145,0.28)",
+    overflow: "hidden",
   },
   finalDeleteText: {
     color: "#fff",
     fontWeight: "900",
-    fontSize: 14,
+    fontSize: 12,
   },
   finalDeleteLoading: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 7,
+  },
+  lockHolderCard: {
+    alignSelf: "center",
+    width: "100%",
+    maxWidth: 340,
+    borderRadius: 22,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.30)",
+    backgroundColor: "#060A12",
+    shadowColor: GOLD,
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+  },
+  lockHolderContent: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 16,
+    gap: 10,
+    alignItems: "center",
+  },
+  lockHolderIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(217,179,95,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.28)",
+  },
+  lockHolderKicker: {
+    color: LABEL_GOLD,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    marginTop: 2,
+  },
+  lockHolderTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: 0.1,
+    lineHeight: 24,
+    textAlign: "center",
+  },
+  lockHolderMessage: {
+    color: TEXT_MUTED,
+    fontSize: 13,
+    fontWeight: "500",
+    lineHeight: 18,
+    textAlign: "center",
+    marginBottom: 4,
+  },
+  lockHolderActions: {
+    width: "100%",
     gap: 8,
+    marginTop: 4,
+  },
+  lockHolderManageBtn: {
+    minHeight: 46,
+    borderRadius: 14,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.34)",
+  },
+  lockHolderManageText: {
+    color: GOLD_BRIGHT,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  lockHolderDeleteBtn: {
+    minHeight: 46,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,130,145,0.28)",
+    backgroundColor: "rgba(255,90,95,0.08)",
+  },
+  lockHolderDeleteText: {
+    color: "#FFB4B8",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  lockHolderNotNowBtn: {
+    minHeight: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+  lockHolderNotNowText: {
+    color: LABEL_GOLD,
+    fontSize: 12,
+    fontWeight: "800",
   },
 });

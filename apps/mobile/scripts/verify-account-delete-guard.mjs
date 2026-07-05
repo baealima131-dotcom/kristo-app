@@ -48,10 +48,86 @@ function resolveStoreSubscriptionWillRenew(customerInfo) {
   return null;
 }
 
+function hasDeleteAccountStoreSubscriptionConcern(check) {
+  return check.detection !== "none";
+}
+
+function churchHasManagedStoreSubscription(status) {
+  if (status.serverSubscriptionActive && status.subscriptionSource === "app_store") {
+    return true;
+  }
+  const lock = status.subscriptionOwnershipLock;
+  if (!lock || lock.status !== "active") return false;
+  return lock.store === "app_store" || lock.store === "play_store";
+}
+
+function mayManageAccountDeleteStoreSubscription(status) {
+  return (
+    status.isActualChurchPastor === true ||
+    status.subscriptionOwnershipLock?.isLockHolder === true
+  );
+}
+
+function resolveDeviceCanManageSubscription(check, churchId, configuredAppUserId = null) {
+  const status = check.status;
+  const isActualChurchPastor = status?.isActualChurchPastor === true;
+  const isLockHolder = status?.subscriptionOwnershipLock?.isLockHolder === true;
+  if (!isActualChurchPastor && !isLockHolder) return false;
+
+  const cid = String(churchId || status?.churchId || "").trim();
+  if (!cid || !status?.serverSubscriptionActive) return false;
+
+  const customerInfo = check.customerInfo;
+  if (!customerInfo || !hasActiveStoreSubscriptionOnDevice(customerInfo)) return false;
+
+  const configuredId = String(configuredAppUserId || cid).trim();
+  const originalAppUserId = String(customerInfo.originalAppUserId || "").trim();
+  return configuredId === cid && originalAppUserId === cid;
+}
+
+function isChurchOwnerRoleForAccountDelete(role) {
+  const normalized = String(role || "").trim().toLowerCase();
+  return (
+    normalized.includes("pastor") ||
+    normalized.includes("admin") ||
+    normalized === "church_admin"
+  );
+}
+
+function resolveOwnerGate(
+  check,
+  { churchId = check.status?.churchId, configuredAppUserId = null, role = "Member" } = {}
+) {
+  const status = check.status;
+  const isActualPastor = status?.isActualChurchPastor === true;
+  const isChurchOwnerRole = isChurchOwnerRoleForAccountDelete(role);
+  const isPastor = isActualPastor || isChurchOwnerRole;
+  const isLockHolder = status?.subscriptionOwnershipLock?.isLockHolder === true;
+  const deviceCanManageSubscription = resolveDeviceCanManageSubscription(
+    check,
+    churchId,
+    configuredAppUserId
+  );
+  const canManageSubscription = isPastor;
+
+  let modalType = "standard";
+  if (isPastor && hasDeleteAccountStoreSubscriptionConcern(check)) {
+    modalType = "owner_choice";
+  } else if (isLockHolder && hasDeleteAccountStoreSubscriptionConcern(check)) {
+    modalType = "lock_holder_non_pastor";
+  } else if (!isPastor && !isLockHolder && churchHasManagedStoreSubscription(status)) {
+    modalType = "member_confirm";
+  }
+
+  return { isPastor, isLockHolder, deviceCanManageSubscription, canManageSubscription, modalType };
+}
+
 function evaluate(status, customerInfo = null) {
-  const deviceStoreConcern = isActiveDeviceStoreSubscription(status);
-  const storeSubscriptionWillRenew = resolveStoreSubscriptionWillRenew(customerInfo);
-  const hasActiveStoreSub = hasActiveStoreSubscriptionOnDevice(customerInfo);
+  const mayManage = mayManageAccountDeleteStoreSubscription(status);
+  const effectiveCustomerInfo = mayManage ? customerInfo : null;
+  const deviceStoreConcern = mayManage && isActiveDeviceStoreSubscription(status);
+  const storeSubscriptionWillRenew = resolveStoreSubscriptionWillRenew(effectiveCustomerInfo);
+  const hasActiveStoreSub = hasActiveStoreSubscriptionOnDevice(effectiveCustomerInfo);
   const cancelledUntilExpiry =
     deviceStoreConcern && storeSubscriptionWillRenew === false && hasActiveStoreSub;
   const requiresStoreCancellation =
@@ -135,8 +211,12 @@ const cases = [
       ...base,
       serverSubscriptionActive: true,
       subscriptionSource: "app_store",
+      isActualChurchPastor: true,
     },
-    customerInfo: activeWillRenew,
+    customerInfo: {
+      ...activeWillRenew,
+      originalAppUserId: "CH7-TEST01",
+    },
     want: {
       requiresStoreCancellation: true,
       cancelledUntilExpiry: false,
@@ -150,8 +230,12 @@ const cases = [
       ...base,
       serverSubscriptionActive: true,
       subscriptionSource: "app_store",
+      isActualChurchPastor: true,
     },
-    customerInfo: activeCancelledUntilExpiry,
+    customerInfo: {
+      ...activeCancelledUntilExpiry,
+      originalAppUserId: "CH7-TEST01",
+    },
     want: {
       requiresStoreCancellation: false,
       cancelledUntilExpiry: true,
@@ -189,10 +273,10 @@ const cases = [
     },
     customerInfo: activeWillRenew,
     want: {
-      requiresStoreCancellation: true,
+      requiresStoreCancellation: false,
       cancelledUntilExpiry: false,
-      detection: "ownership_lock_active",
-      subscriptionChurchId: "CH7-OLDCH",
+      detection: "none",
+      subscriptionChurchId: null,
     },
   },
   {
@@ -219,6 +303,8 @@ const cases = [
     name: "lock holder on current church",
     status: {
       ...base,
+      serverSubscriptionActive: true,
+      subscriptionSource: "app_store",
       subscriptionOwnershipLock: {
         blocked: false,
         isLockHolder: true,
@@ -227,11 +313,14 @@ const cases = [
         store: "app_store",
       },
     },
-    customerInfo: activeWillRenew,
+    customerInfo: {
+      ...activeWillRenew,
+      originalAppUserId: "CH7-TEST01",
+    },
     want: {
       requiresStoreCancellation: true,
       cancelledUntilExpiry: false,
-      detection: "ownership_lock_active",
+      detection: "current_church_app_store",
       subscriptionChurchId: "CH7-TEST01",
     },
   },
@@ -250,6 +339,150 @@ const cases = [
       subscriptionChurchId: null,
     },
   },
+  {
+    name: "member with active church subscription gets member_confirm",
+    status: {
+      ...base,
+      serverSubscriptionActive: true,
+      subscriptionSource: "app_store",
+      isActualChurchPastor: false,
+    },
+    customerInfo: activeWillRenew,
+    gateWant: {
+      isPastor: false,
+      isLockHolder: false,
+      deviceCanManageSubscription: false,
+      canManageSubscription: false,
+      modalType: "member_confirm",
+    },
+    want: {
+      requiresStoreCancellation: false,
+      cancelledUntilExpiry: false,
+      detection: "none",
+      subscriptionChurchId: null,
+    },
+  },
+  {
+    name: "member on shared device with inherited entitlement stays off owner flow",
+    status: {
+      ...base,
+      serverSubscriptionActive: true,
+      subscriptionSource: "app_store",
+      isActualChurchPastor: false,
+    },
+    customerInfo: {
+      ...activeWillRenew,
+      originalAppUserId: "CH7-TEST01",
+    },
+    gateWant: {
+      isPastor: false,
+      isLockHolder: false,
+      deviceCanManageSubscription: false,
+      canManageSubscription: false,
+      modalType: "member_confirm",
+    },
+    want: {
+      requiresStoreCancellation: false,
+      cancelledUntilExpiry: false,
+      detection: "none",
+      subscriptionChurchId: null,
+    },
+  },
+  {
+    name: "pastor with active church subscription gets owner_choice",
+    status: {
+      ...base,
+      serverSubscriptionActive: true,
+      subscriptionSource: "app_store",
+      isActualChurchPastor: true,
+    },
+    customerInfo: {
+      ...activeWillRenew,
+      originalAppUserId: "CH7-TEST01",
+    },
+    role: "Member",
+    gateWant: {
+      isPastor: true,
+      isLockHolder: false,
+      deviceCanManageSubscription: true,
+      canManageSubscription: true,
+      modalType: "owner_choice",
+    },
+    want: {
+      requiresStoreCancellation: true,
+      cancelledUntilExpiry: false,
+      detection: "current_church_app_store",
+      subscriptionChurchId: "CH7-TEST01",
+    },
+  },
+  {
+    name: "lock holder non-pastor gets lock_holder_non_pastor",
+    status: {
+      ...base,
+      serverSubscriptionActive: true,
+      subscriptionSource: "app_store",
+      isActualChurchPastor: false,
+      subscriptionOwnershipLock: {
+        blocked: false,
+        isLockHolder: true,
+        lockedChurchId: "CH7-TEST01",
+        status: "active",
+        store: "app_store",
+      },
+    },
+    customerInfo: {
+      ...activeWillRenew,
+      originalAppUserId: "CH7-TEST01",
+    },
+    role: "Member",
+    gateWant: {
+      isPastor: false,
+      isLockHolder: true,
+      deviceCanManageSubscription: true,
+      canManageSubscription: false,
+      modalType: "lock_holder_non_pastor",
+    },
+    want: {
+      requiresStoreCancellation: true,
+      cancelledUntilExpiry: false,
+      detection: "current_church_app_store",
+      subscriptionChurchId: "CH7-TEST01",
+    },
+  },
+  {
+    name: "lock holder pastor gets owner_choice",
+    status: {
+      ...base,
+      serverSubscriptionActive: true,
+      subscriptionSource: "app_store",
+      isActualChurchPastor: true,
+      subscriptionOwnershipLock: {
+        blocked: false,
+        isLockHolder: true,
+        lockedChurchId: "CH7-TEST01",
+        status: "active",
+        store: "app_store",
+      },
+    },
+    customerInfo: {
+      ...activeWillRenew,
+      originalAppUserId: "CH7-TEST01",
+    },
+    role: "Member",
+    gateWant: {
+      isPastor: true,
+      isLockHolder: true,
+      deviceCanManageSubscription: true,
+      canManageSubscription: true,
+      modalType: "owner_choice",
+    },
+    want: {
+      requiresStoreCancellation: true,
+      cancelledUntilExpiry: false,
+      detection: "current_church_app_store",
+      subscriptionChurchId: "CH7-TEST01",
+    },
+  },
 ];
 
 let failed = 0;
@@ -265,6 +498,31 @@ for (const c of cases) {
     console.error("FAIL", c.name, { want: c.want, got });
   } else {
     console.log("PASS", c.name);
+  }
+
+  if (c.gateWant) {
+    const check = {
+      detection: got.detection,
+      status: c.status,
+      customerInfo: c.customerInfo,
+    };
+    const gate = resolveOwnerGate(check, {
+      churchId: c.status.churchId,
+      configuredAppUserId: c.status.churchId,
+      role: c.role || "Member",
+    });
+    const gateOk =
+      gate.isPastor === c.gateWant.isPastor &&
+      gate.isLockHolder === c.gateWant.isLockHolder &&
+      gate.deviceCanManageSubscription === c.gateWant.deviceCanManageSubscription &&
+      gate.canManageSubscription === c.gateWant.canManageSubscription &&
+      gate.modalType === c.gateWant.modalType;
+    if (!gateOk) {
+      failed += 1;
+      console.error("FAIL gate", c.name, { want: c.gateWant, got: gate });
+    } else {
+      console.log("PASS gate", c.name);
+    }
   }
 }
 
