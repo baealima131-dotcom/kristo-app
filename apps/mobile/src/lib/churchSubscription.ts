@@ -583,6 +583,8 @@ export type ChurchSubscriptionServerStatus = {
 export type ChurchMediaPremiumServerStatus = {
   churchId: string;
   serverSubscriptionActive: boolean;
+  /** From `/api/church/media` — pastor/media-host tools access for this viewer. */
+  canUseMediaTools: boolean | null;
   subscriptionPlan: SubscriptionPlanKey | null;
   subscriptionExpiresAt: number | null;
   subscriptionSource: ChurchMediaSubscriptionSource | null;
@@ -670,10 +672,13 @@ export async function fetchChurchMediaPremiumServerStatus(
     !routeFailed &&
     res?.subscriptionOwnershipLock != null &&
     typeof res.subscriptionOwnershipLock === "object";
+  const canUseMediaTools =
+    routeFailed || typeof res?.canUseMediaTools !== "boolean" ? null : res.canUseMediaTools === true;
 
   console.log("KRISTO_CHURCH_MEDIA_SERVER_RESPONSE", {
     churchId: cid,
     subscriptionActive: serverSubscriptionActive,
+    canUseMediaTools,
     subscriptionExpiresAt,
     subscriptionPlan,
     subscriptionSource,
@@ -687,6 +692,7 @@ export async function fetchChurchMediaPremiumServerStatus(
   return {
     churchId: cid,
     serverSubscriptionActive,
+    canUseMediaTools,
     subscriptionPlan,
     subscriptionExpiresAt,
     subscriptionSource,

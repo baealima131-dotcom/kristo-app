@@ -838,6 +838,7 @@ export default function PaymentsSubscriptionsScreen() {
       churchId: resolvedChurchId,
       customerInfo: infoResult,
       churchSubscriptionActive: server.serverSubscriptionActive,
+      canUseMediaTools: server.canUseMediaTools === true,
     });
     logEntitlementAudit({
       customerInfo: infoResult,
@@ -1042,6 +1043,7 @@ export default function PaymentsSubscriptionsScreen() {
       churchId,
       customerInfo: info,
       churchSubscriptionActive: server?.serverSubscriptionActive,
+      canUseMediaTools: server?.canUseMediaTools === true,
     });
     logRevenueCatSubscriptionOwnershipDebug(info, "subscriptions-refresh", { churchId });
   }

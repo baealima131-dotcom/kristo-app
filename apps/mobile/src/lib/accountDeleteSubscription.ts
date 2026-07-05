@@ -128,6 +128,7 @@ export async function checkAccountDeleteSubscription(args: {
     const emptyStatus: ChurchMediaPremiumServerStatus = {
       churchId: "",
       serverSubscriptionActive: false,
+      canUseMediaTools: null,
       subscriptionPlan: null,
       subscriptionExpiresAt: null,
       subscriptionSource: null,

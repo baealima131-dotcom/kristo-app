@@ -2290,8 +2290,15 @@ export function buildSubscriptionOwnershipChainDiag(args: {
     gateBlockReason = "no_play_subscription_on_device";
   }
 
+  const storeAccountLabel =
+    Platform.OS === "ios"
+      ? "Apple/App Store account (device-local, not readable by app)"
+      : Platform.OS === "android"
+        ? "Google Play account (device-local, not readable by app)"
+        : "App store account (device-local, not readable by app)";
+
   const identityChain: string[] = [
-    "Google Play account (device-local, not readable by app) →",
+    `${storeAccountLabel} →`,
     `RevenueCat originalAppUserId=${originalAppUserId || "null"} →`,
     `RevenueCat configuredAppUserId=${configuredAppUserId || "null"} →`,
     `Kristo churchId=${churchId || "null"} →`,
@@ -2305,13 +2312,22 @@ export function buildSubscriptionOwnershipChainDiag(args: {
     );
   }
   if (churchId && originalAppUserId && originalAppUserId !== churchId) {
-    identityChain.push(
-      `MISMATCH: RC originalAppUserId ${originalAppUserId} !== churchId ${churchId} (aliased/restored customer)`
-    );
+    const configuredMatchesChurch = configuredAppUserId === churchId;
+    if (configuredMatchesChurch && serverActive) {
+      identityChain.push(
+        `DIAG: RC originalAppUserId ${originalAppUserId} !== churchId ${churchId} (aliased/restored customer — configuredAppUserId matches church and server confirms active)`
+      );
+    } else {
+      identityChain.push(
+        `MISMATCH: RC originalAppUserId ${originalAppUserId} !== churchId ${churchId} (aliased/restored customer)`
+      );
+    }
   }
   if (serverActive && !hasPlayPremiumOnDevice && !managementURL) {
     identityChain.push(
-      "Server profile active but device has no manageable Play subscription (wrong Play account, sandbox/prod lane split, or backend-only activation)"
+      Platform.OS === "ios"
+        ? "Server profile active but device has no manageable App Store subscription (wrong Apple ID, sandbox/prod lane split, or backend-only activation)"
+        : "Server profile active but device has no manageable Play subscription (wrong Play account, sandbox/prod lane split, or backend-only activation)"
     );
   }
 
