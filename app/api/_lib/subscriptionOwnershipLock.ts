@@ -33,6 +33,7 @@ export type SubscriptionOwnershipLockApiPayload = {
   expiresAtLabel: string | null;
   platform: "ios" | "android" | null;
   store: "app_store" | "play_store" | null;
+  willRenew: boolean | null;
   status: SubscriptionOwnershipLockStatus | null;
   canPurchase: boolean;
   canActivate: boolean;
@@ -418,6 +419,7 @@ function emptyLockPayload(): SubscriptionOwnershipLockApiPayload {
     expiresAtLabel: null,
     platform: null,
     store: null,
+    willRenew: null,
     status: null,
     canPurchase: true,
     canActivate: true,
@@ -441,6 +443,7 @@ function payloadFromLock(args: {
     expiresAtLabel,
     platform: args.lock.platform,
     store: args.lock.store,
+    willRenew: args.lock.willRenew ?? null,
     status: args.lock.status,
     canPurchase: !blocked,
     canActivate: !blocked,
@@ -451,6 +454,42 @@ function payloadFromLock(args: {
           expiresAtLabel,
         })
       : null,
+  };
+}
+
+export async function buildPrepurchaseOwnershipConflictResponse(args: {
+  churchId: string;
+  reason?: string;
+  lock: SubscriptionOwnershipLockRecord;
+  verification?: ChurchPremiumVerification | null;
+}) {
+  const churchMeta = await resolveLockedChurchName(
+    args.lock.lockedChurchId,
+    args.lock.lockedChurchName
+  );
+  const resolvedLock: SubscriptionOwnershipLockRecord = {
+    ...args.lock,
+    lockedChurchName: churchMeta.name,
+    lockedChurchDeleted: churchMeta.deleted,
+    willRenew: args.lock.willRenew ?? args.verification?.willRenew ?? null,
+    store: args.lock.store ?? args.verification?.store ?? null,
+  };
+  const subscriptionOwnershipLock = payloadFromLock({
+    lock: resolvedLock,
+    churchId: args.churchId,
+  });
+
+  return {
+    ok: false as const,
+    allowed: false as const,
+    reason: args.reason ?? "store-subscription-ownership-conflict",
+    lockedChurchId: resolvedLock.lockedChurchId,
+    lockedChurchName: churchMeta.name,
+    store: subscriptionOwnershipLock.store,
+    expiresAt: subscriptionOwnershipLock.expiresAt,
+    willRenew: subscriptionOwnershipLock.willRenew,
+    subscriptionOwnershipLock,
+    productId: args.verification?.productId ?? resolvedLock.productId ?? null,
   };
 }
 

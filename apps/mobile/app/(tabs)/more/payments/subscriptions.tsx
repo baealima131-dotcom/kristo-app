@@ -1876,6 +1876,7 @@ export default function PaymentsSubscriptionsScreen() {
 
       <SubscriptionStoreConflictModal
         visible={storeConflictModalOpen}
+        currentChurchId={churchId}
         lock={storeConflictLock}
         managing={managingStoreConflict}
         disabled={Boolean(submittingPlan)}

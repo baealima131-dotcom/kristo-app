@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -23,6 +23,7 @@ const TEXT_MUTED = "rgba(255,255,255,0.62)";
 
 type SubscriptionStoreConflictModalProps = {
   visible: boolean;
+  currentChurchId?: string | null;
   lock?: ChurchMediaSubscriptionOwnershipLock | null;
   managing?: boolean;
   disabled?: boolean;
@@ -76,8 +77,50 @@ function PowerCardChrome() {
   );
 }
 
+function resolveStoreSubscriptionLabel(lock?: ChurchMediaSubscriptionOwnershipLock | null): string {
+  if (lock?.store === "play_store") return "Google Play subscription";
+  if (lock?.store === "app_store") return "Apple Subscription";
+  return Platform.OS === "android" ? "Google Play subscription" : "Apple Subscription";
+}
+
+function resolveManageSubscriptionLabel(lock?: ChurchMediaSubscriptionOwnershipLock | null): string {
+  if (lock?.store === "play_store") return "Manage Google Play Subscription";
+  if (lock?.store === "app_store") return "Manage Apple Subscription";
+  return Platform.OS === "android"
+    ? "Manage Google Play Subscription"
+    : "Manage Apple Subscription";
+}
+
+function buildConflictMessage(lock?: ChurchMediaSubscriptionOwnershipLock | null): string {
+  const churchLabel = String(lock?.lockedChurchName || "a previous church").trim();
+  const expiryLabel = String(lock?.expiresAtLabel || "").trim();
+  const storeLabel = resolveStoreSubscriptionLabel(lock);
+
+  const intro = `Your ${storeLabel} is still linked to "${churchLabel}". It cannot be activated for this church while the previous subscription ownership lock is active.`;
+
+  if (lock?.willRenew === true) {
+    const renewalNote = expiryLabel
+      ? `To prevent another renewal, manage the subscription and cancel auto-renewal first. Paid access for the previous church remains until ${expiryLabel}.`
+      : "To prevent another renewal, manage the subscription and cancel auto-renewal first.";
+    return `${intro}\n\n${renewalNote}`;
+  }
+
+  if (lock?.willRenew === false) {
+    const expiryNote = expiryLabel
+      ? `Renewal is already off. Paid access for the previous church remains until ${expiryLabel}. This subscription cannot be moved to another church before that period ends.`
+      : "Renewal is already off. This subscription cannot be moved to another church before the current paid period ends.";
+    return `${intro}\n\n${expiryNote}`;
+  }
+
+  const fallbackNote = expiryLabel
+    ? `Paid access for the previous church remains until ${expiryLabel}.`
+    : "Manage your store subscription to review billing before trying again.";
+  return `${intro}\n\n${fallbackNote}`;
+}
+
 export function SubscriptionStoreConflictModal({
   visible,
+  currentChurchId,
   lock,
   managing,
   disabled,
@@ -86,12 +129,22 @@ export function SubscriptionStoreConflictModal({
 }: SubscriptionStoreConflictModalProps) {
   const insets = useSafeAreaInsets();
   const { scale, fade, lift } = useModalEntrance(visible);
-  const storeLabel = Platform.OS === "ios" ? "Apple" : "Google Play";
+  const message = useMemo(() => buildConflictMessage(lock), [lock]);
+  const manageLabel = useMemo(() => resolveManageSubscriptionLabel(lock), [lock]);
   const expiryLabel = String(lock?.expiresAtLabel || "").trim();
-  const churchLabel = String(lock?.lockedChurchName || "a previous church").trim();
-  const message =
-    String(lock?.message || "").trim() ||
-    `An existing Media Premium subscription is still linked to ${churchLabel}. It cannot be moved to this church.`;
+
+  useEffect(() => {
+    if (!visible || !lock?.blocked) return;
+
+    console.log("KRISTO_SUBSCRIPTION_CONFLICT_MODAL_OPENED", {
+      currentChurchId: String(currentChurchId || "").trim() || null,
+      lockedChurchId: lock.lockedChurchId ?? null,
+      lockedChurchName: lock.lockedChurchName ?? null,
+      store: lock.store ?? null,
+      willRenew: lock.willRenew ?? null,
+      expiresAt: lock.expiresAt ?? null,
+    });
+  }, [visible, lock, currentChurchId]);
 
   return (
     <Modal
@@ -134,12 +187,8 @@ export function SubscriptionStoreConflictModal({
               ) : null}
 
               <Text style={s.powerEyebrow}>SUBSCRIPTION LINKED</Text>
-              <Text style={s.powerTitle}>Existing subscription found</Text>
+              <Text style={s.powerTitle}>Existing Subscription Found</Text>
               <Text style={s.powerMessage}>{message}</Text>
-              <Text style={s.storeHint}>
-                Manage billing in {storeLabel}. Creating a new church does not transfer an existing store
-                subscription.
-              </Text>
             </View>
 
             <View style={s.actions}>
@@ -147,7 +196,7 @@ export function SubscriptionStoreConflictModal({
                 onPress={onManageSubscription}
                 disabled={disabled || managing}
                 accessibilityRole="button"
-                accessibilityLabel="Manage Media Premium subscription"
+                accessibilityLabel={manageLabel}
                 style={({ pressed }) => [
                   s.goldCtaOuter,
                   pressed && !disabled && !managing ? s.ctaPressed : null,
@@ -163,7 +212,7 @@ export function SubscriptionStoreConflictModal({
                   {managing ? (
                     <ActivityIndicator size="small" color="#0B0F17" />
                   ) : (
-                    <Text style={s.goldCtaText}>Manage Subscription</Text>
+                    <Text style={s.goldCtaText}>{manageLabel}</Text>
                   )}
                 </LinearGradient>
               </Pressable>
@@ -314,13 +363,6 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontWeight: "500",
     lineHeight: 18,
-    textAlign: "center",
-  },
-  storeHint: {
-    color: "rgba(255,255,255,0.48)",
-    fontSize: 11,
-    fontWeight: "500",
-    lineHeight: 15,
     textAlign: "center",
   },
   actions: { width: "100%", gap: 10, marginTop: 2 },

@@ -3,7 +3,10 @@ import type { NextRequest } from "next/server";
 
 import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
 import { guard } from "@/app/api/_lib/rbac";
-import { checkStoreSubscriptionPrepurchaseOwnership } from "@/app/api/_lib/subscriptionOwnershipLock";
+import {
+  buildPrepurchaseOwnershipConflictResponse,
+  checkStoreSubscriptionPrepurchaseOwnership,
+} from "@/app/api/_lib/subscriptionOwnershipLock";
 
 export const runtime = "nodejs";
 
@@ -46,21 +49,25 @@ export async function POST(req: NextRequest) {
   });
 
   if (!result.allowed) {
-    return json(
-      {
-        ok: false,
-        allowed: false,
-        reason: result.reason ?? "store-subscription-ownership-conflict",
-        subscriptionOwnershipLock: result.payload,
-        storeSubscriptionIdentity:
-          result.verification?.storeSubscriptionIdentity ??
-          result.lock?.storeSubscriptionIdentity ??
-          null,
-        productId: result.verification?.productId ?? null,
-        store: result.verification?.store ?? null,
-      },
-      { status: 409 }
-    );
+    if (!result.lock) {
+      return json(
+        {
+          ok: false,
+          allowed: false,
+          reason: result.reason ?? "store-subscription-ownership-conflict",
+        },
+        { status: 409 }
+      );
+    }
+
+    const conflict = await buildPrepurchaseOwnershipConflictResponse({
+      churchId,
+      reason: result.reason ?? "store-subscription-ownership-conflict",
+      lock: result.lock,
+      verification: result.verification,
+    });
+
+    return json(conflict, { status: 409 });
   }
 
   return json({

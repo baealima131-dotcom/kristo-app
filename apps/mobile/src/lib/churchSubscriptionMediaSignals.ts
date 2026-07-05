@@ -181,6 +181,7 @@ export type ChurchMediaSubscriptionOwnershipLock = {
   expiresAtLabel: string | null;
   platform: "ios" | "android" | null;
   store: "app_store" | "play_store" | null;
+  willRenew: boolean | null;
   status: "active" | "expired" | "released" | null;
   canPurchase: boolean;
   canActivate: boolean;
@@ -195,14 +196,23 @@ export function parseChurchMediaSubscriptionOwnershipLock(
 
   const blocked = raw.blocked === true;
   const isLockHolder = raw.isLockHolder === true;
-  const lockedChurchId = String(raw.lockedChurchId || "").trim() || null;
-  const lockedChurchName = String(raw.lockedChurchName || "").trim() || null;
+  const lockedChurchId =
+    String(res?.lockedChurchId || raw.lockedChurchId || "").trim() || null;
+  const lockedChurchName =
+    String(res?.lockedChurchName || raw.lockedChurchName || "").trim() || null;
   const expiresAt =
-    typeof raw.expiresAt === "number" && Number.isFinite(raw.expiresAt) ? raw.expiresAt : null;
+    typeof res?.expiresAt === "number" && Number.isFinite(res.expiresAt)
+      ? res.expiresAt
+      : typeof raw.expiresAt === "number" && Number.isFinite(raw.expiresAt)
+        ? raw.expiresAt
+        : null;
   const expiresAtLabel = String(raw.expiresAtLabel || "").trim() || null;
   const platform = raw.platform === "ios" || raw.platform === "android" ? raw.platform : null;
+  const storeRaw = res?.store ?? raw.store;
   const store =
-    raw.store === "app_store" || raw.store === "play_store" ? raw.store : null;
+    storeRaw === "app_store" || storeRaw === "play_store" ? storeRaw : null;
+  const willRenewRaw = res?.willRenew ?? raw.willRenew;
+  const willRenew = typeof willRenewRaw === "boolean" ? willRenewRaw : null;
   const status =
     raw.status === "active" || raw.status === "expired" || raw.status === "released"
       ? raw.status
@@ -230,6 +240,7 @@ export function parseChurchMediaSubscriptionOwnershipLock(
     expiresAtLabel,
     platform,
     store,
+    willRenew,
     status,
     canPurchase,
     canActivate,

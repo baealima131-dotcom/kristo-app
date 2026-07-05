@@ -1096,6 +1096,7 @@ export default function PaymentsCheckoutScreen() {
 
       <SubscriptionStoreConflictModal
         visible={storeConflictModalOpen}
+        currentChurchId={checkoutChurchId}
         lock={storeConflictLock}
         managing={managingStoreConflict}
         disabled={submitting}

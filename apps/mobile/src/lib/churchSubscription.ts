@@ -1145,8 +1145,8 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
         lockedChurchId: ownershipLock?.lockedChurchId ?? null,
         lockedChurchName: ownershipLock?.lockedChurchName ?? null,
         expiresAt: ownershipLock?.expiresAt ?? null,
-        storeSubscriptionIdentity:
-          body?.storeSubscriptionIdentity ?? body?.subscriptionOwnershipLock?.storeSubscriptionIdentity ?? null,
+        store: ownershipLock?.store ?? body?.store ?? null,
+        willRenew: ownershipLock?.willRenew ?? body?.willRenew ?? null,
         endpoint,
       });
       return {
@@ -1178,8 +1178,8 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
         lockedChurchId: ownershipLock?.lockedChurchId ?? null,
         lockedChurchName: ownershipLock?.lockedChurchName ?? null,
         expiresAt: ownershipLock?.expiresAt ?? null,
-        storeSubscriptionIdentity:
-          body?.storeSubscriptionIdentity ?? body?.subscriptionOwnershipLock?.storeSubscriptionIdentity ?? null,
+        store: ownershipLock?.store ?? body?.store ?? null,
+        willRenew: ownershipLock?.willRenew ?? body?.willRenew ?? null,
         endpoint,
       });
       return {
