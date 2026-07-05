@@ -1,5 +1,6 @@
 import { homeFeedRowKey } from "@/src/components/homeFeed/homeFeedPagination";
 import { stableMergeHomeFeedRows, dedupeHomeFeedRowsByKey } from "@/src/components/homeFeed/homeFeedPagination";
+import { HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE } from "@/src/components/homeFeed/homeFeedPageCache";
 import { shouldHardRefreshHomeFeed } from "@/src/lib/homeFeedRefreshReason";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { isHomeFeedYouTubeStyleVideo } from "@/src/lib/homeFeedVideoMode";
@@ -53,8 +54,22 @@ export function peekHomeFeedYoutubeStreamSessionRows(): any[] {
   return session.rows;
 }
 
+export function isPartialHomeFeedYoutubeStreamSession(
+  snap: Pick<HomeFeedYoutubeStreamSession, "rows" | "hasMore"> = session
+): boolean {
+  return (
+    snap.hasMore === true &&
+    snap.rows.length > 0 &&
+    snap.rows.length < HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE
+  );
+}
+
 export function hasHomeFeedYoutubeStreamSession(): boolean {
-  return isHomeFeedYouTubeStyleVideo() && session.rows.length > 0;
+  return (
+    isHomeFeedYouTubeStyleVideo() &&
+    session.rows.length > 0 &&
+    !isPartialHomeFeedYoutubeStreamSession(session)
+  );
 }
 
 export function peekHomeFeedYoutubeRefreshAvailable(): boolean {
@@ -93,6 +108,34 @@ export function saveHomeFeedYoutubeStreamSession(
   const nextRefreshAvailable =
     patch.refreshAvailable !== undefined ? patch.refreshAvailable : session.refreshAvailable;
   const nextScrollY = normalizeHomeFeedSessionScrollY(patch.scrollY);
+  const nextHasMore = patch.hasMore !== undefined ? patch.hasMore : session.hasMore;
+
+  if (patch.rows !== undefined) {
+    const dedupedRows = dedupeHomeFeedRowsByKey(patch.rows);
+    if (isPartialHomeFeedYoutubeStreamSession({ rows: dedupedRows, hasMore: nextHasMore })) {
+      console.log("KRISTO_HOME_FEED_SESSION_PARTIAL_IGNORED", {
+        rowCount: dedupedRows.length,
+        hasMore: nextHasMore,
+        firstPageSize: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
+      });
+      const rowlessPatch = { ...patch };
+      delete rowlessPatch.rows;
+      if (Object.keys(rowlessPatch).length === 0) return;
+      session = {
+        ...session,
+        ...rowlessPatch,
+        scrollY: nextScrollY !== undefined ? nextScrollY : session.scrollY,
+        refreshAvailable: nextRefreshAvailable,
+        pendingPage0Rows:
+          patch.pendingPage0Rows !== undefined ? patch.pendingPage0Rows : session.pendingPage0Rows,
+      };
+      if (patch.refreshAvailable !== undefined) {
+        notifyRefreshListeners();
+      }
+      return;
+    }
+  }
+
   session = {
     ...session,
     ...patch,

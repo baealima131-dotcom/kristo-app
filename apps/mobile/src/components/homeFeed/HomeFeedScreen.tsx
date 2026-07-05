@@ -56,6 +56,7 @@ import {
   appendHomeFeedYoutubeStreamRows,
   clearHomeFeedYoutubeStreamSession,
   hasHomeFeedYoutubeStreamSession,
+  isPartialHomeFeedYoutubeStreamSession,
   logHomeFeedSessionRestored,
   peekHomeFeedYoutubeStreamSession,
   peekHomeFeedYoutubeStreamSessionRows,
@@ -520,6 +521,17 @@ export default function HomeFeedScreen() {
         }
 
         if (youtubeSessionOnMount.rows.length > 0) {
+          if (isPartialHomeFeedYoutubeStreamSession(youtubeSessionOnMount)) {
+            console.log("KRISTO_HOME_FEED_SESSION_PARTIAL_IGNORED", {
+              rowCount: youtubeSessionOnMount.rows.length,
+              hasMore: youtubeSessionOnMount.hasMore,
+              source: "mount-restore",
+              firstPageSize: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
+            });
+            clearHomeFeedYoutubeStreamSession();
+            setDisplayOrderCacheReady(true);
+            return;
+          }
           youtubeStreamRowsRef.current = youtubeSessionOnMount.rows;
           feedNextCursorRef.current = youtubeSessionOnMount.nextCursor;
           feedHasMoreRef.current = youtubeSessionOnMount.hasMore;
@@ -1057,23 +1069,36 @@ export default function HomeFeedScreen() {
                 rows
               );
               void restoreYoutubeStreamRows(merged, { coldStart: true });
-            } else if (androidProgressiveRevealDoneRef.current) {
-              const waitStart = Date.now();
-              while (
-                !youtubePageRevealCompleteRef.current &&
-                Date.now() - waitStart < 2500 &&
-                loadGeneration === loadFeedGenerationRef.current
-              ) {
-                await new Promise((resolve) => setTimeout(resolve, 32));
-              }
-              if (
-                loadGeneration === loadFeedGenerationRef.current &&
-                androidProgressiveRevealDoneRef.current
-              ) {
-                if (youtubePageRevealCompleteRef.current) {
-                  await topUpAndroidYoutubePage0(rows);
-                } else {
-                  void revealYoutubePage0(rows);
+            } else if (
+              Platform.OS === "android" &&
+              loadGeneration === loadFeedGenerationRef.current
+            ) {
+              const collectedVideos = filterHomeFeedYoutubeStreamRows(rows);
+              const visibleCount = youtubeStreamRowsRef.current.length;
+              if (collectedVideos.length > visibleCount) {
+                const waitStart = Date.now();
+                while (
+                  visibleCount > 0 &&
+                  !youtubePageRevealCompleteRef.current &&
+                  Date.now() - waitStart < 2500 &&
+                  loadGeneration === loadFeedGenerationRef.current
+                ) {
+                  await new Promise((resolve) => setTimeout(resolve, 32));
+                }
+                if (loadGeneration === loadFeedGenerationRef.current) {
+                  console.log("KRISTO_HOME_FEED_ANDROID_TOPUP_FORCED", {
+                    visibleCount,
+                    collectedCount: collectedVideos.length,
+                    targetFirstPageSize: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
+                    pageRevealComplete: youtubePageRevealCompleteRef.current,
+                    progressiveRevealDone: androidProgressiveRevealDoneRef.current,
+                    reason,
+                  });
+                  if (youtubePageRevealCompleteRef.current || visibleCount === 0) {
+                    await topUpAndroidYoutubePage0(rows);
+                  } else {
+                    void revealYoutubePage0(rows);
+                  }
                 }
               }
               androidProgressiveRevealDoneRef.current = false;
@@ -1211,6 +1236,21 @@ export default function HomeFeedScreen() {
       if (dirty) {
         forceReloadAfterSchedule("schedule-dirty-focus", dirty.backendFeedId);
         return;
+      }
+      if (youtubeLayout) {
+        const youtubeSession = peekHomeFeedYoutubeStreamSession();
+        if (isPartialHomeFeedYoutubeStreamSession(youtubeSession)) {
+          console.log("KRISTO_HOME_FEED_SESSION_PARTIAL_IGNORED", {
+            rowCount: youtubeSession.rows.length,
+            hasMore: youtubeSession.hasMore,
+            source: "focus-restore",
+            firstPageSize: HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE,
+          });
+          clearHomeFeedYoutubeStreamSession();
+          startupFeedRequestedRef.current = true;
+          void loadFeed("load");
+          return;
+        }
       }
       if (youtubeLayout && hasHomeFeedYoutubeStreamSession()) {
         if (coldStartRotationPendingRef.current) {
