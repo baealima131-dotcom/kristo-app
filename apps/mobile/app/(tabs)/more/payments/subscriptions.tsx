@@ -1282,10 +1282,13 @@ export default function PaymentsSubscriptionsScreen() {
 
     try {
       setSubmittingPlan(plan);
-      await logInRevenueCatForChurchSubscription(churchId);
-
       const purchaseResult = await purchaseSubscriptionPackage(targetPackage, {
         upgradeFromProductId: switchingFromMonthly ? PREMIUM_MONTHLY_PRODUCT_ID : null,
+        identityContext: {
+          churchId,
+          userId: sessionUserId,
+          serverSubscriptionActive: freshStatus.serverSubscriptionActive,
+        },
       });
 
       let info = purchaseResult.customerInfo;

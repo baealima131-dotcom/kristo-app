@@ -336,7 +336,7 @@ export default function PaymentsCheckoutScreen() {
 
  
   const hasPremium = hasPremiumEntitlement(customerInfo);
-  const isSubscribedForCurrentChurch = hasPremium || serverSubscriptionActive;
+  const isSubscribedForCurrentChurch = serverSubscriptionActive;
   const activePlan =
     resolvePremiumPlanFromCustomerInfo(customerInfo) || safePlan;
   const displayPlan = isSubscribedForCurrentChurch ? activePlan : safePlan;
@@ -624,8 +624,13 @@ export default function PaymentsCheckoutScreen() {
     try {
       setSubmitting(true);
 
-      await logInRevenueCatForChurchSubscription(churchId);
-      const purchaseResult = await purchaseSubscriptionPackage(targetPackage);
+      const purchaseResult = await purchaseSubscriptionPackage(targetPackage, {
+        identityContext: {
+          churchId,
+          userId: sessionUserId,
+          serverSubscriptionActive: freshStatus.serverSubscriptionActive,
+        },
+      });
       const initialInfo = purchaseResult.customerInfo;
       setCustomerInfo(initialInfo);
 

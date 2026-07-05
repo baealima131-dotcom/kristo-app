@@ -101,9 +101,7 @@ export function readSessionMediaProfileSubscriptionActive(churchId?: string): bo
   const profile = session?.mediaProfile;
   if (!profile || typeof profile !== "object") return null;
 
-  const profileChurchId = String(
-    profile.churchId || profile.churchID || session?.churchId || session?.activeChurchId || ""
-  ).trim();
+  const profileChurchId = String(profile.churchId || profile.churchID || "").trim();
   if (!profileChurchId) return null;
   if (cid && profileChurchId.toUpperCase() !== cid.toUpperCase()) return null;
 
@@ -134,10 +132,6 @@ export function mergeScheduleSubscriptionSignals(input: {
   hasSubscription: boolean | null;
   source: string;
 } {
-  const sessionProfileActive =
-    input.sessionProfileActive ??
-    readSessionMediaProfileSubscriptionActive(input.churchId);
-
   // Server truth wins when explicitly active.
   if (input.explicitServerActive === true) {
     return {
@@ -156,28 +150,7 @@ export function mergeScheduleSubscriptionSignals(input: {
     };
   }
 
-  const rcTrusted = input.entitlementActive;
-
-  if (rcTrusted) {
-    return {
-      churchSubscriptionActive: true,
-      hasSubscription: true,
-      source: input.routeFailed
-        ? "revenuecat_entitlement_route_failed"
-        : "revenuecat_entitlement_scoped",
-    };
-  }
-
-  if (sessionProfileActive === true) {
-    return {
-      churchSubscriptionActive: true,
-      hasSubscription: true,
-      source: input.routeFailed
-        ? "session_media_profile_route_failed"
-        : "session_media_profile_scoped",
-    };
-  }
-
+  // Never trust RevenueCat or session media profile without explicit server confirmation.
   if (input.routeFailed || input.explicitServerActive === null) {
     return {
       churchSubscriptionActive: null,

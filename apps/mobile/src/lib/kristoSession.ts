@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { clearChurchDraft, clearChurchProfileCache } from "./churchStore";
 import { clearChurchMembersCachesForUser } from "./churchTabCache";
+import { clearChurchMediaProfileCache } from "./churchMediaProfileStore";
 import { clearProfileDraft } from "./profileStore";
 import { clearResponseCacheForRequest } from "./kristoTraffic";
 import { getSessionSync, setSessionSync } from "./kristoSessionSync";
@@ -163,12 +164,30 @@ export async function saveSession(s: KristoSession): Promise<void> {
     String(s.sessionToken || "").trim() ||
     (existing?.userId === userId ? String(existing.sessionToken || "").trim() : "");
 
+  const nextChurchId = String(s.churchId || "").trim();
+  const prevChurchId = String(existing?.churchId || "").trim();
+  const prevUserId = String(existing?.userId || "").trim();
+  let sessionPayload = s;
+  if (
+    (prevChurchId && nextChurchId && prevChurchId !== nextChurchId) ||
+    (prevUserId && prevUserId !== userId)
+  ) {
+    sessionPayload = { ...s, mediaProfile: null };
+    console.log("KRISTO_SESSION_MEDIA_PROFILE_CLEARED", {
+      reason: prevUserId && prevUserId !== userId ? "user_switch" : "church_switch",
+      previousChurchId: prevChurchId || null,
+      nextChurchId: nextChurchId || null,
+      previousUserId: prevUserId || null,
+      nextUserId: userId,
+    });
+  }
+
   console.log("KRISTO_SESSION_SAVE_TOKEN", {
     hasSessionToken: Boolean(sessionToken),
   });
 
   const next: KristoSession = {
-    ...s,
+    ...sessionPayload,
     ...(sessionToken ? { sessionToken } : {}),
     createdAt: Number(s.createdAt || now),
     lastSeenAt: now,
@@ -232,7 +251,11 @@ export async function performLogoutCleanup(params: LogoutCleanupParams = {}): Pr
 
     if (churchId) {
       await clearChurchProfileCache(churchId);
+      await clearChurchMediaProfileCache(churchId);
     }
+
+    const { logOutRevenueCat } = await import("./payments/mobileSubscriptions");
+    await logOutRevenueCat();
 
     const { resetAuthRefreshStateForLogout } = await import("./refreshCoordinator");
     resetAuthRefreshStateForLogout();

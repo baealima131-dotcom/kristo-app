@@ -735,7 +735,13 @@ function isRevenueCatNativePlatform() {
 }
 
 async function runRevenueCatNativeStep<T>(
-  step: "CONFIGURE" | "LOGIN" | "CUSTOMER_INFO" | "IS_CONFIGURED" | "SYNC_PURCHASES",
+  step:
+    | "CONFIGURE"
+    | "LOGIN"
+    | "LOGOUT"
+    | "CUSTOMER_INFO"
+    | "IS_CONFIGURED"
+    | "SYNC_PURCHASES",
   fn: () => Promise<T> | T,
   meta: Record<string, unknown> = {}
 ): Promise<T> {
@@ -962,6 +968,178 @@ export async function logInRevenueCatForChurchSubscription(
   }
 }
 
+function resetRevenueCatLocalIdentityState() {
+  configuredAppUserId = null;
+  loginPromise = null;
+  loginAppUserId = null;
+  invalidateSubscriptionOfferingsCache();
+}
+
+/** Clear RevenueCat church identity — required on logout, account delete, and church switch. */
+export async function logOutRevenueCat(): Promise<void> {
+  if (isRevenueCatPurchasingDisabled()) {
+    resetRevenueCatLocalIdentityState();
+    return;
+  }
+
+  const previousAppUserId = configuredAppUserId;
+  try {
+    if (!(await purchasesIsConfigured())) {
+      resetRevenueCatLocalIdentityState();
+      return;
+    }
+
+    console.log("KRISTO_RC_LOGOUT_START", { previousAppUserId });
+    await runRevenueCatNativeStep("LOGOUT", () => Purchases.logOut(), {
+      previousAppUserId,
+    });
+    console.log("KRISTO_RC_LOGOUT_SUCCESS", { previousAppUserId });
+  } catch (error) {
+    logRevenueCatException("logOut", error, { previousAppUserId });
+    console.log("KRISTO_RC_LOGOUT_FAILED", {
+      previousAppUserId,
+      ...getFullRevenueCatErrorDetail(error),
+    });
+  } finally {
+    resetRevenueCatLocalIdentityState();
+  }
+}
+
+export async function getRevenueCatSdkAppUserId(): Promise<string | null> {
+  if (!isRevenueCatNativePlatform() || isRevenueCatPurchasingDisabled()) return null;
+  try {
+    if (!(await purchasesIsConfigured())) return null;
+    const id = String(await Purchases.getAppUserID()).trim();
+    return id || null;
+  } catch (error) {
+    logRevenueCatException("getAppUserID", error);
+    return null;
+  }
+}
+
+export type RevenueCatIdentityVerificationArgs = {
+  churchId: string;
+  userId?: string | null;
+  customerInfo?: CustomerInfo | null;
+  serverSubscriptionActive?: boolean | null;
+  source: string;
+};
+
+/** Log full RC identity chain — run on login hydration and immediately before purchase. */
+export async function logRevenueCatIdentityVerification(
+  args: RevenueCatIdentityVerificationArgs
+): Promise<void> {
+  const churchId = String(args.churchId || "").trim() || null;
+  const userId = String(args.userId || "").trim() || null;
+  const configuredId = String(getRevenueCatConfiguredAppUserId() || "").trim() || null;
+  const sdkAppUserId = await getRevenueCatSdkAppUserId();
+  const info = args.customerInfo ?? null;
+  const originalAppUserId = String(info?.originalAppUserId || "").trim() || null;
+  const rcDebug = describeCustomerInfoSubscriptionDebug(info);
+  const churchScopedEntitlementActive = Boolean(
+    churchId &&
+      sdkAppUserId === churchId &&
+      configuredId === churchId &&
+      originalAppUserId === churchId &&
+      hasPremiumEntitlement(info)
+  );
+  const serverActive = args.serverSubscriptionActive === true;
+  const entitlementTrusted =
+    churchScopedEntitlementActive && serverActive;
+
+  console.log("KRISTO_RC_IDENTITY_VERIFICATION", {
+    source: args.source,
+    appUserId: userId,
+    churchId,
+    purchasesGetAppUserID: sdkAppUserId,
+    revenueCatConfiguredAppUserId: configuredId,
+    originalAppUserId,
+    activeEntitlementIds: rcDebug.activeEntitlementKeys,
+    activeProductIdentifiers: rcDebug.activeProductIdentifiers,
+    hasPremiumEntitlement: rcDebug.hasPremiumEntitlement,
+    serverSubscriptionActive: args.serverSubscriptionActive ?? null,
+    churchScopedEntitlementActive,
+    identityMatchesChurchId: Boolean(churchId && sdkAppUserId === churchId && configuredId === churchId),
+    originalAppUserIdMatchesChurchId: Boolean(churchId && originalAppUserId === churchId),
+    entitlementTrustedWithServer: entitlementTrusted,
+    policy: "never_trust_rc_entitlement_without_server_and_church_match",
+  });
+
+  if (churchId && sdkAppUserId && sdkAppUserId !== churchId) {
+    console.log("KRISTO_RC_IDENTITY_MISMATCH", {
+      source: args.source,
+      churchId,
+      purchasesGetAppUserID: sdkAppUserId,
+      revenueCatConfiguredAppUserId: configuredId,
+      originalAppUserId,
+    });
+  }
+}
+
+/**
+ * After session hydration: log out stale RC church identity when needed, then log in for current churchId.
+ */
+export async function realignRevenueCatIdentityForChurch(args: {
+  churchId: string;
+  userId?: string | null;
+  reason: string;
+  forceLogOut?: boolean;
+  serverSubscriptionActive?: boolean | null;
+}): Promise<CustomerInfo | null> {
+  const churchId = String(args.churchId || "").trim();
+  const userId = String(args.userId || "").trim() || null;
+
+  if (isRevenueCatPurchasingDisabled()) return null;
+
+  if (!churchId) {
+    await logOutRevenueCat();
+    return null;
+  }
+
+  const configuredId = String(getRevenueCatConfiguredAppUserId() || "").trim();
+  const needsLogOut = args.forceLogOut === true || (configuredId && configuredId !== churchId);
+
+  if (needsLogOut) {
+    await logOutRevenueCat();
+  }
+
+  const info = await logInRevenueCatForChurchSubscription(churchId);
+  await logRevenueCatIdentityVerification({
+    churchId,
+    userId,
+    customerInfo: info,
+    serverSubscriptionActive: args.serverSubscriptionActive,
+    source: args.reason,
+  });
+  return info;
+}
+
+/** Verify RC identity immediately before a store purchase for the current church. */
+export async function verifyRevenueCatIdentityBeforePurchase(args: {
+  churchId: string;
+  userId?: string | null;
+  serverSubscriptionActive?: boolean | null;
+  source?: string;
+}): Promise<CustomerInfo | null> {
+  const churchId = String(args.churchId || "").trim();
+  if (!churchId) return null;
+
+  const configuredId = String(getRevenueCatConfiguredAppUserId() || "").trim();
+  if (configuredId && configuredId !== churchId) {
+    await logOutRevenueCat();
+  }
+
+  const info = await logInRevenueCatForChurchSubscription(churchId);
+  await logRevenueCatIdentityVerification({
+    churchId,
+    userId: args.userId,
+    customerInfo: info,
+    serverSubscriptionActive: args.serverSubscriptionActive,
+    source: args.source || "pre-purchase",
+  });
+  return info;
+}
+
 export type ConfigureChurchMobileSubscriptionsOptions = RevenueCatChurchLoginOptions;
 
 export type ConfigureChurchMobileSubscriptionsResult = {
@@ -1147,8 +1325,23 @@ export type PurchaseSubscriptionPackageOptions = {
 
 export async function purchaseSubscriptionPackage(
   pkg: PurchasesPackage,
-  opts?: PurchaseSubscriptionPackageOptions
+  opts?: PurchaseSubscriptionPackageOptions & {
+    identityContext?: {
+      churchId: string;
+      userId?: string | null;
+      serverSubscriptionActive?: boolean | null;
+    };
+  }
 ) {
+  if (opts?.identityContext?.churchId) {
+    await verifyRevenueCatIdentityBeforePurchase({
+      churchId: opts.identityContext.churchId,
+      userId: opts.identityContext.userId,
+      serverSubscriptionActive: opts.identityContext.serverSubscriptionActive,
+      source: "purchaseSubscriptionPackage",
+    });
+  }
+
   await requireConfiguredPurchases("purchase");
 
   const fromProductId = String(opts?.upgradeFromProductId || "").trim();
