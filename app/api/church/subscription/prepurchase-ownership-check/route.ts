@@ -49,14 +49,20 @@ export async function POST(req: NextRequest) {
   });
 
   if (!result.allowed) {
+    const reason = String(result.reason || "").trim();
+    const unverifiedReason =
+      reason === "unverified-store-identity" || reason === "conflict-pending-verification";
+
     if (!result.lock) {
       return json(
         {
           ok: false,
           allowed: false,
-          reason: result.reason ?? "store-subscription-ownership-conflict",
+          reason: reason || "store-subscription-ownership-conflict",
+          productId: result.verification?.productId ?? null,
+          store: result.verification?.store ?? null,
         },
-        { status: 409 }
+        { status: unverifiedReason ? 423 : 409 }
       );
     }
 

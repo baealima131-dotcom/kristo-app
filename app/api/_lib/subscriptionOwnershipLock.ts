@@ -4,6 +4,9 @@ import { getChurchById } from "@/app/api/_lib/churches";
 import { getMembershipsForUser } from "@/app/api/_lib/memberships";
 import {
   isVerifiedChurchPremiumReason,
+  isRevenueCatSubscriberAliasedFromChurch,
+  hasVerifiedStoreSubscriptionIdentity,
+  verifiedStoreSubscriptionRequiresIdentity,
   verifyChurchPremiumEntitlement,
   type ChurchPremiumVerification,
 } from "@/app/api/_lib/revenuecat";
@@ -824,6 +827,56 @@ async function releaseExpiredStoreSubscriptionLock(
   return released;
 }
 
+export function assertVerifiedStoreSubscriptionIdentityForOwnership(args: {
+  churchId: string;
+  verification: ChurchPremiumVerification;
+}): {
+  verified: boolean;
+  reason?: string;
+} {
+  const churchId = normalizeChurchId(args.churchId);
+  const verification = args.verification;
+
+  if (!verifiedStoreSubscriptionRequiresIdentity(verification)) {
+    return { verified: true };
+  }
+
+  const aliased = isRevenueCatSubscriberAliasedFromChurch({
+    churchId,
+    revenueCatOriginalAppUserId: verification.revenueCatOriginalAppUserId,
+  });
+
+  if (!hasVerifiedStoreSubscriptionIdentity(verification)) {
+    console.log("KRISTO_SUBSCRIPTION_ACTIVATION_BLOCKED_UNVERIFIED_STORE_IDENTITY", {
+      churchId,
+      productId: verification.productId ?? null,
+      store: verification.store ?? null,
+      revenueCatOriginalAppUserId: verification.revenueCatOriginalAppUserId ?? null,
+      revenueCatSubscriberAliased: aliased,
+      revenueCatLane: verification.revenueCatLane ?? null,
+      blockLayer: "missing-store-subscription-identity",
+    });
+    return {
+      verified: false,
+      reason: aliased ? "conflict-pending-verification" : "unverified-store-identity",
+    };
+  }
+
+  if (aliased) {
+    console.log("KRISTO_SUBSCRIPTION_ACTIVATION_BLOCKED_UNVERIFIED_STORE_IDENTITY", {
+      churchId,
+      productId: verification.productId ?? null,
+      store: verification.store ?? null,
+      storeSubscriptionIdentity: verification.storeSubscriptionIdentity ?? null,
+      revenueCatOriginalAppUserId: verification.revenueCatOriginalAppUserId ?? null,
+      revenueCatSubscriberAliased: true,
+      blockLayer: "revenuecat-subscriber-alias",
+    });
+  }
+
+  return { verified: true };
+}
+
 export async function assertStoreSubscriptionOwnershipForActivation(args: {
   churchId: string;
   ownerUserId: string;
@@ -863,23 +916,33 @@ export async function assertStoreSubscriptionOwnershipForActivation(args: {
     };
   }
 
+  const identityCheck = assertVerifiedStoreSubscriptionIdentityForOwnership({
+    churchId,
+    verification: args.verification,
+  });
+  if (!identityCheck.verified) {
+    return {
+      allowed: false,
+      reason: identityCheck.reason || "unverified-store-identity",
+      lock: pastorCheck.lock,
+    };
+  }
+
   const store = args.verification.store;
   const storeSubscriptionIdentity = String(args.verification.storeSubscriptionIdentity || "").trim();
   if (!store || !storeSubscriptionIdentity) {
-    if (
-      pastorCheck.lock &&
-      churchIdsMatch(pastorCheck.lock.lockedChurchId, churchId) &&
-      normalizeUserId(pastorCheck.lock.ownerUserId).toLowerCase() === ownerUserId.toLowerCase()
-    ) {
-      console.log("KRISTO_SUBSCRIPTION_LOCK_MATCH_CURRENT_CHURCH", {
-        churchId,
-        ownerUserId,
-        lockedChurchId: pastorCheck.lock.lockedChurchId,
-        lockedChurchDeleted: pastorCheck.lock.lockedChurchDeleted === true,
-        matchLayer: "pastor-lock-without-store-identity",
-      });
-    }
-    return { allowed: true, lock: pastorCheck.lock };
+    console.log("KRISTO_SUBSCRIPTION_ACTIVATION_BLOCKED_UNVERIFIED_STORE_IDENTITY", {
+      churchId,
+      ownerUserId,
+      productId: args.verification.productId ?? null,
+      store: store ?? null,
+      blockLayer: "missing-store-or-identity-after-check",
+    });
+    return {
+      allowed: false,
+      reason: "unverified-store-identity",
+      lock: pastorCheck.lock,
+    };
   }
 
   const storeLocks = await listActiveSubscriptionOwnershipLocksByStoreIdentity({
@@ -1018,6 +1081,20 @@ export async function checkStoreSubscriptionPrepurchaseOwnership(args: {
     return {
       allowed: true,
       reason: "no-verified-store-entitlement",
+      lock: null,
+      verification,
+      payload: emptyPayload,
+    };
+  }
+
+  const identityCheck = assertVerifiedStoreSubscriptionIdentityForOwnership({
+    churchId,
+    verification,
+  });
+  if (!identityCheck.verified) {
+    return {
+      allowed: false,
+      reason: identityCheck.reason || "unverified-store-identity",
       lock: null,
       verification,
       payload: emptyPayload,

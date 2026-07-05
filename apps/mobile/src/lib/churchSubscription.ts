@@ -976,6 +976,8 @@ export async function syncChurchSubscriptionFromRevenueCat(
       Number(res?.status || 0) === 409 &&
       (reason === "store-subscription-ownership-conflict" ||
         reason === "subscription-ownership-lock");
+    const unverifiedOwnership =
+      Number(res?.status || 0) === 423 && isUnverifiedOwnershipReason(reason);
     if (ownershipConflict) {
       console.log("KRISTO_SUBSCRIPTION_ACTIVATION_BLOCKED_OWNER_MISMATCH", {
         churchId: cid,
@@ -987,7 +989,17 @@ export async function syncChurchSubscriptionFromRevenueCat(
       });
     }
 
-    const stopRetry = isPastorMediaForbiddenResponse(res) || ownershipConflict;
+    if (unverifiedOwnership) {
+      console.log("KRISTO_SUBSCRIPTION_ACTIVATION_BLOCKED_UNVERIFIED_STORE_IDENTITY", {
+        churchId: cid,
+        subscriptionPlan,
+        reason,
+        status: res?.status ?? null,
+      });
+    }
+
+    const stopRetry =
+      isPastorMediaForbiddenResponse(res) || ownershipConflict || unverifiedOwnership;
     console.log("KRISTO_CHURCH_SUBSCRIPTION_ACTIVATION_FAILED", {
       churchId: cid,
       subscriptionPlan,
@@ -1064,6 +1076,47 @@ function isStructuredOwnershipConflictBody(body: any): boolean {
   return lock?.blocked === true;
 }
 
+function isUnverifiedOwnershipReason(reason: string | null | undefined): boolean {
+  const normalized = String(reason || "").trim();
+  return (
+    normalized === "unverified-store-identity" ||
+    normalized === "conflict-pending-verification"
+  );
+}
+
+async function assertDeviceStoreSubscriptionAllowsPurchase(churchId: string): Promise<{
+  allowed: boolean;
+  reason?: string;
+}> {
+  const info = await getCustomerSubscriptionInfo().catch(() => null);
+  const revenueCatAppUserId = getRevenueCatConfiguredAppUserId();
+  const entitlementActive = readChurchScopedEntitlementActive({
+    churchId,
+    customerInfo: info,
+    revenueCatAppUserId,
+  });
+  if (!entitlementActive || !info) {
+    return { allowed: true };
+  }
+
+  const originalAppUserId = String(info.originalAppUserId || "").trim();
+  const aliased =
+    Boolean(originalAppUserId) &&
+    originalAppUserId !== churchId &&
+    (originalAppUserId.startsWith("$RCAnonymousID:") || /^CH7-/i.test(originalAppUserId));
+
+  if (aliased) {
+    console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+      churchId,
+      reason: "device-subscription-alias-unverified",
+      revenueCatOriginalAppUserId: originalAppUserId,
+    });
+    return { allowed: false, reason: "conflict-pending-verification" };
+  }
+
+  return { allowed: true };
+}
+
 export async function runSubscriptionPrepurchaseOwnershipGate(args: {
   churchId: string;
   headers: Record<string, string>;
@@ -1123,16 +1176,28 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
       endpoint,
     });
 
-    if (res.status === 404 || res.status >= 500 || body == null) {
+    if (res.status === 404 || res.status === 423 || res.status >= 500 || body == null) {
       console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
         churchId,
         status: res.status,
-        reason: res.status === 404 ? "route-not-found" : "invalid-or-error-response",
+        reason:
+          res.status === 404
+            ? "route-not-found"
+            : isUnverifiedOwnershipReason(body?.reason)
+              ? String(body.reason)
+              : res.status === 423
+                ? "ownership-check-unverified"
+                : "invalid-or-error-response",
         endpoint,
       });
       return {
         status: "unavailable",
-        reason: res.status === 404 ? "route-not-found" : "ownership-check-unavailable",
+        reason:
+          isUnverifiedOwnershipReason(body?.reason)
+            ? String(body.reason)
+            : res.status === 404
+              ? "route-not-found"
+              : "ownership-check-unavailable",
         httpStatus: res.status,
       };
     }
@@ -1157,6 +1222,19 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
     }
 
     if (!res.ok) {
+      if (isUnverifiedOwnershipReason(body?.reason)) {
+        console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+          churchId,
+          status: res.status,
+          reason: body?.reason ?? "ownership-check-unverified",
+          endpoint,
+        });
+        return {
+          status: "unavailable",
+          reason: String(body?.reason || "ownership-check-unverified"),
+          httpStatus: res.status,
+        };
+      }
       console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
         churchId,
         status: res.status,
@@ -1196,6 +1274,25 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
       storeSubscriptionIdentity: body?.storeSubscriptionIdentity ?? null,
       endpoint,
     });
+
+    if (body?.productId && !body?.storeSubscriptionIdentity) {
+      console.log("KRISTO_SUBSCRIPTION_OWNERSHIP_CHECK_UNAVAILABLE", {
+        churchId,
+        reason: "allowed-without-store-identity",
+        productId: body.productId,
+        store: body?.store ?? null,
+        endpoint,
+      });
+      return { status: "unavailable", reason: "unverified-store-identity" };
+    }
+
+    const deviceCheck = await assertDeviceStoreSubscriptionAllowsPurchase(churchId);
+    if (!deviceCheck.allowed) {
+      return {
+        status: "unavailable",
+        reason: deviceCheck.reason ?? "conflict-pending-verification",
+      };
+    }
 
     return { status: "allowed", reason: body?.reason ?? "ok" };
   } catch (error: any) {

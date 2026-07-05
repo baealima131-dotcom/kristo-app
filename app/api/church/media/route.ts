@@ -429,6 +429,22 @@ export async function PATCH(req: Request) {
       }
 
       if (
+        sync.reason === "unverified-store-identity" ||
+        sync.reason === "conflict-pending-verification"
+      ) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "Subscription ownership could not be verified with the App Store.",
+            reason: sync.reason,
+            revenueCatLane: sync.revenueCatLane ?? null,
+            sandboxPurchase: sync.sandboxPurchase === true,
+          },
+          { status: 423 }
+        );
+      }
+
+      if (
         sync.reason === "subscription-ownership-lock" ||
         sync.reason === "store-subscription-ownership-conflict"
       ) {

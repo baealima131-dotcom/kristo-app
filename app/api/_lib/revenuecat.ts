@@ -60,6 +60,8 @@ export type ChurchPremiumVerification = {
   storeTransactionId?: string | null;
   store?: "app_store" | "play_store" | null;
   willRenew?: boolean | null;
+  /** RevenueCat subscriber original_app_user_id from REST (may differ from churchId when aliased). */
+  revenueCatOriginalAppUserId?: string | null;
 };
 
 type RevenueCatFetchLane = "production" | "sandbox";
@@ -215,6 +217,7 @@ function resolveStoreOwnershipFromSubscription(subscription: any): {
     String(
       subscription.original_transaction_id ||
         subscription.original_store_transaction_id ||
+        subscription.originalTransactionId ||
         ""
     ).trim() || null;
   const storeTransactionId = String(subscription.store_transaction_id || "").trim() || null;
@@ -263,13 +266,46 @@ function resolvePremiumSubscriptionRecord(
   return null;
 }
 
+function findActiveSubscriptionWithStoreIdentity(
+  snapshot: RevenueCatSubscriberSnapshot,
+  productId: string | null | undefined
+): any | null {
+  const resolved = resolvePremiumSubscriptionRecord(snapshot, productId);
+  if (resolved && resolveStoreOwnershipFromSubscription(resolved).storeSubscriptionIdentity) {
+    return resolved;
+  }
+
+  for (const candidate of Object.values(snapshot.subscriptions)) {
+    if (!candidate || !entitlementIsActive(candidate.expires_date)) continue;
+    const ownership = resolveStoreOwnershipFromSubscription(candidate);
+    if (!ownership.storeSubscriptionIdentity) continue;
+    const candidateProductId = String(
+      candidate.product_identifier || candidate.product_id || ""
+    ).trim();
+    if (productId && candidateProductId && candidateProductId !== productId) continue;
+    if (
+      planFromProductId(candidateProductId) ||
+      planFromProductId(candidate.product_identifier) ||
+      !productId
+    ) {
+      return candidate;
+    }
+  }
+
+  return resolved;
+}
+
 function mergeVerificationStoreOwnership(
   verification: ChurchPremiumVerification,
   subscription: any | null | undefined,
   snapshot?: RevenueCatSubscriberSnapshot
 ): ChurchPremiumVerification {
   const resolvedSubscription =
-    subscription ?? resolvePremiumSubscriptionRecord(snapshot ?? { entitlements: {}, subscriptions: {} }, verification.productId);
+    subscription ??
+    findActiveSubscriptionWithStoreIdentity(
+      snapshot ?? { entitlements: {}, subscriptions: {}, originalAppUserId: null, appUserId: null },
+      verification.productId
+    );
   const ownership = resolveStoreOwnershipFromSubscription(resolvedSubscription);
   const merged = {
     ...verification,
@@ -278,6 +314,8 @@ function mergeVerificationStoreOwnership(
       ownership.storeSubscriptionIdentity ?? verification.storeSubscriptionIdentity ?? null,
     storeTransactionId: ownership.storeTransactionId ?? verification.storeTransactionId ?? null,
     willRenew: ownership.willRenew ?? verification.willRenew ?? null,
+    revenueCatOriginalAppUserId:
+      verification.revenueCatOriginalAppUserId ?? snapshot?.originalAppUserId ?? null,
   };
 
   if (merged.active && !merged.storeSubscriptionIdentity) {
@@ -287,6 +325,13 @@ function mergeVerificationStoreOwnership(
       store: merged.store,
       hasSubscriptionRecord: Boolean(resolvedSubscription),
       subscriptionKeys: snapshot ? Object.keys(snapshot.subscriptions) : [],
+      revenueCatOriginalAppUserId: merged.revenueCatOriginalAppUserId ?? null,
+      revenueCatSubscriberAliased: snapshot
+        ? isRevenueCatSubscriberAliasedFromChurch({
+            churchId: String(snapshot.appUserId || ""),
+            revenueCatOriginalAppUserId: merged.revenueCatOriginalAppUserId,
+          })
+        : null,
     });
   } else if (merged.storeSubscriptionIdentity) {
     console.log("KRISTO_REVENUECAT_STORE_IDENTITY_RESOLVED", {
@@ -312,13 +357,45 @@ export function isVerifiedChurchPremiumReason(reason: string): boolean {
 type RevenueCatSubscriberSnapshot = {
   entitlements: Record<string, any>;
   subscriptions: Record<string, any>;
+  originalAppUserId: string | null;
+  appUserId: string | null;
 };
 
 function parseSubscriberSnapshot(data: any): RevenueCatSubscriberSnapshot {
+  const subscriber = data?.subscriber || {};
   return {
-    entitlements: data?.subscriber?.entitlements || {},
-    subscriptions: data?.subscriber?.subscriptions || {},
+    entitlements: subscriber.entitlements || {},
+    subscriptions: subscriber.subscriptions || {},
+    originalAppUserId:
+      String(subscriber.original_app_user_id || subscriber.originalAppUserId || "").trim() || null,
+    appUserId: String(subscriber.app_user_id || subscriber.appUserId || "").trim() || null,
   };
+}
+
+export function isRevenueCatSubscriberAliasedFromChurch(args: {
+  churchId: string;
+  revenueCatOriginalAppUserId?: string | null;
+}): boolean {
+  const churchId = String(args.churchId || "").trim();
+  const original = String(args.revenueCatOriginalAppUserId || "").trim();
+  if (!churchId || !original) return false;
+  if (original === churchId) return false;
+  if (original.startsWith("$RCAnonymousID:")) return true;
+  if (/^CH7-/i.test(original) && original.toUpperCase() !== churchId.toUpperCase()) return true;
+  return true;
+}
+
+export function verifiedStoreSubscriptionRequiresIdentity(
+  verification: ChurchPremiumVerification
+): boolean {
+  if (!verification.active || verification.bypassed) return false;
+  return isVerifiedChurchPremiumReason(verification.reason);
+}
+
+export function hasVerifiedStoreSubscriptionIdentity(
+  verification: ChurchPremiumVerification
+): boolean {
+  return Boolean(String(verification.storeSubscriptionIdentity || "").trim());
 }
 
 function resolvePremiumFromEntitlements(entitlements: Record<string, any>): {
@@ -467,6 +544,7 @@ function verifySubscriberSnapshot(
   const activeEntitlementKeys = Object.keys(snapshot.entitlements);
   const activeSubscriptionKeys = Object.keys(snapshot.subscriptions);
   const entitlementMatch = resolvePremiumFromEntitlements(snapshot.entitlements);
+  const revenueCatOriginalAppUserId = snapshot.originalAppUserId;
 
   console.log("KRISTO_ENTITLEMENT_AUDIT", {
     source: "server-verifyChurchPremiumEntitlement",
@@ -476,6 +554,11 @@ function verifySubscriberSnapshot(
     detectedEntitlement: entitlementMatch.detectedEntitlement,
     hasPremiumEntitlement: entitlementMatch.active,
     currentChurchId: uid,
+    revenueCatOriginalAppUserId,
+    revenueCatSubscriberAliased: isRevenueCatSubscriberAliasedFromChurch({
+      churchId: uid,
+      revenueCatOriginalAppUserId,
+    }),
   });
 
   if (entitlementMatch.entitlement) {
@@ -498,6 +581,7 @@ function verifySubscriberSnapshot(
           expiresAt,
           sandboxPurchase,
           revenueCatLane: lane,
+          revenueCatOriginalAppUserId,
         },
         productId ? snapshot.subscriptions[productId] : null,
         snapshot
@@ -514,6 +598,7 @@ function verifySubscriberSnapshot(
         expiresAt,
         sandboxPurchase,
         revenueCatLane: lane,
+        revenueCatOriginalAppUserId,
       },
       productId ? snapshot.subscriptions[productId] : null,
       snapshot
@@ -549,6 +634,7 @@ function verifySubscriberSnapshot(
         expiresAt,
         sandboxPurchase,
         revenueCatLane: lane,
+        revenueCatOriginalAppUserId,
       },
       subscriptionMatch.subscription,
       snapshot
