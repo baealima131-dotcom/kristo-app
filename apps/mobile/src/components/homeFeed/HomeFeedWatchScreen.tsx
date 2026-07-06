@@ -36,6 +36,7 @@ import {
   notifyWatchScreenOpened,
 } from "@/src/lib/homeFeedWatchPlaybackPriority";
 import {
+  clearHomeFeedVideoProgress,
   peekHomeFeedVideoRestoreSeek,
   saveHomeFeedVideoProgress,
 } from "@/src/lib/homeFeedVideoProgressStore";
@@ -252,7 +253,15 @@ function WatchVideoSurface({
   const item = payload.item;
   const postId = String(payload.postId || "").trim();
   const playbackUri = resolveWatchScreenPlaybackUri(payload);
+  const durationSec = useMemo(() => {
+    const ms =
+      payload.videoDurationMs ??
+      (item ? resolveVideoDurationMs(item) : undefined);
+    const sec = Number(ms) / 1000;
+    return Number.isFinite(sec) && sec > 0 ? sec : null;
+  }, [payload.videoDurationMs, item]);
   const [ended, setEnded] = useState(false);
+  const endedRef = useRef(false);
   const userPausedRef = useRef(false);
   const backgroundPausedRef = useRef(false);
   const onPlaybackStartedRef = useRef(onPlaybackStarted);
@@ -320,7 +329,13 @@ function WatchVideoSurface({
     return () => sub.remove();
   }, [playbackUri, postId]);
 
+  useEffect(() => {
+    endedRef.current = ended;
+  }, [ended]);
+
   useEventListener(player, "playToEnd", () => {
+    endedRef.current = true;
+    clearHomeFeedVideoProgress(postId);
     setEnded(true);
     notifyWatchPlaybackPaused(postId);
   });
@@ -328,6 +343,7 @@ function WatchVideoSurface({
   useEffect(() => {
     if (!playbackUri) return;
     setEnded(false);
+    endedRef.current = false;
     userPausedRef.current = false;
     backgroundPausedRef.current = false;
 
@@ -472,8 +488,8 @@ function WatchVideoSurface({
     let restored = false;
 
     const restoreSeek = () => {
-      if (stopped || restored || ended) return;
-      const seekTo = peekHomeFeedVideoRestoreSeek(postId);
+      if (stopped || restored || endedRef.current) return;
+      const seekTo = peekHomeFeedVideoRestoreSeek(postId, durationSec);
       if (seekTo == null || seekTo <= 0.1) return;
 
       try {
@@ -489,11 +505,11 @@ function WatchVideoSurface({
     };
 
     const saveProgress = () => {
-      if (stopped || ended) return;
+      if (stopped || endedRef.current) return;
       try {
         const t = Number((player as any)?.currentTime || 0);
         if (Number.isFinite(t) && t > 0.5) {
-          saveHomeFeedVideoProgress(postId, t);
+          saveHomeFeedVideoProgress(postId, t, durationSec);
         }
       } catch {}
     };
@@ -505,12 +521,17 @@ function WatchVideoSurface({
       stopped = true;
       clearTimeout(restoreTimer);
       clearInterval(progressTimer);
-      saveProgress();
+      if (!endedRef.current) {
+        saveProgress();
+      }
     };
-  }, [player, postId, ended]);
+  }, [player, postId, durationSec]);
 
   const handleReplay = useCallback(() => {
+    clearHomeFeedVideoProgress(postId);
+    console.log("KRISTO_WATCH_VIDEO_REPLAY_FROM_START", { postId });
     setEnded(false);
+    endedRef.current = false;
     userPausedRef.current = false;
     backgroundPausedRef.current = false;
     safeSeekVideoPlayer(player, 0, { source: "home-feed-watch", uri: playbackUri });
