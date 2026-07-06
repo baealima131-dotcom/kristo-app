@@ -1802,7 +1802,9 @@ export default function PaymentsSubscriptionsScreen() {
               <SubscriptionOwnershipLockCard lock={ownershipLock} />
             ) : null}
 
-            {failClosedSubscriptionPurchase && screenState === "none" ? (
+            {failClosedSubscriptionPurchase &&
+            screenState === "none" &&
+            !(ownershipLockBlocksPurchase && ownershipLock) ? (
               <View style={s.fallbackCard}>
                 <ActivityIndicator color="rgba(196,171,114,0.72)" />
                 <Text style={s.sectionSub}>Checking subscription status...</Text>
