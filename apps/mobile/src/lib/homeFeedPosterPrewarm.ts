@@ -1176,7 +1176,7 @@ export function startYoutubeHomeFeedVisiblePosterPrewarm(
 
   void (async () => {
     try {
-      await hydrateMediaPosterCache();
+      void hydrateMediaPosterCache();
     } catch {}
 
     await Promise.all(

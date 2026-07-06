@@ -114,6 +114,7 @@ import {
   isHomeFeedSkeletonRow,
   homeFeedYoutubeStreamLimitForPage,
   hydrateHomeFeedPage0FromStorage,
+  peekHomeFeedPage0Sync,
   hydrateHomeFeedStreamFromStorage,
   getHomeFeedLoadedPageCount,
   type HomeFeedYoutubeScrollMetrics,
@@ -129,6 +130,7 @@ import {
   waitForYoutubePage0RevealGate,
   kickoffYoutubePagePosterPrewarm,
   kickoffYoutubePageAvatarPrewarm,
+  HOME_FEED_YOUTUBE_APPEND_POSTER_HEAD_COUNT,
 } from "./homeFeedYoutubeStreamUi";
 import {
   hydrateHomeFeedDisplayOrderFromStorage,
@@ -258,6 +260,10 @@ import {
 } from "@/src/lib/homeFeedYoutubePaginationLock";
 import { isHomeFeedPosterPipelineBusyForRows } from "@/src/lib/homeFeedPosterPrewarm";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
+import {
+  markHomeFeedStartupTiming,
+  runAfterHomeFeedFirstCardMount,
+} from "@/src/lib/homeFeedStartupTiming";
 
 export default function HomeFeedScreen() {
   const router = useRouter();
@@ -369,18 +375,20 @@ export default function HomeFeedScreen() {
       : getHomeFeedPagingState().hasMore
   );
   const [loadingMore, setLoadingMore] = useState(false);
+  const youtubeStreamRowsRef = useRef<any[]>(youtubeSessionOnMount.rows);
   const [youtubeRowsTick, bumpYoutubeRows] = useReducer((value: number) => value + 1, 0);
-  const youtubeStreamRows = useMemo(
-    () => peekHomeFeedYoutubeStreamSessionRows(),
-    [youtubeRowsTick]
-  );
+  const youtubeStreamRows = useMemo(() => {
+    const sessionRows = peekHomeFeedYoutubeStreamSessionRows();
+    if (sessionRows.length > 0) return sessionRows;
+    // Progressive Android reveal commits to ref before session accepts a full page.
+    return youtubeStreamRowsRef.current;
+  }, [youtubeRowsTick]);
   const [youtubeShowSkeleton, setYoutubeShowSkeleton] = useState(() =>
     isHomeFeedYouTubeStyleVideo() ? youtubeSessionOnMount.rows.length === 0 : false
   );
   const [youtubePageVisualReady, setYoutubePageVisualReady] = useState(
     () => youtubeSessionOnMount.pageVisualReady
   );
-  const youtubeStreamRowsRef = useRef<any[]>(youtubeSessionOnMount.rows);
   activeIndexRef.current = activeIndex;
   const lastVisibleRowsRef = useRef<any[]>([]);
   const visibleRowCountRef = useRef(0);
@@ -543,6 +551,14 @@ export default function HomeFeedScreen() {
           youtubePageVisualReadyRef.current = youtubeSessionOnMount.pageVisualReady;
           setYoutubePageVisualReady(youtubeSessionOnMount.pageVisualReady);
           setBackendRows(youtubeSessionOnMount.rows);
+          markHomeFeedStartupTiming("FEED_CACHE_READY_TS", {
+            source: "session",
+            rowCount: youtubeSessionOnMount.rows.length,
+          });
+          markHomeFeedStartupTiming("FIRST_DATA_COMMIT_TS", {
+            rowCount: youtubeSessionOnMount.rows.length,
+            source: "session-restore",
+          });
           setLoading(false);
           hadCacheOnMountRef.current = true;
           pageReadyLoggedRef.current = true;
@@ -557,18 +573,37 @@ export default function HomeFeedScreen() {
           return;
         }
 
-        const streamRows = await hydrateHomeFeedStreamFromStorage();
-        if (!alive) return;
-
-        if (streamRows?.length) {
+        const cachedPage0 = peekHomeFeedPage0Sync();
+        if (cachedPage0?.length) {
           coldStartRotationPendingRef.current = true;
-          void restoreYoutubeStreamRows(streamRows, { coldStart: true });
+          markHomeFeedStartupTiming("FEED_CACHE_READY_TS", {
+            source: "page0-mem",
+            rowCount: cachedPage0.length,
+          });
+          void revealYoutubePage0(cachedPage0, { fromCache: true });
         } else {
           const page0 = await hydrateHomeFeedPage0FromStorage();
           if (!alive) return;
+
           if (page0?.length) {
             coldStartRotationPendingRef.current = true;
-            void revealYoutubePage0(page0);
+            markHomeFeedStartupTiming("FEED_CACHE_READY_TS", {
+              source: "page0",
+              rowCount: page0.length,
+            });
+            void revealYoutubePage0(page0, { fromCache: true });
+          } else {
+            const streamRows = await hydrateHomeFeedStreamFromStorage();
+            if (!alive) return;
+
+            if (streamRows?.length) {
+              coldStartRotationPendingRef.current = true;
+              markHomeFeedStartupTiming("FEED_CACHE_READY_TS", {
+                source: "stream",
+                rowCount: streamRows.length,
+              });
+              void restoreYoutubeStreamRows(streamRows, { coldStart: true, fromCache: true });
+            }
           }
         }
 
@@ -733,39 +768,56 @@ export default function HomeFeedScreen() {
     userHasScrolledSinceAppendRef.current = false;
     setYoutubeFeedPaginationLocked(true);
 
-    await runYoutubeVisualPrep(() =>
-      awaitYoutubeBatchCoverGate(batchRows, {
-        phase: "page-visual-ready",
-        isCancelled: () => generation !== youtubeVisualReadyGenerationRef.current,
-      })
-    );
-    if (generation !== youtubeVisualReadyGenerationRef.current) return;
+    const finishVisualReady = async () => {
+      await runYoutubeVisualPrep(() =>
+        awaitYoutubeBatchCoverGate(batchRows, {
+          phase: "page-visual-ready",
+          isCancelled: () => generation !== youtubeVisualReadyGenerationRef.current,
+          avatarHeadCount: HOME_FEED_YOUTUBE_APPEND_POSTER_HEAD_COUNT,
+        })
+      );
+      if (generation !== youtubeVisualReadyGenerationRef.current) return;
 
-    youtubePageVisualReadyRef.current = true;
-    setYoutubePageVisualReady(true);
-    youtubePageSettlingUntilMsRef.current = 0;
-    youtubeLastAppendedBatchRef.current = batchRows;
+      youtubePageVisualReadyRef.current = true;
+      setYoutubePageVisualReady(true);
+      youtubePageSettlingUntilMsRef.current = 0;
+      youtubeLastAppendedBatchRef.current = batchRows;
 
-    console.log("KRISTO_HOME_FEED_PAGE_VISUAL_READY", {
-      rowCount: youtubeStreamRowsRef.current.length,
-      batchSize: batchRows.length,
-    });
+      console.log("KRISTO_HOME_FEED_PAGE_VISUAL_READY", {
+        rowCount: youtubeStreamRowsRef.current.length,
+        batchSize: batchRows.length,
+      });
 
-    saveHomeFeedYoutubeStreamSession({
-      rows: youtubeStreamRowsRef.current,
-      activeIndex: activeIndexRef.current,
-      scrollY: Math.max(0, lastUserScrollYRef.current),
-      pageRevealComplete: true,
-      pageVisualReady: true,
-    });
-    freezeHomeFeedDisplayOrder(youtubeStreamRowsRef.current);
+      saveHomeFeedYoutubeStreamSession({
+        rows: youtubeStreamRowsRef.current,
+        activeIndex: activeIndexRef.current,
+        scrollY: Math.max(0, lastUserScrollYRef.current),
+        pageRevealComplete: true,
+        pageVisualReady: true,
+      });
+      freezeHomeFeedDisplayOrder(youtubeStreamRowsRef.current);
 
-    setYoutubeFeedPaginationLocked(false);
-    void prepareHomeFeedYoutubeNextPageSilently();
+      setYoutubeFeedPaginationLocked(false);
+      runAfterHomeFeedFirstCardMount(() => {
+        void prepareHomeFeedYoutubeNextPageSilently();
+      });
+    };
+
+    if (Platform.OS === "android") {
+      kickoffYoutubePagePosterPrewarm(
+        batchRows.slice(0, HOME_FEED_YOUTUBE_APPEND_POSTER_HEAD_COUNT)
+      );
+      runAfterHomeFeedFirstCardMount(() => {
+        void finishVisualReady();
+      });
+      return;
+    }
+
+    await finishVisualReady();
   }, []);
 
   const restoreYoutubeStreamRows = useCallback(
-    async (rows: any[], opts?: { coldStart?: boolean }) => {
+    async (rows: any[], opts?: { coldStart?: boolean; fromCache?: boolean }) => {
       let videoRows = filterHomeFeedYoutubeStreamRows(rows);
       if (!videoRows.length) return;
 
@@ -785,17 +837,28 @@ export default function HomeFeedScreen() {
       youtubeRevealGenerationRef.current = generation;
       const isFirstPageOnly =
         opts?.coldStart === true && videoRows.length <= HOME_FEED_YOUTUBE_FIRST_PAGE_SIZE;
+      const skipRevealGate = opts?.fromCache === true || Platform.OS === "android";
 
       if (isFirstPageOnly) {
         resetYoutubeStreamPaginationState();
-        setYoutubeShowSkeleton(true);
-        await waitForYoutubePage0RevealGate(videoRows);
+        if (!skipRevealGate) {
+          setYoutubeShowSkeleton(true);
+        }
+        if (skipRevealGate) {
+          void waitForYoutubePage0RevealGate(videoRows, { skip: true });
+        } else {
+          await waitForYoutubePage0RevealGate(videoRows, { skip: false });
+        }
         if (generation !== youtubeRevealGenerationRef.current) return;
       }
 
       youtubeStreamRowsRef.current = videoRows;
       replaceHomeFeedYoutubeStreamRows(videoRows);
       setBackendRows(videoRows);
+      markHomeFeedStartupTiming("FIRST_DATA_COMMIT_TS", {
+        rowCount: videoRows.length,
+        source: opts?.fromCache ? "cache" : "restore",
+      });
       setYoutubeShowSkeleton(false);
       setLoading(false);
       hadCacheOnMountRef.current = true;
@@ -830,7 +893,7 @@ export default function HomeFeedScreen() {
 
   const revealYoutubePage0 = useCallback(async (
     rows: any[],
-    opts?: { progressive?: boolean }
+    opts?: { progressive?: boolean; fromCache?: boolean }
   ) => {
     if (youtubeStreamRowsRef.current.length > 0 && youtubePageRevealCompleteRef.current) {
       return;
@@ -844,17 +907,28 @@ export default function HomeFeedScreen() {
 
     const generation = youtubeRevealGenerationRef.current + 1;
     youtubeRevealGenerationRef.current = generation;
+    const skipRevealGate = opts?.fromCache === true || Platform.OS === "android";
     if (!opts?.progressive || !youtubePageRevealCompleteRef.current) {
       resetYoutubeStreamPaginationState();
-      setYoutubeShowSkeleton(true);
+      if (!skipRevealGate) {
+        setYoutubeShowSkeleton(true);
+      }
     }
 
-    await waitForYoutubePage0RevealGate(visible);
+    if (skipRevealGate) {
+      void waitForYoutubePage0RevealGate(visible, { skip: true });
+    } else {
+      await waitForYoutubePage0RevealGate(visible, { skip: false });
+    }
     if (generation !== youtubeRevealGenerationRef.current) return;
 
     youtubeStreamRowsRef.current = visible;
     replaceHomeFeedYoutubeStreamRows(visible);
     setBackendRows(visible);
+    markHomeFeedStartupTiming("FIRST_DATA_COMMIT_TS", {
+      rowCount: visible.length,
+      source: opts?.fromCache ? "cache" : opts?.progressive ? "android-progressive" : "page0",
+    });
     setYoutubeShowSkeleton(false);
     setLoading(false);
     hadCacheOnMountRef.current = true;
@@ -2024,7 +2098,12 @@ export default function HomeFeedScreen() {
     if (backgroundMediaPaused || videoModalPayload) return;
     if (youtubeLayout) {
       if (!youtubeStreamRows.length) return;
-      startInitialHomeFeedPosterPrewarm(youtubeStreamRows);
+      const run = () => startInitialHomeFeedPosterPrewarm(youtubeStreamRows);
+      if (Platform.OS === "android") {
+        runAfterHomeFeedFirstCardMount(run);
+        return;
+      }
+      run();
       return;
     }
     if (isHomeFeedPosterPrewarmDisabled()) return;
@@ -2101,6 +2180,10 @@ export default function HomeFeedScreen() {
 
   useEffect(() => {
     if (initialRenderSourceLoggedRef.current) return;
+    if (youtubeLayout && !displayOrderCacheReady) return;
+    if (youtubeLayout && displayOrderCacheReady && visibleData.length === 0 && !hadCacheOnMountRef.current) {
+      return;
+    }
     if (loading && visibleData.length === 0) return;
 
     initialRenderSourceLoggedRef.current = true;
@@ -2111,7 +2194,7 @@ export default function HomeFeedScreen() {
           : "api"
         : "empty";
     console.log("KRISTO_HOME_FEED_INITIAL_RENDER_SOURCE", { source });
-  }, [loading, visibleData.length]);
+  }, [loading, visibleData.length, displayOrderCacheReady, youtubeLayout]);
 
   useEffect(() => {
     if (!youtubeLayout) return;
@@ -2194,13 +2277,21 @@ export default function HomeFeedScreen() {
     if (!youtubeFirst20Rows.length) return;
     if (first20AvatarPreloadDoneLoggedRef.current) return;
 
+    const headCount =
+      Platform.OS === "android"
+        ? HOME_FEED_YOUTUBE_APPEND_POSTER_HEAD_COUNT
+        : youtubeFirst20Rows.length;
+    const headRows = youtubeFirst20Rows.slice(0, headCount);
+    const tailRows = youtubeFirst20Rows.slice(headCount);
+
     const startedAt = Date.now();
     if (first20AvatarPreloadStartAtRef.current == null) {
       first20AvatarPreloadStartAtRef.current = startedAt;
     }
 
     console.log("KRISTO_HOME_FEED_AVATAR_PRELOAD_START", {
-      posterCount: youtubeFirst20Rows.length,
+      posterCount: headRows.length,
+      deferredCount: tailRows.length,
       preloadDurationMs: 0,
       first20VisibleMs: first20VisibleLoggedRef.current
         ? startedAt - homeFeedMountAtRef.current
@@ -2208,63 +2299,57 @@ export default function HomeFeedScreen() {
       deferredVideoCount: null,
     });
 
-    void Promise.all(
-      youtubeFirst20Rows.map(async (row, rowIndex) => {
-        const churchId = homeFeedRowChurchId(row) || null;
-        const mediaId = String(row?.mediaId || row?.id || "").trim() || null;
-        const avatar = resolveHomeFeedAvatarCacheContext(row);
-        const cacheKey = String(avatar.cacheKey || "").trim();
-        const primaryUri = String(avatar.uri || avatar.backupUri || "").trim();
-        const hasAvatarUri = Boolean(primaryUri);
-        const payloadBase = {
-          churchId,
-          mediaId,
-          avatarUri: hasAvatarUri ? "present" : "missing",
-          rowIndex,
-        };
+    const preloadAvatarRows = async (rows: any[]) => {
+      await Promise.all(
+        rows.map(async (row, rowIndex) => {
+          const churchId = homeFeedRowChurchId(row) || null;
+          const mediaId = String(row?.mediaId || row?.id || "").trim() || null;
+          const avatar = resolveHomeFeedAvatarCacheContext(row);
+          const cacheKey = String(avatar.cacheKey || "").trim();
+          const primaryUri = String(avatar.uri || avatar.backupUri || "").trim();
+          const hasAvatarUri = Boolean(primaryUri);
+          const payloadBase = {
+            churchId,
+            mediaId,
+            avatarUri: hasAvatarUri ? "present" : "missing",
+            rowIndex,
+          };
 
-        if (!cacheKey || !hasAvatarUri) {
-          console.log("KRISTO_HOME_FEED_AVATAR_MISSING", {
-            ...payloadBase,
-            source: "fallback",
-            statusCode: null,
+          if (!cacheKey || !hasAvatarUri) {
+            console.log("KRISTO_HOME_FEED_AVATAR_MISSING", {
+              ...payloadBase,
+              source: "fallback",
+              statusCode: null,
+            });
+            return;
+          }
+
+          registerHomeFeedAvatarDiagnosticContext(cacheKey, {
+            churchId: churchId || "",
+            mediaId: mediaId || "",
+            rowIndex,
           });
-          return;
-        }
+          const cached = peekHomeFeedAvatar(cacheKey, avatar.avatarUpdatedAt);
+          if (cached) return;
 
-        registerHomeFeedAvatarDiagnosticContext(cacheKey, { churchId: churchId || "", mediaId: mediaId || "", rowIndex });
-        const cached = peekHomeFeedAvatar(cacheKey, avatar.avatarUpdatedAt);
-        if (cached) {
-          console.log("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", {
-            ...payloadBase,
-            source: "cache",
-            statusCode: null,
+          const resolved = await ensureHomeFeedAvatar({
+            cacheKey,
+            remoteUrls: avatar.remoteUris,
+            sourceUpdatedAt: avatar.avatarUpdatedAt,
           });
-          return;
-        }
 
-        const resolved = await ensureHomeFeedAvatar({
-          cacheKey,
-          remoteUrls: avatar.remoteUris,
-          sourceUpdatedAt: avatar.avatarUpdatedAt,
-        });
+          if (!resolved) {
+            console.log("KRISTO_HOME_FEED_AVATAR_MISSING", {
+              ...payloadBase,
+              source: "fallback",
+              statusCode: null,
+            });
+          }
+        })
+      );
+    };
 
-        if (resolved) {
-          console.log("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", {
-            ...payloadBase,
-            source: "network",
-            statusCode: null,
-          });
-          return;
-        }
-
-        console.log("KRISTO_HOME_FEED_AVATAR_MISSING", {
-          ...payloadBase,
-          source: "fallback",
-          statusCode: null,
-        });
-      })
-    ).finally(() => {
+    const finishAvatarPreloadLog = () => {
       const preloadDurationMs = Math.max(
         0,
         Date.now() - (first20AvatarPreloadStartAtRef.current ?? startedAt)
@@ -2278,6 +2363,23 @@ export default function HomeFeedScreen() {
           : null,
         deferredVideoCount: null,
       });
+    };
+
+    void preloadAvatarRows(headRows).then(() => {
+      if (!tailRows.length) {
+        finishAvatarPreloadLog();
+        return;
+      }
+      const runTail = () => {
+        void preloadAvatarRows(tailRows).finally(finishAvatarPreloadLog);
+      };
+      if (Platform.OS === "android") {
+        runAfterHomeFeedFirstCardMount(() => {
+          InteractionManager.runAfterInteractions(runTail);
+        });
+        return;
+      }
+      void preloadAvatarRows(tailRows).finally(finishAvatarPreloadLog);
     });
   }, [youtubeLayout, youtubeFirst20Rows]);
 

@@ -2,6 +2,7 @@ import { Platform } from "react-native";
 import { apiGet, apiPost } from "@/src/lib/kristoApi";
 import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import { getSessionSync } from "@/src/lib/kristoSession";
+import { markHomeFeedStartupTiming } from "@/src/lib/homeFeedStartupTiming";
 import { baseFeedId } from "@/src/lib/scheduleSlotUtils";
 import { homeFeedRowKey, stableMergeHomeFeedRows, HOME_FEED_INITIAL_LIMIT } from "./homeFeedPagination";
 import { filterPhase1FeedRows, filterHomeFeedYoutubeStreamRows, isHomeFeedExpandedScheduleSlotRow, normalizeHomeFeedApiRow } from "./homeFeedUtils";
@@ -412,6 +413,10 @@ async function commitHomeFeedBackendRows(
   }
   lastFetchedHomeFeedRows = active;
   await saveHomeFeedRowsCache(active, undefined, snapshotIds, paging);
+  markHomeFeedStartupTiming("FEED_API_RESPONSE_TS", {
+    rowCount: active.length,
+    source: "inline-feed",
+  });
   return active;
 }
 
@@ -903,7 +908,11 @@ export async function fetchHomeFeedFromApi(
 
       noteHomeFeedFetchSuccess();
       const snapshotIds = rows.map((row) => homeFeedRowKey(row)).filter(Boolean);
-      await saveHomeFeedStreamPage(0, rows, collected.paging, viewerUserId);
+      void saveHomeFeedStreamPage(0, rows, collected.paging, viewerUserId).catch((err) => {
+        console.log("KRISTO_HOME_FEED_PAGE_CACHE_SAVE_ERROR", {
+          message: String((err as Error)?.message || err),
+        });
+      });
       clearHomeFeedYoutubeSilentNextPagePrep();
       if (snapshotIds.length) {
         setBackendSnapshotRowIds(snapshotIds);
@@ -913,6 +922,11 @@ export async function fetchHomeFeedFromApi(
         await import("@/src/lib/homeFeedPosterPipelineTrace");
       markHomeFeedPosterApiRowsReceived(rows);
       startYoutubeHomeFeedVisiblePosterPrewarm(rows);
+      markHomeFeedStartupTiming("FEED_API_RESPONSE_TS", {
+        reason,
+        rowCount: rows.length,
+        source: "youtube-collect",
+      });
       return rows;
     }
 

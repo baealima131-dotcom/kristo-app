@@ -107,8 +107,13 @@ export function kickoffYoutubePagePosterPrewarm(rows: any[]): void {
 }
 
 /** Start avatar cache/network jobs for an incoming page — fire-and-forget. */
-export function kickoffYoutubePageAvatarPrewarm(rows: any[]): void {
+export function kickoffYoutubePageAvatarPrewarm(rows: any[], maxCount?: number): void {
   if (!rows.length) return;
+  const limit =
+    typeof maxCount === "number" && maxCount > 0
+      ? Math.min(maxCount, rows.length)
+      : rows.length;
+  const batch = rows.slice(0, limit);
   const { ensureHomeFeedAvatar } = require("@/src/lib/homeFeedAvatarCache") as {
     ensureHomeFeedAvatar: (params: {
       cacheKey: string;
@@ -124,7 +129,7 @@ export function kickoffYoutubePageAvatarPrewarm(rows: any[]): void {
     };
   };
 
-  for (const row of rows) {
+  for (const row of batch) {
     const ctx = resolveHomeFeedAvatarCacheContext(row);
     if (!ctx.cacheKey || !ctx.remoteUris.length) continue;
     void ensureHomeFeedAvatar({
@@ -157,6 +162,8 @@ export async function awaitYoutubeBatchCoverGate(
   opts?: {
     phase?: string;
     isCancelled?: () => boolean;
+    /** Limit avatar prewarm to head rows during first paint (Android startup). */
+    avatarHeadCount?: number;
   }
 ): Promise<YoutubeBatchCoverGateResult> {
   const phase = String(opts?.phase || "batch").trim();
@@ -172,7 +179,11 @@ export async function awaitYoutubeBatchCoverGate(
   }
 
   kickoffYoutubePagePosterPrewarm(rows);
-  kickoffYoutubePageAvatarPrewarm(rows);
+  const avatarLimit =
+    typeof opts?.avatarHeadCount === "number" && opts.avatarHeadCount > 0
+      ? opts.avatarHeadCount
+      : undefined;
+  kickoffYoutubePageAvatarPrewarm(rows, avatarLimit);
 
   const headCount = Math.min(HOME_FEED_YOUTUBE_APPEND_POSTER_HEAD_COUNT, rows.length);
   const start = Date.now();
@@ -288,8 +299,19 @@ export function isYoutubeFeedListOverflowing(metrics: HomeFeedYoutubeScrollMetri
 }
 
 /** Brief gate — poster downloads start at API return; do not block card mount on probes/cache. */
-export async function waitForYoutubePage0RevealGate(rows: any[]): Promise<void> {
-  if (!rows.length) return;
+export async function waitForYoutubePage0RevealGate(
+  rows: any[],
+  opts?: { skip?: boolean }
+): Promise<void> {
+  if (!rows.length || opts?.skip) {
+    if (rows.length) {
+      kickoffYoutubePagePosterPrewarm(rows.slice(0, HOME_FEED_YOUTUBE_APPEND_POSTER_HEAD_COUNT));
+      const { markHomeFeedPosterApiRowsReceived } =
+        require("@/src/lib/homeFeedPosterPipelineTrace") as typeof import("@/src/lib/homeFeedPosterPipelineTrace");
+      markHomeFeedPosterApiRowsReceived(rows);
+    }
+    return;
+  }
 
   kickoffYoutubePagePosterPrewarm(rows.slice(0, HOME_FEED_YOUTUBE_APPEND_POSTER_HEAD_COUNT));
 

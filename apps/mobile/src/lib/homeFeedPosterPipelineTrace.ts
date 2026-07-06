@@ -87,6 +87,12 @@ export function markHomeFeedPosterPipelineStage(
   if (stage === "first_poster_painted" && !firstPosterPaintedLogged) {
     firstPosterPaintedLogged = true;
     console.log("KRISTO_POSTER_PIPELINE_FIRST_PAINT", payload);
+    void import("@/src/lib/homeFeedStartupTiming").then(({ markHomeFeedStartupTiming }) => {
+      markHomeFeedStartupTiming("FIRST_POSTER_VISIBLE_TS", {
+        postId: pid,
+        rowIndex: extra?.rowIndex ?? entry.rowIndex ?? null,
+      });
+    });
   }
 }
 

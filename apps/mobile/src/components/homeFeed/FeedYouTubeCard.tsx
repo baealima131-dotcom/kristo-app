@@ -30,6 +30,7 @@ import {
 } from "@/src/lib/homeFeedYouTubeLayout";
 import { resolveHomeFeedVideoDisplayType } from "@/src/lib/homeFeedVideoDisplayType";
 import { markHomeFeedPosterPipelineStage } from "@/src/lib/homeFeedPosterPipelineTrace";
+import { markHomeFeedStartupTiming } from "@/src/lib/homeFeedStartupTiming";
 import { HOME_FEED_GOLD, HOME_FEED_THUMB_RADIUS } from "./theme";
 import { homeFeedPremiumStyles as premium } from "./homeFeedPremiumStyles";
 import { FeedChurchBrandRow } from "./FeedChurchBrandRow";
@@ -108,8 +109,12 @@ export const FeedYouTubeCard = memo(
     markHomeFeedPosterPipelineStage(postId, "card_mounted", {
       videoUrl: videoUri,
       source: "FeedYouTubeCard",
+      rowIndex,
     });
-  }, [postId, videoUri]);
+    if (rowIndex === 0) {
+      markHomeFeedStartupTiming("FIRST_CARD_MOUNT_TS", { postId, rowIndex });
+    }
+  }, [postId, videoUri, rowIndex]);
 
   const handleVideoPress = () => {
     const payload = buildHomeFeedVideoOpenPayload(item);

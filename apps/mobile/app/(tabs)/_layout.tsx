@@ -5,6 +5,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { silentPreloadTabScreens } from "@/src/lib/screenDataCache";
 import { setHomeTabFocused } from "@/src/lib/firstPaint";
+import { markHomeFeedStartupTiming } from "@/src/lib/homeFeedStartupTiming";
 import { notifyUserLeftHomeTab, runAfterHomeDeferredStartup } from "@/src/lib/homeFeedDeferredStartup";
 import { startMoreTabPremount } from "@/src/lib/moreTabPremount";
 import {
@@ -62,6 +63,7 @@ import {
   HOME_FEED_INACTIVE,
 } from "@/src/components/homeFeed/theme";
 import { homeFeedPremiumStyles as homeFeedPremium } from "@/src/components/homeFeed/homeFeedPremiumStyles";
+import { kickoffHomeFeedPage0Hydrate } from "@/src/components/homeFeed/homeFeedPageCache";
 
 const VIP_BG = "#010102";
 const VIP_BORDER = "rgba(255,255,255,0.08)";
@@ -268,6 +270,11 @@ export default function TabLayout() {
 
   useEffect(() => {
     if (loading || !session?.userId) return;
+    kickoffHomeFeedPage0Hydrate();
+  }, [loading, session?.userId]);
+
+  useEffect(() => {
+    if (loading || !session?.userId) return;
     runAfterHomeDeferredStartup(() => startMoreTabPremount(session), {
       reason: "tabs-more-tab-premount",
     });
@@ -277,6 +284,9 @@ export default function TabLayout() {
     const tab = String(segments[1] || "index");
     const wasHome = prevTabRef.current === "index" || prevTabRef.current === "";
     setHomeTabFocused(tab === "index");
+    if (tab === "index") {
+      markHomeFeedStartupTiming("HOME_SCREEN_FOCUS_TS", { tab });
+    }
     if (wasHome && tab !== "index") {
       notifyUserLeftHomeTab();
     }

@@ -155,16 +155,7 @@ export function peekHomeFeedAvatar(cacheKey: string, sourceUpdatedAt?: number): 
 
   const sessionUri = peekHomeFeedAvatarSession(key);
   if (sessionUri) {
-    const ctx = avatarDiagnosticContextByKey.get(key);
     logAvatarOnce("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", key, { localUri: sessionUri });
-    console.log("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", {
-      churchId: ctx?.churchId || null,
-      mediaId: ctx?.mediaId || null,
-      avatarUri: "present",
-      source: "cache",
-      rowIndex: ctx?.rowIndex ?? null,
-      statusCode: null,
-    });
     return sessionUri;
   }
 
@@ -173,16 +164,7 @@ export function peekHomeFeedAvatar(cacheKey: string, sourceUpdatedAt?: number): 
     const localUri = String(entry.localUri || "").trim();
     if (localUri && isResolvableAvatarUri(localUri)) {
       avatarDisplaySessionByKey.set(key, localUri);
-      const ctx = avatarDiagnosticContextByKey.get(key);
       logAvatarOnce("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", key, { localUri });
-      console.log("KRISTO_HOME_FEED_AVATAR_CACHE_HIT", {
-        churchId: ctx?.churchId || null,
-        mediaId: ctx?.mediaId || null,
-        avatarUri: "present",
-        source: "cache",
-        rowIndex: ctx?.rowIndex ?? null,
-        statusCode: null,
-      });
       return localUri;
     }
   }

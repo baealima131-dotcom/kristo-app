@@ -35,7 +35,7 @@ import { startMediaUploadResumeSystem } from "./optimisticVideoUpload";
 import { startHomeFeedStartupPrewarm } from "./homeFeedStartupPrewarm";
 import { startFirstHomeFeedVideoPrepare } from "./homeFeedVideoStartup";
 import { startMoreTabPremount } from "./moreTabPremount";
-import { isHomeFeedInlineVideoAutoplayEnabled } from "./homeFeedVideoMode";
+import { isHomeFeedInlineVideoAutoplayEnabled, isHomeFeedYouTubeStyleVideo } from "./homeFeedVideoMode";
 import {
   beginDeleteAccountExit,
   beginLogoutExit,
@@ -75,7 +75,13 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
       setSessionState(s);
       setLoading(false);
 
-      if (isHomeFeedInlineVideoAutoplayEnabled()) {
+      if (isHomeFeedYouTubeStyleVideo() && s?.userId) {
+        const { kickoffHomeFeedPage0Hydrate } = require("@/src/components/homeFeed/homeFeedPageCache") as {
+          kickoffHomeFeedPage0Hydrate: () => void;
+        };
+        kickoffHomeFeedPage0Hydrate();
+        startHomeFeedStartupPrewarm(s);
+      } else if (isHomeFeedInlineVideoAutoplayEnabled()) {
         startFirstHomeFeedVideoPrepare(s);
         startHomeFeedStartupPrewarm(s);
       }
@@ -104,7 +110,13 @@ export function KristoSessionProvider({ children }: { children: React.ReactNode 
         );
         setSessionSync(ready);
         setSessionState(ready);
-        if (isHomeFeedInlineVideoAutoplayEnabled()) {
+        if (isHomeFeedYouTubeStyleVideo() && ready.userId) {
+          const { kickoffHomeFeedPage0Hydrate } = require("@/src/components/homeFeed/homeFeedPageCache") as {
+            kickoffHomeFeedPage0Hydrate: () => void;
+          };
+          kickoffHomeFeedPage0Hydrate();
+          startHomeFeedStartupPrewarm(ready);
+        } else if (isHomeFeedInlineVideoAutoplayEnabled()) {
           startFirstHomeFeedVideoPrepare(ready);
           startHomeFeedStartupPrewarm(ready);
         }
