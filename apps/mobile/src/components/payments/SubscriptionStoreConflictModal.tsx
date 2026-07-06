@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef } from "react";
 import {
   ActivityIndicator,
   Animated,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -154,20 +155,93 @@ function buildOldSubReactivatedBlockedMessage(
   );
 }
 
+function resolveSubscriptionExpiryLabel(
+  lock?: ChurchMediaSubscriptionOwnershipLock | null
+): string | null {
+  const label = String(
+    lock?.subscriptionExpiresAtLabel || lock?.expiresAtLabel || ""
+  ).trim();
+  if (label) {
+    return label.replace(/^(Sandbox )?expires /i, "").trim() || label;
+  }
+  const expiresAtMs = lock?.subscriptionExpiresAt ?? lock?.expiresAt;
+  if (typeof expiresAtMs === "number" && Number.isFinite(expiresAtMs)) {
+    return formatPremiumRenewalDate(new Date(expiresAtMs));
+  }
+  return null;
+}
+
+function hasLinkedChurchDisplay(
+  lock?: ChurchMediaSubscriptionOwnershipLock | null
+): boolean {
+  if (lock?.hasLinkedChurchDisplay === true) return true;
+  return Boolean(String(lock?.lockedChurchName || "").trim());
+}
+
+function resolveStoreBrandLabel(lock?: ChurchMediaSubscriptionOwnershipLock | null): string {
+  if (lock?.store === "play_store") return "Google Play";
+  if (lock?.store === "app_store") return "Apple";
+  return Platform.OS === "android" ? "Google Play" : "Apple";
+}
+
+function resolveStoreAccountLabel(lock?: ChurchMediaSubscriptionOwnershipLock | null): string {
+  if (lock?.store === "play_store") return "Google account";
+  if (lock?.store === "app_store") return "Apple ID";
+  return Platform.OS === "android" ? "Google account" : "Apple ID";
+}
+
 function buildUnverifiedStoreIdentityMessage(
   lock?: ChurchMediaSubscriptionOwnershipLock | null
 ): string {
-  const storeIsPlay = lock?.store === "play_store";
-  const storeLabel = storeIsPlay ? "Google Play" : "Apple";
-  const accountLabel = storeIsPlay ? "Google account" : "Apple ID";
-  const sandboxNote = storeIsPlay ? "" : " (or sandbox test account)";
+  const storeLabel = resolveStoreBrandLabel(lock);
+  const accountLabel = resolveStoreAccountLabel(lock);
+  const churchName = String(lock?.lockedChurchName || "").trim();
+  const hasChurch = hasLinkedChurchDisplay(lock);
+  const expiryDate = resolveSubscriptionExpiryLabel(lock);
+  const deletedDate = String(lock?.lockedChurchDeletedAtLabel || "").trim();
+  const willRenew = lock?.willRenew;
 
-  return (
-    `The existing ${storeLabel} subscription on this account is still tied to a previous church or subscription identity. Kristo could not safely verify ownership for this church, so it was not activated.\n\n` +
-    `Managing subscription from this screen can only cancel or renew that same ${storeLabel} subscription. It cannot move billing to this church. Renewing it may reactivate the previous subscription identity.\n\n` +
-    `To subscribe this new church, wait until the previous subscription fully expires, or use a different ${accountLabel}${sandboxNote} for a new purchase.\n\n` +
-    "Cancelling from here does not immediately free this subscription for the new church."
-  );
+  if (!hasChurch) {
+    const expiryLine = expiryDate
+      ? `Subscription access ends on ${expiryDate}.`
+      : "Subscription access remains active until the current billing period ends.";
+    const renewalLine =
+      willRenew === false
+        ? "The subscription is cancelled and will not renew. After it expires, you can subscribe this church."
+        : willRenew === true
+          ? "Cancel renewal in your store subscription settings first. Paid access remains until the expiry date."
+          : "Manage your store subscription to review renewal and billing.";
+    return (
+      `A previous church subscription is still active on this ${accountLabel}.\n\n` +
+      `${expiryLine}\n\n${renewalLine}`
+    );
+  }
+
+  let intro = "";
+  if (lock?.lockedChurchDeleted === true) {
+    intro = deletedDate
+      ? `${churchName} was deleted on ${deletedDate}, but its ${storeLabel} subscription is still active on this ${accountLabel}.`
+      : `${churchName} was deleted, but its ${storeLabel} subscription is still active on this ${accountLabel}.`;
+  } else {
+    intro = `${storeLabel} still has an active Kristo subscription connected to ${churchName}.`;
+  }
+
+  const expiryLine = expiryDate
+    ? `Subscription access ends on ${expiryDate}.`
+    : "Subscription access remains active until the current billing period ends.";
+
+  let renewalLine = "";
+  if (willRenew === false) {
+    renewalLine =
+      "The subscription is cancelled and will not renew. After it expires, you can subscribe this church.";
+  } else if (willRenew === true) {
+    renewalLine =
+      "Cancel renewal in your store subscription settings first. Paid access remains until the expiry date.";
+  } else {
+    renewalLine = "Manage your store subscription to review renewal and billing.";
+  }
+
+  return `${intro}\n\n${expiryLine}\n\n${renewalLine}`;
 }
 
 function buildConflictMessage(
@@ -230,14 +304,24 @@ export function SubscriptionStoreConflictModal({
   const expiryLabel = String(lock?.expiresAtLabel || "").trim();
   const showExpiryBadge =
     variant === "ownership_lock" && Boolean(expiryLabel);
+  const showLinkedChurch =
+    variant === "unverified_store_identity" && hasLinkedChurchDisplay(lock);
+  const linkedChurchName = String(lock?.lockedChurchName || "").trim();
+  const linkedChurchAvatarUrl = String(lock?.lockedChurchAvatarUrl || "").trim();
   const modalTitle =
     variant === "unverified_store_identity"
-      ? "Subscription Verification Required"
+      ? showLinkedChurch
+        ? linkedChurchName
+        : "Subscription Verification Required"
       : variant === "old_sub_reactivated_blocked"
       ? "Previous Subscription Reactivated"
       : variant === "existing_subscription_cancelled_until_expiry"
       ? "Subscription Already Cancelled"
       : "Existing Subscription Found";
+  const modalSubtitle =
+    variant === "unverified_store_identity" && showLinkedChurch
+      ? "Subscription Verification Required"
+      : null;
   const modalEyebrow =
     variant === "unverified_store_identity"
       ? "VERIFICATION REQUIRED"
@@ -255,9 +339,13 @@ export function SubscriptionStoreConflictModal({
     if (variant === "unverified_store_identity") {
       console.log("KRISTO_SUBSCRIPTION_UNVERIFIED_STORE_IDENTITY_MODAL_OPENED", {
         currentChurchId: String(currentChurchId || "").trim() || null,
+        lockedChurchId: lock?.lockedChurchId ?? null,
+        lockedChurchName: lock?.lockedChurchName ?? null,
+        lockedChurchDeleted: lock?.lockedChurchDeleted === true,
+        hasLinkedChurchDisplay: lock?.hasLinkedChurchDisplay === true,
         store: lock?.store ?? null,
         willRenew: lock?.willRenew ?? null,
-        expiresAt: lock?.expiresAt ?? null,
+        expiresAt: lock?.subscriptionExpiresAt ?? lock?.expiresAt ?? null,
       });
       return;
     }
@@ -324,17 +412,40 @@ export function SubscriptionStoreConflictModal({
           <PowerCardChrome />
           <ScrollView bounces={false} showsVerticalScrollIndicator={false} contentContainerStyle={s.scrollContent}>
             <View style={s.headerBlock}>
-              <View style={s.iconOuter}>
-                <View style={s.iconRing} pointerEvents="none" />
-                <LinearGradient
-                  colors={["#F2D792", GOLD, "#9A7428"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={s.iconTile}
-                >
-                  <Ionicons name="link-outline" size={24} color="#0A0E16" />
-                </LinearGradient>
-              </View>
+              {showLinkedChurch ? (
+                <View style={s.churchAvatarOuter}>
+                  <View style={s.churchAvatarRing} pointerEvents="none" />
+                  {linkedChurchAvatarUrl ? (
+                    <Image
+                      source={{ uri: linkedChurchAvatarUrl }}
+                      style={s.churchAvatarImage}
+                      resizeMode="cover"
+                      accessibilityLabel={`${linkedChurchName} church logo`}
+                    />
+                  ) : (
+                    <LinearGradient
+                      colors={["#F2D792", GOLD, "#9A7428"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={s.churchAvatarFallback}
+                    >
+                      <Ionicons name="business-outline" size={28} color="#0A0E16" />
+                    </LinearGradient>
+                  )}
+                </View>
+              ) : (
+                <View style={s.iconOuter}>
+                  <View style={s.iconRing} pointerEvents="none" />
+                  <LinearGradient
+                    colors={["#F2D792", GOLD, "#9A7428"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={s.iconTile}
+                  >
+                    <Ionicons name="link-outline" size={24} color="#0A0E16" />
+                  </LinearGradient>
+                </View>
+              )}
 
               {showExpiryBadge ? (
                 <View style={s.statusBadge}>
@@ -345,6 +456,7 @@ export function SubscriptionStoreConflictModal({
 
               <Text style={s.powerEyebrow}>{modalEyebrow}</Text>
               <Text style={s.powerTitle}>{modalTitle}</Text>
+              {modalSubtitle ? <Text style={s.powerSubtitle}>{modalSubtitle}</Text> : null}
               <Text style={s.powerMessage}>{message}</Text>
             </View>
 
@@ -477,6 +589,34 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  churchAvatarOuter: {
+    width: 80,
+    height: 80,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 2,
+  },
+  churchAvatarRing: {
+    position: "absolute",
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 2,
+    borderColor: "rgba(217,179,95,0.55)",
+  },
+  churchAvatarImage: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  churchAvatarFallback: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   statusBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -513,6 +653,13 @@ const s = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 0.15,
     lineHeight: 24,
+    textAlign: "center",
+  },
+  powerSubtitle: {
+    color: LABEL_GOLD,
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.2,
     textAlign: "center",
   },
   powerMessage: {

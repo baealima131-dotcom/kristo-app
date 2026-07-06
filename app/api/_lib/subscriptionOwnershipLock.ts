@@ -32,14 +32,21 @@ export type SubscriptionOwnershipLockApiPayload = {
   isLockHolder: boolean;
   lockedChurchId: string | null;
   lockedChurchName: string | null;
+  lockedChurchAvatarUrl: string | null;
+  lockedChurchDeleted: boolean;
+  lockedChurchDeletedAt: number | null;
+  lockedChurchDeletedAtLabel: string | null;
   expiresAt: number | null;
   expiresAtLabel: string | null;
+  subscriptionExpiresAt: number | null;
+  subscriptionExpiresAtLabel: string | null;
   platform: "ios" | "android" | null;
   store: "app_store" | "play_store" | null;
   willRenew: boolean | null;
   status: SubscriptionOwnershipLockStatus | null;
   canPurchase: boolean;
   canActivate: boolean;
+  hasLinkedChurchDisplay: boolean;
   message: string | null;
 };
 
@@ -470,14 +477,21 @@ function emptyLockPayload(): SubscriptionOwnershipLockApiPayload {
     isLockHolder: false,
     lockedChurchId: null,
     lockedChurchName: null,
+    lockedChurchAvatarUrl: null,
+    lockedChurchDeleted: false,
+    lockedChurchDeletedAt: null,
+    lockedChurchDeletedAtLabel: null,
     expiresAt: null,
     expiresAtLabel: null,
+    subscriptionExpiresAt: null,
+    subscriptionExpiresAtLabel: null,
     platform: null,
     store: null,
     willRenew: null,
     status: null,
     canPurchase: true,
     canActivate: true,
+    hasLinkedChurchDisplay: false,
     message: null,
   };
 }
@@ -502,23 +516,39 @@ function payloadFromLock(args: {
   const cancelledAllowsPurchaseAttempt =
     blocked && cancelledSubscriptionAllowsNewPurchaseAttempt({ lock: args.lock });
   const expiresAtLabel = formatExpiresAtLabel(args.lock.expiresAt);
+  const lockedChurchName = String(args.lock.lockedChurchName || "").trim() || null;
+  const lockedChurchDeleted = args.lock.lockedChurchDeleted === true;
+  const lockedChurchDeletedAt =
+    typeof args.lock.lockedChurchDeletedAt === "number" &&
+    Number.isFinite(args.lock.lockedChurchDeletedAt)
+      ? args.lock.lockedChurchDeletedAt
+      : null;
+  const lockedChurchAvatarUrl =
+    String(args.lock.lockedChurchAvatarUrl || "").trim() || null;
   return {
     blocked,
     isLockHolder,
     lockedChurchId: args.lock.lockedChurchId,
-    lockedChurchName: args.lock.lockedChurchName,
+    lockedChurchName,
+    lockedChurchAvatarUrl,
+    lockedChurchDeleted,
+    lockedChurchDeletedAt,
+    lockedChurchDeletedAtLabel: formatExpiresAtLabel(lockedChurchDeletedAt),
     expiresAt: args.lock.expiresAt,
     expiresAtLabel,
+    subscriptionExpiresAt: args.lock.expiresAt,
+    subscriptionExpiresAtLabel: expiresAtLabel,
     platform: args.lock.platform,
     store: args.lock.store,
     willRenew: args.lock.willRenew ?? null,
     status: args.lock.status,
     canPurchase: !blocked || cancelledAllowsPurchaseAttempt,
     canActivate: !blocked,
+    hasLinkedChurchDisplay: Boolean(lockedChurchName),
     message: blocked
       ? buildLockMessage({
-          lockedChurchName: args.lock.lockedChurchName,
-          lockedChurchDeleted: args.lock.lockedChurchDeleted === true,
+          lockedChurchName: lockedChurchName || "a previous church",
+          lockedChurchDeleted,
           expiresAtLabel,
           cancelledAllowsPurchaseAttempt,
         })
@@ -532,16 +562,26 @@ export async function buildPrepurchaseOwnershipConflictResponse(args: {
   lock: SubscriptionOwnershipLockRecord;
   verification?: ChurchPremiumVerification | null;
 }) {
-  const churchMeta = await resolveLockedChurchName(
-    args.lock.lockedChurchId,
-    args.lock.lockedChurchName
-  );
+  const churchMeta = await resolveLockedChurchSnapshot(args.lock.lockedChurchId, {
+    name: args.lock.lockedChurchName,
+    avatarUrl: args.lock.lockedChurchAvatarUrl,
+    deleted: args.lock.lockedChurchDeleted,
+    deletedAt: args.lock.lockedChurchDeletedAt,
+  });
   const resolvedLock: SubscriptionOwnershipLockRecord = {
     ...args.lock,
     lockedChurchName: churchMeta.name,
-    lockedChurchDeleted: churchMeta.deleted,
+    lockedChurchAvatarUrl: churchMeta.avatarUrl ?? args.lock.lockedChurchAvatarUrl ?? null,
+    lockedChurchDeleted: churchMeta.deleted || args.lock.lockedChurchDeleted === true,
+    lockedChurchDeletedAt:
+      args.lock.lockedChurchDeletedAt ??
+      (churchMeta.deleted ? churchMeta.deletedAt : null),
     willRenew: args.lock.willRenew ?? args.verification?.willRenew ?? null,
     store: args.lock.store ?? args.verification?.store ?? null,
+    expiresAt:
+      args.lock.expiresAt ??
+      parseSubscriptionExpiresAtMs(args.verification?.expiresAt) ??
+      null,
   };
   const subscriptionOwnershipLock = payloadFromLock({
     lock: resolvedLock,
@@ -552,13 +592,164 @@ export async function buildPrepurchaseOwnershipConflictResponse(args: {
     ok: false as const,
     allowed: false as const,
     reason: args.reason ?? "store-subscription-ownership-conflict",
-    lockedChurchId: resolvedLock.lockedChurchId,
-    lockedChurchName: churchMeta.name,
-    store: subscriptionOwnershipLock.store,
-    expiresAt: subscriptionOwnershipLock.expiresAt,
+    lockedChurchId: subscriptionOwnershipLock.lockedChurchId,
+    lockedChurchName: subscriptionOwnershipLock.lockedChurchName,
+    lockedChurchAvatarUrl: subscriptionOwnershipLock.lockedChurchAvatarUrl,
+    lockedChurchDeleted: subscriptionOwnershipLock.lockedChurchDeleted,
+    lockedChurchDeletedAt: subscriptionOwnershipLock.lockedChurchDeletedAt,
+    subscriptionExpiresAt: subscriptionOwnershipLock.subscriptionExpiresAt,
     willRenew: subscriptionOwnershipLock.willRenew,
+    store: subscriptionOwnershipLock.store,
     subscriptionOwnershipLock,
     productId: args.verification?.productId ?? resolvedLock.productId ?? null,
+  };
+}
+
+export async function resolveBlockingLockForPrepurchaseDisplay(args: {
+  ownerUserId: string;
+  churchId: string;
+  verification?: ChurchPremiumVerification | null;
+}): Promise<SubscriptionOwnershipLockRecord | null> {
+  const ownerUserId = normalizeUserId(args.ownerUserId);
+  const churchId = normalizeChurchId(args.churchId);
+  if (!ownerUserId || !churchId) return null;
+
+  const pastorLock = await ensureActiveSubscriptionOwnershipLockForPastor({
+    ownerUserId,
+    contextChurchId: churchId,
+    backfillTrigger: "resolve",
+  });
+
+  if (pastorLock && !churchIdsMatch(pastorLock.lockedChurchId, churchId)) {
+    return pastorLock;
+  }
+
+  const tombstones = await listActiveDeletedChurchSubscriptionLocks();
+  const ownerTombstones = tombstones.filter(
+    (lock) =>
+      normalizeUserId(lock.ownerUserId).toLowerCase() === ownerUserId.toLowerCase() &&
+      lock.status === "active" &&
+      !lockIsExpired(lock)
+  );
+
+  const blockingTombstone = ownerTombstones.find(
+    (lock) => !churchIdsMatch(lock.lockedChurchId, churchId)
+  );
+  if (blockingTombstone) return blockingTombstone;
+
+  if (pastorLock && churchIdsMatch(pastorLock.lockedChurchId, churchId)) {
+    return pastorLock;
+  }
+
+  const storeIdentity = String(args.verification?.storeSubscriptionIdentity || "").trim();
+  const store = args.verification?.store;
+  if (storeIdentity && (store === "app_store" || store === "play_store")) {
+    const identityLocks = await listActiveSubscriptionOwnershipLocksByStoreIdentity({
+      store,
+      storeSubscriptionIdentity: storeIdentity,
+    });
+    const ownerIdentityLock = identityLocks.find(
+      (lock) =>
+        normalizeUserId(lock.ownerUserId).toLowerCase() === ownerUserId.toLowerCase() &&
+        lock.status === "active" &&
+        !lockIsExpired(lock)
+    );
+    if (ownerIdentityLock) return ownerIdentityLock;
+  }
+
+  return ownerTombstones[0] ?? pastorLock ?? null;
+}
+
+export async function buildPrepurchaseDeniedDisplayResponse(args: {
+  churchId: string;
+  ownerUserId: string;
+  reason: string;
+  lock: SubscriptionOwnershipLockRecord | null;
+  verification: ChurchPremiumVerification | null;
+}) {
+  let displayLock = args.lock;
+  if (!displayLock) {
+    displayLock = await resolveBlockingLockForPrepurchaseDisplay({
+      ownerUserId: args.ownerUserId,
+      churchId: args.churchId,
+      verification: args.verification,
+    });
+  }
+
+  if (displayLock) {
+    const churchMeta = await resolveLockedChurchSnapshot(displayLock.lockedChurchId, {
+      name: displayLock.lockedChurchName,
+      avatarUrl: displayLock.lockedChurchAvatarUrl,
+      deleted: displayLock.lockedChurchDeleted,
+      deletedAt: displayLock.lockedChurchDeletedAt,
+    });
+    const resolvedLock: SubscriptionOwnershipLockRecord = {
+      ...displayLock,
+      lockedChurchName: churchMeta.name,
+      lockedChurchAvatarUrl: churchMeta.avatarUrl ?? displayLock.lockedChurchAvatarUrl ?? null,
+      lockedChurchDeleted: churchMeta.deleted || displayLock.lockedChurchDeleted === true,
+      lockedChurchDeletedAt:
+        displayLock.lockedChurchDeletedAt ??
+        (churchMeta.deleted ? churchMeta.deletedAt : null),
+      willRenew: displayLock.willRenew ?? args.verification?.willRenew ?? null,
+      store: displayLock.store ?? args.verification?.store ?? null,
+      expiresAt:
+        displayLock.expiresAt ??
+        parseSubscriptionExpiresAtMs(args.verification?.expiresAt) ??
+        null,
+    };
+    const subscriptionOwnershipLock = payloadFromLock({
+      lock: resolvedLock,
+      churchId: args.churchId,
+    });
+
+    return {
+      ok: false as const,
+      allowed: false as const,
+      reason: args.reason,
+      lockedChurchId: subscriptionOwnershipLock.lockedChurchId,
+      lockedChurchName: subscriptionOwnershipLock.lockedChurchName,
+      lockedChurchAvatarUrl: subscriptionOwnershipLock.lockedChurchAvatarUrl,
+      lockedChurchDeleted: subscriptionOwnershipLock.lockedChurchDeleted,
+      lockedChurchDeletedAt: subscriptionOwnershipLock.lockedChurchDeletedAt,
+      subscriptionExpiresAt: subscriptionOwnershipLock.subscriptionExpiresAt,
+      willRenew: subscriptionOwnershipLock.willRenew,
+      store: subscriptionOwnershipLock.store,
+      subscriptionOwnershipLock,
+      productId: args.verification?.productId ?? resolvedLock.productId ?? null,
+    };
+  }
+
+  const fallbackExpiresAt = parseSubscriptionExpiresAtMs(args.verification?.expiresAt) ?? null;
+  const fallbackPayload: SubscriptionOwnershipLockApiPayload = {
+    ...emptyLockPayload(),
+    blocked: true,
+    canPurchase: false,
+    canActivate: false,
+    expiresAt: fallbackExpiresAt,
+    expiresAtLabel: formatExpiresAtLabel(fallbackExpiresAt),
+    subscriptionExpiresAt: fallbackExpiresAt,
+    subscriptionExpiresAtLabel: formatExpiresAtLabel(fallbackExpiresAt),
+    willRenew: args.verification?.willRenew ?? null,
+    store: args.verification?.store ?? null,
+    hasLinkedChurchDisplay: false,
+    status: "active",
+  };
+
+  return {
+    ok: false as const,
+    allowed: false as const,
+    reason: args.reason,
+    lockedChurchId: null,
+    lockedChurchName: null,
+    lockedChurchAvatarUrl: null,
+    lockedChurchDeleted: false,
+    lockedChurchDeletedAt: null,
+    subscriptionExpiresAt: fallbackPayload.subscriptionExpiresAt,
+    willRenew: fallbackPayload.willRenew,
+    store: fallbackPayload.store,
+    subscriptionOwnershipLock: fallbackPayload,
+    productId: args.verification?.productId ?? null,
   };
 }
 
@@ -599,26 +790,75 @@ function lockEntitlementStillInGrace(args: {
   return candidates.some((expiresAt) => expiresAt > now);
 }
 
-async function resolveLockedChurchName(
+async function resolveLockedChurchSnapshot(
   churchId: string,
-  fallback?: string | null
-): Promise<{ name: string; deleted: boolean }> {
+  fallback?: {
+    name?: string | null;
+    avatarUrl?: string | null;
+    deleted?: boolean;
+    deletedAt?: number | null;
+  }
+): Promise<{
+  name: string;
+  deleted: boolean;
+  avatarUrl: string | null;
+  deletedAt: number | null;
+}> {
+  const snapshotName = String(fallback?.name || "").trim();
+  const snapshotAvatar = String(fallback?.avatarUrl || "").trim() || null;
+  const snapshotDeletedAt =
+    typeof fallback?.deletedAt === "number" && Number.isFinite(fallback.deletedAt)
+      ? fallback.deletedAt
+      : null;
+
+  if (fallback?.deleted === true) {
+    const name = snapshotName || normalizeChurchId(churchId) || "a previous church";
+    return {
+      name,
+      deleted: true,
+      avatarUrl: snapshotAvatar,
+      deletedAt: snapshotDeletedAt,
+    };
+  }
+
   const cid = normalizeChurchId(churchId);
   if (!cid) {
-    const name = String(fallback || "another church").trim() || "another church";
-    return { name, deleted: true };
+    const name = snapshotName || "another church";
+    return { name, deleted: true, avatarUrl: snapshotAvatar, deletedAt: snapshotDeletedAt };
   }
+
   try {
     const church = await getChurchById(cid);
     const liveName = String(church?.name || "").trim();
+    const liveAvatar =
+      String(church?.avatarUrl || church?.avatarUri || "").trim() || snapshotAvatar || null;
     if (liveName) {
-      return { name: liveName, deleted: false };
+      return {
+        name: liveName,
+        deleted: false,
+        avatarUrl: liveAvatar,
+        deletedAt: null,
+      };
     }
   } catch {
     // ignore lookup failures
   }
-  const snapshot = String(fallback || cid).trim() || cid;
-  return { name: snapshot, deleted: true };
+
+  const name = snapshotName || cid;
+  return {
+    name,
+    deleted: true,
+    avatarUrl: snapshotAvatar,
+    deletedAt: snapshotDeletedAt,
+  };
+}
+
+async function resolveLockedChurchName(
+  churchId: string,
+  fallback?: string | null
+): Promise<{ name: string; deleted: boolean }> {
+  const snapshot = await resolveLockedChurchSnapshot(churchId, { name: fallback });
+  return { name: snapshot.name, deleted: snapshot.deleted };
 }
 
 async function markLockStatus(
@@ -787,13 +1027,14 @@ export async function ensureSubscriptionOwnershipLockFromActiveMediaProfile(args
     return active;
   }
 
-  const churchMeta = await resolveLockedChurchName(churchId, media.mediaName);
+  const churchMeta = await resolveLockedChurchSnapshot(churchId, { name: media.mediaName });
   const now = Date.now();
   const record: SubscriptionOwnershipLockRecord = {
     id: `sub-lock-${ownerUserId.toLowerCase()}-${churchId.toLowerCase()}`,
     ownerUserId,
     lockedChurchId: churchId,
     lockedChurchName: churchMeta.name,
+    lockedChurchAvatarUrl: churchMeta.avatarUrl,
     lockedChurchDeleted: churchMeta.deleted,
     revenueCatAppUserId: churchId,
     revenueCatOriginalAppUserId: churchId,
@@ -1359,7 +1600,7 @@ export async function upsertSubscriptionOwnershipLockAfterAppStoreActivation(arg
 }): Promise<SubscriptionOwnershipLockRecord> {
   const ownerUserId = normalizeUserId(args.ownerUserId);
   const churchId = normalizeChurchId(args.churchId);
-  const churchMeta = await resolveLockedChurchName(churchId);
+  const churchMeta = await resolveLockedChurchSnapshot(churchId);
   const now = Date.now();
 
   const record: SubscriptionOwnershipLockRecord = {
@@ -1367,6 +1608,7 @@ export async function upsertSubscriptionOwnershipLockAfterAppStoreActivation(arg
     ownerUserId,
     lockedChurchId: churchId,
     lockedChurchName: churchMeta.name,
+    lockedChurchAvatarUrl: churchMeta.avatarUrl,
     lockedChurchDeleted: churchMeta.deleted,
     revenueCatAppUserId: churchId,
     revenueCatOriginalAppUserId: churchId,
@@ -1448,10 +1690,11 @@ export async function preserveSubscriptionOwnershipLockTombstoneForChurchDelete(
     active.expiresAt ??
     media?.subscriptionExpiresAt ??
     null;
-  const churchMeta = await resolveLockedChurchName(
-    churchId,
-    active.lockedChurchName || media?.mediaName
-  );
+  const churchMeta = await resolveLockedChurchSnapshot(churchId, {
+    name: active.lockedChurchName || media?.mediaName,
+    avatarUrl: active.lockedChurchAvatarUrl,
+  });
+  const deletedAt = Date.now();
 
   let storeSubscriptionIdentity = active.storeSubscriptionIdentity ?? null;
   let storeTransactionId = active.storeTransactionId ?? null;
@@ -1476,7 +1719,9 @@ export async function preserveSubscriptionOwnershipLockTombstoneForChurchDelete(
   const preserved = await saveSubscriptionOwnershipLock({
     ...active,
     lockedChurchName: churchMeta.name,
+    lockedChurchAvatarUrl: churchMeta.avatarUrl ?? active.lockedChurchAvatarUrl ?? null,
     lockedChurchDeleted: true,
+    lockedChurchDeletedAt: deletedAt,
     expiresAt,
     storeSubscriptionIdentity,
     storeTransactionId,
@@ -1494,7 +1739,9 @@ export async function preserveSubscriptionOwnershipLockTombstoneForChurchDelete(
     churchId,
     lockedChurchId: preserved.lockedChurchId,
     lockedChurchName: preserved.lockedChurchName,
+    lockedChurchAvatarUrl: preserved.lockedChurchAvatarUrl ?? null,
     lockedChurchDeleted: preserved.lockedChurchDeleted === true,
+    lockedChurchDeletedAt: preserved.lockedChurchDeletedAt ?? null,
     expiresAt: preserved.expiresAt,
     store: preserved.store,
     status: preserved.status,
@@ -1570,15 +1817,22 @@ export async function resolveSubscriptionOwnershipLockForChurch(args: {
     return { lock: null, payload: emptyLockPayload() };
   }
 
-  const churchMeta = await resolveLockedChurchName(active.lockedChurchId, active.lockedChurchName);
+  const churchMeta = await resolveLockedChurchSnapshot(active.lockedChurchId, {
+    name: active.lockedChurchName,
+    avatarUrl: active.lockedChurchAvatarUrl,
+    deleted: active.lockedChurchDeleted,
+    deletedAt: active.lockedChurchDeletedAt,
+  });
   let resolvedActive = active;
   if (
     active.lockedChurchName !== churchMeta.name ||
-    active.lockedChurchDeleted !== churchMeta.deleted
+    active.lockedChurchDeleted !== churchMeta.deleted ||
+    active.lockedChurchAvatarUrl !== churchMeta.avatarUrl
   ) {
     resolvedActive = await saveSubscriptionOwnershipLock({
       ...active,
       lockedChurchName: churchMeta.name,
+      lockedChurchAvatarUrl: churchMeta.avatarUrl ?? active.lockedChurchAvatarUrl ?? null,
       lockedChurchDeleted: churchMeta.deleted,
     });
   }

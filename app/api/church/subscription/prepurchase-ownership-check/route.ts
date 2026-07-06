@@ -4,6 +4,7 @@ import type { NextRequest } from "next/server";
 import { evaluateChurchMediaAccess } from "@/app/api/_lib/churchMediaAccess";
 import { guard } from "@/app/api/_lib/rbac";
 import {
+  buildPrepurchaseDeniedDisplayResponse,
   buildPrepurchaseOwnershipConflictResponse,
   checkStoreSubscriptionPrepurchaseOwnership,
 } from "@/app/api/_lib/subscriptionOwnershipLock";
@@ -54,16 +55,15 @@ export async function POST(req: NextRequest) {
       reason === "unverified-store-identity" || reason === "conflict-pending-verification";
 
     if (!result.lock) {
-      return json(
-        {
-          ok: false,
-          allowed: false,
-          reason: reason || "store-subscription-ownership-conflict",
-          productId: result.verification?.productId ?? null,
-          store: result.verification?.store ?? null,
-        },
-        { status: unverifiedReason ? 423 : 409 }
-      );
+      const denied = await buildPrepurchaseDeniedDisplayResponse({
+        churchId,
+        ownerUserId,
+        reason: reason || "store-subscription-ownership-conflict",
+        lock: result.lock,
+        verification: result.verification,
+      });
+
+      return json(denied, { status: unverifiedReason ? 423 : 409 });
     }
 
     const conflict = await buildPrepurchaseOwnershipConflictResponse({

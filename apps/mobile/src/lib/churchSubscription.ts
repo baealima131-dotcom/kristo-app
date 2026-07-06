@@ -1066,7 +1066,7 @@ export type SubscriptionPrepurchaseOwnershipResult =
       ownershipLock: ChurchMediaSubscriptionOwnershipLock | null;
       modalVariant: "existing_subscription" | "existing_subscription_cancelled_until_expiry";
     }
-  | { status: "unavailable"; reason?: string | null; httpStatus?: number | null };
+  | { status: "unavailable"; reason?: string | null; httpStatus?: number | null; ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null };
 
 const PREPURCHASE_OWNERSHIP_ENDPOINT = "/api/church/subscription/prepurchase-ownership-check";
 
@@ -1197,7 +1197,12 @@ function isUnverifiedOwnershipReason(reason: string | null | undefined): boolean
 
 export function isUnverifiedStoreIdentityPrepurchaseResult(
   result: SubscriptionPrepurchaseOwnershipResult
-): result is { status: "unavailable"; reason?: string | null; httpStatus?: number | null } {
+): result is {
+  status: "unavailable";
+  reason?: string | null;
+  httpStatus?: number | null;
+  ownershipLock?: ChurchMediaSubscriptionOwnershipLock | null;
+} {
   return (
     result.status === "unavailable" &&
     isUnverifiedStoreIdentityReason(result.reason)
@@ -1254,15 +1259,58 @@ export function buildUnverifiedStoreIdentityOwnershipLock(
     isLockHolder: false,
     lockedChurchId: null,
     lockedChurchName: null,
+    lockedChurchAvatarUrl: null,
+    lockedChurchDeleted: false,
+    lockedChurchDeletedAt: null,
+    lockedChurchDeletedAtLabel: null,
     expiresAt: expiresAtMs,
     expiresAtLabel: null,
+    subscriptionExpiresAt: expiresAtMs,
+    subscriptionExpiresAtLabel: null,
     platform: Platform.OS === "android" ? "android" : "ios",
     store: Platform.OS === "android" ? "play_store" : "app_store",
     willRenew: entitlement?.willRenew ?? null,
     status: "active",
     canPurchase: false,
     canActivate: false,
+    hasLinkedChurchDisplay: false,
     message: null,
+  };
+}
+
+function mergeUnverifiedOwnershipLock(
+  serverLock: ChurchMediaSubscriptionOwnershipLock | null,
+  customerInfo: CustomerInfo | null
+): ChurchMediaSubscriptionOwnershipLock {
+  const fallback = buildUnverifiedStoreIdentityOwnershipLock(customerInfo);
+  if (!serverLock) return fallback;
+
+  const churchName = String(serverLock.lockedChurchName || "").trim();
+  const expiryAt = serverLock.subscriptionExpiresAt ?? serverLock.expiresAt ?? fallback.expiresAt;
+  const expiryLabel =
+    String(serverLock.subscriptionExpiresAtLabel || serverLock.expiresAtLabel || "").trim() ||
+    (expiryAt
+      ? formatPremiumSubscriptionExpiryLabel(new Date(expiryAt), { customerInfo })
+      : null);
+
+  return {
+    ...fallback,
+    ...serverLock,
+    lockedChurchName: churchName || fallback.lockedChurchName,
+    lockedChurchAvatarUrl: serverLock.lockedChurchAvatarUrl ?? fallback.lockedChurchAvatarUrl,
+    lockedChurchDeleted: serverLock.lockedChurchDeleted === true,
+    lockedChurchDeletedAt: serverLock.lockedChurchDeletedAt ?? fallback.lockedChurchDeletedAt,
+    lockedChurchDeletedAtLabel:
+      serverLock.lockedChurchDeletedAtLabel ?? fallback.lockedChurchDeletedAtLabel,
+    expiresAt: expiryAt,
+    expiresAtLabel: expiryLabel,
+    subscriptionExpiresAt: serverLock.subscriptionExpiresAt ?? expiryAt,
+    subscriptionExpiresAtLabel: serverLock.subscriptionExpiresAtLabel ?? expiryLabel,
+    willRenew:
+      typeof serverLock.willRenew === "boolean" ? serverLock.willRenew : fallback.willRenew,
+    store: serverLock.store ?? fallback.store,
+    hasLinkedChurchDisplay:
+      serverLock.hasLinkedChurchDisplay === true || Boolean(churchName),
   };
 }
 
@@ -1311,10 +1359,12 @@ export async function resolvePrepurchaseOwnershipGateUiAction(args: {
     args.customerInfo ?? (await getCustomerSubscriptionInfo().catch(() => null));
 
   if (shouldShowUnverifiedStoreIdentityModal({ prepurchase, customerInfo: info })) {
+    const serverLock =
+      prepurchase.status === "unavailable" ? prepurchase.ownershipLock ?? null : null;
     return {
       type: "modal",
       variant: "unverified_store_identity",
-      ownershipLock: buildUnverifiedStoreIdentityOwnershipLock(info),
+      ownershipLock: mergeUnverifiedOwnershipLock(serverLock, info),
     };
   }
 
@@ -1342,8 +1392,18 @@ function resolvePrepurchaseConflictLock(body: any): ChurchMediaSubscriptionOwner
     storeRaw === "app_store" || storeRaw === "play_store" ? storeRaw : null;
   const lockedChurchId = String(body?.lockedChurchId || "").trim() || null;
   const lockedChurchName = String(body?.lockedChurchName || "").trim() || null;
+  const lockedChurchAvatarUrl = String(body?.lockedChurchAvatarUrl || "").trim() || null;
+  const lockedChurchDeleted = body?.lockedChurchDeleted === true;
+  const lockedChurchDeletedAt =
+    typeof body?.lockedChurchDeletedAt === "number" && Number.isFinite(body.lockedChurchDeletedAt)
+      ? body.lockedChurchDeletedAt
+      : null;
   const expiresAt =
-    typeof body?.expiresAt === "number" && Number.isFinite(body.expiresAt) ? body.expiresAt : null;
+    typeof body?.subscriptionExpiresAt === "number" && Number.isFinite(body.subscriptionExpiresAt)
+      ? body.subscriptionExpiresAt
+      : typeof body?.expiresAt === "number" && Number.isFinite(body.expiresAt)
+        ? body.expiresAt
+        : null;
   const willRenew = typeof body?.willRenew === "boolean" ? body.willRenew : null;
 
   return {
@@ -1351,14 +1411,21 @@ function resolvePrepurchaseConflictLock(body: any): ChurchMediaSubscriptionOwner
     isLockHolder: false,
     lockedChurchId,
     lockedChurchName,
+    lockedChurchAvatarUrl,
+    lockedChurchDeleted,
+    lockedChurchDeletedAt,
+    lockedChurchDeletedAtLabel: null,
     expiresAt,
     expiresAtLabel: null,
+    subscriptionExpiresAt: expiresAt,
+    subscriptionExpiresAtLabel: null,
     platform: store === "play_store" ? "android" : store === "app_store" ? "ios" : null,
     store,
     willRenew,
     status: "active",
     canPurchase: false,
     canActivate: false,
+    hasLinkedChurchDisplay: Boolean(lockedChurchName),
     message: null,
   };
 }
@@ -1371,14 +1438,21 @@ function buildDeviceExistingSubscriptionLock(
     isLockHolder: false,
     lockedChurchId: null,
     lockedChurchName: null,
+    lockedChurchAvatarUrl: null,
+    lockedChurchDeleted: false,
+    lockedChurchDeletedAt: null,
+    lockedChurchDeletedAtLabel: null,
     expiresAt: null,
     expiresAtLabel: null,
+    subscriptionExpiresAt: null,
+    subscriptionExpiresAtLabel: null,
     platform: store === "play_store" ? "android" : store === "app_store" ? "ios" : null,
     store,
     willRenew: null,
     status: "active",
     canPurchase: false,
     canActivate: false,
+    hasLinkedChurchDisplay: false,
     message: null,
   };
 }
@@ -1411,6 +1485,8 @@ function enrichExistingSubscriptionOwnershipLock(
     willRenew,
     expiresAt,
     expiresAtLabel,
+    subscriptionExpiresAt: lock.subscriptionExpiresAt ?? expiresAt,
+    subscriptionExpiresAtLabel: lock.subscriptionExpiresAtLabel ?? expiresAtLabel,
   };
 }
 
@@ -1590,6 +1666,7 @@ export async function runSubscriptionPrepurchaseOwnershipGate(args: {
           status: "unavailable",
           reason,
           httpStatus: res.status,
+          ownershipLock: parseChurchMediaSubscriptionOwnershipLock(body),
         };
       }
     }

@@ -12,7 +12,9 @@ export type SubscriptionOwnershipLockRecord = {
   ownerUserId: string;
   lockedChurchId: string;
   lockedChurchName: string;
+  lockedChurchAvatarUrl?: string | null;
   lockedChurchDeleted?: boolean;
+  lockedChurchDeletedAt?: number | null;
   revenueCatAppUserId: string;
   revenueCatOriginalAppUserId: string | null;
   productId: string | null;

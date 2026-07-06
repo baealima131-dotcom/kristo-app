@@ -177,14 +177,21 @@ export type ChurchMediaSubscriptionOwnershipLock = {
   isLockHolder: boolean;
   lockedChurchId: string | null;
   lockedChurchName: string | null;
+  lockedChurchAvatarUrl: string | null;
+  lockedChurchDeleted: boolean;
+  lockedChurchDeletedAt: number | null;
+  lockedChurchDeletedAtLabel: string | null;
   expiresAt: number | null;
   expiresAtLabel: string | null;
+  subscriptionExpiresAt: number | null;
+  subscriptionExpiresAtLabel: string | null;
   platform: "ios" | "android" | null;
   store: "app_store" | "play_store" | null;
   willRenew: boolean | null;
   status: "active" | "expired" | "released" | null;
   canPurchase: boolean;
   canActivate: boolean;
+  hasLinkedChurchDisplay: boolean;
   message: string | null;
 };
 
@@ -200,13 +207,36 @@ export function parseChurchMediaSubscriptionOwnershipLock(
     String(res?.lockedChurchId || raw.lockedChurchId || "").trim() || null;
   const lockedChurchName =
     String(res?.lockedChurchName || raw.lockedChurchName || "").trim() || null;
-  const expiresAt =
-    typeof res?.expiresAt === "number" && Number.isFinite(res.expiresAt)
-      ? res.expiresAt
-      : typeof raw.expiresAt === "number" && Number.isFinite(raw.expiresAt)
-        ? raw.expiresAt
+  const lockedChurchAvatarUrl =
+    String(res?.lockedChurchAvatarUrl || raw.lockedChurchAvatarUrl || "").trim() || null;
+  const lockedChurchDeleted =
+    res?.lockedChurchDeleted === true || raw.lockedChurchDeleted === true;
+  const lockedChurchDeletedAt =
+    typeof res?.lockedChurchDeletedAt === "number" && Number.isFinite(res.lockedChurchDeletedAt)
+      ? res.lockedChurchDeletedAt
+      : typeof raw.lockedChurchDeletedAt === "number" && Number.isFinite(raw.lockedChurchDeletedAt)
+        ? raw.lockedChurchDeletedAt
         : null;
-  const expiresAtLabel = String(raw.expiresAtLabel || "").trim() || null;
+  const lockedChurchDeletedAtLabel =
+    String(raw.lockedChurchDeletedAtLabel || "").trim() || null;
+  const expiresAt =
+    typeof res?.subscriptionExpiresAt === "number" && Number.isFinite(res.subscriptionExpiresAt)
+      ? res.subscriptionExpiresAt
+      : typeof res?.expiresAt === "number" && Number.isFinite(res.expiresAt)
+        ? res.expiresAt
+        : typeof raw.subscriptionExpiresAt === "number" && Number.isFinite(raw.subscriptionExpiresAt)
+          ? raw.subscriptionExpiresAt
+          : typeof raw.expiresAt === "number" && Number.isFinite(raw.expiresAt)
+            ? raw.expiresAt
+            : null;
+  const expiresAtLabel =
+    String(raw.subscriptionExpiresAtLabel || raw.expiresAtLabel || "").trim() || null;
+  const subscriptionExpiresAt =
+    typeof raw.subscriptionExpiresAt === "number" && Number.isFinite(raw.subscriptionExpiresAt)
+      ? raw.subscriptionExpiresAt
+      : expiresAt;
+  const subscriptionExpiresAtLabel =
+    String(raw.subscriptionExpiresAtLabel || "").trim() || expiresAtLabel;
   const platform = raw.platform === "ios" || raw.platform === "android" ? raw.platform : null;
   const storeRaw = res?.store ?? raw.store;
   const store =
@@ -219,6 +249,8 @@ export function parseChurchMediaSubscriptionOwnershipLock(
       : null;
   const canPurchase = raw.canPurchase !== false;
   const canActivate = raw.canActivate !== false;
+  const hasLinkedChurchDisplay =
+    raw.hasLinkedChurchDisplay === true || Boolean(lockedChurchName);
   const message = String(raw.message || "").trim() || null;
 
   if (
@@ -226,7 +258,10 @@ export function parseChurchMediaSubscriptionOwnershipLock(
     !isLockHolder &&
     !lockedChurchId &&
     !lockedChurchName &&
-    !message
+    !message &&
+    !hasLinkedChurchDisplay &&
+    willRenew == null &&
+    expiresAt == null
   ) {
     return null;
   }
@@ -236,14 +271,21 @@ export function parseChurchMediaSubscriptionOwnershipLock(
     isLockHolder,
     lockedChurchId,
     lockedChurchName,
+    lockedChurchAvatarUrl,
+    lockedChurchDeleted,
+    lockedChurchDeletedAt,
+    lockedChurchDeletedAtLabel,
     expiresAt,
     expiresAtLabel,
+    subscriptionExpiresAt,
+    subscriptionExpiresAtLabel,
     platform,
     store,
     willRenew,
     status,
     canPurchase,
     canActivate,
+    hasLinkedChurchDisplay,
     message,
   };
 }
