@@ -584,6 +584,12 @@ export default function ProfileSettingsScreen() {
       <DeleteAccountPastorOwnsChurchModal
         visible={pastorOwnsChurchModalOpen}
         churches={pastorOwnershipCheck?.churches || []}
+        sessionChurchId={session?.churchId}
+        sessionChurchName={session?.churchName}
+        sessionChurchAvatarUrl={
+          String((session as any)?.churchAvatarUri || (session as any)?.churchAvatarUrl || "").trim() ||
+          null
+        }
         disabled={checkingSubscription || deleting}
         onGoToChurch={() => {
           closeDeleteFlow();

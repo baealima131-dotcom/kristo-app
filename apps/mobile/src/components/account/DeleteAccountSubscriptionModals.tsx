@@ -1,7 +1,8 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import {
   ActivityIndicator,
   Animated,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -469,28 +470,118 @@ type LockHolderModalProps = {
 type PastorOwnsChurchModalProps = {
   visible: boolean;
   churches: Array<{ churchId: string; churchName: string | null }>;
+  sessionChurchId?: string | null;
+  sessionChurchName?: string | null;
+  sessionChurchAvatarUrl?: string | null;
   disabled?: boolean;
   onGoToChurch: () => void;
   onNotNow: () => void;
 };
 
+function isInternalChurchIdLabel(value: string | null | undefined): boolean {
+  return /^CH7-/i.test(String(value || "").trim());
+}
+
+function resolvePastorOwnedChurchDisplay(args: {
+  churches: Array<{ churchId: string; churchName: string | null }>;
+  sessionChurchId?: string | null;
+  sessionChurchName?: string | null;
+  sessionChurchAvatarUrl?: string | null;
+}): { churchName: string; churchAvatarUrl: string | null } {
+  const sessionChurchId = String(args.sessionChurchId || "").trim();
+  const matched =
+    (sessionChurchId
+      ? args.churches.find(
+          (row) =>
+            String(row.churchId || "")
+              .trim()
+              .toUpperCase() === sessionChurchId.toUpperCase()
+        )
+      : null) || args.churches[0];
+
+  const sessionName = String(args.sessionChurchName || "").trim();
+  const apiName = String(matched?.churchName || "").trim();
+
+  let churchName = "Your church";
+  if (apiName && !isInternalChurchIdLabel(apiName)) {
+    churchName = apiName;
+  } else if (sessionName && !isInternalChurchIdLabel(sessionName)) {
+    churchName = sessionName;
+  }
+
+  const matchedChurchId = String(matched?.churchId || sessionChurchId || "").trim();
+  const avatarFromSession = String(args.sessionChurchAvatarUrl || "").trim() || null;
+  const churchAvatarUrl =
+    sessionChurchId &&
+    matchedChurchId &&
+    sessionChurchId.toUpperCase() === matchedChurchId.toUpperCase()
+      ? avatarFromSession
+      : null;
+
+  return { churchName, churchAvatarUrl };
+}
+
+function PastorChurchAvatar({
+  churchName,
+  churchAvatarUrl,
+}: {
+  churchName: string;
+  churchAvatarUrl: string | null;
+}) {
+  if (churchAvatarUrl) {
+    return (
+      <Image
+        source={{ uri: churchAvatarUrl }}
+        style={s.pastorChurchAvatarImage}
+        resizeMode="cover"
+        accessibilityLabel={`${churchName} church logo`}
+      />
+    );
+  }
+
+  return (
+    <LinearGradient
+      colors={["#F2D792", GOLD, "#9A7428"]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={s.pastorChurchAvatarFallback}
+    >
+      <Ionicons name="business-outline" size={22} color="#0A0E16" />
+    </LinearGradient>
+  );
+}
+
 export function DeleteAccountPastorOwnsChurchModal({
   visible,
   churches,
+  sessionChurchId,
+  sessionChurchName,
+  sessionChurchAvatarUrl,
   disabled,
   onGoToChurch,
   onNotNow,
 }: PastorOwnsChurchModalProps) {
   const insets = useSafeAreaInsets();
   const { scale, fade, lift } = useModalEntrance(visible);
-  const churchLabel =
-    churches
-      .map((row) => String(row.churchName || row.churchId || "").trim())
-      .filter(Boolean)
-      .join(", ") || "your church";
+  const displayChurch = useMemo(
+    () =>
+      resolvePastorOwnedChurchDisplay({
+        churches,
+        sessionChurchId,
+        sessionChurchName,
+        sessionChurchAvatarUrl,
+      }),
+    [churches, sessionChurchAvatarUrl, sessionChurchId, sessionChurchName]
+  );
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onNotNow}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onNotNow}
+      accessibilityViewIsModal
+    >
       <View style={[s.overlay, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
         <Pressable
           style={s.backdrop}
@@ -498,48 +589,60 @@ export function DeleteAccountPastorOwnsChurchModal({
           accessibilityLabel="Dismiss delete account church ownership notice"
         />
         <Animated.View
-          style={[s.lockHolderCard, { opacity: fade, transform: [{ translateY: lift }, { scale }] }]}
+          style={[s.powerCard, { opacity: fade, transform: [{ translateY: lift }, { scale }] }]}
+          accessibilityRole="alert"
         >
-          <LinearGradient
-            pointerEvents="none"
-            colors={["#0B1220", "#060A12", "#020408"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFillObject}
-          />
-          <LinearGradient
-            pointerEvents="none"
-            colors={["rgba(217,179,95,0.45)", "rgba(217,179,95,0.10)", "transparent"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 0, y: 1 }}
-            style={s.topGoldLine}
-          />
-
-          <View style={s.lockHolderContent}>
-            <View style={s.lockHolderIconWrap}>
-              <Ionicons name="business-outline" size={22} color={GOLD} />
+          <PowerCardChrome />
+          <View style={s.pastorChurchModalContent}>
+            <View style={s.pastorChurchHeader}>
+              <Text style={s.powerEyebrow}>CHURCH STILL ACTIVE</Text>
+              <Text style={s.pastorChurchTitle}>Delete your church first</Text>
+              <Text style={s.pastorChurchIntro}>
+                Before deleting your Kristo account, you must first delete the church you manage.
+              </Text>
             </View>
-            <Text style={s.lockHolderKicker}>CHURCH STILL ACTIVE</Text>
-            <Text style={s.lockHolderTitle}>Delete your church first</Text>
-            <Text style={s.lockHolderMessage}>
-              You still manage {churchLabel}. Delete the church before deleting your Kristo account.
-              If Media Premium is active, cancel renewal in the App Store or Google Play first, then
-              delete the church.
+
+            <View style={s.pastorChurchIdentityRow}>
+              <View style={s.pastorChurchAvatarOuter}>
+                <View style={s.pastorChurchAvatarRing} pointerEvents="none" />
+                <PastorChurchAvatar
+                  churchName={displayChurch.churchName}
+                  churchAvatarUrl={displayChurch.churchAvatarUrl}
+                />
+              </View>
+              <View style={s.pastorChurchIdentityCopy}>
+                <Text style={s.pastorChurchName} numberOfLines={2}>
+                  {displayChurch.churchName}
+                </Text>
+                <Text style={s.pastorChurchManagedLabel}>Managed by you</Text>
+              </View>
+            </View>
+
+            <Text style={s.pastorChurchPremiumNote}>
+              If Media Premium is active, cancel renewal first. Then go to Church Settings and
+              delete the church before returning to delete your account.
             </Text>
 
-            <View style={s.lockHolderActions}>
+            <View style={s.pastorChurchActions}>
               <Pressable
                 onPress={onGoToChurch}
                 disabled={disabled}
                 accessibilityRole="button"
                 accessibilityLabel="Go to church settings"
                 style={({ pressed }) => [
-                  s.lockHolderManageBtn,
+                  s.pastorChurchGoldCtaOuter,
                   pressed && !disabled ? s.pressed : null,
                   disabled && s.optionDisabled,
                 ]}
               >
-                <Text style={s.lockHolderManageText}>Go to Church Settings</Text>
+                <LinearGradient
+                  colors={["#F2D792", GOLD, "#A67C2E"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={s.pastorChurchGoldCta}
+                >
+                  <Text style={s.pastorChurchGoldCtaText}>Go to Church Settings</Text>
+                </LinearGradient>
               </Pressable>
 
               <Pressable
@@ -548,12 +651,21 @@ export function DeleteAccountPastorOwnsChurchModal({
                 accessibilityRole="button"
                 accessibilityLabel="Not now"
                 style={({ pressed }) => [
-                  s.lockHolderNotNowBtn,
+                  s.pastorChurchNotNowOuter,
                   pressed && !disabled ? s.pressed : null,
                   disabled && s.optionDisabled,
                 ]}
               >
-                <Text style={s.lockHolderNotNowText}>Not Now</Text>
+                <View style={s.pastorChurchNotNowPill}>
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={["rgba(217,179,95,0.06)", "rgba(8,12,20,0.92)", "rgba(4,7,12,0.98)"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={StyleSheet.absoluteFillObject}
+                  />
+                  <Text style={s.pastorChurchNotNowText}>Not Now</Text>
+                </View>
               </Pressable>
             </View>
           </View>
@@ -1340,5 +1452,137 @@ const s = StyleSheet.create({
     color: LABEL_GOLD,
     fontSize: 12,
     fontWeight: "800",
+  },
+  pastorChurchModalContent: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
+    gap: 12,
+  },
+  pastorChurchHeader: {
+    alignItems: "center",
+    gap: 6,
+  },
+  pastorChurchTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: 0.12,
+    lineHeight: 24,
+    textAlign: "center",
+  },
+  pastorChurchIntro: {
+    color: TEXT_MUTED,
+    fontSize: 13,
+    fontWeight: "500",
+    lineHeight: 18,
+    textAlign: "center",
+  },
+  pastorChurchIdentityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "rgba(217,179,95,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.22)",
+  },
+  pastorChurchAvatarOuter: {
+    width: 52,
+    height: 52,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pastorChurchAvatarRing: {
+    position: "absolute",
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.45)",
+  },
+  pastorChurchAvatarImage: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  pastorChurchAvatarFallback: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pastorChurchIdentityCopy: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
+  },
+  pastorChurchName: {
+    color: TEXT_PRIMARY,
+    fontSize: 15,
+    fontWeight: "800",
+    lineHeight: 19,
+  },
+  pastorChurchManagedLabel: {
+    color: LABEL_GOLD,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.15,
+  },
+  pastorChurchPremiumNote: {
+    color: TEXT_MUTED,
+    fontSize: 12,
+    fontWeight: "500",
+    lineHeight: 17,
+    textAlign: "center",
+  },
+  pastorChurchActions: {
+    width: "100%",
+    gap: 8,
+    marginTop: 2,
+  },
+  pastorChurchGoldCtaOuter: {
+    borderRadius: 16,
+    overflow: "hidden",
+    shadowColor: GOLD,
+    shadowOpacity: 0.32,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  pastorChurchGoldCta: {
+    minHeight: 48,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  pastorChurchGoldCtaText: {
+    color: "#0B0F17",
+    fontSize: 14,
+    fontWeight: "900",
+    letterSpacing: 0.15,
+  },
+  pastorChurchNotNowOuter: {
+    borderRadius: 16,
+  },
+  pastorChurchNotNowPill: {
+    minHeight: 44,
+    borderRadius: 16,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.30)",
+  },
+  pastorChurchNotNowText: {
+    color: LABEL_GOLD,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
 });
