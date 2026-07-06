@@ -39,6 +39,16 @@ export type AccountDeleteModalType =
   | "member_confirm"
   | "standard";
 
+export type PastorOwnedChurchSummary = {
+  churchId: string;
+  churchName: string | null;
+};
+
+export type AccountDeletePastorOwnershipCheck = {
+  blocked: boolean;
+  churches: PastorOwnedChurchSummary[];
+};
+
 export type AccountDeleteSubscriptionOwnerGate = {
   isPastor: boolean;
   isLockHolder: boolean;
@@ -533,3 +543,52 @@ export async function openAccountDeleteSubscriptionManagement(
 
   return { opened: manageResult.opened, customerInfo: customerInfo ?? null };
 }
+
+export async function checkAccountDeletePastorOwnership(args: {
+  headers: Record<string, string>;
+}): Promise<AccountDeletePastorOwnershipCheck> {
+  const base = String(process.env.EXPO_PUBLIC_API_BASE || "").replace(/\/+$/, "");
+  if (!base) {
+    return { blocked: false, churches: [] };
+  }
+
+  const url = `${base}/api/auth/delete-account/precheck`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      ...args.headers,
+    },
+    body: "{}",
+  });
+
+  const rawText = await res.text();
+  let body: {
+    ok?: boolean;
+    canDeleteAccount?: boolean;
+    pastorOwnsChurches?: PastorOwnedChurchSummary[];
+    error?: string;
+  } | null = null;
+  try {
+    body = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    body = null;
+  }
+
+  if (!res.ok || body?.ok === false) {
+    throw new Error(String(body?.error || rawText || `HTTP ${res.status}`));
+  }
+
+  const churches = Array.isArray(body?.pastorOwnsChurches) ? body.pastorOwnsChurches : [];
+  const blocked = body?.canDeleteAccount === false || churches.length > 0;
+
+  console.log("KRISTO_ACCOUNT_DELETE_PASTOR_OWNERSHIP_CHECK", {
+    blocked,
+    churchCount: churches.length,
+    churchIds: churches.map((row) => row.churchId),
+  });
+
+  return { blocked, churches };
+}
+

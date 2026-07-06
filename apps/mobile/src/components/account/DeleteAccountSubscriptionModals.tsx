@@ -466,6 +466,103 @@ type LockHolderModalProps = {
   onNotNow: () => void;
 };
 
+type PastorOwnsChurchModalProps = {
+  visible: boolean;
+  churches: Array<{ churchId: string; churchName: string | null }>;
+  disabled?: boolean;
+  onGoToChurch: () => void;
+  onNotNow: () => void;
+};
+
+export function DeleteAccountPastorOwnsChurchModal({
+  visible,
+  churches,
+  disabled,
+  onGoToChurch,
+  onNotNow,
+}: PastorOwnsChurchModalProps) {
+  const insets = useSafeAreaInsets();
+  const { scale, fade, lift } = useModalEntrance(visible);
+  const churchLabel =
+    churches
+      .map((row) => String(row.churchName || row.churchId || "").trim())
+      .filter(Boolean)
+      .join(", ") || "your church";
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onNotNow}>
+      <View style={[s.overlay, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
+        <Pressable
+          style={s.backdrop}
+          onPress={disabled ? undefined : onNotNow}
+          accessibilityLabel="Dismiss delete account church ownership notice"
+        />
+        <Animated.View
+          style={[s.lockHolderCard, { opacity: fade, transform: [{ translateY: lift }, { scale }] }]}
+        >
+          <LinearGradient
+            pointerEvents="none"
+            colors={["#0B1220", "#060A12", "#020408"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFillObject}
+          />
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(217,179,95,0.45)", "rgba(217,179,95,0.10)", "transparent"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={s.topGoldLine}
+          />
+
+          <View style={s.lockHolderContent}>
+            <View style={s.lockHolderIconWrap}>
+              <Ionicons name="business-outline" size={22} color={GOLD} />
+            </View>
+            <Text style={s.lockHolderKicker}>CHURCH STILL ACTIVE</Text>
+            <Text style={s.lockHolderTitle}>Delete your church first</Text>
+            <Text style={s.lockHolderMessage}>
+              You still manage {churchLabel}. Delete the church before deleting your Kristo account.
+              If Media Premium is active, cancel renewal in the App Store or Google Play first, then
+              delete the church.
+            </Text>
+
+            <View style={s.lockHolderActions}>
+              <Pressable
+                onPress={onGoToChurch}
+                disabled={disabled}
+                accessibilityRole="button"
+                accessibilityLabel="Go to church settings"
+                style={({ pressed }) => [
+                  s.lockHolderManageBtn,
+                  pressed && !disabled ? s.pressed : null,
+                  disabled && s.optionDisabled,
+                ]}
+              >
+                <Text style={s.lockHolderManageText}>Go to Church Settings</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={onNotNow}
+                disabled={disabled}
+                accessibilityRole="button"
+                accessibilityLabel="Not now"
+                style={({ pressed }) => [
+                  s.lockHolderNotNowBtn,
+                  pressed && !disabled ? s.pressed : null,
+                  disabled && s.optionDisabled,
+                ]}
+              >
+                <Text style={s.lockHolderNotNowText}>Not Now</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
 export function DeleteAccountLockHolderModal({
   visible,
   disabled,

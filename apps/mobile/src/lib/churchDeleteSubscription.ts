@@ -365,7 +365,12 @@ export async function preserveChurchDeleteSubscriptionLockTombstone(args: {
   });
 
   const rawText = await res.text();
-  let body: { ok?: boolean; preserved?: boolean; reason?: string | null } | null = null;
+  let body: {
+    ok?: boolean;
+    preserved?: boolean;
+    reason?: string | null;
+    error?: string;
+  } | null = null;
   try {
     body = rawText ? JSON.parse(rawText) : null;
   } catch {
@@ -373,7 +378,11 @@ export async function preserveChurchDeleteSubscriptionLockTombstone(args: {
   }
 
   if (!res.ok || body?.ok === false) {
-    throw new Error(String(body?.reason || rawText || `HTTP ${res.status}`));
+    const reason = String(body?.reason || "").trim();
+    if (res.status === 404 && reason === "no-active-lock") {
+      return { preserved: false, reason: "no-active-lock" };
+    }
+    throw new Error(String(body?.reason || body?.error || rawText || `HTTP ${res.status}`));
   }
 
   return {

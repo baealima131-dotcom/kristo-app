@@ -15,16 +15,19 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import {
+  checkAccountDeletePastorOwnership,
   checkAccountDeleteSubscription,
   getAccountDeleteStoreManagementFallbackMessage,
   isDeleteAccountStoreCancellationComplete,
   openAccountDeleteSubscriptionManagement,
   resolveAccountDeleteSubscriptionOwnerGate,
+  type AccountDeletePastorOwnershipCheck,
   type AccountDeleteSubscriptionCheck,
 } from "@/src/lib/accountDeleteSubscription";
 import {
   DeleteAccountFinalConfirmModal,
   DeleteAccountLockHolderModal,
+  DeleteAccountPastorOwnsChurchModal,
   DeleteAccountSubscriptionChoiceModal,
   type DeleteAccountChoiceOption,
   type DeleteAccountFinalConfirmVariant,
@@ -60,6 +63,9 @@ export default function ProfileSettingsScreen() {
   const [subscriptionCheck, setSubscriptionCheck] = useState<AccountDeleteSubscriptionCheck | null>(
     null
   );
+  const [pastorOwnershipCheck, setPastorOwnershipCheck] =
+    useState<AccountDeletePastorOwnershipCheck | null>(null);
+  const [pastorOwnsChurchModalOpen, setPastorOwnsChurchModalOpen] = useState(false);
   const pendingCancelSubAfterManagementRef = useRef(false);
   const pendingLockHolderManageRef = useRef(false);
   const deleteContextRef = useRef({
@@ -133,6 +139,15 @@ export default function ProfileSettingsScreen() {
       );
 
       if (!data?.ok) {
+        const reason = String(data?.error || data?.reason || "").trim();
+        if (reason === "pastor-owns-church") {
+          setPastorOwnershipCheck({
+            blocked: true,
+            churches: Array.isArray(data?.pastorOwnsChurches) ? data.pastorOwnsChurches : [],
+          });
+          setPastorOwnsChurchModalOpen(true);
+          return;
+        }
         console.log("KRISTO_DELETE_ACCOUNT_FAILED", {
           status: data?.status ?? null,
           message: String(data?.error || data?.reason || "unknown"),
@@ -356,6 +371,7 @@ export default function ProfileSettingsScreen() {
     setDeleteModalOpen(false);
     setChoiceModalOpen(false);
     setLockHolderModalOpen(false);
+    setPastorOwnsChurchModalOpen(false);
     setFinalConfirmOpen(false);
     setInlineStatusMessage(null);
     setProcessingOption(null);
@@ -383,6 +399,21 @@ export default function ProfileSettingsScreen() {
 
     setCheckingSubscription(true);
     try {
+      const pastorCheck = await checkAccountDeletePastorOwnership({
+        headers: getKristoHeaders({
+          userId,
+          role: role as any,
+          churchId,
+        }) as Record<string, string>,
+      });
+
+      if (pastorCheck.blocked) {
+        setPastorOwnershipCheck(pastorCheck);
+        setDeleteModalOpen(false);
+        setPastorOwnsChurchModalOpen(true);
+        return;
+      }
+
       const check = await runSubscriptionCheck();
       const gate = resolveDeleteGate(check);
 
@@ -547,6 +578,17 @@ export default function ProfileSettingsScreen() {
         processingOption={processingOption}
         disabled={checkingSubscription || deleting}
         onSelectOption={handleChoiceOption}
+        onNotNow={closeDeleteFlow}
+      />
+
+      <DeleteAccountPastorOwnsChurchModal
+        visible={pastorOwnsChurchModalOpen}
+        churches={pastorOwnershipCheck?.churches || []}
+        disabled={checkingSubscription || deleting}
+        onGoToChurch={() => {
+          closeDeleteFlow();
+          router.push("/more/church" as any);
+        }}
         onNotNow={closeDeleteFlow}
       />
 

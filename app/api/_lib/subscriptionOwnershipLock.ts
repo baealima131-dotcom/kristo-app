@@ -105,6 +105,50 @@ async function pastorOwnsChurchMedia(ownerUserId: string, churchId: string): Pro
   );
 }
 
+export type PastorOwnedChurchSummary = {
+  churchId: string;
+  churchName: string | null;
+};
+
+/** Churches the user still owns/manages as the actual pastor. */
+export async function listPastorOwnedChurches(
+  ownerUserId: string
+): Promise<PastorOwnedChurchSummary[]> {
+  const uid = normalizeUserId(ownerUserId);
+  if (!uid) return [];
+
+  const byChurchId = new Map<string, PastorOwnedChurchSummary>();
+
+  const memberships = await getMembershipsForUser(uid);
+  for (const membership of memberships) {
+    if (String(membership.status || "").trim() !== "Active") continue;
+    if (!isPastorChurchRole(membership.churchRole)) continue;
+
+    const churchId = normalizeChurchId(membership.churchId);
+    if (!churchId) continue;
+    if (!(await pastorOwnsChurchMedia(uid, churchId))) continue;
+
+    const media = await getChurchMediaByChurchId(churchId);
+    byChurchId.set(churchId.toUpperCase(), {
+      churchId,
+      churchName: String(media?.mediaName || "").trim() || null,
+    });
+  }
+
+  const ownerIndexed = await listChurchMediaByOwnerUserId(uid);
+  for (const media of ownerIndexed) {
+    const churchId = normalizeChurchId(media.churchId);
+    if (!churchId || byChurchId.has(churchId.toUpperCase())) continue;
+    if (!(await pastorOwnsChurchMedia(uid, churchId))) continue;
+    byChurchId.set(churchId.toUpperCase(), {
+      churchId,
+      churchName: String(media?.mediaName || "").trim() || null,
+    });
+  }
+
+  return Array.from(byChurchId.values());
+}
+
 /** Authoritative pastor-owned media profiles with active subscriptions. */
 export async function listAuthoritativePastorMediaProfiles(
   ownerUserId: string

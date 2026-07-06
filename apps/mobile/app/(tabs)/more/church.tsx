@@ -286,7 +286,7 @@ export default function MoreChurch() {
       "This will remove this church from your local V1 account.",
       [
         { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: () => void clearChurchLocal() },
+        { text: "Delete", style: "destructive", onPress: () => void executePastorChurchDelete() },
       ]
     );
   }
@@ -307,21 +307,7 @@ export default function MoreChurch() {
     setPendingCancellationGuard(null);
   }
 
-  async function onConfirmDeleteChurchAfterCancellation() {
-    const guard = pendingCancellationGuard;
-    if (!guard || deletingChurchAfterCancellation) return;
-
-    setDeletingChurchAfterCancellation(true);
-    try {
-      await clearChurchLocalWithTombstone(guard);
-      setDeleteCancellationModalOpen(false);
-      setPendingCancellationGuard(null);
-    } finally {
-      setDeletingChurchAfterCancellation(false);
-    }
-  }
-
-  async function clearChurchLocalWithTombstone(guard: ChurchDeleteSubscriptionGuard) {
+  async function executePastorChurchDelete() {
     const churchId = String(session?.churchId || "").trim();
     const userId = String(session?.userId || "").trim();
     const role = String(session?.role || "Pastor");
@@ -353,6 +339,20 @@ export default function MoreChurch() {
     }
 
     await clearChurchLocal();
+  }
+
+  async function onConfirmDeleteChurchAfterCancellation() {
+    const guard = pendingCancellationGuard;
+    if (!guard || deletingChurchAfterCancellation) return;
+
+    setDeletingChurchAfterCancellation(true);
+    try {
+      await executePastorChurchDelete();
+      setDeleteCancellationModalOpen(false);
+      setPendingCancellationGuard(null);
+    } finally {
+      setDeletingChurchAfterCancellation(false);
+    }
   }
 
   const handleResumeAfterDeleteSubscriptionManagement = useCallback(async () => {

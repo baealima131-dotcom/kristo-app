@@ -21,6 +21,7 @@ import {
   updateUserPersist,
 } from "@/app/api/auth/_lib/session";
 import { logAuthRequestDiag, resolveRequestUserId } from "@/app/api/auth/_lib/sessionToken";
+import { listPastorOwnedChurches } from "@/app/api/_lib/subscriptionOwnershipLock";
 
 export const runtime = "nodejs";
 
@@ -142,6 +143,24 @@ async function deleteAccount(req: NextRequest) {
   }
 
   console.log("KRISTO_DELETE_ACCOUNT_API_START", { userId });
+
+  const pastorOwnsChurches = await listPastorOwnedChurches(userId);
+  if (pastorOwnsChurches.length > 0) {
+    console.log("KRISTO_DELETE_ACCOUNT_BLOCKED_PASTOR_OWNS_CHURCH", {
+      userId,
+      churchCount: pastorOwnsChurches.length,
+      churchIds: pastorOwnsChurches.map((row) => row.churchId),
+    });
+    return json(
+      {
+        ok: false,
+        error: "pastor-owns-church",
+        reason: "pastor-owns-church",
+        pastorOwnsChurches,
+      },
+      { status: 403 }
+    );
+  }
 
   const partialErrors = await purgeUserAccount(userId);
 
