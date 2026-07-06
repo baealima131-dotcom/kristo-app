@@ -41,6 +41,7 @@ import {
   getActivePremiumEntitlement,
   getCustomerSubscriptionInfo,
   getRevenueCatConfiguredAppUserId,
+  hasActivePremiumProduct,
   hasPremiumEntitlement,
   isPlanActive,
   logEntitlementAudit,
@@ -1192,6 +1193,142 @@ function isUnverifiedStoreIdentityReason(reason: string | null | undefined): boo
 
 function isUnverifiedOwnershipReason(reason: string | null | undefined): boolean {
   return isConflictPendingVerificationReason(reason) || isUnverifiedStoreIdentityReason(reason);
+}
+
+export function isUnverifiedStoreIdentityPrepurchaseResult(
+  result: SubscriptionPrepurchaseOwnershipResult
+): result is { status: "unavailable"; reason?: string | null; httpStatus?: number | null } {
+  return (
+    result.status === "unavailable" &&
+    isUnverifiedStoreIdentityReason(result.reason)
+  );
+}
+
+export function deviceReportsActivePremiumSubscription(
+  customerInfo: CustomerInfo | null | undefined
+): boolean {
+  return hasPremiumEntitlement(customerInfo) || hasActivePremiumProduct(customerInfo);
+}
+
+export function shouldShowUnverifiedStoreIdentityModal(args: {
+  prepurchase: SubscriptionPrepurchaseOwnershipResult;
+  customerInfo: CustomerInfo | null | undefined;
+}): boolean {
+  return (
+    isUnverifiedStoreIdentityPrepurchaseResult(args.prepurchase) &&
+    deviceReportsActivePremiumSubscription(args.customerInfo)
+  );
+}
+
+export function shouldShowGenericPrepurchaseUnavailableRetry(args: {
+  prepurchase: Extract<SubscriptionPrepurchaseOwnershipResult, { status: "unavailable" }>;
+  customerInfo: CustomerInfo | null | undefined;
+}): boolean {
+  if (deviceReportsActivePremiumSubscription(args.customerInfo)) return false;
+  if (isUnverifiedStoreIdentityReason(args.prepurchase.reason)) return false;
+
+  const reason = String(args.prepurchase.reason || "").trim();
+  const status = args.prepurchase.httpStatus;
+  return (
+    reason === "route-not-found" ||
+    reason === "ownership-check-unavailable" ||
+    reason === "network-error" ||
+    reason === "missing-api-base" ||
+    reason === "missing-church-id" ||
+    status === 404 ||
+    (status != null && status >= 500)
+  );
+}
+
+export function buildUnverifiedStoreIdentityOwnershipLock(
+  customerInfo?: CustomerInfo | null
+): ChurchMediaSubscriptionOwnershipLock {
+  const entitlement = getActivePremiumEntitlement(customerInfo ?? null);
+  const expiresAtMs =
+    entitlement?.expirationDate && Number.isFinite(Date.parse(entitlement.expirationDate))
+      ? Date.parse(entitlement.expirationDate)
+      : null;
+
+  return {
+    blocked: true,
+    isLockHolder: false,
+    lockedChurchId: null,
+    lockedChurchName: null,
+    expiresAt: expiresAtMs,
+    expiresAtLabel: null,
+    platform: Platform.OS === "android" ? "android" : "ios",
+    store: Platform.OS === "android" ? "play_store" : "app_store",
+    willRenew: entitlement?.willRenew ?? null,
+    status: "active",
+    canPurchase: false,
+    canActivate: false,
+    message: null,
+  };
+}
+
+export type PrepurchaseOwnershipGateModalVariant =
+  | "ownership_lock"
+  | "existing_subscription"
+  | "existing_subscription_cancelled_until_expiry"
+  | "unverified_store_identity";
+
+export type PrepurchaseOwnershipGateUiAction =
+  | { type: "continue" }
+  | {
+      type: "modal";
+      variant: PrepurchaseOwnershipGateModalVariant;
+      ownershipLock: ChurchMediaSubscriptionOwnershipLock | null;
+    }
+  | { type: "subscription_error"; message: string };
+
+export async function resolvePrepurchaseOwnershipGateUiAction(args: {
+  prepurchase: SubscriptionPrepurchaseOwnershipResult;
+  customerInfo?: CustomerInfo | null;
+}): Promise<PrepurchaseOwnershipGateUiAction> {
+  const prepurchase = args.prepurchase;
+
+  if (prepurchase.status === "allowed") {
+    return { type: "continue" };
+  }
+
+  if (prepurchase.status === "existing_subscription") {
+    return {
+      type: "modal",
+      variant: prepurchase.modalVariant,
+      ownershipLock: prepurchase.ownershipLock ?? null,
+    };
+  }
+
+  if (prepurchase.status === "conflict") {
+    return {
+      type: "modal",
+      variant: "ownership_lock",
+      ownershipLock: prepurchase.ownershipLock ?? null,
+    };
+  }
+
+  const info =
+    args.customerInfo ?? (await getCustomerSubscriptionInfo().catch(() => null));
+
+  if (shouldShowUnverifiedStoreIdentityModal({ prepurchase, customerInfo: info })) {
+    return {
+      type: "modal",
+      variant: "unverified_store_identity",
+      ownershipLock: buildUnverifiedStoreIdentityOwnershipLock(info),
+    };
+  }
+
+  if (shouldShowGenericPrepurchaseUnavailableRetry({ prepurchase, customerInfo: info })) {
+    return {
+      type: "subscription_error",
+      message: "Unable to verify subscription ownership. Try again in a moment.",
+    };
+  }
+
+  return {
+    type: "subscription_error",
+    message: "Unable to verify subscription ownership. Try again in a moment.",
+  };
 }
 
 function resolvePrepurchaseConflictLock(body: any): ChurchMediaSubscriptionOwnershipLock {

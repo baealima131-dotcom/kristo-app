@@ -68,10 +68,12 @@ import {
   fetchChurchMediaPremiumServerStatus,
   logChurchSubscriptionContext,
   recoverChurchSubscriptionFromExistingStore,
+  resolvePrepurchaseOwnershipGateUiAction,
   resolveStoreNewPurchaseBlockedUntilExpiryMessage,
   runSubscriptionPrepurchaseOwnershipGate,
   shouldSkipExistingStoreRecoveryForCancelledOverlap,
   type ChurchSubscriptionActivationSource,
+  type SubscriptionPrepurchaseOwnershipResult,
 } from "../../../../src/lib/churchSubscription";
 import {
   isSubscriptionOwnershipLockBlockingActivation,
@@ -247,6 +249,29 @@ export default function PaymentsCheckoutScreen() {
       churchSubscriptionActive: sync.churchSubscriptionActive,
       storeOwnershipConflict: sync.storeOwnershipConflict === true,
     };
+  }
+
+  async function applyPrepurchaseOwnershipGate(
+    prepurchase: SubscriptionPrepurchaseOwnershipResult
+  ): Promise<"continue" | "handled"> {
+    const action = await resolvePrepurchaseOwnershipGateUiAction({
+      prepurchase,
+      customerInfo,
+    });
+
+    if (action.type === "continue") {
+      return "continue";
+    }
+
+    if (action.type === "modal") {
+      setStoreConflictLock(action.ownershipLock);
+      setStoreConflictVariant(action.variant);
+      setStoreConflictModalOpen(true);
+      return "handled";
+    }
+
+    setPackagesError(action.message);
+    return "handled";
   }
 
   async function handleStoreConflictManageSubscription() {
@@ -674,20 +699,7 @@ export default function PaymentsCheckoutScreen() {
         churchId,
         headers,
       });
-      if (prepurchase.status === "unavailable") {
-        setPackagesError("Unable to verify subscription ownership. Try again in a moment.");
-        return;
-      }
-      if (prepurchase.status === "existing_subscription") {
-        setStoreConflictLock(prepurchase.ownershipLock ?? null);
-        setStoreConflictVariant(prepurchase.modalVariant);
-        setStoreConflictModalOpen(true);
-        return;
-      }
-      if (prepurchase.status === "conflict") {
-        setStoreConflictLock(prepurchase.ownershipLock ?? null);
-        setStoreConflictVariant("ownership_lock");
-        setStoreConflictModalOpen(true);
+      if ((await applyPrepurchaseOwnershipGate(prepurchase)) === "handled") {
         return;
       }
 
@@ -778,20 +790,7 @@ export default function PaymentsCheckoutScreen() {
             churchId,
             headers,
           });
-          if (prepurchase.status === "unavailable") {
-            setPackagesError("Unable to verify subscription ownership. Try again in a moment.");
-            return;
-          }
-          if (prepurchase.status === "existing_subscription") {
-            setStoreConflictLock(prepurchase.ownershipLock ?? null);
-            setStoreConflictVariant(prepurchase.modalVariant);
-            setStoreConflictModalOpen(true);
-            return;
-          }
-          if (prepurchase.status === "conflict") {
-            setStoreConflictLock(prepurchase.ownershipLock ?? null);
-            setStoreConflictVariant("ownership_lock");
-            setStoreConflictModalOpen(true);
+          if ((await applyPrepurchaseOwnershipGate(prepurchase)) === "handled") {
             return;
           }
 
