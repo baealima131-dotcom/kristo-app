@@ -76,6 +76,20 @@ export function isChurchSubscriptionPeriodEnded(
   return false;
 }
 
+/** Lock record first, then RevenueCat CustomerInfo; null fails closed when a store sub blocks delete. */
+export function resolveWillRenewForChurchDelete(args: {
+  status: ChurchMediaPremiumServerStatus;
+  customerInfo: CustomerInfo | null;
+}): boolean | null {
+  const lockWillRenew = args.status.subscriptionOwnershipLock?.willRenew ?? null;
+  if (lockWillRenew === true || lockWillRenew === false) return lockWillRenew;
+
+  const fromCustomer = resolveStoreSubscriptionWillRenew(args.customerInfo);
+  if (fromCustomer === true || fromCustomer === false) return fromCustomer;
+
+  return null;
+}
+
 export function evaluateChurchDeleteSubscriptionGuard(args: {
   status: ChurchMediaPremiumServerStatus;
   storeSubscriptionWillRenew: boolean | null;
@@ -226,7 +240,10 @@ export async function checkChurchDeleteSubscriptionGuard(args: {
     bustCache: true,
   });
 
-  const storeSubscriptionWillRenew = resolveStoreSubscriptionWillRenew(customerInfo);
+  const storeSubscriptionWillRenew = resolveWillRenewForChurchDelete({
+    status,
+    customerInfo,
+  });
   const evaluation = evaluateChurchDeleteSubscriptionGuard({
     status,
     storeSubscriptionWillRenew,

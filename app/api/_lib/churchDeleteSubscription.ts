@@ -22,7 +22,7 @@ export type ChurchDeleteSubscriptionGuardResult = {
   store: "app_store" | "play_store" | null;
 };
 
-function churchHasDeleteBlockingStoreSubscription(args: {
+export function churchHasDeleteBlockingStoreSubscription(args: {
   media: ChurchMediaProfile | null;
   lock: SubscriptionOwnershipLockApiPayload | null;
 }): boolean {
@@ -41,7 +41,7 @@ function churchHasDeleteBlockingStoreSubscription(args: {
   return lock.store === "app_store" || lock.store === "play_store";
 }
 
-function isChurchSubscriptionPeriodEnded(args: {
+export function isChurchSubscriptionPeriodEnded(args: {
   media: ChurchMediaProfile | null;
   lock: SubscriptionOwnershipLockApiPayload | null;
 }): boolean {
@@ -64,7 +64,7 @@ function isChurchSubscriptionPeriodEnded(args: {
   return false;
 }
 
-function evaluateChurchDeleteSubscriptionGuard(args: {
+export function evaluateChurchDeleteSubscriptionGuard(args: {
   hasBlockingStoreSubscription: boolean;
   subscriptionPeriodEnded: boolean;
   willRenew: boolean | null;
@@ -103,7 +103,7 @@ function evaluateChurchDeleteSubscriptionGuard(args: {
   };
 }
 
-async function resolveWillRenewForChurchDelete(args: {
+export async function resolveWillRenewForChurchDelete(args: {
   churchId: string;
   lock: SubscriptionOwnershipLockApiPayload | null;
   hasBlockingStoreSubscription: boolean;
