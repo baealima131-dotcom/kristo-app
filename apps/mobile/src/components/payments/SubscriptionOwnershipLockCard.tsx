@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { Image, Platform, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 
 import type { ChurchMediaSubscriptionOwnershipLock } from "../../lib/churchSubscriptionMediaSignals";
 import { formatPremiumRenewalDate } from "../../lib/payments/mobileSubscriptions";
@@ -10,9 +11,13 @@ type Props = {
 };
 
 const GOLD = "#D9B35F";
-const LABEL_GOLD = "rgba(217,179,95,0.82)";
-const TEXT_PRIMARY = "rgba(255,255,255,0.96)";
-const TEXT_MUTED = "rgba(255,255,255,0.62)";
+const GOLD_BRIGHT = "#F0D48A";
+const LABEL_GOLD = "rgba(217,179,95,0.88)";
+const TEXT_PRIMARY = "rgba(255,255,255,0.97)";
+const TEXT_MUTED = "rgba(255,255,255,0.68)";
+
+const BODY_COPY =
+  "This subscription remains linked to your previous church until the paid period ends.";
 
 function isInternalChurchIdLabel(value: string | null | undefined): boolean {
   return /^CH7-/i.test(String(value || "").trim());
@@ -59,18 +64,45 @@ function resolveStoreAccountLabel(lock: ChurchMediaSubscriptionOwnershipLock): s
   return Platform.OS === "android" ? "Google account" : "Apple ID";
 }
 
-function resolveRenewalGuidance(lock: ChurchMediaSubscriptionOwnershipLock): string {
-  if (lock.willRenew === false) {
-    return "This subscription is cancelled and will not renew. After the reserved period ends, you can subscribe this church.";
-  }
-  if (lock.willRenew === true) {
-    return "Cancel renewal in Apple or Google Play first. Access stays reserved until the paid period ends.";
-  }
-  return `Your store subscription on this ${resolveStoreAccountLabel(lock)} is still reserved for another church until the paid period ends.`;
+function resolveFallbackCopy(lock: ChurchMediaSubscriptionOwnershipLock): string {
+  return `A previous church subscription is still active on this ${resolveStoreAccountLabel(lock)}. ${BODY_COPY}`;
 }
 
-function resolveFallbackCopy(lock: ChurchMediaSubscriptionOwnershipLock): string {
-  return `A previous church subscription is still active on this ${resolveStoreAccountLabel(lock)}.`;
+function PowerCardChrome() {
+  return (
+    <>
+      <LinearGradient
+        pointerEvents="none"
+        colors={["#0B1220", "#060A12", "#020408"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(217,179,95,0.10)", "transparent"]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 0.42 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View pointerEvents="none" style={s.ambientGlowTop} />
+      <View pointerEvents="none" style={s.ambientGlowBottom} />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(217,179,95,0.62)", "rgba(217,179,95,0.14)", "transparent"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+        style={s.topGoldLine}
+      />
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(255,255,255,0.07)", "rgba(255,255,255,0.02)", "transparent"]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 0.45 }}
+        style={s.powerSheen}
+      />
+    </>
+  );
 }
 
 function ChurchAvatar({
@@ -92,9 +124,14 @@ function ChurchAvatar({
   }
 
   return (
-    <View style={s.avatarFallback}>
-      <Ionicons name="business-outline" size={13} color={LABEL_GOLD} />
-    </View>
+    <LinearGradient
+      colors={["#F2D792", GOLD, "#9A7428"]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={s.avatarFallback}
+    >
+      <Ionicons name="business-outline" size={20} color="#0A0E16" />
+    </LinearGradient>
   );
 }
 
@@ -103,51 +140,74 @@ export function SubscriptionOwnershipLockCard({ lock }: Props) {
   const showIdentity = hasLinkedChurchDisplay(lock) && Boolean(churchName);
   const expiryLabel = useMemo(() => resolveExpiryLabel(lock), [lock]);
   const deletedDateLabel = useMemo(() => resolveDeletedDateLabel(lock), [lock]);
-  const renewalGuidance = useMemo(() => resolveRenewalGuidance(lock), [lock]);
   const avatarUrl = String(lock.lockedChurchAvatarUrl || "").trim() || null;
   const churchStatusLabel = lock.lockedChurchDeleted ? "Deleted church" : "Previous church";
 
   return (
     <View style={s.card}>
+      <PowerCardChrome />
+
       <View style={s.content}>
-        <View style={s.topHeader}>
-          <View style={s.iconBadge}>
-            <Ionicons name="lock-closed-outline" size={13} color={GOLD} />
+        <View style={s.heroBlock}>
+          <View style={s.iconOuter}>
+            <View style={s.iconGlow} pointerEvents="none" />
+            <View style={s.iconRing} pointerEvents="none" />
+            <LinearGradient
+              colors={["#F2D792", GOLD, "#9A7428"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={s.iconTile}
+            >
+              <Ionicons name="link-outline" size={22} color="#0A0E16" />
+            </LinearGradient>
           </View>
+
           <Text style={s.eyebrow}>SUBSCRIPTION RESERVED</Text>
+          <Text style={s.title}>Premium reserved for another church</Text>
         </View>
 
-        <Text style={s.title}>Premium is reserved for another church</Text>
-
         {showIdentity && churchName ? (
-          <View style={s.churchRow}>
+          <View style={s.identityStrip}>
+            <LinearGradient
+              pointerEvents="none"
+              colors={["rgba(217,179,95,0.09)", "rgba(217,179,95,0.03)"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFillObject}
+            />
             <ChurchAvatar churchName={churchName} churchAvatarUrl={avatarUrl} />
-            <View style={s.churchCopy}>
-              <Text style={s.linkedChurchLabel} numberOfLines={2}>
-                Linked church: <Text style={s.linkedChurchName}>{churchName}</Text>
+            <View style={s.identityCopy}>
+              <Text style={s.churchName} numberOfLines={2}>
+                {churchName}
               </Text>
-              <View style={s.statusPill}>
-                <Text style={s.statusPillText}>{churchStatusLabel}</Text>
-              </View>
+              {lock.lockedChurchDeleted && deletedDateLabel ? (
+                <Text style={s.deletedLine}>Deleted on {deletedDateLabel}</Text>
+              ) : null}
+            </View>
+            <View style={s.statusBadge}>
+              <View style={s.statusBadgeDot} />
+              <Text style={s.statusBadgeText}>{churchStatusLabel}</Text>
             </View>
           </View>
         ) : (
           <Text style={s.fallbackCopy}>{resolveFallbackCopy(lock)}</Text>
         )}
 
-        {showIdentity && lock.lockedChurchDeleted && deletedDateLabel ? (
-          <Text style={s.deletedLine}>Deleted on {deletedDateLabel}</Text>
-        ) : null}
-
         <View style={s.expiryPill}>
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(217,179,95,0.16)", "rgba(217,179,95,0.06)"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={StyleSheet.absoluteFillObject}
+          />
+          <Ionicons name="shield-checkmark-outline" size={14} color={GOLD_BRIGHT} />
           <Text style={s.expiryPillText}>
-            {expiryLabel
-              ? `Reserved until ${expiryLabel}`
-              : "Reserved until the paid period ends"}
+            {expiryLabel ? `Reserved until ${expiryLabel}` : "Reserved until the paid period ends"}
           </Text>
         </View>
 
-        <Text style={s.guidanceCopy}>{renewalGuidance}</Text>
+        <Text style={s.bodyCopy}>{BODY_COPY}</Text>
       </View>
     </View>
   );
@@ -155,134 +215,208 @@ export function SubscriptionOwnershipLockCard({ lock }: Props) {
 
 const s = StyleSheet.create({
   card: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.28)",
-    backgroundColor: "rgba(8,12,20,0.92)",
-    marginBottom: 12,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.40)",
+    backgroundColor: "#060A12",
+    overflow: "hidden",
+    marginBottom: 16,
+    shadowColor: GOLD,
+    shadowOpacity: 0.24,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
+  },
+  ambientGlowTop: {
+    position: "absolute",
+    top: -24,
+    right: -14,
+    width: 100,
+    height: 100,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.09)",
+  },
+  ambientGlowBottom: {
+    position: "absolute",
+    bottom: -28,
+    left: -16,
+    width: 84,
+    height: 84,
+    borderRadius: 999,
+    backgroundColor: "rgba(217,179,95,0.05)",
+  },
+  topGoldLine: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+  },
+  powerSheen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 40,
   },
   content: {
-    paddingHorizontal: 13,
-    paddingTop: 12,
-    paddingBottom: 12,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 18,
+    gap: 14,
+  },
+  heroBlock: {
+    alignItems: "center",
     gap: 8,
   },
-  topHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-  },
-  iconBadge: {
-    width: 22,
-    height: 22,
-    borderRadius: 8,
+  iconOuter: {
+    width: 64,
+    height: 64,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.28)",
+    marginBottom: 2,
+  },
+  iconGlow: {
+    position: "absolute",
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: "rgba(217,179,95,0.18)",
+  },
+  iconRing: {
+    position: "absolute",
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.50)",
+  },
+  iconTile: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    alignItems: "center",
+    justifyContent: "center",
   },
   eyebrow: {
     color: LABEL_GOLD,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "800",
-    letterSpacing: 0.9,
+    letterSpacing: 1.2,
     textTransform: "uppercase",
   },
   title: {
     color: TEXT_PRIMARY,
-    fontSize: 16,
-    fontWeight: "800",
-    letterSpacing: 0.05,
-    lineHeight: 20,
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: 0.1,
+    lineHeight: 24,
+    textAlign: "center",
+    paddingHorizontal: 4,
   },
-  churchRow: {
+  identityStrip: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 9,
-    marginTop: 1,
-  },
-  avatar: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.30)",
-    marginTop: 1,
-  },
-  avatarFallback: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
     alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(217,179,95,0.10)",
-    borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.24)",
-    marginTop: 1,
-  },
-  churchCopy: {
-    flex: 1,
-    gap: 5,
-    minWidth: 0,
-  },
-  linkedChurchLabel: {
-    color: TEXT_MUTED,
-    fontSize: 13,
-    fontWeight: "500",
-    lineHeight: 17,
-  },
-  linkedChurchName: {
-    color: TEXT_PRIMARY,
-    fontWeight: "700",
-  },
-  statusPill: {
-    alignSelf: "flex-start",
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    backgroundColor: "rgba(217,179,95,0.10)",
+    gap: 12,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    overflow: "hidden",
     borderWidth: 1,
     borderColor: "rgba(217,179,95,0.22)",
   },
-  statusPillText: {
-    color: "rgba(240,214,147,0.92)",
-    fontSize: 10,
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.40)",
+  },
+  avatarFallback: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "rgba(217,179,95,0.40)",
+  },
+  identityCopy: {
+    flex: 1,
+    gap: 3,
+    minWidth: 0,
+  },
+  churchName: {
+    color: TEXT_PRIMARY,
+    fontSize: 16,
     fontWeight: "800",
-    letterSpacing: 0.15,
+    letterSpacing: 0.1,
+    lineHeight: 20,
   },
   deletedLine: {
     color: TEXT_MUTED,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: "600",
-    lineHeight: 15,
-    marginTop: -2,
+    lineHeight: 16,
+  },
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: "rgba(217,179,95,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(217,179,95,0.30)",
+  },
+  statusBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: GOLD,
+  },
+  statusBadgeText: {
+    color: GOLD_BRIGHT,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.25,
   },
   fallbackCopy: {
     color: TEXT_MUTED,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "500",
-    lineHeight: 18,
+    lineHeight: 20,
+    textAlign: "center",
+    paddingHorizontal: 4,
   },
   expiryPill: {
-    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    alignSelf: "stretch",
     borderRadius: 999,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    backgroundColor: "rgba(217,179,95,0.10)",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(217,179,95,0.24)",
+    borderColor: "rgba(217,179,95,0.32)",
   },
   expiryPillText: {
-    color: "rgba(240,214,147,0.94)",
-    fontSize: 11,
+    color: GOLD_BRIGHT,
+    fontSize: 13,
     fontWeight: "800",
-    letterSpacing: 0.1,
+    letterSpacing: 0.15,
+    flexShrink: 1,
+    textAlign: "center",
   },
-  guidanceCopy: {
+  bodyCopy: {
     color: TEXT_MUTED,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "500",
-    lineHeight: 16,
+    lineHeight: 19,
+    textAlign: "center",
+    paddingHorizontal: 6,
   },
 });
