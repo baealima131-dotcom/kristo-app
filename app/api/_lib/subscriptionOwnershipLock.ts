@@ -14,6 +14,7 @@ import {
   acquireActiveSubscriptionOwnershipLock,
   listActiveDeletedChurchSubscriptionLocks,
   listActiveSubscriptionOwnershipLocksByStoreIdentity,
+  listAllSubscriptionOwnershipLocks,
   listSubscriptionOwnershipLocksByOwnerUserId,
   resolveSubscriptionOwnershipLockStoreMode,
   saveSubscriptionOwnershipLock,
@@ -605,6 +606,308 @@ export async function buildPrepurchaseOwnershipConflictResponse(args: {
   };
 }
 
+function subscriptionLockHasDisplayMetadata(
+  lock: SubscriptionOwnershipLockRecord | null | undefined
+): boolean {
+  return Boolean(lock && String(lock.lockedChurchName || "").trim());
+}
+
+function lockNeedsDisplayMetadataEnrichment(lock: SubscriptionOwnershipLockRecord): boolean {
+  const needsName = !String(lock.lockedChurchName || "").trim();
+  const needsAvatar = !String(lock.lockedChurchAvatarUrl || "").trim();
+  const needsDeletedAt = lock.lockedChurchDeleted === true && lock.lockedChurchDeletedAt == null;
+  const needsExpiry = lock.expiresAt == null;
+  return needsName || needsAvatar || needsDeletedAt || needsExpiry;
+}
+
+function expiryTimestampsMatch(
+  left: number | null | undefined,
+  right: number | null | undefined,
+  toleranceMs = 120_000
+): boolean {
+  if (left == null || right == null || !Number.isFinite(left) || !Number.isFinite(right)) {
+    return false;
+  }
+  return Math.abs(left - right) <= toleranceMs;
+}
+
+function sortLocksByRecency(
+  locks: SubscriptionOwnershipLockRecord[]
+): SubscriptionOwnershipLockRecord[] {
+  return [...locks].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+function lockMatchesVerificationSnapshot(
+  lock: SubscriptionOwnershipLockRecord,
+  verification?: ChurchPremiumVerification | null
+): boolean {
+  if (!verification) return false;
+  const verificationExpiry = parseSubscriptionExpiresAtMs(verification.expiresAt);
+  if (expiryTimestampsMatch(lock.expiresAt, verificationExpiry)) return true;
+  const productId = String(verification.productId || "").trim();
+  const store = verification.store;
+  if (productId && lock.productId === productId && (!store || !lock.store || lock.store === store)) {
+    return true;
+  }
+  return false;
+}
+
+async function enrichSubscriptionOwnershipLockDisplayMetadata(args: {
+  lock: SubscriptionOwnershipLockRecord;
+  verification?: ChurchPremiumVerification | null;
+  persist?: boolean;
+  source: string;
+}): Promise<SubscriptionOwnershipLockRecord> {
+  const lock = args.lock;
+  const needsEnrichment = lockNeedsDisplayMetadataEnrichment(lock);
+  const churchMeta = await resolveLockedChurchSnapshot(lock.lockedChurchId, {
+    name: lock.lockedChurchName,
+    avatarUrl: lock.lockedChurchAvatarUrl,
+    deleted: lock.lockedChurchDeleted,
+    deletedAt: lock.lockedChurchDeletedAt,
+  });
+
+  let expiresAt = lock.expiresAt ?? parseSubscriptionExpiresAtMs(args.verification?.expiresAt) ?? null;
+  let willRenew = lock.willRenew ?? args.verification?.willRenew ?? null;
+  let productId = lock.productId ?? args.verification?.productId ?? null;
+  let store = lock.store ?? args.verification?.store ?? null;
+  let storeSubscriptionIdentity =
+    lock.storeSubscriptionIdentity ?? args.verification?.storeSubscriptionIdentity ?? null;
+  let storeTransactionId = lock.storeTransactionId ?? args.verification?.storeTransactionId ?? null;
+
+  if (needsEnrichment || expiresAt == null || !storeSubscriptionIdentity) {
+    try {
+      const verification = await verifyChurchPremiumEntitlement(lock.lockedChurchId, {
+        forActivation: true,
+      });
+      if (verification.active && isVerifiedChurchPremiumReason(verification.reason)) {
+        expiresAt = expiresAt ?? parseSubscriptionExpiresAtMs(verification.expiresAt) ?? null;
+        willRenew = willRenew ?? verification.willRenew ?? null;
+        productId = productId ?? verification.productId ?? null;
+        store = store ?? verification.store ?? null;
+        storeSubscriptionIdentity =
+          storeSubscriptionIdentity ?? verification.storeSubscriptionIdentity ?? null;
+        storeTransactionId = storeTransactionId ?? verification.storeTransactionId ?? null;
+      }
+    } catch {
+      // keep snapshot fields when RC verify is unavailable
+    }
+  }
+
+  const enriched: SubscriptionOwnershipLockRecord = {
+    ...lock,
+    lockedChurchName: churchMeta.name,
+    lockedChurchAvatarUrl: churchMeta.avatarUrl ?? lock.lockedChurchAvatarUrl ?? null,
+    lockedChurchDeleted: churchMeta.deleted || lock.lockedChurchDeleted === true,
+    lockedChurchDeletedAt:
+      lock.lockedChurchDeletedAt ?? (churchMeta.deleted ? churchMeta.deletedAt : null),
+    expiresAt,
+    willRenew,
+    productId,
+    store,
+    storeSubscriptionIdentity,
+    storeTransactionId,
+  };
+
+  const shouldPersist =
+    args.persist !== false &&
+    lock.status === "active" &&
+    (needsEnrichment ||
+      enriched.lockedChurchName !== lock.lockedChurchName ||
+      enriched.lockedChurchAvatarUrl !== lock.lockedChurchAvatarUrl ||
+      enriched.expiresAt !== lock.expiresAt);
+
+  if (shouldPersist) {
+    const saved = await saveSubscriptionOwnershipLock({
+      ...enriched,
+      updatedAt: Date.now(),
+    });
+    console.log("KRISTO_SUBSCRIPTION_LOCK_DISPLAY_METADATA_BACKFILLED", {
+      source: args.source,
+      ownerUserId: saved.ownerUserId,
+      lockedChurchId: saved.lockedChurchId,
+      lockedChurchName: saved.lockedChurchName,
+      lockedChurchDeleted: saved.lockedChurchDeleted === true,
+      persisted: true,
+    });
+    return saved;
+  }
+
+  if (needsEnrichment || subscriptionLockHasDisplayMetadata(enriched)) {
+    console.log("KRISTO_SUBSCRIPTION_LOCK_DISPLAY_METADATA_BACKFILLED", {
+      source: args.source,
+      ownerUserId: enriched.ownerUserId,
+      lockedChurchId: enriched.lockedChurchId,
+      lockedChurchName: enriched.lockedChurchName,
+      lockedChurchDeleted: enriched.lockedChurchDeleted === true,
+      persisted: false,
+    });
+  }
+
+  return enriched;
+}
+
+async function buildDisplayLockFromChurchCandidate(args: {
+  ownerUserId: string;
+  contextChurchId: string;
+  lockedChurchId: string;
+  verification?: ChurchPremiumVerification | null;
+  media?: ChurchMediaProfile | null;
+  preferDeleted?: boolean;
+  source: string;
+}): Promise<SubscriptionOwnershipLockRecord | null> {
+  const ownerUserId = normalizeUserId(args.ownerUserId);
+  const contextChurchId = normalizeChurchId(args.contextChurchId);
+  const lockedChurchId = normalizeChurchId(args.lockedChurchId);
+  if (!ownerUserId || !contextChurchId || !lockedChurchId) return null;
+  if (churchIdsMatch(lockedChurchId, contextChurchId)) return null;
+
+  const media = args.media ?? (await getChurchMediaByChurchId(lockedChurchId));
+  const churchMeta = await resolveLockedChurchSnapshot(lockedChurchId, {
+    name: media?.mediaName,
+    deleted: args.preferDeleted,
+  });
+  const now = Date.now();
+
+  const record: SubscriptionOwnershipLockRecord = {
+    id: `display-${ownerUserId.toLowerCase()}-${lockedChurchId.toLowerCase()}`,
+    ownerUserId,
+    lockedChurchId,
+    lockedChurchName: churchMeta.name,
+    lockedChurchAvatarUrl: churchMeta.avatarUrl,
+    lockedChurchDeleted: churchMeta.deleted || args.preferDeleted === true,
+    lockedChurchDeletedAt: churchMeta.deleted ? churchMeta.deletedAt : null,
+    revenueCatAppUserId: lockedChurchId,
+    revenueCatOriginalAppUserId: lockedChurchId,
+    productId: args.verification?.productId ?? null,
+    store: args.verification?.store ?? (media?.subscriptionSource === "app_store" ? "app_store" : null),
+    storeSubscriptionIdentity: args.verification?.storeSubscriptionIdentity ?? null,
+    storeTransactionId: args.verification?.storeTransactionId ?? null,
+    willRenew: args.verification?.willRenew ?? null,
+    platform: null,
+    subscriptionPlan:
+      media?.subscriptionPlan === "yearly"
+        ? "yearly"
+        : media?.subscriptionPlan === "monthly"
+          ? "monthly"
+          : null,
+    expiresAt:
+      parseSubscriptionExpiresAtMs(args.verification?.expiresAt) ??
+      media?.subscriptionExpiresAt ??
+      null,
+    lockedAt: now,
+    updatedAt: now,
+    status: "active",
+    releasedAt: null,
+    releaseReason: null,
+  };
+
+  return enrichSubscriptionOwnershipLockDisplayMetadata({
+    lock: record,
+    verification: args.verification,
+    persist: false,
+    source: args.source,
+  });
+}
+
+async function resolveDisplayLockFromPastorMediaProfiles(args: {
+  ownerUserId: string;
+  churchId: string;
+  verification?: ChurchPremiumVerification | null;
+}): Promise<SubscriptionOwnershipLockRecord | null> {
+  const ownerUserId = normalizeUserId(args.ownerUserId);
+  const churchId = normalizeChurchId(args.churchId);
+  if (!ownerUserId || !churchId) return null;
+
+  const profiles = await listChurchMediaByOwnerUserId(ownerUserId);
+  const candidates = profiles.filter((media) => {
+    const candidateChurchId = normalizeChurchId(media.churchId);
+    if (!candidateChurchId || churchIdsMatch(candidateChurchId, churchId)) return false;
+    return (
+      media.subscriptionSource === "app_store" ||
+      isChurchSubscriptionActiveFromRecord(media) ||
+      media.subscriptionExpiresAt != null
+    );
+  });
+
+  const sorted = [...candidates].sort(
+    (a, b) => (b.subscriptionExpiresAt ?? 0) - (a.subscriptionExpiresAt ?? 0)
+  );
+
+  for (const media of sorted) {
+    const candidateChurchId = normalizeChurchId(media.churchId);
+    if (!candidateChurchId) continue;
+
+    const candidateLock: SubscriptionOwnershipLockRecord = {
+      id: `media-${candidateChurchId.toLowerCase()}`,
+      ownerUserId,
+      lockedChurchId: candidateChurchId,
+      lockedChurchName: String(media.mediaName || "").trim(),
+      lockedChurchDeleted: false,
+      revenueCatAppUserId: candidateChurchId,
+      revenueCatOriginalAppUserId: candidateChurchId,
+      productId: null,
+      store: media.subscriptionSource === "app_store" ? "app_store" : null,
+      platform: null,
+      subscriptionPlan:
+        media.subscriptionPlan === "yearly"
+          ? "yearly"
+          : media.subscriptionPlan === "monthly"
+            ? "monthly"
+            : null,
+      expiresAt: media.subscriptionExpiresAt ?? null,
+      lockedAt: 0,
+      updatedAt: media.subscriptionExpiresAt ?? 0,
+      status: "active",
+      releasedAt: null,
+      releaseReason: null,
+    };
+
+    if (args.verification && !lockMatchesVerificationSnapshot(candidateLock, args.verification)) {
+      continue;
+    }
+
+    const built = await buildDisplayLockFromChurchCandidate({
+      ownerUserId,
+      contextChurchId: churchId,
+      lockedChurchId: candidateChurchId,
+      verification: args.verification,
+      media,
+      source: "pastor-media-profile",
+    });
+    if (built && subscriptionLockHasDisplayMetadata(built)) {
+      return built;
+    }
+  }
+
+  const fallbackMedia = sorted[0];
+  if (!fallbackMedia) return null;
+
+  return buildDisplayLockFromChurchCandidate({
+    ownerUserId,
+    contextChurchId: churchId,
+    lockedChurchId: normalizeChurchId(fallbackMedia.churchId),
+    verification: args.verification,
+    media: fallbackMedia,
+    source: "pastor-media-profile-fallback",
+  });
+}
+
+async function resolveVerificationStoreIdentityForDisplay(
+  churchId: string,
+  verification?: ChurchPremiumVerification | null
+): Promise<string | null> {
+  const existing = String(verification?.storeSubscriptionIdentity || "").trim();
+  if (existing) return existing;
+
+  try {
+    const refreshed = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
+    return String(refreshed.storeSubscriptionIdentity || "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function resolveBlockingLockForPrepurchaseDisplay(args: {
   ownerUserId: string;
   churchId: string;
@@ -614,35 +917,32 @@ export async function resolveBlockingLockForPrepurchaseDisplay(args: {
   const churchId = normalizeChurchId(args.churchId);
   if (!ownerUserId || !churchId) return null;
 
-  const pastorLock = await ensureActiveSubscriptionOwnershipLockForPastor({
-    ownerUserId,
-    contextChurchId: churchId,
-    backfillTrigger: "resolve",
-  });
+  const verification = args.verification ?? null;
+  const store = verification?.store ?? null;
+  const productId = String(verification?.productId || "").trim() || null;
+  const storeIdentity = await resolveVerificationStoreIdentityForDisplay(churchId, verification);
 
-  if (pastorLock && !churchIdsMatch(pastorLock.lockedChurchId, churchId)) {
-    return pastorLock;
-  }
-
-  const tombstones = await listActiveDeletedChurchSubscriptionLocks();
-  const ownerTombstones = tombstones.filter(
-    (lock) =>
-      normalizeUserId(lock.ownerUserId).toLowerCase() === ownerUserId.toLowerCase() &&
-      lock.status === "active" &&
-      !lockIsExpired(lock)
+  const allOwnerLocks = await listSubscriptionOwnershipLocksByOwnerUserId(ownerUserId);
+  const activeOwnerLocks = allOwnerLocks.filter(
+    (lock) => lock.status === "active" && !lockIsExpired(lock)
   );
-
-  const blockingTombstone = ownerTombstones.find(
+  const otherChurchActiveLocks = activeOwnerLocks.filter(
     (lock) => !churchIdsMatch(lock.lockedChurchId, churchId)
   );
-  if (blockingTombstone) return blockingTombstone;
 
-  if (pastorLock && churchIdsMatch(pastorLock.lockedChurchId, churchId)) {
-    return pastorLock;
-  }
+  const pickAndEnrich = async (
+    lock: SubscriptionOwnershipLockRecord | null | undefined,
+    source: string
+  ) => {
+    if (!lock) return null;
+    return enrichSubscriptionOwnershipLockDisplayMetadata({
+      lock,
+      verification,
+      persist: lock.status === "active",
+      source,
+    });
+  };
 
-  const storeIdentity = String(args.verification?.storeSubscriptionIdentity || "").trim();
-  const store = args.verification?.store;
   if (storeIdentity && (store === "app_store" || store === "play_store")) {
     const identityLocks = await listActiveSubscriptionOwnershipLocksByStoreIdentity({
       store,
@@ -651,13 +951,195 @@ export async function resolveBlockingLockForPrepurchaseDisplay(args: {
     const ownerIdentityLock = identityLocks.find(
       (lock) =>
         normalizeUserId(lock.ownerUserId).toLowerCase() === ownerUserId.toLowerCase() &&
-        lock.status === "active" &&
+        !churchIdsMatch(lock.lockedChurchId, churchId) &&
         !lockIsExpired(lock)
     );
-    if (ownerIdentityLock) return ownerIdentityLock;
+    const identityLock =
+      ownerIdentityLock ||
+      identityLocks.find(
+        (lock) => !churchIdsMatch(lock.lockedChurchId, churchId) && !lockIsExpired(lock)
+      );
+    const enriched = await pickAndEnrich(identityLock, "store-identity");
+    if (enriched && subscriptionLockHasDisplayMetadata(enriched)) {
+      return enriched;
+    }
   }
 
-  return ownerTombstones[0] ?? pastorLock ?? null;
+  const otherActive = sortLocksByRecency(otherChurchActiveLocks)[0];
+  if (otherActive) {
+    const enriched = await pickAndEnrich(otherActive, "owner-active-other-church");
+    if (enriched) return enriched;
+  }
+
+  const ownerTombstones = sortLocksByRecency(
+    activeOwnerLocks.filter((lock) => lock.lockedChurchDeleted === true)
+  );
+  const blockingTombstone =
+    ownerTombstones.find((lock) => !churchIdsMatch(lock.lockedChurchId, churchId)) ||
+    ownerTombstones[0];
+  if (blockingTombstone) {
+    const enriched = await pickAndEnrich(blockingTombstone, "owner-tombstone");
+    if (enriched) return enriched;
+  }
+
+  const globalTombstones = sortLocksByRecency(await listActiveDeletedChurchSubscriptionLocks());
+  const globalOwnerTombstone = globalTombstones.find(
+    (lock) =>
+      normalizeUserId(lock.ownerUserId).toLowerCase() === ownerUserId.toLowerCase() &&
+      !churchIdsMatch(lock.lockedChurchId, churchId) &&
+      !lockIsExpired(lock)
+  );
+  if (globalOwnerTombstone) {
+    const enriched = await pickAndEnrich(globalOwnerTombstone, "global-tombstone");
+    if (enriched) return enriched;
+  }
+
+  if (productId && (store === "app_store" || store === "play_store")) {
+    const productMatch = sortLocksByRecency(
+      otherChurchActiveLocks.filter(
+        (lock) =>
+          (!lock.productId || lock.productId === productId) &&
+          (!lock.store || lock.store === store)
+      )
+    )[0];
+    if (productMatch) {
+      const enriched = await pickAndEnrich(productMatch, "owner-product-store");
+      if (enriched) return enriched;
+    }
+  }
+
+  const verificationExpiry = parseSubscriptionExpiresAtMs(verification?.expiresAt);
+  if (verificationExpiry != null) {
+    const expiryMatch = sortLocksByRecency(
+      otherChurchActiveLocks.filter((lock) =>
+        expiryTimestampsMatch(lock.expiresAt, verificationExpiry)
+      )
+    )[0];
+    if (expiryMatch) {
+      const enriched = await pickAndEnrich(expiryMatch, "owner-expiry-match");
+      if (enriched) return enriched;
+    }
+  }
+
+  const releasedLocks = sortLocksByRecency(
+    allOwnerLocks.filter(
+      (lock) =>
+        lock.status === "released" &&
+        !churchIdsMatch(lock.lockedChurchId, churchId) &&
+        (lock.lockedChurchDeleted === true ||
+          lock.store === "app_store" ||
+          lock.store === "play_store" ||
+          Boolean(lock.productId) ||
+          lock.expiresAt != null)
+    )
+  );
+  if (releasedLocks[0]) {
+    const enriched = await pickAndEnrich(releasedLocks[0], "owner-released-lock");
+    if (enriched && subscriptionLockHasDisplayMetadata(enriched)) {
+      return enriched;
+    }
+  }
+
+  const historicalOwnerLocks = sortLocksByRecency(
+    allOwnerLocks.filter(
+      (lock) =>
+        !churchIdsMatch(lock.lockedChurchId, churchId) &&
+        (subscriptionLockHasDisplayMetadata(lock) ||
+          lock.lockedChurchDeleted === true ||
+          lockMatchesVerificationSnapshot(lock, verification))
+    )
+  );
+  if (historicalOwnerLocks[0]) {
+    const enriched = await pickAndEnrich(historicalOwnerLocks[0], "owner-historical-lock");
+    if (enriched && subscriptionLockHasDisplayMetadata(enriched)) {
+      return enriched;
+    }
+  }
+
+  const rcOriginalChurchId = String(verification?.revenueCatOriginalAppUserId || "").trim();
+  if (rcOriginalChurchId && /^CH7-/i.test(rcOriginalChurchId)) {
+    const built = await buildDisplayLockFromChurchCandidate({
+      ownerUserId,
+      contextChurchId: churchId,
+      lockedChurchId: rcOriginalChurchId,
+      verification,
+      source: "revenuecat-original-app-user-id",
+    });
+    if (built && subscriptionLockHasDisplayMetadata(built)) {
+      return built;
+    }
+  }
+
+  const mediaLock = await resolveDisplayLockFromPastorMediaProfiles({
+    ownerUserId,
+    churchId,
+    verification,
+  });
+  if (mediaLock && subscriptionLockHasDisplayMetadata(mediaLock)) {
+    return mediaLock;
+  }
+
+  return null;
+}
+
+export async function backfillSubscriptionOwnershipLockDisplayMetadataBatch(args?: {
+  ownerUserId?: string;
+  dryRun?: boolean;
+}): Promise<{ enriched: number; skipped: number; missing: number }> {
+  const ownerFilter = String(args?.ownerUserId || "").trim();
+  const dryRun = args?.dryRun === true;
+  const locks = ownerFilter
+    ? await listSubscriptionOwnershipLocksByOwnerUserId(ownerFilter)
+    : await listAllSubscriptionOwnershipLocks();
+
+  let enriched = 0;
+  let skipped = 0;
+  let missing = 0;
+
+  for (const lock of locks) {
+    if (!lockNeedsDisplayMetadataEnrichment(lock) && subscriptionLockHasDisplayMetadata(lock)) {
+      skipped += 1;
+      continue;
+    }
+
+    if (dryRun) {
+      if (subscriptionLockHasDisplayMetadata(lock)) {
+        skipped += 1;
+      } else {
+        missing += 1;
+      }
+      continue;
+    }
+
+    const next = await enrichSubscriptionOwnershipLockDisplayMetadata({
+      lock,
+      persist: lock.status === "active",
+      source: "batch-backfill",
+    });
+
+    if (subscriptionLockHasDisplayMetadata(next)) {
+      enriched += 1;
+    } else {
+      missing += 1;
+      console.log("KRISTO_SUBSCRIPTION_LOCK_DISPLAY_METADATA_MISSING", {
+        ownerUserId: lock.ownerUserId,
+        lockedChurchId: lock.lockedChurchId,
+        status: lock.status,
+        source: "batch-backfill",
+      });
+    }
+  }
+
+  console.log("KRISTO_SUBSCRIPTION_LOCK_DISPLAY_METADATA_BACKFILLED", {
+    source: "batch-backfill-summary",
+    total: locks.length,
+    enriched,
+    skipped,
+    missing,
+    dryRun,
+  });
+
+  return { enriched, skipped, missing };
 }
 
 export async function buildPrepurchaseDeniedDisplayResponse(args: {
@@ -677,24 +1159,32 @@ export async function buildPrepurchaseDeniedDisplayResponse(args: {
   }
 
   if (displayLock) {
-    const churchMeta = await resolveLockedChurchSnapshot(displayLock.lockedChurchId, {
-      name: displayLock.lockedChurchName,
-      avatarUrl: displayLock.lockedChurchAvatarUrl,
-      deleted: displayLock.lockedChurchDeleted,
-      deletedAt: displayLock.lockedChurchDeletedAt,
+    const enrichedDisplayLock = await enrichSubscriptionOwnershipLockDisplayMetadata({
+      lock: displayLock,
+      verification: args.verification,
+      persist: displayLock.status === "active",
+      source: "prepurchase-denied",
+    });
+    const churchMeta = await resolveLockedChurchSnapshot(enrichedDisplayLock.lockedChurchId, {
+      name: enrichedDisplayLock.lockedChurchName,
+      avatarUrl: enrichedDisplayLock.lockedChurchAvatarUrl,
+      deleted: enrichedDisplayLock.lockedChurchDeleted,
+      deletedAt: enrichedDisplayLock.lockedChurchDeletedAt,
     });
     const resolvedLock: SubscriptionOwnershipLockRecord = {
-      ...displayLock,
+      ...enrichedDisplayLock,
       lockedChurchName: churchMeta.name,
-      lockedChurchAvatarUrl: churchMeta.avatarUrl ?? displayLock.lockedChurchAvatarUrl ?? null,
-      lockedChurchDeleted: churchMeta.deleted || displayLock.lockedChurchDeleted === true,
+      lockedChurchAvatarUrl:
+        churchMeta.avatarUrl ?? enrichedDisplayLock.lockedChurchAvatarUrl ?? null,
+      lockedChurchDeleted:
+        churchMeta.deleted || enrichedDisplayLock.lockedChurchDeleted === true,
       lockedChurchDeletedAt:
-        displayLock.lockedChurchDeletedAt ??
+        enrichedDisplayLock.lockedChurchDeletedAt ??
         (churchMeta.deleted ? churchMeta.deletedAt : null),
-      willRenew: displayLock.willRenew ?? args.verification?.willRenew ?? null,
-      store: displayLock.store ?? args.verification?.store ?? null,
+      willRenew: enrichedDisplayLock.willRenew ?? args.verification?.willRenew ?? null,
+      store: enrichedDisplayLock.store ?? args.verification?.store ?? null,
       expiresAt:
-        displayLock.expiresAt ??
+        enrichedDisplayLock.expiresAt ??
         parseSubscriptionExpiresAtMs(args.verification?.expiresAt) ??
         null,
     };
@@ -702,6 +1192,18 @@ export async function buildPrepurchaseDeniedDisplayResponse(args: {
       lock: resolvedLock,
       churchId: args.churchId,
     });
+
+    if (!subscriptionOwnershipLock.hasLinkedChurchDisplay) {
+      console.log("KRISTO_SUBSCRIPTION_LOCK_DISPLAY_METADATA_MISSING", {
+        churchId: args.churchId,
+        ownerUserId: args.ownerUserId,
+        reason: args.reason,
+        lockedChurchId: resolvedLock.lockedChurchId,
+        productId: args.verification?.productId ?? resolvedLock.productId ?? null,
+        store: subscriptionOwnershipLock.store,
+        source: "prepurchase-denied-partial",
+      });
+    }
 
     return {
       ok: false as const,
@@ -735,6 +1237,17 @@ export async function buildPrepurchaseDeniedDisplayResponse(args: {
     hasLinkedChurchDisplay: false,
     status: "active",
   };
+
+  console.log("KRISTO_SUBSCRIPTION_LOCK_DISPLAY_METADATA_MISSING", {
+    churchId: args.churchId,
+    ownerUserId: args.ownerUserId,
+    reason: args.reason,
+    productId: args.verification?.productId ?? null,
+    store: args.verification?.store ?? null,
+    subscriptionExpiresAt: fallbackExpiresAt,
+    willRenew: args.verification?.willRenew ?? null,
+    source: "prepurchase-denied",
+  });
 
   return {
     ok: false as const,
@@ -1660,6 +2173,8 @@ export async function preserveSubscriptionOwnershipLockTombstoneForChurchDelete(
   }
 
   const media = await getChurchMediaByChurchId(churchId);
+  const ownerLocks = await listSubscriptionOwnershipLocksByOwnerUserId(ownerUserId);
+
   let active = await ensureActiveSubscriptionOwnershipLockForPastor({
     ownerUserId,
     contextChurchId: churchId,
@@ -1671,11 +2186,74 @@ export async function preserveSubscriptionOwnershipLockTombstoneForChurchDelete(
     return { preserved: false, reason: "lock-held-by-other-church", lock: active };
   }
 
+  if (!active || !churchIdsMatch(active.lockedChurchId, churchId)) {
+    const priorLock = sortLocksByRecency(
+      ownerLocks.filter((lock) => churchIdsMatch(lock.lockedChurchId, churchId))
+    )[0];
+    if (priorLock) {
+      active = priorLock;
+    }
+  }
+
   if (!active && media && isChurchSubscriptionActiveFromRecord(media)) {
     active = await ensureSubscriptionOwnershipLockFromActiveMediaProfile({
       ownerUserId,
       media,
     });
+  }
+
+  let verification: ChurchPremiumVerification | null = null;
+  try {
+    verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
+  } catch {
+    verification = null;
+  }
+
+  if (!active || !churchIdsMatch(active.lockedChurchId, churchId)) {
+    const hasStoreSubscription =
+      (verification?.active && isVerifiedChurchPremiumReason(verification.reason)) ||
+      media?.subscriptionSource === "app_store" ||
+      isChurchSubscriptionActiveFromRecord(media);
+
+    if (hasStoreSubscription) {
+      const churchMetaForCreate = await resolveLockedChurchSnapshot(churchId, {
+        name: media?.mediaName,
+      });
+      const now = Date.now();
+      active = {
+        id: `sub-lock-${ownerUserId.toLowerCase()}-${churchId.toLowerCase()}`,
+        ownerUserId,
+        lockedChurchId: churchId,
+        lockedChurchName: churchMetaForCreate.name,
+        lockedChurchAvatarUrl: churchMetaForCreate.avatarUrl,
+        lockedChurchDeleted: false,
+        revenueCatAppUserId: churchId,
+        revenueCatOriginalAppUserId: churchId,
+        productId: verification?.productId ?? null,
+        store:
+          verification?.store ??
+          (media?.subscriptionSource === "app_store" ? "app_store" : null),
+        storeSubscriptionIdentity: verification?.storeSubscriptionIdentity ?? null,
+        storeTransactionId: verification?.storeTransactionId ?? null,
+        willRenew: verification?.willRenew ?? null,
+        platform: null,
+        subscriptionPlan:
+          media?.subscriptionPlan === "yearly"
+            ? "yearly"
+            : media?.subscriptionPlan === "monthly"
+              ? "monthly"
+              : null,
+        expiresAt:
+          parseSubscriptionExpiresAtMs(verification?.expiresAt) ??
+          media?.subscriptionExpiresAt ??
+          null,
+        lockedAt: now,
+        updatedAt: now,
+        status: "active",
+        releasedAt: null,
+        releaseReason: null,
+      };
+    }
   }
 
   if (!active || !churchIdsMatch(active.lockedChurchId, churchId)) {
@@ -1688,6 +2266,7 @@ export async function preserveSubscriptionOwnershipLockTombstoneForChurchDelete(
 
   const expiresAt =
     active.expiresAt ??
+    parseSubscriptionExpiresAtMs(verification?.expiresAt) ??
     media?.subscriptionExpiresAt ??
     null;
   const churchMeta = await resolveLockedChurchSnapshot(churchId, {
@@ -1702,18 +2281,13 @@ export async function preserveSubscriptionOwnershipLockTombstoneForChurchDelete(
   let willRenew = active.willRenew ?? null;
   let productId = active.productId ?? null;
 
-  try {
-    const verification = await verifyChurchPremiumEntitlement(churchId, { forActivation: true });
-    if (verification.active && isVerifiedChurchPremiumReason(verification.reason)) {
-      storeSubscriptionIdentity =
-        verification.storeSubscriptionIdentity ?? storeSubscriptionIdentity;
-      storeTransactionId = verification.storeTransactionId ?? storeTransactionId;
-      store = verification.store ?? store;
-      willRenew = verification.willRenew ?? willRenew;
-      productId = verification.productId ?? productId;
-    }
-  } catch {
-    // keep existing lock store identity when RC verify is unavailable
+  if (verification?.active && isVerifiedChurchPremiumReason(verification.reason)) {
+    storeSubscriptionIdentity =
+      verification.storeSubscriptionIdentity ?? storeSubscriptionIdentity;
+    storeTransactionId = verification.storeTransactionId ?? storeTransactionId;
+    store = verification.store ?? store;
+    willRenew = verification.willRenew ?? willRenew;
+    productId = verification.productId ?? productId;
   }
 
   const preserved = await saveSubscriptionOwnershipLock({

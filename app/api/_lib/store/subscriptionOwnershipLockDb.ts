@@ -143,6 +143,21 @@ async function writeLocalLocks(locks: SubscriptionOwnershipLockRecord[]) {
   await writeJsonFile(STORE_FILE, locks);
 }
 
+export async function listAllSubscriptionOwnershipLocks(): Promise<SubscriptionOwnershipLockRecord[]> {
+  if (usePostgres()) {
+    await ensureLockSchema();
+    const sql = getSql();
+    const rows = (await sql`
+      SELECT id, owner_user_id, data, created_at, updated_at
+      FROM kristo_subscription_ownership_locks
+      ORDER BY updated_at DESC
+    `) as LockRow[];
+    return rows.map(rowToLock);
+  }
+
+  return readLocalLocks();
+}
+
 export async function listSubscriptionOwnershipLocksByOwnerUserId(
   ownerUserId: string
 ): Promise<SubscriptionOwnershipLockRecord[]> {
