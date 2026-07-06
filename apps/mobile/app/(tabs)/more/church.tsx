@@ -18,6 +18,7 @@ import {
 } from "@/src/lib/churchDeleteSubscription";
 import { DeleteChurchSubscriptionModal } from "@/src/components/church/DeleteChurchSubscriptionModal";
 import { DeleteChurchCancellationModal } from "@/src/components/church/DeleteChurchCancellationModal";
+import { DeleteChurchConfirmModal } from "@/src/components/church/DeleteChurchConfirmModal";
 
 const VIP_BG = "#0B0F17";
 const GOLD = "rgba(217,179,95,0.95)";
@@ -86,6 +87,8 @@ export default function MoreChurch() {
   const [pendingCancellationGuard, setPendingCancellationGuard] =
     useState<ChurchDeleteSubscriptionGuard | null>(null);
   const [deletingChurchAfterCancellation, setDeletingChurchAfterCancellation] = useState(false);
+  const [deleteConfirmModalOpen, setDeleteConfirmModalOpen] = useState(false);
+  const [deletingChurch, setDeletingChurch] = useState(false);
   const pendingDeleteManageRef = useRef(false);
 
   const current = useMemo(() => {
@@ -95,6 +98,29 @@ export default function MoreChurch() {
   }, [session]);
 
   const showVovotoLanding = !current.cid && String(current.role || "Member").toLowerCase() !== "pastor";
+
+  const deleteConfirmChurchName = useMemo(() => {
+    const sessionAny = session as any;
+    const candidates = [
+      String(session?.churchName || "").trim(),
+      String(sessionAny?.churchProfile?.name || "").trim(),
+    ].filter(Boolean);
+    for (const label of candidates) {
+      if (!/^CH7-/i.test(label)) return label;
+    }
+    return null;
+  }, [session]);
+
+  const deleteConfirmChurchAvatarUrl = useMemo(() => {
+    const sessionAny = session as any;
+    const avatar = String(
+      sessionAny?.churchProfileImage ||
+        sessionAny?.churchProfile?.avatarUri ||
+        sessionAny?.churchProfile?.logoUri ||
+        ""
+    ).trim();
+    return avatar || null;
+  }, [session]);
 
   const canCreate = useMemo(() => {
     const n = createName.trim();
@@ -281,14 +307,26 @@ export default function MoreChurch() {
   }
 
   function confirmDeleteChurch() {
-    Alert.alert(
-      "Delete your church",
-      "This will remove this church from your local V1 account.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: () => void executePastorChurchDelete() },
-      ]
-    );
+    setDeleteConfirmModalOpen(true);
+  }
+
+  function closeDeleteConfirmModal() {
+    if (deletingChurch) return;
+    setDeleteConfirmModalOpen(false);
+  }
+
+  async function onConfirmFinalDeleteChurch() {
+    if (deletingChurch) return;
+
+    setDeletingChurch(true);
+    try {
+      const deleted = await executePastorChurchDelete();
+      if (deleted) {
+        setDeleteConfirmModalOpen(false);
+      }
+    } finally {
+      setDeletingChurch(false);
+    }
   }
 
   function confirmDeleteChurchWithGuard(guard: ChurchDeleteSubscriptionGuard | null | undefined) {
@@ -307,7 +345,7 @@ export default function MoreChurch() {
     setPendingCancellationGuard(null);
   }
 
-  async function executePastorChurchDelete() {
+  async function executePastorChurchDelete(): Promise<boolean> {
     const churchId = String(session?.churchId || "").trim();
     const userId = String(session?.userId || "").trim();
     const role = String(session?.role || "Pastor");
@@ -342,11 +380,12 @@ export default function MoreChurch() {
           "Delete failed",
           "We could not finalize church deletion. Please try again."
         );
-        return;
+        return false;
       }
     }
 
     await clearChurchLocal();
+    return true;
   }
 
   async function onConfirmDeleteChurchAfterCancellation() {
@@ -737,6 +776,18 @@ export default function MoreChurch() {
           void onConfirmDeleteChurchAfterCancellation();
         }}
         onNotNow={closeDeleteCancellationModal}
+      />
+
+      <DeleteChurchConfirmModal
+        visible={deleteConfirmModalOpen}
+        churchName={deleteConfirmChurchName}
+        churchAvatarUrl={deleteConfirmChurchAvatarUrl}
+        deleting={deletingChurch}
+        disabled={checkingDeleteGuard}
+        onConfirm={() => {
+          void onConfirmFinalDeleteChurch();
+        }}
+        onKeepChurch={closeDeleteConfirmModal}
       />
     </View>
   );
