@@ -129,9 +129,13 @@ import {
 import { requireActiveChurchSubscriptionForSchedule } from "@/src/lib/churchSubscription";
 import {
   buildMinistryLiveRoomRouteParams,
+  extractAssignmentScheduleCards,
   logMinistryLiveActivationCheck,
+  logMinistryLiveEnterRolePreserved,
   logMinistryLiveStartAttempt,
   resolveMinistryLiveActivationState,
+  resolveMinistryLiveCanPublishForEntry,
+  viewerHasClaimedAnyAssignmentCard,
 } from "@/src/lib/ministryLiveActivation";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
@@ -3127,17 +3131,6 @@ export default function MessageThreadScreen() {
           ? "Host"
           : String(effectiveAuthRole || assignmentRole || "Member");
 
-  const resolvedCanPublish =
-    isPastorAuthority ||
-    isChurchMediaRoom ||
-    (isAssignmentThread &&
-      !isChurchLiveControlAssignment &&
-      (ministryAuthority.canCreateMeeting ||
-        ministryAuthority.tier === "pastor" ||
-        ministryAuthority.tier === "leader" ||
-        ministryAuthority.tier === "host" ||
-        isSelectedMcHost === true));
-
   const canManageAssignmentMembers = ministryAuthority.canManageMembers;
   const canScheduleStructuredMeeting = ministryAuthority.canCreateMeeting;
   const canManageMcHosts = ministryAuthority.canManageHosts;
@@ -3294,6 +3287,27 @@ export default function MessageThreadScreen() {
 
   const { messages } = useThread(threadId);
   const cacheRenderedLoggedRef = useRef(false);
+
+  const ministryViewerHasClaim = useMemo(
+    () =>
+      viewerHasClaimedAnyAssignmentCard(
+        extractAssignmentScheduleCards(messages),
+        effectiveAuthUserId
+      ),
+    [messages, effectiveAuthUserId]
+  );
+
+  const resolvedCanPublish =
+    isPastorAuthority ||
+    isChurchMediaRoom ||
+    (isAssignmentThread &&
+      !isChurchLiveControlAssignment &&
+      resolveMinistryLiveCanPublishForEntry({
+        viewerHasClaim: ministryViewerHasClaim,
+        viewerIsPastor: isPastorAuthority || ministryAuthority.tier === "pastor",
+        viewerIsHost: ministryAuthority.tier === "host" || isSelectedMcHost === true,
+        isSelectedMcHost: isSelectedMcHost === true,
+      }));
 
   // Log the instant render from the persisted local store (cached messages /
   // R2 image URLs appear immediately, before any background refresh).
@@ -4119,6 +4133,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
         currentTime: now,
         viewerUserId: effectiveAuthUserId,
         ministryRole: resolvedMinistryRoleLabel,
+        churchRole: String(effectiveAuthRole || currentRole || ""),
         viewerIsHost: ministryAuthority.tier === "host" || isSelectedMcHost === true,
         viewerIsLeader: !!isAssignmentLeader || !!isAssignmentTlmc,
         viewerIsPastor:
@@ -4138,23 +4153,13 @@ const displayHeaderTitle = assignmentDisplayTitle;
         };
       }
 
-      if (ministryActivation.liveStillActive && ministryActivation.canStartLive) {
+      if (ministryActivation.liveStillActive && ministryActivation.canEnterLive) {
         return {
           label: "LIVE",
           tone: "live" as const,
-          sublabel: "Live now",
+          sublabel: ministryActivation.canHostOrStartBroadcast ? "Live now" : "Watch live",
           canOpenLive: true,
           entryMode: "live" as const,
-        };
-      }
-
-      if (ministryActivation.liveStillActive && ministryActivation.requiresClaim) {
-        return {
-          label: "LIVE",
-          tone: "scheduled" as const,
-          sublabel: "Claim this slot first",
-          canOpenLive: false,
-          entryMode: "none" as const,
         };
       }
 
@@ -4811,6 +4816,24 @@ const displayHeaderTitle = assignmentDisplayTitle;
         headerTitle ||
         ""
     ).trim();
+    const canPublish = resolveMinistryLiveCanPublishForEntry({
+      viewerHasClaim: ministryActivation.viewerHasClaim,
+      viewerIsPastor: isPastorAuthority || ministryAuthority.tier === "pastor",
+      viewerIsHost: ministryAuthority.tier === "host" || isSelectedMcHost === true,
+      isSelectedMcHost: isSelectedMcHost === true,
+    });
+    const enteredAsViewer = ministryActivation.canEnterLive && !canPublish;
+
+    logMinistryLiveEnterRolePreserved({
+      userId: effectiveAuthUserId,
+      ministryRole: resolvedMinistryRoleLabel,
+      churchRole: String(effectiveAuthRole || currentRole || ""),
+      enteredAsViewer,
+      claimedByMe: ministryActivation.viewerHasClaim,
+      canEnterLive: ministryActivation.canEnterLive,
+      canUseMicCamera: canPublish,
+      canHostOrStartBroadcast: ministryActivation.canHostOrStartBroadcast,
+    });
 
     return buildMinistryLiveRoomRouteParams({
       messages,
@@ -4821,12 +4844,14 @@ const displayHeaderTitle = assignmentDisplayTitle;
       subtitle: sub,
       viewerUserId: effectiveAuthUserId,
       resolvedLiveRole,
-      resolvedCanPublish,
+      resolvedCanPublish: canPublish,
       entryMode,
       preview,
       ministryActivation,
       meetingTopic,
       churchId: String(auth?.churchId || churchId || ""),
+      actualChurchPastorUserId: churchPastorUserId,
+      enteredAsViewer,
     });
   }
 
@@ -6421,25 +6446,27 @@ function saveAssignmentVideoTrim() {
       const roomId = String(threadId || resolvedMinistryId || "");
       const ministryId = String(resolvedMinistryId || threadId || "");
 
-      if (ministryActivation.requiresClaim && ministryActivation.liveStillActive) {
+      if (ministryActivation.liveStillActive && ministryActivation.canEnterLive) {
+        const entryMode = "live";
         logMinistryLiveStartAttempt({
           roomId,
           ministryId,
           activeSlotId: ministryActivation.activeSlotId,
           viewerUserId: effectiveAuthUserId,
-          allowed: false,
-          reason: "claim_required",
+          allowed: true,
+          reason: ministryActivation.reason,
         });
-        Alert.alert("Claim required", "Claim this slot first before opening live.");
+        router.push({
+          pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
+          params: buildMinistryLiveNavigationParams(ministryActivation, entryMode, false) as any,
+        });
         return;
       }
 
-      if (ministryActivation.canStartLive) {
-        const entryMode = ministryActivation.liveStillActive
-          ? "live"
-          : ministryActivation.canEnterBackstage
-            ? "backstage"
-            : "waiting";
+      if (ministryActivation.canHostOrStartBroadcast) {
+        const entryMode = ministryActivation.canEnterBackstage
+          ? "backstage"
+          : "waiting";
         logMinistryLiveStartAttempt({
           roomId,
           ministryId,
@@ -6453,7 +6480,7 @@ function saveAssignmentVideoTrim() {
           params: buildMinistryLiveNavigationParams(
             ministryActivation,
             entryMode,
-            entryMode !== "live"
+            true
           ) as any,
         });
         return;

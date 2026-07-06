@@ -13,8 +13,18 @@ export type MinistryLiveActivationState = {
   firstSlotStart: number | null;
   firstSlotEnd: number | null;
   activeSlotId: string | null;
-  canStartLive: boolean;
+  /** Room entry during an active live window — claim is not required. */
+  canEnterLive: boolean;
+  /** Backstage / ready room before the live window opens. */
   canEnterBackstage: boolean;
+  /** Mic/camera/broadcast controls for the active slot. */
+  canUseMicCamera: boolean;
+  /** Host/broadcast start controls (leader, pastor, host, or claimed slot). */
+  canHostOrStartBroadcast: boolean;
+  /** @deprecated alias for canHostOrStartBroadcast */
+  canStartLive: boolean;
+  viewerHasClaim: boolean;
+  /** Slot-participation hint only — never blocks canEnterLive. */
   requiresClaim: boolean;
   reason: string;
 };
@@ -25,6 +35,7 @@ export type MinistryLiveActivationLogContext = {
   currentTime: number;
   viewerUserId: string;
   ministryRole: string;
+  churchRole?: string;
   viewerIsHost: boolean;
   viewerIsLeader: boolean;
   viewerIsPastor: boolean;
@@ -74,7 +85,7 @@ export function resolveAssignmentMeetingWindowFromCards(
   };
 }
 
-function viewerHasClaimedAssignmentCard(
+export function viewerHasClaimedAssignmentCard(
   card: Record<string, unknown>,
   viewerUserId: string
 ) {
@@ -90,6 +101,25 @@ function viewerHasClaimedAssignmentCard(
   ).trim();
 
   return claimedByUserId === uid;
+}
+
+export function viewerHasClaimedAnyAssignmentCard(
+  cards: Array<{ card: Record<string, unknown> }>,
+  viewerUserId: string
+) {
+  return cards.some(({ card }) => viewerHasClaimedAssignmentCard(card, viewerUserId));
+}
+
+export function resolveMinistryLiveCanPublishForEntry(args: {
+  viewerHasClaim: boolean;
+  viewerIsPastor: boolean;
+  viewerIsHost: boolean;
+  isSelectedMcHost?: boolean;
+}): boolean {
+  if (args.viewerIsPastor) return true;
+  if (args.viewerIsHost || args.isSelectedMcHost === true) return true;
+  if (args.viewerHasClaim) return true;
+  return false;
 }
 
 export function assignmentCardsToLiveScheduleSlots(
@@ -138,6 +168,8 @@ export function buildMinistryLiveRoomRouteParams(args: {
   ministryActivation: MinistryLiveActivationState;
   meetingTopic?: string;
   churchId?: string;
+  actualChurchPastorUserId?: string;
+  enteredAsViewer?: boolean;
 }): Record<string, string> {
   const cards = extractAssignmentScheduleCards(args.messages);
   const slots = assignmentCardsToLiveScheduleSlots(cards);
@@ -154,6 +186,7 @@ export function buildMinistryLiveRoomRouteParams(args: {
     null;
   const routeSlotNumber = Math.max(1, Number(activeSlot?.slotNumber || 1));
   const layout = slots.length > 0 ? "grid6" : "focus";
+  const pastorUserId = String(args.actualChurchPastorUserId || "").trim();
 
   console.log("KRISTO_MINISTRY_LIVE_ROUTE_BUILD", {
     roomId: args.roomId,
@@ -163,6 +196,8 @@ export function buildMinistryLiveRoomRouteParams(args: {
     layout,
     leanSlotsByteLen: utf8JsonByteLength(leanSlotsJson),
     sourceScheduleId,
+    enteredAsViewer: args.enteredAsViewer === true,
+    canPublish: args.resolvedCanPublish,
   });
 
   return {
@@ -201,8 +236,9 @@ export function buildMinistryLiveRoomRouteParams(args: {
     canPublishMic: args.resolvedCanPublish ? "1" : "0",
     canPublishCamera: args.resolvedCanPublish ? "1" : "0",
     mediaSlotPublisher: args.resolvedCanPublish ? "1" : "0",
-    pastorUserId: String(args.viewerUserId || ""),
-    mediaOwnerPastorUserId: String(args.viewerUserId || ""),
+    pastorUserId,
+    mediaOwnerPastorUserId: pastorUserId,
+    enteredAsViewer: args.enteredAsViewer === true ? "1" : "0",
     membersCount: "26",
     leadersCount: "4",
   };
@@ -233,8 +269,12 @@ export function resolveMinistryLiveActivationState(args: {
       firstSlotStart: startMs,
       firstSlotEnd: endMs,
       activeSlotId: window.activeSlotId,
+      canEnterLive: false,
       canStartLive: false,
       canEnterBackstage: false,
+      canUseMicCamera: false,
+      canHostOrStartBroadcast: false,
+      viewerHasClaim: false,
       requiresClaim: false,
       reason: scheduleReady ? "missing_slot_times" : "no_schedule",
     };
@@ -244,30 +284,15 @@ export function resolveMinistryLiveActivationState(args: {
   const liveEnded = nowMs > endMs;
   const viewerCanManageLive =
     args.viewerIsPastor || args.viewerIsLeader || args.viewerIsHost;
-  const viewerHasClaim = cards.some(({ card }) =>
-    viewerHasClaimedAssignmentCard(card, args.viewerUserId)
-  );
+  const viewerHasClaim = viewerHasClaimedAnyAssignmentCard(cards, args.viewerUserId);
+  const canHostOrStartBroadcast =
+    args.viewerIsPastor || args.viewerIsHost || viewerHasClaim;
   const canEnterBackstage =
     !!viewerCanManageLive &&
     nowMs < startMs &&
     nowMs >= startMs - preliveTeamOpenMs;
 
   if (liveStillActive) {
-    if (viewerCanManageLive || viewerHasClaim) {
-      return {
-        scheduleReady: true,
-        liveStillActive: true,
-        liveEnded: false,
-        firstSlotStart: startMs,
-        firstSlotEnd: endMs,
-        activeSlotId: window.activeSlotId,
-        canStartLive: true,
-        canEnterBackstage: false,
-        requiresClaim: false,
-        reason: viewerCanManageLive ? "leader_or_host_live_window" : "claimed_slot_live_window",
-      };
-    }
-
     return {
       scheduleReady: true,
       liveStillActive: true,
@@ -275,10 +300,18 @@ export function resolveMinistryLiveActivationState(args: {
       firstSlotStart: startMs,
       firstSlotEnd: endMs,
       activeSlotId: window.activeSlotId,
-      canStartLive: false,
+      canEnterLive: true,
+      canHostOrStartBroadcast,
+      canUseMicCamera: canHostOrStartBroadcast,
+      canStartLive: canHostOrStartBroadcast,
       canEnterBackstage: false,
-      requiresClaim: true,
-      reason: "claim_required",
+      viewerHasClaim,
+      requiresClaim: !canHostOrStartBroadcast,
+      reason: canHostOrStartBroadcast
+        ? args.viewerIsPastor || args.viewerIsHost
+          ? "leader_or_host_live_window"
+          : "claimed_slot_live_window"
+        : "viewer_live_window",
     };
   }
 
@@ -290,8 +323,12 @@ export function resolveMinistryLiveActivationState(args: {
       firstSlotStart: startMs,
       firstSlotEnd: endMs,
       activeSlotId: null,
+      canEnterLive: false,
       canStartLive: false,
       canEnterBackstage: false,
+      canUseMicCamera: false,
+      canHostOrStartBroadcast: false,
+      viewerHasClaim,
       requiresClaim: false,
       reason: "window_ended",
     };
@@ -305,8 +342,12 @@ export function resolveMinistryLiveActivationState(args: {
       firstSlotStart: startMs,
       firstSlotEnd: endMs,
       activeSlotId: null,
+      canEnterLive: false,
+      canHostOrStartBroadcast: true,
+      canUseMicCamera: true,
       canStartLive: true,
       canEnterBackstage: true,
+      viewerHasClaim,
       requiresClaim: false,
       reason: "backstage_open",
     };
@@ -319,32 +360,61 @@ export function resolveMinistryLiveActivationState(args: {
     firstSlotStart: startMs,
     firstSlotEnd: endMs,
     activeSlotId: null,
+    canEnterLive: false,
     canStartLive: false,
     canEnterBackstage: false,
+    canUseMicCamera: false,
+    canHostOrStartBroadcast: false,
+    viewerHasClaim,
     requiresClaim: false,
     reason: "schedule_ready_waiting_for_window",
   };
 }
 
 export function logMinistryLiveActivationCheck(ctx: MinistryLiveActivationLogContext) {
-  console.log(
-    "KRISTO_MINISTRY_LIVE_ACTIVATION_CHECK",
-    {
-      roomId: ctx.roomId,
-      ministryId: ctx.ministryId,
-      currentTime: ctx.currentTime,
-      firstSlotStart: ctx.state.firstSlotStart,
-      firstSlotEnd: ctx.state.firstSlotEnd,
-      activeSlotId: ctx.state.activeSlotId,
-      scheduleReady: ctx.state.scheduleReady,
-      canStartLive: ctx.state.canStartLive,
-      viewerUserId: ctx.viewerUserId,
-      ministryRole: ctx.ministryRole,
-      viewerIsHost: ctx.viewerIsHost,
-      hasSubscription: ctx.hasSubscription ?? null,
-      reason: ctx.state.reason,
-    }
-  );
+  console.log("KRISTO_MINISTRY_LIVE_ACTIVATION_CHECK", {
+    roomId: ctx.roomId,
+    ministryId: ctx.ministryId,
+    currentTime: ctx.currentTime,
+    firstSlotStart: ctx.state.firstSlotStart,
+    firstSlotEnd: ctx.state.firstSlotEnd,
+    activeSlotId: ctx.state.activeSlotId,
+    scheduleReady: ctx.state.scheduleReady,
+    canEnterLive: ctx.state.canEnterLive,
+    canStartLive: ctx.state.canStartLive,
+    canHostOrStartBroadcast: ctx.state.canHostOrStartBroadcast,
+    canUseMicCamera: ctx.state.canUseMicCamera,
+    viewerHasClaim: ctx.state.viewerHasClaim,
+    viewerUserId: ctx.viewerUserId,
+    ministryRole: ctx.ministryRole,
+    churchRole: ctx.churchRole ?? null,
+    viewerIsHost: ctx.viewerIsHost,
+    hasSubscription: ctx.hasSubscription ?? null,
+    reason: ctx.state.reason,
+  });
+}
+
+export function logMinistryLiveEnterRolePreserved(args: {
+  userId: string;
+  ministryRole: string;
+  churchRole?: string;
+  enteredAsViewer: boolean;
+  claimedByMe: boolean;
+  canEnterLive: boolean;
+  canUseMicCamera: boolean;
+  canHostOrStartBroadcast: boolean;
+}) {
+  console.log("KRISTO_MINISTRY_LIVE_ENTER_ROLE_PRESERVED", {
+    userId: args.userId,
+    ministryRole: args.ministryRole,
+    churchRole: args.churchRole ?? null,
+    enteredAsViewer: args.enteredAsViewer,
+    claimedByMe: args.claimedByMe,
+    canEnterLive: args.canEnterLive,
+    canUseMicCamera: args.canUseMicCamera,
+    canHostOrStartBroadcast: args.canHostOrStartBroadcast,
+    roleMutated: false,
+  });
 }
 
 export function logMinistryLiveStartAttempt(args: {
