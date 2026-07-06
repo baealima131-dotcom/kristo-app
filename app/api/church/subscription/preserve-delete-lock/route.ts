@@ -45,11 +45,31 @@ export async function POST(req: NextRequest) {
   });
 
   if (!result.preserved) {
+    const reason = String(result.reason || "").trim();
+    const skippable =
+      reason === "no-active-lock" || reason === "lock-held-by-other-church-skipped";
+
+    if (skippable) {
+      return json({
+        ok: true,
+        preserved: false,
+        skipped: true,
+        reason,
+        lock: result.lock
+          ? {
+              lockedChurchId: result.lock.lockedChurchId,
+              expiresAt: result.lock.expiresAt,
+              status: result.lock.status,
+            }
+          : null,
+      });
+    }
+
     return json(
       {
         ok: false,
         preserved: false,
-        reason: result.reason ?? "not-preserved",
+        reason: reason || "not-preserved",
         lock: result.lock
           ? {
               lockedChurchId: result.lock.lockedChurchId,
@@ -58,7 +78,7 @@ export async function POST(req: NextRequest) {
             }
           : null,
       },
-      { status: result.reason === "no-active-lock" ? 404 : 400 }
+      { status: 400 }
     );
   }
 

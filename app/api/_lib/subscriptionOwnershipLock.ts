@@ -2183,7 +2183,17 @@ export async function preserveSubscriptionOwnershipLockTombstoneForChurchDelete(
   });
 
   if (active && !churchIdsMatch(active.lockedChurchId, churchId)) {
-    return { preserved: false, reason: "lock-held-by-other-church", lock: active };
+    console.log("KRISTO_CHURCH_DELETE_TOMBSTONE_SKIPPED_OTHER_LOCK", {
+      currentChurchId: churchId,
+      lockedChurchId: active.lockedChurchId,
+      lockedChurchName: active.lockedChurchName ?? null,
+      ownerUserId,
+    });
+    return {
+      preserved: false,
+      reason: "lock-held-by-other-church-skipped",
+      lock: active,
+    };
   }
 
   if (!active || !churchIdsMatch(active.lockedChurchId, churchId)) {

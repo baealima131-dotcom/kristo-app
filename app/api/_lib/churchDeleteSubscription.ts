@@ -37,6 +37,7 @@ function churchHasDeleteBlockingStoreSubscription(args: {
 
   const lock = args.lock;
   if (!lock || lock.status !== "active") return false;
+  if (lock.isLockHolder !== true) return false;
   return lock.store === "app_store" || lock.store === "play_store";
 }
 

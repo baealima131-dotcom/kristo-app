@@ -318,12 +318,20 @@ export default function MoreChurch() {
           churchId,
           headers: getKristoHeaders({ userId, role: role as any, churchId }) as Record<string, string>,
         });
-        console.log("KRISTO_CHURCH_DELETE_LOCK_TOMBSTONE_PRESERVED", {
-          churchId,
-          userId,
-          preserved: result.preserved,
-          reason: result.reason ?? null,
-        });
+        if (result.reason === "lock-held-by-other-church-skipped") {
+          console.log("KRISTO_CHURCH_DELETE_TOMBSTONE_SKIPPED_OTHER_LOCK", {
+            currentChurchId: churchId,
+            userId,
+            reason: result.reason,
+          });
+        } else {
+          console.log("KRISTO_CHURCH_DELETE_LOCK_TOMBSTONE_PRESERVED", {
+            churchId,
+            userId,
+            preserved: result.preserved,
+            reason: result.reason ?? null,
+          });
+        }
       } catch (error: any) {
         console.log("KRISTO_CHURCH_DELETE_LOCK_TOMBSTONE_PRESERVE_FAILED", {
           churchId,

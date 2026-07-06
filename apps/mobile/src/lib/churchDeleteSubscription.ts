@@ -2,7 +2,6 @@ import { Platform } from "react-native";
 import type { CustomerInfo } from "react-native-purchases";
 
 import {
-  churchHasManagedStoreSubscription,
   resolveStoreSubscriptionWillRenew,
 } from "./accountDeleteSubscription";
 import {
@@ -38,14 +37,17 @@ export type ChurchDeleteSubscriptionGuard = {
 export function churchHasDeleteBlockingStoreSubscription(
   status: ChurchMediaPremiumServerStatus
 ): boolean {
-  if (churchHasManagedStoreSubscription(status)) return true;
+  if (
+    status.serverSubscriptionActive &&
+    status.subscriptionSource === "app_store"
+  ) {
+    return true;
+  }
 
   const lock = status.subscriptionOwnershipLock;
-  return (
-    status.serverSubscriptionActive === true &&
-    lock?.status === "active" &&
-    (lock.store === "app_store" || lock.store === "play_store")
-  );
+  if (!lock || lock.status !== "active") return false;
+  if (lock.isLockHolder !== true) return false;
+  return lock.store === "app_store" || lock.store === "play_store";
 }
 
 export function isChurchSubscriptionPeriodEnded(
@@ -368,8 +370,10 @@ export async function preserveChurchDeleteSubscriptionLockTombstone(args: {
   let body: {
     ok?: boolean;
     preserved?: boolean;
+    skipped?: boolean;
     reason?: string | null;
     error?: string;
+    lock?: { lockedChurchId?: string | null } | null;
   } | null = null;
   try {
     body = rawText ? JSON.parse(rawText) : null;
@@ -377,10 +381,36 @@ export async function preserveChurchDeleteSubscriptionLockTombstone(args: {
     body = null;
   }
 
+  if (body?.ok === true && body?.skipped === true) {
+    const reason = String(body?.reason || "").trim();
+    if (reason === "lock-held-by-other-church-skipped") {
+      console.log("KRISTO_CHURCH_DELETE_TOMBSTONE_SKIPPED_OTHER_LOCK", {
+        currentChurchId: churchId,
+        lockedChurchId: String(body?.lock?.lockedChurchId || "").trim() || null,
+        reason,
+      });
+    }
+    return { preserved: false, reason: reason || null };
+  }
+
   if (!res.ok || body?.ok === false) {
     const reason = String(body?.reason || "").trim();
-    if (res.status === 404 && reason === "no-active-lock") {
-      return { preserved: false, reason: "no-active-lock" };
+    if (
+      reason === "no-active-lock" ||
+      reason === "lock-held-by-other-church-skipped" ||
+      reason === "lock-held-by-other-church"
+    ) {
+      if (
+        reason === "lock-held-by-other-church-skipped" ||
+        reason === "lock-held-by-other-church"
+      ) {
+        console.log("KRISTO_CHURCH_DELETE_TOMBSTONE_SKIPPED_OTHER_LOCK", {
+          currentChurchId: churchId,
+          lockedChurchId: String(body?.lock?.lockedChurchId || "").trim() || null,
+          reason,
+        });
+      }
+      return { preserved: false, reason };
     }
     throw new Error(String(body?.reason || body?.error || rawText || `HTTP ${res.status}`));
   }

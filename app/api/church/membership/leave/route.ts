@@ -64,12 +64,21 @@ export async function POST(req: NextRequest) {
         ownerUserId: viewer.userId,
         churchId,
       });
-      console.log("KRISTO_CHURCH_DELETE_LOCK_TOMBSTONE_SERVER", {
-        churchId,
-        userId: viewer.userId,
-        preserved: tombstone.preserved,
-        reason: tombstone.reason ?? null,
-      });
+      if (tombstone.reason === "lock-held-by-other-church-skipped") {
+        console.log("KRISTO_CHURCH_DELETE_TOMBSTONE_SKIPPED_OTHER_LOCK", {
+          churchId,
+          userId: viewer.userId,
+          lockedChurchId: tombstone.lock?.lockedChurchId ?? null,
+          reason: tombstone.reason,
+        });
+      } else {
+        console.log("KRISTO_CHURCH_DELETE_LOCK_TOMBSTONE_SERVER", {
+          churchId,
+          userId: viewer.userId,
+          preserved: tombstone.preserved,
+          reason: tombstone.reason ?? null,
+        });
+      }
     }
   }
 
