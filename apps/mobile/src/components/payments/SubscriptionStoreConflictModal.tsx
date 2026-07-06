@@ -25,7 +25,9 @@ const TEXT_MUTED = "rgba(255,255,255,0.62)";
 export type SubscriptionStoreConflictModalVariant =
   | "ownership_lock"
   | "existing_subscription"
-  | "existing_subscription_cancelled_until_expiry";
+  | "existing_subscription_cancelled_until_expiry"
+  | "old_sub_reactivated_blocked"
+  | "unverified_store_identity";
 
 type SubscriptionStoreConflictModalProps = {
   visible: boolean;
@@ -141,10 +143,43 @@ function buildCancelledUntilExpiryMessage(
   );
 }
 
+function buildOldSubReactivatedBlockedMessage(
+  lock?: ChurchMediaSubscriptionOwnershipLock | null
+): string {
+  const storeIsPlay = lock?.store === "play_store";
+  const storeLabel = storeIsPlay ? "Google Play" : "Apple";
+  return (
+    `${storeLabel} reactivated your previous subscription, but it is still linked to another church or account. ` +
+    "This church was not activated. Manage or cancel the previous subscription, or wait until it fully expires before subscribing here."
+  );
+}
+
+function buildUnverifiedStoreIdentityMessage(
+  lock?: ChurchMediaSubscriptionOwnershipLock | null
+): string {
+  const storeIsPlay = lock?.store === "play_store";
+  const storeLabel = storeIsPlay ? "Google Play" : "Apple";
+  const accountLabel = storeIsPlay ? "Google account" : "Apple ID";
+  const sandboxNote = storeIsPlay ? "" : " (or sandbox test account)";
+
+  return (
+    `The existing ${storeLabel} subscription on this account is still tied to a previous church or subscription identity. Kristo could not safely verify ownership for this church, so it was not activated.\n\n` +
+    `Managing subscription from this screen can only cancel or renew that same ${storeLabel} subscription. It cannot move billing to this church. Renewing it may reactivate the previous subscription identity.\n\n` +
+    `To subscribe this new church, wait until the previous subscription fully expires, or use a different ${accountLabel}${sandboxNote} for a new purchase.\n\n` +
+    "Cancelling from here does not immediately free this subscription for the new church."
+  );
+}
+
 function buildConflictMessage(
   lock?: ChurchMediaSubscriptionOwnershipLock | null,
   variant: SubscriptionStoreConflictModalVariant = "ownership_lock"
 ): string {
+  if (variant === "unverified_store_identity") {
+    return buildUnverifiedStoreIdentityMessage(lock);
+  }
+  if (variant === "old_sub_reactivated_blocked") {
+    return buildOldSubReactivatedBlockedMessage(lock);
+  }
   if (variant === "existing_subscription_cancelled_until_expiry") {
     return buildCancelledUntilExpiryMessage(lock);
   }
@@ -196,11 +231,19 @@ export function SubscriptionStoreConflictModal({
   const showExpiryBadge =
     variant === "ownership_lock" && Boolean(expiryLabel);
   const modalTitle =
-    variant === "existing_subscription_cancelled_until_expiry"
+    variant === "unverified_store_identity"
+      ? "Subscription Verification Required"
+      : variant === "old_sub_reactivated_blocked"
+      ? "Previous Subscription Reactivated"
+      : variant === "existing_subscription_cancelled_until_expiry"
       ? "Subscription Already Cancelled"
       : "Existing Subscription Found";
   const modalEyebrow =
-    variant === "existing_subscription_cancelled_until_expiry"
+    variant === "unverified_store_identity"
+      ? "VERIFICATION REQUIRED"
+      : variant === "old_sub_reactivated_blocked"
+      ? "SUBSCRIPTION REACTIVATED"
+      : variant === "existing_subscription_cancelled_until_expiry"
       ? "CANCELLED SUBSCRIPTION"
       : variant === "existing_subscription"
         ? "EXISTING SUBSCRIPTION"
@@ -208,6 +251,20 @@ export function SubscriptionStoreConflictModal({
 
   useEffect(() => {
     if (!visible) return;
+
+    if (variant === "unverified_store_identity") {
+      console.log("KRISTO_SUBSCRIPTION_UNVERIFIED_STORE_IDENTITY_MODAL_OPENED", {
+        currentChurchId: String(currentChurchId || "").trim() || null,
+        store: lock?.store ?? null,
+        willRenew: lock?.willRenew ?? null,
+        expiresAt: lock?.expiresAt ?? null,
+      });
+      return;
+    }
+
+    if (variant === "old_sub_reactivated_blocked") {
+      return;
+    }
 
     if (variant === "existing_subscription_cancelled_until_expiry") {
       console.log("KRISTO_SUBSCRIPTION_EXISTING_CANCELLED_UNTIL_EXPIRY_MODAL_OPENED", {
