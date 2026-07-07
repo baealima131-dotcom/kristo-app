@@ -50,7 +50,7 @@ import {
 } from "@/src/lib/screenDataCache";
 import { hydrateMediaPosterCache } from "@/src/lib/mediaPosterCache";
 import { ProfileHeroSkeleton } from "@/src/components/PremiumTabSkeletons";
-import { feedList, subscribe as subscribeHomeFeed } from "@/src/lib/homeFeedStore";
+import { feedList, subscribe as subscribeHomeFeed, ensureRingClaimStoresHydrated } from "@/src/lib/homeFeedStore";
 import ChurchActivityGrid from "@/src/components/ChurchActivityGrid";
 import ChurchActivityMemberChips from "@/src/components/ChurchActivityMemberChips";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
@@ -514,6 +514,13 @@ export default function MeScreen() {
   const { session, setSession } = useKristoSession();
   const userId = String(session?.userId || "").trim();
   const churchId = String(session?.churchId || "").trim();
+
+  useEffect(() => {
+    if (!userId) return;
+    void ensureRingClaimStoresHydrated().then(() => {
+      setClaimedFeedTick((v) => v + 1);
+    });
+  }, [userId]);
 
   useEffect(() => {
     const claimedFeedUnsub = subscribeHomeFeed(() => {

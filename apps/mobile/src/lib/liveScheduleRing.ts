@@ -824,6 +824,7 @@ export type ProfileClaimedScheduleSlot = {
   __feedItem?: any;
   __slotIndex?: number;
   __source?: string;
+  __claimKey?: string;
 };
 
 function scheduleRowChurchId(item: any): string {
@@ -906,11 +907,179 @@ function collectProfileScheduleFeedItems(options: {
 }
 
 function profileClaimedSlotKey(slot: any, index = 0): string {
+  const explicitKey = String(slot?.__claimKey || "").trim();
+  if (explicitKey) return explicitKey;
   const feedKey = baseFeedId(
     String(slot?.__feedItem?.sourceScheduleId || slot?.__feedItem?.id || "")
   );
   const slotKey = String(slot?.id || slot?.slotId || slot?.slot || slot?.slotNumber || index);
   return `${feedKey}|${slotKey}`;
+}
+
+function ministryClaimMatchesChurch(churchId: string, recordChurchId?: string): boolean {
+  const cid = String(churchId || "").trim();
+  const recordId = String(recordChurchId || "").trim();
+  if (!cid || !recordId) return true;
+  return recordId === cid;
+}
+
+function resolveMinistryProfileFeedTitle(args: {
+  name?: string;
+  slot?: any;
+  item?: any;
+}): string {
+  const candidates = [
+    args.name,
+    args.slot?.name,
+    args.slot?.task,
+    args.slot?.title,
+    args.item?.title,
+    args.item?.mediaName,
+  ];
+  for (const raw of candidates) {
+    const label = String(raw || "").trim();
+    if (!label) continue;
+    const lower = label.toLowerCase();
+    if (lower.startsWith("min_") || lower.startsWith("ministry_")) continue;
+    if (/^ch\d+/i.test(label)) continue;
+    return label;
+  }
+  return "Ministry Live";
+}
+
+function buildPersistedMinistryProfileSlot(args: {
+  viewerUserId: string;
+  feedId: string;
+  slotId: string;
+  startMs: number;
+  endMs: number;
+  slotNumber?: number;
+  name?: string;
+  role?: string;
+  item?: any;
+  slot?: any;
+  churchId?: string;
+}): any | null {
+  const uid = String(args.viewerUserId || "").trim();
+  const feedId = baseFeedId(String(args.feedId || ""));
+  const slotId = String(args.slotId || "").trim();
+  const startMs = Number(args.startMs || 0);
+  const endMs = Number(args.endMs || 0);
+  if (!uid || !feedId || !slotId || !startMs || endMs <= 0) return null;
+
+  const slotNumber = Math.max(
+    1,
+    Number(
+      args.slotNumber ||
+        args.slot?.slotNumber ||
+        args.slot?.slot ||
+        1
+    )
+  );
+
+  return {
+    ...(args.slot && typeof args.slot === "object" ? args.slot : {}),
+    id: slotId,
+    slotId,
+    slot: slotNumber,
+    slotNumber,
+    startMs,
+    endMs,
+    claimedByUserId: uid,
+    claimedByName: String(args.name || args.slot?.claimedByName || "You").trim(),
+    claimedByRole: String(args.role || args.slot?.claimedByRole || "Member").trim(),
+    churchId: String(args.churchId || args.item?.churchId || args.slot?.churchId || "").trim() || undefined,
+  };
+}
+
+function tryMergePersistedMinistryProfileClaim(
+  merged: ProfileClaimedScheduleSlot[],
+  args: {
+    viewerUserId: string;
+    churchId: string;
+    feedId: string;
+    slotId: string;
+    startMs: number;
+    endMs: number;
+    slotNumber?: number;
+    name?: string;
+    role?: string;
+    item?: any;
+    slot?: any;
+    recordChurchId?: string;
+    source: string;
+  },
+  nowMs: number
+): "added" | "skipped-expired" | "skipped" {
+  const feedId = baseFeedId(String(args.feedId || ""));
+  const slotId = String(args.slotId || "").trim();
+  if (!feedId || !slotId) return "skipped";
+  if (!isMinistryRingFeedId(feedId, args.item, args.slot)) return "skipped";
+  if (
+    !ministryClaimMatchesChurch(
+      args.churchId,
+      args.recordChurchId || args.item?.churchId || args.slot?.churchId
+    )
+  ) {
+    return "skipped";
+  }
+
+  const slot = buildPersistedMinistryProfileSlot({
+    viewerUserId: args.viewerUserId,
+    feedId,
+    slotId,
+    startMs: args.startMs,
+    endMs: args.endMs,
+    slotNumber: args.slotNumber,
+    name: args.name,
+    role: args.role,
+    item: args.item,
+    slot: args.slot,
+    churchId: args.recordChurchId || args.item?.churchId || args.slot?.churchId,
+  });
+  if (!slot) return "skipped";
+  if (!isSlotClaimedByViewer(slot, args.viewerUserId, feedId)) return "skipped";
+  if (!isCountableProfileClaimedSlot(slot, Math.max(0, Number(slot.slotNumber || 1) - 1), nowMs)) {
+    return "skipped-expired";
+  }
+
+  const feedTitle = resolveMinistryProfileFeedTitle({
+    name: args.name,
+    slot,
+    item: args.item,
+  });
+
+  merged.push({
+    ...slot,
+    feedTitle,
+    __feedItem: args.item || {
+      id: feedId,
+      sourceScheduleId: feedId,
+      churchId: args.recordChurchId || args.item?.churchId || args.slot?.churchId,
+      source: "ministry-live",
+      title: feedTitle,
+    },
+    __slotIndex: Math.max(0, Number(slot.slotNumber || 1) - 1),
+    __source: args.source,
+    __claimKey: `${feedId}|${slotId}`,
+  });
+  return "added";
+}
+
+/** Count valid active/upcoming claimed schedule slots for the viewer (feed + persisted ministry). */
+export function getValidClaimedScheduleCountForUser(
+  userId: string,
+  nowMs = Date.now(),
+  options?: { churchId?: string; feedRows?: any[]; source?: string }
+): number {
+  const schedules = buildProfileClaimedSchedules({
+    viewerUserId: userId,
+    churchId: String(options?.churchId || "").trim(),
+    feedRows: options?.feedRows,
+    nowMs,
+    source: options?.source || "getValidClaimedScheduleCountForUser",
+  });
+  return schedules.length;
 }
 
 function resolveFeedItemForClaimEntry(
@@ -943,10 +1112,12 @@ export function buildProfileClaimedSchedules(options: {
   churchId: string;
   feedRows?: any[];
   nowMs?: number;
+  source?: string;
 }): ProfileClaimedScheduleSlot[] {
   const viewerUserId = String(options.viewerUserId || "").trim();
   const churchId = String(options.churchId || "").trim();
   const nowMs = options.nowMs ?? Date.now();
+  const buildSource = String(options.source || "buildProfileClaimedSchedules").trim();
   const homeFeedRows = feedList() as any[];
   const explicitFeedRows = Array.isArray(options.feedRows) ? options.feedRows : [];
   const { items: scheduleItems, canonicalFeedId } = collectProfileScheduleFeedItems({
@@ -967,21 +1138,25 @@ export function buildProfileClaimedSchedules(options: {
     feedRowCount: scheduleItems.length,
     totalScheduleSlots,
     canonicalFeedId,
+    source: buildSource,
   });
 
   if (!viewerUserId || !churchId) {
     console.log("KRISTO_PROFILE_CLAIMED_COUNT_SOURCE", {
-      currentUserId: viewerUserId,
-      totalScheduleSlots,
-      claimedByMeCount: 0,
-      feedIds: [],
-      slotIds: [],
+      userId: viewerUserId,
+      feedClaimCount: 0,
+      persistedMinistryClaimCount: 0,
+      totalClaimedCount: 0,
+      skippedExpired: 0,
+      source: buildSource,
       reason: "missing-viewer-or-church",
     });
     return [];
   }
 
   const merged: ProfileClaimedScheduleSlot[] = [];
+  let skippedExpired = 0;
+  const persistedMinistryKeys = new Set<string>();
   const authoritativeRows = filterOutDeletedScheduleRows(
     explicitFeedRows.length
       ? explicitFeedRows
@@ -1052,7 +1227,28 @@ export function buildProfileClaimedSchedules(options: {
     const feedId = baseFeedId(String(entry?.postId || ""));
     const slotId = String(entry?.slotId || "").trim();
     const authoritative = findAuthoritativeScheduleSlot(feedRows, feedId, slotId);
-    if (!authoritative) continue;
+    if (!authoritative) {
+      const ministryResult = tryMergePersistedMinistryProfileClaim(
+        merged,
+        {
+          viewerUserId,
+          churchId,
+          feedId,
+          slotId,
+          startMs: Number(entry?.startMs || 0),
+          endMs: Number(entry?.endMs || 0),
+          slotNumber: Number(entry?.slotNumber || 0) || undefined,
+          name: entry?.name,
+          role: entry?.role,
+          recordChurchId: entry?.churchId || entry?.targetChurchId,
+          source: "persisted-ministry",
+        },
+        nowMs
+      );
+      if (ministryResult === "skipped-expired") skippedExpired += 1;
+      if (ministryResult === "added") persistedMinistryKeys.add(`${feedId}|${slotId}`);
+      continue;
+    }
 
     const { item: feedItem, slot: matchedSlot, index: slotIndex } = authoritative;
     const resolvedFeedId = feedItem
@@ -1091,8 +1287,34 @@ export function buildProfileClaimedSchedules(options: {
     const feedRows = mergeProfileFeedRows(explicitFeedRows, homeFeedRows);
     const feedId = baseFeedId(String(hint?.baseFeedId || hint?.feedId || ""));
     const slotId = String(hint?.slotId || "").trim();
+    const ministryKey = `${feedId}|${slotId}`;
+    if (persistedMinistryKeys.has(ministryKey)) continue;
+
     const authoritative = findAuthoritativeScheduleSlot(feedRows, feedId, slotId);
-    if (!authoritative) continue;
+    if (!authoritative) {
+      const ministryResult = tryMergePersistedMinistryProfileClaim(
+        merged,
+        {
+          viewerUserId,
+          churchId,
+          feedId,
+          slotId,
+          startMs: Number(hint?.startMs || 0),
+          endMs: Number(hint?.endMs || 0),
+          slotNumber: Number(hint?.slotNumber || 0) || undefined,
+          name: hint?.name,
+          role: hint?.role,
+          item: hint?.item,
+          slot: hint?.slot,
+          recordChurchId: hint?.churchId,
+          source: "persisted-ministry",
+        },
+        nowMs
+      );
+      if (ministryResult === "skipped-expired") skippedExpired += 1;
+      if (ministryResult === "added") persistedMinistryKeys.add(ministryKey);
+      continue;
+    }
 
     const { item: feedItem, slot, index: slotIndex } = authoritative;
     if (!isSlotClaimedByViewer(slot, viewerUserId, feedId)) continue;
@@ -1138,25 +1360,34 @@ export function buildProfileClaimedSchedules(options: {
       return aStart - bStart;
     });
 
+  const feedClaimCount = result.filter((row) => row.__source === "feed").length;
+  const persistedMinistryClaimCount = result.filter(
+    (row) => row.__source === "persisted-ministry"
+  ).length;
+  const fromClaimStore = result.filter((row) => row.__source === "claim-store").length;
+  const fromRingHint = result.filter((row) => row.__source === "ring-hint").length;
+
   console.log("KRISTO_PROFILE_CLAIMED_COUNT_SOURCE", {
-    currentUserId: viewerUserId,
-    totalScheduleSlots,
-    claimedByMeCount: result.length,
-    feedIds: [...new Set(result.map((row) => baseFeedId(String(row?.__feedItem?.sourceScheduleId || row?.__feedItem?.id || ""))).filter(Boolean))],
-    slotIds: result.map((row) => String(row?.id || row?.slotId || "")).filter(Boolean),
+    userId: viewerUserId,
+    feedClaimCount: feedClaimCount + fromClaimStore + fromRingHint,
+    persistedMinistryClaimCount,
+    totalClaimedCount: result.length,
+    skippedExpired,
+    source: buildSource,
+    fromFeed: feedClaimCount,
+    fromClaimStore,
+    fromRingHint,
     canonicalFeedId,
-    fromFeed: result.filter((row) => row.__source === "feed").length,
-    fromClaimStore: result.filter((row) => row.__source === "claim-store").length,
-    fromRingHint: result.filter((row) => row.__source === "ring-hint").length,
   });
 
   console.log("KRISTO_PROFILE_CLAIMED_COUNT_UPDATED", {
     viewerUserId,
     churchId,
     count: result.length,
-    fromFeed: result.filter((row) => row.__source === "feed").length,
-    fromClaimStore: result.filter((row) => row.__source === "claim-store").length,
-    fromRingHint: result.filter((row) => row.__source === "ring-hint").length,
+    feedClaimCount: feedClaimCount + fromClaimStore + fromRingHint,
+    persistedMinistryClaimCount,
+    skippedExpired,
+    source: buildSource,
   });
 
   return result;
