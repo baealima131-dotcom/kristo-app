@@ -110,6 +110,7 @@ import {
 import {
   assignmentCardsToLiveScheduleSlots,
   extractAssignmentScheduleCards,
+  resolveMinistryLiveViewerOnlyFromRouteParams,
 } from "@/src/lib/ministryLiveActivation";
 import { fetchChurchMembers } from "@/src/lib/churchMembersApi";
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRing";
@@ -3840,7 +3841,73 @@ export default function LiveRoomScreen() {
     canPublish?: string;
     canPublishMic?: string;
     canPublishCamera?: string;
+    enteredAsViewer?: string;
+    mediaScope?: string;
+    roomKind?: string;
   }>();
+
+  const ministryLiveViewerOnlyFromRoute = useMemo(
+    () => resolveMinistryLiveViewerOnlyFromRouteParams(params as Record<string, unknown>),
+    [
+      params.room,
+      params.mediaScope,
+      params.roomKind,
+      params.source,
+      params.enteredAsViewer,
+      params.canPublish,
+    ]
+  );
+
+  const livePreflightPermissionModeLoggedRef = useRef(false);
+  useEffect(() => {
+    if (livePreflightPermissionModeLoggedRef.current) return;
+    livePreflightPermissionModeLoggedRef.current = true;
+    const isMinistryRoute =
+      String(params.room || "").toLowerCase() === "ministry" ||
+      String(params.mediaScope || "").toLowerCase() === "ministry" ||
+      String(params.roomKind || "").toLowerCase().includes("ministry") ||
+      String(params.source || "").toLowerCase().includes("ministry-live");
+    const routeCanPublish =
+      String(params.canPublish || "") === "1" ||
+      String(params.canPublishMic || "") === "1" ||
+      String(params.canPublishCamera || "") === "1";
+    console.log("KRISTO_LIVE_PREFLIGHT_PERMISSION_MODE", {
+      meetingType: isMinistryRoute ? "ministry" : "church",
+      canEnterLive: true,
+      canUseMicCamera: routeCanPublish,
+      canHostOrStartBroadcast: routeCanPublish,
+      claimedByMe:
+        String((params as any)?.claimedByUserId || "").trim() ===
+        String(session?.userId || "").trim(),
+      viewerOnly: ministryLiveViewerOnlyFromRoute,
+      ministryRole: String(params.role || ""),
+      churchRole: String((session as any)?.churchRole || ""),
+    });
+  }, [
+    ministryLiveViewerOnlyFromRoute,
+    params.room,
+    params.mediaScope,
+    params.roomKind,
+    params.source,
+    params.role,
+    params.canPublish,
+    params.canPublishMic,
+    params.canPublishCamera,
+    (params as any)?.claimedByUserId,
+    session?.userId,
+    (session as any)?.churchRole,
+  ]);
+
+  useEffect(() => {
+    if (!ministryLiveViewerOnlyFromRoute) return;
+    setLivePerfPermissionsDone(true);
+    console.log("KRISTO_LIVE_PREFLIGHT_MIC_SKIPPED_VIEWER_ONLY", {
+      meetingType: "ministry",
+      enteredAsViewer: String(params.enteredAsViewer || ""),
+      canPublish: String(params.canPublish || ""),
+      currentUserId: String(session?.userId || ""),
+    });
+  }, [ministryLiveViewerOnlyFromRoute, params.enteredAsViewer, params.canPublish, session?.userId]);
 
   console.log("KRISTO_LIVE_ROOM_RENDER_PROBE", {
     isFocused,
@@ -4059,7 +4126,16 @@ export default function LiveRoomScreen() {
       sinceRingNavMs: ringNavAt ? liveRoomMountAtRef.current - ringNavAt : null,
     });
     pauseHomeFeedBackgroundWorkForLiveNavigation("live-room-mount");
-    prewarmLiveRoomMediaPermissions("live-room-mount");
+    if (!resolveMinistryLiveViewerOnlyFromRouteParams(params as Record<string, unknown>)) {
+      prewarmLiveRoomMediaPermissions("live-room-mount");
+    } else {
+      console.log("KRISTO_LIVE_PREFLIGHT_MIC_SKIPPED_VIEWER_ONLY", {
+        meetingType: "ministry",
+        source: "live-room-mount-prewarm-skip",
+        enteredAsViewer: String((params as any)?.enteredAsViewer || ""),
+        canPublish: String((params as any)?.canPublish || ""),
+      });
+    }
     console.log("KRISTO_LIVE_ROOM_ROUTE_SLOTS_SIZE", {
       byteLen: routeSlotsByteLen,
       charLen: routeSlotsRaw.length,
@@ -5914,6 +5990,20 @@ export default function LiveRoomScreen() {
     }
   }
 
+  const ministryLiveViewerOnly =
+    ministryLiveViewerOnlyFromRoute &&
+    !claimEnterLockHeld &&
+    !userHasClaimedScheduleSlot &&
+    myClaimedMicSlotNumbers.length === 0;
+
+  if (ministryLiveViewerOnly) {
+    pastorPermanentMicNow = false;
+    mediaHostPermanentMicNow = false;
+    canPublishClaimedMicNow = false;
+    canPublishClaimedCameraNow = false;
+    canPublishLiveVideoNow = false;
+  }
+
   const cameraPublishAllowedNow = resolveLiveCameraPublishAllowed({
     isMediaInstantLive,
     userOwnsCurrentActiveSlot,
@@ -6331,6 +6421,7 @@ export default function LiveRoomScreen() {
   // Sticky for the live session: token fetch must not follow per-tick camera/slot flags.
   const [liveKitSessionMayPublish, setLiveKitSessionMayPublish] = useState(
     () => {
+      if (ministryLiveViewerOnlyFromRoute) return false;
       if (isMediaInstantLive) {
         return routeCanPublishEarly;
       }
@@ -6349,6 +6440,12 @@ export default function LiveRoomScreen() {
 
   useEffect(() => {
     setLiveKitSessionMayPublish((prev) => {
+      if (ministryLiveViewerOnly) {
+        if (claimEnterLockHeld && claimEnterLock) {
+          return !!(claimEnterLock.canPublishMic || claimEnterLock.canPublishCamera);
+        }
+        return canPublishClaimedMicNow || canPublishLiveVideoNow;
+      }
       if (prev) return true;
       if (isMediaInstantLive) {
         return (
@@ -6377,6 +6474,10 @@ export default function LiveRoomScreen() {
     roleLooksLikeHost,
     fastLiveAuth.trustedIsActualChurchPastor,
     fastLiveAuth.trustedOwnsActiveSlot,
+    ministryLiveViewerOnly,
+    claimEnterLockHeld,
+    claimEnterLock?.canPublishMic,
+    claimEnterLock?.canPublishCamera,
   ]);
 
   const liveMicPublisherReady = canPublishClaimedMicNow;
@@ -7437,9 +7538,10 @@ export default function LiveRoomScreen() {
   const publisherHostPinnedBeforeToken = isLiveKitPublisherHostPinnedBeforeToken(liveBridgeId);
 
   const publisherEligibleForHostPin =
-    canPublishClaimedMicNow ||
-    cameraPublishAllowedNow ||
-    routeActiveSlotSpeakerMount;
+    !ministryLiveViewerOnly &&
+    (canPublishClaimedMicNow ||
+      cameraPublishAllowedNow ||
+      routeActiveSlotSpeakerMount);
 
   useLayoutEffect(() => {
     if (!liveBridgeId || !publisherEligibleForHostPin) return;
@@ -11647,6 +11749,11 @@ export default function LiveRoomScreen() {
   }
 
   useEffect(() => {
+    if (ministryLiveViewerOnly) {
+      setLivePerfPermissionsDone(true);
+      return;
+    }
+
     let alive = true;
 
     (async () => {
@@ -11686,7 +11793,7 @@ export default function LiveRoomScreen() {
     return () => {
       alive = false;
     };
-  }, [cameraPermission?.granted, micPermission?.granted]);
+  }, [cameraPermission?.granted, micPermission?.granted, ministryLiveViewerOnly]);
 
   useEffect(() => {
     if (livePerfInteractLoggedRef.current) return;
@@ -11712,8 +11819,10 @@ export default function LiveRoomScreen() {
     micPermission?.granted,
   ]);
 
-  const livePreflightPublisherMic = canPublishClaimedMicNow;
-  const livePreflightPublisherCamera = cameraPublishAllowedNow;
+  const livePreflightPublisherMic =
+    canPublishClaimedMicNow && !ministryLiveViewerOnly;
+  const livePreflightPublisherCamera =
+    cameraPublishAllowedNow && !ministryLiveViewerOnly;
   const livePreflightSkip = String((params as any)?.preview || "") === "1";
   const livePreflightActive = !livePreflightSkip && !livePreflightComplete;
   const liveKitPreflightStageKey = `lk-preflight-${liveBridgeId}|${currentUserId || "anon"}|r${livePreflightRetryEpoch}`;

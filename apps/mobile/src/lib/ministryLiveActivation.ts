@@ -116,10 +116,25 @@ export function resolveMinistryLiveCanPublishForEntry(args: {
   viewerIsHost: boolean;
   isSelectedMcHost?: boolean;
 }): boolean {
-  if (args.viewerIsPastor) return true;
   if (args.viewerIsHost || args.isSelectedMcHost === true) return true;
   if (args.viewerHasClaim) return true;
   return false;
+}
+
+export function resolveMinistryLiveViewerOnlyFromRouteParams(
+  params: Record<string, unknown> | null | undefined
+): boolean {
+  const p = params || {};
+  const isMinistry =
+    String(p.room || "").toLowerCase() === "ministry" ||
+    String(p.mediaScope || "").toLowerCase() === "ministry" ||
+    String(p.roomKind || "").toLowerCase().includes("ministry") ||
+    String(p.source || "").toLowerCase().includes("ministry-live");
+  if (!isMinistry) return false;
+  return (
+    String(p.enteredAsViewer || "") === "1" ||
+    String(p.canPublish || "") !== "1"
+  );
 }
 
 export function assignmentCardsToLiveScheduleSlots(
@@ -287,6 +302,11 @@ export function resolveMinistryLiveActivationState(args: {
   const viewerHasClaim = viewerHasClaimedAnyAssignmentCard(cards, args.viewerUserId);
   const canHostOrStartBroadcast =
     args.viewerIsPastor || args.viewerIsHost || viewerHasClaim;
+  const canUseMicCamera = resolveMinistryLiveCanPublishForEntry({
+    viewerHasClaim,
+    viewerIsPastor: args.viewerIsPastor,
+    viewerIsHost: args.viewerIsHost,
+  });
   const canEnterBackstage =
     !!viewerCanManageLive &&
     nowMs < startMs &&
@@ -302,7 +322,7 @@ export function resolveMinistryLiveActivationState(args: {
       activeSlotId: window.activeSlotId,
       canEnterLive: true,
       canHostOrStartBroadcast,
-      canUseMicCamera: canHostOrStartBroadcast,
+      canUseMicCamera,
       canStartLive: canHostOrStartBroadcast,
       canEnterBackstage: false,
       viewerHasClaim,
