@@ -131,6 +131,7 @@ import {
 import {
   pauseHomeFeedBackgroundWorkForLiveNavigation,
   prewarmLiveRoomMediaPermissions,
+  readCachedLiveMediaPermissions,
   resumeHomeFeedAfterLiveExit,
 } from "@/src/lib/liveRoomStartup";
 import { fetchLiveKitToken } from "@/src/lib/liveKitTokenPrefetch";
@@ -158,15 +159,69 @@ import {
   logLiveKitConnectStart,
   logLiveKitRoomEvent,
   logLivePreflightBack,
+  logLivePreflightBlockedCameraNotReady,
+  logLivePreflightCameraReady,
+  logLivePreflightEnterAllowed,
+  logLivePreflightFastPathUsed,
+  logLivePreflightPublishReady,
+  logLivePreflightPublisherSequenceStart,
   logLivePreflightReady,
   logLivePreflightRetry,
   logLivePreflightStart,
   logLivePreflightStep,
+  logLivePreflightStepDone,
+  logLivePreflightStepSkipped,
+  logLivePreflightTimingSummary,
+  logLivePreflightModeResolved,
   logLivePreflightTimeout,
   msSinceLiveEnterTap,
   msSinceLiveRoomMount,
 } from "@/src/lib/liveKitPerf";
+import LiveSlotIdentityPlaceholder from "@/src/components/live/LiveSlotIdentityPlaceholder";
 import { isScheduledLivePreflightBridgeId } from "@/src/lib/enterLiveRoomNavigation";
+import {
+  ministryRecordAvatarUri,
+  resolveLiveSlotPlaceholderImageSource,
+} from "@/src/lib/liveSlotPlaceholderImageSource";
+import {
+  extractUserIdFromLiveKitIdentity,
+  getLiveSlotParticipantState,
+  isLiveSlotParticipantCameraPausedOverride,
+  isRemoteParticipantInRoom,
+  setLiveSlotParticipantCameraPausedOverride,
+  syncLiveSlotParticipantsFromRoom,
+} from "@/src/lib/liveSlotParticipantRegistry";
+import { fetchMinistryById } from "@/src/lib/ministriesApi";
+import {
+  logLivePreflightFastPathIfEligible,
+  readSilentPreflightSnapshot,
+  resolveLivePreflightModeFromRoute,
+  shouldSkipVisiblePreflightOnMount,
+  type LivePreflightMode,
+} from "@/src/lib/liveSilentPreflight";
+import {
+  clearPublisherVideoTrackWarmup,
+  ensurePublisherVideoTrackWarmup,
+  takePublisherVideoTrackWarmup,
+} from "@/src/lib/livePreflightPublisherWarmup";
+import {
+  beginLivePreflightStartupAttempt,
+  clearLivePreflightCompletedLock,
+  isLiveKitRoomActuallyConnected,
+  isLivePreflightConnectAccepted,
+  isLivePreflightEntryLocked,
+  lockLivePreflightCompleted,
+  logLiveCameraPausedInRoom,
+  logLivePreflightReopenBlockedAfterEntry,
+  markLivePreflightCameraPublished,
+  readLivePreflightStartupAttempt,
+  resetLivePreflightStartupAttempt,
+  subscribeLivePreflightStartup,
+  tryAcceptLiveKitConnectedOnce,
+  tryBeginCameraPublishOnce,
+  tryBeginLiveKitConnectOnce,
+  tryMarkWarmupConsumedOnce,
+} from "@/src/lib/livePreflightStartupGuard";
 import {
   buildLiveKitRoomOptions,
   resolveLiveKitVideoCaptureOptions,
@@ -215,6 +270,38 @@ import {
   getChurchProjectMcRuntime,
   getChurchProjectMcLiveSlotState,
 } from "@/src/store/churchProjectMcScheduleStore";
+
+function pickRouteMinistryAvatarCandidates(params: Record<string, unknown>, session: any): unknown[] {
+  return [
+    params?.ministryAvatarUrl,
+    params?.ministryAvatarUri,
+    params?.ministryLogoUrl,
+    params?.ministryLogoUri,
+    params?.ministryImageUrl,
+    params?.avatar,
+    params?.avatarUri,
+    params?.avatarUrl,
+    (session as any)?.ministryAvatarUrl,
+    (session as any)?.ministryAvatarUri,
+  ];
+}
+
+function isMinistryLiveRouteParams(params: Record<string, unknown>): boolean {
+  const room = String(params.room || "").toLowerCase();
+  const mediaScope = String(params.mediaScope || "").toLowerCase();
+  const roomKind = String(params.roomKind || "").toLowerCase();
+  const source = String(params.source || "").toLowerCase();
+  const ministryId = String(params.ministryId || params.roomId || "").trim();
+  return (
+    room === "ministry" ||
+    mediaScope === "ministry" ||
+    roomKind === "ministry-live" ||
+    source.includes("ministry-live") ||
+    source === "ministry-live-thread" ||
+    (source === "scheduled-live" && room === "ministry") ||
+    ministryId.startsWith("min_")
+  );
+}
 
 function isKristoChurchIdLabel(value: unknown) {
   return /^CH\d+-[A-Z0-9]+$/i.test(String(value || "").trim());
@@ -894,9 +981,13 @@ function KristoLiveKitConnectionLifecycle({
     const emitConnectedOnce = (source: string) => {
       if (connectedLoggedRef.current) return;
       connectedLoggedRef.current = true;
+      const accepted = tryAcceptLiveKitConnectedOnce({
+        roomName: bridgeId,
+        identity: identity() || String(expectedIdentity || tokenClaims()?.identity || ""),
+        source,
+      });
+      if (!accepted) return;
       logLivePerf("livekit_publisher_mount_end", { event: "connected", source });
-      markLiveRoomLiveKitConnected(bridgeId);
-      markClaimEnterLiveKitConnected(bridgeId);
       console.log("KRISTO_LIVEKIT_ROOM_EVENT_CONNECTED", {
         roomName: bridgeId,
         connectionState: roomState(),
@@ -971,7 +1062,11 @@ function KristoLiveKitConnectionLifecycle({
 
     if (!connectStartedRef.current) {
       connectStartedRef.current = true;
-      markLiveRoomLiveKitConnecting(bridgeId);
+      tryBeginLiveKitConnectOnce({
+        roomName: bridgeId,
+        identity: String(expectedIdentity || tokenClaims()?.identity || identity() || ""),
+        source: "lifecycle-mount",
+      });
       logLiveKitConnectStart({
         roomName: bridgeId,
         state: roomState(),
@@ -1058,6 +1153,10 @@ function KristoLiveKitStage({
   renderLocalPreview = false,
   preferredIdentityPrefix,
   mainStageVideoReady = false,
+  mainStageOwnerUserId,
+  claimedSlotId,
+  hasClaimedMainStageAvatar,
+  emitViewerVisualDecision,
 }: {
   roomName: string;
   headers: any;
@@ -1073,12 +1172,18 @@ function KristoLiveKitStage({
   renderLocalPreview?: boolean;
   preferredIdentityPrefix?: string;
   mainStageVideoReady?: boolean;
+  mainStageOwnerUserId?: string;
+  claimedSlotId?: string;
+  hasClaimedMainStageAvatar?: boolean;
+  emitViewerVisualDecision?: boolean;
 }) {
 
   const [tokenState, setTokenState] = useState<{ url: string; token: string } | null>(null);
   const tokenStateRef = useRef<{ url: string; token: string } | null>(null);
   const tokenFetchInFlightRef = useRef(false);
   const tokenReadyLatchRef = useRef(false);
+  const canPublishRef = useRef(canPublish);
+  canPublishRef.current = canPublish;
   const stableIdentityRef = useRef("");
 
   const [livekitDisabled, setLivekitDisabled] = useState(false);
@@ -1169,6 +1274,11 @@ const headersKey = JSON.stringify(headers || {});
   }, []);
 
   const handleLiveKitRoomConnected = React.useCallback(() => {
+    tryAcceptLiveKitConnectedOnce({
+      roomName,
+      identity: stableIdentityRef.current,
+      source: "LiveKitRoom.onConnected",
+    });
     logLiveKitRoomEvent("ROOM_ON_CONNECTED", {
       roomName,
       identity: stableIdentityRef.current,
@@ -1520,7 +1630,11 @@ const headersKey = JSON.stringify(headers || {});
           (globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ = roomName;
           tokenStateRef.current = { url: nextUrl, token: nextToken };
           tokenReadyLatchRef.current = true;
-          markLiveRoomLiveKitConnecting(roomName);
+          tryBeginLiveKitConnectOnce({
+            roomName,
+            identity: stableIdentity,
+            source: "livekit-token-ready",
+          });
           pinLiveKitPublisherStage(roomName, "livekit-token-ready", {
             lockKey: stageLockKey,
             stableIdentity,
@@ -1590,7 +1704,7 @@ const headersKey = JSON.stringify(headers || {});
       } catch {}
       alive = false;
     };
-  }, [roomName, stableIdentity, headersKey, canPublish]);
+  }, [roomName, stableIdentity, headersKey]);
 
   const liveKitCredentials =
     tokenState?.url && tokenState?.token
@@ -1683,7 +1797,8 @@ const headersKey = JSON.stringify(headers || {});
     isLiveRoomLiveKitSessionActive(roomName) ||
     stageMountSticky ||
     isLiveKitPublisherStagePinned(roomName) ||
-    hostPinnedBeforeToken;
+    hostPinnedBeforeToken ||
+    (globalThis as any).__KRISTO_LIVE_PREFLIGHT_ACTIVE__ === true;
 
   if (!effectiveStageMountAllowed && !keepLiveKitRoomMountedWhileConnecting) {
     logStageEarlyReturn("stage-mount-not-allowed");
@@ -1797,6 +1912,10 @@ const headersKey = JSON.stringify(headers || {});
         style={style}
         fallback={fallback}
         preferredIdentityPrefix={preferredIdentityPrefix}
+        mainStageOwnerUserId={mainStageOwnerUserId}
+        claimedSlotId={claimedSlotId}
+        hasClaimedMainStageAvatar={hasClaimedMainStageAvatar}
+        emitViewerVisualDecision={!canPublishCamera || emitViewerVisualDecision === true}
       />
     </LiveKitRoom>
   );
@@ -1984,14 +2103,161 @@ function KristoLiveKitCleanupGuard() {
 }
 
 
+function isRemoteVideoTrackUsable(track: any): boolean {
+  const mediaTrack = track?.mediaStreamTrack;
+  if (!mediaTrack) return false;
+  if (track?.isMuted === true) return false;
+  if (mediaTrack.enabled === false) return false;
+  const readyState = String(mediaTrack.readyState || "").toLowerCase();
+  if (readyState && readyState !== "live") return false;
+  return true;
+}
+
+function isRemoteVideoPublicationUsable(pub: any, track: any): boolean {
+  if (!isRemoteVideoTrackUsable(track)) return false;
+  if (pub?.isMuted === true) return false;
+  if (pub?.muted === true) return false;
+  return true;
+}
+
+function readRemoteCameraPublicationState(participant: any): {
+  hasParticipant: boolean;
+  hasPublication: boolean;
+  publicationMuted: boolean;
+  remoteCameraEnabled: boolean | null;
+  remoteVideoTrackUsable: boolean;
+  publication: any | null;
+  track: any | null;
+} {
+  if (!participant) {
+    return {
+      hasParticipant: false,
+      hasPublication: false,
+      publicationMuted: false,
+      remoteCameraEnabled: null,
+      remoteVideoTrackUsable: false,
+      publication: null,
+      track: null,
+    };
+  }
+
+  const pubs = Array.from(participant?.trackPublications?.values?.() || []) as any[];
+  const cameraPub =
+    participant?.getTrackPublication?.(Track.Source.Camera) ||
+    pubs.find((pub: any) => {
+      const source = String(pub?.source || "").toLowerCase();
+      const kind = String(pub?.kind || pub?.track?.kind || "").toLowerCase();
+      return (
+        source === String(Track.Source.Camera).toLowerCase() ||
+        source.includes("camera") ||
+        kind === "video"
+      );
+    }) ||
+    null;
+  const track = cameraPub?.track || cameraPub?.videoTrack || null;
+  const userId = extractUserIdFromLiveKitIdentity(String(participant?.identity || ""));
+  if (isLiveSlotParticipantCameraPausedOverride(userId)) {
+    return {
+      hasParticipant: true,
+      hasPublication: !!track,
+      publicationMuted: true,
+      remoteCameraEnabled: false,
+      remoteVideoTrackUsable: false,
+      publication: cameraPub,
+      track,
+    };
+  }
+  const publicationMuted = !!(cameraPub?.isMuted || cameraPub?.muted);
+  const participantCameraEnabled =
+    typeof participant?.isCameraEnabled === "boolean" ? participant.isCameraEnabled : null;
+  const remoteVideoTrackUsable = isRemoteVideoPublicationUsable(cameraPub, track);
+  const remoteCameraEnabled =
+    participantCameraEnabled !== null
+      ? participantCameraEnabled
+      : !!track && remoteVideoTrackUsable && !publicationMuted;
+
+  return {
+    hasParticipant: true,
+    hasPublication: !!track,
+    publicationMuted,
+    remoteCameraEnabled,
+    remoteVideoTrackUsable,
+    publication: cameraPub,
+    track,
+  };
+}
+
+function readRemoteParticipantCameraEnabledFromRoom(userId: string): boolean | null {
+  const uid = String(userId || "").trim();
+  if (!uid) return null;
+  const room = (globalThis as any).__KRISTO_LIVEKIT_CONNECTED_ROOM__;
+  if (!room) return null;
+  try {
+    const remotes = Array.from((room as any)?.remoteParticipants?.values?.() || []) as any[];
+    const participant = remotes.find(
+      (entry) => extractUserIdFromLiveKitIdentity(String(entry?.identity || "")) === uid
+    );
+    if (!participant) return null;
+    const state = readRemoteCameraPublicationState(participant);
+    if (state.remoteCameraEnabled === false) return false;
+    if (state.publicationMuted) return false;
+    if (!state.hasPublication) return false;
+    return state.remoteVideoTrackUsable;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePreferredRemoteParticipant(
+  room: any,
+  preferredIdentityPrefix?: string
+): { participant: any | null; userId: string; slotNumber: number | null } {
+  const preferred = String(preferredIdentityPrefix || "").trim();
+  const participants = Array.from(room?.remoteParticipants?.values?.() || []) as any[];
+
+  const matchesPreferred = (p: any) => {
+    const id = String(p?.identity || "");
+    if (!preferred) return false;
+    if (preferred.startsWith("slot:")) {
+      const n = preferred.replace("slot:", "").trim();
+      return !!n && id.includes(`-slot-${n}`);
+    }
+    return id.startsWith(preferred);
+  };
+
+  const ordered = preferred
+    ? [
+        ...participants.filter((p: any) => matchesPreferred(p)),
+        ...participants.filter((p: any) => !matchesPreferred(p)),
+      ]
+    : participants;
+
+  const participant = ordered[0] || null;
+  const identity = String(participant?.identity || "");
+  const slotMatch = identity.match(/-slot-(\d+)/i);
+  return {
+    participant,
+    userId: extractUserIdFromLiveKitIdentity(identity),
+    slotNumber: slotMatch ? Number(slotMatch[1]) : null,
+  };
+}
+
 function KristoRemoteRoomVideo({
   style,
   fallback,
   preferredIdentityPrefix,
+  mainStageOwnerUserId,
+  claimedSlotId,
+  emitViewerVisualDecision,
+  hasClaimedMainStageAvatar,
 }: {
   style: any;
   fallback: React.ReactNode;
   preferredIdentityPrefix?: string;
+  mainStageOwnerUserId?: string;
+  claimedSlotId?: string;
+  emitViewerVisualDecision?: boolean;
+  hasClaimedMainStageAvatar?: boolean;
 }) {
   const room = useRoomContext();
   const [remoteVideoTrack, setRemoteVideoTrack] = useState<any>(null);
@@ -1999,15 +2265,49 @@ function KristoRemoteRoomVideo({
   const [remoteAvStreamURL, setRemoteAvStreamURL] = useState<string>("");
   const [remoteAudioStreamURL, setRemoteAudioStreamURL] = useState<string>("");
   const [activeSpeakerIdentity, setActiveSpeakerIdentity] = useState<string>("");
+  const remoteFallbackLoggedRef = useRef("");
+  const [participantSyncTick, setParticipantSyncTick] = useState(0);
+
+  useEffect(() => {
+    if (!room) return;
+    const syncParticipants = () => {
+      syncLiveSlotParticipantsFromRoom(room);
+      setParticipantSyncTick((tick) => tick + 1);
+    };
+    syncParticipants();
+    const timer = setInterval(syncParticipants, 350);
+    return () => clearInterval(timer);
+  }, [room]);
+
+  const remoteViewerDecisionLoggedRef = useRef("");
 
   useEffect(() => {
     try {
       const videoTrack: any = remoteVideoTrack?.mediaStreamTrack;
+      const remote = resolvePreferredRemoteParticipant(room, preferredIdentityPrefix);
+      const pubState = readRemoteCameraPublicationState(remote.participant);
+      const participantState = remote.userId
+        ? getLiveSlotParticipantState(remote.userId)
+        : null;
+      const registryCameraOff =
+        participantState?.joined === true && participantState?.cameraEnabled !== true;
+      const remoteCameraOff =
+        !pubState.hasParticipant ||
+        pubState.publicationMuted ||
+        pubState.remoteCameraEnabled === false ||
+        !pubState.remoteVideoTrackUsable ||
+        registryCameraOff;
 
-      if (!videoTrack) return;
+      if (
+        !videoTrack ||
+        !isRemoteVideoPublicationUsable(pubState.publication, remoteVideoTrack) ||
+        remoteCameraOff
+      ) {
+        setRemoteAvStreamURL("");
+        return;
+      }
 
       const stream = new MediaStream();
-      videoTrack.enabled = true;
       stream.addTrack(videoTrack as any);
 
       const audioTrack: any = remoteAudioTrack?.mediaStreamTrack;
@@ -2024,13 +2324,16 @@ function KristoRemoteRoomVideo({
         hasAudio: !!remoteAudioTrack?.mediaStreamTrack,
         videoReadyState: videoTrack?.readyState,
         audioReadyState: remoteAudioTrack?.mediaStreamTrack?.readyState,
+        publicationMuted: pubState.publicationMuted,
+        remoteCameraEnabled: pubState.remoteCameraEnabled,
+        remoteVideoTrackUsable: pubState.remoteVideoTrackUsable,
       });
 
       setRemoteAvStreamURL(url);
     } catch (e: any) {
       console.log("KRISTO_REMOTE_COMBINED_AV_STREAM_ERROR", String(e?.message || e));
     }
-  }, [remoteVideoTrack, remoteAudioTrack]);
+  }, [room, remoteVideoTrack, remoteAudioTrack, preferredIdentityPrefix, participantSyncTick]);
 
   useEffect(() => {
     if (!room) return;
@@ -2064,7 +2367,11 @@ function KristoRemoteRoomVideo({
       }
 
       if (kind === "video") {
-        if (track?.mediaStreamTrack) track.mediaStreamTrack.enabled = true;
+        if (!isRemoteVideoPublicationUsable(publication, track)) {
+          setRemoteVideoTrack(null);
+          setRemoteAvStreamURL("");
+          return;
+        }
         setRemoteVideoTrack(track);
       }
     };
@@ -2130,7 +2437,7 @@ function KristoRemoteRoomVideo({
             if (!track) return;
 
             if (String(track.kind).toLowerCase() === "video") {
-              track.mediaStreamTrack.enabled = true;
+              if (!isRemoteVideoPublicationUsable(pub, track)) return;
 
               if (!pickedVideo) {
                 pickedVideo = true;
@@ -2147,6 +2454,11 @@ function KristoRemoteRoomVideo({
           }
         });
       });
+
+      if (!pickedVideo) {
+        setRemoteVideoTrack(null);
+        setRemoteAvStreamURL("");
+      }
     };
 
     const onActiveSpeakersChanged = (speakers: any[]) => {
@@ -2164,28 +2476,72 @@ function KristoRemoteRoomVideo({
 
     const repick = () => {
       setRemoteVideoTrack(null);
+      setRemoteAvStreamURL("");
       pick();
+      syncLiveSlotParticipantsFromRoom(room);
+      setParticipantSyncTick((tick) => tick + 1);
     };
+
+    const onTrackMuted = (publication: any, participant: any) => {
+      const kind = String(publication?.kind || publication?.track?.kind || "").toLowerCase();
+      const source = String(publication?.source || "").toLowerCase();
+      const isVideo = kind === "video" || source.includes("camera");
+      if (!isVideo) return;
+      const userId = extractUserIdFromLiveKitIdentity(String(participant?.identity || ""));
+      if (userId) setLiveSlotParticipantCameraPausedOverride(userId, true);
+      console.log("KRISTO_LIVE_REMOTE_CAMERA_TRACK_MUTED", {
+        userId,
+        source,
+        trackSid: String(publication?.trackSid || publication?.sid || ""),
+      });
+      repick();
+    };
+
+    const onTrackUnmuted = (publication: any, participant: any) => {
+      const kind = String(publication?.kind || publication?.track?.kind || "").toLowerCase();
+      const source = String(publication?.source || "").toLowerCase();
+      const isVideo = kind === "video" || source.includes("camera");
+      if (!isVideo) return;
+      const userId = extractUserIdFromLiveKitIdentity(String(participant?.identity || ""));
+      if (userId) setLiveSlotParticipantCameraPausedOverride(userId, false);
+      console.log("KRISTO_LIVE_REMOTE_CAMERA_TRACK_UNMUTED", {
+        userId,
+        source,
+        trackSid: String(publication?.trackSid || publication?.sid || ""),
+      });
+      repick();
+    };
+
+    syncLiveSlotParticipantsFromRoom(room);
+
+    const connectionStateChangedEvent =
+      (RoomEvent as any).ConnectionStateChanged || "connectionStateChanged";
 
     room
       .on(RoomEvent.TrackSubscribed, onTrackSubscribed)
       .on(RoomEvent.TrackPublished, repick)
       .on(RoomEvent.TrackUnsubscribed, repick)
+      .on(RoomEvent.TrackMuted, onTrackMuted)
+      .on(RoomEvent.TrackUnmuted, onTrackUnmuted)
       .on(RoomEvent.ParticipantConnected, repick)
       .on(RoomEvent.ParticipantDisconnected, repick)
       .on(RoomEvent.Reconnected, repick)
-      .on(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
+      .on(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged)
+      .on(connectionStateChangedEvent, repick);
 
     return () => {
       room
         .off(RoomEvent.TrackSubscribed, onTrackSubscribed)
         .off(RoomEvent.TrackPublished, repick)
         .off(RoomEvent.TrackUnsubscribed, repick)
+        .off(RoomEvent.TrackMuted, onTrackMuted)
+        .off(RoomEvent.TrackUnmuted, onTrackUnmuted)
         .off(RoomEvent.ParticipantConnected, repick)
         .off(RoomEvent.ParticipantDisconnected, repick)
-        .off(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
+        .off(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged)
+        .off(connectionStateChangedEvent, repick);
     };
-  }, [room]);
+  }, [room, preferredIdentityPrefix]);
 
   const localVideoTrack =
     false
@@ -2213,25 +2569,144 @@ function KristoRemoteRoomVideo({
     }
   })();
 
-  const finalURL = remoteAvStreamURL || localStreamURL;
+  const remoteParticipant = resolvePreferredRemoteParticipant(room, preferredIdentityPrefix);
+  const remoteParticipantState = remoteParticipant.userId
+    ? getLiveSlotParticipantState(remoteParticipant.userId)
+    : null;
+  const remotePubState = readRemoteCameraPublicationState(remoteParticipant.participant);
+  void participantSyncTick;
 
-  if (!finalURL) return <>{fallback}</>;
+  const remotePublicationMuted =
+    remotePubState.publicationMuted ||
+    isLiveSlotParticipantCameraPausedOverride(remoteParticipant.userId);
+  const remoteCameraEnabled =
+    !isLiveSlotParticipantCameraPausedOverride(remoteParticipant.userId) &&
+    remotePubState.remoteCameraEnabled !== false &&
+    remoteParticipantState?.cameraEnabled !== false;
+  const remoteVideoTrackUsable =
+    isRemoteVideoTrackUsable(remoteVideoTrack) &&
+    isRemoteVideoPublicationUsable(remotePubState.publication, remoteVideoTrack || remotePubState.track);
 
-  return (
-    <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]}>
+  const showRemoteVideo =
+    remotePubState.hasParticipant &&
+    remoteVideoTrackUsable &&
+    !remotePublicationMuted &&
+    remoteCameraEnabled &&
+    !!remoteAvStreamURL;
 
-      {finalURL ? (
+  const showPausedPlaceholder =
+    remotePubState.hasParticipant &&
+    (!showRemoteVideo ||
+      remotePublicationMuted ||
+      !remoteVideoTrackUsable ||
+      remotePubState.remoteCameraEnabled === false ||
+      remoteParticipantState?.cameraEnabled === false);
+
+  useEffect(() => {
+    if (!emitViewerVisualDecision) return;
+    const ownerId = String(mainStageOwnerUserId || remoteParticipant.userId || "").trim();
+    const sig = [
+      ownerId,
+      remoteParticipant.userId || "",
+      remotePubState.remoteCameraEnabled,
+      remotePublicationMuted,
+      remoteVideoTrackUsable,
+      !!remoteAvStreamURL,
+      showPausedPlaceholder,
+      showRemoteVideo,
+      claimedSlotId || "",
+    ].join("|");
+    if (remoteViewerDecisionLoggedRef.current === sig) return;
+    remoteViewerDecisionLoggedRef.current = sig;
+    console.log("KRISTO_VIEWER_MAIN_STAGE_VISUAL_DECISION", {
+      currentSlotOwnerId: ownerId,
+      remoteParticipantId: remoteParticipant.userId || "",
+      remoteCameraEnabled: remotePubState.remoteCameraEnabled,
+      remotePublicationMuted,
+      remoteVideoTrackUsable,
+      remoteAvStreamURLPresent: !!remoteAvStreamURL,
+      showPausedPlaceholder,
+      showRemoteVideo,
+      claimedSlotId: String(claimedSlotId || ""),
+      hasClaimedAvatar: hasClaimedMainStageAvatar === true,
+    });
+  }, [
+    emitViewerVisualDecision,
+    mainStageOwnerUserId,
+    remoteParticipant.userId,
+    remotePubState.remoteCameraEnabled,
+    remotePublicationMuted,
+    remoteVideoTrackUsable,
+    remoteAvStreamURL,
+    showPausedPlaceholder,
+    showRemoteVideo,
+    claimedSlotId,
+    hasClaimedMainStageAvatar,
+  ]);
+
+  const renderRemoteFallback = (reason: string) => {
+    const logKey = [
+      remoteParticipant.userId || "",
+      remoteParticipant.slotNumber ?? "",
+      remotePubState.hasParticipant,
+      remotePubState.remoteCameraEnabled,
+      remotePublicationMuted,
+      reason,
+    ].join("|");
+    if (remoteFallbackLoggedRef.current !== logKey) {
+      remoteFallbackLoggedRef.current = logKey;
+      console.log("KRISTO_LIVE_REMOTE_STAGE_FALLBACK", {
+        participantId: remoteParticipant.userId || "",
+        claimedSlotId: remoteParticipant.slotNumber ?? null,
+        cameraEnabled: remotePubState.remoteCameraEnabled !== false,
+        participantJoined:
+          remoteParticipantState?.joined === true || remotePubState.hasParticipant,
+        publicationMuted: remotePublicationMuted,
+        reason,
+      });
+    }
+    return (
+      <View
+        style={[
+          style,
+          {
+            overflow: "hidden",
+            backgroundColor: "#000",
+            alignItems: "center",
+            justifyContent: "center",
+          },
+        ]}
+      >
+        {fallback}
+      </View>
+    );
+  };
+
+  if (showPausedPlaceholder && !showRemoteVideo) {
+    return renderRemoteFallback("remote_camera_off_or_track_missing");
+  }
+
+  if (!showRemoteVideo && !localStreamURL) {
+    return renderRemoteFallback("remote_camera_off_or_track_missing");
+  }
+
+  if (showRemoteVideo || localStreamURL) {
+    const streamURL = remoteAvStreamURL || localStreamURL;
+    return (
+      <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]}>
         <RTCView
-          key={`live-av-${finalURL}`}
-          streamURL={finalURL}
+          key={`live-av-${streamURL}`}
+          streamURL={streamURL}
           style={({ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, width: "100%", height: "100%", backgroundColor: "#000" } as any)}
           objectFit={"cover" as any}
           zOrder={999}
           mirror={!!localStreamURL && !remoteAvStreamURL}
         />
-      ) : null}
-    </View>
-  );
+      </View>
+    );
+  }
+
+  return renderRemoteFallback("remote_camera_off_or_track_missing");
 }
 
 function readLocalMicPublicationState(room: any) {
@@ -2479,6 +2954,80 @@ function readLocalCameraPublicationState(room: any) {
   }
 }
 
+async function applyPublisherCameraPauseState(
+  room: any,
+  input: {
+    cameraPaused: boolean;
+    localVideoTrack: any;
+    cameraFacing?: "front" | "back";
+  }
+) {
+  const lp: any = room?.localParticipant;
+  if (!lp) return;
+  const userId = extractUserIdFromLiveKitIdentity(String(lp?.identity || ""));
+  const before = readLocalCameraPublicationState(room);
+
+  if (input.cameraPaused) {
+    if (userId) setLiveSlotParticipantCameraPausedOverride(userId, true);
+    if (input.localVideoTrack?.mediaStreamTrack) {
+      input.localVideoTrack.mediaStreamTrack.enabled = false;
+    }
+    let mutedViaPublication = false;
+    try {
+      const pub = before.cameraPub;
+      if (pub && typeof pub.mute === "function") {
+        await pub.mute();
+        mutedViaPublication = true;
+      }
+    } catch (e: any) {
+      console.log("KRISTO_LIVE_CAMERA_PAUSE_PUB_MUTE_ERROR", String(e?.message || e));
+    }
+    try {
+      await lp.setCameraEnabled?.(false);
+    } catch (e: any) {
+      console.log("KRISTO_LIVE_CAMERA_PAUSE_SET_ENABLED_ERROR", String(e?.message || e));
+    }
+    const after = readLocalCameraPublicationState(room);
+    console.log("KRISTO_LIVE_CAMERA_PAUSE_PUBLISHED", {
+      userId,
+      mutedViaPublication,
+      beforePublicationMuted: before.publicationMuted,
+      afterPublicationMuted: after.publicationMuted,
+      beforeHasPublication: before.hasPublication,
+      afterHasPublication: after.hasPublication,
+      beforeIsCameraEnabled: before.isCameraEnabled,
+      afterIsCameraEnabled: after.isCameraEnabled,
+    });
+    return;
+  }
+
+  if (userId) setLiveSlotParticipantCameraPausedOverride(userId, false);
+  if (input.localVideoTrack?.mediaStreamTrack) {
+    input.localVideoTrack.mediaStreamTrack.enabled = true;
+  }
+  try {
+    const pub = readLocalCameraPublicationState(room).cameraPub;
+    if (pub?.isMuted && typeof pub.unmute === "function") {
+      await pub.unmute();
+    }
+  } catch (e: any) {
+    console.log("KRISTO_LIVE_CAMERA_RESUME_PUB_UNMUTE_ERROR", String(e?.message || e));
+  }
+  const afterUnmute = readLocalCameraPublicationState(room);
+  if (!afterUnmute.hasPublication || afterUnmute.publicationMuted) {
+    try {
+      const capture = resolveLiveKitVideoCaptureOptions();
+      await lp.setCameraEnabled?.(true, {
+        facingMode: input.cameraFacing === "front" ? "user" : "environment",
+        resolution: capture.resolution,
+      } as any);
+    } catch (e: any) {
+      console.log("KRISTO_LIVE_CAMERA_RESUME_SET_ENABLED_ERROR", String(e?.message || e));
+    }
+  }
+  console.log("KRISTO_LIVE_CAMERA_RESUME_PUBLISHED", readLocalCameraPublicationState(room));
+}
+
 function buildCameraEnableDiagnostics(room: any, canPublishCamera: boolean) {
   const publicationState = readLocalCameraPublicationState(room);
   const track: any = publicationState.track;
@@ -2522,6 +3071,10 @@ function KristoRemoteOrLocalVideo({
   cameraPaused,
   style,
   fallback,
+  mainStageOwnerUserId,
+  claimedSlotId,
+  hasClaimedMainStageAvatar,
+  emitViewerVisualDecision,
 }: {
   canPublishMic: boolean;
   canPublishCamera: boolean;
@@ -2532,8 +3085,23 @@ function KristoRemoteOrLocalVideo({
   cameraPaused: boolean;
   style: any;
   fallback: React.ReactNode;
+  mainStageOwnerUserId?: string;
+  claimedSlotId?: string;
+  hasClaimedMainStageAvatar?: boolean;
+  emitViewerVisualDecision?: boolean;
 }) {
   const room = useRoomContext();
+
+  useEffect(() => {
+    if (!room) return;
+    (globalThis as any).__KRISTO_LIVEKIT_CONNECTED_ROOM__ = room;
+    syncLiveSlotParticipantsFromRoom(room);
+    return () => {
+      if ((globalThis as any).__KRISTO_LIVEKIT_CONNECTED_ROOM__ === room) {
+        (globalThis as any).__KRISTO_LIVEKIT_CONNECTED_ROOM__ = null;
+      }
+    };
+  }, [room]);
 
   useEffect(() => {
     if (!room) return;
@@ -2909,6 +3477,23 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       const publicationState = readLocalCameraPublicationState(room);
       const diagnostics = buildCameraEnableDiagnostics(room, canPublishCamera);
 
+      if (cameraPaused) {
+        await applyPublisherCameraPauseState(room, {
+          cameraPaused: true,
+          localVideoTrack: localVideoTrackRef.current,
+          cameraFacing,
+        });
+        logCameraEnableAttempt({
+          triggerSource,
+          skipped: "camera-paused",
+          connectionState,
+          cameraFacing,
+          cameraPaused,
+          ...diagnostics,
+        });
+        return;
+      }
+
       logCameraEnableAttempt({
         triggerSource,
         connectionState,
@@ -2918,6 +3503,21 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
       });
 
       if (!isLiveKitRoomConnected(room) || !identity) {
+        const bridgeId = String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "");
+        const warmupUserId = String(
+          (globalThis as any).__KRISTO_LIVEKIT_ACTIVE_TOKEN_CLAIMS__?.identity || ""
+        )
+          .split("-slot-")[0]
+          .split("-viewer")[0]
+          .replace(/[^a-zA-Z0-9_]/g, "");
+        if (bridgeId && warmupUserId) {
+          ensurePublisherVideoTrackWarmup({
+            liveBridgeId: bridgeId,
+            userId: warmupUserId,
+            cameraFacing,
+            source: "defer-until-connected",
+          });
+        }
         console.log("KRISTO_LIVEKIT_CAMERA_PUBLISH_DEFERRED_UNTIL_CONNECTED", {
           ...diagnostics,
           triggerSource,
@@ -2956,6 +3556,10 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         markClaimEnterCameraPublished(
           String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "")
         );
+        markLivePreflightCameraPublished({
+          roomName: String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || ""),
+          source: triggerSource,
+        });
         logCameraEnableSuccess({
           triggerSource,
           cameraFacing,
@@ -2980,6 +3584,24 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         return;
       }
 
+      const bridgeId = String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "");
+      const warmupUserId = String(
+        (globalThis as any).__KRISTO_LIVEKIT_ACTIVE_TOKEN_CLAIMS__?.identity || identity
+      )
+        .split("-slot-")[0]
+        .split("-viewer")[0]
+        .replace(/[^a-zA-Z0-9_]/g, "");
+
+      if (
+        !tryBeginCameraPublishOnce({
+          roomName: bridgeId,
+          identity: warmupUserId,
+          source: triggerSource,
+        })
+      ) {
+        return;
+      }
+
       videoPublishBusyRef.current = true;
 
       const fromFacing = videoFacingRef.current || "";
@@ -2993,8 +3615,48 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
 
       try {
         let publishedTrack: any = null;
-        let enableMethod: "setCameraEnabled" | "manual-publish" = "setCameraEnabled";
+        let enableMethod: "setCameraEnabled" | "manual-publish" | "preflight-warmup" =
+          "setCameraEnabled";
 
+        const prewarmedTrack =
+          bridgeId &&
+          warmupUserId &&
+          tryMarkWarmupConsumedOnce({
+            roomName: bridgeId,
+            identity: warmupUserId,
+            source: triggerSource,
+          })
+            ? takePublisherVideoTrackWarmup(bridgeId, warmupUserId)
+            : null;
+        if (prewarmedTrack) {
+          enableMethod = "preflight-warmup";
+          logCameraPublishStart({
+            cameraFacing,
+            tier: capture.tier,
+            triggerSource,
+            method: enableMethod,
+          });
+          await room.localParticipant.publishTrack(prewarmedTrack as any, {
+            source: Track.Source.Camera,
+            name: "camera",
+            simulcast: true,
+            videoCodec: "h264",
+          } as any);
+          publishedTrack = prewarmedTrack;
+          logCameraEnableSuccess({
+            triggerSource,
+            method: enableMethod,
+            cameraFacing,
+            ...buildCameraEnableDiagnostics(room, canPublishCamera),
+          });
+          logCameraPublishSuccess({
+            triggerSource,
+            cameraFacing,
+            method: enableMethod,
+          });
+        }
+
+        if (!publishedTrack) {
         try {
           logCameraEnableAttempt({
             triggerSource,
@@ -3031,6 +3693,7 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
             ...buildCameraEnableDiagnostics(room, canPublishCamera),
           });
           publishedTrack = null;
+        }
         }
 
         if (!publishedTrack) {
@@ -3150,6 +3813,10 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         markClaimEnterCameraPublished(
           String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || "")
         );
+        markLivePreflightCameraPublished({
+          roomName: String((globalThis as any).__KRISTO_LIVEKIT_ACTIVE_ROOM__ || ""),
+          source: triggerSource,
+        });
 
         localVideoTrackRef.current = publishedTrack;
         videoFacingRef.current = cameraFacing;
@@ -3240,6 +3907,14 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     };
 
     const tryScheduleCameraPublish = (triggerSource: string) => {
+      if (cameraPaused) {
+        void applyPublisherCameraPauseState(room, {
+          cameraPaused: true,
+          localVideoTrack: localVideoTrackRef.current,
+          cameraFacing,
+        });
+        return;
+      }
       const connectionState = readLiveKitRoomConnectionState(room);
       const publicationState = readLocalCameraPublicationState(room);
       if (!isLiveKitRoomConnected(room)) {
@@ -3313,19 +3988,17 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         localTrack?.stop?.();
       } catch {}
     };
-  }, [room, canPublishCamera, cameraFacing]);
+  }, [room, canPublishCamera, cameraFacing, cameraPaused]);
 
 
   useEffect(() => {
-    if (!localVideoTrack) return;
-    if (cameraPaused) {
-          // removed: do not call LiveKit mute() on unpublished track
-      if (localVideoTrack.mediaStreamTrack) localVideoTrack.mediaStreamTrack.enabled = false;
-    } else {
-          // removed: do not call LiveKit unmute() on unpublished track
-      if (localVideoTrack.mediaStreamTrack) localVideoTrack.mediaStreamTrack.enabled = true;
-    }
-  }, [localVideoTrack, cameraPaused]);
+    if (!room || !canPublishCamera) return;
+    void applyPublisherCameraPauseState(room, {
+      cameraPaused,
+      localVideoTrack,
+      cameraFacing,
+    });
+  }, [localVideoTrack, cameraPaused, room, canPublishCamera, cameraFacing]);
 
   useLayoutEffect(() => {
     const diagnostics = buildCameraEnableDiagnostics(room, canPublishCamera);
@@ -3437,15 +4110,29 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
     );
   }
 
-  if (wantsLocalStage) {
-    console.log("KRISTO_LIVE_BLACKSCREEN_GUARD", {
+  if (wantsLocalStage && !shouldShowLocalPreview) {
+    console.log("KRISTO_LIVE_LOCAL_STAGE_FALLBACK", {
       hasUrl: !!localPreviewURL,
       cameraPaused,
       renderLocalPreview,
       canPublishCamera,
       mainStageVideoReady: isMainStageLocalVideoReady(),
     });
-    return <View style={[style, { overflow: "hidden", backgroundColor: "#000" }]} />;
+    return (
+      <View
+        style={[
+          style,
+          {
+            overflow: "hidden",
+            backgroundColor: "#000",
+            alignItems: "center",
+            justifyContent: "center",
+          },
+        ]}
+      >
+        {fallback}
+      </View>
+    );
   }
 
   return (
@@ -3454,6 +4141,10 @@ const [actualMicEnabled, setActualMicEnabled] = useState<boolean>(false);
         style={{ width: "100%", height: "100%" }}
         fallback={fallback}
         preferredIdentityPrefix={preferredIdentityPrefix}
+        mainStageOwnerUserId={mainStageOwnerUserId}
+        claimedSlotId={claimedSlotId}
+        emitViewerVisualDecision={emitViewerVisualDecision}
+        hasClaimedMainStageAvatar={hasClaimedMainStageAvatar}
       />
 
     </View>
@@ -3471,7 +4162,8 @@ type LivePreflightStepId =
   | "connect"
   | "mic"
   | "camera"
-  | "video";
+  | "video"
+  | "enter";
 
 type LivePreflightStepStatus = "pending" | "active" | "done" | "skipped";
 
@@ -3481,14 +4173,36 @@ type LivePreflightStep = {
   status: LivePreflightStepStatus;
 };
 
-const LIVE_PREFLIGHT_STEP_DEFS: Array<{ id: LivePreflightStepId; label: string }> = [
-  { id: "schedule", label: "Loading schedule" },
-  { id: "token", label: "Getting token" },
-  { id: "connect", label: "Connecting room" },
-  { id: "mic", label: "Preparing mic" },
-  { id: "camera", label: "Preparing camera" },
-  { id: "video", label: "Publishing video" },
-];
+function livePreflightStepDefs(
+  mode: LivePreflightMode
+): Array<{ id: LivePreflightStepId; label: string }> {
+  if (mode === "video-publisher") {
+    return [
+      { id: "schedule", label: "Loading schedule" },
+      { id: "token", label: "Getting token" },
+      { id: "connect", label: "Connecting room" },
+      { id: "mic", label: "Preparing mic" },
+      { id: "camera", label: "Preparing camera" },
+      { id: "video", label: "Publishing video" },
+      { id: "enter", label: "Entering live" },
+    ];
+  }
+  if (mode === "audio-publisher") {
+    return [
+      { id: "schedule", label: "Loading schedule" },
+      { id: "token", label: "Getting token" },
+      { id: "connect", label: "Connecting room" },
+      { id: "mic", label: "Preparing mic" },
+      { id: "enter", label: "Entering live" },
+    ];
+  }
+  return [
+    { id: "schedule", label: "Loading schedule" },
+    { id: "token", label: "Getting token" },
+    { id: "connect", label: "Connecting room" },
+    { id: "enter", label: "Entering live" },
+  ];
+}
 
 function isLiveKitTokenReadyForBridge(liveBridgeId: string): boolean {
   const bridge = String(liveBridgeId || "").trim();
@@ -3501,6 +4215,8 @@ function isLiveKitTokenReadyForBridge(liveBridgeId: string): boolean {
 function isLiveKitConnectedForBridge(liveBridgeId: string): boolean {
   const bridge = String(liveBridgeId || "").trim();
   if (!bridge) return false;
+  if (isLivePreflightConnectAccepted(bridge)) return true;
+  if (isLiveKitRoomActuallyConnected(bridge)) return true;
   const pin = readLiveRoomSessionPin();
   return pin?.liveBridgeId === bridge && pin.liveKitConnected === true;
 }
@@ -3521,25 +4237,68 @@ type LivePreflightEvaluation = {
   roomConnected: boolean;
   micReady: boolean;
   cameraReady: boolean;
-  videoPublished: boolean;
+  videoReady: boolean;
+  enterReady: boolean;
+  cameraPending: boolean;
 };
 
 function livePreflightStepsSignature(steps: LivePreflightStep[]): string {
   return steps.map((step) => `${step.id}:${step.status}`).join("|");
 }
 
-function evaluateLivePreflight(input: {
+function buildSequentialPreflightSteps(
+  stepDefs: Array<{ id: LivePreflightStepId; label: string }>,
+  stepReady: Partial<Record<LivePreflightStepId, boolean>>,
+  stepSkipped: Partial<Record<LivePreflightStepId, boolean>>
+): LivePreflightStep[] {
+  let pastActive = false;
+  return stepDefs.map((def) => {
+    if (stepSkipped[def.id]) {
+      return { ...def, status: "skipped" };
+    }
+    if (pastActive) {
+      return { ...def, status: "pending" };
+    }
+    if (stepReady[def.id]) {
+      return { ...def, status: "done" };
+    }
+    pastActive = true;
+    return { ...def, status: "active" };
+  });
+}
+
+function finalizePreflightEvaluation(
+  steps: LivePreflightStep[],
+  flags: {
+    scheduleLoaded: boolean;
+    tokenLoaded: boolean;
+    roomConnected: boolean;
+    micReady: boolean;
+    cameraReady: boolean;
+    videoReady: boolean;
+    enterReady: boolean;
+    cameraPending: boolean;
+  }
+): LivePreflightEvaluation {
+  const applicable = steps.filter((step) => step.status !== "skipped");
+  const doneCount = applicable.filter((step) => step.status === "done").length;
+  const ready = applicable.length > 0 && doneCount === applicable.length;
+  return {
+    steps,
+    ready,
+    doneCount,
+    ...flags,
+  };
+}
+
+function evaluateViewerLivePreflight(input: {
   isMediaInstantLive: boolean;
   backendScheduleReady: boolean;
   churchLiveControlBridgeBlocked: boolean;
   liveBridgeId: string;
-  needsPublisherMic: boolean;
-  needsPublisherCamera: boolean;
-  livePerfPermissionsDone: boolean;
-  cameraPermissionGranted: boolean;
-  micPermissionGranted: boolean;
-  mainStageLocalVideoReady: boolean;
-  claimEnterCameraPublished: boolean;
+  preflightElapsedMs: number;
+  silentScheduleReady?: boolean;
+  silentTokenReady?: boolean;
 }): LivePreflightEvaluation {
   const bridge = String(input.liveBridgeId || "").trim();
   const bridgeReady = input.isMediaInstantLive
@@ -3547,73 +4306,191 @@ function evaluateLivePreflight(input: {
     : isScheduledLivePreflightBridgeId(bridge);
 
   const scheduleReady =
+    input.silentScheduleReady === true ||
     input.isMediaInstantLive ||
     (input.backendScheduleReady && !input.churchLiveControlBridgeBlocked && bridgeReady);
 
-  const tokenReady = scheduleReady && isLiveKitTokenReadyForBridge(bridge);
+  const tokenReady =
+    scheduleReady &&
+    ((input.silentTokenReady === true) || isLiveKitTokenReadyForBridge(bridge));
 
   const connectReady =
-    tokenReady &&
-    (input.needsPublisherMic || input.needsPublisherCamera
-      ? isLiveKitConnectedForBridge(bridge)
-      : isLiveKitSafelyMountedForViewer(bridge));
+    tokenReady && isLiveKitSafelyMountedForViewer(bridge);
 
-  const micReady =
-    connectReady && (!input.needsPublisherMic || input.livePerfPermissionsDone);
+  const enterReady = connectReady;
 
-  const cameraReady =
-    micReady && (!input.needsPublisherCamera || input.livePerfPermissionsDone);
+  const steps = buildSequentialPreflightSteps(
+    livePreflightStepDefs("viewer"),
+    {
+      schedule: scheduleReady,
+      token: tokenReady,
+      connect: connectReady,
+      enter: enterReady,
+    },
+    {}
+  );
 
-  const videoReady =
-    cameraReady &&
-    (!input.needsPublisherCamera ||
-      input.mainStageLocalVideoReady ||
-      input.claimEnterCameraPublished);
-
-  const flags: Record<LivePreflightStepId, boolean> = {
-    schedule: scheduleReady,
-    token: tokenReady,
-    connect: connectReady,
-    mic: micReady,
-    camera: cameraReady,
-    video: videoReady,
-  };
-
-  let activeAssigned = false;
-  const steps: LivePreflightStep[] = LIVE_PREFLIGHT_STEP_DEFS.map((def) => {
-    const done = flags[def.id];
-    const skipped =
-      (def.id === "mic" && !input.needsPublisherMic) ||
-      ((def.id === "camera" || def.id === "video") && !input.needsPublisherCamera);
-
-    let status: LivePreflightStepStatus = "pending";
-    if (skipped) {
-      status = "skipped";
-    } else if (done) {
-      status = "done";
-    } else if (!activeAssigned) {
-      status = "active";
-      activeAssigned = true;
-    }
-
-    return { ...def, status };
+  return finalizePreflightEvaluation(steps, {
+    scheduleLoaded: scheduleReady,
+    tokenLoaded: tokenReady,
+    roomConnected: connectReady,
+    micReady: true,
+    cameraReady: true,
+    videoReady: true,
+    enterReady,
+    cameraPending: false,
   });
+}
 
-  const applicable = steps.filter((step) => step.status !== "skipped");
-  const doneCount = applicable.filter((step) => step.status === "done").length;
-  const ready = applicable.length > 0 && doneCount === applicable.length;
+function evaluateAudioPublisherLivePreflight(input: {
+  isMediaInstantLive: boolean;
+  backendScheduleReady: boolean;
+  churchLiveControlBridgeBlocked: boolean;
+  liveBridgeId: string;
+  micPermissionGranted: boolean;
+  silentScheduleReady?: boolean;
+  silentTokenReady?: boolean;
+}): LivePreflightEvaluation {
+  const bridge = String(input.liveBridgeId || "").trim();
+  const bridgeReady = input.isMediaInstantLive
+    ? !!bridge
+    : isScheduledLivePreflightBridgeId(bridge);
 
-  return {
-    steps,
-    ready,
-    doneCount,
+  const scheduleReady =
+    input.silentScheduleReady === true ||
+    input.isMediaInstantLive ||
+    (input.backendScheduleReady && !input.churchLiveControlBridgeBlocked && bridgeReady);
+
+  const tokenReady =
+    scheduleReady &&
+    ((input.silentTokenReady === true) || isLiveKitTokenReadyForBridge(bridge));
+
+  const connectReady = tokenReady && isLiveKitConnectedForBridge(bridge);
+  const micReady = input.micPermissionGranted;
+  const enterReady = scheduleReady && tokenReady && connectReady && micReady;
+
+  const steps = buildSequentialPreflightSteps(
+    livePreflightStepDefs("audio-publisher"),
+    {
+      schedule: scheduleReady,
+      token: tokenReady,
+      connect: connectReady,
+      mic: micReady,
+      enter: enterReady,
+    },
+    {}
+  );
+
+  return finalizePreflightEvaluation(steps, {
+    scheduleLoaded: scheduleReady,
+    tokenLoaded: tokenReady,
+    roomConnected: connectReady,
+    micReady,
+    cameraReady: true,
+    videoReady: true,
+    enterReady,
+    cameraPending: false,
+  });
+}
+
+function evaluateVideoPublisherLivePreflight(input: {
+  isMediaInstantLive: boolean;
+  backendScheduleReady: boolean;
+  churchLiveControlBridgeBlocked: boolean;
+  liveBridgeId: string;
+  needsPublisherMic: boolean;
+  needsPublisherCamera: boolean;
+  micPermissionGranted: boolean;
+  cameraPermissionGranted: boolean;
+  mainStageVideoReady: boolean;
+  cameraPublished: boolean;
+  silentScheduleReady?: boolean;
+  silentTokenReady?: boolean;
+}): LivePreflightEvaluation {
+  const bridge = String(input.liveBridgeId || "").trim();
+  const bridgeReady = input.isMediaInstantLive
+    ? !!bridge
+    : isScheduledLivePreflightBridgeId(bridge);
+
+  const scheduleReady =
+    input.silentScheduleReady === true ||
+    input.isMediaInstantLive ||
+    (input.backendScheduleReady && !input.churchLiveControlBridgeBlocked && bridgeReady);
+
+  const tokenReady =
+    scheduleReady &&
+    ((input.silentTokenReady === true) || isLiveKitTokenReadyForBridge(bridge));
+
+  const connectReady = tokenReady && isLiveKitConnectedForBridge(bridge);
+
+  const micReady = !input.needsPublisherMic || input.micPermissionGranted;
+  const cameraReady = !input.needsPublisherCamera || input.cameraPermissionGranted;
+  const videoReady =
+    !input.needsPublisherCamera ||
+    input.mainStageVideoReady ||
+    input.cameraPublished;
+
+  const enterReady =
+    scheduleReady &&
+    tokenReady &&
+    connectReady &&
+    micReady &&
+    cameraReady &&
+    videoReady;
+
+  const steps = buildSequentialPreflightSteps(
+    livePreflightStepDefs("video-publisher"),
+    {
+      schedule: scheduleReady,
+      token: tokenReady,
+      connect: connectReady,
+      mic: micReady,
+      camera: cameraReady,
+      video: videoReady,
+      enter: enterReady,
+    },
+    {
+      mic: !input.needsPublisherMic,
+      camera: !input.needsPublisherCamera,
+      video: !input.needsPublisherCamera,
+    }
+  );
+
+  return finalizePreflightEvaluation(steps, {
     scheduleLoaded: scheduleReady,
     tokenLoaded: tokenReady,
     roomConnected: connectReady,
     micReady,
     cameraReady,
-    videoPublished: videoReady,
-  };
+    videoReady,
+    enterReady,
+    cameraPending: input.needsPublisherCamera && connectReady && !videoReady,
+  });
+}
+
+function evaluateLivePreflight(input: {
+  isMediaInstantLive: boolean;
+  backendScheduleReady: boolean;
+  churchLiveControlBridgeBlocked: boolean;
+  liveBridgeId: string;
+  mode: LivePreflightMode;
+  needsPublisherMic: boolean;
+  needsPublisherCamera: boolean;
+  micPermissionGranted: boolean;
+  cameraPermissionGranted: boolean;
+  mainStageVideoReady: boolean;
+  cameraPublished: boolean;
+  preflightElapsedMs: number;
+  silentScheduleReady?: boolean;
+  silentTokenReady?: boolean;
+}): LivePreflightEvaluation {
+  if (input.mode === "viewer") {
+    return evaluateViewerLivePreflight(input);
+  }
+  if (input.mode === "audio-publisher") {
+    return evaluateAudioPublisherLivePreflight(input);
+  }
+  return evaluateVideoPublisherLivePreflight(input);
 }
 
 function LiveRoomPreflight({
@@ -3759,12 +4636,21 @@ export default function LiveRoomScreen() {
   }
   const [livePerfPermissionsDone, setLivePerfPermissionsDone] = useState(false);
   const [livePreflightComplete, setLivePreflightComplete] = useState(false);
+  const hasEnteredLiveRoomRef = useRef(false);
   const [livePreflightTimedOut, setLivePreflightTimedOut] = useState(false);
   const [livePreflightSteps, setLivePreflightSteps] = useState<LivePreflightStep[]>(() =>
-    LIVE_PREFLIGHT_STEP_DEFS.map((def) => ({ ...def, status: "pending" as const }))
+    livePreflightStepDefs("viewer").map((def) => ({ ...def, status: "pending" as const }))
   );
+  const livePreflightFastPathLoggedRef = useRef(false);
+  const livePreflightStepSkippedLoggedRef = useRef<Record<string, boolean>>({});
+  const livePreflightPublisherSequenceLoggedRef = useRef(false);
+  const livePreflightCameraReadyLoggedRef = useRef(false);
+  const livePreflightPublishReadyLoggedRef = useRef(false);
+  const livePreflightEnterAllowedLoggedRef = useRef(false);
+  const livePreflightBlockedCameraLoggedRef = useRef(false);
   const [livePreflightElapsedSec, setLivePreflightElapsedSec] = useState(0);
   const [livePreflightRetryEpoch, setLivePreflightRetryEpoch] = useState(0);
+  const [livePreflightConnectEpoch, setLivePreflightConnectEpoch] = useState(0);
   const livePreflightStartedRef = useRef(false);
   const livePreflightReadyLoggedRef = useRef(false);
   const livePreflightStepLoggedRef = useRef<Record<string, boolean>>({});
@@ -3924,6 +4810,31 @@ export default function LiveRoomScreen() {
     String((params as any)?.canPublish || "") === "1" ||
     String((params as any)?.canPublishCamera || "") === "1" ||
     String((params as any)?.mediaSlotPublisher || "") === "1";
+  const routePreflightModeResolvedEarly = useMemo(
+    () =>
+      resolveLivePreflightModeFromRoute(
+        params as Record<string, unknown>,
+        String(session?.userId || "").trim() || undefined
+      ),
+    [
+      params.canPublish,
+      params.canPublishMic,
+      params.canPublishCamera,
+      (params as any)?.mediaSlotPublisher,
+      params.enteredAsViewer,
+      params.room,
+      params.mediaScope,
+      params.roomKind,
+      params.source,
+      params.role,
+      (params as any)?.claimedByUserId,
+      session?.userId,
+      ministryLiveViewerOnlyFromRoute,
+    ]
+  );
+  const routePreflightModeEarly = routePreflightModeResolvedEarly.mode;
+  const routePreflightNeedsCameraEarly = routePreflightModeResolvedEarly.needsCamera;
+  const routePreflightNeedsMicEarly = routePreflightModeResolvedEarly.needsMic;
   const routeClaimedByUserIdEarly = String((params as any)?.claimedByUserId || "").trim();
   const liveBridgeIdFromRoute = String(
     params.liveId ||
@@ -4236,6 +5147,48 @@ export default function LiveRoomScreen() {
   const [memberAvatarByUserId, setMemberAvatarByUserId] = useState<Record<string, string>>({});
   const [resolvedAvatarByUserId, setResolvedAvatarByUserId] = useState<Record<string, string>>({});
   const [liveProfileAvatarUri, setLiveProfileAvatarUri] = useState("");
+  const liveRouteMinistryId = String(
+    (params as any)?.ministryId || (params as any)?.roomId || ""
+  ).trim();
+  const [liveMinistryProfile, setLiveMinistryProfile] = useState<Record<string, unknown> | null>(
+    null
+  );
+
+  const effectiveMinistryProfile = useMemo(() => {
+    const routeName = cleanLiveRoomLabel(
+      String(
+        liveMinistryProfile?.name ||
+          params.title ||
+          (params as any)?.mediaName ||
+          (params as any)?.subtitle ||
+          ""
+      ),
+      ""
+    );
+    const routeAvatarCandidates = pickRouteMinistryAvatarCandidates(
+      params as Record<string, unknown>,
+      session
+    );
+    let routeAvatar = "";
+    for (const raw of routeAvatarCandidates) {
+      const uri = resolveParticipantAvatarUri({ avatar: raw });
+      if (isImageAvatar(uri)) {
+        routeAvatar = uri;
+        break;
+      }
+    }
+    const fetchedAvatar = ministryRecordAvatarUri(liveMinistryProfile, getApiBase());
+    const avatarUri = fetchedAvatar || routeAvatar;
+    if (!liveRouteMinistryId && !routeName && !avatarUri) return null;
+    return {
+      ...(liveMinistryProfile || {}),
+      id: String(liveMinistryProfile?.id || liveRouteMinistryId || ""),
+      name: routeName || String(liveMinistryProfile?.name || ""),
+      avatarUri,
+      avatarUrl: avatarUri,
+      ministryAvatarUrl: avatarUri,
+    } as Record<string, unknown>;
+  }, [liveMinistryProfile, params, session, liveRouteMinistryId]);
 
   const liveProfileName = useMemo(() => {
     return (
@@ -6261,8 +7214,14 @@ export default function LiveRoomScreen() {
     isMediaInstantLive ||
     cameraPublishAllowedNow;
 
-  // Camera publish is slot-owned only — route pastor/host hints must not unlock camera.
-  const liveKitCameraOverrideReady = cameraPublishAllowedNow;
+  // Route publisher intent unlocks mic/camera overrides during visible preflight before runtime authority resolves.
+  const liveKitCameraOverrideReady =
+    cameraPublishAllowedNow ||
+    (routePreflightModeEarly === "video-publisher" && routePreflightNeedsCameraEarly);
+  const liveKitMicOverrideReady =
+    canPublishClaimedMicNow ||
+    (routePreflightModeEarly !== "viewer" && routePreflightNeedsMicEarly);
+  const publisherLocalPreviewDuringPreflight = liveKitCameraOverrideReady;
 
   const pastorCameraReleaseLogRef = useRef("");
   const prevCameraPublishAllowedRef = useRef(cameraPublishAllowedNow);
@@ -6482,16 +7441,13 @@ export default function LiveRoomScreen() {
 
   const liveMicPublisherReady = canPublishClaimedMicNow;
 
-  // Mic override is mic-only; must not imply camera.
-  const liveKitMicOverrideReady = canPublishClaimedMicNow;
-
   // Publisher LiveKit mount: mic-eligible OR current camera slot owner.
   const mountLiveKitPublisherStage = canPublishClaimedMicNow || cameraPublishAllowedNow;
 
   const routeFastPublisherMount =
     !!currentUserId &&
-    routePublisherEligibleEarly &&
-    routeClaimedByUserIdEarly === currentUserId;
+    routePreflightModeEarly !== "viewer" &&
+    (routeClaimedByUserIdEarly === currentUserId || routePublisherEligibleEarly);
   const effectiveMountLiveKitPublisherStage =
     mountLiveKitPublisherStage || routeFastPublisherMount;
 
@@ -7539,7 +8495,8 @@ export default function LiveRoomScreen() {
 
   const publisherEligibleForHostPin =
     !ministryLiveViewerOnly &&
-    (canPublishClaimedMicNow ||
+    (routePreflightModeEarly !== "viewer" ||
+      canPublishClaimedMicNow ||
       cameraPublishAllowedNow ||
       routeActiveSlotSpeakerMount);
 
@@ -7573,6 +8530,272 @@ export default function LiveRoomScreen() {
     isLiveRoomLiveKitConnecting(liveBridgeId) ||
     isLiveRoomLiveKitSessionActive(liveBridgeId) ||
     shouldHoldClaimEnterSessionLock(liveBridgeId);
+
+  const liveStageOrgContext = useMemo(() => {
+    const churchAvatarCandidates = [
+      (params as any)?.churchAvatarUri,
+      (params as any)?.churchAvatarUrl,
+      (params as any)?.churchLogoUri,
+      (params as any)?.churchLogoUrl,
+      (session as any)?.churchAvatarUri,
+      (session as any)?.churchAvatarUrl,
+      (session as any)?.churchLogoUri,
+      (session as any)?.churchLogoUrl,
+    ];
+    const ministryAvatarCandidates = [
+      effectiveMinistryProfile?.avatarUri,
+      effectiveMinistryProfile?.avatarUrl,
+      effectiveMinistryProfile?.ministryAvatarUrl,
+      ...pickRouteMinistryAvatarCandidates(params as Record<string, unknown>, session),
+    ];
+    const pickAvatar = (candidates: unknown[]) => {
+      for (const raw of candidates) {
+        const uri = resolveParticipantAvatarUri({ avatar: raw });
+        if (isImageAvatar(uri)) return uri;
+      }
+      return "";
+    };
+    const ministryNameFromProfile = String(effectiveMinistryProfile?.name || "").trim();
+    return {
+      ministryName: cleanLiveRoomLabel(
+        ministryNameFromProfile ||
+          String(params.title || (params as any)?.subtitle || "Ministry Live")
+      ),
+      ministryAvatarUrl: pickAvatar(ministryAvatarCandidates),
+      churchName: cleanLiveRoomLabel(
+        String(
+          (params as any)?.churchName ||
+            (params as any)?.churchLabel ||
+            (session as any)?.churchName ||
+            (session as any)?.churchLabel ||
+            ""
+        )
+      ),
+      churchAvatarUrl: pickAvatar(churchAvatarCandidates),
+    };
+  }, [params, session, effectiveMinistryProfile]);
+
+  const remoteMainStageClaimedSlot = useMemo(() => {
+    if (currentMainStageSlot?.claimedByUserId) {
+      return currentMainStageSlot;
+    }
+    return (
+      displayScheduleSlots.find((slot: any) => {
+        const claimedBy = String(slot?.claimedByUserId || "").trim();
+        if (!claimedBy) return false;
+        if (!isScheduleSlotActiveNow(slot, liveNowMs)) return false;
+        const participant = getLiveSlotParticipantState(claimedBy);
+        return participant?.joined === true;
+      }) || null
+    );
+  }, [currentMainStageSlot, displayScheduleSlots, liveNowMs]);
+
+  const mainStagePlaceholderSlot = useMemo(() => {
+    const uid = String(currentUserId || "").trim();
+    if (cameraPublishAllowedNow && uid && myClaimedStageSlot) {
+      return enrichLiveRoomDisplaySlot(myClaimedStageSlot);
+    }
+    if (currentMainStageSlot?.claimedByUserId) {
+      return enrichLiveRoomDisplaySlot(currentMainStageSlot);
+    }
+    if (remoteMainStageClaimedSlot) {
+      return enrichLiveRoomDisplaySlot(remoteMainStageClaimedSlot);
+    }
+    if (currentMainStageSlot) {
+      return enrichLiveRoomDisplaySlot(currentMainStageSlot);
+    }
+    const activeOpenSlot = displayScheduleSlots.find((slot: any) => {
+      if (isClaimedScheduleSlot(slot)) return false;
+      return isScheduleSlotActiveNow(slot, liveNowMs);
+    });
+    if (activeOpenSlot) {
+      return enrichLiveRoomDisplaySlot(activeOpenSlot, "open_claimable");
+    }
+    return null;
+  }, [
+    currentMainStageSlot,
+    displayScheduleSlots,
+    liveNowMs,
+    memberAvatarByUserId,
+    resolvedAvatarByUserId,
+    liveProfileAvatarUri,
+    session?.userId,
+    cameraPublishAllowedNow,
+    myClaimedStageSlot,
+    currentUserId,
+    remoteMainStageClaimedSlot,
+  ]);
+
+  const mainStageLiveScope = useMemo((): "ministry" | "church" | "media" => {
+    if (
+      String(params.room || "").toLowerCase() === "ministry" ||
+      String((params as any)?.mediaScope || "").toLowerCase() === "ministry" ||
+      String((params as any)?.roomKind || "").toLowerCase().includes("ministry")
+    ) {
+      return "ministry";
+    }
+    if (routeIsChurchLiveControl) return "church";
+    return "media";
+  }, [params.room, (params as any)?.mediaScope, (params as any)?.roomKind, routeIsChurchLiveControl]);
+
+  const buildLiveSlotPlaceholderProps = useCallback(
+    (
+      slot: any,
+      opts?: {
+        slotIsOpen?: boolean;
+        variant?: "main" | "side-rail" | "bottom-tile" | "open";
+        ringColor?: string;
+        hideWhenLive?: boolean;
+        liveScope?: "ministry" | "church" | "media";
+      }
+    ) => {
+      const slotNumber = Number(slot?.slot || slot?.slotNumber || 0);
+      const startMs = Number(slot?.startMs || 0);
+      const endMs = Number(slot?.endMs || 0);
+      const slotTimeActive = startMs <= liveNowMs && liveNowMs < endMs;
+      const claimedByUserId = String(slot?.claimedByUserId || "").trim();
+      const slotIsOpen =
+        opts?.slotIsOpen === true || (!claimedByUserId && slotTimeActive);
+      const participant = claimedByUserId
+        ? getLiveSlotParticipantState(claimedByUserId)
+        : null;
+      const isSelf = !!claimedByUserId && claimedByUserId === String(currentUserId || "").trim();
+      const connectedRoom = (globalThis as any).__KRISTO_LIVEKIT_CONNECTED_ROOM__;
+      const remoteInRoom =
+        !isSelf && claimedByUserId
+          ? isRemoteParticipantInRoom(connectedRoom, claimedByUserId)
+          : false;
+      const participantJoined = isSelf
+        ? publisherHostActive || keepPublisherLiveKitStage
+        : participant?.joined === true || remoteInRoom;
+      const directRemoteCameraEnabled =
+        !isSelf && claimedByUserId
+          ? readRemoteParticipantCameraEnabledFromRoom(claimedByUserId)
+          : null;
+      const cameraEnabled = isSelf
+        ? !cameraPaused && mainStageLocalVideoReady && cameraPublishAllowedNow
+        : directRemoteCameraEnabled !== null
+          ? directRemoteCameraEnabled === true
+          : participant?.cameraEnabled === true;
+      const participantDisconnected = isSelf ? false : participant?.disconnected === true;
+
+      const imageResolution = resolveLiveSlotPlaceholderImageSource({
+        slot,
+        slotId: String(slot?.id || slot?.slotId || slotNumber || ""),
+        ministryId: liveRouteMinistryId,
+        ministryProfile: effectiveMinistryProfile,
+        churchAvatarUrl: liveStageOrgContext.churchAvatarUrl,
+        apiBase: getApiBase(),
+        memberAvatarByUserId,
+        profileAvatarByUserId: resolvedAvatarByUserId,
+        sessionAvatarUri: liveProfileAvatarUri,
+        sessionUserId: String(session?.userId || ""),
+        slotIsOpen,
+      });
+
+      const ministryAvatarUrl =
+        imageResolution.ministryAvatarUrl || liveStageOrgContext.ministryAvatarUrl;
+      const churchAvatarUrl = imageResolution.churchAvatarUrl || liveStageOrgContext.churchAvatarUrl;
+
+      return {
+        slotId: String(slot?.id || slot?.slotId || slotNumber || ""),
+        slotNumber,
+        claimedByUserId,
+        claimedUserName: String(slot?.claimedByName || slot?.name || ""),
+        claimedUserAvatarUrl: imageResolution.claimedUserAvatarUrl,
+        ministryName: liveStageOrgContext.ministryName,
+        ministryAvatarUrl,
+        churchName: liveStageOrgContext.churchName,
+        churchAvatarUrl,
+        participantJoined,
+        cameraEnabled,
+        participantDisconnected,
+        slotIsOpen,
+        variant: opts?.variant,
+        ringColor: opts?.ringColor,
+        hideWhenLive: opts?.hideWhenLive,
+        liveScope: opts?.liveScope,
+      };
+    },
+    [
+      liveNowMs,
+      currentUserId,
+      publisherHostActive,
+      keepPublisherLiveKitStage,
+      mainStageLocalVideoReady,
+      cameraPaused,
+      cameraPublishAllowedNow,
+      liveStageOrgContext,
+      effectiveMinistryProfile,
+      liveRouteMinistryId,
+      memberAvatarByUserId,
+      resolvedAvatarByUserId,
+      liveProfileAvatarUri,
+      session?.userId,
+    ]
+  );
+
+  const renderMainStageIdentityPlaceholder = useCallback(() => {
+    if (!mainStagePlaceholderSlot) return null;
+    const claimedByUserId = String(mainStagePlaceholderSlot?.claimedByUserId || "").trim();
+    const slotIsOpen = !claimedByUserId;
+    return (
+      <LiveSlotIdentityPlaceholder
+        {...buildLiveSlotPlaceholderProps(mainStagePlaceholderSlot, {
+          slotIsOpen,
+          variant: "main",
+          ringColor: slotRingColor(Number(mainStagePlaceholderSlot?.slot || 0)),
+          hideWhenLive: true,
+          liveScope: mainStageLiveScope,
+        })}
+        identityRole={String(params.role || (session as any)?.role || "Member")}
+      />
+    );
+  }, [
+    mainStagePlaceholderSlot,
+    buildLiveSlotPlaceholderProps,
+    mainStageLiveScope,
+    params.role,
+    session,
+  ]);
+
+  const mainStageViewerDisplayContext = useMemo(() => {
+    const ownerSlot = mainStagePlaceholderSlot || currentMainStageSlot;
+    const avatarCandidates = [
+      ownerSlot?.claimedByAvatarUri,
+      ownerSlot?.claimedByPhotoUrl,
+      ownerSlot?.claimedByAvatar,
+      ownerSlot?.claimedByAvatarUrl,
+    ];
+    return {
+      mainStageOwnerUserId: String(
+        currentSlotOwnerId || ownerSlot?.claimedByUserId || ""
+      ),
+      claimedSlotId: String(ownerSlot?.id || ownerSlot?.slotId || bigStageGuestId || ""),
+      hasClaimedMainStageAvatar: avatarCandidates.some((value) => {
+        const uri = String(value || "").trim();
+        return uri.startsWith("http://") || uri.startsWith("https://");
+      }),
+      emitViewerVisualDecision: !cameraPublishAllowedNow,
+    };
+  }, [
+    mainStagePlaceholderSlot,
+    currentMainStageSlot,
+    currentSlotOwnerId,
+    bigStageGuestId,
+    cameraPublishAllowedNow,
+  ]);
+
+  useEffect(() => {
+    if (!liveBridgeId) return;
+    const timer = setInterval(() => {
+      try {
+        const room = (globalThis as any).__KRISTO_LIVEKIT_CONNECTED_ROOM__;
+        if (room) syncLiveSlotParticipantsFromRoom(room);
+      } catch {}
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [liveBridgeId, liveNowMs]);
 
   useEffect(() => {
     const authorityWantsPublisher =
@@ -8453,6 +9676,40 @@ export default function LiveRoomScreen() {
       alive = false;
     };
   }, [liveRouteChurchId, session?.userId]);
+
+  useEffect(() => {
+    let alive = true;
+    const ministryId = liveRouteMinistryId;
+    const isMinistryLiveRoute = isMinistryLiveRouteParams(params as Record<string, unknown>);
+
+    if (!ministryId || !isMinistryLiveRoute) {
+      setLiveMinistryProfile(null);
+      return () => {
+        alive = false;
+      };
+    }
+
+    void fetchMinistryById(ministryId)
+      .then((ministry) => {
+        if (!alive) return;
+        setLiveMinistryProfile(ministry ? ({ ...ministry } as Record<string, unknown>) : null);
+      })
+      .catch(() => {
+        if (alive) setLiveMinistryProfile(null);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    liveRouteMinistryId,
+    params.room,
+    (params as any)?.mediaScope,
+    (params as any)?.source,
+    (params as any)?.roomKind,
+    (params as any)?.ministryId,
+    (params as any)?.roomId,
+  ]);
 
   useEffect(() => {
     let alive = true;
@@ -11819,29 +13076,195 @@ export default function LiveRoomScreen() {
     micPermission?.granted,
   ]);
 
-  const livePreflightPublisherMic =
+  const livePreflightModeResolvedFromRoute = useMemo(
+    () =>
+      resolveLivePreflightModeFromRoute(
+        params as Record<string, unknown>,
+        String(currentUserId || "").trim() || undefined
+      ),
+    [
+      params.canPublish,
+      params.canPublishMic,
+      params.canPublishCamera,
+      (params as any)?.mediaSlotPublisher,
+      params.enteredAsViewer,
+      params.room,
+      params.mediaScope,
+      params.roomKind,
+      params.source,
+      params.role,
+      (params as any)?.claimedByUserId,
+      currentUserId,
+      ministryLiveViewerOnlyFromRoute,
+    ]
+  );
+  const livePreflightRuntimePublisherMic =
     canPublishClaimedMicNow && !ministryLiveViewerOnly;
-  const livePreflightPublisherCamera =
+  const livePreflightRuntimePublisherCamera =
     cameraPublishAllowedNow && !ministryLiveViewerOnly;
+  const livePreflightMode: LivePreflightMode = useMemo(() => {
+    if (livePreflightModeResolvedFromRoute.mode !== "viewer") {
+      return livePreflightModeResolvedFromRoute.mode;
+    }
+    if (livePreflightRuntimePublisherCamera) return "video-publisher";
+    if (livePreflightRuntimePublisherMic) return "audio-publisher";
+    return "viewer";
+  }, [
+    livePreflightModeResolvedFromRoute.mode,
+    livePreflightRuntimePublisherMic,
+    livePreflightRuntimePublisherCamera,
+  ]);
+  const livePreflightNeedsPublisherMic =
+    livePreflightModeResolvedFromRoute.mode !== "viewer"
+      ? livePreflightModeResolvedFromRoute.needsMic
+      : livePreflightRuntimePublisherMic;
+  const livePreflightNeedsPublisherCamera =
+    livePreflightModeResolvedFromRoute.mode !== "viewer"
+      ? livePreflightModeResolvedFromRoute.needsCamera
+      : livePreflightRuntimePublisherCamera;
+  const livePreflightIsPublisher = livePreflightMode !== "viewer";
+  const livePreflightPublisherMic = livePreflightNeedsPublisherMic;
+  const livePreflightPublisherCamera = livePreflightNeedsPublisherCamera;
+  const livePreflightModeLoggedRef = useRef(false);
+  useEffect(() => {
+    if (livePreflightModeLoggedRef.current) return;
+    livePreflightModeLoggedRef.current = true;
+    logLivePreflightModeResolved({
+      role: livePreflightModeResolvedFromRoute.role,
+      claimedByMe: livePreflightModeResolvedFromRoute.claimedByMe,
+      mode: livePreflightMode,
+      needsMic: livePreflightNeedsPublisherMic,
+      needsCamera: livePreflightNeedsPublisherCamera,
+      roleMutated: false,
+    });
+  }, [
+    livePreflightMode,
+    livePreflightModeResolvedFromRoute.role,
+    livePreflightModeResolvedFromRoute.claimedByMe,
+    livePreflightNeedsPublisherMic,
+    livePreflightNeedsPublisherCamera,
+  ]);
   const livePreflightSkip = String((params as any)?.preview || "") === "1";
   const livePreflightActive = !livePreflightSkip && !livePreflightComplete;
   const liveKitPreflightStageKey = `lk-preflight-${liveBridgeId}|${currentUserId || "anon"}|r${livePreflightRetryEpoch}`;
 
+  useEffect(() => {
+    if (routePreflightModeEarly !== "video-publisher" || !routePreflightNeedsCameraEarly) return;
+    const bridge = String(liveBridgeId || "").trim();
+    const userId = String(currentUserId || "").trim();
+    if (!bridge || !userId) return;
+    if (!cameraPermission?.granted) return;
+    if (livePreflightComplete) return;
+    ensurePublisherVideoTrackWarmup({
+      liveBridgeId: bridge,
+      userId,
+      cameraFacing,
+      source: "publisher-preflight-mount",
+    });
+  }, [
+    routePreflightModeEarly,
+    routePreflightNeedsCameraEarly,
+    liveBridgeId,
+    currentUserId,
+    cameraPermission?.granted,
+    cameraFacing,
+    livePreflightComplete,
+  ]);
+
+  const livePreflightWrongEarlyCompleteRef = useRef(false);
+  const livePreflightStepAtRef = useRef<Partial<Record<LivePreflightStepId, number>>>({});
+  const livePreflightTimingLoggedRef = useRef(false);
+  const livePreflightConnectionReuseAtMountRef = useRef(false);
+
+  useEffect(() => {
+    if (livePreflightSkip || livePreflightMode !== "video-publisher" || !livePreflightComplete) return;
+    if (hasEnteredLiveRoomRef.current || isLivePreflightEntryLocked(liveBridgeId)) {
+      logLivePreflightReopenBlockedAfterEntry("camera-paused-after-entry", {
+        mainStageVideoReady: mainStageLocalVideoReady,
+      });
+      return;
+    }
+    const claimLock = readClaimEnterSessionLock(liveBridgeId);
+    const videoReady =
+      mainStageLocalVideoReady || claimLock?.cameraPublished === true;
+    if (videoReady || livePreflightWrongEarlyCompleteRef.current) return;
+    livePreflightWrongEarlyCompleteRef.current = true;
+    console.log("KRISTO_LIVE_PREFLIGHT_PUBLISHER_REOPEN_BLOCKED_EARLY", {
+      liveBridgeId,
+      mainStageVideoReady: mainStageLocalVideoReady,
+      cameraPublished: claimLock?.cameraPublished === true,
+    });
+    livePreflightReadyLoggedRef.current = false;
+    livePreflightEnterAllowedLoggedRef.current = false;
+    setLivePreflightComplete(false);
+  }, [
+    livePreflightSkip,
+    livePreflightMode,
+    livePreflightComplete,
+    mainStageLocalVideoReady,
+    liveBridgeId,
+  ]);
+
+  useEffect(() => {
+    if (!cameraPaused) return;
+    if (!hasEnteredLiveRoomRef.current && !isLivePreflightEntryLocked(liveBridgeId)) return;
+    logLiveCameraPausedInRoom({
+      bridgeId: String(liveBridgeId || ""),
+      userId: String(currentUserId || ""),
+    });
+  }, [cameraPaused, liveBridgeId, currentUserId]);
+
+  useEffect(() => {
+    if (livePreflightSkip || livePreflightComplete || livePreflightFastPathLoggedRef.current) return;
+    if (livePreflightMode !== "viewer") return;
+    const userId = String(currentUserId || "").trim();
+    const bridge = String(liveBridgeId || "").trim();
+    if (!bridge || !userId) return;
+    if (!shouldSkipVisiblePreflightOnMount(bridge, userId)) return;
+    livePreflightFastPathLoggedRef.current = true;
+    logLivePreflightFastPathIfEligible(bridge, userId, "live-room-mount");
+    hasEnteredLiveRoomRef.current = true;
+    lockLivePreflightCompleted({
+      bridgeId: bridge,
+      userId,
+      source: "viewer-fast-path",
+    });
+    setLivePreflightComplete(true);
+    setLivePreflightTimedOut(false);
+  }, [
+    livePreflightSkip,
+    livePreflightComplete,
+    livePreflightMode,
+    liveBridgeId,
+    currentUserId,
+  ]);
+
   const syncLivePreflightEvaluation = useCallback(
     (source: "deps" | "poll") => {
+      if (hasEnteredLiveRoomRef.current || isLivePreflightEntryLocked(liveBridgeId)) {
+        return null;
+      }
+      const userId = String(currentUserId || "").trim();
+      const silent = readSilentPreflightSnapshot(liveBridgeId, userId);
       const claimLock = readClaimEnterSessionLock(liveBridgeId);
+      const preflightElapsedMs =
+        Date.now() - (livePreflightStartedAtRef.current || Date.now());
+
       const evaluation = evaluateLivePreflight({
         isMediaInstantLive,
         backendScheduleReady,
         churchLiveControlBridgeBlocked,
         liveBridgeId,
+        mode: livePreflightMode,
         needsPublisherMic: livePreflightPublisherMic,
         needsPublisherCamera: livePreflightPublisherCamera,
-        livePerfPermissionsDone,
-        cameraPermissionGranted: !!cameraPermission?.granted,
         micPermissionGranted: !!micPermission?.granted,
-        mainStageLocalVideoReady,
-        claimEnterCameraPublished: claimLock?.cameraPublished === true,
+        cameraPermissionGranted: !!cameraPermission?.granted,
+        mainStageVideoReady: mainStageLocalVideoReady,
+        cameraPublished: claimLock?.cameraPublished === true,
+        preflightElapsedMs,
+        silentScheduleReady: silent?.scheduleReady,
+        silentTokenReady: silent?.tokenReady,
       });
 
       const activeStep = evaluation.steps.find((step) => step.status === "active");
@@ -11852,7 +13275,9 @@ export default function LiveRoomScreen() {
         evaluation.roomConnected,
         evaluation.micReady,
         evaluation.cameraReady,
-        evaluation.videoPublished,
+        evaluation.videoReady,
+        evaluation.enterReady,
+        evaluation.cameraPending,
         liveBridgeId,
       ].join("|");
       if (source === "deps" || livePreflightDebugSigRef.current !== debugSig) {
@@ -11866,7 +13291,11 @@ export default function LiveRoomScreen() {
           roomConnected: evaluation.roomConnected,
           micReady: evaluation.micReady,
           cameraReady: evaluation.cameraReady,
-          videoPublished: evaluation.videoPublished,
+          videoReady: evaluation.videoReady,
+          enterReady: evaluation.enterReady,
+          cameraPending: evaluation.cameraPending,
+          preflightElapsedMs,
+          silentTokenReady: silent?.tokenReady,
           liveBridgeId,
           backendScheduleReady,
           routeSlotCount: routeScheduleSlots.length,
@@ -11882,8 +13311,18 @@ export default function LiveRoomScreen() {
       }
 
       for (const step of evaluation.steps) {
+        if (step.status === "skipped" && !livePreflightStepSkippedLoggedRef.current[step.id]) {
+          livePreflightStepSkippedLoggedRef.current[step.id] = true;
+          logLivePreflightStepSkipped({
+            stepId: step.id,
+            label: step.label,
+            liveBridgeId,
+            source,
+          });
+        }
         if (step.status !== "done" || livePreflightStepLoggedRef.current[step.id]) continue;
         livePreflightStepLoggedRef.current[step.id] = true;
+        livePreflightStepAtRef.current[step.id] = Date.now();
         logLivePreflightStep({
           stepId: step.id,
           label: step.label,
@@ -11891,21 +13330,108 @@ export default function LiveRoomScreen() {
           doneCount: evaluation.doneCount,
           source,
         });
+        logLivePreflightStepDone({
+          step: step.id,
+          liveBridgeId,
+          source,
+        });
+        if (step.id === "camera" && livePreflightPublisherCamera) {
+          if (!livePreflightCameraReadyLoggedRef.current) {
+            livePreflightCameraReadyLoggedRef.current = true;
+            logLivePreflightCameraReady({
+              liveBridgeId,
+              source,
+              preflightElapsedMs,
+            });
+          }
+        }
+        if (step.id === "video" && livePreflightPublisherCamera) {
+          if (!livePreflightPublishReadyLoggedRef.current) {
+            livePreflightPublishReadyLoggedRef.current = true;
+            logLivePreflightPublishReady({
+              liveBridgeId,
+              source,
+              preflightElapsedMs,
+            });
+          }
+        }
       }
 
       if (evaluation.ready && !livePreflightReadyLoggedRef.current) {
         livePreflightReadyLoggedRef.current = true;
+        if (livePreflightIsPublisher && !livePreflightEnterAllowedLoggedRef.current) {
+          livePreflightEnterAllowedLoggedRef.current = true;
+          if (!livePreflightTimingLoggedRef.current) {
+            livePreflightTimingLoggedRef.current = true;
+            const started = livePreflightStartedAtRef.current || Date.now();
+            const at = livePreflightStepAtRef.current;
+            const stepMs = (id: LivePreflightStepId, after?: LivePreflightStepId) => {
+              const end = at[id];
+              if (!end) return 0;
+              const begin = after ? at[after] : started;
+              return Math.max(0, end - (begin ?? started));
+            };
+            const permissionCache = readCachedLiveMediaPermissions();
+            const enterAfterStep: LivePreflightStepId =
+              livePreflightMode === "video-publisher"
+                ? "video"
+                : livePreflightMode === "audio-publisher"
+                  ? "mic"
+                  : "connect";
+            logLivePreflightTimingSummary({
+              scheduleMs: stepMs("schedule"),
+              tokenMs: stepMs("token", "schedule"),
+              connectMs: stepMs("connect", "token"),
+              micMs: stepMs("mic", "connect"),
+              cameraMs: stepMs("camera", "mic"),
+              videoMs: stepMs("video", "camera"),
+              enterMs: stepMs("enter", enterAfterStep),
+              totalMs: Math.max(0, (at.enter ?? Date.now()) - started),
+              preflightMode: livePreflightMode,
+              reusedSilentToken:
+                silent?.tokenReady === true && isLiveKitTokenReadyForBridge(liveBridgeId),
+              reusedConnection: livePreflightConnectionReuseAtMountRef.current,
+              reusedPermissionState:
+                silent?.permissionsPrewarmed === true ||
+                !!(permissionCache?.cameraGranted && permissionCache?.micGranted),
+            });
+          }
+          logLivePreflightEnterAllowed({
+            liveBridgeId,
+            userId,
+            source,
+            preflightElapsedMs,
+            needsPublisherMic: livePreflightPublisherMic,
+            needsPublisherCamera: livePreflightPublisherCamera,
+          });
+          hasEnteredLiveRoomRef.current = true;
+          lockLivePreflightCompleted({
+            bridgeId: liveBridgeId,
+            userId,
+            startupAttemptId: readLivePreflightStartupAttempt()?.startupAttemptId,
+            source: "enter-allowed",
+          });
+        }
         logLivePreflightReady({
           liveBridgeId,
-          durationMs: Date.now() - livePreflightStartedAtRef.current,
+          durationMs: preflightElapsedMs,
           needsPublisherMic: livePreflightPublisherMic,
           needsPublisherCamera: livePreflightPublisherCamera,
           source,
-          mainStageLocalVideoReady,
-          claimEnterCameraPublished: claimLock?.cameraPublished === true,
+          enterReady: evaluation.enterReady,
+          cameraPending: false,
         });
         setLivePreflightComplete(true);
         setLivePreflightTimedOut(false);
+        if (!hasEnteredLiveRoomRef.current) {
+          hasEnteredLiveRoomRef.current = true;
+          lockLivePreflightCompleted({
+            bridgeId: liveBridgeId,
+            userId,
+            startupAttemptId: readLivePreflightStartupAttempt()?.startupAttemptId,
+            source: `preflight-ready-${source}`,
+          });
+        }
       }
 
       return evaluation;
@@ -11915,13 +13441,15 @@ export default function LiveRoomScreen() {
       backendScheduleReady,
       churchLiveControlBridgeBlocked,
       liveBridgeId,
+      currentUserId,
+      livePreflightMode,
       livePreflightPublisherMic,
       livePreflightPublisherCamera,
-      livePerfPermissionsDone,
-      cameraPermission?.granted,
-      micPermission?.granted,
       mainStageLocalVideoReady,
+      micPermission?.granted,
+      cameraPermission?.granted,
       routeScheduleSlots.length,
+      livePreflightConnectEpoch,
     ]
   );
 
@@ -11945,10 +13473,44 @@ export default function LiveRoomScreen() {
       logLivePreflightStart({
         liveBridgeId,
         isMediaInstantLive,
+        preflightMode: livePreflightMode,
         needsPublisherMic: livePreflightPublisherMic,
         needsPublisherCamera: livePreflightPublisherCamera,
         routeSlotCount: routeScheduleSlots.length,
       });
+      if (livePreflightMode === "video-publisher" && !livePreflightPublisherSequenceLoggedRef.current) {
+        livePreflightPublisherSequenceLoggedRef.current = true;
+        const pin = readLiveRoomSessionPin();
+        livePreflightConnectionReuseAtMountRef.current =
+          (pin?.liveBridgeId === liveBridgeId && pin?.liveKitConnected === true) ||
+          isLiveRoomLiveKitConnecting(liveBridgeId);
+        beginLivePreflightStartupAttempt({
+          roomName: String(liveBridgeId || "").trim(),
+          identity: String(liveKitPublisherIdentity || currentUserId || "").replace(
+            /[^a-zA-Z0-9_]/g,
+            ""
+          ),
+          source: "live-room-preflight-start",
+        });
+        logLivePreflightPublisherSequenceStart({
+          liveBridgeId,
+          needsPublisherMic: livePreflightPublisherMic,
+          needsPublisherCamera: livePreflightPublisherCamera,
+        });
+      } else if (
+        livePreflightMode === "audio-publisher" &&
+        !livePreflightPublisherSequenceLoggedRef.current
+      ) {
+        livePreflightPublisherSequenceLoggedRef.current = true;
+        beginLivePreflightStartupAttempt({
+          roomName: String(liveBridgeId || "").trim(),
+          identity: String(liveKitPublisherIdentity || currentUserId || "").replace(
+            /[^a-zA-Z0-9_]/g,
+            ""
+          ),
+          source: "live-room-preflight-start-audio",
+        });
+      }
     }
 
     syncLivePreflightEvaluation("deps");
@@ -11958,6 +13520,13 @@ export default function LiveRoomScreen() {
     livePreflightRetryEpoch,
     syncLivePreflightEvaluation,
   ]);
+
+  useEffect(() => {
+    if (livePreflightSkip || livePreflightComplete) return;
+    return subscribeLivePreflightStartup(() => {
+      setLivePreflightConnectEpoch((epoch) => epoch + 1);
+    });
+  }, [livePreflightSkip, livePreflightComplete]);
 
   useEffect(() => {
     if (livePreflightSkip || livePreflightComplete) return;
@@ -11977,6 +13546,20 @@ export default function LiveRoomScreen() {
             needsPublisherCamera: livePreflightPublisherCamera,
           });
         }
+        if (
+          livePreflightPublisherCamera &&
+          !mainStageLocalVideoReady &&
+          readClaimEnterSessionLock(liveBridgeId)?.cameraPublished !== true &&
+          !livePreflightBlockedCameraLoggedRef.current
+        ) {
+          livePreflightBlockedCameraLoggedRef.current = true;
+          logLivePreflightBlockedCameraNotReady({
+            liveBridgeId,
+            elapsedMs,
+            mainStageVideoReady: mainStageLocalVideoReady,
+            cameraPermissionGranted: !!cameraPermission?.granted,
+          });
+        }
         setLivePreflightTimedOut((prev) => (prev ? prev : true));
       }
     };
@@ -11991,6 +13574,8 @@ export default function LiveRoomScreen() {
     livePreflightPublisherMic,
     livePreflightPublisherCamera,
     livePreflightRetryEpoch,
+    mainStageLocalVideoReady,
+    cameraPermission?.granted,
   ]);
 
   useEffect(() => {
@@ -12012,6 +13597,21 @@ export default function LiveRoomScreen() {
     livePreflightReadyLoggedRef.current = false;
     livePreflightStepLoggedRef.current = {};
     livePreflightTimeoutLoggedRef.current = false;
+    livePreflightStepSkippedLoggedRef.current = {};
+    livePreflightPublisherSequenceLoggedRef.current = false;
+    livePreflightCameraReadyLoggedRef.current = false;
+    livePreflightPublishReadyLoggedRef.current = false;
+    livePreflightEnterAllowedLoggedRef.current = false;
+    livePreflightBlockedCameraLoggedRef.current = false;
+    livePreflightWrongEarlyCompleteRef.current = false;
+    hasEnteredLiveRoomRef.current = false;
+    clearLivePreflightCompletedLock("preflight-reset");
+    livePreflightStepAtRef.current = {};
+    livePreflightTimingLoggedRef.current = false;
+    livePreflightConnectionReuseAtMountRef.current = false;
+    resetLivePreflightStartupAttempt("preflight-reset");
+    clearPublisherVideoTrackWarmup();
+    livePreflightFastPathLoggedRef.current = false;
     livePreflightStartedAtRef.current = Date.now();
     livePreflightStepsSigRef.current = "";
     livePreflightDebugSigRef.current = "";
@@ -12019,7 +13619,10 @@ export default function LiveRoomScreen() {
     setLivePreflightTimedOut(false);
     setLivePreflightComplete(false);
     setLivePreflightSteps(
-      LIVE_PREFLIGHT_STEP_DEFS.map((def) => ({ ...def, status: "pending" as const }))
+      livePreflightStepDefs(livePreflightMode).map((def) => ({
+        ...def,
+        status: "pending" as const,
+      }))
     );
   }
 
@@ -12091,10 +13694,13 @@ export default function LiveRoomScreen() {
 
     resetMainStageLocalVideoReady();
     setMainStageLocalVideoReady(false);
+    hasEnteredLiveRoomRef.current = false;
+    clearLivePreflightCompletedLock("leave-live-room");
 
     clearLiveRoomSessionPin("leave-live-room");
     clearLiveKitPublisherStagePin("leave-live-room");
     clearClaimEnterSessionLock("leave-live-room");
+    resetLivePreflightStartupAttempt("leave-live-room");
     liveKitPublisherStageStickyRef.current = false;
     prevShouldMountLiveKitRef.current = null;
     setLiveKitHostLocked(false);
@@ -12537,7 +14143,7 @@ return (
                     canPublish={keepPublisherLiveKitStage}
                     canPublishMicOverride={liveKitMicOverrideReady}
                     canPublishCameraOverride={liveKitCameraOverrideReady}
-                    renderLocalPreview={cameraPublishAllowedNow}
+                    renderLocalPreview={publisherLocalPreviewDuringPreflight}
                     mainStageVideoReady={mainStageLocalVideoReady}
                     preferredIdentityPrefix={liveKitPublisherIdentity}
                     identity={liveKitPublisherIdentity}
@@ -12565,10 +14171,10 @@ return (
                     micMuted={false}
                     cameraPaused={true}
                     style={s.vipSoloCamera as any}
-                    fallback={
-                      mainStageLocalVideoReady ? (
-                        <View style={s.vipSoloFallback as any} />
-                      ) : (
+                  fallback={
+                    mainStageLocalVideoReady && !cameraPaused ? (
+                      <View style={s.vipSoloFallback as any} />
+                    ) : (
                         <View style={s.vipSoloFallback as any}>
                           <View style={s.vipSoloAvatar as any}>
                             <Text style={s.vipSoloAvatarText as any}>K</Text>
@@ -12782,7 +14388,7 @@ return (
                   canPublish={keepPublisherLiveKitStage}
                   canPublishMicOverride={liveKitMicOverrideReady}
                   canPublishCameraOverride={liveKitCameraOverrideReady}
-                  renderLocalPreview={cameraPublishAllowedNow}
+                  renderLocalPreview={publisherLocalPreviewDuringPreflight}
                   mainStageVideoReady={mainStageLocalVideoReady}
                   preferredIdentityPrefix={
                     isMediaInstantLive
@@ -12794,7 +14400,27 @@ return (
                   micMuted={cameraPublishAllowedNow ? false : live.micMuted}
                   cameraPaused={cameraPaused}
                   style={s.teamGridLiveCamera as any}
-                  fallback={mainStageBlackVideoShell(s.teamGridLiveFallback)}
+                  mainStageOwnerUserId={mainStageViewerDisplayContext.mainStageOwnerUserId}
+                  claimedSlotId={mainStageViewerDisplayContext.claimedSlotId}
+                  hasClaimedMainStageAvatar={mainStageViewerDisplayContext.hasClaimedMainStageAvatar}
+                  emitViewerVisualDecision={mainStageViewerDisplayContext.emitViewerVisualDecision}
+                  fallback={
+                    mainStageLocalVideoReady && !cameraPaused ? (
+                      <View style={s.teamGridLiveFallback as any} />
+                    ) : (
+                      <View style={s.teamGridLiveFallback as any}>
+                        {renderMainStageIdentityPlaceholder() || (
+                          <View style={s.livePausedWrap as any}>
+                            <Ionicons name="radio-outline" size={64} color="#F4C95D" />
+                            <Text style={s.livePausedTitle as any}>
+                              {isMediaInstantLive ? "PASTOR IS LIVE" : "SPEAKER IS LIVE"}
+                            </Text>
+                            <Text style={s.livePausedSub as any}>Waiting for video...</Text>
+                          </View>
+                        )}
+                      </View>
+                    )
+                  }
                 />
               ) : (
                 <KristoLiveKitStage
@@ -12813,16 +14439,26 @@ return (
                   micMuted={false}
                   cameraPaused={true}
                   style={s.teamGridLiveCamera as any}
+                  mainStageOwnerUserId={mainStageViewerDisplayContext.mainStageOwnerUserId}
+                  claimedSlotId={mainStageViewerDisplayContext.claimedSlotId}
+                  hasClaimedMainStageAvatar={mainStageViewerDisplayContext.hasClaimedMainStageAvatar}
+                  emitViewerVisualDecision={mainStageViewerDisplayContext.emitViewerVisualDecision}
                   fallback={
-                    mainStageLocalVideoReady ? (
+                    mainStageLocalVideoReady && !cameraPaused ? (
                       <View style={s.teamGridLiveFallback as any} />
                     ) : (
                       <View style={s.teamGridLiveFallback as any}>
-                        <View style={s.livePausedWrap as any}>
-                          <Ionicons name="radio-outline" size={64} color="#F4C95D" />
-                          <Text style={s.livePausedTitle as any}>{isMediaInstantLive ? "PASTOR IS LIVE" : `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE`}</Text>
-                          <Text style={s.livePausedSub as any}>Waiting for pastor video...</Text>
-                        </View>
+                        {renderMainStageIdentityPlaceholder() || (
+                          <View style={s.livePausedWrap as any}>
+                            <Ionicons name="radio-outline" size={64} color="#F4C95D" />
+                            <Text style={s.livePausedTitle as any}>
+                              {isMediaInstantLive
+                                ? "PASTOR IS LIVE"
+                                : `${String((currentMainStageSlot as any)?.name || "SPEAKER").toUpperCase()} IS LIVE`}
+                            </Text>
+                            <Text style={s.livePausedSub as any}>Waiting for video...</Text>
+                          </View>
+                        )}
                       </View>
                     )
                   }
@@ -12830,7 +14466,7 @@ return (
               )
             ) : (
               <View style={s.teamGridLiveFallback as any}>
-                {(() => {
+                {renderMainStageIdentityPlaceholder() || (() => {
                   const req = bigStageGuestId.startsWith("request-slot-")
                     ? joinRequestsBySlot[Number(bigStageGuestId.replace("request-slot-", ""))]
                     : null;
@@ -17250,6 +18886,34 @@ const s: any = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     zIndex: 999,
     elevation: 999,
+  },
+
+  teamGridCameraRetryOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
+    zIndex: 1000,
+    elevation: 1000,
+  },
+
+  teamGridCameraRetryTitle: {
+    marginTop: 8,
+    color: "#F8FAFF",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+
+  teamGridCameraRetrySub: {
+    marginTop: 4,
+    color: "rgba(248,250,255,0.72)",
+    fontSize: 13,
+    fontWeight: "500",
   },
 
   teamGridLiveStageActiveRing: {

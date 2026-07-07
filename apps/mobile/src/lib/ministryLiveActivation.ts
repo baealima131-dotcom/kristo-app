@@ -116,9 +116,31 @@ export function resolveMinistryLiveCanPublishForEntry(args: {
   viewerIsHost: boolean;
   isSelectedMcHost?: boolean;
 }): boolean {
-  if (args.viewerIsHost || args.isSelectedMcHost === true) return true;
+  return (
+    resolveMinistryLiveMicForEntry(args) ||
+    resolveMinistryLiveCameraForEntry({ viewerHasClaim: args.viewerHasClaim })
+  );
+}
+
+/** Mic-only entry for Pastor / Host / Leader without claim, or any claimed slot. */
+export function resolveMinistryLiveMicForEntry(args: {
+  viewerHasClaim: boolean;
+  viewerIsPastor: boolean;
+  viewerIsHost: boolean;
+  viewerIsLeader?: boolean;
+  isSelectedMcHost?: boolean;
+}): boolean {
+  if (args.viewerIsPastor || args.viewerIsHost || args.viewerIsLeader) return true;
+  if (args.isSelectedMcHost === true) return true;
   if (args.viewerHasClaim) return true;
   return false;
+}
+
+/** Camera/video publish — claimed slot only (no auto-grant to pastor/host/leader). */
+export function resolveMinistryLiveCameraForEntry(args: {
+  viewerHasClaim: boolean;
+}): boolean {
+  return args.viewerHasClaim === true;
 }
 
 export function resolveMinistryLiveViewerOnlyFromRouteParams(
@@ -131,6 +153,8 @@ export function resolveMinistryLiveViewerOnlyFromRouteParams(
     String(p.roomKind || "").toLowerCase().includes("ministry") ||
     String(p.source || "").toLowerCase().includes("ministry-live");
   if (!isMinistry) return false;
+  if (String(p.canPublishMic || "") === "1") return false;
+  if (String(p.canPublishCamera || "") === "1") return false;
   return (
     String(p.enteredAsViewer || "") === "1" ||
     String(p.canPublish || "") !== "1"
@@ -178,6 +202,8 @@ export function buildMinistryLiveRoomRouteParams(args: {
   viewerUserId: string;
   resolvedLiveRole: string;
   resolvedCanPublish: boolean;
+  resolvedCanPublishMic?: boolean;
+  resolvedCanPublishCamera?: boolean;
   entryMode: string;
   preview?: boolean;
   ministryActivation: MinistryLiveActivationState;
@@ -185,6 +211,7 @@ export function buildMinistryLiveRoomRouteParams(args: {
   churchId?: string;
   actualChurchPastorUserId?: string;
   enteredAsViewer?: boolean;
+  ministryAvatarUrl?: string;
 }): Record<string, string> {
   const cards = extractAssignmentScheduleCards(args.messages);
   const slots = assignmentCardsToLiveScheduleSlots(cards);
@@ -202,6 +229,14 @@ export function buildMinistryLiveRoomRouteParams(args: {
   const routeSlotNumber = Math.max(1, Number(activeSlot?.slotNumber || 1));
   const layout = slots.length > 0 ? "grid6" : "focus";
   const pastorUserId = String(args.actualChurchPastorUserId || "").trim();
+  const ministryAvatarUrl = String(args.ministryAvatarUrl || "").trim();
+
+  const canPublishMic =
+    args.resolvedCanPublishMic ??
+    (args.resolvedCanPublish ? true : false);
+  const canPublishCamera =
+    args.resolvedCanPublishCamera ??
+    (args.resolvedCanPublish ? true : false);
 
   console.log("KRISTO_MINISTRY_LIVE_ROUTE_BUILD", {
     roomId: args.roomId,
@@ -212,7 +247,9 @@ export function buildMinistryLiveRoomRouteParams(args: {
     leanSlotsByteLen: utf8JsonByteLength(leanSlotsJson),
     sourceScheduleId,
     enteredAsViewer: args.enteredAsViewer === true,
-    canPublish: args.resolvedCanPublish,
+    canPublish: canPublishMic || canPublishCamera,
+    canPublishMic,
+    canPublishCamera,
   });
 
   return {
@@ -246,11 +283,18 @@ export function buildMinistryLiveRoomRouteParams(args: {
     liveEndMs: String(args.ministryActivation.firstSlotEnd || activeSlot?.endMs || ""),
     title: String(args.headerTitle || "Ministry Live").slice(0, 120),
     subtitle: String(args.subtitle || activeSlot?.title || "Ministry Live").slice(0, 120),
+    ...(ministryAvatarUrl
+      ? {
+          ministryAvatarUrl,
+          avatar: ministryAvatarUrl,
+          avatarUri: ministryAvatarUrl,
+        }
+      : {}),
     meetingTopic: String(args.meetingTopic || args.headerTitle || "").slice(0, 120),
-    canPublish: args.resolvedCanPublish ? "1" : "0",
-    canPublishMic: args.resolvedCanPublish ? "1" : "0",
-    canPublishCamera: args.resolvedCanPublish ? "1" : "0",
-    mediaSlotPublisher: args.resolvedCanPublish ? "1" : "0",
+    canPublish: canPublishMic || canPublishCamera ? "1" : "0",
+    canPublishMic: canPublishMic ? "1" : "0",
+    canPublishCamera: canPublishCamera ? "1" : "0",
+    mediaSlotPublisher: canPublishCamera ? "1" : "0",
     pastorUserId,
     mediaOwnerPastorUserId: pastorUserId,
     enteredAsViewer: args.enteredAsViewer === true ? "1" : "0",

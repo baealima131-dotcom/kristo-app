@@ -134,9 +134,13 @@ import {
   logMinistryLiveEnterRolePreserved,
   logMinistryLiveStartAttempt,
   resolveMinistryLiveActivationState,
+  resolveMinistryLiveCameraForEntry,
   resolveMinistryLiveCanPublishForEntry,
+  resolveMinistryLiveMicForEntry,
   viewerHasClaimedAnyAssignmentCard,
 } from "@/src/lib/ministryLiveActivation";
+import { pushLiveRoomWithSilentPreflight } from "@/src/lib/liveSilentPreflight";
+import { parseLiveAllScheduleSlotsJson } from "@/src/lib/scheduleSlotUtils";
 import { useKristoSession } from "@/src/lib/KristoSessionProvider";
 import { LinearGradient } from "expo-linear-gradient";
 import ImageViewing from "react-native-image-viewing";
@@ -2234,13 +2238,6 @@ function Bubble({
   const mine = m.sender === "me";
   const pastorMessage = isPastorMessage(m, { churchPastorUserId });
   const senderAvatar = resolveMessageSenderAvatar(m);
-
-  console.log("[MessageAvatar]", {
-    id: m.id,
-    senderUserId: m.senderUserId,
-    hasAvatar: !!senderAvatar.uri,
-    source: senderAvatar.source,
-  });
 
   if (m.kind === "shared_content" && m.sharedContent) {
     const highlightStyle = selected || actionHighlighted ? s.bubbleSelectedGlow : null;
@@ -4816,13 +4813,22 @@ const displayHeaderTitle = assignmentDisplayTitle;
         headerTitle ||
         ""
     ).trim();
-    const canPublish = resolveMinistryLiveCanPublishForEntry({
+    const viewerIsPastor = isPastorAuthority || ministryAuthority.tier === "pastor";
+    const viewerIsHost =
+      ministryAuthority.tier === "host" || isSelectedMcHost === true;
+    const viewerIsLeader = ministryAuthority.tier === "leader";
+    const canPublishMic = resolveMinistryLiveMicForEntry({
       viewerHasClaim: ministryActivation.viewerHasClaim,
-      viewerIsPastor: isPastorAuthority || ministryAuthority.tier === "pastor",
-      viewerIsHost: ministryAuthority.tier === "host" || isSelectedMcHost === true,
+      viewerIsPastor,
+      viewerIsHost,
+      viewerIsLeader,
       isSelectedMcHost: isSelectedMcHost === true,
     });
-    const enteredAsViewer = ministryActivation.canEnterLive && !canPublish;
+    const canPublishCamera = resolveMinistryLiveCameraForEntry({
+      viewerHasClaim: ministryActivation.viewerHasClaim,
+    });
+    const canPublish = canPublishMic || canPublishCamera;
+    const enteredAsViewer = ministryActivation.canEnterLive && !canPublishMic && !canPublishCamera;
 
     logMinistryLiveEnterRolePreserved({
       userId: effectiveAuthUserId,
@@ -4845,6 +4851,8 @@ const displayHeaderTitle = assignmentDisplayTitle;
       viewerUserId: effectiveAuthUserId,
       resolvedLiveRole,
       resolvedCanPublish: canPublish,
+      resolvedCanPublishMic: canPublishMic,
+      resolvedCanPublishCamera: canPublishCamera,
       entryMode,
       preview,
       ministryActivation,
@@ -4852,6 +4860,30 @@ const displayHeaderTitle = assignmentDisplayTitle;
       churchId: String(auth?.churchId || churchId || ""),
       actualChurchPastorUserId: churchPastorUserId,
       enteredAsViewer,
+      ministryAvatarUrl: String(effectiveHeaderAvatar || routeAvatar || "").trim(),
+    });
+  }
+
+  function navigateMinistryLiveRoom(
+    ministryActivation: ReturnType<typeof resolveMinistryLiveActivationState>,
+    entryMode: string,
+    preview = entryMode !== "live"
+  ) {
+    const params = buildMinistryLiveNavigationParams(
+      ministryActivation,
+      entryMode,
+      preview
+    ) as Record<string, string>;
+    const slotCount = parseLiveAllScheduleSlotsJson(
+      params.liveAllScheduleSlotsJson || ""
+    ).length;
+    pushLiveRoomWithSilentPreflight({
+      router,
+      params,
+      viewerUserId: effectiveAuthUserId,
+      viewerChurchId: String(auth?.churchId || churchId || ""),
+      source: "ministry-live-thread",
+      routeSlotCount: slotCount,
     });
   }
 
@@ -4907,10 +4939,7 @@ const displayHeaderTitle = assignmentDisplayTitle;
           ministryAuthority.tier === "pastor",
       });
 
-      router.push({
-        pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
-        params: buildMinistryLiveNavigationParams(ministryActivation, mode, mode !== "live") as any,
-      });
+      navigateMinistryLiveRoom(ministryActivation, mode, mode !== "live");
       return;
     }
 
@@ -4944,6 +4973,8 @@ const displayHeaderTitle = assignmentDisplayTitle;
         pastorUserId: String(effectiveAuthUserId || ""),
         mediaOwnerPastorUserId: String(effectiveAuthUserId || ""),
         ministryId: String(resolvedMinistryId || threadId || ""),
+        ministryAvatarUrl: String(effectiveHeaderAvatar || routeAvatar || "").trim(),
+        avatar: String(effectiveHeaderAvatar || routeAvatar || "").trim(),
       },
     });
   }
@@ -6456,10 +6487,7 @@ function saveAssignmentVideoTrim() {
           allowed: true,
           reason: ministryActivation.reason,
         });
-        router.push({
-          pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
-          params: buildMinistryLiveNavigationParams(ministryActivation, entryMode, false) as any,
-        });
+        navigateMinistryLiveRoom(ministryActivation, entryMode, false);
         return;
       }
 
@@ -6475,14 +6503,7 @@ function saveAssignmentVideoTrim() {
           allowed: true,
           reason: ministryActivation.reason,
         });
-        router.push({
-          pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
-          params: buildMinistryLiveNavigationParams(
-            ministryActivation,
-            entryMode,
-            true
-          ) as any,
-        });
+        navigateMinistryLiveRoom(ministryActivation, entryMode, true);
         return;
       }
     }
@@ -6547,14 +6568,11 @@ function saveAssignmentVideoTrim() {
             currentRole === "admin" ||
             ministryAuthority.tier === "pastor",
         });
-        router.push({
-          pathname: "/(tabs)/more/my-church-room/messages/live-room" as any,
-          params: buildMinistryLiveNavigationParams(
-            ministryActivation,
-            entryMode,
-            liveAssignmentCtaMeta.tone === "preview"
-          ) as any,
-        });
+        navigateMinistryLiveRoom(
+          ministryActivation,
+          entryMode,
+          liveAssignmentCtaMeta.tone === "preview"
+        );
         return;
       }
 

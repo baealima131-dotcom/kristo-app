@@ -199,6 +199,23 @@ async function removeMinistryMembersForMinistry(
   return removedCount;
 }
 
+function withMinistryAvatarAliases<T extends Ministry>(ministry: T) {
+  const avatarUri = String(ministry.avatarUri || "").trim();
+  if (!avatarUri) return ministry;
+  return {
+    ...ministry,
+    avatar: avatarUri,
+    avatarUrl: avatarUri,
+    ministryAvatarUrl: avatarUri,
+  };
+}
+
+function materializeMinistryResponse<T extends Ministry & Record<string, unknown>>(row: T) {
+  return withMinistryAvatarAliases(
+    materializeMinistryMediaAccessRecord(row) as Ministry & Record<string, unknown>
+  );
+}
+
 async function applyRateLimit(req: NextRequest): Promise<NextResponse | null> {
   const rl = await rateLimit(req, { name: "ministries", limit: 60, windowMs: 60_000 });
   if (!rl.allowed) {
@@ -263,7 +280,7 @@ export async function GET(req: NextRequest) {
 
     return json<Ministry>({
       ok: true,
-      data: materializeMinistryMediaAccessRecord(one as Ministry & Record<string, unknown>),
+      data: materializeMinistryResponse(one as Ministry & Record<string, unknown>),
     });
   }
 
@@ -298,17 +315,13 @@ export async function GET(req: NextRequest) {
 
     return json<Ministry[]>({
       ok: true,
-      data: data.map((m) =>
-        materializeMinistryMediaAccessRecord(m as Ministry & Record<string, unknown>)
-      ),
+      data: data.map((m) => materializeMinistryResponse(m as Ministry & Record<string, unknown>)),
     });
   }
 
   return json<Ministry[]>({
     ok: true,
-    data: churchMinistries.map((m) =>
-      materializeMinistryMediaAccessRecord(m as Ministry & Record<string, unknown>)
-    ),
+    data: churchMinistries.map((m) => materializeMinistryResponse(m as Ministry & Record<string, unknown>)),
   });
 }
 
@@ -460,7 +473,7 @@ export async function POST(req: NextRequest) {
 
     const allAfterPersist = await readAll();
     const stored = findMinistryInChurch(allAfterPersist, churchId, created.id);
-    const responseMinistry = materializeMinistryMediaAccessRecord(
+    const responseMinistry = materializeMinistryResponse(
       (stored || created) as Ministry & Record<string, unknown>
     );
 
@@ -686,7 +699,7 @@ export async function PATCH(req: NextRequest) {
     meta: { name: u.name, status: u.status, description: u.description, avatarUri: u.avatarUri, mediaAccess: (u as any).mediaAccess },
   } as any);
 
-  return json<Ministry>({ ok: true, data: u });
+  return json<Ministry>({ ok: true, data: materializeMinistryResponse(u as Ministry & Record<string, unknown>) });
 }
 
 /* =========================

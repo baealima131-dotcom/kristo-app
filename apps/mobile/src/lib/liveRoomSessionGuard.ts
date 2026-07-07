@@ -137,8 +137,12 @@ export function pinLiveRoomSession(input: {
       0
     ),
     pinnedAt: prev?.pinnedAt || Date.now(),
-    liveKitConnected: input.liveKitConnected === true || prev?.liveKitConnected === true,
-    liveKitConnecting: input.liveKitConnecting === true || prev?.liveKitConnecting === true,
+    liveKitConnected:
+      input.liveKitConnected === true ||
+      (prev?.liveBridgeId === liveBridgeId && prev?.liveKitConnected === true),
+    liveKitConnecting:
+      input.liveKitConnecting === true ||
+      (prev?.liveBridgeId === liveBridgeId && prev?.liveKitConnecting === true),
     source: input.source || prev?.source || "unknown",
   } satisfies LiveRoomSessionPin;
 

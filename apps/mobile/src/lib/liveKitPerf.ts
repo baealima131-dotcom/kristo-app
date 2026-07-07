@@ -144,3 +144,74 @@ export function logLivePreflightBack(extra?: Record<string, unknown>) {
 export function logLivePreflightTimeout(extra?: Record<string, unknown>) {
   console.log("KRISTO_LIVE_PREFLIGHT_TIMEOUT", perfPayload(extra));
 }
+
+export function logSilentLivePreflightStart(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_SILENT_PREFLIGHT_START", perfPayload(extra));
+}
+
+export function logSilentLivePreflightDone(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_SILENT_PREFLIGHT_DONE", perfPayload(extra));
+}
+
+export function logLivePreflightStepSkipped(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_STEP_SKIPPED", perfPayload(extra));
+}
+
+export function logLivePreflightPublishTimeoutContinue(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_PUBLISH_TIMEOUT_CONTINUE", perfPayload(extra));
+}
+
+export function logLiveRoomEnterWithCameraPending(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_ROOM_ENTER_WITH_CAMERA_PENDING", perfPayload(extra));
+}
+
+export function logLivePreflightFastPathUsed(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_FAST_PATH_USED", perfPayload(extra));
+}
+
+export function logLivePreflightPublisherSequenceStart(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_PUBLISHER_SEQUENCE_START", perfPayload(extra));
+}
+
+export function logLivePreflightStepDone(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_STEP_DONE", perfPayload(extra));
+}
+
+export function logLivePreflightCameraReady(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_CAMERA_READY", perfPayload(extra));
+}
+
+export function logLivePreflightPublishReady(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_PUBLISH_READY", perfPayload(extra));
+}
+
+export function logLivePreflightEnterAllowed(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_ENTER_ALLOWED", perfPayload(extra));
+}
+
+export function logLivePreflightBlockedCameraNotReady(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_BLOCKED_CAMERA_NOT_READY", perfPayload(extra));
+}
+
+export type LivePreflightTimingSummary = {
+  scheduleMs: number;
+  tokenMs: number;
+  connectMs: number;
+  micMs: number;
+  cameraMs: number;
+  videoMs: number;
+  enterMs: number;
+  totalMs: number;
+  preflightMode?: string;
+  reusedSilentToken: boolean;
+  reusedConnection: boolean;
+  reusedPermissionState: boolean;
+};
+
+export function logLivePreflightTimingSummary(summary: LivePreflightTimingSummary) {
+  console.log("KRISTO_LIVE_PREFLIGHT_TIMING_SUMMARY", perfPayload(summary));
+}
+
+export function logLivePreflightModeResolved(extra?: Record<string, unknown>) {
+  console.log("KRISTO_LIVE_PREFLIGHT_MODE_RESOLVED", perfPayload(extra));
+}

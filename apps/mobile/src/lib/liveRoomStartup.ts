@@ -21,10 +21,56 @@ export function pauseHomeFeedBackgroundWorkForLiveNavigation(reason = "live-ring
   console.log("KRISTO_LIVE_BACKGROUND_WORK_PAUSED", { reason });
 }
 
+export type LiveMediaPermissionCache = {
+  cameraGranted: boolean;
+  micGranted: boolean;
+  at: number;
+  source: string;
+};
+
+const LIVE_MEDIA_PERMISSION_CACHE_TTL_MS = 120_000;
+
+export function cacheLiveMediaPermissions(
+  cameraGranted: boolean,
+  micGranted: boolean,
+  source: string
+) {
+  (globalThis as any).__KRISTO_LIVE_MEDIA_PERMISSION_CACHE__ = {
+    cameraGranted,
+    micGranted,
+    at: Date.now(),
+    source,
+  } satisfies LiveMediaPermissionCache;
+}
+
+export function readCachedLiveMediaPermissions(
+  maxAgeMs = LIVE_MEDIA_PERMISSION_CACHE_TTL_MS
+): LiveMediaPermissionCache | null {
+  const entry = (globalThis as any).__KRISTO_LIVE_MEDIA_PERMISSION_CACHE__ as
+    | LiveMediaPermissionCache
+    | undefined;
+  if (!entry) return null;
+  if (Date.now() - Number(entry.at || 0) > maxAgeMs) return null;
+  return entry;
+}
+
 /** Request camera/mic permissions as soon as Enter Live is tapped — before room mount. */
 export function prewarmLiveRoomMediaPermissions(source = "enter-live") {
   void (async () => {
     try {
+      const cached = readCachedLiveMediaPermissions();
+      if (cached?.cameraGranted && cached?.micGranted) {
+        console.log("KRISTO_LIVE_MEDIA_PERMISSIONS_PREWARM", {
+          source,
+          cameraGranted: true,
+          micGranted: true,
+          requested: 0,
+          cacheHit: true,
+          cacheSource: cached.source,
+        });
+        return;
+      }
+
       const [camera, mic] = await Promise.all([
         Camera.getCameraPermissionsAsync().catch(() => null),
         Camera.getMicrophonePermissionsAsync().catch(() => null),
@@ -41,11 +87,20 @@ export function prewarmLiveRoomMediaPermissions(source = "enter-live") {
         await Promise.all(tasks);
       }
 
+      const [cameraAfter, micAfter] = await Promise.all([
+        Camera.getCameraPermissionsAsync().catch(() => null),
+        Camera.getMicrophonePermissionsAsync().catch(() => null),
+      ]);
+      const cameraGranted = cameraAfter?.granted === true;
+      const micGranted = micAfter?.granted === true;
+      cacheLiveMediaPermissions(cameraGranted, micGranted, source);
+
       console.log("KRISTO_LIVE_MEDIA_PERMISSIONS_PREWARM", {
         source,
-        cameraGranted: camera?.granted === true,
-        micGranted: mic?.granted === true,
+        cameraGranted,
+        micGranted,
         requested: tasks.length,
+        cacheHit: false,
       });
     } catch (e: any) {
       console.log("KRISTO_LIVE_MEDIA_PERMISSIONS_PREWARM_ERROR", {

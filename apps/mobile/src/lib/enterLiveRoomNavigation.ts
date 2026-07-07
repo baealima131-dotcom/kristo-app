@@ -4,18 +4,10 @@ import { findAuthoritativeScheduleSlot, isScheduleFeedPresentInRows } from "@/sr
 import { emitLiveRingRefresh } from "@/src/lib/liveScheduleRingEvents";
 import { buildLiveRoomAuthorityParams } from "@/src/lib/liveMediaAuthority";
 import { markLiveEnterTap } from "@/src/lib/liveKitPerf";
-import {
-  pinLiveRoomSession,
-  clearStaleLiveEndedFlag,
-  pinLiveKitPublisherHostBeforeToken,
-  pinClaimEnterSessionLockFromRoute,
-} from "@/src/lib/liveRoomSessionGuard";
-import { prefetchLiveKitToken } from "@/src/lib/liveKitTokenPrefetch";
+import { pushLiveRoomWithSilentPreflight } from "@/src/lib/liveSilentPreflight";
 import {
   pauseHomeFeedBackgroundWorkForLiveNavigation,
-  prewarmLiveRoomMediaPermissions,
 } from "@/src/lib/liveRoomStartup";
-import { getKristoHeaders } from "@/src/lib/kristoHeaders";
 import {
   buildLeanLiveScheduleSlotsJson,
   baseFeedId,
@@ -583,7 +575,6 @@ export function enterLiveRoomFromScheduleCard(input: {
     isLiveNow,
     routeSlotNumber: navTarget.routeSlotNumber,
   });
-  prewarmLiveRoomMediaPermissions(input.source);
   pauseHomeFeedBackgroundWorkForLiveNavigation(`enter-live-${input.source}`);
 
   const routeParams = buildScheduleLiveRoomRouteParams(navTarget.item, {
@@ -619,56 +610,15 @@ export function enterLiveRoomFromScheduleCard(input: {
     leanSlotsByteLen: utf8JsonByteLength(String(routeParams.liveAllScheduleSlotsJson || "")),
   });
 
-  (globalThis as any).__KRISTO_LIVE_ACTIVE__ = true;
-  (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = Date.now();
-
-  const liveBridgeId = String(routeParams.liveId || routeParams.feedId || "").trim();
-  if (liveBridgeId) {
-    pinLiveRoomSession({
-      liveBridgeId,
-      userId: viewerUserId,
-      routeSlotCount: navTarget.allSlots.length,
-      source: `enter-live-${input.source}`,
-    });
-    clearStaleLiveEndedFlag(liveBridgeId, "enter-live-nav");
-  }
-
-  const wantsPublish =
-    routeParams.canPublish === "1" ||
-    routeParams.canPublishCamera === "1" ||
-    routeParams.mediaSlotPublisher === "1";
-  if (liveBridgeId && viewerUserId && wantsPublish) {
-    pinClaimEnterSessionLockFromRoute({
-      liveBridgeId,
-      routeParams: routeParams as Record<string, unknown>,
-      source: `enter-live-${input.source}`,
-    });
-    pinLiveKitPublisherHostBeforeToken(liveBridgeId, `enter-live-${input.source}`, {
-      stableIdentity: String(routeParams.claimedByUserId || viewerUserId).replace(/[^a-zA-Z0-9_]/g, ""),
-    });
-    const viewerChurchId = String(input.viewerChurchId || routeParams.churchId || "").trim();
-    const tokenIdentity = String(routeParams.claimedByUserId || viewerUserId).replace(
-      /[^a-zA-Z0-9_]/g,
-      ""
-    );
-    prefetchLiveKitToken({
-      roomName: liveBridgeId,
-      identity: tokenIdentity,
-      canPublish: true,
-      source: `enter-live-${input.source}`,
-      headers: getKristoHeaders({
-        userId: String(routeParams.claimedByUserId || viewerUserId),
-        role: "Member",
-        churchId: viewerChurchId,
-      }) as Record<string, string>,
-    });
-  }
-
-  if (input.navigationMethod === "replace") {
-    input.router.replace({ pathname, params: routeParams } as any);
-  } else {
-    input.router.push({ pathname, params: routeParams } as any);
-  }
+  pushLiveRoomWithSilentPreflight({
+    router: input.router,
+    params: routeParams as Record<string, string>,
+    viewerUserId,
+    viewerChurchId: input.viewerChurchId,
+    source: input.source,
+    routeSlotCount: navTarget.allSlots.length,
+    navigationMethod: input.navigationMethod,
+  });
 }
 
 function pickChurchLiveControlActiveSlot(
@@ -822,64 +772,22 @@ export function navigateChurchLiveControlLiveRoomFromMessages(input: {
     leanSlotsByteLen: utf8JsonByteLength(String(routeParams.liveAllScheduleSlotsJson || "")),
   });
 
-  (globalThis as any).__KRISTO_LIVE_ACTIVE__ = true;
-  (globalThis as any).__KRISTO_LIVE_RING_NAV_AT__ = Date.now();
-
-  const liveBridgeId = String(routeParams.liveId || routeParams.feedId || "").trim();
-  if (liveBridgeId) {
-    pinLiveRoomSession({
-      liveBridgeId,
-      userId: viewerUserId,
-      routeSlotCount: parseLiveAllScheduleSlotsJson(routeParams.liveAllScheduleSlotsJson).length,
-      source: "enter-live-church-live-control-room-card",
-    });
-    clearStaleLiveEndedFlag(liveBridgeId, "enter-live-nav");
-  }
-
-  const wantsPublish =
-    routeParams.canPublish === "1" ||
-    routeParams.canPublishCamera === "1" ||
-    routeParams.mediaSlotPublisher === "1";
-  if (liveBridgeId && viewerUserId && wantsPublish) {
-    pinClaimEnterSessionLockFromRoute({
-      liveBridgeId,
-      routeParams: routeParams as Record<string, unknown>,
-      source: "enter-live-church-live-control-room-card",
-    });
-    pinLiveKitPublisherHostBeforeToken(liveBridgeId, "enter-live-church-live-control-room-card", {
-      stableIdentity: String(routeParams.claimedByUserId || viewerUserId).replace(
-        /[^a-zA-Z0-9_]/g,
-        ""
-      ),
-    });
-    const viewerChurchId = String(input.viewerChurchId || routeParams.churchId || "").trim();
-    const tokenIdentity = String(routeParams.claimedByUserId || viewerUserId).replace(
-      /[^a-zA-Z0-9_]/g,
-      ""
-    );
-    prefetchLiveKitToken({
-      roomName: liveBridgeId,
-      identity: tokenIdentity,
-      canPublish: true,
-      source: "enter-live-church-live-control-room-card",
-      headers: getKristoHeaders({
-        userId: String(routeParams.claimedByUserId || viewerUserId),
-        role: "Member",
-        churchId: viewerChurchId,
-      }) as Record<string, string>,
-    });
-  }
-
   markLiveEnterTap("church-live-control-room-card", {
     viewerUserId,
-    feedId: liveBridgeId,
+    feedId: String(routeParams.liveId || routeParams.feedId || "").trim(),
     claimedByMe: routeParams.mediaSlotPublisher === "1",
     isLiveNow: routeParams.entryMode === "live",
     routeSlotNumber: Number(routeParams.currentSlotNumber || 1),
   });
-  prewarmLiveRoomMediaPermissions("church-live-control-room-card");
   pauseHomeFeedBackgroundWorkForLiveNavigation("enter-live-church-live-control-room-card");
 
-  input.router.push({ pathname, params: routeParams } as any);
+  pushLiveRoomWithSilentPreflight({
+    router: input.router,
+    params: routeParams as Record<string, string>,
+    viewerUserId,
+    viewerChurchId: input.viewerChurchId,
+    source: "church-live-control-room-card",
+    routeSlotCount: parseLiveAllScheduleSlotsJson(routeParams.liveAllScheduleSlotsJson).length,
+  });
   return true;
 }

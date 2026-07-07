@@ -20,9 +20,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getKristoAuth } from "@/src/lib/kristoHeaders";
-import { apiPatch, apiPost } from "@/src/lib/kristoApi";
+import { apiPatch } from "@/src/lib/kristoApi";
 import { extractApiErrorMessage } from "@/src/lib/messageAttachmentUpload";
-import { fetchMinistryById } from "@/src/lib/ministriesApi";
+import { fetchMinistryById, uploadMinistryAvatar } from "@/src/lib/ministriesApi";
 import * as ImagePicker from "expo-image-picker";
 import { ChurchSubscriptionExpiredBadge } from "@/src/components/ChurchPremiumSubscriptionModal";
 import { useChurchPremiumManagementAccess } from "@/src/lib/useChurchPremiumManagementAccess";
@@ -166,33 +166,24 @@ const [name, setName] = useState("");
       const fileName = String(asset?.fileName || `ministry_${Date.now()}.jpg`);
       const mimeType = String(asset?.mimeType || "image/jpeg");
 
-      const form = new FormData();
-      form.append("file", {
-        uri: localUri,
-        name: fileName,
-        type: mimeType,
-      } as any);
-      if (ministryId) form.append("ministryId", ministryId);
+      const uploaded = await uploadMinistryAvatar({
+        localUri,
+        fileName,
+        mimeType,
+        ministryId,
+        headers: {
+          accept: "application/json",
+          "x-kristo-user-id": effectiveAuthUserId,
+          "x-kristo-role": effectiveAuthRole,
+          "x-kristo-church-id": churchId,
+        },
+      });
 
-      const uploaded = await apiPost<{ ok?: boolean; data?: { url?: string }; error?: string }>(
-        "/api/church/ministries/upload",
-        form,
-        {
-          headers: {
-            accept: "application/json",
-            "x-kristo-user-id": effectiveAuthUserId,
-            "x-kristo-role": effectiveAuthRole,
-            "x-kristo-church-id": churchId,
-          },
-        }
-      );
-
-      if (!uploaded?.ok || !uploaded?.data?.url) {
-        throw new Error(extractApiErrorMessage(uploaded, "Failed to upload photo"));
+      if (!uploaded.ok || !uploaded.url) {
+        throw new Error(uploaded.error || "Failed to upload photo");
       }
 
-      const next = normalizeImageUri(String(uploaded.data.url || "").trim());
-      if (!next) throw new Error("Upload returned empty image URL");
+      const next = normalizeImageUri(uploaded.url);
 
       setItem((prev) => (prev ? { ...prev, avatarUri: next } : prev));
     } catch (e: any) {
